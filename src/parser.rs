@@ -827,6 +827,22 @@ impl Parser {
                 self.expect(TokenKind::RParen)?;
                 Ok(expr)
             }
+            // Bit concatenation: {a, b, c}
+            Some(TokenKind::LBrace) => {
+                let start = self.advance().span;
+                let mut parts = Vec::new();
+                while !self.check(TokenKind::RBrace) {
+                    parts.push(self.parse_expr()?);
+                    if !self.eat(TokenKind::Comma) {
+                        break;
+                    }
+                }
+                let end = self.expect(TokenKind::RBrace)?;
+                Ok(Expr {
+                    kind: ExprKind::Concat(parts),
+                    span: start.merge(end.span),
+                })
+            }
             Some(TokenKind::Todo) => {
                 let tok = self.advance();
                 Ok(Expr {

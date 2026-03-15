@@ -1,3 +1,3 @@
-# forge-com
+# arch-com
 
-A compiler for the FORGE language.
+A compiler for the ARCH language.

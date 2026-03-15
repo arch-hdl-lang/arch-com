@@ -12,6 +12,9 @@ pub struct Codegen<'a> {
     pub warnings: Vec<CompileWarning>,
     /// Comments extracted from the original source (byte span, text).
     comments: Vec<(Span, String)>,
+    /// When inside a `reg on ... rst low` block, holds the reset signal name
+    /// so that bare references to it in expressions are emitted as `(!name)`.
+    active_low_rst: Option<String>,
 }
 
 impl<'a> Codegen<'a> {
@@ -23,6 +26,7 @@ impl<'a> Codegen<'a> {
             indent: 0,
             warnings: Vec::new(),
             comments: Vec::new(),
+            active_low_rst: None,
         }
     }
 
@@ -208,8 +212,12 @@ impl<'a> Codegen<'a> {
     }
 
     fn emit_comb_block(&mut self, cb: &CombBlock) {
-        // Check if all stmts are simple assigns - use `assign` form
-        let all_simple = cb.stmts.iter().all(|s| matches!(s, CombStmt::Assign(_)));
+        // Simple assign form only when every statement is a plain assign with
+        // no match-expression RHS (those need always_comb for the case block).
+        let all_simple = cb.stmts.iter().all(|s| match s {
+            CombStmt::Assign(a) => !matches!(a.value.kind, ExprKind::ExprMatch(..)),
+            _ => false,
+        });
         if all_simple {
             for stmt in &cb.stmts {
                 if let CombStmt::Assign(a) = stmt {
@@ -231,8 +239,31 @@ impl<'a> Codegen<'a> {
     fn emit_comb_stmt(&mut self, stmt: &CombStmt) {
         match stmt {
             CombStmt::Assign(a) => {
-                let val = self.emit_expr_str(&a.value);
-                self.line(&format!("{} = {};", a.target.name, val));
+                // Match-expression RHS: emit as a case block for readability
+                if let ExprKind::ExprMatch(scrutinee, arms) = &a.value.kind {
+                    let s = self.emit_expr_str(scrutinee);
+                    let target = a.target.name.clone();
+                    self.line(&format!("case ({s})"));
+                    self.indent += 1;
+                    for arm in arms {
+                        let pat = match &arm.pattern {
+                            Pattern::Wildcard => "default".to_string(),
+                            Pattern::Ident(id) if id.name == "_" => "default".to_string(),
+                            Pattern::Literal(e) => self.emit_expr_str(e),
+                            Pattern::Ident(id) => id.name.clone(),
+                            Pattern::EnumVariant(en, vr) => {
+                                format!("{}__{}", en.name.to_uppercase(), vr.name.to_uppercase())
+                            }
+                        };
+                        let val = self.emit_expr_str(&arm.value);
+                        self.line(&format!("{pat}: {target} = {val};"));
+                    }
+                    self.indent -= 1;
+                    self.line("endcase");
+                } else {
+                    let val = self.emit_expr_str(&a.value);
+                    self.line(&format!("{} = {};", a.target.name, val));
+                }
             }
             CombStmt::IfElse(ie) => {
                 let cond = self.emit_expr_str(&ie.cond);
@@ -308,9 +339,13 @@ impl<'a> Codegen<'a> {
             ));
         }
         self.indent += 1;
+        if rb.reset_level == ResetLevel::Low {
+            self.active_low_rst = Some(rb.reset.name.clone());
+        }
         for stmt in &rb.stmts {
             self.emit_reg_stmt(stmt);
         }
+        self.active_low_rst = None;
         self.indent -= 1;
         self.line("end");
     }
@@ -654,6 +689,8 @@ impl<'a> Codegen<'a> {
         self.line("logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];");
         self.line("logic [PTR_W-1:0]     wr_ptr;");
         self.line("logic [PTR_W-1:0]     rd_ptr;");
+        self.line("logic                 full;");
+        self.line("logic                 empty;");
         self.line("");
         self.line("// Full when MSBs differ and lower bits match");
         self.line("assign full        = (wr_ptr[PTR_W-1] != rd_ptr[PTR_W-1]) &&");
@@ -813,7 +850,15 @@ impl<'a> Codegen<'a> {
             },
             ExprKind::Bool(true) => "1'b1".to_string(),
             ExprKind::Bool(false) => "1'b0".to_string(),
-            ExprKind::Ident(name) => name.clone(),
+            ExprKind::Ident(name) => {
+                // Inside an active-low reset block, invert bare references to
+                // the reset signal so `if rst` correctly emits `if (!rst_n)`.
+                if self.active_low_rst.as_deref() == Some(name.as_str()) {
+                    format!("(!{name})")
+                } else {
+                    name.clone()
+                }
+            }
             ExprKind::Binary(op, lhs, rhs) => {
                 let l = self.emit_expr_str(lhs);
                 let r = self.emit_expr_str(rhs);
@@ -865,7 +910,9 @@ impl<'a> Codegen<'a> {
                     "zext" => {
                         if let Some(width) = args.first() {
                             let w = self.emit_expr_str(width);
-                            format!("{w}'({b})")
+                            // Explicit zero-extension: {{(W-$bits(x)){1'b0}}, x}
+                            // Outer {{...}} = concatenation; inner {N{1'b0}} = replication.
+                            format!("{{{{({w}-$bits({b})){{1'b0}}}}, {b}}}")
                         } else {
                             b
                         }
@@ -873,7 +920,8 @@ impl<'a> Codegen<'a> {
                     "sext" => {
                         if let Some(width) = args.first() {
                             let w = self.emit_expr_str(width);
-                            format!("{w}'($signed({b}))")
+                            // Sign-extension: replicate the MSB into the upper bits.
+                            format!("{{{{({w}-$bits({b})){{{b}[$bits({b})-1]}}}}, {b}}}")
                         } else {
                             b
                         }
@@ -901,6 +949,10 @@ impl<'a> Codegen<'a> {
             ExprKind::EnumVariant(_, variant) => variant.name.to_uppercase(),
             ExprKind::Todo => {
                 "'0 /* TODO: todo! placeholder */".to_string()
+            }
+            ExprKind::Concat(parts) => {
+                let strs: Vec<String> = parts.iter().map(|p| self.emit_expr_str(p)).collect();
+                format!("{{{}}}", strs.join(", "))
             }
             ExprKind::Match(scrutinee, _arms) => {
                 let s = self.emit_expr_str(scrutinee);
@@ -1594,29 +1646,45 @@ impl<'a> Codegen<'a> {
         self.line(") (");
         self.indent += 1;
 
-        // Build port list
+        // Build port list — multi-port groups are flattened to scalar ports
+        // named {pfx}{i}_{signal} (e.g. read0_addr, read1_addr) so that each
+        // can be connected individually via a `connect` statement.
         let mut all_ports: Vec<String> = Vec::new();
         for p in &r.ports {
             let dir = match p.direction { Direction::In => "input", Direction::Out => "output" };
             let ty_str = self.emit_port_type_str(&p.ty);
             all_ports.push(format!("{dir} {ty_str} {}", p.name.name));
         }
-        // Read ports
+        // Read ports — one set of scalars per port index
         if let Some(rp) = &r.read_ports {
             let pfx = &rp.name.name;
-            for s in &rp.signals {
-                let dir = match s.direction { Direction::In => "input", Direction::Out => "output" };
-                let port_str = self.emit_regfile_port_signal(dir, &s.ty, &format!("{pfx}_{}", s.name.name), nread, addr_width, &data_width_num);
-                all_ports.push(port_str);
+            for i in 0..nread {
+                for s in &rp.signals {
+                    let dir = match s.direction { Direction::In => "input", Direction::Out => "output" };
+                    let flat_name = if nread == 1 {
+                        format!("{pfx}_{}", s.name.name)
+                    } else {
+                        format!("{pfx}{i}_{}", s.name.name)
+                    };
+                    let port_str = self.emit_regfile_port_scalar(dir, &s.ty, &flat_name, addr_width, &data_width_num);
+                    all_ports.push(port_str);
+                }
             }
         }
-        // Write ports
+        // Write ports — one set of scalars per port index
         if let Some(wp) = &r.write_ports {
             let pfx = &wp.name.name;
-            for s in &wp.signals {
-                let dir = match s.direction { Direction::In => "input", Direction::Out => "output" };
-                let port_str = self.emit_regfile_port_signal(dir, &s.ty, &format!("{pfx}_{}", s.name.name), nwrite, addr_width, &data_width_num);
-                all_ports.push(port_str);
+            for i in 0..nwrite {
+                for s in &wp.signals {
+                    let dir = match s.direction { Direction::In => "input", Direction::Out => "output" };
+                    let flat_name = if nwrite == 1 {
+                        format!("{pfx}_{}", s.name.name)
+                    } else {
+                        format!("{pfx}{i}_{}", s.name.name)
+                    };
+                    let port_str = self.emit_regfile_port_scalar(dir, &s.ty, &flat_name, addr_width, &data_width_num);
+                    all_ports.push(port_str);
+                }
             }
         }
         let port_count = all_ports.len();
@@ -1630,20 +1698,17 @@ impl<'a> Codegen<'a> {
         self.indent += 1;
 
         // ── Register array ────────────────────────────────────────────────────
-        self.line(&format!("logic [DATA_WIDTH-1:0] regs [0:NREGS-1];"));
+        self.line(&format!("logic [DATA_WIDTH-1:0] rf_data [0:NREGS-1];"));
         self.line("");
 
-        // ── Determine read/write port signal names ────────────────────────────
-        // write port signals
+        // ── Determine read/write port signal names (flat) ─────────────────────
         let write_pfx = r.write_ports.as_ref().map(|wp| wp.name.name.clone()).unwrap_or_else(|| "write".to_string());
-        let wen_name = if nwrite == 1 { format!("{write_pfx}_en") } else { format!("{write_pfx}_en") };
-        let waddr_name = if nwrite == 1 { format!("{write_pfx}_addr") } else { format!("{write_pfx}_addr") };
-        let wdata_name = if nwrite == 1 { format!("{write_pfx}_data") } else { format!("{write_pfx}_data") };
+        let read_pfx  = r.read_ports.as_ref().map(|rp| rp.name.name.clone()).unwrap_or_else(|| "read".to_string());
 
-        // read port prefix
-        let read_pfx = r.read_ports.as_ref().map(|rp| rp.name.name.clone()).unwrap_or_else(|| "read".to_string());
-        let raddr_name = format!("{read_pfx}_addr");
-        let rdata_name = format!("{read_pfx}_data");
+        // Flat name helper: "{pfx}{i}_{sig}" when count>1, else "{pfx}_{sig}"
+        let flat = |pfx: &str, i: u64, count: u64, sig: &str| -> String {
+            if count == 1 { format!("{pfx}_{sig}") } else { format!("{pfx}{i}_{sig}") }
+        };
 
         // ── Write always_ff ───────────────────────────────────────────────────
         let ff_sens = if is_async {
@@ -1656,29 +1721,23 @@ impl<'a> Codegen<'a> {
         self.indent += 1;
         self.line(&format!("if ({rst}) begin"));
         self.indent += 1;
-        // emit init entries
         for init in &r.inits {
             let idx = self.emit_expr_str(&init.index);
             let val = self.emit_expr_str(&init.value);
-            self.line(&format!("regs[{idx}] <= {val};"));
+            self.line(&format!("rf_data[{idx}] <= {val};"));
         }
         self.indent -= 1;
-        self.line(&format!("end else begin"));
+        self.line("end else begin");
         self.indent += 1;
-        if nwrite == 1 {
-            self.line(&format!("if ({wen_name})"));
+        // Unroll write ports
+        for wi in 0..nwrite {
+            let wen   = flat(&write_pfx, wi, nwrite, "en");
+            let waddr = flat(&write_pfx, wi, nwrite, "addr");
+            let wdata = flat(&write_pfx, wi, nwrite, "data");
+            self.line(&format!("if ({wen})"));
             self.indent += 1;
-            self.line(&format!("regs[{waddr_name}] <= {wdata_name};"));
+            self.line(&format!("rf_data[{waddr}] <= {wdata};"));
             self.indent -= 1;
-        } else {
-            self.line(&format!("for (int w = 0; w < {nwrite}; w++) begin"));
-            self.indent += 1;
-            self.line(&format!("if ({wen_name}[w])"));
-            self.indent += 1;
-            self.line(&format!("regs[{waddr_name}[w]] <= {wdata_name}[w];"));
-            self.indent -= 1;
-            self.indent -= 1;
-            self.line("end");
         }
         self.indent -= 1;
         self.line("end");
@@ -1686,39 +1745,28 @@ impl<'a> Codegen<'a> {
         self.line("end");
         self.line("");
 
-        // ── Read always_comb ──────────────────────────────────────────────────
+        // ── Read always_comb — unrolled per read port ─────────────────────────
         self.line("always_comb begin");
         self.indent += 1;
-        if nread == 1 {
-            if r.forward_write_before_read && nwrite == 1 {
-                self.line(&format!("if ({wen_name} && {waddr_name} == {raddr_name})"));
+        for ri in 0..nread {
+            let raddr = flat(&read_pfx, ri, nread, "addr");
+            let rdata = flat(&read_pfx, ri, nread, "data");
+            if r.forward_write_before_read {
+                // Forward from the first write port (write port 0)
+                let wen   = flat(&write_pfx, 0, nwrite, "en");
+                let waddr = flat(&write_pfx, 0, nwrite, "addr");
+                let wdata = flat(&write_pfx, 0, nwrite, "data");
+                self.line(&format!("if ({wen} && {waddr} == {raddr})"));
                 self.indent += 1;
-                self.line(&format!("{rdata_name} = {wdata_name};"));
+                self.line(&format!("{rdata} = {wdata};"));
                 self.indent -= 1;
                 self.line("else");
                 self.indent += 1;
-                self.line(&format!("{rdata_name} = regs[{raddr_name}];"));
+                self.line(&format!("{rdata} = rf_data[{raddr}];"));
                 self.indent -= 1;
             } else {
-                self.line(&format!("{rdata_name} = regs[{raddr_name}];"));
+                self.line(&format!("{rdata} = rf_data[{raddr}];"));
             }
-        } else {
-            self.line(&format!("for (int r = 0; r < {nread}; r++) begin"));
-            self.indent += 1;
-            if r.forward_write_before_read && nwrite == 1 {
-                self.line(&format!("if ({wen_name} && {waddr_name} == {raddr_name}[r])"));
-                self.indent += 1;
-                self.line(&format!("{rdata_name}[r] = {wdata_name};"));
-                self.indent -= 1;
-                self.line("else");
-                self.indent += 1;
-                self.line(&format!("{rdata_name}[r] = regs[{raddr_name}[r]];"));
-                self.indent -= 1;
-            } else {
-                self.line(&format!("{rdata_name}[r] = regs[{raddr_name}[r]];"));
-            }
-            self.indent -= 1;
-            self.line("end");
         }
         self.indent -= 1;
         self.line("end");
@@ -1729,24 +1777,19 @@ impl<'a> Codegen<'a> {
         self.line("");
     }
 
-    /// Emit a regfile port signal: scalar when N=1, array [0:N-1] when N>1
-    fn emit_regfile_port_signal(
+    /// Emit a single scalar regfile port signal declaration.
+    fn emit_regfile_port_scalar(
         &self,
         dir: &str,
         ty: &TypeExpr,
         name: &str,
-        count: u64,
         addr_width: u32,
         data_width: &str,
     ) -> String {
-        // Determine the physical type from logical type
         let phy_ty = match ty {
-            TypeExpr::Bool => {
-                if count <= 1 { format!("logic") } else { format!("logic [{count}-1:0]") }
-            }
+            TypeExpr::Bool => "logic".to_string(),
             TypeExpr::Named(id) if id.name == "WIDTH" || id.name == "DATA_WIDTH" => {
-                if count <= 1 { format!("logic [{data_width}-1:0]") }
-                else { format!("logic [{data_width}-1:0]") }
+                format!("logic [{data_width}-1:0]")
             }
             TypeExpr::Named(id) if id.name == "ADDR_WIDTH" || id.name.to_lowercase().contains("addr") => {
                 format!("logic [{addr_width}-1:0]")
@@ -1757,12 +1800,7 @@ impl<'a> Codegen<'a> {
             }
             _ => self.emit_port_type_str(ty),
         };
-
-        if count <= 1 {
-            format!("{dir} {phy_ty} {name}")
-        } else {
-            format!("{dir} {phy_ty} {name} [0:{count}-1]")
-        }
+        format!("{dir} {phy_ty} {name}")
     }
 
     /// Map signal types: Named("WIDTH") → `logic [DATA_WIDTH-1:0]`; others pass through
@@ -1879,7 +1917,8 @@ impl<'a> Codegen<'a> {
 
         // Find write data signal (input data in write port)
         let wdata_sig = write_pg.unwrap().signals.iter()
-            .find(|s| s.direction == Direction::In && s.name.name != "en" && s.name.name != "addr" && s.name.name != "mask")
+            .find(|s| s.direction == Direction::In
+                && !["en", "addr", "mask", "wen"].contains(&s.name.name.as_str()))
             .map(|s| s.name.name.clone())
             .unwrap_or_else(|| "data".to_string());
 

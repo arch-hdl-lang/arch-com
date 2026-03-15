@@ -429,6 +429,9 @@ impl<'a> TypeChecker<'a> {
                 let base_ty = self.resolve_expr_type(base, module_name, local_types);
                 match base_ty {
                     Ty::Vec(inner, _) => *inner,
+                    // Bit-select of a UInt/SInt produces a single bit; treat as Bool
+                    // so it can be used directly in boolean expressions.
+                    Ty::UInt(_) | Ty::SInt(_) => Ty::Bool,
                     _ => Ty::Bit,
                 }
             }
@@ -456,6 +459,17 @@ impl<'a> TypeChecker<'a> {
                     return self.resolve_expr_type(&arm.value, module_name, local_types);
                 }
                 Ty::Error
+            }
+            ExprKind::Concat(parts) => {
+                // Total width = sum of each part's width (Bool=1, UInt<N>=N, else 1)
+                let total: u32 = parts.iter().map(|p| {
+                    match self.resolve_expr_type(p, module_name, local_types) {
+                        Ty::UInt(w) | Ty::SInt(w) => w,
+                        Ty::Bool | Ty::Bit => 1,
+                        _ => 1,
+                    }
+                }).sum();
+                Ty::UInt(total)
             }
         }
     }

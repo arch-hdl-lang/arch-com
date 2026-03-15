@@ -287,6 +287,8 @@ pub enum ExprKind {
     Match(Box<Expr>, Vec<MatchArm>),
     /// Expression-level match: each arm produces a value (emitted as nested ternary)
     ExprMatch(Box<Expr>, Vec<ExprMatchArm>),
+    /// Bit concatenation: {a, b, c} → {a, b, c} in SV; MSB first.
+    Concat(Vec<Expr>),
 }
 
 #[derive(Debug, Clone)]
