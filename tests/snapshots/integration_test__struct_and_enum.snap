@@ -1,0 +1,26 @@
+---
+source: tests/integration_test.rs
+expression: sv
+---
+typedef struct packed { // fields: LSB→MSB (reverse of declaration order)
+  logic valid;
+  logic [32-1:0] data;
+} Packet;
+
+typedef enum logic [1:0] {
+  ADD = 2'd0,
+  SUB = 2'd1,
+  AND = 2'd2,
+  OR = 2'd3
+} AluOp;
+
+module SimpleAlu (
+  input AluOp op,
+  input logic [32-1:0] a,
+  input logic [32-1:0] b,
+  output logic [32-1:0] result
+);
+
+  assign result = (a + b);
+
+endmodule

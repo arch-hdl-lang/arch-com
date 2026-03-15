@@ -12,6 +12,8 @@ pub struct Codegen<'a> {
     pub warnings: Vec<CompileWarning>,
     /// Comments extracted from the original source (byte span, text).
     comments: Vec<(Span, String)>,
+    /// Cursor into `comments` — advanced as items are emitted.
+    comment_idx: usize,
     /// When inside a `reg on ... rst low` block, holds the reset signal name
     /// so that bare references to it in expressions are emitted as `(!name)`.
     active_low_rst: Option<String>,
@@ -26,7 +28,19 @@ impl<'a> Codegen<'a> {
             indent: 0,
             warnings: Vec::new(),
             comments: Vec::new(),
+            comment_idx: 0,
             active_low_rst: None,
+        }
+    }
+
+    /// Emit all pending comments whose byte offset is before `pos`.
+    fn emit_comments_before(&mut self, pos: usize) {
+        while self.comment_idx < self.comments.len()
+            && self.comments[self.comment_idx].0.start < pos
+        {
+            let text = self.comments[self.comment_idx].1.clone();
+            self.line(&text);
+            self.comment_idx += 1;
         }
     }
 
@@ -37,17 +51,8 @@ impl<'a> Codegen<'a> {
     }
 
     pub fn generate(mut self) -> String {
-        let mut comment_idx = 0;
         for item in &self.source.items {
-            let item_start = item.span().start;
-            // Emit all comments whose span begins before this item.
-            while comment_idx < self.comments.len()
-                && self.comments[comment_idx].0.start < item_start
-            {
-                let text = self.comments[comment_idx].1.clone();
-                self.line(&text);
-                comment_idx += 1;
-            }
+            self.emit_comments_before(item.span().start);
             match item {
                 Item::Domain(d) => self.emit_domain(d),
                 Item::Struct(s) => self.emit_struct(s),
@@ -61,12 +66,9 @@ impl<'a> Codegen<'a> {
                 Item::Regfile(r) => self.emit_regfile(r),
             }
         }
-        // Emit any trailing comments after the last item.
-        while comment_idx < self.comments.len() {
-            let text = self.comments[comment_idx].1.clone();
-            self.line(&text);
-            comment_idx += 1;
-        }
+        // Flush any trailing comments after the last item.
+        let end = usize::MAX;
+        self.emit_comments_before(end);
         self.out
     }
 
@@ -87,9 +89,10 @@ impl<'a> Codegen<'a> {
     }
 
     fn emit_struct(&mut self, s: &StructDecl) {
-        self.line(&format!("typedef struct packed {{"));
+        // SV packed structs are MSB-first: first field listed = most significant bits.
+        // Fields are reversed so the first ARCH field occupies the LSBs (C-style layout).
+        self.line(&format!("typedef struct packed {{ // fields: LSB→MSB (reverse of declaration order)"));
         self.indent += 1;
-        // Emit fields in reverse order (SystemVerilog packed struct: MSB first)
         for field in s.fields.iter().rev() {
             let ty_str = self.emit_type_str(&field.ty);
             self.line(&format!("{} {};", ty_str, field.name.name));
@@ -161,53 +164,39 @@ impl<'a> Codegen<'a> {
 
         self.indent += 1;
 
-        // Emit reg declarations
-        for item in &m.body {
-            if let ModuleBodyItem::RegDecl(r) = item {
-                let ty_str = self.emit_logic_type_str(&r.ty);
-                let init_str = self.emit_expr_str(&r.init);
-                self.line(&format!("{} {} = {};", ty_str, r.name.name, init_str));
-            }
-        }
-
-        // Emit let bindings
-        for item in &m.body {
-            if let ModuleBodyItem::LetBinding(l) = item {
-                let val_str = self.emit_expr_str(&l.value);
-                if let Some(ty) = &l.ty {
-                    let ty_str = self.emit_logic_type_str(ty);
-                    self.line(&format!("{} {};", ty_str, l.name.name));
-                    self.line(&format!("assign {} = {};", l.name.name, val_str));
-                } else {
-                    self.line(&format!("logic {} = {};", l.name.name, val_str));
+        // Single pass in source order; interleave comments by byte position.
+        // We need a clone of m to satisfy the borrow checker when calling
+        // emit_reg_block (which takes &ModuleDecl) while also mutating self.
+        let body_items: Vec<ModuleBodyItem> = m.body.clone();
+        let m_clone = m.clone();
+        for item in &body_items {
+            self.emit_comments_before(item.span().start);
+            match item {
+                ModuleBodyItem::RegDecl(r) => {
+                    let ty_str = self.emit_logic_type_str(&r.ty);
+                    let init_str = self.emit_expr_str(&r.init);
+                    self.line(&format!("{} {} = {};", ty_str, r.name.name, init_str));
                 }
-            }
-        }
-
-        // Emit comb blocks
-        for item in &m.body {
-            if let ModuleBodyItem::CombBlock(cb) = item {
-                self.emit_comb_block(cb);
-            }
-        }
-
-        // Emit reg blocks
-        for item in &m.body {
-            if let ModuleBodyItem::RegBlock(rb) = item {
-                self.emit_reg_block(rb, m);
-            }
-        }
-
-        // Emit instances
-        for item in &m.body {
-            if let ModuleBodyItem::Inst(inst) = item {
-                self.emit_inst(inst);
+                ModuleBodyItem::LetBinding(l) => {
+                    let val_str = self.emit_expr_str(&l.value);
+                    if let Some(ty) = &l.ty {
+                        let ty_str = self.emit_logic_type_str(ty);
+                        self.line(&format!("{} {};", ty_str, l.name.name));
+                        self.line(&format!("assign {} = {};", l.name.name, val_str));
+                    } else {
+                        self.line(&format!("logic {} = {};", l.name.name, val_str));
+                    }
+                }
+                ModuleBodyItem::CombBlock(cb) => self.emit_comb_block(cb),
+                ModuleBodyItem::RegBlock(rb) => self.emit_reg_block(rb, &m_clone),
+                ModuleBodyItem::Inst(inst) => self.emit_inst(inst),
+                ModuleBodyItem::Generate(_) => {} // expanded before codegen
             }
         }
 
         self.indent -= 1;
         self.line("");
-        self.line(&format!("endmodule"));
+        self.line("endmodule");
         self.line("");
     }
 
@@ -320,34 +309,129 @@ impl<'a> Codegen<'a> {
             ClockEdge::Falling => "negedge",
         };
 
-        // Check if reset is async
         let is_async_reset = self.is_async_reset(&rb.reset.name, m);
-        let rst_edge = match rb.reset_level {
-            ResetLevel::High => "posedge",
-            ResetLevel::Low => "negedge",
+        let is_low = rb.reset_level == ResetLevel::Low;
+        let rst_name = rb.reset.name.clone();
+        let rst_edge = if is_low { "negedge" } else { "posedge" };
+        let rst_cond_str = if is_low {
+            format!("(!{})", rst_name)
+        } else {
+            rst_name.clone()
         };
 
         if is_async_reset {
             self.line(&format!(
-                "always_ff @({} {} or {} {}) begin",
-                clk_edge, rb.clock.name, rst_edge, rb.reset.name
+                "always_ff @({clk_edge} {} or {rst_edge} {rst_name}) begin",
+                rb.clock.name
             ));
         } else {
-            self.line(&format!(
-                "always_ff @({} {}) begin",
-                clk_edge, rb.clock.name
-            ));
+            self.line(&format!("always_ff @({clk_edge} {}) begin", rb.clock.name));
         }
         self.indent += 1;
-        if rb.reset_level == ResetLevel::Low {
-            self.active_low_rst = Some(rb.reset.name.clone());
+
+        let user_has_rst_guard = Self::has_rst_guard(&rb.stmts, &rst_name, is_low);
+
+        if user_has_rst_guard {
+            // User wrote `if rst` (or `if not rst`) — emit body as-is.
+            // active_low_rst causes bare rst references in expressions to be
+            // emitted as (!rst), which is correct for the user-authored guard.
+            if is_low {
+                self.active_low_rst = Some(rst_name.clone());
+            }
+            for stmt in &rb.stmts {
+                self.emit_reg_stmt(stmt);
+            }
+            self.active_low_rst = None;
+        } else {
+            // No explicit reset guard — auto-generate one from init values.
+            let mut assigned = std::collections::BTreeSet::new();
+            Self::collect_assigned_roots(&rb.stmts, &mut assigned);
+
+            // Pre-compute (name, init_str) so emit_expr_str borrows are scoped.
+            let mut resets: Vec<(String, String)> = Vec::new();
+            for name in &assigned {
+                if name.is_empty() {
+                    continue;
+                }
+                let init = m.body.iter()
+                    .filter_map(|i| {
+                        if let ModuleBodyItem::RegDecl(r) = i { Some(r) } else { None }
+                    })
+                    .find(|r| r.name.name == *name)
+                    .map(|r| self.emit_expr_str(&r.init))
+                    .unwrap_or_else(|| "'0".to_string());
+                resets.push((name.clone(), init));
+            }
+
+            self.line(&format!("if ({rst_cond_str}) begin"));
+            self.indent += 1;
+            for (name, init) in &resets {
+                self.line(&format!("{name} <= {init};"));
+            }
+            self.indent -= 1;
+            self.line("end else begin");
+            self.indent += 1;
+            for stmt in &rb.stmts {
+                self.emit_reg_stmt(stmt);
+            }
+            self.indent -= 1;
+            self.line("end");
         }
-        for stmt in &rb.stmts {
-            self.emit_reg_stmt(stmt);
-        }
-        self.active_low_rst = None;
+
         self.indent -= 1;
         self.line("end");
+    }
+
+    /// Returns true if any top-level statement is an if-reset guard.
+    fn has_rst_guard(stmts: &[Stmt], rst_name: &str, is_low: bool) -> bool {
+        stmts.iter().any(|s| {
+            if let Stmt::IfElse(ie) = s {
+                Self::is_rst_cond(&ie.cond, rst_name, is_low)
+            } else {
+                false
+            }
+        })
+    }
+
+    fn is_rst_cond(expr: &Expr, rst_name: &str, _is_low: bool) -> bool {
+        match &expr.kind {
+            // User writes `if rst` (high) or `if rst_n` (low — inverted by active_low_rst).
+            ExprKind::Ident(n) => n == rst_name,
+            // User writes `if not rst` — also accepted as a guard.
+            ExprKind::Unary(UnaryOp::Not, inner) => {
+                matches!(&inner.kind, ExprKind::Ident(n) if n == rst_name)
+            }
+            _ => false,
+        }
+    }
+
+    /// Collect root signal names from all LHS assignments in a statement list.
+    fn collect_assigned_roots(stmts: &[Stmt], out: &mut std::collections::BTreeSet<String>) {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Assign(a) => {
+                    out.insert(Self::expr_root_name(&a.target));
+                }
+                Stmt::IfElse(ie) => {
+                    Self::collect_assigned_roots(&ie.then_stmts, out);
+                    Self::collect_assigned_roots(&ie.else_stmts, out);
+                }
+                Stmt::Match(m) => {
+                    for arm in &m.arms {
+                        Self::collect_assigned_roots(&arm.body, out);
+                    }
+                }
+            }
+        }
+    }
+
+    fn expr_root_name(expr: &Expr) -> String {
+        match &expr.kind {
+            ExprKind::Ident(n) => n.clone(),
+            ExprKind::FieldAccess(base, _) => Self::expr_root_name(base),
+            ExprKind::Index(base, _) => Self::expr_root_name(base),
+            _ => String::new(),
+        }
     }
 
     fn is_async_reset(&self, reset_name: &str, m: &ModuleDecl) -> bool {
@@ -541,10 +625,8 @@ impl<'a> Codegen<'a> {
                 self.line(&format!("state_next = {};",
                     sb.transitions[0].target.name.to_uppercase()));
             } else {
-                let exclusive = transitions_are_exclusive(&cond_strs);
-                let first_kw = if exclusive { "unique if" } else { "priority if" };
                 for (i, tr) in sb.transitions.iter().enumerate() {
-                    let kw = if i == 0 { first_kw } else { "else if" };
+                    let kw = if i == 0 { "if" } else { "else if" };
                     self.line(&format!("{kw} ({}) state_next = {};",
                         cond_strs[i], tr.target.name.to_uppercase()));
                 }
@@ -569,8 +651,12 @@ impl<'a> Codegen<'a> {
             self.indent += 1;
             // Defaults
             for op in &out_ports {
-                let _ty = self.emit_logic_type_str(&op.ty);
-                self.line(&format!("{} = '0; // default", op.name.name));
+                let default_str = if let Some(d) = &op.default {
+                    self.emit_expr_str(d)
+                } else {
+                    "'0".to_string()
+                };
+                self.line(&format!("{} = {}; // default", op.name.name, default_str));
             }
             self.line("case (state_r)");
             self.indent += 1;
@@ -602,16 +688,16 @@ impl<'a> Codegen<'a> {
         use crate::resolve::detect_async_fifo;
         let is_async = detect_async_fifo(&f.ports);
 
-        // Resolve DEPTH and WIDTH from params
+        // Resolve DEPTH and TYPE from params
         let depth_expr = f.params.iter()
             .find(|p| p.name.name == "DEPTH")
             .and_then(|p| p.default.as_ref())
             .map(|e| self.emit_expr_str(e))
             .unwrap_or_else(|| "16".to_string());
 
-        // Resolve WIDTH type from type param kind
-        let width_ty = f.params.iter()
-            .find(|p| p.name.name == "WIDTH")
+        // Resolve TYPE default as an SV type string
+        let type_default_sv = f.params.iter()
+            .find(|p| p.name.name == "TYPE")
             .and_then(|p| match &p.kind {
                 crate::ast::ParamKind::Type(ty) => Some(self.emit_port_type_str(ty)),
                 _ => None,
@@ -626,8 +712,8 @@ impl<'a> Codegen<'a> {
         // ── Module header ────────────────────────────────────────────────────
         self.line(&format!("module {n} #("));
         self.indent += 1;
-        self.line(&format!("parameter int DEPTH = {depth_expr},"));
-        self.line(&format!("parameter int DATA_WIDTH = {}", self.width_of_type_str(&width_ty)));
+        self.line(&format!("parameter int  DEPTH = {depth_expr},"));
+        self.line(&format!("parameter type TYPE  = {type_default_sv}"));
         self.indent -= 1;
         self.line(") (");
         self.indent += 1;
@@ -635,7 +721,7 @@ impl<'a> Codegen<'a> {
         // Emit declared ports
         for (i, p) in f.ports.iter().enumerate() {
             let dir = match p.direction { Direction::In => "input", Direction::Out => "output" };
-            // For WIDTH type-param references, use DATA_WIDTH
+            // Named("TYPE") references → use the TYPE parameter directly
             let ty_str = self.emit_fifo_port_type(&p.ty);
             let comma = if i < f.ports.len() - 1 { "," } else { "" };
             self.line(&format!("{dir} {ty_str} {}{comma}", p.name.name));
@@ -676,9 +762,7 @@ impl<'a> Codegen<'a> {
 
     fn emit_fifo_port_type(&self, ty: &TypeExpr) -> String {
         match ty {
-            TypeExpr::Named(ident) if ident.name == "WIDTH" => {
-                "logic [DATA_WIDTH-1:0]".to_string()
-            }
+            TypeExpr::Named(ident) if ident.name == "TYPE" => "TYPE".to_string(),
             other => self.emit_port_type_str(other),
         }
     }
@@ -686,7 +770,7 @@ impl<'a> Codegen<'a> {
     fn emit_fifo_sync_body(&mut self, f: &FifoDecl, _port_names: &[&str]) {
         self.line("localparam int PTR_W = $clog2(DEPTH) + 1;");
         self.line("");
-        self.line("logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];");
+        self.line("TYPE                  mem [0:DEPTH-1];");
         self.line("logic [PTR_W-1:0]     wr_ptr;");
         self.line("logic [PTR_W-1:0]     rd_ptr;");
         self.line("logic                 full;");
@@ -766,7 +850,7 @@ impl<'a> Codegen<'a> {
         self.indent -= 1;
         self.line("endfunction");
         self.line("");
-        self.line("logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];");
+        self.line("TYPE              mem [0:DEPTH-1];");
         self.line("logic [PTR_W-1:0] wr_ptr_bin, rd_ptr_bin;");
         self.line("logic [PTR_W-1:0] wr_ptr_gray, rd_ptr_gray;");
         self.line("// Two-stage synchronizers");
@@ -902,7 +986,9 @@ impl<'a> Codegen<'a> {
                     "trunc" => {
                         if let Some(width) = args.first() {
                             let w = self.emit_expr_str(width);
-                            format!("{b}[{w}-1:0]")
+                            // SV size cast: valid on any expression, including compound ones.
+                            // e.g. (count_r + 1).trunc<8>() → 8'(count_r + 1)
+                            format!("{w}'({b})")
                         } else {
                             b
                         }
@@ -910,9 +996,8 @@ impl<'a> Codegen<'a> {
                     "zext" => {
                         if let Some(width) = args.first() {
                             let w = self.emit_expr_str(width);
-                            // Explicit zero-extension: {{(W-$bits(x)){1'b0}}, x}
-                            // Outer {{...}} = concatenation; inner {N{1'b0}} = replication.
-                            format!("{{{{({w}-$bits({b})){{1'b0}}}}, {b}}}")
+                            // SV size cast zero-extends when target is wider than source.
+                            format!("{w}'({b})")
                         } else {
                             b
                         }
@@ -1254,8 +1339,8 @@ impl<'a> Codegen<'a> {
 
         match (c.direction, c.mode) {
             (CounterDirection::Up, CounterMode::Wrap) => {
-                let max_cond = if let Some(ref mx) = max_param {
-                    format!("count_r == {count_width}'({mx})")
+                let max_cond = if max_param.is_some() {
+                    format!("count_r == {count_width}'(MAX)")
                 } else {
                     format!("&count_r")  // all bits set
                 };
@@ -1269,8 +1354,8 @@ impl<'a> Codegen<'a> {
             }
             (CounterDirection::Down, CounterMode::Wrap) => {
                 let min_cond = "count_r == '0";
-                let max_val = if let Some(ref mx) = max_param {
-                    format!("{count_width}'({mx})")
+                let max_val = if max_param.is_some() {
+                    format!("{count_width}'(MAX)")
                 } else {
                     format!("'1")
                 };
@@ -1287,8 +1372,8 @@ impl<'a> Codegen<'a> {
                 self.line("else if (dec && !inc) count_r <= count_r - 1;");
             }
             (CounterDirection::Up, CounterMode::Saturate) => {
-                let max_cond = if let Some(ref mx) = max_param {
-                    format!("count_r < {count_width}'({mx})")
+                let max_cond = if max_param.is_some() {
+                    format!("count_r < {count_width}'(MAX)")
                 } else {
                     format!("!(&count_r)")
                 };
@@ -1347,8 +1432,8 @@ impl<'a> Codegen<'a> {
         }
         // at_max
         if c.ports.iter().any(|p| p.name.name == "at_max") {
-            let max_expr = if let Some(ref mx) = max_param {
-                format!("count_r == {count_width}'({mx})")
+            let max_expr = if max_param.is_some() {
+                format!("count_r == {count_width}'(MAX)")
             } else {
                 format!("&count_r")
             };
@@ -2007,85 +2092,3 @@ impl<'a> Codegen<'a> {
     }
 }
 
-// ── FSM transition mutual-exclusivity analysis ────────────────────────────────
-
-/// Returns true when the conditions in `conds` are provably mutually exclusive,
-/// meaning the synthesis tool is free to evaluate them in parallel (`unique if`).
-///
-/// Detected patterns (covering the vast majority of real FSMs):
-///   1. Zero or one transition          — trivially exclusive
-///   2. Two transitions: `c` / `(!c)`  — Boolean complement pair
-///   3. All transitions: `x == lit_i`  — same LHS, distinct literal RHS values
-///   4. Exactly one condition is `1'b1` and it is the *only* transition
-fn transitions_are_exclusive(conds: &[String]) -> bool {
-    match conds.len() {
-        0 | 1 => true,
-
-        2 => {
-            let a = &conds[0];
-            let b = &conds[1];
-            // Complement: b == "(!a)" or a == "(!b)"
-            is_bool_complement(a, b)
-        }
-
-        _ => {
-            // Pattern: every condition is `(lhs == literal)` and all have the
-            // same lhs with distinct literal values.
-            let parsed: Vec<Option<(&str, &str)>> = conds.iter()
-                .map(|c| parse_eq_literal(c))
-                .collect();
-            if parsed.iter().all(|p| p.is_some()) {
-                let lhss: Vec<&str> = parsed.iter().map(|p| p.unwrap().0).collect();
-                let rhss: Vec<&str> = parsed.iter().map(|p| p.unwrap().1).collect();
-                // All same LHS
-                let all_same_lhs = lhss.windows(2).all(|w| w[0] == w[1]);
-                // All distinct RHS
-                let mut rhs_sorted = rhss.clone();
-                rhs_sorted.sort_unstable();
-                rhs_sorted.dedup();
-                let all_distinct_rhs = rhs_sorted.len() == rhss.len();
-                return all_same_lhs && all_distinct_rhs;
-            }
-            false
-        }
-    }
-}
-
-/// True if `b` is the Boolean complement of `a` (or vice-versa).
-/// Recognises the pattern emitted by `emit_expr_str` for `not expr`:
-///   `(!expr)` — parenthesised NOT.
-fn is_bool_complement(a: &str, b: &str) -> bool {
-    // b == "(!a)"
-    if b == format!("(!{a})") { return true; }
-    // a == "(!b)"
-    if a == format!("(!{b})") { return true; }
-    // strip outer parens before retrying
-    let a2 = strip_parens(a);
-    let b2 = strip_parens(b);
-    if b2 == format!("(!{a2})") { return true; }
-    if a2 == format!("(!{b2})") { return true; }
-    false
-}
-
-/// Try to parse `(lhs == rhs)` or `lhs == rhs` → Some(("lhs", "rhs")).
-fn parse_eq_literal(s: &str) -> Option<(&str, &str)> {
-    let s = strip_parens(s);
-    // Find " == " separator
-    let sep = " == ";
-    let pos = s.find(sep)?;
-    let lhs = s[..pos].trim();
-    let rhs = s[pos + sep.len()..].trim();
-    // rhs should look like a literal (digits, hex, etc.) — simple heuristic
-    if rhs.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false)
-        || rhs.starts_with("0x") || rhs.starts_with("0b")
-    {
-        Some((lhs, rhs))
-    } else {
-        None
-    }
-}
-
-fn strip_parens(s: &str) -> &str {
-    let s = s.trim();
-    if s.starts_with('(') && s.ends_with(')') { &s[1..s.len() - 1] } else { s }
-}

@@ -80,6 +80,10 @@ pub struct PortDecl {
     pub name: Ident,
     pub direction: Direction,
     pub ty: TypeExpr,
+    /// Optional default value for FSM output ports.  When present, the FSM
+    /// codegen uses this expression instead of `'0` in the defaults block, and
+    /// the type-checker no longer requires the port to be driven in every state.
+    pub default: Option<Expr>,
     pub span: Span,
 }
 
@@ -96,6 +100,56 @@ pub enum ModuleBodyItem {
     CombBlock(CombBlock),
     LetBinding(LetBinding),
     Inst(InstDecl),
+    Generate(GenerateDecl),
+}
+
+impl ModuleBodyItem {
+    pub fn span(&self) -> Span {
+        match self {
+            ModuleBodyItem::RegDecl(r)    => r.span,
+            ModuleBodyItem::RegBlock(r)   => r.span,
+            ModuleBodyItem::CombBlock(c)  => c.span,
+            ModuleBodyItem::LetBinding(l) => l.span,
+            ModuleBodyItem::Inst(i)       => i.span,
+            ModuleBodyItem::Generate(g)   => match g {
+                GenerateDecl::For(f) => f.span,
+                GenerateDecl::If(i)  => i.span,
+            },
+        }
+    }
+}
+
+// ── Generate ──────────────────────────────────────────────────────────────────
+
+/// An item inside a generate block: either a port declaration or an instance.
+#[derive(Debug, Clone)]
+pub enum GenItem {
+    Port(PortDecl),
+    Inst(InstDecl),
+}
+
+/// `generate for VAR in START..END ... end generate for VAR`
+#[derive(Debug, Clone)]
+pub struct GenerateFor {
+    pub var: Ident,
+    pub start: Expr,
+    pub end: Expr,
+    pub items: Vec<GenItem>,
+    pub span: Span,
+}
+
+/// `generate if COND ... end generate if`
+#[derive(Debug, Clone)]
+pub struct GenerateIf {
+    pub cond: Expr,
+    pub then_items: Vec<GenItem>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum GenerateDecl {
+    For(GenerateFor),
+    If(GenerateIf),
 }
 
 #[derive(Debug, Clone)]

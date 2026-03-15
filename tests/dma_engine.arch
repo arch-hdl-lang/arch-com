@@ -84,15 +84,15 @@ end ram DescTable
 
 fifo WriteBuffer
   param DEPTH: const = 8;
-  param WIDTH: type = UInt<32>;
+  param TYPE: type = UInt<32>;
   port clk:        in Clock<SysDomain>;
   port rst:        in Reset<Sync>;
   port push_valid: in Bool;
   port push_ready: out Bool;
-  port push_data:  in WIDTH;
+  port push_data:  in TYPE;
   port pop_valid:  out Bool;
   port pop_ready:  in Bool;
-  port pop_data:   out WIDTH;
+  port pop_data:   out TYPE;
 end fifo WriteBuffer
 
 // ── Beat counter (counts transferred words, wraps at MAX) ─────────────────────
@@ -136,25 +136,21 @@ fsm TransferFsm
   port rst:      in Reset<Sync>;
   port start:    in Bool;
   port all_done: in Bool;
-  port active:   out Bool;
-  port fire_irq: out Bool;
+  port active:   out Bool default false;
+  port fire_irq: out Bool default false;
 
   state Idle, Running, Done;
   default state Idle;
 
+  // Idle: both outputs stay at their defaults (false) — no comb block needed.
   state Idle
-    comb
-      active   = false;
-      fire_irq = false;
-    end comb
     transition to Running when start;
     transition to Idle    when not start;
   end state Idle
 
   state Running
     comb
-      active   = true;
-      fire_irq = false;
+      active = true;   // override default; fire_irq stays false
     end comb
     transition to Done    when all_done;
     transition to Running when not all_done;
@@ -162,8 +158,7 @@ fsm TransferFsm
 
   state Done
     comb
-      active   = false;
-      fire_irq = true;
+      fire_irq = true; // override default; active stays false
     end comb
     transition to Idle when true;
   end state Done

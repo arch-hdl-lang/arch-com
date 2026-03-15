@@ -1,0 +1,21 @@
+---
+source: tests/integration_test.rs
+expression: sv
+---
+// domain SysDomain
+//   freq_mhz: 100
+
+module LetDemo (
+  input logic [8-1:0] a,
+  input logic [8-1:0] b,
+  output logic [8-1:0] masked,
+  output logic equal
+);
+
+  logic [8-1:0] mask;
+  assign mask = (a & b);
+  logic same = (a == b);
+  assign masked = mask;
+  assign equal = same;
+
+endmodule

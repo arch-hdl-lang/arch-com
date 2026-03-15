@@ -187,6 +187,9 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
+                // Generate blocks are fully expanded by the elaboration pass before
+                // type-checking runs; this arm should never be reached.
+                ModuleBodyItem::Generate(_) => {}
             }
         }
 
@@ -212,6 +215,33 @@ impl<'a> TypeChecker<'a> {
             Stmt::Assign(a) => {
                 if let ExprKind::Ident(name) = &a.target.kind {
                     driven.insert(name.clone());
+                    // Warn when arithmetic widening causes the RHS to be exactly
+                    // 1 bit wider than the LHS (e.g. `beat_r <= beat_r + 1`
+                    // where beat_r: UInt<16> yields a UInt<17> RHS).
+                    let rhs_ty = self.resolve_expr_type(&a.value, module_name, local_types);
+                    if let Some(lhs_ty) = local_types.get(name) {
+                        match (lhs_ty, &rhs_ty) {
+                            (Ty::UInt(lw), Ty::UInt(rw)) if *rw == lw + 1 => {
+                                self.errors.push(CompileError::general(
+                                    &format!(
+                                        "width mismatch: `{name}` is UInt<{lw}> but RHS is UInt<{rw}> \
+                                         (arithmetic widening); use `.trunc<{lw}>()` to truncate explicitly"
+                                    ),
+                                    a.span,
+                                ));
+                            }
+                            (Ty::SInt(lw), Ty::SInt(rw)) if *rw == lw + 1 => {
+                                self.errors.push(CompileError::general(
+                                    &format!(
+                                        "width mismatch: `{name}` is SInt<{lw}> but RHS is SInt<{rw}> \
+                                         (arithmetic widening); use `.trunc<{lw}>()` to truncate explicitly"
+                                    ),
+                                    a.span,
+                                ));
+                            }
+                            _ => {}
+                        }
+                    }
                 }
             }
             Stmt::IfElse(ie) => {
@@ -562,6 +592,11 @@ impl<'a> TypeChecker<'a> {
         if name.is_empty() {
             return;
         }
+        // Monomorphized variant names contain `__` (e.g. `Foo__ENABLE_1`).
+        // They are compiler-generated and do not need to satisfy PascalCase.
+        if name.contains("__") {
+            return;
+        }
         if !name.chars().next().unwrap().is_uppercase() || name.contains('_') {
             self.errors.push(CompileError::NamingViolation {
                 message: format!("`{name}` should be PascalCase"),
@@ -627,12 +662,13 @@ impl<'a> TypeChecker<'a> {
                     sb.name.span,
                 ));
             }
-            // All output ports must be driven in each state
-            let out_ports: Vec<&str> = f
+            // All output ports must be driven in each state, unless they have
+            // a `default` value declared (in which case the FSM codegen emits
+            // the default and the per-state block only needs to override it).
+            let out_ports: Vec<&PortDecl> = f
                 .ports
                 .iter()
                 .filter(|p| p.direction == Direction::Out)
-                .map(|p| p.name.name.as_str())
                 .collect();
             let driven: Vec<&str> = sb
                 .comb_stmts
@@ -646,10 +682,11 @@ impl<'a> TypeChecker<'a> {
                 })
                 .collect();
             for op in &out_ports {
-                if !driven.contains(op) {
+                let name = op.name.name.as_str();
+                if !driven.contains(&name) && op.default.is_none() {
                     self.errors.push(CompileError::general(
                         &format!(
-                            "output port `{op}` not driven in state `{}`",
+                            "output port `{name}` not driven in state `{}`",
                             sb.name.name
                         ),
                         sb.name.span,

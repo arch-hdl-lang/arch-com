@@ -128,6 +128,10 @@ pub enum TokenKind {
     Assert,
     #[token("cover")]
     Cover,
+    #[token("generate")]
+    Generate,
+    #[token("for")]
+    For,
 
     // Type keywords
     #[token("UInt")]
@@ -194,6 +198,8 @@ pub enum TokenKind {
     Shr,
     #[token("::")]
     ColonColon,
+    #[token("..")]
+    DotDot,
     #[token(".")]
     Dot,
     #[token(":")]
@@ -276,6 +282,8 @@ impl fmt::Display for TokenKind {
             TokenKind::False => write!(f, "false"),
             TokenKind::Assert => write!(f, "assert"),
             TokenKind::Cover => write!(f, "cover"),
+            TokenKind::Generate => write!(f, "generate"),
+            TokenKind::For => write!(f, "for"),
             TokenKind::Fsm => write!(f, "fsm"),
             TokenKind::Fifo => write!(f, "fifo"),
             TokenKind::Ram => write!(f, "ram"),
@@ -321,6 +329,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Shl => write!(f, "<<"),
             TokenKind::Shr => write!(f, ">>"),
             TokenKind::ColonColon => write!(f, "::"),
+            TokenKind::DotDot => write!(f, ".."),
             TokenKind::Dot => write!(f, "."),
             TokenKind::Colon => write!(f, ":"),
             TokenKind::Semi => write!(f, ";"),

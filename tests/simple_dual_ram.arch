@@ -1,0 +1,24 @@
+domain SysDomain
+  freq_mhz: 100,
+end domain SysDomain
+
+ram DualMem
+  param DEPTH: const = 128;
+  param WIDTH: type = UInt<8>;
+  port clk: in Clock<SysDomain>;
+  kind simple_dual;
+  read: sync;
+  store
+    buf: Vec<WIDTH, DEPTH>;
+  end store
+  port rd_port
+    en: in Bool;
+    addr: in UInt<7>;
+    data: out WIDTH;
+  end port rd_port
+  port wr_port
+    en: in Bool;
+    addr: in UInt<7>;
+    data: in WIDTH;
+  end port wr_port
+end ram DualMem

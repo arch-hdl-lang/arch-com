@@ -1,0 +1,84 @@
+// domain FastDomain
+//   freq_mhz: 200
+
+// domain SlowDomain
+//   freq_mhz: 50
+
+module AsyncBridge #(
+  parameter int DEPTH = 32,
+  parameter int DATA_WIDTH = 8
+) (
+  input logic wr_clk,
+  input logic rd_clk,
+  input logic rst,
+  input logic push_valid,
+  output logic push_ready,
+  input logic [DATA_WIDTH-1:0] push_data,
+  output logic pop_valid,
+  input logic pop_ready,
+  output logic [DATA_WIDTH-1:0] pop_data
+);
+
+  localparam int PTR_W = $clog2(DEPTH) + 1;
+  
+  // Gray-code helper functions
+  function automatic logic [PTR_W-1:0] bin2gray(input logic [PTR_W-1:0] b);
+    return b ^ (b >> 1);
+  endfunction
+  function automatic logic [PTR_W-1:0] gray2bin(input logic [PTR_W-1:0] g);
+    logic [PTR_W-1:0] b;
+    b[PTR_W-1] = g[PTR_W-1];
+    for (int i = PTR_W-2; i >= 0; i--) b[i] = b[i+1] ^ g[i];
+    return b;
+  endfunction
+  
+  logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];
+  logic [PTR_W-1:0] wr_ptr_bin, rd_ptr_bin;
+  logic [PTR_W-1:0] wr_ptr_gray, rd_ptr_gray;
+  // Two-stage synchronizers
+  logic [PTR_W-1:0] wr_ptr_gray_s1, wr_ptr_gray_sync; // in rd domain
+  logic [PTR_W-1:0] rd_ptr_gray_s1, rd_ptr_gray_sync; // in wr domain
+  
+  assign wr_ptr_gray = bin2gray(wr_ptr_bin);
+  assign rd_ptr_gray = bin2gray(rd_ptr_bin);
+  
+  // Sync wr_ptr into rd domain (rd_clk)
+  always_ff @(posedge rd_clk or posedge rst) begin
+    if (rst) begin wr_ptr_gray_s1 <= '0; wr_ptr_gray_sync <= '0; end
+    else begin wr_ptr_gray_s1 <= wr_ptr_gray; wr_ptr_gray_sync <= wr_ptr_gray_s1; end
+  end
+  // Sync rd_ptr into wr domain (wr_clk)
+  always_ff @(posedge wr_clk or posedge rst) begin
+    if (rst) begin rd_ptr_gray_s1 <= '0; rd_ptr_gray_sync <= '0; end
+    else begin rd_ptr_gray_s1 <= rd_ptr_gray; rd_ptr_gray_sync <= rd_ptr_gray_s1; end
+  end
+  
+  // Write domain: full detection using synced rd_ptr
+  logic full_r;
+  logic [PTR_W-1:0] rd_ptr_bin_wr;
+  assign rd_ptr_bin_wr = gray2bin(rd_ptr_gray_sync);
+  assign full_r  = (wr_ptr_bin[PTR_W-1] != rd_ptr_bin_wr[PTR_W-1]) &&
+                   (wr_ptr_bin[PTR_W-2:0] == rd_ptr_bin_wr[PTR_W-2:0]);
+  assign push_ready = !full_r;
+  always_ff @(posedge wr_clk or posedge rst) begin
+    if (rst) wr_ptr_bin <= '0;
+    else if (push_valid && push_ready) begin
+      mem[wr_ptr_bin[PTR_W-2:0]] <= push_data;
+      wr_ptr_bin <= wr_ptr_bin + 1;
+    end
+  end
+  
+  // Read domain: empty detection using synced wr_ptr
+  logic empty_r;
+  logic [PTR_W-1:0] wr_ptr_bin_rd;
+  assign wr_ptr_bin_rd = gray2bin(wr_ptr_gray_sync);
+  assign empty_r = (rd_ptr_bin == wr_ptr_bin_rd);
+  assign pop_valid = !empty_r;
+  assign pop_data  = mem[rd_ptr_bin[PTR_W-2:0]];
+  always_ff @(posedge rd_clk or posedge rst) begin
+    if (rst) rd_ptr_bin <= '0;
+    else if (pop_valid && pop_ready) rd_ptr_bin <= rd_ptr_bin + 1;
+  end
+
+endmodule
+

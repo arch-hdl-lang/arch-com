@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use arch::codegen::Codegen;
 use arch::diagnostics::CompileError;
+use arch::elaborate;
 use arch::lexer;
 use arch::parser;
 use arch::resolve;
@@ -74,7 +75,13 @@ fn run_check(
 
     // Parse
     let mut p = parser::Parser::new(tokens);
-    let ast = p.parse_source_file().map_err(|err| {
+    let parsed_ast = p.parse_source_file().map_err(|err| {
+        Report::new(err).with_source_code(NamedSource::new(filename.clone(), source.to_string()))
+    })?;
+
+    // Elaborate (expand generate blocks)
+    let ast = elaborate::elaborate(parsed_ast).map_err(|errs| {
+        let err = errs.into_iter().next().unwrap();
         Report::new(err).with_source_code(NamedSource::new(filename.clone(), source.to_string()))
     })?;
 

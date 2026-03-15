@@ -167,9 +167,12 @@ impl Parser {
                 Some(TokenKind::Inst) => {
                     body.push(ModuleBodyItem::Inst(self.parse_inst()?));
                 }
+                Some(TokenKind::Generate) => {
+                    body.push(ModuleBodyItem::Generate(self.parse_generate()?));
+                }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "param, port, reg, comb, let, or inst",
+                        "param, port, reg, comb, let, inst, or generate",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -243,12 +246,18 @@ impl Parser {
             ));
         };
         let ty = self.parse_type_expr()?;
+        let default = if self.eat(TokenKind::Default) {
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
         self.expect(TokenKind::Semi)?;
         let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
         Ok(PortDecl {
             name,
             direction,
             ty,
+            default,
             span: start.merge(end_span),
         })
     }
@@ -631,6 +640,115 @@ impl Parser {
         self.pos + 1 < self.tokens.len()
             && self.tokens[self.pos].kind == TokenKind::End
             && self.tokens[self.pos + 1].kind == TokenKind::Inst
+    }
+
+    // ── Generate ──────────────────────────────────────────────────────────────
+
+    fn check_end_generate_for(&self) -> bool {
+        self.pos + 2 < self.tokens.len()
+            && self.tokens[self.pos].kind == TokenKind::End
+            && self.tokens[self.pos + 1].kind == TokenKind::Generate
+            && self.tokens[self.pos + 2].kind == TokenKind::For
+    }
+
+    fn check_end_generate_if(&self) -> bool {
+        self.pos + 2 < self.tokens.len()
+            && self.tokens[self.pos].kind == TokenKind::End
+            && self.tokens[self.pos + 1].kind == TokenKind::Generate
+            && self.tokens[self.pos + 2].kind == TokenKind::If
+    }
+
+    fn parse_gen_items_for(&mut self) -> Result<Vec<GenItem>, CompileError> {
+        let mut items = Vec::new();
+        while !self.check_end_generate_for() {
+            match self.peek_kind() {
+                Some(TokenKind::Port) => items.push(GenItem::Port(self.parse_port_decl()?)),
+                Some(TokenKind::Inst) => items.push(GenItem::Inst(self.parse_inst()?)),
+                Some(other) => {
+                    return Err(CompileError::unexpected_token(
+                        "port or inst",
+                        &other.to_string(),
+                        self.peek_span(),
+                    ));
+                }
+                None => return Err(CompileError::UnexpectedEof),
+            }
+        }
+        Ok(items)
+    }
+
+    fn parse_gen_items_if(&mut self) -> Result<Vec<GenItem>, CompileError> {
+        let mut items = Vec::new();
+        while !self.check_end_generate_if() {
+            match self.peek_kind() {
+                Some(TokenKind::Port) => items.push(GenItem::Port(self.parse_port_decl()?)),
+                Some(TokenKind::Inst) => items.push(GenItem::Inst(self.parse_inst()?)),
+                Some(other) => {
+                    return Err(CompileError::unexpected_token(
+                        "port or inst",
+                        &other.to_string(),
+                        self.peek_span(),
+                    ));
+                }
+                None => return Err(CompileError::UnexpectedEof),
+            }
+        }
+        Ok(items)
+    }
+
+    fn parse_generate(&mut self) -> Result<GenerateDecl, CompileError> {
+        let start = self.expect(TokenKind::Generate)?.span;
+        match self.peek_kind() {
+            Some(TokenKind::For) => {
+                self.advance(); // consume `for`
+                let var = self.expect_ident()?;
+                self.expect(TokenKind::In)?;
+                // Parse `start..end` range — Pratt stops at `..` and at keywords
+                let range_start = self.parse_expr()?;
+                self.expect(TokenKind::DotDot)?;
+                let range_end = self.parse_expr()?;
+                let items = self.parse_gen_items_for()?;
+                // Consume `end generate for VAR`
+                self.expect(TokenKind::End)?;
+                self.expect(TokenKind::Generate)?;
+                self.expect(TokenKind::For)?;
+                let closing_var = self.expect_ident()?;
+                if closing_var.name != var.name {
+                    return Err(CompileError::mismatched_closing(
+                        &var.name,
+                        &closing_var.name,
+                        closing_var.span,
+                    ));
+                }
+                Ok(GenerateDecl::For(GenerateFor {
+                    span: start.merge(closing_var.span),
+                    var,
+                    start: range_start,
+                    end: range_end,
+                    items,
+                }))
+            }
+            Some(TokenKind::If) => {
+                self.advance(); // consume `if`
+                let cond = self.parse_expr()?;
+                let then_items = self.parse_gen_items_if()?;
+                // Consume `end generate if`
+                self.expect(TokenKind::End)?;
+                self.expect(TokenKind::Generate)?;
+                let end_span = self.expect(TokenKind::If)?.span;
+                Ok(GenerateDecl::If(GenerateIf {
+                    span: start.merge(end_span),
+                    cond,
+                    then_items,
+                }))
+            }
+            Some(other) => Err(CompileError::unexpected_token(
+                "for or if",
+                &other.to_string(),
+                self.peek_span(),
+            )),
+            None => Err(CompileError::UnexpectedEof),
+        }
     }
 
     /// Parse an expression inside angle brackets (no `>` or `>=` as binop)
@@ -1457,7 +1575,7 @@ impl Parser {
         let ty = self.parse_type_expr()?;
         self.expect(TokenKind::Semi)?;
         let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
-        Ok(PortDecl { name, direction, ty, span: start.merge(end_span) })
+        Ok(PortDecl { name, direction, ty, default: None, span: start.merge(end_span) })
     }
 
     fn parse_ram_init(&mut self) -> Result<RamInit, CompileError> {
@@ -1593,15 +1711,10 @@ impl Parser {
             return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
         }
 
-        Ok(CounterDecl {
-            span: start.merge(closing.span),
-            name,
-            params,
-            ports,
-            mode: mode.unwrap_or(CounterMode::Wrap),
-            direction: direction.unwrap_or(CounterDirection::Up),
-            init,
-        })
+        let mode = mode.unwrap_or(CounterMode::Wrap);
+        let direction = direction.unwrap_or(CounterDirection::Up);
+        let span = start.merge(closing.span);
+        Ok(CounterDecl { span, name, params, ports, mode, direction, init })
     }
 
     fn check_end_of(&self, kw: TokenKind) -> bool {
@@ -1691,14 +1804,8 @@ impl Parser {
             return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
         }
 
-        Ok(ArbiterDecl {
-            span: start.merge(closing.span),
-            name,
-            params,
-            ports,
-            port_arrays,
-            policy: policy.unwrap_or(ArbiterPolicy::RoundRobin),
-        })
+        let span = start.merge(closing.span);
+        Ok(ArbiterDecl { span, name, params, ports, port_arrays, policy: policy.unwrap_or(ArbiterPolicy::RoundRobin) })
     }
 
     /// Parse `ports[N] name ... end ports name`
@@ -1887,6 +1994,7 @@ impl Parser {
 fn is_method_name(name: &str) -> bool {
     matches!(name, "trunc" | "zext" | "sext")
 }
+
 
 fn prefix_bp() -> u8 {
     21 // unary prefix is highest

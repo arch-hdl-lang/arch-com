@@ -1,0 +1,42 @@
+// domain SysDomain
+//   freq_mhz: 100
+
+module Counter #(
+  parameter int WIDTH = 8
+) (
+  input logic clk,
+  input logic rst,
+  input logic en,
+  output logic [WIDTH-1:0] count
+);
+
+  logic [WIDTH-1:0] count_r = 0;
+  assign count = count_r;
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      count_r <= 0;
+    end else begin
+      if (en) begin
+        count_r <= (count_r + 1);
+      end
+    end
+  end
+
+endmodule
+
+module Top (
+  input logic clk,
+  input logic rst,
+  input logic en,
+  output logic [8-1:0] count_out
+);
+
+  Counter #(.WIDTH(8)) ctr (
+    .clk(clk),
+    .rst(rst),
+    .en(en),
+    .count(count_out)
+  );
+
+endmodule
+

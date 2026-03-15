@@ -1,4 +1,5 @@
 use arch::codegen::Codegen;
+use arch::elaborate;
 use arch::lexer;
 use arch::parser::Parser;
 use arch::resolve;
@@ -7,7 +8,8 @@ use arch::typecheck::TypeChecker;
 fn compile_to_sv(source: &str) -> String {
     let tokens = lexer::tokenize(source).expect("lexer error");
     let mut parser = Parser::new(tokens);
-    let ast = parser.parse_source_file().expect("parse error");
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
     let symbols = resolve::resolve(&ast).expect("resolve error");
     let checker = TypeChecker::new(&symbols, &ast);
     let _warnings = checker.check().expect("type check error");
@@ -75,6 +77,23 @@ end module Placeholder
 "#;
     let sv = compile_to_sv(source);
     assert!(sv.contains("TODO"));
+    insta::assert_snapshot!(sv);
+}
+
+// ── Let bindings ──────────────────────────────────────────────────────────────
+
+#[test]
+fn test_let_bindings() {
+    let source = include_str!("let_bindings.arch");
+    let sv = compile_to_sv(source);
+    // Typed let: emits declared type then a separate assign
+    assert!(sv.contains("logic [8-1:0] mask;"), "expected typed let decl, got:\n{sv}");
+    assert!(sv.contains("assign mask = (a & b);"), "expected typed let assign, got:\n{sv}");
+    // Untyped let: emits logic with inline initializer
+    assert!(sv.contains("logic same = (a == b);"), "expected untyped let, got:\n{sv}");
+    // Outputs driven from the let-bound wires
+    assert!(sv.contains("assign masked = mask;"), "expected masked assign, got:\n{sv}");
+    assert!(sv.contains("assign equal = same;"), "expected equal assign, got:\n{sv}");
     insta::assert_snapshot!(sv);
 }
 
@@ -146,6 +165,8 @@ fn test_sync_fifo() {
     assert!(sv.contains("assign push_ready"));
     assert!(sv.contains("assign pop_valid"));
     assert!(sv.contains("always_ff @(posedge clk)"));
+    assert!(sv.contains("parameter type TYPE"));
+    assert!(sv.contains("TYPE                  mem [0:DEPTH-1]"));
     // Not async
     assert!(!sv.contains("bin2gray"));
     insta::assert_snapshot!(sv);
@@ -175,12 +196,12 @@ end domain SysDomain
 
 fifo BadFifo
   param DEPTH: const = 8;
-  param WIDTH: type = UInt<8>;
+  param TYPE: type = UInt<8>;
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
   port push_valid: in Bool;
   port push_ready: out Bool;
-  port push_data: in WIDTH;
+  port push_data: in TYPE;
   // Missing: pop_valid, pop_ready, pop_data
 end fifo BadFifo
 "#;
@@ -310,4 +331,350 @@ end ram BadRam
     let symbols = resolve::resolve(&ast).expect("resolve");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
     assert!(checker.check().is_err());
+}
+
+#[test]
+fn test_implicit_truncation_is_error() {
+    // `r <= r + 1` widens UInt<8> → UInt<9>; must be a compile error.
+    // The fix is to write `r <= (r + 1).trunc<8>()` explicitly.
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100,
+end domain SysDomain
+
+module BadCounter
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port count: out UInt<8>;
+  reg count_r: UInt<8> init 0;
+  reg on clk rising, rst high
+    if rst
+      count_r <= 0;
+    end if
+    else
+      count_r <= count_r + 1;
+    end else
+  end reg
+  comb
+    count = count_r;
+  end comb
+end module BadCounter
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens);
+    let ast = parser.parse_source_file().expect("parse");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err(), "expected type error for implicit truncation");
+    let errors = result.unwrap_err();
+    assert!(
+        errors.iter().any(|e| format!("{e:?}").contains("width mismatch")
+            || format!("{e:?}").contains("trunc")),
+        "expected width-mismatch error mentioning trunc, got: {errors:?}"
+    );
+}
+
+// ── Generate ──────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_generate_for() {
+    let source = include_str!("generate_for.arch");
+    let sv = compile_to_sv(source);
+    // After elaboration, generate for 0..1 should expand to 2 ports each
+    assert!(sv.contains("req_0"), "expected req_0 port, got:\n{sv}");
+    assert!(sv.contains("req_1"), "expected req_1 port, got:\n{sv}");
+    assert!(sv.contains("gnt_0"), "expected gnt_0 port, got:\n{sv}");
+    assert!(sv.contains("gnt_1"), "expected gnt_1 port, got:\n{sv}");
+    insta::assert_snapshot!(sv);
+}
+
+#[test]
+fn test_generate_if_true() {
+    let source = include_str!("generate_if.arch");
+    let sv = compile_to_sv(source);
+    // generate if true → debug_out port is included
+    assert!(sv.contains("debug_out"), "expected debug_out port, got:\n{sv}");
+    insta::assert_snapshot!(sv);
+}
+
+#[test]
+fn test_generate_if_param_default_true() {
+    // generate if using a param default value of 1 → port included
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100,
+end domain SysDomain
+
+module ParamDebug
+  param ENABLE_DEBUG: const = 1;
+  port clk: in Clock<SysDomain>;
+
+  generate if ENABLE_DEBUG
+    port debug_out: out UInt<8>;
+  end generate if
+
+  comb
+    debug_out = 0;
+  end comb
+end module ParamDebug
+"#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("debug_out"), "expected debug_out when ENABLE_DEBUG=1, got:\n{sv}");
+}
+
+#[test]
+fn test_generate_if_param_zero_excludes_port() {
+    // generate if PARAM where PARAM default = 0 should exclude
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100,
+end domain SysDomain
+
+module NoDebug2
+  param ENABLE_DEBUG: const = 0;
+  port clk: in Clock<SysDomain>;
+
+  generate if ENABLE_DEBUG
+    port debug_out: out UInt<8>;
+  end generate if
+
+  comb
+  end comb
+end module NoDebug2
+"#;
+    let sv = compile_to_sv(source);
+    assert!(!sv.contains("debug_out"), "debug_out should be excluded when ENABLE_DEBUG=0, got:\n{sv}");
+}
+
+#[test]
+fn test_generate_if_param_comparison() {
+    // generate if PARAM > 0 style condition
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100,
+end domain SysDomain
+
+module CmpDebug
+  param LOG_LEVEL: const = 2;
+  port clk: in Clock<SysDomain>;
+
+  generate if LOG_LEVEL > 1
+    port verbose_out: out UInt<8>;
+  end generate if
+
+  comb
+    verbose_out = 0;
+  end comb
+end module CmpDebug
+"#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("verbose_out"), "expected verbose_out when LOG_LEVEL=2 > 1, got:\n{sv}");
+}
+
+#[test]
+fn test_generate_if_inst_override_enables_port() {
+    // default = 0, inst overrides to 1 → port MUST be included.
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100,
+end domain SysDomain
+
+module Inner
+  param ENABLE_DEBUG: const = 0;
+  port clk: in Clock<SysDomain>;
+
+  generate if ENABLE_DEBUG
+    port debug_out: out UInt<8>;
+  end generate if
+
+  comb
+    debug_out = 0;
+  end comb
+end module Inner
+
+module Outer
+  port clk: in Clock<SysDomain>;
+  port out_dbg: out UInt<8>;
+
+  inst inner: Inner
+    param ENABLE_DEBUG = 1;
+    connect clk <- clk;
+    connect debug_out -> out_dbg;
+  end inst inner
+end module Outer
+"#;
+    let sv = compile_to_sv(source);
+    // The elaborated Inner module (single variant, ENABLE_DEBUG=1) must have debug_out.
+    // Single inst → no name mangling, module keeps its original name.
+    assert!(sv.contains("debug_out"), "Inner should have debug_out when ENABLE_DEBUG=1:\n{sv}");
+    assert!(sv.contains("module Inner"), "module should keep original name for single variant:\n{sv}");
+}
+
+#[test]
+fn test_generate_if_inst_override_disables_port() {
+    // default = 1, inst overrides to 0 → port must be excluded.
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100,
+end domain SysDomain
+
+module Inner2
+  param ENABLE_DEBUG: const = 1;
+  port clk: in Clock<SysDomain>;
+
+  generate if ENABLE_DEBUG
+    port debug_out: out UInt<8>;
+  end generate if
+
+  comb
+  end comb
+end module Inner2
+
+module Outer2
+  port clk: in Clock<SysDomain>;
+
+  inst inner2: Inner2
+    param ENABLE_DEBUG = 0;
+    connect clk <- clk;
+  end inst inner2
+end module Outer2
+"#;
+    let sv = compile_to_sv(source);
+    // Single inst → no mangling, module keeps its name but is elaborated with ENABLE_DEBUG=0.
+    assert!(!sv.contains("debug_out"), "Inner2 should NOT have debug_out when ENABLE_DEBUG=0:\n{sv}");
+    assert!(sv.contains("module Inner2"), "module should keep original name for single variant:\n{sv}");
+}
+
+#[test]
+fn test_generate_monomorphize_two_variants() {
+    // Same module instantiated with ENABLE=0 and ENABLE=1 → two distinct SV modules.
+    // The unconditional output avoids comb-block issues; generate only adds an inst.
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100,
+end domain SysDomain
+
+module Sub
+  param ENABLE: const = 0;
+  port clk: in Clock<SysDomain>;
+  port result: out Bool;
+  comb
+    result = false;
+  end comb
+end module Sub
+
+module Top
+  port clk: in Clock<SysDomain>;
+  port out_a: out Bool;
+  port out_b: out Bool;
+
+  inst sub_on: Sub
+    param ENABLE = 1;
+    connect clk <- clk;
+    connect result -> out_a;
+  end inst sub_on
+
+  inst sub_off: Sub
+    param ENABLE = 0;
+    connect clk <- clk;
+    connect result -> out_b;
+  end inst sub_off
+end module Top
+"#;
+    let sv = compile_to_sv(source);
+    // Both variant module declarations must be emitted
+    assert!(sv.contains("module Sub__ENABLE_0"), "expected Sub__ENABLE_0 module:\n{sv}");
+    assert!(sv.contains("module Sub__ENABLE_1"), "expected Sub__ENABLE_1 module:\n{sv}");
+    // Top's inst blocks must reference the renamed variants
+    assert!(sv.contains("Sub__ENABLE_1"), "Top should reference Sub__ENABLE_1:\n{sv}");
+    assert!(sv.contains("Sub__ENABLE_0"), "Top should reference Sub__ENABLE_0:\n{sv}");
+    // sub_on and sub_off instance names must still appear
+    assert!(sv.contains("sub_on"), "expected sub_on instance:\n{sv}");
+    assert!(sv.contains("sub_off"), "expected sub_off instance:\n{sv}");
+}
+
+#[test]
+fn test_generate_monomorphize_different_port_lists() {
+    // Critical test: same module instantiated twice with params that produce
+    // DIFFERENT port lists via `generate if`.  Uses a conditional INPUT port
+    // so the module's comb block doesn't need to reference non-existent ports.
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100,
+end domain SysDomain
+
+module Inner
+  param ENABLE_DEBUG: const = 0;
+  port clk: in Clock<SysDomain>;
+  port result: out Bool;
+
+  generate if ENABLE_DEBUG
+    port debug_in: in UInt<8>;
+  end generate if
+
+  comb
+    result = false;
+  end comb
+end module Inner
+
+module Outer
+  port clk: in Clock<SysDomain>;
+  port out_a: out Bool;
+  port out_b: out Bool;
+  port dbg_val: in UInt<8>;
+
+  inst inner_on: Inner
+    param ENABLE_DEBUG = 1;
+    connect clk <- clk;
+    connect result -> out_a;
+    connect debug_in <- dbg_val;
+  end inst inner_on
+
+  inst inner_off: Inner
+    param ENABLE_DEBUG = 0;
+    connect clk <- clk;
+    connect result -> out_b;
+  end inst inner_off
+end module Outer
+"#;
+    let sv = compile_to_sv(source);
+    // Two distinct SV modules emitted
+    assert!(sv.contains("module Inner__ENABLE_DEBUG_0"), "missing Inner__ENABLE_DEBUG_0:\n{sv}");
+    assert!(sv.contains("module Inner__ENABLE_DEBUG_1"), "missing Inner__ENABLE_DEBUG_1:\n{sv}");
+    // ENABLE_DEBUG=1 variant has debug_in port; ENABLE_DEBUG=0 does not.
+    // Verify by checking what each module declaration contains.
+    let debug_1_block = sv.split("module Inner__ENABLE_DEBUG_1").nth(1)
+        .and_then(|s| s.split("endmodule").next())
+        .unwrap_or("");
+    let debug_0_block = sv.split("module Inner__ENABLE_DEBUG_0").nth(1)
+        .and_then(|s| s.split("endmodule").next())
+        .unwrap_or("");
+    assert!(debug_1_block.contains("debug_in"), "ENABLE_DEBUG=1 variant missing debug_in:\n{sv}");
+    assert!(!debug_0_block.contains("debug_in"), "ENABLE_DEBUG=0 variant should not have debug_in:\n{sv}");
+    // Inst sites reference the correct variants (params appear between name and instance)
+    assert!(sv.contains("Inner__ENABLE_DEBUG_1") && sv.contains("inner_on"),
+        "inner_on should use _1 variant:\n{sv}");
+    assert!(sv.contains("Inner__ENABLE_DEBUG_0") && sv.contains("inner_off"),
+        "inner_off should use _0 variant:\n{sv}");
+}
+
+#[test]
+fn test_generate_if_false_excludes_port() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100,
+end domain SysDomain
+
+module NoDebug
+  port clk: in Clock<SysDomain>;
+  generate if false
+    port debug_out: out UInt<8>;
+  end generate if
+  comb
+  end comb
+end module NoDebug
+"#;
+    let sv = compile_to_sv(source);
+    assert!(!sv.contains("debug_out"), "debug_out should be excluded when condition is false, got:\n{sv}");
 }
