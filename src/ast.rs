@@ -157,15 +157,24 @@ pub struct RegDecl {
     pub name: Ident,
     pub ty: TypeExpr,
     pub init: Expr,
+    pub reset: RegReset,
     pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum RegReset {
+    /// No reset for this register
+    None,
+    /// Inherit sync/async and polarity from the named reset port declaration
+    Inherit(Ident),
+    /// Explicit override: reset signal, sync/async, high/low
+    Explicit(Ident, ResetKind, ResetLevel),
 }
 
 #[derive(Debug, Clone)]
 pub struct RegBlock {
     pub clock: Ident,
     pub clock_edge: ClockEdge,
-    pub reset: Ident,
-    pub reset_level: ResetLevel,
     pub stmts: Vec<Stmt>,
     pub span: Span,
 }
@@ -306,7 +315,7 @@ pub enum TypeExpr {
     Bool,
     Bit,
     Clock(Ident),
-    Reset(ResetKind),
+    Reset(ResetKind, ResetLevel),
     Vec(Box<TypeExpr>, Box<Expr>),
     Named(Ident),
 }

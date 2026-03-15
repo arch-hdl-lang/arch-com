@@ -3,11 +3,11 @@ domain SysDomain
 end domain SysDomain
 
 ram DualMem
+  kind simple_dual;
+  read: sync;
   param DEPTH: const = 128;
   param WIDTH: type = UInt<8>;
   port clk: in Clock<SysDomain>;
-  kind simple_dual;
-  read: sync;
   store
     buf: Vec<WIDTH, DEPTH>;
   end store

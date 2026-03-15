@@ -14,9 +14,6 @@ pub struct Codegen<'a> {
     comments: Vec<(Span, String)>,
     /// Cursor into `comments` — advanced as items are emitted.
     comment_idx: usize,
-    /// When inside a `reg on ... rst low` block, holds the reset signal name
-    /// so that bare references to it in expressions are emitted as `(!name)`.
-    active_low_rst: Option<String>,
 }
 
 impl<'a> Codegen<'a> {
@@ -29,7 +26,6 @@ impl<'a> Codegen<'a> {
             warnings: Vec::new(),
             comments: Vec::new(),
             comment_idx: 0,
-            active_low_rst: None,
         }
     }
 
@@ -309,58 +305,82 @@ impl<'a> Codegen<'a> {
             ClockEdge::Falling => "negedge",
         };
 
-        let is_async_reset = self.is_async_reset(&rb.reset.name, m);
-        let is_low = rb.reset_level == ResetLevel::Low;
-        let rst_name = rb.reset.name.clone();
-        let rst_edge = if is_low { "negedge" } else { "posedge" };
-        let rst_cond_str = if is_low {
-            format!("(!{})", rst_name)
-        } else {
-            rst_name.clone()
-        };
+        // Collect all assigned register names in this block
+        let mut assigned = std::collections::BTreeSet::new();
+        Self::collect_assigned_roots(&rb.stmts, &mut assigned);
 
-        if is_async_reset {
-            self.line(&format!(
-                "always_ff @({clk_edge} {} or {rst_edge} {rst_name}) begin",
-                rb.clock.name
-            ));
+        // Look up reset info for each assigned register from its RegDecl
+        let reg_decls: Vec<&RegDecl> = m.body.iter()
+            .filter_map(|i| if let ModuleBodyItem::RegDecl(r) = i { Some(r) } else { None })
+            .collect();
+
+        // Resolve reset info: (rst_name, is_async, is_low) for registers that have reset
+        struct ResolvedReset {
+            signal: String,
+            is_async: bool,
+            is_low: bool,
+        }
+        let mut reset_info: Option<ResolvedReset> = Option::None;
+        let mut resets: Vec<(String, String)> = Vec::new(); // (reg_name, init_str)
+        for name in &assigned {
+            if name.is_empty() { continue; }
+            if let Some(rd) = reg_decls.iter().find(|r| r.name.name == *name) {
+                let resolved = self.resolve_reg_reset(&rd.reset, m);
+                if let Some((rst_sig, is_async, is_low)) = resolved {
+                    if reset_info.is_none() {
+                        reset_info = Some(ResolvedReset {
+                            signal: rst_sig.clone(),
+                            is_async,
+                            is_low,
+                        });
+                    }
+                    let init = self.emit_expr_str(&rd.init);
+                    resets.push((name.clone(), init));
+                }
+            }
+        }
+
+        // Emit sensitivity list
+        if let Some(ref ri) = reset_info {
+            if ri.is_async {
+                let rst_edge = if ri.is_low { "negedge" } else { "posedge" };
+                self.line(&format!(
+                    "always_ff @({clk_edge} {} or {rst_edge} {}) begin",
+                    rb.clock.name, ri.signal
+                ));
+            } else {
+                self.line(&format!("always_ff @({clk_edge} {}) begin", rb.clock.name));
+            }
         } else {
             self.line(&format!("always_ff @({clk_edge} {}) begin", rb.clock.name));
         }
         self.indent += 1;
 
-        let user_has_rst_guard = Self::has_rst_guard(&rb.stmts, &rst_name, is_low);
+        if let Some(ref ri) = reset_info {
+            let rst_cond_str = if ri.is_low {
+                format!("(!{})", ri.signal)
+            } else {
+                ri.signal.clone()
+            };
 
-        if user_has_rst_guard {
-            // User wrote `if rst` (or `if not rst`) — emit body as-is.
-            // active_low_rst causes bare rst references in expressions to be
-            // emitted as (!rst), which is correct for the user-authored guard.
-            if is_low {
-                self.active_low_rst = Some(rst_name.clone());
-            }
+            // Build set of register names that have reset
+            let reset_reg_names: std::collections::BTreeSet<String> =
+                resets.iter().map(|(n, _)| n.clone()).collect();
+
+            // Partition top-level statements: those that only assign to reset
+            // registers go inside the if/else guard; those that only assign
+            // to no-reset registers go outside (always execute).
+            let mut guarded_stmts = Vec::new();
+            let mut unguarded_stmts = Vec::new();
             for stmt in &rb.stmts {
-                self.emit_reg_stmt(stmt);
-            }
-            self.active_low_rst = None;
-        } else {
-            // No explicit reset guard — auto-generate one from init values.
-            let mut assigned = std::collections::BTreeSet::new();
-            Self::collect_assigned_roots(&rb.stmts, &mut assigned);
-
-            // Pre-compute (name, init_str) so emit_expr_str borrows are scoped.
-            let mut resets: Vec<(String, String)> = Vec::new();
-            for name in &assigned {
-                if name.is_empty() {
-                    continue;
+                let mut stmt_roots = std::collections::BTreeSet::new();
+                Self::collect_assigned_roots(std::slice::from_ref(stmt), &mut stmt_roots);
+                let any_reset = stmt_roots.iter().any(|n| reset_reg_names.contains(n));
+                if any_reset {
+                    guarded_stmts.push(stmt);
+                } else {
+                    unguarded_stmts.push(stmt);
                 }
-                let init = m.body.iter()
-                    .filter_map(|i| {
-                        if let ModuleBodyItem::RegDecl(r) = i { Some(r) } else { None }
-                    })
-                    .find(|r| r.name.name == *name)
-                    .map(|r| self.emit_expr_str(&r.init))
-                    .unwrap_or_else(|| "'0".to_string());
-                resets.push((name.clone(), init));
             }
 
             self.line(&format!("if ({rst_cond_str}) begin"));
@@ -371,37 +391,58 @@ impl<'a> Codegen<'a> {
             self.indent -= 1;
             self.line("end else begin");
             self.indent += 1;
-            for stmt in &rb.stmts {
+            for stmt in &guarded_stmts {
                 self.emit_reg_stmt(stmt);
             }
             self.indent -= 1;
             self.line("end");
+
+            // Emit no-reset statements outside the if/else guard
+            for stmt in &unguarded_stmts {
+                self.emit_reg_stmt(stmt);
+            }
+        } else {
+            // No registers with reset — emit body directly
+            for stmt in &rb.stmts {
+                self.emit_reg_stmt(stmt);
+            }
         }
 
         self.indent -= 1;
         self.line("end");
     }
 
-    /// Returns true if any top-level statement is an if-reset guard.
-    fn has_rst_guard(stmts: &[Stmt], rst_name: &str, is_low: bool) -> bool {
-        stmts.iter().any(|s| {
-            if let Stmt::IfElse(ie) = s {
-                Self::is_rst_cond(&ie.cond, rst_name, is_low)
-            } else {
-                false
+    /// Resolve a register's reset info: returns Some((signal_name, is_async, is_low))
+    /// or None if the register has no reset.
+    fn resolve_reg_reset(&self, reset: &RegReset, m: &ModuleDecl) -> Option<(String, bool, bool)> {
+        match reset {
+            RegReset::None => Option::None,
+            RegReset::Explicit(signal, kind, level) => {
+                Some((
+                    signal.name.clone(),
+                    *kind == ResetKind::Async,
+                    *level == ResetLevel::Low,
+                ))
             }
-        })
-    }
-
-    fn is_rst_cond(expr: &Expr, rst_name: &str, _is_low: bool) -> bool {
-        match &expr.kind {
-            // User writes `if rst` (high) or `if rst_n` (low — inverted by active_low_rst).
-            ExprKind::Ident(n) => n == rst_name,
-            // User writes `if not rst` — also accepted as a guard.
-            ExprKind::Unary(UnaryOp::Not, inner) => {
-                matches!(&inner.kind, ExprKind::Ident(n) if n == rst_name)
+            RegReset::Inherit(signal) => {
+                // Look up the port declaration to get sync/async and polarity
+                let port = m.ports.iter().find(|p| p.name.name == signal.name);
+                if let Some(port) = port {
+                    if let TypeExpr::Reset(kind, level) = &port.ty {
+                        Some((
+                            signal.name.clone(),
+                            *kind == ResetKind::Async,
+                            *level == ResetLevel::Low,
+                        ))
+                    } else {
+                        // Port exists but isn't a Reset type — treat as no reset
+                        Option::None
+                    }
+                } else {
+                    // Signal not found as port — shouldn't happen after typecheck
+                    Option::None
+                }
             }
-            _ => false,
         }
     }
 
@@ -434,15 +475,38 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    fn is_async_reset(&self, reset_name: &str, m: &ModuleDecl) -> bool {
-        for p in &m.ports {
-            if p.name.name == reset_name {
-                if let TypeExpr::Reset(ResetKind::Async) = &p.ty {
-                    return true;
-                }
+    /// Extract reset info from a port list: (name, is_async, is_low).
+    /// Returns ("rst", false, false) as defaults if no Reset port found.
+    fn extract_reset_info(ports: &[PortDecl]) -> (String, bool, bool) {
+        let rst_port = ports.iter().find(|p| matches!(&p.ty, TypeExpr::Reset(_, _)));
+        let rst_name = rst_port.map(|p| p.name.name.clone()).unwrap_or_else(|| "rst".to_string());
+        let (is_async, is_low) = rst_port.map(|p| {
+            if let TypeExpr::Reset(kind, level) = &p.ty {
+                (*kind == ResetKind::Async, *level == ResetLevel::Low)
+            } else {
+                (false, false)
             }
+        }).unwrap_or((false, false));
+        (rst_name, is_async, is_low)
+    }
+
+    /// Build the sensitivity list string for an always_ff block.
+    fn ff_sensitivity(clk: &str, rst: &str, is_async: bool, is_low: bool) -> String {
+        if is_async {
+            let rst_edge = if is_low { "negedge" } else { "posedge" };
+            format!("posedge {clk} or {rst_edge} {rst}")
+        } else {
+            format!("posedge {clk}")
         }
-        false
+    }
+
+    /// Build the reset condition string (e.g. "rst" or "(!rst_n)").
+    fn rst_condition(rst: &str, is_low: bool) -> String {
+        if is_low {
+            format!("(!{rst})")
+        } else {
+            rst.to_string()
+        }
     }
 
     fn emit_reg_stmt(&mut self, stmt: &Stmt) {
@@ -583,19 +647,15 @@ impl<'a> Codegen<'a> {
 
         // Identify clock and reset port names
         let clk_port = f.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)));
-        let rst_port = f.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Reset(_)));
         let clk_name = clk_port.map(|p| p.name.name.as_str()).unwrap_or("clk");
-        let rst_name = rst_port.map(|p| p.name.name.as_str()).unwrap_or("rst");
-        let is_async = rst_port.map(|p| matches!(&p.ty, TypeExpr::Reset(ResetKind::Async))).unwrap_or(false);
+        let (rst_name, is_async, is_low) = Self::extract_reset_info(&f.ports);
+        let ff_sens = Self::ff_sensitivity(clk_name, &rst_name, is_async, is_low);
+        let rst_cond = Self::rst_condition(&rst_name, is_low);
 
         // ── State register FF ────────────────────────────────────────────────
-        if is_async {
-            self.line(&format!("always_ff @(posedge {clk_name} or posedge {rst_name}) begin"));
-        } else {
-            self.line(&format!("always_ff @(posedge {clk_name}) begin"));
-        }
+        self.line(&format!("always_ff @({ff_sens}) begin"));
         self.indent += 1;
-        self.line(&format!("if ({rst_name}) begin"));
+        self.line(&format!("if ({rst_cond}) begin"));
         self.indent += 1;
         self.line(&format!("state_r <= {};", f.default_state.name.to_uppercase()));
         self.indent -= 1;
@@ -785,19 +845,18 @@ impl<'a> Codegen<'a> {
         self.line("assign pop_data    = mem[rd_ptr[PTR_W-2:0]];");
         self.line("");
 
-        // Determine reset port name
-        let rst = f.ports.iter()
-            .find(|p| matches!(&p.ty, TypeExpr::Reset(_)))
-            .map(|p| p.name.name.as_str())
-            .unwrap_or("rst");
+        // Determine reset port info
+        let (rst, is_async, is_low) = Self::extract_reset_info(&f.ports);
         let clk = f.ports.iter()
             .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| p.name.name.as_str())
             .unwrap_or("clk");
+        let ff_sens = Self::ff_sensitivity(clk, &rst, is_async, is_low);
+        let rst_cond = Self::rst_condition(&rst, is_low);
 
-        self.line(&format!("always_ff @(posedge {clk}) begin"));
+        self.line(&format!("always_ff @({ff_sens}) begin"));
         self.indent += 1;
-        self.line(&format!("if ({rst}) begin"));
+        self.line(&format!("if ({rst_cond}) begin"));
         self.indent += 1;
         self.line("wr_ptr <= '0;");
         self.line("rd_ptr <= '0;");
@@ -828,10 +887,10 @@ impl<'a> Codegen<'a> {
             .collect();
         let wr_clk = clock_ports.get(0).map(|p| p.name.name.as_str()).unwrap_or("wr_clk");
         let rd_clk = clock_ports.get(1).map(|p| p.name.name.as_str()).unwrap_or("rd_clk");
-        let rst = f.ports.iter()
-            .find(|p| matches!(&p.ty, TypeExpr::Reset(_)))
-            .map(|p| p.name.name.as_str())
-            .unwrap_or("rst");
+        let (rst, _is_async_rst, is_low) = Self::extract_reset_info(&f.ports);
+        // Async FIFOs always use async reset (reset in sensitivity list for all FF blocks)
+        let rst_cond = Self::rst_condition(&rst, is_low);
+        let rst_edge = if is_low { "negedge" } else { "posedge" };
 
         self.line("localparam int PTR_W = $clog2(DEPTH) + 1;");
         self.line("");
@@ -861,16 +920,16 @@ impl<'a> Codegen<'a> {
         self.line("assign rd_ptr_gray = bin2gray(rd_ptr_bin);");
         self.line("");
         self.line(&format!("// Sync wr_ptr into rd domain ({rd_clk})"));
-        self.line(&format!("always_ff @(posedge {rd_clk} or posedge {rst}) begin"));
+        self.line(&format!("always_ff @(posedge {rd_clk} or {rst_edge} {rst}) begin"));
         self.indent += 1;
-        self.line(&format!("if ({rst}) begin wr_ptr_gray_s1 <= '0; wr_ptr_gray_sync <= '0; end"));
+        self.line(&format!("if ({rst_cond}) begin wr_ptr_gray_s1 <= '0; wr_ptr_gray_sync <= '0; end"));
         self.line("else begin wr_ptr_gray_s1 <= wr_ptr_gray; wr_ptr_gray_sync <= wr_ptr_gray_s1; end");
         self.indent -= 1;
         self.line("end");
         self.line(&format!("// Sync rd_ptr into wr domain ({wr_clk})"));
-        self.line(&format!("always_ff @(posedge {wr_clk} or posedge {rst}) begin"));
+        self.line(&format!("always_ff @(posedge {wr_clk} or {rst_edge} {rst}) begin"));
         self.indent += 1;
-        self.line(&format!("if ({rst}) begin rd_ptr_gray_s1 <= '0; rd_ptr_gray_sync <= '0; end"));
+        self.line(&format!("if ({rst_cond}) begin rd_ptr_gray_s1 <= '0; rd_ptr_gray_sync <= '0; end"));
         self.line("else begin rd_ptr_gray_s1 <= rd_ptr_gray; rd_ptr_gray_sync <= rd_ptr_gray_s1; end");
         self.indent -= 1;
         self.line("end");
@@ -882,9 +941,9 @@ impl<'a> Codegen<'a> {
         self.line("assign full_r  = (wr_ptr_bin[PTR_W-1] != rd_ptr_bin_wr[PTR_W-1]) &&");
         self.line("                 (wr_ptr_bin[PTR_W-2:0] == rd_ptr_bin_wr[PTR_W-2:0]);");
         self.line("assign push_ready = !full_r;");
-        self.line(&format!("always_ff @(posedge {wr_clk} or posedge {rst}) begin"));
+        self.line(&format!("always_ff @(posedge {wr_clk} or {rst_edge} {rst}) begin"));
         self.indent += 1;
-        self.line(&format!("if ({rst}) wr_ptr_bin <= '0;"));
+        self.line(&format!("if ({rst_cond}) wr_ptr_bin <= '0;"));
         self.line("else if (push_valid && push_ready) begin");
         self.indent += 1;
         self.line("mem[wr_ptr_bin[PTR_W-2:0]] <= push_data;");
@@ -907,9 +966,9 @@ impl<'a> Codegen<'a> {
         if port_names.contains(&"empty") {
             self.line("assign empty = empty_r;");
         }
-        self.line(&format!("always_ff @(posedge {rd_clk} or posedge {rst}) begin"));
+        self.line(&format!("always_ff @(posedge {rd_clk} or {rst_edge} {rst}) begin"));
         self.indent += 1;
-        self.line(&format!("if ({rst}) rd_ptr_bin <= '0;"));
+        self.line(&format!("if ({rst_cond}) rd_ptr_bin <= '0;"));
         self.line("else if (pop_valid && pop_ready) rd_ptr_bin <= rd_ptr_bin + 1;");
         self.indent -= 1;
         self.line("end");
@@ -935,13 +994,7 @@ impl<'a> Codegen<'a> {
             ExprKind::Bool(true) => "1'b1".to_string(),
             ExprKind::Bool(false) => "1'b0".to_string(),
             ExprKind::Ident(name) => {
-                // Inside an active-low reset block, invert bare references to
-                // the reset signal so `if rst` correctly emits `if (!rst_n)`.
-                if self.active_low_rst.as_deref() == Some(name.as_str()) {
-                    format!("(!{name})")
-                } else {
-                    name.clone()
-                }
+                name.clone()
             }
             ExprKind::Binary(op, lhs, rhs) => {
                 let l = self.emit_expr_str(lhs);
@@ -1087,7 +1140,7 @@ impl<'a> Codegen<'a> {
             TypeExpr::Bool => "logic".to_string(),
             TypeExpr::Bit => "logic".to_string(),
             TypeExpr::Clock(_) => "logic".to_string(),
-            TypeExpr::Reset(_) => "logic".to_string(),
+            TypeExpr::Reset(_, _) => "logic".to_string(),
             TypeExpr::Vec(inner, size) => {
                 let inner_str = self.emit_type_str(inner);
                 let size_str = self.emit_expr_str(size);
@@ -1110,7 +1163,7 @@ impl<'a> Codegen<'a> {
             TypeExpr::Bool => "logic".to_string(),
             TypeExpr::Bit => "logic".to_string(),
             TypeExpr::Clock(_) => "logic".to_string(),
-            TypeExpr::Reset(_) => "logic".to_string(),
+            TypeExpr::Reset(_, _) => "logic".to_string(),
             TypeExpr::Vec(inner, size) => {
                 let inner_str = self.emit_port_type_str(inner);
                 let size_str = self.emit_expr_str(size);
@@ -1270,13 +1323,7 @@ impl<'a> Codegen<'a> {
             .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| p.name.name.clone())
             .unwrap_or_else(|| "clk".to_string());
-        let rst = c.ports.iter()
-            .find(|p| matches!(&p.ty, TypeExpr::Reset(_)))
-            .map(|p| p.name.name.clone())
-            .unwrap_or_else(|| "rst".to_string());
-
-        let is_async = c.ports.iter()
-            .any(|p| matches!(&p.ty, TypeExpr::Reset(crate::ast::ResetKind::Async)));
+        let (rst, is_async, is_low) = Self::extract_reset_info(&c.ports);
 
         // ── Module header ─────────────────────────────────────────────────────
         self.line(&format!("module {n} #("));
@@ -1316,17 +1363,13 @@ impl<'a> Codegen<'a> {
         self.line(&format!("logic [{count_width}-1:0] count_r;"));
 
         // ── Determine FF sensitivity list ─────────────────────────────────────
-        let ff_sens = if is_async {
-            format!("posedge {clk} or posedge {rst}")
-        } else {
-            format!("posedge {clk}")
-        };
+        let ff_sens = Self::ff_sensitivity(&clk, &rst, is_async, is_low);
+        let rst_cond = Self::rst_condition(&rst, is_low);
 
         self.line(&format!("always_ff @({ff_sens}) begin"));
         self.indent += 1;
 
         // Reset branch
-        let rst_cond = if is_async { rst.clone() } else { rst.clone() };
         self.line(&format!("if ({rst_cond}) count_r <= {init_val};"));
 
         // Load/clear
@@ -1472,12 +1515,7 @@ impl<'a> Codegen<'a> {
             .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| p.name.name.clone())
             .unwrap_or_else(|| "clk".to_string());
-        let rst = a.ports.iter()
-            .find(|p| matches!(&p.ty, TypeExpr::Reset(_)))
-            .map(|p| p.name.name.clone())
-            .unwrap_or_else(|| "rst".to_string());
-        let is_async = a.ports.iter()
-            .any(|p| matches!(&p.ty, TypeExpr::Reset(crate::ast::ResetKind::Async)));
+        let (rst, is_async, is_low) = Self::extract_reset_info(&a.ports);
 
         // ── Module header ─────────────────────────────────────────────────────
         self.line(&format!("module {n} #("));
@@ -1546,13 +1584,13 @@ impl<'a> Codegen<'a> {
         // ── Arbiter logic ─────────────────────────────────────────────────────
         match policy {
             ArbiterPolicy::RoundRobin => {
-                self.emit_arbiter_round_robin(&clk, &rst, is_async, req_width, num_req_int, &req_valid_sig, &req_ready_sig);
+                self.emit_arbiter_round_robin(&clk, &rst, is_async, is_low, req_width, num_req_int, &req_valid_sig, &req_ready_sig);
             }
             ArbiterPolicy::Priority => {
                 self.emit_arbiter_priority(req_width, num_req_int, &req_valid_sig, &req_ready_sig);
             }
             ArbiterPolicy::Lru => {
-                self.emit_arbiter_round_robin(&clk, &rst, is_async, req_width, num_req_int, &req_valid_sig, &req_ready_sig);
+                self.emit_arbiter_round_robin(&clk, &rst, is_async, is_low, req_width, num_req_int, &req_valid_sig, &req_ready_sig);
             }
             ArbiterPolicy::Weighted(_) => {
                 self.emit_arbiter_priority(req_width, num_req_int, &req_valid_sig, &req_ready_sig);
@@ -1604,6 +1642,7 @@ impl<'a> Codegen<'a> {
         clk: &str,
         rst: &str,
         is_async: bool,
+        is_low: bool,
         req_width: u32,
         num_req: u64,
         req_valid: &str,
@@ -1614,15 +1653,12 @@ impl<'a> Codegen<'a> {
         self.line("logic arb_found;");
         self.line("");
 
-        let ff_sens = if is_async {
-            format!("posedge {clk} or posedge {rst}")
-        } else {
-            format!("posedge {clk}")
-        };
+        let ff_sens = Self::ff_sensitivity(clk, rst, is_async, is_low);
+        let rst_cond = Self::rst_condition(rst, is_low);
 
         self.line(&format!("always_ff @({ff_sens}) begin"));
         self.indent += 1;
-        self.line(&format!("if ({rst}) rr_ptr_r <= '0;"));
+        self.line(&format!("if ({rst_cond}) rr_ptr_r <= '0;"));
         self.line("else if (grant_valid) rr_ptr_r <= rr_ptr_r + 1;");
         self.indent -= 1;
         self.line("end");
@@ -1715,12 +1751,7 @@ impl<'a> Codegen<'a> {
             .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| p.name.name.clone())
             .unwrap_or_else(|| "clk".to_string());
-        let rst = r.ports.iter()
-            .find(|p| matches!(&p.ty, TypeExpr::Reset(_)))
-            .map(|p| p.name.name.clone())
-            .unwrap_or_else(|| "rst".to_string());
-        let is_async = r.ports.iter()
-            .any(|p| matches!(&p.ty, TypeExpr::Reset(crate::ast::ResetKind::Async)));
+        let (rst, is_async, is_low) = Self::extract_reset_info(&r.ports);
 
         // ── Module header ─────────────────────────────────────────────────────
         self.line(&format!("module {n} #("));
@@ -1796,15 +1827,12 @@ impl<'a> Codegen<'a> {
         };
 
         // ── Write always_ff ───────────────────────────────────────────────────
-        let ff_sens = if is_async {
-            format!("posedge {clk} or posedge {rst}")
-        } else {
-            format!("posedge {clk}")
-        };
+        let ff_sens = Self::ff_sensitivity(&clk, &rst, is_async, is_low);
+        let rst_cond = Self::rst_condition(&rst, is_low);
 
         self.line(&format!("always_ff @({ff_sens}) begin"));
         self.indent += 1;
-        self.line(&format!("if ({rst}) begin"));
+        self.line(&format!("if ({rst_cond}) begin"));
         self.indent += 1;
         for init in &r.inits {
             let idx = self.emit_expr_str(&init.index);

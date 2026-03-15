@@ -314,11 +314,11 @@ domain SysDomain
 end domain SysDomain
 
 ram BadRam
+  kind single;
+  read: sync;
   param DEPTH: const = 64;
   param WIDTH: type = UInt<8>;
   port clk: in Clock<SysDomain>;
-  kind single;
-  read: sync;
   store
     data: Vec<WIDTH, DEPTH>;
   end store
@@ -346,15 +346,10 @@ module BadCounter
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
   port count: out UInt<8>;
-  reg count_r: UInt<8> init 0;
-  reg on clk rising, rst high
-    if rst
-      count_r <= 0;
-    end if
-    else
-      count_r <= count_r + 1;
-    end else
-  end reg
+  reg count_r: UInt<8> init 0 reset rst;
+  always on clk rising
+    count_r <= count_r + 1;
+  end always
   comb
     count = count_r;
   end comb
@@ -677,4 +672,121 @@ end module NoDebug
 "#;
     let sv = compile_to_sv(source);
     assert!(!sv.contains("debug_out"), "debug_out should be excluded when condition is false, got:\n{sv}");
+}
+
+// ── Mixed reset / no-reset in always block ───────────────────────────────────
+
+#[test]
+fn test_mixed_reset_and_no_reset() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100,
+end domain SysDomain
+
+module MixedReset
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port data_in: in UInt<8>;
+  port count_out: out UInt<8>;
+  port pipe_out: out UInt<8>;
+
+  reg count_r: UInt<8> init 0 reset rst;
+  reg pipe_r:  UInt<8> init 0 reset none;
+
+  always on clk rising
+    count_r <= (count_r + 1).trunc<8>();
+    pipe_r  <= data_in;
+  end always
+
+  comb
+    count_out = count_r;
+    pipe_out  = pipe_r;
+  end comb
+end module MixedReset
+"#;
+    let sv = compile_to_sv(source);
+    // count_r has reset: should appear inside if(rst)/else guard
+    assert!(sv.contains("if (rst) begin"), "expected reset guard, got:\n{sv}");
+    assert!(sv.contains("count_r <= 0;"), "expected count_r reset init, got:\n{sv}");
+    // pipe_r has reset none: should appear outside the if/else guard
+    // Verify pipe_r assignment is NOT inside the else block but after `end`
+    let always_block: &str = sv.split("always_ff").nth(1).expect("no always_ff block");
+    let end_else_pos = always_block.find("end else").expect("no end else");
+    let second_end_pos = always_block[end_else_pos + 8..].find("end").expect("no closing end") + end_else_pos + 8;
+    let after_guard = &always_block[second_end_pos..];
+    assert!(after_guard.contains("pipe_r <= data_in"), "pipe_r should be outside if/else guard, got:\n{sv}");
+    insta::assert_snapshot!(sv);
+}
+
+#[test]
+fn test_reset_consistency_error_mixed_signals() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100,
+end domain SysDomain
+
+module BadMixed
+  port clk: in Clock<SysDomain>;
+  port rst_a: in Reset<Sync>;
+  port rst_b: in Reset<Sync>;
+  port out_a: out UInt<8>;
+  port out_b: out UInt<8>;
+
+  reg reg_a: UInt<8> init 0 reset rst_a;
+  reg reg_b: UInt<8> init 0 reset rst_b;
+
+  always on clk rising
+    reg_a <= (reg_a + 1).trunc<8>();
+    reg_b <= (reg_b + 1).trunc<8>();
+  end always
+
+  comb
+    out_a = reg_a;
+    out_b = reg_b;
+  end comb
+end module BadMixed
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens);
+    let ast = parser.parse_source_file().expect("parse");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err(), "expected error for mixed reset signals in same always block");
+}
+
+#[test]
+fn test_reset_consistency_error_mixed_sync_async() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100,
+end domain SysDomain
+
+module BadSyncAsync
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port out_a: out UInt<8>;
+  port out_b: out UInt<8>;
+
+  reg reg_a: UInt<8> init 0 reset rst;
+  reg reg_b: UInt<8> init 0 reset rst Async high;
+
+  always on clk rising
+    reg_a <= (reg_a + 1).trunc<8>();
+    reg_b <= (reg_b + 1).trunc<8>();
+  end always
+
+  comb
+    out_a = reg_a;
+    out_b = reg_b;
+  end comb
+end module BadSyncAsync
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens);
+    let ast = parser.parse_source_file().expect("parse");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err(), "expected error for mixing sync and async reset in same always block");
 }

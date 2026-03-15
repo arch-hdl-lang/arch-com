@@ -3,12 +3,12 @@ domain SysDomain
 end domain SysDomain
 
 counter WrapCounter
-  param MAX: const = 15;
-  port clk: in Clock<SysDomain>;
-  port rst: in Reset<Sync>;
   mode: wrap;
   direction: up;
   init: 0;
+  param MAX: const = 15;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
   port inc: in Bool;
   port value: out UInt<4>;
   port at_max: out Bool;

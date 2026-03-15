@@ -154,6 +154,9 @@ impl<'a> TypeChecker<'a> {
                     for stmt in &rb.stmts {
                         self.check_reg_stmt(stmt, &m.name.name, &local_types, &mut driven);
                     }
+                    // Validate reset consistency: all registers with reset in the
+                    // same always block must agree on signal name, sync/async, and polarity.
+                    self.check_always_block_reset_consistency(rb, m);
                 }
                 ModuleBodyItem::CombBlock(cb) => {
                     for stmt in &cb.stmts {
@@ -201,6 +204,126 @@ impl<'a> TypeChecker<'a> {
                     span: crate::diagnostics::span_to_source_span(p.name.span),
                 });
             }
+        }
+    }
+
+    /// Validate that all registers with reset assigned in an `always on` block
+    /// agree on reset signal name, sync/async kind, and polarity.
+    fn check_always_block_reset_consistency(&mut self, rb: &RegBlock, m: &ModuleDecl) {
+        // Collect assigned register root names
+        let mut assigned = std::collections::BTreeSet::new();
+        Self::collect_assigned_roots_tc(&rb.stmts, &mut assigned);
+
+        // Gather reg declarations for assigned registers
+        let reg_decls: Vec<&RegDecl> = m.body.iter()
+            .filter_map(|i| if let ModuleBodyItem::RegDecl(r) = i { Some(r) } else { None })
+            .collect();
+
+        // Resolved reset info: (signal_name, kind, level)
+        struct ResetProps {
+            signal: String,
+            kind: ResetKind,
+            level: ResetLevel,
+        }
+
+        let mut first_reset: Option<ResetProps> = None;
+
+        for name in &assigned {
+            if name.is_empty() { continue; }
+            let rd = match reg_decls.iter().find(|r| r.name.name == *name) {
+                Some(rd) => rd,
+                None => continue,
+            };
+
+            let (signal, kind, level) = match &rd.reset {
+                RegReset::None => continue,
+                RegReset::Explicit(sig, k, l) => (sig.name.clone(), *k, *l),
+                RegReset::Inherit(sig) => {
+                    // Look up port to resolve kind and level
+                    if let Some(port) = m.ports.iter().find(|p| p.name.name == sig.name) {
+                        if let TypeExpr::Reset(k, l) = &port.ty {
+                            (sig.name.clone(), *k, *l)
+                        } else {
+                            self.errors.push(CompileError::general(
+                                &format!("`{}` reset signal `{}` is not a Reset port", name, sig.name),
+                                sig.span,
+                            ));
+                            continue;
+                        }
+                    } else {
+                        self.errors.push(CompileError::general(
+                            &format!("`{}` reset signal `{}` not found in module ports", name, sig.name),
+                            sig.span,
+                        ));
+                        continue;
+                    }
+                }
+            };
+
+            if let Some(ref first) = first_reset {
+                if signal != first.signal {
+                    self.errors.push(CompileError::general(
+                        &format!(
+                            "register `{}` uses reset signal `{}` but other registers in the same always block use `{}`",
+                            name, signal, first.signal
+                        ),
+                        rd.span,
+                    ));
+                }
+                if kind != first.kind {
+                    self.errors.push(CompileError::general(
+                        &format!(
+                            "register `{}` uses {} reset but other registers in the same always block use {}",
+                            name,
+                            if kind == ResetKind::Async { "async" } else { "sync" },
+                            if first.kind == ResetKind::Async { "async" } else { "sync" },
+                        ),
+                        rd.span,
+                    ));
+                }
+                if level != first.level {
+                    self.errors.push(CompileError::general(
+                        &format!(
+                            "register `{}` uses active-{} reset but other registers in the same always block use active-{}",
+                            name,
+                            if level == ResetLevel::Low { "low" } else { "high" },
+                            if first.level == ResetLevel::Low { "low" } else { "high" },
+                        ),
+                        rd.span,
+                    ));
+                }
+            } else {
+                first_reset = Some(ResetProps { signal, kind, level });
+            }
+        }
+    }
+
+    /// Collect root signal names from LHS assignments (typecheck version, no codegen dependency).
+    fn collect_assigned_roots_tc(stmts: &[Stmt], out: &mut std::collections::BTreeSet<String>) {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Assign(a) => {
+                    out.insert(Self::expr_root_name_tc(&a.target));
+                }
+                Stmt::IfElse(ie) => {
+                    Self::collect_assigned_roots_tc(&ie.then_stmts, out);
+                    Self::collect_assigned_roots_tc(&ie.else_stmts, out);
+                }
+                Stmt::Match(m) => {
+                    for arm in &m.arms {
+                        Self::collect_assigned_roots_tc(&arm.body, out);
+                    }
+                }
+            }
+        }
+    }
+
+    fn expr_root_name_tc(expr: &Expr) -> String {
+        match &expr.kind {
+            ExprKind::Ident(n) => n.clone(),
+            ExprKind::FieldAccess(base, _) => Self::expr_root_name_tc(base),
+            ExprKind::Index(base, _) => Self::expr_root_name_tc(base),
+            _ => String::new(),
         }
     }
 
@@ -325,7 +448,7 @@ impl<'a> TypeChecker<'a> {
             TypeExpr::Bool => Ty::Bool,
             TypeExpr::Bit => Ty::Bit,
             TypeExpr::Clock(domain) => Ty::Clock(domain.name.clone()),
-            TypeExpr::Reset(kind) => Ty::Reset(*kind),
+            TypeExpr::Reset(kind, _level) => Ty::Reset(*kind),
             TypeExpr::Vec(inner, size_expr) => {
                 let inner_ty = self.resolve_type_expr(inner, _module_name, local_types);
                 if let Some(n) = self.eval_const_expr(size_expr, local_types) {

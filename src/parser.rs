@@ -151,12 +151,10 @@ impl Parser {
                 Some(TokenKind::Param) => params.push(self.parse_param_decl()?),
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Reg) => {
-                    // Could be reg decl or reg block
-                    if self.is_reg_block() {
-                        body.push(ModuleBodyItem::RegBlock(self.parse_reg_block()?));
-                    } else {
-                        body.push(ModuleBodyItem::RegDecl(self.parse_reg_decl()?));
-                    }
+                    body.push(ModuleBodyItem::RegDecl(self.parse_reg_decl()?));
+                }
+                Some(TokenKind::Always) => {
+                    body.push(ModuleBodyItem::RegBlock(self.parse_always_block()?));
                 }
                 Some(TokenKind::Comb) => {
                     body.push(ModuleBodyItem::CombBlock(self.parse_comb_block()?));
@@ -172,7 +170,7 @@ impl Parser {
                 }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "param, port, reg, comb, let, inst, or generate",
+                        "param, port, reg, always, comb, let, inst, or generate",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -262,10 +260,6 @@ impl Parser {
         })
     }
 
-    fn is_reg_block(&self) -> bool {
-        // reg on ... is a reg block; reg name: ... is a reg decl
-        self.pos + 1 < self.tokens.len() && self.tokens[self.pos + 1].kind == TokenKind::On
-    }
 
     fn parse_reg_decl(&mut self) -> Result<RegDecl, CompileError> {
         let start = self.expect(TokenKind::Reg)?.span;
@@ -274,18 +268,55 @@ impl Parser {
         let ty = self.parse_type_expr()?;
         self.expect(TokenKind::Init)?;
         let init = self.parse_expr()?;
+
+        // Optional reset clause: reset none | reset <signal> [sync|async high|low]
+        let reset = if self.check_ident("reset") {
+            self.advance(); // consume "reset"
+            if self.eat(TokenKind::None) {
+                RegReset::None
+            } else {
+                let rst_signal = self.expect_ident()?;
+                // Check for explicit override: sync|async high|low
+                if self.check(TokenKind::Sync) || self.check(TokenKind::Async) {
+                    let kind = if self.eat(TokenKind::Sync) {
+                        ResetKind::Sync
+                    } else {
+                        self.advance(); // consume Async
+                        ResetKind::Async
+                    };
+                    let level = if self.eat(TokenKind::High) {
+                        ResetLevel::High
+                    } else if self.eat(TokenKind::Low) {
+                        ResetLevel::Low
+                    } else {
+                        return Err(CompileError::unexpected_token(
+                            "high or low",
+                            &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                            self.peek_span(),
+                        ));
+                    };
+                    RegReset::Explicit(rst_signal, kind, level)
+                } else {
+                    RegReset::Inherit(rst_signal)
+                }
+            }
+        } else {
+            RegReset::None // default when no reset clause
+        };
+
         self.expect(TokenKind::Semi)?;
         let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
         Ok(RegDecl {
             name,
             ty,
             init,
+            reset,
             span: start.merge(end_span),
         })
     }
 
-    fn parse_reg_block(&mut self) -> Result<RegBlock, CompileError> {
-        let start = self.expect(TokenKind::Reg)?.span;
+    fn parse_always_block(&mut self) -> Result<RegBlock, CompileError> {
+        let start = self.expect(TokenKind::Always)?.span;
         self.expect(TokenKind::On)?;
         let clock = self.expect_ident()?;
         let clock_edge = if self.eat(TokenKind::Rising) {
@@ -299,44 +330,26 @@ impl Parser {
                 self.peek_span(),
             ));
         };
-        self.expect(TokenKind::Comma)?;
-        let reset = self.expect_ident()?;
-        let reset_level = if self.eat(TokenKind::High) {
-            ResetLevel::High
-        } else if self.eat(TokenKind::Low) {
-            ResetLevel::Low
-        } else {
-            return Err(CompileError::unexpected_token(
-                "high or low",
-                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
-                self.peek_span(),
-            ));
-        };
 
         let mut stmts = Vec::new();
-        while !self.check_end_keyword() || self.check_end_reg() {
-            if self.check_end_reg() {
-                break;
-            }
+        while !self.check_end_always() {
             stmts.push(self.parse_reg_stmt()?);
         }
         self.expect(TokenKind::End)?;
-        self.expect(TokenKind::Reg)?;
+        self.expect(TokenKind::Always)?;
         let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
         Ok(RegBlock {
             clock,
             clock_edge,
-            reset,
-            reset_level,
             stmts,
             span: start.merge(end_span),
         })
     }
 
-    fn check_end_reg(&self) -> bool {
+    fn check_end_always(&self) -> bool {
         self.pos + 1 < self.tokens.len()
             && self.tokens[self.pos].kind == TokenKind::End
-            && self.tokens[self.pos + 1].kind == TokenKind::Reg
+            && self.tokens[self.pos + 1].kind == TokenKind::Always
     }
 
     fn parse_reg_stmt(&mut self) -> Result<Stmt, CompileError> {
@@ -586,7 +599,15 @@ impl Parser {
                 param_assigns.push(ParamAssign { name: pname, value });
             } else if self.check(TokenKind::Connect) {
                 let cstart = self.advance().span;
-                let port_name = self.expect_ident()?;
+                let mut port_name = self.expect_ident()?;
+                // Support dot notation for port group members: group.member → group_member
+                if self.eat(TokenKind::Dot) {
+                    let member = self.expect_ident()?;
+                    port_name = Ident::new(
+                        format!("{}_{}", port_name.name, member.name),
+                        port_name.span.merge(member.span),
+                    );
+                }
                 let direction = if self.eat(TokenKind::LArrow) {
                     ConnectDir::Input
                 } else if self.eat(TokenKind::RArrow) {
@@ -806,8 +827,30 @@ impl Parser {
                         self.peek_span(),
                     ));
                 };
+                // Optional polarity: Reset<Sync, High> or Reset<Sync> (defaults High)
+                let level = if self.eat(TokenKind::Comma) {
+                    match self.peek_kind() {
+                        Some(TokenKind::Ident(ref s)) if s == "High" => {
+                            self.advance();
+                            ResetLevel::High
+                        }
+                        Some(TokenKind::Ident(ref s)) if s == "Low" => {
+                            self.advance();
+                            ResetLevel::Low
+                        }
+                        _ => {
+                            return Err(CompileError::unexpected_token(
+                                "High or Low",
+                                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                                self.peek_span(),
+                            ));
+                        }
+                    }
+                } else {
+                    ResetLevel::High // default
+                };
                 self.expect(TokenKind::Gt)?;
-                Ok(TypeExpr::Reset(kind))
+                Ok(TypeExpr::Reset(kind, level))
             }
             Some(TokenKind::KwVec) => {
                 self.advance();
@@ -1354,9 +1397,78 @@ impl Parser {
         let mut port_groups = Vec::new();
         let mut init: Option<RamInit> = None;
 
+        // Phase 1: attributes (kind, read, write, collision, init)
+        while !self.check_end_ram() {
+            if self.check(TokenKind::Param) || self.check(TokenKind::Port)
+                || self.check(TokenKind::Store)
+                || self.check(TokenKind::Assert) || self.check(TokenKind::Cover) {
+                break;
+            }
+            if self.check(TokenKind::Init) {
+                init = Some(self.parse_ram_init()?);
+            } else if self.check_ident("kind") {
+                self.advance();
+                let val = self.expect_ident()?;
+                self.expect(TokenKind::Semi)?;
+                kind = Some(match val.name.as_str() {
+                    "single" => RamKind::Single,
+                    "simple_dual" => RamKind::SimpleDual,
+                    "true_dual" => RamKind::TrueDual,
+                    other => return Err(CompileError::general(
+                        &format!("unknown ram kind `{other}`; expected single, simple_dual, or true_dual"),
+                        val.span,
+                    )),
+                });
+            } else if self.check_ident("read") {
+                self.advance();
+                self.expect(TokenKind::Colon)?;
+                read_mode = Some(self.parse_read_mode()?);
+                self.expect(TokenKind::Semi)?;
+            } else if self.check_ident("write") {
+                self.advance();
+                self.expect(TokenKind::Colon)?;
+                let val = self.expect_ident()?;
+                self.expect(TokenKind::Semi)?;
+                write_mode = Some(match val.name.as_str() {
+                    "first" => RamWriteMode::WriteFirst,
+                    "read_first" => RamWriteMode::ReadFirst,
+                    "no_change" => RamWriteMode::NoChange,
+                    other => return Err(CompileError::general(
+                        &format!("unknown write mode `{other}`; expected first, read_first, or no_change"),
+                        val.span,
+                    )),
+                });
+            } else if self.check_ident("collision") {
+                self.advance();
+                self.expect(TokenKind::Colon)?;
+                let val = self.expect_ident()?;
+                self.expect(TokenKind::Semi)?;
+                collision = Some(match val.name.as_str() {
+                    "port_a_wins" => RamCollision::PortAWins,
+                    "port_b_wins" => RamCollision::PortBWins,
+                    "undefined" => RamCollision::Undefined,
+                    other => return Err(CompileError::general(
+                        &format!("unknown collision policy `{other}`"),
+                        val.span,
+                    )),
+                });
+            } else {
+                return Err(CompileError::unexpected_token(
+                    "kind, read, write, collision, or init",
+                    &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                    self.peek_span(),
+                ));
+            }
+        }
+
+        // Phase 2: params
+        while !self.check_end_ram() && self.check(TokenKind::Param) {
+            params.push(self.parse_param_decl()?);
+        }
+
+        // Phase 3: ports, store, port groups, assert/cover
         while !self.check_end_ram() {
             match self.peek_kind() {
-                Some(TokenKind::Param) => params.push(self.parse_param_decl()?),
                 Some(TokenKind::Port) => {
                     // Disambiguate: port IDENT : → top-level port
                     //               port IDENT <signals> end port IDENT → port group
@@ -1380,69 +1492,8 @@ impl Parser {
                     }
                     self.eat(TokenKind::Semi);
                 }
-                // Directive lines parsed as identifiers: kind / read / write / collision
-                Some(TokenKind::Ident(ref s)) => {
-                    let s = s.clone();
-                    match s.as_str() {
-                        "kind" => {
-                            self.advance(); // consume "kind"
-                            let val = self.expect_ident()?;
-                            self.expect(TokenKind::Semi)?;
-                            kind = Some(match val.name.as_str() {
-                                "single" => RamKind::Single,
-                                "simple_dual" => RamKind::SimpleDual,
-                                "true_dual" => RamKind::TrueDual,
-                                other => return Err(CompileError::general(
-                                    &format!("unknown ram kind `{other}`; expected single, simple_dual, or true_dual"),
-                                    val.span,
-                                )),
-                            });
-                        }
-                        "read" => {
-                            self.advance(); // consume "read"
-                            self.expect(TokenKind::Colon)?;
-                            read_mode = Some(self.parse_read_mode()?);
-                            self.expect(TokenKind::Semi)?;
-                        }
-                        "write" => {
-                            self.advance(); // consume "write"
-                            self.expect(TokenKind::Colon)?;
-                            let val = self.expect_ident()?;
-                            self.expect(TokenKind::Semi)?;
-                            write_mode = Some(match val.name.as_str() {
-                                "first" => RamWriteMode::WriteFirst,
-                                "read_first" => RamWriteMode::ReadFirst,
-                                "no_change" => RamWriteMode::NoChange,
-                                other => return Err(CompileError::general(
-                                    &format!("unknown write mode `{other}`; expected first, read_first, or no_change"),
-                                    val.span,
-                                )),
-                            });
-                        }
-                        "collision" => {
-                            self.advance(); // consume "collision"
-                            self.expect(TokenKind::Colon)?;
-                            let val = self.expect_ident()?;
-                            self.expect(TokenKind::Semi)?;
-                            collision = Some(match val.name.as_str() {
-                                "port_a_wins" => RamCollision::PortAWins,
-                                "port_b_wins" => RamCollision::PortBWins,
-                                "undefined" => RamCollision::Undefined,
-                                other => return Err(CompileError::general(
-                                    &format!("unknown collision policy `{other}`"),
-                                    val.span,
-                                )),
-                            });
-                        }
-                        other => return Err(CompileError::unexpected_token(
-                            "param, port, store, kind, read, write, collision, or init",
-                            other,
-                            self.peek_span(),
-                        )),
-                    }
-                }
                 Some(other) => return Err(CompileError::unexpected_token(
-                    "param, port, store, kind, read, write, collision, init",
+                    "port, store, init, assert, or cover",
                     &other.to_string(),
                     self.peek_span(),
                 )),
@@ -1639,64 +1690,71 @@ impl Parser {
         let mut direction: Option<CounterDirection> = None;
         let mut init: Option<Expr> = None;
 
+        // Phase 1: attributes (mode, direction, init) — must come first
+        while !self.check_end_of(TokenKind::Counter) {
+            if self.check(TokenKind::Param) || self.check(TokenKind::Port)
+                || self.check(TokenKind::Assert) || self.check(TokenKind::Cover) {
+                break;
+            }
+            if self.check(TokenKind::Init) {
+                self.advance();
+                self.expect(TokenKind::Colon)?;
+                init = Some(self.parse_expr()?);
+                self.expect(TokenKind::Semi)?;
+            } else if self.check_ident("mode") {
+                self.advance();
+                self.expect(TokenKind::Colon)?;
+                let val = self.expect_ident()?;
+                self.expect(TokenKind::Semi)?;
+                mode = Some(match val.name.as_str() {
+                    "wrap"     => CounterMode::Wrap,
+                    "saturate" => CounterMode::Saturate,
+                    "gray"     => CounterMode::Gray,
+                    "one_hot"  => CounterMode::OneHot,
+                    "johnson"  => CounterMode::Johnson,
+                    other => return Err(CompileError::general(
+                        &format!("unknown counter mode `{other}`"),
+                        val.span,
+                    )),
+                });
+            } else if self.check_ident("direction") {
+                self.advance();
+                self.expect(TokenKind::Colon)?;
+                let val = self.expect_ident()?;
+                self.expect(TokenKind::Semi)?;
+                direction = Some(match val.name.as_str() {
+                    "up"      => CounterDirection::Up,
+                    "down"    => CounterDirection::Down,
+                    "up_down" => CounterDirection::UpDown,
+                    other => return Err(CompileError::general(
+                        &format!("unknown counter direction `{other}`"),
+                        val.span,
+                    )),
+                });
+            } else {
+                return Err(CompileError::unexpected_token(
+                    "mode, direction, or init",
+                    &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                    self.peek_span(),
+                ));
+            }
+        }
+
+        // Phase 2: params
+        while !self.check_end_of(TokenKind::Counter) && self.check(TokenKind::Param) {
+            params.push(self.parse_param_decl()?);
+        }
+
+        // Phase 3: ports (and assert/cover)
         while !self.check_end_of(TokenKind::Counter) {
             match self.peek_kind() {
-                Some(TokenKind::Param) => params.push(self.parse_param_decl()?),
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
                     while !self.check(TokenKind::Semi) && !self.at_end() { self.advance(); }
                     self.eat(TokenKind::Semi);
                 }
-                Some(TokenKind::Init) => {
-                    self.advance(); // consume "init"
-                    self.expect(TokenKind::Colon)?;
-                    init = Some(self.parse_expr()?);
-                    self.expect(TokenKind::Semi)?;
-                }
-                Some(TokenKind::Ident(ref s)) => {
-                    let s = s.clone();
-                    match s.as_str() {
-                        "mode" => {
-                            self.advance();
-                            self.expect(TokenKind::Colon)?;
-                            let val = self.expect_ident()?;
-                            self.expect(TokenKind::Semi)?;
-                            mode = Some(match val.name.as_str() {
-                                "wrap"     => CounterMode::Wrap,
-                                "saturate" => CounterMode::Saturate,
-                                "gray"     => CounterMode::Gray,
-                                "one_hot"  => CounterMode::OneHot,
-                                "johnson"  => CounterMode::Johnson,
-                                other => return Err(CompileError::general(
-                                    &format!("unknown counter mode `{other}`"),
-                                    val.span,
-                                )),
-                            });
-                        }
-                        "direction" => {
-                            self.advance();
-                            self.expect(TokenKind::Colon)?;
-                            let val = self.expect_ident()?;
-                            self.expect(TokenKind::Semi)?;
-                            direction = Some(match val.name.as_str() {
-                                "up"      => CounterDirection::Up,
-                                "down"    => CounterDirection::Down,
-                                "up_down" => CounterDirection::UpDown,
-                                other => return Err(CompileError::general(
-                                    &format!("unknown counter direction `{other}`"),
-                                    val.span,
-                                )),
-                            });
-                        }
-                        other => return Err(CompileError::unexpected_token(
-                            "param, port, mode, direction, or init",
-                            other,
-                            self.peek_span(),
-                        )),
-                    }
-                }
                 Some(other) => return Err(CompileError::unexpected_token(
-                    "param, port, mode, direction, or init",
+                    "port, assert, or cover",
                     &other.to_string(),
                     self.peek_span(),
                 )),
@@ -1734,62 +1792,59 @@ impl Parser {
         let mut port_arrays = Vec::new();
         let mut policy: Option<ArbiterPolicy> = None;
 
+        // Phase 1: attributes (policy)
+        while !self.check_end_of(TokenKind::Arbiter) {
+            if self.check(TokenKind::Param) || self.check(TokenKind::Port)
+                || self.check(TokenKind::Ports)
+                || self.check(TokenKind::Assert) || self.check(TokenKind::Cover) {
+                break;
+            }
+            if self.check_ident("policy") {
+                self.advance();
+                let val = self.expect_ident()?;
+                self.expect(TokenKind::Semi)?;
+                policy = Some(match val.name.as_str() {
+                    "round_robin" => ArbiterPolicy::RoundRobin,
+                    "priority"    => ArbiterPolicy::Priority,
+                    "lru"         => ArbiterPolicy::Lru,
+                    "custom"      => ArbiterPolicy::Custom,
+                    "weighted" => {
+                        let w = Expr {
+                            kind: ExprKind::Literal(LitKind::Dec(1)),
+                            span: val.span,
+                        };
+                        ArbiterPolicy::Weighted(w)
+                    }
+                    other => return Err(CompileError::general(
+                        &format!("unknown arbiter policy `{other}`"),
+                        val.span,
+                    )),
+                });
+            } else {
+                return Err(CompileError::unexpected_token(
+                    "policy",
+                    &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                    self.peek_span(),
+                ));
+            }
+        }
+
+        // Phase 2: params
+        while !self.check_end_of(TokenKind::Arbiter) && self.check(TokenKind::Param) {
+            params.push(self.parse_param_decl()?);
+        }
+
+        // Phase 3: ports, port arrays, assert/cover
         while !self.check_end_of(TokenKind::Arbiter) {
             match self.peek_kind() {
-                Some(TokenKind::Param) => params.push(self.parse_param_decl()?),
-                Some(TokenKind::Port) => {
-                    if self.pos + 2 < self.tokens.len()
-                        && self.tokens[self.pos + 2].kind == TokenKind::Colon
-                    {
-                        ports.push(self.parse_port_decl()?);
-                    } else {
-                        // shouldn't happen in arbiter, just skip gracefully
-                        ports.push(self.parse_port_decl()?);
-                    }
-                }
-                Some(TokenKind::Ports) => {
-                    port_arrays.push(self.parse_port_array()?);
-                }
+                Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
+                Some(TokenKind::Ports) => port_arrays.push(self.parse_port_array()?),
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
                     while !self.check(TokenKind::Semi) && !self.at_end() { self.advance(); }
                     self.eat(TokenKind::Semi);
                 }
-                Some(TokenKind::Ident(ref s)) => {
-                    let s = s.clone();
-                    match s.as_str() {
-                        "policy" => {
-                            self.advance();
-                            let val = self.expect_ident()?;
-                            self.expect(TokenKind::Semi)?;
-                            policy = Some(match val.name.as_str() {
-                                "round_robin" => ArbiterPolicy::RoundRobin,
-                                "priority"    => ArbiterPolicy::Priority,
-                                "lru"         => ArbiterPolicy::Lru,
-                                "custom"      => ArbiterPolicy::Custom,
-                                "weighted" => {
-                                    // weighted<EXPR>
-                                    // For MVP: just use literal 1 as weight expression
-                                    let w = Expr {
-                                        kind: ExprKind::Literal(LitKind::Dec(1)),
-                                        span: val.span,
-                                    };
-                                    ArbiterPolicy::Weighted(w)
-                                }
-                                other => return Err(CompileError::general(
-                                    &format!("unknown arbiter policy `{other}`"),
-                                    val.span,
-                                )),
-                            });
-                        }
-                        other => return Err(CompileError::unexpected_token(
-                            "param, port, ports, or policy",
-                            other,
-                            self.peek_span(),
-                        )),
-                    }
-                }
                 Some(other) => return Err(CompileError::unexpected_token(
-                    "param, port, ports, or policy",
+                    "port, ports, assert, or cover",
                     &other.to_string(),
                     self.peek_span(),
                 )),
@@ -1947,6 +2002,11 @@ impl Parser {
 
     fn check_end_keyword(&self) -> bool {
         self.check(TokenKind::End)
+    }
+
+    /// Check if the next token is an identifier with a specific name.
+    fn check_ident(&self, name: &str) -> bool {
+        matches!(self.peek_kind(), Some(TokenKind::Ident(ref s)) if s == name)
     }
 
     fn eat(&mut self, kind: TokenKind) -> bool {

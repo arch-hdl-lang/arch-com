@@ -57,12 +57,13 @@ end regfile DmaRegs
 // APB writes program descriptors; DMA fetches src/dst via the read port on start.
 
 ram DescTable
-  param DEPTH: const = 16;
-  param WIDTH: type = UInt<32>;
-  port clk: in Clock<SysDomain>;
   kind simple_dual;
   read: sync;
   write: no_change;
+  init: zero;
+  param DEPTH: const = 16;
+  param WIDTH: type = UInt<32>;
+  port clk: in Clock<SysDomain>;
   port rd_port
     addr:  in UInt<4>;
     en:    in Bool;
@@ -74,7 +75,6 @@ ram DescTable
     wen:   in Bool;
     wdata: in WIDTH;
   end port wr_port
-  init: zero;
 end ram DescTable
 
 // ── Write-side data FIFO (decouples read and write phases) ────────────────────
@@ -99,14 +99,14 @@ end fifo WriteBuffer
 // Instantiated inside DmaEngine as `inst beat: BeatCounter`.
 
 counter BeatCounter
+  mode:      wrap;
+  direction: up;
+  init: 0;
   param MAX: const = 255;
   port clk:   in Clock<SysDomain>;
   port rst:   in Reset<Sync>;
   port inc:   in Bool;
   port clear: in Bool;
-  mode:      wrap;
-  direction: up;
-  init: 0;
   port value:  out UInt<8>;
   port at_max: out Bool;
 end counter BeatCounter
@@ -115,6 +115,7 @@ end counter BeatCounter
 // Would arbitrate shared memory access when read and write phases overlap.
 
 arbiter MemArbiter
+  policy round_robin;
   param NUM_REQ: const = 2;
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
@@ -124,7 +125,6 @@ arbiter MemArbiter
   end ports request
   port grant_valid:     out Bool;
   port grant_requester: out UInt<1>;
-  policy round_robin;
 end arbiter MemArbiter
 
 // ── Transfer FSM ──────────────────────────────────────────────────────────────
@@ -203,40 +203,40 @@ module DmaEngine
 
   // ── Wires for DmaRegs read outputs (sole driver = inst connection) ─────────
   // Port 0 hardwired to addr 0 (src); port 1 hardwired to addr 1 (dst).
-  reg regs_src: UInt<32> init 0;
-  reg regs_dst: UInt<32> init 0;
+  reg regs_src: UInt<32> init 0 reset none;
+  reg regs_dst: UInt<32> init 0 reset none;
 
   // ── Wires for BeatCounter outputs (write-beat counter) ────────────────────
-  reg beat_val: UInt<8> init 0;
-  reg at_max_r: Bool    init false;
+  reg beat_val: UInt<8> init 0 reset none;
+  reg at_max_r: Bool    init false reset none;
 
   // ── Wires for WriteBuffer FIFO outputs ────────────────────────────────────
-  reg wb_push_ready: Bool      init false;
-  reg wb_pop_valid:  Bool      init false;
-  reg wb_pop_data:   UInt<32>  init 0;
+  reg wb_push_ready: Bool      init false reset none;
+  reg wb_pop_valid:  Bool      init false reset none;
+  reg wb_pop_data:   UInt<32>  init 0 reset none;
 
   // Read-beat counter wires (inst read_ctr: BeatCounter below).
   // Separate from beat_val/BeatCounter which tracks write beats.
-  reg read_val:       UInt<8>  init 0;
-  reg read_at_max_r:  Bool     init false;
+  reg read_val:       UInt<8>  init 0 reset none;
+  reg read_at_max_r:  Bool     init false reset none;
 
   // Latch: set when last read fires, cleared when FSM returns to Idle.
-  reg reads_done_r:   Bool     init false;
+  reg reads_done_r:   Bool     init false reset rst;
 
   // ── Descriptor fetch state registers ──────────────────────────────────────
   // desc_rdata: registered output of DescTable read port (1-cycle sync latency).
   // fetch_cnt:  0=idle, 1=reading[0]/src, 2=reading[1]/dst+latch src, 3=done.
   // Transfer is gated until fetch_cnt reaches 3.
-  reg desc_rdata: UInt<32> init 0;
-  reg fetch_cnt:  UInt<2>  init 0;
+  reg desc_rdata: UInt<32> init 0 reset none;
+  reg fetch_cnt:  UInt<2>  init 0 reset rst;
   // Fetched descriptor: src/dst loaded from DescTable; length written via APB.
-  reg desc_r: DmaDescriptor init DmaDescriptor { src_addr: 0, dst_addr: 0, length: 0, flags: 0 };
+  reg desc_r: DmaDescriptor init DmaDescriptor { src_addr: 0, dst_addr: 0, length: 0, flags: 0 } reset rst;
 
   // ── Wires for MemArbiter outputs ──────────────────────────────────────────
   // request_ready is a 2-bit packed vector: bit[0]=read granted, bit[1]=write granted.
-  reg arb_req_ready:   UInt<2> init 0;
-  reg arb_grant_valid: Bool    init false;
-  reg arb_grant_req:   UInt<1> init 0;
+  reg arb_req_ready:   UInt<2> init 0 reset none;
+  reg arb_grant_valid: Bool    init false reset none;
+  reg arb_grant_req:   UInt<1> init 0 reset none;
 
   // ── Let bindings ──────────────────────────────────────────────────────────
   // start_pulse: one-cycle high when APB writes '1' to the start register
@@ -330,14 +330,14 @@ module DmaEngine
   // Write port: APB programs descriptor words 0 (src) and 1 (dst) before start.
   // Read port:  fetch state machine reads src/dst on the two cycles after start.
   inst desc: DescTable
-    connect clk           <- clk;
-    connect rd_port_addr  <- desc_rd_addr;
-    connect rd_port_en    <- desc_rd_en;
-    connect rd_port_rdata -> desc_rdata;
-    connect wr_port_addr  <- apb_addr.zext<4>();
-    connect wr_port_en    <- apb_sel and apb_enable and apb_write;
-    connect wr_port_wen   <- apb_sel and apb_enable and apb_write;
-    connect wr_port_wdata <- apb_wdata;
+    connect clk            <- clk;
+    connect rd_port.addr   <- desc_rd_addr;
+    connect rd_port.en     <- desc_rd_en;
+    connect rd_port.rdata  -> desc_rdata;
+    connect wr_port.addr   <- apb_addr.zext<4>();
+    connect wr_port.en     <- apb_sel and apb_enable and apb_write;
+    connect wr_port.wen    <- apb_sel and apb_enable and apb_write;
+    connect wr_port.wdata  <- apb_wdata;
   end inst desc
 
   // ── Memory bus arbiter instance ───────────────────────────────────────────
@@ -345,16 +345,16 @@ module DmaEngine
   // {write_wants, read_wants} packs them into the 2-bit request_valid vector
   // (MSB = requester 1 = write, LSB = requester 0 = read).
   inst arb: MemArbiter
-    connect clk             <- clk;
-    connect rst             <- rst;
-    connect request_valid   <- {write_wants, read_wants};
-    connect request_ready   -> arb_req_ready;
-    connect grant_valid     -> arb_grant_valid;
-    connect grant_requester -> arb_grant_req;
+    connect clk               <- clk;
+    connect rst               <- rst;
+    connect request.valid     <- {write_wants, read_wants};
+    connect request.ready     -> arb_req_ready;
+    connect grant_valid       -> arb_grant_valid;
+    connect grant_requester   -> arb_grant_req;
   end inst arb
 
   // ── All-reads-done latch: set when last read fires, clear on FSM idle ──────
-  reg on clk rising, rst high
+  always on clk rising
     if not busy
       reads_done_r <= false;
     end if
@@ -363,7 +363,7 @@ module DmaEngine
         reads_done_r <= true;
       end if
     end else
-  end reg
+  end always
 
   // ── Descriptor fetch state machine ────────────────────────────────────────
   // start_pulse: fetch_cnt 0→1.  Each subsequent cycle advances by one.
@@ -371,7 +371,7 @@ module DmaEngine
   // Cycle 2: DescTable[0] output available → latch desc_src_r; read [1] issued.
   // Cycle 3: DescTable[1] output available → latch desc_dst_r; fetch complete.
   // all_done: resets fetch_cnt to 0, ready for next transfer.
-  reg on clk rising, rst high
+  always on clk rising
     if start_pulse
       fetch_cnt <= 1;
     end if
@@ -388,16 +388,16 @@ module DmaEngine
     if all_done
       fetch_cnt <= 0;
     end if
-  end reg
+  end always
 
   // ── APB write: latch desc_r.length (and desc_r.flags if addr 4 used) ───────
-  reg on clk rising, rst high
+  always on clk rising
     if apb_sel and apb_enable and apb_write
       if apb_addr == 2
         desc_r.length <= apb_wdata.trunc<16>();
       end if
     end if
-  end reg
+  end always
 
   // ── Combinational outputs ─────────────────────────────────────────────────
   // mem_rd_valid: read only while FSM active, FIFO has space, reads not done.

@@ -3,6 +3,7 @@ domain SysDomain
 end domain SysDomain
 
 arbiter BusArbiter
+  policy round_robin;
   param NUM_REQ: const = 4;
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;

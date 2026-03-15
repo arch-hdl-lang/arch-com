@@ -3,12 +3,13 @@ domain SysDomain
 end domain SysDomain
 
 ram SimpleMem
-  param DEPTH: const = 256;
-  param WIDTH: type = UInt<8>;
-  port clk: in Clock<SysDomain>;
   kind single;
   read: sync;
   write: no_change;
+  init: zero;
+  param DEPTH: const = 256;
+  param WIDTH: type = UInt<8>;
+  port clk: in Clock<SysDomain>;
   store
     data: Vec<WIDTH, DEPTH>;
   end store
@@ -19,5 +20,4 @@ ram SimpleMem
     wdata: in WIDTH;
     rdata: out WIDTH;
   end port access
-  init: zero;
 end ram SimpleMem

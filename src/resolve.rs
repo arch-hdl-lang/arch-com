@@ -94,6 +94,7 @@ pub struct PortInfo {
 pub struct RegInfo {
     pub name: String,
     pub ty: TypeExpr,
+    pub reset: RegReset,
 }
 
 #[derive(Debug, Clone)]
@@ -313,6 +314,7 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                                     Symbol::Reg(RegInfo {
                                         name: r.name.name.clone(),
                                         ty: r.ty.clone(),
+                                        reset: r.reset.clone(),
                                     }),
                                     r.name.span,
                                 ),

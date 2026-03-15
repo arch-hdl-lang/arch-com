@@ -228,9 +228,17 @@ Every assignment, port connection, and arithmetic result is width-checked at com
 | **let** sum: UInt\<9\> = a + a; // UInt\<8\> + UInt\<8\> → UInt\<9\>        |
 |                                                                             |
 | **let** wide: UInt\<24\> = a.zext\<24\>() \* b.zext\<24\>();                |
+|                                                                             |
+| // Common trap: counter increment widens by one bit                        |
+|                                                                             |
+| **reg** cnt: UInt\<8\> **init** 0;                                          |
+|                                                                             |
+| cnt \<= cnt + 1; // ✗ COMPILE ERROR: UInt\<8\> ← UInt\<9\>                 |
+|                                                                             |
+| cnt \<= (cnt + 1).trunc\<8\>(); // ✓ explicit wrap-around truncation        |
 +-----------------------------------------------------------------------------+
 
-> *⚑ Width inference follows IEEE 1800-2012 §11.6. Arch promotes all mismatches to hard errors --- never warnings.*
+> *⚑ Width inference follows IEEE 1800-2012 §11.6. Arch promotes all mismatches to hard errors --- never warnings. The arithmetic widening trap (`r <= r + 1`) is caught at the register-assignment level: the compiler diagnoses it and suggests `.trunc<N>()`. The `.trunc<N>()` method emits a SystemVerilog size cast `N'(expr)`, which is valid on any expression including compound ones.*
 
 **3.3 Struct and Enum Types**
 
@@ -636,6 +644,8 @@ A pipeline is a first-class Arch construct --- not a pattern you build from regi
 
 An fsm block declares a finite state machine with named states and exhaustive coverage enforced by the compiler. Missing transitions, undriven outputs in any state, and unreachable states are all compile-time errors.
 
+Output ports may carry an optional `default expr` annotation. When present, the compiler emits the default value at the top of the output `always_comb` block (instead of `'0`) and relaxes the "all ports driven in every state" rule for that port — states that do not override the port simply inherit the declared default. This eliminates boilerplate `= false` / `= 0` assignments that would otherwise appear in every state body.
+
 **7.1 Declaration**
 
 +--------------------------------------------------------------------+
@@ -651,11 +661,11 @@ An fsm block declares a finite state machine with named states and exhaustive co
 |                                                                    |
 | **port** timer: **in** UInt\<TIMER_W\>;                            |
 |                                                                    |
-| **port** red: **out** Bool;                                        |
+| **port** red:    **out** Bool **default** false;                   |
 |                                                                    |
-| **port** yellow: **out** Bool;                                     |
+| **port** yellow: **out** Bool **default** false;                   |
 |                                                                    |
-| **port** green: **out** Bool;                                      |
+| **port** green:  **out** Bool **default** false;                   |
 |                                                                    |
 | **state** Red, Yellow, Green;                                      |
 |                                                                    |
@@ -663,11 +673,7 @@ An fsm block declares a finite state machine with named states and exhaustive co
 |                                                                    |
 | **state** Red                                                      |
 |                                                                    |
-| **comb**                                                           |
-|                                                                    |
-| red = true; yellow = false; green = false;                         |
-|                                                                    |
-| **end** **comb**                                                   |
+| **comb** red = true; **end** **comb**                              |
 |                                                                    |
 | **transition** **to** Green **when** timer == 0;                   |
 |                                                                    |
@@ -675,11 +681,7 @@ An fsm block declares a finite state machine with named states and exhaustive co
 |                                                                    |
 | **state** Green                                                    |
 |                                                                    |
-| **comb**                                                           |
-|                                                                    |
-| red = false; yellow = false; green = true;                         |
-|                                                                    |
-| **end** **comb**                                                   |
+| **comb** green = true; **end** **comb**                            |
 |                                                                    |
 | **transition** **to** Yellow **when** timer == 0;                  |
 |                                                                    |
@@ -687,11 +689,7 @@ An fsm block declares a finite state machine with named states and exhaustive co
 |                                                                    |
 | **state** Yellow                                                   |
 |                                                                    |
-| **comb**                                                           |
-|                                                                    |
-| red = false; yellow = true; green = false;                         |
-|                                                                    |
-| **end** **comb**                                                   |
+| **comb** yellow = true; **end** **comb**                           |
 |                                                                    |
 | **transition** **to** Red **when** timer == 0;                     |
 |                                                                    |
@@ -700,7 +698,37 @@ An fsm block declares a finite state machine with named states and exhaustive co
 | **end** **fsm** TrafficLight                                       |
 +--------------------------------------------------------------------+
 
-> *⚑ The compiler verifies: every state has at least one outgoing transition; all output ports are driven in every state; no two transitions from the same state can be simultaneously enabled.*
+> *⚑ The compiler verifies: every state has at least one outgoing transition; output ports **without** a `default` annotation must be driven in every state; output ports **with** `default expr` need only be driven in states that deviate from the declared default; no two transitions from the same state can be simultaneously enabled.*
+
+**7.2 FSM Output Port Defaults**
+
+Output ports may be given a `default expr` annotation immediately after the type expression and before the semicolon:
+
+```
+port name: out TypeExpr default expr;
+```
+
+**Semantics:**
+
+| Rule | Without `default` | With `default expr` |
+|------|-------------------|---------------------|
+| Compiler initialises output in `always_comb` | `name = '0;` | `name = expr;` |
+| Port must be driven in every state | ✅ yes (compile error if missing) | ❌ no — states that omit the port inherit `expr` |
+| Port can be overridden in individual states | ✅ | ✅ |
+
+**Generated SystemVerilog** for a port with `default false`:
+
+```systemverilog
+always_comb begin
+  name = 1'b0; // default  ← from the annotation
+  case (state_r)
+    FOO: begin
+      name = 1'b1; // state-level override
+    end
+    default: ;     // other states inherit the default
+  endcase
+end
+```
 
 **8. First-Class Construct: fifo**
 

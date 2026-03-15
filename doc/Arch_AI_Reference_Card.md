@@ -144,35 +144,49 @@
 
 **fsm --- finite state machine**
 
-+-----------------------------+-----------------------------------+
-| fsm Name                    | Compiler checks exhaustive        |
-|                             |                                   |
-| port clk: in Clock\<D\>;    | transitions --- every state needs |
-|                             |                                   |
-| port rst: in Reset\<Sync\>; | a default or full coverage.       |
-|                             |                                   |
-| state Idle                  | reset_state required.             |
-|                             |                                   |
-| comb out = false; end comb  |                                   |
-|                             |                                   |
-| on in == true -\> Active;   |                                   |
-|                             |                                   |
-| end state Idle              |                                   |
-|                             |                                   |
-| state Active                |                                   |
-|                             |                                   |
-| comb out = true; end comb   |                                   |
-|                             |                                   |
-| on in == false -\> Idle;    |                                   |
-|                             |                                   |
-| default -\> Active;         |                                   |
-|                             |                                   |
-| end state Active            |                                   |
-|                             |                                   |
-| reset_state: Idle;          |                                   |
-|                             |                                   |
-| end fsm Name                |                                   |
-+-----------------------------+-----------------------------------+
++------------------------------------------+-------------------------------------------+
+| fsm Name                                 | Compiler checks exhaustive transitions.   |
+|                                          |                                           |
+| port clk: in Clock\<D\>;                 | `default state` required (reset value).  |
+|                                          |                                           |
+| port rst: in Reset\<Sync\>;              | Output ports with `default expr` need     |
+|                                          | not be driven in every state — the        |
+| port active: out Bool default false;     | compiler emits the default at the top of  |
+|                                          | the always\_comb output block; states     |
+| port fire\_irq: out Bool default false;  | only override what differs.               |
+|                                          |                                           |
+| state Idle, Running, Done;               | Ports **without** `default` must be       |
+|                                          | driven in every state (compile error      |
+| default state Idle;                      | otherwise).                               |
+|                                          |                                           |
+| state Idle                               | Transition syntax:                        |
+|                                          |                                           |
+| // no comb block — both stay at default  | transition to Next when \<expr\>;         |
+|                                          |                                           |
+| transition to Running when start;        | Multiple transitions are checked for      |
+| transition to Idle when not start;       | mutual exclusivity; `unique if` emitted   |
+|                                          | when exclusive, `priority if` otherwise.  |
+| end state Idle                           |                                           |
+|                                          |                                           |
+| state Running                            |                                           |
+|                                          |                                           |
+| comb active = true; end comb             |                                           |
+|                                          |                                           |
+| transition to Done when all\_done;       |                                           |
+| transition to Running when not all\_done;|                                           |
+|                                          |                                           |
+| end state Running                        |                                           |
+|                                          |                                           |
+| state Done                               |                                           |
+|                                          |                                           |
+| comb fire\_irq = true; end comb          |                                           |
+|                                          |                                           |
+| transition to Idle when true;            |                                           |
+|                                          |                                           |
+| end state Done                           |                                           |
+|                                          |                                           |
+| end fsm Name                             |                                           |
++------------------------------------------+-------------------------------------------+
 
 **fifo --- sync or dual-clock async (gray-code auto-generated)**
 

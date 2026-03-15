@@ -1,7 +1,7 @@
 # ARCH Compiler — Status & Roadmap
 
-> Last updated: 2026-03-13
-> Compiler version: 0.4.0 (FSM + FIFO + RAM + Counter + Arbiter + Regfile)
+> Last updated: 2026-03-14
+> Compiler version: 0.6.0 (generate for/if elaboration pass)
 
 ---
 
@@ -26,7 +26,7 @@ Single-file compilation only.
 | `struct` | ✅ | `typedef struct packed` |
 | `enum` | ✅ | `typedef enum logic`; auto width ⌈log₂(N)⌉ |
 | `module` | ✅ | Params, ports, reg/comb/let/inst body |
-| `fsm` | ✅ | State enum, `always_ff` state reg, `always_comb` next-state + output |
+| `fsm` | ✅ | State enum, `always_ff` state reg, `always_comb` next-state + output; `default expr` on output ports |
 | `fifo` | ✅ | Sync (extra-bit pointers) + async (gray-code CDC, auto-detected) |
 | `ram` | ✅ | `single`/`simple_dual`/`true_dual`; `async`/`sync`/`sync_out`; all write modes; `init` block |
 | `counter` | ✅ | `wrap`/`saturate`/`gray`/`one_hot`/`johnson` modes; `up`/`down`/`up_down`; `at_max`/`at_min` outputs |
@@ -34,13 +34,12 @@ Single-file compilation only.
 | `regfile` | ✅ | Multi-read-port / multi-write-port; `forward write_before_read`; `init [i] = v` |
 | `assert` / `cover` | ❌ | Lexed but skipped at parse time |
 | `pipeline` | ❌ | Not implemented |
-| `generate for/if` | ❌ | Not implemented |
+| `generate for/if` | ✅ | Pre-resolve elaboration pass; const/literal bounds; port + inst items |
 | `ram` (multi-var store) | ⚠️ | Single store variable only; compiler-managed address layout not implemented |
 | `cam` | ❌ | Not implemented |
 | `crossbar` | ❌ | Not implemented |
 | `scoreboard` | ❌ | Not implemented |
 | `reorder_buf` | ❌ | Not implemented |
-| `counter` | ❌ | Not implemented |
 | `pqueue` | ❌ | Not implemented |
 | `linklist` | ❌ | Not implemented |
 | `interface` / `socket` | ❌ | TLM only; not implemented |
@@ -61,8 +60,8 @@ Single-file compilation only.
 | `Future<T>` | ❌ | TLM only |
 | `$clog2(expr)` in type args | ❌ | Lexer has no `$` token; users write explicit widths |
 | Clock domain mismatch (CDC errors) | ❌ | No cross-domain assignment checking |
-| Width mismatch at assignment | ❌ | Silently passes |
-| Implicit truncation prevention | ❌ | |
+| Width mismatch at assignment | ⚠️ | Errors when reg assignment RHS is exactly 1 bit wider than LHS due to arithmetic widening; full width-error checking (arbitrary width delta) not yet implemented |
+| Implicit truncation prevention | ✅ | `r <= r + 1` is a compile error; write `r <= (r + 1).trunc<N>()` explicitly. `.trunc<N>()` emits SV size cast `N'(expr)`, valid on any expression. |
 
 ---
 
@@ -83,7 +82,7 @@ Single-file compilation only.
 | Struct literals | ✅ |
 | Enum variants `E::Variant` | ✅ |
 | `todo!` | ✅ |
-| Expression-level `match` | ⚠️ Parsed; emits `'0` stub |
+| Expression-level `match` | ✅ As `CombAssign` RHS → `case` block; as inline expression → nested ternary chain |
 | `$clog2(x)` / `$bytes(x)` system calls | ❌ |
 
 ---
@@ -112,7 +111,7 @@ Single-file compilation only.
 | Single driver per signal | ✅ |
 | `todo!` site warning | ✅ |
 | Binary op result widths (IEEE 1800-2012 §11.6) | ✅ |
-| Width mismatch at assignment | ❌ |
+| Width mismatch at assignment | ⚠️ Reg assignments error when RHS is exactly 1 bit wider (arithmetic widening); full width-checking (arbitrary delta) not yet implemented |
 | Clock domain crossing errors | ❌ |
 | Exhaustive match arm checking | ❌ |
 | Const param evaluation (complex exprs) | ⚠️ Literals + simple arithmetic only |
@@ -121,7 +120,7 @@ Single-file compilation only.
 
 ### Tests
 
-- 14 integration tests (snapshot + error-case)
+- 20 integration tests (snapshot + error-case), including `let` binding, `generate for`, `generate if` coverage
 - 7 Verilator simulations: Counter, TrafficLight FSM, TxQueue sync FIFO, AsyncBridge async FIFO, SimpleMem RAM, WrapCounter, BusArbiter (round-robin), IntRegs (regfile + forwarding)
 
 ---
@@ -144,7 +143,7 @@ Single-file compilation only.
 | # | Construct | Complexity | What it generates |
 |---|-----------|------------|-------------------|
 | 7 | **`assert` / `cover`** | Low | `assert property` / `cover property` in SV |
-| 8 | **`generate for/if`** | Medium | Unrolled port/instance arrays; compile-time conditional blocks |
+| 8 | ~~**`generate for/if`**~~ | ~~Medium~~ | **DONE** — elaboration pass expands before resolve |
 | 9 | **`pipeline`** | High | Valid/stall propagation, flush masks, forwarding muxes — auto-generated from `stall when`, `flush`, `forward` directives |
 | 12 | **`ram` multi-var store** | Medium | Compiler-managed address layout across multiple logical variables |
 | 13 | **`cam`** | High | Content-addressable memory with match/miss logic |

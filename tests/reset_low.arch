@@ -1,5 +1,5 @@
 // Test: active-low synchronous reset
-// `reg on clk rising, rst low` should emit `if (!rst)` in the body.
+// `reg reset rst_n` with `Reset<Sync, Low>` should emit `if (!rst_n)` in the body.
 
 domain SysDomain
   freq_mhz: 100,
@@ -7,22 +7,17 @@ end domain SysDomain
 
 module ActiveLowRst
   port clk: in Clock<SysDomain>;
-  port rst_n: in Reset<Sync>;
+  port rst_n: in Reset<Sync, Low>;
   port en: in Bool;
   port count: out UInt<8>;
 
-  reg count_r: UInt<8> init 0;
+  reg count_r: UInt<8> init 0 reset rst_n;
 
-  reg on clk rising, rst_n low
-    if rst_n
-      count_r <= 0;
+  always on clk rising
+    if en
+      count_r <= (count_r + 1).trunc<8>();
     end if
-    else
-      if en
-        count_r <= (count_r + 1).trunc<8>();
-      end if
-    end else
-  end reg
+  end always
 
   comb
     count = count_r;
