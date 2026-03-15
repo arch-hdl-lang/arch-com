@@ -63,11 +63,11 @@ end keyword Name
 
 ### Signal Assignment
 - `comb y = expr; end comb` — combinational, uses `=`
-- `reg r: T init 0;` + `reg on clk rising, rst high ... end reg` — registered, uses `<=`
+- `reg r: T init 0 reset rst sync high;` + `always on clk rising ... end always` — registered, uses `<=`. Reset is declared per register; compiler auto-generates reset guards.
 - No implicit latches (error). Single driver per signal (error). All ports must be connected.
 
 ### Type System
-- **Primitive types:** `UInt<N>`, `SInt<N>`, `Bool`, `Bit`, `Clock<Domain>`, `Reset<Sync|Async>`, `Vec<T,N>`, `struct`, `enum`, `Token`, `Future<T>`, `Token<T, id_width: N>`
+- **Primitive types:** `UInt<N>`, `SInt<N>`, `Bool`, `Bit`, `Clock<Domain>`, `Reset<Sync|Async, High|Low>` (polarity defaults High), `Vec<T,N>`, `struct`, `enum`, `Token`, `Future<T>`, `Token<T, id_width: N>`
 - **No implicit conversions.** All width casts are explicit: `.trunc<N>()`, `.zext<N>()`, `.sext<N>()`
 - Arithmetic result widths follow IEEE 1800-2012 §11.6 (e.g. `UInt<8> + UInt<8>` → `UInt<9>`)
 - Clock domain mismatches are **compile errors**, not warnings
@@ -79,7 +79,7 @@ end keyword Name
 | Signals, registers, ports, locals | snake_case | `pc_next`, `req_valid` |
 | Parameters and constants | UPPER_SNAKE | `XLEN`, `CACHE_DEPTH` |
 | Clock ports | `Clock<Domain>` | `clk: in Clock<SysDomain>` |
-| Reset ports | `Reset<Sync\|Async>` | `rst: in Reset<Sync>` |
+| Reset ports | `Reset<Sync\|Async, High\|Low>` | `rst: in Reset<Sync>` (High default) |
 
 ### `todo!` Escape Hatch
 Any expression or block body may be replaced with `todo!` to produce a compilable, type-checked skeleton. The compiler emits a warning per site; simulation aborts if a `todo!` site is reached at runtime.

@@ -55,7 +55,7 @@ Arch makes a hard design commitment: a large language model that has read this s
 
   **Clock ports**                           typed Clock\<Domain\>        clk: in Clock\<SysDomain\>
 
-  **Reset ports**                           typed Reset\<Sync\|Async\>   rst: in Reset\<Sync\>
+  **Reset ports**                           typed Reset\<Sync\|Async, High\|Low\>   rst: in Reset\<Sync\> (polarity defaults High; e.g. Reset\<Sync, Low\> for active-low)
   -------------------------------------------------------------------------------------------------------
 
 **2.2 Literals**
@@ -187,9 +187,9 @@ The Arch type system enforces four independent safety dimensions simultaneously.
 
   **Clock\<D\>**       1 bit                Carries clock-domain tag D. Cannot appear in arithmetic.
 
-  **Reset\<Sync\>**    1 bit                Synchronous reset --- deasserted on the clock edge.
+  **Reset\<Sync, High\|Low\>**    1 bit                Synchronous reset --- deasserted on the clock edge. Polarity defaults High.
 
-  **Reset\<Async\>**   1 bit                Asynchronous reset --- deasserted immediately.
+  **Reset\<Async, High\|Low\>**   1 bit                Asynchronous reset --- deasserted immediately. Polarity defaults High.
 
   **Vec\<T,N\>**       N × \|T\|            Fixed-size array of any hardware type T.
 
@@ -405,7 +405,7 @@ Arch has exactly two assignment forms. Mixing operators between them is a compil
   ------------------- -------------------- -------------- ------------------------------------------------------------------
   **Combinational**   comb \... end comb   =              Continuous assignment; no flip-flop inferred.
 
-  **Registered**      reg \... end reg     \<=            Clocked assignment; flip-flop inferred on the active clock edge.
+  **Registered**      always \... end always     \<=            Clocked assignment; flip-flop inferred on the active clock edge. Reset is declared on each `reg` declaration, not on the `always` block.
   --------------------------------------------------------------------------------------------------------------------------
 
 +--------------------------------------------------------------------+
@@ -423,17 +423,9 @@ Arch has exactly two assignment forms. Mixing operators between them is a compil
 |                                                                    |
 | **port** count: **out** UInt\<WIDTH\>;                             |
 |                                                                    |
-| **reg** count_r: UInt\<WIDTH\> **init** 0;                         |
+| **reg** count_r: UInt\<WIDTH\> **init** 0 **reset** rst;           |
 |                                                                    |
-| **reg** **on** clk rising, rst high                                |
-|                                                                    |
-| **if** rst                                                         |
-|                                                                    |
-| count_r \<= 0;                                                     |
-|                                                                    |
-| **end** **if**                                                     |
-|                                                                    |
-| **else**                                                           |
+| **always** **on** clk rising                                       |
 |                                                                    |
 | **if** en                                                          |
 |                                                                    |
@@ -441,9 +433,7 @@ Arch has exactly two assignment forms. Mixing operators between them is a compil
 |                                                                    |
 | **end** **if**                                                     |
 |                                                                    |
-| **end** **else**                                                   |
-|                                                                    |
-| **end** **reg**                                                    |
+| **end** **always**                                                 |
 |                                                                    |
 | **comb**                                                           |
 |                                                                    |
@@ -454,7 +444,7 @@ Arch has exactly two assignment forms. Mixing operators between them is a compil
 | **end** **module** Counter                                         |
 +--------------------------------------------------------------------+
 
-> *⚑ on clk rising, rst high is the only place a clock and reset are named. The compiler propagates domain membership automatically through all downstream logic in the module.*
+> *⚑ The clock is named in `always on clk rising`; reset is declared per register (`reset rst sync high` or `reset none`). The compiler auto-generates the `if (rst)` guard and propagates domain membership automatically through all downstream logic in the module.*
 
 **4.3 Module Instantiation**
 
@@ -7295,7 +7285,7 @@ A practical AI workflow: generate a correct skeleton with todo! for all logic, t
 
   **Unsigned/signed determined by context**        Explicit: .zext\<N\>() .sext\<N\>() as SInt\<N\>
 
-  **Clock inferred from sensitivity list**         Explicit: reg on clk rising, rst high
+  **Clock inferred from sensitivity list**         Explicit: always on clk rising; reset on reg decl: reset rst sync high
 
   **Module port width from implicit param math**   Explicit: port sum: out UInt\<WIDTH+1\>;
 

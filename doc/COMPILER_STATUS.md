@@ -1,7 +1,7 @@
 # ARCH Compiler — Status & Roadmap
 
-> Last updated: 2026-03-14
-> Compiler version: 0.6.0 (generate for/if elaboration pass)
+> Last updated: 2026-03-15
+> Compiler version: 0.7.0 (register syntax refactor: `always on` + per-reg reset)
 
 ---
 
@@ -25,7 +25,7 @@ Single-file compilation only.
 | `domain` | ✅ | Emitted as SV comments |
 | `struct` | ✅ | `typedef struct packed` |
 | `enum` | ✅ | `typedef enum logic`; auto width ⌈log₂(N)⌉ |
-| `module` | ✅ | Params, ports, reg/comb/let/inst body |
+| `module` | ✅ | Params, ports, reg/comb/let/inst body; `always on` clocked blocks with per-reg reset (`reset <signal> sync\|async high\|low` or `reset none`); compiler auto-generates reset guards; mixed reset/no-reset partitioning |
 | `fsm` | ✅ | State enum, `always_ff` state reg, `always_comb` next-state + output; `default expr` on output ports |
 | `fifo` | ✅ | Sync (extra-bit pointers) + async (gray-code CDC, auto-detected) |
 | `ram` | ✅ | `single`/`simple_dual`/`true_dual`; `async`/`sync`/`sync_out`; all write modes; `init` block |
@@ -53,7 +53,7 @@ Single-file compilation only.
 | `UInt<N>`, `SInt<N>` | ✅ | |
 | `Bool`, `Bit` | ✅ | |
 | `Clock<Domain>` | ✅ | Domain tracked for CDC detection |
-| `Reset<Sync\|Async>` | ✅ | Async → `posedge rst` sensitivity |
+| `Reset<Sync\|Async, High\|Low>` | ✅ | Optional polarity (defaults High); Async → `posedge rst` sensitivity |
 | `Vec<T, N>` | ✅ | |
 | Named types (struct/enum refs) | ✅ | |
 | `Token<T, id_width>` | ❌ | TLM only |
@@ -120,7 +120,7 @@ Single-file compilation only.
 
 ### Tests
 
-- 20 integration tests (snapshot + error-case), including `let` binding, `generate for`, `generate if` coverage
+- 23 integration tests (snapshot + error-case), including `let` binding, `generate for`, `generate if`, mixed reset/no-reset partitioning, reset consistency validation
 - 7 Verilator simulations: Counter, TrafficLight FSM, TxQueue sync FIFO, AsyncBridge async FIFO, SimpleMem RAM, WrapCounter, BusArbiter (round-robin), IntRegs (regfile + forwarding)
 
 ---

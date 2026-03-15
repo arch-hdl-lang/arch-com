@@ -40,21 +40,23 @@
 >
 > comb y = expr; end comb // combinational --- uses =
 >
-> reg r: T init 0; // register decl
+> reg r: T init 0 reset rst sync high; // register decl with reset
 >
-> reg on clk rising, rst high // register update --- uses \<=
+> reg p: T init 0 reset none; // register decl without reset
 >
-> if rst r \<= 0; end if
+> always on clk rising // clocked process --- uses \<=
 >
-> else r \<= expr; end else
+> r \<= expr; // compiler auto-generates if(rst) guard
 >
-> end reg
+> p \<= expr; // no reset guard (reset none)
+>
+> end always
 
 **2. Types**
 
 > UInt\<N\> SInt\<N\> Bool Bit
 >
-> Clock\<Domain\> Reset\<Sync\|Async\>
+> Clock\<Domain\> Reset\<Sync\|Async, High\|Low\> (polarity defaults High)
 >
 > Vec\<T,N\> struct S { f: T, } enum E { A, B, }
 >
@@ -79,15 +81,13 @@
 |                                       |                                  |
 | port y: out UInt\<W\>;                |                                  |
 |                                       |                                  |
-| reg r: UInt\<W\> init 0;              |                                  |
+| reg r: UInt\<W\> init 0 reset rst;    |                                  |
 |                                       |                                  |
-| reg on clk rising, rst high           |                                  |
+| always on clk rising                  | Compiler auto-generates          |
 |                                       |                                  |
-| if rst r \<= 0; end if                |                                  |
+| r \<= a;                              | if(rst) reset guard from reg decl|
 |                                       |                                  |
-| else r \<= a; end else                |                                  |
-|                                       |                                  |
-| end reg                               |                                  |
+| end always                            |                                  |
 |                                       |                                  |
 | comb y = r; end comb                  |                                  |
 |                                       |                                  |
@@ -117,15 +117,13 @@
 |                               |                               |
 | stage S1                      | todo! compiles --- use for    |
 |                               |                               |
-| reg r1: T init 0;             | scaffolding before filling in |
+| reg r1: T init 0 reset rst;   | scaffolding before filling in |
 |                               |                               |
-| reg on clk rising, rst high   | stage bodies.                 |
+| always on clk rising          | stage bodies.                 |
 |                               |                               |
-| if rst r1 \<= 0; end if       |                               |
+| r1 \<= in;                    |                               |
 |                               |                               |
-| else r1 \<= in; end else      |                               |
-|                               |                               |
-| end reg                       |                               |
+| end always                    |                               |
 |                               |                               |
 | end stage S1                  |                               |
 |                               |                               |
