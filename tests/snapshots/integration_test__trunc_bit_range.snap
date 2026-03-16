@@ -1,0 +1,37 @@
+---
+source: tests/integration_test.rs
+expression: sv
+---
+// domain SysDomain
+//   freq_mhz: 100
+
+module BitExtract #(
+  parameter int XLEN = 32
+) (
+  input logic clk,
+  input logic rst,
+  input logic [XLEN-1:0] instr,
+  output logic [7-1:0] opcode,
+  output logic [5-1:0] rd,
+  output logic [3-1:0] funct3
+);
+
+  logic [7-1:0] opcode_r = 0;
+  logic [5-1:0] rd_r = 0;
+  logic [3-1:0] funct3_r = 0;
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      funct3_r <= 0;
+      opcode_r <= 0;
+      rd_r <= 0;
+    end else begin
+      opcode_r <= 7'(instr);
+      rd_r <= instr[11:7];
+      funct3_r <= instr[14:12];
+    end
+  end
+  assign opcode = opcode_r;
+  assign rd = rd_r;
+  assign funct3 = funct3_r;
+
+endmodule

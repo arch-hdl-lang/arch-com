@@ -1,7 +1,7 @@
 # ARCH Compiler — Status & Roadmap
 
 > Last updated: 2026-03-15
-> Compiler version: 0.7.0 (register syntax refactor: `always on` + per-reg reset)
+> Compiler version: 0.8.0 (pipeline construct, trunc<N,M> bit-range, inst inside stages)
 
 ---
 
@@ -33,7 +33,7 @@ Single-file compilation only.
 | `arbiter` | ✅ | `round_robin`/`priority`/`lru`/`weighted`/`custom`; `ports[N]` arrays; `grant_valid`/`grant_requester` |
 | `regfile` | ✅ | Multi-read-port / multi-write-port; `forward write_before_read`; `init [i] = v` |
 | `assert` / `cover` | ❌ | Lexed but skipped at parse time |
-| `pipeline` | ❌ | Not implemented |
+| `pipeline` | ✅ | Stages with reg/comb/let/inst body; per-stage `stall when`; `flush` directives; explicit forwarding mux via comb if/else; `valid_r` per-stage signal; cross-stage refs (`Stage.signal`); `inst` inside stages with auto-declared output wires |
 | `generate for/if` | ✅ | Pre-resolve elaboration pass; const/literal bounds; port + inst items |
 | `ram` (multi-var store) | ⚠️ | Single store variable only; compiler-managed address layout not implemented |
 | `cam` | ❌ | Not implemented |
@@ -61,7 +61,7 @@ Single-file compilation only.
 | `$clog2(expr)` in type args | ❌ | Lexer has no `$` token; users write explicit widths |
 | Clock domain mismatch (CDC errors) | ❌ | No cross-domain assignment checking |
 | Width mismatch at assignment | ⚠️ | Errors when reg assignment RHS is exactly 1 bit wider than LHS due to arithmetic widening; full width-error checking (arbitrary width delta) not yet implemented |
-| Implicit truncation prevention | ✅ | `r <= r + 1` is a compile error; write `r <= (r + 1).trunc<N>()` explicitly. `.trunc<N>()` emits SV size cast `N'(expr)`, valid on any expression. |
+| Implicit truncation prevention | ✅ | `r <= r + 1` is a compile error; write `r <= (r + 1).trunc<N>()` explicitly. `.trunc<N>()` emits SV size cast `N'(expr)`. `.trunc<N,M>()` emits bit-range select `expr[N:M]` for field extraction (e.g. `instr.trunc<11,7>()` → `instr[11:7]`). |
 
 ---
 
@@ -77,7 +77,7 @@ Single-file compilation only.
 | Bitwise `& \| ^ ~ << >>` | ✅ |
 | Field access `.field` | ✅ |
 | Array index `[i]` | ✅ |
-| `.trunc<N>()` / `.zext<N>()` / `.sext<N>()` | ✅ |
+| `.trunc<N>()` / `.trunc<N,M>()` / `.zext<N>()` / `.sext<N>()` | ✅ |
 | `as` cast | ✅ |
 | Struct literals | ✅ |
 | Enum variants `E::Variant` | ✅ |
@@ -120,8 +120,8 @@ Single-file compilation only.
 
 ### Tests
 
-- 23 integration tests (snapshot + error-case), including `let` binding, `generate for`, `generate if`, mixed reset/no-reset partitioning, reset consistency validation
-- 7 Verilator simulations: Counter, TrafficLight FSM, TxQueue sync FIFO, AsyncBridge async FIFO, SimpleMem RAM, WrapCounter, BusArbiter (round-robin), IntRegs (regfile + forwarding)
+- 37 integration tests (snapshot + error-case), including `let` binding, `generate for`, `generate if`, mixed reset/no-reset partitioning, reset consistency validation, pipeline (simple, CPU 4-stage, instantiation, stage inst, bit-range trunc)
+- 8 Verilator simulations: Counter, TrafficLight FSM, TxQueue sync FIFO, AsyncBridge async FIFO, SimpleMem RAM, WrapCounter, BusArbiter (round-robin), IntRegs (regfile + forwarding), CpuPipe 4-stage pipeline (reset, flow, stall, flush, forwarding)
 
 ---
 
@@ -144,7 +144,7 @@ Single-file compilation only.
 |---|-----------|------------|-------------------|
 | 7 | **`assert` / `cover`** | Low | `assert property` / `cover property` in SV |
 | 8 | ~~**`generate for/if`**~~ | ~~Medium~~ | **DONE** — elaboration pass expands before resolve |
-| 9 | **`pipeline`** | High | Valid/stall propagation, flush masks, forwarding muxes — auto-generated from `stall when`, `flush`, `forward` directives |
+| 9 | ~~**`pipeline`**~~ | ~~High~~ | **DONE** — valid/stall propagation, flush masks, explicit forwarding mux, `valid_r` gating, cross-stage refs, inst inside stages |
 | 12 | **`ram` multi-var store** | Medium | Compiler-managed address layout across multiple logical variables |
 | 13 | **`cam`** | High | Content-addressable memory with match/miss logic |
 | 14 | **`crossbar`** | High | N×M switch fabric with arbitration |

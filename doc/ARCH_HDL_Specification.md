@@ -219,6 +219,8 @@ Every assignment, port connection, and arithmetic result is width-checked at com
 |                                                                             |
 | **let** lo: UInt\<8\> = b.trunc\<8\>();                                     |
 |                                                                             |
+| **let** rd: UInt\<5\> = instr.trunc\<11,7\>();  // bit-range [11:7]         |
+|                                                                             |
 | **let** ext: UInt\<16\> = a.zext\<16\>();                                   |
 |                                                                             |
 | **let** sx: SInt\<16\> = (a **as** SInt\<8\>).sext\<16\>();                 |
@@ -238,7 +240,7 @@ Every assignment, port connection, and arithmetic result is width-checked at com
 | cnt \<= (cnt + 1).trunc\<8\>(); // ✓ explicit wrap-around truncation        |
 +-----------------------------------------------------------------------------+
 
-> *⚑ Width inference follows IEEE 1800-2012 §11.6. Arch promotes all mismatches to hard errors --- never warnings. The arithmetic widening trap (`r <= r + 1`) is caught at the register-assignment level: the compiler diagnoses it and suggests `.trunc<N>()`. The `.trunc<N>()` method emits a SystemVerilog size cast `N'(expr)`, which is valid on any expression including compound ones.*
+> *⚑ Width inference follows IEEE 1800-2012 §11.6. Arch promotes all mismatches to hard errors --- never warnings. The arithmetic widening trap (`r <= r + 1`) is caught at the register-assignment level: the compiler diagnoses it and suggests `.trunc<N>()`. The `.trunc<N>()` method emits a SystemVerilog size cast `N'(expr)`, which is valid on any expression including compound ones. The `.trunc<N,M>()` dual-arity form extracts a bit range: `signal.trunc<11,7>()` emits `signal[11:7]` with result width N−M+1. This is essential for instruction field decoding.*
 
 **3.3 Struct and Enum Types**
 

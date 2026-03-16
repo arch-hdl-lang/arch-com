@@ -17,6 +17,7 @@ pub enum Item {
     Counter(CounterDecl),
     Arbiter(ArbiterDecl),
     Regfile(RegfileDecl),
+    Pipeline(PipelineDecl),
 }
 
 #[derive(Debug, Clone)]
@@ -428,6 +429,7 @@ impl Item {
             Item::Counter(c) => c.span,
             Item::Arbiter(a) => a.span,
             Item::Regfile(r) => r.span,
+            Item::Pipeline(p) => p.span,
         }
     }
 }
@@ -620,5 +622,48 @@ pub struct RegfileDecl {
 pub struct RegfileInit {
     pub index: Expr,
     pub value: Expr,
+    pub span: Span,
+}
+
+// ── Pipeline ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct PipelineDecl {
+    pub name: Ident,
+    pub params: Vec<ParamDecl>,
+    pub ports: Vec<PortDecl>,
+    pub stages: Vec<StageDecl>,
+    pub stall_conds: Vec<StallDecl>,
+    pub flush_directives: Vec<FlushDecl>,
+    pub forward_directives: Vec<ForwardDecl>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct StageDecl {
+    pub name: Ident,
+    pub stall_cond: Option<Expr>,
+    pub body: Vec<ModuleBodyItem>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct StallDecl {
+    pub condition: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct FlushDecl {
+    pub target_stage: Ident,
+    pub condition: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct ForwardDecl {
+    pub dest: Expr,
+    pub source: Expr,
+    pub condition: Expr,
     pub span: Span,
 }

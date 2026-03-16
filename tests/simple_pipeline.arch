@@ -1,0 +1,29 @@
+domain SysDomain
+  freq_mhz: 100,
+end domain SysDomain
+
+pipeline SimplePipe
+  param XLEN: const = 32;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port data_in: in UInt<XLEN>;
+  port data_out: out UInt<XLEN>;
+
+  stage Fetch
+    reg captured: UInt<XLEN> init 0 reset rst;
+    always on clk rising
+      captured <= data_in;
+    end always
+  end stage Fetch
+
+  stage Writeback
+    reg result: UInt<XLEN> init 0 reset rst;
+    always on clk rising
+      result <= Fetch.captured;
+    end always
+    comb
+      data_out = result;
+    end comb
+  end stage Writeback
+
+end pipeline SimplePipe

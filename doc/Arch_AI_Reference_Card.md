@@ -62,7 +62,9 @@
 >
 > Token Future\<T\> Token\<T, id_width: N\>
 >
-> Width conversions (always explicit): x.trunc\<N\>() x.zext\<N\>() x.sext\<N\>()
+> Width conversions (always explicit): x.trunc\<N\>() x.trunc\<N,M\>() x.zext\<N\>() x.sext\<N\>()
+>
+> trunc\<N\>() → lowest N bits (SV: N'(x)); trunc\<N,M\>() → bit range [N:M] (SV: x[N:M])
 
 **3. Construct Cards**
 
@@ -108,37 +110,47 @@
 
 **pipeline --- staged datapath, compiler generates hazard logic**
 
-+-------------------------------+-------------------------------+
-| pipeline Name                 | Compiler generates:           |
-|                               |                               |
-| port clk: in Clock\<D\>;      | valid/stall propagation,      |
-|                               |                               |
-| port rst: in Reset\<Sync\>;   | flush masks, forward muxes.   |
-|                               |                               |
-| stage S1                      | todo! compiles --- use for    |
-|                               |                               |
-| reg r1: T init 0 reset rst;   | scaffolding before filling in |
-|                               |                               |
-| always on clk rising          | stage bodies.                 |
-|                               |                               |
-| r1 \<= in;                    |                               |
-|                               |                               |
-| end always                    |                               |
-|                               |                               |
-| end stage S1                  |                               |
-|                               |                               |
-| stage S2 todo! end stage S2   |                               |
-|                               |                               |
-| stall when !in_valid;         |                               |
-|                               |                               |
-| flush S2 when mispredict;     |                               |
-|                               |                               |
-| forward result from wb_result |                               |
-|                               |                               |
-| when wb_valid;                |                               |
-|                               |                               |
-| end pipeline Name             |                               |
-+-------------------------------+-------------------------------+
++---------------------------------------+-------------------------------+
+| pipeline Name                         | Compiler generates:           |
+|                                       |                               |
+| port clk: in Clock\<D\>;              | per-stage valid\_r registers, |
+|                                       |                               |
+| port rst: in Reset\<Sync\>;           | stall chain (backpressure),   |
+|                                       |                               |
+| stage Fetch stall when !in\_valid     | flush masks, comb wire decls. |
+|                                       |                               |
+| reg r1: T init 0 reset rst;           | Cross-stage refs rewritten:   |
+|                                       |                               |
+| always on clk rising                  | Fetch.pc → fetch\_pc          |
+|                                       |                               |
+| r1 \<= in;                            |                               |
+|                                       |                               |
+| end always                            | valid\_r accessible per-stage |
+|                                       |                               |
+| end stage Fetch                       | for output gating:            |
+|                                       |                               |
+| stage Exec                            | wb\_we = valid and valid\_r;  |
+|                                       |                               |
+| reg r2: T init 0 reset rst;           |                               |
+|                                       |                               |
+| always on clk rising                  | Explicit forwarding via comb  |
+|                                       |                               |
+| r2 \<= Fetch.r1;                      | if/else mux inside stage.     |
+|                                       |                               |
+| end always                            |                               |
+|                                       |                               |
+| inst alu0: Alu                        | inst inside stages supported  |
+|                                       |                               |
+| connect a \<- Fetch.r1;               | (output wires auto-declared). |
+|                                       |                               |
+| end inst alu0                         |                               |
+|                                       |                               |
+| end stage Exec                        |                               |
+|                                       |                               |
+| flush Fetch when mispredict;          |                               |
+|                                       |                               |
+| end pipeline Name                     |                               |
++---------------------------------------+-------------------------------+
 
 **fsm --- finite state machine**
 

@@ -16,6 +16,7 @@ pub enum Symbol {
     Counter(CounterInfo),
     Arbiter(ArbiterInfo),
     Regfile(RegfileInfo),
+    Pipeline(PipelineInfo),
     Param(String),
     Port(PortInfo),
     Reg(RegInfo),
@@ -39,6 +40,14 @@ pub struct ArbiterInfo {
 #[derive(Debug, Clone)]
 pub struct RegfileInfo {
     pub name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PipelineInfo {
+    pub name: String,
+    pub params: Vec<ParamDecl>,
+    pub ports: Vec<PortDecl>,
+    pub stage_names: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -273,6 +282,19 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                     table.globals.insert(r.name.name.clone(), (Symbol::Regfile(info), r.name.span));
                 }
             }
+            Item::Pipeline(p) => {
+                if table.globals.contains_key(&p.name.name) {
+                    errors.push(CompileError::duplicate(&p.name.name, p.name.span));
+                } else {
+                    let info = PipelineInfo {
+                        name: p.name.name.clone(),
+                        params: p.params.clone(),
+                        ports: p.ports.clone(),
+                        stage_names: p.stages.iter().map(|s| s.name.name.clone()).collect(),
+                    };
+                    table.globals.insert(p.name.name.clone(), (Symbol::Pipeline(info), p.name.span));
+                }
+            }
         }
     }
 
@@ -359,6 +381,22 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
             }
 
             table.module_scopes.insert(m.name.name.clone(), scope);
+        }
+
+        // Validate inst references inside pipeline stages
+        if let Item::Pipeline(p) = item {
+            for stage in &p.stages {
+                for body_item in &stage.body {
+                    if let ModuleBodyItem::Inst(i) = body_item {
+                        if !table.globals.contains_key(&i.module_name.name) {
+                            errors.push(CompileError::undefined(
+                                &i.module_name.name,
+                                i.module_name.span,
+                            ));
+                        }
+                    }
+                }
+            }
         }
     }
 

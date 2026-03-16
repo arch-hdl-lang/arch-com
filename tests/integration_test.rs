@@ -790,3 +790,291 @@ end module BadSyncAsync
     let result = checker.check();
     assert!(result.is_err(), "expected error for mixing sync and async reset in same always block");
 }
+
+// ── Pipeline ──────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_simple_pipeline() {
+    let source = include_str!("simple_pipeline.arch");
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module SimplePipe"), "missing module header");
+    assert!(sv.contains("fetch_valid_r"), "missing fetch valid register");
+    assert!(sv.contains("writeback_valid_r"), "missing writeback valid register");
+    assert!(sv.contains("fetch_captured"), "missing fetch stage register");
+    assert!(sv.contains("writeback_result"), "missing writeback stage register");
+    assert!(sv.contains("always_ff"), "missing always_ff block");
+    assert!(sv.contains("assign data_out = writeback_result"), "missing comb output");
+    insta::assert_snapshot!(sv);
+}
+
+#[test]
+fn test_pipeline_comb_only_stage_error() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100,
+end domain SysDomain
+
+pipeline BadPipe
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port data_in: in UInt<8>;
+  port data_out: out UInt<8>;
+
+  stage CombOnly
+    comb
+      data_out = data_in;
+    end comb
+  end stage CombOnly
+
+end pipeline BadPipe
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens);
+    let ast = parser.parse_source_file().expect("parse");
+    let elaborated = elaborate::elaborate(ast).expect("elaborate");
+    let symbols = resolve::resolve(&elaborated).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &elaborated);
+    let result = checker.check();
+    assert!(result.is_err(), "expected error for comb-only pipeline stage");
+}
+
+#[test]
+fn test_pipeline_bad_flush_target_error() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100,
+end domain SysDomain
+
+pipeline BadFlush
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port data_in: in UInt<8>;
+  port data_out: out UInt<8>;
+
+  stage Fetch
+    reg captured: UInt<8> init 0 reset rst;
+    always on clk rising
+      captured <= data_in;
+    end always
+  end stage Fetch
+
+  stage Writeback
+    reg result: UInt<8> init 0 reset rst;
+    always on clk rising
+      result <= Fetch.captured;
+    end always
+    comb
+      data_out = result;
+    end comb
+  end stage Writeback
+
+  flush Nonexistent when data_in == 0;
+
+end pipeline BadFlush
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens);
+    let ast = parser.parse_source_file().expect("parse");
+    let elaborated = elaborate::elaborate(ast).expect("elaborate");
+    let symbols = resolve::resolve(&elaborated).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &elaborated);
+    let result = checker.check();
+    assert!(result.is_err(), "expected error for undeclared flush target stage");
+}
+
+#[test]
+fn test_cpu_pipeline() {
+    let source = include_str!("cpu_pipeline.arch");
+    let sv = compile_to_sv(source);
+    // Module header
+    assert!(sv.contains("module CpuPipe"), "missing module header");
+    // Per-stage stall chain
+    assert!(sv.contains("fetch_stall"), "missing fetch_stall signal");
+    assert!(sv.contains("decode_stall"), "missing decode_stall signal");
+    assert!(sv.contains("(!imem_valid)"), "missing Fetch stall condition");
+    // Backpressure propagation
+    assert!(sv.contains("fetch_stall = (!imem_valid) || decode_stall"), "missing backpressure chain");
+    // Stage register updates with stall guard
+    assert!(sv.contains("if (!fetch_stall)"), "missing fetch stall guard");
+    assert!(sv.contains("if (!decode_stall)"), "missing decode stall guard");
+    // Bubble insertion
+    assert!(sv.contains("fetch_stall ? 1'b0 : fetch_valid_r"), "missing bubble insertion");
+    // Flush
+    assert!(sv.contains("if (branch_taken)"), "missing flush condition");
+    assert!(sv.contains("fetch_valid_r <= 1'b0"), "missing fetch flush");
+    assert!(sv.contains("decode_valid_r <= 1'b0"), "missing decode flush");
+    // Cross-stage references rewritten
+    assert!(sv.contains("fetch_instr"), "missing rewritten cross-stage ref");
+    assert!(sv.contains("decode_rs1_val"), "missing rewritten decode ref");
+    assert!(sv.contains("execute_alu_result"), "missing rewritten execute ref");
+    // Outputs
+    assert!(sv.contains("assign wb_data = writeback_result"), "missing wb output");
+    assert!(sv.contains("assign pc_out = fetch_pc"), "missing pc output");
+    // Explicit forwarding mux
+    assert!(sv.contains("decode_rs1_fwd"), "missing forwarding mux wire");
+    assert!(sv.contains("always_comb"), "missing always_comb for forwarding mux");
+    insta::assert_snapshot!(sv);
+}
+
+#[test]
+fn test_trunc_bit_range() {
+    // Test trunc<N,M> (bit-range extraction) alongside trunc<N> (lowest N bits)
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100,
+end domain SysDomain
+
+module BitExtract
+  param XLEN: const = 32;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port instr: in UInt<XLEN>;
+  port opcode: out UInt<7>;
+  port rd: out UInt<5>;
+  port funct3: out UInt<3>;
+
+  reg opcode_r: UInt<7> init 0 reset rst;
+  reg rd_r: UInt<5> init 0 reset rst;
+  reg funct3_r: UInt<3> init 0 reset rst;
+
+  always on clk rising
+    opcode_r <= instr.trunc<7>();
+    rd_r     <= instr.trunc<11,7>();
+    funct3_r <= instr.trunc<14,12>();
+  end always
+
+  comb
+    opcode = opcode_r;
+    rd = rd_r;
+    funct3 = funct3_r;
+  end comb
+end module BitExtract
+"#;
+    let sv = compile_to_sv(source);
+    // trunc<7>() → 7'(instr)
+    assert!(sv.contains("7'(instr)"), "expected trunc<7> → 7'(instr), got:\n{sv}");
+    // trunc<11,7>() → instr[11:7]
+    assert!(sv.contains("instr[11:7]"), "expected trunc<11,7> → instr[11:7], got:\n{sv}");
+    // trunc<14,12>() → instr[14:12]
+    assert!(sv.contains("instr[14:12]"), "expected trunc<14,12> → instr[14:12], got:\n{sv}");
+    insta::assert_snapshot!(sv);
+}
+
+#[test]
+fn test_pipeline_instantiation() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100,
+end domain SysDomain
+
+pipeline SimplePipe
+  param XLEN: const = 32;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port data_in: in UInt<XLEN>;
+  port data_out: out UInt<XLEN>;
+
+  stage Fetch
+    reg captured: UInt<XLEN> init 0 reset rst;
+    always on clk rising
+      captured <= data_in;
+    end always
+  end stage Fetch
+
+  stage Writeback
+    reg result: UInt<XLEN> init 0 reset rst;
+    always on clk rising
+      result <= Fetch.captured;
+    end always
+    comb
+      data_out = result;
+    end comb
+  end stage Writeback
+
+end pipeline SimplePipe
+
+module Top
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port din: in UInt<32>;
+  port dout: out UInt<32>;
+
+  inst pipe0: SimplePipe
+    connect clk <- clk;
+    connect rst <- rst;
+    connect data_in <- din;
+    connect data_out -> dout;
+  end inst pipe0
+end module Top
+"#;
+    let sv = compile_to_sv(source);
+    // Should contain the pipeline module
+    assert!(sv.contains("module SimplePipe"), "missing pipeline module");
+    // Should contain the top module with instantiation
+    assert!(sv.contains("module Top"), "missing top module");
+    assert!(sv.contains("SimplePipe pipe0"), "missing pipeline instantiation");
+    assert!(sv.contains(".data_in(din)"), "missing data_in connection");
+    assert!(sv.contains(".data_out(dout)"), "missing data_out connection");
+    insta::assert_snapshot!(sv);
+}
+
+#[test]
+fn test_pipeline_stage_inst() {
+    // Instantiate an ALU module inside a pipeline Execute stage
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100,
+end domain SysDomain
+
+module Alu
+  param WIDTH: const = 32;
+  port a: in UInt<WIDTH>;
+  port b: in UInt<WIDTH>;
+  port result: out UInt<WIDTH>;
+
+  comb
+    result = a + b;
+  end comb
+end module Alu
+
+pipeline AluPipe
+  param XLEN: const = 32;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port op_a: in UInt<XLEN>;
+  port op_b: in UInt<XLEN>;
+  port result_out: out UInt<XLEN>;
+
+  stage Fetch
+    reg a_r: UInt<XLEN> init 0 reset rst;
+    reg b_r: UInt<XLEN> init 0 reset rst;
+    always on clk rising
+      a_r <= op_a;
+      b_r <= op_b;
+    end always
+  end stage Fetch
+
+  stage Execute
+    reg alu_out: UInt<XLEN> init 0 reset rst;
+    always on clk rising
+      alu_out <= Fetch.a_r + Fetch.b_r;
+    end always
+    inst alu0: Alu
+      connect a <- Fetch.a_r;
+      connect b <- Fetch.b_r;
+      connect result -> result_out;
+    end inst alu0
+  end stage Execute
+
+end pipeline AluPipe
+"#;
+    let sv = compile_to_sv(source);
+    // ALU module should be emitted
+    assert!(sv.contains("module Alu"), "missing Alu module");
+    // Pipeline should contain the inst
+    assert!(sv.contains("Alu alu0"), "missing Alu instantiation inside pipeline stage");
+    assert!(sv.contains(".a("), "missing port a connection");
+    assert!(sv.contains(".b("), "missing port b connection");
+    assert!(sv.contains(".result(result_out)"), "missing result connection");
+    insta::assert_snapshot!(sv);
+}

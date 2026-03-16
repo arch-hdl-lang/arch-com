@@ -34,8 +34,9 @@ impl Parser {
             Some(TokenKind::Counter) => Ok(Item::Counter(self.parse_counter()?)),
             Some(TokenKind::Arbiter) => Ok(Item::Arbiter(self.parse_arbiter()?)),
             Some(TokenKind::Regfile) => Ok(Item::Regfile(self.parse_regfile()?)),
+            Some(TokenKind::Pipeline) => Ok(Item::Pipeline(self.parse_pipeline()?)),
             Some(other) => Err(CompileError::unexpected_token(
-                "domain, struct, enum, module, fsm, fifo, ram, counter, arbiter, or regfile",
+                "domain, struct, enum, module, fsm, fifo, ram, counter, arbiter, regfile, or pipeline",
                 &other.to_string(),
                 self.peek_span(),
             )),
@@ -887,19 +888,23 @@ impl Parser {
             if self.check(TokenKind::Dot) {
                 self.advance();
                 let field = self.expect_ident()?;
-                // Check for method call: .trunc<N>(), .zext<N>(), .sext<N>()
+                // Check for method call: .trunc<N>(), .trunc<N,M>(), .zext<N>(), .sext<N>()
                 if self.check(TokenKind::Lt) && is_method_name(&field.name) {
                     self.advance(); // <
                     let old_no_angle = self.no_angle;
                     self.no_angle = true;
-                    let arg = self.parse_expr()?;
+                    let mut type_args = vec![self.parse_expr()?];
+                    while self.check(TokenKind::Comma) {
+                        self.advance();
+                        type_args.push(self.parse_expr()?);
+                    }
                     self.no_angle = old_no_angle;
                     self.expect(TokenKind::Gt)?;
                     self.expect(TokenKind::LParen)?;
                     self.expect(TokenKind::RParen)?;
                     let span = lhs.span.merge(self.tokens[self.pos.saturating_sub(1)].span);
                     lhs = Expr {
-                        kind: ExprKind::MethodCall(Box::new(lhs), field, vec![arg]),
+                        kind: ExprKind::MethodCall(Box::new(lhs), field, type_args),
                         span,
                     };
                 } else {
@@ -1328,6 +1333,181 @@ impl Parser {
             condition,
             span: start.merge(end_span),
         })
+    }
+
+    // ── Pipeline ──────────────────────────────────────────────────────────────
+
+    fn parse_pipeline(&mut self) -> Result<PipelineDecl, CompileError> {
+        let start = self.expect(TokenKind::Pipeline)?.span;
+        let name = self.expect_ident()?;
+
+        let mut params = Vec::new();
+        let mut ports = Vec::new();
+        let mut stages = Vec::new();
+        let mut stall_conds = Vec::new();
+        let mut flush_directives = Vec::new();
+        let mut forward_directives = Vec::new();
+
+        while !self.check_end_pipeline() {
+            match self.peek_kind() {
+                Some(TokenKind::Param) => params.push(self.parse_param_decl()?),
+                Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
+                Some(TokenKind::Stage) => stages.push(self.parse_stage_decl()?),
+                Some(TokenKind::Stall) => stall_conds.push(self.parse_stall_decl()?),
+                Some(TokenKind::Flush) => flush_directives.push(self.parse_flush_decl()?),
+                Some(TokenKind::Forward) => forward_directives.push(self.parse_forward_decl()?),
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                    while !self.check(TokenKind::Semi) && !self.at_end() {
+                        self.advance();
+                    }
+                    self.eat(TokenKind::Semi);
+                }
+                Some(other) => {
+                    return Err(CompileError::unexpected_token(
+                        "param, port, stage, stall, flush, forward, assert, or cover",
+                        &other.to_string(),
+                        self.peek_span(),
+                    ));
+                }
+                None => return Err(CompileError::UnexpectedEof),
+            }
+        }
+
+        self.expect(TokenKind::End)?;
+        self.expect(TokenKind::Pipeline)?;
+        let closing = self.expect_ident()?;
+        if closing.name != name.name {
+            return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+        }
+
+        Ok(PipelineDecl {
+            span: start.merge(closing.span),
+            name,
+            params,
+            ports,
+            stages,
+            stall_conds,
+            flush_directives,
+            forward_directives,
+        })
+    }
+
+    fn parse_stage_decl(&mut self) -> Result<StageDecl, CompileError> {
+        let start = self.expect(TokenKind::Stage)?.span;
+        let name = self.expect_ident()?;
+
+        // Optional per-stage stall condition: `stage Fetch stall when <expr>`
+        let stall_cond = if self.eat(TokenKind::Stall) {
+            self.expect(TokenKind::When)?;
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+
+        let mut body = Vec::new();
+
+        // Handle todo! stage body
+        if self.check(TokenKind::Todo) {
+            self.advance(); // consume todo!
+            // fall through to end stage
+        } else {
+            while !self.check_end_stage() {
+                match self.peek_kind() {
+                    Some(TokenKind::Reg) => {
+                        body.push(ModuleBodyItem::RegDecl(self.parse_reg_decl()?));
+                    }
+                    Some(TokenKind::Always) => {
+                        body.push(ModuleBodyItem::RegBlock(self.parse_always_block()?));
+                    }
+                    Some(TokenKind::Comb) => {
+                        body.push(ModuleBodyItem::CombBlock(self.parse_comb_block()?));
+                    }
+                    Some(TokenKind::Let) => {
+                        body.push(ModuleBodyItem::LetBinding(self.parse_let_binding()?));
+                    }
+                    Some(TokenKind::Inst) => {
+                        body.push(ModuleBodyItem::Inst(self.parse_inst()?));
+                    }
+                    Some(other) => {
+                        return Err(CompileError::unexpected_token(
+                            "reg, always, comb, let, inst, or end stage",
+                            &other.to_string(),
+                            self.peek_span(),
+                        ));
+                    }
+                    None => return Err(CompileError::UnexpectedEof),
+                }
+            }
+        }
+
+        self.expect(TokenKind::End)?;
+        self.expect(TokenKind::Stage)?;
+        let closing = self.expect_ident()?;
+        if closing.name != name.name {
+            return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+        }
+
+        Ok(StageDecl {
+            span: start.merge(closing.span),
+            name,
+            stall_cond,
+            body,
+        })
+    }
+
+    fn parse_stall_decl(&mut self) -> Result<StallDecl, CompileError> {
+        let start = self.expect(TokenKind::Stall)?.span;
+        self.expect(TokenKind::When)?;
+        let condition = self.parse_expr()?;
+        self.expect(TokenKind::Semi)?;
+        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        Ok(StallDecl {
+            condition,
+            span: start.merge(end_span),
+        })
+    }
+
+    fn parse_flush_decl(&mut self) -> Result<FlushDecl, CompileError> {
+        let start = self.expect(TokenKind::Flush)?.span;
+        let target_stage = self.expect_ident()?;
+        self.expect(TokenKind::When)?;
+        let condition = self.parse_expr()?;
+        self.expect(TokenKind::Semi)?;
+        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        Ok(FlushDecl {
+            target_stage,
+            condition,
+            span: start.merge(end_span),
+        })
+    }
+
+    fn parse_forward_decl(&mut self) -> Result<ForwardDecl, CompileError> {
+        let start = self.expect(TokenKind::Forward)?.span;
+        let dest = self.parse_expr()?;
+        self.expect(TokenKind::From)?;
+        let source = self.parse_expr()?;
+        self.expect(TokenKind::When)?;
+        let condition = self.parse_expr()?;
+        self.expect(TokenKind::Semi)?;
+        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        Ok(ForwardDecl {
+            dest,
+            source,
+            condition,
+            span: start.merge(end_span),
+        })
+    }
+
+    fn check_end_pipeline(&self) -> bool {
+        self.pos + 1 < self.tokens.len()
+            && self.tokens[self.pos].kind == TokenKind::End
+            && self.tokens[self.pos + 1].kind == TokenKind::Pipeline
+    }
+
+    fn check_end_stage(&self) -> bool {
+        self.pos + 1 < self.tokens.len()
+            && self.tokens[self.pos].kind == TokenKind::End
+            && self.tokens[self.pos + 1].kind == TokenKind::Stage
     }
 
     // ── FIFO ──────────────────────────────────────────────────────────────────

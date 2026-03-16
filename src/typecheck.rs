@@ -85,6 +85,7 @@ impl<'a> TypeChecker<'a> {
                 Item::Counter(c) => self.check_counter(c),
                 Item::Arbiter(a) => self.check_arbiter(a),
                 Item::Regfile(r) => self.check_regfile(r),
+                Item::Pipeline(p) => self.check_pipeline(p),
             }
         }
         if self.errors.is_empty() {
@@ -558,7 +559,18 @@ impl<'a> TypeChecker<'a> {
                 let base_ty = self.resolve_expr_type(base, module_name, local_types);
                 match method.name.as_str() {
                     "trunc" | "zext" | "sext" => {
-                        if let Some(width_expr) = args.first() {
+                        if method.name == "trunc" && args.len() == 2 {
+                            // trunc<Hi,Lo>() → extracts bits [Hi:Lo], result width = Hi - Lo + 1
+                            let hi = self.eval_const_expr(&args[0], local_types);
+                            let lo = self.eval_const_expr(&args[1], local_types);
+                            match (hi, lo) {
+                                (Some(h), Some(l)) if h >= l => {
+                                    let w = (h - l + 1) as u32;
+                                    if let Ty::SInt(_) = base_ty { Ty::SInt(w) } else { Ty::UInt(w) }
+                                }
+                                _ => Ty::Error,
+                            }
+                        } else if let Some(width_expr) = args.first() {
                             if let Some(w) = self.eval_const_expr(width_expr, local_types) {
                                 if method.name == "sext" {
                                     Ty::SInt(w as u32)
@@ -933,6 +945,92 @@ impl<'a> TypeChecker<'a> {
             self.check_snake_case(&wp.name);
             for s in &wp.signals {
                 self.check_snake_case(&s.name);
+            }
+        }
+    }
+    // ── Pipeline ──────────────────────────────────────────────────────────────
+
+    fn check_pipeline(&mut self, p: &PipelineDecl) {
+        self.check_pascal_case(&p.name);
+
+        for param in &p.params {
+            self.check_upper_snake(&param.name);
+        }
+        for port in &p.ports {
+            self.check_snake_case(&port.name);
+        }
+
+        let stage_names: Vec<&str> = p.stages.iter().map(|s| s.name.name.as_str()).collect();
+
+        for stage in &p.stages {
+            self.check_pascal_case(&stage.name);
+
+            // Every stage must have at least one RegDecl + RegBlock (always on)
+            let has_reg = stage.body.iter().any(|i| matches!(i, ModuleBodyItem::RegDecl(_)));
+            let has_always = stage.body.iter().any(|i| matches!(i, ModuleBodyItem::RegBlock(_)));
+
+            if !has_reg || !has_always {
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "pipeline stage `{}` has no registers; every stage must capture data into at least one register",
+                        stage.name.name
+                    ),
+                    stage.name.span,
+                ));
+            }
+
+            // Check naming within stage body
+            for item in &stage.body {
+                match item {
+                    ModuleBodyItem::RegDecl(r) => self.check_snake_case(&r.name),
+                    ModuleBodyItem::LetBinding(l) => self.check_snake_case(&l.name),
+                    ModuleBodyItem::Inst(inst) => self.check_snake_case(&inst.name),
+                    _ => {}
+                }
+            }
+        }
+
+        // Validate flush targets are declared stages
+        for flush in &p.flush_directives {
+            if !stage_names.contains(&flush.target_stage.name.as_str()) {
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "flush target `{}` is not a declared stage in pipeline `{}`",
+                        flush.target_stage.name, p.name.name
+                    ),
+                    flush.target_stage.span,
+                ));
+            }
+        }
+
+        // Check output ports are driven (at least one comb block in some stage assigns them)
+        let mut driven: HashSet<String> = HashSet::new();
+        for stage in &p.stages {
+            for item in &stage.body {
+                if let ModuleBodyItem::CombBlock(cb) = item {
+                    for stmt in &cb.stmts {
+                        if let CombStmt::Assign(a) = stmt {
+                            driven.insert(a.target.name.clone());
+                        }
+                    }
+                }
+                if let ModuleBodyItem::Inst(inst) = item {
+                    for conn in &inst.connections {
+                        if conn.direction == ConnectDir::Output {
+                            if let ExprKind::Ident(name) = &conn.signal.kind {
+                                driven.insert(name.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for port in &p.ports {
+            if port.direction == Direction::Out && !driven.contains(&port.name.name) {
+                self.errors.push(CompileError::UndriveOutput {
+                    name: port.name.name.clone(),
+                    span: crate::diagnostics::span_to_source_span(port.name.span),
+                });
             }
         }
     }

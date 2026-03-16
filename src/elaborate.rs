@@ -73,6 +73,7 @@ pub fn elaborate(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
                     }
                 }
             }
+            Item::Pipeline(p) => new_items.push(Item::Pipeline(p)),
             other => new_items.push(other),
         }
     }
