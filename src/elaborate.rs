@@ -490,6 +490,10 @@ pub fn try_eval_i64(expr: &Expr, param_vals: &HashMap<String, i64>) -> Option<i6
             Some(try_eval_i64(l, param_vals)? * try_eval_i64(r, param_vals)?)
         }
         ExprKind::Unary(UnaryOp::Neg, e) => Some(-try_eval_i64(e, param_vals)?),
+        ExprKind::Clog2(arg) => {
+            let v = try_eval_i64(arg, param_vals)? as u64;
+            if v <= 1 { Some(1) } else { Some(64 - (v - 1).leading_zeros() as i64) }
+        }
         _ => None,
     }
 }

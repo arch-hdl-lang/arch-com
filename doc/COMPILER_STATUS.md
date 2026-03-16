@@ -58,7 +58,7 @@ Single-file compilation only.
 | Named types (struct/enum refs) | ✅ | |
 | `Token<T, id_width>` | ❌ | TLM only |
 | `Future<T>` | ❌ | TLM only |
-| `$clog2(expr)` in type args | ❌ | Lexer has no `$` token; users write explicit widths |
+| `$clog2(expr)` in type args | ✅ | Parsed as expression, emitted as SV `$clog2(...)`, evaluated at compile time for const-folding |
 | Clock domain mismatch (CDC errors) | ❌ | No cross-domain assignment checking |
 | Width mismatch at assignment | ⚠️ | Errors when reg assignment RHS is exactly 1 bit wider than LHS due to arithmetic widening; full width-error checking (arbitrary width delta) not yet implemented |
 | Implicit truncation prevention | ✅ | `r <= r + 1` is a compile error; write `r <= (r + 1).trunc<N>()` explicitly. `.trunc<N>()` emits SV size cast `N'(expr)`. `.trunc<N,M>()` emits bit-range select `expr[N:M]` for field extraction (e.g. `instr.trunc<11,7>()` → `instr[11:7]`). |
@@ -83,7 +83,7 @@ Single-file compilation only.
 | Enum variants `E::Variant` | ✅ |
 | `todo!` | ✅ |
 | Expression-level `match` | ✅ As `CombAssign` RHS → `case` block; as inline expression → nested ternary chain |
-| `$clog2(x)` / `$bytes(x)` system calls | ❌ |
+| `$clog2(x)` | ✅ |
 
 ---
 
@@ -120,7 +120,7 @@ Single-file compilation only.
 
 ### Tests
 
-- 37 integration tests (snapshot + error-case), including `let` binding, `generate for`, `generate if`, mixed reset/no-reset partitioning, reset consistency validation, pipeline (simple, CPU 4-stage, instantiation, stage inst, bit-range trunc)
+- 38 integration tests (snapshot + error-case), including `let` binding, `generate for`, `generate if`, mixed reset/no-reset partitioning, reset consistency validation, pipeline (simple, CPU 4-stage, instantiation, stage inst, bit-range trunc), `$clog2` in type args
 - 8 Verilator simulations: Counter, TrafficLight FSM, TxQueue sync FIFO, AsyncBridge async FIFO, SimpleMem RAM, WrapCounter, BusArbiter (round-robin), IntRegs (regfile + forwarding), CpuPipe 4-stage pipeline (reset, flow, stall, flush, forwarding)
 
 ---
@@ -134,7 +134,7 @@ Single-file compilation only.
 | 1 | **Width mismatch at assignment** — `UInt<16>` → `UInt<8>` should error | Low |
 | 2 | **Exhaustive `match` checking** — enum match must cover all variants or have `_` | Low |
 | 3 | **Expression-level `match` codegen** — currently emits `'0` stub | Medium |
-| 4 | **`$clog2(expr)` in type args** — add `$`-prefixed system calls to lexer/parser | Low |
+| 4 | ~~**`$clog2(expr)` in type args**~~ | ~~Low~~ | **DONE** |
 | 5 | **CDC error detection** — cross-domain signal assignment → compile error | Medium |
 | 6 | **Const param evaluation at instantiation** — `UInt<WIDTH*2>` with param override | Medium |
 

@@ -1078,3 +1078,44 @@ end pipeline AluPipe
     assert!(sv.contains(".result(result_out)"), "missing result connection");
     insta::assert_snapshot!(sv);
 }
+
+#[test]
+fn test_clog2_in_type_args() {
+    // $clog2(DEPTH) in type width expressions
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100,
+end domain SysDomain
+
+module FifoCtrl
+  param DEPTH: const = 16;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port wr_ptr: out UInt<$clog2(DEPTH)>;
+  port rd_ptr: out UInt<$clog2(DEPTH)>;
+  port count: out UInt<$clog2(DEPTH) + 1>;
+
+  reg wr_r: UInt<$clog2(DEPTH)> init 0 reset rst;
+  reg rd_r: UInt<$clog2(DEPTH)> init 0 reset rst;
+
+  always on clk rising
+    wr_r <= (wr_r + 1).trunc<$clog2(DEPTH)>();
+    rd_r <= rd_r;
+  end always
+
+  comb
+    wr_ptr = wr_r;
+    rd_ptr = rd_r;
+    count = wr_r - rd_r;
+  end comb
+end module FifoCtrl
+"#;
+    let sv = compile_to_sv(source);
+    // $clog2(DEPTH) should appear in port widths
+    assert!(sv.contains("$clog2(DEPTH)"), "expected $clog2(DEPTH) in SV output, got:\n{sv}");
+    // $clog2(DEPTH) + 1 in count port
+    assert!(sv.contains("$clog2(DEPTH) + 1"), "expected $clog2(DEPTH) + 1 in SV output, got:\n{sv}");
+    // trunc<$clog2(DEPTH)>() should emit as size cast
+    assert!(sv.contains("$clog2(DEPTH)'("), "expected $clog2(DEPTH)'(...) size cast, got:\n{sv}");
+    insta::assert_snapshot!(sv);
+}

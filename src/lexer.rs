@@ -254,6 +254,10 @@ pub enum TokenKind {
     #[regex(r"[0-9][0-9_]*", priority = 2, callback = |lex| lex.slice().to_string())]
     DecLiteral(String),
 
+    // System functions
+    #[token("$clog2")]
+    Clog2,
+
     // Identifier
     #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*", priority = 1, callback = |lex| lex.slice().to_string())]
     Ident(String),
@@ -368,6 +372,7 @@ impl fmt::Display for TokenKind {
             TokenKind::BinLiteral(s) => write!(f, "{s}"),
             TokenKind::SizedLiteral(s) => write!(f, "{s}"),
             TokenKind::DecLiteral(s) => write!(f, "{s}"),
+            TokenKind::Clog2 => write!(f, "$clog2"),
             TokenKind::Ident(s) => write!(f, "{s}"),
         }
     }

@@ -353,6 +353,8 @@ pub enum ExprKind {
     ExprMatch(Box<Expr>, Vec<ExprMatchArm>),
     /// Bit concatenation: {a, b, c} → {a, b, c} in SV; MSB first.
     Concat(Vec<Expr>),
+    /// $clog2(expr) — ceiling log2, used in type width expressions.
+    Clog2(Box<Expr>),
 }
 
 #[derive(Debug, Clone)]

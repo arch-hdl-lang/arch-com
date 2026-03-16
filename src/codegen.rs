@@ -1898,6 +1898,10 @@ impl<'a> Codegen<'a> {
                 let strs: Vec<String> = parts.iter().map(|p| self.emit_expr_str(p)).collect();
                 format!("{{{}}}", strs.join(", "))
             }
+            ExprKind::Clog2(arg) => {
+                let a = self.emit_expr_str(arg);
+                format!("$clog2({a})")
+            }
             ExprKind::Match(scrutinee, _arms) => {
                 let s = self.emit_expr_str(scrutinee);
                 format!("/* match({s}) */ '0")

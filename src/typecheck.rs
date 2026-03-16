@@ -636,6 +636,15 @@ impl<'a> TypeChecker<'a> {
                 }).sum();
                 Ty::UInt(total)
             }
+            ExprKind::Clog2(arg) => {
+                // $clog2 returns a compile-time constant width value
+                if let Some(v) = self.eval_const_expr(arg, local_types) {
+                    let bits = if v == 0 { 1 } else { 64 - v.leading_zeros() as u64 };
+                    Ty::UInt(bits as u32)
+                } else {
+                    Ty::UInt(32) // fallback: treat as generic integer
+                }
+            }
         }
     }
 
@@ -717,6 +726,10 @@ impl<'a> TypeChecker<'a> {
                 let l = self.eval_const_expr(lhs, local_types)?;
                 let r = self.eval_const_expr(rhs, local_types)?;
                 Some(l * r)
+            }
+            ExprKind::Clog2(arg) => {
+                let v = self.eval_const_expr(arg, local_types)?;
+                if v <= 1 { Some(1) } else { Some(64 - (v - 1).leading_zeros() as u64) }
             }
             _ => None,
         }

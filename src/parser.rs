@@ -993,6 +993,17 @@ impl Parser {
                 self.expect(TokenKind::RParen)?;
                 Ok(expr)
             }
+            // $clog2(expr)
+            Some(TokenKind::Clog2) => {
+                let start = self.advance().span;
+                self.expect(TokenKind::LParen)?;
+                let arg = self.parse_expr()?;
+                let end = self.expect(TokenKind::RParen)?;
+                Ok(Expr {
+                    kind: ExprKind::Clog2(Box::new(arg)),
+                    span: start.merge(end.span),
+                })
+            }
             // Bit concatenation: {a, b, c}
             Some(TokenKind::LBrace) => {
                 let start = self.advance().span;
