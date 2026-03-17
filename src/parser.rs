@@ -35,8 +35,9 @@ impl Parser {
             Some(TokenKind::Arbiter) => Ok(Item::Arbiter(self.parse_arbiter()?)),
             Some(TokenKind::Regfile) => Ok(Item::Regfile(self.parse_regfile()?)),
             Some(TokenKind::Pipeline) => Ok(Item::Pipeline(self.parse_pipeline()?)),
+            Some(TokenKind::Function) => Ok(Item::Function(self.parse_function()?)),
             Some(other) => Err(CompileError::unexpected_token(
-                "domain, struct, enum, module, fsm, fifo, ram, counter, arbiter, regfile, or pipeline",
+                "domain, struct, enum, module, fsm, fifo, ram, counter, arbiter, regfile, pipeline, or function",
                 &other.to_string(),
                 self.peek_span(),
             )),
@@ -373,21 +374,29 @@ impl Parser {
         let start = self.expect(TokenKind::If)?.span;
         let cond = self.parse_expr()?;
         let mut then_stmts = Vec::new();
-        // Parse stmts until `end if`
-        while !self.check_end_if() {
+        while !self.check_end_if() && !self.check(TokenKind::Else) {
             then_stmts.push(self.parse_reg_stmt()?);
         }
-        self.expect(TokenKind::End)?;
-        self.expect(TokenKind::If)?;
 
         let mut else_stmts = Vec::new();
         if self.check(TokenKind::Else) {
             self.advance(); // consume `else`
-            while !self.check_end_else() {
-                else_stmts.push(self.parse_reg_stmt()?);
+            if self.check(TokenKind::If) {
+                // `else if` — desugar to nested IfElse
+                let nested = self.parse_reg_if()?;
+                else_stmts.push(nested);
+            } else {
+                // `else` body — parse until `end if`
+                while !self.check_end_if() {
+                    else_stmts.push(self.parse_reg_stmt()?);
+                }
+                self.expect(TokenKind::End)?;
+                self.expect(TokenKind::If)?;
             }
+        } else {
+            // No else branch — just `end if`
             self.expect(TokenKind::End)?;
-            self.expect(TokenKind::Else)?;
+            self.expect(TokenKind::If)?;
         }
 
         let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
@@ -405,11 +414,6 @@ impl Parser {
             && self.tokens[self.pos + 1].kind == TokenKind::If
     }
 
-    fn check_end_else(&self) -> bool {
-        self.pos + 1 < self.tokens.len()
-            && self.tokens[self.pos].kind == TokenKind::End
-            && self.tokens[self.pos + 1].kind == TokenKind::Else
-    }
 
     fn parse_reg_match(&mut self) -> Result<Stmt, CompileError> {
         let start = self.expect(TokenKind::Match)?.span;
@@ -512,20 +516,26 @@ impl Parser {
         let start = self.expect(TokenKind::If)?.span;
         let cond = self.parse_expr()?;
         let mut then_stmts = Vec::new();
-        while !self.check_end_if() {
+        while !self.check_end_if() && !self.check(TokenKind::Else) {
             then_stmts.push(self.parse_comb_stmt()?);
         }
-        self.expect(TokenKind::End)?;
-        self.expect(TokenKind::If)?;
 
         let mut else_stmts = Vec::new();
         if self.check(TokenKind::Else) {
             self.advance();
-            while !self.check_end_else() {
-                else_stmts.push(self.parse_comb_stmt()?);
+            if self.check(TokenKind::If) {
+                let nested = self.parse_comb_if()?;
+                else_stmts.push(nested);
+            } else {
+                while !self.check_end_if() {
+                    else_stmts.push(self.parse_comb_stmt()?);
+                }
+                self.expect(TokenKind::End)?;
+                self.expect(TokenKind::If)?;
             }
+        } else {
             self.expect(TokenKind::End)?;
-            self.expect(TokenKind::Else)?;
+            self.expect(TokenKind::If)?;
         }
 
         let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
@@ -1074,6 +1084,22 @@ impl Parser {
                     let span = ident.span.merge(end.span);
                     Ok(Expr {
                         kind: ExprKind::StructLiteral(ident, fields),
+                        span,
+                    })
+                } else if self.check(TokenKind::LParen) {
+                    // Function call: Name(arg, ...)
+                    self.advance(); // consume `(`
+                    let mut call_args = Vec::new();
+                    while !self.check(TokenKind::RParen) {
+                        call_args.push(self.parse_expr()?);
+                        if !self.eat(TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                    let end = self.expect(TokenKind::RParen)?;
+                    let span = ident.span.merge(end.span);
+                    Ok(Expr {
+                        kind: ExprKind::FunctionCall(ident.name, call_args),
                         span,
                     })
                 } else {
@@ -2263,6 +2289,71 @@ fn infix_binding_power(op: BinOp) -> (u8, u8) {
         BinOp::Shl | BinOp::Shr => (15, 16),
         BinOp::Add | BinOp::Sub => (17, 18),
         BinOp::Mul | BinOp::Div | BinOp::Mod => (19, 20),
+    }
+}
+
+impl Parser {
+    // ── Function ──────────────────────────────────────────────────────────────
+
+    fn parse_function(&mut self) -> Result<FunctionDecl, CompileError> {
+        let start = self.expect(TokenKind::Function)?.span;
+        let name = self.expect_ident()?;
+
+        // Arg list: (name: Type, ...)
+        self.expect(TokenKind::LParen)?;
+        let mut args = Vec::new();
+        while !self.check(TokenKind::RParen) {
+            let arg_name = self.expect_ident()?;
+            self.expect(TokenKind::Colon)?;
+            let ty = self.parse_type_expr()?;
+            args.push(FunctionArg { name: arg_name, ty });
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokenKind::RParen)?;
+
+        // Return type: ->
+        self.expect(TokenKind::RArrow)?;
+        let ret_ty = self.parse_type_expr()?;
+
+        // Body: let* return
+        let mut body = Vec::new();
+        while !self.check_end_keyword() {
+            if self.check(TokenKind::Let) {
+                body.push(FunctionBodyItem::Let(self.parse_let_binding()?));
+            } else if self.check(TokenKind::Return) {
+                self.advance();
+                let expr = self.parse_expr()?;
+                self.expect(TokenKind::Semi)?;
+                body.push(FunctionBodyItem::Return(expr));
+            } else {
+                return Err(CompileError::unexpected_token(
+                    "let or return",
+                    &self.peek_kind().map(|k| k.to_string()).unwrap_or_else(|| "EOF".to_string()),
+                    self.peek_span(),
+                ));
+            }
+        }
+
+        self.expect(TokenKind::End)?;
+        self.expect(TokenKind::Function)?;
+        let closing_name = self.expect_ident()?;
+        if closing_name.name != name.name {
+            return Err(CompileError::mismatched_closing(
+                &name.name,
+                &closing_name.name,
+                closing_name.span,
+            ));
+        }
+
+        Ok(FunctionDecl {
+            span: start.merge(closing_name.span),
+            name,
+            args,
+            ret_ty,
+            body,
+        })
     }
 }
 

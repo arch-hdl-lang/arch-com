@@ -12,8 +12,8 @@ fn compile_to_sv(source: &str) -> String {
     let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
     let symbols = resolve::resolve(&ast).expect("resolve error");
     let checker = TypeChecker::new(&symbols, &ast);
-    let _warnings = checker.check().expect("type check error");
-    let codegen = Codegen::new(&symbols, &ast);
+    let (_warnings, overload_map) = checker.check().expect("type check error");
+    let codegen = Codegen::new(&symbols, &ast, overload_map);
     codegen.generate()
 }
 

@@ -143,4 +143,54 @@ impl CompileError {
             span: span_to_source_span(span),
         }
     }
+
+    /// Get the byte offset of this error's span in the combined source.
+    pub fn span_offset(&self) -> usize {
+        match self {
+            CompileError::UnexpectedToken { span, .. }
+            | CompileError::MismatchedClosingName { span, .. }
+            | CompileError::UndefinedName { span, .. }
+            | CompileError::DuplicateDefinition { span, .. }
+            | CompileError::TypeMismatch { span, .. }
+            | CompileError::WidthMismatch { span, .. }
+            | CompileError::MultipleDrivers { span, .. }
+            | CompileError::UndriveOutput { span, .. }
+            | CompileError::NamingViolation { span, .. }
+            | CompileError::LexerError { span, .. }
+            | CompileError::General { span, .. } => span.offset(),
+            CompileError::UnexpectedEof => 0,
+        }
+    }
+
+    /// Create a copy of this error with the span offset adjusted for multi-file reporting.
+    pub fn relocate(self, new_offset: usize) -> Self {
+        fn respan(span: SourceSpan, new_offset: usize) -> SourceSpan {
+            SourceSpan::new(new_offset.into(), span.len().into())
+        }
+        match self {
+            CompileError::UnexpectedToken { expected, found, span } =>
+                CompileError::UnexpectedToken { expected, found, span: respan(span, new_offset) },
+            CompileError::MismatchedClosingName { expected, found, span } =>
+                CompileError::MismatchedClosingName { expected, found, span: respan(span, new_offset) },
+            CompileError::UndefinedName { name, span } =>
+                CompileError::UndefinedName { name, span: respan(span, new_offset) },
+            CompileError::DuplicateDefinition { name, span } =>
+                CompileError::DuplicateDefinition { name, span: respan(span, new_offset) },
+            CompileError::TypeMismatch { expected, found, span } =>
+                CompileError::TypeMismatch { expected, found, span: respan(span, new_offset) },
+            CompileError::WidthMismatch { target_width, value_width, span } =>
+                CompileError::WidthMismatch { target_width, value_width, span: respan(span, new_offset) },
+            CompileError::MultipleDrivers { name, span } =>
+                CompileError::MultipleDrivers { name, span: respan(span, new_offset) },
+            CompileError::UndriveOutput { name, span } =>
+                CompileError::UndriveOutput { name, span: respan(span, new_offset) },
+            CompileError::NamingViolation { message, span } =>
+                CompileError::NamingViolation { message, span: respan(span, new_offset) },
+            CompileError::LexerError { span } =>
+                CompileError::LexerError { span: respan(span, new_offset) },
+            CompileError::General { message, span } =>
+                CompileError::General { message, span: respan(span, new_offset) },
+            CompileError::UnexpectedEof => CompileError::UnexpectedEof,
+        }
+    }
 }

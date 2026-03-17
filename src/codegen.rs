@@ -1,7 +1,7 @@
 use crate::ast::*;
 use crate::diagnostics::CompileWarning;
 use crate::lexer::Span;
-use crate::resolve::SymbolTable;
+use crate::resolve::{Symbol, SymbolTable};
 use crate::typecheck::enum_width;
 
 pub struct Codegen<'a> {
@@ -14,10 +14,18 @@ pub struct Codegen<'a> {
     comments: Vec<(Span, String)>,
     /// Cursor into `comments` — advanced as items are emitted.
     comment_idx: usize,
+    /// Functions collected from the current file; emitted inside each module body.
+    pending_functions: Vec<FunctionDecl>,
+    /// Maps call-site span.start → overload index (for overloaded functions only).
+    overload_map: std::collections::HashMap<usize, usize>,
 }
 
 impl<'a> Codegen<'a> {
-    pub fn new(symbols: &'a SymbolTable, source: &'a SourceFile) -> Self {
+    pub fn new(
+        symbols: &'a SymbolTable,
+        source: &'a SourceFile,
+        overload_map: std::collections::HashMap<usize, usize>,
+    ) -> Self {
         Self {
             symbols,
             source,
@@ -26,6 +34,8 @@ impl<'a> Codegen<'a> {
             warnings: Vec::new(),
             comments: Vec::new(),
             comment_idx: 0,
+            pending_functions: Vec::new(),
+            overload_map,
         }
     }
 
@@ -47,7 +57,20 @@ impl<'a> Codegen<'a> {
     }
 
     pub fn generate(mut self) -> String {
-        for item in &self.source.items {
+        let items: &[Item] = self.source.items.as_slice();
+        self.generate_items(items)
+    }
+
+    /// Generate SV for a specific subset of items (used for per-file output).
+    pub fn generate_items(&mut self, items: &[Item]) -> String {
+        self.out.clear();
+        self.comment_idx = 0;
+        // Pre-collect all functions so they can be emitted inside each module.
+        self.pending_functions = items.iter()
+            .filter_map(|i| if let Item::Function(f) = i { Some(f) } else { None })
+            .cloned()
+            .collect();
+        for item in items {
             self.emit_comments_before(item.span().start);
             match item {
                 Item::Domain(d) => self.emit_domain(d),
@@ -61,12 +84,13 @@ impl<'a> Codegen<'a> {
                 Item::Arbiter(a) => self.emit_arbiter(a),
                 Item::Regfile(r) => self.emit_regfile(r),
                 Item::Pipeline(p) => self.emit_pipeline(p),
+                Item::Function(_) => {} // emitted inside modules
             }
         }
         // Flush any trailing comments after the last item.
         let end = usize::MAX;
         self.emit_comments_before(end);
-        self.out
+        std::mem::take(&mut self.out)
     }
 
     fn line(&mut self, s: &str) {
@@ -82,6 +106,77 @@ impl<'a> Codegen<'a> {
         for field in &d.fields {
             self.line(&format!("//   {}: {}", field.name.name, self.emit_expr_str(&field.value)));
         }
+        self.line("");
+    }
+
+    /// Compute a short tag string for a TypeExpr used in mangled function names.
+    /// `UInt<8>` → "8", `SInt<16>` → "s16", `Bool` → "b", etc.
+    fn type_mangle_tag(te: &TypeExpr) -> String {
+        match te {
+            TypeExpr::UInt(e) => Self::expr_simple_str(e),
+            TypeExpr::SInt(e) => format!("s{}", Self::expr_simple_str(e)),
+            TypeExpr::Bool => "b".to_string(),
+            TypeExpr::Bit  => "1".to_string(),
+            TypeExpr::Named(n) => n.name.clone(),
+            _ => "x".to_string(),
+        }
+    }
+
+    fn expr_simple_str(e: &Expr) -> String {
+        match &e.kind {
+            ExprKind::Literal(LitKind::Dec(n)) => n.to_string(),
+            ExprKind::Literal(LitKind::Hex(n)) => n.to_string(),
+            _ => "x".to_string(),
+        }
+    }
+
+    /// Return the SV name for a function overload.  When a name has multiple overloads,
+    /// mangle as `Name_W1_W2` using the declared arg type widths (e.g. `Xtime_8`).
+    fn sv_function_name(&self, f: &FunctionDecl) -> String {
+        if let Some((Symbol::Function(overloads), _)) = self.symbols.globals.get(&f.name.name) {
+            if overloads.len() > 1 {
+                let suffix: String = f.args.iter()
+                    .map(|a| Self::type_mangle_tag(&a.ty))
+                    .collect::<Vec<_>>()
+                    .join("_");
+                return format!("{}_{}", f.name.name, suffix);
+            }
+        }
+        f.name.name.clone()
+    }
+
+    fn emit_function(&mut self, f: &FunctionDecl) {
+        let sv_name = self.sv_function_name(f);
+        let ret_str = self.emit_type_str(&f.ret_ty);
+        let args_str: Vec<String> = f.args.iter()
+            .map(|a| format!("input {} {}", self.emit_type_str(&a.ty), a.name.name))
+            .collect();
+        self.line(&format!(
+            "function automatic {} {}({});",
+            ret_str,
+            sv_name,
+            args_str.join(", ")
+        ));
+        self.indent += 1;
+        for item in &f.body {
+            match item {
+                FunctionBodyItem::Let(l) => {
+                    let ty_str = if let Some(ann) = &l.ty {
+                        self.emit_type_str(ann)
+                    } else {
+                        "logic".to_string()
+                    };
+                    let val = self.emit_expr_str(&l.value);
+                    self.line(&format!("{} {} = {};", ty_str, l.name.name, val));
+                }
+                FunctionBodyItem::Return(expr) => {
+                    let val = self.emit_expr_str(expr);
+                    self.line(&format!("return {};", val));
+                }
+            }
+        }
+        self.indent -= 1;
+        self.line("endfunction");
         self.line("");
     }
 
@@ -161,6 +256,25 @@ impl<'a> Codegen<'a> {
 
         self.indent += 1;
 
+        // Emit any functions defined in the same file as local `function automatic` declarations.
+        let fns = std::mem::take(&mut self.pending_functions);
+        for f in &fns {
+            self.emit_function(f);
+        }
+        self.pending_functions = fns;
+
+        // Collect names already declared as ports, regs, or lets so we can
+        // auto-declare inst output wires that aren't otherwise declared.
+        let mut declared_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for p in &m.ports { declared_names.insert(p.name.name.clone()); }
+        for item in &m.body {
+            match item {
+                ModuleBodyItem::RegDecl(r) => { declared_names.insert(r.name.name.clone()); }
+                ModuleBodyItem::LetBinding(l) => { declared_names.insert(l.name.name.clone()); }
+                _ => {}
+            }
+        }
+
         // Single pass in source order; interleave comments by byte position.
         // We need a clone of m to satisfy the borrow checker when calling
         // emit_reg_block (which takes &ModuleDecl) while also mutating self.
@@ -186,7 +300,11 @@ impl<'a> Codegen<'a> {
                 }
                 ModuleBodyItem::CombBlock(cb) => self.emit_comb_block(cb),
                 ModuleBodyItem::RegBlock(rb) => self.emit_reg_block(rb, &m_clone),
-                ModuleBodyItem::Inst(inst) => self.emit_inst(inst),
+                ModuleBodyItem::Inst(inst) => {
+                    // Auto-declare output wires that aren't already declared
+                    self.emit_inst_output_wire_decls(inst, &declared_names);
+                    self.emit_inst(inst);
+                }
                 ModuleBodyItem::Generate(_) => {} // expanded before codegen
             }
         }
@@ -252,22 +370,7 @@ impl<'a> Codegen<'a> {
                 }
             }
             CombStmt::IfElse(ie) => {
-                let cond = self.emit_expr_str(&ie.cond);
-                self.line(&format!("if ({}) begin", cond));
-                self.indent += 1;
-                for s in &ie.then_stmts {
-                    self.emit_comb_stmt(s);
-                }
-                self.indent -= 1;
-                if !ie.else_stmts.is_empty() {
-                    self.line("end else begin");
-                    self.indent += 1;
-                    for s in &ie.else_stmts {
-                        self.emit_comb_stmt(s);
-                    }
-                    self.indent -= 1;
-                }
-                self.line("end");
+                self.emit_comb_if_else(ie);
             }
             CombStmt::MatchExpr(m) => {
                 let scrut = self.emit_expr_str(&m.scrutinee);
@@ -287,6 +390,39 @@ impl<'a> Codegen<'a> {
                 self.line("endcase");
             }
         }
+    }
+
+    fn emit_comb_if_else(&mut self, ie: &CombIfElse) {
+        self.emit_comb_if_else_inner(ie, false);
+    }
+
+    fn emit_comb_if_else_inner(&mut self, ie: &CombIfElse, is_chain: bool) {
+        let cond = self.emit_expr_str(&ie.cond);
+        if is_chain {
+            self.line(&format!("end else if ({}) begin", cond));
+        } else {
+            self.line(&format!("if ({}) begin", cond));
+        }
+        self.indent += 1;
+        for s in &ie.then_stmts {
+            self.emit_comb_stmt(s);
+        }
+        self.indent -= 1;
+        if ie.else_stmts.len() == 1 {
+            if let CombStmt::IfElse(nested) = &ie.else_stmts[0] {
+                self.emit_comb_if_else_inner(nested, true);
+                return;
+            }
+        }
+        if !ie.else_stmts.is_empty() {
+            self.line("end else begin");
+            self.indent += 1;
+            for s in &ie.else_stmts {
+                self.emit_comb_stmt(s);
+            }
+            self.indent -= 1;
+        }
+        self.line("end");
     }
 
     fn emit_reg_stmt_as_comb(&mut self, stmt: &Stmt) {
@@ -518,22 +654,7 @@ impl<'a> Codegen<'a> {
                 self.line(&format!("{} <= {};", target, val));
             }
             Stmt::IfElse(ie) => {
-                let cond = self.emit_expr_str(&ie.cond);
-                self.line(&format!("if ({}) begin", cond));
-                self.indent += 1;
-                for s in &ie.then_stmts {
-                    self.emit_reg_stmt(s);
-                }
-                self.indent -= 1;
-                if !ie.else_stmts.is_empty() {
-                    self.line("end else begin");
-                    self.indent += 1;
-                    for s in &ie.else_stmts {
-                        self.emit_reg_stmt(s);
-                    }
-                    self.indent -= 1;
-                }
-                self.line("end");
+                self.emit_reg_if_else(ie);
             }
             Stmt::Match(m) => {
                 let scrut = self.emit_expr_str(&m.scrutinee);
@@ -551,6 +672,79 @@ impl<'a> Codegen<'a> {
                 }
                 self.indent -= 1;
                 self.line("endcase");
+            }
+        }
+    }
+
+    fn emit_reg_if_else(&mut self, ie: &IfElse) {
+        self.emit_reg_if_else_inner(ie, false);
+    }
+
+    fn emit_reg_if_else_inner(&mut self, ie: &IfElse, is_chain: bool) {
+        let cond = self.emit_expr_str(&ie.cond);
+        if is_chain {
+            self.line(&format!("end else if ({}) begin", cond));
+        } else {
+            self.line(&format!("if ({}) begin", cond));
+        }
+        self.indent += 1;
+        for s in &ie.then_stmts {
+            self.emit_reg_stmt(s);
+        }
+        self.indent -= 1;
+        if ie.else_stmts.len() == 1 {
+            if let Stmt::IfElse(nested) = &ie.else_stmts[0] {
+                self.emit_reg_if_else_inner(nested, true);
+                return;
+            }
+        }
+        if !ie.else_stmts.is_empty() {
+            self.line("end else begin");
+            self.indent += 1;
+            for s in &ie.else_stmts {
+                self.emit_reg_stmt(s);
+            }
+            self.indent -= 1;
+        }
+        self.line("end");
+    }
+
+    /// Auto-declare `logic` wires for inst output connections that reference
+    /// names not already declared as ports, regs, or lets in the current module.
+    /// The wire type is resolved from the source module's port definition.
+    fn emit_inst_output_wire_decls(
+        &mut self,
+        inst: &InstDecl,
+        declared: &std::collections::HashSet<String>,
+    ) {
+        // Look up the instantiated module's port info
+        let module_ports = if let Some((Symbol::Module(info), _)) =
+            self.symbols.globals.get(&inst.module_name.name)
+        {
+            info.ports.clone()
+        } else if let Some((Symbol::Pipeline(info), _)) =
+            self.symbols.globals.get(&inst.module_name.name)
+        {
+            info.ports.clone()
+        } else {
+            return;
+        };
+
+        for conn in &inst.connections {
+            if conn.direction != ConnectDir::Output {
+                continue;
+            }
+            if let ExprKind::Ident(target) = &conn.signal.kind {
+                if declared.contains(target) {
+                    continue;
+                }
+                // Find the port type from the module definition
+                if let Some(port) = module_ports.iter().find(|p| p.name.name == conn.port_name.name) {
+                    let ty_str = self.emit_logic_type_str(&port.ty);
+                    self.line(&format!("{} {};", ty_str, target));
+                } else {
+                    self.line(&format!("logic {};", target));
+                }
             }
         }
     }
@@ -1172,22 +1366,7 @@ impl<'a> Codegen<'a> {
                 self.line(&format!("{} <= {};", target, val));
             }
             Stmt::IfElse(ie) => {
-                let cond = self.emit_pipeline_stage_expr_str(&ie.cond, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
-                self.line(&format!("if ({}) begin", cond));
-                self.indent += 1;
-                for s in &ie.then_stmts {
-                    self.emit_pipeline_reg_stmt(s, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
-                }
-                self.indent -= 1;
-                if !ie.else_stmts.is_empty() {
-                    self.line("end else begin");
-                    self.indent += 1;
-                    for s in &ie.else_stmts {
-                        self.emit_pipeline_reg_stmt(s, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
-                    }
-                    self.indent -= 1;
-                }
-                self.line("end");
+                self.emit_pipeline_reg_if_else(ie, current_prefix, current_stage_idx, stage_names, stage_regs, port_names, false);
             }
             Stmt::Match(_) => {
                 // MVP: basic pipeline doesn't need match in always blocks
@@ -1336,25 +1515,86 @@ impl<'a> Codegen<'a> {
                 self.line(&format!("{} = {};", target, val));
             }
             CombStmt::IfElse(ie) => {
-                let cond = self.emit_pipeline_stage_expr_str(&ie.cond, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
-                self.line(&format!("if ({}) begin", cond));
-                self.indent += 1;
-                for s in &ie.then_stmts {
-                    self.emit_pipeline_comb_stmt(s, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
-                }
-                self.indent -= 1;
-                if !ie.else_stmts.is_empty() {
-                    self.line("end else begin");
-                    self.indent += 1;
-                    for s in &ie.else_stmts {
-                        self.emit_pipeline_comb_stmt(s, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
-                    }
-                    self.indent -= 1;
-                }
-                self.line("end");
+                self.emit_pipeline_comb_if_else(ie, current_prefix, current_stage_idx, stage_names, stage_regs, port_names, false);
             }
             CombStmt::MatchExpr(_) => {} // TODO if needed
         }
+    }
+
+    fn emit_pipeline_reg_if_else(
+        &mut self,
+        ie: &IfElse,
+        current_prefix: &str,
+        current_stage_idx: usize,
+        stage_names: &[&str],
+        stage_regs: &[Vec<(String, String, String)>],
+        port_names: &std::collections::HashSet<String>,
+        is_chain: bool,
+    ) {
+        let cond = self.emit_pipeline_stage_expr_str(&ie.cond, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+        if is_chain {
+            self.line(&format!("end else if ({}) begin", cond));
+        } else {
+            self.line(&format!("if ({}) begin", cond));
+        }
+        self.indent += 1;
+        for s in &ie.then_stmts {
+            self.emit_pipeline_reg_stmt(s, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+        }
+        self.indent -= 1;
+        if ie.else_stmts.len() == 1 {
+            if let Stmt::IfElse(nested) = &ie.else_stmts[0] {
+                self.emit_pipeline_reg_if_else(nested, current_prefix, current_stage_idx, stage_names, stage_regs, port_names, true);
+                return;
+            }
+        }
+        if !ie.else_stmts.is_empty() {
+            self.line("end else begin");
+            self.indent += 1;
+            for s in &ie.else_stmts {
+                self.emit_pipeline_reg_stmt(s, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+            }
+            self.indent -= 1;
+        }
+        self.line("end");
+    }
+
+    fn emit_pipeline_comb_if_else(
+        &mut self,
+        ie: &CombIfElse,
+        current_prefix: &str,
+        current_stage_idx: usize,
+        stage_names: &[&str],
+        stage_regs: &[Vec<(String, String, String)>],
+        port_names: &std::collections::HashSet<String>,
+        is_chain: bool,
+    ) {
+        let cond = self.emit_pipeline_stage_expr_str(&ie.cond, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+        if is_chain {
+            self.line(&format!("end else if ({}) begin", cond));
+        } else {
+            self.line(&format!("if ({}) begin", cond));
+        }
+        self.indent += 1;
+        for s in &ie.then_stmts {
+            self.emit_pipeline_comb_stmt(s, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+        }
+        self.indent -= 1;
+        if ie.else_stmts.len() == 1 {
+            if let CombStmt::IfElse(nested) = &ie.else_stmts[0] {
+                self.emit_pipeline_comb_if_else(nested, current_prefix, current_stage_idx, stage_names, stage_regs, port_names, true);
+                return;
+            }
+        }
+        if !ie.else_stmts.is_empty() {
+            self.line("end else begin");
+            self.indent += 1;
+            for s in &ie.else_stmts {
+                self.emit_pipeline_comb_stmt(s, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+            }
+            self.indent -= 1;
+        }
+        self.line("end");
     }
 
     /// Emit an expression within a specific stage context (knows which stage it's in,
@@ -1933,6 +2173,26 @@ impl<'a> Codegen<'a> {
                     result = format!("({cond} ? {val} : {result})");
                 }
                 result
+            }
+            ExprKind::FunctionCall(name, args) => {
+                let arg_strs: Vec<String> = args.iter().map(|a| self.emit_expr_str(a)).collect();
+                // Resolve mangled name if this is an overloaded function.
+                let sv_name = if let Some((Symbol::Function(overloads), _)) = self.symbols.globals.get(name) {
+                    if overloads.len() > 1 {
+                        let idx = self.overload_map.get(&expr.span.start).copied().unwrap_or(0);
+                        let ov = &overloads[idx];
+                        let suffix: String = ov.arg_types.iter()
+                            .map(|t| Self::type_mangle_tag(t))
+                            .collect::<Vec<_>>()
+                            .join("_");
+                        format!("{name}_{suffix}")
+                    } else {
+                        name.clone()
+                    }
+                } else {
+                    name.clone()
+                };
+                format!("{sv_name}({})", arg_strs.join(", "))
             }
         }
     }

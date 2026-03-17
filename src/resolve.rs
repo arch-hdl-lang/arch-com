@@ -17,6 +17,7 @@ pub enum Symbol {
     Arbiter(ArbiterInfo),
     Regfile(RegfileInfo),
     Pipeline(PipelineInfo),
+    Function(Vec<FunctionInfo>),
     Param(String),
     Port(PortInfo),
     Reg(RegInfo),
@@ -40,6 +41,13 @@ pub struct ArbiterInfo {
 #[derive(Debug, Clone)]
 pub struct RegfileInfo {
     pub name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct FunctionInfo {
+    pub name: String,
+    pub arg_types: Vec<crate::ast::TypeExpr>,
+    pub ret_ty: crate::ast::TypeExpr,
 }
 
 #[derive(Debug, Clone)]
@@ -135,7 +143,10 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
     for item in &source_file.items {
         match item {
             Item::Domain(d) => {
-                if table.globals.contains_key(&d.name.name) {
+                // Allow duplicate domain definitions (common in multi-file projects)
+                if let Some((Symbol::Domain(_), _)) = table.globals.get(&d.name.name) {
+                    // Same domain re-declared — silently accept
+                } else if table.globals.contains_key(&d.name.name) {
                     errors.push(CompileError::duplicate(&d.name.name, d.name.span));
                 } else {
                     table.globals.insert(
@@ -293,6 +304,20 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                         stage_names: p.stages.iter().map(|s| s.name.name.clone()).collect(),
                     };
                     table.globals.insert(p.name.name.clone(), (Symbol::Pipeline(info), p.name.span));
+                }
+            }
+            Item::Function(f) => {
+                let info = FunctionInfo {
+                    name: f.name.name.clone(),
+                    arg_types: f.args.iter().map(|a| a.ty.clone()).collect(),
+                    ret_ty: f.ret_ty.clone(),
+                };
+                if let Some((Symbol::Function(overloads), _)) = table.globals.get_mut(&f.name.name) {
+                    overloads.push(info);
+                } else if table.globals.contains_key(&f.name.name) {
+                    errors.push(CompileError::duplicate(&f.name.name, f.name.span));
+                } else {
+                    table.globals.insert(f.name.name.clone(), (Symbol::Function(vec![info]), f.name.span));
                 }
             }
         }

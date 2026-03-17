@@ -100,6 +100,10 @@ pub enum TokenKind {
     Ports,
     #[token("pipeline")]
     Pipeline,
+    #[token("function")]
+    Function,
+    #[token("return")]
+    Return,
     #[token("stage")]
     Stage,
     #[token("stall")]
@@ -313,6 +317,8 @@ impl fmt::Display for TokenKind {
             TokenKind::Regfile => write!(f, "regfile"),
             TokenKind::Ports => write!(f, "ports"),
             TokenKind::Pipeline => write!(f, "pipeline"),
+            TokenKind::Function => write!(f, "function"),
+            TokenKind::Return => write!(f, "return"),
             TokenKind::Stage => write!(f, "stage"),
             TokenKind::Stall => write!(f, "stall"),
             TokenKind::Flush => write!(f, "flush"),

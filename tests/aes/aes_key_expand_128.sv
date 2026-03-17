@@ -1,0 +1,389 @@
+// AES 128-bit Key Expansion Module
+// Expands a 128-bit initial key into round keys for 10 encryption rounds.
+// Uses 4 S-box instances for SubWord and 1 rcon instance for round constants.
+// domain SysDomain
+//   freq_mhz: 100
+
+module AesSbox (
+  input logic [8-1:0] a,
+  output logic [8-1:0] b
+);
+
+  always_comb begin
+    case (a)
+      'h0: b = 'h63;
+      'h1: b = 'h7C;
+      'h2: b = 'h77;
+      'h3: b = 'h7B;
+      'h4: b = 'hF2;
+      'h5: b = 'h6B;
+      'h6: b = 'h6F;
+      'h7: b = 'hC5;
+      'h8: b = 'h30;
+      'h9: b = 'h1;
+      'hA: b = 'h67;
+      'hB: b = 'h2B;
+      'hC: b = 'hFE;
+      'hD: b = 'hD7;
+      'hE: b = 'hAB;
+      'hF: b = 'h76;
+      'h10: b = 'hCA;
+      'h11: b = 'h82;
+      'h12: b = 'hC9;
+      'h13: b = 'h7D;
+      'h14: b = 'hFA;
+      'h15: b = 'h59;
+      'h16: b = 'h47;
+      'h17: b = 'hF0;
+      'h18: b = 'hAD;
+      'h19: b = 'hD4;
+      'h1A: b = 'hA2;
+      'h1B: b = 'hAF;
+      'h1C: b = 'h9C;
+      'h1D: b = 'hA4;
+      'h1E: b = 'h72;
+      'h1F: b = 'hC0;
+      'h20: b = 'hB7;
+      'h21: b = 'hFD;
+      'h22: b = 'h93;
+      'h23: b = 'h26;
+      'h24: b = 'h36;
+      'h25: b = 'h3F;
+      'h26: b = 'hF7;
+      'h27: b = 'hCC;
+      'h28: b = 'h34;
+      'h29: b = 'hA5;
+      'h2A: b = 'hE5;
+      'h2B: b = 'hF1;
+      'h2C: b = 'h71;
+      'h2D: b = 'hD8;
+      'h2E: b = 'h31;
+      'h2F: b = 'h15;
+      'h30: b = 'h4;
+      'h31: b = 'hC7;
+      'h32: b = 'h23;
+      'h33: b = 'hC3;
+      'h34: b = 'h18;
+      'h35: b = 'h96;
+      'h36: b = 'h5;
+      'h37: b = 'h9A;
+      'h38: b = 'h7;
+      'h39: b = 'h12;
+      'h3A: b = 'h80;
+      'h3B: b = 'hE2;
+      'h3C: b = 'hEB;
+      'h3D: b = 'h27;
+      'h3E: b = 'hB2;
+      'h3F: b = 'h75;
+      'h40: b = 'h9;
+      'h41: b = 'h83;
+      'h42: b = 'h2C;
+      'h43: b = 'h1A;
+      'h44: b = 'h1B;
+      'h45: b = 'h6E;
+      'h46: b = 'h5A;
+      'h47: b = 'hA0;
+      'h48: b = 'h52;
+      'h49: b = 'h3B;
+      'h4A: b = 'hD6;
+      'h4B: b = 'hB3;
+      'h4C: b = 'h29;
+      'h4D: b = 'hE3;
+      'h4E: b = 'h2F;
+      'h4F: b = 'h84;
+      'h50: b = 'h53;
+      'h51: b = 'hD1;
+      'h52: b = 'h0;
+      'h53: b = 'hED;
+      'h54: b = 'h20;
+      'h55: b = 'hFC;
+      'h56: b = 'hB1;
+      'h57: b = 'h5B;
+      'h58: b = 'h6A;
+      'h59: b = 'hCB;
+      'h5A: b = 'hBE;
+      'h5B: b = 'h39;
+      'h5C: b = 'h4A;
+      'h5D: b = 'h4C;
+      'h5E: b = 'h58;
+      'h5F: b = 'hCF;
+      'h60: b = 'hD0;
+      'h61: b = 'hEF;
+      'h62: b = 'hAA;
+      'h63: b = 'hFB;
+      'h64: b = 'h43;
+      'h65: b = 'h4D;
+      'h66: b = 'h33;
+      'h67: b = 'h85;
+      'h68: b = 'h45;
+      'h69: b = 'hF9;
+      'h6A: b = 'h2;
+      'h6B: b = 'h7F;
+      'h6C: b = 'h50;
+      'h6D: b = 'h3C;
+      'h6E: b = 'h9F;
+      'h6F: b = 'hA8;
+      'h70: b = 'h51;
+      'h71: b = 'hA3;
+      'h72: b = 'h40;
+      'h73: b = 'h8F;
+      'h74: b = 'h92;
+      'h75: b = 'h9D;
+      'h76: b = 'h38;
+      'h77: b = 'hF5;
+      'h78: b = 'hBC;
+      'h79: b = 'hB6;
+      'h7A: b = 'hDA;
+      'h7B: b = 'h21;
+      'h7C: b = 'h10;
+      'h7D: b = 'hFF;
+      'h7E: b = 'hF3;
+      'h7F: b = 'hD2;
+      'h80: b = 'hCD;
+      'h81: b = 'hC;
+      'h82: b = 'h13;
+      'h83: b = 'hEC;
+      'h84: b = 'h5F;
+      'h85: b = 'h97;
+      'h86: b = 'h44;
+      'h87: b = 'h17;
+      'h88: b = 'hC4;
+      'h89: b = 'hA7;
+      'h8A: b = 'h7E;
+      'h8B: b = 'h3D;
+      'h8C: b = 'h64;
+      'h8D: b = 'h5D;
+      'h8E: b = 'h19;
+      'h8F: b = 'h73;
+      'h90: b = 'h60;
+      'h91: b = 'h81;
+      'h92: b = 'h4F;
+      'h93: b = 'hDC;
+      'h94: b = 'h22;
+      'h95: b = 'h2A;
+      'h96: b = 'h90;
+      'h97: b = 'h88;
+      'h98: b = 'h46;
+      'h99: b = 'hEE;
+      'h9A: b = 'hB8;
+      'h9B: b = 'h14;
+      'h9C: b = 'hDE;
+      'h9D: b = 'h5E;
+      'h9E: b = 'hB;
+      'h9F: b = 'hDB;
+      'hA0: b = 'hE0;
+      'hA1: b = 'h32;
+      'hA2: b = 'h3A;
+      'hA3: b = 'hA;
+      'hA4: b = 'h49;
+      'hA5: b = 'h6;
+      'hA6: b = 'h24;
+      'hA7: b = 'h5C;
+      'hA8: b = 'hC2;
+      'hA9: b = 'hD3;
+      'hAA: b = 'hAC;
+      'hAB: b = 'h62;
+      'hAC: b = 'h91;
+      'hAD: b = 'h95;
+      'hAE: b = 'hE4;
+      'hAF: b = 'h79;
+      'hB0: b = 'hE7;
+      'hB1: b = 'hC8;
+      'hB2: b = 'h37;
+      'hB3: b = 'h6D;
+      'hB4: b = 'h8D;
+      'hB5: b = 'hD5;
+      'hB6: b = 'h4E;
+      'hB7: b = 'hA9;
+      'hB8: b = 'h6C;
+      'hB9: b = 'h56;
+      'hBA: b = 'hF4;
+      'hBB: b = 'hEA;
+      'hBC: b = 'h65;
+      'hBD: b = 'h7A;
+      'hBE: b = 'hAE;
+      'hBF: b = 'h8;
+      'hC0: b = 'hBA;
+      'hC1: b = 'h78;
+      'hC2: b = 'h25;
+      'hC3: b = 'h2E;
+      'hC4: b = 'h1C;
+      'hC5: b = 'hA6;
+      'hC6: b = 'hB4;
+      'hC7: b = 'hC6;
+      'hC8: b = 'hE8;
+      'hC9: b = 'hDD;
+      'hCA: b = 'h74;
+      'hCB: b = 'h1F;
+      'hCC: b = 'h4B;
+      'hCD: b = 'hBD;
+      'hCE: b = 'h8B;
+      'hCF: b = 'h8A;
+      'hD0: b = 'h70;
+      'hD1: b = 'h3E;
+      'hD2: b = 'hB5;
+      'hD3: b = 'h66;
+      'hD4: b = 'h48;
+      'hD5: b = 'h3;
+      'hD6: b = 'hF6;
+      'hD7: b = 'hE;
+      'hD8: b = 'h61;
+      'hD9: b = 'h35;
+      'hDA: b = 'h57;
+      'hDB: b = 'hB9;
+      'hDC: b = 'h86;
+      'hDD: b = 'hC1;
+      'hDE: b = 'h1D;
+      'hDF: b = 'h9E;
+      'hE0: b = 'hE1;
+      'hE1: b = 'hF8;
+      'hE2: b = 'h98;
+      'hE3: b = 'h11;
+      'hE4: b = 'h69;
+      'hE5: b = 'hD9;
+      'hE6: b = 'h8E;
+      'hE7: b = 'h94;
+      'hE8: b = 'h9B;
+      'hE9: b = 'h1E;
+      'hEA: b = 'h87;
+      'hEB: b = 'hE9;
+      'hEC: b = 'hCE;
+      'hED: b = 'h55;
+      'hEE: b = 'h28;
+      'hEF: b = 'hDF;
+      'hF0: b = 'h8C;
+      'hF1: b = 'hA1;
+      'hF2: b = 'h89;
+      'hF3: b = 'hD;
+      'hF4: b = 'hBF;
+      'hF5: b = 'hE6;
+      'hF6: b = 'h42;
+      'hF7: b = 'h68;
+      'hF8: b = 'h41;
+      'hF9: b = 'h99;
+      'hFA: b = 'h2D;
+      'hFB: b = 'hF;
+      'hFC: b = 'hB0;
+      'hFD: b = 'h54;
+      'hFE: b = 'hBB;
+      'hFF: b = 'h16;
+      default: b = 'h0;
+    endcase
+  end
+
+endmodule
+
+module AesRcon (
+  input logic clk,
+  input logic kld,
+  output logic [32-1:0] out_rcon
+);
+
+  logic [4-1:0] rcnt = 0;
+  always_ff @(posedge clk) begin
+    if (kld) begin
+      rcnt <= 0;
+    end else begin
+      rcnt <= 4'((rcnt + 1));
+    end
+  end
+  always_comb begin
+    case (rcnt)
+      'h0: out_rcon = 'h1000000;
+      'h1: out_rcon = 'h2000000;
+      'h2: out_rcon = 'h4000000;
+      'h3: out_rcon = 'h8000000;
+      'h4: out_rcon = 'h10000000;
+      'h5: out_rcon = 'h20000000;
+      'h6: out_rcon = 'h40000000;
+      'h7: out_rcon = 'h80000000;
+      'h8: out_rcon = 'h1B000000;
+      'h9: out_rcon = 'h36000000;
+      default: out_rcon = 'h0;
+    endcase
+  end
+
+endmodule
+
+// AES 128-bit Key Expansion
+// Expands 128-bit key into round keys using RotWord, SubWord, and Rcon.
+// w0-w3 are the four 32-bit words of the current round key.
+// On kld: load initial key directly.
+// On !kld: compute next round key from previous round key.
+module AesKeyExpand128 (
+  input logic clk,
+  input logic kld,
+  input logic [128-1:0] key,
+  output logic [32-1:0] wo_0,
+  output logic [32-1:0] wo_1,
+  output logic [32-1:0] wo_2,
+  output logic [32-1:0] wo_3
+);
+
+  // Key word registers
+  logic [32-1:0] w0 = 0;
+  logic [32-1:0] w1 = 0;
+  logic [32-1:0] w2 = 0;
+  logic [32-1:0] w3 = 0;
+  // S-box instances for RotWord+SubWord on w3
+  // RotWord: [a0,a1,a2,a3] -> [a1,a2,a3,a0]
+  // So we feed w3[23:16], w3[15:8], w3[7:0], w3[31:24]
+  logic [8-1:0] subword0;
+  AesSbox sbox0 (
+    .a(w3[23:16]),
+    .b(subword0)
+  );
+  logic [8-1:0] subword1;
+  AesSbox sbox1 (
+    .a(w3[15:8]),
+    .b(subword1)
+  );
+  logic [8-1:0] subword2;
+  AesSbox sbox2 (
+    .a(w3[7:0]),
+    .b(subword2)
+  );
+  logic [8-1:0] subword3;
+  AesSbox sbox3 (
+    .a(w3[31:24]),
+    .b(subword3)
+  );
+  // Round constant
+  logic [32-1:0] rcon_val;
+  AesRcon rcon0 (
+    .clk(clk),
+    .kld(kld),
+    .out_rcon(rcon_val)
+  );
+  // Combinational: compute next key words
+  // T(w3) = SubWord(RotWord(w3)) ^ Rcon
+  logic [32-1:0] t;
+  assign t = ({subword0, subword1, subword2, subword3} ^ rcon_val);
+  logic [32-1:0] nw0;
+  assign nw0 = (w0 ^ t);
+  logic [32-1:0] nw1;
+  assign nw1 = ((w1 ^ w0) ^ t);
+  logic [32-1:0] nw2;
+  assign nw2 = (((w2 ^ w1) ^ w0) ^ t);
+  logic [32-1:0] nw3;
+  assign nw3 = ((((w3 ^ w2) ^ w1) ^ w0) ^ t);
+  always_ff @(posedge clk) begin
+    if (kld) begin
+      w0 <= key[127:96];
+      w1 <= key[95:64];
+      w2 <= key[63:32];
+      w3 <= key[31:0];
+    end else begin
+      w0 <= nw0;
+      w1 <= nw1;
+      w2 <= nw2;
+      w3 <= nw3;
+    end
+  end
+  assign wo_0 = w0;
+  assign wo_1 = w1;
+  assign wo_2 = w2;
+  assign wo_3 = w3;
+
+endmodule
+

@@ -357,12 +357,9 @@ module DmaEngine
   always on clk rising
     if not busy
       reads_done_r <= false;
+    else if read_done
+      reads_done_r <= true;
     end if
-    else
-      if read_done
-        reads_done_r <= true;
-      end if
-    end else
   end always
 
   // ── Descriptor fetch state machine ────────────────────────────────────────

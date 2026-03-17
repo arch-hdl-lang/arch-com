@@ -74,10 +74,9 @@ pipeline CpuPipe
     comb
       if Execute.we and (Execute.rd == rd) and Execute.rd != 0
         rs1_fwd = Execute.alu_result;
-      end if
       else
         rs1_fwd = rs1_val;
-      end else
+      end if
     end comb
   end stage Decode
 

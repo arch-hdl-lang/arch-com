@@ -1,7 +1,7 @@
 # ARCH Compiler — Status & Roadmap
 
-> Last updated: 2026-03-15
-> Compiler version: 0.8.0 (pipeline construct, trunc<N,M> bit-range, inst inside stages)
+> Last updated: 2026-03-16
+> Compiler version: 0.9.0 (function construct with overloading, multi-file compilation)
 
 ---
 
@@ -13,8 +13,7 @@
 |---------|--------|
 | `arch check <file.arch>` | ✅ Parse + type-check; exits 0 on success |
 | `arch build <file.arch> [-o out.sv]` | ✅ Emits deterministic SystemVerilog |
-
-Single-file compilation only.
+| `arch build a.arch b.arch` | ✅ Multi-file: concatenates + cross-resolves; one `.sv` per input (or single combined file with `-o`) |
 
 ---
 
@@ -34,6 +33,7 @@ Single-file compilation only.
 | `regfile` | ✅ | Multi-read-port / multi-write-port; `forward write_before_read`; `init [i] = v` |
 | `assert` / `cover` | ❌ | Lexed but skipped at parse time |
 | `pipeline` | ✅ | Stages with reg/comb/let/inst body; per-stage `stall when`; `flush` directives; explicit forwarding mux via comb if/else; `valid_r` per-stage signal; cross-stage refs (`Stage.signal`); `inst` inside stages with auto-declared output wires |
+| `function` | ✅ | Pure combinational; `return expr;`; `let` bindings as temporaries; **overloading** (same name, different arg types — mangled as `Name_8`, `Name_16`, etc.); emitted as SV `function automatic` inside each module that uses it |
 | `generate for/if` | ✅ | Pre-resolve elaboration pass; const/literal bounds; port + inst items |
 | `ram` (multi-var store) | ⚠️ | Single store variable only; compiler-managed address layout not implemented |
 | `cam` | ❌ | Not implemented |
@@ -84,6 +84,7 @@ Single-file compilation only.
 | `todo!` | ✅ |
 | Expression-level `match` | ✅ As `CombAssign` RHS → `case` block; as inline expression → nested ternary chain |
 | `$clog2(x)` | ✅ |
+| Function calls `Name(args)` | ✅ Resolved at call site; overload-resolved by argument types |
 
 ---
 
@@ -93,9 +94,10 @@ Single-file compilation only.
 |---------|--------|
 | `comb` assignment | ✅ |
 | `reg` assignment `<=` | ✅ |
-| `if / else` | ✅ |
+| `if / else if / else` | ✅ |
 | `match` (reg and comb blocks) | ✅ |
 | Wildcard `_` → `default:` | ✅ |
+| `let` bindings | ✅ `logic` local in module scope; optional type annotation |
 | `assert` / `cover` | ❌ |
 
 ---
@@ -120,8 +122,9 @@ Single-file compilation only.
 
 ### Tests
 
-- 38 integration tests (snapshot + error-case), including `let` binding, `generate for`, `generate if`, mixed reset/no-reset partitioning, reset consistency validation, pipeline (simple, CPU 4-stage, instantiation, stage inst, bit-range trunc), `$clog2` in type args
+- 38 integration tests (snapshot + error-case), including `let` binding, `generate for`, `generate if`, mixed reset/no-reset partitioning, reset consistency validation, pipeline (simple, CPU 4-stage, instantiation, stage inst, bit-range trunc), `$clog2` in type args, function overloading
 - 8 Verilator simulations: Counter, TrafficLight FSM, TxQueue sync FIFO, AsyncBridge async FIFO, SimpleMem RAM, WrapCounter, BusArbiter (round-robin), IntRegs (regfile + forwarding), CpuPipe 4-stage pipeline (reset, flow, stall, flush, forwarding)
+- AES-128 cipher benchmark (NIST test vectors verified): AesSbox + Xtime as functions, AesCipherTop + AesKeyExpand128 using inline function calls replacing 32 `inst` blocks
 
 ---
 
@@ -133,32 +136,33 @@ Single-file compilation only.
 |---|---------|--------|
 | 1 | **Width mismatch at assignment** — `UInt<16>` → `UInt<8>` should error | Low |
 | 2 | **Exhaustive `match` checking** — enum match must cover all variants or have `_` | Low |
-| 3 | **Expression-level `match` codegen** — currently emits `'0` stub | Medium |
-| 4 | ~~**`$clog2(expr)` in type args**~~ | ~~Low~~ | **DONE** |
-| 5 | **CDC error detection** — cross-domain signal assignment → compile error | Medium |
-| 6 | **Const param evaluation at instantiation** — `UInt<WIDTH*2>` with param override | Medium |
+| 3 | **CDC error detection** — cross-domain signal assignment → compile error | Medium |
+| 4 | **Const param evaluation at instantiation** — `UInt<WIDTH*2>` with param override | Medium |
+| 5 | **Function type-parametric overloads** — type parameters on functions (e.g. `function Foo<T>(a: T) -> T`) | High |
 
 ### Missing Constructs (in spec order)
 
 | # | Construct | Complexity | What it generates |
 |---|-----------|------------|-------------------|
-| 7 | **`assert` / `cover`** | Low | `assert property` / `cover property` in SV |
-| 8 | ~~**`generate for/if`**~~ | ~~Medium~~ | **DONE** — elaboration pass expands before resolve |
-| 9 | ~~**`pipeline`**~~ | ~~High~~ | **DONE** — valid/stall propagation, flush masks, explicit forwarding mux, `valid_r` gating, cross-stage refs, inst inside stages |
-| 12 | **`ram` multi-var store** | Medium | Compiler-managed address layout across multiple logical variables |
-| 13 | **`cam`** | High | Content-addressable memory with match/miss logic |
-| 14 | **`crossbar`** | High | N×M switch fabric with arbitration |
-| 15 | **`scoreboard`** | High | Issue/complete tracking, hazard detection |
-| 16 | **`reorder_buf`** | High | Out-of-order completion, in-order retirement |
-| 18 | **`pqueue`** | High | Priority queue with enqueue/dequeue |
-| 19 | **`linklist`** | High | Linked-list manager |
+| ~~1~~ | ~~**`$clog2(expr)` in type args**~~ | ~~Low~~ | **DONE** |
+| ~~2~~ | ~~**`generate for/if`**~~ | ~~Medium~~ | **DONE** — elaboration pass expands before resolve |
+| ~~3~~ | ~~**`pipeline`**~~ | ~~High~~ | **DONE** — valid/stall propagation, flush masks, explicit forwarding mux, `valid_r` gating, cross-stage refs, inst inside stages |
+| ~~4~~ | ~~**`function`**~~ | ~~Medium~~ | **DONE** — pure combinational, `return`, `let` bindings, overloading by argument type; emits `function automatic` in SV |
+| 5 | **`assert` / `cover`** | Low | `assert property` / `cover property` in SV |
+| 6 | **`ram` multi-var store** | Medium | Compiler-managed address layout across multiple logical variables |
+| 7 | **`cam`** | High | Content-addressable memory with match/miss logic |
+| 8 | **`crossbar`** | High | N×M switch fabric with arbitration |
+| 9 | **`scoreboard`** | High | Issue/complete tracking, hazard detection |
+| 10 | **`reorder_buf`** | High | Out-of-order completion, in-order retirement |
+| 11 | **`pqueue`** | High | Priority queue with enqueue/dequeue |
+| 12 | **`linklist`** | High | Linked-list manager |
 
 ### CLI & Backend
 
 | # | Feature | Notes |
 |---|---------|-------|
-| 20 | **`arch sim`** | TLM simulation: `--tlm-lt`, `--tlm-at`, `--tlm-rtl`; `--wave out.fst` waveform output |
-| 21 | **`arch formal`** | Emit SMT-LIB2 for bounded model checking |
-| 22 | **Multi-file compilation** | Cross-file type/module resolution |
-| 23 | **`interface` / `socket`** | TLM interfaces with `blocking`, `pipelined`, `out_of_order`, `burst`; `await`/`await_all`/`await_any` |
-| 24 | **Waveform output** | FST/VCD compatible with GTKWave/Surfer |
+| ~~1~~ | ~~**Multi-file compilation**~~ | **DONE** — `arch build a.arch b.arch` concatenates and cross-resolves; `arch build a.arch b.arch` without `-o` emits one `.sv` per input |
+| 2 | **`arch sim`** | TLM simulation: `--tlm-lt`, `--tlm-at`, `--tlm-rtl`; `--wave out.fst` waveform output |
+| 3 | **`arch formal`** | Emit SMT-LIB2 for bounded model checking |
+| 4 | **`interface` / `socket`** | TLM interfaces with `blocking`, `pipelined`, `out_of_order`, `burst`; `await`/`await_all`/`await_any` |
+| 5 | **Waveform output** | FST/VCD compatible with GTKWave/Surfer |

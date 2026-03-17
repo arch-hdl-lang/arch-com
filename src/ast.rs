@@ -18,6 +18,7 @@ pub enum Item {
     Arbiter(ArbiterDecl),
     Regfile(RegfileDecl),
     Pipeline(PipelineDecl),
+    Function(FunctionDecl),
 }
 
 #[derive(Debug, Clone)]
@@ -355,6 +356,8 @@ pub enum ExprKind {
     Concat(Vec<Expr>),
     /// $clog2(expr) — ceiling log2, used in type width expressions.
     Clog2(Box<Expr>),
+    /// Pure combinational function call: Name(arg, ...)
+    FunctionCall(String, Vec<Expr>),
 }
 
 #[derive(Debug, Clone)]
@@ -432,8 +435,32 @@ impl Item {
             Item::Arbiter(a) => a.span,
             Item::Regfile(r) => r.span,
             Item::Pipeline(p) => p.span,
+            Item::Function(f) => f.span,
         }
     }
+}
+
+// ── Function ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct FunctionDecl {
+    pub name: Ident,
+    pub args: Vec<FunctionArg>,
+    pub ret_ty: TypeExpr,
+    pub body: Vec<FunctionBodyItem>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct FunctionArg {
+    pub name: Ident,
+    pub ty: TypeExpr,
+}
+
+#[derive(Debug, Clone)]
+pub enum FunctionBodyItem {
+    Let(LetBinding),
+    Return(Expr),
 }
 
 // ── FSM ──────────────────────────────────────────────────────────────────────

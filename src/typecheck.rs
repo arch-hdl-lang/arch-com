@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::ast::*;
 use crate::diagnostics::{CompileError, CompileWarning};
 use crate::lexer::Span;
-use crate::resolve::SymbolTable;
+use crate::resolve::{Symbol, SymbolTable};
 
 /// Resolved type information
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +60,9 @@ pub struct TypeChecker<'a> {
     pub source: &'a SourceFile,
     pub errors: Vec<CompileError>,
     pub warnings: Vec<CompileWarning>,
+    /// Maps call-site span.start → overload index within Symbol::Function vec.
+    /// Only populated for calls to overloaded functions (vec.len() > 1).
+    pub overload_map: HashMap<usize, usize>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -69,10 +72,11 @@ impl<'a> TypeChecker<'a> {
             source,
             errors: Vec::new(),
             warnings: Vec::new(),
+            overload_map: HashMap::new(),
         }
     }
 
-    pub fn check(mut self) -> Result<Vec<CompileWarning>, Vec<CompileError>> {
+    pub fn check(mut self) -> Result<(Vec<CompileWarning>, HashMap<usize, usize>), Vec<CompileError>> {
         for item in &self.source.items {
             match item {
                 Item::Domain(d) => self.check_domain(d),
@@ -86,10 +90,11 @@ impl<'a> TypeChecker<'a> {
                 Item::Arbiter(a) => self.check_arbiter(a),
                 Item::Regfile(r) => self.check_regfile(r),
                 Item::Pipeline(p) => self.check_pipeline(p),
+                Item::Function(f) => self.check_function(f),
             }
         }
         if self.errors.is_empty() {
-            Ok(self.warnings)
+            Ok((self.warnings, self.overload_map))
         } else {
             Err(self.errors)
         }
@@ -169,7 +174,9 @@ impl<'a> TypeChecker<'a> {
                     let ty = self.resolve_expr_type(&l.value, &m.name.name, &local_types);
                     if let Some(declared_ty) = &l.ty {
                         let expected = self.resolve_type_expr(declared_ty, &m.name.name, &local_types);
-                        if expected != Ty::Error && ty != Ty::Error && ty != Ty::Todo && expected != ty {
+                        if expected != Ty::Error && ty != Ty::Error && ty != Ty::Todo && expected != ty
+                            && !types_compatible(&expected, &ty)
+                        {
                             self.errors.push(CompileError::type_mismatch(
                                 &expected.display(),
                                 &ty.display(),
@@ -177,7 +184,13 @@ impl<'a> TypeChecker<'a> {
                             ));
                         }
                     }
-                    local_types.insert(l.name.name.clone(), ty);
+                    // Use the declared type if provided (it may be wider than what was inferred)
+                    let final_ty = if let Some(declared_ty) = &l.ty {
+                        self.resolve_type_expr(declared_ty, &m.name.name, &local_types)
+                    } else {
+                        ty
+                    };
+                    local_types.insert(l.name.name.clone(), final_ty);
                     driven.insert(l.name.name.clone());
                 }
                 ModuleBodyItem::Inst(inst) => {
@@ -404,14 +417,24 @@ impl<'a> TypeChecker<'a> {
                     });
                 }
                 driven.insert(a.target.name.clone());
+                self.resolve_expr_type(&a.value, module_name, local_types);
             }
             CombStmt::IfElse(ie) => {
                 let _cond_ty = self.resolve_expr_type(&ie.cond, module_name, local_types);
+                // Each branch gets its own copy of driven — signals assigned
+                // in mutually exclusive branches are not multiple drivers.
+                let mut then_driven = driven.clone();
                 for s in &ie.then_stmts {
-                    self.check_comb_stmt(s, module_name, local_types, driven);
+                    self.check_comb_stmt(s, module_name, local_types, &mut then_driven);
                 }
+                let mut else_driven = driven.clone();
                 for s in &ie.else_stmts {
-                    self.check_comb_stmt(s, module_name, local_types, driven);
+                    self.check_comb_stmt(s, module_name, local_types, &mut else_driven);
+                }
+                // Merge both branches back — a signal driven in either branch
+                // counts as driven for subsequent statements.
+                for name in then_driven.iter().chain(else_driven.iter()) {
+                    driven.insert(name.clone());
                 }
             }
             CombStmt::MatchExpr(m) => {
@@ -643,6 +666,68 @@ impl<'a> TypeChecker<'a> {
                     Ty::UInt(bits as u32)
                 } else {
                     Ty::UInt(32) // fallback: treat as generic integer
+                }
+            }
+            ExprKind::FunctionCall(name, call_args) => {
+                if let Some((Symbol::Function(overloads), _)) = self.symbols.globals.get(name) {
+                    // Resolve argument types first.
+                    let arg_tys: Vec<Ty> = call_args.iter()
+                        .map(|a| {
+                            let mut lt = local_types.clone();
+                            self.resolve_expr_type(a, module_name, &mut lt)
+                        })
+                        .collect();
+
+                    // Find matching overload: same arity, compatible types.
+                    let overloads = overloads.clone(); // detach borrow so we can call &mut self methods
+                    let chosen = overloads.iter().enumerate().find(|(_, ov)| {
+                        if ov.arg_types.len() != arg_tys.len() { return false; }
+                        ov.arg_types.iter().zip(arg_tys.iter()).all(|(expected_te, actual_ty)| {
+                            match (expected_te, actual_ty) {
+                                (TypeExpr::UInt(we), Ty::UInt(wa)) => {
+                                    // Compare widths when the expression is a simple literal.
+                                    eval_type_width_expr(we).map_or(true, |ew| ew == *wa)
+                                }
+                                (TypeExpr::SInt(we), Ty::SInt(wa)) => {
+                                    eval_type_width_expr(we).map_or(true, |ew| ew == *wa)
+                                }
+                                (TypeExpr::Bool, Ty::Bool) => true,
+                                (TypeExpr::Bit,  Ty::Bit)  => true,
+                                (TypeExpr::UInt(_), Ty::Todo)
+                                | (TypeExpr::SInt(_), Ty::Todo) => true,
+                                _ => false,
+                            }
+                        })
+                    });
+
+                    match chosen {
+                        Some((idx, ov)) => {
+                            if overloads.len() > 1 {
+                                self.overload_map.insert(expr.span.start, idx);
+                            }
+                            let ret_ty = ov.ret_ty.clone();
+                            self.resolve_type_expr(&ret_ty, module_name, local_types)
+                        }
+                        None => {
+                            // No exact type match; try arity-only match as fallback.
+                            if let Some(ov) = overloads.iter().find(|ov| ov.arg_types.len() == call_args.len()) {
+                                let ret_ty = ov.ret_ty.clone();
+                                self.resolve_type_expr(&ret_ty, module_name, local_types)
+                            } else {
+                                self.errors.push(CompileError::general(
+                                    &format!("no matching overload for `{name}` with {} argument(s)", call_args.len()),
+                                    expr.span,
+                                ));
+                                Ty::Error
+                            }
+                        }
+                    }
+                } else {
+                    self.errors.push(CompileError::general(
+                        &format!("unknown function `{name}`"),
+                        expr.span,
+                    ));
+                    Ty::Error
                 }
             }
         }
@@ -1046,6 +1131,73 @@ impl<'a> TypeChecker<'a> {
                 });
             }
         }
+    }
+
+    fn check_function(&mut self, f: &FunctionDecl) {
+        self.check_pascal_case(&f.name);
+        for arg in &f.args {
+            self.check_snake_case(&arg.name);
+        }
+
+        // Build local type environment with args
+        let mut local_types: HashMap<String, Ty> = HashMap::new();
+        for arg in &f.args {
+            let ty = self.resolve_type_expr(&arg.ty, &f.name.name, &local_types);
+            local_types.insert(arg.name.name.clone(), ty);
+        }
+
+        let expected_ret = self.resolve_type_expr(&f.ret_ty, &f.name.name, &local_types);
+
+        for item in &f.body {
+            match item {
+                FunctionBodyItem::Let(l) => {
+                    self.check_snake_case(&l.name);
+                    let val_ty = self.resolve_expr_type(&l.value, &f.name.name, &local_types);
+                    let ty = if let Some(ann) = &l.ty {
+                        self.resolve_type_expr(ann, &f.name.name, &local_types)
+                    } else {
+                        val_ty
+                    };
+                    local_types.insert(l.name.name.clone(), ty);
+                }
+                FunctionBodyItem::Return(expr) => {
+                    let ret_ty = self.resolve_expr_type(expr, &f.name.name, &local_types);
+                    if !matches!(ret_ty, Ty::Error | Ty::Todo)
+                        && !matches!(expected_ret, Ty::Error | Ty::Todo)
+                        && ret_ty != expected_ret
+                        && !types_compatible(&expected_ret, &ret_ty)
+                    {
+                        self.warnings.push(CompileWarning {
+                            message: format!(
+                                "function `{}`: return type mismatch (declared {}, got {})",
+                                f.name.name, expected_ret.display(), ret_ty.display()
+                            ),
+                            span: expr.span,
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Evaluate a simple literal type-width expression (e.g. the `8` in `UInt<8>`).
+/// Returns `None` for non-literal expressions (params, arithmetic, etc.).
+fn eval_type_width_expr(e: &Expr) -> Option<u32> {
+    match &e.kind {
+        ExprKind::Literal(LitKind::Dec(n)) => Some(*n as u32),
+        ExprKind::Literal(LitKind::Hex(n)) => Some(*n as u32),
+        _ => None,
+    }
+}
+
+/// Returns true if `actual` is assignable to `expected` without an explicit cast.
+/// In hardware, narrower unsigned values zero-extend to wider wires.
+fn types_compatible(expected: &Ty, actual: &Ty) -> bool {
+    match (expected, actual) {
+        (Ty::UInt(em), Ty::UInt(am)) => am <= em,
+        (Ty::SInt(em), Ty::SInt(am)) => am <= em,
+        _ => false,
     }
 }
 

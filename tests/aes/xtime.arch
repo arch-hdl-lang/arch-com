@@ -1,0 +1,13 @@
+// GF(2^8) multiply by 2
+// xtime(a) = (a << 1) ^ (0x1b if a[7] else 0x00)
+module Xtime
+  port a: in UInt<8>;
+  port y: out UInt<8>;
+
+  comb
+    y = match a & 0x80
+      0x80 => (a << 1).trunc<8>() ^ 0x1b,
+      _ => (a << 1).trunc<8>(),
+    end match;
+  end comb
+end module Xtime
