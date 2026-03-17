@@ -1,7 +1,7 @@
 # ARCH Compiler — Status & Roadmap
 
 > Last updated: 2026-03-16
-> Compiler version: 0.10.0 (reg default, width mismatch errors, exhaustive match, log statement)
+> Compiler version: 0.11.0 (arch sim: Verilator-compatible C++ simulation from ARCH source)
 
 ---
 
@@ -14,6 +14,7 @@
 | `arch check <file.arch>` | ✅ Parse + type-check; exits 0 on success |
 | `arch build <file.arch> [-o out.sv]` | ✅ Emits deterministic SystemVerilog |
 | `arch build a.arch b.arch` | ✅ Multi-file: concatenates + cross-resolves; one `.sv` per input (or single combined file with `-o`) |
+| `arch sim <file.arch> --tb <tb.cpp>` | ✅ Generates Verilator-compatible C++ models (`VName.h` + `VName.cpp` + `verilated.h`), compiles with `g++`, and runs; supports `module`, `counter`, `fsm`; `fifo`/`ram`/`arbiter`/`regfile` pending |
 
 ---
 
@@ -127,6 +128,7 @@
 
 - 38 integration tests (snapshot + error-case), including `let` binding, `generate for`, `generate if`, mixed reset/no-reset partitioning, reset consistency validation, pipeline (simple, CPU 4-stage, instantiation, stage inst, bit-range trunc), `$clog2` in type args, function overloading, width mismatch errors, exhaustive match checking
 - 8 Verilator simulations: Counter, TrafficLight FSM, TxQueue sync FIFO, AsyncBridge async FIFO, SimpleMem RAM, WrapCounter, BusArbiter (round-robin), IntRegs (regfile + forwarding), CpuPipe 4-stage pipeline (reset, flow, stall, flush, forwarding)
+- 3 `arch sim` native C++ simulations verified: WrapCounter (`counter`), TrafficLight (`fsm`), Top+Counter (`module` with sub-instance)
 - AES-128 cipher benchmark (NIST test vectors verified): AesSbox + Xtime as functions, AesCipherTop + AesKeyExpand128 using inline function calls replacing 32 `inst` blocks
 
 ---
@@ -165,7 +167,7 @@
 | # | Feature | Notes |
 |---|---------|-------|
 | ~~1~~ | ~~**Multi-file compilation**~~ | **DONE** — `arch build a.arch b.arch` concatenates and cross-resolves; `arch build a.arch b.arch` without `-o` emits one `.sv` per input |
-| 2 | **`arch sim`** | TLM simulation: `--tlm-lt`, `--tlm-at`, `--tlm-rtl`; `--wave out.fst` waveform output |
+| ~~2~~ | ~~**`arch sim`**~~ | **DONE** — `arch sim Foo.arch --tb Foo_tb.cpp`; generates Verilator-compatible C++ models for `module`, `counter`, `fsm`; compiles with `g++`; runs binary; verified with counter, FSM, and top-level module testbenches |
 | 3 | **`arch formal`** | Emit SMT-LIB2 for bounded model checking |
 | 4 | **`interface` / `socket`** | TLM interfaces with `blocking`, `pipelined`, `out_of_order`, `burst`; `await`/`await_all`/`await_any` |
 | 5 | **Waveform output** | FST/VCD compatible with GTKWave/Surfer |

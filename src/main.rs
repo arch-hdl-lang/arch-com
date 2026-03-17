@@ -9,6 +9,7 @@ use arch::elaborate;
 use arch::lexer;
 use arch::parser;
 use arch::resolve;
+use arch::sim_codegen::SimCodegen;
 use arch::typecheck::TypeChecker;
 
 #[derive(Parser)]
@@ -34,6 +35,22 @@ enum Command {
         /// Output .sv file
         #[arg(short, long)]
         o: Option<PathBuf>,
+    },
+    /// Compile ARCH + C++ testbench and run simulation
+    ///
+    /// Example: arch sim Foo.arch Foo_tb.cpp
+    ///
+    /// Generates Verilator-compatible C++ models, compiles with g++, and runs.
+    Sim {
+        /// Input .arch file(s)
+        #[arg(required = true)]
+        arch_files: Vec<PathBuf>,
+        /// C++ testbench file(s) to compile alongside the generated models
+        #[arg(long = "tb", num_args = 1..)]
+        tb_files: Vec<PathBuf>,
+        /// Output directory for generated C++ files (default: arch_sim_build/)
+        #[arg(short, long)]
+        outdir: Option<PathBuf>,
     },
 }
 
@@ -98,6 +115,9 @@ fn main() -> miette::Result<()> {
             eprintln!("OK: no errors");
             Ok(())
         }
+        Command::Sim { arch_files, tb_files, outdir } => {
+            run_sim(&arch_files, &tb_files, outdir.as_deref())
+        }
         Command::Build { files, o } => {
             let ms = MultiSource::from_files(&files)?;
             let (ast, symbols, overload_map) = run_check_multi(&ms)?;
@@ -144,6 +164,85 @@ fn main() -> miette::Result<()> {
             Ok(())
         }
     }
+}
+
+fn run_sim(
+    arch_files: &[PathBuf],
+    tb_files: &[PathBuf],
+    outdir: Option<&std::path::Path>,
+) -> miette::Result<()> {
+    // 1. Parse + type-check
+    let ms = MultiSource::from_files(arch_files)?;
+    let (ast, symbols, overload_map) = run_check_multi(&ms)?;
+
+    // 2. Set up output directory
+    let build_dir = outdir
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("arch_sim_build"));
+    fs::create_dir_all(&build_dir).into_diagnostic()?;
+
+    // 3. Generate C++ models
+    let sim = SimCodegen::new(&symbols, &ast, overload_map);
+    let models = sim.generate();
+
+    if models.is_empty() {
+        eprintln!("warning: no synthesizable constructs found (module/counter/fsm)");
+    }
+
+    let mut generated_cpps: Vec<PathBuf> = Vec::new();
+
+    for model in &models {
+        let h_path   = build_dir.join(format!("{}.h",   model.class_name));
+        let cpp_path = build_dir.join(format!("{}.cpp", model.class_name));
+        fs::write(&h_path,   &model.header).into_diagnostic()?;
+        fs::write(&cpp_path, &model.impl_).into_diagnostic()?;
+        eprintln!("Generated {}", cpp_path.display());
+        generated_cpps.push(cpp_path);
+    }
+
+    // 4. Write verilated.h / verilated.cpp stubs
+    let verilated_h   = build_dir.join("verilated.h");
+    let verilated_cpp = build_dir.join("verilated.cpp");
+    fs::write(&verilated_h,   SimCodegen::verilated_h()).into_diagnostic()?;
+    fs::write(&verilated_cpp, SimCodegen::verilated_cpp()).into_diagnostic()?;
+    generated_cpps.push(verilated_cpp);
+
+    if tb_files.is_empty() {
+        eprintln!("No testbench files supplied — generated models are in {}/", build_dir.display());
+        eprintln!("Compile with: g++ {}/verilated.cpp {}/V*.cpp <your_tb.cpp> -I{} -o sim_out",
+            build_dir.display(), build_dir.display(), build_dir.display());
+        return Ok(());
+    }
+
+    // 5. Compile with g++
+    let sim_bin = build_dir.join("sim_out");
+    let mut cmd = std::process::Command::new("g++");
+    cmd.arg("-std=c++17")
+       .arg("-O1")
+       .arg("-I").arg(&build_dir);
+
+    for cpp in &generated_cpps {
+        cmd.arg(cpp);
+    }
+    for tb in tb_files {
+        cmd.arg(tb);
+    }
+    cmd.arg("-o").arg(&sim_bin);
+
+    eprintln!("Compiling simulation binary...");
+    let status = cmd.status().into_diagnostic()?;
+    if !status.success() {
+        eprintln!("Compilation failed");
+        std::process::exit(1);
+    }
+
+    // 6. Run the simulation binary, forwarding remaining args
+    eprintln!("Running simulation...");
+    let run_status = std::process::Command::new(&sim_bin)
+        .status()
+        .into_diagnostic()?;
+
+    std::process::exit(run_status.code().unwrap_or(1));
 }
 
 fn run_check_multi(

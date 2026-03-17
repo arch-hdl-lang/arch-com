@@ -5,4 +5,5 @@ pub mod elaborate;
 pub mod lexer;
 pub mod parser;
 pub mod resolve;
+pub mod sim_codegen;
 pub mod typecheck;
