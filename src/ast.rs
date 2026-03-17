@@ -204,6 +204,7 @@ pub enum CombStmt {
     Assign(CombAssign),
     IfElse(CombIfElse),
     MatchExpr(CombMatch),
+    Log(LogStmt),
 }
 
 #[derive(Debug, Clone)]
@@ -265,12 +266,48 @@ pub enum ConnectDir {
     Output, // ->
 }
 
+// Simulation log verbosity levels (0 = always print, higher = more verbose).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogLevel {
+    Always = 0,
+    Low    = 1,
+    Medium = 2,
+    High   = 3,
+    Full   = 4,
+    Debug  = 5,
+}
+
+impl LogLevel {
+    pub fn name(self) -> &'static str {
+        match self {
+            LogLevel::Always => "ALWAYS",
+            LogLevel::Low    => "LOW",
+            LogLevel::Medium => "MEDIUM",
+            LogLevel::High   => "HIGH",
+            LogLevel::Full   => "FULL",
+            LogLevel::Debug  => "DEBUG",
+        }
+    }
+
+    pub fn value(self) -> u8 { self as u8 }
+}
+
 // Statements inside reg blocks
 #[derive(Debug, Clone)]
 pub enum Stmt {
     Assign(RegAssign),
     IfElse(IfElse),
     Match(MatchStmt),
+    Log(LogStmt),
+}
+
+#[derive(Debug, Clone)]
+pub struct LogStmt {
+    pub level: LogLevel,
+    pub tag: String,
+    pub fmt: String,
+    pub args: Vec<Expr>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

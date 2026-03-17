@@ -263,6 +263,14 @@ impl<'a> Codegen<'a> {
         }
         self.pending_functions = fns;
 
+        // If any log() statements exist in this module, emit the per-module verbosity variable.
+        // Override at simulation: +arch_verbosity=N on the simulator command line.
+        if Self::module_has_log(&m.body) {
+            self.line("integer _arch_verbosity = 1; // 0=Always 1=Low 2=Medium 3=High 4=Full 5=Debug");
+            self.line("initial void'($value$plusargs(\"arch_verbosity=%0d\", _arch_verbosity));");
+            self.line("");
+        }
+
         // Collect names already declared as ports, regs, or lets so we can
         // auto-declare inst output wires that aren't otherwise declared.
         let mut declared_names: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -340,6 +348,50 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Return true if any log() statement exists anywhere in the module body.
+    fn module_has_log(body: &[ModuleBodyItem]) -> bool {
+        body.iter().any(|item| match item {
+            ModuleBodyItem::RegBlock(rb) => rb.stmts.iter().any(Self::stmt_has_log),
+            ModuleBodyItem::CombBlock(cb) => cb.stmts.iter().any(Self::comb_stmt_has_log),
+            _ => false,
+        })
+    }
+
+    fn stmt_has_log(s: &Stmt) -> bool {
+        match s {
+            Stmt::Log(_) => true,
+            Stmt::IfElse(ie) => ie.then_stmts.iter().any(Self::stmt_has_log)
+                || ie.else_stmts.iter().any(Self::stmt_has_log),
+            Stmt::Match(m) => m.arms.iter().any(|a| a.body.iter().any(Self::stmt_has_log)),
+            Stmt::Assign(_) => false,
+        }
+    }
+
+    fn comb_stmt_has_log(s: &CombStmt) -> bool {
+        match s {
+            CombStmt::Log(_) => true,
+            CombStmt::IfElse(ie) => ie.then_stmts.iter().any(Self::comb_stmt_has_log)
+                || ie.else_stmts.iter().any(Self::comb_stmt_has_log),
+            CombStmt::Assign(_) | CombStmt::MatchExpr(_) => false,
+        }
+    }
+
+    /// Emit a `log(...)` statement as an `if`-guarded `$display`.
+    fn emit_log_stmt(&mut self, l: &LogStmt) {
+        let args_str: String = l.args.iter()
+            .map(|a| format!(", {}", self.emit_expr_str(a)))
+            .collect();
+        let display = format!(
+            "$display(\"[%0t][{}][{}] {}\", $time{});",
+            l.level.name(), l.tag, l.fmt, args_str
+        );
+        if l.level == LogLevel::Always {
+            self.line(&display);
+        } else {
+            self.line(&format!("if (_arch_verbosity >= {}) {}", l.level.value(), display));
+        }
+    }
+
     fn emit_comb_stmt(&mut self, stmt: &CombStmt) {
         match stmt {
             CombStmt::Assign(a) => {
@@ -389,6 +441,7 @@ impl<'a> Codegen<'a> {
                 self.indent -= 1;
                 self.line("endcase");
             }
+            CombStmt::Log(l) => { self.emit_log_stmt(l); }
         }
     }
 
@@ -599,6 +652,7 @@ impl<'a> Codegen<'a> {
                         Self::collect_assigned_roots(&arm.body, out);
                     }
                 }
+                Stmt::Log(_) => {}
             }
         }
     }
@@ -673,6 +727,7 @@ impl<'a> Codegen<'a> {
                 self.indent -= 1;
                 self.line("endcase");
             }
+            Stmt::Log(l) => { self.emit_log_stmt(l); }
         }
     }
 
@@ -1371,6 +1426,7 @@ impl<'a> Codegen<'a> {
             Stmt::Match(_) => {
                 // MVP: basic pipeline doesn't need match in always blocks
             }
+            Stmt::Log(l) => { self.emit_log_stmt(l); }
         }
     }
 
@@ -1411,7 +1467,7 @@ impl<'a> Codegen<'a> {
                         if !targets.contains(&t) { targets.push(t); }
                     }
                 }
-                CombStmt::MatchExpr(_) => {} // TODO if needed
+                CombStmt::MatchExpr(_) | CombStmt::Log(_) => {}
             }
         }
         targets
@@ -1518,6 +1574,7 @@ impl<'a> Codegen<'a> {
                 self.emit_pipeline_comb_if_else(ie, current_prefix, current_stage_idx, stage_names, stage_regs, port_names, false);
             }
             CombStmt::MatchExpr(_) => {} // TODO if needed
+            CombStmt::Log(l) => { self.emit_log_stmt(l); }
         }
     }
 

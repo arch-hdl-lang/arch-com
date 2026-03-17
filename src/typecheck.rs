@@ -328,6 +328,7 @@ impl<'a> TypeChecker<'a> {
                         Self::collect_assigned_roots_tc(&arm.body, out);
                     }
                 }
+                Stmt::Log(_) => {}
             }
         }
     }
@@ -338,6 +339,65 @@ impl<'a> TypeChecker<'a> {
             ExprKind::FieldAccess(base, _) => Self::expr_root_name_tc(base),
             ExprKind::Index(base, _) => Self::expr_root_name_tc(base),
             _ => String::new(),
+        }
+    }
+
+    /// Emit an error when the RHS is wider than the LHS register/port.
+    fn check_width_compatible(&mut self, lhs_ty: &Ty, rhs_ty: &Ty, name: &str, span: Span) {
+        match (lhs_ty, rhs_ty) {
+            (Ty::UInt(lw), Ty::UInt(rw)) if rw > lw => {
+                let hint = if *rw == lw + 1 { " (arithmetic widening)" } else { "" };
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "width mismatch: `{name}` is UInt<{lw}> but RHS is UInt<{rw}>{hint}; \
+                         use `.trunc<{lw}>()` to truncate explicitly"
+                    ),
+                    span,
+                ));
+            }
+            (Ty::SInt(lw), Ty::SInt(rw)) if rw > lw => {
+                let hint = if *rw == lw + 1 { " (arithmetic widening)" } else { "" };
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "width mismatch: `{name}` is SInt<{lw}> but RHS is SInt<{rw}>{hint}; \
+                         use `.trunc<{lw}>()` to truncate explicitly"
+                    ),
+                    span,
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    /// Emit an error when an enum match is not exhaustive (no wildcard and missing variants).
+    fn check_match_exhaustive(&mut self, scrutinee: &Expr, patterns: &[Pattern], span: Span,
+                              module_name: &str, local_types: &HashMap<String, Ty>) {
+        let scrutinee_ty = self.resolve_expr_type(scrutinee, module_name, local_types);
+        let enum_name = match &scrutinee_ty {
+            Ty::Enum(name, _) => name.clone(),
+            _ => return, // only check enum matches
+        };
+        if patterns.iter().any(|p| matches!(p, Pattern::Wildcard)) {
+            return; // wildcard covers everything
+        }
+        let covered: HashSet<String> = patterns.iter().filter_map(|p| {
+            if let Pattern::EnumVariant(_, variant) = p { Some(variant.name.clone()) } else { None }
+        }).collect();
+        if let Some((Symbol::Enum(info), _)) = self.symbols.globals.get(&enum_name).cloned() {
+            let missing: Vec<String> = info.variants.iter()
+                .filter(|v| !covered.contains(*v))
+                .map(|v| format!("`{enum_name}::{v}`"))
+                .collect();
+            if !missing.is_empty() {
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "non-exhaustive match on `{enum_name}`: missing {}; \
+                         add arms or a wildcard `_`",
+                        missing.join(", ")
+                    ),
+                    span,
+                ));
+            }
         }
     }
 
@@ -352,32 +412,9 @@ impl<'a> TypeChecker<'a> {
             Stmt::Assign(a) => {
                 if let ExprKind::Ident(name) = &a.target.kind {
                     driven.insert(name.clone());
-                    // Warn when arithmetic widening causes the RHS to be exactly
-                    // 1 bit wider than the LHS (e.g. `beat_r <= beat_r + 1`
-                    // where beat_r: UInt<16> yields a UInt<17> RHS).
                     let rhs_ty = self.resolve_expr_type(&a.value, module_name, local_types);
-                    if let Some(lhs_ty) = local_types.get(name) {
-                        match (lhs_ty, &rhs_ty) {
-                            (Ty::UInt(lw), Ty::UInt(rw)) if *rw == lw + 1 => {
-                                self.errors.push(CompileError::general(
-                                    &format!(
-                                        "width mismatch: `{name}` is UInt<{lw}> but RHS is UInt<{rw}> \
-                                         (arithmetic widening); use `.trunc<{lw}>()` to truncate explicitly"
-                                    ),
-                                    a.span,
-                                ));
-                            }
-                            (Ty::SInt(lw), Ty::SInt(rw)) if *rw == lw + 1 => {
-                                self.errors.push(CompileError::general(
-                                    &format!(
-                                        "width mismatch: `{name}` is SInt<{lw}> but RHS is SInt<{rw}> \
-                                         (arithmetic widening); use `.trunc<{lw}>()` to truncate explicitly"
-                                    ),
-                                    a.span,
-                                ));
-                            }
-                            _ => {}
-                        }
+                    if let Some(lhs_ty) = local_types.get(name).cloned() {
+                        self.check_width_compatible(&lhs_ty, &rhs_ty, name, a.span);
                     }
                 }
             }
@@ -391,11 +428,17 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Stmt::Match(m) => {
-                let _ty = self.resolve_expr_type(&m.scrutinee, module_name, local_types);
+                let patterns: Vec<Pattern> = m.arms.iter().map(|a| a.pattern.clone()).collect();
+                self.check_match_exhaustive(&m.scrutinee, &patterns, m.span, module_name, local_types);
                 for arm in &m.arms {
                     for s in &arm.body {
                         self.check_reg_stmt(s, module_name, local_types, driven);
                     }
+                }
+            }
+            Stmt::Log(l) => {
+                for arg in &l.args {
+                    self.resolve_expr_type(arg, module_name, local_types);
                 }
             }
         }
@@ -417,7 +460,10 @@ impl<'a> TypeChecker<'a> {
                     });
                 }
                 driven.insert(a.target.name.clone());
-                self.resolve_expr_type(&a.value, module_name, local_types);
+                let rhs_ty = self.resolve_expr_type(&a.value, module_name, local_types);
+                if let Some(lhs_ty) = local_types.get(&a.target.name).cloned() {
+                    self.check_width_compatible(&lhs_ty, &rhs_ty, &a.target.name, a.span);
+                }
             }
             CombStmt::IfElse(ie) => {
                 let _cond_ty = self.resolve_expr_type(&ie.cond, module_name, local_types);
@@ -438,11 +484,17 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             CombStmt::MatchExpr(m) => {
-                let _ty = self.resolve_expr_type(&m.scrutinee, module_name, local_types);
+                let patterns: Vec<Pattern> = m.arms.iter().map(|a| a.pattern.clone()).collect();
+                self.check_match_exhaustive(&m.scrutinee, &patterns, m.span, module_name, local_types);
                 for arm in &m.arms {
-                    for _s in &arm.body {
-                        // Convert Stmt to check like comb (best effort for MVP)
+                    for s in &arm.body {
+                        self.check_reg_stmt(s, module_name, local_types, driven);
                     }
+                }
+            }
+            CombStmt::Log(l) => {
+                for arg in &l.args {
+                    self.resolve_expr_type(arg, module_name, local_types);
                 }
             }
         }
@@ -641,7 +693,8 @@ impl<'a> TypeChecker<'a> {
                 Ty::Error
             }
             ExprKind::ExprMatch(scrutinee, arms) => {
-                let _ty = self.resolve_expr_type(scrutinee, module_name, local_types);
+                let patterns: Vec<Pattern> = arms.iter().map(|a| a.pattern.clone()).collect();
+                self.check_match_exhaustive(scrutinee, &patterns, expr.span, module_name, local_types);
                 // Return type from first non-wildcard arm
                 for arm in arms {
                     return self.resolve_expr_type(&arm.value, module_name, local_types);

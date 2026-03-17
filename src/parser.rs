@@ -7,11 +7,14 @@ pub struct Parser {
     pos: usize,
     /// When true, `>` and `>=` are not treated as binary operators (inside type angle brackets)
     no_angle: bool,
+    /// Default init/reset applied to reg declarations that omit those clauses.
+    /// Set by `reg default: init <expr> reset <...>;` within a module/pipeline body.
+    reg_defaults: Option<(Expr, RegReset)>,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0, no_angle: false }
+        Self { tokens, pos: 0, no_angle: false, reg_defaults: None }
     }
 
     pub fn parse_source_file(&mut self) -> Result<SourceFile, CompileError> {
@@ -143,6 +146,7 @@ impl Parser {
     fn parse_module(&mut self) -> Result<ModuleDecl, CompileError> {
         let start = self.expect(TokenKind::Module)?.span;
         let name = self.expect_ident()?;
+        self.reg_defaults = None; // reset per-module
 
         let mut params = Vec::new();
         let mut ports = Vec::new();
@@ -153,7 +157,11 @@ impl Parser {
                 Some(TokenKind::Param) => params.push(self.parse_param_decl()?),
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Reg) => {
-                    body.push(ModuleBodyItem::RegDecl(self.parse_reg_decl()?));
+                    if self.peek_default_at(1) {
+                        self.parse_reg_default_decl()?;
+                    } else {
+                        body.push(ModuleBodyItem::RegDecl(self.parse_reg_decl()?));
+                    }
                 }
                 Some(TokenKind::Always) => {
                     body.push(ModuleBodyItem::RegBlock(self.parse_always_block()?));
@@ -263,47 +271,87 @@ impl Parser {
     }
 
 
+    /// Return true if the token `offset` positions ahead is `TokenKind::Default`.
+    fn peek_default_at(&self, offset: usize) -> bool {
+        self.tokens.get(self.pos + offset)
+            .map(|t| matches!(t.kind, TokenKind::Default))
+            .unwrap_or(false)
+    }
+
+    /// Parse the reset clause shared by default and normal reg declarations.
+    /// Caller has already consumed the `reset` pseudo-keyword.
+    fn parse_reset_clause(&mut self) -> Result<RegReset, CompileError> {
+        if self.eat(TokenKind::None) {
+            return Ok(RegReset::None);
+        }
+        let rst_signal = self.expect_ident()?;
+        if self.check(TokenKind::Sync) || self.check(TokenKind::Async) {
+            let kind = if self.eat(TokenKind::Sync) {
+                ResetKind::Sync
+            } else {
+                self.advance();
+                ResetKind::Async
+            };
+            let level = if self.eat(TokenKind::High) {
+                ResetLevel::High
+            } else if self.eat(TokenKind::Low) {
+                ResetLevel::Low
+            } else {
+                return Err(CompileError::unexpected_token(
+                    "high or low",
+                    &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                    self.peek_span(),
+                ));
+            };
+            Ok(RegReset::Explicit(rst_signal, kind, level))
+        } else {
+            Ok(RegReset::Inherit(rst_signal))
+        }
+    }
+
+    /// Parse `reg default: init <expr> [reset <...>] ;` and store as the active defaults.
+    fn parse_reg_default_decl(&mut self) -> Result<(), CompileError> {
+        self.expect(TokenKind::Reg)?;
+        self.expect(TokenKind::Default)?;
+        self.expect(TokenKind::Colon)?;
+        self.expect(TokenKind::Init)?;
+        let init = self.parse_expr()?;
+        let reset = if self.check_ident("reset") {
+            self.advance();
+            self.parse_reset_clause()?
+        } else {
+            RegReset::None
+        };
+        self.expect(TokenKind::Semi)?;
+        self.reg_defaults = Some((init, reset));
+        Ok(())
+    }
+
     fn parse_reg_decl(&mut self) -> Result<RegDecl, CompileError> {
         let start = self.expect(TokenKind::Reg)?.span;
         let name = self.expect_ident()?;
         self.expect(TokenKind::Colon)?;
         let ty = self.parse_type_expr()?;
-        self.expect(TokenKind::Init)?;
-        let init = self.parse_expr()?;
 
-        // Optional reset clause: reset none | reset <signal> [sync|async high|low]
-        let reset = if self.check_ident("reset") {
-            self.advance(); // consume "reset"
-            if self.eat(TokenKind::None) {
-                RegReset::None
-            } else {
-                let rst_signal = self.expect_ident()?;
-                // Check for explicit override: sync|async high|low
-                if self.check(TokenKind::Sync) || self.check(TokenKind::Async) {
-                    let kind = if self.eat(TokenKind::Sync) {
-                        ResetKind::Sync
-                    } else {
-                        self.advance(); // consume Async
-                        ResetKind::Async
-                    };
-                    let level = if self.eat(TokenKind::High) {
-                        ResetLevel::High
-                    } else if self.eat(TokenKind::Low) {
-                        ResetLevel::Low
-                    } else {
-                        return Err(CompileError::unexpected_token(
-                            "high or low",
-                            &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
-                            self.peek_span(),
-                        ));
-                    };
-                    RegReset::Explicit(rst_signal, kind, level)
-                } else {
-                    RegReset::Inherit(rst_signal)
-                }
-            }
+        // `init` clause is optional when reg_defaults provides one.
+        let init = if self.check(TokenKind::Init) {
+            self.advance();
+            self.parse_expr()?
+        } else if let Some((default_init, _)) = &self.reg_defaults {
+            default_init.clone()
         } else {
-            RegReset::None // default when no reset clause
+            self.expect(TokenKind::Init)?; // will error with a clear message
+            unreachable!()
+        };
+
+        // `reset` clause is optional when reg_defaults provides one.
+        let reset = if self.check_ident("reset") {
+            self.advance();
+            self.parse_reset_clause()?
+        } else if let Some((_, default_reset)) = &self.reg_defaults {
+            default_reset.clone()
+        } else {
+            RegReset::None
         };
 
         self.expect(TokenKind::Semi)?;
@@ -354,12 +402,78 @@ impl Parser {
             && self.tokens[self.pos + 1].kind == TokenKind::Always
     }
 
+    /// Parse `log(Level, "TAG", "fmt", arg, ...) ;`
+    fn parse_log_stmt(&mut self) -> Result<LogStmt, CompileError> {
+        let start = self.expect(TokenKind::Log)?.span;
+        self.expect(TokenKind::LParen)?;
+
+        // Verbosity level: PascalCase ident
+        let level = match self.peek_kind() {
+            Some(TokenKind::Ident(name)) => {
+                let level = match name.as_str() {
+                    "Always" => LogLevel::Always,
+                    "Low"    => LogLevel::Low,
+                    "Medium" => LogLevel::Medium,
+                    "High"   => LogLevel::High,
+                    "Full"   => LogLevel::Full,
+                    "Debug"  => LogLevel::Debug,
+                    other => return Err(CompileError::general(
+                        &format!("unknown log level `{other}`; expected Always, Low, Medium, High, Full, or Debug"),
+                        self.peek_span(),
+                    )),
+                };
+                self.advance();
+                level
+            }
+            _ => return Err(CompileError::unexpected_token(
+                "log level (Always/Low/Medium/High/Full/Debug)",
+                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                self.peek_span(),
+            )),
+        };
+        self.expect(TokenKind::Comma)?;
+
+        // Tag string
+        let tag = match self.peek_kind() {
+            Some(TokenKind::StringLit(s)) => { let t = s.clone(); self.advance(); t }
+            _ => return Err(CompileError::unexpected_token(
+                "tag string literal",
+                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                self.peek_span(),
+            )),
+        };
+        self.expect(TokenKind::Comma)?;
+
+        // Format string
+        let fmt = match self.peek_kind() {
+            Some(TokenKind::StringLit(s)) => { let f = s.clone(); self.advance(); f }
+            _ => return Err(CompileError::unexpected_token(
+                "format string literal",
+                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                self.peek_span(),
+            )),
+        };
+
+        // Optional args
+        let mut args = Vec::new();
+        while self.eat(TokenKind::Comma) {
+            args.push(self.parse_expr()?);
+        }
+
+        let end = self.expect(TokenKind::RParen)?.span;
+        self.expect(TokenKind::Semi)?;
+        Ok(LogStmt { level, tag, fmt, args, span: start.merge(end) })
+    }
+
     fn parse_reg_stmt(&mut self) -> Result<Stmt, CompileError> {
         if self.check(TokenKind::If) {
             return self.parse_reg_if();
         }
         if self.check(TokenKind::Match) {
             return self.parse_reg_match();
+        }
+        if self.check(TokenKind::Log) {
+            return Ok(Stmt::Log(self.parse_log_stmt()?));
         }
         // Assignment: target <= value;
         let target = self.parse_expr()?;
@@ -498,6 +612,9 @@ impl Parser {
         }
         if self.check(TokenKind::Match) {
             return self.parse_comb_match();
+        }
+        if self.check(TokenKind::Log) {
+            return Ok(CombStmt::Log(self.parse_log_stmt()?));
         }
         // target = expr;
         let target = self.expect_ident()?;
@@ -1432,6 +1549,7 @@ impl Parser {
     fn parse_stage_decl(&mut self) -> Result<StageDecl, CompileError> {
         let start = self.expect(TokenKind::Stage)?.span;
         let name = self.expect_ident()?;
+        self.reg_defaults = None; // reset per-stage
 
         // Optional per-stage stall condition: `stage Fetch stall when <expr>`
         let stall_cond = if self.eat(TokenKind::Stall) {
@@ -1451,7 +1569,11 @@ impl Parser {
             while !self.check_end_stage() {
                 match self.peek_kind() {
                     Some(TokenKind::Reg) => {
-                        body.push(ModuleBodyItem::RegDecl(self.parse_reg_decl()?));
+                        if self.peek_default_at(1) {
+                            self.parse_reg_default_decl()?;
+                        } else {
+                            body.push(ModuleBodyItem::RegDecl(self.parse_reg_decl()?));
+                        }
                     }
                     Some(TokenKind::Always) => {
                         body.push(ModuleBodyItem::RegBlock(self.parse_always_block()?));

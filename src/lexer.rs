@@ -262,6 +262,14 @@ pub enum TokenKind {
     #[token("$clog2")]
     Clog2,
 
+    // Simulation logging
+    #[token("log")]
+    Log,
+
+    // String literal "..." (used by log statements)
+    #[regex(r#""([^"\\]|\\.)*""#, |lex| { let s = lex.slice(); s[1..s.len()-1].to_string() })]
+    StringLit(String),
+
     // Identifier
     #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*", priority = 1, callback = |lex| lex.slice().to_string())]
     Ident(String),
@@ -379,6 +387,8 @@ impl fmt::Display for TokenKind {
             TokenKind::SizedLiteral(s) => write!(f, "{s}"),
             TokenKind::DecLiteral(s) => write!(f, "{s}"),
             TokenKind::Clog2 => write!(f, "$clog2"),
+            TokenKind::Log => write!(f, "log"),
+            TokenKind::StringLit(s) => write!(f, "\"{s}\""),
             TokenKind::Ident(s) => write!(f, "{s}"),
         }
     }

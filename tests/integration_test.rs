@@ -49,7 +49,7 @@ module SimpleAlu
   port b: in UInt<32>;
   port result: out UInt<32>;
   comb
-    result = a + b;
+    result = (a + b).trunc<32>();
   end comb
 end module SimpleAlu
 "#;
@@ -1033,7 +1033,7 @@ module Alu
   port result: out UInt<WIDTH>;
 
   comb
-    result = a + b;
+    result = (a + b).trunc<WIDTH>();
   end comb
 end module Alu
 
@@ -1057,7 +1057,7 @@ pipeline AluPipe
   stage Execute
     reg alu_out: UInt<XLEN> init 0 reset rst;
     always on clk rising
-      alu_out <= Fetch.a_r + Fetch.b_r;
+      alu_out <= (Fetch.a_r + Fetch.b_r).trunc<XLEN>();
     end always
     inst alu0: Alu
       connect a <- Fetch.a_r;

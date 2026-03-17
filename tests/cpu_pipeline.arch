@@ -18,7 +18,7 @@ module Alu
   port result: out UInt<WIDTH>;
 
   comb
-    result = a + b;
+    result = (a + b).trunc<WIDTH>();
   end comb
 end module Alu
 

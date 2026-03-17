@@ -1,7 +1,7 @@
 # ARCH Compiler — Status & Roadmap
 
 > Last updated: 2026-03-16
-> Compiler version: 0.9.0 (function construct with overloading, multi-file compilation)
+> Compiler version: 0.10.0 (reg default, width mismatch errors, exhaustive match, log statement)
 
 ---
 
@@ -24,7 +24,7 @@
 | `domain` | ✅ | Emitted as SV comments |
 | `struct` | ✅ | `typedef struct packed` |
 | `enum` | ✅ | `typedef enum logic`; auto width ⌈log₂(N)⌉ |
-| `module` | ✅ | Params, ports, reg/comb/let/inst body; `always on` clocked blocks with per-reg reset (`reset <signal> sync\|async high\|low` or `reset none`); compiler auto-generates reset guards; mixed reset/no-reset partitioning |
+| `module` | ✅ | Params, ports, reg/comb/let/inst body; `always on` clocked blocks with per-reg reset (`reset <signal> sync\|async high\|low` or `reset none`); compiler auto-generates reset guards; mixed reset/no-reset partitioning; `reg default: init 0 reset rst;` wildcard default for register declarations |
 | `fsm` | ✅ | State enum, `always_ff` state reg, `always_comb` next-state + output; `default expr` on output ports |
 | `fifo` | ✅ | Sync (extra-bit pointers) + async (gray-code CDC, auto-detected) |
 | `ram` | ✅ | `single`/`simple_dual`/`true_dual`; `async`/`sync`/`sync_out`; all write modes; `init` block |
@@ -34,6 +34,7 @@
 | `assert` / `cover` | ❌ | Lexed but skipped at parse time |
 | `pipeline` | ✅ | Stages with reg/comb/let/inst body; per-stage `stall when`; `flush` directives; explicit forwarding mux via comb if/else; `valid_r` per-stage signal; cross-stage refs (`Stage.signal`); `inst` inside stages with auto-declared output wires |
 | `function` | ✅ | Pure combinational; `return expr;`; `let` bindings as temporaries; **overloading** (same name, different arg types — mangled as `Name_8`, `Name_16`, etc.); emitted as SV `function automatic` inside each module that uses it |
+| `log` | ✅ | Simulation logging: `log(Level, "TAG", "fmt %0d", arg)` in `always` and `comb` blocks; levels `Always`/`Low`/`Medium`/`High`/`Full`/`Debug`; per-module `_arch_verbosity` integer; runtime control via `+arch_verbosity=N`; emits `$display` with `[%0t][LEVEL][TAG]` prefix; NBA semantics: value printed is last cycle's registered value |
 | `generate for/if` | ✅ | Pre-resolve elaboration pass; const/literal bounds; port + inst items |
 | `ram` (multi-var store) | ⚠️ | Single store variable only; compiler-managed address layout not implemented |
 | `cam` | ❌ | Not implemented |
@@ -60,7 +61,7 @@
 | `Future<T>` | ❌ | TLM only |
 | `$clog2(expr)` in type args | ✅ | Parsed as expression, emitted as SV `$clog2(...)`, evaluated at compile time for const-folding |
 | Clock domain mismatch (CDC errors) | ❌ | No cross-domain assignment checking |
-| Width mismatch at assignment | ⚠️ | Errors when reg assignment RHS is exactly 1 bit wider than LHS due to arithmetic widening; full width-error checking (arbitrary width delta) not yet implemented |
+| Width mismatch at assignment | ✅ | Errors for any RHS wider than LHS in both `always` and `comb` blocks; arithmetic widening (`+1`) flagged with explicit hint to use `.trunc<N>()` |
 | Implicit truncation prevention | ✅ | `r <= r + 1` is a compile error; write `r <= (r + 1).trunc<N>()` explicitly. `.trunc<N>()` emits SV size cast `N'(expr)`. `.trunc<N,M>()` emits bit-range select `expr[N:M]` for field extraction (e.g. `instr.trunc<11,7>()` → `instr[11:7]`). |
 
 ---
@@ -98,6 +99,8 @@
 | `match` (reg and comb blocks) | ✅ |
 | Wildcard `_` → `default:` | ✅ |
 | `let` bindings | ✅ `logic` local in module scope; optional type annotation |
+| `log(Level, "TAG", "fmt", args...)` | ✅ In `always` and `comb` blocks; runtime verbosity via `+arch_verbosity=N` |
+| `reg default: init 0 reset rst;` | ✅ Sets default `init`/`reset` for all regs in scope; individual regs may override either field |
 | `assert` / `cover` | ❌ |
 
 ---
@@ -113,16 +116,16 @@
 | Single driver per signal | ✅ |
 | `todo!` site warning | ✅ |
 | Binary op result widths (IEEE 1800-2012 §11.6) | ✅ |
-| Width mismatch at assignment | ⚠️ Reg assignments error when RHS is exactly 1 bit wider (arithmetic widening); full width-checking (arbitrary delta) not yet implemented |
+| Width mismatch at assignment | ✅ Any RHS wider than LHS errors in both `always` and `comb` blocks; arithmetic widening hint included |
 | Clock domain crossing errors | ❌ |
-| Exhaustive match arm checking | ❌ |
+| Exhaustive match arm checking | ✅ Enum matches must cover all variants or include a wildcard `_`; missing variants named in error |
 | Const param evaluation (complex exprs) | ⚠️ Literals + simple arithmetic only |
 
 ---
 
 ### Tests
 
-- 38 integration tests (snapshot + error-case), including `let` binding, `generate for`, `generate if`, mixed reset/no-reset partitioning, reset consistency validation, pipeline (simple, CPU 4-stage, instantiation, stage inst, bit-range trunc), `$clog2` in type args, function overloading
+- 38 integration tests (snapshot + error-case), including `let` binding, `generate for`, `generate if`, mixed reset/no-reset partitioning, reset consistency validation, pipeline (simple, CPU 4-stage, instantiation, stage inst, bit-range trunc), `$clog2` in type args, function overloading, width mismatch errors, exhaustive match checking
 - 8 Verilator simulations: Counter, TrafficLight FSM, TxQueue sync FIFO, AsyncBridge async FIFO, SimpleMem RAM, WrapCounter, BusArbiter (round-robin), IntRegs (regfile + forwarding), CpuPipe 4-stage pipeline (reset, flow, stall, flush, forwarding)
 - AES-128 cipher benchmark (NIST test vectors verified): AesSbox + Xtime as functions, AesCipherTop + AesKeyExpand128 using inline function calls replacing 32 `inst` blocks
 
@@ -134,8 +137,8 @@
 
 | # | Feature | Effort |
 |---|---------|--------|
-| 1 | **Width mismatch at assignment** — `UInt<16>` → `UInt<8>` should error | Low |
-| 2 | **Exhaustive `match` checking** — enum match must cover all variants or have `_` | Low |
+| ~~1~~ | ~~**Width mismatch at assignment**~~ | **DONE** — any width delta errors in `always` and `comb` |
+| ~~2~~ | ~~**Exhaustive `match` checking**~~ | **DONE** — missing variants named in error; wildcard `_` suppresses |
 | 3 | **CDC error detection** — cross-domain signal assignment → compile error | Medium |
 | 4 | **Const param evaluation at instantiation** — `UInt<WIDTH*2>` with param override | Medium |
 | 5 | **Function type-parametric overloads** — type parameters on functions (e.g. `function Foo<T>(a: T) -> T`) | High |

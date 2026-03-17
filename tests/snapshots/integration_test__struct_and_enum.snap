@@ -21,6 +21,6 @@ module SimpleAlu (
   output logic [32-1:0] result
 );
 
-  assign result = (a + b);
+  assign result = 32'((a + b));
 
 endmodule
