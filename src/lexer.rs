@@ -150,6 +150,12 @@ pub enum TokenKind {
     Generate,
     #[token("for")]
     For,
+    #[token("testbench")]
+    Testbench,
+    #[token("initial")]
+    Initial,
+    #[token("repeat")]
+    Repeat,
 
     // Type keywords
     #[token("UInt")]
@@ -316,6 +322,9 @@ impl fmt::Display for TokenKind {
             TokenKind::Cover => write!(f, "cover"),
             TokenKind::Generate => write!(f, "generate"),
             TokenKind::For => write!(f, "for"),
+            TokenKind::Testbench => write!(f, "testbench"),
+            TokenKind::Initial => write!(f, "initial"),
+            TokenKind::Repeat => write!(f, "repeat"),
             TokenKind::Fsm => write!(f, "fsm"),
             TokenKind::Fifo => write!(f, "fifo"),
             TokenKind::Ram => write!(f, "ram"),

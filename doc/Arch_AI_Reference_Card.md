@@ -358,21 +358,39 @@
 
 > arch check F.arch // type-check only
 >
-> arch sim Tb.arch // run (single core)
+> arch sim F.arch \--tb F_tb.cpp // compile C++ testbench + run
 >
-> arch sim \--parallel Tb.arch // all cores
+> arch sim F.arch \--tb F_tb.cpp \--outdir build/ // specify output dir
 >
-> arch sim \--tlm-lt // max speed, no timing
+> arch sim F.arch // generate models only (no testbench)
 >
-> arch sim \--tlm-at // ns-accurate AT timing
+> arch sim \--parallel Tb.arch // all cores (planned)
 >
-> arch sim \--tlm-rtl // full signal fidelity
+> arch sim \--tlm-lt // max speed, no timing (planned)
 >
-> arch sim \--wave out.fst // waveform (GTKWave/Surfer)
+> arch sim \--tlm-at // ns-accurate AT timing (planned)
+>
+> arch sim \--tlm-rtl // full signal fidelity (planned)
+>
+> arch sim \--wave out.fst // waveform (GTKWave/Surfer) (planned)
 >
 > arch build F.arch // emit SystemVerilog
 >
-> arch formal F.arch // emit SMT-LIB2
+> arch formal F.arch // emit SMT-LIB2 (planned)
+
+> **arch sim C++ testbench interface (Verilator-compatible)**
+>
+> // Ports map to public fields: dut-\>clk, dut-\>rst, dut-\>data_in
+>
+> // Wide ports (UInt\<N\> where N\>64) use VlWide\<WORDS\>:
+>
+> // dut-\>key.data() returns uint32_t\* (word 0 = LSB, word N-1 = MSB)
+>
+> // Standard cycle loop:
+>
+> auto tick = \[\&\]() \{ dut-\>clk=0; dut-\>eval(); dut-\>clk=1; dut-\>eval(); \};
+>
+> // Compile: g++ -std=c++17 build/verilated.cpp build/V\*.cpp tb.cpp -Ibuild -o sim
 
 **6. AI Prompting Patterns**
 
