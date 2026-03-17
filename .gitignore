@@ -1,0 +1,11 @@
+# Rust build artifacts
+/target/
+
+# Verilator simulation build artifacts
+obj_dir/
+
+# Generated HTML from docs
+*.html
+
+# macOS
+.DS_Store
