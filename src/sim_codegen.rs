@@ -192,6 +192,20 @@ fn cpp_internal_type(ty: &TypeExpr) -> String {
     }
 }
 
+/// If `ty` is Vec<T, N>, return (elem_cpp_type, count_string).
+fn vec_array_info(ty: &TypeExpr) -> Option<(String, String)> {
+    if let TypeExpr::Vec(elem, count_expr) = ty {
+        let elem_type = cpp_internal_type(elem);
+        let count_str = match &count_expr.kind {
+            ExprKind::Literal(LitKind::Dec(v)) => v.to_string(),
+            _ => "0".to_string(),
+        };
+        Some((elem_type, count_str))
+    } else {
+        None
+    }
+}
+
 /// Smallest C++ unsigned integer type that fits `bits` (up to 64).
 fn cpp_uint(bits: u32) -> &'static str {
     if bits <= 8  { "uint8_t" }
@@ -438,7 +452,7 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
         }
 
         ExprKind::Index(base, idx) => {
-            let b = cpp_expr(base, ctx);
+            let b = cpp_expr_inner(base, ctx, is_lhs);
             let i = cpp_expr(idx, ctx);
             format!("{b}[{i}]")
         }
@@ -950,9 +964,23 @@ impl<'a> SimCodegen<'a> {
             .filter(|p| !wide_names.contains(&p.name.name))
             .map(|p| format!("{}(0)", p.name.name))
             .collect();
+        // Collect Vec-array regs that need memset in constructor body
+        let vec_reg_inits: Vec<String> = m.body.iter()
+            .filter_map(|i| {
+                if let ModuleBodyItem::RegDecl(r) = i {
+                    if vec_array_info(&r.ty).is_some() {
+                        let n = &r.name.name;
+                        Some(format!("    memset(_{n}, 0, sizeof(_{n}));"))
+                    } else { None }
+                } else { None }
+            })
+            .collect();
+
         let reg_inits: Vec<String> = m.body.iter()
             .filter_map(|i| if let ModuleBodyItem::RegDecl(r) = i {
-                if wide_names.contains(&r.name.name) {
+                if vec_array_info(&r.ty).is_some() {
+                    None  // handled via memset in constructor body
+                } else if wide_names.contains(&r.name.name) {
                     Some(format!("_{}()", r.name.name))  // VlWide or _arch_u128 zero-inits
                 } else {
                     let init_val = match &r.init.kind {
@@ -970,7 +998,13 @@ impl<'a> SimCodegen<'a> {
             .chain(clk_init)
             .collect();
 
-        h.push_str(&format!("  {class}() : {} {{}}\n", all_inits.join(", ")));
+        if vec_reg_inits.is_empty() {
+            h.push_str(&format!("  {class}() : {} {{}}\n", all_inits.join(", ")));
+        } else {
+            h.push_str(&format!("  {class}() : {} {{\n", all_inits.join(", ")));
+            for line in &vec_reg_inits { h.push_str(&format!("{line}\n")); }
+            h.push_str("  }\n");
+        }
         h.push_str("  void eval();\n");
         h.push_str("  void eval_comb();\n");
         h.push_str("  void eval_posedge();\n");
@@ -981,8 +1015,12 @@ impl<'a> SimCodegen<'a> {
         // Private reg fields
         for item in &m.body {
             if let ModuleBodyItem::RegDecl(r) = item {
-                let ty = cpp_internal_type(&r.ty);
-                h.push_str(&format!("  {ty} _{};\n", r.name.name));
+                if let Some((elem_ty, count)) = vec_array_info(&r.ty) {
+                    h.push_str(&format!("  {elem_ty} _{}[{count}];\n", r.name.name));
+                } else {
+                    let ty = cpp_internal_type(&r.ty);
+                    h.push_str(&format!("  {ty} _{};\n", r.name.name));
+                }
             }
         }
 
@@ -1116,8 +1154,13 @@ impl<'a> SimCodegen<'a> {
         if !reg_blocks.is_empty() {
             // Declare _n_ temporaries for all regs
             for rd in &reg_decls {
-                let ty = cpp_internal_type(&rd.ty);
-                cpp.push_str(&format!("  {ty} _n_{} = _{};\n", rd.name.name, rd.name.name));
+                let n = &rd.name.name;
+                if let Some((elem_ty, count)) = vec_array_info(&rd.ty) {
+                    cpp.push_str(&format!("  {elem_ty} _n_{n}[{count}]; memcpy(_n_{n}, _{n}, sizeof(_{n}));\n"));
+                } else {
+                    let ty = cpp_internal_type(&rd.ty);
+                    cpp.push_str(&format!("  {ty} _n_{n} = _{n};\n"));
+                }
             }
             cpp.push('\n');
 
@@ -1169,7 +1212,12 @@ impl<'a> SimCodegen<'a> {
 
             cpp.push('\n');
             for rd in &reg_decls {
-                cpp.push_str(&format!("  _{} = _n_{};\n", rd.name.name, rd.name.name));
+                let n = &rd.name.name;
+                if vec_array_info(&rd.ty).is_some() {
+                    cpp.push_str(&format!("  memcpy(_{n}, _n_{n}, sizeof(_{n}));\n"));
+                } else {
+                    cpp.push_str(&format!("  _{n} = _n_{n};\n"));
+                }
             }
         }
         cpp.push_str("}\n\n");
