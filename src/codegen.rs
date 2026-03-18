@@ -2844,34 +2844,54 @@ impl<'a> Codegen<'a> {
     // ── Regfile ───────────────────────────────────────────────────────────────
 
     fn emit_regfile(&mut self, r: &crate::ast::RegfileDecl) {
+        use crate::ast::{ParamKind, ExprKind, LitKind};
         let n = &r.name.name.clone();
 
-        // Find NREGS, DATA_WIDTH params
-        let nregs_str = r.params.iter()
-            .find(|p| p.name.name == "NREGS")
-            .and_then(|p| p.default.as_ref())
-            .map(|e| self.emit_expr_str(e))
+        // Helper: resolve a param by name to its default integer value.
+        let param_int = |name: &str, default: u64| -> u64 {
+            r.params.iter()
+                .find(|p| p.name.name == name)
+                .and_then(|p| p.default.as_ref())
+                .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(*v) } else { None })
+                .unwrap_or(default)
+        };
+
+        // Helper: resolve a count_expr — literal or param-name reference.
+        let resolve_count = |expr: &crate::ast::Expr| -> u64 {
+            match &expr.kind {
+                ExprKind::Literal(LitKind::Dec(v)) => *v,
+                ExprKind::Ident(name) => param_int(name, 1),
+                _ => 1,
+            }
+        };
+
+        let nregs = param_int("NREGS", 32);
+        let nregs_str = nregs.to_string();
+
+        // Data width: prefer the UInt<N> type of the data signal in the write port,
+        // then fall back to XLEN/WIDTH/DATA_WIDTH params.
+        let data_width_num: String = r.write_ports.as_ref()
+            .and_then(|wp| wp.signals.iter().find(|s| s.name.name == "data"))
+            .and_then(|s| if let TypeExpr::UInt(w) = &s.ty { Some(self.emit_expr_str(w)) } else { None })
+            .or_else(|| {
+                r.params.iter()
+                    .find(|p| matches!(p.name.name.as_str(), "XLEN" | "WIDTH" | "DATA_WIDTH"))
+                    .and_then(|p| match &p.kind {
+                        ParamKind::Const => p.default.as_ref().map(|e| self.emit_expr_str(e)),
+                        _ => None,
+                    })
+            })
             .unwrap_or_else(|| "32".to_string());
 
-        let data_width_ty = r.params.iter()
-            .find(|p| p.name.name == "WIDTH" || p.name.name == "DATA_WIDTH")
-            .and_then(|p| match &p.kind {
-                crate::ast::ParamKind::Type(ty) => Some(self.emit_port_type_str(ty)),
-                _ => None,
-            })
-            .unwrap_or_else(|| "logic [7:0]".to_string());
-        let data_width_num = self.width_of_type_str(&data_width_ty);
-
         // Determine addr width: ceil(log2(NREGS))
-        let nregs_int: u64 = nregs_str.parse().unwrap_or(32);
-        let addr_width = if nregs_int <= 1 { 1 } else { (nregs_int as f64).log2().ceil() as u32 };
+        let addr_width = if nregs <= 1 { 1u32 } else { (nregs as f64).log2().ceil() as u32 };
 
-        // Read/write port counts
+        // Read/write port counts — resolve param references
         let nread = r.read_ports.as_ref()
-            .map(|rp| { let s = self.emit_expr_str(&rp.count_expr); s.parse::<u64>().unwrap_or(1) })
+            .map(|rp| resolve_count(&rp.count_expr))
             .unwrap_or(1);
         let nwrite = r.write_ports.as_ref()
-            .map(|wp| { let s = self.emit_expr_str(&wp.count_expr); s.parse::<u64>().unwrap_or(1) })
+            .map(|wp| resolve_count(&wp.count_expr))
             .unwrap_or(1);
 
         let clk = r.ports.iter()
@@ -2881,10 +2901,15 @@ impl<'a> Codegen<'a> {
         let (rst, is_async, is_low) = Self::extract_reset_info(&r.ports);
 
         // ── Module header ─────────────────────────────────────────────────────
+        // Emit one SV parameter per ARCH param declaration
         self.line(&format!("module {n} #("));
         self.indent += 1;
-        self.line(&format!("parameter int NREGS = {nregs_str},"));
-        self.line(&format!("parameter int DATA_WIDTH = {data_width_num}"));
+        let param_count = r.params.len();
+        for (i, p) in r.params.iter().enumerate() {
+            let comma = if i < param_count - 1 { "," } else { "" };
+            let val = p.default.as_ref().map(|e| self.emit_expr_str(e)).unwrap_or_else(|| "0".to_string());
+            self.line(&format!("parameter int {} = {}{}", p.name.name, val, comma));
+        }
         self.indent -= 1;
         self.line(") (");
         self.indent += 1;
@@ -2941,7 +2966,7 @@ impl<'a> Codegen<'a> {
         self.indent += 1;
 
         // ── Register array ────────────────────────────────────────────────────
-        self.line(&format!("logic [DATA_WIDTH-1:0] rf_data [0:NREGS-1];"));
+        self.line(&format!("logic [{data_width_num}-1:0] rf_data [0:NREGS-1];"));
         self.line("");
 
         // ── Determine read/write port signal names (flat) ─────────────────────
@@ -2954,33 +2979,66 @@ impl<'a> Codegen<'a> {
         };
 
         // ── Write always_ff ───────────────────────────────────────────────────
-        let ff_sens = Self::ff_sensitivity(&clk, &rst, is_async, is_low);
-        let rst_cond = Self::rst_condition(&rst, is_low);
+        // Collect init-guarded addresses: init[k]=v means addr k is immutable
+        // (implemented as a write guard), not as a reset.
+        let guarded_addrs: Vec<String> = r.inits.iter()
+            .map(|init| self.emit_expr_str(&init.index))
+            .collect();
+
+        // Only include reset sensitivity when a reset port is actually present
+        // and there are reset-driven init entries. For register files that use
+        // write guards for x0 (not reset), emit plain posedge-only always_ff.
+        let has_reset_port = !rst.is_empty();
+        let use_reset = has_reset_port && r.inits.iter().any(|_| false); // reserved for future explicit reset-on-init
+
+        let ff_sens = if use_reset {
+            Self::ff_sensitivity(&clk, &rst, is_async, is_low)
+        } else {
+            format!("posedge {clk}")
+        };
 
         self.line(&format!("always_ff @({ff_sens}) begin"));
         self.indent += 1;
-        self.line(&format!("if ({rst_cond}) begin"));
-        self.indent += 1;
-        for init in &r.inits {
-            let idx = self.emit_expr_str(&init.index);
-            let val = self.emit_expr_str(&init.value);
-            self.line(&format!("rf_data[{idx}] <= {val};"));
+
+        if use_reset {
+            let rst_cond = Self::rst_condition(&rst, is_low);
+            self.line(&format!("if ({rst_cond}) begin"));
+            self.indent += 1;
+            for init in &r.inits {
+                let idx = self.emit_expr_str(&init.index);
+                let val = self.emit_expr_str(&init.value);
+                self.line(&format!("rf_data[{idx}] <= {val};"));
+            }
+            self.indent -= 1;
+            self.line("end else begin");
+            self.indent += 1;
         }
-        self.indent -= 1;
-        self.line("end else begin");
-        self.indent += 1;
-        // Unroll write ports
+
+        // Unroll write ports; add address guards for init[k] entries
         for wi in 0..nwrite {
             let wen   = flat(&write_pfx, wi, nwrite, "en");
             let waddr = flat(&write_pfx, wi, nwrite, "addr");
             let wdata = flat(&write_pfx, wi, nwrite, "data");
-            self.line(&format!("if ({wen})"));
+            // Build guard: skip writes to any init-protected address
+            let addr_guards: Vec<String> = guarded_addrs.iter()
+                .map(|a| format!("{waddr} != {a}"))
+                .collect();
+            let guard = if addr_guards.is_empty() {
+                wen.clone()
+            } else {
+                format!("{wen} && {}", addr_guards.join(" && "))
+            };
+            self.line(&format!("if ({guard})"));
             self.indent += 1;
             self.line(&format!("rf_data[{waddr}] <= {wdata};"));
             self.indent -= 1;
         }
-        self.indent -= 1;
-        self.line("end");
+
+        if use_reset {
+            self.indent -= 1;
+            self.line("end");
+        }
+
         self.indent -= 1;
         self.line("end");
         self.line("");
