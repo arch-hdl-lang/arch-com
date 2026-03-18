@@ -57,10 +57,11 @@ impl<'a> SimCodegen<'a> {
 
         for item in &self.source.items {
             match item {
-                Item::Module(m)  => models.push(self.gen_module(m)),
-                Item::Counter(c) => models.push(self.gen_counter(c)),
-                Item::Fsm(f)     => models.push(self.gen_fsm(f)),
-                _ => {} // fifo/ram/arbiter/regfile: TODO
+                Item::Module(m)   => models.push(self.gen_module(m)),
+                Item::Counter(c)  => models.push(self.gen_counter(c)),
+                Item::Fsm(f)      => models.push(self.gen_fsm(f)),
+                Item::Regfile(r)  => models.push(self.gen_regfile(r)),
+                _ => {} // fifo/ram/arbiter: TODO
             }
         }
         models
@@ -1493,6 +1494,135 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str("      break;\n    }\n");
         }
         cpp.push_str("  }\n}\n");
+
+        SimModel { class_name: class, header: h, impl_: cpp }
+    }
+}
+
+// ── Regfile codegen ───────────────────────────────────────────────────────────
+
+impl<'a> SimCodegen<'a> {
+    fn gen_regfile(&self, r: &RegfileDecl) -> SimModel {
+        use crate::ast::{ExprKind, LitKind};
+
+        let name  = &r.name.name;
+        let class = format!("V{name}");
+
+        // Resolve a param by name to its default integer value
+        let param_int = |pname: &str, default: u64| -> u64 {
+            r.params.iter()
+                .find(|p| p.name.name == pname)
+                .and_then(|p| p.default.as_ref())
+                .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(*v) } else { None })
+                .unwrap_or(default)
+        };
+        let resolve_count = |expr: &Expr| -> u64 {
+            match &expr.kind {
+                ExprKind::Literal(LitKind::Dec(v)) => *v,
+                ExprKind::Ident(n) => param_int(n, 1),
+                _ => 1,
+            }
+        };
+
+        let nregs  = param_int("NREGS", 32) as usize;
+        let nread  = r.read_ports.as_ref().map(|rp| resolve_count(&rp.count_expr)).unwrap_or(1) as usize;
+        let nwrite = r.write_ports.as_ref().map(|wp| resolve_count(&wp.count_expr)).unwrap_or(1) as usize;
+
+        // C++ type for one register element (from the write data signal type)
+        let elem_cpp = r.write_ports.as_ref()
+            .and_then(|wp| wp.signals.iter().find(|s| s.name.name == "data"))
+            .map(|s| cpp_internal_type(&s.ty))
+            .unwrap_or_else(|| "uint32_t".to_string());
+
+        // Flat port name: "{pfx}_{sig}" when count==1, "{pfx}{i}_{sig}" otherwise
+        let flat = |pfx: &str, i: usize, count: usize, sig: &str| -> String {
+            if count == 1 { format!("{pfx}_{sig}") } else { format!("{pfx}{i}_{sig}") }
+        };
+
+        let clk_port  = r.ports.iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            .map(|p| p.name.name.clone())
+            .unwrap_or_else(|| "clk".to_string());
+        let read_pfx  = r.read_ports.as_ref().map(|rp| rp.name.name.clone()).unwrap_or_else(|| "read".to_string());
+        let write_pfx = r.write_ports.as_ref().map(|wp| wp.name.name.clone()).unwrap_or_else(|| "write".to_string());
+
+        // Addresses that are permanently fixed (init [k] = v ⇒ k is write-guarded)
+        let guarded: Vec<u64> = r.inits.iter()
+            .filter_map(|init| if let ExprKind::Literal(LitKind::Dec(v)) = &init.index.kind { Some(*v) } else { None })
+            .collect();
+
+        // ── Header ────────────────────────────────────────────────────────────
+        let mut h = String::new();
+        h.push_str(&format!("#pragma once\n#include <cstdint>\n#include <cstring>\n#include \"verilated.h\"\n\nclass {class} {{\npublic:\n"));
+
+        for p in &r.ports {
+            h.push_str(&format!("  {} {};\n", cpp_port_type(&p.ty), p.name.name));
+        }
+        if let Some(rp) = &r.read_ports {
+            for i in 0..nread {
+                for s in &rp.signals {
+                    h.push_str(&format!("  {} {};\n", cpp_port_type(&s.ty), flat(&read_pfx, i, nread, &s.name.name)));
+                }
+            }
+        }
+        if let Some(wp) = &r.write_ports {
+            for i in 0..nwrite {
+                for s in &wp.signals {
+                    h.push_str(&format!("  {} {};\n", cpp_port_type(&s.ty), flat(&write_pfx, i, nwrite, &s.name.name)));
+                }
+            }
+        }
+        h.push('\n');
+
+        // Constructor init list (all scalars = 0) + memset for rf array
+        let mut inits: Vec<String> = r.ports.iter().map(|p| format!("{}(0)", p.name.name)).collect();
+        if let Some(rp) = &r.read_ports {
+            for i in 0..nread { for s in &rp.signals { inits.push(format!("{}(0)", flat(&read_pfx, i, nread, &s.name.name))); } }
+        }
+        if let Some(wp) = &r.write_ports {
+            for i in 0..nwrite { for s in &wp.signals { inits.push(format!("{}(0)", flat(&write_pfx, i, nwrite, &s.name.name))); } }
+        }
+        inits.push("_clk_prev(0)".to_string());
+
+        h.push_str(&format!("  {class}() : {} {{\n    memset(_rf, 0, sizeof(_rf));\n  }}\n", inits.join(", ")));
+        h.push_str("  void eval();\n  void eval_comb();\n  void eval_posedge();\n  void final() {}\n\nprivate:\n");
+        h.push_str("  uint8_t _clk_prev;\n");
+        h.push_str(&format!("  {elem_cpp} _rf[{nregs}];\n}};\n"));
+
+        // ── Implementation ────────────────────────────────────────────────────
+        let mut cpp = String::new();
+        cpp.push_str(&format!("#include \"{class}.h\"\n\n"));
+
+        // eval()
+        cpp.push_str(&format!("void {class}::eval() {{\n  bool _rising = ({clk_port} && !_clk_prev);\n  _clk_prev = {clk_port};\n  eval_comb();\n  if (_rising) eval_posedge();\n  eval_comb();\n}}\n\n"));
+
+        // eval_posedge(): write ports with address guards for init-protected entries
+        cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
+        for wi in 0..nwrite {
+            let wen   = flat(&write_pfx, wi, nwrite, "en");
+            let waddr = flat(&write_pfx, wi, nwrite, "addr");
+            let wdata = flat(&write_pfx, wi, nwrite, "data");
+            let mut cond = wen.clone();
+            for g in &guarded { cond.push_str(&format!(" && {waddr} != {g}")); }
+            cpp.push_str(&format!("  if ({cond})\n    _rf[{waddr}] = {wdata};\n"));
+        }
+        cpp.push_str("}\n\n");
+
+        // eval_comb(): async reads, optional write-before-read bypass
+        cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
+        for ri in 0..nread {
+            let raddr = flat(&read_pfx, ri, nread, "addr");
+            let rdata = flat(&read_pfx, ri, nread, "data");
+            if r.forward_write_before_read && nwrite > 0 {
+                let wen   = flat(&write_pfx, 0, nwrite, "en");
+                let waddr = flat(&write_pfx, 0, nwrite, "addr");
+                let wdata = flat(&write_pfx, 0, nwrite, "data");
+                cpp.push_str(&format!("  {rdata} = ({wen} && {waddr} == {raddr}) ? {wdata} : _rf[{raddr}];\n"));
+            } else {
+                cpp.push_str(&format!("  {rdata} = _rf[{raddr}];\n"));
+            }
+        }
+        cpp.push_str("}\n");
 
         SimModel { class_name: class, header: h, impl_: cpp }
     }
