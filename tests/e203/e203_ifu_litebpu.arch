@@ -1,0 +1,101 @@
+// E203 HBirdv2 static branch prediction unit (LiteBPU)
+// Handles JAL (always taken), JALR (always taken), and Bxx (taken if backward).
+// Generates PC-adder operands and stall signal for data-dependent JALR.
+
+module LiteBpu
+  param PC_SIZE:      const = 32;
+  param XLEN:         const = 32;
+  param RFIDX_WIDTH:  const = 5;
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  // Decode signals
+  port pc:                      in UInt<32>;
+  port dec_jal:                 in Bool;
+  port dec_jalr:                in Bool;
+  port dec_bxx:                 in Bool;
+  port dec_bjp_imm:             in UInt<32>;
+  port dec_jalr_rs1idx:         in UInt<5>;
+
+  // Pipeline hazard state
+  port oitf_empty:              in Bool;
+  port ir_empty:                in Bool;
+  port ir_rs1en:                in Bool;
+  port jalr_rs1idx_cam_irrdidx: in Bool;
+  port dec_i_valid:             in Bool;
+  port ir_valid_clr:            in Bool;
+
+  // Register file read-back
+  port rf2bpu_x1:   in UInt<32>;
+  port rf2bpu_rs1:  in UInt<32>;
+
+  // Outputs
+  port prdt_taken:       out Bool;
+  port prdt_pc_add_op1:  out UInt<32>;
+  port prdt_pc_add_op2:  out UInt<32>;
+  port bpu_wait:         out Bool;
+  port bpu2rf_rs1_ena:   out Bool;
+
+  // State: tracks whether an xN regfile read is pending
+  reg rs1xn_rdrf_r: Bool init 0 reset rst_n;
+
+  // ── Combinational intermediates ──────────────────────────────────────────
+
+  // rs1 classification for JALR
+  let dec_jalr_rs1x0 = (dec_jalr_rs1idx == 0);
+  let dec_jalr_rs1x1 = (dec_jalr_rs1idx == 1);
+  let dec_jalr_rs1xn = ~dec_jalr_rs1x0 & ~dec_jalr_rs1x1;
+
+  // Immediate sign bit (negative = backward branch)
+  let bjp_imm_neg = (dec_bjp_imm >> 31) != 0;
+
+  // x1 dependency: OITF not empty, or IR target matches x1
+  let jalr_rs1x1_dep = ~oitf_empty | jalr_rs1idx_cam_irrdidx;
+
+  // xn dependency: OITF not empty, or IR has active rs1 match (not being cleared)
+  let jalr_rs1xn_dep = ~oitf_empty | (~ir_empty & ir_rs1en & jalr_rs1idx_cam_irrdidx & ~ir_valid_clr);
+
+  // xn dep being cleared this cycle (IR match + ir_valid_clr)
+  let jalr_rs1xn_dep_ir_clr = ~ir_empty & ir_rs1en & jalr_rs1idx_cam_irrdidx & ir_valid_clr;
+
+  // Regfile read request: issued when dep is clear (or clearing), and not already pending
+  let rs1xn_rdrf_set = ~rs1xn_rdrf_r & dec_i_valid & dec_jalr & dec_jalr_rs1xn &
+                       (~jalr_rs1xn_dep | jalr_rs1xn_dep_ir_clr);
+
+  // ── State machine ────────────────────────────────────────────────────────
+  // rs1xn_rdrf_r is set by rs1xn_rdrf_set and self-clears after one cycle.
+  always on clk rising
+    rs1xn_rdrf_r <= rs1xn_rdrf_set;
+  end always
+
+  // ── Combinational outputs ─────────────────────────────────────────────────
+  comb
+    // JAL/JALR: always taken; Bxx: taken if backward (negative offset)
+    prdt_taken = dec_jal | dec_jalr | (dec_bxx & bjp_imm_neg);
+
+    // PC-adder op2 is always the branch immediate (truncated to PC_SIZE bits)
+    prdt_pc_add_op2 = dec_bjp_imm;
+
+    // BPU wait: JALR x1 dep unresolved, or JALR xN dep unresolved and read not issued
+    bpu_wait = (dec_jalr & dec_jalr_rs1x1 & jalr_rs1x1_dep) |
+               (dec_jalr & dec_jalr_rs1xn & jalr_rs1xn_dep & ~rs1xn_rdrf_r);
+
+    // Issue regfile read for xN
+    bpu2rf_rs1_ena = rs1xn_rdrf_set;
+
+    // PC-adder op1: rs1 value for JALR, PC for JAL/Bxx
+    if dec_jalr
+      if dec_jalr_rs1x0
+        prdt_pc_add_op1 = 0;
+      else if dec_jalr_rs1x1
+        prdt_pc_add_op1 = rf2bpu_x1;
+      else
+        prdt_pc_add_op1 = rf2bpu_rs1;
+      end if
+    else
+      prdt_pc_add_op1 = pc;
+    end if
+  end comb
+
+end module LiteBpu

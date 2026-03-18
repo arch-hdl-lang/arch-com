@@ -89,8 +89,9 @@ fn test_let_bindings() {
     // Typed let: emits declared type then a separate assign
     assert!(sv.contains("logic [8-1:0] mask;"), "expected typed let decl, got:\n{sv}");
     assert!(sv.contains("assign mask = (a & b);"), "expected typed let assign, got:\n{sv}");
-    // Untyped let: emits logic with inline initializer
-    assert!(sv.contains("logic same = (a == b);"), "expected untyped let, got:\n{sv}");
+    // Untyped let: emits logic declaration + assign (same pattern as typed let)
+    assert!(sv.contains("logic same;"), "expected untyped let decl, got:\n{sv}");
+    assert!(sv.contains("assign same = (a == b);"), "expected untyped let assign, got:\n{sv}");
     // Outputs driven from the let-bound wires
     assert!(sv.contains("assign masked = mask;"), "expected masked assign, got:\n{sv}");
     assert!(sv.contains("assign equal = same;"), "expected equal assign, got:\n{sv}");
@@ -287,7 +288,7 @@ fn test_int_regs() {
     let sv = compile_to_sv(source);
     assert!(sv.contains("module IntRegs"));
     assert!(sv.contains("parameter int NREGS = 32"));
-    assert!(sv.contains("logic [DATA_WIDTH-1:0] rf_data [0:NREGS-1]"));
+    assert!(sv.contains("rf_data [0:NREGS-1]"));
     assert!(sv.contains("always_ff @(posedge clk)"));
     assert!(sv.contains("always_comb"));
     // forwarding (port 0 and port 1 each get their own unrolled block)

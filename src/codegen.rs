@@ -303,7 +303,8 @@ impl<'a> Codegen<'a> {
                         self.line(&format!("{} {};", ty_str, l.name.name));
                         self.line(&format!("assign {} = {};", l.name.name, val_str));
                     } else {
-                        self.line(&format!("logic {} = {};", l.name.name, val_str));
+                        self.line(&format!("logic {};", l.name.name));
+                        self.line(&format!("assign {} = {};", l.name.name, val_str));
                     }
                 }
                 ModuleBodyItem::CombBlock(cb) => self.emit_comb_block(cb),
