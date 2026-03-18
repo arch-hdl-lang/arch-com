@@ -393,7 +393,9 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             let o = cpp_expr(operand, ctx);
             match op {
                 UnaryOp::Not    => format!("(!{o})"),
-                UnaryOp::BitNot => format!("(~{o})"),
+                // ~ on Bool/1-bit: logical ! so uint8_t(0)→1, uint8_t(1)→0.
+                // Bitwise ~ gives 0xFF for 0 which breaks Bool comparisons.
+                UnaryOp::BitNot => format!("(uint8_t)(!({o}))"),
                 UnaryOp::Neg    => format!("(-{o})"),
             }
         }

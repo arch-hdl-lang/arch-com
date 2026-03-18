@@ -1,0 +1,50 @@
+// E203 HBirdv2 write-back arbiter
+// Arbitrates between ALU (lower priority) and long-pipeline (higher priority)
+// write-back requests, forwarding the winner to the integer register file.
+// Purely combinational — no registers, no reset used.
+
+module ExuWbck
+  param XLEN:        const = 32;
+  param RFIDX_WIDTH: const = 5;
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;  // present for interface compatibility; unused
+
+  // ALU write-back (lower priority)
+  port alu_wbck_i_valid:  in  Bool;
+  port alu_wbck_i_ready:  out Bool;
+  port alu_wbck_i_wdat:   in  UInt<32>;
+  port alu_wbck_i_rdidx:  in  UInt<5>;
+
+  // Long-pipeline write-back (higher priority)
+  port longp_wbck_i_valid:  in  Bool;
+  port longp_wbck_i_ready:  out Bool;
+  port longp_wbck_i_wdat:   in  UInt<32>;
+  port longp_wbck_i_flags:  in  UInt<5>;
+  port longp_wbck_i_rdidx:  in  UInt<5>;
+  port longp_wbck_i_rdfpu:  in  Bool;
+
+  // Register file write port
+  port rf_wbck_o_ena:   out Bool;
+  port rf_wbck_o_wdat:  out UInt<32>;
+  port rf_wbck_o_rdidx: out UInt<5>;
+
+  comb
+    // RF is always ready; longp has unconditional priority.
+    longp_wbck_i_ready = 1;
+    alu_wbck_i_ready   = ~longp_wbck_i_valid;
+
+    // Data / index mux: longp wins when valid
+    if longp_wbck_i_valid
+      rf_wbck_o_wdat  = longp_wbck_i_wdat;
+      rf_wbck_o_rdidx = longp_wbck_i_rdidx;
+      // Write enable: suppress if longp is writing to FPU register
+      rf_wbck_o_ena   = ~longp_wbck_i_rdfpu;
+    else
+      rf_wbck_o_wdat  = alu_wbck_i_wdat;
+      rf_wbck_o_rdidx = alu_wbck_i_rdidx;
+      rf_wbck_o_ena   = alu_wbck_i_valid;
+    end if
+  end comb
+
+end module ExuWbck
