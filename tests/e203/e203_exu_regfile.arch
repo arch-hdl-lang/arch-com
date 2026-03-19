@@ -1,52 +1,30 @@
 // E203 HBirdv2 integer register file
 // 32 × 32-bit, 2 async read ports, 1 sync write port.
-// x0 is hardwired to 0: initialized to 0 and guarded from writes.
-// Registers carry no reset; rst_n and test_mode are present only to
-// match the external interface.
+// x0 hardwired to 0 via init[0]=0 and write guard in the pipeline.
+// No reset on data entries (matches E203 spec).
 
-module ExuRegfile
-  param XLEN:       const = 32;
-  param RFIDX_WIDTH: const = 5;
-  param RFREG_NUM:  const = 32;
+regfile ExuRegfile
+  param XLEN:   const = 32;
+  param NREGS:  const = 32;
+  param NREAD:  const = 2;
+  param NWRITE: const = 1;
 
-  port clk:           in Clock<SysDomain>;
-  port rst_n:         in Reset<Async, Low>;   // not used — regfile has no reset
-  port test_mode:     in Bool;                // not used in DFF path
+  port clk:    in Clock<SysDomain>;
+  port rst_n:  in Reset<Async, Low>;
+  port test_mode: in Bool;
 
-  // Read port 1
-  port read_src1_idx: in  UInt<5>;
-  port read_src1_dat: out UInt<32>;
+  ports[NREAD] read
+    addr: in  UInt<5>;
+    data: out UInt<32>;
+  end ports read
 
-  // Read port 2
-  port read_src2_idx: in  UInt<5>;
-  port read_src2_dat: out UInt<32>;
+  ports[NWRITE] write
+    en:   in Bool;
+    addr: in UInt<5>;
+    data: in UInt<32>;
+  end ports write
 
-  // Write port (writeback)
-  port wbck_dest_wen: in  Bool;
-  port wbck_dest_idx: in  UInt<5>;
-  port wbck_dest_dat: in  UInt<32>;
+  init [0] = 0;                    // x0 hardwired to 0
+  forward write_before_read: false; // no bypass — hazards resolved by pipeline
 
-  // Dedicated x1 (link register) read-out
-  port x1_r:          out UInt<32>;
-
-  // 32-entry register file; rf[0] is always 0 because it is never written
-  reg rf: Vec<UInt<32>, 32> init 0;
-
-  // Synchronous write — x0 is protected by the index guard
-  always on clk rising
-    if wbck_dest_wen & (wbck_dest_idx != 0)
-      rf[wbck_dest_idx] <= wbck_dest_dat;
-    end if
-  end always
-
-  // Asynchronous reads — rf[0] reads back 0 naturally
-  comb read_src1_dat = rf[read_src1_idx];
-  end comb
-
-  comb read_src2_dat = rf[read_src2_idx];
-  end comb
-
-  comb x1_r = rf[1];
-  end comb
-
-end module ExuRegfile
+end regfile ExuRegfile
