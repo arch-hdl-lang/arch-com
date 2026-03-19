@@ -393,9 +393,21 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             let o = cpp_expr(operand, ctx);
             match op {
                 UnaryOp::Not    => format!("(!{o})"),
-                // ~ on Bool/1-bit: logical ! so uint8_t(0)→1, uint8_t(1)→0.
-                // Bitwise ~ gives 0xFF for 0 which breaks Bool comparisons.
-                UnaryOp::BitNot => format!("(uint8_t)(!({o}))"),
+                UnaryOp::BitNot => {
+                    // Use logical ! (clamped to 0/1) only for 1-bit/Bool signals.
+                    // For wider types use bitwise ~.
+                    let is_one_bit = match &operand.kind {
+                        ExprKind::Ident(name) => {
+                            ctx.widths.get(name.as_str()).copied().unwrap_or(32) == 1
+                        }
+                        _ => false,
+                    };
+                    if is_one_bit {
+                        format!("(uint8_t)(!({o}))")
+                    } else {
+                        format!("(~({o}))")
+                    }
+                }
                 UnaryOp::Neg    => format!("(-{o})"),
             }
         }
@@ -498,6 +510,13 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
         ExprKind::Clog2(arg) => {
             let a = cpp_expr(arg, ctx);
             format!("_arch_clog2({a})")
+        }
+
+        ExprKind::Ternary(cond, then_expr, else_expr) => {
+            let c = cpp_expr(cond, ctx);
+            let t = cpp_expr(then_expr, ctx);
+            let e = cpp_expr(else_expr, ctx);
+            format!("(({c}) ? ({t}) : ({e}))")
         }
 
         ExprKind::FunctionCall(name, args) => {

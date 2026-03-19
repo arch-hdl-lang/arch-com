@@ -1004,7 +1004,26 @@ impl Parser {
 
     // --- Expression Parsing (Pratt) ---
     pub fn parse_expr(&mut self) -> Result<Expr, CompileError> {
-        self.parse_expr_bp(0)
+        self.parse_ternary()
+    }
+
+    /// Parse a ternary expression (lower precedence than all binary ops).
+    /// Right-associative: a ? b : c ? d : e  →  a ? b : (c ? d : e)
+    fn parse_ternary(&mut self) -> Result<Expr, CompileError> {
+        let cond = self.parse_expr_bp(0)?;
+        if self.check(TokenKind::Question) {
+            self.advance(); // consume `?`
+            let then_expr = self.parse_ternary()?;
+            self.expect(TokenKind::Colon)?;
+            let else_expr = self.parse_ternary()?;
+            let span = cond.span.merge(else_expr.span);
+            Ok(Expr {
+                kind: ExprKind::Ternary(Box::new(cond), Box::new(then_expr), Box::new(else_expr)),
+                span,
+            })
+        } else {
+            Ok(cond)
+        }
     }
 
     fn parse_expr_bp(&mut self, min_bp: u8) -> Result<Expr, CompileError> {

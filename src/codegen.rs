@@ -2232,6 +2232,12 @@ impl<'a> Codegen<'a> {
                 }
                 result
             }
+            ExprKind::Ternary(cond, then_expr, else_expr) => {
+                let c = self.emit_expr_str(cond);
+                let t = self.emit_expr_str(then_expr);
+                let e = self.emit_expr_str(else_expr);
+                format!("({c}) ? ({t}) : ({e})")
+            }
             ExprKind::FunctionCall(name, args) => {
                 let arg_strs: Vec<String> = args.iter().map(|a| self.emit_expr_str(a)).collect();
                 // Resolve mangled name if this is an overloaded function.

@@ -13,7 +13,7 @@ module LetDemo
   let mask: UInt<8> = a & b;
 
   // Untyped let binding: type inferred from expression
-  let same = a == b;
+  let same: Bool = a == b;
 
   comb
     masked = mask;

@@ -395,6 +395,8 @@ pub enum ExprKind {
     Clog2(Box<Expr>),
     /// Pure combinational function call: Name(arg, ...)
     FunctionCall(String, Vec<Expr>),
+    /// Ternary conditional: cond ? then_expr : else_expr
+    Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
 }
 
 #[derive(Debug, Clone)]

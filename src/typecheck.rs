@@ -171,6 +171,15 @@ impl<'a> TypeChecker<'a> {
                 }
                 ModuleBodyItem::LetBinding(l) => {
                     self.check_snake_case(&l.name);
+                    if l.ty.is_none() {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "let binding '{}' requires an explicit type annotation: let {}: Type = ...",
+                                l.name.name, l.name.name
+                            ),
+                            l.span,
+                        ));
+                    }
                     let ty = self.resolve_expr_type(&l.value, &m.name.name, &local_types);
                     if let Some(declared_ty) = &l.ty {
                         let expected = self.resolve_type_expr(declared_ty, &m.name.name, &local_types);
@@ -719,6 +728,15 @@ impl<'a> TypeChecker<'a> {
                     Ty::UInt(bits as u32)
                 } else {
                     Ty::UInt(32) // fallback: treat as generic integer
+                }
+            }
+            ExprKind::Ternary(_cond, then_expr, else_expr) => {
+                // Return the type of the then branch; else branch should match.
+                let then_ty = self.resolve_expr_type(then_expr, module_name, local_types);
+                if matches!(then_ty, Ty::Error) {
+                    self.resolve_expr_type(else_expr, module_name, local_types)
+                } else {
+                    then_ty
                 }
             }
             ExprKind::FunctionCall(name, call_args) => {
