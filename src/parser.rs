@@ -39,8 +39,9 @@ impl Parser {
             Some(TokenKind::Regfile) => Ok(Item::Regfile(self.parse_regfile()?)),
             Some(TokenKind::Pipeline) => Ok(Item::Pipeline(self.parse_pipeline()?)),
             Some(TokenKind::Function) => Ok(Item::Function(self.parse_function()?)),
+            Some(TokenKind::Linklist) => Ok(Item::Linklist(self.parse_linklist()?)),
             Some(other) => Err(CompileError::unexpected_token(
-                "domain, struct, enum, module, fsm, fifo, ram, counter, arbiter, regfile, pipeline, or function",
+                "domain, struct, enum, module, fsm, fifo, ram, counter, arbiter, regfile, pipeline, function, or linklist",
                 &other.to_string(),
                 self.peek_span(),
             )),
@@ -1764,7 +1765,7 @@ impl Parser {
             }
             if self.check(TokenKind::Init) {
                 init = Some(self.parse_ram_init()?);
-            } else if self.check_ident("kind") {
+            } else if self.check(TokenKind::Kind) {
                 self.advance();
                 let val = self.expect_ident()?;
                 self.expect(TokenKind::Semi)?;
@@ -2395,6 +2396,19 @@ impl Parser {
     }
 
     fn expect_ident(&mut self) -> Result<Ident, CompileError> {
+        // Contextual keywords that are valid identifiers in non-keyword positions.
+        let contextual_name = match self.peek_kind() {
+            Some(TokenKind::Op)        => Some("op"),
+            Some(TokenKind::Track)     => Some("track"),
+            Some(TokenKind::Latency)   => Some("latency"),
+            Some(TokenKind::Pipelined) => Some("pipelined"),
+            Some(TokenKind::Kind)      => Some("kind"),
+            _ => None,
+        };
+        if let Some(name) = contextual_name {
+            let tok = self.advance();
+            return Ok(Ident::new(name.to_string(), tok.span));
+        }
         match self.peek_kind() {
             Some(TokenKind::Ident(name)) => {
                 let tok = self.advance();
@@ -2406,6 +2420,174 @@ impl Parser {
                 self.peek_span(),
             )),
         }
+    }
+
+    // ── Linklist ──────────────────────────────────────────────────────────────
+
+    fn parse_linklist(&mut self) -> Result<LinklistDecl, CompileError> {
+        let start = self.expect(TokenKind::Linklist)?.span;
+        let name = self.expect_ident()?;
+
+        let mut params = Vec::new();
+        let mut ports = Vec::new();
+        let mut kind: Option<LinklistKind> = None;
+        let mut track_tail = false;
+        let mut track_length = false;
+        let mut ops = Vec::new();
+
+        while !self.check_end_linklist() {
+            match self.peek_kind() {
+                Some(TokenKind::Param) => params.push(self.parse_param_decl()?),
+                Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
+                Some(TokenKind::Kind) => {
+                    self.advance(); // consume 'kind'
+                    let kw = self.expect_ident()?;
+                    kind = Some(match kw.name.as_str() {
+                        "singly"           => LinklistKind::Singly,
+                        "doubly"           => LinklistKind::Doubly,
+                        "circular_singly"  => LinklistKind::CircularSingly,
+                        "circular_doubly"  => LinklistKind::CircularDoubly,
+                        other => return Err(CompileError::unexpected_token(
+                            "singly, doubly, circular_singly, or circular_doubly",
+                            other, kw.span,
+                        )),
+                    });
+                    self.eat(TokenKind::Semi);
+                }
+                Some(TokenKind::Track) => {
+                    self.advance(); // consume 'track'
+                    let field = self.expect_ident()?;
+                    self.expect(TokenKind::Colon)?;
+                    let val = match self.peek_kind() {
+                        Some(TokenKind::True)  => { self.advance(); true }
+                        Some(TokenKind::False) => { self.advance(); false }
+                        Some(TokenKind::Ident(ref s)) if s == "true"  => { self.advance(); true }
+                        Some(TokenKind::Ident(ref s)) if s == "false" => { self.advance(); false }
+                        other => return Err(CompileError::unexpected_token(
+                            "true or false",
+                            &other.map(|k| k.to_string()).unwrap_or("EOF".into()),
+                            self.peek_span(),
+                        )),
+                    };
+                    self.eat(TokenKind::Semi);
+                    match field.name.as_str() {
+                        "tail"   => track_tail   = val,
+                        "length" => track_length = val,
+                        other => return Err(CompileError::unexpected_token(
+                            "tail or length", other, field.span,
+                        )),
+                    }
+                }
+                Some(TokenKind::Op) => ops.push(self.parse_op_decl()?),
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                    while !self.check(TokenKind::Semi) && !self.at_end() { self.advance(); }
+                    self.eat(TokenKind::Semi);
+                }
+                Some(other) => return Err(CompileError::unexpected_token(
+                    "param, port, kind, track, or op", &other.to_string(), self.peek_span(),
+                )),
+                None => return Err(CompileError::UnexpectedEof),
+            }
+        }
+
+        self.expect(TokenKind::End)?;
+        self.expect(TokenKind::Linklist)?;
+        let closing = self.expect_ident()?;
+        if closing.name != name.name {
+            return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+        }
+
+        Ok(LinklistDecl {
+            span: start.merge(closing.span),
+            name,
+            params,
+            ports,
+            kind: kind.unwrap_or(LinklistKind::Singly),
+            track_tail,
+            track_length,
+            ops,
+        })
+    }
+
+    fn parse_op_decl(&mut self) -> Result<OpDecl, CompileError> {
+        let start = self.expect(TokenKind::Op)?.span;
+        let name = self.expect_ident()?;
+
+        let mut latency: u32 = 1;
+        let mut pipelined = false;
+        let mut ports = Vec::new();
+
+        while !self.check_end_op() {
+            match self.peek_kind() {
+                Some(TokenKind::Latency) => {
+                    self.advance(); // consume 'latency'
+                    self.expect(TokenKind::Colon)?;
+                    match self.peek_kind() {
+                        Some(TokenKind::DecLiteral(ref s)) => {
+                            let s = s.clone();
+                            latency = s.parse::<u32>().unwrap_or(1);
+                            self.advance();
+                        }
+                        other => return Err(CompileError::unexpected_token(
+                            "integer literal", &other.map(|k| k.to_string()).unwrap_or("EOF".into()), self.peek_span(),
+                        )),
+                    }
+                    self.eat(TokenKind::Semi);
+                }
+                Some(TokenKind::Pipelined) => {
+                    self.advance(); // consume 'pipelined'
+                    self.expect(TokenKind::Colon)?;
+                    pipelined = match self.peek_kind() {
+                        Some(TokenKind::True)  => { self.advance(); true }
+                        Some(TokenKind::False) => { self.advance(); false }
+                        Some(TokenKind::Ident(ref s)) if s == "true"  => { self.advance(); true }
+                        Some(TokenKind::Ident(ref s)) if s == "false" => { self.advance(); false }
+                        other => return Err(CompileError::unexpected_token(
+                            "true or false",
+                            &other.map(|k| k.to_string()).unwrap_or("EOF".into()),
+                            self.peek_span(),
+                        )),
+                    };
+                    self.eat(TokenKind::Semi);
+                }
+                Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                    while !self.check(TokenKind::Semi) && !self.at_end() { self.advance(); }
+                    self.eat(TokenKind::Semi);
+                }
+                Some(other) => return Err(CompileError::unexpected_token(
+                    "latency, pipelined, or port", &other.to_string(), self.peek_span(),
+                )),
+                None => return Err(CompileError::UnexpectedEof),
+            }
+        }
+
+        self.expect(TokenKind::End)?;
+        self.expect(TokenKind::Op)?;
+        let closing = self.expect_ident()?;
+        if closing.name != name.name {
+            return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+        }
+
+        Ok(OpDecl {
+            span: start.merge(closing.span),
+            name,
+            latency,
+            pipelined,
+            ports,
+        })
+    }
+
+    fn check_end_linklist(&self) -> bool {
+        self.pos + 1 < self.tokens.len()
+            && self.tokens[self.pos].kind == TokenKind::End
+            && self.tokens[self.pos + 1].kind == TokenKind::Linklist
+    }
+
+    fn check_end_op(&self) -> bool {
+        self.pos + 1 < self.tokens.len()
+            && self.tokens[self.pos].kind == TokenKind::End
+            && self.tokens[self.pos + 1].kind == TokenKind::Op
     }
 }
 

@@ -114,6 +114,18 @@ pub enum TokenKind {
     From,
     #[token("forward")]
     Forward,
+    #[token("linklist")]
+    Linklist,
+    #[token("op")]
+    Op,
+    #[token("track")]
+    Track,
+    #[token("latency")]
+    Latency,
+    #[token("pipelined")]
+    Pipelined,
+    #[token("kind")]
+    Kind,
     #[token("state")]
     State,
     #[token("default")]
@@ -341,6 +353,12 @@ impl fmt::Display for TokenKind {
             TokenKind::Flush => write!(f, "flush"),
             TokenKind::From => write!(f, "from"),
             TokenKind::Forward => write!(f, "forward"),
+            TokenKind::Linklist => write!(f, "linklist"),
+            TokenKind::Op => write!(f, "op"),
+            TokenKind::Track => write!(f, "track"),
+            TokenKind::Latency => write!(f, "latency"),
+            TokenKind::Pipelined => write!(f, "pipelined"),
+            TokenKind::Kind => write!(f, "kind"),
             TokenKind::State => write!(f, "state"),
             TokenKind::Default => write!(f, "default"),
             TokenKind::Transition => write!(f, "transition"),

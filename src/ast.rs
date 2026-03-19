@@ -19,6 +19,7 @@ pub enum Item {
     Regfile(RegfileDecl),
     Pipeline(PipelineDecl),
     Function(FunctionDecl),
+    Linklist(LinklistDecl),
 }
 
 #[derive(Debug, Clone)]
@@ -475,6 +476,7 @@ impl Item {
             Item::Regfile(r) => r.span,
             Item::Pipeline(p) => p.span,
             Item::Function(f) => f.span,
+            Item::Linklist(l) => l.span,
         }
     }
 }
@@ -733,5 +735,37 @@ pub struct ForwardDecl {
     pub dest: Expr,
     pub source: Expr,
     pub condition: Expr,
+    pub span: Span,
+}
+
+// ── Linklist ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum LinklistKind {
+    Singly,
+    Doubly,
+    CircularSingly,
+    CircularDoubly,
+}
+
+#[derive(Debug, Clone)]
+pub struct LinklistDecl {
+    pub name: Ident,
+    pub params: Vec<ParamDecl>,
+    /// User-declared status ports (empty, full, length)
+    pub ports: Vec<PortDecl>,
+    pub kind: LinklistKind,
+    pub track_tail: bool,
+    pub track_length: bool,
+    pub ops: Vec<OpDecl>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct OpDecl {
+    pub name: Ident,
+    pub latency: u32,
+    pub pipelined: bool,
+    pub ports: Vec<PortDecl>,
     pub span: Span,
 }

@@ -1,7 +1,7 @@
 # ARCH Compiler — Status & Roadmap
 
-> Last updated: 2026-03-18
-> Compiler version: 0.13.0 (ternary `?:` operator; explicit `let` types; Bool≡UInt<1>; e203 alu_dpath + alu_bjp benchmarks)
+> Last updated: 2026-03-19
+> Compiler version: 0.14.0 (linklist construct: singly/doubly/circular variants; per-op FSM controllers; prev-pointer maintenance; arch sim C++ model generation verified against Verilator)
 
 ---
 
@@ -14,7 +14,7 @@
 | `arch check <file.arch>` | ✅ Parse + type-check; exits 0 on success |
 | `arch build <file.arch> [-o out.sv]` | ✅ Emits deterministic SystemVerilog |
 | `arch build a.arch b.arch` | ✅ Multi-file: concatenates + cross-resolves; one `.sv` per input (or single combined file with `-o`) |
-| `arch sim <file.arch> --tb <tb.cpp>` | ✅ Generates Verilator-compatible C++ models (`VName.h` + `VName.cpp` + `verilated.h`), compiles with `g++`, and runs; supports `module`, `counter`, `fsm`; `fifo`/`ram`/`arbiter`/`regfile` pending |
+| `arch sim <file.arch> --tb <tb.cpp>` | ✅ Generates Verilator-compatible C++ models (`VName.h` + `VName.cpp` + `verilated.h`), compiles with `g++`, and runs; supports `module`, `counter`, `fsm`, `linklist`; `fifo`/`ram`/`arbiter`/`regfile` pending |
 
 ---
 
@@ -43,7 +43,7 @@
 | `scoreboard` | ❌ | Not implemented |
 | `reorder_buf` | ❌ | Not implemented |
 | `pqueue` | ❌ | Not implemented |
-| `linklist` | ❌ | Not implemented |
+| `linklist` | ✅ | `singly`/`doubly`/`circular_singly`/`circular_doubly`; per-op FSM controllers; `insert_head`/`insert_tail`/`insert_after`/`delete_head`/`delete`/`next`/`prev`/`alloc`/`free`/`read_data`/`write_data`; doubly: `_prev_mem` updated on all insert ops; `arch sim` C++ model verified against Verilator output |
 | `interface` / `socket` | ❌ | TLM only; not implemented |
 
 ---
@@ -127,9 +127,9 @@
 
 ### Tests
 
-- 38 integration tests (snapshot + error-case), including `let` binding, `generate for`, `generate if`, mixed reset/no-reset partitioning, reset consistency validation, pipeline (simple, CPU 4-stage, instantiation, stage inst, bit-range trunc), `$clog2` in type args, function overloading, width mismatch errors, exhaustive match checking
+- 41 integration tests (snapshot + error-case), including `let` binding, `generate for`, `generate if`, mixed reset/no-reset partitioning, reset consistency validation, pipeline (simple, CPU 4-stage, instantiation, stage inst, bit-range trunc), `$clog2` in type args, function overloading, width mismatch errors, exhaustive match checking, linklist (basic singly + doubly)
 - 8 Verilator simulations: Counter, TrafficLight FSM, TxQueue sync FIFO, AsyncBridge async FIFO, SimpleMem RAM, WrapCounter, BusArbiter (round-robin), IntRegs (regfile + forwarding), CpuPipe 4-stage pipeline (reset, flow, stall, flush, forwarding)
-- 7 `arch sim` native C++ simulations verified: WrapCounter (`counter`), TrafficLight (`fsm`), Top+Counter (`module` with sub-instance), AesCipherTop (AES-128 full cipher with sub-instance + wide signals + functions), AesKeyExpand128 (key expansion with sub-instance timing), e203_exu_alu_dpath (26 tests), e203_exu_alu_bjp (25 tests — first clock-free module in test suite)
+- 9 `arch sim` native C++ simulations verified: WrapCounter (`counter`), TrafficLight (`fsm`), Top+Counter (`module` with sub-instance), AesCipherTop (AES-128 full cipher with sub-instance + wide signals + functions), AesKeyExpand128 (key expansion with sub-instance timing), e203_exu_alu_dpath (26 tests), e203_exu_alu_bjp (25 tests — first clock-free module in test suite), linklist_basic (singly FIFO; arch sim output identical to Verilator), linklist_doubly (doubly list with next/prev/insert_after; arch sim output identical to Verilator)
 - `arch sim` supports purely combinational modules (no `Clock<>` port): generated `eval()` skips `_rising` edge detection — testbenches call `eval()` directly without toggling a clock signal
 - AES-128 cipher benchmark (NIST FIPS-197 test vectors verified via `arch sim`): AesSbox + Xtime as pure combinational functions; AesCipherTop + AesKeyExpand128 using inline function calls replacing 32 `inst` blocks; wide `UInt<128>` ports via `VlWide<4>`; correct hierarchical posedge simultaneity (all `always_ff` blocks across parent + sub-instance fire atomically)
 - **E203 HBirdv2 benchmark suite** (5 modules from nuclei-sw E203 RISC-V core):
@@ -177,7 +177,7 @@
 | 9 | **`scoreboard`** | High | Issue/complete tracking, hazard detection |
 | 10 | **`reorder_buf`** | High | Out-of-order completion, in-order retirement |
 | 11 | **`pqueue`** | High | Priority queue with enqueue/dequeue |
-| 12 | **`linklist`** | High | Linked-list manager |
+| ~~12~~ | ~~**`linklist`**~~ | ~~High~~ | **DONE** — singly/doubly/circular variants; all standard ops; prev-pointer maintenance; arch sim C++ model |
 
 ### CLI & Backend
 

@@ -1120,3 +1120,146 @@ end module FifoCtrl
     assert!(sv.contains("$clog2(DEPTH)'("), "expected $clog2(DEPTH)'(...) size cast, got:\n{sv}");
     insta::assert_snapshot!(sv);
 }
+
+// ── Linklist tests ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_linklist_basic_compiles() {
+    let source = r#"
+linklist TaskQueue
+  param DEPTH: const = 8;
+  param DATA: type = UInt<32>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  kind singly;
+  track tail: true;
+  track length: true;
+  op alloc
+    latency: 1;
+    port req_valid:   in Bool;
+    port req_ready:   out Bool;
+    port resp_valid:  out Bool;
+    port resp_handle: out UInt<3>;
+  end op alloc
+  op free
+    latency: 1;
+    port req_valid:  in Bool;
+    port req_ready:  out Bool;
+    port req_handle: in UInt<3>;
+  end op free
+  op delete_head
+    latency: 2;
+    port req_valid:  in Bool;
+    port req_ready:  out Bool;
+    port resp_valid: out Bool;
+    port resp_data:  out DATA;
+  end op delete_head
+  port empty:  out Bool;
+  port full:   out Bool;
+  port length: out UInt<4>;
+end linklist TaskQueue
+"#;
+    let sv = compile_to_sv(source);
+    // Module header
+    assert!(sv.contains("module TaskQueue #("), "missing module header");
+    assert!(sv.contains("parameter int  DEPTH = 8"), "missing DEPTH param");
+    assert!(sv.contains("parameter type DATA"), "missing DATA param");
+    // Infrastructure signals
+    assert!(sv.contains("_fl_mem"), "missing free list memory");
+    assert!(sv.contains("_next_mem"), "missing next pointer RAM");
+    assert!(sv.contains("_head_r"), "missing head register");
+    assert!(sv.contains("_tail_r"), "missing tail register (track_tail: true)");
+    // Status outputs
+    assert!(sv.contains("assign empty"), "missing empty assign");
+    assert!(sv.contains("assign full"), "missing full assign");
+    assert!(sv.contains("assign length"), "missing length assign");
+    // Op ports
+    assert!(sv.contains("alloc_req_valid"), "missing alloc port");
+    assert!(sv.contains("delete_head_resp_data"), "missing delete_head resp_data port");
+    // alloc FSM
+    assert!(sv.contains("_fl_rdp <= _fl_rdp + 1'b1"), "missing free-list dequeue");
+    // delete_head 2-cycle FSM
+    assert!(sv.contains("_ctrl_delete_head_busy"), "missing delete_head busy reg");
+    assert!(sv.contains("_head_r <= _next_mem"), "missing head advance");
+    insta::assert_snapshot!(sv);
+}
+
+#[test]
+fn test_linklist_doubly_compiles() {
+    let source = r#"
+linklist SchedList
+  param DEPTH: const = 4;
+  param DATA: type = UInt<8>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  kind doubly;
+  track tail: true;
+  track length: false;
+  op alloc
+    latency: 1;
+    port req_valid:   in Bool;
+    port req_ready:   out Bool;
+    port resp_valid:  out Bool;
+    port resp_handle: out UInt<2>;
+  end op alloc
+  op next
+    latency: 1;
+    port req_valid:   in Bool;
+    port req_handle:  in UInt<2>;
+    port resp_valid:  out Bool;
+    port resp_handle: out UInt<2>;
+  end op next
+  op prev
+    latency: 1;
+    port req_valid:   in Bool;
+    port req_handle:  in UInt<2>;
+    port resp_valid:  out Bool;
+    port resp_handle: out UInt<2>;
+  end op prev
+  port empty: out Bool;
+  port full:  out Bool;
+end linklist SchedList
+"#;
+    let sv = compile_to_sv(source);
+    // Doubly-linked should have prev_mem
+    assert!(sv.contains("_prev_mem"), "doubly list missing _prev_mem");
+    assert!(sv.contains("_next_mem"), "missing _next_mem");
+    // prev op controller
+    assert!(sv.contains("_ctrl_prev_resp_handle <= _prev_mem"), "missing prev pointer follow");
+    insta::assert_snapshot!(sv);
+}
+
+#[test]
+fn test_linklist_prev_on_singly_is_error() {
+    let source = r#"
+linklist BadList
+  param DEPTH: const = 4;
+  param DATA: type = UInt<8>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  kind singly;
+  track tail: false;
+  track length: false;
+  op prev
+    latency: 1;
+    port req_valid:   in Bool;
+    port req_handle:  in UInt<2>;
+    port resp_valid:  out Bool;
+    port resp_handle: out UInt<2>;
+  end op prev
+  port empty: out Bool;
+  port full:  out Bool;
+end linklist BadList
+"#;
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens);
+    let parsed = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed).expect("elaborate error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err(), "expected type error for prev on singly list");
+    let errs = result.unwrap_err();
+    assert!(errs.iter().any(|e| { let s = e.to_string(); s.contains("prev") && s.contains("doubly") }),
+            "expected error about prev requiring doubly, got: {:?}", errs);
+}

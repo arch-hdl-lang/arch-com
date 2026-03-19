@@ -91,6 +91,7 @@ impl<'a> TypeChecker<'a> {
                 Item::Regfile(r) => self.check_regfile(r),
                 Item::Pipeline(p) => self.check_pipeline(p),
                 Item::Function(f) => self.check_function(f),
+                Item::Linklist(l) => self.check_linklist(l),
             }
         }
         if self.errors.is_empty() {
@@ -1202,6 +1203,103 @@ impl<'a> TypeChecker<'a> {
                     span: crate::diagnostics::span_to_source_span(port.name.span),
                 });
             }
+        }
+    }
+
+    // ── Linklist ──────────────────────────────────────────────────────────────
+
+    fn check_linklist(&mut self, l: &crate::ast::LinklistDecl) {
+        use crate::ast::LinklistKind;
+
+        self.check_pascal_case(&l.name);
+        for p in &l.params {
+            self.check_upper_snake(&p.name);
+        }
+        for p in &l.ports {
+            self.check_snake_case(&p.name);
+        }
+
+        // Required params: DEPTH (const) and DATA (type)
+        let has_depth = l.params.iter().any(|p| p.name.name == "DEPTH");
+        let has_data  = l.params.iter().any(|p| p.name.name == "DATA");
+        if !has_depth {
+            self.errors.push(CompileError::general(
+                &format!("linklist `{}` is missing required param `DEPTH: const`", l.name.name),
+                l.name.span,
+            ));
+        }
+        if !has_data {
+            self.errors.push(CompileError::general(
+                &format!("linklist `{}` is missing required param `DATA: type`", l.name.name),
+                l.name.span,
+            ));
+        }
+
+        // Required ports: clk and rst
+        let has_clk = l.ports.iter().any(|p| matches!(&p.ty, crate::ast::TypeExpr::Clock(_)));
+        let has_rst = l.ports.iter().any(|p| matches!(&p.ty, crate::ast::TypeExpr::Reset(_, _)));
+        if !has_clk {
+            self.errors.push(CompileError::general(
+                &format!("linklist `{}` is missing required `clk: in Clock<...>` port", l.name.name),
+                l.name.span,
+            ));
+        }
+        if !has_rst {
+            self.errors.push(CompileError::general(
+                &format!("linklist `{}` is missing required `rst: in Reset<...>` port", l.name.name),
+                l.name.span,
+            ));
+        }
+
+        // `prev` op requires doubly or circular_doubly
+        for op in &l.ops {
+            self.check_snake_case(&op.name);
+            for p in &op.ports { self.check_snake_case(&p.name); }
+
+            if op.name.name == "prev"
+                && !matches!(l.kind, LinklistKind::Doubly | LinklistKind::CircularDoubly)
+            {
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "linklist `{}`: op `prev` requires `kind doubly` or `kind circular_doubly`",
+                        l.name.name
+                    ),
+                    op.name.span,
+                ));
+            }
+
+            // Known op names
+            let known_ops = [
+                "alloc", "free", "insert_head", "insert_tail", "insert_after",
+                "delete_head", "delete", "read_data", "write_data", "next", "prev", "length",
+            ];
+            if !known_ops.contains(&op.name.name.as_str()) {
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "linklist `{}`: unknown op `{}`; known ops: {}",
+                        l.name.name, op.name.name, known_ops.join(", ")
+                    ),
+                    op.name.span,
+                ));
+            }
+
+            if op.latency == 0 {
+                self.errors.push(CompileError::general(
+                    &format!("linklist `{}`: op `{}` latency must be ≥ 1", l.name.name, op.name.name),
+                    op.name.span,
+                ));
+            }
+        }
+
+        // Warn about O(N) insert_tail without track tail
+        if l.ops.iter().any(|op| op.name.name == "insert_tail") && !l.track_tail {
+            self.warnings.push(CompileWarning {
+                message: format!(
+                    "linklist `{}`: `op insert_tail` without `track tail: true` requires O(N) traversal",
+                    l.name.name
+                ),
+                span: l.name.span,
+            });
         }
     }
 

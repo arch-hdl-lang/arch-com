@@ -18,6 +18,7 @@ pub enum Symbol {
     Regfile(RegfileInfo),
     Pipeline(PipelineInfo),
     Function(Vec<FunctionInfo>),
+    Linklist(LinklistInfo),
     Param(String),
     Port(PortInfo),
     Reg(RegInfo),
@@ -56,6 +57,12 @@ pub struct PipelineInfo {
     pub params: Vec<ParamDecl>,
     pub ports: Vec<PortDecl>,
     pub stage_names: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LinklistInfo {
+    pub name: String,
+    pub kind: crate::ast::LinklistKind,
 }
 
 #[derive(Debug, Clone)]
@@ -318,6 +325,14 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                     errors.push(CompileError::duplicate(&f.name.name, f.name.span));
                 } else {
                     table.globals.insert(f.name.name.clone(), (Symbol::Function(vec![info]), f.name.span));
+                }
+            }
+            Item::Linklist(l) => {
+                if table.globals.contains_key(&l.name.name) {
+                    errors.push(CompileError::duplicate(&l.name.name, l.name.span));
+                } else {
+                    let info = LinklistInfo { name: l.name.name.clone(), kind: l.kind.clone() };
+                    table.globals.insert(l.name.name.clone(), (Symbol::Linklist(info), l.name.span));
                 }
             }
         }
