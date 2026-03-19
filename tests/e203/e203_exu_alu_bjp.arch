@@ -1,0 +1,83 @@
+// E203 HBirdv2 Branch/Jump Unit
+// Computes: branch target address, link address (PC+4), and branch comparison
+// result.  Purely combinational.
+//
+// The caller muxes op1/op2 appropriately:
+//   Branch : op1 = PC,  op2 = sign-extended offset
+//   JAL    : op1 = PC,  op2 = sign-extended 21-bit offset
+//   JALR   : op1 = rs1, op2 = sign-extended 12-bit offset (JALR clears bit 0)
+
+module BjpUnit
+  param XLEN: const = 32;
+
+  // ── Target address operands ────────────────────────────────────────────
+  // target = op1 + op2 (with bit[0] forced to 0 by caller for JALR)
+  port i_tgt_op1:  in UInt<32>;
+  port i_tgt_op2:  in UInt<32>;
+
+  // ── Comparison operands ────────────────────────────────────────────────
+  port i_cmp_rs1:  in UInt<32>;
+  port i_cmp_rs2:  in UInt<32>;
+
+  // ── Branch type selectors ──────────────────────────────────────────────
+  port i_beq:   in Bool;
+  port i_bne:   in Bool;
+  port i_blt:   in Bool;
+  port i_bge:   in Bool;
+  port i_bltu:  in Bool;
+  port i_bgeu:  in Bool;
+
+  // ── Unconditional jump (JAL/JALR — always taken) ───────────────────────
+  port i_jump:  in Bool;
+
+  // ── Link address: input PC → output PC+4 ──────────────────────────────
+  port i_lnk_pc:  in UInt<32>;
+
+  // ── Outputs ────────────────────────────────────────────────────────────
+  port o_taken:    out Bool;       // branch/jump taken
+  port o_tgt:      out UInt<32>;   // target address
+  port o_lnk:      out UInt<32>;   // link address (i_lnk_pc + 4)
+  port o_cmp_res:  out Bool;       // raw comparison result (independent of jump)
+
+  // ── Target address: op1 + op2, keep lower 32 bits ─────────────────────
+  let tgt_sum: UInt<33> = (i_tgt_op1.zext<33>() + i_tgt_op2.zext<33>()).trunc<33>();
+  let tgt_addr: UInt<32> = tgt_sum.trunc<32>();
+
+  // ── Link address: PC + 4 ──────────────────────────────────────────────
+  let lnk_sum: UInt<33> = (i_lnk_pc.zext<33>() + (4 as UInt<32>).zext<33>()).trunc<33>();
+  let lnk_addr: UInt<32> = lnk_sum.trunc<32>();
+
+  // ── Comparison logic ───────────────────────────────────────────────────
+  // XOR-based equality
+  let xor_res: UInt<32>  = i_cmp_rs1 ^ i_cmp_rs2;
+  let xor_zero: Bool     = xor_res == 0;
+
+  // Subtraction via two's-complement: rs1 + ~rs2 + 1
+  let cmp_op2_inv: UInt<32>  = ~i_cmp_rs2;
+  let sub_res: UInt<33>      = (i_cmp_rs1.zext<33>() + cmp_op2_inv.zext<33>() +
+                                true.zext<33>()).trunc<33>();
+  // carry=1 → rs1 >= rs2 unsigned (no borrow)
+  let sub_carry: Bool = (sub_res >> 32) != 0;
+
+  // Signed less-than via SInt cast
+  let signed_lt: Bool = (i_cmp_rs1 as SInt<32>) < (i_cmp_rs2 as SInt<32>);
+
+  // ── Comparison result mux ──────────────────────────────────────────────
+  let cmp_result: Bool =
+    i_beq  ? xor_zero    :
+    i_bne  ? ~xor_zero   :
+    i_blt  ? signed_lt   :
+    i_bge  ? ~signed_lt  :
+    i_bltu ? ~sub_carry  :
+    i_bgeu ? sub_carry   :
+             false;
+
+  // ── Drive outputs ──────────────────────────────────────────────────────
+  comb
+    o_cmp_res = cmp_result;
+    o_taken   = i_jump | cmp_result;
+    o_tgt     = tgt_addr;
+    o_lnk     = lnk_addr;
+  end comb
+
+end module BjpUnit

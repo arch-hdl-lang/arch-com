@@ -1014,11 +1014,15 @@ impl<'a> SimCodegen<'a> {
                 }
             } else { None })
             .collect();
-        let clk_init = vec!["_clk_prev(0)".to_string()];
-        let all_inits: Vec<String> = port_inits.into_iter()
-            .chain(reg_inits)
-            .chain(clk_init)
-            .collect();
+        let has_clk = m.ports.iter().any(|p| matches!(&p.ty, TypeExpr::Clock(_)));
+        let all_inits: Vec<String> = if has_clk {
+            port_inits.into_iter()
+                .chain(reg_inits)
+                .chain(std::iter::once("_clk_prev(0)".to_string()))
+                .collect()
+        } else {
+            port_inits.into_iter().chain(reg_inits).collect()
+        };
 
         if vec_reg_inits.is_empty() {
             h.push_str(&format!("  {class}() : {} {{}}\n", all_inits.join(", ")));
@@ -1032,7 +1036,9 @@ impl<'a> SimCodegen<'a> {
         h.push_str("  void eval_posedge();\n");
         h.push_str("  void final() {}\n\n");
         h.push_str("private:\n");
-        h.push_str("  uint8_t _clk_prev;\n");
+        if has_clk {
+            h.push_str("  uint8_t _clk_prev;\n");
+        }
 
         // Private reg fields
         for item in &m.body {
@@ -1074,13 +1080,14 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("#include \"{class}.h\"\n\n"));
 
         let clk_port = m.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
-            .map(|p| p.name.name.as_str())
-            .unwrap_or("clk");
+            .map(|p| p.name.name.clone());
 
         // eval()
         cpp.push_str(&format!("void {class}::eval() {{\n"));
-        cpp.push_str(&format!("  bool _rising = ({clk_port} && !_clk_prev);\n"));
-        cpp.push_str(&format!("  _clk_prev = {clk_port};\n"));
+        if let Some(ref clk) = clk_port {
+            cpp.push_str(&format!("  bool _rising = ({clk} && !_clk_prev);\n"));
+            cpp.push_str(&format!("  _clk_prev = {clk};\n"));
+        }
 
         // Helper closure: emit sub-instance input assignments + eval_comb + output reads
         // Returns (input_code, comb_call, output_read_code) per inst
@@ -1090,8 +1097,10 @@ impl<'a> SimCodegen<'a> {
         if insts.is_empty() {
             // No sub-instances: simple path
             cpp.push_str("  eval_comb();\n");
-            cpp.push_str("  if (_rising) eval_posedge();\n");
-            cpp.push_str("  eval_comb();\n");
+            if clk_port.is_some() {
+                cpp.push_str("  if (_rising) eval_posedge();\n");
+                cpp.push_str("  eval_comb();\n");
+            }
         } else {
             // Modules with sub-instances: preserve simultaneity of posedge across hierarchy.
             // All always_ff blocks in the design fire simultaneously — parent and sub-instance
@@ -1137,6 +1146,7 @@ impl<'a> SimCodegen<'a> {
             // Step 3: parent comb (uses pre-posedge sub-inst outputs)
             cpp.push_str("  eval_comb();\n");
 
+            if clk_port.is_some() {
             // Step 4: if rising, fire ALL posedge blocks simultaneously
             cpp.push_str("  if (_rising) {\n");
             cpp.push_str("    eval_posedge();\n");
@@ -1159,7 +1169,8 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str("  } else {\n");
             cpp.push_str("    eval_comb();\n");
             cpp.push_str("  }\n");
-        }
+            } // end if clk_port.is_some()
+        } // end else (has insts)
 
         cpp.push_str("}\n\n");
 
