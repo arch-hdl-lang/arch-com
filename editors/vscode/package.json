@@ -1,0 +1,29 @@
+{
+  "name": "arch-hdl",
+  "displayName": "ARCH HDL",
+  "description": "Syntax highlighting for ARCH HDL (.arch files)",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.70.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "arch",
+        "aliases": ["ARCH HDL", "arch"],
+        "extensions": [".arch"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "arch",
+        "scopeName": "source.arch",
+        "path": "./syntaxes/arch.tmLanguage.json"
+      }
+    ]
+  }
+}

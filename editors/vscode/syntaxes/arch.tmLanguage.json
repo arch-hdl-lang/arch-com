@@ -1,0 +1,126 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "ARCH HDL",
+  "scopeName": "source.arch",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#todo" },
+    { "include": "#sized-literals" },
+    { "include": "#hex-literals" },
+    { "include": "#binary-literals" },
+    { "include": "#boolean-literals" },
+    { "include": "#construct-keywords" },
+    { "include": "#end-keyword" },
+    { "include": "#control-flow" },
+    { "include": "#block-keywords" },
+    { "include": "#attribute-keywords" },
+    { "include": "#port-direction" },
+    { "include": "#builtin-types" },
+    { "include": "#param-kind" },
+    { "include": "#boolean-operators" },
+    { "include": "#cast-operator" },
+    { "include": "#multi-char-operators" },
+    { "include": "#single-char-operators" },
+    { "include": "#decimal-literals" },
+    { "include": "#upper-snake-identifiers" },
+    { "include": "#pascal-case-identifiers" }
+  ],
+  "repository": {
+    "comments": {
+      "name": "comment.line.double-slash.arch",
+      "match": "//.*$"
+    },
+    "strings": {
+      "name": "string.quoted.double.arch",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.arch",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "todo": {
+      "name": "invalid.deprecated.arch",
+      "match": "\\btodo!"
+    },
+    "sized-literals": {
+      "name": "constant.numeric.sized.arch",
+      "match": "\\b[0-9]+'[bdh][0-9a-fA-F_xXzZ]+\\b"
+    },
+    "hex-literals": {
+      "name": "constant.numeric.hex.arch",
+      "match": "\\b0[xX][0-9a-fA-F_]+\\b"
+    },
+    "binary-literals": {
+      "name": "constant.numeric.binary.arch",
+      "match": "\\b0[bB][01_]+\\b"
+    },
+    "boolean-literals": {
+      "name": "constant.language.arch",
+      "match": "\\b(true|false)\\b"
+    },
+    "construct-keywords": {
+      "name": "keyword.control.arch",
+      "match": "\\b(module|pipeline|fsm|fifo|ram|arbiter|regfile|counter|domain|struct|enum)\\b"
+    },
+    "end-keyword": {
+      "name": "keyword.control.arch",
+      "match": "\\bend\\b"
+    },
+    "control-flow": {
+      "name": "keyword.control.flow.arch",
+      "match": "\\b(if|else|match|transition|to|when|on|rising|falling|high|low|await|await_all|await_any|forward|init|reset|always)\\b"
+    },
+    "block-keywords": {
+      "name": "keyword.other.arch",
+      "match": "\\b(port|ports|param|socket|state|default|comb|reg|let|inst|connect|generate|assert|cover)\\b"
+    },
+    "attribute-keywords": {
+      "name": "keyword.other.attribute.arch",
+      "match": "\\b(kind|read|write|mode|direction|policy|single|simple_dual|true_dual|sync|async|sync_out|no_change|wrap|saturate|up|down|round_robin|priority|weighted|lru|custom|blocking|pipelined|out_of_order|burst|zero|freq_mhz|write_before_read)\\b"
+    },
+    "port-direction": {
+      "name": "storage.type.arch",
+      "match": "\\b(in|out|initiator|target)\\b"
+    },
+    "builtin-types": {
+      "name": "support.type.arch",
+      "match": "\\b(UInt|SInt|Bool|Bit|Clock|Reset|Vec|Token|Future|Sync|Async)\\b"
+    },
+    "param-kind": {
+      "name": "storage.modifier.arch",
+      "match": "\\b(const|type)\\b"
+    },
+    "boolean-operators": {
+      "name": "keyword.operator.logical.arch",
+      "match": "\\b(and|or|not)\\b"
+    },
+    "cast-operator": {
+      "name": "keyword.operator.cast.arch",
+      "match": "\\bas\\b"
+    },
+    "multi-char-operators": {
+      "name": "keyword.operator.arch",
+      "match": "<=|<-|->|=>|::|[=!<>]="
+    },
+    "single-char-operators": {
+      "name": "keyword.operator.arch",
+      "match": "[+\\-*/%&|^~=!<>?:]"
+    },
+    "decimal-literals": {
+      "name": "constant.numeric.decimal.arch",
+      "match": "\\b[0-9][0-9_]*\\b"
+    },
+    "upper-snake-identifiers": {
+      "name": "constant.other.arch",
+      "match": "\\b[A-Z][A-Z0-9_]{2,}\\b"
+    },
+    "pascal-case-identifiers": {
+      "name": "entity.name.type.arch",
+      "match": "\\b[A-Z][a-zA-Z0-9]+\\b"
+    }
+  }
+}
