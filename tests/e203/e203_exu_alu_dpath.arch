@@ -85,7 +85,7 @@ module AluDpath
   // ── Shared adder (add/sub — BJP add, ALU add/sub, AGU add) ────────────
   // Subtraction: op1 + ~op2 + 1 (two's complement); captured in 33 bits
   let adder_op2_inv: UInt<32> = ~req_op2;
-  let do_sub: UInt<1> = alu_req_alu_sub | alu_req_alu_slt | alu_req_alu_sltu |
+  let do_sub: Bool = alu_req_alu_sub | alu_req_alu_slt | alu_req_alu_sltu |
                bjp_req_alu_cmp_eq | bjp_req_alu_cmp_ne |
                bjp_req_alu_cmp_lt | bjp_req_alu_cmp_gt |
                bjp_req_alu_cmp_ltu | bjp_req_alu_cmp_gtu |

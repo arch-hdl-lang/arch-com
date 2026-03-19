@@ -45,22 +45,22 @@ module LiteBpu
   // rs1 classification for JALR
   let dec_jalr_rs1x0: Bool = (dec_jalr_rs1idx == 0);
   let dec_jalr_rs1x1: Bool = (dec_jalr_rs1idx == 1);
-  let dec_jalr_rs1xn: UInt<1> = ~dec_jalr_rs1x0 & ~dec_jalr_rs1x1;
+  let dec_jalr_rs1xn: Bool = ~dec_jalr_rs1x0 & ~dec_jalr_rs1x1;
 
   // Immediate sign bit (negative = backward branch)
   let bjp_imm_neg: Bool = (dec_bjp_imm >> 31) != 0;
 
   // x1 dependency: OITF not empty, or IR target matches x1
-  let jalr_rs1x1_dep: UInt<1> = ~oitf_empty | jalr_rs1idx_cam_irrdidx;
+  let jalr_rs1x1_dep: Bool = ~oitf_empty | jalr_rs1idx_cam_irrdidx;
 
   // xn dependency: OITF not empty, or IR has active rs1 match (not being cleared)
-  let jalr_rs1xn_dep: UInt<1> = ~oitf_empty | (~ir_empty & ir_rs1en & jalr_rs1idx_cam_irrdidx & ~ir_valid_clr);
+  let jalr_rs1xn_dep: Bool = ~oitf_empty | (~ir_empty & ir_rs1en & jalr_rs1idx_cam_irrdidx & ~ir_valid_clr);
 
   // xn dep being cleared this cycle (IR match + ir_valid_clr)
-  let jalr_rs1xn_dep_ir_clr: UInt<1> = ~ir_empty & ir_rs1en & jalr_rs1idx_cam_irrdidx & ir_valid_clr;
+  let jalr_rs1xn_dep_ir_clr: Bool = ~ir_empty & ir_rs1en & jalr_rs1idx_cam_irrdidx & ir_valid_clr;
 
   // Regfile read request: issued when dep is clear (or clearing), and not already pending
-  let rs1xn_rdrf_set: UInt<1> = ~rs1xn_rdrf_r & dec_i_valid & dec_jalr & dec_jalr_rs1xn &
+  let rs1xn_rdrf_set: Bool = ~rs1xn_rdrf_r & dec_i_valid & dec_jalr & dec_jalr_rs1xn &
                        (~jalr_rs1xn_dep | jalr_rs1xn_dep_ir_clr);
 
   // ── State machine ────────────────────────────────────────────────────────

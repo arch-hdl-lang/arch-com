@@ -838,9 +838,10 @@ impl<'a> TypeChecker<'a> {
             }
             BinOp::Div | BinOp::Mod => lt.clone(),
             BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => {
+                // Bool is UInt<1>; bitwise ops on two 1-bit types stay Bool.
                 let lw = lt.width().unwrap_or(1);
                 let rw = rt.width().unwrap_or(1);
-                Ty::UInt(lw.max(rw))
+                if lw.max(rw) == 1 { Ty::Bool } else { Ty::UInt(lw.max(rw)) }
             }
             BinOp::Shl | BinOp::Shr => lt.clone(),
         }
@@ -1268,6 +1269,9 @@ fn types_compatible(expected: &Ty, actual: &Ty) -> bool {
     match (expected, actual) {
         (Ty::UInt(em), Ty::UInt(am)) => am <= em,
         (Ty::SInt(em), Ty::SInt(am)) => am <= em,
+        // Bool ≡ UInt<1>: freely assignable in both directions.
+        (Ty::Bool, Ty::UInt(1)) | (Ty::UInt(1), Ty::Bool) => true,
+        (Ty::Bool, Ty::Bool) => true,
         _ => false,
     }
 }
