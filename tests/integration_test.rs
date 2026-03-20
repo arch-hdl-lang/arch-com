@@ -1263,3 +1263,22 @@ end linklist BadList
     assert!(errs.iter().any(|e| { let s = e.to_string(); s.contains("prev") && s.contains("doubly") }),
             "expected error about prev requiring doubly, got: {:?}", errs);
 }
+
+#[test]
+fn test_linklist_inst_in_module() {
+    // PacketQueue wraps TaskQueue linklist as a push/pop FIFO interface.
+    // Verifies that: linklist can be instantiated inside a module,
+    // inst output ports are auto-declared as wires, and codegen succeeds.
+    let source = std::fs::read_to_string("tests/pkt_queue.arch")
+        .expect("pkt_queue.arch not found");
+    let tokens = lexer::tokenize(&source).expect("lexer error");
+    let mut parser = Parser::new(tokens);
+    let parsed = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed).expect("elaborate error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let (_warnings, overload_map) = checker.check().expect("type check error");
+    let codegen = Codegen::new(&symbols, &ast, overload_map);
+    let sv = codegen.generate();
+    insta::assert_snapshot!(sv);
+}
