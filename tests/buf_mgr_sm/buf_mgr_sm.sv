@@ -20,9 +20,9 @@ module BufMgrSm #(
   output logic init_done
 );
 
-  logic [4-1:0] [0:4-1] head_arr = 0;
-  logic [4-1:0] [0:4-1] tail_arr = 0;
-  logic [5-1:0] [0:4-1] count_arr = 0;
+  logic [4-1:0] head_arr [0:4-1] = '{default: 0};
+  logic [4-1:0] tail_arr [0:4-1] = '{default: 0};
+  logic [5-1:0] count_arr [0:4-1] = '{default: 0};
   logic [PTR_WIDTH-1:0] free_rd_ptr = 0;
   logic [PTR_WIDTH-1:0] free_wr_ptr = 0;
   logic [5-1:0] free_count = 0;
@@ -34,7 +34,14 @@ module BufMgrSm #(
   logic [DATA_WIDTH-1:0] eq1_data = 0;
   logic [PTR_WIDTH-1:0] eq1_old_tail = 0;
   logic eq1_was_empty = 0;
-  logic eq2_valid = 0;
+  logic eq2_valid;
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      eq2_valid <= '0;
+    end else begin
+      eq2_valid <= eq1_valid;
+    end
+  end
   logic [QN_WIDTH-1:0] eq2_qn = 0;
   logic [DATA_WIDTH-1:0] eq2_data = 0;
   logic [PTR_WIDTH-1:0] eq2_old_tail = 0;
@@ -98,7 +105,7 @@ module BufMgrSm #(
   );
   always_ff @(posedge clk) begin
     if (rst) begin
-      count_arr <= 0;
+      count_arr <= '{default: 0};
       dq1_old_head <= 0;
       dq1_qn <= 0;
       dq1_valid <= 0;
@@ -114,15 +121,14 @@ module BufMgrSm #(
       eq2_free_slot <= 0;
       eq2_old_tail <= 0;
       eq2_qn <= 0;
-      eq2_valid <= 0;
       eq2_was_empty <= 0;
       free_count <= 0;
       free_rd_ptr <= 0;
       free_wr_ptr <= 0;
-      head_arr <= 0;
+      head_arr <= '{default: 0};
       setup_ctr <= 0;
       setup_done <= 0;
-      tail_arr <= 0;
+      tail_arr <= '{default: 0};
     end else begin
       if ((!setup_done)) begin
         setup_ctr <= 4'((setup_ctr + 4'd1));
@@ -144,7 +150,6 @@ module BufMgrSm #(
       end else begin
         eq1_valid <= 1'd0;
       end
-      eq2_valid <= eq1_valid;
       eq2_qn <= eq1_qn;
       eq2_data <= eq1_data;
       eq2_old_tail <= eq1_old_tail;

@@ -1,7 +1,7 @@
 # ARCH Compiler — Status & Roadmap
 
 > Last updated: 2026-03-20
-> Compiler version: 0.17.0 (--check-uninit: uninitialized register read detection for reset-none regs with pipe_reg propagation; warn-once per signal)
+> Compiler version: 0.17.1 (--check-uninit verified across all reset-none benchmarks: buf_mgr, buf_mgr_sm, e203, AES)
 
 ---
 
