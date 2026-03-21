@@ -284,11 +284,11 @@
 | end fifo Name                                          |                               |
 +--------------------------------------------------------+-------------------------------+
 
-**synchronizer --- CDC synchronizer (ff / gray / handshake / reset)**
+**synchronizer --- CDC synchronizer (ff / gray / handshake / reset / pulse)**
 
 > synchronizer Name
 >
-> kind ff; // ff (default) | gray | handshake | reset
+> kind ff; // ff (default) | gray | handshake | reset | pulse
 >
 > param STAGES: const = 2; // 2 or 3 (default 2)
 >
@@ -310,8 +310,9 @@ Strategies:
 - `kind gray;` --- Binary-to-gray encode, FF chain, gray-to-binary decode. Safe for multi-bit counters/pointers.
 - `kind handshake;` --- Req/ack toggle protocol with synchronized control signals. Safe for arbitrary multi-bit data.
 - `kind reset;` --- Reset synchronizer: async assert (immediate), sync deassert through N-stage FF chain. Single-bit only (Bool). Used for synchronizing reset deassertion to a clock domain.
+- `kind pulse;` --- Pulse synchronizer: converts a single-cycle pulse into a level toggle in the source domain, syncs the toggle through the FF chain, then edge-detects in the destination domain to regenerate a single-cycle pulse. Single-bit only (Bool). Used for events, interrupts, triggers across clock domains.
 
-Notes: two Clock ports must reference different domains (compile error otherwise). SV codegen emits strategy-specific logic; sim codegen generates C++ models for all 4 kinds.
+Notes: two Clock ports must reference different domains (compile error otherwise). SV codegen emits strategy-specific logic; sim codegen generates C++ models for all 5 kinds.
 
 **ram --- FPGA BRAM / ASIC SRAM**
 

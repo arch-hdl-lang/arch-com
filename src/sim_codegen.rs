@@ -2630,6 +2630,12 @@ impl<'a> SimCodegen<'a> {
             SyncKind::Reset => {
                 for i in 0..stages { h.push_str(&format!("  uint8_t _stage{};\n", i)); }
             }
+            SyncKind::Pulse => {
+                h.push_str("  uint8_t _toggle_src;\n");
+                // sync_chain needs STAGES entries + previous value for edge detect
+                for i in 0..stages { h.push_str(&format!("  uint8_t _sync{};\n", i)); }
+                h.push_str("  uint8_t _sync_prev;\n");
+            }
         }
         h.push_str("};\n");
 
@@ -2667,6 +2673,10 @@ impl<'a> SimCodegen<'a> {
                 SyncKind::Reset => {
                     for i in 0..stages { cpp.push_str(&format!("    _stage{i} = 1;\n")); }
                 }
+                SyncKind::Pulse => {
+                    cpp.push_str("    _toggle_src = 0; _sync_prev = 0;\n");
+                    for i in 0..stages { cpp.push_str(&format!("    _sync{i} = 0;\n")); }
+                }
             }
             cpp.push_str("    return;\n  }\n");
         }
@@ -2702,6 +2712,18 @@ impl<'a> SimCodegen<'a> {
                 for i in (1..stages).rev() { cpp.push_str(&format!("    _stage{i} = _stage{};\n", i - 1)); }
                 cpp.push_str("    _stage0 = 0;\n  }\n");
             }
+            SyncKind::Pulse => {
+                // Source clock: toggle on input pulse
+                cpp.push_str("  if (_rising_src) {\n");
+                cpp.push_str("    if (data_in) _toggle_src ^= 1;\n");
+                cpp.push_str("  }\n");
+                // Destination clock: sync toggle through chain, save prev for edge detect
+                cpp.push_str("  if (_rising_dst) {\n");
+                cpp.push_str(&format!("    _sync_prev = _sync{};\n", stages - 1));
+                for i in (1..stages).rev() { cpp.push_str(&format!("    _sync{i} = _sync{};\n", i - 1)); }
+                cpp.push_str("    _sync0 = _toggle_src;\n");
+                cpp.push_str("  }\n");
+            }
         }
         cpp.push_str("}\n\n");
 
@@ -2728,6 +2750,10 @@ impl<'a> SimCodegen<'a> {
             }
             SyncKind::Reset => {
                 cpp.push_str(&format!("  data_out = _stage{};\n", stages - 1));
+            }
+            SyncKind::Pulse => {
+                // Edge detect: XOR of last stage with its previous value
+                cpp.push_str(&format!("  data_out = _sync{} ^ _sync_prev;\n", stages - 1));
             }
         }
         cpp.push_str("}\n");

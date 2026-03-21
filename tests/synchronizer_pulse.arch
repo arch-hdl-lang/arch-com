@@ -1,0 +1,17 @@
+domain SrcDomain
+  freq_mhz: 100
+end domain SrcDomain
+
+domain DstDomain
+  freq_mhz: 200
+end domain DstDomain
+
+synchronizer EventSync
+  kind pulse;
+  param STAGES: const = 2;
+  port src_clk: in Clock<SrcDomain>;
+  port dst_clk: in Clock<DstDomain>;
+  port rst: in Reset<Sync>;
+  port data_in: in Bool;
+  port data_out: out Bool;
+end synchronizer EventSync

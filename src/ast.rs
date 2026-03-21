@@ -574,6 +574,8 @@ pub enum SyncKind {
     Handshake,
     /// Reset synchronizer: assert immediate (async), deassert through FF chain (sync)
     Reset,
+    /// Pulse synchronizer: single-cycle pulse across clock domains via toggle + edge detect
+    Pulse,
 }
 
 #[derive(Debug, Clone)]

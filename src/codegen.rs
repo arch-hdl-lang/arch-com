@@ -2484,6 +2484,7 @@ impl<'a> Codegen<'a> {
             SyncKind::Gray => self.emit_sync_gray(src_clk, dst_clk, &data_ty, rst_port, stages),
             SyncKind::Handshake => self.emit_sync_handshake(src_clk, dst_clk, &data_ty, rst_port, stages),
             SyncKind::Reset => self.emit_sync_reset(dst_clk, rst_port, stages),
+            SyncKind::Pulse => self.emit_sync_pulse(src_clk, dst_clk, rst_port, stages),
         }
 
         self.indent -= 1;
@@ -2684,6 +2685,56 @@ impl<'a> Codegen<'a> {
         self.line("end");
         self.line("");
         self.line("assign data_out = sync_chain[STAGES-1];");
+    }
+
+    fn emit_sync_pulse(&mut self, src_clk: &str, dst_clk: &str, rst_port: Option<&PortDecl>, _stages: usize) {
+        let rst_name = rst_port.map(|rp| rp.name.name.as_str());
+        let is_low = rst_port.map_or(false, |rp| matches!(&rp.ty, TypeExpr::Reset(_, level) if *level == ResetLevel::Low));
+        let rst_cond = rst_name.map(|n| if is_low { format!("!{n}") } else { n.to_string() });
+
+        self.line(&format!("// Pulse synchronizer: {src_clk} → {dst_clk}"));
+        self.line("// Source: pulse → toggle; Destination: sync toggle → edge detect → pulse");
+        self.line("logic toggle_src;");
+        self.line("logic sync_chain [0:STAGES-1];");
+        self.line("logic pulse_dst;");
+        self.line("");
+
+        // Source domain: toggle on input pulse
+        self.line(&format!("always_ff @(posedge {src_clk}) begin"));
+        self.indent += 1;
+        if let Some(ref cond) = rst_cond {
+            self.line(&format!("if ({cond}) toggle_src <= 1'b0;"));
+            self.line("else if (data_in) toggle_src <= ~toggle_src;");
+        } else {
+            self.line("if (data_in) toggle_src <= ~toggle_src;");
+        }
+        self.indent -= 1;
+        self.line("end");
+        self.line("");
+
+        // Destination domain: sync the toggle through FF chain
+        self.line(&format!("always_ff @(posedge {dst_clk}) begin"));
+        self.indent += 1;
+        if let Some(ref cond) = rst_cond {
+            self.line(&format!("if ({cond}) begin"));
+            self.indent += 1;
+            self.line("for (int i = 0; i < STAGES; i++) sync_chain[i] <= 1'b0;");
+            self.indent -= 1;
+            self.line("end else begin");
+            self.indent += 1;
+        }
+        self.line("sync_chain[0] <= toggle_src;");
+        self.line("for (int i = 1; i < STAGES; i++) sync_chain[i] <= sync_chain[i-1];");
+        if rst_cond.is_some() {
+            self.indent -= 1;
+            self.line("end");
+        }
+        self.indent -= 1;
+        self.line("end");
+        self.line("");
+
+        // Edge detect: XOR of last two stages → single-cycle pulse
+        self.line("assign data_out = sync_chain[STAGES-1] ^ sync_chain[STAGES-2];");
     }
 
     // ── RAM ───────────────────────────────────────────────────────────────────
