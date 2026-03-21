@@ -39,9 +39,9 @@ module BufMgr #(
 );
 
   // ── Flop arrays (256 entries) ──
-  logic [14-1:0] [0:256-1] head_arr = 0;
-  logic [14-1:0] [0:256-1] tail_arr = 0;
-  logic [15-1:0] [0:256-1] count_arr = 0;
+  logic [14-1:0] head_arr [0:256-1] = '{default: 0};
+  logic [14-1:0] tail_arr [0:256-1] = '{default: 0};
+  logic [15-1:0] count_arr [0:256-1] = '{default: 0};
   // ── Init FSM ──
   logic setup_done = 0;
   logic [14-1:0] setup_ctr = 0;
@@ -168,7 +168,7 @@ module BufMgr #(
   // ══════════════════════════════════════════════════════════════════════════
   always_ff @(posedge clk) begin
     if (rst) begin
-      count_arr <= 0;
+      count_arr <= '{default: 0};
       dq1_old_head <= 0;
       dq1_qn <= 0;
       dq1_valid <= 0;
@@ -201,10 +201,10 @@ module BufMgr #(
       fl_rd_ptr <= 0;
       fl_wr_ptr <= 0;
       free_count <= 0;
-      head_arr <= 0;
+      head_arr <= '{default: 0};
       setup_ctr <= 0;
       setup_done <= 0;
-      tail_arr <= 0;
+      tail_arr <= '{default: 0};
     end else begin
       if ((!setup_done)) begin
         setup_ctr <= 14'((setup_ctr + 14'd1));

@@ -293,15 +293,19 @@ impl<'a> Codegen<'a> {
             self.emit_comments_before(item.span().start);
             match item {
                 ModuleBodyItem::RegDecl(r) => {
-                    let ty_str = self.emit_logic_type_str(&r.ty);
+                    let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(&r.ty);
                     let init_str = self.emit_expr_str(&r.init);
-                    self.line(&format!("{} {} = {};", ty_str, r.name.name, init_str));
+                    if arr_suffix.is_empty() {
+                        self.line(&format!("{} {} = {};", ty_str, r.name.name, init_str));
+                    } else {
+                        self.line(&format!("{} {}{} = '{{default: {}}};", ty_str, r.name.name, arr_suffix, init_str));
+                    }
                 }
                 ModuleBodyItem::LetBinding(l) => {
                     let val_str = self.emit_expr_str(&l.value);
                     if let Some(ty) = &l.ty {
-                        let ty_str = self.emit_logic_type_str(ty);
-                        self.line(&format!("{} {};", ty_str, l.name.name));
+                        let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(ty);
+                        self.line(&format!("{} {}{};", ty_str, l.name.name, arr_suffix));
                         self.line(&format!("assign {} = {};", l.name.name, val_str));
                     } else {
                         self.line(&format!("logic {};", l.name.name));
@@ -578,7 +582,12 @@ impl<'a> Codegen<'a> {
             self.line(&format!("if ({rst_cond_str}) begin"));
             self.indent += 1;
             for (name, init) in &resets {
-                self.line(&format!("{name} <= {init};"));
+                let is_vec = reg_decls.iter().any(|r| r.name.name == *name && matches!(&r.ty, TypeExpr::Vec(_, _)));
+                if is_vec {
+                    self.line(&format!("{name} <= '{{default: {init}}};"));
+                } else {
+                    self.line(&format!("{name} <= {init};"));
+                }
             }
             self.indent -= 1;
             self.line("end else begin");
@@ -797,8 +806,8 @@ impl<'a> Codegen<'a> {
                 }
                 // Find the port type from the module definition
                 if let Some(port) = module_ports.iter().find(|p| p.name.name == conn.port_name.name) {
-                    let ty_str = self.emit_logic_type_str(&port.ty);
-                    self.line(&format!("{} {};", ty_str, target));
+                    let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(&port.ty);
+                    self.line(&format!("{} {}{};", ty_str, target, arr_suffix));
                 } else {
                     self.line(&format!("logic {};", target));
                 }
@@ -2310,6 +2319,19 @@ impl<'a> Codegen<'a> {
 
     fn emit_logic_type_str(&self, ty: &TypeExpr) -> String {
         self.emit_type_str(ty)
+    }
+
+    /// For Vec types, returns (element_type_str, " [0:N-1]") so the unpacked
+    /// dimension can be placed after the signal name in declarations.
+    /// For non-Vec types, returns (type_str, "").
+    fn emit_type_and_array_suffix(&self, ty: &TypeExpr) -> (String, String) {
+        if let TypeExpr::Vec(inner, size) = ty {
+            let inner_str = self.emit_type_str(inner);
+            let size_str = self.emit_expr_str(size);
+            (inner_str, format!(" [0:{size_str}-1]"))
+        } else {
+            (self.emit_type_str(ty), String::new())
+        }
     }
 
     // ── RAM ───────────────────────────────────────────────────────────────────
