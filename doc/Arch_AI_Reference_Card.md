@@ -1,6 +1,6 @@
 **Arch HDL --- AI Reference Card**
 
-*Compact AI context for hardware generation · v0.18.0 · Put this in context, add design intent, paste compiler errors to self-correct.*
+*Compact AI context for hardware generation · v0.21.0 · Put this in context, add design intent, paste compiler errors to self-correct.*
 
 **1. Universal Block Schema --- Every Construct Uses This**
 
@@ -289,13 +289,13 @@
 +-----------------------------------+--------------------------------------+
 | ram Name                          | kind: single\|simple_dual\|true_dual |
 |                                   |                                      |
-| param DEPTH: const = 1024;        | read: async\|sync\|sync_out          |
+| param DEPTH: const = 1024;        | latency 0 = async (comb read)        |
+|                                   | latency 1 = sync (1-cycle read)      |
+| port clk: in Clock\<D\>;          | latency 2 = sync_out (2-cycle read)  |
 |                                   |                                      |
-| port clk: in Clock\<D\>;          | init: zero\|none\|file \'x.hex\'     |
+| kind simple_dual;                 | init: zero\|none\|file \'x.hex\'     |
 |                                   |                                      |
-| kind simple_dual;                 | store: multiple named logical        |
-|                                   |                                      |
-| read: sync;                       | vars --- compiler auto-assigns       |
+| latency 1;                        | store: multiple named logical         |
 |                                   |                                      |
 | store                             | address ranges (planned).            |
 |                                   |                                      |
@@ -350,39 +350,33 @@
 | end counter Name                  |                                      |
 +-----------------------------------+--------------------------------------+
 
-**arbiter --- N requesters, policy-driven grant**
+**arbiter --- N requesters, policy-driven grant with hook + latency**
 
-+----------------------------------+---------------------------------+
-| arbiter Name                     | policy: round_robin \| priority |
-|                                  |                                 |
-| param N: const = 4;              | \| weighted\<W\> \| lru         |
-|                                  |                                 |
-| port clk: in Clock\<D\>;         | \| custom fn(mask)-\>mask       |
-|                                  |                                 |
-| port rst: in Reset\<Sync\>;      |                                 |
-|                                  |                                 |
-| ports\[N\] req                   |                                 |
-|                                  |                                 |
-| valid: in Bool; ready: out Bool; |                                 |
-|                                  |                                 |
-| data: in UInt\<32\>;             |                                 |
-|                                  |                                 |
-| end ports req                    |                                 |
-|                                  |                                 |
-| ports\[1\] grant                 |                                 |
-|                                  |                                 |
-| valid: out Bool; ready: in Bool; |                                 |
-|                                  |                                 |
-| data: out UInt\<32\>;            |                                 |
-|                                  |                                 |
-| sel: out UInt\<\$clog2(N)\>;     |                                 |
-|                                  |                                 |
-| end ports grant                  |                                 |
-|                                  |                                 |
-| policy: round_robin;             |                                 |
-|                                  |                                 |
-| end arbiter Name                 |                                 |
-+----------------------------------+---------------------------------+
++--------------------------------------------+---------------------------------+
+| arbiter Name                               | Built-in policies:              |
+|                                            |   round_robin, priority,        |
+| param N: const = 4;                        |   lru, weighted                 |
+|                                            |                                 |
+| port clk: in Clock\<D\>;                   | Custom policy: use function     |
+|                                            | name as policy + hook decl:     |
+| port rst: in Reset\<Sync\>;                |                                 |
+|                                            | policy: MyGrantFn;              |
+| ports\[N\] req                             | hook grant_select(              |
+|                                            |   req_mask: UInt\<N\>,          |
+| valid: in Bool; ready: out Bool;           |   last_grant: UInt\<N\>,        |
+|                                            |   extra_port: UInt\<8\>)        |
+| end ports req                              |   -\> UInt\<N\>                 |
+|                                            |   = MyGrantFn(req_mask,         |
+| port grant_valid: out Bool;                |     last_grant, extra_port);    |
+|                                            |                                 |
+| port grant_requester: out UInt\<$clog2(N)\>; | Hook args bind to:           |
+|                                            |   hook params (internal sigs),  |
+| policy: round_robin;                       |   user-declared ports/params    |
+|                                            |                                 |
+| latency 1;  // default: comb grant        | latency 2 = +1 pipeline stage   |
+|                                            | latency 3 = +2 pipeline stages  |
+| end arbiter Name                           |                                 |
++--------------------------------------------+---------------------------------+
 
 **regfile --- multi-port register file**
 
@@ -469,6 +463,26 @@
 |                                      |                                   |
 | // is a COMPILE ERROR                |                                   |
 +--------------------------------------+-----------------------------------+
+
+**template --- user-defined interface contract**
+
++-------------------------------------------+--------------------------------------+
+| template MyInterface                      | Compile-time only --- no SV emitted  |
+|                                           |                                      |
+| param NUM_REQ: const;                     | Defines required params, ports,      |
+|                                           | and hooks that implementing          |
+| port clk: in Clock\<D\>;                  | modules must provide.                |
+|                                           |                                      |
+| port rst: in Reset\<Sync\>;               | Missing any required item is a       |
+|                                           | compile error.                       |
+| port grant_valid: out Bool;               |                                      |
+|                                           | Modules opt in with:                 |
+| hook grant_select(                        | module Foo implements MyInterface    |
+|   req_mask: UInt\<4\>)                    |                                      |
+|   -\> UInt\<4\>;                          | Hooks in template: signature only    |
+|                                           | Hooks in module: + binding           |
+| end template MyInterface                  |   = FnName(args);                    |
++-------------------------------------------+--------------------------------------+
 
 **5. Logging**
 
@@ -562,4 +576,4 @@
 >
 > Start --tlm-lt. Add rtl_accurate only after function verified.
 
-*Arch AI Reference Card · March 2026 · v0.18.0 · arch check is your first line of defence*
+*Arch AI Reference Card · March 2026 · v0.21.0 · arch check is your first line of defence*
