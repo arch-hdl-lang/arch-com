@@ -1,0 +1,42 @@
+domain DomainA
+  freq_mhz: 100
+end domain DomainA
+
+domain DomainB
+  freq_mhz: 200
+end domain DomainB
+
+module Consumer
+  port clk: in Clock<DomainB>;
+  port rst: in Reset<Sync>;
+  port data_in: in UInt<8>;
+  port data_out: out UInt<8>;
+
+  reg r: UInt<8> init 0 reset rst;
+
+  seq on clk rising
+    r <= data_in;
+  end seq
+
+  comb data_out = r; end comb
+end module Consumer
+
+module TopBad
+  port clk_a: in Clock<DomainA>;
+  port clk_b: in Clock<DomainB>;
+  port rst: in Reset<Sync>;
+  port result: out UInt<8>;
+
+  reg counter_a: UInt<8> init 0 reset rst;
+
+  seq on clk_a rising
+    counter_a <= (counter_a + 1).trunc<8>();
+  end seq
+
+  inst cons: Consumer
+    connect clk <- clk_b;
+    connect rst <- rst;
+    connect data_in <- counter_a;
+    connect data_out -> result;
+  end inst cons
+end module TopBad

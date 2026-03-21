@@ -124,7 +124,7 @@
 | `todo!` site warning | ✅ |
 | Binary op result widths (IEEE 1800-2012 §11.6) | ✅ |
 | Width mismatch at assignment | ✅ Any RHS wider than LHS errors in both `always` and `comb` blocks; arithmetic widening hint included |
-| Clock domain crossing errors | ✅ | seq→seq and comb→seq crossings detected |
+| Clock domain crossing errors | ✅ | seq→seq and comb→seq crossings detected; extends across `inst` boundaries (compiler traces clock port connections to map child domains to parent domains) |
 | Exhaustive match arm checking | ✅ Enum matches must cover all variants or include a wildcard `_`; missing variants named in error |
 | Const param evaluation (complex exprs) | ⚠️ Literals + simple arithmetic only |
 

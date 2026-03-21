@@ -949,6 +949,8 @@ The compiler enforces the following rules for synchronizer constructs:
 
 > ◈ The synchronizer construct and the dual-clock fifo are the two legal CDC crossing mechanisms in Arch. Any other cross-domain signal access is a compile error, with the error message directing the user to use either a synchronizer or an async fifo.
 
+> ◈ CDC checking extends across `inst` boundaries. When a parent module instantiates a child, the compiler traces clock port connections to map child domains to parent domains, then verifies that all data connections respect clock domain boundaries. If a signal from DomainA is connected to a port that operates in DomainB inside the child, the compiler reports a CDC violation --- the same error and guidance as for intra-module crossings.
+
 **9. First-Class Construct: arbiter**
 
 An arbiter manages N requesters competing for M shared resources. The designer declares port counts and an arbitration policy. The compiler generates all grant logic, stall propagation, and fairness guarantees.

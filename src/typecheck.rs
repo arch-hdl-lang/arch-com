@@ -345,6 +345,13 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
+
+            // CDC check across instance boundaries
+            for item in &m.body {
+                if let ModuleBodyItem::Inst(inst) = item {
+                    self.check_inst_cdc(inst, &clk_domain, &reg_domain, m);
+                }
+            }
         }
 
         // Validate `implements` template conformance
@@ -1084,6 +1091,186 @@ impl<'a> TypeChecker<'a> {
     }
 
     // ── CDC helpers ────────────────────────────────────────────────────────
+
+    /// Check CDC violations across an instance boundary.
+    /// For each data connection, verify that the signal's clock domain in the
+    /// parent matches the port's clock domain in the child module.
+    fn check_inst_cdc(
+        &mut self,
+        inst: &InstDecl,
+        parent_clk_domain: &HashMap<String, String>,
+        parent_reg_domain: &HashMap<String, String>,
+        parent_module: &ModuleDecl,
+    ) {
+        // Find the instantiated module's definition
+        let child_module = self.source.items.iter().find_map(|item| {
+            if let Item::Module(m) = item {
+                if m.name.name == inst.module_name.name { Some(m) } else { None }
+            } else { None }
+        });
+        let child_module = match child_module {
+            Some(m) => m,
+            None => return, // Module not found in this file; skip
+        };
+
+        // Build child module's clock port → domain map
+        let child_clk_domain: HashMap<String, String> = child_module.ports.iter()
+            .filter_map(|p| if let TypeExpr::Clock(domain) = &p.ty {
+                Some((p.name.name.clone(), domain.name.clone()))
+            } else { None })
+            .collect();
+
+        if child_clk_domain.is_empty() {
+            return; // Single-clock or no-clock child; no CDC concern
+        }
+
+        // Build child module's port → domain map (which domain uses each port)
+        // A port is in a domain if a seq block on that clock reads/writes it
+        let mut child_port_domain: HashMap<String, String> = HashMap::new();
+
+        // Clock ports map to their own domain
+        for (clk_name, domain) in &child_clk_domain {
+            child_port_domain.insert(clk_name.clone(), domain.clone());
+        }
+
+        // Reset ports: if there's only one, it's shared; skip domain assignment
+        // Data ports: determine domain from seq block usage
+        for body_item in &child_module.body {
+            if let ModuleBodyItem::RegBlock(rb) = body_item {
+                if let Some(domain) = child_clk_domain.get(&rb.clock.name) {
+                    // Registers assigned in this seq block
+                    let mut assigned = HashSet::new();
+                    Self::collect_stmt_targets(&rb.stmts, &mut assigned);
+
+                    // Find which output ports these registers feed via comb blocks
+                    for comb_item in &child_module.body {
+                        if let ModuleBodyItem::CombBlock(cb) = comb_item {
+                            let mut comb_reads = HashSet::new();
+                            Self::collect_comb_stmt_reads(&cb.stmts, &mut comb_reads);
+                            let mut comb_targets = HashSet::new();
+                            Self::collect_comb_stmt_targets(&cb.stmts, &mut comb_targets);
+
+                            // If this comb block reads any register from this domain,
+                            // its output ports belong to this domain
+                            if comb_reads.iter().any(|r| assigned.contains(r)) {
+                                for target in &comb_targets {
+                                    if child_module.ports.iter().any(|p| p.name.name == *target) {
+                                        child_port_domain.insert(target.clone(), domain.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Input ports read in this seq block belong to this domain
+                    let mut reads = HashSet::new();
+                    Self::collect_stmt_reads(&rb.stmts, &mut reads);
+                    for read_name in &reads {
+                        if child_module.ports.iter().any(|p| p.name.name == *read_name && p.direction == Direction::In) {
+                            child_port_domain.insert(read_name.clone(), domain.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Now build the parent signal → domain map
+        // Include: registers, comb outputs, and ports (clocks map to their domain)
+        let mut parent_signal_domain: HashMap<String, String> = parent_reg_domain.clone();
+        for (clk_name, domain) in parent_clk_domain {
+            parent_signal_domain.insert(clk_name.clone(), domain.clone());
+        }
+        // Comb blocks: if a comb output is driven from a single-domain register, it's in that domain
+        for body_item in &parent_module.body {
+            if let ModuleBodyItem::CombBlock(cb) = body_item {
+                let mut reads = HashSet::new();
+                Self::collect_comb_stmt_reads(&cb.stmts, &mut reads);
+                let mut targets = HashSet::new();
+                Self::collect_comb_stmt_targets(&cb.stmts, &mut targets);
+                // If all register reads are from the same domain, targets inherit that domain
+                let domains: HashSet<&String> = reads.iter()
+                    .filter_map(|r| parent_reg_domain.get(r))
+                    .collect();
+                if domains.len() == 1 {
+                    let domain = domains.into_iter().next().unwrap();
+                    for target in targets {
+                        parent_signal_domain.insert(target, domain.clone());
+                    }
+                }
+            }
+        }
+
+        // Build connection map: inst port name → connected signal name
+        let conn_signal: HashMap<String, String> = inst.connections.iter()
+            .filter_map(|c| {
+                if let ExprKind::Ident(sig_name) = &c.signal.kind {
+                    Some((c.port_name.name.clone(), sig_name.clone()))
+                } else { None }
+            })
+            .collect();
+
+        // Find which clock domain each inst clock port is connected to
+        let inst_clk_mapping: HashMap<String, String> = inst.connections.iter()
+            .filter_map(|c| {
+                let child_port = child_module.ports.iter().find(|p| p.name.name == c.port_name.name)?;
+                if let TypeExpr::Clock(_) = &child_port.ty {
+                    if let ExprKind::Ident(sig_name) = &c.signal.kind {
+                        parent_clk_domain.get(sig_name).map(|d| (c.port_name.name.clone(), d.clone()))
+                    } else { None }
+                } else { None }
+            })
+            .collect();
+
+        // For each data connection, check domain compatibility
+        for conn in &inst.connections {
+            let port_name = &conn.port_name.name;
+
+            // Skip clock and reset ports
+            if let Some(child_port) = child_module.ports.iter().find(|p| p.name.name == *port_name) {
+                if matches!(&child_port.ty, TypeExpr::Clock(_) | TypeExpr::Reset(..)) {
+                    continue;
+                }
+            }
+
+            // Get the child port's expected domain
+            let child_domain = match child_port_domain.get(port_name) {
+                Some(d) => d,
+                None => continue, // Can't determine port's domain; skip
+            };
+
+            // Map child domain to parent domain via clock connections
+            // Find which parent clock is connected to the child clock in this domain
+            let expected_parent_domain = inst_clk_mapping.iter()
+                .find_map(|(child_clk, parent_domain)| {
+                    if child_clk_domain.get(child_clk) == Some(child_domain) {
+                        Some(parent_domain.as_str())
+                    } else { None }
+                });
+
+            let expected_parent_domain = match expected_parent_domain {
+                Some(d) => d,
+                None => continue,
+            };
+
+            // Get the connected signal's domain in the parent
+            if let Some(sig_name) = conn_signal.get(port_name) {
+                if let Some(sig_domain) = parent_signal_domain.get(sig_name) {
+                    if sig_domain != expected_parent_domain {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "CDC violation at instance `{}`: signal `{}` (domain `{}`) \
+                                 connected to port `{}` which operates in domain `{}` (mapped to parent domain `{}`). \
+                                 Use a `synchronizer` or async `fifo` to cross clock domains",
+                                inst.name.name, sig_name, sig_domain,
+                                port_name, child_domain, expected_parent_domain
+                            ),
+                            conn.span,
+                        ));
+                    }
+                }
+            }
+        }
+    }
 
     /// Collect all register names assigned (targets) in a list of seq stmts.
     fn collect_stmt_targets(stmts: &[Stmt], out: &mut HashSet<String>) {
