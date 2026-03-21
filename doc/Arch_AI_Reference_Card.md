@@ -562,7 +562,7 @@ CDC detection covers both seq→seq and comb→seq crossings: a comb block readi
 >
 > arch sim F.arch --tb F_tb.cpp --check-uninit // warn on reads of uninitialized reset-none regs
 >
-> arch sim F.arch --tb F_tb.cpp --cdc-random // randomize synchronizer latency (+1 cycle ~25% chance); LFSR-based deterministic
+> arch sim F.arch --tb F_tb.cpp --cdc-random // randomize synchronizer latency; cdc_skip_pct (0-100, default 25) controllable from testbench
 >
 > arch sim F.arch // generate models only (no testbench)
 >

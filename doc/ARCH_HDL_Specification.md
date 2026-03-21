@@ -949,6 +949,8 @@ The compiler enforces the following rules for synchronizer constructs:
 
 > ◈ The synchronizer construct and the dual-clock fifo are the two legal CDC crossing mechanisms in Arch. Any other cross-domain signal access is a compile error, with the error message directing the user to use either a synchronizer or an async fifo.
 
+> ◈ **`--cdc-random` simulation flag.** When `arch sim` is invoked with `--cdc-random`, each synchronizer's FF-chain shift is probabilistically skipped on any given clock edge, adding +1 cycle of latency. This verifies that designs do not depend on exact synchronizer propagation delay. The probability is controlled by the `cdc_skip_pct` public member (0–100, default 25) on each generated C++ model, allowing testbenches to tune randomization intensity at runtime (e.g. `dut.cdc_skip_pct = 50;` for aggressive stress testing). Internally uses a 32-bit LFSR for deterministic pseudo-random sequencing.
+
 > ◈ CDC checking extends across `inst` boundaries. When a parent module instantiates a child, the compiler traces clock port connections to map child domains to parent domains, then verifies that all data connections respect clock domain boundaries. If a signal from DomainA is connected to a port that operates in DomainB inside the child, the compiler reports a CDC violation --- the same error and guidance as for intra-module crossings.
 
 **9. First-Class Construct: arbiter**
