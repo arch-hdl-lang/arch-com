@@ -1156,16 +1156,20 @@ impl<'a> SimCodegen<'a> {
             } else { None })
             .flatten()
             .collect();
-        let has_clk = m.ports.iter().any(|p| matches!(&p.ty, TypeExpr::Clock(_)));
-        let all_inits: Vec<String> = if has_clk {
-            port_inits.into_iter()
-                .chain(reg_inits)
-                .chain(pipe_reg_inits)
-                .chain(std::iter::once("_clk_prev(0)".to_string()))
-                .collect()
-        } else {
-            port_inits.into_iter().chain(reg_inits).chain(pipe_reg_inits).collect()
-        };
+        // Collect all clock ports (multi-domain support)
+        let clk_ports: Vec<String> = m.ports.iter()
+            .filter(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            .map(|p| p.name.name.clone())
+            .collect();
+        let has_clk = !clk_ports.is_empty();
+        let clk_prev_inits: Vec<String> = clk_ports.iter()
+            .map(|c| format!("_clk_prev_{}(0)", c))
+            .collect();
+        let all_inits: Vec<String> = port_inits.into_iter()
+            .chain(reg_inits)
+            .chain(pipe_reg_inits)
+            .chain(clk_prev_inits)
+            .collect();
 
         if vec_reg_inits.is_empty() {
             h.push_str(&format!("  {class}() : {} {{}}\n", all_inits.join(", ")));
@@ -1179,8 +1183,13 @@ impl<'a> SimCodegen<'a> {
         h.push_str("  void eval_posedge();\n");
         h.push_str("  void final() {}\n\n");
         h.push_str("private:\n");
-        if has_clk {
-            h.push_str("  uint8_t _clk_prev;\n");
+        for c in &clk_ports {
+            h.push_str(&format!("  uint8_t _clk_prev_{c};\n"));
+        }
+        if clk_ports.len() > 1 {
+            for c in &clk_ports {
+                h.push_str(&format!("  bool _rising_{c};\n"));
+            }
         }
 
         // Private reg fields
@@ -1260,15 +1269,23 @@ impl<'a> SimCodegen<'a> {
         let mut cpp = String::new();
         cpp.push_str(&format!("#include \"{class}.h\"\n\n"));
 
-        let clk_port = m.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
-            .map(|p| p.name.name.clone());
-
         // eval()
         cpp.push_str(&format!("void {class}::eval() {{\n"));
-        if let Some(ref clk) = clk_port {
-            cpp.push_str(&format!("  bool _rising = ({clk} && !_clk_prev);\n"));
-            cpp.push_str(&format!("  _clk_prev = {clk};\n"));
+        let multi_clk = clk_ports.len() > 1;
+        for c in &clk_ports {
+            if multi_clk {
+                // Multi-clock: write to member variable so eval_posedge() can see it
+                cpp.push_str(&format!("  _rising_{c} = ({c} && !_clk_prev_{c});\n"));
+            } else {
+                cpp.push_str(&format!("  bool _rising_{c} = ({c} && !_clk_prev_{c});\n"));
+            }
+            cpp.push_str(&format!("  _clk_prev_{c} = {c};\n"));
         }
+        let any_rising = if clk_ports.len() == 1 {
+            format!("_rising_{}", clk_ports[0])
+        } else {
+            clk_ports.iter().map(|c| format!("_rising_{c}")).collect::<Vec<_>>().join(" || ")
+        };
 
         // Helper closure: emit sub-instance input assignments + eval_comb + output reads
         // Returns (input_code, comb_call, output_read_code) per inst
@@ -1278,8 +1295,8 @@ impl<'a> SimCodegen<'a> {
         if insts.is_empty() {
             // No sub-instances: simple path
             cpp.push_str("  eval_comb();\n");
-            if clk_port.is_some() {
-                cpp.push_str("  if (_rising) eval_posedge();\n");
+            if has_clk {
+                cpp.push_str(&format!("  if ({any_rising}) eval_posedge();\n"));
                 cpp.push_str("  eval_comb();\n");
             }
         } else {
@@ -1334,9 +1351,9 @@ impl<'a> SimCodegen<'a> {
             // Step 3: parent comb (uses pre-posedge sub-inst outputs)
             cpp.push_str("  eval_comb();\n");
 
-            if clk_port.is_some() {
-            // Step 4: if rising, fire ALL posedge blocks simultaneously
-            cpp.push_str("  if (_rising) {\n");
+            if has_clk {
+            // Step 4: if any rising edge, fire posedge blocks simultaneously
+            cpp.push_str(&format!("  if ({any_rising}) {{\n"));
             cpp.push_str("    eval_posedge();\n");
             for inst in &insts {
                 cpp.push_str(&format!("    _inst_{}.eval_posedge();\n", inst.name.name));
@@ -1363,7 +1380,7 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str("  } else {\n");
             cpp.push_str("    eval_comb();\n");
             cpp.push_str("  }\n");
-            } // end if clk_port.is_some()
+            } // end if has_clk
         } // end else (has insts)
 
         cpp.push_str("}\n\n");
@@ -1412,6 +1429,7 @@ impl<'a> SimCodegen<'a> {
             let ctx = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                &wide_names, &widths, &enum_map).posedge();
 
+            let multi_clk = clk_ports.len() > 1;
             for rb in &reg_blocks {
                 let mut assigned = std::collections::BTreeSet::new();
                 collect_stmt_assigns(&rb.stmts, &mut assigned);
@@ -1433,25 +1451,37 @@ impl<'a> SimCodegen<'a> {
                     }
                 }
 
+                // Multi-clock: guard each seq block on its specific clock's rising edge
+                let base_indent: usize = if multi_clk {
+                    cpp.push_str(&format!("  if (_rising_{}) {{\n", rb.clock.name));
+                    2
+                } else {
+                    1
+                };
+
                 if let Some((rst_name, _is_async, is_low)) = &reset_sig {
                     let cond = if *is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
-                    cpp.push_str(&format!("  if ({cond}) {{\n"));
+                    cpp.push_str(&format!("{}if ({cond}) {{\n", "  ".repeat(base_indent)));
                     for (reg_name, init) in &reset_regs {
                         if wide_names.contains(*reg_name) {
-                            cpp.push_str(&format!("    _n_{reg_name} = (_arch_u128){init};\n"));
+                            cpp.push_str(&format!("{}_n_{reg_name} = (_arch_u128){init};\n", "  ".repeat(base_indent + 1)));
                         } else {
-                            cpp.push_str(&format!("    _n_{reg_name} = {init};\n"));
+                            cpp.push_str(&format!("{}_n_{reg_name} = {init};\n", "  ".repeat(base_indent + 1)));
                         }
                     }
-                    cpp.push_str("  } else {\n");
+                    cpp.push_str(&format!("{}}} else {{\n", "  ".repeat(base_indent)));
                     let mut body = String::new();
-                    emit_reg_stmts(&rb.stmts, &ctx, &mut body, 2);
+                    emit_reg_stmts(&rb.stmts, &ctx, &mut body, base_indent + 1);
                     cpp.push_str(&body);
-                    cpp.push_str("  }\n");
+                    cpp.push_str(&format!("{}}}\n", "  ".repeat(base_indent)));
                 } else {
                     let mut body = String::new();
-                    emit_reg_stmts(&rb.stmts, &ctx, &mut body, 1);
+                    emit_reg_stmts(&rb.stmts, &ctx, &mut body, base_indent);
                     cpp.push_str(&body);
+                }
+
+                if multi_clk {
+                    cpp.push_str("  }\n");
                 }
             }
 

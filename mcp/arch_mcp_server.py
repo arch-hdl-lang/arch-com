@@ -8,7 +8,17 @@ import pathlib
 import glob as globmod
 from mcp.server.fastmcp import FastMCP
 
-PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
+SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+
+# Load .env written by install.sh (contains ARCH_BIN path)
+_env_file = SCRIPT_DIR / ".env"
+if _env_file.exists():
+    for line in _env_file.read_text().splitlines():
+        if "=" in line and not line.startswith("#"):
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip())
+
 ARCH_BIN = os.environ.get("ARCH_BIN", str(PROJECT_ROOT / "target" / "release" / "arch"))
 
 mcp = FastMCP("arch-hdl")

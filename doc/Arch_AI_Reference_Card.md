@@ -544,6 +544,16 @@
 >
 > auto tick = \[\&\]() \{ dut->clk=0; dut->eval(); dut->clk=1; dut->eval(); \};
 >
+> // Multi-clock modules: each Clock\<Domain\> port gets independent rising-edge detection.
+>
+> // Testbench toggles each clock at its own rate:
+>
+> dut->fast_clk=1; if (cycle%4==0) dut->slow_clk=1; dut->eval();
+>
+> dut->fast_clk=0; dut->slow_clk=0; dut->eval();
+>
+> // Each seq block fires only on its own clock's rising edge.
+>
 > // Compile: g++ -std=c++17 build/verilated.cpp build/V\*.cpp tb.cpp -Ibuild -o sim
 
 **8. AI Prompting Patterns**
@@ -576,4 +586,4 @@
 >
 > Start --tlm-lt. Add rtl_accurate only after function verified.
 
-*Arch AI Reference Card · March 2026 · v0.21.0 · arch check is your first line of defence*
+*Arch AI Reference Card · March 2026 · v0.22.0 · arch check is your first line of defence*
