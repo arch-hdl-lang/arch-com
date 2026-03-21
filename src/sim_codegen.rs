@@ -2362,7 +2362,7 @@ impl<'a> SimCodegen<'a> {
         h.push_str(&format!("  {} _mem[{}];\n", elem_ty, depth));
         for fs in &out_sigs {
             h.push_str(&format!("  {} _r_{};\n", elem_ty, fs.full_name));
-            if r.read_mode == RamReadMode::SyncOut {
+            if r.latency == 2 {
                 h.push_str(&format!("  {} _r2_{};\n", elem_ty, fs.full_name));
             }
         }
@@ -2394,17 +2394,17 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str(&format!("  if ({pfx}_en) {{\n"));
                 if has_wen {
                     cpp.push_str(&format!("    if ({pfx}_wen) _mem[{pfx}_addr] = {wdata_name};\n"));
-                    match r.read_mode {
-                        RamReadMode::Sync | RamReadMode::SyncOut => {
+                    match r.latency {
+                        1 | 2 => {
                             cpp.push_str(&format!("    if (!{pfx}_wen) _r_{out_name} = _mem[{pfx}_addr];\n"));
                         }
-                        RamReadMode::Async => {}
+                        0 | _ => {}
                     }
                 } else {
                     cpp.push_str(&format!("    _mem[{pfx}_addr] = {wdata_name};\n"));
                 }
                 cpp.push_str("  }\n");
-                if r.read_mode == RamReadMode::SyncOut {
+                if r.latency == 2 {
                     cpp.push_str(&format!("  _r2_{out_name} = _r_{out_name};\n"));
                 }
             }
@@ -2429,17 +2429,17 @@ impl<'a> SimCodegen<'a> {
                 } else {
                     cpp.push_str(&format!("  if ({wpfx}_en) _mem[{wpfx}_addr] = {w_data_name};\n"));
                 }
-                match r.read_mode {
-                    RamReadMode::Sync | RamReadMode::SyncOut => {
+                match r.latency {
+                    1 | 2 => {
                         if is_wide {
                             cpp.push_str(&format!("  if ({rpfx}_en) memcpy(&_r_{out_name}, &_mem[{rpfx}_addr], sizeof({elem_ty}));\n"));
                         } else {
                             cpp.push_str(&format!("  if ({rpfx}_en) _r_{out_name} = _mem[{rpfx}_addr];\n"));
                         }
                     }
-                    RamReadMode::Async => {}
+                    0 | _ => {}
                 }
-                if r.read_mode == RamReadMode::SyncOut {
+                if r.latency == 2 {
                     if is_wide {
                         cpp.push_str(&format!("  memcpy(&_r2_{out_name}, &_r_{out_name}, sizeof({elem_ty}));\n"));
                     } else {
@@ -2455,8 +2455,8 @@ impl<'a> SimCodegen<'a> {
 
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
         for fs in &out_sigs {
-            match r.read_mode {
-                RamReadMode::Async => {
+            match r.latency {
+                0 => {
                     let rpfx = r.port_groups.iter()
                         .find(|pg| pg.signals.iter().any(|s| s.direction == Direction::Out))
                         .map(|pg| pg.name.name.as_str())
@@ -2467,20 +2467,21 @@ impl<'a> SimCodegen<'a> {
                         cpp.push_str(&format!("  {} = _mem[{rpfx}_addr];\n", fs.full_name));
                     }
                 }
-                RamReadMode::Sync => {
+                1 => {
                     if is_wide {
                         cpp.push_str(&format!("  memcpy(&{}, &_r_{}, sizeof({}));\n", fs.full_name, fs.full_name, fs.full_name));
                     } else {
                         cpp.push_str(&format!("  {} = _r_{};\n", fs.full_name, fs.full_name));
                     }
                 }
-                RamReadMode::SyncOut => {
+                2 => {
                     if is_wide {
                         cpp.push_str(&format!("  memcpy(&{}, &_r2_{}, sizeof({}));\n", fs.full_name, fs.full_name, fs.full_name));
                     } else {
                         cpp.push_str(&format!("  {} = _r2_{};\n", fs.full_name, fs.full_name));
                     }
                 }
+                _ => {}
             }
         }
         cpp.push_str("}\n");

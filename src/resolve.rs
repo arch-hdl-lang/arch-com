@@ -69,7 +69,7 @@ pub struct LinklistInfo {
 pub struct RamInfo {
     pub name: String,
     pub kind: crate::ast::RamKind,
-    pub read_mode: crate::ast::RamReadMode,
+    pub latency: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -258,7 +258,7 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                     let info = RamInfo {
                         name: r.name.name.clone(),
                         kind: r.kind,
-                        read_mode: r.read_mode,
+                        latency: r.latency,
                     };
                     table.globals.insert(r.name.name.clone(), (Symbol::Ram(info), r.name.span));
                 }

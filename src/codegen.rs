@@ -2843,23 +2843,95 @@ impl<'a> Codegen<'a> {
             ("request_valid".to_string(), "request_ready".to_string())
         };
 
+        let latency = a.latency;
         let policy = a.policy.clone();
+
+        // When latency > 1, grant logic targets intermediate _comb signals
+        // which are then pipelined to the actual output ports.
+        let (gv_sig, gr_sig, rr_sig) = if latency > 1 {
+            let num_req_str = self.emit_expr_str(
+                &a.params.iter().find(|p| p.name.name == "NUM_REQ")
+                    .and_then(|p| p.default.clone())
+                    .unwrap_or(crate::ast::Expr {
+                        kind: crate::ast::ExprKind::Literal(crate::ast::LitKind::Dec(num_req_int)),
+                        span: a.span,
+                    })
+            );
+            self.line(&format!("logic grant_valid_comb;"));
+            self.line(&format!("logic [{req_width}-1:0] grant_requester_comb;"));
+            self.line(&format!("logic [{num_req_str}-1:0] {req_ready_sig}_comb;"));
+            self.line("");
+            ("grant_valid_comb".to_string(), "grant_requester_comb".to_string(), format!("{req_ready_sig}_comb"))
+        } else {
+            ("grant_valid".to_string(), "grant_requester".to_string(), req_ready_sig.clone())
+        };
+
         // ── Arbiter logic ─────────────────────────────────────────────────────
         match policy {
             ArbiterPolicy::RoundRobin => {
-                self.emit_arbiter_round_robin(&clk, &rst, is_async, is_low, req_width, num_req_int, &req_valid_sig, &req_ready_sig);
+                self.emit_arbiter_round_robin(&clk, &rst, is_async, is_low, req_width, num_req_int, &req_valid_sig, &rr_sig, &gv_sig, &gr_sig);
             }
             ArbiterPolicy::Priority => {
-                self.emit_arbiter_priority(req_width, num_req_int, &req_valid_sig, &req_ready_sig);
+                self.emit_arbiter_priority(req_width, num_req_int, &req_valid_sig, &rr_sig, &gv_sig, &gr_sig);
             }
             ArbiterPolicy::Lru => {
-                self.emit_arbiter_round_robin(&clk, &rst, is_async, is_low, req_width, num_req_int, &req_valid_sig, &req_ready_sig);
+                self.emit_arbiter_round_robin(&clk, &rst, is_async, is_low, req_width, num_req_int, &req_valid_sig, &rr_sig, &gv_sig, &gr_sig);
             }
             ArbiterPolicy::Weighted(_) => {
-                self.emit_arbiter_priority(req_width, num_req_int, &req_valid_sig, &req_ready_sig);
+                self.emit_arbiter_priority(req_width, num_req_int, &req_valid_sig, &rr_sig, &gv_sig, &gr_sig);
             }
             ArbiterPolicy::Custom(ref fn_ident) => {
-                self.emit_arbiter_custom(a, fn_ident, &clk, &rst, is_async, is_low, req_width, num_req_int, &req_valid_sig, &req_ready_sig);
+                self.emit_arbiter_custom(a, fn_ident, &clk, &rst, is_async, is_low, req_width, num_req_int, &req_valid_sig, &rr_sig, &gv_sig, &gr_sig);
+            }
+        }
+
+        // ── Pipeline registers for latency > 1 ───────────────────────────────
+        if latency > 1 {
+            let stages = latency - 1;
+            let ff_sens = Self::ff_sensitivity(&clk, &rst, is_async, is_low);
+            let rst_cond = Self::rst_condition(&rst, is_low);
+            let num_req_str = &num_req_default;
+            self.line("");
+
+            for s in 0..stages {
+                let src_gv = if s == 0 { gv_sig.clone() } else { format!("grant_valid_p{s}") };
+                let src_gr = if s == 0 { gr_sig.clone() } else { format!("grant_requester_p{s}") };
+                let src_rr = if s == 0 { rr_sig.clone() } else { format!("{req_ready_sig}_p{s}") };
+                let dst_suffix = if s == stages - 1 {
+                    // Last stage drives the output ports directly
+                    String::new()
+                } else {
+                    format!("_p{}", s + 1)
+                };
+
+                let dst_gv = if dst_suffix.is_empty() { "grant_valid".to_string() } else { format!("grant_valid{dst_suffix}") };
+                let dst_gr = if dst_suffix.is_empty() { "grant_requester".to_string() } else { format!("grant_requester{dst_suffix}") };
+                let dst_rr = if dst_suffix.is_empty() { req_ready_sig.clone() } else { format!("{req_ready_sig}{dst_suffix}") };
+
+                // Declare intermediate regs (not needed for last stage which drives output ports)
+                if !dst_suffix.is_empty() {
+                    self.line(&format!("logic {dst_gv};"));
+                    self.line(&format!("logic [{req_width}-1:0] {dst_gr};"));
+                    self.line(&format!("logic [{num_req_str}-1:0] {dst_rr};"));
+                }
+
+                self.line(&format!("always_ff @({ff_sens}) begin"));
+                self.indent += 1;
+                self.line(&format!("if ({rst_cond}) begin"));
+                self.indent += 1;
+                self.line(&format!("{dst_gv} <= 1'b0;"));
+                self.line(&format!("{dst_gr} <= '0;"));
+                self.line(&format!("{dst_rr} <= '0;"));
+                self.indent -= 1;
+                self.line("end else begin");
+                self.indent += 1;
+                self.line(&format!("{dst_gv} <= {src_gv};"));
+                self.line(&format!("{dst_gr} <= {src_gr};"));
+                self.line(&format!("{dst_rr} <= {src_rr};"));
+                self.indent -= 1;
+                self.line("end");
+                self.indent -= 1;
+                self.line("end");
             }
         }
 
@@ -2909,6 +2981,8 @@ impl<'a> Codegen<'a> {
         num_req: u64,
         req_valid: &str,
         req_ready: &str,
+        grant_valid_sig: &str,
+        grant_requester_sig: &str,
     ) {
         self.line(&format!("logic [{req_width}-1:0] rr_ptr_r;"));
         self.line("integer arb_i;");
@@ -2921,16 +2995,16 @@ impl<'a> Codegen<'a> {
         self.line(&format!("always_ff @({ff_sens}) begin"));
         self.indent += 1;
         self.line(&format!("if ({rst_cond}) rr_ptr_r <= '0;"));
-        self.line("else if (grant_valid) rr_ptr_r <= rr_ptr_r + 1;");
+        self.line(&format!("else if ({grant_valid_sig}) rr_ptr_r <= rr_ptr_r + 1;"));
         self.indent -= 1;
         self.line("end");
         self.line("");
         // Use a shared integer index to avoid width-expansion warnings
         self.line("always_comb begin");
         self.indent += 1;
-        self.line("grant_valid = 1'b0;");
+        self.line(&format!("{grant_valid_sig} = 1'b0;"));
         self.line(&format!("{req_ready} = '0;"));
-        self.line("grant_requester = '0;");
+        self.line(&format!("{grant_requester_sig} = '0;"));
         self.line("arb_found = 1'b0;");
         self.line(&format!("for (arb_i = 0; arb_i < {num_req}; arb_i++) begin"));
         self.indent += 1;
@@ -2940,9 +3014,9 @@ impl<'a> Codegen<'a> {
         ));
         self.indent += 1;
         self.line("arb_found = 1'b1;");
-        self.line("grant_valid = 1'b1;");
+        self.line(&format!("{grant_valid_sig} = 1'b1;"));
         self.line(&format!(
-            "grant_requester = {req_width}'((int'(rr_ptr_r) + arb_i) % {num_req});"
+            "{grant_requester_sig} = {req_width}'((int'(rr_ptr_r) + arb_i) % {num_req});"
         ));
         self.line(&format!(
             "{req_ready}[(int'(rr_ptr_r) + arb_i) % {num_req}] = 1'b1;"
@@ -2955,18 +3029,18 @@ impl<'a> Codegen<'a> {
         self.line("end");
     }
 
-    fn emit_arbiter_priority(&mut self, req_width: u32, num_req: u64, req_valid: &str, req_ready: &str) {
+    fn emit_arbiter_priority(&mut self, req_width: u32, num_req: u64, req_valid: &str, req_ready: &str, grant_valid_sig: &str, grant_requester_sig: &str) {
         self.line("always_comb begin");
         self.indent += 1;
-        self.line("grant_valid = 1'b0;");
+        self.line(&format!("{grant_valid_sig} = 1'b0;"));
         self.line(&format!("{req_ready} = '0;"));
-        self.line("grant_requester = '0;");
+        self.line(&format!("{grant_requester_sig} = '0;"));
         self.line(&format!("for (int pri_i = 0; pri_i < {num_req}; pri_i++) begin"));
         self.indent += 1;
-        self.line(&format!("if (!grant_valid && {req_valid}[pri_i]) begin"));
+        self.line(&format!("if (!{grant_valid_sig} && {req_valid}[pri_i]) begin"));
         self.indent += 1;
-        self.line("grant_valid = 1'b1;");
-        self.line(&format!("grant_requester = {req_width}'(pri_i);"));
+        self.line(&format!("{grant_valid_sig} = 1'b1;"));
+        self.line(&format!("{grant_requester_sig} = {req_width}'(pri_i);"));
         self.line(&format!("{req_ready}[pri_i] = 1'b1;"));
         self.indent -= 1;
         self.line("end");
@@ -2988,6 +3062,8 @@ impl<'a> Codegen<'a> {
         num_req: u64,
         req_valid: &str,
         req_ready: &str,
+        grant_valid_sig: &str,
+        grant_requester_sig: &str,
     ) {
         let fn_name = &fn_ident.name;
 
@@ -3001,7 +3077,7 @@ impl<'a> Codegen<'a> {
         self.line(&format!("always_ff @({ff_sens}) begin"));
         self.indent += 1;
         self.line(&format!("if ({rst_cond}) last_grant_r <= '0;"));
-        self.line("else if (grant_valid) last_grant_r <= grant_onehot;");
+        self.line(&format!("else if ({grant_valid_sig}) last_grant_r <= grant_onehot;"));
         self.indent -= 1;
         self.line("end");
         self.line("");
@@ -3032,13 +3108,13 @@ impl<'a> Codegen<'a> {
         self.line("always_comb begin");
         self.indent += 1;
         self.line(&format!("grant_onehot = {fn_name}({args_str});"));
-        self.line(&format!("grant_valid = |grant_onehot;"));
+        self.line(&format!("{grant_valid_sig} = |grant_onehot;"));
         self.line(&format!("{req_ready} = grant_onehot;"));
         // Priority encode one-hot to index
-        self.line(&format!("grant_requester = '0;"));
+        self.line(&format!("{grant_requester_sig} = '0;"));
         self.line(&format!("for (int ci = 0; ci < {num_req}; ci++) begin"));
         self.indent += 1;
-        self.line(&format!("if (grant_onehot[ci]) grant_requester = {req_width}'(ci);"));
+        self.line(&format!("if (grant_onehot[ci]) {grant_requester_sig} = {req_width}'(ci);"));
         self.indent -= 1;
         self.line("end");
         self.indent -= 1;
@@ -3315,7 +3391,7 @@ impl<'a> Codegen<'a> {
     }
 
     fn emit_ram_single(&mut self, r: &RamDecl, clk: &str, _data_width_ty: &str) {
-        use crate::ast::{RamReadMode, RamWriteMode};
+        use crate::ast::RamWriteMode;
         // The single port group
         let pg = &r.port_groups[0];
         let pfx = &pg.name.name.clone();
@@ -3324,8 +3400,8 @@ impl<'a> Codegen<'a> {
         let has_wen = pg.signals.iter().any(|s| s.name.name == "wen");
         let out_sig = pg.signals.iter().find(|s| s.direction == Direction::Out).cloned();
 
-        match r.read_mode {
-            RamReadMode::Async => {
+        match r.latency {
+            0 => {
                 // Combinational read
                 if let Some(ref os) = out_sig {
                     self.line("");
@@ -3341,7 +3417,7 @@ impl<'a> Codegen<'a> {
                 self.indent -= 1;
                 self.line("end");
             }
-            RamReadMode::Sync | RamReadMode::SyncOut => {
+            1 | 2 => {
                 if let Some(ref os) = out_sig {
                     let rdata_r = format!("{pfx}_{}_r", os.name.name);
                     self.line(&format!("logic [DATA_WIDTH-1:0] {rdata_r};"));
@@ -3387,8 +3463,8 @@ impl<'a> Codegen<'a> {
                     self.indent -= 1;
                     self.line("end");
                     self.line(&format!("assign {pfx}_{} = {rdata_r};", os.name.name));
-                    // sync_out adds an extra output register stage
-                    if r.read_mode == RamReadMode::SyncOut {
+                    // latency 2 adds an extra output register stage
+                    if r.latency == 2 {
                         let rdata_r2 = format!("{pfx}_{}_r2", os.name.name);
                         self.line(&format!("logic [DATA_WIDTH-1:0] {rdata_r2};"));
                         self.line(&format!("always_ff @(posedge {clk}) {rdata_r2} <= {rdata_r};"));
@@ -3396,11 +3472,11 @@ impl<'a> Codegen<'a> {
                     }
                 }
             }
+            _ => {}
         }
     }
 
     fn emit_ram_simple_dual(&mut self, r: &RamDecl, clk: &str, _data_width_ty: &str) {
-        use crate::ast::RamReadMode;
         // Identify read port (has output signal) and write port (all inputs)
         let read_pg = r.port_groups.iter()
             .find(|pg| pg.signals.iter().any(|s| s.direction == Direction::Out));
@@ -3423,8 +3499,8 @@ impl<'a> Codegen<'a> {
             .map(|s| s.name.name.clone())
             .unwrap_or_else(|| "data".to_string());
 
-        match r.read_mode {
-            RamReadMode::Async => {
+        match r.latency {
+            0 => {
                 self.line("");
                 self.line(&format!("assign {rpfx}_{out_sig} = mem[{rpfx}_addr];"));
                 self.line("");
@@ -3437,7 +3513,7 @@ impl<'a> Codegen<'a> {
                 self.indent -= 1;
                 self.line("end");
             }
-            RamReadMode::Sync | RamReadMode::SyncOut => {
+            1 | 2 => {
                 let rdata_r = format!("{rpfx}_{out_sig}_r");
                 self.line(&format!("logic [DATA_WIDTH-1:0] {rdata_r};"));
                 self.line("");
@@ -3453,7 +3529,7 @@ impl<'a> Codegen<'a> {
                 self.indent -= 1;
                 self.indent -= 1;
                 self.line("end");
-                if r.read_mode == RamReadMode::SyncOut {
+                if r.latency == 2 {
                     let rdata_r2 = format!("{rpfx}_{out_sig}_r2");
                     self.line(&format!("logic [DATA_WIDTH-1:0] {rdata_r2};"));
                     self.line(&format!("always_ff @(posedge {clk}) {rdata_r2} <= {rdata_r};"));
@@ -3462,6 +3538,7 @@ impl<'a> Codegen<'a> {
                     self.line(&format!("assign {rpfx}_{out_sig} = {rdata_r};"));
                 }
             }
+            _ => {}
         }
     }
 

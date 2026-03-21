@@ -58,7 +58,7 @@ end regfile DmaRegs
 
 ram DescTable
   kind simple_dual;
-  read: sync;
+  latency 1;
   write: no_change;
   init: zero;
   param DEPTH: const = 16;

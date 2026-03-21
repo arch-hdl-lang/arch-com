@@ -323,6 +323,22 @@ end arbiter BadArb
     assert!(result.is_err(), "expected error for custom policy without hook");
 }
 
+#[test]
+fn test_arbiter_latency2() {
+    let source = include_str!("arbiter_latency2.arch");
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module LatencyArbiter"));
+    // Should have _comb intermediate signals
+    assert!(sv.contains("grant_valid_comb"));
+    assert!(sv.contains("grant_requester_comb"));
+    assert!(sv.contains("request_ready_comb"));
+    // Should have pipeline register stage
+    assert!(sv.contains("grant_valid <= grant_valid_comb"));
+    assert!(sv.contains("grant_requester <= grant_requester_comb"));
+    assert!(sv.contains("request_ready <= request_ready_comb"));
+    insta::assert_snapshot!(sv);
+}
+
 // ── Regfile ───────────────────────────────────────────────────────────────────
 
 #[test]
@@ -359,7 +375,7 @@ end domain SysDomain
 
 ram BadRam
   kind single;
-  read: sync;
+  latency 1;
   param DEPTH: const = 64;
   param WIDTH: type = UInt<8>;
   port clk: in Clock<SysDomain>;

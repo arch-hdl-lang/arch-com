@@ -1119,6 +1119,13 @@ impl<'a> TypeChecker<'a> {
                 self.check_snake_case(&s.name);
             }
         }
+        // Validate latency
+        if a.latency < 1 {
+            self.errors.push(CompileError::general(
+                "arbiter latency must be >= 1",
+                a.name.span,
+            ));
+        }
         // Validate hook for custom policy
         if let ArbiterPolicy::Custom(ref fn_ident) = a.policy {
             if a.hook.is_none() {

@@ -41,7 +41,7 @@ Every construct uses **keyword Name / ... / end keyword Name** — no braces any
 | `pipeline` | Staged datapath — compiler generates hazard logic (valid/stall propagation, flush masks, forward muxes) |
 | `fsm` | Finite state machine — compiler checks exhaustive transitions; `reset_state` required |
 | `fifo` | Sync or dual-clock async FIFO — two different `Clock<D>` ports auto-triggers gray-code CDC generation |
-| `ram` | FPGA BRAM / ASIC SRAM — `kind: single|simple_dual|true_dual`, `read: async|sync|sync_out` |
+| `ram` | FPGA BRAM / ASIC SRAM — `kind: single|simple_dual|true_dual`, `latency 0|1|2` (async/sync/sync_out) |
 | `arbiter` | N-requester grant logic — `policy: round_robin|priority|weighted<W>|lru|custom` |
 | `generate` | Compile-time port/instance generation (`for` and `if` variants) |
 

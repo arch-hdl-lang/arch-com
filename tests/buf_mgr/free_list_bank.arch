@@ -3,7 +3,7 @@
 
 ram FreeListBank
   kind simple_dual;
-  read: sync_out;
+  latency 2;
   param DEPTH: const = 8192;
   param WIDTH: type = UInt<14>;
   port clk: in Clock<SysDomain>;

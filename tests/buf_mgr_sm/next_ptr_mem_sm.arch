@@ -2,7 +2,7 @@
 
 ram NextPtrMemSm
   kind simple_dual;
-  read: sync;
+  latency 1;
   param DEPTH: const = 16;
   param WIDTH: type = UInt<4>;
   port clk: in Clock<SysDomain>;

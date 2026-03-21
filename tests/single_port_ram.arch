@@ -4,7 +4,7 @@ end domain SysDomain
 
 ram SimpleMem
   kind single;
-  read: sync;
+  latency 1;
   write: no_change;
   init: zero;
   param DEPTH: const = 256;

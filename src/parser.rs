@@ -1779,7 +1779,7 @@ impl Parser {
         let mut params = Vec::new();
         let mut ports = Vec::new();
         let mut kind: Option<RamKind> = None;
-        let mut read_mode: Option<RamReadMode> = None;
+        let mut latency: Option<u32> = None;
         let mut write_mode: Option<RamWriteMode> = None;
         let mut collision: Option<RamCollision> = None;
         let mut store_vars = Vec::new();
@@ -1808,11 +1808,22 @@ impl Parser {
                         val.span,
                     )),
                 });
-            } else if self.check_ident("read") {
+            } else if self.check(TokenKind::Latency) {
                 self.advance();
-                self.expect(TokenKind::Colon)?;
-                read_mode = Some(self.parse_read_mode()?);
+                let lit_span = self.peek_span();
+                let val = match self.peek_kind() {
+                    Some(TokenKind::DecLiteral(s)) => {
+                        let v = s.parse::<u32>().map_err(|_| CompileError::general(
+                            "expected integer after `latency`", lit_span))?;
+                        self.advance(); v
+                    }
+                    _ => return Err(CompileError::general(
+                        "expected integer after `latency`",
+                        lit_span,
+                    )),
+                };
                 self.expect(TokenKind::Semi)?;
+                latency = Some(val);
             } else if self.check_ident("write") {
                 self.advance();
                 self.expect(TokenKind::Colon)?;
@@ -1843,7 +1854,7 @@ impl Parser {
                 });
             } else {
                 return Err(CompileError::unexpected_token(
-                    "kind, read, write, collision, or init",
+                    "kind, latency, write, collision, or init",
                     &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
                     self.peek_span(),
                 ));
@@ -1894,8 +1905,8 @@ impl Parser {
             "ram is missing required `kind` directive",
             name.span,
         ))?;
-        let r = read_mode.ok_or_else(|| CompileError::general(
-            "ram is missing required `read` directive",
+        let lat = latency.ok_or_else(|| CompileError::general(
+            "ram is missing required `latency` directive",
             name.span,
         ))?;
 
@@ -1912,39 +1923,13 @@ impl Parser {
             params,
             ports,
             kind: k,
-            read_mode: r,
+            latency: lat,
             write_mode,
             collision,
             store_vars,
             port_groups,
             init,
         })
-    }
-
-    fn parse_read_mode(&mut self) -> Result<RamReadMode, CompileError> {
-        // `read: sync` uses lowercase ident; `Sync`/`Async` keywords are uppercase type tokens
-        match self.peek_kind() {
-            Some(TokenKind::Sync) => { self.advance(); Ok(RamReadMode::Sync) }
-            Some(TokenKind::Async) => { self.advance(); Ok(RamReadMode::Async) }
-            Some(TokenKind::Ident(s)) => {
-                let s = s.clone();
-                match s.as_str() {
-                    "sync"     => { self.advance(); Ok(RamReadMode::Sync) }
-                    "async"    => { self.advance(); Ok(RamReadMode::Async) }
-                    "sync_out" => { self.advance(); Ok(RamReadMode::SyncOut) }
-                    other => Err(CompileError::general(
-                        &format!("unknown read mode `{other}`; expected sync, async, or sync_out"),
-                        self.peek_span(),
-                    )),
-                }
-            }
-            Some(other) => Err(CompileError::unexpected_token(
-                "sync, async, or sync_out",
-                &other.to_string(),
-                self.peek_span(),
-            )),
-            None => Err(CompileError::UnexpectedEof),
-        }
     }
 
     fn parse_store_block(&mut self) -> Result<Vec<RamStoreVar>, CompileError> {
@@ -2181,15 +2166,32 @@ impl Parser {
         let mut port_arrays = Vec::new();
         let mut policy: Option<ArbiterPolicy> = None;
         let mut hook: Option<crate::ast::ArbiterHookDecl> = None;
+        let mut latency: u32 = 1;
 
-        // Phase 1: attributes (policy)
+        // Phase 1: attributes (policy, latency)
         while !self.check_end_of(TokenKind::Arbiter) {
             if self.check(TokenKind::Param) || self.check(TokenKind::Port)
                 || self.check(TokenKind::Ports) || self.check(TokenKind::Hook)
                 || self.check(TokenKind::Assert) || self.check(TokenKind::Cover) {
                 break;
             }
-            if self.check_ident("policy") {
+            if self.check(TokenKind::Latency) {
+                self.advance();
+                let lit_span = self.peek_span();
+                let val = match self.peek_kind() {
+                    Some(TokenKind::DecLiteral(s)) => {
+                        let v = s.parse::<u32>().map_err(|_| CompileError::general(
+                            "expected integer after `latency`", lit_span))?;
+                        self.advance(); v
+                    }
+                    _ => return Err(CompileError::general(
+                        "expected integer after `latency`",
+                        lit_span,
+                    )),
+                };
+                self.expect(TokenKind::Semi)?;
+                latency = val;
+            } else if self.check_ident("policy") {
                 self.advance();
                 let val = self.expect_ident()?;
                 self.expect(TokenKind::Semi)?;
@@ -2249,7 +2251,7 @@ impl Parser {
         }
 
         let span = start.merge(closing.span);
-        Ok(ArbiterDecl { span, name, params, ports, port_arrays, policy: policy.unwrap_or(ArbiterPolicy::RoundRobin), hook })
+        Ok(ArbiterDecl { span, name, params, ports, port_arrays, policy: policy.unwrap_or(ArbiterPolicy::RoundRobin), hook, latency })
     }
 
     /// Parse `hook grant_select(req_mask: UInt<N>, ...) -> UInt<N> = FnName(arg1, ...);`

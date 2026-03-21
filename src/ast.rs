@@ -565,7 +565,7 @@ pub struct RamDecl {
     /// Top-level ports: clk, optional rst
     pub ports: Vec<PortDecl>,
     pub kind: RamKind,
-    pub read_mode: RamReadMode,
+    pub latency: u32,
     pub write_mode: Option<RamWriteMode>,
     pub collision: Option<RamCollision>,
     pub store_vars: Vec<RamStoreVar>,
@@ -579,13 +579,6 @@ pub enum RamKind {
     Single,
     SimpleDual,
     TrueDual,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RamReadMode {
-    Async,
-    Sync,
-    SyncOut,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -664,6 +657,7 @@ pub struct ArbiterDecl {
     pub port_arrays: Vec<PortArrayDecl>,
     pub policy: ArbiterPolicy,
     pub hook: Option<ArbiterHookDecl>,
+    pub latency: u32,
     pub span: Span,
 }
 
