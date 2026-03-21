@@ -407,7 +407,7 @@ Arch has exactly two assignment forms. Mixing operators between them is a compil
   ------------------- -------------------- -------------- ------------------------------------------------------------------
   **Combinational**   comb \... end comb   =              Continuous assignment; no flip-flop inferred.
 
-  **Registered**      always \... end always     \<=            Clocked assignment; flip-flop inferred on the active clock edge. Reset is declared on each `reg` declaration, not on the `always` block.
+  **Registered**      seq \... end seq            \<=            Clocked assignment; flip-flop inferred on the active clock edge. Reset is declared on each `reg` declaration, not on the `seq` block.
   --------------------------------------------------------------------------------------------------------------------------
 
 +--------------------------------------------------------------------+
@@ -446,7 +446,7 @@ Arch has exactly two assignment forms. Mixing operators between them is a compil
 | **end** **module** Counter                                         |
 +--------------------------------------------------------------------+
 
-> *⚑ The clock is named in `always on clk rising`; reset is declared per register (`reset rst sync high` or `reset none`). The compiler auto-generates the `if (rst)` guard and propagates domain membership automatically through all downstream logic in the module.*
+> *⚑ The clock is named in `seq on clk rising`; reset is declared per register (`reset rst sync high` or `reset none`). The compiler auto-generates the `if (rst)` guard and propagates domain membership automatically through all downstream logic in the module.*
 
 **4.3 Module Instantiation**
 
@@ -921,11 +921,11 @@ A ram is a first-class construct that maps to a physical memory --- FPGA BRAM, d
   -------------------------------------------------------------------------------------------------------------------------------------
   **Mode**             **Latency**   **Behaviour**                                              **Use When**
   -------------------- ------------- ---------------------------------------------------------- ---------------------------------------
-  **read: async**      0 cycles      Output is combinationally derived from address             Register files, small look-up tables
+  **latency 0**        0 cycles      Output is combinationally derived from address             Register files, small look-up tables
 
-  **read: sync**       1 cycle       Address and enable registered; data available next cycle   Standard BRAM, most cache SRAMs
+  **latency 1**        1 cycle       Address and enable registered; data available next cycle   Standard BRAM, most cache SRAMs
 
-  **read: sync_out**   2 cycles      Both input and output registered for max frequency         Timing-critical paths, deep pipelines
+  **latency 2**        2 cycles      Both input and output registered for max frequency         Timing-critical paths, deep pipelines
   -------------------------------------------------------------------------------------------------------------------------------------
 
 **11.3 Single-Port RAM**
@@ -7287,7 +7287,7 @@ A practical AI workflow: generate a correct skeleton with todo! for all logic, t
 
   **Unsigned/signed determined by context**        Explicit: .zext\<N\>() .sext\<N\>() as SInt\<N\>
 
-  **Clock inferred from sensitivity list**         Explicit: always on clk rising; reset on reg decl: reset rst sync high
+  **Clock inferred from sensitivity list**         Explicit: seq on clk rising; reset on reg decl: reset rst sync high
 
   **Module port width from implicit param math**   Explicit: port sum: out UInt\<WIDTH+1\>;
 
