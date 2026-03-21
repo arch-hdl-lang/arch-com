@@ -19,6 +19,7 @@ pub enum Symbol {
     Pipeline(PipelineInfo),
     Function(Vec<FunctionInfo>),
     Linklist(LinklistInfo),
+    Template(String),
     Param(String),
     Port(PortInfo),
     Reg(RegInfo),
@@ -333,6 +334,13 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                 } else {
                     let info = LinklistInfo { name: l.name.name.clone(), kind: l.kind.clone() };
                     table.globals.insert(l.name.name.clone(), (Symbol::Linklist(info), l.name.span));
+                }
+            }
+            Item::Template(t) => {
+                if table.globals.contains_key(&t.name.name) {
+                    errors.push(CompileError::duplicate(&t.name.name, t.name.span));
+                } else {
+                    table.globals.insert(t.name.name.clone(), (Symbol::Template(t.name.name.clone()), t.name.span));
                 }
             }
         }

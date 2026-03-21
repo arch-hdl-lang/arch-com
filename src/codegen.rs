@@ -86,6 +86,7 @@ impl<'a> Codegen<'a> {
                 Item::Pipeline(p) => self.emit_pipeline(p),
                 Item::Function(_) => {} // emitted inside modules
                 Item::Linklist(l) => self.emit_linklist(l),
+                Item::Template(_) => {} // compile-time only
             }
         }
         // Flush any trailing comments after the last item.

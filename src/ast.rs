@@ -20,6 +20,7 @@ pub enum Item {
     Pipeline(PipelineDecl),
     Function(FunctionDecl),
     Linklist(LinklistDecl),
+    Template(TemplateDecl),
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +62,8 @@ pub struct ModuleDecl {
     pub params: Vec<ParamDecl>,
     pub ports: Vec<PortDecl>,
     pub body: Vec<ModuleBodyItem>,
+    pub implements: Option<Ident>,
+    pub hooks: Vec<ModuleHookDecl>,
     pub span: Span,
 }
 
@@ -487,6 +490,7 @@ impl Item {
             Item::Pipeline(p) => p.span,
             Item::Function(f) => f.span,
             Item::Linklist(l) => l.span,
+            Item::Template(t) => t.span,
         }
     }
 }
@@ -783,5 +787,37 @@ pub struct OpDecl {
     pub latency: u32,
     pub pipelined: bool,
     pub ports: Vec<PortDecl>,
+    pub span: Span,
+}
+
+// ── Template ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct TemplateDecl {
+    pub name: Ident,
+    pub params: Vec<ParamDecl>,
+    pub ports: Vec<PortDecl>,
+    pub port_arrays: Vec<PortArrayDecl>,
+    pub hooks: Vec<TemplateHookDecl>,
+    pub span: Span,
+}
+
+/// Hook signature in a template (no binding — just the contract)
+#[derive(Debug, Clone)]
+pub struct TemplateHookDecl {
+    pub name: Ident,
+    pub params: Vec<FunctionArg>,
+    pub ret_ty: TypeExpr,
+    pub span: Span,
+}
+
+/// Hook binding in a module that `implements` a template
+#[derive(Debug, Clone)]
+pub struct ModuleHookDecl {
+    pub hook_name: Ident,
+    pub params: Vec<FunctionArg>,
+    pub ret_ty: TypeExpr,
+    pub fn_name: Ident,
+    pub fn_args: Vec<Ident>,
     pub span: Span,
 }

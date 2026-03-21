@@ -339,6 +339,46 @@ fn test_arbiter_latency2() {
     insta::assert_snapshot!(sv);
 }
 
+// ── Template ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_template_basic() {
+    let source = include_str!("template_basic.arch");
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module MyArbiter"));
+    assert!(!sv.contains("template")); // templates don't emit SV
+    assert!(sv.contains("function automatic"));
+    insta::assert_snapshot!(sv);
+}
+
+#[test]
+fn test_template_missing_port_error() {
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100,
+end domain SysDomain
+
+template MyTmpl
+  port clk: in Clock<SysDomain>;
+  port data_out: out UInt<8>;
+end template MyTmpl
+
+module BadModule implements MyTmpl
+  port clk: in Clock<SysDomain>;
+  port other: out UInt<8>;
+  comb other = 0; end comb
+end module BadModule
+"#;
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err(), "expected error for missing template port");
+}
+
 // ── Regfile ───────────────────────────────────────────────────────────────────
 
 #[test]

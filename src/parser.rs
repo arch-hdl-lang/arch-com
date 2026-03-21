@@ -40,8 +40,9 @@ impl Parser {
             Some(TokenKind::Pipeline) => Ok(Item::Pipeline(self.parse_pipeline()?)),
             Some(TokenKind::Function) => Ok(Item::Function(self.parse_function()?)),
             Some(TokenKind::Linklist) => Ok(Item::Linklist(self.parse_linklist()?)),
+            Some(TokenKind::Template) => Ok(Item::Template(self.parse_template()?)),
             Some(other) => Err(CompileError::unexpected_token(
-                "domain, struct, enum, module, fsm, fifo, ram, counter, arbiter, regfile, pipeline, function, or linklist",
+                "domain, struct, enum, module, fsm, fifo, ram, counter, arbiter, regfile, pipeline, function, linklist, or template",
                 &other.to_string(),
                 self.peek_span(),
             )),
@@ -149,9 +150,18 @@ impl Parser {
         let name = self.expect_ident()?;
         self.reg_defaults = None; // reset per-module
 
+        // Optional: `implements TemplateName`
+        let implements = if self.check(TokenKind::Implements) {
+            self.advance();
+            Some(self.expect_ident()?)
+        } else {
+            None
+        };
+
         let mut params = Vec::new();
         let mut ports = Vec::new();
         let mut body = Vec::new();
+        let mut hooks: Vec<crate::ast::ModuleHookDecl> = Vec::new();
 
         while !self.check_end_keyword() {
             match self.peek_kind() {
@@ -182,9 +192,12 @@ impl Parser {
                 Some(TokenKind::Generate) => {
                     body.push(ModuleBodyItem::Generate(self.parse_generate()?));
                 }
+                Some(TokenKind::Hook) => {
+                    hooks.push(self.parse_module_hook_decl()?);
+                }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "param, port, reg, seq, comb, let, inst, pipe_reg, or generate",
+                        "param, port, reg, seq, comb, let, inst, pipe_reg, generate, or hook",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -210,6 +223,8 @@ impl Parser {
             params,
             ports,
             body,
+            implements,
+            hooks,
         })
     }
 
@@ -2297,6 +2312,111 @@ impl Parser {
             ret_ty,
             fn_name,
             fn_args,
+            span: start.merge(end),
+        })
+    }
+
+    /// Parse `hook name(args) -> RetType = FnName(args);` inside a module
+    fn parse_module_hook_decl(&mut self) -> Result<crate::ast::ModuleHookDecl, CompileError> {
+        let start = self.expect(TokenKind::Hook)?.span;
+        let hook_name = self.expect_ident()?;
+
+        self.expect(TokenKind::LParen)?;
+        let mut params = Vec::new();
+        while !self.check(TokenKind::RParen) {
+            if !params.is_empty() { self.expect(TokenKind::Comma)?; }
+            let pname = self.expect_ident()?;
+            self.expect(TokenKind::Colon)?;
+            let pty = self.parse_type_expr()?;
+            params.push(crate::ast::FunctionArg { name: pname, ty: pty });
+        }
+        self.expect(TokenKind::RParen)?;
+
+        self.expect(TokenKind::RArrow)?;
+        let ret_ty = self.parse_type_expr()?;
+
+        self.expect(TokenKind::Eq)?;
+        let fn_name = self.expect_ident()?;
+        self.expect(TokenKind::LParen)?;
+        let mut fn_args = Vec::new();
+        while !self.check(TokenKind::RParen) {
+            if !fn_args.is_empty() { self.expect(TokenKind::Comma)?; }
+            fn_args.push(self.expect_ident()?);
+        }
+        self.expect(TokenKind::RParen)?;
+        let end = self.expect(TokenKind::Semi)?.span;
+
+        Ok(crate::ast::ModuleHookDecl {
+            hook_name,
+            params,
+            ret_ty,
+            fn_name,
+            fn_args,
+            span: start.merge(end),
+        })
+    }
+
+    // ── Template ─────────────────────────────────────────────────────────────
+
+    fn parse_template(&mut self) -> Result<crate::ast::TemplateDecl, CompileError> {
+        let start = self.expect(TokenKind::Template)?.span;
+        let name = self.expect_ident()?;
+
+        let mut params = Vec::new();
+        let mut ports = Vec::new();
+        let mut port_arrays = Vec::new();
+        let mut hooks = Vec::new();
+
+        while !self.check_end_of(TokenKind::Template) {
+            match self.peek_kind() {
+                Some(TokenKind::Param) => params.push(self.parse_param_decl()?),
+                Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
+                Some(TokenKind::Ports) => port_arrays.push(self.parse_port_array()?),
+                Some(TokenKind::Hook) => hooks.push(self.parse_template_hook_decl()?),
+                Some(other) => return Err(CompileError::unexpected_token(
+                    "param, port, ports, or hook",
+                    &other.to_string(),
+                    self.peek_span(),
+                )),
+                None => return Err(CompileError::UnexpectedEof),
+            }
+        }
+
+        self.expect(TokenKind::End)?;
+        self.expect(TokenKind::Template)?;
+        let closing = self.expect_ident()?;
+        if closing.name != name.name {
+            return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+        }
+
+        let span = start.merge(closing.span);
+        Ok(crate::ast::TemplateDecl { name, params, ports, port_arrays, hooks, span })
+    }
+
+    /// Parse `hook name(args) -> RetType;` (no binding — template signature only)
+    fn parse_template_hook_decl(&mut self) -> Result<crate::ast::TemplateHookDecl, CompileError> {
+        let start = self.expect(TokenKind::Hook)?.span;
+        let name = self.expect_ident()?;
+
+        self.expect(TokenKind::LParen)?;
+        let mut params = Vec::new();
+        while !self.check(TokenKind::RParen) {
+            if !params.is_empty() { self.expect(TokenKind::Comma)?; }
+            let pname = self.expect_ident()?;
+            self.expect(TokenKind::Colon)?;
+            let pty = self.parse_type_expr()?;
+            params.push(crate::ast::FunctionArg { name: pname, ty: pty });
+        }
+        self.expect(TokenKind::RParen)?;
+
+        self.expect(TokenKind::RArrow)?;
+        let ret_ty = self.parse_type_expr()?;
+        let end = self.expect(TokenKind::Semi)?.span;
+
+        Ok(crate::ast::TemplateHookDecl {
+            name,
+            params,
+            ret_ty,
             span: start.merge(end),
         })
     }

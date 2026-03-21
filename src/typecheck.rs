@@ -92,6 +92,7 @@ impl<'a> TypeChecker<'a> {
                 Item::Pipeline(p) => self.check_pipeline(p),
                 Item::Function(f) => self.check_function(f),
                 Item::Linklist(l) => self.check_linklist(l),
+                Item::Template(t) => self.check_template(t),
             }
         }
         if self.errors.is_empty() {
@@ -251,6 +252,79 @@ impl<'a> TypeChecker<'a> {
                     name: p.name.name.clone(),
                     span: crate::diagnostics::span_to_source_span(p.name.span),
                 });
+            }
+        }
+
+        // Validate `implements` template conformance
+        if let Some(ref tmpl_name) = m.implements {
+            self.check_implements(m, tmpl_name);
+        }
+    }
+
+    fn check_implements(&mut self, m: &ModuleDecl, tmpl_name: &Ident) {
+        // Find the template in the source file
+        let tmpl = self.source.items.iter().find_map(|item| {
+            if let Item::Template(t) = item {
+                if t.name.name == tmpl_name.name { Some(t) } else { None }
+            } else {
+                None
+            }
+        });
+        let tmpl = match tmpl {
+            Some(t) => t,
+            None => {
+                self.errors.push(CompileError::general(
+                    &format!("template `{}` not found", tmpl_name.name),
+                    tmpl_name.span,
+                ));
+                return;
+            }
+        };
+
+        // Check required params
+        for tp in &tmpl.params {
+            let found = m.params.iter().any(|mp| mp.name.name == tp.name.name);
+            if !found {
+                self.errors.push(CompileError::general(
+                    &format!("module `{}` is missing param `{}` required by template `{}`",
+                             m.name.name, tp.name.name, tmpl.name.name),
+                    m.name.span,
+                ));
+            }
+        }
+
+        // Check required ports (name + direction)
+        for tp in &tmpl.ports {
+            let found = m.ports.iter().find(|mp| mp.name.name == tp.name.name);
+            match found {
+                None => {
+                    self.errors.push(CompileError::general(
+                        &format!("module `{}` is missing port `{}` required by template `{}`",
+                                 m.name.name, tp.name.name, tmpl.name.name),
+                        m.name.span,
+                    ));
+                }
+                Some(mp) => {
+                    if mp.direction != tp.direction {
+                        self.errors.push(CompileError::general(
+                            &format!("port `{}` direction mismatch: template requires {:?}, module has {:?}",
+                                     tp.name.name, tp.direction, mp.direction),
+                            mp.name.span,
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Check required hooks
+        for th in &tmpl.hooks {
+            let found = m.hooks.iter().any(|mh| mh.hook_name.name == th.name.name);
+            if !found {
+                self.errors.push(CompileError::general(
+                    &format!("module `{}` is missing hook `{}` required by template `{}`",
+                             m.name.name, th.name.name, tmpl.name.name),
+                    m.name.span,
+                ));
             }
         }
     }
@@ -1292,6 +1366,25 @@ impl<'a> TypeChecker<'a> {
     }
 
     // ── Linklist ──────────────────────────────────────────────────────────────
+
+    fn check_template(&mut self, t: &crate::ast::TemplateDecl) {
+        self.check_pascal_case(&t.name);
+        for p in &t.params {
+            self.check_upper_snake(&p.name);
+        }
+        for p in &t.ports {
+            self.check_snake_case(&p.name);
+        }
+        for pa in &t.port_arrays {
+            self.check_snake_case(&pa.name);
+            for s in &pa.signals {
+                self.check_snake_case(&s.name);
+            }
+        }
+        for h in &t.hooks {
+            self.check_snake_case(&h.name);
+        }
+    }
 
     fn check_linklist(&mut self, l: &crate::ast::LinklistDecl) {
         use crate::ast::LinklistKind;
