@@ -2814,6 +2814,17 @@ impl<'a> Codegen<'a> {
         self.line("");
         self.indent += 1;
 
+        // Emit hook function inside arbiter module if custom policy
+        if let ArbiterPolicy::Custom(ref fn_ident) = a.policy {
+            let fns = std::mem::take(&mut self.pending_functions);
+            for f in &fns {
+                if f.name.name == fn_ident.name {
+                    self.emit_function(f);
+                }
+            }
+            self.pending_functions = fns;
+        }
+
         // ── Detect request/grant signal names from port arrays ─────────────────
         // The first port array is assumed to be the request ports.
         // Input signal in it → req_valid_sig; output signal → req_ready_sig
@@ -2847,9 +2858,8 @@ impl<'a> Codegen<'a> {
             ArbiterPolicy::Weighted(_) => {
                 self.emit_arbiter_priority(req_width, num_req_int, &req_valid_sig, &req_ready_sig);
             }
-            ArbiterPolicy::Custom => {
-                self.line("// custom arbiter — implement grant logic here");
-                self.line("assign grant_valid = '0;");
+            ArbiterPolicy::Custom(ref fn_ident) => {
+                self.emit_arbiter_custom(a, fn_ident, &clk, &rst, is_async, is_low, req_width, num_req_int, &req_valid_sig, &req_ready_sig);
             }
         }
 
@@ -2960,6 +2970,75 @@ impl<'a> Codegen<'a> {
         self.line(&format!("{req_ready}[pri_i] = 1'b1;"));
         self.indent -= 1;
         self.line("end");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line("end");
+    }
+
+    fn emit_arbiter_custom(
+        &mut self,
+        a: &crate::ast::ArbiterDecl,
+        fn_ident: &crate::ast::Ident,
+        clk: &str,
+        rst: &str,
+        is_async: bool,
+        is_low: bool,
+        req_width: u32,
+        num_req: u64,
+        req_valid: &str,
+        req_ready: &str,
+    ) {
+        let fn_name = &fn_ident.name;
+
+        // last_grant_r register for fairness state
+        self.line(&format!("logic [{num_req}-1:0] last_grant_r;"));
+        self.line("");
+
+        let ff_sens = Self::ff_sensitivity(clk, rst, is_async, is_low);
+        let rst_cond = Self::rst_condition(rst, is_low);
+
+        self.line(&format!("always_ff @({ff_sens}) begin"));
+        self.indent += 1;
+        self.line(&format!("if ({rst_cond}) last_grant_r <= '0;"));
+        self.line("else if (grant_valid) last_grant_r <= grant_onehot;");
+        self.indent -= 1;
+        self.line("end");
+        self.line("");
+
+        // Build function call arguments from hook bindings
+        let hook = a.hook.as_ref().unwrap();
+        let args: Vec<String> = hook.fn_args.iter().map(|arg| {
+            let name = &arg.name;
+            // Map hook formal param names to actual SV signals
+            let hook_param = hook.params.iter().find(|p| p.name.name == *name);
+            if hook_param.is_some() {
+                // This is a hook formal param — map known names to SV signals
+                match name.as_str() {
+                    "req_mask" => req_valid.to_string(),
+                    "last_grant" => "last_grant_r".to_string(),
+                    _ => name.clone(),
+                }
+            } else {
+                // Must be a port or param name on the arbiter — use as-is
+                name.clone()
+            }
+        }).collect();
+        let args_str = args.join(", ");
+
+        // Call the function to get one-hot grant mask
+        self.line(&format!("logic [{num_req}-1:0] grant_onehot;"));
+        self.line("");
+        self.line("always_comb begin");
+        self.indent += 1;
+        self.line(&format!("grant_onehot = {fn_name}({args_str});"));
+        self.line(&format!("grant_valid = |grant_onehot;"));
+        self.line(&format!("{req_ready} = grant_onehot;"));
+        // Priority encode one-hot to index
+        self.line(&format!("grant_requester = '0;"));
+        self.line(&format!("for (int ci = 0; ci < {num_req}; ci++) begin"));
+        self.indent += 1;
+        self.line(&format!("if (grant_onehot[ci]) grant_requester = {req_width}'(ci);"));
         self.indent -= 1;
         self.line("end");
         self.indent -= 1;

@@ -280,6 +280,49 @@ fn test_bus_arbiter() {
     insta::assert_snapshot!(sv);
 }
 
+#[test]
+fn test_arbiter_custom_hook() {
+    let source = include_str!("arbiter_custom_hook.arch");
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module QosArbiter"));
+    assert!(sv.contains("function automatic"));
+    assert!(sv.contains("QosGrant(request_valid, last_grant_r, qos)"));
+    assert!(sv.contains("last_grant_r"));
+    assert!(sv.contains("grant_onehot"));
+    insta::assert_snapshot!(sv);
+}
+
+#[test]
+fn test_arbiter_custom_hook_missing_error() {
+    // Custom policy without hook should error
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100,
+end domain SysDomain
+
+arbiter BadArb
+  policy MyFunc;
+  param NUM_REQ: const = 4;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  ports[NUM_REQ] request
+    valid: in Bool;
+    ready: out Bool;
+  end ports request
+  port grant_valid: out Bool;
+  port grant_requester: out UInt<2>;
+end arbiter BadArb
+"#;
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err(), "expected error for custom policy without hook");
+}
+
 // ── Regfile ───────────────────────────────────────────────────────────────────
 
 #[test]

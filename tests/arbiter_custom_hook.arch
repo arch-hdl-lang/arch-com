@@ -1,0 +1,26 @@
+domain SysDomain
+  freq_mhz: 100,
+end domain SysDomain
+
+function QosGrant(req_mask: UInt<4>, last_grant: UInt<4>, qos: UInt<8>) -> UInt<4>
+  let masked: UInt<4> = req_mask & ~last_grant;
+  let pick: UInt<4> = masked != 0 ? masked : req_mask;
+  let neg_pick: UInt<4> = (~pick + 1).trunc<4>();
+  return pick & neg_pick;
+end function QosGrant
+
+arbiter QosArbiter
+  policy QosGrant;
+  param NUM_REQ: const = 4;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port qos: in UInt<8>;
+  ports[NUM_REQ] request
+    valid: in Bool;
+    ready: out Bool;
+  end ports request
+  port grant_valid: out Bool;
+  port grant_requester: out UInt<2>;
+  hook grant_select(req_mask: UInt<4>, last_grant: UInt<4>, qos: UInt<8>) -> UInt<4>
+    = QosGrant(req_mask, last_grant, qos);
+end arbiter QosArbiter

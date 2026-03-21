@@ -1105,6 +1105,7 @@ impl<'a> TypeChecker<'a> {
     // ── Arbiter ───────────────────────────────────────────────────────────────
 
     fn check_arbiter(&mut self, a: &crate::ast::ArbiterDecl) {
+        use crate::ast::ArbiterPolicy;
         self.check_pascal_case(&a.name);
         for p in &a.params {
             self.check_upper_snake(&p.name);
@@ -1117,6 +1118,58 @@ impl<'a> TypeChecker<'a> {
             for s in &pa.signals {
                 self.check_snake_case(&s.name);
             }
+        }
+        // Validate hook for custom policy
+        if let ArbiterPolicy::Custom(ref fn_ident) = a.policy {
+            if a.hook.is_none() {
+                self.errors.push(CompileError::general(
+                    &format!("custom policy `{}` requires a `hook grant_select` declaration", fn_ident.name),
+                    fn_ident.span,
+                ));
+                return;
+            }
+            let hook = a.hook.as_ref().unwrap();
+            // Verify the hook's bound function name matches the policy name
+            if hook.fn_name.name != fn_ident.name {
+                self.errors.push(CompileError::general(
+                    &format!("hook function `{}` does not match policy name `{}`", hook.fn_name.name, fn_ident.name),
+                    hook.fn_name.span,
+                ));
+            }
+            // Verify the function exists in the compilation unit
+            let fn_exists = self.source.items.iter().any(|item| {
+                if let crate::ast::Item::Function(f) = item {
+                    f.name.name == fn_ident.name
+                } else {
+                    false
+                }
+            });
+            if !fn_exists {
+                self.errors.push(CompileError::general(
+                    &format!("function `{}` not found", fn_ident.name),
+                    fn_ident.span,
+                ));
+            }
+            // Verify hook argument bindings reference declared ports or params
+            let port_names: Vec<&str> = a.ports.iter().map(|p| p.name.name.as_str()).collect();
+            let param_names: Vec<&str> = a.params.iter().map(|p| p.name.name.as_str()).collect();
+            let hook_param_names: Vec<&str> = hook.params.iter().map(|p| p.name.name.as_str()).collect();
+            for arg in &hook.fn_args {
+                if !hook_param_names.contains(&arg.name.as_str())
+                    && !port_names.contains(&arg.name.as_str())
+                    && !param_names.contains(&arg.name.as_str())
+                {
+                    self.errors.push(CompileError::general(
+                        &format!("hook argument `{}` is not a hook parameter, port, or param", arg.name),
+                        arg.span,
+                    ));
+                }
+            }
+        } else if a.hook.is_some() {
+            self.warnings.push(CompileWarning {
+                message: "hook is ignored for built-in arbiter policies".to_string(),
+                span: a.hook.as_ref().unwrap().span,
+            });
         }
     }
 

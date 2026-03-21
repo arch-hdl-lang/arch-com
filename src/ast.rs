@@ -663,6 +663,7 @@ pub struct ArbiterDecl {
     pub ports: Vec<PortDecl>,
     pub port_arrays: Vec<PortArrayDecl>,
     pub policy: ArbiterPolicy,
+    pub hook: Option<ArbiterHookDecl>,
     pub span: Span,
 }
 
@@ -672,7 +673,18 @@ pub enum ArbiterPolicy {
     Priority,
     Lru,
     Weighted(Expr),  // weight expression (param reference)
-    Custom,
+    Custom(Ident),   // user function name as policy
+}
+
+/// `hook grant_select(req_mask: UInt<N>, ...) -> UInt<N> = FnName(arg1, arg2, ...);`
+#[derive(Debug, Clone)]
+pub struct ArbiterHookDecl {
+    pub hook_name: Ident,          // e.g. "grant_select"
+    pub params: Vec<FunctionArg>,  // formal parameters with types
+    pub ret_ty: TypeExpr,          // return type
+    pub fn_name: Ident,            // bound function name
+    pub fn_args: Vec<Ident>,       // bound arguments
+    pub span: Span,
 }
 
 /// A `ports[N] name ... end ports name` block (used by arbiter and regfile)

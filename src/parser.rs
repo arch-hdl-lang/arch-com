@@ -2180,11 +2180,12 @@ impl Parser {
         let mut ports = Vec::new();
         let mut port_arrays = Vec::new();
         let mut policy: Option<ArbiterPolicy> = None;
+        let mut hook: Option<crate::ast::ArbiterHookDecl> = None;
 
         // Phase 1: attributes (policy)
         while !self.check_end_of(TokenKind::Arbiter) {
             if self.check(TokenKind::Param) || self.check(TokenKind::Port)
-                || self.check(TokenKind::Ports)
+                || self.check(TokenKind::Ports) || self.check(TokenKind::Hook)
                 || self.check(TokenKind::Assert) || self.check(TokenKind::Cover) {
                 break;
             }
@@ -2196,7 +2197,6 @@ impl Parser {
                     "round_robin" => ArbiterPolicy::RoundRobin,
                     "priority"    => ArbiterPolicy::Priority,
                     "lru"         => ArbiterPolicy::Lru,
-                    "custom"      => ArbiterPolicy::Custom,
                     "weighted" => {
                         let w = Expr {
                             kind: ExprKind::Literal(LitKind::Dec(1)),
@@ -2204,10 +2204,7 @@ impl Parser {
                         };
                         ArbiterPolicy::Weighted(w)
                     }
-                    other => return Err(CompileError::general(
-                        &format!("unknown arbiter policy `{other}`"),
-                        val.span,
-                    )),
+                    _ => ArbiterPolicy::Custom(val),
                 });
             } else {
                 return Err(CompileError::unexpected_token(
@@ -2223,17 +2220,20 @@ impl Parser {
             params.push(self.parse_param_decl()?);
         }
 
-        // Phase 3: ports, port arrays, assert/cover
+        // Phase 3: ports, port arrays, hook, assert/cover
         while !self.check_end_of(TokenKind::Arbiter) {
             match self.peek_kind() {
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Ports) => port_arrays.push(self.parse_port_array()?),
+                Some(TokenKind::Hook) => {
+                    hook = Some(self.parse_arbiter_hook()?);
+                }
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
                     while !self.check(TokenKind::Semi) && !self.at_end() { self.advance(); }
                     self.eat(TokenKind::Semi);
                 }
                 Some(other) => return Err(CompileError::unexpected_token(
-                    "port, ports, assert, or cover",
+                    "port, ports, hook, assert, or cover",
                     &other.to_string(),
                     self.peek_span(),
                 )),
@@ -2249,7 +2249,54 @@ impl Parser {
         }
 
         let span = start.merge(closing.span);
-        Ok(ArbiterDecl { span, name, params, ports, port_arrays, policy: policy.unwrap_or(ArbiterPolicy::RoundRobin) })
+        Ok(ArbiterDecl { span, name, params, ports, port_arrays, policy: policy.unwrap_or(ArbiterPolicy::RoundRobin), hook })
+    }
+
+    /// Parse `hook grant_select(req_mask: UInt<N>, ...) -> UInt<N> = FnName(arg1, ...);`
+    fn parse_arbiter_hook(&mut self) -> Result<crate::ast::ArbiterHookDecl, CompileError> {
+        let start = self.expect(TokenKind::Hook)?.span;
+        let hook_name = self.expect_ident()?;
+
+        // Parse formal parameters: (name: Type, ...)
+        self.expect(TokenKind::LParen)?;
+        let mut params = Vec::new();
+        while !self.check(TokenKind::RParen) {
+            if !params.is_empty() {
+                self.expect(TokenKind::Comma)?;
+            }
+            let pname = self.expect_ident()?;
+            self.expect(TokenKind::Colon)?;
+            let pty = self.parse_type_expr()?;
+            params.push(crate::ast::FunctionArg { name: pname, ty: pty });
+        }
+        self.expect(TokenKind::RParen)?;
+
+        // Parse -> RetType
+        self.expect(TokenKind::RArrow)?;
+        let ret_ty = self.parse_type_expr()?;
+
+        // Parse = FnName(arg1, arg2, ...);
+        self.expect(TokenKind::Eq)?;
+        let fn_name = self.expect_ident()?;
+        self.expect(TokenKind::LParen)?;
+        let mut fn_args = Vec::new();
+        while !self.check(TokenKind::RParen) {
+            if !fn_args.is_empty() {
+                self.expect(TokenKind::Comma)?;
+            }
+            fn_args.push(self.expect_ident()?);
+        }
+        self.expect(TokenKind::RParen)?;
+        let end = self.expect(TokenKind::Semi)?.span;
+
+        Ok(crate::ast::ArbiterHookDecl {
+            hook_name,
+            params,
+            ret_ty,
+            fn_name,
+            fn_args,
+            span: start.merge(end),
+        })
     }
 
     /// Parse `ports[N] name ... end ports name`
