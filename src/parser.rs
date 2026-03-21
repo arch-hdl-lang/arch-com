@@ -176,12 +176,15 @@ impl Parser {
                 Some(TokenKind::Inst) => {
                     body.push(ModuleBodyItem::Inst(self.parse_inst()?));
                 }
+                Some(TokenKind::PipeReg) => {
+                    body.push(ModuleBodyItem::PipeRegDecl(self.parse_pipe_reg_decl()?));
+                }
                 Some(TokenKind::Generate) => {
                     body.push(ModuleBodyItem::Generate(self.parse_generate()?));
                 }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "param, port, reg, always, comb, let, inst, or generate",
+                        "param, port, reg, always, comb, let, inst, pipe_reg, or generate",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -707,6 +710,30 @@ impl Parser {
             value,
             span: start.merge(end_span),
         })
+    }
+
+    fn parse_pipe_reg_decl(&mut self) -> Result<PipeRegDecl, CompileError> {
+        let start = self.expect(TokenKind::PipeReg)?.span;
+        let name = self.expect_ident()?;
+        self.expect(TokenKind::Colon)?;
+        let source = self.expect_ident()?;
+        // Expect the contextual keyword "stages"
+        let stages_ident = self.expect_ident()?;
+        if stages_ident.name != "stages" {
+            return Err(CompileError::unexpected_token(
+                "stages", &stages_ident.name, stages_ident.span,
+            ));
+        }
+        let stages_tok = self.advance();
+        let stages = match &stages_tok.kind {
+            TokenKind::DecLiteral(s) => s.parse::<u32>().map_err(|_|
+                CompileError::general("invalid stage count", stages_tok.span))?,
+            _ => return Err(CompileError::unexpected_token(
+                "integer literal", &stages_tok.kind.to_string(), stages_tok.span)),
+        };
+        self.expect(TokenKind::Semi)?;
+        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        Ok(PipeRegDecl { name, source, stages, span: start.merge(end_span) })
     }
 
     fn parse_inst(&mut self) -> Result<InstDecl, CompileError> {
@@ -1607,9 +1634,12 @@ impl Parser {
                     Some(TokenKind::Inst) => {
                         body.push(ModuleBodyItem::Inst(self.parse_inst()?));
                     }
+                    Some(TokenKind::PipeReg) => {
+                        body.push(ModuleBodyItem::PipeRegDecl(self.parse_pipe_reg_decl()?));
+                    }
                     Some(other) => {
                         return Err(CompileError::unexpected_token(
-                            "reg, always, comb, let, inst, or end stage",
+                            "reg, always, comb, let, inst, pipe_reg, or end stage",
                             &other.to_string(),
                             self.peek_span(),
                         ));

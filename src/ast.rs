@@ -104,6 +104,7 @@ pub enum ModuleBodyItem {
     LetBinding(LetBinding),
     Inst(InstDecl),
     Generate(GenerateDecl),
+    PipeRegDecl(PipeRegDecl),
 }
 
 impl ModuleBodyItem {
@@ -118,8 +119,17 @@ impl ModuleBodyItem {
                 GenerateDecl::For(f) => f.span,
                 GenerateDecl::If(i)  => i.span,
             },
+            ModuleBodyItem::PipeRegDecl(p) => p.span,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct PipeRegDecl {
+    pub name: Ident,
+    pub source: Ident,
+    pub stages: u32,
+    pub span: Span,
 }
 
 // ── Generate ──────────────────────────────────────────────────────────────────

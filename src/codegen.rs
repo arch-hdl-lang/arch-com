@@ -280,6 +280,12 @@ impl<'a> Codegen<'a> {
             match item {
                 ModuleBodyItem::RegDecl(r) => { declared_names.insert(r.name.name.clone()); }
                 ModuleBodyItem::LetBinding(l) => { declared_names.insert(l.name.name.clone()); }
+                ModuleBodyItem::PipeRegDecl(p) => {
+                    declared_names.insert(p.name.name.clone());
+                    for i in 0..p.stages.saturating_sub(1) {
+                        declared_names.insert(format!("{}_stg{}", p.name.name, i + 1));
+                    }
+                }
                 _ => {}
             }
         }
@@ -319,6 +325,9 @@ impl<'a> Codegen<'a> {
                     self.emit_inst_output_wire_decls(inst, &declared_names);
                     self.emit_inst(inst);
                 }
+                ModuleBodyItem::PipeRegDecl(p) => {
+                    self.emit_pipe_reg(p, &m_clone);
+                }
                 ModuleBodyItem::Generate(_) => {} // expanded before codegen
             }
         }
@@ -327,6 +336,92 @@ impl<'a> Codegen<'a> {
         self.line("");
         self.line("endmodule");
         self.line("");
+    }
+
+    /// Find the SV type string for a signal by looking up ports, regs, and let bindings.
+    fn find_signal_sv_type(&self, name: &str, m: &ModuleDecl) -> String {
+        // Check ports
+        for p in &m.ports {
+            if p.name.name == name {
+                return self.emit_type_str(&p.ty);
+            }
+        }
+        // Check reg decls
+        for item in &m.body {
+            match item {
+                ModuleBodyItem::RegDecl(r) if r.name.name == name => {
+                    return self.emit_type_str(&r.ty);
+                }
+                ModuleBodyItem::LetBinding(l) if l.name.name == name => {
+                    if let Some(ty) = &l.ty {
+                        return self.emit_type_str(ty);
+                    }
+                }
+                ModuleBodyItem::PipeRegDecl(p) if p.name.name == name => {
+                    // Recursively resolve from source
+                    return self.find_signal_sv_type(&p.source.name, m);
+                }
+                _ => {}
+            }
+        }
+        "logic".to_string() // fallback
+    }
+
+    fn emit_pipe_reg(&mut self, p: &PipeRegDecl, m: &ModuleDecl) {
+        let ty_str = self.find_signal_sv_type(&p.source.name, m);
+
+        // Build chain of names: stg1, stg2, ..., final name
+        let mut chain: Vec<String> = Vec::new();
+        for i in 0..p.stages {
+            if i == p.stages - 1 {
+                chain.push(p.name.name.clone());
+            } else {
+                chain.push(format!("{}_stg{}", p.name.name, i + 1));
+            }
+        }
+
+        // Declare all as regs
+        for name in &chain {
+            self.line(&format!("{} {};", ty_str, name));
+        }
+
+        // Find clock and reset from module ports
+        let clk_name = m.ports.iter()
+            .find(|port| matches!(&port.ty, TypeExpr::Clock(_)))
+            .map(|port| port.name.name.clone())
+            .unwrap_or_else(|| "clk".to_string());
+
+        let rst_name = m.ports.iter()
+            .find(|port| matches!(&port.ty, TypeExpr::Reset(..)))
+            .map(|port| port.name.name.clone());
+
+        self.line(&format!("always_ff @(posedge {}) begin", clk_name));
+        self.indent += 1;
+
+        if let Some(ref rst) = rst_name {
+            self.line(&format!("if ({}) begin", rst));
+            self.indent += 1;
+            for name in &chain {
+                self.line(&format!("{} <= '0;", name));
+            }
+            self.indent -= 1;
+            self.line("end else begin");
+            self.indent += 1;
+        }
+
+        let mut prev = p.source.name.clone();
+        for name in &chain {
+            self.line(&format!("{} <= {};", name, prev));
+            prev = name.clone();
+        }
+
+        if rst_name.is_some() {
+            self.indent -= 1;
+            self.line("end");
+        }
+
+        self.indent -= 1;
+        self.line("end");
     }
 
     fn emit_comb_block(&mut self, cb: &CombBlock) {

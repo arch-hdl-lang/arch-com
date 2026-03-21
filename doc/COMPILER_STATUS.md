@@ -1,7 +1,7 @@
 # ARCH Compiler — Status & Roadmap
 
 > Last updated: 2026-03-20
-> Compiler version: 0.15.0 (ram sim codegen; BufMgr benchmark: 16K×128b shared buffer manager with 256 queues, 2-bank free-list, prefetch FIFO; trunc bitmask fix)
+> Compiler version: 0.16.0 (pipe_reg construct: N-stage delay chain with type inference, auto clock/reset from reg default; verified in BufMgr_Sm benchmark)
 
 ---
 
@@ -44,6 +44,7 @@
 | `reorder_buf` | ❌ | Not implemented |
 | `pqueue` | ❌ | Not implemented |
 | `linklist` | ✅ | `singly`/`doubly`/`circular_singly`/`circular_doubly`; per-op FSM controllers; `insert_head`/`insert_tail`/`insert_after`/`delete_head`/`delete`/`next`/`prev`/`alloc`/`free`/`read_data`/`write_data`; doubly: `_prev_mem` updated on all insert ops; `arch sim` C++ model verified against Verilator output |
+| `pipe_reg` | ✅ | `pipe_reg name: source stages N;` — N-stage flip-flop delay chain; type inferred from source signal; clock/reset from `reg default`; output is read-only; works with ports, `let` bindings, reg outputs; SV emits chained `always_ff`; sim codegen uses `_n_` temporaries for correct non-blocking semantics |
 | `interface` / `socket` | ❌ | TLM only; not implemented |
 
 ---

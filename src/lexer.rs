@@ -116,6 +116,8 @@ pub enum TokenKind {
     Forward,
     #[token("linklist")]
     Linklist,
+    #[token("pipe_reg")]
+    PipeReg,
     #[token("op")]
     Op,
     #[token("track")]
@@ -354,6 +356,7 @@ impl fmt::Display for TokenKind {
             TokenKind::From => write!(f, "from"),
             TokenKind::Forward => write!(f, "forward"),
             TokenKind::Linklist => write!(f, "linklist"),
+            TokenKind::PipeReg => write!(f, "pipe_reg"),
             TokenKind::Op => write!(f, "op"),
             TokenKind::Track => write!(f, "track"),
             TokenKind::Latency => write!(f, "latency"),

@@ -42,7 +42,7 @@ module BufMgrSm
   reg eq1_old_tail: UInt<PTR_WIDTH>;
   reg eq1_was_empty: Bool;
 
-  reg eq2_valid:    Bool;
+  pipe_reg eq2_valid: eq1_valid stages 1;
   reg eq2_qn:       UInt<QN_WIDTH>;
   reg eq2_data:     UInt<DATA_WIDTH>;
   reg eq2_old_tail: UInt<PTR_WIDTH>;
@@ -142,7 +142,6 @@ module BufMgrSm
       eq1_valid     <= 1'b0;
     end if
 
-    eq2_valid     <= eq1_valid;
     eq2_qn        <= eq1_qn;
     eq2_data      <= eq1_data;
     eq2_old_tail  <= eq1_old_tail;

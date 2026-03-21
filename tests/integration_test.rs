@@ -1282,3 +1282,14 @@ fn test_linklist_inst_in_module() {
     let sv = codegen.generate();
     insta::assert_snapshot!(sv);
 }
+
+#[test]
+fn test_pipe_reg() {
+    let source = include_str!("pipe_reg_test.arch");
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("delayed_stg1"));
+    assert!(sv.contains("delayed_stg2"));
+    assert!(sv.contains("delayed <= delayed_stg2"));
+    assert!(sv.contains("always_ff"));
+    insta::assert_snapshot!(sv);
+}

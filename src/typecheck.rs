@@ -203,6 +203,30 @@ impl<'a> TypeChecker<'a> {
                     local_types.insert(l.name.name.clone(), final_ty);
                     driven.insert(l.name.name.clone());
                 }
+                ModuleBodyItem::PipeRegDecl(p) => {
+                    self.check_snake_case(&p.name);
+                    if p.stages == 0 {
+                        self.errors.push(CompileError::general(
+                            &format!("pipe_reg '{}': stages must be > 0", p.name.name),
+                            p.span,
+                        ));
+                    }
+                    if !local_types.contains_key(&p.source.name) {
+                        self.errors.push(CompileError::general(
+                            &format!("pipe_reg '{}': source signal '{}' not found", p.name.name, p.source.name),
+                            p.source.span,
+                        ));
+                    }
+                    if local_types.contains_key(&p.name.name) {
+                        self.errors.push(CompileError::general(
+                            &format!("pipe_reg '{}': name already declared", p.name.name),
+                            p.name.span,
+                        ));
+                    }
+                    let ty = local_types.get(&p.source.name).cloned().unwrap_or(Ty::Error);
+                    local_types.insert(p.name.name.clone(), ty);
+                    driven.insert(p.name.name.clone());
+                }
                 ModuleBodyItem::Inst(inst) => {
                     self.check_snake_case(&inst.name);
                     // Mark connected output ports as driven
@@ -1155,6 +1179,7 @@ impl<'a> TypeChecker<'a> {
                 match item {
                     ModuleBodyItem::RegDecl(r) => self.check_snake_case(&r.name),
                     ModuleBodyItem::LetBinding(l) => self.check_snake_case(&l.name),
+                    ModuleBodyItem::PipeRegDecl(p) => self.check_snake_case(&p.name),
                     ModuleBodyItem::Inst(inst) => self.check_snake_case(&inst.name),
                     _ => {}
                 }

@@ -744,6 +744,22 @@ fn collect_let_names(body: &[ModuleBodyItem]) -> HashSet<String> {
         .collect()
 }
 
+fn collect_pipe_reg_names(body: &[ModuleBodyItem]) -> HashSet<String> {
+    let mut s = HashSet::new();
+    for item in body {
+        if let ModuleBodyItem::PipeRegDecl(p) = item {
+            for i in 0..p.stages {
+                if i == p.stages - 1 {
+                    s.insert(p.name.name.clone());
+                } else {
+                    s.insert(format!("{}_stg{}", p.name.name, i + 1));
+                }
+            }
+        }
+    }
+    s
+}
+
 fn collect_inst_names(body: &[ModuleBodyItem]) -> HashSet<String> {
     body.iter()
         .filter_map(|i| if let ModuleBodyItem::Inst(inst) = i { Some(inst.name.name.clone()) } else { None })
@@ -825,6 +841,19 @@ fn build_widths(ports: &[PortDecl], body: &[ModuleBodyItem]) -> HashMap<String, 
             _ => {}
         }
     }
+    // Resolve pipe_reg widths from their sources
+    for item in body {
+        if let ModuleBodyItem::PipeRegDecl(p) = item {
+            let w = m.get(&p.source.name).copied().unwrap_or(32);
+            for i in 0..p.stages {
+                if i == p.stages - 1 {
+                    m.insert(p.name.name.clone(), w);
+                } else {
+                    m.insert(format!("{}_stg{}", p.name.name, i + 1), w);
+                }
+            }
+        }
+    }
     m
 }
 
@@ -853,6 +882,22 @@ fn collect_wide_names(ports: &[PortDecl], body: &[ModuleBodyItem]) -> HashSet<St
                 }
             }
             _ => {}
+        }
+    }
+    // Resolve pipe_reg wide from source
+    let widths = build_widths(ports, body);
+    for item in body {
+        if let ModuleBodyItem::PipeRegDecl(p) = item {
+            let w = widths.get(&p.source.name).copied().unwrap_or(32);
+            if w > 64 {
+                for i in 0..p.stages {
+                    if i == p.stages - 1 {
+                        s.insert(p.name.name.clone());
+                    } else {
+                        s.insert(format!("{}_stg{}", p.name.name, i + 1));
+                    }
+                }
+            }
         }
     }
     s
@@ -962,7 +1007,8 @@ impl<'a> SimCodegen<'a> {
         let enum_map = build_enum_map(self.symbols);
 
         let port_names: HashSet<String> = m.ports.iter().map(|p| p.name.name.clone()).collect();
-        let reg_names   = collect_reg_names(&m.body);
+        let mut reg_names = collect_reg_names(&m.body);
+        reg_names.extend(collect_pipe_reg_names(&m.body));
         let let_names   = collect_let_names(&m.body);
         let inst_names  = collect_inst_names(&m.body);
         let inst_out    = collect_inst_output_signals(&m.body);
@@ -1031,14 +1077,31 @@ impl<'a> SimCodegen<'a> {
                 }
             } else { None })
             .collect();
+        // pipe_reg inits
+        let pipe_reg_inits: Vec<String> = m.body.iter()
+            .filter_map(|i| if let ModuleBodyItem::PipeRegDecl(p) = i {
+                let mut inits = Vec::new();
+                for i in 0..p.stages {
+                    let name = if i == p.stages - 1 {
+                        p.name.name.clone()
+                    } else {
+                        format!("{}_stg{}", p.name.name, i + 1)
+                    };
+                    inits.push(format!("_{}(0)", name));
+                }
+                Some(inits)
+            } else { None })
+            .flatten()
+            .collect();
         let has_clk = m.ports.iter().any(|p| matches!(&p.ty, TypeExpr::Clock(_)));
         let all_inits: Vec<String> = if has_clk {
             port_inits.into_iter()
                 .chain(reg_inits)
+                .chain(pipe_reg_inits)
                 .chain(std::iter::once("_clk_prev(0)".to_string()))
                 .collect()
         } else {
-            port_inits.into_iter().chain(reg_inits).collect()
+            port_inits.into_iter().chain(reg_inits).chain(pipe_reg_inits).collect()
         };
 
         if vec_reg_inits.is_empty() {
@@ -1075,6 +1138,22 @@ impl<'a> SimCodegen<'a> {
                 let ty = l.ty.as_ref().map(|t| cpp_internal_type(t))
                     .unwrap_or_else(|| "uint32_t".to_string());
                 h.push_str(&format!("  {ty} _let_{};\n", l.name.name));
+            }
+        }
+
+        // Private pipe_reg fields
+        for item in &m.body {
+            if let ModuleBodyItem::PipeRegDecl(p) = item {
+                let w = widths.get(&p.source.name).copied().unwrap_or(32);
+                let ty = cpp_uint(w);
+                for i in 0..p.stages {
+                    let name = if i == p.stages - 1 {
+                        p.name.name.clone()
+                    } else {
+                        format!("{}_stg{}", p.name.name, i + 1)
+                    };
+                    h.push_str(&format!("  {ty} _{name};\n"));
+                }
             }
         }
 
@@ -1202,7 +1281,12 @@ impl<'a> SimCodegen<'a> {
             .filter_map(|i| if let ModuleBodyItem::RegDecl(r) = i { Some(r) } else { None })
             .collect();
 
-        if !reg_blocks.is_empty() {
+        // Collect pipe_reg declarations for _n_ temporary handling
+        let pipe_regs: Vec<&PipeRegDecl> = m.body.iter()
+            .filter_map(|i| if let ModuleBodyItem::PipeRegDecl(p) = i { Some(p) } else { None })
+            .collect();
+
+        if !reg_blocks.is_empty() || !pipe_regs.is_empty() {
             // Declare _n_ temporaries for all regs
             for rd in &reg_decls {
                 let n = &rd.name.name;
@@ -1211,6 +1295,19 @@ impl<'a> SimCodegen<'a> {
                 } else {
                     let ty = cpp_internal_type(&rd.ty);
                     cpp.push_str(&format!("  {ty} _n_{n} = _{n};\n"));
+                }
+            }
+            // Declare _n_ temporaries for pipe_reg stages
+            for p in &pipe_regs {
+                let w = widths.get(&p.source.name).copied().unwrap_or(32);
+                let ty = cpp_uint(w);
+                for i in 0..p.stages {
+                    let name = if i == p.stages - 1 {
+                        p.name.name.clone()
+                    } else {
+                        format!("{}_stg{}", p.name.name, i + 1)
+                    };
+                    cpp.push_str(&format!("  {ty} _n_{name} = _{name};\n"));
                 }
             }
             cpp.push('\n');
@@ -1261,6 +1358,54 @@ impl<'a> SimCodegen<'a> {
                 }
             }
 
+            // pipe_reg chain assignments — write to _n_ temporaries (before commit)
+            {
+                let rst_info = m.ports.iter()
+                    .find(|p| matches!(&p.ty, TypeExpr::Reset(..)))
+                    .map(|p| {
+                        let is_low = matches!(&p.ty, TypeExpr::Reset(_, level) if *level == ResetLevel::Low);
+                        (p.name.name.clone(), is_low)
+                    });
+                for p in &pipe_regs {
+                    let mut chain: Vec<String> = Vec::new();
+                    for i in 0..p.stages {
+                        if i == p.stages - 1 {
+                            chain.push(p.name.name.clone());
+                        } else {
+                            chain.push(format!("{}_stg{}", p.name.name, i + 1));
+                        }
+                    }
+                    let ctx_pe = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
+                                           &wide_names, &widths, &enum_map);
+                    let src = ctx_pe.resolve_name(&p.source.name, false);
+                    if let Some((ref rst_name, is_low)) = rst_info {
+                        let cond = if is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
+                        cpp.push_str(&format!("  if ({cond}) {{\n"));
+                        for name in &chain {
+                            cpp.push_str(&format!("    _n_{name} = 0;\n"));
+                        }
+                        cpp.push_str("  } else {\n");
+                        for name in &chain {
+                            let prev = if *name == chain[0] { src.clone() } else {
+                                let idx = chain.iter().position(|n| n == name).unwrap();
+                                format!("_{}", chain[idx - 1])
+                            };
+                            cpp.push_str(&format!("    _n_{name} = {prev};\n"));
+                        }
+                        cpp.push_str("  }\n");
+                    } else {
+                        for name in &chain {
+                            let prev = if *name == chain[0] { src.clone() } else {
+                                let idx = chain.iter().position(|n| n == name).unwrap();
+                                format!("_{}", chain[idx - 1])
+                            };
+                            cpp.push_str(&format!("  _n_{name} = {prev};\n"));
+                        }
+                    }
+                }
+            }
+
+            // Commit all _n_ temporaries (regs + pipe_regs)
             cpp.push('\n');
             for rd in &reg_decls {
                 let n = &rd.name.name;
@@ -1270,7 +1415,18 @@ impl<'a> SimCodegen<'a> {
                     cpp.push_str(&format!("  _{n} = _n_{n};\n"));
                 }
             }
+            for p in &pipe_regs {
+                for i in 0..p.stages {
+                    let name = if i == p.stages - 1 {
+                        p.name.name.clone()
+                    } else {
+                        format!("{}_stg{}", p.name.name, i + 1)
+                    };
+                    cpp.push_str(&format!("  _{name} = _n_{name};\n"));
+                }
+            }
         }
+
         cpp.push_str("}\n\n");
 
         // eval_comb()
