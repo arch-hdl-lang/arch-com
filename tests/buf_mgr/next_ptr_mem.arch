@@ -1,0 +1,22 @@
+// Next-Pointer SRAM: 16K x 14b, simple_dual, sync_out (2-cycle read)
+
+ram NextPtrMem
+  kind simple_dual;
+  read: sync_out;
+  param DEPTH: const = 16384;
+  param WIDTH: type = UInt<14>;
+  port clk: in Clock<SysDomain>;
+  store
+    ptrs: Vec<WIDTH, DEPTH>;
+  end store
+  port rd_port
+    en:   in Bool;
+    addr: in UInt<14>;
+    data: out WIDTH;
+  end port rd_port
+  port wr_port
+    en:   in Bool;
+    addr: in UInt<14>;
+    data: in WIDTH;
+  end port wr_port
+end ram NextPtrMem

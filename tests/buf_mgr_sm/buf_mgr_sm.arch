@@ -1,81 +1,6 @@
 // BufMgr_Sm — Small variant for arch sim testing
 // 16 entries x 32-bit, 4 queues. Same architecture as BufMgr.
 
-domain SysDomain
-  freq_mhz: 500,
-end domain SysDomain
-
-// ── Data SRAM: 16 x 32b ────────────────────────────────────────────────────
-
-ram DataMemSm
-  kind simple_dual;
-  read: sync;
-  param DEPTH: const = 16;
-  param WIDTH: type = UInt<32>;
-  port clk: in Clock<SysDomain>;
-  store
-    data: Vec<WIDTH, DEPTH>;
-  end store
-  port rd_port
-    en:   in Bool;
-    addr: in UInt<4>;
-    data: out WIDTH;
-  end port rd_port
-  port wr_port
-    en:   in Bool;
-    addr: in UInt<4>;
-    data: in WIDTH;
-  end port wr_port
-end ram DataMemSm
-
-// ── Next-Pointer SRAM: 16 x 4b ─────────────────────────────────────────────
-
-ram NextPtrMemSm
-  kind simple_dual;
-  read: sync;
-  param DEPTH: const = 16;
-  param WIDTH: type = UInt<4>;
-  port clk: in Clock<SysDomain>;
-  store
-    ptrs: Vec<WIDTH, DEPTH>;
-  end store
-  port rd_port
-    en:   in Bool;
-    addr: in UInt<4>;
-    data: out WIDTH;
-  end port rd_port
-  port wr_port
-    en:   in Bool;
-    addr: in UInt<4>;
-    data: in WIDTH;
-  end port wr_port
-end ram NextPtrMemSm
-
-// ── Free-List SRAM: 16 x 4b ────────────────────────────────────────────────
-
-ram FreeListMemSm
-  kind simple_dual;
-  read: sync;
-  param DEPTH: const = 16;
-  param WIDTH: type = UInt<4>;
-  port clk: in Clock<SysDomain>;
-  store
-    slots: Vec<WIDTH, DEPTH>;
-  end store
-  port rd_port
-    en:   in Bool;
-    addr: in UInt<4>;
-    data: out WIDTH;
-  end port rd_port
-  port wr_port
-    en:   in Bool;
-    addr: in UInt<4>;
-    data: in WIDTH;
-  end port wr_port
-end ram FreeListMemSm
-
-// ── Small Buffer Manager ────────────────────────────────────────────────────
-
 module BufMgrSm
   param DEPTH:       const = 16;
   param QUEUE_COUNT: const = 4;
@@ -100,43 +25,43 @@ module BufMgrSm
 
   reg default: init 0 reset rst;
 
-  reg head_arr:  Vec<UInt<4>, 4> init 0 reset rst;
-  reg tail_arr:  Vec<UInt<4>, 4> init 0 reset rst;
-  reg count_arr: Vec<UInt<5>, 4> init 0 reset rst;
+  reg head_arr:  Vec<UInt<4>, 4>;
+  reg tail_arr:  Vec<UInt<4>, 4>;
+  reg count_arr: Vec<UInt<5>, 4>;
 
-  reg free_rd_ptr:  UInt<PTR_WIDTH> init 0 reset rst;
-  reg free_wr_ptr:  UInt<PTR_WIDTH> init 0 reset rst;
-  reg free_count:   UInt<5> init 0 reset rst;
-  reg setup_done:   Bool init 0 reset rst;
-  reg setup_ctr:    UInt<PTR_WIDTH> init 0 reset rst;
+  reg free_rd_ptr:  UInt<PTR_WIDTH>;
+  reg free_wr_ptr:  UInt<PTR_WIDTH>;
+  reg free_count:   UInt<5>;
+  reg setup_done:   Bool;
+  reg setup_ctr:    UInt<PTR_WIDTH>;
 
   // Enqueue pipeline regs
-  reg eq1_valid:    Bool init 0 reset rst;
-  reg eq1_qn:       UInt<QN_WIDTH> init 0 reset rst;
-  reg eq1_data:     UInt<DATA_WIDTH> init 0 reset rst;
-  reg eq1_old_tail: UInt<PTR_WIDTH> init 0 reset rst;
-  reg eq1_was_empty: Bool init 0 reset rst;
+  reg eq1_valid:    Bool;
+  reg eq1_qn:       UInt<QN_WIDTH>;
+  reg eq1_data:     UInt<DATA_WIDTH>;
+  reg eq1_old_tail: UInt<PTR_WIDTH>;
+  reg eq1_was_empty: Bool;
 
-  reg eq2_valid:    Bool init 0 reset rst;
-  reg eq2_qn:       UInt<QN_WIDTH> init 0 reset rst;
-  reg eq2_data:     UInt<DATA_WIDTH> init 0 reset rst;
-  reg eq2_old_tail: UInt<PTR_WIDTH> init 0 reset rst;
-  reg eq2_was_empty: Bool init 0 reset rst;
-  reg eq2_free_slot: UInt<PTR_WIDTH> init 0 reset rst;
+  reg eq2_valid:    Bool;
+  reg eq2_qn:       UInt<QN_WIDTH>;
+  reg eq2_data:     UInt<DATA_WIDTH>;
+  reg eq2_old_tail: UInt<PTR_WIDTH>;
+  reg eq2_was_empty: Bool;
+  reg eq2_free_slot: UInt<PTR_WIDTH>;
 
   // Dequeue pipeline regs
-  reg dq1_valid:    Bool init 0 reset rst;
-  reg dq1_qn:       UInt<QN_WIDTH> init 0 reset rst;
-  reg dq1_old_head: UInt<PTR_WIDTH> init 0 reset rst;
+  reg dq1_valid:    Bool;
+  reg dq1_qn:       UInt<QN_WIDTH>;
+  reg dq1_old_head: UInt<PTR_WIDTH>;
 
-  reg dq2_valid:    Bool init 0 reset rst;
-  reg dq2_qn:       UInt<QN_WIDTH> init 0 reset rst;
-  reg dq2_old_head: UInt<PTR_WIDTH> init 0 reset rst;
+  reg dq2_valid:    Bool;
+  reg dq2_qn:       UInt<QN_WIDTH>;
+  reg dq2_old_head: UInt<PTR_WIDTH>;
 
   // SRAM output wires
-  reg free_slot_rd_data: UInt<4> init 0 reset none;
-  reg data_rd_data:      UInt<32> init 0 reset none;
-  reg next_ptr_rd_data:  UInt<4> init 0 reset none;
+  reg free_slot_rd_data: UInt<4> reset none;
+  reg data_rd_data:      UInt<32> reset none;
+  reg next_ptr_rd_data:  UInt<4> reset none;
 
   // Bypass logic
   let eq0_tail_bypassed: UInt<PTR_WIDTH> =

@@ -5,7 +5,7 @@
 // Singly-linked list per queue; all pointers + data in SRAM.
 // Head/tail pointers in flops.  Simultaneous enqueue + dequeue every cycle.
 //
-// Sub-components:
+// Sub-components (separate files):
 //   DataMem       — 16K x 128b  simple_dual  sync_out (2-cycle read)
 //   NextPtrMem    — 16K x 14b   simple_dual  sync_out (2-cycle read)
 //   FreeListBank  — 8K x 14b    simple_dual  sync_out (2-cycle read) x 2
@@ -18,81 +18,6 @@
 // Enqueue pipeline: EQ0 → EQ1 → EQ2  (3 stages)
 // Dequeue pipeline: DQ0 → DQ1 → DQ2  (3 stages)
 // =============================================================================
-
-domain SysDomain
-  freq_mhz: 500,
-end domain SysDomain
-
-// ── Data SRAM: 16K x 128b ──────────────────────────────────────────────────
-
-ram DataMem
-  kind simple_dual;
-  read: sync_out;
-  param DEPTH: const = 16384;
-  param WIDTH: type = UInt<128>;
-  port clk: in Clock<SysDomain>;
-  store
-    data: Vec<WIDTH, DEPTH>;
-  end store
-  port rd_port
-    en:   in Bool;
-    addr: in UInt<14>;
-    data: out WIDTH;
-  end port rd_port
-  port wr_port
-    en:   in Bool;
-    addr: in UInt<14>;
-    data: in WIDTH;
-  end port wr_port
-end ram DataMem
-
-// ── Next-Pointer SRAM: 16K x 14b ──────────────────────────────────────────
-
-ram NextPtrMem
-  kind simple_dual;
-  read: sync_out;
-  param DEPTH: const = 16384;
-  param WIDTH: type = UInt<14>;
-  port clk: in Clock<SysDomain>;
-  store
-    ptrs: Vec<WIDTH, DEPTH>;
-  end store
-  port rd_port
-    en:   in Bool;
-    addr: in UInt<14>;
-    data: out WIDTH;
-  end port rd_port
-  port wr_port
-    en:   in Bool;
-    addr: in UInt<14>;
-    data: in WIDTH;
-  end port wr_port
-end ram NextPtrMem
-
-// ── Free-List Bank SRAM: 8K x 14b (one of two banks) ───────────────────────
-
-ram FreeListBank
-  kind simple_dual;
-  read: sync_out;
-  param DEPTH: const = 8192;
-  param WIDTH: type = UInt<14>;
-  port clk: in Clock<SysDomain>;
-  store
-    slots: Vec<WIDTH, DEPTH>;
-  end store
-  port rd_port
-    en:   in Bool;
-    addr: in UInt<13>;
-    data: out WIDTH;
-  end port rd_port
-  port wr_port
-    en:   in Bool;
-    addr: in UInt<13>;
-    data: in WIDTH;
-  end port wr_port
-end ram FreeListBank
-
-// ── Top-Level Buffer Manager ────────────────────────────────────────────────
 
 module BufMgr
   param DEPTH:       const = 16384;
