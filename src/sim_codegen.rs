@@ -32,6 +32,7 @@ pub struct SimCodegen<'a> {
     #[allow(dead_code)]
     overload_map: HashMap<usize, usize>,
     check_uninit: bool,
+    cdc_random: bool,
 }
 
 impl<'a> SimCodegen<'a> {
@@ -40,11 +41,16 @@ impl<'a> SimCodegen<'a> {
         source: &'a SourceFile,
         overload_map: HashMap<usize, usize>,
     ) -> Self {
-        Self { symbols, source, overload_map, check_uninit: false }
+        Self { symbols, source, overload_map, check_uninit: false, cdc_random: false }
     }
 
     pub fn check_uninit(mut self, enabled: bool) -> Self {
         self.check_uninit = enabled;
+        self
+    }
+
+    pub fn cdc_random(mut self, enabled: bool) -> Self {
+        self.cdc_random = enabled;
         self
     }
 
@@ -2601,10 +2607,16 @@ impl<'a> SimCodegen<'a> {
             if rst_is_low { format!("!{}", rp.name.name) } else { rp.name.name.clone() }
         });
 
+        let cdc_random = self.cdc_random;
+
         // ── Header ──
         let mut h = String::new();
         h.push_str("#pragma once\n");
-        h.push_str("#include <cstdint>\n#include <cstring>\n\n");
+        if cdc_random {
+            h.push_str("#include <cstdint>\n#include <cstring>\n#include <cstdlib>\n\n");
+        } else {
+            h.push_str("#include <cstdint>\n#include <cstring>\n\n");
+        }
         h.push_str(&format!("class {class} {{\npublic:\n"));
         for p in &s.ports {
             h.push_str(&format!("  {} {};\n", cpp_port_type(&p.ty), p.name.name));
@@ -2636,6 +2648,9 @@ impl<'a> SimCodegen<'a> {
                 for i in 0..stages { h.push_str(&format!("  uint8_t _sync{};\n", i)); }
                 h.push_str("  uint8_t _sync_prev;\n");
             }
+        }
+        if cdc_random {
+            h.push_str("  uint32_t _cdc_lfsr;\n");
         }
         h.push_str("};\n");
 
@@ -2678,16 +2693,33 @@ impl<'a> SimCodegen<'a> {
                     for i in 0..stages { cpp.push_str(&format!("    _sync{i} = 0;\n")); }
                 }
             }
+            if cdc_random {
+                cpp.push_str("    _cdc_lfsr = 0xACE1u;\n");
+            }
             cpp.push_str("    return;\n  }\n");
         }
+        // CDC randomization: LFSR step + skip flag
+        if cdc_random {
+            cpp.push_str("  // LFSR-based CDC randomization (models metastability settling)\n");
+            cpp.push_str("  _cdc_lfsr = (_cdc_lfsr >> 1) ^ ((_cdc_lfsr & 1) ? 0xB4BCD35Cu : 0u);\n");
+            cpp.push_str("  bool _cdc_skip = (_cdc_lfsr & 0x3) == 0; // ~25% chance of extra cycle\n");
+        }
+
+        // Open dst guard with optional random skip
+        let dst_guard = if cdc_random {
+            "  if (_rising_dst && !_cdc_skip) {\n"
+        } else {
+            "  if (_rising_dst) {\n"
+        };
+
         match s.kind {
             SyncKind::Ff => {
-                cpp.push_str("  if (_rising_dst) {\n");
+                cpp.push_str(dst_guard);
                 for i in (1..stages).rev() { cpp.push_str(&format!("    _stage{i} = _stage{};\n", i - 1)); }
                 cpp.push_str("    _stage0 = data_in;\n  }\n");
             }
             SyncKind::Gray => {
-                cpp.push_str("  if (_rising_dst) {\n");
+                cpp.push_str(dst_guard);
                 for i in (1..stages).rev() { cpp.push_str(&format!("    _gray_stage{i} = _gray_stage{};\n", i - 1)); }
                 cpp.push_str("    _gray_stage0 = data_in ^ (data_in >> 1);\n  }\n");
             }
@@ -2698,27 +2730,29 @@ impl<'a> SimCodegen<'a> {
                 for i in (1..stages).rev() { cpp.push_str(&format!("    _ack_sync{i} = _ack_sync{};\n", i - 1)); }
                 cpp.push_str("    _ack_sync0 = _ack_dst;\n");
                 cpp.push_str(&format!("    _ack_src = _ack_sync{};\n  }}\n", stages - 1));
-                cpp.push_str("  if (_rising_dst) {\n");
+                cpp.push_str(dst_guard);
                 for i in (1..stages).rev() { cpp.push_str(&format!("    _req_sync{i} = _req_sync{};\n", i - 1)); }
                 cpp.push_str("    _req_sync0 = _req_src;\n");
                 cpp.push_str(&format!("    _ack_dst = _req_sync{};\n  }}\n", stages - 1));
             }
             SyncKind::Reset => {
-                // Async assert: when data_in goes high, all stages immediately go to 1
+                // Async assert is always immediate (no randomization)
                 cpp.push_str("  if (data_in) {\n");
                 for i in 0..stages { cpp.push_str(&format!("    _stage{i} = 1;\n")); }
-                cpp.push_str("  } else if (_rising_dst) {\n");
-                // Sync deassert: shift 0 through the chain on dst_clk rising
+                if cdc_random {
+                    cpp.push_str("  } else if (_rising_dst && !_cdc_skip) {\n");
+                } else {
+                    cpp.push_str("  } else if (_rising_dst) {\n");
+                }
                 for i in (1..stages).rev() { cpp.push_str(&format!("    _stage{i} = _stage{};\n", i - 1)); }
                 cpp.push_str("    _stage0 = 0;\n  }\n");
             }
             SyncKind::Pulse => {
-                // Source clock: toggle on input pulse
+                // Source toggle is always immediate (no randomization)
                 cpp.push_str("  if (_rising_src) {\n");
                 cpp.push_str("    if (data_in) _toggle_src ^= 1;\n");
                 cpp.push_str("  }\n");
-                // Destination clock: sync toggle through chain, save prev for edge detect
-                cpp.push_str("  if (_rising_dst) {\n");
+                cpp.push_str(dst_guard);
                 cpp.push_str(&format!("    _sync_prev = _sync{};\n", stages - 1));
                 for i in (1..stages).rev() { cpp.push_str(&format!("    _sync{i} = _sync{};\n", i - 1)); }
                 cpp.push_str("    _sync0 = _toggle_src;\n");

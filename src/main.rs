@@ -54,6 +54,9 @@ enum Command {
         /// Enable uninitialized register read detection (reset-none regs + pipe_reg propagation)
         #[arg(long)]
         check_uninit: bool,
+        /// Randomize synchronizer latency to model CDC metastability
+        #[arg(long)]
+        cdc_random: bool,
     },
 }
 
@@ -118,8 +121,8 @@ fn main() -> miette::Result<()> {
             eprintln!("OK: no errors");
             Ok(())
         }
-        Command::Sim { arch_files, tb_files, outdir, check_uninit } => {
-            run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit)
+        Command::Sim { arch_files, tb_files, outdir, check_uninit, cdc_random } => {
+            run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, cdc_random)
         }
         Command::Build { files, o } => {
             let ms = MultiSource::from_files(&files)?;
@@ -174,6 +177,7 @@ fn run_sim(
     tb_files: &[PathBuf],
     outdir: Option<&std::path::Path>,
     check_uninit: bool,
+    cdc_random: bool,
 ) -> miette::Result<()> {
     // 1. Parse + type-check
     let ms = MultiSource::from_files(arch_files)?;
@@ -186,7 +190,7 @@ fn run_sim(
     fs::create_dir_all(&build_dir).into_diagnostic()?;
 
     // 3. Generate C++ models
-    let sim = SimCodegen::new(&symbols, &ast, overload_map).check_uninit(check_uninit);
+    let sim = SimCodegen::new(&symbols, &ast, overload_map).check_uninit(check_uninit).cdc_random(cdc_random);
     let models = sim.generate();
 
     if models.is_empty() {

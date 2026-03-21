@@ -314,6 +314,10 @@ Strategies:
 
 Notes: two Clock ports must reference different domains (compile error otherwise). SV codegen emits strategy-specific logic; sim codegen generates C++ models for all 5 kinds.
 
+Type checker warnings/errors: `kind ff` with multi-bit data (UInt\<N\> where N>1) warns — use `kind gray` or `kind handshake` instead. `kind reset` and `kind pulse` error if data is not Bool.
+
+CDC detection covers both seq→seq and comb→seq crossings: a comb block reading a register from domain A whose output feeds a seq block in domain B is a compile error.
+
 **ram --- FPGA BRAM / ASIC SRAM**
 
 +-----------------------------------+--------------------------------------+
@@ -557,6 +561,8 @@ Notes: two Clock ports must reference different domains (compile error otherwise
 > arch sim F.arch --tb F_tb.cpp --outdir build/
 >
 > arch sim F.arch --tb F_tb.cpp --check-uninit // warn on reads of uninitialized reset-none regs
+>
+> arch sim F.arch --tb F_tb.cpp --cdc-random // randomize synchronizer latency (+1 cycle ~25% chance); LFSR-based deterministic
 >
 > arch sim F.arch // generate models only (no testbench)
 >

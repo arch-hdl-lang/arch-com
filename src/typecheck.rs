@@ -303,6 +303,48 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
+
+            // For each comb block, check if it reads registers from multiple domains
+            for item in &m.body {
+                if let ModuleBodyItem::CombBlock(cb) = item {
+                    let mut reads = HashSet::new();
+                    Self::collect_comb_stmt_reads(&cb.stmts, &mut reads);
+                    for name in &reads {
+                        // A comb block reading a cross-domain register is unsafe —
+                        // it could be consumed by any domain downstream
+                        if reg_domain.contains_key(name) {
+                            // Find which domains consume this comb block's outputs
+                            let mut comb_targets = HashSet::new();
+                            Self::collect_comb_stmt_targets(&cb.stmts, &mut comb_targets);
+                            for target in &comb_targets {
+                                // Check if any seq block in a different domain reads this target
+                                for item2 in &m.body {
+                                    if let ModuleBodyItem::RegBlock(rb) = item2 {
+                                        if let Some(consumer_domain) = clk_domain.get(&rb.clock.name) {
+                                            let mut seq_reads = HashSet::new();
+                                            Self::collect_stmt_reads(&rb.stmts, &mut seq_reads);
+                                            if seq_reads.contains(target) {
+                                                if let Some(src_domain) = reg_domain.get(name) {
+                                                    if src_domain != consumer_domain {
+                                                        self.errors.push(CompileError::general(
+                                                            &format!(
+                                                                "CDC violation: comb signal `{target}` reads register `{name}` \
+                                                                 (domain `{src_domain}`) but is consumed in domain `{consumer_domain}`. \
+                                                                 Use a `synchronizer` or async `fifo` to cross clock domains"
+                                                            ),
+                                                            cb.span,
+                                                        ));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Validate `implements` template conformance
@@ -1128,6 +1170,44 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Collect all identifier names read in comb statements.
+    fn collect_comb_stmt_reads(stmts: &[CombStmt], out: &mut HashSet<String>) {
+        for stmt in stmts {
+            match stmt {
+                CombStmt::Assign(a) => Self::collect_expr_reads(&a.value, out),
+                CombStmt::IfElse(ie) => {
+                    Self::collect_expr_reads(&ie.cond, out);
+                    Self::collect_comb_stmt_reads(&ie.then_stmts, out);
+                    Self::collect_comb_stmt_reads(&ie.else_stmts, out);
+                }
+                CombStmt::MatchExpr(m) => {
+                    Self::collect_expr_reads(&m.scrutinee, out);
+                    for arm in &m.arms { Self::collect_stmt_reads(&arm.body, out); }
+                }
+                CombStmt::Log(l) => {
+                    for arg in &l.args { Self::collect_expr_reads(arg, out); }
+                }
+            }
+        }
+    }
+
+    /// Collect all target names assigned in comb statements.
+    fn collect_comb_stmt_targets(stmts: &[CombStmt], out: &mut HashSet<String>) {
+        for stmt in stmts {
+            match stmt {
+                CombStmt::Assign(a) => { out.insert(a.target.name.clone()); }
+                CombStmt::IfElse(ie) => {
+                    Self::collect_comb_stmt_targets(&ie.then_stmts, out);
+                    Self::collect_comb_stmt_targets(&ie.else_stmts, out);
+                }
+                CombStmt::MatchExpr(m) => {
+                    for arm in &m.arms { Self::collect_stmt_targets(&arm.body, out); }
+                }
+                CombStmt::Log(_) => {}
+            }
+        }
+    }
+
     fn check_pascal_case(&mut self, ident: &Ident) {
         let name = &ident.name;
         if name.is_empty() {
@@ -1350,6 +1430,40 @@ impl<'a> TypeChecker<'a> {
                         ));
                     }
                 }
+            }
+        }
+
+        // Kind-specific checks
+        if let Some(data_in) = s.ports.iter().find(|p| p.name.name == "data_in") {
+            let is_single_bit = match &data_in.ty {
+                TypeExpr::Bool | TypeExpr::Bit => true,
+                _ => false,
+            };
+
+            match s.kind {
+                SyncKind::Ff if !is_single_bit => {
+                    self.warnings.push(CompileWarning {
+                        message: format!(
+                            "synchronizer `{}`: `kind ff` on multi-bit data is unsafe — \
+                             consider `kind gray` (for counters) or `kind handshake` (for arbitrary data)",
+                            s.name.name
+                        ),
+                        span: s.name.span,
+                    });
+                }
+                SyncKind::Reset if !is_single_bit => {
+                    self.errors.push(CompileError::general(
+                        &format!("synchronizer `{}`: `kind reset` requires single-bit (Bool) data ports", s.name.name),
+                        data_in.span,
+                    ));
+                }
+                SyncKind::Pulse if !is_single_bit => {
+                    self.errors.push(CompileError::general(
+                        &format!("synchronizer `{}`: `kind pulse` requires single-bit (Bool) data ports", s.name.name),
+                        data_in.span,
+                    ));
+                }
+                _ => {}
             }
         }
     }
