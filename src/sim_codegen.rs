@@ -31,6 +31,7 @@ pub struct SimCodegen<'a> {
     source: &'a SourceFile,
     #[allow(dead_code)]
     overload_map: HashMap<usize, usize>,
+    check_uninit: bool,
 }
 
 impl<'a> SimCodegen<'a> {
@@ -39,7 +40,12 @@ impl<'a> SimCodegen<'a> {
         source: &'a SourceFile,
         overload_map: HashMap<usize, usize>,
     ) -> Self {
-        Self { symbols, source, overload_map }
+        Self { symbols, source, overload_map, check_uninit: false }
+    }
+
+    pub fn check_uninit(mut self, enabled: bool) -> Self {
+        self.check_uninit = enabled;
+        self
     }
 
     /// Generate a SimModel for each synthesizable construct in the source.
@@ -760,6 +766,52 @@ fn collect_pipe_reg_names(body: &[ModuleBodyItem]) -> HashSet<String> {
     s
 }
 
+/// Collect all identifiers read in a comb statement (RHS of assignments).
+fn collect_comb_reads(stmt: &CombStmt, out: &mut std::collections::BTreeSet<String>) {
+    match stmt {
+        CombStmt::Assign(a) => collect_expr_idents(&a.value, out),
+        CombStmt::IfElse(ie) => {
+            collect_expr_idents(&ie.cond, out);
+            for s in &ie.then_stmts { collect_comb_reads(s, out); }
+            for s in &ie.else_stmts { collect_comb_reads(s, out); }
+        }
+        CombStmt::MatchExpr(_) | CombStmt::Log(_) => {}
+    }
+}
+
+fn collect_expr_idents(expr: &Expr, out: &mut std::collections::BTreeSet<String>) {
+    match &expr.kind {
+        ExprKind::Ident(name) => { out.insert(name.clone()); }
+        ExprKind::Binary(_, lhs, rhs) => {
+            collect_expr_idents(lhs, out);
+            collect_expr_idents(rhs, out);
+        }
+        ExprKind::Unary(_, e) => collect_expr_idents(e, out),
+        ExprKind::Index(base, idx) => {
+            collect_expr_idents(base, out);
+            collect_expr_idents(idx, out);
+        }
+        ExprKind::FieldAccess(base, _) => collect_expr_idents(base, out),
+        ExprKind::MethodCall(base, _, args) => {
+            collect_expr_idents(base, out);
+            for a in args { collect_expr_idents(a, out); }
+        }
+        ExprKind::FunctionCall(_, args) => {
+            for a in args { collect_expr_idents(a, out); }
+        }
+        ExprKind::Ternary(cond, then_e, else_e) => {
+            collect_expr_idents(cond, out);
+            collect_expr_idents(then_e, out);
+            collect_expr_idents(else_e, out);
+        }
+        ExprKind::ExprMatch(scrut, arms) => {
+            collect_expr_idents(scrut, out);
+            for arm in arms { collect_expr_idents(&arm.value, out); }
+        }
+        _ => {}
+    }
+}
+
 fn collect_inst_names(body: &[ModuleBodyItem]) -> HashSet<String> {
     body.iter()
         .filter_map(|i| if let ModuleBodyItem::Inst(inst) = i { Some(inst.name.name.clone()) } else { None })
@@ -1015,6 +1067,17 @@ impl<'a> SimCodegen<'a> {
         let wide_names  = collect_wide_names(&m.ports, &m.body);
         let widths      = build_widths(&m.ports, &m.body);
 
+        // Collect reset-none reg names for --check-uninit
+        let uninit_regs: HashSet<String> = if self.check_uninit {
+            m.body.iter()
+                .filter_map(|i| if let ModuleBodyItem::RegDecl(r) = i {
+                    if matches!(r.reset, RegReset::None) { Some(r.name.name.clone()) } else { None }
+                } else { None })
+                .collect()
+        } else {
+            HashSet::new()
+        };
+
         // Also include inst_out in "known" names for the wide set and widths
         // (they come from sub-inst ports — we'll default them to uint32_t for now)
 
@@ -1132,6 +1195,28 @@ impl<'a> SimCodegen<'a> {
             }
         }
 
+        // Shadow valid bits for --check-uninit (reset-none regs + pipe_reg stages)
+        if !uninit_regs.is_empty() {
+            h.push_str("  // --check-uninit shadow valid bits\n");
+            for name in &uninit_regs {
+                h.push_str(&format!("  bool _{name}_vinit = false;\n"));
+            }
+            // pipe_reg stages whose source is uninit also get shadow bits
+            for item in &m.body {
+                if let ModuleBodyItem::PipeRegDecl(p) = item {
+                    // pipe_reg always gets shadow bits (propagated from source)
+                    for i in 0..p.stages {
+                        let sname = if i == p.stages - 1 {
+                            p.name.name.clone()
+                        } else {
+                            format!("{}_stg{}", p.name.name, i + 1)
+                        };
+                        h.push_str(&format!("  bool _{sname}_vinit = false;\n"));
+                    }
+                }
+            }
+        }
+
         // Private let fields (computed in eval_comb, read in eval_posedge)
         for item in &m.body {
             if let ModuleBodyItem::LetBinding(l) = item {
@@ -1236,6 +1321,12 @@ impl<'a> SimCodegen<'a> {
                         let sig = cpp_expr(&conn.signal, &ctx);
                         cpp.push_str(&format!("  {} = _inst_{}.{};\n",
                             sig, inst.name.name, conn.port_name.name));
+                        // --check-uninit: mark inst output as initialized
+                        if let ExprKind::Ident(name) = &conn.signal.kind {
+                            if uninit_regs.contains(name.as_str()) {
+                                cpp.push_str(&format!("  _{name}_vinit = true;\n"));
+                            }
+                        }
                     }
                 }
             }
@@ -1259,6 +1350,12 @@ impl<'a> SimCodegen<'a> {
                         let sig = cpp_expr(&conn.signal, &ctx);
                         cpp.push_str(&format!("    {} = _inst_{}.{};\n",
                             sig, inst.name.name, conn.port_name.name));
+                        // --check-uninit: mark inst output as initialized
+                        if let ExprKind::Ident(name) = &conn.signal.kind {
+                            if uninit_regs.contains(name.as_str()) {
+                                cpp.push_str(&format!("    _{name}_vinit = true;\n"));
+                            }
+                        }
                     }
                 }
             }
@@ -1425,6 +1522,34 @@ impl<'a> SimCodegen<'a> {
                     cpp.push_str(&format!("  _{name} = _n_{name};\n"));
                 }
             }
+
+            // --check-uninit: propagate vinit for pipe_reg stages
+            if !uninit_regs.is_empty() {
+                for p in &pipe_regs {
+                    let mut chain: Vec<String> = Vec::new();
+                    for i in 0..p.stages {
+                        if i == p.stages - 1 {
+                            chain.push(p.name.name.clone());
+                        } else {
+                            chain.push(format!("{}_stg{}", p.name.name, i + 1));
+                        }
+                    }
+                    // Propagate vinit in reverse (like data) — shift valid bits
+                    for i in (0..chain.len()).rev() {
+                        let prev_vinit = if i == 0 {
+                            // Source's vinit: check if source is an uninit reg
+                            if uninit_regs.contains(&p.source.name) {
+                                format!("_{}_vinit", p.source.name)
+                            } else {
+                                "true".to_string() // source is always valid (port, let, or reset-initialized reg)
+                            }
+                        } else {
+                            format!("_{}_vinit", chain[i - 1])
+                        };
+                        cpp.push_str(&format!("  _{}_vinit = {};\n", chain[i], prev_vinit));
+                    }
+                }
+            }
         }
 
         cpp.push_str("}\n\n");
@@ -1439,6 +1564,40 @@ impl<'a> SimCodegen<'a> {
             if let ModuleBodyItem::LetBinding(l) = item {
                 let val = cpp_expr(&l.value, &ctx_comb);
                 cpp.push_str(&format!("  _let_{} = {};\n", l.name.name, val));
+            }
+        }
+
+        // --check-uninit: warn if any uninit reg/pipe_reg output is read in comb
+        if !uninit_regs.is_empty() {
+            // Collect all signal names read in comb blocks
+            let mut comb_reads: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            for item in &m.body {
+                if let ModuleBodyItem::CombBlock(cb) = item {
+                    for stmt in &cb.stmts {
+                        collect_comb_reads(stmt, &mut comb_reads);
+                    }
+                }
+            }
+            // Check uninit regs that are read in comb (warn once per signal)
+            for name in &comb_reads {
+                if uninit_regs.contains(name) {
+                    cpp.push_str(&format!(
+                        "  {{ static bool _w_{name} = false; if (!_{name}_vinit && !_w_{name}) {{ fprintf(stderr, \"WARNING: read of uninitialized reg '{name}' in {n}\\n\"); _w_{name} = true; }} }}\n",
+                        name = name, n = name
+                    ));
+                }
+            }
+            // Check pipe_reg outputs whose source chain includes uninit regs
+            for item in &m.body {
+                if let ModuleBodyItem::PipeRegDecl(p) = item {
+                    if comb_reads.contains(&p.name.name) {
+                        let pn = &p.name.name;
+                        cpp.push_str(&format!(
+                            "  {{ static bool _w_{pn} = false; if (!_{pn}_vinit && !_w_{pn}) {{ fprintf(stderr, \"WARNING: read of uninitialized pipe_reg '{pn}' in {n}\\n\"); _w_{pn} = true; }} }}\n",
+                            pn = pn, n = name
+                        ));
+                    }
+                }
             }
         }
 

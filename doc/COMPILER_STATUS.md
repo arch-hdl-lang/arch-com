@@ -1,7 +1,7 @@
 # ARCH Compiler — Status & Roadmap
 
 > Last updated: 2026-03-20
-> Compiler version: 0.16.0 (pipe_reg construct: N-stage delay chain with type inference, auto clock/reset from reg default; verified in BufMgr_Sm benchmark)
+> Compiler version: 0.17.0 (--check-uninit: uninitialized register read detection for reset-none regs with pipe_reg propagation; warn-once per signal)
 
 ---
 
@@ -15,6 +15,7 @@
 | `arch build <file.arch> [-o out.sv]` | ✅ Emits deterministic SystemVerilog |
 | `arch build a.arch b.arch` | ✅ Multi-file: concatenates + cross-resolves; one `.sv` per input (or single combined file with `-o`) |
 | `arch sim <file.arch> --tb <tb.cpp>` | ✅ Generates Verilator-compatible C++ models (`VName.h` + `VName.cpp` + `verilated.h`), compiles with `g++`, and runs; supports `module`, `counter`, `fsm`, `linklist`, `ram`; `fifo`/`arbiter`/`regfile` pending |
+| `arch sim ... --check-uninit` | ✅ Detects reads of uninitialized `reset none` registers; shadow valid bits propagate through `pipe_reg` chains; warn-once per signal to stderr |
 
 ---
 
