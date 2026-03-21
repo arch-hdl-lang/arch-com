@@ -9,11 +9,11 @@ module Counter
   port en: in Bool;
   port count: out UInt<WIDTH>;
   reg count_r: UInt<WIDTH> init 0 reset rst;
-  always on clk rising
+  seq on clk rising
     if en
       count_r <= (count_r + 1).trunc<WIDTH>();
     end if
-  end always
+  end seq
   comb
     count = count_r;
   end comb

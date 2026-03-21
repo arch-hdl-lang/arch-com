@@ -14,13 +14,13 @@ module AesRcon
 
   reg rcnt: UInt<4> init 0 reset none;
 
-  always on clk rising
+  seq on clk rising
     if kld
       rcnt <= 0;
     else
       rcnt <= (rcnt + 1).trunc<4>();
     end if
-  end always
+  end seq
 
   comb
     out_rcon = match rcnt

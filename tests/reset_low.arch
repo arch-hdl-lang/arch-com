@@ -13,11 +13,11 @@ module ActiveLowRst
 
   reg count_r: UInt<8> init 0 reset rst_n;
 
-  always on clk rising
+  seq on clk rising
     if en
       count_r <= (count_r + 1).trunc<8>();
     end if
-  end always
+  end seq
 
   comb
     count = count_r;

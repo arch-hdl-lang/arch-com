@@ -158,7 +158,7 @@ module AesCipherTop
   let sa33_fark: UInt<8> = sa33_sr ^ w3.trunc<7,0>();
 
   // ── FSM control + state matrix updates ──
-  always on clk rising
+  seq on clk rising
     ld_r <= ld;
 
     if ld
@@ -212,7 +212,7 @@ module AesCipherTop
                       sa02_fark, sa12_fark, sa22_fark, sa32_fark,
                       sa03_fark, sa13_fark, sa23_fark, sa33_fark };
     end if
-  end always
+  end seq
 
   comb
     done = done_r;

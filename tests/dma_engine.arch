@@ -314,7 +314,7 @@ module DmaEngine
   // ── Write buffer FIFO instance ────────────────────────────────────────────
   // Push: fires when read handshake completes.
   // Pop:  fires when write bus is ready (mem_wr_ready).
-  // Result: write data is always the read data from the preceding beat.
+  // Result: write data is seq the read data from the preceding beat.
   inst wb: WriteBuffer
     connect clk        <- clk;
     connect rst        <- rst;
@@ -354,13 +354,13 @@ module DmaEngine
   end inst arb
 
   // ── All-reads-done latch: set when last read fires, clear on FSM idle ──────
-  always on clk rising
+  seq on clk rising
     if not busy
       reads_done_r <= false;
     else if read_done
       reads_done_r <= true;
     end if
-  end always
+  end seq
 
   // ── Descriptor fetch state machine ────────────────────────────────────────
   // start_pulse: fetch_cnt 0→1.  Each subsequent cycle advances by one.
@@ -368,7 +368,7 @@ module DmaEngine
   // Cycle 2: DescTable[0] output available → latch desc_src_r; read [1] issued.
   // Cycle 3: DescTable[1] output available → latch desc_dst_r; fetch complete.
   // all_done: resets fetch_cnt to 0, ready for next transfer.
-  always on clk rising
+  seq on clk rising
     if start_pulse
       fetch_cnt <= 1;
     end if
@@ -385,16 +385,16 @@ module DmaEngine
     if all_done
       fetch_cnt <= 0;
     end if
-  end always
+  end seq
 
   // ── APB write: latch desc_r.length (and desc_r.flags if addr 4 used) ───────
-  always on clk rising
+  seq on clk rising
     if apb_sel and apb_enable and apb_write
       if apb_addr == 2
         desc_r.length <= apb_wdata.trunc<16>();
       end if
     end if
-  end always
+  end seq
 
   // ── Combinational outputs ─────────────────────────────────────────────────
   // mem_rd_valid: read only while FSM active, FIFO has space, reads not done.

@@ -348,9 +348,9 @@ module BadCounter
   port rst: in Reset<Sync>;
   port count: out UInt<8>;
   reg count_r: UInt<8> init 0 reset rst;
-  always on clk rising
+  seq on clk rising
     count_r <= count_r + 1;
-  end always
+  end seq
   comb
     count = count_r;
   end comb
@@ -694,10 +694,10 @@ module MixedReset
   reg count_r: UInt<8> init 0 reset rst;
   reg pipe_r:  UInt<8> init 0 reset none;
 
-  always on clk rising
+  seq on clk rising
     count_r <= (count_r + 1).trunc<8>();
     pipe_r  <= data_in;
-  end always
+  end seq
 
   comb
     count_out = count_r;
@@ -736,10 +736,10 @@ module BadMixed
   reg reg_a: UInt<8> init 0 reset rst_a;
   reg reg_b: UInt<8> init 0 reset rst_b;
 
-  always on clk rising
+  seq on clk rising
     reg_a <= (reg_a + 1).trunc<8>();
     reg_b <= (reg_b + 1).trunc<8>();
-  end always
+  end seq
 
   comb
     out_a = reg_a;
@@ -772,10 +772,10 @@ module BadSyncAsync
   reg reg_a: UInt<8> init 0 reset rst;
   reg reg_b: UInt<8> init 0 reset rst Async high;
 
-  always on clk rising
+  seq on clk rising
     reg_a <= (reg_a + 1).trunc<8>();
     reg_b <= (reg_b + 1).trunc<8>();
-  end always
+  end seq
 
   comb
     out_a = reg_a;
@@ -854,16 +854,16 @@ pipeline BadFlush
 
   stage Fetch
     reg captured: UInt<8> init 0 reset rst;
-    always on clk rising
+    seq on clk rising
       captured <= data_in;
-    end always
+    end seq
   end stage Fetch
 
   stage Writeback
     reg result: UInt<8> init 0 reset rst;
-    always on clk rising
+    seq on clk rising
       result <= Fetch.captured;
-    end always
+    end seq
     comb
       data_out = result;
     end comb
@@ -938,11 +938,11 @@ module BitExtract
   reg rd_r: UInt<5> init 0 reset rst;
   reg funct3_r: UInt<3> init 0 reset rst;
 
-  always on clk rising
+  seq on clk rising
     opcode_r <= instr.trunc<7>();
     rd_r     <= instr.trunc<11,7>();
     funct3_r <= instr.trunc<14,12>();
-  end always
+  end seq
 
   comb
     opcode = opcode_r;
@@ -977,16 +977,16 @@ pipeline SimplePipe
 
   stage Fetch
     reg captured: UInt<XLEN> init 0 reset rst;
-    always on clk rising
+    seq on clk rising
       captured <= data_in;
-    end always
+    end seq
   end stage Fetch
 
   stage Writeback
     reg result: UInt<XLEN> init 0 reset rst;
-    always on clk rising
+    seq on clk rising
       result <= Fetch.captured;
-    end always
+    end seq
     comb
       data_out = result;
     end comb
@@ -1049,17 +1049,17 @@ pipeline AluPipe
   stage Fetch
     reg a_r: UInt<XLEN> init 0 reset rst;
     reg b_r: UInt<XLEN> init 0 reset rst;
-    always on clk rising
+    seq on clk rising
       a_r <= op_a;
       b_r <= op_b;
-    end always
+    end seq
   end stage Fetch
 
   stage Execute
     reg alu_out: UInt<XLEN> init 0 reset rst;
-    always on clk rising
+    seq on clk rising
       alu_out <= (Fetch.a_r + Fetch.b_r).trunc<XLEN>();
-    end always
+    end seq
     inst alu0: Alu
       connect a <- Fetch.a_r;
       connect b <- Fetch.b_r;
@@ -1099,10 +1099,10 @@ module FifoCtrl
   reg wr_r: UInt<$clog2(DEPTH)> init 0 reset rst;
   reg rd_r: UInt<$clog2(DEPTH)> init 0 reset rst;
 
-  always on clk rising
+  seq on clk rising
     wr_r <= (wr_r + 1).trunc<$clog2(DEPTH)>();
     rd_r <= rd_r;
-  end always
+  end seq
 
   comb
     wr_ptr = wr_r;

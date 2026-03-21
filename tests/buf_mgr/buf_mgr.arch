@@ -190,7 +190,7 @@ module BufMgr
   // Clocked logic
   // ══════════════════════════════════════════════════════════════════════════
 
-  always on clk rising
+  seq on clk rising
 
     // ── Init FSM: fill both free-list banks ──
     if not setup_done
@@ -307,7 +307,7 @@ module BufMgr
       free_count <= free_count;
     end if
 
-  end always
+  end seq
 
   comb
     dequeue_resp_valid = dq2_valid;

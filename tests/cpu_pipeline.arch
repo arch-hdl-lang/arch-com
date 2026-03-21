@@ -51,10 +51,10 @@ pipeline CpuPipe
   stage Fetch stall when not imem_valid
     reg pc: UInt<XLEN> init 0 reset rst;
     reg instr: UInt<XLEN> init 0 reset rst;
-    always on clk rising
+    seq on clk rising
       pc <= branch_target;
       instr <= imem_data;
-    end always
+    end seq
   end stage Fetch
 
   // ── Decode: latch register values from external regfile ──
@@ -64,12 +64,12 @@ pipeline CpuPipe
     reg rd: UInt<REG_ADDR_W> init 0 reset rst;
     reg rs1_val: UInt<XLEN> init 0 reset rst;
     reg rs2_val: UInt<XLEN> init 0 reset rst;
-    always on clk rising
+    seq on clk rising
       opcode  <= Fetch.instr.trunc<6,0>();
       rd      <= Fetch.instr.trunc<11,7>();
       rs1_val <= rs1_data;
       rs2_val <= rs2_data;
-    end always
+    end seq
     // Explicit forwarding mux: bypass ALU result on RAW hazard
     comb
       if Execute.we and (Execute.rd == rd) and Execute.rd != 0
@@ -85,11 +85,11 @@ pipeline CpuPipe
     reg alu_result: UInt<XLEN> init 0 reset rst;
     reg rd: UInt<REG_ADDR_W> init 0 reset rst;
     reg we: Bool init false reset rst;
-    always on clk rising
+    seq on clk rising
       alu_result <= alu_out;
       rd <= Decode.rd;
       we <= Decode.opcode != 0;
-    end always
+    end seq
     // Combinational ALU instance
     inst alu0: Alu
       param WIDTH = XLEN;
@@ -104,11 +104,11 @@ pipeline CpuPipe
     reg result: UInt<XLEN> init 0 reset rst;
     reg rd: UInt<REG_ADDR_W> init 0 reset rst;
     reg valid: Bool init false reset rst;
-    always on clk rising
+    seq on clk rising
       result <= Execute.alu_result;
       rd <= Execute.rd;
       valid <= Execute.we;
-    end always
+    end seq
     comb
       wb_data = result;
       wb_rd = rd;

@@ -1,5 +1,5 @@
 // E203 HBirdv2 static branch prediction unit (LiteBPU)
-// Handles JAL (always taken), JALR (always taken), and Bxx (taken if backward).
+// Handles JAL (seq taken), JALR (seq taken), and Bxx (taken if backward).
 // Generates PC-adder operands and stall signal for data-dependent JALR.
 
 module LiteBpu
@@ -65,16 +65,16 @@ module LiteBpu
 
   // ── State machine ────────────────────────────────────────────────────────
   // rs1xn_rdrf_r is set by rs1xn_rdrf_set and self-clears after one cycle.
-  always on clk rising
+  seq on clk rising
     rs1xn_rdrf_r <= rs1xn_rdrf_set;
-  end always
+  end seq
 
   // ── Combinational outputs ─────────────────────────────────────────────────
   comb
-    // JAL/JALR: always taken; Bxx: taken if backward (negative offset)
+    // JAL/JALR: seq taken; Bxx: taken if backward (negative offset)
     prdt_taken = dec_jal | dec_jalr | (dec_bxx & bjp_imm_neg);
 
-    // PC-adder op2 is always the branch immediate (truncated to PC_SIZE bits)
+    // PC-adder op2 is seq the branch immediate (truncated to PC_SIZE bits)
     prdt_pc_add_op2 = dec_bjp_imm;
 
     // BPU wait: JALR x1 dep unresolved, or JALR xN dep unresolved and read not issued

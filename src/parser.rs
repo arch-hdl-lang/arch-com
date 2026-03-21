@@ -164,7 +164,7 @@ impl Parser {
                         body.push(ModuleBodyItem::RegDecl(self.parse_reg_decl()?));
                     }
                 }
-                Some(TokenKind::Always) => {
+                Some(TokenKind::Seq) => {
                     body.push(ModuleBodyItem::RegBlock(self.parse_always_block()?));
                 }
                 Some(TokenKind::Comb) => {
@@ -184,7 +184,7 @@ impl Parser {
                 }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "param, port, reg, always, comb, let, inst, pipe_reg, or generate",
+                        "param, port, reg, seq, comb, let, inst, pipe_reg, or generate",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -370,7 +370,7 @@ impl Parser {
     }
 
     fn parse_always_block(&mut self) -> Result<RegBlock, CompileError> {
-        let start = self.expect(TokenKind::Always)?.span;
+        let start = self.expect(TokenKind::Seq)?.span;
         self.expect(TokenKind::On)?;
         let clock = self.expect_ident()?;
         let clock_edge = if self.eat(TokenKind::Rising) {
@@ -390,7 +390,7 @@ impl Parser {
             stmts.push(self.parse_reg_stmt()?);
         }
         self.expect(TokenKind::End)?;
-        self.expect(TokenKind::Always)?;
+        self.expect(TokenKind::Seq)?;
         let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
         Ok(RegBlock {
             clock,
@@ -403,7 +403,7 @@ impl Parser {
     fn check_end_always(&self) -> bool {
         self.pos + 1 < self.tokens.len()
             && self.tokens[self.pos].kind == TokenKind::End
-            && self.tokens[self.pos + 1].kind == TokenKind::Always
+            && self.tokens[self.pos + 1].kind == TokenKind::Seq
     }
 
     /// Parse `log(Level, "TAG", "fmt", arg, ...) ;`
@@ -1622,7 +1622,7 @@ impl Parser {
                             body.push(ModuleBodyItem::RegDecl(self.parse_reg_decl()?));
                         }
                     }
-                    Some(TokenKind::Always) => {
+                    Some(TokenKind::Seq) => {
                         body.push(ModuleBodyItem::RegBlock(self.parse_always_block()?));
                     }
                     Some(TokenKind::Comb) => {

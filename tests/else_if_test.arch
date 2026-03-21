@@ -12,8 +12,8 @@ module ElseIfTest
 
   reg result_r: UInt<8> init 0 reset rst;
 
-  // Test else-if in always block
-  always on clk rising
+  // Test else-if in seq block
+  seq on clk rising
     if sel == 0
       result_r <= data_in;
     else if sel == 1
@@ -23,7 +23,7 @@ module ElseIfTest
     else
       result_r <= 0;
     end if
-  end always
+  end seq
 
   // Test else-if in comb block
   comb

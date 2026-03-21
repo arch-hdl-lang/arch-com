@@ -162,7 +162,7 @@ impl<'a> TypeChecker<'a> {
                         self.check_reg_stmt(stmt, &m.name.name, &local_types, &mut driven);
                     }
                     // Validate reset consistency: all registers with reset in the
-                    // same always block must agree on signal name, sync/async, and polarity.
+                    // same seq block must agree on signal name, sync/async, and polarity.
                     self.check_always_block_reset_consistency(rb, m);
                 }
                 ModuleBodyItem::CombBlock(cb) => {
@@ -312,7 +312,7 @@ impl<'a> TypeChecker<'a> {
                 if signal != first.signal {
                     self.errors.push(CompileError::general(
                         &format!(
-                            "register `{}` uses reset signal `{}` but other registers in the same always block use `{}`",
+                            "register `{}` uses reset signal `{}` but other registers in the same seq block use `{}`",
                             name, signal, first.signal
                         ),
                         rd.span,
@@ -321,7 +321,7 @@ impl<'a> TypeChecker<'a> {
                 if kind != first.kind {
                     self.errors.push(CompileError::general(
                         &format!(
-                            "register `{}` uses {} reset but other registers in the same always block use {}",
+                            "register `{}` uses {} reset but other registers in the same seq block use {}",
                             name,
                             if kind == ResetKind::Async { "async" } else { "sync" },
                             if first.kind == ResetKind::Async { "async" } else { "sync" },
@@ -332,7 +332,7 @@ impl<'a> TypeChecker<'a> {
                 if level != first.level {
                     self.errors.push(CompileError::general(
                         &format!(
-                            "register `{}` uses active-{} reset but other registers in the same always block use active-{}",
+                            "register `{}` uses active-{} reset but other registers in the same seq block use active-{}",
                             name,
                             if level == ResetLevel::Low { "low" } else { "high" },
                             if first.level == ResetLevel::Low { "low" } else { "high" },

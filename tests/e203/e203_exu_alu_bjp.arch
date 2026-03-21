@@ -27,7 +27,7 @@ module BjpUnit
   port i_bltu:  in Bool;
   port i_bgeu:  in Bool;
 
-  // ── Unconditional jump (JAL/JALR — always taken) ───────────────────────
+  // ── Unconditional jump (JAL/JALR — seq taken) ───────────────────────
   port i_jump:  in Bool;
 
   // ── Link address: input PC → output PC+4 ──────────────────────────────

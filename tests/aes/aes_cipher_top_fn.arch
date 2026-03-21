@@ -133,7 +133,7 @@ module AesKeyExpand128
   let nw2: UInt<32> = w2 ^ w1 ^ w0 ^ t;
   let nw3: UInt<32> = w3 ^ w2 ^ w1 ^ w0 ^ t;
 
-  always on clk rising
+  seq on clk rising
     if kld
       w0 <= key.trunc<127,96>();
       w1 <= key.trunc<95,64>();
@@ -147,7 +147,7 @@ module AesKeyExpand128
       w3 <= nw3;
       rcnt <= (rcnt + 1).trunc<4>();
     end if
-  end always
+  end seq
 
   comb
     wo_0 = w0;
@@ -288,7 +288,7 @@ module AesCipherTop
   let sa33_fark: UInt<8> = sa33_sr ^ w3.trunc<7,0>();
 
   // ── FSM control + state matrix updates ──
-  always on clk rising
+  seq on clk rising
     ld_r <= ld;
 
     if ld
@@ -342,7 +342,7 @@ module AesCipherTop
                       sa02_fark, sa12_fark, sa22_fark, sa32_fark,
                       sa03_fark, sa13_fark, sa23_fark, sa33_fark };
     end if
-  end always
+  end seq
 
   comb
     done = done_r;

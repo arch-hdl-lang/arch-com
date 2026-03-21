@@ -1251,7 +1251,7 @@ impl<'a> Codegen<'a> {
 
             // Collect inst output connection targets as wires.
             // Resolve type by finding the register this wire is assigned to in
-            // the stage's always block (e.g. `alu_result <= alu_out` → use alu_result's type).
+            // the stage's seq block (e.g. `alu_result <= alu_out` → use alu_result's type).
             for item in &stage.body {
                 if let ModuleBodyItem::Inst(inst) = item {
                     for conn in &inst.connections {
@@ -1409,7 +1409,7 @@ impl<'a> Codegen<'a> {
                     self.line(&format!("{prefix}_valid_r <= {prev_prefix}_stall ? 1'b0 : {prev_prefix}_valid_r;"));
                 }
 
-                // Register assignments from always blocks
+                // Register assignments from seq blocks
                 for item in &stage.body {
                     if let ModuleBodyItem::RegBlock(rb) = item {
                         for stmt in &rb.stmts {
@@ -1530,7 +1530,7 @@ impl<'a> Codegen<'a> {
                 self.emit_pipeline_reg_if_else(ie, current_prefix, current_stage_idx, stage_names, stage_regs, port_names, false);
             }
             Stmt::Match(_) => {
-                // MVP: basic pipeline doesn't need match in always blocks
+                // MVP: basic pipeline doesn't need match in seq blocks
             }
             Stmt::Log(l) => { self.emit_log_stmt(l); }
         }
@@ -1580,7 +1580,7 @@ impl<'a> Codegen<'a> {
     }
 
     /// Resolve the type of an inst output wire by finding which register reads it
-    /// in the stage's always block (e.g. `alu_result <= alu_out` → use alu_result's type).
+    /// in the stage's seq block (e.g. `alu_result <= alu_out` → use alu_result's type).
     fn resolve_inst_wire_type_from_consumers(
         wire_name: &str,
         body: &[ModuleBodyItem],

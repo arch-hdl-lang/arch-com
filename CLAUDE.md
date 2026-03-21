@@ -63,7 +63,7 @@ end keyword Name
 
 ### Signal Assignment
 - `comb y = expr; end comb` — combinational, uses `=`
-- `reg r: T init 0 reset rst sync high;` + `always on clk rising ... end always` — registered, uses `<=`. Reset is declared per register; compiler auto-generates reset guards.
+- `reg r: T init 0 reset rst sync high;` + `seq on clk rising ... end seq` — registered, uses `<=`. Reset is declared per register; compiler auto-generates reset guards.
 - No implicit latches (error). Single driver per signal (error). All ports must be connected.
 
 ### Type System

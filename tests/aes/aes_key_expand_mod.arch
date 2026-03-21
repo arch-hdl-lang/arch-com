@@ -45,7 +45,7 @@ module AesKeyExpand128
   let nw2: UInt<32> = w2 ^ w1 ^ w0 ^ t;
   let nw3: UInt<32> = w3 ^ w2 ^ w1 ^ w0 ^ t;
 
-  always on clk rising
+  seq on clk rising
     if kld
       w0 <= key.trunc<127,96>();
       w1 <= key.trunc<95,64>();
@@ -57,7 +57,7 @@ module AesKeyExpand128
       w2 <= nw2;
       w3 <= nw3;
     end if
-  end always
+  end seq
 
   comb
     wo_0 = w0;

@@ -64,14 +64,14 @@ module AluDpath
   reg sbf_0_r: UInt<32> init 0 reset none;
   reg sbf_1_r: UInt<32> init 0 reset none;
 
-  always on clk rising
+  seq on clk rising
     if agu_sbf_0_ena
       sbf_0_r <= agu_sbf_0_nxt;
     end if
     if agu_sbf_1_ena
       sbf_1_r <= agu_sbf_1_nxt;
     end if
-  end always
+  end seq
 
   // ── Shared operand mux: BJP > AGU > ALU ───────────────────────────────
   let req_op1: UInt<32> = bjp_req_alu ? bjp_req_alu_op1 :

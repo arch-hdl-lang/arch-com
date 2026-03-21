@@ -118,7 +118,7 @@ module BufMgrSm
     connect rd_port.data  -> free_slot_rd_data;
   end inst flist
 
-  always on clk rising
+  seq on clk rising
 
     if not setup_done
       setup_ctr <= (setup_ctr + 4'h1).trunc<4>();
@@ -183,7 +183,7 @@ module BufMgrSm
       free_count <= free_count;
     end if
 
-  end always
+  end seq
 
   comb
     dequeue_resp_valid = dq2_valid;

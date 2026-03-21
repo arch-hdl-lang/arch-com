@@ -1,7 +1,7 @@
 # ARCH Compiler — Status & Roadmap
 
 > Last updated: 2026-03-20
-> Compiler version: 0.17.1 (--check-uninit verified across all reset-none benchmarks: buf_mgr, buf_mgr_sm, e203, AES)
+> Compiler version: 0.18.0 (rename `always` keyword to `seq` for symmetry with `comb`)
 
 ---
 
@@ -26,7 +26,7 @@
 | `domain` | ✅ | Emitted as SV comments |
 | `struct` | ✅ | `typedef struct packed` |
 | `enum` | ✅ | `typedef enum logic`; auto width ⌈log₂(N)⌉ |
-| `module` | ✅ | Params, ports, reg/comb/let/inst body; `always on` clocked blocks with per-reg reset (`reset <signal> sync\|async high\|low` or `reset none`); compiler auto-generates reset guards; mixed reset/no-reset partitioning; `reg default: init 0 reset rst;` wildcard default for register declarations |
+| `module` | ✅ | Params, ports, reg/comb/let/inst body; `seq on` clocked blocks with per-reg reset (`reset <signal> sync\|async high\|low` or `reset none`); compiler auto-generates reset guards; mixed reset/no-reset partitioning; `reg default: init 0 reset rst;` wildcard default for register declarations |
 | `fsm` | ✅ | State enum, `always_ff` state reg, `always_comb` next-state + output; `default expr` on output ports |
 | `fifo` | ✅ | Sync (extra-bit pointers) + async (gray-code CDC, auto-detected) |
 | `ram` | ✅ | `single`/`simple_dual`/`true_dual`; `async`/`sync`/`sync_out`; all write modes; `init` block |
@@ -36,7 +36,7 @@
 | `assert` / `cover` | ❌ | Lexed but skipped at parse time |
 | `pipeline` | ✅ | Stages with reg/comb/let/inst body; per-stage `stall when`; `flush` directives; explicit forwarding mux via comb if/else; `valid_r` per-stage signal; cross-stage refs (`Stage.signal`); `inst` inside stages with auto-declared output wires |
 | `function` | ✅ | Pure combinational; `return expr;`; `let` bindings as temporaries; **overloading** (same name, different arg types — mangled as `Name_8`, `Name_16`, etc.); emitted as SV `function automatic` inside each module that uses it |
-| `log` | ✅ | Simulation logging: `log(Level, "TAG", "fmt %0d", arg)` in `always` and `comb` blocks; levels `Always`/`Low`/`Medium`/`High`/`Full`/`Debug`; per-module `_arch_verbosity` integer; runtime control via `+arch_verbosity=N`; emits `$display` with `[%0t][LEVEL][TAG]` prefix; NBA semantics: value printed is last cycle's registered value |
+| `log` | ✅ | Simulation logging: `log(Level, "TAG", "fmt %0d", arg)` in `seq` and `comb` blocks; levels `Always`/`Low`/`Medium`/`High`/`Full`/`Debug`; per-module `_arch_verbosity` integer; runtime control via `+arch_verbosity=N`; emits `$display` with `[%0t][LEVEL][TAG]` prefix; NBA semantics: value printed is last cycle's registered value |
 | `generate for/if` | ✅ | Pre-resolve elaboration pass; const/literal bounds; port + inst items |
 | `ram` (multi-var store) | ⚠️ | Single store variable only; compiler-managed address layout not implemented |
 | `cam` | ❌ | Not implemented |
@@ -159,7 +159,7 @@
 
 | # | Feature | Effort |
 |---|---------|--------|
-| ~~1~~ | ~~**Width mismatch at assignment**~~ | **DONE** — any width delta errors in `always` and `comb` |
+| ~~1~~ | ~~**Width mismatch at assignment**~~ | **DONE** — any width delta errors in `seq` and `comb` |
 | ~~2~~ | ~~**Exhaustive `match` checking**~~ | **DONE** — missing variants named in error; wildcard `_` suppresses |
 | 3 | **CDC error detection** — cross-domain signal assignment → compile error | Medium |
 | 4 | **Const param evaluation at instantiation** — `UInt<WIDTH*2>` with param override | Medium |

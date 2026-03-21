@@ -11,16 +11,16 @@ pipeline SimplePipe
 
   stage Fetch
     reg captured: UInt<XLEN> init 0 reset rst;
-    always on clk rising
+    seq on clk rising
       captured <= data_in;
-    end always
+    end seq
   end stage Fetch
 
   stage Writeback
     reg result: UInt<XLEN> init 0 reset rst;
-    always on clk rising
+    seq on clk rising
       result <= Fetch.captured;
-    end always
+    end seq
     comb
       data_out = result;
     end comb

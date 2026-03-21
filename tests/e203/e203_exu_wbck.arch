@@ -30,7 +30,7 @@ module ExuWbck
   port rf_wbck_o_rdidx: out UInt<5>;
 
   comb
-    // RF is always ready; longp has unconditional priority.
+    // RF is seq ready; longp has unconditional priority.
     longp_wbck_i_ready = 1;
     alu_wbck_i_ready   = ~longp_wbck_i_valid;
 
