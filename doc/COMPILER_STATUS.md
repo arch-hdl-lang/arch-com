@@ -65,7 +65,7 @@
 | `Token<T, id_width>` | ❌ | TLM only |
 | `Future<T>` | ❌ | TLM only |
 | `$clog2(expr)` in type args | ✅ | Parsed as expression, emitted as SV `$clog2(...)`, evaluated at compile time for const-folding |
-| Clock domain mismatch (CDC errors) | ❌ | No cross-domain assignment checking |
+| Clock domain mismatch (CDC errors) | ✅ | Compile error when a register driven in one domain is read in another domain's `seq` block; message directs user to `synchronizer` or async `fifo` |
 | Width mismatch at assignment | ✅ | Errors for any RHS wider than LHS in both `always` and `comb` blocks; arithmetic widening (`+1`) flagged with explicit hint to use `.trunc<N>()` |
 | Implicit truncation prevention | ✅ | `r <= r + 1` is a compile error; write `r <= (r + 1).trunc<N>()` explicitly. `.trunc<N>()` emits SV size cast `N'(expr)`. `.trunc<N,M>()` emits bit-range select `expr[N:M]` for field extraction (e.g. `instr.trunc<11,7>()` → `instr[11:7]`). Sim codegen applies bitmask `& ((1<<N)-1)` for sub-word types (e.g. `UInt<2>` in `uint8_t`). |
 
@@ -123,7 +123,7 @@
 | `todo!` site warning | ✅ |
 | Binary op result widths (IEEE 1800-2012 §11.6) | ✅ |
 | Width mismatch at assignment | ✅ Any RHS wider than LHS errors in both `always` and `comb` blocks; arithmetic widening hint included |
-| Clock domain crossing errors | ❌ |
+| Clock domain crossing errors | ✅ |
 | Exhaustive match arm checking | ✅ Enum matches must cover all variants or include a wildcard `_`; missing variants named in error |
 | Const param evaluation (complex exprs) | ⚠️ Literals + simple arithmetic only |
 
@@ -164,7 +164,7 @@
 |---|---------|--------|
 | ~~1~~ | ~~**Width mismatch at assignment**~~ | **DONE** — any width delta errors in `seq` and `comb` |
 | ~~2~~ | ~~**Exhaustive `match` checking**~~ | **DONE** — missing variants named in error; wildcard `_` suppresses |
-| 3 | **CDC error detection** — cross-domain signal assignment → compile error | Medium |
+| ~~3~~ | ~~**CDC error detection**~~ | **DONE** — cross-domain register read → compile error; `synchronizer` and async `fifo` are the legal CDC crossing mechanisms |
 | 4 | **Const param evaluation at instantiation** — `UInt<WIDTH*2>` with param override | Medium |
 | 5 | **Function type-parametric overloads** — type parameters on functions (e.g. `function Foo<T>(a: T) -> T`) | High |
 

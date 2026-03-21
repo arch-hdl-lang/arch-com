@@ -256,6 +256,55 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // ── CDC check: detect cross-domain register reads ─────────────────────
+        // Build clock port → domain name map
+        let clk_domain: HashMap<String, String> = m.ports.iter()
+            .filter_map(|p| if let TypeExpr::Clock(domain) = &p.ty {
+                Some((p.name.name.clone(), domain.name.clone()))
+            } else { None })
+            .collect();
+
+        if clk_domain.len() >= 2 {
+            // Build reg → domain map (which domain drives each register)
+            let mut reg_domain: HashMap<String, String> = HashMap::new();
+            for item in &m.body {
+                if let ModuleBodyItem::RegBlock(rb) = item {
+                    if let Some(domain) = clk_domain.get(&rb.clock.name) {
+                        let mut assigned = HashSet::new();
+                        Self::collect_stmt_targets(&rb.stmts, &mut assigned);
+                        for name in assigned {
+                            reg_domain.insert(name, domain.clone());
+                        }
+                    }
+                }
+            }
+
+            // For each seq block, check reads against domain map
+            for item in &m.body {
+                if let ModuleBodyItem::RegBlock(rb) = item {
+                    if let Some(this_domain) = clk_domain.get(&rb.clock.name) {
+                        let mut reads = HashSet::new();
+                        Self::collect_stmt_reads(&rb.stmts, &mut reads);
+                        for name in &reads {
+                            if let Some(src_domain) = reg_domain.get(name) {
+                                if src_domain != this_domain {
+                                    self.errors.push(CompileError::general(
+                                        &format!(
+                                            "CDC violation: register `{name}` is driven in domain `{src_domain}` \
+                                             but read in domain `{this_domain}` (clock `{}`). \
+                                             Use a `synchronizer` or async `fifo` to cross clock domains",
+                                            rb.clock.name
+                                        ),
+                                        rb.span,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Validate `implements` template conformance
         if let Some(ref tmpl_name) = m.implements {
             self.check_implements(m, tmpl_name);
@@ -989,6 +1038,93 @@ impl<'a> TypeChecker<'a> {
                 if v <= 1 { Some(1) } else { Some(64 - (v - 1).leading_zeros() as u64) }
             }
             _ => None,
+        }
+    }
+
+    // ── CDC helpers ────────────────────────────────────────────────────────
+
+    /// Collect all register names assigned (targets) in a list of seq stmts.
+    fn collect_stmt_targets(stmts: &[Stmt], out: &mut HashSet<String>) {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Assign(a) => {
+                    if let ExprKind::Ident(name) = &a.target.kind {
+                        out.insert(name.clone());
+                    }
+                }
+                Stmt::IfElse(ie) => {
+                    Self::collect_stmt_targets(&ie.then_stmts, out);
+                    Self::collect_stmt_targets(&ie.else_stmts, out);
+                }
+                Stmt::Match(m) => {
+                    for arm in &m.arms {
+                        Self::collect_stmt_targets(&arm.body, out);
+                    }
+                }
+                Stmt::Log(_) => {}
+            }
+        }
+    }
+
+    /// Collect all identifier names read (RHS) in a list of seq stmts.
+    fn collect_stmt_reads(stmts: &[Stmt], out: &mut HashSet<String>) {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Assign(a) => {
+                    Self::collect_expr_reads(&a.value, out);
+                }
+                Stmt::IfElse(ie) => {
+                    Self::collect_expr_reads(&ie.cond, out);
+                    Self::collect_stmt_reads(&ie.then_stmts, out);
+                    Self::collect_stmt_reads(&ie.else_stmts, out);
+                }
+                Stmt::Match(m) => {
+                    Self::collect_expr_reads(&m.scrutinee, out);
+                    for arm in &m.arms {
+                        Self::collect_stmt_reads(&arm.body, out);
+                    }
+                }
+                Stmt::Log(l) => {
+                    for arg in &l.args { Self::collect_expr_reads(arg, out); }
+                }
+            }
+        }
+    }
+
+    fn collect_expr_reads(expr: &Expr, out: &mut HashSet<String>) {
+        match &expr.kind {
+            ExprKind::Ident(name) => { out.insert(name.clone()); }
+            ExprKind::Binary(_, lhs, rhs) => {
+                Self::collect_expr_reads(lhs, out);
+                Self::collect_expr_reads(rhs, out);
+            }
+            ExprKind::Unary(_, e) => Self::collect_expr_reads(e, out),
+            ExprKind::Index(base, idx) => {
+                Self::collect_expr_reads(base, out);
+                Self::collect_expr_reads(idx, out);
+            }
+            ExprKind::FieldAccess(base, _) => Self::collect_expr_reads(base, out),
+            ExprKind::MethodCall(base, _, args) => {
+                Self::collect_expr_reads(base, out);
+                for a in args { Self::collect_expr_reads(a, out); }
+            }
+            ExprKind::FunctionCall(_, args) => {
+                for a in args { Self::collect_expr_reads(a, out); }
+            }
+            ExprKind::Ternary(cond, then_e, else_e) => {
+                Self::collect_expr_reads(cond, out);
+                Self::collect_expr_reads(then_e, out);
+                Self::collect_expr_reads(else_e, out);
+            }
+            ExprKind::Match(scrut, arms) => {
+                Self::collect_expr_reads(scrut, out);
+                for arm in arms { Self::collect_stmt_reads(&arm.body, out); }
+            }
+            ExprKind::ExprMatch(scrut, arms) => {
+                Self::collect_expr_reads(scrut, out);
+                for arm in arms { Self::collect_expr_reads(&arm.value, out); }
+            }
+            _ => {}
         }
     }
 
