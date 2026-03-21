@@ -69,6 +69,7 @@ impl<'a> SimCodegen<'a> {
                 Item::Regfile(r)  => models.push(self.gen_regfile(r)),
                 Item::Linklist(l) => models.push(self.gen_linklist(l)),
                 Item::Ram(r)      => models.push(self.gen_ram(r)),
+                Item::Synchronizer(s) => models.push(self.gen_synchronizer(s)),
                 _ => {} // fifo/arbiter: TODO
             }
         }
@@ -2562,6 +2563,148 @@ impl<'a> SimCodegen<'a> {
                     }
                 }
                 _ => {}
+            }
+        }
+        cpp.push_str("}\n");
+
+        SimModel { class_name: class, header: h, impl_: cpp }
+    }
+
+    fn gen_synchronizer(&self, s: &crate::ast::SynchronizerDecl) -> SimModel {
+        use crate::ast::SyncKind;
+
+        let class = s.name.name.clone();
+
+        let stages: usize = s.params.iter()
+            .find(|p| p.name.name == "STAGES")
+            .and_then(|p| p.default.as_ref())
+            .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(*v as usize) } else { None })
+            .unwrap_or(2);
+
+        let clk_ports: Vec<&crate::ast::PortDecl> = s.ports.iter()
+            .filter(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            .collect();
+        let src_clk = &clk_ports[0].name.name;
+        let dst_clk = &clk_ports[1].name.name;
+
+        let data_in_port = s.ports.iter().find(|p| p.name.name == "data_in").unwrap();
+        let data_ctype = cpp_port_type(&data_in_port.ty);
+        let data_bits: u32 = match &data_in_port.ty {
+            TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval_width(w),
+            TypeExpr::Bool | TypeExpr::Bit => 1,
+            _ => 32,
+        };
+
+        let rst_port = s.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Reset(..)));
+        let rst_is_low = rst_port.map_or(false, |rp| matches!(&rp.ty, TypeExpr::Reset(_, level) if *level == crate::ast::ResetLevel::Low));
+        let rst_guard = rst_port.map(|rp| {
+            if rst_is_low { format!("!{}", rp.name.name) } else { rp.name.name.clone() }
+        });
+
+        // ── Header ──
+        let mut h = String::new();
+        h.push_str("#pragma once\n");
+        h.push_str("#include <cstdint>\n#include <cstring>\n\n");
+        h.push_str(&format!("class {class} {{\npublic:\n"));
+        for p in &s.ports {
+            h.push_str(&format!("  {} {};\n", cpp_port_type(&p.ty), p.name.name));
+        }
+        h.push_str("\n  void eval();\n  void eval_posedge();\n  void eval_comb();\n  void final_() {}\n");
+        h.push_str("private:\n");
+        h.push_str("  uint8_t _clk_prev_src;\n  uint8_t _clk_prev_dst;\n");
+        h.push_str("  bool _rising_src;\n  bool _rising_dst;\n");
+        match s.kind {
+            SyncKind::Ff => {
+                for i in 0..stages { h.push_str(&format!("  {} _stage{};\n", data_ctype, i)); }
+            }
+            SyncKind::Gray => {
+                for i in 0..stages { h.push_str(&format!("  {} _gray_stage{};\n", data_ctype, i)); }
+            }
+            SyncKind::Handshake => {
+                h.push_str(&format!("  {} _data_reg;\n", data_ctype));
+                h.push_str("  uint8_t _req_src;\n  uint8_t _ack_src;\n  uint8_t _ack_dst;\n");
+                for i in 0..stages {
+                    h.push_str(&format!("  uint8_t _req_sync{};\n  uint8_t _ack_sync{};\n", i, i));
+                }
+            }
+        }
+        h.push_str("};\n");
+
+        // ── Implementation ──
+        let mut cpp = String::new();
+        cpp.push_str(&format!("#include \"{class}.h\"\n\n"));
+
+        // eval()
+        cpp.push_str(&format!("void {class}::eval() {{\n"));
+        cpp.push_str(&format!("  _rising_src = ({src_clk} && !_clk_prev_src);\n"));
+        cpp.push_str(&format!("  _rising_dst = ({dst_clk} && !_clk_prev_dst);\n"));
+        cpp.push_str(&format!("  _clk_prev_src = {src_clk};\n  _clk_prev_dst = {dst_clk};\n"));
+        cpp.push_str("  if (_rising_src || _rising_dst) eval_posedge();\n  eval_comb();\n}\n\n");
+
+        // eval_posedge()
+        cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
+        if let Some(ref cond) = rst_guard {
+            cpp.push_str(&format!("  if ({cond}) {{\n"));
+            match s.kind {
+                SyncKind::Ff => {
+                    for i in 0..stages { cpp.push_str(&format!("    _stage{i} = 0;\n")); }
+                }
+                SyncKind::Gray => {
+                    for i in 0..stages { cpp.push_str(&format!("    _gray_stage{i} = 0;\n")); }
+                }
+                SyncKind::Handshake => {
+                    cpp.push_str("    _data_reg = 0; _req_src = 0; _ack_src = 0; _ack_dst = 0;\n");
+                    for i in 0..stages { cpp.push_str(&format!("    _req_sync{i} = 0; _ack_sync{i} = 0;\n")); }
+                }
+            }
+            cpp.push_str("    return;\n  }\n");
+        }
+        match s.kind {
+            SyncKind::Ff => {
+                cpp.push_str("  if (_rising_dst) {\n");
+                for i in (1..stages).rev() { cpp.push_str(&format!("    _stage{i} = _stage{};\n", i - 1)); }
+                cpp.push_str("    _stage0 = data_in;\n  }\n");
+            }
+            SyncKind::Gray => {
+                cpp.push_str("  if (_rising_dst) {\n");
+                for i in (1..stages).rev() { cpp.push_str(&format!("    _gray_stage{i} = _gray_stage{};\n", i - 1)); }
+                cpp.push_str("    _gray_stage0 = data_in ^ (data_in >> 1);\n  }\n");
+            }
+            SyncKind::Handshake => {
+                cpp.push_str("  if (_rising_src) {\n");
+                cpp.push_str("    if (data_in != _data_reg && _req_src == _ack_src) {\n");
+                cpp.push_str("      _data_reg = data_in;\n      _req_src ^= 1;\n    }\n");
+                for i in (1..stages).rev() { cpp.push_str(&format!("    _ack_sync{i} = _ack_sync{};\n", i - 1)); }
+                cpp.push_str("    _ack_sync0 = _ack_dst;\n");
+                cpp.push_str(&format!("    _ack_src = _ack_sync{};\n  }}\n", stages - 1));
+                cpp.push_str("  if (_rising_dst) {\n");
+                for i in (1..stages).rev() { cpp.push_str(&format!("    _req_sync{i} = _req_sync{};\n", i - 1)); }
+                cpp.push_str("    _req_sync0 = _req_src;\n");
+                cpp.push_str(&format!("    _ack_dst = _req_sync{};\n  }}\n", stages - 1));
+            }
+        }
+        cpp.push_str("}\n\n");
+
+        // eval_comb()
+        cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
+        match s.kind {
+            SyncKind::Ff => {
+                cpp.push_str(&format!("  data_out = _stage{};\n", stages - 1));
+            }
+            SyncKind::Gray => {
+                let last = stages - 1;
+                cpp.push_str(&format!("  {data_ctype} g = _gray_stage{last};\n"));
+                cpp.push_str(&format!("  {data_ctype} b = g;\n"));
+                // Standard gray-to-binary: b ^= b >> 1; b ^= b >> 2; b ^= b >> 4; ...
+                let mut shift = 1u32;
+                while shift < data_bits {
+                    cpp.push_str(&format!("  b ^= (b >> {shift});\n"));
+                    shift *= 2;
+                }
+                cpp.push_str("  data_out = b;\n");
+            }
+            SyncKind::Handshake => {
+                cpp.push_str("  data_out = _data_reg;\n");
             }
         }
         cpp.push_str("}\n");

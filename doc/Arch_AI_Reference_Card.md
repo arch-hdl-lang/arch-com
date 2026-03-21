@@ -284,9 +284,11 @@
 | end fifo Name                                          |                               |
 +--------------------------------------------------------+-------------------------------+
 
-**synchronizer --- CDC synchronizer (2FF/3FF chain)**
+**synchronizer --- CDC synchronizer (ff / gray / handshake)**
 
 > synchronizer Name
+>
+> kind ff; // ff (default) | gray | handshake
 >
 > param STAGES: const = 2; // 2 or 3 (default 2)
 >
@@ -302,7 +304,13 @@
 >
 > end synchronizer Name
 
-Notes: two Clock ports must reference different domains (compile error otherwise). Compiler generates STAGES flip-flops on the destination clock. For multi-bit buses, consider using a FIFO or gray-code encoding instead.
+Strategies:
+
+- `kind ff;` (default) --- N-stage flip-flop shift chain on dst clock. Best for 1-bit signals.
+- `kind gray;` --- Binary-to-gray encode, FF chain, gray-to-binary decode. Safe for multi-bit counters/pointers.
+- `kind handshake;` --- Req/ack toggle protocol with synchronized control signals. Safe for arbitrary multi-bit data.
+
+Notes: two Clock ports must reference different domains (compile error otherwise). SV codegen emits strategy-specific logic; sim codegen generates C++ models for all 3 kinds.
 
 **ram --- FPGA BRAM / ASIC SRAM**
 

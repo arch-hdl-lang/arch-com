@@ -564,9 +564,20 @@ pub struct FifoDecl {
 
 // ── Synchronizer (CDC) ──────────────────────────────────────────────────────
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncKind {
+    /// N-stage flip-flop chain (default, best for 1-bit signals)
+    Ff,
+    /// Gray-code encode → FF chain → decode (safe for multi-bit counters/pointers)
+    Gray,
+    /// Req/ack handshake protocol (safe for arbitrary multi-bit data)
+    Handshake,
+}
+
 #[derive(Debug, Clone)]
 pub struct SynchronizerDecl {
     pub name: Ident,
+    pub kind: SyncKind,
     pub params: Vec<ParamDecl>,
     pub ports: Vec<PortDecl>,
     pub span: Span,

@@ -1793,14 +1793,29 @@ impl Parser {
 
         let mut params = Vec::new();
         let mut ports = Vec::new();
+        let mut kind = None;
 
         while !self.check_end_synchronizer() {
             match self.peek_kind() {
                 Some(TokenKind::Param) => params.push(self.parse_param_decl()?),
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
+                Some(TokenKind::Kind) => {
+                    self.advance();
+                    let val = self.expect_ident()?;
+                    self.expect(TokenKind::Semi)?;
+                    kind = Some(match val.name.as_str() {
+                        "ff" => SyncKind::Ff,
+                        "gray" => SyncKind::Gray,
+                        "handshake" => SyncKind::Handshake,
+                        other => return Err(CompileError::general(
+                            &format!("unknown synchronizer kind `{other}`; expected ff, gray, or handshake"),
+                            val.span,
+                        )),
+                    });
+                }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "param or port",
+                        "kind, param, or port",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -1819,6 +1834,7 @@ impl Parser {
         Ok(SynchronizerDecl {
             span: start.merge(closing.span),
             name,
+            kind: kind.unwrap_or(SyncKind::Ff),
             params,
             ports,
         })

@@ -2447,7 +2447,7 @@ impl<'a> Codegen<'a> {
         let clk_ports: Vec<&PortDecl> = s.ports.iter()
             .filter(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .collect();
-        let _src_clk = &clk_ports[0].name.name;
+        let src_clk = &clk_ports[0].name.name;
         let dst_clk = &clk_ports[1].name.name;
 
         // Find data ports
@@ -2479,13 +2479,22 @@ impl<'a> Codegen<'a> {
         self.line("");
         self.indent += 1;
 
-        // Synchronizer chain registers (on destination clock)
-        self.line(&format!("// {stages}-stage synchronizer chain (destination clock: {dst_clk})"));
-        self.line(&format!("{data_ty} sync_chain [0:STAGES-1];"));
-        self.line("");
+        match s.kind {
+            SyncKind::Ff => self.emit_sync_ff(dst_clk, &data_ty, rst_port, stages),
+            SyncKind::Gray => self.emit_sync_gray(src_clk, dst_clk, &data_ty, rst_port, stages),
+            SyncKind::Handshake => self.emit_sync_handshake(src_clk, dst_clk, &data_ty, rst_port, stages),
+        }
 
-        // Sequential logic on destination clock
-        let rst_cond = if let Some(rp) = rst_port {
+        self.indent -= 1;
+        self.line("");
+        self.line("endmodule");
+        self.line("");
+    }
+
+    // ── Synchronizer kind helpers ────────────────────────────────────────────
+
+    fn emit_sync_reset_begin(&mut self, dst_clk: &str, rst_port: Option<&PortDecl>) -> Option<String> {
+        if let Some(rp) = rst_port {
             let is_low = matches!(&rp.ty, TypeExpr::Reset(_, level) if *level == ResetLevel::Low);
             let is_async = matches!(&rp.ty, TypeExpr::Reset(sync_type, _) if *sync_type == ResetKind::Async);
             let sensitivity = if is_async {
@@ -2500,8 +2509,15 @@ impl<'a> Codegen<'a> {
         } else {
             self.line(&format!("always_ff @(posedge {dst_clk}) begin"));
             None
-        };
+        }
+    }
 
+    fn emit_sync_ff(&mut self, dst_clk: &str, data_ty: &str, rst_port: Option<&PortDecl>, stages: usize) {
+        self.line(&format!("// {stages}-stage FF synchronizer chain (destination clock: {dst_clk})"));
+        self.line(&format!("{data_ty} sync_chain [0:STAGES-1];"));
+        self.line("");
+
+        let rst_cond = self.emit_sync_reset_begin(dst_clk, rst_port);
         self.indent += 1;
         if let Some(ref cond) = rst_cond {
             self.line(&format!("if ({cond}) begin"));
@@ -2511,10 +2527,42 @@ impl<'a> Codegen<'a> {
             self.line("end else begin");
             self.indent += 1;
         }
-
-        self.line(&format!("sync_chain[0] <= data_in;"));
+        self.line("sync_chain[0] <= data_in;");
         self.line("for (int i = 1; i < STAGES; i++) sync_chain[i] <= sync_chain[i-1];");
+        if rst_cond.is_some() {
+            self.indent -= 1;
+            self.line("end");
+        }
+        self.indent -= 1;
+        self.line("end");
+        self.line("");
+        self.line("assign data_out = sync_chain[STAGES-1];");
+    }
 
+    fn emit_sync_gray(&mut self, src_clk: &str, dst_clk: &str, data_ty: &str, rst_port: Option<&PortDecl>, stages: usize) {
+        self.line(&format!("// Gray-code synchronizer ({stages} stages, {src_clk} → {dst_clk})"));
+        self.line(&format!("{data_ty} bin_to_gray;"));
+        self.line(&format!("{data_ty} gray_chain [0:STAGES-1];"));
+        self.line(&format!("{data_ty} gray_to_bin;"));
+        self.line("");
+
+        // Binary-to-gray encode (combinational, source domain)
+        self.line("assign bin_to_gray = data_in ^ (data_in >> 1);");
+        self.line("");
+
+        // FF chain on destination clock
+        let rst_cond = self.emit_sync_reset_begin(dst_clk, rst_port);
+        self.indent += 1;
+        if let Some(ref cond) = rst_cond {
+            self.line(&format!("if ({cond}) begin"));
+            self.indent += 1;
+            self.line("for (int i = 0; i < STAGES; i++) gray_chain[i] <= '0;");
+            self.indent -= 1;
+            self.line("end else begin");
+            self.indent += 1;
+        }
+        self.line("gray_chain[0] <= bin_to_gray;");
+        self.line("for (int i = 1; i < STAGES; i++) gray_chain[i] <= gray_chain[i-1];");
         if rst_cond.is_some() {
             self.indent -= 1;
             self.line("end");
@@ -2523,13 +2571,93 @@ impl<'a> Codegen<'a> {
         self.line("end");
         self.line("");
 
-        // Output assignment
-        self.line("assign data_out = sync_chain[STAGES-1];");
-
+        // Gray-to-binary decode (combinational, destination domain)
+        self.line("// Gray-to-binary decode");
+        self.line(&format!("always_comb begin"));
+        self.indent += 1;
+        self.line(&format!("gray_to_bin[$bits({data_ty})-1] = gray_chain[STAGES-1][$bits({data_ty})-1];"));
+        self.line(&format!("for (int i = $bits({data_ty})-2; i >= 0; i--)"));
+        self.indent += 1;
+        self.line("gray_to_bin[i] = gray_chain[STAGES-1][i] ^ gray_to_bin[i+1];");
         self.indent -= 1;
+        self.indent -= 1;
+        self.line("end");
         self.line("");
-        self.line("endmodule");
+        self.line("assign data_out = gray_to_bin;");
+    }
+
+    fn emit_sync_handshake(&mut self, src_clk: &str, dst_clk: &str, data_ty: &str, rst_port: Option<&PortDecl>, stages: usize) {
+        self.line(&format!("// Handshake synchronizer ({stages} stages, {src_clk} → {dst_clk})"));
+        self.line(&format!("{data_ty} data_reg;"));
+        self.line("logic req_src, ack_src;");
+        self.line(&format!("logic req_sync [0:STAGES-1];  // req synchronized to {dst_clk}"));
+        self.line(&format!("logic ack_sync [0:STAGES-1];  // ack synchronized to {src_clk}"));
+        self.line("logic ack_dst;");
         self.line("");
+
+        let rst_name = rst_port.map(|rp| rp.name.name.as_str()).unwrap_or("1'b0");
+        let is_low = rst_port.map_or(false, |rp| matches!(&rp.ty, TypeExpr::Reset(_, level) if *level == ResetLevel::Low));
+        let rst_active = if is_low { format!("!{rst_name}") } else { rst_name.to_string() };
+
+        // Source domain: latch data and toggle req
+        self.line(&format!("// Source domain ({src_clk}): latch data, manage req/ack"));
+        self.line(&format!("always_ff @(posedge {src_clk}) begin"));
+        self.indent += 1;
+        self.line(&format!("if ({rst_active}) begin"));
+        self.indent += 1;
+        self.line("req_src <= 1'b0;");
+        self.line("data_reg <= '0;");
+        self.indent -= 1;
+        self.line("end else if (data_in !== data_reg && req_src == ack_src) begin");
+        self.indent += 1;
+        self.line("data_reg <= data_in;");
+        self.line("req_src <= ~req_src;");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line("end");
+        self.line("");
+
+        // Synchronize req into destination domain
+        self.line(&format!("// Synchronize req into {dst_clk}"));
+        self.line(&format!("always_ff @(posedge {dst_clk}) begin"));
+        self.indent += 1;
+        self.line(&format!("if ({rst_active}) begin"));
+        self.indent += 1;
+        self.line("for (int i = 0; i < STAGES; i++) req_sync[i] <= 1'b0;");
+        self.line("ack_dst <= 1'b0;");
+        self.indent -= 1;
+        self.line("end else begin");
+        self.indent += 1;
+        self.line("req_sync[0] <= req_src;");
+        self.line("for (int i = 1; i < STAGES; i++) req_sync[i] <= req_sync[i-1];");
+        self.line("ack_dst <= req_sync[STAGES-1];");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line("end");
+        self.line("");
+
+        // Synchronize ack back into source domain
+        self.line(&format!("// Synchronize ack back into {src_clk}"));
+        self.line(&format!("always_ff @(posedge {src_clk}) begin"));
+        self.indent += 1;
+        self.line(&format!("if ({rst_active}) begin"));
+        self.indent += 1;
+        self.line("for (int i = 0; i < STAGES; i++) ack_sync[i] <= 1'b0;");
+        self.indent -= 1;
+        self.line("end else begin");
+        self.indent += 1;
+        self.line("ack_sync[0] <= ack_dst;");
+        self.line("for (int i = 1; i < STAGES; i++) ack_sync[i] <= ack_sync[i-1];");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line("end");
+        self.line("");
+
+        self.line("assign ack_src = ack_sync[STAGES-1];");
+        self.line("assign data_out = data_reg;");
     }
 
     // ── RAM ───────────────────────────────────────────────────────────────────
