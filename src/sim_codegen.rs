@@ -2622,6 +2622,9 @@ impl<'a> SimCodegen<'a> {
             h.push_str(&format!("  {} {};\n", cpp_port_type(&p.ty), p.name.name));
         }
         h.push_str("\n  void eval();\n  void eval_posedge();\n  void eval_comb();\n  void final_() {}\n");
+        if cdc_random {
+            h.push_str("  uint8_t cdc_skip_pct = 25; // 0-100: probability of +1 cycle latency per edge\n");
+        }
         h.push_str("private:\n");
         h.push_str("  uint8_t _clk_prev_src;\n  uint8_t _clk_prev_dst;\n");
         h.push_str("  bool _rising_src;\n  bool _rising_dst;\n");
@@ -2702,7 +2705,7 @@ impl<'a> SimCodegen<'a> {
         if cdc_random {
             cpp.push_str("  // LFSR-based CDC randomization (models metastability settling)\n");
             cpp.push_str("  _cdc_lfsr = (_cdc_lfsr >> 1) ^ ((_cdc_lfsr & 1) ? 0xB4BCD35Cu : 0u);\n");
-            cpp.push_str("  bool _cdc_skip = (_cdc_lfsr & 0x3) == 0; // ~25% chance of extra cycle\n");
+            cpp.push_str("  bool _cdc_skip = (_cdc_lfsr % 100) < cdc_skip_pct;\n");
         }
 
         // Open dst guard with optional random skip

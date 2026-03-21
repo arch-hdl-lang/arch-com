@@ -2,12 +2,15 @@
 #include <cstdio>
 
 // Test that data eventually propagates even with random latency.
-// With --cdc-random, the synchronizer may take STAGES or STAGES+1 cycles.
-// This test allows for extra latency.
+// With --cdc-random, the synchronizer may take STAGES or more cycles.
+// cdc_skip_pct controls the probability (0-100) of +1 cycle per edge.
 
 int main() {
     FlagSync dut;
     int errors = 0;
+
+    // Testbench controls skip probability: 50% for aggressive stress testing
+    dut.cdc_skip_pct = 50;
 
     // Reset
     dut.src_clk = 0; dut.dst_clk = 0; dut.rst = 0; dut.data_in = 0;
@@ -16,8 +19,8 @@ int main() {
     dut.dst_clk = 0; dut.eval();
     dut.rst = 0;
 
-    // ── Test: data_in=1 must appear at data_out within STAGES+2 cycles ──
-    printf("=== CDC random test: eventual propagation ===\n");
+    // ── Test: data_in=1 must appear at data_out within STAGES+8 cycles ──
+    printf("=== CDC random test: eventual propagation (cdc_skip_pct=50) ===\n");
     dut.data_in = 1;
 
     int appeared = 0;
