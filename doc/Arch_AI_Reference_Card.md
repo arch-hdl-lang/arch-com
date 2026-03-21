@@ -1,6 +1,6 @@
 **Arch HDL --- AI Reference Card**
 
-*Compact AI context for hardware generation · v0.1 · Put this in context, add design intent, paste compiler errors to self-correct.*
+*Compact AI context for hardware generation · v0.18.0 · Put this in context, add design intent, paste compiler errors to self-correct.*
 
 **1. Universal Block Schema --- Every Construct Uses This**
 
@@ -14,9 +14,9 @@
 >
 > port name: out TypeExpr;
 >
-> socket name: initiator InterfaceName; // TLM initiator
+> socket name: initiator InterfaceName; // TLM initiator (planned)
 >
-> socket name: target InterfaceName; // TLM target
+> socket name: target InterfaceName; // TLM target (planned)
 >
 > generate for i in 0..N-1 // generated ports / instances
 >
@@ -30,9 +30,9 @@
 >
 > end generate if
 >
-> assert name: expression;
+> assert name: expression; // (planned)
 >
-> cover name: expression;
+> cover name: expression; // (planned)
 >
 > end keyword Name
 >
@@ -44,13 +44,21 @@
 >
 > reg p: T init 0 reset none; // register decl without reset
 >
-> always on clk rising // clocked process --- uses \<=
+> reg default: init 0 reset rst; // wildcard default for all regs in scope
+>
+> reg r: UInt\<8\>; // inherits init/reset from reg default
+>
+> pipe_reg delayed: source stages 3; // N-stage delay chain, type inferred
+>
+> seq on clk rising // clocked process --- uses \<=
 >
 > r \<= expr; // compiler auto-generates if(rst) guard
 >
 > p \<= expr; // no reset guard (reset none)
 >
-> end always
+> end seq
+>
+> let x: UInt\<32\> = a + b; // combinational wire (explicit type required)
 
 **2. Types**
 
@@ -60,13 +68,43 @@
 >
 > Vec\<T,N\> struct S { f: T, } enum E { A, B, }
 >
-> Token Future\<T\> Token\<T, id_width: N\>
+> Bool and UInt\<1\> are identical --- freely assignable, bitwise ops on 1-bit return Bool
+>
+> Token Future\<T\> Token\<T, id_width: N\> (planned --- TLM only)
 >
 > Width conversions (always explicit): x.trunc\<N\>() x.trunc\<N,M\>() x.zext\<N\>() x.sext\<N\>()
 >
 > trunc\<N\>() → lowest N bits (SV: N'(x)); trunc\<N,M\>() → bit range [N:M] (SV: x[N:M])
+>
+> Arithmetic: UInt\<8\> + UInt\<8\> → UInt\<9\> (auto-widen); must .trunc\<8\>() to assign back
+>
+> $clog2(expr) supported in type args: UInt\<$clog2(DEPTH)\>
 
-**3. Construct Cards**
+**3. Expressions & Operators**
+
+> Arithmetic: + - \* / %
+>
+> Comparison: == != \< \> \<= \>=
+>
+> Logical: and or not
+>
+> Bitwise: & \| ^ ~ \<\< \>\>
+>
+> Ternary: cond ? a : b (right-associative; chains for priority muxes)
+>
+> Match expression: match x { E::A => val1, E::B => val2, _ => default }
+>
+> Field access: s.field Array index: a\[i\]
+>
+> Function call: FnName(arg1, arg2) (overload-resolved by argument types)
+>
+> Enum variant: E::Variant Struct literal: S { f: val }
+>
+> Sized literals: 8'hFF 16'd1024 4'b1010 (Verilog-style)
+>
+> todo! --- compilable placeholder; warns at compile, aborts at sim runtime
+
+**4. Construct Cards**
 
 **module --- combinational or registered logic**
 
@@ -83,15 +121,19 @@
 |                                       |                                  |
 | port y: out UInt\<W\>;                |                                  |
 |                                       |                                  |
-| reg r: UInt\<W\> init 0 reset rst;    |                                  |
+| reg default: init 0 reset rst;        | Wildcard default for all regs    |
 |                                       |                                  |
-| always on clk rising                  | Compiler auto-generates          |
+| reg r: UInt\<W\>;                     | Inherits init/reset from default |
+|                                       |                                  |
+| pipe_reg d: r stages 2;              | 2-stage delay of r (read-only)   |
+|                                       |                                  |
+| seq on clk rising                     | Compiler auto-generates          |
 |                                       |                                  |
 | r \<= a;                              | if(rst) reset guard from reg decl|
 |                                       |                                  |
-| end always                            |                                  |
+| end seq                               |                                  |
 |                                       |                                  |
-| comb y = r; end comb                  |                                  |
+| comb y = d; end comb                  |                                  |
 |                                       |                                  |
 | end module Name                       |                                  |
 |                                       |                                  |
@@ -108,6 +150,22 @@
 | end inst u                            |                                  |
 +---------------------------------------+----------------------------------+
 
+**function --- pure combinational, overloadable**
+
++---------------------------------------+----------------------------------+
+| function AddSat(a: UInt\<8\>,         | Pure comb --- no state, no clk   |
+|                 b: UInt\<8\>)          |                                  |
+|   -\> UInt\<8\>                       | Overloading: same name, different|
+|                                       | arg types (mangled in SV)        |
+| let sum: UInt\<9\> = a.zext\<9\>()   |                                  |
+|   + b.zext\<9\>();                    | let bindings as temporaries      |
+|                                       |                                  |
+| return sum\[8\] ? 8'hFF              | Ternary / match in return        |
+|   : sum.trunc\<8\>();                 |                                  |
+|                                       | Emits SV: function automatic     |
+| end function AddSat                   |                                  |
++---------------------------------------+----------------------------------+
+
 **pipeline --- staged datapath, compiler generates hazard logic**
 
 +---------------------------------------+-------------------------------+
@@ -121,11 +179,11 @@
 |                                       |                               |
 | reg r1: T init 0 reset rst;           | Cross-stage refs rewritten:   |
 |                                       |                               |
-| always on clk rising                  | Fetch.pc → fetch\_pc          |
+| seq on clk rising                     | Fetch.pc → fetch\_pc          |
 |                                       |                               |
 | r1 \<= in;                            |                               |
 |                                       |                               |
-| end always                            | valid\_r accessible per-stage |
+| end seq                               | valid\_r accessible per-stage |
 |                                       |                               |
 | end stage Fetch                       | for output gating:            |
 |                                       |                               |
@@ -133,11 +191,11 @@
 |                                       |                               |
 | reg r2: T init 0 reset rst;           |                               |
 |                                       |                               |
-| always on clk rising                  | Explicit forwarding via comb  |
+| seq on clk rising                     | Explicit forwarding via comb  |
 |                                       |                               |
 | r2 \<= Fetch.r1;                      | if/else mux inside stage.     |
 |                                       |                               |
-| end always                            |                               |
+| end seq                               |                               |
 |                                       |                               |
 | inst alu0: Alu                        | inst inside stages supported  |
 |                                       |                               |
@@ -239,7 +297,7 @@
 |                                   |                                      |
 | read: sync;                       | vars --- compiler auto-assigns       |
 |                                   |                                      |
-| store                             | address ranges.                      |
+| store                             | address ranges (planned).            |
 |                                   |                                      |
 | weights: Vec\<SInt\<8\>, DEPTH\>; |                                      |
 |                                   |                                      |
@@ -266,6 +324,30 @@
 | init: zero;                       |                                      |
 |                                   |                                      |
 | end ram Name                      |                                      |
++-----------------------------------+--------------------------------------+
+
+**counter --- wrap/saturate/gray/one_hot/johnson**
+
++-----------------------------------+--------------------------------------+
+| counter Name                      | mode: wrap\|saturate\|gray\|         |
+|                                   |   one_hot\|johnson                   |
+| param WIDTH: const = 8;           |                                      |
+|                                   | direction: up\|down\|up_down         |
+| port clk: in Clock\<D\>;          |                                      |
+|                                   | at_max / at_min output ports         |
+| port rst: in Reset\<Sync\>;       |                                      |
+|                                   |                                      |
+| port en: in Bool;                 |                                      |
+|                                   |                                      |
+| port count: out UInt\<WIDTH\>;    |                                      |
+|                                   |                                      |
+| port at_max: out Bool;            |                                      |
+|                                   |                                      |
+| mode: wrap;                       |                                      |
+|                                   |                                      |
+| direction: up;                    |                                      |
+|                                   |                                      |
+| end counter Name                  |                                      |
 +-----------------------------------+--------------------------------------+
 
 **arbiter --- N requesters, policy-driven grant**
@@ -302,7 +384,61 @@
 | end arbiter Name                 |                                 |
 +----------------------------------+---------------------------------+
 
-**generate --- compile-time ports and instances (impossible in SV)**
+**regfile --- multi-port register file**
+
++-----------------------------------+--------------------------------------+
+| regfile Name                      | Multiple read + write ports          |
+|                                   |                                      |
+| param DEPTH: const = 32;          | forward write_before_read: true      |
+|                                   | enables bypass forwarding            |
+| param WIDTH: const = 32;          |                                      |
+|                                   | init \[i\] = v; sets reset values   |
+| port clk: in Clock\<D\>;          |                                      |
+|                                   |                                      |
+| port rst: in Reset\<Sync\>;       |                                      |
+|                                   |                                      |
+| port rd0                          |                                      |
+|                                   |                                      |
+| addr: in UInt\<5\>;               |                                      |
+|                                   |                                      |
+| data: out UInt\<WIDTH\>;          |                                      |
+|                                   |                                      |
+| end port rd0                      |                                      |
+|                                   |                                      |
+| port wr0                          |                                      |
+|                                   |                                      |
+| en: in Bool; addr: in UInt\<5\>;  |                                      |
+|                                   |                                      |
+| data: in UInt\<WIDTH\>;           |                                      |
+|                                   |                                      |
+| end port wr0                      |                                      |
+|                                   |                                      |
+| forward write_before_read: false; |                                      |
+|                                   |                                      |
+| init \[0\] = 0;                   |                                      |
+|                                   |                                      |
+| end regfile Name                  |                                      |
++-----------------------------------+--------------------------------------+
+
+**linklist --- singly/doubly/circular linked list**
+
++-------------------------------------------+--------------------------------------+
+| linklist Name                             | variant: singly\|doubly\|            |
+|                                           |   circular_singly\|circular_doubly   |
+| param DEPTH: const = 256;                 |                                      |
+|                                           | Operations (via op port):            |
+| param DATA_WIDTH: const = 32;             |   insert_head, insert_tail,          |
+|                                           |   insert_after, delete_head,         |
+| port clk: in Clock\<D\>;                  |   delete, next, prev (doubly),       |
+|                                           |   alloc, free, read_data, write_data |
+| port rst: in Reset\<Sync\>;               |                                      |
+|                                           | Built-in free list + FSM controller  |
+| variant: doubly;                          |                                      |
+|                                           | 2-cycle latency per operation        |
+| end linklist Name                         |                                      |
++-------------------------------------------+--------------------------------------+
+
+**generate --- compile-time ports and instances**
 
 +--------------------------------------+-----------------------------------+
 | generate for i in 0..SIZE-1          | Generates REAL named ports.       |
@@ -334,7 +470,19 @@
 | // is a COMPILE ERROR                |                                   |
 +--------------------------------------+-----------------------------------+
 
-**4. TLM Concurrency Modes**
+**5. Logging**
+
+> log(Level, "TAG", "format %0d", arg);
+>
+> Levels: Always, Low, Medium, High, Full, Debug
+>
+> Works in seq and comb blocks
+>
+> Runtime control: +arch_verbosity=N (0=Always only ... 5=Debug)
+>
+> NBA semantics in seq: value printed is last cycle's registered value
+
+**6. TLM Concurrency Modes (planned)**
 
 > blocking ret: T directly --- caller suspends until done --- APB/MMIO
 >
@@ -344,82 +492,74 @@
 >
 > burst ret: Future\<Vec\<T,L\>\>--- one AR, N data beats --- AXI INCR burst
 >
-> !! timing: N is NOT cycle-accurate --- no backpressure, optimistic throughput !!
->
-> !! For cycle accuracy: implement \... rtl_accurate on BOTH initiator AND target !!
->
 > await f // wait for one Future
 >
 > await_all(f0,f1,f2) // wait for all
 >
 > await_any(t0,t1) // first Token to complete (out_of_order only)
 
-**5. Simulation Flags**
+**7. Simulation & Build**
 
 > arch check F.arch // type-check only
 >
-> arch sim F.arch \--tb F_tb.cpp // compile C++ testbench + run
+> arch build F.arch // emit SystemVerilog
 >
-> arch sim F.arch \--tb F_tb.cpp \--outdir build/ // specify output dir
+> arch build F.arch -o out.sv // combined output
+>
+> arch build a.arch b.arch // multi-file: one .sv per input
+>
+> arch sim F.arch --tb F_tb.cpp // compile + run C++ testbench
+>
+> arch sim F.arch --tb F_tb.cpp --outdir build/
+>
+> arch sim F.arch --tb F_tb.cpp --check-uninit // warn on reads of uninitialized reset-none regs
 >
 > arch sim F.arch // generate models only (no testbench)
->
-> arch sim \--parallel Tb.arch // all cores (planned)
->
-> arch sim \--tlm-lt // max speed, no timing (planned)
->
-> arch sim \--tlm-at // ns-accurate AT timing (planned)
->
-> arch sim \--tlm-rtl // full signal fidelity (planned)
->
-> arch sim \--wave out.fst // waveform (GTKWave/Surfer) (planned)
->
-> arch build F.arch // emit SystemVerilog
 >
 > arch formal F.arch // emit SMT-LIB2 (planned)
 
 > **arch sim C++ testbench interface (Verilator-compatible)**
 >
-> // Ports map to public fields: dut-\>clk, dut-\>rst, dut-\>data_in
+> // Ports map to public fields: dut->clk, dut->rst, dut->data_in
 >
 > // Wide ports (UInt\<N\> where N\>64) use VlWide\<WORDS\>:
 >
-> // dut-\>key.data() returns uint32_t\* (word 0 = LSB, word N-1 = MSB)
+> // dut->key.data() returns uint32_t\* (word 0 = LSB, word N-1 = MSB)
 >
 > // Standard cycle loop:
 >
-> auto tick = \[\&\]() \{ dut-\>clk=0; dut-\>eval(); dut-\>clk=1; dut-\>eval(); \};
+> auto tick = \[\&\]() \{ dut->clk=0; dut->eval(); dut->clk=1; dut->eval(); \};
 >
 > // Compile: g++ -std=c++17 build/verilated.cpp build/V\*.cpp tb.cpp -Ibuild -o sim
 
-**6. AI Prompting Patterns**
+**8. AI Prompting Patterns**
 
 > 1\. CONSTRUCT-FIRST (most reliable)
 >
-> \'Generate an Arch fifo named InstrQueue, depth 64, element type
+> 'Generate an Arch fifo named InstrQueue, depth 64, element type
 >
-> InstrPacket, single clock SysDomain. Add cover push_when_full.\'
+> InstrPacket, single clock SysDomain. Add cover push_when_full.'
 >
 > 2\. todo! SCAFFOLDING
 >
-> \'Generate the skeleton for a 5-stage RISC-V pipeline.
+> 'Generate the skeleton for a 5-stage RISC-V pipeline.
 >
-> Use todo! for all stage bodies.\'
+> Use todo! for all stage bodies.'
 >
 > 3\. PASTE COMPILER ERRORS
 >
-> \'Fix this Arch error: \[paste arch check output\]\'
+> 'Fix this Arch error: \[paste arch check output\]'
 >
 > Errors are self-sufficient --- no spec lookup needed.
 >
 > 4\. ONE CONSTRUCT PER PROMPT
 >
-> structs → primitives → pipeline → top module → testbench
+> structs → functions → primitives → pipeline → top module → testbench
 >
 > Compile and verify each before moving to the next.
 >
 > 5\. ABSTRACTION PROGRESSION
 >
-> Start \--tlm-lt. Add rtl_accurate only after function verified.
+> Start --tlm-lt. Add rtl_accurate only after function verified.
 
-*Arch AI Reference Card · March 2026 · arch check is your first line of defence*
+*Arch AI Reference Card · March 2026 · v0.18.0 · arch check is your first line of defence*

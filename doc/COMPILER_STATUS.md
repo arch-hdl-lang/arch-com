@@ -103,7 +103,7 @@
 | `match` (reg and comb blocks) | ✅ |
 | Wildcard `_` → `default:` | ✅ |
 | `let` bindings | ✅ `logic` local in module scope; **explicit type annotation required** (e.g. `let x: UInt<32> = ...`) — omitting the type is a compile error since bit widths are semantically meaningful |
-| `log(Level, "TAG", "fmt", args...)` | ✅ In `always` and `comb` blocks; runtime verbosity via `+arch_verbosity=N` |
+| `log(Level, "TAG", "fmt", args...)` | ✅ In `seq` and `comb` blocks; runtime verbosity via `+arch_verbosity=N` |
 | `reg default: init 0 reset rst;` | ✅ Sets default `init`/`reset` for all regs in scope; individual regs may override either field |
 | `assert` / `cover` | ❌ |
 
