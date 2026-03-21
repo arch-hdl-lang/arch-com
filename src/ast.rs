@@ -21,6 +21,7 @@ pub enum Item {
     Function(FunctionDecl),
     Linklist(LinklistDecl),
     Template(TemplateDecl),
+    Synchronizer(SynchronizerDecl),
 }
 
 #[derive(Debug, Clone)]
@@ -491,6 +492,7 @@ impl Item {
             Item::Function(f) => f.span,
             Item::Linklist(l) => l.span,
             Item::Template(t) => t.span,
+            Item::Synchronizer(s) => s.span,
         }
     }
 }
@@ -554,6 +556,16 @@ pub struct Transition {
 
 #[derive(Debug, Clone)]
 pub struct FifoDecl {
+    pub name: Ident,
+    pub params: Vec<ParamDecl>,
+    pub ports: Vec<PortDecl>,
+    pub span: Span,
+}
+
+// ── Synchronizer (CDC) ──────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct SynchronizerDecl {
     pub name: Ident,
     pub params: Vec<ParamDecl>,
     pub ports: Vec<PortDecl>,

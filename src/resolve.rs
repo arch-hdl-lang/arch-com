@@ -20,6 +20,7 @@ pub enum Symbol {
     Function(Vec<FunctionInfo>),
     Linklist(LinklistInfo),
     Template(String),
+    Synchronizer(SynchronizerInfo),
     Param(String),
     Port(PortInfo),
     Reg(RegInfo),
@@ -31,6 +32,12 @@ pub enum Symbol {
 pub struct DomainInfo {
     pub name: String,
     pub freq_mhz: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SynchronizerInfo {
+    pub name: String,
+    pub stages: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -350,6 +357,21 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                     errors.push(CompileError::duplicate(&t.name.name, t.name.span));
                 } else {
                     table.globals.insert(t.name.name.clone(), (Symbol::Template(t.name.name.clone()), t.name.span));
+                }
+            }
+            Item::Synchronizer(s) => {
+                if table.globals.contains_key(&s.name.name) {
+                    errors.push(CompileError::duplicate(&s.name.name, s.name.span));
+                } else {
+                    let stages = s.params.iter()
+                        .find(|p| p.name.name == "STAGES")
+                        .and_then(|p| p.default.as_ref())
+                        .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(*v) } else { None })
+                        .unwrap_or(2);
+                    table.globals.insert(s.name.name.clone(), (Symbol::Synchronizer(SynchronizerInfo {
+                        name: s.name.name.clone(),
+                        stages,
+                    }), s.name.span));
                 }
             }
         }

@@ -284,6 +284,26 @@
 | end fifo Name                                          |                               |
 +--------------------------------------------------------+-------------------------------+
 
+**synchronizer --- CDC synchronizer (2FF/3FF chain)**
+
+> synchronizer Name
+>
+> param STAGES: const = 2; // 2 or 3 (default 2)
+>
+> port src_clk: in Clock\<SrcDomain\>;
+>
+> port dst_clk: in Clock\<DstDomain\>; // chain clocked on dst_clk
+>
+> port rst: in Reset\<Async\>; // optional
+>
+> port data_in: in Bool; // or UInt\<N\> for multi-bit
+>
+> port data_out: out Bool;
+>
+> end synchronizer Name
+
+Notes: two Clock ports must reference different domains (compile error otherwise). Compiler generates STAGES flip-flops on the destination clock. For multi-bit buses, consider using a FIFO or gray-code encoding instead.
+
 **ram --- FPGA BRAM / ASIC SRAM**
 
 +-----------------------------------+--------------------------------------+

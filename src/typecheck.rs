@@ -93,6 +93,7 @@ impl<'a> TypeChecker<'a> {
                 Item::Function(f) => self.check_function(f),
                 Item::Linklist(l) => self.check_linklist(l),
                 Item::Template(t) => self.check_template(t),
+                Item::Synchronizer(s) => self.check_synchronizer(s),
             }
         }
         if self.errors.is_empty() {
@@ -1160,6 +1161,59 @@ impl<'a> TypeChecker<'a> {
                     &format!("fifo `{}` is missing required port `{req}`", f.name.name),
                     f.name.span,
                 ));
+            }
+        }
+    }
+
+    // ── Synchronizer ─────────────────────────────────────────────────────────
+
+    fn check_synchronizer(&mut self, s: &SynchronizerDecl) {
+        self.check_pascal_case(&s.name);
+        for p in &s.params {
+            self.check_upper_snake(&p.name);
+        }
+        for p in &s.ports {
+            self.check_snake_case(&p.name);
+        }
+
+        // Must have exactly two clock ports from different domains
+        let clk_ports: Vec<(&Ident, &Ident)> = s.ports.iter()
+            .filter_map(|p| if let TypeExpr::Clock(domain) = &p.ty { Some((&p.name, domain)) } else { None })
+            .collect();
+        if clk_ports.len() != 2 {
+            self.errors.push(CompileError::general(
+                &format!("synchronizer `{}` must have exactly 2 Clock<Domain> ports (source and destination)", s.name.name),
+                s.name.span,
+            ));
+        } else if clk_ports[0].1.name == clk_ports[1].1.name {
+            self.errors.push(CompileError::general(
+                &format!("synchronizer `{}` has two clock ports in the same domain `{}`; use different domains", s.name.name, clk_ports[0].1.name),
+                s.name.span,
+            ));
+        }
+
+        // Must have data_in and data_out ports
+        let port_names: Vec<&str> = s.ports.iter().map(|p| p.name.name.as_str()).collect();
+        for req in &["data_in", "data_out"] {
+            if !port_names.contains(req) {
+                self.errors.push(CompileError::general(
+                    &format!("synchronizer `{}` is missing required port `{req}`", s.name.name),
+                    s.name.span,
+                ));
+            }
+        }
+
+        // STAGES param must be >= 2
+        if let Some(stages_param) = s.params.iter().find(|p| p.name.name == "STAGES") {
+            if let Some(ref default) = stages_param.default {
+                if let ExprKind::Literal(LitKind::Dec(v)) = &default.kind {
+                    if *v < 2 {
+                        self.errors.push(CompileError::general(
+                            &format!("synchronizer `{}`: STAGES must be >= 2 (got {})", s.name.name, v),
+                            stages_param.name.span,
+                        ));
+                    }
+                }
             }
         }
     }

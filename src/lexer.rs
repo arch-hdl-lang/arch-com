@@ -86,6 +86,8 @@ pub enum TokenKind {
     Fsm,
     #[token("fifo")]
     Fifo,
+    #[token("synchronizer")]
+    Synchronizer,
     #[token("ram")]
     Ram,
     #[token("store")]
@@ -347,6 +349,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Repeat => write!(f, "repeat"),
             TokenKind::Fsm => write!(f, "fsm"),
             TokenKind::Fifo => write!(f, "fifo"),
+            TokenKind::Synchronizer => write!(f, "synchronizer"),
             TokenKind::Ram => write!(f, "ram"),
             TokenKind::Store => write!(f, "store"),
             TokenKind::Counter => write!(f, "counter"),

@@ -41,8 +41,9 @@ impl Parser {
             Some(TokenKind::Function) => Ok(Item::Function(self.parse_function()?)),
             Some(TokenKind::Linklist) => Ok(Item::Linklist(self.parse_linklist()?)),
             Some(TokenKind::Template) => Ok(Item::Template(self.parse_template()?)),
+            Some(TokenKind::Synchronizer) => Ok(Item::Synchronizer(self.parse_synchronizer()?)),
             Some(other) => Err(CompileError::unexpected_token(
-                "domain, struct, enum, module, fsm, fifo, ram, counter, arbiter, regfile, pipeline, function, linklist, or template",
+                "domain, struct, enum, module, fsm, fifo, ram, counter, arbiter, regfile, pipeline, function, linklist, template, or synchronizer",
                 &other.to_string(),
                 self.peek_span(),
             )),
@@ -1783,6 +1784,51 @@ impl Parser {
         self.pos + 1 < self.tokens.len()
             && self.tokens[self.pos].kind == TokenKind::End
             && self.tokens[self.pos + 1].kind == TokenKind::Fifo
+    }
+
+    // ── Synchronizer ─────────────────────────────────────────────────────────
+
+    fn parse_synchronizer(&mut self) -> Result<SynchronizerDecl, CompileError> {
+        let start = self.expect(TokenKind::Synchronizer)?.span;
+        let name = self.expect_ident()?;
+
+        let mut params = Vec::new();
+        let mut ports = Vec::new();
+
+        while !self.check_end_synchronizer() {
+            match self.peek_kind() {
+                Some(TokenKind::Param) => params.push(self.parse_param_decl()?),
+                Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
+                Some(other) => {
+                    return Err(CompileError::unexpected_token(
+                        "param or port",
+                        &other.to_string(),
+                        self.peek_span(),
+                    ));
+                }
+                None => return Err(CompileError::UnexpectedEof),
+            }
+        }
+
+        self.expect(TokenKind::End)?;
+        self.expect(TokenKind::Synchronizer)?;
+        let closing = self.expect_ident()?;
+        if closing.name != name.name {
+            return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+        }
+
+        Ok(SynchronizerDecl {
+            span: start.merge(closing.span),
+            name,
+            params,
+            ports,
+        })
+    }
+
+    fn check_end_synchronizer(&self) -> bool {
+        self.pos + 1 < self.tokens.len()
+            && self.tokens[self.pos].kind == TokenKind::End
+            && self.tokens[self.pos + 1].kind == TokenKind::Synchronizer
     }
 
     // ── RAM ───────────────────────────────────────────────────────────────────

@@ -87,6 +87,7 @@ impl<'a> Codegen<'a> {
                 Item::Function(_) => {} // emitted inside modules
                 Item::Linklist(l) => self.emit_linklist(l),
                 Item::Template(_) => {} // compile-time only
+                Item::Synchronizer(s) => self.emit_synchronizer(s),
             }
         }
         // Flush any trailing comments after the last item.
@@ -2428,6 +2429,107 @@ impl<'a> Codegen<'a> {
         } else {
             (self.emit_type_str(ty), String::new())
         }
+    }
+
+    // ── Synchronizer ─────────────────────────────────────────────────────────
+
+    fn emit_synchronizer(&mut self, s: &SynchronizerDecl) {
+        let n = &s.name.name;
+
+        // Resolve STAGES (default 2)
+        let stages = s.params.iter()
+            .find(|p| p.name.name == "STAGES")
+            .and_then(|p| p.default.as_ref())
+            .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(*v as usize) } else { None })
+            .unwrap_or(2);
+
+        // Find clock ports (first = source clock, second = destination clock)
+        let clk_ports: Vec<&PortDecl> = s.ports.iter()
+            .filter(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            .collect();
+        let _src_clk = &clk_ports[0].name.name;
+        let dst_clk = &clk_ports[1].name.name;
+
+        // Find data ports
+        let data_in_port = s.ports.iter().find(|p| p.name.name == "data_in").unwrap();
+        let data_ty = self.emit_port_type_str(&data_in_port.ty);
+
+        // Check for reset port
+        let rst_port = s.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Reset(..)));
+
+        // Module header
+        self.line(&format!("module {n} #("));
+        self.indent += 1;
+        self.line(&format!("parameter int STAGES = {stages}"));
+        self.indent -= 1;
+        self.line(") (");
+        self.indent += 1;
+        // Emit ports
+        let port_strs: Vec<String> = s.ports.iter().map(|p| {
+            let dir = match p.direction { Direction::In => "input", Direction::Out => "output" };
+            let ty = self.emit_port_type_str(&p.ty);
+            format!("{dir} {ty} {}", p.name.name)
+        }).collect();
+        for (i, ps) in port_strs.iter().enumerate() {
+            let comma = if i < port_strs.len() - 1 { "," } else { "" };
+            self.line(&format!("{ps}{comma}"));
+        }
+        self.indent -= 1;
+        self.line(");");
+        self.line("");
+        self.indent += 1;
+
+        // Synchronizer chain registers (on destination clock)
+        self.line(&format!("// {stages}-stage synchronizer chain (destination clock: {dst_clk})"));
+        self.line(&format!("{data_ty} sync_chain [0:STAGES-1];"));
+        self.line("");
+
+        // Sequential logic on destination clock
+        let rst_cond = if let Some(rp) = rst_port {
+            let is_low = matches!(&rp.ty, TypeExpr::Reset(_, level) if *level == ResetLevel::Low);
+            let is_async = matches!(&rp.ty, TypeExpr::Reset(sync_type, _) if *sync_type == ResetKind::Async);
+            let sensitivity = if is_async {
+                let edge = if is_low { "negedge" } else { "posedge" };
+                format!(" or {edge} {}", rp.name.name)
+            } else {
+                String::new()
+            };
+            self.line(&format!("always_ff @(posedge {dst_clk}{sensitivity}) begin"));
+            let cond = if is_low { format!("!{}", rp.name.name) } else { rp.name.name.clone() };
+            Some(cond)
+        } else {
+            self.line(&format!("always_ff @(posedge {dst_clk}) begin"));
+            None
+        };
+
+        self.indent += 1;
+        if let Some(ref cond) = rst_cond {
+            self.line(&format!("if ({cond}) begin"));
+            self.indent += 1;
+            self.line("for (int i = 0; i < STAGES; i++) sync_chain[i] <= '0;");
+            self.indent -= 1;
+            self.line("end else begin");
+            self.indent += 1;
+        }
+
+        self.line(&format!("sync_chain[0] <= data_in;"));
+        self.line("for (int i = 1; i < STAGES; i++) sync_chain[i] <= sync_chain[i-1];");
+
+        if rst_cond.is_some() {
+            self.indent -= 1;
+            self.line("end");
+        }
+        self.indent -= 1;
+        self.line("end");
+        self.line("");
+
+        // Output assignment
+        self.line("assign data_out = sync_chain[STAGES-1];");
+
+        self.indent -= 1;
+        self.line("");
+        self.line("endmodule");
+        self.line("");
     }
 
     // ── RAM ───────────────────────────────────────────────────────────────────
