@@ -136,6 +136,14 @@ Every compound construct in Arch opens with a keyword-and-name header on its own
 | **end** **state** Red                                              |
 |                                                                    |
 | **end** **fsm** TrafficLight                                       |
+|                                                                    |
+| **synchronizer** EventSync                                         |
+|                                                                    |
+| **kind** pulse;                                                    |
+|                                                                    |
+| // body                                                            |
+|                                                                    |
+| **end** **synchronizer** EventSync                                 |
 +--------------------------------------------------------------------+
 
 > *⚑ No braces, no ambiguity. The opening keyword+name and closing end keyword name are always a matched pair. An AI generating code cannot accidentally close the wrong block.*
@@ -793,6 +801,153 @@ A fifo is a first-class construct with compile-time-verified flow control. The d
 +--------------------------------------------------------------------+
 
 > ◈ When two different Clock domains are detected on wr_clk and rd_clk, the compiler automatically selects gray-code pointer synchronisation. This can be overridden with an explicit sync: policy annotation inside the fifo body.
+
+**8.3 First-Class Construct: synchronizer**
+
+A synchronizer is a first-class construct for clock domain crossing (CDC) of individual signals. While a dual-clock fifo handles bulk data transfer between domains, a synchronizer handles single signals --- control bits, status flags, counters, and event pulses. The designer declares the synchronization strategy via `kind` and the compiler generates the correct CDC logic, including all intermediate flip-flop stages, encoding/decoding, and protocol handshaking.
+
+The `kind` keyword selects the synchronization strategy (same syntax as `ram`). If omitted, the default is `ff`. The `param STAGES` controls the flip-flop chain depth (default 2).
+
+**8.3.1 Synchronizer Kinds**
+
+| Kind | Signal Type | Description |
+|------|-------------|-------------|
+| `ff` (default) | `Bool` or 1-bit | N-stage flip-flop shift chain clocked on `dst_clk`. Best for single-bit level signals (e.g. status flags, enables). |
+| `gray` | `UInt<N>` (multi-bit) | Binary-to-gray encode in source domain, N-stage FF chain, gray-to-binary decode in destination domain. Safe for multi-bit counters and pointers where only one bit changes per cycle. |
+| `handshake` | Any type | Req/ack toggle protocol with synchronized control signals. Safe for arbitrary multi-bit data that changes infrequently. Higher latency than `gray` but works for any data pattern. |
+| `reset` | `Bool` only | Reset synchronizer: asynchronous assert (immediate propagation), synchronous deassert through N-stage FF chain. Used for synchronizing reset deassertion to a clock domain. Compile error if data type is not `Bool`. |
+| `pulse` | `Bool` only | Pulse synchronizer: converts a single-cycle pulse in the source domain into a level toggle, syncs the toggle through the N-stage FF chain, then edge-detects in the destination domain to regenerate a single-cycle pulse. Used for events, interrupts, and triggers across clock domains. Compile error if data type is not `Bool`. |
+
+**8.3.2 Declaration**
+
++--------------------------------------------------------------------------+
+| *sync_ff.arch --- 1-bit FF synchronizer (default kind)*                  |
+|                                                                          |
+| **synchronizer** StatusSync                                              |
+|                                                                          |
+| **param** STAGES: **const** = 2;                                         |
+|                                                                          |
+| **port** src_clk: **in** Clock\<SrcDomain\>;                             |
+|                                                                          |
+| **port** dst_clk: **in** Clock\<DstDomain\>;                             |
+|                                                                          |
+| **port** rst: **in** Reset\<Async\>;                                     |
+|                                                                          |
+| **port** data_in: **in** Bool;                                           |
+|                                                                          |
+| **port** data_out: **out** Bool;                                         |
+|                                                                          |
+| **end** **synchronizer** StatusSync                                      |
++--------------------------------------------------------------------------+
+
++--------------------------------------------------------------------------+
+| *sync_gray.arch --- multi-bit gray-code synchronizer*                    |
+|                                                                          |
+| **synchronizer** PtrSync                                                 |
+|                                                                          |
+| **kind** gray;                                                           |
+|                                                                          |
+| **param** STAGES: **const** = 2;                                         |
+|                                                                          |
+| **port** src_clk: **in** Clock\<WrDomain\>;                              |
+|                                                                          |
+| **port** dst_clk: **in** Clock\<RdDomain\>;                              |
+|                                                                          |
+| **port** rst: **in** Reset\<Async\>;                                     |
+|                                                                          |
+| **port** data_in: **in** UInt\<5\>;                                      |
+|                                                                          |
+| **port** data_out: **out** UInt\<5\>;                                    |
+|                                                                          |
+| **end** **synchronizer** PtrSync                                         |
++--------------------------------------------------------------------------+
+
++--------------------------------------------------------------------------+
+| *sync_handshake.arch --- multi-bit handshake synchronizer*               |
+|                                                                          |
+| **synchronizer** ConfigSync                                              |
+|                                                                          |
+| **kind** handshake;                                                      |
+|                                                                          |
+| **param** STAGES: **const** = 2;                                         |
+|                                                                          |
+| **port** src_clk: **in** Clock\<CpuDomain\>;                             |
+|                                                                          |
+| **port** dst_clk: **in** Clock\<AccelDomain\>;                           |
+|                                                                          |
+| **port** rst: **in** Reset\<Sync\>;                                      |
+|                                                                          |
+| **port** data_in: **in** UInt\<32\>;                                     |
+|                                                                          |
+| **port** data_out: **out** UInt\<32\>;                                   |
+|                                                                          |
+| **end** **synchronizer** ConfigSync                                      |
++--------------------------------------------------------------------------+
+
++--------------------------------------------------------------------------+
+| *sync_reset.arch --- reset synchronizer*                                 |
+|                                                                          |
+| **synchronizer** RstSync                                                 |
+|                                                                          |
+| **kind** reset;                                                          |
+|                                                                          |
+| **param** STAGES: **const** = 3;                                         |
+|                                                                          |
+| **port** src_clk: **in** Clock\<PllDomain\>;                             |
+|                                                                          |
+| **port** dst_clk: **in** Clock\<CoreDomain\>;                            |
+|                                                                          |
+| **port** rst: **in** Reset\<Async\>;                                     |
+|                                                                          |
+| **port** data_in: **in** Bool;                                           |
+|                                                                          |
+| **port** data_out: **out** Bool;                                         |
+|                                                                          |
+| **end** **synchronizer** RstSync                                         |
++--------------------------------------------------------------------------+
+
++--------------------------------------------------------------------------+
+| *sync_pulse.arch --- pulse synchronizer for events*                      |
+|                                                                          |
+| **synchronizer** EventSync                                               |
+|                                                                          |
+| **kind** pulse;                                                          |
+|                                                                          |
+| **param** STAGES: **const** = 2;                                         |
+|                                                                          |
+| **port** src_clk: **in** Clock\<SrcDomain\>;                             |
+|                                                                          |
+| **port** dst_clk: **in** Clock\<DstDomain\>;                             |
+|                                                                          |
+| **port** rst: **in** Reset\<Sync\>;                                      |
+|                                                                          |
+| **port** data_in: **in** Bool;                                           |
+|                                                                          |
+| **port** data_out: **out** Bool;                                         |
+|                                                                          |
+| **end** **synchronizer** EventSync                                       |
++--------------------------------------------------------------------------+
+
+**8.3.3 Compile-Time Checks**
+
+The compiler enforces the following rules for synchronizer constructs:
+
+- The two `Clock<Domain>` ports must reference **different** domains. Same-domain clocks are a compile error --- use a direct assignment instead.
+- `kind reset` and `kind pulse` require the data port type to be `Bool`. Multi-bit data is a compile error.
+- `kind gray` requires `UInt<N>` data. The compiler warns if the source signal can change by more than one LSB per cycle (e.g. arbitrary data rather than a counter).
+- `STAGES` must be at least 2. Values of 2 or 3 are typical; the compiler warns on values above 4 (diminishing returns, increased latency).
+
+**8.3.4 Generated Hardware**
+
+| Kind | SystemVerilog Output |
+|------|---------------------|
+| `ff` | Chain of `STAGES` flip-flops clocked on `dst_clk`: `always_ff @(posedge dst_clk)` with shift register `sync[0] <= data_in; sync[1] <= sync[0]; ...` |
+| `gray` | Source domain: binary-to-gray encoder. Destination domain: `STAGES`-FF chain + gray-to-binary decoder. |
+| `handshake` | Req toggle in source domain, req synchronized to destination domain via FF chain, ack toggle back to source domain via FF chain, data latched on ack. |
+| `reset` | `always_ff @(posedge dst_clk or posedge data_in)`: async set on assertion, synchronous shift chain for deassertion. |
+| `pulse` | Source domain: toggle register flipped on input pulse. Destination domain: `STAGES`-FF chain on toggle + XOR edge detector to regenerate single-cycle pulse. |
+
+> ◈ The synchronizer construct and the dual-clock fifo are the two legal CDC crossing mechanisms in Arch. Any other cross-domain signal access is a compile error, with the error message directing the user to use either a synchronizer or an async fifo.
 
 **9. First-Class Construct: arbiter**
 
