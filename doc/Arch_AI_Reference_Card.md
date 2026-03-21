@@ -284,11 +284,11 @@
 | end fifo Name                                          |                               |
 +--------------------------------------------------------+-------------------------------+
 
-**synchronizer --- CDC synchronizer (ff / gray / handshake)**
+**synchronizer --- CDC synchronizer (ff / gray / handshake / reset)**
 
 > synchronizer Name
 >
-> kind ff; // ff (default) | gray | handshake
+> kind ff; // ff (default) | gray | handshake | reset
 >
 > param STAGES: const = 2; // 2 or 3 (default 2)
 >
@@ -309,8 +309,9 @@ Strategies:
 - `kind ff;` (default) --- N-stage flip-flop shift chain on dst clock. Best for 1-bit signals.
 - `kind gray;` --- Binary-to-gray encode, FF chain, gray-to-binary decode. Safe for multi-bit counters/pointers.
 - `kind handshake;` --- Req/ack toggle protocol with synchronized control signals. Safe for arbitrary multi-bit data.
+- `kind reset;` --- Reset synchronizer: async assert (immediate), sync deassert through N-stage FF chain. Single-bit only (Bool). Used for synchronizing reset deassertion to a clock domain.
 
-Notes: two Clock ports must reference different domains (compile error otherwise). SV codegen emits strategy-specific logic; sim codegen generates C++ models for all 3 kinds.
+Notes: two Clock ports must reference different domains (compile error otherwise). SV codegen emits strategy-specific logic; sim codegen generates C++ models for all 4 kinds.
 
 **ram --- FPGA BRAM / ASIC SRAM**
 

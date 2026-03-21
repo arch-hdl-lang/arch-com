@@ -2627,6 +2627,9 @@ impl<'a> SimCodegen<'a> {
                     h.push_str(&format!("  uint8_t _req_sync{};\n  uint8_t _ack_sync{};\n", i, i));
                 }
             }
+            SyncKind::Reset => {
+                for i in 0..stages { h.push_str(&format!("  uint8_t _stage{};\n", i)); }
+            }
         }
         h.push_str("};\n");
 
@@ -2639,7 +2642,12 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("  _rising_src = ({src_clk} && !_clk_prev_src);\n"));
         cpp.push_str(&format!("  _rising_dst = ({dst_clk} && !_clk_prev_dst);\n"));
         cpp.push_str(&format!("  _clk_prev_src = {src_clk};\n  _clk_prev_dst = {dst_clk};\n"));
-        cpp.push_str("  if (_rising_src || _rising_dst) eval_posedge();\n  eval_comb();\n}\n\n");
+        if s.kind == SyncKind::Reset {
+            // Reset synchronizer: async assert needs eval_posedge on every eval
+            cpp.push_str("  eval_posedge();\n  eval_comb();\n}\n\n");
+        } else {
+            cpp.push_str("  if (_rising_src || _rising_dst) eval_posedge();\n  eval_comb();\n}\n\n");
+        }
 
         // eval_posedge()
         cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
@@ -2655,6 +2663,9 @@ impl<'a> SimCodegen<'a> {
                 SyncKind::Handshake => {
                     cpp.push_str("    _data_reg = 0; _req_src = 0; _ack_src = 0; _ack_dst = 0;\n");
                     for i in 0..stages { cpp.push_str(&format!("    _req_sync{i} = 0; _ack_sync{i} = 0;\n")); }
+                }
+                SyncKind::Reset => {
+                    for i in 0..stages { cpp.push_str(&format!("    _stage{i} = 1;\n")); }
                 }
             }
             cpp.push_str("    return;\n  }\n");
@@ -2682,6 +2693,15 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str("    _req_sync0 = _req_src;\n");
                 cpp.push_str(&format!("    _ack_dst = _req_sync{};\n  }}\n", stages - 1));
             }
+            SyncKind::Reset => {
+                // Async assert: when data_in goes high, all stages immediately go to 1
+                cpp.push_str("  if (data_in) {\n");
+                for i in 0..stages { cpp.push_str(&format!("    _stage{i} = 1;\n")); }
+                cpp.push_str("  } else if (_rising_dst) {\n");
+                // Sync deassert: shift 0 through the chain on dst_clk rising
+                for i in (1..stages).rev() { cpp.push_str(&format!("    _stage{i} = _stage{};\n", i - 1)); }
+                cpp.push_str("    _stage0 = 0;\n  }\n");
+            }
         }
         cpp.push_str("}\n\n");
 
@@ -2705,6 +2725,9 @@ impl<'a> SimCodegen<'a> {
             }
             SyncKind::Handshake => {
                 cpp.push_str("  data_out = _data_reg;\n");
+            }
+            SyncKind::Reset => {
+                cpp.push_str(&format!("  data_out = _stage{};\n", stages - 1));
             }
         }
         cpp.push_str("}\n");

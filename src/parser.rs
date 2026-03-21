@@ -1807,8 +1807,9 @@ impl Parser {
                         "ff" => SyncKind::Ff,
                         "gray" => SyncKind::Gray,
                         "handshake" => SyncKind::Handshake,
+                        "reset" => SyncKind::Reset,
                         other => return Err(CompileError::general(
-                            &format!("unknown synchronizer kind `{other}`; expected ff, gray, or handshake"),
+                            &format!("unknown synchronizer kind `{other}`; expected ff, gray, handshake, or reset"),
                             val.span,
                         )),
                     });

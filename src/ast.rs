@@ -572,6 +572,8 @@ pub enum SyncKind {
     Gray,
     /// Req/ack handshake protocol (safe for arbitrary multi-bit data)
     Handshake,
+    /// Reset synchronizer: assert immediate (async), deassert through FF chain (sync)
+    Reset,
 }
 
 #[derive(Debug, Clone)]

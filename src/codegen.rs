@@ -2483,6 +2483,7 @@ impl<'a> Codegen<'a> {
             SyncKind::Ff => self.emit_sync_ff(dst_clk, &data_ty, rst_port, stages),
             SyncKind::Gray => self.emit_sync_gray(src_clk, dst_clk, &data_ty, rst_port, stages),
             SyncKind::Handshake => self.emit_sync_handshake(src_clk, dst_clk, &data_ty, rst_port, stages),
+            SyncKind::Reset => self.emit_sync_reset(dst_clk, rst_port, stages),
         }
 
         self.indent -= 1;
@@ -2658,6 +2659,31 @@ impl<'a> Codegen<'a> {
 
         self.line("assign ack_src = ack_sync[STAGES-1];");
         self.line("assign data_out = data_reg;");
+    }
+
+    fn emit_sync_reset(&mut self, dst_clk: &str, _rst_port: Option<&PortDecl>, _stages: usize) {
+        // Reset synchronizer: data_in is the async reset input (active high).
+        // Assert immediately (async), deassert through N-stage FF chain (sync to dst_clk).
+        self.line(&format!("// Reset synchronizer: async assert, sync deassert on {dst_clk}"));
+        self.line("logic sync_chain [0:STAGES-1];");
+        self.line("");
+
+        self.line(&format!("always_ff @(posedge {dst_clk} or posedge data_in) begin"));
+        self.indent += 1;
+        self.line("if (data_in) begin");
+        self.indent += 1;
+        self.line("for (int i = 0; i < STAGES; i++) sync_chain[i] <= 1'b1;");
+        self.indent -= 1;
+        self.line("end else begin");
+        self.indent += 1;
+        self.line("sync_chain[0] <= 1'b0;");
+        self.line("for (int i = 1; i < STAGES; i++) sync_chain[i] <= sync_chain[i-1];");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line("end");
+        self.line("");
+        self.line("assign data_out = sync_chain[STAGES-1];");
     }
 
     // ── RAM ───────────────────────────────────────────────────────────────────
