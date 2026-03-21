@@ -3,7 +3,7 @@
 // Uses 4 S-box instances for SubWord and 1 rcon instance for round constants.
 
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 module AesSbox

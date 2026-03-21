@@ -1,6 +1,6 @@
 // Test: let bindings — typed and untyped
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 module LetDemo

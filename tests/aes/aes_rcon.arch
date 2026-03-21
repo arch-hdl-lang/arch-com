@@ -4,7 +4,7 @@
 // resets to 0 when kld is high.
 
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 module AesRcon

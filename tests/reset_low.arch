@@ -2,7 +2,7 @@
 // `reg reset rst_n` with `Reset<Sync, Low>` should emit `if (!rst_n)` in the body.
 
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 module ActiveLowRst

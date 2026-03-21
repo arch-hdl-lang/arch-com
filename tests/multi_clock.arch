@@ -1,9 +1,9 @@
 domain FastDomain
-  freq_mhz: 200,
+  freq_mhz: 200
 end domain FastDomain
 
 domain SlowDomain
-  freq_mhz: 50,
+  freq_mhz: 50
 end domain SlowDomain
 
 module MultiClockSync

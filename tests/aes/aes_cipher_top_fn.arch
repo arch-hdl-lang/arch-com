@@ -3,7 +3,7 @@
 // eliminating 32 inst blocks from AesCipherTop and 4+1 inst blocks from AesKeyExpand128.
 
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 // ── Pure combinational functions ──────────────────────────────────────────────

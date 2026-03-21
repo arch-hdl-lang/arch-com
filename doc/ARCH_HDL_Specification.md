@@ -499,19 +499,19 @@ Every Clock signal in Arch carries a domain tag as part of its type. The compile
 |                                                                               |
 | **domain** SysDomain                                                          |
 |                                                                               |
-| freq_mhz: 200,                                                                |
+| freq_mhz: 200                                                                |
 |                                                                               |
 | **end** **domain** SysDomain                                                  |
 |                                                                               |
 | **domain** UsbDomain                                                          |
 |                                                                               |
-| freq_mhz: 48,                                                                 |
+| freq_mhz: 48                                                                 |
 |                                                                               |
 | **end** **domain** UsbDomain                                                  |
 |                                                                               |
 | **domain** PcieDomain                                                         |
 |                                                                               |
-| freq_mhz: 250,                                                                |
+| freq_mhz: 250                                                                |
 |                                                                               |
 | **end** **domain** PcieDomain                                                 |
 +-------------------------------------------------------------------------------+
@@ -7361,7 +7361,7 @@ Design: a 3-stage in-order RISC-V integer pipeline with a unified register + CSR
 |                                                                    |
 | **domain** SysDomain                                               |
 |                                                                    |
-| freq_mhz: 100,                                                     |
+| freq_mhz: 100                                                     |
 |                                                                    |
 | **end** **domain** SysDomain                                       |
 |                                                                    |

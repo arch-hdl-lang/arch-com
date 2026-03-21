@@ -1,5 +1,5 @@
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 fifo TxQueue

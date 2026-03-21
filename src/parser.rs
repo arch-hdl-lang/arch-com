@@ -60,7 +60,6 @@ impl Parser {
             let field_name = self.expect_ident()?;
             self.expect(TokenKind::Colon)?;
             let value = self.parse_expr()?;
-            self.expect(TokenKind::Comma)?;
             fields.push(DomainField {
                 name: field_name,
                 value,
@@ -2938,7 +2937,7 @@ mod tests {
 
     #[test]
     fn test_parse_domain() {
-        let sf = parse("domain SysDomain\n  freq_mhz: 100,\nend domain SysDomain");
+        let sf = parse("domain SysDomain\n  freq_mhz: 100\nend domain SysDomain");
         assert_eq!(sf.items.len(), 1);
         match &sf.items[0] {
             Item::Domain(d) => {

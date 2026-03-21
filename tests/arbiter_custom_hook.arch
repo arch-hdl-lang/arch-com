@@ -1,5 +1,5 @@
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 function QosGrant(req_mask: UInt<4>, last_grant: UInt<4>, qos: UInt<8>) -> UInt<4>

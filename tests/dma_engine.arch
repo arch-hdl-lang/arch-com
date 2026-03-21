@@ -7,7 +7,7 @@
 // ── Clock domain ─────────────────────────────────────────────────────────────
 
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 // ── Shared types ──────────────────────────────────────────────────────────────

@@ -63,7 +63,7 @@ end module SimpleAlu
 fn test_todo_placeholder() {
     let source = r#"
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 module Placeholder
@@ -192,7 +192,7 @@ fn test_async_fifo() {
 fn test_fifo_missing_port_errors() {
     let source = r#"
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 fifo BadFifo
@@ -297,7 +297,7 @@ fn test_arbiter_custom_hook_missing_error() {
     // Custom policy without hook should error
     let source = r#"
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 arbiter BadArb
@@ -355,7 +355,7 @@ fn test_template_basic() {
 fn test_template_missing_port_error() {
     let source = r#"
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 template MyTmpl
@@ -410,7 +410,7 @@ fn test_active_low_reset() {
 fn test_ram_missing_port_group_errors() {
     let source = r#"
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 ram BadRam
@@ -439,7 +439,7 @@ fn test_implicit_truncation_is_error() {
     // The fix is to write `r <= (r + 1).trunc<8>()` explicitly.
     let source = r#"
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 module BadCounter
@@ -498,7 +498,7 @@ fn test_generate_if_param_default_true() {
     // generate if using a param default value of 1 → port included
     let source = r#"
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 module ParamDebug
@@ -523,7 +523,7 @@ fn test_generate_if_param_zero_excludes_port() {
     // generate if PARAM where PARAM default = 0 should exclude
     let source = r#"
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 module NoDebug2
@@ -547,7 +547,7 @@ fn test_generate_if_param_comparison() {
     // generate if PARAM > 0 style condition
     let source = r#"
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 module CmpDebug
@@ -572,7 +572,7 @@ fn test_generate_if_inst_override_enables_port() {
     // default = 0, inst overrides to 1 → port MUST be included.
     let source = r#"
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 module Inner
@@ -611,7 +611,7 @@ fn test_generate_if_inst_override_disables_port() {
     // default = 1, inst overrides to 0 → port must be excluded.
     let source = r#"
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 module Inner2
@@ -647,7 +647,7 @@ fn test_generate_monomorphize_two_variants() {
     // The unconditional output avoids comb-block issues; generate only adds an inst.
     let source = r#"
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 module Sub
@@ -696,7 +696,7 @@ fn test_generate_monomorphize_different_port_lists() {
     // so the module's comb block doesn't need to reference non-existent ports.
     let source = r#"
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 module Inner
@@ -758,7 +758,7 @@ end module Outer
 fn test_generate_if_false_excludes_port() {
     let source = r#"
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 module NoDebug
@@ -780,7 +780,7 @@ end module NoDebug
 fn test_mixed_reset_and_no_reset() {
     let source = r#"
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 module MixedReset
@@ -822,7 +822,7 @@ end module MixedReset
 fn test_reset_consistency_error_mixed_signals() {
     let source = r#"
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 module BadMixed
@@ -859,7 +859,7 @@ end module BadMixed
 fn test_reset_consistency_error_mixed_sync_async() {
     let source = r#"
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 module BadSyncAsync
@@ -911,7 +911,7 @@ fn test_simple_pipeline() {
 fn test_pipeline_comb_only_stage_error() {
     let source = r#"
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 pipeline BadPipe
@@ -942,7 +942,7 @@ end pipeline BadPipe
 fn test_pipeline_bad_flush_target_error() {
     let source = r#"
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 pipeline BadFlush
@@ -1021,7 +1021,7 @@ fn test_trunc_bit_range() {
     // Test trunc<N,M> (bit-range extraction) alongside trunc<N> (lowest N bits)
     let source = r#"
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 module BitExtract
@@ -1064,7 +1064,7 @@ end module BitExtract
 fn test_pipeline_instantiation() {
     let source = r#"
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 pipeline SimplePipe
@@ -1123,7 +1123,7 @@ fn test_pipeline_stage_inst() {
     // Instantiate an ALU module inside a pipeline Execute stage
     let source = r#"
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 module Alu
@@ -1184,7 +1184,7 @@ fn test_clog2_in_type_args() {
     // $clog2(DEPTH) in type width expressions
     let source = r#"
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 module FifoCtrl

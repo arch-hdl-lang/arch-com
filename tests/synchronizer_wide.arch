@@ -1,9 +1,9 @@
 domain SrcDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SrcDomain
 
 domain DstDomain
-  freq_mhz: 133,
+  freq_mhz: 133
 end domain DstDomain
 
 synchronizer DataSync

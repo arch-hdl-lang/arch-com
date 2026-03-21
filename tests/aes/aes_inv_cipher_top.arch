@@ -4,7 +4,7 @@
 // FSM: IDLE -> KEY_LOAD -> KEY_EXPAND -> KEY_STORED -> INIT_ROUND -> ROUND_OP -> FINAL_ROUND -> DONE
 
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 // ── Inverse S-Box ──

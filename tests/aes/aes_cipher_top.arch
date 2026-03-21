@@ -3,7 +3,7 @@
 // Depends on: AesSbox, AesRcon, AesKeyExpand128, Xtime
 
 domain SysDomain
-  freq_mhz: 100,
+  freq_mhz: 100
 end domain SysDomain
 
 module AesCipherTop

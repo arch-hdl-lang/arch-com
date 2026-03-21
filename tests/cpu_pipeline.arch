@@ -7,7 +7,7 @@
 //   - Cross-stage signal references (Decode reads Fetch.instr, etc.)
 
 domain CoreDomain
-  freq_mhz: 200,
+  freq_mhz: 200
 end domain CoreDomain
 
 // Combinational ALU — instantiated inside Execute stage
