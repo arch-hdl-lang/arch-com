@@ -1156,19 +1156,30 @@ impl<'a> SimCodegen<'a> {
             } else { None })
             .flatten()
             .collect();
-        // Collect all clock ports (multi-domain support)
+        // Collect all clock ports with domain frequency info (multi-domain support)
         let clk_ports: Vec<String> = m.ports.iter()
             .filter(|p| matches!(&p.ty, TypeExpr::Clock(_)))
             .map(|p| p.name.name.clone())
+            .collect();
+        // Map clock port name → freq_mhz (if domain has it)
+        let clk_freqs: Vec<(String, Option<u64>)> = m.ports.iter()
+            .filter_map(|p| if let TypeExpr::Clock(domain) = &p.ty {
+                let freq = self.symbols.globals.get(&domain.name)
+                    .and_then(|(_sym, _span)| if let crate::resolve::Symbol::Domain(info) = _sym { info.freq_mhz } else { None });
+                Some((p.name.name.clone(), freq))
+            } else { None })
             .collect();
         let has_clk = !clk_ports.is_empty();
         let clk_prev_inits: Vec<String> = clk_ports.iter()
             .map(|c| format!("_clk_prev_{}(0)", c))
             .collect();
+        let all_freqs_known_early = clk_freqs.len() >= 2 && clk_freqs.iter().all(|(_, f)| f.is_some());
+        let time_init = if all_freqs_known_early { vec!["time_ps(0)".to_string()] } else { vec![] };
         let all_inits: Vec<String> = port_inits.into_iter()
             .chain(reg_inits)
             .chain(pipe_reg_inits)
             .chain(clk_prev_inits)
+            .chain(time_init)
             .collect();
 
         if vec_reg_inits.is_empty() {
@@ -1181,6 +1192,12 @@ impl<'a> SimCodegen<'a> {
         h.push_str("  void eval();\n");
         h.push_str("  void eval_comb();\n");
         h.push_str("  void eval_posedge();\n");
+        // Generate tick() for multi-clock modules with known frequencies
+        let all_freqs_known = clk_freqs.len() >= 2 && clk_freqs.iter().all(|(_, f)| f.is_some());
+        if all_freqs_known {
+            h.push_str("  void tick();  // advance one time step, auto-toggle clocks at correct ratio\n");
+            h.push_str("  uint64_t time_ps;  // current simulation time in picoseconds\n");
+        }
         h.push_str("  void final() {}\n\n");
         h.push_str("private:\n");
         for c in &clk_ports {
@@ -1640,6 +1657,39 @@ impl<'a> SimCodegen<'a> {
             }
         }
         cpp.push_str("}\n");
+
+        // Generate tick() for multi-clock modules with known frequencies
+        if all_freqs_known {
+            let freqs: Vec<(String, u64)> = clk_freqs.iter()
+                .map(|(name, f)| (name.clone(), f.unwrap()))
+                .collect();
+
+            // Compute half-periods in picoseconds: half_period = 1e6 / (2 * freq_mhz)
+            // To avoid floating point, use: half_period_ps = 500_000 / freq_mhz
+            let half_periods: Vec<(String, u64)> = freqs.iter()
+                .map(|(name, f)| (name.clone(), 500_000 / f))
+                .collect();
+
+            // Find GCD of all half-periods for the time step
+            fn gcd(a: u64, b: u64) -> u64 {
+                if b == 0 { a } else { gcd(b, a % b) }
+            }
+            let step_ps = half_periods.iter().map(|(_, hp)| *hp).reduce(|a, b| gcd(a, b)).unwrap();
+
+            cpp.push_str(&format!("\nvoid {class}::tick() {{\n"));
+            cpp.push_str(&format!("  // Auto-generated clock driver (step = {} ps)\n", step_ps));
+            for (name, hp) in &half_periods {
+                cpp.push_str(&format!("  // {name}: half-period = {hp} ps ({} MHz)\n",
+                    500_000 / hp));
+            }
+            // Toggle each clock: flip when time_ps is at a half-period boundary
+            for (name, hp) in &half_periods {
+                cpp.push_str(&format!("  if (time_ps % {hp} == 0) {name} = !{name};\n"));
+            }
+            cpp.push_str("  eval();\n");
+            cpp.push_str(&format!("  time_ps += {step_ps};\n"));
+            cpp.push_str("}\n");
+        }
 
         SimModel { class_name: class.clone(), header: h, impl_: cpp }
     }

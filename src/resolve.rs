@@ -6,7 +6,7 @@ use crate::lexer::Span;
 
 #[derive(Debug, Clone)]
 pub enum Symbol {
-    Domain(String),
+    Domain(DomainInfo),
     Struct(StructInfo),
     Enum(EnumInfo),
     Module(ModuleInfo),
@@ -25,6 +25,12 @@ pub enum Symbol {
     Reg(RegInfo),
     Let(String),
     Instance(InstanceInfo),
+}
+
+#[derive(Debug, Clone)]
+pub struct DomainInfo {
+    pub name: String,
+    pub freq_mhz: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -157,9 +163,12 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                 } else if table.globals.contains_key(&d.name.name) {
                     errors.push(CompileError::duplicate(&d.name.name, d.name.span));
                 } else {
+                    let freq_mhz = d.fields.iter()
+                        .find(|f| f.name.name == "freq_mhz")
+                        .and_then(|f| if let ExprKind::Literal(LitKind::Dec(v)) = &f.value.kind { Some(*v) } else { None });
                     table.globals.insert(
                         d.name.name.clone(),
-                        (Symbol::Domain(d.name.name.clone()), d.name.span),
+                        (Symbol::Domain(DomainInfo { name: d.name.name.clone(), freq_mhz }), d.name.span),
                     );
                 }
             }

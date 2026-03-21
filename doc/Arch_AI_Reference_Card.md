@@ -544,15 +544,13 @@
 >
 > auto tick = \[\&\]() \{ dut->clk=0; dut->eval(); dut->clk=1; dut->eval(); \};
 >
-> // Multi-clock modules: each Clock\<Domain\> port gets independent rising-edge detection.
+> // Multi-clock modules: compiler auto-generates tick() from domain freq\_mhz.
 >
-> // Testbench toggles each clock at its own rate:
+> // tick() toggles each clock at the correct frequency ratio and calls eval().
 >
-> dut->fast_clk=1; if (cycle%4==0) dut->slow_clk=1; dut->eval();
+> dut.tick(); // auto-toggles fast\_clk (200MHz) and slow\_clk (50MHz) at 4:1 ratio
 >
-> dut->fast_clk=0; dut->slow_clk=0; dut->eval();
->
-> // Each seq block fires only on its own clock's rising edge.
+> // Manual control also works — each seq block fires only on its own clock's rising edge.
 >
 > // Compile: g++ -std=c++17 build/verilated.cpp build/V\*.cpp tb.cpp -Ibuild -o sim
 
