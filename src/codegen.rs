@@ -3257,7 +3257,14 @@ impl<'a> Codegen<'a> {
                 self.indent -= 1;
                 self.indent -= 1;
                 self.line("end");
-                self.line(&format!("assign {rpfx}_{out_sig} = {rdata_r};"));
+                if r.read_mode == RamReadMode::SyncOut {
+                    let rdata_r2 = format!("{rpfx}_{out_sig}_r2");
+                    self.line(&format!("logic [DATA_WIDTH-1:0] {rdata_r2};"));
+                    self.line(&format!("always_ff @(posedge {clk}) {rdata_r2} <= {rdata_r};"));
+                    self.line(&format!("assign {rpfx}_{out_sig} = {rdata_r2};"));
+                } else {
+                    self.line(&format!("assign {rpfx}_{out_sig} = {rdata_r};"));
+                }
             }
         }
     }

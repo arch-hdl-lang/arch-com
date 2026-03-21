@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="app.diagrams.net">
+  <diagram name="BufMgr Architecture" id="buf_mgr_arch">
+    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1200" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- Title -->
+        <mxCell id="title" value="&lt;b&gt;BufMgr — 256-Queue Shared Buffer Manager&lt;/b&gt;&lt;br&gt;16K entries x 128b, 2-port SRAMs, 2-cycle read latency" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="400" y="20" width="500" height="50" as="geometry"/>
+        </mxCell>
+
+        <!-- ══════════════════════════════════════════════ -->
+        <!-- Primary Inputs (left side) -->
+        <!-- ══════════════════════════════════════════════ -->
+        <mxCell id="enq_in" value="&lt;b&gt;Enqueue Input&lt;/b&gt;&lt;br&gt;enqueue_valid&lt;br&gt;enqueue_queue_number[7:0]&lt;br&gt;enqueue_data[127:0]" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="20" y="200" width="220" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="deq_in" value="&lt;b&gt;Dequeue Input&lt;/b&gt;&lt;br&gt;dequeue_valid&lt;br&gt;dequeue_queue_number[7:0]" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="20" y="700" width="220" height="70" as="geometry"/>
+        </mxCell>
+
+        <!-- ══════════════════════════════════════════════ -->
+        <!-- Enqueue Pipeline (top row) -->
+        <!-- ══════════════════════════════════════════════ -->
+        <mxCell id="eq0" value="&lt;b&gt;EQ0&lt;/b&gt;&lt;br&gt;Alloc free slot&lt;br&gt;Read tail[qn]&lt;br&gt;Read count[qn]&lt;br&gt;(+bypass)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="300" y="180" width="140" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="eq1" value="&lt;b&gt;EQ1&lt;/b&gt;&lt;br&gt;Pipeline reg&lt;br&gt;(SRAM cycle 2)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="500" y="180" width="140" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="eq2" value="&lt;b&gt;EQ2&lt;/b&gt;&lt;br&gt;free_slot ready&lt;br&gt;Write DataMem&lt;br&gt;Write NextPtrMem&lt;br&gt;Update tail,count" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="700" y="180" width="160" height="100" as="geometry"/>
+        </mxCell>
+
+        <!-- Enqueue pipeline arrows -->
+        <mxCell id="e_in_eq0" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="enq_in" target="eq0" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_eq0_eq1" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="eq0" target="eq1" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_eq1_eq2" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="eq1" target="eq2" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- ══════════════════════════════════════════════ -->
+        <!-- Dequeue Pipeline (bottom row) -->
+        <!-- ══════════════════════════════════════════════ -->
+        <mxCell id="dq0" value="&lt;b&gt;DQ0&lt;/b&gt;&lt;br&gt;Read head[qn]&lt;br&gt;Read count[qn]&lt;br&gt;Issue DataMem rd&lt;br&gt;Issue NextPtr rd&lt;br&gt;(+bypass)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="300" y="680" width="140" height="110" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="dq1" value="&lt;b&gt;DQ1&lt;/b&gt;&lt;br&gt;Pipeline reg&lt;br&gt;(SRAM cycle 2)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="500" y="680" width="140" height="110" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="dq2" value="&lt;b&gt;DQ2&lt;/b&gt;&lt;br&gt;data + next_ptr ready&lt;br&gt;Output dequeue_data&lt;br&gt;Write FreeListMem&lt;br&gt;Update head,count" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="700" y="680" width="160" height="110" as="geometry"/>
+        </mxCell>
+
+        <!-- Dequeue pipeline arrows -->
+        <mxCell id="e_in_dq0" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="deq_in" target="dq0" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_dq0_dq1" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="dq0" target="dq1" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_dq1_dq2" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="dq1" target="dq2" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- ══════════════════════════════════════════════ -->
+        <!-- Primary Output (right side) -->
+        <!-- ══════════════════════════════════════════════ -->
+        <mxCell id="deq_out" value="&lt;b&gt;Dequeue Output&lt;/b&gt;&lt;br&gt;dequeue_resp_valid&lt;br&gt;dequeue_data[127:0]" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="940" y="700" width="220" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_dq2_out" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="dq2" target="deq_out" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- ══════════════════════════════════════════════ -->
+        <!-- SRAMs (center) -->
+        <!-- ══════════════════════════════════════════════ -->
+        <mxCell id="data_mem" value="&lt;b&gt;DataMem&lt;/b&gt;&lt;br&gt;16K x 128b&lt;br&gt;simple_dual&lt;br&gt;sync_out (2-cyc)&lt;br&gt;&lt;hr&gt;WR ← Enqueue&lt;br&gt;RD ← Dequeue" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=10;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="520" y="380" width="150" height="130" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="next_mem" value="&lt;b&gt;NextPtrMem&lt;/b&gt;&lt;br&gt;16K x 14b&lt;br&gt;simple_dual&lt;br&gt;sync_out (2-cyc)&lt;br&gt;&lt;hr&gt;WR ← Enqueue&lt;br&gt;RD ← Dequeue" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=10;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="720" y="380" width="150" height="130" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="free_mem" value="&lt;b&gt;FreeListMem&lt;/b&gt;&lt;br&gt;16K x 14b&lt;br&gt;simple_dual&lt;br&gt;sync_out (2-cyc)&lt;br&gt;&lt;hr&gt;RD ← Enqueue (alloc)&lt;br&gt;WR ← Dequeue (free)" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=10;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="300" y="380" width="170" height="130" as="geometry"/>
+        </mxCell>
+
+        <!-- SRAM connections from enqueue -->
+        <mxCell id="e_eq0_free" value="rd" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#d6b656;" edge="1" source="eq0" target="free_mem" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_eq2_data" value="wr" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#d6b656;" edge="1" source="eq2" target="data_mem" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_eq2_next" value="wr" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#d6b656;" edge="1" source="eq2" target="next_mem" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- SRAM connections from dequeue -->
+        <mxCell id="e_dq0_data" value="rd" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#82b366;" edge="1" source="dq0" target="data_mem" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_dq0_next" value="rd" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#82b366;" edge="1" source="dq0" target="next_mem" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_dq2_free" value="wr" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#82b366;" edge="1" source="dq2" target="free_mem" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- ══════════════════════════════════════════════ -->
+        <!-- Flop Arrays (right side, center) -->
+        <!-- ══════════════════════════════════════════════ -->
+        <mxCell id="head_arr" value="&lt;b&gt;head[256]&lt;/b&gt;&lt;br&gt;14b x 256 (flops)&lt;br&gt;RD: DQ0&lt;br&gt;WR: DQ2" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="960" y="380" width="130" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="tail_arr" value="&lt;b&gt;tail[256]&lt;/b&gt;&lt;br&gt;14b x 256 (flops)&lt;br&gt;RD: EQ0&lt;br&gt;WR: EQ2" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="960" y="480" width="130" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="count_arr" value="&lt;b&gt;count[256]&lt;/b&gt;&lt;br&gt;15b x 256 (flops)&lt;br&gt;RD: EQ0, DQ0&lt;br&gt;WR: EQ2, DQ2" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1120" y="430" width="140" height="80" as="geometry"/>
+        </mxCell>
+
+        <!-- Flop array connections -->
+        <mxCell id="e_eq0_tail" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#9673a6;" edge="1" source="eq0" target="tail_arr" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_dq0_head" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#9673a6;" edge="1" source="dq0" target="head_arr" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- ══════════════════════════════════════════════ -->
+        <!-- Bypass arrows -->
+        <!-- ══════════════════════════════════════════════ -->
+        <mxCell id="bypass_eq" value="bypass tail/count" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#FF0000;curved=1;" edge="1" source="eq2" target="eq0" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="780" y="140"/>
+              <mxPoint x="370" y="140"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <mxCell id="bypass_dq" value="bypass head/count" style="edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#FF0000;curved=1;" edge="1" source="dq2" target="dq0" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="780" y="840"/>
+              <mxPoint x="370" y="840"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ══════════════════════════════════════════════ -->
+        <!-- Free list flop state -->
+        <!-- ══════════════════════════════════════════════ -->
+        <mxCell id="free_ptrs" value="&lt;b&gt;Free-list ptrs&lt;/b&gt;&lt;br&gt;rd_ptr[13:0]&lt;br&gt;wr_ptr[13:0]&lt;br&gt;free_count[14:0]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="120" y="410" width="140" height="80" as="geometry"/>
+        </mxCell>
+
+        <!-- ══════════════════════════════════════════════ -->
+        <!-- Legend -->
+        <!-- ══════════════════════════════════════════════ -->
+        <mxCell id="legend" value="&lt;b&gt;Legend&lt;/b&gt;&lt;br&gt;Yellow = Enqueue pipeline&lt;br&gt;Green = Dequeue pipeline&lt;br&gt;Red cylinder = SRAM (2-cycle read)&lt;br&gt;Purple = Flop arrays&lt;br&gt;Red dashed = Bypass/forwarding" style="text;html=1;align=left;verticalAlign=top;whiteSpace=wrap;fillColor=#f5f5f5;strokeColor=#666666;fontColor=#333333;" vertex="1" parent="1">
+          <mxGeometry x="20" y="900" width="250" height="110" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

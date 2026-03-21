@@ -62,7 +62,8 @@ impl<'a> SimCodegen<'a> {
                 Item::Fsm(f)      => models.push(self.gen_fsm(f)),
                 Item::Regfile(r)  => models.push(self.gen_regfile(r)),
                 Item::Linklist(l) => models.push(self.gen_linklist(l)),
-                _ => {} // fifo/ram/arbiter: TODO
+                Item::Ram(r)      => models.push(self.gen_ram(r)),
+                _ => {} // fifo/arbiter: TODO
             }
         }
         models
@@ -198,13 +199,21 @@ fn cpp_internal_type(ty: &TypeExpr) -> String {
 fn vec_array_info(ty: &TypeExpr) -> Option<(String, String)> {
     if let TypeExpr::Vec(elem, count_expr) = ty {
         let elem_type = cpp_internal_type(elem);
-        let count_str = match &count_expr.kind {
-            ExprKind::Literal(LitKind::Dec(v)) => v.to_string(),
-            _ => "0".to_string(),
-        };
+        let count_str = eval_const_expr(count_expr).to_string();
         Some((elem_type, count_str))
     } else {
         None
+    }
+}
+
+/// Evaluate a constant expression to a u64, resolving basic arithmetic.
+fn eval_const_expr(expr: &Expr) -> u64 {
+    match &expr.kind {
+        ExprKind::Literal(LitKind::Dec(v)) => *v,
+        ExprKind::Literal(LitKind::Hex(v)) => *v,
+        ExprKind::Literal(LitKind::Bin(v)) => *v,
+        ExprKind::Literal(LitKind::Sized(_, v)) => *v,
+        _ => 0,
     }
 }
 
@@ -226,7 +235,15 @@ fn cpp_sint(bits: u32) -> &'static str {
 
 /// Cast expression to `bits`-wide C++ type.
 fn cast_to_bits(expr: &str, bits: u32) -> String {
-    format!("({})({})", cpp_uint(bits), expr)
+    // Must mask to the exact bit-width, since C++ types are wider than the
+    // HDL type (e.g. UInt<2> stored in uint8_t).
+    if bits >= 64 {
+        // 64-bit or wider: cast is sufficient (or use u128 path)
+        format!("({})({})", cpp_uint(bits), expr)
+    } else {
+        let mask = (1u64 << bits) - 1;
+        format!("({})((({}) & 0x{:X}ULL))", cpp_uint(bits), expr, mask)
+    }
 }
 
 /// Bit-range extraction from a narrow value: `(expr >> lo) & mask`.
@@ -1123,8 +1140,9 @@ impl<'a> SimCodegen<'a> {
                     if conn.direction == ConnectDir::Input {
                         if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
                             if wide_names.contains(src_name.as_str()) {
+                                let resolved = ctx.resolve_name(src_name, false);
                                 cpp.push_str(&format!("  _inst_{}.{} = {};\n",
-                                    inst.name.name, conn.port_name.name, src_name));
+                                    inst.name.name, conn.port_name.name, resolved));
                                 continue;
                             }
                         }
@@ -1934,6 +1952,223 @@ impl<'a> SimCodegen<'a> {
             }
         }
         cpp.push_str("  }\n}\n");
+
+        SimModel { class_name: class, header: h, impl_: cpp }
+    }
+
+    // ── RAM codegen ───────────────────────────────────────────────────────────
+
+    fn gen_ram(&self, r: &RamDecl) -> SimModel {
+        let name = &r.name.name;
+        let class = format!("V{name}");
+
+        // Extract DEPTH param
+        let depth: u64 = r.params.iter()
+            .find(|p| p.name.name == "DEPTH")
+            .and_then(|p| p.default.as_ref())
+            .map(|e| match &e.kind {
+                ExprKind::Literal(LitKind::Dec(v)) => *v,
+                _ => 256,
+            })
+            .unwrap_or(256);
+
+        // Extract data width from output port signal type
+        let data_bits: u32 = r.port_groups.iter()
+            .flat_map(|pg| pg.signals.iter())
+            .find(|s| s.direction == Direction::Out)
+            .map(|s| match &s.ty {
+                TypeExpr::UInt(w) => eval_width(w),
+                TypeExpr::Named(_) => 32,
+                _ => 32,
+            })
+            .unwrap_or(32);
+
+        let elem_ty = if data_bits > 64 { "_arch_u128".to_string() } else { cpp_uint(data_bits).to_string() };
+        let port_elem_ty = if data_bits > 64 { format!("VlWide<{}>", wide_words(data_bits)) } else { cpp_uint(data_bits).to_string() };
+        let is_wide = data_bits > 64;
+
+        // Flatten port groups into (full_name, direction)
+        struct FlatSig { full_name: String, dir: Direction }
+        let mut flat_sigs: Vec<FlatSig> = Vec::new();
+        for pg in &r.port_groups {
+            for sig in &pg.signals {
+                flat_sigs.push(FlatSig {
+                    full_name: format!("{}_{}", pg.name.name, sig.name.name),
+                    dir: sig.direction,
+                });
+            }
+        }
+        let out_sigs: Vec<&FlatSig> = flat_sigs.iter().filter(|s| s.dir == Direction::Out).collect();
+
+        // ── Header ──
+        let mut h = String::new();
+        h.push_str("#pragma once\n#include <cstdint>\n#include <cstring>\n#include \"verilated.h\"\n\n");
+        h.push_str(&format!("class {class} {{\npublic:\n"));
+        h.push_str("  uint8_t clk;\n");
+
+        for fs in &flat_sigs {
+            let ty_str: String = if fs.dir == Direction::Out {
+                port_elem_ty.clone()
+            } else {
+                let orig_ty = r.port_groups.iter()
+                    .flat_map(|pg| pg.signals.iter().map(move |s| (format!("{}_{}", pg.name.name, s.name.name), &s.ty)))
+                    .find(|(n, _)| *n == fs.full_name)
+                    .map(|(_, ty)| ty);
+                match orig_ty {
+                    Some(TypeExpr::UInt(w)) => {
+                        let b = eval_width(w);
+                        if b > 64 { port_elem_ty.clone() } else { cpp_uint(b).to_string() }
+                    }
+                    Some(TypeExpr::Bool) => "uint8_t".to_string(),
+                    _ => "uint32_t".to_string(),
+                }
+            };
+            h.push_str(&format!("  {} {};\n", ty_str, fs.full_name));
+        }
+
+        h.push('\n');
+        h.push_str(&format!("  {class}() : clk(0)"));
+        for fs in &flat_sigs {
+            if is_wide && fs.dir == Direction::Out { /* VlWide memset below */ } else {
+                h.push_str(&format!(", {}(0)", fs.full_name));
+            }
+        }
+        h.push_str(", _clk_prev(0) {\n");
+        h.push_str("    memset(_mem, 0, sizeof(_mem));\n");
+        for fs in &out_sigs {
+            if is_wide {
+                h.push_str(&format!("    memset(&{}, 0, sizeof({}));\n", fs.full_name, fs.full_name));
+            }
+        }
+        h.push_str("  }\n");
+        h.push_str("  void eval();\n  void eval_posedge();\n  void eval_comb();\n  void final() {}\n");
+        h.push_str("private:\n");
+        h.push_str("  uint8_t _clk_prev;\n");
+        h.push_str(&format!("  {} _mem[{}];\n", elem_ty, depth));
+        for fs in &out_sigs {
+            h.push_str(&format!("  {} _r_{};\n", elem_ty, fs.full_name));
+            if r.read_mode == RamReadMode::SyncOut {
+                h.push_str(&format!("  {} _r2_{};\n", elem_ty, fs.full_name));
+            }
+        }
+        h.push_str("};\n");
+
+        // ── Implementation ──
+        let mut cpp = String::new();
+        cpp.push_str(&format!("#include \"{class}.h\"\n\n"));
+
+        cpp.push_str(&format!("void {class}::eval() {{\n"));
+        cpp.push_str("  bool _rising = (clk && !_clk_prev);\n");
+        cpp.push_str("  _clk_prev = clk;\n");
+        cpp.push_str("  if (_rising) eval_posedge();\n");
+        cpp.push_str("  eval_comb();\n");
+        cpp.push_str("}\n\n");
+
+        cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
+        match r.kind {
+            RamKind::Single => {
+                let pg = &r.port_groups[0];
+                let pfx = &pg.name.name;
+                let has_wen = pg.signals.iter().any(|s| s.name.name == "wen");
+                let wdata_name = pg.signals.iter()
+                    .find(|s| s.direction == Direction::In && (s.name.name == "wdata" || s.name.name == "data"))
+                    .map(|s| format!("{pfx}_{}", s.name.name))
+                    .unwrap_or_else(|| format!("{pfx}_wdata"));
+                let out_name = out_sigs.first().map(|s| s.full_name.as_str()).unwrap_or("rdata");
+
+                cpp.push_str(&format!("  if ({pfx}_en) {{\n"));
+                if has_wen {
+                    cpp.push_str(&format!("    if ({pfx}_wen) _mem[{pfx}_addr] = {wdata_name};\n"));
+                    match r.read_mode {
+                        RamReadMode::Sync | RamReadMode::SyncOut => {
+                            cpp.push_str(&format!("    if (!{pfx}_wen) _r_{out_name} = _mem[{pfx}_addr];\n"));
+                        }
+                        RamReadMode::Async => {}
+                    }
+                } else {
+                    cpp.push_str(&format!("    _mem[{pfx}_addr] = {wdata_name};\n"));
+                }
+                cpp.push_str("  }\n");
+                if r.read_mode == RamReadMode::SyncOut {
+                    cpp.push_str(&format!("  _r2_{out_name} = _r_{out_name};\n"));
+                }
+            }
+            RamKind::SimpleDual => {
+                let wr_pg = r.port_groups.iter().find(|pg|
+                    pg.signals.iter().any(|s| s.direction == Direction::In && (s.name.name == "data" || s.name.name == "wdata"))
+                ).unwrap_or(&r.port_groups[1]);
+                let rd_pg = r.port_groups.iter().find(|pg|
+                    pg.signals.iter().any(|s| s.direction == Direction::Out)
+                ).unwrap_or(&r.port_groups[0]);
+
+                let wpfx = &wr_pg.name.name;
+                let rpfx = &rd_pg.name.name;
+                let w_data_name = wr_pg.signals.iter()
+                    .find(|s| s.direction == Direction::In && (s.name.name == "data" || s.name.name == "wdata"))
+                    .map(|s| format!("{wpfx}_{}", s.name.name))
+                    .unwrap_or_else(|| format!("{wpfx}_data"));
+                let out_name = out_sigs.first().map(|s| s.full_name.as_str()).unwrap_or("rd_port_data");
+
+                if is_wide {
+                    cpp.push_str(&format!("  if ({wpfx}_en) memcpy(&_mem[{wpfx}_addr], &{w_data_name}, sizeof({elem_ty}));\n"));
+                } else {
+                    cpp.push_str(&format!("  if ({wpfx}_en) _mem[{wpfx}_addr] = {w_data_name};\n"));
+                }
+                match r.read_mode {
+                    RamReadMode::Sync | RamReadMode::SyncOut => {
+                        if is_wide {
+                            cpp.push_str(&format!("  if ({rpfx}_en) memcpy(&_r_{out_name}, &_mem[{rpfx}_addr], sizeof({elem_ty}));\n"));
+                        } else {
+                            cpp.push_str(&format!("  if ({rpfx}_en) _r_{out_name} = _mem[{rpfx}_addr];\n"));
+                        }
+                    }
+                    RamReadMode::Async => {}
+                }
+                if r.read_mode == RamReadMode::SyncOut {
+                    if is_wide {
+                        cpp.push_str(&format!("  memcpy(&_r2_{out_name}, &_r_{out_name}, sizeof({elem_ty}));\n"));
+                    } else {
+                        cpp.push_str(&format!("  _r2_{out_name} = _r_{out_name};\n"));
+                    }
+                }
+            }
+            RamKind::TrueDual => {
+                cpp.push_str("  // TrueDual: not yet implemented\n");
+            }
+        }
+        cpp.push_str("}\n\n");
+
+        cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
+        for fs in &out_sigs {
+            match r.read_mode {
+                RamReadMode::Async => {
+                    let rpfx = r.port_groups.iter()
+                        .find(|pg| pg.signals.iter().any(|s| s.direction == Direction::Out))
+                        .map(|pg| pg.name.name.as_str())
+                        .unwrap_or("access");
+                    if is_wide {
+                        cpp.push_str(&format!("  memcpy(&{}, &_mem[{rpfx}_addr], sizeof({}));\n", fs.full_name, fs.full_name));
+                    } else {
+                        cpp.push_str(&format!("  {} = _mem[{rpfx}_addr];\n", fs.full_name));
+                    }
+                }
+                RamReadMode::Sync => {
+                    if is_wide {
+                        cpp.push_str(&format!("  memcpy(&{}, &_r_{}, sizeof({}));\n", fs.full_name, fs.full_name, fs.full_name));
+                    } else {
+                        cpp.push_str(&format!("  {} = _r_{};\n", fs.full_name, fs.full_name));
+                    }
+                }
+                RamReadMode::SyncOut => {
+                    if is_wide {
+                        cpp.push_str(&format!("  memcpy(&{}, &_r2_{}, sizeof({}));\n", fs.full_name, fs.full_name, fs.full_name));
+                    } else {
+                        cpp.push_str(&format!("  {} = _r2_{};\n", fs.full_name, fs.full_name));
+                    }
+                }
+            }
+        }
+        cpp.push_str("}\n");
 
         SimModel { class_name: class, header: h, impl_: cpp }
     }

@@ -1,0 +1,271 @@
+// BufMgr_Sm — Small variant for arch sim testing
+// 16 entries x 32-bit, 4 queues. Same architecture as BufMgr.
+
+domain SysDomain
+  freq_mhz: 500,
+end domain SysDomain
+
+// ── Data SRAM: 16 x 32b ────────────────────────────────────────────────────
+
+ram DataMemSm
+  kind simple_dual;
+  read: sync;
+  param DEPTH: const = 16;
+  param WIDTH: type = UInt<32>;
+  port clk: in Clock<SysDomain>;
+  store
+    data: Vec<WIDTH, DEPTH>;
+  end store
+  port rd_port
+    en:   in Bool;
+    addr: in UInt<4>;
+    data: out WIDTH;
+  end port rd_port
+  port wr_port
+    en:   in Bool;
+    addr: in UInt<4>;
+    data: in WIDTH;
+  end port wr_port
+end ram DataMemSm
+
+// ── Next-Pointer SRAM: 16 x 4b ─────────────────────────────────────────────
+
+ram NextPtrMemSm
+  kind simple_dual;
+  read: sync;
+  param DEPTH: const = 16;
+  param WIDTH: type = UInt<4>;
+  port clk: in Clock<SysDomain>;
+  store
+    ptrs: Vec<WIDTH, DEPTH>;
+  end store
+  port rd_port
+    en:   in Bool;
+    addr: in UInt<4>;
+    data: out WIDTH;
+  end port rd_port
+  port wr_port
+    en:   in Bool;
+    addr: in UInt<4>;
+    data: in WIDTH;
+  end port wr_port
+end ram NextPtrMemSm
+
+// ── Free-List SRAM: 16 x 4b ────────────────────────────────────────────────
+
+ram FreeListMemSm
+  kind simple_dual;
+  read: sync;
+  param DEPTH: const = 16;
+  param WIDTH: type = UInt<4>;
+  port clk: in Clock<SysDomain>;
+  store
+    slots: Vec<WIDTH, DEPTH>;
+  end store
+  port rd_port
+    en:   in Bool;
+    addr: in UInt<4>;
+    data: out WIDTH;
+  end port rd_port
+  port wr_port
+    en:   in Bool;
+    addr: in UInt<4>;
+    data: in WIDTH;
+  end port wr_port
+end ram FreeListMemSm
+
+// ── Small Buffer Manager ────────────────────────────────────────────────────
+
+module BufMgrSm
+  param DEPTH:       const = 16;
+  param QUEUE_COUNT: const = 4;
+  param DATA_WIDTH:  const = 32;
+  param PTR_WIDTH:   const = 4;
+  param QN_WIDTH:    const = 2;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  port enqueue_valid:        in Bool;
+  port enqueue_queue_number: in UInt<QN_WIDTH>;
+  port enqueue_data:         in UInt<DATA_WIDTH>;
+
+  port dequeue_valid:        in Bool;
+  port dequeue_queue_number: in UInt<QN_WIDTH>;
+  port dequeue_resp_valid:   out Bool;
+  port dequeue_data:         out UInt<DATA_WIDTH>;
+
+  port free_count_out: out UInt<5>;
+  port init_done:      out Bool;
+
+  reg default: init 0 reset rst;
+
+  reg head_arr:  Vec<UInt<4>, 4> init 0 reset rst;
+  reg tail_arr:  Vec<UInt<4>, 4> init 0 reset rst;
+  reg count_arr: Vec<UInt<5>, 4> init 0 reset rst;
+
+  reg free_rd_ptr:  UInt<PTR_WIDTH> init 0 reset rst;
+  reg free_wr_ptr:  UInt<PTR_WIDTH> init 0 reset rst;
+  reg free_count:   UInt<5> init 0 reset rst;
+  reg setup_done:   Bool init 0 reset rst;
+  reg setup_ctr:    UInt<PTR_WIDTH> init 0 reset rst;
+
+  // Enqueue pipeline regs
+  reg eq1_valid:    Bool init 0 reset rst;
+  reg eq1_qn:       UInt<QN_WIDTH> init 0 reset rst;
+  reg eq1_data:     UInt<DATA_WIDTH> init 0 reset rst;
+  reg eq1_old_tail: UInt<PTR_WIDTH> init 0 reset rst;
+  reg eq1_was_empty: Bool init 0 reset rst;
+
+  reg eq2_valid:    Bool init 0 reset rst;
+  reg eq2_qn:       UInt<QN_WIDTH> init 0 reset rst;
+  reg eq2_data:     UInt<DATA_WIDTH> init 0 reset rst;
+  reg eq2_old_tail: UInt<PTR_WIDTH> init 0 reset rst;
+  reg eq2_was_empty: Bool init 0 reset rst;
+  reg eq2_free_slot: UInt<PTR_WIDTH> init 0 reset rst;
+
+  // Dequeue pipeline regs
+  reg dq1_valid:    Bool init 0 reset rst;
+  reg dq1_qn:       UInt<QN_WIDTH> init 0 reset rst;
+  reg dq1_old_head: UInt<PTR_WIDTH> init 0 reset rst;
+
+  reg dq2_valid:    Bool init 0 reset rst;
+  reg dq2_qn:       UInt<QN_WIDTH> init 0 reset rst;
+  reg dq2_old_head: UInt<PTR_WIDTH> init 0 reset rst;
+
+  // SRAM output wires
+  reg free_slot_rd_data: UInt<4> init 0 reset none;
+  reg data_rd_data:      UInt<32> init 0 reset none;
+  reg next_ptr_rd_data:  UInt<4> init 0 reset none;
+
+  // Bypass logic
+  let eq0_tail_bypassed: UInt<PTR_WIDTH> =
+    eq1_valid and (eq1_qn == enqueue_queue_number) ? free_slot_rd_data
+    : eq2_valid and (eq2_qn == enqueue_queue_number) ? eq2_free_slot
+    : tail_arr[enqueue_queue_number];
+
+  let eq0_count_raw: UInt<5> = count_arr[enqueue_queue_number];
+  let eq0_count_adj_eq2: UInt<5> =
+    eq2_valid and (eq2_qn == enqueue_queue_number) ? (eq0_count_raw + 4'h1).trunc<5>()
+    : eq0_count_raw;
+  let eq0_count_adj_eq1: UInt<5> =
+    eq1_valid and (eq1_qn == enqueue_queue_number) ? (eq0_count_adj_eq2 + 4'h1).trunc<5>()
+    : eq0_count_adj_eq2;
+  let eq0_was_empty: Bool = eq0_count_adj_eq1 == 5'h0;
+
+  let dq0_head_bypassed: UInt<PTR_WIDTH> =
+    dq2_valid and (dq2_qn == dequeue_queue_number) ? next_ptr_rd_data
+    : head_arr[dequeue_queue_number];
+
+  let dq0_count_raw: UInt<5> = count_arr[dequeue_queue_number];
+  let dq0_count_adj_dq2: UInt<5> =
+    dq2_valid and (dq2_qn == dequeue_queue_number) ? (dq0_count_raw - 4'h1).trunc<5>()
+    : dq0_count_raw;
+
+  // RAM instances
+  inst dmem: DataMemSm
+    connect clk           <- clk;
+    connect wr_port.en    <- eq2_valid;
+    connect wr_port.addr  <- eq2_free_slot;
+    connect wr_port.data  <- eq2_data;
+    connect rd_port.en    <- dequeue_valid and setup_done;
+    connect rd_port.addr  <- dq0_head_bypassed;
+    connect rd_port.data  -> data_rd_data;
+  end inst dmem
+
+  inst nptr: NextPtrMemSm
+    connect clk           <- clk;
+    connect wr_port.en    <- eq2_valid and (not eq2_was_empty);
+    connect wr_port.addr  <- eq2_old_tail;
+    connect wr_port.data  <- eq2_free_slot;
+    connect rd_port.en    <- dequeue_valid and setup_done;
+    connect rd_port.addr  <- dq0_head_bypassed;
+    connect rd_port.data  -> next_ptr_rd_data;
+  end inst nptr
+
+  inst flist: FreeListMemSm
+    connect clk           <- clk;
+    connect rd_port.en    <- (enqueue_valid and setup_done) or (not setup_done);
+    connect rd_port.addr  <- setup_done ? free_rd_ptr : setup_ctr;
+    connect wr_port.en    <- (dq2_valid and setup_done) or (not setup_done);
+    connect wr_port.addr  <- setup_done ? free_wr_ptr : setup_ctr;
+    connect wr_port.data  <- setup_done ? dq2_old_head : setup_ctr;
+    connect rd_port.data  -> free_slot_rd_data;
+  end inst flist
+
+  always on clk rising
+
+    if not setup_done
+      setup_ctr <= (setup_ctr + 4'h1).trunc<4>();
+      if setup_ctr == 4'hF
+        setup_done  <= 1'b1;
+        free_count  <= 5'h10;
+        free_rd_ptr <= 4'h0;
+        free_wr_ptr <= 4'h0;
+      end if
+    end if
+
+    if enqueue_valid and setup_done
+      eq1_valid     <= 1'b1;
+      eq1_qn        <= enqueue_queue_number;
+      eq1_data      <= enqueue_data;
+      eq1_old_tail  <= eq0_tail_bypassed;
+      eq1_was_empty <= eq0_was_empty;
+      free_rd_ptr   <= (free_rd_ptr + 4'h1).trunc<4>();
+      free_count    <= (free_count - 5'h1).trunc<5>();
+    else
+      eq1_valid     <= 1'b0;
+    end if
+
+    eq2_valid     <= eq1_valid;
+    eq2_qn        <= eq1_qn;
+    eq2_data      <= eq1_data;
+    eq2_old_tail  <= eq1_old_tail;
+    eq2_was_empty <= eq1_was_empty;
+    eq2_free_slot <= free_slot_rd_data;
+
+    if eq2_valid
+      tail_arr[eq2_qn] <= eq2_free_slot;
+      count_arr[eq2_qn] <= (count_arr[eq2_qn] + 5'h1).trunc<5>();
+      if eq2_was_empty
+        head_arr[eq2_qn] <= eq2_free_slot;
+      end if
+    end if
+
+    if dequeue_valid and setup_done
+      dq1_valid     <= 1'b1;
+      dq1_qn        <= dequeue_queue_number;
+      dq1_old_head  <= dq0_head_bypassed;
+    else
+      dq1_valid     <= 1'b0;
+    end if
+
+    dq2_valid     <= dq1_valid;
+    dq2_qn        <= dq1_qn;
+    dq2_old_head  <= dq1_old_head;
+
+    if dq2_valid
+      head_arr[dq2_qn] <= next_ptr_rd_data;
+      count_arr[dq2_qn] <= (count_arr[dq2_qn] - 5'h1).trunc<5>();
+      free_wr_ptr <= (free_wr_ptr + 4'h1).trunc<4>();
+      free_count  <= (free_count + 5'h1).trunc<5>();
+    end if
+
+    if eq2_valid and dq2_valid and (eq2_qn == dq2_qn)
+      count_arr[eq2_qn] <= count_arr[eq2_qn];
+    end if
+
+    if (enqueue_valid and setup_done) and dq2_valid
+      free_count <= free_count;
+    end if
+
+  end always
+
+  comb
+    dequeue_resp_valid = dq2_valid;
+    dequeue_data       = data_rd_data;
+    free_count_out     = free_count;
+    init_done          = setup_done;
+  end comb
+
+end module BufMgrSm
