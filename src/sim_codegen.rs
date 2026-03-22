@@ -1165,6 +1165,16 @@ impl<'a> SimCodegen<'a> {
             h.push_str(&format!("#include \"V{}.h\"\n", inst.module_name.name));
         }
         h.push('\n');
+        // Emit param constants as #define
+        for p in &m.params {
+            if matches!(p.kind, ParamKind::Const) {
+                if let Some(ref def) = p.default {
+                    let val = eval_const_expr(def);
+                    h.push_str(&format!("#ifndef {}\n#define {} {val}ULL\n#endif\n", p.name.name, p.name.name));
+                }
+            }
+        }
+        h.push('\n');
         h.push_str(&format!("class {class} {{\npublic:\n"));
 
         // Public port fields
@@ -1937,6 +1947,16 @@ impl<'a> SimCodegen<'a> {
 
         let mut h = String::new();
         h.push_str("#pragma once\n#include <cstdint>\n#include <cstdio>\n#include \"verilated.h\"\n\n");
+        // Emit param constants as #define
+        for p in &f.params {
+            if matches!(p.kind, ParamKind::Const) {
+                if let Some(ref def) = p.default {
+                    let val = eval_const_expr(def);
+                    h.push_str(&format!("#ifndef {}\n#define {} {val}ULL\n#endif\n", p.name.name, p.name.name));
+                }
+            }
+        }
+        h.push('\n');
         h.push_str(&format!("class {class} {{\npublic:\n  // State constants\n"));
         for (i, sn) in f.state_names.iter().enumerate() {
             h.push_str(&format!("  static const {state_ty} STATE_{} = {i};\n", sn.name.to_uppercase()));

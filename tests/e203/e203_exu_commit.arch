@@ -1,0 +1,77 @@
+// E203 HBirdv2 Execution Commit Unit (9th E203 benchmark)
+// Arbitrates between ALU (single-cycle) and long-pipe (multi-cycle muldiv)
+// results. ALU has priority. Commits winning result to register file
+// write-back port. Manages valid/ready handshake on both channels.
+//
+// Features exercised: {a,b} concat, {N{expr}} repeat, elsif, let
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module ExuCommit
+  param XLEN: const = 32;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+
+  // ALU result channel (single-cycle, higher priority)
+  port alu_valid:   in  Bool;
+  port alu_ready:   out Bool;
+  port alu_wdat:    in  UInt<32>;
+  port alu_rd_idx:  in  UInt<5>;
+  port alu_rd_en:   in  Bool;
+
+  // Long-pipe result channel (multi-cycle muldiv)
+  port long_valid:  in  Bool;
+  port long_ready:  out Bool;
+  port long_wdat:   in  UInt<32>;
+  port long_rd_idx: in  UInt<5>;
+  port long_rd_en:  in  Bool;
+
+  // Register file write-back port
+  port wbck_valid:  out Bool;
+  port wbck_ready:  in  Bool;
+  port wbck_wdat:   out UInt<32>;
+  port wbck_rd_idx: out UInt<5>;
+  port wbck_rd_en:  out Bool;
+
+  // Commit status
+  port commit_valid: out Bool;
+  port commit_src:   out UInt<2>;  // 0=none, 1=alu, 2=long
+
+  // Arbitration: ALU wins when both valid
+  let alu_win:  Bool = alu_valid;
+  let long_win: Bool = long_valid & ~alu_valid;
+  let any_valid: Bool = alu_valid | long_valid;
+
+  // Selected result (mux)
+  let sel_wdat:   UInt<32> = alu_win ? alu_wdat   : long_wdat;
+  let sel_rd_idx: UInt<5>  = alu_win ? alu_rd_idx : long_rd_idx;
+  let sel_rd_en:  Bool     = alu_win ? alu_rd_en  : long_rd_en;
+
+  // Handshake: forward wbck_ready to winning channel only
+  let alu_can_go:  Bool = alu_win  & wbck_ready;
+  let long_can_go: Bool = long_win & wbck_ready;
+
+  // Commit source encoding using concat
+  let src_bits: UInt<2> = alu_win  ? 1 :
+                           long_win ? 2 : 0;
+
+  comb
+    // Write-back port drives
+    wbck_valid  = any_valid;
+    wbck_wdat   = sel_wdat;
+    wbck_rd_idx = sel_rd_idx;
+    wbck_rd_en  = sel_rd_en;
+
+    // Ready back to sources
+    alu_ready  = alu_can_go;
+    long_ready = long_can_go;
+
+    // Status outputs
+    commit_valid = any_valid & wbck_ready;
+    commit_src   = src_bits;
+  end comb
+
+end module ExuCommit

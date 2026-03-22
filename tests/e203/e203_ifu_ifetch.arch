@@ -1,0 +1,116 @@
+// E203 HBirdv2 Instruction Fetch Mini-Controller (10th E203 benchmark)
+// FSM managing PC generation, instruction fetch requests, and branch redirects.
+// Exercises: FSM with reg/seq datapath, {a,b} concat, {N{expr}} repeat, elsif.
+//
+// States:
+//   Idle    — wait for reset release, then start fetching
+//   WaitGnt — issue memory request, wait for bus grant
+//   WaitRsp — wait for memory response (instruction data)
+//   Abort   — branch redirect received; cancel in-flight fetch
+//
+// Handshake: req_valid/req_ready to memory, rsp_valid/rsp_ready from memory.
+// On branch redirect: current fetch is aborted, PC reloaded.
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+fsm IfuIfetch
+  param XLEN: const = 32;
+  param RESET_PC: const = 0x80000000;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+
+  // Instruction memory request interface
+  port req_valid: out Bool default false;
+  port req_ready: in  Bool;
+  port req_addr:  out UInt<32> default 0;
+
+  // Instruction memory response interface
+  port rsp_valid:  in  Bool;
+  port rsp_ready:  out Bool default false;
+  port rsp_instr:  in  UInt<32>;
+  port rsp_err:    in  Bool;
+
+  // Output to decode stage
+  port o_valid:    out Bool default false;
+  port o_ready:    in  Bool;
+  port o_instr:    out UInt<32> default 0;
+  port o_pc:       out UInt<32> default 0;
+  port o_bus_err:  out Bool default false;
+
+  // Branch redirect from EXU
+  port redirect:    in Bool;
+  port redirect_pc: in UInt<32>;
+
+  // Datapath registers
+  reg pc_r:       UInt<32> init 0 reset rst;
+  reg instr_r:    UInt<32> init 0 reset rst;
+  reg pc_out_r:   UInt<32> init 0 reset rst;
+  reg bus_err_r:  Bool     init 0 reset rst;
+
+  // Next PC: PC+4 with bottom 2 bits forced to 0 (aligned)
+  let pc_plus4: UInt<32> = (pc_r + 4).trunc<32>();
+  let pc_aligned: UInt<32> = {pc_plus4.trunc<31,2>(), {2{false}}};
+
+  state Idle, WaitGnt, WaitRsp, Abort;
+  default state Idle;
+
+  state Idle
+    // After reset, load reset vector and start fetching
+    seq on clk rising
+      pc_r <= RESET_PC;
+    end seq
+
+    transition to WaitGnt when true;
+  end state Idle
+
+  state WaitGnt
+    // Issue fetch request
+    comb
+      req_valid = true;
+      req_addr  = pc_r;
+    end comb
+
+    seq on clk rising
+      if redirect
+        pc_r <= redirect_pc;
+      end if
+    end seq
+
+    transition to Abort   when redirect;
+    transition to WaitRsp when req_ready;
+  end state WaitGnt
+
+  state WaitRsp
+    comb
+      rsp_ready = true;
+    end comb
+
+    seq on clk rising
+      if redirect
+        pc_r <= redirect_pc;
+      elsif rsp_valid
+        instr_r   <= rsp_instr;
+        pc_out_r  <= pc_r;
+        bus_err_r <= rsp_err;
+        pc_r      <= pc_aligned;
+      end if
+    end seq
+
+    transition to Abort   when redirect;
+    transition to WaitGnt when rsp_valid;
+  end state WaitRsp
+
+  state Abort
+    // Discard any in-flight response; redirect already captured
+    comb
+      rsp_ready = true;
+    end comb
+
+    // Go back to fetching from redirected PC
+    transition to WaitGnt when true;
+  end state Abort
+
+end fsm IfuIfetch
