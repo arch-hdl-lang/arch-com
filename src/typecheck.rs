@@ -1603,6 +1603,27 @@ impl<'a> TypeChecker<'a> {
                 r.name.span,
             ));
         }
+        // ROM validation
+        if r.kind == crate::ast::RamKind::Rom {
+            // ROM must have init
+            if r.init.is_none() {
+                self.errors.push(CompileError::general(
+                    &format!("rom `{}` must have an init clause", r.name.name),
+                    r.name.span,
+                ));
+            }
+            // ROM must not have write signals
+            for pg in &r.port_groups {
+                for s in &pg.signals {
+                    if s.name.name == "wen" || s.name.name == "wdata" {
+                        self.errors.push(CompileError::general(
+                            &format!("rom `{}` must not have write signal `{}`", r.name.name, s.name.name),
+                            s.name.span,
+                        ));
+                    }
+                }
+            }
+        }
     }
 
     // ── FIFO ──────────────────────────────────────────────────────────────────

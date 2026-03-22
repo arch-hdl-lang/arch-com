@@ -2664,7 +2664,7 @@ impl<'a> SimCodegen<'a> {
 
         // ── Header ──
         let mut h = String::new();
-        h.push_str("#pragma once\n#include <cstdint>\n#include <cstring>\n#include \"verilated.h\"\n\n");
+        h.push_str("#pragma once\n#include <cstdint>\n#include <cstring>\n#include <cstdio>\n#include <cstdlib>\n#include \"verilated.h\"\n\n");
         h.push_str(&format!("class {class} {{\npublic:\n"));
         h.push_str("  uint8_t clk;\n");
 
@@ -2696,7 +2696,38 @@ impl<'a> SimCodegen<'a> {
             }
         }
         h.push_str(", _clk_prev(0) {\n");
-        h.push_str("    memset(_mem, 0, sizeof(_mem));\n");
+        // Initialize memory
+        match &r.init {
+            Some(RamInit::Array(values)) => {
+                h.push_str("    memset(_mem, 0, sizeof(_mem));\n");
+                for (i, v) in values.iter().enumerate() {
+                    h.push_str(&format!("    _mem[{i}] = 0x{v:X}ULL;\n"));
+                }
+            }
+            Some(RamInit::File(path, format)) => {
+                // Load hex or bin file at construction
+                h.push_str("    memset(_mem, 0, sizeof(_mem));\n");
+                h.push_str("    { FILE* _f = fopen(\"");
+                h.push_str(path);
+                h.push_str("\", \"r\");\n");
+                h.push_str("      if (_f) {\n");
+                h.push_str(&format!("        char _line[256]; int _i = 0;\n"));
+                h.push_str("        while (fgets(_line, sizeof(_line), _f) && _i < ");
+                h.push_str(&format!("{depth}"));
+                h.push_str(") {\n");
+                match format {
+                    FileFormat::Hex => h.push_str("          _mem[_i++] = strtoull(_line, NULL, 16);\n"),
+                    FileFormat::Bin => h.push_str("          _mem[_i++] = strtoull(_line, NULL, 2);\n"),
+                }
+                h.push_str("        }\n");
+                h.push_str("        fclose(_f);\n");
+                h.push_str("      }\n");
+                h.push_str("    }\n");
+            }
+            _ => {
+                h.push_str("    memset(_mem, 0, sizeof(_mem));\n");
+            }
+        }
         for fs in &out_sigs {
             if is_wide {
                 h.push_str(&format!("    memset(&{}, 0, sizeof({}));\n", fs.full_name, fs.full_name));
@@ -2796,6 +2827,24 @@ impl<'a> SimCodegen<'a> {
             }
             RamKind::TrueDual => {
                 cpp.push_str("  // TrueDual: not yet implemented\n");
+            }
+            RamKind::Rom => {
+                // ROM: read-only, no writes in posedge
+                // For latency >= 1, latch the read output
+                if r.latency >= 1 {
+                    let pg = &r.port_groups[0];
+                    let rpfx = &pg.name.name;
+                    let out_name = out_sigs.first().map(|s| s.full_name.as_str()).unwrap_or("data");
+                    let has_en = pg.signals.iter().any(|s| s.name.name == "en");
+                    if has_en {
+                        cpp.push_str(&format!("  if ({rpfx}_en) _r_{out_name} = _mem[{rpfx}_addr];\n"));
+                    } else {
+                        cpp.push_str(&format!("  _r_{out_name} = _mem[{rpfx}_addr];\n"));
+                    }
+                    if r.latency == 2 {
+                        cpp.push_str(&format!("  _r2_{out_name} = _r_{out_name};\n"));
+                    }
+                }
             }
         }
         cpp.push_str("}\n\n");

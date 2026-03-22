@@ -1929,8 +1929,9 @@ impl Parser {
                     "single" => RamKind::Single,
                     "simple_dual" => RamKind::SimpleDual,
                     "true_dual" => RamKind::TrueDual,
+                    "rom" => RamKind::Rom,
                     other => return Err(CompileError::general(
-                        &format!("unknown ram kind `{other}`; expected single, simple_dual, or true_dual"),
+                        &format!("unknown ram kind `{other}`; expected single, simple_dual, true_dual, or rom"),
                         val.span,
                     )),
                 });
@@ -2140,16 +2141,36 @@ impl Parser {
                     "none" => { self.advance(); self.expect(TokenKind::Semi)?; Ok(RamInit::None) }
                     "file" => {
                         self.advance();
-                        // Expect a string literal — we scan until `;` collecting path
-                        // For MVP: skip tokens until semicolon, extract filename as empty
-                        // (file init is not simulated in SV MVP)
-                        let mut path = String::new();
-                        while !self.check(TokenKind::Semi) && !self.at_end() {
-                            let tok = self.advance();
-                            path.push_str(&tok.kind.to_string());
-                        }
+                        self.expect(TokenKind::LParen)?;
+                        let path = match self.peek_kind() {
+                            Some(TokenKind::StringLit(s)) => { let s = s.clone(); self.advance(); s }
+                            _ => {
+                                // Fallback: scan tokens until , or ) for unquoted paths
+                                let mut p = String::new();
+                                while !self.check(TokenKind::Comma) && !self.check(TokenKind::RParen) && !self.at_end() {
+                                    let tok = self.advance();
+                                    p.push_str(&tok.kind.to_string());
+                                }
+                                p
+                            }
+                        };
+                        let format = if self.check(TokenKind::Comma) {
+                            self.advance();
+                            let fmt_id = self.expect_ident()?;
+                            match fmt_id.name.as_str() {
+                                "hex" => FileFormat::Hex,
+                                "bin" => FileFormat::Bin,
+                                other => return Err(CompileError::general(
+                                    &format!("unknown file format `{other}`; expected hex or bin"),
+                                    fmt_id.span,
+                                )),
+                            }
+                        } else {
+                            FileFormat::Hex // default
+                        };
+                        self.expect(TokenKind::RParen)?;
                         self.expect(TokenKind::Semi)?;
-                        Ok(RamInit::File(path))
+                        Ok(RamInit::File(path, format))
                     }
                     "value" => {
                         self.advance();
@@ -2158,13 +2179,35 @@ impl Parser {
                         Ok(RamInit::Value(expr))
                     }
                     other => Err(CompileError::general(
-                        &format!("unknown init mode `{other}`; expected zero, none, file, or value"),
+                        &format!("unknown init mode `{other}`; expected zero, none, file, value, or [...]"),
                         self.peek_span(),
                     )),
                 }
             }
+            Some(TokenKind::LBracket) => {
+                self.advance();
+                let mut values = Vec::new();
+                while !self.check(TokenKind::RBracket) && !self.at_end() {
+                    let expr = self.parse_expr()?;
+                    let val = match &expr.kind {
+                        ExprKind::Literal(LitKind::Dec(v)) => *v,
+                        ExprKind::Literal(LitKind::Hex(v)) => *v,
+                        ExprKind::Literal(LitKind::Bin(v)) => *v,
+                        ExprKind::Literal(LitKind::Sized(_, v)) => *v,
+                        _ => return Err(CompileError::general(
+                            "init array elements must be integer literals",
+                            expr.span,
+                        )),
+                    };
+                    values.push(val);
+                    if self.check(TokenKind::Comma) { self.advance(); }
+                }
+                self.expect(TokenKind::RBracket)?;
+                self.expect(TokenKind::Semi)?;
+                Ok(RamInit::Array(values))
+            }
             Some(other) => Err(CompileError::unexpected_token(
-                "zero, none, file, or value",
+                "zero, none, file, value, or [...]",
                 &other.to_string(),
                 self.peek_span(),
             )),

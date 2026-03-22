@@ -3013,6 +3013,7 @@ impl<'a> Codegen<'a> {
             RamKind::Single => self.emit_ram_single(r, &clk_name, &data_width_ty),
             RamKind::SimpleDual => self.emit_ram_simple_dual(r, &clk_name, &data_width_ty),
             RamKind::TrueDual => self.emit_ram_true_dual(r, &clk_name, &data_width_ty),
+            RamKind::Rom => self.emit_ram_rom(r, &clk_name),
         }
 
         // ── Init block ───────────────────────────────────────────────────────
@@ -3027,8 +3028,21 @@ impl<'a> Codegen<'a> {
                     self.line("end");
                 }
                 RamInit::None => {}
-                RamInit::File(path) => {
-                    self.line(&format!("initial $readmemh(\"{path}\", mem);"));
+                RamInit::File(path, format) => {
+                    let func = match format {
+                        FileFormat::Hex => "$readmemh",
+                        FileFormat::Bin => "$readmemb",
+                    };
+                    self.line(&format!("initial {func}(\"{path}\", mem);"));
+                }
+                RamInit::Array(values) => {
+                    self.line("initial begin");
+                    self.indent += 1;
+                    for (i, v) in values.iter().enumerate() {
+                        self.line(&format!("mem[{i}] = {data_width_num}'h{v:X};"));
+                    }
+                    self.indent -= 1;
+                    self.line("end");
                 }
                 RamInit::Value(expr) => {
                     let v = self.emit_expr_str(expr);
@@ -4102,6 +4116,58 @@ impl<'a> Codegen<'a> {
         self.line("end");
         self.line(&format!("assign {pfx_a}_{rdata_a} = {rdata_a_r};"));
         self.line(&format!("assign {pfx_b}_{rdata_b} = {rdata_b_r};"));
+    }
+
+    fn emit_ram_rom(&mut self, r: &RamDecl, clk: &str) {
+        let pg = &r.port_groups[0];
+        let pfx = &pg.name.name;
+        let out_sig = pg.signals.iter().find(|s| s.direction == Direction::Out);
+
+        match r.latency {
+            0 => {
+                // Combinational read
+                if let Some(os) = out_sig {
+                    self.line("");
+                    self.line(&format!("assign {pfx}_{} = mem[{pfx}_addr];", os.name.name));
+                }
+            }
+            1 => {
+                if let Some(os) = out_sig {
+                    let rdata_r = format!("{pfx}_{}_r", os.name.name);
+                    self.line(&format!("logic [DATA_WIDTH-1:0] {rdata_r};"));
+                    self.line("");
+                    self.line(&format!("always_ff @(posedge {clk}) begin"));
+                    self.indent += 1;
+                    let has_en = pg.signals.iter().any(|s| s.name.name == "en");
+                    if has_en {
+                        self.line(&format!("if ({pfx}_en)"));
+                        self.indent += 1;
+                    }
+                    self.line(&format!("{rdata_r} <= mem[{pfx}_addr];"));
+                    if has_en { self.indent -= 1; }
+                    self.indent -= 1;
+                    self.line("end");
+                    self.line(&format!("assign {pfx}_{} = {rdata_r};", os.name.name));
+                }
+            }
+            2 => {
+                if let Some(os) = out_sig {
+                    let rdata_r = format!("{pfx}_{}_r", os.name.name);
+                    let rdata_r2 = format!("{pfx}_{}_r2", os.name.name);
+                    self.line(&format!("logic [DATA_WIDTH-1:0] {rdata_r};"));
+                    self.line(&format!("logic [DATA_WIDTH-1:0] {rdata_r2};"));
+                    self.line("");
+                    self.line(&format!("always_ff @(posedge {clk}) begin"));
+                    self.indent += 1;
+                    self.line(&format!("{rdata_r} <= mem[{pfx}_addr];"));
+                    self.line(&format!("{rdata_r2} <= {rdata_r};"));
+                    self.indent -= 1;
+                    self.line("end");
+                    self.line(&format!("assign {pfx}_{} = {rdata_r2};", os.name.name));
+                }
+            }
+            _ => {}
+        }
     }
 
     // ── Linklist ─────────────────────────────────────────────────────────────

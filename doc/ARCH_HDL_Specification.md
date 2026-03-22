@@ -1157,7 +1157,11 @@ A ram is a first-class construct that maps to a physical memory --- FPGA BRAM, d
   **Simple dual port**   kind simple_dual   Read on one port, write on the other           Standard FPGA BRAM (most common mode)
 
   **True dual port**     kind true_dual     Any combination on both ports simultaneously   True dual-port BRAM, high-bandwidth caches
+
+  **ROM**                kind rom           Read-only, no write ports                      Lookup tables, microcode, boot ROM
   -------------------------------------------------------------------------------------------------------------------------------------
+
+ROM requires an `init` clause. No write-enable or write-data signals are permitted.
 
 **11.2 Read Timing Modes**
 
@@ -1504,11 +1508,13 @@ Any Arch struct can be used as the word type of a ram. The compiler packs the st
 
   **init: none**                Words undefined until written                 ASIC default; simulation X-propagation enabled
 
-  **init: file \"path.hex\"**   Load from Intel HEX file at elaboration       Simulation and FPGA bitstream
+  **init: file("path", hex)**   Load hex file (`$readmemh`)                   Simulation and FPGA bitstream
 
-  **init: file \"path.bin\"**   Load from raw binary file                     Simulation only
+  **init: file("path", bin)**   Load binary file (`$readmemb`)                Simulation and FPGA
 
   **init: value expr**          All words set to the given const expression   Simulation and FPGA
+
+  **init: [v0, v1, ...]**       Inline array of integer literals              Simulation and FPGA (ROM tables)
   ----------------------------------------------------------------------------------------------------------------------------
 
 **11.9 RAM vs regfile --- When to Use Which**

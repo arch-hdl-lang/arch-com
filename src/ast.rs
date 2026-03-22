@@ -627,6 +627,7 @@ pub enum RamKind {
     Single,
     SimpleDual,
     TrueDual,
+    Rom,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -658,12 +659,19 @@ pub struct RamPortGroup {
     pub span: Span,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileFormat {
+    Hex,
+    Bin,
+}
+
 #[derive(Debug, Clone)]
 pub enum RamInit {
     Zero,
     None,
-    File(String),
+    File(String, FileFormat),
     Value(Expr),
+    Array(Vec<u64>),
 }
 
 // ── Counter ───────────────────────────────────────────────────────────────────
