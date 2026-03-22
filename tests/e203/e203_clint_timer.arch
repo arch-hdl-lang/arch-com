@@ -1,0 +1,83 @@
+// E203 HBirdv2 CLINT Timer (12th E203 benchmark)
+// 64-bit mtime counter with mtimecmp comparison for timer interrupt.
+// APB-like register interface: read/write mtime and mtimecmp as two
+// 32-bit halves (low at offset 0, high at offset 4).
+// Exercises: {a,b} concat for 64-bit assembly, elsif chains, seq blocks.
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module ClintTimer
+  param XLEN: const = 32;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+
+  // Register read/write interface
+  port reg_addr:  in  UInt<4>;   // 0=mtime_lo, 4=mtime_hi, 8=mtimecmp_lo, C=mtimecmp_hi
+  port reg_wdata: in  UInt<32>;
+  port reg_wen:   in  Bool;
+  port reg_rdata: out UInt<32>;
+
+  // Timer interrupt output
+  port tmr_irq:   out Bool;
+
+  // 64-bit mtime counter (split into two 32-bit regs)
+  reg mtime_lo_r:   UInt<32> init 0 reset rst;
+  reg mtime_hi_r:   UInt<32> init 0 reset rst;
+
+  // 64-bit mtimecmp register
+  reg mtimecmp_lo_r: UInt<32> init 0xFFFFFFFF reset rst;
+  reg mtimecmp_hi_r: UInt<32> init 0xFFFFFFFF reset rst;
+
+  // Assemble 64-bit values using concat
+  let mtime_full:    UInt<64> = {mtime_hi_r, mtime_lo_r};
+  let mtimecmp_full: UInt<64> = {mtimecmp_hi_r, mtimecmp_lo_r};
+
+  // Increment: mtime + 1 with carry
+  let mtime_inc: UInt<64> = (mtime_full + 1).trunc<64>();
+  let next_lo: UInt<32> = mtime_inc.trunc<31,0>();
+  let next_hi: UInt<32> = mtime_inc.trunc<63,32>();
+
+  // Timer interrupt: mtime >= mtimecmp (unsigned 64-bit compare)
+  let irq_pending: Bool = (mtime_full >= mtimecmp_full) ? true : false;
+
+  // Counter update and register writes
+  seq on clk rising
+    // Default: increment mtime every cycle
+    mtime_lo_r <= next_lo;
+    mtime_hi_r <= next_hi;
+
+    // Register writes override counter
+    if reg_wen
+      if reg_addr == 0x0
+        mtime_lo_r <= reg_wdata;
+      elsif reg_addr == 0x4
+        mtime_hi_r <= reg_wdata;
+      elsif reg_addr == 0x8
+        mtimecmp_lo_r <= reg_wdata;
+      elsif reg_addr == 0xC
+        mtimecmp_hi_r <= reg_wdata;
+      end if
+    end if
+  end seq
+
+  // Register read mux
+  comb
+    if reg_addr == 0x0
+      reg_rdata = mtime_lo_r;
+    elsif reg_addr == 0x4
+      reg_rdata = mtime_hi_r;
+    elsif reg_addr == 0x8
+      reg_rdata = mtimecmp_lo_r;
+    elsif reg_addr == 0xC
+      reg_rdata = mtimecmp_hi_r;
+    else
+      reg_rdata = 0;
+    end if
+
+    tmr_irq = irq_pending;
+  end comb
+
+end module ClintTimer

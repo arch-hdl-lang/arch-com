@@ -17,7 +17,7 @@
 | `arch sim <file.arch> --tb <tb.cpp>` | ✅ Generates Verilator-compatible C++ models (`VName.h` + `VName.cpp` + `verilated.h`), compiles with `g++`, and runs; supports `module`, `counter`, `fsm`, `linklist`, `ram`; `fifo`/`arbiter`/`regfile` pending |
 | `arch sim ... --check-uninit` | ✅ Detects reads of uninitialized `reset none` registers; shadow valid bits propagate through `pipe_reg` chains; warn-once per signal to stderr |
 | `arch sim ... --cdc-random` | ✅ Randomizes synchronizer chain propagation latency via LFSR; `cdc_skip_pct` (0–100, default 25) is a public member on each C++ model, controllable from testbench at runtime |
-| `arch sim` **sim codegen fixes** | ✅ (1) `.sext<N>()` now correctly replicates the MSB into all upper bits instead of being treated identically to `.zext<N>()` (plain C++ cast); (2) `infer_expr_width` for two-arg `.trunc<Hi,Lo>()` now returns `Hi-Lo+1` instead of `Hi`, fixing incorrect source widths for subsequent sign extension; (3) `param` constants now emitted as `#define` in generated C++ headers for both `module` and `fsm` models |
+| `arch sim` **sim codegen fixes** | ✅ (1) `.sext<N>()` now correctly replicates the MSB into all upper bits instead of being treated identically to `.zext<N>()` (plain C++ cast); (2) `infer_expr_width` for two-arg `.trunc<Hi,Lo>()` now returns `Hi-Lo+1` instead of `Hi`, fixing incorrect source widths for subsequent sign extension; (3) `param` constants now emitted as `#define` in generated C++ headers for both `module` and `fsm` models; (4) `reg` init values with hex/bin/sized literals now correctly emitted in both constructor initializer and reset block (previously only `Dec` literals were handled, all others defaulted to 0) |
 
 ---
 
@@ -154,6 +154,8 @@
   - `e203_exu_muldiv`: Iterative multiply/divide unit (8th E203 module); RV32M MUL/MULH/MULHSU/MULHU/DIV/DIVU/REM/REMU; 32-cycle shift-add multiply, 32-cycle restoring divide; signed operand conversion + result negation; divide-by-zero handling; valid/ready handshake; written as both `module` (manual state encoding) and `fsm` (named states with `reg`/`seq` datapath extension); 24 `arch sim` tests + 12 Verilator cross-check tests; uses `elsif` for chained conditionals
   - `e203_exu_commit`: Execution commit unit (9th E203 module); 2-input priority arbiter (ALU wins over long-pipe muldiv); data mux + valid/ready handshake backpressure; pure combinational; 38 `arch sim` tests + 20 Verilator cross-check tests
   - `e203_ifu_ifetch`: Instruction fetch mini-controller (10th E203 module); FSM with datapath regs (`reg`/`seq` extension); 4 states (Idle, WaitGnt, WaitRsp, Abort); PC generation with `{a,b}` concat and `{N{expr}}` repeat for alignment; branch redirect handling; async low reset; 23 `arch sim` tests + 10 Verilator cross-check tests
+  - `e203_lsu_ctrl`: Load-store unit controller (11th E203 module); byte/halfword/word access with alignment; store byte-enable and data lane shifting; load sign-extension using `{N{sign_bit}}` repeat; pure combinational; 34 `arch sim` tests + 16 Verilator cross-check tests
+  - `e203_clint_timer`: CLINT timer (12th E203 module); 64-bit `mtime` counter with `mtimecmp` comparison; `{hi, lo}` concat for 64-bit assembly; APB-like register read/write with `elsif` chains; timer interrupt generation; 18 `arch sim` tests + 8 Verilator cross-check tests
 
 ---
 

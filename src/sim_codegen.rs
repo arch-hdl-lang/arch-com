@@ -1210,6 +1210,9 @@ impl<'a> SimCodegen<'a> {
                 } else {
                     let init_val = match &r.init.kind {
                         ExprKind::Literal(LitKind::Dec(v)) => v.to_string(),
+                        ExprKind::Literal(LitKind::Hex(v)) => format!("0x{:X}", v),
+                        ExprKind::Literal(LitKind::Bin(v)) => v.to_string(),
+                        ExprKind::Literal(LitKind::Sized(_, v)) => v.to_string(),
                         ExprKind::Bool(b) => if *b { "1".to_string() } else { "0".to_string() },
                         _ => "0".to_string(),
                     };
@@ -1537,6 +1540,9 @@ impl<'a> SimCodegen<'a> {
                             if reset_sig.is_none() { reset_sig = Some(info.clone()); }
                             let init_val = match &rd.init.kind {
                                 ExprKind::Literal(LitKind::Dec(v)) => v.to_string(),
+                                ExprKind::Literal(LitKind::Hex(v)) => format!("0x{:X}", v),
+                                ExprKind::Literal(LitKind::Bin(v)) => v.to_string(),
+                                ExprKind::Literal(LitKind::Sized(_, v)) => v.to_string(),
                                 ExprKind::Bool(b) => if *b { "1".to_string() } else { "0".to_string() },
                                 _ => "0".to_string(),
                             };

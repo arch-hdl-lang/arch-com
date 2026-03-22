@@ -1,0 +1,97 @@
+// E203 HBirdv2 Load-Store Unit Controller (11th E203 benchmark)
+// Handles load/store memory requests with byte/halfword/word access.
+// Load path: reads memory, aligns and sign-extends based on funct3.
+// Store path: generates byte-enable mask and aligned write data.
+// Exercises: {a,b} concat, {N{expr}} repeat, elsif, let chains.
+//
+// funct3 encoding (RV32I):
+//   000 = LB/SB  (byte)
+//   001 = LH/SH  (halfword)
+//   010 = LW/SW  (word)
+//   100 = LBU    (byte unsigned)
+//   101 = LHU    (halfword unsigned)
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module LsuCtrl
+  param XLEN: const = 32;
+
+  // Request from EXU
+  port addr:    in UInt<32>;    // byte address
+  port wdata:   in UInt<32>;    // store data (unaligned)
+  port funct3:  in UInt<3>;     // access type
+  port is_load: in Bool;
+  port is_store: in Bool;
+
+  // Memory interface (aligned, word-addressed)
+  port mem_addr:  out UInt<32>;
+  port mem_wdata: out UInt<32>;
+  port mem_wstrb: out UInt<4>;   // byte enables
+  port mem_wen:   out Bool;
+
+  // Load result (from memory read data)
+  port mem_rdata: in  UInt<32>;  // aligned word from memory
+  port load_result: out UInt<32>;
+
+  // ── Address alignment ──────────────────────────────────────
+  let byte_off: UInt<2> = addr.trunc<1,0>();
+  let word_addr: UInt<32> = {addr.trunc<31,2>(), {2{false}}};
+
+  // ── funct3 decode ──────────────────────────────────────────
+  let is_byte:  Bool = (funct3.trunc<1,0>() == 0);
+  let is_half:  Bool = (funct3.trunc<1,0>() == 1);
+  let is_word:  Bool = (funct3.trunc<1,0>() == 2);
+  let is_unsigned: Bool = funct3.trunc<2,2>() != 0;
+
+  // ── Store: byte-enable and data alignment ──────────────────
+  let wstrb_byte: UInt<4> = (byte_off == 0) ? 0x1 :
+                             (byte_off == 1) ? 0x2 :
+                             (byte_off == 2) ? 0x4 : 0x8;
+
+  let wstrb_half: UInt<4> = (byte_off.trunc<1,1>() == 0) ? 0x3 : 0xC;
+
+  let wstrb_word: UInt<4> = 0xF;
+
+  let store_strb: UInt<4> = is_byte ? wstrb_byte :
+                             is_half ? wstrb_half : wstrb_word;
+
+  // Shift store data to correct byte lane
+  let wdata_byte: UInt<8> = wdata.trunc<7,0>();
+  let wdata_half: UInt<16> = wdata.trunc<15,0>();
+
+  let store_data: UInt<32> = is_byte ? (wdata_byte.zext<32>() << (byte_off.zext<32>() << 3).trunc<32>()).trunc<32>() :
+                              is_half ? (wdata_half.zext<32>() << (byte_off.trunc<1,1>().zext<32>() << 4).trunc<32>()).trunc<32>() :
+                                        wdata;
+
+  // ── Load: extract and sign-extend ──────────────────────────
+  // Select the right byte from the word
+  let rdata_shifted: UInt<32> = (mem_rdata >> (byte_off.zext<32>() << 3).trunc<32>()).trunc<32>();
+
+  let load_byte: UInt<8> = rdata_shifted.trunc<7,0>();
+  let load_half: UInt<16> = rdata_shifted.trunc<15,0>();
+
+  // Sign extension using {N{sign_bit}}
+  let byte_sign: Bool = load_byte.trunc<7,7>() != 0;
+  let half_sign: Bool = load_half.trunc<15,15>() != 0;
+
+  let lb_result:  UInt<32> = {{24{byte_sign}}, load_byte};
+  let lbu_result: UInt<32> = {{24{false}}, load_byte};
+  let lh_result:  UInt<32> = {{16{half_sign}}, load_half};
+  let lhu_result: UInt<32> = {{16{false}}, load_half};
+
+  let load_val: UInt<32> = is_byte ? (is_unsigned ? lbu_result : lb_result) :
+                            is_half ? (is_unsigned ? lhu_result : lh_result) :
+                                      mem_rdata;
+
+  // ── Output drives ──────────────────────────────────────────
+  comb
+    mem_addr  = word_addr;
+    mem_wdata = store_data;
+    mem_wstrb = is_store ? store_strb : 0;
+    mem_wen   = is_store;
+    load_result = load_val;
+  end comb
+
+end module LsuCtrl
