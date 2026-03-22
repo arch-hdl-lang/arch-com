@@ -14,13 +14,9 @@ static int test_num = 0;
     else { printf("PASS test %d\n", test_num); } \
 } while(0)
 
-static void settle(VCoreTop &m) {
-    for (int i = 0; i < 8; i++) m.eval();
-}
-
 static void tick(VCoreTop &m) {
-    m.clk = 0; settle(m);
-    m.clk = 1; settle(m);
+    m.clk = 0; m.eval();
+    m.clk = 1; m.eval();
 }
 
 // RV32I encoding helpers
@@ -48,7 +44,6 @@ static void itcm_write(VCoreTop &m, uint32_t word_addr, uint32_t data) {
 static bool wait_valid(VCoreTop &m, int max_cycles, uint32_t &instr, uint32_t &pc) {
     for (int i = 0; i < max_cycles; i++) {
         tick(m);
-        settle(m);
         if (BOOL(m.o_valid)) {
             instr = m.o_instr;
             pc = m.o_pc;
