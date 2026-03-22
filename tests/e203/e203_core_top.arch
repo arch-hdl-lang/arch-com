@@ -1,0 +1,94 @@
+// E203 Core Top-Level Integration
+// Ties together: EXU (decode+dispatch+ALU+commit+regfile) + LSU + CLINT
+// IFU is simplified: instruction fetch is driven by testbench.
+// This module validates that all generated SV modules instantiate and connect correctly.
+
+module CoreTop
+  param XLEN: const = 32;
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  // ── Instruction interface (from testbench acting as IFU) ───────────
+  port ifu_valid:   in  Bool;
+  port ifu_ready:   out Bool;
+  port ifu_instr:   in  UInt<32>;
+  port ifu_pc:      in  UInt<32>;
+
+  // ── Data memory interface (directly from LSU to testbench) ─────────
+  port mem_addr:    out UInt<32>;
+  port mem_wdata:   out UInt<32>;
+  port mem_wstrb:   out UInt<4>;
+  port mem_wen:     out Bool;
+  port mem_rdata:   in  UInt<32>;
+
+  // ── Timer IRQ ──────────────────────────────────────────────────────
+  port tmr_irq:     out Bool;
+
+  // ── Status ─────────────────────────────────────────────────────────
+  port commit_valid: out Bool;
+  port bjp_taken:    out Bool;
+  port bjp_tgt:      out UInt<32>;
+
+  // ── EXU ────────────────────────────────────────────────────────────
+  inst exu: ExuTop
+    connect clk   <- clk;
+    connect rst_n <- rst_n;
+    connect ifu_valid  <- ifu_valid;
+    connect ifu_ready  -> exu_ifu_ready;
+    connect ifu_instr  <- ifu_instr;
+    connect ifu_pc     <- ifu_pc;
+    connect o_bjp_valid -> exu_bjp_valid;
+    connect o_bjp_taken -> exu_bjp_taken;
+    connect o_bjp_tgt   -> exu_bjp_tgt;
+    connect lsu_valid   -> exu_lsu_valid;
+    connect lsu_ready   <- true;
+    connect lsu_addr    -> exu_lsu_addr;
+    connect lsu_wdata   -> exu_lsu_wdata;
+    connect lsu_load    -> exu_lsu_load;
+    connect lsu_store   -> exu_lsu_store;
+    connect lsu_resp_valid <- false;
+    connect lsu_resp_data  <- 0;
+    connect o_commit_valid -> exu_commit_valid;
+  end inst exu
+
+  // ── LSU byte/half/word alignment ───────────────────────────────────
+  inst lsu: LsuCtrl
+    connect addr     <- exu_lsu_addr;
+    connect wdata    <- exu_lsu_wdata;
+    connect funct3   <- 2;
+    connect is_load  <- exu_lsu_load;
+    connect is_store <- exu_lsu_store;
+    connect mem_addr  -> lsu_mem_addr;
+    connect mem_wdata -> lsu_mem_wdata;
+    connect mem_wstrb -> lsu_mem_wstrb;
+    connect mem_wen   -> lsu_mem_wen;
+    connect mem_rdata <- mem_rdata;
+    connect load_result -> lsu_load_result;
+  end inst lsu
+
+  // ── CLINT Timer ────────────────────────────────────────────────────
+  inst timer: ClintTimer
+    connect clk      <- clk;
+    connect rst      <- false;
+    connect reg_addr <- 0;
+    connect reg_wdata <- 0;
+    connect reg_wen  <- false;
+    connect reg_rdata -> timer_rdata;
+    connect tmr_irq   -> timer_irq;
+  end inst timer
+
+  // ── Output connections ─────────────────────────────────────────────
+  comb
+    ifu_ready    = exu_ifu_ready;
+    mem_addr     = lsu_mem_addr;
+    mem_wdata    = lsu_mem_wdata;
+    mem_wstrb    = lsu_mem_wstrb;
+    mem_wen      = lsu_mem_wen;
+    tmr_irq      = timer_irq;
+    commit_valid = exu_commit_valid;
+    bjp_taken    = exu_bjp_taken;
+    bjp_tgt      = exu_bjp_tgt;
+  end comb
+
+end module CoreTop

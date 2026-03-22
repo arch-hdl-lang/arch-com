@@ -1,0 +1,259 @@
+// E203 Execution Unit Top-Level
+// Integrates: Decode → Dispatch → ALU/MulDiv → Commit → Regfile
+// Single-issue, in-order pipeline with valid/ready handshake.
+
+module ExuTop
+  param XLEN: const = 32;
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  // ── IFU interface ──────────────────────────────────────────────────
+  port ifu_valid:    in  Bool;
+  port ifu_ready:    out Bool;
+  port ifu_instr:    in  UInt<32>;
+  port ifu_pc:       in  UInt<32>;
+
+  // ── Branch feedback to IFU ─────────────────────────────────────────
+  port o_bjp_valid:  out Bool;
+  port o_bjp_taken:  out Bool;
+  port o_bjp_tgt:    out UInt<32>;
+
+  // ── LSU interface ──────────────────────────────────────────────────
+  port lsu_valid:    out Bool;
+  port lsu_ready:    in  Bool;
+  port lsu_addr:     out UInt<32>;
+  port lsu_wdata:    out UInt<32>;
+  port lsu_load:     out Bool;
+  port lsu_store:    out Bool;
+  port lsu_resp_valid: in Bool;
+  port lsu_resp_data:  in UInt<32>;
+
+  // ── Commit status ──────────────────────────────────────────────────
+  port o_commit_valid: out Bool;
+
+  // ── Decode ─────────────────────────────────────────────────────────
+  inst dec: ExuDecode
+    connect instr <- ifu_instr;
+    connect o_rs1_idx  -> dec_rs1_idx;
+    connect o_rs2_idx  -> dec_rs2_idx;
+    connect o_rd_idx   -> dec_rd_idx;
+    connect o_imm      -> dec_imm;
+    connect o_alu      -> dec_alu;
+    connect o_bjp      -> dec_bjp;
+    connect o_agu      -> dec_agu;
+    connect o_alu_add  -> dec_alu_add;
+    connect o_alu_sub  -> dec_alu_sub;
+    connect o_alu_xor  -> dec_alu_xor;
+    connect o_alu_sll  -> dec_alu_sll;
+    connect o_alu_srl  -> dec_alu_srl;
+    connect o_alu_sra  -> dec_alu_sra;
+    connect o_alu_or   -> dec_alu_or;
+    connect o_alu_and  -> dec_alu_and;
+    connect o_alu_slt  -> dec_alu_slt;
+    connect o_alu_sltu -> dec_alu_sltu;
+    connect o_alu_lui  -> dec_alu_lui;
+    connect o_beq      -> dec_beq;
+    connect o_bne      -> dec_bne;
+    connect o_blt      -> dec_blt;
+    connect o_bge      -> dec_bge;
+    connect o_bltu     -> dec_bltu;
+    connect o_bgeu     -> dec_bgeu;
+    connect o_jump     -> dec_jump;
+    connect o_load     -> dec_load;
+    connect o_store    -> dec_store;
+    connect o_rs1_en   -> dec_rs1_en;
+    connect o_rs2_en   -> dec_rs2_en;
+    connect o_rd_en    -> dec_rd_en;
+  end inst dec
+
+  // ── Regfile (2R1W) — flattened port names ──────────────────────────
+  inst rf: ExuRegfile
+    connect clk   <- clk;
+    connect rst_n <- rst_n;
+    connect test_mode <- false;
+    connect read0_addr <- dec_rs1_idx;
+    connect read0_data -> rf_rs1_data;
+    connect read1_addr <- dec_rs2_idx;
+    connect read1_data -> rf_rs2_data;
+    connect write_en   <- wbck_fire;
+    connect write_addr <- wbck_rd_idx;
+    connect write_data <- wbck_wdat;
+  end inst rf
+
+  // ── Dispatch ───────────────────────────────────────────────────────
+  inst disp: ExuDisp
+    connect disp_valid <- ifu_valid;
+    connect disp_ready -> disp_rdy;
+    connect i_rs1      <- rf_rs1_data;
+    connect i_rs2      <- rf_rs2_data;
+    connect i_pc       <- ifu_pc;
+    connect i_imm      <- dec_imm;
+    connect i_rd_idx   <- dec_rd_idx;
+    connect i_rd_en    <- dec_rd_en;
+    connect i_alu      <- dec_alu;
+    connect i_bjp      <- dec_bjp;
+    connect i_agu      <- dec_agu;
+    connect i_load     <- dec_load;
+    connect i_store    <- dec_store;
+    connect i_mul      <- false;
+    connect i_div      <- false;
+    connect i_alu_add  <- dec_alu_add;
+    connect i_alu_sub  <- dec_alu_sub;
+    connect i_alu_xor  <- dec_alu_xor;
+    connect i_alu_sll  <- dec_alu_sll;
+    connect i_alu_srl  <- dec_alu_srl;
+    connect i_alu_sra  <- dec_alu_sra;
+    connect i_alu_or   <- dec_alu_or;
+    connect i_alu_and  <- dec_alu_and;
+    connect i_alu_slt  <- dec_alu_slt;
+    connect i_alu_sltu <- dec_alu_sltu;
+    connect i_alu_lui  <- dec_alu_lui;
+    connect i_beq      <- dec_beq;
+    connect i_bne      <- dec_bne;
+    connect i_blt      <- dec_blt;
+    connect i_bge      <- dec_bge;
+    connect i_bltu     <- dec_bltu;
+    connect i_bgeu     <- dec_bgeu;
+    connect i_jump     <- dec_jump;
+    connect alu_valid  -> disp_alu_valid;
+    connect alu_ready  <- alu_o_ready;
+    connect alu_rs1    -> disp_alu_rs1;
+    connect alu_rs2    -> disp_alu_rs2;
+    connect alu_pc     -> disp_alu_pc;
+    connect alu_imm    -> disp_alu_imm;
+    connect alu_rdidx  -> disp_alu_rdidx;
+    connect alu_op_add -> disp_alu_op_add;
+    connect alu_op_sub -> disp_alu_op_sub;
+    connect alu_op_xor -> disp_alu_op_xor;
+    connect alu_op_sll -> disp_alu_op_sll;
+    connect alu_op_srl -> disp_alu_op_srl;
+    connect alu_op_sra -> disp_alu_op_sra;
+    connect alu_op_or  -> disp_alu_op_or;
+    connect alu_op_and -> disp_alu_op_and;
+    connect alu_op_slt -> disp_alu_op_slt;
+    connect alu_op_sltu -> disp_alu_op_sltu;
+    connect alu_op_lui -> disp_alu_op_lui;
+    connect alu_is_bjp -> disp_alu_is_bjp;
+    connect alu_beq    -> disp_alu_beq;
+    connect alu_bne    -> disp_alu_bne;
+    connect alu_blt    -> disp_alu_blt;
+    connect alu_bge    -> disp_alu_bge;
+    connect alu_bltu   -> disp_alu_bltu;
+    connect alu_bgeu   -> disp_alu_bgeu;
+    connect alu_is_jump -> disp_alu_is_jump;
+    connect alu_is_agu -> disp_alu_is_agu;
+    connect mdv_valid  -> disp_mdv_valid;
+    connect mdv_ready  <- true;
+    connect mdv_rs1    -> disp_mdv_rs1;
+    connect mdv_rs2    -> disp_mdv_rs2;
+    connect mdv_mul    -> disp_mdv_mul;
+    connect mdv_div    -> disp_mdv_div;
+    connect lsu_valid  -> disp_lsu_valid;
+    connect lsu_ready  <- lsu_ready;
+    connect lsu_rs1    -> disp_lsu_rs1;
+    connect lsu_rs2    -> disp_lsu_rs2;
+    connect lsu_imm    -> disp_lsu_imm;
+    connect lsu_load   -> disp_lsu_load;
+    connect lsu_store  -> disp_lsu_store;
+  end inst disp
+
+  // ── ALU ────────────────────────────────────────────────────────────
+  inst alu: ExuAlu
+    connect clk   <- clk;
+    connect rst_n <- rst_n;
+    connect i_valid   <- disp_alu_valid;
+    connect i_ready   -> alu_o_ready;
+    connect i_rs1     <- disp_alu_rs1;
+    connect i_rs2     <- disp_alu_rs2;
+    connect i_pc      <- disp_alu_pc;
+    connect i_imm     <- disp_alu_imm;
+    connect i_rdidx   <- disp_alu_rdidx;
+    connect i_alu     <- true;
+    connect i_alu_add <- disp_alu_op_add;
+    connect i_alu_sub <- disp_alu_op_sub;
+    connect i_alu_xor <- disp_alu_op_xor;
+    connect i_alu_sll <- disp_alu_op_sll;
+    connect i_alu_srl <- disp_alu_op_srl;
+    connect i_alu_sra <- disp_alu_op_sra;
+    connect i_alu_or  <- disp_alu_op_or;
+    connect i_alu_and <- disp_alu_op_and;
+    connect i_alu_slt <- disp_alu_op_slt;
+    connect i_alu_sltu <- disp_alu_op_sltu;
+    connect i_alu_lui <- disp_alu_op_lui;
+    connect i_bjp     <- disp_alu_is_bjp;
+    connect i_beq     <- disp_alu_beq;
+    connect i_bne     <- disp_alu_bne;
+    connect i_blt     <- disp_alu_blt;
+    connect i_bge     <- disp_alu_bge;
+    connect i_bltu    <- disp_alu_bltu;
+    connect i_bgeu    <- disp_alu_bgeu;
+    connect i_jump    <- disp_alu_is_jump;
+    connect i_agu     <- disp_alu_is_agu;
+    connect i_agu_swap <- false;
+    connect i_agu_add  <- false;
+    connect i_agu_and  <- false;
+    connect i_agu_or   <- false;
+    connect i_agu_xor  <- false;
+    connect i_agu_max  <- false;
+    connect i_agu_min  <- false;
+    connect i_agu_maxu <- false;
+    connect i_agu_minu <- false;
+    connect i_agu_sbf_0_ena <- false;
+    connect i_agu_sbf_0_nxt <- 0;
+    connect i_agu_sbf_1_ena <- false;
+    connect i_agu_sbf_1_nxt <- 0;
+    connect o_valid   -> alu_done_valid;
+    connect o_ready   <- commit_alu_ready;
+    connect o_wdat    -> alu_wdat;
+    connect o_rdidx   -> alu_rdidx;
+    connect o_bjp_taken -> alu_bjp_taken;
+    connect o_bjp_tgt   -> alu_bjp_tgt;
+    connect o_bjp_lnk   -> alu_bjp_lnk;
+  end inst alu
+
+  // ── Commit arbiter ─────────────────────────────────────────────────
+  inst cmt: ExuCommit
+    connect clk <- clk;
+    connect rst <- false;
+    connect alu_valid  <- alu_done_valid;
+    connect alu_ready  -> commit_alu_ready;
+    connect alu_wdat   <- alu_wdat;
+    connect alu_rd_idx <- alu_rdidx;
+    connect alu_rd_en  <- true;
+    connect long_valid <- false;
+    connect long_ready -> cmt_long_ready;
+    connect long_wdat  <- 0;
+    connect long_rd_idx <- 0;
+    connect long_rd_en <- false;
+    connect wbck_valid -> wbck_valid_w;
+    connect wbck_ready <- true;
+    connect wbck_wdat  -> wbck_wdat;
+    connect wbck_rd_idx -> wbck_rd_idx;
+    connect wbck_rd_en -> wbck_rd_en;
+    connect commit_valid -> cmt_valid_out;
+    connect commit_src   -> cmt_src_out;
+  end inst cmt
+
+  // ── Output logic ───────────────────────────────────────────────────
+  comb
+    ifu_ready = disp_rdy;
+    wbck_fire = wbck_valid_w & wbck_rd_en;
+
+    // BJP feedback
+    o_bjp_valid = alu_done_valid & alu_bjp_taken;
+    o_bjp_taken = alu_bjp_taken;
+    o_bjp_tgt   = alu_bjp_tgt;
+
+    // LSU interface
+    lsu_valid = disp_lsu_valid;
+    lsu_addr  = disp_lsu_rs1 + disp_lsu_imm;
+    lsu_wdata = disp_lsu_rs2;
+    lsu_load  = disp_lsu_load;
+    lsu_store = disp_lsu_store;
+
+    // Commit status
+    o_commit_valid = cmt_valid_out;
+  end comb
+
+end module ExuTop
