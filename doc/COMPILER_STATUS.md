@@ -1,7 +1,7 @@
 # ARCH Compiler — Status & Roadmap
 
 > Last updated: 2026-03-21
-> Compiler version: 0.26.0 (E203 full core integration — 15 modules, top-level Verilator sim)
+> Compiler version: 0.26.0 (E203 full core integration — 21 modules, top-level Verilator sim)
 
 ---
 
@@ -144,22 +144,23 @@
 - `arch sim` supports **multi-clock domain** modules: each `Clock<Domain>` port gets independent `_rising_X` edge detection; `eval_posedge()` guards each `seq` block on its specific clock's rising edge; auto-generates `tick()` method from domain `freq_mhz` declarations (computes half-periods via GCD for correct clock ratio); single-clock modules unchanged; verified with 200MHz/50MHz dual-clock testbench (MultiClockSync, 80 ticks, 4:1 ratio, 0 errors)
 - `arch sim` supports purely combinational modules (no `Clock<>` port): generated `eval()` skips `_rising` edge detection — testbenches call `eval()` directly without toggling a clock signal
 - AES-128 cipher benchmark (NIST FIPS-197 test vectors verified via `arch sim`): AesSbox + Xtime as pure combinational functions; AesCipherTop + AesKeyExpand128 using inline function calls replacing 32 `inst` blocks; wide `UInt<128>` ports via `VlWide<4>`; correct hierarchical posedge simultaneity (all `always_ff` blocks across parent + sub-instance fire atomically)
-- **E203 HBirdv2 benchmark suite** (15 modules from nuclei-sw E203 RISC-V core, full core integration):
+- **E203 HBirdv2 benchmark suite** (21 modules from nuclei-sw E203 RISC-V core, full core integration):
   - `e203_exu_regfile`: 2R1W register file using `regfile` construct; `init [0] = 0` write guard; `forward write_before_read: false`; 5 sim tests; verified against Verilator
   - `e203_exu_wbck`: Priority write-back arbiter (alu vs long-latency); pure `comb` block with `if/else`; 6 sim tests; verified against Verilator
   - `e203_ifu_litebpu`: Static branch prediction unit; JAL/JALR always-taken, Bxx backward-taken; JALR-x1/xN hazard detection; `rs1xn_rdrf_r` state register; `let` intermediates + async reset + `comb` `if/elsif/else`; 11 sim tests; verified against Verilator
   - `e203_exu_alu_dpath`: Shared ALU datapath; BJP/AGU/ALU operand mux; 33-bit carry-extended adder; two's-complement subtraction for comparison; `?:` ternary chaining; `SInt<32>` cast for signed comparison; `reset none` registers; 26 sim tests
   - `e203_exu_alu_bjp`: Branch/jump unit; BEQ/BNE/BLT/BGE/BLTU/BGEU; JAL/JALR unconditional jump; target address, link address (PC+4); XOR-based equality, carry-out subtraction for BLTU/BGEU, `SInt<32>` cast for BLT/BGE; purely combinational (no clock port); 25 sim tests
   - `e203_exu_alu`: ALU top-level module (6th E203 module); first to use `inst` for hierarchical composition — instantiates AluDpath + BjpUnit; 20 sim tests; verified against Verilator
-  - `e203_exu_decode`: RV32I instruction decoder (7th E203 module); pure combinational; decodes all RV32I formats (R, I, S, B, U, J); produces one-hot ALU/BJP ops, register indices/enables, sign-extended immediates, unit select, load/store flags; 30 `arch sim` tests + 22 Verilator cross-check tests
+  - `e203_exu_decode`: RV32IM instruction decoder (7th E203 module); pure combinational; decodes all RV32I formats (R, I, S, B, U, J) plus RV32M (MUL/MULH/MULHSU/MULHU/DIV/DIVU/REM/REMU); produces one-hot ALU/BJP/MulDiv ops, register indices/enables, sign-extended immediates, unit select, load/store flags; 30 `arch sim` tests + 22 Verilator cross-check tests
   - `e203_exu_muldiv`: Iterative multiply/divide unit (8th E203 module); RV32M MUL/MULH/MULHSU/MULHU/DIV/DIVU/REM/REMU; 32-cycle shift-add multiply, 32-cycle restoring divide; signed operand conversion + result negation; divide-by-zero handling; valid/ready handshake; written as both `module` (manual state encoding) and `fsm` (named states with `reg`/`seq` datapath extension); 24 `arch sim` tests + 12 Verilator cross-check tests; uses `elsif` for chained conditionals
   - `e203_exu_commit`: Execution commit unit (9th E203 module); 2-input priority arbiter (ALU wins over long-pipe muldiv); data mux + valid/ready handshake backpressure; pure combinational; 38 `arch sim` tests + 20 Verilator cross-check tests
   - `e203_ifu_ifetch`: Instruction fetch mini-controller (10th E203 module); FSM with datapath regs (`reg`/`seq` extension); 4 states (Idle, WaitGnt, WaitRsp, Abort); PC generation with `{a,b}` concat and `{N{expr}}` repeat for alignment; branch redirect handling; async low reset; 23 `arch sim` tests + 10 Verilator cross-check tests
   - `e203_lsu_ctrl`: Load-store unit controller (11th E203 module); byte/halfword/word access with alignment; store byte-enable and data lane shifting; load sign-extension using `{N{sign_bit}}` repeat; pure combinational; 34 `arch sim` tests + 16 Verilator cross-check tests
   - `e203_clint_timer`: CLINT timer (12th E203 module); 64-bit `mtime` counter with `mtimecmp` comparison; `{hi, lo}` concat for 64-bit assembly; APB-like register read/write with `elsif` chains; timer interrupt generation; 18 `arch sim` tests + 8 Verilator cross-check tests
-  - `e203_exu_disp`: Execution dispatch unit (13th E203 module); routes decoded ops to ALU/MulDiv/LSU based on decode flags; valid/ready handshake with backpressure; pure combinational; 28 `arch sim` tests
-  - `e203_exu_top`: Execution unit top-level (14th E203 module); hierarchical integration of ExuDecode + ExuDisp + ExuAlu (AluDpath + BjpUnit) + ExuCommit + ExuRegfile; IFU→decode→dispatch→ALU→commit→writeback pipeline; first 5-level deep `inst` hierarchy in test suite
-  - `e203_core_top`: Core top-level integration (15th E203 module); ties ExuTop + LsuCtrl + ClintTimer; testbench-driven instruction fetch; 8 `arch sim` tests + 6 Verilator integration tests (ADDI, ADD, SUB, LUI, XOR, SW, timer, back-to-back) verifying all 11 sub-modules instantiate and connect correctly through 3 levels of hierarchy
+  - `e203_exu_disp`: Execution dispatch unit (13th E203 module); routes decoded ops to ALU/MulDiv/LSU based on decode flags; all 8 RV32M ops passed through to MulDiv; valid/ready handshake with backpressure; pure combinational; 28 `arch sim` tests
+  - `e203_exu_oitf`: Outstanding Instruction Track FIFO (16th E203 module); 2-entry circular FIFO tracking in-flight long-pipe ops; RAW/WAW hazard detection against new instruction's rs1/rs2/rd; dispatch stall on dependency; 6 `arch sim` tests
+  - `e203_exu_top`: Execution unit top-level (14th E203 module); hierarchical integration of ExuDecode + ExuDisp + ExuAlu (AluDpath + BjpUnit) + ExuMuldiv + ExuOitf + ExuWbck + ExuRegfile; full RV32IM pipeline with OITF hazard stall, MulDiv long-pipe writeback through priority arbiter; 6-level deep `inst` hierarchy
+  - `e203_core_top`: Core top-level integration; ties ExuTop (with MulDiv + OITF + Wbck) + IfuTop + LsuCtrl + Biu + ITCM + DTCM + ClintTimer; full RV32IM core with 21 integrated modules through 4 levels of hierarchy; 8 `arch sim` tests + 6 Verilator integration tests
 
 ---
 

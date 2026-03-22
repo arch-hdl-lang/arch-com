@@ -19,12 +19,6 @@ module CoreTop #(
   output logic tmr_irq
 );
 
-  logic itcm_fetch_rd_en;
-  logic itcm_fetch_rd_addr;
-  logic itcm_rsp_valid_d;
-  logic itcm_wr_mux_en;
-  logic itcm_wr_mux_addr;
-  logic itcm_wr_mux_data;
   // ── ITCM write port (for testbench to load program) ────────────────
   // ── Branch redirect from EXU to IFU ────────────────────────────────
   // ── Status outputs ─────────────────────────────────────────────────
@@ -207,28 +201,22 @@ module CoreTop #(
     end
   end
   // ── ITCM write mux: testbench loader vs BIU store ─────────────────
-  always_comb begin
-    itcm_fetch_rd_en = itcm_cmd_valid;
-    itcm_fetch_rd_addr = itcm_cmd_addr;
-    itcm_rsp_valid_d = itcm_rsp_valid_r;
-    if (itcm_wr_en) begin
-      itcm_wr_mux_en = 1'b1;
-      itcm_wr_mux_addr = itcm_wr_addr;
-      itcm_wr_mux_data = itcm_wr_data;
-    end else if (biu_itcm_wr_en) begin
-      itcm_wr_mux_en = 1'b1;
-      itcm_wr_mux_addr = biu_itcm_wr_addr;
-      itcm_wr_mux_data = biu_itcm_wr_data;
-    end else begin
-      itcm_wr_mux_en = 1'b0;
-      itcm_wr_mux_addr = 0;
-      itcm_wr_mux_data = 0;
-    end
-    o_valid = ifu_o_valid;
-    o_instr = ifu_o_instr;
-    o_pc = ifu_o_pc;
-    commit_valid = exu_commit_valid;
-  end
+  logic itcm_wr_mux_en;
+  assign itcm_wr_mux_en = (itcm_wr_en | biu_itcm_wr_en);
+  logic [14-1:0] itcm_wr_mux_addr;
+  assign itcm_wr_mux_addr = (itcm_wr_en) ? (itcm_wr_addr) : (biu_itcm_wr_addr);
+  logic [32-1:0] itcm_wr_mux_data;
+  assign itcm_wr_mux_data = (itcm_wr_en) ? (itcm_wr_data) : (biu_itcm_wr_data);
+  logic itcm_fetch_rd_en;
+  assign itcm_fetch_rd_en = itcm_cmd_valid;
+  logic [14-1:0] itcm_fetch_rd_addr;
+  assign itcm_fetch_rd_addr = itcm_cmd_addr;
+  logic itcm_rsp_valid_d;
+  assign itcm_rsp_valid_d = itcm_rsp_valid_r;
+  assign o_valid = ifu_o_valid;
+  assign o_instr = ifu_o_instr;
+  assign o_pc = ifu_o_pc;
+  assign commit_valid = exu_commit_valid;
 
 endmodule
 

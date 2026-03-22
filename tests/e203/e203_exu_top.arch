@@ -1,5 +1,6 @@
 // E203 Execution Unit Top-Level
-// Integrates: Decode → Dispatch → ALU/MulDiv → Commit → Regfile
+// Integrates: Decode → Dispatch → ALU/MulDiv → Wbck → Regfile
+// With OITF for long-pipe (MulDiv) hazard tracking.
 // Single-issue, in-order pipeline with valid/ready handshake.
 
 module ExuTop
@@ -65,9 +66,17 @@ module ExuTop
     connect o_rs1_en   -> dec_rs1_en;
     connect o_rs2_en   -> dec_rs2_en;
     connect o_rd_en    -> dec_rd_en;
+    connect o_mul      -> dec_mul;
+    connect o_mulh     -> dec_mulh;
+    connect o_mulhsu   -> dec_mulhsu;
+    connect o_mulhu    -> dec_mulhu;
+    connect o_div      -> dec_div;
+    connect o_divu     -> dec_divu;
+    connect o_rem      -> dec_rem;
+    connect o_remu     -> dec_remu;
   end inst dec
 
-  // ── Regfile (2R1W) — flattened port names ──────────────────────────
+  // ── Regfile (2R1W) ────────────────────────────────────────────────
   inst rf: ExuRegfile
     connect clk   <- clk;
     connect rst_n <- rst_n;
@@ -76,14 +85,40 @@ module ExuTop
     connect read0_data -> rf_rs1_data;
     connect read1_addr <- dec_rs2_idx;
     connect read1_data -> rf_rs2_data;
-    connect write_en   <- wbck_fire;
-    connect write_addr <- wbck_rd_idx;
-    connect write_data <- wbck_wdat;
+    connect write_en   <- wbck_rf_ena;
+    connect write_addr <- wbck_rf_rdidx;
+    connect write_data <- wbck_rf_wdat;
   end inst rf
+
+  // ── OITF (Outstanding Instruction Track FIFO) ─────────────────────
+  inst oitf: ExuOitf
+    connect clk   <- clk;
+    connect rst_n <- rst_n;
+    // Allocate on muldiv dispatch
+    connect dis_ena    <- oitf_dis_ena;
+    connect dis_rd_idx <- disp_mdv_rdidx;
+    connect dis_rd_en  <- disp_mdv_rd_en;
+    connect dis_ready  -> oitf_dis_ready;
+    // Deallocate on muldiv writeback
+    connect ret_ena    <- oitf_ret_ena;
+    connect ret_rd_idx -> oitf_ret_rd_idx;
+    connect ret_rd_en  -> oitf_ret_rd_en;
+    // Hazard check against new instruction
+    connect chk_rs1_idx <- dec_rs1_idx;
+    connect chk_rs1_en  <- dec_rs1_en;
+    connect chk_rs2_idx <- dec_rs2_idx;
+    connect chk_rs2_en  <- dec_rs2_en;
+    connect chk_rd_idx  <- dec_rd_idx;
+    connect chk_rd_en   <- dec_rd_en;
+    connect raw_dep     -> oitf_raw_dep;
+    connect waw_dep     -> oitf_waw_dep;
+    connect dep_stall   -> oitf_dep_stall;
+    connect oitf_empty  -> oitf_is_empty;
+  end inst oitf
 
   // ── Dispatch ───────────────────────────────────────────────────────
   inst disp: ExuDisp
-    connect disp_valid <- ifu_valid;
+    connect disp_valid <- disp_valid_gated;
     connect disp_ready -> disp_rdy;
     connect i_rs1      <- rf_rs1_data;
     connect i_rs2      <- rf_rs2_data;
@@ -96,8 +131,14 @@ module ExuTop
     connect i_agu      <- dec_agu;
     connect i_load     <- dec_load;
     connect i_store    <- dec_store;
-    connect i_mul      <- false;
-    connect i_div      <- false;
+    connect i_mul      <- dec_mul;
+    connect i_mulh     <- dec_mulh;
+    connect i_mulhsu   <- dec_mulhsu;
+    connect i_mulhu    <- dec_mulhu;
+    connect i_div      <- dec_div;
+    connect i_divu     <- dec_divu;
+    connect i_rem      <- dec_rem;
+    connect i_remu     <- dec_remu;
     connect i_alu_add  <- dec_alu_add;
     connect i_alu_sub  <- dec_alu_sub;
     connect i_alu_xor  <- dec_alu_xor;
@@ -144,11 +185,19 @@ module ExuTop
     connect alu_is_jump -> disp_alu_is_jump;
     connect alu_is_agu -> disp_alu_is_agu;
     connect mdv_valid  -> disp_mdv_valid;
-    connect mdv_ready  <- true;
+    connect mdv_ready  <- mdv_i_ready;
     connect mdv_rs1    -> disp_mdv_rs1;
     connect mdv_rs2    -> disp_mdv_rs2;
+    connect mdv_rdidx  -> disp_mdv_rdidx;
+    connect mdv_rd_en  -> disp_mdv_rd_en;
     connect mdv_mul    -> disp_mdv_mul;
+    connect mdv_mulh   -> disp_mdv_mulh;
+    connect mdv_mulhsu -> disp_mdv_mulhsu;
+    connect mdv_mulhu  -> disp_mdv_mulhu;
     connect mdv_div    -> disp_mdv_div;
+    connect mdv_divu   -> disp_mdv_divu;
+    connect mdv_rem    -> disp_mdv_rem;
+    connect mdv_remu   -> disp_mdv_remu;
     connect lsu_valid  -> disp_lsu_valid;
     connect lsu_ready  <- lsu_ready;
     connect lsu_rs1    -> disp_lsu_rs1;
@@ -204,7 +253,7 @@ module ExuTop
     connect i_agu_sbf_1_ena <- false;
     connect i_agu_sbf_1_nxt <- 0;
     connect o_valid   -> alu_done_valid;
-    connect o_ready   <- commit_alu_ready;
+    connect o_ready   <- wbck_alu_ready;
     connect o_wdat    -> alu_wdat;
     connect o_rdidx   -> alu_rdidx;
     connect o_bjp_taken -> alu_bjp_taken;
@@ -212,33 +261,68 @@ module ExuTop
     connect o_bjp_lnk   -> alu_bjp_lnk;
   end inst alu
 
-  // ── Commit arbiter ─────────────────────────────────────────────────
-  inst cmt: ExuCommit
-    connect clk <- clk;
-    connect rst <- false;
-    connect alu_valid  <- alu_done_valid;
-    connect alu_ready  -> commit_alu_ready;
-    connect alu_wdat   <- alu_wdat;
-    connect alu_rd_idx <- alu_rdidx;
-    connect alu_rd_en  <- true;
-    connect long_valid <- false;
-    connect long_ready -> cmt_long_ready;
-    connect long_wdat  <- 0;
-    connect long_rd_idx <- 0;
-    connect long_rd_en <- false;
-    connect wbck_valid -> wbck_valid_w;
-    connect wbck_ready <- true;
-    connect wbck_wdat  -> wbck_wdat;
-    connect wbck_rd_idx -> wbck_rd_idx;
-    connect wbck_rd_en -> wbck_rd_en;
-    connect commit_valid -> cmt_valid_out;
-    connect commit_src   -> cmt_src_out;
-  end inst cmt
+  // ── MulDiv ─────────────────────────────────────────────────────────
+  inst mdv: ExuMuldiv
+    connect clk   <- clk;
+    connect rst_n <- rst_n;
+    connect i_valid  <- mdv_dispatch_valid;
+    connect i_ready  -> mdv_i_ready;
+    connect i_rs1    <- disp_mdv_rs1;
+    connect i_rs2    <- disp_mdv_rs2;
+    connect i_mul    <- disp_mdv_mul;
+    connect i_mulh   <- disp_mdv_mulh;
+    connect i_mulhsu <- disp_mdv_mulhsu;
+    connect i_mulhu  <- disp_mdv_mulhu;
+    connect i_div    <- disp_mdv_div;
+    connect i_divu   <- disp_mdv_divu;
+    connect i_rem    <- disp_mdv_rem;
+    connect i_remu   <- disp_mdv_remu;
+    connect o_valid  -> mdv_done_valid;
+    connect o_ready  <- wbck_longp_ready;
+    connect o_wdat   -> mdv_wdat;
+  end inst mdv
 
-  // ── Output logic ───────────────────────────────────────────────────
+  // ── Writeback arbiter (replaces ExuCommit) ─────────────────────────
+  inst wbck: ExuWbck
+    connect clk   <- clk;
+    connect rst_n <- rst_n;
+    // ALU path (lower priority)
+    connect alu_wbck_i_valid <- alu_done_valid;
+    connect alu_wbck_i_ready -> wbck_alu_ready;
+    connect alu_wbck_i_wdat  <- alu_wdat;
+    connect alu_wbck_i_rdidx <- alu_rdidx;
+    // Long-pipe path (higher priority) — MulDiv results
+    connect longp_wbck_i_valid <- mdv_done_valid;
+    connect longp_wbck_i_ready -> wbck_longp_ready;
+    connect longp_wbck_i_wdat  <- mdv_wdat;
+    connect longp_wbck_i_flags <- 0;
+    connect longp_wbck_i_rdidx <- oitf_ret_rd_idx;
+    connect longp_wbck_i_rdfpu <- false;
+    // RF write port
+    connect rf_wbck_o_ena   -> wbck_rf_ena;
+    connect rf_wbck_o_wdat  -> wbck_rf_wdat;
+    connect rf_wbck_o_rdidx -> wbck_rf_rdidx;
+  end inst wbck
+
+  // ── Glue logic ────────────────────────────────────────────────────
+  wire disp_valid_gated: Bool;
+  wire oitf_dis_ena: Bool;
+  wire oitf_ret_ena: Bool;
+  wire mdv_dispatch_valid: Bool;
+
   comb
-    ifu_ready = disp_rdy;
-    wbck_fire = wbck_valid_w & wbck_rd_en;
+    // Gate dispatch on OITF hazard stall
+    disp_valid_gated = ifu_valid & ~oitf_dep_stall;
+    ifu_ready = disp_rdy & ~oitf_dep_stall;
+
+    // OITF allocate: when muldiv dispatches successfully
+    oitf_dis_ena = disp_mdv_valid & mdv_i_ready & oitf_dis_ready;
+
+    // Gate muldiv dispatch on OITF availability
+    mdv_dispatch_valid = disp_mdv_valid & oitf_dis_ready;
+
+    // OITF deallocate: when muldiv result is written back
+    oitf_ret_ena = mdv_done_valid & wbck_longp_ready;
 
     // BJP feedback
     o_bjp_valid = alu_done_valid & alu_bjp_taken;
@@ -252,8 +336,8 @@ module ExuTop
     lsu_load  = disp_lsu_load;
     lsu_store = disp_lsu_store;
 
-    // Commit status
-    o_commit_valid = cmt_valid_out;
+    // Commit status — either ALU or long-pipe completes
+    o_commit_valid = (alu_done_valid & wbck_alu_ready) | (mdv_done_valid & wbck_longp_ready);
   end comb
 
 end module ExuTop

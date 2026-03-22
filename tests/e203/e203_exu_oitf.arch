@@ -1,0 +1,105 @@
+// E203 Outstanding Instruction Track FIFO (OITF)
+// Tracks in-flight long-latency instructions (MulDiv, LSU) for hazard detection.
+// Circular FIFO with 2 entries; each entry stores destination register index
+// and a "has rd" flag.
+//
+// On dispatch of a long-pipe op: allocate (push) entry with rd info.
+// On long-pipe writeback: deallocate (pop) oldest entry.
+// Hazard check: compare new instruction's rs1/rs2/rd against all valid entries.
+
+module ExuOitf
+  param OITF_DEPTH: const = 2;
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  // ── Dispatch interface (allocate on long-pipe dispatch) ────────────
+  port dis_ena:     in  Bool;
+  port dis_rd_idx:  in  UInt<5>;
+  port dis_rd_en:   in  Bool;
+  port dis_ready:   out Bool;
+
+  // ── Writeback interface (deallocate on long-pipe completion) ────────
+  port ret_ena:     in  Bool;
+  port ret_rd_idx:  out UInt<5>;
+  port ret_rd_en:   out Bool;
+
+  // ── Hazard check inputs (from decode of new instruction) ───────────
+  port chk_rs1_idx: in  UInt<5>;
+  port chk_rs1_en:  in  Bool;
+  port chk_rs2_idx: in  UInt<5>;
+  port chk_rs2_en:  in  Bool;
+  port chk_rd_idx:  in  UInt<5>;
+  port chk_rd_en:   in  Bool;
+
+  // ── Hazard outputs ─────────────────────────────────────────────────
+  port raw_dep:     out Bool;
+  port waw_dep:     out Bool;
+  port dep_stall:   out Bool;
+  port oitf_empty:  out Bool;
+
+  // ── FIFO state ─────────────────────────────────────────────────────
+  reg valid_0:  Bool    init false reset rst_n;
+  reg valid_1:  Bool    init false reset rst_n;
+  reg rdidx_0:  UInt<5> init 0     reset rst_n;
+  reg rdidx_1:  UInt<5> init 0     reset rst_n;
+  reg rden_0:   Bool    init false reset rst_n;
+  reg rden_1:   Bool    init false reset rst_n;
+  reg wr_ptr:   Bool    init false reset rst_n;
+  reg rd_ptr:   Bool    init false reset rst_n;
+
+  seq on clk rising
+    // Allocate: write new entry at wr_ptr
+    if dis_ena & dis_ready
+      if wr_ptr == false
+        valid_0  <= true;
+        rdidx_0  <= dis_rd_idx;
+        rden_0   <= dis_rd_en;
+      else
+        valid_1  <= true;
+        rdidx_1  <= dis_rd_idx;
+        rden_1   <= dis_rd_en;
+      end if
+      wr_ptr <= ~wr_ptr;
+    end if
+
+    // Deallocate: clear oldest entry at rd_ptr
+    if ret_ena
+      if rd_ptr == false
+        valid_0 <= false;
+      else
+        valid_1 <= false;
+      end if
+      rd_ptr <= ~rd_ptr;
+    end if
+  end seq
+
+  comb
+    // FIFO status
+    oitf_empty = ~valid_0 & ~valid_1;
+    dis_ready  = ~(valid_0 & valid_1);
+
+    // Return oldest entry info (at rd_ptr)
+    if rd_ptr == false
+      ret_rd_idx = rdidx_0;
+      ret_rd_en  = rden_0;
+    else
+      ret_rd_idx = rdidx_1;
+      ret_rd_en  = rden_1;
+    end if
+
+    // ── RAW dependency: new rs1/rs2 matches any valid entry's rd ─────
+    raw_dep = (valid_0 & rden_0 & ((chk_rs1_en & (chk_rs1_idx == rdidx_0))
+                                  | (chk_rs2_en & (chk_rs2_idx == rdidx_0))))
+            | (valid_1 & rden_1 & ((chk_rs1_en & (chk_rs1_idx == rdidx_1))
+                                  | (chk_rs2_en & (chk_rs2_idx == rdidx_1))));
+
+    // ── WAW dependency: new rd matches any valid entry's rd ──────────
+    waw_dep = (valid_0 & rden_0 & chk_rd_en & (chk_rd_idx == rdidx_0))
+            | (valid_1 & rden_1 & chk_rd_en & (chk_rd_idx == rdidx_1));
+
+    // Stall dispatch if any dependency exists
+    dep_stall = raw_dep | waw_dep;
+  end comb
+
+end module ExuOitf

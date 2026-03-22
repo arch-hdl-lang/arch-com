@@ -22,7 +22,13 @@ module ExuDisp
   port i_load:        in Bool;
   port i_store:       in Bool;
   port i_mul:         in Bool;
+  port i_mulh:        in Bool;
+  port i_mulhsu:      in Bool;
+  port i_mulhu:       in Bool;
   port i_div:         in Bool;
+  port i_divu:        in Bool;
+  port i_rem:         in Bool;
+  port i_remu:        in Bool;
 
   // ALU op flags (pass-through)
   port i_alu_add:     in Bool;
@@ -80,8 +86,16 @@ module ExuDisp
   port mdv_ready:     in  Bool;
   port mdv_rs1:       out UInt<32>;
   port mdv_rs2:       out UInt<32>;
+  port mdv_rdidx:     out UInt<5>;
+  port mdv_rd_en:     out Bool;
   port mdv_mul:       out Bool;
+  port mdv_mulh:      out Bool;
+  port mdv_mulhsu:    out Bool;
+  port mdv_mulhu:     out Bool;
   port mdv_div:       out Bool;
+  port mdv_divu:      out Bool;
+  port mdv_rem:       out Bool;
+  port mdv_remu:      out Bool;
 
   // LSU interface
   port lsu_valid:     out Bool;
@@ -95,12 +109,12 @@ module ExuDisp
   comb
     // Valid signals — only one unit gets valid
     alu_valid = disp_valid & (i_alu | i_bjp | i_agu);
-    mdv_valid = disp_valid & (i_mul | i_div);
+    mdv_valid = disp_valid & (i_mul | i_mulh | i_mulhsu | i_mulhu | i_div | i_divu | i_rem | i_remu);
     lsu_valid = disp_valid & (i_load | i_store);
 
     // Ready: accept when the targeted unit is ready
     disp_ready = ((i_alu | i_bjp | i_agu) & alu_ready)
-               | ((i_mul | i_div) & mdv_ready)
+               | ((i_mul | i_mulh | i_mulhsu | i_mulhu | i_div | i_divu | i_rem | i_remu) & mdv_ready)
                | ((i_load | i_store) & lsu_ready);
 
     // ALU operands (always driven, gated by alu_valid)
@@ -131,10 +145,18 @@ module ExuDisp
     alu_is_agu = i_agu;
 
     // MulDiv operands
-    mdv_rs1 = i_rs1;
-    mdv_rs2 = i_rs2;
-    mdv_mul = i_mul;
-    mdv_div = i_div;
+    mdv_rs1    = i_rs1;
+    mdv_rs2    = i_rs2;
+    mdv_rdidx  = i_rd_idx;
+    mdv_rd_en  = i_rd_en;
+    mdv_mul    = i_mul;
+    mdv_mulh   = i_mulh;
+    mdv_mulhsu = i_mulhsu;
+    mdv_mulhu  = i_mulhu;
+    mdv_div    = i_div;
+    mdv_divu   = i_divu;
+    mdv_rem    = i_rem;
+    mdv_remu   = i_remu;
 
     // LSU operands
     lsu_rs1   = i_rs1;

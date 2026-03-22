@@ -1,11 +1,11 @@
 // E203 HBirdv2 Instruction Decode Unit
-// Pure combinational RV32I decoder. Takes a 32-bit instruction word and
+// Pure combinational RV32IM decoder. Takes a 32-bit instruction word and
 // produces one-hot operation signals, immediate value, register indices,
 // and register read/write enables.
 //
-// Feeds directly into ExuAlu (ALU/BJP ops) and the AGU (load/store).
+// Feeds directly into ExuAlu (ALU/BJP ops), MulDiv, and the AGU (load/store).
 // Supports: R-type ALU, I-type ALU, LUI, AUIPC, branches, JAL, JALR,
-// loads, and stores.
+// loads, stores, and RV32M (MUL/MULH/MULHSU/MULHU/DIV/DIVU/REM/REMU).
 module ExuDecode #(
   parameter int XLEN = 32
 ) (
@@ -35,6 +35,14 @@ module ExuDecode #(
   output logic o_bltu,
   output logic o_bgeu,
   output logic o_jump,
+  output logic o_mul,
+  output logic o_mulh,
+  output logic o_mulhsu,
+  output logic o_mulhu,
+  output logic o_div,
+  output logic o_divu,
+  output logic o_rem,
+  output logic o_remu,
   output logic o_load,
   output logic o_store,
   output logic o_rs1_en,
@@ -46,6 +54,7 @@ module ExuDecode #(
   // ── Unit select (one-hot) ────────────────────────────────────────────
   // ── ALU operation one-hot ────────────────────────────────────────────
   // ── BJP operation one-hot ────────────────────────────────────────────
+  // ── MulDiv operation one-hot (RV32M) ─────────────────────────────────
   // ── Memory ───────────────────────────────────────────────────────────
   // ── Register enables ─────────────────────────────────────────────────
   // ── Instruction field extraction ─────────────────────────────────────
@@ -109,6 +118,14 @@ module ExuDecode #(
   // funct7 bit 5 distinguishes ADD/SUB, SRL/SRA
   logic f7_sub;
   assign f7_sub = (funct7 == 'h20);
+  // RV32M: opcode=0x33, funct7=0x01
+  logic f7_muldiv;
+  assign f7_muldiv = (funct7 == 'h1);
+  logic is_muldiv;
+  assign is_muldiv = (is_op & f7_muldiv);
+  logic is_alu_op;
+  assign is_alu_op = (is_op & (~f7_muldiv));
+  // R-type ALU excluding M-ext
   // ── funct3 decode (branch) ───────────────────────────────────────────
   logic f3_beq;
   assign f3_beq = (funct3 == 'h0);
@@ -167,20 +184,28 @@ module ExuDecode #(
     o_rs1_idx = rs1_field;
     o_rs2_idx = rs2_field;
     o_rd_idx = rd_field;
-    o_alu = (((is_op | is_op_imm) | is_lui) | is_auipc);
+    o_alu = (((is_alu_op | is_op_imm) | is_lui) | is_auipc);
     o_bjp = ((is_branch | is_jal) | is_jalr);
     o_agu = (is_load_op | is_store_op);
-    o_alu_add = ((((is_op & f3_add) & (~f7_sub)) | (is_op_imm & f3_add)) | is_auipc);
-    o_alu_sub = ((is_op & f3_add) & f7_sub);
-    o_alu_xor = ((is_op | is_op_imm) & f3_xor);
-    o_alu_sll = ((is_op | is_op_imm) & f3_sll);
-    o_alu_srl = (((is_op | is_op_imm) & f3_srl) & (~f7_sub));
-    o_alu_sra = (((is_op | is_op_imm) & f3_srl) & f7_sub);
-    o_alu_or = ((is_op | is_op_imm) & f3_or);
-    o_alu_and = ((is_op | is_op_imm) & f3_and);
-    o_alu_slt = ((is_op | is_op_imm) & f3_slt);
-    o_alu_sltu = ((is_op | is_op_imm) & f3_sltu);
+    o_alu_add = ((((is_alu_op & f3_add) & (~f7_sub)) | (is_op_imm & f3_add)) | is_auipc);
+    o_alu_sub = ((is_alu_op & f3_add) & f7_sub);
+    o_alu_xor = ((is_alu_op | is_op_imm) & f3_xor);
+    o_alu_sll = ((is_alu_op | is_op_imm) & f3_sll);
+    o_alu_srl = (((is_alu_op | is_op_imm) & f3_srl) & (~f7_sub));
+    o_alu_sra = (((is_alu_op | is_op_imm) & f3_srl) & f7_sub);
+    o_alu_or = ((is_alu_op | is_op_imm) & f3_or);
+    o_alu_and = ((is_alu_op | is_op_imm) & f3_and);
+    o_alu_slt = ((is_alu_op | is_op_imm) & f3_slt);
+    o_alu_sltu = ((is_alu_op | is_op_imm) & f3_sltu);
     o_alu_lui = is_lui;
+    o_mul = (is_muldiv & f3_add);
+    o_mulh = (is_muldiv & f3_sll);
+    o_mulhsu = (is_muldiv & f3_slt);
+    o_mulhu = (is_muldiv & f3_sltu);
+    o_div = (is_muldiv & f3_xor);
+    o_divu = (is_muldiv & f3_srl);
+    o_rem = (is_muldiv & f3_or);
+    o_remu = (is_muldiv & f3_and);
     o_beq = (is_branch & f3_beq);
     o_bne = (is_branch & f3_bne);
     o_blt = (is_branch & f3_blt);
@@ -212,8 +237,17 @@ endmodule
 
 // Register indices
 // Unit select
-// ALU operation one-hot
+// ALU operation one-hot (use is_alu_op to exclude M-ext)
+// MulDiv operation one-hot (RV32M: funct3 selects op)
+// funct3=0
+// funct3=1
+// funct3=2
+// funct3=3
+// funct3=4
+// funct3=5
+// funct3=6
+// funct3=7
 // BJP operation one-hot
 // Memory
-// Register enables
+// Register enables (is_op covers both ALU R-type and M-ext)
 // Immediate mux

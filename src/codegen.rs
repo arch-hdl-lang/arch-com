@@ -914,6 +914,11 @@ impl<'a> Codegen<'a> {
         {
             // RAM uses port groups — handle separately below
             Vec::new()
+        } else if let Some((Symbol::Regfile(_), _)) =
+            self.symbols.globals.get(&inst.module_name.name)
+        {
+            // Regfile uses port arrays — handle separately below
+            Vec::new()
         } else {
             return;
         };
@@ -958,6 +963,45 @@ impl<'a> Codegen<'a> {
             Vec::new()
         };
 
+        // For Regfile instances, build a flattened port map from port arrays
+        let regfile_flat_ports: Vec<(String, TypeExpr)> = if let Some((Symbol::Regfile(_), _)) =
+            self.symbols.globals.get(&inst.module_name.name)
+        {
+            let mut flat = Vec::new();
+            for item in &self.source.items {
+                if let Item::Regfile(r) = item {
+                    if r.name.name == inst.module_name.name {
+                        // Scalar ports
+                        for p in &r.ports {
+                            flat.push((p.name.name.clone(), p.ty.clone()));
+                        }
+                        // Read port array: read{i}_signal
+                        if let Some(rp) = &r.read_ports {
+                            let count = self.resolve_regfile_count(&rp.count_expr, r);
+                            for i in 0..count {
+                                for s in &rp.signals {
+                                    flat.push((format!("{}{i}_{}", rp.name.name, s.name.name), s.ty.clone()));
+                                }
+                            }
+                        }
+                        // Write port array: write{i}_signal
+                        if let Some(wp) = &r.write_ports {
+                            let count = self.resolve_regfile_count(&wp.count_expr, r);
+                            for i in 0..count {
+                                for s in &wp.signals {
+                                    flat.push((format!("{}{i}_{}", wp.name.name, s.name.name), s.ty.clone()));
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            flat
+        } else {
+            Vec::new()
+        };
+
         for conn in &inst.connections {
             if conn.direction != ConnectDir::Output {
                 continue;
@@ -973,10 +1017,31 @@ impl<'a> Codegen<'a> {
                 } else if let Some((_, ty)) = ram_flat_ports.iter().find(|(n, _)| *n == conn.port_name.name) {
                     let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(ty);
                     self.line(&format!("{} {}{};", ty_str, target, arr_suffix));
+                } else if let Some((_, ty)) = regfile_flat_ports.iter().find(|(n, _)| *n == conn.port_name.name) {
+                    let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(ty);
+                    self.line(&format!("{} {}{};", ty_str, target, arr_suffix));
                 } else {
                     self.line(&format!("logic {};", target));
                 }
             }
+        }
+    }
+
+    fn resolve_regfile_count(&self, expr: &crate::ast::Expr, r: &crate::ast::RegfileDecl) -> u64 {
+        use crate::ast::{ExprKind, LitKind, ParamKind};
+        match &expr.kind {
+            ExprKind::Literal(LitKind::Dec(v)) => *v,
+            ExprKind::Ident(name) => {
+                r.params.iter()
+                    .find(|p| p.name.name == *name)
+                    .and_then(|p| match &p.kind {
+                        ParamKind::Const => p.default.as_ref(),
+                        _ => None,
+                    })
+                    .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(*v) } else { None })
+                    .unwrap_or(1)
+            }
+            _ => 1,
         }
     }
 

@@ -1,5 +1,6 @@
 // E203 Execution Unit Top-Level
-// Integrates: Decode → Dispatch → ALU/MulDiv → Commit → Regfile
+// Integrates: Decode → Dispatch → ALU/MulDiv → Wbck → Regfile
+// With OITF for long-pipe (MulDiv) hazard tracking.
 // Single-issue, in-order pipeline with valid/ready handshake.
 module ExuTop #(
   parameter int XLEN = 32
@@ -24,7 +25,6 @@ module ExuTop #(
   output logic o_commit_valid
 );
 
-  logic wbck_fire;
   // ── IFU interface ──────────────────────────────────────────────────
   // ── Branch feedback to IFU ─────────────────────────────────────────
   // ── LSU interface ──────────────────────────────────────────────────
@@ -60,6 +60,14 @@ module ExuTop #(
   logic dec_rs1_en;
   logic dec_rs2_en;
   logic dec_rd_en;
+  logic dec_mul;
+  logic dec_mulh;
+  logic dec_mulhsu;
+  logic dec_mulhu;
+  logic dec_div;
+  logic dec_divu;
+  logic dec_rem;
+  logic dec_remu;
   ExuDecode dec (
     .instr(ifu_instr),
     .o_rs1_idx(dec_rs1_idx),
@@ -91,9 +99,19 @@ module ExuTop #(
     .o_store(dec_store),
     .o_rs1_en(dec_rs1_en),
     .o_rs2_en(dec_rs2_en),
-    .o_rd_en(dec_rd_en)
+    .o_rd_en(dec_rd_en),
+    .o_mul(dec_mul),
+    .o_mulh(dec_mulh),
+    .o_mulhsu(dec_mulhsu),
+    .o_mulhu(dec_mulhu),
+    .o_div(dec_div),
+    .o_divu(dec_divu),
+    .o_rem(dec_rem),
+    .o_remu(dec_remu)
   );
-  // ── Regfile (2R1W) — flattened port names ──────────────────────────
+  // ── Regfile (2R1W) ────────────────────────────────────────────────
+  logic [32-1:0] rf_rs1_data;
+  logic [32-1:0] rf_rs2_data;
   ExuRegfile rf (
     .clk(clk),
     .rst_n(rst_n),
@@ -102,10 +120,42 @@ module ExuTop #(
     .read0_data(rf_rs1_data),
     .read1_addr(dec_rs2_idx),
     .read1_data(rf_rs2_data),
-    .write_en(wbck_fire),
-    .write_addr(wbck_rd_idx),
-    .write_data(wbck_wdat)
+    .write_en(wbck_rf_ena),
+    .write_addr(wbck_rf_rdidx),
+    .write_data(wbck_rf_wdat)
   );
+  // ── OITF (Outstanding Instruction Track FIFO) ─────────────────────
+  logic oitf_dis_ready;
+  logic [5-1:0] oitf_ret_rd_idx;
+  logic oitf_ret_rd_en;
+  logic oitf_raw_dep;
+  logic oitf_waw_dep;
+  logic oitf_dep_stall;
+  logic oitf_is_empty;
+  ExuOitf oitf (
+    .clk(clk),
+    .rst_n(rst_n),
+    .dis_ena(oitf_dis_ena),
+    .dis_rd_idx(disp_mdv_rdidx),
+    .dis_rd_en(disp_mdv_rd_en),
+    .dis_ready(oitf_dis_ready),
+    .ret_ena(oitf_ret_ena),
+    .ret_rd_idx(oitf_ret_rd_idx),
+    .ret_rd_en(oitf_ret_rd_en),
+    .chk_rs1_idx(dec_rs1_idx),
+    .chk_rs1_en(dec_rs1_en),
+    .chk_rs2_idx(dec_rs2_idx),
+    .chk_rs2_en(dec_rs2_en),
+    .chk_rd_idx(dec_rd_idx),
+    .chk_rd_en(dec_rd_en),
+    .raw_dep(oitf_raw_dep),
+    .waw_dep(oitf_waw_dep),
+    .dep_stall(oitf_dep_stall),
+    .oitf_empty(oitf_is_empty)
+  );
+  // Allocate on muldiv dispatch
+  // Deallocate on muldiv writeback
+  // Hazard check against new instruction
   // ── Dispatch ───────────────────────────────────────────────────────
   logic disp_rdy;
   logic disp_alu_valid;
@@ -137,8 +187,16 @@ module ExuTop #(
   logic disp_mdv_valid;
   logic [32-1:0] disp_mdv_rs1;
   logic [32-1:0] disp_mdv_rs2;
+  logic [5-1:0] disp_mdv_rdidx;
+  logic disp_mdv_rd_en;
   logic disp_mdv_mul;
+  logic disp_mdv_mulh;
+  logic disp_mdv_mulhsu;
+  logic disp_mdv_mulhu;
   logic disp_mdv_div;
+  logic disp_mdv_divu;
+  logic disp_mdv_rem;
+  logic disp_mdv_remu;
   logic disp_lsu_valid;
   logic [32-1:0] disp_lsu_rs1;
   logic [32-1:0] disp_lsu_rs2;
@@ -146,7 +204,7 @@ module ExuTop #(
   logic disp_lsu_load;
   logic disp_lsu_store;
   ExuDisp disp (
-    .disp_valid(ifu_valid),
+    .disp_valid(disp_valid_gated),
     .disp_ready(disp_rdy),
     .i_rs1(rf_rs1_data),
     .i_rs2(rf_rs2_data),
@@ -159,8 +217,14 @@ module ExuTop #(
     .i_agu(dec_agu),
     .i_load(dec_load),
     .i_store(dec_store),
-    .i_mul(1'b0),
-    .i_div(1'b0),
+    .i_mul(dec_mul),
+    .i_mulh(dec_mulh),
+    .i_mulhsu(dec_mulhsu),
+    .i_mulhu(dec_mulhu),
+    .i_div(dec_div),
+    .i_divu(dec_divu),
+    .i_rem(dec_rem),
+    .i_remu(dec_remu),
     .i_alu_add(dec_alu_add),
     .i_alu_sub(dec_alu_sub),
     .i_alu_xor(dec_alu_xor),
@@ -207,11 +271,19 @@ module ExuTop #(
     .alu_is_jump(disp_alu_is_jump),
     .alu_is_agu(disp_alu_is_agu),
     .mdv_valid(disp_mdv_valid),
-    .mdv_ready(1'b1),
+    .mdv_ready(mdv_i_ready),
     .mdv_rs1(disp_mdv_rs1),
     .mdv_rs2(disp_mdv_rs2),
+    .mdv_rdidx(disp_mdv_rdidx),
+    .mdv_rd_en(disp_mdv_rd_en),
     .mdv_mul(disp_mdv_mul),
+    .mdv_mulh(disp_mdv_mulh),
+    .mdv_mulhsu(disp_mdv_mulhsu),
+    .mdv_mulhu(disp_mdv_mulhu),
     .mdv_div(disp_mdv_div),
+    .mdv_divu(disp_mdv_divu),
+    .mdv_rem(disp_mdv_rem),
+    .mdv_remu(disp_mdv_remu),
     .lsu_valid(disp_lsu_valid),
     .lsu_ready(lsu_ready),
     .lsu_rs1(disp_lsu_rs1),
@@ -273,46 +345,72 @@ module ExuTop #(
     .i_agu_sbf_1_ena(1'b0),
     .i_agu_sbf_1_nxt(0),
     .o_valid(alu_done_valid),
-    .o_ready(commit_alu_ready),
+    .o_ready(wbck_alu_ready),
     .o_wdat(alu_wdat),
     .o_rdidx(alu_rdidx),
     .o_bjp_taken(alu_bjp_taken),
     .o_bjp_tgt(alu_bjp_tgt),
     .o_bjp_lnk(alu_bjp_lnk)
   );
-  // ── Commit arbiter ─────────────────────────────────────────────────
-  logic commit_alu_ready;
-  logic cmt_long_ready;
-  logic wbck_valid_w;
-  logic [32-1:0] wbck_wdat;
-  logic [5-1:0] wbck_rd_idx;
-  logic wbck_rd_en;
-  logic cmt_valid_out;
-  logic [2-1:0] cmt_src_out;
-  ExuCommit cmt (
+  // ── MulDiv ─────────────────────────────────────────────────────────
+  logic mdv_i_ready;
+  logic mdv_done_valid;
+  logic [32-1:0] mdv_wdat;
+  ExuMuldiv mdv (
     .clk(clk),
-    .rst(1'b0),
-    .alu_valid(alu_done_valid),
-    .alu_ready(commit_alu_ready),
-    .alu_wdat(alu_wdat),
-    .alu_rd_idx(alu_rdidx),
-    .alu_rd_en(1'b1),
-    .long_valid(1'b0),
-    .long_ready(cmt_long_ready),
-    .long_wdat(0),
-    .long_rd_idx(0),
-    .long_rd_en(1'b0),
-    .wbck_valid(wbck_valid_w),
-    .wbck_ready(1'b1),
-    .wbck_wdat(wbck_wdat),
-    .wbck_rd_idx(wbck_rd_idx),
-    .wbck_rd_en(wbck_rd_en),
-    .commit_valid(cmt_valid_out),
-    .commit_src(cmt_src_out)
+    .rst_n(rst_n),
+    .i_valid(mdv_dispatch_valid),
+    .i_ready(mdv_i_ready),
+    .i_rs1(disp_mdv_rs1),
+    .i_rs2(disp_mdv_rs2),
+    .i_mul(disp_mdv_mul),
+    .i_mulh(disp_mdv_mulh),
+    .i_mulhsu(disp_mdv_mulhsu),
+    .i_mulhu(disp_mdv_mulhu),
+    .i_div(disp_mdv_div),
+    .i_divu(disp_mdv_divu),
+    .i_rem(disp_mdv_rem),
+    .i_remu(disp_mdv_remu),
+    .o_valid(mdv_done_valid),
+    .o_ready(wbck_longp_ready),
+    .o_wdat(mdv_wdat)
   );
-  // ── Output logic ───────────────────────────────────────────────────
-  assign ifu_ready = disp_rdy;
-  assign wbck_fire = (wbck_valid_w & wbck_rd_en);
+  // ── Writeback arbiter (replaces ExuCommit) ─────────────────────────
+  logic wbck_alu_ready;
+  logic wbck_longp_ready;
+  logic wbck_rf_ena;
+  logic [32-1:0] wbck_rf_wdat;
+  logic [5-1:0] wbck_rf_rdidx;
+  ExuWbck wbck (
+    .clk(clk),
+    .rst_n(rst_n),
+    .alu_wbck_i_valid(alu_done_valid),
+    .alu_wbck_i_ready(wbck_alu_ready),
+    .alu_wbck_i_wdat(alu_wdat),
+    .alu_wbck_i_rdidx(alu_rdidx),
+    .longp_wbck_i_valid(mdv_done_valid),
+    .longp_wbck_i_ready(wbck_longp_ready),
+    .longp_wbck_i_wdat(mdv_wdat),
+    .longp_wbck_i_flags(0),
+    .longp_wbck_i_rdidx(oitf_ret_rd_idx),
+    .longp_wbck_i_rdfpu(1'b0),
+    .rf_wbck_o_ena(wbck_rf_ena),
+    .rf_wbck_o_wdat(wbck_rf_wdat),
+    .rf_wbck_o_rdidx(wbck_rf_rdidx)
+  );
+  // ALU path (lower priority)
+  // Long-pipe path (higher priority) — MulDiv results
+  // RF write port
+  // ── Glue logic ────────────────────────────────────────────────────
+  logic disp_valid_gated;
+  logic oitf_dis_ena;
+  logic oitf_ret_ena;
+  logic mdv_dispatch_valid;
+  assign disp_valid_gated = (ifu_valid & (~oitf_dep_stall));
+  assign ifu_ready = (disp_rdy & (~oitf_dep_stall));
+  assign oitf_dis_ena = ((disp_mdv_valid & mdv_i_ready) & oitf_dis_ready);
+  assign mdv_dispatch_valid = (disp_mdv_valid & oitf_dis_ready);
+  assign oitf_ret_ena = (mdv_done_valid & wbck_longp_ready);
   assign o_bjp_valid = (alu_done_valid & alu_bjp_taken);
   assign o_bjp_taken = alu_bjp_taken;
   assign o_bjp_tgt = alu_bjp_tgt;
@@ -321,10 +419,14 @@ module ExuTop #(
   assign lsu_wdata = disp_lsu_rs2;
   assign lsu_load = disp_lsu_load;
   assign lsu_store = disp_lsu_store;
-  assign o_commit_valid = cmt_valid_out;
+  assign o_commit_valid = ((alu_done_valid & wbck_alu_ready) | (mdv_done_valid & wbck_longp_ready));
 
 endmodule
 
+// Gate dispatch on OITF hazard stall
+// OITF allocate: when muldiv dispatches successfully
+// Gate muldiv dispatch on OITF availability
+// OITF deallocate: when muldiv result is written back
 // BJP feedback
 // LSU interface
-// Commit status
+// Commit status — either ALU or long-pipe completes
