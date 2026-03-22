@@ -169,13 +169,13 @@ module ExuDecode
     // Immediate mux
     if is_op_imm | is_load_op | is_jalr
       o_imm = imm_i;
-    else if is_store_op
+    elsif is_store_op
       o_imm = imm_s;
-    else if is_branch
+    elsif is_branch
       o_imm = imm_b;
-    else if is_lui | is_auipc
+    elsif is_lui | is_auipc
       o_imm = imm_u;
-    else if is_jal
+    elsif is_jal
       o_imm = imm_j;
     else
       o_imm = 0;

@@ -401,7 +401,7 @@ module AesInvCipherTop
     if kld
       kb_ld <= true;
       kcnt <= 0xa;
-    else if kb_ld
+    elsif kb_ld
       if kcnt == 0
         kb_ld <= false;
       else
@@ -452,7 +452,7 @@ module AesInvCipherTop
       go <= true;
       text_in_r <= text_in;
       done_r <= false;
-    else if go
+    elsif go
       dcnt <= (dcnt + 1).trunc<4>();
       if dcnt == 0xb
         go <= false;
@@ -479,7 +479,7 @@ module AesInvCipherTop
       sa13 <= text_in_r.trunc<23,16>()   ^ kb10.trunc<23,16>();
       sa23 <= text_in_r.trunc<15,8>()    ^ kb10.trunc<15,8>();
       sa33 <= text_in_r.trunc<7,0>()     ^ kb10.trunc<7,0>();
-    else if go and dcnt > 1 and dcnt < 0xb
+    elsif go and dcnt > 1 and dcnt < 0xb
       // Standard rounds: InvShiftRows + InvSubBytes + AddRoundKey + InvMixColumns
       // For now use todo! placeholder for InvMixColumns (complex GF math)
       // AddRoundKey with kb[11-dcnt]
@@ -489,7 +489,7 @@ module AesInvCipherTop
       sa10 <= sa10_sr;  sa11 <= sa11_sr;  sa12 <= sa12_sr;  sa13 <= sa13_sr;
       sa20 <= sa20_sr;  sa21 <= sa21_sr;  sa22 <= sa22_sr;  sa23 <= sa23_sr;
       sa30 <= sa30_sr;  sa31 <= sa31_sr;  sa32 <= sa32_sr;  sa33 <= sa33_sr;
-    else if dcnt == 0xb
+    elsif dcnt == 0xb
       // Final round (no InvMixColumns): InvShiftRows + InvSubBytes + AddRoundKey(kb[0])
       sa00 <= sa00_sr ^ kb00.trunc<127,120>();
       sa10 <= sa10_sr ^ kb00.trunc<119,112>();

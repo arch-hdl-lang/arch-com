@@ -16,9 +16,9 @@ module ElseIfTest
   seq on clk rising
     if sel == 0
       result_r <= data_in;
-    else if sel == 1
+    elsif sel == 1
       result_r <= data_in ^ 0xff;
-    else if sel == 2
+    elsif sel == 2
       result_r <= (data_in << 1).trunc<8>();
     else
       result_r <= 0;
@@ -29,9 +29,9 @@ module ElseIfTest
   comb
     if sel == 0
       comb_out = data_in;
-    else if sel == 1
+    elsif sel == 1
       comb_out = data_in ^ 0xff;
-    else if sel == 2
+    elsif sel == 2
       comb_out = (data_in << 1).trunc<8>();
     else
       comb_out = 0;

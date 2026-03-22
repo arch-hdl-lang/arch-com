@@ -456,6 +456,24 @@ Arch has exactly two assignment forms. Mixing operators between them is a compil
 
 > *⚑ The clock is named in `seq on clk rising`; reset is declared per register (`reset rst sync high` or `reset none`). The compiler auto-generates the `if (rst)` guard and propagates domain membership automatically through all downstream logic in the module.*
 
+**4.2.1 Conditional Statements: if / elsif / else**
+
+Arch uses `elsif` (one word) for chained conditionals, not `else if` (two words). In a brace-free language, `else if` is ambiguous — does `else` start a new body block, or does `else if` chain? The `elsif` keyword resolves this unambiguously:
+
+```
+if condition_a
+  r <= val_a;
+elsif condition_b
+  r <= val_b;
+elsif condition_c
+  r <= val_c;
+else
+  r <= val_default;
+end if
+```
+
+The same syntax applies in both `seq` and `comb` blocks. A chain begins with `if`, continues with zero or more `elsif` branches, optionally ends with `else`, and is always closed by a single `end if`. The compiler emits standard SystemVerilog `if / else if / else` from this syntax.
+
 **4.3 Module Instantiation**
 
 +--------------------------------------------------------------------+
@@ -651,6 +669,16 @@ A pipeline is a first-class Arch construct --- not a pattern you build from regi
 An fsm block declares a finite state machine with named states and exhaustive coverage enforced by the compiler. Missing transitions, undriven outputs in any state, and unreachable states are all compile-time errors.
 
 Output ports may carry an optional `default expr` annotation. When present, the compiler emits the default value at the top of the output `always_comb` block (instead of `'0`) and relaxes the "all ports driven in every state" rule for that port — states that do not override the port simply inherit the declared default. This eliminates boilerplate `= false` / `= 0` assignments that would otherwise appear in every state body.
+
+**Datapath Registers and Sequential Logic in FSMs**
+
+FSMs may declare `reg` and `let` bindings at scope level (alongside `port` and `state`), and `seq on clk rising ... end seq` blocks inside state bodies (alongside `comb` and `transition`). This allows co-locating datapath logic with control logic — a significant readability improvement over SystemVerilog, where FSM state and datapath registers must be split across separate `always_ff` and `always_comb` blocks.
+
+The compiler generates clean, separated SystemVerilog:
+
+- A single `always_ff` block containing: reset logic for state register + all datapath registers, then `state_r <= state_next` followed by a `case` dispatching per-state `seq` assignments.
+- An `always_comb` block for next-state transitions.
+- An `always_comb` block for output logic (per-state `comb` assignments).
 
 **7.1 Declaration**
 

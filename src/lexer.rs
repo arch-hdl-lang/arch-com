@@ -68,6 +68,8 @@ pub enum TokenKind {
     If,
     #[token("else")]
     Else,
+    #[token("elsif")]
+    ElsIf,
     #[token("match")]
     Match,
     #[token("let")]
@@ -324,6 +326,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Init => write!(f, "init"),
             TokenKind::If => write!(f, "if"),
             TokenKind::Else => write!(f, "else"),
+            TokenKind::ElsIf => write!(f, "elsif"),
             TokenKind::Match => write!(f, "match"),
             TokenKind::Let => write!(f, "let"),
             TokenKind::Inst => write!(f, "inst"),

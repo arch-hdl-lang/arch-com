@@ -88,7 +88,7 @@ module LiteBpu
     if dec_jalr
       if dec_jalr_rs1x0
         prdt_pc_add_op1 = 0;
-      else if dec_jalr_rs1x1
+      elsif dec_jalr_rs1x1
         prdt_pc_add_op1 = rf2bpu_x1;
       else
         prdt_pc_add_op1 = rf2bpu_rs1;

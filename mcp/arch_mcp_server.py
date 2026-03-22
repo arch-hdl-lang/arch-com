@@ -41,6 +41,7 @@ Common mistakes to avoid:
 - 'let' declarations REQUIRE an initializer (let x: UInt<8> = expr;)
 - Do NOT use reserved keywords as signal/register names (counter, interface, domain, etc.)
 - All output ports of an inst MUST be explicitly connected via 'connect port -> wire'
+- Use 'elsif' for chained conditionals (NOT 'else if'). 'else' starts a body block; 'elsif' chains.
 """,
 )
 
@@ -101,7 +102,7 @@ RESERVED_KEYWORDS = {
     "module", "pipeline", "fsm", "fifo", "ram", "arbiter", "synchronizer",
     "counter", "regfile", "interface", "domain", "struct", "enum",
     "generate", "inst", "port", "param", "reg", "let", "comb", "seq",
-    "assert", "cover", "if", "else", "end", "for", "in", "on", "rising",
+    "assert", "cover", "if", "else", "elsif", "end", "for", "in", "on", "rising",
     "falling", "init", "reset", "sync", "async", "high", "low", "none",
     "forward", "stall", "flush", "when", "kind", "policy", "connect",
     "true", "false", "todo",

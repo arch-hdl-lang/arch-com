@@ -117,25 +117,25 @@ module AluDpath
     // ── ALU result ──────────────────────────────────────────────────────
     if alu_req_alu_add
       alu_req_alu_res = adder_res32;
-    else if alu_req_alu_sub
+    elsif alu_req_alu_sub
       alu_req_alu_res = adder_res32;
-    else if alu_req_alu_xor
+    elsif alu_req_alu_xor
       alu_req_alu_res = xor_res;
-    else if alu_req_alu_or
+    elsif alu_req_alu_or
       alu_req_alu_res = alu_req_alu_op1 | alu_req_alu_op2;
-    else if alu_req_alu_and
+    elsif alu_req_alu_and
       alu_req_alu_res = alu_req_alu_op1 & alu_req_alu_op2;
-    else if alu_req_alu_sll
+    elsif alu_req_alu_sll
       alu_req_alu_res = (alu_req_alu_op1 << shamt).trunc<32>();
-    else if alu_req_alu_srl
+    elsif alu_req_alu_srl
       alu_req_alu_res = alu_req_alu_op1 >> shamt;
-    else if alu_req_alu_sra
+    elsif alu_req_alu_sra
       alu_req_alu_res = ((alu_req_alu_op1 as SInt<32>) >> shamt) as UInt<32>;
-    else if alu_req_alu_slt
+    elsif alu_req_alu_slt
       alu_req_alu_res = signed_lt.zext<32>();
-    else if alu_req_alu_sltu
+    elsif alu_req_alu_sltu
       alu_req_alu_res = (~adder_carry).zext<32>();
-    else if alu_req_alu_lui
+    elsif alu_req_alu_lui
       alu_req_alu_res = alu_req_alu_op2;
     else
       alu_req_alu_res = 0;
@@ -147,15 +147,15 @@ module AluDpath
     // ── BJP comparison result ────────────────────────────────────────────
     if bjp_req_alu_cmp_eq
       bjp_req_alu_cmp_res = xor_all_zero;
-    else if bjp_req_alu_cmp_ne
+    elsif bjp_req_alu_cmp_ne
       bjp_req_alu_cmp_res = ~xor_all_zero;
-    else if bjp_req_alu_cmp_lt
+    elsif bjp_req_alu_cmp_lt
       bjp_req_alu_cmp_res = signed_lt;
-    else if bjp_req_alu_cmp_gt
+    elsif bjp_req_alu_cmp_gt
       bjp_req_alu_cmp_res = ~signed_lt & ~xor_all_zero;
-    else if bjp_req_alu_cmp_ltu
+    elsif bjp_req_alu_cmp_ltu
       bjp_req_alu_cmp_res = ~adder_carry;
-    else if bjp_req_alu_cmp_gtu
+    elsif bjp_req_alu_cmp_gtu
       bjp_req_alu_cmp_res = adder_carry & ~xor_all_zero;
     else
       bjp_req_alu_cmp_res = false;
@@ -164,22 +164,22 @@ module AluDpath
     // ── AGU result ───────────────────────────────────────────────────────
     if agu_req_alu_add
       agu_req_alu_res = adder_res32;
-    else if agu_req_alu_and
+    elsif agu_req_alu_and
       agu_req_alu_res = agu_req_alu_op1 & agu_req_alu_op2;
-    else if agu_req_alu_or
+    elsif agu_req_alu_or
       agu_req_alu_res = agu_req_alu_op1 | agu_req_alu_op2;
-    else if agu_req_alu_xor
+    elsif agu_req_alu_xor
       agu_req_alu_res = agu_req_alu_op1 ^ agu_req_alu_op2;
-    else if agu_req_alu_swap
+    elsif agu_req_alu_swap
       // SWAP: write mem value (op2) to rd; op1 is the address
       agu_req_alu_res = agu_req_alu_op2;
-    else if agu_req_alu_max
+    elsif agu_req_alu_max
       agu_req_alu_res = signed_lt ? agu_req_alu_op2 : agu_req_alu_op1;
-    else if agu_req_alu_min
+    elsif agu_req_alu_min
       agu_req_alu_res = signed_lt ? agu_req_alu_op1 : agu_req_alu_op2;
-    else if agu_req_alu_maxu
+    elsif agu_req_alu_maxu
       agu_req_alu_res = (~adder_carry) ? agu_req_alu_op2 : agu_req_alu_op1;
-    else if agu_req_alu_minu
+    elsif agu_req_alu_minu
       agu_req_alu_res = (~adder_carry) ? agu_req_alu_op1 : agu_req_alu_op2;
     else
       agu_req_alu_res = 0;

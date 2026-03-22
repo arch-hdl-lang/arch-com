@@ -1061,6 +1061,30 @@ impl<'a> Codegen<'a> {
         self.line(&format!("{n}_state_t state_r, state_next;"));
         self.line("");
 
+        // ── Datapath register declarations ───────────────────────────────────
+        for reg in &f.regs {
+            let ty = self.emit_type_str(&reg.ty);
+            self.line(&format!("{ty} {};", reg.name.name));
+        }
+        if !f.regs.is_empty() {
+            self.line("");
+        }
+
+        // ── Let wire declarations ────────────────────────────────────────────
+        for lb in &f.lets {
+            let ty = if let Some(t) = &lb.ty {
+                self.emit_type_str(t)
+            } else {
+                "logic".to_string()
+            };
+            let val = self.emit_expr_str(&lb.value);
+            self.line(&format!("{ty} {};", lb.name.name));
+            self.line(&format!("assign {} = {};", lb.name.name, val));
+        }
+        if !f.lets.is_empty() {
+            self.line("");
+        }
+
         // Identify clock and reset port names
         let clk_port = f.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)));
         let clk_name = clk_port.map(|p| p.name.name.as_str()).unwrap_or("clk");
@@ -1069,15 +1093,41 @@ impl<'a> Codegen<'a> {
         let rst_cond = Self::rst_condition(&rst_name, is_low);
 
         // ── State register FF ────────────────────────────────────────────────
+        let has_seq = f.states.iter().any(|s| !s.seq_stmts.is_empty());
         self.line(&format!("always_ff @({ff_sens}) begin"));
         self.indent += 1;
         self.line(&format!("if ({rst_cond}) begin"));
         self.indent += 1;
         self.line(&format!("state_r <= {};", f.default_state.name.to_uppercase()));
+        // Reset datapath registers
+        for reg in &f.regs {
+            let init_str = self.emit_expr_str(&reg.init);
+            self.line(&format!("{} <= {};", reg.name.name, init_str));
+        }
         self.indent -= 1;
         self.line("end else begin");
         self.indent += 1;
         self.line("state_r <= state_next;");
+        // Per-state sequential logic
+        if has_seq {
+            self.line("case (state_r)");
+            self.indent += 1;
+            for sb in &f.states {
+                if sb.seq_stmts.is_empty() {
+                    continue;
+                }
+                self.line(&format!("{}: begin", sb.name.name.to_uppercase()));
+                self.indent += 1;
+                for stmt in &sb.seq_stmts {
+                    self.emit_reg_stmt(stmt);
+                }
+                self.indent -= 1;
+                self.line("end");
+            }
+            self.line("default: ;");
+            self.indent -= 1;
+            self.line("endcase");
+        }
         self.indent -= 1;
         self.line("end");
         self.indent -= 1;

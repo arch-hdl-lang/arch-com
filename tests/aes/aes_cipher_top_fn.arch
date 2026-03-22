@@ -293,7 +293,7 @@ module AesCipherTop
 
     if ld
       dcnt <= 0xb;
-    else if dcnt != 0
+    elsif dcnt != 0
       dcnt <= (dcnt - 1).trunc<4>();
     end if
 
@@ -314,12 +314,12 @@ module AesCipherTop
       sa13 <= text_in_r.trunc<23,16>()   ^ w3.trunc<23,16>();
       sa23 <= text_in_r.trunc<15,8>()    ^ w3.trunc<15,8>();
       sa33 <= text_in_r.trunc<7,0>()     ^ w3.trunc<7,0>();
-    else if dcnt > 1
+    elsif dcnt > 1
       sa00 <= sa00_ark;  sa01 <= sa01_ark;  sa02 <= sa02_ark;  sa03 <= sa03_ark;
       sa10 <= sa10_ark;  sa11 <= sa11_ark;  sa12 <= sa12_ark;  sa13 <= sa13_ark;
       sa20 <= sa20_ark;  sa21 <= sa21_ark;  sa22 <= sa22_ark;  sa23 <= sa23_ark;
       sa30 <= sa30_ark;  sa31 <= sa31_ark;  sa32 <= sa32_ark;  sa33 <= sa33_ark;
-    else if dcnt == 1
+    elsif dcnt == 1
       sa00 <= sa00_fark;  sa01 <= sa01_fark;  sa02 <= sa02_fark;  sa03 <= sa03_fark;
       sa10 <= sa10_fark;  sa11 <= sa11_fark;  sa12 <= sa12_fark;  sa13 <= sa13_fark;
       sa20 <= sa20_fark;  sa21 <= sa21_fark;  sa22 <= sa22_fark;  sa23 <= sa23_fark;
@@ -332,7 +332,7 @@ module AesCipherTop
 
     if ld
       done_r <= false;
-    else if dcnt == 1
+    elsif dcnt == 1
       done_r <= true;
     end if
 

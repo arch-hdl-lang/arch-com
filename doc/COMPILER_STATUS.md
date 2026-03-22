@@ -1,7 +1,7 @@
 # ARCH Compiler — Status & Roadmap
 
 > Last updated: 2026-03-21
-> Compiler version: 0.24.0 (sim sext fix, sim trunc<Hi,Lo> width fix, e203_exu_decode benchmark)
+> Compiler version: 0.25.0 (elsif keyword, FSM reg/seq extension, e203_exu_muldiv benchmark)
 
 ---
 
@@ -29,7 +29,7 @@
 | `struct` | ✅ | `typedef struct packed` |
 | `enum` | ✅ | `typedef enum logic`; auto width ⌈log₂(N)⌉ |
 | `module` | ✅ | Params, ports, reg/comb/let/inst body; `seq on` clocked blocks with per-reg reset (`reset <signal> sync\|async high\|low` or `reset none`); compiler auto-generates reset guards; mixed reset/no-reset partitioning; `reg default: init 0 reset rst;` wildcard default for register declarations |
-| `fsm` | ✅ | State enum, `always_ff` state reg, `always_comb` next-state + output; `default expr` on output ports |
+| `fsm` | ✅ | State enum, `always_ff` state reg, `always_comb` next-state + output; `default expr` on output ports; **datapath extension**: `reg` declarations and `let` bindings at FSM scope, `seq on clk rising ... end seq` blocks inside state bodies — compiler emits separate `always_ff` (state + datapath regs with reset + per-state seq) and `always_comb` (transitions + outputs); sim codegen supports FSM regs with `_n_` shadow variables and proper Bool width tracking |
 | `fifo` | ✅ | Sync (extra-bit pointers) + async (gray-code CDC, auto-detected) |
 | `ram` | ✅ | `single`/`simple_dual`/`true_dual`; `latency 0` (async) / `latency 1` (sync) / `latency 2` (sync_out); all write modes; `init` block |
 | `counter` | ✅ | `wrap`/`saturate`/`gray`/`one_hot`/`johnson` modes; `up`/`down`/`up_down`; `at_max`/`at_min` outputs |
@@ -103,7 +103,7 @@
 |---------|--------|
 | `comb` assignment | ✅ |
 | `reg` assignment `<=` | ✅ |
-| `if / else if / else` | ✅ |
+| `if / elsif / else` | ✅ `elsif` keyword for chained conditionals (not `else if`); resolves ambiguity in brace-free syntax |
 | `match` (reg and comb blocks) | ✅ |
 | Wildcard `_` → `default:` | ✅ |
 | `let` bindings | ✅ `logic` local in module scope; **explicit type annotation required** (e.g. `let x: UInt<32> = ...`) — omitting the type is a compile error since bit widths are semantically meaningful |
@@ -144,11 +144,12 @@
 - **E203 HBirdv2 benchmark suite** (7 modules from nuclei-sw E203 RISC-V core):
   - `e203_exu_regfile`: 2R1W register file using `regfile` construct; `init [0] = 0` write guard; `forward write_before_read: false`; 5 sim tests; verified against Verilator
   - `e203_exu_wbck`: Priority write-back arbiter (alu vs long-latency); pure `comb` block with `if/else`; 6 sim tests; verified against Verilator
-  - `e203_ifu_litebpu`: Static branch prediction unit; JAL/JALR always-taken, Bxx backward-taken; JALR-x1/xN hazard detection; `rs1xn_rdrf_r` state register; `let` intermediates + async reset + `comb` `if/else if/else`; 11 sim tests; verified against Verilator
+  - `e203_ifu_litebpu`: Static branch prediction unit; JAL/JALR always-taken, Bxx backward-taken; JALR-x1/xN hazard detection; `rs1xn_rdrf_r` state register; `let` intermediates + async reset + `comb` `if/elsif/else`; 11 sim tests; verified against Verilator
   - `e203_exu_alu_dpath`: Shared ALU datapath; BJP/AGU/ALU operand mux; 33-bit carry-extended adder; two's-complement subtraction for comparison; `?:` ternary chaining; `SInt<32>` cast for signed comparison; `reset none` registers; 26 sim tests
   - `e203_exu_alu_bjp`: Branch/jump unit; BEQ/BNE/BLT/BGE/BLTU/BGEU; JAL/JALR unconditional jump; target address, link address (PC+4); XOR-based equality, carry-out subtraction for BLTU/BGEU, `SInt<32>` cast for BLT/BGE; purely combinational (no clock port); 25 sim tests
   - `e203_exu_alu`: ALU top-level module (6th E203 module); first to use `inst` for hierarchical composition — instantiates AluDpath + BjpUnit; 20 sim tests; verified against Verilator
   - `e203_exu_decode`: RV32I instruction decoder (7th E203 module); pure combinational; decodes all RV32I formats (R, I, S, B, U, J); produces one-hot ALU/BJP ops, register indices/enables, sign-extended immediates, unit select, load/store flags; 30 `arch sim` tests + 22 Verilator cross-check tests
+  - `e203_exu_muldiv`: Iterative multiply/divide unit (8th E203 module); RV32M MUL/MULH/MULHSU/MULHU/DIV/DIVU/REM/REMU; 32-cycle shift-add multiply, 32-cycle restoring divide; signed operand conversion + result negation; divide-by-zero handling; valid/ready handshake; written as both `module` (manual state encoding) and `fsm` (named states with `reg`/`seq` datapath extension); 24 `arch sim` tests + 12 Verilator cross-check tests; uses `elsif` for chained conditionals
 
 ---
 

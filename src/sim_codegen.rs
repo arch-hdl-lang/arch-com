@@ -302,6 +302,8 @@ struct Ctx<'a> {
     /// Signal name → bit width for known signals (used for concat width inference).
     widths:      &'a HashMap<String, u32>,
     posedge_lhs: bool,
+    /// FSM mode: regs are public members, no `_` prefix on reads
+    fsm_mode:    bool,
     enum_map:    &'a HashMap<String, Vec<String>>,
 }
 
@@ -317,7 +319,7 @@ impl<'a> Ctx<'a> {
         enum_map:   &'a HashMap<String, Vec<String>>,
     ) -> Self {
         Ctx { reg_names, port_names, let_names, inst_names, wide_names,
-              widths, posedge_lhs: false, enum_map }
+              widths, posedge_lhs: false, fsm_mode: false, enum_map }
     }
 
     fn posedge(mut self) -> Self { self.posedge_lhs = true; self }
@@ -327,11 +329,17 @@ impl<'a> Ctx<'a> {
         if self.reg_names.contains(name) {
             if is_lhs && self.posedge_lhs {
                 format!("_n_{name}")
+            } else if self.fsm_mode {
+                name.to_string()
             } else {
                 format!("_{name}")
             }
         } else if self.let_names.contains(name) {
-            format!("_let_{name}")
+            if self.fsm_mode {
+                name.to_string()
+            } else {
+                format!("_let_{name}")
+            }
         } else if self.inst_names.contains(name) {
             format!("_inst_{name}")
         } else {
@@ -1909,11 +1917,25 @@ impl<'a> SimCodegen<'a> {
         }
         h.push('\n');
         for p in &f.ports { h.push_str(&format!("  {} {};\n", cpp_port_type(&p.ty), p.name.name)); }
+        // Datapath registers as public members (accessible from testbench)
+        for reg in &f.regs {
+            let ty = cpp_internal_type(&reg.ty);
+            h.push_str(&format!("  {} {};\n", ty, reg.name.name));
+        }
+        // Let bindings as public members
+        for lb in &f.lets {
+            let ty = lb.ty.as_ref().map(|t| cpp_internal_type(t)).unwrap_or_else(|| "uint32_t".to_string());
+            h.push_str(&format!("  {} {};\n", ty, lb.name.name));
+        }
         h.push('\n');
 
         let port_inits: Vec<String> = f.ports.iter().map(|p| format!("{}(0)", p.name.name)).collect();
+        let reg_inits: Vec<String> = f.regs.iter().map(|r| {
+            let init_val = cpp_expr(&r.init, &Ctx::new(&empty_regs, &port_names, &empty_lets, &empty_insts, &empty_wide, &empty_w, &enum_map));
+            format!("{}({})", r.name.name, init_val)
+        }).collect();
         let state_inits = vec!["_clk_prev(0)".to_string(), format!("_state_r({default_idx})")];
-        let all_inits: Vec<String> = port_inits.into_iter().chain(state_inits).collect();
+        let all_inits: Vec<String> = port_inits.into_iter().chain(reg_inits).chain(state_inits).collect();
         h.push_str(&format!("  {class}() : {} {{}}\n", all_inits.join(", ")));
         h.push_str("  void eval();\n  void final() {}\nprivate:\n");
         h.push_str("  uint8_t _clk_prev;\n");
@@ -1931,16 +1953,52 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("  _clk_prev = {clk_port};\n"));
         cpp.push_str("  eval_comb();\n  if (_rising) eval_posedge();\n  eval_comb();\n}\n\n");
 
-        let ctx_fsm = Ctx::new(&empty_regs, &port_names, &empty_lets, &empty_insts,
-                               &empty_wide, &empty_w, &enum_map);
+        let fsm_reg_names: HashSet<String> = f.regs.iter().map(|r| r.name.name.clone()).collect();
+        let fsm_let_names: HashSet<String> = f.lets.iter().map(|l| l.name.name.clone()).collect();
+        let mut fsm_widths: HashMap<String, u32> = HashMap::new();
+        for p in &f.ports { fsm_widths.insert(p.name.name.clone(), type_bits_te(&p.ty)); }
+        for r in &f.regs { fsm_widths.insert(r.name.name.clone(), type_bits_te(&r.ty)); }
+        for l in &f.lets {
+            if let Some(ty) = &l.ty { fsm_widths.insert(l.name.name.clone(), type_bits_te(ty)); }
+        }
+        let ctx_fsm = {
+            let mut c = Ctx::new(&fsm_reg_names, &port_names, &fsm_let_names, &empty_insts,
+                                 &empty_wide, &fsm_widths, &enum_map);
+            c.fsm_mode = true;
+            c
+        };
 
         cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
         cpp.push_str(&format!("  {state_ty} _n_state = _state_r;\n"));
-        cpp.push_str(&format!("  if ({rst_cond}) {{\n    _n_state = {default_idx};\n  }} else {{\n"));
+        // Shadow variables for datapath regs
+        for reg in &f.regs {
+            let ty = cpp_internal_type(&reg.ty);
+            cpp.push_str(&format!("  {ty} _n_{name} = {name};\n", name = reg.name.name));
+        }
+        cpp.push_str(&format!("  if ({rst_cond}) {{\n    _n_state = {default_idx};\n"));
+        // Reset datapath regs
+        for reg in &f.regs {
+            let init_val = cpp_expr(&reg.init, &ctx_fsm);
+            cpp.push_str(&format!("    _n_{} = {};\n", reg.name.name, init_val));
+        }
+        cpp.push_str("  } else {\n");
+        let ctx_posedge = {
+            let mut c = Ctx::new(&fsm_reg_names, &port_names, &fsm_let_names, &empty_insts,
+                                 &empty_wide, &fsm_widths, &enum_map);
+            c.posedge_lhs = true;
+            c.fsm_mode = true;
+            c
+        };
         cpp.push_str("    switch (_state_r) {\n");
         for sb in &f.states {
             let idx = state_idx.get(&sb.name.name).copied().unwrap_or(0);
             cpp.push_str(&format!("      case {idx}: // {}\n", sb.name.name));
+            // Emit seq_stmts for this state
+            for stmt in &sb.seq_stmts {
+                let mut body = String::new();
+                emit_reg_stmt(stmt, &ctx_posedge, &mut body, 4);
+                cpp.push_str(&body);
+            }
             for tr in &sb.transitions {
                 let cond = cpp_expr(&tr.condition, &ctx_fsm);
                 let target_idx = state_idx.get(&tr.target.name).copied().unwrap_or(0);
@@ -1948,9 +2006,19 @@ impl<'a> SimCodegen<'a> {
             }
             cpp.push_str("        break;\n");
         }
-        cpp.push_str("    }\n  }\n  _state_r = _n_state;\n}\n\n");
+        cpp.push_str("    }\n  }\n  _state_r = _n_state;\n");
+        // Commit datapath regs
+        for reg in &f.regs {
+            cpp.push_str(&format!("  {} = _n_{};\n", reg.name.name, reg.name.name));
+        }
+        cpp.push_str("}\n\n");
 
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
+        // Let bindings
+        for lb in &f.lets {
+            let val = cpp_expr(&lb.value, &ctx_fsm);
+            cpp.push_str(&format!("  {} = {};\n", lb.name.name, val));
+        }
         for p in &f.ports {
             if p.direction == Direction::Out {
                 let default_val = p.default.as_ref()

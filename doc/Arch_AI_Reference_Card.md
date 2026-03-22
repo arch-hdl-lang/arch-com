@@ -59,6 +59,10 @@
 > end seq
 >
 > let x: UInt\<32\> = a + b; // combinational wire (explicit type required)
+>
+> CONDITIONALS: use elsif (one word), NOT else if (two words):
+>
+> if cond\_a r \<= val\_a; elsif cond\_b r \<= val\_b; else r \<= val\_c; end if
 
 **2. Types**
 
@@ -262,6 +266,24 @@
 |                                          |                                           |
 | end fsm Name                             |                                           |
 +------------------------------------------+-------------------------------------------+
+
+**fsm datapath extension** --- `reg`, `let`, and `seq` inside FSMs:
+
+FSMs may declare `reg` and `let` at scope level, and `seq on clk rising ... end seq` blocks inside state bodies. The compiler emits separate `always_ff` (state + datapath regs) and `always_comb` (transitions + outputs). This co-locates control and datapath — a readability win over SV's split-block style.
+
+```
+fsm MulDiv
+  reg acc_r: UInt<64> init 0 reset rst sync high;
+  let done: Bool = (cycle_r == 31);
+  state Idle
+    seq on clk rising
+      acc_r <= 0;
+    end seq
+    transition to Multiply when req_valid;
+  end state Idle
+  ...
+end fsm MulDiv
+```
 
 **fifo --- sync or dual-clock async (gray-code auto-generated)**
 

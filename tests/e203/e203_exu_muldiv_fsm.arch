@@ -1,0 +1,174 @@
+// E203 HBirdv2 Multiply/Divide Unit — FSM version
+// Iterative 32-cycle multiply (shift-add) and 32-cycle restoring divide.
+// Supports RV32M: MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU.
+// Valid/ready handshake: accepts when Idle, produces result in Done.
+
+fsm ExuMuldiv
+  param XLEN: const = 32;
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  // Dispatch interface
+  port i_valid: in  Bool;
+  port i_ready: out Bool default false;
+  port i_rs1:   in  UInt<32>;
+  port i_rs2:   in  UInt<32>;
+
+  // Operation select (one-hot)
+  port i_mul:    in Bool;
+  port i_mulh:   in Bool;
+  port i_mulhsu: in Bool;
+  port i_mulhu:  in Bool;
+  port i_div:    in Bool;
+  port i_divu:   in Bool;
+  port i_rem:    in Bool;
+  port i_remu:   in Bool;
+
+  // Result
+  port o_valid: out Bool default false;
+  port o_ready: in  Bool;
+  port o_wdat:  out UInt<32> default 0;
+
+  // Datapath registers
+  reg cyc_r:   UInt<6> init 0 reset rst_n;
+  reg acc_hi_r:  UInt<32> init 0 reset rst_n;
+  reg acc_lo_r:  UInt<32> init 0 reset rst_n;
+  reg mcand_r:   UInt<32> init 0 reset rst_n;
+  reg rem_r:   UInt<33> init 0 reset rst_n;
+  reg quot_r:  UInt<32> init 0 reset rst_n;
+  reg dvsr_r:  UInt<32> init 0 reset rst_n;
+  reg is_mul_r:    Bool init 0 reset rst_n;
+  reg want_hi_r:   Bool init 0 reset rst_n;
+  reg want_rem_r:  Bool init 0 reset rst_n;
+  reg neg_res_r:   Bool init 0 reset rst_n;
+  reg div_zero_r:  Bool init 0 reset rst_n;
+
+  // Operand sign handling
+  let rs1_sign: Bool = (i_rs1 >> 31) != 0;
+  let rs2_sign: Bool = (i_rs2 >> 31) != 0;
+  let rs1_is_signed: Bool = i_mul | i_mulh | i_mulhsu | i_div | i_rem;
+  let rs2_is_signed: Bool = i_mul | i_mulh | i_div | i_rem;
+  let rs1_neg: UInt<32> = (~i_rs1 + 1).trunc<32>();
+  let rs2_neg: UInt<32> = (~i_rs2 + 1).trunc<32>();
+  let op1_mag: UInt<32> = (rs1_is_signed & rs1_sign) ? rs1_neg : i_rs1;
+  let op2_mag: UInt<32> = (rs2_is_signed & rs2_sign) ? rs2_neg : i_rs2;
+  let mul_neg: Bool = (i_mul | i_mulh) ? (rs1_sign ^ rs2_sign) :
+                      i_mulhsu          ? rs1_sign              :
+                                          false;
+  let div_neg: Bool = (i_div & (rs1_sign ^ rs2_sign)) | (i_rem & rs1_sign);
+  let is_mul_op: Bool = i_mul | i_mulh | i_mulhsu | i_mulhu;
+  let is_div_op: Bool = i_div | i_divu | i_rem | i_remu;
+  let want_hi:  Bool = i_mulh | i_mulhsu | i_mulhu;
+  let want_rem: Bool = i_rem | i_remu;
+
+  // Multiply step intermediates
+  let add_res: UInt<33> = (acc_hi_r.zext<33>() + mcand_r.zext<33>()).trunc<33>();
+  let add_lo: UInt<32> = add_res.trunc<32>();
+  let add_carry: Bool = (add_res >> 32) != 0;
+
+  // Divide step intermediates
+  let rem_shifted: UInt<33> = ((rem_r << 1).trunc<33>() | quot_r.trunc<31,31>().zext<33>()).trunc<33>();
+  let trial_sub: UInt<34> = (rem_shifted.zext<34>() - dvsr_r.zext<34>()).trunc<34>();
+  let trial_neg: Bool = (trial_sub >> 33) != 0;
+
+  // Multiply next-state values
+  let carry_mask: UInt<32> = add_carry ? 0x80000000 : 0;
+  let mul_nxt_hi_add: UInt<32> = (add_lo >> 1).trunc<32>() | carry_mask;
+  let mul_nxt_lo_add: UInt<32> = (acc_lo_r >> 1).trunc<32>() | (add_lo.trunc<0,0>().zext<32>() << 31);
+  let mul_nxt_hi_nop: UInt<32> = (acc_hi_r >> 1).trunc<32>();
+  let mul_nxt_lo_nop: UInt<32> = (acc_lo_r >> 1).trunc<32>() | (acc_hi_r.trunc<0,0>().zext<32>() << 31);
+
+  // Result selection
+  let mul_res: UInt<32> = want_hi_r ? acc_hi_r : acc_lo_r;
+  let mul_res_neg: UInt<32> = (~mul_res + 1).trunc<32>();
+  let div_raw: UInt<32> = want_rem_r ? rem_r.trunc<32>() : quot_r;
+  let div_res_neg: UInt<32> = (~div_raw + 1).trunc<32>();
+  let raw_result: UInt<32> = is_mul_r ? mul_res : div_raw;
+  let neg_result: UInt<32> = is_mul_r ? mul_res_neg : div_res_neg;
+
+  state Idle, Exec, Done;
+  default state Idle;
+
+  state Idle
+    comb
+      i_ready = true;
+    end comb
+
+    seq on clk rising
+      if i_valid & (is_mul_op | is_div_op)
+        cyc_r   <= 0;
+        is_mul_r   <= is_mul_op;
+        want_hi_r  <= want_hi;
+        want_rem_r <= want_rem;
+        neg_res_r  <= is_mul_op ? mul_neg : div_neg;
+        div_zero_r <= (i_rs2 == 0) & is_div_op;
+
+        if is_mul_op
+          acc_hi_r <= 0;
+          acc_lo_r <= op2_mag;
+          mcand_r  <= op1_mag;
+        else
+          rem_r  <= (i_rs2 == 0) ? op1_mag.zext<33>() : 0;
+          quot_r <= op1_mag;
+          dvsr_r <= op2_mag;
+        end if
+      end if
+    end seq
+
+    transition to Exec when i_valid & (is_mul_op | is_div_op);
+    transition to Idle when true;
+  end state Idle
+
+  state Exec
+    seq on clk rising
+      if is_mul_r
+        if acc_lo_r.trunc<0,0>() != 0
+          acc_hi_r <= mul_nxt_hi_add;
+          acc_lo_r <= mul_nxt_lo_add;
+        else
+          acc_hi_r <= mul_nxt_hi_nop;
+          acc_lo_r <= mul_nxt_lo_nop;
+        end if
+      else
+        if ~trial_neg
+          rem_r  <= trial_sub.trunc<33>();
+          quot_r <= ((quot_r << 1).trunc<32>() | 1).trunc<32>();
+        else
+          rem_r  <= rem_shifted;
+          quot_r <= (quot_r << 1).trunc<32>();
+        end if
+      end if
+
+      if cyc_r == 31
+      else
+        cyc_r <= (cyc_r + 1).trunc<6>();
+      end if
+    end seq
+
+    transition to Done when cyc_r == 31;
+    transition to Exec when true;
+  end state Exec
+
+  state Done
+    comb
+      o_valid = true;
+
+      if div_zero_r & ~is_mul_r
+        if want_rem_r
+          o_wdat = rem_r.trunc<32>();
+        else
+          o_wdat = 0xFFFFFFFF;
+        end if
+      elsif neg_res_r
+        o_wdat = neg_result;
+      else
+        o_wdat = raw_result;
+      end if
+    end comb
+
+    transition to Idle when o_ready;
+    transition to Done when true;
+  end state Done
+
+end fsm ExuMuldiv

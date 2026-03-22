@@ -527,6 +527,10 @@ pub struct FsmDecl {
     pub name: Ident,
     pub params: Vec<ParamDecl>,
     pub ports: Vec<PortDecl>,
+    /// Register declarations (datapath registers alongside FSM state)
+    pub regs: Vec<RegDecl>,
+    /// Combinational let bindings at FSM scope
+    pub lets: Vec<LetBinding>,
     /// Flat list of declared state names (`state A, B, C;`)
     pub state_names: Vec<Ident>,
     /// The reset / default state
@@ -541,6 +545,8 @@ pub struct StateBody {
     pub name: Ident,
     /// Combinational output assignments for this state
     pub comb_stmts: Vec<CombStmt>,
+    /// Sequential register assignments for this state
+    pub seq_stmts: Vec<Stmt>,
     pub transitions: Vec<Transition>,
     pub span: Span,
 }

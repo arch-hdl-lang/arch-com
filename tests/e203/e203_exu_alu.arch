@@ -162,7 +162,7 @@ module ExuAlu
 
     if i_bjp
       o_wdat = bjp_lnk;
-    else if i_agu
+    elsif i_agu
       o_wdat = dpath_agu_res;
     else
       o_wdat = dpath_alu_res;

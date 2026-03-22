@@ -507,25 +507,25 @@ impl Parser {
         let start = self.expect(TokenKind::If)?.span;
         let cond = self.parse_expr()?;
         let mut then_stmts = Vec::new();
-        while !self.check_end_if() && !self.check(TokenKind::Else) {
+        while !self.check_end_if() && !self.check(TokenKind::Else) && !self.check(TokenKind::ElsIf) {
             then_stmts.push(self.parse_reg_stmt()?);
         }
 
         let mut else_stmts = Vec::new();
-        if self.check(TokenKind::Else) {
+        if self.check(TokenKind::ElsIf) {
+            // `elsif` — desugar to nested IfElse (replaces old `else if` chaining)
+            // Rewrite the ElsIf token to If so parse_reg_if can consume it
+            self.tokens[self.pos].kind = TokenKind::If;
+            let nested = self.parse_reg_if()?;
+            else_stmts.push(nested);
+        } else if self.check(TokenKind::Else) {
             self.advance(); // consume `else`
-            if self.check(TokenKind::If) {
-                // `else if` — desugar to nested IfElse
-                let nested = self.parse_reg_if()?;
-                else_stmts.push(nested);
-            } else {
-                // `else` body — parse until `end if`
-                while !self.check_end_if() {
-                    else_stmts.push(self.parse_reg_stmt()?);
-                }
-                self.expect(TokenKind::End)?;
-                self.expect(TokenKind::If)?;
+            // `else` body — parse until `end if`
+            while !self.check_end_if() {
+                else_stmts.push(self.parse_reg_stmt()?);
             }
+            self.expect(TokenKind::End)?;
+            self.expect(TokenKind::If)?;
         } else {
             // No else branch — just `end if`
             self.expect(TokenKind::End)?;
@@ -652,23 +652,22 @@ impl Parser {
         let start = self.expect(TokenKind::If)?.span;
         let cond = self.parse_expr()?;
         let mut then_stmts = Vec::new();
-        while !self.check_end_if() && !self.check(TokenKind::Else) {
+        while !self.check_end_if() && !self.check(TokenKind::Else) && !self.check(TokenKind::ElsIf) {
             then_stmts.push(self.parse_comb_stmt()?);
         }
 
         let mut else_stmts = Vec::new();
-        if self.check(TokenKind::Else) {
+        if self.check(TokenKind::ElsIf) {
+            self.tokens[self.pos].kind = TokenKind::If;
+            let nested = self.parse_comb_if()?;
+            else_stmts.push(nested);
+        } else if self.check(TokenKind::Else) {
             self.advance();
-            if self.check(TokenKind::If) {
-                let nested = self.parse_comb_if()?;
-                else_stmts.push(nested);
-            } else {
-                while !self.check_end_if() {
-                    else_stmts.push(self.parse_comb_stmt()?);
-                }
-                self.expect(TokenKind::End)?;
-                self.expect(TokenKind::If)?;
+            while !self.check_end_if() {
+                else_stmts.push(self.parse_comb_stmt()?);
             }
+            self.expect(TokenKind::End)?;
+            self.expect(TokenKind::If)?;
         } else {
             self.expect(TokenKind::End)?;
             self.expect(TokenKind::If)?;
@@ -1395,6 +1394,8 @@ impl Parser {
 
         let mut params = Vec::new();
         let mut ports = Vec::new();
+        let mut regs = Vec::new();
+        let mut lets = Vec::new();
         let mut state_names: Vec<Ident> = Vec::new();
         let mut default_state: Option<Ident> = None;
         let mut states: Vec<StateBody> = Vec::new();
@@ -1403,6 +1404,8 @@ impl Parser {
             match self.peek_kind() {
                 Some(TokenKind::Param) => params.push(self.parse_param_decl()?),
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
+                Some(TokenKind::Reg) => regs.push(self.parse_reg_decl()?),
+                Some(TokenKind::Let) => lets.push(self.parse_let_binding()?),
                 // `state A, B, C;` — flat declaration list
                 Some(TokenKind::State) if self.is_state_list() => {
                     self.advance(); // consume `state`
@@ -1439,7 +1442,7 @@ impl Parser {
                 }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "param, port, state, default, assert, or cover",
+                        "param, port, reg, let, state, default, assert, or cover",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -1464,6 +1467,8 @@ impl Parser {
             name,
             params,
             ports,
+            regs,
+            lets,
             state_names,
             default_state: ds,
             states,
@@ -1492,6 +1497,7 @@ impl Parser {
         let name = self.expect_ident()?;
 
         let mut comb_stmts = Vec::new();
+        let mut seq_stmts = Vec::new();
         let mut transitions = Vec::new();
 
         while !self.check_end_state() {
@@ -1501,12 +1507,17 @@ impl Parser {
                     let cb = self.parse_comb_block()?;
                     comb_stmts.extend(cb.stmts);
                 }
+                Some(TokenKind::Seq) => {
+                    // parse seq block, collect its statements
+                    let rb = self.parse_always_block()?;
+                    seq_stmts.extend(rb.stmts);
+                }
                 Some(TokenKind::Transition) => {
                     transitions.push(self.parse_transition()?);
                 }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "comb or transition",
+                        "comb, seq, or transition",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -1526,6 +1537,7 @@ impl Parser {
             span: start.merge(closing.span),
             name,
             comb_stmts,
+            seq_stmts,
             transitions,
         })
     }

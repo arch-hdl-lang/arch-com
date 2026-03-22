@@ -357,7 +357,7 @@ module DmaEngine
   seq on clk rising
     if not busy
       reads_done_r <= false;
-    else if read_done
+    elsif read_done
       reads_done_r <= true;
     end if
   end seq

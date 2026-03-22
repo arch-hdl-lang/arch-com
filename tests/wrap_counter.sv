@@ -15,12 +15,12 @@ module WrapCounter #(
   always_ff @(posedge clk) begin
     if (rst) count_r <= 0;
     else if (inc) begin
-      if (count_r == 4'(15)) count_r <= 0;
+      if (count_r == 4'(MAX)) count_r <= 0;
       else count_r <= count_r + 1;
     end
   end
   assign value = count_r;
-  assign at_max = (count_r == 4'(15));
+  assign at_max = (count_r == 4'(MAX));
 
 endmodule
 
