@@ -486,6 +486,44 @@ let sext32: UInt<32> = {{24{sign_bit}}, byte_val}; // replication inside concat
 
 `{a, b, c}` concatenates operands MSB-first, producing a `UInt` whose width is the sum of all operand widths. `{N{expr}}` replicates `expr` N times. Replication may be nested inside concatenation.
 
+**4.2.3 Signal Declarations: let, wire, and reg**
+
+Arch has three kinds of module-scope signal declarations. Each has a distinct syntax, assignment location, and SV equivalent.
+
+| Construct | Syntax | Assigned in | SV equivalent |
+|-----------|--------|-------------|---------------|
+| `let` | `let x: T = expr;` | declaration (fixed combinational expr) | `logic [W-1:0] x; assign x = expr;` |
+| `wire` | `wire x: T;` | `comb` block (`=`) | `logic [W-1:0] x;` (driven in `assign`/`always_comb`) |
+| `reg` | `reg x: T init V reset R;` | `seq` block (`<=`) | `logic [W-1:0] x = V;` (driven in `always_ff`) |
+
+**`let`** declares a combinational binding fixed to a single expression at the declaration site. It cannot appear on the left-hand side of a `comb` or `seq` block.
+
+**`wire`** declares an explicitly-typed combinational net with no initializer. It must be driven exactly once inside a `comb` block using `=`. This is the right choice when the combinational expression is too complex for a single inline `let`, or when the wire must be conditionally driven using `if/elsif/else` inside the `comb` block. The type checker enforces that only `wire` declarations and output ports are valid targets for `comb` assignment — assigning to a `reg` inside a `comb` block is a compile error.
+
+**`reg`** declares a flip-flop. It must be assigned inside a `seq` block using `<=`. Reset polarity and mode are declared per register.
+
+```
+module Mux2
+  port sel: in Bool;
+  port a:   in UInt<8>;
+  port b:   in UInt<8>;
+  port y:   out UInt<8>;
+
+  wire result: UInt<8>;   // declared here, driven in comb below
+
+  comb
+    if sel
+      result = a;
+    else
+      result = b;
+    end if
+    y = result;
+  end comb
+end module Mux2
+```
+
+> *⚑ The type checker enforces: `reg` cannot be a `comb` target (error: "cannot assign to register `x` in a comb block; use `<=` inside a seq block"). Only `wire` declarations and output ports are valid comb targets.*
+
 **4.3 Module Instantiation**
 
 +--------------------------------------------------------------------+

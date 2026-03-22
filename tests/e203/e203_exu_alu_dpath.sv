@@ -76,13 +76,13 @@ module AluDpath #(
   // Subtraction: op1 + ~op2 + 1 (two's complement); captured in 33 bits
   logic [32-1:0] adder_op2_inv;
   assign adder_op2_inv = (~req_op2);
-  logic [1-1:0] do_sub;
+  logic do_sub;
   assign do_sub = ((((((((((((alu_req_alu_sub | alu_req_alu_slt) | alu_req_alu_sltu) | bjp_req_alu_cmp_eq) | bjp_req_alu_cmp_ne) | bjp_req_alu_cmp_lt) | bjp_req_alu_cmp_gt) | bjp_req_alu_cmp_ltu) | bjp_req_alu_cmp_gtu) | agu_req_alu_max) | agu_req_alu_min) | agu_req_alu_maxu) | agu_req_alu_minu);
   logic [32-1:0] adder_op2_sel;
   assign adder_op2_sel = (do_sub) ? (adder_op2_inv) : (req_op2);
   // 33-bit result: bit 32 = carry-out (unsigned) or sign (signed sext)
   logic [33-1:0] adder_res;
-  assign adder_res = 33'(((33'(req_op1) + 33'(adder_op2_sel)) + 33'(do_sub)));
+  assign adder_res = 33'(((33'($unsigned(req_op1)) + 33'($unsigned(adder_op2_sel))) + 33'($unsigned(do_sub))));
   logic [32-1:0] adder_res32;
   assign adder_res32 = 32'(adder_res);
   // Unsigned carry-out: bit 32 = 1 → no borrow → op1 >= op2
@@ -90,7 +90,7 @@ module AluDpath #(
   assign adder_carry = ((adder_res >> 32) != 0);
   // ── Signed comparison via SInt cast ───────────────────────────────────
   logic signed_lt;
-  assign signed_lt = (logic signed [32-1:0]'(req_op1) < logic signed [32-1:0]'(req_op2));
+  assign signed_lt = ($signed(req_op1) < $signed(req_op2));
   // ── Shift amount: lower 5 bits of op2 ─────────────────────────────────
   logic [5-1:0] shamt;
   assign shamt = alu_req_alu_op2[4:0];
@@ -116,11 +116,11 @@ module AluDpath #(
     end else if (alu_req_alu_srl) begin
       alu_req_alu_res = (alu_req_alu_op1 >> shamt);
     end else if (alu_req_alu_sra) begin
-      alu_req_alu_res = logic [32-1:0]'((logic signed [32-1:0]'(alu_req_alu_op1) >> shamt));
+      alu_req_alu_res = 32'($unsigned(($signed(alu_req_alu_op1) >>> shamt)));
     end else if (alu_req_alu_slt) begin
-      alu_req_alu_res = 32'(signed_lt);
+      alu_req_alu_res = 32'($unsigned(signed_lt));
     end else if (alu_req_alu_sltu) begin
-      alu_req_alu_res = 32'((~adder_carry));
+      alu_req_alu_res = 32'($unsigned((~adder_carry)));
     end else if (alu_req_alu_lui) begin
       alu_req_alu_res = alu_req_alu_op2;
     end else begin

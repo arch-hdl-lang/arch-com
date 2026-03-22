@@ -48,6 +48,8 @@ pub enum TokenKind {
     Comb,
     #[token("reg")]
     Reg,
+    #[token("wire")]
+    Wire,
     #[token("on")]
     On,
     #[token("rising")]
@@ -316,6 +318,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Out => write!(f, "out"),
             TokenKind::Comb => write!(f, "comb"),
             TokenKind::Reg => write!(f, "reg"),
+            TokenKind::Wire => write!(f, "wire"),
             TokenKind::On => write!(f, "on"),
             TokenKind::Rising => write!(f, "rising"),
             TokenKind::Falling => write!(f, "falling"),

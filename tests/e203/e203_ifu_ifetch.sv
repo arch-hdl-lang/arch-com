@@ -14,7 +14,6 @@
 //   freq_mhz: 100
 
 module IfuIfetch #(
-  parameter int XLEN = 32,
   parameter int RESET_PC = 'h80000000
 ) (
   input logic clk,
@@ -48,6 +47,7 @@ module IfuIfetch #(
   logic [32-1:0] instr_r;
   logic [32-1:0] pc_out_r;
   logic bus_err_r;
+  logic out_valid_r;
   
   logic [32-1:0] pc_plus4;
   assign pc_plus4 = 32'((pc_r + 4));
@@ -61,26 +61,38 @@ module IfuIfetch #(
       instr_r <= 0;
       pc_out_r <= 0;
       bus_err_r <= 0;
+      out_valid_r <= 0;
     end else begin
       state_r <= state_next;
       case (state_r)
         IDLE: begin
           pc_r <= RESET_PC;
+          out_valid_r <= 1'b0;
         end
         WAITGNT: begin
           if (redirect) begin
             pc_r <= redirect_pc;
+            out_valid_r <= 1'b0;
+          end else if (o_ready) begin
+            out_valid_r <= 1'b0;
           end
         end
         WAITRSP: begin
           if (redirect) begin
             pc_r <= redirect_pc;
+            out_valid_r <= 1'b0;
           end else if (rsp_valid) begin
             instr_r <= rsp_instr;
             pc_out_r <= pc_r;
             bus_err_r <= rsp_err;
+            out_valid_r <= 1'b1;
             pc_r <= pc_aligned;
+          end else if (o_ready) begin
+            out_valid_r <= 1'b0;
           end
+        end
+        ABORT: begin
+          out_valid_r <= 1'b0;
         end
         default: ;
       endcase
@@ -122,9 +134,17 @@ module IfuIfetch #(
       WAITGNT: begin
         req_valid = 1'b1;
         req_addr = pc_r;
+        o_valid = out_valid_r;
+        o_instr = instr_r;
+        o_pc = pc_out_r;
+        o_bus_err = bus_err_r;
       end
       WAITRSP: begin
         rsp_ready = 1'b1;
+        o_valid = out_valid_r;
+        o_instr = instr_r;
+        o_pc = pc_out_r;
+        o_bus_err = bus_err_r;
       end
       ABORT: begin
         rsp_ready = 1'b1;
@@ -141,7 +161,3 @@ endmodule
 // Branch redirect from EXU
 // Datapath registers
 // Next PC: PC+4 with bottom 2 bits forced to 0 (aligned)
-// After reset, load reset vector and start fetching
-// Issue fetch request
-// Discard any in-flight response; redirect already captured
-// Go back to fetching from redirected PC

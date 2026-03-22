@@ -109,6 +109,7 @@ pub enum ModuleBodyItem {
     Inst(InstDecl),
     Generate(GenerateDecl),
     PipeRegDecl(PipeRegDecl),
+    WireDecl(WireDecl),
 }
 
 impl ModuleBodyItem {
@@ -124,6 +125,7 @@ impl ModuleBodyItem {
                 GenerateDecl::If(i)  => i.span,
             },
             ModuleBodyItem::PipeRegDecl(p) => p.span,
+            ModuleBodyItem::WireDecl(w) => w.span,
         }
     }
 }
@@ -249,6 +251,13 @@ pub struct LetBinding {
     pub name: Ident,
     pub ty: Option<TypeExpr>,
     pub value: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct WireDecl {
+    pub name: Ident,
+    pub ty: TypeExpr,
     pub span: Span,
 }
 

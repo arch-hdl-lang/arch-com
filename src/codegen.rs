@@ -330,6 +330,11 @@ impl<'a> Codegen<'a> {
                 ModuleBodyItem::PipeRegDecl(p) => {
                     self.emit_pipe_reg(p, &m_clone);
                 }
+                ModuleBodyItem::WireDecl(w) => {
+                    let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(&w.ty);
+                    self.line(&format!("{} {}{};", ty_str, w.name.name, arr_suffix));
+                    declared_names.insert(w.name.name.clone());
+                }
                 ModuleBodyItem::Generate(_) => {} // expanded before codegen
             }
         }
@@ -362,6 +367,9 @@ impl<'a> Codegen<'a> {
                 ModuleBodyItem::PipeRegDecl(p) if p.name.name == name => {
                     // Recursively resolve from source
                     return self.find_signal_sv_type(&p.source.name, m);
+                }
+                ModuleBodyItem::WireDecl(w) if w.name.name == name => {
+                    return self.emit_type_str(&w.ty);
                 }
                 _ => {}
             }
@@ -897,8 +905,57 @@ impl<'a> Codegen<'a> {
             self.symbols.globals.get(&inst.module_name.name)
         {
             info.ports.clone()
+        } else if let Some((Symbol::Fsm(info), _)) =
+            self.symbols.globals.get(&inst.module_name.name)
+        {
+            info.ports.clone()
+        } else if let Some((Symbol::Ram(_), _)) =
+            self.symbols.globals.get(&inst.module_name.name)
+        {
+            // RAM uses port groups — handle separately below
+            Vec::new()
         } else {
             return;
+        };
+
+        // For RAM instances, build a flattened port map from port groups
+        // Resolve type params (e.g. WIDTH → UInt<32>) from the RAM's param list.
+        let ram_flat_ports: Vec<(String, TypeExpr)> = if let Some((Symbol::Ram(_), _)) =
+            self.symbols.globals.get(&inst.module_name.name)
+        {
+            let mut flat = Vec::new();
+            for item in &self.source.items {
+                if let Item::Ram(r) = item {
+                    if r.name.name == inst.module_name.name {
+                        // Build type param map: param name → resolved TypeExpr
+                        let type_params: std::collections::HashMap<String, TypeExpr> = r.params.iter()
+                            .filter_map(|p| match &p.kind {
+                                crate::ast::ParamKind::Type(ty) => Some((p.name.name.clone(), ty.clone())),
+                                _ => None,
+                            })
+                            .collect();
+                        for pg in &r.port_groups {
+                            for s in &pg.signals {
+                                // Resolve Named type params to their actual types
+                                let resolved_ty = match &s.ty {
+                                    TypeExpr::Named(ident) => {
+                                        type_params.get(&ident.name).cloned().unwrap_or_else(|| s.ty.clone())
+                                    }
+                                    other => other.clone(),
+                                };
+                                flat.push((
+                                    format!("{}_{}", pg.name.name, s.name.name),
+                                    resolved_ty,
+                                ));
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            flat
+        } else {
+            Vec::new()
         };
 
         for conn in &inst.connections {
@@ -912,6 +969,9 @@ impl<'a> Codegen<'a> {
                 // Find the port type from the module definition
                 if let Some(port) = module_ports.iter().find(|p| p.name.name == conn.port_name.name) {
                     let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(&port.ty);
+                    self.line(&format!("{} {}{};", ty_str, target, arr_suffix));
+                } else if let Some((_, ty)) = ram_flat_ports.iter().find(|(n, _)| *n == conn.port_name.name) {
+                    let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(ty);
                     self.line(&format!("{} {}{};", ty_str, target, arr_suffix));
                 } else {
                     self.line(&format!("logic {};", target));

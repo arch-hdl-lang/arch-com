@@ -127,6 +127,11 @@ impl<'a> TypeChecker<'a> {
         // Track driven signals
         let mut driven: HashSet<String> = HashSet::new();
 
+        // Collect reg names for comb target validation
+        let reg_names: HashSet<String> = m.body.iter().filter_map(|item| {
+            if let ModuleBodyItem::RegDecl(r) = item { Some(r.name.name.clone()) } else { None }
+        }).collect();
+
         // Check params
         for p in &m.params {
             self.check_upper_snake(&p.name);
@@ -169,7 +174,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 ModuleBodyItem::CombBlock(cb) => {
                     for stmt in &cb.stmts {
-                        self.check_comb_stmt(stmt, &m.name.name, &local_types, &mut driven);
+                        self.check_comb_stmt(stmt, &m.name.name, &local_types, &mut driven, &reg_names);
                     }
                 }
                 ModuleBodyItem::LetBinding(l) => {
@@ -239,6 +244,12 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                     }
+                }
+                ModuleBodyItem::WireDecl(w) => {
+                    self.check_snake_case(&w.name);
+                    let ty = self.resolve_type_expr(&w.ty, &m.name.name, &local_types);
+                    local_types.insert(w.name.name.clone(), ty);
+                    // Wire is NOT marked as driven here — it must be driven by a comb block
                 }
                 // Generate blocks are fully expanded by the elaboration pass before
                 // type-checking runs; this arm should never be reached.
@@ -657,9 +668,20 @@ impl<'a> TypeChecker<'a> {
         module_name: &str,
         local_types: &HashMap<String, Ty>,
         driven: &mut HashSet<String>,
+        reg_names: &HashSet<String>,
     ) {
         match stmt {
             CombStmt::Assign(a) => {
+                // Regs must be assigned in seq blocks, not comb blocks
+                if reg_names.contains(&a.target.name) {
+                    self.errors.push(CompileError::general(
+                        &format!(
+                            "`{}` is a reg — assign it with `<=` in a `seq` block, not `=` in a `comb` block",
+                            a.target.name
+                        ),
+                        a.span,
+                    ));
+                }
                 if driven.contains(&a.target.name) {
                     self.errors.push(CompileError::MultipleDrivers {
                         name: a.target.name.clone(),
@@ -678,11 +700,11 @@ impl<'a> TypeChecker<'a> {
                 // in mutually exclusive branches are not multiple drivers.
                 let mut then_driven = driven.clone();
                 for s in &ie.then_stmts {
-                    self.check_comb_stmt(s, module_name, local_types, &mut then_driven);
+                    self.check_comb_stmt(s, module_name, local_types, &mut then_driven, reg_names);
                 }
                 let mut else_driven = driven.clone();
                 for s in &ie.else_stmts {
-                    self.check_comb_stmt(s, module_name, local_types, &mut else_driven);
+                    self.check_comb_stmt(s, module_name, local_types, &mut else_driven, reg_names);
                 }
                 // Merge both branches back — a signal driven in either branch
                 // counts as driven for subsequent statements.

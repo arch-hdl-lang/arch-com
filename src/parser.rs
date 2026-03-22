@@ -183,6 +183,9 @@ impl Parser {
                 Some(TokenKind::Let) => {
                     body.push(ModuleBodyItem::LetBinding(self.parse_let_binding()?));
                 }
+                Some(TokenKind::Wire) => {
+                    body.push(ModuleBodyItem::WireDecl(self.parse_wire_decl()?));
+                }
                 Some(TokenKind::Inst) => {
                     body.push(ModuleBodyItem::Inst(self.parse_inst()?));
                 }
@@ -344,6 +347,20 @@ impl Parser {
         self.expect(TokenKind::Semi)?;
         self.reg_defaults = Some((init, reset));
         Ok(())
+    }
+
+    fn parse_wire_decl(&mut self) -> Result<WireDecl, CompileError> {
+        let start = self.expect(TokenKind::Wire)?.span;
+        let name = self.expect_ident()?;
+        self.expect(TokenKind::Colon)?;
+        let ty = self.parse_type_expr()?;
+        self.expect(TokenKind::Semi)?;
+        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        Ok(WireDecl {
+            name,
+            ty,
+            span: start.merge(end_span),
+        })
     }
 
     fn parse_reg_decl(&mut self) -> Result<RegDecl, CompileError> {

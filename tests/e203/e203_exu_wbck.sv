@@ -43,6 +43,6 @@ module ExuWbck #(
 
 endmodule
 
-// RF is always ready; longp has unconditional priority.
+// RF is seq ready; longp has unconditional priority.
 // Data / index mux: longp wins when valid
 // Write enable: suppress if longp is writing to FPU register

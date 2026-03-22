@@ -61,8 +61,18 @@ keyword Name
 end keyword Name
 ```
 
-### Signal Assignment
-- `comb y = expr; end comb` — combinational, uses `=`
+### Signal Declarations and Assignment
+
+Arch has three kinds of module-scope signal declarations:
+
+| Construct | Syntax | Assigned in | SV equivalent |
+|-----------|--------|-------------|---------------|
+| `let` | `let x: T = expr;` | declaration (fixed combinational expr) | `logic [W-1:0] x; assign x = expr;` |
+| `wire` | `wire x: T;` | `comb` block (`=`) | `logic [W-1:0] x;` (driven in `assign`/`always_comb`) |
+| `reg` | `reg x: T init V reset R;` | `seq` block (`<=`) | `logic [W-1:0] x = V;` (driven in `always_ff`) |
+
+- `comb y = expr; end comb` — combinational, uses `=`. Valid targets are `wire` declarations and output ports only; assigning to a `reg` in `comb` is a compile error.
+- `wire x: T;` — declares a combinational net driven inside a `comb` block. No initializer. SV codegen emits `logic [N-1:0] x;`. Sim codegen treats it as a private member in `eval_comb()`.
 - `reg r: T init 0 reset rst sync high;` + `seq on clk rising ... end seq` — registered, uses `<=`. Reset is declared per register; compiler auto-generates reset guards.
 - No implicit latches (error). Single driver per signal (error). All ports must be connected.
 

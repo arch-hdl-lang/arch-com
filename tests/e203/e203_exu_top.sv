@@ -24,6 +24,7 @@ module ExuTop #(
   output logic o_commit_valid
 );
 
+  logic wbck_fire;
   // ── IFU interface ──────────────────────────────────────────────────
   // ── Branch feedback to IFU ─────────────────────────────────────────
   // ── LSU interface ──────────────────────────────────────────────────

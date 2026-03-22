@@ -1,11 +1,7 @@
 // E203 HBirdv2 static branch prediction unit (LiteBPU)
-// Handles JAL (always taken), JALR (always taken), and Bxx (taken if backward).
+// Handles JAL (seq taken), JALR (seq taken), and Bxx (taken if backward).
 // Generates PC-adder operands and stall signal for data-dependent JALR.
-module LiteBpu #(
-  parameter int PC_SIZE = 32,
-  parameter int XLEN = 32,
-  parameter int RFIDX_WIDTH = 5
-) (
+module LiteBpu (
   input logic clk,
   input logic rst_n,
   input logic [32-1:0] pc,
@@ -88,8 +84,8 @@ module LiteBpu #(
 
 endmodule
 
-// JAL/JALR: always taken; Bxx: taken if backward (negative offset)
-// PC-adder op2 is always the branch immediate (truncated to PC_SIZE bits)
+// JAL/JALR: seq taken; Bxx: taken if backward (negative offset)
+// PC-adder op2 is seq the branch immediate (truncated to PC_SIZE bits)
 // BPU wait: JALR x1 dep unresolved, or JALR xN dep unresolved and read not issued
 // Issue regfile read for xN
 // PC-adder op1: rs1 value for JALR, PC for JAL/Bxx

@@ -3,10 +3,6 @@
 // Generates PC-adder operands and stall signal for data-dependent JALR.
 
 module LiteBpu
-  param PC_SIZE:      const = 32;
-  param XLEN:         const = 32;
-  param RFIDX_WIDTH:  const = 5;
-
   port clk:   in Clock<SysDomain>;
   port rst_n: in Reset<Async, Low>;
 

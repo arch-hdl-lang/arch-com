@@ -1,31 +1,93 @@
 // E203 Core Top-Level Integration
-// Ties together: EXU (decode+dispatch+ALU+commit+regfile) + LSU + CLINT
-// IFU is simplified: instruction fetch is driven by testbench.
-// This module validates that all generated SV modules instantiate and connect correctly.
+// Full integration: IFU + EXU + LSU + BIU + ITCM + DTCM + CLINT
+// Testbench loads instructions into ITCM via write port, then
+// the IFU fetches and the core executes autonomously.
 module CoreTop #(
   parameter int XLEN = 32
 ) (
   input logic clk,
   input logic rst_n,
-  input logic ifu_valid,
-  output logic ifu_ready,
-  input logic [32-1:0] ifu_instr,
-  input logic [32-1:0] ifu_pc,
-  output logic [32-1:0] mem_addr,
-  output logic [32-1:0] mem_wdata,
-  output logic [4-1:0] mem_wstrb,
-  output logic mem_wen,
-  input logic [32-1:0] mem_rdata,
-  output logic tmr_irq,
+  input logic itcm_wr_en,
+  input logic [14-1:0] itcm_wr_addr,
+  input logic [32-1:0] itcm_wr_data,
+  input logic exu_redirect,
+  input logic [32-1:0] exu_redirect_pc,
   output logic commit_valid,
-  output logic bjp_taken,
-  output logic [32-1:0] bjp_tgt
+  output logic [32-1:0] o_instr,
+  output logic [32-1:0] o_pc,
+  output logic o_valid,
+  output logic tmr_irq
 );
 
-  // ── Instruction interface (from testbench acting as IFU) ───────────
-  // ── Data memory interface (directly from LSU to testbench) ─────────
-  // ── Timer IRQ ──────────────────────────────────────────────────────
-  // ── Status ─────────────────────────────────────────────────────────
+  logic itcm_fetch_rd_en;
+  logic itcm_fetch_rd_addr;
+  logic itcm_rsp_valid_d;
+  logic itcm_wr_mux_en;
+  logic itcm_wr_mux_addr;
+  logic itcm_wr_mux_data;
+  // ── ITCM write port (for testbench to load program) ────────────────
+  // ── Branch redirect from EXU to IFU ────────────────────────────────
+  // ── Status outputs ─────────────────────────────────────────────────
+  // ── ITCM ───────────────────────────────────────────────────────────
+  logic [32-1:0] itcm_fetch_rd_data;
+  E203Itcm itcm (
+    .clk(clk),
+    .rst_n(rst_n),
+    .rd_en(itcm_fetch_rd_en),
+    .rd_addr(itcm_fetch_rd_addr),
+    .rd_data(itcm_fetch_rd_data),
+    .wr_en(itcm_wr_mux_en),
+    .wr_addr(itcm_wr_mux_addr),
+    .wr_data(itcm_wr_mux_data)
+  );
+  // ── IFU ────────────────────────────────────────────────────────────
+  logic ifu_o_valid;
+  logic [32-1:0] ifu_o_instr;
+  logic [32-1:0] ifu_o_pc;
+  logic ifu_bus_err;
+  logic itcm_cmd_valid;
+  logic [14-1:0] itcm_cmd_addr;
+  logic ifu_rsp_ready;
+  logic ifu_bpu_wait;
+  logic ifu_bpu_rs1_ena;
+  logic ifu_prdt_taken;
+  logic [32-1:0] ifu_pc_op1;
+  logic [32-1:0] ifu_pc_op2;
+  logic ifu_dec_bjp;
+  logic ifu_dec_lui;
+  logic ifu_dec_auipc;
+  IfuTop ifu (
+    .clk(clk),
+    .rst_n(rst_n),
+    .o_ready(1'b1),
+    .exu_redirect(exu_redirect),
+    .exu_redirect_pc(exu_redirect_pc),
+    .itcm_cmd_ready(1'b1),
+    .itcm_rsp_valid(itcm_rsp_valid_d),
+    .itcm_rsp_data(itcm_fetch_rd_data),
+    .oitf_empty(1'b1),
+    .ir_empty(1'b1),
+    .ir_rs1en(1'b0),
+    .jalr_rs1idx_cam_irrdidx(1'b0),
+    .ir_valid_clr(1'b0),
+    .rf2bpu_x1(0),
+    .rf2bpu_rs1(0),
+    .o_valid(ifu_o_valid),
+    .o_instr(ifu_o_instr),
+    .o_pc(ifu_o_pc),
+    .o_bus_err(ifu_bus_err),
+    .itcm_cmd_valid(itcm_cmd_valid),
+    .itcm_cmd_addr(itcm_cmd_addr),
+    .itcm_rsp_ready(ifu_rsp_ready),
+    .bpu_wait(ifu_bpu_wait),
+    .bpu2rf_rs1_ena(ifu_bpu_rs1_ena),
+    .prdt_taken(ifu_prdt_taken),
+    .prdt_pc_add_op1(ifu_pc_op1),
+    .prdt_pc_add_op2(ifu_pc_op2),
+    .dec_is_bjp(ifu_dec_bjp),
+    .dec_is_lui(ifu_dec_lui),
+    .dec_is_auipc(ifu_dec_auipc)
+  );
   // ── EXU ────────────────────────────────────────────────────────────
   logic exu_ifu_ready;
   logic exu_bjp_valid;
@@ -40,10 +102,10 @@ module CoreTop #(
   ExuTop exu (
     .clk(clk),
     .rst_n(rst_n),
-    .ifu_valid(ifu_valid),
+    .ifu_valid(ifu_o_valid),
+    .ifu_instr(ifu_o_instr),
+    .ifu_pc(ifu_o_pc),
     .ifu_ready(exu_ifu_ready),
-    .ifu_instr(ifu_instr),
-    .ifu_pc(ifu_pc),
     .o_bjp_valid(exu_bjp_valid),
     .o_bjp_taken(exu_bjp_taken),
     .o_bjp_tgt(exu_bjp_tgt),
@@ -57,7 +119,7 @@ module CoreTop #(
     .lsu_resp_data(0),
     .o_commit_valid(exu_commit_valid)
   );
-  // ── LSU byte/half/word alignment ───────────────────────────────────
+  // ── LSU ────────────────────────────────────────────────────────────
   logic [32-1:0] lsu_mem_addr;
   logic [32-1:0] lsu_mem_wdata;
   logic [4-1:0] lsu_mem_wstrb;
@@ -73,12 +135,58 @@ module CoreTop #(
     .mem_wdata(lsu_mem_wdata),
     .mem_wstrb(lsu_mem_wstrb),
     .mem_wen(lsu_mem_wen),
-    .mem_rdata(mem_rdata),
+    .mem_rdata(biu_lsu_rdata),
     .load_result(lsu_load_result)
+  );
+  // ── BIU ────────────────────────────────────────────────────────────
+  logic [32-1:0] biu_lsu_rdata;
+  logic biu_itcm_rd_en;
+  logic [14-1:0] biu_itcm_rd_addr;
+  logic biu_itcm_wr_en;
+  logic [14-1:0] biu_itcm_wr_addr;
+  logic [32-1:0] biu_itcm_wr_data;
+  logic biu_dtcm_rd_en;
+  logic [14-1:0] biu_dtcm_rd_addr;
+  logic biu_dtcm_wr_en;
+  logic [14-1:0] biu_dtcm_wr_addr;
+  logic [32-1:0] biu_dtcm_wr_data;
+  logic [4-1:0] biu_dtcm_wr_be;
+  Biu bus (
+    .lsu_addr(lsu_mem_addr),
+    .lsu_wdata(lsu_mem_wdata),
+    .lsu_wstrb(lsu_mem_wstrb),
+    .lsu_wen(lsu_mem_wen),
+    .lsu_ren(exu_lsu_load),
+    .itcm_rd_data(itcm_fetch_rd_data),
+    .dtcm_rd_data(dtcm_rd_data),
+    .lsu_rdata(biu_lsu_rdata),
+    .itcm_rd_en(biu_itcm_rd_en),
+    .itcm_rd_addr(biu_itcm_rd_addr),
+    .itcm_wr_en(biu_itcm_wr_en),
+    .itcm_wr_addr(biu_itcm_wr_addr),
+    .itcm_wr_data(biu_itcm_wr_data),
+    .dtcm_rd_en(biu_dtcm_rd_en),
+    .dtcm_rd_addr(biu_dtcm_rd_addr),
+    .dtcm_wr_en(biu_dtcm_wr_en),
+    .dtcm_wr_addr(biu_dtcm_wr_addr),
+    .dtcm_wr_data(biu_dtcm_wr_data),
+    .dtcm_wr_be(biu_dtcm_wr_be)
+  );
+  // ── DTCM ───────────────────────────────────────────────────────────
+  logic [32-1:0] dtcm_rd_data;
+  Dtcm dtcm (
+    .clk(clk),
+    .rst_n(rst_n),
+    .rd_en(biu_dtcm_rd_en),
+    .rd_addr(biu_dtcm_rd_addr),
+    .rd_dout(dtcm_rd_data),
+    .wr_en(biu_dtcm_wr_en),
+    .wr_be(biu_dtcm_wr_be),
+    .wr_addr(biu_dtcm_wr_addr),
+    .wr_din(biu_dtcm_wr_data)
   );
   // ── CLINT Timer ────────────────────────────────────────────────────
   logic [32-1:0] timer_rdata;
-  logic timer_irq;
   ClintTimer timer (
     .clk(clk),
     .rst(1'b0),
@@ -86,18 +194,41 @@ module CoreTop #(
     .reg_wdata(0),
     .reg_wen(1'b0),
     .reg_rdata(timer_rdata),
-    .tmr_irq(timer_irq)
+    .tmr_irq(tmr_irq)
   );
-  // ── Output connections ─────────────────────────────────────────────
-  assign ifu_ready = exu_ifu_ready;
-  assign mem_addr = lsu_mem_addr;
-  assign mem_wdata = lsu_mem_wdata;
-  assign mem_wstrb = lsu_mem_wstrb;
-  assign mem_wen = lsu_mem_wen;
-  assign tmr_irq = timer_irq;
-  assign commit_valid = exu_commit_valid;
-  assign bjp_taken = exu_bjp_taken;
-  assign bjp_tgt = exu_bjp_tgt;
+  // ── ITCM fetch: IFU cmd → ITCM read port ──────────────────────────
+  // ITCM rsp_valid: delay cmd_valid by 1 cycle (ITCM latency 1)
+  logic itcm_rsp_valid_r = 1'b0;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if ((!rst_n)) begin
+      itcm_rsp_valid_r <= 1'b0;
+    end else begin
+      itcm_rsp_valid_r <= itcm_cmd_valid;
+    end
+  end
+  // ── ITCM write mux: testbench loader vs BIU store ─────────────────
+  always_comb begin
+    itcm_fetch_rd_en = itcm_cmd_valid;
+    itcm_fetch_rd_addr = itcm_cmd_addr;
+    itcm_rsp_valid_d = itcm_rsp_valid_r;
+    if (itcm_wr_en) begin
+      itcm_wr_mux_en = 1'b1;
+      itcm_wr_mux_addr = itcm_wr_addr;
+      itcm_wr_mux_data = itcm_wr_data;
+    end else if (biu_itcm_wr_en) begin
+      itcm_wr_mux_en = 1'b1;
+      itcm_wr_mux_addr = biu_itcm_wr_addr;
+      itcm_wr_mux_data = biu_itcm_wr_data;
+    end else begin
+      itcm_wr_mux_en = 1'b0;
+      itcm_wr_mux_addr = 0;
+      itcm_wr_mux_data = 0;
+    end
+    o_valid = ifu_o_valid;
+    o_instr = ifu_o_instr;
+    o_pc = ifu_o_pc;
+    commit_valid = exu_commit_valid;
+  end
 
 endmodule
 

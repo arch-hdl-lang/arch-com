@@ -1,7 +1,7 @@
 // E203 Core Top-Level Integration
-// Ties together: EXU (decode+dispatch+ALU+commit+regfile) + LSU + CLINT
-// IFU is simplified: instruction fetch is driven by testbench.
-// This module validates that all generated SV modules instantiate and connect correctly.
+// Full integration: IFU + EXU + LSU + BIU + ITCM + DTCM + CLINT
+// Testbench loads instructions into ITCM via write port, then
+// the IFU fetches and the core executes autonomously.
 
 module CoreTop
   param XLEN: const = 32;
@@ -9,35 +9,76 @@ module CoreTop
   port clk:   in Clock<SysDomain>;
   port rst_n: in Reset<Async, Low>;
 
-  // ── Instruction interface (from testbench acting as IFU) ───────────
-  port ifu_valid:   in  Bool;
-  port ifu_ready:   out Bool;
-  port ifu_instr:   in  UInt<32>;
-  port ifu_pc:      in  UInt<32>;
+  // ── ITCM write port (for testbench to load program) ────────────────
+  port itcm_wr_en:   in Bool;
+  port itcm_wr_addr: in UInt<14>;
+  port itcm_wr_data: in UInt<32>;
 
-  // ── Data memory interface (directly from LSU to testbench) ─────────
-  port mem_addr:    out UInt<32>;
-  port mem_wdata:   out UInt<32>;
-  port mem_wstrb:   out UInt<4>;
-  port mem_wen:     out Bool;
-  port mem_rdata:   in  UInt<32>;
+  // ── Branch redirect from EXU to IFU ────────────────────────────────
+  port exu_redirect:    in Bool;
+  port exu_redirect_pc: in UInt<32>;
 
-  // ── Timer IRQ ──────────────────────────────────────────────────────
-  port tmr_irq:     out Bool;
-
-  // ── Status ─────────────────────────────────────────────────────────
+  // ── Status outputs ─────────────────────────────────────────────────
   port commit_valid: out Bool;
-  port bjp_taken:    out Bool;
-  port bjp_tgt:      out UInt<32>;
+  port o_instr:      out UInt<32>;
+  port o_pc:         out UInt<32>;
+  port o_valid:      out Bool;
+  port tmr_irq:      out Bool;
+
+  // ── ITCM ───────────────────────────────────────────────────────────
+  inst itcm: E203Itcm
+    connect clk     <- clk;
+    connect rst_n   <- rst_n;
+    connect rd_en   <- itcm_fetch_rd_en;
+    connect rd_addr <- itcm_fetch_rd_addr;
+    connect rd_data -> itcm_fetch_rd_data;
+    connect wr_en   <- itcm_wr_mux_en;
+    connect wr_addr <- itcm_wr_mux_addr;
+    connect wr_data <- itcm_wr_mux_data;
+  end inst itcm
+
+  // ── IFU ────────────────────────────────────────────────────────────
+  inst ifu: IfuTop
+    connect clk              <- clk;
+    connect rst_n            <- rst_n;
+    connect o_ready          <- true;
+    connect exu_redirect     <- exu_redirect;
+    connect exu_redirect_pc  <- exu_redirect_pc;
+    connect itcm_cmd_ready   <- true;
+    connect itcm_rsp_valid   <- itcm_rsp_valid_d;
+    connect itcm_rsp_data    <- itcm_fetch_rd_data;
+    connect oitf_empty       <- true;
+    connect ir_empty         <- true;
+    connect ir_rs1en         <- false;
+    connect jalr_rs1idx_cam_irrdidx <- false;
+    connect ir_valid_clr     <- false;
+    connect rf2bpu_x1        <- 0;
+    connect rf2bpu_rs1       <- 0;
+    connect o_valid          -> ifu_o_valid;
+    connect o_instr          -> ifu_o_instr;
+    connect o_pc             -> ifu_o_pc;
+    connect o_bus_err        -> ifu_bus_err;
+    connect itcm_cmd_valid   -> itcm_cmd_valid;
+    connect itcm_cmd_addr    -> itcm_cmd_addr;
+    connect itcm_rsp_ready   -> ifu_rsp_ready;
+    connect bpu_wait         -> ifu_bpu_wait;
+    connect bpu2rf_rs1_ena   -> ifu_bpu_rs1_ena;
+    connect prdt_taken       -> ifu_prdt_taken;
+    connect prdt_pc_add_op1  -> ifu_pc_op1;
+    connect prdt_pc_add_op2  -> ifu_pc_op2;
+    connect dec_is_bjp       -> ifu_dec_bjp;
+    connect dec_is_lui       -> ifu_dec_lui;
+    connect dec_is_auipc     -> ifu_dec_auipc;
+  end inst ifu
 
   // ── EXU ────────────────────────────────────────────────────────────
   inst exu: ExuTop
-    connect clk   <- clk;
-    connect rst_n <- rst_n;
-    connect ifu_valid  <- ifu_valid;
+    connect clk        <- clk;
+    connect rst_n      <- rst_n;
+    connect ifu_valid  <- ifu_o_valid;
+    connect ifu_instr  <- ifu_o_instr;
+    connect ifu_pc     <- ifu_o_pc;
     connect ifu_ready  -> exu_ifu_ready;
-    connect ifu_instr  <- ifu_instr;
-    connect ifu_pc     <- ifu_pc;
     connect o_bjp_valid -> exu_bjp_valid;
     connect o_bjp_taken -> exu_bjp_taken;
     connect o_bjp_tgt   -> exu_bjp_tgt;
@@ -52,7 +93,7 @@ module CoreTop
     connect o_commit_valid -> exu_commit_valid;
   end inst exu
 
-  // ── LSU byte/half/word alignment ───────────────────────────────────
+  // ── LSU ────────────────────────────────────────────────────────────
   inst lsu: LsuCtrl
     connect addr     <- exu_lsu_addr;
     connect wdata    <- exu_lsu_wdata;
@@ -63,32 +104,78 @@ module CoreTop
     connect mem_wdata -> lsu_mem_wdata;
     connect mem_wstrb -> lsu_mem_wstrb;
     connect mem_wen   -> lsu_mem_wen;
-    connect mem_rdata <- mem_rdata;
+    connect mem_rdata <- biu_lsu_rdata;
     connect load_result -> lsu_load_result;
   end inst lsu
 
+  // ── BIU ────────────────────────────────────────────────────────────
+  inst bus: Biu
+    connect lsu_addr   <- lsu_mem_addr;
+    connect lsu_wdata  <- lsu_mem_wdata;
+    connect lsu_wstrb  <- lsu_mem_wstrb;
+    connect lsu_wen    <- lsu_mem_wen;
+    connect lsu_ren    <- exu_lsu_load;
+    connect itcm_rd_data <- itcm_fetch_rd_data;
+    connect dtcm_rd_data <- dtcm_rd_data;
+    connect lsu_rdata    -> biu_lsu_rdata;
+    connect itcm_rd_en   -> biu_itcm_rd_en;
+    connect itcm_rd_addr -> biu_itcm_rd_addr;
+    connect itcm_wr_en   -> biu_itcm_wr_en;
+    connect itcm_wr_addr -> biu_itcm_wr_addr;
+    connect itcm_wr_data -> biu_itcm_wr_data;
+    connect dtcm_rd_en   -> biu_dtcm_rd_en;
+    connect dtcm_rd_addr -> biu_dtcm_rd_addr;
+    connect dtcm_wr_en   -> biu_dtcm_wr_en;
+    connect dtcm_wr_addr -> biu_dtcm_wr_addr;
+    connect dtcm_wr_data -> biu_dtcm_wr_data;
+    connect dtcm_wr_be   -> biu_dtcm_wr_be;
+  end inst bus
+
+  // ── DTCM ───────────────────────────────────────────────────────────
+  inst dtcm: Dtcm
+    connect clk     <- clk;
+    connect rst_n   <- rst_n;
+    connect rd_en   <- biu_dtcm_rd_en;
+    connect rd_addr <- biu_dtcm_rd_addr;
+    connect rd_dout -> dtcm_rd_data;
+    connect wr_en   <- biu_dtcm_wr_en;
+    connect wr_be   <- biu_dtcm_wr_be;
+    connect wr_addr <- biu_dtcm_wr_addr;
+    connect wr_din  <- biu_dtcm_wr_data;
+  end inst dtcm
+
   // ── CLINT Timer ────────────────────────────────────────────────────
   inst timer: ClintTimer
-    connect clk      <- clk;
-    connect rst      <- false;
-    connect reg_addr <- 0;
+    connect clk       <- clk;
+    connect rst       <- false;
+    connect reg_addr  <- 0;
     connect reg_wdata <- 0;
-    connect reg_wen  <- false;
+    connect reg_wen   <- false;
     connect reg_rdata -> timer_rdata;
-    connect tmr_irq   -> timer_irq;
+    connect tmr_irq   -> tmr_irq;
   end inst timer
 
-  // ── Output connections ─────────────────────────────────────────────
+  // ── ITCM fetch: IFU cmd → ITCM read port ──────────────────────────
+  // ITCM rsp_valid: delay cmd_valid by 1 cycle (ITCM latency 1)
+  reg itcm_rsp_valid_r: Bool init false reset rst_n;
+
+  seq on clk rising
+    itcm_rsp_valid_r <= itcm_cmd_valid;
+  end seq
+
+  // ── ITCM write mux: testbench loader vs BIU store ─────────────────
+  let itcm_wr_mux_en:   Bool     = itcm_wr_en | biu_itcm_wr_en;
+  let itcm_wr_mux_addr: UInt<14> = itcm_wr_en ? itcm_wr_addr : biu_itcm_wr_addr;
+  let itcm_wr_mux_data: UInt<32> = itcm_wr_en ? itcm_wr_data : biu_itcm_wr_data;
+  let itcm_fetch_rd_en:   Bool     = itcm_cmd_valid;
+  let itcm_fetch_rd_addr: UInt<14> = itcm_cmd_addr;
+  let itcm_rsp_valid_d:   Bool     = itcm_rsp_valid_r;
+
   comb
-    ifu_ready    = exu_ifu_ready;
-    mem_addr     = lsu_mem_addr;
-    mem_wdata    = lsu_mem_wdata;
-    mem_wstrb    = lsu_mem_wstrb;
-    mem_wen      = lsu_mem_wen;
-    tmr_irq      = timer_irq;
+    o_valid      = ifu_o_valid;
+    o_instr      = ifu_o_instr;
+    o_pc         = ifu_o_pc;
     commit_valid = exu_commit_valid;
-    bjp_taken    = exu_bjp_taken;
-    bjp_tgt      = exu_bjp_tgt;
   end comb
 
 end module CoreTop

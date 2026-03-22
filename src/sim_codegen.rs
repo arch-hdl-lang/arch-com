@@ -721,13 +721,14 @@ fn emit_comb_stmt(stmt: &CombStmt, ctx: &Ctx, out: &mut String, indent: usize) {
     match stmt {
         CombStmt::Assign(a) => {
             let rhs = cpp_expr(&a.value, ctx);
-            let port_name = &a.target.name;
+            let target_name = &a.target.name;
+            let resolved_target = ctx.resolve_name(target_name, false);
             // Wide output port: use conversion instead of direct assignment
-            if ctx.wide_names.contains(port_name.as_str()) {
+            if ctx.wide_names.contains(target_name.as_str()) {
                 out.push_str(&format!("{}  _arch_u128_to_vl({}, {}._data);\n",
-                    ind(indent), rhs, port_name));
+                    ind(indent), rhs, target_name));
             } else {
-                out.push_str(&format!("{}{}  = {};\n", ind(indent), port_name, rhs));
+                out.push_str(&format!("{}{}  = {};\n", ind(indent), resolved_target, rhs));
             }
         }
         CombStmt::IfElse(ie) => emit_comb_if_else(ie, ctx, out, indent, false),
@@ -813,7 +814,11 @@ fn collect_reg_names(body: &[ModuleBodyItem]) -> HashSet<String> {
 
 fn collect_let_names(body: &[ModuleBodyItem]) -> HashSet<String> {
     body.iter()
-        .filter_map(|i| if let ModuleBodyItem::LetBinding(l) = i { Some(l.name.name.clone()) } else { None })
+        .filter_map(|i| match i {
+            ModuleBodyItem::LetBinding(l) => Some(l.name.name.clone()),
+            ModuleBodyItem::WireDecl(w) => Some(w.name.name.clone()),
+            _ => None,
+        })
         .collect()
 }
 
@@ -1357,12 +1362,19 @@ impl<'a> SimCodegen<'a> {
             }
         }
 
-        // Private let fields (computed in eval_comb, read in eval_posedge)
+        // Private let/wire fields (computed in eval_comb, read in eval_posedge)
         for item in &m.body {
-            if let ModuleBodyItem::LetBinding(l) = item {
-                let ty = l.ty.as_ref().map(|t| cpp_internal_type(t))
-                    .unwrap_or_else(|| "uint32_t".to_string());
-                h.push_str(&format!("  {ty} _let_{};\n", l.name.name));
+            match item {
+                ModuleBodyItem::LetBinding(l) => {
+                    let ty = l.ty.as_ref().map(|t| cpp_internal_type(t))
+                        .unwrap_or_else(|| "uint32_t".to_string());
+                    h.push_str(&format!("  {ty} _let_{};\n", l.name.name));
+                }
+                ModuleBodyItem::WireDecl(w) => {
+                    let ty = cpp_internal_type(&w.ty);
+                    h.push_str(&format!("  {ty} _let_{};\n", w.name.name));
+                }
+                _ => {}
             }
         }
 
@@ -1500,9 +1512,6 @@ impl<'a> SimCodegen<'a> {
             // Step 4: if any rising edge, fire posedge blocks simultaneously
             cpp.push_str(&format!("  if ({any_rising}) {{\n"));
             cpp.push_str("    eval_posedge();\n");
-            for inst in &insts {
-                cpp.push_str(&format!("    _inst_{}.eval_posedge();\n", inst.name.name));
-            }
 
             // Step 5+6: refresh sub-inst comb outputs, then parent comb (with settle loop)
             cpp.push_str("    for (int _settle = 0; _settle < 2; _settle++) {\n");
@@ -1748,6 +1757,14 @@ impl<'a> SimCodegen<'a> {
             }
         }
 
+        // Propagate eval_posedge to sub-instances so grandchild registers fire
+        // when a parent calls this module's eval_posedge()
+        if !insts.is_empty() {
+            for inst in &insts {
+                cpp.push_str(&format!("  _inst_{}.eval_posedge();\n", inst.name.name));
+            }
+        }
+
         cpp.push_str("}\n\n");
 
         // eval_comb()
@@ -1756,6 +1773,14 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
         let ctx_comb = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                 &wide_names, &widths, &enum_map);
+
+        // Let bindings → private fields (assign before inst eval so instances see current values)
+        for item in &m.body {
+            if let ModuleBodyItem::LetBinding(l) = item {
+                let val = cpp_expr(&l.value, &ctx_comb);
+                cpp.push_str(&format!("  _let_{} = {};\n", l.name.name, val));
+            }
+        }
 
         // If there are sub-instances, re-evaluate the inst chain
         if !insts.is_empty() {
@@ -1783,14 +1808,6 @@ impl<'a> SimCodegen<'a> {
                             sig, inst.name.name, conn.port_name.name));
                     }
                 }
-            }
-        }
-
-        // Let bindings → private fields (assign, not declare)
-        for item in &m.body {
-            if let ModuleBodyItem::LetBinding(l) = item {
-                let val = cpp_expr(&l.value, &ctx_comb);
-                cpp.push_str(&format!("  _let_{} = {};\n", l.name.name, val));
             }
         }
 
@@ -2086,10 +2103,10 @@ impl<'a> SimCodegen<'a> {
         let state_inits = vec!["_clk_prev(0)".to_string(), format!("_state_r({default_idx})")];
         let all_inits: Vec<String> = port_inits.into_iter().chain(reg_inits).chain(state_inits).collect();
         h.push_str(&format!("  {class}() : {} {{}}\n", all_inits.join(", ")));
-        h.push_str("  void eval();\n  void final() {}\nprivate:\n");
+        h.push_str("  void eval();\n  void eval_posedge();\n  void eval_comb();\n  void final() {}\nprivate:\n");
         h.push_str("  uint8_t _clk_prev;\n");
         h.push_str(&format!("  {state_ty} _state_r;\n"));
-        h.push_str("  void eval_posedge();\n  void eval_comb();\n};\n");
+        h.push_str("};\n");
 
         let mut cpp = String::new();
         cpp.push_str(&format!("#include \"{class}.h\"\n\n"));
