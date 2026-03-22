@@ -148,6 +148,13 @@
 | connect a \<- sig; connect y -\> out; |                                  |
 |                                       |                                  |
 | end inst u                            |                                  |
+|                                       |                                  |
+| // Hierarchical refs FORBIDDEN:       | inst_name.port is a compile      |
+|                                       | error. Use connect y -> wire     |
+| // ✗ add.sum  (compile error)         | in the inst block and reference  |
+|                                       | wire in the enclosing scope.     |
+| // ✓ connect sum -> my_sum;           |                                  |
+|    // then use my_sum                 |                                  |
 +---------------------------------------+----------------------------------+
 
 **function --- pure combinational, overloadable**
@@ -620,4 +627,16 @@ CDC detection covers both seq→seq and comb→seq crossings: a comb block readi
 >
 > Start --tlm-lt. Add rtl_accurate only after function verified.
 
-*Arch AI Reference Card · March 2026 · v0.22.0 · arch check is your first line of defence*
+**9. ARCH MCP Server**
+
+> Tools available when running under the ARCH MCP server:
+>
+> `get_construct_syntax(construct)` — returns syntax template + reserved keywords for any construct
+>
+> `write_and_check(path, content)` — write .arch file + type-check in one call
+>
+> `arch_build_and_lint(files, top_module)` — build SV + Verilator lint in one call
+>
+> Recommended AI workflow: fetch syntax first → write_and_check → arch_build_and_lint
+
+*Arch AI Reference Card · March 2026 · v0.23.0 · arch check is your first line of defence*

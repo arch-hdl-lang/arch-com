@@ -493,6 +493,10 @@ Arch has exactly two assignment forms. Mixing operators between them is a compil
 +--------------------------------------------------------------------+
 
 > ◈ connect port \<- signal drives an input. connect port -\> signal reads an output. The arrow direction always shows which way data flows --- a property that makes the design readable to both humans and AI without any context lookup.
+>
+> ◈ **Hierarchical instance references are forbidden.** Expressions like `inst_name.port_name` (e.g. `add.sum`) are a compile error. To read an instance output, use `connect port -> wire_name` inside the `inst` block and reference `wire_name` in the enclosing scope. Error message: *"hierarchical reference \`u.y\` is not allowed; use \`connect y -> wire_name\` in the inst block instead."*
+>
+> ◈ **SV codegen notes.** The SystemVerilog backend applies the following transformations for correctness across simulators and lint tools: (1) signed casts emit `$signed(x)` (not `logic signed [N-1:0]'(x)`) for Verilator compatibility; (2) right-shift `>>` on an `SInt` operand emits arithmetic shift `>>>` (correct SRA behavior); (3) `.zext<N>()` emits `N'($unsigned(x))` to prevent context-dependent width expansion.
 
 **5. Clock Domains and CDC Safety**
 

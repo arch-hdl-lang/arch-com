@@ -835,6 +835,33 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
+                // Check for forbidden hierarchical instance reference (inst_name.port_name)
+                if let ExprKind::Ident(base_name) = &base.kind {
+                    let is_inst = self.source.items.iter().any(|item| {
+                        if let crate::ast::Item::Module(m) = item {
+                            if m.name.name == module_name {
+                                return m.body.iter().any(|bi| {
+                                    if let ModuleBodyItem::Inst(inst) = bi {
+                                        inst.name.name == *base_name
+                                    } else {
+                                        false
+                                    }
+                                });
+                            }
+                        }
+                        false
+                    });
+                    if is_inst {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "hierarchical reference `{}.{}` is not allowed; \
+                                 use `connect {} -> wire_name` in the inst block instead",
+                                base_name, field.name, field.name
+                            ),
+                            expr.span,
+                        ));
+                    }
+                }
                 Ty::Error
             }
             ExprKind::MethodCall(base, method, args) => {

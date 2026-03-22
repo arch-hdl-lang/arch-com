@@ -1,7 +1,7 @@
 # ARCH Compiler — Status & Roadmap
 
-> Last updated: 2026-03-20
-> Compiler version: 0.21.0 (`template` construct: user-defined interface contracts with `module Name implements Template` validation)
+> Last updated: 2026-03-21
+> Compiler version: 0.23.0 (SV codegen fixes, hierarchical ref check, MCP server tools, e203_exu_alu benchmark)
 
 ---
 
@@ -12,7 +12,7 @@
 | Command | Status |
 |---------|--------|
 | `arch check <file.arch>` | ✅ Parse + type-check; exits 0 on success |
-| `arch build <file.arch> [-o out.sv]` | ✅ Emits deterministic SystemVerilog |
+| `arch build <file.arch> [-o out.sv]` | ✅ Emits deterministic SystemVerilog; **SV codegen fixes**: (1) signed cast emits `$signed(x)` instead of `logic signed [N-1:0]'(x)` for Verilator compatibility; (2) `>>` on SInt operands emits `>>>` (arithmetic shift right); (3) `.zext<N>()` emits `N'($unsigned(x))` to prevent context-dependent width expansion |
 | `arch build a.arch b.arch` | ✅ Multi-file: concatenates + cross-resolves; one `.sv` per input (or single combined file with `-o`) |
 | `arch sim <file.arch> --tb <tb.cpp>` | ✅ Generates Verilator-compatible C++ models (`VName.h` + `VName.cpp` + `verilated.h`), compiles with `g++`, and runs; supports `module`, `counter`, `fsm`, `linklist`, `ram`; `fifo`/`arbiter`/`regfile` pending |
 | `arch sim ... --check-uninit` | ✅ Detects reads of uninitialized `reset none` registers; shadow valid bits propagate through `pipe_reg` chains; warn-once per signal to stderr |
@@ -126,6 +126,7 @@
 | Width mismatch at assignment | ✅ Any RHS wider than LHS errors in both `always` and `comb` blocks; arithmetic widening hint included |
 | Clock domain crossing errors | ✅ | seq→seq and comb→seq crossings detected; extends across `inst` boundaries (compiler traces clock port connections to map child domains to parent domains) |
 | Exhaustive match arm checking | ✅ Enum matches must cover all variants or include a wildcard `_`; missing variants named in error |
+| Hierarchical instance references forbidden | ✅ `inst_name.port_name` in expressions is a compile error; must use `connect port -> wire_name` in the inst block instead |
 | Const param evaluation (complex exprs) | ⚠️ Literals + simple arithmetic only |
 
 ---
@@ -139,12 +140,13 @@
 - `arch sim` supports **multi-clock domain** modules: each `Clock<Domain>` port gets independent `_rising_X` edge detection; `eval_posedge()` guards each `seq` block on its specific clock's rising edge; auto-generates `tick()` method from domain `freq_mhz` declarations (computes half-periods via GCD for correct clock ratio); single-clock modules unchanged; verified with 200MHz/50MHz dual-clock testbench (MultiClockSync, 80 ticks, 4:1 ratio, 0 errors)
 - `arch sim` supports purely combinational modules (no `Clock<>` port): generated `eval()` skips `_rising` edge detection — testbenches call `eval()` directly without toggling a clock signal
 - AES-128 cipher benchmark (NIST FIPS-197 test vectors verified via `arch sim`): AesSbox + Xtime as pure combinational functions; AesCipherTop + AesKeyExpand128 using inline function calls replacing 32 `inst` blocks; wide `UInt<128>` ports via `VlWide<4>`; correct hierarchical posedge simultaneity (all `always_ff` blocks across parent + sub-instance fire atomically)
-- **E203 HBirdv2 benchmark suite** (5 modules from nuclei-sw E203 RISC-V core):
+- **E203 HBirdv2 benchmark suite** (6 modules from nuclei-sw E203 RISC-V core):
   - `e203_exu_regfile`: 2R1W register file using `regfile` construct; `init [0] = 0` write guard; `forward write_before_read: false`; 5 sim tests; verified against Verilator
   - `e203_exu_wbck`: Priority write-back arbiter (alu vs long-latency); pure `comb` block with `if/else`; 6 sim tests; verified against Verilator
   - `e203_ifu_litebpu`: Static branch prediction unit; JAL/JALR always-taken, Bxx backward-taken; JALR-x1/xN hazard detection; `rs1xn_rdrf_r` state register; `let` intermediates + async reset + `comb` `if/else if/else`; 11 sim tests; verified against Verilator
   - `e203_exu_alu_dpath`: Shared ALU datapath; BJP/AGU/ALU operand mux; 33-bit carry-extended adder; two's-complement subtraction for comparison; `?:` ternary chaining; `SInt<32>` cast for signed comparison; `reset none` registers; 26 sim tests
   - `e203_exu_alu_bjp`: Branch/jump unit; BEQ/BNE/BLT/BGE/BLTU/BGEU; JAL/JALR unconditional jump; target address, link address (PC+4); XOR-based equality, carry-out subtraction for BLTU/BGEU, `SInt<32>` cast for BLT/BGE; purely combinational (no clock port); 25 sim tests
+  - `e203_exu_alu`: ALU top-level module (6th E203 module); first to use `inst` for hierarchical composition — instantiates AluDpath + BjpUnit; 20 sim tests; verified against Verilator
 
 ---
 
@@ -154,6 +156,7 @@
 |------|--------|
 | VSCode syntax extension | ✅ TextMate grammar (`editors/vscode/`); install: symlink to `~/.vscode/extensions/arch-hdl`; covers all keywords, types, operators, numeric literals, comments |
 | Vim syntax | ✅ `editors/vim/syntax/arch.vim` |
+| ARCH MCP server | ✅ Tools: `get_construct_syntax(construct)` — syntax template + reserved keywords; `write_and_check(path, content)` — write + type-check in one call; `arch_build_and_lint(files, top_module)` — build SV + Verilator lint in one call; server instructions guide AI workflow: fetch syntax → write_and_check → build_and_lint |
 
 ---
 

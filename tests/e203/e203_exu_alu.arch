@@ -1,0 +1,172 @@
+// E203 HBirdv2 ALU Top-Level
+// Orchestrates the shared ALU datapath (AluDpath) and branch/jump unit (BjpUnit).
+// Receives dispatched instructions, decodes operation type, routes operands to
+// sub-units, and presents results to the write-back path.
+//
+// Three sub-unit request types share the AluDpath adder:
+//   ALU — register-register / register-immediate arithmetic
+//   BJP — branch comparison + target/link address computation
+//   AGU — load/store/AMO effective address + atomic ALU ops
+//
+// Purely combinational top-level; registers live only inside AluDpath (shared buffers).
+
+module ExuAlu
+  param XLEN: const = 32;
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  // ── Dispatch interface ───────────────────────────────────────────────────
+  port i_valid:   in  Bool;
+  port i_ready:   out Bool;
+  port i_rs1:     in  UInt<32>;
+  port i_rs2:     in  UInt<32>;
+  port i_pc:      in  UInt<32>;
+  port i_imm:     in  UInt<32>;
+  port i_rdidx:   in  UInt<5>;
+
+  // ── ALU operation decode (one-hot) ───────────────────────────────────────
+  port i_alu:       in Bool;
+  port i_alu_add:   in Bool;
+  port i_alu_sub:   in Bool;
+  port i_alu_xor:   in Bool;
+  port i_alu_sll:   in Bool;
+  port i_alu_srl:   in Bool;
+  port i_alu_sra:   in Bool;
+  port i_alu_or:    in Bool;
+  port i_alu_and:   in Bool;
+  port i_alu_slt:   in Bool;
+  port i_alu_sltu:  in Bool;
+  port i_alu_lui:   in Bool;
+
+  // ── BJP operation decode ─────────────────────────────────────────────────
+  port i_bjp:       in Bool;
+  port i_beq:       in Bool;
+  port i_bne:       in Bool;
+  port i_blt:       in Bool;
+  port i_bge:       in Bool;
+  port i_bltu:      in Bool;
+  port i_bgeu:      in Bool;
+  port i_jump:      in Bool;
+
+  // ── AGU operation decode ─────────────────────────────────────────────────
+  port i_agu:           in Bool;
+  port i_agu_swap:      in Bool;
+  port i_agu_add:       in Bool;
+  port i_agu_and:       in Bool;
+  port i_agu_or:        in Bool;
+  port i_agu_xor:       in Bool;
+  port i_agu_max:       in Bool;
+  port i_agu_min:       in Bool;
+  port i_agu_maxu:      in Bool;
+  port i_agu_minu:      in Bool;
+  port i_agu_sbf_0_ena: in Bool;
+  port i_agu_sbf_0_nxt: in UInt<32>;
+  port i_agu_sbf_1_ena: in Bool;
+  port i_agu_sbf_1_nxt: in UInt<32>;
+
+  // ── Write-back output ────────────────────────────────────────────────────
+  port o_valid:   out Bool;
+  port o_ready:   in  Bool;
+  port o_wdat:    out UInt<32>;
+  port o_rdidx:   out UInt<5>;
+
+  // ── BJP result output (to PC update logic) ───────────────────────────────
+  port o_bjp_taken: out Bool;
+  port o_bjp_tgt:   out UInt<32>;
+  port o_bjp_lnk:   out UInt<32>;
+
+  // ── Instantiate AluDpath ─────────────────────────────────────────────────
+  inst dpath: AluDpath
+    connect clk   <- clk;
+    connect rst_n <- rst_n;
+
+    connect alu_req_alu      <- i_alu;
+    connect alu_req_alu_add  <- i_alu_add;
+    connect alu_req_alu_sub  <- i_alu_sub;
+    connect alu_req_alu_xor  <- i_alu_xor;
+    connect alu_req_alu_sll  <- i_alu_sll;
+    connect alu_req_alu_srl  <- i_alu_srl;
+    connect alu_req_alu_sra  <- i_alu_sra;
+    connect alu_req_alu_or   <- i_alu_or;
+    connect alu_req_alu_and  <- i_alu_and;
+    connect alu_req_alu_slt  <- i_alu_slt;
+    connect alu_req_alu_sltu <- i_alu_sltu;
+    connect alu_req_alu_lui  <- i_alu_lui;
+    connect alu_req_alu_op1  <- i_rs1;
+    connect alu_req_alu_op2  <- i_rs2;
+    connect alu_req_alu_res  -> dpath_alu_res;
+
+    connect bjp_req_alu         <- i_bjp;
+    connect bjp_req_alu_op1     <- i_rs1;
+    connect bjp_req_alu_op2     <- i_rs2;
+    connect bjp_req_alu_cmp_eq  <- i_beq;
+    connect bjp_req_alu_cmp_ne  <- i_bne;
+    connect bjp_req_alu_cmp_lt  <- i_blt;
+    connect bjp_req_alu_cmp_gt  <- i_bge;
+    connect bjp_req_alu_cmp_ltu <- i_bltu;
+    connect bjp_req_alu_cmp_gtu <- i_bgeu;
+    connect bjp_req_alu_add     <- i_bjp;
+    connect bjp_req_alu_add_res -> dpath_bjp_add_res;
+    connect bjp_req_alu_cmp_res -> dpath_bjp_cmp_res;
+
+    connect agu_req_alu      <- i_agu;
+    connect agu_req_alu_op1  <- i_rs1;
+    connect agu_req_alu_op2  <- i_imm;
+    connect agu_req_alu_swap <- i_agu_swap;
+    connect agu_req_alu_add  <- i_agu_add;
+    connect agu_req_alu_and  <- i_agu_and;
+    connect agu_req_alu_or   <- i_agu_or;
+    connect agu_req_alu_xor  <- i_agu_xor;
+    connect agu_req_alu_max  <- i_agu_max;
+    connect agu_req_alu_min  <- i_agu_min;
+    connect agu_req_alu_maxu <- i_agu_maxu;
+    connect agu_req_alu_minu <- i_agu_minu;
+    connect agu_req_alu_res  -> dpath_agu_res;
+
+    connect agu_sbf_0_ena <- i_agu_sbf_0_ena;
+    connect agu_sbf_0_nxt <- i_agu_sbf_0_nxt;
+    connect agu_sbf_1_ena <- i_agu_sbf_1_ena;
+    connect agu_sbf_1_nxt <- i_agu_sbf_1_nxt;
+  end inst dpath
+
+  // ── Instantiate BjpUnit ──────────────────────────────────────────────────
+  inst bjp_unit: BjpUnit
+    connect i_tgt_op1 <- i_pc;
+    connect i_tgt_op2 <- i_imm;
+    connect i_cmp_rs1 <- i_rs1;
+    connect i_cmp_rs2 <- i_rs2;
+    connect i_beq  <- i_beq;
+    connect i_bne  <- i_bne;
+    connect i_blt  <- i_blt;
+    connect i_bge  <- i_bge;
+    connect i_bltu <- i_bltu;
+    connect i_bgeu <- i_bgeu;
+    connect i_jump <- i_jump;
+    connect i_lnk_pc <- i_pc;
+    connect o_taken   -> bjp_taken;
+    connect o_tgt     -> bjp_tgt;
+    connect o_lnk     -> bjp_lnk;
+    connect o_cmp_res -> bjp_cmp_res;
+  end inst bjp_unit
+
+  // ── Result mux and output logic ──────────────────────────────────────────
+  comb
+    i_ready = o_ready;
+    o_valid = i_valid;
+    o_rdidx = i_rdidx;
+
+    o_bjp_taken = bjp_taken & i_bjp;
+    o_bjp_tgt   = bjp_tgt;
+    o_bjp_lnk   = bjp_lnk;
+
+    if i_bjp
+      o_wdat = bjp_lnk;
+    else if i_agu
+      o_wdat = dpath_agu_res;
+    else
+      o_wdat = dpath_alu_res;
+    end if
+  end comb
+
+end module ExuAlu

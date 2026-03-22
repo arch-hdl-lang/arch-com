@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "arch-hdl": {
+      "command": "/Users/shuqingzhao/github/arch-com/mcp/.venv/bin/python3",
+      "args": ["/Users/shuqingzhao/github/arch-com/mcp/arch_mcp_server.py"],
+      "cwd": "/Users/shuqingzhao/github/arch-com"
+    }
+  }
+}

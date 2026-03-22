@@ -765,6 +765,14 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Check if an expression is signed (contains a Cast to SInt).
+    fn expr_is_signed(expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Cast(_, ty) => matches!(&**ty, TypeExpr::SInt(_)),
+            _ => false,
+        }
+    }
+
     fn expr_root_name(expr: &Expr) -> String {
         match &expr.kind {
             ExprKind::Ident(n) => n.clone(),
@@ -2205,6 +2213,12 @@ impl<'a> Codegen<'a> {
             ExprKind::Binary(op, lhs, rhs) => {
                 let l = self.emit_expr_str(lhs);
                 let r = self.emit_expr_str(rhs);
+                // Use arithmetic shift (>>>) when LHS is cast to SInt
+                let shr_str = if matches!(op, BinOp::Shr) && Self::expr_is_signed(lhs) {
+                    ">>>"
+                } else {
+                    ">>"
+                };
                 let op_str = match op {
                     BinOp::Add => "+",
                     BinOp::Sub => "-",
@@ -2223,7 +2237,7 @@ impl<'a> Codegen<'a> {
                     BinOp::BitOr => "|",
                     BinOp::BitXor => "^",
                     BinOp::Shl => "<<",
-                    BinOp::Shr => ">>",
+                    BinOp::Shr => shr_str,
                 };
                 format!("({l} {op_str} {r})")
             }
@@ -2260,8 +2274,8 @@ impl<'a> Codegen<'a> {
                     "zext" => {
                         if let Some(width) = args.first() {
                             let w = self.emit_expr_str(width);
-                            // SV size cast zero-extends when target is wider than source.
-                            format!("{w}'({b})")
+                            // $unsigned prevents context-dependent width expansion before the cast
+                            format!("{w}'($unsigned({b}))")
                         } else {
                             b
                         }
@@ -2280,8 +2294,19 @@ impl<'a> Codegen<'a> {
             }
             ExprKind::Cast(expr, ty) => {
                 let e = self.emit_expr_str(expr);
-                let t = self.emit_type_str(ty);
-                format!("{t}'({e})")
+                match &**ty {
+                    TypeExpr::SInt(_) => {
+                        format!("$signed({e})")
+                    }
+                    TypeExpr::UInt(w) => {
+                        let ws = self.emit_expr_str(w);
+                        format!("{ws}'($unsigned({e}))")
+                    }
+                    _ => {
+                        let t = self.emit_type_str(ty);
+                        format!("{t}'({e})")
+                    }
+                }
             }
             ExprKind::Index(base, idx) => {
                 let b = self.emit_expr_str(base);
