@@ -902,6 +902,40 @@ fn collect_inst_output_signals(body: &[ModuleBodyItem]) -> HashSet<String> {
     signals
 }
 
+/// Collect all LHS targets from comb blocks (recursing into if/else/match arms).
+fn collect_comb_targets(body: &[ModuleBodyItem]) -> HashSet<String> {
+    fn collect_stmt_targets(stmt: &CombStmt, out: &mut HashSet<String>) {
+        match stmt {
+            CombStmt::Assign(a) => { out.insert(a.target.name.clone()); }
+            CombStmt::IfElse(ie) => {
+                for s in &ie.then_stmts { collect_stmt_targets(s, out); }
+                for s in &ie.else_stmts { collect_stmt_targets(s, out); }
+            }
+            CombStmt::MatchExpr(m) => {
+                for arm in &m.arms {
+                    for s in &arm.body {
+                        if let Stmt::Assign(a) = s {
+                            if let ExprKind::Ident(name) = &a.target.kind {
+                                out.insert(name.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            CombStmt::Log(_) => {}
+        }
+    }
+    let mut targets = HashSet::new();
+    for item in body {
+        if let ModuleBodyItem::CombBlock(cb) = item {
+            for stmt in &cb.stmts {
+                collect_stmt_targets(stmt, &mut targets);
+            }
+        }
+    }
+    targets
+}
+
 fn extract_reset_info(ports: &[PortDecl]) -> (String, bool, bool) {
     for p in ports {
         if let TypeExpr::Reset(kind, level) = &p.ty {
@@ -1355,6 +1389,16 @@ impl<'a> SimCodegen<'a> {
             }
         }
 
+        // Private fields for comb-block intermediate signals (not ports/regs/inst_out)
+        let comb_targets = collect_comb_targets(&m.body);
+        for sig_name in &comb_targets {
+            if !port_names.contains(sig_name) && !reg_names.contains(sig_name)
+                && !inst_out.contains(sig_name) && !let_names.contains(sig_name)
+            {
+                h.push_str(&format!("  uint32_t {sig_name};\n"));
+            }
+        }
+
         // Sub-instance private fields
         for inst in &insts {
             h.push_str(&format!("  V{} _inst_{};\n", inst.module_name.name, inst.name.name));
@@ -1412,6 +1456,9 @@ impl<'a> SimCodegen<'a> {
             //   6. Parent eval_comb()    → refresh parent output ports
 
             // Step 1 + 2: set sub-inst inputs, run comb, read outputs (pre-posedge)
+            // Wrapped in a 2-pass loop to settle combinational feedback across inst boundaries
+            // (e.g., valid/ready handshake loops: disp → alu → commit → disp)
+            cpp.push_str("  for (int _settle = 0; _settle < 2; _settle++) {\n");
             for inst in &insts {
                 cpp.push('\n');
                 for conn in &inst.connections {
@@ -1419,45 +1466,16 @@ impl<'a> SimCodegen<'a> {
                         if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
                             if wide_names.contains(src_name.as_str()) {
                                 let resolved = ctx.resolve_name(src_name, false);
-                                cpp.push_str(&format!("  _inst_{}.{} = {};\n",
+                                cpp.push_str(&format!("    _inst_{}.{} = {};\n",
                                     inst.name.name, conn.port_name.name, resolved));
                                 continue;
                             }
                         }
                         let sig = cpp_expr(&conn.signal, &ctx);
-                        cpp.push_str(&format!("  _inst_{}.{} = {};\n",
+                        cpp.push_str(&format!("    _inst_{}.{} = {};\n",
                             inst.name.name, conn.port_name.name, sig));
                     }
                 }
-                cpp.push_str(&format!("  _inst_{}.eval_comb();\n", inst.name.name));
-                for conn in &inst.connections {
-                    if conn.direction == ConnectDir::Output {
-                        let sig = cpp_expr(&conn.signal, &ctx);
-                        cpp.push_str(&format!("  {} = _inst_{}.{};\n",
-                            sig, inst.name.name, conn.port_name.name));
-                        // --check-uninit: mark inst output as initialized
-                        if let ExprKind::Ident(name) = &conn.signal.kind {
-                            if uninit_regs.contains(name.as_str()) {
-                                cpp.push_str(&format!("  _{name}_vinit = true;\n"));
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Step 3: parent comb (uses pre-posedge sub-inst outputs)
-            cpp.push_str("  eval_comb();\n");
-
-            if has_clk {
-            // Step 4: if any rising edge, fire posedge blocks simultaneously
-            cpp.push_str(&format!("  if ({any_rising}) {{\n"));
-            cpp.push_str("    eval_posedge();\n");
-            for inst in &insts {
-                cpp.push_str(&format!("    _inst_{}.eval_posedge();\n", inst.name.name));
-            }
-
-            // Step 5+6: refresh sub-inst comb outputs, then parent comb
-            for inst in &insts {
                 cpp.push_str(&format!("    _inst_{}.eval_comb();\n", inst.name.name));
                 for conn in &inst.connections {
                     if conn.direction == ConnectDir::Output {
@@ -1473,7 +1491,55 @@ impl<'a> SimCodegen<'a> {
                     }
                 }
             }
+
+            // Parent comb within settle loop
             cpp.push_str("    eval_comb();\n");
+            cpp.push_str("  } // settle\n");
+
+            if has_clk {
+            // Step 4: if any rising edge, fire posedge blocks simultaneously
+            cpp.push_str(&format!("  if ({any_rising}) {{\n"));
+            cpp.push_str("    eval_posedge();\n");
+            for inst in &insts {
+                cpp.push_str(&format!("    _inst_{}.eval_posedge();\n", inst.name.name));
+            }
+
+            // Step 5+6: refresh sub-inst comb outputs, then parent comb (with settle loop)
+            cpp.push_str("    for (int _settle = 0; _settle < 2; _settle++) {\n");
+            for inst in &insts {
+                // Re-set sub-inst inputs (may have changed after posedge)
+                for conn in &inst.connections {
+                    if conn.direction == ConnectDir::Input {
+                        if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
+                            if wide_names.contains(src_name.as_str()) {
+                                let resolved = ctx.resolve_name(src_name, false);
+                                cpp.push_str(&format!("      _inst_{}.{} = {};\n",
+                                    inst.name.name, conn.port_name.name, resolved));
+                                continue;
+                            }
+                        }
+                        let sig = cpp_expr(&conn.signal, &ctx);
+                        cpp.push_str(&format!("      _inst_{}.{} = {};\n",
+                            inst.name.name, conn.port_name.name, sig));
+                    }
+                }
+                cpp.push_str(&format!("      _inst_{}.eval_comb();\n", inst.name.name));
+                for conn in &inst.connections {
+                    if conn.direction == ConnectDir::Output {
+                        let sig = cpp_expr(&conn.signal, &ctx);
+                        cpp.push_str(&format!("      {} = _inst_{}.{};\n",
+                            sig, inst.name.name, conn.port_name.name));
+                        // --check-uninit: mark inst output as initialized
+                        if let ExprKind::Ident(name) = &conn.signal.kind {
+                            if uninit_regs.contains(name.as_str()) {
+                                cpp.push_str(&format!("      _{name}_vinit = true;\n"));
+                            }
+                        }
+                    }
+                }
+            }
+            cpp.push_str("      eval_comb();\n");
+            cpp.push_str("    } // settle\n");
             cpp.push_str("  } else {\n");
             cpp.push_str("    eval_comb();\n");
             cpp.push_str("  }\n");
@@ -1685,9 +1751,40 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("}\n\n");
 
         // eval_comb()
+        // For modules with sub-instances, eval_comb includes re-evaluation of the
+        // inst chain so that combinational feedback settles when called from parent.
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
         let ctx_comb = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                 &wide_names, &widths, &enum_map);
+
+        // If there are sub-instances, re-evaluate the inst chain
+        if !insts.is_empty() {
+            for inst in &insts {
+                for conn in &inst.connections {
+                    if conn.direction == ConnectDir::Input {
+                        if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
+                            if wide_names.contains(src_name.as_str()) {
+                                let resolved = ctx_comb.resolve_name(src_name, false);
+                                cpp.push_str(&format!("  _inst_{}.{} = {};\n",
+                                    inst.name.name, conn.port_name.name, resolved));
+                                continue;
+                            }
+                        }
+                        let sig = cpp_expr(&conn.signal, &ctx_comb);
+                        cpp.push_str(&format!("  _inst_{}.{} = {};\n",
+                            inst.name.name, conn.port_name.name, sig));
+                    }
+                }
+                cpp.push_str(&format!("  _inst_{}.eval_comb();\n", inst.name.name));
+                for conn in &inst.connections {
+                    if conn.direction == ConnectDir::Output {
+                        let sig = cpp_expr(&conn.signal, &ctx_comb);
+                        cpp.push_str(&format!("  {} = _inst_{}.{};\n",
+                            sig, inst.name.name, conn.port_name.name));
+                    }
+                }
+            }
+        }
 
         // Let bindings → private fields (assign, not declare)
         for item in &m.body {
