@@ -498,6 +498,8 @@ Arch has exactly two assignment forms. Mixing operators between them is a compil
 >
 > ◈ **SV codegen notes.** The SystemVerilog backend applies the following transformations for correctness across simulators and lint tools: (1) signed casts emit `$signed(x)` (not `logic signed [N-1:0]'(x)`) for Verilator compatibility; (2) right-shift `>>` on an `SInt` operand emits arithmetic shift `>>>` (correct SRA behavior); (3) `.zext<N>()` emits `N'($unsigned(x))` to prevent context-dependent width expansion.
 
+> ◈ **Sim codegen notes.** The C++ simulation backend applies the following fixes for correctness: (1) `.sext<N>()` properly replicates the MSB of the source value into all upper bits of the result — previously it was treated identically to `.zext<N>()` (plain C++ cast, no sign extension); the correct formula is `((val & ((1<<src)-1)) ^ (1<<(src-1))) - (1<<(src-1))` where `src` is the source width; (2) the two-argument form `.trunc<Hi,Lo>()` now correctly computes the inferred source width as `Hi-Lo+1` rather than `Hi` — the incorrect value caused wrong sign-extension when the bit-range result was later `.sext()`-ed.
+
 **5. Clock Domains and CDC Safety**
 
 Every Clock signal in Arch carries a domain tag as part of its type. The compiler tracks which domain every signal belongs to. Crossing domain boundaries without an explicit crossing block is a compile-time error --- never a simulation-time surprise.

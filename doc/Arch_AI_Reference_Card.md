@@ -1,6 +1,6 @@
 **Arch HDL --- AI Reference Card**
 
-*Compact AI context for hardware generation · v0.21.0 · Put this in context, add design intent, paste compiler errors to self-correct.*
+*Compact AI context for hardware generation · v0.24.0 · Put this in context, add design intent, paste compiler errors to self-correct.*
 
 **1. Universal Block Schema --- Every Construct Uses This**
 
@@ -639,4 +639,4 @@ CDC detection covers both seq→seq and comb→seq crossings: a comb block readi
 >
 > Recommended AI workflow: fetch syntax first → write_and_check → arch_build_and_lint
 
-*Arch AI Reference Card · March 2026 · v0.23.0 · arch check is your first line of defence*
+*Arch AI Reference Card · March 2026 · v0.24.0 · arch check is your first line of defence*

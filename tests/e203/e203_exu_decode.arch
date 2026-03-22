@@ -1,0 +1,185 @@
+// E203 HBirdv2 Instruction Decode Unit
+// Pure combinational RV32I decoder. Takes a 32-bit instruction word and
+// produces one-hot operation signals, immediate value, register indices,
+// and register read/write enables.
+//
+// Feeds directly into ExuAlu (ALU/BJP ops) and the AGU (load/store).
+// Supports: R-type ALU, I-type ALU, LUI, AUIPC, branches, JAL, JALR,
+// loads, and stores.
+
+module ExuDecode
+  param XLEN: const = 32;
+
+  port instr: in UInt<32>;
+
+  // ── Register indices ─────────────────────────────────────────────────
+  port o_rs1_idx: out UInt<5>;
+  port o_rs2_idx: out UInt<5>;
+  port o_rd_idx:  out UInt<5>;
+  port o_imm:     out UInt<32>;
+
+  // ── Unit select (one-hot) ────────────────────────────────────────────
+  port o_alu:   out Bool;
+  port o_bjp:   out Bool;
+  port o_agu:   out Bool;
+
+  // ── ALU operation one-hot ────────────────────────────────────────────
+  port o_alu_add:  out Bool;
+  port o_alu_sub:  out Bool;
+  port o_alu_xor:  out Bool;
+  port o_alu_sll:  out Bool;
+  port o_alu_srl:  out Bool;
+  port o_alu_sra:  out Bool;
+  port o_alu_or:   out Bool;
+  port o_alu_and:  out Bool;
+  port o_alu_slt:  out Bool;
+  port o_alu_sltu: out Bool;
+  port o_alu_lui:  out Bool;
+
+  // ── BJP operation one-hot ────────────────────────────────────────────
+  port o_beq:   out Bool;
+  port o_bne:   out Bool;
+  port o_blt:   out Bool;
+  port o_bge:   out Bool;
+  port o_bltu:  out Bool;
+  port o_bgeu:  out Bool;
+  port o_jump:  out Bool;
+
+  // ── Memory ───────────────────────────────────────────────────────────
+  port o_load:  out Bool;
+  port o_store: out Bool;
+
+  // ── Register enables ─────────────────────────────────────────────────
+  port o_rs1_en: out Bool;
+  port o_rs2_en: out Bool;
+  port o_rd_en:  out Bool;
+
+  // ── Instruction field extraction ─────────────────────────────────────
+  let opcode: UInt<7> = instr.trunc<6,0>();
+  let rd_field:  UInt<5> = instr.trunc<11,7>();
+  let funct3: UInt<3> = instr.trunc<14,12>();
+  let rs1_field: UInt<5> = instr.trunc<19,15>();
+  let rs2_field: UInt<5> = instr.trunc<24,20>();
+  let funct7: UInt<7> = instr.trunc<31,25>();
+
+  // ── Opcode classification ────────────────────────────────────────────
+  let is_op:       Bool = opcode == 0x33;   // R-type ALU
+  let is_op_imm:   Bool = opcode == 0x13;   // I-type ALU
+  let is_lui:      Bool = opcode == 0x37;   // LUI
+  let is_auipc:    Bool = opcode == 0x17;   // AUIPC
+  let is_branch:   Bool = opcode == 0x63;   // Branch
+  let is_jal:      Bool = opcode == 0x6F;   // JAL
+  let is_jalr:     Bool = opcode == 0x67;   // JALR
+  let is_load_op:  Bool = opcode == 0x03;   // Load
+  let is_store_op: Bool = opcode == 0x23;   // Store
+
+  // ── funct3 decode (ALU) ──────────────────────────────────────────────
+  let f3_add:  Bool = funct3 == 0x0;
+  let f3_sll:  Bool = funct3 == 0x1;
+  let f3_slt:  Bool = funct3 == 0x2;
+  let f3_sltu: Bool = funct3 == 0x3;
+  let f3_xor:  Bool = funct3 == 0x4;
+  let f3_srl:  Bool = funct3 == 0x5;
+  let f3_or:   Bool = funct3 == 0x6;
+  let f3_and:  Bool = funct3 == 0x7;
+
+  // funct7 bit 5 distinguishes ADD/SUB, SRL/SRA
+  let f7_sub: Bool = funct7 == 0x20;
+
+  // ── funct3 decode (branch) ───────────────────────────────────────────
+  let f3_beq:  Bool = funct3 == 0x0;
+  let f3_bne:  Bool = funct3 == 0x1;
+  let f3_blt:  Bool = funct3 == 0x4;
+  let f3_bge:  Bool = funct3 == 0x5;
+  let f3_bltu: Bool = funct3 == 0x6;
+  let f3_bgeu: Bool = funct3 == 0x7;
+
+  // ── Immediate generation ─────────────────────────────────────────────
+
+  // I-type: instr[31:20] sign-extended
+  let imm_i: UInt<32> = (instr.trunc<31,20>().sext<32>() as UInt<32>);
+
+  // S-type: {instr[31:25], instr[11:7]} sign-extended
+  let imm_s_hi: UInt<12> = funct7.zext<12>() << 5;
+  let imm_s_raw: UInt<12> = (imm_s_hi | rd_field.zext<12>()).trunc<12>();
+  let imm_s: UInt<32> = (imm_s_raw.sext<32>() as UInt<32>);
+
+  // B-type: {instr[31], instr[7], instr[30:25], instr[11:8], 0} sign-extended
+  let imm_b_12:   UInt<32> = instr.trunc<31,31>().zext<32>() << 12;
+  let imm_b_11:   UInt<32> = instr.trunc<7,7>().zext<32>() << 11;
+  let imm_b_10_5: UInt<32> = instr.trunc<30,25>().zext<32>() << 5;
+  let imm_b_4_1:  UInt<32> = instr.trunc<11,8>().zext<32>() << 1;
+  let imm_b_raw:  UInt<13> = (imm_b_12 | imm_b_11 | imm_b_10_5 | imm_b_4_1).trunc<13>();
+  let imm_b: UInt<32> = (imm_b_raw.sext<32>() as UInt<32>);
+
+  // U-type: {instr[31:12], 12'b0}
+  let imm_u: UInt<32> = (instr >> 12).trunc<20>().zext<32>() << 12;
+
+  // J-type: {instr[31], instr[19:12], instr[20], instr[30:21], 0} sign-extended
+  let imm_j_20:    UInt<32> = instr.trunc<31,31>().zext<32>() << 20;
+  let imm_j_19_12: UInt<32> = instr.trunc<19,12>().zext<32>() << 12;
+  let imm_j_11:    UInt<32> = instr.trunc<20,20>().zext<32>() << 11;
+  let imm_j_10_1:  UInt<32> = instr.trunc<30,21>().zext<32>() << 1;
+  let imm_j_raw:   UInt<21> = (imm_j_20 | imm_j_19_12 | imm_j_11 | imm_j_10_1).trunc<21>();
+  let imm_j: UInt<32> = (imm_j_raw.sext<32>() as UInt<32>);
+
+  // ── Combinational output logic ───────────────────────────────────────
+  comb
+    // Register indices
+    o_rs1_idx = rs1_field;
+    o_rs2_idx = rs2_field;
+    o_rd_idx  = rd_field;
+
+    // Unit select
+    o_alu = is_op | is_op_imm | is_lui | is_auipc;
+    o_bjp = is_branch | is_jal | is_jalr;
+    o_agu = is_load_op | is_store_op;
+
+    // ALU operation one-hot
+    o_alu_add  = (is_op & f3_add & ~f7_sub) | (is_op_imm & f3_add) | is_auipc;
+    o_alu_sub  = is_op & f3_add & f7_sub;
+    o_alu_xor  = (is_op | is_op_imm) & f3_xor;
+    o_alu_sll  = (is_op | is_op_imm) & f3_sll;
+    o_alu_srl  = (is_op | is_op_imm) & f3_srl & ~f7_sub;
+    o_alu_sra  = (is_op | is_op_imm) & f3_srl & f7_sub;
+    o_alu_or   = (is_op | is_op_imm) & f3_or;
+    o_alu_and  = (is_op | is_op_imm) & f3_and;
+    o_alu_slt  = (is_op | is_op_imm) & f3_slt;
+    o_alu_sltu = (is_op | is_op_imm) & f3_sltu;
+    o_alu_lui  = is_lui;
+
+    // BJP operation one-hot
+    o_beq  = is_branch & f3_beq;
+    o_bne  = is_branch & f3_bne;
+    o_blt  = is_branch & f3_blt;
+    o_bge  = is_branch & f3_bge;
+    o_bltu = is_branch & f3_bltu;
+    o_bgeu = is_branch & f3_bgeu;
+    o_jump = is_jal | is_jalr;
+
+    // Memory
+    o_load  = is_load_op;
+    o_store = is_store_op;
+
+    // Register enables
+    o_rs1_en = is_op | is_op_imm | is_branch | is_jalr | is_load_op | is_store_op;
+    o_rs2_en = is_op | is_branch | is_store_op;
+    o_rd_en  = is_op | is_op_imm | is_lui | is_auipc | is_jal | is_jalr | is_load_op;
+
+    // Immediate mux
+    if is_op_imm | is_load_op | is_jalr
+      o_imm = imm_i;
+    else if is_store_op
+      o_imm = imm_s;
+    else if is_branch
+      o_imm = imm_b;
+    else if is_lui | is_auipc
+      o_imm = imm_u;
+    else if is_jal
+      o_imm = imm_j;
+    else
+      o_imm = 0;
+    end if
+  end comb
+
+end module ExuDecode

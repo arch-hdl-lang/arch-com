@@ -1,7 +1,7 @@
 # ARCH Compiler — Status & Roadmap
 
 > Last updated: 2026-03-21
-> Compiler version: 0.23.0 (SV codegen fixes, hierarchical ref check, MCP server tools, e203_exu_alu benchmark)
+> Compiler version: 0.24.0 (sim sext fix, sim trunc<Hi,Lo> width fix, e203_exu_decode benchmark)
 
 ---
 
@@ -17,6 +17,7 @@
 | `arch sim <file.arch> --tb <tb.cpp>` | ✅ Generates Verilator-compatible C++ models (`VName.h` + `VName.cpp` + `verilated.h`), compiles with `g++`, and runs; supports `module`, `counter`, `fsm`, `linklist`, `ram`; `fifo`/`arbiter`/`regfile` pending |
 | `arch sim ... --check-uninit` | ✅ Detects reads of uninitialized `reset none` registers; shadow valid bits propagate through `pipe_reg` chains; warn-once per signal to stderr |
 | `arch sim ... --cdc-random` | ✅ Randomizes synchronizer chain propagation latency via LFSR; `cdc_skip_pct` (0–100, default 25) is a public member on each C++ model, controllable from testbench at runtime |
+| `arch sim` **sim codegen fixes** | ✅ (1) `.sext<N>()` now correctly replicates the MSB into all upper bits instead of being treated identically to `.zext<N>()` (plain C++ cast); (2) `infer_expr_width` for two-arg `.trunc<Hi,Lo>()` now returns `Hi-Lo+1` instead of `Hi`, fixing incorrect source widths for subsequent sign extension |
 
 ---
 
@@ -140,13 +141,14 @@
 - `arch sim` supports **multi-clock domain** modules: each `Clock<Domain>` port gets independent `_rising_X` edge detection; `eval_posedge()` guards each `seq` block on its specific clock's rising edge; auto-generates `tick()` method from domain `freq_mhz` declarations (computes half-periods via GCD for correct clock ratio); single-clock modules unchanged; verified with 200MHz/50MHz dual-clock testbench (MultiClockSync, 80 ticks, 4:1 ratio, 0 errors)
 - `arch sim` supports purely combinational modules (no `Clock<>` port): generated `eval()` skips `_rising` edge detection — testbenches call `eval()` directly without toggling a clock signal
 - AES-128 cipher benchmark (NIST FIPS-197 test vectors verified via `arch sim`): AesSbox + Xtime as pure combinational functions; AesCipherTop + AesKeyExpand128 using inline function calls replacing 32 `inst` blocks; wide `UInt<128>` ports via `VlWide<4>`; correct hierarchical posedge simultaneity (all `always_ff` blocks across parent + sub-instance fire atomically)
-- **E203 HBirdv2 benchmark suite** (6 modules from nuclei-sw E203 RISC-V core):
+- **E203 HBirdv2 benchmark suite** (7 modules from nuclei-sw E203 RISC-V core):
   - `e203_exu_regfile`: 2R1W register file using `regfile` construct; `init [0] = 0` write guard; `forward write_before_read: false`; 5 sim tests; verified against Verilator
   - `e203_exu_wbck`: Priority write-back arbiter (alu vs long-latency); pure `comb` block with `if/else`; 6 sim tests; verified against Verilator
   - `e203_ifu_litebpu`: Static branch prediction unit; JAL/JALR always-taken, Bxx backward-taken; JALR-x1/xN hazard detection; `rs1xn_rdrf_r` state register; `let` intermediates + async reset + `comb` `if/else if/else`; 11 sim tests; verified against Verilator
   - `e203_exu_alu_dpath`: Shared ALU datapath; BJP/AGU/ALU operand mux; 33-bit carry-extended adder; two's-complement subtraction for comparison; `?:` ternary chaining; `SInt<32>` cast for signed comparison; `reset none` registers; 26 sim tests
   - `e203_exu_alu_bjp`: Branch/jump unit; BEQ/BNE/BLT/BGE/BLTU/BGEU; JAL/JALR unconditional jump; target address, link address (PC+4); XOR-based equality, carry-out subtraction for BLTU/BGEU, `SInt<32>` cast for BLT/BGE; purely combinational (no clock port); 25 sim tests
   - `e203_exu_alu`: ALU top-level module (6th E203 module); first to use `inst` for hierarchical composition — instantiates AluDpath + BjpUnit; 20 sim tests; verified against Verilator
+  - `e203_exu_decode`: RV32I instruction decoder (7th E203 module); pure combinational; decodes all RV32I formats (R, I, S, B, U, J); produces one-hot ALU/BJP ops, register indices/enables, sign-extended immediates, unit select, load/store flags; 30 `arch sim` tests + 22 Verilator cross-check tests
 
 ---
 

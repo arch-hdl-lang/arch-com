@@ -360,7 +360,16 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
         ExprKind::Literal(_) => 32,
         ExprKind::Bool(_) => 1,
         ExprKind::MethodCall(_, method, args) if method.name == "trunc" || method.name == "zext" || method.name == "sext" => {
-            if let Some(w) = args.first() { eval_width(w) } else { 8 }
+            if method.name == "trunc" && args.len() == 2 {
+                // Two-arg trunc: trunc<Hi,Lo>() → width = Hi - Lo + 1
+                let hi = eval_width(&args[0]);
+                let lo = eval_width(&args[1]);
+                hi - lo + 1
+            } else if let Some(w) = args.first() {
+                eval_width(w)
+            } else {
+                8
+            }
         }
         ExprKind::Cast(_, ty) => {
             match ty.as_ref() {
@@ -479,10 +488,27 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                         b
                     }
                 }
-                "zext" | "sext" => {
+                "zext" => {
                     if let Some(w_expr) = args.first() {
                         let bits = eval_width(w_expr);
                         format!("({})({})", cpp_uint(bits), b)
+                    } else {
+                        b
+                    }
+                }
+                "sext" => {
+                    if let Some(w_expr) = args.first() {
+                        let dst_bits = eval_width(w_expr);
+                        let src_bits = infer_expr_width(base, ctx);
+                        if src_bits >= dst_bits || src_bits == 0 {
+                            // No extension needed or unknown source width
+                            format!("({})({})", cpp_uint(dst_bits), b)
+                        } else {
+                            // Sign-extend: if MSB of source is set, fill upper bits with 1s
+                            let dst_t = cpp_uint(dst_bits);
+                            format!("(({b} >> {}) & 1 ? ({dst_t})({b}) | ({dst_t})(~(({dst_t})0) << {src_bits}) : ({dst_t})({b}))",
+                                src_bits - 1)
+                        }
                     } else {
                         b
                     }
