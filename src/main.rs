@@ -57,6 +57,9 @@ enum Command {
         /// Randomize synchronizer latency to model CDC metastability
         #[arg(long)]
         cdc_random: bool,
+        /// Emit VCD waveform to file (e.g. --wave out.vcd)
+        #[arg(long)]
+        wave: Option<PathBuf>,
     },
 }
 
@@ -121,8 +124,8 @@ fn main() -> miette::Result<()> {
             eprintln!("OK: no errors");
             Ok(())
         }
-        Command::Sim { arch_files, tb_files, outdir, check_uninit, cdc_random } => {
-            run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, cdc_random)
+        Command::Sim { arch_files, tb_files, outdir, check_uninit, cdc_random, wave } => {
+            run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, cdc_random, wave.as_deref())
         }
         Command::Build { files, o } => {
             let ms = MultiSource::from_files(&files)?;
@@ -178,6 +181,7 @@ fn run_sim(
     outdir: Option<&std::path::Path>,
     check_uninit: bool,
     cdc_random: bool,
+    wave: Option<&std::path::Path>,
 ) -> miette::Result<()> {
     // 1. Parse + type-check
     let ms = MultiSource::from_files(arch_files)?;
@@ -246,7 +250,12 @@ fn run_sim(
 
     // 6. Run the simulation binary, forwarding remaining args
     eprintln!("Running simulation...");
-    let run_status = std::process::Command::new(&sim_bin)
+    let mut run_cmd = std::process::Command::new(&sim_bin);
+    if let Some(wave_path) = wave {
+        run_cmd.arg(format!("+trace+{}", wave_path.display()));
+        eprintln!("VCD waveform will be written to {}", wave_path.display());
+    }
+    let run_status = run_cmd
         .status()
         .into_diagnostic()?;
 

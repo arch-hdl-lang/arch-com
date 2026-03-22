@@ -99,10 +99,18 @@ public:
             if (sscanf(argv[i], "+arch_verbosity=%d", &v) == 1) {
                 _s_verbosity = v;
             }
+            if (strncmp(argv[i], "+trace+", 7) == 0 && argv[i][7]) {
+                _s_trace_file = argv[i] + 7;
+            }
         }
     }
     static int verbosity() { return _s_verbosity; }
+    static const char* traceFile() { return _s_trace_file; }
+    /// Returns true if this is the first caller (top-level module).
+    static bool claimTrace() { if (_s_trace_claimed) return false; _s_trace_claimed = true; return true; }
     static int _s_verbosity;
+    static const char* _s_trace_file;
+    static bool _s_trace_claimed;
 };
 
 // ── Wide signal support ───────────────────────────────────────────────────────
@@ -157,8 +165,240 @@ static inline uint64_t _arch_repeat(uint64_t val, uint32_t n, uint32_t val_width
     pub fn verilated_cpp() -> String {
         r#"#include "verilated.h"
 int Verilated::_s_verbosity = 1;
+const char* Verilated::_s_trace_file = nullptr;
+bool Verilated::_s_trace_claimed = false;
 "#.to_string()
     }
+}
+
+// ── VCD Trace helpers ────────────────────────────────────────────────────────
+
+/// A signal to be traced in VCD output.
+struct TraceSignal {
+    vcd_name: String,    // display name in VCD scope
+    cpp_expr: String,    // C++ expression to read the value
+    width: u32,          // bit width
+    is_wide: bool,       // true if VlWide<N> type
+}
+
+/// Generate a short VCD identifier from a signal index.
+/// Uses alphanumeric chars only (a-z, A-Z, 0-9) to avoid C string/printf conflicts.
+fn vcd_id(index: usize) -> String {
+    // Prefix with 's' to ensure valid VCD id, then index
+    format!("s{index}")
+}
+
+/// Emit trace_open / trace_dump / trace_close C++ method implementations.
+/// Returns (header_declarations, cpp_implementations).
+fn emit_trace_methods(class: &str, module_name: &str, signals: &[TraceSignal]) -> (String, String) {
+    let mut h = String::new();
+    let mut cpp = String::new();
+
+    h.push_str("  void trace_open(const char* filename);\n");
+    h.push_str("  void trace_dump(uint64_t time);\n");
+    h.push_str("  void trace_close();\n");
+
+    // ── trace_open ──
+    cpp.push_str(&format!("void {class}::trace_open(const char* filename) {{\n"));
+    cpp.push_str("  _trace_fp = fopen(filename, \"w\");\n");
+    cpp.push_str("  if (!_trace_fp) return;\n");
+    cpp.push_str("  fprintf(_trace_fp, \"$timescale 1ns $end\\n\");\n");
+    cpp.push_str(&format!("  fprintf(_trace_fp, \"$scope module {} $end\\n\");\n", module_name));
+    for (i, sig) in signals.iter().enumerate() {
+        let id = vcd_id(i);
+        let kind = if sig.vcd_name.starts_with('_') { "reg" } else { "wire" };
+        cpp.push_str(&format!(
+            "  fprintf(_trace_fp, \"$var {} {} {} {} $end\\n\");\n",
+            kind, sig.width, id, sig.vcd_name
+        ));
+    }
+    cpp.push_str("  fprintf(_trace_fp, \"$upscope $end\\n$enddefinitions $end\\n\");\n");
+    cpp.push_str("}\n\n");
+
+    // ── trace_dump ──
+    cpp.push_str(&format!("void {class}::trace_dump(uint64_t time) {{\n"));
+    cpp.push_str("  if (!_trace_fp) return;\n");
+    cpp.push_str("  fprintf(_trace_fp, \"#%lu\\n\", (unsigned long)time);\n");
+    for (i, sig) in signals.iter().enumerate() {
+        let id = vcd_id(i);
+        if sig.width == 1 {
+            cpp.push_str(&format!(
+                "  fprintf(_trace_fp, \"%c{}\\n\", {} ? '1' : '0');\n",
+                id, sig.cpp_expr
+            ));
+        } else if sig.is_wide {
+            // Wide signal: emit bit-by-bit from VlWide
+            cpp.push_str("  fprintf(_trace_fp, \"b\");\n");
+            cpp.push_str(&format!(
+                "  for (int _i = {w} - 1; _i >= 0; _i--) fprintf(_trace_fp, \"%c\", ({expr}.data()[_i/32] >> (_i%32)) & 1 ? '1' : '0');\n",
+                w = sig.width, expr = sig.cpp_expr
+            ));
+            cpp.push_str(&format!("  fprintf(_trace_fp, \" {}\\n\");\n", id));
+        } else {
+            // Multi-bit (<=64): emit binary
+            cpp.push_str("  fprintf(_trace_fp, \"b\");\n");
+            cpp.push_str(&format!(
+                "  for (int _i = {w} - 1; _i >= 0; _i--) fprintf(_trace_fp, \"%c\", (int)(({expr} >> _i) & 1) ? '1' : '0');\n",
+                w = sig.width, expr = sig.cpp_expr
+            ));
+            cpp.push_str(&format!("  fprintf(_trace_fp, \" {}\\n\");\n", id));
+        }
+    }
+    cpp.push_str("}\n\n");
+
+    // ── trace_close ──
+    cpp.push_str(&format!("void {class}::trace_close() {{\n"));
+    cpp.push_str("  if (_trace_fp) { fclose(_trace_fp); _trace_fp = nullptr; }\n");
+    cpp.push_str("}\n\n");
+
+    (h, cpp)
+}
+
+/// Collect trace signals from a module's ports and body.
+fn collect_trace_signals(
+    ports: &[PortDecl],
+    body: &[ModuleBodyItem],
+    wide_names: &HashSet<String>,
+    widths: &HashMap<String, u32>,
+) -> Vec<TraceSignal> {
+    let mut sigs = Vec::new();
+
+    // Ports
+    for p in ports {
+        let name = &p.name.name;
+        let width = type_width(&p.ty);
+        let is_wide = wide_names.contains(name.as_str());
+        sigs.push(TraceSignal {
+            vcd_name: name.clone(),
+            cpp_expr: name.clone(),
+            width,
+            is_wide,
+        });
+    }
+
+    // Registers
+    for item in body {
+        if let ModuleBodyItem::RegDecl(r) = item {
+            let name = &r.name.name;
+            let width = type_width(&r.ty);
+            let is_wide = wide_names.contains(name.as_str());
+            sigs.push(TraceSignal {
+                vcd_name: name.clone(),
+                cpp_expr: format!("_{name}"),
+                width,
+                is_wide,
+            });
+        }
+    }
+
+    // Let bindings and wire decls
+    for item in body {
+        match item {
+            ModuleBodyItem::LetBinding(l) => {
+                let name = &l.name.name;
+                let width = l.ty.as_ref().map(|t| type_width(t)).unwrap_or(
+                    widths.get(name.as_str()).copied().unwrap_or(32)
+                );
+                sigs.push(TraceSignal {
+                    vcd_name: name.clone(),
+                    cpp_expr: format!("_let_{name}"),
+                    width,
+                    is_wide: false,
+                });
+            }
+            ModuleBodyItem::WireDecl(w) => {
+                let name = &w.name.name;
+                let width = type_width(&w.ty);
+                sigs.push(TraceSignal {
+                    vcd_name: name.clone(),
+                    cpp_expr: format!("_let_{name}"),
+                    width,
+                    is_wide: false,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    // Pipe regs
+    for item in body {
+        if let ModuleBodyItem::PipeRegDecl(p) = item {
+            let width = widths.get(&p.source.name).copied().unwrap_or(32);
+            for i in 0..p.stages {
+                let stage_name = if i == p.stages - 1 {
+                    p.name.name.clone()
+                } else {
+                    format!("{}_stg{}", p.name.name, i + 1)
+                };
+                sigs.push(TraceSignal {
+                    vcd_name: stage_name.clone(),
+                    cpp_expr: format!("_{stage_name}"),
+                    width,
+                    is_wide: false,
+                });
+            }
+        }
+    }
+
+    sigs
+}
+
+/// Get the bit-width of a TypeExpr.
+fn type_width(ty: &TypeExpr) -> u32 {
+    match ty {
+        TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval_width(w),
+        TypeExpr::Bool => 1,
+        TypeExpr::Bit => 1,
+        TypeExpr::Clock(_) => 1,
+        TypeExpr::Reset { .. } => 1,
+        TypeExpr::Vec(elem, count) => type_width(elem) * eval_width(count),
+        _ => 32,
+    }
+}
+
+/// Add VCD trace support to a non-module construct (counter, fsm, ram, etc.).
+/// Patches the header and cpp strings in place. Call BEFORE closing `};\n` in header
+/// and AFTER all method impls in cpp.
+///
+/// `extra_signals`: additional internal signals to trace (name, cpp_expr, width).
+fn add_trace_to_simple_construct(
+    h: &mut String,
+    cpp: &mut String,
+    class: &str,
+    construct_name: &str,
+    ports: &[PortDecl],
+    extra_signals: &[(&str, &str, u32)],
+) {
+    // Build signal list from ports + extras
+    let mut signals = Vec::new();
+    for p in ports {
+        let width = type_width(&p.ty);
+        signals.push(TraceSignal {
+            vcd_name: p.name.name.clone(),
+            cpp_expr: p.name.name.clone(),
+            width,
+            is_wide: false,
+        });
+    }
+    for &(name, expr, width) in extra_signals {
+        signals.push(TraceSignal {
+            vcd_name: name.to_string(),
+            cpp_expr: expr.to_string(),
+            width,
+            is_wide: false,
+        });
+    }
+
+    let (trace_h, trace_cpp) = emit_trace_methods(class, construct_name, &signals);
+
+    // Inject into header: trace methods + private members before closing };
+    // We expect the header to NOT yet have };\n
+    h.push_str(&trace_h);
+    h.push_str("  FILE* _trace_fp = nullptr;\n");
+    h.push_str("  uint64_t _trace_time = 0;\n");
+
+    // Append trace impls to cpp
+    cpp.push_str(&trace_cpp);
 }
 
 // ── Type helpers ──────────────────────────────────────────────────────────────
@@ -1356,36 +1596,35 @@ impl<'a> SimCodegen<'a> {
 
         // Collect log file paths early so constructor can open them
         let log_files_for_ctor = collect_log_files(&m.body);
-        let needs_ctor_body = !vec_reg_inits.is_empty() || !log_files_for_ctor.is_empty();
-        if !needs_ctor_body {
-            h.push_str(&format!("  {class}() : {} {{}}\n", all_inits.join(", ")));
-        } else {
-            h.push_str(&format!("  {class}() : {} {{\n", all_inits.join(", ")));
-            for line in &vec_reg_inits { h.push_str(&format!("{line}\n")); }
-            for path in &log_files_for_ctor {
-                h.push_str(&format!("    {} = fopen(\"{}\", \"w\");\n", log_fd_name(path), path));
-            }
-            h.push_str("  }\n");
+        // Constructor always has a body (for auto-trace open)
+        h.push_str(&format!("  {class}() : {} {{\n", all_inits.join(", ")));
+        for line in &vec_reg_inits { h.push_str(&format!("{line}\n")); }
+        for path in &log_files_for_ctor {
+            h.push_str(&format!("    {} = fopen(\"{}\", \"w\");\n", log_fd_name(path), path));
         }
+        // Note: VCD auto-open is deferred to first eval() call via Verilated::claimTrace()
+        h.push_str("  }\n");
+        // Collect trace signals for VCD waveform support
+        let trace_signals = collect_trace_signals(&m.ports, &m.body, &wide_names, &widths);
+        let (trace_h_decls, trace_cpp_impl) = emit_trace_methods(&class, name, &trace_signals);
+
         h.push_str("  void eval();\n");
         h.push_str("  void eval_comb();\n");
         h.push_str("  void eval_posedge();\n");
+        h.push_str(&trace_h_decls);
         // Generate tick() for multi-clock modules with known frequencies
         let all_freqs_known = clk_freqs.len() >= 2 && clk_freqs.iter().all(|(_, f)| f.is_some());
         if all_freqs_known {
             h.push_str("  void tick();  // advance one time step, auto-toggle clocks at correct ratio\n");
             h.push_str("  uint64_t time_ps;  // current simulation time in picoseconds\n");
         }
-        // Log file handles: close in final()
-        if log_files_for_ctor.is_empty() {
-            h.push_str("  void final() {}\n\n");
-        } else {
-            h.push_str("  void final() {\n");
-            for path in &log_files_for_ctor {
-                h.push_str(&format!("    if ({fd}) fclose({fd});\n", fd = log_fd_name(path)));
-            }
-            h.push_str("  }\n\n");
+        // final(): close trace + log file handles
+        h.push_str("  void final() {\n");
+        h.push_str("    trace_close();\n");
+        for path in &log_files_for_ctor {
+            h.push_str(&format!("    if ({fd}) fclose({fd});\n", fd = log_fd_name(path)));
         }
+        h.push_str("  }\n\n");
         h.push_str("private:\n");
         for c in &clk_ports {
             h.push_str(&format!("  uint8_t _clk_prev_{c};\n"));
@@ -1489,6 +1728,10 @@ impl<'a> SimCodegen<'a> {
             h.push_str(&format!("  FILE* {} = nullptr;\n", log_fd_name(path)));
         }
 
+        // VCD trace state
+        h.push_str("  FILE* _trace_fp = nullptr;\n");
+        h.push_str("  uint64_t _trace_time = 0;\n");
+
         h.push_str("};\n");
 
         // ── Implementation ────────────────────────────────────────────────────
@@ -1497,6 +1740,9 @@ impl<'a> SimCodegen<'a> {
 
         // eval()
         cpp.push_str(&format!("void {class}::eval() {{\n"));
+        // Auto-open VCD on first eval() — only the top-level module (called by testbench) claims it
+        cpp.push_str("  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n");
+        cpp.push_str("    trace_open(Verilated::traceFile());\n");
         let multi_clk = clk_ports.len() > 1;
         for c in &clk_ports {
             if multi_clk {
@@ -1628,6 +1874,8 @@ impl<'a> SimCodegen<'a> {
             } // end if has_clk
         } // end else (has insts)
 
+        // Auto-dump VCD trace after each eval()
+        cpp.push_str("  if (_trace_fp) trace_dump(_trace_time++);\n");
         cpp.push_str("}\n\n");
 
         // eval_posedge()
@@ -1961,6 +2209,9 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str("}\n");
         }
 
+        // Trace method implementations
+        cpp.push_str(&trace_cpp_impl);
+
         SimModel { class_name: class.clone(), header: h, impl_: cpp }
     }
 }
@@ -2008,10 +2259,10 @@ impl<'a> SimCodegen<'a> {
         let state_inits = vec!["_clk_prev(0)".to_string(), format!("_count_r({})", init_val)];
         let all_inits: Vec<String> = port_inits.into_iter().chain(state_inits).collect();
         h.push_str(&format!("  {class}() : {} {{}}\n", all_inits.join(", ")));
-        h.push_str("  void eval();\n  void final() {}\nprivate:\n");
+        h.push_str("  void eval();\n  void final() { trace_close(); }\nprivate:\n");
         h.push_str("  uint8_t _clk_prev;\n");
         h.push_str(&format!("  {count_ty} _count_r;\n"));
-        h.push_str("  void eval_posedge();\n  void eval_comb();\n};\n");
+        h.push_str("  void eval_posedge();\n  void eval_comb();\n");
 
         let mut cpp = String::new();
         cpp.push_str(&format!("#include \"{class}.h\"\n\n"));
@@ -2020,9 +2271,13 @@ impl<'a> SimCodegen<'a> {
             .map(|p| p.name.name.as_str()).unwrap_or("clk");
 
         cpp.push_str(&format!("void {class}::eval() {{\n"));
+        cpp.push_str("  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n");
+        cpp.push_str("    trace_open(Verilated::traceFile());\n");
         cpp.push_str(&format!("  bool _rising = ({clk_port} && !_clk_prev);\n"));
         cpp.push_str(&format!("  _clk_prev = {clk_port};\n"));
-        cpp.push_str("  if (_rising) eval_posedge();\n  eval_comb();\n}\n\n");
+        cpp.push_str("  if (_rising) eval_posedge();\n  eval_comb();\n");
+        cpp.push_str("  if (_trace_fp) trace_dump(_trace_time++);\n");
+        cpp.push_str("}\n\n");
 
         cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
         cpp.push_str(&format!("  {count_ty} _n = _count_r;\n"));
@@ -2108,6 +2363,11 @@ impl<'a> SimCodegen<'a> {
         }
         cpp.push_str("}\n");
 
+        // Add trace support
+        let extra_sigs: Vec<(&str, &str, u32)> = vec![("count_r", "_count_r", count_bits)];
+        add_trace_to_simple_construct(&mut h, &mut cpp, &class, name, &c.ports, &extra_sigs);
+        h.push_str("};\n");
+
         SimModel { class_name: class, header: h, impl_: cpp }
     }
 }
@@ -2176,10 +2436,10 @@ impl<'a> SimCodegen<'a> {
         let state_inits = vec!["_clk_prev(0)".to_string(), format!("_state_r({default_idx})")];
         let all_inits: Vec<String> = port_inits.into_iter().chain(reg_inits).chain(state_inits).collect();
         h.push_str(&format!("  {class}() : {} {{}}\n", all_inits.join(", ")));
-        h.push_str("  void eval();\n  void eval_posedge();\n  void eval_comb();\n  void final() {}\nprivate:\n");
+        h.push_str("  void eval();\n  void eval_posedge();\n  void eval_comb();\n  void final() { trace_close(); }\nprivate:\n");
         h.push_str("  uint8_t _clk_prev;\n");
         h.push_str(&format!("  {state_ty} _state_r;\n"));
-        h.push_str("};\n");
+        // };\n deferred until after trace support added
 
         let mut cpp = String::new();
         cpp.push_str(&format!("#include \"{class}.h\"\n\n"));
@@ -2188,9 +2448,13 @@ impl<'a> SimCodegen<'a> {
             .map(|p| p.name.name.as_str()).unwrap_or("clk");
 
         cpp.push_str(&format!("void {class}::eval() {{\n"));
+        cpp.push_str("  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n");
+        cpp.push_str("    trace_open(Verilated::traceFile());\n");
         cpp.push_str(&format!("  bool _rising = ({clk_port} && !_clk_prev);\n"));
         cpp.push_str(&format!("  _clk_prev = {clk_port};\n"));
-        cpp.push_str("  eval_comb();\n  if (_rising) eval_posedge();\n  eval_comb();\n}\n\n");
+        cpp.push_str("  eval_comb();\n  if (_rising) eval_posedge();\n  eval_comb();\n");
+        cpp.push_str("  if (_trace_fp) trace_dump(_trace_time++);\n");
+        cpp.push_str("}\n\n");
 
         let fsm_reg_names: HashSet<String> = f.regs.iter().map(|r| r.name.name.clone()).collect();
         let fsm_let_names: HashSet<String> = f.lets.iter().map(|l| l.name.name.clone()).collect();
@@ -2279,6 +2543,11 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str("      break;\n    }\n");
         }
         cpp.push_str("  }\n}\n");
+
+        // Add trace support
+        let extra_sigs: Vec<(&str, &str, u32)> = vec![("state_r", "_state_r", state_bits as u32)];
+        add_trace_to_simple_construct(&mut h, &mut cpp, &class, name, &f.ports, &extra_sigs);
+        h.push_str("};\n");
 
         SimModel { class_name: class, header: h, impl_: cpp }
     }
@@ -2370,16 +2639,21 @@ impl<'a> SimCodegen<'a> {
         inits.push("_clk_prev(0)".to_string());
 
         h.push_str(&format!("  {class}() : {} {{\n    memset(_rf, 0, sizeof(_rf));\n  }}\n", inits.join(", ")));
-        h.push_str("  void eval();\n  void eval_comb();\n  void eval_posedge();\n  void final() {}\n\nprivate:\n");
+        h.push_str("  void eval();\n  void eval_comb();\n  void eval_posedge();\n  void final() { trace_close(); }\n\nprivate:\n");
         h.push_str("  uint8_t _clk_prev;\n");
-        h.push_str(&format!("  {elem_cpp} _rf[{nregs}];\n}};\n"));
+        h.push_str(&format!("  {elem_cpp} _rf[{nregs}];\n"));
 
         // ── Implementation ────────────────────────────────────────────────────
         let mut cpp = String::new();
         cpp.push_str(&format!("#include \"{class}.h\"\n\n"));
 
         // eval()
-        cpp.push_str(&format!("void {class}::eval() {{\n  bool _rising = ({clk_port} && !_clk_prev);\n  _clk_prev = {clk_port};\n  eval_comb();\n  if (_rising) eval_posedge();\n  eval_comb();\n}}\n\n"));
+        cpp.push_str(&format!("void {class}::eval() {{\n"));
+        cpp.push_str("  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n");
+        cpp.push_str("    trace_open(Verilated::traceFile());\n");
+        cpp.push_str(&format!("  bool _rising = ({clk_port} && !_clk_prev);\n  _clk_prev = {clk_port};\n  eval_comb();\n  if (_rising) eval_posedge();\n  eval_comb();\n"));
+        cpp.push_str("  if (_trace_fp) trace_dump(_trace_time++);\n");
+        cpp.push_str("}\n\n");
 
         // eval_posedge(): write ports with address guards for init-protected entries
         cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
@@ -2408,6 +2682,10 @@ impl<'a> SimCodegen<'a> {
             }
         }
         cpp.push_str("}\n");
+
+        let extra_sigs: Vec<(&str, &str, u32)> = vec![];
+        add_trace_to_simple_construct(&mut h, &mut cpp, &class, name, &r.ports, &extra_sigs);
+        h.push_str("};\n");
 
         SimModel { class_name: class, header: h, impl_: cpp }
     }
@@ -2504,7 +2782,7 @@ impl<'a> SimCodegen<'a> {
         h.push_str("    memset(_next_mem, 0, sizeof(_next_mem));\n");
         if has_doubly { h.push_str("    memset(_prev_mem, 0, sizeof(_prev_mem));\n"); }
         h.push_str("  }\n");
-        h.push_str("  void eval();\n  void eval_comb();\n  void eval_posedge();\n  void final() {}\n\nprivate:\n");
+        h.push_str("  void eval();\n  void eval_comb();\n  void eval_posedge();\n  void final() { trace_close(); }\n\nprivate:\n");
         h.push_str("  uint8_t _clk_prev;\n");
         h.push_str(&format!("  uint8_t _fl_mem[{depth}];\n"));
         h.push_str(&format!("  {data_cpp} _data_mem[{depth}];\n"));
@@ -2530,17 +2808,19 @@ impl<'a> SimCodegen<'a> {
                 h.push_str(&format!("  uint8_t _ctrl_{on}_after_handle;\n"));
             }
         }
-        h.push_str("};\n");
 
         // ── Implementation ────────────────────────────────────────────────────
         let mut cpp = String::new();
         cpp.push_str(&format!("#include \"{class}.h\"\n\n"));
         cpp.push_str(&format!(
             "void {class}::eval() {{\n\
+             \n  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n\
+             \n    trace_open(Verilated::traceFile());\n\
              \n  bool _rising = (clk && !_clk_prev);\n\
              \n  _clk_prev = clk;\n\
              \n  if (_rising) eval_posedge();\n\
-             \n  eval_comb();\n}}\n\n"
+             \n  eval_comb();\n\
+             \n  if (_trace_fp) trace_dump(_trace_time++);\n}}\n\n"
         ));
 
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
@@ -2688,6 +2968,10 @@ impl<'a> SimCodegen<'a> {
         }
         cpp.push_str("  }\n}\n");
 
+        let extra_sigs: Vec<(&str, &str, u32)> = vec![];
+        add_trace_to_simple_construct(&mut h, &mut cpp, &class, name, &l.ports, &extra_sigs);
+        h.push_str("};\n");
+
         SimModel { class_name: class, header: h, impl_: cpp }
     }
 
@@ -2807,7 +3091,7 @@ impl<'a> SimCodegen<'a> {
             }
         }
         h.push_str("  }\n");
-        h.push_str("  void eval();\n  void eval_posedge();\n  void eval_comb();\n  void final() {}\n");
+        h.push_str("  void eval();\n  void eval_posedge();\n  void eval_comb();\n  void final() { trace_close(); }\n");
         h.push_str("private:\n");
         h.push_str("  uint8_t _clk_prev;\n");
         h.push_str(&format!("  {} _mem[{}];\n", elem_ty, depth));
@@ -2817,17 +3101,19 @@ impl<'a> SimCodegen<'a> {
                 h.push_str(&format!("  {} _r2_{};\n", elem_ty, fs.full_name));
             }
         }
-        h.push_str("};\n");
 
         // ── Implementation ──
         let mut cpp = String::new();
         cpp.push_str(&format!("#include \"{class}.h\"\n\n"));
 
         cpp.push_str(&format!("void {class}::eval() {{\n"));
+        cpp.push_str("  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n");
+        cpp.push_str("    trace_open(Verilated::traceFile());\n");
         cpp.push_str("  bool _rising = (clk && !_clk_prev);\n");
         cpp.push_str("  _clk_prev = clk;\n");
         cpp.push_str("  if (_rising) eval_posedge();\n");
         cpp.push_str("  eval_comb();\n");
+        cpp.push_str("  if (_trace_fp) trace_dump(_trace_time++);\n");
         cpp.push_str("}\n\n");
 
         cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
@@ -2955,6 +3241,10 @@ impl<'a> SimCodegen<'a> {
         }
         cpp.push_str("}\n");
 
+        let extra_sigs: Vec<(&str, &str, u32)> = vec![];
+        add_trace_to_simple_construct(&mut h, &mut cpp, &class, name, &r.ports, &extra_sigs);
+        h.push_str("};\n");
+
         SimModel { class_name: class, header: h, impl_: cpp }
     }
 
@@ -2995,15 +3285,15 @@ impl<'a> SimCodegen<'a> {
         let mut h = String::new();
         h.push_str("#pragma once\n");
         if cdc_random {
-            h.push_str("#include <cstdint>\n#include <cstring>\n#include <cstdlib>\n\n");
+            h.push_str("#include <cstdint>\n#include <cstring>\n#include <cstdlib>\n#include \"verilated.h\"\n\n");
         } else {
-            h.push_str("#include <cstdint>\n#include <cstring>\n\n");
+            h.push_str("#include <cstdint>\n#include <cstring>\n#include \"verilated.h\"\n\n");
         }
         h.push_str(&format!("class {class} {{\npublic:\n"));
         for p in &s.ports {
             h.push_str(&format!("  {} {};\n", cpp_port_type(&p.ty), p.name.name));
         }
-        h.push_str("\n  void eval();\n  void eval_posedge();\n  void eval_comb();\n  void final_() {}\n");
+        h.push_str("\n  void eval();\n  void eval_posedge();\n  void eval_comb();\n  void final() { trace_close(); }\n");
         if cdc_random {
             h.push_str("  uint8_t cdc_skip_pct = 25; // 0-100: probability of +1 cycle latency per edge\n");
         }
@@ -3037,7 +3327,6 @@ impl<'a> SimCodegen<'a> {
         if cdc_random {
             h.push_str("  uint32_t _cdc_lfsr;\n");
         }
-        h.push_str("};\n");
 
         // ── Implementation ──
         let mut cpp = String::new();
@@ -3045,15 +3334,18 @@ impl<'a> SimCodegen<'a> {
 
         // eval()
         cpp.push_str(&format!("void {class}::eval() {{\n"));
+        cpp.push_str("  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n");
+        cpp.push_str("    trace_open(Verilated::traceFile());\n");
         cpp.push_str(&format!("  _rising_src = ({src_clk} && !_clk_prev_src);\n"));
         cpp.push_str(&format!("  _rising_dst = ({dst_clk} && !_clk_prev_dst);\n"));
         cpp.push_str(&format!("  _clk_prev_src = {src_clk};\n  _clk_prev_dst = {dst_clk};\n"));
         if s.kind == SyncKind::Reset {
-            // Reset synchronizer: async assert needs eval_posedge on every eval
-            cpp.push_str("  eval_posedge();\n  eval_comb();\n}\n\n");
+            cpp.push_str("  eval_posedge();\n  eval_comb();\n");
         } else {
-            cpp.push_str("  if (_rising_src || _rising_dst) eval_posedge();\n  eval_comb();\n}\n\n");
+            cpp.push_str("  if (_rising_src || _rising_dst) eval_posedge();\n  eval_comb();\n");
         }
+        cpp.push_str("  if (_trace_fp) trace_dump(_trace_time++);\n");
+        cpp.push_str("}\n\n");
 
         // eval_posedge()
         cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
@@ -3176,6 +3468,10 @@ impl<'a> SimCodegen<'a> {
             }
         }
         cpp.push_str("}\n");
+
+        let extra_sigs: Vec<(&str, &str, u32)> = vec![];
+        add_trace_to_simple_construct(&mut h, &mut cpp, &class, &class, &s.ports, &extra_sigs);
+        h.push_str("};\n");
 
         SimModel { class_name: class, header: h, impl_: cpp }
     }
