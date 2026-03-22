@@ -331,6 +331,7 @@ pub struct LogStmt {
     pub tag: String,
     pub fmt: String,
     pub args: Vec<Expr>,
+    pub file: Option<String>,
     pub span: Span,
 }
 

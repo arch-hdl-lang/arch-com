@@ -339,10 +339,88 @@ impl<'a> Codegen<'a> {
             }
         }
 
+        // Emit log file descriptors: initial $fopen / final $fclose
+        let log_files = Self::collect_log_files(&m_clone.body);
+        if !log_files.is_empty() {
+            self.line("");
+            for path in &log_files {
+                let fd = Self::log_fd_name(path);
+                self.line(&format!("integer {fd};"));
+            }
+            self.line("initial begin");
+            self.indent += 1;
+            for path in &log_files {
+                let fd = Self::log_fd_name(path);
+                self.line(&format!("{fd} = $fopen(\"{path}\", \"w\");"));
+            }
+            self.indent -= 1;
+            self.line("end");
+            self.line("final begin");
+            self.indent += 1;
+            for path in &log_files {
+                let fd = Self::log_fd_name(path);
+                self.line(&format!("$fclose({fd});"));
+            }
+            self.indent -= 1;
+            self.line("end");
+        }
+
         self.indent -= 1;
         self.line("");
         self.line("endmodule");
         self.line("");
+    }
+
+    /// Collect all unique log file paths from module body items.
+    fn collect_log_files(body: &[ModuleBodyItem]) -> Vec<String> {
+        let mut files = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        fn collect_from_comb(stmts: &[CombStmt], files: &mut Vec<String>, seen: &mut std::collections::HashSet<String>) {
+            for stmt in stmts {
+                match stmt {
+                    CombStmt::Log(l) => {
+                        if let Some(ref path) = l.file {
+                            if seen.insert(path.clone()) { files.push(path.clone()); }
+                        }
+                    }
+                    CombStmt::IfElse(ie) => {
+                        collect_from_comb(&ie.then_stmts, files, seen);
+                        collect_from_comb(&ie.else_stmts, files, seen);
+                    }
+                    CombStmt::MatchExpr(m) => {
+                        for arm in &m.arms { collect_from_seq(&arm.body, files, seen); }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        fn collect_from_seq(stmts: &[Stmt], files: &mut Vec<String>, seen: &mut std::collections::HashSet<String>) {
+            for stmt in stmts {
+                match stmt {
+                    Stmt::Log(l) => {
+                        if let Some(ref path) = l.file {
+                            if seen.insert(path.clone()) { files.push(path.clone()); }
+                        }
+                    }
+                    Stmt::IfElse(ie) => {
+                        collect_from_seq(&ie.then_stmts, files, seen);
+                        collect_from_seq(&ie.else_stmts, files, seen);
+                    }
+                    Stmt::Match(m) => {
+                        for arm in &m.arms { collect_from_seq(&arm.body, files, seen); }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for item in body {
+            match item {
+                ModuleBodyItem::CombBlock(cb) => collect_from_comb(&cb.stmts, &mut files, &mut seen),
+                ModuleBodyItem::RegBlock(rb) => collect_from_seq(&rb.stmts, &mut files, &mut seen),
+                _ => {}
+            }
+        }
+        files
     }
 
     /// Find the SV type string for a signal by looking up ports, regs, and let bindings.
@@ -487,20 +565,36 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    /// Emit a `log(...)` statement as an `if`-guarded `$display`.
+    /// Emit a `log(...)` statement as an `if`-guarded `$display` or `$fwrite`.
     fn emit_log_stmt(&mut self, l: &LogStmt) {
         let args_str: String = l.args.iter()
             .map(|a| format!(", {}", self.emit_expr_str(a)))
             .collect();
-        let display = format!(
-            "$display(\"[%0t][{}][{}] {}\", $time{});",
-            l.level.name(), l.tag, l.fmt, args_str
-        );
-        if l.level == LogLevel::Always {
-            self.line(&display);
+        let stmt = if let Some(ref path) = l.file {
+            let fd_name = Self::log_fd_name(path);
+            format!(
+                "$fwrite({}, \"[%0t][{}][{}] {}\\n\", $time{});",
+                fd_name, l.level.name(), l.tag, l.fmt, args_str
+            )
         } else {
-            self.line(&format!("if (_arch_verbosity >= {}) {}", l.level.value(), display));
+            format!(
+                "$display(\"[%0t][{}][{}] {}\", $time{});",
+                l.level.name(), l.tag, l.fmt, args_str
+            )
+        };
+        if l.level == LogLevel::Always {
+            self.line(&stmt);
+        } else {
+            self.line(&format!("if (_arch_verbosity >= {}) {}", l.level.value(), stmt));
         }
+    }
+
+    /// Generate a deterministic SV file descriptor name from a log file path.
+    fn log_fd_name(path: &str) -> String {
+        let clean: String = path.chars()
+            .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+            .collect();
+        format!("_log_fd_{clean}")
     }
 
     fn emit_comb_stmt(&mut self, stmt: &CombStmt) {

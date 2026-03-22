@@ -294,10 +294,13 @@ fn bit_range_u128(expr: &str, hi: u32, lo: u32) -> String {
 /// Convert SV/ARCH format string tokens to printf equivalents.
 fn sv_fmt_to_printf(s: &str) -> String {
     s.replace("%0t", "%lu")
-     .replace("%0d", "%d")
-     .replace("%0h", "%x")
-     .replace("%0b", "%u")
+     .replace("%0d", "%lld")
+     .replace("%0h", "%llx")
+     .replace("%0b", "%llu")
      .replace("%t",  "%lu")
+     .replace("%h",  "%llx")
+     .replace("%d",  "%lld")
+     .replace("%b",  "%llu")
 }
 
 // ── Expression context ────────────────────────────────────────────────────────
@@ -789,19 +792,69 @@ fn emit_log_stmt(l: &LogStmt, ctx: &Ctx, out: &mut String, indent: usize) {
         .map(|a| format!(", (long long)({})", cpp_expr(a, ctx)))
         .collect();
     let fmt = sv_fmt_to_printf(&l.fmt);
-    let printf_line = format!(
-        "{}printf(\"[{}][{}] {}\\n\"{});",
-        ind(indent), l.level.name(), l.tag, fmt, args_str
-    );
+    let print_line = if let Some(ref path) = l.file {
+        let fd_name = log_fd_name(path);
+        format!(
+            "{}if ({fd_name}) fprintf({fd_name}, \"[{}][{}] {}\\n\"{});",
+            ind(indent), l.level.name(), l.tag, fmt, args_str
+        )
+    } else {
+        format!(
+            "{}printf(\"[{}][{}] {}\\n\"{});",
+            ind(indent), l.level.name(), l.tag, fmt, args_str
+        )
+    };
     if l.level == LogLevel::Always {
-        out.push_str(&printf_line);
+        out.push_str(&print_line);
         out.push('\n');
     } else {
         out.push_str(&format!(
             "{}if (Verilated::verbosity() >= {}) {{ {} }}\n",
-            ind(indent), l.level.value(), printf_line
+            ind(indent), l.level.value(), print_line
         ));
     }
+}
+
+/// Generate a C++ file pointer name from a log file path.
+fn log_fd_name(path: &str) -> String {
+    let clean: String = path.chars()
+        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .collect();
+    format!("_log_fd_{clean}")
+}
+
+/// Collect unique log file paths from module body (comb + seq blocks).
+fn collect_log_files(body: &[ModuleBodyItem]) -> Vec<String> {
+    let mut files = Vec::new();
+    let mut seen = HashSet::new();
+    fn from_comb(stmts: &[CombStmt], files: &mut Vec<String>, seen: &mut HashSet<String>) {
+        for s in stmts {
+            match s {
+                CombStmt::Log(l) => { if let Some(ref p) = l.file { if seen.insert(p.clone()) { files.push(p.clone()); } } }
+                CombStmt::IfElse(ie) => { from_comb(&ie.then_stmts, files, seen); from_comb(&ie.else_stmts, files, seen); }
+                CombStmt::MatchExpr(m) => { for arm in &m.arms { from_seq(&arm.body, files, seen); } }
+                _ => {}
+            }
+        }
+    }
+    fn from_seq(stmts: &[Stmt], files: &mut Vec<String>, seen: &mut HashSet<String>) {
+        for s in stmts {
+            match s {
+                Stmt::Log(l) => { if let Some(ref p) = l.file { if seen.insert(p.clone()) { files.push(p.clone()); } } }
+                Stmt::IfElse(ie) => { from_seq(&ie.then_stmts, files, seen); from_seq(&ie.else_stmts, files, seen); }
+                Stmt::Match(m) => { for arm in &m.arms { from_seq(&arm.body, files, seen); } }
+                _ => {}
+            }
+        }
+    }
+    for item in body {
+        match item {
+            ModuleBodyItem::CombBlock(cb) => from_comb(&cb.stmts, &mut files, &mut seen),
+            ModuleBodyItem::RegBlock(rb) => from_seq(&rb.stmts, &mut files, &mut seen),
+            _ => {}
+        }
+    }
+    files
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1301,11 +1354,17 @@ impl<'a> SimCodegen<'a> {
             .chain(time_init)
             .collect();
 
-        if vec_reg_inits.is_empty() {
+        // Collect log file paths early so constructor can open them
+        let log_files_for_ctor = collect_log_files(&m.body);
+        let needs_ctor_body = !vec_reg_inits.is_empty() || !log_files_for_ctor.is_empty();
+        if !needs_ctor_body {
             h.push_str(&format!("  {class}() : {} {{}}\n", all_inits.join(", ")));
         } else {
             h.push_str(&format!("  {class}() : {} {{\n", all_inits.join(", ")));
             for line in &vec_reg_inits { h.push_str(&format!("{line}\n")); }
+            for path in &log_files_for_ctor {
+                h.push_str(&format!("    {} = fopen(\"{}\", \"w\");\n", log_fd_name(path), path));
+            }
             h.push_str("  }\n");
         }
         h.push_str("  void eval();\n");
@@ -1317,7 +1376,16 @@ impl<'a> SimCodegen<'a> {
             h.push_str("  void tick();  // advance one time step, auto-toggle clocks at correct ratio\n");
             h.push_str("  uint64_t time_ps;  // current simulation time in picoseconds\n");
         }
-        h.push_str("  void final() {}\n\n");
+        // Log file handles: close in final()
+        if log_files_for_ctor.is_empty() {
+            h.push_str("  void final() {}\n\n");
+        } else {
+            h.push_str("  void final() {\n");
+            for path in &log_files_for_ctor {
+                h.push_str(&format!("    if ({fd}) fclose({fd});\n", fd = log_fd_name(path)));
+            }
+            h.push_str("  }\n\n");
+        }
         h.push_str("private:\n");
         for c in &clk_ports {
             h.push_str(&format!("  uint8_t _clk_prev_{c};\n"));
@@ -1414,6 +1482,11 @@ impl<'a> SimCodegen<'a> {
         // Sub-instance private fields
         for inst in &insts {
             h.push_str(&format!("  V{} _inst_{};\n", inst.module_name.name, inst.name.name));
+        }
+
+        // Log file handles
+        for path in &log_files_for_ctor {
+            h.push_str(&format!("  FILE* {} = nullptr;\n", log_fd_name(path)));
         }
 
         h.push_str("};\n");

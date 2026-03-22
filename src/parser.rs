@@ -439,8 +439,28 @@ impl Parser {
     }
 
     /// Parse `log(Level, "TAG", "fmt", arg, ...) ;`
+    /// or    `log file("path") (Level, "TAG", "fmt", arg, ...) ;`
     fn parse_log_stmt(&mut self) -> Result<LogStmt, CompileError> {
         let start = self.expect(TokenKind::Log)?.span;
+
+        // Optional: file("path")
+        let file = if matches!(self.peek_kind(), Some(TokenKind::Ident(ref s)) if s == "file") {
+            self.advance();
+            self.expect(TokenKind::LParen)?;
+            let path = match self.peek_kind() {
+                Some(TokenKind::StringLit(s)) => { let p = s.clone(); self.advance(); p }
+                _ => return Err(CompileError::unexpected_token(
+                    "file path string literal",
+                    &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                    self.peek_span(),
+                )),
+            };
+            self.expect(TokenKind::RParen)?;
+            Some(path)
+        } else {
+            None
+        };
+
         self.expect(TokenKind::LParen)?;
 
         // Verbosity level: PascalCase ident
@@ -498,7 +518,7 @@ impl Parser {
 
         let end = self.expect(TokenKind::RParen)?.span;
         self.expect(TokenKind::Semi)?;
-        Ok(LogStmt { level, tag, fmt, args, span: start.merge(end) })
+        Ok(LogStmt { level, tag, fmt, args, file, span: start.merge(end) })
     }
 
     fn parse_reg_stmt(&mut self) -> Result<Stmt, CompileError> {
