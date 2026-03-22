@@ -1,4 +1,7 @@
 // Simple FSM with datapath registers to test reg/seq in FSM
+// domain SysDomain
+//   freq_mhz: 100
+
 module FsmCounter (
   input logic clk,
   input logic rst,
@@ -46,11 +49,9 @@ module FsmCounter (
     case (state_r)
       IDLE: begin
         if (go) state_next = COUNTING;
-        else if (1'b1) state_next = IDLE;
       end
       COUNTING: begin
         if ((cnt_r == tgt_r)) state_next = DONE;
-        else if (1'b1) state_next = COUNTING;
       end
       DONE: begin
         state_next = IDLE;
@@ -60,8 +61,8 @@ module FsmCounter (
   end
   
   always_comb begin
-    done = '0; // default
-    count = '0; // default
+    done = 1'b0; // default
+    count = 0; // default
     case (state_r)
       IDLE: begin
         done = 1'b0;
@@ -81,3 +82,5 @@ module FsmCounter (
 
 endmodule
 
+// no fallthrough needed — compiler defaults to stay in Idle
+// implicit stay in Counting

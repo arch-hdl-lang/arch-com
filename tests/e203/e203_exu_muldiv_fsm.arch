@@ -117,7 +117,6 @@ fsm ExuMuldiv
     end seq
 
     transition to Exec when i_valid & (is_mul_op | is_div_op);
-    transition to Idle when true;
   end state Idle
 
   state Exec
@@ -147,7 +146,6 @@ fsm ExuMuldiv
     end seq
 
     transition to Done when cyc_r == 31;
-    transition to Exec when true;
   end state Exec
 
   state Done
@@ -168,7 +166,6 @@ fsm ExuMuldiv
     end comb
 
     transition to Idle when o_ready;
-    transition to Done when true;
   end state Done
 
 end fsm ExuMuldiv

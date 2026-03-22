@@ -474,6 +474,18 @@ end if
 
 The same syntax applies in both `seq` and `comb` blocks. A chain begins with `if`, continues with zero or more `elsif` branches, optionally ends with `else`, and is always closed by a single `end if`. The compiler emits standard SystemVerilog `if / else if / else` from this syntax.
 
+**4.2.2 Bit Concatenation and Replication**
+
+Arch uses standard SystemVerilog syntax for bit concatenation and replication:
+
+```
+let word: UInt<16> = {high_byte, low_byte};       // concatenation (MSB first)
+let sign_ext: UInt<8> = {8{sign_bit}};            // replication
+let sext32: UInt<32> = {{24{sign_bit}}, byte_val}; // replication inside concat
+```
+
+`{a, b, c}` concatenates operands MSB-first, producing a `UInt` whose width is the sum of all operand widths. `{N{expr}}` replicates `expr` N times. Replication may be nested inside concatenation.
+
 **4.3 Module Instantiation**
 
 +--------------------------------------------------------------------+
@@ -732,7 +744,7 @@ The compiler generates clean, separated SystemVerilog:
 | **end** **fsm** TrafficLight                                       |
 +--------------------------------------------------------------------+
 
-> *⚑ The compiler verifies: every state has at least one outgoing transition; output ports **without** a `default` annotation must be driven in every state; output ports **with** `default expr` need only be driven in states that deviate from the declared default; no two transitions from the same state can be simultaneously enabled.*
+> *⚑ The compiler verifies: every state has at least one outgoing transition (dead-end states are a compile error); output ports **without** a `default` annotation must be driven in every state; output ports **with** `default expr` need only be driven in states that deviate from the declared default; no two transitions from the same state can be simultaneously enabled. If no transition fires in a given cycle, the FSM holds in the current state — a catch-all `transition to Self when true` is not required.*
 
 **7.2 FSM Output Port Defaults**
 

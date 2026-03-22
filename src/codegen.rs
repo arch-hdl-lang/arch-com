@@ -2378,6 +2378,11 @@ impl<'a> Codegen<'a> {
                 let strs: Vec<String> = parts.iter().map(|p| self.emit_expr_str(p)).collect();
                 format!("{{{}}}", strs.join(", "))
             }
+            ExprKind::Repeat(count, value) => {
+                let c = self.emit_expr_str(count);
+                let v = self.emit_expr_str(value);
+                format!("{{{c}{{{v}}}}}")
+            }
             ExprKind::Clog2(arg) => {
                 let a = self.emit_expr_str(arg);
                 format!("$clog2({a})")

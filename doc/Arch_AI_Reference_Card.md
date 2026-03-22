@@ -83,6 +83,10 @@
 > Arithmetic: UInt\<8\> + UInt\<8\> → UInt\<9\> (auto-widen); must .trunc\<8\>() to assign back
 >
 > $clog2(expr) supported in type args: UInt\<$clog2(DEPTH)\>
+>
+> Bit concat: {a, b} → SV {a, b} (MSB first). Bit repeat: {N{expr}} → SV {N{expr}}.
+>
+> Nestable: {{8{sign\_bit}}, byte\_val} → 16-bit sign-extended value.
 
 **3. Expressions & Operators**
 
@@ -243,8 +247,11 @@
 | // no comb block — both stay at default  | transition to Next when \<expr\>;         |
 |                                          |                                           |
 | transition to Running when start;        | Multiple transitions are checked for      |
-| transition to Idle when not start;       | mutual exclusivity; `unique if` emitted   |
+|                                          | mutual exclusivity; `unique if` emitted   |
 |                                          | when exclusive, `priority if` otherwise.  |
+|                                          | Implicit hold: if no transition fires,    |
+|                                          | FSM stays in current state. No catch-all  |
+|                                          | `transition to Self when true` needed.    |
 | end state Idle                           |                                           |
 |                                          |                                           |
 | state Running                            |                                           |

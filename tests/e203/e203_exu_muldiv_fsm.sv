@@ -176,15 +176,12 @@ module ExuMuldiv #(
     case (state_r)
       IDLE: begin
         if ((i_valid & (is_mul_op | is_div_op))) state_next = EXEC;
-        else if (1'b1) state_next = IDLE;
       end
       EXEC: begin
         if ((cyc_r == 31)) state_next = DONE;
-        else if (1'b1) state_next = EXEC;
       end
       DONE: begin
         if (o_ready) state_next = IDLE;
-        else if (1'b1) state_next = DONE;
       end
       default: state_next = state_r;
     endcase

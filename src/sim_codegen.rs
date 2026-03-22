@@ -141,6 +141,16 @@ static inline uint32_t _arch_clog2(uint64_t v) {
     if (v <= 1) return 1;
     uint32_t r = 0; v--; while (v) { v >>= 1; r++; } return r;
 }
+
+/// Bit replication helper: {N{val}} where val is val_width bits wide.
+static inline uint64_t _arch_repeat(uint64_t val, uint32_t n, uint32_t val_width) {
+    uint64_t mask = (val_width >= 64) ? ~0ULL : ((1ULL << val_width) - 1);
+    uint64_t result = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        result = (result << val_width) | (val & mask);
+    }
+    return result;
+}
 "#.to_string()
     }
 
@@ -386,6 +396,14 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
                 _ => 8,
             }
         }
+        ExprKind::Concat(parts) => {
+            parts.iter().map(|p| infer_expr_width(p, ctx)).sum()
+        }
+        ExprKind::Repeat(count, value) => {
+            let n = eval_width(count);
+            let w = infer_expr_width(value, ctx);
+            n * w
+        }
         _ => 8,
     }
 }
@@ -572,6 +590,14 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             format!("({})", terms.join(" | "))
         }
 
+        ExprKind::Repeat(count, value) => {
+            // {N{expr}} — replicate expr N times by shift-OR
+            let c = cpp_expr(count, ctx);
+            let v = cpp_expr(value, ctx);
+            let val_width = infer_expr_width(value, ctx);
+            // Generate: _arch_repeat(val, count, val_width)
+            format!("_arch_repeat((uint64_t)({v}), {c}, {val_width})")
+        }
         ExprKind::Clog2(arg) => {
             let a = cpp_expr(arg, ctx);
             format!("_arch_clog2({a})")

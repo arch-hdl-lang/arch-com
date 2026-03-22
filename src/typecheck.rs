@@ -946,6 +946,16 @@ impl<'a> TypeChecker<'a> {
                 }).sum();
                 Ty::UInt(total)
             }
+            ExprKind::Repeat(count, value) => {
+                // {N{expr}} — total width = N * width(expr)
+                let val_width = match self.resolve_expr_type(value, module_name, local_types) {
+                    Ty::UInt(w) | Ty::SInt(w) => w,
+                    Ty::Bool | Ty::Bit => 1,
+                    _ => 1,
+                };
+                let n = self.eval_const_expr(count, local_types).unwrap_or(1) as u32;
+                Ty::UInt(n * val_width)
+            }
             ExprKind::Clog2(arg) => {
                 // $clog2 returns a compile-time constant width value
                 if let Some(v) = self.eval_const_expr(arg, local_types) {
@@ -1489,11 +1499,14 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        // Every state body must have at least one transition
+        // Every state must have at least one transition (a state with zero
+        // transitions is a dead end — the FSM can never leave it).
+        // However, a catch-all `transition to Self when true` is NOT required;
+        // the codegen emits `state_next = state_r` as the default hold.
         for sb in &f.states {
             if sb.transitions.is_empty() {
                 self.errors.push(CompileError::general(
-                    &format!("state `{}` has no transitions", sb.name.name),
+                    &format!("state `{}` has no transitions (dead-end state)", sb.name.name),
                     sb.name.span,
                 ));
             }

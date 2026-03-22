@@ -1192,21 +1192,40 @@ impl Parser {
                     span: start.merge(end.span),
                 })
             }
-            // Bit concatenation: {a, b, c}
+            // Bit concatenation {a, b, c} or bit replication {N{expr}}
             Some(TokenKind::LBrace) => {
                 let start = self.advance().span;
-                let mut parts = Vec::new();
-                while !self.check(TokenKind::RBrace) {
-                    parts.push(self.parse_expr()?);
-                    if !self.eat(TokenKind::Comma) {
-                        break;
+                // Check for replication: {N{expr}} — count/ident followed by LBrace
+                let is_repeat = if let Some(TokenKind::DecLiteral(_) | TokenKind::HexLiteral(_) | TokenKind::Ident(_)) = self.peek_kind() {
+                    // Look ahead: if token after the number/ident is '{', it's replication
+                    self.pos + 1 < self.tokens.len() && self.tokens[self.pos + 1].kind == TokenKind::LBrace
+                } else {
+                    false
+                };
+                if is_repeat {
+                    let count = self.parse_expr()?;
+                    self.expect(TokenKind::LBrace)?;
+                    let value = self.parse_expr()?;
+                    self.expect(TokenKind::RBrace)?;
+                    let end = self.expect(TokenKind::RBrace)?;
+                    Ok(Expr {
+                        kind: ExprKind::Repeat(Box::new(count), Box::new(value)),
+                        span: start.merge(end.span),
+                    })
+                } else {
+                    let mut parts = Vec::new();
+                    while !self.check(TokenKind::RBrace) {
+                        parts.push(self.parse_expr()?);
+                        if !self.eat(TokenKind::Comma) {
+                            break;
+                        }
                     }
+                    let end = self.expect(TokenKind::RBrace)?;
+                    Ok(Expr {
+                        kind: ExprKind::Concat(parts),
+                        span: start.merge(end.span),
+                    })
                 }
-                let end = self.expect(TokenKind::RBrace)?;
-                Ok(Expr {
-                    kind: ExprKind::Concat(parts),
-                    span: start.merge(end.span),
-                })
             }
             Some(TokenKind::Todo) => {
                 let tok = self.advance();
