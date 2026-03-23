@@ -126,6 +126,7 @@ module ExuTop
     connect i_imm      <- dec_imm;
     connect i_rd_idx   <- dec_rd_idx;
     connect i_rd_en    <- dec_rd_en;
+    connect i_rs2_en   <- dec_rs2_en;
     connect i_alu      <- dec_alu;
     connect i_bjp      <- dec_bjp;
     connect i_agu      <- dec_agu;

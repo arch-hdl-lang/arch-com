@@ -1,0 +1,63 @@
+// E203 Interrupt Controller
+// Manages external, software, and timer interrupts.
+// Interfaces with CSR (mie/mip) and generates trap request to pipeline.
+// Supports RISC-V machine-mode interrupts: MEI (11), MTI (7), MSI (3).
+
+module IrqCtrl
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  // External interrupt sources
+  port ext_irq_i:    in Bool;       // external interrupt (PLIC)
+  port sw_irq_i:     in Bool;       // software interrupt
+  port tmr_irq_i:    in Bool;       // timer interrupt (CLINT)
+
+  // CSR interface
+  port mstatus_mie:  in Bool;       // global interrupt enable
+  port mie_meie:     in Bool;       // external interrupt enable
+  port mie_mtie:     in Bool;       // timer interrupt enable
+  port mie_msie:     in Bool;       // software interrupt enable
+
+  // Pipeline interface
+  port pipe_flush_ack: in Bool;     // pipeline flushed, safe to trap
+  port commit_valid:   in Bool;     // instruction committing (for precise traps)
+
+  // Outputs
+  port irq_req:       out Bool;     // interrupt request to pipeline
+  port irq_cause:     out UInt<32>; // mcause value (bit 31 = interrupt)
+  port mip_meip:      out Bool;     // for CSR mip read
+  port mip_mtip:      out Bool;
+  port mip_msip:      out Bool;
+
+  // Interrupt pending (raw: source & enable)
+  let mei_pending: Bool = ext_irq_i & mie_meie;
+  let mti_pending: Bool = tmr_irq_i & mie_mtie;
+  let msi_pending: Bool = sw_irq_i  & mie_msie;
+
+  // Any interrupt pending with global enable
+  let any_pending: Bool = (mei_pending | mti_pending | msi_pending) & mstatus_mie;
+
+  // Priority: MEI > MSI > MTI (per RISC-V privileged spec)
+  let sel_mei: Bool = mei_pending;
+  let sel_msi: Bool = msi_pending & ~mei_pending;
+  let sel_mti: Bool = mti_pending & ~mei_pending & ~msi_pending;
+
+  // mcause encoding: bit 31 = 1 (interrupt), bits[3:0] = cause code
+  // MEI=11, MSI=3, MTI=7
+  let cause_val: UInt<32> = sel_mei ? 0x8000000B :
+                              sel_msi ? 0x80000003 :
+                              sel_mti ? 0x80000007 : 0;
+
+  comb
+    // Interrupt request: pending + pipeline ready to take trap
+    irq_req   = any_pending & (pipe_flush_ack | commit_valid);
+    irq_cause = cause_val;
+
+    // mip bits for CSR read
+    mip_meip = ext_irq_i;
+    mip_mtip = tmr_irq_i;
+    mip_msip = sw_irq_i;
+  end comb
+
+end module IrqCtrl

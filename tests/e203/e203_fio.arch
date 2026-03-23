@@ -1,0 +1,99 @@
+// E203 Fast I/O Port
+// Provides a low-latency ICB-to-memory-mapped I/O interface.
+// Single-cycle read/write to a small register file (16 registers).
+// Used for performance-critical peripherals (e.g., GPIO fast set/clear).
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module Fio
+  param NUM_REGS: const = 16;
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  // ICB slave interface
+  port icb_cmd_valid: in  Bool;
+  port icb_cmd_ready: out Bool;
+  port icb_cmd_addr:  in  UInt<32>;
+  port icb_cmd_wdata: in  UInt<32>;
+  port icb_cmd_wmask: in  UInt<4>;
+  port icb_cmd_read:  in  Bool;
+  port icb_rsp_valid: out Bool;
+  port icb_rsp_ready: in  Bool;
+  port icb_rsp_rdata: out UInt<32>;
+  port icb_rsp_err:   out Bool;
+
+  // Fast I/O output pins (directly mapped from regs)
+  port fio_out_0: out UInt<32>;
+  port fio_out_1: out UInt<32>;
+  port fio_out_2: out UInt<32>;
+  port fio_out_3: out UInt<32>;
+
+  // Fast I/O input pins (directly readable)
+  port fio_in_0: in UInt<32>;
+  port fio_in_1: in UInt<32>;
+
+  // Register file (word-addressed, addr[5:2] selects register)
+  let reg_idx: UInt<4> = icb_cmd_addr.trunc<5,2>();
+
+  // Output registers
+  reg fio_r0: UInt<32> init 0 reset rst_n;
+  reg fio_r1: UInt<32> init 0 reset rst_n;
+  reg fio_r2: UInt<32> init 0 reset rst_n;
+  reg fio_r3: UInt<32> init 0 reset rst_n;
+
+  // Response pipeline (1-cycle)
+  reg rsp_valid_r: Bool     init false reset rst_n;
+  reg rsp_rdata_r: UInt<32> init 0 reset rst_n;
+
+  seq on clk rising
+    rsp_valid_r <= icb_cmd_valid;
+
+    if icb_cmd_valid & ~icb_cmd_read
+      // Write
+      if reg_idx == 0
+        fio_r0 <= icb_cmd_wdata;
+      elsif reg_idx == 1
+        fio_r1 <= icb_cmd_wdata;
+      elsif reg_idx == 2
+        fio_r2 <= icb_cmd_wdata;
+      elsif reg_idx == 3
+        fio_r3 <= icb_cmd_wdata;
+      end if
+    end if
+
+    // Latch read data
+    if icb_cmd_valid & icb_cmd_read
+      if reg_idx == 0
+        rsp_rdata_r <= fio_r0;
+      elsif reg_idx == 1
+        rsp_rdata_r <= fio_r1;
+      elsif reg_idx == 2
+        rsp_rdata_r <= fio_r2;
+      elsif reg_idx == 3
+        rsp_rdata_r <= fio_r3;
+      elsif reg_idx == 8
+        rsp_rdata_r <= fio_in_0;
+      elsif reg_idx == 9
+        rsp_rdata_r <= fio_in_1;
+      else
+        rsp_rdata_r <= 0;
+      end if
+    end if
+  end seq
+
+  comb
+    icb_cmd_ready = true;
+    icb_rsp_valid = rsp_valid_r;
+    icb_rsp_rdata = rsp_rdata_r;
+    icb_rsp_err   = false;
+
+    fio_out_0 = fio_r0;
+    fio_out_1 = fio_r1;
+    fio_out_2 = fio_r2;
+    fio_out_3 = fio_r3;
+  end comb
+
+end module Fio

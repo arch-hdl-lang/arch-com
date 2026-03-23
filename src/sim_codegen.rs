@@ -647,6 +647,14 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
             let w = infer_expr_width(value, ctx);
             n * w
         }
+        ExprKind::Binary(op, _, _) => {
+            match op {
+                BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt |
+                BinOp::Lte | BinOp::Gte | BinOp::And | BinOp::Or => 1,
+                _ => 8,
+            }
+        }
+        ExprKind::Unary(UnaryOp::Not, _) => 1,
         _ => 8,
     }
 }

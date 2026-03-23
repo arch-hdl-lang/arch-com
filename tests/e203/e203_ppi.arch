@@ -1,0 +1,151 @@
+// E203 Private Peripheral Interface
+// ICB-to-APB bridge with address-based demux to multiple peripherals.
+// Decodes ICB address to select one of N APB slaves.
+// Base addresses: GPIO=0x10012000, UART=0x10013000, SPI=0x10014000, Timer=0x02000000
+
+module Ppi
+  param NUM_SLAVES: const = 4;
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  // ICB slave (from BIU)
+  port icb_cmd_valid: in  Bool;
+  port icb_cmd_ready: out Bool;
+  port icb_cmd_addr:  in  UInt<32>;
+  port icb_cmd_wdata: in  UInt<32>;
+  port icb_cmd_wmask: in  UInt<4>;
+  port icb_cmd_read:  in  Bool;
+  port icb_rsp_valid: out Bool;
+  port icb_rsp_ready: in  Bool;
+  port icb_rsp_rdata: out UInt<32>;
+  port icb_rsp_err:   out Bool;
+
+  // APB master 0 (GPIO)
+  port apb0_psel:    out Bool;
+  port apb0_penable: out Bool;
+  port apb0_paddr:   out UInt<32>;
+  port apb0_pwdata:  out UInt<32>;
+  port apb0_pwrite:  out Bool;
+  port apb0_prdata:  in  UInt<32>;
+  port apb0_pready:  in  Bool;
+
+  // APB master 1 (UART)
+  port apb1_psel:    out Bool;
+  port apb1_penable: out Bool;
+  port apb1_paddr:   out UInt<32>;
+  port apb1_pwdata:  out UInt<32>;
+  port apb1_pwrite:  out Bool;
+  port apb1_prdata:  in  UInt<32>;
+  port apb1_pready:  in  Bool;
+
+  // APB master 2 (SPI)
+  port apb2_psel:    out Bool;
+  port apb2_penable: out Bool;
+  port apb2_paddr:   out UInt<32>;
+  port apb2_pwdata:  out UInt<32>;
+  port apb2_pwrite:  out Bool;
+  port apb2_prdata:  in  UInt<32>;
+  port apb2_pready:  in  Bool;
+
+  // APB master 3 (Timer/CLINT)
+  port apb3_psel:    out Bool;
+  port apb3_penable: out Bool;
+  port apb3_paddr:   out UInt<32>;
+  port apb3_pwdata:  out UInt<32>;
+  port apb3_pwrite:  out Bool;
+  port apb3_prdata:  in  UInt<32>;
+  port apb3_pready:  in  Bool;
+
+  // ── Address decode ─────────────────────────────────────────────
+  let addr_hi: UInt<20> = icb_cmd_addr.trunc<31,12>();
+  let sel_gpio:  Bool = (addr_hi == 0x10012);
+  let sel_uart:  Bool = (addr_hi == 0x10013);
+  let sel_spi:   Bool = (addr_hi == 0x10014);
+  let sel_timer: Bool = (icb_cmd_addr.trunc<31,24>() == 0x02);
+
+  // ── FSM: IDLE → SETUP → ACCESS ────────────────────────────────
+  reg fsm_st: UInt<2> init 0 reset rst_n;
+  reg sel_r:  UInt<3> init 0 reset rst_n;  // latched slave select
+  reg cmd_addr_r:  UInt<32> init 0 reset rst_n;
+  reg cmd_wdata_r: UInt<32> init 0 reset rst_n;
+  reg cmd_read_r:  Bool     init false reset rst_n;
+  reg rsp_valid_r: Bool     init false reset rst_n;
+  reg rsp_rdata_r: UInt<32> init 0 reset rst_n;
+
+  // Encode slave select
+  let sel_enc: UInt<3> = sel_gpio  ? 1 :
+                          sel_uart  ? 2 :
+                          sel_spi   ? 3 :
+                          sel_timer ? 4 : 0;
+
+  // Selected slave's pready and prdata
+  wire sel_prdata: UInt<32>;
+  wire sel_pready: Bool;
+
+  seq on clk rising
+    if fsm_st == 0
+      if icb_cmd_valid
+        sel_r       <= sel_enc;
+        cmd_addr_r  <= icb_cmd_addr;
+        cmd_wdata_r <= icb_cmd_wdata;
+        cmd_read_r  <= icb_cmd_read;
+        fsm_st      <= 1;
+      end if
+      if rsp_valid_r & icb_rsp_ready
+        rsp_valid_r <= false;
+      end if
+    elsif fsm_st == 1
+      fsm_st <= 2;
+    elsif fsm_st == 2
+      if sel_pready
+        rsp_rdata_r <= sel_prdata;
+        rsp_valid_r <= true;
+        fsm_st      <= 0;
+      end if
+    end if
+  end seq
+
+  let in_setup:  Bool = (fsm_st == 1);
+  let in_access: Bool = (fsm_st == 2);
+
+  comb
+    // APB common signals
+    apb0_paddr = cmd_addr_r; apb1_paddr = cmd_addr_r;
+    apb2_paddr = cmd_addr_r; apb3_paddr = cmd_addr_r;
+    apb0_pwdata = cmd_wdata_r; apb1_pwdata = cmd_wdata_r;
+    apb2_pwdata = cmd_wdata_r; apb3_pwdata = cmd_wdata_r;
+    apb0_pwrite = ~cmd_read_r; apb1_pwrite = ~cmd_read_r;
+    apb2_pwrite = ~cmd_read_r; apb3_pwrite = ~cmd_read_r;
+
+    // Per-slave psel/penable
+    apb0_psel = (sel_r == 1) & (in_setup | in_access);
+    apb0_penable = (sel_r == 1) & in_access;
+    apb1_psel = (sel_r == 2) & (in_setup | in_access);
+    apb1_penable = (sel_r == 2) & in_access;
+    apb2_psel = (sel_r == 3) & (in_setup | in_access);
+    apb2_penable = (sel_r == 3) & in_access;
+    apb3_psel = (sel_r == 4) & (in_setup | in_access);
+    apb3_penable = (sel_r == 4) & in_access;
+
+    // Read data mux
+    if sel_r == 1
+      sel_prdata = apb0_prdata; sel_pready = apb0_pready;
+    elsif sel_r == 2
+      sel_prdata = apb1_prdata; sel_pready = apb1_pready;
+    elsif sel_r == 3
+      sel_prdata = apb2_prdata; sel_pready = apb2_pready;
+    elsif sel_r == 4
+      sel_prdata = apb3_prdata; sel_pready = apb3_pready;
+    else
+      sel_prdata = 0; sel_pready = true;
+    end if
+
+    // ICB interface
+    icb_cmd_ready = (fsm_st == 0) & ~rsp_valid_r;
+    icb_rsp_valid = rsp_valid_r;
+    icb_rsp_rdata = rsp_rdata_r;
+    icb_rsp_err   = false;
+  end comb
+
+end module Ppi

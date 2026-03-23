@@ -10,6 +10,7 @@ module ExuDisp (
   input logic [32-1:0] i_imm,
   input logic [5-1:0] i_rd_idx,
   input logic i_rd_en,
+  input logic i_rs2_en,
   input logic i_alu,
   input logic i_bjp,
   input logic i_agu,
@@ -98,57 +99,63 @@ module ExuDisp (
   // ALU interface
   // MulDiv interface
   // LSU interface
-  assign alu_valid = (disp_valid & ((i_alu | i_bjp) | i_agu));
-  assign mdv_valid = (disp_valid & (((((((i_mul | i_mulh) | i_mulhsu) | i_mulhu) | i_div) | i_divu) | i_rem) | i_remu));
-  assign lsu_valid = (disp_valid & (i_load | i_store));
-  assign disp_ready = (((((i_alu | i_bjp) | i_agu) & alu_ready) | ((((((((i_mul | i_mulh) | i_mulhsu) | i_mulhu) | i_div) | i_divu) | i_rem) | i_remu) & mdv_ready)) | ((i_load | i_store) & lsu_ready));
-  assign alu_rs1 = i_rs1;
-  assign alu_rs2 = i_rs2;
-  assign alu_pc = i_pc;
-  assign alu_imm = i_imm;
-  assign alu_rdidx = i_rd_idx;
-  assign alu_op_add = i_alu_add;
-  assign alu_op_sub = i_alu_sub;
-  assign alu_op_xor = i_alu_xor;
-  assign alu_op_sll = i_alu_sll;
-  assign alu_op_srl = i_alu_srl;
-  assign alu_op_sra = i_alu_sra;
-  assign alu_op_or = i_alu_or;
-  assign alu_op_and = i_alu_and;
-  assign alu_op_slt = i_alu_slt;
-  assign alu_op_sltu = i_alu_sltu;
-  assign alu_op_lui = i_alu_lui;
-  assign alu_is_bjp = i_bjp;
-  assign alu_beq = i_beq;
-  assign alu_bne = i_bne;
-  assign alu_blt = i_blt;
-  assign alu_bge = i_bge;
-  assign alu_bltu = i_bltu;
-  assign alu_bgeu = i_bgeu;
-  assign alu_is_jump = i_jump;
-  assign alu_is_agu = i_agu;
-  assign mdv_rs1 = i_rs1;
-  assign mdv_rs2 = i_rs2;
-  assign mdv_rdidx = i_rd_idx;
-  assign mdv_rd_en = i_rd_en;
-  assign mdv_mul = i_mul;
-  assign mdv_mulh = i_mulh;
-  assign mdv_mulhsu = i_mulhsu;
-  assign mdv_mulhu = i_mulhu;
-  assign mdv_div = i_div;
-  assign mdv_divu = i_divu;
-  assign mdv_rem = i_rem;
-  assign mdv_remu = i_remu;
-  assign lsu_rs1 = i_rs1;
-  assign lsu_rs2 = i_rs2;
-  assign lsu_imm = i_imm;
-  assign lsu_load = i_load;
-  assign lsu_store = i_store;
+  always_comb begin
+    alu_valid = (disp_valid & ((i_alu | i_bjp) | i_agu));
+    mdv_valid = (disp_valid & (((((((i_mul | i_mulh) | i_mulhsu) | i_mulhu) | i_div) | i_divu) | i_rem) | i_remu));
+    lsu_valid = (disp_valid & (i_load | i_store));
+    disp_ready = (((((i_alu | i_bjp) | i_agu) & alu_ready) | ((((((((i_mul | i_mulh) | i_mulhsu) | i_mulhu) | i_div) | i_divu) | i_rem) | i_remu) & mdv_ready)) | ((i_load | i_store) & lsu_ready));
+    alu_rs1 = i_rs1;
+    if (i_rs2_en) begin
+      alu_rs2 = i_rs2;
+    end else begin
+      alu_rs2 = i_imm;
+    end
+    alu_pc = i_pc;
+    alu_imm = i_imm;
+    alu_rdidx = i_rd_idx;
+    alu_op_add = i_alu_add;
+    alu_op_sub = i_alu_sub;
+    alu_op_xor = i_alu_xor;
+    alu_op_sll = i_alu_sll;
+    alu_op_srl = i_alu_srl;
+    alu_op_sra = i_alu_sra;
+    alu_op_or = i_alu_or;
+    alu_op_and = i_alu_and;
+    alu_op_slt = i_alu_slt;
+    alu_op_sltu = i_alu_sltu;
+    alu_op_lui = i_alu_lui;
+    alu_is_bjp = i_bjp;
+    alu_beq = i_beq;
+    alu_bne = i_bne;
+    alu_blt = i_blt;
+    alu_bge = i_bge;
+    alu_bltu = i_bltu;
+    alu_bgeu = i_bgeu;
+    alu_is_jump = i_jump;
+    alu_is_agu = i_agu;
+    mdv_rs1 = i_rs1;
+    mdv_rs2 = i_rs2;
+    mdv_rdidx = i_rd_idx;
+    mdv_rd_en = i_rd_en;
+    mdv_mul = i_mul;
+    mdv_mulh = i_mulh;
+    mdv_mulhsu = i_mulhsu;
+    mdv_mulhu = i_mulhu;
+    mdv_div = i_div;
+    mdv_divu = i_divu;
+    mdv_rem = i_rem;
+    mdv_remu = i_remu;
+    lsu_rs1 = i_rs1;
+    lsu_rs2 = i_rs2;
+    lsu_imm = i_imm;
+    lsu_load = i_load;
+    lsu_store = i_store;
+  end
 
 endmodule
 
 // Valid signals — only one unit gets valid
 // Ready: accept when the targeted unit is ready
-// ALU operands (always driven, gated by alu_valid)
+// ALU operands — mux immediate into rs2 for I-type ALU/LUI (rs2_en=0)
 // MulDiv operands
 // LSU operands

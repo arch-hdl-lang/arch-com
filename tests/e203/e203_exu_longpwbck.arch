@@ -1,0 +1,50 @@
+// E203 Long-Pipe Writeback Collector
+// Collects results from long-latency units (MulDiv, LSU load)
+// and arbitrates them into a single writeback port.
+// Priority: LSU > MulDiv (loads are more latency-critical).
+
+module ExuLongpWbck
+
+  // LSU load result
+  port lsu_wbck_valid:  in  Bool;
+  port lsu_wbck_ready:  out Bool;
+  port lsu_wbck_wdat:   in  UInt<32>;
+  port lsu_wbck_rd_idx: in  UInt<5>;
+  port lsu_wbck_rd_en:  in  Bool;
+
+  // MulDiv result
+  port mdv_wbck_valid:  in  Bool;
+  port mdv_wbck_ready:  out Bool;
+  port mdv_wbck_wdat:   in  UInt<32>;
+  port mdv_wbck_rd_idx: in  UInt<5>;
+  port mdv_wbck_rd_en:  in  Bool;
+
+  // Merged output to ExuWbck long-pipe port
+  port o_valid:    out Bool;
+  port o_ready:    in  Bool;
+  port o_wdat:     out UInt<32>;
+  port o_rd_idx:   out UInt<5>;
+  port o_rd_en:    out Bool;
+
+  // LSU wins when both valid (priority arbiter)
+  let lsu_win: Bool = lsu_wbck_valid;
+
+  comb
+    o_valid = lsu_wbck_valid | mdv_wbck_valid;
+
+    if lsu_win
+      o_wdat   = lsu_wbck_wdat;
+      o_rd_idx = lsu_wbck_rd_idx;
+      o_rd_en  = lsu_wbck_rd_en;
+    else
+      o_wdat   = mdv_wbck_wdat;
+      o_rd_idx = mdv_wbck_rd_idx;
+      o_rd_en  = mdv_wbck_rd_en;
+    end if
+
+    // Handshake: grant to winner
+    lsu_wbck_ready = lsu_win & o_ready;
+    mdv_wbck_ready = ~lsu_win & o_ready;
+  end comb
+
+end module ExuLongpWbck

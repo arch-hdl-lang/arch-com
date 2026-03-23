@@ -1,0 +1,109 @@
+// E203 Debug Module (simplified)
+// JTAG-like debug interface for halt/resume/register access.
+// Implements a minimal set of Debug Module registers per RISC-V Debug Spec 0.13:
+//   dmcontrol(0x10): haltreq, resumereq, dmactive
+//   dmstatus(0x11): halted, running, allhalted
+//   data0(0x04): abstract data register
+//   command(0x17): access register command
+// Interface: APB slave for debug transport module (DTM).
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module DebugModule
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  // APB slave (from Debug Transport Module)
+  port psel:    in  Bool;
+  port penable: in  Bool;
+  port paddr:   in  UInt<32>;
+  port pwdata:  in  UInt<32>;
+  port pwrite:  in  Bool;
+  port prdata:  out UInt<32>;
+  port pready:  out Bool;
+
+  // Core interface
+  port hart_halted:    in  Bool;  // core reports halted
+  port hart_running:   in  Bool;  // core reports running
+  port halt_req:       out Bool;  // request core to halt
+  port resume_req:     out Bool;  // request core to resume
+  port dbg_reg_addr:   out UInt<16>;  // register access address
+  port dbg_reg_wdata:  out UInt<32>;  // register write data
+  port dbg_reg_wen:    out Bool;      // register write enable
+  port dbg_reg_rdata:  in  UInt<32>;  // register read data
+
+  // ── DM registers ───────────────────────────────────────────────
+  reg dmactive_r:    Bool     init false reset rst_n;
+  reg haltreq_r:     Bool     init false reset rst_n;
+  reg resumereq_r:   Bool     init false reset rst_n;
+  reg data0_r:       UInt<32> init 0 reset rst_n;
+  reg cmd_valid_r:   Bool     init false reset rst_n;
+  reg cmd_reg_r:     UInt<16> init 0 reset rst_n;
+  reg cmd_write_r:   Bool     init false reset rst_n;
+
+  let reg_off: UInt<8> = paddr.trunc<7,0>();
+  let apb_wr: Bool = psel & penable & pwrite;
+
+  seq on clk rising
+    // Auto-clear resume request after 1 cycle
+    if resumereq_r
+      resumereq_r <= false;
+    end if
+    // Auto-clear command after 1 cycle
+    if cmd_valid_r
+      cmd_valid_r <= false;
+    end if
+
+    if apb_wr
+      // dmcontrol (0x10)
+      if reg_off == 0x10
+        dmactive_r  <= pwdata.trunc<0,0>() != 0;
+        haltreq_r   <= pwdata.trunc<31,31>() != 0;
+        resumereq_r <= pwdata.trunc<30,30>() != 0;
+      // data0 (0x04)
+      elsif reg_off == 0x04
+        data0_r <= pwdata;
+      // command (0x17)
+      elsif reg_off == 0x17
+        cmd_valid_r <= true;
+        cmd_reg_r   <= pwdata.trunc<15,0>();
+        cmd_write_r <= pwdata.trunc<16,16>() != 0;
+      end if
+    end if
+
+    // Capture register read result into data0
+    if cmd_valid_r & ~cmd_write_r
+      data0_r <= dbg_reg_rdata;
+    end if
+  end seq
+
+  comb
+    halt_req    = haltreq_r & dmactive_r;
+    resume_req  = resumereq_r & dmactive_r;
+    dbg_reg_addr  = cmd_reg_r;
+    dbg_reg_wdata = data0_r;
+    dbg_reg_wen   = cmd_valid_r & cmd_write_r;
+
+    // APB read
+    if reg_off == 0x10
+      // dmcontrol
+      prdata = {haltreq_r, resumereq_r, {29{false}}, dmactive_r};
+    elsif reg_off == 0x11
+      // dmstatus: bit 9=allhalted, bit 8=anyhalted, bit 3=allrunning, bit 2=anyrunning
+      prdata = {{22{false}}, hart_halted, hart_halted, {4{false}}, hart_running, hart_running, {2{false}}};
+    elsif reg_off == 0x04
+      prdata = data0_r;
+    elsif reg_off == 0x12
+      // abstractcs: busy bit (bit 12)
+      prdata = {cmd_valid_r, {31{false}}};
+    else
+      prdata = 0;
+    end if
+
+    pready = true;
+  end comb
+
+end module DebugModule

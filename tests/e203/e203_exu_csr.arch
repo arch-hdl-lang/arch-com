@@ -1,0 +1,154 @@
+// E203 CSR Register File
+// Implements machine-mode CSRs for RV32IM:
+//   mstatus, mie, mtvec, mepc, mcause, mtval, mip, mscratch
+//   mcycle (low/high), minstret (low/high)
+// CSR read/write via APB-like interface with 12-bit CSR address.
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module ExuCsr
+  param XLEN: const = 32;
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  // CSR read/write interface
+  port csr_addr:    in UInt<12>;
+  port csr_wen:     in Bool;
+  port csr_wdata:   in UInt<32>;
+  port csr_rdata:   out UInt<32>;
+
+  // Trap entry/exit
+  port trap_taken:  in Bool;
+  port trap_cause:  in UInt<32>;
+  port trap_pc:     in UInt<32>;   // PC of trapping instruction
+  port trap_val:    in UInt<32>;   // mtval (fault addr / instr)
+  port mret_taken:  in Bool;
+
+  // Interrupt pending inputs
+  port ext_irq:     in Bool;       // external interrupt
+  port sw_irq:      in Bool;       // software interrupt
+  port tmr_irq:     in Bool;       // timer interrupt
+
+  // Outputs to pipeline
+  port mtvec_val:   out UInt<32>;  // trap vector base
+  port mepc_val:    out UInt<32>;  // return address for MRET
+  port mstatus_mie: out Bool;      // global interrupt enable
+  port irq_pending: out Bool;      // any enabled interrupt pending
+
+  // ── CSR address constants ───────────────────────────────────────
+  // mstatus=0x300, mie=0x304, mtvec=0x305, mscratch=0x340
+  // mepc=0x341, mcause=0x342, mtval=0x343, mip=0x344
+  // mcyclel=0xB00, mcycleh=0xB80, minstretl=0xB02, minstreth=0xB82
+
+  // ── CSR registers ──────────────────────────────────────────────
+  reg mstatus_r:   UInt<32> init 0 reset rst_n;
+  reg mie_r:       UInt<32> init 0 reset rst_n;
+  reg mtvec_r:     UInt<32> init 0 reset rst_n;
+  reg mscratch_r:  UInt<32> init 0 reset rst_n;
+  reg mepc_r:      UInt<32> init 0 reset rst_n;
+  reg mcause_r:    UInt<32> init 0 reset rst_n;
+  reg mtval_r:     UInt<32> init 0 reset rst_n;
+  reg mcycle_lo_r: UInt<32> init 0 reset rst_n;
+  reg mcycle_hi_r: UInt<32> init 0 reset rst_n;
+  reg minstret_lo_r: UInt<32> init 0 reset rst_n;
+  reg minstret_hi_r: UInt<32> init 0 reset rst_n;
+
+  // ── mip is read-only (directly reflects external signals) ──────
+  let mip_val: UInt<32> = {{20{false}}, ext_irq, {3{false}}, tmr_irq, {3{false}}, sw_irq, {3{false}}};
+  // bit 11 = MEIP, bit 7 = MTIP, bit 3 = MSIP
+
+  // ── mstatus fields ─────────────────────────────────────────────
+  let mie_bit:  Bool = mstatus_r.trunc<3,3>() != 0;
+  let mpie_bit: Bool = mstatus_r.trunc<7,7>() != 0;
+
+  // ── Interrupt pending check ────────────────────────────────────
+  let irq_en: UInt<32> = mie_r & mip_val;
+  let any_irq: Bool = (irq_en != 0) & mie_bit;
+
+  seq on clk rising
+    // ── mcycle auto-increment ──────────────────────────────────
+    if (mcycle_lo_r == 0xFFFFFFFF)
+      mcycle_lo_r <= 0;
+      mcycle_hi_r <= (mcycle_hi_r + 1).trunc<32>();
+    else
+      mcycle_lo_r <= (mcycle_lo_r + 1).trunc<32>();
+    end if
+
+    // ── Trap entry: save context ───────────────────────────────
+    if trap_taken
+      mepc_r   <= trap_pc;
+      mcause_r <= trap_cause;
+      mtval_r  <= trap_val;
+      // Set MPIE = MIE, clear MIE
+      mstatus_r <= {mstatus_r.trunc<31,8>(), mie_bit, mstatus_r.trunc<6,4>(), false, mstatus_r.trunc<2,0>()};
+    elsif mret_taken
+      // Restore: MIE = MPIE, MPIE = 1
+      mstatus_r <= {mstatus_r.trunc<31,8>(), true, mstatus_r.trunc<6,4>(), mpie_bit, mstatus_r.trunc<2,0>()};
+    elsif csr_wen
+      // ── CSR write ────────────────────────────────────────────
+      if csr_addr == 0x300
+        mstatus_r <= csr_wdata;
+      elsif csr_addr == 0x304
+        mie_r <= csr_wdata;
+      elsif csr_addr == 0x305
+        mtvec_r <= csr_wdata;
+      elsif csr_addr == 0x340
+        mscratch_r <= csr_wdata;
+      elsif csr_addr == 0x341
+        mepc_r <= csr_wdata;
+      elsif csr_addr == 0x342
+        mcause_r <= csr_wdata;
+      elsif csr_addr == 0x343
+        mtval_r <= csr_wdata;
+      elsif csr_addr == 0xB00
+        mcycle_lo_r <= csr_wdata;
+      elsif csr_addr == 0xB80
+        mcycle_hi_r <= csr_wdata;
+      elsif csr_addr == 0xB02
+        minstret_lo_r <= csr_wdata;
+      elsif csr_addr == 0xB82
+        minstret_hi_r <= csr_wdata;
+      end if
+    end if
+  end seq
+
+  // ── CSR read mux ───────────────────────────────────────────────
+  comb
+    if csr_addr == 0x300
+      csr_rdata = mstatus_r;
+    elsif csr_addr == 0x304
+      csr_rdata = mie_r;
+    elsif csr_addr == 0x305
+      csr_rdata = mtvec_r;
+    elsif csr_addr == 0x340
+      csr_rdata = mscratch_r;
+    elsif csr_addr == 0x341
+      csr_rdata = mepc_r;
+    elsif csr_addr == 0x342
+      csr_rdata = mcause_r;
+    elsif csr_addr == 0x343
+      csr_rdata = mtval_r;
+    elsif csr_addr == 0x344
+      csr_rdata = mip_val;
+    elsif csr_addr == 0xB00
+      csr_rdata = mcycle_lo_r;
+    elsif csr_addr == 0xB80
+      csr_rdata = mcycle_hi_r;
+    elsif csr_addr == 0xB02
+      csr_rdata = minstret_lo_r;
+    elsif csr_addr == 0xB82
+      csr_rdata = minstret_hi_r;
+    else
+      csr_rdata = 0;
+    end if
+
+    mtvec_val   = mtvec_r;
+    mepc_val    = mepc_r;
+    mstatus_mie = mie_bit;
+    irq_pending = any_irq;
+  end comb
+
+end module ExuCsr

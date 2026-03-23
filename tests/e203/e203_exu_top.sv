@@ -212,6 +212,7 @@ module ExuTop #(
     .i_imm(dec_imm),
     .i_rd_idx(dec_rd_idx),
     .i_rd_en(dec_rd_en),
+    .i_rs2_en(dec_rs2_en),
     .i_alu(dec_alu),
     .i_bjp(dec_bjp),
     .i_agu(dec_agu),

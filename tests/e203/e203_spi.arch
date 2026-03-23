@@ -1,0 +1,133 @@
+// E203 SPI Master Peripheral
+// APB-accessible SPI master with configurable clock divider, CPOL/CPHA.
+// Registers: txdata(0x00), rxdata(0x04), ctrl(0x08), div(0x0C), status(0x10)
+// ctrl: bit 0=enable, bit 1=CPOL, bit 2=CPHA
+// Single-byte shift-register transfer.
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module Spi
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  // APB slave interface
+  port psel:    in  Bool;
+  port penable: in  Bool;
+  port paddr:   in  UInt<32>;
+  port pwdata:  in  UInt<32>;
+  port pwrite:  in  Bool;
+  port prdata:  out UInt<32>;
+  port pready:  out Bool;
+
+  // SPI pins
+  port spi_sclk: out Bool;
+  port spi_mosi: out Bool;
+  port spi_miso: in  Bool;
+  port spi_cs_n: out Bool;
+
+  // Interrupt
+  port spi_irq: out Bool;
+
+  // ── Registers ──────────────────────────────────────────────────
+  reg ctrl_en_r:   Bool     init false reset rst_n;
+  reg ctrl_cpol_r: Bool     init false reset rst_n;
+  reg ctrl_cpha_r: Bool     init false reset rst_n;
+  reg spi_div_r:   UInt<8>  init 4 reset rst_n;
+  reg div_cnt_r:   UInt<8>  init 0 reset rst_n;
+
+  // Transfer state
+  reg tx_shift_r:  UInt<8>  init 0 reset rst_n;
+  reg rx_shift_r:  UInt<8>  init 0 reset rst_n;
+  reg bit_cnt_r:   UInt<4>  init 0 reset rst_n;
+  reg busy_r:      Bool     init false reset rst_n;
+  reg sclk_r:      Bool     init false reset rst_n;
+  reg cs_n_r:      Bool     init true reset rst_n;
+  reg done_r:      Bool     init false reset rst_n;
+  reg phase_r:     Bool     init false reset rst_n;  // 0=setup, 1=sample
+
+  let reg_off: UInt<8> = paddr.trunc<7,0>();
+  let apb_wr: Bool = psel & penable & pwrite;
+  let div_tick: Bool = (div_cnt_r == 0);
+
+  seq on clk rising
+    // Clock divider
+    if div_cnt_r == 0
+      div_cnt_r <= spi_div_r;
+    else
+      div_cnt_r <= (div_cnt_r - 1).trunc<8>();
+    end if
+
+    // Clear done on status read
+    if psel & penable & ~pwrite & (reg_off == 0x10)
+      done_r <= false;
+    end if
+
+    // Start transfer
+    if apb_wr & (reg_off == 0x00) & ~busy_r & ctrl_en_r
+      tx_shift_r <= pwdata.trunc<7,0>();
+      bit_cnt_r  <= 8;
+      busy_r     <= true;
+      cs_n_r     <= false;
+      phase_r    <= false;
+      sclk_r     <= ctrl_cpol_r;
+    elsif busy_r & div_tick
+      if ~phase_r
+        // Setup phase: drive MOSI, toggle clock
+        sclk_r  <= ~sclk_r;
+        phase_r <= true;
+      else
+        // Sample phase: read MISO, shift
+        rx_shift_r <= {rx_shift_r.trunc<6,0>(), spi_miso};
+        tx_shift_r <= {tx_shift_r.trunc<6,0>(), false};
+        sclk_r     <= ~sclk_r;
+        phase_r    <= false;
+        bit_cnt_r  <= (bit_cnt_r - 1).trunc<4>();
+        if bit_cnt_r == 1
+          busy_r <= false;
+          cs_n_r <= true;
+          done_r <= true;
+          sclk_r <= ctrl_cpol_r;
+        end if
+      end if
+    end if
+
+    // Register writes
+    if apb_wr
+      if reg_off == 0x08
+        ctrl_en_r   <= pwdata.trunc<0,0>() != 0;
+        ctrl_cpol_r <= pwdata.trunc<1,1>() != 0;
+        ctrl_cpha_r <= pwdata.trunc<2,2>() != 0;
+      elsif reg_off == 0x0C
+        spi_div_r <= pwdata.trunc<7,0>();
+      end if
+    end if
+  end seq
+
+  comb
+    spi_sclk = sclk_r;
+    spi_mosi = tx_shift_r.trunc<7,7>() != 0;
+    spi_cs_n = cs_n_r;
+
+    // APB read
+    if reg_off == 0x00
+      prdata = {busy_r, {31{false}}};
+    elsif reg_off == 0x04
+      prdata = rx_shift_r.zext<32>();
+    elsif reg_off == 0x08
+      prdata = {ctrl_cpha_r, ctrl_cpol_r, ctrl_en_r}.zext<32>();
+    elsif reg_off == 0x0C
+      prdata = spi_div_r.zext<32>();
+    elsif reg_off == 0x10
+      prdata = {done_r, busy_r}.zext<32>();
+    else
+      prdata = 0;
+    end if
+
+    pready  = true;
+    spi_irq = done_r;
+  end comb
+
+end module Spi

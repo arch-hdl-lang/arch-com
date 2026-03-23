@@ -1,0 +1,64 @@
+// E203 HBirdv2 DTCM — Data Tightly Coupled Memory
+// 64KB (16384 x 32-bit) simple dual-port SRAM wrapper.
+// Supports simultaneous read and write with byte-strobe write enables.
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+ram DtcmSram
+  kind simple_dual;
+  latency 1;
+  param DEPTH: const = 16384;
+  param WIDTH: type = UInt<32>;
+  port clk: in Clock<SysDomain>;
+  store
+    buf: Vec<WIDTH, DEPTH>;
+  end store
+  port rd_port
+    en:   in Bool;
+    addr: in UInt<14>;
+    data: out WIDTH;
+  end port rd_port
+  port wr_port
+    en:   in Bool;
+    addr: in UInt<14>;
+    data: in WIDTH;
+  end port wr_port
+end ram DtcmSram
+
+module Dtcm
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  // Read port
+  port rd_en:   in Bool;
+  port rd_addr: in UInt<14>;
+  port rd_dout: out UInt<32>;
+
+  // Write port
+  port wr_en:   in Bool;
+  port wr_be:   in UInt<4>;
+  port wr_addr: in UInt<14>;
+  port wr_din:  in UInt<32>;
+
+  // Byte-masked write data: each bit of wr_be controls one byte lane.
+  let byte0_mask: UInt<8> = {8{wr_be.trunc<0,0>()}};
+  let byte1_mask: UInt<8> = {8{wr_be.trunc<1,1>()}};
+  let byte2_mask: UInt<8> = {8{wr_be.trunc<2,2>()}};
+  let byte3_mask: UInt<8> = {8{wr_be.trunc<3,3>()}};
+
+  let full_mask: UInt<32> = {byte3_mask, byte2_mask, byte1_mask, byte0_mask};
+  let masked_wdata: UInt<32> = wr_din & full_mask;
+
+  inst sram: DtcmSram
+    connect clk          <- clk;
+    connect rd_port.en   <- rd_en;
+    connect rd_port.addr <- rd_addr;
+    connect rd_port.data -> rd_dout;
+    connect wr_port.en   <- wr_en;
+    connect wr_port.addr <- wr_addr;
+    connect wr_port.data <- masked_wdata;
+  end inst sram
+
+end module Dtcm

@@ -1,0 +1,101 @@
+// E203 GPIO Peripheral
+// 32-bit GPIO with APB interface.
+// Registers: output_val(0x00), output_en(0x04), input_val(0x08),
+//            rise_ie(0x0C), rise_ip(0x10), fall_ie(0x14), fall_ip(0x18)
+// Directly maps to FPGA I/O pins.
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module Gpio
+  param WIDTH: const = 32;
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  // APB slave interface
+  port psel:    in  Bool;
+  port penable: in  Bool;
+  port paddr:   in  UInt<32>;
+  port pwdata:  in  UInt<32>;
+  port pwrite:  in  Bool;
+  port prdata:  out UInt<32>;
+  port pready:  out Bool;
+
+  // GPIO pins
+  port gpio_in:  in  UInt<32>;
+  port gpio_out: out UInt<32>;
+  port gpio_oe:  out UInt<32>;   // output enable
+  port gpio_irq: out Bool;       // interrupt output
+
+  // ── Registers ──────────────────────────────────────────────────
+  reg out_val_r:  UInt<32> init 0 reset rst_n;
+  reg out_en_r:   UInt<32> init 0 reset rst_n;
+  reg rise_ie_r:  UInt<32> init 0 reset rst_n;  // rise interrupt enable
+  reg rise_ip_r:  UInt<32> init 0 reset rst_n;  // rise interrupt pending
+  reg fall_ie_r:  UInt<32> init 0 reset rst_n;  // fall interrupt enable
+  reg fall_ip_r:  UInt<32> init 0 reset rst_n;  // fall interrupt pending
+  reg gpio_prev_r: UInt<32> init 0 reset rst_n; // previous gpio_in value
+
+  // Edge detection
+  let rise_edge: UInt<32> = gpio_in & ~gpio_prev_r;
+  let fall_edge: UInt<32> = ~gpio_in & gpio_prev_r;
+
+  // Register offset
+  let reg_off: UInt<8> = paddr.trunc<7,0>();
+  let apb_wr: Bool = psel & penable & pwrite;
+  let apb_rd: Bool = psel & penable & ~pwrite;
+
+  seq on clk rising
+    gpio_prev_r <= gpio_in;
+
+    // Set interrupt pending on edges
+    rise_ip_r <= rise_ip_r | rise_edge;
+    fall_ip_r <= fall_ip_r | fall_edge;
+
+    if apb_wr
+      if reg_off == 0x00
+        out_val_r <= pwdata;
+      elsif reg_off == 0x04
+        out_en_r <= pwdata;
+      elsif reg_off == 0x0C
+        rise_ie_r <= pwdata;
+      elsif reg_off == 0x10
+        // Write 1 to clear pending
+        rise_ip_r <= rise_ip_r & ~pwdata;
+      elsif reg_off == 0x14
+        fall_ie_r <= pwdata;
+      elsif reg_off == 0x18
+        fall_ip_r <= fall_ip_r & ~pwdata;
+      end if
+    end if
+  end seq
+
+  comb
+    // APB read
+    if reg_off == 0x00
+      prdata = out_val_r;
+    elsif reg_off == 0x04
+      prdata = out_en_r;
+    elsif reg_off == 0x08
+      prdata = gpio_in;
+    elsif reg_off == 0x0C
+      prdata = rise_ie_r;
+    elsif reg_off == 0x10
+      prdata = rise_ip_r;
+    elsif reg_off == 0x14
+      prdata = fall_ie_r;
+    elsif reg_off == 0x18
+      prdata = fall_ip_r;
+    else
+      prdata = 0;
+    end if
+
+    pready  = true;  // single-cycle APB
+    gpio_out = out_val_r;
+    gpio_oe  = out_en_r;
+    gpio_irq = ((rise_ip_r & rise_ie_r) | (fall_ip_r & fall_ie_r)) != 0;
+  end comb
+
+end module Gpio

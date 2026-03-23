@@ -1,0 +1,124 @@
+// E203 HBirdv2 IFU Top — wires IfuIfetch, IfuMinidec, LiteBpu, Ift2Icb
+// Simplified: no RVC (16-bit) support, ITCM-only fetch path.
+
+module IfuTop
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  // Output to EXU: decoded instruction
+  port o_valid:   out Bool;
+  port o_ready:   in  Bool;
+  port o_instr:   out UInt<32>;
+  port o_pc:      out UInt<32>;
+  port o_bus_err: out Bool;
+
+  // Branch redirect from EXU
+  port exu_redirect:    in Bool;
+  port exu_redirect_pc: in UInt<32>;
+
+  // ITCM interface
+  port itcm_cmd_valid: out Bool;
+  port itcm_cmd_addr:  out UInt<14>;
+  port itcm_cmd_ready: in Bool;
+  port itcm_rsp_valid: in Bool;
+  port itcm_rsp_data:  in UInt<32>;
+  port itcm_rsp_ready: out Bool;
+
+  // OITF/regfile inputs for BPU
+  port oitf_empty:              in Bool;
+  port ir_empty:                in Bool;
+  port ir_rs1en:                in Bool;
+  port jalr_rs1idx_cam_irrdidx: in Bool;
+  port ir_valid_clr:            in Bool;
+  port rf2bpu_x1:               in UInt<32>;
+  port rf2bpu_rs1:              in UInt<32>;
+
+  // BPU outputs
+  port bpu_wait:        out Bool;
+  port bpu2rf_rs1_ena:  out Bool;
+  port prdt_taken:      out Bool;
+  port prdt_pc_add_op1: out UInt<32>;
+  port prdt_pc_add_op2: out UInt<32>;
+
+  // Mini-decoder classification (used by EXU for decode hints)
+  port dec_is_bjp:   out Bool;
+  port dec_is_lui:   out Bool;
+  port dec_is_auipc: out Bool;
+
+  // ── IfuIfetch: PC generation + fetch state machine ──────────────────
+  inst ifetch: IfuIfetch
+    connect clk         <- clk;
+    connect rst         <- rst_n;
+    connect req_ready   <- icb_req_ready;
+    connect rsp_valid   <- icb_rsp_valid;
+    connect rsp_instr   <- icb_rsp_instr;
+    connect rsp_err     <- false;
+    connect o_ready     <- o_ready;
+    connect redirect    <- exu_redirect;
+    connect redirect_pc <- exu_redirect_pc;
+    connect req_valid   -> ifetch_req_valid;
+    connect req_addr    -> ifetch_req_addr;
+    connect rsp_ready   -> ifetch_rsp_ready;
+    connect o_valid     -> o_valid;
+    connect o_instr     -> o_instr;
+    connect o_pc        -> o_pc;
+    connect o_bus_err   -> o_bus_err;
+  end inst ifetch
+
+  // ── Ift2Icb: fetch-to-ITCM bridge ──────────────────────────────────
+  inst icb: Ift2Icb
+    connect clk            <- clk;
+    connect rst_n          <- rst_n;
+    connect ifu_req_valid  <- ifetch_req_valid;
+    connect ifu_req_pc     <- ifetch_req_addr;
+    connect ifu_rsp_ready  <- ifetch_rsp_ready;
+    connect itcm_cmd_ready <- itcm_cmd_ready;
+    connect itcm_rsp_valid <- itcm_rsp_valid;
+    connect itcm_rsp_data  <- itcm_rsp_data;
+    connect ifu_req_ready  -> icb_req_ready;
+    connect ifu_rsp_valid  -> icb_rsp_valid;
+    connect ifu_rsp_instr  -> icb_rsp_instr;
+    connect itcm_cmd_valid -> itcm_cmd_valid;
+    connect itcm_cmd_addr  -> itcm_cmd_addr;
+    connect itcm_rsp_ready -> itcm_rsp_ready;
+  end inst icb
+
+  // ── IfuMinidec: classify fetched instruction ────────────────────────
+  inst mdec: IfuMinidec
+    connect instr      <- o_instr;
+    connect o_is_bjp   -> dec_is_bjp;
+    connect o_is_jal   -> mdec_is_jal;
+    connect o_is_jalr  -> mdec_is_jalr;
+    connect o_is_bxx   -> mdec_is_bxx;
+    connect o_is_lui   -> dec_is_lui;
+    connect o_is_auipc -> dec_is_auipc;
+    connect o_bjp_imm  -> mdec_bjp_imm;
+    connect o_rs1_idx  -> mdec_rs1_idx;
+  end inst mdec
+
+  // ── LiteBpu: static branch prediction ──────────────────────────────
+  inst bpu: LiteBpu
+    connect clk                       <- clk;
+    connect rst_n                     <- rst_n;
+    connect pc                        <- o_pc;
+    connect dec_jal                   <- mdec_is_jal;
+    connect dec_jalr                  <- mdec_is_jalr;
+    connect dec_bxx                   <- mdec_is_bxx;
+    connect dec_bjp_imm               <- mdec_bjp_imm.zext<32>();
+    connect dec_jalr_rs1idx           <- mdec_rs1_idx;
+    connect oitf_empty                <- oitf_empty;
+    connect ir_empty                  <- ir_empty;
+    connect ir_rs1en                  <- ir_rs1en;
+    connect jalr_rs1idx_cam_irrdidx   <- jalr_rs1idx_cam_irrdidx;
+    connect dec_i_valid               <- o_valid;
+    connect ir_valid_clr              <- ir_valid_clr;
+    connect rf2bpu_x1                 <- rf2bpu_x1;
+    connect rf2bpu_rs1                <- rf2bpu_rs1;
+    connect prdt_taken                -> prdt_taken;
+    connect prdt_pc_add_op1           -> prdt_pc_add_op1;
+    connect prdt_pc_add_op2           -> prdt_pc_add_op2;
+    connect bpu_wait                  -> bpu_wait;
+    connect bpu2rf_rs1_ena            -> bpu2rf_rs1_ena;
+  end inst bpu
+
+end module IfuTop

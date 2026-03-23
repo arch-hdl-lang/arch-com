@@ -1,0 +1,102 @@
+// E203 Address Generation Unit
+// Computes load/store effective address: base (rs1) + offset (imm).
+// Also handles AMO (atomic) operations with the shared ALU datapath.
+// In E203, AGU uses the shared adder in AluDpath via agu_req_alu signals.
+// This module wraps the address calculation and generates ICB cmd signals.
+
+module ExuAgu
+  param XLEN: const = 32;
+
+  // From dispatch
+  port i_valid:   in Bool;
+  port i_ready:   out Bool;
+  port i_rs1:     in UInt<32>;   // base address (register)
+  port i_rs2:     in UInt<32>;   // store data
+  port i_imm:     in UInt<32>;   // offset (sign-extended)
+  port i_load:    in Bool;
+  port i_store:   in Bool;
+  port i_rd_idx:  in UInt<5>;
+  port i_rd_en:   in Bool;
+  port i_funct3:  in UInt<3>;    // byte/half/word
+
+  // Memory ICB command
+  port icb_cmd_valid:  out Bool;
+  port icb_cmd_ready:  in  Bool;
+  port icb_cmd_addr:   out UInt<32>;
+  port icb_cmd_wdata:  out UInt<32>;
+  port icb_cmd_wmask:  out UInt<4>;
+  port icb_cmd_read:   out Bool;
+
+  // Memory ICB response
+  port icb_rsp_valid:  in  Bool;
+  port icb_rsp_ready:  out Bool;
+  port icb_rsp_rdata:  in  UInt<32>;
+
+  // Writeback
+  port o_valid:    out Bool;
+  port o_ready:    in  Bool;
+  port o_wdat:     out UInt<32>;
+  port o_rd_idx:   out UInt<5>;
+  port o_rd_en:    out Bool;
+
+  // ── Address calculation ─────────────────────────────────────────
+  let eff_addr: UInt<32> = (i_rs1 + i_imm).trunc<32>();
+  let byte_off: UInt<2> = eff_addr.trunc<1,0>();
+  let word_addr: UInt<32> = {eff_addr.trunc<31,2>(), {2{false}}};
+
+  // ── funct3 decode ───────────────────────────────────────────────
+  let is_byte: Bool = (i_funct3.trunc<1,0>() == 0);
+  let is_half: Bool = (i_funct3.trunc<1,0>() == 1);
+  let is_unsigned: Bool = i_funct3.trunc<2,2>() != 0;
+
+  // ── Store byte-enable ───────────────────────────────────────────
+  let wstrb_byte: UInt<4> = (byte_off == 0) ? 0x1 :
+                              (byte_off == 1) ? 0x2 :
+                              (byte_off == 2) ? 0x4 : 0x8;
+  let wstrb_half: UInt<4> = (byte_off.trunc<1,1>() == 0) ? 0x3 : 0xC;
+  let wmask_sel: UInt<4> = is_byte ? wstrb_byte :
+                             is_half ? wstrb_half : 0xF;
+
+  // ── Store data alignment ────────────────────────────────────────
+  let wdata_byte: UInt<8> = i_rs2.trunc<7,0>();
+  let wdata_half: UInt<16> = i_rs2.trunc<15,0>();
+  let store_aligned: UInt<32> = is_byte ? (wdata_byte.zext<32>() << (byte_off.zext<32>() << 3).trunc<32>()).trunc<32>() :
+                                  is_half ? (wdata_half.zext<32>() << (byte_off.trunc<1,1>().zext<32>() << 4).trunc<32>()).trunc<32>() :
+                                            i_rs2;
+
+  // ── Load result alignment ───────────────────────────────────────
+  let rdata_shifted: UInt<32> = (icb_rsp_rdata >> (byte_off.zext<32>() << 3).trunc<32>()).trunc<32>();
+  let load_byte: UInt<8> = rdata_shifted.trunc<7,0>();
+  let load_half: UInt<16> = rdata_shifted.trunc<15,0>();
+  let byte_sign: Bool = load_byte.trunc<7,7>() != 0;
+  let half_sign: Bool = load_half.trunc<15,15>() != 0;
+  let lb_result:  UInt<32> = {{24{byte_sign}}, load_byte};
+  let lbu_result: UInt<32> = {{24{false}}, load_byte};
+  let lh_result:  UInt<32> = {{16{half_sign}}, load_half};
+  let lhu_result: UInt<32> = {{16{false}}, load_half};
+  let load_val: UInt<32> = is_byte ? (is_unsigned ? lbu_result : lb_result) :
+                             is_half ? (is_unsigned ? lhu_result : lh_result) :
+                                       icb_rsp_rdata;
+
+  comb
+    // ICB command
+    icb_cmd_valid = i_valid & (i_load | i_store);
+    icb_cmd_addr  = word_addr;
+    icb_cmd_wdata = store_aligned;
+    icb_cmd_wmask = i_store ? wmask_sel : 0;
+    icb_cmd_read  = i_load;
+
+    // ICB response
+    icb_rsp_ready = o_ready;
+
+    // Dispatch handshake
+    i_ready = icb_cmd_ready;
+
+    // Writeback (loads write to rd)
+    o_valid  = icb_rsp_valid & i_load;
+    o_wdat   = load_val;
+    o_rd_idx = i_rd_idx;
+    o_rd_en  = i_rd_en & i_load;
+  end comb
+
+end module ExuAgu

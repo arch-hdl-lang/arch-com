@@ -1,0 +1,61 @@
+// E203 HBirdv2 IFU Ift2Icb — Instruction Fetch to ICB bridge
+// Converts IFU fetch requests into ITCM ICB transactions.
+// Simplified: ITCM-only path (no external memory).
+// Response path has a 1-cycle pipeline register.
+
+module Ift2Icb
+  port clk:       in Clock<SysDomain>;
+  port rst_n:     in Reset<Async, Low>;
+
+  // IFU fetch request
+  port ifu_req_valid:  in Bool;
+  port ifu_req_pc:     in UInt<32>;
+  port ifu_req_ready:  out Bool;
+
+  // IFU fetch response
+  port ifu_rsp_valid:  out Bool;
+  port ifu_rsp_instr:  out UInt<32>;
+  port ifu_rsp_ready:  in Bool;
+
+  // ITCM ICB master interface
+  port itcm_cmd_valid: out Bool;
+  port itcm_cmd_addr:  out UInt<14>;
+  port itcm_cmd_ready: in Bool;
+  port itcm_rsp_valid: in Bool;
+  port itcm_rsp_data:  in UInt<32>;
+  port itcm_rsp_ready: out Bool;
+
+  // Response pipeline register
+  reg rsp_valid_r: Bool   init 0 reset rst_n;
+  reg rsp_data_r:  UInt<32> init 0 reset rst_n;
+
+  // Backpressure: don't accept new request if response register is full
+  // and downstream is not ready
+  let stall_pipe: Bool = rsp_valid_r & ~ifu_rsp_ready;
+
+  // Request path: pass through to ITCM when not stalled
+  comb
+    itcm_cmd_valid = ifu_req_valid & ~stall_pipe;
+    itcm_cmd_addr  = ifu_req_pc.trunc<15,2>();
+    ifu_req_ready  = itcm_cmd_ready & ~stall_pipe;
+  end comb
+
+  // Accept ITCM response when we can
+  comb
+    itcm_rsp_ready = ~stall_pipe;
+  end comb
+
+  // Response pipeline: register ITCM response for IFU
+  seq on clk rising
+    if ~stall_pipe
+      rsp_valid_r <= itcm_rsp_valid;
+      rsp_data_r  <= itcm_rsp_data;
+    end if
+  end seq
+
+  // IFU response output
+  comb
+    ifu_rsp_valid = rsp_valid_r;
+    ifu_rsp_instr = rsp_data_r;
+  end comb
+end module Ift2Icb

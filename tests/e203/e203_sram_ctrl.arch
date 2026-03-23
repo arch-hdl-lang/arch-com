@@ -1,0 +1,72 @@
+// E203 SRAM Controller
+// Provides a simple ICB-slave interface to a synchronous SRAM.
+// Single-port RAM with read and write sharing the same port.
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+ram SramBank
+  kind single;
+  latency 1;
+  param DEPTH: const = 4096;
+  param WIDTH: type = UInt<32>;
+  port clk: in Clock<SysDomain>;
+  store
+    buf: Vec<WIDTH, DEPTH>;
+  end store
+  port rw
+    en:    in Bool;
+    wen:   in Bool;
+    addr:  in UInt<12>;
+    wdata: in WIDTH;
+    rdata: out WIDTH;
+  end port rw
+end ram SramBank
+
+module SramCtrl
+  param DEPTH: const = 4096;
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  // ICB slave interface
+  port icb_cmd_valid: in  Bool;
+  port icb_cmd_ready: out Bool;
+  port icb_cmd_addr:  in  UInt<32>;
+  port icb_cmd_wdata: in  UInt<32>;
+  port icb_cmd_wmask: in  UInt<4>;
+  port icb_cmd_read:  in  Bool;
+  port icb_rsp_valid: out Bool;
+  port icb_rsp_ready: in  Bool;
+  port icb_rsp_rdata: out UInt<32>;
+  port icb_rsp_err:   out Bool;
+
+  // Word address from byte address
+  let word_addr: UInt<12> = icb_cmd_addr.trunc<13,2>();
+
+  // SRAM instance
+  inst mem: SramBank
+    connect clk      <- clk;
+    connect rw.en    <- icb_cmd_valid;
+    connect rw.wen   <- ~icb_cmd_read;
+    connect rw.addr  <- word_addr;
+    connect rw.wdata <- icb_cmd_wdata;
+    connect rw.rdata -> sram_rdata;
+  end inst mem
+
+  // Response valid: 1-cycle latency
+  reg rsp_valid_r: Bool init false reset rst_n;
+
+  seq on clk rising
+    rsp_valid_r <= icb_cmd_valid & icb_cmd_ready;
+  end seq
+
+  comb
+    icb_cmd_ready = true;
+    icb_rsp_valid = rsp_valid_r;
+    icb_rsp_rdata = sram_rdata;
+    icb_rsp_err   = false;
+  end comb
+
+end module SramCtrl

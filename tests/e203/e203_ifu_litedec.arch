@@ -1,0 +1,88 @@
+// E203 Lightweight Pre-Decoder
+// Determines if an instruction is 16-bit (RV32C compressed) or 32-bit.
+// In E203, this is used by the IFU to know how much to advance PC.
+// Also extracts basic info for branch prediction: is it a branch/JAL/JALR,
+// and the register indices for BPU RAW hazard checking.
+
+module IfuLiteDec
+
+  port instr:       in UInt<32>;
+
+  // Length detection
+  port is_32bit:    out Bool;
+
+  // Quick decode for BPU
+  port is_bjp:      out Bool;   // branch, JAL, or JALR
+  port is_jal:      out Bool;
+  port is_jalr:     out Bool;
+  port is_branch:   out Bool;
+  port is_lui:      out Bool;
+  port is_auipc:    out Bool;
+
+  // Register indices (for BPU hazard check)
+  port rs1_idx:     out UInt<5>;
+  port rd_idx:      out UInt<5>;
+  port rs1_en:      out Bool;
+
+  // Branch/JAL immediate (sign-extended, for BPU target calc)
+  port bjp_imm:     out UInt<32>;
+
+  // ── 16-bit vs 32-bit ───────────────────────────────────────────
+  // Per RV spec: if bits [1:0] != 2'b11, it's a 16-bit instruction
+  let opcode_1_0: UInt<2> = instr.trunc<1,0>();
+  let is_32: Bool = (opcode_1_0 == 3);
+
+  // ── Opcode fields (32-bit) ─────────────────────────────────────
+  let opcode: UInt<7> = instr.trunc<6,0>();
+  let funct3: UInt<3> = instr.trunc<14,12>();
+
+  // ── Instruction type detection ─────────────────────────────────
+  let dec_jal:    Bool = (opcode == 0x6F);   // JAL
+  let dec_jalr:   Bool = (opcode == 0x67);   // JALR
+  let dec_branch: Bool = (opcode == 0x63);   // Bxx
+  let dec_lui:    Bool = (opcode == 0x37);   // LUI
+  let dec_auipc:  Bool = (opcode == 0x17);   // AUIPC
+
+  // ── Register indices ───────────────────────────────────────────
+  let rs1_field: UInt<5> = instr.trunc<19,15>();
+  let rd_field:  UInt<5> = instr.trunc<11,7>();
+
+  // rs1 used by JALR and Bxx
+  let rs1_used: Bool = dec_jalr | dec_branch;
+
+  // ── Immediate extraction ───────────────────────────────────────
+  // JAL: imm[20|10:1|11|19:12] -> bits [31|30:21|20|19:12]
+  let jal_imm: UInt<32> = {{12{instr.trunc<31,31>() != 0}},
+                             instr.trunc<19,12>(),
+                             instr.trunc<20,20>(),
+                             instr.trunc<30,21>(),
+                             false};
+
+  // Branch: imm[12|10:5|4:1|11] -> bits [31|30:25|11:8|7]
+  let branch_imm: UInt<32> = {{20{instr.trunc<31,31>() != 0}},
+                                instr.trunc<7,7>(),
+                                instr.trunc<30,25>(),
+                                instr.trunc<11,8>(),
+                                false};
+
+  comb
+    is_32bit  = is_32;
+    is_jal    = dec_jal & is_32;
+    is_jalr   = dec_jalr & is_32;
+    is_branch = dec_branch & is_32;
+    is_bjp    = (dec_jal | dec_jalr | dec_branch) & is_32;
+    is_lui    = dec_lui & is_32;
+    is_auipc  = dec_auipc & is_32;
+    rs1_idx   = rs1_field;
+    rd_idx    = rd_field;
+    rs1_en    = rs1_used & is_32;
+
+    // Immediate: JAL or Branch
+    if dec_jal
+      bjp_imm = jal_imm;
+    else
+      bjp_imm = branch_imm;
+    end if
+  end comb
+
+end module IfuLiteDec

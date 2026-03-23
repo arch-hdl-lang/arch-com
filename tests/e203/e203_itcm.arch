@@ -1,0 +1,46 @@
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+ram ItcmSram
+  kind simple_dual;
+  latency 1;
+  param DEPTH: const = 16384;
+  param WIDTH: type = UInt<32>;
+  port clk: in Clock<SysDomain>;
+  store
+    buf: Vec<WIDTH, DEPTH>;
+  end store
+  port rd_port
+    en:   in Bool;
+    addr: in UInt<14>;
+    data: out WIDTH;
+  end port rd_port
+  port wr_port
+    en:   in Bool;
+    addr: in UInt<14>;
+    data: in WIDTH;
+  end port wr_port
+end ram ItcmSram
+
+module E203Itcm
+  port clk:      in Clock<SysDomain>;
+  port rst_n:    in Reset<Async, Low>;
+  port rd_en:    in Bool;
+  port rd_addr:  in UInt<14>;
+  port rd_data:  out UInt<32>;
+  port wr_en:    in Bool;
+  port wr_addr:  in UInt<14>;
+  port wr_data:  in UInt<32>;
+
+  inst mem: ItcmSram
+    connect clk          <- clk;
+    connect rd_port.en   <- rd_en;
+    connect rd_port.addr <- rd_addr;
+    connect rd_port.data -> rd_data;
+    connect wr_port.en   <- wr_en;
+    connect wr_port.addr <- wr_addr;
+    connect wr_port.data <- wr_data;
+  end inst mem
+
+end module E203Itcm

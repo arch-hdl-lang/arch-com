@@ -1,0 +1,95 @@
+// E203 ICB-to-APB Bridge
+// Converts ICB bus transactions to APB protocol.
+// APB is a 2-phase protocol: SETUP (psel=1, penable=0) → ACCESS (penable=1).
+// ICB cmd maps to APB write/read; ICB rsp returns when pready=1.
+
+module Icb2Apb
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  // ICB slave interface
+  port icb_cmd_valid: in  Bool;
+  port icb_cmd_ready: out Bool;
+  port icb_cmd_addr:  in  UInt<32>;
+  port icb_cmd_wdata: in  UInt<32>;
+  port icb_cmd_wmask: in  UInt<4>;
+  port icb_cmd_read:  in  Bool;
+  port icb_rsp_valid: out Bool;
+  port icb_rsp_ready: in  Bool;
+  port icb_rsp_rdata: out UInt<32>;
+  port icb_rsp_err:   out Bool;
+
+  // APB master interface
+  port psel:    out Bool;
+  port penable: out Bool;
+  port paddr:   out UInt<32>;
+  port pwdata:  out UInt<32>;
+  port pstrb:   out UInt<4>;
+  port pwrite:  out Bool;
+  port prdata:  in  UInt<32>;
+  port pready:  in  Bool;
+  port pslverr: in  Bool;
+
+  // ── FSM states ──────────────────────────────────────────────────
+  // Idle → Setup → Access → (back to Idle or respond)
+  reg fsm_st: UInt<2> init 0 reset rst_n;  // 0=IDLE, 1=SETUP, 2=ACCESS
+
+  // Latched command
+  reg cmd_addr_r:  UInt<32> init 0 reset rst_n;
+  reg cmd_wdata_r: UInt<32> init 0 reset rst_n;
+  reg cmd_wmask_r: UInt<4>  init 0 reset rst_n;
+  reg cmd_read_r:  Bool     init false reset rst_n;
+
+  // Latched response
+  reg rsp_rdata_r: UInt<32> init 0 reset rst_n;
+  reg rsp_err_r:   Bool     init false reset rst_n;
+  reg rsp_valid_r: Bool     init false reset rst_n;
+
+  seq on clk rising
+    if fsm_st == 0
+      // IDLE: accept new ICB command
+      if icb_cmd_valid
+        cmd_addr_r  <= icb_cmd_addr;
+        cmd_wdata_r <= icb_cmd_wdata;
+        cmd_wmask_r <= icb_cmd_wmask;
+        cmd_read_r  <= icb_cmd_read;
+        fsm_st      <= 1;
+      end if
+      // Clear response after it's been accepted
+      if rsp_valid_r & icb_rsp_ready
+        rsp_valid_r <= false;
+      end if
+    elsif fsm_st == 1
+      // SETUP phase: assert psel, move to ACCESS next cycle
+      fsm_st <= 2;
+    elsif fsm_st == 2
+      // ACCESS phase: wait for pready
+      if pready
+        rsp_rdata_r <= prdata;
+        rsp_err_r   <= pslverr;
+        rsp_valid_r <= true;
+        fsm_st      <= 0;
+      end if
+    end if
+  end seq
+
+  comb
+    // APB signals
+    psel    = (fsm_st == 1) | (fsm_st == 2);
+    penable = (fsm_st == 2);
+    paddr   = cmd_addr_r;
+    pwdata  = cmd_wdata_r;
+    pstrb   = cmd_wmask_r;
+    pwrite  = ~cmd_read_r;
+
+    // ICB command ready: accept in IDLE when no pending response
+    icb_cmd_ready = (fsm_st == 0) & ~rsp_valid_r;
+
+    // ICB response
+    icb_rsp_valid = rsp_valid_r;
+    icb_rsp_rdata = rsp_rdata_r;
+    icb_rsp_err   = rsp_err_r;
+  end comb
+
+end module Icb2Apb
