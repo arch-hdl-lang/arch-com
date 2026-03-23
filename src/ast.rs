@@ -22,6 +22,7 @@ pub enum Item {
     Linklist(LinklistDecl),
     Template(TemplateDecl),
     Synchronizer(SynchronizerDecl),
+    Clkgate(ClkGateDecl),
 }
 
 #[derive(Debug, Clone)]
@@ -505,6 +506,7 @@ impl Item {
             Item::Linklist(l) => l.span,
             Item::Template(t) => t.span,
             Item::Synchronizer(s) => s.span,
+            Item::Clkgate(c) => c.span,
         }
     }
 }
@@ -600,6 +602,23 @@ pub enum SyncKind {
 pub struct SynchronizerDecl {
     pub name: Ident,
     pub kind: SyncKind,
+    pub params: Vec<ParamDecl>,
+    pub ports: Vec<PortDecl>,
+    pub span: Span,
+}
+
+// ── Clock Gate ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClkGateKind {
+    Latch,
+    And,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClkGateDecl {
+    pub name: Ident,
+    pub kind: ClkGateKind,
     pub params: Vec<ParamDecl>,
     pub ports: Vec<PortDecl>,
     pub span: Span,

@@ -1,7 +1,7 @@
 # ARCH Compiler — Status & Roadmap
 
 > Last updated: 2026-03-22
-> Compiler version: 0.27.0 (VCD waveform support, ROM, file logging)
+> Compiler version: 0.28.0 (clkgate construct, .as_clock<D>() cast)
 
 ---
 
@@ -36,6 +36,8 @@
 | `counter` | ✅ | `wrap`/`saturate`/`gray`/`one_hot`/`johnson` modes; `up`/`down`/`up_down`; `at_max`/`at_min` outputs |
 | `arbiter` | ✅ | `round_robin`/`priority`/`lru`/`weighted`; `ports[N]` arrays; `grant_valid`/`grant_requester`; **custom policy via `hook`**: `policy: FnName;` + `hook grant_select(req_mask, last_grant, ...extra) -> UInt<N> = FnName(...);` — extra args bind to user-declared ports/params; function emitted inside arbiter module |
 | `synchronizer` | ✅ | CDC synchronizer; `kind ff\|gray\|handshake\|reset\|pulse` (default `ff`): `ff` = N-stage FF chain (1-bit signals), `gray` = gray-code encode→FF chain→decode (multi-bit counters/pointers), `handshake` = req/ack toggle protocol (arbitrary multi-bit data), `reset` = async-assert / sync-deassert through N-stage FF chain (Bool only, reset deassertion synchronization), `pulse` = level-toggle in src domain → FF chain → edge-detect in dst domain to regenerate single-cycle pulse (Bool only, events/interrupts/triggers); `param STAGES` (default 2); requires 2 `Clock<Domain>` ports from different domains; supports `Bool` and `UInt<N>` data; async/sync reset; compile error on same-domain clocks; **multi-bit `kind ff` warning**: warns when `kind ff` used with `UInt<N>` where N>1, suggests `kind gray` or `kind handshake`; `kind reset` and `kind pulse` error if data is not `Bool`; SV codegen emits strategy-specific logic; sim codegen generates C++ models for all 5 kinds |
+| `clkgate` | ✅ | First-class ICG (Integrated Clock Gating) cell; `kind latch` (default, ASIC: latch-based `always_latch`) or `kind and` (FPGA: simple AND gate); ports: `clk_in: in Clock<D>`, `enable: in Bool`, optional `test_en: in Bool`, `clk_out: out Clock<D>`; type checker enforces matching clock domains; SV + sim codegen |
+| `.as_clock<D>()` | ✅ | Type cast: `Bool` or `UInt<1>` → `Clock<Domain>`; identity in SV (1-bit logic used as clock); enables clock dividers and custom clock generation in `module` without requiring a first-class construct |
 | `regfile` | ✅ | Multi-read-port / multi-write-port; `forward write_before_read`; `init [i] = v` |
 | `assert` / `cover` | ❌ | Lexed but skipped at parse time |
 | `pipeline` | ✅ | Stages with reg/comb/let/inst body; per-stage `stall when`; `flush` directives; explicit forwarding mux via comb if/else; `valid_r` per-stage signal; cross-stage refs (`Stage.signal`); `inst` inside stages with auto-declared output wires |
@@ -145,7 +147,7 @@
 - `arch sim` supports **multi-clock domain** modules: each `Clock<Domain>` port gets independent `_rising_X` edge detection; `eval_posedge()` guards each `seq` block on its specific clock's rising edge; auto-generates `tick()` method from domain `freq_mhz` declarations (computes half-periods via GCD for correct clock ratio); single-clock modules unchanged; verified with 200MHz/50MHz dual-clock testbench (MultiClockSync, 80 ticks, 4:1 ratio, 0 errors)
 - `arch sim` supports purely combinational modules (no `Clock<>` port): generated `eval()` skips `_rising` edge detection — testbenches call `eval()` directly without toggling a clock signal
 - AES-128 cipher benchmark (NIST FIPS-197 test vectors verified via `arch sim`): AesSbox + Xtime as pure combinational functions; AesCipherTop + AesKeyExpand128 using inline function calls replacing 32 `inst` blocks; wide `UInt<128>` ports via `VlWide<4>`; correct hierarchical posedge simultaneity (all `always_ff` blocks across parent + sub-instance fire atomically)
-- **E203 HBirdv2 benchmark suite** (37 modules — full RISC-V SoC with peripherals):
+- **E203 HBirdv2 benchmark suite** (39 modules — full RISC-V SoC with peripherals + clock gating):
   - **Core pipeline** (21 modules):
   - `e203_exu_regfile`: 2R1W register file using `regfile` construct; 5 sim tests
   - `e203_exu_wbck`: Priority write-back arbiter; 6 sim tests
@@ -179,6 +181,9 @@
   - `e203_spi`: SPI master; configurable CPOL/CPHA, clock divider; 13 sim tests
   - `e203_irq_ctrl`: Interrupt controller; MEI/MSI/MTI priority per RISC-V spec; 11 sim tests
   - `e203_debug_module`: Debug module (RISC-V Debug Spec 0.13); dmcontrol/dmstatus/data0/command; 16 sim tests
+  - **Clock infrastructure** (2 modules):
+  - `e203_clkgate`: Latch-based ICG cell using `clkgate` construct
+  - `e203_clk_ctrl`: Clock controller — 4 ICG instances (IFU/EXU/LSU/BIU gating)
   - **SoC top-level integration** (1 module):
   - `e203_soc_top`: Full SoC — CoreTop + ICB arbiter + SRAM + PPI (GPIO + UART + SPI) + FIO + IrqCtrl + DebugModule; 37 .arch files, 39 SV modules; `wire` bus interconnect; latched peripheral select registers for response mux; Verilator lint clean; 11 arch sim tests + 11 Verilator tests (VCD waveform verified)
 

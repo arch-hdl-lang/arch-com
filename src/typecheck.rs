@@ -94,6 +94,7 @@ impl<'a> TypeChecker<'a> {
                 Item::Linklist(l) => self.check_linklist(l),
                 Item::Template(t) => self.check_template(t),
                 Item::Synchronizer(s) => self.check_synchronizer(s),
+                Item::Clkgate(c) => self.check_clkgate(c),
             }
         }
         if self.errors.is_empty() {
@@ -889,6 +890,35 @@ impl<'a> TypeChecker<'a> {
             ExprKind::MethodCall(base, method, args) => {
                 let base_ty = self.resolve_expr_type(base, module_name, local_types);
                 match method.name.as_str() {
+                    "as_clock" => {
+                        // .as_clock<Domain>() — converts Bool/UInt<1> to Clock<Domain>
+                        match &base_ty {
+                            Ty::Bool | Ty::UInt(1) => {}
+                            _ => {
+                                self.errors.push(CompileError::general(
+                                    &format!(".as_clock<D>() requires Bool or UInt<1> base, got {}", base_ty.display()),
+                                    method.span,
+                                ));
+                            }
+                        }
+                        if let Some(domain_expr) = args.first() {
+                            if let ExprKind::Ident(domain_name) = &domain_expr.kind {
+                                Ty::Clock(domain_name.clone())
+                            } else {
+                                self.errors.push(CompileError::general(
+                                    ".as_clock<D>() requires a domain name argument",
+                                    method.span,
+                                ));
+                                Ty::Error
+                            }
+                        } else {
+                            self.errors.push(CompileError::general(
+                                ".as_clock<D>() requires a domain name argument",
+                                method.span,
+                            ));
+                            Ty::Error
+                        }
+                    }
                     "trunc" | "zext" | "sext" => {
                         if method.name == "trunc" && args.len() == 2 {
                             // trunc<Hi,Lo>() → extracts bits [Hi:Lo], result width = Hi - Lo + 1
@@ -1735,6 +1765,61 @@ impl<'a> TypeChecker<'a> {
                 }
                 _ => {}
             }
+        }
+    }
+
+    // ── Clock Gate ─────────────────────────────────────────────────────────────
+
+    fn check_clkgate(&mut self, c: &crate::ast::ClkGateDecl) {
+        self.check_pascal_case(&c.name);
+        for p in &c.params {
+            self.check_upper_snake(&p.name);
+        }
+        for p in &c.ports {
+            self.check_snake_case(&p.name);
+        }
+
+        // Must have exactly one Clock input and one Clock output with matching domain
+        let clk_in_ports: Vec<&crate::ast::PortDecl> = c.ports.iter()
+            .filter(|p| matches!(&p.ty, TypeExpr::Clock(_)) && p.direction == Direction::In)
+            .collect();
+        let clk_out_ports: Vec<&crate::ast::PortDecl> = c.ports.iter()
+            .filter(|p| matches!(&p.ty, TypeExpr::Clock(_)) && p.direction == Direction::Out)
+            .collect();
+
+        if clk_in_ports.len() != 1 {
+            self.errors.push(CompileError::general(
+                &format!("clkgate `{}` must have exactly 1 Clock input port", c.name.name),
+                c.name.span,
+            ));
+        }
+        if clk_out_ports.len() != 1 {
+            self.errors.push(CompileError::general(
+                &format!("clkgate `{}` must have exactly 1 Clock output port", c.name.name),
+                c.name.span,
+            ));
+        }
+
+        // Check domains match
+        if clk_in_ports.len() == 1 && clk_out_ports.len() == 1 {
+            if let (TypeExpr::Clock(d_in), TypeExpr::Clock(d_out)) = (&clk_in_ports[0].ty, &clk_out_ports[0].ty) {
+                if d_in.name != d_out.name {
+                    self.errors.push(CompileError::general(
+                        &format!("clkgate `{}`: input clock domain `{}` must match output clock domain `{}`",
+                                 c.name.name, d_in.name, d_out.name),
+                        c.name.span,
+                    ));
+                }
+            }
+        }
+
+        // Must have enable port (Bool input)
+        let has_enable = c.ports.iter().any(|p| p.name.name == "enable" && p.direction == Direction::In);
+        if !has_enable {
+            self.errors.push(CompileError::general(
+                &format!("clkgate `{}` is missing required `enable: in Bool` port", c.name.name),
+                c.name.span,
+            ));
         }
     }
 

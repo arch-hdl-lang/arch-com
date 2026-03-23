@@ -1,0 +1,69 @@
+// E203 Clock Control
+// Generates gated clocks for core subsystems: IFU, EXU, LSU, BIU
+// Each sub-block clock can be independently gated for power savings.
+
+module ClkCtrl
+
+  port clk:      in Clock<SysDomain>;
+  port rst_n:    in Reset<Async, Low>;
+  port test_en:  in Bool;
+
+  // Gate enables from CSR/power management
+  port ifu_gate_en: in Bool;
+  port exu_gate_en: in Bool;
+  port lsu_gate_en: in Bool;
+  port biu_gate_en: in Bool;
+
+  // Gated clocks out
+  port clk_ifu: out Clock<SysDomain>;
+  port clk_exu: out Clock<SysDomain>;
+  port clk_lsu: out Clock<SysDomain>;
+  port clk_biu: out Clock<SysDomain>;
+
+  // Status: whether each clock is active
+  port ifu_clk_active: out Bool;
+  port exu_clk_active: out Bool;
+  port lsu_clk_active: out Bool;
+  port biu_clk_active: out Bool;
+
+  // ICG instances
+  inst icg_ifu: E203ClkGate
+    connect clk_in  <- clk;
+    connect enable  <- ifu_gate_en;
+    connect test_en <- test_en;
+    connect clk_out -> clk_ifu_w;
+  end inst icg_ifu
+
+  inst icg_exu: E203ClkGate
+    connect clk_in  <- clk;
+    connect enable  <- exu_gate_en;
+    connect test_en <- test_en;
+    connect clk_out -> clk_exu_w;
+  end inst icg_exu
+
+  inst icg_lsu: E203ClkGate
+    connect clk_in  <- clk;
+    connect enable  <- lsu_gate_en;
+    connect test_en <- test_en;
+    connect clk_out -> clk_lsu_w;
+  end inst icg_lsu
+
+  inst icg_biu: E203ClkGate
+    connect clk_in  <- clk;
+    connect enable  <- biu_gate_en;
+    connect test_en <- test_en;
+    connect clk_out -> clk_biu_w;
+  end inst icg_biu
+
+  comb
+    clk_ifu = clk_ifu_w;
+    clk_exu = clk_exu_w;
+    clk_lsu = clk_lsu_w;
+    clk_biu = clk_biu_w;
+    ifu_clk_active = ifu_gate_en | test_en;
+    exu_clk_active = exu_gate_en | test_en;
+    lsu_clk_active = lsu_gate_en | test_en;
+    biu_clk_active = biu_gate_en | test_en;
+  end comb
+
+end module ClkCtrl

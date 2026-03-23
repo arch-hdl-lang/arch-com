@@ -76,6 +76,7 @@ impl<'a> SimCodegen<'a> {
                 Item::Linklist(l) => models.push(self.gen_linklist(l)),
                 Item::Ram(r)      => models.push(self.gen_ram(r)),
                 Item::Synchronizer(s) => models.push(self.gen_synchronizer(s)),
+                Item::Clkgate(c) => models.push(self.gen_clkgate(c)),
                 _ => {} // fifo/arbiter: TODO
             }
         }
@@ -620,6 +621,7 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
         ExprKind::Literal(LitKind::Sized(w, _)) => *w,
         ExprKind::Literal(_) => 32,
         ExprKind::Bool(_) => 1,
+        ExprKind::MethodCall(_, method, _) if method.name == "as_clock" => 1,
         ExprKind::MethodCall(_, method, args) if method.name == "trunc" || method.name == "zext" || method.name == "sext" => {
             if method.name == "trunc" && args.len() == 2 {
                 // Two-arg trunc: trunc<Hi,Lo>() → width = Hi - Lo + 1
@@ -790,6 +792,7 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                         b
                     }
                 }
+                "as_clock" => b, // identity — Bool used as clock
                 _ => format!("{b}.{}()", method.name),
             }
         }
@@ -3480,6 +3483,55 @@ impl<'a> SimCodegen<'a> {
         let extra_sigs: Vec<(&str, &str, u32)> = vec![];
         add_trace_to_simple_construct(&mut h, &mut cpp, &class, &class, &s.ports, &extra_sigs);
         h.push_str("};\n");
+
+        SimModel { class_name: class, header: h, impl_: cpp }
+    }
+
+    fn gen_clkgate(&self, c: &crate::ast::ClkGateDecl) -> SimModel {
+        let class = c.name.name.clone();
+
+        let clk_in = c.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)) && p.direction == Direction::In)
+            .map(|p| p.name.name.as_str()).unwrap_or("clk_in");
+        let clk_out = c.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)) && p.direction == Direction::Out)
+            .map(|p| p.name.name.as_str()).unwrap_or("clk_out");
+        let enable = "enable";
+        let test_en = c.ports.iter().find(|p| p.name.name == "test_en").map(|p| p.name.name.as_str());
+
+        let mut h = String::new();
+        h.push_str(&format!("#pragma once\n#include <cstdint>\nclass {} {{\npublic:\n", class));
+
+        for p in &c.ports {
+            h.push_str(&format!("  uint8_t {} = 0;\n", p.name.name));
+        }
+
+        if c.kind == crate::ast::ClkGateKind::Latch {
+            h.push_str("  uint8_t _en_latched = 0;\n");
+        }
+
+        h.push_str("  void eval();\n");
+        h.push_str("};\n");
+
+        let mut cpp = String::new();
+        cpp.push_str(&format!("#include \"V{}.h\"\n", class));
+        cpp.push_str(&format!("void {}::eval() {{\n", class));
+
+        let en_expr = if let Some(te) = test_en {
+            format!("{enable} | {te}")
+        } else {
+            enable.to_string()
+        };
+
+        match c.kind {
+            crate::ast::ClkGateKind::Latch => {
+                cpp.push_str(&format!("  if (!{clk_in}) _en_latched = ({en_expr}) ? 1 : 0;\n"));
+                cpp.push_str(&format!("  {clk_out} = {clk_in} & _en_latched;\n"));
+            }
+            crate::ast::ClkGateKind::And => {
+                cpp.push_str(&format!("  {clk_out} = {clk_in} & (({en_expr}) ? 1 : 0);\n"));
+            }
+        }
+
+        cpp.push_str("}\n");
 
         SimModel { class_name: class, header: h, impl_: cpp }
     }

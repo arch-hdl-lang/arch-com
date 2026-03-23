@@ -21,6 +21,7 @@ pub enum Symbol {
     Linklist(LinklistInfo),
     Template(String),
     Synchronizer(SynchronizerInfo),
+    Clkgate(ClkGateInfo),
     Param(String),
     Port(PortInfo),
     Reg(RegInfo),
@@ -38,6 +39,12 @@ pub struct DomainInfo {
 pub struct SynchronizerInfo {
     pub name: String,
     pub stages: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClkGateInfo {
+    pub name: String,
+    pub kind: crate::ast::ClkGateKind,
 }
 
 #[derive(Debug, Clone)]
@@ -372,6 +379,16 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                         name: s.name.name.clone(),
                         stages,
                     }), s.name.span));
+                }
+            }
+            Item::Clkgate(c) => {
+                if table.globals.contains_key(&c.name.name) {
+                    errors.push(CompileError::duplicate(&c.name.name, c.name.span));
+                } else {
+                    table.globals.insert(c.name.name.clone(), (Symbol::Clkgate(ClkGateInfo {
+                        name: c.name.name.clone(),
+                        kind: c.kind.clone(),
+                    }), c.name.span));
                 }
             }
         }

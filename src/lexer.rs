@@ -92,6 +92,8 @@ pub enum TokenKind {
     Fifo,
     #[token("synchronizer")]
     Synchronizer,
+    #[token("clkgate")]
+    Clkgate,
     #[token("ram")]
     Ram,
     #[token("store")]
@@ -356,6 +358,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Fsm => write!(f, "fsm"),
             TokenKind::Fifo => write!(f, "fifo"),
             TokenKind::Synchronizer => write!(f, "synchronizer"),
+            TokenKind::Clkgate => write!(f, "clkgate"),
             TokenKind::Ram => write!(f, "ram"),
             TokenKind::Store => write!(f, "store"),
             TokenKind::Counter => write!(f, "counter"),

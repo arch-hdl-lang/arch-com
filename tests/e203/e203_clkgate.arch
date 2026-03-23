@@ -1,0 +1,9 @@
+// E203 Clock Gate Cell (Integrated Clock Gating)
+// Standard ASIC latch-based ICG
+clkgate E203ClkGate
+  kind latch;
+  port clk_in:  in Clock<SysDomain>;
+  port enable:  in Bool;
+  port test_en: in Bool;
+  port clk_out: out Clock<SysDomain>;
+end clkgate E203ClkGate

@@ -42,8 +42,9 @@ impl Parser {
             Some(TokenKind::Linklist) => Ok(Item::Linklist(self.parse_linklist()?)),
             Some(TokenKind::Template) => Ok(Item::Template(self.parse_template()?)),
             Some(TokenKind::Synchronizer) => Ok(Item::Synchronizer(self.parse_synchronizer()?)),
+            Some(TokenKind::Clkgate) => Ok(Item::Clkgate(self.parse_clkgate()?)),
             Some(other) => Err(CompileError::unexpected_token(
-                "domain, struct, enum, module, fsm, fifo, ram, counter, arbiter, regfile, pipeline, function, linklist, template, or synchronizer",
+                "domain, struct, enum, module, fsm, fifo, ram, counter, arbiter, regfile, pipeline, function, linklist, template, synchronizer, or clkgate",
                 &other.to_string(),
                 self.peek_span(),
             )),
@@ -1916,6 +1917,78 @@ impl Parser {
             && self.tokens[self.pos + 1].kind == TokenKind::Synchronizer
     }
 
+    // ── Clock Gate ────────────────────────────────────────────────────────────
+
+    fn parse_clkgate(&mut self) -> Result<ClkGateDecl, CompileError> {
+        let start = self.expect(TokenKind::Clkgate)?.span;
+        let name = self.expect_ident()?;
+
+        let mut params = Vec::new();
+        let mut ports = Vec::new();
+        let mut kind = None;
+
+        while !self.check_end_clkgate() {
+            match self.peek_kind() {
+                Some(TokenKind::Param) => params.push(self.parse_param_decl()?),
+                Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
+                Some(TokenKind::Kind) => {
+                    self.advance();
+                    // 'and' is a keyword token, so handle it specially
+                    let span = self.peek_span();
+                    let kind_val = match self.peek_kind() {
+                        Some(TokenKind::And) => { self.advance(); "and" }
+                        Some(TokenKind::Ident(_)) => {
+                            let val = self.expect_ident()?;
+                            match val.name.as_str() {
+                                "latch" => "latch",
+                                other => return Err(CompileError::general(
+                                    &format!("unknown clkgate kind `{other}`; expected latch or and"),
+                                    val.span,
+                                )),
+                            }
+                        }
+                        _ => return Err(CompileError::unexpected_token("latch or and", &format!("{:?}", self.peek_kind()), span)),
+                    };
+                    self.expect(TokenKind::Semi)?;
+                    kind = Some(match kind_val {
+                        "latch" => ClkGateKind::Latch,
+                        "and" => ClkGateKind::And,
+                        _ => unreachable!(),
+                    });
+                }
+                Some(other) => {
+                    return Err(CompileError::unexpected_token(
+                        "kind, param, or port",
+                        &other.to_string(),
+                        self.peek_span(),
+                    ));
+                }
+                None => return Err(CompileError::UnexpectedEof),
+            }
+        }
+
+        self.expect(TokenKind::End)?;
+        self.expect(TokenKind::Clkgate)?;
+        let closing = self.expect_ident()?;
+        if closing.name != name.name {
+            return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+        }
+
+        Ok(ClkGateDecl {
+            span: start.merge(closing.span),
+            name,
+            kind: kind.unwrap_or(ClkGateKind::Latch),
+            params,
+            ports,
+        })
+    }
+
+    fn check_end_clkgate(&self) -> bool {
+        self.pos + 1 < self.tokens.len()
+            && self.tokens[self.pos].kind == TokenKind::End
+            && self.tokens[self.pos + 1].kind == TokenKind::Clkgate
+    }
+
     // ── RAM ───────────────────────────────────────────────────────────────────
 
     fn parse_ram(&mut self) -> Result<RamDecl, CompileError> {
@@ -2965,7 +3038,7 @@ impl Parser {
 }
 
 fn is_method_name(name: &str) -> bool {
-    matches!(name, "trunc" | "zext" | "sext")
+    matches!(name, "trunc" | "zext" | "sext" | "as_clock")
 }
 
 
