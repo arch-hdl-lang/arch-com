@@ -1,0 +1,13 @@
+module TopModule
+  port vec: in UInt<3>;
+  port outv: out UInt<3>;
+  port o2: out Bool;
+  port o1: out Bool;
+  port o0: out Bool;
+  comb
+    outv = vec;
+    o0 = vec[0];
+    o1 = vec[1];
+    o2 = vec[2];
+  end comb
+end module TopModule

@@ -1,0 +1,15 @@
+// VerilogEval Prob033: 8-bit signed add with overflow detection
+module TopModule
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port s: out UInt<8>;
+  port overflow: out Bool;
+
+  wire sum9: UInt<9>;
+
+  comb
+    sum9 = (a.zext<9>() + b.zext<9>()).trunc<9>();
+    s = sum9.trunc<8>();
+    overflow = (a[7] == b[7]) & (sum9[7] != a[7]);
+  end comb
+end module TopModule

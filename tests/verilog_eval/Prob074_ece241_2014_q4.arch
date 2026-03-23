@@ -1,0 +1,22 @@
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port clk: in Clock<SysDomain>;
+  port x: in Bool;
+  port z: out Bool;
+
+  reg ff_xor: Bool;
+  reg ff_and: Bool;
+  reg ff_or: Bool;
+
+  seq on clk rising
+    ff_xor <= x ^ ff_xor;
+    ff_and <= x & (~ff_and);
+    ff_or <= x | (~ff_or);
+  end seq
+
+  comb
+    z = ~(ff_xor | ff_and | ff_or);
+  end comb
+end module TopModule

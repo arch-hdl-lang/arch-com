@@ -1,0 +1,10 @@
+module TopModule
+  port ring: in Bool;
+  port vibrate_mode: in Bool;
+  port ringer: out Bool;
+  port motor: out Bool;
+  comb
+    ringer = ring & (~vibrate_mode);
+    motor = ring & vibrate_mode;
+  end comb
+end module TopModule

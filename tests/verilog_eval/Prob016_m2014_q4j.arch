@@ -1,0 +1,9 @@
+// VerilogEval Prob016: 4-bit adder with 5-bit sum
+module TopModule
+  port x: in UInt<4>;
+  port y: in UInt<4>;
+  port sum: out UInt<5>;
+  comb
+    sum = (x.zext<5>() + y.zext<5>()).trunc<5>();
+  end comb
+end module TopModule

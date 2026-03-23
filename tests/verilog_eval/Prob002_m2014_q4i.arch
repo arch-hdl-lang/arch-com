@@ -1,0 +1,6 @@
+module TopModule
+  port out_sig: out Bool;
+  comb
+    out_sig = 0;
+  end comb
+end module TopModule

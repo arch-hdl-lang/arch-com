@@ -1,0 +1,18 @@
+module TopModule
+  port p1a: in Bool;
+  port p1b: in Bool;
+  port p1c: in Bool;
+  port p1d: in Bool;
+  port p1e: in Bool;
+  port p1f: in Bool;
+  port p2a: in Bool;
+  port p2b: in Bool;
+  port p2c: in Bool;
+  port p2d: in Bool;
+  port p1y: out Bool;
+  port p2y: out Bool;
+  comb
+    p1y = (p1a & p1b & p1c) | (p1d & p1e & p1f);
+    p2y = (p2a & p2b) | (p2c & p2d);
+  end comb
+end module TopModule

@@ -1,0 +1,15 @@
+module TopModule
+  port a: in Bool;
+  port b: in Bool;
+  port c: in Bool;
+  port w: out Bool;
+  port x: out Bool;
+  port y: out Bool;
+  port z: out Bool;
+  comb
+    w = a;
+    x = b;
+    y = b;
+    z = c;
+  end comb
+end module TopModule

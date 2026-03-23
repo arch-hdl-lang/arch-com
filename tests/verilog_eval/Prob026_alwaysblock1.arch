@@ -1,0 +1,10 @@
+module TopModule
+  port a: in Bool;
+  port b: in Bool;
+  port out_assign: out Bool;
+  port out_alwaysblock: out Bool;
+  comb
+    out_assign = a & b;
+    out_alwaysblock = a & b;
+  end comb
+end module TopModule

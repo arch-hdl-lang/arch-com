@@ -1,0 +1,24 @@
+// VerilogEval Prob044: Bitwise OR, logical OR, NOT of 3-bit vectors
+module TopModule
+  port a: in UInt<3>;
+  port b: in UInt<3>;
+  port out_or_bitwise: out UInt<3>;
+  port out_or_logical: out Bool;
+  port out_not: out UInt<6>;
+
+  wire not_a: UInt<3>;
+  wire not_b: UInt<3>;
+
+  comb
+    out_or_bitwise = a | b;
+    out_or_logical = (a[0] | a[1] | a[2]) | (b[0] | b[1] | b[2]);
+    not_a = ~a;
+    not_b = ~b;
+    for i in 0..2
+      out_not[i] = not_a[i];
+    end for
+    for i in 0..2
+      out_not[3 + i] = not_b[i];
+    end for
+  end comb
+end module TopModule

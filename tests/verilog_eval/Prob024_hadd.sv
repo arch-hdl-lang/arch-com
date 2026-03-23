@@ -3,11 +3,11 @@
 module TopModule (
   input logic a,
   input logic b,
-  output logic sum_sig,
+  output logic sum,
   output logic cout
 );
 
-  assign sum_sig = (a ^ b);
+  assign sum = (a ^ b);
   assign cout = (a & b);
 
 endmodule

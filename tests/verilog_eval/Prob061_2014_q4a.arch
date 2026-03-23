@@ -1,0 +1,26 @@
+// VerilogEval Prob061: Shift register stage with load
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port clk: in Clock<SysDomain>;
+  port w: in Bool;
+  port r_sig: in Bool;
+  port e: in Bool;
+  port l: in Bool;
+  port q_sig: out Bool;
+
+  reg q_r: Bool;
+
+  seq on clk rising
+    if l
+      q_r <= r_sig;
+    elsif e
+      q_r <= w;
+    end if
+  end seq
+
+  comb
+    q_sig = q_r;
+  end comb
+end module TopModule

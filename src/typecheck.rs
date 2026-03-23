@@ -682,7 +682,8 @@ impl<'a> TypeChecker<'a> {
     ) {
         match stmt {
             CombStmt::Assign(a) => {
-                let target_name = if let ExprKind::Ident(name) = &a.target.kind { name.clone() } else { format!("{:?}", a.target.kind) };
+                let target_name = Self::expr_root_name_tc(&a.target);
+                let target_name = if target_name.is_empty() { format!("{:?}", a.target.kind) } else { target_name };
                 // Regs must be assigned in seq blocks, not comb blocks
                 if reg_names.contains(&target_name) {
                     self.errors.push(CompileError::general(
@@ -693,7 +694,8 @@ impl<'a> TypeChecker<'a> {
                         a.span,
                     ));
                 }
-                if driven.contains(&target_name) {
+                let is_indexed = !matches!(&a.target.kind, ExprKind::Ident(_));
+                if driven.contains(&target_name) && !is_indexed {
                     self.errors.push(CompileError::MultipleDrivers {
                         name: target_name.clone(),
                         span: crate::diagnostics::span_to_source_span(a.target.span),
@@ -701,8 +703,10 @@ impl<'a> TypeChecker<'a> {
                 }
                 driven.insert(target_name.clone());
                 let rhs_ty = self.resolve_expr_type(&a.value, module_name, local_types);
-                if let Some(lhs_ty) = local_types.get(&target_name).cloned() {
-                    self.check_width_compatible(&lhs_ty, &rhs_ty, &target_name, a.span);
+                if !is_indexed {
+                    if let Some(lhs_ty) = local_types.get(&target_name).cloned() {
+                        self.check_width_compatible(&lhs_ty, &rhs_ty, &target_name, a.span);
+                    }
                 }
             }
             CombStmt::IfElse(ie) => {
@@ -1495,7 +1499,7 @@ impl<'a> TypeChecker<'a> {
     fn collect_comb_stmt_targets(stmts: &[CombStmt], out: &mut HashSet<String>) {
         for stmt in stmts {
             match stmt {
-                CombStmt::Assign(a) => { if let ExprKind::Ident(name) = &a.target.kind { out.insert(name.clone()); } }
+                CombStmt::Assign(a) => { let name = Self::expr_root_name_tc(&a.target); if !name.is_empty() { out.insert(name); } }
                 CombStmt::IfElse(ie) => {
                     Self::collect_comb_stmt_targets(&ie.then_stmts, out);
                     Self::collect_comb_stmt_targets(&ie.else_stmts, out);

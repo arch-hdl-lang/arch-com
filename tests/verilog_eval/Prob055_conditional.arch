@@ -1,0 +1,28 @@
+module TopModule
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port c: in UInt<8>;
+  port d: in UInt<8>;
+  port min: out UInt<8>;
+
+  wire ab_min: UInt<8>;
+  wire cd_min: UInt<8>;
+
+  comb
+    if a < b
+      ab_min = a;
+    else
+      ab_min = b;
+    end if
+    if c < d
+      cd_min = c;
+    else
+      cd_min = d;
+    end if
+    if ab_min < cd_min
+      min = ab_min;
+    else
+      min = cd_min;
+    end if
+  end comb
+end module TopModule

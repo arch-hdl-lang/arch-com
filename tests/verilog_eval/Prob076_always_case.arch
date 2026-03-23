@@ -1,0 +1,27 @@
+module TopModule
+  port sel: in UInt<3>;
+  port data0: in UInt<4>;
+  port data1: in UInt<4>;
+  port data2: in UInt<4>;
+  port data3: in UInt<4>;
+  port data4: in UInt<4>;
+  port data5: in UInt<4>;
+  port out_sig: out UInt<4>;
+  comb
+    if sel == 0
+      out_sig = data0;
+    elsif sel == 1
+      out_sig = data1;
+    elsif sel == 2
+      out_sig = data2;
+    elsif sel == 3
+      out_sig = data3;
+    elsif sel == 4
+      out_sig = data4;
+    elsif sel == 5
+      out_sig = data5;
+    else
+      out_sig = 0;
+    end if
+  end comb
+end module TopModule

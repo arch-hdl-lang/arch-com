@@ -1,0 +1,12 @@
+module TopModule
+  port a: in Bool;
+  port b: in Bool;
+  port c: in Bool;
+  port d: in Bool;
+  port out_sop: out Bool;
+  port out_pos: out Bool;
+  comb
+    out_sop = (~a & ~b & c) | (c & d);
+    out_pos = c & (~b | d) & (~a | b);
+  end comb
+end module TopModule

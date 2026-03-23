@@ -1,0 +1,9 @@
+module TopModule
+  port x3: in Bool;
+  port x2: in Bool;
+  port x1: in Bool;
+  port f: out Bool;
+  comb
+    f = (x2 & (~x3)) | (x3 & x1);
+  end comb
+end module TopModule

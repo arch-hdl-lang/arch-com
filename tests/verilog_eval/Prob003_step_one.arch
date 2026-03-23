@@ -1,0 +1,6 @@
+module TopModule
+  port one: out Bool;
+  comb
+    one = 1;
+  end comb
+end module TopModule

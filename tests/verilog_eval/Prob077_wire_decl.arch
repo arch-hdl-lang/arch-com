@@ -1,0 +1,18 @@
+module TopModule
+  port a: in Bool;
+  port b: in Bool;
+  port c: in Bool;
+  port d: in Bool;
+  port out_sig: out Bool;
+  port out_n: out Bool;
+
+  wire ab: Bool;
+  wire cd: Bool;
+
+  comb
+    ab = a & b;
+    cd = c & d;
+    out_sig = ab | cd;
+    out_n = ~(ab | cd);
+  end comb
+end module TopModule

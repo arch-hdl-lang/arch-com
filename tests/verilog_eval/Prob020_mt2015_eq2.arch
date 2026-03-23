@@ -1,0 +1,12 @@
+module TopModule
+  port a_sig: in UInt<2>;
+  port b_sig: in UInt<2>;
+  port z: out Bool;
+  comb
+    if a_sig == b_sig
+      z = 1;
+    else
+      z = 0;
+    end if
+  end comb
+end module TopModule

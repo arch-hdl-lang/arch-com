@@ -1,0 +1,14 @@
+module TopModule
+  port mode: in Bool;
+  port too_cold: in Bool;
+  port too_hot: in Bool;
+  port fan_on: in Bool;
+  port heater: out Bool;
+  port aircon: out Bool;
+  port fan: out Bool;
+  comb
+    heater = mode & too_cold;
+    aircon = (~mode) & too_hot;
+    fan = heater | aircon | fan_on;
+  end comb
+end module TopModule

@@ -1,0 +1,17 @@
+module TopModule
+  port a: in Bool;
+  port b: in Bool;
+  port sel_b1: in Bool;
+  port sel_b2: in Bool;
+  port out_assign: out Bool;
+  port out_always: out Bool;
+  comb
+    if sel_b1 & sel_b2
+      out_assign = b;
+      out_always = b;
+    else
+      out_assign = a;
+      out_always = a;
+    end if
+  end comb
+end module TopModule
