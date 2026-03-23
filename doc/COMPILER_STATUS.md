@@ -1,7 +1,7 @@
 # ARCH Compiler — Status & Roadmap
 
 > Last updated: 2026-03-22
-> Compiler version: 0.29.0 (fix derived clock eval ordering in sim codegen)
+> Compiler version: 0.29.0 (derived clock eval fix, split always_ff for mixed reset)
 
 ---
 

@@ -21,6 +21,8 @@ module MixedReset (
     end else begin
       count_r <= 8'((count_r + 1));
     end
+  end
+  always_ff @(posedge clk) begin
     pipe_r <= data_in;
   end
   assign count_out = count_r;

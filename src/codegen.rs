@@ -736,36 +736,13 @@ impl<'a> Codegen<'a> {
             }
         }
 
-        // Emit sensitivity list
         if let Some(ref ri) = reset_info {
-            if ri.is_async {
-                let rst_edge = if ri.is_low { "negedge" } else { "posedge" };
-                self.line(&format!(
-                    "always_ff @({clk_edge} {} or {rst_edge} {}) begin",
-                    rb.clock.name, ri.signal
-                ));
-            } else {
-                self.line(&format!("always_ff @({clk_edge} {}) begin", rb.clock.name));
-            }
-        } else {
-            self.line(&format!("always_ff @({clk_edge} {}) begin", rb.clock.name));
-        }
-        self.indent += 1;
-
-        if let Some(ref ri) = reset_info {
-            let rst_cond_str = if ri.is_low {
-                format!("(!{})", ri.signal)
-            } else {
-                ri.signal.clone()
-            };
-
             // Build set of register names that have reset
             let reset_reg_names: std::collections::BTreeSet<String> =
                 resets.iter().map(|(n, _)| n.clone()).collect();
 
-            // Partition top-level statements: those that only assign to reset
-            // registers go inside the if/else guard; those that only assign
-            // to no-reset registers go outside (always execute).
+            // Partition top-level statements: those that assign to reset
+            // registers vs. those that only assign to non-reset registers.
             let mut guarded_stmts = Vec::new();
             let mut unguarded_stmts = Vec::new();
             for stmt in &rb.stmts {
@@ -779,6 +756,23 @@ impl<'a> Codegen<'a> {
                 }
             }
 
+            let rst_cond_str = if ri.is_low {
+                format!("(!{})", ri.signal)
+            } else {
+                ri.signal.clone()
+            };
+
+            // Emit always_ff with reset sensitivity for resetable registers
+            if ri.is_async {
+                let rst_edge = if ri.is_low { "negedge" } else { "posedge" };
+                self.line(&format!(
+                    "always_ff @({clk_edge} {} or {rst_edge} {}) begin",
+                    rb.clock.name, ri.signal
+                ));
+            } else {
+                self.line(&format!("always_ff @({clk_edge} {}) begin", rb.clock.name));
+            }
+            self.indent += 1;
             self.line(&format!("if ({rst_cond_str}) begin"));
             self.indent += 1;
             for (name, init) in &resets {
@@ -797,20 +791,32 @@ impl<'a> Codegen<'a> {
             }
             self.indent -= 1;
             self.line("end");
+            self.indent -= 1;
+            self.line("end");
 
-            // Emit no-reset statements outside the if/else guard
-            for stmt in &unguarded_stmts {
-                self.emit_reg_stmt(stmt);
+            // Emit separate always_ff WITHOUT reset sensitivity for non-reset registers.
+            // Mixing resetable and non-resetable regs in one always_ff with async reset
+            // in the sensitivity list causes synthesis tools to infer unintended clock
+            // gating on the reset path for the non-reset registers.
+            if !unguarded_stmts.is_empty() {
+                self.line(&format!("always_ff @({clk_edge} {}) begin", rb.clock.name));
+                self.indent += 1;
+                for stmt in &unguarded_stmts {
+                    self.emit_reg_stmt(stmt);
+                }
+                self.indent -= 1;
+                self.line("end");
             }
         } else {
             // No registers with reset — emit body directly
+            self.line(&format!("always_ff @({clk_edge} {}) begin", rb.clock.name));
+            self.indent += 1;
             for stmt in &rb.stmts {
                 self.emit_reg_stmt(stmt);
             }
+            self.indent -= 1;
+            self.line("end");
         }
-
-        self.indent -= 1;
-        self.line("end");
     }
 
     /// Resolve a register's reset info: returns Some((signal_name, is_async, is_low))

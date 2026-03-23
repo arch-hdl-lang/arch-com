@@ -805,16 +805,18 @@ module MixedReset
 end module MixedReset
 "#;
     let sv = compile_to_sv(source);
-    // count_r has reset: should appear inside if(rst)/else guard
+    // count_r has reset: should appear inside if(rst)/else guard in first always_ff
     assert!(sv.contains("if (rst) begin"), "expected reset guard, got:\n{sv}");
     assert!(sv.contains("count_r <= 0;"), "expected count_r reset init, got:\n{sv}");
-    // pipe_r has reset none: should appear outside the if/else guard
-    // Verify pipe_r assignment is NOT inside the else block but after `end`
-    let always_block: &str = sv.split("always_ff").nth(1).expect("no always_ff block");
-    let end_else_pos = always_block.find("end else").expect("no end else");
-    let second_end_pos = always_block[end_else_pos + 8..].find("end").expect("no closing end") + end_else_pos + 8;
-    let after_guard = &always_block[second_end_pos..];
-    assert!(after_guard.contains("pipe_r <= data_in"), "pipe_r should be outside if/else guard, got:\n{sv}");
+    // pipe_r has reset none: must be in a SEPARATE always_ff block (no reset in sensitivity list).
+    // Mixing resetable and non-resetable regs in one always_ff with async reset causes
+    // synthesis tools to infer unintended clock gating on the reset path.
+    let always_blocks: Vec<&str> = sv.split("always_ff").collect();
+    assert!(always_blocks.len() >= 3, "expected at least 2 always_ff blocks (reset + no-reset), got:\n{sv}");
+    // The second always_ff should contain pipe_r and NOT have reset in sensitivity
+    let second_block = always_blocks[2];
+    assert!(second_block.contains("pipe_r <= data_in"), "pipe_r should be in separate always_ff, got:\n{sv}");
+    assert!(!second_block.contains("rst"), "no-reset always_ff should not reference rst, got:\n{sv}");
     insta::assert_snapshot!(sv);
 }
 
