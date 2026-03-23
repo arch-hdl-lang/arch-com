@@ -11,16 +11,16 @@ module Counter #(
 );
 
   logic [WIDTH-1:0] count_r = 0;
-  assign count = count_r;
   always_ff @(posedge clk) begin
     if (rst) begin
       count_r <= 0;
     end else begin
       if (en) begin
-        count_r <= (count_r + 1);
+        count_r <= WIDTH'((count_r + 1));
       end
     end
   end
+  assign count = count_r;
 
 endmodule
 

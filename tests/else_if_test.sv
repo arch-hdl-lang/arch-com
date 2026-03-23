@@ -11,7 +11,7 @@ module ElseIfTest (
 );
 
   logic [8-1:0] result_r = 0;
-  // Test else-if in always block
+  // Test else-if in seq block
   always_ff @(posedge clk) begin
     if (rst) begin
       result_r <= 0;

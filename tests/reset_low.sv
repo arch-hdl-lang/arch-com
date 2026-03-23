@@ -1,5 +1,5 @@
 // Test: active-low synchronous reset
-// `reg on clk rising, rst low` should emit `if (!rst)` in the body.
+// `reg reset rst_n` with `Reset<Sync, Low>` should emit `if (!rst_n)` in the body.
 // domain SysDomain
 //   freq_mhz: 100
 
@@ -11,16 +11,16 @@ module ActiveLowRst (
 );
 
   logic [8-1:0] count_r = 0;
-  assign count = count_r;
   always_ff @(posedge clk) begin
     if ((!rst_n)) begin
       count_r <= 0;
     end else begin
       if (en) begin
-        count_r <= (count_r + 1);
+        count_r <= 8'((count_r + 1));
       end
     end
   end
+  assign count = count_r;
 
 endmodule
 
