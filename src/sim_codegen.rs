@@ -941,6 +941,16 @@ fn emit_reg_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize) {
             out.push_str(&format!("{}}}\n", ind(indent)));
         }
         Stmt::Log(l) => emit_log_stmt(l, ctx, out, indent),
+        Stmt::For(f) => {
+            let start = cpp_expr(&f.start, ctx);
+            let end = cpp_expr(&f.end, ctx);
+            let var = &f.var.name;
+            out.push_str(&format!("{}for (int {var} = {start}; {var} <= {end}; {var}++) {{\n", ind(indent)));
+            for s in &f.body {
+                emit_reg_stmt(s, ctx, out, indent + 1);
+            }
+            out.push_str(&format!("{}}}\n", ind(indent)));
+        }
     }
 }
 
@@ -975,8 +985,8 @@ fn emit_comb_stmt(stmt: &CombStmt, ctx: &Ctx, out: &mut String, indent: usize) {
     match stmt {
         CombStmt::Assign(a) => {
             let rhs = cpp_expr(&a.value, ctx);
-            let target_name = &a.target.name;
-            let resolved_target = ctx.resolve_name(target_name, false);
+            let target_name = if let ExprKind::Ident(name) = &a.target.kind { name.clone() } else { cpp_expr(&a.target, ctx) };
+            let resolved_target = ctx.resolve_name(&target_name, false);
             // Wide output port: use conversion instead of direct assignment
             if ctx.wide_names.contains(target_name.as_str()) {
                 out.push_str(&format!("{}  _arch_u128_to_vl({}, {}._data);\n",
@@ -1014,6 +1024,16 @@ fn emit_comb_stmt(stmt: &CombStmt, ctx: &Ctx, out: &mut String, indent: usize) {
             out.push_str(&format!("{}}}\n", ind(indent)));
         }
         CombStmt::Log(l) => emit_log_stmt(l, ctx, out, indent),
+        CombStmt::For(f) => {
+            let start = cpp_expr(&f.start, ctx);
+            let end = cpp_expr(&f.end, ctx);
+            let var = &f.var.name;
+            out.push_str(&format!("{}for (int {var} = {start}; {var} <= {end}; {var}++) {{\n", ind(indent)));
+            for s in &f.body {
+                emit_reg_stmt(s, ctx, out, indent + 1);
+            }
+            out.push_str(&format!("{}}}\n", ind(indent)));
+        }
     }
 }
 
@@ -1152,6 +1172,13 @@ fn collect_comb_reads(stmt: &CombStmt, out: &mut std::collections::BTreeSet<Stri
             for s in &ie.else_stmts { collect_comb_reads(s, out); }
         }
         CombStmt::MatchExpr(_) | CombStmt::Log(_) => {}
+        CombStmt::For(f) => {
+            for s in &f.body {
+                if let Stmt::Assign(a) = s {
+                    collect_expr_idents(&a.value, out);
+                }
+            }
+        }
     }
 }
 
@@ -1215,7 +1242,7 @@ fn collect_inst_output_signals(body: &[ModuleBodyItem]) -> HashSet<String> {
 fn collect_comb_targets(body: &[ModuleBodyItem]) -> HashSet<String> {
     fn collect_stmt_targets(stmt: &CombStmt, out: &mut HashSet<String>) {
         match stmt {
-            CombStmt::Assign(a) => { out.insert(a.target.name.clone()); }
+            CombStmt::Assign(a) => { if let ExprKind::Ident(name) = &a.target.kind { out.insert(name.clone()); } }
             CombStmt::IfElse(ie) => {
                 for s in &ie.then_stmts { collect_stmt_targets(s, out); }
                 for s in &ie.else_stmts { collect_stmt_targets(s, out); }
@@ -1232,6 +1259,15 @@ fn collect_comb_targets(body: &[ModuleBodyItem]) -> HashSet<String> {
                 }
             }
             CombStmt::Log(_) => {}
+            CombStmt::For(f) => {
+                for s in &f.body {
+                    if let Stmt::Assign(a) = s {
+                        if let ExprKind::Ident(name) = &a.target.kind {
+                            out.insert(name.clone());
+                        }
+                    }
+                }
+            }
         }
     }
     let mut targets = HashSet::new();
@@ -1261,18 +1297,26 @@ fn extract_reset_info(ports: &[PortDecl]) -> (String, bool, bool) {
 fn resolve_reg_reset_info(reset: &RegReset, ports: &[PortDecl]) -> Option<(String, bool, bool)> {
     match reset {
         RegReset::None => None,
-        RegReset::Explicit(sig, kind, level) => Some((
+        RegReset::Explicit(sig, kind, level, _) => Some((
             sig.name.clone(),
             *kind == ResetKind::Async,
             *level == ResetLevel::Low,
         )),
-        RegReset::Inherit(sig) => {
+        RegReset::Inherit(sig, _) => {
             if let Some(p) = ports.iter().find(|p| p.name.name == sig.name) {
                 if let TypeExpr::Reset(kind, level) = &p.ty {
                     Some((sig.name.clone(), *kind == ResetKind::Async, *level == ResetLevel::Low))
                 } else { None }
             } else { None }
         }
+    }
+}
+
+/// Extract the reset value expression from a RegReset variant.
+fn reset_value_from_reg_reset(reset: &RegReset) -> Option<&Expr> {
+    match reset {
+        RegReset::None => None,
+        RegReset::Inherit(_, val) | RegReset::Explicit(_, _, _, val) => Some(val),
     }
 }
 
@@ -1458,6 +1502,9 @@ fn collect_stmt_assigns(stmts: &[Stmt], out: &mut std::collections::BTreeSet<Str
                 for arm in &m.arms { collect_stmt_assigns(&arm.body, out); }
             }
             Stmt::Log(_) => {}
+            Stmt::For(f) => {
+                collect_stmt_assigns(&f.body, out);
+            }
         }
     }
 }
@@ -1551,13 +1598,17 @@ impl<'a> SimCodegen<'a> {
                 } else if wide_names.contains(&r.name.name) {
                     Some(format!("_{}()", r.name.name))  // VlWide or _arch_u128 zero-inits
                 } else {
-                    let init_val = match &r.init.kind {
-                        ExprKind::Literal(LitKind::Dec(v)) => v.to_string(),
-                        ExprKind::Literal(LitKind::Hex(v)) => format!("0x{:X}", v),
-                        ExprKind::Literal(LitKind::Bin(v)) => v.to_string(),
-                        ExprKind::Literal(LitKind::Sized(_, v)) => v.to_string(),
-                        ExprKind::Bool(b) => if *b { "1".to_string() } else { "0".to_string() },
-                        _ => "0".to_string(),
+                    let init_val = if let Some(ref init_expr) = r.init {
+                        match &init_expr.kind {
+                            ExprKind::Literal(LitKind::Dec(v)) => v.to_string(),
+                            ExprKind::Literal(LitKind::Hex(v)) => format!("0x{:X}", v),
+                            ExprKind::Literal(LitKind::Bin(v)) => v.to_string(),
+                            ExprKind::Literal(LitKind::Sized(_, v)) => v.to_string(),
+                            ExprKind::Bool(b) => if *b { "1".to_string() } else { "0".to_string() },
+                            _ => "0".to_string(),
+                        }
+                    } else {
+                        "0".to_string()
                     };
                     Some(format!("_{}({})", r.name.name, init_val))
                 }
@@ -1953,13 +2004,18 @@ impl<'a> SimCodegen<'a> {
                     if let Some(rd) = reg_decls.iter().find(|r| r.name.name == *name) {
                         if let Some(info) = resolve_reg_reset_info(&rd.reset, &m.ports) {
                             if reset_sig.is_none() { reset_sig = Some(info.clone()); }
-                            let init_val = match &rd.init.kind {
-                                ExprKind::Literal(LitKind::Dec(v)) => v.to_string(),
-                                ExprKind::Literal(LitKind::Hex(v)) => format!("0x{:X}", v),
-                                ExprKind::Literal(LitKind::Bin(v)) => v.to_string(),
-                                ExprKind::Literal(LitKind::Sized(_, v)) => v.to_string(),
-                                ExprKind::Bool(b) => if *b { "1".to_string() } else { "0".to_string() },
-                                _ => "0".to_string(),
+                            let reset_expr = reset_value_from_reg_reset(&rd.reset);
+                            let init_val = if let Some(expr) = reset_expr {
+                                match &expr.kind {
+                                    ExprKind::Literal(LitKind::Dec(v)) => v.to_string(),
+                                    ExprKind::Literal(LitKind::Hex(v)) => format!("0x{:X}", v),
+                                    ExprKind::Literal(LitKind::Bin(v)) => v.to_string(),
+                                    ExprKind::Literal(LitKind::Sized(_, v)) => v.to_string(),
+                                    ExprKind::Bool(b) => if *b { "1".to_string() } else { "0".to_string() },
+                                    _ => "0".to_string(),
+                                }
+                            } else {
+                                "0".to_string()
                             };
                             reset_regs.push((&rd.name.name, init_val));
                         }
@@ -2443,8 +2499,14 @@ impl<'a> SimCodegen<'a> {
 
         let port_inits: Vec<String> = f.ports.iter().map(|p| format!("{}(0)", p.name.name)).collect();
         let reg_inits: Vec<String> = f.regs.iter().map(|r| {
-            let init_val = cpp_expr(&r.init, &Ctx::new(&empty_regs, &port_names, &empty_lets, &empty_insts, &empty_wide, &empty_w, &enum_map));
-            format!("{}({})", r.name.name, init_val)
+            let init_expr = reset_value_from_reg_reset(&r.reset)
+                .or(r.init.as_ref());
+            if let Some(expr) = init_expr {
+                let init_val = cpp_expr(expr, &Ctx::new(&empty_regs, &port_names, &empty_lets, &empty_insts, &empty_wide, &empty_w, &enum_map));
+                format!("{}({})", r.name.name, init_val)
+            } else {
+                format!("{}(0)", r.name.name)
+            }
         }).collect();
         let state_inits = vec!["_clk_prev(0)".to_string(), format!("_state_r({default_idx})")];
         let all_inits: Vec<String> = port_inits.into_iter().chain(reg_inits).chain(state_inits).collect();
@@ -2494,8 +2556,12 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("  if ({rst_cond}) {{\n    _n_state = {default_idx};\n"));
         // Reset datapath regs
         for reg in &f.regs {
-            let init_val = cpp_expr(&reg.init, &ctx_fsm);
-            cpp.push_str(&format!("    _n_{} = {};\n", reg.name.name, init_val));
+            let reset_expr = reset_value_from_reg_reset(&reg.reset)
+                .or(reg.init.as_ref());
+            if let Some(expr) = reset_expr {
+                let init_val = cpp_expr(expr, &ctx_fsm);
+                cpp.push_str(&format!("    _n_{} = {};\n", reg.name.name, init_val));
+            }
         }
         cpp.push_str("  } else {\n");
         let ctx_posedge = {

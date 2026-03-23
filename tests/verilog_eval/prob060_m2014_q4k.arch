@@ -1,0 +1,24 @@
+// VerilogEval Prob060: 4-stage shift register, active-low sync reset
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port clk: in Clock<SysDomain>;
+  port resetn: in Bool;
+  port in_sig: in Bool;
+  port out_sig: out Bool;
+
+  reg sr: UInt<4> init 0 reset none;
+
+  seq on clk rising
+    if ~resetn
+      sr <= 0;
+    else
+      sr <= (sr << 1).trunc<4>() | in_sig.zext<4>();
+    end if
+  end seq
+
+  comb
+    out_sig = sr.trunc<3,3>();
+  end comb
+end module TopModule

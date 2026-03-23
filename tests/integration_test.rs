@@ -446,7 +446,7 @@ module BadCounter
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
   port count: out UInt<8>;
-  reg count_r: UInt<8> init 0 reset rst;
+  reg count_r: UInt<8> init 0 reset rst=0;
   seq on clk rising
     count_r <= count_r + 1;
   end seq
@@ -790,7 +790,7 @@ module MixedReset
   port count_out: out UInt<8>;
   port pipe_out: out UInt<8>;
 
-  reg count_r: UInt<8> init 0 reset rst;
+  reg count_r: UInt<8> init 0 reset rst=0;
   reg pipe_r:  UInt<8> init 0 reset none;
 
   seq on clk rising
@@ -834,8 +834,8 @@ module BadMixed
   port out_a: out UInt<8>;
   port out_b: out UInt<8>;
 
-  reg reg_a: UInt<8> init 0 reset rst_a;
-  reg reg_b: UInt<8> init 0 reset rst_b;
+  reg reg_a: UInt<8> init 0 reset rst_a=0;
+  reg reg_b: UInt<8> init 0 reset rst_b=0;
 
   seq on clk rising
     reg_a <= (reg_a + 1).trunc<8>();
@@ -870,8 +870,8 @@ module BadSyncAsync
   port out_a: out UInt<8>;
   port out_b: out UInt<8>;
 
-  reg reg_a: UInt<8> init 0 reset rst;
-  reg reg_b: UInt<8> init 0 reset rst Async high;
+  reg reg_a: UInt<8> init 0 reset rst=0;
+  reg reg_b: UInt<8> init 0 reset rst=0 Async high;
 
   seq on clk rising
     reg_a <= (reg_a + 1).trunc<8>();
@@ -954,14 +954,14 @@ pipeline BadFlush
   port data_out: out UInt<8>;
 
   stage Fetch
-    reg captured: UInt<8> init 0 reset rst;
+    reg captured: UInt<8> init 0 reset rst=0;
     seq on clk rising
       captured <= data_in;
     end seq
   end stage Fetch
 
   stage Writeback
-    reg result: UInt<8> init 0 reset rst;
+    reg result: UInt<8> init 0 reset rst=0;
     seq on clk rising
       result <= Fetch.captured;
     end seq
@@ -1035,9 +1035,9 @@ module BitExtract
   port rd: out UInt<5>;
   port funct3: out UInt<3>;
 
-  reg opcode_r: UInt<7> init 0 reset rst;
-  reg rd_r: UInt<5> init 0 reset rst;
-  reg funct3_r: UInt<3> init 0 reset rst;
+  reg opcode_r: UInt<7> init 0 reset rst=0;
+  reg rd_r: UInt<5> init 0 reset rst=0;
+  reg funct3_r: UInt<3> init 0 reset rst=0;
 
   seq on clk rising
     opcode_r <= instr.trunc<7>();
@@ -1077,14 +1077,14 @@ pipeline SimplePipe
   port data_out: out UInt<XLEN>;
 
   stage Fetch
-    reg captured: UInt<XLEN> init 0 reset rst;
+    reg captured: UInt<XLEN> init 0 reset rst=0;
     seq on clk rising
       captured <= data_in;
     end seq
   end stage Fetch
 
   stage Writeback
-    reg result: UInt<XLEN> init 0 reset rst;
+    reg result: UInt<XLEN> init 0 reset rst=0;
     seq on clk rising
       result <= Fetch.captured;
     end seq
@@ -1148,8 +1148,8 @@ pipeline AluPipe
   port result_out: out UInt<XLEN>;
 
   stage Fetch
-    reg a_r: UInt<XLEN> init 0 reset rst;
-    reg b_r: UInt<XLEN> init 0 reset rst;
+    reg a_r: UInt<XLEN> init 0 reset rst=0;
+    reg b_r: UInt<XLEN> init 0 reset rst=0;
     seq on clk rising
       a_r <= op_a;
       b_r <= op_b;
@@ -1157,7 +1157,7 @@ pipeline AluPipe
   end stage Fetch
 
   stage Execute
-    reg alu_out: UInt<XLEN> init 0 reset rst;
+    reg alu_out: UInt<XLEN> init 0 reset rst=0;
     seq on clk rising
       alu_out <= (Fetch.a_r + Fetch.b_r).trunc<XLEN>();
     end seq
@@ -1197,8 +1197,8 @@ module FifoCtrl
   port rd_ptr: out UInt<$clog2(DEPTH)>;
   port count: out UInt<$clog2(DEPTH) + 1>;
 
-  reg wr_r: UInt<$clog2(DEPTH)> init 0 reset rst;
-  reg rd_r: UInt<$clog2(DEPTH)> init 0 reset rst;
+  reg wr_r: UInt<$clog2(DEPTH)> init 0 reset rst=0;
+  reg rd_r: UInt<$clog2(DEPTH)> init 0 reset rst=0;
 
   seq on clk rising
     wr_r <= (wr_r + 1).trunc<$clog2(DEPTH)>();

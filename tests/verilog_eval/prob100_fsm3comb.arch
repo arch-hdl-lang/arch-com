@@ -1,0 +1,41 @@
+// VerilogEval Prob100: FSM combinational logic only
+// State encoding: A=0, B=1, C=2, D=3
+module TopModule
+  port in_sig: in Bool;
+  port state_sig: in UInt<2>;
+  port next_state: out UInt<2>;
+  port out_sig: out Bool;
+
+  comb
+    if state_sig == 0
+      // State A
+      if in_sig
+        next_state = 1;
+      else
+        next_state = 0;
+      end if
+    elsif state_sig == 1
+      // State B
+      if in_sig
+        next_state = 1;
+      else
+        next_state = 2;
+      end if
+    elsif state_sig == 2
+      // State C
+      if in_sig
+        next_state = 3;
+      else
+        next_state = 0;
+      end if
+    else
+      // State D
+      if in_sig
+        next_state = 1;
+      else
+        next_state = 2;
+      end if
+    end if
+    out_sig = (state_sig == 3);
+  end comb
+end module TopModule

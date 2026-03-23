@@ -1,0 +1,23 @@
+// VerilogEval Prob130: 4-to-1 mux based on c
+module TopModule
+  port a: in UInt<4>;
+  port b: in UInt<4>;
+  port c: in UInt<4>;
+  port d: in UInt<4>;
+  port e: in UInt<4>;
+  port q: out UInt<4>;
+
+  comb
+    if c == 0
+      q = b;
+    elsif c == 1
+      q = e;
+    elsif c == 2
+      q = a;
+    elsif c == 3
+      q = d;
+    else
+      q = 4'hF;
+    end if
+  end comb
+end module TopModule

@@ -30,13 +30,13 @@ module Gpio
   port gpio_irq: out Bool;       // interrupt output
 
   // ── Registers ──────────────────────────────────────────────────
-  reg out_val_r:  UInt<32> init 0 reset rst_n;
-  reg out_en_r:   UInt<32> init 0 reset rst_n;
-  reg rise_ie_r:  UInt<32> init 0 reset rst_n;  // rise interrupt enable
-  reg rise_ip_r:  UInt<32> init 0 reset rst_n;  // rise interrupt pending
-  reg fall_ie_r:  UInt<32> init 0 reset rst_n;  // fall interrupt enable
-  reg fall_ip_r:  UInt<32> init 0 reset rst_n;  // fall interrupt pending
-  reg gpio_prev_r: UInt<32> init 0 reset rst_n; // previous gpio_in value
+  reg out_val_r:  UInt<32> init 0 reset rst_n=0;
+  reg out_en_r:   UInt<32> init 0 reset rst_n=0;
+  reg rise_ie_r:  UInt<32> init 0 reset rst_n=0;  // rise interrupt enable
+  reg rise_ip_r:  UInt<32> init 0 reset rst_n=0;  // rise interrupt pending
+  reg fall_ie_r:  UInt<32> init 0 reset rst_n=0;  // fall interrupt enable
+  reg fall_ip_r:  UInt<32> init 0 reset rst_n=0;  // fall interrupt pending
+  reg gpio_prev_r: UInt<32> init 0 reset rst_n=0; // previous gpio_in value
 
   // Edge detection
   let rise_edge: UInt<32> = gpio_in & ~gpio_prev_r;

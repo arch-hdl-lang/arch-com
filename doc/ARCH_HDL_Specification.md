@@ -433,7 +433,7 @@ Arch has exactly two assignment forms. Mixing operators between them is a compil
 |                                                                    |
 | **port** count: **out** UInt\<WIDTH\>;                             |
 |                                                                    |
-| **reg** count_r: UInt\<WIDTH\> **init** 0 **reset** rst;           |
+| **reg** count_r: UInt\<WIDTH\> **reset** rst=0;                    |
 |                                                                    |
 | **always** **on** clk rising                                       |
 |                                                                    |
@@ -454,7 +454,7 @@ Arch has exactly two assignment forms. Mixing operators between them is a compil
 | **end** **module** Counter                                         |
 +--------------------------------------------------------------------+
 
-> *⚑ The clock is named in `seq on clk rising`; reset is declared per register (`reset rst sync high` or `reset none`). The compiler auto-generates the `if (rst)` guard and propagates domain membership automatically through all downstream logic in the module.*
+> *⚑ The clock is named in `seq on clk rising`; reset is declared per register (`reset rst=0 sync high` or `reset none`). The `reset SIGNAL=VALUE` syntax requires an explicit reset value after the signal name. `init` is optional and only sets the SV declaration initializer (`logic x = VALUE;`). The compiler auto-generates the `if (rst)` guard and propagates domain membership automatically through all downstream logic in the module.*
 
 **4.2.1 Conditional Statements: if / elsif / else**
 
@@ -473,6 +473,47 @@ end if
 ```
 
 The same syntax applies in both `seq` and `comb` blocks. A chain begins with `if`, continues with zero or more `elsif` branches, optionally ends with `else`, and is always closed by a single `end if`. The compiler emits standard SystemVerilog `if / else if / else` from this syntax.
+
+**4.2.1a For Loops in comb and seq Blocks**
+
+A `for` loop iterates over an inclusive integer range inside a `comb` or `seq` block. The syntax is:
+
+```
+for VAR in START..END
+  // body — VAR is an integer variable usable as an index
+end for
+```
+
+The range `START..END` is inclusive (both endpoints are visited). The compiler emits a SystemVerilog `for` loop:
+
+```systemverilog
+for (int VAR = START; VAR <= END; VAR++) begin
+  // body
+end
+```
+
+Example in a `comb` block:
+
+```
+comb
+  for i in 0..7
+    out[i] = data[7 - i];
+  end for
+end comb
+```
+
+Example in a `seq` block:
+
+```
+seq on clk rising
+  for i in 0..3
+    shift_r[i] <= shift_r[i + 1];
+  end for
+  shift_r[3] <= data_in;
+end seq
+```
+
+> *⚑ This `for` construct is a runtime loop emitted as a SV `for` statement. It differs from `generate for`, which is a compile-time unrolling that creates distinct ports and instances.*
 
 **4.2.2 Bit Concatenation and Replication**
 
@@ -494,13 +535,13 @@ Arch has three kinds of module-scope signal declarations. Each has a distinct sy
 |-----------|--------|-------------|---------------|
 | `let` | `let x: T = expr;` | declaration (fixed combinational expr) | `logic [W-1:0] x; assign x = expr;` |
 | `wire` | `wire x: T;` | `comb` block (`=`) | `logic [W-1:0] x;` (driven in `assign`/`always_comb`) |
-| `reg` | `reg x: T init V reset R;` | `seq` block (`<=`) | `logic [W-1:0] x = V;` (driven in `always_ff`) |
+| `reg` | `reg x: T [init V] [reset R=V];` | `seq` block (`<=`) | `logic [W-1:0] x = V;` (driven in `always_ff`) |
 
 **`let`** declares a combinational binding fixed to a single expression at the declaration site. It cannot appear on the left-hand side of a `comb` or `seq` block.
 
 **`wire`** declares an explicitly-typed combinational net with no initializer. It must be driven exactly once inside a `comb` block using `=`. This is the right choice when the combinational expression is too complex for a single inline `let`, or when the wire must be conditionally driven using `if/elsif/else` inside the `comb` block. The type checker enforces that only `wire` declarations and output ports are valid targets for `comb` assignment — assigning to a `reg` inside a `comb` block is a compile error.
 
-**`reg`** declares a flip-flop. It must be assigned inside a `seq` block using `<=`. Reset polarity and mode are declared per register.
+**`reg`** declares a flip-flop. It must be assigned inside a `seq` block using `<=`. Reset polarity and mode are declared per register. The syntax is `reg x: T [init VALUE] [reset SIGNAL=VALUE];` where `init` is optional (sets only the SV declaration initializer `logic x = VALUE;`) and `reset SIGNAL=VALUE` specifies both the reset signal and the value to load on reset. Use `reset none` for registers that should not be reset. A `reg default:` declaration sets the default init and reset for all subsequent registers in scope: `reg default: [init VALUE] reset SIGNAL=VALUE;`.
 
 ```
 module Mux2
@@ -7530,13 +7571,13 @@ A practical AI workflow: generate a correct skeleton with todo! for all logic, t
   ------------------------------------------------ -------------------------------------------------------------
   **Undriven output defaults to high-Z**           Compile error --- every output must have exactly one driver
 
-  **reg with no reset holds unknown state**        Reset value required: reg x: UInt\<8\> init 0;
+  **reg with no reset holds unknown state**        Reset value required: reg x: UInt\<8\> reset rst=0;
 
   **Wire driven by last assignment wins**          Compile error --- single-driver rule enforced statically
 
   **Unsigned/signed determined by context**        Explicit: .zext\<N\>() .sext\<N\>() as SInt\<N\>
 
-  **Clock inferred from sensitivity list**         Explicit: seq on clk rising; reset on reg decl: reset rst sync high
+  **Clock inferred from sensitivity list**         Explicit: seq on clk rising; reset on reg decl: reset rst=0 sync high
 
   **Module port width from implicit param math**   Explicit: port sum: out UInt\<WIDTH+1\>;
 
@@ -7567,13 +7608,13 @@ A practical AI workflow: generate a correct skeleton with todo! for all logic, t
 
 The generated SystemVerilog is guaranteed to contain none of the following:
 
-- Latches --- all state is explicit reg with init.
+- Latches --- all state is explicit reg with reset value.
 
 - Multiply-driven nets --- enforced by the single-driver rule.
 
 - Unresolved high-Z outputs --- every output port has exactly one driver.
 
-- X-propagation from uninitialised state --- all reg declarations require init.
+- X-propagation from uninitialised state --- all reg declarations require a reset value (via `reset SIGNAL=VALUE`).
 
 - Implicit clock-domain crossings --- all CDCs are declared and synchroniser-wrapped.
 

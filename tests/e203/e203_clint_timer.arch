@@ -24,12 +24,12 @@ module ClintTimer
   port tmr_irq:   out Bool;
 
   // 64-bit mtime counter (split into two 32-bit regs)
-  reg mtime_lo_r:   UInt<32> init 0 reset rst;
-  reg mtime_hi_r:   UInt<32> init 0 reset rst;
+  reg mtime_lo_r:   UInt<32> init 0 reset rst=0;
+  reg mtime_hi_r:   UInt<32> init 0 reset rst=0;
 
   // 64-bit mtimecmp register
-  reg mtimecmp_lo_r: UInt<32> init 0xFFFFFFFF reset rst;
-  reg mtimecmp_hi_r: UInt<32> init 0xFFFFFFFF reset rst;
+  reg mtimecmp_lo_r: UInt<32> init 0xFFFFFFFF reset rst=0xFFFFFFFF;
+  reg mtimecmp_hi_r: UInt<32> init 0xFFFFFFFF reset rst=0xFFFFFFFF;
 
   // Assemble 64-bit values using concat
   let mtime_full:    UInt<64> = {mtime_hi_r, mtime_lo_r};

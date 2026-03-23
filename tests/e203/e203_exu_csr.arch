@@ -44,17 +44,17 @@ module ExuCsr
   // mcyclel=0xB00, mcycleh=0xB80, minstretl=0xB02, minstreth=0xB82
 
   // ── CSR registers ──────────────────────────────────────────────
-  reg mstatus_r:   UInt<32> init 0 reset rst_n;
-  reg mie_r:       UInt<32> init 0 reset rst_n;
-  reg mtvec_r:     UInt<32> init 0 reset rst_n;
-  reg mscratch_r:  UInt<32> init 0 reset rst_n;
-  reg mepc_r:      UInt<32> init 0 reset rst_n;
-  reg mcause_r:    UInt<32> init 0 reset rst_n;
-  reg mtval_r:     UInt<32> init 0 reset rst_n;
-  reg mcycle_lo_r: UInt<32> init 0 reset rst_n;
-  reg mcycle_hi_r: UInt<32> init 0 reset rst_n;
-  reg minstret_lo_r: UInt<32> init 0 reset rst_n;
-  reg minstret_hi_r: UInt<32> init 0 reset rst_n;
+  reg mstatus_r:   UInt<32> init 0 reset rst_n=0;
+  reg mie_r:       UInt<32> init 0 reset rst_n=0;
+  reg mtvec_r:     UInt<32> init 0 reset rst_n=0;
+  reg mscratch_r:  UInt<32> init 0 reset rst_n=0;
+  reg mepc_r:      UInt<32> init 0 reset rst_n=0;
+  reg mcause_r:    UInt<32> init 0 reset rst_n=0;
+  reg mtval_r:     UInt<32> init 0 reset rst_n=0;
+  reg mcycle_lo_r: UInt<32> init 0 reset rst_n=0;
+  reg mcycle_hi_r: UInt<32> init 0 reset rst_n=0;
+  reg minstret_lo_r: UInt<32> init 0 reset rst_n=0;
+  reg minstret_hi_r: UInt<32> init 0 reset rst_n=0;
 
   // ── mip is read-only (directly reflects external signals) ──────
   let mip_val: UInt<32> = {{20{false}}, ext_irq, {3{false}}, tmr_irq, {3{false}}, sw_irq, {3{false}}};

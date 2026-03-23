@@ -276,51 +276,51 @@ module AesInvCipherTop
   port text_out: out UInt<128>;
 
   // ── Control registers ──
-  reg dcnt: UInt<4> init 0 reset rst;
-  reg ld_r: Bool init false reset rst;
-  reg done_r: Bool init false reset rst;
-  reg go: Bool init false reset rst;
+  reg dcnt: UInt<4> init 0 reset rst=0;
+  reg ld_r: Bool init false reset rst=false;
+  reg done_r: Bool init false reset rst=false;
+  reg go: Bool init false reset rst=false;
 
   // ── Key buffer counter ──
-  reg kcnt: UInt<4> init 0xa reset rst;
-  reg kb_ld: Bool init false reset rst;
+  reg kcnt: UInt<4> init 0xa reset rst=0xa;
+  reg kb_ld: Bool init false reset rst=false;
 
   // ── Input buffer ──
-  reg text_in_r: UInt<128> init 0 reset rst;
+  reg text_in_r: UInt<128> init 0 reset rst=0;
 
   // ── State matrix: 16 individual 8-bit registers ──
-  reg sa00: UInt<8> init 0 reset rst;
-  reg sa01: UInt<8> init 0 reset rst;
-  reg sa02: UInt<8> init 0 reset rst;
-  reg sa03: UInt<8> init 0 reset rst;
-  reg sa10: UInt<8> init 0 reset rst;
-  reg sa11: UInt<8> init 0 reset rst;
-  reg sa12: UInt<8> init 0 reset rst;
-  reg sa13: UInt<8> init 0 reset rst;
-  reg sa20: UInt<8> init 0 reset rst;
-  reg sa21: UInt<8> init 0 reset rst;
-  reg sa22: UInt<8> init 0 reset rst;
-  reg sa23: UInt<8> init 0 reset rst;
-  reg sa30: UInt<8> init 0 reset rst;
-  reg sa31: UInt<8> init 0 reset rst;
-  reg sa32: UInt<8> init 0 reset rst;
-  reg sa33: UInt<8> init 0 reset rst;
+  reg sa00: UInt<8> init 0 reset rst=0;
+  reg sa01: UInt<8> init 0 reset rst=0;
+  reg sa02: UInt<8> init 0 reset rst=0;
+  reg sa03: UInt<8> init 0 reset rst=0;
+  reg sa10: UInt<8> init 0 reset rst=0;
+  reg sa11: UInt<8> init 0 reset rst=0;
+  reg sa12: UInt<8> init 0 reset rst=0;
+  reg sa13: UInt<8> init 0 reset rst=0;
+  reg sa20: UInt<8> init 0 reset rst=0;
+  reg sa21: UInt<8> init 0 reset rst=0;
+  reg sa22: UInt<8> init 0 reset rst=0;
+  reg sa23: UInt<8> init 0 reset rst=0;
+  reg sa30: UInt<8> init 0 reset rst=0;
+  reg sa31: UInt<8> init 0 reset rst=0;
+  reg sa32: UInt<8> init 0 reset rst=0;
+  reg sa33: UInt<8> init 0 reset rst=0;
 
   // ── Key buffer: 11 x 128-bit round keys ──
-  reg kb00: UInt<128> init 0 reset rst;
-  reg kb01: UInt<128> init 0 reset rst;
-  reg kb02: UInt<128> init 0 reset rst;
-  reg kb03: UInt<128> init 0 reset rst;
-  reg kb04: UInt<128> init 0 reset rst;
-  reg kb05: UInt<128> init 0 reset rst;
-  reg kb06: UInt<128> init 0 reset rst;
-  reg kb07: UInt<128> init 0 reset rst;
-  reg kb08: UInt<128> init 0 reset rst;
-  reg kb09: UInt<128> init 0 reset rst;
-  reg kb10: UInt<128> init 0 reset rst;
+  reg kb00: UInt<128> init 0 reset rst=0;
+  reg kb01: UInt<128> init 0 reset rst=0;
+  reg kb02: UInt<128> init 0 reset rst=0;
+  reg kb03: UInt<128> init 0 reset rst=0;
+  reg kb04: UInt<128> init 0 reset rst=0;
+  reg kb05: UInt<128> init 0 reset rst=0;
+  reg kb06: UInt<128> init 0 reset rst=0;
+  reg kb07: UInt<128> init 0 reset rst=0;
+  reg kb08: UInt<128> init 0 reset rst=0;
+  reg kb09: UInt<128> init 0 reset rst=0;
+  reg kb10: UInt<128> init 0 reset rst=0;
 
   // ── Output register ──
-  reg text_out_r: UInt<128> init 0 reset rst;
+  reg text_out_r: UInt<128> init 0 reset rst=0;
 
   // ── Key expansion instance ──
   inst key_exp: AesKeyExpand128

@@ -8,7 +8,7 @@ module PipeRegTest
   port data_in: in UInt<8>;
   port data_out: out UInt<8>;
 
-  reg default: init 0 reset rst;
+  reg default: init 0 reset rst=0;
 
   let w: UInt<8> = data_in ^ 8'hFF;
 

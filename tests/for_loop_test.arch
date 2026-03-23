@@ -1,0 +1,22 @@
+domain SysDomain
+end domain SysDomain
+
+module ForLoopTest
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port din: in UInt<8>;
+  port dout: out UInt<8>;
+
+  reg sr: Vec<UInt<8>, 4> init 0 reset rst=0;
+
+  seq on clk rising
+    sr[0] <= din;
+    for i in 1..3
+      sr[i] <= sr[i - 1];
+    end for
+  end seq
+
+  comb
+    dout = sr[3];
+  end comb
+end module ForLoopTest

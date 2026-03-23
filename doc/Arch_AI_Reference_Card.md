@@ -40,13 +40,15 @@
 >
 > comb y = expr; end comb // combinational --- uses =
 >
-> reg r: T init 0 reset rst sync high; // register decl with reset
+> reg r: T reset rst=0 sync high; // register decl with reset (reset value after =)
 >
-> reg p: T init 0 reset none; // register decl without reset
+> reg r: T init 0 reset rst=0; // optional init sets SV declaration initializer
 >
-> reg default: init 0 reset rst; // wildcard default for all regs in scope
+> reg p: T reset none; // register decl without reset
 >
-> reg r: UInt\<8\>; // inherits init/reset from reg default
+> reg default: reset rst=0; // wildcard default for all regs in scope
+>
+> reg r: UInt\<8\>; // inherits reset from reg default
 >
 > pipe_reg delayed: source stages 3; // N-stage delay chain, type inferred
 >
@@ -63,6 +65,12 @@
 > CONDITIONALS: use elsif (one word), NOT else if (two words):
 >
 > if cond\_a r \<= val\_a; elsif cond\_b r \<= val\_b; else r \<= val\_c; end if
+>
+> FOR LOOPS (runtime, in comb/seq blocks):
+>
+> for i in 0..7 out\[i\] = data\[7 - i\]; end for // inclusive range, emits SV for loop
+>
+> // Differs from generate for (compile-time unroll for ports/instances)
 
 **2. Types**
 
@@ -129,9 +137,9 @@
 |                                       |                                  |
 | port y: out UInt\<W\>;                |                                  |
 |                                       |                                  |
-| reg default: init 0 reset rst;        | Wildcard default for all regs    |
+| reg default: reset rst=0;             | Wildcard default for all regs    |
 |                                       |                                  |
-| reg r: UInt\<W\>;                     | Inherits init/reset from default |
+| reg r: UInt\<W\>;                     | Inherits reset from default      |
 |                                       |                                  |
 | pipe_reg d: r stages 2;              | 2-stage delay of r (read-only)   |
 |                                       |                                  |
@@ -192,7 +200,7 @@
 |                                       |                               |
 | stage Fetch stall when !in\_valid     | flush masks, comb wire decls. |
 |                                       |                               |
-| reg r1: T init 0 reset rst;           | Cross-stage refs rewritten:   |
+| reg r1: T reset rst=0;           | Cross-stage refs rewritten:   |
 |                                       |                               |
 | seq on clk rising                     | Fetch.pc → fetch\_pc          |
 |                                       |                               |
@@ -204,7 +212,7 @@
 |                                       |                               |
 | stage Exec                            | wb\_we = valid and valid\_r;  |
 |                                       |                               |
-| reg r2: T init 0 reset rst;           |                               |
+| reg r2: T reset rst=0;           |                               |
 |                                       |                               |
 | seq on clk rising                     | Explicit forwarding via comb  |
 |                                       |                               |
@@ -280,7 +288,7 @@ FSMs may declare `reg` and `let` at scope level, and `seq on clk rising ... end 
 
 ```
 fsm MulDiv
-  reg acc_r: UInt<64> init 0 reset rst sync high;
+  reg acc_r: UInt<64> reset rst=0 sync high;
   let done: Bool = (cycle_r == 31);
   state Idle
     seq on clk rising

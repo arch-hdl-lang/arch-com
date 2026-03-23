@@ -303,11 +303,15 @@ impl<'a> Codegen<'a> {
             match item {
                 ModuleBodyItem::RegDecl(r) => {
                     let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(&r.ty);
-                    let init_str = self.emit_expr_str(&r.init);
-                    if arr_suffix.is_empty() {
-                        self.line(&format!("{} {} = {};", ty_str, r.name.name, init_str));
+                    if let Some(ref init_expr) = r.init {
+                        let init_str = self.emit_expr_str(init_expr);
+                        if arr_suffix.is_empty() {
+                            self.line(&format!("{} {} = {};", ty_str, r.name.name, init_str));
+                        } else {
+                            self.line(&format!("{} {}{} = '{{default: {}}};", ty_str, r.name.name, arr_suffix, init_str));
+                        }
                     } else {
-                        self.line(&format!("{} {}{} = '{{default: {}}};", ty_str, r.name.name, arr_suffix, init_str));
+                        self.line(&format!("{} {}{};", ty_str, r.name.name, arr_suffix));
                     }
                 }
                 ModuleBodyItem::LetBinding(l) => {
@@ -524,7 +528,8 @@ impl<'a> Codegen<'a> {
             for stmt in &cb.stmts {
                 if let CombStmt::Assign(a) = stmt {
                     let val = self.emit_expr_str(&a.value);
-                    self.line(&format!("assign {} = {};", a.target.name, val));
+                    let tgt = self.emit_expr_str(&a.target);
+                    self.line(&format!("assign {} = {};", tgt, val));
                 }
             }
         } else {
@@ -554,6 +559,7 @@ impl<'a> Codegen<'a> {
                 || ie.else_stmts.iter().any(Self::stmt_has_log),
             Stmt::Match(m) => m.arms.iter().any(|a| a.body.iter().any(Self::stmt_has_log)),
             Stmt::Assign(_) => false,
+            Stmt::For(f) => f.body.iter().any(Self::stmt_has_log),
         }
     }
 
@@ -563,6 +569,7 @@ impl<'a> Codegen<'a> {
             CombStmt::IfElse(ie) => ie.then_stmts.iter().any(Self::comb_stmt_has_log)
                 || ie.else_stmts.iter().any(Self::comb_stmt_has_log),
             CombStmt::Assign(_) | CombStmt::MatchExpr(_) => false,
+            CombStmt::For(f) => f.body.iter().any(Self::stmt_has_log),
         }
     }
 
@@ -604,7 +611,7 @@ impl<'a> Codegen<'a> {
                 // Match-expression RHS: emit as a case block for readability
                 if let ExprKind::ExprMatch(scrutinee, arms) = &a.value.kind {
                     let s = self.emit_expr_str(scrutinee);
-                    let target = a.target.name.clone();
+                    let target = self.emit_expr_str(&a.target);
                     self.line(&format!("case ({s})"));
                     self.indent += 1;
                     for arm in arms {
@@ -624,7 +631,8 @@ impl<'a> Codegen<'a> {
                     self.line("endcase");
                 } else {
                     let val = self.emit_expr_str(&a.value);
-                    self.line(&format!("{} = {};", a.target.name, val));
+                    let tgt = self.emit_expr_str(&a.target);
+                    self.line(&format!("{} = {};", tgt, val));
                 }
             }
             CombStmt::IfElse(ie) => {
@@ -648,6 +656,18 @@ impl<'a> Codegen<'a> {
                 self.line("endcase");
             }
             CombStmt::Log(l) => { self.emit_log_stmt(l); }
+            CombStmt::For(f) => {
+                let start = self.emit_expr_str(&f.start);
+                let end = self.emit_expr_str(&f.end);
+                let var = &f.var.name;
+                self.line(&format!("for (int {var} = {start}; {var} <= {end}; {var}++) begin"));
+                self.indent += 1;
+                for s in &f.body {
+                    self.emit_reg_stmt_as_comb(s);
+                }
+                self.indent -= 1;
+                self.line("end");
+            }
         }
     }
 
@@ -730,7 +750,8 @@ impl<'a> Codegen<'a> {
                             is_low,
                         });
                     }
-                    let init = self.emit_expr_str(&rd.init);
+                    let reset_val = Self::reset_value_expr(&rd.reset).unwrap();
+                    let init = self.emit_expr_str(reset_val);
                     resets.push((name.clone(), init));
                 }
             }
@@ -821,17 +842,25 @@ impl<'a> Codegen<'a> {
 
     /// Resolve a register's reset info: returns Some((signal_name, is_async, is_low))
     /// or None if the register has no reset.
+    /// Extract the reset value expression from a RegReset variant.
+    fn reset_value_expr(reset: &RegReset) -> Option<&Expr> {
+        match reset {
+            RegReset::None => None,
+            RegReset::Inherit(_, val) | RegReset::Explicit(_, _, _, val) => Some(val),
+        }
+    }
+
     fn resolve_reg_reset(&self, reset: &RegReset, m: &ModuleDecl) -> Option<(String, bool, bool)> {
         match reset {
             RegReset::None => Option::None,
-            RegReset::Explicit(signal, kind, level) => {
+            RegReset::Explicit(signal, kind, level, _) => {
                 Some((
                     signal.name.clone(),
                     *kind == ResetKind::Async,
                     *level == ResetLevel::Low,
                 ))
             }
-            RegReset::Inherit(signal) => {
+            RegReset::Inherit(signal, _) => {
                 // Look up the port declaration to get sync/async and polarity
                 let port = m.ports.iter().find(|p| p.name.name == signal.name);
                 if let Some(port) = port {
@@ -870,6 +899,9 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 Stmt::Log(_) => {}
+                Stmt::For(f) => {
+                    Self::collect_assigned_roots(&f.body, out);
+                }
             }
         }
     }
@@ -953,6 +985,18 @@ impl<'a> Codegen<'a> {
                 self.line("endcase");
             }
             Stmt::Log(l) => { self.emit_log_stmt(l); }
+            Stmt::For(f) => {
+                let start = self.emit_expr_str(&f.start);
+                let end = self.emit_expr_str(&f.end);
+                let var = &f.var.name;
+                self.line(&format!("for (int {var} = {start}; {var} <= {end}; {var}++) begin"));
+                self.indent += 1;
+                for s in &f.body {
+                    self.emit_reg_stmt(s);
+                }
+                self.indent -= 1;
+                self.line("end");
+            }
         }
     }
 
@@ -1327,8 +1371,13 @@ impl<'a> Codegen<'a> {
         self.line(&format!("state_r <= {};", f.default_state.name.to_uppercase()));
         // Reset datapath registers
         for reg in &f.regs {
-            let init_str = self.emit_expr_str(&reg.init);
-            self.line(&format!("{} <= {};", reg.name.name, init_str));
+            if let Some(reset_val) = Self::reset_value_expr(&reg.reset) {
+                let init_str = self.emit_expr_str(reset_val);
+                self.line(&format!("{} <= {};", reg.name.name, init_str));
+            } else if let Some(ref init_expr) = reg.init {
+                let init_str = self.emit_expr_str(init_expr);
+                self.line(&format!("{} <= {};", reg.name.name, init_str));
+            }
         }
         self.indent -= 1;
         self.line("end else begin");
@@ -1490,7 +1539,13 @@ impl<'a> Codegen<'a> {
             for item in &stage.body {
                 if let ModuleBodyItem::RegDecl(r) = item {
                     let ty_str = self.emit_logic_type_str(&r.ty);
-                    let init_str = self.emit_expr_str(&r.init);
+                    let init_str = if let Some(reset_val) = Self::reset_value_expr(&r.reset) {
+                        self.emit_expr_str(reset_val)
+                    } else if let Some(ref init_expr) = r.init {
+                        self.emit_expr_str(init_expr)
+                    } else {
+                        "0".to_string()
+                    };
                     regs.push((r.name.name.clone(), ty_str, init_str));
                 }
             }
@@ -1754,10 +1809,14 @@ impl<'a> Codegen<'a> {
                         for stmt in &cb.stmts {
                             if let CombStmt::Assign(a) = stmt {
                                 let val = self.emit_pipeline_stage_expr_str(&a.value, &prefix, si, &stage_names, &stage_regs, &port_names);
-                                let target = if port_names.contains(&a.target.name) {
-                                    a.target.name.clone()
+                                let target = if let ExprKind::Ident(name) = &a.target.kind {
+                                    if port_names.contains(name) {
+                                        name.clone()
+                                    } else {
+                                        format!("{}_{}", prefix, name)
+                                    }
                                 } else {
-                                    format!("{}_{}", prefix, a.target.name)
+                                    self.emit_expr_str(&a.target)
                                 };
                                 self.line(&format!("assign {} = {};", target, val));
                             }
@@ -1819,6 +1878,18 @@ impl<'a> Codegen<'a> {
                 // MVP: basic pipeline doesn't need match in seq blocks
             }
             Stmt::Log(l) => { self.emit_log_stmt(l); }
+            Stmt::For(f) => {
+                let start = self.emit_expr_str(&f.start);
+                let end = self.emit_expr_str(&f.end);
+                let var = &f.var.name;
+                self.line(&format!("for (int {var} = {start}; {var} <= {end}; {var}++) begin"));
+                self.indent += 1;
+                for s in &f.body {
+                    self.emit_pipeline_reg_stmt(s, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                }
+                self.indent -= 1;
+                self.line("end");
+            }
         }
     }
 
@@ -1847,8 +1918,10 @@ impl<'a> Codegen<'a> {
         for stmt in stmts {
             match stmt {
                 CombStmt::Assign(a) => {
-                    if !targets.contains(&a.target.name) {
-                        targets.push(a.target.name.clone());
+                    if let ExprKind::Ident(name) = &a.target.kind {
+                        if !targets.contains(name) {
+                            targets.push(name.clone());
+                        }
                     }
                 }
                 CombStmt::IfElse(ie) => {
@@ -1860,6 +1933,16 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 CombStmt::MatchExpr(_) | CombStmt::Log(_) => {}
+                CombStmt::For(f) => {
+                    // ForLoop body is Vec<Stmt>; collect ident targets from assigns
+                    for s in &f.body {
+                        if let Stmt::Assign(a) = s {
+                            if let ExprKind::Ident(name) = &a.target.kind {
+                                if !targets.contains(name) { targets.push(name.clone()); }
+                            }
+                        }
+                    }
+                }
             }
         }
         targets
@@ -1905,7 +1988,7 @@ impl<'a> Codegen<'a> {
     ) -> Option<String> {
         for stmt in stmts {
             match stmt {
-                CombStmt::Assign(a) if a.target.name == target => {
+                CombStmt::Assign(a) if matches!(&a.target.kind, ExprKind::Ident(n) if n == target) => {
                     // Check if RHS is a bare identifier (local register)
                     if let ExprKind::Ident(name) = &a.value.kind {
                         if let Some(r) = stage_regs[current_stage_idx].iter()
@@ -1955,10 +2038,14 @@ impl<'a> Codegen<'a> {
         match stmt {
             CombStmt::Assign(a) => {
                 let val = self.emit_pipeline_stage_expr_str(&a.value, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
-                let target = if port_names.contains(&a.target.name) {
-                    a.target.name.clone()
+                let target = if let ExprKind::Ident(name) = &a.target.kind {
+                    if port_names.contains(name) {
+                        name.clone()
+                    } else {
+                        format!("{}_{}", current_prefix, name)
+                    }
                 } else {
-                    format!("{}_{}", current_prefix, a.target.name)
+                    self.emit_expr_str(&a.target)
                 };
                 self.line(&format!("{} = {};", target, val));
             }
@@ -1967,6 +2054,18 @@ impl<'a> Codegen<'a> {
             }
             CombStmt::MatchExpr(_) => {} // TODO if needed
             CombStmt::Log(l) => { self.emit_log_stmt(l); }
+            CombStmt::For(f) => {
+                let start = self.emit_expr_str(&f.start);
+                let end = self.emit_expr_str(&f.end);
+                let var = &f.var.name;
+                self.line(&format!("for (int {var} = {start}; {var} <= {end}; {var}++) begin"));
+                self.indent += 1;
+                for s in &f.body {
+                    self.emit_reg_stmt_as_comb(s);
+                }
+                self.indent -= 1;
+                self.line("end");
+            }
         }
     }
 

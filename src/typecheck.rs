@@ -470,8 +470,8 @@ impl<'a> TypeChecker<'a> {
 
             let (signal, kind, level) = match &rd.reset {
                 RegReset::None => continue,
-                RegReset::Explicit(sig, k, l) => (sig.name.clone(), *k, *l),
-                RegReset::Inherit(sig) => {
+                RegReset::Explicit(sig, k, l, _) => (sig.name.clone(), *k, *l),
+                RegReset::Inherit(sig, _) => {
                     // Look up port to resolve kind and level
                     if let Some(port) = m.ports.iter().find(|p| p.name.name == sig.name) {
                         if let TypeExpr::Reset(k, l) = &port.ty {
@@ -548,6 +548,9 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 Stmt::Log(_) => {}
+                Stmt::For(f) => {
+                    Self::collect_assigned_roots_tc(&f.body, out);
+                }
             }
         }
     }
@@ -629,11 +632,12 @@ impl<'a> TypeChecker<'a> {
     ) {
         match stmt {
             Stmt::Assign(a) => {
-                if let ExprKind::Ident(name) = &a.target.kind {
-                    driven.insert(name.clone());
+                {
+                    let name = Self::expr_root_name_tc(&a.target);
+                    if !name.is_empty() { driven.insert(name.clone()); }
                     let rhs_ty = self.resolve_expr_type(&a.value, module_name, local_types);
-                    if let Some(lhs_ty) = local_types.get(name).cloned() {
-                        self.check_width_compatible(&lhs_ty, &rhs_ty, name, a.span);
+                    if let Some(lhs_ty) = local_types.get(&name).cloned() {
+                        self.check_width_compatible(&lhs_ty, &rhs_ty, &name, a.span);
                     }
                 }
             }
@@ -660,6 +664,11 @@ impl<'a> TypeChecker<'a> {
                     self.resolve_expr_type(arg, module_name, local_types);
                 }
             }
+            Stmt::For(f) => {
+                for s in &f.body {
+                    self.check_reg_stmt(s, module_name, local_types, driven);
+                }
+            }
         }
     }
 
@@ -673,26 +682,27 @@ impl<'a> TypeChecker<'a> {
     ) {
         match stmt {
             CombStmt::Assign(a) => {
+                let target_name = if let ExprKind::Ident(name) = &a.target.kind { name.clone() } else { format!("{:?}", a.target.kind) };
                 // Regs must be assigned in seq blocks, not comb blocks
-                if reg_names.contains(&a.target.name) {
+                if reg_names.contains(&target_name) {
                     self.errors.push(CompileError::general(
                         &format!(
                             "`{}` is a reg — assign it with `<=` in a `seq` block, not `=` in a `comb` block",
-                            a.target.name
+                            target_name
                         ),
                         a.span,
                     ));
                 }
-                if driven.contains(&a.target.name) {
+                if driven.contains(&target_name) {
                     self.errors.push(CompileError::MultipleDrivers {
-                        name: a.target.name.clone(),
+                        name: target_name.clone(),
                         span: crate::diagnostics::span_to_source_span(a.target.span),
                     });
                 }
-                driven.insert(a.target.name.clone());
+                driven.insert(target_name.clone());
                 let rhs_ty = self.resolve_expr_type(&a.value, module_name, local_types);
-                if let Some(lhs_ty) = local_types.get(&a.target.name).cloned() {
-                    self.check_width_compatible(&lhs_ty, &rhs_ty, &a.target.name, a.span);
+                if let Some(lhs_ty) = local_types.get(&target_name).cloned() {
+                    self.check_width_compatible(&lhs_ty, &rhs_ty, &target_name, a.span);
                 }
             }
             CombStmt::IfElse(ie) => {
@@ -725,6 +735,11 @@ impl<'a> TypeChecker<'a> {
             CombStmt::Log(l) => {
                 for arg in &l.args {
                     self.resolve_expr_type(arg, module_name, local_types);
+                }
+            }
+            CombStmt::For(f) => {
+                for s in &f.body {
+                    self.check_reg_stmt(s, module_name, local_types, driven);
                 }
             }
         }
@@ -1380,6 +1395,9 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 Stmt::Log(_) => {}
+                Stmt::For(f) => {
+                    Self::collect_stmt_targets(&f.body, out);
+                }
             }
         }
     }
@@ -1404,6 +1422,9 @@ impl<'a> TypeChecker<'a> {
                 }
                 Stmt::Log(l) => {
                     for arg in &l.args { Self::collect_expr_reads(arg, out); }
+                }
+                Stmt::For(f) => {
+                    Self::collect_stmt_reads(&f.body, out);
                 }
             }
         }
@@ -1463,6 +1484,9 @@ impl<'a> TypeChecker<'a> {
                 CombStmt::Log(l) => {
                     for arg in &l.args { Self::collect_expr_reads(arg, out); }
                 }
+                CombStmt::For(f) => {
+                    Self::collect_stmt_reads(&f.body, out);
+                }
             }
         }
     }
@@ -1471,7 +1495,7 @@ impl<'a> TypeChecker<'a> {
     fn collect_comb_stmt_targets(stmts: &[CombStmt], out: &mut HashSet<String>) {
         for stmt in stmts {
             match stmt {
-                CombStmt::Assign(a) => { out.insert(a.target.name.clone()); }
+                CombStmt::Assign(a) => { if let ExprKind::Ident(name) = &a.target.kind { out.insert(name.clone()); } }
                 CombStmt::IfElse(ie) => {
                     Self::collect_comb_stmt_targets(&ie.then_stmts, out);
                     Self::collect_comb_stmt_targets(&ie.else_stmts, out);
@@ -1480,6 +1504,9 @@ impl<'a> TypeChecker<'a> {
                     for arm in &m.arms { Self::collect_stmt_targets(&arm.body, out); }
                 }
                 CombStmt::Log(_) => {}
+                CombStmt::For(f) => {
+                    Self::collect_stmt_targets(&f.body, out);
+                }
             }
         }
     }
@@ -1575,7 +1602,7 @@ impl<'a> TypeChecker<'a> {
                 .iter()
                 .filter_map(|s| {
                     if let CombStmt::Assign(a) = s {
-                        Some(a.target.name.as_str())
+                        if let ExprKind::Ident(name) = &a.target.kind { Some(name.as_str()) } else { None }
                     } else {
                         None
                     }
@@ -1999,7 +2026,7 @@ impl<'a> TypeChecker<'a> {
                 if let ModuleBodyItem::CombBlock(cb) = item {
                     for stmt in &cb.stmts {
                         if let CombStmt::Assign(a) = stmt {
-                            driven.insert(a.target.name.clone());
+                            if let ExprKind::Ident(name) = &a.target.kind { driven.insert(name.clone()); }
                         }
                     }
                 }

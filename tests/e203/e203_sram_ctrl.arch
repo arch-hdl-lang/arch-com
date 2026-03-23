@@ -56,7 +56,7 @@ module SramCtrl
   end inst mem
 
   // Response valid: 1-cycle latency
-  reg rsp_valid_r: Bool init false reset rst_n;
+  reg rsp_valid_r: Bool init false reset rst_n=false;
 
   seq on clk rising
     rsp_valid_r <= icb_cmd_valid & icb_cmd_ready;

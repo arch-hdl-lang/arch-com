@@ -176,7 +176,8 @@ pub enum GenerateDecl {
 pub struct RegDecl {
     pub name: Ident,
     pub ty: TypeExpr,
-    pub init: Expr,
+    /// Optional SV declaration initializer (`logic [W-1:0] x = VALUE;`)
+    pub init: Option<Expr>,
     pub reset: RegReset,
     pub span: Span,
 }
@@ -185,10 +186,11 @@ pub struct RegDecl {
 pub enum RegReset {
     /// No reset for this register
     None,
-    /// Inherit sync/async and polarity from the named reset port declaration
-    Inherit(Ident),
-    /// Explicit override: reset signal, sync/async, high/low
-    Explicit(Ident, ResetKind, ResetLevel),
+    /// Inherit sync/async and polarity from the named reset port declaration;
+    /// reset value is the `=VALUE` expression after the signal name.
+    Inherit(Ident, Expr),
+    /// Explicit override: reset signal, sync/async, high/low, reset value
+    Explicit(Ident, ResetKind, ResetLevel, Expr),
 }
 
 #[derive(Debug, Clone)]
@@ -223,11 +225,12 @@ pub enum CombStmt {
     IfElse(CombIfElse),
     MatchExpr(CombMatch),
     Log(LogStmt),
+    For(ForLoop),
 }
 
 #[derive(Debug, Clone)]
 pub struct CombAssign {
-    pub target: Ident,
+    pub target: Expr,
     pub value: Expr,
     pub span: Span,
 }
@@ -324,6 +327,16 @@ pub enum Stmt {
     IfElse(IfElse),
     Match(MatchStmt),
     Log(LogStmt),
+    For(ForLoop),
+}
+
+#[derive(Debug, Clone)]
+pub struct ForLoop {
+    pub var: Ident,
+    pub start: Expr,
+    pub end: Expr,
+    pub body: Vec<Stmt>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

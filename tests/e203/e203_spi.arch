@@ -32,21 +32,21 @@ module Spi
   port spi_irq: out Bool;
 
   // ── Registers ──────────────────────────────────────────────────
-  reg ctrl_en_r:   Bool     init false reset rst_n;
-  reg ctrl_cpol_r: Bool     init false reset rst_n;
-  reg ctrl_cpha_r: Bool     init false reset rst_n;
-  reg spi_div_r:   UInt<8>  init 4 reset rst_n;
-  reg div_cnt_r:   UInt<8>  init 0 reset rst_n;
+  reg ctrl_en_r:   Bool     init false reset rst_n=false;
+  reg ctrl_cpol_r: Bool     init false reset rst_n=false;
+  reg ctrl_cpha_r: Bool     init false reset rst_n=false;
+  reg spi_div_r:   UInt<8>  init 4 reset rst_n=4;
+  reg div_cnt_r:   UInt<8>  init 0 reset rst_n=0;
 
   // Transfer state
-  reg tx_shift_r:  UInt<8>  init 0 reset rst_n;
-  reg rx_shift_r:  UInt<8>  init 0 reset rst_n;
-  reg bit_cnt_r:   UInt<4>  init 0 reset rst_n;
-  reg busy_r:      Bool     init false reset rst_n;
-  reg sclk_r:      Bool     init false reset rst_n;
-  reg cs_n_r:      Bool     init true reset rst_n;
-  reg done_r:      Bool     init false reset rst_n;
-  reg phase_r:     Bool     init false reset rst_n;  // 0=setup, 1=sample
+  reg tx_shift_r:  UInt<8>  init 0 reset rst_n=0;
+  reg rx_shift_r:  UInt<8>  init 0 reset rst_n=0;
+  reg bit_cnt_r:   UInt<4>  init 0 reset rst_n=0;
+  reg busy_r:      Bool     init false reset rst_n=false;
+  reg sclk_r:      Bool     init false reset rst_n=false;
+  reg cs_n_r:      Bool     init true reset rst_n=true;
+  reg done_r:      Bool     init false reset rst_n=false;
+  reg phase_r:     Bool     init false reset rst_n=false;  // 0=setup, 1=sample
 
   let reg_off: UInt<8> = paddr.trunc<7,0>();
   let apb_wr: Bool = psel & penable & pwrite;

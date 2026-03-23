@@ -1,0 +1,21 @@
+// VerilogEval Prob045: 8-bit any-edge detect
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port clk: in Clock<SysDomain>;
+  port in_sig: in UInt<8>;
+  port anyedge: out UInt<8>;
+
+  reg d_last: UInt<8> init 0 reset none;
+  reg anyedge_r: UInt<8> init 0 reset none;
+
+  seq on clk rising
+    d_last <= in_sig;
+    anyedge_r <= in_sig ^ d_last;
+  end seq
+
+  comb
+    anyedge = anyedge_r;
+  end comb
+end module TopModule

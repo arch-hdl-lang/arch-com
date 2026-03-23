@@ -1,7 +1,7 @@
 # ARCH Compiler — Status & Roadmap
 
 > Last updated: 2026-03-22
-> Compiler version: 0.29.0 (derived clock eval fix, split always_ff for mixed reset)
+> Compiler version: 0.30.0 (separate init/reset, for loops, comb indexed targets)
 
 ---
 
@@ -29,7 +29,7 @@
 | `domain` | ✅ | Emitted as SV comments |
 | `struct` | ✅ | `typedef struct packed` |
 | `enum` | ✅ | `typedef enum logic`; auto width ⌈log₂(N)⌉ |
-| `module` | ✅ | Params, ports, reg/comb/let/wire/inst body; `seq on` clocked blocks with per-reg reset (`reset <signal> sync\|async high\|low` or `reset none`); compiler auto-generates reset guards; mixed reset/no-reset partitioning; `reg default: init 0 reset rst;` wildcard default for register declarations; `wire name: T;` declares a combinational net driven in a `comb` block (type checker enforces: only `wire` and output ports are valid `comb` targets — assigning a `reg` in `comb` is a compile error); SV codegen emits `logic [N-1:0] name;` driven by `assign`/`always_comb`; sim codegen treats `wire` as a private member assigned in `eval_comb()` |
+| `module` | ✅ | Params, ports, reg/comb/let/wire/inst body; `seq on` clocked blocks with per-reg reset; **register syntax**: `reg x: UInt<8> [init VALUE] [reset SIGNAL=VALUE [sync\|async high\|low]];` — `init` (optional) sets SV declaration initializer, `reset SIGNAL=VALUE` (optional) sets async/sync reset with explicit reset value (value is **required** after `=`); `reset none` for no reset; `reg default:` applies defaults; compiler auto-generates reset guards; mixed reset/no-reset partitioning; `wire name: T;` declares a combinational net driven in a `comb` block (type checker enforces: only `wire` and output ports are valid `comb` targets — assigning a `reg` in `comb` is a compile error); **for loops**: `for VAR in START..END ... end for` in both `comb` and `seq` blocks — emits SV `for (int VAR = START; VAR <= END; VAR++)` |
 | `fsm` | ✅ | State enum, `always_ff` state reg, `always_comb` next-state + output; `default expr` on output ports; **datapath extension**: `reg` declarations and `let` bindings at FSM scope, `seq on clk rising ... end seq` blocks inside state bodies — compiler emits separate `always_ff` (state + datapath regs with reset + per-state seq) and `always_comb` (transitions + outputs); sim codegen supports FSM regs with `_n_` shadow variables and proper Bool width tracking; **implicit hold**: states default to staying in current state (`state_next = state_r`), so catch-all `transition to Self when true` is not needed — but every state must have at least one transition (dead-end states are a compile error) |
 | `fifo` | ✅ | Sync (extra-bit pointers) + async (gray-code CDC, auto-detected) |
 | `ram` | ✅ | `single`/`simple_dual`/`true_dual`/`rom`; `latency 0`/`1`/`2`; all write modes; `init: zero\|none\|file("path",hex\|bin)\|value\|[...]`; ROM: read-only, init required, no write signals |

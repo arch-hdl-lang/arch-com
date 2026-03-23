@@ -12,7 +12,7 @@ module Consumer
   port data_in: in UInt<8>;
   port data_out: out UInt<8>;
 
-  reg r: UInt<8> init 0 reset rst;
+  reg r: UInt<8> init 0 reset rst=0;
 
   seq on clk rising
     r <= data_in;
@@ -27,7 +27,7 @@ module TopBad
   port rst: in Reset<Sync>;
   port result: out UInt<8>;
 
-  reg counter_a: UInt<8> init 0 reset rst;
+  reg counter_a: UInt<8> init 0 reset rst=0;
 
   seq on clk_a rising
     counter_a <= (counter_a + 1).trunc<8>();

@@ -39,14 +39,14 @@ module ExuOitf
   port oitf_empty:  out Bool;
 
   // ── FIFO state ─────────────────────────────────────────────────────
-  reg valid_0:  Bool    init false reset rst_n;
-  reg valid_1:  Bool    init false reset rst_n;
-  reg rdidx_0:  UInt<5> init 0     reset rst_n;
-  reg rdidx_1:  UInt<5> init 0     reset rst_n;
-  reg rden_0:   Bool    init false reset rst_n;
-  reg rden_1:   Bool    init false reset rst_n;
-  reg wr_ptr:   Bool    init false reset rst_n;
-  reg rd_ptr:   Bool    init false reset rst_n;
+  reg valid_0:  Bool    init false reset rst_n=false;
+  reg valid_1:  Bool    init false reset rst_n=false;
+  reg rdidx_0:  UInt<5> init 0     reset rst_n=0;
+  reg rdidx_1:  UInt<5> init 0     reset rst_n=0;
+  reg rden_0:   Bool    init false reset rst_n=false;
+  reg rden_1:   Bool    init false reset rst_n=false;
+  reg wr_ptr:   Bool    init false reset rst_n=false;
+  reg rd_ptr:   Bool    init false reset rst_n=false;
 
   seq on clk rising
     // Allocate: write new entry at wr_ptr

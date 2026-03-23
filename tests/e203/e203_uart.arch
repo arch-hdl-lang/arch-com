@@ -32,25 +32,25 @@ module Uart
   port uart_irq: out Bool;
 
   // ── Baud rate divider ──────────────────────────────────────────
-  reg baud_div_r: UInt<16> init 1 reset rst_n;  // configurable; default=1 for sim
-  reg baud_cnt_r: UInt<16> init 0 reset rst_n;
+  reg baud_div_r: UInt<16> init 1 reset rst_n=1;  // configurable; default=1 for sim
+  reg baud_cnt_r: UInt<16> init 0 reset rst_n=0;
   let baud_tick: Bool = (baud_cnt_r == 0);
 
   // ── TX state ───────────────────────────────────────────────────
-  reg tx_shift_r: UInt<10> init 0x3FF reset rst_n;  // idle=all 1s: {stop, data[7:0], start}
-  reg tx_cnt_r:   UInt<4>  init 0 reset rst_n;      // bit counter (0=idle)
-  reg tx_busy_r:  Bool     init false reset rst_n;
+  reg tx_shift_r: UInt<10> init 0x3FF reset rst_n=0x3FF;  // idle=all 1s: {stop, data[7:0], start}
+  reg tx_cnt_r:   UInt<4>  init 0 reset rst_n=0;      // bit counter (0=idle)
+  reg tx_busy_r:  Bool     init false reset rst_n=false;
 
   // ── RX state ───────────────────────────────────────────────────
-  reg rx_shift_r: UInt<8>  init 0 reset rst_n;
-  reg rx_cnt_r:   UInt<4>  init 0 reset rst_n;
-  reg rx_valid_r: Bool     init false reset rst_n;
-  reg rx_data_r:  UInt<8>  init 0 reset rst_n;
-  reg rx_prev_r:  Bool     init true reset rst_n;   // previous rx pin
+  reg rx_shift_r: UInt<8>  init 0 reset rst_n=0;
+  reg rx_cnt_r:   UInt<4>  init 0 reset rst_n=0;
+  reg rx_valid_r: Bool     init false reset rst_n=false;
+  reg rx_data_r:  UInt<8>  init 0 reset rst_n=0;
+  reg rx_prev_r:  Bool     init true reset rst_n=true;   // previous rx pin
 
   // ── TX/RX enable ───────────────────────────────────────────────
-  reg txen_r: Bool init false reset rst_n;
-  reg rxen_r: Bool init false reset rst_n;
+  reg txen_r: Bool init false reset rst_n=false;
+  reg rxen_r: Bool init false reset rst_n=false;
 
   // APB decode
   let reg_off: UInt<8> = paddr.trunc<7,0>();

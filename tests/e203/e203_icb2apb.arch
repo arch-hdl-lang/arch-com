@@ -33,18 +33,18 @@ module Icb2Apb
 
   // ── FSM states ──────────────────────────────────────────────────
   // Idle → Setup → Access → (back to Idle or respond)
-  reg fsm_st: UInt<2> init 0 reset rst_n;  // 0=IDLE, 1=SETUP, 2=ACCESS
+  reg fsm_st: UInt<2> init 0 reset rst_n=0;  // 0=IDLE, 1=SETUP, 2=ACCESS
 
   // Latched command
-  reg cmd_addr_r:  UInt<32> init 0 reset rst_n;
-  reg cmd_wdata_r: UInt<32> init 0 reset rst_n;
-  reg cmd_wmask_r: UInt<4>  init 0 reset rst_n;
-  reg cmd_read_r:  Bool     init false reset rst_n;
+  reg cmd_addr_r:  UInt<32> init 0 reset rst_n=0;
+  reg cmd_wdata_r: UInt<32> init 0 reset rst_n=0;
+  reg cmd_wmask_r: UInt<4>  init 0 reset rst_n=0;
+  reg cmd_read_r:  Bool     init false reset rst_n=false;
 
   // Latched response
-  reg rsp_rdata_r: UInt<32> init 0 reset rst_n;
-  reg rsp_err_r:   Bool     init false reset rst_n;
-  reg rsp_valid_r: Bool     init false reset rst_n;
+  reg rsp_rdata_r: UInt<32> init 0 reset rst_n=0;
+  reg rsp_err_r:   Bool     init false reset rst_n=false;
+  reg rsp_valid_r: Bool     init false reset rst_n=false;
 
   seq on clk rising
     if fsm_st == 0

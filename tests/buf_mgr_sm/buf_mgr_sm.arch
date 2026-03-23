@@ -23,7 +23,7 @@ module BufMgrSm
   port free_count_out: out UInt<5>;
   port init_done:      out Bool;
 
-  reg default: init 0 reset rst;
+  reg default: init 0 reset rst=0;
 
   reg head_arr:  Vec<UInt<4>, 4>;
   reg tail_arr:  Vec<UInt<4>, 4>;

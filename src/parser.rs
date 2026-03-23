@@ -9,7 +9,7 @@ pub struct Parser {
     no_angle: bool,
     /// Default init/reset applied to reg declarations that omit those clauses.
     /// Set by `reg default: init <expr> reset <...>;` within a module/pipeline body.
-    reg_defaults: Option<(Expr, RegReset)>,
+    reg_defaults: Option<(Option<Expr>, RegReset)>,
 }
 
 impl Parser {
@@ -308,6 +308,11 @@ impl Parser {
             return Ok(RegReset::None);
         }
         let rst_signal = self.expect_ident()?;
+
+        // Parse `=VALUE` — required reset value
+        self.expect(TokenKind::Eq)?;
+        let reset_value = self.parse_expr()?;
+
         if self.check(TokenKind::Sync) || self.check(TokenKind::Async) {
             let kind = if self.eat(TokenKind::Sync) {
                 ResetKind::Sync
@@ -326,19 +331,23 @@ impl Parser {
                     self.peek_span(),
                 ));
             };
-            Ok(RegReset::Explicit(rst_signal, kind, level))
+            Ok(RegReset::Explicit(rst_signal, kind, level, reset_value))
         } else {
-            Ok(RegReset::Inherit(rst_signal))
+            Ok(RegReset::Inherit(rst_signal, reset_value))
         }
     }
 
-    /// Parse `reg default: init <expr> [reset <...>] ;` and store as the active defaults.
+    /// Parse `reg default: [init <expr>] [reset <signal>=<value>] ;`
     fn parse_reg_default_decl(&mut self) -> Result<(), CompileError> {
         self.expect(TokenKind::Reg)?;
         self.expect(TokenKind::Default)?;
         self.expect(TokenKind::Colon)?;
-        self.expect(TokenKind::Init)?;
-        let init = self.parse_expr()?;
+        let init = if self.check(TokenKind::Init) {
+            self.advance();
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
         let reset = if self.check_ident("reset") {
             self.advance();
             self.parse_reset_clause()?
@@ -370,18 +379,18 @@ impl Parser {
         self.expect(TokenKind::Colon)?;
         let ty = self.parse_type_expr()?;
 
-        // `init` clause is optional when reg_defaults provides one.
+        // `init` clause is optional — provides SV declaration initializer only.
         let init = if self.check(TokenKind::Init) {
             self.advance();
-            self.parse_expr()?
+            Some(self.parse_expr()?)
         } else if let Some((default_init, _)) = &self.reg_defaults {
             default_init.clone()
         } else {
-            self.expect(TokenKind::Init)?; // will error with a clear message
-            unreachable!()
+            None
         };
 
         // `reset` clause is optional when reg_defaults provides one.
+        // New syntax: `reset rst=VALUE` where =VALUE is required.
         let reset = if self.check_ident("reset") {
             self.advance();
             self.parse_reset_clause()?
@@ -532,6 +541,9 @@ impl Parser {
         if self.check(TokenKind::Log) {
             return Ok(Stmt::Log(self.parse_log_stmt()?));
         }
+        if self.check(TokenKind::For) {
+            return self.parse_for_loop(true);
+        }
         // Assignment: target <= value;
         let target = self.parse_expr()?;
         self.expect(TokenKind::LtEq)?;
@@ -663,6 +675,59 @@ impl Parser {
             && self.tokens[self.pos + 1].kind == TokenKind::Comb
     }
 
+    /// Convert a CombStmt to a Stmt for use in for-loop bodies.
+    fn comb_stmt_to_stmt(cs: CombStmt) -> Stmt {
+        match cs {
+            CombStmt::Assign(a) => Stmt::Assign(RegAssign {
+                target: a.target,
+                value: a.value,
+                span: a.span,
+            }),
+            CombStmt::IfElse(ie) => Stmt::IfElse(IfElse {
+                cond: ie.cond,
+                then_stmts: ie.then_stmts.into_iter().map(Self::comb_stmt_to_stmt).collect(),
+                else_stmts: ie.else_stmts.into_iter().map(Self::comb_stmt_to_stmt).collect(),
+                span: ie.span,
+            }),
+            CombStmt::Log(l) => Stmt::Log(l),
+            CombStmt::For(f) => Stmt::For(f),
+            CombStmt::MatchExpr(_) => todo!("match in for-loop comb body"),
+        }
+    }
+
+    /// Parse `for VAR in START..END ... end for`
+    /// `is_seq`: true = body uses `parse_reg_stmt`, false = body uses `parse_comb_stmt` (wrapped)
+    fn parse_for_loop(&mut self, is_seq: bool) -> Result<Stmt, CompileError> {
+        let start = self.expect(TokenKind::For)?.span;
+        let var = self.expect_ident()?;
+        self.expect(TokenKind::In)?;
+        let range_start = self.parse_expr()?;
+        self.expect(TokenKind::DotDot)?;
+        let range_end = self.parse_expr()?;
+
+        let mut body = Vec::new();
+        while !(self.check(TokenKind::End)
+            && self.pos + 1 < self.tokens.len()
+            && self.tokens[self.pos + 1].kind == TokenKind::For) {
+            if is_seq {
+                body.push(self.parse_reg_stmt()?);
+            } else {
+                // Wrap CombStmt into Stmt for unified ForLoop body
+                let cs = self.parse_comb_stmt()?;
+                body.push(Self::comb_stmt_to_stmt(cs));
+            }
+        }
+        self.expect(TokenKind::End)?;
+        let end_span = self.expect(TokenKind::For)?.span;
+        Ok(Stmt::For(ForLoop {
+            var,
+            start: range_start,
+            end: range_end,
+            body,
+            span: start.merge(end_span),
+        }))
+    }
+
     fn parse_comb_stmt(&mut self) -> Result<CombStmt, CompileError> {
         if self.check(TokenKind::If) {
             return self.parse_comb_if();
@@ -673,8 +738,15 @@ impl Parser {
         if self.check(TokenKind::Log) {
             return Ok(CombStmt::Log(self.parse_log_stmt()?));
         }
+        if self.check(TokenKind::For) {
+            let fl = self.parse_for_loop(false)?;
+            if let Stmt::For(f) = fl {
+                return Ok(CombStmt::For(f));
+            }
+            unreachable!();
+        }
         // target = expr;
-        let target = self.expect_ident()?;
+        let target = self.parse_expr()?;
         self.expect(TokenKind::Eq)?;
         let value = self.parse_expr()?;
         self.expect(TokenKind::Semi)?;
