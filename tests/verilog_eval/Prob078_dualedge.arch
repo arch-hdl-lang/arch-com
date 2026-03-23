@@ -1,0 +1,29 @@
+// VerilogEval Prob078: Dual-edge triggered flip-flop
+// Use posedge FF + negedge FF + clock-level mux
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port clk: in Clock<SysDomain>;
+  port d: in Bool;
+  port q: out Bool;
+
+  reg q_pos: Bool;
+  reg q_neg: Bool;
+
+  seq on clk rising
+    q_pos <= d;
+  end seq
+
+  seq on clk falling
+    q_neg <= d;
+  end seq
+
+  comb
+    if clk
+      q = q_pos;
+    else
+      q = q_neg;
+    end if
+  end comb
+end module TopModule

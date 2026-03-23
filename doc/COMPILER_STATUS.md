@@ -1,7 +1,7 @@
 # ARCH Compiler — Status & Roadmap
 
 > Last updated: 2026-03-23
-> Compiler version: 0.33.0 (VerilogEval 151/151, full benchmark coverage)
+> Compiler version: 0.33.1 (VerilogEval 152/152, dual-edge FF via negedge support)
 
 ---
 
@@ -140,7 +140,7 @@
 
 ### Tests
 
-- **VerilogEval benchmark**: 151/151 problems passing (combinational, sequential, counters, shift registers, LFSRs, edge detectors, BCD counters, rotators, muxes, vector ops, cellular automata, branch predictors, FSMs — Moore, Mealy, one-hot, serial protocol, PS/2, lemmings, timers, arbiters, reservoir controllers); 5 problems skipped: 3 language limitations (Prob028: latch, Prob078: dual-edge FF, Prob145: negedge FF) + 2 dataset bugs (Prob099: test/ref port mismatch, Prob118: ref Verilator incompatibility); covers Prob001–Prob156 from the NVIDIA/HDLBits spec-to-RTL dataset; each solution is an `.arch` file compiled to SV and verified against golden reference via Verilator
+- **VerilogEval benchmark**: 152/152 problems passing (combinational, sequential, counters, shift registers, LFSRs, edge detectors, BCD counters, rotators, muxes, vector ops, cellular automata, branch predictors, dual-edge FF, FSMs — Moore, Mealy, one-hot, serial protocol, PS/2, lemmings, timers, arbiters, reservoir controllers); 4 problems skipped: 2 language limitations (Prob028/Prob145: latch) + 2 dataset bugs (Prob099: test/ref port mismatch, Prob118: ref Verilator incompatibility); covers Prob001–Prob156 from the NVIDIA/HDLBits spec-to-RTL dataset; each solution is an `.arch` file compiled to SV and verified against golden reference via Verilator
 - 48 integration tests (snapshot + error-case), including `let` binding, `generate for`, `generate if`, mixed reset/no-reset partitioning, reset consistency validation, pipeline (simple, CPU 4-stage, instantiation, stage inst, bit-range trunc), `$clog2` in type args, function overloading, width mismatch errors, exhaustive match checking, linklist (basic singly + doubly)
 - 9 Verilator simulations: Counter, TrafficLight FSM, TxQueue sync FIFO, AsyncBridge async FIFO, SimpleMem RAM, WrapCounter, BusArbiter (round-robin), IntRegs (regfile + forwarding), CpuPipe 4-stage pipeline (reset, flow, stall, flush, forwarding), BufMgr (16K×128b, 256 queues, 19 tests — multi-file split SV verified)
 - 11 `arch sim` native C++ simulations verified: WrapCounter (`counter`), TrafficLight (`fsm`), Top+Counter (`module` with sub-instance), AesCipherTop (AES-128 full cipher with sub-instance + wide signals + functions), AesKeyExpand128 (key expansion with sub-instance timing), e203_exu_alu_dpath (26 tests), e203_exu_alu_bjp (25 tests — first clock-free module in test suite), linklist_basic (singly FIFO; arch sim output identical to Verilator), linklist_doubly (doubly list with next/prev/insert_after; arch sim output identical to Verilator), buf_mgr_sm (16×32b shared buffer manager; 4 queues; 17 tests), buf_mgr (16K×128b shared buffer manager; 256 queues; 2-bank free-list with prefetch; 19 tests)
