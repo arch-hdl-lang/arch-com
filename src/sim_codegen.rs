@@ -1592,8 +1592,22 @@ impl<'a> SimCodegen<'a> {
                 Some((p.name.name.clone(), freq))
             } else { None })
             .collect();
-        let has_clk = !clk_ports.is_empty();
-        let clk_prev_inits: Vec<String> = clk_ports.iter()
+        // Collect internal clock wires: clocks referenced in `seq on X rising` that are
+        // not port-level clocks (i.e. derived from inst outputs, like a clock divider).
+        let internal_clks: Vec<String> = {
+            let clk_set: std::collections::HashSet<&str> = clk_ports.iter().map(|s| s.as_str()).collect();
+            let mut seen = std::collections::HashSet::new();
+            m.body.iter()
+                .filter_map(|i| if let ModuleBodyItem::RegBlock(rb) = i { Some(rb) } else { None })
+                .filter(|rb| !clk_set.contains(rb.clock.name.as_str()))
+                .filter(|rb| seen.insert(rb.clock.name.clone()))
+                .map(|rb| rb.clock.name.clone())
+                .collect()
+        };
+        // all_clks = port clocks + internal derived clocks
+        let all_clks: Vec<String> = clk_ports.iter().chain(internal_clks.iter()).cloned().collect();
+        let has_clk = !all_clks.is_empty();
+        let clk_prev_inits: Vec<String> = all_clks.iter()
             .map(|c| format!("_clk_prev_{}(0)", c))
             .collect();
         let all_freqs_known_early = clk_freqs.len() >= 2 && clk_freqs.iter().all(|(_, f)| f.is_some());
@@ -1637,13 +1651,11 @@ impl<'a> SimCodegen<'a> {
         }
         h.push_str("  }\n\n");
         h.push_str("private:\n");
-        for c in &clk_ports {
+        for c in &all_clks {
             h.push_str(&format!("  uint8_t _clk_prev_{c};\n"));
         }
-        if clk_ports.len() > 1 {
-            for c in &clk_ports {
-                h.push_str(&format!("  bool _rising_{c};\n"));
-            }
+        for c in &all_clks {
+            h.push_str(&format!("  bool _rising_{c};\n"));
         }
 
         // Private reg fields
@@ -1754,21 +1766,10 @@ impl<'a> SimCodegen<'a> {
         // Auto-open VCD on first eval() — only the top-level module (called by testbench) claims it
         cpp.push_str("  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n");
         cpp.push_str("    trace_open(Verilated::traceFile());\n");
-        let multi_clk = clk_ports.len() > 1;
-        for c in &clk_ports {
-            if multi_clk {
-                // Multi-clock: write to member variable so eval_posedge() can see it
-                cpp.push_str(&format!("  _rising_{c} = ({c} && !_clk_prev_{c});\n"));
-            } else {
-                cpp.push_str(&format!("  bool _rising_{c} = ({c} && !_clk_prev_{c});\n"));
-            }
-            cpp.push_str(&format!("  _clk_prev_{c} = {c};\n"));
-        }
-        let any_rising = if clk_ports.len() == 1 {
-            format!("_rising_{}", clk_ports[0])
-        } else {
-            clk_ports.iter().map(|c| format!("_rising_{c}")).collect::<Vec<_>>().join(" || ")
-        };
+        // Edge detection is done inside eval_posedge(), not in eval().
+        // This ensures derived clocks from sub-instances (e.g. clock dividers) are
+        // settled before edges are detected, and sub-instances correctly detect their
+        // own clock edges when called from a parent's eval_posedge().
 
         // Helper closure: emit sub-instance input assignments + eval_comb + output reads
         // Returns (input_code, comb_call, output_read_code) per inst
@@ -1779,7 +1780,7 @@ impl<'a> SimCodegen<'a> {
             // No sub-instances: simple path
             cpp.push_str("  eval_comb();\n");
             if has_clk {
-                cpp.push_str(&format!("  if ({any_rising}) eval_posedge();\n"));
+                cpp.push_str("  eval_posedge();\n");
                 cpp.push_str("  eval_comb();\n");
             }
         } else {
@@ -1789,13 +1790,16 @@ impl<'a> SimCodegen<'a> {
             // must read the sub-instance's PRE-posedge combinational outputs (which reflect the
             // sub-instance's current registered values, not the new ones).
             //
+            // IMPORTANT: Edge detection must happen AFTER the settle loop, not before.
+            // Sub-instances may produce derived clocks (e.g. clock dividers, clock gates).
+            // Those outputs are only valid after eval_comb(). Detecting edges before settle
+            // would use stale clock values and miss or delay derived clock edges by one eval().
+            //
             // Correct order:
-            //   1. Set sub-inst inputs
-            //   2. Sub-inst eval_comb()  → parent reads pre-posedge sub-inst outputs
-            //   3. Parent eval_comb()
-            //   4. If rising: parent eval_posedge() + sub-inst eval_posedge() (simultaneous)
-            //   5. Sub-inst eval_comb()  → refresh sub-inst outputs with post-posedge state
-            //   6. Parent eval_comb()    → refresh parent output ports
+            //   1. Settle loop: set sub-inst inputs → eval_comb() → read outputs → parent comb
+            //   2. Edge detection on ALL clocks (port + internal derived clocks)
+            //   3. If rising: parent eval_posedge() + sub-inst eval_posedge() (simultaneous)
+            //   4. Re-settle: refresh sub-inst + parent comb with post-posedge state
 
             // Step 1 + 2: set sub-inst inputs, run comb, read outputs (pre-posedge)
             // Wrapped in a 2-pass loop to settle combinational feedback across inst boundaries
@@ -1839,12 +1843,11 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str("  } // settle\n");
 
             if has_clk {
-            // Step 4: if any rising edge, fire posedge blocks simultaneously
-            cpp.push_str(&format!("  if ({any_rising}) {{\n"));
-            cpp.push_str("    eval_posedge();\n");
+            // Step 2: eval_posedge detects edges internally (after settle, so derived clocks are valid)
+            cpp.push_str("  eval_posedge();\n");
 
-            // Step 5+6: refresh sub-inst comb outputs, then parent comb (with settle loop)
-            cpp.push_str("    for (int _settle = 0; _settle < 2; _settle++) {\n");
+            // Step 3: refresh sub-inst comb outputs, then parent comb (with settle loop)
+            cpp.push_str("  for (int _settle = 0; _settle < 2; _settle++) {\n");
             for inst in &insts {
                 // Re-set sub-inst inputs (may have changed after posedge)
                 for conn in &inst.connections {
@@ -1852,36 +1855,33 @@ impl<'a> SimCodegen<'a> {
                         if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
                             if wide_names.contains(src_name.as_str()) {
                                 let resolved = ctx.resolve_name(src_name, false);
-                                cpp.push_str(&format!("      _inst_{}.{} = {};\n",
+                                cpp.push_str(&format!("    _inst_{}.{} = {};\n",
                                     inst.name.name, conn.port_name.name, resolved));
                                 continue;
                             }
                         }
                         let sig = cpp_expr(&conn.signal, &ctx);
-                        cpp.push_str(&format!("      _inst_{}.{} = {};\n",
+                        cpp.push_str(&format!("    _inst_{}.{} = {};\n",
                             inst.name.name, conn.port_name.name, sig));
                     }
                 }
-                cpp.push_str(&format!("      _inst_{}.eval_comb();\n", inst.name.name));
+                cpp.push_str(&format!("    _inst_{}.eval_comb();\n", inst.name.name));
                 for conn in &inst.connections {
                     if conn.direction == ConnectDir::Output {
                         let sig = cpp_expr(&conn.signal, &ctx);
-                        cpp.push_str(&format!("      {} = _inst_{}.{};\n",
+                        cpp.push_str(&format!("    {} = _inst_{}.{};\n",
                             sig, inst.name.name, conn.port_name.name));
                         // --check-uninit: mark inst output as initialized
                         if let ExprKind::Ident(name) = &conn.signal.kind {
                             if uninit_regs.contains(name.as_str()) {
-                                cpp.push_str(&format!("      _{name}_vinit = true;\n"));
+                                cpp.push_str(&format!("    _{name}_vinit = true;\n"));
                             }
                         }
                     }
                 }
             }
-            cpp.push_str("      eval_comb();\n");
-            cpp.push_str("    } // settle\n");
-            cpp.push_str("  } else {\n");
             cpp.push_str("    eval_comb();\n");
-            cpp.push_str("  }\n");
+            cpp.push_str("  } // settle\n");
             } // end if has_clk
         } // end else (has insts)
 
@@ -1891,6 +1891,15 @@ impl<'a> SimCodegen<'a> {
 
         // eval_posedge()
         cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
+
+        // Edge detection: detect rising edges and update _clk_prev for all clocks.
+        // This runs inside eval_posedge() so that:
+        //   - Derived clocks from sub-instances are already settled before detection
+        //   - Sub-instances correctly detect their own clock edges when called from parent
+        for c in &all_clks {
+            cpp.push_str(&format!("  _rising_{c} = ({c} && !_clk_prev_{c});\n"));
+            cpp.push_str(&format!("  _clk_prev_{c} = {c};\n"));
+        }
 
         let reg_blocks: Vec<&RegBlock> = m.body.iter()
             .filter_map(|i| if let ModuleBodyItem::RegBlock(rb) = i { Some(rb) } else { None })
@@ -1933,7 +1942,6 @@ impl<'a> SimCodegen<'a> {
             let ctx = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                &wide_names, &widths, &enum_map).posedge();
 
-            let multi_clk = clk_ports.len() > 1;
             for rb in &reg_blocks {
                 let mut assigned = std::collections::BTreeSet::new();
                 collect_stmt_assigns(&rb.stmts, &mut assigned);
@@ -1958,13 +1966,9 @@ impl<'a> SimCodegen<'a> {
                     }
                 }
 
-                // Multi-clock: guard each seq block on its specific clock's rising edge
-                let base_indent: usize = if multi_clk {
-                    cpp.push_str(&format!("  if (_rising_{}) {{\n", rb.clock.name));
-                    2
-                } else {
-                    1
-                };
+                // Guard each seq block on its specific clock's rising edge
+                cpp.push_str(&format!("  if (_rising_{}) {{\n", rb.clock.name));
+                let base_indent: usize = 2;
 
                 if let Some((rst_name, _is_async, is_low)) = &reset_sig {
                     let cond = if *is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
@@ -1987,9 +1991,7 @@ impl<'a> SimCodegen<'a> {
                     cpp.push_str(&body);
                 }
 
-                if multi_clk {
-                    cpp.push_str("  }\n");
-                }
+                cpp.push_str("  }\n");
             }
 
             // pipe_reg chain assignments — write to _n_ temporaries (before commit)
@@ -3488,7 +3490,7 @@ impl<'a> SimCodegen<'a> {
     }
 
     fn gen_clkgate(&self, c: &crate::ast::ClkGateDecl) -> SimModel {
-        let class = c.name.name.clone();
+        let class = format!("V{}", c.name.name);
 
         let clk_in = c.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)) && p.direction == Direction::In)
             .map(|p| p.name.name.as_str()).unwrap_or("clk_in");
@@ -3509,11 +3511,12 @@ impl<'a> SimCodegen<'a> {
         }
 
         h.push_str("  void eval();\n");
+        h.push_str("  void eval_comb();\n");
+        h.push_str("  void eval_posedge();\n");
         h.push_str("};\n");
 
         let mut cpp = String::new();
-        cpp.push_str(&format!("#include \"V{}.h\"\n", class));
-        cpp.push_str(&format!("void {}::eval() {{\n", class));
+        cpp.push_str(&format!("#include \"{}.h\"\n", class));
 
         let en_expr = if let Some(te) = test_en {
             format!("{enable} | {te}")
@@ -3521,6 +3524,8 @@ impl<'a> SimCodegen<'a> {
             enable.to_string()
         };
 
+        // eval_comb — the actual gate logic
+        cpp.push_str(&format!("void {}::eval_comb() {{\n", class));
         match c.kind {
             crate::ast::ClkGateKind::Latch => {
                 cpp.push_str(&format!("  if (!{clk_in}) _en_latched = ({en_expr}) ? 1 : 0;\n"));
@@ -3530,8 +3535,13 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str(&format!("  {clk_out} = {clk_in} & (({en_expr}) ? 1 : 0);\n"));
             }
         }
-
         cpp.push_str("}\n");
+
+        // eval_posedge — no-op for clkgate
+        cpp.push_str(&format!("void {}::eval_posedge() {{}}\n", class));
+
+        // eval — calls both
+        cpp.push_str(&format!("void {}::eval() {{ eval_comb(); }}\n", class));
 
         SimModel { class_name: class, header: h, impl_: cpp }
     }
