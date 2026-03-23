@@ -1,0 +1,28 @@
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port clk: in Clock<SysDomain>;
+  port reset_sig: in Reset<Sync>;
+  port j: in Bool;
+  port k: in Bool;
+  port out_sig: out Bool;
+
+  reg st: Bool reset reset_sig=0;
+
+  seq on clk rising
+    if ~st
+      if j
+        st <= 1;
+      end if
+    else
+      if k
+        st <= 0;
+      end if
+    end if
+  end seq
+
+  comb
+    out_sig = st;
+  end comb
+end module TopModule

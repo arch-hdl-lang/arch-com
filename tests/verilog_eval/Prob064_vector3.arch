@@ -1,0 +1,33 @@
+module TopModule
+  port a: in UInt<5>;
+  port b: in UInt<5>;
+  port c: in UInt<5>;
+  port d: in UInt<5>;
+  port e: in UInt<5>;
+  port f: in UInt<5>;
+  port w: out UInt<8>;
+  port x: out UInt<8>;
+  port y: out UInt<8>;
+  port z: out UInt<8>;
+
+  wire cat: UInt<32>;
+
+  comb
+    cat[0] = 1;
+    cat[1] = 1;
+    for i in 0..4
+      cat[2 + i] = f[i];
+      cat[7 + i] = e[i];
+      cat[12 + i] = d[i];
+      cat[17 + i] = c[i];
+      cat[22 + i] = b[i];
+      cat[27 + i] = a[i];
+    end for
+    for i in 0..7
+      z[i] = cat[i];
+      y[i] = cat[8 + i];
+      x[i] = cat[16 + i];
+      w[i] = cat[24 + i];
+    end for
+  end comb
+end module TopModule

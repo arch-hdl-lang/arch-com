@@ -1,0 +1,20 @@
+module TopModule
+  port a: in Bool;
+  port b: in Bool;
+  port out_and: out Bool;
+  port out_or: out Bool;
+  port out_xor: out Bool;
+  port out_nand: out Bool;
+  port out_nor: out Bool;
+  port out_xnor: out Bool;
+  port out_anotb: out Bool;
+  comb
+    out_and = a & b;
+    out_or = a | b;
+    out_xor = a ^ b;
+    out_nand = ~(a & b);
+    out_nor = ~(a | b);
+    out_xnor = ~(a ^ b);
+    out_anotb = a & (~b);
+  end comb
+end module TopModule

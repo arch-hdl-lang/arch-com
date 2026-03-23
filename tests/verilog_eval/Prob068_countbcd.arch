@@ -1,0 +1,49 @@
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port clk: in Clock<SysDomain>;
+  port reset_sig: in Reset<Sync>;
+  port ena: out UInt<3>;
+  port q: out UInt<16>;
+
+  reg ones: UInt<4> reset reset_sig=0;
+  reg tens: UInt<4> reset reset_sig=0;
+  reg hund: UInt<4> reset reset_sig=0;
+  reg thou: UInt<4> reset reset_sig=0;
+
+  seq on clk rising
+    if ones == 9
+      ones <= 0;
+      if tens == 9
+        tens <= 0;
+        if hund == 9
+          hund <= 0;
+          if thou == 9
+            thou <= 0;
+          else
+            thou <= (thou + 1).trunc<4>();
+          end if
+        else
+          hund <= (hund + 1).trunc<4>();
+        end if
+      else
+        tens <= (tens + 1).trunc<4>();
+      end if
+    else
+      ones <= (ones + 1).trunc<4>();
+    end if
+  end seq
+
+  comb
+    for i in 0..3
+      q[i] = ones[i];
+      q[4 + i] = tens[i];
+      q[8 + i] = hund[i];
+      q[12 + i] = thou[i];
+    end for
+    ena[0] = (ones == 9);
+    ena[1] = (ones == 9) & (tens == 9);
+    ena[2] = (ones == 9) & (tens == 9) & (hund == 9);
+  end comb
+end module TopModule

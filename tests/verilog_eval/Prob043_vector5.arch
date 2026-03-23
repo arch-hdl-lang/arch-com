@@ -1,0 +1,35 @@
+module TopModule
+  port a: in Bool;
+  port b: in Bool;
+  port c: in Bool;
+  port d: in Bool;
+  port e: in Bool;
+  port out_sig: out UInt<25>;
+  comb
+    out_sig[24] = ~a ^ a;
+    out_sig[23] = ~a ^ b;
+    out_sig[22] = ~a ^ c;
+    out_sig[21] = ~a ^ d;
+    out_sig[20] = ~a ^ e;
+    out_sig[19] = ~b ^ a;
+    out_sig[18] = ~b ^ b;
+    out_sig[17] = ~b ^ c;
+    out_sig[16] = ~b ^ d;
+    out_sig[15] = ~b ^ e;
+    out_sig[14] = ~c ^ a;
+    out_sig[13] = ~c ^ b;
+    out_sig[12] = ~c ^ c;
+    out_sig[11] = ~c ^ d;
+    out_sig[10] = ~c ^ e;
+    out_sig[9] = ~d ^ a;
+    out_sig[8] = ~d ^ b;
+    out_sig[7] = ~d ^ c;
+    out_sig[6] = ~d ^ d;
+    out_sig[5] = ~d ^ e;
+    out_sig[4] = ~e ^ a;
+    out_sig[3] = ~e ^ b;
+    out_sig[2] = ~e ^ c;
+    out_sig[1] = ~e ^ d;
+    out_sig[0] = ~e ^ e;
+  end comb
+end module TopModule

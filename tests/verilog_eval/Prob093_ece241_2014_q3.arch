@@ -1,0 +1,11 @@
+module TopModule
+  port c: in Bool;
+  port d: in Bool;
+  port mux_in: out UInt<4>;
+  comb
+    mux_in[0] = c | d;
+    mux_in[1] = 0;
+    mux_in[2] = ~d;
+    mux_in[3] = c & d;
+  end comb
+end module TopModule

@@ -1,0 +1,33 @@
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port clk: in Clock<SysDomain>;
+  port areset: in Reset<Async>;
+  port predict_valid: in Bool;
+  port predict_taken: in Bool;
+  port train_mispredicted: in Bool;
+  port train_taken: in Bool;
+  port train_history: in UInt<32>;
+  port predict_history: out UInt<32>;
+
+  reg hist: UInt<32> reset areset=0;
+
+  seq on clk rising
+    if train_mispredicted
+      hist[0] <= train_taken;
+      for i in 1..31
+        hist[i] <= train_history[i - 1];
+      end for
+    elsif predict_valid
+      hist[0] <= predict_taken;
+      for i in 1..31
+        hist[i] <= hist[i - 1];
+      end for
+    end if
+  end seq
+
+  comb
+    predict_history = hist;
+  end comb
+end module TopModule

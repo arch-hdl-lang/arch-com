@@ -138,5 +138,58 @@ run "Prob067_countslow"    "$EVAL/Prob067_countslow.sv"    's/ reset_sig/ reset/
 run "Prob073_dff16e"       "$EVAL/Prob073_dff16e.sv"       ''
 run "Prob074_ece241_2014_q4" "$EVAL/Prob074_ece241_2014_q4.sv" ''
 
+# Batch 6: simple combinational (new)
+run "Prob062_bugs_mux2"       "$EVAL/Prob062_bugs_mux2.sv"       's/out_sig/out/g'
+run "Prob083_mt2015_q4b"      "$EVAL/Prob083_mt2015_q4b.sv"      ''
+run "Prob087_gates"           "$EVAL/Prob087_gates.sv"           ''
+run "Prob090_circuit1"        "$EVAL/Prob090_circuit1.sv"        ''
+run "Prob093_ece241_2014_q3"  "$EVAL/Prob093_ece241_2014_q3.sv"  ''
+run "Prob101_circuit4"        "$EVAL/Prob101_circuit4.sv"        ''
+run "Prob102_circuit3"        "$EVAL/Prob102_circuit3.sv"        ''
+run "Prob103_circuit2"        "$EVAL/Prob103_circuit2.sv"        ''
+run "Prob106_always_nolatches" "$EVAL/Prob106_always_nolatches.sv" ''
+run "Prob112_always_case2"    "$EVAL/Prob112_always_case2.sv"    's/in_sig/in/g'
+run "Prob113_2012_q1g"        "$EVAL/Prob113_2012_q1g.sv"        ''
+run "Prob114_bugs_case"       "$EVAL/Prob114_bugs_case.sv"       's/out_sig/out/g'
+run "Prob116_m2014_q3"        "$EVAL/Prob116_m2014_q3.sv"        ''
+run "Prob123_bugs_addsubz"    "$EVAL/Prob123_bugs_addsubz.sv"    's/out_sig/out/g'
+run "Prob125_kmap3"           "$EVAL/Prob125_kmap3.sv"           's/out_sig/out/g'
+run "Prob132_always_if2"      "$EVAL/Prob132_always_if2.sv"      ''
+
+# Batch 7: vector/loop (new)
+run "Prob018_mux256to1"       "$EVAL/Prob018_mux256to1.sv"       's/in_sig/in/g; s/out_sig/out/g'
+run "Prob023_vector100r"      "$EVAL/Prob023_vector100r.sv"      's/in_sig/in/g; s/out_sig/out/g'
+run "Prob042_vector4"         "$EVAL/Prob042_vector4.sv"         's/in_sig/in/g; s/out_sig/out/g'
+run "Prob043_vector5"         "$EVAL/Prob043_vector5.sv"         's/out_sig/out/g'
+run "Prob064_vector3"         "$EVAL/Prob064_vector3.sv"         ''
+run "Prob092_gatesv100"       "$EVAL/Prob092_gatesv100.sv"       's/in_sig/in/g'
+run "Prob094_gatesv"          "$EVAL/Prob094_gatesv.sv"          's/in_sig/in/g'
+run "Prob097_mux9to1v"        "$EVAL/Prob097_mux9to1v.sv"        's/out_sig/out/g'
+
+# Batch 8: sequential (new)
+run "Prob068_countbcd"        "$EVAL/Prob068_countbcd.sv"        's/reset_sig/reset/g'
+run "Prob082_lfsr32"          "$EVAL/Prob082_lfsr32.sv"          's/reset_sig/reset/g'
+run "Prob084_ece241_2013_q12" "$EVAL/Prob084_ece241_2013_q12.sv" 's/s_sig/S/g; s/a_sig/A/g; s/b_sig/B/g; s/c_sig/C/g; s/z_sig/Z/g'
+run "Prob085_shift4"          "$EVAL/Prob085_shift4.sv"          ''
+run "Prob091_2012_q2b"        "$EVAL/Prob091_2012_q2b.sv"        's/[[:<:]]y1[[:>:]]/Y1/g; s/[[:<:]]y3[[:>:]]/Y3/g'
+run "Prob098_circuit7"        "$EVAL/Prob098_circuit7.sv"        ''
+# Prob099_m2014_q6c: skipped — dataset bug: test connects Y2/Y4 but ref declares Y1/Y3
+run "Prob104_mt2015_muxdff"   "$EVAL/Prob104_mt2015_muxdff.sv"   's/l_sig/L/g; s/q_sig/Q/g'
+run "Prob105_rotate100"       "$EVAL/Prob105_rotate100.sv"       ''
+run "Prob117_circuit9"        "$EVAL/Prob117_circuit9.sv"        ''
+# Prob118_history_shift: skipped — ref module mixes blocking/nonblocking (Verilator BLKANDNBLK)
+run "Prob135_m2014_q6b"       "$EVAL/Prob135_m2014_q6b.sv"       's/y1/Y1/g'
+
+# Batch 9: FSM (new)
+run "Prob088_ece241_2014_q5b" "$EVAL/Prob088_ece241_2014_q5b.sv" ''
+run "Prob089_ece241_2014_q5a" "$EVAL/Prob089_ece241_2014_q5a.sv" ''
+run "Prob107_fsm1s"           "$EVAL/Prob107_fsm1s.sv"           's/reset_sig/reset/g; s/in_sig/in/g; s/out_sig/out/g'
+run "Prob109_fsm1"            "$EVAL/Prob109_fsm1.sv"            's/in_sig/in/g; s/out_sig/out/g'
+run "Prob111_fsm2s"           "$EVAL/Prob111_fsm2s.sv"           's/reset_sig/reset/g; s/out_sig/out/g'
+run "Prob119_fsm3"            "$EVAL/Prob119_fsm3.sv"            's/in_sig/in/g; s/out_sig/out/g'
+run "Prob127_lemmings1"       "$EVAL/Prob127_lemmings1.sv"       ''
+run "Prob136_m2014_q6"        "$EVAL/Prob136_m2014_q6.sv"        's/reset_sig/reset/g'
+run "Prob137_fsm_serial"      "$EVAL/Prob137_fsm_serial.sv"      's/reset_sig/reset/g; s/in_sig/in/g'
+
 echo ""
 echo "=== Results: $pass/$total passed, $fail failed ==="

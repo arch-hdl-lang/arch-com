@@ -1,0 +1,30 @@
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port clk: in Clock<SysDomain>;
+  port areset: in Reset<Async>;
+  port bump_left: in Bool;
+  port bump_right: in Bool;
+  port walk_left: out Bool;
+  port walk_right: out Bool;
+
+  reg st: Bool reset areset=0;
+
+  seq on clk rising
+    if ~st
+      if bump_left
+        st <= 1;
+      end if
+    else
+      if bump_right
+        st <= 0;
+      end if
+    end if
+  end seq
+
+  comb
+    walk_left = ~st;
+    walk_right = st;
+  end comb
+end module TopModule

@@ -695,12 +695,9 @@ impl<'a> TypeChecker<'a> {
                     ));
                 }
                 let is_indexed = !matches!(&a.target.kind, ExprKind::Ident(_));
-                if driven.contains(&target_name) && !is_indexed {
-                    self.errors.push(CompileError::MultipleDrivers {
-                        name: target_name.clone(),
-                        span: crate::diagnostics::span_to_source_span(a.target.span),
-                    });
-                }
+                // Multiple assignments within a single comb block are allowed
+                // (default + override in if/elsif/else branches). The real
+                // multiple-driver check is across different comb blocks.
                 driven.insert(target_name.clone());
                 let rhs_ty = self.resolve_expr_type(&a.value, module_name, local_types);
                 if !is_indexed {

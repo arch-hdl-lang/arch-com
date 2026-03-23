@@ -1,0 +1,22 @@
+module TopModule
+  port scancode: in UInt<16>;
+  port left: out Bool;
+  port down: out Bool;
+  port right: out Bool;
+  port up: out Bool;
+  comb
+    left = 0;
+    down = 0;
+    right = 0;
+    up = 0;
+    if scancode == 0xe06b
+      left = 1;
+    elsif scancode == 0xe072
+      down = 1;
+    elsif scancode == 0xe074
+      right = 1;
+    elsif scancode == 0xe075
+      up = 1;
+    end if
+  end comb
+end module TopModule

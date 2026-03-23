@@ -1,0 +1,32 @@
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port clk: in Clock<SysDomain>;
+  port load: in Bool;
+  port ena: in UInt<2>;
+  port data: in UInt<100>;
+  port q: out UInt<100>;
+
+  reg q_r: UInt<100>;
+
+  seq on clk rising
+    if load
+      q_r <= data;
+    elsif ena == 1
+      q_r[99] <= q_r[0];
+      for i in 0..98
+        q_r[i] <= q_r[i + 1];
+      end for
+    elsif ena == 2
+      q_r[0] <= q_r[99];
+      for i in 1..99
+        q_r[i] <= q_r[i - 1];
+      end for
+    end if
+  end seq
+
+  comb
+    q = q_r;
+  end comb
+end module TopModule

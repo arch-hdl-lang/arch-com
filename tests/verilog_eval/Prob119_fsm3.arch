@@ -1,0 +1,43 @@
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port clk: in Clock<SysDomain>;
+  port areset: in Reset<Async>;
+  port in_sig: in Bool;
+  port out_sig: out Bool;
+
+  reg st: UInt<2> reset areset=0;
+
+  seq on clk rising
+    if st == 0
+      if in_sig
+        st <= 1;
+      end if
+    elsif st == 1
+      if ~in_sig
+        st <= 2;
+      end if
+    elsif st == 2
+      if in_sig
+        st <= 3;
+      else
+        st <= 0;
+      end if
+    else
+      if in_sig
+        st <= 1;
+      else
+        st <= 2;
+      end if
+    end if
+  end seq
+
+  comb
+    if st == 3
+      out_sig = 1;
+    else
+      out_sig = 0;
+    end if
+  end comb
+end module TopModule

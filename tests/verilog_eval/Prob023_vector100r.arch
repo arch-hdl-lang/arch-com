@@ -1,0 +1,9 @@
+module TopModule
+  port in_sig: in UInt<100>;
+  port out_sig: out UInt<100>;
+  comb
+    for i in 0..99
+      out_sig[i] = in_sig[99 - i];
+    end for
+  end comb
+end module TopModule

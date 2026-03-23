@@ -1,0 +1,59 @@
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port clk: in Clock<SysDomain>;
+  port reset_sig: in Reset<Sync>;
+  port w: in Bool;
+  port z: out Bool;
+
+  reg st: UInt<3> reset reset_sig=0;
+
+  seq on clk rising
+    if st == 0
+      if w
+        st <= 0;
+      else
+        st <= 1;
+      end if
+    elsif st == 1
+      if w
+        st <= 3;
+      else
+        st <= 2;
+      end if
+    elsif st == 2
+      if w
+        st <= 3;
+      else
+        st <= 4;
+      end if
+    elsif st == 3
+      if w
+        st <= 0;
+      else
+        st <= 5;
+      end if
+    elsif st == 4
+      if w
+        st <= 3;
+      else
+        st <= 4;
+      end if
+    else
+      if w
+        st <= 3;
+      else
+        st <= 2;
+      end if
+    end if
+  end seq
+
+  comb
+    if (st == 4) | (st == 5)
+      z = 1;
+    else
+      z = 0;
+    end if
+  end comb
+end module TopModule

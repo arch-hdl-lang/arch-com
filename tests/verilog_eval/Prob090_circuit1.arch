@@ -1,0 +1,8 @@
+module TopModule
+  port a: in Bool;
+  port b: in Bool;
+  port q: out Bool;
+  comb
+    q = a & b;
+  end comb
+end module TopModule

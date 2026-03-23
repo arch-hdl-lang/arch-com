@@ -1,0 +1,32 @@
+module TopModule
+  port code: in UInt<8>;
+  port out_sig: out UInt<4>;
+  port valid: out Bool;
+  comb
+    valid = 1;
+    if code == 0x45
+      out_sig = 0;
+    elsif code == 0x16
+      out_sig = 1;
+    elsif code == 0x1e
+      out_sig = 2;
+    elsif code == 0x26
+      out_sig = 3;
+    elsif code == 0x25
+      out_sig = 4;
+    elsif code == 0x2e
+      out_sig = 5;
+    elsif code == 0x36
+      out_sig = 6;
+    elsif code == 0x3d
+      out_sig = 7;
+    elsif code == 0x3e
+      out_sig = 8;
+    elsif code == 0x46
+      out_sig = 9;
+    else
+      out_sig = 0;
+      valid = 0;
+    end if
+  end comb
+end module TopModule

@@ -1,0 +1,12 @@
+module TopModule
+  port in_sig: in UInt<8>;
+  port out_sig: out UInt<32>;
+  comb
+    for i in 0..7
+      out_sig[i] = in_sig[i];
+    end for
+    for i in 8..31
+      out_sig[i] = in_sig[7];
+    end for
+  end comb
+end module TopModule

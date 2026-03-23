@@ -1,0 +1,36 @@
+module TopModule
+  port a: in UInt<16>;
+  port b: in UInt<16>;
+  port c: in UInt<16>;
+  port d: in UInt<16>;
+  port e: in UInt<16>;
+  port f: in UInt<16>;
+  port g: in UInt<16>;
+  port h: in UInt<16>;
+  port i: in UInt<16>;
+  port sel: in UInt<4>;
+  port out_sig: out UInt<16>;
+  comb
+    if sel == 0
+      out_sig = a;
+    elsif sel == 1
+      out_sig = b;
+    elsif sel == 2
+      out_sig = c;
+    elsif sel == 3
+      out_sig = d;
+    elsif sel == 4
+      out_sig = e;
+    elsif sel == 5
+      out_sig = f;
+    elsif sel == 6
+      out_sig = g;
+    elsif sel == 7
+      out_sig = h;
+    elsif sel == 8
+      out_sig = i;
+    else
+      out_sig = 0xffff;
+    end if
+  end comb
+end module TopModule

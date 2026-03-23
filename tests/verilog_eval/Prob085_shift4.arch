@@ -1,0 +1,28 @@
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port clk: in Clock<SysDomain>;
+  port areset: in Reset<Async>;
+  port load: in Bool;
+  port ena: in Bool;
+  port data: in UInt<4>;
+  port q: out UInt<4>;
+
+  reg q_r: UInt<4> reset areset=0;
+
+  seq on clk rising
+    if load
+      q_r <= data;
+    elsif ena
+      q_r[3] <= 0;
+      q_r[2] <= q_r[3];
+      q_r[1] <= q_r[2];
+      q_r[0] <= q_r[1];
+    end if
+  end seq
+
+  comb
+    q = q_r;
+  end comb
+end module TopModule
