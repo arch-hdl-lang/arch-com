@@ -1,0 +1,12 @@
+module TopModule
+  port in_sig: in UInt<255>;
+  port out_sig: out UInt<8>;
+  wire acc: UInt<8>;
+  comb
+    acc = 0;
+    for i in 0..254
+      acc = (acc + in_sig[i].zext<8>()).trunc<8>();
+    end for
+    out_sig = acc;
+  end comb
+end module TopModule

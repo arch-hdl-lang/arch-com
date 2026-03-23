@@ -1,0 +1,65 @@
+// VerilogEval Prob144: 16x16 toroidal Game of Life
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port clk: in Clock<SysDomain>;
+  port load: in Bool;
+  port data: in UInt<256>;
+  port q: out UInt<256>;
+
+  reg grid: UInt<256> init 0 reset none;
+  wire next_grid: UInt<256>;
+
+  wire row: UInt<4>;
+  wire col: UInt<4>;
+  wire ra: UInt<4>;
+  wire rb: UInt<4>;
+  wire cl: UInt<4>;
+  wire cr: UInt<4>;
+  wire ncount: UInt<4>;
+
+  comb
+    row = 0;
+    col = 0;
+    ra = 0;
+    rb = 0;
+    cl = 0;
+    cr = 0;
+    ncount = 0;
+    for i in 0..255
+      row = (i / 16).trunc<4>();
+      col = (i % 16).trunc<4>();
+      ra = (row + 15).trunc<4>();
+      rb = (row + 1).trunc<4>();
+      cl = (col + 15).trunc<4>();
+      cr = (col + 1).trunc<4>();
+
+      ncount = (
+        grid[ra * 16 + cl].zext<4>()
+        + grid[ra * 16 + col].zext<4>()
+        + grid[ra * 16 + cr].zext<4>()
+        + grid[row * 16 + cl].zext<4>()
+        + grid[row * 16 + cr].zext<4>()
+        + grid[rb * 16 + cl].zext<4>()
+        + grid[rb * 16 + col].zext<4>()
+        + grid[rb * 16 + cr].zext<4>()
+      ).trunc<4>();
+
+      // alive = (ncount==3) | (ncount==2 & grid[i])
+      next_grid[i] = (ncount == 3) | ((ncount == 2) & grid[i]);
+    end for
+  end comb
+
+  seq on clk rising
+    if load
+      grid <= data;
+    else
+      grid <= next_grid;
+    end if
+  end seq
+
+  comb
+    q = grid;
+  end comb
+end module TopModule

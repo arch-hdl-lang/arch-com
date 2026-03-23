@@ -24,7 +24,7 @@ run() {
     # Verilator compile
     cd "$bdir"
     rm -rf obj_dir
-    if ! verilator --binary -Wno-fatal --timing --top-module tb \
+    if ! verilator --binary -Wno-fatal -Wno-BLKANDNBLK --timing --top-module tb \
         "$PROB/${prob}_ref.sv" TopModule.sv "$PROB/${prob}_test.sv" \
         -o sim_out 2>verilator_err.txt; then
         echo "FAIL $prob (verilator compile)"
@@ -190,6 +190,38 @@ run "Prob119_fsm3"            "$EVAL/Prob119_fsm3.sv"            's/in_sig/in/g;
 run "Prob127_lemmings1"       "$EVAL/Prob127_lemmings1.sv"       ''
 run "Prob136_m2014_q6"        "$EVAL/Prob136_m2014_q6.sv"        's/reset_sig/reset/g'
 run "Prob137_fsm_serial"      "$EVAL/Prob137_fsm_serial.sv"      's/reset_sig/reset/g; s/in_sig/in/g'
+
+# Batch 10: combinational (final)
+run "Prob021_mux256to1v"      "$EVAL/Prob021_mux256to1v.sv"      's/in_sig/in/g; s/out_sig/out/g'
+run "Prob030_popcount255"     "$EVAL/Prob030_popcount255.sv"     's/in_sig/in/g; s/out_sig/out/g'
+run "Prob052_gates100"        "$EVAL/Prob052_gates100.sv"        's/in_sig/in/g'
+run "Prob126_circuit6"        "$EVAL/Prob126_circuit6.sv"        ''
+run "Prob131_mt2015_q4"       "$EVAL/Prob131_mt2015_q4.sv"       ''
+run "Prob134_2014_q3c"        "$EVAL/Prob134_2014_q3c.sv"        's/y0_sig/Y0/g'
+run "Prob143_fsm_onehot"      "$EVAL/Prob143_fsm_onehot.sv"      's/in_sig/in/g; s/state_sig/state/g'
+run "Prob150_review2015_fsmonehot" "$EVAL/Prob150_review2015_fsmonehot.sv" 's/state_sig/state/g; s/b3_next/B3_next/g; s/s1_next/S1_next/g; s/s_next/S_next/g; s/count_next/Count_next/g; s/wait_next/Wait_next/g'
+
+# Batch 11: sequential (final)
+run "Prob108_rule90"          "$EVAL/Prob108_rule90.sv"          ''
+run "Prob124_rule110"         "$EVAL/Prob124_rule110.sv"         ''
+run "Prob141_count_clock"     "$EVAL/Prob141_count_clock.sv"     's/rst/reset/g'
+run "Prob144_conwaylife"      "$EVAL/Prob144_conwaylife.sv"      ''
+run "Prob147_circuit10"       "$EVAL/Prob147_circuit10.sv"       's/state_sig/state/g'
+run "Prob153_gshare"          "$EVAL/Prob153_gshare.sv"          's/arst/areset/g'
+
+# Batch 12: FSM (final)
+run "Prob121_2014_q3bfsm"    "$EVAL/Prob121_2014_q3bfsm.sv"    's/rst/reset/g'
+run "Prob133_2014_q3fsm"     "$EVAL/Prob133_2014_q3fsm.sv"     's/rst/reset/g; s/s_sig/s/g'
+run "Prob139_2013_q2bfsm"    "$EVAL/Prob139_2013_q2bfsm.sv"    ''
+run "Prob142_lemmings2"      "$EVAL/Prob142_lemmings2.sv"       ''
+run "Prob146_fsm_serialdata" "$EVAL/Prob146_fsm_serialdata.sv"  's/rst/reset/g; s/in_sig/in/g'
+run "Prob148_2013_q2afsm"   "$EVAL/Prob148_2013_q2afsm.sv"     ''
+run "Prob149_ece241_2013_q4" "$EVAL/Prob149_ece241_2013_q4.sv"  's/rst/reset/g; s/s_sig/s/g'
+run "Prob151_review2015_fsm" "$EVAL/Prob151_review2015_fsm.sv"  's/reset_sig/reset/g'
+run "Prob152_lemmings3"      "$EVAL/Prob152_lemmings3.sv"       ''
+run "Prob154_fsm_ps2data"    "$EVAL/Prob154_fsm_ps2data.sv"     's/rst/reset/g; s/in_sig/in/g'
+run "Prob155_lemmings4"      "$EVAL/Prob155_lemmings4.sv"       ''
+run "Prob156_review2015_fancytimer" "$EVAL/Prob156_review2015_fancytimer.sv" 's/reset_sig/reset/g'
 
 echo ""
 echo "=== Results: $pass/$total passed, $fail failed ==="

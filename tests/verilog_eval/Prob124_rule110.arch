@@ -1,0 +1,48 @@
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port clk: in Clock<SysDomain>;
+  port load: in Bool;
+  port data: in UInt<512>;
+  port q: out UInt<512>;
+
+  reg q_r: UInt<512>;
+
+  wire q_next: UInt<512>;
+  wire left_i: Bool;
+  wire center_i: Bool;
+  wire right_i: Bool;
+
+  comb
+    // Boundary: i=0 (right neighbor is 0)
+    left_i = q_r[1];
+    center_i = q_r[0];
+    right_i = 0;
+    q_next[0] = ~((left_i & center_i & right_i) | (~left_i & ~center_i & ~right_i) | (left_i & ~center_i & ~right_i));
+
+    // Inner cells
+    for i in 1..510
+      left_i = q_r[i + 1];
+      center_i = q_r[i];
+      right_i = q_r[i - 1];
+      q_next[i] = ~((left_i & center_i & right_i) | (~left_i & ~center_i & ~right_i) | (left_i & ~center_i & ~right_i));
+    end for
+
+    // Boundary: i=511 (left neighbor is 0)
+    left_i = 0;
+    center_i = q_r[511];
+    right_i = q_r[510];
+    q_next[511] = ~((left_i & center_i & right_i) | (~left_i & ~center_i & ~right_i) | (left_i & ~center_i & ~right_i));
+
+    q = q_r;
+  end comb
+
+  seq on clk rising
+    if load
+      q_r <= data;
+    else
+      q_r <= q_next;
+    end if
+  end seq
+end module TopModule

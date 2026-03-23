@@ -1,0 +1,72 @@
+// VerilogEval Prob153: Gshare branch predictor
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port clk: in Clock<SysDomain>;
+  port arst: in Reset<Async>;
+  port predict_valid: in Bool;
+  port predict_pc: in UInt<7>;
+  port train_valid: in Bool;
+  port train_taken: in Bool;
+  port train_mispredicted: in Bool;
+  port train_history: in UInt<7>;
+  port train_pc: in UInt<7>;
+  port predict_taken: out Bool;
+  port predict_history: out UInt<7>;
+
+  // 128-entry PHT, 2-bit saturating counters, init to weakly not-taken (01)
+  reg pht: Vec<UInt<2>, 128> reset arst=1;
+  reg ghr: UInt<7> reset arst=0;
+
+  wire predict_idx: UInt<7>;
+  wire train_idx: UInt<7>;
+  wire train_cnt: UInt<2>;
+  wire train_new: UInt<2>;
+
+  comb
+    predict_idx = predict_pc ^ ghr;
+    train_idx = train_pc ^ train_history;
+
+    // Gate outputs: 0 when predict_valid=0 (Verilator 2-state compatibility)
+    if predict_valid
+      predict_taken = pht[predict_idx][1];
+      predict_history = ghr;
+    else
+      predict_taken = 0;
+      predict_history = 0;
+    end if
+
+    // Compute updated counter for training
+    train_cnt = pht[train_idx];
+    train_new = train_cnt;
+    if train_taken & (train_cnt != 3)
+      train_new = (train_cnt + 1).trunc<2>();
+    elsif ~train_taken & (train_cnt != 0)
+      train_new = (train_cnt - 1).trunc<2>();
+    end if
+  end comb
+
+  seq on clk rising
+    // Train PHT
+    if train_valid
+      pht[train_idx] <= train_new;
+    end if
+
+    // Update GHR: predict shifts in predicted taken
+    if predict_valid
+      ghr[0] <= pht[predict_idx][1];
+      for i in 1..6
+        ghr[i] <= ghr[i - 1];
+      end for
+    end if
+
+    // Misprediction recovery overwrites GHR (last assignment wins)
+    if train_valid & train_mispredicted
+      ghr[0] <= train_taken;
+      for i in 1..6
+        ghr[i] <= train_history[i - 1];
+      end for
+    end if
+  end seq
+end module TopModule

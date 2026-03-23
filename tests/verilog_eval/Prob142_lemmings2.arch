@@ -1,0 +1,60 @@
+// VerilogEval Prob142: Lemmings walk/fall FSM with async reset
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port clk: in Clock<SysDomain>;
+  port areset: in Reset<Async>;
+  port bump_left: in Bool;
+  port bump_right: in Bool;
+  port ground: in Bool;
+  port walk_left: out Bool;
+  port walk_right: out Bool;
+  port aaah: out Bool;
+
+  // States: 0=WalkLeft, 1=WalkRight, 2=FallLeft, 3=FallRight
+  reg state_r: UInt<2> reset areset=0;
+
+  wire next_state: UInt<2>;
+
+  comb
+    next_state = state_r;
+    if state_r == 0
+      // Walking left
+      if ~ground
+        next_state = 2;
+      elsif bump_left
+        next_state = 1;
+      end if
+    elsif state_r == 1
+      // Walking right
+      if ~ground
+        next_state = 3;
+      elsif bump_right
+        next_state = 0;
+      end if
+    elsif state_r == 2
+      // Falling (was walking left)
+      if ground
+        next_state = 0;
+      end if
+    elsif state_r == 3
+      // Falling (was walking right)
+      if ground
+        next_state = 1;
+      end if
+    else
+      next_state = 0;
+    end if
+  end comb
+
+  seq on clk rising
+    state_r <= next_state;
+  end seq
+
+  comb
+    walk_left = (state_r == 0);
+    walk_right = (state_r == 1);
+    aaah = (state_r == 2) | (state_r == 3);
+  end comb
+end module TopModule

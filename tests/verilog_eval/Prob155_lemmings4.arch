@@ -1,0 +1,116 @@
+// VerilogEval Prob155: Lemmings walk/fall/dig/splatter FSM with async reset
+// Fall > 20 cycles then hit ground = splat (dead forever)
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port clk: in Clock<SysDomain>;
+  port areset: in Reset<Async>;
+  port bump_left: in Bool;
+  port bump_right: in Bool;
+  port ground: in Bool;
+  port dig: in Bool;
+  port walk_left: out Bool;
+  port walk_right: out Bool;
+  port aaah: out Bool;
+  port digging: out Bool;
+
+  // States: 0=WalkLeft, 1=WalkRight, 2=FallLeft, 3=FallRight, 4=DigLeft, 5=DigRight, 6=Splat
+  reg state_r: UInt<3> reset areset=0;
+  reg fall_count: UInt<5> reset areset=0;
+  // Flag set when fall exceeds 20 cycles; never cleared until reset
+  reg long_fall: Bool reset areset=false;
+
+  wire next_state: UInt<3>;
+  wire next_fall_count: UInt<5>;
+  wire next_long_fall: Bool;
+
+  comb
+    next_state = state_r;
+    next_fall_count = 0;
+    next_long_fall = long_fall;
+    if state_r == 0
+      // WalkLeft
+      next_long_fall = false;
+      if ~ground
+        next_state = 2;
+        next_fall_count = 1;
+      elsif dig
+        next_state = 4;
+      elsif bump_left
+        next_state = 1;
+      end if
+    elsif state_r == 1
+      // WalkRight
+      next_long_fall = false;
+      if ~ground
+        next_state = 3;
+        next_fall_count = 1;
+      elsif dig
+        next_state = 5;
+      elsif bump_right
+        next_state = 0;
+      end if
+    elsif state_r == 2
+      // FallLeft
+      if ground
+        if long_fall | (fall_count > 20)
+          next_state = 6;
+        else
+          next_state = 0;
+        end if
+      else
+        next_state = 2;
+        next_fall_count = (fall_count + 1).trunc<5>();
+        if fall_count > 19
+          next_long_fall = true;
+        end if
+      end if
+    elsif state_r == 3
+      // FallRight
+      if ground
+        if long_fall | (fall_count > 20)
+          next_state = 6;
+        else
+          next_state = 1;
+        end if
+      else
+        next_state = 3;
+        next_fall_count = (fall_count + 1).trunc<5>();
+        if fall_count > 19
+          next_long_fall = true;
+        end if
+      end if
+    elsif state_r == 4
+      // DigLeft
+      if ~ground
+        next_state = 2;
+        next_fall_count = 1;
+      end if
+    elsif state_r == 5
+      // DigRight
+      if ~ground
+        next_state = 3;
+        next_fall_count = 1;
+      end if
+    elsif state_r == 6
+      // Splat: dead forever
+      next_state = 6;
+    else
+      next_state = 0;
+    end if
+  end comb
+
+  seq on clk rising
+    state_r <= next_state;
+    fall_count <= next_fall_count;
+    long_fall <= next_long_fall;
+  end seq
+
+  comb
+    walk_left = (state_r == 0);
+    walk_right = (state_r == 1);
+    aaah = (state_r == 2) | (state_r == 3);
+    digging = (state_r == 4) | (state_r == 5);
+  end comb
+end module TopModule

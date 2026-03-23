@@ -1,0 +1,22 @@
+module TopModule
+  port in_sig: in UInt<100>;
+  port out_and: out Bool;
+  port out_or: out Bool;
+  port out_xor: out Bool;
+  wire a: Bool;
+  wire o: Bool;
+  wire x: Bool;
+  comb
+    a = in_sig[0];
+    o = in_sig[0];
+    x = in_sig[0];
+    for i in 1..99
+      a = a & in_sig[i];
+      o = o | in_sig[i];
+      x = x ^ in_sig[i];
+    end for
+    out_and = a;
+    out_or = o;
+    out_xor = x;
+  end comb
+end module TopModule

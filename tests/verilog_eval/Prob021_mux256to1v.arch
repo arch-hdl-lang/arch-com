@@ -1,0 +1,10 @@
+module TopModule
+  port in_sig: in UInt<1024>;
+  port sel: in UInt<8>;
+  port out_sig: out UInt<4>;
+  comb
+    for i in 0..3
+      out_sig[i] = in_sig[sel * 4 + i];
+    end for
+  end comb
+end module TopModule

@@ -1,0 +1,23 @@
+module TopModule
+  port a: in UInt<3>;
+  port q: out UInt<16>;
+  comb
+    if a == 0
+      q = 4658;
+    elsif a == 1
+      q = 44768;
+    elsif a == 2
+      q = 10196;
+    elsif a == 3
+      q = 23054;
+    elsif a == 4
+      q = 8294;
+    elsif a == 5
+      q = 25806;
+    elsif a == 6
+      q = 50470;
+    else
+      q = 12057;
+    end if
+  end comb
+end module TopModule

@@ -1,0 +1,39 @@
+module TopModule
+  port clk: in Clock<SysDomain>;
+  port x: in Bool;
+  port y: in UInt<3>;
+  port y0_sig: out Bool;
+  port z: out Bool;
+  wire yx: UInt<4>;
+  comb
+    yx = (y.zext<4>() * 2 + x.zext<4>()).trunc<4>();
+    if yx == 0
+      y0_sig = 0;
+    elsif yx == 1
+      y0_sig = 1;
+    elsif yx == 2
+      y0_sig = 1;
+    elsif yx == 3
+      y0_sig = 0;
+    elsif yx == 4
+      y0_sig = 0;
+    elsif yx == 5
+      y0_sig = 1;
+    elsif yx == 6
+      y0_sig = 1;
+    elsif yx == 7
+      y0_sig = 0;
+    elsif yx == 8
+      y0_sig = 1;
+    else
+      y0_sig = 0;
+    end if
+    if y == 3
+      z = 1;
+    elsif y == 4
+      z = 1;
+    else
+      z = 0;
+    end if
+  end comb
+end module TopModule

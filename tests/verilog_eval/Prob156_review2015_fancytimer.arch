@@ -1,0 +1,85 @@
+// VerilogEval Prob156: Full timer FSM - detect 1101, shift 4-bit delay, count down, done+ack
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port clk: in Clock<SysDomain>;
+  port reset_sig: in Reset<Sync>;
+  port data: in Bool;
+  port ack: in Bool;
+  port count: out UInt<4>;
+  port counting: out Bool;
+  port done: out Bool;
+
+  // FSM states: 0=S, 1=S1, 2=S11, 3=S110
+  // 4=B0, 5=B1, 6=B2, 7=B3
+  // 8=COUNT, 9=DONE_ST
+  reg state_reg: UInt<4> reset reset_sig=0;
+  reg delay_reg: UInt<4> reset reset_sig=0;
+  reg cnt_reg: UInt<4> reset reset_sig=0;
+  reg sub_cnt: UInt<10> reset reset_sig=0;
+
+  seq on clk rising
+    if state_reg == 0
+      if data
+        state_reg <= 1;
+      end if
+    elsif state_reg == 1
+      if data
+        state_reg <= 2;
+      else
+        state_reg <= 0;
+      end if
+    elsif state_reg == 2
+      if ~data
+        state_reg <= 3;
+      end if
+    elsif state_reg == 3
+      if data
+        state_reg <= 4;
+      else
+        state_reg <= 0;
+      end if
+    elsif state_reg == 4
+      delay_reg[3] <= data;
+      state_reg <= 5;
+    elsif state_reg == 5
+      delay_reg[2] <= data;
+      state_reg <= 6;
+    elsif state_reg == 6
+      delay_reg[1] <= data;
+      state_reg <= 7;
+    elsif state_reg == 7
+      // Last bit shifted in; go directly to COUNT
+      delay_reg[0] <= data;
+      // Init counter: cnt starts at delay value, sub_cnt at 0
+      // But delay[0] isn't stored yet, so compute initial cnt from {delay_reg[3:1], data}
+      cnt_reg[0] <= data;
+      cnt_reg[1] <= delay_reg[1];
+      cnt_reg[2] <= delay_reg[2];
+      cnt_reg[3] <= delay_reg[3];
+      sub_cnt <= 0;
+      state_reg <= 8;
+    elsif state_reg == 8
+      // COUNT
+      if (sub_cnt == 999) & (cnt_reg == 0)
+        state_reg <= 9;
+      elsif sub_cnt == 999
+        sub_cnt <= 0;
+        cnt_reg <= (cnt_reg - 1).trunc<4>();
+      else
+        sub_cnt <= (sub_cnt + 1).trunc<10>();
+      end if
+    elsif state_reg == 9
+      if ack
+        state_reg <= 0;
+      end if
+    end if
+  end seq
+
+  comb
+    counting = (state_reg == 8);
+    done = (state_reg == 9);
+    count = cnt_reg;
+  end comb
+end module TopModule
