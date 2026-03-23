@@ -1,0 +1,16 @@
+// VerilogEval Prob028: D latch
+module TopModule
+  port d: in Bool;
+  port ena: in Bool;
+  port q: out Bool;
+
+  reg q_r: Bool;
+
+  latch on ena
+    q_r <= d;
+  end latch
+
+  comb
+    q = q_r;
+  end comb
+end module TopModule

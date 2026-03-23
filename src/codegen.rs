@@ -327,6 +327,7 @@ impl<'a> Codegen<'a> {
                 }
                 ModuleBodyItem::CombBlock(cb) => self.emit_comb_block(cb),
                 ModuleBodyItem::RegBlock(rb) => self.emit_reg_block(rb, &m_clone),
+                ModuleBodyItem::LatchBlock(lb) => self.emit_latch_block(lb),
                 ModuleBodyItem::Inst(inst) => {
                     // Auto-declare output wires that aren't already declared
                     self.emit_inst_output_wire_decls(inst, &declared_names);
@@ -838,6 +839,20 @@ impl<'a> Codegen<'a> {
             self.indent -= 1;
             self.line("end");
         }
+    }
+
+    fn emit_latch_block(&mut self, lb: &LatchBlock) {
+        self.line(&format!("always_latch begin"));
+        self.indent += 1;
+        self.line(&format!("if ({}) begin", lb.enable.name));
+        self.indent += 1;
+        for stmt in &lb.stmts {
+            self.emit_reg_stmt(stmt);
+        }
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line("end");
     }
 
     /// Resolve a register's reset info: returns Some((signal_name, is_async, is_low))

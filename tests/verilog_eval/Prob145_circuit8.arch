@@ -1,4 +1,4 @@
-// VerilogEval Prob145: p=a when clock high, p holds on negedge; q captures p on negedge
+// VerilogEval Prob145: p is positive-level latch of a, q captures a on negedge
 domain SysDomain
 end domain SysDomain
 
@@ -11,17 +11,16 @@ module TopModule
   reg p_r: Bool;
   reg q_r: Bool;
 
-  seq on clock falling
+  latch on clock
     p_r <= a;
+  end latch
+
+  seq on clock falling
     q_r <= a;
   end seq
 
   comb
-    if clock
-      p = a;
-    else
-      p = p_r;
-    end if
+    p = p_r;
     q = q_r;
   end comb
 end module TopModule

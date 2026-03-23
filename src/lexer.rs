@@ -62,6 +62,8 @@ pub enum TokenKind {
     Low,
     #[token("seq")]
     Seq,
+    #[token("latch")]
+    Latch,
     #[token("none")]
     None,
     #[token("init")]
@@ -327,6 +329,7 @@ impl fmt::Display for TokenKind {
             TokenKind::High => write!(f, "high"),
             TokenKind::Low => write!(f, "low"),
             TokenKind::Seq => write!(f, "seq"),
+            TokenKind::Latch => write!(f, "latch"),
             TokenKind::None => write!(f, "none"),
             TokenKind::Init => write!(f, "init"),
             TokenKind::If => write!(f, "if"),

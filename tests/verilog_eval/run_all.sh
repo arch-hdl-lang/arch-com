@@ -222,7 +222,8 @@ run "Prob152_lemmings3"      "$EVAL/Prob152_lemmings3.sv"       ''
 run "Prob154_fsm_ps2data"    "$EVAL/Prob154_fsm_ps2data.sv"     's/rst/reset/g; s/in_sig/in/g'
 run "Prob155_lemmings4"      "$EVAL/Prob155_lemmings4.sv"       ''
 run "Prob078_dualedge"        "$EVAL/Prob078_dualedge.sv"        ''
-# Prob145_circuit8: skipped — requires positive-level latch for p output (negedge FF for q works)
+run "Prob028_m2014_q4a"       "$EVAL/Prob028_m2014_q4a.sv"       ''
+run "Prob145_circuit8"        "$EVAL/Prob145_circuit8.sv"        ''
 run "Prob156_review2015_fancytimer" "$EVAL/Prob156_review2015_fancytimer.sv" 's/reset_sig/reset/g'
 
 echo ""

@@ -105,6 +105,7 @@ pub enum Direction {
 pub enum ModuleBodyItem {
     RegDecl(RegDecl),
     RegBlock(RegBlock),
+    LatchBlock(LatchBlock),
     CombBlock(CombBlock),
     LetBinding(LetBinding),
     Inst(InstDecl),
@@ -118,6 +119,7 @@ impl ModuleBodyItem {
         match self {
             ModuleBodyItem::RegDecl(r)    => r.span,
             ModuleBodyItem::RegBlock(r)   => r.span,
+            ModuleBodyItem::LatchBlock(l) => l.span,
             ModuleBodyItem::CombBlock(c)  => c.span,
             ModuleBodyItem::LetBinding(l) => l.span,
             ModuleBodyItem::Inst(i)       => i.span,
@@ -197,6 +199,13 @@ pub enum RegReset {
 pub struct RegBlock {
     pub clock: Ident,
     pub clock_edge: ClockEdge,
+    pub stmts: Vec<Stmt>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct LatchBlock {
+    pub enable: Ident,
     pub stmts: Vec<Stmt>,
     pub span: Span,
 }

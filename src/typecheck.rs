@@ -173,6 +173,24 @@ impl<'a> TypeChecker<'a> {
                     // same seq block must agree on signal name, sync/async, and polarity.
                     self.check_always_block_reset_consistency(rb, m);
                 }
+                ModuleBodyItem::LatchBlock(lb) => {
+                    // Validate enable signal exists and is Bool
+                    if let Some(ty) = local_types.get(&lb.enable.name) {
+                        if !matches!(ty, Ty::Bool | Ty::Clock(_)) {
+                            self.errors.push(CompileError::general(
+                                &format!(
+                                    "latch enable signal `{}` must be Bool or Clock, found {:?}",
+                                    lb.enable.name, ty
+                                ),
+                                lb.span,
+                            ));
+                        }
+                    }
+                    // Check stmts (same as seq — targets must be regs)
+                    for stmt in &lb.stmts {
+                        self.check_reg_stmt(stmt, &m.name.name, &local_types, &mut driven);
+                    }
+                }
                 ModuleBodyItem::CombBlock(cb) => {
                     for stmt in &cb.stmts {
                         self.check_comb_stmt(stmt, &m.name.name, &local_types, &mut driven, &reg_names);

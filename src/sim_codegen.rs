@@ -2242,6 +2242,15 @@ impl<'a> SimCodegen<'a> {
                 emit_comb_stmts(&cb.stmts, &ctx_comb, &mut body, 1);
                 cpp.push_str(&body);
             }
+            // Latch blocks: level-sensitive — update reg when enable is active
+            if let ModuleBodyItem::LatchBlock(lb) = item {
+                let en = ctx_comb.resolve_name(&lb.enable.name, false);
+                cpp.push_str(&format!("  if ({}) {{\n", en));
+                let mut body = String::new();
+                emit_reg_stmts(&lb.stmts, &ctx_comb, &mut body, 2);
+                cpp.push_str(&body);
+                cpp.push_str("  }\n");
+            }
         }
         cpp.push_str("}\n");
 

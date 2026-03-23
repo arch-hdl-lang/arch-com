@@ -178,6 +178,9 @@ impl Parser {
                 Some(TokenKind::Seq) => {
                     body.push(ModuleBodyItem::RegBlock(self.parse_always_block()?));
                 }
+                Some(TokenKind::Latch) => {
+                    body.push(ModuleBodyItem::LatchBlock(self.parse_latch_block()?));
+                }
                 Some(TokenKind::Comb) => {
                     body.push(ModuleBodyItem::CombBlock(self.parse_comb_block()?));
                 }
@@ -446,6 +449,31 @@ impl Parser {
         self.pos + 1 < self.tokens.len()
             && self.tokens[self.pos].kind == TokenKind::End
             && self.tokens[self.pos + 1].kind == TokenKind::Seq
+    }
+
+    fn parse_latch_block(&mut self) -> Result<LatchBlock, CompileError> {
+        let start = self.expect(TokenKind::Latch)?.span;
+        self.expect(TokenKind::On)?;
+        let enable = self.expect_ident()?;
+
+        let mut stmts = Vec::new();
+        while !self.check_end_latch() {
+            stmts.push(self.parse_reg_stmt()?);
+        }
+        self.expect(TokenKind::End)?;
+        self.expect(TokenKind::Latch)?;
+        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        Ok(LatchBlock {
+            enable,
+            stmts,
+            span: start.merge(end_span),
+        })
+    }
+
+    fn check_end_latch(&self) -> bool {
+        self.pos + 1 < self.tokens.len()
+            && self.tokens[self.pos].kind == TokenKind::End
+            && self.tokens[self.pos + 1].kind == TokenKind::Latch
     }
 
     /// Parse `log(Level, "TAG", "fmt", arg, ...) ;`
