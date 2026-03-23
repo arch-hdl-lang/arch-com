@@ -9,7 +9,7 @@ module TopModule
   port train_taken: in Bool;
   port state_sig: out UInt<2>;
 
-  reg cnt: UInt<2> init 1 reset areset=1;
+  reg cnt: UInt<2> reset areset=1;
 
   seq on clk rising
     if train_valid

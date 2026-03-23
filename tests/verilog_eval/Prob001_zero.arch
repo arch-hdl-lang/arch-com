@@ -1,0 +1,10 @@
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port zero: out Bool;
+
+  comb
+    zero = 1'b0;
+  end comb
+end module TopModule

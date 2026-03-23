@@ -1,0 +1,26 @@
+// VerilogEval Prob086: 5-bit Galois LFSR, taps at 5 and 3, sync reset to 1
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port q: out UInt<5>;
+
+  reg q_r: UInt<5> reset rst=1;
+
+  wire q_next: UInt<5>;
+
+  comb
+    q_next[4] = q_r[0];
+    q_next[3] = q_r[4];
+    q_next[2] = q_r[3] ^ q_r[0];
+    q_next[1] = q_r[2];
+    q_next[0] = q_r[1];
+    q = q_r;
+  end comb
+
+  seq on clk rising
+    q_r <= q_next;
+  end seq
+end module TopModule

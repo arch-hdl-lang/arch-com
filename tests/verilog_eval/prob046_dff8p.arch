@@ -1,0 +1,20 @@
+// VerilogEval Prob046: 8 DFFs, active high sync reset to 0x34, negedge clk
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port d: in UInt<8>;
+  port q: out UInt<8>;
+
+  reg q_r: UInt<8> reset rst=0x34;
+
+  seq on clk falling
+    q_r <= d;
+  end seq
+
+  comb
+    q = q_r;
+  end comb
+end module TopModule

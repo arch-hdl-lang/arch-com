@@ -1,0 +1,14 @@
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port a: in Bool;
+  port b: in Bool;
+  port sum_sig: out Bool;
+  port cout: out Bool;
+
+  comb
+    sum_sig = a ^ b;
+    cout = a & b;
+  end comb
+end module TopModule

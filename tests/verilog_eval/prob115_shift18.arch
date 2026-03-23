@@ -1,0 +1,39 @@
+// VerilogEval Prob115: 64-bit arithmetic shift register
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port clk: in Clock<SysDomain>;
+  port load: in Bool;
+  port ena: in Bool;
+  port amount: in UInt<2>;
+  port data: in UInt<64>;
+  port q: out UInt<64>;
+
+  reg q_r: UInt<64> init 0 reset none;
+
+  wire sra1: UInt<64>;
+  wire sra8: UInt<64>;
+
+  comb
+    sra1 = {q_r[63], (q_r >> 1).trunc<63>()};
+    sra8 = {{8{q_r[63]}}, (q_r >> 8).trunc<56>()};
+    q = q_r;
+  end comb
+
+  seq on clk rising
+    if load
+      q_r <= data;
+    elsif ena
+      if amount == 0
+        q_r <= (q_r << 1).trunc<64>();
+      elsif amount == 1
+        q_r <= (q_r << 8).trunc<64>();
+      elsif amount == 2
+        q_r <= sra1;
+      else
+        q_r <= sra8;
+      end if
+    end if
+  end seq
+end module TopModule

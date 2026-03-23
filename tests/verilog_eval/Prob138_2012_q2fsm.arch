@@ -1,0 +1,49 @@
+// VerilogEval Prob138: 6-state FSM, input w, output z
+domain SysDomain
+end domain SysDomain
+
+fsm TopModule
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port w: in Bool;
+  port z: out Bool default false;
+
+  state A, B, C, D, E, F;
+  default state A;
+
+  state A
+    transition to B when w;
+  end state A
+
+  state B
+    transition to C when w;
+    transition to D when ~w;
+  end state B
+
+  state C
+    transition to E when w;
+    transition to D when ~w;
+  end state C
+
+  state D
+    transition to F when w;
+    transition to A when ~w;
+  end state D
+
+  state E
+    comb
+      z = true;
+    end comb
+    transition to E when w;
+    transition to D when ~w;
+  end state E
+
+  state F
+    comb
+      z = true;
+    end comb
+    transition to C when w;
+    transition to D when ~w;
+  end state F
+
+end fsm TopModule

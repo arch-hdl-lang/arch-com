@@ -1,0 +1,36 @@
+// VerilogEval Prob095: FSM that asserts shift_ena for 4 cycles after reset
+domain SysDomain
+end domain SysDomain
+
+fsm TopModule
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port shift_ena: out Bool default true;
+
+  state B0, B1, B2, B3, Done;
+  default state B0;
+
+  state B0
+    transition to B1 when true;
+  end state B0
+
+  state B1
+    transition to B2 when true;
+  end state B1
+
+  state B2
+    transition to B3 when true;
+  end state B2
+
+  state B3
+    transition to Done when true;
+  end state B3
+
+  state Done
+    comb
+      shift_ena = false;
+    end comb
+    transition to Done when true;
+  end state Done
+
+end fsm TopModule

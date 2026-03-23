@@ -9,7 +9,7 @@ module TopModule (
   output logic [2-1:0] state_sig
 );
 
-  logic [2-1:0] cnt = 1;
+  logic [2-1:0] cnt;
   always_ff @(posedge clk or posedge areset) begin
     if (areset) begin
       cnt <= 1;

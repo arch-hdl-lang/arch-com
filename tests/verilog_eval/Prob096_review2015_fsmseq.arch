@@ -1,0 +1,40 @@
+// VerilogEval Prob096: Detect 1101 sequence, assert start_shifting forever
+domain SysDomain
+end domain SysDomain
+
+fsm TopModule
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port data: in Bool;
+  port start_shifting: out Bool default false;
+
+  state S, S1, S11, S110, Done;
+  default state S;
+
+  state S
+    transition to S1 when data;
+  end state S
+
+  state S1
+    transition to S11 when data;
+    transition to S when ~data;
+  end state S1
+
+  state S11
+    transition to S11 when data;
+    transition to S110 when ~data;
+  end state S11
+
+  state S110
+    transition to Done when data;
+    transition to S when ~data;
+  end state S110
+
+  state Done
+    comb
+      start_shifting = true;
+    end comb
+    transition to Done when true;
+  end state Done
+
+end fsm TopModule

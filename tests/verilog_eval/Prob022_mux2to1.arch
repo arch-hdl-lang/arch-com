@@ -1,0 +1,17 @@
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port a: in Bool;
+  port b: in Bool;
+  port sel: in Bool;
+  port out_sig: out Bool;
+
+  comb
+    if sel == 1'b1
+      out_sig = b;
+    else
+      out_sig = a;
+    end if
+  end comb
+end module TopModule

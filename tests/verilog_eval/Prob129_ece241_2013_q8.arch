@@ -1,0 +1,50 @@
+// VerilogEval Prob129: Mealy FSM detecting overlapping 101, async active-low reset
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port clk: in Clock<SysDomain>;
+  port aresetn: in Reset<Async, Low>;
+  port x: in Bool;
+  port z: out Bool;
+
+  reg state_r: UInt<2> init 0 reset aresetn=0;
+
+  wire next_state: UInt<2>;
+
+  comb
+    if state_r == 0
+      if x
+        next_state = 1;
+      else
+        next_state = 0;
+      end if
+    elsif state_r == 1
+      if x
+        next_state = 1;
+      else
+        next_state = 2;
+      end if
+    elsif state_r == 2
+      if x
+        next_state = 1;
+      else
+        next_state = 0;
+      end if
+    else
+      next_state = 0;
+    end if
+  end comb
+
+  seq on clk rising
+    state_r <= next_state;
+  end seq
+
+  comb
+    if (state_r == 2) & x
+      z = true;
+    else
+      z = false;
+    end if
+  end comb
+end module TopModule

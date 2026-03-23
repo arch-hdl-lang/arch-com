@@ -1,0 +1,14 @@
+domain SysDomain
+end domain SysDomain
+
+module TopModule
+  port a: in Bool;
+  port b: in Bool;
+  port c: in Bool;
+  port d: in Bool;
+  port out_sig: out Bool;
+
+  comb
+    out_sig = a ^ b ^ c ^ d;
+  end comb
+end module TopModule
