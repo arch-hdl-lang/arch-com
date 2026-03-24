@@ -1,43 +1,33 @@
 domain SysDomain
 end domain SysDomain
 
-module TopModule
+fsm TopModule
   port clk: in Clock<SysDomain>;
   port areset: in Reset<Async>;
   port in: in Bool;
-  port out: out Bool;
+  port out: out Bool default false;
 
-  reg st: UInt<2> reset areset=0;
+  state A, B, C, D;
+  default state A;
 
-  seq on clk rising
-    if st == 0
-      if in
-        st <= 1;
-      end if
-    elsif st == 1
-      if ~in
-        st <= 2;
-      end if
-    elsif st == 2
-      if in
-        st <= 3;
-      else
-        st <= 0;
-      end if
-    else
-      if in
-        st <= 1;
-      else
-        st <= 2;
-      end if
-    end if
-  end seq
+  state A
+    transition to B when in;
+  end state A
 
-  comb
-    if st == 3
-      out = 1;
-    else
-      out = 0;
-    end if
-  end comb
-end module TopModule
+  state B
+    transition to C when ~in;
+  end state B
+
+  state C
+    transition to D when in;
+    transition to A when ~in;
+  end state C
+
+  state D
+    comb
+      out = true;
+    end comb
+    transition to B when in;
+    transition to C when ~in;
+  end state D
+end fsm TopModule

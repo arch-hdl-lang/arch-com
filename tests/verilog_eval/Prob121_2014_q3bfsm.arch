@@ -1,62 +1,39 @@
-// VerilogEval Prob121: 5-state FSM with state-assigned table
 domain SysDomain
 end domain SysDomain
 
-module TopModule
+fsm TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
   port x: in Bool;
-  port z: out Bool;
+  port z: out Bool default false;
 
-  reg state_r: UInt<3> reset reset=0;
+  state A, B, C, D, E;
+  default state A;
 
-  wire next_state: UInt<3>;
+  state A
+    transition to B when x;
+  end state A
 
-  comb
-    if state_r == 0
-      if x
-        next_state = 1;
-      else
-        next_state = 0;
-      end if
-    elsif state_r == 1
-      if x
-        next_state = 4;
-      else
-        next_state = 1;
-      end if
-    elsif state_r == 2
-      if x
-        next_state = 1;
-      else
-        next_state = 2;
-      end if
-    elsif state_r == 3
-      if x
-        next_state = 2;
-      else
-        next_state = 1;
-      end if
-    elsif state_r == 4
-      if x
-        next_state = 4;
-      else
-        next_state = 3;
-      end if
-    else
-      next_state = 0;
-    end if
-  end comb
+  state B
+    transition to E when x;
+  end state B
 
-  seq on clk rising
-    state_r <= next_state;
-  end seq
+  state C
+    transition to B when x;
+  end state C
 
-  comb
-    if (state_r == 3) | (state_r == 4)
+  state D
+    comb
       z = true;
-    else
-      z = false;
-    end if
-  end comb
-end module TopModule
+    end comb
+    transition to C when x;
+    transition to B when ~x;
+  end state D
+
+  state E
+    comb
+      z = true;
+    end comb
+    transition to D when ~x;
+  end state E
+end fsm TopModule

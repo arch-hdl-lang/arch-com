@@ -35,13 +35,23 @@ IMPORTANT WORKFLOW — follow this order when writing .arch code:
 2. THEN write the .arch code using write_and_check() (writes + type-checks in one call)
 3. THEN call arch_build_and_lint() to generate SV and verify with Verilator
 
+CONSTRUCT SELECTION — use first-class constructs when possible:
+- FSM behavior → use 'fsm' (NOT a module with manual state register)
+- FIFO → use 'fifo' (NOT a module with manual pointers)
+- RAM/ROM → use 'ram' with appropriate kind (NOT a module with reg array)
+- Arbiter → use 'arbiter' with policy (NOT manual grant logic in a module)
+- Pipeline → use 'pipeline' with stages (NOT manual valid/stall registers)
+- Only use 'module' for pure combinational/registered logic that doesn't fit the above
+
 Common mistakes to avoid:
 - inst connections use 'connect port <- signal' and 'connect port -> wire' (NOT '=' or direct assignment)
 - Hierarchical references (inst_name.port_name) are FORBIDDEN — always connect outputs explicitly
 - 'let' declarations REQUIRE an initializer (let x: UInt<8> = expr;)
 - Do NOT use reserved keywords as signal/register names (counter, interface, domain, etc.)
+- 'in', 'out', 'state' are contextual keywords — safe to use as port/signal names
 - All output ports of an inst MUST be explicitly connected via 'connect port -> wire'
 - Use 'elsif' for chained conditionals (NOT 'else if'). 'else' starts a body block; 'elsif' chains.
+- Bit-slice syntax: expr[hi:lo] extracts bits (NOT .trunc<Hi,Lo>())
 """,
 )
 
@@ -102,7 +112,7 @@ RESERVED_KEYWORDS = {
     "module", "pipeline", "fsm", "fifo", "ram", "arbiter", "synchronizer",
     "counter", "regfile", "interface", "domain", "struct", "enum",
     "generate", "inst", "port", "param", "reg", "let", "comb", "seq",
-    "assert", "cover", "if", "else", "elsif", "end", "for", "in", "on", "rising",
+    "assert", "cover", "if", "else", "elsif", "end", "for", "on", "rising",
     "falling", "init", "reset", "sync", "async", "high", "low", "none",
     "forward", "stall", "flush", "when", "kind", "policy", "connect",
     "true", "false", "todo",

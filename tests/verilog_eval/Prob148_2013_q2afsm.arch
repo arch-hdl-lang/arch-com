@@ -2,61 +2,39 @@
 domain SysDomain
 end domain SysDomain
 
-module TopModule
+fsm TopModule
   port clk: in Clock<SysDomain>;
   port resetn: in Reset<Sync, Low>;
   port r: in UInt<3>;
-  port g: out UInt<3>;
+  port g: out UInt<3> default 0;
 
-  // States: 0=A(idle), 1=B(grant0), 2=C(grant1), 3=D(grant2)
-  reg state_r: UInt<2> reset resetn=0;
+  state Idle, Grant0, Grant1, Grant2;
+  default state Idle;
 
-  wire next_state: UInt<2>;
+  state Idle
+    transition to Grant0 when r[0];
+    transition to Grant1 when ~r[0] & r[1];
+    transition to Grant2 when ~r[0] & ~r[1] & r[2];
+  end state Idle
 
-  comb
-    next_state = state_r;
-    if state_r == 0
-      // Idle: priority r[0] > r[1] > r[2]
-      if r[0]
-        next_state = 1;
-      elsif r[1]
-        next_state = 2;
-      elsif r[2]
-        next_state = 3;
-      end if
-    elsif state_r == 1
-      // Grant 0: stay while r[0]=1
-      if ~r[0]
-        next_state = 0;
-      end if
-    elsif state_r == 2
-      // Grant 1: stay while r[1]=1
-      if ~r[1]
-        next_state = 0;
-      end if
-    elsif state_r == 3
-      // Grant 2: stay while r[2]=1
-      if ~r[2]
-        next_state = 0;
-      end if
-    else
-      next_state = 0;
-    end if
-  end comb
-
-  seq on clk rising
-    state_r <= next_state;
-  end seq
-
-  comb
-    if state_r == 1
+  state Grant0
+    comb
       g = 1;
-    elsif state_r == 2
+    end comb
+    transition to Idle when ~r[0];
+  end state Grant0
+
+  state Grant1
+    comb
       g = 2;
-    elsif state_r == 3
+    end comb
+    transition to Idle when ~r[1];
+  end state Grant1
+
+  state Grant2
+    comb
       g = 4;
-    else
-      g = 0;
-    end if
-  end comb
-end module TopModule
+    end comb
+    transition to Idle when ~r[2];
+  end state Grant2
+end fsm TopModule

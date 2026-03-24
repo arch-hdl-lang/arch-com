@@ -2,59 +2,46 @@
 domain SysDomain
 end domain SysDomain
 
-module TopModule
+fsm TopModule
   port clk: in Clock<SysDomain>;
   port areset: in Reset<Async>;
   port bump_left: in Bool;
   port bump_right: in Bool;
   port ground: in Bool;
-  port walk_left: out Bool;
-  port walk_right: out Bool;
-  port aaah: out Bool;
+  port walk_left: out Bool default false;
+  port walk_right: out Bool default false;
+  port aaah: out Bool default false;
 
-  // States: 0=WalkLeft, 1=WalkRight, 2=FallLeft, 3=FallRight
-  reg state_r: UInt<2> reset areset=0;
+  state WalkLeft, WalkRight, FallLeft, FallRight;
+  default state WalkLeft;
 
-  wire next_state: UInt<2>;
+  state WalkLeft
+    comb
+      walk_left = true;
+    end comb
+    transition to FallLeft when ~ground;
+    transition to WalkRight when ground & bump_left;
+  end state WalkLeft
 
-  comb
-    next_state = state_r;
-    if state_r == 0
-      // Walking left
-      if ~ground
-        next_state = 2;
-      elsif bump_left
-        next_state = 1;
-      end if
-    elsif state_r == 1
-      // Walking right
-      if ~ground
-        next_state = 3;
-      elsif bump_right
-        next_state = 0;
-      end if
-    elsif state_r == 2
-      // Falling (was walking left)
-      if ground
-        next_state = 0;
-      end if
-    elsif state_r == 3
-      // Falling (was walking right)
-      if ground
-        next_state = 1;
-      end if
-    else
-      next_state = 0;
-    end if
-  end comb
+  state WalkRight
+    comb
+      walk_right = true;
+    end comb
+    transition to FallRight when ~ground;
+    transition to WalkLeft when ground & bump_right;
+  end state WalkRight
 
-  seq on clk rising
-    state_r <= next_state;
-  end seq
+  state FallLeft
+    comb
+      aaah = true;
+    end comb
+    transition to WalkLeft when ground;
+  end state FallLeft
 
-  comb
-    walk_left = (state_r == 0);
-    walk_right = (state_r == 1);
-    aaah = (state_r == 2) | (state_r == 3);
-  end comb
-end module TopModule
+  state FallRight
+    comb
+      aaah = true;
+    end comb
+    transition to WalkRight when ground;
+  end state FallRight
+end fsm TopModule

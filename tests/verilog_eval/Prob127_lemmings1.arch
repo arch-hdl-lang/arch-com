@@ -1,30 +1,28 @@
 domain SysDomain
 end domain SysDomain
 
-module TopModule
+fsm TopModule
   port clk: in Clock<SysDomain>;
   port areset: in Reset<Async>;
   port bump_left: in Bool;
   port bump_right: in Bool;
-  port walk_left: out Bool;
-  port walk_right: out Bool;
+  port walk_left: out Bool default false;
+  port walk_right: out Bool default false;
 
-  reg st: Bool reset areset=0;
+  state WalkLeft, WalkRight;
+  default state WalkLeft;
 
-  seq on clk rising
-    if ~st
-      if bump_left
-        st <= 1;
-      end if
-    else
-      if bump_right
-        st <= 0;
-      end if
-    end if
-  end seq
+  state WalkLeft
+    comb
+      walk_left = true;
+    end comb
+    transition to WalkRight when bump_left;
+  end state WalkLeft
 
-  comb
-    walk_left = ~st;
-    walk_right = st;
-  end comb
-end module TopModule
+  state WalkRight
+    comb
+      walk_right = true;
+    end comb
+    transition to WalkLeft when bump_right;
+  end state WalkRight
+end fsm TopModule

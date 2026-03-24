@@ -3,55 +3,70 @@
 domain SysDomain
 end domain SysDomain
 
-module TopModule
+fsm TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
   port in: in UInt<8>;
-  port out_bytes: out UInt<24>;
-  port done: out Bool;
+  port out_bytes: out UInt<24> default 0;
+  port done: out Bool default false;
 
-  reg state_reg: UInt<2> reset reset=0;
-  // 24-bit shift register: always shift in new byte
   reg out_r: UInt<24> reset reset=0;
 
-  // States: 0=FIND, 1=GOT1, 2=GOT2, 3=DONE
-  // Always shift in: out_r <= {out_r[15:0], in}
-  seq on clk rising
-    for i in 0..15
-      out_r[i + 8] <= out_r[i];
-    end for
-    for i in 0..7
-      out_r[i] <= in[i];
-    end for
+  state Find, Got1, Got2, Done_St;
+  default state Find;
 
-    if state_reg == 0
-      if in[3]
-        state_reg <= 1;
-      end if
-    elsif state_reg == 1
-      state_reg <= 2;
-    elsif state_reg == 2
-      state_reg <= 3;
-    else
-      if in[3]
-        state_reg <= 1;
-      else
-        state_reg <= 0;
-      end if
-    end if
-  end seq
+  state Find
+    seq on clk rising
+      for i in 0..15
+        out_r[i + 8] <= out_r[i];
+      end for
+      for i in 0..7
+        out_r[i] <= in[i];
+      end for
+    end seq
+    transition to Got1 when in[3];
+  end state Find
 
-  comb
-    done = (state_reg == 3);
-    // Output shift register when done, else 0
-    if state_reg == 3
+  state Got1
+    seq on clk rising
+      for i in 0..15
+        out_r[i + 8] <= out_r[i];
+      end for
+      for i in 0..7
+        out_r[i] <= in[i];
+      end for
+    end seq
+    transition to Got2 when true;
+  end state Got1
+
+  state Got2
+    seq on clk rising
+      for i in 0..15
+        out_r[i + 8] <= out_r[i];
+      end for
+      for i in 0..7
+        out_r[i] <= in[i];
+      end for
+    end seq
+    transition to Done_St when true;
+  end state Got2
+
+  state Done_St
+    comb
+      done = true;
       for i in 0..23
         out_bytes[i] = out_r[i];
       end for
-    else
-      for i in 0..23
-        out_bytes[i] = false;
+    end comb
+    seq on clk rising
+      for i in 0..15
+        out_r[i + 8] <= out_r[i];
       end for
-    end if
-  end comb
-end module TopModule
+      for i in 0..7
+        out_r[i] <= in[i];
+      end for
+    end seq
+    transition to Got1 when in[3];
+    transition to Find when ~in[3];
+  end state Done_St
+end fsm TopModule

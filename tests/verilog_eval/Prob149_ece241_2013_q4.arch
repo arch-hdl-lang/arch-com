@@ -3,123 +3,58 @@
 domain SysDomain
 end domain SysDomain
 
-module TopModule
+fsm TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
   port s: in UInt<3>;
-  port fr2: out Bool;
-  port fr1: out Bool;
-  port fr0: out Bool;
-  port dfr: out Bool;
+  port fr2: out Bool default false;
+  port fr1: out Bool default false;
+  port fr0: out Bool default false;
+  port dfr: out Bool default false;
 
-  // States: 0=A2(below,falling), 1=B1(mid-low,rising), 2=B2(mid-low,falling)
-  //         3=C1(mid-high,rising), 4=C2(mid-high,falling), 5=D1(above,rising)
-  reg state_r: UInt<3> reset reset=0;
-  wire next_state: UInt<3>;
+  state A2, B1, B2, C1, C2, D1;
+  default state A2;
 
-  comb
-    if state_r == 0
-      // A2: below s0
-      if s[0]
-        next_state = 1;
-      else
-        next_state = 0;
-      end if
-    elsif state_r == 1
-      // B1: mid-low, rising
-      if s[1]
-        next_state = 3;
-      elsif s[0]
-        next_state = 1;
-      else
-        next_state = 0;
-      end if
-    elsif state_r == 2
-      // B2: mid-low, falling
-      if s[1]
-        next_state = 3;
-      elsif s[0]
-        next_state = 2;
-      else
-        next_state = 0;
-      end if
-    elsif state_r == 3
-      // C1: mid-high, rising
-      if s[2]
-        next_state = 5;
-      elsif s[1]
-        next_state = 3;
-      else
-        next_state = 2;
-      end if
-    elsif state_r == 4
-      // C2: mid-high, falling
-      if s[2]
-        next_state = 5;
-      elsif s[1]
-        next_state = 4;
-      else
-        next_state = 2;
-      end if
-    elsif state_r == 5
-      // D1: above s2
-      if s[2]
-        next_state = 5;
-      else
-        next_state = 4;
-      end if
-    else
-      next_state = 0;
-    end if
-  end comb
+  state A2
+    comb
+      fr2 = true; fr1 = true; fr0 = true; dfr = true;
+    end comb
+    transition to B1 when s[0];
+  end state A2
 
-  seq on clk rising
-    state_r <= next_state;
-  end seq
+  state B1
+    comb
+      fr1 = true; fr0 = true;
+    end comb
+    transition to C1 when s[1];
+    transition to A2 when ~s[0];
+  end state B1
 
-  comb
-    // Output logic: {fr2, fr1, fr0, dfr}
-    if state_r == 0
-      // A2: 1111
-      fr2 = true;
-      fr1 = true;
+  state B2
+    comb
+      fr1 = true; fr0 = true; dfr = true;
+    end comb
+    transition to C1 when s[1];
+    transition to A2 when ~s[0];
+  end state B2
+
+  state C1
+    comb
       fr0 = true;
-      dfr = true;
-    elsif state_r == 1
-      // B1: 0110
-      fr2 = false;
-      fr1 = true;
-      fr0 = true;
-      dfr = false;
-    elsif state_r == 2
-      // B2: 0111
-      fr2 = false;
-      fr1 = true;
-      fr0 = true;
-      dfr = true;
-    elsif state_r == 3
-      // C1: 0010
-      fr2 = false;
-      fr1 = false;
-      fr0 = true;
-      dfr = false;
-    elsif state_r == 4
-      // C2: 0011
-      fr2 = false;
-      fr1 = false;
-      fr0 = true;
-      dfr = true;
-    elsif state_r == 5
-      // D1: 0000
-      fr2 = false;
-      fr1 = false;
-      fr0 = false;
-      dfr = false;
-    else
-      fr2 = false;
-      fr1 = false;
-      fr0 = false;
-      dfr = false;
-    end if
-  end comb
-end module TopModule
+    end comb
+    transition to D1 when s[2];
+    transition to B2 when ~s[1];
+  end state C1
+
+  state C2
+    comb
+      fr0 = true; dfr = true;
+    end comb
+    transition to D1 when s[2];
+    transition to B2 when ~s[1];
+  end state C2
+
+  state D1
+    transition to C2 when ~s[2];
+  end state D1
+end fsm TopModule

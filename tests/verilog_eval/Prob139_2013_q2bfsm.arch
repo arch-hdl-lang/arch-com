@@ -3,86 +3,65 @@
 domain SysDomain
 end domain SysDomain
 
-module TopModule
+fsm TopModule
   port clk: in Clock<SysDomain>;
   port resetn: in Reset<Sync, Low>;
   port x: in Bool;
   port y: in Bool;
-  port f: out Bool;
-  port g: out Bool;
+  port f: out Bool default false;
+  port g: out Bool default false;
 
-  reg state_r: UInt<4> reset resetn=0;
+  state A, SetF, X1, X0, X01, SetG1, SetG2, GoodG, BadG;
+  default state A;
 
-  wire next_state: UInt<4>;
+  state A
+    transition to SetF when true;
+  end state A
 
-  // 0=A, 1=SetF, 2=X1, 3=X0, 4=X01, 5=SetG1, 6=SetG2, 7=GoodG, 8=BadG
-  comb
-    next_state = state_r;
-    if state_r == 0
-      // A: after reset deasserted, go to SetF
-      next_state = 1;
-    elsif state_r == 1
-      // SetF: f=1 for one cycle, then monitor x
-      next_state = 2;
-    elsif state_r == 2
-      // Wait for x=1
-      if x
-        next_state = 3;
-      end if
-    elsif state_r == 3
-      // Got 1, need 0
-      if x
-        next_state = 3;
-      else
-        next_state = 4;
-      end if
-    elsif state_r == 4
-      // Got 1,0, need 1
-      if x
-        next_state = 5;
-      else
-        next_state = 2;
-      end if
-    elsif state_r == 5
-      // SetG1: g=1, first cycle to check y
-      if y
-        next_state = 7;
-      else
-        next_state = 6;
-      end if
-    elsif state_r == 6
-      // SetG2: g=1, second cycle to check y
-      if y
-        next_state = 7;
-      else
-        next_state = 8;
-      end if
-    elsif state_r == 7
-      // GoodG: g=1 permanently
-      next_state = 7;
-    elsif state_r == 8
-      // BadG: g=0 permanently
-      next_state = 8;
-    else
-      next_state = 0;
-    end if
-  end comb
-
-  seq on clk rising
-    state_r <= next_state;
-  end seq
-
-  comb
-    if state_r == 1
+  state SetF
+    comb
       f = true;
-    else
-      f = false;
-    end if
+    end comb
+    transition to X1 when true;
+  end state SetF
 
-    if (state_r == 5) | (state_r == 6) | (state_r == 7)
+  state X1
+    transition to X0 when x;
+  end state X1
+
+  state X0
+    transition to X01 when ~x;
+  end state X0
+
+  state X01
+    transition to SetG1 when x;
+    transition to X1 when ~x;
+  end state X01
+
+  state SetG1
+    comb
       g = true;
-    else
-      g = false;
-    end if
-  end comb
-end module TopModule
+    end comb
+    transition to GoodG when y;
+    transition to SetG2 when ~y;
+  end state SetG1
+
+  state SetG2
+    comb
+      g = true;
+    end comb
+    transition to GoodG when y;
+    transition to BadG when ~y;
+  end state SetG2
+
+  state GoodG
+    comb
+      g = true;
+    end comb
+    transition to GoodG when true;
+  end state GoodG
+
+  state BadG
+    transition to BadG when true;
+  end state BadG
+end fsm TopModule
