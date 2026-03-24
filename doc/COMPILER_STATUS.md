@@ -1,7 +1,7 @@
 # ARCH Compiler — Status & Roadmap
 
 > Last updated: 2026-03-24
-> Compiler version: 0.37.0 (FSM construct adoption: 18 VerilogEval problems converted)
+> Compiler version: 0.38.0 (.reverse(N) method, VerilogEval optimizations)
 
 ---
 
@@ -89,7 +89,7 @@
 | Bitwise `& \| ^ ~ << >>` | ✅ |
 | Field access `.field` | ✅ |
 | Array index `[i]` | ✅ |
-| `.trunc<N>()` / `.zext<N>()` / `.sext<N>()` / `expr[hi:lo]` bit-slice | ✅ |
+| `.trunc<N>()` / `.zext<N>()` / `.sext<N>()` / `expr[hi:lo]` bit-slice / `.reverse(N)` | ✅ | `.reverse(N)` reverses in N-bit chunks; emits SV `{<<N{expr}}`; type checker enforces width divisible by N |
 | `as` cast | ✅ |
 | Struct literals | ✅ |
 | Enum variants `E::Variant` | ✅ |

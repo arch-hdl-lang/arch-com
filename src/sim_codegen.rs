@@ -622,6 +622,9 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
         ExprKind::Literal(_) => 32,
         ExprKind::Bool(_) => 1,
         ExprKind::MethodCall(_, method, _) if method.name == "as_clock" => 1,
+        ExprKind::MethodCall(base, method, _) if method.name == "reverse" => {
+            infer_expr_width(base, ctx)
+        }
         ExprKind::MethodCall(_, method, args) if method.name == "trunc" || method.name == "zext" || method.name == "sext" => {
             if let Some(w) = args.first() {
                 eval_width(w)
@@ -778,6 +781,32 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                     }
                 }
                 "as_clock" => b, // identity — Bool used as clock
+                "reverse" => {
+                    let base_w = infer_expr_width(base, ctx);
+                    let chunk = if let Some(c) = args.first() { eval_width(c) } else { 1 };
+                    if chunk == 1 {
+                        // Bit-reverse: build at compile time
+                        if base_w <= 64 {
+                            format!("[&]() {{ {ty} v = {b}; {ty} r = 0; for (int i = 0; i < {w}; i++) r |= (({ty})((v >> i) & 1)) << ({w} - 1 - i); return r; }}()",
+                                ty = cpp_uint(base_w), w = base_w)
+                        } else {
+                            // Wide (>64 bit) reversal via VlWide
+                            format!("[&]() {{ auto v = {b}; {ty} r{{}}; for (int i = 0; i < {w}; i++) {{ int sw = i / 32; int sb = i % 32; int dw = ({w} - 1 - i) / 32; int db = ({w} - 1 - i) % 32; if ((v[sw] >> sb) & 1) r[dw] |= (1u << db); }} return r; }}()",
+                                ty = cpp_uint(base_w), w = base_w)
+                        }
+                    } else {
+                        // Chunk-reverse: reverse order of N-bit chunks
+                        let n_chunks = base_w / chunk;
+                        if base_w <= 64 {
+                            format!("[&]() {{ {ty} v = {b}; {ty} r = 0; for (int i = 0; i < {nc}; i++) r |= ((v >> (i * {c})) & (({ty})((1ULL << {c}) - 1))) << (({nc} - 1 - i) * {c}); return r; }}()",
+                                ty = cpp_uint(base_w), nc = n_chunks, c = chunk)
+                        } else {
+                            // Wide chunk reverse — extract and place via bit loops
+                            format!("[&]() {{ auto v = {b}; {ty} r{{}}; for (int ci = 0; ci < {nc}; ci++) for (int bi = 0; bi < {c}; bi++) {{ int si = ci * {c} + bi; int di = ({nc} - 1 - ci) * {c} + bi; int sw = si / 32; int sb = si % 32; int dw = di / 32; int db = di % 32; if ((v[sw] >> sb) & 1) r[dw] |= (1u << db); }} return r; }}()",
+                                ty = cpp_uint(base_w), nc = n_chunks, c = chunk)
+                        }
+                    }
+                }
                 _ => format!("{b}.{}()", method.name),
             }
         }

@@ -52,6 +52,8 @@ Common mistakes to avoid:
 - All output ports of an inst MUST be explicitly connected via 'connect port -> wire'
 - Use 'elsif' for chained conditionals (NOT 'else if'). 'else' starts a body block; 'elsif' chains.
 - Bit-slice syntax: expr[hi:lo] extracts bits (NOT .trunc<Hi,Lo>())
+- Bit/byte reverse: expr.reverse(1) for bit-reverse, expr.reverse(8) for byte-reverse (width must be divisible by N)
+- Prefer concat {a, b} over bit-by-bit for loops; prefer direct boolean (z = (A == B);) over if/else
 """,
 )
 

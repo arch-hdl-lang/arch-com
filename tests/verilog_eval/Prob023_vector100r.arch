@@ -2,8 +2,6 @@ module TopModule
   port in: in UInt<100>;
   port out: out UInt<100>;
   comb
-    for i in 0..99
-      out[i] = in[99 - i];
-    end for
+    out = in.reverse(1);
   end comb
 end module TopModule

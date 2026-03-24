@@ -968,6 +968,49 @@ impl<'a> TypeChecker<'a> {
                             Ty::Error
                         }
                     }
+                    "reverse" => {
+                        if let Some(chunk_expr) = args.first() {
+                            if let Some(chunk) = self.eval_const_expr(chunk_expr, local_types) {
+                                let chunk = chunk as u32;
+                                if chunk == 0 {
+                                    self.errors.push(CompileError::general(
+                                        ".reverse(N) chunk size must be > 0",
+                                        method.span,
+                                    ));
+                                    Ty::Error
+                                } else {
+                                    let base_w = match &base_ty {
+                                        Ty::UInt(w) | Ty::SInt(w) => *w,
+                                        Ty::Bool => 1,
+                                        _ => {
+                                            self.errors.push(CompileError::general(
+                                                &format!(".reverse(N) requires UInt/SInt/Bool base, got {}", base_ty.display()),
+                                                method.span,
+                                            ));
+                                            return Ty::Error;
+                                        }
+                                    };
+                                    if base_w % chunk != 0 {
+                                        self.errors.push(CompileError::general(
+                                            &format!(".reverse({chunk}) requires width divisible by {chunk}, got UInt<{base_w}>"),
+                                            method.span,
+                                        ));
+                                        Ty::Error
+                                    } else {
+                                        base_ty
+                                    }
+                                }
+                            } else {
+                                Ty::Error
+                            }
+                        } else {
+                            self.errors.push(CompileError::general(
+                                ".reverse(N) requires a chunk size argument",
+                                method.span,
+                            ));
+                            Ty::Error
+                        }
+                    }
                     _ => Ty::Error,
                 }
             }

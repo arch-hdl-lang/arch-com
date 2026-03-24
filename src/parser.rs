@@ -1214,8 +1214,21 @@ impl Parser {
             if self.check(TokenKind::Dot) {
                 self.advance();
                 let field = self.expect_ident()?;
-                // Check for method call: .trunc<N>(), .zext<N>(), .sext<N>()
-                if self.check(TokenKind::Lt) && is_method_name(&field.name) {
+                // Check for method call: .trunc<N>(), .zext<N>(), .sext<N>(), .reverse(N)
+                if self.check(TokenKind::LParen) && field.name == "reverse" {
+                    self.advance(); // (
+                    let mut args = vec![self.parse_expr()?];
+                    while self.check(TokenKind::Comma) {
+                        self.advance();
+                        args.push(self.parse_expr()?);
+                    }
+                    self.expect(TokenKind::RParen)?;
+                    let span = lhs.span.merge(self.tokens[self.pos.saturating_sub(1)].span);
+                    lhs = Expr {
+                        kind: ExprKind::MethodCall(Box::new(lhs), field, args),
+                        span,
+                    };
+                } else if self.check(TokenKind::Lt) && is_method_name(&field.name) {
                     self.advance(); // <
                     let old_no_angle = self.no_angle;
                     self.no_angle = true;
@@ -3179,7 +3192,7 @@ impl Parser {
 }
 
 fn is_method_name(name: &str) -> bool {
-    matches!(name, "trunc" | "zext" | "sext" | "as_clock")
+    matches!(name, "trunc" | "zext" | "sext" | "as_clock" | "reverse")
 }
 
 

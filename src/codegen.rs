@@ -2239,6 +2239,14 @@ impl<'a> Codegen<'a> {
                         }
                     }
                     "as_clock" => b,
+                    "reverse" => {
+                        if let Some(chunk) = args.first() {
+                            let c = self.emit_expr_str(chunk);
+                            format!("{{<<{c}{{{b}}}}}")
+                        } else {
+                            b
+                        }
+                    }
                     _ => format!("{b}.{}()", method.name),
                 }
             }
@@ -2331,6 +2339,14 @@ impl<'a> Codegen<'a> {
                         }
                     }
                     "as_clock" => b,
+                    "reverse" => {
+                        if let Some(chunk) = args.first() {
+                            let c = self.emit_expr_str(chunk);
+                            format!("{{<<{c}{{{b}}}}}")
+                        } else {
+                            b
+                        }
+                    }
                     _ => format!("{b}.{}()", method.name),
                 }
             }
@@ -2679,6 +2695,14 @@ impl<'a> Codegen<'a> {
                         }
                     }
                     "as_clock" => b, // identity — 1-bit logic used as clock
+                    "reverse" => {
+                        if let Some(chunk) = args.first() {
+                            let c = self.emit_expr_str(chunk);
+                            format!("{{<<{c}{{{b}}}}}")
+                        } else {
+                            b
+                        }
+                    }
                     _ => format!("{b}.{}()", method.name),
                 }
             }
