@@ -29,12 +29,12 @@ module IfuLiteDec
 
   // ── 16-bit vs 32-bit ───────────────────────────────────────────
   // Per RV spec: if bits [1:0] != 2'b11, it's a 16-bit instruction
-  let opcode_1_0: UInt<2> = instr.trunc<1,0>();
+  let opcode_1_0: UInt<2> = instr[1:0];
   let is_32: Bool = (opcode_1_0 == 3);
 
   // ── Opcode fields (32-bit) ─────────────────────────────────────
-  let opcode: UInt<7> = instr.trunc<6,0>();
-  let funct3: UInt<3> = instr.trunc<14,12>();
+  let opcode: UInt<7> = instr[6:0];
+  let funct3: UInt<3> = instr[14:12];
 
   // ── Instruction type detection ─────────────────────────────────
   let dec_jal:    Bool = (opcode == 0x6F);   // JAL
@@ -44,25 +44,25 @@ module IfuLiteDec
   let dec_auipc:  Bool = (opcode == 0x17);   // AUIPC
 
   // ── Register indices ───────────────────────────────────────────
-  let rs1_field: UInt<5> = instr.trunc<19,15>();
-  let rd_field:  UInt<5> = instr.trunc<11,7>();
+  let rs1_field: UInt<5> = instr[19:15];
+  let rd_field:  UInt<5> = instr[11:7];
 
   // rs1 used by JALR and Bxx
   let rs1_used: Bool = dec_jalr | dec_branch;
 
   // ── Immediate extraction ───────────────────────────────────────
   // JAL: imm[20|10:1|11|19:12] -> bits [31|30:21|20|19:12]
-  let jal_imm: UInt<32> = {{12{instr.trunc<31,31>() != 0}},
-                             instr.trunc<19,12>(),
-                             instr.trunc<20,20>(),
-                             instr.trunc<30,21>(),
+  let jal_imm: UInt<32> = {{12{instr[31:31] != 0}},
+                             instr[19:12],
+                             instr[20:20],
+                             instr[30:21],
                              false};
 
   // Branch: imm[12|10:5|4:1|11] -> bits [31|30:25|11:8|7]
-  let branch_imm: UInt<32> = {{20{instr.trunc<31,31>() != 0}},
-                                instr.trunc<7,7>(),
-                                instr.trunc<30,25>(),
-                                instr.trunc<11,8>(),
+  let branch_imm: UInt<32> = {{20{instr[31:31] != 0}},
+                                instr[7:7],
+                                instr[30:25],
+                                instr[11:8],
                                 false};
 
   comb

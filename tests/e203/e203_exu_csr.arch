@@ -61,8 +61,8 @@ module ExuCsr
   // bit 11 = MEIP, bit 7 = MTIP, bit 3 = MSIP
 
   // ── mstatus fields ─────────────────────────────────────────────
-  let mie_bit:  Bool = mstatus_r.trunc<3,3>() != 0;
-  let mpie_bit: Bool = mstatus_r.trunc<7,7>() != 0;
+  let mie_bit:  Bool = mstatus_r[3:3] != 0;
+  let mpie_bit: Bool = mstatus_r[7:7] != 0;
 
   // ── Interrupt pending check ────────────────────────────────────
   let irq_en: UInt<32> = mie_r & mip_val;
@@ -83,10 +83,10 @@ module ExuCsr
       mcause_r <= trap_cause;
       mtval_r  <= trap_val;
       // Set MPIE = MIE, clear MIE
-      mstatus_r <= {mstatus_r.trunc<31,8>(), mie_bit, mstatus_r.trunc<6,4>(), false, mstatus_r.trunc<2,0>()};
+      mstatus_r <= {mstatus_r[31:8], mie_bit, mstatus_r[6:4], false, mstatus_r[2:0]};
     elsif mret_taken
       // Restore: MIE = MPIE, MPIE = 1
-      mstatus_r <= {mstatus_r.trunc<31,8>(), true, mstatus_r.trunc<6,4>(), mpie_bit, mstatus_r.trunc<2,0>()};
+      mstatus_r <= {mstatus_r[31:8], true, mstatus_r[6:4], mpie_bit, mstatus_r[2:0]};
     elsif csr_wen
       // ── CSR write ────────────────────────────────────────────
       if csr_addr == 0x300

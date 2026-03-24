@@ -575,7 +575,7 @@ impl<'a> TypeChecker<'a> {
         match &expr.kind {
             ExprKind::Ident(n) => n.clone(),
             ExprKind::FieldAccess(base, _) => Self::expr_root_name_tc(base),
-            ExprKind::Index(base, _) => Self::expr_root_name_tc(base),
+            ExprKind::Index(base, _) | ExprKind::BitSlice(base, _, _) => Self::expr_root_name_tc(base),
             _ => String::new(),
         }
     }
@@ -952,18 +952,7 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     "trunc" | "zext" | "sext" => {
-                        if method.name == "trunc" && args.len() == 2 {
-                            // trunc<Hi,Lo>() → extracts bits [Hi:Lo], result width = Hi - Lo + 1
-                            let hi = self.eval_const_expr(&args[0], local_types);
-                            let lo = self.eval_const_expr(&args[1], local_types);
-                            match (hi, lo) {
-                                (Some(h), Some(l)) if h >= l => {
-                                    let w = (h - l + 1) as u32;
-                                    if let Ty::SInt(_) = base_ty { Ty::SInt(w) } else { Ty::UInt(w) }
-                                }
-                                _ => Ty::Error,
-                            }
-                        } else if let Some(width_expr) = args.first() {
+                        if let Some(width_expr) = args.first() {
                             if let Some(w) = self.eval_const_expr(width_expr, local_types) {
                                 if method.name == "sext" {
                                     Ty::SInt(w as u32)
@@ -991,6 +980,18 @@ impl<'a> TypeChecker<'a> {
                     // so it can be used directly in boolean expressions.
                     Ty::UInt(_) | Ty::SInt(_) => Ty::Bool,
                     _ => Ty::Bit,
+                }
+            }
+            ExprKind::BitSlice(base, hi, lo) => {
+                let base_ty = self.resolve_expr_type(base, module_name, local_types);
+                let hi_val = self.eval_const_expr(hi, local_types);
+                let lo_val = self.eval_const_expr(lo, local_types);
+                match (hi_val, lo_val) {
+                    (Some(h), Some(l)) if h >= l => {
+                        let w = (h - l + 1) as u32;
+                        if let Ty::SInt(_) = base_ty { Ty::SInt(w) } else { Ty::UInt(w) }
+                    }
+                    _ => Ty::Error,
                 }
             }
             ExprKind::StructLiteral(name, _) => Ty::Struct(name.name.clone()),
@@ -1458,6 +1459,11 @@ impl<'a> TypeChecker<'a> {
             ExprKind::Index(base, idx) => {
                 Self::collect_expr_reads(base, out);
                 Self::collect_expr_reads(idx, out);
+            }
+            ExprKind::BitSlice(base, hi, lo) => {
+                Self::collect_expr_reads(base, out);
+                Self::collect_expr_reads(hi, out);
+                Self::collect_expr_reads(lo, out);
             }
             ExprKind::FieldAccess(base, _) => Self::collect_expr_reads(base, out),
             ExprKind::MethodCall(base, _, args) => {

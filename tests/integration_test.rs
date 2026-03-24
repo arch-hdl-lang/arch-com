@@ -1041,8 +1041,8 @@ module BitExtract
 
   seq on clk rising
     opcode_r <= instr.trunc<7>();
-    rd_r     <= instr.trunc<11,7>();
-    funct3_r <= instr.trunc<14,12>();
+    rd_r     <= instr[11:7];
+    funct3_r <= instr[14:12];
   end seq
 
   comb

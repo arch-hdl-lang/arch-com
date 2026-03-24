@@ -59,14 +59,14 @@ pipeline CpuPipe
 
   // ── Decode: latch register values from external regfile ──
   // Stall on load-use hazard: Execute is a load writing to a register Decode needs
-  stage Decode stall when Execute.we and (Execute.rd == Fetch.instr.trunc<11,7>()) and Execute.rd != 0
+  stage Decode stall when Execute.we and (Execute.rd == Fetch.instr[11:7]) and Execute.rd != 0
     reg opcode: UInt<7> init 0 reset rst=0;
     reg rd: UInt<REG_ADDR_W> init 0 reset rst=0;
     reg rs1_val: UInt<XLEN> init 0 reset rst=0;
     reg rs2_val: UInt<XLEN> init 0 reset rst=0;
     seq on clk rising
-      opcode  <= Fetch.instr.trunc<6,0>();
-      rd      <= Fetch.instr.trunc<11,7>();
+      opcode  <= Fetch.instr[6:0];
+      rd      <= Fetch.instr[11:7];
       rs1_val <= rs1_data;
       rs2_val <= rs2_data;
     end seq

@@ -41,35 +41,35 @@ module ExuAgu
 
   // ── Address calculation ─────────────────────────────────────────
   let eff_addr: UInt<32> = (i_rs1 + i_imm).trunc<32>();
-  let byte_off: UInt<2> = eff_addr.trunc<1,0>();
-  let word_addr: UInt<32> = {eff_addr.trunc<31,2>(), {2{false}}};
+  let byte_off: UInt<2> = eff_addr[1:0];
+  let word_addr: UInt<32> = {eff_addr[31:2], {2{false}}};
 
   // ── funct3 decode ───────────────────────────────────────────────
-  let is_byte: Bool = (i_funct3.trunc<1,0>() == 0);
-  let is_half: Bool = (i_funct3.trunc<1,0>() == 1);
-  let is_unsigned: Bool = i_funct3.trunc<2,2>() != 0;
+  let is_byte: Bool = (i_funct3[1:0] == 0);
+  let is_half: Bool = (i_funct3[1:0] == 1);
+  let is_unsigned: Bool = i_funct3[2:2] != 0;
 
   // ── Store byte-enable ───────────────────────────────────────────
   let wstrb_byte: UInt<4> = (byte_off == 0) ? 0x1 :
                               (byte_off == 1) ? 0x2 :
                               (byte_off == 2) ? 0x4 : 0x8;
-  let wstrb_half: UInt<4> = (byte_off.trunc<1,1>() == 0) ? 0x3 : 0xC;
+  let wstrb_half: UInt<4> = (byte_off[1:1] == 0) ? 0x3 : 0xC;
   let wmask_sel: UInt<4> = is_byte ? wstrb_byte :
                              is_half ? wstrb_half : 0xF;
 
   // ── Store data alignment ────────────────────────────────────────
-  let wdata_byte: UInt<8> = i_rs2.trunc<7,0>();
-  let wdata_half: UInt<16> = i_rs2.trunc<15,0>();
+  let wdata_byte: UInt<8> = i_rs2[7:0];
+  let wdata_half: UInt<16> = i_rs2[15:0];
   let store_aligned: UInt<32> = is_byte ? (wdata_byte.zext<32>() << (byte_off.zext<32>() << 3).trunc<32>()).trunc<32>() :
-                                  is_half ? (wdata_half.zext<32>() << (byte_off.trunc<1,1>().zext<32>() << 4).trunc<32>()).trunc<32>() :
+                                  is_half ? (wdata_half.zext<32>() << (byte_off[1:1].zext<32>() << 4).trunc<32>()).trunc<32>() :
                                             i_rs2;
 
   // ── Load result alignment ───────────────────────────────────────
   let rdata_shifted: UInt<32> = (icb_rsp_rdata >> (byte_off.zext<32>() << 3).trunc<32>()).trunc<32>();
-  let load_byte: UInt<8> = rdata_shifted.trunc<7,0>();
-  let load_half: UInt<16> = rdata_shifted.trunc<15,0>();
-  let byte_sign: Bool = load_byte.trunc<7,7>() != 0;
-  let half_sign: Bool = load_half.trunc<15,15>() != 0;
+  let load_byte: UInt<8> = rdata_shifted[7:0];
+  let load_half: UInt<16> = rdata_shifted[15:0];
+  let byte_sign: Bool = load_byte[7:7] != 0;
+  let half_sign: Bool = load_half[15:15] != 0;
   let lb_result:  UInt<32> = {{24{byte_sign}}, load_byte};
   let lbu_result: UInt<32> = {{24{false}}, load_byte};
   let lh_result:  UInt<32> = {{16{half_sign}}, load_half};

@@ -1214,7 +1214,7 @@ impl Parser {
             if self.check(TokenKind::Dot) {
                 self.advance();
                 let field = self.expect_ident()?;
-                // Check for method call: .trunc<N>(), .trunc<N,M>(), .zext<N>(), .sext<N>()
+                // Check for method call: .trunc<N>(), .zext<N>(), .sext<N>()
                 if self.check(TokenKind::Lt) && is_method_name(&field.name) {
                     self.advance(); // <
                     let old_no_angle = self.no_angle;
@@ -1245,13 +1245,26 @@ impl Parser {
 
             if self.check(TokenKind::LBracket) {
                 self.advance();
-                let index = self.parse_expr()?;
-                self.expect(TokenKind::RBracket)?;
-                let span = lhs.span.merge(self.tokens[self.pos.saturating_sub(1)].span);
-                lhs = Expr {
-                    kind: ExprKind::Index(Box::new(lhs), Box::new(index)),
-                    span,
-                };
+                let first = self.parse_expr()?;
+                if self.check(TokenKind::Colon) {
+                    // bit-slice: expr[hi:lo]
+                    self.advance();
+                    let lo = self.parse_expr()?;
+                    self.expect(TokenKind::RBracket)?;
+                    let span = lhs.span.merge(self.tokens[self.pos.saturating_sub(1)].span);
+                    lhs = Expr {
+                        kind: ExprKind::BitSlice(Box::new(lhs), Box::new(first), Box::new(lo)),
+                        span,
+                    };
+                } else {
+                    // index: expr[i]
+                    self.expect(TokenKind::RBracket)?;
+                    let span = lhs.span.merge(self.tokens[self.pos.saturating_sub(1)].span);
+                    lhs = Expr {
+                        kind: ExprKind::Index(Box::new(lhs), Box::new(first)),
+                        span,
+                    };
+                }
                 continue;
             }
 

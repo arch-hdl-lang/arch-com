@@ -83,16 +83,16 @@ module ExuMuldiv
   let add_carry: Bool = (add_res >> 32) != 0;
 
   // ── Divide step intermediates ──────────────────────────────────────
-  let rem_shifted: UInt<33> = ((rem_r << 1).trunc<33>() | quot_r.trunc<31,31>().zext<33>()).trunc<33>();
+  let rem_shifted: UInt<33> = ((rem_r << 1).trunc<33>() | quot_r[31:31].zext<33>()).trunc<33>();
   let trial_sub: UInt<34> = (rem_shifted.zext<34>() - dvsr_r.zext<34>()).trunc<34>();
   let trial_neg: Bool = (trial_sub >> 33) != 0;
 
   // ── Multiply next-state values ─────────────────────────────────────
   let carry_mask: UInt<32> = add_carry ? 0x80000000 : 0;
   let mul_nxt_hi_add: UInt<32> = (add_lo >> 1).trunc<32>() | carry_mask;
-  let mul_nxt_lo_add: UInt<32> = (acc_lo_r >> 1).trunc<32>() | (add_lo.trunc<0,0>().zext<32>() << 31);
+  let mul_nxt_lo_add: UInt<32> = (acc_lo_r >> 1).trunc<32>() | (add_lo[0:0].zext<32>() << 31);
   let mul_nxt_hi_nop: UInt<32> = (acc_hi_r >> 1).trunc<32>();
-  let mul_nxt_lo_nop: UInt<32> = (acc_lo_r >> 1).trunc<32>() | (acc_hi_r.trunc<0,0>().zext<32>() << 31);
+  let mul_nxt_lo_nop: UInt<32> = (acc_lo_r >> 1).trunc<32>() | (acc_hi_r[0:0].zext<32>() << 31);
 
   // ── Sequential logic ──────────────────────────────────────────────
   seq on clk rising
@@ -120,7 +120,7 @@ module ExuMuldiv
     elsif state_r == 1
       // EXEC: iterate
       if is_mul_r
-        if acc_lo_r.trunc<0,0>() != 0
+        if acc_lo_r[0:0] != 0
           acc_hi_r <= mul_nxt_hi_add;
           acc_lo_r <= mul_nxt_lo_add;
         else

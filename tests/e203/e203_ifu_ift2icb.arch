@@ -36,7 +36,7 @@ module Ift2Icb
   // Request path: pass through to ITCM when not stalled
   comb
     itcm_cmd_valid = ifu_req_valid & ~stall_pipe;
-    itcm_cmd_addr  = ifu_req_pc.trunc<15,2>();
+    itcm_cmd_addr  = ifu_req_pc[15:2];
     ifu_req_ready  = itcm_cmd_ready & ~stall_pipe;
   end comb
 

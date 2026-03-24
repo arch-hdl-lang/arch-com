@@ -430,6 +430,7 @@ pub enum ExprKind {
     MethodCall(Box<Expr>, Ident, Vec<Expr>),  // receiver, method, type_args encoded as exprs
     Cast(Box<Expr>, Box<TypeExpr>),
     Index(Box<Expr>, Box<Expr>),
+    BitSlice(Box<Expr>, Box<Expr>, Box<Expr>),  // base[hi:lo]
     StructLiteral(Ident, Vec<FieldInit>),
     EnumVariant(Ident, Ident), // EnumName::Variant
     Todo,

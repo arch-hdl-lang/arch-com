@@ -37,8 +37,8 @@ module ClintTimer
 
   // Increment: mtime + 1 with carry
   let mtime_inc: UInt<64> = (mtime_full + 1).trunc<64>();
-  let next_lo: UInt<32> = mtime_inc.trunc<31,0>();
-  let next_hi: UInt<32> = mtime_inc.trunc<63,32>();
+  let next_lo: UInt<32> = mtime_inc[31:0];
+  let next_hi: UInt<32> = mtime_inc[63:32];
 
   // Timer interrupt: mtime >= mtimecmp (unsigned 64-bit compare)
   let irq_pending: Bool = (mtime_full >= mtimecmp_full) ? true : false;

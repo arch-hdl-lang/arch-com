@@ -18,7 +18,7 @@
 | `arch sim ... --check-uninit` | ✅ Detects reads of uninitialized `reset none` registers; shadow valid bits propagate through `pipe_reg` chains; warn-once per signal to stderr |
 | `arch sim ... --cdc-random` | ✅ Randomizes synchronizer chain propagation latency via LFSR; `cdc_skip_pct` (0–100, default 25) is a public member on each C++ model, controllable from testbench at runtime |
 | `arch sim ... --wave out.vcd` | ✅ VCD waveform output; auto-traces all ports and registers of the top-level module/construct; also works with standalone counter, fsm, etc.; opens in GTKWave/Surfer; testbenches can also call `trace_open("file.vcd")` / `trace_dump(time)` / `trace_close()` explicitly |
-| `arch sim` **sim codegen fixes** | ✅ (1) `.sext<N>()` now correctly replicates the MSB into all upper bits instead of being treated identically to `.zext<N>()` (plain C++ cast); (2) `infer_expr_width` for two-arg `.trunc<Hi,Lo>()` now returns `Hi-Lo+1` instead of `Hi`, fixing incorrect source widths for subsequent sign extension; (3) `param` constants now emitted as `#define` in generated C++ headers for both `module` and `fsm` models; (4) `reg` init values with hex/bin/sized literals now correctly emitted in both constructor initializer and reset block (previously only `Dec` literals were handled, all others defaulted to 0); (5) comb-block intermediate signals (assigned in comb, used in inst connections) now declared as class member fields; (6) `eval_comb()` for modules with sub-instances now re-evaluates the full inst chain (input→eval_comb→output) so combinational feedback loops settle correctly when called from parent modules; (7) 2-pass settle loop in `eval()` for inst chains to handle valid/ready handshake loops across inst boundaries; (8) **derived clock eval ordering fix**: edge detection moved from `eval()` into `eval_posedge()` — derived clocks from sub-instances (clock dividers, clock gates) are now settled before edges are detected; internal clock wires from `seq on` blocks get proper edge trackers; sub-instance `eval_posedge()` self-detects clock edges so they work correctly when called from parent hierarchy |
+| `arch sim` **sim codegen fixes** | ✅ (1) `.sext<N>()` now correctly replicates the MSB into all upper bits instead of being treated identically to `.zext<N>()` (plain C++ cast); (2) `infer_expr_width` for `expr[Hi:Lo]` bit-slice now returns `Hi-Lo+1`, fixing incorrect source widths for subsequent sign extension; (3) `param` constants now emitted as `#define` in generated C++ headers for both `module` and `fsm` models; (4) `reg` init values with hex/bin/sized literals now correctly emitted in both constructor initializer and reset block (previously only `Dec` literals were handled, all others defaulted to 0); (5) comb-block intermediate signals (assigned in comb, used in inst connections) now declared as class member fields; (6) `eval_comb()` for modules with sub-instances now re-evaluates the full inst chain (input→eval_comb→output) so combinational feedback loops settle correctly when called from parent modules; (7) 2-pass settle loop in `eval()` for inst chains to handle valid/ready handshake loops across inst boundaries; (8) **derived clock eval ordering fix**: edge detection moved from `eval()` into `eval_posedge()` — derived clocks from sub-instances (clock dividers, clock gates) are now settled before edges are detected; internal clock wires from `seq on` blocks get proper edge trackers; sub-instance `eval_posedge()` self-detects clock edges so they work correctly when called from parent hierarchy |
 
 ---
 
@@ -73,7 +73,7 @@
 | `$clog2(expr)` in type args | ✅ | Parsed as expression, emitted as SV `$clog2(...)`, evaluated at compile time for const-folding |
 | Clock domain mismatch (CDC errors) | ✅ | Compile error when a register driven in one domain is read in another domain's `seq` block **or** when a `comb` block reads a register from one domain and its output is consumed by a `seq` block in a different domain; message directs user to `synchronizer` or async `fifo` |
 | Width mismatch at assignment | ✅ | Errors for any RHS wider than LHS in both `always` and `comb` blocks; arithmetic widening (`+1`) flagged with explicit hint to use `.trunc<N>()` |
-| Implicit truncation prevention | ✅ | `r <= r + 1` is a compile error; write `r <= (r + 1).trunc<N>()` explicitly. `.trunc<N>()` emits SV size cast `N'(expr)`. `.trunc<N,M>()` emits bit-range select `expr[N:M]` for field extraction (e.g. `instr.trunc<11,7>()` → `instr[11:7]`). Sim codegen applies bitmask `& ((1<<N)-1)` for sub-word types (e.g. `UInt<2>` in `uint8_t`). |
+| Implicit truncation prevention | ✅ | `r <= r + 1` is a compile error; write `r <= (r + 1).trunc<N>()` explicitly. `.trunc<N>()` emits SV size cast `N'(expr)`. `expr[hi:lo]` bit-slice emits `expr[hi:lo]` for field extraction (e.g. `instr[11:7]`). Sim codegen applies bitmask `& ((1<<N)-1)` for sub-word types (e.g. `UInt<2>` in `uint8_t`). |
 
 ---
 
@@ -89,7 +89,7 @@
 | Bitwise `& \| ^ ~ << >>` | ✅ |
 | Field access `.field` | ✅ |
 | Array index `[i]` | ✅ |
-| `.trunc<N>()` / `.trunc<N,M>()` / `.zext<N>()` / `.sext<N>()` | ✅ |
+| `.trunc<N>()` / `.zext<N>()` / `.sext<N>()` / `expr[hi:lo]` bit-slice | ✅ |
 | `as` cast | ✅ |
 | Struct literals | ✅ |
 | Enum variants `E::Variant` | ✅ |

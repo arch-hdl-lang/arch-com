@@ -58,11 +58,11 @@ module Ppi
   port apb3_pready:  in  Bool;
 
   // ── Address decode ─────────────────────────────────────────────
-  let addr_hi: UInt<20> = icb_cmd_addr.trunc<31,12>();
+  let addr_hi: UInt<20> = icb_cmd_addr[31:12];
   let sel_gpio:  Bool = (addr_hi == 0x10012);
   let sel_uart:  Bool = (addr_hi == 0x10013);
   let sel_spi:   Bool = (addr_hi == 0x10014);
-  let sel_timer: Bool = (icb_cmd_addr.trunc<31,24>() == 0x02);
+  let sel_timer: Bool = (icb_cmd_addr[31:24] == 0x02);
 
   // ── FSM: IDLE → SETUP → ACCESS ────────────────────────────────
   reg fsm_st: UInt<2> init 0 reset rst_n=0;

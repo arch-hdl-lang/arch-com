@@ -65,12 +65,12 @@ module ExuDecode
   port o_rd_en:  out Bool;
 
   // ── Instruction field extraction ─────────────────────────────────────
-  let opcode: UInt<7> = instr.trunc<6,0>();
-  let rd_field:  UInt<5> = instr.trunc<11,7>();
-  let funct3: UInt<3> = instr.trunc<14,12>();
-  let rs1_field: UInt<5> = instr.trunc<19,15>();
-  let rs2_field: UInt<5> = instr.trunc<24,20>();
-  let funct7: UInt<7> = instr.trunc<31,25>();
+  let opcode: UInt<7> = instr[6:0];
+  let rd_field:  UInt<5> = instr[11:7];
+  let funct3: UInt<3> = instr[14:12];
+  let rs1_field: UInt<5> = instr[19:15];
+  let rs2_field: UInt<5> = instr[24:20];
+  let funct7: UInt<7> = instr[31:25];
 
   // ── Opcode classification ────────────────────────────────────────────
   let is_op:       Bool = opcode == 0x33;   // R-type ALU
@@ -112,7 +112,7 @@ module ExuDecode
   // ── Immediate generation ─────────────────────────────────────────────
 
   // I-type: instr[31:20] sign-extended
-  let imm_i: UInt<32> = (instr.trunc<31,20>().sext<32>() as UInt<32>);
+  let imm_i: UInt<32> = (instr[31:20].sext<32>() as UInt<32>);
 
   // S-type: {instr[31:25], instr[11:7]} sign-extended
   let imm_s_hi: UInt<12> = funct7.zext<12>() << 5;
@@ -120,10 +120,10 @@ module ExuDecode
   let imm_s: UInt<32> = (imm_s_raw.sext<32>() as UInt<32>);
 
   // B-type: {instr[31], instr[7], instr[30:25], instr[11:8], 0} sign-extended
-  let imm_b_12:   UInt<32> = instr.trunc<31,31>().zext<32>() << 12;
-  let imm_b_11:   UInt<32> = instr.trunc<7,7>().zext<32>() << 11;
-  let imm_b_10_5: UInt<32> = instr.trunc<30,25>().zext<32>() << 5;
-  let imm_b_4_1:  UInt<32> = instr.trunc<11,8>().zext<32>() << 1;
+  let imm_b_12:   UInt<32> = instr[31:31].zext<32>() << 12;
+  let imm_b_11:   UInt<32> = instr[7:7].zext<32>() << 11;
+  let imm_b_10_5: UInt<32> = instr[30:25].zext<32>() << 5;
+  let imm_b_4_1:  UInt<32> = instr[11:8].zext<32>() << 1;
   let imm_b_raw:  UInt<13> = (imm_b_12 | imm_b_11 | imm_b_10_5 | imm_b_4_1).trunc<13>();
   let imm_b: UInt<32> = (imm_b_raw.sext<32>() as UInt<32>);
 
@@ -131,10 +131,10 @@ module ExuDecode
   let imm_u: UInt<32> = (instr >> 12).trunc<20>().zext<32>() << 12;
 
   // J-type: {instr[31], instr[19:12], instr[20], instr[30:21], 0} sign-extended
-  let imm_j_20:    UInt<32> = instr.trunc<31,31>().zext<32>() << 20;
-  let imm_j_19_12: UInt<32> = instr.trunc<19,12>().zext<32>() << 12;
-  let imm_j_11:    UInt<32> = instr.trunc<20,20>().zext<32>() << 11;
-  let imm_j_10_1:  UInt<32> = instr.trunc<30,21>().zext<32>() << 1;
+  let imm_j_20:    UInt<32> = instr[31:31].zext<32>() << 20;
+  let imm_j_19_12: UInt<32> = instr[19:12].zext<32>() << 12;
+  let imm_j_11:    UInt<32> = instr[20:20].zext<32>() << 11;
+  let imm_j_10_1:  UInt<32> = instr[30:21].zext<32>() << 1;
   let imm_j_raw:   UInt<21> = (imm_j_20 | imm_j_19_12 | imm_j_11 | imm_j_10_1).trunc<21>();
   let imm_j: UInt<32> = (imm_j_raw.sext<32>() as UInt<32>);
 

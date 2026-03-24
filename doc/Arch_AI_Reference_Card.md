@@ -84,9 +84,9 @@
 >
 > Token Future\<T\> Token\<T, id_width: N\> (planned --- TLM only)
 >
-> Width conversions (always explicit): x.trunc\<N\>() x.trunc\<N,M\>() x.zext\<N\>() x.sext\<N\>()
+> Width conversions (always explicit): x.trunc\<N\>() x.zext\<N\>() x.sext\<N\>() x[hi:lo]
 >
-> trunc\<N\>() → lowest N bits (SV: N'(x)); trunc\<N,M\>() → bit range [N:M] (SV: x[N:M])
+> trunc\<N\>() → lowest N bits (SV: N'(x)); x[hi:lo] → bit-slice (SV: x[hi:lo])
 >
 > Arithmetic: UInt\<8\> + UInt\<8\> → UInt\<9\> (auto-widen); must .trunc\<8\>() to assign back
 >
@@ -184,7 +184,7 @@
 |   + b.zext\<9\>();                    | let bindings as temporaries      |
 |                                       |                                  |
 | return sum\[8\] ? 8'hFF              | Ternary / match in return        |
-|   : sum.trunc\<8\>();                 |                                  |
+|   : sum[7:0];                        |                                  |
 |                                       | Emits SV: function automatic     |
 | end function AddSat                   |                                  |
 +---------------------------------------+----------------------------------+

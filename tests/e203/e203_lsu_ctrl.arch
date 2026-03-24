@@ -36,21 +36,21 @@ module LsuCtrl
   port load_result: out UInt<32>;
 
   // ── Address alignment ──────────────────────────────────────
-  let byte_off: UInt<2> = addr.trunc<1,0>();
-  let word_addr: UInt<32> = {addr.trunc<31,2>(), {2{false}}};
+  let byte_off: UInt<2> = addr[1:0];
+  let word_addr: UInt<32> = {addr[31:2], {2{false}}};
 
   // ── funct3 decode ──────────────────────────────────────────
-  let is_byte:  Bool = (funct3.trunc<1,0>() == 0);
-  let is_half:  Bool = (funct3.trunc<1,0>() == 1);
-  let is_word:  Bool = (funct3.trunc<1,0>() == 2);
-  let is_unsigned: Bool = funct3.trunc<2,2>() != 0;
+  let is_byte:  Bool = (funct3[1:0] == 0);
+  let is_half:  Bool = (funct3[1:0] == 1);
+  let is_word:  Bool = (funct3[1:0] == 2);
+  let is_unsigned: Bool = funct3[2:2] != 0;
 
   // ── Store: byte-enable and data alignment ──────────────────
   let wstrb_byte: UInt<4> = (byte_off == 0) ? 0x1 :
                              (byte_off == 1) ? 0x2 :
                              (byte_off == 2) ? 0x4 : 0x8;
 
-  let wstrb_half: UInt<4> = (byte_off.trunc<1,1>() == 0) ? 0x3 : 0xC;
+  let wstrb_half: UInt<4> = (byte_off[1:1] == 0) ? 0x3 : 0xC;
 
   let wstrb_word: UInt<4> = 0xF;
 
@@ -58,23 +58,23 @@ module LsuCtrl
                              is_half ? wstrb_half : wstrb_word;
 
   // Shift store data to correct byte lane
-  let wdata_byte: UInt<8> = wdata.trunc<7,0>();
-  let wdata_half: UInt<16> = wdata.trunc<15,0>();
+  let wdata_byte: UInt<8> = wdata[7:0];
+  let wdata_half: UInt<16> = wdata[15:0];
 
   let store_data: UInt<32> = is_byte ? (wdata_byte.zext<32>() << (byte_off.zext<32>() << 3).trunc<32>()).trunc<32>() :
-                              is_half ? (wdata_half.zext<32>() << (byte_off.trunc<1,1>().zext<32>() << 4).trunc<32>()).trunc<32>() :
+                              is_half ? (wdata_half.zext<32>() << (byte_off[1:1].zext<32>() << 4).trunc<32>()).trunc<32>() :
                                         wdata;
 
   // ── Load: extract and sign-extend ──────────────────────────
   // Select the right byte from the word
   let rdata_shifted: UInt<32> = (mem_rdata >> (byte_off.zext<32>() << 3).trunc<32>()).trunc<32>();
 
-  let load_byte: UInt<8> = rdata_shifted.trunc<7,0>();
-  let load_half: UInt<16> = rdata_shifted.trunc<15,0>();
+  let load_byte: UInt<8> = rdata_shifted[7:0];
+  let load_half: UInt<16> = rdata_shifted[15:0];
 
   // Sign extension using {N{sign_bit}}
-  let byte_sign: Bool = load_byte.trunc<7,7>() != 0;
-  let half_sign: Bool = load_half.trunc<15,15>() != 0;
+  let byte_sign: Bool = load_byte[7:7] != 0;
+  let half_sign: Bool = load_half[15:15] != 0;
 
   let lb_result:  UInt<32> = {{24{byte_sign}}, load_byte};
   let lbu_result: UInt<32> = {{24{false}}, load_byte};

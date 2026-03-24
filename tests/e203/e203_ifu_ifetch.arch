@@ -52,7 +52,7 @@ fsm IfuIfetch
 
   // Next PC: PC+4 with bottom 2 bits forced to 0 (aligned)
   let pc_plus4: UInt<32> = (pc_r + 4).trunc<32>();
-  let pc_aligned: UInt<32> = {pc_plus4.trunc<31,2>(), {2{false}}};
+  let pc_aligned: UInt<32> = {pc_plus4[31:2], {2{false}}};
 
   state Idle, WaitGnt, WaitRsp, Abort;
   default state Idle;

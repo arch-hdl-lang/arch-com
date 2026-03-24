@@ -106,7 +106,7 @@ module AluDpath
   let signed_lt: Bool = (req_op1 as SInt<32>) < (req_op2 as SInt<32>);
 
   // ── Shift amount: lower 5 bits of op2 ─────────────────────────────────
-  let shamt: UInt<5> = alu_req_alu_op2.trunc<4,0>();
+  let shamt: UInt<5> = alu_req_alu_op2[4:0];
 
   // ── XOR (also used for EQ/NE comparison) ──────────────────────────────
   let xor_res: UInt<32> = req_op1 ^ req_op2;

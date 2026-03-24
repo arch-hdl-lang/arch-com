@@ -122,40 +122,40 @@ module AesCipherTop
   let sa33_mc: UInt<8> = xt03_y ^ sa03_sr ^ sa13_sr ^ sa23_sr ^ xt33_y;
 
   // ── AddRoundKey after MixColumns (rounds 1-9) ──
-  let sa00_ark: UInt<8> = sa00_mc ^ w0.trunc<31,24>();
-  let sa10_ark: UInt<8> = sa10_mc ^ w0.trunc<23,16>();
-  let sa20_ark: UInt<8> = sa20_mc ^ w0.trunc<15,8>();
-  let sa30_ark: UInt<8> = sa30_mc ^ w0.trunc<7,0>();
-  let sa01_ark: UInt<8> = sa01_mc ^ w1.trunc<31,24>();
-  let sa11_ark: UInt<8> = sa11_mc ^ w1.trunc<23,16>();
-  let sa21_ark: UInt<8> = sa21_mc ^ w1.trunc<15,8>();
-  let sa31_ark: UInt<8> = sa31_mc ^ w1.trunc<7,0>();
-  let sa02_ark: UInt<8> = sa02_mc ^ w2.trunc<31,24>();
-  let sa12_ark: UInt<8> = sa12_mc ^ w2.trunc<23,16>();
-  let sa22_ark: UInt<8> = sa22_mc ^ w2.trunc<15,8>();
-  let sa32_ark: UInt<8> = sa32_mc ^ w2.trunc<7,0>();
-  let sa03_ark: UInt<8> = sa03_mc ^ w3.trunc<31,24>();
-  let sa13_ark: UInt<8> = sa13_mc ^ w3.trunc<23,16>();
-  let sa23_ark: UInt<8> = sa23_mc ^ w3.trunc<15,8>();
-  let sa33_ark: UInt<8> = sa33_mc ^ w3.trunc<7,0>();
+  let sa00_ark: UInt<8> = sa00_mc ^ w0[31:24];
+  let sa10_ark: UInt<8> = sa10_mc ^ w0[23:16];
+  let sa20_ark: UInt<8> = sa20_mc ^ w0[15:8];
+  let sa30_ark: UInt<8> = sa30_mc ^ w0[7:0];
+  let sa01_ark: UInt<8> = sa01_mc ^ w1[31:24];
+  let sa11_ark: UInt<8> = sa11_mc ^ w1[23:16];
+  let sa21_ark: UInt<8> = sa21_mc ^ w1[15:8];
+  let sa31_ark: UInt<8> = sa31_mc ^ w1[7:0];
+  let sa02_ark: UInt<8> = sa02_mc ^ w2[31:24];
+  let sa12_ark: UInt<8> = sa12_mc ^ w2[23:16];
+  let sa22_ark: UInt<8> = sa22_mc ^ w2[15:8];
+  let sa32_ark: UInt<8> = sa32_mc ^ w2[7:0];
+  let sa03_ark: UInt<8> = sa03_mc ^ w3[31:24];
+  let sa13_ark: UInt<8> = sa13_mc ^ w3[23:16];
+  let sa23_ark: UInt<8> = sa23_mc ^ w3[15:8];
+  let sa33_ark: UInt<8> = sa33_mc ^ w3[7:0];
 
   // ── AddRoundKey after ShiftRows only (final round) ──
-  let sa00_fark: UInt<8> = sa00_sr ^ w0.trunc<31,24>();
-  let sa10_fark: UInt<8> = sa10_sr ^ w0.trunc<23,16>();
-  let sa20_fark: UInt<8> = sa20_sr ^ w0.trunc<15,8>();
-  let sa30_fark: UInt<8> = sa30_sr ^ w0.trunc<7,0>();
-  let sa01_fark: UInt<8> = sa01_sr ^ w1.trunc<31,24>();
-  let sa11_fark: UInt<8> = sa11_sr ^ w1.trunc<23,16>();
-  let sa21_fark: UInt<8> = sa21_sr ^ w1.trunc<15,8>();
-  let sa31_fark: UInt<8> = sa31_sr ^ w1.trunc<7,0>();
-  let sa02_fark: UInt<8> = sa02_sr ^ w2.trunc<31,24>();
-  let sa12_fark: UInt<8> = sa12_sr ^ w2.trunc<23,16>();
-  let sa22_fark: UInt<8> = sa22_sr ^ w2.trunc<15,8>();
-  let sa32_fark: UInt<8> = sa32_sr ^ w2.trunc<7,0>();
-  let sa03_fark: UInt<8> = sa03_sr ^ w3.trunc<31,24>();
-  let sa13_fark: UInt<8> = sa13_sr ^ w3.trunc<23,16>();
-  let sa23_fark: UInt<8> = sa23_sr ^ w3.trunc<15,8>();
-  let sa33_fark: UInt<8> = sa33_sr ^ w3.trunc<7,0>();
+  let sa00_fark: UInt<8> = sa00_sr ^ w0[31:24];
+  let sa10_fark: UInt<8> = sa10_sr ^ w0[23:16];
+  let sa20_fark: UInt<8> = sa20_sr ^ w0[15:8];
+  let sa30_fark: UInt<8> = sa30_sr ^ w0[7:0];
+  let sa01_fark: UInt<8> = sa01_sr ^ w1[31:24];
+  let sa11_fark: UInt<8> = sa11_sr ^ w1[23:16];
+  let sa21_fark: UInt<8> = sa21_sr ^ w1[15:8];
+  let sa31_fark: UInt<8> = sa31_sr ^ w1[7:0];
+  let sa02_fark: UInt<8> = sa02_sr ^ w2[31:24];
+  let sa12_fark: UInt<8> = sa12_sr ^ w2[23:16];
+  let sa22_fark: UInt<8> = sa22_sr ^ w2[15:8];
+  let sa32_fark: UInt<8> = sa32_sr ^ w2[7:0];
+  let sa03_fark: UInt<8> = sa03_sr ^ w3[31:24];
+  let sa13_fark: UInt<8> = sa13_sr ^ w3[23:16];
+  let sa23_fark: UInt<8> = sa23_sr ^ w3[15:8];
+  let sa33_fark: UInt<8> = sa33_sr ^ w3[7:0];
 
   // ── FSM control + state matrix updates ──
   seq on clk rising
@@ -168,22 +168,22 @@ module AesCipherTop
     end if
 
     if ld_r
-      sa00 <= text_in_r.trunc<127,120>() ^ w0.trunc<31,24>();
-      sa10 <= text_in_r.trunc<119,112>() ^ w0.trunc<23,16>();
-      sa20 <= text_in_r.trunc<111,104>() ^ w0.trunc<15,8>();
-      sa30 <= text_in_r.trunc<103,96>()  ^ w0.trunc<7,0>();
-      sa01 <= text_in_r.trunc<95,88>()   ^ w1.trunc<31,24>();
-      sa11 <= text_in_r.trunc<87,80>()   ^ w1.trunc<23,16>();
-      sa21 <= text_in_r.trunc<79,72>()   ^ w1.trunc<15,8>();
-      sa31 <= text_in_r.trunc<71,64>()   ^ w1.trunc<7,0>();
-      sa02 <= text_in_r.trunc<63,56>()   ^ w2.trunc<31,24>();
-      sa12 <= text_in_r.trunc<55,48>()   ^ w2.trunc<23,16>();
-      sa22 <= text_in_r.trunc<47,40>()   ^ w2.trunc<15,8>();
-      sa32 <= text_in_r.trunc<39,32>()   ^ w2.trunc<7,0>();
-      sa03 <= text_in_r.trunc<31,24>()   ^ w3.trunc<31,24>();
-      sa13 <= text_in_r.trunc<23,16>()   ^ w3.trunc<23,16>();
-      sa23 <= text_in_r.trunc<15,8>()    ^ w3.trunc<15,8>();
-      sa33 <= text_in_r.trunc<7,0>()     ^ w3.trunc<7,0>();
+      sa00 <= text_in_r[127:120] ^ w0[31:24];
+      sa10 <= text_in_r[119:112] ^ w0[23:16];
+      sa20 <= text_in_r[111:104] ^ w0[15:8];
+      sa30 <= text_in_r[103:96]  ^ w0[7:0];
+      sa01 <= text_in_r[95:88]   ^ w1[31:24];
+      sa11 <= text_in_r[87:80]   ^ w1[23:16];
+      sa21 <= text_in_r[79:72]   ^ w1[15:8];
+      sa31 <= text_in_r[71:64]   ^ w1[7:0];
+      sa02 <= text_in_r[63:56]   ^ w2[31:24];
+      sa12 <= text_in_r[55:48]   ^ w2[23:16];
+      sa22 <= text_in_r[47:40]   ^ w2[15:8];
+      sa32 <= text_in_r[39:32]   ^ w2[7:0];
+      sa03 <= text_in_r[31:24]   ^ w3[31:24];
+      sa13 <= text_in_r[23:16]   ^ w3[23:16];
+      sa23 <= text_in_r[15:8]    ^ w3[15:8];
+      sa33 <= text_in_r[7:0]     ^ w3[7:0];
     elsif dcnt > 1
       sa00 <= sa00_ark;  sa01 <= sa01_ark;  sa02 <= sa02_ark;  sa03 <= sa03_ark;
       sa10 <= sa10_ark;  sa11 <= sa11_ark;  sa12 <= sa12_ark;  sa13 <= sa13_ark;

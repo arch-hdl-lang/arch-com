@@ -933,7 +933,7 @@ impl<'a> Codegen<'a> {
         match &expr.kind {
             ExprKind::Ident(n) => n.clone(),
             ExprKind::FieldAccess(base, _) => Self::expr_root_name(base),
-            ExprKind::Index(base, _) => Self::expr_root_name(base),
+            ExprKind::Index(base, _) | ExprKind::BitSlice(base, _, _) => Self::expr_root_name(base),
             _ => String::new(),
         }
     }
@@ -2222,11 +2222,6 @@ impl<'a> Codegen<'a> {
             ExprKind::MethodCall(base, method, args) => {
                 let b = self.emit_pipeline_stage_expr_str(base, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
                 match method.name.as_str() {
-                    "trunc" if args.len() == 2 => {
-                        let hi = self.emit_expr_str(&args[0]);
-                        let lo = self.emit_expr_str(&args[1]);
-                        format!("{b}[{hi}:{lo}]")
-                    }
                     "trunc" | "zext" => {
                         if let Some(width) = args.first() {
                             let w = self.emit_expr_str(width);
@@ -2251,6 +2246,12 @@ impl<'a> Codegen<'a> {
                 let b = self.emit_pipeline_stage_expr_str(base, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
                 let i = self.emit_pipeline_stage_expr_str(idx, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
                 format!("{b}[{i}]")
+            }
+            ExprKind::BitSlice(base, hi, lo) => {
+                let b = self.emit_pipeline_stage_expr_str(base, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                let h = self.emit_expr_str(hi);
+                let l = self.emit_expr_str(lo);
+                format!("{b}[{h}:{l}]")
             }
             _ => self.emit_expr_str(expr),
         }
@@ -2313,11 +2314,6 @@ impl<'a> Codegen<'a> {
             ExprKind::MethodCall(base, method, args) => {
                 let b = self.emit_pipeline_expr_str(base, stage_names, stage_regs, port_names);
                 match method.name.as_str() {
-                    "trunc" if args.len() == 2 => {
-                        let hi = self.emit_expr_str(&args[0]);
-                        let lo = self.emit_expr_str(&args[1]);
-                        format!("{b}[{hi}:{lo}]")
-                    }
                     "trunc" | "zext" => {
                         if let Some(width) = args.first() {
                             let w = self.emit_expr_str(width);
@@ -2342,6 +2338,12 @@ impl<'a> Codegen<'a> {
                 let b = self.emit_pipeline_expr_str(base, stage_names, stage_regs, port_names);
                 let i = self.emit_pipeline_expr_str(idx, stage_names, stage_regs, port_names);
                 format!("{b}[{i}]")
+            }
+            ExprKind::BitSlice(base, hi, lo) => {
+                let b = self.emit_pipeline_expr_str(base, stage_names, stage_regs, port_names);
+                let h = self.emit_expr_str(hi);
+                let l = self.emit_expr_str(lo);
+                format!("{b}[{h}:{l}]")
             }
             // For everything else, fall back to regular emit
             _ => self.emit_expr_str(expr),
@@ -2648,11 +2650,6 @@ impl<'a> Codegen<'a> {
             ExprKind::MethodCall(base, method, args) => {
                 let b = self.emit_expr_str(base);
                 match method.name.as_str() {
-                    "trunc" if args.len() == 2 => {
-                        let hi = self.emit_expr_str(&args[0]);
-                        let lo = self.emit_expr_str(&args[1]);
-                        format!("{b}[{hi}:{lo}]")
-                    }
                     "trunc" => {
                         if let Some(width) = args.first() {
                             let w = self.emit_expr_str(width);
@@ -2705,6 +2702,12 @@ impl<'a> Codegen<'a> {
                 let b = self.emit_expr_str(base);
                 let i = self.emit_expr_str(idx);
                 format!("{b}[{i}]")
+            }
+            ExprKind::BitSlice(base, hi, lo) => {
+                let b = self.emit_expr_str(base);
+                let h = self.emit_expr_str(hi);
+                let l = self.emit_expr_str(lo);
+                format!("{b}[{h}:{l}]")
             }
             ExprKind::StructLiteral(_name, fields) => {
                 let field_strs: Vec<String> = fields

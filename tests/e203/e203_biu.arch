@@ -36,10 +36,10 @@ module Biu
   port dtcm_wr_be:   out UInt<4>;
 
   // Address decode
-  let addr_top: UInt<16> = lsu_addr.trunc<31,16>();
-  let is_itcm: Bool = (addr_top == ITCM_BASE.trunc<31,16>());
-  let is_dtcm: Bool = (addr_top == DTCM_BASE.trunc<31,16>());
-  let word_addr: UInt<14> = lsu_addr.trunc<15,2>();
+  let addr_top: UInt<16> = lsu_addr[31:16];
+  let is_itcm: Bool = (addr_top == ITCM_BASE[31:16]);
+  let is_dtcm: Bool = (addr_top == DTCM_BASE[31:16]);
+  let word_addr: UInt<14> = lsu_addr[15:2];
 
   comb
     // ITCM: read-only from BIU perspective (writes go through IFU path)

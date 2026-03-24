@@ -623,16 +623,16 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
         ExprKind::Bool(_) => 1,
         ExprKind::MethodCall(_, method, _) if method.name == "as_clock" => 1,
         ExprKind::MethodCall(_, method, args) if method.name == "trunc" || method.name == "zext" || method.name == "sext" => {
-            if method.name == "trunc" && args.len() == 2 {
-                // Two-arg trunc: trunc<Hi,Lo>() → width = Hi - Lo + 1
-                let hi = eval_width(&args[0]);
-                let lo = eval_width(&args[1]);
-                hi - lo + 1
-            } else if let Some(w) = args.first() {
+            if let Some(w) = args.first() {
                 eval_width(w)
             } else {
                 8
             }
+        }
+        ExprKind::BitSlice(_, hi, lo) => {
+            let h = eval_width(hi);
+            let l = eval_width(lo);
+            h - l + 1
         }
         ExprKind::Cast(_, ty) => {
             match ty.as_ref() {
@@ -743,22 +743,7 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
 
         ExprKind::MethodCall(base, method, args) => {
             let b = cpp_expr(base, ctx);
-            // Check if the base signal is a wide type
-            let base_is_wide = match &base.kind {
-                ExprKind::Ident(name) => ctx.wide_names.contains(name.as_str()),
-                _ => false,
-            };
             match method.name.as_str() {
-                "trunc" if args.len() == 2 => {
-                    let hi = eval_width(&args[0]);
-                    let lo = eval_width(&args[1]);
-                    // `b` is already a number (either uint64_t or _arch_u128 from Ident handler)
-                    if base_is_wide {
-                        bit_range_u128(&b, hi, lo)
-                    } else {
-                        bit_range(&b, hi, lo)
-                    }
-                }
                 "trunc" => {
                     if let Some(w_expr) = args.first() {
                         let bits = eval_width(w_expr);
@@ -807,6 +792,18 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             let b = cpp_expr_inner(base, ctx, is_lhs);
             let i = cpp_expr(idx, ctx);
             format!("{b}[{i}]")
+        }
+
+        ExprKind::BitSlice(base, hi, lo) => {
+            let b = cpp_expr(base, ctx);
+            let h = eval_width(hi);
+            let l = eval_width(lo);
+            let base_w = infer_expr_width(base, ctx);
+            if base_w > 64 {
+                bit_range_u128(&b, h, l)
+            } else {
+                bit_range(&b, h, l)
+            }
         }
 
         ExprKind::EnumVariant(enum_name, variant) => {
@@ -1193,6 +1190,11 @@ fn collect_expr_idents(expr: &Expr, out: &mut std::collections::BTreeSet<String>
         ExprKind::Index(base, idx) => {
             collect_expr_idents(base, out);
             collect_expr_idents(idx, out);
+        }
+        ExprKind::BitSlice(base, hi, lo) => {
+            collect_expr_idents(base, out);
+            collect_expr_idents(hi, out);
+            collect_expr_idents(lo, out);
         }
         ExprKind::FieldAccess(base, _) => collect_expr_idents(base, out),
         ExprKind::MethodCall(base, _, args) => {

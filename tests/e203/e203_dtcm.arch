@@ -43,10 +43,10 @@ module Dtcm
   port wr_din:  in UInt<32>;
 
   // Byte-masked write data: each bit of wr_be controls one byte lane.
-  let byte0_mask: UInt<8> = {8{wr_be.trunc<0,0>()}};
-  let byte1_mask: UInt<8> = {8{wr_be.trunc<1,1>()}};
-  let byte2_mask: UInt<8> = {8{wr_be.trunc<2,2>()}};
-  let byte3_mask: UInt<8> = {8{wr_be.trunc<3,3>()}};
+  let byte0_mask: UInt<8> = {8{wr_be[0:0]}};
+  let byte1_mask: UInt<8> = {8{wr_be[1:1]}};
+  let byte2_mask: UInt<8> = {8{wr_be[2:2]}};
+  let byte3_mask: UInt<8> = {8{wr_be[3:3]}};
 
   let full_mask: UInt<32> = {byte3_mask, byte2_mask, byte1_mask, byte0_mask};
   let masked_wdata: UInt<32> = wr_din & full_mask;

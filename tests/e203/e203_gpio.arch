@@ -43,7 +43,7 @@ module Gpio
   let fall_edge: UInt<32> = ~gpio_in & gpio_prev_r;
 
   // Register offset
-  let reg_off: UInt<8> = paddr.trunc<7,0>();
+  let reg_off: UInt<8> = paddr[7:0];
   let apb_wr: Bool = psel & penable & pwrite;
   let apb_rd: Bool = psel & penable & ~pwrite;
 

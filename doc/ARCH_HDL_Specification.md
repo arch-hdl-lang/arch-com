@@ -227,7 +227,7 @@ Every assignment, port connection, and arithmetic result is width-checked at com
 |                                                                             |
 | **let** lo: UInt\<8\> = b.trunc\<8\>();                                     |
 |                                                                             |
-| **let** rd: UInt\<5\> = instr.trunc\<11,7\>();  // bit-range [11:7]         |
+| **let** rd: UInt\<5\> = instr[11:7];            // bit-slice [11:7]         |
 |                                                                             |
 | **let** ext: UInt\<16\> = a.zext\<16\>();                                   |
 |                                                                             |
@@ -248,7 +248,7 @@ Every assignment, port connection, and arithmetic result is width-checked at com
 | cnt \<= (cnt + 1).trunc\<8\>(); // ✓ explicit wrap-around truncation        |
 +-----------------------------------------------------------------------------+
 
-> *⚑ Width inference follows IEEE 1800-2012 §11.6. Arch promotes all mismatches to hard errors --- never warnings. The arithmetic widening trap (`r <= r + 1`) is caught at the register-assignment level: the compiler diagnoses it and suggests `.trunc<N>()`. The `.trunc<N>()` method emits a SystemVerilog size cast `N'(expr)`, which is valid on any expression including compound ones. The `.trunc<N,M>()` dual-arity form extracts a bit range: `signal.trunc<11,7>()` emits `signal[11:7]` with result width N−M+1. This is essential for instruction field decoding.*
+> *⚑ Width inference follows IEEE 1800-2012 §11.6. Arch promotes all mismatches to hard errors --- never warnings. The arithmetic widening trap (`r <= r + 1`) is caught at the register-assignment level: the compiler diagnoses it and suggests `.trunc<N>()`. The `.trunc<N>()` method emits a SystemVerilog size cast `N'(expr)`, which is valid on any expression including compound ones. Bit-slice syntax `expr[hi:lo]` extracts a bit range: `instr[11:7]` emits `instr[11:7]` with result width hi−lo+1. This is essential for instruction field decoding.*
 
 **3.3 Struct and Enum Types**
 
@@ -607,7 +607,7 @@ end module Mux2
 >
 > ◈ **SV codegen notes.** The SystemVerilog backend applies the following transformations for correctness across simulators and lint tools: (1) signed casts emit `$signed(x)` (not `logic signed [N-1:0]'(x)`) for Verilator compatibility; (2) right-shift `>>` on an `SInt` operand emits arithmetic shift `>>>` (correct SRA behavior); (3) `.zext<N>()` emits `N'($unsigned(x))` to prevent context-dependent width expansion.
 
-> ◈ **Sim codegen notes.** The C++ simulation backend applies the following fixes for correctness: (1) `.sext<N>()` properly replicates the MSB of the source value into all upper bits of the result — previously it was treated identically to `.zext<N>()` (plain C++ cast, no sign extension); the correct formula is `((val & ((1<<src)-1)) ^ (1<<(src-1))) - (1<<(src-1))` where `src` is the source width; (2) the two-argument form `.trunc<Hi,Lo>()` now correctly computes the inferred source width as `Hi-Lo+1` rather than `Hi` — the incorrect value caused wrong sign-extension when the bit-range result was later `.sext()`-ed.
+> ◈ **Sim codegen notes.** The C++ simulation backend applies the following fixes for correctness: (1) `.sext<N>()` properly replicates the MSB of the source value into all upper bits of the result — previously it was treated identically to `.zext<N>()` (plain C++ cast, no sign extension); the correct formula is `((val & ((1<<src)-1)) ^ (1<<(src-1))) - (1<<(src-1))` where `src` is the source width; (2) bit-slice `expr[Hi:Lo]` correctly computes the inferred width as `Hi-Lo+1` for subsequent operations.
 
 **5. Clock Domains and CDC Safety**
 

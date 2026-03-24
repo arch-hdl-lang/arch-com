@@ -43,7 +43,7 @@ module SramCtrl
   port icb_rsp_err:   out Bool;
 
   // Word address from byte address
-  let word_addr: UInt<12> = icb_cmd_addr.trunc<13,2>();
+  let word_addr: UInt<12> = icb_cmd_addr[13:2];
 
   // SRAM instance
   inst mem: SramBank

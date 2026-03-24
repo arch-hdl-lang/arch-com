@@ -16,7 +16,7 @@ module IfuMinidec
   port o_rs1_idx:  out UInt<5>;
 
   // ── Instruction field extraction ─────────────────────────────────────
-  let opcode: UInt<7> = instr.trunc<6,0>();
+  let opcode: UInt<7> = instr[6:0];
 
   // ── Opcode classification ────────────────────────────────────────────
   let dec_bxx:   Bool = opcode == 0x63;  // Branch: BEQ/BNE/BLT/BGE/BLTU/BGEU
@@ -26,23 +26,23 @@ module IfuMinidec
   let dec_auipc: Bool = opcode == 0x17;  // AUIPC
 
   // ── B-type immediate: {instr[31], instr[7], instr[30:25], instr[11:8], 1'b0} ──
-  let bimm_12:   UInt<32> = instr.trunc<31,31>().zext<32>() << 12;
-  let bimm_11:   UInt<32> = instr.trunc<7,7>().zext<32>() << 11;
-  let bimm_10_5: UInt<32> = instr.trunc<30,25>().zext<32>() << 5;
-  let bimm_4_1:  UInt<32> = instr.trunc<11,8>().zext<32>() << 1;
+  let bimm_12:   UInt<32> = instr[31:31].zext<32>() << 12;
+  let bimm_11:   UInt<32> = instr[7:7].zext<32>() << 11;
+  let bimm_10_5: UInt<32> = instr[30:25].zext<32>() << 5;
+  let bimm_4_1:  UInt<32> = instr[11:8].zext<32>() << 1;
   let bimm_raw:  UInt<13> = (bimm_12 | bimm_11 | bimm_10_5 | bimm_4_1).trunc<13>();
   let bimm_se:   SInt<21> = bimm_raw.sext<21>();
 
   // ── J-type immediate: {instr[31], instr[19:12], instr[20], instr[30:21], 1'b0} ──
-  let jimm_20:    UInt<32> = instr.trunc<31,31>().zext<32>() << 20;
-  let jimm_19_12: UInt<32> = instr.trunc<19,12>().zext<32>() << 12;
-  let jimm_11:    UInt<32> = instr.trunc<20,20>().zext<32>() << 11;
-  let jimm_10_1:  UInt<32> = instr.trunc<30,21>().zext<32>() << 1;
+  let jimm_20:    UInt<32> = instr[31:31].zext<32>() << 20;
+  let jimm_19_12: UInt<32> = instr[19:12].zext<32>() << 12;
+  let jimm_11:    UInt<32> = instr[20:20].zext<32>() << 11;
+  let jimm_10_1:  UInt<32> = instr[30:21].zext<32>() << 1;
   let jimm_raw:   UInt<21> = (jimm_20 | jimm_19_12 | jimm_11 | jimm_10_1).trunc<21>();
   let jimm_se:    SInt<21> = jimm_raw.sext<21>();
 
   // ── I-type immediate (JALR): sign-extend instr[31:20] ──
-  let iimm_raw: UInt<12> = instr.trunc<31,20>();
+  let iimm_raw: UInt<12> = instr[31:20];
   let iimm_se:  SInt<21> = iimm_raw.sext<21>();
 
   // ── Output logic ─────────────────────────────────────────────────────
@@ -53,7 +53,7 @@ module IfuMinidec
     o_is_bjp   = dec_bxx | dec_jal | dec_jalr;
     o_is_lui   = dec_lui;
     o_is_auipc = dec_auipc;
-    o_rs1_idx  = instr.trunc<19,15>();
+    o_rs1_idx  = instr[19:15];
 
     if dec_bxx
       o_bjp_imm = bimm_se;

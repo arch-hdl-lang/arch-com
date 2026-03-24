@@ -36,7 +36,7 @@ module Fio
   port fio_in_1: in UInt<32>;
 
   // Register file (word-addressed, addr[5:2] selects register)
-  let reg_idx: UInt<4> = icb_cmd_addr.trunc<5,2>();
+  let reg_idx: UInt<4> = icb_cmd_addr[5:2];
 
   // Output registers
   reg fio_r0: UInt<32> init 0 reset rst_n=0;

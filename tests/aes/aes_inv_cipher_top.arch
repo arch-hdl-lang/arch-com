@@ -208,22 +208,22 @@ module AesKeyExpand128
   reg w3: UInt<32> init 0 reset none;
 
   inst sbox0: AesSbox
-    connect a <- w3.trunc<23,16>();
+    connect a <- w3[23:16];
     connect b -> subword0;
   end inst sbox0
 
   inst sbox1: AesSbox
-    connect a <- w3.trunc<15,8>();
+    connect a <- w3[15:8];
     connect b -> subword1;
   end inst sbox1
 
   inst sbox2: AesSbox
-    connect a <- w3.trunc<7,0>();
+    connect a <- w3[7:0];
     connect b -> subword2;
   end inst sbox2
 
   inst sbox3: AesSbox
-    connect a <- w3.trunc<31,24>();
+    connect a <- w3[31:24];
     connect b -> subword3;
   end inst sbox3
 
@@ -241,10 +241,10 @@ module AesKeyExpand128
 
   seq on clk rising
     if kld
-      w0 <= key.trunc<127,96>();
-      w1 <= key.trunc<95,64>();
-      w2 <= key.trunc<63,32>();
-      w3 <= key.trunc<31,0>();
+      w0 <= key[127:96];
+      w1 <= key[95:64];
+      w2 <= key[63:32];
+      w3 <= key[31:0];
     else
       w0 <= nw0;
       w1 <= nw1;
@@ -463,22 +463,22 @@ module AesInvCipherTop
     // State matrix updates
     if ld_r
       // Initial round: XOR input with round key kb[10] (last expanded key)
-      sa00 <= text_in_r.trunc<127,120>() ^ kb10.trunc<127,120>();
-      sa10 <= text_in_r.trunc<119,112>() ^ kb10.trunc<119,112>();
-      sa20 <= text_in_r.trunc<111,104>() ^ kb10.trunc<111,104>();
-      sa30 <= text_in_r.trunc<103,96>()  ^ kb10.trunc<103,96>();
-      sa01 <= text_in_r.trunc<95,88>()   ^ kb10.trunc<95,88>();
-      sa11 <= text_in_r.trunc<87,80>()   ^ kb10.trunc<87,80>();
-      sa21 <= text_in_r.trunc<79,72>()   ^ kb10.trunc<79,72>();
-      sa31 <= text_in_r.trunc<71,64>()   ^ kb10.trunc<71,64>();
-      sa02 <= text_in_r.trunc<63,56>()   ^ kb10.trunc<63,56>();
-      sa12 <= text_in_r.trunc<55,48>()   ^ kb10.trunc<55,48>();
-      sa22 <= text_in_r.trunc<47,40>()   ^ kb10.trunc<47,40>();
-      sa32 <= text_in_r.trunc<39,32>()   ^ kb10.trunc<39,32>();
-      sa03 <= text_in_r.trunc<31,24>()   ^ kb10.trunc<31,24>();
-      sa13 <= text_in_r.trunc<23,16>()   ^ kb10.trunc<23,16>();
-      sa23 <= text_in_r.trunc<15,8>()    ^ kb10.trunc<15,8>();
-      sa33 <= text_in_r.trunc<7,0>()     ^ kb10.trunc<7,0>();
+      sa00 <= text_in_r[127:120] ^ kb10[127:120];
+      sa10 <= text_in_r[119:112] ^ kb10[119:112];
+      sa20 <= text_in_r[111:104] ^ kb10[111:104];
+      sa30 <= text_in_r[103:96]  ^ kb10[103:96];
+      sa01 <= text_in_r[95:88]   ^ kb10[95:88];
+      sa11 <= text_in_r[87:80]   ^ kb10[87:80];
+      sa21 <= text_in_r[79:72]   ^ kb10[79:72];
+      sa31 <= text_in_r[71:64]   ^ kb10[71:64];
+      sa02 <= text_in_r[63:56]   ^ kb10[63:56];
+      sa12 <= text_in_r[55:48]   ^ kb10[55:48];
+      sa22 <= text_in_r[47:40]   ^ kb10[47:40];
+      sa32 <= text_in_r[39:32]   ^ kb10[39:32];
+      sa03 <= text_in_r[31:24]   ^ kb10[31:24];
+      sa13 <= text_in_r[23:16]   ^ kb10[23:16];
+      sa23 <= text_in_r[15:8]    ^ kb10[15:8];
+      sa33 <= text_in_r[7:0]     ^ kb10[7:0];
     elsif go and dcnt > 1 and dcnt < 0xb
       // Standard rounds: InvShiftRows + InvSubBytes + AddRoundKey + InvMixColumns
       // For now use todo! placeholder for InvMixColumns (complex GF math)
@@ -491,34 +491,34 @@ module AesInvCipherTop
       sa30 <= sa30_sr;  sa31 <= sa31_sr;  sa32 <= sa32_sr;  sa33 <= sa33_sr;
     elsif dcnt == 0xb
       // Final round (no InvMixColumns): InvShiftRows + InvSubBytes + AddRoundKey(kb[0])
-      sa00 <= sa00_sr ^ kb00.trunc<127,120>();
-      sa10 <= sa10_sr ^ kb00.trunc<119,112>();
-      sa20 <= sa20_sr ^ kb00.trunc<111,104>();
-      sa30 <= sa30_sr ^ kb00.trunc<103,96>();
-      sa01 <= sa01_sr ^ kb00.trunc<95,88>();
-      sa11 <= sa11_sr ^ kb00.trunc<87,80>();
-      sa21 <= sa21_sr ^ kb00.trunc<79,72>();
-      sa31 <= sa31_sr ^ kb00.trunc<71,64>();
-      sa02 <= sa02_sr ^ kb00.trunc<63,56>();
-      sa12 <= sa12_sr ^ kb00.trunc<55,48>();
-      sa22 <= sa22_sr ^ kb00.trunc<47,40>();
-      sa32 <= sa32_sr ^ kb00.trunc<39,32>();
-      sa03 <= sa03_sr ^ kb00.trunc<31,24>();
-      sa13 <= sa13_sr ^ kb00.trunc<23,16>();
-      sa23 <= sa23_sr ^ kb00.trunc<15,8>();
-      sa33 <= sa33_sr ^ kb00.trunc<7,0>();
+      sa00 <= sa00_sr ^ kb00[127:120];
+      sa10 <= sa10_sr ^ kb00[119:112];
+      sa20 <= sa20_sr ^ kb00[111:104];
+      sa30 <= sa30_sr ^ kb00[103:96];
+      sa01 <= sa01_sr ^ kb00[95:88];
+      sa11 <= sa11_sr ^ kb00[87:80];
+      sa21 <= sa21_sr ^ kb00[79:72];
+      sa31 <= sa31_sr ^ kb00[71:64];
+      sa02 <= sa02_sr ^ kb00[63:56];
+      sa12 <= sa12_sr ^ kb00[55:48];
+      sa22 <= sa22_sr ^ kb00[47:40];
+      sa32 <= sa32_sr ^ kb00[39:32];
+      sa03 <= sa03_sr ^ kb00[31:24];
+      sa13 <= sa13_sr ^ kb00[23:16];
+      sa23 <= sa23_sr ^ kb00[15:8];
+      sa33 <= sa33_sr ^ kb00[7:0];
     end if
 
     // Output latch
     if dcnt == 0xb
-      text_out_r <= { sa00_sr ^ kb00.trunc<127,120>(), sa10_sr ^ kb00.trunc<119,112>(),
-                      sa20_sr ^ kb00.trunc<111,104>(), sa30_sr ^ kb00.trunc<103,96>(),
-                      sa01_sr ^ kb00.trunc<95,88>(),   sa11_sr ^ kb00.trunc<87,80>(),
-                      sa21_sr ^ kb00.trunc<79,72>(),   sa31_sr ^ kb00.trunc<71,64>(),
-                      sa02_sr ^ kb00.trunc<63,56>(),   sa12_sr ^ kb00.trunc<55,48>(),
-                      sa22_sr ^ kb00.trunc<47,40>(),   sa32_sr ^ kb00.trunc<39,32>(),
-                      sa03_sr ^ kb00.trunc<31,24>(),   sa13_sr ^ kb00.trunc<23,16>(),
-                      sa23_sr ^ kb00.trunc<15,8>(),    sa33_sr ^ kb00.trunc<7,0>() };
+      text_out_r <= { sa00_sr ^ kb00[127:120], sa10_sr ^ kb00[119:112],
+                      sa20_sr ^ kb00[111:104], sa30_sr ^ kb00[103:96],
+                      sa01_sr ^ kb00[95:88],   sa11_sr ^ kb00[87:80],
+                      sa21_sr ^ kb00[79:72],   sa31_sr ^ kb00[71:64],
+                      sa02_sr ^ kb00[63:56],   sa12_sr ^ kb00[55:48],
+                      sa22_sr ^ kb00[47:40],   sa32_sr ^ kb00[39:32],
+                      sa03_sr ^ kb00[31:24],   sa13_sr ^ kb00[23:16],
+                      sa23_sr ^ kb00[15:8],    sa33_sr ^ kb00[7:0] };
     end if
   end seq
 

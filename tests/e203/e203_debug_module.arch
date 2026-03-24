@@ -44,7 +44,7 @@ module DebugModule
   reg cmd_reg_r:     UInt<16> init 0 reset rst_n=0;
   reg cmd_write_r:   Bool     init false reset rst_n=false;
 
-  let reg_off: UInt<8> = paddr.trunc<7,0>();
+  let reg_off: UInt<8> = paddr[7:0];
   let apb_wr: Bool = psel & penable & pwrite;
 
   seq on clk rising
@@ -60,17 +60,17 @@ module DebugModule
     if apb_wr
       // dmcontrol (0x10)
       if reg_off == 0x10
-        dmactive_r  <= pwdata.trunc<0,0>() != 0;
-        haltreq_r   <= pwdata.trunc<31,31>() != 0;
-        resumereq_r <= pwdata.trunc<30,30>() != 0;
+        dmactive_r  <= pwdata[0:0] != 0;
+        haltreq_r   <= pwdata[31:31] != 0;
+        resumereq_r <= pwdata[30:30] != 0;
       // data0 (0x04)
       elsif reg_off == 0x04
         data0_r <= pwdata;
       // command (0x17)
       elsif reg_off == 0x17
         cmd_valid_r <= true;
-        cmd_reg_r   <= pwdata.trunc<15,0>();
-        cmd_write_r <= pwdata.trunc<16,16>() != 0;
+        cmd_reg_r   <= pwdata[15:0];
+        cmd_write_r <= pwdata[16:16] != 0;
       end if
     end if
 

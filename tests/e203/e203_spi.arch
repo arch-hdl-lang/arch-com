@@ -48,7 +48,7 @@ module Spi
   reg done_r:      Bool     init false reset rst_n=false;
   reg phase_r:     Bool     init false reset rst_n=false;  // 0=setup, 1=sample
 
-  let reg_off: UInt<8> = paddr.trunc<7,0>();
+  let reg_off: UInt<8> = paddr[7:0];
   let apb_wr: Bool = psel & penable & pwrite;
   let div_tick: Bool = (div_cnt_r == 0);
 
@@ -67,7 +67,7 @@ module Spi
 
     // Start transfer
     if apb_wr & (reg_off == 0x00) & ~busy_r & ctrl_en_r
-      tx_shift_r <= pwdata.trunc<7,0>();
+      tx_shift_r <= pwdata[7:0];
       bit_cnt_r  <= 8;
       busy_r     <= true;
       cs_n_r     <= false;
@@ -80,8 +80,8 @@ module Spi
         phase_r <= true;
       else
         // Sample phase: read MISO, shift
-        rx_shift_r <= {rx_shift_r.trunc<6,0>(), spi_miso};
-        tx_shift_r <= {tx_shift_r.trunc<6,0>(), false};
+        rx_shift_r <= {rx_shift_r[6:0], spi_miso};
+        tx_shift_r <= {tx_shift_r[6:0], false};
         sclk_r     <= ~sclk_r;
         phase_r    <= false;
         bit_cnt_r  <= (bit_cnt_r - 1).trunc<4>();
@@ -97,18 +97,18 @@ module Spi
     // Register writes
     if apb_wr
       if reg_off == 0x08
-        ctrl_en_r   <= pwdata.trunc<0,0>() != 0;
-        ctrl_cpol_r <= pwdata.trunc<1,1>() != 0;
-        ctrl_cpha_r <= pwdata.trunc<2,2>() != 0;
+        ctrl_en_r   <= pwdata[0:0] != 0;
+        ctrl_cpol_r <= pwdata[1:1] != 0;
+        ctrl_cpha_r <= pwdata[2:2] != 0;
       elsif reg_off == 0x0C
-        spi_div_r <= pwdata.trunc<7,0>();
+        spi_div_r <= pwdata[7:0];
       end if
     end if
   end seq
 
   comb
     spi_sclk = sclk_r;
-    spi_mosi = tx_shift_r.trunc<7,7>() != 0;
+    spi_mosi = tx_shift_r[7:7] != 0;
     spi_cs_n = cs_n_r;
 
     // APB read

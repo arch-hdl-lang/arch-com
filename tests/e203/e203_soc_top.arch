@@ -120,9 +120,9 @@ module SocTop
   end inst arbt
 
   // Address decode (combinational — valid only while bus_cmd_valid)
-  let sel_sram: Bool = bus_cmd_addr.trunc<31,28>() == 2;
-  let sel_ppi:  Bool = bus_cmd_addr.trunc<31,28>() == 1;
-  let sel_fio:  Bool = bus_cmd_addr.trunc<31,28>() == 3;
+  let sel_sram: Bool = bus_cmd_addr[31:28] == 2;
+  let sel_ppi:  Bool = bus_cmd_addr[31:28] == 1;
+  let sel_fio:  Bool = bus_cmd_addr[31:28] == 3;
 
   // Latched peripheral select for response mux (holds after cmd completes)
   reg sel_sram_r: Bool init false reset rst_n=false;

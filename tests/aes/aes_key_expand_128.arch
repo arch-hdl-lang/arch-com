@@ -137,22 +137,22 @@ module AesKeyExpand128
   // RotWord: [a0,a1,a2,a3] -> [a1,a2,a3,a0]
   // So we feed w3[23:16], w3[15:8], w3[7:0], w3[31:24]
   inst sbox0: AesSbox
-    connect a <- w3.trunc<23,16>();
+    connect a <- w3[23:16];
     connect b -> subword0;
   end inst sbox0
 
   inst sbox1: AesSbox
-    connect a <- w3.trunc<15,8>();
+    connect a <- w3[15:8];
     connect b -> subword1;
   end inst sbox1
 
   inst sbox2: AesSbox
-    connect a <- w3.trunc<7,0>();
+    connect a <- w3[7:0];
     connect b -> subword2;
   end inst sbox2
 
   inst sbox3: AesSbox
-    connect a <- w3.trunc<31,24>();
+    connect a <- w3[31:24];
     connect b -> subword3;
   end inst sbox3
 
@@ -173,10 +173,10 @@ module AesKeyExpand128
 
   seq on clk rising
     if kld
-      w0 <= key.trunc<127,96>();
-      w1 <= key.trunc<95,64>();
-      w2 <= key.trunc<63,32>();
-      w3 <= key.trunc<31,0>();
+      w0 <= key[127:96];
+      w1 <= key[95:64];
+      w2 <= key[63:32];
+      w3 <= key[31:0];
     else
       w0 <= nw0;
       w1 <= nw1;

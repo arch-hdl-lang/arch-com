@@ -19,6 +19,6 @@ module TopModule
   end seq
 
   comb
-    out_sig = sr.trunc<3,3>();
+    out_sig = sr[3:3];
   end comb
 end module TopModule
