@@ -13,14 +13,10 @@ module TopModule
 
   seq on clk rising
     if byteena[0]
-      for i in 0..7
-        q_r[i] <= d[i];
-      end for
+      q_r[7:0] <= d[7:0];
     end if
     if byteena[1]
-      for i in 8..15
-        q_r[i] <= d[i];
-      end for
+      q_r[15:8] <= d[15:8];
     end if
   end seq
 

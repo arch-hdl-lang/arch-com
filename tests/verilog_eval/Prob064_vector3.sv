@@ -12,24 +12,11 @@ module TopModule (
 );
 
   logic [32-1:0] cat;
-  always_comb begin
-    cat[0] = 1;
-    cat[1] = 1;
-    for (int i = 0; i <= 4; i++) begin
-      cat[(2 + i)] = f[i];
-      cat[(7 + i)] = e[i];
-      cat[(12 + i)] = d[i];
-      cat[(17 + i)] = c[i];
-      cat[(22 + i)] = b[i];
-      cat[(27 + i)] = a[i];
-    end
-    for (int i = 0; i <= 7; i++) begin
-      z[i] = cat[i];
-      y[i] = cat[(8 + i)];
-      x[i] = cat[(16 + i)];
-      w[i] = cat[(24 + i)];
-    end
-  end
+  assign cat = {a, b, c, d, e, f, 2'd3};
+  assign w = cat[31:24];
+  assign x = cat[23:16];
+  assign y = cat[15:8];
+  assign z = cat[7:0];
 
 endmodule
 

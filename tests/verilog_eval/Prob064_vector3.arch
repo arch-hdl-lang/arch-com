@@ -10,24 +10,12 @@ module TopModule
   port y: out UInt<8>;
   port z: out UInt<8>;
 
-  wire cat: UInt<32>;
+  let cat: UInt<32> = {a, b, c, d, e, f, 2'b11};
 
   comb
-    cat[0] = 1;
-    cat[1] = 1;
-    for i in 0..4
-      cat[2 + i] = f[i];
-      cat[7 + i] = e[i];
-      cat[12 + i] = d[i];
-      cat[17 + i] = c[i];
-      cat[22 + i] = b[i];
-      cat[27 + i] = a[i];
-    end for
-    for i in 0..7
-      z[i] = cat[i];
-      y[i] = cat[8 + i];
-      x[i] = cat[16 + i];
-      w[i] = cat[24 + i];
-    end for
+    w = cat[31:24];
+    x = cat[23:16];
+    y = cat[15:8];
+    z = cat[7:0];
   end comb
 end module TopModule

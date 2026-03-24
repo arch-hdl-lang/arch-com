@@ -4,9 +4,7 @@ module TopModule
   port out_hi: out UInt<8>;
   port out_lo: out UInt<8>;
   comb
-    for i in 0..7
-      out_lo[i] = in[i];
-      out_hi[i] = in[8 + i];
-    end for
+    out_lo = in[7:0];
+    out_hi = in[15:8];
   end comb
 end module TopModule

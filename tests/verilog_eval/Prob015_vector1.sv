@@ -5,12 +5,8 @@ module TopModule (
   output logic [8-1:0] out_lo
 );
 
-  always_comb begin
-    for (int i = 0; i <= 7; i++) begin
-      out_lo[i] = in[i];
-      out_hi[i] = in[(8 + i)];
-    end
-  end
+  assign out_lo = in[7:0];
+  assign out_hi = in[15:8];
 
 endmodule
 

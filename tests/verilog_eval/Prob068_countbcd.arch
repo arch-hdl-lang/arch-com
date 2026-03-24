@@ -36,12 +36,7 @@ module TopModule
   end seq
 
   comb
-    for i in 0..3
-      q[i] = ones[i];
-      q[4 + i] = tens[i];
-      q[8 + i] = hund[i];
-      q[12 + i] = thou[i];
-    end for
+    q = {thou, hund, tens, ones};
     ena[0] = (ones == 9);
     ena[1] = (ones == 9) & (tens == 9);
     ena[2] = (ones == 9) & (tens == 9) & (hund == 9);

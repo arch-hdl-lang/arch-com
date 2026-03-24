@@ -40,17 +40,10 @@ module TopModule (
       end
     end
   end
-  always_comb begin
-    for (int i = 0; i <= 3; i++) begin
-      q[i] = ones[i];
-      q[(4 + i)] = tens[i];
-      q[(8 + i)] = hund[i];
-      q[(12 + i)] = thou[i];
-    end
-    ena[0] = (ones == 9);
-    ena[1] = ((ones == 9) & (tens == 9));
-    ena[2] = (((ones == 9) & (tens == 9)) & (hund == 9));
-  end
+  assign q = {thou, hund, tens, ones};
+  assign ena[0] = (ones == 9);
+  assign ena[1] = ((ones == 9) & (tens == 9));
+  assign ena[2] = (((ones == 9) & (tens == 9)) & (hund == 9));
 
 endmodule
 

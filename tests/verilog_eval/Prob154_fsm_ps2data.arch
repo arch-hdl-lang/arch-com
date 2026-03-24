@@ -17,36 +17,21 @@ fsm TopModule
 
   state Find
     seq on clk rising
-      for i in 0..15
-        out_r[i + 8] <= out_r[i];
-      end for
-      for i in 0..7
-        out_r[i] <= in[i];
-      end for
+      out_r <= {out_r[15:0], in};
     end seq
     transition to Got1 when in[3];
   end state Find
 
   state Got1
     seq on clk rising
-      for i in 0..15
-        out_r[i + 8] <= out_r[i];
-      end for
-      for i in 0..7
-        out_r[i] <= in[i];
-      end for
+      out_r <= {out_r[15:0], in};
     end seq
     transition to Got2 when true;
   end state Got1
 
   state Got2
     seq on clk rising
-      for i in 0..15
-        out_r[i + 8] <= out_r[i];
-      end for
-      for i in 0..7
-        out_r[i] <= in[i];
-      end for
+      out_r <= {out_r[15:0], in};
     end seq
     transition to Done_St when true;
   end state Got2
@@ -54,17 +39,10 @@ fsm TopModule
   state Done_St
     comb
       done = true;
-      for i in 0..23
-        out_bytes[i] = out_r[i];
-      end for
+      out_bytes = out_r;
     end comb
     seq on clk rising
-      for i in 0..15
-        out_r[i + 8] <= out_r[i];
-      end for
-      for i in 0..7
-        out_r[i] <= in[i];
-      end for
+      out_r <= {out_r[15:0], in};
     end seq
     transition to Got1 when in[3];
     transition to Find when ~in[3];

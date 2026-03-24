@@ -14,15 +14,9 @@ module TopModule
     if load
       q_r <= data;
     elsif ena == 1
-      q_r[99] <= q_r[0];
-      for i in 0..98
-        q_r[i] <= q_r[i + 1];
-      end for
+      q_r <= {q_r[0], q_r[99:1]};
     elsif ena == 2
-      q_r[0] <= q_r[99];
-      for i in 1..99
-        q_r[i] <= q_r[i - 1];
-      end for
+      q_r <= {q_r[98:0], q_r[99]};
     end if
   end seq
 

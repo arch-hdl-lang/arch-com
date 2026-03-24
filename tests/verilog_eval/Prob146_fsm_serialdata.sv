@@ -23,52 +23,28 @@ module TopModule (
           state_reg <= 0;
         end
       end else if ((state_reg == 0)) begin
-        for (int i = 0; i <= 6; i++) begin
-          data_reg[i] <= data_reg[(i + 1)];
-        end
-        data_reg[7] <= in;
+        data_reg <= {in, data_reg[7:1]};
         state_reg <= 1;
       end else if ((state_reg == 1)) begin
-        for (int i = 0; i <= 6; i++) begin
-          data_reg[i] <= data_reg[(i + 1)];
-        end
-        data_reg[7] <= in;
+        data_reg <= {in, data_reg[7:1]};
         state_reg <= 2;
       end else if ((state_reg == 2)) begin
-        for (int i = 0; i <= 6; i++) begin
-          data_reg[i] <= data_reg[(i + 1)];
-        end
-        data_reg[7] <= in;
+        data_reg <= {in, data_reg[7:1]};
         state_reg <= 3;
       end else if ((state_reg == 3)) begin
-        for (int i = 0; i <= 6; i++) begin
-          data_reg[i] <= data_reg[(i + 1)];
-        end
-        data_reg[7] <= in;
+        data_reg <= {in, data_reg[7:1]};
         state_reg <= 4;
       end else if ((state_reg == 4)) begin
-        for (int i = 0; i <= 6; i++) begin
-          data_reg[i] <= data_reg[(i + 1)];
-        end
-        data_reg[7] <= in;
+        data_reg <= {in, data_reg[7:1]};
         state_reg <= 5;
       end else if ((state_reg == 5)) begin
-        for (int i = 0; i <= 6; i++) begin
-          data_reg[i] <= data_reg[(i + 1)];
-        end
-        data_reg[7] <= in;
+        data_reg <= {in, data_reg[7:1]};
         state_reg <= 6;
       end else if ((state_reg == 6)) begin
-        for (int i = 0; i <= 6; i++) begin
-          data_reg[i] <= data_reg[(i + 1)];
-        end
-        data_reg[7] <= in;
+        data_reg <= {in, data_reg[7:1]};
         state_reg <= 7;
       end else if ((state_reg == 7)) begin
-        for (int i = 0; i <= 6; i++) begin
-          data_reg[i] <= data_reg[(i + 1)];
-        end
-        data_reg[7] <= in;
+        data_reg <= {in, data_reg[7:1]};
         state_reg <= 9;
       end else if ((state_reg == 9)) begin
         if (in) begin

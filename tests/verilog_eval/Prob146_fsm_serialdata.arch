@@ -22,52 +22,28 @@ module TopModule
       end if
     elsif state_reg == 0
       // Shift right: data_reg = {in, data_reg[7:1]}
-      for i in 0..6
-        data_reg[i] <= data_reg[i + 1];
-      end for
-      data_reg[7] <= in;
+      data_reg <= {in, data_reg[7:1]};
       state_reg <= 1;
     elsif state_reg == 1
-      for i in 0..6
-        data_reg[i] <= data_reg[i + 1];
-      end for
-      data_reg[7] <= in;
+      data_reg <= {in, data_reg[7:1]};
       state_reg <= 2;
     elsif state_reg == 2
-      for i in 0..6
-        data_reg[i] <= data_reg[i + 1];
-      end for
-      data_reg[7] <= in;
+      data_reg <= {in, data_reg[7:1]};
       state_reg <= 3;
     elsif state_reg == 3
-      for i in 0..6
-        data_reg[i] <= data_reg[i + 1];
-      end for
-      data_reg[7] <= in;
+      data_reg <= {in, data_reg[7:1]};
       state_reg <= 4;
     elsif state_reg == 4
-      for i in 0..6
-        data_reg[i] <= data_reg[i + 1];
-      end for
-      data_reg[7] <= in;
+      data_reg <= {in, data_reg[7:1]};
       state_reg <= 5;
     elsif state_reg == 5
-      for i in 0..6
-        data_reg[i] <= data_reg[i + 1];
-      end for
-      data_reg[7] <= in;
+      data_reg <= {in, data_reg[7:1]};
       state_reg <= 6;
     elsif state_reg == 6
-      for i in 0..6
-        data_reg[i] <= data_reg[i + 1];
-      end for
-      data_reg[7] <= in;
+      data_reg <= {in, data_reg[7:1]};
       state_reg <= 7;
     elsif state_reg == 7
-      for i in 0..6
-        data_reg[i] <= data_reg[i + 1];
-      end for
-      data_reg[7] <= in;
+      data_reg <= {in, data_reg[7:1]};
       state_reg <= 9;
     elsif state_reg == 9
       // STOP: check stop bit

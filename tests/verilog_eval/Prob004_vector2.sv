@@ -4,14 +4,7 @@ module TopModule (
   output logic [32-1:0] out
 );
 
-  always_comb begin
-    for (int i = 0; i <= 7; i++) begin
-      out[i] = in[(24 + i)];
-      out[(8 + i)] = in[(16 + i)];
-      out[(16 + i)] = in[(8 + i)];
-      out[(24 + i)] = in[i];
-    end
-  end
+  assign out = {in[7:0], in[15:8], in[23:16], in[31:24]};
 
 endmodule
 

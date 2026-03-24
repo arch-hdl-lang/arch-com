@@ -15,14 +15,10 @@ module TopModule (
       q_r <= 0;
     end else begin
       if (byteena[0]) begin
-        for (int i = 0; i <= 7; i++) begin
-          q_r[i] <= d[i];
-        end
+        q_r[7:0] <= d[7:0];
       end
       if (byteena[1]) begin
-        for (int i = 8; i <= 15; i++) begin
-          q_r[i] <= d[i];
-        end
+        q_r[15:8] <= d[15:8];
       end
     end
   end

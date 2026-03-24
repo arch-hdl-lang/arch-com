@@ -13,15 +13,9 @@ module TopModule (
     if (load) begin
       q_r <= data;
     end else if ((ena == 1)) begin
-      q_r[99] <= q_r[0];
-      for (int i = 0; i <= 98; i++) begin
-        q_r[i] <= q_r[(i + 1)];
-      end
+      q_r <= {q_r[0], q_r[99:1]};
     end else if ((ena == 2)) begin
-      q_r[0] <= q_r[99];
-      for (int i = 1; i <= 99; i++) begin
-        q_r[i] <= q_r[(i - 1)];
-      end
+      q_r <= {q_r[98:0], q_r[99]};
     end
   end
   assign q = q_r;

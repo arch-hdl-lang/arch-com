@@ -29,36 +29,16 @@ module TopModule (
       state_r <= state_next;
       case (state_r)
         FIND: begin
-          for (int i = 0; i <= 15; i++) begin
-            out_r[(i + 8)] <= out_r[i];
-          end
-          for (int i = 0; i <= 7; i++) begin
-            out_r[i] <= in[i];
-          end
+          out_r <= {out_r[15:0], in};
         end
         GOT1: begin
-          for (int i = 0; i <= 15; i++) begin
-            out_r[(i + 8)] <= out_r[i];
-          end
-          for (int i = 0; i <= 7; i++) begin
-            out_r[i] <= in[i];
-          end
+          out_r <= {out_r[15:0], in};
         end
         GOT2: begin
-          for (int i = 0; i <= 15; i++) begin
-            out_r[(i + 8)] <= out_r[i];
-          end
-          for (int i = 0; i <= 7; i++) begin
-            out_r[i] <= in[i];
-          end
+          out_r <= {out_r[15:0], in};
         end
         DONE_ST: begin
-          for (int i = 0; i <= 15; i++) begin
-            out_r[(i + 8)] <= out_r[i];
-          end
-          for (int i = 0; i <= 7; i++) begin
-            out_r[i] <= in[i];
-          end
+          out_r <= {out_r[15:0], in};
         end
         default: ;
       endcase
@@ -97,9 +77,7 @@ module TopModule (
       end
       DONE_ST: begin
         done = 1'b1;
-        for (int i = 0; i <= 23; i++) begin
-          out_bytes[i] = out_r[i];
-        end
+        out_bytes = out_r;
       end
       default: ;
     endcase
