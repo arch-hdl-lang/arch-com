@@ -7,38 +7,58 @@ module TopModule (
   output logic z
 );
 
-  logic [2-1:0] st;
+  typedef enum logic [1:0] {
+    A = 2'd0,
+    B = 2'd1,
+    C = 2'd2,
+    D = 2'd3
+  } TopModule_state_t;
+  
+  TopModule_state_t state_r, state_next;
+  
   always_ff @(posedge clk or posedge areset) begin
     if (areset) begin
-      st <= 0;
+      state_r <= A;
     end else begin
-      if ((st == 0)) begin
-        if (x) begin
-          st <= 1;
-        end
-      end else if ((st == 1)) begin
-        if (x) begin
-          st <= 3;
-        end else begin
-          st <= 2;
-        end
-      end else if ((st == 2)) begin
-        if (x) begin
-          st <= 3;
-        end
-      end else if ((st == 3)) begin
-        if ((~x)) begin
-          st <= 2;
-        end
-      end
+      state_r <= state_next;
     end
   end
+  
   always_comb begin
-    if (((st == 1) | (st == 2))) begin
-      z = 1;
-    end else begin
-      z = 0;
-    end
+    state_next = state_r; // hold by default
+    case (state_r)
+      A: begin
+        if (x) state_next = B;
+      end
+      B: begin
+        if (x) state_next = D;
+        else if ((~x)) state_next = C;
+      end
+      C: begin
+        if (x) state_next = D;
+      end
+      D: begin
+        if ((~x)) state_next = C;
+      end
+      default: state_next = state_r;
+    endcase
+  end
+  
+  always_comb begin
+    z = 1'b0; // default
+    case (state_r)
+      A: begin
+      end
+      B: begin
+        z = 1'b1;
+      end
+      C: begin
+        z = 1'b1;
+      end
+      D: begin
+      end
+      default: ;
+    endcase
   end
 
 endmodule

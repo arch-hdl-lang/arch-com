@@ -1,4 +1,3 @@
-// VerilogEval Prob121: 5-state FSM with state-assigned table
 // domain SysDomain
 
 module TopModule (
@@ -8,56 +7,64 @@ module TopModule (
   output logic z
 );
 
-  logic [3-1:0] state_r;
-  logic [3-1:0] next_state;
-  always_comb begin
-    if ((state_r == 0)) begin
-      if (x) begin
-        next_state = 1;
-      end else begin
-        next_state = 0;
-      end
-    end else if ((state_r == 1)) begin
-      if (x) begin
-        next_state = 4;
-      end else begin
-        next_state = 1;
-      end
-    end else if ((state_r == 2)) begin
-      if (x) begin
-        next_state = 1;
-      end else begin
-        next_state = 2;
-      end
-    end else if ((state_r == 3)) begin
-      if (x) begin
-        next_state = 2;
-      end else begin
-        next_state = 1;
-      end
-    end else if ((state_r == 4)) begin
-      if (x) begin
-        next_state = 4;
-      end else begin
-        next_state = 3;
-      end
-    end else begin
-      next_state = 0;
-    end
-  end
+  typedef enum logic [2:0] {
+    A = 3'd0,
+    B = 3'd1,
+    C = 3'd2,
+    D = 3'd3,
+    E = 3'd4
+  } TopModule_state_t;
+  
+  TopModule_state_t state_r, state_next;
+  
   always_ff @(posedge clk) begin
     if (reset) begin
-      state_r <= 0;
+      state_r <= A;
     end else begin
-      state_r <= next_state;
+      state_r <= state_next;
     end
   end
+  
   always_comb begin
-    if (((state_r == 3) | (state_r == 4))) begin
-      z = 1'b1;
-    end else begin
-      z = 1'b0;
-    end
+    state_next = state_r; // hold by default
+    case (state_r)
+      A: begin
+        if (x) state_next = B;
+      end
+      B: begin
+        if (x) state_next = E;
+      end
+      C: begin
+        if (x) state_next = B;
+      end
+      D: begin
+        if (x) state_next = C;
+        else if ((~x)) state_next = B;
+      end
+      E: begin
+        if ((~x)) state_next = D;
+      end
+      default: state_next = state_r;
+    endcase
+  end
+  
+  always_comb begin
+    z = 1'b0; // default
+    case (state_r)
+      A: begin
+      end
+      B: begin
+      end
+      C: begin
+      end
+      D: begin
+        z = 1'b1;
+      end
+      E: begin
+        z = 1'b1;
+      end
+      default: ;
+    endcase
   end
 
 endmodule

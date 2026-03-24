@@ -9,68 +9,97 @@ module TopModule (
   output logic z
 );
 
-  // States: 0=A (wait for s), 1=B1 (cycle 1 of 3), 2=B2 (cycle 2), 3=B3 (cycle 3), 4=output
-  logic [3-1:0] state_r;
-  logic [2-1:0] count_r;
-  logic [3-1:0] next_state;
-  logic [2-1:0] next_count;
-  always_comb begin
-    next_count = count_r;
-    next_state = state_r;
-    if ((state_r == 0)) begin
-      next_count = 0;
-      if (s) begin
-        next_state = 1;
-      end
-    end else if ((state_r == 1)) begin
-      if (w) begin
-        next_count = 1;
-      end else begin
-        next_count = 0;
-      end
-      next_state = 2;
-    end else if ((state_r == 2)) begin
-      if (w) begin
-        next_count = 2'((count_r + 1));
-      end
-      next_state = 3;
-    end else if ((state_r == 3)) begin
-      if (w) begin
-        next_count = 2'((count_r + 1));
-      end
-      next_state = 4;
-    end else if ((state_r == 4)) begin
-      if (w) begin
-        next_count = 1;
-      end else begin
-        next_count = 0;
-      end
-      next_state = 2;
-    end else begin
-      next_state = 0;
-      next_count = 0;
-    end
-  end
-  // State A: wait for s
-  // B1: first cycle
-  // B2: second cycle
-  // B3: third cycle
-  // Output cycle, then start next window
+  typedef enum logic [2:0] {
+    A = 3'd0,
+    B1 = 3'd1,
+    B2 = 3'd2,
+    B3 = 3'd3,
+    OUT = 3'd4
+  } TopModule_state_t;
+  
+  TopModule_state_t state_r, state_next;
+  
+  logic [2-1:0] cnt;
+  
   always_ff @(posedge clk) begin
     if (reset) begin
-      count_r <= 0;
-      state_r <= 0;
+      state_r <= A;
+      cnt <= 0;
     end else begin
-      state_r <= next_state;
-      count_r <= next_count;
+      state_r <= state_next;
+      case (state_r)
+        A: begin
+          cnt <= 0;
+        end
+        B1: begin
+          if (w) begin
+            cnt <= 1;
+          end else begin
+            cnt <= 0;
+          end
+        end
+        B2: begin
+          if (w) begin
+            cnt <= 2'((cnt + 1));
+          end
+        end
+        B3: begin
+          if (w) begin
+            cnt <= 2'((cnt + 1));
+          end
+        end
+        OUT: begin
+          if (w) begin
+            cnt <= 1;
+          end else begin
+            cnt <= 0;
+          end
+        end
+        default: ;
+      endcase
     end
   end
+  
   always_comb begin
-    if (((state_r == 4) & (count_r == 2))) begin
-      z = 1'b1;
-    end else begin
-      z = 1'b0;
-    end
+    state_next = state_r; // hold by default
+    case (state_r)
+      A: begin
+        if (s) state_next = B1;
+      end
+      B1: begin
+        state_next = B2;
+      end
+      B2: begin
+        state_next = B3;
+      end
+      B3: begin
+        state_next = OUT;
+      end
+      OUT: begin
+        state_next = B2;
+      end
+      default: state_next = state_r;
+    endcase
+  end
+  
+  always_comb begin
+    z = 1'b0; // default
+    case (state_r)
+      A: begin
+      end
+      B1: begin
+      end
+      B2: begin
+      end
+      B3: begin
+      end
+      OUT: begin
+        if ((cnt == 2)) begin
+          z = 1'b1;
+        end
+      end
+      default: ;
+    endcase
   end
 
 endmodule

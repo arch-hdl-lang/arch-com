@@ -10,50 +10,100 @@ module TopModule (
   output logic done
 );
 
-  logic [2-1:0] state_reg;
-  // 24-bit shift register: always shift in new byte
+  typedef enum logic [1:0] {
+    FIND = 2'd0,
+    GOT1 = 2'd1,
+    GOT2 = 2'd2,
+    DONE_ST = 2'd3
+  } TopModule_state_t;
+  
+  TopModule_state_t state_r, state_next;
+  
   logic [24-1:0] out_r;
-  // States: 0=FIND, 1=GOT1, 2=GOT2, 3=DONE
-  // Always shift in: out_r <= {out_r[15:0], in}
+  
   always_ff @(posedge clk) begin
     if (reset) begin
+      state_r <= FIND;
       out_r <= 0;
-      state_reg <= 0;
     end else begin
-      for (int i = 0; i <= 15; i++) begin
-        out_r[(i + 8)] <= out_r[i];
-      end
-      for (int i = 0; i <= 7; i++) begin
-        out_r[i] <= in[i];
-      end
-      if ((state_reg == 0)) begin
-        if (in[3]) begin
-          state_reg <= 1;
+      state_r <= state_next;
+      case (state_r)
+        FIND: begin
+          for (int i = 0; i <= 15; i++) begin
+            out_r[(i + 8)] <= out_r[i];
+          end
+          for (int i = 0; i <= 7; i++) begin
+            out_r[i] <= in[i];
+          end
         end
-      end else if ((state_reg == 1)) begin
-        state_reg <= 2;
-      end else if ((state_reg == 2)) begin
-        state_reg <= 3;
-      end else if (in[3]) begin
-        state_reg <= 1;
-      end else begin
-        state_reg <= 0;
-      end
+        GOT1: begin
+          for (int i = 0; i <= 15; i++) begin
+            out_r[(i + 8)] <= out_r[i];
+          end
+          for (int i = 0; i <= 7; i++) begin
+            out_r[i] <= in[i];
+          end
+        end
+        GOT2: begin
+          for (int i = 0; i <= 15; i++) begin
+            out_r[(i + 8)] <= out_r[i];
+          end
+          for (int i = 0; i <= 7; i++) begin
+            out_r[i] <= in[i];
+          end
+        end
+        DONE_ST: begin
+          for (int i = 0; i <= 15; i++) begin
+            out_r[(i + 8)] <= out_r[i];
+          end
+          for (int i = 0; i <= 7; i++) begin
+            out_r[i] <= in[i];
+          end
+        end
+        default: ;
+      endcase
     end
   end
+  
   always_comb begin
-    done = (state_reg == 3);
-    if ((state_reg == 3)) begin
-      for (int i = 0; i <= 23; i++) begin
-        out_bytes[i] = out_r[i];
+    state_next = state_r; // hold by default
+    case (state_r)
+      FIND: begin
+        if (in[3]) state_next = GOT1;
       end
-    end else begin
-      for (int i = 0; i <= 23; i++) begin
-        out_bytes[i] = 1'b0;
+      GOT1: begin
+        state_next = GOT2;
       end
-    end
+      GOT2: begin
+        state_next = DONE_ST;
+      end
+      DONE_ST: begin
+        if (in[3]) state_next = GOT1;
+        else if ((~in[3])) state_next = FIND;
+      end
+      default: state_next = state_r;
+    endcase
+  end
+  
+  always_comb begin
+    out_bytes = 0; // default
+    done = 1'b0; // default
+    case (state_r)
+      FIND: begin
+      end
+      GOT1: begin
+      end
+      GOT2: begin
+      end
+      DONE_ST: begin
+        done = 1'b1;
+        for (int i = 0; i <= 23; i++) begin
+          out_bytes[i] = out_r[i];
+        end
+      end
+      default: ;
+    endcase
   end
 
 endmodule
 
-// Output shift register when done, else 0

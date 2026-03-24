@@ -12,117 +12,87 @@ module TopModule (
   output logic dfr
 );
 
-  // States: 0=A2(below,falling), 1=B1(mid-low,rising), 2=B2(mid-low,falling)
-  //         3=C1(mid-high,rising), 4=C2(mid-high,falling), 5=D1(above,rising)
-  logic [3-1:0] state_r;
-  logic [3-1:0] next_state;
-  always_comb begin
-    if ((state_r == 0)) begin
-      if (s[0]) begin
-        next_state = 1;
-      end else begin
-        next_state = 0;
-      end
-    end else if ((state_r == 1)) begin
-      if (s[1]) begin
-        next_state = 3;
-      end else if (s[0]) begin
-        next_state = 1;
-      end else begin
-        next_state = 0;
-      end
-    end else if ((state_r == 2)) begin
-      if (s[1]) begin
-        next_state = 3;
-      end else if (s[0]) begin
-        next_state = 2;
-      end else begin
-        next_state = 0;
-      end
-    end else if ((state_r == 3)) begin
-      if (s[2]) begin
-        next_state = 5;
-      end else if (s[1]) begin
-        next_state = 3;
-      end else begin
-        next_state = 2;
-      end
-    end else if ((state_r == 4)) begin
-      if (s[2]) begin
-        next_state = 5;
-      end else if (s[1]) begin
-        next_state = 4;
-      end else begin
-        next_state = 2;
-      end
-    end else if ((state_r == 5)) begin
-      if (s[2]) begin
-        next_state = 5;
-      end else begin
-        next_state = 4;
-      end
-    end else begin
-      next_state = 0;
-    end
-  end
-  // A2: below s0
-  // B1: mid-low, rising
-  // B2: mid-low, falling
-  // C1: mid-high, rising
-  // C2: mid-high, falling
-  // D1: above s2
+  typedef enum logic [2:0] {
+    A2 = 3'd0,
+    B1 = 3'd1,
+    B2 = 3'd2,
+    C1 = 3'd3,
+    C2 = 3'd4,
+    D1 = 3'd5
+  } TopModule_state_t;
+  
+  TopModule_state_t state_r, state_next;
+  
   always_ff @(posedge clk) begin
     if (reset) begin
-      state_r <= 0;
+      state_r <= A2;
     end else begin
-      state_r <= next_state;
+      state_r <= state_next;
     end
   end
+  
   always_comb begin
-    if ((state_r == 0)) begin
-      fr2 = 1'b1;
-      fr1 = 1'b1;
-      fr0 = 1'b1;
-      dfr = 1'b1;
-    end else if ((state_r == 1)) begin
-      fr2 = 1'b0;
-      fr1 = 1'b1;
-      fr0 = 1'b1;
-      dfr = 1'b0;
-    end else if ((state_r == 2)) begin
-      fr2 = 1'b0;
-      fr1 = 1'b1;
-      fr0 = 1'b1;
-      dfr = 1'b1;
-    end else if ((state_r == 3)) begin
-      fr2 = 1'b0;
-      fr1 = 1'b0;
-      fr0 = 1'b1;
-      dfr = 1'b0;
-    end else if ((state_r == 4)) begin
-      fr2 = 1'b0;
-      fr1 = 1'b0;
-      fr0 = 1'b1;
-      dfr = 1'b1;
-    end else if ((state_r == 5)) begin
-      fr2 = 1'b0;
-      fr1 = 1'b0;
-      fr0 = 1'b0;
-      dfr = 1'b0;
-    end else begin
-      fr2 = 1'b0;
-      fr1 = 1'b0;
-      fr0 = 1'b0;
-      dfr = 1'b0;
-    end
+    state_next = state_r; // hold by default
+    case (state_r)
+      A2: begin
+        if (s[0]) state_next = B1;
+      end
+      B1: begin
+        if (s[1]) state_next = C1;
+        else if ((~s[0])) state_next = A2;
+      end
+      B2: begin
+        if (s[1]) state_next = C1;
+        else if ((~s[0])) state_next = A2;
+      end
+      C1: begin
+        if (s[2]) state_next = D1;
+        else if ((~s[1])) state_next = B2;
+      end
+      C2: begin
+        if (s[2]) state_next = D1;
+        else if ((~s[1])) state_next = B2;
+      end
+      D1: begin
+        if ((~s[2])) state_next = C2;
+      end
+      default: state_next = state_r;
+    endcase
+  end
+  
+  always_comb begin
+    fr2 = 1'b0; // default
+    fr1 = 1'b0; // default
+    fr0 = 1'b0; // default
+    dfr = 1'b0; // default
+    case (state_r)
+      A2: begin
+        fr2 = 1'b1;
+        fr1 = 1'b1;
+        fr0 = 1'b1;
+        dfr = 1'b1;
+      end
+      B1: begin
+        fr1 = 1'b1;
+        fr0 = 1'b1;
+      end
+      B2: begin
+        fr1 = 1'b1;
+        fr0 = 1'b1;
+        dfr = 1'b1;
+      end
+      C1: begin
+        fr0 = 1'b1;
+      end
+      C2: begin
+        fr0 = 1'b1;
+        dfr = 1'b1;
+      end
+      D1: begin
+      end
+      default: ;
+    endcase
   end
 
 endmodule
 
-// Output logic: {fr2, fr1, fr0, dfr}
-// A2: 1111
-// B1: 0110
-// B2: 0111
-// C1: 0010
-// C2: 0011
-// D1: 0000

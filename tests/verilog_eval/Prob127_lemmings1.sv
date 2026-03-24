@@ -9,22 +9,47 @@ module TopModule (
   output logic walk_right
 );
 
-  logic st;
+  typedef enum logic [0:0] {
+    WALKLEFT = 1'd0,
+    WALKRIGHT = 1'd1
+  } TopModule_state_t;
+  
+  TopModule_state_t state_r, state_next;
+  
   always_ff @(posedge clk or posedge areset) begin
     if (areset) begin
-      st <= 0;
+      state_r <= WALKLEFT;
     end else begin
-      if ((~st)) begin
-        if (bump_left) begin
-          st <= 1;
-        end
-      end else if (bump_right) begin
-        st <= 0;
-      end
+      state_r <= state_next;
     end
   end
-  assign walk_left = (~st);
-  assign walk_right = st;
+  
+  always_comb begin
+    state_next = state_r; // hold by default
+    case (state_r)
+      WALKLEFT: begin
+        if (bump_left) state_next = WALKRIGHT;
+      end
+      WALKRIGHT: begin
+        if (bump_right) state_next = WALKLEFT;
+      end
+      default: state_next = state_r;
+    endcase
+  end
+  
+  always_comb begin
+    walk_left = 1'b0; // default
+    walk_right = 1'b0; // default
+    case (state_r)
+      WALKLEFT: begin
+        walk_left = 1'b1;
+      end
+      WALKRIGHT: begin
+        walk_right = 1'b1;
+      end
+      default: ;
+    endcase
+  end
 
 endmodule
 
