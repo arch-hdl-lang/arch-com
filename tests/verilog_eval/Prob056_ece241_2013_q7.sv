@@ -4,7 +4,7 @@ module TopModule (
   input logic clk,
   input logic j,
   input logic k,
-  output logic q_sig
+  output logic Q
 );
 
   logic q_r;
@@ -17,7 +17,7 @@ module TopModule (
       q_r <= 0;
     end
   end
-  assign q_sig = q_r;
+  assign Q = q_r;
 
 endmodule
 

@@ -3,12 +3,12 @@ end domain SysDomain
 
 module TopModule
   port clk: in Clock<SysDomain>;
-  port reset_sig: in Reset<Sync>;
+  port reset: in Reset<Sync>;
   port j: in Bool;
   port k: in Bool;
-  port out_sig: out Bool;
+  port out: out Bool;
 
-  reg st: Bool reset reset_sig=0;
+  reg st: Bool reset reset=0;
 
   seq on clk rising
     if ~st
@@ -23,6 +23,6 @@ module TopModule
   end seq
 
   comb
-    out_sig = st;
+    out = st;
   end comb
 end module TopModule

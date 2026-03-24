@@ -5,8 +5,8 @@ end domain SysDomain
 module TopModule
   port clk: in Clock<SysDomain>;
   port resetn: in Bool;
-  port in_sig: in Bool;
-  port out_sig: out Bool;
+  port in: in Bool;
+  port out: out Bool;
 
   reg sr: UInt<4> init 0 reset none;
 
@@ -14,11 +14,11 @@ module TopModule
     if ~resetn
       sr <= 0;
     else
-      sr <= (sr << 1).trunc<4>() | in_sig.zext<4>();
+      sr <= (sr << 1).trunc<4>() | in.zext<4>();
     end if
   end seq
 
   comb
-    out_sig = sr[3:3];
+    out = sr[3:3];
   end comb
 end module TopModule

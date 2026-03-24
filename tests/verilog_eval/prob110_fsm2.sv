@@ -6,7 +6,7 @@ module TopModule (
   input logic areset,
   input logic j,
   input logic k,
-  output logic out_sig
+  output logic out
 );
 
   typedef enum logic [0:0] {
@@ -38,13 +38,13 @@ module TopModule (
   end
   
   always_comb begin
-    out_sig = 1'b0; // default
+    out = 1'b0; // default
     case (state_r)
       OFF: begin
-        out_sig = 1'b0;
+        out = 1'b0;
       end
       ON: begin
-        out_sig = 1'b1;
+        out = 1'b1;
       end
       default: ;
     endcase

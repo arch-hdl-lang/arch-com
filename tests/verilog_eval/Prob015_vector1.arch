@@ -1,12 +1,12 @@
 // VerilogEval Prob015: Split 16-bit into hi/lo bytes
 module TopModule
-  port in_sig: in UInt<16>;
+  port in: in UInt<16>;
   port out_hi: out UInt<8>;
   port out_lo: out UInt<8>;
   comb
     for i in 0..7
-      out_lo[i] = in_sig[i];
-      out_hi[i] = in_sig[8 + i];
+      out_lo[i] = in[i];
+      out_hi[i] = in[8 + i];
     end for
   end comb
 end module TopModule

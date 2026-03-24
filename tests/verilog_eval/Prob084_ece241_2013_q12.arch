@@ -4,17 +4,17 @@ end domain SysDomain
 module TopModule
   port clk: in Clock<SysDomain>;
   port enable: in Bool;
-  port s_sig: in Bool;
-  port a_sig: in Bool;
-  port b_sig: in Bool;
-  port c_sig: in Bool;
-  port z_sig: out Bool;
+  port S: in Bool;
+  port A: in Bool;
+  port B: in Bool;
+  port C: in Bool;
+  port Z: out Bool;
 
   reg sr: UInt<8>;
 
   seq on clk rising
     if enable
-      sr[0] <= s_sig;
+      sr[0] <= S;
       for i in 1..7
         sr[i] <= sr[i - 1];
       end for
@@ -24,9 +24,9 @@ module TopModule
   wire sel: UInt<3>;
 
   comb
-    sel[2] = a_sig;
-    sel[1] = b_sig;
-    sel[0] = c_sig;
-    z_sig = sr[sel];
+    sel[2] = A;
+    sel[1] = B;
+    sel[0] = C;
+    Z = sr[sel];
   end comb
 end module TopModule

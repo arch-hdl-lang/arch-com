@@ -2,9 +2,9 @@
 module TopModule
   port a: in Bool;
   port b: in Bool;
-  port out_sig: out Bool;
+  port out: out Bool;
 
   comb
-    out_sig = a & b;
+    out = a & b;
   end comb
 end module TopModule

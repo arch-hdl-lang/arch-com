@@ -1,10 +1,10 @@
 module TopModule (
   input logic a,
   input logic b,
-  output logic out_sig
+  output logic out
 );
 
-  assign out_sig = (~(a | b));
+  assign out = (~(a | b));
 
 endmodule
 

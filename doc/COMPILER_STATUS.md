@@ -1,7 +1,7 @@
 # ARCH Compiler — Status & Roadmap
 
 > Last updated: 2026-03-23
-> Compiler version: 0.35.0 (naming convention checks removed)
+> Compiler version: 0.36.0 (contextual keywords: in/out/state unreserved)
 
 ---
 
@@ -125,6 +125,7 @@
 | Check | Status |
 |-------|--------|
 | PascalCase (types), snake_case (signals), UPPER_SNAKE (params) | ⚪ Removed — style convention, not compiler-enforced |
+| `in`, `out`, `state` as contextual keywords | ✅ | Can be used as port/signal names; only act as keywords in their specific grammar positions |
 | Duplicate definitions | ✅ |
 | Undefined name references | ✅ |
 | Output ports must be driven | ✅ |

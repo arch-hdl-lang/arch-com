@@ -9,28 +9,28 @@ module TopModule
   port h: in UInt<16>;
   port i: in UInt<16>;
   port sel: in UInt<4>;
-  port out_sig: out UInt<16>;
+  port out: out UInt<16>;
   comb
     if sel == 0
-      out_sig = a;
+      out = a;
     elsif sel == 1
-      out_sig = b;
+      out = b;
     elsif sel == 2
-      out_sig = c;
+      out = c;
     elsif sel == 3
-      out_sig = d;
+      out = d;
     elsif sel == 4
-      out_sig = e;
+      out = e;
     elsif sel == 5
-      out_sig = f;
+      out = f;
     elsif sel == 6
-      out_sig = g;
+      out = g;
     elsif sel == 7
-      out_sig = h;
+      out = h;
     elsif sel == 8
-      out_sig = i;
+      out = i;
     else
-      out_sig = 0xffff;
+      out = 0xffff;
     end if
   end comb
 end module TopModule

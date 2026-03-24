@@ -6,22 +6,22 @@ module TopModule
   port data3: in UInt<4>;
   port data4: in UInt<4>;
   port data5: in UInt<4>;
-  port out_sig: out UInt<4>;
+  port out: out UInt<4>;
   comb
     if sel == 0
-      out_sig = data0;
+      out = data0;
     elsif sel == 1
-      out_sig = data1;
+      out = data1;
     elsif sel == 2
-      out_sig = data2;
+      out = data2;
     elsif sel == 3
-      out_sig = data3;
+      out = data3;
     elsif sel == 4
-      out_sig = data4;
+      out = data4;
     elsif sel == 5
-      out_sig = data5;
+      out = data5;
     else
-      out_sig = 0;
+      out = 0;
     end if
   end comb
 end module TopModule

@@ -1,13 +1,13 @@
 // VerilogEval Prob004: Reverse byte order of 32-bit vector
 module TopModule
-  port in_sig: in UInt<32>;
-  port out_sig: out UInt<32>;
+  port in: in UInt<32>;
+  port out: out UInt<32>;
   comb
     for i in 0..7
-      out_sig[i] = in_sig[24 + i];
-      out_sig[8 + i] = in_sig[16 + i];
-      out_sig[16 + i] = in_sig[8 + i];
-      out_sig[24 + i] = in_sig[i];
+      out[i] = in[24 + i];
+      out[8 + i] = in[16 + i];
+      out[16 + i] = in[8 + i];
+      out[24 + i] = in[i];
     end for
   end comb
 end module TopModule

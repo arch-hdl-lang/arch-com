@@ -8,7 +8,7 @@ module TopModule
   port clk: in Clock<SysDomain>;
   port a: in Bool;
   port b: in Bool;
-  port state_sig: out Bool;
+  port state: out Bool;
   port q: out Bool;
 
   reg st: Bool;
@@ -19,6 +19,6 @@ module TopModule
 
   comb
     q = a ^ b ^ st;
-    state_sig = st;
+    state = st;
   end comb
 end module TopModule

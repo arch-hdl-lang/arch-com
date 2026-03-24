@@ -4,8 +4,8 @@
 module TopModule (
   input logic clk,
   input logic resetn,
-  input logic in_sig,
-  output logic out_sig
+  input logic in,
+  output logic out
 );
 
   logic [4-1:0] sr = 0;
@@ -13,10 +13,10 @@ module TopModule (
     if ((~resetn)) begin
       sr <= 0;
     end else begin
-      sr <= (4'((sr << 1)) | 4'($unsigned(in_sig)));
+      sr <= (4'((sr << 1)) | 4'($unsigned(in)));
     end
   end
-  assign out_sig = sr[3:3];
+  assign out = sr[3:3];
 
 endmodule
 

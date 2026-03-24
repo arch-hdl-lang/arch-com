@@ -4,8 +4,8 @@
 
 module TopModule (
   input logic clk,
-  input logic rst,
-  input logic [8-1:0] in_sig,
+  input logic reset,
+  input logic [8-1:0] in,
   output logic [24-1:0] out_bytes,
   output logic done
 );
@@ -16,7 +16,7 @@ module TopModule (
   // States: 0=FIND, 1=GOT1, 2=GOT2, 3=DONE
   // Always shift in: out_r <= {out_r[15:0], in}
   always_ff @(posedge clk) begin
-    if (rst) begin
+    if (reset) begin
       out_r <= 0;
       state_reg <= 0;
     end else begin
@@ -24,17 +24,17 @@ module TopModule (
         out_r[(i + 8)] <= out_r[i];
       end
       for (int i = 0; i <= 7; i++) begin
-        out_r[i] <= in_sig[i];
+        out_r[i] <= in[i];
       end
       if ((state_reg == 0)) begin
-        if (in_sig[3]) begin
+        if (in[3]) begin
           state_reg <= 1;
         end
       end else if ((state_reg == 1)) begin
         state_reg <= 2;
       end else if ((state_reg == 2)) begin
         state_reg <= 3;
-      end else if (in_sig[3]) begin
+      end else if (in[3]) begin
         state_reg <= 1;
       end else begin
         state_reg <= 0;

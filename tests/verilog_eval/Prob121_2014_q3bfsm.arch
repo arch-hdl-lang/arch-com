@@ -4,11 +4,11 @@ end domain SysDomain
 
 module TopModule
   port clk: in Clock<SysDomain>;
-  port rst: in Reset<Sync>;
+  port reset: in Reset<Sync>;
   port x: in Bool;
   port z: out Bool;
 
-  reg state_r: UInt<3> reset rst=0;
+  reg state_r: UInt<3> reset reset=0;
 
   wire next_state: UInt<3>;
 

@@ -2,15 +2,15 @@ module TopModule
   port do_sub: in Bool;
   port a: in UInt<8>;
   port b: in UInt<8>;
-  port out_sig: out UInt<8>;
+  port out: out UInt<8>;
   port result_is_zero: out Bool;
   comb
     if do_sub
-      out_sig = (a - b).trunc<8>();
+      out = (a - b).trunc<8>();
     else
-      out_sig = (a + b).trunc<8>();
+      out = (a + b).trunc<8>();
     end if
-    if out_sig == 0
+    if out == 0
       result_is_zero = 1;
     else
       result_is_zero = 0;

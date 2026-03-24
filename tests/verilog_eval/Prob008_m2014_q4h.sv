@@ -1,9 +1,9 @@
 module TopModule (
-  input logic in_sig,
-  output logic out_sig
+  input logic in,
+  output logic out
 );
 
-  assign out_sig = in_sig;
+  assign out = in;
 
 endmodule
 

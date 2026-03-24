@@ -2,12 +2,12 @@ module TopModule
   port a: in UInt<100>;
   port b: in UInt<100>;
   port sel: in Bool;
-  port out_sig: out UInt<100>;
+  port out: out UInt<100>;
   comb
     if sel
-      out_sig = b;
+      out = b;
     else
-      out_sig = a;
+      out = a;
     end if
   end comb
 end module TopModule

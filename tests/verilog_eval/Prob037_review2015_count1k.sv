@@ -2,13 +2,13 @@
 
 module TopModule (
   input logic clk,
-  input logic reset_sig,
+  input logic reset,
   output logic [10-1:0] q
 );
 
   logic [10-1:0] cnt;
   always_ff @(posedge clk) begin
-    if (reset_sig) begin
+    if (reset) begin
       cnt <= 0;
     end else begin
       if ((cnt == 999)) begin

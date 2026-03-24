@@ -3,7 +3,7 @@
 
 module TopModule (
   input logic clk,
-  input logic arst,
+  input logic areset,
   input logic predict_valid,
   input logic [7-1:0] predict_pc,
   input logic train_valid,
@@ -42,8 +42,8 @@ module TopModule (
   end
   // Gate outputs: 0 when predict_valid=0 (Verilator 2-state compatibility)
   // Compute updated counter for training
-  always_ff @(posedge clk or posedge arst) begin
-    if (arst) begin
+  always_ff @(posedge clk or posedge areset) begin
+    if (areset) begin
       ghr <= 0;
       pht <= '{default: 1};
     end else begin

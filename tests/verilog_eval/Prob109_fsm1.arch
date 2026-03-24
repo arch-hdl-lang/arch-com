@@ -4,24 +4,24 @@ end domain SysDomain
 module TopModule
   port clk: in Clock<SysDomain>;
   port areset: in Reset<Async>;
-  port in_sig: in Bool;
-  port out_sig: out Bool;
+  port in: in Bool;
+  port out: out Bool;
 
   reg st: Bool reset areset=1;
 
   seq on clk rising
     if st
-      if ~in_sig
+      if ~in
         st <= 0;
       end if
     else
-      if ~in_sig
+      if ~in
         st <= 1;
       end if
     end if
   end seq
 
   comb
-    out_sig = st;
+    out = st;
   end comb
 end module TopModule

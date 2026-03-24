@@ -4,14 +4,14 @@ end domain SysDomain
 
 module TopModule
   port clk: in Clock<SysDomain>;
-  port rst: in Reset<Sync>;
-  port s_sig: in Bool;
+  port reset: in Reset<Sync>;
+  port s: in Bool;
   port w: in Bool;
   port z: out Bool;
 
   // States: 0=A (wait for s), 1=B1 (cycle 1 of 3), 2=B2 (cycle 2), 3=B3 (cycle 3), 4=output
-  reg state_r: UInt<3> reset rst=0;
-  reg count_r: UInt<2> reset rst=0;
+  reg state_r: UInt<3> reset reset=0;
+  reg count_r: UInt<2> reset reset=0;
 
   wire next_state: UInt<3>;
   wire next_count: UInt<2>;
@@ -22,7 +22,7 @@ module TopModule
     if state_r == 0
       // State A: wait for s
       next_count = 0;
-      if s_sig
+      if s
         next_state = 1;
       end if
     elsif state_r == 1

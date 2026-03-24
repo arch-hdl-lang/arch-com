@@ -4,8 +4,8 @@ end domain SysDomain
 
 fsm TopModule
   port clk: in Clock<SysDomain>;
-  port rst: in Reset<Sync>;
-  port in_sig: in Bool;
+  port reset: in Reset<Sync>;
+  port in: in Bool;
   port disc: out Bool default false;
   port flag: out Bool default false;
   port err: out Bool default false;
@@ -14,61 +14,61 @@ fsm TopModule
   default state S0;
 
   state S0
-    transition to S1 when in_sig;
+    transition to S1 when in;
   end state S0
 
   state S1
-    transition to S2 when in_sig;
-    transition to S0 when ~in_sig;
+    transition to S2 when in;
+    transition to S0 when ~in;
   end state S1
 
   state S2
-    transition to S3 when in_sig;
-    transition to S0 when ~in_sig;
+    transition to S3 when in;
+    transition to S0 when ~in;
   end state S2
 
   state S3
-    transition to S4 when in_sig;
-    transition to S0 when ~in_sig;
+    transition to S4 when in;
+    transition to S0 when ~in;
   end state S3
 
   state S4
-    transition to S5 when in_sig;
-    transition to S0 when ~in_sig;
+    transition to S5 when in;
+    transition to S0 when ~in;
   end state S4
 
   state S5
-    transition to S6 when in_sig;
-    transition to Sdisc when ~in_sig;
+    transition to S6 when in;
+    transition to Sdisc when ~in;
   end state S5
 
   state S6
-    transition to Serr when in_sig;
-    transition to Sflag when ~in_sig;
+    transition to Serr when in;
+    transition to Sflag when ~in;
   end state S6
 
   state Serr
     comb
       err = true;
     end comb
-    transition to Serr when in_sig;
-    transition to S0 when ~in_sig;
+    transition to Serr when in;
+    transition to S0 when ~in;
   end state Serr
 
   state Sdisc
     comb
       disc = true;
     end comb
-    transition to S1 when in_sig;
-    transition to S0 when ~in_sig;
+    transition to S1 when in;
+    transition to S0 when ~in;
   end state Sdisc
 
   state Sflag
     comb
       flag = true;
     end comb
-    transition to S1 when in_sig;
-    transition to S0 when ~in_sig;
+    transition to S1 when in;
+    transition to S0 when ~in;
   end state Sflag
 
 end fsm TopModule

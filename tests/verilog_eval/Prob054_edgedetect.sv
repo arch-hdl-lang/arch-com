@@ -3,15 +3,15 @@
 
 module TopModule (
   input logic clk,
-  input logic [8-1:0] in_sig,
+  input logic [8-1:0] in,
   output logic [8-1:0] pedge
 );
 
   logic [8-1:0] prev;
   logic [8-1:0] pedge_r;
   always_ff @(posedge clk) begin
-    prev <= in_sig;
-    pedge_r <= (in_sig & (~prev));
+    prev <= in;
+    pedge_r <= (in & (~prev));
   end
   assign pedge = pedge_r;
 

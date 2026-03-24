@@ -2,21 +2,21 @@
 
 module TopModule (
   input logic clk,
-  input logic l_sig,
+  input logic L,
   input logic q_in,
   input logic r_in,
-  output logic q_sig
+  output logic Q
 );
 
   logic q_r;
   always_ff @(posedge clk) begin
-    if (l_sig) begin
+    if (L) begin
       q_r <= r_in;
     end else begin
       q_r <= q_in;
     end
   end
-  assign q_sig = q_r;
+  assign Q = q_r;
 
 endmodule
 

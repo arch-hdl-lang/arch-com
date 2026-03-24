@@ -1,16 +1,16 @@
 module TopModule (
-  input logic [4-1:0] in_sig,
+  input logic [4-1:0] in,
   output logic [2-1:0] pos
 );
 
   always_comb begin
-    if (in_sig[0]) begin
+    if (in[0]) begin
       pos = 0;
-    end else if (in_sig[1]) begin
+    end else if (in[1]) begin
       pos = 1;
-    end else if (in_sig[2]) begin
+    end else if (in[2]) begin
       pos = 2;
-    end else if (in_sig[3]) begin
+    end else if (in[3]) begin
       pos = 3;
     end else begin
       pos = 0;

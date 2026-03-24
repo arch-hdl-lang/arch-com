@@ -3,7 +3,7 @@
 
 module TopModule (
   input logic clk,
-  input logic rst,
+  input logic reset,
   output logic [5-1:0] q
 );
 
@@ -16,7 +16,7 @@ module TopModule (
   assign q_next[0] = q_r[1];
   assign q = q_r;
   always_ff @(posedge clk) begin
-    if (rst) begin
+    if (reset) begin
       q_r <= 1;
     end else begin
       q_r <= q_next;

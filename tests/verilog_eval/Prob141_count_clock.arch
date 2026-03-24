@@ -4,20 +4,20 @@ end domain SysDomain
 
 module TopModule
   port clk: in Clock<SysDomain>;
-  port rst: in Reset<Sync>;
+  port reset: in Reset<Sync>;
   port ena: in Bool;
   port pm: out Bool;
   port hh: out UInt<8>;
   port mm: out UInt<8>;
   port ss: out UInt<8>;
 
-  reg ss_lo: UInt<4> reset rst=0;
-  reg ss_hi: UInt<4> reset rst=0;
-  reg mm_lo: UInt<4> reset rst=0;
-  reg mm_hi: UInt<4> reset rst=0;
-  reg hh_lo: UInt<4> reset rst=2;
-  reg hh_hi: UInt<4> reset rst=1;
-  reg pm_reg: Bool reset rst=0;
+  reg ss_lo: UInt<4> reset reset=0;
+  reg ss_hi: UInt<4> reset reset=0;
+  reg mm_lo: UInt<4> reset reset=0;
+  reg mm_hi: UInt<4> reset reset=0;
+  reg hh_lo: UInt<4> reset reset=2;
+  reg hh_hi: UInt<4> reset reset=1;
+  reg pm_reg: Bool reset reset=0;
 
   comb
     ss[0] = ss_lo[0];

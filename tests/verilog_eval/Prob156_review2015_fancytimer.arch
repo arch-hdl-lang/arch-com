@@ -4,7 +4,7 @@ end domain SysDomain
 
 module TopModule
   port clk: in Clock<SysDomain>;
-  port reset_sig: in Reset<Sync>;
+  port reset: in Reset<Sync>;
   port data: in Bool;
   port ack: in Bool;
   port count: out UInt<4>;
@@ -14,10 +14,10 @@ module TopModule
   // FSM states: 0=S, 1=S1, 2=S11, 3=S110
   // 4=B0, 5=B1, 6=B2, 7=B3
   // 8=COUNT, 9=DONE_ST
-  reg state_reg: UInt<4> reset reset_sig=0;
-  reg delay_reg: UInt<4> reset reset_sig=0;
-  reg cnt_reg: UInt<4> reset reset_sig=0;
-  reg sub_cnt: UInt<10> reset reset_sig=0;
+  reg state_reg: UInt<4> reset reset=0;
+  reg delay_reg: UInt<4> reset reset=0;
+  reg cnt_reg: UInt<4> reset reset=0;
+  reg sub_cnt: UInt<10> reset reset=0;
 
   seq on clk rising
     if state_reg == 0

@@ -1,9 +1,9 @@
 // VerilogEval Prob079: One-hot FSM combinational logic
 module TopModule
-  port in_sig: in Bool;
-  port state_sig: in UInt<4>;
+  port in: in Bool;
+  port state: in UInt<4>;
   port next_state: out UInt<4>;
-  port out_sig: out Bool;
+  port out: out Bool;
 
   wire ns0: Bool;
   wire ns1: Bool;
@@ -11,14 +11,14 @@ module TopModule
   wire ns3: Bool;
 
   comb
-    ns0 = (state_sig[0] & ~in_sig) | (state_sig[2] & ~in_sig);
-    ns1 = (state_sig[0] & in_sig) | (state_sig[1] & in_sig) | (state_sig[3] & in_sig);
-    ns2 = (state_sig[1] & ~in_sig) | (state_sig[3] & ~in_sig);
-    ns3 = state_sig[2] & in_sig;
+    ns0 = (state[0] & ~in) | (state[2] & ~in);
+    ns1 = (state[0] & in) | (state[1] & in) | (state[3] & in);
+    ns2 = (state[1] & ~in) | (state[3] & ~in);
+    ns3 = state[2] & in;
     next_state[0] = ns0;
     next_state[1] = ns1;
     next_state[2] = ns2;
     next_state[3] = ns3;
-    out_sig = state_sig[3];
+    out = state[3];
   end comb
 end module TopModule

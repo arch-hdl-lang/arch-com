@@ -268,9 +268,9 @@ impl Parser {
         let start = self.expect(TokenKind::Port)?.span;
         let name = self.expect_ident()?;
         self.expect(TokenKind::Colon)?;
-        let direction = if self.eat(TokenKind::In) {
+        let direction = if self.eat_contextual("in") {
             Direction::In
-        } else if self.eat(TokenKind::Out) {
+        } else if self.eat_contextual("out") {
             Direction::Out
         } else {
             return Err(CompileError::unexpected_token(
@@ -728,7 +728,7 @@ impl Parser {
     fn parse_for_loop(&mut self, is_seq: bool) -> Result<Stmt, CompileError> {
         let start = self.expect(TokenKind::For)?.span;
         let var = self.expect_ident()?;
-        self.expect(TokenKind::In)?;
+        self.expect_contextual("in")?;
         let range_start = self.parse_expr()?;
         self.expect(TokenKind::DotDot)?;
         let range_end = self.parse_expr()?;
@@ -1031,7 +1031,7 @@ impl Parser {
             Some(TokenKind::For) => {
                 self.advance(); // consume `for`
                 let var = self.expect_ident()?;
-                self.expect(TokenKind::In)?;
+                self.expect_contextual("in")?;
                 // Parse `start..end` range — Pratt stops at `..` and at keywords
                 let range_start = self.parse_expr()?;
                 self.expect(TokenKind::DotDot)?;
@@ -1577,7 +1577,7 @@ impl Parser {
                 Some(TokenKind::Reg) => regs.push(self.parse_reg_decl()?),
                 Some(TokenKind::Let) => lets.push(self.parse_let_binding()?),
                 // `state A, B, C;` — flat declaration list
-                Some(TokenKind::State) if self.is_state_list() => {
+                _ if self.check_contextual("state") && self.is_state_list() => {
                     self.advance(); // consume `state`
                     loop {
                         state_names.push(self.expect_ident()?);
@@ -1594,13 +1594,13 @@ impl Parser {
                 // `default state Name;`
                 Some(TokenKind::Default) => {
                     self.advance(); // consume `default`
-                    self.expect(TokenKind::State)?;
+                    self.expect_contextual("state")?;
                     let ds = self.expect_ident()?;
                     self.expect(TokenKind::Semi)?;
                     default_state = Some(ds);
                 }
                 // `state Name ... end state Name` — state body
-                Some(TokenKind::State) => {
+                _ if self.check_contextual("state") => {
                     states.push(self.parse_state_body()?);
                 }
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
@@ -1663,7 +1663,7 @@ impl Parser {
     }
 
     fn parse_state_body(&mut self) -> Result<StateBody, CompileError> {
-        let start = self.expect(TokenKind::State)?.span;
+        let start = self.expect_contextual("state")?.span;
         let name = self.expect_ident()?;
 
         let mut comb_stmts = Vec::new();
@@ -1697,7 +1697,7 @@ impl Parser {
         }
 
         self.expect(TokenKind::End)?;
-        self.expect(TokenKind::State)?;
+        self.expect_contextual("state")?;
         let closing = self.expect_ident()?;
         if closing.name != name.name {
             return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
@@ -1715,7 +1715,7 @@ impl Parser {
     fn check_end_state(&self) -> bool {
         self.pos + 1 < self.tokens.len()
             && self.tokens[self.pos].kind == TokenKind::End
-            && self.tokens[self.pos + 1].kind == TokenKind::State
+            && matches!(&self.tokens[self.pos + 1].kind, TokenKind::Ident(s) if s == "state")
     }
 
     fn parse_transition(&mut self) -> Result<Transition, CompileError> {
@@ -2319,9 +2319,9 @@ impl Parser {
         let name = self.expect_ident()?;
         let start = name.span;
         self.expect(TokenKind::Colon)?;
-        let direction = if self.eat(TokenKind::In) {
+        let direction = if self.eat_contextual("in") {
             Direction::In
-        } else if self.eat(TokenKind::Out) {
+        } else if self.eat_contextual("out") {
             Direction::Out
         } else {
             return Err(CompileError::unexpected_token(
@@ -2934,6 +2934,34 @@ impl Parser {
         } else {
             false
         }
+    }
+
+    /// Eat a contextual keyword (lexed as Ident, matched by name).
+    fn eat_contextual(&mut self, name: &str) -> bool {
+        if self.check_ident(name) {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Expect a contextual keyword (lexed as Ident, matched by name).
+    fn expect_contextual(&mut self, name: &str) -> Result<Token, CompileError> {
+        if self.check_ident(name) {
+            Ok(self.advance())
+        } else {
+            let span = self.tokens.get(self.pos).map(|t| t.span).unwrap_or(Span { start: 0, end: 0 });
+            Err(CompileError::general(
+                &format!("expected `{}`", name),
+                span,
+            ))
+        }
+    }
+
+    /// Check if next token is a contextual keyword (for lookahead).
+    fn check_contextual(&self, name: &str) -> bool {
+        self.check_ident(name)
     }
 
     fn advance(&mut self) -> Token {

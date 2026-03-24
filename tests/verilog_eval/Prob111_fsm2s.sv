@@ -2,15 +2,15 @@
 
 module TopModule (
   input logic clk,
-  input logic reset_sig,
+  input logic reset,
   input logic j,
   input logic k,
-  output logic out_sig
+  output logic out
 );
 
   logic st;
   always_ff @(posedge clk) begin
-    if (reset_sig) begin
+    if (reset) begin
       st <= 0;
     end else begin
       if ((~st)) begin
@@ -22,7 +22,7 @@ module TopModule (
       end
     end
   end
-  assign out_sig = st;
+  assign out = st;
 
 endmodule
 

@@ -3,19 +3,19 @@ end domain SysDomain
 
 module TopModule
   port clk: in Clock<SysDomain>;
-  port reset_sig: in Reset<Sync>;
-  port in_sig: in UInt<32>;
-  port out_sig: out UInt<32>;
+  port reset: in Reset<Sync>;
+  port in: in UInt<32>;
+  port out: out UInt<32>;
 
   reg prev: UInt<32>;
-  reg captured: UInt<32> reset reset_sig=0;
+  reg captured: UInt<32> reset reset=0;
 
   seq on clk rising
-    prev <= in_sig;
-    captured <= captured | (prev & ~in_sig);
+    prev <= in;
+    captured <= captured | (prev & ~in);
   end seq
 
   comb
-    out_sig = captured;
+    out = captured;
   end comb
 end module TopModule

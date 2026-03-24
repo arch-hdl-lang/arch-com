@@ -3,7 +3,7 @@
 
 module TopModule (
   input logic clk,
-  input logic rst,
+  input logic reset,
   input logic ena,
   output logic pm,
   output logic [8-1:0] hh,
@@ -44,7 +44,7 @@ module TopModule (
   assign hh[7] = hh_hi[3];
   assign pm = pm_reg;
   always_ff @(posedge clk) begin
-    if (rst) begin
+    if (reset) begin
       hh_hi <= 1;
       hh_lo <= 2;
       mm_hi <= 0;

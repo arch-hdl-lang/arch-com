@@ -40,10 +40,7 @@ pub enum TokenKind {
     Param,
     #[token("port")]
     Port,
-    #[token("in")]
-    In,
-    #[token("out")]
-    Out,
+    // `in` and `out` are contextual keywords — lexed as Ident
     #[token("comb")]
     Comb,
     #[token("reg")]
@@ -144,8 +141,7 @@ pub enum TokenKind {
     Pipelined,
     #[token("kind")]
     Kind,
-    #[token("state")]
-    State,
+    // `state` is a contextual keyword — lexed as Ident
     #[token("default")]
     Default,
     #[token("transition")]
@@ -318,8 +314,6 @@ impl fmt::Display for TokenKind {
             TokenKind::End => write!(f, "end"),
             TokenKind::Param => write!(f, "param"),
             TokenKind::Port => write!(f, "port"),
-            TokenKind::In => write!(f, "in"),
-            TokenKind::Out => write!(f, "out"),
             TokenKind::Comb => write!(f, "comb"),
             TokenKind::Reg => write!(f, "reg"),
             TokenKind::Wire => write!(f, "wire"),
@@ -386,7 +380,6 @@ impl fmt::Display for TokenKind {
             TokenKind::Latency => write!(f, "latency"),
             TokenKind::Pipelined => write!(f, "pipelined"),
             TokenKind::Kind => write!(f, "kind"),
-            TokenKind::State => write!(f, "state"),
             TokenKind::Default => write!(f, "default"),
             TokenKind::Transition => write!(f, "transition"),
             TokenKind::To => write!(f, "to"),

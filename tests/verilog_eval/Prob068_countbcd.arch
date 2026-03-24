@@ -3,14 +3,14 @@ end domain SysDomain
 
 module TopModule
   port clk: in Clock<SysDomain>;
-  port reset_sig: in Reset<Sync>;
+  port reset: in Reset<Sync>;
   port ena: out UInt<3>;
   port q: out UInt<16>;
 
-  reg ones: UInt<4> reset reset_sig=0;
-  reg tens: UInt<4> reset reset_sig=0;
-  reg hund: UInt<4> reset reset_sig=0;
-  reg thou: UInt<4> reset reset_sig=0;
+  reg ones: UInt<4> reset reset=0;
+  reg tens: UInt<4> reset reset=0;
+  reg hund: UInt<4> reset reset=0;
+  reg thou: UInt<4> reset reset=0;
 
   seq on clk rising
     if ones == 9

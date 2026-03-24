@@ -3,8 +3,8 @@
 
 module TopModule (
   input logic clk,
-  input logic rst,
-  input logic in_sig,
+  input logic reset,
+  input logic in,
   output logic disc,
   output logic flag,
   output logic err
@@ -26,7 +26,7 @@ module TopModule (
   TopModule_state_t state_r, state_next;
   
   always_ff @(posedge clk) begin
-    if (rst) begin
+    if (reset) begin
       state_r <= S0;
     end else begin
       state_r <= state_next;
@@ -37,43 +37,43 @@ module TopModule (
     state_next = state_r; // hold by default
     case (state_r)
       S0: begin
-        if (in_sig) state_next = S1;
+        if (in) state_next = S1;
       end
       S1: begin
-        if (in_sig) state_next = S2;
-        else if ((~in_sig)) state_next = S0;
+        if (in) state_next = S2;
+        else if ((~in)) state_next = S0;
       end
       S2: begin
-        if (in_sig) state_next = S3;
-        else if ((~in_sig)) state_next = S0;
+        if (in) state_next = S3;
+        else if ((~in)) state_next = S0;
       end
       S3: begin
-        if (in_sig) state_next = S4;
-        else if ((~in_sig)) state_next = S0;
+        if (in) state_next = S4;
+        else if ((~in)) state_next = S0;
       end
       S4: begin
-        if (in_sig) state_next = S5;
-        else if ((~in_sig)) state_next = S0;
+        if (in) state_next = S5;
+        else if ((~in)) state_next = S0;
       end
       S5: begin
-        if (in_sig) state_next = S6;
-        else if ((~in_sig)) state_next = SDISC;
+        if (in) state_next = S6;
+        else if ((~in)) state_next = SDISC;
       end
       S6: begin
-        if (in_sig) state_next = SERR;
-        else if ((~in_sig)) state_next = SFLAG;
+        if (in) state_next = SERR;
+        else if ((~in)) state_next = SFLAG;
       end
       SERR: begin
-        if (in_sig) state_next = SERR;
-        else if ((~in_sig)) state_next = S0;
+        if (in) state_next = SERR;
+        else if ((~in)) state_next = S0;
       end
       SDISC: begin
-        if (in_sig) state_next = S1;
-        else if ((~in_sig)) state_next = S0;
+        if (in) state_next = S1;
+        else if ((~in)) state_next = S0;
       end
       SFLAG: begin
-        if (in_sig) state_next = S1;
-        else if ((~in_sig)) state_next = S0;
+        if (in) state_next = S1;
+        else if ((~in)) state_next = S0;
       end
       default: state_next = state_r;
     endcase

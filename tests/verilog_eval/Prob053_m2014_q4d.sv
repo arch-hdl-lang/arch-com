@@ -2,15 +2,15 @@
 
 module TopModule (
   input logic clk,
-  input logic in_sig,
-  output logic out_sig
+  input logic in,
+  output logic out
 );
 
   logic q_r;
   always_ff @(posedge clk) begin
-    q_r <= (in_sig ^ q_r);
+    q_r <= (in ^ q_r);
   end
-  assign out_sig = q_r;
+  assign out = q_r;
 
 endmodule
 

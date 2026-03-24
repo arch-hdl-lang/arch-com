@@ -3,8 +3,8 @@
 module TopModule (
   input logic clk,
   input logic areset,
-  input logic in_sig,
-  output logic out_sig
+  input logic in,
+  output logic out
 );
 
   logic [2-1:0] st;
@@ -13,20 +13,20 @@ module TopModule (
       st <= 0;
     end else begin
       if ((st == 0)) begin
-        if (in_sig) begin
+        if (in) begin
           st <= 1;
         end
       end else if ((st == 1)) begin
-        if ((~in_sig)) begin
+        if ((~in)) begin
           st <= 2;
         end
       end else if ((st == 2)) begin
-        if (in_sig) begin
+        if (in) begin
           st <= 3;
         end else begin
           st <= 0;
         end
-      end else if (in_sig) begin
+      end else if (in) begin
         st <= 1;
       end else begin
         st <= 2;
@@ -35,9 +35,9 @@ module TopModule (
   end
   always_comb begin
     if ((st == 3)) begin
-      out_sig = 1;
+      out = 1;
     end else begin
-      out_sig = 0;
+      out = 0;
     end
   end
 

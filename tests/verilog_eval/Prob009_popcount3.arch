@@ -2,10 +2,10 @@ domain SysDomain
 end domain SysDomain
 
 module TopModule
-  port in_sig: in UInt<3>;
-  port out_sig: out UInt<2>;
+  port in: in UInt<3>;
+  port out: out UInt<2>;
 
   comb
-    out_sig = (in_sig[0].zext<2>() + in_sig[1].zext<2>() + in_sig[2].zext<2>()).trunc<2>();
+    out = (in[0].zext<2>() + in[1].zext<2>() + in[2].zext<2>()).trunc<2>();
   end comb
 end module TopModule

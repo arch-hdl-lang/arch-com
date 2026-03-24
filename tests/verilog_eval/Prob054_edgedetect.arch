@@ -4,15 +4,15 @@ end domain SysDomain
 
 module TopModule
   port clk: in Clock<SysDomain>;
-  port in_sig: in UInt<8>;
+  port in: in UInt<8>;
   port pedge: out UInt<8>;
 
   reg prev: UInt<8>;
   reg pedge_r: UInt<8>;
 
   seq on clk rising
-    prev <= in_sig;
-    pedge_r <= in_sig & (~prev);
+    prev <= in;
+    pedge_r <= in & (~prev);
   end seq
 
   comb

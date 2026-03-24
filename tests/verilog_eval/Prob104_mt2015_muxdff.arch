@@ -3,15 +3,15 @@ end domain SysDomain
 
 module TopModule
   port clk: in Clock<SysDomain>;
-  port l_sig: in Bool;
+  port L: in Bool;
   port q_in: in Bool;
   port r_in: in Bool;
-  port q_sig: out Bool;
+  port Q: out Bool;
 
   reg q_r: Bool;
 
   seq on clk rising
-    if l_sig
+    if L
       q_r <= r_in;
     else
       q_r <= q_in;
@@ -19,6 +19,6 @@ module TopModule
   end seq
 
   comb
-    q_sig = q_r;
+    Q = q_r;
   end comb
 end module TopModule

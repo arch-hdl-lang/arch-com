@@ -3,15 +3,15 @@ end domain SysDomain
 
 module TopModule
   port clk: in Clock<SysDomain>;
-  port reset_sig: in Reset<Sync>;
-  port in_sig: in Bool;
+  port reset: in Reset<Sync>;
+  port in: in Bool;
   port done: out Bool;
 
-  reg st: UInt<4> reset reset_sig=8;
+  reg st: UInt<4> reset reset=8;
 
   seq on clk rising
     if st == 8
-      if ~in_sig
+      if ~in
         st <= 0;
       end if
     elsif st == 0
@@ -31,19 +31,19 @@ module TopModule
     elsif st == 7
       st <= 9;
     elsif st == 9
-      if in_sig
+      if in
         st <= 10;
       else
         st <= 11;
       end if
     elsif st == 10
-      if in_sig
+      if in
         st <= 8;
       else
         st <= 0;
       end if
     elsif st == 11
-      if in_sig
+      if in
         st <= 8;
       end if
     end if

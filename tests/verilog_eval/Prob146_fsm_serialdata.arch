@@ -5,87 +5,87 @@ end domain SysDomain
 
 module TopModule
   port clk: in Clock<SysDomain>;
-  port rst: in Reset<Sync>;
-  port in_sig: in Bool;
+  port reset: in Reset<Sync>;
+  port in: in Bool;
   port out_byte: out UInt<8>;
   port done: out Bool;
 
   // States: 8=IDLE, 0-7=BIT0-BIT7, 9=STOP, 10=DONE, 11=ERROR
-  reg state_reg: UInt<4> reset rst=8;
-  reg data_reg: UInt<8> reset rst=0;
+  reg state_reg: UInt<4> reset reset=8;
+  reg data_reg: UInt<8> reset reset=0;
 
   seq on clk rising
     if state_reg == 8
       // IDLE: wait for start bit (in=0)
-      if ~in_sig
+      if ~in
         state_reg <= 0;
       end if
     elsif state_reg == 0
-      // Shift right: data_reg = {in_sig, data_reg[7:1]}
+      // Shift right: data_reg = {in, data_reg[7:1]}
       for i in 0..6
         data_reg[i] <= data_reg[i + 1];
       end for
-      data_reg[7] <= in_sig;
+      data_reg[7] <= in;
       state_reg <= 1;
     elsif state_reg == 1
       for i in 0..6
         data_reg[i] <= data_reg[i + 1];
       end for
-      data_reg[7] <= in_sig;
+      data_reg[7] <= in;
       state_reg <= 2;
     elsif state_reg == 2
       for i in 0..6
         data_reg[i] <= data_reg[i + 1];
       end for
-      data_reg[7] <= in_sig;
+      data_reg[7] <= in;
       state_reg <= 3;
     elsif state_reg == 3
       for i in 0..6
         data_reg[i] <= data_reg[i + 1];
       end for
-      data_reg[7] <= in_sig;
+      data_reg[7] <= in;
       state_reg <= 4;
     elsif state_reg == 4
       for i in 0..6
         data_reg[i] <= data_reg[i + 1];
       end for
-      data_reg[7] <= in_sig;
+      data_reg[7] <= in;
       state_reg <= 5;
     elsif state_reg == 5
       for i in 0..6
         data_reg[i] <= data_reg[i + 1];
       end for
-      data_reg[7] <= in_sig;
+      data_reg[7] <= in;
       state_reg <= 6;
     elsif state_reg == 6
       for i in 0..6
         data_reg[i] <= data_reg[i + 1];
       end for
-      data_reg[7] <= in_sig;
+      data_reg[7] <= in;
       state_reg <= 7;
     elsif state_reg == 7
       for i in 0..6
         data_reg[i] <= data_reg[i + 1];
       end for
-      data_reg[7] <= in_sig;
+      data_reg[7] <= in;
       state_reg <= 9;
     elsif state_reg == 9
       // STOP: check stop bit
-      if in_sig
+      if in
         state_reg <= 10;
       else
         state_reg <= 11;
       end if
     elsif state_reg == 10
       // DONE: valid stop received
-      if in_sig
+      if in
         state_reg <= 8;
       else
         state_reg <= 0;
       end if
     elsif state_reg == 11
       // ERROR: wait for in=1 then go idle
-      if in_sig
+      if in
         state_reg <= 8;
       end if
     end if

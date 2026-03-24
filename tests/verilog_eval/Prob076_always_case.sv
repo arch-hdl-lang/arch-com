@@ -6,24 +6,24 @@ module TopModule (
   input logic [4-1:0] data3,
   input logic [4-1:0] data4,
   input logic [4-1:0] data5,
-  output logic [4-1:0] out_sig
+  output logic [4-1:0] out
 );
 
   always_comb begin
     if ((sel == 0)) begin
-      out_sig = data0;
+      out = data0;
     end else if ((sel == 1)) begin
-      out_sig = data1;
+      out = data1;
     end else if ((sel == 2)) begin
-      out_sig = data2;
+      out = data2;
     end else if ((sel == 3)) begin
-      out_sig = data3;
+      out = data3;
     end else if ((sel == 4)) begin
-      out_sig = data4;
+      out = data4;
     end else if ((sel == 5)) begin
-      out_sig = data5;
+      out = data5;
     end else begin
-      out_sig = 0;
+      out = 0;
     end
   end
 

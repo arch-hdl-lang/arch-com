@@ -6,7 +6,7 @@ module TopModule (
   input logic areset,
   input logic train_valid,
   input logic train_taken,
-  output logic [2-1:0] state_sig
+  output logic [2-1:0] state
 );
 
   logic [2-1:0] cnt;
@@ -23,7 +23,7 @@ module TopModule (
       end
     end
   end
-  assign state_sig = cnt;
+  assign state = cnt;
 
 endmodule
 

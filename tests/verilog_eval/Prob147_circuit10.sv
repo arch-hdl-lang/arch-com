@@ -7,7 +7,7 @@ module TopModule (
   input logic clk,
   input logic a,
   input logic b,
-  output logic state_sig,
+  output logic state,
   output logic q
 );
 
@@ -16,7 +16,7 @@ module TopModule (
     st <= ((a & b) | (st & (a ^ b)));
   end
   assign q = ((a ^ b) ^ st);
-  assign state_sig = st;
+  assign state = st;
 
 endmodule
 

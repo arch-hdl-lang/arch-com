@@ -3,9 +3,9 @@
 
 module TopModule (
   input logic clk,
-  input logic rst,
-  input logic in_sig,
-  output logic out_sig
+  input logic reset,
+  input logic in,
+  output logic out
 );
 
   typedef enum logic [1:0] {
@@ -18,7 +18,7 @@ module TopModule (
   TopModule_state_t state_r, state_next;
   
   always_ff @(posedge clk) begin
-    if (rst) begin
+    if (reset) begin
       state_r <= A;
     end else begin
       state_r <= state_next;
@@ -29,26 +29,26 @@ module TopModule (
     state_next = state_r; // hold by default
     case (state_r)
       A: begin
-        if (in_sig) state_next = B;
+        if (in) state_next = B;
       end
       B: begin
-        if (in_sig) state_next = B;
-        else if ((~in_sig)) state_next = C;
+        if (in) state_next = B;
+        else if ((~in)) state_next = C;
       end
       C: begin
-        if (in_sig) state_next = D;
-        else if ((~in_sig)) state_next = A;
+        if (in) state_next = D;
+        else if ((~in)) state_next = A;
       end
       D: begin
-        if (in_sig) state_next = B;
-        else if ((~in_sig)) state_next = C;
+        if (in) state_next = B;
+        else if ((~in)) state_next = C;
       end
       default: state_next = state_r;
     endcase
   end
   
   always_comb begin
-    out_sig = 1'b0; // default
+    out = 1'b0; // default
     case (state_r)
       A: begin
       end
@@ -57,7 +57,7 @@ module TopModule (
       C: begin
       end
       D: begin
-        out_sig = 1'b1;
+        out = 1'b1;
       end
       default: ;
     endcase

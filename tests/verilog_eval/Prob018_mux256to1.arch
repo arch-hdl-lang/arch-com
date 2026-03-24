@@ -1,8 +1,8 @@
 module TopModule
-  port in_sig: in UInt<256>;
+  port in: in UInt<256>;
   port sel: in UInt<8>;
-  port out_sig: out Bool;
+  port out: out Bool;
   comb
-    out_sig = in_sig[sel];
+    out = in[sel];
   end comb
 end module TopModule

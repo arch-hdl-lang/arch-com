@@ -3,7 +3,7 @@
 
 module TopModule (
   input logic clk,
-  input logic rst,
+  input logic reset,
   input logic x,
   output logic z
 );
@@ -46,7 +46,7 @@ module TopModule (
     end
   end
   always_ff @(posedge clk) begin
-    if (rst) begin
+    if (reset) begin
       state_r <= 0;
     end else begin
       state_r <= next_state;

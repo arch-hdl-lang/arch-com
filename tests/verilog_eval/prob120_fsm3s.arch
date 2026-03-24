@@ -4,33 +4,33 @@ end domain SysDomain
 
 fsm TopModule
   port clk: in Clock<SysDomain>;
-  port rst: in Reset<Sync>;
-  port in_sig: in Bool;
-  port out_sig: out Bool default false;
+  port reset: in Reset<Sync>;
+  port in: in Bool;
+  port out: out Bool default false;
 
   state A, B, C, D;
   default state A;
 
   state A
-    transition to B when in_sig;
+    transition to B when in;
   end state A
 
   state B
-    transition to B when in_sig;
-    transition to C when ~in_sig;
+    transition to B when in;
+    transition to C when ~in;
   end state B
 
   state C
-    transition to D when in_sig;
-    transition to A when ~in_sig;
+    transition to D when in;
+    transition to A when ~in;
   end state C
 
   state D
     comb
-      out_sig = true;
+      out = true;
     end comb
-    transition to B when in_sig;
-    transition to C when ~in_sig;
+    transition to B when in;
+    transition to C when ~in;
   end state D
 
 end fsm TopModule

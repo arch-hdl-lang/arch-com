@@ -4,7 +4,7 @@ end domain SysDomain
 
 fsm TopModule
   port clk: in Clock<SysDomain>;
-  port rst: in Reset<Sync>;
+  port reset: in Reset<Sync>;
   port data: in Bool;
   port start_shifting: out Bool default false;
 

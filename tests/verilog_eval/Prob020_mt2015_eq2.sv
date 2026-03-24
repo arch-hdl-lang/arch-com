@@ -1,11 +1,11 @@
 module TopModule (
-  input logic [2-1:0] a_sig,
-  input logic [2-1:0] b_sig,
+  input logic [2-1:0] A,
+  input logic [2-1:0] B,
   output logic z
 );
 
   always_comb begin
-    if ((a_sig == b_sig)) begin
+    if ((A == B)) begin
       z = 1;
     end else begin
       z = 0;

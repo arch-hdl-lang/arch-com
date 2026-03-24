@@ -4,25 +4,25 @@ module TopModule (
   input logic d,
   input logic done_counting,
   input logic ack,
-  input logic [10-1:0] state_sig,
-  output logic b3_next,
-  output logic s_next,
-  output logic s1_next,
-  output logic count_next,
-  output logic wait_next,
+  input logic [10-1:0] state,
+  output logic B3_next,
+  output logic S_next,
+  output logic S1_next,
+  output logic Count_next,
+  output logic Wait_next,
   output logic done,
   output logic counting,
   output logic shift_ena
 );
 
-  assign s_next = ((((state_sig[0] & (~d)) | (state_sig[1] & (~d))) | (state_sig[3] & (~d))) | (state_sig[9] & ack));
-  assign s1_next = (state_sig[0] & d);
-  assign b3_next = state_sig[6];
-  assign count_next = (state_sig[7] | (state_sig[8] & (~done_counting)));
-  assign wait_next = ((state_sig[8] & done_counting) | (state_sig[9] & (~ack)));
-  assign shift_ena = (((state_sig[4] | state_sig[5]) | state_sig[6]) | state_sig[7]);
-  assign counting = state_sig[8];
-  assign done = state_sig[9];
+  assign S_next = ((((state[0] & (~d)) | (state[1] & (~d))) | (state[3] & (~d))) | (state[9] & ack));
+  assign S1_next = (state[0] & d);
+  assign B3_next = state[6];
+  assign Count_next = (state[7] | (state[8] & (~done_counting)));
+  assign Wait_next = ((state[8] & done_counting) | (state[9] & (~ack)));
+  assign shift_ena = (((state[4] | state[5]) | state[6]) | state[7]);
+  assign counting = state[8];
+  assign done = state[9];
 
 endmodule
 

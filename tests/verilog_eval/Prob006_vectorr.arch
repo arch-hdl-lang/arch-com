@@ -1,9 +1,9 @@
 module TopModule
-  port in_sig: in UInt<8>;
-  port out_sig: out UInt<8>;
+  port in: in UInt<8>;
+  port out: out UInt<8>;
   comb
     for i in 0..7
-      out_sig[i] = in_sig[7 - i];
+      out[i] = in[7 - i];
     end for
   end comb
 end module TopModule

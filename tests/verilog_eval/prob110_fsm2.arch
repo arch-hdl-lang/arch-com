@@ -7,21 +7,21 @@ fsm TopModule
   port areset: in Reset<Async>;
   port j: in Bool;
   port k: in Bool;
-  port out_sig: out Bool default false;
+  port out: out Bool default false;
 
   state Off, On;
   default state Off;
 
   state Off
     comb
-      out_sig = false;
+      out = false;
     end comb
     transition to On when j;
   end state Off
 
   state On
     comb
-      out_sig = true;
+      out = true;
     end comb
     transition to Off when k;
   end state On

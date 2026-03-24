@@ -3,8 +3,8 @@ module TopModule
   port b: in Bool;
   port c: in Bool;
   port d: in Bool;
-  port out_sig: out Bool;
+  port out: out Bool;
   comb
-    out_sig = (~b & ~c) | (~a & b & c) | (~a & ~d & b & ~c) | (~a & ~d & ~b & c) | (a & c & d);
+    out = (~b & ~c) | (~a & b & c) | (~a & ~d & b & ~c) | (~a & ~d & ~b & c) | (a & c & d);
   end comb
 end module TopModule

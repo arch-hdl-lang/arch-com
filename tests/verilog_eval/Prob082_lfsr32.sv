@@ -2,13 +2,13 @@
 
 module TopModule (
   input logic clk,
-  input logic reset_sig,
+  input logic reset,
   output logic [32-1:0] q
 );
 
   logic [32-1:0] q_r;
   always_ff @(posedge clk) begin
-    if (reset_sig) begin
+    if (reset) begin
       q_r <= 1;
     end else begin
       q_r[31] <= q_r[0];

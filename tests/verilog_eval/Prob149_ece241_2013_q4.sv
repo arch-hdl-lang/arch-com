@@ -4,8 +4,8 @@
 
 module TopModule (
   input logic clk,
-  input logic rst,
-  input logic [3-1:0] s_sig,
+  input logic reset,
+  input logic [3-1:0] s,
   output logic fr2,
   output logic fr1,
   output logic fr0,
@@ -18,45 +18,45 @@ module TopModule (
   logic [3-1:0] next_state;
   always_comb begin
     if ((state_r == 0)) begin
-      if (s_sig[0]) begin
+      if (s[0]) begin
         next_state = 1;
       end else begin
         next_state = 0;
       end
     end else if ((state_r == 1)) begin
-      if (s_sig[1]) begin
+      if (s[1]) begin
         next_state = 3;
-      end else if (s_sig[0]) begin
+      end else if (s[0]) begin
         next_state = 1;
       end else begin
         next_state = 0;
       end
     end else if ((state_r == 2)) begin
-      if (s_sig[1]) begin
+      if (s[1]) begin
         next_state = 3;
-      end else if (s_sig[0]) begin
+      end else if (s[0]) begin
         next_state = 2;
       end else begin
         next_state = 0;
       end
     end else if ((state_r == 3)) begin
-      if (s_sig[2]) begin
+      if (s[2]) begin
         next_state = 5;
-      end else if (s_sig[1]) begin
+      end else if (s[1]) begin
         next_state = 3;
       end else begin
         next_state = 2;
       end
     end else if ((state_r == 4)) begin
-      if (s_sig[2]) begin
+      if (s[2]) begin
         next_state = 5;
-      end else if (s_sig[1]) begin
+      end else if (s[1]) begin
         next_state = 4;
       end else begin
         next_state = 2;
       end
     end else if ((state_r == 5)) begin
-      if (s_sig[2]) begin
+      if (s[2]) begin
         next_state = 5;
       end else begin
         next_state = 4;
@@ -72,7 +72,7 @@ module TopModule (
   // C2: mid-high, falling
   // D1: above s2
   always_ff @(posedge clk) begin
-    if (rst) begin
+    if (reset) begin
       state_r <= 0;
     end else begin
       state_r <= next_state;

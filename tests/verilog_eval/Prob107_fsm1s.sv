@@ -2,26 +2,26 @@
 
 module TopModule (
   input logic clk,
-  input logic reset_sig,
-  input logic in_sig,
-  output logic out_sig
+  input logic reset,
+  input logic in,
+  output logic out
 );
 
   logic st;
   always_ff @(posedge clk) begin
-    if (reset_sig) begin
+    if (reset) begin
       st <= 1;
     end else begin
       if (st) begin
-        if ((~in_sig)) begin
+        if ((~in)) begin
           st <= 0;
         end
-      end else if ((~in_sig)) begin
+      end else if ((~in)) begin
         st <= 1;
       end
     end
   end
-  assign out_sig = st;
+  assign out = st;
 
 endmodule
 

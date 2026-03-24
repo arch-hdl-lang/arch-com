@@ -2,24 +2,24 @@
 
 module TopModule (
   input logic clk,
-  input logic reset_sig,
-  input logic [32-1:0] in_sig,
-  output logic [32-1:0] out_sig
+  input logic reset,
+  input logic [32-1:0] in,
+  output logic [32-1:0] out
 );
 
   logic [32-1:0] prev;
   logic [32-1:0] captured;
   always_ff @(posedge clk) begin
-    if (reset_sig) begin
+    if (reset) begin
       captured <= 0;
     end else begin
-      captured <= (captured | (prev & (~in_sig)));
+      captured <= (captured | (prev & (~in)));
     end
   end
   always_ff @(posedge clk) begin
-    prev <= in_sig;
+    prev <= in;
   end
-  assign out_sig = captured;
+  assign out = captured;
 
 endmodule
 

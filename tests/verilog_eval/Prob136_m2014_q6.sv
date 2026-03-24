@@ -2,14 +2,14 @@
 
 module TopModule (
   input logic clk,
-  input logic reset_sig,
+  input logic reset,
   input logic w,
   output logic z
 );
 
   logic [3-1:0] st;
   always_ff @(posedge clk) begin
-    if (reset_sig) begin
+    if (reset) begin
       st <= 0;
     end else begin
       if ((st == 0)) begin

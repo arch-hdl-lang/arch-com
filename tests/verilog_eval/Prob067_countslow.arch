@@ -3,11 +3,11 @@ end domain SysDomain
 
 module TopModule
   port clk: in Clock<SysDomain>;
-  port reset_sig: in Reset<Sync>;
+  port reset: in Reset<Sync>;
   port slowena: in Bool;
   port q: out UInt<4>;
 
-  reg cnt: UInt<4> reset reset_sig=0;
+  reg cnt: UInt<4> reset reset=0;
 
   seq on clk rising
     if slowena

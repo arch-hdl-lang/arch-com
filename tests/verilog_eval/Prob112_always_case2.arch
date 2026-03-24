@@ -1,14 +1,14 @@
 module TopModule
-  port in_sig: in UInt<4>;
+  port in: in UInt<4>;
   port pos: out UInt<2>;
   comb
-    if in_sig[0]
+    if in[0]
       pos = 0;
-    elsif in_sig[1]
+    elsif in[1]
       pos = 1;
-    elsif in_sig[2]
+    elsif in[2]
       pos = 2;
-    elsif in_sig[3]
+    elsif in[3]
       pos = 3;
     else
       pos = 0;

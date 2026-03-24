@@ -7,7 +7,7 @@ module TopModule
   port areset: in Reset<Async>;
   port train_valid: in Bool;
   port train_taken: in Bool;
-  port state_sig: out UInt<2>;
+  port state: out UInt<2>;
 
   reg cnt: UInt<2> reset areset=1;
 
@@ -22,6 +22,6 @@ module TopModule
   end seq
 
   comb
-    state_sig = cnt;
+    state = cnt;
   end comb
 end module TopModule

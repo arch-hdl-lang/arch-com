@@ -5,10 +5,10 @@ module TopModule (
   input logic b,
   input logic c,
   input logic d,
-  output logic out_sig
+  output logic out
 );
 
-  assign out_sig = (((a ^ b) ^ c) ^ d);
+  assign out = (((a ^ b) ^ c) ^ d);
 
 endmodule
 

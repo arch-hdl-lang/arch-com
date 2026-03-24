@@ -5,8 +5,8 @@ end domain SysDomain
 
 module TopModule
   port clk: in Clock<SysDomain>;
-  port rst: in Reset<Sync>;
-  port s_sig: in UInt<3>;
+  port reset: in Reset<Sync>;
+  port s: in UInt<3>;
   port fr2: out Bool;
   port fr1: out Bool;
   port fr0: out Bool;
@@ -14,56 +14,56 @@ module TopModule
 
   // States: 0=A2(below,falling), 1=B1(mid-low,rising), 2=B2(mid-low,falling)
   //         3=C1(mid-high,rising), 4=C2(mid-high,falling), 5=D1(above,rising)
-  reg state_r: UInt<3> reset rst=0;
+  reg state_r: UInt<3> reset reset=0;
   wire next_state: UInt<3>;
 
   comb
     if state_r == 0
       // A2: below s0
-      if s_sig[0]
+      if s[0]
         next_state = 1;
       else
         next_state = 0;
       end if
     elsif state_r == 1
       // B1: mid-low, rising
-      if s_sig[1]
+      if s[1]
         next_state = 3;
-      elsif s_sig[0]
+      elsif s[0]
         next_state = 1;
       else
         next_state = 0;
       end if
     elsif state_r == 2
       // B2: mid-low, falling
-      if s_sig[1]
+      if s[1]
         next_state = 3;
-      elsif s_sig[0]
+      elsif s[0]
         next_state = 2;
       else
         next_state = 0;
       end if
     elsif state_r == 3
       // C1: mid-high, rising
-      if s_sig[2]
+      if s[2]
         next_state = 5;
-      elsif s_sig[1]
+      elsif s[1]
         next_state = 3;
       else
         next_state = 2;
       end if
     elsif state_r == 4
       // C2: mid-high, falling
-      if s_sig[2]
+      if s[2]
         next_state = 5;
-      elsif s_sig[1]
+      elsif s[1]
         next_state = 4;
       else
         next_state = 2;
       end if
     elsif state_r == 5
       // D1: above s2
-      if s_sig[2]
+      if s[2]
         next_state = 5;
       else
         next_state = 4;

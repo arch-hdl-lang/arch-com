@@ -2,7 +2,7 @@
 
 module TopModule (
   input logic clk,
-  input logic reset_sig,
+  input logic reset,
   output logic [3-1:0] ena,
   output logic [16-1:0] q
 );
@@ -12,7 +12,7 @@ module TopModule (
   logic [4-1:0] hund;
   logic [4-1:0] thou;
   always_ff @(posedge clk) begin
-    if (reset_sig) begin
+    if (reset) begin
       hund <= 0;
       ones <= 0;
       tens <= 0;

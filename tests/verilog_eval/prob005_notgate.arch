@@ -1,9 +1,9 @@
 // VerilogEval Prob005: NOT gate
 module TopModule
-  port in_sig: in Bool;
-  port out_sig: out Bool;
+  port in: in Bool;
+  port out: out Bool;
 
   comb
-    out_sig = ~in_sig;
+    out = ~in;
   end comb
 end module TopModule

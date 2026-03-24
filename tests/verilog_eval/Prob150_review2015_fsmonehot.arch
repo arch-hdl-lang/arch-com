@@ -4,24 +4,24 @@ module TopModule
   port d: in Bool;
   port done_counting: in Bool;
   port ack: in Bool;
-  port state_sig: in UInt<10>;
-  port b3_next: out Bool;
-  port s_next: out Bool;
-  port s1_next: out Bool;
-  port count_next: out Bool;
-  port wait_next: out Bool;
+  port state: in UInt<10>;
+  port B3_next: out Bool;
+  port S_next: out Bool;
+  port S1_next: out Bool;
+  port Count_next: out Bool;
+  port Wait_next: out Bool;
   port done: out Bool;
   port counting: out Bool;
   port shift_ena: out Bool;
 
   comb
-    s_next = (state_sig[0] & ~d) | (state_sig[1] & ~d) | (state_sig[3] & ~d) | (state_sig[9] & ack);
-    s1_next = state_sig[0] & d;
-    b3_next = state_sig[6];
-    count_next = state_sig[7] | (state_sig[8] & ~done_counting);
-    wait_next = (state_sig[8] & done_counting) | (state_sig[9] & ~ack);
-    shift_ena = state_sig[4] | state_sig[5] | state_sig[6] | state_sig[7];
-    counting = state_sig[8];
-    done = state_sig[9];
+    S_next = (state[0] & ~d) | (state[1] & ~d) | (state[3] & ~d) | (state[9] & ack);
+    S1_next = state[0] & d;
+    B3_next = state[6];
+    Count_next = state[7] | (state[8] & ~done_counting);
+    Wait_next = (state[8] & done_counting) | (state[9] & ~ack);
+    shift_ena = state[4] | state[5] | state[6] | state[7];
+    counting = state[8];
+    done = state[9];
   end comb
 end module TopModule

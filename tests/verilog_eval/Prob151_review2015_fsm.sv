@@ -3,7 +3,7 @@
 
 module TopModule (
   input logic clk,
-  input logic reset_sig,
+  input logic reset,
   input logic data,
   input logic done_counting,
   input logic ack,
@@ -28,7 +28,7 @@ module TopModule (
   TopModule_state_t state_r, state_next;
   
   always_ff @(posedge clk) begin
-    if (reset_sig) begin
+    if (reset) begin
       state_r <= S;
     end else begin
       state_r <= state_next;

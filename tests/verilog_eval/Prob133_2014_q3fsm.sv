@@ -3,8 +3,8 @@
 
 module TopModule (
   input logic clk,
-  input logic rst,
-  input logic s_sig,
+  input logic reset,
+  input logic s,
   input logic w,
   output logic z
 );
@@ -19,7 +19,7 @@ module TopModule (
     next_state = state_r;
     if ((state_r == 0)) begin
       next_count = 0;
-      if (s_sig) begin
+      if (s) begin
         next_state = 1;
       end
     end else if ((state_r == 1)) begin
@@ -57,7 +57,7 @@ module TopModule (
   // B3: third cycle
   // Output cycle, then start next window
   always_ff @(posedge clk) begin
-    if (rst) begin
+    if (reset) begin
       count_r <= 0;
       state_r <= 0;
     end else begin

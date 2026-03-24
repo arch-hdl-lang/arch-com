@@ -1,11 +1,11 @@
 module TopModule
   port y: in UInt<6>;
   port w: in Bool;
-  port y1: out Bool;
-  port y3: out Bool;
+  port Y1: out Bool;
+  port Y3: out Bool;
 
   comb
-    y1 = y[0] & w;
-    y3 = (y[1] & ~w) | (y[2] & ~w) | (y[4] & ~w) | (y[5] & ~w);
+    Y1 = y[0] & w;
+    Y3 = (y[1] & ~w) | (y[2] & ~w) | (y[4] & ~w) | (y[5] & ~w);
   end comb
 end module TopModule

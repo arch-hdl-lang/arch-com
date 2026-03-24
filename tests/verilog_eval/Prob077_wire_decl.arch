@@ -3,7 +3,7 @@ module TopModule
   port b: in Bool;
   port c: in Bool;
   port d: in Bool;
-  port out_sig: out Bool;
+  port out: out Bool;
   port out_n: out Bool;
 
   wire ab: Bool;
@@ -12,7 +12,7 @@ module TopModule
   comb
     ab = a & b;
     cd = c & d;
-    out_sig = ab | cd;
+    out = ab | cd;
     out_n = ~(ab | cd);
   end comb
 end module TopModule

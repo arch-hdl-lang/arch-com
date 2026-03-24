@@ -1,13 +1,13 @@
 module TopModule
   port y: in UInt<3>;
   port w: in Bool;
-  port y1: out Bool;
+  port Y1: out Bool;
 
   comb
     if (y == 1) | (y == 5) | (w & ((y == 2) | (y == 4)))
-      y1 = 1;
+      Y1 = 1;
     else
-      y1 = 0;
+      Y1 = 0;
     end if
   end comb
 end module TopModule

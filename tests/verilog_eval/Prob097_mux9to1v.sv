@@ -9,30 +9,30 @@ module TopModule (
   input logic [16-1:0] h,
   input logic [16-1:0] i,
   input logic [4-1:0] sel,
-  output logic [16-1:0] out_sig
+  output logic [16-1:0] out
 );
 
   always_comb begin
     if ((sel == 0)) begin
-      out_sig = a;
+      out = a;
     end else if ((sel == 1)) begin
-      out_sig = b;
+      out = b;
     end else if ((sel == 2)) begin
-      out_sig = c;
+      out = c;
     end else if ((sel == 3)) begin
-      out_sig = d;
+      out = d;
     end else if ((sel == 4)) begin
-      out_sig = e;
+      out = e;
     end else if ((sel == 5)) begin
-      out_sig = f;
+      out = f;
     end else if ((sel == 6)) begin
-      out_sig = g;
+      out = g;
     end else if ((sel == 7)) begin
-      out_sig = h;
+      out = h;
     end else if ((sel == 8)) begin
-      out_sig = i;
+      out = i;
     end else begin
-      out_sig = 'hFFFF;
+      out = 'hFFFF;
     end
   end
 

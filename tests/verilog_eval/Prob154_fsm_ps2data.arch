@@ -5,14 +5,14 @@ end domain SysDomain
 
 module TopModule
   port clk: in Clock<SysDomain>;
-  port rst: in Reset<Sync>;
-  port in_sig: in UInt<8>;
+  port reset: in Reset<Sync>;
+  port in: in UInt<8>;
   port out_bytes: out UInt<24>;
   port done: out Bool;
 
-  reg state_reg: UInt<2> reset rst=0;
+  reg state_reg: UInt<2> reset reset=0;
   // 24-bit shift register: always shift in new byte
-  reg out_r: UInt<24> reset rst=0;
+  reg out_r: UInt<24> reset reset=0;
 
   // States: 0=FIND, 1=GOT1, 2=GOT2, 3=DONE
   // Always shift in: out_r <= {out_r[15:0], in}
@@ -21,11 +21,11 @@ module TopModule
       out_r[i + 8] <= out_r[i];
     end for
     for i in 0..7
-      out_r[i] <= in_sig[i];
+      out_r[i] <= in[i];
     end for
 
     if state_reg == 0
-      if in_sig[3]
+      if in[3]
         state_reg <= 1;
       end if
     elsif state_reg == 1
@@ -33,7 +33,7 @@ module TopModule
     elsif state_reg == 2
       state_reg <= 3;
     else
-      if in_sig[3]
+      if in[3]
         state_reg <= 1;
       else
         state_reg <= 0;

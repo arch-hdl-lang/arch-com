@@ -1,9 +1,9 @@
 module TopModule
-  port a_sig: in UInt<2>;
-  port b_sig: in UInt<2>;
+  port A: in UInt<2>;
+  port B: in UInt<2>;
   port z: out Bool;
   comb
-    if a_sig == b_sig
+    if A == B
       z = 1;
     else
       z = 0;

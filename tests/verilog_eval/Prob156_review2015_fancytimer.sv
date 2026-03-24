@@ -3,7 +3,7 @@
 
 module TopModule (
   input logic clk,
-  input logic reset_sig,
+  input logic reset,
   input logic data,
   input logic ack,
   output logic [4-1:0] count,
@@ -19,7 +19,7 @@ module TopModule (
   logic [4-1:0] cnt_reg;
   logic [10-1:0] sub_cnt;
   always_ff @(posedge clk) begin
-    if (reset_sig) begin
+    if (reset) begin
       cnt_reg <= 0;
       delay_reg <= 0;
       state_reg <= 0;

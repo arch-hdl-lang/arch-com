@@ -1,8 +1,8 @@
 module TopModule (
-  output logic out_sig
+  output logic out
 );
 
-  assign out_sig = 0;
+  assign out = 0;
 
 endmodule
 
