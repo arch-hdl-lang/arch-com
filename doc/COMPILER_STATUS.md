@@ -1,7 +1,7 @@
 # ARCH Compiler — Status & Roadmap
 
 > Last updated: 2026-03-23
-> Compiler version: 0.34.0 (VerilogEval 154/154, latch construct)
+> Compiler version: 0.35.0 (naming convention checks removed)
 
 ---
 
@@ -124,7 +124,7 @@
 
 | Check | Status |
 |-------|--------|
-| PascalCase (types), snake_case (signals), UPPER_SNAKE (params) | ✅ |
+| PascalCase (types), snake_case (signals), UPPER_SNAKE (params) | ⚪ Removed — style convention, not compiler-enforced |
 | Duplicate definitions | ✅ |
 | Undefined name references | ✅ |
 | Output ports must be driven | ✅ |

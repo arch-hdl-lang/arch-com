@@ -138,10 +138,8 @@ impl<'a> TypeChecker<'a> {
             self.check_upper_snake(&p.name);
         }
 
-        // Check ports
-        for p in &m.ports {
-            self.check_snake_case(&p.name);
-        }
+        // Check ports — no naming enforcement; ports must match external interfaces
+        // which may use any convention (uppercase, PascalCase, etc.)
 
         // Build local type environment
         let mut local_types: HashMap<String, Ty> = HashMap::new();
@@ -1530,49 +1528,11 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn check_pascal_case(&mut self, ident: &Ident) {
-        let name = &ident.name;
-        if name.is_empty() {
-            return;
-        }
-        // Monomorphized variant names contain `__` (e.g. `Foo__ENABLE_1`).
-        // They are compiler-generated and do not need to satisfy PascalCase.
-        if name.contains("__") {
-            return;
-        }
-        if !name.chars().next().unwrap().is_uppercase() || name.contains('_') {
-            self.errors.push(CompileError::NamingViolation {
-                message: format!("`{name}` should be PascalCase"),
-                span: crate::diagnostics::span_to_source_span(ident.span),
-            });
-        }
-    }
-
-    fn check_snake_case(&mut self, ident: &Ident) {
-        let name = &ident.name;
-        if name.is_empty() {
-            return;
-        }
-        if name.chars().any(|c| c.is_uppercase()) {
-            self.errors.push(CompileError::NamingViolation {
-                message: format!("`{name}` should be snake_case"),
-                span: crate::diagnostics::span_to_source_span(ident.span),
-            });
-        }
-    }
-
-    fn check_upper_snake(&mut self, ident: &Ident) {
-        let name = &ident.name;
-        if name.is_empty() {
-            return;
-        }
-        if name.chars().any(|c| c.is_lowercase()) {
-            self.errors.push(CompileError::NamingViolation {
-                message: format!("`{name}` should be UPPER_SNAKE_CASE"),
-                span: crate::diagnostics::span_to_source_span(ident.span),
-            });
-        }
-    }
+    // Naming convention checks removed — style is a convention (LLM defaults
+    // to snake_case), not a compiler-enforced rule.
+    fn check_pascal_case(&mut self, _ident: &Ident) {}
+    fn check_snake_case(&mut self, _ident: &Ident) {}
+    fn check_upper_snake(&mut self, _ident: &Ident) {}
 
     // ── FSM ───────────────────────────────────────────────────────────────────
 
