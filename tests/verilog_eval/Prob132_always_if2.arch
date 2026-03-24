@@ -5,15 +5,7 @@ module TopModule
   port gas_tank_empty: in Bool;
   port keep_driving: out Bool;
   comb
-    if cpu_overheated
-      shut_off_computer = 1;
-    else
-      shut_off_computer = 0;
-    end if
-    if ~arrived
-      keep_driving = ~gas_tank_empty;
-    else
-      keep_driving = 0;
-    end if
+    shut_off_computer = cpu_overheated;
+    keep_driving = ~arrived & ~gas_tank_empty;
   end comb
 end module TopModule

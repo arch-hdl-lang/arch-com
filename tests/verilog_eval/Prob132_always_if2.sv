@@ -6,18 +6,8 @@ module TopModule (
   output logic keep_driving
 );
 
-  always_comb begin
-    if (cpu_overheated) begin
-      shut_off_computer = 1;
-    end else begin
-      shut_off_computer = 0;
-    end
-    if ((~arrived)) begin
-      keep_driving = (~gas_tank_empty);
-    end else begin
-      keep_driving = 0;
-    end
-  end
+  assign shut_off_computer = cpu_overheated;
+  assign keep_driving = ((~arrived) & (~gas_tank_empty));
 
 endmodule
 

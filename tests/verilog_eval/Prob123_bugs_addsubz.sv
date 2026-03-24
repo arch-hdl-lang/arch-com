@@ -12,11 +12,7 @@ module TopModule (
     end else begin
       out = 8'((a + b));
     end
-    if ((out == 0)) begin
-      result_is_zero = 1;
-    end else begin
-      result_is_zero = 0;
-    end
+    result_is_zero = (out == 0);
   end
 
 endmodule

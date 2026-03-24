@@ -20,30 +20,9 @@ module TopModule
   reg pm_reg: Bool reset reset=0;
 
   comb
-    ss[0] = ss_lo[0];
-    ss[1] = ss_lo[1];
-    ss[2] = ss_lo[2];
-    ss[3] = ss_lo[3];
-    ss[4] = ss_hi[0];
-    ss[5] = ss_hi[1];
-    ss[6] = ss_hi[2];
-    ss[7] = ss_hi[3];
-    mm[0] = mm_lo[0];
-    mm[1] = mm_lo[1];
-    mm[2] = mm_lo[2];
-    mm[3] = mm_lo[3];
-    mm[4] = mm_hi[0];
-    mm[5] = mm_hi[1];
-    mm[6] = mm_hi[2];
-    mm[7] = mm_hi[3];
-    hh[0] = hh_lo[0];
-    hh[1] = hh_lo[1];
-    hh[2] = hh_lo[2];
-    hh[3] = hh_lo[3];
-    hh[4] = hh_hi[0];
-    hh[5] = hh_hi[1];
-    hh[6] = hh_hi[2];
-    hh[7] = hh_hi[3];
+    ss = {ss_hi, ss_lo};
+    mm = {mm_hi, mm_lo};
+    hh = {hh_hi, hh_lo};
     pm = pm_reg;
   end comb
 

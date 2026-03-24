@@ -15,15 +15,9 @@ module TopModule
 
   seq on clk rising
     if train_mispredicted
-      hist[0] <= train_taken;
-      for i in 1..31
-        hist[i] <= train_history[i - 1];
-      end for
+      hist <= {train_history[30:0], train_taken};
     elsif predict_valid
-      hist[0] <= predict_taken;
-      for i in 1..31
-        hist[i] <= hist[i - 1];
-      end for
+      hist <= {hist[30:0], predict_taken};
     end if
   end seq
 

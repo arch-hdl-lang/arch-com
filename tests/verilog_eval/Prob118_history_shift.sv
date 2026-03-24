@@ -17,15 +17,9 @@ module TopModule (
       hist <= 0;
     end else begin
       if (train_mispredicted) begin
-        hist[0] <= train_taken;
-        for (int i = 1; i <= 31; i++) begin
-          hist[i] <= train_history[(i - 1)];
-        end
+        hist <= {train_history[30:0], train_taken};
       end else if (predict_valid) begin
-        hist[0] <= predict_taken;
-        for (int i = 1; i <= 31; i++) begin
-          hist[i] <= hist[(i - 1)];
-        end
+        hist <= {hist[30:0], predict_taken};
       end
     end
   end

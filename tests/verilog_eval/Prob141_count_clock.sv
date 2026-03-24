@@ -18,30 +18,9 @@ module TopModule (
   logic [4-1:0] hh_lo;
   logic [4-1:0] hh_hi;
   logic pm_reg;
-  assign ss[0] = ss_lo[0];
-  assign ss[1] = ss_lo[1];
-  assign ss[2] = ss_lo[2];
-  assign ss[3] = ss_lo[3];
-  assign ss[4] = ss_hi[0];
-  assign ss[5] = ss_hi[1];
-  assign ss[6] = ss_hi[2];
-  assign ss[7] = ss_hi[3];
-  assign mm[0] = mm_lo[0];
-  assign mm[1] = mm_lo[1];
-  assign mm[2] = mm_lo[2];
-  assign mm[3] = mm_lo[3];
-  assign mm[4] = mm_hi[0];
-  assign mm[5] = mm_hi[1];
-  assign mm[6] = mm_hi[2];
-  assign mm[7] = mm_hi[3];
-  assign hh[0] = hh_lo[0];
-  assign hh[1] = hh_lo[1];
-  assign hh[2] = hh_lo[2];
-  assign hh[3] = hh_lo[3];
-  assign hh[4] = hh_hi[0];
-  assign hh[5] = hh_hi[1];
-  assign hh[6] = hh_hi[2];
-  assign hh[7] = hh_hi[3];
+  assign ss = {ss_hi, ss_lo};
+  assign mm = {mm_hi, mm_lo};
+  assign hh = {hh_hi, hh_lo};
   assign pm = pm_reg;
   always_ff @(posedge clk) begin
     if (reset) begin

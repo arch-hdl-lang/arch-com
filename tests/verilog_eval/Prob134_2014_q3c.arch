@@ -28,12 +28,6 @@ module TopModule
     else
       Y0 = 0;
     end if
-    if y == 3
-      z = 1;
-    elsif y == 4
-      z = 1;
-    else
-      z = 0;
-    end if
+    z = (y == 3) | (y == 4);
   end comb
 end module TopModule

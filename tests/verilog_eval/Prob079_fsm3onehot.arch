@@ -15,10 +15,7 @@ module TopModule
     ns1 = (state[0] & in) | (state[1] & in) | (state[3] & in);
     ns2 = (state[1] & ~in) | (state[3] & ~in);
     ns3 = state[2] & in;
-    next_state[0] = ns0;
-    next_state[1] = ns1;
-    next_state[2] = ns2;
-    next_state[3] = ns3;
+    next_state = {ns3, ns2, ns1, ns0};
     out = state[3];
   end comb
 end module TopModule

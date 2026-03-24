@@ -55,18 +55,12 @@ module TopModule
 
     // Update GHR: predict shifts in predicted taken
     if predict_valid
-      ghr[0] <= pht[predict_idx][1];
-      for i in 1..6
-        ghr[i] <= ghr[i - 1];
-      end for
+      ghr <= {ghr[5:0], pht[predict_idx][1]};
     end if
 
     // Misprediction recovery overwrites GHR (last assignment wins)
     if train_valid & train_mispredicted
-      ghr[0] <= train_taken;
-      for i in 1..6
-        ghr[i] <= train_history[i - 1];
-      end for
+      ghr <= {train_history[5:0], train_taken};
     end if
   end seq
 end module TopModule

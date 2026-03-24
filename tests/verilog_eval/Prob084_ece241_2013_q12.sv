@@ -20,9 +20,7 @@ module TopModule (
     end
   end
   logic [3-1:0] sel;
-  assign sel[2] = A;
-  assign sel[1] = B;
-  assign sel[0] = C;
+  assign sel = {A, B, C};
   assign Z = sr[sel];
 
 endmodule

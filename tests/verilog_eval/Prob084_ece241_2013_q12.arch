@@ -21,12 +21,9 @@ module TopModule
     end if
   end seq
 
-  wire sel: UInt<3>;
+  let sel: UInt<3> = {A, B, C};
 
   comb
-    sel[2] = A;
-    sel[1] = B;
-    sel[0] = C;
     Z = sr[sel];
   end comb
 end module TopModule

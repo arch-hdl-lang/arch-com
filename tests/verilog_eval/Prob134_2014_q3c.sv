@@ -30,13 +30,7 @@ module TopModule (
     end else begin
       Y0 = 0;
     end
-    if ((y == 3)) begin
-      z = 1;
-    end else if ((y == 4)) begin
-      z = 1;
-    end else begin
-      z = 0;
-    end
+    z = ((y == 3) | (y == 4));
   end
 
 endmodule

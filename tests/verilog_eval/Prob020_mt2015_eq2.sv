@@ -4,13 +4,7 @@ module TopModule (
   output logic z
 );
 
-  always_comb begin
-    if ((A == B)) begin
-      z = 1;
-    end else begin
-      z = 0;
-    end
-  end
+  assign z = (A == B);
 
 endmodule
 

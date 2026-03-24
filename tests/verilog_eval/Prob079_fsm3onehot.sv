@@ -14,10 +14,7 @@ module TopModule (
   assign ns1 = (((state[0] & in) | (state[1] & in)) | (state[3] & in));
   assign ns2 = ((state[1] & (~in)) | (state[3] & (~in)));
   assign ns3 = (state[2] & in);
-  assign next_state[0] = ns0;
-  assign next_state[1] = ns1;
-  assign next_state[2] = ns2;
-  assign next_state[3] = ns3;
+  assign next_state = {ns3, ns2, ns1, ns0};
   assign out = state[3];
 
 endmodule

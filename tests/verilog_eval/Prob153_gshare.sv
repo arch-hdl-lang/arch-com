@@ -51,16 +51,10 @@ module TopModule (
         pht[train_idx] <= train_new;
       end
       if (predict_valid) begin
-        ghr[0] <= pht[predict_idx][1];
-        for (int i = 1; i <= 6; i++) begin
-          ghr[i] <= ghr[(i - 1)];
-        end
+        ghr <= {ghr[5:0], pht[predict_idx][1]};
       end
       if ((train_valid & train_mispredicted)) begin
-        ghr[0] <= train_taken;
-        for (int i = 1; i <= 6; i++) begin
-          ghr[i] <= train_history[(i - 1)];
-        end
+        ghr <= {train_history[5:0], train_taken};
       end
     end
   end

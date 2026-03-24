@@ -3,10 +3,6 @@ module TopModule
   port B: in UInt<2>;
   port z: out Bool;
   comb
-    if A == B
-      z = 1;
-    else
-      z = 0;
-    end if
+    z = (A == B);
   end comb
 end module TopModule
