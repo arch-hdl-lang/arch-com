@@ -809,9 +809,22 @@ impl<'a> Codegen<'a> {
             self.line(&format!("if ({rst_cond_str}) begin"));
             self.indent += 1;
             for (name, init) in &resets {
-                let is_vec = reg_decls.iter().any(|r| r.name.name == *name && matches!(&r.ty, TypeExpr::Vec(_, _)));
-                if is_vec {
-                    self.line(&format!("{name} <= '{{default: {init}}};"));
+                let vec_depth = reg_decls.iter()
+                    .find(|r| r.name.name == *name)
+                    .map(|r| {
+                        let mut depth = 0u32;
+                        let mut ty = &r.ty;
+                        while let TypeExpr::Vec(inner, _) = ty {
+                            depth += 1;
+                            ty = inner;
+                        }
+                        depth
+                    })
+                    .unwrap_or(0);
+                if vec_depth > 0 {
+                    let open: String = "'{default: ".repeat(vec_depth as usize);
+                    let close: String = "}".repeat(vec_depth as usize);
+                    self.line(&format!("{name} <= {open}{init}{close};"));
                 } else {
                     self.line(&format!("{name} <= {init};"));
                 }
@@ -2912,10 +2925,10 @@ impl<'a> Codegen<'a> {
             TypeExpr::Bit => "logic".to_string(),
             TypeExpr::Clock(_) => "logic".to_string(),
             TypeExpr::Reset(_, _) => "logic".to_string(),
-            TypeExpr::Vec(inner, size) => {
-                let inner_str = self.emit_type_str(inner);
-                let size_str = self.emit_expr_str(size);
-                format!("{inner_str} [0:{size_str}-1]")
+            TypeExpr::Vec(_, _) => {
+                // Peel all Vec layers; emit base type + unpacked dims inline
+                let (base, suffix) = self.emit_type_and_array_suffix(ty);
+                format!("{base}{suffix}")
             }
             TypeExpr::Named(ident) => ident.name.clone(),
         }
@@ -2925,7 +2938,7 @@ impl<'a> Codegen<'a> {
         match ty {
             TypeExpr::UInt(w) => {
                 let ws = self.emit_expr_str(w);
-                format!("logic [{ws}-1:0]", )
+                format!("logic [{ws}-1:0]")
             }
             TypeExpr::SInt(w) => {
                 let ws = self.emit_expr_str(w);
@@ -2935,10 +2948,9 @@ impl<'a> Codegen<'a> {
             TypeExpr::Bit => "logic".to_string(),
             TypeExpr::Clock(_) => "logic".to_string(),
             TypeExpr::Reset(_, _) => "logic".to_string(),
-            TypeExpr::Vec(inner, size) => {
-                let inner_str = self.emit_port_type_str(inner);
-                let size_str = self.emit_expr_str(size);
-                format!("{inner_str} [0:{size_str}-1]")
+            TypeExpr::Vec(_, _) => {
+                let (base, suffix) = self.emit_type_and_array_suffix(ty);
+                format!("{base}{suffix}")
             }
             TypeExpr::Named(ident) => ident.name.clone(),
         }
@@ -2948,16 +2960,22 @@ impl<'a> Codegen<'a> {
         self.emit_type_str(ty)
     }
 
-    /// For Vec types, returns (element_type_str, " [0:N-1]") so the unpacked
-    /// dimension can be placed after the signal name in declarations.
+    /// For Vec types (including nested), returns (base_type_str, " [0:M-1][0:N-1]...")
+    /// so unpacked dimensions can be placed after the signal name in declarations.
+    /// Outermost Vec dimension comes first (leftmost in SV).
     /// For non-Vec types, returns (type_str, "").
     fn emit_type_and_array_suffix(&self, ty: &TypeExpr) -> (String, String) {
-        if let TypeExpr::Vec(inner, size) = ty {
-            let inner_str = self.emit_type_str(inner);
+        let mut dims = Vec::new();
+        let mut cur = ty;
+        while let TypeExpr::Vec(inner, size) = cur {
             let size_str = self.emit_expr_str(size);
-            (inner_str, format!(" [0:{size_str}-1]"))
-        } else {
+            dims.push(format!(" [0:{size_str}-1]"));
+            cur = inner;
+        }
+        if dims.is_empty() {
             (self.emit_type_str(ty), String::new())
+        } else {
+            (self.emit_type_str(cur), dims.join(""))
         }
     }
 

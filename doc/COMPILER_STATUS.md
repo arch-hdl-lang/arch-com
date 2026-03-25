@@ -66,7 +66,7 @@
 | `Bool`, `Bit` | ✅ | `Bool` and `UInt<1>` are treated as identical types throughout — freely assignable to each other, bitwise ops on 1-bit operands return `Bool` |
 | `Clock<Domain>` | ✅ | Domain tracked for CDC detection |
 | `Reset<Sync\|Async, High\|Low>` | ✅ | Optional polarity (defaults High); Async → `posedge rst` sensitivity |
-| `Vec<T, N>` | ✅ | Emits as SV unpacked array `logic [W-1:0] name [0:N-1]`; init/reset uses `'{default: val}` |
+| `Vec<T, N>` | ✅ | Emits as SV unpacked array `logic [W-1:0] name [0:N-1]`; init/reset uses `'{default: val}`; **multi-dimensional**: nested `Vec<Vec<T,N>,M>` supported — emits `logic [W-1:0] name [0:M-1][0:N-1]` with nested `'{default: '{default: val}}` reset; arbitrary nesting depth; multi-level indexing `arr[i][j]` |
 | Named types (struct/enum refs) | ✅ | |
 | `Token<T, id_width>` | ❌ | TLM only |
 | `Future<T>` | ❌ | TLM only |

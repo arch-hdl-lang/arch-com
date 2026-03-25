@@ -1,0 +1,22 @@
+module MultiDimVec
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port wr_en: in Bool;
+  port row_sel: in UInt<2>;
+  port col_sel: in UInt<3>;
+  port din: in UInt<8>;
+  port dout: out UInt<8>;
+
+  // 2D array: 4 rows x 8 cols of UInt<8>
+  reg storage: Vec<Vec<UInt<8>, 8>, 4> reset rst = 0;
+
+  seq on clk rising
+    if wr_en == 1
+      storage[row_sel][col_sel] <= din;
+    end if
+  end seq
+
+  comb
+    dout = storage[row_sel][col_sel];
+  end comb
+end module MultiDimVec
