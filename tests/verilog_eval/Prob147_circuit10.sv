@@ -11,12 +11,10 @@ module TopModule (
   output logic q
 );
 
-  logic st;
   always_ff @(posedge clk) begin
-    st <= a & b | st & (a ^ b);
+    state <= a & b | state & (a ^ b);
   end
-  assign q = a ^ b ^ st;
-  assign state = st;
+  assign q = a ^ b ^ state;
 
 endmodule
 

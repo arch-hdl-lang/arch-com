@@ -50,6 +50,10 @@
 >
 > reg r: UInt\<8\>; // inherits reset from reg default
 >
+> port reg q: out UInt\<8\> reset rst=0; // output port + register combined
+>
+> port reg q: out UInt\<8\>; // inherits reset from reg default
+>
 > pipe_reg delayed: source stages 3; // N-stage delay chain, type inferred
 >
 > seq on clk rising // clocked process --- uses \<=
@@ -141,15 +145,17 @@
 |                                       |                                  |
 | reg r: UInt\<W\>;                     | Inherits reset from default      |
 |                                       |                                  |
+| port reg y: out UInt\<W\>;            | Output port + register combined  |
+|                                       |                                  |
 | pipe_reg d: r stages 2;              | 2-stage delay of r (read-only)   |
 |                                       |                                  |
 | seq on clk rising                     | Compiler auto-generates          |
 |                                       |                                  |
 | r \<= a;                              | if(rst) reset guard from reg decl|
 |                                       |                                  |
-| end seq                               |                                  |
+| y \<= r;                              | port reg assigned directly       |
 |                                       |                                  |
-| comb y = d; end comb                  |                                  |
+| end seq                               |                                  |
 |                                       |                                  |
 | end module Name                       |                                  |
 |                                       |                                  |

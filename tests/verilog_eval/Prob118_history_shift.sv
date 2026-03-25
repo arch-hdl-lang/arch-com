@@ -11,19 +11,17 @@ module TopModule (
   output logic [32-1:0] predict_history
 );
 
-  logic [32-1:0] hist;
   always_ff @(posedge clk or posedge areset) begin
     if (areset) begin
-      hist <= 0;
+      predict_history <= 0;
     end else begin
       if (train_mispredicted) begin
-        hist <= {train_history[30:0], train_taken};
+        predict_history <= {train_history[30:0], train_taken};
       end else if (predict_valid) begin
-        hist <= {hist[30:0], predict_taken};
+        predict_history <= {predict_history[30:0], predict_taken};
       end
     end
   end
-  assign predict_history = hist;
 
 endmodule
 

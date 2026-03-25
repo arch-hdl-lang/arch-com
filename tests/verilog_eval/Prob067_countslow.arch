@@ -5,21 +5,15 @@ module TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
   port slowena: in Bool;
-  port q: out UInt<4>;
-
-  reg cnt: UInt<4> reset reset=0;
+  port reg q: out UInt<4> reset reset=0;
 
   seq on clk rising
     if slowena
-      if cnt == 9
-        cnt <= 0;
+      if q == 9
+        q <= 0;
       else
-        cnt <= (cnt + 1).trunc<4>();
+        q <= (q + 1).trunc<4>();
       end if
     end if
   end seq
-
-  comb
-    q = cnt;
-  end comb
 end module TopModule

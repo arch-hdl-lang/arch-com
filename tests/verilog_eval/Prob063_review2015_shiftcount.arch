@@ -8,22 +8,16 @@ module TopModule
   port shift_ena: in Bool;
   port count_ena: in Bool;
   port data: in Bool;
-  port q: out UInt<4>;
-
-  reg sr: UInt<4>;
+  port reg q: out UInt<4>;
 
   seq on clk rising
     if shift_ena
-      sr[0] <= data;
-      sr[1] <= sr[0];
-      sr[2] <= sr[1];
-      sr[3] <= sr[2];
+      q[0] <= data;
+      q[1] <= q[0];
+      q[2] <= q[1];
+      q[3] <= q[2];
     elsif count_ena
-      sr <= (sr - 1).trunc<4>();
+      q <= (q - 1).trunc<4>();
     end if
   end seq
-
-  comb
-    q = sr;
-  end comb
 end module TopModule

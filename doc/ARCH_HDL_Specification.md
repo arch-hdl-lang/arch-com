@@ -543,6 +543,8 @@ Arch has three kinds of module-scope signal declarations. Each has a distinct sy
 
 **`reg`** declares a flip-flop. It must be assigned inside a `seq` block using `<=`. Reset polarity and mode are declared per register. The syntax is `reg x: T [init VALUE] [reset SIGNAL=VALUE];` where `init` is optional (sets only the SV declaration initializer `logic x = VALUE;`) and `reset SIGNAL=VALUE` specifies both the reset signal and the value to load on reset. Use `reset none` for registers that should not be reset. A `reg default:` declaration sets the default init and reset for all subsequent registers in scope: `reg default: [init VALUE] reset SIGNAL=VALUE;`.
 
+**`port reg`** declares an output port that is also a register, eliminating the common `reg r` + `comb out = r; end comb` boilerplate. The syntax is `port reg name: out T [init V] [reset R=V];`. It can only be used on output ports (`in` direction is a compile error). The port is assigned with `<=` inside a `seq` block, just like a regular `reg`. If `reg default:` is in scope, it inherits the default init and reset. In generated SV, the port is declared as `output logic [W-1:0] name` and driven directly in the `always_ff` block.
+
 ```
 module Mux2
   port sel: in Bool;
@@ -564,6 +566,26 @@ end module Mux2
 ```
 
 > *⚑ The type checker enforces: `reg` cannot be a `comb` target (error: "cannot assign to register `x` in a comb block; use `<=` inside a seq block"). Only `wire` declarations and output ports are valid comb targets.*
+
+The Counter example from §4.2 can be simplified using `port reg`:
+
+```
+module Counter
+  param WIDTH: const = 8;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port reg count: out UInt<WIDTH> reset rst=0;
+
+  seq on clk rising
+    if en
+      count <= (count + 1).trunc<WIDTH>();
+    end if
+  end seq
+end module Counter
+```
+
+> *⚑ `port reg` eliminates the intermediate `reg count_r` and the `comb count = count_r; end comb` wiring block. The port is directly assigned in the `seq` block. This is the preferred style when the output port is a straightforward registered value.*
 
 **4.3 Module Instantiation**
 

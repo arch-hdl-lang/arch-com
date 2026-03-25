@@ -4,19 +4,13 @@ end domain SysDomain
 module TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
-  port q: out UInt<10>;
-
-  reg cnt: UInt<10> reset reset=0;
+  port reg q: out UInt<10> reset reset=0;
 
   seq on clk rising
-    if cnt == 999
-      cnt <= 0;
+    if q == 999
+      q <= 0;
     else
-      cnt <= (cnt + 1).trunc<10>();
+      q <= (q + 1).trunc<10>();
     end if
   end seq
-
-  comb
-    q = cnt;
-  end comb
 end module TopModule

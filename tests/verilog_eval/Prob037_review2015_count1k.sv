@@ -6,19 +6,17 @@ module TopModule (
   output logic [10-1:0] q
 );
 
-  logic [10-1:0] cnt;
   always_ff @(posedge clk) begin
     if (reset) begin
-      cnt <= 0;
+      q <= 0;
     end else begin
-      if (cnt == 999) begin
-        cnt <= 0;
+      if (q == 999) begin
+        q <= 0;
       end else begin
-        cnt <= 10'(cnt + 1);
+        q <= 10'(q + 1);
       end
     end
   end
-  assign q = cnt;
 
 endmodule
 

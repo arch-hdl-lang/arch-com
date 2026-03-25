@@ -5,10 +5,9 @@ module TopModule (
   input logic clk,
   input logic load,
   input logic [256-1:0] data,
-  output logic [256-1:0] q
+  output logic [256-1:0] q = 0
 );
 
-  logic [256-1:0] grid = 0;
   logic [256-1:0] next_grid;
   logic [4-1:0] row;
   logic [4-1:0] col;
@@ -32,19 +31,18 @@ module TopModule (
       rb = 4'(row + 1);
       cl = 4'(col + 15);
       cr = 4'(col + 1);
-      ncount = 4'(4'($unsigned(grid[ra * 16 + cl])) + 4'($unsigned(grid[ra * 16 + col])) + 4'($unsigned(grid[ra * 16 + cr])) + 4'($unsigned(grid[row * 16 + cl])) + 4'($unsigned(grid[row * 16 + cr])) + 4'($unsigned(grid[rb * 16 + cl])) + 4'($unsigned(grid[rb * 16 + col])) + 4'($unsigned(grid[rb * 16 + cr])));
-      next_grid[i] = ncount == 3 | ncount == 2 & grid[i];
+      ncount = 4'(4'($unsigned(q[ra * 16 + cl])) + 4'($unsigned(q[ra * 16 + col])) + 4'($unsigned(q[ra * 16 + cr])) + 4'($unsigned(q[row * 16 + cl])) + 4'($unsigned(q[row * 16 + cr])) + 4'($unsigned(q[rb * 16 + cl])) + 4'($unsigned(q[rb * 16 + col])) + 4'($unsigned(q[rb * 16 + cr])));
+      next_grid[i] = ncount == 3 | ncount == 2 & q[i];
     end
   end
-  // alive = (ncount==3) | (ncount==2 & grid[i])
+  // alive = (ncount==3) | (ncount==2 & q[i])
   always_ff @(posedge clk) begin
     if (load) begin
-      grid <= data;
+      q <= data;
     end else begin
-      grid <= next_grid;
+      q <= next_grid;
     end
   end
-  assign q = grid;
 
 endmodule
 

@@ -7,21 +7,15 @@ module TopModule
   port areset: in Reset<Async>;
   port train_valid: in Bool;
   port train_taken: in Bool;
-  port state: out UInt<2>;
-
-  reg cnt: UInt<2> reset areset=1;
+  port reg state: out UInt<2> reset areset=1;
 
   seq on clk rising
     if train_valid
-      if (cnt < 3) & train_taken
-        cnt <= (cnt + 1).trunc<2>();
-      elsif (cnt > 0) & (~train_taken)
-        cnt <= (cnt - 1).trunc<2>();
+      if (state < 3) & train_taken
+        state <= (state + 1).trunc<2>();
+      elsif (state > 0) & (~train_taken)
+        state <= (state - 1).trunc<2>();
       end if
     end if
   end seq
-
-  comb
-    state = cnt;
-  end comb
 end module TopModule

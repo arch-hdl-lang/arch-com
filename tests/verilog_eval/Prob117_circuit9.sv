@@ -6,17 +6,15 @@ module TopModule (
   output logic [3-1:0] q
 );
 
-  logic [3-1:0] cnt;
   always_ff @(posedge clk) begin
     if (a) begin
-      cnt <= 4;
-    end else if (cnt == 6) begin
-      cnt <= 0;
+      q <= 4;
+    end else if (q == 6) begin
+      q <= 0;
     end else begin
-      cnt <= 3'(cnt + 1);
+      q <= 3'(q + 1);
     end
   end
-  assign q = cnt;
 
 endmodule
 
