@@ -1371,6 +1371,33 @@ impl Parser {
                     span,
                 })
             }
+            Some(TokenKind::Amp) => {
+                let tok = self.advance();
+                let operand = self.parse_expr_bp(prefix_bp())?;
+                let span = tok.span.merge(operand.span);
+                Ok(Expr {
+                    kind: ExprKind::Unary(UnaryOp::RedAnd, Box::new(operand)),
+                    span,
+                })
+            }
+            Some(TokenKind::Pipe) => {
+                let tok = self.advance();
+                let operand = self.parse_expr_bp(prefix_bp())?;
+                let span = tok.span.merge(operand.span);
+                Ok(Expr {
+                    kind: ExprKind::Unary(UnaryOp::RedOr, Box::new(operand)),
+                    span,
+                })
+            }
+            Some(TokenKind::Caret) => {
+                let tok = self.advance();
+                let operand = self.parse_expr_bp(prefix_bp())?;
+                let span = tok.span.merge(operand.span);
+                Ok(Expr {
+                    kind: ExprKind::Unary(UnaryOp::RedXor, Box::new(operand)),
+                    span,
+                })
+            }
             Some(TokenKind::LParen) => {
                 self.advance();
                 let expr = self.parse_expr()?;

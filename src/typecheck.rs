@@ -877,6 +877,7 @@ impl<'a> TypeChecker<'a> {
                             t
                         }
                     }
+                    UnaryOp::RedAnd | UnaryOp::RedOr | UnaryOp::RedXor => Ty::Bool,
                 }
             }
             ExprKind::FieldAccess(base, field) => {

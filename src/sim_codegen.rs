@@ -659,7 +659,10 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
                 _ => 8,
             }
         }
-        ExprKind::Unary(UnaryOp::Not, _) => 1,
+        ExprKind::Unary(UnaryOp::Not, _)
+        | ExprKind::Unary(UnaryOp::RedAnd, _)
+        | ExprKind::Unary(UnaryOp::RedOr, _)
+        | ExprKind::Unary(UnaryOp::RedXor, _) => 1,
         _ => 8,
     }
 }
@@ -731,6 +734,24 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                     }
                 }
                 UnaryOp::Neg    => format!("(-{o})"),
+                UnaryOp::RedAnd => {
+                    // Reduction AND: all bits set → 1
+                    let w = infer_expr_width(operand, ctx);
+                    if w <= 1 {
+                        format!("({o} & 1)")
+                    } else {
+                        let mask = if w >= 64 { u64::MAX } else { (1u64 << w) - 1 };
+                        format!("(uint8_t)(({o} & 0x{mask:x}ULL) == 0x{mask:x}ULL)")
+                    }
+                }
+                UnaryOp::RedOr => {
+                    // Reduction OR: any bit set → 1
+                    format!("(uint8_t)(({o}) != 0)")
+                }
+                UnaryOp::RedXor => {
+                    // Reduction XOR: parity — use __builtin_parityll
+                    format!("(uint8_t)(__builtin_parityll((uint64_t)({o})))")
+                }
             }
         }
 

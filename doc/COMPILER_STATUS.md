@@ -87,6 +87,7 @@
 | Comparison `== != < > <= >=` | ✅ |
 | Logical `and` / `or` / `not` | ✅ |
 | Bitwise `& \| ^ ~ << >>` | ✅ |
+| Reduction `&x \|x ^x` | ✅ Unary prefix on `UInt<N>`/`SInt<N>`; result is `Bool`; emits SV `&expr`, `\|expr`, `^expr` |
 | Field access `.field` | ✅ |
 | Array index `[i]` | ✅ |
 | `.trunc<N>()` / `.zext<N>()` / `.sext<N>()` / `expr[hi:lo]` bit-slice / `.reverse(N)` | ✅ | `.reverse(N)` reverses in N-bit chunks; emits SV `{<<N{expr}}`; type checker enforces width divisible by N |

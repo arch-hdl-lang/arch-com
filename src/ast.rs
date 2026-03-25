@@ -507,6 +507,9 @@ pub enum UnaryOp {
     Not,
     BitNot,
     Neg,
+    RedAnd,
+    RedOr,
+    RedXor,
 }
 
 #[derive(Debug, Clone)]

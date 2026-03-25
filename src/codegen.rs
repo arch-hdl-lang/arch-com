@@ -2253,6 +2253,9 @@ impl<'a> Codegen<'a> {
                     UnaryOp::Not => format!("(!{o})"),
                     UnaryOp::BitNot => format!("(~{o})"),
                     UnaryOp::Neg => format!("(-{o})"),
+                    UnaryOp::RedAnd => format!("(&{o})"),
+                    UnaryOp::RedOr => format!("(|{o})"),
+                    UnaryOp::RedXor => format!("(^{o})"),
                 }
             }
             ExprKind::MethodCall(base, method, args) => {
@@ -2353,6 +2356,9 @@ impl<'a> Codegen<'a> {
                     UnaryOp::Not => format!("(!{o})"),
                     UnaryOp::BitNot => format!("(~{o})"),
                     UnaryOp::Neg => format!("(-{o})"),
+                    UnaryOp::RedAnd => format!("(&{o})"),
+                    UnaryOp::RedOr => format!("(|{o})"),
+                    UnaryOp::RedXor => format!("(^{o})"),
                 }
             }
             ExprKind::MethodCall(base, method, args) => {
@@ -2749,6 +2755,9 @@ impl<'a> Codegen<'a> {
                     UnaryOp::Not => format!("!{o}"),
                     UnaryOp::BitNot => format!("~{o}"),
                     UnaryOp::Neg => format!("-{o}"),
+                    UnaryOp::RedAnd => format!("&{o}"),
+                    UnaryOp::RedOr => format!("|{o}"),
+                    UnaryOp::RedXor => format!("^{o}"),
                 }
             }
             ExprKind::FieldAccess(base, field) => {
