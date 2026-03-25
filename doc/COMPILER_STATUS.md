@@ -91,7 +91,7 @@
 | Field access `.field` | ✅ |
 | Array index `[i]` | ✅ |
 | `.trunc<N>()` / `.zext<N>()` / `.sext<N>()` / `expr[hi:lo]` bit-slice / `.reverse(N)` | ✅ | `.reverse(N)` reverses in N-bit chunks; emits SV `{<<N{expr}}`; type checker enforces width divisible by N |
-| `as` cast | ✅ |
+| `as` cast | ✅ Width-checked: source and target must have same total bit width; struct-to-struct casts supported for same-width packed structs |
 | Struct literals | ✅ |
 | Enum variants `E::Variant` | ✅ |
 | `todo!` | ✅ |

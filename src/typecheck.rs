@@ -583,6 +583,55 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Emit an error when the RHS is wider than the LHS register/port.
+    /// Compute total bit width of a type, resolving structs via symbol table.
+    fn type_total_width(&self, ty: &Ty) -> Option<u32> {
+        match ty {
+            Ty::UInt(w) | Ty::SInt(w) => Some(*w),
+            Ty::Bool | Ty::Bit | Ty::Clock(_) | Ty::Reset(_) => Some(1),
+            Ty::Enum(_, w) => Some(*w),
+            Ty::Vec(inner, count) => self.type_total_width(inner).map(|w| w * count),
+            Ty::Struct(name) => {
+                if let Some((crate::resolve::Symbol::Struct(info), _)) = self.symbols.globals.get(name) {
+                    let mut total = 0u32;
+                    for (_, field_ty) in &info.fields {
+                        let w = self.type_expr_width(field_ty)?;
+                        total += w;
+                    }
+                    Some(total)
+                } else {
+                    None
+                }
+            }
+            Ty::Todo | Ty::Error => None,
+        }
+    }
+
+    /// Compute bit width directly from a TypeExpr without needing &mut self.
+    fn type_expr_width(&self, ty: &TypeExpr) -> Option<u32> {
+        match ty {
+            TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval_type_width_expr(w),
+            TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(_, _) => Some(1),
+            TypeExpr::Vec(inner, size) => {
+                let iw = self.type_expr_width(inner)?;
+                let n = eval_type_width_expr(size)?;
+                Some(iw * n)
+            }
+            TypeExpr::Named(ident) => {
+                if let Some((crate::resolve::Symbol::Struct(info), _)) = self.symbols.globals.get(&ident.name) {
+                    let mut total = 0u32;
+                    for (_, field_ty) in &info.fields {
+                        total += self.type_expr_width(field_ty)?;
+                    }
+                    Some(total)
+                } else if let Some((crate::resolve::Symbol::Enum(info), _)) = self.symbols.globals.get(&ident.name) {
+                    Some(enum_width(info.variants.len()))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
     fn check_width_compatible(&mut self, lhs_ty: &Ty, rhs_ty: &Ty, name: &str, span: Span) {
         match (lhs_ty, rhs_ty) {
             (Ty::UInt(lw), Ty::UInt(rw)) if rw > lw => {
@@ -1017,7 +1066,25 @@ impl<'a> TypeChecker<'a> {
                     _ => Ty::Error,
                 }
             }
-            ExprKind::Cast(_, ty) => self.resolve_type_expr(ty, module_name, local_types),
+            ExprKind::Cast(inner, ty) => {
+                let src_ty = self.resolve_expr_type(inner, module_name, local_types);
+                let dst_ty = self.resolve_type_expr(ty, module_name, local_types);
+                // Width check: if both widths are known and differ, emit error
+                let src_w = self.type_total_width(&src_ty);
+                let dst_w = self.type_total_width(&dst_ty);
+                if let (Some(sw), Some(dw)) = (src_w, dst_w) {
+                    if sw != dw {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "cast width mismatch: source is {} bits ({}), target is {} bits ({})",
+                                sw, src_ty.display(), dw, dst_ty.display()
+                            ),
+                            inner.span,
+                        ));
+                    }
+                }
+                dst_ty
+            }
             ExprKind::Index(base, _) => {
                 let base_ty = self.resolve_expr_type(base, module_name, local_types);
                 match base_ty {
