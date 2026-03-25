@@ -7,9 +7,9 @@ fsm TopModule
   port reset: in Reset<Sync>;
   port data: in Bool;
   port ack: in Bool;
-  port count: out UInt<4> default 0;
-  port counting: out Bool default false;
-  port done: out Bool default false;
+  port count: out UInt<4>;
+  port counting: out Bool;
+  port done: out Bool;
 
   reg delay_r: UInt<4> reset reset=0;
   reg cnt_r: UInt<4> reset reset=0;
@@ -17,6 +17,14 @@ fsm TopModule
 
   state S, S1, S11, S110, B0, B1, B2, B3, Count_St, Done_St;
   default state S;
+
+  default
+    comb
+      count = 0;
+      counting = false;
+      done = false;
+    end comb
+  end default
 
   state S
     transition to S1 when data;

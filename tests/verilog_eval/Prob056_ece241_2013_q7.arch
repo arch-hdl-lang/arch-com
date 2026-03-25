@@ -5,21 +5,15 @@ module TopModule
   port clk: in Clock<SysDomain>;
   port j: in Bool;
   port k: in Bool;
-  port Q: out Bool;
-
-  reg q_r: Bool;
+  port reg Q: out Bool;
 
   seq on clk rising
     if j & k
-      q_r <= ~q_r;
+      Q <= ~Q;
     elsif j
-      q_r <= 1;
+      Q <= 1;
     elsif k
-      q_r <= 0;
+      Q <= 0;
     end if
   end seq
-
-  comb
-    Q = q_r;
-  end comb
 end module TopModule

@@ -7,7 +7,7 @@ fsm TopModule
   port areset: in Reset<Async>;
   port j: in Bool;
   port k: in Bool;
-  port out: out Bool default false;
+  port out: out Bool;
 
   state Off, On;
   default state Off;

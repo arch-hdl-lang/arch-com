@@ -12,7 +12,7 @@ module TopModule (
     if (reset) begin
       count_r <= 0;
     end else begin
-      count_r <= 4'((count_r + 1));
+      count_r <= 4'(count_r + 1);
     end
   end
   assign q = count_r;

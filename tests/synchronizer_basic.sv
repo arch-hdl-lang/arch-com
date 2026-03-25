@@ -14,7 +14,7 @@ module FlagSync #(
   output logic data_out
 );
 
-  // 2-stage synchronizer chain (destination clock: dst_clk)
+  // 2-stage FF synchronizer chain (destination clock: dst_clk)
   logic sync_chain [0:STAGES-1];
   
   always_ff @(posedge dst_clk or posedge rst) begin

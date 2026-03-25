@@ -11,10 +11,10 @@ module TopModule (
     if (reset) begin
       cnt <= 1;
     end else begin
-      if ((cnt == 10)) begin
+      if (cnt == 10) begin
         cnt <= 1;
       end else begin
-        cnt <= 4'((cnt + 1));
+        cnt <= 4'(cnt + 1);
       end
     end
   end

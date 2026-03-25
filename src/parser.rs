@@ -266,6 +266,7 @@ impl Parser {
 
     fn parse_port_decl(&mut self) -> Result<PortDecl, CompileError> {
         let start = self.expect(TokenKind::Port)?.span;
+        let is_reg = self.eat(TokenKind::Reg);
         let name = self.expect_ident()?;
         self.expect(TokenKind::Colon)?;
         let direction = if self.eat_contextual("in") {
@@ -279,7 +280,37 @@ impl Parser {
                 self.peek_span(),
             ));
         };
+        if is_reg && direction == Direction::In {
+            return Err(CompileError::general(
+                "port reg must be an output port",
+                start.merge(self.peek_span()),
+            ));
+        }
         let ty = self.parse_type_expr()?;
+
+        // For `port reg`, parse optional init/reset (same syntax as `reg` decl).
+        let reg_info = if is_reg {
+            let init = if self.check(TokenKind::Init) {
+                self.advance();
+                Some(self.parse_expr()?)
+            } else if let Some((default_init, _)) = &self.reg_defaults {
+                default_init.clone()
+            } else {
+                None
+            };
+            let reset = if self.check_ident("reset") {
+                self.advance();
+                self.parse_reset_clause()?
+            } else if let Some((_, default_reset)) = &self.reg_defaults {
+                default_reset.clone()
+            } else {
+                RegReset::None
+            };
+            Some(PortRegInfo { init, reset })
+        } else {
+            None
+        };
+
         let default = if self.eat(TokenKind::Default) {
             Some(self.parse_expr()?)
         } else {
@@ -292,6 +323,7 @@ impl Parser {
             direction,
             ty,
             default,
+            reg_info,
             span: start.merge(end_span),
         })
     }
@@ -1581,6 +1613,8 @@ impl Parser {
         let mut lets = Vec::new();
         let mut state_names: Vec<Ident> = Vec::new();
         let mut default_state: Option<Ident> = None;
+        let mut default_comb: Vec<CombStmt> = Vec::new();
+        let mut default_seq: Vec<Stmt> = Vec::new();
         let mut states: Vec<StateBody> = Vec::new();
 
         while !self.check_end_fsm() {
@@ -1604,13 +1638,42 @@ impl Parser {
                     }
                     self.expect(TokenKind::Semi)?;
                 }
-                // `default state Name;`
                 Some(TokenKind::Default) => {
                     self.advance(); // consume `default`
-                    self.expect_contextual("state")?;
-                    let ds = self.expect_ident()?;
-                    self.expect(TokenKind::Semi)?;
-                    default_state = Some(ds);
+                    if self.check_contextual("state") {
+                        // `default state Name;`
+                        self.advance();
+                        let ds = self.expect_ident()?;
+                        self.expect(TokenKind::Semi)?;
+                        default_state = Some(ds);
+                    } else {
+                        // `default ... end default` block
+                        while !(self.check(TokenKind::End)
+                            && self.pos + 1 < self.tokens.len()
+                            && self.tokens[self.pos + 1].kind == TokenKind::Default)
+                        {
+                            match self.peek_kind() {
+                                Some(TokenKind::Comb) => {
+                                    let cb = self.parse_comb_block()?;
+                                    default_comb.extend(cb.stmts);
+                                }
+                                Some(TokenKind::Seq) => {
+                                    let rb = self.parse_always_block()?;
+                                    default_seq.extend(rb.stmts);
+                                }
+                                Some(other) => {
+                                    return Err(CompileError::unexpected_token(
+                                        "comb or seq inside default block",
+                                        &other.to_string(),
+                                        self.peek_span(),
+                                    ));
+                                }
+                                None => return Err(CompileError::UnexpectedEof),
+                            }
+                        }
+                        self.expect(TokenKind::End)?;
+                        self.expect(TokenKind::Default)?;
+                    }
                 }
                 // `state Name ... end state Name` — state body
                 _ if self.check_contextual("state") => {
@@ -1654,6 +1717,8 @@ impl Parser {
             lets,
             state_names,
             default_state: ds,
+            default_comb,
+            default_seq,
             states,
         })
     }
@@ -2346,7 +2411,7 @@ impl Parser {
         let ty = self.parse_type_expr()?;
         self.expect(TokenKind::Semi)?;
         let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
-        Ok(PortDecl { name, direction, ty, default: None, span: start.merge(end_span) })
+        Ok(PortDecl { name, direction, ty, default: None, reg_info: None, span: start.merge(end_span) })
     }
 
     fn parse_ram_init(&mut self) -> Result<RamInit, CompileError> {

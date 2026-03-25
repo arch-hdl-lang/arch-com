@@ -9,10 +9,10 @@ module TopModule (
 
   logic ab;
   logic cd;
-  assign ab = (a & b);
-  assign cd = (c & d);
-  assign out = (ab | cd);
-  assign out_n = (~(ab | cd));
+  assign ab = a & b;
+  assign cd = c & d;
+  assign out = ab | cd;
+  assign out_n = ~(ab | cd);
 
 endmodule
 

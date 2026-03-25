@@ -26,19 +26,19 @@ module TopModule (
     state_next = state_r; // hold by default
     case (state_r)
       A: begin
-        if ((~in)) state_next = B;
+        if (~in) state_next = B;
       end
       B: begin
-        if ((~in)) state_next = A;
+        if (~in) state_next = A;
       end
       default: state_next = state_r;
     endcase
   end
   
   always_comb begin
-    out = 1'b0; // default
     case (state_r)
       A: begin
+        out = 1'b0;
       end
       B: begin
         out = 1'b1;

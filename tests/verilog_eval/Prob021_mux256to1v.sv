@@ -6,7 +6,7 @@ module TopModule (
 
   always_comb begin
     for (int i = 0; i <= 3; i++) begin
-      out[i] = in[((sel * 4) + i)];
+      out[i] = in[sel * 4 + i];
     end
   end
 

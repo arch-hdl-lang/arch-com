@@ -5,15 +5,9 @@ module TopModule
   port clk: in Clock<SysDomain>;
   port areset: in Reset<Async>;
   port d: in UInt<8>;
-  port q: out UInt<8>;
-
-  reg q_r: UInt<8> reset areset=0;
+  port reg q: out UInt<8> reset areset=0;
 
   seq on clk rising
-    q_r <= d;
+    q <= d;
   end seq
-
-  comb
-    q = q_r;
-  end comb
 end module TopModule

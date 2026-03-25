@@ -759,7 +759,7 @@ A pipeline is a first-class Arch construct --- not a pattern you build from regi
 
 An fsm block declares a finite state machine with named states and exhaustive coverage enforced by the compiler. Missing transitions, undriven outputs in any state, and unreachable states are all compile-time errors.
 
-Output ports may carry an optional `default expr` annotation. When present, the compiler emits the default value at the top of the output `always_comb` block (instead of `'0`) and relaxes the "all ports driven in every state" rule for that port — states that do not override the port simply inherit the declared default. This eliminates boilerplate `= false` / `= 0` assignments that would otherwise appear in every state body.
+FSMs support a `default ... end default` block that provides default combinational and/or sequential assignments emitted before the state `case` statement. This eliminates boilerplate assignments that would otherwise appear in every state body — states only override what differs. The default block may contain `comb ... end comb` and/or `seq on clk rising ... end seq` sub-blocks. Output ports that are not driven in a state body will naturally be X in the generated Verilog unless a default is provided via this block.
 
 **Datapath Registers and Sequential Logic in FSMs**
 
@@ -786,15 +786,21 @@ The compiler generates clean, separated SystemVerilog:
 |                                                                    |
 | **port** timer: **in** UInt\<TIMER_W\>;                            |
 |                                                                    |
-| **port** red:    **out** Bool **default** false;                   |
+| **port** red:    **out** Bool;                                     |
 |                                                                    |
-| **port** yellow: **out** Bool **default** false;                   |
+| **port** yellow: **out** Bool;                                     |
 |                                                                    |
-| **port** green:  **out** Bool **default** false;                   |
+| **port** green:  **out** Bool;                                     |
 |                                                                    |
 | **state** Red, Yellow, Green;                                      |
 |                                                                    |
 | **default** **state** Red;                                         |
+|                                                                    |
+| **default**                                                        |
+|                                                                    |
+|   **comb** red = false; yellow = false; green = false; **end comb**|
+|                                                                    |
+| **end** **default**                                                |
 |                                                                    |
 | **state** Red                                                      |
 |                                                                    |
@@ -823,34 +829,41 @@ The compiler generates clean, separated SystemVerilog:
 | **end** **fsm** TrafficLight                                       |
 +--------------------------------------------------------------------+
 
-> *⚑ The compiler verifies: every state has at least one outgoing transition (dead-end states are a compile error); output ports **without** a `default` annotation must be driven in every state; output ports **with** `default expr` need only be driven in states that deviate from the declared default; no two transitions from the same state can be simultaneously enabled. If no transition fires in a given cycle, the FSM holds in the current state — a catch-all `transition to Self when true` is not required.*
+> *⚑ The compiler verifies: every state has at least one outgoing transition (dead-end states are a compile error); no two transitions from the same state can be simultaneously enabled. If no transition fires in a given cycle, the FSM holds in the current state — a catch-all `transition to Self when true` is not required. Output ports not driven in a state and not covered by a `default` block will be X in the generated Verilog.*
 
-**7.2 FSM Output Port Defaults**
+**7.2 FSM Default Block**
 
-Output ports may be given a `default expr` annotation immediately after the type expression and before the semicolon:
+The `default ... end default` block provides default assignments that are emitted before the state `case` statement. It may contain `comb ... end comb` and/or `seq on clk rising ... end seq` sub-blocks:
 
 ```
-port name: out TypeExpr default expr;
+default
+  comb
+    out_a = false;
+    out_b = 0;
+  end comb
+  seq on clk rising
+    data_reg <= 0;
+  end seq
+end default
 ```
 
 **Semantics:**
 
-| Rule | Without `default` | With `default expr` |
-|------|-------------------|---------------------|
-| Compiler initialises output in `always_comb` | `name = '0;` | `name = expr;` |
-| Port must be driven in every state | ✅ yes (compile error if missing) | ❌ no — states that omit the port inherit `expr` |
-| Port can be overridden in individual states | ✅ | ✅ |
+- Default `comb` assignments are emitted at the top of the output `always_comb` block, before `case (state_r)`. States that override a signal simply reassign it inside their case branch.
+- Default `seq` assignments are emitted at the top of the `always_ff` else branch, before the per-state `case`. States with `seq` blocks override as needed.
+- Output ports not covered by either a default block or per-state comb assignments will be X (undriven) in the generated Verilog — this matches real hardware behavior.
 
-**Generated SystemVerilog** for a port with `default false`:
+**Generated SystemVerilog:**
 
 ```systemverilog
 always_comb begin
-  name = 1'b0; // default  ← from the annotation
+  out_a = 1'b0;   // ← from default block
+  out_b = 0;      // ← from default block
   case (state_r)
     FOO: begin
-      name = 1'b1; // state-level override
+      out_a = 1'b1; // state-level override
     end
-    default: ;     // other states inherit the default
+    default: ;     // other states inherit the defaults
   endcase
 end
 ```

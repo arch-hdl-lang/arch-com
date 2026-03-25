@@ -8,17 +8,14 @@ module TopModule
   port clk: in Clock<SysDomain>;
   port a: in Bool;
   port b: in Bool;
-  port state: out Bool;
+  port reg state: out Bool;
   port q: out Bool;
 
-  reg st: Bool;
-
   seq on clk rising
-    st <= (a & b) | (st & (a ^ b));
+    state <= (a & b) | (state & (a ^ b));
   end seq
 
   comb
-    q = a ^ b ^ st;
-    state = st;
+    q = a ^ b ^ state;
   end comb
 end module TopModule

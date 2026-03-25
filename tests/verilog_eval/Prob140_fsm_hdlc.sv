@@ -41,48 +41,48 @@ module TopModule (
       end
       S1: begin
         if (in) state_next = S2;
-        else if ((~in)) state_next = S0;
+        else if (~in) state_next = S0;
       end
       S2: begin
         if (in) state_next = S3;
-        else if ((~in)) state_next = S0;
+        else if (~in) state_next = S0;
       end
       S3: begin
         if (in) state_next = S4;
-        else if ((~in)) state_next = S0;
+        else if (~in) state_next = S0;
       end
       S4: begin
         if (in) state_next = S5;
-        else if ((~in)) state_next = S0;
+        else if (~in) state_next = S0;
       end
       S5: begin
         if (in) state_next = S6;
-        else if ((~in)) state_next = SDISC;
+        else if (~in) state_next = SDISC;
       end
       S6: begin
         if (in) state_next = SERR;
-        else if ((~in)) state_next = SFLAG;
+        else if (~in) state_next = SFLAG;
       end
       SERR: begin
         if (in) state_next = SERR;
-        else if ((~in)) state_next = S0;
+        else if (~in) state_next = S0;
       end
       SDISC: begin
         if (in) state_next = S1;
-        else if ((~in)) state_next = S0;
+        else if (~in) state_next = S0;
       end
       SFLAG: begin
         if (in) state_next = S1;
-        else if ((~in)) state_next = S0;
+        else if (~in) state_next = S0;
       end
       default: state_next = state_r;
     endcase
   end
   
   always_comb begin
-    disc = 1'b0; // default
-    flag = 1'b0; // default
-    err = 1'b0; // default
+    disc = 1'b0;
+    flag = 1'b0;
+    err = 1'b0;
     case (state_r)
       S0: begin
       end

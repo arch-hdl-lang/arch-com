@@ -33,38 +33,38 @@ module TopModule (
       ss_lo <= 0;
     end else begin
       if (ena) begin
-        if ((ss_lo == 9)) begin
+        if (ss_lo == 9) begin
           ss_lo <= 0;
-          if ((ss_hi == 5)) begin
+          if (ss_hi == 5) begin
             ss_hi <= 0;
-            if ((mm_lo == 9)) begin
+            if (mm_lo == 9) begin
               mm_lo <= 0;
-              if ((mm_hi == 5)) begin
+              if (mm_hi == 5) begin
                 mm_hi <= 0;
-                if (((hh_hi == 1) & (hh_lo == 2))) begin
+                if (hh_hi == 1 & hh_lo == 2) begin
                   hh_hi <= 0;
                   hh_lo <= 1;
-                end else if (((hh_hi == 1) & (hh_lo == 1))) begin
+                end else if (hh_hi == 1 & hh_lo == 1) begin
                   hh_hi <= 1;
                   hh_lo <= 2;
-                  pm_reg <= (~pm_reg);
-                end else if ((hh_lo == 9)) begin
+                  pm_reg <= ~pm_reg;
+                end else if (hh_lo == 9) begin
                   hh_lo <= 0;
-                  hh_hi <= 4'((hh_hi + 1));
+                  hh_hi <= 4'(hh_hi + 1);
                 end else begin
-                  hh_lo <= 4'((hh_lo + 1));
+                  hh_lo <= 4'(hh_lo + 1);
                 end
               end else begin
-                mm_hi <= 4'((mm_hi + 1));
+                mm_hi <= 4'(mm_hi + 1);
               end
             end else begin
-              mm_lo <= 4'((mm_lo + 1));
+              mm_lo <= 4'(mm_lo + 1);
             end
           end else begin
-            ss_hi <= 4'((ss_hi + 1));
+            ss_hi <= 4'(ss_hi + 1);
           end
         end else begin
-          ss_lo <= 4'((ss_lo + 1));
+          ss_lo <= 4'(ss_lo + 1);
         end
       end
     end

@@ -8,11 +8,18 @@ fsm TopModule
   port resetn: in Reset<Sync, Low>;
   port x: in Bool;
   port y: in Bool;
-  port f: out Bool default false;
-  port g: out Bool default false;
+  port f: out Bool;
+  port g: out Bool;
 
   state A, SetF, X1, X0, X01, SetG1, SetG2, GoodG, BadG;
   default state A;
+
+  default
+    comb
+      f = false;
+      g = false;
+    end comb
+  end default
 
   state A
     transition to SetF when true;

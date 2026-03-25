@@ -10,17 +10,17 @@ module TopModule (
 );
 
   always_comb begin
-    if ((sel == 0)) begin
+    if (sel == 0) begin
       out = data0;
-    end else if ((sel == 1)) begin
+    end else if (sel == 1) begin
       out = data1;
-    end else if ((sel == 2)) begin
+    end else if (sel == 2) begin
       out = data2;
-    end else if ((sel == 3)) begin
+    end else if (sel == 3) begin
       out = data3;
-    end else if ((sel == 4)) begin
+    end else if (sel == 4) begin
       out = data4;
-    end else if ((sel == 5)) begin
+    end else if (sel == 5) begin
       out = data5;
     end else begin
       out = 0;

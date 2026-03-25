@@ -6,9 +6,8 @@ module TopModule
   port clk: in Clock<SysDomain>;
   port load: in Bool;
   port data: in UInt<256>;
-  port q: out UInt<256>;
+  port reg q: out UInt<256> init 0 reset none;
 
-  reg grid: UInt<256> init 0 reset none;
   wire next_grid: UInt<256>;
 
   wire row: UInt<4>;
@@ -36,30 +35,26 @@ module TopModule
       cr = (col + 1).trunc<4>();
 
       ncount = (
-        grid[ra * 16 + cl].zext<4>()
-        + grid[ra * 16 + col].zext<4>()
-        + grid[ra * 16 + cr].zext<4>()
-        + grid[row * 16 + cl].zext<4>()
-        + grid[row * 16 + cr].zext<4>()
-        + grid[rb * 16 + cl].zext<4>()
-        + grid[rb * 16 + col].zext<4>()
-        + grid[rb * 16 + cr].zext<4>()
+        q[ra * 16 + cl].zext<4>()
+        + q[ra * 16 + col].zext<4>()
+        + q[ra * 16 + cr].zext<4>()
+        + q[row * 16 + cl].zext<4>()
+        + q[row * 16 + cr].zext<4>()
+        + q[rb * 16 + cl].zext<4>()
+        + q[rb * 16 + col].zext<4>()
+        + q[rb * 16 + cr].zext<4>()
       ).trunc<4>();
 
-      // alive = (ncount==3) | (ncount==2 & grid[i])
-      next_grid[i] = (ncount == 3) | ((ncount == 2) & grid[i]);
+      // alive = (ncount==3) | (ncount==2 & q[i])
+      next_grid[i] = (ncount == 3) | ((ncount == 2) & q[i]);
     end for
   end comb
 
   seq on clk rising
     if load
-      grid <= data;
+      q <= data;
     else
-      grid <= next_grid;
+      q <= next_grid;
     end if
   end seq
-
-  comb
-    q = grid;
-  end comb
 end module TopModule

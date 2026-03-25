@@ -13,9 +13,9 @@ module TopModule (
     o = in[0];
     x = in[0];
     for (int i = 1; i <= 99; i++) begin
-      a = (a & in[i]);
-      o = (o | in[i]);
-      x = (x ^ in[i]);
+      a = a & in[i];
+      o = o | in[i];
+      x = x ^ in[i];
     end
     out_and = a;
     out_or = o;

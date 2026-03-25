@@ -30,24 +30,24 @@ module TopModule (
     case (state_r)
       IDLE: begin
         if (r[0]) state_next = GRANT0;
-        else if (((~r[0]) & r[1])) state_next = GRANT1;
-        else if ((((~r[0]) & (~r[1])) & r[2])) state_next = GRANT2;
+        else if (~r[0] & r[1]) state_next = GRANT1;
+        else if (~r[0] & ~r[1] & r[2]) state_next = GRANT2;
       end
       GRANT0: begin
-        if ((~r[0])) state_next = IDLE;
+        if (~r[0]) state_next = IDLE;
       end
       GRANT1: begin
-        if ((~r[1])) state_next = IDLE;
+        if (~r[1]) state_next = IDLE;
       end
       GRANT2: begin
-        if ((~r[2])) state_next = IDLE;
+        if (~r[2]) state_next = IDLE;
       end
       default: state_next = state_r;
     endcase
   end
   
   always_comb begin
-    g = 0; // default
+    g = 0;
     case (state_r)
       IDLE: begin
       end

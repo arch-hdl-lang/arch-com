@@ -17,7 +17,7 @@ module Alu #(
   output logic [WIDTH-1:0] result
 );
 
-  assign result = (a + b);
+  assign result = WIDTH'(a + b);
 
 endmodule
 

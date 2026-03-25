@@ -5,20 +5,29 @@ fsm TopModule
   port clk: in Clock<SysDomain>;
   port areset: in Reset<Async>;
   port in: in Bool;
-  port out: out Bool default false;
+  port out: out Bool;
 
   state A, B, C, D;
   default state A;
 
   state A
+    comb
+      out = false;
+    end comb
     transition to B when in;
   end state A
 
   state B
+    comb
+      out = false;
+    end comb
     transition to C when ~in;
   end state B
 
   state C
+    comb
+      out = false;
+    end comb
     transition to D when in;
     transition to A when ~in;
   end state C

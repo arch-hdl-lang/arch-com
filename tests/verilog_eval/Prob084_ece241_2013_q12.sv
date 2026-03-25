@@ -15,7 +15,7 @@ module TopModule (
     if (enable) begin
       sr[0] <= S;
       for (int i = 1; i <= 7; i++) begin
-        sr[i] <= sr[(i - 1)];
+        sr[i] <= sr[i - 1];
       end
     end
   end

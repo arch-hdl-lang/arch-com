@@ -36,13 +36,12 @@ module TopModule (
   end
   
   always_comb begin
-    z = 1'b0; // default
     case (state_r)
       A: begin
         z = x;
       end
       B: begin
-        z = (~x);
+        z = ~x;
       end
       default: ;
     endcase

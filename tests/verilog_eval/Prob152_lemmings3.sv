@@ -37,14 +37,14 @@ module TopModule (
     state_next = state_r; // hold by default
     case (state_r)
       WALKLEFT: begin
-        if ((~ground)) state_next = FALLLEFT;
-        else if ((ground & dig)) state_next = DIGLEFT;
-        else if (((ground & (~dig)) & bump_left)) state_next = WALKRIGHT;
+        if (~ground) state_next = FALLLEFT;
+        else if (ground & dig) state_next = DIGLEFT;
+        else if (ground & ~dig & bump_left) state_next = WALKRIGHT;
       end
       WALKRIGHT: begin
-        if ((~ground)) state_next = FALLRIGHT;
-        else if ((ground & dig)) state_next = DIGRIGHT;
-        else if (((ground & (~dig)) & bump_right)) state_next = WALKLEFT;
+        if (~ground) state_next = FALLRIGHT;
+        else if (ground & dig) state_next = DIGRIGHT;
+        else if (ground & ~dig & bump_right) state_next = WALKLEFT;
       end
       FALLLEFT: begin
         if (ground) state_next = WALKLEFT;
@@ -53,20 +53,20 @@ module TopModule (
         if (ground) state_next = WALKRIGHT;
       end
       DIGLEFT: begin
-        if ((~ground)) state_next = FALLLEFT;
+        if (~ground) state_next = FALLLEFT;
       end
       DIGRIGHT: begin
-        if ((~ground)) state_next = FALLRIGHT;
+        if (~ground) state_next = FALLRIGHT;
       end
       default: state_next = state_r;
     endcase
   end
   
   always_comb begin
-    walk_left = 1'b0; // default
-    walk_right = 1'b0; // default
-    aaah = 1'b0; // default
-    digging = 1'b0; // default
+    walk_left = 1'b0;
+    walk_right = 1'b0;
+    aaah = 1'b0;
+    digging = 1'b0;
     case (state_r)
       WALKLEFT: begin
         walk_left = 1'b1;

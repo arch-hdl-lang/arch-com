@@ -1156,9 +1156,12 @@ fn collect_log_files(body: &[ModuleBodyItem]) -> Vec<String> {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn collect_reg_names(body: &[ModuleBodyItem]) -> HashSet<String> {
+fn collect_reg_names(body: &[ModuleBodyItem], ports: &[PortDecl]) -> HashSet<String> {
     body.iter()
         .filter_map(|i| if let ModuleBodyItem::RegDecl(r) = i { Some(r.name.name.clone()) } else { None })
+        .chain(ports.iter().filter_map(|p| {
+            if p.reg_info.is_some() { Some(p.name.name.clone()) } else { None }
+        }))
         .collect()
 }
 
@@ -1547,7 +1550,7 @@ impl<'a> SimCodegen<'a> {
         let enum_map = build_enum_map(self.symbols);
 
         let port_names: HashSet<String> = m.ports.iter().map(|p| p.name.name.clone()).collect();
-        let mut reg_names = collect_reg_names(&m.body);
+        let mut reg_names = collect_reg_names(&m.body, &m.ports);
         reg_names.extend(collect_pipe_reg_names(&m.body));
         let let_names   = collect_let_names(&m.body);
         let inst_names  = collect_inst_names(&m.body);
@@ -1561,6 +1564,11 @@ impl<'a> SimCodegen<'a> {
                 .filter_map(|i| if let ModuleBodyItem::RegDecl(r) = i {
                     if matches!(r.reset, RegReset::None) { Some(r.name.name.clone()) } else { None }
                 } else { None })
+                .chain(m.ports.iter().filter_map(|p| {
+                    if let Some(ri) = &p.reg_info {
+                        if matches!(ri.reset, RegReset::None) { Some(p.name.name.clone()) } else { None }
+                    } else { None }
+                }))
                 .collect()
         } else {
             HashSet::new()
@@ -1645,6 +1653,25 @@ impl<'a> SimCodegen<'a> {
                 }
             } else { None })
             .collect();
+        // port reg shadow inits
+        let port_reg_inits: Vec<String> = m.ports.iter()
+            .filter_map(|p| {
+                let ri = p.reg_info.as_ref()?;
+                let init_val = if let Some(ref init_expr) = ri.init {
+                    match &init_expr.kind {
+                        ExprKind::Literal(LitKind::Dec(v)) => v.to_string(),
+                        ExprKind::Literal(LitKind::Hex(v)) => format!("0x{:X}", v),
+                        ExprKind::Literal(LitKind::Bin(v)) => v.to_string(),
+                        ExprKind::Literal(LitKind::Sized(_, v)) => v.to_string(),
+                        ExprKind::Bool(b) => if *b { "1".to_string() } else { "0".to_string() },
+                        _ => "0".to_string(),
+                    }
+                } else {
+                    "0".to_string()
+                };
+                Some(format!("_{}({})", p.name.name, init_val))
+            })
+            .collect();
         // pipe_reg inits
         let pipe_reg_inits: Vec<String> = m.body.iter()
             .filter_map(|i| if let ModuleBodyItem::PipeRegDecl(p) = i {
@@ -1696,6 +1723,7 @@ impl<'a> SimCodegen<'a> {
         let time_init = if all_freqs_known_early { vec!["time_ps(0)".to_string()] } else { vec![] };
         let all_inits: Vec<String> = port_inits.into_iter()
             .chain(reg_inits)
+            .chain(port_reg_inits)
             .chain(pipe_reg_inits)
             .chain(clk_prev_inits)
             .chain(time_init)
@@ -1749,6 +1777,14 @@ impl<'a> SimCodegen<'a> {
                     let ty = cpp_internal_type(&r.ty);
                     h.push_str(&format!("  {ty} _{};\n", r.name.name));
                 }
+            }
+        }
+
+        // Private shadow fields for port reg outputs
+        for p in &m.ports {
+            if p.reg_info.is_some() {
+                let ty = cpp_internal_type(&p.ty);
+                h.push_str(&format!("  {ty} _{};\n", p.name.name));
             }
         }
 
@@ -2006,6 +2042,14 @@ impl<'a> SimCodegen<'a> {
                     cpp.push_str(&format!("  {ty} _n_{n} = _{n};\n"));
                 }
             }
+            // Declare _n_ temporaries for port reg shadows
+            for p in &m.ports {
+                if p.reg_info.is_some() {
+                    let n = &p.name.name;
+                    let ty = cpp_internal_type(&p.ty);
+                    cpp.push_str(&format!("  {ty} _n_{n} = _{n};\n"));
+                }
+            }
             // Declare _n_ temporaries for pipe_reg stages
             for p in &pipe_regs {
                 let w = widths.get(&p.source.name).copied().unwrap_or(32);
@@ -2032,10 +2076,17 @@ impl<'a> SimCodegen<'a> {
                 let mut reset_regs: Vec<(&str, String)> = Vec::new();
 
                 for name in &assigned {
-                    if let Some(rd) = reg_decls.iter().find(|r| r.name.name == *name) {
-                        if let Some(info) = resolve_reg_reset_info(&rd.reset, &m.ports) {
+                    // Look up reset from RegDecl or port reg
+                    let reset_ref: Option<&RegReset> = reg_decls.iter()
+                        .find(|r| r.name.name == *name)
+                        .map(|r| &r.reset)
+                        .or_else(|| m.ports.iter()
+                            .find(|p| p.name.name == *name && p.reg_info.is_some())
+                            .and_then(|p| p.reg_info.as_ref().map(|ri| &ri.reset)));
+                    if let Some(reg_reset) = reset_ref {
+                        if let Some(info) = resolve_reg_reset_info(reg_reset, &m.ports) {
                             if reset_sig.is_none() { reset_sig = Some(info.clone()); }
-                            let reset_expr = reset_value_from_reg_reset(&rd.reset);
+                            let reset_expr = reset_value_from_reg_reset(reg_reset);
                             let init_val = if let Some(expr) = reset_expr {
                                 match &expr.kind {
                                     ExprKind::Literal(LitKind::Dec(v)) => v.to_string(),
@@ -2048,7 +2099,7 @@ impl<'a> SimCodegen<'a> {
                             } else {
                                 "0".to_string()
                             };
-                            reset_regs.push((&rd.name.name, init_val));
+                            reset_regs.push((name.as_str(), init_val));
                         }
                     }
                 }
@@ -2146,6 +2197,15 @@ impl<'a> SimCodegen<'a> {
                         format!("{}_stg{}", p.name.name, i + 1)
                     };
                     cpp.push_str(&format!("  _{name} = _n_{name};\n"));
+                }
+            }
+
+            // Commit port reg shadows: _n_ → shadow → public port
+            for p in &m.ports {
+                if p.reg_info.is_some() {
+                    let n = &p.name.name;
+                    cpp.push_str(&format!("  _{n} = _n_{n};\n"));
+                    cpp.push_str(&format!("  {n} = _{n};\n"));
                 }
             }
 
@@ -2611,6 +2671,12 @@ impl<'a> SimCodegen<'a> {
             c.fsm_mode = true;
             c
         };
+        // Default sequential assignments
+        for stmt in &f.default_seq {
+            let mut body = String::new();
+            emit_reg_stmt(stmt, &ctx_posedge, &mut body, 2);
+            cpp.push_str(&body);
+        }
         cpp.push_str("    switch (_state_r) {\n");
         for sb in &f.states {
             let idx = state_idx.get(&sb.name.name).copied().unwrap_or(0);
@@ -2641,16 +2707,11 @@ impl<'a> SimCodegen<'a> {
             let val = cpp_expr(&lb.value, &ctx_fsm);
             cpp.push_str(&format!("  {} = {};\n", lb.name.name, val));
         }
-        for p in &f.ports {
-            if p.direction == Direction::Out {
-                let default_val = p.default.as_ref()
-                    .map(|e| match &e.kind {
-                        ExprKind::Bool(b) => if *b { "1".to_string() } else { "0".to_string() },
-                        ExprKind::Literal(LitKind::Dec(v)) => v.to_string(),
-                        _ => "0".to_string(),
-                    }).unwrap_or_else(|| "0".to_string());
-                cpp.push_str(&format!("  {} = {};\n", p.name.name, default_val));
-            }
+        // Default combinational assignments
+        {
+            let mut body = String::new();
+            emit_comb_stmts(&f.default_comb, &ctx_fsm, &mut body, 1);
+            cpp.push_str(&body);
         }
         cpp.push_str("  switch (_state_r) {\n");
         for sb in &f.states {

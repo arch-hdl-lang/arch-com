@@ -16,17 +16,17 @@ module TopModule (
     left_i = q_r[1];
     center_i = q_r[0];
     right_i = 0;
-    q_next[0] = (~((((left_i & center_i) & right_i) | (((~left_i) & (~center_i)) & (~right_i))) | ((left_i & (~center_i)) & (~right_i))));
+    q_next[0] = ~(left_i & center_i & right_i | ~left_i & ~center_i & ~right_i | left_i & ~center_i & ~right_i);
     for (int i = 1; i <= 510; i++) begin
-      left_i = q_r[(i + 1)];
+      left_i = q_r[i + 1];
       center_i = q_r[i];
-      right_i = q_r[(i - 1)];
-      q_next[i] = (~((((left_i & center_i) & right_i) | (((~left_i) & (~center_i)) & (~right_i))) | ((left_i & (~center_i)) & (~right_i))));
+      right_i = q_r[i - 1];
+      q_next[i] = ~(left_i & center_i & right_i | ~left_i & ~center_i & ~right_i | left_i & ~center_i & ~right_i);
     end
     left_i = 0;
     center_i = q_r[511];
     right_i = q_r[510];
-    q_next[511] = (~((((left_i & center_i) & right_i) | (((~left_i) & (~center_i)) & (~right_i))) | ((left_i & (~center_i)) & (~right_i))));
+    q_next[511] = ~(left_i & center_i & right_i | ~left_i & ~center_i & ~right_i | left_i & ~center_i & ~right_i);
     q = q_r;
   end
   // Boundary: i=0 (right neighbor is 0)

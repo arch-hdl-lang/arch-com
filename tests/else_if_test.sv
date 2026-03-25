@@ -16,12 +16,12 @@ module ElseIfTest (
     if (rst) begin
       result_r <= 0;
     end else begin
-      if ((sel == 0)) begin
+      if (sel == 0) begin
         result_r <= data_in;
-      end else if ((sel == 1)) begin
-        result_r <= (data_in ^ 'hFF);
-      end else if ((sel == 2)) begin
-        result_r <= 8'((data_in << 1));
+      end else if (sel == 1) begin
+        result_r <= data_in ^ 'hFF;
+      end else if (sel == 2) begin
+        result_r <= 8'(data_in << 1);
       end else begin
         result_r <= 0;
       end
@@ -29,12 +29,12 @@ module ElseIfTest (
   end
   // Test else-if in comb block
   always_comb begin
-    if ((sel == 0)) begin
+    if (sel == 0) begin
       comb_out = data_in;
-    end else if ((sel == 1)) begin
-      comb_out = (data_in ^ 'hFF);
-    end else if ((sel == 2)) begin
-      comb_out = 8'((data_in << 1));
+    end else if (sel == 1) begin
+      comb_out = data_in ^ 'hFF;
+    end else if (sel == 2) begin
+      comb_out = 8'(data_in << 1);
     end else begin
       comb_out = 0;
     end

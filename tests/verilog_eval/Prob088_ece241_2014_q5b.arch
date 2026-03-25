@@ -5,7 +5,7 @@ fsm TopModule
   port clk: in Clock<SysDomain>;
   port areset: in Reset<Async>;
   port x: in Bool;
-  port z: out Bool default false;
+  port z: out Bool;
 
   state A, B;
   default state A;

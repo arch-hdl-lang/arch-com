@@ -7,9 +7,9 @@ module TopModule (
   output logic [6-1:0] out_not
 );
 
-  assign out_or_bitwise = (a | b);
-  assign out_or_logical = (((a[0] | a[1]) | a[2]) | ((b[0] | b[1]) | b[2]));
-  assign out_not = {(~b), (~a)};
+  assign out_or_bitwise = a | b;
+  assign out_or_logical = a[0] | a[1] | a[2] | b[0] | b[1] | b[2];
+  assign out_not = {~b, ~a};
 
 endmodule
 

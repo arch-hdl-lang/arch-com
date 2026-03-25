@@ -6,12 +6,20 @@ fsm TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
   port in: in Bool;
-  port disc: out Bool default false;
-  port flag: out Bool default false;
-  port err: out Bool default false;
+  port disc: out Bool;
+  port flag: out Bool;
+  port err: out Bool;
 
   state S0, S1, S2, S3, S4, S5, S6, Serr, Sdisc, Sflag;
   default state S0;
+
+  default
+    comb
+      disc = false;
+      flag = false;
+      err = false;
+    end comb
+  end default
 
   state S0
     transition to S1 when in;

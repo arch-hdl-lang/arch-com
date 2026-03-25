@@ -4,21 +4,15 @@ end domain SysDomain
 module TopModule
   port clk: in Clock<SysDomain>;
   port a: in Bool;
-  port q: out UInt<3>;
-
-  reg cnt: UInt<3>;
+  port reg q: out UInt<3>;
 
   seq on clk rising
     if a
-      cnt <= 4;
-    elsif cnt == 6
-      cnt <= 0;
+      q <= 4;
+    elsif q == 6
+      q <= 0;
     else
-      cnt <= (cnt + 1).trunc<3>();
+      q <= (q + 1).trunc<3>();
     end if
   end seq
-
-  comb
-    q = cnt;
-  end comb
 end module TopModule

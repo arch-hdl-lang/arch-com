@@ -8,12 +8,20 @@ fsm TopModule
   port data: in Bool;
   port done_counting: in Bool;
   port ack: in Bool;
-  port shift_ena: out Bool default false;
-  port counting: out Bool default false;
-  port done: out Bool default false;
+  port shift_ena: out Bool;
+  port counting: out Bool;
+  port done: out Bool;
 
   state S, S1, S11, S110, B0, B1, B2, B3, Count, Wait;
   default state S;
+
+  default
+    comb
+      shift_ena = false;
+      counting = false;
+      done = false;
+    end comb
+  end default
 
   state S
     transition to S1 when data;

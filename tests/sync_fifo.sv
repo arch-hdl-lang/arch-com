@@ -2,26 +2,28 @@
 //   freq_mhz: 100
 
 module TxQueue #(
-  parameter int DEPTH = 16,
-  parameter int DATA_WIDTH = 8
+  parameter int  DEPTH = 16,
+  parameter type TYPE  = logic [8-1:0]
 ) (
   input logic clk,
   input logic rst,
   input logic push_valid,
   output logic push_ready,
-  input logic [DATA_WIDTH-1:0] push_data,
+  input TYPE push_data,
   output logic pop_valid,
   input logic pop_ready,
-  output logic [DATA_WIDTH-1:0] pop_data,
+  output TYPE pop_data,
   output logic full,
   output logic empty
 );
 
   localparam int PTR_W = $clog2(DEPTH) + 1;
   
-  logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];
+  TYPE                  mem [0:DEPTH-1];
   logic [PTR_W-1:0]     wr_ptr;
   logic [PTR_W-1:0]     rd_ptr;
+  logic                 full;
+  logic                 empty;
   
   // Full when MSBs differ and lower bits match
   assign full        = (wr_ptr[PTR_W-1] != rd_ptr[PTR_W-1]) &&

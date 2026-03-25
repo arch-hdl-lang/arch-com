@@ -32,37 +32,31 @@ module TrafficLight #(
     state_next = state_r; // hold by default
     case (state_r)
       RED: begin
-        unique if ((timer == 0)) state_next = GREEN;
+        if (timer == 0) state_next = GREEN;
       end
       GREEN: begin
-        unique if ((timer == 0)) state_next = YELLOW;
+        if (timer == 0) state_next = YELLOW;
       end
       YELLOW: begin
-        unique if ((timer == 0)) state_next = RED;
+        if (timer == 0) state_next = RED;
       end
       default: state_next = state_r;
     endcase
   end
   
   always_comb begin
-    red = '0; // default
-    yellow = '0; // default
-    green = '0; // default
+    red = 1'b0; // default
+    yellow = 1'b0; // default
+    green = 1'b0; // default
     case (state_r)
       RED: begin
         red = 1'b1;
-        yellow = 1'b0;
-        green = 1'b0;
       end
       GREEN: begin
-        red = 1'b0;
-        yellow = 1'b0;
         green = 1'b1;
       end
       YELLOW: begin
-        red = 1'b0;
         yellow = 1'b1;
-        green = 1'b0;
       end
       default: ;
     endcase

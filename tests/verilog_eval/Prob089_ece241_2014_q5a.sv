@@ -32,22 +32,22 @@ module TopModule (
       end
       B: begin
         if (x) state_next = D;
-        else if ((~x)) state_next = C;
+        else if (~x) state_next = C;
       end
       C: begin
         if (x) state_next = D;
       end
       D: begin
-        if ((~x)) state_next = C;
+        if (~x) state_next = C;
       end
       default: state_next = state_r;
     endcase
   end
   
   always_comb begin
-    z = 1'b0; // default
     case (state_r)
       A: begin
+        z = 1'b0;
       end
       B: begin
         z = 1'b1;
@@ -56,6 +56,7 @@ module TopModule (
         z = 1'b1;
       end
       D: begin
+        z = 1'b0;
       end
       default: ;
     endcase

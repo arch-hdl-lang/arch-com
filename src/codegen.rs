@@ -251,8 +251,12 @@ impl<'a> Codegen<'a> {
                 Direction::Out => "output",
             };
             let ty_str = self.emit_port_type_str(&p.ty);
+            let init_str = p.reg_info.as_ref()
+                .and_then(|ri| ri.init.as_ref())
+                .map(|e| format!(" = {}", self.emit_expr_str(e)))
+                .unwrap_or_default();
             let comma = if i < m.ports.len() - 1 { "," } else { "" };
-            self.line(&format!("{} {} {}{}", dir, ty_str, p.name.name, comma));
+            self.line(&format!("{} {} {}{}{}", dir, ty_str, p.name.name, init_str, comma));
         }
         self.indent -= 1;
         self.line(");");
@@ -741,8 +745,15 @@ impl<'a> Codegen<'a> {
         let mut resets: Vec<(String, String)> = Vec::new(); // (reg_name, init_str)
         for name in &assigned {
             if name.is_empty() { continue; }
-            if let Some(rd) = reg_decls.iter().find(|r| r.name.name == *name) {
-                let resolved = self.resolve_reg_reset(&rd.reset, m);
+            // Look up reset info from RegDecl or port reg
+            let reset_ref: Option<&RegReset> = reg_decls.iter()
+                .find(|r| r.name.name == *name)
+                .map(|r| &r.reset)
+                .or_else(|| m.ports.iter()
+                    .find(|p| p.name.name == *name && p.reg_info.is_some())
+                    .and_then(|p| p.reg_info.as_ref().map(|ri| &ri.reset)));
+            if let Some(reg_reset) = reset_ref {
+                let resolved = self.resolve_reg_reset(reg_reset, m);
                 if let Some((rst_sig, is_async, is_low)) = resolved {
                     if reset_info.is_none() {
                         reset_info = Some(ResolvedReset {
@@ -751,7 +762,7 @@ impl<'a> Codegen<'a> {
                             is_low,
                         });
                     }
-                    let reset_val = Self::reset_value_expr(&rd.reset).unwrap();
+                    let reset_val = Self::reset_value_expr(reg_reset).unwrap();
                     let init = self.emit_expr_str(reset_val);
                     resets.push((name.clone(), init));
                 }
@@ -1398,8 +1409,12 @@ impl<'a> Codegen<'a> {
         self.line("end else begin");
         self.indent += 1;
         self.line("state_r <= state_next;");
+        // Default sequential assignments (before state case)
+        for stmt in &f.default_seq {
+            self.emit_reg_stmt(stmt);
+        }
         // Per-state sequential logic
-        if has_seq {
+        if has_seq || !f.default_seq.is_empty() {
             self.line("case (state_r)");
             self.indent += 1;
             for sb in &f.states {
@@ -1473,17 +1488,14 @@ impl<'a> Codegen<'a> {
         let out_ports: Vec<&PortDecl> = f.ports.iter()
             .filter(|p| p.direction == Direction::Out)
             .collect();
-        if !out_ports.is_empty() {
+        let has_comb = !out_ports.is_empty() || !f.default_comb.is_empty()
+            || f.states.iter().any(|s| !s.comb_stmts.is_empty());
+        if has_comb {
             self.line("always_comb begin");
             self.indent += 1;
-            // Defaults
-            for op in &out_ports {
-                let default_str = if let Some(d) = &op.default {
-                    self.emit_expr_str(d)
-                } else {
-                    "'0".to_string()
-                };
-                self.line(&format!("{} = {}; // default", op.name.name, default_str));
+            // Default combinational assignments (before state case)
+            for stmt in &f.default_comb {
+                self.emit_comb_stmt(stmt);
             }
             self.line("case (state_r)");
             self.indent += 1;

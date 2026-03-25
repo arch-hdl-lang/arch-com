@@ -5,8 +5,8 @@ module TopModule (
   output logic out_alwaysblock
 );
 
-  assign out_assign = (a & b);
-  assign out_alwaysblock = (a & b);
+  assign out_assign = a & b;
+  assign out_alwaysblock = a & b;
 
 endmodule
 

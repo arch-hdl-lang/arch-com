@@ -4,7 +4,7 @@ module TopModule (
   output logic z
 );
 
-  assign z = (A == B);
+  assign z = A == B;
 
 endmodule
 

@@ -9,7 +9,7 @@ module PipeRegTest (
 );
 
   logic [8-1:0] w;
-  assign w = (data_in ^ 8'd255);
+  assign w = data_in ^ 8'd255;
   logic [8-1:0] delayed_stg1;
   logic [8-1:0] delayed_stg2;
   logic [8-1:0] delayed;

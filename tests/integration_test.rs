@@ -88,10 +88,10 @@ fn test_let_bindings() {
     let sv = compile_to_sv(source);
     // Typed let: emits declared type then a separate assign
     assert!(sv.contains("logic [8-1:0] mask;"), "expected typed let decl, got:\n{sv}");
-    assert!(sv.contains("assign mask = (a & b);"), "expected typed let assign, got:\n{sv}");
+    assert!(sv.contains("assign mask = a & b;"), "expected typed let assign, got:\n{sv}");
     // Untyped let: emits logic declaration + assign (same pattern as typed let)
     assert!(sv.contains("logic same;"), "expected untyped let decl, got:\n{sv}");
-    assert!(sv.contains("assign same = (a == b);"), "expected untyped let assign, got:\n{sv}");
+    assert!(sv.contains("assign same = a == b;"), "expected untyped let assign, got:\n{sv}");
     // Outputs driven from the let-bound wires
     assert!(sv.contains("assign masked = mask;"), "expected masked assign, got:\n{sv}");
     assert!(sv.contains("assign equal = same;"), "expected equal assign, got:\n{sv}");

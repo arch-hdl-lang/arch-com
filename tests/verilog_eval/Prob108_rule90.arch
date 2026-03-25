@@ -5,26 +5,23 @@ module TopModule
   port clk: in Clock<SysDomain>;
   port load: in Bool;
   port data: in UInt<512>;
-  port q: out UInt<512>;
-
-  reg q_r: UInt<512>;
+  port reg q: out UInt<512>;
 
   wire q_next: UInt<512>;
 
   comb
-    q_next[0] = q_r[1];
+    q_next[0] = q[1];
     for i in 1..510
-      q_next[i] = q_r[i - 1] ^ q_r[i + 1];
+      q_next[i] = q[i - 1] ^ q[i + 1];
     end for
-    q_next[511] = q_r[510];
-    q = q_r;
+    q_next[511] = q[510];
   end comb
 
   seq on clk rising
     if load
-      q_r <= data;
+      q <= data;
     else
-      q_r <= q_next;
+      q <= q_next;
     end if
   end seq
 end module TopModule

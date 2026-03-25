@@ -9,19 +9,13 @@ module TopModule
   port train_mispredicted: in Bool;
   port train_taken: in Bool;
   port train_history: in UInt<32>;
-  port predict_history: out UInt<32>;
-
-  reg hist: UInt<32> reset areset=0;
+  port reg predict_history: out UInt<32> reset areset=0;
 
   seq on clk rising
     if train_mispredicted
-      hist <= {train_history[30:0], train_taken};
+      predict_history <= {train_history[30:0], train_taken};
     elsif predict_valid
-      hist <= {hist[30:0], predict_taken};
+      predict_history <= {predict_history[30:0], predict_taken};
     end if
   end seq
-
-  comb
-    predict_history = hist;
-  end comb
 end module TopModule

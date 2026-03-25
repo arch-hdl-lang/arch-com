@@ -6,12 +6,15 @@ fsm TopModule
   port reset: in Reset<Sync>;
   port j: in Bool;
   port k: in Bool;
-  port out: out Bool default false;
+  port out: out Bool;
 
   state OFF, ON;
   default state OFF;
 
   state OFF
+    comb
+      out = false;
+    end comb
     transition to ON when j;
   end state OFF
 

@@ -8,7 +8,7 @@ module TopModule (
 );
 
   always_comb begin
-    if ((sel_b1 & sel_b2)) begin
+    if (sel_b1 & sel_b2) begin
       out_assign = b;
       out_always = b;
     end else begin

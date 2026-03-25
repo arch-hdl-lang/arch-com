@@ -5,15 +5,9 @@ module TopModule
   port clk: in Clock<SysDomain>;
   port r: in Reset<Sync>;
   port d: in Bool;
-  port q: out Bool;
-
-  reg q_r: Bool reset r=0;
+  port reg q: out Bool reset r=0;
 
   seq on clk rising
-    q_r <= d;
+    q <= d;
   end seq
-
-  comb
-    q = q_r;
-  end comb
 end module TopModule

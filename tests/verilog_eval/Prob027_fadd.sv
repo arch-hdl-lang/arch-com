@@ -8,8 +8,8 @@ module TopModule (
   output logic cout
 );
 
-  assign sum = ((a ^ b) ^ cin);
-  assign cout = (((a & b) | (a & cin)) | (b & cin));
+  assign sum = a ^ b ^ cin;
+  assign cout = a & b | a & cin | b & cin;
 
 endmodule
 

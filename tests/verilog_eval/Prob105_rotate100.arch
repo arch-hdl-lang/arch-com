@@ -6,21 +6,15 @@ module TopModule
   port load: in Bool;
   port ena: in UInt<2>;
   port data: in UInt<100>;
-  port q: out UInt<100>;
-
-  reg q_r: UInt<100>;
+  port reg q: out UInt<100>;
 
   seq on clk rising
     if load
-      q_r <= data;
+      q <= data;
     elsif ena == 1
-      q_r <= {q_r[0], q_r[99:1]};
+      q <= {q[0], q[99:1]};
     elsif ena == 2
-      q_r <= {q_r[98:0], q_r[99]};
+      q <= {q[98:0], q[99]};
     end if
   end seq
-
-  comb
-    q = q_r;
-  end comb
 end module TopModule

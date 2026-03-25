@@ -11,10 +11,10 @@ module TopModule (
     if (reset) begin
       cnt <= 0;
     end else begin
-      if ((cnt == 999)) begin
+      if (cnt == 999) begin
         cnt <= 0;
       end else begin
-        cnt <= 10'((cnt + 1));
+        cnt <= 10'(cnt + 1);
       end
     end
   end

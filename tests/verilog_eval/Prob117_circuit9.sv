@@ -10,10 +10,10 @@ module TopModule (
   always_ff @(posedge clk) begin
     if (a) begin
       cnt <= 4;
-    end else if ((cnt == 6)) begin
+    end else if (cnt == 6) begin
       cnt <= 0;
     end else begin
-      cnt <= 3'((cnt + 1));
+      cnt <= 3'(cnt + 1);
     end
   end
   assign q = cnt;

@@ -11,10 +11,10 @@ module TopModule (
 
   logic ff_r;
   always_ff @(posedge clk) begin
-    ff_r <= (a ^ b);
+    ff_r <= a ^ b;
   end
-  assign out_assign = (a ^ b);
-  assign out_always_comb = (a ^ b);
+  assign out_assign = a ^ b;
+  assign out_always_comb = a ^ b;
   assign out_always_ff = ff_r;
 
 endmodule

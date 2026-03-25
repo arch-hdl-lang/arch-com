@@ -128,10 +128,12 @@ impl<'a> TypeChecker<'a> {
         // Track driven signals
         let mut driven: HashSet<String> = HashSet::new();
 
-        // Collect reg names for comb target validation
+        // Collect reg names for comb target validation (includes port reg ports)
         let reg_names: HashSet<String> = m.body.iter().filter_map(|item| {
             if let ModuleBodyItem::RegDecl(r) = item { Some(r.name.name.clone()) } else { None }
-        }).collect();
+        }).chain(m.ports.iter().filter_map(|p| {
+            if p.reg_info.is_some() { Some(p.name.name.clone()) } else { None }
+        })).collect();
 
         // Check params
         for p in &m.params {
@@ -1620,34 +1622,6 @@ impl<'a> TypeChecker<'a> {
             // All output ports must be driven in each state, unless they have
             // a `default` value declared (in which case the FSM codegen emits
             // the default and the per-state block only needs to override it).
-            let out_ports: Vec<&PortDecl> = f
-                .ports
-                .iter()
-                .filter(|p| p.direction == Direction::Out)
-                .collect();
-            let driven: Vec<&str> = sb
-                .comb_stmts
-                .iter()
-                .filter_map(|s| {
-                    if let CombStmt::Assign(a) = s {
-                        if let ExprKind::Ident(name) = &a.target.kind { Some(name.as_str()) } else { None }
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            for op in &out_ports {
-                let name = op.name.name.as_str();
-                if !driven.contains(&name) && op.default.is_none() {
-                    self.errors.push(CompileError::general(
-                        &format!(
-                            "output port `{name}` not driven in state `{}`",
-                            sb.name.name
-                        ),
-                        sb.name.span,
-                    ));
-                }
-            }
         }
     }
 

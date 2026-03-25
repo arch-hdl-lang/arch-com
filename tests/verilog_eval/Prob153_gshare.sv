@@ -23,8 +23,8 @@ module TopModule (
   logic [2-1:0] train_cnt;
   logic [2-1:0] train_new;
   always_comb begin
-    predict_idx = (predict_pc ^ ghr);
-    train_idx = (train_pc ^ train_history);
+    predict_idx = predict_pc ^ ghr;
+    train_idx = train_pc ^ train_history;
     if (predict_valid) begin
       predict_taken = pht[predict_idx][1];
       predict_history = ghr;
@@ -34,10 +34,10 @@ module TopModule (
     end
     train_cnt = pht[train_idx];
     train_new = train_cnt;
-    if ((train_taken & (train_cnt != 3))) begin
-      train_new = 2'((train_cnt + 1));
-    end else if (((~train_taken) & (train_cnt != 0))) begin
-      train_new = 2'((train_cnt - 1));
+    if (train_taken & train_cnt != 3) begin
+      train_new = 2'(train_cnt + 1);
+    end else if (~train_taken & train_cnt != 0) begin
+      train_new = 2'(train_cnt - 1);
     end
   end
   // Gate outputs: 0 when predict_valid=0 (Verilator 2-state compatibility)
@@ -53,7 +53,7 @@ module TopModule (
       if (predict_valid) begin
         ghr <= {ghr[5:0], pht[predict_idx][1]};
       end
-      if ((train_valid & train_mispredicted)) begin
+      if (train_valid & train_mispredicted) begin
         ghr <= {train_history[5:0], train_taken};
       end
     end

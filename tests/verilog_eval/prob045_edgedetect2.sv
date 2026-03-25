@@ -11,7 +11,7 @@ module TopModule (
   logic [8-1:0] anyedge_r = 0;
   always_ff @(posedge clk) begin
     d_last <= in;
-    anyedge_r <= (in ^ d_last);
+    anyedge_r <= in ^ d_last;
   end
   assign anyedge = anyedge_r;
 

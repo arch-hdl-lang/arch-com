@@ -43,15 +43,15 @@ module TopModule (
       end
       S1: begin
         if (data) state_next = S11;
-        else if ((~data)) state_next = S;
+        else if (~data) state_next = S;
       end
       S11: begin
         if (data) state_next = S11;
-        else if ((~data)) state_next = S110;
+        else if (~data) state_next = S110;
       end
       S110: begin
         if (data) state_next = B0;
-        else if ((~data)) state_next = S;
+        else if (~data) state_next = S;
       end
       B0: begin
         state_next = B1;
@@ -67,20 +67,20 @@ module TopModule (
       end
       COUNT: begin
         if (done_counting) state_next = WAIT;
-        else if ((~done_counting)) state_next = COUNT;
+        else if (~done_counting) state_next = COUNT;
       end
       WAIT: begin
         if (ack) state_next = S;
-        else if ((~ack)) state_next = WAIT;
+        else if (~ack) state_next = WAIT;
       end
       default: state_next = state_r;
     endcase
   end
   
   always_comb begin
-    shift_ena = 1'b0; // default
-    counting = 1'b0; // default
-    done = 1'b0; // default
+    shift_ena = 1'b0;
+    counting = 1'b0;
+    done = 1'b0;
     case (state_r)
       S: begin
       end

@@ -6,26 +6,38 @@ fsm TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
   port data: in Bool;
-  port start_shifting: out Bool default false;
+  port start_shifting: out Bool;
 
   state S, S1, S11, S110, Done;
   default state S;
 
   state S
+    comb
+      start_shifting = false;
+    end comb
     transition to S1 when data;
   end state S
 
   state S1
+    comb
+      start_shifting = false;
+    end comb
     transition to S11 when data;
     transition to S when ~data;
   end state S1
 
   state S11
+    comb
+      start_shifting = false;
+    end comb
     transition to S11 when data;
     transition to S110 when ~data;
   end state S11
 
   state S110
+    comb
+      start_shifting = false;
+    end comb
     transition to Done when data;
     transition to S when ~data;
   end state S110

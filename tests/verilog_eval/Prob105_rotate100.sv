@@ -12,9 +12,9 @@ module TopModule (
   always_ff @(posedge clk) begin
     if (load) begin
       q_r <= data;
-    end else if ((ena == 1)) begin
+    end else if (ena == 1) begin
       q_r <= {q_r[0], q_r[99:1]};
-    end else if ((ena == 2)) begin
+    end else if (ena == 2) begin
       q_r <= {q_r[98:0], q_r[99]};
     end
   end

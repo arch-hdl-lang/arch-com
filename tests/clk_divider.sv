@@ -10,7 +10,7 @@ module ClkDiv2 (
     if ((!rst_n)) begin
       toggle_r <= 1'b0;
     end else begin
-      toggle_r <= (~toggle_r);
+      toggle_r <= ~toggle_r;
     end
   end
   assign clk_out = toggle_r;

@@ -8,12 +8,20 @@ fsm TopModule
   port bump_left: in Bool;
   port bump_right: in Bool;
   port ground: in Bool;
-  port walk_left: out Bool default false;
-  port walk_right: out Bool default false;
-  port aaah: out Bool default false;
+  port walk_left: out Bool;
+  port walk_right: out Bool;
+  port aaah: out Bool;
 
   state WalkLeft, WalkRight, FallLeft, FallRight;
   default state WalkLeft;
+
+  default
+    comb
+      walk_left = false;
+      walk_right = false;
+      aaah = false;
+    end comb
+  end default
 
   state WalkLeft
     comb

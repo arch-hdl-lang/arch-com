@@ -7,9 +7,9 @@ module TopModule (
 );
 
   logic [9-1:0] sum9;
-  assign sum9 = 9'((9'($unsigned(a)) + 9'($unsigned(b))));
+  assign sum9 = 9'(9'($unsigned(a)) + 9'($unsigned(b)));
   assign s = 8'(sum9);
-  assign overflow = ((a[7] == b[7]) & (sum9[7] != a[7]));
+  assign overflow = a[7] == b[7] & sum9[7] != a[7];
 
 endmodule
 

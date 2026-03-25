@@ -6,7 +6,7 @@ module TopModule (
   output logic out
 );
 
-  assign out = ((((~b) & c) | (a & (~d))) | (a & c));
+  assign out = ~b & c | a & ~d | a & c;
 
 endmodule
 

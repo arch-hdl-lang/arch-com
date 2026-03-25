@@ -240,15 +240,22 @@
 |                                          |                                           |
 | port clk: in Clock\<D\>;                 | `default state` required (reset value).  |
 |                                          |                                           |
-| port rst: in Reset\<Sync\>;              | Output ports with `default expr` need     |
-|                                          | not be driven in every state — the        |
-| port active: out Bool default false;     | compiler emits the default at the top of  |
-|                                          | the always\_comb output block; states     |
-| port fire\_irq: out Bool default false;  | only override what differs.               |
+| port rst: in Reset\<Sync\>;              | `default ... end default` block provides  |
+|                                          | default comb/seq assignments emitted      |
+| port active: out Bool;                   | before the state case statement; states   |
+|                                          | only override what differs.               |
+| port fire\_irq: out Bool;               |                                           |
+|                                          | Undriven outputs are X (real HW).         |
+| state Idle, Running, Done;               |                                           |
 |                                          |                                           |
-| state Idle, Running, Done;               | Ports **without** `default` must be       |
-|                                          | driven in every state (compile error      |
-| default state Idle;                      | otherwise).                               |
+| default state Idle;                      |                                           |
+|                                          |                                           |
+| default                                  |                                           |
+|   comb                                   |                                           |
+|     active = false;                      |                                           |
+|     fire\_irq = false;                   |                                           |
+|   end comb                               |                                           |
+| end default                              |                                           |
 |                                          |                                           |
 | state Idle                               | Transition syntax:                        |
 |                                          |                                           |

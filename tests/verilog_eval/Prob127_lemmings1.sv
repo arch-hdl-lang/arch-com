@@ -38,13 +38,13 @@ module TopModule (
   end
   
   always_comb begin
-    walk_left = 1'b0; // default
-    walk_right = 1'b0; // default
     case (state_r)
       WALKLEFT: begin
         walk_left = 1'b1;
+        walk_right = 1'b0;
       end
       WALKRIGHT: begin
+        walk_left = 1'b0;
         walk_right = 1'b1;
       end
       default: ;

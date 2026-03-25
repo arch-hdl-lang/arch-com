@@ -8,19 +8,19 @@ module TopModule (
 );
 
   always_comb begin
-    if ((state == 0)) begin
+    if (state == 0) begin
       if (in) begin
         next_state = 1;
       end else begin
         next_state = 0;
       end
-    end else if ((state == 1)) begin
+    end else if (state == 1) begin
       if (in) begin
         next_state = 1;
       end else begin
         next_state = 2;
       end
-    end else if ((state == 2)) begin
+    end else if (state == 2) begin
       if (in) begin
         next_state = 3;
       end else begin
@@ -31,7 +31,7 @@ module TopModule (
     end else begin
       next_state = 2;
     end
-    out = (state == 3);
+    out = state == 3;
   end
 
 endmodule

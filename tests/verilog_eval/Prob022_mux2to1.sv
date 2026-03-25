@@ -8,7 +8,7 @@ module TopModule (
 );
 
   always_comb begin
-    if ((sel == 1'd1)) begin
+    if (sel == 1'd1) begin
       out = b;
     end else begin
       out = a;

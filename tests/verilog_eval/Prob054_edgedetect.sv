@@ -11,7 +11,7 @@ module TopModule (
   logic [8-1:0] pedge_r;
   always_ff @(posedge clk) begin
     prev <= in;
-    pedge_r <= (in & (~prev));
+    pedge_r <= in & ~prev;
   end
   assign pedge = pedge_r;
 

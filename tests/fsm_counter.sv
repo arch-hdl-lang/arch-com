@@ -37,7 +37,7 @@ module FsmCounter (
           end
         end
         COUNTING: begin
-          cnt_r <= 8'((cnt_r + 1));
+          cnt_r <= 8'(cnt_r + 1);
         end
         default: ;
       endcase
@@ -51,7 +51,7 @@ module FsmCounter (
         if (go) state_next = COUNTING;
       end
       COUNTING: begin
-        if ((cnt_r == tgt_r)) state_next = DONE;
+        if (cnt_r == tgt_r) state_next = DONE;
       end
       DONE: begin
         state_next = IDLE;

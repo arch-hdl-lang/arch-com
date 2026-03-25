@@ -12,12 +12,12 @@ module MyArbiter #(
 );
 
   function automatic logic [4-1:0] FixedGrant(input logic [4-1:0] req_mask);
-    return (req_mask & 4'(((~req_mask) + 1)));
+    return req_mask & 4'(~req_mask + 1);
   endfunction
   
   logic [4-1:0] grant;
   assign grant = FixedGrant(req_mask);
-  assign grant_valid = (grant != 0);
+  assign grant_valid = grant != 0;
   assign grant_out = grant;
 
 endmodule

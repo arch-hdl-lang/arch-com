@@ -15,10 +15,10 @@ module TopModule (
       cnt <= 1;
     end else begin
       if (train_valid) begin
-        if (((cnt < 3) & train_taken)) begin
-          cnt <= 2'((cnt + 1));
-        end else if (((cnt > 0) & (~train_taken))) begin
-          cnt <= 2'((cnt - 1));
+        if (cnt < 3 & train_taken) begin
+          cnt <= 2'(cnt + 1);
+        end else if (cnt > 0 & ~train_taken) begin
+          cnt <= 2'(cnt - 1);
         end
       end
     end

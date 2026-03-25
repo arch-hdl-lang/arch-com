@@ -12,7 +12,7 @@ module TopModule (
   always_comb begin
     q_next[0] = q_r[1];
     for (int i = 1; i <= 510; i++) begin
-      q_next[i] = (q_r[(i - 1)] ^ q_r[(i + 1)]);
+      q_next[i] = q_r[i - 1] ^ q_r[i + 1];
     end
     q_next[511] = q_r[510];
     q = q_r;

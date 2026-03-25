@@ -33,28 +33,30 @@ module TopModule (
       end
       B: begin
         if (in) state_next = B;
-        else if ((~in)) state_next = C;
+        else if (~in) state_next = C;
       end
       C: begin
         if (in) state_next = D;
-        else if ((~in)) state_next = A;
+        else if (~in) state_next = A;
       end
       D: begin
         if (in) state_next = B;
-        else if ((~in)) state_next = C;
+        else if (~in) state_next = C;
       end
       default: state_next = state_r;
     endcase
   end
   
   always_comb begin
-    out = 1'b0; // default
     case (state_r)
       A: begin
+        out = 1'b0;
       end
       B: begin
+        out = 1'b0;
       end
       C: begin
+        out = 1'b0;
       end
       D: begin
         out = 1'b1;

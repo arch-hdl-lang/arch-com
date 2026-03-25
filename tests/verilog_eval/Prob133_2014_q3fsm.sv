@@ -40,12 +40,12 @@ module TopModule (
         end
         B2: begin
           if (w) begin
-            cnt <= 2'((cnt + 1));
+            cnt <= 2'(cnt + 1);
           end
         end
         B3: begin
           if (w) begin
-            cnt <= 2'((cnt + 1));
+            cnt <= 2'(cnt + 1);
           end
         end
         OUT: begin
@@ -83,18 +83,22 @@ module TopModule (
   end
   
   always_comb begin
-    z = 1'b0; // default
     case (state_r)
       A: begin
+        z = 1'b0;
       end
       B1: begin
+        z = 1'b0;
       end
       B2: begin
+        z = 1'b0;
       end
       B3: begin
+        z = 1'b0;
       end
       OUT: begin
-        if ((cnt == 2)) begin
+        z = 1'b0;
+        if (cnt == 2) begin
           z = 1'b1;
         end
       end

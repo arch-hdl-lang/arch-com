@@ -12,7 +12,7 @@ module FifoCtrl #(
   input logic rst,
   output logic [$clog2(DEPTH)-1:0] wr_ptr,
   output logic [$clog2(DEPTH)-1:0] rd_ptr,
-  output logic [($clog2(DEPTH) + 1)-1:0] count
+  output logic [$clog2(DEPTH) + 1-1:0] count
 );
 
   logic [$clog2(DEPTH)-1:0] wr_r = 0;
@@ -22,12 +22,12 @@ module FifoCtrl #(
       rd_r <= 0;
       wr_r <= 0;
     end else begin
-      wr_r <= $clog2(DEPTH)'((wr_r + 1));
+      wr_r <= $clog2(DEPTH)'(wr_r + 1);
       rd_r <= rd_r;
     end
   end
   assign wr_ptr = wr_r;
   assign rd_ptr = rd_r;
-  assign count = (wr_r - rd_r);
+  assign count = wr_r - rd_r;
 
 endmodule

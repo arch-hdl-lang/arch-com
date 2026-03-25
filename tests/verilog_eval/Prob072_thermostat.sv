@@ -8,9 +8,9 @@ module TopModule (
   output logic fan
 );
 
-  assign heater = (mode & too_cold);
-  assign aircon = ((~mode) & too_hot);
-  assign fan = ((heater | aircon) | fan_on);
+  assign heater = mode & too_cold;
+  assign aircon = ~mode & too_hot;
+  assign fan = heater | aircon | fan_on;
 
 endmodule
 

@@ -59,15 +59,15 @@ module TopModule (
       end
       DONE_ST: begin
         if (in[3]) state_next = GOT1;
-        else if ((~in[3])) state_next = FIND;
+        else if (~in[3]) state_next = FIND;
       end
       default: state_next = state_r;
     endcase
   end
   
   always_comb begin
-    out_bytes = 0; // default
-    done = 1'b0; // default
+    out_bytes = 0;
+    done = 1'b0;
     case (state_r)
       FIND: begin
       end

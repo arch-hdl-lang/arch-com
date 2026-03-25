@@ -7,20 +7,14 @@ module TopModule
   port resetn: in Reset<Sync, Low>;
   port byteena: in UInt<2>;
   port d: in UInt<16>;
-  port q: out UInt<16>;
-
-  reg q_r: UInt<16> reset resetn=0;
+  port reg q: out UInt<16> reset resetn=0;
 
   seq on clk rising
     if byteena[0]
-      q_r[7:0] <= d[7:0];
+      q[7:0] <= d[7:0];
     end if
     if byteena[1]
-      q_r[15:8] <= d[15:8];
+      q[15:8] <= d[15:8];
     end if
   end seq
-
-  comb
-    q = q_r;
-  end comb
 end module TopModule

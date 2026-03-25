@@ -6,10 +6,16 @@ fsm TopModule
   port clk: in Clock<SysDomain>;
   port resetn: in Reset<Sync, Low>;
   port r: in UInt<3>;
-  port g: out UInt<3> default 0;
+  port g: out UInt<3>;
 
   state Idle, Grant0, Grant1, Grant2;
   default state Idle;
+
+  default
+    comb
+      g = 0;
+    end comb
+  end default
 
   state Idle
     transition to Grant0 when r[0];

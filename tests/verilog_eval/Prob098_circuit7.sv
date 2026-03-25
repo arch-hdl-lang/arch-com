@@ -8,7 +8,7 @@ module TopModule (
 
   logic q_r;
   always_ff @(posedge clk) begin
-    q_r <= (~a);
+    q_r <= ~a;
   end
   assign q = q_r;
 

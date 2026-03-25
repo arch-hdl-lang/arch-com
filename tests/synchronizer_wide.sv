@@ -14,7 +14,7 @@ module DataSync #(
   output logic [8-1:0] data_out
 );
 
-  // 3-stage synchronizer chain (destination clock: dst_clk)
+  // 3-stage FF synchronizer chain (destination clock: dst_clk)
   logic [8-1:0] sync_chain [0:STAGES-1];
   
   always_ff @(posedge dst_clk) begin

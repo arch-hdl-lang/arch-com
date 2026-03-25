@@ -4,15 +4,9 @@ end domain SysDomain
 module TopModule
   port clk: in Clock<SysDomain>;
   port d: in UInt<8>;
-  port q: out UInt<8>;
-
-  reg q_r: UInt<8>;
+  port reg q: out UInt<8>;
 
   seq on clk rising
-    q_r <= d;
+    q <= d;
   end seq
-
-  comb
-    q = q_r;
-  end comb
 end module TopModule

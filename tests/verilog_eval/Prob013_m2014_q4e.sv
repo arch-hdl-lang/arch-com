@@ -4,7 +4,7 @@ module TopModule (
   output logic out
 );
 
-  assign out = (~(in1 | in2));
+  assign out = ~(in1 | in2);
 
 endmodule
 

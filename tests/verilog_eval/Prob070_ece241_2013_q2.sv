@@ -7,8 +7,8 @@ module TopModule (
   output logic out_pos
 );
 
-  assign out_sop = ((((~a) & (~b)) & c) | (c & d));
-  assign out_pos = ((c & ((~b) | d)) & ((~a) | b));
+  assign out_sop = ~a & ~b & c | c & d;
+  assign out_pos = c & (~b | d) & (~a | b);
 
 endmodule
 

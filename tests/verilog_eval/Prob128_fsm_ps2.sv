@@ -39,20 +39,22 @@ module TopModule (
       end
       DONES: begin
         if (in[3]) state_next = BYTE2;
-        else if ((~in[3])) state_next = BYTE1;
+        else if (~in[3]) state_next = BYTE1;
       end
       default: state_next = state_r;
     endcase
   end
   
   always_comb begin
-    done = 1'b0; // default
     case (state_r)
       BYTE1: begin
+        done = 1'b0;
       end
       BYTE2: begin
+        done = 1'b0;
       end
       BYTE3: begin
+        done = 1'b0;
       end
       DONES: begin
         done = 1'b1;

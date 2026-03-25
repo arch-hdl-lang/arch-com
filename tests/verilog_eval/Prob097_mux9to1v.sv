@@ -13,23 +13,23 @@ module TopModule (
 );
 
   always_comb begin
-    if ((sel == 0)) begin
+    if (sel == 0) begin
       out = a;
-    end else if ((sel == 1)) begin
+    end else if (sel == 1) begin
       out = b;
-    end else if ((sel == 2)) begin
+    end else if (sel == 2) begin
       out = c;
-    end else if ((sel == 3)) begin
+    end else if (sel == 3) begin
       out = d;
-    end else if ((sel == 4)) begin
+    end else if (sel == 4) begin
       out = e;
-    end else if ((sel == 5)) begin
+    end else if (sel == 5) begin
       out = f;
-    end else if ((sel == 6)) begin
+    end else if (sel == 6) begin
       out = g;
-    end else if ((sel == 7)) begin
+    end else if (sel == 7) begin
       out = h;
-    end else if ((sel == 8)) begin
+    end else if (sel == 8) begin
       out = i;
     end else begin
       out = 'hFFFF;

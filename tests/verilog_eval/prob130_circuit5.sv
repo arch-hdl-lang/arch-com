@@ -9,13 +9,13 @@ module TopModule (
 );
 
   always_comb begin
-    if ((c == 0)) begin
+    if (c == 0) begin
       q = b;
-    end else if ((c == 1)) begin
+    end else if (c == 1) begin
       q = e;
-    end else if ((c == 2)) begin
+    end else if (c == 2) begin
       q = a;
-    end else if ((c == 3)) begin
+    end else if (c == 3) begin
       q = d;
     end else begin
       q = 4'd15;

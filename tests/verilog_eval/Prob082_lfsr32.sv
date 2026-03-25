@@ -21,7 +21,7 @@ module TopModule (
       q_r[24] <= q_r[25];
       q_r[23] <= q_r[24];
       q_r[22] <= q_r[23];
-      q_r[21] <= (q_r[22] ^ q_r[0]);
+      q_r[21] <= q_r[22] ^ q_r[0];
       q_r[20] <= q_r[21];
       q_r[19] <= q_r[20];
       q_r[18] <= q_r[19];
@@ -41,8 +41,8 @@ module TopModule (
       q_r[4] <= q_r[5];
       q_r[3] <= q_r[4];
       q_r[2] <= q_r[3];
-      q_r[1] <= (q_r[2] ^ q_r[0]);
-      q_r[0] <= (q_r[1] ^ q_r[0]);
+      q_r[1] <= q_r[2] ^ q_r[0];
+      q_r[0] <= q_r[1] ^ q_r[0];
     end
   end
   assign q = q_r;

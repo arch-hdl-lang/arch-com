@@ -5,10 +5,16 @@ fsm TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
   port w: in Bool;
-  port z: out Bool default false;
+  port z: out Bool;
 
   state A, B, C, D, E, F;
   default state A;
+
+  default
+    comb
+      z = false;
+    end comb
+  end default
 
   state A
     transition to B when ~w;

@@ -11,13 +11,13 @@ module TopModule (
     down = 0;
     right = 0;
     up = 0;
-    if ((scancode == 'hE06B)) begin
+    if (scancode == 'hE06B) begin
       left = 1;
-    end else if ((scancode == 'hE072)) begin
+    end else if (scancode == 'hE072) begin
       down = 1;
-    end else if ((scancode == 'hE074)) begin
+    end else if (scancode == 'hE074) begin
       right = 1;
-    end else if ((scancode == 'hE075)) begin
+    end else if (scancode == 'hE075) begin
       up = 1;
     end
   end

@@ -35,30 +35,30 @@ module TopModule (
       end
       B: begin
         if (w) state_next = C;
-        else if ((~w)) state_next = D;
+        else if (~w) state_next = D;
       end
       C: begin
         if (w) state_next = E;
-        else if ((~w)) state_next = D;
+        else if (~w) state_next = D;
       end
       D: begin
         if (w) state_next = F;
-        else if ((~w)) state_next = A;
+        else if (~w) state_next = A;
       end
       E: begin
         if (w) state_next = E;
-        else if ((~w)) state_next = D;
+        else if (~w) state_next = D;
       end
       F: begin
         if (w) state_next = C;
-        else if ((~w)) state_next = D;
+        else if (~w) state_next = D;
       end
       default: state_next = state_r;
     endcase
   end
   
   always_comb begin
-    z = 1'b0; // default
+    z = 1'b0;
     case (state_r)
       A: begin
       end

@@ -7,13 +7,22 @@ fsm TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
   port s: in UInt<3>;
-  port fr2: out Bool default false;
-  port fr1: out Bool default false;
-  port fr0: out Bool default false;
-  port dfr: out Bool default false;
+  port fr2: out Bool;
+  port fr1: out Bool;
+  port fr0: out Bool;
+  port dfr: out Bool;
 
   state A2, B1, B2, C1, C2, D1;
   default state A2;
+
+  default
+    comb
+      fr2 = false;
+      fr1 = false;
+      fr0 = false;
+      dfr = false;
+    end comb
+  end default
 
   state A2
     comb

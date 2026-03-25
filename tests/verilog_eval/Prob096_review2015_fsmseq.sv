@@ -34,15 +34,15 @@ module TopModule (
       end
       S1: begin
         if (data) state_next = S11;
-        else if ((~data)) state_next = S;
+        else if (~data) state_next = S;
       end
       S11: begin
         if (data) state_next = S11;
-        else if ((~data)) state_next = S110;
+        else if (~data) state_next = S110;
       end
       S110: begin
         if (data) state_next = DONE;
-        else if ((~data)) state_next = S;
+        else if (~data) state_next = S;
       end
       DONE: begin
         state_next = DONE;
@@ -52,15 +52,18 @@ module TopModule (
   end
   
   always_comb begin
-    start_shifting = 1'b0; // default
     case (state_r)
       S: begin
+        start_shifting = 1'b0;
       end
       S1: begin
+        start_shifting = 1'b0;
       end
       S11: begin
+        start_shifting = 1'b0;
       end
       S110: begin
+        start_shifting = 1'b0;
       end
       DONE: begin
         start_shifting = 1'b1;

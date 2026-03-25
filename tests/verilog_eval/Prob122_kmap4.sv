@@ -8,7 +8,7 @@ module TopModule (
   output logic out
 );
 
-  assign out = (((a ^ b) ^ c) ^ d);
+  assign out = a ^ b ^ c ^ d;
 
 endmodule
 

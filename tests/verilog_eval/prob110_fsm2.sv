@@ -38,7 +38,6 @@ module TopModule (
   end
   
   always_comb begin
-    out = 1'b0; // default
     case (state_r)
       OFF: begin
         out = 1'b0;

@@ -6,20 +6,29 @@ fsm TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
   port in: in UInt<8>;
-  port done: out Bool default false;
+  port done: out Bool;
 
   state Byte1, Byte2, Byte3, DoneS;
   default state Byte1;
 
   state Byte1
+    comb
+      done = false;
+    end comb
     transition to Byte2 when in[3];
   end state Byte1
 
   state Byte2
+    comb
+      done = false;
+    end comb
     transition to Byte3 when true;
   end state Byte2
 
   state Byte3
+    comb
+      done = false;
+    end comb
     transition to DoneS when true;
   end state Byte3
 

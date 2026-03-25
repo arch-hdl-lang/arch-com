@@ -7,7 +7,7 @@ module TopModule (
 );
 
   assign shut_off_computer = cpu_overheated;
-  assign keep_driving = ((~arrived) & (~gas_tank_empty));
+  assign keep_driving = ~arrived & ~gas_tank_empty;
 
 endmodule
 

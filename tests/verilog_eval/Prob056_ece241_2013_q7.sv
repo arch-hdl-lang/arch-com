@@ -9,8 +9,8 @@ module TopModule (
 
   logic q_r;
   always_ff @(posedge clk) begin
-    if ((j & k)) begin
-      q_r <= (~q_r);
+    if (j & k) begin
+      q_r <= ~q_r;
     end else if (j) begin
       q_r <= 1;
     end else if (k) begin

@@ -18,32 +18,32 @@ module TopModule (
       tens <= 0;
       thou <= 0;
     end else begin
-      if ((ones == 9)) begin
+      if (ones == 9) begin
         ones <= 0;
-        if ((tens == 9)) begin
+        if (tens == 9) begin
           tens <= 0;
-          if ((hund == 9)) begin
+          if (hund == 9) begin
             hund <= 0;
-            if ((thou == 9)) begin
+            if (thou == 9) begin
               thou <= 0;
             end else begin
-              thou <= 4'((thou + 1));
+              thou <= 4'(thou + 1);
             end
           end else begin
-            hund <= 4'((hund + 1));
+            hund <= 4'(hund + 1);
           end
         end else begin
-          tens <= 4'((tens + 1));
+          tens <= 4'(tens + 1);
         end
       end else begin
-        ones <= 4'((ones + 1));
+        ones <= 4'(ones + 1);
       end
     end
   end
   assign q = {thou, hund, tens, ones};
-  assign ena[0] = (ones == 9);
-  assign ena[1] = ((ones == 9) & (tens == 9));
-  assign ena[2] = (((ones == 9) & (tens == 9)) & (hund == 9));
+  assign ena[0] = ones == 9;
+  assign ena[1] = ones == 9 & tens == 9;
+  assign ena[2] = ones == 9 & tens == 9 & hund == 9;
 
 endmodule
 

@@ -57,14 +57,14 @@ module TopModule (
           sub_cnt <= 0;
         end
         COUNT_ST: begin
-          if (((sub_cnt == 999) & (cnt_r == 0))) begin
+          if (sub_cnt == 999 & cnt_r == 0) begin
             sub_cnt <= sub_cnt;
             cnt_r <= cnt_r;
-          end else if ((sub_cnt == 999)) begin
+          end else if (sub_cnt == 999) begin
             sub_cnt <= 0;
-            cnt_r <= 4'((cnt_r - 1));
+            cnt_r <= 4'(cnt_r - 1);
           end else begin
-            sub_cnt <= 10'((sub_cnt + 1));
+            sub_cnt <= 10'(sub_cnt + 1);
           end
         end
         default: ;
@@ -80,14 +80,14 @@ module TopModule (
       end
       S1: begin
         if (data) state_next = S11;
-        else if ((~data)) state_next = S;
+        else if (~data) state_next = S;
       end
       S11: begin
-        if ((~data)) state_next = S110;
+        if (~data) state_next = S110;
       end
       S110: begin
         if (data) state_next = B0;
-        else if ((~data)) state_next = S;
+        else if (~data) state_next = S;
       end
       B0: begin
         state_next = B1;
@@ -102,7 +102,7 @@ module TopModule (
         state_next = COUNT_ST;
       end
       COUNT_ST: begin
-        if (((sub_cnt == 999) & (cnt_r == 0))) state_next = DONE_ST;
+        if (sub_cnt == 999 & cnt_r == 0) state_next = DONE_ST;
       end
       DONE_ST: begin
         if (ack) state_next = S;
@@ -112,9 +112,9 @@ module TopModule (
   end
   
   always_comb begin
-    count = 0; // default
-    counting = 1'b0; // default
-    done = 1'b0; // default
+    count = 0;
+    counting = 1'b0;
+    done = 1'b0;
     case (state_r)
       S: begin
       end

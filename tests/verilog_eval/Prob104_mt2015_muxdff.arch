@@ -6,19 +6,13 @@ module TopModule
   port L: in Bool;
   port q_in: in Bool;
   port r_in: in Bool;
-  port Q: out Bool;
-
-  reg q_r: Bool;
+  port reg Q: out Bool;
 
   seq on clk rising
     if L
-      q_r <= r_in;
+      Q <= r_in;
     else
-      q_r <= q_in;
+      Q <= q_in;
     end if
   end seq
-
-  comb
-    Q = q_r;
-  end comb
 end module TopModule

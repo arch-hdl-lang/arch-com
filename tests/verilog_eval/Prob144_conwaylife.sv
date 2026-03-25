@@ -26,14 +26,14 @@ module TopModule (
     cr = 0;
     ncount = 0;
     for (int i = 0; i <= 255; i++) begin
-      row = 4'((i / 16));
-      col = 4'((i % 16));
-      ra = 4'((row + 15));
-      rb = 4'((row + 1));
-      cl = 4'((col + 15));
-      cr = 4'((col + 1));
-      ncount = 4'((((((((4'($unsigned(grid[((ra * 16) + cl)])) + 4'($unsigned(grid[((ra * 16) + col)]))) + 4'($unsigned(grid[((ra * 16) + cr)]))) + 4'($unsigned(grid[((row * 16) + cl)]))) + 4'($unsigned(grid[((row * 16) + cr)]))) + 4'($unsigned(grid[((rb * 16) + cl)]))) + 4'($unsigned(grid[((rb * 16) + col)]))) + 4'($unsigned(grid[((rb * 16) + cr)]))));
-      next_grid[i] = ((ncount == 3) | ((ncount == 2) & grid[i]));
+      row = 4'(i / 16);
+      col = 4'(i % 16);
+      ra = 4'(row + 15);
+      rb = 4'(row + 1);
+      cl = 4'(col + 15);
+      cr = 4'(col + 1);
+      ncount = 4'(4'($unsigned(grid[ra * 16 + cl])) + 4'($unsigned(grid[ra * 16 + col])) + 4'($unsigned(grid[ra * 16 + cr])) + 4'($unsigned(grid[row * 16 + cl])) + 4'($unsigned(grid[row * 16 + cr])) + 4'($unsigned(grid[rb * 16 + cl])) + 4'($unsigned(grid[rb * 16 + col])) + 4'($unsigned(grid[rb * 16 + cr])));
+      next_grid[i] = ncount == 3 | ncount == 2 & grid[i];
     end
   end
   // alive = (ncount==3) | (ncount==2 & grid[i])

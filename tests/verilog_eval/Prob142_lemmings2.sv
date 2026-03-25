@@ -33,12 +33,12 @@ module TopModule (
     state_next = state_r; // hold by default
     case (state_r)
       WALKLEFT: begin
-        if ((~ground)) state_next = FALLLEFT;
-        else if ((ground & bump_left)) state_next = WALKRIGHT;
+        if (~ground) state_next = FALLLEFT;
+        else if (ground & bump_left) state_next = WALKRIGHT;
       end
       WALKRIGHT: begin
-        if ((~ground)) state_next = FALLRIGHT;
-        else if ((ground & bump_right)) state_next = WALKLEFT;
+        if (~ground) state_next = FALLRIGHT;
+        else if (ground & bump_right) state_next = WALKLEFT;
       end
       FALLLEFT: begin
         if (ground) state_next = WALKLEFT;
@@ -51,9 +51,9 @@ module TopModule (
   end
   
   always_comb begin
-    walk_left = 1'b0; // default
-    walk_right = 1'b0; // default
-    aaah = 1'b0; // default
+    walk_left = 1'b0;
+    walk_right = 1'b0;
+    aaah = 1'b0;
     case (state_r)
       WALKLEFT: begin
         walk_left = 1'b1;

@@ -5,18 +5,18 @@
 //   freq_mhz: 50
 
 module AsyncBridge #(
-  parameter int DEPTH = 32,
-  parameter int DATA_WIDTH = 8
+  parameter int  DEPTH = 32,
+  parameter type TYPE  = logic [8-1:0]
 ) (
   input logic wr_clk,
   input logic rd_clk,
   input logic rst,
   input logic push_valid,
   output logic push_ready,
-  input logic [DATA_WIDTH-1:0] push_data,
+  input TYPE push_data,
   output logic pop_valid,
   input logic pop_ready,
-  output logic [DATA_WIDTH-1:0] pop_data
+  output TYPE pop_data
 );
 
   localparam int PTR_W = $clog2(DEPTH) + 1;
@@ -32,7 +32,7 @@ module AsyncBridge #(
     return b;
   endfunction
   
-  logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];
+  TYPE              mem [0:DEPTH-1];
   logic [PTR_W-1:0] wr_ptr_bin, rd_ptr_bin;
   logic [PTR_W-1:0] wr_ptr_gray, rd_ptr_gray;
   // Two-stage synchronizers

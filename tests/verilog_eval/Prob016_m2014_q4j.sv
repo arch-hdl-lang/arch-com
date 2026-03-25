@@ -5,7 +5,7 @@ module TopModule (
   output logic [5-1:0] sum
 );
 
-  assign sum = 5'((5'($unsigned(x)) + 5'($unsigned(y))));
+  assign sum = 5'(5'($unsigned(x)) + 5'($unsigned(y)));
 
 endmodule
 

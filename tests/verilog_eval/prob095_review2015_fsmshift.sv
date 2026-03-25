@@ -48,15 +48,18 @@ module TopModule (
   end
   
   always_comb begin
-    shift_ena = 1'b1; // default
     case (state_r)
       B0: begin
+        shift_ena = 1'b1;
       end
       B1: begin
+        shift_ena = 1'b1;
       end
       B2: begin
+        shift_ena = 1'b1;
       end
       B3: begin
+        shift_ena = 1'b1;
       end
       DONE: begin
         shift_ena = 1'b0;

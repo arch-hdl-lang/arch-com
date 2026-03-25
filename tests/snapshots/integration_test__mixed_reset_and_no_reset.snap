@@ -19,7 +19,7 @@ module MixedReset (
     if (rst) begin
       count_r <= 0;
     end else begin
-      count_r <= 8'((count_r + 1));
+      count_r <= 8'(count_r + 1);
     end
   end
   always_ff @(posedge clk) begin

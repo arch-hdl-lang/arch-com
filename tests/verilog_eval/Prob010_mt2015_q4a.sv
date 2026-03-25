@@ -4,7 +4,7 @@ module TopModule (
   output logic z
 );
 
-  assign z = ((x ^ y) & x);
+  assign z = (x ^ y) & x;
 
 endmodule
 

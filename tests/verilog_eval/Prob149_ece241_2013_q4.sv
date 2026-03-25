@@ -39,32 +39,32 @@ module TopModule (
       end
       B1: begin
         if (s[1]) state_next = C1;
-        else if ((~s[0])) state_next = A2;
+        else if (~s[0]) state_next = A2;
       end
       B2: begin
         if (s[1]) state_next = C1;
-        else if ((~s[0])) state_next = A2;
+        else if (~s[0]) state_next = A2;
       end
       C1: begin
         if (s[2]) state_next = D1;
-        else if ((~s[1])) state_next = B2;
+        else if (~s[1]) state_next = B2;
       end
       C2: begin
         if (s[2]) state_next = D1;
-        else if ((~s[1])) state_next = B2;
+        else if (~s[1]) state_next = B2;
       end
       D1: begin
-        if ((~s[2])) state_next = C2;
+        if (~s[2]) state_next = C2;
       end
       default: state_next = state_r;
     endcase
   end
   
   always_comb begin
-    fr2 = 1'b0; // default
-    fr1 = 1'b0; // default
-    fr0 = 1'b0; // default
-    dfr = 1'b0; // default
+    fr2 = 1'b0;
+    fr1 = 1'b0;
+    fr0 = 1'b0;
+    dfr = 1'b0;
     case (state_r)
       A2: begin
         fr2 = 1'b1;

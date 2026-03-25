@@ -92,7 +92,17 @@ pub struct PortDecl {
     /// codegen uses this expression instead of `'0` in the defaults block, and
     /// the type-checker no longer requires the port to be driven in every state.
     pub default: Option<Expr>,
+    /// When present, this output port is also a register (assigned in `seq` blocks).
+    /// Syntax: `port reg name: out Type [init V] [reset R=V];`
+    pub reg_info: Option<PortRegInfo>,
     pub span: Span,
+}
+
+/// Register metadata for a `port reg` declaration.
+#[derive(Debug, Clone)]
+pub struct PortRegInfo {
+    pub init: Option<Expr>,
+    pub reset: RegReset,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -572,6 +582,9 @@ pub struct FsmDecl {
     pub state_names: Vec<Ident>,
     /// The reset / default state
     pub default_state: Ident,
+    /// Default block: comb and seq statements applied before the state case
+    pub default_comb: Vec<CombStmt>,
+    pub default_seq: Vec<Stmt>,
     /// State bodies (`state Foo ... end state Foo`)
     pub states: Vec<StateBody>,
     pub span: Span,

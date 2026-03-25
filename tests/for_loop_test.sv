@@ -14,7 +14,7 @@ module ForLoopTest (
     end else begin
       sr[0] <= din;
       for (int i = 1; i <= 3; i++) begin
-        sr[i] <= sr[(i - 1)];
+        sr[i] <= sr[i - 1];
       end
     end
   end

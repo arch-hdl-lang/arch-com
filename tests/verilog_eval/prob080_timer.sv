@@ -10,13 +10,13 @@ module TopModule (
 
   logic [10-1:0] count_val = 0;
   always_ff @(posedge clk) begin
-    if ((load == 1)) begin
+    if (load == 1) begin
       count_val <= data;
-    end else if ((count_val != 0)) begin
-      count_val <= 10'((count_val - 1));
+    end else if (count_val != 0) begin
+      count_val <= 10'(count_val - 1);
     end
   end
-  assign tc = (count_val == 0);
+  assign tc = count_val == 0;
 
 endmodule
 

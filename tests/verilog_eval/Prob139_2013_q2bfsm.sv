@@ -46,19 +46,19 @@ module TopModule (
         if (x) state_next = X0;
       end
       X0: begin
-        if ((~x)) state_next = X01;
+        if (~x) state_next = X01;
       end
       X01: begin
         if (x) state_next = SETG1;
-        else if ((~x)) state_next = X1;
+        else if (~x) state_next = X1;
       end
       SETG1: begin
         if (y) state_next = GOODG;
-        else if ((~y)) state_next = SETG2;
+        else if (~y) state_next = SETG2;
       end
       SETG2: begin
         if (y) state_next = GOODG;
-        else if ((~y)) state_next = BADG;
+        else if (~y) state_next = BADG;
       end
       GOODG: begin
         state_next = GOODG;
@@ -71,8 +71,8 @@ module TopModule (
   end
   
   always_comb begin
-    f = 1'b0; // default
-    g = 1'b0; // default
+    f = 1'b0;
+    g = 1'b0;
     case (state_r)
       A: begin
       end

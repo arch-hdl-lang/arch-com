@@ -8,11 +8,11 @@ module TopModule (
 
   always_comb begin
     if (do_sub) begin
-      out = 8'((a - b));
+      out = 8'(a - b);
     end else begin
-      out = 8'((a + b));
+      out = 8'(a + b);
     end
-    result_is_zero = (out == 0);
+    result_is_zero = out == 0;
   end
 
 endmodule

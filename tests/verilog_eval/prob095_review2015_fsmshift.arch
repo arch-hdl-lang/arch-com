@@ -5,24 +5,36 @@ end domain SysDomain
 fsm TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
-  port shift_ena: out Bool default true;
+  port shift_ena: out Bool;
 
   state B0, B1, B2, B3, Done;
   default state B0;
 
   state B0
+    comb
+      shift_ena = true;
+    end comb
     transition to B1 when true;
   end state B0
 
   state B1
+    comb
+      shift_ena = true;
+    end comb
     transition to B2 when true;
   end state B1
 
   state B2
+    comb
+      shift_ena = true;
+    end comb
     transition to B3 when true;
   end state B2
 
   state B3
+    comb
+      shift_ena = true;
+    end comb
     transition to Done when true;
   end state B3
 

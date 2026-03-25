@@ -6,7 +6,7 @@ module TopModule (
   output logic q
 );
 
-  assign q = ((a | b) & (c | d));
+  assign q = (a | b) & (c | d);
 
 endmodule
 

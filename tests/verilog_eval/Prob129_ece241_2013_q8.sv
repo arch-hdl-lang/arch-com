@@ -31,24 +31,26 @@ module TopModule (
         if (x) state_next = S1;
       end
       S1: begin
-        if ((~x)) state_next = S10;
+        if (~x) state_next = S10;
       end
       S10: begin
         if (x) state_next = S1;
-        else if ((~x)) state_next = S0;
+        else if (~x) state_next = S0;
       end
       default: state_next = state_r;
     endcase
   end
   
   always_comb begin
-    z = 1'b0; // default
     case (state_r)
       S0: begin
+        z = 1'b0;
       end
       S1: begin
+        z = 1'b0;
       end
       S10: begin
+        z = 1'b0;
         if (x) begin
           z = 1'b1;
         end

@@ -6,8 +6,8 @@ fsm TopModule
   port areset: in Reset<Async>;
   port bump_left: in Bool;
   port bump_right: in Bool;
-  port walk_left: out Bool default false;
-  port walk_right: out Bool default false;
+  port walk_left: out Bool;
+  port walk_right: out Bool;
 
   state WalkLeft, WalkRight;
   default state WalkLeft;
@@ -15,12 +15,14 @@ fsm TopModule
   state WalkLeft
     comb
       walk_left = true;
+      walk_right = false;
     end comb
     transition to WalkRight when bump_left;
   end state WalkLeft
 
   state WalkRight
     comb
+      walk_left = false;
       walk_right = true;
     end comb
     transition to WalkLeft when bump_right;

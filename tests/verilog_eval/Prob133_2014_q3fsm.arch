@@ -7,7 +7,7 @@ fsm TopModule
   port reset: in Reset<Sync>;
   port s: in Bool;
   port w: in Bool;
-  port z: out Bool default false;
+  port z: out Bool;
 
   reg cnt: UInt<2> reset reset=0;
 
@@ -15,6 +15,9 @@ fsm TopModule
   default state A;
 
   state A
+    comb
+      z = false;
+    end comb
     seq on clk rising
       cnt <= 0;
     end seq
@@ -22,6 +25,9 @@ fsm TopModule
   end state A
 
   state B1
+    comb
+      z = false;
+    end comb
     seq on clk rising
       if w
         cnt <= 1;
@@ -33,6 +39,9 @@ fsm TopModule
   end state B1
 
   state B2
+    comb
+      z = false;
+    end comb
     seq on clk rising
       if w
         cnt <= (cnt + 1).trunc<2>();
@@ -42,6 +51,9 @@ fsm TopModule
   end state B2
 
   state B3
+    comb
+      z = false;
+    end comb
     seq on clk rising
       if w
         cnt <= (cnt + 1).trunc<2>();
@@ -52,6 +64,7 @@ fsm TopModule
 
   state Out
     comb
+      z = false;
       if cnt == 2
         z = true;
       end if

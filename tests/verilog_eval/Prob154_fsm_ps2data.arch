@@ -7,13 +7,20 @@ fsm TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
   port in: in UInt<8>;
-  port out_bytes: out UInt<24> default 0;
-  port done: out Bool default false;
+  port out_bytes: out UInt<24>;
+  port done: out Bool;
 
   reg out_r: UInt<24> reset reset=0;
 
   state Find, Got1, Got2, Done_St;
   default state Find;
+
+  default
+    comb
+      out_bytes = 0;
+      done = false;
+    end comb
+  end default
 
   state Find
     seq on clk rising

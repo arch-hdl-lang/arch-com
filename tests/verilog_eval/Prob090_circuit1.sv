@@ -4,7 +4,7 @@ module TopModule (
   output logic q
 );
 
-  assign q = (a & b);
+  assign q = a & b;
 
 endmodule
 

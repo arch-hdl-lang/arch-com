@@ -18,7 +18,7 @@ module ActiveLowRst (
       count_r <= 0;
     end else begin
       if (en) begin
-        count_r <= 8'((count_r + 1));
+        count_r <= 8'(count_r + 1);
       end
     end
   end

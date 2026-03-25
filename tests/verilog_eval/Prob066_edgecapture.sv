@@ -13,7 +13,7 @@ module TopModule (
     if (reset) begin
       captured <= 0;
     end else begin
-      captured <= (captured | (prev & (~in)));
+      captured <= captured | prev & ~in;
     end
   end
   always_ff @(posedge clk) begin

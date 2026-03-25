@@ -18,7 +18,7 @@ module TopModule (
       sr[2] <= sr[1];
       sr[3] <= sr[2];
     end else if (count_ena) begin
-      sr <= 4'((sr - 1));
+      sr <= 4'(sr - 1);
     end
   end
   assign q = sr;
