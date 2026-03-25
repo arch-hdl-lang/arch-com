@@ -54,6 +54,8 @@ Common mistakes to avoid:
 - Bit-slice syntax: expr[hi:lo] extracts bits (NOT .trunc<Hi,Lo>())
 - Bit/byte reverse: expr.reverse(1) for bit-reverse, expr.reverse(8) for byte-reverse (width must be divisible by N)
 - Prefer concat {a, b} over bit-by-bit for loops; prefer direct boolean (z = (A == B);) over if/else
+- In fsm states, do NOT write 'transition to X when true;' — omit the transition to stay in the current state (implicit hold), or restructure so the last branch uses a real condition
+- Do NOT declare 'domain ... end domain' in pure combinational modules — domains are only needed when Clock/Reset ports are used
 """,
 )
 

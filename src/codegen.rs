@@ -1442,9 +1442,20 @@ impl<'a> Codegen<'a> {
                     sb.transitions[0].target.name.to_uppercase()));
             } else {
                 for (i, tr) in sb.transitions.iter().enumerate() {
-                    let kw = if i == 0 { "if" } else { "else if" };
-                    self.line(&format!("{kw} ({}) state_next = {};",
-                        cond_strs[i], tr.target.name.to_uppercase()));
+                    let is_true = cond_strs[i] == "1'b1" || cond_strs[i] == "1";
+                    if i == 0 && is_true {
+                        // First and unconditional — plain assignment
+                        self.line(&format!("state_next = {};",
+                            tr.target.name.to_uppercase()));
+                    } else if i > 0 && is_true {
+                        // Last catch-all — emit as else
+                        self.line(&format!("else state_next = {};",
+                            tr.target.name.to_uppercase()));
+                    } else {
+                        let kw = if i == 0 { "if" } else { "else if" };
+                        self.line(&format!("{kw} ({}) state_next = {};",
+                            cond_strs[i], tr.target.name.to_uppercase()));
+                    }
                 }
             }
             self.indent -= 1;
@@ -2607,7 +2618,51 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Return SystemVerilog operator precedence (higher = tighter binding).
+    /// Values follow IEEE 1800-2017 Table 11-2, simplified to relevant tiers.
+    fn sv_binop_prec(op: &BinOp) -> u8 {
+        match op {
+            BinOp::Mul | BinOp::Div | BinOp::Mod => 12,
+            BinOp::Add | BinOp::Sub => 11,
+            BinOp::Shl | BinOp::Shr => 10,
+            BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => 9,
+            BinOp::Eq | BinOp::Neq => 8,
+            BinOp::BitAnd => 7,
+            BinOp::BitXor => 6,
+            BinOp::BitOr => 5,
+            BinOp::And => 4,
+            BinOp::Or => 3,
+        }
+    }
+
+    /// Precedence of the outermost operator in `expr`, or u8::MAX for atoms.
+    fn expr_prec(expr: &Expr) -> u8 {
+        match &expr.kind {
+            ExprKind::Binary(op, _, _) => Self::sv_binop_prec(op),
+            ExprKind::Unary(..) => 14,
+            ExprKind::Ternary(..) => 2,
+            _ => u8::MAX, // atoms — never need wrapping
+        }
+    }
+
     fn emit_expr_str(&self, expr: &Expr) -> String {
+        self.emit_expr_prec(expr, 0)
+    }
+
+    /// Emit an expression, wrapping in parens only when its precedence is
+    /// below `parent_prec` (i.e. the context requires tighter binding).
+    fn emit_expr_prec(&self, expr: &Expr, parent_prec: u8) -> String {
+        let result = self.emit_expr_inner(expr);
+        let my_prec = Self::expr_prec(expr);
+        if my_prec < parent_prec {
+            format!("({result})")
+        } else {
+            result
+        }
+    }
+
+    /// Core expression emitter — never adds outer parens itself.
+    fn emit_expr_inner(&self, expr: &Expr) -> String {
         match &expr.kind {
             ExprKind::Literal(lit) => match lit {
                 LitKind::Dec(v) => format!("{v}"),
@@ -2621,8 +2676,19 @@ impl<'a> Codegen<'a> {
                 name.clone()
             }
             ExprKind::Binary(op, lhs, rhs) => {
-                let l = self.emit_expr_str(lhs);
-                let r = self.emit_expr_str(rhs);
+                let prec = Self::sv_binop_prec(op);
+                // LHS: wrap if strictly lower precedence (same-prec is left-assoc, OK)
+                let l = self.emit_expr_prec(lhs, prec);
+                // RHS: wrap if same-or-lower precedence to respect left-associativity,
+                // EXCEPT for the same commutative/associative op (chain without parens).
+                let rhs_prec = if matches!(&rhs.kind, ExprKind::Binary(rop, _, _) if rop == op
+                    && matches!(op, BinOp::Add | BinOp::Mul | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::And | BinOp::Or))
+                {
+                    prec // same assoc op — don't wrap
+                } else {
+                    prec + 1 // different op at same level — wrap
+                };
+                let r = self.emit_expr_prec(rhs, rhs_prec);
                 // Use arithmetic shift (>>>) when LHS is cast to SInt
                 let shr_str = if matches!(op, BinOp::Shr) && Self::expr_is_signed(lhs) {
                     ">>>"
@@ -2649,14 +2715,15 @@ impl<'a> Codegen<'a> {
                     BinOp::Shl => "<<",
                     BinOp::Shr => shr_str,
                 };
-                format!("({l} {op_str} {r})")
+                format!("{l} {op_str} {r}")
             }
             ExprKind::Unary(op, operand) => {
-                let o = self.emit_expr_str(operand);
+                // Unary has prec 14 — wrap child only if it's a binary/ternary
+                let o = self.emit_expr_prec(operand, 14);
                 match op {
-                    UnaryOp::Not => format!("(!{o})"),
-                    UnaryOp::BitNot => format!("(~{o})"),
-                    UnaryOp::Neg => format!("(-{o})"),
+                    UnaryOp::Not => format!("!{o}"),
+                    UnaryOp::BitNot => format!("~{o}"),
+                    UnaryOp::Neg => format!("-{o}"),
                 }
             }
             ExprKind::FieldAccess(base, field) => {
@@ -2790,10 +2857,11 @@ impl<'a> Codegen<'a> {
                 result
             }
             ExprKind::Ternary(cond, then_expr, else_expr) => {
-                let c = self.emit_expr_str(cond);
+                // Inside ?: operands, any precedence is fine (delimited by ? and :)
+                let c = self.emit_expr_prec(cond, 3); // wrap only if lower than ternary
                 let t = self.emit_expr_str(then_expr);
                 let e = self.emit_expr_str(else_expr);
-                format!("({c}) ? ({t}) : ({e})")
+                format!("{c} ? {t} : {e}")
             }
             ExprKind::FunctionCall(name, args) => {
                 let arg_strs: Vec<String> = args.iter().map(|a| self.emit_expr_str(a)).collect();
