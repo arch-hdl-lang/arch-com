@@ -853,6 +853,25 @@ The compiler generates clean, separated SystemVerilog:
 
 > *⚑ The compiler verifies: every state has at least one outgoing transition (dead-end states are a compile error); no two transitions from the same state can be simultaneously enabled. If no transition fires in a given cycle, the FSM holds in the current state — a catch-all `transition to Self when true` is not required. Output ports not driven in a state and not covered by a `default` block will be X in the generated Verilog.*
 
+**7.1.1 One-Line State Syntax**
+
+States that have only a single transition and no output or datapath logic can be written on one line, omitting the `end state Name` closing:
+
+```
+state Idle transition to Run when go;
+state Wait transition to Done when ack;
+```
+
+This is equivalent to the full form:
+
+```
+state Idle
+  transition to Run when go;
+end state Idle
+```
+
+States with comb/seq blocks or multiple transitions must use the full multi-line form. Both forms may be mixed freely within the same FSM.
+
 **7.2 FSM Default Block**
 
 The `default ... end default` block provides default assignments that are emitted before the state `case` statement. It may contain `comb ... end comb` and/or `seq on clk rising ... end seq` sub-blocks:

@@ -43,8 +43,9 @@ impl Parser {
             Some(TokenKind::Template) => Ok(Item::Template(self.parse_template()?)),
             Some(TokenKind::Synchronizer) => Ok(Item::Synchronizer(self.parse_synchronizer()?)),
             Some(TokenKind::Clkgate) => Ok(Item::Clkgate(self.parse_clkgate()?)),
+            Some(TokenKind::Bus) => Ok(Item::Bus(self.parse_bus()?)),
             Some(other) => Err(CompileError::unexpected_token(
-                "domain, struct, enum, module, fsm, fifo, ram, counter, arbiter, regfile, pipeline, function, linklist, template, synchronizer, or clkgate",
+                "domain, struct, enum, module, fsm, fifo, ram, counter, arbiter, regfile, pipeline, function, linklist, template, synchronizer, clkgate, or bus",
                 &other.to_string(),
                 self.peek_span(),
             )),
@@ -112,6 +113,62 @@ impl Parser {
             span: start.merge(closing_name.span),
             name,
             fields,
+        })
+    }
+
+    // --- Bus ---
+    fn parse_bus(&mut self) -> Result<BusDecl, CompileError> {
+        let start = self.expect(TokenKind::Bus)?.span;
+        let name = self.expect_ident()?;
+        let mut params = Vec::new();
+        let mut signals = Vec::new();
+        while !self.check_end_keyword() {
+            if self.check(TokenKind::Param) {
+                params.push(self.parse_param_decl()?);
+            } else {
+                // Signal: name: in/out Type;
+                let sig_name = self.expect_ident()?;
+                self.expect(TokenKind::Colon)?;
+                let direction = if self.eat_contextual("in") {
+                    Direction::In
+                } else if self.eat_contextual("out") {
+                    Direction::Out
+                } else {
+                    return Err(CompileError::unexpected_token(
+                        "in or out",
+                        &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                        self.peek_span(),
+                    ));
+                };
+                let ty = self.parse_type_expr()?;
+                self.expect(TokenKind::Semi)?;
+                let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+                signals.push(PortDecl {
+                    name: sig_name,
+                    direction,
+                    ty,
+                    default: None,
+                    reg_info: None,
+                    bus_info: None,
+                    span: start.merge(end_span),
+                });
+            }
+        }
+        self.expect(TokenKind::End)?;
+        self.expect(TokenKind::Bus)?;
+        let closing_name = self.expect_ident()?;
+        if closing_name.name != name.name {
+            return Err(CompileError::mismatched_closing(
+                &name.name,
+                &closing_name.name,
+                closing_name.span,
+            ));
+        }
+        Ok(BusDecl {
+            span: start.merge(closing_name.span),
+            name,
+            params,
+            signals,
         })
     }
 
@@ -269,13 +326,55 @@ impl Parser {
         let is_reg = self.eat(TokenKind::Reg);
         let name = self.expect_ident()?;
         self.expect(TokenKind::Colon)?;
+        // Check for bus port: `port name: initiator/target BusName<...>;`
+        let bus_perspective = if self.eat_contextual("initiator") {
+            Some(BusPerspective::Initiator)
+        } else if self.eat_contextual("target") {
+            Some(BusPerspective::Target)
+        } else {
+            None
+        };
+        if let Some(perspective) = bus_perspective {
+            let bus_name = self.expect_ident()?;
+            // Optional param assignments: <PARAM=val, ...>
+            let params = if self.check(TokenKind::Lt) {
+                self.advance();
+                let old_no_angle = self.no_angle;
+                self.no_angle = true;
+                let mut assigns = Vec::new();
+                loop {
+                    let pname = self.expect_ident()?;
+                    self.expect(TokenKind::Eq)?;
+                    let pval = self.parse_expr()?;
+                    assigns.push(ParamAssign { name: pname, value: pval });
+                    if !self.eat(TokenKind::Comma) { break; }
+                }
+                self.no_angle = old_no_angle;
+                self.expect(TokenKind::Gt)?;
+                assigns
+            } else {
+                Vec::new()
+            };
+            self.expect(TokenKind::Semi)?;
+            let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+            return Ok(PortDecl {
+                name,
+                direction: Direction::Out, // placeholder; actual directions from bus decl
+                ty: TypeExpr::Named(bus_name.clone()),
+                default: None,
+                reg_info: None,
+                bus_info: Some(BusPortInfo { bus_name, perspective, params }),
+                span: start.merge(end_span),
+            });
+        }
+
         let direction = if self.eat_contextual("in") {
             Direction::In
         } else if self.eat_contextual("out") {
             Direction::Out
         } else {
             return Err(CompileError::unexpected_token(
-                "in or out",
+                "in, out, initiator, or target",
                 &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
                 self.peek_span(),
             ));
@@ -324,6 +423,7 @@ impl Parser {
             ty,
             default,
             reg_info,
+            bus_info: None,
             span: start.merge(end_span),
         })
     }
@@ -1771,6 +1871,20 @@ impl Parser {
         let start = self.expect_contextual("state")?.span;
         let name = self.expect_ident()?;
 
+        // One-line form: state A transition to B when cond;
+        // (no end state A required — only when nothing else follows the transition)
+        if self.check(TokenKind::Transition) && !self.has_end_state_after_transition() {
+            let t = self.parse_transition()?;
+            let end_span = t.span;
+            return Ok(StateBody {
+                span: start.merge(end_span),
+                name,
+                comb_stmts: Vec::new(),
+                seq_stmts: Vec::new(),
+                transitions: vec![t],
+            });
+        }
+
         let mut comb_stmts = Vec::new();
         let mut seq_stmts = Vec::new();
         let mut transitions = Vec::new();
@@ -1821,6 +1935,24 @@ impl Parser {
         self.pos + 1 < self.tokens.len()
             && self.tokens[self.pos].kind == TokenKind::End
             && matches!(&self.tokens[self.pos + 1].kind, TokenKind::Ident(s) if s == "state")
+    }
+
+    /// Look ahead from a `transition` token: find the `;`, then check if `end state` follows.
+    /// If so, it's the multi-line form (even with a single transition). Also returns true
+    /// if another transition/comb/seq follows (multi-transition state).
+    fn has_end_state_after_transition(&self) -> bool {
+        let mut i = self.pos;
+        // Skip to the next semicolon
+        while i < self.tokens.len() && self.tokens[i].kind != TokenKind::Semi {
+            i += 1;
+        }
+        i += 1; // skip `;`
+        if i >= self.tokens.len() {
+            return false;
+        }
+        // Multi-line if followed by: end state, another transition, comb, or seq
+        matches!(self.tokens[i].kind,
+            TokenKind::End | TokenKind::Transition | TokenKind::Comb | TokenKind::Seq)
     }
 
     fn parse_transition(&mut self) -> Result<Transition, CompileError> {
@@ -2438,7 +2570,7 @@ impl Parser {
         let ty = self.parse_type_expr()?;
         self.expect(TokenKind::Semi)?;
         let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
-        Ok(PortDecl { name, direction, ty, default: None, reg_info: None, span: start.merge(end_span) })
+        Ok(PortDecl { name, direction, ty, default: None, reg_info: None, bus_info: None, span: start.merge(end_span) })
     }
 
     fn parse_ram_init(&mut self) -> Result<RamInit, CompileError> {

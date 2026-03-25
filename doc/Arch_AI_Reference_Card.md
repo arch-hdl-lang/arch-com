@@ -264,16 +264,15 @@
 | end default                              |                                           |
 |                                          |                                           |
 | state Idle                               | Transition syntax:                        |
+|   transition to Running when start;      |                                           |
+| end state Idle                           | transition to Next when \<expr\>;         |
 |                                          |                                           |
-| // no comb block — both stay at default  | transition to Next when \<expr\>;         |
-|                                          |                                           |
-| transition to Running when start;        | Multiple transitions are checked for      |
-|                                          | mutual exclusivity; `unique if` emitted   |
-|                                          | when exclusive, `priority if` otherwise.  |
+| // or one-line (no end state needed):    | Multiple transitions are checked for      |
+| state Idle                               | mutual exclusivity; `unique if` emitted   |
+|   transition to Running when start;      | when exclusive, `priority if` otherwise.  |
 |                                          | Implicit hold: if no transition fires,    |
 |                                          | FSM stays in current state. No catch-all  |
 |                                          | `transition to Self when true` needed.    |
-| end state Idle                           |                                           |
 |                                          |                                           |
 | state Running                            |                                           |
 |                                          |                                           |
