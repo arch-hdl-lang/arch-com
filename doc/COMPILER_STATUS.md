@@ -106,7 +106,7 @@
 
 | Feature | Status |
 |---------|--------|
-| `comb` assignment | ✅ |
+| `comb` assignment | ✅ One-line form: `comb y = expr;` (no `end comb` needed for single assignments) |
 | `reg` assignment `<=` | ✅ |
 | `if / elsif / else` | ✅ `elsif` keyword for chained conditionals (not `else if`); resolves ambiguity in brace-free syntax |
 | `match` (reg and comb blocks) | ✅ |

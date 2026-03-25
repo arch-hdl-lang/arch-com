@@ -38,7 +38,9 @@
 >
 > SIGNAL ASSIGNMENT:
 >
-> comb y = expr; end comb // combinational --- uses =
+> comb y = expr; // one-line combinational (no end comb needed)
+>
+> comb y = expr; end comb // equivalent multi-line form
 >
 > reg r: T reset rst=0 sync high; // register decl with reset (reset value after =)
 >

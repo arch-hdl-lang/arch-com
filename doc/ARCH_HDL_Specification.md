@@ -456,6 +456,14 @@ Arch has exactly two assignment forms. Mixing operators between them is a compil
 
 > *⚑ The clock is named in `seq on clk rising`; reset is declared per register (`reset rst=0 sync high` or `reset none`). The `reset SIGNAL=VALUE` syntax requires an explicit reset value after the signal name. `init` is optional and only sets the SV declaration initializer (`logic x = VALUE;`). The compiler auto-generates the `if (rst)` guard and propagates domain membership automatically through all downstream logic in the module.*
 
+Combinational blocks with a single assignment can use the one-line form, omitting `end comb`:
+
+```
+comb y = a & b;
+```
+
+This is equivalent to `comb y = a & b; end comb`. Blocks with multiple assignments, `if/else`, or `for` loops must use the full `comb ... end comb` form.
+
 **4.2.1 Conditional Statements: if / elsif / else**
 
 Arch uses `elsif` (one word) for chained conditionals, not `else if` (two words). In a brace-free language, `else if` is ambiguous — does `else` start a new body block, or does `else if` chain? The `elsif` keyword resolves this unambiguously:

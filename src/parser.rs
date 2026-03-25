@@ -816,6 +816,19 @@ impl Parser {
 
     fn parse_comb_block(&mut self) -> Result<CombBlock, CompileError> {
         let start = self.expect(TokenKind::Comb)?.span;
+
+        // One-line form: comb target = expr;
+        // Detected by checking if the tokens after `comb` form a simple assignment
+        // (ident ... = ... ;) with no `end comb` following.
+        if self.is_oneline_comb() {
+            let stmt = self.parse_comb_stmt()?;
+            let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+            return Ok(CombBlock {
+                stmts: vec![stmt],
+                span: start.merge(end_span),
+            });
+        }
+
         let mut stmts = Vec::new();
         while !self.check_end_comb() {
             stmts.push(self.parse_comb_stmt()?);
@@ -827,6 +840,63 @@ impl Parser {
             stmts,
             span: start.merge(end_span),
         })
+    }
+
+    /// One-line comb: `comb target = expr;` (no `end comb`).
+    /// Find the first top-level `;`, then check what follows:
+    /// - `end comb` → multi-line form
+    /// - comb-stmt starter (ident, if, for, match, log) → multi-line form
+    /// - anything else (end module, seq, comb, etc.) → one-liner
+    fn is_oneline_comb(&self) -> bool {
+        let mut i = self.pos;
+        let mut depth = 0u32;
+        while i < self.tokens.len() {
+            match self.tokens[i].kind {
+                TokenKind::LParen | TokenKind::LBracket => depth += 1,
+                TokenKind::RParen | TokenKind::RBracket => depth = depth.saturating_sub(1),
+                TokenKind::Semi if depth == 0 => break,
+                // Hit `end comb` before any `;` → empty or multi-line block, not one-liner
+                TokenKind::End if depth == 0
+                    && i + 1 < self.tokens.len()
+                    && self.tokens[i + 1].kind == TokenKind::Comb =>
+                {
+                    return false;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        if i >= self.tokens.len() {
+            return false;
+        }
+        let after = i + 1;
+        if after >= self.tokens.len() {
+            return true;
+        }
+        // One-liner if followed by a module-level keyword (not a comb-block interior token).
+        // These tokens can only appear at module/stage/fsm scope, never inside a comb block:
+        match &self.tokens[after].kind {
+            TokenKind::Comb      // another comb block
+            | TokenKind::Seq     // seq block
+            | TokenKind::Latch   // latch block
+            | TokenKind::Reg     // reg declaration
+            | TokenKind::Let     // let binding
+            | TokenKind::Wire    // wire declaration
+            | TokenKind::Inst    // inst declaration
+            | TokenKind::PipeReg // pipe_reg declaration
+            | TokenKind::Assert  // assert
+            | TokenKind::Cover   // cover
+            => true,
+            // `end` followed by module/fsm/pipeline/stage — module scope
+            TokenKind::End => {
+                after + 1 < self.tokens.len()
+                    && !matches!(self.tokens[after + 1].kind, TokenKind::Comb | TokenKind::If | TokenKind::For)
+            }
+            // Port declaration at module level
+            TokenKind::Port => true,
+            // Anything else (ident, if, else, elsif, for, etc.) → could be inside comb
+            _ => false,
+        }
     }
 
     fn check_end_comb(&self) -> bool {
