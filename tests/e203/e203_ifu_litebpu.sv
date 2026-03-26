@@ -34,26 +34,26 @@ module LiteBpu (
   // ── Combinational intermediates ──────────────────────────────────────────
   // rs1 classification for JALR
   logic dec_jalr_rs1x0;
-  assign dec_jalr_rs1x0 = (dec_jalr_rs1idx == 0);
+  assign dec_jalr_rs1x0 = dec_jalr_rs1idx == 0;
   logic dec_jalr_rs1x1;
-  assign dec_jalr_rs1x1 = (dec_jalr_rs1idx == 1);
+  assign dec_jalr_rs1x1 = dec_jalr_rs1idx == 1;
   logic dec_jalr_rs1xn;
-  assign dec_jalr_rs1xn = ((~dec_jalr_rs1x0) & (~dec_jalr_rs1x1));
+  assign dec_jalr_rs1xn = ~dec_jalr_rs1x0 & ~dec_jalr_rs1x1;
   // Immediate sign bit (negative = backward branch)
   logic bjp_imm_neg;
-  assign bjp_imm_neg = ((dec_bjp_imm >> 31) != 0);
+  assign bjp_imm_neg = dec_bjp_imm >> 31 != 0;
   // x1 dependency: OITF not empty, or IR target matches x1
   logic jalr_rs1x1_dep;
-  assign jalr_rs1x1_dep = ((~oitf_empty) | jalr_rs1idx_cam_irrdidx);
+  assign jalr_rs1x1_dep = ~oitf_empty | jalr_rs1idx_cam_irrdidx;
   // xn dependency: OITF not empty, or IR has active rs1 match (not being cleared)
   logic jalr_rs1xn_dep;
-  assign jalr_rs1xn_dep = ((~oitf_empty) | ((((~ir_empty) & ir_rs1en) & jalr_rs1idx_cam_irrdidx) & (~ir_valid_clr)));
+  assign jalr_rs1xn_dep = ~oitf_empty | ~ir_empty & ir_rs1en & jalr_rs1idx_cam_irrdidx & ~ir_valid_clr;
   // xn dep being cleared this cycle (IR match + ir_valid_clr)
   logic jalr_rs1xn_dep_ir_clr;
-  assign jalr_rs1xn_dep_ir_clr = ((((~ir_empty) & ir_rs1en) & jalr_rs1idx_cam_irrdidx) & ir_valid_clr);
+  assign jalr_rs1xn_dep_ir_clr = ~ir_empty & ir_rs1en & jalr_rs1idx_cam_irrdidx & ir_valid_clr;
   // Regfile read request: issued when dep is clear (or clearing), and not already pending
   logic rs1xn_rdrf_set;
-  assign rs1xn_rdrf_set = (((((~rs1xn_rdrf_r) & dec_i_valid) & dec_jalr) & dec_jalr_rs1xn) & ((~jalr_rs1xn_dep) | jalr_rs1xn_dep_ir_clr));
+  assign rs1xn_rdrf_set = ~rs1xn_rdrf_r & dec_i_valid & dec_jalr & dec_jalr_rs1xn & (~jalr_rs1xn_dep | jalr_rs1xn_dep_ir_clr);
   // ── State machine ────────────────────────────────────────────────────────
   // rs1xn_rdrf_r is set by rs1xn_rdrf_set and self-clears after one cycle.
   always_ff @(posedge clk or negedge rst_n) begin
@@ -65,9 +65,9 @@ module LiteBpu (
   end
   // ── Combinational outputs ─────────────────────────────────────────────────
   always_comb begin
-    prdt_taken = ((dec_jal | dec_jalr) | (dec_bxx & bjp_imm_neg));
+    prdt_taken = dec_jal | dec_jalr | dec_bxx & bjp_imm_neg;
     prdt_pc_add_op2 = dec_bjp_imm;
-    bpu_wait = (((dec_jalr & dec_jalr_rs1x1) & jalr_rs1x1_dep) | (((dec_jalr & dec_jalr_rs1xn) & jalr_rs1xn_dep) & (~rs1xn_rdrf_r)));
+    bpu_wait = dec_jalr & dec_jalr_rs1x1 & jalr_rs1x1_dep | dec_jalr & dec_jalr_rs1xn & jalr_rs1xn_dep & ~rs1xn_rdrf_r;
     bpu2rf_rs1_ena = rs1xn_rdrf_set;
     if (dec_jalr) begin
       if (dec_jalr_rs1x0) begin

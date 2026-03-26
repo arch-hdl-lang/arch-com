@@ -370,6 +370,7 @@ fn subst_port(p: &PortDecl, var: &str, val: i64) -> PortDecl {
         ty: subst_type_expr(&p.ty, var, val),
         default: p.default.as_ref().map(|e| subst_expr(e.clone(), var, val)),
         reg_info: p.reg_info.clone(),
+        bus_info: p.bus_info.clone(),
         span: p.span,
     }
 }

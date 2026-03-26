@@ -1,17 +1,11 @@
-module TopModule (
-  input logic [100-1:0] a,
+Wrote tests/verilog_eval/Prob017_mux2to1v.sv
+
   input logic [100-1:0] b,
   input logic sel,
   output logic [100-1:0] out
 );
 
-  always_comb begin
-    if (sel) begin
-      out = b;
-    end else begin
-      out = a;
-    end
-  end
+  assign out = sel ? b : a;
 
 endmodule
 

@@ -1,6 +1,3 @@
-domain SysDomain
-end domain SysDomain
-
 fsm TopModule
   port clk: in Clock<SysDomain>;
   port areset: in Reset<Async>;
@@ -11,16 +8,12 @@ fsm TopModule
   default state B;
 
   state A
-    comb
-      out = false;
-    end comb
+    comb out = false;
     transition to B when ~in;
   end state A
 
   state B
-    comb
-      out = true;
-    end comb
+    comb out = true;
     transition to A when ~in;
   end state B
 end fsm TopModule

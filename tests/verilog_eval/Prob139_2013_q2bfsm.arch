@@ -1,8 +1,5 @@
 // VerilogEval Prob139: Motor controller FSM, active-low sync reset (resetn)
 // States: A(reset), SetF, X1, X0, X01, SetG1, SetG2, GoodG, BadG
-domain SysDomain
-end domain SysDomain
-
 fsm TopModule
   port clk: in Clock<SysDomain>;
   port resetn: in Reset<Sync, Low>;
@@ -13,32 +10,21 @@ fsm TopModule
 
   state A, SetF, X1, X0, X01, SetG1, SetG2, GoodG, BadG;
   default state A;
-
   default
-    comb
-      f = false;
-      g = false;
-    end comb
+    comb f = false;
+    comb g = false;
   end default
 
-  state A
-    transition to SetF when true;
-  end state A
+  state A transition to SetF when true;
 
   state SetF
-    comb
-      f = true;
-    end comb
+    comb f = true;
     transition to X1 when true;
   end state SetF
 
-  state X1
-    transition to X0 when x;
-  end state X1
+  state X1 transition to X0 when x;
 
-  state X0
-    transition to X01 when ~x;
-  end state X0
+  state X0 transition to X01 when ~x;
 
   state X01
     transition to SetG1 when x;
@@ -46,29 +32,21 @@ fsm TopModule
   end state X01
 
   state SetG1
-    comb
-      g = true;
-    end comb
+    comb g = true;
     transition to GoodG when y;
     transition to SetG2 when ~y;
   end state SetG1
 
   state SetG2
-    comb
-      g = true;
-    end comb
+    comb g = true;
     transition to GoodG when y;
     transition to BadG when ~y;
   end state SetG2
 
   state GoodG
-    comb
-      g = true;
-    end comb
+    comb g = true;
     transition to GoodG when true;
   end state GoodG
 
-  state BadG
-    transition to BadG when true;
-  end state BadG
+  state BadG transition to BadG when true;
 end fsm TopModule

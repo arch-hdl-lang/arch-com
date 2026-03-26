@@ -1,12 +1,11 @@
 // VerilogEval Prob144: 16x16 toroidal Game of Life
-domain SysDomain
-end domain SysDomain
-
 module TopModule
   port clk: in Clock<SysDomain>;
   port load: in Bool;
   port data: in UInt<256>;
   port reg q: out UInt<256> init 0 reset none;
+
+  default seq on clk rising;
 
   wire next_grid: UInt<256>;
 
@@ -50,11 +49,5 @@ module TopModule
     end for
   end comb
 
-  seq on clk rising
-    if load
-      q <= data;
-    else
-      q <= next_grid;
-    end if
-  end seq
+  seq q <= load ? data : next_grid;
 end module TopModule

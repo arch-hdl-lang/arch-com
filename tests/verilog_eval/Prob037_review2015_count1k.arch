@@ -1,16 +1,9 @@
-domain SysDomain
-end domain SysDomain
-
 module TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
   port reg q: out UInt<10> reset reset=0;
 
-  seq on clk rising
-    if q == 999
-      q <= 0;
-    else
-      q <= (q + 1).trunc<10>();
-    end if
-  end seq
+  default seq on clk rising;
+
+  seq q <= q == 999 ? 0 : (q + 1).trunc<10>();
 end module TopModule

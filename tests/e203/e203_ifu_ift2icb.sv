@@ -28,20 +28,20 @@ module Ift2Icb (
   // Backpressure: don't accept new request if response register is full
   // and downstream is not ready
   logic stall_pipe;
-  assign stall_pipe = (rsp_valid_r & (~ifu_rsp_ready));
+  assign stall_pipe = rsp_valid_r & ~ifu_rsp_ready;
   // Request path: pass through to ITCM when not stalled
-  assign itcm_cmd_valid = (ifu_req_valid & (~stall_pipe));
+  assign itcm_cmd_valid = ifu_req_valid & ~stall_pipe;
   assign itcm_cmd_addr = ifu_req_pc[15:2];
-  assign ifu_req_ready = (itcm_cmd_ready & (~stall_pipe));
+  assign ifu_req_ready = itcm_cmd_ready & ~stall_pipe;
   // Accept ITCM response when we can
-  assign itcm_rsp_ready = (~stall_pipe);
+  assign itcm_rsp_ready = ~stall_pipe;
   // Response pipeline: register ITCM response for IFU
   always_ff @(posedge clk or negedge rst_n) begin
     if ((!rst_n)) begin
       rsp_data_r <= 0;
       rsp_valid_r <= 0;
     end else begin
-      if ((~stall_pipe)) begin
+      if (~stall_pipe) begin
         rsp_valid_r <= itcm_rsp_valid;
         rsp_data_r <= itcm_rsp_data;
       end

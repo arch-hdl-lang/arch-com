@@ -4,10 +4,6 @@ module TopModule
   port sel: in Bool;
   port out: out UInt<100>;
   comb
-    if sel
-      out = b;
-    else
-      out = a;
-    end if
+    out = sel ? b : a;
   end comb
 end module TopModule

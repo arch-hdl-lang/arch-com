@@ -1,7 +1,4 @@
 // VerilogEval Prob115: 64-bit arithmetic shift register
-domain SysDomain
-end domain SysDomain
-
 module TopModule
   port clk: in Clock<SysDomain>;
   port load: in Bool;
@@ -9,6 +6,8 @@ module TopModule
   port amount: in UInt<2>;
   port data: in UInt<64>;
   port q: out UInt<64>;
+
+  default seq on clk rising;
 
   reg q_r: UInt<64> init 0 reset none;
 
@@ -21,7 +20,7 @@ module TopModule
     q = q_r;
   end comb
 
-  seq on clk rising
+  seq
     if load
       q_r <= data;
     elsif ena

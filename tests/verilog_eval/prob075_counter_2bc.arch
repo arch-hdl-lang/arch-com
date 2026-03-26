@@ -1,7 +1,4 @@
 // VerilogEval Prob075: 2-bit saturating counter (branch predictor)
-domain SysDomain
-end domain SysDomain
-
 module TopModule
   port clk: in Clock<SysDomain>;
   port areset: in Reset<Async>;
@@ -9,7 +6,9 @@ module TopModule
   port train_taken: in Bool;
   port reg state: out UInt<2> reset areset=1;
 
-  seq on clk rising
+  default seq on clk rising;
+
+  seq
     if train_valid
       if (state < 3) & train_taken
         state <= (state + 1).trunc<2>();

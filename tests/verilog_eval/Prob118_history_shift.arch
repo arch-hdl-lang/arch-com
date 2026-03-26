@@ -1,6 +1,3 @@
-domain SysDomain
-end domain SysDomain
-
 module TopModule
   port clk: in Clock<SysDomain>;
   port areset: in Reset<Async>;
@@ -11,7 +8,9 @@ module TopModule
   port train_history: in UInt<32>;
   port reg predict_history: out UInt<32> reset areset=0;
 
-  seq on clk rising
+  default seq on clk rising;
+
+  seq
     if train_mispredicted
       predict_history <= {train_history[30:0], train_taken};
     elsif predict_valid

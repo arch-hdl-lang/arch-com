@@ -1,6 +1,5 @@
-module TopModule (
-  input logic [4-1:0] in,
-  output logic [2-1:0] pos
+Wrote tests/verilog_eval/Prob112_always_case2.sv
+tput logic [2-1:0] pos
 );
 
   always_comb begin

@@ -1,13 +1,10 @@
-domain SysDomain
-end domain SysDomain
-
 module TopModule
   port clk: in Clock<SysDomain>;
   port r: in Reset<Sync>;
   port d: in Bool;
   port reg q: out Bool reset r=0;
 
-  seq on clk rising
-    q <= d;
-  end seq
+  default seq on clk rising;
+
+  seq q <= d;
 end module TopModule

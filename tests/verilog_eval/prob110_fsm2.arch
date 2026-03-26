@@ -1,7 +1,4 @@
 // VerilogEval Prob110: JK flip-flop as Moore FSM, async reset
-domain SysDomain
-end domain SysDomain
-
 fsm TopModule
   port clk: in Clock<SysDomain>;
   port areset: in Reset<Async>;
@@ -13,16 +10,12 @@ fsm TopModule
   default state Off;
 
   state Off
-    comb
-      out = false;
-    end comb
+    comb out = false;
     transition to On when j;
   end state Off
 
   state On
-    comb
-      out = true;
-    end comb
+    comb out = true;
     transition to Off when k;
   end state On
 

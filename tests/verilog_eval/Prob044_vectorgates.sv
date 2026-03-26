@@ -1,4 +1,5 @@
-// VerilogEval Prob044: Bitwise OR, logical OR, NOT of 3-bit vectors
+Wrote tests/verilog_eval/Prob044_vectorgates.sv
+NOT of 3-bit vectors
 module TopModule (
   input logic [3-1:0] a,
   input logic [3-1:0] b,

@@ -1,5 +1,5 @@
-module TopModule (
-  input logic [4-1:0] in,
+Wrote tests/verilog_eval/Prob051_gates4.sv
+,
   output logic out_and,
   output logic out_or,
   output logic out_xor

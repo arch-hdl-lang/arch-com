@@ -1,5 +1,5 @@
-module TopModule (
-  input logic [3-1:0] vec,
+Wrote tests/verilog_eval/Prob032_vector0.sv
+,
   output logic [3-1:0] outv,
   output logic o2,
   output logic o1,

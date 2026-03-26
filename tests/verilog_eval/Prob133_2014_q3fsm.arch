@@ -1,7 +1,4 @@
 // VerilogEval Prob133: FSM waits for s=1, then counts w over 3-cycle windows
-domain SysDomain
-end domain SysDomain
-
 fsm TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
@@ -13,69 +10,34 @@ fsm TopModule
 
   state A, B1, B2, B3, Out;
   default state A;
+  default seq on clk rising;
+  default
+    comb z = false;
+  end default
 
   state A
-    comb
-      z = false;
-    end comb
-    seq on clk rising
-      cnt <= 0;
-    end seq
+    seq cnt <= 0;
     transition to B1 when s;
   end state A
 
   state B1
-    comb
-      z = false;
-    end comb
-    seq on clk rising
-      if w
-        cnt <= 1;
-      else
-        cnt <= 0;
-      end if
-    end seq
+    seq cnt <= w ? 1 : 0;
     transition to B2 when true;
   end state B1
 
   state B2
-    comb
-      z = false;
-    end comb
-    seq on clk rising
-      if w
-        cnt <= (cnt + 1).trunc<2>();
-      end if
-    end seq
+    seq cnt <= w ? (cnt + 1).trunc<2>() : cnt;
     transition to B3 when true;
   end state B2
 
   state B3
-    comb
-      z = false;
-    end comb
-    seq on clk rising
-      if w
-        cnt <= (cnt + 1).trunc<2>();
-      end if
-    end seq
+    seq cnt <= w ? (cnt + 1).trunc<2>() : cnt;
     transition to Out when true;
   end state B3
 
   state Out
-    comb
-      z = false;
-      if cnt == 2
-        z = true;
-      end if
-    end comb
-    seq on clk rising
-      if w
-        cnt <= 1;
-      else
-        cnt <= 0;
-      end if
-    end seq
+    comb z = (cnt == 2);
+    seq cnt <= w ? 1 : 0;
     transition to B2 when true;
   end state Out
 end fsm TopModule

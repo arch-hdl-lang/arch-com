@@ -1,8 +1,5 @@
 // VerilogEval Prob149: Water reservoir FSM with dfr (decreasing flow rate)
 // 6 states: level + direction
-domain SysDomain
-end domain SysDomain
-
 fsm TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
@@ -14,14 +11,11 @@ fsm TopModule
 
   state A2, B1, B2, C1, C2, D1;
   default state A2;
-
   default
-    comb
-      fr2 = false;
-      fr1 = false;
-      fr0 = false;
-      dfr = false;
-    end comb
+    comb fr2 = false;
+    comb fr1 = false;
+    comb fr0 = false;
+    comb dfr = false;
   end default
 
   state A2
@@ -48,9 +42,7 @@ fsm TopModule
   end state B2
 
   state C1
-    comb
-      fr0 = true;
-    end comb
+    comb fr0 = true;
     transition to D1 when s[2];
     transition to B2 when ~s[1];
   end state C1
@@ -63,7 +55,5 @@ fsm TopModule
     transition to B2 when ~s[1];
   end state C2
 
-  state D1
-    transition to C2 when ~s[2];
-  end state D1
+  state D1 transition to C2 when ~s[2];
 end fsm TopModule

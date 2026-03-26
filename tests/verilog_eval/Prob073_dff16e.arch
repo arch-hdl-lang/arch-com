@@ -1,7 +1,4 @@
 // VerilogEval Prob073: 16 DFFs with byte enable, active-low sync reset
-domain SysDomain
-end domain SysDomain
-
 module TopModule
   port clk: in Clock<SysDomain>;
   port resetn: in Reset<Sync, Low>;
@@ -9,12 +6,10 @@ module TopModule
   port d: in UInt<16>;
   port reg q: out UInt<16> reset resetn=0;
 
-  seq on clk rising
-    if byteena[0]
-      q[7:0] <= d[7:0];
-    end if
-    if byteena[1]
-      q[15:8] <= d[15:8];
-    end if
+  default seq on clk rising;
+
+  seq
+    q[7:0] <= byteena[0] ? d[7:0] : q[7:0];
+    q[15:8] <= byteena[1] ? d[15:8] : q[15:8];
   end seq
 end module TopModule

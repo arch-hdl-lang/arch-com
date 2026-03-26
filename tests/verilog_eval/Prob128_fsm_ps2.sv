@@ -1,6 +1,5 @@
-// VerilogEval Prob128: PS/2 mouse 3-byte message boundary detection
-// domain SysDomain
-
+Wrote tests/verilog_eval/Prob128_fsm_ps2.sv
+ssage boundary detection
 module TopModule (
   input logic clk,
   input logic reset,
@@ -46,15 +45,13 @@ module TopModule (
   end
   
   always_comb begin
+    done = 1'b0;
     case (state_r)
       BYTE1: begin
-        done = 1'b0;
       end
       BYTE2: begin
-        done = 1'b0;
       end
       BYTE3: begin
-        done = 1'b0;
       end
       DONES: begin
         done = 1'b1;

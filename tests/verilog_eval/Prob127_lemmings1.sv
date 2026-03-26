@@ -1,8 +1,5 @@
-// domain SysDomain
-
-module TopModule (
-  input logic clk,
-  input logic areset,
+Wrote tests/verilog_eval/Prob127_lemmings1.sv
+logic areset,
   input logic bump_left,
   input logic bump_right,
   output logic walk_left,
@@ -38,13 +35,13 @@ module TopModule (
   end
   
   always_comb begin
+    walk_left = 1'b0;
+    walk_right = 1'b0;
     case (state_r)
       WALKLEFT: begin
         walk_left = 1'b1;
-        walk_right = 1'b0;
       end
       WALKRIGHT: begin
-        walk_left = 1'b0;
         walk_right = 1'b1;
       end
       default: ;

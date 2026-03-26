@@ -50,7 +50,7 @@ module IfuIfetch #(
   logic out_valid_r;
   
   logic [32-1:0] pc_plus4;
-  assign pc_plus4 = 32'((pc_r + 4));
+  assign pc_plus4 = 32'(pc_r + 4);
   logic [32-1:0] pc_aligned;
   assign pc_aligned = {pc_plus4[31:2], {2{1'b0}}};
   
@@ -121,13 +121,6 @@ module IfuIfetch #(
   end
   
   always_comb begin
-    req_valid = 1'b0; // default
-    req_addr = 0; // default
-    rsp_ready = 1'b0; // default
-    o_valid = 1'b0; // default
-    o_instr = 0; // default
-    o_pc = 0; // default
-    o_bus_err = 1'b0; // default
     case (state_r)
       IDLE: begin
       end

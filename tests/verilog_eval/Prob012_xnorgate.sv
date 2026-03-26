@@ -1,6 +1,5 @@
-module TopModule (
-  input logic a,
-  input logic b,
+Wrote tests/verilog_eval/Prob012_xnorgate.sv
+ogic b,
   output logic out
 );
 

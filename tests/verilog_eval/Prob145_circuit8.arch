@@ -1,12 +1,11 @@
 // VerilogEval Prob145: p is positive-level latch of a, q captures a on negedge
-domain SysDomain
-end domain SysDomain
-
 module TopModule
   port clock: in Clock<SysDomain>;
   port a: in Bool;
   port p: out Bool;
   port q: out Bool;
+
+  default seq on clock falling;
 
   reg p_r: Bool;
   reg q_r: Bool;
@@ -15,9 +14,7 @@ module TopModule
     p_r <= a;
   end latch
 
-  seq on clock falling
-    q_r <= a;
-  end seq
+  seq q_r <= a;
 
   comb
     p = p_r;

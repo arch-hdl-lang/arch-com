@@ -1,5 +1,5 @@
-module TopModule (
-  input logic [4-1:0] in,
+Wrote tests/verilog_eval/Prob094_gatesv.sv
+,
   output logic [4-1:0] out_both,
   output logic [4-1:0] out_any,
   output logic [4-1:0] out_different

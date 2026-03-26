@@ -3,20 +3,8 @@ module TopModule
   port out_and: out Bool;
   port out_or: out Bool;
   port out_xor: out Bool;
-  wire a: Bool;
-  wire o: Bool;
-  wire x: Bool;
-  comb
-    a = in[0];
-    o = in[0];
-    x = in[0];
-    for i in 1..99
-      a = a & in[i];
-      o = o | in[i];
-      x = x ^ in[i];
-    end for
-    out_and = a;
-    out_or = o;
-    out_xor = x;
-  end comb
+
+  comb out_and = &in;
+  comb out_or = |in;
+  comb out_xor = ^in;
 end module TopModule

@@ -1,6 +1,5 @@
-module TopModule (
-  input logic a,
-  input logic b,
+Wrote tests/verilog_eval/Prob087_gates.sv
+t logic b,
   output logic out_and,
   output logic out_or,
   output logic out_xor,

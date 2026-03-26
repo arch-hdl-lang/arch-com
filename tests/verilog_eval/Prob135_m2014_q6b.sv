@@ -1,16 +1,9 @@
-module TopModule (
-  input logic [3-1:0] y,
-  input logic w,
+Wrote tests/verilog_eval/Prob135_m2014_q6b.sv
+input logic w,
   output logic Y1
 );
 
-  always_comb begin
-    if (y == 1 | y == 5 | w & (y == 2 | y == 4)) begin
-      Y1 = 1;
-    end else begin
-      Y1 = 0;
-    end
-  end
+  assign Y1 = y == 1 | y == 5 | w & (y == 2 | y == 4) ? 1 : 0;
 
 endmodule
 

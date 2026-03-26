@@ -9,20 +9,8 @@ module TopModule
   wire cd_min: UInt<8>;
 
   comb
-    if a < b
-      ab_min = a;
-    else
-      ab_min = b;
-    end if
-    if c < d
-      cd_min = c;
-    else
-      cd_min = d;
-    end if
-    if ab_min < cd_min
-      min = ab_min;
-    else
-      min = cd_min;
-    end if
+    ab_min = a < b ? a : b;
+    cd_min = c < d ? c : d;
+    min = ab_min < cd_min ? ab_min : cd_min;
   end comb
 end module TopModule

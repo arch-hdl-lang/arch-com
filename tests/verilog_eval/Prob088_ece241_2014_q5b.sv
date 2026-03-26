@@ -1,8 +1,5 @@
-// domain SysDomain
-
-module TopModule (
-  input logic clk,
-  input logic areset,
+Wrote tests/verilog_eval/Prob088_ece241_2014_q5b.sv
+areset,
   input logic x,
   output logic z
 );

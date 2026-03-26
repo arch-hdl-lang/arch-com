@@ -1,6 +1,3 @@
-domain SysDomain
-end domain SysDomain
-
 fsm TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
@@ -9,48 +6,27 @@ fsm TopModule
 
   state Bit0, Bit1, Bit2, Bit3, Bit4, Bit5, Bit6, Bit7, Idle, Stop, Ok, Err;
   default state Idle;
-
   default
-    comb
-      done = false;
-    end comb
+    comb done = false;
   end default
 
-  state Idle
-    transition to Bit0 when ~in;
-  end state Idle
+  state Idle transition to Bit0 when ~in;
 
-  state Bit0
-    transition to Bit1 when true;
-  end state Bit0
+  state Bit0 transition to Bit1 when true;
 
-  state Bit1
-    transition to Bit2 when true;
-  end state Bit1
+  state Bit1 transition to Bit2 when true;
 
-  state Bit2
-    transition to Bit3 when true;
-  end state Bit2
+  state Bit2 transition to Bit3 when true;
 
-  state Bit3
-    transition to Bit4 when true;
-  end state Bit3
+  state Bit3 transition to Bit4 when true;
 
-  state Bit4
-    transition to Bit5 when true;
-  end state Bit4
+  state Bit4 transition to Bit5 when true;
 
-  state Bit5
-    transition to Bit6 when true;
-  end state Bit5
+  state Bit5 transition to Bit6 when true;
 
-  state Bit6
-    transition to Bit7 when true;
-  end state Bit6
+  state Bit6 transition to Bit7 when true;
 
-  state Bit7
-    transition to Stop when true;
-  end state Bit7
+  state Bit7 transition to Stop when true;
 
   state Stop
     transition to Ok when in;
@@ -58,14 +34,10 @@ fsm TopModule
   end state Stop
 
   state Ok
-    comb
-      done = true;
-    end comb
+    comb done = true;
     transition to Idle when in;
     transition to Bit0 when ~in;
   end state Ok
 
-  state Err
-    transition to Idle when in;
-  end state Err
+  state Err transition to Idle when in;
 end fsm TopModule

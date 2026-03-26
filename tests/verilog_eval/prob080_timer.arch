@@ -1,16 +1,15 @@
 // VerilogEval Prob080: Down counter timer
-domain SysDomain
-end domain SysDomain
-
 module TopModule
   port clk: in Clock<SysDomain>;
   port load: in Bool;
   port data: in UInt<10>;
   port tc: out Bool;
 
+  default seq on clk rising;
+
   reg count_val: UInt<10> init 0 reset none;
 
-  seq on clk rising
+  seq
     if load == 1
       count_val <= data;
     elsif count_val != 0

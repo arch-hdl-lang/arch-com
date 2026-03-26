@@ -1,6 +1,5 @@
-module TopModule (
-  input logic a,
-  input logic b,
+Wrote tests/verilog_eval/Prob070_ece241_2013_q2.sv
+,
   input logic c,
   input logic d,
   output logic out_sop,

@@ -1,6 +1,5 @@
-// VerilogEval Prob096: Detect 1101 sequence, assert start_shifting forever
-// domain SysDomain
-
+Wrote tests/verilog_eval/Prob096_review2015_fsmseq.sv
+tart_shifting forever
 module TopModule (
   input logic clk,
   input logic reset,
@@ -52,18 +51,15 @@ module TopModule (
   end
   
   always_comb begin
+    start_shifting = 1'b0;
     case (state_r)
       S: begin
-        start_shifting = 1'b0;
       end
       S1: begin
-        start_shifting = 1'b0;
       end
       S11: begin
-        start_shifting = 1'b0;
       end
       S110: begin
-        start_shifting = 1'b0;
       end
       DONE: begin
         start_shifting = 1'b1;

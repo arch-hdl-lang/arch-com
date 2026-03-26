@@ -17,6 +17,7 @@ pub enum Ty {
     Vec(Box<Ty>, u32),
     Struct(String),
     Enum(String, u32), // name, bit width
+    Bus(String),       // bus type name
     Todo,
     Error,
 }
@@ -29,7 +30,7 @@ impl Ty {
             Ty::Bit => Some(1),
             Ty::Enum(_, w) => Some(*w),
             Ty::Vec(inner, count) => inner.width().map(|w| w * count),
-            Ty::Struct(_) => None, // would need lookup
+            Ty::Struct(_) | Ty::Bus(_) => None,
             Ty::Clock(_) | Ty::Reset(_) => Some(1),
             Ty::Todo | Ty::Error => None,
         }
@@ -49,6 +50,7 @@ impl Ty {
             Ty::Vec(inner, n) => format!("Vec<{}, {n}>", inner.display()),
             Ty::Struct(name) => name.clone(),
             Ty::Enum(name, _) => name.clone(),
+            Ty::Bus(name) => format!("bus {name}"),
             Ty::Todo => "todo!".to_string(),
             Ty::Error => "<error>".to_string(),
         }
@@ -95,6 +97,7 @@ impl<'a> TypeChecker<'a> {
                 Item::Template(t) => self.check_template(t),
                 Item::Synchronizer(s) => self.check_synchronizer(s),
                 Item::Clkgate(c) => self.check_clkgate(c),
+                Item::Bus(_) => {} // validated at port usage sites
             }
         }
         if self.errors.is_empty() {
@@ -152,6 +155,20 @@ impl<'a> TypeChecker<'a> {
             }
         }
         for p in &m.ports {
+            if p.bus_info.is_some() {
+                // Bus ports: validate bus exists, register as a special type
+                if let Some(ref bi) = p.bus_info {
+                    if let Some((crate::resolve::Symbol::Bus(_), _)) = self.symbols.globals.get(&bi.bus_name.name) {
+                        local_types.insert(p.name.name.clone(), Ty::Bus(bi.bus_name.name.clone()));
+                    } else {
+                        self.errors.push(CompileError::general(
+                            &format!("unknown bus type `{}`", bi.bus_name.name),
+                            bi.bus_name.span,
+                        ));
+                    }
+                }
+                continue;
+            }
             let ty = self.resolve_type_expr(&p.ty, &m.name.name, &local_types);
             local_types.insert(p.name.name.clone(), ty);
         }
@@ -278,7 +295,27 @@ impl<'a> TypeChecker<'a> {
 
         // Check all output ports are driven
         for p in &m.ports {
-            if p.direction == Direction::Out && !driven.contains(&p.name.name) {
+            if let Some(ref bi) = p.bus_info {
+                // Bus port: check each output signal is driven (flattened name: port_signal)
+                let bus_name = &bi.bus_name.name;
+                if let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
+                    for (sname, sdir, _) in &info.signals {
+                        let actual_dir = match bi.perspective {
+                            BusPerspective::Initiator => *sdir,
+                            BusPerspective::Target => (*sdir).flip(),
+                        };
+                        if actual_dir == Direction::Out {
+                            let flat = format!("{}_{}", p.name.name, sname);
+                            if !driven.contains(&flat) {
+                                self.errors.push(CompileError::UndriveOutput {
+                                    name: flat,
+                                    span: crate::diagnostics::span_to_source_span(p.name.span),
+                                });
+                            }
+                        }
+                    }
+                }
+            } else if p.direction == Direction::Out && !driven.contains(&p.name.name) {
                 self.errors.push(CompileError::UndriveOutput {
                     name: p.name.name.clone(),
                     span: crate::diagnostics::span_to_source_span(p.name.span),
@@ -582,6 +619,23 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Like expr_root_name_tc but returns the flattened name for single-level FieldAccess
+    /// (e.g. `itcm.cmd_valid` → `"itcm_cmd_valid"`). Used for bus port driven tracking.
+    fn expr_flat_name_tc(expr: &Expr) -> String {
+        match &expr.kind {
+            ExprKind::Ident(n) => n.clone(),
+            ExprKind::FieldAccess(base, field) => {
+                if let ExprKind::Ident(base_name) = &base.kind {
+                    format!("{}_{}", base_name, field.name)
+                } else {
+                    Self::expr_root_name_tc(base)
+                }
+            }
+            ExprKind::Index(base, _) | ExprKind::BitSlice(base, _, _) => Self::expr_flat_name_tc(base),
+            _ => String::new(),
+        }
+    }
+
     /// Emit an error when the RHS is wider than the LHS register/port.
     /// Compute total bit width of a type, resolving structs via symbol table.
     fn type_total_width(&self, ty: &Ty) -> Option<u32> {
@@ -602,6 +656,7 @@ impl<'a> TypeChecker<'a> {
                     None
                 }
             }
+            Ty::Bus(_) => None, // bus is not a single-width type
             Ty::Todo | Ty::Error => None,
         }
     }
@@ -702,6 +757,8 @@ impl<'a> TypeChecker<'a> {
                 {
                     let name = Self::expr_root_name_tc(&a.target);
                     if !name.is_empty() { driven.insert(name.clone()); }
+                    let flat = Self::expr_flat_name_tc(&a.target);
+                    if flat != name { driven.insert(flat); }
                     let rhs_ty = self.resolve_expr_type(&a.value, module_name, local_types);
                     if let Some(lhs_ty) = local_types.get(&name).cloned() {
                         self.check_width_compatible(&lhs_ty, &rhs_ty, &name, a.span);
@@ -766,6 +823,11 @@ impl<'a> TypeChecker<'a> {
                 // (default + override in if/elsif/else branches). The real
                 // multiple-driver check is across different comb blocks.
                 driven.insert(target_name.clone());
+                // Also track flattened name for bus port signals (e.g. itcm_cmd_valid)
+                let flat_name = Self::expr_flat_name_tc(&a.target);
+                if flat_name != target_name {
+                    driven.insert(flat_name);
+                }
                 let rhs_ty = self.resolve_expr_type(&a.value, module_name, local_types);
                 if !is_indexed {
                     if let Some(lhs_ty) = local_types.get(&target_name).cloned() {
@@ -939,6 +1001,21 @@ impl<'a> TypeChecker<'a> {
                                     return self.resolve_type_expr(fty, module_name, local_types);
                                 }
                             }
+                        }
+                    }
+                }
+                if let Ty::Bus(name) = &base_ty {
+                    if let Some((sym, _)) = self.symbols.globals.get(name) {
+                        if let crate::resolve::Symbol::Bus(info) = sym {
+                            for (sname, _dir, sty) in &info.signals {
+                                if sname == &field.name {
+                                    return self.resolve_type_expr(sty, module_name, local_types);
+                                }
+                            }
+                            self.errors.push(CompileError::general(
+                                &format!("bus `{}` has no signal `{}`", name, field.name),
+                                field.span,
+                            ));
                         }
                     }
                 }

@@ -1,7 +1,6 @@
-// VerilogEval Prob139: Motor controller FSM, active-low sync reset (resetn)
+Wrote tests/verilog_eval/Prob139_2013_q2bfsm.sv
+tive-low sync reset (resetn)
 // States: A(reset), SetF, X1, X0, X01, SetG1, SetG2, GoodG, BadG
-// domain SysDomain
-
 module TopModule (
   input logic clk,
   input logic resetn,

@@ -1,6 +1,5 @@
-module TopModule (
-  input logic p1a,
-  input logic p1b,
+Wrote tests/verilog_eval/Prob065_7420.sv
+nput logic p1b,
   input logic p1c,
   input logic p1d,
   input logic p2a,

@@ -23,6 +23,7 @@ pub enum Item {
     Template(TemplateDecl),
     Synchronizer(SynchronizerDecl),
     Clkgate(ClkGateDecl),
+    Bus(BusDecl),
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +50,29 @@ pub struct StructDecl {
 pub struct StructField {
     pub name: Ident,
     pub ty: TypeExpr,
+}
+
+// ── Bus (port bundle) ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct BusDecl {
+    pub name: Ident,
+    pub params: Vec<ParamDecl>,
+    pub signals: Vec<PortDecl>,  // direction = from initiator's perspective
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BusPerspective {
+    Initiator,
+    Target,
+}
+
+#[derive(Debug, Clone)]
+pub struct BusPortInfo {
+    pub bus_name: Ident,
+    pub perspective: BusPerspective,
+    pub params: Vec<ParamAssign>,
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +119,9 @@ pub struct PortDecl {
     /// When present, this output port is also a register (assigned in `seq` blocks).
     /// Syntax: `port reg name: out Type [init V] [reset R=V];`
     pub reg_info: Option<PortRegInfo>,
+    /// When present, this port is a bus bundle (initiator or target perspective).
+    /// Syntax: `port name: initiator BusName<PARAM=val>;`
+    pub bus_info: Option<BusPortInfo>,
     pub span: Span,
 }
 
@@ -109,6 +136,15 @@ pub struct PortRegInfo {
 pub enum Direction {
     In,
     Out,
+}
+
+impl Direction {
+    pub fn flip(self) -> Self {
+        match self {
+            Direction::In => Direction::Out,
+            Direction::Out => Direction::In,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -543,6 +579,7 @@ impl Item {
             Item::Template(t) => t.span,
             Item::Synchronizer(s) => s.span,
             Item::Clkgate(c) => c.span,
+            Item::Bus(b) => b.span,
         }
     }
 }

@@ -61,8 +61,6 @@ module FsmCounter (
   end
   
   always_comb begin
-    done = 1'b0; // default
-    count = 0; // default
     case (state_r)
       IDLE: begin
         done = 1'b0;

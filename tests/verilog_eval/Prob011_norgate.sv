@@ -1,6 +1,5 @@
-module TopModule (
-  input logic a,
-  input logic b,
+Wrote tests/verilog_eval/Prob011_norgate.sv
+logic b,
   output logic out
 );
 

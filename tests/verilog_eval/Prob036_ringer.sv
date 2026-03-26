@@ -1,6 +1,5 @@
-module TopModule (
-  input logic ring,
-  input logic vibrate_mode,
+Wrote tests/verilog_eval/Prob036_ringer.sv
+put logic vibrate_mode,
   output logic ringer,
   output logic motor
 );

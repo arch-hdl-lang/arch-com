@@ -18,12 +18,7 @@ module Ift2Icb
   port ifu_rsp_ready:  in Bool;
 
   // ITCM ICB master interface
-  port itcm_cmd_valid: out Bool;
-  port itcm_cmd_addr:  out UInt<14>;
-  port itcm_cmd_ready: in Bool;
-  port itcm_rsp_valid: in Bool;
-  port itcm_rsp_data:  in UInt<32>;
-  port itcm_rsp_ready: out Bool;
+  port itcm: initiator ItcmIcb;
 
   // Response pipeline register
   reg rsp_valid_r: Bool   init 0 reset rst_n=0;
@@ -35,21 +30,21 @@ module Ift2Icb
 
   // Request path: pass through to ITCM when not stalled
   comb
-    itcm_cmd_valid = ifu_req_valid & ~stall_pipe;
-    itcm_cmd_addr  = ifu_req_pc[15:2];
-    ifu_req_ready  = itcm_cmd_ready & ~stall_pipe;
+    itcm.cmd_valid = ifu_req_valid & ~stall_pipe;
+    itcm.cmd_addr  = ifu_req_pc[15:2];
+    ifu_req_ready  = itcm.cmd_ready & ~stall_pipe;
   end comb
 
   // Accept ITCM response when we can
   comb
-    itcm_rsp_ready = ~stall_pipe;
+    itcm.rsp_ready = ~stall_pipe;
   end comb
 
   // Response pipeline: register ITCM response for IFU
   seq on clk rising
     if ~stall_pipe
-      rsp_valid_r <= itcm_rsp_valid;
-      rsp_data_r  <= itcm_rsp_data;
+      rsp_valid_r <= itcm.rsp_valid;
+      rsp_data_r  <= itcm.rsp_data;
     end if
   end seq
 

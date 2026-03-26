@@ -1,6 +1,3 @@
-domain SysDomain
-end domain SysDomain
-
 fsm TopModule
   port clk: in Clock<SysDomain>;
   port areset: in Reset<Async>;
@@ -9,33 +6,22 @@ fsm TopModule
 
   state A, B, C, D;
   default state A;
+  default
+    comb z = false;
+  end default
 
-  state A
-    comb
-      z = false;
-    end comb
-    transition to B when x;
-  end state A
+  state A transition to B when x;
 
   state B
-    comb
-      z = true;
-    end comb
+    comb z = true;
     transition to D when x;
     transition to C when ~x;
   end state B
 
   state C
-    comb
-      z = true;
-    end comb
+    comb z = true;
     transition to D when x;
   end state C
 
-  state D
-    comb
-      z = false;
-    end comb
-    transition to C when ~x;
-  end state D
+  state D transition to C when ~x;
 end fsm TopModule

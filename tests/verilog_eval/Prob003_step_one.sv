@@ -1,8 +1,5 @@
-module TopModule (
-  output logic one
-);
-
-  assign one = 1;
+Wrote tests/verilog_eval/Prob003_step_one.sv
+ssign one = 1;
 
 endmodule
 

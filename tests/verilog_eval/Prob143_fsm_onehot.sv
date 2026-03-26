@@ -1,6 +1,5 @@
-module TopModule (
-  input logic in,
-  input logic [10-1:0] state,
+Wrote tests/verilog_eval/Prob143_fsm_onehot.sv
+gic [10-1:0] state,
   output logic [10-1:0] next_state,
   output logic out1,
   output logic out2

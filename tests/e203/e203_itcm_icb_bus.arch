@@ -1,0 +1,14 @@
+// ITCM ICB bus — simple command/response interface for ITCM access
+// Directions are from the initiator's (master's) perspective.
+
+bus ItcmIcb
+  param ADDR_W: const = 14;
+  param DATA_W: const = 32;
+
+  cmd_valid: out Bool;
+  cmd_addr:  out UInt<ADDR_W>;
+  cmd_ready: in  Bool;
+  rsp_valid: in  Bool;
+  rsp_data:  in  UInt<DATA_W>;
+  rsp_ready: out Bool;
+end bus ItcmIcb

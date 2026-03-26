@@ -1,9 +1,6 @@
 // VerilogEval Prob147: Sequential circuit from waveform
 // next_state = (a & b) | (state & (a ^ b))
 // q = a ^ b ^ state
-domain SysDomain
-end domain SysDomain
-
 module TopModule
   port clk: in Clock<SysDomain>;
   port a: in Bool;
@@ -11,9 +8,9 @@ module TopModule
   port reg state: out Bool;
   port q: out Bool;
 
-  seq on clk rising
-    state <= (a & b) | (state & (a ^ b));
-  end seq
+  default seq on clk rising;
+
+  seq state <= (a & b) | (state & (a ^ b));
 
   comb
     q = a ^ b ^ state;

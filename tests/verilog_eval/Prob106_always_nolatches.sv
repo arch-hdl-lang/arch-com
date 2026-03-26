@@ -1,6 +1,5 @@
-module TopModule (
-  input logic [16-1:0] scancode,
-  output logic left,
+Wrote tests/verilog_eval/Prob106_always_nolatches.sv
+ output logic left,
   output logic down,
   output logic right,
   output logic up

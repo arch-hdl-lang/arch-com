@@ -1,6 +1,3 @@
-domain SysDomain
-end domain SysDomain
-
 module TopModule
   port a: in Bool;
   port b: in Bool;

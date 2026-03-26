@@ -456,6 +456,36 @@ Arch has exactly two assignment forms. Mixing operators between them is a compil
 
 > *⚑ The clock is named in `seq on clk rising`; reset is declared per register (`reset rst=0 sync high` or `reset none`). The `reset SIGNAL=VALUE` syntax requires an explicit reset value after the signal name. `init` is optional and only sets the SV declaration initializer (`logic x = VALUE;`). The compiler auto-generates the `if (rst)` guard and propagates domain membership automatically through all downstream logic in the module.*
 
+**Default Clock for seq Blocks**
+
+When a module or FSM has only one clock, the `seq on clk rising/falling` header can be factored out into a default declaration:
+
+```
+default seq on clk rising;
+```
+
+This sets the default clock and edge for all `seq` blocks in the construct. With this default in place, `seq` blocks no longer need the `on clk rising` clause:
+
+```
+module Counter
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port reg count: out UInt<8> reset rst=0;
+
+  default seq on clk rising;
+
+  seq count <= (count + 1).trunc<8>();
+end module Counter
+```
+
+**One-line seq syntax:** When `default seq` is declared, a single-assignment seq block can be written on one line without `end seq`:
+
+```
+seq target <= expr;
+```
+
+This is equivalent to `seq on clk rising target <= expr; end seq`. Multi-line seq blocks (with `if/elsif/else`, `for`, or multiple assignments) still use the full `seq ... end seq` form (but omit `on clk rising`).
+
 Combinational blocks with a single assignment can use the one-line form, omitting `end comb`:
 
 ```
@@ -644,6 +674,8 @@ end module Counter
 Every Clock signal in Arch carries a domain tag as part of its type. The compiler tracks which domain every signal belongs to. Crossing domain boundaries without an explicit crossing block is a compile-time error --- never a simulation-time surprise.
 
 **5.1 Declaring Domains**
+
+**Built-in domain: `SysDomain`.** The domain `SysDomain` is always available without an explicit declaration. It is the conventional default clock domain. You may still declare `domain SysDomain freq_mhz: 200 end domain SysDomain` to set a specific frequency, but the domain name itself is pre-registered and can be used in `Clock<SysDomain>` without any domain block.
 
 +-------------------------------------------------------------------------------+
 | *domains.arch*                                                                |

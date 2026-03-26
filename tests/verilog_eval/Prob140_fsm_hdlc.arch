@@ -1,7 +1,4 @@
 // VerilogEval Prob140: HDLC framing FSM - disc, flag, err detection
-domain SysDomain
-end domain SysDomain
-
 fsm TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
@@ -12,18 +9,13 @@ fsm TopModule
 
   state S0, S1, S2, S3, S4, S5, S6, Serr, Sdisc, Sflag;
   default state S0;
-
   default
-    comb
-      disc = false;
-      flag = false;
-      err = false;
-    end comb
+    comb disc = false;
+    comb flag = false;
+    comb err = false;
   end default
 
-  state S0
-    transition to S1 when in;
-  end state S0
+  state S0 transition to S1 when in;
 
   state S1
     transition to S2 when in;
@@ -56,25 +48,19 @@ fsm TopModule
   end state S6
 
   state Serr
-    comb
-      err = true;
-    end comb
+    comb err = true;
     transition to Serr when in;
     transition to S0 when ~in;
   end state Serr
 
   state Sdisc
-    comb
-      disc = true;
-    end comb
+    comb disc = true;
     transition to S1 when in;
     transition to S0 when ~in;
   end state Sdisc
 
   state Sflag
-    comb
-      flag = true;
-    end comb
+    comb flag = true;
     transition to S1 when in;
     transition to S0 when ~in;
   end state Sflag

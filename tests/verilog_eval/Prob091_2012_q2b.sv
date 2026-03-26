@@ -1,6 +1,5 @@
-module TopModule (
-  input logic [6-1:0] y,
-  input logic w,
+Wrote tests/verilog_eval/Prob091_2012_q2b.sv
+ input logic w,
   output logic Y1,
   output logic Y3
 );

@@ -1,7 +1,4 @@
 // VerilogEval Prob153: Gshare branch predictor
-domain SysDomain
-end domain SysDomain
-
 module TopModule
   port clk: in Clock<SysDomain>;
   port areset: in Reset<Async>;
@@ -16,6 +13,8 @@ module TopModule
   port predict_history: out UInt<7>;
 
   // 128-entry PHT, 2-bit saturating counters, init to weakly not-taken (01)
+  default seq on clk rising;
+
   reg pht: Vec<UInt<2>, 128> reset areset=1;
   reg ghr: UInt<7> reset areset=0;
 
@@ -47,20 +46,14 @@ module TopModule
     end if
   end comb
 
-  seq on clk rising
+  seq
     // Train PHT
-    if train_valid
-      pht[train_idx] <= train_new;
-    end if
+    pht[train_idx] <= train_valid ? train_new : pht[train_idx];
 
     // Update GHR: predict shifts in predicted taken
-    if predict_valid
-      ghr <= {ghr[5:0], pht[predict_idx][1]};
-    end if
+    ghr <= predict_valid ? {ghr[5:0], pht[predict_idx][1]} : ghr;
 
     // Misprediction recovery overwrites GHR (last assignment wins)
-    if train_valid & train_mispredicted
-      ghr <= {train_history[5:0], train_taken};
-    end if
+    ghr <= train_valid & train_mispredicted ? {train_history[5:0], train_taken} : ghr;
   end seq
 end module TopModule

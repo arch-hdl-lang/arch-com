@@ -1,6 +1,3 @@
-domain SysDomain
-end domain SysDomain
-
 module TopModule
   port a: in Bool;
   port b: in Bool;
@@ -8,10 +5,6 @@ module TopModule
   port out: out Bool;
 
   comb
-    if sel == 1'b1
-      out = b;
-    else
-      out = a;
-    end if
+    out = sel == 1'b1 ? b : a;
   end comb
 end module TopModule

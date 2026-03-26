@@ -1,6 +1,5 @@
-// VerilogEval Prob133: FSM waits for s=1, then counts w over 3-cycle windows
-// domain SysDomain
-
+Wrote tests/verilog_eval/Prob133_2014_q3fsm.sv
+ counts w over 3-cycle windows
 module TopModule (
   input logic clk,
   input logic reset,
@@ -32,28 +31,16 @@ module TopModule (
           cnt <= 0;
         end
         B1: begin
-          if (w) begin
-            cnt <= 1;
-          end else begin
-            cnt <= 0;
-          end
+          cnt <= w ? 1 : 0;
         end
         B2: begin
-          if (w) begin
-            cnt <= 2'(cnt + 1);
-          end
+          cnt <= w ? 2'(cnt + 1) : cnt;
         end
         B3: begin
-          if (w) begin
-            cnt <= 2'(cnt + 1);
-          end
+          cnt <= w ? 2'(cnt + 1) : cnt;
         end
         OUT: begin
-          if (w) begin
-            cnt <= 1;
-          end else begin
-            cnt <= 0;
-          end
+          cnt <= w ? 1 : 0;
         end
         default: ;
       endcase
@@ -83,24 +70,18 @@ module TopModule (
   end
   
   always_comb begin
+    z = 1'b0;
     case (state_r)
       A: begin
-        z = 1'b0;
       end
       B1: begin
-        z = 1'b0;
       end
       B2: begin
-        z = 1'b0;
       end
       B3: begin
-        z = 1'b0;
       end
       OUT: begin
-        z = 1'b0;
-        if (cnt == 2) begin
-          z = 1'b1;
-        end
+        z = cnt == 2;
       end
       default: ;
     endcase

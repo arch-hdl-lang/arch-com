@@ -1,7 +1,5 @@
-// domain SysDomain
-
-module TopModule (
-  input logic in,
+Wrote tests/verilog_eval/Prob007_wire.sv
+ input logic in,
   output logic out
 );
 

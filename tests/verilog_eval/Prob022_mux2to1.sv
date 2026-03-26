@@ -1,19 +1,10 @@
-// domain SysDomain
-
-module TopModule (
-  input logic a,
-  input logic b,
+Wrote tests/verilog_eval/Prob022_mux2to1.sv
+logic b,
   input logic sel,
   output logic out
 );
 
-  always_comb begin
-    if (sel == 1'd1) begin
-      out = b;
-    end else begin
-      out = a;
-    end
-  end
+  assign out = sel == 1'd1 ? b : a;
 
 endmodule
 

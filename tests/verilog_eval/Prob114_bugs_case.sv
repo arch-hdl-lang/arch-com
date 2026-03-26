@@ -1,5 +1,5 @@
-module TopModule (
-  input logic [8-1:0] code,
+Wrote tests/verilog_eval/Prob114_bugs_case.sv
+
   output logic [4-1:0] out,
   output logic valid
 );

@@ -1,8 +1,5 @@
-// domain SysDomain
-
-module TopModule (
-  input logic clk,
-  input logic reset,
+Wrote tests/verilog_eval/Prob121_2014_q3bfsm.sv
+gic reset,
   input logic x,
   output logic z
 );
@@ -49,15 +46,13 @@ module TopModule (
   end
   
   always_comb begin
+    z = 1'b0;
     case (state_r)
       A: begin
-        z = 1'b0;
       end
       B: begin
-        z = 1'b0;
       end
       C: begin
-        z = 1'b0;
       end
       D: begin
         z = 1'b1;

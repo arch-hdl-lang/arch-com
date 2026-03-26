@@ -1,7 +1,4 @@
 // VerilogEval Prob148: 4-state priority arbiter, active-low sync reset (resetn)
-domain SysDomain
-end domain SysDomain
-
 fsm TopModule
   port clk: in Clock<SysDomain>;
   port resetn: in Reset<Sync, Low>;
@@ -10,11 +7,8 @@ fsm TopModule
 
   state Idle, Grant0, Grant1, Grant2;
   default state Idle;
-
   default
-    comb
-      g = 0;
-    end comb
+    comb g = 0;
   end default
 
   state Idle
@@ -24,23 +18,17 @@ fsm TopModule
   end state Idle
 
   state Grant0
-    comb
-      g = 1;
-    end comb
+    comb g = 1;
     transition to Idle when ~r[0];
   end state Grant0
 
   state Grant1
-    comb
-      g = 2;
-    end comb
+    comb g = 2;
     transition to Idle when ~r[1];
   end state Grant1
 
   state Grant2
-    comb
-      g = 4;
-    end comb
+    comb g = 4;
     transition to Idle when ~r[2];
   end state Grant2
 end fsm TopModule

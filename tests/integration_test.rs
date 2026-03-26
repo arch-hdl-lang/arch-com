@@ -7,7 +7,7 @@ use arch::typecheck::TypeChecker;
 
 fn compile_to_sv(source: &str) -> String {
     let tokens = lexer::tokenize(source).expect("lexer error");
-    let mut parser = Parser::new(tokens);
+    let mut parser = Parser::new(tokens, source);
     let parsed_ast = parser.parse_source_file().expect("parse error");
     let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
     let symbols = resolve::resolve(&ast).expect("resolve error");
@@ -148,7 +148,7 @@ fsm Broken
 end fsm Broken
 "#;
     let tokens = lexer::tokenize(source).expect("lex");
-    let mut parser = Parser::new(tokens);
+    let mut parser = Parser::new(tokens, source);
     let ast = parser.parse_source_file().expect("parse");
     // `C` is not in {A, B} — resolve should error
     assert!(resolve::resolve(&ast).is_err());
@@ -207,7 +207,7 @@ fifo BadFifo
 end fifo BadFifo
 "#;
     let tokens = lexer::tokenize(source).expect("lex");
-    let mut parser = Parser::new(tokens);
+    let mut parser = Parser::new(tokens, source);
     let ast = parser.parse_source_file().expect("parse");
     let symbols = resolve::resolve(&ast).expect("resolve");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
@@ -314,7 +314,7 @@ arbiter BadArb
 end arbiter BadArb
 "#;
     let tokens = lexer::tokenize(source).expect("lexer error");
-    let mut parser = Parser::new(tokens);
+    let mut parser = Parser::new(tokens, source);
     let parsed_ast = parser.parse_source_file().expect("parse error");
     let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
     let symbols = resolve::resolve(&ast).expect("resolve error");
@@ -366,11 +366,11 @@ end template MyTmpl
 module BadModule implements MyTmpl
   port clk: in Clock<SysDomain>;
   port other: out UInt<8>;
-  comb other = 0; end comb
+  comb other = 0;
 end module BadModule
 "#;
     let tokens = lexer::tokenize(source).expect("lexer error");
-    let mut parser = Parser::new(tokens);
+    let mut parser = Parser::new(tokens, source);
     let parsed_ast = parser.parse_source_file().expect("parse error");
     let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
     let symbols = resolve::resolve(&ast).expect("resolve error");
@@ -426,7 +426,7 @@ ram BadRam
 end ram BadRam
 "#;
     let tokens = lexer::tokenize(source).expect("lex");
-    let mut parser = Parser::new(tokens);
+    let mut parser = Parser::new(tokens, source);
     let ast = parser.parse_source_file().expect("parse");
     let symbols = resolve::resolve(&ast).expect("resolve");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
@@ -456,7 +456,7 @@ module BadCounter
 end module BadCounter
 "#;
     let tokens = lexer::tokenize(source).expect("lex");
-    let mut parser = Parser::new(tokens);
+    let mut parser = Parser::new(tokens, source);
     let ast = parser.parse_source_file().expect("parse");
     let symbols = resolve::resolve(&ast).expect("resolve");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
@@ -849,7 +849,7 @@ module BadMixed
 end module BadMixed
 "#;
     let tokens = lexer::tokenize(source).expect("lex");
-    let mut parser = Parser::new(tokens);
+    let mut parser = Parser::new(tokens, source);
     let ast = parser.parse_source_file().expect("parse");
     let symbols = resolve::resolve(&ast).expect("resolve");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
@@ -885,7 +885,7 @@ module BadSyncAsync
 end module BadSyncAsync
 "#;
     let tokens = lexer::tokenize(source).expect("lex");
-    let mut parser = Parser::new(tokens);
+    let mut parser = Parser::new(tokens, source);
     let ast = parser.parse_source_file().expect("parse");
     let symbols = resolve::resolve(&ast).expect("resolve");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
@@ -931,7 +931,7 @@ pipeline BadPipe
 end pipeline BadPipe
 "#;
     let tokens = lexer::tokenize(source).expect("lex");
-    let mut parser = Parser::new(tokens);
+    let mut parser = Parser::new(tokens, source);
     let ast = parser.parse_source_file().expect("parse");
     let elaborated = elaborate::elaborate(ast).expect("elaborate");
     let symbols = resolve::resolve(&elaborated).expect("resolve");
@@ -975,7 +975,7 @@ pipeline BadFlush
 end pipeline BadFlush
 "#;
     let tokens = lexer::tokenize(source).expect("lex");
-    let mut parser = Parser::new(tokens);
+    let mut parser = Parser::new(tokens, source);
     let ast = parser.parse_source_file().expect("parse");
     let elaborated = elaborate::elaborate(ast).expect("elaborate");
     let symbols = resolve::resolve(&elaborated).expect("resolve");
@@ -1353,7 +1353,7 @@ linklist BadList
 end linklist BadList
 "#;
     let tokens = lexer::tokenize(source).expect("lexer error");
-    let mut parser = Parser::new(tokens);
+    let mut parser = Parser::new(tokens, source);
     let parsed = parser.parse_source_file().expect("parse error");
     let ast = elaborate::elaborate(parsed).expect("elaborate error");
     let symbols = resolve::resolve(&ast).expect("resolve error");
@@ -1373,7 +1373,7 @@ fn test_linklist_inst_in_module() {
     let source = std::fs::read_to_string("tests/pkt_queue.arch")
         .expect("pkt_queue.arch not found");
     let tokens = lexer::tokenize(&source).expect("lexer error");
-    let mut parser = Parser::new(tokens);
+    let mut parser = Parser::new(tokens, &source);
     let parsed = parser.parse_source_file().expect("parse error");
     let ast = elaborate::elaborate(parsed).expect("elaborate error");
     let symbols = resolve::resolve(&ast).expect("resolve error");

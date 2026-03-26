@@ -1,8 +1,5 @@
-// domain SysDomain
-
-module TopModule (
-  input logic clk,
-  input logic areset,
+Wrote tests/verilog_eval/Prob089_ece241_2014_q5a.sv
+areset,
   input logic x,
   output logic z
 );
@@ -45,9 +42,9 @@ module TopModule (
   end
   
   always_comb begin
+    z = 1'b0;
     case (state_r)
       A: begin
-        z = 1'b0;
       end
       B: begin
         z = 1'b1;
@@ -56,7 +53,6 @@ module TopModule (
         z = 1'b1;
       end
       D: begin
-        z = 1'b0;
       end
       default: ;
     endcase

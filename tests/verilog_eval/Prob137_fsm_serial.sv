@@ -1,8 +1,5 @@
-// domain SysDomain
-
-module TopModule (
-  input logic clk,
-  input logic reset,
+Wrote tests/verilog_eval/Prob137_fsm_serial.sv
+ogic reset,
   input logic in,
   output logic done
 );

@@ -1,6 +1,5 @@
-module TopModule (
-  input logic a,
-  input logic b,
+Wrote tests/verilog_eval/Prob059_wire4.sv
+t logic b,
   input logic c,
   output logic w,
   output logic x,

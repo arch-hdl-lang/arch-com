@@ -1,8 +1,5 @@
 // VerilogEval Prob063: 4-bit shift register / down counter
 // Shift: data enters at LSB, shifts left: q <= {q[2:0], data}
-domain SysDomain
-end domain SysDomain
-
 module TopModule
   port clk: in Clock<SysDomain>;
   port shift_ena: in Bool;
@@ -10,7 +7,9 @@ module TopModule
   port data: in Bool;
   port reg q: out UInt<4>;
 
-  seq on clk rising
+  default seq on clk rising;
+
+  seq
     if shift_ena
       q[0] <= data;
       q[1] <= q[0];

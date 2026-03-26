@@ -1,6 +1,5 @@
-// VerilogEval Prob151: Timer FSM (registered version) - detect 1101, shift 4, count, wait ack
-// domain SysDomain
-
+Wrote tests/verilog_eval/Prob151_review2015_fsm.sv
+on) - detect 1101, shift 4, count, wait ack
 module TopModule (
   input logic clk,
   input logic reset,

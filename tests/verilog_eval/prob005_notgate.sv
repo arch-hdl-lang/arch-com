@@ -1,5 +1,5 @@
-// VerilogEval Prob005: NOT gate
-module TopModule (
+Wrote tests/verilog_eval/prob005_notgate.sv
+odule (
   input logic in,
   output logic out
 );

@@ -278,7 +278,7 @@ fn run_check_multi(
     })?;
 
     // Parse
-    let mut p = parser::Parser::new(tokens);
+    let mut p = parser::Parser::new(tokens, source);
     let parsed_ast = p.parse_source_file().map_err(|err| {
         ms.report_error(err)
     })?;

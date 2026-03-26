@@ -1,6 +1,3 @@
-domain SysDomain
-end domain SysDomain
-
 fsm TopModule
   port clk: in Clock<SysDomain>;
   port areset: in Reset<Async>;
@@ -11,20 +8,18 @@ fsm TopModule
 
   state WalkLeft, WalkRight;
   default state WalkLeft;
+  default
+    comb walk_left = false;
+    comb walk_right = false;
+  end default
 
   state WalkLeft
-    comb
-      walk_left = true;
-      walk_right = false;
-    end comb
+    comb walk_left = true;
     transition to WalkRight when bump_left;
   end state WalkLeft
 
   state WalkRight
-    comb
-      walk_left = false;
-      walk_right = true;
-    end comb
+    comb walk_right = true;
     transition to WalkLeft when bump_right;
   end state WalkRight
 end fsm TopModule

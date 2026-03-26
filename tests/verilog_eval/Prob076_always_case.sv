@@ -1,6 +1,5 @@
-module TopModule (
-  input logic [3-1:0] sel,
-  input logic [4-1:0] data0,
+Wrote tests/verilog_eval/Prob076_always_case.sv
+input logic [4-1:0] data0,
   input logic [4-1:0] data1,
   input logic [4-1:0] data2,
   input logic [4-1:0] data3,

@@ -4,10 +4,6 @@ module TopModule
   port b: in UInt<8>;
   port out: out UInt<8>;
   comb
-    if sel
-      out = a;
-    else
-      out = b;
-    end if
+    out = sel ? a : b;
   end comb
 end module TopModule

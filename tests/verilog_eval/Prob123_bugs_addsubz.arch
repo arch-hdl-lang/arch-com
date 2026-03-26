@@ -5,11 +5,7 @@ module TopModule
   port out: out UInt<8>;
   port result_is_zero: out Bool;
   comb
-    if do_sub
-      out = (a - b).trunc<8>();
-    else
-      out = (a + b).trunc<8>();
-    end if
+    out = do_sub ? (a - b).trunc<8>() : (a + b).trunc<8>();
     result_is_zero = (out == 0);
   end comb
 end module TopModule

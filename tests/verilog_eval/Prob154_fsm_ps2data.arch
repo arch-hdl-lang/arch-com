@@ -1,8 +1,5 @@
 // VerilogEval Prob154: PS/2 3-byte message FSM with data output
 // Find byte with in[3]=1, collect 3 bytes, assert done
-domain SysDomain
-end domain SysDomain
-
 fsm TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
@@ -14,32 +11,24 @@ fsm TopModule
 
   state Find, Got1, Got2, Done_St;
   default state Find;
-
+  default seq on clk rising;
   default
-    comb
-      out_bytes = 0;
-      done = false;
-    end comb
+    comb out_bytes = 0;
+    comb done = false;
   end default
 
   state Find
-    seq on clk rising
-      out_r <= {out_r[15:0], in};
-    end seq
+    seq out_r <= {out_r[15:0], in};
     transition to Got1 when in[3];
   end state Find
 
   state Got1
-    seq on clk rising
-      out_r <= {out_r[15:0], in};
-    end seq
+    seq out_r <= {out_r[15:0], in};
     transition to Got2 when true;
   end state Got1
 
   state Got2
-    seq on clk rising
-      out_r <= {out_r[15:0], in};
-    end seq
+    seq out_r <= {out_r[15:0], in};
     transition to Done_St when true;
   end state Got2
 
@@ -48,9 +37,7 @@ fsm TopModule
       done = true;
       out_bytes = out_r;
     end comb
-    seq on clk rising
-      out_r <= {out_r[15:0], in};
-    end seq
+    seq out_r <= {out_r[15:0], in};
     transition to Got1 when in[3];
     transition to Find when ~in[3];
   end state Done_St

@@ -58,6 +58,8 @@
 >
 > pipe_reg delayed: source stages 3; // N-stage delay chain, type inferred
 >
+> default seq on clk rising; // set default clock for all seq blocks
+>
 > seq on clk rising // clocked process --- uses \<=
 >
 > r \<= expr; // compiler auto-generates if(rst) guard
@@ -65,6 +67,8 @@
 > p \<= expr; // no reset guard (reset none)
 >
 > end seq
+>
+> seq r \<= expr; // one-line seq (uses default clock, no end seq)
 >
 > let x: UInt\<32\> = a + b; // combinational wire (explicit type required)
 >
@@ -83,6 +87,8 @@
 > UInt\<N\> SInt\<N\> Bool Bit
 >
 > Clock\<Domain\> Reset\<Sync\|Async, High\|Low\> (polarity defaults High)
+>
+> SysDomain is built-in --- no `domain SysDomain end domain SysDomain` needed
 >
 > Vec\<T,N\> struct S { f: T, } enum E { A, B, }
 >
@@ -151,6 +157,8 @@
 |                                       |                                  |
 | pipe_reg d: r stages 2;              | 2-stage delay of r (read-only)   |
 |                                       |                                  |
+| default seq on clk rising;            | Set default clock for seq blocks |
+|                                       |                                  |
 | seq on clk rising                     | Compiler auto-generates          |
 |                                       |                                  |
 | r \<= a;                              | if(rst) reset guard from reg decl|
@@ -158,6 +166,8 @@
 | y \<= r;                              | port reg assigned directly       |
 |                                       |                                  |
 | end seq                               |                                  |
+|                                       |                                  |
+| seq r \<= a;                          | One-line seq (uses default clk)  |
 |                                       |                                  |
 | end module Name                       |                                  |
 |                                       |                                  |
@@ -555,6 +565,24 @@ CDC detection covers both seq→seq and comb→seq crossings: a comb block readi
 |                                      |                                   |
 | // is a COMPILE ERROR                |                                   |
 +--------------------------------------+-----------------------------------+
+
+**bus --- reusable port bundle with initiator/target perspectives**
+
++-------------------------------------------+--------------------------------------+
+| bus AxiLite                               | Signals from initiator's perspective |
+|                                           |                                      |
+| param ADDR_W: const = 32;                 | `target` flips all directions        |
+|                                           |                                      |
+| port aw_valid: out Bool;                  | Usage in module:                     |
+|                                           |                                      |
+| port aw_ready: in Bool;                   | port axi: initiator AxiLite;         |
+|                                           |                                      |
+| port aw_addr: out UInt\<ADDR_W\>;        | port axi: target AxiLite;            |
+|                                           |                                      |
+| end bus AxiLite                           | SV: flattened axi\_aw\_valid, etc.   |
+|                                           |                                      |
+|                                           | inst connect: axi.aw\_valid \<- wire |
++-------------------------------------------+--------------------------------------+
 
 **template --- user-defined interface contract**
 

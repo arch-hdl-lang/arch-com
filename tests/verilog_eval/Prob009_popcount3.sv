@@ -1,7 +1,5 @@
-// domain SysDomain
-
-module TopModule (
-  input logic [3-1:0] in,
+Wrote tests/verilog_eval/Prob009_popcount3.sv
+t logic [3-1:0] in,
   output logic [2-1:0] out
 );
 

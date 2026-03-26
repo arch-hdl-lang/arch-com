@@ -1,6 +1,5 @@
-// VerilogEval Prob138: 6-state FSM, input w, output z
-// domain SysDomain
-
+Wrote tests/verilog_eval/Prob138_2012_q2fsm.sv
+utput z
 module TopModule (
   input logic clk,
   input logic reset,

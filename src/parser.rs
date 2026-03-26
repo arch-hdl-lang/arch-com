@@ -5,16 +5,25 @@ use crate::lexer::{Span, Token, TokenKind};
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    /// Original source text, used for newline detection in one-line syntax disambiguation
+    source: String,
     /// When true, `>` and `>=` are not treated as binary operators (inside type angle brackets)
     no_angle: bool,
     /// Default init/reset applied to reg declarations that omit those clauses.
     /// Set by `reg default: init <expr> reset <...>;` within a module/pipeline body.
     reg_defaults: Option<(Option<Expr>, RegReset)>,
+    /// Default clock/edge for seq blocks. Set by `default seq on <clk> rising|falling;`.
+    seq_default: Option<(Ident, ClockEdge)>,
 }
 
 impl Parser {
-    pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0, no_angle: false, reg_defaults: None }
+    pub fn new(tokens: Vec<Token>, source: &str) -> Self {
+        Self { tokens, pos: 0, source: source.to_string(), no_angle: false, reg_defaults: None, seq_default: None }
+    }
+
+    /// Check if there's a newline in the source between two byte offsets.
+    fn has_newline_between(&self, from: usize, to: usize) -> bool {
+        self.source[from..to].contains('\n')
     }
 
     pub fn parse_source_file(&mut self) -> Result<SourceFile, CompileError> {
@@ -207,6 +216,7 @@ impl Parser {
         let start = self.expect(TokenKind::Module)?.span;
         let name = self.expect_ident()?;
         self.reg_defaults = None; // reset per-module
+        self.seq_default = None;
 
         // Optional: `implements TemplateName`
         let implements = if self.check(TokenKind::Implements) {
@@ -259,9 +269,13 @@ impl Parser {
                 Some(TokenKind::Hook) => {
                     hooks.push(self.parse_module_hook_decl()?);
                 }
+                Some(TokenKind::Default) => {
+                    // `default seq on <clk> rising|falling;`
+                    self.parse_seq_default_decl()?;
+                }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "param, port, reg, seq, comb, let, inst, pipe_reg, generate, or hook",
+                        "param, port, reg, seq, comb, let, inst, pipe_reg, generate, default, or hook",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -546,8 +560,10 @@ impl Parser {
         })
     }
 
-    fn parse_always_block(&mut self) -> Result<RegBlock, CompileError> {
-        let start = self.expect(TokenKind::Seq)?.span;
+    /// Parse `default seq on <clk> rising|falling;`
+    fn parse_seq_default_decl(&mut self) -> Result<(), CompileError> {
+        self.expect(TokenKind::Default)?;
+        self.expect(TokenKind::Seq)?;
         self.expect(TokenKind::On)?;
         let clock = self.expect_ident()?;
         let clock_edge = if self.eat(TokenKind::Rising) {
@@ -561,7 +577,62 @@ impl Parser {
                 self.peek_span(),
             ));
         };
+        self.expect(TokenKind::Semi)?;
+        self.seq_default = Some((clock, clock_edge));
+        Ok(())
+    }
 
+    fn parse_always_block(&mut self) -> Result<RegBlock, CompileError> {
+        let start = self.expect(TokenKind::Seq)?.span;
+
+        // Explicit clock: `seq on clk rising/falling ...`
+        if self.check(TokenKind::On) {
+            self.advance(); // consume `on`
+            let clock = self.expect_ident()?;
+            let clock_edge = if self.eat(TokenKind::Rising) {
+                ClockEdge::Rising
+            } else if self.eat(TokenKind::Falling) {
+                ClockEdge::Falling
+            } else {
+                return Err(CompileError::unexpected_token(
+                    "rising or falling",
+                    &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                    self.peek_span(),
+                ));
+            };
+
+            let mut stmts = Vec::new();
+            while !self.check_end_always() {
+                stmts.push(self.parse_reg_stmt()?);
+            }
+            self.expect(TokenKind::End)?;
+            self.expect(TokenKind::Seq)?;
+            let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+            return Ok(RegBlock { clock, clock_edge, stmts, span: start.merge(end_span) });
+        }
+
+        // No `on` — use default clock. Could be one-liner or multi-line.
+        let (clock, clock_edge) = self.seq_default.clone().ok_or_else(|| {
+            CompileError::general(
+                "`seq` without `on <clk>` requires `default seq on <clk> rising|falling;`",
+                start,
+            )
+        })?;
+
+        // One-line form: seq target <= expr; (no newline between `seq` and next token)
+        let is_oneline = if let Some(next) = self.tokens.get(self.pos) {
+            !self.has_newline_between(start.end, next.span.start)
+        } else {
+            false
+        };
+
+        if is_oneline {
+            let stmt = self.parse_reg_stmt()?;
+            let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+            return Ok(RegBlock { clock, clock_edge, stmts: vec![stmt], span: start.merge(end_span) });
+        }
+
+        // Multi-line without explicit clock
         let mut stmts = Vec::new();
         while !self.check_end_always() {
             stmts.push(self.parse_reg_stmt()?);
@@ -569,12 +640,7 @@ impl Parser {
         self.expect(TokenKind::End)?;
         self.expect(TokenKind::Seq)?;
         let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
-        Ok(RegBlock {
-            clock,
-            clock_edge,
-            stmts,
-            span: start.merge(end_span),
-        })
+        Ok(RegBlock { clock, clock_edge, stmts, span: start.merge(end_span) })
     }
 
     fn check_end_always(&self) -> bool {
@@ -818,9 +884,13 @@ impl Parser {
         let start = self.expect(TokenKind::Comb)?.span;
 
         // One-line form: comb target = expr;
-        // Detected by checking if the tokens after `comb` form a simple assignment
-        // (ident ... = ... ;) with no `end comb` following.
-        if self.is_oneline_comb() {
+        // If everything after `comb` is on the same line (no newline), it's a one-liner.
+        let is_oneline = if let Some(next) = self.tokens.get(self.pos) {
+            !self.has_newline_between(start.end, next.span.start)
+        } else {
+            false
+        };
+        if is_oneline {
             let stmt = self.parse_comb_stmt()?;
             let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
             return Ok(CombBlock {
@@ -842,62 +912,6 @@ impl Parser {
         })
     }
 
-    /// One-line comb: `comb target = expr;` (no `end comb`).
-    /// Find the first top-level `;`, then check what follows:
-    /// - `end comb` → multi-line form
-    /// - comb-stmt starter (ident, if, for, match, log) → multi-line form
-    /// - anything else (end module, seq, comb, etc.) → one-liner
-    fn is_oneline_comb(&self) -> bool {
-        let mut i = self.pos;
-        let mut depth = 0u32;
-        while i < self.tokens.len() {
-            match self.tokens[i].kind {
-                TokenKind::LParen | TokenKind::LBracket => depth += 1,
-                TokenKind::RParen | TokenKind::RBracket => depth = depth.saturating_sub(1),
-                TokenKind::Semi if depth == 0 => break,
-                // Hit `end comb` before any `;` → empty or multi-line block, not one-liner
-                TokenKind::End if depth == 0
-                    && i + 1 < self.tokens.len()
-                    && self.tokens[i + 1].kind == TokenKind::Comb =>
-                {
-                    return false;
-                }
-                _ => {}
-            }
-            i += 1;
-        }
-        if i >= self.tokens.len() {
-            return false;
-        }
-        let after = i + 1;
-        if after >= self.tokens.len() {
-            return true;
-        }
-        // One-liner if followed by a module-level keyword (not a comb-block interior token).
-        // These tokens can only appear at module/stage/fsm scope, never inside a comb block:
-        match &self.tokens[after].kind {
-            TokenKind::Comb      // another comb block
-            | TokenKind::Seq     // seq block
-            | TokenKind::Latch   // latch block
-            | TokenKind::Reg     // reg declaration
-            | TokenKind::Let     // let binding
-            | TokenKind::Wire    // wire declaration
-            | TokenKind::Inst    // inst declaration
-            | TokenKind::PipeReg // pipe_reg declaration
-            | TokenKind::Assert  // assert
-            | TokenKind::Cover   // cover
-            => true,
-            // `end` followed by module/fsm/pipeline/stage — module scope
-            TokenKind::End => {
-                after + 1 < self.tokens.len()
-                    && !matches!(self.tokens[after + 1].kind, TokenKind::Comb | TokenKind::If | TokenKind::For)
-            }
-            // Port declaration at module level
-            TokenKind::Port => true,
-            // Anything else (ident, if, else, elsif, for, etc.) → could be inside comb
-            _ => false,
-        }
-    }
 
     fn check_end_comb(&self) -> bool {
         self.pos + 1 < self.tokens.len()
@@ -1803,6 +1817,7 @@ impl Parser {
     fn parse_fsm(&mut self) -> Result<FsmDecl, CompileError> {
         let start = self.expect(TokenKind::Fsm)?.span;
         let name = self.expect_ident()?;
+        self.seq_default = None;
 
         let mut params = Vec::new();
         let mut ports = Vec::new();
@@ -1836,6 +1851,11 @@ impl Parser {
                     self.expect(TokenKind::Semi)?;
                 }
                 Some(TokenKind::Default) => {
+                    // Peek ahead: `default seq on ...;` sets the seq clock default
+                    if self.pos + 1 < self.tokens.len() && self.tokens[self.pos + 1].kind == TokenKind::Seq {
+                        self.parse_seq_default_decl()?;
+                        continue;
+                    }
                     self.advance(); // consume `default`
                     if self.check_contextual("state") {
                         // `default state Name;`
@@ -1942,8 +1962,13 @@ impl Parser {
         let name = self.expect_ident()?;
 
         // One-line form: state A transition to B when cond;
-        // (no end state A required — only when nothing else follows the transition)
-        if self.check(TokenKind::Transition) && !self.has_end_state_after_transition() {
+        // If transition is on the same line as state name (no newline), it's a one-liner.
+        let is_oneline_state = if let Some(next) = self.tokens.get(self.pos) {
+            self.check(TokenKind::Transition) && !self.has_newline_between(name.span.end, next.span.start)
+        } else {
+            false
+        };
+        if is_oneline_state {
             let t = self.parse_transition()?;
             let end_span = t.span;
             return Ok(StateBody {
@@ -2007,23 +2032,6 @@ impl Parser {
             && matches!(&self.tokens[self.pos + 1].kind, TokenKind::Ident(s) if s == "state")
     }
 
-    /// Look ahead from a `transition` token: find the `;`, then check if `end state` follows.
-    /// If so, it's the multi-line form (even with a single transition). Also returns true
-    /// if another transition/comb/seq follows (multi-transition state).
-    fn has_end_state_after_transition(&self) -> bool {
-        let mut i = self.pos;
-        // Skip to the next semicolon
-        while i < self.tokens.len() && self.tokens[i].kind != TokenKind::Semi {
-            i += 1;
-        }
-        i += 1; // skip `;`
-        if i >= self.tokens.len() {
-            return false;
-        }
-        // Multi-line if followed by: end state, another transition, comb, or seq
-        matches!(self.tokens[i].kind,
-            TokenKind::End | TokenKind::Transition | TokenKind::Comb | TokenKind::Seq)
-    }
 
     fn parse_transition(&mut self) -> Result<Transition, CompileError> {
         let start = self.expect(TokenKind::Transition)?.span;
@@ -3581,7 +3589,7 @@ mod tests {
 
     fn parse(src: &str) -> SourceFile {
         let tokens = tokenize(src).unwrap();
-        let mut parser = Parser::new(tokens);
+        let mut parser = Parser::new(tokens, src);
         parser.parse_source_file().unwrap()
     }
 
@@ -3643,15 +3651,17 @@ mod tests {
 
     #[test]
     fn test_mismatched_closing() {
-        let tokens = tokenize("module Foo\nend module Bar").unwrap();
-        let mut parser = Parser::new(tokens);
+        let src = "module Foo\nend module Bar";
+        let tokens = tokenize(src).unwrap();
+        let mut parser = Parser::new(tokens, src);
         assert!(parser.parse_source_file().is_err());
     }
 
     #[test]
     fn test_parse_expr_arithmetic() {
-        let tokens = tokenize("module M\n  let x: UInt<8> = a + b * c;\nend module M").unwrap();
-        let mut parser = Parser::new(tokens);
+        let src = "module M\n  let x: UInt<8> = a + b * c;\nend module M";
+        let tokens = tokenize(src).unwrap();
+        let mut parser = Parser::new(tokens, src);
         let sf = parser.parse_source_file().unwrap();
         match &sf.items[0] {
             Item::Module(m) => assert_eq!(m.body.len(), 1),

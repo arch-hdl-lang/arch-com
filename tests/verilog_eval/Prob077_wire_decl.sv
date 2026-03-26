@@ -1,6 +1,5 @@
-module TopModule (
-  input logic a,
-  input logic b,
+Wrote tests/verilog_eval/Prob077_wire_decl.sv
+gic b,
   input logic c,
   input logic d,
   output logic out,

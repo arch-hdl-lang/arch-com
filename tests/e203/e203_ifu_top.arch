@@ -17,12 +17,7 @@ module IfuTop
   port exu_redirect_pc: in UInt<32>;
 
   // ITCM interface
-  port itcm_cmd_valid: out Bool;
-  port itcm_cmd_addr:  out UInt<14>;
-  port itcm_cmd_ready: in Bool;
-  port itcm_rsp_valid: in Bool;
-  port itcm_rsp_data:  in UInt<32>;
-  port itcm_rsp_ready: out Bool;
+  port itcm: initiator ItcmIcb;
 
   // OITF/regfile inputs for BPU
   port oitf_empty:              in Bool;
@@ -72,15 +67,15 @@ module IfuTop
     connect ifu_req_valid  <- ifetch_req_valid;
     connect ifu_req_pc     <- ifetch_req_addr;
     connect ifu_rsp_ready  <- ifetch_rsp_ready;
-    connect itcm_cmd_ready <- itcm_cmd_ready;
-    connect itcm_rsp_valid <- itcm_rsp_valid;
-    connect itcm_rsp_data  <- itcm_rsp_data;
+    connect itcm.cmd_ready <- itcm.cmd_ready;
+    connect itcm.rsp_valid <- itcm.rsp_valid;
+    connect itcm.rsp_data  <- itcm.rsp_data;
     connect ifu_req_ready  -> icb_req_ready;
     connect ifu_rsp_valid  -> icb_rsp_valid;
     connect ifu_rsp_instr  -> icb_rsp_instr;
-    connect itcm_cmd_valid -> itcm_cmd_valid;
-    connect itcm_cmd_addr  -> itcm_cmd_addr;
-    connect itcm_rsp_ready -> itcm_rsp_ready;
+    connect itcm.cmd_valid -> itcm.cmd_valid;
+    connect itcm.cmd_addr  -> itcm.cmd_addr;
+    connect itcm.rsp_ready -> itcm.rsp_ready;
   end inst icb
 
   // ── IfuMinidec: classify fetched instruction ────────────────────────

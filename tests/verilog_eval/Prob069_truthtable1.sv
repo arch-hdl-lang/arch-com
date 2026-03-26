@@ -1,6 +1,5 @@
-module TopModule (
-  input logic x3,
-  input logic x2,
+Wrote tests/verilog_eval/Prob069_truthtable1.sv
+ic x2,
   input logic x1,
   output logic f
 );

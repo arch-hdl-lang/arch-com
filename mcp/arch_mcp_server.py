@@ -56,6 +56,9 @@ Common mistakes to avoid:
 - Prefer concat {a, b} over bit-by-bit for loops; prefer direct boolean (z = (A == B);) over if/else
 - In fsm states, do NOT write 'transition to X when true;' — omit the transition to stay in the current state (implicit hold), or restructure so the last branch uses a real condition
 - Do NOT declare 'domain ... end domain' in pure combinational modules — domains are only needed when Clock/Reset ports are used
+- SysDomain is built-in — do NOT declare 'domain SysDomain end domain SysDomain'; just use Clock<SysDomain> directly
+- Use 'default seq on clk rising;' to set the default clock, then use one-line 'seq target <= expr;' (no 'on clk', no 'end seq')
+- One-line seq requires 'default seq' — without it, 'seq' must have 'on clk rising/falling'
 """,
 )
 

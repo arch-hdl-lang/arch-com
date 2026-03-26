@@ -1,6 +1,5 @@
-// VerilogEval Prob140: HDLC framing FSM - disc, flag, err detection
-// domain SysDomain
-
+Wrote tests/verilog_eval/Prob140_fsm_hdlc.sv
+sc, flag, err detection
 module TopModule (
   input logic clk,
   input logic reset,

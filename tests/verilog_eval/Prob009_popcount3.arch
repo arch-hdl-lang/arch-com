@@ -1,6 +1,3 @@
-domain SysDomain
-end domain SysDomain
-
 module TopModule
   port in: in UInt<3>;
   port out: out UInt<2>;

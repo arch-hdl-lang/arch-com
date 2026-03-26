@@ -1,5 +1,4 @@
-module TopModule (
-  input logic [5-1:0] a,
+Wrote tests/verilog_eval/Prob064_vector3.sv
   input logic [5-1:0] b,
   input logic [5-1:0] c,
   input logic [5-1:0] d,

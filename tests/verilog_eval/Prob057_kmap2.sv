@@ -1,6 +1,5 @@
-module TopModule (
-  input logic a,
-  input logic b,
+Wrote tests/verilog_eval/Prob057_kmap2.sv
+t logic b,
   input logic c,
   input logic d,
   output logic out

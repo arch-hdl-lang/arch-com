@@ -9,32 +9,16 @@ module TopModule
   comb
     if state == 0
       // State A
-      if in
-        next_state = 1;
-      else
-        next_state = 0;
-      end if
+      next_state = in ? 1 : 0;
     elsif state == 1
       // State B
-      if in
-        next_state = 1;
-      else
-        next_state = 2;
-      end if
+      next_state = in ? 1 : 2;
     elsif state == 2
       // State C
-      if in
-        next_state = 3;
-      else
-        next_state = 0;
-      end if
+      next_state = in ? 3 : 0;
     else
       // State D
-      if in
-        next_state = 1;
-      else
-        next_state = 2;
-      end if
+      next_state = in ? 1 : 2;
     end if
     out = (state == 3);
   end comb

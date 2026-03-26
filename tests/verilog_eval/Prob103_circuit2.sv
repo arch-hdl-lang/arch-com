@@ -1,6 +1,5 @@
-module TopModule (
-  input logic a,
-  input logic b,
+Wrote tests/verilog_eval/Prob103_circuit2.sv
+ogic b,
   input logic c,
   input logic d,
   output logic q

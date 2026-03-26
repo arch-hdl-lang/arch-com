@@ -1,6 +1,5 @@
-module TopModule (
-  input logic [3-1:0] a,
-  output logic [16-1:0] q
+Wrote tests/verilog_eval/Prob126_circuit6.sv
+ output logic [16-1:0] q
 );
 
   always_comb begin

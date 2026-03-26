@@ -1,6 +1,5 @@
-// VerilogEval Prob110: JK flip-flop as Moore FSM, async reset
-// domain SysDomain
-
+Wrote tests/verilog_eval/prob110_fsm2.sv
+oore FSM, async reset
 module TopModule (
   input logic clk,
   input logic areset,

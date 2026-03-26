@@ -1,5 +1,5 @@
-// VerilogEval Prob150: One-hot FSM combinational logic
-// state[9:0]: S=0, S1=1, S11=2, S110=3, B0=4, B1=5, B2=6, B3=7, Count=8, Wait=9
+Wrote tests/verilog_eval/Prob150_review2015_fsmonehot.sv
+/ state[9:0]: S=0, S1=1, S11=2, S110=3, B0=4, B1=5, B2=6, B3=7, Count=8, Wait=9
 module TopModule (
   input logic d,
   input logic done_counting,

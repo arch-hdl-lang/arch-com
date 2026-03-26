@@ -1,11 +1,10 @@
-domain SysDomain
-end domain SysDomain
-
 module TopModule
   port clk: in Clock<SysDomain>;
   port load: in Bool;
   port data: in UInt<512>;
   port reg q: out UInt<512>;
+
+  default seq on clk rising;
 
   wire q_next: UInt<512>;
   wire left_i: Bool;
@@ -34,11 +33,5 @@ module TopModule
     q_next[511] = ~((left_i & center_i & right_i) | (~left_i & ~center_i & ~right_i) | (left_i & ~center_i & ~right_i));
   end comb
 
-  seq on clk rising
-    if load
-      q <= data;
-    else
-      q <= q_next;
-    end if
-  end seq
+  seq q <= load ? data : q_next;
 end module TopModule

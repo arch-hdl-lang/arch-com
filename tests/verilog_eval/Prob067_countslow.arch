@@ -1,19 +1,10 @@
-domain SysDomain
-end domain SysDomain
-
 module TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
   port slowena: in Bool;
   port reg q: out UInt<4> reset reset=0;
 
-  seq on clk rising
-    if slowena
-      if q == 9
-        q <= 0;
-      else
-        q <= (q + 1).trunc<4>();
-      end if
-    end if
-  end seq
+  default seq on clk rising;
+
+  seq q <= slowena ? q == 9 ? 0 : (q + 1).trunc<4>() : q;
 end module TopModule

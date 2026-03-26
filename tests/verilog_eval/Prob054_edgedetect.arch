@@ -1,15 +1,14 @@
 // VerilogEval Prob054: 8-bit positive edge detection (registered output)
-domain SysDomain
-end domain SysDomain
-
 module TopModule
   port clk: in Clock<SysDomain>;
   port in: in UInt<8>;
   port reg pedge: out UInt<8>;
 
+  default seq on clk rising;
+
   reg prev: UInt<8>;
 
-  seq on clk rising
+  seq
     prev <= in;
     pedge <= in & (~prev);
   end seq

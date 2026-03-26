@@ -20,6 +20,7 @@ pub enum Symbol {
     Function(Vec<FunctionInfo>),
     Linklist(LinklistInfo),
     Template(String),
+    Bus(BusInfo),
     Synchronizer(SynchronizerInfo),
     Clkgate(ClkGateInfo),
     Param(String),
@@ -116,6 +117,13 @@ pub struct StructInfo {
 }
 
 #[derive(Debug, Clone)]
+pub struct BusInfo {
+    pub name: String,
+    pub params: Vec<ParamDecl>,
+    pub signals: Vec<(String, Direction, TypeExpr)>,
+}
+
+#[derive(Debug, Clone)]
 pub struct EnumInfo {
     pub name: String,
     pub variants: Vec<String>,
@@ -166,6 +174,12 @@ impl SymbolTable {
 pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError>> {
     let mut table = SymbolTable::new();
     let mut errors = Vec::new();
+
+    // Built-in domain: SysDomain is always available (can be overridden by user)
+    table.globals.insert(
+        "SysDomain".to_string(),
+        (Symbol::Domain(DomainInfo { name: "SysDomain".to_string(), freq_mhz: None }), Span { start: 0, end: 0 }),
+    );
 
     // First pass: register all global items
     for item in &source_file.items {
@@ -364,6 +378,20 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                     errors.push(CompileError::duplicate(&t.name.name, t.name.span));
                 } else {
                     table.globals.insert(t.name.name.clone(), (Symbol::Template(t.name.name.clone()), t.name.span));
+                }
+            }
+            Item::Bus(b) => {
+                if table.globals.contains_key(&b.name.name) {
+                    errors.push(CompileError::duplicate(&b.name.name, b.name.span));
+                } else {
+                    let info = BusInfo {
+                        name: b.name.name.clone(),
+                        params: b.params.clone(),
+                        signals: b.signals.iter()
+                            .map(|s| (s.name.name.clone(), s.direction, s.ty.clone()))
+                            .collect(),
+                    };
+                    table.globals.insert(b.name.name.clone(), (Symbol::Bus(info), b.name.span));
                 }
             }
             Item::Synchronizer(s) => {

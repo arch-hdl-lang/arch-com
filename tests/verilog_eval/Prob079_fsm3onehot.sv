@@ -1,4 +1,5 @@
-// VerilogEval Prob079: One-hot FSM combinational logic
+Wrote tests/verilog_eval/Prob079_fsm3onehot.sv
+al logic
 module TopModule (
   input logic in,
   input logic [4-1:0] state,

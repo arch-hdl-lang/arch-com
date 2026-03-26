@@ -1,13 +1,12 @@
-domain SysDomain
-end domain SysDomain
-
 module TopModule
   port clk: in Clock<SysDomain>;
   port j: in Bool;
   port k: in Bool;
   port reg Q: out Bool;
 
-  seq on clk rising
+  default seq on clk rising;
+
+  seq
     if j & k
       Q <= ~Q;
     elsif j

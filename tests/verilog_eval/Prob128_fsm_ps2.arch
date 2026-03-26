@@ -1,7 +1,4 @@
 // VerilogEval Prob128: PS/2 mouse 3-byte message boundary detection
-domain SysDomain
-end domain SysDomain
-
 fsm TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
@@ -10,32 +7,18 @@ fsm TopModule
 
   state Byte1, Byte2, Byte3, DoneS;
   default state Byte1;
+  default
+    comb done = false;
+  end default
 
-  state Byte1
-    comb
-      done = false;
-    end comb
-    transition to Byte2 when in[3];
-  end state Byte1
+  state Byte1 transition to Byte2 when in[3];
 
-  state Byte2
-    comb
-      done = false;
-    end comb
-    transition to Byte3 when true;
-  end state Byte2
+  state Byte2 transition to Byte3 when true;
 
-  state Byte3
-    comb
-      done = false;
-    end comb
-    transition to DoneS when true;
-  end state Byte3
+  state Byte3 transition to DoneS when true;
 
   state DoneS
-    comb
-      done = true;
-    end comb
+    comb done = true;
     transition to Byte2 when in[3];
     transition to Byte1 when ~in[3];
   end state DoneS

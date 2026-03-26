@@ -1,16 +1,15 @@
-domain SysDomain
-end domain SysDomain
-
 module TopModule
   port clk: in Clock<SysDomain>;
   port x: in Bool;
   port z: out Bool;
 
+  default seq on clk rising;
+
   reg ff_xor: Bool;
   reg ff_and: Bool;
   reg ff_or: Bool;
 
-  seq on clk rising
+  seq
     ff_xor <= x ^ ff_xor;
     ff_and <= x & (~ff_and);
     ff_or <= x | (~ff_or);

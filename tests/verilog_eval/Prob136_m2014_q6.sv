@@ -1,8 +1,5 @@
-// domain SysDomain
-
-module TopModule (
-  input logic clk,
-  input logic reset,
+Wrote tests/verilog_eval/Prob136_m2014_q6.sv
+ logic reset,
   input logic w,
   output logic z
 );

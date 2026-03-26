@@ -1,7 +1,4 @@
 // VerilogEval Prob120: 4-state Moore FSM, sync reset
-domain SysDomain
-end domain SysDomain
-
 fsm TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
@@ -10,34 +7,24 @@ fsm TopModule
 
   state A, B, C, D;
   default state A;
+  default
+    comb out = false;
+  end default
 
-  state A
-    comb
-      out = false;
-    end comb
-    transition to B when in;
-  end state A
+  state A transition to B when in;
 
   state B
-    comb
-      out = false;
-    end comb
     transition to B when in;
     transition to C when ~in;
   end state B
 
   state C
-    comb
-      out = false;
-    end comb
     transition to D when in;
     transition to A when ~in;
   end state C
 
   state D
-    comb
-      out = true;
-    end comb
+    comb out = true;
     transition to B when in;
     transition to C when ~in;
   end state D

@@ -113,6 +113,8 @@ pub enum TokenKind {
     Hook,
     #[token("template")]
     Template,
+    #[token("bus")]
+    Bus,
     #[token("implements")]
     Implements,
     #[token("return")]
@@ -366,6 +368,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Function => write!(f, "function"),
             TokenKind::Hook => write!(f, "hook"),
             TokenKind::Template => write!(f, "template"),
+            TokenKind::Bus => write!(f, "bus"),
             TokenKind::Implements => write!(f, "implements"),
             TokenKind::Return => write!(f, "return"),
             TokenKind::Stage => write!(f, "stage"),

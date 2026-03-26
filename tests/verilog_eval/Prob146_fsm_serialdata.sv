@@ -1,7 +1,6 @@
-// VerilogEval Prob146: Serial receiver with data output
+Wrote tests/verilog_eval/Prob146_fsm_serialdata.sv
+utput
 // Start bit (0), 8 data bits LSB-first, stop bit (1). Assert done when stop=1.
-// domain SysDomain
-
 module TopModule (
   input logic clk,
   input logic reset,
@@ -11,15 +10,15 @@ module TopModule (
 );
 
   typedef enum logic [3:0] {
-    BIT0 = 4'd0,
-    BIT1 = 4'd1,
-    BIT2 = 4'd2,
-    BIT3 = 4'd3,
-    BIT4 = 4'd4,
-    BIT5 = 4'd5,
-    BIT6 = 4'd6,
-    BIT7 = 4'd7,
-    IDLE = 4'd8,
+    IDLE = 4'd0,
+    BIT0 = 4'd1,
+    BIT1 = 4'd2,
+    BIT2 = 4'd3,
+    BIT3 = 4'd4,
+    BIT4 = 4'd5,
+    BIT5 = 4'd6,
+    BIT6 = 4'd7,
+    BIT7 = 4'd8,
     STOP = 4'd9,
     OK = 4'd10,
     ERR = 4'd11
@@ -35,31 +34,8 @@ module TopModule (
       data_reg <= 0;
     end else begin
       state_r <= state_next;
+      data_reg <= {in, data_reg[7:1]};
       case (state_r)
-        BIT0: begin
-          data_reg <= {in, data_reg[7:1]};
-        end
-        BIT1: begin
-          data_reg <= {in, data_reg[7:1]};
-        end
-        BIT2: begin
-          data_reg <= {in, data_reg[7:1]};
-        end
-        BIT3: begin
-          data_reg <= {in, data_reg[7:1]};
-        end
-        BIT4: begin
-          data_reg <= {in, data_reg[7:1]};
-        end
-        BIT5: begin
-          data_reg <= {in, data_reg[7:1]};
-        end
-        BIT6: begin
-          data_reg <= {in, data_reg[7:1]};
-        end
-        BIT7: begin
-          data_reg <= {in, data_reg[7:1]};
-        end
         default: ;
       endcase
     end

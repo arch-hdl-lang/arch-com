@@ -1,21 +1,14 @@
 // VerilogEval Prob040: Decade counter (0-9), sync reset
-domain SysDomain
-end domain SysDomain
-
 module TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
   port q: out UInt<4>;
 
+  default seq on clk rising;
+
   reg count_r: UInt<4> init 0 reset reset=0;
 
-  seq on clk rising
-    if count_r == 9
-      count_r <= 0;
-    else
-      count_r <= (count_r + 1).trunc<4>();
-    end if
-  end seq
+  seq count_r <= count_r == 9 ? 0 : (count_r + 1).trunc<4>();
 
   comb
     q = count_r;

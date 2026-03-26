@@ -1,6 +1,5 @@
-module TopModule (
-  input logic a,
-  input logic b,
+Wrote tests/verilog_eval/Prob039_always_if.sv
+gic b,
   input logic sel_b1,
   input logic sel_b2,
   output logic out_assign,

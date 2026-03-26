@@ -1,7 +1,4 @@
 // VerilogEval Prob151: Timer FSM (registered version) - detect 1101, shift 4, count, wait ack
-domain SysDomain
-end domain SysDomain
-
 fsm TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
@@ -14,18 +11,13 @@ fsm TopModule
 
   state S, S1, S11, S110, B0, B1, B2, B3, Count, Wait;
   default state S;
-
   default
-    comb
-      shift_ena = false;
-      counting = false;
-      done = false;
-    end comb
+    comb shift_ena = false;
+    comb counting = false;
+    comb done = false;
   end default
 
-  state S
-    transition to S1 when data;
-  end state S
+  state S transition to S1 when data;
 
   state S1
     transition to S11 when data;
@@ -43,45 +35,33 @@ fsm TopModule
   end state S110
 
   state B0
-    comb
-      shift_ena = true;
-    end comb
+    comb shift_ena = true;
     transition to B1 when true;
   end state B0
 
   state B1
-    comb
-      shift_ena = true;
-    end comb
+    comb shift_ena = true;
     transition to B2 when true;
   end state B1
 
   state B2
-    comb
-      shift_ena = true;
-    end comb
+    comb shift_ena = true;
     transition to B3 when true;
   end state B2
 
   state B3
-    comb
-      shift_ena = true;
-    end comb
+    comb shift_ena = true;
     transition to Count when true;
   end state B3
 
   state Count
-    comb
-      counting = true;
-    end comb
+    comb counting = true;
     transition to Wait when done_counting;
     transition to Count when ~done_counting;
   end state Count
 
   state Wait
-    comb
-      done = true;
-    end comb
+    comb done = true;
     transition to S when ack;
     transition to Wait when ~ack;
   end state Wait

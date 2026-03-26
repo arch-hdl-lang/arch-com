@@ -1,6 +1,5 @@
-module TopModule (
-  input logic clk,
-  input logic x,
+Wrote tests/verilog_eval/Prob134_2014_q3c.sv
+ logic x,
   input logic [3-1:0] y,
   output logic Y0,
   output logic z

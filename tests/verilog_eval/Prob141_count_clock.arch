@@ -1,7 +1,4 @@
 // VerilogEval Prob141: 12-hour BCD clock
-domain SysDomain
-end domain SysDomain
-
 module TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
@@ -10,6 +7,8 @@ module TopModule
   port hh: out UInt<8>;
   port mm: out UInt<8>;
   port ss: out UInt<8>;
+
+  default seq on clk rising;
 
   reg ss_lo: UInt<4> reset reset=0;
   reg ss_hi: UInt<4> reset reset=0;
@@ -26,7 +25,7 @@ module TopModule
     pm = pm_reg;
   end comb
 
-  seq on clk rising
+  seq
     if ena
       if ss_lo == 9
         ss_lo <= 0;
