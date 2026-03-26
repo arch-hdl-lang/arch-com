@@ -1,8 +1,13 @@
 # 19.  First-Class Construct: bus
 
-A `bus` is a reusable, parameterized port bundle for RTL signal-level interfaces.  It replaces the repetitive individual `port` declarations that make SoC interconnects brittle and verbose.  The bus defines signal names, types, and directions from the **initiator's perspective**.  At the use site, `initiator` keeps directions as declared; `target` flips every `in` to `out` and every `out` to `in`.  The compiler flattens bus ports to individual SystemVerilog ports — 100% portable output with no SV `interface` or `modport` constructs.
+A `bus` is a reusable, parameterized port bundle that eliminates repetitive port declarations across modules.  It serves two roles:
 
-## 19.1  Declaration
+1. **RTL signal bundle** (implemented) — declares signal names, types, and directions.  The compiler flattens bus ports to individual SystemVerilog ports.
+2. **TLM method interface** (planned) — declares transaction-level methods (`blocking`, `pipelined`, `out_of_order`, `burst`) on top of the signal bundle.  Used with `arch sim --tlm-lt/at` for high-speed architectural simulation.
+
+Directions are declared from the **initiator's perspective**.  At the use site, `initiator` keeps directions as declared; `target` flips every `in` to `out` and every `out` to `in`.
+
+## 19.1  Declaration — RTL Signals
 
 ```
 bus_basic.arch
@@ -23,16 +28,94 @@ end bus ItcmIcb
 
 **Parameters** follow the same `param NAME: const = default;` syntax as all other constructs.  Parameter values propagate to signal widths.
 
-## 19.2  Using a Bus Port
+A more complete example — AXI4-Lite with write address, write data, and write response channels:
+
+```
+axi_lite_bus.arch
+bus AxiLite
+  param ADDR_W: const = 32;
+  param DATA_W: const = 32;
+
+  // Write address channel
+  aw_valid: out Bool;
+  aw_ready: in  Bool;
+  aw_addr:  out UInt<ADDR_W>;
+
+  // Write data channel
+  w_valid:  out Bool;
+  w_ready:  in  Bool;
+  w_data:   out UInt<DATA_W>;
+  w_strb:   out UInt<DATA_W/8>;
+
+  // Write response channel
+  b_valid:  in  Bool;
+  b_ready:  out Bool;
+  b_resp:   in  UInt<2>;
+end bus AxiLite
+```
+
+## 19.2  Declaration — TLM Methods (Planned)
+
+A bus may optionally include a `methods` block that declares transaction-level operations.  Methods coexist with RTL signals — the same bus declaration serves both RTL simulation (`arch build`) and TLM simulation (`arch sim --tlm-lt/at`).
+
+```
+bus_with_tlm.arch
+bus AxiLite
+  param ADDR_W: const = 32;
+  param DATA_W: const = 32;
+
+  // RTL signals (same as above)
+  aw_valid: out Bool;
+  aw_ready: in  Bool;
+  aw_addr:  out UInt<ADDR_W>;
+  w_valid:  out Bool;
+  w_ready:  in  Bool;
+  w_data:   out UInt<DATA_W>;
+  b_valid:  in  Bool;
+  b_ready:  out Bool;
+  b_resp:   in  UInt<2>;
+
+  // TLM methods (planned — not yet implemented)
+  methods
+    blocking method write(addr: UInt<ADDR_W>, data: UInt<DATA_W>) -> UInt<2>
+      timing: 2 cycles;
+    end method write
+
+    pipelined method read(addr: UInt<ADDR_W>) -> Future<UInt<DATA_W>>
+      timing: 4 cycles;
+      max_outstanding: 8;
+    end method read
+  end methods
+end bus AxiLite
+```
+
+### 19.2.1  Method Concurrency Modes
+
+| Mode | Return Type | Caller Behaviour | Use Case |
+|---|---|---|---|
+| `blocking` | `T` | Caller suspends until response arrives; next call cannot issue until this one completes | APB, AHB single-transfer, simple MMIO |
+| `pipelined` | `Future<T>` | Caller gets a `Future` immediately and can issue more calls; responses arrive in order | AXI in-order reads, read-after-read pipelining |
+| `out_of_order` | `Token<T, id_width: N>` | Caller gets a `Token` immediately; responses may arrive in any order, matched by ID | Full AXI with multiple IDs, out-of-order memory |
+| `burst` | `Future<Vec<T, L>>` | One call issues N data beats; single AR, N data responses | AXI INCR bursts |
+
+Synchronization primitives: `await f` (wait for one), `await_all(f0, f1, f2)` (wait for all), `await_any(t0, t1)` (wait for first to complete).
+
+⚑  Methods describe the **transaction-level contract**.  At RTL (`arch build`), only the signal declarations are used.  At TLM (`arch sim --tlm-lt`), the compiler generates method call/response logic from the method declarations.  The `implement` block (§23) bridges the two: an `rtl_accurate` implement drives real signals cycle by cycle behind the method call API.
+
+## 19.3  Using a Bus Port
 
 ```
 module Ift2Icb
   port clk:   in Clock<SysDomain>;
   port rst_n: in Reset<Async, Low>;
   port itcm:  initiator ItcmIcb;          // directions as declared
-  port ifu:   target    IfuFetchBus;       // directions flipped
-  ...
 end module Ift2Icb
+
+module ItcmSram
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+  port itcm:  target ItcmIcb;             // directions flipped
+end module ItcmSram
 ```
 
 | Keyword | Meaning | Effect on `out` signals | Effect on `in` signals |
@@ -42,7 +125,7 @@ end module Ift2Icb
 
 **Parameter overrides** are specified inline: `port axi: initiator AxiLite<ADDR_W=32, DATA_W=64>;`.  Unspecified parameters use their defaults from the bus declaration.
 
-## 19.3  Signal Access
+## 19.4  Signal Access
 
 Bus signals are accessed with dot notation in `comb` and `seq` blocks:
 
@@ -62,7 +145,7 @@ end seq
 
 The type checker resolves `itcm.cmd_addr` to `UInt<14>` (from the bus declaration with `ADDR_W=14`) and verifies that only output signals are assigned and only input signals are read, according to the port's perspective.
 
-## 19.4  Instance Connections
+## 19.5  Instance Connections
 
 When instantiating a module with bus ports, connect individual signals using dot notation on the port name:
 
@@ -81,7 +164,7 @@ end inst bridge
 
 The parser converts `itcm.cmd_valid` in the connect statement to the flattened name `itcm_cmd_valid`, matching the generated SV port.
 
-## 19.5  SystemVerilog Output
+## 19.6  SystemVerilog Output
 
 Bus ports flatten to individual SV ports.  The naming convention is `{port}_{signal}`:
 
@@ -102,7 +185,7 @@ endmodule
 
 No SV `interface`, `modport`, or `virtual interface` is used.  The output is plain structural Verilog compatible with every synthesis, simulation, and formal tool.
 
-## 19.6  Type Checker Guarantees
+## 19.7  Type Checker Guarantees
 
 | Check | Description |
 |---|---|
@@ -112,7 +195,7 @@ No SV `interface`, `modport`, or `virtual interface` is used.  The output is pla
 | Per-signal drive coverage | Each output signal of a bus port must be driven — the checker expands the bus and verifies each flattened signal individually |
 | Parameter validation | Overridden params must exist in the bus declaration |
 
-## 19.7  Simulation Codegen
+## 19.8  Simulation Codegen
 
 The sim codegen (C++ model generation) applies the same flattening.  Each bus signal becomes an individual `uint*_t` struct field:
 
@@ -131,14 +214,16 @@ public:
 
 All bus signals are automatically included in VCD waveform trace output.
 
-## 19.8  Bus vs Interface
+## 19.9  Why `bus` Instead of SV `interface`
 
-| Feature | `bus` | `interface` (§24) |
-|---|---|---|
-| Purpose | RTL signal-level port bundles | TLM method-level abstractions |
-| Perspective | `initiator` / `target` | `out` / `in` on port declaration |
-| TLM methods | No | Yes — `blocking`, `pipelined`, `out_of_order`, `burst` |
-| SV output | Flattened individual ports | Flattened individual ports (RTL) or method calls (TLM) |
-| Use when | Connecting RTL modules with standard bus protocols | Modeling transaction-level communication |
+SystemVerilog `interface` has well-documented weaknesses that `bus` avoids:
 
-Both constructs share the same design principle: declare the bundle once, use it everywhere, let the compiler manage direction flipping and port expansion.  `bus` is the lightweight RTL-only form; `interface` is the full TLM-capable form.
+| SV `interface` Problem | `bus` Solution |
+|---|---|
+| Requires `modport` declarations that duplicate signal lists | Single declaration; `initiator`/`target` at use site flips directions automatically |
+| `virtual interface` needed for class-based testbenches — adds indirection and synthesis limitations | Not applicable — flattened ports work everywhere |
+| Tool support varies — many synthesis tools restrict or reject `interface` constructs | Output is plain `logic` ports — universal tool compatibility |
+| Cannot parameterize signal sets cleanly (no generate inside interface in most tools) | Standard `param` syntax; params propagate to signal widths |
+| Separate `modport` per perspective (manager vs subordinate) | One declaration, two perspectives (`initiator` / `target`) |
+
+The `bus` construct provides better source-level ergonomics with 100% portable RTL output.
