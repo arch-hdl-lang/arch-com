@@ -41,6 +41,7 @@ CONSTRUCT SELECTION — use first-class constructs when possible:
 - RAM/ROM → use 'ram' with appropriate kind (NOT a module with reg array)
 - Arbiter → use 'arbiter' with policy (NOT manual grant logic in a module)
 - Pipeline → use 'pipeline' with stages (NOT manual valid/stall registers)
+- Bus → use 'bus' for reusable port bundles (NOT manual individual port declarations for standard interfaces like AXI, APB, custom)
 - Only use 'module' for pure combinational/registered logic that doesn't fit the above
 
 Common mistakes to avoid:
@@ -57,6 +58,8 @@ Common mistakes to avoid:
 - In fsm states, do NOT write 'transition to X when true;' — omit the transition to stay in the current state (implicit hold), or restructure so the last branch uses a real condition
 - Do NOT declare 'domain ... end domain' in pure combinational modules — domains are only needed when Clock/Reset ports are used
 - SysDomain is built-in — do NOT declare 'domain SysDomain end domain SysDomain'; just use Clock<SysDomain> directly
+- Bus signal access uses dot notation (itcm.cmd_valid), NOT underscore (itcm_cmd_valid)
+- Bus ports use 'initiator BusName' or 'target BusName' to set the perspective — 'initiator' keeps signal directions as declared in the bus; 'target' flips them (in↔out)
 - Use 'default seq on clk rising;' to set the default clock, then use one-line 'seq target <= expr;' (no 'on clk', no 'end seq')
 - One-line seq requires 'default seq' — without it, 'seq' must have 'on clk rising/falling'
 - Use 'package PkgName ... end package PkgName' to group shared enums/structs/functions; import with 'use PkgName;' at file scope
