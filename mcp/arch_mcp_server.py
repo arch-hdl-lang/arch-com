@@ -347,6 +347,59 @@ end module Consumer
 //   module Consumer (...); ... endmodule
 """,
 
+    "bus": """\
+// ── Bus declaration: reusable port bundle ──
+bus ItcmIcb
+  param ADDR_W: const = 14;
+  param DATA_W: const = 32;
+
+  cmd_valid: out Bool;          // direction from initiator's perspective
+  cmd_addr:  out UInt<ADDR_W>;
+  cmd_ready: in  Bool;
+  rsp_valid: in  Bool;
+  rsp_data:  in  UInt<DATA_W>;
+  rsp_ready: out Bool;
+end bus ItcmIcb
+
+// ── Using a bus port ──
+module Master
+  port clk:  in Clock<SysDomain>;
+  port rst:  in Reset<Sync>;
+  port itcm: initiator ItcmIcb;                    // directions as declared
+  // With param overrides:
+  // port axi: initiator AxiLite<ADDR_W=32, DATA_W=64>;
+
+  comb
+    itcm.cmd_valid = 1;          // dot notation for signal access
+    itcm.cmd_addr  = addr_r;
+  end comb
+end module Master
+
+module Slave
+  port clk:  in Clock<SysDomain>;
+  port rst:  in Reset<Sync>;
+  port itcm: target ItcmIcb;                       // directions FLIPPED (in↔out)
+
+  comb
+    itcm.cmd_ready = 1;          // cmd_ready is output for target
+    itcm.rsp_valid = 1;
+  end comb
+end module Slave
+
+// ── Instance connections: use dot notation on port name ──
+// inst m: Master
+//   connect itcm.cmd_valid -> cmd_valid_w;
+//   connect itcm.cmd_ready <- cmd_ready_w;
+// end inst m
+
+// ── SV output: flattened to individual ports ──
+// module Master (
+//   output logic        itcm_cmd_valid,    // {port}_{signal}
+//   output logic [13:0] itcm_cmd_addr,
+//   input  logic        itcm_cmd_ready,
+//   ...
+// );
+""",
     "types": """\
 // ── Type System ──
 // UInt<N>, SInt<N>, Bool, Bit
@@ -381,7 +434,7 @@ def get_construct_syntax(construct: str) -> str:
     any .arch code to avoid common mistakes.
 
     Available constructs: module, inst, fsm, pipeline, synchronizer, fifo,
-    ram, arbiter, regfile, package, types
+    ram, arbiter, regfile, bus, package, types
 
     Also returns reserved keywords to avoid as signal/register names."""
     key = construct.lower().strip()
