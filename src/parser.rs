@@ -53,8 +53,10 @@ impl Parser {
             Some(TokenKind::Synchronizer) => Ok(Item::Synchronizer(self.parse_synchronizer()?)),
             Some(TokenKind::Clkgate) => Ok(Item::Clkgate(self.parse_clkgate()?)),
             Some(TokenKind::Bus) => Ok(Item::Bus(self.parse_bus()?)),
+            Some(TokenKind::Package) => Ok(Item::Package(self.parse_package()?)),
+            Some(TokenKind::Use) => Ok(Item::Use(self.parse_use()?)),
             Some(other) => Err(CompileError::unexpected_token(
-                "domain, struct, enum, module, fsm, fifo, ram, counter, arbiter, regfile, pipeline, function, linklist, template, synchronizer, clkgate, or bus",
+                "domain, struct, enum, module, fsm, fifo, ram, counter, arbiter, regfile, pipeline, function, linklist, template, synchronizer, clkgate, bus, package, or use",
                 &other.to_string(),
                 self.peek_span(),
             )),
@@ -3578,6 +3580,64 @@ impl Parser {
             args,
             ret_ty,
             body,
+        })
+    }
+
+    // --- Use ---
+    fn parse_use(&mut self) -> Result<UseDecl, CompileError> {
+        let start = self.expect(TokenKind::Use)?.span;
+        let name = self.expect_ident()?;
+        let end = self.expect(TokenKind::Semi)?.span;
+        Ok(UseDecl {
+            span: start.merge(end),
+            name,
+        })
+    }
+
+    // --- Package ---
+    fn parse_package(&mut self) -> Result<PackageDecl, CompileError> {
+        let start = self.expect(TokenKind::Package)?.span;
+        let name = self.expect_ident()?;
+        let mut params = Vec::new();
+        let mut enums = Vec::new();
+        let mut structs = Vec::new();
+        let mut functions = Vec::new();
+
+        while !self.check_end_keyword() {
+            match self.peek_kind() {
+                Some(TokenKind::Param) => params.push(self.parse_param_decl()?),
+                Some(TokenKind::Enum) => enums.push(self.parse_enum()?),
+                Some(TokenKind::Struct) => structs.push(self.parse_struct()?),
+                Some(TokenKind::Function) => functions.push(self.parse_function()?),
+                Some(other) => {
+                    return Err(CompileError::unexpected_token(
+                        "param, enum, struct, or function",
+                        &other.to_string(),
+                        self.peek_span(),
+                    ));
+                }
+                None => return Err(CompileError::UnexpectedEof),
+            }
+        }
+
+        self.expect(TokenKind::End)?;
+        self.expect(TokenKind::Package)?;
+        let closing_name = self.expect_ident()?;
+        if closing_name.name != name.name {
+            return Err(CompileError::mismatched_closing(
+                &name.name,
+                &closing_name.name,
+                closing_name.span,
+            ));
+        }
+
+        Ok(PackageDecl {
+            span: start.merge(closing_name.span),
+            name,
+            params,
+            enums,
+            structs,
+            functions,
         })
     }
 }

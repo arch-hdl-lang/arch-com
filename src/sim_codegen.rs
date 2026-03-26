@@ -61,7 +61,11 @@ impl<'a> SimCodegen<'a> {
 
         // Functions → VFunctions.h (header-only)
         let fn_items: Vec<&FunctionDecl> = self.source.items.iter()
-            .filter_map(|i| if let Item::Function(f) = i { Some(f) } else { None })
+            .flat_map(|i| match i {
+                Item::Function(f) => vec![f],
+                Item::Package(p) => p.functions.iter().collect(),
+                _ => vec![],
+            })
             .collect();
         if !fn_items.is_empty() {
             models.push(self.gen_functions(&fn_items));
@@ -261,17 +265,30 @@ fn collect_trace_signals(
     body: &[ModuleBodyItem],
     wide_names: &HashSet<String>,
     widths: &HashMap<String, u32>,
+    bus_flat: &[(String, TypeExpr)],
 ) -> Vec<TraceSignal> {
     let mut sigs = Vec::new();
 
-    // Ports
+    // Ports (skip bus ports — flattened signals added below)
     for p in ports {
+        if p.bus_info.is_some() { continue; }
         let name = &p.name.name;
         let width = type_width(&p.ty);
         let is_wide = wide_names.contains(name.as_str());
         sigs.push(TraceSignal {
             vcd_name: name.clone(),
             cpp_expr: name.clone(),
+            width,
+            is_wide,
+        });
+    }
+    // Flattened bus signals
+    for (flat_name, flat_ty) in bus_flat {
+        let width = type_width(flat_ty);
+        let is_wide = wide_names.contains(flat_name.as_str());
+        sigs.push(TraceSignal {
+            vcd_name: flat_name.clone(),
+            cpp_expr: flat_name.clone(),
             width,
             is_wide,
         });
@@ -441,6 +458,56 @@ fn cpp_port_type(ty: &TypeExpr) -> String {
     }
 }
 
+/// Substitute param idents in a TypeExpr (for bus param resolution in sim codegen).
+fn subst_type_expr_sim(ty: &TypeExpr, params: &HashMap<String, &Expr>) -> TypeExpr {
+    match ty {
+        TypeExpr::UInt(w) => TypeExpr::UInt(Box::new(subst_expr_sim(w, params))),
+        TypeExpr::SInt(w) => TypeExpr::SInt(Box::new(subst_expr_sim(w, params))),
+        TypeExpr::Vec(inner, len) => TypeExpr::Vec(
+            Box::new(subst_type_expr_sim(inner, params)),
+            Box::new(subst_expr_sim(len, params)),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn subst_expr_sim(expr: &Expr, params: &HashMap<String, &Expr>) -> Expr {
+    match &expr.kind {
+        ExprKind::Ident(name) => {
+            if let Some(replacement) = params.get(name.as_str()) {
+                (*replacement).clone()
+            } else {
+                expr.clone()
+            }
+        }
+        _ => expr.clone(),
+    }
+}
+
+/// Return flattened bus port signals: Vec<(flat_name, TypeExpr)>.
+/// E.g. port itcm: initiator ItcmIcb → [(itcm_cmd_valid, Bool), (itcm_cmd_addr, UInt<14>), ...]
+fn flatten_bus_port(
+    port_name: &str,
+    bi: &BusPortInfo,
+    symbols: &crate::resolve::SymbolTable,
+) -> Vec<(String, TypeExpr)> {
+    let bus_name = &bi.bus_name.name;
+    if let Some((crate::resolve::Symbol::Bus(info), _)) = symbols.globals.get(bus_name) {
+        let mut param_map: HashMap<String, &Expr> = info.params.iter()
+            .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
+            .collect();
+        for pa in &bi.params {
+            param_map.insert(pa.name.name.clone(), &pa.value);
+        }
+        info.signals.iter().map(|(sname, _sdir, sty)| {
+            let subst_ty = subst_type_expr_sim(sty, &param_map);
+            (format!("{}_{}", port_name, sname), subst_ty)
+        }).collect()
+    } else {
+        Vec::new()
+    }
+}
+
 /// C++ type for a private reg/let field (wide → _arch_u128, narrow → uint).
 fn cpp_internal_type(ty: &TypeExpr) -> String {
     match ty {
@@ -559,6 +626,8 @@ struct Ctx<'a> {
     /// FSM mode: regs are public members, no `_` prefix on reads
     fsm_mode:    bool,
     enum_map:    &'a HashMap<String, Vec<String>>,
+    /// Bus port names (for FieldAccess rewriting: itcm.cmd_valid → itcm_cmd_valid).
+    bus_ports:   &'a HashSet<String>,
 }
 
 impl<'a> Ctx<'a> {
@@ -571,9 +640,10 @@ impl<'a> Ctx<'a> {
         wide_names: &'a HashSet<String>,
         widths:     &'a HashMap<String, u32>,
         enum_map:   &'a HashMap<String, Vec<String>>,
+        bus_ports:  &'a HashSet<String>,
     ) -> Self {
         Ctx { reg_names, port_names, let_names, inst_names, wide_names,
-              widths, posedge_lhs: false, fsm_mode: false, enum_map }
+              widths, posedge_lhs: false, fsm_mode: false, enum_map, bus_ports }
     }
 
     fn posedge(mut self) -> Self { self.posedge_lhs = true; self }
@@ -757,6 +827,10 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
 
         ExprKind::FieldAccess(base, field) => {
             if let ExprKind::Ident(base_name) = &base.kind {
+                // Bus port: itcm.cmd_valid → itcm_cmd_valid
+                if ctx.bus_ports.contains(base_name.as_str()) {
+                    return format!("{}_{}", base_name, field.name);
+                }
                 if ctx.inst_names.contains(base_name.as_str()) {
                     return format!("_inst_{}.{}", base_name, field.name);
                 }
@@ -1487,8 +1561,9 @@ impl<'a> SimCodegen<'a> {
 
             // Build arg names as "port" names (so they're used as-is)
             let arg_ports: HashSet<String> = f.args.iter().map(|a| a.name.name.clone()).collect();
+            let empty_bus: HashSet<String> = HashSet::new();
             let ctx = Ctx::new(&empty_regs, &arg_ports, &empty_lets, &empty_insts,
-                               &empty_wide, &empty_w, &enum_map);
+                               &empty_wide, &empty_w, &enum_map, &empty_bus);
 
             for item in &f.body {
                 match item {
@@ -1570,14 +1645,39 @@ impl<'a> SimCodegen<'a> {
         let class = format!("V{name}");
         let enum_map = build_enum_map(self.symbols);
 
-        let port_names: HashSet<String> = m.ports.iter().map(|p| p.name.name.clone()).collect();
+        // Collect bus port names and flattened signals
+        let mut bus_port_names: HashSet<String> = HashSet::new();
+        let mut bus_flat: Vec<(String, TypeExpr)> = Vec::new();
+        for p in &m.ports {
+            if let Some(ref bi) = p.bus_info {
+                bus_port_names.insert(p.name.name.clone());
+                bus_flat.extend(flatten_bus_port(&p.name.name, bi, self.symbols));
+            }
+        }
+
+        let mut port_names: HashSet<String> = m.ports.iter()
+            .filter(|p| p.bus_info.is_none())
+            .map(|p| p.name.name.clone())
+            .collect();
+        // Add flattened bus signal names to port_names
+        for (flat_name, _) in &bus_flat {
+            port_names.insert(flat_name.clone());
+        }
+
         let mut reg_names = collect_reg_names(&m.body, &m.ports);
         reg_names.extend(collect_pipe_reg_names(&m.body));
         let let_names   = collect_let_names(&m.body);
         let inst_names  = collect_inst_names(&m.body);
         let inst_out    = collect_inst_output_signals(&m.body);
-        let wide_names  = collect_wide_names(&m.ports, &m.body);
-        let widths      = build_widths(&m.ports, &m.body);
+        let mut wide_names  = collect_wide_names(&m.ports, &m.body);
+        let mut widths      = build_widths(&m.ports, &m.body);
+
+        // Add bus flattened signals to wide_names and widths
+        for (flat_name, flat_ty) in &bus_flat {
+            let bits = type_bits_te(flat_ty);
+            widths.insert(flat_name.clone(), bits);
+            if bits > 64 { wide_names.insert(flat_name.clone()); }
+        }
 
         // Collect reset-none reg names for --check-uninit
         let uninit_regs: HashSet<String> = if self.check_uninit {
@@ -1627,18 +1727,29 @@ impl<'a> SimCodegen<'a> {
         h.push('\n');
         h.push_str(&format!("class {class} {{\npublic:\n"));
 
-        // Public port fields
+        // Public port fields (bus ports are flattened)
         for p in &m.ports {
+            if p.bus_info.is_some() { continue; }
             let ty = cpp_port_type(&p.ty);
             h.push_str(&format!("  {ty} {};\n", p.name.name));
+        }
+        for (flat_name, flat_ty) in &bus_flat {
+            let ty = cpp_port_type(flat_ty);
+            h.push_str(&format!("  {ty} {flat_name};\n"));
         }
         h.push('\n');
 
         // Constructor — build init list
-        let port_inits: Vec<String> = m.ports.iter()
-            .filter(|p| !wide_names.contains(&p.name.name))
+        let mut port_inits: Vec<String> = m.ports.iter()
+            .filter(|p| p.bus_info.is_none() && !wide_names.contains(&p.name.name))
             .map(|p| format!("{}(0)", p.name.name))
             .collect();
+        // Add flattened bus signal inits
+        for (flat_name, _) in &bus_flat {
+            if !wide_names.contains(flat_name) {
+                port_inits.push(format!("{flat_name}(0)"));
+            }
+        }
         // Collect Vec-array regs that need memset in constructor body
         let vec_reg_inits: Vec<String> = m.body.iter()
             .filter_map(|i| {
@@ -1761,7 +1872,7 @@ impl<'a> SimCodegen<'a> {
         // Note: VCD auto-open is deferred to first eval() call via Verilated::claimTrace()
         h.push_str("  }\n");
         // Collect trace signals for VCD waveform support
-        let trace_signals = collect_trace_signals(&m.ports, &m.body, &wide_names, &widths);
+        let trace_signals = collect_trace_signals(&m.ports, &m.body, &wide_names, &widths, &bus_flat);
         let (trace_h_decls, trace_cpp_impl) = emit_trace_methods(&class, name, &trace_signals);
 
         h.push_str("  void eval();\n");
@@ -1913,7 +2024,7 @@ impl<'a> SimCodegen<'a> {
         // Helper closure: emit sub-instance input assignments + eval_comb + output reads
         // Returns (input_code, comb_call, output_read_code) per inst
         let ctx = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
-                           &wide_names, &widths, &enum_map);
+                           &wide_names, &widths, &enum_map, &bus_port_names);
 
         if insts.is_empty() {
             // No sub-instances: simple path
@@ -2087,7 +2198,7 @@ impl<'a> SimCodegen<'a> {
             cpp.push('\n');
 
             let ctx = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
-                               &wide_names, &widths, &enum_map).posedge();
+                               &wide_names, &widths, &enum_map, &bus_port_names).posedge();
 
             for rb in &reg_blocks {
                 let mut assigned = std::collections::BTreeSet::new();
@@ -2171,7 +2282,7 @@ impl<'a> SimCodegen<'a> {
                         }
                     }
                     let ctx_pe = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
-                                           &wide_names, &widths, &enum_map);
+                                           &wide_names, &widths, &enum_map, &bus_port_names);
                     let src = ctx_pe.resolve_name(&p.source.name, false);
                     if let Some((ref rst_name, is_low)) = rst_info {
                         let cond = if is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
@@ -2274,7 +2385,7 @@ impl<'a> SimCodegen<'a> {
         // inst chain so that combinational feedback settles when called from parent.
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
         let ctx_comb = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
-                                &wide_names, &widths, &enum_map);
+                                &wide_names, &widths, &enum_map, &bus_port_names);
 
         // Let bindings → private fields (assign before inst eval so instances see current values)
         for item in &m.body {
@@ -2623,7 +2734,8 @@ impl<'a> SimCodegen<'a> {
             let init_expr = reset_value_from_reg_reset(&r.reset)
                 .or(r.init.as_ref());
             if let Some(expr) = init_expr {
-                let init_val = cpp_expr(expr, &Ctx::new(&empty_regs, &port_names, &empty_lets, &empty_insts, &empty_wide, &empty_w, &enum_map));
+                let empty_bus: HashSet<String> = HashSet::new();
+                let init_val = cpp_expr(expr, &Ctx::new(&empty_regs, &port_names, &empty_lets, &empty_insts, &empty_wide, &empty_w, &enum_map, &empty_bus));
                 format!("{}({})", r.name.name, init_val)
             } else {
                 format!("{}(0)", r.name.name)
@@ -2660,9 +2772,10 @@ impl<'a> SimCodegen<'a> {
         for l in &f.lets {
             if let Some(ty) = &l.ty { fsm_widths.insert(l.name.name.clone(), type_bits_te(ty)); }
         }
+        let empty_bus: HashSet<String> = HashSet::new();
         let ctx_fsm = {
             let mut c = Ctx::new(&fsm_reg_names, &port_names, &fsm_let_names, &empty_insts,
-                                 &empty_wide, &fsm_widths, &enum_map);
+                                 &empty_wide, &fsm_widths, &enum_map, &empty_bus);
             c.fsm_mode = true;
             c
         };
@@ -2687,7 +2800,7 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("  } else {\n");
         let ctx_posedge = {
             let mut c = Ctx::new(&fsm_reg_names, &port_names, &fsm_let_names, &empty_insts,
-                                 &empty_wide, &fsm_widths, &enum_map);
+                                 &empty_wide, &fsm_widths, &enum_map, &empty_bus);
             c.posedge_lhs = true;
             c.fsm_mode = true;
             c

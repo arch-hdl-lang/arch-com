@@ -41,6 +41,7 @@
 | `.as_clock<D>()` | ✅ | Type cast: `Bool` or `UInt<1>` → `Clock<Domain>`; identity in SV (1-bit logic used as clock); enables clock dividers and custom clock generation in `module` without requiring a first-class construct |
 | `regfile` | ✅ | Multi-read-port / multi-write-port; `forward write_before_read`; `init [i] = v` |
 | `bus` | ✅ | Reusable port bundles with `initiator`/`target` perspectives; parameterized; signals have explicit `in`/`out` from initiator's perspective, `target` flips all directions; late flattening at codegen: `axi.aw_valid` → `axi_aw_valid` in SV; inst connections via `connect axi.signal <- wire`; clean Verilator lint |
+| `package` / `use` | ❌ | Planned — `package PkgName ... end package PkgName` groups enums, structs, functions, params; `use PkgName;` imports all names; emits SV `package`/`import BusPkg::*;`; file resolution: `PkgName.arch` in same directory |
 | `assert` / `cover` | ❌ | Lexed but skipped at parse time |
 | `pipeline` | ✅ | Stages with reg/comb/let/inst body; per-stage `stall when`; `flush` directives; explicit forwarding mux via comb if/else; `valid_r` per-stage signal; cross-stage refs (`Stage.signal`); `inst` inside stages with auto-declared output wires |
 | `function` | ✅ | Pure combinational; `return expr;`; `let` bindings as temporaries; **overloading** (same name, different arg types — mangled as `Name_8`, `Name_16`, etc.); emitted as SV `function automatic` inside each module that uses it |

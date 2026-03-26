@@ -8160,4 +8160,112 @@ Design: a 3-stage in-order RISC-V integer pipeline with a unified register + CSR
 
 > ◈ The entire design compiles with two todo! sites as the only incomplete logic. All types are checked, clock domains verified, all ports driven, pipeline hazard annotations structurally correct, and the RAM\'s logical variable mapping fully resolved. An AI fills in the two todo! sites independently without touching anything else.
 
+---
+
+**29. Packages and Imports**
+
+**29.1 The package Construct**
+
+A **package** groups related type definitions, constants, and functions into a reusable namespace. Packages follow the universal block grammar:
+
+> **package** PkgName
+>
+> // enum, struct, function, and param declarations
+>
+> **end** **package** PkgName
+
+**What can go inside a package:**
+
+| Item | Example |
+|------|---------|
+| `enum` | `enum BusOp Read, Write, Idle end enum BusOp` |
+| `struct` | `struct BusReq op: BusOp; addr: UInt<32>; end struct BusReq` |
+| `function` | `function max(a: UInt<32>, b: UInt<32>) -> UInt<32> ... end function max` |
+| `param` | `param BUS_WIDTH: const = 64;` |
+
+Packages may **not** contain modules, pipelines, FSMs, or any other construct that produces hardware. They are purely compile-time organizational units.
+
+**29.2 The use Import**
+
+A consumer file imports a package with the **use** statement at file scope (before any construct declaration):
+
+> **use** PkgName;
+
+This makes all names defined inside the package available unqualified in the importing file. Multiple `use` statements are allowed.
+
+**29.3 File Resolution**
+
+The compiler resolves `use PkgName;` by searching for `PkgName.arch` in the same directory as the importing file. The package file must contain exactly one `package PkgName ... end package PkgName` construct whose name matches the file name.
+
+When using multi-file compilation (`arch build a.arch b.arch`), packages included on the command line are also resolved.
+
+**29.4 Complete Example**
+
+Source file `BusPkg.arch`:
+
+```
+package BusPkg
+  enum BusOp
+    Read, Write, Idle
+  end enum BusOp
+
+  struct BusReq
+    op: BusOp;
+    addr: UInt<32>;
+    data: UInt<32>;
+  end struct BusReq
+
+  function max(a: UInt<32>, b: UInt<32>) -> UInt<32>
+    return a > b ? a : b;
+  end function max
+end package BusPkg
+```
+
+Consumer file `Consumer.arch`:
+
+```
+use BusPkg;
+
+module Consumer
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port req: in BusReq;
+  port addr_out: out UInt<32>;
+
+  comb addr_out = req.addr;
+end module Consumer
+```
+
+**29.5 Generated SystemVerilog**
+
+The compiler emits a standard SV `package` / `import` pair:
+
+```sv
+package BusPkg;
+  typedef enum logic [1:0] { READ, WRITE, IDLE } BusOp;
+  typedef struct packed {
+    BusOp op;
+    logic [31:0] addr;
+    logic [31:0] data;
+  } BusReq;
+  function automatic logic [31:0] max(input logic [31:0] a, input logic [31:0] b);
+    return (a > b) ? a : b;
+  endfunction
+endpackage
+
+import BusPkg::*;
+module Consumer (
+  input  wire        clk,
+  input  wire        rst,
+  input  BusReq      req,
+  output logic [31:0] addr_out
+);
+  assign addr_out = req.addr;
+endmodule
+```
+
+Each `use PkgName;` in Arch emits one `import PkgName::*;` in SV, placed immediately before the consuming module.
+
+---
+
 *ARCH Language Specification v0.1 · March 2026 · Draft for Review*

@@ -70,8 +70,11 @@ impl<'a> Codegen<'a> {
         self.comment_idx = 0;
         // Pre-collect all functions so they can be emitted inside each module.
         self.pending_functions = items.iter()
-            .filter_map(|i| if let Item::Function(f) = i { Some(f) } else { None })
-            .cloned()
+            .flat_map(|i| match i {
+                Item::Function(f) => vec![f.clone()],
+                Item::Package(p) => p.functions.clone(),
+                _ => vec![],
+            })
             .collect();
         for item in items {
             self.emit_comments_before(item.span().start);
@@ -93,6 +96,8 @@ impl<'a> Codegen<'a> {
                 Item::Bus(_) => {} // compile-time only; flattened at port sites
                 Item::Synchronizer(s) => self.emit_synchronizer(s),
                 Item::Clkgate(c) => self.emit_clkgate(c),
+                Item::Package(p) => self.emit_package(p),
+                Item::Use(_) => {} // import emitted inside modules
             }
         }
         // Flush any trailing comments after the last item.
@@ -188,6 +193,38 @@ impl<'a> Codegen<'a> {
         self.line("");
     }
 
+    fn emit_package(&mut self, pkg: &PackageDecl) {
+        self.line(&format!("package {};", pkg.name.name));
+        self.indent += 1;
+
+        // params → localparam
+        for p in &pkg.params {
+            if let Some(d) = &p.default {
+                let val = self.emit_expr_str(d);
+                self.line(&format!("localparam int {} = {};", p.name.name, val));
+            }
+        }
+
+        // enums
+        for e in &pkg.enums {
+            self.emit_enum(e);
+        }
+
+        // structs
+        for s in &pkg.structs {
+            self.emit_struct(s);
+        }
+
+        // functions
+        for f in &pkg.functions {
+            self.emit_function(f);
+        }
+
+        self.indent -= 1;
+        self.line("endpackage");
+        self.line("");
+    }
+
     fn emit_struct(&mut self, s: &StructDecl) {
         // SV packed structs are MSB-first: first field listed = most significant bits.
         // Fields are reversed so the first ARCH field occupies the LSBs (C-style layout).
@@ -228,6 +265,13 @@ impl<'a> Codegen<'a> {
     }
 
     fn emit_module(&mut self, m: &ModuleDecl) {
+        // Emit import statements for any packages referenced via `use` before the module
+        for item in &self.source.items {
+            if let Item::Use(u) = item {
+                self.out.push_str(&format!("import {}::*;\n", u.name.name));
+            }
+        }
+
         // Module header with parameters
         if m.params.is_empty() {
             self.out.push_str(&format!("module {} (\n", m.name.name));

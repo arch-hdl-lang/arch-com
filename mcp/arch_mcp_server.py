@@ -59,6 +59,7 @@ Common mistakes to avoid:
 - SysDomain is built-in — do NOT declare 'domain SysDomain end domain SysDomain'; just use Clock<SysDomain> directly
 - Use 'default seq on clk rising;' to set the default clock, then use one-line 'seq target <= expr;' (no 'on clk', no 'end seq')
 - One-line seq requires 'default seq' — without it, 'seq' must have 'on clk rising/falling'
+- Use 'package PkgName ... end package PkgName' to group shared enums/structs/functions; import with 'use PkgName;' at file scope
 """,
 )
 
@@ -117,7 +118,7 @@ def _run(args: list[str], timeout: int = 30, cwd: str | None = None) -> str:
 
 RESERVED_KEYWORDS = {
     "module", "pipeline", "fsm", "fifo", "ram", "arbiter", "synchronizer",
-    "counter", "regfile", "interface", "domain", "struct", "enum",
+    "counter", "regfile", "interface", "domain", "struct", "enum", "package",
     "generate", "inst", "port", "param", "reg", "let", "comb", "seq",
     "assert", "cover", "if", "else", "elsif", "end", "for", "on", "rising",
     "falling", "init", "reset", "sync", "async", "high", "low", "none",
@@ -307,6 +308,42 @@ regfile RegfileName
 end regfile RegfileName
 """,
 
+    "package": """\
+// Package: reusable namespace for enums, structs, functions, params.
+// File must be named PkgName.arch; consumer imports with 'use PkgName;'
+
+// BusPkg.arch
+package BusPkg
+  enum BusOp
+    Read, Write, Idle
+  end enum BusOp
+
+  struct BusReq
+    op: BusOp;
+    addr: UInt<32>;
+    data: UInt<32>;
+  end struct BusReq
+
+  function max(a: UInt<32>, b: UInt<32>) -> UInt<32>
+    return a > b ? a : b;
+  end function max
+end package BusPkg
+
+// Consumer.arch
+use BusPkg;
+
+module Consumer
+  port req: in BusReq;
+  port addr_out: out UInt<32>;
+  comb addr_out = req.addr;
+end module Consumer
+
+// SV output:
+//   package BusPkg; ... endpackage
+//   import BusPkg::*;
+//   module Consumer (...); ... endmodule
+""",
+
     "types": """\
 // ── Type System ──
 // UInt<N>, SInt<N>, Bool, Bit
@@ -341,7 +378,7 @@ def get_construct_syntax(construct: str) -> str:
     any .arch code to avoid common mistakes.
 
     Available constructs: module, inst, fsm, pipeline, synchronizer, fifo,
-    ram, arbiter, regfile, types
+    ram, arbiter, regfile, package, types
 
     Also returns reserved keywords to avoid as signal/register names."""
     key = construct.lower().strip()

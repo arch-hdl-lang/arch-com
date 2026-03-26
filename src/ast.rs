@@ -24,6 +24,8 @@ pub enum Item {
     Synchronizer(SynchronizerDecl),
     Clkgate(ClkGateDecl),
     Bus(BusDecl),
+    Package(PackageDecl),
+    Use(UseDecl),
 }
 
 #[derive(Debug, Clone)]
@@ -580,6 +582,8 @@ impl Item {
             Item::Synchronizer(s) => s.span,
             Item::Clkgate(c) => c.span,
             Item::Bus(b) => b.span,
+            Item::Package(p) => p.span,
+            Item::Use(u) => u.span,
         }
     }
 }
@@ -956,6 +960,24 @@ pub struct TemplateHookDecl {
     pub name: Ident,
     pub params: Vec<FunctionArg>,
     pub ret_ty: TypeExpr,
+    pub span: Span,
+}
+
+// ── Package ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct PackageDecl {
+    pub name: Ident,
+    pub params: Vec<ParamDecl>,
+    pub enums: Vec<EnumDecl>,
+    pub structs: Vec<StructDecl>,
+    pub functions: Vec<FunctionDecl>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct UseDecl {
+    pub name: Ident,
     pub span: Span,
 }
 

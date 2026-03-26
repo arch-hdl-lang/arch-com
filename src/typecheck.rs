@@ -98,6 +98,12 @@ impl<'a> TypeChecker<'a> {
                 Item::Synchronizer(s) => self.check_synchronizer(s),
                 Item::Clkgate(c) => self.check_clkgate(c),
                 Item::Bus(_) => {} // validated at port usage sites
+                Item::Package(pkg) => {
+                    for e in &pkg.enums { self.check_enum(e); }
+                    for s in &pkg.structs { self.check_struct(s); }
+                    for f in &pkg.functions { self.check_function(f); }
+                }
+                Item::Use(_) => {} // no-op
             }
         }
         if self.errors.is_empty() {
@@ -277,6 +283,11 @@ impl<'a> TypeChecker<'a> {
                         if conn.direction == ConnectDir::Output {
                             if let ExprKind::Ident(name) = &conn.signal.kind {
                                 driven.insert(name.clone());
+                            }
+                            // Bus port FieldAccess: itcm.cmd_valid → driven itcm_cmd_valid
+                            let flat = Self::expr_flat_name_tc(&conn.signal);
+                            if !flat.is_empty() {
+                                driven.insert(flat);
                             }
                         }
                     }

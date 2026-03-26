@@ -604,6 +604,30 @@ CDC detection covers both seq→seq and comb→seq crossings: a comb block readi
 | end template MyInterface                  |   = FnName(args);                    |
 +-------------------------------------------+--------------------------------------+
 
+**package --- reusable type/function namespace**
+
++-------------------------------------------+--------------------------------------+
+| package BusPkg                            | Contains: enum, struct, function,    |
+|                                           | param declarations only.             |
+| enum BusOp                                |                                      |
+|   Read, Write, Idle                       | No modules/pipelines/FSMs inside.    |
+| end enum BusOp                            |                                      |
+|                                           | File: PkgName.arch (one package      |
+| struct BusReq                             | per file, name must match).          |
+|   op: BusOp;                              |                                      |
+|   addr: UInt\<32\>;                       | Consumer imports with:               |
+|   data: UInt\<32\>;                       |   use BusPkg;                        |
+| end struct BusReq                         |                                      |
+|                                           | Emits SV:                            |
+| function max(a: UInt\<32\>,               |   package BusPkg; ... endpackage     |
+|              b: UInt\<32\>)               |   import BusPkg::*;                  |
+|   -> UInt\<32\>                           |                                      |
+| return a > b ? a : b;                     | Resolved from same directory or      |
+| end function max                          | multi-file command line.             |
+|                                           |                                      |
+| end package BusPkg                        |                                      |
++-------------------------------------------+--------------------------------------+
+
 **5. Logging**
 
 > log(Level, "TAG", "format %0d", arg);

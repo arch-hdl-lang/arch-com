@@ -394,6 +394,61 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                     table.globals.insert(b.name.name.clone(), (Symbol::Bus(info), b.name.span));
                 }
             }
+            Item::Package(pkg) => {
+                if table.globals.contains_key(&pkg.name.name) {
+                    errors.push(CompileError::duplicate(&pkg.name.name, pkg.name.span));
+                } else {
+                    // Register the package name itself (not strictly needed but consistent)
+                    table.globals.insert(
+                        pkg.name.name.clone(),
+                        (Symbol::Template(pkg.name.name.clone()), pkg.name.span),
+                    );
+                    // Register contained items as globals
+                    for e in &pkg.enums {
+                        if table.globals.contains_key(&e.name.name) {
+                            errors.push(CompileError::duplicate(&e.name.name, e.name.span));
+                        } else {
+                            let info = EnumInfo {
+                                name: e.name.name.clone(),
+                                variants: e.variants.iter().map(|v| v.name.clone()).collect(),
+                            };
+                            table.globals.insert(e.name.name.clone(), (Symbol::Enum(info), e.name.span));
+                        }
+                    }
+                    for s in &pkg.structs {
+                        if table.globals.contains_key(&s.name.name) {
+                            errors.push(CompileError::duplicate(&s.name.name, s.name.span));
+                        } else {
+                            let info = StructInfo {
+                                name: s.name.name.clone(),
+                                fields: s.fields.iter().map(|f| (f.name.name.clone(), f.ty.clone())).collect(),
+                            };
+                            table.globals.insert(s.name.name.clone(), (Symbol::Struct(info), s.name.span));
+                        }
+                    }
+                    for f in &pkg.functions {
+                        let info = FunctionInfo {
+                            name: f.name.name.clone(),
+                            arg_types: f.args.iter().map(|a| a.ty.clone()).collect(),
+                            ret_ty: f.ret_ty.clone(),
+                        };
+                        if let Some((Symbol::Function(overloads), _)) = table.globals.get_mut(&f.name.name) {
+                            overloads.push(info);
+                        } else if table.globals.contains_key(&f.name.name) {
+                            errors.push(CompileError::duplicate(&f.name.name, f.name.span));
+                        } else {
+                            table.globals.insert(f.name.name.clone(), (Symbol::Function(vec![info]), f.name.span));
+                        }
+                    }
+                    for p in &pkg.params {
+                        table.globals.insert(
+                            p.name.name.clone(),
+                            (Symbol::Param(p.name.name.clone()), p.name.span),
+                        );
+                    }
+                }
+            }
+            Item::Use(_) => {} // file already loaded; no-op
             Item::Synchronizer(s) => {
                 if table.globals.contains_key(&s.name.name) {
                     errors.push(CompileError::duplicate(&s.name.name, s.name.span));

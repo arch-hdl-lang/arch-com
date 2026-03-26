@@ -119,7 +119,8 @@ fn main() -> miette::Result<()> {
 
     match cli.command {
         Command::Check { files } => {
-            let ms = MultiSource::from_files(&files)?;
+            let all_files = resolve_use_imports(&files)?;
+            let ms = MultiSource::from_files(&all_files)?;
             let _ = run_check_multi(&ms)?;
             eprintln!("OK: no errors");
             Ok(())
@@ -128,7 +129,8 @@ fn main() -> miette::Result<()> {
             run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, cdc_random, wave.as_deref())
         }
         Command::Build { files, o } => {
-            let ms = MultiSource::from_files(&files)?;
+            let all_files = resolve_use_imports(&files)?;
+            let ms = MultiSource::from_files(&all_files)?;
             let (ast, symbols, overload_map) = run_check_multi(&ms)?;
 
             let comments = lexer::extract_comments(&ms.combined);
@@ -184,7 +186,8 @@ fn run_sim(
     wave: Option<&std::path::Path>,
 ) -> miette::Result<()> {
     // 1. Parse + type-check
-    let ms = MultiSource::from_files(arch_files)?;
+    let all_files = resolve_use_imports(arch_files)?;
+    let ms = MultiSource::from_files(&all_files)?;
     let (ast, symbols, overload_map) = run_check_multi(&ms)?;
 
     // 2. Set up output directory
@@ -260,6 +263,82 @@ fn run_sim(
         .into_diagnostic()?;
 
     std::process::exit(run_status.code().unwrap_or(1));
+}
+
+/// Resolve `use PkgName;` imports: find PkgName.arch files relative to the
+/// first input file's directory. Returns an extended MultiSource with
+/// dependency files prepended.
+fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
+    use std::collections::HashSet;
+
+    let base_dir = files.first()
+        .and_then(|f| f.parent())
+        .unwrap_or(std::path::Path::new("."));
+
+    let mut all_files: Vec<PathBuf> = Vec::new();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut queue: Vec<PathBuf> = files.to_vec();
+
+    // Process files, discovering new dependencies via `use`
+    while let Some(file) = queue.pop() {
+        let canon = file.canonicalize().unwrap_or_else(|_| file.clone());
+        if seen.contains(&canon) {
+            continue;
+        }
+        seen.insert(canon);
+
+        let source = fs::read_to_string(&file).into_diagnostic()?;
+        let tokens = lexer::tokenize(&source).map_err(|_| {
+            miette::miette!("Lexer error in {}", file.display())
+        })?;
+        let mut p = parser::Parser::new(tokens, &source);
+        let parsed = p.parse_source_file().map_err(|err| {
+            Report::new(err).with_source_code(NamedSource::new(file.display().to_string(), source.clone()))
+        })?;
+
+        // Find `use` items and queue their files
+        let mut deps = Vec::new();
+        for item in &parsed.items {
+            if let arch::ast::Item::Use(u) = item {
+                let dep_path = base_dir.join(format!("{}.arch", u.name.name));
+                if dep_path.exists() {
+                    deps.push(dep_path);
+                }
+                // If the file doesn't exist, resolve/typecheck will catch the missing symbols
+            }
+        }
+
+        // Dependencies go first (before the file that uses them)
+        for dep in deps.into_iter().rev() {
+            queue.push(dep);
+        }
+        all_files.push(file);
+    }
+
+    // Reverse so dependencies come before dependents
+    // Actually, deps were pushed to queue and will be processed before
+    // the current file is added. But since we push the current file at the
+    // end, all_files has: first input files first, then deps. We need deps first.
+    // Let's just deduplicate and reorder: deps before users.
+    // Simple approach: move any file that is NOT in the original `files` list to front.
+    let orig_set: HashSet<PathBuf> = files.iter()
+        .map(|f| f.canonicalize().unwrap_or_else(|_| f.clone()))
+        .collect();
+    let mut dep_files: Vec<PathBuf> = Vec::new();
+    let mut main_files: Vec<PathBuf> = Vec::new();
+    let mut seen2: HashSet<PathBuf> = HashSet::new();
+    for f in &all_files {
+        let canon = f.canonicalize().unwrap_or_else(|_| f.clone());
+        if seen2.contains(&canon) { continue; }
+        seen2.insert(canon.clone());
+        if orig_set.contains(&canon) {
+            main_files.push(f.clone());
+        } else {
+            dep_files.push(f.clone());
+        }
+    }
+    dep_files.extend(main_files);
+    Ok(dep_files)
 }
 
 fn run_check_multi(

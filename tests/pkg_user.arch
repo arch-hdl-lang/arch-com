@@ -1,0 +1,10 @@
+use TestPkg;
+
+module PkgUser
+  port op: in AluOp;
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port result: out UInt<8>;
+
+  comb result = max(a, b);
+end module PkgUser
