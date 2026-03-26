@@ -131,22 +131,36 @@ CONSTRUCT_SYNTAX = {
     "module": """\
 module ModuleName
   param PARAM_NAME: const = 32;
-  port clk:   in Clock<SysDomain>;
+  port clk:   in Clock<SysDomain>;      // SysDomain is built-in
   port rst:   in Reset<Sync>;
   port a:     in UInt<8>;
-  port b:     out UInt<8>;
+  port reg q: out UInt<8> reset rst=0;  // port reg: output + register in one
 
-  reg my_reg: UInt<8> init 0 reset rst;
+  default seq on clk rising;             // sets default clock for all seq
 
-  let wire_name: UInt<8> = a + 1;    // let REQUIRES initializer
+  let sum: UInt<9> = a + 1;             // let REQUIRES initializer
+  wire w: UInt<8>;                       // wire: driven in comb blocks
 
-  seq on clk rising
-    my_reg <= a;
+  comb w = a;                            // one-line comb (single assignment)
+
+  comb                                   // multi-line comb (multiple assignments or if/else)
+    w = a;
+    q = w + 1;                           // ERROR: q is reg, can only assign in seq
+  end comb
+
+  seq q <= a;                            // one-line seq (uses default clock)
+
+  seq                                    // multi-line seq (omits 'on clk' when default is set)
+    if rst
+      q <= 0;
+    else
+      q <= a;
+    end if
   end seq
 
-  comb
-    b = my_reg;
-  end comb
+  seq on clk falling                     // explicit clock overrides default
+    q <= a;
+  end seq
 end module ModuleName
 """,
 
@@ -174,16 +188,26 @@ fsm FsmName
   port go:  in Bool;
   port done: out Bool;
 
+  reg cnt: UInt<4> reset rst=0;
+
   state Idle, Running, Done;
-  reset_state Idle;
+  default state Idle;                    // reset state
+  default seq on clk rising;             // default clock for all seq in states
+  default                                // default outputs (overridden per-state)
+    comb done = false;
+  end default
 
-  transition Idle -> Running when go;
-  transition Running -> Done when true;
-  transition Done -> Idle when true;
+  state Idle transition to Running when go;   // one-line state (1 transition, no comb/seq)
 
-  comb
-    done = (state == Done);
-  end comb
+  state Running
+    comb done = false;                   // override default if needed
+    seq cnt <= cnt + 1;                  // one-line seq inside state
+    transition to Done when cnt == 10;
+  end state Running
+
+  state Done
+    comb done = true;                    // override default
+  end state Done                         // no transition = stays in Done
 end fsm FsmName
 """,
 
@@ -293,8 +317,13 @@ end regfile RegfileName
 // ── Width rules ──
 // UInt<8> + UInt<8> → UInt<9>   (result widens by 1)
 // No implicit conversions — use .trunc<N>(), .zext<N>(), .sext<N>()
-// Bit slice: x.trunc<Hi, Lo>()  e.g. x.trunc<7,4>() = x[7:4]
+// Bit slice: x[7:4] extracts bits 7 down to 4
+// Single bit: x[3] extracts bit 3
 // Cast: (x as SInt<32>), (x as UInt<32>)
+// Concat: {a, b}   Replication: {4{a}}
+// Reduction: &x (AND), |x (OR), ^x (XOR)
+// Ternary: cond ? a : b
+// Bit/byte reverse: x.reverse(1) for bit-reverse, x.reverse(8) for byte-reverse
 
 // ── Naming conventions (compiler-enforced) ──
 // Modules/structs/enums: PascalCase
