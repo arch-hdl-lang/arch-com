@@ -14,9 +14,9 @@
 >
 > port name: out TypeExpr;
 >
-> socket name: initiator InterfaceName; // TLM initiator (planned)
+> port name: initiator BusName; // bus port (initiator perspective)
 >
-> socket name: target InterfaceName; // TLM target (planned)
+> port name: target BusName; // bus port (directions flipped)
 >
 > generate for i in 0..N-1 // generated ports / instances
 >
@@ -571,17 +571,19 @@ CDC detection covers both seq→seq and comb→seq crossings: a comb block readi
 +-------------------------------------------+--------------------------------------+
 | bus AxiLite                               | Signals from initiator's perspective |
 |                                           |                                      |
-| param ADDR_W: const = 32;                 | `target` flips all directions        |
+| param ADDR_W: const = 32;                 | `initiator` keeps directions         |
 |                                           |                                      |
-| port aw_valid: out Bool;                  | Usage in module:                     |
+| aw_valid: out Bool;                       | `target` flips all directions        |
 |                                           |                                      |
-| port aw_ready: in Bool;                   | port axi: initiator AxiLite;         |
+| aw_ready: in Bool;                        | Usage in module:                     |
 |                                           |                                      |
-| port aw_addr: out UInt\<ADDR_W\>;        | port axi: target AxiLite;            |
+| aw_addr: out UInt\<ADDR_W\>;             | port axi: initiator AxiLite;         |
 |                                           |                                      |
-| end bus AxiLite                           | SV: flattened axi\_aw\_valid, etc.   |
+| end bus AxiLite                           | port axi: target AxiLite;            |
 |                                           |                                      |
-|                                           | inst connect: axi.aw\_valid \<- wire |
+|                                           | Access: axi.aw\_valid (dot notation) |
+|                                           |                                      |
+|                                           | SV: flattened axi\_aw\_valid, etc.   |
 +-------------------------------------------+--------------------------------------+
 
 **template --- user-defined interface contract**
