@@ -44,7 +44,7 @@ Every construct uses **keyword Name / ... / end keyword Name** — no braces any
 | `ram` | FPGA BRAM / ASIC SRAM / ROM — `kind: single|simple_dual|true_dual|rom`, `latency 0|1|2` (async/sync/sync_out). ROM: read-only, requires `init: [...]` or `init: file("path", hex|bin);` |
 | `arbiter` | N-requester grant logic — `policy: round_robin|priority|weighted<W>|lru|custom` |
 | `bus` | Reusable parameterized port bundle — `initiator` keeps signal directions, `target` flips them; flattens to individual SV ports (`axi.aw_valid` → `axi_aw_valid`) |
-| `process` | Multi-cycle sequential block — `wait until`/`wait N cycle`/`fork`-`join`; compiler lowers to synthesizable FSM; use instead of manual `fsm` for sequential protocols |
+| `thread` | Multi-cycle sequential block — `wait until`/`wait N cycle`/`fork`-`join`; compiler lowers to synthesizable FSM; use instead of manual `fsm` for sequential protocols |
 | `generate` | Compile-time port/instance generation (`for` and `if` variants) |
 
 ### Universal Block Schema (all constructs follow this layout)
