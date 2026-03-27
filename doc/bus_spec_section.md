@@ -100,7 +100,108 @@ end bus AxiLite
 
 Synchronization primitives: `await f` (wait for one), `await_all(f0, f1, f2)` (wait for all), `await_any(t0, t1)` (wait for first to complete).
 
-⚑  Methods describe the **transaction-level contract**.  At RTL (`arch build`), only the signal declarations are used.  At TLM (`arch sim --tlm-lt`), the compiler generates method call/response logic from the method declarations.  The `implement` block (§23) bridges the two: an `rtl_accurate` implement drives real signals cycle by cycle behind the method call API.
+⚑  Methods describe the **transaction-level contract**.  At RTL (`arch build`), only the signal declarations are used.  At TLM (`arch sim --tlm-lt`), the compiler generates method call/response logic from the method declarations.  The `implement` block (§19.2.2) bridges the two: a cycle-accurate implement drives real signals behind the method call API, and the compiler can synthesize it to an FSM.
+
+### 19.2.2  Implement Blocks — Cycle-Accurate Protocol Description (Planned)
+
+An `implement` block maps a TLM method to cycle-accurate signal-level behavior.  The compiler lowers it to a synthesizable FSM — each `wait` statement becomes a state boundary.
+
+```
+implement AxiLite.write rtl
+  // Drive write-address and write-data channels in parallel
+  fork
+    // AW channel
+    aw_valid = 1;
+    aw_addr  = addr;
+    wait until aw_ready;
+    aw_valid = 0;
+  and
+    // W channel
+    w_valid = 1;
+    w_data  = data;
+    w_strb  = {DATA_W/8{1'b1}};
+    wait until w_ready;
+    w_valid = 0;
+  join
+
+  // Wait for write response
+  b_ready = 1;
+  wait until b_valid;
+  b_ready = 0;
+  return b_resp;
+end implement AxiLite.write
+```
+
+#### Protocol primitives
+
+| Primitive | Meaning | Synthesizable lowering |
+|-----------|---------|----------------------|
+| `wait until cond` | Pause until condition is true on a clock edge | State boundary — stay in current state while `!cond` |
+| `wait N cycle` | Pause for exactly N clock cycles | Counter + state boundary |
+| `fork ... and ... join` | Drive parallel channels independently | Per-arm done-bit registers; advance when all done |
+| `if/elsif/else` | Conditional signal driving | Combinational mux within a state |
+| `for i in 0..N` | Repeated beats (bursts) | Loop counter + state boundary per iteration |
+| `wait until cond timeout N cycle` | Wait with timeout (planned) | Counter + OR condition for state exit |
+
+#### Fork/join synthesis
+
+`fork/join` does **not** create simulation threads.  The compiler lowers it to parallel done-tracking — the same pattern hardware engineers write manually for multi-channel protocols:
+
+```
+// Compiler-generated FSM for the fork/join above:
+state WRITE_REQ:
+  aw_valid = ~aw_done;
+  w_valid  = ~w_done;
+  aw_addr  = addr;
+  w_data   = data;
+  if aw_ready & ~aw_done
+    aw_done <= 1;
+  end if
+  if w_ready & ~w_done
+    w_done <= 1;
+  end if
+  transition to WRITE_RESP when (aw_done | aw_ready) & (w_done | w_ready);
+
+state WRITE_RESP:
+  b_ready = 1;
+  transition to IDLE when b_valid;
+```
+
+Each `fork` arm becomes a done-bit register.  Each arm's `wait until` conditionally sets its done-bit.  The `join` transitions when all arms have completed (either previously or in the current cycle).  Done-bits reset on the outgoing transition.
+
+For arms with multiple sequential waits, each arm becomes a mini sub-FSM with its own state register, and the join waits for all sub-FSMs to reach their terminal state.
+
+#### Protocol expressiveness
+
+The primitive set (`wait until`, `wait N cycle`, `fork/join`, `for`, `if/elsif`) covers the following protocol families:
+
+| Protocol | Key pattern | Primitives used |
+|----------|------------|-----------------|
+| APB | Sequential phases (setup → access) | `wait 1 cycle`, `wait until pready` |
+| AHB | Pipelined address/data with HREADY | `wait until hready` |
+| AXI | 5 independent channels, bursts | `fork/join` (AW+W parallel), `for` (burst beats) |
+| Wishbone | Single-channel handshake | `wait until ack` |
+| TileLink | Multi-channel with ordering | `fork/join`, `wait until` |
+| SPI/I2C | Bit-serial with clock manipulation | `wait 1 cycle`, `for` (bit loop) |
+
+The design principle: these primitives compose to express any protocol that can be described as a sequence of conditional waits with optional parallelism.  This is equivalent in expressive power to a manually-written FSM (since the compiler lowers to exactly that), but with clearer intent.
+
+#### Synthesizability
+
+All four method modes are synthesizable when their static bounds are declared.  The compiler generates progressively more hardware, but every component is deterministic and follows standard microarchitecture patterns.
+
+| Method mode | Bound required | Generated hardware |
+|-------------|---------------|-------------------|
+| `blocking` | — | Single FSM from `implement` block lowering |
+| `pipelined` | `max_outstanding` | Request FSM + outstanding counter + response FIFO (`max_outstanding` entries) |
+| `out_of_order` | `id_width` | Request FSM + completion buffer (`2^id_width` entries × data width) + free list + response collector |
+| `burst` | `max_burst_len` | Request FSM + beat counter |
+
+**Pipelined** example (back-to-back AXI writes): the request FSM issues writes using the same fork/join lowering as blocking, but instead of waiting for the B response, it increments an outstanding counter and accepts the next call immediately.  A separate response collector watches `b_valid`/`b_ready`, resolves Futures in FIFO order, and decrements the counter.  When outstanding hits `max_outstanding`, the request FSM stalls the caller.
+
+**Out-of-order** example (AXI reads with multiple IDs): the request FSM allocates an ID from a free list, issues AR, and returns a `Token` to the caller.  A response collector watches `r_valid`/`r_ready` and writes `r_data` into a completion buffer indexed by `r_id`.  When the caller awaits a Token, the hardware checks the completion buffer — returns immediately if valid, stalls if not yet arrived.  The completion buffer has `2^id_width` entries, each `DATA_W` bits wide plus a valid bit.
+
+All bounds are already required in the method declaration (`max_outstanding`, `id_width`, `max_burst_len`), so the compiler always has the static information needed to size the generated hardware.
 
 ## 19.3  Using a Bus Port
 
