@@ -1,0 +1,32 @@
+module signed_unsigned_comparator
+  param WIDTH: const = 5;
+  port i_A:       in UInt<WIDTH>;
+  port i_B:       in UInt<WIDTH>;
+  port i_enable:  in Bool;
+  port i_mode:    in Bool;
+  port o_greater: out Bool;
+  port o_less:    out Bool;
+  port o_equal:   out Bool;
+
+  wire gt: Bool;
+  wire lt: Bool;
+  wire eq: Bool;
+
+  comb
+    if i_mode
+      // Signed mode
+      gt = ((i_A as SInt<WIDTH>) > (i_B as SInt<WIDTH>)) ? 1'd1 : 1'd0;
+      lt = ((i_A as SInt<WIDTH>) < (i_B as SInt<WIDTH>)) ? 1'd1 : 1'd0;
+      eq = (i_A == i_B) ? 1'd1 : 1'd0;
+    else
+      // Magnitude (unsigned) mode
+      gt = (i_A > i_B) ? 1'd1 : 1'd0;
+      lt = (i_A < i_B) ? 1'd1 : 1'd0;
+      eq = (i_A == i_B) ? 1'd1 : 1'd0;
+    end if
+
+    o_greater = i_enable & gt;
+    o_less    = i_enable & lt;
+    o_equal   = i_enable & eq;
+  end comb
+end module signed_unsigned_comparator

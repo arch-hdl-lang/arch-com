@@ -1,0 +1,45 @@
+module nbit_swizzling
+  param DATA_WIDTH: const = 64;
+  port data_in:  in UInt<DATA_WIDTH>;
+  port sel:      in UInt<2>;
+  port data_out: out UInt<DATA_WIDTH>;
+
+  wire rev_full: UInt<DATA_WIDTH>;
+  wire rev_half: UInt<DATA_WIDTH>;
+  wire rev_quarter: UInt<DATA_WIDTH>;
+  wire rev_eighth: UInt<DATA_WIDTH>;
+
+  comb
+    // sel=0: reverse entire input
+    for i in 0..DATA_WIDTH-1
+      rev_full[i] = data_in[DATA_WIDTH - 1 - i];
+    end for
+
+    // sel=1: reverse two halves
+    for i in 0..DATA_WIDTH-1
+      rev_half[i] = data_in[(i / (DATA_WIDTH/2)) * (DATA_WIDTH/2) + (DATA_WIDTH/2 - 1) - (i % (DATA_WIDTH/2))];
+    end for
+
+    // sel=2: reverse four quarters
+    for i in 0..DATA_WIDTH-1
+      rev_quarter[i] = data_in[(i / (DATA_WIDTH/4)) * (DATA_WIDTH/4) + (DATA_WIDTH/4 - 1) - (i % (DATA_WIDTH/4))];
+    end for
+
+    // sel=3: reverse eight eighths
+    for i in 0..DATA_WIDTH-1
+      rev_eighth[i] = data_in[(i / (DATA_WIDTH/8)) * (DATA_WIDTH/8) + (DATA_WIDTH/8 - 1) - (i % (DATA_WIDTH/8))];
+    end for
+
+    if sel == 2'd0
+      data_out = rev_full;
+    elsif sel == 2'd1
+      data_out = rev_half;
+    elsif sel == 2'd2
+      data_out = rev_quarter;
+    elsif sel == 2'd3
+      data_out = rev_eighth;
+    else
+      data_out = data_in;
+    end if
+  end comb
+end module nbit_swizzling

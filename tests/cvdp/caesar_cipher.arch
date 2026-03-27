@@ -1,0 +1,21 @@
+module caesar_cipher
+  port input_char:  in UInt<8>;
+  port key:         in UInt<4>;
+  port output_char: out UInt<8>;
+
+  let is_upper: Bool = (input_char >= 8'd65) & (input_char < 8'd91);
+  let is_lower: Bool = (input_char >= 8'd97) & (input_char < 8'd123);
+  let key8: UInt<8> = key.zext<8>();
+  let upper_shifted: UInt<8> = ((input_char - 8'd65 + key8).trunc<8>() % 8'd26 + 8'd65).trunc<8>();
+  let lower_shifted: UInt<8> = ((input_char - 8'd97 + key8).trunc<8>() % 8'd26 + 8'd97).trunc<8>();
+
+  comb
+    if is_upper
+      output_char = upper_shifted;
+    elsif is_lower
+      output_char = lower_shifted;
+    else
+      output_char = input_char;
+    end if
+  end comb
+end module caesar_cipher
