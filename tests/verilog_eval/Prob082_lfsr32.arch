@@ -8,7 +8,10 @@ module TopModule
   wire q_next: UInt<32>;
 
   comb
-    q_next = {q[0], q[31:1]};
+    q_next[31] = q[0];
+    for i in 1..31
+      q_next[i] = q[i + 1];
+    end for
     q_next[21] = q[22] ^ q[0];
     q_next[1] = q[2] ^ q[0];
     q_next[0] = q[1] ^ q[0];

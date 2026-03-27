@@ -1,5 +1,4 @@
-Wrote tests/verilog_eval/Prob146_fsm_serialdata.sv
-utput
+// VerilogEval Prob146: Serial receiver with data output
 // Start bit (0), 8 data bits LSB-first, stop bit (1). Assert done when stop=1.
 module TopModule (
   input logic clk,
@@ -34,8 +33,31 @@ module TopModule (
       data_reg <= 0;
     end else begin
       state_r <= state_next;
-      data_reg <= {in, data_reg[7:1]};
       case (state_r)
+        BIT0: begin
+          data_reg <= {in, data_reg[7:1]};
+        end
+        BIT1: begin
+          data_reg <= {in, data_reg[7:1]};
+        end
+        BIT2: begin
+          data_reg <= {in, data_reg[7:1]};
+        end
+        BIT3: begin
+          data_reg <= {in, data_reg[7:1]};
+        end
+        BIT4: begin
+          data_reg <= {in, data_reg[7:1]};
+        end
+        BIT5: begin
+          data_reg <= {in, data_reg[7:1]};
+        end
+        BIT6: begin
+          data_reg <= {in, data_reg[7:1]};
+        end
+        BIT7: begin
+          data_reg <= {in, data_reg[7:1]};
+        end
         default: ;
       endcase
     end
