@@ -1,5 +1,6 @@
-Wrote tests/verilog_eval/Prob137_fsm_serial.sv
-ogic reset,
+module TopModule (
+  input logic clk,
+  input logic reset,
   input logic in,
   output logic done
 );

@@ -1,0 +1,114 @@
+%Warning-TIMESCALEMOD: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_ref.sv:2:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    2 | module RefModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:6:8: ... Location of module with timescale
+    6 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+                       ... For warning description see https://verilator.org/warn/TIMESCALEMOD?v=5.034
+                       ... Use "/* verilator lint_off TIMESCALEMOD */" and lint_on around source to disable this message.
+%Warning-TIMESCALEMOD: TopModule.sv:4:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    4 | module TopModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:6:8: ... Location of module with timescale
+    6 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:73:7: Operator ASSIGNDLY expects 1 bits on the Assign RHS, but Assign RHS's RAND generates 32 bits.
+                                                                                                          : ... note: In instance 'tb.stim1'
+   73 |    in <= $random;
+      |       ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:74:13: Logical operator LOGNOT expects 1 bit on the LHS, but LHS's AND generates 32 bits.
+                                                                                                           : ... note: In instance 'tb.stim1'
+   74 |    reset <= !($random & 31);
+      |             ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:146:3: Logical operator IF expects 1 bit on the If, but If's SEL generates 32 bits.
+                                                                                                           : ... note: In instance 'tb'
+  146 |   if (stats1.errors_out) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out", stats1.errors_out, stats1.errortime_out);
+      |   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:162:45: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                            : ... note: In instance 'tb'
+  162 |    if (stats1.errors == 0) stats1.errortime = $time;
+      |                                             ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:166:58: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                            : ... note: In instance 'tb'
+  166 |   begin if (stats1.errors_out == 0) stats1.errortime_out = $time;
+      |                                                          ^
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:51:9: Non-blocking assignment '<=' in initial/final block
+                                                                                                          : ... This will be executed as a blocking assignment '='!
+   51 |   reset <= 1;
+      |         ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:52:6: Non-blocking assignment '<=' in initial/final block
+                                                                                                          : ... This will be executed as a blocking assignment '='!
+   52 |   in <= 0;
+      |      ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:53:24: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   53 |   @(posedge clk) reset <= 0; in <= 1;
+      |                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:53:33: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   53 |   @(posedge clk) reset <= 0; in <= 1;
+      |                                 ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:54:21: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   54 |   @(posedge clk) in <= 0;
+      |                     ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:55:21: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   55 |   @(posedge clk) in <= 1;
+      |                     ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:57:22: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   57 |    @(posedge clk) in <= 0;
+      |                      ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:58:22: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   58 |    @(posedge clk) in <= 1;
+      |                      ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:60:25: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   60 |    @(negedge clk) reset <= 1;
+      |                         ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:61:25: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   61 |    @(posedge clk) reset <= 0;
+      |                         ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:62:22: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   62 |    @(posedge clk) in <= 1;
+      |                      ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:63:22: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   63 |    @(posedge clk) in <= 1;
+      |                      ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:64:22: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   64 |    @(posedge clk) in <= 0;
+      |                      ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:65:22: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   65 |    @(posedge clk) in <= 1;
+      |                      ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:66:22: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   66 |    @(posedge clk) in <= 0;
+      |                      ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:67:22: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   67 |    @(posedge clk) in <= 1;
+      |                      ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:68:22: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   68 |    @(posedge clk) in <= 1;
+      |                      ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:69:22: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   69 |    @(posedge clk) in <= 1;
+      |                      ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:73:7: Non-blocking assignment '<=' in initial/final block
+                                                                                                          : ... This will be executed as a blocking assignment '='!
+   73 |    in <= $random;
+      |       ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob120_fsm3s_test.sv:74:10: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   74 |    reset <= !($random & 31);
+      |          ^~

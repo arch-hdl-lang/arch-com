@@ -1,5 +1,4 @@
-Wrote tests/verilog_eval/Prob155_lemmings4.sv
-/splatter FSM with async reset
+// VerilogEval Prob155: Lemmings walk/fall/dig/splatter FSM with async reset
 // Fall >= 20 cycles then hit ground = splat (dead forever)
 module TopModule (
   input logic clk,

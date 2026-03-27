@@ -1,5 +1,4 @@
-Wrote tests/verilog_eval/Prob148_2013_q2afsm.sv
-, active-low sync reset (resetn)
+// VerilogEval Prob148: 4-state priority arbiter, active-low sync reset (resetn)
 module TopModule (
   input logic clk,
   input logic resetn,

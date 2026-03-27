@@ -1,5 +1,6 @@
-Wrote tests/verilog_eval/Prob109_fsm1.sv
-nput logic areset,
+module TopModule (
+  input logic clk,
+  input logic areset,
   input logic in,
   output logic out
 );

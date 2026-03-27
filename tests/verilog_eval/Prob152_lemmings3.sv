@@ -1,5 +1,4 @@
-Wrote tests/verilog_eval/Prob152_lemmings3.sv
- FSM with async reset
+// VerilogEval Prob152: Lemmings walk/fall/dig FSM with async reset
 module TopModule (
   input logic clk,
   input logic areset,

@@ -1,5 +1,6 @@
-Wrote tests/verilog_eval/Prob136_m2014_q6.sv
- logic reset,
+module TopModule (
+  input logic clk,
+  input logic reset,
   input logic w,
   output logic z
 );

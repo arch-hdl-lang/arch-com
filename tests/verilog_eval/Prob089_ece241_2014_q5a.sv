@@ -1,5 +1,6 @@
-Wrote tests/verilog_eval/Prob089_ece241_2014_q5a.sv
-areset,
+module TopModule (
+  input logic clk,
+  input logic areset,
   input logic x,
   output logic z
 );

@@ -1,0 +1,50 @@
+%Warning-TIMESCALEMOD: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob035_count1to10_ref.sv:2:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    2 | module RefModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob035_count1to10_test.sv:6:8: ... Location of module with timescale
+    6 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+                       ... For warning description see https://verilator.org/warn/TIMESCALEMOD?v=5.034
+                       ... Use "/* verilator lint_off TIMESCALEMOD */" and lint_on around source to disable this message.
+%Warning-TIMESCALEMOD: TopModule.sv:3:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    3 | module TopModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob035_count1to10_test.sv:6:8: ... Location of module with timescale
+    6 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob035_count1to10_test.sv:60:13: Logical operator LOGNOT expects 1 bit on the LHS, but LHS's AND generates 32 bits.
+                                                                                                                : ... note: In instance 'tb.stim1'
+   60 |    reset <= !($random & 31);
+      |             ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob035_count1to10_test.sv:128:3: Logical operator IF expects 1 bit on the If, but If's SEL generates 32 bits.
+                                                                                                                : ... note: In instance 'tb'
+  128 |   if (stats1.errors_q) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "q", stats1.errors_q, stats1.errortime_q);
+      |   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob035_count1to10_test.sv:144:45: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                 : ... note: In instance 'tb'
+  144 |    if (stats1.errors == 0) stats1.errortime = $time;
+      |                                             ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob035_count1to10_test.sv:148:54: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                 : ... note: In instance 'tb'
+  148 |   begin if (stats1.errors_q == 0) stats1.errortime_q = $time;
+      |                                                      ^
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob035_count1to10_test.sv:52:9: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   52 |   reset <= 1;
+      |         ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob035_count1to10_test.sv:18:24: Non-blocking assignment '<=' in initial/final block
+                                                                                                                : ... This will be executed as a blocking assignment '='!
+   18 |   @(posedge clk) reset <= 0;
+      |                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob035_count1to10_test.sv:21:53: Non-blocking assignment '<=' in initial/final block
+                                                                                                                : ... This will be executed as a blocking assignment '='!
+   21 |   @(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+      |                                                     ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob035_count1to10_test.sv:25:10: Non-blocking assignment '<=' in initial/final block
+                                                                                                                : ... This will be executed as a blocking assignment '='!
+   25 |    reset <= 0;
+      |          ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob035_count1to10_test.sv:60:10: Non-blocking assignment '<=' in initial/final block
+                                                                                                                : ... This will be executed as a blocking assignment '='!
+   60 |    reset <= !($random & 31);
+      |          ^~

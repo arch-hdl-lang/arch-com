@@ -1,5 +1,4 @@
-Wrote tests/verilog_eval/Prob129_ece241_2013_q8.sv
-ping 101, async active-low reset
+// VerilogEval Prob129: Mealy FSM detecting overlapping 101, async active-low reset
 module TopModule (
   input logic clk,
   input logic aresetn,

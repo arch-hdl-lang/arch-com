@@ -1,5 +1,4 @@
-Wrote tests/verilog_eval/Prob128_fsm_ps2.sv
-ssage boundary detection
+// VerilogEval Prob128: PS/2 mouse 3-byte message boundary detection
 module TopModule (
   input logic clk,
   input logic reset,

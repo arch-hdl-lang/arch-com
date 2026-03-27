@@ -1,0 +1,110 @@
+%Warning-TIMESCALEMOD: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_ref.sv:2:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    2 | module RefModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_test.sv:6:8: ... Location of module with timescale
+    6 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+                       ... For warning description see https://verilator.org/warn/TIMESCALEMOD?v=5.034
+                       ... Use "/* verilator lint_off TIMESCALEMOD */" and lint_on around source to disable this message.
+%Warning-TIMESCALEMOD: TopModule.sv:5:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    5 | module TopModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_test.sv:6:8: ... Location of module with timescale
+    6 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_test.sv:60:27: Operator ASSIGNDLY expects 2 bits on the Assign RHS, but Assign RHS's MODDIV generates 32 bits.
+                                                                                                                           : ... note: In instance 'tb.stim1'
+   60 |    {shift_ena, count_ena} <= $unsigned($random) % 3;
+      |                           ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_test.sv:61:9: Operator ASSIGNDLY expects 1 bits on the Assign RHS, but Assign RHS's RAND generates 32 bits.
+                                                                                                                          : ... note: In instance 'tb.stim1'
+   61 |    data <= $random;
+      |         ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_test.sv:136:3: Logical operator IF expects 1 bit on the If, but If's SEL generates 32 bits.
+                                                                                                                           : ... note: In instance 'tb'
+  136 |   if (stats1.errors_q) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "q", stats1.errors_q, stats1.errortime_q);
+      |   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_test.sv:152:45: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                            : ... note: In instance 'tb'
+  152 |    if (stats1.errors == 0) stats1.errortime = $time;
+      |                                             ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_test.sv:156:54: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                            : ... note: In instance 'tb'
+  156 |   begin if (stats1.errors_q == 0) stats1.errortime_q = $time;
+      |                                                      ^
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_test.sv:28:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                                          : ... This will be executed as a blocking assignment '='!
+   28 |   data <= 0;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_test.sv:29:13: Non-blocking assignment '<=' in initial/final block
+                                                                                                                           : ... This will be executed as a blocking assignment '='!
+   29 |   shift_ena <= 1;
+      |             ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_test.sv:30:13: Non-blocking assignment '<=' in initial/final block
+                                                                                                                           : ... This will be executed as a blocking assignment '='!
+   30 |   count_ena <= 0;
+      |             ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_test.sv:33:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                                          : ... This will be executed as a blocking assignment '='!
+   33 |   data <= 1;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_test.sv:34:13: Non-blocking assignment '<=' in initial/final block
+                                                                                                                           : ... This will be executed as a blocking assignment '='!
+   34 |   shift_ena <= 0;
+      |             ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_test.sv:35:13: Non-blocking assignment '<=' in initial/final block
+                                                                                                                           : ... This will be executed as a blocking assignment '='!
+   35 |   count_ena <= 0;
+      |             ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_test.sv:38:28: Non-blocking assignment '<=' in initial/final block
+                                                                                                                           : ... This will be executed as a blocking assignment '='!
+   38 |   @(posedge clk) shift_ena <= 1;
+      |                            ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_test.sv:39:38: Non-blocking assignment '<=' in initial/final block
+                                                                                                                           : ... This will be executed as a blocking assignment '='!
+   39 |   repeat(2) @(posedge clk) shift_ena <= 0;
+      |                                      ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_test.sv:40:28: Non-blocking assignment '<=' in initial/final block
+                                                                                                                           : ... This will be executed as a blocking assignment '='!
+   40 |   @(posedge clk) shift_ena <= 1;
+      |                            ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_test.sv:42:23: Non-blocking assignment '<=' in initial/final block
+                                                                                                                           : ... This will be executed as a blocking assignment '='!
+   42 |   @(posedge clk) data <= 0;
+      |                       ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_test.sv:46:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                                          : ... This will be executed as a blocking assignment '='!
+   46 |   data <= 1;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_test.sv:47:13: Non-blocking assignment '<=' in initial/final block
+                                                                                                                           : ... This will be executed as a blocking assignment '='!
+   47 |   shift_ena <= 1;  
+      |             ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_test.sv:49:13: Non-blocking assignment '<=' in initial/final block
+                                                                                                                           : ... This will be executed as a blocking assignment '='!
+   49 |   shift_ena <= 0;
+      |             ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_test.sv:51:28: Non-blocking assignment '<=' in initial/final block
+                                                                                                                           : ... This will be executed as a blocking assignment '='!
+   51 |   @(posedge clk) count_ena <= 1;
+      |                            ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_test.sv:52:38: Non-blocking assignment '<=' in initial/final block
+                                                                                                                           : ... This will be executed as a blocking assignment '='!
+   52 |   repeat(2) @(posedge clk) count_ena <= 0;
+      |                                      ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_test.sv:53:28: Non-blocking assignment '<=' in initial/final block
+                                                                                                                           : ... This will be executed as a blocking assignment '='!
+   53 |   @(posedge clk) count_ena <= 1;
+      |                            ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_test.sv:55:23: Non-blocking assignment '<=' in initial/final block
+                                                                                                                           : ... This will be executed as a blocking assignment '='!
+   55 |   @(posedge clk) data <= 0;
+      |                       ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_test.sv:60:27: Non-blocking assignment '<=' in initial/final block
+                                                                                                                           : ... This will be executed as a blocking assignment '='!
+   60 |    {shift_ena, count_ena} <= $unsigned($random) % 3;
+      |                           ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob063_review2015_shiftcount_test.sv:61:9: Non-blocking assignment '<=' in initial/final block
+                                                                                                                          : ... This will be executed as a blocking assignment '='!
+   61 |    data <= $random;
+      |         ^~

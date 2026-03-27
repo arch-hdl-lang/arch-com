@@ -1,0 +1,150 @@
+%Warning-TIMESCALEMOD: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_ref.sv:2:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    2 | module RefModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:6:8: ... Location of module with timescale
+    6 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+                       ... For warning description see https://verilator.org/warn/TIMESCALEMOD?v=5.034
+                       ... Use "/* verilator lint_off TIMESCALEMOD */" and lint_on around source to disable this message.
+%Warning-TIMESCALEMOD: TopModule.sv:4:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    4 | module TopModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:6:8: ... Location of module with timescale
+    6 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+%Warning-WIDTHEXPAND: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:19:8: Operator ASSIGNDLY expects 256 bits on the Assign RHS, but Assign RHS's CONST '3'h7' generates 3 bits.
+                                                                                                                : ... note: In instance 'tb.stim1'
+   19 |   data <= 3'h7;    
+      |        ^~
+%Warning-WIDTHEXPAND: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:23:8: Operator ASSIGNDLY expects 256 bits on the Assign RHS, but Assign RHS's CONST '4'bxxxx' generates 4 bits.
+                                                                                                                : ... note: In instance 'tb.stim1'
+   23 |   data <= 4'hx;
+      |        ^~
+%Warning-WIDTHEXPAND: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:45:8: Operator ASSIGNDLY expects 256 bits on the Assign RHS, but Assign RHS's CONST '48'h200010007' generates 48 bits.
+                                                                                                                : ... note: In instance 'tb.stim1'
+   45 |   data <= 48'h000200010007;  
+      |        ^~
+%Warning-WIDTHEXPAND: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:51:8: Operator ASSIGNDLY expects 256 bits on the Assign RHS, but Assign RHS's CONST '4'bxxxx' generates 4 bits.
+                                                                                                                : ... note: In instance 'tb.stim1'
+   51 |   data <= 4'hx;
+      |        ^~
+%Warning-WIDTHEXPAND: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:73:8: Operator ASSIGNDLY expects 256 bits on the Assign RHS, but Assign RHS's CONST '48'h40001000ce' generates 48 bits.
+                                                                                                                : ... note: In instance 'tb.stim1'
+   73 |   data <= 48'h0040001000ce;    
+      |        ^~
+%Warning-WIDTHEXPAND: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_ref.sv:26:37: Operator ADD expects 3 bits on the LHS, but LHS's SEL generates 1 bits.
+                                                                                                                : ... note: In instance 'tb.good1'
+   26 |         ((q_pad[(i+1)*18+j+1 -1+18] + q_pad[(i+1)*18+j+1 +18] + q_pad[(i+1)*18+j+1 +1+18] +
+      |                                     ^
+%Warning-WIDTHEXPAND: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_ref.sv:26:37: Operator ADD expects 3 bits on the RHS, but RHS's SEL generates 1 bits.
+                                                                                                                : ... note: In instance 'tb.good1'
+   26 |         ((q_pad[(i+1)*18+j+1 -1+18] + q_pad[(i+1)*18+j+1 +18] + q_pad[(i+1)*18+j+1 +1+18] +
+      |                                     ^
+%Warning-WIDTHEXPAND: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_ref.sv:26:63: Operator ADD expects 3 bits on the RHS, but RHS's SEL generates 1 bits.
+                                                                                                                : ... note: In instance 'tb.good1'
+   26 |         ((q_pad[(i+1)*18+j+1 -1+18] + q_pad[(i+1)*18+j+1 +18] + q_pad[(i+1)*18+j+1 +1+18] +
+      |                                                               ^
+%Warning-WIDTHEXPAND: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_ref.sv:26:91: Operator ADD expects 3 bits on the RHS, but RHS's SEL generates 1 bits.
+                                                                                                                : ... note: In instance 'tb.good1'
+   26 |         ((q_pad[(i+1)*18+j+1 -1+18] + q_pad[(i+1)*18+j+1 +18] + q_pad[(i+1)*18+j+1 +1+18] +
+      |                                                                                           ^
+%Warning-WIDTHEXPAND: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_ref.sv:27:63: Operator ADD expects 3 bits on the RHS, but RHS's SEL generates 1 bits.
+                                                                                                                : ... note: In instance 'tb.good1'
+   27 |         q_pad[(i+1)*18+j+1 -1]                                + q_pad[(i+1)*18+j+1+1] +
+      |                                                               ^
+%Warning-WIDTHEXPAND: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_ref.sv:27:87: Operator ADD expects 3 bits on the RHS, but RHS's SEL generates 1 bits.
+                                                                                                                : ... note: In instance 'tb.good1'
+   27 |         q_pad[(i+1)*18+j+1 -1]                                + q_pad[(i+1)*18+j+1+1] +
+      |                                                                                       ^
+%Warning-WIDTHEXPAND: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_ref.sv:28:37: Operator ADD expects 3 bits on the RHS, but RHS's SEL generates 1 bits.
+                                                                                                                : ... note: In instance 'tb.good1'
+   28 |         q_pad[(i+1)*18+j+1 -1-18]   + q_pad[(i+1)*18+j+1 -18] + q_pad[(i+1)*18+j+1 +1-18]) & 3'h7 | q[i*16+j]) == 3'h3;
+      |                                     ^
+%Warning-WIDTHEXPAND: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_ref.sv:28:63: Operator ADD expects 3 bits on the RHS, but RHS's SEL generates 1 bits.
+                                                                                                                : ... note: In instance 'tb.good1'
+   28 |         q_pad[(i+1)*18+j+1 -1-18]   + q_pad[(i+1)*18+j+1 -18] + q_pad[(i+1)*18+j+1 +1-18]) & 3'h7 | q[i*16+j]) == 3'h3;
+      |                                                               ^
+%Warning-WIDTHEXPAND: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_ref.sv:28:99: Operator OR expects 3 bits on the RHS, but RHS's SEL generates 1 bits.
+                                                                                                                : ... note: In instance 'tb.good1'
+   28 |         q_pad[(i+1)*18+j+1 -1-18]   + q_pad[(i+1)*18+j+1 -18] + q_pad[(i+1)*18+j+1 +1-18]) & 3'h7 | q[i*16+j]) == 3'h3;
+      |                                                                                                   ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:165:3: Logical operator IF expects 1 bit on the If, but If's SEL generates 32 bits.
+                                                                                                                : ... note: In instance 'tb'
+  165 |   if (stats1.errors_q) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "q", stats1.errors_q, stats1.errortime_q);
+      |   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:181:45: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                 : ... note: In instance 'tb'
+  181 |    if (stats1.errors == 0) stats1.errortime = $time;
+      |                                             ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:185:54: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                 : ... note: In instance 'tb'
+  185 |   begin if (stats1.errors_q == 0) stats1.errortime_q = $time;
+      |                                                      ^
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:19:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   19 |   data <= 3'h7;    
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:20:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   20 |   load <= 1;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:22:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   22 |   load <= 0;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:23:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   23 |   data <= 4'hx;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:45:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   45 |   data <= 48'h000200010007;  
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:46:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   46 |   load <= 1;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:50:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   50 |   load <= 0;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:51:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   51 |   data <= 4'hx;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:73:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   73 |   data <= 48'h0040001000ce;    
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:74:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   74 |   load <= 1;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:76:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   76 |   load <= 0;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:80:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   80 |   data <= {$random,$random,$random,$random,$random,$random,$random,$random};   
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:81:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   81 |   load <= 1;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:83:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   83 |   load <= 0;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:86:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   86 |   data <= {$random,$random,$random,$random,$random,$random,$random,$random}&   
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:90:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   90 |   load <= 1;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob144_conwaylife_test.sv:92:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   92 |   load <= 0;
+      |        ^~

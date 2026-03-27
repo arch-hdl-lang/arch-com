@@ -1,5 +1,6 @@
-Wrote tests/verilog_eval/Prob022_mux2to1.sv
-logic b,
+module TopModule (
+  input logic a,
+  input logic b,
   input logic sel,
   output logic out
 );

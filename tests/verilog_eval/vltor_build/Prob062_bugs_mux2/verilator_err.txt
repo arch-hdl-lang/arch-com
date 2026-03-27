@@ -1,0 +1,90 @@
+%Warning-TIMESCALEMOD: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob062_bugs_mux2_ref.sv:2:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    2 | module RefModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob062_bugs_mux2_test.sv:5:8: ... Location of module with timescale
+    5 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+                       ... For warning description see https://verilator.org/warn/TIMESCALEMOD?v=5.034
+                       ... Use "/* verilator lint_off TIMESCALEMOD */" and lint_on around source to disable this message.
+%Warning-TIMESCALEMOD: TopModule.sv:1:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    1 | module TopModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob062_bugs_mux2_test.sv:5:8: ... Location of module with timescale
+    5 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob062_bugs_mux2_test.sv:46:14: Operator ASSIGNDLY expects 17 bits on the Assign RHS, but Assign RHS's RAND generates 32 bits.
+                                                                                                               : ... note: In instance 'tb.stim1'
+   46 |    {a,b,sel} <= $urandom;
+      |              ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob062_bugs_mux2_test.sv:118:3: Logical operator IF expects 1 bit on the If, but If's SEL generates 32 bits.
+                                                                                                               : ... note: In instance 'tb'
+  118 |   if (stats1.errors_out) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out", stats1.errors_out, stats1.errortime_out);
+      |   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob062_bugs_mux2_test.sv:134:45: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                : ... note: In instance 'tb'
+  134 |    if (stats1.errors == 0) stats1.errortime = $time;
+      |                                             ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob062_bugs_mux2_test.sv:138:58: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                : ... note: In instance 'tb'
+  138 |   begin if (stats1.errors_out == 0) stats1.errortime_out = $time;
+      |                                                          ^
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob062_bugs_mux2_test.sv:28:15: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   28 |   {a, b, sel} <= '0;
+      |               ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob062_bugs_mux2_test.sv:30:42: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   30 |    @(posedge clk, negedge clk) {a,b,sel} <= {8'haa, 8'hbb, 1'b0};
+      |                                          ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob062_bugs_mux2_test.sv:31:42: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   31 |    @(posedge clk, negedge clk) {a,b,sel} <= {8'haa, 8'hbb, 1'b0};
+      |                                          ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob062_bugs_mux2_test.sv:32:42: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   32 |    @(posedge clk, negedge clk) {a,b,sel} <= {8'haa, 8'hbb, 1'b1};
+      |                                          ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob062_bugs_mux2_test.sv:33:42: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   33 |    @(posedge clk, negedge clk) {a,b,sel} <= {8'haa, 8'hbb, 1'b0};
+      |                                          ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob062_bugs_mux2_test.sv:34:42: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   34 |    @(posedge clk, negedge clk) {a,b,sel} <= {8'haa, 8'hbb, 1'b1};
+      |                                          ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob062_bugs_mux2_test.sv:35:42: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   35 |    @(posedge clk, negedge clk) {a,b,sel} <= {8'haa, 8'hbb, 1'b1};
+      |                                          ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob062_bugs_mux2_test.sv:37:39: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   37 |    @(posedge clk, negedge clk) {a, b} <= {8'hff, 8'h00}; sel <= 1'b0;
+      |                                       ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob062_bugs_mux2_test.sv:37:62: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   37 |    @(posedge clk, negedge clk) {a, b} <= {8'hff, 8'h00}; sel <= 1'b0;
+      |                                                              ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob062_bugs_mux2_test.sv:38:36: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   38 |    @(posedge clk, negedge clk) sel <= 1'b0;
+      |                                    ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob062_bugs_mux2_test.sv:39:36: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   39 |    @(posedge clk, negedge clk) sel <= 1'b1;
+      |                                    ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob062_bugs_mux2_test.sv:40:36: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   40 |    @(posedge clk, negedge clk) sel <= 1'b0;
+      |                                    ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob062_bugs_mux2_test.sv:41:36: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   41 |    @(posedge clk, negedge clk) sel <= 1'b1;
+      |                                    ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob062_bugs_mux2_test.sv:42:36: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   42 |    @(posedge clk, negedge clk) sel <= 1'b1;
+      |                                    ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob062_bugs_mux2_test.sv:46:14: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   46 |    {a,b,sel} <= $urandom;
+      |              ^~

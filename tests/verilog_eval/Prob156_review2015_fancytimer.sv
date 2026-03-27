@@ -1,5 +1,4 @@
-Wrote tests/verilog_eval/Prob156_review2015_fancytimer.sv
-t 4-bit delay, count down, done+ack
+// VerilogEval Prob156: Full timer FSM - detect 1101, shift 4-bit delay, count down, done+ack
 module TopModule (
   input logic clk,
   input logic reset,

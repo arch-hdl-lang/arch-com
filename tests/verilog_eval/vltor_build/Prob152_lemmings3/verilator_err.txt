@@ -1,0 +1,106 @@
+%Warning-TIMESCALEMOD: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_ref.sv:2:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    2 | module RefModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_test.sv:6:8: ... Location of module with timescale
+    6 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+                       ... For warning description see https://verilator.org/warn/TIMESCALEMOD?v=5.034
+                       ... Use "/* verilator lint_off TIMESCALEMOD */" and lint_on around source to disable this message.
+%Warning-TIMESCALEMOD: TopModule.sv:4:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    4 | module TopModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_test.sv:6:8: ... Location of module with timescale
+    6 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+%Warning-ASCRANGE: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_test.sv:56:7: Ascending bit range vector: left < right of bit range: [0:13]
+                                                                                                            : ... note: In instance 'tb.stim1'
+   56 |  wire [0:13][3:0] d = {
+      |       ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_test.sv:89:33: Operator ASSIGNDLY expects 3 bits on the Assign RHS, but Assign RHS's AND generates 32 bits.
+                                                                                                               : ... note: In instance 'tb.stim1'
+   89 |    {dig, bump_right, bump_left} <= $random & $random;
+      |                                 ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_test.sv:91:13: Logical operator LOGNOT expects 1 bit on the LHS, but LHS's AND generates 32 bits.
+                                                                                                               : ... note: In instance 'tb.stim1'
+   91 |    reset <= !($random & 31);
+      |             ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_test.sv:193:3: Logical operator IF expects 1 bit on the If, but If's SEL generates 32 bits.
+                                                                                                               : ... note: In instance 'tb'
+  193 |   if (stats1.errors_walk_left) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "walk_left", stats1.errors_walk_left, stats1.errortime_walk_left);
+      |   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_test.sv:195:3: Logical operator IF expects 1 bit on the If, but If's SEL generates 32 bits.
+                                                                                                               : ... note: In instance 'tb'
+  195 |   if (stats1.errors_walk_right) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "walk_right", stats1.errors_walk_right, stats1.errortime_walk_right);
+      |   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_test.sv:197:3: Logical operator IF expects 1 bit on the If, but If's SEL generates 32 bits.
+                                                                                                               : ... note: In instance 'tb'
+  197 |   if (stats1.errors_aaah) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "aaah", stats1.errors_aaah, stats1.errortime_aaah);
+      |   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_test.sv:199:3: Logical operator IF expects 1 bit on the If, but If's SEL generates 32 bits.
+                                                                                                               : ... note: In instance 'tb'
+  199 |   if (stats1.errors_digging) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "digging", stats1.errors_digging, stats1.errortime_digging);
+      |   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_test.sv:215:45: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                : ... note: In instance 'tb'
+  215 |    if (stats1.errors == 0) stats1.errortime = $time;
+      |                                             ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_test.sv:219:70: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                : ... note: In instance 'tb'
+  219 |   begin if (stats1.errors_walk_left == 0) stats1.errortime_walk_left = $time;
+      |                                                                      ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_test.sv:222:72: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                : ... note: In instance 'tb'
+  222 |   begin if (stats1.errors_walk_right == 0) stats1.errortime_walk_right = $time;
+      |                                                                        ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_test.sv:225:60: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                : ... note: In instance 'tb'
+  225 |   begin if (stats1.errors_aaah == 0) stats1.errortime_aaah = $time;
+      |                                                            ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_test.sv:228:66: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                : ... note: In instance 'tb'
+  228 |   begin if (stats1.errors_digging == 0) stats1.errortime_digging = $time;
+      |                                                                  ^
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_test.sv:74:9: Non-blocking assignment '<=' in initial/final block
+                                                                                                              : ... This will be executed as a blocking assignment '='!
+   74 |   reset <= 1'b1;
+      |         ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_test.sv:75:40: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   75 |   {bump_left, bump_right, ground, dig} <= 4'h2;
+      |                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_test.sv:24:24: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   24 |   @(posedge clk) reset <= 0;
+      |                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_test.sv:27:53: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   27 |   @(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+      |                                                     ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_test.sv:31:10: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   31 |    reset <= 0;
+      |          ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_test.sv:78:9: Non-blocking assignment '<=' in initial/final block
+                                                                                                              : ... This will be executed as a blocking assignment '='!
+   78 |   reset <= 1'b1;
+      |         ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_test.sv:80:9: Non-blocking assignment '<=' in initial/final block
+                                                                                                              : ... This will be executed as a blocking assignment '='!
+   80 |   reset <= 0;
+      |         ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_test.sv:85:56: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   85 |    @(posedge clk) {bump_left, bump_right, ground, dig} <= d[i];
+      |                                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_test.sv:89:33: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   89 |    {dig, bump_right, bump_left} <= $random & $random;
+      |                                 ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_test.sv:90:11: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   90 |    ground <= |($random & 7);
+      |           ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_test.sv:91:10: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   91 |    reset <= !($random & 31);
+      |          ^~

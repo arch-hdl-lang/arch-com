@@ -1,5 +1,6 @@
-Wrote tests/verilog_eval/Prob055_conditional.sv
-put logic [8-1:0] b,
+module TopModule (
+  input logic [8-1:0] a,
+  input logic [8-1:0] b,
   input logic [8-1:0] c,
   input logic [8-1:0] d,
   output logic [8-1:0] min

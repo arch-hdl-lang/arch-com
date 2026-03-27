@@ -1,5 +1,4 @@
-Wrote tests/verilog_eval/Prob154_fsm_ps2data.sv
-with data output
+// VerilogEval Prob154: PS/2 3-byte message FSM with data output
 // Find byte with in[3]=1, collect 3 bytes, assert done
 module TopModule (
   input logic clk,

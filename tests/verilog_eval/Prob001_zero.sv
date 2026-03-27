@@ -1,5 +1,5 @@
-Wrote tests/verilog_eval/Prob001_zero.sv
- output logic zero
+module TopModule (
+  output logic zero
 );
 
   assign zero = 1'd0;

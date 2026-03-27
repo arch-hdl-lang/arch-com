@@ -1,0 +1,78 @@
+%Warning-TIMESCALEMOD: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob022_mux2to1_ref.sv:2:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    2 | module RefModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob022_mux2to1_test.sv:6:8: ... Location of module with timescale
+    6 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+                       ... For warning description see https://verilator.org/warn/TIMESCALEMOD?v=5.034
+                       ... Use "/* verilator lint_off TIMESCALEMOD */" and lint_on around source to disable this message.
+%Warning-TIMESCALEMOD: TopModule.sv:3:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    3 | module TopModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob022_mux2to1_test.sv:6:8: ... Location of module with timescale
+    6 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob022_mux2to1_test.sv:42:14: Operator ASSIGNDLY expects 3 bits on the Assign RHS, but Assign RHS's RAND generates 32 bits.
+                                                                                                             : ... note: In instance 'tb.stim1'
+   42 |    {a,b,sel} <= $random;
+      |              ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob022_mux2to1_test.sv:114:3: Logical operator IF expects 1 bit on the If, but If's SEL generates 32 bits.
+                                                                                                             : ... note: In instance 'tb'
+  114 |   if (stats1.errors_out) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out", stats1.errors_out, stats1.errortime_out);
+      |   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob022_mux2to1_test.sv:130:45: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                              : ... note: In instance 'tb'
+  130 |    if (stats1.errors == 0) stats1.errortime = $time;
+      |                                             ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob022_mux2to1_test.sv:134:58: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                              : ... note: In instance 'tb'
+  134 |   begin if (stats1.errors_out == 0) stats1.errortime_out = $time;
+      |                                                          ^
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob022_mux2to1_test.sv:28:15: Non-blocking assignment '<=' in initial/final block
+                                                                                                             : ... This will be executed as a blocking assignment '='!
+   28 |   {a, b, sel} <= 3'b000;
+      |               ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob022_mux2to1_test.sv:30:31: Non-blocking assignment '<=' in initial/final block
+                                                                                                             : ... This will be executed as a blocking assignment '='!
+   30 |    @(posedge clk) {a, b, sel} <= 3'b000;
+      |                               ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob022_mux2to1_test.sv:31:31: Non-blocking assignment '<=' in initial/final block
+                                                                                                             : ... This will be executed as a blocking assignment '='!
+   31 |    @(posedge clk) {a, b, sel} <= 3'b100;
+      |                               ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob022_mux2to1_test.sv:32:31: Non-blocking assignment '<=' in initial/final block
+                                                                                                             : ... This will be executed as a blocking assignment '='!
+   32 |    @(posedge clk) {a, b, sel} <= 3'b110;
+      |                               ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob022_mux2to1_test.sv:33:31: Non-blocking assignment '<=' in initial/final block
+                                                                                                             : ... This will be executed as a blocking assignment '='!
+   33 |    @(posedge clk) {a, b, sel} <= 3'b111;
+      |                               ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob022_mux2to1_test.sv:34:31: Non-blocking assignment '<=' in initial/final block
+                                                                                                             : ... This will be executed as a blocking assignment '='!
+   34 |    @(posedge clk) {a, b, sel} <= 3'b011;
+      |                               ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob022_mux2to1_test.sv:35:31: Non-blocking assignment '<=' in initial/final block
+                                                                                                             : ... This will be executed as a blocking assignment '='!
+   35 |    @(posedge clk) {a, b, sel} <= 3'b001;
+      |                               ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob022_mux2to1_test.sv:36:31: Non-blocking assignment '<=' in initial/final block
+                                                                                                             : ... This will be executed as a blocking assignment '='!
+   36 |    @(posedge clk) {a, b, sel} <= 3'b100;
+      |                               ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob022_mux2to1_test.sv:37:31: Non-blocking assignment '<=' in initial/final block
+                                                                                                             : ... This will be executed as a blocking assignment '='!
+   37 |    @(posedge clk) {a, b, sel} <= 3'b101;
+      |                               ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob022_mux2to1_test.sv:38:31: Non-blocking assignment '<=' in initial/final block
+                                                                                                             : ... This will be executed as a blocking assignment '='!
+   38 |    @(posedge clk) {a, b, sel} <= 3'b110;
+      |                               ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob022_mux2to1_test.sv:39:31: Non-blocking assignment '<=' in initial/final block
+                                                                                                             : ... This will be executed as a blocking assignment '='!
+   39 |    @(posedge clk) {a, b, sel} <= 3'b111;
+      |                               ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob022_mux2to1_test.sv:42:14: Non-blocking assignment '<=' in initial/final block
+                                                                                                             : ... This will be executed as a blocking assignment '='!
+   42 |    {a,b,sel} <= $random;
+      |              ^~

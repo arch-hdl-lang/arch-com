@@ -1,5 +1,4 @@
-Wrote tests/verilog_eval/Prob133_2014_q3fsm.sv
- counts w over 3-cycle windows
+// VerilogEval Prob133: FSM waits for s=1, then counts w over 3-cycle windows
 module TopModule (
   input logic clk,
   input logic reset,

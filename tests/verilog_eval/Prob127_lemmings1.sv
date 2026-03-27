@@ -1,5 +1,6 @@
-Wrote tests/verilog_eval/Prob127_lemmings1.sv
-logic areset,
+module TopModule (
+  input logic clk,
+  input logic areset,
   input logic bump_left,
   input logic bump_right,
   output logic walk_left,

@@ -1,0 +1,114 @@
+%Warning-TIMESCALEMOD: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_ref.sv:2:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    2 | module RefModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_test.sv:6:8: ... Location of module with timescale
+    6 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+                       ... For warning description see https://verilator.org/warn/TIMESCALEMOD?v=5.034
+                       ... Use "/* verilator lint_off TIMESCALEMOD */" and lint_on around source to disable this message.
+%Warning-TIMESCALEMOD: TopModule.sv:3:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    3 | module TopModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_test.sv:6:8: ... Location of module with timescale
+    6 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+%Warning-WIDTHEXPAND: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_test.sv:56:8: Operator ASSIGNDLY expects 512 bits on the Assign RHS, but Assign RHS's RAND generates 32 bits.
+                                                                                                            : ... note: In instance 'tb.stim1'
+   56 |   data <= $random;
+      |        ^~
+%Warning-WIDTHEXPAND: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_ref.sv:13:28: Operator XOR expects 512 bits on the LHS, but LHS's SEL generates 511 bits.
+                                                                                                            : ... note: In instance 'tb.good1'
+   13 |       q <= q[$bits(q)-1:1] ^ {q[$bits(q)-2:0], 1'b0} ;
+      |                            ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_test.sv:144:3: Logical operator IF expects 1 bit on the If, but If's SEL generates 32 bits.
+                                                                                                            : ... note: In instance 'tb'
+  144 |   if (stats1.errors_q) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "q", stats1.errors_q, stats1.errortime_q);
+      |   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_test.sv:160:45: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                             : ... note: In instance 'tb'
+  160 |    if (stats1.errors == 0) stats1.errortime = $time;
+      |                                             ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_test.sv:164:54: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                             : ... note: In instance 'tb'
+  164 |   begin if (stats1.errors_q == 0) stats1.errortime_q = $time;
+      |                                                      ^
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_test.sv:29:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   29 |   data <= 0;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_test.sv:30:11: Non-blocking assignment '<=' in initial/final block
+                                                                                                            : ... This will be executed as a blocking assignment '='!
+   30 |   data[0] <= 1'b1;
+      |           ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_test.sv:31:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   31 |   load <= 1;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_test.sv:35:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   35 |   load <= 0;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_test.sv:40:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   40 |   data <= 0;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_test.sv:41:13: Non-blocking assignment '<=' in initial/final block
+                                                                                                            : ... This will be executed as a blocking assignment '='!
+   41 |   data[256] <= 1'b1;
+      |             ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_test.sv:42:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   42 |   load <= 1;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_test.sv:46:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   46 |   load <= 0;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_test.sv:49:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   49 |   data <= 512'h1000000000000001;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_test.sv:50:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   50 |   load <= 1;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_test.sv:52:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   52 |   load <= 0;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_test.sv:56:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   56 |   data <= $random;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_test.sv:57:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   57 |   load <= 1;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_test.sv:59:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   59 |   load <= 0;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_test.sv:63:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   63 |   data <= 0;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_test.sv:64:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   64 |   load <= 1;
+      |        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_test.sv:66:33: Non-blocking assignment '<=' in initial/final block
+                                                                                                            : ... This will be executed as a blocking assignment '='!
+   66 |   repeat(2) @(posedge clk) data <= data + 2;
+      |                                 ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_test.sv:68:9: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   68 |    load <= 0;
+      |         ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_test.sv:69:9: Non-blocking assignment '<=' in initial/final block
+                                                                                                           : ... This will be executed as a blocking assignment '='!
+   69 |    data <= data + 1;
+      |         ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob108_rule90_test.sv:71:34: Non-blocking assignment '<=' in initial/final block
+                                                                                                            : ... This will be executed as a blocking assignment '='!
+   71 |   repeat(20) @(posedge clk) data <= data + 1;
+      |                                  ^~

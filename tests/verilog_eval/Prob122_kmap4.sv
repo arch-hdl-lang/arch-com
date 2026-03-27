@@ -1,5 +1,5 @@
-Wrote tests/verilog_eval/Prob122_kmap4.sv
-input logic a,
+module TopModule (
+  input logic a,
   input logic b,
   input logic c,
   input logic d,

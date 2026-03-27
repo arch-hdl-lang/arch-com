@@ -1,0 +1,30 @@
+%Warning-TIMESCALEMOD: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob104_mt2015_muxdff_ref.sv:2:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    2 | module RefModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob104_mt2015_muxdff_test.sv:9:8: ... Location of module with timescale
+    9 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+                       ... For warning description see https://verilator.org/warn/TIMESCALEMOD?v=5.034
+                       ... Use "/* verilator lint_off TIMESCALEMOD */" and lint_on around source to disable this message.
+%Warning-TIMESCALEMOD: TopModule.sv:3:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    3 | module TopModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob104_mt2015_muxdff_test.sv:9:8: ... Location of module with timescale
+    9 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob104_mt2015_muxdff_test.sv:17:19: Operator ASSIGNDLY expects 3 bits on the Assign RHS, but Assign RHS's MODDIVS generates 32 bits.
+                                                                                                                   : ... note: In instance 'tb.stim1'
+   17 |   {L, r_in, q_in} <= $random % 8;
+      |                   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob104_mt2015_muxdff_test.sv:94:3: Logical operator IF expects 1 bit on the If, but If's SEL generates 32 bits.
+                                                                                                                  : ... note: In instance 'tb'
+   94 |   if (stats1.errors_Q) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "Q", stats1.errors_Q, stats1.errortime_Q);
+      |   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob104_mt2015_muxdff_test.sv:110:45: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                    : ... note: In instance 'tb'
+  110 |    if (stats1.errors == 0) stats1.errortime = $time;
+      |                                             ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob104_mt2015_muxdff_test.sv:114:54: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                    : ... note: In instance 'tb'
+  114 |   begin if (stats1.errors_Q == 0) stats1.errortime_Q = $time;
+      |                                                      ^

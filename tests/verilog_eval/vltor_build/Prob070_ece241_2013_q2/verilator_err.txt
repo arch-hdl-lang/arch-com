@@ -1,0 +1,98 @@
+%Warning-TIMESCALEMOD: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob070_ece241_2013_q2_ref.sv:2:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    2 | module RefModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob070_ece241_2013_q2_test.sv:6:8: ... Location of module with timescale
+    6 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+                       ... For warning description see https://verilator.org/warn/TIMESCALEMOD?v=5.034
+                       ... Use "/* verilator lint_off TIMESCALEMOD */" and lint_on around source to disable this message.
+%Warning-TIMESCALEMOD: TopModule.sv:1:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    1 | module TopModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob070_ece241_2013_q2_test.sv:6:8: ... Location of module with timescale
+    6 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob070_ece241_2013_q2_test.sv:54:16: Operator ASSIGNDLY expects 4 bits on the Assign RHS, but Assign RHS's VARREF 'i' generates 32 bits.
+                                                                                                                    : ... note: In instance 'tb.stim1'
+   54 |      {a,b,c,d} <= i;
+      |                ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob070_ece241_2013_q2_test.sv:58:14: Operator ASSIGNDLY expects 4 bits on the Assign RHS, but Assign RHS's RAND generates 32 bits.
+                                                                                                                    : ... note: In instance 'tb.stim1'
+   58 |    {a,b,c,d} <= $random;
+      |              ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob070_ece241_2013_q2_test.sv:144:3: Logical operator IF expects 1 bit on the If, but If's SEL generates 32 bits.
+                                                                                                                    : ... note: In instance 'tb'
+  144 |   if (stats1.errors_out_sop) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_sop", stats1.errors_out_sop, stats1.errortime_out_sop);
+      |   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob070_ece241_2013_q2_test.sv:146:3: Logical operator IF expects 1 bit on the If, but If's SEL generates 32 bits.
+                                                                                                                    : ... note: In instance 'tb'
+  146 |   if (stats1.errors_out_pos) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_pos", stats1.errors_out_pos, stats1.errortime_out_pos);
+      |   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob070_ece241_2013_q2_test.sv:162:45: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                     : ... note: In instance 'tb'
+  162 |    if (stats1.errors == 0) stats1.errortime = $time;
+      |                                             ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob070_ece241_2013_q2_test.sv:166:66: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                     : ... note: In instance 'tb'
+  166 |   begin if (stats1.errors_out_sop == 0) stats1.errortime_out_sop = $time;
+      |                                                                  ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob070_ece241_2013_q2_test.sv:169:66: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                     : ... note: In instance 'tb'
+  169 |   begin if (stats1.errors_out_pos == 0) stats1.errortime_out_pos = $time;
+      |                                                                  ^
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob070_ece241_2013_q2_test.sv:34:28: Non-blocking assignment '<=' in initial/final block
+                                                                                                                    : ... This will be executed as a blocking assignment '='!
+   34 |   @(posedge clk) {a,b,c,d} <= 0;
+      |                            ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob070_ece241_2013_q2_test.sv:35:28: Non-blocking assignment '<=' in initial/final block
+                                                                                                                    : ... This will be executed as a blocking assignment '='!
+   35 |   @(posedge clk) {a,b,c,d} <= 1;
+      |                            ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob070_ece241_2013_q2_test.sv:36:28: Non-blocking assignment '<=' in initial/final block
+                                                                                                                    : ... This will be executed as a blocking assignment '='!
+   36 |   @(posedge clk) {a,b,c,d} <= 2;
+      |                            ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob070_ece241_2013_q2_test.sv:37:28: Non-blocking assignment '<=' in initial/final block
+                                                                                                                    : ... This will be executed as a blocking assignment '='!
+   37 |   @(posedge clk) {a,b,c,d} <= 4;
+      |                            ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob070_ece241_2013_q2_test.sv:38:28: Non-blocking assignment '<=' in initial/final block
+                                                                                                                    : ... This will be executed as a blocking assignment '='!
+   38 |   @(posedge clk) {a,b,c,d} <= 5;
+      |                            ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob070_ece241_2013_q2_test.sv:39:28: Non-blocking assignment '<=' in initial/final block
+                                                                                                                    : ... This will be executed as a blocking assignment '='!
+   39 |   @(posedge clk) {a,b,c,d} <= 6;
+      |                            ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob070_ece241_2013_q2_test.sv:40:28: Non-blocking assignment '<=' in initial/final block
+                                                                                                                    : ... This will be executed as a blocking assignment '='!
+   40 |   @(posedge clk) {a,b,c,d} <= 7;
+      |                            ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob070_ece241_2013_q2_test.sv:41:28: Non-blocking assignment '<=' in initial/final block
+                                                                                                                    : ... This will be executed as a blocking assignment '='!
+   41 |   @(posedge clk) {a,b,c,d} <= 9;
+      |                            ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob070_ece241_2013_q2_test.sv:42:28: Non-blocking assignment '<=' in initial/final block
+                                                                                                                    : ... This will be executed as a blocking assignment '='!
+   42 |   @(posedge clk) {a,b,c,d} <= 10;
+      |                            ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob070_ece241_2013_q2_test.sv:43:28: Non-blocking assignment '<=' in initial/final block
+                                                                                                                    : ... This will be executed as a blocking assignment '='!
+   43 |   @(posedge clk) {a,b,c,d} <= 13;
+      |                            ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob070_ece241_2013_q2_test.sv:44:28: Non-blocking assignment '<=' in initial/final block
+                                                                                                                    : ... This will be executed as a blocking assignment '='!
+   44 |   @(posedge clk) {a,b,c,d} <= 14;
+      |                            ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob070_ece241_2013_q2_test.sv:45:28: Non-blocking assignment '<=' in initial/final block
+                                                                                                                    : ... This will be executed as a blocking assignment '='!
+   45 |   @(posedge clk) {a,b,c,d} <= 15;
+      |                            ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob070_ece241_2013_q2_test.sv:54:16: Non-blocking assignment '<=' in initial/final block
+                                                                                                                    : ... This will be executed as a blocking assignment '='!
+   54 |      {a,b,c,d} <= i;
+      |                ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob070_ece241_2013_q2_test.sv:58:14: Non-blocking assignment '<=' in initial/final block
+                                                                                                                    : ... This will be executed as a blocking assignment '='!
+   58 |    {a,b,c,d} <= $random;
+      |              ^~

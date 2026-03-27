@@ -1,5 +1,6 @@
-Wrote tests/verilog_eval/Prob121_2014_q3bfsm.sv
-gic reset,
+module TopModule (
+  input logic clk,
+  input logic reset,
   input logic x,
   output logic z
 );

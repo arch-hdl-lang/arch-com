@@ -1,0 +1,86 @@
+%Warning-TIMESCALEMOD: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob110_fsm2_ref.sv:2:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    2 | module RefModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob110_fsm2_test.sv:6:8: ... Location of module with timescale
+    6 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+                       ... For warning description see https://verilator.org/warn/TIMESCALEMOD?v=5.034
+                       ... Use "/* verilator lint_off TIMESCALEMOD */" and lint_on around source to disable this message.
+%Warning-TIMESCALEMOD: TopModule.sv:4:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    4 | module TopModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob110_fsm2_test.sv:6:8: ... Location of module with timescale
+    6 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+%Warning-ASCRANGE: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob110_fsm2_test.sv:53:6: Ascending bit range vector: left < right of bit range: [0:11]
+                                                                                                       : ... note: In instance 'tb.stim1'
+   53 |  reg [0:11][1:0] d = 24'b000101010010101111111111;
+      |      ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob110_fsm2_test.sv:70:10: Operator ASSIGNDLY expects 2 bits on the Assign RHS, but Assign RHS's RAND generates 32 bits.
+                                                                                                          : ... note: In instance 'tb.stim1'
+   70 |    {j,k} <= $random;
+      |          ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob110_fsm2_test.sv:71:13: Logical operator LOGNOT expects 1 bit on the LHS, but LHS's AND generates 32 bits.
+                                                                                                          : ... note: In instance 'tb.stim1'
+   71 |    reset <= !($random & 7);
+      |             ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob110_fsm2_test.sv:147:3: Logical operator IF expects 1 bit on the If, but If's SEL generates 32 bits.
+                                                                                                          : ... note: In instance 'tb'
+  147 |   if (stats1.errors_out) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out", stats1.errors_out, stats1.errortime_out);
+      |   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob110_fsm2_test.sv:163:45: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                           : ... note: In instance 'tb'
+  163 |    if (stats1.errors == 0) stats1.errortime = $time;
+      |                                             ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob110_fsm2_test.sv:167:58: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                           : ... note: In instance 'tb'
+  167 |   begin if (stats1.errors_out == 0) stats1.errortime_out = $time;
+      |                                                          ^
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob110_fsm2_test.sv:56:9: Non-blocking assignment '<=' in initial/final block
+                                                                                                         : ... This will be executed as a blocking assignment '='!
+   56 |   reset <= 1;
+      |         ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob110_fsm2_test.sv:57:5: Non-blocking assignment '<=' in initial/final block
+                                                                                                         : ... This will be executed as a blocking assignment '='!
+   57 |   j <= 0;
+      |     ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob110_fsm2_test.sv:58:5: Non-blocking assignment '<=' in initial/final block
+                                                                                                         : ... This will be executed as a blocking assignment '='!
+   58 |   k <= 0;
+      |     ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob110_fsm2_test.sv:60:9: Non-blocking assignment '<=' in initial/final block
+                                                                                                         : ... This will be executed as a blocking assignment '='!
+   60 |   reset <= 0;
+      |         ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob110_fsm2_test.sv:61:5: Non-blocking assignment '<=' in initial/final block
+                                                                                                         : ... This will be executed as a blocking assignment '='!
+   61 |   j <= 1;
+      |     ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob110_fsm2_test.sv:63:5: Non-blocking assignment '<=' in initial/final block
+                                                                                                         : ... This will be executed as a blocking assignment '='!
+   63 |   j <= 0;
+      |     ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob110_fsm2_test.sv:21:24: Non-blocking assignment '<=' in initial/final block
+                                                                                                          : ... This will be executed as a blocking assignment '='!
+   21 |   @(posedge clk) reset <= 0;
+      |                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob110_fsm2_test.sv:24:53: Non-blocking assignment '<=' in initial/final block
+                                                                                                          : ... This will be executed as a blocking assignment '='!
+   24 |   @(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+      |                                                     ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob110_fsm2_test.sv:28:10: Non-blocking assignment '<=' in initial/final block
+                                                                                                          : ... This will be executed as a blocking assignment '='!
+   28 |    reset <= 0;
+      |          ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob110_fsm2_test.sv:67:26: Non-blocking assignment '<=' in initial/final block
+                                                                                                          : ... This will be executed as a blocking assignment '='!
+   67 |    @(posedge clk) {k, j} <= d[i];
+      |                          ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob110_fsm2_test.sv:70:10: Non-blocking assignment '<=' in initial/final block
+                                                                                                          : ... This will be executed as a blocking assignment '='!
+   70 |    {j,k} <= $random;
+      |          ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob110_fsm2_test.sv:71:10: Non-blocking assignment '<=' in initial/final block
+                                                                                                          : ... This will be executed as a blocking assignment '='!
+   71 |    reset <= !($random & 7);
+      |          ^~

@@ -1,0 +1,62 @@
+%Warning-TIMESCALEMOD: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob032_vector0_ref.sv:2:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    2 | module RefModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob032_vector0_test.sv:6:8: ... Location of module with timescale
+    6 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+                       ... For warning description see https://verilator.org/warn/TIMESCALEMOD?v=5.034
+                       ... Use "/* verilator lint_off TIMESCALEMOD */" and lint_on around source to disable this message.
+%Warning-TIMESCALEMOD: TopModule.sv:1:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    1 | module TopModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob032_vector0_test.sv:6:8: ... Location of module with timescale
+    6 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob032_vector0_test.sv:33:8: Operator ASSIGNDLY expects 3 bits on the Assign RHS, but Assign RHS's VARREF '__Vincrement1' generates 32 bits.
+                                                                                                            : ... note: In instance 'tb.stim1'
+   33 |    vec <= count++;  
+      |        ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob032_vector0_test.sv:117:3: Logical operator IF expects 1 bit on the If, but If's SEL generates 32 bits.
+                                                                                                             : ... note: In instance 'tb'
+  117 |   if (stats1.errors_outv) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "outv", stats1.errors_outv, stats1.errortime_outv);
+      |   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob032_vector0_test.sv:119:3: Logical operator IF expects 1 bit on the If, but If's SEL generates 32 bits.
+                                                                                                             : ... note: In instance 'tb'
+  119 |   if (stats1.errors_o2) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "o2", stats1.errors_o2, stats1.errortime_o2);
+      |   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob032_vector0_test.sv:121:3: Logical operator IF expects 1 bit on the If, but If's SEL generates 32 bits.
+                                                                                                             : ... note: In instance 'tb'
+  121 |   if (stats1.errors_o1) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "o1", stats1.errors_o1, stats1.errortime_o1);
+      |   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob032_vector0_test.sv:123:3: Logical operator IF expects 1 bit on the If, but If's SEL generates 32 bits.
+                                                                                                             : ... note: In instance 'tb'
+  123 |   if (stats1.errors_o0) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "o0", stats1.errors_o0, stats1.errortime_o0);
+      |   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob032_vector0_test.sv:139:45: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                              : ... note: In instance 'tb'
+  139 |    if (stats1.errors == 0) stats1.errortime = $time;
+      |                                             ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob032_vector0_test.sv:143:60: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                              : ... note: In instance 'tb'
+  143 |   begin if (stats1.errors_outv == 0) stats1.errortime_outv = $time;
+      |                                                            ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob032_vector0_test.sv:146:56: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                              : ... note: In instance 'tb'
+  146 |   begin if (stats1.errors_o2 == 0) stats1.errortime_o2 = $time;
+      |                                                        ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob032_vector0_test.sv:149:56: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                              : ... note: In instance 'tb'
+  149 |   begin if (stats1.errors_o1 == 0) stats1.errortime_o1 = $time;
+      |                                                        ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob032_vector0_test.sv:152:56: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                              : ... note: In instance 'tb'
+  152 |   begin if (stats1.errors_o0 == 0) stats1.errortime_o0 = $time;
+      |                                                        ^
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob032_vector0_test.sv:29:7: Non-blocking assignment '<=' in initial/final block
+                                                                                                            : ... This will be executed as a blocking assignment '='!
+   29 |   vec <= 3'b0;
+      |       ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob032_vector0_test.sv:33:8: Non-blocking assignment '<=' in initial/final block
+                                                                                                            : ... This will be executed as a blocking assignment '='!
+   33 |    vec <= count++;  
+      |        ^~

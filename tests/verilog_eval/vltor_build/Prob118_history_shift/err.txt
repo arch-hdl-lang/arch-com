@@ -1,0 +1,177 @@
+%Warning-TIMESCALEMOD: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_ref.sv:2:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    2 | module RefModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:5:8: ... Location of module with timescale
+    5 | module stimulus_gen
+      |        ^~~~~~~~~~~~
+                       ... For warning description see https://verilator.org/warn/TIMESCALEMOD?v=5.034
+                       ... Use "/* verilator lint_off TIMESCALEMOD */" and lint_on around source to disable this message.
+%Warning-TIMESCALEMOD: TopModule.sv:3:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    3 | module TopModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:5:8: ... Location of module with timescale
+    5 | module stimulus_gen
+      |        ^~~~~~~~~~~~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:86:61: Operator ASSIGNDLY expects 2 bits on the Assign RHS, but Assign RHS's REPLICATE generates 32 bits.
+                                                                                                                   : ... note: In instance 'tb.stim1'
+   86 |   repeat(2) @(posedge clk) {predict_valid, predict_taken_r} <= {$urandom};
+      |                                                             ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:89:46: Operator ASSIGNDLY expects 1 bits on the Assign RHS, but Assign RHS's REPLICATE generates 32 bits.
+                                                                                                                   : ... note: In instance 'tb.stim1'
+   89 |   repeat(6) @(posedge clk) {predict_taken_r} <= {$urandom};
+      |                                              ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:91:46: Operator ASSIGNDLY expects 1 bits on the Assign RHS, but Assign RHS's REPLICATE generates 32 bits.
+                                                                                                                   : ... note: In instance 'tb.stim1'
+   91 |   repeat(3) @(posedge clk) {predict_taken_r} <= {$urandom};
+      |                                              ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:95:46: Operator ASSIGNDLY expects 1 bits on the Assign RHS, but Assign RHS's REPLICATE generates 32 bits.
+                                                                                                                   : ... note: In instance 'tb.stim1'
+   95 |   repeat(6) @(posedge clk) {predict_taken_r} <= {$urandom};
+      |                                              ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:99:52: Operator ASSIGNDLY expects 3 bits on the Assign RHS, but Assign RHS's REPLICATE generates 32 bits.
+                                                                                                                   : ... note: In instance 'tb.stim1'
+   99 |    {predict_valid, predict_taken_r, train_taken_r} <= {$urandom};
+      |                                                    ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:101:26: Logical operator LOGNOT expects 1 bit on the LHS, but LHS's URANDOMRANGE generates 32 bits.
+                                                                                                                    : ... note: In instance 'tb.stim1'
+  101 |    train_mispredicted <= !($urandom_range(0,31));
+      |                          ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_ref.sv:19:25: Operator ASSIGNDLY expects 32 bits on the Assign RHS, but Assign RHS's REPLICATE generates 33 bits.
+                                                                                                                  : ... note: In instance 'tb.good1'
+   19 |         predict_history <= {train_history, train_taken};
+      |                         ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_ref.sv:21:25: Operator ASSIGNDLY expects 32 bits on the Assign RHS, but Assign RHS's REPLICATE generates 33 bits.
+                                                                                                                  : ... note: In instance 'tb.good1'
+   21 |         predict_history <= {predict_history, predict_taken};
+      |                         ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:189:3: Logical operator IF expects 1 bit on the If, but If's SEL generates 32 bits.
+                                                                                                                   : ... note: In instance 'tb'
+  189 |   if (stats1.errors_predict_history) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "predict_history", stats1.errors_predict_history, stats1.errortime_predict_history);
+      |   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:205:45: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                    : ... note: In instance 'tb'
+  205 |    if (stats1.errors == 0) stats1.errortime = $time;
+      |                                             ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:209:82: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                    : ... note: In instance 'tb'
+  209 |   begin if (stats1.errors_predict_history == 0) stats1.errortime_predict_history = $time;
+      |                                                                                  ^
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:71:24: Non-blocking assignment '<=' in initial/final block
+                                                                                                                   : ... This will be executed as a blocking assignment '='!
+   71 |   @(posedge clk) reset <= 1;
+      |                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:72:24: Non-blocking assignment '<=' in initial/final block
+                                                                                                                   : ... This will be executed as a blocking assignment '='!
+   72 |   @(posedge clk) reset <= 0;
+      |                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:73:19: Non-blocking assignment '<=' in initial/final block
+                                                                                                                   : ... This will be executed as a blocking assignment '='!
+   73 |   predict_taken_r <= 1;
+      |                   ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:74:17: Non-blocking assignment '<=' in initial/final block
+                                                                                                                   : ... This will be executed as a blocking assignment '='!
+   74 |   predict_valid <= 1;
+      |                 ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:75:22: Non-blocking assignment '<=' in initial/final block
+                                                                                                                   : ... This will be executed as a blocking assignment '='!
+   75 |   train_mispredicted <= 0;
+      |                      ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:76:19: Non-blocking assignment '<=' in initial/final block
+                                                                                                                   : ... This will be executed as a blocking assignment '='!
+   76 |   train_history_r <= 32'h5;
+      |                   ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:77:17: Non-blocking assignment '<=' in initial/final block
+                                                                                                                   : ... This will be executed as a blocking assignment '='!
+   77 |   train_taken_r <= 1;
+      |                 ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:41:24: Non-blocking assignment '<=' in initial/final block
+                                                                                                                   : ... This will be executed as a blocking assignment '='!
+   41 |   @(posedge clk) reset <= 0;
+      |                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:44:53: Non-blocking assignment '<=' in initial/final block
+                                                                                                                   : ... This will be executed as a blocking assignment '='!
+   44 |   @(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+      |                                                     ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:48:10: Non-blocking assignment '<=' in initial/final block
+                                                                                                                   : ... This will be executed as a blocking assignment '='!
+   48 |    reset <= 0;
+      |          ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:82:24: Non-blocking assignment '<=' in initial/final block
+                                                                                                                   : ... This will be executed as a blocking assignment '='!
+   82 |   @(posedge clk) reset <= 1;
+      |                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:83:17: Non-blocking assignment '<=' in initial/final block
+                                                                                                                   : ... This will be executed as a blocking assignment '='!
+   83 |   predict_valid <= 0;
+      |                 ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:86:61: Non-blocking assignment '<=' in initial/final block
+                                                                                                                   : ... This will be executed as a blocking assignment '='!
+   86 |   repeat(2) @(posedge clk) {predict_valid, predict_taken_r} <= {$urandom};
+      |                                                             ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:87:9: Non-blocking assignment '<=' in initial/final block
+                                                                                                                  : ... This will be executed as a blocking assignment '='!
+   87 |   reset <= 0;
+      |         ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:88:17: Non-blocking assignment '<=' in initial/final block
+                                                                                                                   : ... This will be executed as a blocking assignment '='!
+   88 |   predict_valid <= 1;
+      |                 ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:89:46: Non-blocking assignment '<=' in initial/final block
+                                                                                                                   : ... This will be executed as a blocking assignment '='!
+   89 |   repeat(6) @(posedge clk) {predict_taken_r} <= {$urandom};
+      |                                              ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:90:17: Non-blocking assignment '<=' in initial/final block
+                                                                                                                   : ... This will be executed as a blocking assignment '='!
+   90 |   predict_valid <= 0;
+      |                 ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:91:46: Non-blocking assignment '<=' in initial/final block
+                                                                                                                   : ... This will be executed as a blocking assignment '='!
+   91 |   repeat(3) @(posedge clk) {predict_taken_r} <= {$urandom};
+      |                                              ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:92:17: Non-blocking assignment '<=' in initial/final block
+                                                                                                                   : ... This will be executed as a blocking assignment '='!
+   92 |   predict_valid <= 1;
+      |                 ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:93:22: Non-blocking assignment '<=' in initial/final block
+                                                                                                                   : ... This will be executed as a blocking assignment '='!
+   93 |   train_mispredicted <= 1;
+      |                      ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:94:37: Non-blocking assignment '<=' in initial/final block
+                                                                                                                   : ... This will be executed as a blocking assignment '='!
+   94 |   @(posedge clk) train_mispredicted <= 0;
+      |                                     ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:95:46: Non-blocking assignment '<=' in initial/final block
+                                                                                                                   : ... This will be executed as a blocking assignment '='!
+   95 |   repeat(6) @(posedge clk) {predict_taken_r} <= {$urandom};
+      |                                              ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:99:52: Non-blocking assignment '<=' in initial/final block
+                                                                                                                   : ... This will be executed as a blocking assignment '='!
+   99 |    {predict_valid, predict_taken_r, train_taken_r} <= {$urandom};
+      |                                                    ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:100:20: Non-blocking assignment '<=' in initial/final block
+                                                                                                                    : ... This will be executed as a blocking assignment '='!
+  100 |    train_history_r <= $urandom;
+      |                    ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:101:23: Non-blocking assignment '<=' in initial/final block
+                                                                                                                    : ... This will be executed as a blocking assignment '='!
+  101 |    train_mispredicted <= !($urandom_range(0,31));
+      |                       ^~
+%Error-BLKANDNBLK: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:137:15: Unsupported: Blocked and non-blocking assignments to same variable: 'tb.predict_history_ref'
+  137 |  logic [31:0] predict_history_ref;
+      |               ^~~~~~~~~~~~~~~~~~~
+                   /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_ref.sv:16:23: ... Location of blocking assignment
+   16 |       predict_history = 0;
+      |                       ^
+                   /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_ref.sv:19:25: ... Location of nonblocking assignment
+   19 |         predict_history <= {train_history, train_taken};
+      |                         ^~
+%Error-BLKANDNBLK: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:137:15: Unsupported: Blocked and non-blocking assignments to same variable: 'tb.predict_history_ref'
+  137 |  logic [31:0] predict_history_ref;
+      |               ^~~~~~~~~~~~~~~~~~~
+                   /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_ref.sv:16:23: ... Location of blocking assignment
+   16 |       predict_history = 0;
+      |                       ^
+                   /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_ref.sv:21:25: ... Location of nonblocking assignment
+   21 |         predict_history <= {predict_history, predict_taken};
+      |                         ^~
+%Error: Exiting due to 2 error(s)

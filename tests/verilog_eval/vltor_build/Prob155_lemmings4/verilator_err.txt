@@ -1,0 +1,270 @@
+%Warning-TIMESCALEMOD: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_ref.sv:2:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    2 | module RefModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:6:8: ... Location of module with timescale
+    6 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+                       ... For warning description see https://verilator.org/warn/TIMESCALEMOD?v=5.034
+                       ... Use "/* verilator lint_off TIMESCALEMOD */" and lint_on around source to disable this message.
+%Warning-TIMESCALEMOD: TopModule.sv:5:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    5 | module TopModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:6:8: ... Location of module with timescale
+    6 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:87:33: Operator ASSIGNDLY expects 3 bits on the Assign RHS, but Assign RHS's AND generates 32 bits.
+                                                                                                               : ... note: In instance 'tb.stim1'
+   87 |    {dig, bump_right, bump_left} <= $random & $random;  
+      |                                 ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:102:33: Operator ASSIGNDLY expects 3 bits on the Assign RHS, but Assign RHS's AND generates 32 bits.
+                                                                                                                : ... note: In instance 'tb.stim1'
+  102 |    {dig, bump_right, bump_left} <= $random & $random;  
+      |                                 ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:129:33: Operator ASSIGNDLY expects 3 bits on the Assign RHS, but Assign RHS's AND generates 32 bits.
+                                                                                                                : ... note: In instance 'tb.stim1'
+  129 |    {dig, bump_right, bump_left} <= $random & $random;  
+      |                                 ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:142:33: Operator ASSIGNDLY expects 3 bits on the Assign RHS, but Assign RHS's AND generates 32 bits.
+                                                                                                                : ... note: In instance 'tb.stim1'
+  142 |    {dig, bump_right, bump_left} <= $random & $random;  
+      |                                 ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:153:33: Operator ASSIGNDLY expects 3 bits on the Assign RHS, but Assign RHS's AND generates 32 bits.
+                                                                                                                : ... note: In instance 'tb.stim1'
+  153 |    {dig, bump_right, bump_left} <= $random & $random;
+      |                                 ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:155:13: Logical operator LOGNOT expects 1 bit on the LHS, but LHS's AND generates 32 bits.
+                                                                                                                : ... note: In instance 'tb.stim1'
+  155 |    reset <= !($random & 31);
+      |             ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:257:3: Logical operator IF expects 1 bit on the If, but If's SEL generates 32 bits.
+                                                                                                               : ... note: In instance 'tb'
+  257 |   if (stats1.errors_walk_left) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "walk_left", stats1.errors_walk_left, stats1.errortime_walk_left);
+      |   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:259:3: Logical operator IF expects 1 bit on the If, but If's SEL generates 32 bits.
+                                                                                                               : ... note: In instance 'tb'
+  259 |   if (stats1.errors_walk_right) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "walk_right", stats1.errors_walk_right, stats1.errortime_walk_right);
+      |   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:261:3: Logical operator IF expects 1 bit on the If, but If's SEL generates 32 bits.
+                                                                                                               : ... note: In instance 'tb'
+  261 |   if (stats1.errors_aaah) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "aaah", stats1.errors_aaah, stats1.errortime_aaah);
+      |   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:263:3: Logical operator IF expects 1 bit on the If, but If's SEL generates 32 bits.
+                                                                                                               : ... note: In instance 'tb'
+  263 |   if (stats1.errors_digging) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "digging", stats1.errors_digging, stats1.errortime_digging);
+      |   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:279:45: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                : ... note: In instance 'tb'
+  279 |    if (stats1.errors == 0) stats1.errortime = $time;
+      |                                             ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:283:70: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                : ... note: In instance 'tb'
+  283 |   begin if (stats1.errors_walk_left == 0) stats1.errortime_walk_left = $time;
+      |                                                                      ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:286:72: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                : ... note: In instance 'tb'
+  286 |   begin if (stats1.errors_walk_right == 0) stats1.errortime_walk_right = $time;
+      |                                                                        ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:289:60: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                : ... note: In instance 'tb'
+  289 |   begin if (stats1.errors_aaah == 0) stats1.errortime_aaah = $time;
+      |                                                            ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:292:66: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                : ... note: In instance 'tb'
+  292 |   begin if (stats1.errors_digging == 0) stats1.errortime_digging = $time;
+      |                                                                  ^
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:58:9: Non-blocking assignment '<=' in initial/final block
+                                                                                                              : ... This will be executed as a blocking assignment '='!
+   58 |   reset <= 1'b1;
+      |         ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:60:9: Non-blocking assignment '<=' in initial/final block
+                                                                                                              : ... This will be executed as a blocking assignment '='!
+   60 |   reset <= 0;
+      |         ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:61:40: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   61 |   {bump_left, bump_right, ground, dig} <= 2;
+      |                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:63:40: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   63 |   {bump_left, bump_right, ground, dig} <= 3;
+      |                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:65:40: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   65 |   {bump_left, bump_right, ground, dig} <= 2;
+      |                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:67:40: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   67 |   {bump_left, bump_right, ground, dig} <= 10;
+      |                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:69:40: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   69 |   {bump_left, bump_right, ground, dig} <= 2;
+      |                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:71:40: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   71 |   {bump_left, bump_right, ground, dig} <= 0;
+      |                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:73:40: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   73 |   {bump_left, bump_right, ground, dig} <= 3;
+      |                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:75:40: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   75 |   {bump_left, bump_right, ground, dig} <= 2;
+      |                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:78:40: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   78 |   {bump_left, bump_right, ground, dig} <= 0;   
+      |                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:80:40: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   80 |   {bump_left, bump_right, ground, dig} <= 2;   
+      |                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:83:40: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   83 |   {bump_left, bump_right, ground, dig} <= 0;   
+      |                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:85:40: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   85 |   {bump_left, bump_right, ground, dig} <= 2;   
+      |                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:87:33: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   87 |    {dig, bump_right, bump_left} <= $random & $random;  
+      |                                 ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:88:11: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   88 |    ground <= |($random & 7);
+      |           ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:92:9: Non-blocking assignment '<=' in initial/final block
+                                                                                                              : ... This will be executed as a blocking assignment '='!
+   92 |   reset <= 1;
+      |         ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:93:40: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   93 |   {bump_left, bump_right, ground, dig} <= 2;   
+      |                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:95:9: Non-blocking assignment '<=' in initial/final block
+                                                                                                              : ... This will be executed as a blocking assignment '='!
+   95 |   reset <= 0;   
+      |         ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:96:13: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   96 |   bump_left <= 1;
+      |             ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:98:40: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+   98 |   {bump_left, bump_right, ground, dig} <= 0;   
+      |                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:100:40: Non-blocking assignment '<=' in initial/final block
+                                                                                                                : ... This will be executed as a blocking assignment '='!
+  100 |   {bump_left, bump_right, ground, dig} <= 2;   
+      |                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:102:33: Non-blocking assignment '<=' in initial/final block
+                                                                                                                : ... This will be executed as a blocking assignment '='!
+  102 |    {dig, bump_right, bump_left} <= $random & $random;  
+      |                                 ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:103:11: Non-blocking assignment '<=' in initial/final block
+                                                                                                                : ... This will be executed as a blocking assignment '='!
+  103 |    ground <= |($random & 7);
+      |           ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:106:9: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+  106 |   reset <= 1;
+      |         ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:108:9: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+  108 |   reset <= 0;   
+      |         ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:109:40: Non-blocking assignment '<=' in initial/final block
+                                                                                                                : ... This will be executed as a blocking assignment '='!
+  109 |   {bump_left, bump_right, ground, dig} <= 2;   
+      |                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:112:40: Non-blocking assignment '<=' in initial/final block
+                                                                                                                : ... This will be executed as a blocking assignment '='!
+  112 |   {bump_left, bump_right, ground, dig} <= 0;   
+      |                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:114:40: Non-blocking assignment '<=' in initial/final block
+                                                                                                                : ... This will be executed as a blocking assignment '='!
+  114 |   {bump_left, bump_right, ground, dig} <= 2;   
+      |                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:118:9: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+  118 |   reset <= 1;
+      |         ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:120:9: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+  120 |   reset <= 0;   
+      |         ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:121:40: Non-blocking assignment '<=' in initial/final block
+                                                                                                                : ... This will be executed as a blocking assignment '='!
+  121 |   {bump_left, bump_right, ground, dig} <= 2;   
+      |                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:124:40: Non-blocking assignment '<=' in initial/final block
+                                                                                                                : ... This will be executed as a blocking assignment '='!
+  124 |   {bump_left, bump_right, ground, dig} <= 0;   
+      |                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:126:40: Non-blocking assignment '<=' in initial/final block
+                                                                                                                : ... This will be executed as a blocking assignment '='!
+  126 |   {bump_left, bump_right, ground, dig} <= 2;   
+      |                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:129:33: Non-blocking assignment '<=' in initial/final block
+                                                                                                                : ... This will be executed as a blocking assignment '='!
+  129 |    {dig, bump_right, bump_left} <= $random & $random;  
+      |                                 ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:130:11: Non-blocking assignment '<=' in initial/final block
+                                                                                                                : ... This will be executed as a blocking assignment '='!
+  130 |    ground <= |($random & 7);
+      |           ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:133:9: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+  133 |   reset <= 1;
+      |         ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:134:40: Non-blocking assignment '<=' in initial/final block
+                                                                                                                : ... This will be executed as a blocking assignment '='!
+  134 |   {bump_left, bump_right, ground, dig} <= 2;   
+      |                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:136:9: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+  136 |   reset <= 0;   
+      |         ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:138:40: Non-blocking assignment '<=' in initial/final block
+                                                                                                                : ... This will be executed as a blocking assignment '='!
+  138 |   {bump_left, bump_right, ground, dig} <= 0;   
+      |                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:140:40: Non-blocking assignment '<=' in initial/final block
+                                                                                                                : ... This will be executed as a blocking assignment '='!
+  140 |   {bump_left, bump_right, ground, dig} <= 2;   
+      |                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:142:33: Non-blocking assignment '<=' in initial/final block
+                                                                                                                : ... This will be executed as a blocking assignment '='!
+  142 |    {dig, bump_right, bump_left} <= $random & $random;  
+      |                                 ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:143:11: Non-blocking assignment '<=' in initial/final block
+                                                                                                                : ... This will be executed as a blocking assignment '='!
+  143 |    ground <= |($random & 7);
+      |           ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:146:9: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+  146 |   reset <= 1;
+      |         ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:147:40: Non-blocking assignment '<=' in initial/final block
+                                                                                                                : ... This will be executed as a blocking assignment '='!
+  147 |   {bump_left, bump_right, ground, dig} <= 2;   
+      |                                        ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:149:9: Non-blocking assignment '<=' in initial/final block
+                                                                                                               : ... This will be executed as a blocking assignment '='!
+  149 |   reset <= 0;   
+      |         ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:153:33: Non-blocking assignment '<=' in initial/final block
+                                                                                                                : ... This will be executed as a blocking assignment '='!
+  153 |    {dig, bump_right, bump_left} <= $random & $random;
+      |                                 ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:154:11: Non-blocking assignment '<=' in initial/final block
+                                                                                                                : ... This will be executed as a blocking assignment '='!
+  154 |    ground <= |($random & 7);
+      |           ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob155_lemmings4_test.sv:155:10: Non-blocking assignment '<=' in initial/final block
+                                                                                                                : ... This will be executed as a blocking assignment '='!
+  155 |    reset <= !($random & 31);
+      |          ^~

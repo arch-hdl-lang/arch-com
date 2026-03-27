@@ -1,5 +1,5 @@
-Wrote tests/verilog_eval/Prob017_mux2to1v.sv
-
+module TopModule (
+  input logic [100-1:0] a,
   input logic [100-1:0] b,
   input logic sel,
   output logic [100-1:0] out

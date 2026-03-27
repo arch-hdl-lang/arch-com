@@ -1,5 +1,4 @@
-Wrote tests/verilog_eval/Prob078_dualedge.sv
-lip-flop
+// VerilogEval Prob078: Dual-edge triggered flip-flop
 // Use posedge FF + negedge FF + clock-level mux
 module TopModule (
   input logic clk,

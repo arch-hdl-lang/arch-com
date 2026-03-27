@@ -1,0 +1,130 @@
+%Warning-TIMESCALEMOD: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_ref.sv:2:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    2 | module RefModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:7:8: ... Location of module with timescale
+    7 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+                       ... For warning description see https://verilator.org/warn/TIMESCALEMOD?v=5.034
+                       ... Use "/* verilator lint_off TIMESCALEMOD */" and lint_on around source to disable this message.
+%Warning-TIMESCALEMOD: TopModule.sv:1:8: Timescale missing on this module as other modules have it (IEEE 1800-2023 3.14.2.3)
+    1 | module TopModule (
+      |        ^~~~~~~~~
+                       /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:7:8: ... Location of module with timescale
+    7 | module stimulus_gen (
+      |        ^~~~~~~~~~~~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:54:18: Operator ASSIGNDLY expects 17 bits on the Assign RHS, but Assign RHS's RAND generates 32 bits.
+                                                                                                                  : ... note: In instance 'tb.stim1'
+   54 |    {a,b, do_sub} <= $urandom;
+      |                  ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:134:3: Logical operator IF expects 1 bit on the If, but If's SEL generates 32 bits.
+                                                                                                                  : ... note: In instance 'tb'
+  134 |   if (stats1.errors_out) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out", stats1.errors_out, stats1.errortime_out);
+      |   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:136:3: Logical operator IF expects 1 bit on the If, but If's SEL generates 32 bits.
+                                                                                                                  : ... note: In instance 'tb'
+  136 |   if (stats1.errors_result_is_zero) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "result_is_zero", stats1.errors_result_is_zero, stats1.errortime_result_is_zero);
+      |   ^~
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:152:45: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                   : ... note: In instance 'tb'
+  152 |    if (stats1.errors == 0) stats1.errortime = $time;
+      |                                             ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:156:58: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                   : ... note: In instance 'tb'
+  156 |   begin if (stats1.errors_out == 0) stats1.errortime_out = $time;
+      |                                                          ^
+%Warning-WIDTHTRUNC: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:159:80: Operator ASSIGN expects 32 bits on the Assign RHS, but Assign RHS's TIME generates 64 bits.
+                                                                                                                   : ... note: In instance 'tb'
+  159 |   begin if (stats1.errors_result_is_zero == 0) stats1.errortime_result_is_zero = $time;
+      |                                                                                ^
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:31:10: Non-blocking assignment '<=' in initial/final block
+                                                                                                                  : ... This will be executed as a blocking assignment '='!
+   31 |   {a, b} <= 16'haabb;
+      |          ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:32:10: Non-blocking assignment '<=' in initial/final block
+                                                                                                                  : ... This will be executed as a blocking assignment '='!
+   32 |   do_sub <= 0;
+      |          ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:34:39: Non-blocking assignment '<=' in initial/final block
+                                                                                                                  : ... This will be executed as a blocking assignment '='!
+   34 |    @(posedge clk, negedge clk) do_sub <= 0;
+      |                                       ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:35:39: Non-blocking assignment '<=' in initial/final block
+                                                                                                                  : ... This will be executed as a blocking assignment '='!
+   35 |    @(posedge clk, negedge clk) do_sub <= 0;
+      |                                       ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:36:39: Non-blocking assignment '<=' in initial/final block
+                                                                                                                  : ... This will be executed as a blocking assignment '='!
+   36 |    @(posedge clk, negedge clk) do_sub <= 1;
+      |                                       ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:37:39: Non-blocking assignment '<=' in initial/final block
+                                                                                                                  : ... This will be executed as a blocking assignment '='!
+   37 |    @(posedge clk, negedge clk) do_sub <= 1;
+      |                                       ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:39:39: Non-blocking assignment '<=' in initial/final block
+                                                                                                                  : ... This will be executed as a blocking assignment '='!
+   39 |    @(posedge clk, negedge clk) {a, b} <= 16'h0303; do_sub <= 1'b0;
+      |                                       ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:39:59: Non-blocking assignment '<=' in initial/final block
+                                                                                                                  : ... This will be executed as a blocking assignment '='!
+   39 |    @(posedge clk, negedge clk) {a, b} <= 16'h0303; do_sub <= 1'b0;
+      |                                                           ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:40:39: Non-blocking assignment '<=' in initial/final block
+                                                                                                                  : ... This will be executed as a blocking assignment '='!
+   40 |    @(posedge clk, negedge clk) do_sub <= 0;
+      |                                       ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:41:39: Non-blocking assignment '<=' in initial/final block
+                                                                                                                  : ... This will be executed as a blocking assignment '='!
+   41 |    @(posedge clk, negedge clk) do_sub <= 1;
+      |                                       ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:42:39: Non-blocking assignment '<=' in initial/final block
+                                                                                                                  : ... This will be executed as a blocking assignment '='!
+   42 |    @(posedge clk, negedge clk) {a, b} <= 16'h0304; do_sub <= 1'b0;
+      |                                       ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:42:59: Non-blocking assignment '<=' in initial/final block
+                                                                                                                  : ... This will be executed as a blocking assignment '='!
+   42 |    @(posedge clk, negedge clk) {a, b} <= 16'h0304; do_sub <= 1'b0;
+      |                                                           ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:43:39: Non-blocking assignment '<=' in initial/final block
+                                                                                                                  : ... This will be executed as a blocking assignment '='!
+   43 |    @(posedge clk, negedge clk) do_sub <= 0;
+      |                                       ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:44:39: Non-blocking assignment '<=' in initial/final block
+                                                                                                                  : ... This will be executed as a blocking assignment '='!
+   44 |    @(posedge clk, negedge clk) do_sub <= 1;
+      |                                       ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:45:39: Non-blocking assignment '<=' in initial/final block
+                                                                                                                  : ... This will be executed as a blocking assignment '='!
+   45 |    @(posedge clk, negedge clk) {a, b} <= 16'hfd03; do_sub <= 1'b0;
+      |                                       ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:45:59: Non-blocking assignment '<=' in initial/final block
+                                                                                                                  : ... This will be executed as a blocking assignment '='!
+   45 |    @(posedge clk, negedge clk) {a, b} <= 16'hfd03; do_sub <= 1'b0;
+      |                                                           ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:46:39: Non-blocking assignment '<=' in initial/final block
+                                                                                                                  : ... This will be executed as a blocking assignment '='!
+   46 |    @(posedge clk, negedge clk) do_sub <= 0;
+      |                                       ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:47:39: Non-blocking assignment '<=' in initial/final block
+                                                                                                                  : ... This will be executed as a blocking assignment '='!
+   47 |    @(posedge clk, negedge clk) do_sub <= 1;
+      |                                       ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:48:39: Non-blocking assignment '<=' in initial/final block
+                                                                                                                  : ... This will be executed as a blocking assignment '='!
+   48 |    @(posedge clk, negedge clk) {a, b} <= 16'hfd04; do_sub <= 1'b0;
+      |                                       ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:48:59: Non-blocking assignment '<=' in initial/final block
+                                                                                                                  : ... This will be executed as a blocking assignment '='!
+   48 |    @(posedge clk, negedge clk) {a, b} <= 16'hfd04; do_sub <= 1'b0;
+      |                                                           ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:49:39: Non-blocking assignment '<=' in initial/final block
+                                                                                                                  : ... This will be executed as a blocking assignment '='!
+   49 |    @(posedge clk, negedge clk) do_sub <= 0;
+      |                                       ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:50:39: Non-blocking assignment '<=' in initial/final block
+                                                                                                                  : ... This will be executed as a blocking assignment '='!
+   50 |    @(posedge clk, negedge clk) do_sub <= 1;
+      |                                       ^~
+%Warning-INITIALDLY: /Users/shuqingzhao/github/verilog-eval/dataset_spec-to-rtl/Prob123_bugs_addsubz_test.sv:54:18: Non-blocking assignment '<=' in initial/final block
+                                                                                                                  : ... This will be executed as a blocking assignment '='!
+   54 |    {a,b, do_sub} <= $urandom;
+      |                  ^~

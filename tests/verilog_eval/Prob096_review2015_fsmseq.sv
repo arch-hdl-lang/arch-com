@@ -1,5 +1,4 @@
-Wrote tests/verilog_eval/Prob096_review2015_fsmseq.sv
-tart_shifting forever
+// VerilogEval Prob096: Detect 1101 sequence, assert start_shifting forever
 module TopModule (
   input logic clk,
   input logic reset,

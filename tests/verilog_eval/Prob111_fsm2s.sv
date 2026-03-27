@@ -1,5 +1,6 @@
-Wrote tests/verilog_eval/Prob111_fsm2s.sv
-put logic reset,
+module TopModule (
+  input logic clk,
+  input logic reset,
   input logic j,
   input logic k,
   output logic out
