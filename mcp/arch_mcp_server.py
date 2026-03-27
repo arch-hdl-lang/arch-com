@@ -418,10 +418,11 @@ end module Slave
 // Ternary: cond ? a : b
 // Bit/byte reverse: x.reverse(1) for bit-reverse, x.reverse(8) for byte-reverse
 
-// ── Naming conventions (compiler-enforced) ──
-// Modules/structs/enums: PascalCase
-// Signals/ports/regs:    snake_case
-// Params/constants:      UPPER_SNAKE
+// ── Naming conventions (recommended, NOT compiler-enforced) ──
+// Modules/structs/enums: PascalCase (recommended)
+// Signals/ports/regs:    snake_case (recommended)
+// Params/constants:      UPPER_SNAKE (recommended)
+// Module names are emitted as-is in SV — use the exact name the testbench expects
 """,
 }
 
@@ -436,7 +437,9 @@ def get_construct_syntax(construct: str) -> str:
     Available constructs: module, inst, fsm, pipeline, synchronizer, fifo,
     ram, arbiter, regfile, bus, package, types
 
-    Also returns reserved keywords to avoid as signal/register names."""
+    Also returns reserved keywords to avoid as signal/register names.
+    Note: 'in', 'out', 'state' are contextual — safe to use as port/signal names.
+    Module names are NOT required to be PascalCase — use whatever name the target expects."""
     key = construct.lower().strip()
     syntax = CONSTRUCT_SYNTAX.get(key)
     if syntax is None:

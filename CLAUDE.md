@@ -85,7 +85,7 @@ Arch has three kinds of module-scope signal declarations:
 - Arithmetic result widths follow IEEE 1800-2012 §11.6 (e.g. `UInt<8> + UInt<8>` → `UInt<9>`)
 - Clock domain mismatches are **compile errors**, not warnings
 
-### Naming Conventions (compiler-enforced)
+### Naming Conventions (recommended, not compiler-enforced)
 | Category | Convention | Example |
 |---|---|---|
 | Modules, interfaces, structs, enums | PascalCase | `FetchUnit`, `AluOp` |
