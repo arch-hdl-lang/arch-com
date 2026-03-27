@@ -1,0 +1,30 @@
+module cascaded_adder
+  param IN_DATA_WIDTH: const = 16;
+  param IN_DATA_NS: const = 4;
+  param OUT_WIDTH: const = IN_DATA_WIDTH + $clog2(IN_DATA_NS);
+
+  port clk: in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+  port i_valid: in Bool;
+  port i_data: in UInt<IN_DATA_WIDTH * IN_DATA_NS>;
+  port reg o_valid: out Bool reset rst_n=0;
+  port reg o_data: out UInt<OUT_WIDTH> reset rst_n=0;
+
+  reg valid_d1: Bool reset rst_n=0;
+  reg sum_reg: UInt<OUT_WIDTH> reset rst_n=0;
+
+  wire sum_comb: UInt<OUT_WIDTH>;
+  comb
+    sum_comb = 0;
+    for i in 0..IN_DATA_NS-1
+      sum_comb = (sum_comb + i_data[i * IN_DATA_WIDTH + IN_DATA_WIDTH - 1 : i * IN_DATA_WIDTH].zext<OUT_WIDTH>()).trunc<OUT_WIDTH>();
+    end for
+  end comb
+
+  seq on clk rising
+    valid_d1 <= i_valid;
+    sum_reg <= sum_comb;
+    o_valid <= valid_d1;
+    o_data <= sum_reg;
+  end seq
+end module cascaded_adder

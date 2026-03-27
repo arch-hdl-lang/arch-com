@@ -1,0 +1,28 @@
+module complex_multiplier
+  port clk: in Clock<SysDomain>;
+  port arst_n: in Reset<Async, Low>;
+  port a_real: in SInt<16>;
+  port a_imag: in SInt<16>;
+  port b_real: in SInt<16>;
+  port b_imag: in SInt<16>;
+  port reg result_real: out SInt<32> reset arst_n=0;
+  port reg result_imag: out SInt<32> reset arst_n=0;
+
+  // (a+bj)*(c+dj) = (ac-bd) + (ad+bc)j
+  wire ac: SInt<32>;
+  wire bd: SInt<32>;
+  wire ad: SInt<32>;
+  wire bc: SInt<32>;
+
+  comb
+    ac = a_real * b_real;
+    bd = a_imag * b_imag;
+    ad = a_real * b_imag;
+    bc = a_imag * b_real;
+  end comb
+
+  seq on clk rising
+    result_real <= (ac - bd).trunc<32>();
+    result_imag <= (ad + bc).trunc<32>();
+  end seq
+end module complex_multiplier

@@ -1,0 +1,22 @@
+module palindrome_detect
+  param N: const = 3;
+
+  port clk: in Clock<SysDomain>;
+  port reset: in Reset<Sync, High>;
+  port bit_stream: in Bool;
+  port palindrome_detected: out Bool;
+
+  reg sr0: Bool reset reset=0;
+  reg sr1: Bool reset reset=0;
+  reg sr2: Bool reset reset=0;
+
+  seq on clk rising
+    sr0 <= bit_stream;
+    sr1 <= sr0;
+    sr2 <= sr1;
+  end seq
+
+  comb
+    palindrome_detected = (sr0 == sr2);
+  end comb
+end module palindrome_detect

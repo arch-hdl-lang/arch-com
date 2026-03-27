@@ -1,0 +1,15 @@
+module bcd_to_excess_3
+  port bcd:     in UInt<4>;
+  port excess3: out UInt<4>;
+  port error:   out Bool;
+
+  comb
+    if bcd > 4'd9
+      excess3 = 4'd0;
+      error = 1'd1;
+    else
+      excess3 = (bcd + 4'd3).trunc<4>();
+      error = 1'd0;
+    end if
+  end comb
+end module bcd_to_excess_3

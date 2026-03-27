@@ -1,0 +1,11 @@
+module binary_to_one_hot_decoder
+  param BINARY_WIDTH: const = 5;
+  param OUTPUT_WIDTH: const = 32;
+
+  port binary_in: in UInt<BINARY_WIDTH>;
+  port one_hot_out: out UInt<OUTPUT_WIDTH>;
+
+  comb
+    one_hot_out = 32'd1 << binary_in.zext<32>();
+  end comb
+end module binary_to_one_hot_decoder

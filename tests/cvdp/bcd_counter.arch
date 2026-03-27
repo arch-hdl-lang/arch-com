@@ -1,0 +1,42 @@
+module bcd_counter
+  port clk:    in Clock<SysDomain>;
+  port rst:    in Reset<Sync>;
+  port reg ms_hr:  out UInt<4> reset rst=0;
+  port reg ls_hr:  out UInt<4> reset rst=0;
+  port reg ms_min: out UInt<4> reset rst=0;
+  port reg ls_min: out UInt<4> reset rst=0;
+  port reg ms_sec: out UInt<4> reset rst=0;
+  port reg ls_sec: out UInt<4> reset rst=0;
+
+  seq on clk rising
+    if ls_sec < 4'd9
+      ls_sec <= (ls_sec + 4'd1).trunc<4>();
+    else
+      ls_sec <= 4'd0;
+      if ms_sec < 4'd5
+        ms_sec <= (ms_sec + 4'd1).trunc<4>();
+      else
+        ms_sec <= 4'd0;
+        if ls_min < 4'd9
+          ls_min <= (ls_min + 4'd1).trunc<4>();
+        else
+          ls_min <= 4'd0;
+          if ms_min < 4'd5
+            ms_min <= (ms_min + 4'd1).trunc<4>();
+          else
+            ms_min <= 4'd0;
+            if ms_hr == 4'd2 and ls_hr == 4'd3
+              ms_hr <= 4'd0;
+              ls_hr <= 4'd0;
+            elsif ls_hr < 4'd9
+              ls_hr <= (ls_hr + 4'd1).trunc<4>();
+            else
+              ls_hr <= 4'd0;
+              ms_hr <= (ms_hr + 4'd1).trunc<4>();
+            end if
+          end if
+        end if
+      end if
+    end if
+  end seq
+end module bcd_counter

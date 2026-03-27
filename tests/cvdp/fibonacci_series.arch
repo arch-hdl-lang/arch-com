@@ -1,0 +1,35 @@
+module fibonacci_series
+  port clk:           in Clock<SysDomain>;
+  port rst:           in Reset<Async, High>;
+  port reg fib_out:       out UInt<32> reset rst=0;
+  port reg overflow_flag: out Bool reset rst=0;
+
+  reg RegA: UInt<32> reset rst=0;
+  reg RegB: UInt<32> reset rst=1;
+  reg overflow_detected: Bool reset rst=0;
+
+  wire next_fib: UInt<33>;
+  comb
+    next_fib = RegA + RegB;
+  end comb
+
+  seq on clk rising
+    if overflow_detected
+      overflow_flag <= 1'd1;
+      fib_out <= 32'd0;
+      RegA <= 32'd0;
+      RegB <= 32'd1;
+      overflow_detected <= 1'd0;
+    else
+      if next_fib[32]
+        overflow_detected <= 1'd1;
+        fib_out <= RegB;
+      else
+        overflow_flag <= 1'd0;
+        fib_out <= RegB;
+        RegA <= RegB;
+        RegB <= next_fib.trunc<32>();
+      end if
+    end if
+  end seq
+end module fibonacci_series

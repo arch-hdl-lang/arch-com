@@ -1,0 +1,14 @@
+module barrel_shifter_8bit
+  port data_in: in UInt<8>;
+  port shift_bits: in UInt<3>;
+  port left_right: in Bool;
+  port data_out: out UInt<8>;
+
+  comb
+    if left_right
+      data_out = (data_in << shift_bits.zext<8>()).trunc<8>();
+    else
+      data_out = (data_in >> shift_bits.zext<8>()).trunc<8>();
+    end if
+  end comb
+end module barrel_shifter_8bit

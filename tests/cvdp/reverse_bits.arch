@@ -2,9 +2,9 @@ module reverse_bits
   port num_in:  in  UInt<32>;
   port num_out: out UInt<32>;
 
-  let reversed: UInt<32> = num_in.reverse(1);
-
   comb
-    num_out = reversed;
+    for i in 0..31
+      num_out[i] = num_in[31 - i];
+    end for
   end comb
 end module reverse_bits

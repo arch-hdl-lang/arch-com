@@ -1,0 +1,28 @@
+module SetBitStreamCalculator
+  param p_max_set_bit_count_width: const = 8;
+
+  port i_clk: in Clock<SysDomain>;
+  port i_rst_n: in Reset<Async, Low>;
+  port i_bit_in: in Bool;
+  port i_ready: in Bool;
+  port reg o_set_bit_count: out UInt<p_max_set_bit_count_width> reset i_rst_n=0;
+
+  reg prev_ready: Bool reset i_rst_n=0;
+
+  let max_val: UInt<p_max_set_bit_count_width> = 8'hFF;
+
+  seq on i_clk rising
+    prev_ready <= i_ready;
+    if i_ready
+      if ~prev_ready
+        o_set_bit_count <= 0;
+      else
+        if i_bit_in
+          if o_set_bit_count < max_val
+            o_set_bit_count <= (o_set_bit_count + 1'd1).trunc<p_max_set_bit_count_width>();
+          end if
+        end if
+      end if
+    end if
+  end seq
+end module SetBitStreamCalculator

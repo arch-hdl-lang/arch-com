@@ -1,0 +1,38 @@
+module hamming_code_receiver
+  port data_in: in UInt<8>;
+  port data_out: out UInt<4>;
+
+  wire c1: Bool;
+  wire c2: Bool;
+  wire c3: Bool;
+  wire syndrome: UInt<3>;
+  wire corrected: UInt<8>;
+
+  comb
+    c1 = data_in[1] ^ data_in[3] ^ data_in[5] ^ data_in[7];
+    c2 = data_in[2] ^ data_in[3] ^ data_in[6] ^ data_in[7];
+    c3 = data_in[4] ^ data_in[5] ^ data_in[6] ^ data_in[7];
+    syndrome = {c3, c2, c1};
+
+    if syndrome == 3'd0
+      corrected = data_in;
+    elsif syndrome == 3'd1
+      corrected = data_in ^ 8'd2;
+    elsif syndrome == 3'd2
+      corrected = data_in ^ 8'd4;
+    elsif syndrome == 3'd3
+      corrected = data_in ^ 8'd8;
+    elsif syndrome == 3'd4
+      corrected = data_in ^ 8'd16;
+    elsif syndrome == 3'd5
+      corrected = data_in ^ 8'd32;
+    elsif syndrome == 3'd6
+      corrected = data_in ^ 8'd64;
+    else
+      corrected = data_in ^ 8'd128;
+    end if
+
+    // d3=corrected[7], d2=corrected[6], d1=corrected[5], d0=corrected[3]
+    data_out = {corrected[7], corrected[6], corrected[5], corrected[3]};
+  end comb
+end module hamming_code_receiver

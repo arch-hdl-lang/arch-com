@@ -1,0 +1,28 @@
+module hamming_code_tx_for_4bit (
+  input logic [4-1:0] data_in,
+  output logic [8-1:0] data_out
+);
+
+  // data_in[3]=d3, data_in[2]=d2, data_in[1]=d1, data_in[0]=d0
+  // Hamming(7,4) + 1 redundant bit at position 0
+  // Positions (1-indexed in output[7:1]):
+  //   pos7=d3, pos6=d2, pos5=d1, pos4=p3, pos3=d0, pos2=p2, pos1=p1
+  // data_out[0] = 0 (redundant)
+  // data_out[1] = p1 = d0 ^ d1 ^ d3  (covers pos 1,3,5,7)
+  // data_out[2] = p2 = d0 ^ d2 ^ d3  (covers pos 2,3,6,7)
+  // data_out[3] = d0
+  // data_out[4] = p3 = d1 ^ d2 ^ d3  (covers pos 4,5,6,7)
+  // data_out[5] = d1
+  // data_out[6] = d2
+  // data_out[7] = d3
+  assign data_out[0] = 1'd0;
+  assign data_out[1] = data_in[0] ^ data_in[1] ^ data_in[3];
+  assign data_out[2] = data_in[0] ^ data_in[2] ^ data_in[3];
+  assign data_out[3] = data_in[0];
+  assign data_out[4] = data_in[1] ^ data_in[2] ^ data_in[3];
+  assign data_out[5] = data_in[1];
+  assign data_out[6] = data_in[2];
+  assign data_out[7] = data_in[3];
+
+endmodule
+

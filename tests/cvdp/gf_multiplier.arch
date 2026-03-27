@@ -1,0 +1,81 @@
+module gf_multiplier
+  port A: in UInt<4>;
+  port B: in UInt<4>;
+  port result: out UInt<4>;
+
+  // Unrolled GF(2^4) multiplication with irreducible polynomial x^4+x+1
+  // Step 0: start with A, check B[0]
+  wire p0: UInt<4>;
+  wire a1: UInt<5>;
+  wire a1r: UInt<5>;
+
+  // Step 1: check B[1]
+  wire p1: UInt<4>;
+  wire a2: UInt<5>;
+  wire a2r: UInt<5>;
+
+  // Step 2: check B[2]
+  wire p2: UInt<4>;
+  wire a3: UInt<5>;
+  wire a3r: UInt<5>;
+
+  // Step 3: check B[3]
+  wire p3: UInt<4>;
+
+  comb
+    // Step 0: if B[0], XOR A into partial product
+    if B[0] == 1'b1
+      p0 = A;
+    else
+      p0 = 4'h0;
+    end if
+
+    // Shift A left by 1 (into 5-bit)
+    a1 = A.zext<5>() << 1;
+    // Reduce if bit 4 set
+    if a1[4] == 1'b1
+      a1r = a1 ^ 5'h13;
+    else
+      a1r = a1;
+    end if
+
+    // Step 1: if B[1], XOR shifted A into partial product
+    if B[1] == 1'b1
+      p1 = p0 ^ a1r[3:0];
+    else
+      p1 = p0;
+    end if
+
+    // Shift a1r left by 1
+    a2 = a1r << 1;
+    if a2[4] == 1'b1
+      a2r = a2 ^ 5'h13;
+    else
+      a2r = a2;
+    end if
+
+    // Step 2: if B[2], XOR
+    if B[2] == 1'b1
+      p2 = p1 ^ a2r[3:0];
+    else
+      p2 = p1;
+    end if
+
+    // Shift a2r left by 1
+    a3 = a2r << 1;
+    if a3[4] == 1'b1
+      a3r = a3 ^ 5'h13;
+    else
+      a3r = a3;
+    end if
+
+    // Step 3: if B[3], XOR
+    if B[3] == 1'b1
+      p3 = p2 ^ a3r[3:0];
+    else
+      p3 = p2;
+    end if
+
+    result = p3;
+  end comb
+end module gf_multiplier

@@ -1,0 +1,30 @@
+module perfect_squares_generator
+  port clk: in Clock<SysDomain>;
+  port reset: in Reset<Async, High>;
+  port reg sqr_o: out UInt<32> reset reset=1;
+
+  // Incremental: (n+1)^2 = n^2 + 2n + 1 = sqr + odd, odd += 2
+  // Start: sqr=1, odd=3 → 4, 9, 16, ...
+  reg odd_num: UInt<33> reset reset=3;
+  reg saturated: Bool reset reset=0;
+
+  // UInt<32> + UInt<33> → UInt<34>, need trunc
+  wire next_sqr: UInt<34>;
+  comb
+    next_sqr = sqr_o + odd_num;
+  end comb
+
+  seq on clk rising
+    if saturated
+      sqr_o <= 32'hFFFFFFFF;
+    else
+      if next_sqr[32]
+        sqr_o <= 32'hFFFFFFFF;
+        saturated <= 1'd1;
+      else
+        sqr_o <= next_sqr.trunc<32>();
+      end if
+    end if
+    odd_num <= (odd_num + 33'd2).trunc<33>();
+  end seq
+end module perfect_squares_generator

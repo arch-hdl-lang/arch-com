@@ -3,9 +3,11 @@ module reverse_bits (
   output logic [32-1:0] num_out
 );
 
-  logic [32-1:0] reversed;
-  assign reversed = {<<1{num_in}};
-  assign num_out = reversed;
+  always_comb begin
+    for (int i = 0; i <= 31; i++) begin
+      num_out[i] = num_in[31 - i];
+    end
+  end
 
 endmodule
 
