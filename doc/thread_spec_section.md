@@ -131,7 +131,7 @@ The compiler generates a terminal state that holds after completion.
 
 ## 20.6  Named Thread
 
-Threades can be named for readability and to support multiple threades in one module:
+Threads can be named for readability and to support multiple threades in one module:
 
 ```
 thread WriteHandler on clk rising, rst_n low
@@ -145,7 +145,138 @@ end thread ReadHandler
 
 Each named thread generates an independent FSM with its own state register (`_write_handler_state`, `_read_handler_state`).
 
-## 20.7  Interaction with Other Blocks
+## 20.7  Generate with Threads
+
+Threads work with `generate for` and `generate if`.  The loop variable is a compile-time constant within each unrolled instance.
+
+```
+module MultiChannelDma
+  param NUM_CH: const = 4;
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+  port addr:  in Vec<UInt<32>, NUM_CH>;
+  port data:  in Vec<UInt<32>, NUM_CH>;
+  port done:  out Vec<Bool, NUM_CH>;
+
+  generate for i in 0..NUM_CH-1
+    thread DmaChannel_i on clk rising, rst_n low
+      // each thread gets its own FSM, parameterized by i
+      aw_valid[i] = 1;
+      aw_addr[i]  = addr[i];
+      wait until aw_ready[i];
+      aw_valid[i] = 0;
+      done[i] <= 1;
+    end thread DmaChannel_i
+  end generate for i
+end module MultiChannelDma
+```
+
+The compiler unrolls and produces `NUM_CH` independent FSMs with state registers `_dma_channel_0_state`, `_dma_channel_1_state`, etc.
+
+Conditional generation:
+
+```
+generate if HAS_WRITE
+  thread WriteHandler on clk rising, rst_n low
+    ...
+  end thread WriteHandler
+end generate if
+```
+
+## 20.8  Resource Locking (`resource` / `lock`)
+
+When multiple threads share a bus or set of signals, they need exclusive access.  The `resource` declaration and `lock` block provide synthesizable mutual exclusion.
+
+### 20.8.1  Declaration
+
+```
+resource axi_wr: mutex<round_robin>;
+```
+
+The `mutex<policy>` type declares a shared resource with an arbitration policy.  The policy reuses existing `arbiter` policies: `round_robin`, `priority`, `lru`, `weighted`.
+
+### 20.8.2  Lock Block
+
+```
+generate for i in 0..NUM_CH-1
+  thread DmaChannel_i on clk rising, rst_n low
+    // ... prepare addr/data locally ...
+
+    lock axi_wr
+      fork
+        axi.aw_valid = 1;
+        axi.aw_addr  = ch_addr[i];
+        wait until axi.aw_ready;
+        axi.aw_valid = 0;
+      and
+        axi.w_valid = 1;
+        axi.w_data  = ch_data[i];
+        wait until axi.w_ready;
+        axi.w_valid = 0;
+      join
+
+      axi.b_ready = 1;
+      wait until axi.b_valid;
+      axi.b_ready = 0;
+    end lock axi_wr
+
+    ch_done[i] <= 1;
+  end thread DmaChannel_i
+end generate for i
+```
+
+A thread reaching `lock` asserts its request.  The thread stalls until granted.  Signals inside the `lock` body are driven through a grant-indexed mux.  When execution reaches `end lock`, the thread releases the resource.
+
+### 20.8.3  Compiler-Generated Hardware
+
+The compiler generates three components:
+
+1. **Arbiter** — reuses the existing `arbiter` construct internally, with the declared policy.  Each thread produces a `req[i]` signal; the arbiter outputs `grant[i]`.
+
+2. **Mux** — all signals driven inside `lock` bodies are routed through a `grant`-indexed mux.  Only the granted thread's values reach the shared signals.
+
+3. **Stall logic** — a thread's FSM holds at the `lock` entry state while `grant[i]` is deasserted.
+
+```systemverilog
+// Compiler-generated sketch for mutex<round_robin> with 4 threads:
+wire [3:0] axi_wr_req;
+wire [3:0] axi_wr_grant;
+wire [1:0] grant_idx;
+
+// Arbiter (round-robin)
+// ... standard round-robin logic ...
+
+// Mux: granted thread drives the bus
+always_comb begin
+  case (grant_idx)
+    0: begin axi_aw_addr = ch_addr_0; axi_w_data = ch_data_0; end
+    1: begin axi_aw_addr = ch_addr_1; axi_w_data = ch_data_1; end
+    2: begin axi_aw_addr = ch_addr_2; axi_w_data = ch_data_2; end
+    3: begin axi_aw_addr = ch_addr_3; axi_w_data = ch_data_3; end
+  endcase
+end
+
+// Per-thread FSM stalls at lock state when not granted
+// Thread 0: if (_dma_channel_0_state == LOCK_ENTRY && !axi_wr_grant[0]) hold;
+```
+
+### 20.8.4  Resource Types
+
+| Type | Meaning | Hardware | Use case |
+|------|---------|----------|----------|
+| `mutex<policy>` | Exclusive — one holder at a time | Arbiter + mux | Single-port bus sharing |
+| `semaphore<N, policy>` | Up to N concurrent holders | Counter-based arbiter | Multi-port memories, banked buses |
+
+`semaphore` is planned for future implementation.
+
+### 20.8.5  Rules
+
+- **Exclusive drive**: signals driven inside a `lock` block must not be driven outside any `lock` on the same resource.  The compiler enforces this — these signals have no defined driver when no thread holds the lock (the mux defaults to zero or the last granted value, configurable).
+- **Multiple resources**: a thread may lock different resources in sequence or hold multiple locks simultaneously (nested `lock` blocks on different resources).
+- **Deadlock warning**: if two threads lock resources A and B in opposite order, the compiler emits a warning.  The compiler performs static lock-order analysis across all threads in the module.
+- **No lock in `comb`/`seq`**: `lock` is only valid inside `thread` blocks.
+
+## 20.9  Interaction with Other Blocks
 
 | Block | Reads from thread | Writes to thread |
 |-------|-------------------|-------------------|
@@ -155,7 +286,7 @@ Each named thread generates an independent FSM with its own state register (`_wr
 
 The single-driver rule applies per signal: a register may be driven by exactly one `thread`, `seq`, or `fsm` block.
 
-## 20.8  Thread vs FSM vs Seq
+## 20.10  Thread vs FSM vs Seq
 
 | Feature | `seq` | `fsm` | `thread` |
 |---------|-------|-------|-----------|
@@ -168,7 +299,7 @@ The single-driver rule applies per signal: a register may be driven by exactly o
 
 **Rule of thumb:** use `seq` for single-cycle register updates, `fsm` when you want named states and explicit transitions, `thread` when the logic is naturally sequential but spans multiple cycles.
 
-## 20.9  Relation to Bus Implement Blocks
+## 20.11  Relation to Bus Implement Blocks
 
 `implement BusName.method rtl` (§19.2.2) is syntactic sugar for a `thread` block that is scoped to a bus method's signals and parameters.  The same lowering machinery is used.  The difference is scope:
 
