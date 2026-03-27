@@ -56,6 +56,7 @@
 | `linklist` | ✅ | `singly`/`doubly`/`circular_singly`/`circular_doubly`; per-op FSM controllers; `insert_head`/`insert_tail`/`insert_after`/`delete_head`/`delete`/`next`/`prev`/`alloc`/`free`/`read_data`/`write_data`; doubly: `_prev_mem` updated on all insert ops; `arch sim` C++ model verified against Verilator output |
 | `pipe_reg` | ✅ | `pipe_reg name: source stages N;` — N-stage flip-flop delay chain; type inferred from source signal; clock/reset from `reg default`; output is read-only; works with ports, `let` bindings, reg outputs; SV emits chained `always_ff`; sim codegen uses `_n_` temporaries for correct non-blocking semantics |
 | `template` | ✅ | User-defined interface contracts; `module Name implements Template` — compiler validates required params, ports, and hooks; templates emit no SV; multi-file cross-reference supported |
+| `process` | ❌ | Planned — multi-cycle sequential block with `wait until`/`wait N cycle`/`fork`-`join`/`for`; compiler lowers to synthesizable FSM; named processes for multiple independent FSMs per module; `process once` for one-shot sequences; spec: `doc/process_spec_section.md` |
 | `bus` (TLM methods) | ❌ | Planned — `methods ... end methods` block inside `bus` for TLM `blocking`, `pipelined`, `out_of_order`, `burst` concurrency modes; `implement BusName.method rtl` with `wait until`/`wait N cycle`/`fork`-`join`/`for` lowers to synthesizable FSMs; all four modes synthesizable when bounds declared (`max_outstanding`, `id_width`, `max_burst_len`); spec: `doc/bus_spec_section.md` §19.2.2 |
 
 ---

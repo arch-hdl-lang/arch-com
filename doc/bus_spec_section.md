@@ -328,3 +328,12 @@ SystemVerilog `interface` has well-documented weaknesses that `bus` avoids:
 | Separate `modport` per perspective (manager vs subordinate) | One declaration, two perspectives (`initiator` / `target`) |
 
 The `bus` construct provides better source-level ergonomics with 100% portable RTL output.
+
+## 19.10  Relation to `process` Blocks
+
+`implement BusName.method rtl` (§19.2.2) uses the same lowering machinery as `process` blocks (§20).  Both compile `wait until`/`fork`-`join`/`for` into synthesizable FSMs.  The difference is scope:
+
+- A `process` block lives inside a `module` and operates on the module's ports and signals.
+- An `implement ... rtl` block lives at file scope and defines how a bus method maps to bus signals.
+
+Users writing protocol logic inside a module should prefer `process` over a manual `fsm` when the logic is naturally sequential.
