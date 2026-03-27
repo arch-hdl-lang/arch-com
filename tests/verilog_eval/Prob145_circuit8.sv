@@ -10,7 +10,7 @@ module TopModule (
   logic q_r;
   always_latch begin
     if (clock) begin
-      p_r <= a;
+      p_r = a;
     end
   end
   always_ff @(negedge clock) begin

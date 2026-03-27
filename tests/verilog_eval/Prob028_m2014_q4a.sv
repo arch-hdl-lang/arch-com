@@ -8,7 +8,7 @@ module TopModule (
   logic q_r;
   always_latch begin
     if (ena) begin
-      q_r <= d;
+      q_r = d;
     end
   end
   assign q = q_r;

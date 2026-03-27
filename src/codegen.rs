@@ -393,7 +393,8 @@ impl<'a> Codegen<'a> {
                         if arr_suffix.is_empty() {
                             self.line(&format!("{} {} = {};", ty_str, r.name.name, init_str));
                         } else {
-                            self.line(&format!("{} {}{} = '{{default: {}}};", ty_str, r.name.name, arr_suffix, init_str));
+                            // Skip declaration initializer for unpacked arrays (icarus doesn't support '{default:})
+                            self.line(&format!("{} {}{};", ty_str, r.name.name, arr_suffix));
                         }
                     } else {
                         self.line(&format!("{} {}{};", ty_str, r.name.name, arr_suffix));
@@ -454,6 +455,49 @@ impl<'a> Codegen<'a> {
             }
             self.indent -= 1;
             self.line("end");
+        }
+
+        // Emit initial block for unpacked-array registers with init values (icarus compatibility)
+        {
+            let mut arr_inits: Vec<(String, Vec<String>, String)> = Vec::new();
+            for item in &body_items {
+                if let ModuleBodyItem::RegDecl(r) = item {
+                    if let Some(ref init_expr) = r.init {
+                        let (_, arr_suffix) = self.emit_type_and_array_suffix(&r.ty);
+                        if !arr_suffix.is_empty() {
+                            let mut dims = Vec::new();
+                            let mut ty = &r.ty;
+                            while let TypeExpr::Vec(inner, size) = ty {
+                                dims.push(self.emit_expr_str(size));
+                                ty = inner;
+                            }
+                            let init_str = self.emit_expr_str(init_expr);
+                            arr_inits.push((r.name.name.clone(), dims, init_str));
+                        }
+                    }
+                }
+            }
+            if !arr_inits.is_empty() {
+                self.line("");
+                self.line("initial begin");
+                self.indent += 1;
+                for (name, dims, init_val) in &arr_inits {
+                    let idx_vars: Vec<String> = (0..dims.len()).map(|d| format!("__ii{d}")).collect();
+                    for (d, dim_size) in dims.iter().enumerate() {
+                        self.line(&format!("for (int {} = 0; {} < {}; {}++) begin",
+                            idx_vars[d], idx_vars[d], dim_size, idx_vars[d]));
+                        self.indent += 1;
+                    }
+                    let idx_str: String = idx_vars.iter().map(|v| format!("[{v}]")).collect();
+                    self.line(&format!("{name}{idx_str} = {init_val};"));
+                    for _ in 0..dims.len() {
+                        self.indent -= 1;
+                        self.line("end");
+                    }
+                }
+                self.indent -= 1;
+                self.line("end");
+            }
         }
 
         self.indent -= 1;
@@ -797,8 +841,69 @@ impl<'a> Codegen<'a> {
                 let val = self.emit_expr_str(&a.value);
                 self.line(&format!("{} = {};", target, val));
             }
-            _ => {} // MVP: basic case only
+            Stmt::IfElse(ie) => {
+                self.emit_comb_if_else_from_reg(ie, false);
+            }
+            Stmt::Match(m) => {
+                let scrut = self.emit_expr_str(&m.scrutinee);
+                self.line(&format!("case ({})", scrut));
+                self.indent += 1;
+                for arm in &m.arms {
+                    let pat = self.emit_pattern(&arm.pattern);
+                    self.line(&format!("{}: begin", pat));
+                    self.indent += 1;
+                    for s in &arm.body {
+                        self.emit_reg_stmt_as_comb(s);
+                    }
+                    self.indent -= 1;
+                    self.line("end");
+                }
+                self.indent -= 1;
+                self.line("endcase");
+            }
+            Stmt::Log(l) => { self.emit_log_stmt(l); }
+            Stmt::For(f) => {
+                let start = self.emit_expr_str(&f.start);
+                let end = self.emit_expr_str(&f.end);
+                let var = &f.var.name;
+                self.line(&format!("for (int {var} = {start}; {var} <= {end}; {var}++) begin"));
+                self.indent += 1;
+                for s in &f.body {
+                    self.emit_reg_stmt_as_comb(s);
+                }
+                self.indent -= 1;
+                self.line("end");
+            }
         }
+    }
+
+    fn emit_comb_if_else_from_reg(&mut self, ie: &IfElse, is_chain: bool) {
+        let cond = self.emit_expr_str(&ie.cond);
+        if is_chain {
+            self.line(&format!("end else if ({}) begin", cond));
+        } else {
+            self.line(&format!("if ({}) begin", cond));
+        }
+        self.indent += 1;
+        for s in &ie.then_stmts {
+            self.emit_reg_stmt_as_comb(s);
+        }
+        self.indent -= 1;
+        if ie.else_stmts.len() == 1 {
+            if let Stmt::IfElse(nested) = &ie.else_stmts[0] {
+                self.emit_comb_if_else_from_reg(nested, true);
+                return;
+            }
+        }
+        if !ie.else_stmts.is_empty() {
+            self.line("end else begin");
+            self.indent += 1;
+            for s in &ie.else_stmts {
+                self.emit_reg_stmt_as_comb(s);
+            }
+            self.indent -= 1;
+        }
+        self.line("end");
     }
 
     fn emit_reg_block(&mut self, rb: &RegBlock, m: &ModuleDecl) {
@@ -903,9 +1008,30 @@ impl<'a> Codegen<'a> {
                     })
                     .unwrap_or(0);
                 if vec_depth > 0 {
-                    let open: String = "'{default: ".repeat(vec_depth as usize);
-                    let close: String = "}".repeat(vec_depth as usize);
-                    self.line(&format!("{name} <= {open}{init}{close};"));
+                    // Emit for-loop reset for unpacked arrays (icarus-compatible)
+                    let reg_decl = reg_decls.iter().find(|r| r.name.name == *name);
+                    if let Some(rd) = reg_decl {
+                        // Collect Vec dimensions
+                        let mut dims = Vec::new();
+                        let mut ty = &rd.ty;
+                        while let TypeExpr::Vec(inner, size) = ty {
+                            dims.push(self.emit_expr_str(size));
+                            ty = inner;
+                        }
+                        // Generate nested for-loops
+                        let idx_vars: Vec<String> = (0..dims.len()).map(|d| format!("__ri{d}")).collect();
+                        for (d, dim_size) in dims.iter().enumerate() {
+                            self.line(&format!("for (int {} = 0; {} < {}; {}++) begin",
+                                idx_vars[d], idx_vars[d], dim_size, idx_vars[d]));
+                            self.indent += 1;
+                        }
+                        let idx_str: String = idx_vars.iter().map(|v| format!("[{v}]")).collect();
+                        self.line(&format!("{name}{idx_str} <= {init};"));
+                        for _ in 0..dims.len() {
+                            self.indent -= 1;
+                            self.line("end");
+                        }
+                    }
                 } else {
                     self.line(&format!("{name} <= {init};"));
                 }
@@ -952,7 +1078,7 @@ impl<'a> Codegen<'a> {
         self.line(&format!("if ({}) begin", lb.enable.name));
         self.indent += 1;
         for stmt in &lb.stmts {
-            self.emit_reg_stmt(stmt);
+            self.emit_reg_stmt_as_comb(stmt);
         }
         self.indent -= 1;
         self.line("end");
@@ -1031,6 +1157,147 @@ impl<'a> Codegen<'a> {
         match &expr.kind {
             ExprKind::Cast(_, ty) => matches!(&**ty, TypeExpr::SInt(_)),
             _ => false,
+        }
+    }
+
+    /// Try to detect indexed part-select pattern: hi = lo + (width - 1).
+    /// Returns Some(width) if the width is a compile-time constant,
+    /// enabling emission of `base[lo +: width]` instead of `base[hi:lo]`.
+    fn try_indexed_part_select(hi: &Expr, lo: &Expr) -> Option<String> {
+        // Try to check if hi == lo + (W - 1) structurally.
+        // Strategy: subtract lo from hi symbolically, add 1, and see if we get a constant.
+        // We do this by collecting all terms as (coefficient, variable_or_empty) pairs.
+
+        // Simpler approach: check the common pattern where
+        // hi = Binary(Add, Binary(Mul, var, W), Binary(Sub, W, 1))
+        // or hi = Binary(Sub, Binary(Add, Binary(Mul, var, W), W), 1)
+        // and lo = Binary(Mul, var, W)
+        //
+        // Most robust: check if hi and lo both contain a non-constant sub-expression,
+        // and if (hi - lo) const-evaluates to a constant.
+        fn try_const_eval(expr: &Expr) -> Option<i64> {
+            match &expr.kind {
+                ExprKind::Literal(lit) => {
+                    let val = match lit {
+                        LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v) => *v as i64,
+                        LitKind::Sized(_, v) => *v as i64,
+                    };
+                    Some(val)
+                }
+                ExprKind::Binary(op, lhs, rhs) => {
+                    let l = try_const_eval(lhs)?;
+                    let r = try_const_eval(rhs)?;
+                    match op {
+                        BinOp::Add => Some(l + r),
+                        BinOp::Sub => Some(l - r),
+                        BinOp::Mul => Some(l * r),
+                        _ => None,
+                    }
+                }
+                _ => None, // Contains variable — not a constant
+            }
+        }
+
+        // Check if lo contains any non-constant part (otherwise static slice is fine)
+        if try_const_eval(lo).is_some() {
+            return None; // Both constant — normal [hi:lo] is fine
+        }
+
+        // Collect additive terms from an expression: returns Vec<(sign, term)>
+        // where term is either a constant or an opaque expression.
+        // Produce a span-independent string key for an expression
+        fn expr_key(expr: &Expr) -> String {
+            match &expr.kind {
+                ExprKind::Ident(name) => name.clone(),
+                ExprKind::Literal(lit) => match lit {
+                    LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v) => format!("{v}"),
+                    LitKind::Sized(w, v) => format!("{w}'{v}"),
+                },
+                ExprKind::Binary(op, lhs, rhs) => {
+                    format!("({} {:?} {})", expr_key(lhs), op, expr_key(rhs))
+                }
+                ExprKind::Unary(op, inner) => format!("{:?}({})", op, expr_key(inner)),
+                ExprKind::Index(base, idx) => format!("{}[{}]", expr_key(base), expr_key(idx)),
+                ExprKind::FieldAccess(base, field) => format!("{}.{}", expr_key(base), field.name),
+                _ => format!("{:?}", std::mem::discriminant(&expr.kind)),
+            }
+        }
+
+        fn collect_terms(expr: &Expr, sign: i64, terms: &mut Vec<(i64, Option<i64>, String)>) {
+            match &expr.kind {
+                ExprKind::Literal(lit) => {
+                    let val = match lit {
+                        LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v) => *v as i64,
+                        LitKind::Sized(_, v) => *v as i64,
+                    };
+                    terms.push((sign, Some(val), String::new()));
+                }
+                ExprKind::Binary(BinOp::Add, lhs, rhs) => {
+                    collect_terms(lhs, sign, terms);
+                    collect_terms(rhs, sign, terms);
+                }
+                ExprKind::Binary(BinOp::Sub, lhs, rhs) => {
+                    collect_terms(lhs, sign, terms);
+                    collect_terms(rhs, -sign, terms);
+                }
+                _ => {
+                    // Opaque expression — use span-free representation as key
+                    terms.push((sign, None, expr_key(expr)));
+                }
+            }
+        }
+
+        let mut hi_terms = Vec::new();
+        let mut lo_terms = Vec::new();
+        collect_terms(hi, 1, &mut hi_terms);
+        collect_terms(lo, -1, &mut lo_terms);
+
+        // Compute (hi - lo + 1): cancel non-constant terms, sum constants
+        let mut all_terms = hi_terms;
+        all_terms.extend(lo_terms);
+
+        // Separate constants and variable terms
+        let mut const_sum: i64 = 1; // the +1
+        let mut var_terms: Vec<(i64, String)> = Vec::new();
+
+        for (sign, val, key) in &all_terms {
+            if let Some(v) = val {
+                const_sum += sign * v;
+            } else {
+                var_terms.push((*sign, key.clone()));
+            }
+        }
+
+        // Check if variable terms cancel out
+        let mut var_map: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        for (sign, key) in &var_terms {
+            *var_map.entry(key.clone()).or_insert(0) += sign;
+        }
+
+        // Collect remaining (non-cancelled) variable terms
+        let remaining_vars: Vec<(&String, &i64)> = var_map.iter().filter(|(_, &v)| v != 0).collect();
+
+        if remaining_vars.is_empty() && const_sum > 0 {
+            // Pure constant width
+            Some(const_sum.to_string())
+        } else if remaining_vars.len() == 1 {
+            let (key, &coeff) = remaining_vars[0];
+            if coeff == 1 {
+                // Width = key + const_sum (key is an expression like a param name)
+                // Only emit if key looks like a simple identifier or expression
+                // (not something with parentheses that would be ambiguous)
+                if const_sum == 0 {
+                    Some(key.clone())
+                } else if const_sum > 0 {
+                    Some(format!("{key} + {const_sum}"))
+                } else {
+                    Some(format!("{key} - {}", -const_sum))
+                }
+            } else {
+                None
+            }
+        } else {
+            None
         }
     }
 
@@ -2396,9 +2663,14 @@ impl<'a> Codegen<'a> {
             }
             ExprKind::BitSlice(base, hi, lo) => {
                 let b = self.emit_pipeline_stage_expr_str(base, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
-                let h = self.emit_expr_str(hi);
-                let l = self.emit_expr_str(lo);
-                format!("{b}[{h}:{l}]")
+                if let Some(width) = Self::try_indexed_part_select(hi, lo) {
+                    let l = self.emit_expr_str(lo);
+                    format!("{b}[{l} +: {width}]")
+                } else {
+                    let h = self.emit_expr_str(hi);
+                    let l = self.emit_expr_str(lo);
+                    format!("{b}[{h}:{l}]")
+                }
             }
             _ => self.emit_expr_str(expr),
         }
@@ -2499,9 +2771,14 @@ impl<'a> Codegen<'a> {
             }
             ExprKind::BitSlice(base, hi, lo) => {
                 let b = self.emit_pipeline_expr_str(base, stage_names, stage_regs, port_names);
-                let h = self.emit_expr_str(hi);
-                let l = self.emit_expr_str(lo);
-                format!("{b}[{h}:{l}]")
+                if let Some(width) = Self::try_indexed_part_select(hi, lo) {
+                    let l = self.emit_expr_str(lo);
+                    format!("{b}[{l} +: {width}]")
+                } else {
+                    let h = self.emit_expr_str(hi);
+                    let l = self.emit_expr_str(lo);
+                    format!("{b}[{h}:{l}]")
+                }
             }
             // For everything else, fall back to regular emit
             _ => self.emit_expr_str(expr),
@@ -2936,9 +3213,16 @@ impl<'a> Codegen<'a> {
             }
             ExprKind::BitSlice(base, hi, lo) => {
                 let b = self.emit_expr_str(base);
-                let h = self.emit_expr_str(hi);
-                let l = self.emit_expr_str(lo);
-                format!("{b}[{h}:{l}]")
+                // Try to emit indexed part-select: base[lo +: width]
+                // Detects pattern hi = lo + (width - 1)
+                if let Some(width) = Self::try_indexed_part_select(hi, lo) {
+                    let l = self.emit_expr_str(lo);
+                    format!("{b}[{l} +: {width}]")
+                } else {
+                    let h = self.emit_expr_str(hi);
+                    let l = self.emit_expr_str(lo);
+                    format!("{b}[{h}:{l}]")
+                }
             }
             ExprKind::StructLiteral(_name, fields) => {
                 let field_strs: Vec<String> = fields
@@ -3161,7 +3445,7 @@ impl<'a> Codegen<'a> {
         match c.kind {
             crate::ast::ClkGateKind::Latch => {
                 self.line("logic en_latched;");
-                self.line(&format!("always_latch if (!{clk_in}) en_latched <= {en_expr};"));
+                self.line(&format!("always_latch if (!{clk_in}) en_latched = {en_expr};"));
                 self.line(&format!("assign {clk_out} = {clk_in} & en_latched;"));
             }
             crate::ast::ClkGateKind::And => {
