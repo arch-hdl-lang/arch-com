@@ -983,6 +983,9 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             ExprKind::Binary(op, lhs, rhs) => {
+                // Check for precedence ambiguity between bitwise and comparison ops.
+                // ARCH and SV parse these differently — require parentheses to be explicit.
+                self.check_precedence_ambiguity(*op, lhs, rhs, expr.span);
                 let lt = self.resolve_expr_type(lhs, module_name, local_types);
                 let rt = self.resolve_expr_type(rhs, module_name, local_types);
                 self.binop_result_type(*op, &lt, &rt, expr.span)
@@ -1354,6 +1357,50 @@ impl<'a> TypeChecker<'a> {
                         expr.span,
                     ));
                     Ty::Error
+                }
+            }
+        }
+    }
+
+    /// Detects expressions where ARCH and SV precedence differ and the user
+    /// has not added parentheses. Specifically: bitwise ops (`&`, `|`, `^`)
+    /// mixed with comparison ops (`==`, `!=`, `<`, `>`, `<=`, `>=`) as children.
+    fn check_precedence_ambiguity(&mut self, op: BinOp, lhs: &Expr, rhs: &Expr, span: Span) {
+        let is_bitwise = matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor);
+        let is_comparison = matches!(op, BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte);
+
+        // Case 1: comparison with unparenthesized bitwise child
+        // e.g. `a & b == c` — ARCH parses as (a & b) == c, SV parses as a & (b == c)
+        if is_comparison {
+            for child in [lhs, rhs] {
+                if let ExprKind::Binary(child_op, _, _) = &child.kind {
+                    if matches!(child_op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor) && !child.parenthesized {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "ambiguous precedence: bitwise '{}' inside comparison '{}' — add parentheses (ARCH and SystemVerilog parse this differently)",
+                                child_op, op
+                            ),
+                            span,
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Case 2: bitwise with unparenthesized comparison child
+        // e.g. `a == b & c` — ARCH parses as a == (b & c), SV parses as (a == b) & c
+        if is_bitwise {
+            for child in [lhs, rhs] {
+                if let ExprKind::Binary(child_op, _, _) = &child.kind {
+                    if matches!(child_op, BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte) && !child.parenthesized {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "ambiguous precedence: comparison '{}' inside bitwise '{}' — add parentheses (ARCH and SystemVerilog parse this differently)",
+                                child_op, op
+                            ),
+                            span,
+                        ));
+                    }
                 }
             }
         }

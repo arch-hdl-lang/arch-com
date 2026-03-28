@@ -249,7 +249,7 @@ fn elaborate_module_variant(
     let mut all_ports = m.ports;
     all_ports.extend(extra_ports);
 
-    Ok(ModuleDecl { name: new_name, params: m.params, ports: all_ports, body: new_body, implements: m.implements, hooks: m.hooks, span: m.span })
+    Ok(ModuleDecl { name: new_name, params: m.params, ports: all_ports, body: new_body, implements: m.implements, hooks: m.hooks, cdc_safe: m.cdc_safe, span: m.span })
 }
 
 /// Rewrite an inst's `module_name` to the correct variant name.
@@ -456,7 +456,7 @@ fn subst_expr(expr: Expr, var: &str, val: i64) -> Expr {
         }
         other => other,
     };
-    Expr { kind: new_kind, span: expr.span }
+    Expr { kind: new_kind, span: expr.span, parenthesized: false }
 }
 
 // ── Const evaluation ──────────────────────────────────────────────────────────

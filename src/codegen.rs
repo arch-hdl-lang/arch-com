@@ -4239,6 +4239,7 @@ impl<'a> Codegen<'a> {
                     .unwrap_or(crate::ast::Expr {
                         kind: crate::ast::ExprKind::Literal(crate::ast::LitKind::Dec(num_req_int)),
                         span: a.span,
+                        parenthesized: false,
                     })
             );
             self.line(&format!("logic grant_valid_comb;"));

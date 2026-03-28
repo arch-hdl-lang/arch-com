@@ -472,6 +472,18 @@ pub enum ResetKind {
 pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
+    /// True when this expression was wrapped in parentheses in source.
+    #[doc(hidden)]
+    pub parenthesized: bool,
+}
+
+impl Expr {
+    pub fn new(kind: ExprKind, span: Span) -> Self {
+        Expr { kind, span, parenthesized: false }
+    }
+    pub fn parens(kind: ExprKind, span: Span) -> Self {
+        Expr { kind, span, parenthesized: true }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -552,6 +564,31 @@ pub enum BinOp {
     BitXor,
     Shl,
     Shr,
+}
+
+impl std::fmt::Display for BinOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BinOp::Add => write!(f, "+"),
+            BinOp::Sub => write!(f, "-"),
+            BinOp::Mul => write!(f, "*"),
+            BinOp::Div => write!(f, "/"),
+            BinOp::Mod => write!(f, "%"),
+            BinOp::Eq => write!(f, "=="),
+            BinOp::Neq => write!(f, "!="),
+            BinOp::Lt => write!(f, "<"),
+            BinOp::Gt => write!(f, ">"),
+            BinOp::Lte => write!(f, "<="),
+            BinOp::Gte => write!(f, ">="),
+            BinOp::And => write!(f, "and"),
+            BinOp::Or => write!(f, "or"),
+            BinOp::BitAnd => write!(f, "&"),
+            BinOp::BitOr => write!(f, "|"),
+            BinOp::BitXor => write!(f, "^"),
+            BinOp::Shl => write!(f, "<<"),
+            BinOp::Shr => write!(f, ">>"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

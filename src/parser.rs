@@ -1446,8 +1446,7 @@ impl Parser {
             let span = cond.span.merge(else_expr.span);
             Ok(Expr {
                 kind: ExprKind::Ternary(Box::new(cond), Box::new(then_expr), Box::new(else_expr)),
-                span,
-            })
+                span, parenthesized: false })
         } else {
             Ok(cond)
         }
@@ -1473,8 +1472,7 @@ impl Parser {
                     let span = lhs.span.merge(self.tokens[self.pos.saturating_sub(1)].span);
                     lhs = Expr {
                         kind: ExprKind::MethodCall(Box::new(lhs), field, args),
-                        span,
-                    };
+                        span, parenthesized: false };
                 } else if self.check(TokenKind::Lt) && is_method_name(&field.name) {
                     self.advance(); // <
                     let old_no_angle = self.no_angle;
@@ -1491,14 +1489,12 @@ impl Parser {
                     let span = lhs.span.merge(self.tokens[self.pos.saturating_sub(1)].span);
                     lhs = Expr {
                         kind: ExprKind::MethodCall(Box::new(lhs), field, type_args),
-                        span,
-                    };
+                        span, parenthesized: false };
                 } else {
                     let span = lhs.span.merge(field.span);
                     lhs = Expr {
                         kind: ExprKind::FieldAccess(Box::new(lhs), field),
-                        span,
-                    };
+                        span, parenthesized: false };
                 }
                 continue;
             }
@@ -1514,16 +1510,14 @@ impl Parser {
                     let span = lhs.span.merge(self.tokens[self.pos.saturating_sub(1)].span);
                     lhs = Expr {
                         kind: ExprKind::BitSlice(Box::new(lhs), Box::new(first), Box::new(lo)),
-                        span,
-                    };
+                        span, parenthesized: false };
                 } else {
                     // index: expr[i]
                     self.expect(TokenKind::RBracket)?;
                     let span = lhs.span.merge(self.tokens[self.pos.saturating_sub(1)].span);
                     lhs = Expr {
                         kind: ExprKind::Index(Box::new(lhs), Box::new(first)),
-                        span,
-                    };
+                        span, parenthesized: false };
                 }
                 continue;
             }
@@ -1534,8 +1528,7 @@ impl Parser {
                 let span = lhs.span; // approximate
                 lhs = Expr {
                     kind: ExprKind::Cast(Box::new(lhs), Box::new(ty)),
-                    span,
-                };
+                    span, parenthesized: false };
                 continue;
             }
 
@@ -1556,7 +1549,7 @@ impl Parser {
                     if !self.eat(TokenKind::Comma) { break; }
                 }
                 let end_span = self.expect(TokenKind::RBrace)?.span;
-                lhs = Expr { kind: ExprKind::Inside(Box::new(lhs), members), span: lhs_span.merge(end_span) };
+                lhs = Expr { kind: ExprKind::Inside(Box::new(lhs), members), span: lhs_span.merge(end_span), parenthesized: false };
                 continue;
             }
 
@@ -1571,8 +1564,7 @@ impl Parser {
             let span = lhs.span.merge(rhs.span);
             lhs = Expr {
                 kind: ExprKind::Binary(op, Box::new(lhs), Box::new(rhs)),
-                span,
-            };
+                span, parenthesized: false };
         }
 
         Ok(lhs)
@@ -1586,8 +1578,7 @@ impl Parser {
                 let span = tok.span.merge(operand.span);
                 Ok(Expr {
                     kind: ExprKind::Unary(UnaryOp::Not, Box::new(operand)),
-                    span,
-                })
+                    span, parenthesized: false })
             }
             Some(TokenKind::Tilde) => {
                 let tok = self.advance();
@@ -1595,8 +1586,7 @@ impl Parser {
                 let span = tok.span.merge(operand.span);
                 Ok(Expr {
                     kind: ExprKind::Unary(UnaryOp::BitNot, Box::new(operand)),
-                    span,
-                })
+                    span, parenthesized: false })
             }
             Some(TokenKind::Minus) => {
                 let tok = self.advance();
@@ -1604,8 +1594,7 @@ impl Parser {
                 let span = tok.span.merge(operand.span);
                 Ok(Expr {
                     kind: ExprKind::Unary(UnaryOp::Neg, Box::new(operand)),
-                    span,
-                })
+                    span, parenthesized: false })
             }
             Some(TokenKind::Amp) => {
                 let tok = self.advance();
@@ -1613,8 +1602,7 @@ impl Parser {
                 let span = tok.span.merge(operand.span);
                 Ok(Expr {
                     kind: ExprKind::Unary(UnaryOp::RedAnd, Box::new(operand)),
-                    span,
-                })
+                    span, parenthesized: false })
             }
             Some(TokenKind::Pipe) => {
                 let tok = self.advance();
@@ -1622,8 +1610,7 @@ impl Parser {
                 let span = tok.span.merge(operand.span);
                 Ok(Expr {
                     kind: ExprKind::Unary(UnaryOp::RedOr, Box::new(operand)),
-                    span,
-                })
+                    span, parenthesized: false })
             }
             Some(TokenKind::Caret) => {
                 let tok = self.advance();
@@ -1631,13 +1618,13 @@ impl Parser {
                 let span = tok.span.merge(operand.span);
                 Ok(Expr {
                     kind: ExprKind::Unary(UnaryOp::RedXor, Box::new(operand)),
-                    span,
-                })
+                    span, parenthesized: false })
             }
             Some(TokenKind::LParen) => {
                 self.advance();
-                let expr = self.parse_expr()?;
+                let mut expr = self.parse_expr()?;
                 self.expect(TokenKind::RParen)?;
+                expr.parenthesized = true;
                 Ok(expr)
             }
             // $clog2(expr)
@@ -1648,8 +1635,7 @@ impl Parser {
                 let end = self.expect(TokenKind::RParen)?;
                 Ok(Expr {
                     kind: ExprKind::Clog2(Box::new(arg)),
-                    span: start.merge(end.span),
-                })
+                    span: start.merge(end.span), parenthesized: false })
             }
             // Bit concatenation {a, b, c} or bit replication {N{expr}}
             Some(TokenKind::LBrace) => {
@@ -1669,8 +1655,7 @@ impl Parser {
                     let end = self.expect(TokenKind::RBrace)?;
                     Ok(Expr {
                         kind: ExprKind::Repeat(Box::new(count), Box::new(value)),
-                        span: start.merge(end.span),
-                    })
+                        span: start.merge(end.span), parenthesized: false })
                 } else {
                     let mut parts = Vec::new();
                     while !self.check(TokenKind::RBrace) {
@@ -1682,30 +1667,26 @@ impl Parser {
                     let end = self.expect(TokenKind::RBrace)?;
                     Ok(Expr {
                         kind: ExprKind::Concat(parts),
-                        span: start.merge(end.span),
-                    })
+                        span: start.merge(end.span), parenthesized: false })
                 }
             }
             Some(TokenKind::Todo) => {
                 let tok = self.advance();
                 Ok(Expr {
                     kind: ExprKind::Todo,
-                    span: tok.span,
-                })
+                    span: tok.span, parenthesized: false })
             }
             Some(TokenKind::True) => {
                 let tok = self.advance();
                 Ok(Expr {
                     kind: ExprKind::Bool(true),
-                    span: tok.span,
-                })
+                    span: tok.span, parenthesized: false })
             }
             Some(TokenKind::False) => {
                 let tok = self.advance();
                 Ok(Expr {
                     kind: ExprKind::Bool(false),
-                    span: tok.span,
-                })
+                    span: tok.span, parenthesized: false })
             }
             Some(TokenKind::DecLiteral(_)) | Some(TokenKind::HexLiteral(_))
             | Some(TokenKind::BinLiteral(_)) | Some(TokenKind::SizedLiteral(_)) => {
@@ -1720,8 +1701,7 @@ impl Parser {
                     let span = ident.span.merge(variant.span);
                     Ok(Expr {
                         kind: ExprKind::EnumVariant(ident, variant),
-                        span,
-                    })
+                        span, parenthesized: false })
                 }
                 // Check for struct literal: Ident { ... }
                 else if self.check(TokenKind::LBrace) {
@@ -1740,8 +1720,7 @@ impl Parser {
                     let span = ident.span.merge(end.span);
                     Ok(Expr {
                         kind: ExprKind::StructLiteral(ident, fields),
-                        span,
-                    })
+                        span, parenthesized: false })
                 } else if self.check(TokenKind::LParen) {
                     // Function call: Name(arg, ...)
                     self.advance(); // consume `(`
@@ -1756,14 +1735,12 @@ impl Parser {
                     let span = ident.span.merge(end.span);
                     Ok(Expr {
                         kind: ExprKind::FunctionCall(ident.name, call_args),
-                        span,
-                    })
+                        span, parenthesized: false })
                 } else {
                     let span = ident.span;
                     Ok(Expr {
                         kind: ExprKind::Ident(ident.name),
-                        span,
-                    })
+                        span, parenthesized: false })
                 }
             }
             // match expression: match scrutinee  pat => expr, ... end match
@@ -1783,8 +1760,7 @@ impl Parser {
                 let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
                 Ok(Expr {
                     kind: ExprKind::ExprMatch(Box::new(scrutinee), arms),
-                    span: start.merge(end_span),
-                })
+                    span: start.merge(end_span), parenthesized: false })
             }
             Some(other) => Err(CompileError::unexpected_token(
                 "expression",
@@ -1837,8 +1813,7 @@ impl Parser {
         };
         Ok(Expr {
             kind,
-            span: tok.span,
-        })
+            span: tok.span, parenthesized: false })
     }
 
     fn peek_binop(&self) -> Option<BinOp> {
@@ -2944,8 +2919,7 @@ impl Parser {
                     "weighted" => {
                         let w = Expr {
                             kind: ExprKind::Literal(LitKind::Dec(1)),
-                            span: val.span,
-                        };
+                            span: val.span, parenthesized: false };
                         ArbiterPolicy::Weighted(w)
                     }
                     _ => ArbiterPolicy::Custom(val),
