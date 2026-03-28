@@ -1,5 +1,3 @@
-// domain SysDomain
-
 module TopModule (
   input logic a,
   input logic b,

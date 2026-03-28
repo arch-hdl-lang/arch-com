@@ -1,5 +1,3 @@
-// domain SysDomain
-
 module TopModule (
   input logic clk,
   input logic reset,
@@ -24,11 +22,7 @@ module TopModule (
           tens <= 0;
           if (hund == 9) begin
             hund <= 0;
-            if (thou == 9) begin
-              thou <= 0;
-            end else begin
-              thou <= 4'(thou + 1);
-            end
+            thou <= thou == 9 ? 0 : 4'(thou + 1);
           end else begin
             hund <= 4'(hund + 1);
           end

@@ -1,6 +1,4 @@
 // VerilogEval Prob153: Gshare branch predictor
-// domain SysDomain
-
 module TopModule (
   input logic clk,
   input logic areset,
@@ -47,15 +45,9 @@ module TopModule (
       ghr <= 0;
       pht <= '{default: 1};
     end else begin
-      if (train_valid) begin
-        pht[train_idx] <= train_new;
-      end
-      if (predict_valid) begin
-        ghr <= {ghr[5:0], pht[predict_idx][1]};
-      end
-      if (train_valid & train_mispredicted) begin
-        ghr <= {train_history[5:0], train_taken};
-      end
+      pht[train_idx] <= train_valid ? train_new : pht[train_idx];
+      ghr <= predict_valid ? {ghr[5:0], pht[predict_idx][1]} : ghr;
+      ghr <= train_valid & train_mispredicted ? {train_history[5:0], train_taken} : ghr;
     end
   end
 

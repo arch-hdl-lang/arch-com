@@ -6,14 +6,8 @@ module TopModule (
   output logic result_is_zero
 );
 
-  always_comb begin
-    if (do_sub) begin
-      out = 8'(a - b);
-    end else begin
-      out = 8'(a + b);
-    end
-    result_is_zero = out == 0;
-  end
+  assign out = do_sub ? 8'(a - b) : 8'(a + b);
+  assign result_is_zero = out == 0;
 
 endmodule
 

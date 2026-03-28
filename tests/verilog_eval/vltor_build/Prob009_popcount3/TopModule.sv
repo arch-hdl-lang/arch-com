@@ -1,5 +1,3 @@
-// domain SysDomain
-
 module TopModule (
   input logic [3-1:0] in,
   output logic [2-1:0] out

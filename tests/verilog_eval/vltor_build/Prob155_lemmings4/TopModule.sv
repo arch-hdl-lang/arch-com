@@ -1,7 +1,5 @@
 // VerilogEval Prob155: Lemmings walk/fall/dig/splatter FSM with async reset
 // Fall >= 20 cycles then hit ground = splat (dead forever)
-// domain SysDomain
-
 module TopModule (
   input logic clk,
   input logic areset,
@@ -43,14 +41,10 @@ module TopModule (
           fall_count <= 0;
         end
         FALLLEFT: begin
-          if (fall_count < 20) begin
-            fall_count <= 5'(fall_count + 1);
-          end
+          fall_count <= fall_count < 20 ? 5'(fall_count + 1) : fall_count;
         end
         FALLRIGHT: begin
-          if (fall_count < 20) begin
-            fall_count <= 5'(fall_count + 1);
-          end
+          fall_count <= fall_count < 20 ? 5'(fall_count + 1) : fall_count;
         end
         DIGLEFT: begin
           fall_count <= 0;

@@ -1,6 +1,4 @@
 // VerilogEval Prob152: Lemmings walk/fall/dig FSM with async reset
-// domain SysDomain
-
 module TopModule (
   input logic clk,
   input logic areset,

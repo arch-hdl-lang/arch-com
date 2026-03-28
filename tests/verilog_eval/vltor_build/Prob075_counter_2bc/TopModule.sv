@@ -1,6 +1,4 @@
 // VerilogEval Prob075: 2-bit saturating counter (branch predictor)
-// domain SysDomain
-
 module TopModule (
   input logic clk,
   input logic areset,
@@ -9,21 +7,19 @@ module TopModule (
   output logic [2-1:0] state
 );
 
-  logic [2-1:0] cnt;
   always_ff @(posedge clk or posedge areset) begin
     if (areset) begin
-      cnt <= 1;
+      state <= 1;
     end else begin
       if (train_valid) begin
-        if (cnt < 3 & train_taken) begin
-          cnt <= 2'(cnt + 1);
-        end else if (cnt > 0 & ~train_taken) begin
-          cnt <= 2'(cnt - 1);
+        if (state < 3 & train_taken) begin
+          state <= 2'(state + 1);
+        end else if (state > 0 & ~train_taken) begin
+          state <= 2'(state - 1);
         end
       end
     end
   end
-  assign state = cnt;
 
 endmodule
 

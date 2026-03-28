@@ -1,6 +1,4 @@
 // VerilogEval Prob073: 16 DFFs with byte enable, active-low sync reset
-// domain SysDomain
-
 module TopModule (
   input logic clk,
   input logic resetn,
@@ -9,20 +7,14 @@ module TopModule (
   output logic [16-1:0] q
 );
 
-  logic [16-1:0] q_r;
   always_ff @(posedge clk) begin
     if ((!resetn)) begin
-      q_r <= 0;
+      q <= 0;
     end else begin
-      if (byteena[0]) begin
-        q_r[7:0] <= d[7:0];
-      end
-      if (byteena[1]) begin
-        q_r[15:8] <= d[15:8];
-      end
+      q[7:0] <= byteena[0] ? d[7:0] : q[7:0];
+      q[15:8] <= byteena[1] ? d[15:8] : q[15:8];
     end
   end
-  assign q = q_r;
 
 endmodule
 

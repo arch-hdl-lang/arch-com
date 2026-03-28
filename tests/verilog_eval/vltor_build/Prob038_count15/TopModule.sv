@@ -1,6 +1,4 @@
 // VerilogEval Prob038: 4-bit counter 0-15, sync reset to 0
-// domain SysDomain
-
 module TopModule (
   input logic clk,
   input logic reset,

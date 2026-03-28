@@ -9,27 +9,13 @@ module TopModule (
 
   always_comb begin
     if (state == 0) begin
-      if (in) begin
-        next_state = 1;
-      end else begin
-        next_state = 0;
-      end
+      next_state = in ? 1 : 0;
     end else if (state == 1) begin
-      if (in) begin
-        next_state = 1;
-      end else begin
-        next_state = 2;
-      end
+      next_state = in ? 1 : 2;
     end else if (state == 2) begin
-      if (in) begin
-        next_state = 3;
-      end else begin
-        next_state = 0;
-      end
-    end else if (in) begin
-      next_state = 1;
+      next_state = in ? 3 : 0;
     end else begin
-      next_state = 2;
+      next_state = in ? 1 : 2;
     end
     out = state == 3;
   end

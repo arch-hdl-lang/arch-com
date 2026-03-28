@@ -1,5 +1,3 @@
-// domain SysDomain
-
 module TopModule (
   input logic clk,
   input logic reset,
@@ -7,21 +5,13 @@ module TopModule (
   output logic [4-1:0] q
 );
 
-  logic [4-1:0] cnt;
   always_ff @(posedge clk) begin
     if (reset) begin
-      cnt <= 0;
+      q <= 0;
     end else begin
-      if (slowena) begin
-        if (cnt == 9) begin
-          cnt <= 0;
-        end else begin
-          cnt <= 4'(cnt + 1);
-        end
-      end
+      q <= slowena ? q == 9 ? 0 : 4'(q + 1) : q;
     end
   end
-  assign q = cnt;
 
 endmodule
 

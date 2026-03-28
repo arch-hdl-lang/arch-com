@@ -1,7 +1,5 @@
 // VerilogEval Prob146: Serial receiver with data output
 // Start bit (0), 8 data bits LSB-first, stop bit (1). Assert done when stop=1.
-// domain SysDomain
-
 module TopModule (
   input logic clk,
   input logic reset,
@@ -11,15 +9,15 @@ module TopModule (
 );
 
   typedef enum logic [3:0] {
-    BIT0 = 4'd0,
-    BIT1 = 4'd1,
-    BIT2 = 4'd2,
-    BIT3 = 4'd3,
-    BIT4 = 4'd4,
-    BIT5 = 4'd5,
-    BIT6 = 4'd6,
-    BIT7 = 4'd7,
-    IDLE = 4'd8,
+    IDLE = 4'd0,
+    BIT0 = 4'd1,
+    BIT1 = 4'd2,
+    BIT2 = 4'd3,
+    BIT3 = 4'd4,
+    BIT4 = 4'd5,
+    BIT5 = 4'd6,
+    BIT6 = 4'd7,
+    BIT7 = 4'd8,
     STOP = 4'd9,
     OK = 4'd10,
     ERR = 4'd11

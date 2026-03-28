@@ -1,6 +1,4 @@
 // VerilogEval Prob141: 12-hour BCD clock
-// domain SysDomain
-
 module TopModule (
   input logic clk,
   input logic reset,

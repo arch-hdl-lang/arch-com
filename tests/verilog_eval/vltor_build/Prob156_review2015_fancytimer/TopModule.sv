@@ -1,6 +1,4 @@
 // VerilogEval Prob156: Full timer FSM - detect 1101, shift 4-bit delay, count down, done+ack
-// domain SysDomain
-
 module TopModule (
   input logic clk,
   input logic reset,

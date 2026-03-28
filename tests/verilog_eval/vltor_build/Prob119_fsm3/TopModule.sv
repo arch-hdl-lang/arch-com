@@ -1,5 +1,3 @@
-// domain SysDomain
-
 module TopModule (
   input logic clk,
   input logic areset,
@@ -46,15 +44,13 @@ module TopModule (
   end
   
   always_comb begin
+    out = 1'b0;
     case (state_r)
       A: begin
-        out = 1'b0;
       end
       B: begin
-        out = 1'b0;
       end
       C: begin
-        out = 1'b0;
       end
       D: begin
         out = 1'b1;

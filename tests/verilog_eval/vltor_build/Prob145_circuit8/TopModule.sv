@@ -1,6 +1,4 @@
 // VerilogEval Prob145: p is positive-level latch of a, q captures a on negedge
-// domain SysDomain
-
 module TopModule (
   input logic clock,
   input logic a,
@@ -12,7 +10,7 @@ module TopModule (
   logic q_r;
   always_latch begin
     if (clock) begin
-      p_r <= a;
+      p_r = a;
     end
   end
   always_ff @(negedge clock) begin

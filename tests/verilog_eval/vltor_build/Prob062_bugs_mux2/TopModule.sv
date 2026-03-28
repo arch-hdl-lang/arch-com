@@ -5,13 +5,7 @@ module TopModule (
   output logic [8-1:0] out
 );
 
-  always_comb begin
-    if (sel) begin
-      out = a;
-    end else begin
-      out = b;
-    end
-  end
+  assign out = sel ? a : b;
 
 endmodule
 

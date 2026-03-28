@@ -1,5 +1,3 @@
-// domain SysDomain
-
 module TopModule (
   input logic a,
   input logic b,
@@ -7,13 +5,7 @@ module TopModule (
   output logic out
 );
 
-  always_comb begin
-    if (sel == 1'd1) begin
-      out = b;
-    end else begin
-      out = a;
-    end
-  end
+  assign out = sel == 1'd1 ? b : a;
 
 endmodule
 

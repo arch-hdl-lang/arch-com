@@ -1,6 +1,4 @@
 // VerilogEval Prob080: Down counter timer
-// domain SysDomain
-
 module TopModule (
   input logic clk,
   input logic load,

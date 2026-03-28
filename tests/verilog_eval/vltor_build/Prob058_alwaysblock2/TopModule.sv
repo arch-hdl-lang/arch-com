@@ -1,5 +1,3 @@
-// domain SysDomain
-
 module TopModule (
   input logic clk,
   input logic a,
@@ -9,13 +7,11 @@ module TopModule (
   output logic out_always_ff
 );
 
-  logic ff_r;
   always_ff @(posedge clk) begin
-    ff_r <= a ^ b;
+    out_always_ff <= a ^ b;
   end
   assign out_assign = a ^ b;
   assign out_always_comb = a ^ b;
-  assign out_always_ff = ff_r;
 
 endmodule
 

@@ -4,7 +4,7 @@ module TopModule (
   output logic [32-1:0] out
 );
 
-  assign out = {in[7:0], in[15:8], in[23:16], in[31:24]};
+  assign out = {<<8{in}};
 
 endmodule
 

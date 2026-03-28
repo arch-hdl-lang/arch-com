@@ -1,7 +1,5 @@
 // VerilogEval Prob149: Water reservoir FSM with dfr (decreasing flow rate)
 // 6 states: level + direction
-// domain SysDomain
-
 module TopModule (
   input logic clk,
   input logic reset,

@@ -1,6 +1,4 @@
 // VerilogEval Prob095: FSM that asserts shift_ena for 4 cycles after reset
-// domain SysDomain
-
 module TopModule (
   input logic clk,
   input logic reset,
@@ -48,18 +46,15 @@ module TopModule (
   end
   
   always_comb begin
+    shift_ena = 1'b1;
     case (state_r)
       B0: begin
-        shift_ena = 1'b1;
       end
       B1: begin
-        shift_ena = 1'b1;
       end
       B2: begin
-        shift_ena = 1'b1;
       end
       B3: begin
-        shift_ena = 1'b1;
       end
       DONE: begin
         shift_ena = 1'b0;

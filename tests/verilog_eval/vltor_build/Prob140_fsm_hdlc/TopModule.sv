@@ -1,6 +1,4 @@
 // VerilogEval Prob140: HDLC framing FSM - disc, flag, err detection
-// domain SysDomain
-
 module TopModule (
   input logic clk,
   input logic reset,

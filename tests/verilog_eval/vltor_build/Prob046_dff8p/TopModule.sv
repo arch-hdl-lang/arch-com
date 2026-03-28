@@ -1,6 +1,4 @@
 // VerilogEval Prob046: 8 DFFs, active high sync reset to 0x34, negedge clk
-// domain SysDomain
-
 module TopModule (
   input logic clk,
   input logic reset,
@@ -8,15 +6,13 @@ module TopModule (
   output logic [8-1:0] q
 );
 
-  logic [8-1:0] q_r;
   always_ff @(negedge clk) begin
     if (reset) begin
-      q_r <= 'h34;
+      q <= 'h34;
     end else begin
-      q_r <= d;
+      q <= d;
     end
   end
-  assign q = q_r;
 
 endmodule
 

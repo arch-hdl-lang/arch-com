@@ -1,6 +1,4 @@
 // VerilogEval Prob061: Shift register stage with load
-// domain SysDomain
-
 module TopModule (
   input logic clk,
   input logic w,
@@ -10,15 +8,13 @@ module TopModule (
   output logic Q
 );
 
-  logic q_r;
   always_ff @(posedge clk) begin
     if (L) begin
-      q_r <= R;
+      Q <= R;
     end else if (E) begin
-      q_r <= w;
+      Q <= w;
     end
   end
-  assign Q = q_r;
 
 endmodule
 

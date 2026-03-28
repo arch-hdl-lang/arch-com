@@ -1,6 +1,4 @@
 // VerilogEval Prob086: 5-bit Galois LFSR, taps at 5 and 3, sync reset to 1
-// domain SysDomain
-
 module TopModule (
   input logic clk,
   input logic reset,

@@ -1,5 +1,3 @@
-// domain SysDomain
-
 module TopModule (
   input logic clk,
   input logic L,
@@ -8,15 +6,9 @@ module TopModule (
   output logic Q
 );
 
-  logic q_r;
   always_ff @(posedge clk) begin
-    if (L) begin
-      q_r <= r_in;
-    end else begin
-      q_r <= q_in;
-    end
+    Q <= L ? r_in : q_in;
   end
-  assign Q = q_r;
 
 endmodule
 

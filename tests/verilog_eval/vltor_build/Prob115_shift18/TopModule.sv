@@ -1,6 +1,4 @@
 // VerilogEval Prob115: 64-bit arithmetic shift register
-// domain SysDomain
-
 module TopModule (
   input logic clk,
   input logic load,

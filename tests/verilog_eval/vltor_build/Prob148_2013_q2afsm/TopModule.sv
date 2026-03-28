@@ -1,6 +1,4 @@
 // VerilogEval Prob148: 4-state priority arbiter, active-low sync reset (resetn)
-// domain SysDomain
-
 module TopModule (
   input logic clk,
   input logic resetn,
