@@ -465,7 +465,7 @@ fn subst_expr(expr: Expr, var: &str, val: i64) -> Expr {
 fn compute_defaults(params: &[ParamDecl]) -> HashMap<String, i64> {
     let mut map = HashMap::new();
     for p in params {
-        if let ParamKind::Const = p.kind {
+        if matches!(p.kind, ParamKind::Const | ParamKind::WidthConst(..)) {
             if let Some(default) = &p.default {
                 if let Some(v) = try_eval_i64(default, &HashMap::new()) {
                     map.insert(p.name.name.clone(), v);

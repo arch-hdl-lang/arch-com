@@ -1755,7 +1755,7 @@ impl<'a> SimCodegen<'a> {
         h.push('\n');
         // Emit param constants as #define
         for p in &m.params {
-            if matches!(p.kind, ParamKind::Const) {
+            if matches!(p.kind, ParamKind::Const | ParamKind::WidthConst(..)) {
                 if let Some(ref def) = p.default {
                     let val = eval_const_expr(def);
                     h.push_str(&format!("#ifndef {}\n#define {} {val}ULL\n#endif\n", p.name.name, p.name.name));
@@ -2741,7 +2741,7 @@ impl<'a> SimCodegen<'a> {
         h.push_str("#pragma once\n#include <cstdint>\n#include <cstdio>\n#include \"verilated.h\"\n\n");
         // Emit param constants as #define
         for p in &f.params {
-            if matches!(p.kind, ParamKind::Const) {
+            if matches!(p.kind, ParamKind::Const | ParamKind::WidthConst(..)) {
                 if let Some(ref def) = p.default {
                     let val = eval_const_expr(def);
                     h.push_str(&format!("#ifndef {}\n#define {} {val}ULL\n#endif\n", p.name.name, p.name.name));

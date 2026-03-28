@@ -106,7 +106,10 @@ pub struct ParamDecl {
 
 #[derive(Debug, Clone)]
 pub enum ParamKind {
+    /// Untyped const (emits `parameter int`)
     Const,
+    /// Width-qualified const: `param NAME[hi:lo]: const` (emits `parameter [hi:lo]`)
+    WidthConst(Expr, Expr),
     Type(TypeExpr),
 }
 

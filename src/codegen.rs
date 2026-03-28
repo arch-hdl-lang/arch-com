@@ -137,6 +137,24 @@ impl<'a> Codegen<'a> {
         self.out.push('\n');
     }
 
+    fn emit_param_decl(&mut self, p: &ParamDecl, comma: &str) {
+        let default_str = if let Some(d) = &p.default {
+            format!(" = {}", self.emit_expr_str(d))
+        } else {
+            String::new()
+        };
+        match &p.kind {
+            ParamKind::WidthConst(hi, lo) => {
+                let hi_s = self.emit_expr_str(hi);
+                let lo_s = self.emit_expr_str(lo);
+                self.line(&format!("parameter [{}:{}] {}{}{}", hi_s, lo_s, p.name.name, default_str, comma));
+            }
+            _ => {
+                self.line(&format!("parameter int {}{}{}", p.name.name, default_str, comma));
+            }
+        }
+    }
+
     fn emit_domain(&mut self, d: &DomainDecl) {
         self.line(&format!("// domain {}", d.name.name));
         for field in &d.fields {
@@ -303,13 +321,8 @@ impl<'a> Codegen<'a> {
             self.out.push_str(&format!("module {} #(\n", m.name.name));
             self.indent += 1;
             for (i, p) in m.params.iter().enumerate() {
-                let default_str = if let Some(d) = &p.default {
-                    format!(" = {}", self.emit_expr_str(d))
-                } else {
-                    String::new()
-                };
                 let comma = if i < m.params.len() - 1 { "," } else { "" };
-                self.line(&format!("parameter int {}{}{}", p.name.name, default_str, comma));
+                self.emit_param_decl(p, comma);
             }
             self.indent -= 1;
             self.line(") (");
@@ -1598,7 +1611,7 @@ impl<'a> Codegen<'a> {
                 r.params.iter()
                     .find(|p| p.name.name == *name)
                     .and_then(|p| match &p.kind {
-                        ParamKind::Const => p.default.as_ref(),
+                        ParamKind::Const | ParamKind::WidthConst(..) => p.default.as_ref(),
                         _ => None,
                     })
                     .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(*v) } else { None })
@@ -1731,13 +1744,8 @@ impl<'a> Codegen<'a> {
             self.line(&format!("module {n} #("));
             self.indent += 1;
             for (i, p) in f.params.iter().enumerate() {
-                let default_str = if let Some(d) = &p.default {
-                    format!(" = {}", self.emit_expr_str(d))
-                } else {
-                    String::new()
-                };
                 let comma = if i < f.params.len() - 1 { "," } else { "" };
-                self.line(&format!("parameter int {}{}{}", p.name.name, default_str, comma));
+                self.emit_param_decl(p, comma);
             }
             self.indent -= 1;
             self.line(") (");
@@ -1946,13 +1954,8 @@ impl<'a> Codegen<'a> {
             self.out.push_str(&format!("module {} #(\n", n));
             self.indent += 1;
             for (i, param) in p.params.iter().enumerate() {
-                let default_str = if let Some(d) = &param.default {
-                    format!(" = {}", self.emit_expr_str(d))
-                } else {
-                    String::new()
-                };
                 let comma = if i < p.params.len() - 1 { "," } else { "" };
-                self.line(&format!("parameter int {}{}{}", param.name.name, default_str, comma));
+                self.emit_param_decl(param, comma);
             }
             self.indent -= 1;
             self.line(") (");
@@ -4567,7 +4570,7 @@ impl<'a> Codegen<'a> {
                 r.params.iter()
                     .find(|p| matches!(p.name.name.as_str(), "XLEN" | "WIDTH" | "DATA_WIDTH"))
                     .and_then(|p| match &p.kind {
-                        ParamKind::Const => p.default.as_ref().map(|e| self.emit_expr_str(e)),
+                        ParamKind::Const | ParamKind::WidthConst(..) => p.default.as_ref().map(|e| self.emit_expr_str(e)),
                         _ => None,
                     })
             })

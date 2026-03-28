@@ -328,9 +328,23 @@ impl Parser {
     fn parse_param_decl(&mut self) -> Result<ParamDecl, CompileError> {
         let start = self.expect(TokenKind::Param)?.span;
         let name = self.expect_ident()?;
+        // Optional width qualifier: param NAME[hi:lo]: const
+        let width_range = if self.eat(TokenKind::LBracket) {
+            let hi = self.parse_expr()?;
+            self.expect(TokenKind::Colon)?;
+            let lo = self.parse_expr()?;
+            self.expect(TokenKind::RBracket)?;
+            Some((hi, lo))
+        } else {
+            None
+        };
         self.expect(TokenKind::Colon)?;
         let kind = if self.eat(TokenKind::Const) {
-            ParamKind::Const
+            if let Some((hi, lo)) = width_range {
+                ParamKind::WidthConst(hi, lo)
+            } else {
+                ParamKind::Const
+            }
         } else if self.check(TokenKind::Type) {
             self.advance();
             self.expect(TokenKind::Eq)?;
