@@ -299,17 +299,52 @@ fn expand_generate(
     }
 }
 
+/// Check whether an expression references any identifier that is a param name.
+fn expr_references_param(expr: &Expr, param_names: &[String]) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => param_names.contains(name),
+        ExprKind::Binary(_, l, r) => {
+            expr_references_param(l, param_names)
+                || expr_references_param(r, param_names)
+        }
+        ExprKind::Unary(_, e) => expr_references_param(e, param_names),
+        ExprKind::Clog2(e) => expr_references_param(e, param_names),
+        _ => false,
+    }
+}
+
 fn expand_generate_for(
     gf: GenerateFor,
     param_vals: &HashMap<String, i64>,
 ) -> Result<(Vec<PortDecl>, Vec<ModuleBodyItem>), Vec<CompileError>> {
-    let start = try_eval_i64(&gf.start, param_vals).ok_or_else(|| {
+    // Collect param names from param_vals
+    let param_names: Vec<String> = param_vals.keys().cloned().collect();
+
+    let has_port_items = gf.items.iter().any(|item| matches!(item, GenItem::Port(_)));
+    let range_depends_on_param = expr_references_param(&gf.start, &param_names)
+        || expr_references_param(&gf.end, &param_names);
+
+    // Try to evaluate the range bounds
+    let start_val = try_eval_i64(&gf.start, param_vals);
+    let end_val = try_eval_i64(&gf.end, param_vals);
+
+    // If the range references a param and there are no port items,
+    // preserve the generate block as-is so codegen emits SV generate for.
+    // This allows the SV to be parameterized (e.g. NUM_MODULES can be overridden).
+    if range_depends_on_param && !has_port_items {
+        return Ok((
+            Vec::new(),
+            vec![ModuleBodyItem::Generate(GenerateDecl::For(gf))],
+        ));
+    }
+
+    let start = start_val.ok_or_else(|| {
         vec![CompileError::general(
             "generate for: start expression must be a compile-time constant",
             gf.start.span,
         )]
     })?;
-    let end = try_eval_i64(&gf.end, param_vals).ok_or_else(|| {
+    let end = end_val.ok_or_else(|| {
         vec![CompileError::general(
             "generate for: end expression must be a compile-time constant",
             gf.end.span,
@@ -450,6 +485,11 @@ fn subst_expr(expr: Expr, var: &str, val: i64) -> Expr {
             Box::new(subst_expr(*base, var, val)),
             Box::new(subst_expr(*idx, var, val)),
         ),
+        ExprKind::BitSlice(base, hi, lo) => ExprKind::BitSlice(
+            Box::new(subst_expr(*base, var, val)),
+            Box::new(subst_expr(*hi, var, val)),
+            Box::new(subst_expr(*lo, var, val)),
+        ),
         ExprKind::Cast(e, ty) => ExprKind::Cast(Box::new(subst_expr(*e, var, val)), ty),
         ExprKind::Concat(exprs) => {
             ExprKind::Concat(exprs.into_iter().map(|e| subst_expr(e, var, val)).collect())
@@ -462,12 +502,14 @@ fn subst_expr(expr: Expr, var: &str, val: i64) -> Expr {
 // ── Const evaluation ──────────────────────────────────────────────────────────
 
 /// Compute default values for all `const` params (used in Step 1).
+/// Uses the accumulated map so that derived params (e.g. `NUM = A / B`)
+/// can resolve if their dependencies were declared earlier.
 fn compute_defaults(params: &[ParamDecl]) -> HashMap<String, i64> {
     let mut map = HashMap::new();
     for p in params {
         if matches!(p.kind, ParamKind::Const | ParamKind::WidthConst(..)) {
             if let Some(default) = &p.default {
-                if let Some(v) = try_eval_i64(default, &HashMap::new()) {
+                if let Some(v) = try_eval_i64(default, &map) {
                     map.insert(p.name.name.clone(), v);
                 }
             }
@@ -492,6 +534,14 @@ pub fn try_eval_i64(expr: &Expr, param_vals: &HashMap<String, i64>) -> Option<i6
         }
         ExprKind::Binary(BinOp::Mul, l, r) => {
             Some(try_eval_i64(l, param_vals)? * try_eval_i64(r, param_vals)?)
+        }
+        ExprKind::Binary(BinOp::Div, l, r) => {
+            let rv = try_eval_i64(r, param_vals)?;
+            if rv == 0 { None } else { Some(try_eval_i64(l, param_vals)? / rv) }
+        }
+        ExprKind::Binary(BinOp::Mod, l, r) => {
+            let rv = try_eval_i64(r, param_vals)?;
+            if rv == 0 { None } else { Some(try_eval_i64(l, param_vals)? % rv) }
         }
         ExprKind::Unary(UnaryOp::Neg, e) => Some(-try_eval_i64(e, param_vals)?),
         ExprKind::Clog2(arg) => {

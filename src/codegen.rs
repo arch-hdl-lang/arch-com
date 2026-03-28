@@ -464,7 +464,9 @@ impl<'a> Codegen<'a> {
                     self.line(&format!("{} {}{};", ty_str, w.name.name, arr_suffix));
                     declared_names.insert(w.name.name.clone());
                 }
-                ModuleBodyItem::Generate(_) => {} // expanded before codegen
+                ModuleBodyItem::Generate(ref gen) => {
+                    self.emit_generate(gen);
+                }
             }
         }
 
@@ -1683,6 +1685,30 @@ impl<'a> Codegen<'a> {
         }
         self.indent -= 1;
         self.line(");");
+    }
+
+    fn emit_generate(&mut self, gen: &GenerateDecl) {
+        match gen {
+            GenerateDecl::For(gf) => {
+                let var = &gf.var.name;
+                let start_str = self.emit_expr_str(&gf.start);
+                let end_str = self.emit_expr_str(&gf.end);
+                self.line(&format!("genvar {var};"));
+                self.line(&format!(
+                    "for ({var} = {start_str}; {var} <= {end_str}; {var} = {var} + 1) begin : gen_{var}",
+                ));
+                self.indent += 1;
+                for item in &gf.items {
+                    match item {
+                        GenItem::Inst(inst) => self.emit_inst(inst),
+                        GenItem::Port(_) => {} // port items should not appear here
+                    }
+                }
+                self.indent -= 1;
+                self.line("end");
+            }
+            GenerateDecl::If(_) => {} // not yet supported
+        }
     }
 
     fn emit_pipeline_inst(

@@ -6,19 +6,23 @@ module sync_pos_neg_edge_detector (
   output logic o_negative_edge_detected
 );
 
-  logic sig_d1;
-  logic sig_d2;
+  logic prev_signal;
   always_ff @(posedge i_clk or negedge i_rstb) begin
     if ((!i_rstb)) begin
-      sig_d1 <= 0;
-      sig_d2 <= 0;
+      prev_signal <= 0;
     end else begin
-      sig_d1 <= i_detection_signal;
-      sig_d2 <= sig_d1;
+      prev_signal <= i_detection_signal;
     end
   end
-  assign o_positive_edge_detected = sig_d1 & ~sig_d2;
-  assign o_negative_edge_detected = ~sig_d1 & sig_d2;
+  always_ff @(posedge i_clk or negedge i_rstb) begin
+    if ((!i_rstb)) begin
+      o_negative_edge_detected <= 0;
+      o_positive_edge_detected <= 0;
+    end else begin
+      o_positive_edge_detected <= i_detection_signal & ~prev_signal;
+      o_negative_edge_detected <= ~i_detection_signal & prev_signal;
+    end
+  end
 
 endmodule
 

@@ -1,19 +1,30 @@
 module caesar_cipher
-  port input_char:  in UInt<8>;
-  port key:         in UInt<4>;
+  port input_char:  in  UInt<8>;
+  port key:         in  UInt<4>;
   port output_char: out UInt<8>;
 
-  let is_upper: Bool = (input_char >= 8'd65) & (input_char < 8'd91);
-  let is_lower: Bool = (input_char >= 8'd97) & (input_char < 8'd123);
-  let key8: UInt<8> = key.zext<8>();
-  let upper_shifted: UInt<8> = ((input_char - 8'd65 + key8).trunc<8>() % 8'd26 + 8'd65).trunc<8>();
-  let lower_shifted: UInt<8> = ((input_char - 8'd97 + key8).trunc<8>() % 8'd26 + 8'd97).trunc<8>();
+  let key_ext: UInt<8> = key.zext<8>();
+
+  let upper_off: UInt<9> = input_char - 65;
+  let lower_off: UInt<9> = input_char - 97;
+
+  let upper_sum: UInt<10> = upper_off + key_ext.zext<9>();
+  let lower_sum: UInt<10> = lower_off + key_ext.zext<9>();
+
+  let upper_mod: UInt<10> = upper_sum % 26;
+  let lower_mod: UInt<10> = lower_sum % 26;
+
+  let upper_shifted: UInt<11> = upper_mod + 65;
+  let lower_shifted: UInt<11> = lower_mod + 97;
+
+  let is_upper: Bool = (input_char >= 65) & (input_char < 91);
+  let is_lower: Bool = (input_char >= 97) & (input_char < 123);
 
   comb
     if is_upper
-      output_char = upper_shifted;
+      output_char = upper_shifted.trunc<8>();
     elsif is_lower
-      output_char = lower_shifted;
+      output_char = lower_shifted.trunc<8>();
     else
       output_char = input_char;
     end if

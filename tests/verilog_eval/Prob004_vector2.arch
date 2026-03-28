@@ -3,6 +3,6 @@ module TopModule
   port in: in UInt<32>;
   port out: out UInt<32>;
   comb
-    out = {in[7:0], in[15:8], in[23:16], in[31:24]};
+    out = in.reverse(8);
   end comb
 end module TopModule

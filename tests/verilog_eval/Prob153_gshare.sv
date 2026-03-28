@@ -43,7 +43,9 @@ module TopModule (
   always_ff @(posedge clk or posedge areset) begin
     if (areset) begin
       ghr <= 0;
-      pht <= '{default: 1};
+      for (int __ri0 = 0; __ri0 < 128; __ri0++) begin
+        pht[__ri0] <= 1;
+      end
     end else begin
       pht[train_idx] <= train_valid ? train_new : pht[train_idx];
       ghr <= predict_valid ? {ghr[5:0], pht[predict_idx][1]} : ghr;

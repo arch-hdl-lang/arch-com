@@ -1,0 +1,66 @@
+module pipeline_mac
+  param DWIDTH: const = 16;
+  param N: const = 4;
+  param DWIDTH_ACCUMULATOR: const = $clog2(N) + 2 * DWIDTH;
+
+  port clk: in Clock<SysDomain>;
+  port rstn: in Reset<Async, Low>;
+  port multiplicand: in UInt<DWIDTH>;
+  port multiplier: in UInt<DWIDTH>;
+  port valid_i: in Bool;
+  port result: out UInt<DWIDTH_ACCUMULATOR>;
+  port valid_out: out Bool;
+
+  default seq on clk rising;
+
+  reg mult_result_reg: UInt<DWIDTH_ACCUMULATOR> reset rstn=0;
+  reg accumulation_reg: UInt<DWIDTH_ACCUMULATOR> reset rstn=0;
+  reg counter_reg: UInt<$clog2(N)+1> reset rstn=0;
+  reg valid_out_s1: Bool reset rstn=false;
+  reg valid_out_s2: Bool reset rstn=false;
+  reg valid_i_s1: Bool reset rstn=false;
+
+  let valid_out_s0: Bool = counter_reg == (N - 1).trunc<$clog2(N)+1>();
+  let count_rst: Bool = valid_out_s1;
+  let accumulator_rst: Bool = valid_out_s1;
+  comb result = accumulation_reg;
+  comb valid_out = valid_out_s1 & ~valid_out_s2;
+
+  // Extend inputs for full-width multiplication
+  let mcand_ext: UInt<DWIDTH_ACCUMULATOR> = multiplicand.zext<DWIDTH_ACCUMULATOR>();
+  let mplier_ext: UInt<DWIDTH_ACCUMULATOR> = multiplier.zext<DWIDTH_ACCUMULATOR>();
+  let mult_product: UInt<DWIDTH_ACCUMULATOR> = (mcand_ext * mplier_ext).trunc<DWIDTH_ACCUMULATOR>();
+
+  // Stage 1: Multiplication
+  seq
+    if valid_i
+      mult_result_reg <= mult_product;
+    end if
+    valid_i_s1 <= valid_i;
+  end seq
+
+  // Stage 2: Accumulation
+  seq
+    if accumulator_rst
+      accumulation_reg <= mult_result_reg;
+    elsif valid_i_s1
+      accumulation_reg <= (accumulation_reg + mult_result_reg).trunc<DWIDTH_ACCUMULATOR>();
+    end if
+  end seq
+
+  // Counter: update on valid_i_s1 or count_rst
+  seq
+    if count_rst
+      counter_reg <= 1.zext<$clog2(N)+1>();
+    elsif valid_i_s1
+      counter_reg <= (counter_reg + 1).trunc<$clog2(N)+1>();
+    end if
+  end seq
+
+  // Valid output pipeline
+  seq
+    valid_out_s1 <= valid_out_s0 & valid_i_s1;
+    valid_out_s2 <= valid_out_s1;
+  end seq
+
+end module pipeline_mac

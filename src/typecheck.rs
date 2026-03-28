@@ -299,9 +299,35 @@ impl<'a> TypeChecker<'a> {
                     local_types.insert(w.name.name.clone(), ty);
                     // Wire is NOT marked as driven here — it must be driven by a comb block
                 }
-                // Generate blocks are fully expanded by the elaboration pass before
-                // type-checking runs; this arm should never be reached.
-                ModuleBodyItem::Generate(_) => {}
+                // Generate blocks that were preserved (param-dependent range) —
+                // mark their inst output connections as driven.
+                ModuleBodyItem::Generate(gen) => {
+                    let items = match gen {
+                        crate::ast::GenerateDecl::For(gf) => &gf.items,
+                        crate::ast::GenerateDecl::If(gi) => &gi.then_items,
+                    };
+                    for gi in items {
+                        if let crate::ast::GenItem::Inst(inst) = gi {
+                            for conn in &inst.connections {
+                                if conn.direction == ConnectDir::Output {
+                                    if let ExprKind::Ident(name) = &conn.signal.kind {
+                                        driven.insert(name.clone());
+                                    }
+                                    // Handle bit-slice targets (e.g. data_out[...])
+                                    if let ExprKind::BitSlice(base, _, _) = &conn.signal.kind {
+                                        if let ExprKind::Ident(name) = &base.kind {
+                                            driven.insert(name.clone());
+                                        }
+                                    }
+                                    let flat = Self::expr_flat_name_tc(&conn.signal);
+                                    if !flat.is_empty() {
+                                        driven.insert(flat);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 

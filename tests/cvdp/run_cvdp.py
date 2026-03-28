@@ -135,12 +135,27 @@ def extract_and_run(name_substr, sv_file=None):
         if 'cocotb.sim_time_utils' in pycontent:
             pycontent = pycontent.replace('from cocotb.sim_time_utils import', 'from cocotb.utils import')
             changed = True
+        # Fix Logic vs LogicArray: .integer on single-bit Logic (cocotb 2.0)
+        if '.value.integer' in pycontent:
+            fix = "\n# Monkey-patch cocotb Logic to support .integer\ntry:\n    from cocotb.types import Logic\n    if not hasattr(Logic, 'integer'):\n        Logic.integer = property(lambda self: int(self))\nexcept Exception:\n    pass\n"
+            pycontent = fix + pycontent
+            changed = True
         # Fix Logic vs LogicArray: .to_signed()/.to_unsigned() on single-bit Logic
         if '.to_signed()' in pycontent or '.to_unsigned()' in pycontent:
             fix = "\n# Monkey-patch cocotb Logic to support to_signed/to_unsigned\ntry:\n    from cocotb.types import Logic\n    if not hasattr(Logic, 'to_unsigned'):\n        Logic.to_unsigned = lambda self: int(self)\n    if not hasattr(Logic, 'to_signed'):\n        Logic.to_signed = lambda self: int(self)\nexcept Exception:\n    pass\n"
             pycontent = fix + pycontent
             changed = True
-        # (no cocotb timing patches)
+        # Fix odd Clock periods: cocotb 2.0 requires period divisible by 2
+        import re as _re2
+        def _fix_odd_clock(m):
+            val = int(m.group(2))
+            if val % 2 != 0:
+                val += 1
+            return f'Clock({m.group(1)}, {val},'
+        pycontent_new = _re2.sub(r'Clock\(([^,]+),\s*(\d+),', _fix_odd_clock, pycontent)
+        if pycontent_new != pycontent:
+            pycontent = pycontent_new
+            changed = True
         if changed:
             open(pyfile, 'w').write(pycontent)
 
@@ -187,7 +202,7 @@ def extract_and_run(name_substr, sv_file=None):
 
     print("STDOUT:", result.stdout[-1000:] if len(result.stdout) > 1000 else result.stdout)
     if result.stderr:
-        print("STDERR:", result.stderr[-500:] if len(result.stderr) > 500 else result.stderr)
+        print("STDERR:", result.stderr[-2000:] if len(result.stderr) > 2000 else result.stderr)
     print(f"Return code: {result.returncode}")
 
     passed = result.returncode == 0 and ('FAIL=0' in result.stdout or ('passed' in result.stdout and 'failed' not in result.stdout.lower()))
