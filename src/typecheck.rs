@@ -147,6 +147,7 @@ impl<'a> TypeChecker<'a> {
         // Check params
         for p in &m.params {
             self.check_upper_snake(&p.name);
+            self.check_width_const_overflow(p);
         }
 
         // Check ports — no naming enforcement; ports must match external interfaces
@@ -1833,6 +1834,29 @@ impl<'a> TypeChecker<'a> {
     fn check_pascal_case(&mut self, _ident: &Ident) {}
     fn check_snake_case(&mut self, _ident: &Ident) {}
     fn check_upper_snake(&mut self, _ident: &Ident) {}
+
+    /// Check that a WidthConst param's default value fits in the declared width.
+    fn check_width_const_overflow(&mut self, p: &ParamDecl) {
+        if let ParamKind::WidthConst(hi, lo) = &p.kind {
+            let empty = std::collections::HashMap::new();
+            if let (Some(h), Some(l), Some(default)) = (
+                crate::elaborate::try_eval_i64(hi, &empty),
+                crate::elaborate::try_eval_i64(lo, &empty),
+                p.default.as_ref().and_then(|d| crate::elaborate::try_eval_i64(d, &empty)),
+            ) {
+                let width = (h - l + 1).max(0) as u32;
+                if width < 64 && default as u64 >= (1u64 << width) {
+                    self.errors.push(CompileError::general(
+                        &format!(
+                            "param `{}` default value {} does not fit in declared width [{}:{}] ({} bits)",
+                            p.name.name, default, h, l, width
+                        ),
+                        p.name.span,
+                    ));
+                }
+            }
+        }
+    }
 
     // ── FSM ───────────────────────────────────────────────────────────────────
 
