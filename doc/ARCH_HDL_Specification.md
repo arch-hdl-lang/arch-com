@@ -8243,6 +8243,7 @@ A **package** groups related type definitions, constants, and functions into a r
 | `struct` | `struct BusReq op: BusOp; addr: UInt<32>; end struct BusReq` |
 | `function` | `function max(a: UInt<32>, b: UInt<32>) -> UInt<32> ... end function max` |
 | `param` | `param BUS_WIDTH: const = 64;` |
+| `domain` | `domain FastClk freq_mhz: 500 end domain FastClk` |
 
 Packages may **not** contain modules, pipelines, FSMs, or any other construct that produces hardware. They are purely compile-time organizational units.
 

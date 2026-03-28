@@ -92,6 +92,7 @@ pub struct ModuleDecl {
     pub body: Vec<ModuleBodyItem>,
     pub implements: Option<Ident>,
     pub hooks: Vec<ModuleHookDecl>,
+    pub cdc_safe: bool,
     pub span: Span,
 }
 
@@ -982,6 +983,7 @@ pub struct TemplateHookDecl {
 pub struct PackageDecl {
     pub name: Ident,
     pub params: Vec<ParamDecl>,
+    pub domains: Vec<DomainDecl>,
     pub enums: Vec<EnumDecl>,
     pub structs: Vec<StructDecl>,
     pub functions: Vec<FunctionDecl>,

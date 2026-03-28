@@ -404,6 +404,21 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                         (Symbol::Template(pkg.name.name.clone()), pkg.name.span),
                     );
                     // Register contained items as globals
+                    for d in &pkg.domains {
+                        if let Some((Symbol::Domain(_), _)) = table.globals.get(&d.name.name) {
+                            // Same domain re-declared — silently accept
+                        } else if table.globals.contains_key(&d.name.name) {
+                            errors.push(CompileError::duplicate(&d.name.name, d.name.span));
+                        } else {
+                            let freq_mhz = d.fields.iter()
+                                .find(|f| f.name.name == "freq_mhz")
+                                .and_then(|f| if let ExprKind::Literal(LitKind::Dec(v)) = &f.value.kind { Some(*v) } else { None });
+                            table.globals.insert(
+                                d.name.name.clone(),
+                                (Symbol::Domain(DomainInfo { name: d.name.name.clone(), freq_mhz }), d.name.span),
+                            );
+                        }
+                    }
                     for e in &pkg.enums {
                         if table.globals.contains_key(&e.name.name) {
                             errors.push(CompileError::duplicate(&e.name.name, e.name.span));

@@ -614,10 +614,14 @@ CDC detection covers both seq→seq and comb→seq crossings: a comb block readi
 
 +-------------------------------------------+--------------------------------------+
 | package BusPkg                            | Contains: enum, struct, function,    |
-|                                           | param declarations only.             |
+|                                           | param, domain declarations.          |
 | enum BusOp                                |                                      |
 |   Read, Write, Idle                       | No modules/pipelines/FSMs inside.    |
 | end enum BusOp                            |                                      |
+|                                           |                                      |
+| domain FastClk                            | domain inside package: share clock   |
+|   freq\_mhz: 500                          | domains across files via             |
+| end domain FastClk                        |   use ClockPkg;                      |                                      |
 |                                           | File: PkgName.arch (one package      |
 | struct BusReq                             | per file, name must match).          |
 |   op: BusOp;                              |                                      |

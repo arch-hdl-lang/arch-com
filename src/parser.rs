@@ -232,9 +232,25 @@ impl Parser {
         let mut ports = Vec::new();
         let mut body = Vec::new();
         let mut hooks: Vec<crate::ast::ModuleHookDecl> = Vec::new();
+        let mut cdc_safe = false;
 
         while !self.check_end_keyword() {
             match self.peek_kind() {
+                // `pragma cdc_safe;` — suppress CDC checks for this module
+                Some(TokenKind::Ident(ref s)) if s == "pragma" => {
+                    self.advance();
+                    let pragma_name = self.expect_ident()?;
+                    if pragma_name.name == "cdc_safe" {
+                        cdc_safe = true;
+                    } else {
+                        return Err(CompileError::general(
+                            &format!("unknown pragma `{}`", pragma_name.name),
+                            pragma_name.span,
+                        ));
+                    }
+                    self.expect(TokenKind::Semi)?;
+                    continue;
+                }
                 Some(TokenKind::Param) => params.push(self.parse_param_decl()?),
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Reg) => {
@@ -305,6 +321,7 @@ impl Parser {
             body,
             implements,
             hooks,
+            cdc_safe,
         })
     }
 
@@ -3632,6 +3649,7 @@ impl Parser {
         let start = self.expect(TokenKind::Package)?.span;
         let name = self.expect_ident()?;
         let mut params = Vec::new();
+        let mut domains = Vec::new();
         let mut enums = Vec::new();
         let mut structs = Vec::new();
         let mut functions = Vec::new();
@@ -3639,12 +3657,13 @@ impl Parser {
         while !self.check_end_keyword() {
             match self.peek_kind() {
                 Some(TokenKind::Param) => params.push(self.parse_param_decl()?),
+                Some(TokenKind::Domain) => domains.push(self.parse_domain()?),
                 Some(TokenKind::Enum) => enums.push(self.parse_enum()?),
                 Some(TokenKind::Struct) => structs.push(self.parse_struct()?),
                 Some(TokenKind::Function) => functions.push(self.parse_function()?),
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "param, enum, struct, or function",
+                        "param, domain, enum, struct, or function",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -3668,6 +3687,7 @@ impl Parser {
             span: start.merge(closing_name.span),
             name,
             params,
+            domains,
             enums,
             structs,
             functions,

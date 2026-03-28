@@ -322,11 +322,15 @@ end regfile RegfileName
 """,
 
     "package": """\
-// Package: reusable namespace for enums, structs, functions, params.
+// Package: reusable namespace for enums, structs, functions, params, domains.
 // File must be named PkgName.arch; consumer imports with 'use PkgName;'
 
 // BusPkg.arch
 package BusPkg
+  domain FastClk
+    freq_mhz: 500
+  end domain FastClk
+
   enum BusOp
     Read, Write, Idle
   end enum BusOp
@@ -483,9 +487,15 @@ def arch_build(files: list[str], output: str | None = None) -> str:
 
     # Try to read generated SV and append it
     if result.startswith("[OK]"):
-        sv_path = _resolve_safe(output) if output else pathlib.Path(paths[0]).with_suffix(".sv")
-        if sv_path.exists():
-            result += f"\n\n--- Generated SystemVerilog ---\n{sv_path.read_text()}"
+        if output:
+            sv_path = _resolve_safe(output)
+            if sv_path.exists():
+                result += f"\n\n--- Generated SystemVerilog ---\n{sv_path.read_text()}"
+        else:
+            for p in paths:
+                sv_path = pathlib.Path(p).with_suffix(".sv")
+                if sv_path.exists():
+                    result += f"\n\n--- {sv_path.name} ---\n{sv_path.read_text()}"
 
     return result
 
@@ -497,18 +507,23 @@ def arch_build_and_lint(files: list[str], top_module: str, output: str | None = 
     paths = [str(_resolve_safe(f)) for f in files]
     cmd = [ARCH_BIN, "build"] + paths
 
-    sv_path = _resolve_safe(output) if output else pathlib.Path(paths[-1]).with_suffix(".sv")
     if output:
+        sv_path = _resolve_safe(output)
         cmd += ["-o", str(sv_path)]
+        sv_files = [str(sv_path)]
+    else:
+        sv_files = [str(pathlib.Path(p).with_suffix(".sv")) for p in paths]
 
     result = _run(cmd)
     if not result.startswith("[OK]"):
         return result
 
-    # Run Verilator lint
+    # Run Verilator lint on all generated SV files
+    # Add -I flags for directories containing SV files so Verilator finds submodules
+    inc_dirs = list({f"-I{str(pathlib.Path(f).parent)}" for f in sv_files})
     lint_result = _run(
-        [VERILATOR_BIN, "--lint-only", "-Wno-DECLFILENAME", "-Wno-UNUSEDSIGNAL",
-         str(sv_path), "--top-module", top_module],
+        [VERILATOR_BIN, "--lint-only", "-Wno-DECLFILENAME", "-Wno-UNUSEDSIGNAL"]
+        + inc_dirs + sv_files + ["--top-module", top_module],
         timeout=15,
     )
 
