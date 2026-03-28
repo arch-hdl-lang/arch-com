@@ -614,6 +614,28 @@ assign is_special = opcode inside {3, 7, [16:31]};
 
 The `inside` expression can be used anywhere a `Bool` expression is valid — in `if` conditions, ternary operands, `comb` assignments, `transition when` guards, etc.
 
+**4.2.1d The `unique` Modifier for `if` and `match`**
+
+The `unique` keyword may be prepended to any `if` or `match` statement to assert to the synthesis tool that all conditions are mutually exclusive. The compiler passes the `unique` qualifier directly to SystemVerilog, enabling parallel mux inference instead of priority encoding.
+
+```
+unique if sel == 0
+  y = a;
+else
+  y = b;
+end if
+```
+
+```
+unique match opcode
+  0 => result <= a;
+  1 => result <= b;
+  _ => result <= 0;
+end match
+```
+
+The emitted SystemVerilog uses `unique if (...)` and `unique case (...)` respectively. Use `unique` when you know the conditions cannot overlap and want the synthesis tool to optimize accordingly. Omit it when conditions may overlap and priority resolution is required.
+
 **4.2.2 Bit Concatenation and Replication**
 
 Arch uses standard SystemVerilog syntax for bit concatenation and replication:

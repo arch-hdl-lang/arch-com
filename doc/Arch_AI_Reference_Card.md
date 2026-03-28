@@ -76,6 +76,12 @@
 >
 > if cond\_a r \<= val\_a; elsif cond\_b r \<= val\_b; else r \<= val\_c; end if
 >
+> unique if / unique match — assert mutual exclusivity; emits SV unique if / unique case:
+>
+> unique if sel == 0 y = a; else y = b; end if
+>
+> unique match opcode 0 =\> r \<= a; 1 =\> r \<= b; \_ =\> r \<= 0; end match
+>
 > FOR LOOPS (runtime, in comb/seq blocks):
 >
 > for i in 0..7 out\[i\] = data\[7 - i\]; end for // inclusive range, emits SV for loop

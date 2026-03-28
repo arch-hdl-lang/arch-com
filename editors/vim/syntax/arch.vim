@@ -26,7 +26,7 @@ syn keyword archBlock      stage store hook implements
 syn keyword archBlock      testbench initial repeat
 
 " ── Signal / control flow keywords ───────────────────────────────────────────
-syn keyword archControl    if elsif else match transition to when
+syn keyword archControl    if elsif else match unique transition to when
 syn keyword archControl    on rising falling high low
 syn keyword archControl    await await_all await_any
 syn keyword archControl    forward init for in from

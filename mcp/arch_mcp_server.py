@@ -66,6 +66,7 @@ Common mistakes to avoid:
 - Domains declared in a package are shared across files via 'use PkgName;'
 - 'inside' operator: expr inside {val1, val2, lo..hi} — returns Bool, set membership
 - 'for i in {a, b, c}' — compile-time unrolled value-list iteration (inside comb/seq blocks)
+- 'unique if' and 'unique match' assert mutual exclusivity to synthesis (parallel mux): use 'unique if sel == 0 ... end if' or 'unique match opcode ... end match'; emits SV 'unique if' / 'unique case'
 - .trunc<N>() errors if N >= source width (not truncating); .zext<N>()/.sext<N>() error if N <= source width (not extending)
 """,
 )
@@ -188,6 +189,24 @@ module ModuleName
 
   // inside operator (set membership, returns Bool):
   let is_special: Bool = opcode inside {3, 7, 16..31};
+
+  // unique if — assert mutual exclusivity; synthesis emits parallel mux:
+  comb
+    unique if sel == 0
+      y = a;
+    else
+      y = b;
+    end if
+  end comb
+
+  // unique match — assert mutual exclusivity; emits SV unique case:
+  comb
+    unique match opcode
+      0 => result = a;
+      1 => result = b;
+      _ => result = 0;
+    end match
+  end comb
 end module ModuleName
 """,
 

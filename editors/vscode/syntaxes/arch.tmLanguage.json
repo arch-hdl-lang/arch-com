@@ -72,7 +72,7 @@
     },
     "control-flow": {
       "name": "keyword.control.flow.arch",
-      "match": "\\b(if|elsif|else|match|transition|to|when|on|rising|falling|high|low|await|await_all|await_any|forward|init|reset|always|for|in|from|stall|flush|inside)\\b"
+      "match": "\\b(if|elsif|else|match|unique|transition|to|when|on|rising|falling|high|low|await|await_all|await_any|forward|init|reset|always|for|in|from|stall|flush|inside)\\b"
     },
     "block-keywords": {
       "name": "keyword.other.arch",

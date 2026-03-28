@@ -113,6 +113,7 @@
 | `comb` assignment | ✅ One-line form: `comb y = expr;` (no `end comb` needed for single assignments) |
 | `reg` assignment `<=` | ✅ |
 | `if / elsif / else` | ✅ `elsif` keyword for chained conditionals (not `else if`); resolves ambiguity in brace-free syntax |
+| `unique if` / `unique match` | ✅ `unique if cond ...` and `unique match expr ...` assert mutual exclusivity to the synthesis tool; emits SV `unique if (...)` and `unique case (...)`; enables parallel mux optimization |
 | `match` (reg and comb blocks) | ✅ |
 | Wildcard `_` → `default:` | ✅ |
 | `let` bindings | ✅ `logic` local in module scope; **explicit type annotation required** (e.g. `let x: UInt<32> = ...`) — omitting the type is a compile error since bit widths are semantically meaningful |
