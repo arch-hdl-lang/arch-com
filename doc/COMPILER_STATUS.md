@@ -239,6 +239,12 @@
 | 11 | **`pqueue`** | High | Priority queue with enqueue/dequeue |
 | ~~12~~ | ~~**`linklist`**~~ | ~~High~~ | **DONE** — singly/doubly/circular variants; all standard ops; prev-pointer maintenance; arch sim C++ model |
 
+### Planned Language Features
+
+| # | Feature | Description |
+|---|---------|-------------|
+| 1 | **`multicycle` reg annotation** | `reg result: UInt<32> multicycle 3 reset rst=0;` — declares that the combinational path feeding this register has a multi-cycle timing budget. No extra flops are inserted (unlike `pipe_reg`); the register remains a single flop. The compiler emits an SDC constraint (`set_multicycle_path N -to result`) and can statically verify that consumers only sample the value at the correct rate. Saves area and power for slow-settling paths (multipliers, dividers, complex ALU ops). |
+
 ### CLI & Backend
 
 | # | Feature | Notes |

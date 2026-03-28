@@ -688,6 +688,8 @@ end module Mux2
 
 > *⚑ The type checker enforces: `reg` cannot be a `comb` target (error: "cannot assign to register `x` in a comb block; use `<=` inside a seq block"). Only `wire` declarations and output ports are valid comb targets.*
 
+**`multicycle` reg annotation (planned)** — `reg result: UInt<32> multicycle 3 reset rst=0;` declares that the combinational path feeding this register has a multi-cycle timing budget. Unlike `pipe_reg` (which inserts N physical flip-flop stages), a `multicycle` register remains a single flop — no extra area or power. The compiler emits an SDC constraint (`set_multicycle_path N -to result`) and can statically verify that consumers only sample the value at the correct rate. This is useful for slow-settling operations (multipliers, dividers, complex ALU) where the path does not affect end-to-end throughput.
+
 The Counter example from §4.2 can be simplified using `port reg`:
 
 ```
