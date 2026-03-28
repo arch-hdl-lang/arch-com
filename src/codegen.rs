@@ -4,6 +4,26 @@ use crate::lexer::Span;
 use crate::resolve::{Symbol, SymbolTable};
 use crate::typecheck::enum_width;
 
+fn stmt_span_start(stmt: &Stmt) -> usize {
+    match stmt {
+        Stmt::Assign(a) => a.span.start,
+        Stmt::IfElse(i) => i.span.start,
+        Stmt::Match(m) => m.span.start,
+        Stmt::Log(l) => l.span.start,
+        Stmt::For(f) => f.span.start,
+    }
+}
+
+fn comb_stmt_span_start(stmt: &CombStmt) -> usize {
+    match stmt {
+        CombStmt::Assign(a) => a.span.start,
+        CombStmt::IfElse(i) => i.span.start,
+        CombStmt::MatchExpr(m) => m.span.start,
+        CombStmt::Log(l) => l.span.start,
+        CombStmt::For(f) => f.span.start,
+    }
+}
+
 pub struct Codegen<'a> {
     pub symbols: &'a SymbolTable,
     pub source: &'a SourceFile,
@@ -629,6 +649,7 @@ impl<'a> Codegen<'a> {
             for stmt in &cb.stmts {
                 self.emit_comb_stmt(stmt);
             }
+            self.emit_comments_before(cb.span.end);
             self.indent -= 1;
             self.line("end");
         }
@@ -724,6 +745,7 @@ impl<'a> Codegen<'a> {
     }
 
     fn emit_comb_stmt(&mut self, stmt: &CombStmt) {
+        self.emit_comments_before(comb_stmt_span_start(stmt));
         match stmt {
             CombStmt::Assign(a) => {
                 // Match-expression RHS: emit as a case block for readability
@@ -1012,6 +1034,7 @@ impl<'a> Codegen<'a> {
             for stmt in &guarded_stmts {
                 self.emit_reg_stmt(stmt);
             }
+            self.emit_comments_before(rb.span.end);
             self.indent -= 1;
             self.line("end");
             self.indent -= 1;
@@ -1027,6 +1050,7 @@ impl<'a> Codegen<'a> {
                 for stmt in &unguarded_stmts {
                     self.emit_reg_stmt(stmt);
                 }
+                self.emit_comments_before(rb.span.end);
                 self.indent -= 1;
                 self.line("end");
             }
@@ -1037,6 +1061,7 @@ impl<'a> Codegen<'a> {
             for stmt in &rb.stmts {
                 self.emit_reg_stmt(stmt);
             }
+            self.emit_comments_before(rb.span.end);
             self.indent -= 1;
             self.line("end");
         }
@@ -1358,6 +1383,7 @@ impl<'a> Codegen<'a> {
     }
 
     fn emit_reg_stmt(&mut self, stmt: &Stmt) {
+        self.emit_comments_before(stmt_span_start(stmt));
         match stmt {
             Stmt::Assign(a) => {
                 let target = self.emit_expr_str(&a.target);
