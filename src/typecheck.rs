@@ -342,7 +342,7 @@ impl<'a> TypeChecker<'a> {
             } else { None })
             .collect();
 
-        if clk_domain.len() >= 2 {
+        if clk_domain.len() >= 2 && !m.cdc_safe {
             // Build reg → domain map (which domain drives each register)
             let mut reg_domain: HashMap<String, String> = HashMap::new();
             for item in &m.body {
@@ -1094,12 +1094,33 @@ impl<'a> TypeChecker<'a> {
                     "trunc" | "zext" | "sext" => {
                         if let Some(width_expr) = args.first() {
                             if let Some(w) = self.eval_const_expr(width_expr, local_types) {
+                                let target_w = w as u32;
+                                let source_w = match &base_ty {
+                                    Ty::UInt(sw) | Ty::SInt(sw) => Some(*sw),
+                                    _ => None,
+                                };
+                                if let Some(sw) = source_w {
+                                    if method.name == "trunc" && target_w >= sw {
+                                        self.errors.push(CompileError::general(
+                                            &format!(".trunc<{}>() on a {}-bit value does not truncate — use .zext<{}>() to extend", target_w, sw, target_w),
+                                            method.span,
+                                        ));
+                                        return Ty::Error;
+                                    }
+                                    if (method.name == "zext" || method.name == "sext") && target_w <= sw {
+                                        self.errors.push(CompileError::general(
+                                            &format!(".{}<{}>() on a {}-bit value does not extend — use .trunc<{}>() to narrow", method.name, target_w, sw, target_w),
+                                            method.span,
+                                        ));
+                                        return Ty::Error;
+                                    }
+                                }
                                 if method.name == "sext" {
-                                    Ty::SInt(w as u32)
+                                    Ty::SInt(target_w)
                                 } else if let Ty::SInt(_) = base_ty {
-                                    Ty::SInt(w as u32)
+                                    Ty::SInt(target_w)
                                 } else {
-                                    Ty::UInt(w as u32)
+                                    Ty::UInt(target_w)
                                 }
                             } else {
                                 Ty::Error

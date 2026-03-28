@@ -62,7 +62,11 @@ Common mistakes to avoid:
 - Bus ports use 'initiator BusName' or 'target BusName' to set the perspective — 'initiator' keeps signal directions as declared in the bus; 'target' flips them (in↔out)
 - Use 'default seq on clk rising;' to set the default clock, then use one-line 'seq target <= expr;' (no 'on clk', no 'end seq')
 - One-line seq requires 'default seq' — without it, 'seq' must have 'on clk rising/falling'
-- Use 'package PkgName ... end package PkgName' to group shared enums/structs/functions; import with 'use PkgName;' at file scope
+- Use 'package PkgName ... end package PkgName' to group shared enums/structs/functions/domains; import with 'use PkgName;' at file scope
+- Domains declared in a package are shared across files via 'use PkgName;'
+- 'inside' operator: expr inside {val1, val2, lo..hi} — returns Bool, set membership
+- 'for i in {a, b, c}' — compile-time unrolled value-list iteration (inside comb/seq blocks)
+- .trunc<N>() errors if N >= source width (not truncating); .zext<N>()/.sext<N>() error if N <= source width (not extending)
 """,
 )
 
@@ -73,6 +77,12 @@ Common mistakes to avoid:
 def reference_card() -> str:
     """Full ARCH HDL AI Reference Card — language syntax, constructs, and examples."""
     return (PROJECT_ROOT / "doc" / "Arch_AI_Reference_Card.md").read_text()
+
+
+@mcp.resource("arch://specification")
+def specification() -> str:
+    """Full ARCH HDL Language Specification — detailed semantics, type system, and all constructs."""
+    return (PROJECT_ROOT / "doc" / "ARCH_HDL_Specification.md").read_text()
 
 
 @mcp.resource("arch://compiler-status")
@@ -122,11 +132,14 @@ def _run(args: list[str], timeout: int = 30, cwd: str | None = None) -> str:
 RESERVED_KEYWORDS = {
     "module", "pipeline", "fsm", "fifo", "ram", "arbiter", "synchronizer",
     "counter", "regfile", "interface", "domain", "struct", "enum", "package",
-    "generate", "inst", "port", "param", "reg", "let", "comb", "seq",
-    "assert", "cover", "if", "else", "elsif", "end", "for", "on", "rising",
-    "falling", "init", "reset", "sync", "async", "high", "low", "none",
-    "forward", "stall", "flush", "when", "kind", "policy", "connect",
-    "true", "false", "todo",
+    "generate", "inst", "port", "ports", "param", "reg", "wire", "let",
+    "comb", "seq", "latch", "assert", "cover", "if", "else", "elsif", "end",
+    "for", "on", "rising", "falling", "init", "reset", "sync", "async",
+    "high", "low", "none", "forward", "stall", "flush", "when", "kind",
+    "policy", "connect", "true", "false", "todo", "use", "inside", "bus",
+    "template", "function", "return", "stage", "store", "default",
+    "testbench", "initial", "repeat", "clkgate", "linklist", "hook",
+    "implements", "from", "match", "transition", "to",
 }
 
 # ── Construct syntax snippets ────────────────────────────────────────────
@@ -424,6 +437,8 @@ end module Slave
 // ── Width rules ──
 // UInt<8> + UInt<8> → UInt<9>   (result widens by 1)
 // No implicit conversions — use .trunc<N>(), .zext<N>(), .sext<N>()
+// .trunc<N>() requires N < source width (compiler error otherwise)
+// .zext<N>()/.sext<N>() require N > source width (compiler error otherwise)
 // Bit slice: x[7:4] extracts bits 7 down to 4
 // Single bit: x[3] extracts bit 3
 // Cast: (x as SInt<32>), (x as UInt<32>)
