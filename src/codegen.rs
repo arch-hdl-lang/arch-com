@@ -701,9 +701,10 @@ impl<'a> Codegen<'a> {
             ForRange::ValueList(vals) => {
                 for v in vals {
                     let val = self.emit_expr_str(v);
-                    self.line("begin");
+                    // Emit as a for-loop with a single iteration for Icarus compatibility
+                    // (Icarus doesn't support variable declarations inside always_* blocks)
+                    self.line(&format!("for (int {var} = {val}; {var} == {val}; {var}++) begin"));
                     self.indent += 1;
-                    self.line(&format!("automatic int {var} = {val};"));
                     for s in &f.body { emit_body_stmt(self, s); }
                     self.indent -= 1;
                     self.line("end");
@@ -2343,9 +2344,8 @@ impl<'a> Codegen<'a> {
                     ForRange::ValueList(vals) => {
                         for v in vals {
                             let val = self.emit_expr_str(v);
-                            self.line("begin");
+                            self.line(&format!("for (int {var} = {val}; {var} == {val}; {var}++) begin"));
                             self.indent += 1;
-                            self.line(&format!("automatic int {var} = {val};"));
                             for s in &f.body { self.emit_pipeline_reg_stmt(s, current_prefix, current_stage_idx, stage_names, stage_regs, port_names); }
                             self.indent -= 1;
                             self.line("end");
