@@ -301,6 +301,7 @@ pub struct CombIfElse {
     pub cond: Expr,
     pub then_stmts: Vec<CombStmt>,
     pub else_stmts: Vec<CombStmt>,
+    pub unique: bool,
     pub span: Span,
 }
 
@@ -308,6 +309,7 @@ pub struct CombIfElse {
 pub struct CombMatch {
     pub scrutinee: Expr,
     pub arms: Vec<MatchArm>,
+    pub unique: bool,
     pub span: Span,
 }
 
@@ -427,6 +429,7 @@ pub struct IfElse {
     pub cond: Expr,
     pub then_stmts: Vec<Stmt>,
     pub else_stmts: Vec<Stmt>,
+    pub unique: bool,
     pub span: Span,
 }
 
@@ -434,6 +437,7 @@ pub struct IfElse {
 pub struct MatchStmt {
     pub scrutinee: Expr,
     pub arms: Vec<MatchArm>,
+    pub unique: bool,
     pub span: Span,
 }
 

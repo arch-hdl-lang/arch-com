@@ -791,11 +791,18 @@ impl Parser {
     }
 
     fn parse_reg_stmt(&mut self) -> Result<Stmt, CompileError> {
+        let unique = self.eat(TokenKind::Unique);
         if self.check(TokenKind::If) {
-            return self.parse_reg_if();
+            return self.parse_reg_if(unique);
         }
         if self.check(TokenKind::Match) {
-            return self.parse_reg_match();
+            return self.parse_reg_match(unique);
+        }
+        if unique {
+            return Err(CompileError::general(
+                "'unique' can only precede 'if' or 'match'",
+                self.peek_span(),
+            ));
         }
         if self.check(TokenKind::Log) {
             return Ok(Stmt::Log(self.parse_log_stmt()?));
@@ -812,7 +819,7 @@ impl Parser {
         Ok(Stmt::Assign(RegAssign { target, value, span }))
     }
 
-    fn parse_reg_if(&mut self) -> Result<Stmt, CompileError> {
+    fn parse_reg_if(&mut self, unique: bool) -> Result<Stmt, CompileError> {
         let start = self.expect(TokenKind::If)?.span;
         let cond = self.parse_expr()?;
         let mut then_stmts = Vec::new();
@@ -825,7 +832,7 @@ impl Parser {
             // `elsif` — desugar to nested IfElse (replaces old `else if` chaining)
             // Rewrite the ElsIf token to If so parse_reg_if can consume it
             self.tokens[self.pos].kind = TokenKind::If;
-            let nested = self.parse_reg_if()?;
+            let nested = self.parse_reg_if(false)?;
             else_stmts.push(nested);
         } else if self.check(TokenKind::Else) {
             self.advance(); // consume `else`
@@ -846,6 +853,7 @@ impl Parser {
             cond,
             then_stmts,
             else_stmts,
+            unique,
             span: start.merge(end_span),
         }))
     }
@@ -857,7 +865,7 @@ impl Parser {
     }
 
 
-    fn parse_reg_match(&mut self) -> Result<Stmt, CompileError> {
+    fn parse_reg_match(&mut self, unique: bool) -> Result<Stmt, CompileError> {
         let start = self.expect(TokenKind::Match)?.span;
         let scrutinee = self.parse_expr()?;
         let mut arms = Vec::new();
@@ -875,6 +883,7 @@ impl Parser {
         Ok(Stmt::Match(MatchStmt {
             scrutinee,
             arms,
+            unique,
             span: start.merge(end_span),
         }))
     }
@@ -964,6 +973,7 @@ impl Parser {
                 cond: ie.cond,
                 then_stmts: ie.then_stmts.into_iter().map(Self::comb_stmt_to_stmt).collect(),
                 else_stmts: ie.else_stmts.into_iter().map(Self::comb_stmt_to_stmt).collect(),
+                unique: ie.unique,
                 span: ie.span,
             }),
             CombStmt::Log(l) => Stmt::Log(l),
@@ -1018,11 +1028,18 @@ impl Parser {
     }
 
     fn parse_comb_stmt(&mut self) -> Result<CombStmt, CompileError> {
+        let unique = self.eat(TokenKind::Unique);
         if self.check(TokenKind::If) {
-            return self.parse_comb_if();
+            return self.parse_comb_if(unique);
         }
         if self.check(TokenKind::Match) {
-            return self.parse_comb_match();
+            return self.parse_comb_match(unique);
+        }
+        if unique {
+            return Err(CompileError::general(
+                "'unique' can only precede 'if' or 'match'",
+                self.peek_span(),
+            ));
         }
         if self.check(TokenKind::Log) {
             return Ok(CombStmt::Log(self.parse_log_stmt()?));
@@ -1047,7 +1064,7 @@ impl Parser {
         }))
     }
 
-    fn parse_comb_if(&mut self) -> Result<CombStmt, CompileError> {
+    fn parse_comb_if(&mut self, unique: bool) -> Result<CombStmt, CompileError> {
         let start = self.expect(TokenKind::If)?.span;
         let cond = self.parse_expr()?;
         let mut then_stmts = Vec::new();
@@ -1058,7 +1075,7 @@ impl Parser {
         let mut else_stmts = Vec::new();
         if self.check(TokenKind::ElsIf) {
             self.tokens[self.pos].kind = TokenKind::If;
-            let nested = self.parse_comb_if()?;
+            let nested = self.parse_comb_if(false)?;
             else_stmts.push(nested);
         } else if self.check(TokenKind::Else) {
             self.advance();
@@ -1077,11 +1094,12 @@ impl Parser {
             cond,
             then_stmts,
             else_stmts,
+            unique,
             span: start.merge(end_span),
         }))
     }
 
-    fn parse_comb_match(&mut self) -> Result<CombStmt, CompileError> {
+    fn parse_comb_match(&mut self, unique: bool) -> Result<CombStmt, CompileError> {
         let start = self.expect(TokenKind::Match)?.span;
         let scrutinee = self.parse_expr()?;
         let mut arms = Vec::new();
@@ -1101,6 +1119,7 @@ impl Parser {
         Ok(CombStmt::MatchExpr(CombMatch {
             scrutinee,
             arms,
+            unique,
             span: start.merge(end_span),
         }))
     }

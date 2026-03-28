@@ -794,7 +794,8 @@ impl<'a> Codegen<'a> {
             }
             CombStmt::MatchExpr(m) => {
                 let scrut = self.emit_expr_str(&m.scrutinee);
-                self.line(&format!("case ({})", scrut));
+                let u = if m.unique { "unique " } else { "" };
+                self.line(&format!("{}case ({})", u, scrut));
                 self.indent += 1;
                 for arm in &m.arms {
                     let pat = self.emit_pattern(&arm.pattern);
@@ -822,10 +823,11 @@ impl<'a> Codegen<'a> {
 
     fn emit_comb_if_else_inner(&mut self, ie: &CombIfElse, is_chain: bool) {
         let cond = self.emit_expr_str(&ie.cond);
+        let u = if ie.unique && !is_chain { "unique " } else { "" };
         if is_chain {
             self.line(&format!("end else if ({}) begin", cond));
         } else {
-            self.line(&format!("if ({}) begin", cond));
+            self.line(&format!("{}if ({}) begin", u, cond));
         }
         self.indent += 1;
         for s in &ie.then_stmts {
@@ -861,7 +863,8 @@ impl<'a> Codegen<'a> {
             }
             Stmt::Match(m) => {
                 let scrut = self.emit_expr_str(&m.scrutinee);
-                self.line(&format!("case ({})", scrut));
+                let u = if m.unique { "unique " } else { "" };
+                self.line(&format!("{}case ({})", u, scrut));
                 self.indent += 1;
                 for arm in &m.arms {
                     let pat = self.emit_pattern(&arm.pattern);
@@ -885,10 +888,11 @@ impl<'a> Codegen<'a> {
 
     fn emit_comb_if_else_from_reg(&mut self, ie: &IfElse, is_chain: bool) {
         let cond = self.emit_expr_str(&ie.cond);
+        let u = if ie.unique && !is_chain { "unique " } else { "" };
         if is_chain {
             self.line(&format!("end else if ({}) begin", cond));
         } else {
-            self.line(&format!("if ({}) begin", cond));
+            self.line(&format!("{}if ({}) begin", u, cond));
         }
         self.indent += 1;
         for s in &ie.then_stmts {
@@ -1409,7 +1413,8 @@ impl<'a> Codegen<'a> {
             }
             Stmt::Match(m) => {
                 let scrut = self.emit_expr_str(&m.scrutinee);
-                self.line(&format!("case ({})", scrut));
+                let u = if m.unique { "unique " } else { "" };
+                self.line(&format!("{}case ({})", u, scrut));
                 self.indent += 1;
                 for arm in &m.arms {
                     let pat = self.emit_pattern(&arm.pattern);
@@ -1437,10 +1442,11 @@ impl<'a> Codegen<'a> {
 
     fn emit_reg_if_else_inner(&mut self, ie: &IfElse, is_chain: bool) {
         let cond = self.emit_expr_str(&ie.cond);
+        let u = if ie.unique && !is_chain { "unique " } else { "" };
         if is_chain {
             self.line(&format!("end else if ({}) begin", cond));
         } else {
-            self.line(&format!("if ({}) begin", cond));
+            self.line(&format!("{}if ({}) begin", u, cond));
         }
         self.indent += 1;
         for s in &ie.then_stmts {

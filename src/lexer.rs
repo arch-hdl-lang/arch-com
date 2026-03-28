@@ -190,6 +190,8 @@ pub enum TokenKind {
     Repeat,
     #[token("inside")]
     Inside,
+    #[token("unique")]
+    Unique,
 
     // Type keywords
     #[token("UInt")]
@@ -363,6 +365,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Initial => write!(f, "initial"),
             TokenKind::Repeat => write!(f, "repeat"),
             TokenKind::Inside => write!(f, "inside"),
+            TokenKind::Unique => write!(f, "unique"),
             TokenKind::Fsm => write!(f, "fsm"),
             TokenKind::Fifo => write!(f, "fifo"),
             TokenKind::Synchronizer => write!(f, "synchronizer"),

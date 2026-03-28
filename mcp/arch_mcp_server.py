@@ -139,7 +139,7 @@ RESERVED_KEYWORDS = {
     "policy", "connect", "true", "false", "todo", "use", "inside", "bus",
     "template", "function", "return", "stage", "store", "default",
     "testbench", "initial", "repeat", "clkgate", "linklist", "hook",
-    "implements", "from", "match", "transition", "to",
+    "implements", "from", "match", "transition", "to", "unique",
 }
 
 # ── Construct syntax snippets ────────────────────────────────────────────
