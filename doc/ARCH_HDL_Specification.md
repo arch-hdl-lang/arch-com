@@ -710,6 +710,8 @@ end module Counter
 
 > *⚑ `port reg` eliminates the intermediate `reg count_r` and the `comb count = count_r; end comb` wiring block. The port is directly assigned in the `seq` block. This is the preferred style when the output port is a straightforward registered value.*
 
+**`multicycle` reg annotation (planned)** — `reg result: UInt<32> multicycle 3 reset rst=0;` declares that the combinational path feeding this register has a multi-cycle timing budget. Unlike `pipe_reg` (which inserts N physical flip-flop stages), a `multicycle` register remains a single flop — no extra area or power. The compiler auto-detects all input signals feeding the register by walking the assignment expression tree. Three modes of enforcement: (1) **Simulation** (`--check-uninit`): hidden valid tracking with input change detection and latency counter; reads before the counter expires return poison/X. (2) **Synthesis**: SDC constraint generation (`set_multicycle_path N -to result`). (3) **Formal**: optional `assert property` to verify the multicycle timing assumption holds.
+
 **4.3 Module Instantiation**
 
 +--------------------------------------------------------------------+
