@@ -3,6 +3,10 @@ name = "arch"
 version = "0.1.0"
 edition = "2021"
 description = "Compiler for the ARCH hardware description language"
+license = "Apache-2.0"
+repository = "https://github.com/arch-hdl-lang/arch"
+keywords = ["hdl", "hardware", "compiler", "systemverilog", "eda"]
+categories = ["compilers", "hardware-support"]
 
 [[bin]]
 name = "arch"
