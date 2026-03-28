@@ -553,6 +553,67 @@ end seq
 
 > *⚑ This `for` construct is a runtime loop emitted as a SV `for` statement. It differs from `generate for`, which is a compile-time unrolling that creates distinct ports and instances.*
 
+**4.2.1b For Loops with Value Lists**
+
+A `for` loop may also iterate over an explicit value list enclosed in braces. The syntax is:
+
+```
+for VAR in {val1, val2, val3}
+  // body — VAR takes each value in turn
+end for
+```
+
+The compiler unrolls the loop at compile time, emitting one copy of the body per value. This is useful when the iteration values are non-contiguous or follow no simple range pattern.
+
+Example in a `comb` block:
+
+```
+comb
+  for i in {0, 3, 7, 15}
+    mask[i] = true;
+  end for
+end comb
+```
+
+The compiler emits one assignment per value:
+
+```systemverilog
+mask[0] = 1'b1;
+mask[3] = 1'b1;
+mask[7] = 1'b1;
+mask[15] = 1'b1;
+```
+
+> *⚑ Value-list `for` is compile-time unrolled (like `generate for`), not a runtime SV `for` loop. Use range-based `for i in 0..N` for runtime loops.*
+
+**4.2.1c The `inside` Set Membership Operator**
+
+The `inside` operator tests whether an expression matches any value or falls within any range in a set. It returns `Bool`.
+
+```
+expr inside {val1, val2, lo..hi}
+```
+
+Individual values and inclusive ranges (`lo..hi`) may be freely mixed inside the braces. The compiler emits the SystemVerilog `inside` operator directly:
+
+```systemverilog
+expr inside {val1, val2, [lo:hi]}
+```
+
+Example:
+
+```
+let is_special: Bool = opcode inside {3, 7, 16..31};
+```
+
+Emits:
+
+```systemverilog
+assign is_special = opcode inside {3, 7, [16:31]};
+```
+
+The `inside` expression can be used anywhere a `Bool` expression is valid — in `if` conditions, ternary operands, `comb` assignments, `transition when` guards, etc.
+
 **4.2.2 Bit Concatenation and Replication**
 
 Arch uses standard SystemVerilog syntax for bit concatenation and replication:

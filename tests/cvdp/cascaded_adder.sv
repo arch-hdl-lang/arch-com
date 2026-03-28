@@ -17,7 +17,7 @@ module cascaded_adder #(
   always_comb begin
     sum_comb = 0;
     for (int i = 0; i <= IN_DATA_NS - 1; i++) begin
-      sum_comb = OUT_WIDTH'(sum_comb + OUT_WIDTH'($unsigned(i_data[i * IN_DATA_WIDTH + IN_DATA_WIDTH - 1:i * IN_DATA_WIDTH])));
+      sum_comb = OUT_WIDTH'(sum_comb + OUT_WIDTH'($unsigned(i_data[i * IN_DATA_WIDTH +: IN_DATA_WIDTH])));
     end
   end
   always_ff @(posedge clk or negedge rst_n) begin

@@ -20,6 +20,8 @@ pub struct Codegen<'a> {
     overload_map: std::collections::HashMap<usize, usize>,
     /// Bus port names in the current module → bus name (for FieldAccess rewriting).
     bus_ports: std::collections::HashMap<String, String>,
+    /// Name of the construct currently being emitted (for symbol lookups).
+    current_construct: String,
 }
 
 impl<'a> Codegen<'a> {
@@ -39,6 +41,7 @@ impl<'a> Codegen<'a> {
             pending_functions: Vec::new(),
             overload_map,
             bus_ports: std::collections::HashMap::new(),
+            current_construct: String::new(),
         }
     }
 
@@ -265,6 +268,7 @@ impl<'a> Codegen<'a> {
     }
 
     fn emit_module(&mut self, m: &ModuleDecl) {
+        self.current_construct = m.name.name.clone();
         // Emit import statements for any packages referenced via `use` before the module
         for item in &self.source.items {
             if let Item::Use(u) = item {
@@ -455,49 +459,6 @@ impl<'a> Codegen<'a> {
             }
             self.indent -= 1;
             self.line("end");
-        }
-
-        // Emit initial block for unpacked-array registers with init values (icarus compatibility)
-        {
-            let mut arr_inits: Vec<(String, Vec<String>, String)> = Vec::new();
-            for item in &body_items {
-                if let ModuleBodyItem::RegDecl(r) = item {
-                    if let Some(ref init_expr) = r.init {
-                        let (_, arr_suffix) = self.emit_type_and_array_suffix(&r.ty);
-                        if !arr_suffix.is_empty() {
-                            let mut dims = Vec::new();
-                            let mut ty = &r.ty;
-                            while let TypeExpr::Vec(inner, size) = ty {
-                                dims.push(self.emit_expr_str(size));
-                                ty = inner;
-                            }
-                            let init_str = self.emit_expr_str(init_expr);
-                            arr_inits.push((r.name.name.clone(), dims, init_str));
-                        }
-                    }
-                }
-            }
-            if !arr_inits.is_empty() {
-                self.line("");
-                self.line("initial begin");
-                self.indent += 1;
-                for (name, dims, init_val) in &arr_inits {
-                    let idx_vars: Vec<String> = (0..dims.len()).map(|d| format!("__ii{d}")).collect();
-                    for (d, dim_size) in dims.iter().enumerate() {
-                        self.line(&format!("for (int {} = 0; {} < {}; {}++) begin",
-                            idx_vars[d], idx_vars[d], dim_size, idx_vars[d]));
-                        self.indent += 1;
-                    }
-                    let idx_str: String = idx_vars.iter().map(|v| format!("[{v}]")).collect();
-                    self.line(&format!("{name}{idx_str} = {init_val};"));
-                    for _ in 0..dims.len() {
-                        self.indent -= 1;
-                        self.line("end");
-                    }
-                }
-                self.indent -= 1;
-                self.line("end");
-            }
         }
 
         self.indent -= 1;
@@ -703,6 +664,33 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Emit a for-loop (Range or ValueList) as SV.
+    fn emit_for_loop_sv(&mut self, f: &ForLoop, mut emit_body_stmt: impl FnMut(&mut Self, &Stmt)) {
+        let var = &f.var.name;
+        match &f.range {
+            ForRange::Range(rs, re) => {
+                let start = self.emit_expr_str(rs);
+                let end = self.emit_expr_str(re);
+                self.line(&format!("for (int {var} = {start}; {var} <= {end}; {var}++) begin"));
+                self.indent += 1;
+                for s in &f.body { emit_body_stmt(self, s); }
+                self.indent -= 1;
+                self.line("end");
+            }
+            ForRange::ValueList(vals) => {
+                for v in vals {
+                    let val = self.emit_expr_str(v);
+                    self.line("begin");
+                    self.indent += 1;
+                    self.line(&format!("automatic int {var} = {val};"));
+                    for s in &f.body { emit_body_stmt(self, s); }
+                    self.indent -= 1;
+                    self.line("end");
+                }
+            }
+        }
+    }
+
     /// Emit a `log(...)` statement as an `if`-guarded `$display` or `$fwrite`.
     fn emit_log_stmt(&mut self, l: &LogStmt) {
         let args_str: String = l.args.iter()
@@ -787,16 +775,7 @@ impl<'a> Codegen<'a> {
             }
             CombStmt::Log(l) => { self.emit_log_stmt(l); }
             CombStmt::For(f) => {
-                let start = self.emit_expr_str(&f.start);
-                let end = self.emit_expr_str(&f.end);
-                let var = &f.var.name;
-                self.line(&format!("for (int {var} = {start}; {var} <= {end}; {var}++) begin"));
-                self.indent += 1;
-                for s in &f.body {
-                    self.emit_reg_stmt_as_comb(s);
-                }
-                self.indent -= 1;
-                self.line("end");
+                self.emit_for_loop_sv(f, |s, stmt| s.emit_reg_stmt_as_comb(stmt));
             }
         }
     }
@@ -863,16 +842,7 @@ impl<'a> Codegen<'a> {
             }
             Stmt::Log(l) => { self.emit_log_stmt(l); }
             Stmt::For(f) => {
-                let start = self.emit_expr_str(&f.start);
-                let end = self.emit_expr_str(&f.end);
-                let var = &f.var.name;
-                self.line(&format!("for (int {var} = {start}; {var} <= {end}; {var}++) begin"));
-                self.indent += 1;
-                for s in &f.body {
-                    self.emit_reg_stmt_as_comb(s);
-                }
-                self.indent -= 1;
-                self.line("end");
+                self.emit_for_loop_sv(f, |s, stmt| s.emit_reg_stmt_as_comb(stmt));
             }
         }
     }
@@ -1152,12 +1122,55 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    /// Check if an expression is signed (contains a Cast to SInt).
-    fn expr_is_signed(expr: &Expr) -> bool {
+    /// Check if an expression produces a signed (SInt) value.
+    fn expr_is_signed(&self, expr: &Expr) -> bool {
         match &expr.kind {
             ExprKind::Cast(_, ty) => matches!(&**ty, TypeExpr::SInt(_)),
+            ExprKind::Ident(name) => self.ident_is_sint(name),
+            ExprKind::MethodCall(recv, method, _) => {
+                // sext always produces signed; trunc preserves signedness
+                match method.name.as_str() {
+                    "sext" => true,
+                    "trunc" => self.expr_is_signed(recv),
+                    _ => false,
+                }
+            }
+            ExprKind::Binary(_, lhs, _) => self.expr_is_signed(lhs),
             _ => false,
         }
+    }
+
+    /// Check if an identifier is declared as SInt in the current construct's scope.
+    fn ident_is_sint(&self, name: &str) -> bool {
+        if let Some(scope) = self.symbols.module_scopes.get(&self.current_construct) {
+            if let Some((sym, _)) = scope.get(name) {
+                return match sym {
+                    Symbol::Port(p) => matches!(&p.ty, TypeExpr::SInt(_)),
+                    Symbol::Reg(r) => matches!(&r.ty, TypeExpr::SInt(_)),
+                    Symbol::Let(_) => self.let_binding_is_sint(name),
+                    _ => false,
+                };
+            }
+        }
+        false
+    }
+
+    /// Check if a let binding is typed as SInt by looking up the AST.
+    fn let_binding_is_sint(&self, name: &str) -> bool {
+        for item in &self.source.items {
+            if let Item::Module(m) = item {
+                if m.name.name == self.current_construct {
+                    for bi in &m.body {
+                        if let ModuleBodyItem::LetBinding(l) = bi {
+                            if l.name.name == name {
+                                return l.ty.as_ref().map_or(false, |t| matches!(t, TypeExpr::SInt(_)));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Try to detect indexed part-select pattern: hi = lo + (width - 1).
@@ -1373,16 +1386,7 @@ impl<'a> Codegen<'a> {
             }
             Stmt::Log(l) => { self.emit_log_stmt(l); }
             Stmt::For(f) => {
-                let start = self.emit_expr_str(&f.start);
-                let end = self.emit_expr_str(&f.end);
-                let var = &f.var.name;
-                self.line(&format!("for (int {var} = {start}; {var} <= {end}; {var}++) begin"));
-                self.indent += 1;
-                for s in &f.body {
-                    self.emit_reg_stmt(s);
-                }
-                self.indent -= 1;
-                self.line("end");
+                self.emit_for_loop_sv(f, |s, stmt| s.emit_reg_stmt(stmt));
             }
         }
     }
@@ -1688,6 +1692,7 @@ impl<'a> Codegen<'a> {
     // ── FSM ───────────────────────────────────────────────────────────────────
 
     fn emit_fsm(&mut self, f: &FsmDecl) {
+        self.current_construct = f.name.name.clone();
         let n = f.name.name.clone();
         let n_states = f.state_names.len();
         let state_bits = enum_width(n_states);
@@ -1904,6 +1909,7 @@ impl<'a> Codegen<'a> {
     // ── Pipeline ──────────────────────────────────────────────────────────────
 
     fn emit_pipeline(&mut self, p: &PipelineDecl) {
+        self.current_construct = p.name.name.clone();
         let n = &p.name.name;
 
         // ── Module header ────────────────────────────────────────────────────
@@ -2297,16 +2303,29 @@ impl<'a> Codegen<'a> {
             }
             Stmt::Log(l) => { self.emit_log_stmt(l); }
             Stmt::For(f) => {
-                let start = self.emit_expr_str(&f.start);
-                let end = self.emit_expr_str(&f.end);
                 let var = &f.var.name;
-                self.line(&format!("for (int {var} = {start}; {var} <= {end}; {var}++) begin"));
-                self.indent += 1;
-                for s in &f.body {
-                    self.emit_pipeline_reg_stmt(s, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                match &f.range {
+                    ForRange::Range(rs, re) => {
+                        let start = self.emit_expr_str(rs);
+                        let end = self.emit_expr_str(re);
+                        self.line(&format!("for (int {var} = {start}; {var} <= {end}; {var}++) begin"));
+                        self.indent += 1;
+                        for s in &f.body { self.emit_pipeline_reg_stmt(s, current_prefix, current_stage_idx, stage_names, stage_regs, port_names); }
+                        self.indent -= 1;
+                        self.line("end");
+                    }
+                    ForRange::ValueList(vals) => {
+                        for v in vals {
+                            let val = self.emit_expr_str(v);
+                            self.line("begin");
+                            self.indent += 1;
+                            self.line(&format!("automatic int {var} = {val};"));
+                            for s in &f.body { self.emit_pipeline_reg_stmt(s, current_prefix, current_stage_idx, stage_names, stage_regs, port_names); }
+                            self.indent -= 1;
+                            self.line("end");
+                        }
+                    }
                 }
-                self.indent -= 1;
-                self.line("end");
             }
         }
     }
@@ -2473,16 +2492,7 @@ impl<'a> Codegen<'a> {
             CombStmt::MatchExpr(_) => {} // TODO if needed
             CombStmt::Log(l) => { self.emit_log_stmt(l); }
             CombStmt::For(f) => {
-                let start = self.emit_expr_str(&f.start);
-                let end = self.emit_expr_str(&f.end);
-                let var = &f.var.name;
-                self.line(&format!("for (int {var} = {start}; {var} <= {end}; {var}++) begin"));
-                self.indent += 1;
-                for s in &f.body {
-                    self.emit_reg_stmt_as_comb(s);
-                }
-                self.indent -= 1;
-                self.line("end");
+                self.emit_for_loop_sv(f, |s, stmt| s.emit_reg_stmt_as_comb(stmt));
             }
         }
     }
@@ -2631,7 +2641,8 @@ impl<'a> Codegen<'a> {
                     "trunc" | "zext" => {
                         if let Some(width) = args.first() {
                             let w = self.emit_expr_str(width);
-                            format!("{w}'({b})")
+                            let wp = Self::paren_width(&w);
+                            format!("{wp}'({b})")
                         } else {
                             b
                         }
@@ -2739,7 +2750,8 @@ impl<'a> Codegen<'a> {
                     "trunc" | "zext" => {
                         if let Some(width) = args.first() {
                             let w = self.emit_expr_str(width);
-                            format!("{w}'({b})")
+                            let wp = Self::paren_width(&w);
+                            format!("{wp}'({b})")
                         } else {
                             b
                         }
@@ -3057,6 +3069,16 @@ impl<'a> Codegen<'a> {
         self.emit_expr_prec(expr, 0)
     }
 
+    /// Wrap a width expression in parens if it contains operators,
+    /// so that `W'(expr)` SV cast syntax parses correctly even when W is e.g. `DATA_WIDTH + 1`.
+    fn paren_width(w: &str) -> String {
+        if w.contains('+') || w.contains('-') || w.contains('*') || w.contains('/') {
+            format!("({w})")
+        } else {
+            w.to_string()
+        }
+    }
+
     /// Emit an expression, wrapping in parens only when its precedence is
     /// below `parent_prec` (i.e. the context requires tighter binding).
     fn emit_expr_prec(&self, expr: &Expr, parent_prec: u8) -> String {
@@ -3098,7 +3120,7 @@ impl<'a> Codegen<'a> {
                 };
                 let r = self.emit_expr_prec(rhs, rhs_prec);
                 // Use arithmetic shift (>>>) when LHS is cast to SInt
-                let shr_str = if matches!(op, BinOp::Shr) && Self::expr_is_signed(lhs) {
+                let shr_str = if matches!(op, BinOp::Shr) && self.expr_is_signed(lhs) {
                     ">>>"
                 } else {
                     ">>"
@@ -3155,7 +3177,8 @@ impl<'a> Codegen<'a> {
                             let w = self.emit_expr_str(width);
                             // SV size cast: valid on any expression, including compound ones.
                             // e.g. (count_r + 1).trunc<8>() → 8'(count_r + 1)
-                            format!("{w}'({b})")
+                            let wp = Self::paren_width(&w);
+                            format!("{wp}'({b})")
                         } else {
                             b
                         }
@@ -3164,7 +3187,8 @@ impl<'a> Codegen<'a> {
                         if let Some(width) = args.first() {
                             let w = self.emit_expr_str(width);
                             // $unsigned prevents context-dependent width expansion before the cast
-                            format!("{w}'($unsigned({b}))")
+                            let wp = Self::paren_width(&w);
+                            format!("{wp}'($unsigned({b}))")
                         } else {
                             b
                         }
@@ -3286,6 +3310,18 @@ impl<'a> Codegen<'a> {
                 let t = self.emit_expr_str(then_expr);
                 let e = self.emit_expr_str(else_expr);
                 format!("{c} ? {t} : {e}")
+            }
+            ExprKind::Inside(scrutinee, members) => {
+                let s = self.emit_expr_str(scrutinee);
+                let member_strs: Vec<String> = members.iter().map(|m| match m {
+                    InsideMember::Single(e) => self.emit_expr_str(e),
+                    InsideMember::Range(lo, hi) => {
+                        let l = self.emit_expr_str(lo);
+                        let h = self.emit_expr_str(hi);
+                        format!("[{l}:{h}]")
+                    }
+                }).collect();
+                format!("{s} inside {{{}}}", member_strs.join(", "))
             }
             ExprKind::FunctionCall(name, args) => {
                 let arg_strs: Vec<String> = args.iter().map(|a| self.emit_expr_str(a)).collect();

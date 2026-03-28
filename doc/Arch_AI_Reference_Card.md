@@ -80,7 +80,9 @@
 >
 > for i in 0..7 out\[i\] = data\[7 - i\]; end for // inclusive range, emits SV for loop
 >
-> // Differs from generate for (compile-time unroll for ports/instances)
+> for i in {0, 3, 7, 15} mask\[i\] = true; end for // value-list, compile-time unrolled
+>
+> // Range for = runtime SV loop; value-list for = compile-time unroll; generate for = ports/instances
 
 **2. Types**
 
@@ -121,6 +123,8 @@
 > Ternary: cond ? a : b (right-associative; chains for priority muxes)
 >
 > Match expression: match x { E::A => val1, E::B => val2, _ => default }
+>
+> Set membership: expr inside {val1, val2, lo..hi} — returns Bool, emits SV inside operator
 >
 > Field access: s.field Array index: a\[i\]
 >

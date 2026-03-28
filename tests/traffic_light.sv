@@ -45,9 +45,6 @@ module TrafficLight #(
   end
   
   always_comb begin
-    red = 1'b0; // default
-    yellow = 1'b0; // default
-    green = 1'b0; // default
     case (state_r)
       RED: begin
         red = 1'b1;

@@ -1260,6 +1260,19 @@ impl<'a> TypeChecker<'a> {
                     then_ty
                 }
             }
+            ExprKind::Inside(scrutinee, members) => {
+                self.resolve_expr_type(scrutinee, module_name, local_types);
+                for m in members {
+                    match m {
+                        InsideMember::Single(e) => { self.resolve_expr_type(e, module_name, local_types); }
+                        InsideMember::Range(lo, hi) => {
+                            self.resolve_expr_type(lo, module_name, local_types);
+                            self.resolve_expr_type(hi, module_name, local_types);
+                        }
+                    }
+                }
+                Ty::Bool
+            }
             ExprKind::FunctionCall(name, call_args) => {
                 if let Some((Symbol::Function(overloads), _)) = self.symbols.globals.get(name) {
                     // Resolve argument types first.
@@ -1686,6 +1699,18 @@ impl<'a> TypeChecker<'a> {
             ExprKind::ExprMatch(scrut, arms) => {
                 Self::collect_expr_reads(scrut, out);
                 for arm in arms { Self::collect_expr_reads(&arm.value, out); }
+            }
+            ExprKind::Inside(scrut, members) => {
+                Self::collect_expr_reads(scrut, out);
+                for m in members {
+                    match m {
+                        InsideMember::Single(e) => Self::collect_expr_reads(e, out),
+                        InsideMember::Range(lo, hi) => {
+                            Self::collect_expr_reads(lo, out);
+                            Self::collect_expr_reads(hi, out);
+                        }
+                    }
+                }
             }
             _ => {}
         }

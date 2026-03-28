@@ -388,10 +388,15 @@ pub enum Stmt {
 }
 
 #[derive(Debug, Clone)]
+pub enum ForRange {
+    Range(Expr, Expr),      // start..end
+    ValueList(Vec<Expr>),   // {a, b, c}
+}
+
+#[derive(Debug, Clone)]
 pub struct ForLoop {
     pub var: Ident,
-    pub start: Expr,
-    pub end: Expr,
+    pub range: ForRange,
     pub body: Vec<Stmt>,
     pub span: Span,
 }
@@ -494,8 +499,16 @@ pub enum ExprKind {
     Clog2(Box<Expr>),
     /// Pure combinational function call: Name(arg, ...)
     FunctionCall(String, Vec<Expr>),
+    /// Set membership: expr inside {val, lo..hi, ...}
+    Inside(Box<Expr>, Vec<InsideMember>),
     /// Ternary conditional: cond ? then_expr : else_expr
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
+}
+
+#[derive(Debug, Clone)]
+pub enum InsideMember {
+    Single(Expr),
+    Range(Expr, Expr), // lo..hi inclusive
 }
 
 #[derive(Debug, Clone)]

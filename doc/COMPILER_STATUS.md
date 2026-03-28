@@ -102,6 +102,7 @@
 | Expression-level `match` | ✅ As `CombAssign` RHS → `case` block; as inline expression → nested ternary chain |
 | `$clog2(x)` | ✅ |
 | Function calls `Name(args)` | ✅ Resolved at call site; overload-resolved by argument types |
+| `inside` set membership | ✅ `expr inside {val1, val2, lo..hi}` — returns `Bool`; emits SV `inside` operator; supports individual values and inclusive ranges |
 
 ---
 
@@ -121,6 +122,7 @@
 | `reg default: init 0 reset rst;` | ✅ Sets default `init`/`reset` for all regs in scope; individual regs may override either field |
 | `{a, b, c}` bit concatenation | ✅ MSB-first; emits SV `{a, b, c}`; sim codegen shift-OR with 128-bit support |
 | `{N{expr}}` bit replication | ✅ Emits SV `{N{expr}}`; nestable inside concat `{{8{sign}}, data}`; sim codegen `_arch_repeat` helper |
+| `for i in {list}` value-list iteration | ✅ `for i in {10, 20, 30} ... end for` — compile-time unrolled; each value gets its own block; works in `comb` and `seq` blocks |
 | `assert` / `cover` | ❌ |
 
 ---

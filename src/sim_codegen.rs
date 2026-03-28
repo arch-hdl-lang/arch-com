@@ -1018,6 +1018,22 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
         ExprKind::Match(scrutinee, _) => {
             format!("/* match({}) */ 0", cpp_expr(scrutinee, ctx))
         }
+
+        ExprKind::Inside(scrutinee, members) => {
+            let s = cpp_expr(scrutinee, ctx);
+            let parts: Vec<String> = members.iter().map(|m| match m {
+                InsideMember::Single(e) => {
+                    let v = cpp_expr(e, ctx);
+                    format!("({s} == {v})")
+                }
+                InsideMember::Range(lo, hi) => {
+                    let l = cpp_expr(lo, ctx);
+                    let h = cpp_expr(hi, ctx);
+                    format!("({s} >= {l} && {s} <= {h})")
+                }
+            }).collect();
+            if parts.is_empty() { "0".to_string() } else { format!("({})", parts.join(" || ")) }
+        }
     }
 }
 
@@ -1063,14 +1079,25 @@ fn emit_reg_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize) {
         }
         Stmt::Log(l) => emit_log_stmt(l, ctx, out, indent),
         Stmt::For(f) => {
-            let start = cpp_expr(&f.start, ctx);
-            let end = cpp_expr(&f.end, ctx);
             let var = &f.var.name;
-            out.push_str(&format!("{}for (int {var} = {start}; {var} <= {end}; {var}++) {{\n", ind(indent)));
-            for s in &f.body {
-                emit_reg_stmt(s, ctx, out, indent + 1);
+            match &f.range {
+                ForRange::Range(rs, re) => {
+                    let start = cpp_expr(rs, ctx);
+                    let end = cpp_expr(re, ctx);
+                    out.push_str(&format!("{}for (int {var} = {start}; {var} <= {end}; {var}++) {{\n", ind(indent)));
+                    for s in &f.body { emit_reg_stmt(s, ctx, out, indent + 1); }
+                    out.push_str(&format!("{}}}\n", ind(indent)));
+                }
+                ForRange::ValueList(vals) => {
+                    for v in vals {
+                        let val = cpp_expr(v, ctx);
+                        out.push_str(&format!("{}{{\n", ind(indent)));
+                        out.push_str(&format!("{}int {var} = {val};\n", ind(indent + 1)));
+                        for s in &f.body { emit_reg_stmt(s, ctx, out, indent + 1); }
+                        out.push_str(&format!("{}}}\n", ind(indent)));
+                    }
+                }
             }
-            out.push_str(&format!("{}}}\n", ind(indent)));
         }
     }
 }
@@ -1146,14 +1173,25 @@ fn emit_comb_stmt(stmt: &CombStmt, ctx: &Ctx, out: &mut String, indent: usize) {
         }
         CombStmt::Log(l) => emit_log_stmt(l, ctx, out, indent),
         CombStmt::For(f) => {
-            let start = cpp_expr(&f.start, ctx);
-            let end = cpp_expr(&f.end, ctx);
             let var = &f.var.name;
-            out.push_str(&format!("{}for (int {var} = {start}; {var} <= {end}; {var}++) {{\n", ind(indent)));
-            for s in &f.body {
-                emit_reg_stmt(s, ctx, out, indent + 1);
+            match &f.range {
+                ForRange::Range(rs, re) => {
+                    let start = cpp_expr(rs, ctx);
+                    let end = cpp_expr(re, ctx);
+                    out.push_str(&format!("{}for (int {var} = {start}; {var} <= {end}; {var}++) {{\n", ind(indent)));
+                    for s in &f.body { emit_reg_stmt(s, ctx, out, indent + 1); }
+                    out.push_str(&format!("{}}}\n", ind(indent)));
+                }
+                ForRange::ValueList(vals) => {
+                    for v in vals {
+                        let val = cpp_expr(v, ctx);
+                        out.push_str(&format!("{}{{\n", ind(indent)));
+                        out.push_str(&format!("{}int {var} = {val};\n", ind(indent + 1)));
+                        for s in &f.body { emit_reg_stmt(s, ctx, out, indent + 1); }
+                        out.push_str(&format!("{}}}\n", ind(indent)));
+                    }
+                }
             }
-            out.push_str(&format!("{}}}\n", ind(indent)));
         }
     }
 }

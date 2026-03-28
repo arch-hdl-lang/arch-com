@@ -947,9 +947,22 @@ impl Parser {
         let start = self.expect(TokenKind::For)?.span;
         let var = self.expect_ident()?;
         self.expect_contextual("in")?;
-        let range_start = self.parse_expr()?;
-        self.expect(TokenKind::DotDot)?;
-        let range_end = self.parse_expr()?;
+
+        let range = if self.check(TokenKind::LBrace) {
+            self.advance();
+            let mut values = Vec::new();
+            loop {
+                values.push(self.parse_expr()?);
+                if !self.eat(TokenKind::Comma) { break; }
+            }
+            self.expect(TokenKind::RBrace)?;
+            ForRange::ValueList(values)
+        } else {
+            let range_start = self.parse_expr()?;
+            self.expect(TokenKind::DotDot)?;
+            let range_end = self.parse_expr()?;
+            ForRange::Range(range_start, range_end)
+        };
 
         let mut body = Vec::new();
         while !(self.check(TokenKind::End)
@@ -967,8 +980,7 @@ impl Parser {
         let end_span = self.expect(TokenKind::For)?.span;
         Ok(Stmt::For(ForLoop {
             var,
-            start: range_start,
-            end: range_end,
+            range,
             body,
             span: start.merge(end_span),
         }))
@@ -1507,6 +1519,27 @@ impl Parser {
                     kind: ExprKind::Cast(Box::new(lhs), Box::new(ty)),
                     span,
                 };
+                continue;
+            }
+
+            // `inside` set membership operator
+            if self.check(TokenKind::Inside) {
+                let lhs_span = lhs.span;
+                self.advance();
+                self.expect(TokenKind::LBrace)?;
+                let mut members = Vec::new();
+                loop {
+                    let e = self.parse_expr()?;
+                    if self.eat(TokenKind::DotDot) {
+                        let end = self.parse_expr()?;
+                        members.push(InsideMember::Range(e, end));
+                    } else {
+                        members.push(InsideMember::Single(e));
+                    }
+                    if !self.eat(TokenKind::Comma) { break; }
+                }
+                let end_span = self.expect(TokenKind::RBrace)?.span;
+                lhs = Expr { kind: ExprKind::Inside(Box::new(lhs), members), span: lhs_span.merge(end_span) };
                 continue;
             }
 

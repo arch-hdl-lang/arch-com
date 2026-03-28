@@ -165,6 +165,16 @@ module ModuleName
   seq on clk falling                     // explicit clock overrides default
     q <= a;
   end seq
+
+  // Value-list for (compile-time unrolled, each value gets its own block):
+  comb
+    for i in {0, 3, 7, 15}
+      mask[i] = true;
+    end for
+  end comb
+
+  // inside operator (set membership, returns Bool):
+  let is_special: Bool = opcode inside {3, 7, 16..31};
 end module ModuleName
 """,
 
@@ -415,6 +425,7 @@ end module Slave
 // Cast: (x as SInt<32>), (x as UInt<32>)
 // Concat: {a, b}   Replication: {4{a}}
 // Reduction: &x (AND), |x (OR), ^x (XOR)
+// Set membership: expr inside {val1, val2, lo..hi} — returns Bool, emits SV inside
 // Ternary: cond ? a : b
 // Bit/byte reverse: x.reverse(1) for bit-reverse, x.reverse(8) for byte-reverse
 
