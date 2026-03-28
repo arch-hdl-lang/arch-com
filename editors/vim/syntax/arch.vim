@@ -10,7 +10,8 @@ endif
 " ── Top-level construct keywords ─────────────────────────────────────────────
 " These open a named block: `keyword Name ... end keyword Name`
 syn keyword archConstruct  module pipeline fsm fifo ram arbiter regfile counter
-syn keyword archConstruct  domain struct enum
+syn keyword archConstruct  domain struct enum package bus template
+syn keyword archConstruct  synchronizer clkgate linklist
 syn keyword archConstruct  nextgroup=archConstructName skipwhite
 
 " `end` followed by a construct keyword closes a block
@@ -19,14 +20,17 @@ syn keyword archEnd        end
 " ── Block-structure keywords ──────────────────────────────────────────────────
 " Appear inside construct bodies to declare sub-sections
 syn keyword archBlock      port ports param socket state default
-syn keyword archBlock      comb reg let inst connect generate
-syn keyword archBlock      assert cover
+syn keyword archBlock      comb seq reg wire let inst connect generate
+syn keyword archBlock      assert cover function return use
+syn keyword archBlock      stage store hook implements
+syn keyword archBlock      testbench initial repeat
 
 " ── Signal / control flow keywords ───────────────────────────────────────────
-syn keyword archControl    if else match transition to when
+syn keyword archControl    if elsif else match transition to when
 syn keyword archControl    on rising falling high low
 syn keyword archControl    await await_all await_any
-syn keyword archControl    forward init
+syn keyword archControl    forward init for in from
+syn keyword archControl    stall flush inside
 
 " ── RAM / FIFO / counter attributes ──────────────────────────────────────────
 syn keyword archAttr       kind read write mode direction policy
@@ -35,8 +39,9 @@ syn keyword archAttr       sync async sync_out no_change
 syn keyword archAttr       wrap saturate up down
 syn keyword archAttr       round_robin priority weighted lru custom
 syn keyword archAttr       blocking pipelined out_of_order burst
-syn keyword archAttr       zero freq_mhz
+syn keyword archAttr       zero freq_mhz latency
 syn keyword archAttr       write_before_read
+syn keyword archAttr       pipe_reg op track pipelined
 
 " ── Port direction ────────────────────────────────────────────────────────────
 syn keyword archDir        in out initiator target

@@ -64,7 +64,7 @@
     },
     "construct-keywords": {
       "name": "keyword.control.arch",
-      "match": "\\b(module|pipeline|fsm|fifo|ram|arbiter|regfile|counter|domain|struct|enum)\\b"
+      "match": "\\b(module|pipeline|fsm|fifo|ram|arbiter|regfile|counter|domain|struct|enum|package|bus|template|synchronizer|clkgate|linklist)\\b"
     },
     "end-keyword": {
       "name": "keyword.control.arch",
@@ -72,15 +72,15 @@
     },
     "control-flow": {
       "name": "keyword.control.flow.arch",
-      "match": "\\b(if|else|match|transition|to|when|on|rising|falling|high|low|await|await_all|await_any|forward|init|reset|always)\\b"
+      "match": "\\b(if|elsif|else|match|transition|to|when|on|rising|falling|high|low|await|await_all|await_any|forward|init|reset|always|for|in|from|stall|flush|inside)\\b"
     },
     "block-keywords": {
       "name": "keyword.other.arch",
-      "match": "\\b(port|ports|param|socket|state|default|comb|reg|let|inst|connect|generate|assert|cover)\\b"
+      "match": "\\b(port|ports|param|socket|state|default|comb|seq|reg|wire|let|inst|connect|generate|assert|cover|function|return|use|stage|store|hook|implements|testbench|initial|repeat)\\b"
     },
     "attribute-keywords": {
       "name": "keyword.other.attribute.arch",
-      "match": "\\b(kind|read|write|mode|direction|policy|single|simple_dual|true_dual|sync|async|sync_out|no_change|wrap|saturate|up|down|round_robin|priority|weighted|lru|custom|blocking|pipelined|out_of_order|burst|zero|freq_mhz|write_before_read)\\b"
+      "match": "\\b(kind|read|write|mode|direction|policy|single|simple_dual|true_dual|sync|async|sync_out|no_change|wrap|saturate|up|down|round_robin|priority|weighted|lru|custom|blocking|pipelined|out_of_order|burst|zero|freq_mhz|write_before_read|latency|pipe_reg|op|track)\\b"
     },
     "port-direction": {
       "name": "storage.type.arch",
