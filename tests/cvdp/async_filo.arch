@@ -21,39 +21,30 @@ module async_filo
   // Write domain: monotonically increasing push count (ADDR_WIDTH+1 bits)
   reg w_ptr: UInt<ADDR_WIDTH+1> reset w_rst=0;
 
-  // Gray-encode w_ptr before crossing to read domain
-  wire w_ptr_gray: UInt<ADDR_WIDTH+1>;
-  comb w_ptr_gray = w_ptr ^ (w_ptr >> 1);
-
-  // 2-flop sync of gray-coded w_ptr into read domain (safe: 1-bit-at-a-time)
-  reg rq1_wptr_gray: UInt<ADDR_WIDTH+1> reset r_rst=0;
-  reg rq2_wptr_gray: UInt<ADDR_WIDTH+1> reset r_rst=0;
-
-  // Gray-decode rq2_wptr_gray back to binary in read domain
-  // (hardcoded for ADDR_WIDTH=3, i.e. 4-bit counters)
-  let rq2_b3: Bool = rq2_wptr_gray[3];
-  let rq2_b2: Bool = rq2_b3 ^ rq2_wptr_gray[2];
-  let rq2_b1: Bool = rq2_b2 ^ rq2_wptr_gray[1];
-  let rq2_b0: Bool = rq2_b1 ^ rq2_wptr_gray[0];
-  let rq2_wptr: UInt<4> = {rq2_b3, rq2_b2, rq2_b1, rq2_b0};
-
   // Read domain: monotonically increasing pop count
   reg r_pop_cnt: UInt<ADDR_WIDTH+1> reset r_rst=0;
 
-  // Gray-encode r_pop_cnt before crossing to write domain
-  wire r_pop_cnt_gray: UInt<ADDR_WIDTH+1>;
-  comb r_pop_cnt_gray = r_pop_cnt ^ (r_pop_cnt >> 1);
+  // Gray-code CDC: w_ptr (WDomain) → RDomain
+  wire rq2_wptr: UInt<ADDR_WIDTH+1>;
+  inst wptr_sync: WToRGraySync
+    param WIDTH = ADDR_WIDTH+1;
+    connect src_clk  <- w_clk;
+    connect dst_clk  <- r_clk;
+    connect rst      <- r_rst;
+    connect data_in  <- w_ptr;
+    connect data_out -> rq2_wptr;
+  end inst wptr_sync
 
-  // 2-flop sync of gray-coded r_pop_cnt into write domain (safe: 1-bit-at-a-time)
-  reg wq1_rcnt_gray: UInt<ADDR_WIDTH+1> reset w_rst=0;
-  reg wq2_rcnt_gray: UInt<ADDR_WIDTH+1> reset w_rst=0;
-
-  // Gray-decode wq2_rcnt_gray back to binary in write domain
-  let wq2_b3: Bool = wq2_rcnt_gray[3];
-  let wq2_b2: Bool = wq2_b3 ^ wq2_rcnt_gray[2];
-  let wq2_b1: Bool = wq2_b2 ^ wq2_rcnt_gray[1];
-  let wq2_b0: Bool = wq2_b1 ^ wq2_rcnt_gray[0];
-  let wq2_rcnt: UInt<4> = {wq2_b3, wq2_b2, wq2_b1, wq2_b0};
+  // Gray-code CDC: r_pop_cnt (RDomain) → WDomain
+  wire wq2_rcnt: UInt<ADDR_WIDTH+1>;
+  inst rptr_sync: RToWGraySync
+    param WIDTH = ADDR_WIDTH+1;
+    connect src_clk  <- r_clk;
+    connect dst_clk  <- w_clk;
+    connect rst      <- w_rst;
+    connect data_in  <- r_pop_cnt;
+    connect data_out -> wq2_rcnt;
+  end inst rptr_sync
 
   // Stack pointer and empty-edge detection (read domain only — no CDC needed)
   reg r_ptr:    UInt<ADDR_WIDTH+1> reset r_rst=0;
@@ -68,20 +59,16 @@ module async_filo
   comb r_empty = empty_i;
   comb w_full  = full_i;
 
-  // Write domain: sync gray pop count in, push data
+  // Write domain: push data
   seq on w_clk rising
-    wq1_rcnt_gray <= r_pop_cnt_gray;
-    wq2_rcnt_gray <= wq1_rcnt_gray;
     if push & ~full_i
       mem[w_ptr[ADDR_WIDTH-1:0]] <= w_data;
       w_ptr <= (w_ptr + 1).trunc<ADDR_WIDTH+1>();
     end if
   end seq
 
-  // Read domain: sync gray push count in, manage stack pointer
+  // Read domain: manage stack pointer
   seq on r_clk rising
-    rq1_wptr_gray <= w_ptr_gray;
-    rq2_wptr_gray <= rq1_wptr_gray;
     was_empty <= empty_i;
     if was_empty & ~empty_i
       r_ptr <= (rq2_wptr - 1).trunc<ADDR_WIDTH+1>();

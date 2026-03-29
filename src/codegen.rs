@@ -363,12 +363,22 @@ impl<'a> Codegen<'a> {
                     Direction::In => "input",
                     Direction::Out => "output",
                 };
-                let ty_str = self.emit_port_type_str(&p.ty);
-                let init_str = p.reg_info.as_ref()
-                    .and_then(|ri| ri.init.as_ref())
-                    .map(|e| format!(" = {}", self.emit_expr_str(e)))
-                    .unwrap_or_default();
-                port_lines.push(format!("{} {} {}{}", dir, ty_str, p.name.name, init_str));
+                // Vec types: emit unpacked array dimensions after the port name
+                if let TypeExpr::Vec(_, _) = &p.ty {
+                    let (base_ty, suffix) = self.emit_type_and_array_suffix(&p.ty);
+                    let init_str = p.reg_info.as_ref()
+                        .and_then(|ri| ri.init.as_ref())
+                        .map(|e| format!(" = {}", self.emit_expr_str(e)))
+                        .unwrap_or_default();
+                    port_lines.push(format!("{} {} {}{}{}", dir, base_ty, p.name.name, suffix, init_str));
+                } else {
+                    let ty_str = self.emit_port_type_str(&p.ty);
+                    let init_str = p.reg_info.as_ref()
+                        .and_then(|ri| ri.init.as_ref())
+                        .map(|e| format!(" = {}", self.emit_expr_str(e)))
+                        .unwrap_or_default();
+                    port_lines.push(format!("{} {} {}{}", dir, ty_str, p.name.name, init_str));
+                }
             }
         }
         self.indent += 1;
@@ -2909,6 +2919,8 @@ impl<'a> Codegen<'a> {
 
         if is_async {
             self.emit_fifo_async_body(f, &port_names);
+        } else if f.kind == FifoKind::Lifo {
+            self.emit_fifo_lifo_body(f, &port_names);
         } else {
             self.emit_fifo_sync_body(f, &port_names);
         }
@@ -2943,14 +2955,18 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    fn emit_fifo_sync_body(&mut self, f: &FifoDecl, _port_names: &[&str]) {
+    fn emit_fifo_sync_body(&mut self, f: &FifoDecl, port_names: &[&str]) {
         self.line("localparam int PTR_W = $clog2(DEPTH) + 1;");
         self.line("");
         self.line("TYPE                  mem [0:DEPTH-1];");
         self.line("logic [PTR_W-1:0]     wr_ptr;");
         self.line("logic [PTR_W-1:0]     rd_ptr;");
-        self.line("logic                 full;");
-        self.line("logic                 empty;");
+        if !port_names.contains(&"full") {
+            self.line("logic                 full;");
+        }
+        if !port_names.contains(&"empty") {
+            self.line("logic                 empty;");
+        }
         self.line("");
         self.line("// Full when MSBs differ and lower bits match");
         self.line("assign full        = (wr_ptr[PTR_W-1] != rd_ptr[PTR_W-1]) &&");
@@ -2988,6 +3004,62 @@ impl<'a> Codegen<'a> {
         self.line("if (pop_valid && pop_ready) begin");
         self.indent += 1;
         self.line("rd_ptr <= rd_ptr + 1;");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line("end");
+    }
+
+    fn emit_fifo_lifo_body(&mut self, f: &FifoDecl, port_names: &[&str]) {
+        self.line("localparam int PTR_W = $clog2(DEPTH + 1);");
+        self.line("");
+        self.line("TYPE                  mem [0:DEPTH-1];");
+        self.line("logic [PTR_W-1:0]     sp;");
+        if !port_names.contains(&"full") {
+            self.line("logic                 full;");
+        }
+        if !port_names.contains(&"empty") {
+            self.line("logic                 empty;");
+        }
+        self.line("");
+        self.line("assign full        = (sp == DEPTH[PTR_W-1:0]);");
+        self.line("assign empty       = (sp == '0);");
+        self.line("assign push_ready  = !full;");
+        self.line("assign pop_valid   = !empty;");
+        self.line("assign pop_data    = mem[sp - 1];");
+        self.line("");
+
+        let (rst, is_async, is_low) = Self::extract_reset_info(&f.ports);
+        let clk = f.ports.iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            .map(|p| p.name.name.as_str())
+            .unwrap_or("clk");
+        let ff_sens = Self::ff_sensitivity(clk, &rst, is_async, is_low);
+        let rst_cond = Self::rst_condition(&rst, is_low);
+
+        self.line(&format!("always_ff @({ff_sens}) begin"));
+        self.indent += 1;
+        self.line(&format!("if ({rst_cond}) begin"));
+        self.indent += 1;
+        self.line("sp <= '0;");
+        self.indent -= 1;
+        self.line("end else begin");
+        self.indent += 1;
+        self.line("if (push_valid && push_ready && pop_valid && pop_ready) begin");
+        self.indent += 1;
+        self.line("// Simultaneous push+pop: replace top of stack");
+        self.line("mem[sp - 1] <= push_data;");
+        self.indent -= 1;
+        self.line("end else if (push_valid && push_ready) begin");
+        self.indent += 1;
+        self.line("mem[sp] <= push_data;");
+        self.line("sp <= sp + 1;");
+        self.indent -= 1;
+        self.line("end else if (pop_valid && pop_ready) begin");
+        self.indent += 1;
+        self.line("sp <= sp - 1;");
         self.indent -= 1;
         self.line("end");
         self.indent -= 1;
@@ -3580,10 +3652,25 @@ impl<'a> Codegen<'a> {
         // Check for reset port
         let rst_port = s.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Reset(..)));
 
-        // Module header
+        // Module header — emit all declared params as SV parameters
         self.line(&format!("module {n} #("));
         self.indent += 1;
-        self.line(&format!("parameter int STAGES = {stages}"));
+        let param_strs: Vec<String> = s.params.iter().map(|p| {
+            let val = p.default.as_ref()
+                .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(v.to_string()) } else { None })
+                .unwrap_or_else(|| "0".to_string());
+            format!("parameter int {} = {}", p.name.name, val)
+        }).collect();
+        // Always include STAGES if not already declared
+        let has_stages = s.params.iter().any(|p| p.name.name == "STAGES");
+        let mut all_param_strs = param_strs;
+        if !has_stages {
+            all_param_strs.push(format!("parameter int STAGES = {stages}"));
+        }
+        for (i, ps) in all_param_strs.iter().enumerate() {
+            let comma = if i < all_param_strs.len() - 1 { "," } else { "" };
+            self.line(&format!("{ps}{comma}"));
+        }
         self.indent -= 1;
         self.line(") (");
         self.indent += 1;
@@ -3696,14 +3783,15 @@ impl<'a> Codegen<'a> {
         self.line("end");
         self.line("");
 
-        // Gray-to-binary decode (combinational, destination domain)
-        self.line("// Gray-to-binary decode");
+        // Gray-to-binary decode: binary[i] = XOR of all gray bits from MSB down to i
+        // Computed as: b = g ^ (g>>1) ^ (g>>2) ^ ... — no self-reference, no ordering issue.
+        self.line("// Gray-to-binary decode (prefix XOR — no self-reference)");
         self.line(&format!("always_comb begin"));
         self.indent += 1;
-        self.line(&format!("gray_to_bin[$bits({data_ty})-1] = gray_chain[STAGES-1][$bits({data_ty})-1];"));
-        self.line(&format!("for (int i = $bits({data_ty})-2; i >= 0; i--)"));
+        self.line("gray_to_bin = gray_chain[STAGES-1];");
+        self.line(&format!("for (int i = 1; i < $bits({data_ty}); i++)"));
         self.indent += 1;
-        self.line("gray_to_bin[i] = gray_chain[STAGES-1][i] ^ gray_to_bin[i+1];");
+        self.line("gray_to_bin ^= gray_chain[STAGES-1] >> i;");
         self.indent -= 1;
         self.indent -= 1;
         self.line("end");
@@ -4077,7 +4165,7 @@ impl<'a> Codegen<'a> {
             self.line("else if (load) count_r <= load_data;");
         }
 
-        match (c.direction, c.mode) {
+        match (c.direction, c.kind) {
             (CounterDirection::Up, CounterMode::Wrap) => {
                 let max_cond = if max_param.is_some() {
                     format!("count_r == {count_width}'(MAX)")

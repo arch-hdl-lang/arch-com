@@ -1,0 +1,10 @@
+synchronizer RToWGraySync
+  kind gray;
+  param STAGES: const = 2;
+  param WIDTH: const = 4;
+  port src_clk:  in Clock<RDomain>;
+  port dst_clk:  in Clock<WDomain>;
+  port rst:      in Reset<Async>;
+  port data_in:  in UInt<WIDTH>;
+  port data_out: out UInt<WIDTH>;
+end synchronizer RToWGraySync
