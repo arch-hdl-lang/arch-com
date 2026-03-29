@@ -1,0 +1,94 @@
+module async_filo
+  pragma cdc_safe;
+  param DATA_WIDTH: const = 16;
+  param DEPTH[3:0]:    const = 8;   // max 15; width matches ADDR_WIDTH+1
+  param ADDR_WIDTH: const = 3;      // must equal log2(DEPTH)
+
+  port w_clk:   in Clock<WDomain>;
+  port w_rst:   in Reset<Async>;
+  port push:    in Bool;
+  port r_rst:   in Reset<Async>;
+  port r_clk:   in Clock<RDomain>;
+  port pop:     in Bool;
+  port w_data:  in UInt<DATA_WIDTH>;
+  port r_data:  out UInt<DATA_WIDTH>;
+  port r_empty: out Bool;
+  port w_full:  out Bool;
+
+  // Memory array
+  reg mem: Vec<UInt<DATA_WIDTH>, DEPTH> init 0;
+
+  // Write domain: monotonically increasing push count (ADDR_WIDTH+1 bits)
+  reg w_ptr: UInt<ADDR_WIDTH+1> reset w_rst=0;
+
+  // Gray-encode w_ptr before crossing to read domain
+  wire w_ptr_gray: UInt<ADDR_WIDTH+1>;
+  comb w_ptr_gray = w_ptr ^ (w_ptr >> 1);
+
+  // 2-flop sync of gray-coded w_ptr into read domain (safe: 1-bit-at-a-time)
+  reg rq1_wptr_gray: UInt<ADDR_WIDTH+1> reset r_rst=0;
+  reg rq2_wptr_gray: UInt<ADDR_WIDTH+1> reset r_rst=0;
+
+  // Gray-decode rq2_wptr_gray back to binary in read domain
+  // (hardcoded for ADDR_WIDTH=3, i.e. 4-bit counters)
+  let rq2_b3: Bool = rq2_wptr_gray[3];
+  let rq2_b2: Bool = rq2_b3 ^ rq2_wptr_gray[2];
+  let rq2_b1: Bool = rq2_b2 ^ rq2_wptr_gray[1];
+  let rq2_b0: Bool = rq2_b1 ^ rq2_wptr_gray[0];
+  let rq2_wptr: UInt<4> = {rq2_b3, rq2_b2, rq2_b1, rq2_b0};
+
+  // Read domain: monotonically increasing pop count
+  reg r_pop_cnt: UInt<ADDR_WIDTH+1> reset r_rst=0;
+
+  // Gray-encode r_pop_cnt before crossing to write domain
+  wire r_pop_cnt_gray: UInt<ADDR_WIDTH+1>;
+  comb r_pop_cnt_gray = r_pop_cnt ^ (r_pop_cnt >> 1);
+
+  // 2-flop sync of gray-coded r_pop_cnt into write domain (safe: 1-bit-at-a-time)
+  reg wq1_rcnt_gray: UInt<ADDR_WIDTH+1> reset w_rst=0;
+  reg wq2_rcnt_gray: UInt<ADDR_WIDTH+1> reset w_rst=0;
+
+  // Gray-decode wq2_rcnt_gray back to binary in write domain
+  let wq2_b3: Bool = wq2_rcnt_gray[3];
+  let wq2_b2: Bool = wq2_b3 ^ wq2_rcnt_gray[2];
+  let wq2_b1: Bool = wq2_b2 ^ wq2_rcnt_gray[1];
+  let wq2_b0: Bool = wq2_b1 ^ wq2_rcnt_gray[0];
+  let wq2_rcnt: UInt<4> = {wq2_b3, wq2_b2, wq2_b1, wq2_b0};
+
+  // Stack pointer and empty-edge detection (read domain only — no CDC needed)
+  reg r_ptr:    UInt<ADDR_WIDTH+1> reset r_rst=0;
+  reg was_empty: Bool reset r_rst=1;
+
+  wire full_i:  Bool;
+  wire empty_i: Bool;
+  comb full_i  = (w_ptr - wq2_rcnt) == DEPTH;
+  comb empty_i = (rq2_wptr == r_pop_cnt);
+
+  comb r_data  = mem[r_ptr[ADDR_WIDTH-1:0]];
+  comb r_empty = empty_i;
+  comb w_full  = full_i;
+
+  // Write domain: sync gray pop count in, push data
+  seq on w_clk rising
+    wq1_rcnt_gray <= r_pop_cnt_gray;
+    wq2_rcnt_gray <= wq1_rcnt_gray;
+    if push & ~full_i
+      mem[w_ptr[ADDR_WIDTH-1:0]] <= w_data;
+      w_ptr <= (w_ptr + 1).trunc<ADDR_WIDTH+1>();
+    end if
+  end seq
+
+  // Read domain: sync gray push count in, manage stack pointer
+  seq on r_clk rising
+    rq1_wptr_gray <= w_ptr_gray;
+    rq2_wptr_gray <= rq1_wptr_gray;
+    was_empty <= empty_i;
+    if was_empty & ~empty_i
+      r_ptr <= (rq2_wptr - 1).trunc<ADDR_WIDTH+1>();
+    elsif pop & ~empty_i
+      r_pop_cnt <= (r_pop_cnt + 1).trunc<ADDR_WIDTH+1>();
+      r_ptr <= (r_ptr - 1).trunc<ADDR_WIDTH+1>();
+    end if
+  end seq
+
+end module async_filo
