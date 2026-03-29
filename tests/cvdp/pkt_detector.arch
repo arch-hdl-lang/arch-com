@@ -1,0 +1,167 @@
+module pkt_detector
+  param PKT_CNT_WIDTH: const = 4;
+
+  port clk:       in Clock<SysDomain>;
+  port reset:     in Reset<Async, Low>;
+  port data_in:   in UInt<8>;
+  port data_k_flag: in Bool;
+  port pkt_count: out UInt<PKT_CNT_WIDTH>;
+  port pkt_data:  out UInt<160>;
+  port mem_read_detected:        out Bool;
+  port mem_write_detected:       out Bool;
+  port io_read_detected:         out Bool;
+  port io_write_detected:        out Bool;
+  port cfg_read0_detected:       out Bool;
+  port cfg_write0_detected:      out Bool;
+  port cfg_read1_detected:       out Bool;
+  port cfg_write1_detected:      out Bool;
+  port completion_detected:      out Bool;
+  port completion_data_detected: out Bool;
+  port error_detected:           out Bool;
+
+  default seq on clk rising;
+
+  let START_SYMBOL: UInt<8> = 8'hFB;
+  let END_SYMBOL:   UInt<8> = 8'hFD;
+  let PKT_BYTES:    UInt<8> = 20;
+
+  reg curr_state: UInt<2> reset reset=>0;
+  wire nxt_state: UInt<2>;
+
+  reg byte_cnt:  UInt<8> reset reset=>0;
+  reg pkt_reg:   UInt<160> reset reset=>0;
+  reg pkt_count_r: UInt<PKT_CNT_WIDTH> reset reset=>0;
+  reg pkt_data_r:  UInt<160> reset reset=>0;
+  reg mem_read_detected_r:        Bool reset reset=>false;
+  reg mem_write_detected_r:       Bool reset reset=>false;
+  reg io_read_detected_r:         Bool reset reset=>false;
+  reg io_write_detected_r:        Bool reset reset=>false;
+  reg cfg_read0_detected_r:       Bool reset reset=>false;
+  reg cfg_write0_detected_r:      Bool reset reset=>false;
+  reg cfg_read1_detected_r:       Bool reset reset=>false;
+  reg cfg_write1_detected_r:      Bool reset reset=>false;
+  reg completion_detected_r:      Bool reset reset=>false;
+  reg completion_data_detected_r: Bool reset reset=>false;
+  reg error_detected_r:           Bool reset reset=>false;
+
+  let data_is_start: Bool = (data_in == START_SYMBOL);
+  let is_start: Bool = data_is_start & data_k_flag;
+  let header: UInt<8> = pkt_reg[31:24];
+  let end_byte: UInt<8> = pkt_reg[159:152];
+  let end_valid: Bool = (end_byte == END_SYMBOL);
+
+  // Next state logic
+  comb
+    if curr_state == 0
+      if is_start
+        nxt_state = 1;
+      else
+        nxt_state = 0;
+      end if
+    elsif curr_state == 1
+      if byte_cnt == PKT_BYTES
+        nxt_state = 2;
+      else
+        nxt_state = 1;
+      end if
+    elsif curr_state == 2
+      if end_valid
+        nxt_state = 0;
+      else
+        nxt_state = 3;
+      end if
+    else
+      if is_start
+        nxt_state = 1;
+      else
+        nxt_state = 3;
+      end if
+    end if
+  end comb
+
+  // State register
+  seq curr_state <= nxt_state;
+
+  // Datapath
+  seq
+    if curr_state == 0
+      byte_cnt <= 0;
+      pkt_reg <= 0;
+      error_detected_r <= false;
+      mem_read_detected_r <= false;
+      mem_write_detected_r <= false;
+      io_read_detected_r <= false;
+      io_write_detected_r <= false;
+      cfg_read0_detected_r <= false;
+      cfg_write0_detected_r <= false;
+      cfg_read1_detected_r <= false;
+      cfg_write1_detected_r <= false;
+      completion_detected_r <= false;
+      completion_data_detected_r <= false;
+      if is_start
+        pkt_reg <= {data_in, 152'd0};
+        byte_cnt <= 1;
+      end if
+    elsif curr_state == 1
+      if byte_cnt < PKT_BYTES
+        pkt_reg <= {data_in, pkt_reg[159:8]};
+        byte_cnt <= (byte_cnt + 1).trunc<8>();
+      end if
+    elsif curr_state == 2
+      if end_valid
+        pkt_data_r <= pkt_reg;
+        pkt_count_r <= (pkt_count_r + 1).trunc<PKT_CNT_WIDTH>();
+        if header == 8'h00
+          mem_read_detected_r <= true;
+        elsif header == 8'h01
+          mem_write_detected_r <= true;
+        elsif header == 8'h02
+          io_read_detected_r <= true;
+        elsif header == 8'h42
+          io_write_detected_r <= true;
+        elsif header == 8'h04
+          cfg_read0_detected_r <= true;
+        elsif header == 8'h44
+          cfg_write0_detected_r <= true;
+        elsif header == 8'h05
+          cfg_read1_detected_r <= true;
+        elsif header == 8'h45
+          cfg_write1_detected_r <= true;
+        elsif header == 8'h0A
+          completion_detected_r <= true;
+        elsif header == 8'h4A
+          completion_data_detected_r <= true;
+        end if
+      else
+        error_detected_r <= true;
+      end if
+    else
+      error_detected_r <= true;
+      byte_cnt <= 0;
+      pkt_reg <= 0;
+      if is_start
+        pkt_reg <= {data_in, 152'd0};
+        byte_cnt <= 1;
+        error_detected_r <= false;
+      end if
+    end if
+  end seq
+
+  // Output assignments
+  comb
+    pkt_count = pkt_count_r;
+    pkt_data = pkt_data_r;
+    mem_read_detected = mem_read_detected_r;
+    mem_write_detected = mem_write_detected_r;
+    io_read_detected = io_read_detected_r;
+    io_write_detected = io_write_detected_r;
+    cfg_read0_detected = cfg_read0_detected_r;
+    cfg_write0_detected = cfg_write0_detected_r;
+    cfg_read1_detected = cfg_read1_detected_r;
+    cfg_write1_detected = cfg_write1_detected_r;
+    completion_detected = completion_detected_r;
+    completion_data_detected = completion_data_detected_r;
+    error_detected = error_detected_r;
+  end comb
+
+end module pkt_detector

@@ -5,19 +5,19 @@ fsm vending_machine
   port item_selected: in UInt<3>;
   port coin_input: in UInt<4>;
   port cancel: in Bool;
-  port reg dispense_item: out Bool reset rst=false;
-  port reg return_change: out Bool reset rst=false;
-  port reg item_price: out UInt<5> reset rst=0;
-  port reg change_amount: out UInt<5> reset rst=0;
-  port reg dispense_item_id: out UInt<3> reset rst=0;
-  port reg error: out Bool reset rst=false;
-  port reg return_money: out Bool reset rst=false;
+  port reg dispense_item: out Bool reset rst=>false;
+  port reg return_change: out Bool reset rst=>false;
+  port reg item_price: out UInt<5> reset rst=>0;
+  port reg change_amount: out UInt<5> reset rst=>0;
+  port reg dispense_item_id: out UInt<3> reset rst=>0;
+  port reg error: out Bool reset rst=>false;
+  port reg return_money: out Bool reset rst=>false;
 
-  reg coins_accumulated: UInt<5> reset rst=0;
-  reg selected_item: UInt<3> reset rst=0;
-  reg selected_price: UInt<5> reset rst=0;
-  reg item_button_prev: Bool reset rst=false;
-  reg cancel_prev: Bool reset rst=false;
+  reg coins_accumulated: UInt<5> reset rst=>0;
+  reg selected_item: UInt<3> reset rst=>0;
+  reg selected_price: UInt<5> reset rst=>0;
+  reg item_button_prev: Bool reset rst=>false;
+  reg cancel_prev: Bool reset rst=>false;
 
   let item_button_edge: Bool = item_button & ~item_button_prev;
   let cancel_edge: Bool = cancel & ~cancel_prev;

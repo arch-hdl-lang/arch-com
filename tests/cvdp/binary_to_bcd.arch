@@ -1,0 +1,108 @@
+module binary_to_bcd
+  port binary_in: in UInt<8>;
+  port bcd_out: out UInt<12>;
+
+  // Double-dabble: 20-bit shift register, 8 iterations
+  // Each iteration: check each BCD nibble >= 5 → add 3, then shift left
+  wire s0: UInt<20>;
+  wire s1: UInt<20>;
+  wire s2: UInt<20>;
+  wire s3: UInt<20>;
+  wire s4: UInt<20>;
+  wire s5: UInt<20>;
+  wire s6: UInt<20>;
+  wire s7: UInt<20>;
+  wire s8: UInt<20>;
+
+  comb
+    s0 = binary_in.zext<20>();
+
+    // Iteration 1: shift left, then adjust
+    s1 = s0 << 1;
+
+    // Iteration 2
+    s2[7:0] = s1[7:0];
+    s2[11:8] = s1[11:8];
+    if s1[11:8] >= 5
+      s2[11:8] = (s1[11:8] + 3).trunc<4>();
+    end if
+    s2[19:12] = s1[19:12];
+    s2 = s2 << 1;
+
+    // Iteration 3
+    s3[7:0] = s2[7:0];
+    s3[11:8] = s2[11:8];
+    if s2[11:8] >= 5
+      s3[11:8] = (s2[11:8] + 3).trunc<4>();
+    end if
+    s3[19:12] = s2[19:12];
+    s3 = s3 << 1;
+
+    // Iteration 4
+    s4[7:0] = s3[7:0];
+    s4[11:8] = s3[11:8];
+    if s3[11:8] >= 5
+      s4[11:8] = (s3[11:8] + 3).trunc<4>();
+    end if
+    s4[15:12] = s3[15:12];
+    if s3[15:12] >= 5
+      s4[15:12] = (s3[15:12] + 3).trunc<4>();
+    end if
+    s4[19:16] = s3[19:16];
+    s4 = s4 << 1;
+
+    // Iteration 5
+    s5[7:0] = s4[7:0];
+    s5[11:8] = s4[11:8];
+    if s4[11:8] >= 5
+      s5[11:8] = (s4[11:8] + 3).trunc<4>();
+    end if
+    s5[15:12] = s4[15:12];
+    if s4[15:12] >= 5
+      s5[15:12] = (s4[15:12] + 3).trunc<4>();
+    end if
+    s5[19:16] = s4[19:16];
+    s5 = s5 << 1;
+
+    // Iteration 6
+    s6[7:0] = s5[7:0];
+    s6[11:8] = s5[11:8];
+    if s5[11:8] >= 5
+      s6[11:8] = (s5[11:8] + 3).trunc<4>();
+    end if
+    s6[15:12] = s5[15:12];
+    if s5[15:12] >= 5
+      s6[15:12] = (s5[15:12] + 3).trunc<4>();
+    end if
+    s6[19:16] = s5[19:16];
+    s6 = s6 << 1;
+
+    // Iteration 7
+    s7[7:0] = s6[7:0];
+    s7[11:8] = s6[11:8];
+    if s6[11:8] >= 5
+      s7[11:8] = (s6[11:8] + 3).trunc<4>();
+    end if
+    s7[15:12] = s6[15:12];
+    if s6[15:12] >= 5
+      s7[15:12] = (s6[15:12] + 3).trunc<4>();
+    end if
+    s7[19:16] = s6[19:16];
+    s7 = s7 << 1;
+
+    // Iteration 8 (last): adjust then shift
+    s8[7:0] = s7[7:0];
+    s8[11:8] = s7[11:8];
+    if s7[11:8] >= 5
+      s8[11:8] = (s7[11:8] + 3).trunc<4>();
+    end if
+    s8[15:12] = s7[15:12];
+    if s7[15:12] >= 5
+      s8[15:12] = (s7[15:12] + 3).trunc<4>();
+    end if
+    s8[19:16] = s7[19:16];
+    s8 = s8 << 1;
+
+    bcd_out = s8[19:8];
+  end comb
+end module binary_to_bcd

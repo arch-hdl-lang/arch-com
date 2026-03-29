@@ -1,0 +1,198 @@
+MODULE: load_store_unit
+ID: cvdp_copilot_load_store_unit_0001
+
+=== SPEC ===
+# **Design a Load Store Unit**
+
+In a classic five-stage pipelined processor, the five pipeline stages are:
+
+1. **Instruction Fetch (IF):** The next instruction is fetched from the instruction cache.
+2. **Instruction Decode (ID):** The instruction is decoded, and registers are fetched from the register file.
+3. **Execute (EX):** The ALU operates on the operands from the register file.
+4. **Memory Access (MA):** Accesses the processor's data cache. Data cache latency depends on whether it's a hit or miss.
+5. **Writeback (WB):** Writes ALU results or data cache values back to the register file.
+
+Develop a SystemVerilog RTL module named `load_store_unit` for a Load Store Unit (LSU) that manages load and store operations, serving as a memory access stage, interfacing between the execute stage and the data-cache memory. The module reads from and writes to a 32-bit, byte-addressable memory, where each address corresponds to a single byte. It supports accesses of varying sizes: byte (1 byte), halfword (2 bytes), and word (4 bytes). 
+
+---
+
+## **Ports**
+
+### **Clock and Reset**
+| **Signal** | **Direction** | **Width** | **Description**                                                                     |
+|------------|---------------|-----------|-------------------------------------------------------------------------------------|
+| `clk`      | Input         | 1-bit     | System clock signal. The design is synchronized to the positive edge of this clock. |
+| `rst_n`    | Input         | 1-bit     | Active-low asynchronous reset signal.                                               |
+
+### **Data-Cache Interface**
+| **Signal**               | **Direction** | **Width**  | **Description**                                                                 |
+|--------------------------|---------------|------------|---------------------------------------------------------------------------------|
+| `dmem_req_o`             | Output        | 1-bit      | Active-high signal indicating a load/store transaction request to data-cache.   |
+| `dmem_gnt_i`             | Input         | 1-bit      | Active-high grant signal from memory, indicating acceptance of the transaction. |
+| `dmem_req_addr_o[31:0]`  | Output        | 32-bit     | Memory address for the transaction.                                             |
+| `dmem_req_we_o`          | Output        | 1-bit      | Active-high write enable indicating it's a write request.                       |
+| `dmem_req_be_o[3:0]`     | Output        | 4-bit      | Byte enable signals for memory transactions.                                    |
+| `dmem_req_wdata_o[31:0]` | Output        | 32-bit     | Data to write to memory.                                                        |
+| `dmem_rvalid_i`          | Input         | 1-bit      | Active-high signal indicating that the data read from memory is valid.          |
+| `dmem_rsp_rdata_i[31:0]` | Input         | 32-bit     | Data read from memory.                                                          |
+
+### **Execution Stage Interface**
+| **Signal**                 | **Direction** | **Width**  | **Description**                                                                       |
+|----------------------------|---------------|------------|---------------------------------------------------------------------------------------|
+| `ex_if_req_i`              | Input         | 1-bit      | Active-high data request signal from the EX stage.                                    |
+| `ex_if_we_i`               | Input         | 1-bit      | Active-high write enable signal from the EX stage. Asserted along with `ex_if_req_i`. |
+| `ex_if_type_i[1:0]`        | Input         | 2-bit      | Data type: word (`0'b10`), half-word (`0'b01`), or byte (`0'b00`).                    |
+| `ex_if_wdata_i[31:0]`      | Input         | 32-bit     | Data to write to memory from the EX stage.                                            |
+| `ex_if_addr_base_i[31:0]`  | Input         | 32-bit     | Base address for the transaction.                                                     |
+| `ex_if_addr_offset_i[31:0]`| Input         | 32-bit     | Offset for the transaction address.                                                   |
+| `ex_if_ready_o`            | Output        | 1-bit      | Active-high signal indicating that the LSU is ready to handle new requests.           |
+
+### **Writeback Interface**
+| **Signal**               | **Direction** | **Width**  | **Description**                                            |
+|--------------------------|---------------|------------|------------------------------------------------------------|
+| `wb_if_rdata_o[31:0]`    | Output        | 32-bit     | Data read from memory.                                     |
+| `wb_if_rvalid_o`         | Output        | 1-bit      | Active-high signal indicating that the data read is valid. |
+
+---
+
+## **Module Behavior:**
+
+### **On Reset (`rst_n = 0`):**
+- Clears all pending requests and responses.
+- Resets all outputs to their default states:
+  - The execution stage interface is signaled as ready for new requests (`ex_if_ready_o` is asserted).
+  - No requests are sent to the data memory (`dmem_req_o` and `dmem_req_we_o` are deasserted and `dmem_req_addr_o`,  `dmem_req_be_o`, and `dmem_req_wdata_o` are cleared to zero.)
+  - No valid data is provided to the writeback stage (`wb_if_rvalid_o` is deasserted and `wb_if_rdata_o` is cleared to zero ).
+
+---
+
+### **Transaction address and byte enable:**
+- The transaction address is calculated **combinationally** as the sum of `ex_if_addr_base_i` and `ex_if_addr_offset_i`.
+- The data type (word, half-word, byte) determines the byte enable signals and the number of bytes to access:
+  - For byte access (`ex_if_type_i = 0x0`), the corresponding single byte is enabled in the byte enable mask based on the effective address's least significant bits two bits (LSBs).
+  - For halfword access (`ex_if_type_i = 0x1`), two consecutive bytes are enabled in the byte enable mask. The effective address must be aligned to 2 bytes (LSBs = 0b00 or 0b10) otherwise it's a misaligned access. LSBs = 0b00 selects the first two (least significant ) bytes, and 0b10 selects the last two (most significant) bytes.
+  - For word access (`ex_if_type_i = 0x2`), all four bytes are enabled. The effective address must be aligned to 4 bytes (LSBs = 0b00) otherwise it's a misaligned access.
+  - Any other value for `ex_if_type_i`  and unaligned effective addresses are considered as misaligned access and discarded
+---
+
+### **Processing execute stage request (`ex_if_req_i = 1`):**
+`ex_if_req_i = 1` will only be asserted when `ex_if_ready_o` is high. The module accepts the request if `ex_if_ready_o` and `ex_if_req_i = 1` are asserted and the access address is aligned. For accepted requests, the LSU initiates a request to the data cache and deasserts `ex_if_ready_o` to indicate that it is handling an outstanding transaction with a **one-cycle latency** after the execute unit request is received.
+Note: If both `ex_if_req_i` and `ex_if_we_i` are asserted it indicates a store transaction, if only `ex_if_req_i` is asserted it indicates a load transaction. 
+
+The protocol used to communicate with data cache memory works as follows:
+- The LSU provides a valid transaction address on `dmem_req_addr_o`, the control information on `dmem_req_we_o`, `dmem_req_be_o` (as well as write data on `dmem_req_wdata_o` in case of a store) and sets `dmem_req_o` high. These signals are updated at the next positive edge of the clock after the triggering load/store request.
+- The memory sets `dmem_gnt_i` high as soon as it is ready to serve the request. This may happen at any time after the request is sent. 
+- After a request has been granted:
+    - The LSU deasserts `dmem_req_o` and `dmem_req_we_o` at the next positive edge of the clock.  `dmem_req_addr_o`,`dmem_req_be_o` , and  `dmem_req_wdata_o` are also cleared to 0.
+    - For store transactions, when`dmem_req_we_o = 1'b1` and `dmem_gnt_i=1`: the memory is assumed to already have processed and completed the transaction.
+    - For load transaction, After granting a request, the memory answers with a `dmem_rvalid_i` set high if `dmem_rsp_rdata_i` is valid for **one clock cycle**. This may happen one or more cycles after the request has been granted.
+
+The following diagram shows an example timing diagram of the protocol for a store then a load transactions.
+
+
+```wavedrom
+{
+  "signal": [
+    { "name": "clk", "wave": "p............." },
+    { "name": "rst_n", "wave": "0............." },
+    { "name": "dmem_req_o", "wave": "0.1...0.1..0..", "data": ["Request"] },
+    { "name": "dmem_req_addr_o", "wave": "x.3...x.3..x..", "data": ["0x0004", "0x0004"] },
+    { "name": "dmem_req_we_o", "wave": "0.1...0.......", "data": ["Write"] },
+    { "name": "dmem_req_be_o", "wave": "x.3...x.3..x..", "data": ["0xF","0x1"] },
+    { "name": "dmem_req_wdata_o", "wave": "x.3...x.......", "data": ["0xDEADBEEF"] },
+    { "name": "dmem_gnt_i", "wave": "0....10...10..", "data": ["Grant"] },
+    { "name": "dmem_rvalid_i", "wave": "0...........10", "data": ["Valid"] },
+    { "name": "dmem_rsp_rdata_i", "wave": "x...........3x", "data": ["0xEF"] }
+  ]
+}
+
+```
+
+After the transaction is completed, (`dmem_gnt_i = 1` for store and `dmem_rvalid_i = 1` for load) the module reasserts `ex_if_ready_o`, signaling readiness to handle new requests with a **one-cycle latency**.
+
+---
+
+### **Response to Writeback Stage:**
+- For Load Transactions:
+  - After the data memory transaction is completed (`dmem_rvalid_i = 1`), the load/store unit asserts `wb_if_rvalid_o` and updates `wb_if_rdata_o` with the read data from `dmem_rsp_rdata_i`.
+  - The response is provided to the writeback stage with a **one-cycle latency** after the data memory response is received.
+  - The read data validity (`wb_if_rvalid_o`) will remain active on writeback bus for **just one cycle** as `dmem_rvalid_i` is high for one cycle.  `wb_if_rdata_o` value will be maintained until the update from next load instruction.
+
+=== src/.env ===
+SIM             = icarus
+WAVE            = True
+TOPLEVEL_LANG   = verilog
+VERILOG_SOURCES = /code/rtl/load_store_unit.sv
+TOPLEVEL        = load_store_unit
+MODULE          = test_load_store_unit
+PYTHONPATH      = /src
+HASH            = "feature/issue_1"
+
+
+=== src/test_load_store_unit.py ===
+import cocotb
+from cocotb.clock import Clock
+from cocotb.triggers import FallingEdge, RisingEdge, ClockCycles, Timer
+import random
+import time
+import harness_library as hrs_lb
+from harness_library import ExReqDriver, dmemIFDriver
+
+# Place holder for coverage
+
+def execute_sb_fn(dut,type_i, wdata, addr_base, addr_offset):
+   pass
+   #dut._log.info(f"Execute unit request -- type:{hex(type_i)}, write_data = {hex(wdata)}, addr: {hex(addr_base + addr_offset)}")
+
+@cocotb.test()
+async def test_load_store_unit(dut): 
+   # Start clock
+   dut_clock_period = random.randint(2, 20) # starting from 2, t high must be integer! 
+   print(f"Clk period is {dut_clock_period}")
+   DUT_CLK = Clock(dut.clk, dut_clock_period, 'ns')
+   await cocotb.start(DUT_CLK.start())
+   dut.clk._log.info(f"clk STARTED")
+
+   await hrs_lb.dut_init(dut)
+
+   # Apply reset 
+   await hrs_lb.reset_dut(dut.rst_n, dut_clock_period)
+
+   for i in range(2):
+      await RisingEdge(dut.clk)
+
+   # Ensure  outputs reset value 
+
+   # The Execution Stage Interface is signaled as ready for new requests.
+   assert dut.ex_if_ready_o.value == 1, f"The Execution Stage Interface should be signaled as ready for new requests (ex_if_ready_o = 0x1): {dut.ex_if_ready_o.value}"
+   
+   # No requests are sent to data memory.
+   assert dut.dmem_req_o.value == 0, f"ُShould be No requests are sent to data memory (dmem_req_o = 0x0). {dut.dmem_req_o.value}"
+   
+   # No valid data is provided to the writeback stage.
+   assert dut.wb_if_rvalid_o.value == 0, f"Should be No valid data  provided to the writeback stage (wb_if_rvalid_o = 0x0). {dut.wb_if_rvalid_o.value}"
+
+   
+   await FallingEdge(dut.clk)
+   
+   dmemIFDriver(dut,'dmem', dut.clk)
+   execute_if_driver = ExReqDriver(dut,'ex_if',dut.clk,execute_sb_fn)
+
+   for i in range(500):
+      wdata = random.randint(0, 2**32) # 32 bit word data
+      addr_base = random.randint(0,2**6)
+      addr_off = random.randint(0,2**6) # Limiting address space to 7 bit (MemoryModel representation limit)
+      type = random.randint(0,2) # TYPE: can be 0x0, 0x1, 0x2
+      Test_Vec = (type, wdata, addr_base, addr_off)
+      # Drive Write operation
+      await execute_if_driver.write_req(Test_Vec)
+      
+      # Read the written value
+      await execute_if_driver.read_req(Test_Vec)
+
+    
+
+
+
+
+

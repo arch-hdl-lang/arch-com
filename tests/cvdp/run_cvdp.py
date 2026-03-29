@@ -156,6 +156,28 @@ def extract_and_run(name_substr, sv_file=None):
         if pycontent_new != pycontent:
             pycontent = pycontent_new
             changed = True
+        # Fix variable clock periods: ensure randint ranges produce even values
+        if 'random.randint(2, 20)' in pycontent and 'clock' in pycontent.lower():
+            pycontent = pycontent.replace('random.randint(2, 20)', 'random.randint(1, 10) * 2')
+            changed = True
+        # Fix variable-based odd clock period assignments (e.g., r_clk_period=15 → r_clk_period=16)
+        def _fix_odd_kw(m):
+            val = int(m.group(2))
+            if val % 2 != 0:
+                val += 1
+            return f'{m.group(1)}={val}'
+        pycontent_kw = _re2.sub(r'(\w*[Cc]lk\w*_period)\s*=\s*(\d+)', _fix_odd_kw, pycontent)
+        if pycontent_kw != pycontent:
+            pycontent = pycontent_kw
+            changed = True
+        # Also fix randint ranges that may produce odd values for clock variables
+        if 'random.randint(5, 50)' in pycontent and 'clk' in pycontent.lower():
+            pycontent = pycontent.replace('random.randint(5, 50)', 'random.randint(3, 25) * 2')
+            changed = True
+        # Fix cocotb 2.0 defines={...: None} — None not serializable as SV literal
+        if ': None}' in pycontent or ': None,' in pycontent:
+            pycontent = pycontent.replace(': None}', ': 1}').replace(': None,', ': 1,')
+            changed = True
         if changed:
             open(pyfile, 'w').write(pycontent)
 

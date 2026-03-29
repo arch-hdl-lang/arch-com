@@ -1,0 +1,215 @@
+MODULE: FILO_RTL
+ID: cvdp_copilot_filo_0005
+
+=== SPEC ===
+Develop the RTL design of First In Last Out (FILO) with the module name `FILO_RTL`. The design `FILO_RTL` has to support various data widths and buffer depths. The FILO should ensure correct data management for push and pop operations while handling edge cases such as feedthrough scenarios. The design must guarantee correct buffer behavior when pushing data into the FILO and popping the data out of it. The FILO buffer stores input data in a stack-like structure, where the most recently pushed data is the first to be popped. 
+
+# FILO Design Specification
+
+The `FILO` (First-In-Last-Out) buffer module stores the input data of configurable widths and manages them in a stack-like manner. The design ensures that data can be pushed into the buffer and popped from it while maintaining control signals for empty and full status.
+
+## Parameters:
+- **`DATA_WIDTH`**: Width of the input data to be pushed into the FILO buffer. Default value is 8 bits.
+- **`FILO_DEPTH`**: Maximum number of elements the FILO buffer can hold. Default value is 16.
+
+## Interface:
+
+### Inputs:
+- **`clk (1-bit)`**: Data operations (push/pop) will be performed on the rising edge of this clock. The clock operates at a 50:50 duty cycle.
+- **`reset (1-bit)`**: Asynchronous active-HIGH reset signal to initialize the FILO system. The output `full` will be LOW and `empty` will be HIGH when the `reset` input is HIGH
+- **`push (1-bit)`**: Control signal to push data into the FILO buffer. Data is only pushed when the buffer is not full.
+- **`pop (1-bit)`**: Control signal to pop data from the FILO buffer. Data is only popped when the buffer is not empty.
+- **`data_in` (`DATA_WIDTH` bits, [DATA_WIDTH - 1:0])**: The input data word to be stored in the FILO. The width of this input can vary based on the `DATA_WIDTH` parameter.
+
+### Outputs:
+- **`data_out`** (`DATA_WIDTH` bits, [DATA_WIDTH - 1:0]): The data popped from the top of the FILO. The width of this output matches the input data width.
+- **`full (1-bit)`**: Status signal indicating whether the FILO buffer is full. Asserted HIGH when the FILO contains the maximum number of elements (`FILO_DEPTH`).
+- **`empty (1-bit)`**: Status signal indicating whether the FILO buffer is empty. Asserted HIGH when no elements are present in the FILO.
+
+## Behavior and Operation:
+The FILO buffer functions as a stack where the last element pushed into the buffer is the first one to be popped. The FILO buffer's state (full/empty) is updated based on the `push` and `pop` operations.
+
+### Reset Behavior:
+- When the **`reset`** signal is asserted, the buffer is cleared:
+  - The internal stack pointer (`top`) is reset to 0.
+  - The **`empty`** signal is asserted (`empty = 1`), indicating the buffer is empty.
+  - The **`full`** signal is deasserted (`full = 0`).
+
+### Push Operation:
+- When the **`push`** signal is asserted and the buffer is **not full**, the following occur:
+  - The data from `data_in` is stored at the current position indicated by the `top` pointer.
+  - The `top` pointer is incremented to point to the next empty position.
+  - If the `top` pointer reaches the `FILO_DEPTH`, the **full** signal is asserted (`full = 1`), indicating the buffer is full.
+  - The **`empty`** signal is deasserted (`empty = 0`), indicating the buffer contains data.
+
+### Pop Operation:
+- When the **`pop`** signal is asserted and the buffer is **not empty**, the following occur:
+  - The `top` pointer is decremented to point to the previous data in the buffer.
+  - The data at the new `top` position is assigned to `data_out` and output.
+  - If the `top` pointer reaches 0, the **empty** signal is asserted (`empty = 1`), indicating the buffer is empty.
+  - The **`full`** signal is deasserted (`full = 0`), indicating space is available in the buffer.
+
+## Edge Cases:
+**`Feedthrough`**: If the **`FILO`** is empty, and both **`push`** and **`pop`** signals are asserted HIGH in the same positive edge of the `clk`, the input data (`data_in`) is immediately passed through to the output (`data_out`) without being stored in the memory, ensuring minimal latency for this case.
+
+## Example Operation:
+Assuming `DATA_WIDTH = 8` and `FILO_DEPTH = 8`:
+
+| Clock Cycle | Reset | Push | Pop | Data_in      | Data_out     | Full | Empty |
+|-------------|-------|------|-----|--------------|--------------|------|-------|
+| 1           | 1     | 0    | 0   | 8'h00 | 8'hXX | 0    | 1     |
+| 2           | 0     | 1    | 0   | 8'hA1 | 8'hXX | 0    | 0     |
+| 3           | 0     | 1    | 0   | 8'hA2 | 8'hXX | 0    | 0     |
+| 4           | 0     | 1    | 0   | 8'hA3 | 8'hXX | 0    | 0     |
+| 5           | 0     | 1    | 0   | 8'hA4 | 8'hXX | 0    | 0     |
+| 6           | 0     | 1    | 0   | 8'hA5 | 8'hXX | 0    | 0     |
+| 7           | 0     | 1    | 0   | 8'hA6 | 8'hXX | 0    | 0     |
+| 8           | 0     | 1    | 0   | 8'hA7 | 8'hXX | 0    | 0     |
+| 9           | 0     | 1    | 0   | 8'hA8 | 8'hXX | 1    | 0     |
+| 10           | 0     | 0    | 1   | 8'hXX | 8'hA8 | 0    | 0     |
+| 11         | 0     | 0    | 1   | 8'hXX | 8'hA7 | 0    | 0     |
+| 12           | 0     | 0    | 1   | 8'hXX | 8'hA6 | 0    | 0     |
+| 13           | 0     | 0    | 1   | 8'hXX | 8'hA5 | 0    | 0     |
+| 14           | 0     | 0    | 1   | 8'hXX | 8'hA4 | 0    | 0     |
+| 15           | 0     | 0    | 1   | 8'hXX | 8'hA3 | 0    | 0     |
+| 16           | 0     | 0    | 1   | 8'hXX | 8'hA2 | 0    | 0     |
+| 17           | 0     | 0    | 1   | 8'hXX | 8'hA1 | 0    | 1    |
+| 18           | 0     | 1    | 1   | 8'hD1 | 8'hD1 | 0    | 1     |
+
+In this example, the `FILO` buffer handles data push and pop operations with the correct sequence, including the feedthrough case (when both push and pop occur simultaneously).
+
+
+=== src/.env ===
+SIM             = icarus
+TOPLEVEL_LANG   = verilog
+WAVE            = 1
+VERILOG_SOURCES = /code/rtl/FILO_RTL.sv
+TOPLEVEL        = FILO_RTL
+MODULE          = test_filo
+PYTHONPATH      = /src
+HASH            = 5-rtl-design-modification-for-first-in-last-outfilo-1
+
+
+=== src/test_filo.py ===
+import cocotb
+from cocotb.triggers import RisingEdge, Timer
+import random
+
+async def clock_gen(dut):
+    while True:
+        dut.clk.value = 0
+        await Timer(5, units='ns')
+        dut.clk.value = 1
+        await Timer(5, units='ns')
+
+async def apply_reset(dut, push_count, filo_depth):
+    dut.reset.value = 1
+    await Timer(20, units='ns')
+    dut.reset.value = 0
+    await RisingEdge(dut.clk)
+
+    push_count[0] = 0
+    is_full = int(push_count[0] == filo_depth) 
+    is_empty = int(push_count[0] == 0)        
+    dut._log.info(f"Reset applied. Full: {is_full}, Empty: {is_empty}")
+
+
+async def push_data(dut, pushed_values, push_count, filo_depth, data_width):
+    if push_count[0] == filo_depth:
+        dut._log.info("Cannot push, FILO is full (calculated).")
+        assert False, "Trying to push when FILO is full (calculated)."
+    else:
+        value = random.randint(0, (1 << data_width) - 1)
+        dut.push.value = 1
+        dut.data_in.value = value
+        await RisingEdge(dut.clk)
+        dut.push.value = 0
+        await Timer(20, units='ns')  
+
+        pushed_values.append(value)  
+        push_count[0] += 1  
+
+        is_full = int(push_count[0] == filo_depth) 
+        is_empty = int(push_count[0] == 0)        
+        dut._log.info(f"Pushed value: {hex(value)}, Push Count: {push_count[0]}, Full: {is_full}, Empty: {is_empty}")
+
+async def pop_data(dut, expected_value, push_count, filo_depth, data_width):
+    if push_count[0] == 0:
+        dut._log.info("Cannot pop, FILO is empty (calculated).")
+        assert False, "Trying to pop when FILO is empty (calculated)."
+    else:
+        dut.pop.value = 1
+        await RisingEdge(dut.clk)
+        dut_pop_value = expected_value
+        dut.pop.value = 0
+        await Timer(20, units='ns')
+
+        popped_value = int(dut.data_out.value) & ((1 << data_width) - 1)
+        push_count[0] -= 1 
+
+        is_full = int(push_count[0] == filo_depth)
+        is_empty = int(push_count[0] == 0)        
+        dut._log.info(f"Popped value: {hex(dut_pop_value)}, Push Count: {push_count[0]}, Full: {is_full}, Empty: {is_empty}")
+        assert dut_pop_value == expected_value, f"Expected {hex(expected_value)}, but got {hex(dut_pop_value)}"
+
+@cocotb.test()
+async def test_filo(dut):
+    """ Test FILO_RTL behavior with manual full and empty conditions using push count """
+
+    data_width = int(dut.DATA_WIDTH.value)
+    filo_depth = int(dut.FILO_DEPTH.value)
+
+    dut._log.info(f"Test started with parameters: DATA_WIDTH={data_width}, FILO_DEPTH={filo_depth}")
+
+    cocotb.start_soon(clock_gen(dut))
+
+    dut.push.value = 0
+    dut.pop.value = 0
+    dut.data_in.value = 0
+    dut.reset.value = 0
+    push_count = [0] 
+
+
+    dut._log.info("Starting Initial Reset...")
+    await apply_reset(dut, push_count, filo_depth)
+    await RisingEdge(dut.clk)
+
+    assert push_count[0] == 0, "Push count should be 0 after reset"
+
+    pushed_values = []
+
+
+    dut._log.info(f"Starting Push Test with random data width {data_width} and FILO depth {filo_depth}...")
+    for _ in range(filo_depth):
+        await push_data(dut, pushed_values, push_count, filo_depth, data_width) 
+
+    dut._log.info("Starting Pop Test...")
+    while pushed_values:
+        expected_value = pushed_values.pop()  
+        await pop_data(dut, expected_value, push_count, filo_depth, data_width)
+
+  
+    dut._log.info("Starting Feedthrough Test...")
+    if push_count[0] == 0:
+        feedthrough_value = random.randint(0, (1 << data_width) - 1)
+        dut.push.value = 1
+        dut.pop.value = 1
+        dut.data_in.value = feedthrough_value 
+        dut_popped_value =  feedthrough_value
+        dut._log.info(f"Feedthrough pushed value: {hex(feedthrough_value)}")
+        await RisingEdge(dut.clk)
+        await Timer(10, units='ns')  
+        popped_value = int(dut.data_out.value) & ((1 << data_width) - 1)
+        dut._log.info(f"Feedthrough popped value: {hex(dut_popped_value)}")
+        assert dut_popped_value == feedthrough_value, f"Feedthrough test failed, expected {hex(feedthrough_value)}"
+        dut.push.value = 0
+        dut.pop.value = 0
+        dut._log.info("Feedthrough Test Passed.")
+    else:
+        assert False, "Error: FILO is not empty before feedthrough test."
+
+    # Final check
+    await RisingEdge(dut.clk)
+    dut._log.info(f"All tests passed.")
+
+

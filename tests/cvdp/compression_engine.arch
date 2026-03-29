@@ -1,0 +1,100 @@
+module compression_engine
+  port clk: in Clock<SysDomain>;
+  port reset: in Reset<Async>;
+  port num_i: in UInt<24>;
+  port mantissa_o: out UInt<12>;
+  port exponent_o: out UInt<4>;
+
+  default seq on clk rising;
+
+  // One-hot encoding of MSB position in bits [23:12]
+  wire exp_oh: UInt<12>;
+
+  comb
+    exp_oh[11] = num_i[23];
+    exp_oh[10] = num_i[22] & ~num_i[23];
+    exp_oh[9] = num_i[21] & ~(num_i[23] | num_i[22]);
+    exp_oh[8] = num_i[20] & ~(num_i[23] | num_i[22] | num_i[21]);
+    exp_oh[7] = num_i[19] & ~(num_i[23] | num_i[22] | num_i[21] | num_i[20]);
+    exp_oh[6] = num_i[18] & ~(num_i[23] | num_i[22] | num_i[21] | num_i[20] | num_i[19]);
+    exp_oh[5] = num_i[17] & ~(num_i[23] | num_i[22] | num_i[21] | num_i[20] | num_i[19] | num_i[18]);
+    exp_oh[4] = num_i[16] & ~(num_i[23] | num_i[22] | num_i[21] | num_i[20] | num_i[19] | num_i[18] | num_i[17]);
+    exp_oh[3] = num_i[15] & ~(num_i[23] | num_i[22] | num_i[21] | num_i[20] | num_i[19] | num_i[18] | num_i[17] | num_i[16]);
+    exp_oh[2] = num_i[14] & ~(num_i[23] | num_i[22] | num_i[21] | num_i[20] | num_i[19] | num_i[18] | num_i[17] | num_i[16] | num_i[15]);
+    exp_oh[1] = num_i[13] & ~(num_i[23] | num_i[22] | num_i[21] | num_i[20] | num_i[19] | num_i[18] | num_i[17] | num_i[16] | num_i[15] | num_i[14]);
+    exp_oh[0] = num_i[12] & ~(num_i[23] | num_i[22] | num_i[21] | num_i[20] | num_i[19] | num_i[18] | num_i[17] | num_i[16] | num_i[15] | num_i[14] | num_i[13]);
+  end comb
+
+  // One-hot to binary conversion
+  wire exp_bin: UInt<4>;
+
+  comb
+    exp_bin = 0;
+    for i in 0..11
+      if exp_oh[i:i]
+        exp_bin = i.trunc<4>();
+      end if
+    end for
+  end comb
+
+  // Adjusted exponent: exp_bin+1 if any bit set, else 0
+  let any_oh: Bool = exp_oh != 0;
+  wire exponent_w: UInt<4>;
+  comb
+    if any_oh
+      exponent_w = (exp_bin + 1).trunc<4>();
+    else
+      exponent_w = 0;
+    end if
+  end comb
+
+  // Mantissa extraction: shift right by (exponent-1) when exponent>=1
+  // exponent=0: num_i[11:0]
+  // exponent=1: num_i[11:0]  (shift by 0)
+  // exponent=2: num_i[12:1]
+  // exponent=N (N>=1): num_i[N+10:N-1]
+  wire mantissa_w: UInt<12>;
+  comb
+    if exponent_w == 0
+      mantissa_w = num_i[11:0];
+    elsif exponent_w == 1
+      mantissa_w = num_i[11:0];
+    elsif exponent_w == 2
+      mantissa_w = num_i[12:1];
+    elsif exponent_w == 3
+      mantissa_w = num_i[13:2];
+    elsif exponent_w == 4
+      mantissa_w = num_i[14:3];
+    elsif exponent_w == 5
+      mantissa_w = num_i[15:4];
+    elsif exponent_w == 6
+      mantissa_w = num_i[16:5];
+    elsif exponent_w == 7
+      mantissa_w = num_i[17:6];
+    elsif exponent_w == 8
+      mantissa_w = num_i[18:7];
+    elsif exponent_w == 9
+      mantissa_w = num_i[19:8];
+    elsif exponent_w == 10
+      mantissa_w = num_i[20:9];
+    elsif exponent_w == 11
+      mantissa_w = num_i[21:10];
+    else
+      mantissa_w = num_i[22:11];
+    end if
+  end comb
+
+  // Registered outputs
+  reg mantissa_r: UInt<12> reset reset=>0;
+  reg exponent_r: UInt<4> reset reset=>0;
+
+  seq
+    mantissa_r <= mantissa_w;
+    exponent_r <= exponent_w;
+  end seq
+
+  comb
+    mantissa_o = mantissa_r;
+    exponent_o = exponent_r;
+  end comb
+end module compression_engine

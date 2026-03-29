@@ -21,8 +21,8 @@ module Ift2Icb
   port itcm: initiator ItcmIcb;
 
   // Response pipeline register
-  reg rsp_valid_r: Bool   init 0 reset rst_n=0;
-  reg rsp_data_r:  UInt<32> init 0 reset rst_n=0;
+  reg rsp_valid_r: Bool   init 0 reset rst_n=>0;
+  reg rsp_data_r:  UInt<32> init 0 reset rst_n=>0;
 
   // Backpressure: don't accept new request if response register is full
   // and downstream is not ready

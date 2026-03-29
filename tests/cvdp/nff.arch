@@ -1,0 +1,18 @@
+module nff
+  port d_in:    in Bit;
+  port dst_clk: in Clock<SysDomain>;
+  port rst:     in Reset<Async, Low>;
+  port reg syncd: out Bit reset rst=>0;
+
+  reg ff1: Bit reset rst=>0;
+
+  default seq on dst_clk rising;
+
+  seq
+    ff1 <= d_in;
+  end seq
+
+  seq
+    syncd <= ff1;
+  end seq
+end module nff

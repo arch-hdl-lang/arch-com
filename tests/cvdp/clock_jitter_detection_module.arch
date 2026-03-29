@@ -1,0 +1,44 @@
+module clock_jitter_detection_module
+  param JITTER_THRESHOLD: const = 5;
+  port clk: in Clock<SysDomain>;
+  port system_clk: in Bool;
+  port rst: in Reset<Sync>;
+  port reg jitter_detected: out Bool reset rst=>false;
+
+  default seq on clk rising;
+
+  reg edge_count: UInt<32> reset rst=>0;
+  reg edge_count_r: UInt<32> reset rst=>0;
+  reg prev_system_clk: Bool reset rst=>false;
+  reg edge_detected: Bool reset rst=>false;
+  reg start_counter: Bool reset rst=>false;
+  reg cycle_count: UInt<32> reset rst=>0;
+
+  let cnt_ne_thresh: Bool = (edge_count != JITTER_THRESHOLD);
+  let cnt_ne_zero: Bool = (edge_count != 0);
+  let past_startup: Bool = (cycle_count > JITTER_THRESHOLD);
+
+  seq
+    prev_system_clk <= system_clk;
+    edge_detected <= system_clk & (~prev_system_clk);
+    cycle_count <= (cycle_count + 1).trunc<32>();
+
+    if edge_detected
+      edge_count_r <= edge_count;
+      edge_count <= 1;
+      start_counter <= true;
+    elsif start_counter
+      edge_count <= (edge_count + 1).trunc<32>();
+    end if
+
+    if edge_detected
+      if cnt_ne_thresh & cnt_ne_zero & past_startup
+        jitter_detected <= true;
+      else
+        jitter_detected <= false;
+      end if
+    else
+      jitter_detected <= false;
+    end if
+  end seq
+end module clock_jitter_detection_module

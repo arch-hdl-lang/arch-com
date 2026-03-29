@@ -7,7 +7,7 @@ fsm TopModule
   port out_bytes: out UInt<24>;
   port done: out Bool;
 
-  reg out_r: UInt<24> reset reset=0;
+  reg out_r: UInt<24> reset reset=>0;
 
   state Find, Got1, Got2, Done_St;
   default state Find;

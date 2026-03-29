@@ -1,0 +1,49 @@
+module skid_buffer
+  port clk:     in Clock<SysDomain>;
+  port rst:     in Reset<Sync>;
+  port i_data:  in UInt<4>;
+  port i_valid: in Bool;
+  port i_ready: in Bool;
+  port o_data:  out UInt<4>;
+  port o_valid: out Bool;
+  port o_ready: out Bool;
+
+  reg data_reg: UInt<4> reset rst=>0;
+  reg buf_flag: Bool reset rst=>false;
+
+  default seq on clk rising;
+
+  // o_ready: we can accept data when buffer is empty
+  comb o_ready = ~buf_flag;
+
+  // o_valid: valid when input valid or buffer has data
+  comb o_valid = i_valid | buf_flag;
+
+  // o_data: output buffered data if buffer active, else pass through
+  comb
+    if buf_flag
+      o_data = data_reg;
+    else
+      o_data = i_data;
+    end if
+  end comb
+
+  seq
+    if rst
+      buf_flag <= false;
+      data_reg <= 0;
+    elsif buf_flag
+      // buffer has data, downstream ready => release
+      if i_ready
+        buf_flag <= false;
+        data_reg <= 0;
+      end if
+    else
+      // no buffer: if input valid and downstream not ready, store
+      if i_valid & (~i_ready)
+        buf_flag <= true;
+        data_reg <= i_data;
+      end if
+    end if
+  end seq
+end module skid_buffer

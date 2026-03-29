@@ -1,10 +1,10 @@
 module piso_8bit
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Async, Low>;
-  port reg serial_out: out Bool reset rst=0;
+  port reg serial_out: out Bool reset rst=>0;
 
-  reg tmp: UInt<8> reset rst=1;
-  reg bit_cnt: UInt<3> reset rst=0;
+  reg tmp: UInt<8> reset rst=>1;
+  reg bit_cnt: UInt<3> reset rst=>0;
 
   seq on clk rising
     // Output MSB-first: bit (7 - bit_cnt)

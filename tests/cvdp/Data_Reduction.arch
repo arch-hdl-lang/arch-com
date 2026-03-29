@@ -1,0 +1,53 @@
+// Data reduction: reduces DATA_COUNT elements of DATA_WIDTH bits each
+// into a single DATA_WIDTH-bit output using Bitwise_Reduction
+module Data_Reduction
+  param REDUCTION_OP: const = 0;
+  param DATA_WIDTH: const = 4;
+  param DATA_COUNT: const = 4;
+
+  port data_in: in UInt<DATA_WIDTH * DATA_COUNT>;
+  port reduced_data_out: out UInt<DATA_WIDTH>;
+
+  // Perform reduction directly: for each output bit position,
+  // gather that bit from all elements and reduce
+  wire and_result: UInt<DATA_WIDTH>;
+  wire or_result: UInt<DATA_WIDTH>;
+  wire xor_result: UInt<DATA_WIDTH>;
+
+  comb
+    // Initialize from first element
+    for b in 0..DATA_WIDTH-1
+      and_result[b:b] = data_in[b:b];
+      or_result[b:b] = data_in[b:b];
+      xor_result[b:b] = data_in[b:b];
+    end for
+
+    // Reduce across remaining elements
+    for e in 1..DATA_COUNT-1
+      for b in 0..DATA_WIDTH-1
+        and_result[b:b] = and_result[b:b] & data_in[e * DATA_WIDTH + b : e * DATA_WIDTH + b];
+        or_result[b:b] = or_result[b:b] | data_in[e * DATA_WIDTH + b : e * DATA_WIDTH + b];
+        xor_result[b:b] = xor_result[b:b] ^ data_in[e * DATA_WIDTH + b : e * DATA_WIDTH + b];
+      end for
+    end for
+  end comb
+
+  // Select operation: 0=AND, 1=OR, 2=XOR, 3=NAND, 4=NOR, 5=XNOR, default=AND
+  comb
+    if REDUCTION_OP == 0
+      reduced_data_out = and_result;
+    elsif REDUCTION_OP == 1
+      reduced_data_out = or_result;
+    elsif REDUCTION_OP == 2
+      reduced_data_out = xor_result;
+    elsif REDUCTION_OP == 3
+      reduced_data_out = ~and_result;
+    elsif REDUCTION_OP == 4
+      reduced_data_out = ~or_result;
+    elsif REDUCTION_OP == 5
+      reduced_data_out = ~xor_result;
+    else
+      reduced_data_out = and_result;
+    end if
+  end comb
+end module Data_Reduction

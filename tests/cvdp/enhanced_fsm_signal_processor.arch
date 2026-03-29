@@ -1,0 +1,98 @@
+module enhanced_fsm_signal_processor
+  port i_clk:    in Clock<SysDomain>;
+  port i_rst_n:  in Reset<Sync, Low>;
+  port i_enable: in Bit;
+  port i_clear:  in Bit;
+  port i_ack:    in Bit;
+  port i_fault:  in Bit;
+  port i_vector_1: in UInt<5>;
+  port i_vector_2: in UInt<5>;
+  port i_vector_3: in UInt<5>;
+  port i_vector_4: in UInt<5>;
+  port i_vector_5: in UInt<5>;
+  port i_vector_6: in UInt<5>;
+  port reg o_ready:      out Bit       reset i_rst_n=>0;
+  port reg o_error:      out Bit       reset i_rst_n=>0;
+  port reg o_fsm_status: out UInt<2>   reset i_rst_n=>0;
+  port reg o_vector_1:   out UInt<8>   reset i_rst_n=>0;
+  port reg o_vector_2:   out UInt<8>   reset i_rst_n=>0;
+  port reg o_vector_3:   out UInt<8>   reset i_rst_n=>0;
+  port reg o_vector_4:   out UInt<8>   reset i_rst_n=>0;
+
+  default seq on i_clk rising;
+
+  // 1-cycle "just entered" flag: suppress action on the cycle a state is entered
+  reg entered: Bit reset i_rst_n=>0;
+
+  let two_ones: UInt<2> = 3;
+  let concat_bus: UInt<32> = {i_vector_1, i_vector_2, i_vector_3, i_vector_4, i_vector_5, i_vector_6, two_ones};
+
+  seq
+    if entered
+      entered <= 0;
+    elsif o_fsm_status == 2'd0
+      // IDLE
+      if i_fault
+        o_fsm_status <= 2'd3;
+        o_error      <= 1;
+        o_ready      <= 0;
+        o_vector_1   <= 0;
+        o_vector_2   <= 0;
+        o_vector_3   <= 0;
+        o_vector_4   <= 0;
+        entered      <= 1;
+      elsif i_enable
+        o_fsm_status <= 2'd1;
+        entered      <= 1;
+      end if
+    elsif o_fsm_status == 2'd1
+      // PROCESS
+      if i_fault
+        o_fsm_status <= 2'd3;
+        o_error      <= 1;
+        o_ready      <= 0;
+        o_vector_1   <= 0;
+        o_vector_2   <= 0;
+        o_vector_3   <= 0;
+        o_vector_4   <= 0;
+        entered      <= 1;
+      else
+        o_vector_1   <= concat_bus[31:24];
+        o_vector_2   <= concat_bus[23:16];
+        o_vector_3   <= concat_bus[15:8];
+        o_vector_4   <= concat_bus[7:0];
+        o_fsm_status <= 2'd2;
+        o_ready      <= 1;
+        entered      <= 1;
+      end if
+    elsif o_fsm_status == 2'd2
+      // READY
+      if i_fault
+        o_fsm_status <= 2'd3;
+        o_error      <= 1;
+        o_ready      <= 0;
+        o_vector_1   <= 0;
+        o_vector_2   <= 0;
+        o_vector_3   <= 0;
+        o_vector_4   <= 0;
+        entered      <= 1;
+      elsif i_ack
+        o_fsm_status <= 2'd0;
+        o_ready      <= 0;
+        entered      <= 1;
+      end if
+    elsif o_fsm_status == 2'd3
+      // FAULT
+      if (~i_fault) & i_clear
+        o_fsm_status <= 2'd0;
+        o_error      <= 0;
+        o_ready      <= 0;
+        o_vector_1   <= 0;
+        o_vector_2   <= 0;
+        o_vector_3   <= 0;
+        o_vector_4   <= 0;
+        entered      <= 1;
+      end if
+    end if
+  end seq
+end module enhanced_fsm_signal_processor

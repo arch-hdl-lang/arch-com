@@ -1,0 +1,153 @@
+MODULE: dbi_enc
+ID: cvdp_copilot_dbi_0001
+
+=== SPEC ===
+A **Data Bus Inversion (DBI) encoder** is a digital circuit used to reduce power consumption and electromagnetic interference (EMI) in high-speed digital buses. DBI encodes a group of data bits using an additional bit called a control bit, which indicates whether the current data bits should be transmitted over the bus as they are or in an inverted form.
+
+For example, in the case of a DBI encoder that processes a group of 40 data bits, the 40-bit data is divided into two 20-bit groups, and each 20-bit group is converted into a 21-bit codeword. If the number of bit toggles between the previous codeword and the current data in each 20-bit group exceeds 10, the control bit is set to 1, and the data bits are encoded in inverted form. Otherwise, the control bit is set to 0, and the data bits are transmitted unchanged.
+
+## Design Specification of `dbi_enc` module:
+
+### Interface:
+
+#### Inputs:
+- **`data_in`** (40-bits, [39:0]): Data input before DBI logic, that is data input that needed to be encoded.
+- **`clk`** (1-bit): Clock signal associated with the input data.
+- **`rst_n`**: An active-low asynchronous reset signal. When asserted, this signal resets the internal flip-flops, forcing the output to a known state that is `data_out` to 40'h00_0000_0000 and `dbi_cntrl` to 2'b00.
+#### Output:
+- **`data_out`** (40-bits, [39:0]): Data input after DBI logic.
+- **`dbi_cntrl`** (2-bits, [1:0]): The output signal synchronized to the destination clock domain.
+
+### Description of DBI Encoder Functionality:
+
+**Splitting Incoming Data `data_in`:**
+The DBI Encoder splits the 40-bit `data_in` into two 20-bit groups:
+- Group-1: The 20 most significant bits (MSBs).
+- Group-0: The 20 least significant bits (LSBs).
+
+**Comparison with Previous Data:**
+Each 20-bit group is compared with its corresponding previous 20-bit group.
+- If this is the first operation after a system reset or initialization, the groups are compared with 20-bits of zeroes.
+- Each bit in the current group is compared with the corresponding bit in the previous group to check whether they match or differ.
+
+**Control Signal (`dbi_cntrl`) Behavior:**
+- If more than 10 bits differ between the current and previous data in Group-1, `dbi_cntrl[1]` is set to high (1); otherwise, it is set to low (0).
+- Similarly, if more than 10 bits differ in Group-0, `dbi_cntrl[0]` is set to high (1); otherwise, it is set to low (0).
+
+**Generating `data_out`:**
+The `data_out` signal is generated based on the values of `dbi_cntrl`:
+- If `dbi_cntrl[1]` is high, the inverted version of Group-1 (MSBs) is assigned to `data_out[39:20]`.
+- If `dbi_cntrl[0]` is high, the inverted version of Group-0 (LSBs) is assigned to `data_out[19:0]`.
+- If neither control signal is high, the respective groups are passed through without inversion.
+
+**Updating Previous Data:**
+- For the next operation, the 40-bit `data_out` from the current cycle is stored as the "previous data" for comparison.
+
+**Reset Behavior (nrst):**
+- When the` rst_n` signal is de-asserted (active low):
+- All flip-flops in the encoder are reset to a known state (typically logic low).
+- The `data_out` signal is held at a known value (e.g., all zeroes) while the reset is active.
+### Summary:
+The DBI Encoder ensures that data is dynamically inverted for each group based on the bitwise differences between consecutive operations, optimizing the data encoding for transmission. The `dbi_cntrl` signals dictate whether the data groups are inverted, ensuring flexibility. Reset functionality ensures stable behavior during system initialization.
+
+
+
+=== src/.env ===
+SIM             = icarus
+WAVE            = False
+TOPLEVEL_LANG   = verilog
+VERILOG_SOURCES = /code/rtl/dbi_enc.sv 
+TOPLEVEL        = dbi_enc
+MODULE          = test_dbi_encoder
+PYTHONPATH      = /src
+HASH            = f934aee69ae2f90fa004a1feef1da7307479bc2b
+
+=== src/test_dbi_encoder.py ===
+import cocotb
+from cocotb.clock import Clock
+from cocotb.triggers import FallingEdge, RisingEdge, ClockCycles, Timer
+import random
+import time
+import harness_library as hrs_lb
+
+@cocotb.test()
+async def test_dbi_encoder(dut):
+    # Seed the random number generator with the current time or another unique value
+    random.seed(time.time())
+    # Start clock
+    cocotb.start_soon(Clock(dut.clk, 100, units='ns').start())
+    
+    
+    # Initialize DUT
+    #print(f'data_in before initialization = {dut.data_in.value}') ####need to remove
+    await hrs_lb.dut_init(dut) 
+    data_in = 0 
+    dut.data_in.value = data_in
+    await FallingEdge(dut.clk)
+    #print(f'data_in after initialization   = {dut.data_in.value}') ####need to remove
+    # Apply reset 
+    await hrs_lb.reset_dut(dut.rst_n, dut)
+    print(f'data_out after reset  = {dut.data_out.value}') ####need to remove
+
+
+    await FallingEdge(dut.clk)
+    
+    prev_dat1 = dut.data_out.value[39:20]
+    prev_dat0 = dut.data_out.value[19:0]
+    #print(f'prev data_out after first data  = {(prev_dat1),(prev_dat0)}')
+    data_in = 0xaa_aaaf_ffff
+    dut.data_in.value = data_in
+    start = 20
+    end = 39
+    data_in1 = (data_in >> start) & ((1 << (end - start + 1)) - 1)
+    
+    start = 0
+    end = 19
+    data_in0 = (data_in >> start) & ((1 << (end - start + 1)) - 1)
+    #print(f'data_in after first data  = {bin(data_in1),bin(data_in0)}')
+    
+    xor_result0 = prev_dat0.integer ^ data_in0
+    xor_result1 = prev_dat1.integer ^ data_in1
+
+    count_ones0 = bin(xor_result0).count('1')
+    count_ones1 = bin(xor_result1).count('1')
+
+    print(f'count  = {count_ones0,count_ones1}')
+
+
+    if count_ones0 > 10:  # If the value is greater than 10 
+        cntrl0 = 1
+        out_data0 = ~data_in0
+    else:
+        cntrl0 = 0
+        out_data0 = data_in0
+
+    if count_ones1 > 10:  # If the value is greater than 10 
+        cntrl1 = 1
+        out_data1 = ~data_in1
+    else:
+        cntrl1 = 0
+        out_data1 = data_in1
+
+    print(f'control outdata = {cntrl1,cntrl0}')
+    #print(f'expected outdata = {bin(out_data1),bin(out_data0)}')
+
+    exp_out_data1 = bin(out_data1)[-20:]
+    exp_out_data0 = bin(out_data0)[-20:]
+
+
+    #print(f'expected outdata = {exp_out_data1,exp_out_data0}')
+    
+    await FallingEdge(dut.clk)
+    ##data_out = dut.data_out.value
+    pres_dat1 = dut.data_out.value[39:20].binstr
+    pres_dat0 = dut.data_out.value[19:0].binstr
+    print(f'dut  outdata = {pres_dat1,pres_dat0}')
+    print(f'expected  outdata = {exp_out_data1,exp_out_data0}')
+
+    if pres_dat1 == exp_out_data1 and pres_dat0 == exp_out_data0 :  # If the value is greater than 10 
+         print("[INFO] Test 'test_dbi_encoder' completed successfully.")
+    else:
+        print("[INFO] Test 'test_dbi_encoder' failed.")
+    
+

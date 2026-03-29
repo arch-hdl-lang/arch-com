@@ -1,0 +1,182 @@
+MODULE: 16qam_demapper
+ID: cvdp_copilot_16qam_mapper_0006
+
+=== SPEC ===
+Design a combinational RTL (using SystemVerilog) module to implement a QAM16 demapper with error detection based on interpolated values. **QAM16** (16-Quadrature Amplitude Modulation) is a modulation scheme that represents data as combinations of four amplitude levels and four phase states, resulting in 16 unique symbols mapped in a 2D I/Q plane. The module converts QAM16 I/Q samples back into bit streams, checks the interpolated values for potential noise or errors, and sets an error flag if any discrepancies are detected.
+
+## Module Name
+`qam16_demapper_interpolated`
+
+## Parameters
+
+| Parameter   | Description                                    | Default | Constraints                                     |
+|-------------|------------------------------------------------|---------|-------------------------------------------------|
+| `N`         | Number of original input symbols               | 4       | ≥ 2 and a multiple of 2 (e.g., 2, 4, 6, 8, etc.)|
+| `OUT_WIDTH` | Bit width of each output symbol (fixed)        | 4       | Fixed at 4                                      |
+| `IN_WIDTH`  | Bit width of I/Q components (fixed)            | 3       | Fixed at 3                                      |
+
+## Inputs and Outputs
+
+### Inputs
+
+| Name | Width                | Description                                                                                     |
+|------|----------------------|-------------------------------------------------------------------------------------------------|
+| `I`  | `(N + N/2)*IN_WIDTH` | Packed input vector containing real (I) components of QAM16 symbols. The samples are organized in a repeating pattern: **mapped sample**, **interpolated sample**, **mapped sample**. Each `IN_WIDTH` segment represents a signed integer. |
+| `Q`  | `(N + N/2)*IN_WIDTH` | Packed input vector containing imaginary (Q) components of QAM16 symbols. The organization follows the same pattern as `I`: **mapped sample**, **interpolated sample**, **mapped sample**. Each `IN_WIDTH` segment represents a signed integer. |
+
+### Outputs
+
+| Name        | Width         | Description                                                                                  |
+|-------------|---------------|----------------------------------------------------------------------------------------------|
+| `bits`      | `N*OUT_WIDTH` | Packed output vector representing the original bit stream decoded from the input I/Q values. |
+| `error_flag`| 1             | Global flag indicating whether any errors were detected in the interpolated values.          |
+
+---
+
+## Example Inputs and Outputs for \( N = 4 \)
+### Inputs
+
+1. **Real (I) Input Vector**:
+   - Width: \((N + N/2) * IN\_WIDTH = (4 + 2) * 3 = 18\) bits
+   - Example:
+     ```text
+     I = [Mapped 1, Interpolated 1, Mapped 2, Mapped 3, Interpolated 2, Mapped 4]
+     I = [-3, 0, 1, 1, -1, 3]
+     ```
+     Each value is a 3-bit signed integer.
+
+2. **Imaginary (Q) Input Vector**:
+   - Width: \((N + N/2) * IN\_WIDTH = 18\) bits
+   - Example:
+     ```text
+     Q = [Mapped 1, Interpolated 1, Mapped 2, Mapped 3, Interpolated 2, Mapped 4]
+     Q = [-1, 2, 1, 3, -3, -3]
+     ```
+     Each value is a 3-bit signed integer.
+
+### Outputs
+
+1. **Bits Vector**:
+   - Width: \(N * OUT\_WIDTH = 4 * 4 = 16\) bits
+   - Example Mapping:
+     ```text
+     bits = [MSB_1|LSB_1, MSB_2|LSB_2, MSB_3|LSB_3, MSB_4|LSB_4]
+     bits = [10|01, 01|10, 10|11, 11|00]
+     ```
+     Each 4-bit segment represents the demapped symbol, combining 2 bits from the real (`I`) component and 2 bits from the imaginary (`Q`) component.
+
+2. **Error Flag**:
+   - Width: \(1\) bit
+   - Example:
+     ```text
+     error_flag = 1
+     ```
+     Indicates that at least one interpolated value deviated beyond the acceptable threshold.
+
+---
+
+
+## Behavioral Definitions
+
+### Input Parsing
+The input vectors consist of alternating **mapped** and **interpolated** values, structured in a repeating pattern. For every group of input symbols, the sequence includes the first mapped value, the interpolated value between the first and second mapped values, and the second mapped value. This pattern repeats across the entire input, ensuring that the real (`I`) and imaginary (`Q`) components follow the same structure.
+
+### Error Detection
+
+The expected interpolated values for both `I` and `Q` mapped components are calculated as the average of two mapped values that surround the interpolated position. This is done by summing the two mapped values and dividing the result by 2. To ensure precision and prevent overflow, the calculation uses a signal size of `IN_WIDTH + 1` bits, as the addition of two signed values can produce a result with an extra bit due to carry.
+
+The difference between the interpolated values and the expected values is calculated to measure deviations. This subtraction operation also requires a signal size of `IN_WIDTH + 1` bits to represent all possible outcomes. The absolute value of the difference is then computed to quantify the magnitude of deviation, ensuring the sign is irrelevant. The error flag is set to `1` if the absolute difference exceeds a predefined threshold (e.g., `ERROR_THRESHOLD`).
+
+### Mapping I/Q Components to Bits
+Each I/Q component is converted back into a 4-bit representation. The most significant 2 bits (MSBs) are derived from the `I` (real) component, where the normalized amplitude levels of the QAM16 constellation points (`-3`, `-1`, `1`, `3`) map to binary values as follows:
+- `-3`: `00`
+- `-1`: `01`
+- `1`: `10`
+- `3`: `11`
+
+Similarly, the least significant 2 bits (LSBs) are derived from the `Q` (imaginary) component using the same mapping.
+
+### Output Arrangement
+The output `bits` vector contains the demapped bit stream for all mapped symbols in the input. Each segment of `OUT_WIDTH` bits represents a mapped output derived from the corresponding mapped `I` and `Q` components of the input.
+
+---
+
+## Timing and Synchronization
+The module operates combinationally, with no clock or reset signals. Outputs are updated immediately based on the current input values.
+
+=== src/.env ===
+SIM             = icarus
+TOPLEVEL_LANG   = verilog
+VERILOG_SOURCES = /code/rtl/16qam_demapper.sv
+TOPLEVEL        = qam16_demapper_interpolated
+MODULE          = test_qam16_demapper_interpolated
+PYTHONPATH      = /src
+HASH            = 6-create-a-rtl-of-16qam-demapper
+
+=== src/test_qam16_demapper_interpolated.py ===
+import cocotb
+from cocotb.triggers import Timer
+import harness_library as hrs_lb
+
+@cocotb.test()
+async def test_qam16_demapper_interpolated(dut):
+    # Parameters from the DUT
+    N = int(dut.N.value)  # Number of mapped symbols
+    IN_WIDTH = int(dut.IN_WIDTH.value)
+    threshold = int(dut.ERROR_THRESHOLD.value)
+
+    # Debug mode
+    debug = 0
+
+    I_values, Q_values = hrs_lb.generate_samples(N)
+    mapped_indices = []
+    for i in range(N // 2):
+        mapped_indices.extend([3 * i, 3 * i + 2])  # First mapped and second mapped
+    
+    # Indices for interpolated values
+    interp_indices = [3 * i + 1 for i in range(N // 2)]  # Interpolated indices are always the middle (3*i + 1)
+    # Extract mapped values
+    mapped_I = [I_values[idx] for idx in mapped_indices]
+    mapped_Q = [Q_values[idx] for idx in mapped_indices]    
+
+    # Extract interpolated values
+    interp_I = [I_values[idx] for idx in interp_indices]
+    interp_Q = [Q_values[idx] for idx in interp_indices]
+    
+    error_flag = 0
+    for i in range(len(interp_I)):
+           # Calculate averages of mapped pairs
+           avg_I = (mapped_I[2 * i] + mapped_I[2 * i + 1]) / 2
+           avg_Q = (mapped_Q[2 * i] + mapped_Q[2 * i + 1]) / 2
+           cocotb.log.info(f'avg I= {avg_I}')
+           cocotb.log.info(f'avg Q= {avg_Q}')
+           # Compare with interpolated values
+           if abs(avg_I - interp_I[i]) > threshold or abs(avg_Q - interp_Q[i]) > threshold:
+               error_flag = 1
+
+    bit_vec = hrs_lb.map_to_bits_vector(mapped_I, mapped_Q, N)
+    bit_stream ="".join(str(bit) for bit in bit_vec)
+    packed_I = hrs_lb.pack_signal(I_values, IN_WIDTH)
+    packed_Q = hrs_lb.pack_signal(Q_values, IN_WIDTH)    
+    dut.I.value = packed_I
+    dut.Q.value = packed_Q
+
+    await Timer(1, units="ns")
+    assert dut.bits.value == bit_stream
+    assert dut.error_flag.value == error_flag
+
+    if debug:
+      cocotb.log.info(f"I_values: {I_values}")
+      cocotb.log.info(f"Q_values: {Q_values}")
+      cocotb.log.info(f"interp_I: {interp_I}")
+      cocotb.log.info(f"interp_Q: {interp_Q}")
+      cocotb.log.info(f'error flag     = {error_flag}')
+      cocotb.log.info(f'error_flag dut = {dut.error_flag.value}')          
+      cocotb.log.info(f"Packed I: {bin(packed_I)}")
+      cocotb.log.info(f"Packed Q: {bin(packed_Q)}")    
+      cocotb.log.info(f"DUT I_values: {dut.I.value}")
+      cocotb.log.info(f"DUT Q_values: {dut.Q.value}")
+      cocotb.log.info(f'bits dut = {dut.bits.value}')
+      cocotb.log.info(f'bit model = {(bit_stream)}')
+
+

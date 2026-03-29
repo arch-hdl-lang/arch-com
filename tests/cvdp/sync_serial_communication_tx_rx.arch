@@ -1,0 +1,39 @@
+module sync_serial_communication_tx_rx
+  port clk:       in Clock<SysDomain>;
+  port reset_n:   in Reset<Async, Low>;
+  port data_in:   in UInt<64>;
+  port sel:       in UInt<3>;
+  port data_out:  out UInt<64>;
+  port done:      out Bool;
+
+  wire serial_out_w: Bool;
+  wire tx_done_w:    Bool;
+  wire serial_clk_w: Bool;
+  wire rx_data_out:  UInt<64>;
+  wire rx_done_w:    Bool;
+
+  inst tx: tx_block
+    connect clk        <- clk;
+    connect reset_n    <- reset_n;
+    connect data_in    <- data_in;
+    connect sel        <- sel;
+    connect serial_out -> serial_out_w;
+    connect done       -> tx_done_w;
+    connect serial_clk -> serial_clk_w;
+  end inst tx
+
+  inst rx: rx_block
+    connect clk        <- clk;
+    connect reset_n    <- reset_n;
+    connect data_in    <- serial_out_w;
+    connect sel        <- sel;
+    connect serial_clk <- serial_clk_w;
+    connect data_out   -> rx_data_out;
+    connect done       -> rx_done_w;
+  end inst rx
+
+  comb
+    data_out = rx_data_out;
+    done = rx_done_w;
+  end comb
+end module sync_serial_communication_tx_rx

@@ -1,0 +1,35 @@
+module cvdp_leading_zero_cnt
+  param DATA_WIDTH: const = 32;
+  param REVERSE: const = 0;
+  port data: in UInt<DATA_WIDTH>;
+  port leading_zeros: out UInt<$clog2(DATA_WIDTH)>;
+  port all_zeros: out Bool;
+
+  wire zcount: UInt<$clog2(DATA_WIDTH)>;
+  wire found: Bool;
+
+  comb
+    zcount = 0;
+    found = false;
+    if REVERSE == 1
+      // Trailing zero count: scan from LSB
+      for i in 0..DATA_WIDTH-1
+        if (~found) & (data[i] == 1)
+          zcount = i[$clog2(DATA_WIDTH)-1:0];
+          found = true;
+        end if
+      end for
+    else
+      // Leading zero count: scan from MSB
+      for i in 0..DATA_WIDTH-1
+        if (~found) & (data[DATA_WIDTH-1-i] == 1)
+          zcount = i[$clog2(DATA_WIDTH)-1:0];
+          found = true;
+        end if
+      end for
+    end if
+  end comb
+
+  comb leading_zeros = zcount;
+  comb all_zeros = data == 0;
+end module cvdp_leading_zero_cnt

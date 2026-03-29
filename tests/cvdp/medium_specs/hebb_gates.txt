@@ -1,0 +1,234 @@
+MODULE: hebb_gates
+ID: cvdp_copilot_hebbian_rule_0017
+
+=== SPEC ===
+Design a SystemVerilog RTL module `hebbian_rule` that implements a Moore Finite State Machine (FSM) to train a Hebbian learning model. The module takes signed 4-bit inputs (`a` and `b`), a 2-bit gate selector, and control signals for starting the FSM and resetting the system. It sequentially performs training steps such as weight initialization, target selection, weight/bias updates, and convergence checks using the Hebbian learning rule. The module outputs the updated weights (`w1` and `w2`), bias, and the FSM's current state and next state. The system uses a gate selection module to determine the target outputs based on logical gate operations for training.
+
+## Design Specifications:
+- Hebbian rule is a type of unsupervised neural network learning algorithm
+
+## Abstract Algorithm:
+- The hebbian or hebb rule works based on the following algorithm
+
+-  **Step 1**: Initialize all the weights and bias to zero.
+                                  w<sub>I</sub> = 0 for i = 1 to n , n is the number of input vectors
+
+- **Step 2**: For each input training vector and target output pair, do the following:
+
+    - **Step 2a**: Set activation for input units
+                         x<sub>i</sub>=s<sub>i</sub>, x is a register to store the input vector, where x is a register to store the input vector
+
+    -  **Step 2b**: Set activation for output unit
+                            y = t, where t is the target vector and y is the output vector
+
+    -  **Step 2c**: Adjust the weights and bias
+                         w<sub>i</sub>(new) = w<sub>i</sub>(old) + delta_w
+                         bias(new) = bias(old) + delta_b
+                          Where:
+                            delta_w = x<sub>I</sub> * t
+                            delta_b = t
+                   
+## Inputs and Outputs:
+## Inputs:
+- `clk` (1-bit): Posedge Clock signal.
+- `rst` (1-bit): Asynchronous Negedge Reset signal. When asserted LOW , the FSM is initialized to State_0 and iteration counter is initialized to 0.
+- `start `(1-bit): Active HIGH Signal to initiate the FSM.
+- `a`, `b` (4-bit each, [3:0],signed): Bipolar input signals [-1 ,1]. Only -1 and 1 have to be considered as valid inputs
+- `gate_select` (2-bit,[1:0]): Selector to specify the target for a given gate
+## Outputs:
+- `w1`, `w2` (4-bit each,[3:0], signed): Trained weights for the inputs.
+- `bias` (4-bit, signed,[3:0]): Trained bias value.
+- `present_state`, `next_state` (4-bit each,[3:0]): Current and next states of the Training FSM.
+
+## Learning Logic:
+- Weights (w1, w2) and bias are updated incrementally based on the input values and a computed error:
+    delta_w1 = x1 * target
+    delta_w2 = x2 * target
+    delta_b = target 
+    w1 = w1 + delta_w1
+    w2 = w2 + delta_w2
+    bias = bias + delta_b
+
+- Target values are determined using a `gate_target` submodule based on `gate_select`:
+  - gate_select = 2'b00: AND gate behavior.
+  - gate_select = 2'b01: OR gate behavior.
+  - gate_select = 2'b10: NAND gate behavior.
+  - gate_select = 2'b11: NOR gate behavior.
+
+## FSM Design:
+There are totally 11 states handled by Moore FSM.
+- State_0: Reset state.
+- State_1: Capture inputs.
+- State_2-State_6: Assign targets based on the selected gate.
+- State_7: Compute deltas for weights and bias.
+- State_8: Update weights and bias.
+- State_9: Loop through training iterations.
+- State_10: Return to the initial state.
+
+## Functional Requirements:
+- Weight adjustment must follow the Hebbian learning rule.
+- The FSM must support multiple training iterations for every possible input combination of a two-input logic gate.
+- Outputs (`w1`, `w2`, `bias`) should reflect trained values at the end of the process.
+
+## Testbench:
+- Validate learning for all gates (`gate_select` = 2'b00 to 2'b11).
+- Test with various input combinations (`a`, `b`) to observe weight and bias updates.
+- Ensure the FSM transitions and outputs align with the design.
+
+## Example Calculation:
+Let us take the AND gate for explaining the working of the module.
+Let the 4-bit inputs be : `a = 4'b0001` and `b = 4'b0001`.
+The target expected for this input combination is `4'b0001`.
+
+## Algorithmic Explanation :
+-  1. Initialize the weights and bias registers to 0
+            `w1 = 4'b0000` , `w2 = 4'b0000` , `bias = 4'b0000`;
+-  2. Capture the inputs `a` and `b` into two internal registers namely x1 and x2.
+            `x1 = 4'b0001` (Holds the contents of operand `a`)
+            `x2 = 4'b0001` (Holds the contents of operand `b`)
+-  3. Select the target required for the given input combination 
+          ` t1 = 4'b0001`
+-  4. Calculate the incremental values of w1(`delta_w1`), w2(`delta_w2`), b(`delta_b`)
+            `delta_w1 = x1 * t = 4'b0001 * 4'b0001 = 4'b0001`
+            `delta_w2 = x2 * t = 4'b0001 * 4'b0001 = 4'b0001`
+            `delta_b  = t = 4'b0001`
+-  5. Calculate the values of w1 , w2 , bias
+            `w1   = w1 + delta_w1  = 4'b0000 + 4'b0001 = 4'b0001`; (1 in decimal)
+            `w2   = w2 + delta_w2  = 4'b0000 + 4'b0001 = 4'b0001`; (1 in decimal)
+            `bias = bias + delta_b = 4'b0000 + 4'b1111 = 4'b0001`; (1 in decimal)
+
+Example Waveform:
+```wavedrom
+{
+  "signal": [
+    {"name": "clk", "wave": "p................"},
+    {"name": "rst", "wave": "0...1............", "data": []},
+    {"name": "a[3:0]", "wave": "0...3444.........", "data": ["4'd1","4'd1","-4'd1","-4'd1"]},
+    {"name": "b[3:0]", "wave": "0...3444.........", "data": ["4'd1","-4'd1","4'd1","-4'd1"]},
+    {"name": "gate_select[1:0]", "wave": "x...3............", "data": ["2'b00"]},
+    {"name": "w1[3:0]", "wave": "0...4444.........", "data": ["4'd1","4'd0","4'd1","4'd2"]},
+    {"name": "w2[3:0]", "wave": "0...4444.........", "data": ["4'd1","4'd2","4'd1","4'd2"]},
+    {"name": "bias[3:0]", "wave": "0...4444.........", "data": ["4'd1","4'd0","-4'd1","-4'd2"]},
+    {"name": "present_state[3:0]", "wave": "0...3333.........", "data": ["4'd0..49","4'd0..4'd9","4'd0..4'd9","4'd0..4'd10"]}
+    ],
+  "config": {"hscale": 3}
+}
+```
+
+=== src/.env ===
+SIM             = icarus
+TOPLEVEL_LANG   = verilog
+VERILOG_SOURCES = /code/rtl/hebb_gates.sv
+TOPLEVEL        = hebb_gates
+MODULE          = test_hebb_gates
+PYTHONPATH      = /src
+HASH            = 17-hebbian_rule_rtl_design_generation_issue
+
+
+=== src/test_hebb_gates.py ===
+import cocotb
+from cocotb.clock import Clock
+from cocotb.triggers import RisingEdge, Timer
+import random
+
+@cocotb.test()
+async def test_hebb_gates(dut):
+    """Test the hebb_gates module with different gate selections and inputs."""
+
+    # Create a 10ns clock
+    clock = Clock(dut.clk, 10, units="ns")
+    cocotb.start_soon(clock.start())
+
+    # Reset logic
+    dut.rst.value = 0
+    await Timer(10, units="ns")
+    dut.rst.value = 1
+
+    # Initialize inputs
+    dut.start.value = 0
+    dut.a.value = 0
+    dut.b.value = 0
+    dut.gate_select.value = 0
+
+    await RisingEdge(dut.rst)
+    await Timer(10, units="ns")
+
+    # Helper function for applying stimulus and logging outputs
+    async def apply_stimulus(a, b, gate_select, duration):
+        dut.a.value = a
+        dut.b.value = b
+        dut.gate_select.value = gate_select
+        await Timer(duration, units="ns")
+        cocotb.log.info(f"gate_select={gate_select}, a={a}, b={b}, w1={dut.w1.value.to_signed()}, w2={dut.w2.value.to_signed()}, bias={dut.bias.value.to_signed()}, state={bin(dut.present_state.value.to_unsigned())}")
+
+    # Test AND gate targets (gate_select = 2'b00)
+    dut.gate_select.value = 0b00
+    dut.start.value = 1
+    cocotb.log.info("Start of AND gate Training")
+
+    await apply_stimulus(1, 1, 0b00, 60)
+    await apply_stimulus(1, -1, 0b00, 60)
+    await apply_stimulus(-1, 1, 0b00, 60)
+    await apply_stimulus(-1, -1, 0b00, 70)
+    assert dut.w1.value.to_signed() == 2, f"Expected w1=1, but got {dut.w1.value.to_signed()}"
+    assert dut.w2.value.to_signed() == 2, f"Expected w2=1, but got {dut.w2.value.to_signed()}"
+    assert dut.bias.value.to_signed() == -2, f"Expected bias=-1, but got {dut.bias.value.to_signed()}"
+    cocotb.log.info("End of AND gate Training")
+
+    # Test OR gate targets (gate_select = 2'b01)
+    dut.gate_select.value = 0b01
+    cocotb.log.info("Start of OR gate Training")
+
+    await apply_stimulus(1, 1, 0b01, 70)
+    await apply_stimulus(-1, 1, 0b01, 60)
+    await apply_stimulus(1, -1, 0b01, 60)
+    await apply_stimulus(-1, -1, 0b01, 70)
+    assert dut.w1.value.to_signed() == 2, f"Expected w1=1, but got {dut.w1.value.to_signed()}"
+    assert dut.w2.value.to_signed() == 2, f"Expected w2=1, but got {dut.w2.value.to_signed()}"
+    assert dut.bias.value.to_signed() == 2, f"Expected bias=-1, but got {dut.bias.value.to_signed()}"
+    cocotb.log.info("End of OR gate Training")
+
+    # Test NAND gate targets (gate_select = 2'b10)
+    dut.gate_select.value = 0b10
+    cocotb.log.info("Start of NAND gate Training")
+
+    await apply_stimulus(-1, -1, 0b10, 70)
+    await apply_stimulus(-1, 1, 0b10, 60)
+    await apply_stimulus(1, -1, 0b10, 60)
+    await apply_stimulus(1, 1, 0b10, 70)
+    assert dut.w1.value.to_signed() == -2, f"Expected w1=1, but got {dut.w1.value.to_signed()}"
+    assert dut.w2.value.to_signed() == -2, f"Expected w2=1, but got {dut.w2.value.to_signed()}"
+    assert dut.bias.value.to_signed() == 2, f"Expected bias=-1, but got {dut.bias.value.to_signed()}"
+    cocotb.log.info("End of NAND gate Training")
+
+    # Test NOR gate targets (gate_select = 2'b11)
+    dut.gate_select.value = 0b11
+    cocotb.log.info("Start of NOR gate Training")
+
+    await apply_stimulus(-1, -1, 0b11, 70)
+    await apply_stimulus(-1, 1, 0b11, 60)
+    await apply_stimulus(1, -1, 0b11, 60)
+    await apply_stimulus(1, 1, 0b11, 70)
+    assert dut.w1.value.to_signed() == -2, f"Expected w1=1, but got {dut.w1.value.to_signed()}"
+    assert dut.w2.value.to_signed() == -2, f"Expected w2=1, but got {dut.w2.value.to_signed()}"
+    assert dut.bias.value.to_signed() == -2, f"Expected bias=-1, but got {dut.bias.value.to_signed()}"
+    cocotb.log.info("End of NOR gate Training")
+
+    # Randomized test cases
+    num_random_cases = 10  # Number of random test cases
+    for i in range(num_random_cases):
+        random_gate_select = random.randint(0, 3)  # Randomly select gate (0b00 to 0b11)
+        random_inputs = [(random.choice([-1, 1]), random.choice([-1, 1])) for _ in range(4)]
+
+        dut.gate_select.value = random_gate_select
+        dut.start.value = 1
+        cocotb.log.info(f"Start of Random Test Case {i+1} for gate_select={bin(random_gate_select)}")
+
+        for a, b in random_inputs:
+            await apply_stimulus(a, b, random_gate_select, 65)
+        cocotb.log.info(f"End of Random Test Case {i+1} for gate_select={bin(random_gate_select)}")
+    # Stop the test
+    dut.start.value = 0
+    cocotb.log.info("Test Completed")
+
+

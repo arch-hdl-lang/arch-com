@@ -1,0 +1,42 @@
+module reed_solomon_encoder
+  param DATA_WIDTH: const = 8;
+  param N: const = 255;
+  param K: const = 223;
+
+  port clk:           in Clock<SysDomain>;
+  port reset:         in Reset<Async, High>;
+  port enable:        in Bool;
+  port data_in:       in UInt<DATA_WIDTH>;
+  port valid_in:      in Bool;
+  port reg codeword_out:  out UInt<DATA_WIDTH> reset reset=>0;
+  port reg valid_out:     out Bool reset reset=>false;
+  port reg parity_0:      out UInt<DATA_WIDTH> reset reset=>0;
+  port reg parity_1:      out UInt<DATA_WIDTH> reset reset=>0;
+
+  // Generator polynomial coefficient
+  let gp: UInt<DATA_WIDTH> = 8'h33;
+
+  // Feedback: combinational
+  let feedback: UInt<DATA_WIDTH> = data_in ^ parity_1;
+
+  // feedback * gp product truncated to DATA_WIDTH
+  let fb_prod: UInt<16> = feedback * gp;
+  wire fb_mult: UInt<DATA_WIDTH>;
+  comb fb_mult = fb_prod[DATA_WIDTH - 1 : 0];
+
+  default seq on clk rising;
+
+  seq
+    if reset
+      parity_0 <= 0;
+      parity_1 <= 0;
+      codeword_out <= 0;
+      valid_out <= false;
+    elsif enable & valid_in
+      parity_0 <= feedback;
+      parity_1 <= parity_0 ^ fb_mult;
+      codeword_out <= data_in;
+      valid_out <= true;
+    end if
+  end seq
+end module reed_solomon_encoder

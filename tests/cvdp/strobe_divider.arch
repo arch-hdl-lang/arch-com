@@ -1,0 +1,89 @@
+module strobe_divider
+  param MaxRatio_g: const = 10;
+  param Latency_g: const = 1;
+  port Clk: in Clock<SysDomain>;
+  port Rst: in Reset<Sync>;
+  port In_Ratio: in UInt<$clog2(MaxRatio_g)>;
+  port In_Valid: in Bool;
+  port Out_Valid: out Bool;
+  port Out_Ready: in Bool;
+
+  default seq on Clk rising;
+
+  reg r_Count: UInt<$clog2(MaxRatio_g)> reset Rst=>0;
+  reg r_OutValid: Bool reset Rst=>0;
+
+  wire r_next_Count: UInt<$clog2(MaxRatio_g)>;
+  wire r_next_OutValid: Bool;
+  wire OutValid_v: Bool;
+  wire count_match: Bool;
+
+  // Precompute count match to avoid && in if conditions
+  let ratio_minus1: UInt<$clog2(MaxRatio_g)> = (In_Ratio - 1).trunc<$clog2(MaxRatio_g)>();
+  comb count_match = (r_Count == ratio_minus1);
+
+  comb
+    // Default: hold current state
+    r_next_Count = r_Count;
+    r_next_OutValid = r_OutValid;
+
+    // Counter logic for division ratio
+    if In_Valid == true
+      if In_Ratio == 0
+        r_next_Count = 0;
+      elsif count_match == true
+        r_next_Count = 0;
+      else
+        r_next_Count = (r_Count + 1).trunc<$clog2(MaxRatio_g)>();
+      end if
+    end if
+
+    // Latency handling
+    if Latency_g == 0
+      if In_Ratio == 0
+        OutValid_v = In_Valid;
+      elsif In_Valid == true
+        if count_match == true
+          OutValid_v = true;
+        else
+          OutValid_v = false;
+        end if
+      else
+        OutValid_v = false;
+      end if
+    else
+      OutValid_v = r_OutValid;
+    end if
+
+    // Output pulse generation for registered path
+    if In_Ratio == 0
+      r_next_OutValid = In_Valid;
+    elsif In_Valid == true
+      if count_match == true
+        r_next_OutValid = true;
+      end if
+    elsif Out_Ready == true
+      if r_OutValid == true
+        r_next_OutValid = false;
+      end if
+    end if
+
+    // Output ready handshake
+    if Latency_g == 0
+      if Out_Ready == true
+        Out_Valid = OutValid_v;
+      elsif r_OutValid == false
+        Out_Valid = OutValid_v;
+      else
+        Out_Valid = true;
+      end if
+    else
+      Out_Valid = OutValid_v;
+    end if
+  end comb
+
+  seq
+    r_Count <= r_next_Count;
+    r_OutValid <= r_next_OutValid;
+  end seq
+end module strobe_divider

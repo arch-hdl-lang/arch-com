@@ -1,0 +1,182 @@
+MODULE: data_bus_controller
+ID: cvdp_copilot_data_bus_controller_0001
+
+=== SPEC ===
+Write the RTL design for a data bus controller using System Verilog. Here are the design specifications.
+-  There will be two master interfaces (m0 and m1) which can send transaction independently regardless of each other. Both interfaces use ready-valid handshake mechanism. 
+- There will be only one slave to accept these transactions. This should also follow the ready-valid handshake mechanism. 
+- If both masters drive transaction at different clock cycles, then design should drive them to slave interface first come, first served basis. 
+- The ready signal for master should be dependent on slave's ready. Slave's ready signal should be transferred to masters's ready signal.
+- If both masters drives at the same cycle, then design should use a parameter named 'AFINITY' value to decide whose transaction will be sent to the slave and whose will be ignored.
+  - The parameter AFINITY can only have value 0 and 1
+  - if the value of AFINITY is 0 at that particular cycle, the transaction of m0 should be driven to the slave and m1 will be ignored.
+  - if the value of AFINITY is 1 at that particular cycle, the transaction of m1 should be driven to the slave and m0 will be ignored.
+- Latency of the design should be one cycle.
+ Here is the signal description of the interface.
+
+### Global Signals
+
+| Signal Name | Width  | Direction | Description                                                  | 
+|-------------|--------|-----------|--------------------------------------------------------------|
+| clk         | 1 bit  | input     | System clock                                                 |
+| rst_n       | 1 bit  | input     | Asynchronous active low reset                                |
+
+### Master_0 interface (m0):
+
+| Signal Name | Width  | Direction | Description                                                  | 
+|-------------|--------|-----------|--------------------------------------------------------------|
+| m0_ready    | 1 bit  | output    | Indicates that the design is ready to accept the transaction |
+| m0_valid    | 1 bit  | input     | Indicates that this transaction is a valid transaction       |
+| m0_data     | 32 bit | input     | Data to be transferred                                       |
+
+### Master_1 interface (m1):
+
+| Signal Name | Width  | Direction | Description                                                  |
+|-------------|--------|-----------|--------------------------------------------------------------|
+| m1_ready   | 1 bit  | output    | Indicates that the design is ready to accept the transaction |
+| m1_valid    | 1 bit  | input     | Indicates that this transaction is a valid transaction       |
+| m1_data     | 32 bit | input     | Data to be transferred                                       |
+
+### Slave interface :
+
+| Signal Name | Width  | Direction | Description                                                  |
+|-------------|--------|-----------|--------------------------------------------------------------|
+| s_ready     | 1 bit  | input     | Indicates that the slave is ready to accept the transaction  |
+| s_valid     | 1 bit  | output    | Indicates that this transaction is a valid transaction       |
+| s_data      | 32 bit | output    | Data to be transferred                                       |
+
+Here is the module definition in System Verilog
+```SystemVerilog
+module data_bus_controller #(
+  parameter AFINITY = 0
+  )(
+  input         clk      ,
+  input         rst_n    ,
+
+  output        m0_read  ,
+  input         m0_valid ,
+  input [31:0]  m0_data  ,
+
+  output        m1_read  ,
+  input         m1_valid ,
+  input [31:0]  m1_data  ,
+
+  input         s_read   ,
+  output        s_valid  ,
+  output [31:0] s_data 
+);
+```
+ ### Conceptual Diagram
+```mermaid
+graph LR;
+    M0--data-->S;
+    M0--valid-->S;
+    S--ready-->M0;
+    M1--data-->S;
+    M1--valid-->S;
+    S--ready-->M1;
+```
+### Ready-Valid Handshake Protocol
+The ready-valid handshake mechanism is a commonly used protocol in digital designs for managing data transfer between modules in a synchronized and reliable manner. In this protocol, two signals—valid and ready—coordinate the data transfer. The valid signal, asserted by the sender, indicates that the data is ready to be transmitted. The ready signal, asserted by the receiver, indicates that it is prepared to accept the data. A successful handshake occurs when both valid and ready are high in the same clock cycle, enabling the data transfer. This mechanism ensures data is transferred only when both modules are synchronized, improving timing predictability and flow control in digital systems.
+
+=== src/.env ===
+SIM             = icarus
+TOPLEVEL_LANG   = verilog
+VERILOG_SOURCES = /code/rtl/data_bus_controller.sv
+TOPLEVEL        = data_bus_controller
+MODULE          = test_data_bus_controller
+PYTHONPATH      = /src
+HASH            = 1-rtl-design-for-data-bus-controller
+
+=== src/test_data_bus_controller.py ===
+import cocotb
+from cocotb.clock import Clock
+from cocotb.triggers import RisingEdge, FallingEdge
+from cocotb.regression import TestFactory
+import random
+
+# Constants for the affinity parameter
+AFINITY_0 = 0
+
+async def reset_dut(dut):
+    dut.rst_n.value = 0
+    await RisingEdge(dut.clk)
+    await RisingEdge(dut.clk)
+    dut.rst_n.value = 1
+    await RisingEdge(dut.clk)
+
+async def drive_master_transaction(dut, master, valid, data):
+    """Drives a transaction on the specified master interface."""
+    if master == 0:
+        dut.m0_valid.value = valid
+        dut.m0_data.value = data
+    elif master == 1:
+        dut.m1_valid.value = valid
+        dut.m1_data.value = data
+    await RisingEdge(dut.clk)
+    await RisingEdge(dut.clk)
+
+async def drive_both_master_transaction(dut, valid, data0, data1):
+    """Drives a transaction on the specified master interface."""
+    dut.m0_valid.value = valid
+    dut.m0_data.value = data0
+    dut.m1_valid.value = valid
+    dut.m1_data.value = data1
+    await RisingEdge(dut.clk)
+    await RisingEdge(dut.clk)
+
+async def release_master(dut, master):
+    """Releases the transaction on the specified master interface."""
+    if master == 0:
+        dut.m0_valid.value = 0
+    elif master == 1:
+        dut.m1_valid.value = 0
+    await RisingEdge(dut.clk)
+
+async def monitor_slave_transaction(dut, expected_data):
+    """Monitors and checks if the transaction on the slave interface is as expected."""
+    await FallingEdge(dut.clk)
+    if dut.s_valid.value and dut.s_ready.value:
+        assert dut.s_data.value == expected_data, f"Expected data {hex(expected_data)}, but got {hex(int(dut.s_data.value))}"
+        cocotb.log.info(f"Transaction successful: Received data {dut.s_data.value}")
+
+async def test_transaction(dut, affinity):
+    NUM_TEST = 1000
+    """Main test coroutine that applies different transaction scenarios to the DUT."""
+    # AFINITY = dut.AFINITY.value  # Set the affinity parameter
+    for x in range(NUM_TEST):
+        AFINITY_TEST = random.choice([True, False])
+        if AFINITY_TEST == True:
+            print("AFINITY_TEST")
+            data0      = random.randint(0,0xFFFF_FFFF)
+            data1      = random.randint(0,0xFFFF_FFFF)
+            dut.s_ready.value = 1
+            await drive_both_master_transaction(dut, 1, data0=data0, data1=data1)
+
+            if affinity == AFINITY_0:
+                await monitor_slave_transaction(dut, expected_data=data0)
+            else:
+                await monitor_slave_transaction(dut, expected_data=data1)
+            await release_master(dut, 0)
+            await release_master(dut, 1)
+
+        else:
+            master_num = random.randint(0, 1) 
+            data       = random.randint(0,0xFFFF_FFFF)
+            # master_num = 0
+            dut.s_ready.value = 1
+            await drive_master_transaction(dut, master_num, valid=1, data=data)
+            await monitor_slave_transaction(dut, expected_data=data)
+            await release_master(dut, master_num)
+
+@cocotb.test()
+async def test_data_bus_controller(dut):
+    AFINITY = dut.AFINITY.value
+    # Generate the clock
+    cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
+    await reset_dut(dut)
+
+    # Run the test with AFINITY set to 0
+    dut._log.info("Testing with Random AFINITY")
+    await test_transaction(dut, AFINITY)
+

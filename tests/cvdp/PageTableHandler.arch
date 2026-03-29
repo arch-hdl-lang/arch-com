@@ -1,0 +1,29 @@
+module PageTableHandler
+  param ADDR_WIDTH: const = 8;
+  param PAGE_WIDTH: const = 8;
+  param PAGE_TABLE_SIZE: const = 16;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port miss: in Bool;
+  port virtual_page: in UInt<ADDR_WIDTH>;
+  port page_table_entry: out UInt<PAGE_WIDTH>;
+  port ready: out Bool;
+
+  default seq on clk rising;
+
+  reg rdy: Bool reset rst=>false;
+
+  comb page_table_entry = virtual_page[PAGE_WIDTH-1:0];
+
+  comb ready = rdy;
+
+  seq
+    if rst
+      rdy <= false;
+    elsif miss
+      rdy <= true;
+    else
+      rdy <= false;
+    end if
+  end seq
+end module PageTableHandler

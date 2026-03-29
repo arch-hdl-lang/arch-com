@@ -125,9 +125,9 @@ module SocTop
   let sel_fio:  Bool = bus_cmd_addr[31:28] == 3;
 
   // Latched peripheral select for response mux (holds after cmd completes)
-  reg sel_sram_r: Bool init false reset rst_n=false;
-  reg sel_ppi_r:  Bool init false reset rst_n=false;
-  reg sel_fio_r:  Bool init false reset rst_n=false;
+  reg sel_sram_r: Bool init false reset rst_n=>false;
+  reg sel_ppi_r:  Bool init false reset rst_n=>false;
+  reg sel_fio_r:  Bool init false reset rst_n=>false;
 
   seq on clk rising
     if bus_cmd_valid & bus_cmd_ready

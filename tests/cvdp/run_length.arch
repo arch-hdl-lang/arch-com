@@ -1,0 +1,36 @@
+module run_length
+  param DATA_WIDTH: const = 8;
+
+  port clk:      in Clock<SysDomain>;
+  port reset_n:  in Reset<Async, Low>;
+  port data_in:  in Bit;
+  port reg data_out:  out Bit reset reset_n=>0;
+  port reg run_value: out UInt<$clog2(DATA_WIDTH) + 1> reset reset_n=>0;
+  port reg valid:     out Bit reset reset_n=>0;
+
+  default seq on clk rising;
+
+  reg run_len: UInt<$clog2(DATA_WIDTH) + 1> init 0 reset reset_n=>0;
+  reg prev_data_in: Bit init 0 reset reset_n=>0;
+
+  seq
+    prev_data_in <= data_in;
+    if data_in == prev_data_in
+      if run_len.zext<32>() == DATA_WIDTH
+        run_value <= run_len;
+        run_len <= 1;
+        valid <= 1;
+        data_out <= prev_data_in;
+      else
+        run_len <= (run_len + 1).trunc<$clog2(DATA_WIDTH) + 1>();
+        valid <= 0;
+      end if
+    else
+      run_value <= run_len;
+      data_out <= prev_data_in;
+      valid <= 1;
+      run_len <= 1;
+    end if
+  end seq
+
+end module run_length

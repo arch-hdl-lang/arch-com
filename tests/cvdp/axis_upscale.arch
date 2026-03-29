@@ -1,0 +1,55 @@
+module axis_upscale
+  port clk:          in Clock<SysDomain>;
+  port resetn:       in Reset<Sync, Low>;
+  port dfmt_enable:  in Bool;
+  port dfmt_type:    in Bool;
+  port dfmt_se:      in Bool;
+  port s_axis_valid: in Bool;
+  port s_axis_data:  in UInt<24>;
+  port m_axis_ready: in Bool;
+  port s_axis_ready: out Bool;
+  port m_axis_valid: out Bool;
+  port m_axis_data:  out UInt<32>;
+
+  reg r_valid: Bool reset resetn=>false;
+  reg r_data:  UInt<32> reset resetn=>0;
+  reg r_ready: Bool reset resetn=>false;
+
+  wire fmt_data: UInt<32>;
+  wire bit23: UInt<1>;
+  wire ext_bits: UInt<8>;
+
+  comb
+    // Determine bit[23]: dfmt_type=1 inverts MSB, dfmt_type=0 passes through
+    if dfmt_type
+      bit23 = ~s_axis_data[23:23];
+    else
+      bit23 = s_axis_data[23:23];
+    end if
+
+    // Sign extension uses the NEW bit23 (after dfmt_type transform)
+    if dfmt_se
+      ext_bits = {bit23, bit23, bit23, bit23, bit23, bit23, bit23, bit23};
+    else
+      ext_bits = 0;
+    end if
+
+    if dfmt_enable
+      fmt_data = {ext_bits, bit23, s_axis_data[22:0]};
+    else
+      fmt_data = {0.trunc<8>(), s_axis_data};
+    end if
+  end comb
+
+  seq on clk rising
+    r_valid <= s_axis_valid;
+    r_data  <= fmt_data;
+    r_ready <= m_axis_ready;
+  end seq
+
+  comb
+    m_axis_valid = r_valid;
+    m_axis_data  = r_data;
+    s_axis_ready = r_ready;
+  end comb
+end module axis_upscale

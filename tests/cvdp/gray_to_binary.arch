@@ -1,0 +1,41 @@
+module gray_to_binary
+  param WIDTH: const = 4;
+  param DEBUG_MODE: const = 0;
+
+  port gray_in:    in  UInt<WIDTH>;
+  port binary_out: out UInt<WIDTH>;
+  port debug_mask: out UInt<WIDTH>;
+  port parity:     out Bit;
+  port valid:      out Bit;
+
+  wire intermediate_stage_1: UInt<WIDTH>;
+  wire intermediate_stage_2: UInt<WIDTH>;
+  wire masked_output: UInt<WIDTH>;
+  wire final_binary: UInt<WIDTH>;
+  wire valid_stage_1: Bit;
+  wire valid_stage_2: Bit;
+
+  comb
+    intermediate_stage_1[WIDTH-1] = gray_in[WIDTH-1];
+    for i in 0..WIDTH-2
+      intermediate_stage_1[WIDTH-2-i] = intermediate_stage_1[WIDTH-1-i] ^ gray_in[WIDTH-2-i];
+    end for
+    valid_stage_1 = 1;
+
+    if DEBUG_MODE == 1
+      masked_output = intermediate_stage_1;
+      intermediate_stage_2 = masked_output;
+      debug_mask = ~intermediate_stage_2;
+    else
+      masked_output = intermediate_stage_1;
+      intermediate_stage_2 = masked_output;
+      debug_mask = 0;
+    end if
+    valid_stage_2 = valid_stage_1;
+
+    final_binary = intermediate_stage_2;
+    binary_out = final_binary;
+    parity = ^final_binary;
+    valid = valid_stage_2;
+  end comb
+end module gray_to_binary

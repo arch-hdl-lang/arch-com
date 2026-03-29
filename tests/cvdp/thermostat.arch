@@ -1,0 +1,75 @@
+module thermostat
+  port i_clk:           in Clock<SysDomain>;
+  port i_rst:           in Reset<Async, Low>;
+  port i_temp_feedback: in UInt<6>;
+  port i_fan_on:        in Bool;
+  port i_enable:        in Bool;
+  port i_fault:         in Bool;
+  port i_clr:           in Bool;
+  port reg o_heater_full:   out Bool reset i_rst=>false;
+  port reg o_heater_medium: out Bool reset i_rst=>false;
+  port reg o_heater_low:    out Bool reset i_rst=>false;
+  port reg o_aircon_full:   out Bool reset i_rst=>false;
+  port reg o_aircon_medium: out Bool reset i_rst=>false;
+  port reg o_aircon_low:    out Bool reset i_rst=>false;
+  port reg o_fan:           out Bool reset i_rst=>false;
+  port reg o_state:         out UInt<3> reset i_rst=>3;
+
+  reg fault_latch: Bool reset i_rst=>false;
+
+  wire next_state: UInt<3>;
+  wire any_active: Bool;
+
+  comb
+    if i_temp_feedback[5]
+      next_state = 3'd2;
+    elsif i_temp_feedback[4]
+      next_state = 3'd1;
+    elsif i_temp_feedback[3]
+      next_state = 3'd0;
+    elsif i_temp_feedback[0]
+      next_state = 3'd6;
+    elsif i_temp_feedback[1]
+      next_state = 3'd5;
+    elsif i_temp_feedback[2]
+      next_state = 3'd4;
+    else
+      next_state = 3'd3;
+    end if
+    any_active = next_state != 3'd3;
+  end comb
+
+  seq on i_clk rising
+    if i_clr
+      fault_latch <= false;
+    elsif i_fault
+      fault_latch <= true;
+    end if
+
+    if i_clr
+      o_state <= 3'd3;
+    elsif ~i_enable
+      o_state <= 3'd3;
+    else
+      o_state <= next_state;
+    end if
+
+    if fault_latch | i_fault | ~i_enable
+      o_heater_full   <= false;
+      o_heater_medium <= false;
+      o_heater_low    <= false;
+      o_aircon_full   <= false;
+      o_aircon_medium <= false;
+      o_aircon_low    <= false;
+      o_fan           <= false;
+    else
+      o_heater_full   <= next_state == 3'd2;
+      o_heater_medium <= next_state == 3'd1;
+      o_heater_low    <= next_state == 3'd0;
+      o_aircon_full   <= next_state == 3'd6;
+      o_aircon_medium <= next_state == 3'd5;
+      o_aircon_low    <= next_state == 3'd4;
+      o_fan           <= any_active | i_fan_on;
+    end if
+  end seq
+end module thermostat

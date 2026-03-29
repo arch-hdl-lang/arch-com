@@ -19,7 +19,7 @@ module ClkDivCounter
   end comb
 
   // Counter on the divided clock
-  reg counter_r: UInt<8> init 0 reset rst_n=0;
+  reg counter_r: UInt<8> init 0 reset rst_n=>0;
 
   seq on clk_slow rising
     counter_r <= (counter_r + 1).trunc<8>();

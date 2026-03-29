@@ -1,0 +1,438 @@
+MODULE: axi_register
+ID: cvdp_copilot_axi_register_0001
+
+=== SPEC ===
+
+Design a **SystemVerilog module** named `axi_register` that implements a configurable **AXI4-Lite Slave** interface for controlling and monitoring specific hardware registers. This module allows software to interact with hardware by performing read and write operations via the AXI4-Lite protocol. The supported functionalities include:
+
+- **Beat Counter**: A 20-bit counter that can be set and read by the AXI master.  
+- **Start Signal**: A single-bit control signal to trigger a hardware operation.  
+- **Done Status**: A single-bit flag indicating the completion of a hardware task.  
+- **Writeback Signal**: A single-bit control signal to trigger a writeback operation.  
+- **ID Register**: A fixed, read-only 32-bit register for identification purposes.
+
+The module should adhere to the AXI4-Lite protocol, ensure proper handshaking, and handle valid data transfers with error handling for invalid operations.
+
+---
+
+## Design Specification
+
+### AXI4-Lite Protocol Features
+
+- **Handshake Mechanism**  
+  Implements the AXI handshake protocol using valid and ready signals for read (`arvalid_i`, `arready_o`, `rvalid_o`, `rready_i`) and write (`awvalid_i`, `awready_o`, `wvalid_i`, `wready_o`, `bvalid_o`, `bready_i`) operations.
+
+- **Address Decoding**  
+  Decodes incoming AXI addresses (using `awaddr_i` or `araddr_i`) to access specific registers based on the lower address bits.
+
+- **Flow Control**  
+  Supports backpressure and flow control using ready signals to properly synchronize with the AXI master.
+
+---
+
+## Interface
+
+### Parameters
+
+1. **`ADDR_WIDTH`**: Specifies the width of the AXI address bus. The default value is `32`. This parameter determines the maximum addressable range of the registers. It must be a positive integer greater than or equal to 12.
+
+2. **`DATA_WIDTH`**: Specifies the width of the AXI data bus. The default value is `32`. This parameter defines the size of the data transferred during read and write operations, and it must be a positive integer greater than or equal to 8.
+
+### Inputs
+
+- **`clk_i`**: The clock signal for synchronous operations. The design operates on the positive edge of the clock signal.
+- **`rst_n_i`**: Active-low asynchronous reset. When de-asserted, the module returns to its initial state.
+- **`[ADDR_WIDTH-1:0] awaddr_i`**: Address for write operations.
+- **`awvalid_i`**: Indicates the write address is valid.
+- **`[DATA_WIDTH-1:0] wdata_i`**: Data to be written, matching the address specified.
+- **`wvalid_i`**: Indicates that the written data is valid.
+- **`[(DATA_WIDTH/8)-1:0] wstrb_i`**: Byte-enable signals for partial or full writes.
+- **`bready_i`**: Indicates that the master is ready to receive the completed response for the write.
+- **`[ADDR_WIDTH-1:0] araddr_i`**: Address for read operations.
+- **`arvalid_i`**: Indicates that the read address is valid.
+- **`rready_i`**: Indicates that the master is ready to receive the read data.
+- **`done_i`**: Indicates that a hardware task has been completed, to be reflected in the status register.
+
+---
+
+### Outputs
+
+- **`awready_o`**: Indicates that the module is ready to accept the write address.
+- **`wready_o`**: Indicates that the module is ready to accept the write data.
+- **`[1:0] bresp_o`**: Two-bit field indicating success or error for the write transaction.
+- **`bvalid_o`**: Indicates that the write completion response is valid.
+- **`arready_o`**: Indicates that the module is ready to accept the read address.
+- **`[DATA_WIDTH-1:0] rdata_o`**: Data returned to the master for a read request.
+- **`rvalid_o`**: Indicates that read data is valid.
+- **`[1:0] rresp_o`**: A two-bit field indicating success or error for the read transaction.
+- **`[19:0] beat_o`**: Reflects the current value of the beat counter, configured via AXI writes.
+- **`start_o`**: Single-bit control signal triggered via AXI write.
+- **`writeback_o`**: Single-bit control signal to trigger a writeback operation, also set via AXI.
+
+---
+
+## Register Map
+
+| **Register**  | **Offset** | **Description**              | **Access**   | **Bit Width** |
+|---------------|------------|------------------------------|--------------|---------------|
+| Beat          | 0x100      | 20-bit beat counter          | Read/Write   | 20            |
+| Start         | 0x200      | Single-bit trigger signal    | Read/Write   | 1             |
+| Done          | 0x300      | Single-bit done status       | Read/Write   | 1             |
+| Writeback     | 0x400      | Single-bit writeback control | Read/Write   | 1             |
+| ID            | 0x500      | Fixed identification value   | Read-Only    | 32            |
+
+---
+
+## Functional Description
+
+### Write Transactions
+
+#### Address Phase
+- Provides a write address on **`awaddr_i`** and asserts **`awvalid_i`** to indicate the validity of the address.  
+- The module asserts **`awready_o`** to confirm that it is ready to accept the address.  
+- Once the address is accepted, **`awready_o`** is de-asserted, and the module transitions to the data phase.
+
+#### Data Phase
+- Provides the write data on **`wdata_i`**, along with byte-enable signals on **`wstrb_i`**, and asserts **`wvalid_i`**.  
+- The module asserts **`wready_o`** to indicate it is ready to accept the write data.
+
+##### Conditions:
+
+1. **Full Write**  
+   If **`wvalid_i`** is asserted and all bits in **`wstrb_i`** are set (indicating that all bytes in **`wdata_i`** are valid), the module performs a complete update of the targeted register.
+
+2. **Partial Write**  
+   If **`wvalid_i`** is asserted but not all bits in **`wstrb_i`** are set, the module acknowledges the write without modifying the targeted register. The register remains unchanged.
+
+##### Register Updates
+- The module uses the lower bits of **`awaddr_i`** to determine the target register, then updates the corresponding outputs:
+  - **Beat Counter**: Updates the 20-bit counter with the lower bits of **`wdata_i`** and reflects on **`beat_o`**.
+  - **Start Signal**: Sets **`start_o`** to `1` if the least significant bit of **`wdata_i`** is `1` and the corresponding byte is enabled by **`wstrb_i`**.
+  - **Done Signal**: Clears **`done_i`** internally if the least significant bit is `1`, effectively resetting the done status in the module’s logic.
+  - **Writeback Signal**: Sets **`writeback_o`** to `1` if the least significant bit of **`wdata_i`** is `1` and the corresponding byte is enabled by **`wstrb_i`**.
+  - **ID Register**: Attempts to write to this read-only register generate an error on **`bresp_o`**.
+
+#### Completion Phase
+- After processing the write data, the module generates a write response on **`bresp_o`** and asserts **`bvalid_o`**.  
+- Asserts **`bready_i`** to acknowledge the response, after which **`bvalid_o`** is deasserted.
+- Possible responses:
+  - **OKAY (`2'b00`)**: Indicates a successful write operation.
+  - **SLVERR (`2'b10`)**: Indicates an error, such as an invalid address or an attempt to write to the read-only register.
+
+---
+
+### Read Transactions
+
+#### Address Phase
+- Provides a read address on **`araddr_i`** and asserts **`arvalid_i`** to indicate the validity of the address. 
+- The module asserts **`arready_o`** to confirm that it is ready to accept the address. 
+- Once the address is accepted, **`arready_o`** is de-asserted, and the module transitions to the data phase.
+
+#### Data Phase
+- The module decodes the address from **`araddr_i`** and retrieves the corresponding data:
+  - **Beat Counter**: Returns the current 20-bit counter value on **`rdata_o`**, padded to match the data width.
+  - **Done Signal**: Returns the status of **`done_i`** (e.g., `1` if the hardware task is done, `0` otherwise).
+  - **ID Register**: Returns the fixed 32-bit identification value.
+  - **Invalid Address**: Generates an error on **`rresp_o`**.
+
+#### Completion Phase
+- The module provides the read data on **`rdata_o`** and asserts **`rvalid_o`**.  
+- The AXI master asserts **`rready_i`** to acknowledge the read data, after which **`rvalid_o`** is deasserted.
+- Possible responses:
+  - **OKAY (`2'b00`)**: Indicates a successful read operation.
+  - **SLVERR (`2'b10`)**: Indicates an error, such as an invalid address.
+
+---
+
+## Edge Cases
+
+1. **Reset (`rst_n_i`)**:  
+   When reset is active, all outputs (`beat_o`, `start_o`, `writeback_o`) are deasserted, and registers are cleared to default values.
+
+2. **Read-Only Registers**:  
+   Attempts to write to the ID register generate an error response (`SLVERR`) on **`bresp_o`**, preventing unwanted modifications.
+
+3. **Invalid Addresses**:  
+   Any read or write operation targeting an undefined address generates an error response on **`rresp_o`** or **`bresp_o`**.
+
+---
+
+## Example Operations
+
+### Write Example
+- **Operation**: Write `0x5678` to the Beat register.  
+  - **Address**: `0x100`  
+  - **Data**: `0x00005678`  
+  - **Result**: The 20-bit counter updates to `0x5678`, and `beat_o` reflects this new value.
+
+### Read Example
+- **Operation**: Read from the ID register.  
+  - **Address**: `0x500`  
+  - **Result**: The module returns `0x0001_0001` on **`rdata_o`**, indicating the fixed ID value.
+
+### Error Example
+- **Operation**: Attempt to write to the ID register.  
+  - **Address**: `0x500`  
+  - **Data**: Any value  
+  - **Result**: The module returns an error response (`SLVERR`) on **`bresp_o`**, and the register remains unchanged.
+
+=== src/.env ===
+SIM             = icarus
+WAVE            = True
+TOPLEVEL_LANG   = verilog
+VERILOG_SOURCES = /code/rtl/axi_register.sv
+TOPLEVEL        = axi_register
+MODULE          = test_axi_register
+PYTHONPATH      = /src
+HASH            = 748c8466993ff067bc3f8a4953d002e1b5913109
+
+=== src/test_axi_register.py ===
+import cocotb
+from cocotb.clock import Clock
+from cocotb.triggers import RisingEdge, FallingEdge, ReadOnly , Timer
+
+import harness_library as hrs_lb
+import random
+
+# AXI Write Helper Function
+async def axi_write(dut, awaddr, wdata, wstrb=None):
+
+    wstrb_width = len(dut.wstrb_i)  # Get the width of wstrb_i
+    if wstrb is None:
+        # Generate default wstrb to enable all valid bytes
+        wstrb = (1 << wstrb_width) - 1
+
+    # Mask wstrb to match the actual width of wstrb_i
+    adjusted_wstrb = wstrb & ((1 << wstrb_width) - 1)
+
+    dut.awaddr_i.value = awaddr
+    dut.awvalid_i.value = 1
+    dut.wdata_i.value = wdata & ((1 << len(dut.wdata_i)) - 1)  # Mask wdata to DATA_WIDTH
+    dut.wstrb_i.value = adjusted_wstrb
+    dut.wvalid_i.value = 1
+    dut.bready_i.value = 1
+
+    # Wait for the write response
+    while not dut.bvalid_o.value:
+        await RisingEdge(dut.clk_i)
+        dut.awvalid_i.value = 0
+        dut.wvalid_i.value = 0
+        dut.bready_i.value = 0
+
+    # Check the write response
+    if dut.bresp_o.value != 0:
+        dut._log.error(f"Write operation failed: addr={hex(awaddr)}, data={hex(wdata)}, strb={bin(wstrb)}")
+    else:
+        dut._log.info(f"Write operation succeeded: addr={hex(awaddr)}, data={hex(wdata)}, strb={bin(wstrb)}")
+    await RisingEdge(dut.clk_i)
+
+ 
+
+# AXI Read Helper Function
+async def axi_read(dut, araddr):
+
+    dut.araddr_i.value = araddr
+    dut.arvalid_i.value = 1
+    dut.rready_i.value = 1
+    await RisingEdge(dut.clk_i)
+    await RisingEdge(dut.clk_i)
+    rdata = dut.rdata_o.value
+    assert dut.rresp_o.value == 0, f"Read response error: {dut.rresp_o.value}"
+
+    return rdata
+# Test CTRL_START
+async def test_ctrl_start(dut, awaddr, start_value,wstrb_all_one):
+    """
+    Test CTRL_START: Verifies that the start signal is set correctly.
+    """
+    await axi_write(dut, awaddr, start_value, wstrb_all_one)
+    await RisingEdge(dut.clk_i)
+    await RisingEdge(dut.clk_i)
+    assert (
+        dut.start_o.value == start_value
+    ), f"CTRL_START failed: expected={start_value}, got={dut.start_o.value}"
+    dut._log.info(f"CTRL_START test passed: start_value={start_value}")
+
+async def test_ctrl_done(dut, done_addr,wstrb_all_ones):
+
+    # Step 1: Simulate the DONE signal
+    dut.done_i.value = 1  # Assert done
+    await RisingEdge(dut.clk_i)
+    dut.done_i.value = 0  # Deassert done
+
+    # Step 2: Read CTRL_DONE to verify it is set
+    rdata = await axi_read(dut, done_addr)
+    rdata = int(rdata)  # Convert LogicArray to int
+    if rdata & 0x1 != 1:
+        dut._log.error(f"CTRL_DONE set test failed: expected=1, got={rdata & 0x1}")
+        assert False, "CTRL_DONE set test failed"
+    else:
+        dut._log.info(f"CTRL_DONE set test passed: expected=1, got={rdata & 0x1}")
+
+    # Step 3: Clear CTRL_DONE using axi_write
+    await axi_write(dut, done_addr, 1, wstrb_all_ones)  # Write '1' to clear CTRL_DONE
+    # Add delay to ensure proper processing
+    for _ in range(5):
+        await RisingEdge(dut.clk_i)
+
+    # Step 4: Read CTRL_DONE to verify it is cleared
+    rdata = await axi_read(dut, done_addr)
+    rdata = int(rdata)  # Convert LogicArray to int
+    if rdata & 0x1 != 0:
+        dut._log.error(f"CTRL_DONE clear test failed: expected=0, got={rdata & 0x1}")
+        assert False, "CTRL_DONE clear test failed"
+    else:
+        dut._log.info(f"CTRL_DONE clear test passed: expected=0, got={rdata & 0x1}")
+
+async def test_ctrl_writeback(dut, writeback_addr, writeback_value,wstrb_all_ones):
+
+    # Step 1: Calculate the expected data
+    expected_data = writeback_value & 0x1  # Only the LSB is relevant for writeback
+
+    # Step 2: Write to the CTRL_WRITEBACK register
+    await axi_write(dut, writeback_addr, expected_data, wstrb_all_ones)  # Write the value with all strobes enabled
+    # Add delay to ensure proper processing
+    for _ in range(4):
+        await RisingEdge(dut.clk_i)
+    # Step 3: Verify the writeback_o signal
+    if dut.writeback_o.value != expected_data:
+        dut._log.error(f"CTRL_WRITEBACK test failed: expected={expected_data}, got={dut.writeback_o.value}")
+        assert False, f"CTRL_WRITEBACK test failed: expected={expected_data}, got={dut.writeback_o.value}"
+    else:
+        dut._log.info(f"CTRL_WRITEBACK test passed: expected={expected_data}, got={dut.writeback_o.value}")
+
+async def test_ctrl_id(dut, id_addr, expected_id_value):
+
+    expected_id_value = expected_id_value& ((1 << len(dut.wdata_i)) - 1) 
+    # Step 1: Read the CTRL_ID register
+    dut.araddr_i.value = id_addr
+    dut.arvalid_i.value = 1
+    dut.rready_i.value = 1
+    await RisingEdge(dut.clk_i)
+    await RisingEdge(dut.clk_i)
+    await RisingEdge(dut.clk_i)
+
+    # Step 2: Wait for the read data to be valid
+    while not dut.rvalid_o.value:
+        await RisingEdge(dut.clk_i)
+
+    # Step 3: Read the CTRL_ID value
+    rdata = int(dut.rdata_o.value)
+
+    # Step 4: Verify the read value matches the expected value
+    if rdata == expected_id_value:
+        dut._log.info(f"CTRL_ID test passed: expected={hex(expected_id_value)}, got={hex(rdata)}")
+    else:
+        dut._log.error(f"CTRL_ID test failed: expected={hex(expected_id_value)}, got={hex(rdata)}")
+        assert False, f"CTRL_ID test failed: expected={hex(expected_id_value)}, got={hex(rdata)}"
+
+    # Step 5: Deassert rready
+    dut.rready_i.value = 0
+
+async def test_partial_write_invalid_strobe(dut, beat_addr, random_data, invalid_strobe):
+    """
+    Test partial write with an invalid strobe and verify that bresp_next = AXI_RESP_OK
+    and beat_o retains its previous value.
+    Args:
+        dut: The DUT instance.
+        beat_addr: The address of the CTRL_BEAT register.
+        random_data: Random data to write.
+        invalid_strobe: The invalid write strobe value.
+    """
+    # Step 1: Record the initial value of beat_o
+    prev_rdata_value = int(dut.rdata_o.value)
+
+    # Step 2: Perform a partial write with invalid strobe
+    await axi_write(dut, beat_addr, random_data, invalid_strobe)
+
+    # Step 3: Check bresp_o for AXI_RESP_OK
+    while not dut.bvalid_o.value:
+        await RisingEdge(dut.clk_i)
+    assert (
+        dut.bresp_o.value == 0
+    ), f"Partial write failed: expected AXI_RESP_OK, got={dut.bresp_o.value}"
+    dut._log.info("Partial write response is OK (AXI_RESP_OK).")
+
+    read_data = await axi_read(dut, beat_addr)
+    assert (
+        int(read_data) == prev_rdata_value
+    ), f"Partial write corrupted the register: expected={prev_beat_value}, got={int(read_data)}"
+    dut._log.info(f"Partial write did not affect the register: read_data={int(read_data)}")
+
+
+@cocotb.test()
+async def test_axi_register(dut):
+    ADDR_WIDTH = int(dut.ADDR_WIDTH.value)
+    DATA_WIDTH = int(dut.DATA_WIDTH.value)
+
+    # Start the clock with a 10ns time period (100 MHz clock)
+    cocotb.start_soon(Clock(dut.clk_i, 10, units='ns').start())
+    
+    # Initialize the DUT signals with default 0
+    await hrs_lb.dut_init(dut)
+    # Reset the DUT rst_n signal
+    await hrs_lb.reset_dut(dut.rst_n_i, duration_ns=10, active=True)
+
+    await RisingEdge(dut.clk_i) 
+    
+    # Define Constants
+    CTRL_BEAT = 0x100
+    CTRL_START = 0x200
+    CTRL_DONE = 0x300
+    CTRL_WRITEBACK = 0x400
+    CTRL_ID = 0x500
+    ID_VALUE = 0x00010001
+
+    wstrb_all_ones = (1 << (DATA_WIDTH // 8)) - 1  # All bits of wstrb set to 1
+
+    # Generate random data and use all-ones wstrb
+    for i in range(10):  # Perform 10 tests
+        # Generate random data
+        random_data = random.randint(0, (1 << DATA_WIDTH) - 1)
+        # Calculate expected data
+        expected_data = random_data & 0xFFFFF  # Retain only the lower 20 bits
+        expected_data = expected_data | (0 << 20)  # Set upper 12 bits to 0
+        # Write random data
+        await axi_write(dut, CTRL_BEAT, random_data, wstrb_all_ones)
+
+        # Add delay to ensure proper processing
+        for _ in range(5):
+            await RisingEdge(dut.clk_i)
+
+        # Read back and verify
+        rdata = await axi_read(dut, CTRL_BEAT)
+
+        # Log read operation details
+        dut._log.info(f"Test {i}: Read Data: {hex(int(rdata))} from Address: {hex(CTRL_BEAT)}")
+
+        assert (
+            int(rdata) == expected_data
+        ), f"Test {i}: Mismatch! Expected: {hex(random_data)}, Got: {hex(int(rdata))}"
+        # Wait for Read Response
+        while not dut.rvalid_o.value:
+            await RisingEdge(dut.clk_i)
+            dut.rready_i.value = 0
+            dut.arvalid_i.value = 0
+    dut._log.info("Randomized AXI register tests with all-ones wstrb passed successfully!")
+
+    await RisingEdge(dut.clk_i)
+    # Test CTRL_START
+    await test_ctrl_start(dut, CTRL_START, 1 ,wstrb_all_ones)
+    await RisingEdge(dut.clk_i)
+    # Test CTRL_DONE
+    await test_ctrl_done(dut, CTRL_DONE,wstrb_all_ones)
+    await RisingEdge(dut.clk_i)
+    # Generate a random writeback value and test CTRL_WRITEBACK
+    random_writeback_value = random.randint(0, 1)
+    await test_ctrl_writeback(dut, CTRL_WRITEBACK, random_writeback_value,wstrb_all_ones)
+    await RisingEdge(dut.clk_i) 
+    await test_ctrl_id(dut, CTRL_ID, ID_VALUE)
+    await RisingEdge(dut.clk_i)
+    # Generate Random Data and Invalid Strobe
+    random_data = random.randint(0, (1 << DATA_WIDTH) - 1)
+    invalid_strobe = random.randint(0, 9)  # Example invalid strobe: only the second byte
+
+    # Test Partial Write with Invalid Strobe
+    await test_partial_write_invalid_strobe(dut, CTRL_BEAT, random_data, invalid_strobe)
+    await RisingEdge(dut.clk_i)
+

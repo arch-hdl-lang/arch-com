@@ -7,7 +7,7 @@ module TopModule
   default seq on clk rising;
 
   reg prev: UInt<32>;
-  reg captured: UInt<32> reset reset=0;
+  reg captured: UInt<32> reset reset=>0;
 
   seq
     prev <= in;

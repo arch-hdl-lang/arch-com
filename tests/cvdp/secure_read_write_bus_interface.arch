@@ -1,0 +1,33 @@
+module secure_read_write_bus_interface
+  param P_CONFIGURABLE_KEY: const = 170;
+  param P_DATA_WIDTH: const = 8;
+  param P_ADDR_WIDTH: const = 8;
+
+  port i_capture_pulse: in Clock<SysDomain>;
+  port i_reset_bar: in Reset<Async, Low>;
+  port i_addr: in UInt<P_ADDR_WIDTH>;
+  port i_data_in: in UInt<P_DATA_WIDTH>;
+  port i_key_in: in UInt<8>;
+  port i_read_write_enable: in Bit;
+  port reg o_data_out: out UInt<P_DATA_WIDTH> reset i_reset_bar=>0;
+  port reg o_error: out Bit reset i_reset_bar=>0;
+
+  default seq on i_capture_pulse rising;
+
+  reg mem: Vec<UInt<P_DATA_WIDTH>, 256> reset i_reset_bar=>0;
+
+  seq
+    if i_key_in == P_CONFIGURABLE_KEY.trunc<8>()
+      o_error <= 0;
+      if i_read_write_enable == 0
+        mem[i_addr] <= i_data_in;
+        o_data_out <= 0;
+      else
+        o_data_out <= mem[i_addr];
+      end if
+    else
+      o_error <= 1;
+      o_data_out <= 0;
+    end if
+  end seq
+end module secure_read_write_bus_interface

@@ -1,0 +1,48 @@
+module arithmetic_progression_generator
+  param DATA_WIDTH: const = 16;
+  param SEQUENCE_LENGTH: const = 10;
+  param WIDTH_OUT_VAL: const = $clog2(SEQUENCE_LENGTH) + DATA_WIDTH;
+
+  port clk: in Clock<SysDomain>;
+  port resetn: in Reset<Async, Low>;
+  port enable: in Bool;
+  port start_val: in UInt<DATA_WIDTH>;
+  port step_size: in UInt<DATA_WIDTH>;
+  port out_val: out UInt<WIDTH_OUT_VAL>;
+  port done: out Bool;
+
+  reg current_val: UInt<WIDTH_OUT_VAL> reset resetn=>0;
+  reg cnt: UInt<$clog2(SEQUENCE_LENGTH)> reset resetn=>0;
+  reg done_r: Bool reset resetn=>false;
+
+  let seq_limit: UInt<$clog2(SEQUENCE_LENGTH)> = (SEQUENCE_LENGTH - 1).trunc<$clog2(SEQUENCE_LENGTH)>();
+  let step_ext: UInt<WIDTH_OUT_VAL> = step_size.zext<WIDTH_OUT_VAL>();
+
+  default seq on clk rising;
+
+  seq
+    if enable
+      if done_r == false
+        if cnt == 0
+          current_val <= start_val.zext<WIDTH_OUT_VAL>();
+          cnt <= 1;
+          if SEQUENCE_LENGTH == 1
+            done_r <= true;
+          end if
+        elsif cnt == seq_limit
+          current_val <= (current_val + step_ext).trunc<WIDTH_OUT_VAL>();
+          cnt <= cnt;
+          done_r <= true;
+        else
+          current_val <= (current_val + step_ext).trunc<WIDTH_OUT_VAL>();
+          cnt <= (cnt + 1).trunc<$clog2(SEQUENCE_LENGTH)>();
+        end if
+      end if
+    end if
+  end seq
+
+  comb
+    out_val = current_val;
+    done = done_r;
+  end comb
+end module arithmetic_progression_generator

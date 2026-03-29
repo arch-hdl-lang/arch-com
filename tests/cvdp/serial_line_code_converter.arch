@@ -1,0 +1,111 @@
+module serial_line_code_converter
+  param CLK_DIV: const = 16;
+  port clk: in Clock<SysDomain>;
+  port reset_n: in Reset<Async, Low>;
+  port serial_in: in Bit;
+  port mode: in UInt<3>;
+  port serial_out: out Bit;
+
+  reg clk_counter: UInt<4> reset reset_n=>0;
+  reg clk_pulse: Bit reset reset_n=>0;
+  reg prev_value: Bit reset reset_n=>0;
+  reg prev_serial_in: Bit reset reset_n=>0;
+  reg nrz_out: Bit reset reset_n=>0;
+  reg rz_out: Bit reset reset_n=>0;
+  reg diff_out: Bit reset reset_n=>0;
+  reg inv_nrz_out: Bit reset reset_n=>0;
+  reg alt_invert_out: Bit reset reset_n=>0;
+  reg alt_invert_state: Bit reset reset_n=>0;
+  reg parity_out: Bit reset reset_n=>0;
+  reg scrambled_out: Bit reset reset_n=>0;
+  reg edge_triggered_out: Bit reset reset_n=>0;
+
+  // Clock pulse generation
+  seq on clk rising
+    if clk_counter == (CLK_DIV - 1).trunc<4>()
+      clk_counter <= 4'd0;
+      clk_pulse <= 1'd1;
+    else
+      clk_counter <= (clk_counter + 4'd1).trunc<4>();
+      clk_pulse <= 1'd0;
+    end if
+  end seq
+
+  // Previous serial input tracking
+  seq on clk rising
+    prev_value <= serial_in;
+    prev_serial_in <= prev_value;
+  end seq
+
+  // NRZ pass-through
+  seq on clk rising
+    nrz_out <= serial_in;
+  end seq
+
+  // RZ encoding
+  seq on clk rising
+    if (serial_in == 1'd1) && (clk_pulse == 1'd1)
+      rz_out <= 1'd1;
+    else
+      rz_out <= 1'd0;
+    end if
+  end seq
+
+  // Differential encoding
+  seq on clk rising
+    diff_out <= serial_in ^ prev_value;
+  end seq
+
+  // Inverted NRZ
+  seq on clk rising
+    inv_nrz_out <= ~serial_in;
+  end seq
+
+  // NRZ with alternating bit inversion
+  seq on clk rising
+    alt_invert_state <= ~alt_invert_state;
+    if alt_invert_state == 1'd1
+      alt_invert_out <= ~serial_in;
+    else
+      alt_invert_out <= serial_in;
+    end if
+  end seq
+
+  // Parity bit output (odd parity)
+  seq on clk rising
+    parity_out <= parity_out ^ serial_in;
+  end seq
+
+  // Scrambled NRZ
+  seq on clk rising
+    scrambled_out <= serial_in ^ clk_counter[0:0];
+  end seq
+
+  // Edge-triggered NRZ
+  seq on clk rising
+    edge_triggered_out <= serial_in & ~prev_serial_in;
+  end seq
+
+  // Output multiplexer
+  comb
+    if mode == 3'd0
+      serial_out = nrz_out;
+    elsif mode == 3'd1
+      serial_out = rz_out;
+    elsif mode == 3'd2
+      serial_out = diff_out;
+    elsif mode == 3'd3
+      serial_out = inv_nrz_out;
+    elsif mode == 3'd4
+      serial_out = alt_invert_out;
+    elsif mode == 3'd5
+      serial_out = parity_out;
+    elsif mode == 3'd6
+      serial_out = scrambled_out;
+    elsif mode == 3'd7
+      serial_out = edge_triggered_out;
+    else
+      serial_out = 1'd0;
+    end if
+  end comb
+end module serial_line_code_converter

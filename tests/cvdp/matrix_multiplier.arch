@@ -1,0 +1,23 @@
+module matrix_multiplier
+  param ROW_A: const = 4;
+  param COL_A: const = 4;
+  param ROW_B: const = 4;
+  param COL_B: const = 4;
+  param INPUT_DATA_WIDTH: const = 8;
+  param OUTPUT_DATA_WIDTH: const = 48;
+
+  port matrix_a: in UInt<ROW_A * COL_A * INPUT_DATA_WIDTH>;
+  port matrix_b: in UInt<ROW_B * COL_B * INPUT_DATA_WIDTH>;
+  port matrix_c: out UInt<ROW_A * COL_B * OUTPUT_DATA_WIDTH>;
+
+  comb
+    matrix_c = 0;
+    for i in 0..ROW_A - 1
+      for j in 0..COL_B - 1
+        for k in 0..COL_A - 1
+          matrix_c[(i * COL_B + j) * OUTPUT_DATA_WIDTH + OUTPUT_DATA_WIDTH - 1 : (i * COL_B + j) * OUTPUT_DATA_WIDTH] = (matrix_c[(i * COL_B + j) * OUTPUT_DATA_WIDTH + OUTPUT_DATA_WIDTH - 1 : (i * COL_B + j) * OUTPUT_DATA_WIDTH] + matrix_a[(i * COL_A + k) * INPUT_DATA_WIDTH + INPUT_DATA_WIDTH - 1 : (i * COL_A + k) * INPUT_DATA_WIDTH].zext<OUTPUT_DATA_WIDTH>() * matrix_b[(k * COL_B + j) * INPUT_DATA_WIDTH + INPUT_DATA_WIDTH - 1 : (k * COL_B + j) * INPUT_DATA_WIDTH].zext<OUTPUT_DATA_WIDTH>()).trunc<OUTPUT_DATA_WIDTH>();
+        end for
+      end for
+    end for
+  end comb
+end module matrix_multiplier

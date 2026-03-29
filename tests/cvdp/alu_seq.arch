@@ -1,0 +1,36 @@
+module alu_seq
+  param p_key: const = 0xAA;
+  port i_clk: in Clock<SysDomain>;
+  port i_rst_b: in Reset<Async, Low>;
+  port i_operand_a: in UInt<4>;
+  port i_operand_b: in UInt<4>;
+  port i_opcode: in UInt<3>;
+  port i_key_in: in UInt<8>;
+  port reg o_result: out UInt<8> reset i_rst_b=>0;
+
+  default seq on i_clk rising;
+
+  seq
+    if i_key_in != p_key
+      o_result <= 0;
+    else
+      if i_opcode == 0
+        o_result <= (i_operand_a.zext<8>() + i_operand_b.zext<8>()).trunc<8>();
+      elsif i_opcode == 1
+        o_result <= (i_operand_a.zext<8>() - i_operand_b.zext<8>()).trunc<8>();
+      elsif i_opcode == 2
+        o_result <= (i_operand_a.zext<8>() * i_operand_b.zext<8>()).trunc<8>();
+      elsif i_opcode == 3
+        o_result <= (i_operand_a & i_operand_b).zext<8>();
+      elsif i_opcode == 4
+        o_result <= (i_operand_a | i_operand_b).zext<8>();
+      elsif i_opcode == 5
+        o_result <= (~i_operand_a).zext<8>();
+      elsif i_opcode == 6
+        o_result <= (i_operand_a ^ i_operand_b).zext<8>();
+      else
+        o_result <= (~(i_operand_a ^ i_operand_b)).zext<8>();
+      end if
+    end if
+  end seq
+end module alu_seq

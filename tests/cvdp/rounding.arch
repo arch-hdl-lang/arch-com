@@ -1,0 +1,44 @@
+module rounding
+  param WIDTH: const = 24;
+  port in_data: in UInt<WIDTH>;
+  port sign: in Bool;
+  port roundin: in Bool;
+  port stickyin: in Bool;
+  port rm: in UInt<3>;
+  port out_data: out UInt<WIDTH>;
+  port inexact: out Bool;
+  port cout: out Bool;
+  port r_up: out Bool;
+
+  let is_inexact: Bool = roundin | stickyin;
+  let all_ones: Bool = (&in_data);
+  let inc: UInt<WIDTH+1> = (in_data.zext<WIDTH+1>() + 1).trunc<WIDTH+1>();
+
+  wire do_round_up: Bool;
+
+  comb
+    if rm == 0
+      do_round_up = roundin & (stickyin | in_data[0:0]);
+    elsif rm == 1
+      do_round_up = false;
+    elsif rm == 2
+      do_round_up = ~sign & is_inexact;
+    elsif rm == 3
+      do_round_up = sign & is_inexact & ~all_ones;
+    elsif rm == 4
+      do_round_up = roundin;
+    else
+      do_round_up = false;
+    end if
+
+    if do_round_up
+      out_data = inc[WIDTH-1:0];
+      cout = all_ones;
+    else
+      out_data = in_data;
+      cout = false;
+    end if
+    inexact = is_inexact;
+    r_up = do_round_up;
+  end comb
+end module rounding

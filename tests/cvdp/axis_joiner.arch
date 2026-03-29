@@ -1,0 +1,160 @@
+module axis_joiner
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async>;
+  port s_axis_tdata_1: in UInt<8>;
+  port s_axis_tvalid_1: in Bool;
+  port s_axis_tready_1: out Bool;
+  port s_axis_tlast_1: in Bool;
+  port s_axis_tdata_2: in UInt<8>;
+  port s_axis_tvalid_2: in Bool;
+  port s_axis_tready_2: out Bool;
+  port s_axis_tlast_2: in Bool;
+  port s_axis_tdata_3: in UInt<8>;
+  port s_axis_tvalid_3: in Bool;
+  port s_axis_tready_3: out Bool;
+  port s_axis_tlast_3: in Bool;
+  port m_axis_tdata: out UInt<8>;
+  port m_axis_tvalid: out Bool;
+  port m_axis_tready: in Bool;
+  port m_axis_tlast: out Bool;
+  port m_axis_tuser: out UInt<2>;
+  port busy: out Bool;
+
+  default seq on clk rising;
+
+  let ST_IDLE: UInt<2> = 0;
+  let ST_S1: UInt<2> = 1;
+  let ST_S2: UInt<2> = 2;
+  let ST_S3: UInt<2> = 3;
+
+  reg state: UInt<2> reset rst=>0;
+  reg temp_data: UInt<8> reset rst=>0;
+  reg temp_valid: Bool reset rst=>false;
+  reg temp_last: Bool reset rst=>false;
+  reg temp_user: UInt<2> reset rst=>0;
+  reg temp_flag: Bool reset rst=>false;
+
+  wire sel_data: UInt<8>;
+  wire sel_valid: Bool;
+  wire sel_last: Bool;
+  wire sel_user: UInt<2>;
+
+  comb
+    sel_data = 0;
+    sel_valid = false;
+    sel_last = false;
+    sel_user = 0;
+    if state == ST_IDLE
+      if s_axis_tvalid_1
+        sel_data = s_axis_tdata_1;
+        sel_valid = s_axis_tvalid_1;
+        sel_last = s_axis_tlast_1;
+        sel_user = 1;
+      elsif s_axis_tvalid_2
+        sel_data = s_axis_tdata_2;
+        sel_valid = s_axis_tvalid_2;
+        sel_last = s_axis_tlast_2;
+        sel_user = 2;
+      elsif s_axis_tvalid_3
+        sel_data = s_axis_tdata_3;
+        sel_valid = s_axis_tvalid_3;
+        sel_last = s_axis_tlast_3;
+        sel_user = 3;
+      end if
+    elsif state == ST_S1
+      sel_data = s_axis_tdata_1;
+      sel_valid = s_axis_tvalid_1;
+      sel_last = s_axis_tlast_1;
+      sel_user = 1;
+    elsif state == ST_S2
+      sel_data = s_axis_tdata_2;
+      sel_valid = s_axis_tvalid_2;
+      sel_last = s_axis_tlast_2;
+      sel_user = 2;
+    elsif state == ST_S3
+      sel_data = s_axis_tdata_3;
+      sel_valid = s_axis_tvalid_3;
+      sel_last = s_axis_tlast_3;
+      sel_user = 3;
+    end if
+  end comb
+
+  comb
+    if temp_flag
+      m_axis_tdata = temp_data;
+      m_axis_tvalid = temp_valid;
+      m_axis_tlast = temp_last;
+      m_axis_tuser = temp_user;
+    else
+      m_axis_tdata = sel_data;
+      m_axis_tvalid = sel_valid;
+      m_axis_tlast = sel_last;
+      m_axis_tuser = sel_user;
+    end if
+  end comb
+
+  comb
+    s_axis_tready_1 = false;
+    s_axis_tready_2 = false;
+    s_axis_tready_3 = false;
+    if state == ST_S1
+      s_axis_tready_1 = true;
+    elsif state == ST_S2
+      s_axis_tready_2 = true;
+    elsif state == ST_S3
+      s_axis_tready_3 = true;
+    elsif state == ST_IDLE
+      if s_axis_tvalid_1
+        s_axis_tready_1 = true;
+      elsif s_axis_tvalid_2
+        s_axis_tready_2 = true;
+      elsif s_axis_tvalid_3
+        s_axis_tready_3 = true;
+      end if
+    end if
+  end comb
+
+  comb
+    busy = (state != ST_IDLE);
+  end comb
+
+  seq
+    if temp_flag
+      if m_axis_tready
+        temp_flag <= false;
+      end if
+    else
+      if ~m_axis_tready
+        if sel_valid
+          temp_data <= sel_data;
+          temp_valid <= sel_valid;
+          temp_last <= sel_last;
+          temp_user <= sel_user;
+          temp_flag <= true;
+        end if
+      end if
+    end if
+
+    if state == ST_IDLE
+      if s_axis_tvalid_1
+        state <= ST_S1;
+      elsif s_axis_tvalid_2
+        state <= ST_S2;
+      elsif s_axis_tvalid_3
+        state <= ST_S3;
+      end if
+    elsif state == ST_S1
+      if s_axis_tvalid_1 && s_axis_tlast_1
+        state <= ST_IDLE;
+      end if
+    elsif state == ST_S2
+      if s_axis_tvalid_2 && s_axis_tlast_2
+        state <= ST_IDLE;
+      end if
+    elsif state == ST_S3
+      if s_axis_tvalid_3 && s_axis_tlast_3
+        state <= ST_IDLE;
+      end if
+    end if
+  end seq
+end module axis_joiner

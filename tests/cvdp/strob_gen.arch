@@ -1,0 +1,33 @@
+module strob_gen
+  param CLOCK_HZ: const = 10000000;
+  param PERIOD_US: const = 100;
+  port clk:      in Clock<SysDomain>;
+  port nrst:     in Reset<Async, Low>;
+  port enable:   in Bool;
+  port reg strobe_o: out Bool reset nrst=>false;
+
+  default seq on clk rising;
+
+  // DELAY = (CLOCK_HZ * PERIOD_US / 1_000_000) - 1
+  param DELAY: const = (CLOCK_HZ * PERIOD_US / 1000000) - 1;
+
+  reg cnt: UInt<32> reset nrst=>DELAY;
+
+  seq
+    if cnt == 0
+      if enable == true
+        strobe_o <= true;
+      else
+        strobe_o <= false;
+      end if
+      cnt <= DELAY;
+    else
+      strobe_o <= false;
+      if enable == true
+        cnt <= (cnt - 1).trunc<32>();
+      else
+        cnt <= DELAY;
+      end if
+    end if
+  end seq
+end module strob_gen

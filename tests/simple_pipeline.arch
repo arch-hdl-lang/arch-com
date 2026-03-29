@@ -10,14 +10,14 @@ pipeline SimplePipe
   port data_out: out UInt<XLEN>;
 
   stage Fetch
-    reg captured: UInt<XLEN> init 0 reset rst=0;
+    reg captured: UInt<XLEN> init 0 reset rst=>0;
     seq on clk rising
       captured <= data_in;
     end seq
   end stage Fetch
 
   stage Writeback
-    reg result: UInt<XLEN> init 0 reset rst=0;
+    reg result: UInt<XLEN> init 0 reset rst=>0;
     seq on clk rising
       result <= Fetch.captured;
     end seq

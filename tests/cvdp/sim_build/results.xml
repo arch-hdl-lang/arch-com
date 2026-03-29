@@ -1,0 +1,8 @@
+<testsuites name="results">
+  <testsuite name="all" package="all">
+    <property name="random_seed" value="1774762821" />
+    <testcase name="test_bst_sorter" classname="test_bst_inline" file="/Users/shuqingzhao/github/arch-com/tests/cvdp/test_bst_inline.py" lineno="69" time="0.020094871520996094" sim_time_ns="1605.0" ratio_time="79871.12524322528">
+      <failure error_type="AssertionError" error_msg="[Worst case desc] Latency incorrect. Got: 39, Expected: 36.0&#10;assert 36.0 == 39" />
+    </testcase>
+  </testsuite>
+</testsuites>

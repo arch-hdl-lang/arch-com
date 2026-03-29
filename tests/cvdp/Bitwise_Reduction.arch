@@ -1,0 +1,43 @@
+// Bitwise reduction: reduces BIT_COUNT input bits to one output bit
+// using a specified Boolean operation (AND/OR/XOR/NAND/NOR/XNOR)
+module Bitwise_Reduction
+  param REDUCTION_OP: const = 0;
+  param BIT_COUNT: const = 4;
+
+  port input_bits: in UInt<BIT_COUNT>;
+  port reduced_bit: out UInt<1>;
+
+  wire and_r: UInt<1>;
+  wire or_r: UInt<1>;
+  wire xor_r: UInt<1>;
+
+  comb
+    and_r = input_bits[0:0];
+    or_r = input_bits[0:0];
+    xor_r = input_bits[0:0];
+    for i in 1..BIT_COUNT-1
+      and_r = and_r & input_bits[i:i];
+      or_r = or_r | input_bits[i:i];
+      xor_r = xor_r ^ input_bits[i:i];
+    end for
+  end comb
+
+  // Select operation: 0=AND, 1=OR, 2=XOR, 3=NAND, 4=NOR, 5=XNOR, default=AND
+  comb
+    if REDUCTION_OP == 0
+      reduced_bit = and_r;
+    elsif REDUCTION_OP == 1
+      reduced_bit = or_r;
+    elsif REDUCTION_OP == 2
+      reduced_bit = xor_r;
+    elsif REDUCTION_OP == 3
+      reduced_bit = ~and_r;
+    elsif REDUCTION_OP == 4
+      reduced_bit = ~or_r;
+    elsif REDUCTION_OP == 5
+      reduced_bit = ~xor_r;
+    else
+      reduced_bit = and_r;
+    end if
+  end comb
+end module Bitwise_Reduction

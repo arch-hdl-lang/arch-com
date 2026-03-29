@@ -5,8 +5,8 @@ module complex_multiplier
   port a_imag: in SInt<16>;
   port b_real: in SInt<16>;
   port b_imag: in SInt<16>;
-  port reg result_real: out SInt<32> reset arst_n=0;
-  port reg result_imag: out SInt<32> reset arst_n=0;
+  port reg result_real: out SInt<32> reset arst_n=>0;
+  port reg result_imag: out SInt<32> reset arst_n=>0;
 
   // (a+bj)*(c+dj) = (ac-bd) + (ad+bc)j
   wire ac: SInt<32>;

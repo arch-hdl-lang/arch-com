@@ -1,0 +1,19 @@
+module hamming_tx
+  param DATA_WIDTH: const = 64;
+  param PART_WIDTH: const = 4;
+  param PARITY_BIT: const = 3;
+  param ENCODED_DATA: const = PARITY_BIT + PART_WIDTH + 1;
+  param NUM_MODULES: const = DATA_WIDTH / PART_WIDTH;
+  param TOTAL_ENCODED: const = ENCODED_DATA * NUM_MODULES;
+  port data_in:  in UInt<DATA_WIDTH>;
+  port data_out: out UInt<TOTAL_ENCODED>;
+
+  generate for i in 0..NUM_MODULES-1
+    inst tx_i: t_hamming_tx
+      param DATA_WIDTH = PART_WIDTH;
+      param PARITY_BIT = PARITY_BIT;
+      connect data_in  <- data_in[i*PART_WIDTH + PART_WIDTH - 1 : i*PART_WIDTH];
+      connect data_out -> data_out[i*ENCODED_DATA + ENCODED_DATA - 1 : i*ENCODED_DATA];
+    end inst tx_i
+  end generate for i
+end module hamming_tx

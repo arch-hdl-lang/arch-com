@@ -1,0 +1,148 @@
+MODULE: secure_read_write_bus_interface
+ID: cvdp_copilot_secure_read_write_bus_0001
+
+=== SPEC ===
+Design a **parameterized read/write bus** in Verilog that ensures secure access through an **8-bit configurable key**. This module named `secure_read_write_bus_interface` will support both read and write operations, with authorization based on a comparison between the input key and an internal parameterized key.
+
+## Functional Requirements
+1. **Read and Write Operations**:
+   - The bus performs read or write actions based on an enable signal.
+   - Access is authorized only if the provided key matches an internal key, with errors flagged otherwise.
+
+## Input/Output Specifications
+
+### Inputs
+- `i_addr` (`p_addr_width bit`): Specifies the target address for read or write operations.
+- `i_data_in` (`p_data_width` bit): Data to be written during a write operation.
+- `i_key_in` (`8-bit`): Key provided by the initiator for operation authorization.
+- `i_read_write_enable` (`1-bit`): Specifies the requested operation; `1` for read, `0` for write.
+- `i_capture_pulse` (`1-bit`): Qualifies input capture for `i_addr`, `i_data_in`, `i_key_in`, and `i_read_write_enable`.
+- `i_reset_bar` (`1-bit`): Asynchronous, active-low reset to initialize internal states and registers.
+
+### Outputs
+- `o_data_out` (`p_data_width` bit): Data output during a read operation, valid only if the input key matches the internal key.
+- `o_error` (`1-bit`): Asserted if the input key is incorrect and dessert if input key is correct.
+
+## Behavioral Requirements
+
+### Write Operation
+- If `i_read_write_enable` is **0**, the bus interprets the operation as a write request.
+- At the rising edge of `i_capture_pulse`:
+  - If `i_key_in` matches the internal 8-bit configurable key, `i_data_in` is written to the address specified by `i_addr`.
+  - If `i_key_in` does not match the internal key:
+    - `o_error` is set to **1**.
+    - `o_data_out` is set to **0** (default).
+
+### Read Operation
+- If `i_read_write_enable` is **1**, the bus interprets the operation as a read request.
+- At the rising edge of `i_capture_pulse`:
+  - If `i_key_in` matches the internal key, data from address `i_addr` is output on `o_data_out`, and `o_error` is **0**.
+  - If `i_key_in` does not match:
+    - `o_error` is set to **1**.
+    - `o_data_out` remains **0**.
+
+## Parameterization Requirements
+- `p_configurable_key`: Internal 8-bit key, default value `8'hAA`.
+- `p_data_width`: Configurable data width, default is **8 bits**.
+- `p_addr_width`: Configurable address width, default is **8 bits**.
+
+## Additional Requirements
+1. **Edge Case Handling**:
+   - `i_reset_bar` reset signal should clear all internal registers and outputs when asserted low.
+   - Ensure that outputs default to `0` upon reset or when unauthorized access occurs.
+2. **Clocking and Timing**:
+   - Operations are gated by the positive edge of `i_capture_pulse` for both read and write actions.
+   - Timing for signal latching and error assertions should align with rising edges of `i_capture_pulse`.
+
+## Assumptions
+  - Assume all the inputs are synchronous to the `i_capture_pulse`
+
+=== src/.env ===
+SIM             = icarus
+WAVE            = False
+TOPLEVEL_LANG   = verilog
+VERILOG_SOURCES = /code/rtl/secure_read_write_bus_interface.v
+TOPLEVEL        = secure_read_write_bus_interface 
+MODULE          = test_secure_read_write_bus_interface
+PYTHONPATH      = /src
+HASH            = 1-address-secured-read-and-write-bus
+
+=== src/test_secure_read_write_bus_interface.py ===
+import cocotb
+from cocotb.clock import Clock
+from cocotb.triggers import RisingEdge, FallingEdge, Timer
+
+async def reset_dut(dut):
+    """Reset the DUT"""
+    dut.i_reset_bar.value =0
+    dut.i_addr.value =0
+    dut.i_data_in.value =0
+    dut.i_key_in.value =0
+    dut.i_read_write_enable.value =0
+    dut.i_capture_pulse.value =0
+
+    await FallingEdge(dut.i_capture_pulse)
+    dut.i_reset_bar.value = 1
+    await RisingEdge(dut.i_capture_pulse)
+
+
+@cocotb.test()
+async def test_secure_read_write_bus_interface(dut):  # dut will be the object for RTL top.
+   
+
+    cocotb.start_soon(Clock(dut.i_capture_pulse, 10, units='ns').start())  # timeperiod= 10ns
+    # Reset the DUT
+    await reset_dut(dut)
+
+    
+    await FallingEdge(dut.i_capture_pulse)  #writing addr 1 with data 1, with correct key.
+    dut.i_addr.value =1
+    dut.i_data_in.value =1
+    dut.i_key_in.value =170
+    dut.i_read_write_enable.value =0
+    await FallingEdge(dut.i_capture_pulse) #writing addr 2 with data 2, with correct key.
+    assert dut.o_error.value==0, f"output should not be {dut.o_error.value}"
+    assert dut.o_data_out.value==0, f"output should not be {dut.o_data_out.value}"
+    dut.i_addr.value =2
+    dut.i_data_in.value =2
+    dut.i_key_in.value =170
+    dut.i_read_write_enable.value =0
+    await FallingEdge(dut.i_capture_pulse) #reading addr 1 with correct key.
+    assert dut.o_error.value==0, f"output should not be {dut.o_error.value}"
+    assert dut.o_data_out.value==0, f"output should not be {dut.o_data_out.value}"
+    dut.i_addr.value =1
+    dut.i_data_in.value =0
+    dut.i_key_in.value =170
+    dut.i_read_write_enable.value =1
+    await FallingEdge(dut.i_capture_pulse) #assertion of addr 1.reading addr 2 with correct key.
+    assert dut.o_data_out.value==1, f"output should not be {dut.o_data_out.value}"
+    assert dut.o_error.value==0, f"output should not be {dut.o_error.value}"
+    dut.i_addr.value =2
+    dut.i_data_in.value =0
+    dut.i_key_in.value =170
+    dut.i_read_write_enable.value =1
+    await FallingEdge(dut.i_capture_pulse) #assertion of addr 2.reading addr 2 with incorrect key.
+    assert dut.o_data_out.value==2, f"output should not be {dut.o_data_out.value}"
+    assert dut.o_error.value==0, f"output should not be {dut.o_error.value}"
+    dut.i_addr.value =2
+    dut.i_data_in.value =0
+    dut.i_key_in.value =172
+    dut.i_read_write_enable.value =1
+    await FallingEdge(dut.i_capture_pulse) #assertion of addr 2. #writing addr 1 with data 4, with incorrect key.
+    assert dut.o_data_out.value==0, f"output should not be {dut.o_data_out.value}"
+    assert dut.o_error.value==1, f"output should not be {dut.o_error.value}"
+    dut.i_addr.value =1
+    dut.i_data_in.value =4
+    dut.i_key_in.value =173
+    dut.i_read_write_enable.value =0
+    await FallingEdge(dut.i_capture_pulse) #reading add 1, with correct key.
+    assert dut.o_data_out.value==0, f"output should not be {dut.o_data_out.value}"
+    assert dut.o_error.value==1, f"output should not be {dut.o_error.value}"
+    dut.i_addr.value =1
+    dut.i_data_in.value =0
+    dut.i_key_in.value =170
+    dut.i_read_write_enable.value =1
+    await FallingEdge(dut.i_capture_pulse) #assertion of addr 1. data should not change.reading addr 2 with correct key.
+    assert dut.o_data_out.value==1, f"output should not be {dut.o_data_out.value}"
+    assert dut.o_error.value==0, f"output should not be {dut.o_error.value}"
+

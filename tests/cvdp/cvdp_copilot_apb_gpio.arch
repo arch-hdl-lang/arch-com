@@ -1,0 +1,118 @@
+module cvdp_copilot_apb_gpio
+  param GPIO_WIDTH: const = 8;
+
+  port pclk:       in Clock<SysDomain>;
+  port preset_n:   in Reset<Async, Low>;
+  port psel:       in Bool;
+  port paddr:      in UInt<6>;
+  port penable:    in Bool;
+  port pwrite:     in Bool;
+  port pwdata:     in UInt<32>;
+  port gpio_in:    in UInt<GPIO_WIDTH>;
+
+  port prdata:      out UInt<32>;
+  port pready:      out Bool;
+  port pslverr:     out Bool;
+  port gpio_out:    out UInt<GPIO_WIDTH>;
+  port gpio_enable: out UInt<GPIO_WIDTH>;
+  port gpio_int:    out UInt<GPIO_WIDTH>;
+  port comb_int:    out Bool;
+
+  default seq on pclk rising;
+
+  // Internal registers
+  reg reg_dout:     UInt<GPIO_WIDTH> reset preset_n=>0;
+  reg reg_dout_en:  UInt<GPIO_WIDTH> reset preset_n=>0;
+  reg reg_int_en:   UInt<GPIO_WIDTH> reset preset_n=>0;
+  reg reg_int_type: UInt<GPIO_WIDTH> reset preset_n=>0;
+  reg reg_int_pol:  UInt<GPIO_WIDTH> reset preset_n=>0;
+  reg reg_int_state: UInt<GPIO_WIDTH> reset preset_n=>0;
+
+  // Two-stage synchronizer for gpio_in
+  reg sync1: UInt<GPIO_WIDTH> reset preset_n=>0;
+  reg sync2: UInt<GPIO_WIDTH> reset preset_n=>0;
+  reg sync_prev: UInt<GPIO_WIDTH> reset preset_n=>0;
+
+  seq
+    sync1 <= gpio_in;
+    sync2 <= sync1;
+    sync_prev <= sync2;
+  end seq
+
+  // Wires for interrupt logic
+  wire rising_edge: UInt<GPIO_WIDTH>;
+  wire falling_edge: UInt<GPIO_WIDTH>;
+  wire edge_detect: UInt<GPIO_WIDTH>;
+  wire level_detect: UInt<GPIO_WIDTH>;
+  wire int_combined: UInt<GPIO_WIDTH>;
+
+  comb
+    rising_edge = sync2 & ~sync_prev;
+    falling_edge = ~sync2 & sync_prev;
+    edge_detect = (~reg_int_pol & rising_edge) | (reg_int_pol & falling_edge);
+    level_detect = sync2 ^ reg_int_pol;
+    int_combined = (reg_int_type & reg_int_state) | (~reg_int_type & level_detect & reg_int_en);
+  end comb
+
+  // Combinational outputs
+  comb
+    gpio_out = reg_dout;
+    gpio_enable = reg_dout_en;
+    pready = true;
+    pslverr = false;
+    gpio_int = int_combined;
+    comb_int = gpio_int != 0;
+  end comb
+
+  // APB control signals
+  let apb_write_en: Bool = psel & penable & pwrite;
+  let apb_read_en: Bool = psel & penable & ~pwrite;
+
+  // APB write logic + edge interrupt accumulation
+  seq
+    // Edge interrupt accumulation: accumulate edges, keep only edge-type bits
+    reg_int_state <= (reg_int_state | (edge_detect & reg_int_en)) & reg_int_type;
+
+    if apb_write_en
+      if paddr == 1
+        reg_dout <= pwdata[GPIO_WIDTH - 1:0];
+      elsif paddr == 2
+        reg_dout_en <= pwdata[GPIO_WIDTH - 1:0];
+      elsif paddr == 3
+        reg_int_en <= pwdata[GPIO_WIDTH - 1:0];
+      elsif paddr == 4
+        reg_int_type <= pwdata[GPIO_WIDTH - 1:0];
+      elsif paddr == 5
+        reg_int_pol <= pwdata[GPIO_WIDTH - 1:0];
+      elsif paddr == 6
+        // Write-1-to-clear for edge interrupts
+        reg_int_state <= ((reg_int_state | (edge_detect & reg_int_en)) & reg_int_type) & ~(pwdata[GPIO_WIDTH - 1:0] & reg_int_type);
+      end if
+    end if
+  end seq
+
+  // APB read logic (combinational)
+  comb
+    if apb_read_en
+      if paddr == 0
+        prdata = sync2.zext<32>();
+      elsif paddr == 1
+        prdata = reg_dout.zext<32>();
+      elsif paddr == 2
+        prdata = reg_dout_en.zext<32>();
+      elsif paddr == 3
+        prdata = reg_int_en.zext<32>();
+      elsif paddr == 4
+        prdata = reg_int_type.zext<32>();
+      elsif paddr == 5
+        prdata = reg_int_pol.zext<32>();
+      elsif paddr == 6
+        prdata = int_combined.zext<32>();
+      else
+        prdata = 0;
+      end if
+    else
+      prdata = 0;
+    end if
+  end comb
+end module cvdp_copilot_apb_gpio

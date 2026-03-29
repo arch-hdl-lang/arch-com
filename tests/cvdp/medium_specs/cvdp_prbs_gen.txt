@@ -1,0 +1,240 @@
+MODULE: cvdp_prbs_gen
+ID: cvdp_copilot_prbs_gen_0003
+
+=== SPEC ===
+Create a SystemVerilog module named `cvdp_prbs_gen` that functions as both a PRBS (Pseudo-Random Binary Sequence) generator and checker. The module should be parameterizable and capable of operating in two modes:
+
+- **Generator Mode (`CHECK_MODE = 0`):** Generates a PRBS pattern using a Linear Feedback Shift Register (LFSR) structure.
+- **Checker Mode (`CHECK_MODE = 1`):** Loads incoming data into PRBS registers and compares it with a locally generated PRBS pattern to detect errors.
+
+ A LFSR is a sequential circuit used to generate a sequence of bits based on linear feedback logic. It consists of a series of flip-flops connected in a shift register configuration, where the input of the first flip-flop is driven by a linear function (typically XOR or XNOR) of selected outputs (taps) of the shift register. 
+ 
+ A PRBS is a deterministic sequence of binary values that exhibits properties similar to a random sequence. By configuring the LFSR with appropriate feedback taps, the PRBS generator produces a maximal-length sequence that cycles through all possible non-zero states before repeating, ensuring comprehensive test coverage.
+
+**Additional Specifications:**
+
+- **Polynomial Details:**
+  - The PRBS generation should be based on a configurable polynomial defined by the parameters.
+  - The polynomial length and taps are defined by `POLY_LENGTH` and `POLY_TAP`, representing the positions in the shift register that are XORed together. The XORed bit is set as the most significant bit (msb) of the PRBS for the next stage calculation.
+  - **Example Polynomial:**
+    - For a 31-bit PRBS: \( x^{31} + x^{3} + 1 \), where taps are at positions 31 (POLY_LENGTH) and 3(POLY_TAP).
+
+- **Seed Details:**
+  - The PRBS registers initialize to all ones on reset.
+
+**Module Parameters:**
+
+- `CHECK_MODE` (default: 0)
+  - **Type:** Integer parameter
+  - **Description:** Mode selection. `0` for generator mode, `1` for checker mode.
+- `POLY_LENGTH` (default: 31)
+  - **Type:** Integer parameter
+  - **Description:** Length of the polynomial (number of shift register stages in the LFSR).
+- `POLY_TAP` (default: 3)
+  - **Type:** Integer parameter or array
+  - **Description:** Positions of the tap in the shift register that is XORed with bit at `POLY_LENGTH` to generate the feedback bit.
+- `WIDTH` (default: 16)
+  - **Type:** Integer parameter
+  - **Description:** Bit width of the `data_in` and `data_out` buses.
+
+**Module Interface:**
+
+- **Inputs:**
+  - `clk`
+    - **Width:** 1 bit
+    - **Description:** Clock input signal. All operations are synchronized on the **rising edge**.
+  - `rst`
+    - **Width:** 1 bit
+    - **Active High**
+    - **Description:** Synchronous reset signal. When asserted high, resets internal states and outputs to their initial values.
+  - `data_in [WIDTH-1]`
+    - **Description:** Input data bus. In checker mode, it receives data to be compared with the PRBS pattern. In generator mode, it is tied to 0.
+
+- **Outputs:**
+  - `data_out [WIDTH-1]`
+    - **Description:**
+      - **Generator Mode:** Outputs the generated PRBS pattern.
+      - **Checker Mode:** Outputs the result of the error checking. A non-zero value indicates a discrepancy between `data_in` and the expected PRBS pattern.
+
+**Behavioral Description:**
+
+- **Reset Behavior:**
+  -  If `rst` is asserted high:
+    - The PRBS shift registers are initialized to all ones (`1`).
+    - `data_out` is set to all ones (`1`).
+- **Generator Mode (`CHECK_MODE = 0`):**
+  - Implements an LFSR to generate the PRBS pattern.
+  - For each bit position `i` (from `0` to `WIDTH-1`):
+    - Calculates the XOR of the bits at positions `POLY_TAP` and `POLY_LENGTH` of the current PRBS register.
+	- In generator mode, the data_in is expected to be set to all 0.
+    - Updates the PRBS register by shifting right and inserting the XORed bit at the most significant bit (MSB).
+- **Checker Mode (`CHECK_MODE = 1`):**
+  - For each bit position `i` (from `0` to `WIDTH-1`):
+    - Generates the expected PRBS bit as in generator mode.
+    - Compares the input bit and generated bit by XORing `data_in[i]` with internally generated PRBS.
+
+**Timing and Synchronization:**
+
+- **Latency Considerations:**
+  - The module updates outputs every clock cycle when enabled.
+  - There is a one-clock-cycle latency from input to output due to synchronous operation.
+
+**Constraints and Edge Cases:**
+
+- **Parameter Constraints:**
+  - `POLY_LENGTH` must be greater than or equal to the tap position specified in `POLY_TAP`.
+  - `POLY_TAP` must be a positive integer.
+  - `WIDTH` must be a positive integer.
+- **Error Detection:**
+  - In checker mode, any non-zero value on `data_out` indicates an error between `data_in` and the expected PRBS pattern.
+  
+** Assumptions:**
+- In Generator mode, the PRBS data will be generated at every clock cycle after the reset is deasserted.
+- In Checker mode, data_in should be available and updated at every clock cycle as soon as the reset is deasserted.
+
+**Summary:**
+
+Design a configurable PRBS generator and checker module in SystemVerilog, adhering to the specifications above. The module should efficiently handle PRBS generation and error checking based on the selected mode and 
+LFSR configuration, while being flexible enough to accommodate various polynomial lengths, taps, and data widths. Ensure that the design is robust, well-documented, and thoroughly tested.
+
+=== src/.env ===
+SIM             = icarus
+WAVE            = False
+TOPLEVEL_LANG   = verilog
+VERILOG_SOURCES = /code/rtl/cvdp_prbs_gen.sv
+TOPLEVEL        = cvdp_prbs_gen
+MODULE          = test_prbs_gen
+PYTHONPATH      = /src
+HASH            = 1a6c4d08f6dc2ada6cc3c565ff357389d2cf163e
+
+
+=== src/test_prbs_gen.py ===
+import cocotb
+from cocotb.triggers import RisingEdge, ClockCycles
+from cocotb.clock import Clock
+
+# Helper function to generate expected PRBS sequence
+def generate_prbs(seed, poly_length, poly_tap, width, num_cycles):
+    prbs_reg = [int(x) for x in f'{seed:0{poly_length}b}']
+    prbs_out = []
+
+    for _ in range(num_cycles):
+        prbs_xor_a = []
+        prbs = [prbs_reg]  # Initialize prbs[0] with the current PRBS register
+
+        # Loop through each bit of the output width
+        for i in range(width):
+            # Perform XOR operation between specified tap and last stage of PRBS
+            xor_a = prbs[i][poly_tap - 1] ^ prbs[i][poly_length - 1]
+            prbs_xor_a.append(xor_a)
+
+            # Shift the LFSR and insert the new XOR result to generate next state
+            prbs_next = [xor_a] + prbs[i][0:poly_length - 1]
+            prbs.append(prbs_next)
+
+        # Collect the XOR result as the output for this cycle
+        prbs_out.append(int(''.join(map(str, prbs_xor_a[::-1])), 2))
+
+        # Update the PRBS register with the last stage (prbs[width])
+        prbs_reg = prbs[width]
+
+    return prbs_out
+
+# Testbench for PRBS Generator and Checker
+@cocotb.test()
+async def test_prbs_gen(dut):
+    # Initialize and start the clock signal with a 10 ns period
+    cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
+
+    # Test Parameters
+    #width       = int(dut.WIDTH.value)
+    check_mode  = int(dut.CHECK_MODE.value)  # Select mode: generator or checker
+    poly_length = int(dut.POLY_LENGTH.value)  # Length of the polynomial
+    poly_tap    = int(dut.POLY_TAP.value)     # Tap position in the polynomial
+    width       = int(dut.WIDTH.value)        # Width of the PRBS output
+    num_cycles  = 100  # Number of cycles to run the test
+    #print ("Parameters: CHECK_MODE: " ,check_mode, ", POLY_LENGTH: " ,poly_length, ", POLY_TAP: " ,poly_tap, ", WIDTH: ",width)
+
+    # Seed value for PRBS generation (all bits set to 1 initially)
+    seed = int('1' * poly_length, 2)
+
+    if check_mode == 0:  # Generator mode
+        # Reset the DUT (Device Under Test)
+        dut.rst.value = 1
+        dut.data_in.value = 0  # Initialize data_in to 0
+        await ClockCycles(dut.clk, 5)  # Wait for 5 clock cycles
+
+        # When rst is high, set expected PRBS output to all 1's
+        expected_prbs = [int('1' * width, 2)]
+
+        # Check the PRBS output during reset
+        await RisingEdge(dut.clk)  # Wait for a rising edge of the clock
+        prbs_out = dut.data_out.value.to_unsigned()  # Capture the output from the DUT
+        assert prbs_out == expected_prbs[0], f"During reset: Expected {expected_prbs[0]:0{width}b}, Got {prbs_out:0{width}b}"
+
+        # Release the reset and enable PRBS generation
+        dut.rst.value = 0  # Release reset
+
+        # Generate expected PRBS sequence after reset is released
+        expected_prbs = generate_prbs(seed, poly_length, poly_tap, width, num_cycles)
+
+        await RisingEdge(dut.clk)  # Wait for a rising edge of the clock so that the reset is driven low
+
+        # Check the PRBS output after reset is released
+        for cycle in range(num_cycles):
+            await RisingEdge(dut.clk)  # Wait for each clock cycle
+
+            # Extract the generated PRBS output from the DUT
+            prbs_out = dut.data_out.value.to_unsigned()
+
+            # Compare the DUT output with the expected PRBS sequence
+            assert prbs_out == expected_prbs[cycle], f"Mismatch at cycle {cycle}: Expected {expected_prbs[cycle]:0{width}b}, Got {prbs_out:0{width}b}"
+
+    elif check_mode == 1:  # Checker mode
+        # Reset the DUT (Device Under Test)
+        dut.rst.value = 1
+        dut.data_in.value = 0  # Initialize data_in to 0
+        await ClockCycles(dut.clk, 5)  # Wait for 5 clock cycles
+
+        # Release the reset and enable PRBS checking
+        dut.rst.value = 0  # Release reset
+
+        # Generate expected PRBS sequence to feed into data_in
+        prbs_sequence = generate_prbs(seed, poly_length, poly_tap, width, num_cycles)
+
+        # Initialize error flag
+        error_flag = 0
+
+        # Wait for a rising edge of the clock to ensure reset is low
+        #await RisingEdge(dut.clk)
+
+        # Send the PRBS sequence to the DUT via data_in
+        for cycle in range(num_cycles):
+            # Apply PRBS data_in
+            dut.data_in.value = prbs_sequence[cycle]
+
+            # Wait for a clock cycle
+            await RisingEdge(dut.clk)
+
+            # Read the error flag from data_out (assuming data_out is the error indicator)
+            error_flag = dut.data_out.value.to_unsigned()
+
+            if(cycle>0):
+            # Check that error_flag is 0 (no error)
+                assert error_flag == 0, f"No error expected, but error detected at cycle {cycle}"
+
+        # Introduce an error in the data_in
+        error_cycle = num_cycles // 2  # Introduce error at the middle of the sequence
+        dut.data_in.value = prbs_sequence[error_cycle] ^ 0x1  # Flip one bit to introduce error
+
+        # Wait for a clock cycle
+        await RisingEdge(dut.clk)
+        await RisingEdge(dut.clk)
+
+        # Read the error flag after introducing the error
+        error_flag = dut.data_out.value.to_unsigned()
+
+        # Check that error_flag is 1 (error detected)
+        assert error_flag >0, f"Error expected, but no error detected at cycle {error_cycle}"
+
+

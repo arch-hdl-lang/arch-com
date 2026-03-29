@@ -1,0 +1,100 @@
+module TLB
+  param TLB_SIZE: const = 4;
+  param ADDR_WIDTH: const = 8;
+  param PAGE_WIDTH: const = 8;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port virtual_address: in UInt<ADDR_WIDTH>;
+  port tlb_write_enable: in Bool;
+  port flsh: in Bool;
+  port page_table_entry: in UInt<PAGE_WIDTH>;
+  port physical_address: out UInt<PAGE_WIDTH>;
+  port hit: out Bool;
+  port miss: out Bool;
+
+  default seq on clk rising;
+
+  reg virtual_tags_0: UInt<ADDR_WIDTH> reset rst=>0;
+  reg virtual_tags_1: UInt<ADDR_WIDTH> reset rst=>0;
+  reg virtual_tags_2: UInt<ADDR_WIDTH> reset rst=>0;
+  reg virtual_tags_3: UInt<ADDR_WIDTH> reset rst=>0;
+  reg physical_pages_0: UInt<PAGE_WIDTH> reset rst=>0;
+  reg physical_pages_1: UInt<PAGE_WIDTH> reset rst=>0;
+  reg physical_pages_2: UInt<PAGE_WIDTH> reset rst=>0;
+  reg physical_pages_3: UInt<PAGE_WIDTH> reset rst=>0;
+  reg valid_bits: UInt<TLB_SIZE> reset rst=>0;
+  reg replacement_idx: UInt<2> reset rst=>0;
+
+  let v0: Bool = (virtual_tags_0 == virtual_address);
+  let v1: Bool = (virtual_tags_1 == virtual_address);
+  let v2: Bool = (virtual_tags_2 == virtual_address);
+  let v3: Bool = (virtual_tags_3 == virtual_address);
+
+  let match0: Bool = valid_bits[0:0] & v0;
+  let match1: Bool = valid_bits[1:1] & v1;
+  let match2: Bool = valid_bits[2:2] & v2;
+  let match3: Bool = valid_bits[3:3] & v3;
+
+  comb
+    if match0
+      hit = true;
+      miss = false;
+      physical_address = physical_pages_0;
+    elsif match1
+      hit = true;
+      miss = false;
+      physical_address = physical_pages_1;
+    elsif match2
+      hit = true;
+      miss = false;
+      physical_address = physical_pages_2;
+    elsif match3
+      hit = true;
+      miss = false;
+      physical_address = physical_pages_3;
+    else
+      hit = false;
+      miss = true;
+      physical_address = page_table_entry;
+    end if
+  end comb
+
+  seq
+    if rst
+      valid_bits <= 0;
+      replacement_idx <= 0;
+      virtual_tags_0 <= 0;
+      virtual_tags_1 <= 0;
+      virtual_tags_2 <= 0;
+      virtual_tags_3 <= 0;
+      physical_pages_0 <= 0;
+      physical_pages_1 <= 0;
+      physical_pages_2 <= 0;
+      physical_pages_3 <= 0;
+    elsif flsh
+      valid_bits <= 0;
+    elsif tlb_write_enable
+      if replacement_idx == 0
+        virtual_tags_0 <= virtual_address;
+        physical_pages_0 <= page_table_entry;
+        valid_bits <= valid_bits | 4'b0001;
+        replacement_idx <= 1;
+      elsif replacement_idx == 1
+        virtual_tags_1 <= virtual_address;
+        physical_pages_1 <= page_table_entry;
+        valid_bits <= valid_bits | 4'b0010;
+        replacement_idx <= 2;
+      elsif replacement_idx == 2
+        virtual_tags_2 <= virtual_address;
+        physical_pages_2 <= page_table_entry;
+        valid_bits <= valid_bits | 4'b0100;
+        replacement_idx <= 3;
+      else
+        virtual_tags_3 <= virtual_address;
+        physical_pages_3 <= page_table_entry;
+        valid_bits <= valid_bits | 4'b1000;
+        replacement_idx <= 0;
+      end if
+    end if
+  end seq
+end module TLB

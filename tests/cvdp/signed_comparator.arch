@@ -1,0 +1,46 @@
+module signed_unsigned_comparator
+  param WIDTH: const = 5;
+  port i_A:       in UInt<WIDTH>;
+  port i_B:       in UInt<WIDTH>;
+  port i_enable:  in Bool;
+  port i_mode:    in Bool;
+  port o_greater: out Bool;
+  port o_less:    out Bool;
+  port o_equal:   out Bool;
+
+  comb
+    if ~i_enable
+      o_greater = false;
+      o_less    = false;
+      o_equal   = false;
+    elsif i_mode
+      if (i_A as SInt<WIDTH>) > (i_B as SInt<WIDTH>)
+        o_greater = true;
+        o_less    = false;
+        o_equal   = false;
+      elsif (i_A as SInt<WIDTH>) < (i_B as SInt<WIDTH>)
+        o_greater = false;
+        o_less    = true;
+        o_equal   = false;
+      else
+        o_greater = false;
+        o_less    = false;
+        o_equal   = true;
+      end if
+    else
+      if i_A > i_B
+        o_greater = true;
+        o_less    = false;
+        o_equal   = false;
+      elsif i_A < i_B
+        o_greater = false;
+        o_less    = true;
+        o_equal   = false;
+      else
+        o_greater = false;
+        o_less    = false;
+        o_equal   = true;
+      end if
+    end if
+  end comb
+end module signed_unsigned_comparator

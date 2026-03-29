@@ -1,0 +1,21 @@
+module moving_average
+  port clk: in Clock<SysDomain>;
+  port reset: in Reset<Sync, High>;
+  port data_in: in UInt<12>;
+  port data_out: out UInt<12>;
+
+  reg mem: Vec<UInt<12>, 8> init 0 reset reset=>0;
+  reg sum_reg: UInt<15> init 0 reset reset=>0;
+
+  seq on clk rising
+    sum_reg <= (sum_reg - mem[7].zext<15>() + data_in.zext<15>()).trunc<15>();
+    for i in 1..7
+      mem[i] <= mem[i - 1];
+    end for
+    mem[0] <= data_in;
+  end seq
+
+  comb
+    data_out = (sum_reg >> 3).trunc<12>();
+  end comb
+end module moving_average

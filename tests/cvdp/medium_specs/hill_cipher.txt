@@ -1,0 +1,336 @@
+MODULE: hill_cipher
+ID: cvdp_copilot_hill_cipher_0001
+
+=== SPEC ===
+Design an RTL module that implements the Hill cipher encryption algorithm with the following specifications:
+
+- **Block Size**: 3 letters (each letter represented by 5 bits).
+- **Key Matrix**: 3x3 matrix (each element represented by 5 bits).
+- **Modular Arithmetic**: All operations are based on modulo 26.
+
+The Hill cipher is a classical symmetric encryption algorithm based on linear algebra. It operates on blocks of plaintext and uses matrix multiplication to produce ciphertext.
+
+### 1.1. Basic Concepts
+
+- **Plaintext**: The original message to be encrypted.
+- **Ciphertext**: The encrypted message.
+- **Block Size**: The number of letters processed at a time. The design has to use a block size of **3**.
+- **Key Matrix**: A square matrix used for encryption. For a block size of 3, the key matrix is a 3x3 matrix.
+- **Modular Arithmetic**: All calculations are performed on modulo 26, corresponding to the 26 letters of the English alphabet.
+
+### 1.2. Encryption Process
+
+1. **Convert Letters to Numbers**: Map each letter to a number (e.g., A=0, B=1, ..., Z=25).
+2. **Form Plaintext Vector**: Group the plaintext into blocks of 3 letters and represent them as column vectors.
+3. **Matrix Multiplication**: Multiply the key matrix by the plaintext vector.
+4. **Modulo Operation**: Apply modulo 26 to each element of the resulting vector.
+5. **Convert Numbers to Letters**: Map the resulting numbers back to letters to obtain the ciphertext.
+
+---
+
+## 2. Module Specifications
+
+### 2.1. Port Definitions
+
+#### 1. Clock and Reset
+
+- **`clk`**: Clock signal for synchronous operation. 
+- **`reset`**: Asynchronous reset signal to initialize the module. Set the output `ciphertext` to 0 when the `reset` is HIGH.
+
+#### 2. Control Signals
+
+- **`start`**: A logic HIGH in this input initiates the encryption process.
+
+#### 3. Data Inputs
+
+- **`plaintext`**: 15-bit input representing 3 plaintext letters.
+  - Each letter is represented by 5 bits.
+  - Bit mapping:
+    - `plaintext[14:10]`: First letter.
+    -  `plaintext[9:5]`: Second letter.
+    - `plaintext[4:0]`: Third letter.
+
+- **`key`**: 45-bit input representing the 3x3 key matrix.
+  - Each element is represented by 5 bits.
+  - key value should vary from 00000 to 11001.
+  - Element mapping:
+    - `key[44:40]`: K <sub>00</sub>
+    - `key[39:35]`:  K <sub>01</sub>
+    - `key[34:30]`:  K <sub>02</sub>
+    - `key[29:25]`:  K <sub>10</sub>
+    - `key[24:20]`:  K <sub>11</sub>
+    - `key[19:15]`:  K <sub>12</sub>
+    - `key[14:10]`:  K <sub>20</sub>
+    - `key[9:5]`: K <sub>21</sub>
+    - `key[4:0]`:  K <sub>22</sub>
+
+#### 4. Data Output
+
+- **`ciphertext`**: 15-bit output representing the encrypted 3 letters.
+  - Bit mapping follows the same pattern as `plaintext`.
+- **`done`**: A HIGH in this output signal indicates that the encryption process is complete.
+
+### 2.2. Functional Requirements
+
+- **Finite State Machine (FSM)**: Implement an FSM to manage the encryption process.
+- **Matrix Multiplication**: Compute the ciphertext vector \( C \) as:
+
+ C<sub>i</sub> = $$\left( \sum_{j=0}^2 K_{ij} \right) \times \left( P_j \right)$$ mod26
+  Where:
+
+  - C<sub>i</sub> : i<sup>th</sup> element of the ciphertext vector.
+  - K<sub>ij</sub>: Element of the key matrix at row \( i \), column \( j \).
+  - P<sub>j</sub>:  j<sup>th</sup> element of the plaintext vector.
+
+- **Modular Arithmetic**: Implement the modulo 26 operation.
+- **Synchronous Operation**: All operations should be synchronized with the rising edge of the clock (`clk`).
+- **Latency**: The design will have a latency of three clock cycles to produce the ciphertext after applying logic HIGH to `start`
+
+---
+
+
+## 3.  **Example**
+
+#### **Input**
+
+-  **Plaintext Block**: `"CAT"` → `[2, 0, 19]^T`
+  - Binary Representation:
+    - C = `00010`, A = `00000`, T = `10011`
+    - **Combined 15-bit input**: `00010_00000_10011`
+- **Key Matrix**:
+
+```math
+\begin{bmatrix}3 & 10 & 20 \\ 1 & 9 & 15 \\ 8 & 7 & 17 \end{bmatrix}
+```
+
+#### **Encryption Process**
+
+**Ciphertext = (Key Matrix × Plaintext Vector) mod 26**
+
+1. Perform the matrix multiplication:
+
+C₀ = (3 * 2 + 10 * 0 + 20 * 19) mod 26  
+   = (6 + 0 + 380) mod 26  
+   = 22  
+
+C₁ = (1 * 2 + 9 * 0 + 15 * 19) mod 26  
+   = (2 + 0 + 285) mod 26  
+   = 1  
+
+C₂ = (8 * 2 + 7 * 0 + 17 * 19) mod 26  
+   = (16 + 0 + 323) mod 26  
+   = 1  
+
+2. **Ciphertext Vector**:
+
+```math
+\begin{bmatrix}22 \\ 1 \\ 1\end{bmatrix}
+```
+
+3. **Mapping Numbers to Letters**:
+   - 22 → U  
+   - 1 → B  
+   - 1 → B  
+
+   **Ciphertext Block**: `"UBB"`
+
+#### **Output**
+
+- **Ciphertext**: `"UBB"`
+- **Binary Representation**:
+  - U = `10110`, B = `00001`, B = `00001`
+  - **Combined 15-bit output**: `10110_00001_00001`
+
+
+=== src/.env ===
+SIM             = icarus
+TOPLEVEL_LANG   = verilog
+VERILOG_SOURCES = /code/rtl/hill_cipher.sv
+TOPLEVEL        = hill_cipher
+MODULE          = test_hill_cipher
+PYTHONPATH      = /src
+HASH            = 1-rtl
+
+=== src/test_hill_cipher.py ===
+# Filename: test_hill_cipher.py
+
+import cocotb
+from cocotb.triggers import RisingEdge, FallingEdge, Timer
+from cocotb.clock import Clock
+import random
+
+def mod26(value):
+    """Modulo 26 operation."""
+    return value % 26
+
+def mod64(value):
+    """Modulo 32 operation."""
+    return value % 64
+
+@cocotb.test()
+async def hill_cipher_test(dut):
+    """Test the hill_cipher module with various inputs to cover all corner cases."""
+
+    # Generate clock
+    cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
+
+    # Reset the DUT
+    dut.reset.value = 1
+    dut.start.value = 0
+    dut.plaintext.value = 0
+    dut.key.value = 0
+    await RisingEdge(dut.clk)
+    dut.reset.value = 0
+    await RisingEdge(dut.clk)
+
+    # Define test cases with categories
+    test_cases = [
+        # Normal case
+        {
+            'category': 'Normal Case',
+            'plaintext': 0b000010000100001,  # 'A', 'B', 'C' (assuming 'A' = 0, 'B' = 1, etc.)
+            'key': 0b000010000100001000010000100001000010000100001,
+            'expected_ciphertext': None  # Will compute below
+        },
+        # Maximum values
+        {
+            'category': 'Maximum Values',
+            'plaintext': 0b110101101011010,  # Max plaintext `Z`, `Z`, `Z`
+            'key': 0b111111111111111111111111111111111111111111111,
+            'expected_ciphertext': None
+        },
+        # Minimum values
+        {
+            'category': 'Minimum Values',
+            'plaintext': 0b000000000000000,
+            'key': 0b000000000000000000000000000000000000000000000,
+            'expected_ciphertext': None
+        },
+        # Edge case for modulo operation
+        {
+            'category': 'Edge Case: Modulo Operation',
+            'plaintext': 0b001100011000110,  # 12, 12, 12
+            'key': 0b001100011000110001100011000110001100011000110,  # 12s
+            'expected_ciphertext': None
+        },
+        # Random values
+        {
+            'category': 'Random Case',
+            'plaintext':  int(f"{random.randint(0, 0x19)}{random.randint(0, 0x19)}"),
+            'key': random.randint(0, 0x1FFFFFFFFFF),
+            'expected_ciphertext': None
+        },
+        # Another random case
+        {
+            'category': 'Random Case',
+            'plaintext': int(f"{random.randint(0, 0x19)}{random.randint(0, 0x19)}"),
+            'key': random.randint(0, 0x1FFFFFFFFFF),
+            'expected_ciphertext': None
+        },
+    ]
+
+    # Helper function to split bits into 5-bit chunks
+    def split_bits(value, num_chunks, chunk_size):
+        chunks = []
+        for i in range(num_chunks):
+            chunks.append((value >> ((num_chunks - 1 - i) * chunk_size)) & ((1 << chunk_size) - 1))
+        return chunks
+
+    # Run test cases
+    for idx, case in enumerate(test_cases):
+        dut._log.info(f"Running Test Case {idx+1}: {case['category']}")
+
+        # Apply inputs
+        dut.plaintext.value = case['plaintext']
+        dut.key.value = case['key']
+        await FallingEdge(dut.clk)
+        dut.start.value = 1
+        await RisingEdge(dut.clk)
+        dut.start.value = 0
+
+        # Wait for done signal
+        while dut.done.value != 1:
+            await RisingEdge(dut.clk)
+
+        # Display input values in logs
+        dut._log.info(f"Test Case {idx+1} Inputs:")
+        dut._log.info(f"  Category: {case['category']}")
+        dut._log.info(f"  Plaintext (binary): {bin(case['plaintext'])}")
+        dut._log.info(f"  Plaintext (decimal): {int(case['plaintext'])}")
+        dut._log.info(f"  Key (binary): {bin(case['key'])}")
+        dut._log.info(f"  Key (decimal): {int(case['key'])}")
+
+        # Compute expected ciphertext in Python
+        P = split_bits(int(case['plaintext']), 3, 5)  # [P0, P1, P2]
+        K = split_bits(int(case['key']), 9, 5)        # [K00, K01, ..., K22]
+
+        # Reshape K into 3x3 matrix
+        K_matrix = [K[0:3], K[3:6], K[6:9]]
+
+        # Matrix multiplication
+        C = []
+        for i in range(3):
+            temp = 0
+            for j in range(3):
+                temp += mod26(K_matrix[i][j] * P[j])
+            temp = mod64(temp)
+            C.append(mod26(temp))
+
+        # Expected ciphertext
+        expected_ciphertext = (C[0] << 10) | (C[1] << 5) | C[2]
+
+        # Display expected ciphertext
+        dut._log.info(f"  Expected Ciphertext (binary): {bin(expected_ciphertext)}")
+        dut._log.info(f"  Expected Ciphertext (decimal): {expected_ciphertext}")
+
+        # Check the output
+        actual_ciphertext = int(dut.ciphertext.value)
+        dut._log.info(f"  Actual Ciphertext (binary): {bin(actual_ciphertext)}")
+        dut._log.info(f"  Actual Ciphertext (decimal): {actual_ciphertext}")
+
+        assert actual_ciphertext == expected_ciphertext, (
+            f"Test Case {idx+1} ({case['category']}) failed: "
+            f"Expected {expected_ciphertext}, got {actual_ciphertext}"
+        )
+
+        # Reset the DUT between test cases
+        dut.reset.value = 1
+        await RisingEdge(dut.clk)
+        dut.reset.value = 0
+        await RisingEdge(dut.clk)
+
+    dut._log.info("All test cases passed!")
+
+
+@cocotb.test()
+async def hill_cipher_clock_latency_test(dut):
+    """Test the clock latency from start signal to done signal."""
+
+    # Generate clock
+    cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
+
+    # Reset the DUT
+    dut.reset.value = 1
+    await RisingEdge(dut.clk)
+    dut.reset.value = 0
+
+    # Apply a simple input
+    dut.plaintext.value = 0b000010000100001  # Example plaintext
+    dut.key.value = 0b000010000100001000010000100001000010000100001  # Example key
+
+    # Assert start signal and measure latency
+    await FallingEdge(dut.clk)
+    dut.start.value = 1
+    await RisingEdge(dut.clk)
+    dut.start.value = 0
+
+    latency = 0
+    while dut.done.value != 1:
+        await RisingEdge(dut.clk)
+        latency += 1
+
+    # Log the latency
+    dut._log.info(f"Clock Latency: {latency} clock cycles")
+    assert latency == 3, "Clock latency should be equal to 3."
+
+

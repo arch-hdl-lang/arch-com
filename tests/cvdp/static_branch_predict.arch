@@ -1,0 +1,66 @@
+module static_branch_predict
+  port fetch_rdata_i:          in UInt<32>;
+  port fetch_pc_i:             in UInt<32>;
+  port fetch_valid_i:          in Bool;
+  port register_addr_i:        in UInt<32>;
+  port predict_branch_taken_o: out Bool;
+  port predict_branch_pc_o:    out UInt<32>;
+
+  // Opcodes
+  let OPCODE_BRANCH: UInt<7> = 7'h63;
+  let OPCODE_JAL:    UInt<7> = 7'h6F;
+  let OPCODE_JALR:   UInt<7> = 7'h67;
+
+  // Alias
+  let instr: UInt<32> = fetch_rdata_i;
+  let opcode: UInt<7> = instr[6:0];
+
+  // Instruction type detection
+  let instr_j:    Bool = (opcode == OPCODE_JAL);
+  let instr_b:    Bool = (opcode == OPCODE_BRANCH);
+  let instr_jalr: Bool = (opcode == OPCODE_JALR);
+
+  // Immediate extraction - JAL (J-type)
+  let imm_j_type: UInt<32> = {{12{instr[31]}}, instr[19:12], instr[20], instr[30:21], 1'b0};
+
+  // Immediate extraction - Branch (B-type)
+  let imm_b_type: UInt<32> = {{20{instr[31]}}, instr[7], instr[30:25], instr[11:8], 1'b0};
+
+  // Immediate extraction - JALR (I-type)
+  let imm_i_type: UInt<32> = {{20{instr[31]}}, instr[31:20]};
+
+  // Branch taken if offset is negative (sign bit = 1)
+  let instr_b_taken: Bool = instr[31];
+
+  // Select branch immediate
+  wire branch_imm: UInt<32>;
+
+  comb
+    if instr_j
+      branch_imm = imm_j_type;
+    elsif instr_jalr
+      branch_imm = imm_i_type;
+    elsif instr_b
+      branch_imm = imm_b_type;
+    else
+      branch_imm = 32'h0;
+    end if
+  end comb
+
+  // Output logic
+  comb
+    if fetch_valid_i
+      if instr_j | instr_jalr
+        predict_branch_taken_o = true;
+      elsif instr_b & instr_b_taken
+        predict_branch_taken_o = true;
+      else
+        predict_branch_taken_o = false;
+      end if
+      predict_branch_pc_o = (fetch_pc_i + branch_imm).trunc<32>();
+    else
+      predict_branch_taken_o = false;
+      predict_branch_pc_o = fetch_pc_i;
+    end if
+  end comb
+end module static_branch_predict

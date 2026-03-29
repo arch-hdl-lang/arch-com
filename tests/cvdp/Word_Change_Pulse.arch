@@ -1,0 +1,55 @@
+module Word_Change_Pulse
+  param DATA_WIDTH: const = 8;
+  port clk:                 in Clock<SysDomain>;
+  port reset:               in Reset<Async>;
+  port data_in:             in UInt<DATA_WIDTH>;
+  port mask:                in UInt<DATA_WIDTH>;
+  port match_pattern:       in UInt<DATA_WIDTH>;
+  port enable:              in Bool;
+  port latch_pattern:       in Bool;
+  port reg word_change_pulse:   out Bool reset reset=>false;
+  port reg pattern_match_pulse: out Bool reset reset=>false;
+  port reg latched_pattern:     out UInt<DATA_WIDTH> reset reset=>0;
+
+  wire change_pulses: UInt<DATA_WIDTH>;
+
+  reg masked_data_in_r:       UInt<DATA_WIDTH> reset reset=>0;
+  reg masked_change_pulses_r: UInt<DATA_WIDTH> reset reset=>0;
+  reg match_detected_r:       Bool reset reset=>false;
+
+  default seq on clk rising;
+
+  generate for i in 0..DATA_WIDTH-1
+    inst det_i: Bit_Change_Detector
+      connect clk          <- clk;
+      connect reset        <- reset;
+      connect bit_in       <- data_in[i:i];
+      connect change_pulse -> change_pulses[i:i];
+    end inst det_i
+  end generate for i
+
+  seq
+    if enable
+      if latch_pattern
+        latched_pattern <= match_pattern;
+      end if
+      masked_data_in_r <= data_in & mask;
+      masked_change_pulses_r <= change_pulses & mask;
+      if masked_change_pulses_r != 0
+        word_change_pulse <= true;
+      else
+        word_change_pulse <= false;
+      end if
+      if (masked_data_in_r) == (latched_pattern & mask)
+        match_detected_r <= true;
+        pattern_match_pulse <= true;
+      else
+        match_detected_r <= false;
+        pattern_match_pulse <= false;
+      end if
+    else
+      word_change_pulse <= false;
+      pattern_match_pulse <= false;
+    end if
+  end seq
+end module Word_Change_Pulse

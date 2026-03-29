@@ -1,0 +1,24 @@
+module glitch_free_mux
+  pragma cdc_safe;
+
+  port clk1:   in Clock<Clk1Domain>;
+  port clk2:   in Clock<Clk2Domain>;
+  port rst_n:  in Reset<Async, Low>;
+  port sel:    in Bool;
+  port clkout: out Bool;
+
+  reg en1: Bool reset rst_n=>false;
+  reg en2: Bool reset rst_n=>false;
+
+  seq on clk1 rising
+    en1 <= ~sel & ~en2;
+  end seq
+
+  seq on clk2 rising
+    en2 <= sel & ~en1;
+  end seq
+
+  comb
+    clkout = (clk1 & en1) | (clk2 & en2);
+  end comb
+end module glitch_free_mux

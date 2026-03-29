@@ -1,0 +1,54 @@
+module virtual2physical_tlb
+  param ADDR_WIDTH: const = 8;
+  param PAGE_WIDTH: const = 8;
+  param TLB_SIZE: const = 4;
+  param PAGE_TABLE_SIZE: const = 16;
+  port clk: in Clock<SysDomain>;
+  port reset: in Reset<Sync>;
+  port virtual_address: in UInt<ADDR_WIDTH>;
+  port physical_address: out UInt<PAGE_WIDTH>;
+  port hit: out Bool;
+  port miss: out Bool;
+
+  wire tlb_write_enable: Bool;
+  wire flsh: Bool;
+  wire ready: Bool;
+  wire page_table_entry: UInt<PAGE_WIDTH>;
+
+  inst tlb_inst: TLB
+    param TLB_SIZE = TLB_SIZE;
+    param ADDR_WIDTH = ADDR_WIDTH;
+    param PAGE_WIDTH = PAGE_WIDTH;
+    connect clk <- clk;
+    connect rst <- reset;
+    connect virtual_address <- virtual_address;
+    connect tlb_write_enable <- tlb_write_enable;
+    connect flsh <- flsh;
+    connect page_table_entry <- page_table_entry;
+    connect physical_address -> physical_address;
+    connect hit -> hit;
+    connect miss -> miss;
+  end inst tlb_inst
+
+  inst pth_inst: PageTableHandler
+    param ADDR_WIDTH = ADDR_WIDTH;
+    param PAGE_WIDTH = PAGE_WIDTH;
+    param PAGE_TABLE_SIZE = PAGE_TABLE_SIZE;
+    connect clk <- clk;
+    connect rst <- reset;
+    connect miss <- miss;
+    connect virtual_page <- virtual_address;
+    connect page_table_entry -> page_table_entry;
+    connect ready -> ready;
+  end inst pth_inst
+
+  inst cu_inst: ControlUnit
+    connect clk <- clk;
+    connect rst <- reset;
+    connect hit <- hit;
+    connect miss <- miss;
+    connect ready <- ready;
+    connect tlb_write_enable -> tlb_write_enable;
+    connect flsh -> flsh;
+  end inst cu_inst
+end module virtual2physical_tlb

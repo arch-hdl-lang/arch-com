@@ -10,13 +10,13 @@ module TopModule
 
   default seq on clk rising;
 
-  reg ss_lo: UInt<4> reset reset=0;
-  reg ss_hi: UInt<4> reset reset=0;
-  reg mm_lo: UInt<4> reset reset=0;
-  reg mm_hi: UInt<4> reset reset=0;
-  reg hh_lo: UInt<4> reset reset=2;
-  reg hh_hi: UInt<4> reset reset=1;
-  reg pm_reg: Bool reset reset=0;
+  reg ss_lo: UInt<4> reset reset=>0;
+  reg ss_hi: UInt<4> reset reset=>0;
+  reg mm_lo: UInt<4> reset reset=>0;
+  reg mm_hi: UInt<4> reset reset=>0;
+  reg hh_lo: UInt<4> reset reset=>2;
+  reg hh_hi: UInt<4> reset reset=>1;
+  reg pm_reg: Bool reset reset=>0;
 
   comb
     ss = {ss_hi, ss_lo};

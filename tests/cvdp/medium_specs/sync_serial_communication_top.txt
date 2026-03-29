@@ -1,0 +1,188 @@
+MODULE: sync_serial_communication_top
+ID: cvdp_copilot_sync_serial_communication_0001
+
+=== SPEC ===
+Create an RTL design with SystemVerilog, consisting of modules `sync_serial_communication_top`, `tx_block` and `rx_block` for transmitting and receiving data between transmitter and receiver blocks. The module must operate according to the following specifications.
+
+The design `sync_serial_communication_top` consists of 2 modules:
+- `tx_block` which is responsible for transmitting the data based on the `sel` input
+- `rx_block` which will reconstruct the `data_out` based on the `sel` input
+
+##  RTL Module Requirements:
+### 1.Transmitter block(`tx_block`):
+  Convert parallel data into a serial format based on the `sel` input.
+### Inputs:
+- `clk(1-bit)`: Clock signal that runs at a 50:50 duty cycle. 
+- `reset_n(1-bit)`: Active LOW asynchronous reset. When LOW, `serial_out`, `done` and `serial_clk` will maintain zero
+- `data_in ([63:0])`: Input data for the transmitter (TX).
+- `sel ([2:0])`: Controls the data width for the transmitter (TX):
+    - `3'h0`: 0 bits. No transmission happens
+    - `3'h1`: 8 bits. `data_in [7:0]` is the valid data to be transmitted.
+    - `3'h2`: 16 bits. `data_in [15:0]` is the valid data to be transmitted.
+    - `3'h3`: 32 bits. `data_in [31:0]` is the valid data to be transmitted.
+    - `3'h4`: 64 bits. `data_in [63:0]` is the valid data to be transmitted.
+    - Default: 0 bits
+### Outputs:
+- `serial_out(1-bit)`: Output data.
+- `done (1-bit)`: A HIGH on this signal indicates the availability of a stable result; wait for the `done` signal HIGH from the rx_block. The default value is 1'b0
+- `serial_clk`: It is gated when no data is transmitted
+### Behaviour:
+- The transmitter(TX) and receiver (RX) operate synchronously, driven by the same clock signal (`clk`) and reset (`reset_n`).
+- Upon reset (`reset_n`), all internal counters and registers are reset to their initial values.
+- The transmitter (TX) is responsible for serializing 8, 16, 32, or 64-bit data input based on the `sel` signal and produces serial data. 
+- During data transfer, a gated clock signal `serial_clk` which operates at the frequency of `clk` has to be transmitted to the receiver (RX) alongside the serial data. When no data is transmitted, it remains at a fixed logic state of either HIGH or LOW
+- The transmitter (TX) generates the serial clock signal `serial_clk` that is used by both the transmitter (TX) and receiver (RX) for synchronized communication to transmit and receive one bit each during the positive edge of the clock
+
+### 2.Receiver block(`rx_block):
+Capture incoming serial data and reconstruct it into the specified parallel data based on the `sel` input.
+### Inputs:
+- `clk(1-bit)`: Clock signal that runs at a 50:50 duty cycle. 
+- `reset_n(1-bit)`: Active LOW asynchronous reset. When LOW, the outputs `data_out` and `done` will maintain zero
+- `data_in (1-bit)`: Serial input data.
+- `sel ([2:0])`: Controls the data width for the Receiver(RX):
+    - `3'h0`: 0 bits. No data reception.
+    - `3'h1`: 8 bits
+    - `3'h2`: 16 bits
+    - `3'h3`: 32 bits
+    - `3'h4`: 64 bits
+    - Default: 0 bits
+- `serial_clk(1-bit)`: Clk captures serial data.
+### Outputs:
+- `data_out([63:0])`: Output data from the receiver (RX).
+- `done (1-bit)`: A HIGH in this signal for one clock cycle represents the availability of the stable result of the receiver (RX), default value is 1'b0.
+### Behaviour:
+- Data sampling in the receiver (RX) is valid whenever `serial_clk` is active.
+- The `sel` in the RX module receives the same value of `sel` maintained by the TX module
+- The receiver (RX) receives the serial data from the transmitter (TX) and reconstructs it into a 64-bit parallel output (`data_out`). The `data_out` will have the following data based on the `sel` value
+  - If `sel` is 000, `data_out` = 64'h0
+  - If `sel` is 001, `data_out` = {56'h0,data_in[7:0]}
+  - If `sel` is 010, `data_out` = {48'h0,data_in[15:0]}
+  - If `sel` is 011, `data_out` = {32'h0,data_in[31:0]}
+  - If `sel` is 100, `data_out` = data_in[63:0]
+  - default: 64'h0
+- The `done` signal  High indicates the valid output.
+### 3. Sync_serial_communication_top:
+The top-level module integrates the `tx_block` and `rx_block` modules. 
+### Inputs:
+- `clk(1-bit)`: Clock signal that runs at a 50:50 duty cycle. 
+- `reset_n(1-bit)`: Active LOW asynchronous reset.
+- `data_in ([63:0])`: Input data to the transmitter (TX).
+- `sel ([2:0])`: Controls the data width for the transmitter (TX):
+    - `3'h0`: 0 bits
+    - `3'h1`: 8 bits
+    - `3'h2`: 16 bits
+    - `3'h3`: 32 bits
+    - `3'h4`: 64 bits
+    - Default: 0 bits
+### Outputs:
+- `data_out([63:0])`: Output data from the receiver (RX).
+- `done (1-bit)`: A HIGH in this signal for one clock cycle represents the availability of the stable result of the receiver (RX), default value is 1'b0.
+#### Behaviour:
+-#### Transmission: The TX block accepts a 64-bit parallel `data_in`, serializes it, and transmits it via the `serial_out` . It also provides a `serial_clk` for synchronizing the RX block.
+-#### Reception: The `RX block` receives serialized data through `serial_out` and uses `serial_clk` to clock the data. Once reception completes, it outputs a 64-bit data_out and asserts the `done` signal.
+
+#### . Edge cases:
+- The module should ensure that no data is transmitted or received if `sel` is set to any value other than the valid cases (000, 001, 010, 011, 100).
+- The `done` signal is set to LOW during transmission or reception and only goes to HIGH when the operation completes.
+- Changes in the `sel` value during data transfer from transmitter(TX) to receiver (RX) will not be acknowledged and it need not be considered as a valid case.
+- After each transaction, `reset_n` has to be set to active LOW to reset the required internal signals and achieve the correct `data_out` as a new `data_in` is driven
+
+#### Example
+
+````wavedrom
+
+{"signal": [
+  {"name": "clk", "wave": "P............................................."},
+  {"name": "reset_n", "wave": "..nh.............l.nh.....................l.nh."},
+  { "name": "sel[2:0]",  "wave": "x..=...............=.=......................x.", "data": ["001","000","010"] },
+  { "name": "data_in[63:0]",  "wave": "x..=...............==.......................x.", "data": ["0000000000000074","16'h0","0000000000000081"] },
+  { "name": "data_out[63:0]",  "wave": "x..=............==.......................==...x", "data": ["0000000000000000","74","00000000000000000","81","00000000000000000"] },
+  { "name": "serial_clk",  "wave": "L......P.......l........P...............l....."},
+    {"name": "done", "wave": "0...............Hl.......................Hl...."}
+],
+  "head": {
+    "text": "Module:: SYNC_SERIAL_COMMUNICATION, data_in and data_out represented in hex format"
+  }
+}
+
+``````
+
+=== src/.env ===
+SIM             = icarus
+WAVE            = True
+TOPLEVEL_LANG   = verilog
+VERILOG_SOURCES = /code/rtl/sync_serial_communication_top.sv
+TOPLEVEL        = sync_serial_communication_tx_rx
+MODULE          = test_sync_serial_communication
+PYTHONPATH      = /src
+HASH            = 263b2ff470b4b743412034826a0c6bb9e6056510
+
+=== src/test_sync_serial_communication.py ===
+import cocotb
+from cocotb.clock import Clock
+from cocotb.triggers import RisingEdge,FallingEdge,Timer
+import harness_library as hrs_lb
+import random
+
+
+sel_value = [1,2,3,4]
+
+
+# Main test for sync_communication top module
+@cocotb.test()
+async def test_sync_communication(dut):
+    #data_wd = int(dut.DATA_WIDTH.value)                                    # Get the data width from the DUT (Device Under Test)
+    # Start the clock with a 10ns time period
+
+    sel = random.choice(sel_value)
+
+    if sel == 1:
+        range_value = 8
+        data_in = random.randint(0, 127)
+    elif sel == 2:
+        range_value = 16
+        data_in = random.randint(0,4196)
+    elif sel == 3:
+        range_value = 32
+        data_in = random.randint(0,18192)
+    elif sel == 4:
+        range_value = 64
+        data_in = random.randint(0,154097)
+
+    cocotb.start_soon(Clock(dut.clk, 10, units='ns').start())
+
+    # Initialize the DUT signals with default 0
+    await hrs_lb.dut_init(dut)
+
+    # Reset the DUT rst_n signal
+    await hrs_lb.reset_dut(dut.reset_n, duration_ns=25, active=False)
+
+    # Ensure all control signals are low initially before starting the test
+    dut.sel.value = 0
+    dut.data_in.value = 0
+
+    # Main test loop to validate both PISO and SIPO functionality
+    for _ in range(sel):
+        await drive_byte(dut,sel,range_value,data_in)
+        await hrs_lb.reset_dut(dut.reset_n, duration_ns=25, active=False)
+
+        
+async def drive_byte(dut,sel,range_value,data_in):
+    """Drive a byte of data to the DUT"""
+    await RisingEdge(dut.clk)
+    dut.data_in.value = data_in  # Assign a random byte (0-127)
+    dut._log.info(f" data_in = {int(dut.data_in.value)}, sel = {dut.sel.value}")
+    for i in range(range_value):
+        dut.sel.value  = sel
+        #dut._log.info(f" data_in = {int(dut.data_in.value)}, sel = {dut.sel.value}")
+        await RisingEdge(dut.clk)
+    await RisingEdge(dut.done)
+    await RisingEdge(dut.clk)
+    dut._log.info(f" data_in = {int(dut.data_in.value)}, sel = {dut.sel.value}, data_out = {int(dut.data_out.value)}, done = {dut.done.value}")
+
+    expected_data_out = dut.data_in.value
+    dut._log.info(f" data_in = {int(dut.data_in.value)}, expected_data_out = {int(expected_data_out)}, data_out = {int(dut.data_out.value)}")
+
+    assert int(dut.data_out.value) == expected_data_out, f"Test failed: Expected {expected_data_out}, got {int(dut.data_out.value)}"
+
+

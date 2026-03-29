@@ -1,0 +1,35 @@
+module mux_synch
+  port data_in:  in UInt<8>;
+  port req:      in Bit;
+  port dst_clk:  in Clock<SysDomain>;
+  port src_clk:  in Clock<SrcDomain>;
+  port nrst:     in Reset<Async, Low>;
+  port reg data_out: out UInt<8> reset nrst=>0;
+
+  // Synchronize req to dst_clk domain using 2-flop synchronizer
+  wire req_syncd: Bit;
+
+  inst sync_req: nff
+    connect d_in    <- req;
+    connect dst_clk <- dst_clk;
+    connect rst     <- nrst;
+    connect syncd   -> req_syncd;
+  end inst sync_req
+
+  // Mux: select data_in when req_syncd is high, else feed back data_out
+  wire mux_out: UInt<8>;
+
+  default seq on dst_clk rising;
+
+  comb
+    if req_syncd
+      mux_out = data_in;
+    else
+      mux_out = data_out;
+    end if
+  end comb
+
+  seq
+    data_out <= mux_out;
+  end seq
+end module mux_synch

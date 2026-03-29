@@ -1,0 +1,48 @@
+module unpack_one_hot
+  port sign:             in Bool;
+  port size:             in Bool;
+  port one_hot_selector: in UInt<3>;
+  port source_reg:       in UInt<256>;
+  port destination_reg:  out UInt<512>;
+
+  comb
+    destination_reg = 0;
+    if one_hot_selector == 1
+      for i in 0..255
+        if sign & source_reg[i]
+          destination_reg[i * 8 + 7 : i * 8] = 0xFF.trunc<8>();
+        else
+          destination_reg[i * 8 + 7 : i * 8] = source_reg[i].zext<8>();
+        end if
+      end for
+    elsif one_hot_selector == 2
+      for i in 0..127
+        if sign & source_reg[i * 2 + 1]
+          destination_reg[i * 8 + 7 : i * 8] = {source_reg[i * 2 + 1], source_reg[i * 2 + 1], source_reg[i * 2 + 1], source_reg[i * 2 + 1], source_reg[i * 2 + 1], source_reg[i * 2 + 1], source_reg[i * 2 + 1 : i * 2]};
+        else
+          destination_reg[i * 8 + 7 : i * 8] = source_reg[i * 2 + 1 : i * 2].zext<8>();
+        end if
+      end for
+    elsif one_hot_selector == 4
+      if size
+        for i in 0..31
+          if sign & source_reg[i * 8 + 7]
+            destination_reg[i * 16 + 15 : i * 16] = {source_reg[i * 8 + 7], source_reg[i * 8 + 7], source_reg[i * 8 + 7], source_reg[i * 8 + 7], source_reg[i * 8 + 7], source_reg[i * 8 + 7], source_reg[i * 8 + 7], source_reg[i * 8 + 7], source_reg[i * 8 + 7 : i * 8]};
+          else
+            destination_reg[i * 16 + 15 : i * 16] = source_reg[i * 8 + 7 : i * 8].zext<16>();
+          end if
+        end for
+      else
+        for i in 0..63
+          if sign & source_reg[i * 4 + 3]
+            destination_reg[i * 8 + 7 : i * 8] = {source_reg[i * 4 + 3], source_reg[i * 4 + 3], source_reg[i * 4 + 3], source_reg[i * 4 + 3], source_reg[i * 4 + 3 : i * 4]};
+          else
+            destination_reg[i * 8 + 7 : i * 8] = source_reg[i * 4 + 3 : i * 4].zext<8>();
+          end if
+        end for
+      end if
+    else
+      destination_reg = source_reg.zext<512>();
+    end if
+  end comb
+end module unpack_one_hot

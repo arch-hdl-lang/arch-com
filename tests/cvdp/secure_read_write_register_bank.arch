@@ -1,0 +1,84 @@
+module secure_read_write_register_bank
+  param P_ADDRESS_WIDTH: const = 8;
+  param P_DATA_WIDTH: const = 8;
+  param P_UNLOCK_CODE_0: const = 171;
+  param P_UNLOCK_CODE_1: const = 205;
+
+  port i_capture_pulse: in Clock<SysDomain>;
+  port i_rst_n: in Reset<Async, Low>;
+  port i_addr: in UInt<P_ADDRESS_WIDTH>;
+  port i_data_in: in UInt<P_DATA_WIDTH>;
+  port i_read_write_enable: in Bit;
+  port reg o_data_out: out UInt<P_DATA_WIDTH> reset i_rst_n=>0;
+
+  default seq on i_capture_pulse rising;
+
+  reg lock_state: UInt<2> reset i_rst_n=>0;
+  reg mem: Vec<UInt<P_DATA_WIDTH>, 256> reset i_rst_n=>0;
+
+  let LOCKED: UInt<2> = 0;
+  let GOT_CODE0: UInt<2> = 1;
+  let UNLOCKED: UInt<2> = 2;
+
+  let is_write: Bool = i_read_write_enable == 0;
+  let is_read: Bool = i_read_write_enable == 1;
+
+  seq
+    if is_write
+      if i_addr == 0
+        if i_data_in == P_UNLOCK_CODE_0.trunc<P_DATA_WIDTH>()
+          lock_state <= GOT_CODE0;
+        else
+          lock_state <= LOCKED;
+        end if
+      elsif i_addr == 1
+        if lock_state == GOT_CODE0
+          if i_data_in == P_UNLOCK_CODE_1.trunc<P_DATA_WIDTH>()
+            lock_state <= UNLOCKED;
+          else
+            lock_state <= LOCKED;
+          end if
+        else
+          if i_data_in != P_UNLOCK_CODE_1.trunc<P_DATA_WIDTH>()
+            lock_state <= LOCKED;
+          else
+            lock_state <= LOCKED;
+          end if
+        end if
+      else
+        if lock_state == GOT_CODE0
+          lock_state <= LOCKED;
+        end if
+      end if
+    else
+      if lock_state == GOT_CODE0
+        lock_state <= LOCKED;
+      end if
+    end if
+  end seq
+
+  seq
+    if is_write
+      if i_addr == 0
+        mem[0] <= i_data_in;
+      elsif i_addr == 1
+        mem[1] <= i_data_in;
+      elsif lock_state == UNLOCKED
+        mem[i_addr] <= i_data_in;
+      end if
+      o_data_out <= 0;
+    else
+      if lock_state == UNLOCKED
+        if i_addr == 0
+          o_data_out <= 0;
+        elsif i_addr == 1
+          o_data_out <= 0;
+        else
+          o_data_out <= mem[i_addr];
+        end if
+      else
+        o_data_out <= 0;
+      end if
+    end if
+  end seq
+end module secure_read_write_register_bank

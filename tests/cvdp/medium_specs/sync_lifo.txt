@@ -1,0 +1,162 @@
+MODULE: sync_lifo
+ID: cvdp_copilot_sync_lifo_0001
+
+=== SPEC ===
+Design a System Verilog module that implements a **synchronous LIFO (Last-In, First-Out)** memory with configurable data width and depth. The design allows data to be written to and read from the LIFO structure based on specific control signals. 
+
+### Interface of the Module `sync_lifo`
+2. **Parameter Definitions**:
+   - `DATA_WIDTH` (default = 8): Specifies the bit-width of the data to be stored in the LIFO.
+   - `ADDR_WIDTH` (default = 3): Specifies the number of address bits, determining the depth of the LIFO. The depth is ( 2^{ADDR_WIDTH} ). 
+   
+3. **Input Ports**:
+   - `clock` (1 bit): Clock signal. All operations are synchronized with the rising edge of the clock.
+   - `reset` (1 bit): Synchronous reset, active high.
+   - `write_en` (1 bit): Write enable signal. When asserted high, new data is written into the LIFO if it is not full.
+   - `read_en` (1 bit): Read enable signal. When asserted high, data is read from the LIFO if it is not empty.
+   - `data_in` (DATA_WIDTH bits): The data input that will be written to the LIFO when `write_en` is active.
+
+4. **Output Ports**:
+   - `empty` (1 bit): High when the LIFO is empty, indicating no data is available to be read.
+   - `full` (1 bit): High when the LIFO is full, indicating no more data can be written.
+   - `data_out` (DATA_WIDTH bits): The output data that is read from the LIFO when `read_en` is active.
+
+### Specifications:
+
+1. **Write Operation**: 
+	- On the rising edge of the clock, if `write_en` is high and the LIFO is not full, the `data_in` is written to the memory array. 
+	
+2. **Read Operation**: 
+	- On the rising edge of the clock, if `read_en` is high and the LIFO is not empty, the data from the top of the LIFO (the last written value) should be read and output through `data_out`. 
+	
+3. **Reset Behavior**:
+   	-  When reset is asserted (active high), the output clears to zero. The memory should also be cleared at reset and after reset is de-asserted, the LIFO write operation should start fresh.
+
+ 4. **Edge Cases**:
+   	-  Overflow: If write_en is asserted while the LIFO is full, no new data will be written, and the contents and pointer remain unchanged.
+   	-  Underflow: If read_en is asserted while the LIFO is empty, data_out will hold its previous value, and the LIFO pointer and memory remain unchanged.
+### Assumptions:
+-    Assume that the input data is bounded within DATA_WIDTH bits
+	
+
+=== src/.env ===
+SIM             = icarus
+WAVE            = True
+TOPLEVEL_LANG   = verilog
+VERILOG_SOURCES = /code/rtl/sync_lifo.sv
+TOPLEVEL        = sync_lifo
+MODULE          = test_sync_lifo
+PYTHONPATH      = /src
+HASH            = d95483560b7048f2168dd12aa85e2766718dd3c1
+
+=== src/test_sync_lifo.py ===
+import cocotb
+from cocotb.clock import Clock
+from cocotb.triggers import RisingEdge, Timer
+import harness_library as hrs_lb
+import random
+
+
+@cocotb.test()
+async def lifo_test(dut):
+    """
+    Test the basic functionality of the LIFO with continuous write and read enable.
+    The first read has a two-clock cycle delay, and subsequent reads occur on each clock cycle.
+    Also, tests overflow and underflow scenarios.
+    """
+
+    # Extract the data width (assumed to be the LIFO depth) from the DUT
+    DATA_WIDTH = int(dut.DATA_WIDTH.value)
+
+    dut._log.info(f"ADDR_WIDTH = {int(dut.ADDR_WIDTH.value)}, DATA_WIDTH = {DATA_WIDTH}")
+
+    # Start the clock with a period of 10ns
+    cocotb.start_soon(Clock(dut.clock, 10, units='ns').start())
+
+    # Initialize the DUT signals (e.g., reset all values to default 0)
+    await hrs_lb.dut_init(dut)
+
+    # Apply reset to the DUT for 25ns, reset is active low
+    await hrs_lb.reset_dut(dut.reset, duration_ns=25, active=False)
+
+    # Create a reference Python stack to model LIFO behavior
+    reference_stack = []
+
+    # Writing data into the LIFO more than its capacity to test overflow behavior
+    await Timer(10, units='ns')  # Wait for the reset to settle
+    dut.write_en.value = 1  # Enable continuous write
+
+    # Loop to write data beyond LIFO depth to check overflow condition
+    for i in range(DATA_WIDTH + 2):  
+        # Generate random data to write into the LIFO
+        data = random.randint(0, 2**DATA_WIDTH-1)
+        await write_lifo(dut, data)  # Perform the write operation
+
+        # Push data into the reference stack if the LIFO is not full
+        if dut.full.value == 0:
+            reference_stack.append(data)
+        else:
+            # If LIFO is full, check if overflow is handled correctly
+            await Timer(10, units='ns')  # Short delay to allow full flag to settle
+            assert dut.full.value == 1, f"Failed: LIFO should be full on iteration {i}"
+
+        # Check if the LIFO becomes full after all writes are complete
+        if i >= DATA_WIDTH:
+            await Timer(10, units='ns')  # Extra delay to check overflow properly
+            assert dut.full.value == 1, f"Failed: Overflow not set when LIFO is full on iteration {i}"
+            dut._log.info(f"Overflow occurred on iteration {i} when attempting to write to a full LIFO.")
+
+    # Disable the write enable after completing the write sequence
+    dut.write_en.value = 0
+
+    # Read operations from the LIFO to test underflow behavior
+    await Timer(10, units='ns')  # Wait for a short period before starting reads
+    dut.read_en.value = 1  # Enable continuous read
+
+    # Loop to read data from LIFO, including underflow test
+    for i in range(DATA_WIDTH + 2):
+        data_out = await read_lifo(dut, first_read=(i == 0))  # Perform the read operation
+
+        # Pop data from the reference stack if the LIFO is not empty
+        if i <= DATA_WIDTH and dut.empty.value == 0:
+            await Timer(10, units='ns')  # Short delay to allow empty flag to settle
+            expected_data = reference_stack.pop()
+            assert int(data_out) == expected_data, f"Expected {expected_data}, got {int(data_out)}"
+        else:  # Check if underflow occurs when attempting to read from an empty LIFO
+            assert dut.empty.value == 1, f"LIFO should be empty after all reads on iteration {i}"
+
+        # Delay empty check to allow LIFO to update its internal state after reading
+        if i >= DATA_WIDTH:
+            await Timer(20, units='ns')  # Allow extra time for empty flag to assert
+            assert dut.empty.value == 1, f"Underflow not set when LIFO empty on iteration {i}"
+            dut._log.info(f"Underflow occurred on iteration {i} when attempting to read from an empty LIFO.")
+
+    # Disable the read enable after completing the read sequence
+    dut.read_en.value = 0
+
+
+async def write_lifo(dut, data):
+    """Perform a write operation into the LIFO."""
+    # Assign the input data to the LIFO's data_in port
+    dut.data_in.value = data
+    # Wait for one clock cycle to simulate the write operation
+    await RisingEdge(dut.clock)
+    # Log the data that was written to the LIFO
+    dut._log.info(f"Wrote {data} to LIFO")
+
+
+async def read_lifo(dut, first_read=False):
+    """Perform a read operation from the LIFO, with a two-clock cycle delay for the first read."""
+    if first_read:
+        # Introduce an additional delay before the first read
+        await Timer(10, units='ns')
+        dut._log.info("Two-clock cycle delay before first read")
+    
+    # Capture the output data from the LIFO at the clock edge
+    data_out = dut.data_out.value
+    
+    # Log the data that was read from the LIFO
+    dut._log.info(f"Read {int(data_out)} from LIFO")
+    return data_out
+
+

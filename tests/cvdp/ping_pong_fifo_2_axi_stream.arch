@@ -1,0 +1,65 @@
+module ping_pong_fifo_2_axi_stream
+  param DATA_WIDTH: const = 24;
+  param STROBE_WIDTH: const = 3;
+  param USE_KEEP: const = 0;
+  param USER_IN_DATA: const = 1;
+
+  port rst:                in Reset<Async, High>;
+  port i_block_fifo_rdy:   in Bool;
+  port reg o_block_fifo_act: out Bool init 0 reset rst=>0;
+  port i_block_fifo_size:  in UInt<24>;
+  port i_block_fifo_data:  in UInt<DATA_WIDTH + 1>;
+  port reg o_block_fifo_stb: out Bool init 0 reset rst=>0;
+  port i_axi_user:         in UInt<4>;
+  port i_axi_clk:          in Clock<SysDomain>;
+  port reg o_axi_user:     out UInt<4> init 0 reset rst=>0;
+  port i_axi_ready:        in Bool;
+  port reg o_axi_data:     out UInt<DATA_WIDTH> init 0 reset rst=>0;
+  port reg o_axi_last:     out Bool init 0 reset rst=>0;
+  port reg o_axi_valid:    out Bool init 0 reset rst=>0;
+
+  reg fifo_data_buffer: UInt<DATA_WIDTH> init 0 reset rst=>0;
+  reg fifo_valid_buffer: Bool init 0 reset rst=>0;
+  reg fifo_last_buffer: Bool init 0 reset rst=>0;
+  reg read_count: UInt<24> init 0 reset rst=>0;
+  reg block_size: UInt<24> init 0 reset rst=>0;
+  reg stb_prev: Bool init 0 reset rst=>0;
+  reg act_prev: Bool init 0 reset rst=>0;
+
+  seq on i_axi_clk rising
+    stb_prev <= o_block_fifo_stb;
+    act_prev <= o_block_fifo_act;
+
+    if ~o_block_fifo_act & i_block_fifo_rdy & ~act_prev
+      o_block_fifo_act <= true;
+      read_count <= 0;
+      block_size <= i_block_fifo_size;
+      o_block_fifo_stb <= true;
+    elsif o_block_fifo_act
+      if stb_prev
+        fifo_data_buffer <= i_block_fifo_data[DATA_WIDTH - 1 : 0];
+        fifo_valid_buffer <= true;
+        if (read_count + 1).trunc<24>() >= block_size
+          fifo_last_buffer <= true;
+          o_block_fifo_stb <= false;
+          o_block_fifo_act <= false;
+        else
+          fifo_last_buffer <= false;
+          read_count <= (read_count + 1).trunc<24>();
+        end if
+      end if
+    end if
+
+    if fifo_valid_buffer
+      if ~o_axi_valid | i_axi_ready
+        o_axi_data <= fifo_data_buffer;
+        o_axi_last <= fifo_last_buffer;
+        o_axi_valid <= true;
+        o_axi_user <= i_axi_user;
+        fifo_valid_buffer <= false;
+      end if
+    elsif o_axi_valid & i_axi_ready
+      o_axi_valid <= false;
+    end if
+  end seq
+end module ping_pong_fifo_2_axi_stream

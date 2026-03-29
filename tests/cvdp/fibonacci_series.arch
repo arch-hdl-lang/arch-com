@@ -1,12 +1,12 @@
 module fibonacci_series
   port clk:           in Clock<SysDomain>;
   port rst:           in Reset<Async, High>;
-  port reg fib_out:       out UInt<32> reset rst=0;
-  port reg overflow_flag: out Bool reset rst=0;
+  port reg fib_out:       out UInt<32> reset rst=>0;
+  port reg overflow_flag: out Bool reset rst=>0;
 
-  reg RegA: UInt<32> reset rst=0;
-  reg RegB: UInt<32> reset rst=1;
-  reg overflow_detected: Bool reset rst=0;
+  reg RegA: UInt<32> reset rst=>0;
+  reg RegB: UInt<32> reset rst=>1;
+  reg overflow_detected: Bool reset rst=>0;
 
   wire next_fib: UInt<33>;
   comb

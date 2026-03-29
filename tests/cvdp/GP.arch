@@ -1,0 +1,14 @@
+module GP
+  port i_A: in Bool;
+  port i_B: in Bool;
+  port i_Cin: in Bool;
+  port o_generate: out Bool;
+  port o_propagate: out Bool;
+  port o_Cout: out Bool;
+
+  comb
+    o_generate = i_A & i_B;
+    o_propagate = i_A | i_B;
+    o_Cout = (i_A & i_B) | ((i_A | i_B) & i_Cin);
+  end comb
+end module GP

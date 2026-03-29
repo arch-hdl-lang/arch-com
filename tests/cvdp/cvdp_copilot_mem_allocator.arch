@@ -1,0 +1,61 @@
+module cvdp_copilot_mem_allocator
+  param SIZE: const = 4;
+  param ADDRW: const = $clog2(SIZE);
+  port clk: in Clock<SysDomain>;
+  port reset: in Reset<Sync>;
+  port acquire_en: in Bool;
+  port acquire_addr: out UInt<ADDRW>;
+  port release_en: in Bool;
+  port release_addr: in UInt<ADDRW>;
+  port empty: out Bool;
+  port full: out Bool;
+
+  default seq on clk rising;
+
+  reg free_slots: UInt<SIZE>;
+  wire free_slots_n: UInt<SIZE>;
+  reg acquire_addr_r: UInt<ADDRW>;
+  reg empty_r: Bool;
+  reg full_r: Bool;
+
+  wire free_index: UInt<ADDRW>;
+  wire full_d: Bool;
+
+  inst free_slots_sel: cvdp_leading_zero_cnt
+    param DATA_WIDTH = SIZE;
+    param REVERSE = 1;
+    connect data <- free_slots_n;
+    connect leading_zeros -> free_index;
+    connect all_zeros -> full_d;
+  end inst free_slots_sel
+
+  // Combinational next-state for free_slots
+  comb
+    free_slots_n = free_slots;
+    if acquire_en
+      free_slots_n[acquire_addr_r] = false;
+    end if
+    if release_en
+      free_slots_n[release_addr] = true;
+    end if
+  end comb
+
+  // Sequential update: on reset, mark all slots free (all ones)
+  seq
+    if reset
+      free_slots <= ~(0.zext<SIZE>());
+      acquire_addr_r <= 0;
+      empty_r <= true;
+      full_r <= false;
+    else
+      free_slots <= free_slots_n;
+      acquire_addr_r <= free_index;
+      empty_r <= &free_slots_n;
+      full_r <= full_d;
+    end if
+  end seq
+
+  comb acquire_addr = acquire_addr_r;
+  comb empty = empty_r;
+  comb full = full_r;
+end module cvdp_copilot_mem_allocator

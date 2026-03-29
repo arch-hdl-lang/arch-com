@@ -1,0 +1,208 @@
+MODULE: secure_read_write_register_bank
+ID: cvdp_copilot_secure_read_write_register_bank_0001
+
+=== SPEC ===
+Design a parameterized register bank module with secure access control in Verilog. The module named `secure_read_write_register_bank` should allow read and write operations only after unlocking, which requires specific values written to the first two addresses in sequence. Once unlocked, the register bank operates as specified below.
+
+## Parameter
+1.  **p_address_width**: The address width parameter with default value of 8 bits. It will be used to create the addressable space of register bank module.
+2.  **p_data_width**: The data width parameter with default value of 8 bits.
+3. **p_unlock_code_0**: The unlock code to be written at address zero. The default value is 0xAB.
+4. **p_unlock_code_1**: The unlock code to be written at address one. The default value is 0xCD.
+
+
+## Inputs
+1. **i_addr**: `p_addr_width`-bit input. Specifies the target address for read or write operations.
+2. **i_data_in**: `p_data_width`-bit input. Data input to be written to the register bank during a write operation.
+3. **i_read_write_enable**: 1-bit input control signal. Determines the operation type:
+   - `0`: Write operation.
+   - `1`: Read operation.
+4. **i_capture_pulse**: 1-bit capture pulse signal. Triggers the read or write operation on positive edge of this signal. It will act as clock for register bank.
+5.  **i_rst_n**: 1-bit asynchronous active low reset, to reset the unlock state machine
+
+## Outputs
+1. **o_data_out**: `p_data_width`-bit output. Data output bus that reflects the value read from the register bank during a read operation.
+
+## Functional Requirements
+
+### 1. Write Operation
+   - If **i_read_write_enable** is `0`, the module interprets this as a write operation.
+   - On the **rising edge** of **i_capture_pulse**, the value of **i_data_in** is written to the register at the address specified by **i_addr**.
+   - **o_data_out** should output `0` during write operations as a default state.
+
+### 2. Read Operation
+   - If **i_read_write_enable** is `1`, the module interprets this as a read operation.
+   - On the **rising edge** of **i_capture_pulse**, **o_data_out** outputs the data stored at the address specified by **i_addr**.
+   - **o_data_out** only reflects the read data during read operations.
+
+## Security Access Requirements
+1. **Unlocking Mechanism**:
+   - **To unlock the register bank**, two sequential operations must be completed:
+     - First, the specific **parameterized unlock code** (matching **p_data_width**) must be written to address `0`.
+     - Then, a specific **parameterized trigger code** must be written to address `1`.
+   - If both conditions are met, the register bank unlocks, enabling access to read and write for all addresses.
+   - If, at any positive edge of i_capture_pulse, values are written to address 0 or 1 does not equal to given parameterized unlock code, the register bank will reset, resulting in lock of register bank. User needs to unlock the register bank once again.
+   - If the unlock sequence is incomplete, access to other addresses will remain restricted as follows:
+     - **Read Operation**: Outputs `0` on **o_data_out**.
+     - **Write Operation**: Prevents writing to any address except `0` and `1`.
+   - When i_rst_n goes low, then this unlocking mechanism resets and user needs to unlock the register bank once again.
+
+2. **Restricted Access Addresses**:
+   - Addresses `0` and `1` are write-only and cannot be read.
+   - Other addresses remain inaccessible for both read and write until the unlock sequence is completed.
+
+## Constraints and Edge Cases
+- Ensure that addresses `0` and `1` cannot be read.
+- Any read or write attempt on other addresses before unlocking should default **o_data_out** to `0` and prevent writing, respectively.
+- The writing of address `0` and address `1` should be concurrent, else register bank should be locked.
+
+## Verification and Test Cases
+1. **Write Operation Test**: Verify that data can be written only after the register bank is unlocked.
+2. **Read Operation Test**: Confirm that data is output only on successful read operations.
+3. **Unlock Sequence Test**: Test various sequences to confirm that only the correct sequence unlocks the register bank.
+6. **Access Restriction Test**: Ensure that all addresses except `0` and `1` remain inaccessible until unlocked.
+
+=== src/.env ===
+SIM             = icarus
+WAVE            = False
+TOPLEVEL_LANG   = verilog
+VERILOG_SOURCES = /code/rtl/secure_read_write_register_bank.v
+TOPLEVEL        = secure_read_write_register_bank 
+MODULE          = test_secure_read_write_register_bank
+PYTHONPATH      = /src
+HASH            = 1-design-a-parameterized-register-bank-module-with-secure-access
+
+=== src/test_secure_read_write_register_bank.py ===
+import cocotb
+from cocotb.clock import Clock
+from cocotb.triggers import RisingEdge, FallingEdge, Timer
+
+async def reset_dut(dut):
+    """Reset the DUT"""
+    dut.i_rst_n.value =0
+    dut.i_addr.value =0
+    dut.i_data_in.value =0
+    dut.i_read_write_enable.value =0
+    dut.i_capture_pulse.value =0
+
+    await FallingEdge(dut.i_capture_pulse)
+    dut.i_rst_n.value = 1
+    await RisingEdge(dut.i_capture_pulse)
+
+
+@cocotb.test()
+async def test_secure_read_write_register_bank(dut):  # dut will be the object for RTL top.
+   
+
+    cocotb.start_soon(Clock(dut.i_capture_pulse, 10, units='ns').start())  # timeperiod= 10ns
+    # Reset the DUT
+    await reset_dut(dut)
+
+    
+    await FallingEdge(dut.i_capture_pulse)  #stage one unlock
+    dut.i_addr.value =0
+    dut.i_data_in.value =171
+    dut.i_read_write_enable.value =0
+    await FallingEdge(dut.i_capture_pulse) #stage two unlock
+    dut.i_addr.value =1
+    dut.i_data_in.value =205
+    dut.i_read_write_enable.value =0
+    await FallingEdge(dut.i_capture_pulse) #unlocked, at address 2, data 2 witten
+    dut.i_addr.value =2
+    dut.i_data_in.value =2
+    dut.i_read_write_enable.value =0
+    await FallingEdge(dut.i_capture_pulse) # at address 3, data 3 witte
+    dut.i_addr.value =3
+    dut.i_data_in.value =3
+    dut.i_read_write_enable.value =0
+    await FallingEdge(dut.i_capture_pulse) #read at address 2
+    dut.i_addr.value =2
+    dut.i_data_in.value =0
+    dut.i_read_write_enable.value =1
+    await FallingEdge(dut.i_capture_pulse) #assertion at address 2, and read at address 3
+    assert dut.o_data_out.value==2, f"output should not be {dut.o_data_out.value}"
+    dut.i_addr.value =3
+    dut.i_data_in.value =0
+    dut.i_read_write_enable.value =1
+    await FallingEdge(dut.i_capture_pulse) #assertion at address 3, and locks the bank
+    assert dut.o_data_out.value==3, f"output should not be {dut.o_data_out.value}"
+    dut.i_addr.value =0
+    dut.i_data_in.value =170
+    dut.i_read_write_enable.value =0
+    await FallingEdge(dut.i_capture_pulse) #locked, reading at address 2. 
+    dut.i_addr.value =2
+    dut.i_data_in.value =0
+    dut.i_read_write_enable.value =1
+    await FallingEdge(dut.i_capture_pulse) #assertion at address 2 locked, and read at address 3
+    assert dut.o_data_out.value==0, f"output should not be {dut.o_data_out.value}"
+    dut.i_addr.value =3
+    dut.i_data_in.value =0
+    dut.i_read_write_enable.value =1
+    await FallingEdge(dut.i_capture_pulse) #assertion at address 3 locked, and step 1 of unlock
+    assert dut.o_data_out.value==0, f"output should not be {dut.o_data_out.value}"
+    dut.i_addr.value =0
+    dut.i_data_in.value =171
+    dut.i_read_write_enable.value =0
+    await FallingEdge(dut.i_capture_pulse) #read at address 2, locked
+    dut.i_addr.value =2
+    dut.i_data_in.value =0
+    dut.i_read_write_enable.value =1
+    await FallingEdge(dut.i_capture_pulse) #assertion at address 2 locked, and read at address 3
+    assert dut.o_data_out.value==0, f"output should not be {dut.o_data_out.value}"
+    dut.i_addr.value =3
+    dut.i_data_in.value =0
+    dut.i_read_write_enable.value =1
+    await FallingEdge(dut.i_capture_pulse) #assertion at address 3 locked, and step 2 of unlock
+    assert dut.o_data_out.value==0, f"output should not be {dut.o_data_out.value}"
+    dut.i_addr.value =1
+    dut.i_data_in.value =205
+    dut.i_read_write_enable.value =0
+    await FallingEdge(dut.i_capture_pulse) # read address 2, locked. unlock series broken.
+    dut.i_addr.value =2
+    dut.i_data_in.value =0
+    dut.i_read_write_enable.value =1
+    await FallingEdge(dut.i_capture_pulse) #assertion at address 2 locked, and read at address 3
+    assert dut.o_data_out.value==0, f"output should not be {dut.o_data_out.value}"
+    dut.i_addr.value =3
+    dut.i_data_in.value =0
+    dut.i_read_write_enable.value =1
+    await FallingEdge(dut.i_capture_pulse) #assertion at address 3 locked, and step 2 of unlock
+    assert dut.o_data_out.value==0, f"output should not be {dut.o_data_out.value}"
+    dut.i_addr.value =0
+    dut.i_data_in.value =171
+    dut.i_read_write_enable.value =0
+    await FallingEdge(dut.i_capture_pulse) #stage two unlock
+    dut.i_addr.value =1
+    dut.i_data_in.value =205
+    dut.i_read_write_enable.value =0
+    await FallingEdge(dut.i_capture_pulse) #unlocked, read at address 2.
+    dut.i_addr.value =2
+    dut.i_data_in.value =0
+    dut.i_read_write_enable.value =1
+    await FallingEdge(dut.i_capture_pulse) #assertion at address 2, and read at address 0
+    assert dut.o_data_out.value==2, f"output should not be {dut.o_data_out.value}"
+    dut.i_addr.value =0
+    dut.i_data_in.value =0
+    dut.i_read_write_enable.value =1
+    await FallingEdge(dut.i_capture_pulse) #assertion at address 0, and read at address 1
+    assert dut.o_data_out.value==0, f"output should not be {dut.o_data_out.value}"
+    dut.i_addr.value =1
+    dut.i_data_in.value =0
+    dut.i_read_write_enable.value =1
+    await FallingEdge(dut.i_capture_pulse) #assertion at address 1, and incorrect unlock 1
+    assert dut.o_data_out.value==0, f"output should not be {dut.o_data_out.value}"
+    dut.i_addr.value =0
+    dut.i_data_in.value =170
+    dut.i_read_write_enable.value =0
+    await FallingEdge(dut.i_capture_pulse) #in correct stage two unlock
+    dut.i_addr.value =1
+    dut.i_data_in.value =200
+    dut.i_read_write_enable.value =0
+    await FallingEdge(dut.i_capture_pulse) #locked, read at address 2.
+    dut.i_addr.value =2
+    dut.i_data_in.value =0
+    dut.i_read_write_enable.value =1
+    await FallingEdge(dut.i_capture_pulse) #assertion at address 2
+    assert dut.o_data_out.value==0, f"output should not be {dut.o_data_out.value}"
+    
+

@@ -13,8 +13,8 @@ fsm FsmCounter
   port done:   out Bool default false;
   port count:  out UInt<8> default 0;
 
-  reg cnt_r: UInt<8> init 0 reset rst=0;
-  reg tgt_r: UInt<8> init 0 reset rst=0;
+  reg cnt_r: UInt<8> init 0 reset rst=>0;
+  reg tgt_r: UInt<8> init 0 reset rst=>0;
 
   state Idle, Counting, Done;
   default state Idle;

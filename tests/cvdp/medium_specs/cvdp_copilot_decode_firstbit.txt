@@ -1,0 +1,251 @@
+MODULE: cvdp_copilot_decode_firstbit
+ID: cvdp_copilot_decode_firstbit_0001
+
+=== SPEC ===
+The first-bit decoder RTL module implements a decoder logic that returns the index of the lowest bit set in a vector. It decodes the first set bit in a parameterized input data vector (`In_Data`). It uses pipelined stages to distribute the processing load, with the number of pipeline registers determined by the parameter `PlRegs_g`. The goal is to locate the first set bit in the input data and propagate the result through the pipeline stages while maintaining output validity.
+
+---
+Design and implement an RTL design for this first-bit decoder module with the following design specifications :
+
+### **Design Specifications:**
+
+1. **Pipeline Architecture:**
+   - The input data vector (`In_Data`) is processed across multiple pipeline stages. Each stage is responsible for passing the intermediate result (i.e., the first set bit) through the pipeline until it reaches the output.
+   - The pipeline depth is controlled by `PlRegs_g`. As `PlRegs_g` increases, more stages are introduced, which increases the number of clock cycles (latency) required for the valid signal (`Out_Valid`) to propagate from input to output.
+
+2. **Parameterization and Scalability:**
+   - The design must efficiently scale with varying input widths (`InWidth_g`). The module supports input widths that are not powers of two, handling them without unnecessary resource utilization.
+   - To handle non-power-of-two input widths, the input vector is padded internally to the nearest power of two, ensuring accurate processing.
+   
+3. **Input and Output Specifications:**
+   - **Input Handling:** If `InReg_g` is enabled (`InReg_g = 1`), the input data (`In_Data`) and its validity signal (`In_Valid`) are registered on the rising clock edge. Otherwise, the input is passed directly to the logic.
+   - **Output Behavior:** If `OutReg_g` is enabled (`OutReg_g = 1`), the outputs (`Out_FirstBit`, `Out_Found`, and `Out_Valid`) are registered before being sent out. These outputs indicate the position of the first set bit, the presence of any set bit, and the validity of the output, respectively.
+
+4. **Latency and Pipeline Depth:**
+   - The parameter `PlRegs_g` determines the pipeline depth, introducing additional clock cycles to propagate valid signals. The design should ensure that as `PlRegs_g` increases, the number of clock cycles required to produce valid output also increases.
+   The module's total latency is affected by the depth of the pipeline. For example, when `PlRegs_g = 0`, the detection happens in one cycle, whereas `PlRegs_g = 1` splits the detection across two stages, requiring two cycles.
+
+5. **Edge Case Handling:**
+   - If `In_Data` contains no set bits (i.e., all zeros), the output `Out_Found` should be `0`, and `Out_FirstBit` should be reset to `0`.
+   - For inputs containing a single set bit, the module should correctly detect and output the position of that bit.
+
+---
+
+### **Parameters:**
+
+| Name      | Default | Description                                                  |
+|-----------|---------|--------------------------------------------------------------|
+| InWidth_g | 32      | Width of the input data vector                                |
+| InReg_g   | 1       | Enables input register for latching data                      |
+| OutReg_g  | 1       | Enables output register for latching results                  |
+| PlRegs_g  | 1       | Number of pipeline registers for first-bit decoding logic. The value of `PlRegs_g` controls the number of stages |
+
+### **Interfaces:**
+
+#### Control Signals:
+
+| Name | In/Out | Length | Description                                   |
+| :--- | :----- | :----- | :-------------------------------------------- |
+| Clk  | in     | 1      | Clock signal (rising edge)                    |
+| Rst  | in     | 1      | Reset signal (high-active, asynchronous)       |
+
+#### Input Data:
+
+| Name     | In/Out | Length       | Description                                  |
+| :------- | :----- | :----------- | :------------------------------------------- |
+| In_Data  | in     | `InWidth_g`  | Input data vector                            |
+| In_Valid | in     | 1            | Valid indication for `In_Data`               |
+
+#### Output Data:
+
+| Name         | In/Out | Length                  | Description                                                  |
+| :----------- | :----- | :---------------------- | :----------------------------------------------------------- |
+| Out_FirstBit | out    | $clog2(`InWidth_g`)      | Index of the lowest set bit in `In_Data`                      |
+| Out_Found    | out    | 1                       | Set to '1' if any bit in `In_Data` was set                    |
+| Out_Valid    | out    | 1                       | Indicates valid data on `Out_FirstBit` and `Out_Found`        |
+
+---
+
+### **Behavioral Definition:**
+
+- **Reset Behavior:** The reset signal (`Rst`) is asynchronous and active-high. On reset, the internal pipeline registers and output signals are set to zero.
+- **Clocking:** The module operates on the rising edge of the clock (`Clk`), and all sequential elements must be synchronized with this clock.
+
+---
+
+### **Example:**
+
+1. **Input Data:** `In_Data = 32'h0000_0080`, `In_Valid = 1'b1`
+   - Expected Output: `Out_FirstBit = 7`, `Out_Found = 1`, `Out_Valid = 1`
+
+2. **Reset:** Upon asserting the reset (`Rst = 1`), the outputs should reset to `Out_FirstBit = 0`, `Out_Found = 0`, and `Out_Valid = 0`.
+
+---
+
+### **Constraints:**
+
+The parameter `PlRegs_g` should remain within a reasonable range based on the input width (`InWidth_g`) to ensure efficient performance and avoid excessive pipeline depth. A suitable range for `PlRegs_g` is:
+
+```
+0 <= PlRegs_g <= (BinBits_c / 2) - 1
+```
+
+where `BinBits_c = $clog2(InWidth_g)` represents the number of bits required to encode the index of the first set bit.
+
+For example:
+- If `InWidth_g = 32`, then `BinBits_c = 5`, and the valid range for `PlRegs_g` is 0 to 1.
+- This ensures that the number of pipeline stages is balanced, avoiding unnecessary delays while distributing the decoding logic efficiently across multiple cycles.
+
+---
+
+=== src/.env ===
+SIM             = icarus
+TOPLEVEL_LANG   = verilog
+VERILOG_SOURCES = /code/rtl/cvdp_copilot_decode_firstbit.sv 
+TOPLEVEL        = cvdp_copilot_decode_firstbit
+MODULE          = test_decode_firstbit
+PYTHONPATH      = /src
+HASH            = 1-first-bit-decoder-logic-rtl-code
+
+=== src/test_decode_firstbit.py ===
+import cocotb
+from cocotb.clock import Clock
+from cocotb.triggers import RisingEdge, Timer
+from cocotb.result import TestFailure
+import random
+
+@cocotb.test()
+async def test_decode_firstbit(dut):
+    """Testbench for olo_base_decode_firstbit module."""
+
+    # Parameters
+    CLK_PERIOD = 10  # Clock period in nanoseconds
+
+    # Create a clock on dut.Clk
+    cocotb.start_soon(Clock(dut.Clk, CLK_PERIOD, units='ns').start())
+
+    # Initialize inputs
+    dut.Rst.value = 1
+    dut.In_Data.value = 0
+    dut.In_Valid.value = 0
+
+    # Wait for a few clock cycles
+    await Timer(CLK_PERIOD * 5, units='ns')
+    dut.Rst.value = 0
+
+    # Define test vectors
+    test_vectors = [
+        0x00000000,  # No bits set
+        0x00000001,  # First bit set
+        0x00000002,  # Second bit set
+        0x80000000,  # Last bit set
+        0x00010000,  # Middle bit set
+        0xFFFFFFFF,  # All bits set
+        0xFFFFFFFE,  # All but first bit set
+        0x7FFFFFFF,  # All but last bit set
+        0x00008000,  # Random bit set
+        0x00000008,  # Another random bit set
+        0xAAAAAAAA,  # Alternating bits starting with '1'
+        0x55555555,  # Alternating bits starting with '0'
+        0x0000FFFF,  # Lower half bits set
+        0xFFFF0000,  # Upper half bits set
+        0x00000010,  # Single bit set at position 4
+        0x00020000,  # Single bit set at position 17
+        0x00000004,  # Single bit set at position 2
+        0x40000000,  # Single bit set at position 30
+        0x00800000,  # Single bit set at position 23
+        0x00400000,  # Single bit set at position 22
+        0x00000400,  # Single bit set at position 10
+    ]
+
+    # Apply predefined test vectors
+    for data_in in test_vectors:
+        await apply_test_vector(dut, data_in, CLK_PERIOD)
+
+    # Apply random test vectors
+    for _ in range(20):  # Increased from 10 to 20 random tests
+        random_data = random.getrandbits(len(dut.In_Data))
+        await apply_test_vector(dut, random_data, CLK_PERIOD)
+
+async def apply_test_vector(dut, data_in, CLK_PERIOD):
+    """Apply a single test vector to the DUT."""
+
+    # Apply input data and valid signal
+    dut.In_Data.value = data_in
+    dut.In_Valid.value = 1
+
+    await RisingEdge(dut.Clk)
+    dut.In_Valid.value = 0
+
+    # Wait for the output to become valid
+    while True:
+        await RisingEdge(dut.Clk)
+        if dut.Out_Valid.value:
+            break
+
+    # Read output values
+    out_firstbit = dut.Out_FirstBit.value.integer
+    out_found = dut.Out_Found.value.integer
+
+    # Calculate expected results
+    expected_index = find_first_set_bit(data_in)
+    expected_found = 1 if expected_index != -1 else 0
+
+    # Compare DUT output with expected values
+    if out_found != expected_found:
+        dut._log.error(f"Out_Found mismatch: Input={hex(data_in)}, Expected {expected_found}, Got {out_found}")
+        raise TestFailure("Out_Found signal mismatch")
+
+    if expected_found:
+        if out_firstbit != expected_index:
+            dut._log.error(f"Out_FirstBit mismatch: Input={hex(data_in)}, Expected Index={expected_index}, Got {out_firstbit}")
+            raise TestFailure("Out_FirstBit signal mismatch")
+        else:
+            dut._log.info(f"PASS: Input={hex(data_in)}, Expected Index={expected_index}, Output Index={out_firstbit}")
+    else:
+        dut._log.info(f"PASS: Input={hex(data_in)}, No bits set as expected")
+
+def find_first_set_bit(data_in):
+    """Find the index of the first set bit in data_in."""
+    for idx in range(data_in.bit_length()):
+        if (data_in >> idx) & 1:
+            return idx
+    return -1  # Return -1 if no bits are set
+
+# Pytest wrapper
+import os
+from cocotb.runner import get_runner
+import pytest
+import pickle
+
+
+@pytest.mark.parametrize("in_width_g", [8, 16, 32])
+@pytest.mark.parametrize("output_format_g", [0, 1])
+def test_decode_firstbit(in_width_g, output_format_g):
+    """Pytest wrapper to run the cocotb test with different parameters."""
+
+    dut_path = os.path.abspath("cvdp_copilot_decode_firstbit.v")
+    
+    # Define the module name (this file without extension)
+    module_name = os.path.splitext(os.path.basename(__file__))[0]
+    
+    sim_build = os.path.abspath(f"sim_build_{in_width_g}_{output_format_g}")
+    
+    parameters = {}
+    parameters['InWidth_g'] = in_width_g
+    parameters['OutputFormat_g'] = output_format_g
+
+    # Convert parameters to dictionary required by cocotb-test
+    extra_env = {f'PARAM_{k}': str(v) for k, v in parameters.items()}
+
+    runner = get_runner(sim)
+    runner.build(
+        verilog_sources=[dut_path],
+        toplevel="cvdp_copilot_decode_firstbit",
+        module=module_name,  # Name of the Python test module (without .py)
+        parameters=parameters,
+        sim_build=sim_build,
+        extra_env=extra_env,
+    )
+    runner.test(hdl_toplevel=toplevel, test_module=module, waves=True)
+

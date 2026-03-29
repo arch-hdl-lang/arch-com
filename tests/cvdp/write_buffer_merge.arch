@@ -1,0 +1,67 @@
+// Write buffer merge: merges BUFFER_DEPTH input writes into one wider output write.
+// NOTE: ARCH generate-if cannot contain reg/seq, so this covers BUFFER_DEPTH > 1.
+// The .sv file includes both generate branches (BUFFER_DEPTH > 1 and == 1).
+module write_buffer_merge
+  param INPUT_DATA_WIDTH: const = 32;
+  param INPUT_ADDR_WIDTH: const = 16;
+  param BUFFER_DEPTH: const = 8;
+  param OUTPUT_DATA_WIDTH: const = INPUT_DATA_WIDTH * BUFFER_DEPTH;
+  param OUTPUT_ADDR_WIDTH: const = INPUT_ADDR_WIDTH - $clog2(BUFFER_DEPTH);
+
+  port clk: in Clock<SysDomain>;
+  port srst: in Reset<Sync, High>;
+  port wr_en_in: in Bool;
+  port wr_addr_in: in UInt<INPUT_ADDR_WIDTH>;
+  port wr_data_in: in UInt<INPUT_DATA_WIDTH>;
+  port reg wr_en_out: out Bool reset srst=>false;
+  port reg wr_addr_out: out UInt<OUTPUT_ADDR_WIDTH> reset srst=>0;
+  port reg wr_data_out: out UInt<OUTPUT_DATA_WIDTH> reset srst=>0;
+
+  default seq on clk rising;
+
+  reg write_cnt: UInt<$clog2(BUFFER_DEPTH)> reset srst=>0;
+  reg base_addr: UInt<OUTPUT_ADDR_WIDTH> reset srst=>0;
+  reg merged_data: UInt<OUTPUT_DATA_WIDTH> reset srst=>0;
+  reg write_complete: Bool reset srst=>false;
+
+  // Write count logic
+  seq
+    if wr_en_in
+      write_cnt <= (write_cnt + 1).trunc<$clog2(BUFFER_DEPTH)>();
+    end if
+  end seq
+
+  // Base address logic: capture MSBs of address on first write
+  seq
+    if wr_en_in & (write_cnt == 0)
+      base_addr <= wr_addr_in[INPUT_ADDR_WIDTH-1:$clog2(BUFFER_DEPTH)];
+    end if
+  end seq
+
+  // Merged data logic: shift right and append new data at MSB
+  seq
+    if wr_en_in
+      merged_data <= {wr_data_in, merged_data[OUTPUT_DATA_WIDTH-1:INPUT_DATA_WIDTH]};
+    end if
+  end seq
+
+  // Write completion: buffer full
+  seq
+    if (write_cnt == (BUFFER_DEPTH - 1).trunc<$clog2(BUFFER_DEPTH)>()) & wr_en_in
+      write_complete <= true;
+    else
+      write_complete <= false;
+    end if
+  end seq
+
+  // Output logic: 2 cycle latency
+  seq
+    if write_complete
+      wr_en_out <= true;
+      wr_addr_out <= base_addr;
+      wr_data_out <= merged_data;
+    else
+      wr_en_out <= false;
+    end if
+  end seq
+end module write_buffer_merge

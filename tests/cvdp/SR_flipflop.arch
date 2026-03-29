@@ -1,0 +1,25 @@
+module SR_flipflop
+  port i_clk: in Clock<SysDomain>;
+  port i_rst_b: in Reset<Async, Low>;
+  port i_S: in Bool;
+  port i_R: in Bool;
+  port reg o_Q: out Bool reset i_rst_b=>false;
+  port reg o_Q_b: out Bool reset i_rst_b=>true;
+
+  default seq on i_clk rising;
+
+  seq
+    if i_S & i_R
+      // Invalid state: both outputs low
+      o_Q <= false;
+      o_Q_b <= false;
+    elsif i_S
+      o_Q <= true;
+      o_Q_b <= false;
+    elsif i_R
+      o_Q <= false;
+      o_Q_b <= true;
+    end if
+    // else: hold
+  end seq
+end module SR_flipflop

@@ -1,0 +1,35 @@
+// Elastic buffer pattern matcher: approximate match within error tolerance
+module elastic_buffer_pattern_matcher
+  param WIDTH: const = 16;
+  param ERR_TOLERANCE: const = 2;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port i_data: in UInt<WIDTH>;
+  port i_pattern: in UInt<WIDTH>;
+  port o_match: out Bool;
+
+  wire xor_data: UInt<WIDTH>;
+  comb xor_data = i_data ^ i_pattern;
+
+  // Count ones (popcount)
+  wire err_count: UInt<WIDTH>;
+  comb
+    err_count = 0;
+    for i in 0..WIDTH-1
+      err_count = (err_count + xor_data[i:i].zext<WIDTH>()).trunc<WIDTH>();
+    end for
+  end comb
+
+  // Register the match output (1-cycle latency)
+  reg match_r: Bool reset rst=>false;
+  seq on clk rising
+    if err_count < ERR_TOLERANCE
+      match_r <= true;
+    else
+      match_r <= false;
+    end if
+  end seq
+
+  comb o_match = match_r;
+end module elastic_buffer_pattern_matcher

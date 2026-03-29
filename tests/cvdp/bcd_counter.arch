@@ -1,12 +1,12 @@
 module bcd_counter
   port clk:    in Clock<SysDomain>;
   port rst:    in Reset<Sync>;
-  port reg ms_hr:  out UInt<4> reset rst=0;
-  port reg ls_hr:  out UInt<4> reset rst=0;
-  port reg ms_min: out UInt<4> reset rst=0;
-  port reg ls_min: out UInt<4> reset rst=0;
-  port reg ms_sec: out UInt<4> reset rst=0;
-  port reg ls_sec: out UInt<4> reset rst=0;
+  port reg ms_hr:  out UInt<4> reset rst=>0;
+  port reg ls_hr:  out UInt<4> reset rst=>0;
+  port reg ms_min: out UInt<4> reset rst=>0;
+  port reg ls_min: out UInt<4> reset rst=>0;
+  port reg ms_sec: out UInt<4> reset rst=>0;
+  port reg ls_sec: out UInt<4> reset rst=>0;
 
   seq on clk rising
     if ls_sec < 4'd9

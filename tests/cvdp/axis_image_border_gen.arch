@@ -1,0 +1,86 @@
+module axis_image_border_gen
+  param IMG_WIDTH:    const = 336;
+  param IMG_HEIGHT:   const = 256;
+  param BORDER_COLOR: const = 65535;
+  param DATA_WIDTH:   const = 16;
+
+  port clk:            in Clock<SysDomain>;
+  port resetn:         in Reset<Async, Low>;
+
+  port s_axis_tdata:   in  UInt<DATA_WIDTH>;
+  port s_axis_tvalid:  in  Bool;
+  port s_axis_tready:  out Bool;
+  port s_axis_tlast:   in  Bool;
+  port s_axis_tuser:   in  Bool;
+
+  port m_axis_tdata:   out UInt<DATA_WIDTH>;
+  port m_axis_tvalid:  out Bool;
+  port m_axis_tready:  in  Bool;
+  port m_axis_tlast:   out Bool;
+  port m_axis_tuser:   out Bool;
+
+  default seq on clk rising;
+
+  // Output image is (IMG_WIDTH+2) wide, (IMG_HEIGHT+2) tall
+  let LAST_COL: UInt<16> = (IMG_WIDTH + 1).zext<16>();
+  let LAST_ROW: UInt<16> = (IMG_HEIGHT + 1).zext<16>();
+
+  reg x_count: UInt<16> reset resetn=>0;
+  reg y_count: UInt<16> reset resetn=>0;
+  reg active:  Bool reset resetn=>false;
+
+  wire is_border:    Bool;
+  wire out_valid:    Bool;
+  wire at_col_end:   Bool;
+  wire at_row_end:   Bool;
+  wire m_handshake:  Bool;
+  wire border_pixel: UInt<DATA_WIDTH>;
+
+  comb
+    is_border    = (x_count == 0.zext<16>()) | (x_count == LAST_COL) |
+                   (y_count == 0.zext<16>()) | (y_count == LAST_ROW);
+    at_col_end   = x_count == LAST_COL;
+    at_row_end   = at_col_end & (y_count == LAST_ROW);
+    border_pixel = BORDER_COLOR[DATA_WIDTH-1:0];
+    // For border pixels: generated internally; for content: need upstream valid
+    out_valid    = active & (is_border | s_axis_tvalid);
+    m_handshake  = out_valid & m_axis_tready;
+    // Only accept upstream when active AND at content position AND downstream ready
+    // When not active: s_axis_tready=0 so resizer holds its output for us to observe
+    s_axis_tready = active & ~is_border & m_axis_tready;
+  end comb
+
+  comb
+    m_axis_tdata  = is_border ? border_pixel : s_axis_tdata;
+    m_axis_tvalid = out_valid;
+    m_axis_tlast  = active & at_col_end;
+    m_axis_tuser  = s_axis_tuser;
+  end comb
+
+  seq
+    if ~active
+      // Observe (but do not consume) upstream: activate when tuser seen
+      if s_axis_tvalid & s_axis_tuser
+        active  <= true;
+        x_count <= 0.zext<16>();
+        y_count <= 0.zext<16>();
+      end if
+    else
+      // Advance counters on every output handshake
+      if m_handshake
+        if at_col_end
+          x_count <= 0.zext<16>();
+          if at_row_end
+            active  <= false;
+            y_count <= 0.zext<16>();
+          else
+            y_count <= (y_count + 1).trunc<16>();
+          end if
+        else
+          x_count <= (x_count + 1).trunc<16>();
+        end if
+      end if
+    end if
+  end seq
+
+end module axis_image_border_gen

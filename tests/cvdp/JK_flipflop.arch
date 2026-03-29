@@ -1,0 +1,25 @@
+module JK_flipflop
+  port i_clk: in Clock<SysDomain>;
+  port i_rst_b: in Reset<Async, Low>;
+  port i_J: in Bool;
+  port i_K: in Bool;
+  port reg o_Q: out Bool reset i_rst_b=>false;
+  port reg o_Q_b: out Bool reset i_rst_b=>true;
+
+  default seq on i_clk rising;
+
+  seq
+    if i_J & i_K
+      // Toggle
+      o_Q <= ~o_Q;
+      o_Q_b <= ~o_Q_b;
+    elsif i_J
+      o_Q <= true;
+      o_Q_b <= false;
+    elsif i_K
+      o_Q <= false;
+      o_Q_b <= true;
+    end if
+    // else: hold
+  end seq
+end module JK_flipflop

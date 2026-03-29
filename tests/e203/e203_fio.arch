@@ -39,14 +39,14 @@ module Fio
   let reg_idx: UInt<4> = icb_cmd_addr[5:2];
 
   // Output registers
-  reg fio_r0: UInt<32> init 0 reset rst_n=0;
-  reg fio_r1: UInt<32> init 0 reset rst_n=0;
-  reg fio_r2: UInt<32> init 0 reset rst_n=0;
-  reg fio_r3: UInt<32> init 0 reset rst_n=0;
+  reg fio_r0: UInt<32> init 0 reset rst_n=>0;
+  reg fio_r1: UInt<32> init 0 reset rst_n=>0;
+  reg fio_r2: UInt<32> init 0 reset rst_n=>0;
+  reg fio_r3: UInt<32> init 0 reset rst_n=>0;
 
   // Response pipeline (1-cycle)
-  reg rsp_valid_r: Bool     init false reset rst_n=false;
-  reg rsp_rdata_r: UInt<32> init 0 reset rst_n=0;
+  reg rsp_valid_r: Bool     init false reset rst_n=>false;
+  reg rsp_rdata_r: UInt<32> init 0 reset rst_n=>0;
 
   seq on clk rising
     rsp_valid_r <= icb_cmd_valid;

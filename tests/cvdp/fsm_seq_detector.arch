@@ -1,0 +1,58 @@
+fsm fsm_seq_detector
+  port clk_in: in Clock<SysDomain>;
+  port rst_in: in Reset<Async, High>;
+  port seq_in: in Bool;
+  port seq_detected: out Bool;
+
+  state S0, S1, S2, S3, S4, S5, S6, S7, S8;
+  default state S0;
+  default
+    comb seq_detected = false;
+  end default
+
+  state S0
+    transition to S1 when seq_in;
+  end state S0
+
+  state S1
+    transition to S2 when ~seq_in;
+    transition to S1 when seq_in;
+  end state S1
+
+  state S2
+    transition to S3 when seq_in;
+    transition to S0 when ~seq_in;
+  end state S2
+
+  state S3
+    transition to S4 when seq_in;
+    transition to S2 when ~seq_in;
+  end state S3
+
+  state S4
+    transition to S5 when ~seq_in;
+    transition to S1 when seq_in;
+  end state S4
+
+  state S5
+    transition to S3 when seq_in;
+    transition to S6 when ~seq_in;
+  end state S5
+
+  state S6
+    transition to S1 when seq_in;
+    transition to S7 when ~seq_in;
+  end state S6
+
+  state S7
+    transition to S8 when seq_in;
+    transition to S0 when ~seq_in;
+  end state S7
+
+  state S8
+    comb seq_detected = true;
+    transition to S1 when seq_in;
+    transition to S2 when ~seq_in;
+  end state S8
+
+end fsm fsm_seq_detector

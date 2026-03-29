@@ -1,0 +1,22 @@
+module decoder_64b66b
+  port clk_in: in Clock<SysDomain>;
+  port rst_in: in Reset<Async>;
+  port decoder_data_in: in UInt<66>;
+  port reg decoder_data_out: out UInt<64> reset rst_in = 0;
+  port reg sync_error: out Bool reset rst_in = false;
+
+  default seq on clk_in rising;
+
+  let sync_header: UInt<2> = decoder_data_in[65:64];
+  let data_in: UInt<64> = decoder_data_in[63:0];
+
+  seq
+    if sync_header == 2'b01
+      decoder_data_out <= data_in;
+      sync_error <= false;
+    else
+      decoder_data_out <= 0;
+      sync_error <= true;
+    end if
+  end seq
+end module decoder_64b66b

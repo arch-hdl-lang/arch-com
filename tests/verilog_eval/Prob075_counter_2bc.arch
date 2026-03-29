@@ -4,7 +4,7 @@ module TopModule
   port areset: in Reset<Async>;
   port train_valid: in Bool;
   port train_taken: in Bool;
-  port reg state: out UInt<2> reset areset=1;
+  port reg state: out UInt<2> reset areset=>1;
 
   default seq on clk rising;
 

@@ -1,0 +1,113 @@
+module Binary2BCD
+  port num: in UInt<8>;
+  port thousand: out UInt<4>;
+  port hundred: out UInt<4>;
+  port ten: out UInt<4>;
+  port one: out UInt<4>;
+
+  // Double-dabble: 20-bit shift register [19:16]=thousand [15:12]=hundred [11:8]=ten [7:0]=input
+  wire sh0: UInt<20>;
+  wire sh1: UInt<20>;
+  wire sh2: UInt<20>;
+  wire sh3: UInt<20>;
+  wire sh4: UInt<20>;
+  wire sh5: UInt<20>;
+  wire sh6: UInt<20>;
+  wire sh7: UInt<20>;
+  wire sh8: UInt<20>;
+
+  comb
+    sh0 = num.zext<20>();
+
+    // Iteration 1: just shift (no BCD digits populated yet)
+    sh1 = sh0 << 1;
+
+    // Iteration 2
+    sh2[7:0] = sh1[7:0];
+    sh2[11:8] = sh1[11:8];
+    if sh1[11:8] >= 5
+      sh2[11:8] = (sh1[11:8] + 3).trunc<4>();
+    end if
+    sh2[19:12] = sh1[19:12];
+    sh2 = sh2 << 1;
+
+    // Iteration 3
+    sh3[7:0] = sh2[7:0];
+    sh3[11:8] = sh2[11:8];
+    if sh2[11:8] >= 5
+      sh3[11:8] = (sh2[11:8] + 3).trunc<4>();
+    end if
+    sh3[19:12] = sh2[19:12];
+    sh3 = sh3 << 1;
+
+    // Iteration 4
+    sh4[7:0] = sh3[7:0];
+    sh4[11:8] = sh3[11:8];
+    if sh3[11:8] >= 5
+      sh4[11:8] = (sh3[11:8] + 3).trunc<4>();
+    end if
+    sh4[15:12] = sh3[15:12];
+    if sh3[15:12] >= 5
+      sh4[15:12] = (sh3[15:12] + 3).trunc<4>();
+    end if
+    sh4[19:16] = sh3[19:16];
+    sh4 = sh4 << 1;
+
+    // Iteration 5
+    sh5[7:0] = sh4[7:0];
+    sh5[11:8] = sh4[11:8];
+    if sh4[11:8] >= 5
+      sh5[11:8] = (sh4[11:8] + 3).trunc<4>();
+    end if
+    sh5[15:12] = sh4[15:12];
+    if sh4[15:12] >= 5
+      sh5[15:12] = (sh4[15:12] + 3).trunc<4>();
+    end if
+    sh5[19:16] = sh4[19:16];
+    sh5 = sh5 << 1;
+
+    // Iteration 6
+    sh6[7:0] = sh5[7:0];
+    sh6[11:8] = sh5[11:8];
+    if sh5[11:8] >= 5
+      sh6[11:8] = (sh5[11:8] + 3).trunc<4>();
+    end if
+    sh6[15:12] = sh5[15:12];
+    if sh5[15:12] >= 5
+      sh6[15:12] = (sh5[15:12] + 3).trunc<4>();
+    end if
+    sh6[19:16] = sh5[19:16];
+    sh6 = sh6 << 1;
+
+    // Iteration 7
+    sh7[7:0] = sh6[7:0];
+    sh7[11:8] = sh6[11:8];
+    if sh6[11:8] >= 5
+      sh7[11:8] = (sh6[11:8] + 3).trunc<4>();
+    end if
+    sh7[15:12] = sh6[15:12];
+    if sh6[15:12] >= 5
+      sh7[15:12] = (sh6[15:12] + 3).trunc<4>();
+    end if
+    sh7[19:16] = sh6[19:16];
+    sh7 = sh7 << 1;
+
+    // Iteration 8
+    sh8[7:0] = sh7[7:0];
+    sh8[11:8] = sh7[11:8];
+    if sh7[11:8] >= 5
+      sh8[11:8] = (sh7[11:8] + 3).trunc<4>();
+    end if
+    sh8[15:12] = sh7[15:12];
+    if sh7[15:12] >= 5
+      sh8[15:12] = (sh7[15:12] + 3).trunc<4>();
+    end if
+    sh8[19:16] = sh7[19:16];
+    sh8 = sh8 << 1;
+
+    thousand = sh8[19:16];
+    hundred = sh8[15:12];
+    ten = sh8[11:8];
+    one = sh8[7:4];
+  end comb
+end module Binary2BCD

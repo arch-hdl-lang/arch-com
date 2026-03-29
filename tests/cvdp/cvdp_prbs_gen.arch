@@ -1,0 +1,51 @@
+module cvdp_prbs_gen
+  param CHECK_MODE:  const = 0;
+  param POLY_LENGTH: const = 31;
+  param POLY_TAP:    const = 3;
+  param WIDTH:       const = 16;
+
+  port clk:      in Clock<SysDomain>;
+  port rst:      in Reset<Sync, High>;
+  port data_in:  in UInt<WIDTH>;
+  port data_out: out UInt<WIDTH>;
+
+  // PRBS shift register
+  reg prbs_reg: UInt<POLY_LENGTH> init 0;
+  reg data_out_r: UInt<WIDTH> init 0;
+
+  // Current PRBS state (updated iteratively in comb for loop)
+  wire prbs_cur: UInt<POLY_LENGTH>;
+  wire xor_bits: UInt<WIDTH>;
+
+  // All-ones constants
+  let ones_poly: UInt<POLY_LENGTH> = ~(0.trunc<POLY_LENGTH>());
+  let ones_width: UInt<WIDTH> = ~(0.trunc<WIDTH>());
+
+  comb
+    prbs_cur = prbs_reg;
+    for i in 0..WIDTH - 1
+      // Python model uses MSB-first indexing: tap at [poly_tap-1] and [poly_length-1]
+      // In SV (LSB-first): these map to bit [POLY_LENGTH - POLY_TAP] and bit [0]
+      xor_bits[i] = prbs_cur[POLY_LENGTH - POLY_TAP] ^ prbs_cur[0];
+      // Shift: drop LSB (bit 0), insert xor at MSB
+      prbs_cur = {xor_bits[i], prbs_cur[POLY_LENGTH - 1 : 1]};
+    end for
+    data_out = data_out_r;
+  end comb
+
+  default seq on clk rising;
+
+  seq
+    if rst
+      prbs_reg <= ones_poly;
+      data_out_r <= ones_width;
+    else
+      prbs_reg <= prbs_cur;
+      if CHECK_MODE == 0
+        data_out_r <= xor_bits;
+      else
+        data_out_r <= xor_bits ^ data_in;
+      end if
+    end if
+  end seq
+end module cvdp_prbs_gen

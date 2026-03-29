@@ -1,0 +1,170 @@
+module precision_counter_axi
+  param C_S_AXI_DATA_WIDTH: const = 32;
+  param C_S_AXI_ADDR_WIDTH: const = 8;
+
+  port axi_aclk:    in Clock<SysDomain>;
+  port axi_aresetn: in Reset<Async, Low>;
+
+  port axi_awaddr:  in UInt<C_S_AXI_ADDR_WIDTH>;
+  port axi_awvalid: in Bool;
+  port reg axi_awready: out Bool reset axi_aresetn=>false;
+
+  port axi_wdata:   in UInt<C_S_AXI_DATA_WIDTH>;
+  port axi_wstrb:   in UInt<C_S_AXI_DATA_WIDTH/8>;
+  port axi_wvalid:  in Bool;
+  port reg axi_wready: out Bool reset axi_aresetn=>false;
+
+  port reg axi_bresp:  out UInt<2> reset axi_aresetn=>0;
+  port reg axi_bvalid: out Bool reset axi_aresetn=>false;
+  port axi_bready: in Bool;
+
+  port axi_araddr:  in UInt<C_S_AXI_ADDR_WIDTH>;
+  port axi_arvalid: in Bool;
+  port reg axi_arready: out Bool reset axi_aresetn=>false;
+
+  port reg axi_rdata:  out UInt<C_S_AXI_DATA_WIDTH> reset axi_aresetn=>0;
+  port reg axi_rresp:  out UInt<2> reset axi_aresetn=>0;
+  port reg axi_rvalid: out Bool reset axi_aresetn=>false;
+  port axi_rready: in Bool;
+
+  port reg axi_ap_done: out Bool reset axi_aresetn=>false;
+  port reg irq: out Bool reset axi_aresetn=>false;
+
+  default seq on axi_aclk rising;
+
+  reg slv_reg_ctl:        UInt<C_S_AXI_DATA_WIDTH> reset axi_aresetn=>0;
+  reg slv_reg_t:          UInt<C_S_AXI_DATA_WIDTH> reset axi_aresetn=>0;
+  reg slv_reg_v:          UInt<C_S_AXI_DATA_WIDTH> reset axi_aresetn=>0;
+  reg slv_reg_irq_mask:   UInt<C_S_AXI_DATA_WIDTH> reset axi_aresetn=>0;
+  reg slv_reg_irq_thresh: UInt<C_S_AXI_DATA_WIDTH> reset axi_aresetn=>0;
+  reg aw_en: Bool reset axi_aresetn=>true;
+  reg aw_addr_latched: UInt<C_S_AXI_ADDR_WIDTH> reset axi_aresetn=>0;
+  reg ar_addr_latched: UInt<C_S_AXI_ADDR_WIDTH> reset axi_aresetn=>0;
+
+  seq
+    // === Write address/data handshake ===
+    if ~axi_awready & axi_awvalid & axi_wvalid & aw_en
+      axi_awready <= true;
+      axi_wready <= true;
+      aw_en <= false;
+      aw_addr_latched <= axi_awaddr;
+    else
+      axi_awready <= false;
+      axi_wready <= false;
+      if axi_bvalid & axi_bready
+        aw_en <= true;
+      end if
+    end if
+
+    // === Write response ===
+    if axi_awready & axi_wready & axi_awvalid & axi_wvalid & ~axi_bvalid
+      axi_bvalid <= true;
+      if aw_addr_latched == 0x00
+        axi_bresp <= 0b00;
+      elsif aw_addr_latched == 0x10
+        axi_bresp <= 0b00;
+      elsif aw_addr_latched == 0x20
+        axi_bresp <= 0b00;
+      elsif aw_addr_latched == 0x24
+        axi_bresp <= 0b00;
+      elsif aw_addr_latched == 0x28
+        axi_bresp <= 0b00;
+      else
+        axi_bresp <= 0b10;
+      end if
+    elsif axi_bvalid & axi_bready
+      axi_bvalid <= false;
+    end if
+
+    // === Register writes + counter ===
+    // Gate counter during write setup (~awready & awvalid & wvalid & aw_en)
+    if axi_awready & axi_wready & axi_awvalid & axi_wvalid
+      if aw_addr_latched == 0x00
+        slv_reg_ctl <= axi_wdata;
+        slv_reg_t <= 0;
+      elsif aw_addr_latched == 0x10
+        slv_reg_t <= axi_wdata;
+      elsif aw_addr_latched == 0x20
+        slv_reg_v <= axi_wdata;
+      elsif aw_addr_latched == 0x24
+        slv_reg_irq_mask <= axi_wdata;
+      elsif aw_addr_latched == 0x28
+        slv_reg_irq_thresh <= axi_wdata;
+      end if
+    elsif ~axi_awready & axi_awvalid & axi_wvalid & aw_en
+      // Write setup cycle - don't run counter
+    elsif axi_arvalid & ~axi_rvalid
+      // Read setup cycles - don't run counter
+    else
+      if slv_reg_ctl[0:0] == 1
+        if slv_reg_v != 0
+          slv_reg_v <= (slv_reg_v - 1).trunc<C_S_AXI_DATA_WIDTH>();
+        else
+          slv_reg_t <= (slv_reg_t + 1).trunc<C_S_AXI_DATA_WIDTH>();
+        end if
+      end if
+    end if
+
+    // === ap_done ===
+    if slv_reg_v == 0
+      axi_ap_done <= true;
+    else
+      axi_ap_done <= false;
+    end if
+
+    // === IRQ ===
+    if slv_reg_irq_mask[0:0] == 1 & slv_reg_ctl[0:0] == 1 & slv_reg_v == slv_reg_irq_thresh
+      irq <= true;
+    else
+      irq <= false;
+    end if
+
+    // === Read address handshake (cycle 1) ===
+    if ~axi_arready & axi_arvalid & ~axi_rvalid
+      axi_arready <= true;
+      ar_addr_latched <= axi_araddr;
+    else
+      axi_arready <= false;
+    end if
+
+    // === Read data response (cycle 2: one cycle after arready) ===
+    if axi_arready & axi_arvalid & ~axi_rvalid
+      axi_rvalid <= true;
+      if ar_addr_latched == 0x00
+        axi_rdata <= slv_reg_ctl;
+        axi_rresp <= 0b00;
+      elsif ar_addr_latched == 0x04
+        axi_rdata <= 0;
+        axi_rresp <= 0b00;
+      elsif ar_addr_latched == 0x08
+        axi_rdata <= 0;
+        axi_rresp <= 0b00;
+      elsif ar_addr_latched == 0x0C
+        if slv_reg_v == 0
+          axi_rdata <= 1;
+        else
+          axi_rdata <= 0;
+        end if
+        axi_rresp <= 0b00;
+      elsif ar_addr_latched == 0x10
+        axi_rdata <= slv_reg_t;
+        axi_rresp <= 0b00;
+      elsif ar_addr_latched == 0x20
+        axi_rdata <= slv_reg_v;
+        axi_rresp <= 0b00;
+      elsif ar_addr_latched == 0x24
+        axi_rdata <= slv_reg_irq_mask;
+        axi_rresp <= 0b00;
+      elsif ar_addr_latched == 0x28
+        axi_rdata <= slv_reg_irq_thresh;
+        axi_rresp <= 0b00;
+      else
+        axi_rdata <= 0;
+        axi_rresp <= 0b10;
+      end if
+    elsif axi_rvalid & axi_rready & ~axi_arvalid
+      axi_rvalid <= false;
+    end if
+  end seq
+
+end module precision_counter_axi

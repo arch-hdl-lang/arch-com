@@ -1,0 +1,283 @@
+module search_binary_search_tree
+  param DATA_WIDTH: const = 32;
+  param ARRAY_SIZE: const = 15;
+  param PTR_W: const = $clog2(ARRAY_SIZE) + 1;
+
+  port clk:            in Clock<SysDomain>;
+  port reset:          in Reset<Async, High>;
+  port start:          in Bool;
+  port search_key:     in UInt<DATA_WIDTH>;
+  port root:           in UInt<PTR_W>;
+  port keys:           in UInt<ARRAY_SIZE * DATA_WIDTH>;
+  port left_child:     in UInt<ARRAY_SIZE * PTR_W>;
+  port right_child:    in UInt<ARRAY_SIZE * PTR_W>;
+  port key_position:   out UInt<PTR_W>;
+  port complete_found: out Bool;
+  port search_invalid: out Bool;
+
+  // FSM: 0=S_IDLE,1=S_INIT,2=S_SEARCH_LEFT,3=S_SEARCH_LEFT_RIGHT,4=S_COMPLETE_SEARCH
+  reg search_state: UInt<3> reset reset=>0;
+
+  // S_INIT takes 3 cycles: two warmup registers then process on third
+  reg init_r1: Bool reset reset=>false;
+  reg init_r2: Bool reset reset=>false;
+
+  // found: key was found at root (need to count left subtree for position)
+  reg found: Bool reset reset=>false;
+
+  // Left traversal state
+  reg cur_left:     UInt<PTR_W> reset reset=>0;
+  reg left_stack:   UInt<ARRAY_SIZE * PTR_W> reset reset=>0;
+  reg sp_left:      UInt<PTR_W> reset reset=>0;
+  reg left_out_idx: UInt<PTR_W> reset reset=>0;
+
+  // Right traversal state
+  reg cur_right:     UInt<PTR_W> reset reset=>0;
+  reg right_stack:   UInt<ARRAY_SIZE * PTR_W> reset reset=>0;
+  reg sp_right:      UInt<PTR_W> reset reset=>0;
+  reg right_out_idx: UInt<PTR_W> reset reset=>0;
+
+  // Phase 1 done flag and root position offset
+  reg left_done: Bool reset reset=>false;
+  reg pos:       UInt<PTR_W> reset reset=>0;
+
+  // Registered outputs
+  reg r_key_position:   UInt<PTR_W> reset reset=>0;
+  reg r_complete_found: Bool reset reset=>false;
+  reg r_search_invalid: Bool reset reset=>false;
+
+  let null_ptr: UInt<PTR_W> = (1 << PTR_W) - 1;
+
+  // Root fields (combinational)
+  wire root_key: UInt<DATA_WIDTH>;
+  wire root_lc:  UInt<PTR_W>;
+  wire root_rc:  UInt<PTR_W>;
+
+  // cur_left fields
+  wire cur_left_key: UInt<DATA_WIDTH>;
+  wire cur_left_lc:  UInt<PTR_W>;
+  wire cur_left_rc:  UInt<PTR_W>;
+
+  // Left stack top
+  wire sp_left_m1:    UInt<PTR_W>;
+  wire left_top_node: UInt<PTR_W>;
+  wire left_top_key:  UInt<DATA_WIDTH>;
+  wire left_top_rc:   UInt<PTR_W>;
+
+  // cur_right left child
+  wire cur_right_lc: UInt<PTR_W>;
+
+  // Right stack top
+  wire sp_right_m1:    UInt<PTR_W>;
+  wire right_top_node: UInt<PTR_W>;
+  wire right_top_key:  UInt<DATA_WIDTH>;
+  wire right_top_rc:   UInt<PTR_W>;
+
+  comb
+    root_key = keys[root * DATA_WIDTH + DATA_WIDTH - 1 : root * DATA_WIDTH];
+    root_lc  = left_child[root * PTR_W + PTR_W - 1 : root * PTR_W];
+    root_rc  = right_child[root * PTR_W + PTR_W - 1 : root * PTR_W];
+
+    cur_left_key = keys[cur_left * DATA_WIDTH + DATA_WIDTH - 1 : cur_left * DATA_WIDTH];
+    cur_left_lc  = left_child[cur_left * PTR_W + PTR_W - 1 : cur_left * PTR_W];
+    cur_left_rc  = right_child[cur_left * PTR_W + PTR_W - 1 : cur_left * PTR_W];
+
+    if sp_left > 0
+      sp_left_m1 = (sp_left - 1).trunc<PTR_W>();
+    else
+      sp_left_m1 = 0;
+    end if
+    left_top_node = left_stack[sp_left_m1 * PTR_W + PTR_W - 1 : sp_left_m1 * PTR_W];
+    left_top_key  = keys[left_top_node * DATA_WIDTH + DATA_WIDTH - 1 : left_top_node * DATA_WIDTH];
+    left_top_rc   = right_child[left_top_node * PTR_W + PTR_W - 1 : left_top_node * PTR_W];
+
+    cur_right_lc = left_child[cur_right * PTR_W + PTR_W - 1 : cur_right * PTR_W];
+
+    if sp_right > 0
+      sp_right_m1 = (sp_right - 1).trunc<PTR_W>();
+    else
+      sp_right_m1 = 0;
+    end if
+    right_top_node = right_stack[sp_right_m1 * PTR_W + PTR_W - 1 : sp_right_m1 * PTR_W];
+    right_top_key  = keys[right_top_node * DATA_WIDTH + DATA_WIDTH - 1 : right_top_node * DATA_WIDTH];
+    right_top_rc   = right_child[right_top_node * PTR_W + PTR_W - 1 : right_top_node * PTR_W];
+
+    key_position   = r_key_position;
+    complete_found = r_complete_found;
+    search_invalid = r_search_invalid;
+  end comb
+
+  seq on clk rising
+    if search_state == 0
+      // S_IDLE: wait for start
+      r_complete_found <= false;
+      r_search_invalid <= false;
+      init_r1 <= false;
+      init_r2 <= false;
+      if start
+        r_key_position <= null_ptr;
+        left_out_idx   <= 0;
+        right_out_idx  <= 0;
+        sp_left        <= 0;
+        sp_right       <= 0;
+        left_done      <= false;
+        found          <= false;
+        pos            <= 0;
+        search_state   <= 1;
+      end if
+
+    elsif search_state == 1
+      // S_INIT: 3 cycles (two warmup + one processing)
+      if init_r1 == false
+        init_r1 <= true;
+      elsif init_r2 == false
+        init_r2 <= true;
+      else
+        init_r1 <= false;
+        init_r2 <= false;
+        if root == null_ptr
+          // Empty tree
+          r_key_position   <= null_ptr;
+          r_search_invalid <= true;
+          r_complete_found <= false;
+          search_state     <= 4;
+        elsif root_key == search_key
+          if root_lc == null_ptr
+            // Found at root with no left subtree: position = 0
+            r_key_position   <= 0;
+            r_complete_found <= true;
+            r_search_invalid <= false;
+            search_state     <= 4;
+          else
+            // Found at root: count left subtree to determine position
+            found        <= true;
+            cur_left     <= root_lc;
+            sp_left      <= 0;
+            left_out_idx <= 0;
+            search_state <= 2;
+          end if
+        elsif search_key < root_key
+          // Search in left subtree
+          found        <= false;
+          cur_left     <= root_lc;
+          sp_left      <= 0;
+          left_out_idx <= 0;
+          search_state <= 2;
+        else
+          // search_key > root_key: count left subtree + search right
+          cur_left      <= root_lc;
+          cur_right     <= root_rc;
+          sp_left       <= 0;
+          sp_right      <= 0;
+          left_out_idx  <= 0;
+          right_out_idx <= 0;
+          left_done     <= false;
+          search_state  <= 3;
+        end if
+      end if
+
+    elsif search_state == 2
+      // S_SEARCH_LEFT: iterative in-order traversal
+      if cur_left != null_ptr
+        // Push current, go left
+        left_stack[sp_left * PTR_W + PTR_W - 1 : sp_left * PTR_W] <= cur_left;
+        sp_left  <= (sp_left + 1).trunc<PTR_W>();
+        cur_left <= cur_left_lc;
+      elsif sp_left > 0
+        // Pop and check in one cycle
+        sp_left  <= sp_left_m1;
+        cur_left <= left_top_rc;
+        if left_top_key == search_key
+          r_key_position   <= left_out_idx;
+          r_complete_found <= true;
+          r_search_invalid <= false;
+          search_state     <= 4;
+        else
+          left_out_idx <= (left_out_idx + 1).trunc<PTR_W>();
+        end if
+      else
+        // cur=null, sp=0: traversal complete
+        if found
+          r_key_position   <= left_out_idx;
+          r_complete_found <= true;
+          r_search_invalid <= false;
+        else
+          r_key_position   <= null_ptr;
+          r_complete_found <= false;
+          r_search_invalid <= true;
+        end if
+        search_state <= 4;
+      end if
+
+    elsif search_state == 3
+      // S_SEARCH_LEFT_RIGHT
+      if left_done == false
+        // Phase 1: count all nodes in root's left subtree
+        if cur_left != null_ptr
+          if cur_left_lc != null_ptr
+            // Node has left child: push and go left
+            left_stack[sp_left * PTR_W + PTR_W - 1 : sp_left * PTR_W] <= cur_left;
+            sp_left  <= (sp_left + 1).trunc<PTR_W>();
+            cur_left <= cur_left_lc;
+          else
+            // Node has no left child: process directly (count + go right), no push
+            // New left_out_idx = old+1. pos = (old+1)+1 = old+2.
+            left_out_idx <= (left_out_idx + 1).trunc<PTR_W>();
+            cur_left     <= cur_left_rc;
+            if cur_left_rc == null_ptr
+              if sp_left == 0
+                left_done <= true;
+                pos       <= (left_out_idx + 2).trunc<PTR_W>();
+              end if
+            end if
+          end if
+        elsif sp_left > 0
+          // Pop: count + go right
+          sp_left      <= sp_left_m1;
+          left_out_idx <= (left_out_idx + 1).trunc<PTR_W>();
+          cur_left     <= left_top_rc;
+          if left_top_rc == null_ptr
+            if sp_left_m1 == 0
+              left_done <= true;
+              pos       <= (left_out_idx + 2).trunc<PTR_W>();
+            end if
+          end if
+        else
+          // cur=null, sp=0: counting done
+          left_done <= true;
+          pos       <= (left_out_idx + 1).trunc<PTR_W>();
+        end if
+      else
+        // Phase 2: search right subtree in-order
+        if cur_right != null_ptr
+          // Push current, go left
+          right_stack[sp_right * PTR_W + PTR_W - 1 : sp_right * PTR_W] <= cur_right;
+          sp_right  <= (sp_right + 1).trunc<PTR_W>();
+          cur_right <= cur_right_lc;
+        elsif sp_right > 0
+          // Pop and check in one cycle
+          sp_right  <= sp_right_m1;
+          cur_right <= right_top_rc;
+          if right_top_key == search_key
+            r_key_position   <= (pos + right_out_idx).trunc<PTR_W>();
+            r_complete_found <= true;
+            r_search_invalid <= false;
+            search_state     <= 4;
+          else
+            right_out_idx <= (right_out_idx + 1).trunc<PTR_W>();
+          end if
+        else
+          // cur=null, sp=0: key not in right subtree
+          r_key_position   <= null_ptr;
+          r_complete_found <= false;
+          r_search_invalid <= true;
+          search_state     <= 4;
+        end if
+      end if
+
+    elsif search_state == 4
+      // S_COMPLETE_SEARCH: outputs already set, return to idle
+      search_state <= 0;
+    end if
+  end seq
+end module search_binary_search_tree

@@ -1,0 +1,165 @@
+module interrupt_controller_apb
+  param NUM_INTERRUPTS: const = 4;
+  param ADDR_WIDTH: const = 8;
+
+  port clk:                in Clock<SysDomain>;
+  port rst_n:              in Reset<Sync, Low>;
+  port interrupt_requests: in UInt<NUM_INTERRUPTS>;
+  port interrupt_service:  out UInt<NUM_INTERRUPTS>;
+  port cpu_interrupt:      out Bool;
+  port cpu_ack:            in Bool;
+  port interrupt_idx:      out UInt<$clog2(NUM_INTERRUPTS)>;
+  port interrupt_vector:   out UInt<ADDR_WIDTH>;
+
+  port pclk:    in Clock<SysDomain>;
+  port presetn: in Reset<Sync, Low>;
+  port psel:    in Bool;
+  port penable: in Bool;
+  port pwrite:  in Bool;
+  port paddr:   in UInt<ADDR_WIDTH>;
+  port pwdata:  in UInt<32>;
+  port prdata:  out UInt<32>;
+  port pready:  out Bool;
+
+  // Interrupt logic registers (clk domain)
+  reg pending_interrupts: UInt<NUM_INTERRUPTS> reset rst_n=>0;
+  reg servicing: Bool reset rst_n=>false;
+  reg current_int: UInt<NUM_INTERRUPTS> reset rst_n=>0;
+  reg current_idx: UInt<$clog2(NUM_INTERRUPTS)> reset rst_n=>0;
+
+  // APB-configured registers (pclk domain)
+  reg priority_map: Vec<UInt<24>, NUM_INTERRUPTS> reset none;
+  reg vector_table: Vec<UInt<24>, NUM_INTERRUPTS> reset none;
+  reg interrupt_mask: UInt<NUM_INTERRUPTS> reset none;
+
+  // Combinational wires for priority arbitration
+  wire masked_pending: UInt<NUM_INTERRUPTS>;
+  wire winner_int: UInt<NUM_INTERRUPTS>;
+  wire winner_idx32: UInt<32>;
+  wire highest_pri_val: UInt<24>;
+  wire has_pending: Bool;
+  wire current_still_unmasked: Bool;
+  wire winner_differs: Bool;
+  wire should_preempt: Bool;
+
+  // Priority-based arbitration (combinational): finds highest-priority pending interrupt
+  comb
+    masked_pending = pending_interrupts & interrupt_mask;
+    winner_int = 0;
+    winner_idx32 = 0;
+    highest_pri_val = 16777215;
+    has_pending = false;
+    for i in 0..NUM_INTERRUPTS-1
+      if masked_pending[i]
+        if ~has_pending | (priority_map[i] < highest_pri_val)
+          winner_idx32 = i.zext<32>();
+          winner_int = 1.zext<NUM_INTERRUPTS>() << i.zext<NUM_INTERRUPTS>();
+          highest_pri_val = priority_map[i];
+          has_pending = true;
+        end if
+      end if
+    end for
+    // Currently-serviced interrupt is still unmasked
+    current_still_unmasked = (current_int & interrupt_mask) != 0;
+    // winner_differs: winner one-hot is different from current (preemption candidate)
+    winner_differs = winner_int != current_int;
+    // Should preempt: there is a higher-priority interrupt than the one being served
+    should_preempt = servicing & has_pending & winner_differs;
+  end comb
+
+  // Interrupt dispatch, preemption, and ack logic (clk domain)
+  seq on clk rising
+    // Latch all incoming interrupt requests
+    pending_interrupts <= pending_interrupts | interrupt_requests;
+    if cpu_ack & servicing
+      // Clear the serviced interrupt; next interrupt dispatches in the following cycle
+      pending_interrupts <= (pending_interrupts | interrupt_requests) & ~current_int;
+      servicing <= false;
+      current_int <= 0;
+    elsif servicing & ~current_still_unmasked
+      // Active interrupt was masked — abort without clearing pending
+      servicing <= false;
+      current_int <= 0;
+    elsif should_preempt
+      // Preempt: a higher-priority interrupt has arrived — switch immediately
+      current_int <= winner_int;
+      current_idx <= winner_idx32.trunc<$clog2(NUM_INTERRUPTS)>();
+    elsif ~servicing & has_pending
+      // Dispatch highest-priority pending interrupt
+      servicing <= true;
+      current_int <= winner_int;
+      current_idx <= winner_idx32.trunc<$clog2(NUM_INTERRUPTS)>();
+    end if
+  end seq
+
+  // Output assignments (combinational)
+  comb
+    interrupt_service = current_int;
+    // Deassert cpu_interrupt while cpu_ack is active
+    cpu_interrupt = servicing & ~cpu_ack & current_still_unmasked;
+    interrupt_idx = current_idx;
+    interrupt_vector = vector_table[current_idx].trunc<ADDR_WIDTH>();
+  end comb
+
+  // APB combinational read data; pready asserted combinationally in access phase
+  wire apb_rdata: UInt<32>;
+  comb
+    apb_rdata = 0;
+    pready = psel & penable;
+    if psel & penable & ~pwrite
+      if paddr[3:0] == 0
+        for i in 0..NUM_INTERRUPTS-1
+          if paddr[7:4] == i.zext<4>()
+            apb_rdata = priority_map[i].zext<32>();
+          end if
+        end for
+      elsif paddr[3:0] == 1
+        apb_rdata = interrupt_mask.zext<32>();
+      elsif paddr[3:0] == 2
+        for i in 0..NUM_INTERRUPTS-1
+          if paddr[7:4] == i.zext<4>()
+            apb_rdata = vector_table[i].zext<32>();
+          end if
+        end for
+      elsif paddr[3:0] == 3
+        apb_rdata = pending_interrupts.zext<32>();
+      elsif paddr[3:0] == 4
+        apb_rdata = current_idx.zext<32>();
+      end if
+    end if
+    prdata = apb_rdata;
+  end comb
+
+  // APB register writes (pclk domain)
+  // Address map (paddr[3:0]):
+  //   0x0: priority_map — pwdata[7:0]=irq_index, pwdata[31:8]=priority_value
+  //   0x1: interrupt_mask — pwdata[NUM_INTERRUPTS-1:0]=new_mask
+  //   0x2: vector_table  — pwdata[7:0]=irq_index, pwdata[31:8]=vector_address
+  seq on pclk rising
+    if ~presetn
+      for i in 0..NUM_INTERRUPTS-1
+        priority_map[i] <= i.trunc<24>();
+        vector_table[i] <= (i * 4).trunc<24>();
+      end for
+      interrupt_mask <= ~(0.zext<NUM_INTERRUPTS>());
+    else
+      if psel & penable & pwrite
+        if paddr[3:0] == 0
+          for i in 0..NUM_INTERRUPTS-1
+            if pwdata[7:0] == i.zext<8>()
+              priority_map[i] <= pwdata[31:8];
+            end if
+          end for
+        elsif paddr[3:0] == 1
+          interrupt_mask <= pwdata.trunc<NUM_INTERRUPTS>();
+        elsif paddr[3:0] == 2
+          for i in 0..NUM_INTERRUPTS-1
+            if pwdata[7:0] == i.zext<8>()
+              vector_table[i] <= pwdata[31:8];
+            end if
+          end for
+        end if
+      end if
+    end if
+  end seq
+end module interrupt_controller_apb

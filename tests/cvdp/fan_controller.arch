@@ -1,0 +1,106 @@
+module fan_controller
+  port clk:         in Clock<SysDomain>;
+  port reset:       in Reset<Async>;
+  port psel:        in Bool;
+  port penable:     in Bool;
+  port pwrite:      in Bool;
+  port paddr:       in UInt<8>;
+  port pwdata:      in UInt<8>;
+
+  port fan_pwm_out:  out Bool;
+  port prdata:       out UInt<8>;
+  port pready:       out Bool;
+  port pslverr:      out Bool;
+
+  default seq on clk rising;
+
+  // Internal registers for temperature thresholds and ADC reading
+  reg temp_low:    UInt<8> reset reset=>0;
+  reg temp_med:    UInt<8> reset reset=>0;
+  reg temp_high:   UInt<8> reset reset=>0;
+  reg temp_adc_in: UInt<8> reset reset=>0;
+
+  // PWM registers
+  reg pwm_duty_cycle: UInt<8> reset reset=>0;
+  reg pwm_counter:    UInt<8> reset reset=>0;
+
+  // APB helper signals
+  let apb_access: Bool = psel & penable;
+
+  // APB read/write logic
+  wire w_prdata:  UInt<8>;
+  wire w_pslverr: Bool;
+
+  comb
+    w_prdata = 0;
+    w_pslverr = false;
+    if apb_access
+      if paddr == 10
+        w_prdata = temp_low;
+      elsif paddr == 11
+        w_prdata = temp_med;
+      elsif paddr == 12
+        w_prdata = temp_high;
+      elsif paddr == 15
+        w_prdata = temp_adc_in;
+      else
+        w_pslverr = true;
+      end if
+    end if
+  end comb
+
+  // APB write
+  seq
+    if apb_access & pwrite
+      if paddr == 10
+        temp_low <= pwdata;
+      elsif paddr == 11
+        temp_med <= pwdata;
+      elsif paddr == 12
+        temp_high <= pwdata;
+      elsif paddr == 15
+        temp_adc_in <= pwdata;
+      end if
+    end if
+  end seq
+
+  // Duty cycle computation based on temperature
+  wire w_duty: UInt<8>;
+  comb
+    if temp_adc_in < temp_low
+      w_duty = 64;
+    elsif temp_adc_in < temp_med
+      w_duty = 128;
+    elsif temp_adc_in < temp_high
+      w_duty = 192;
+    else
+      w_duty = 255;
+    end if
+  end comb
+
+  seq
+    pwm_duty_cycle <= w_duty;
+  end seq
+
+  // PWM counter
+  seq
+    if pwm_counter == 255
+      pwm_counter <= 0;
+    else
+      pwm_counter <= (pwm_counter + 1).trunc<8>();
+    end if
+  end seq
+
+  // PWM output: high when counter in [1, pwm_duty_cycle]
+  let cnt_nonzero: Bool = pwm_counter != 0;
+  let cnt_in_duty: Bool = (pwm_duty_cycle > pwm_counter) | (pwm_duty_cycle == pwm_counter);
+
+  // Output assignments
+  comb
+    fan_pwm_out = cnt_nonzero & cnt_in_duty;
+    prdata = w_prdata;
+    pready = apb_access;
+    pslverr = w_pslverr;
+  end comb
+
+end module fan_controller

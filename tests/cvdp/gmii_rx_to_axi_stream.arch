@@ -1,0 +1,61 @@
+module gmii_rx_to_axi_stream
+  port gmii_rx_clk: in Clock<SysDomain>;
+  port gmii_rxd: in UInt<8>;
+  port gmii_rx_dv: in Bool;
+  port m_axis_tdata: out UInt<8>;
+  port m_axis_tvalid: out Bool;
+  port m_axis_tready: in Bool;
+  port m_axis_tlast: out Bool;
+
+  default seq on gmii_rx_clk rising;
+
+  reg state_r: UInt<2> init 0;
+  reg data_r: UInt<8> init 0;
+  reg valid_r: Bool init false;
+  reg last_r: Bool init false;
+  reg dv_prev: Bool init false;
+
+  seq dv_prev <= gmii_rx_dv;
+
+  seq
+    if state_r == 0
+      // IDLE
+      if gmii_rx_dv
+        state_r <= 1;
+        data_r <= gmii_rxd;
+        valid_r <= true;
+        last_r <= false;
+      else
+        valid_r <= false;
+        last_r <= false;
+      end if
+    elsif state_r == 1
+      // RECEIVING
+      if gmii_rx_dv
+        if m_axis_tready
+          data_r <= gmii_rxd;
+          valid_r <= true;
+        else
+          valid_r <= false;
+        end if
+        last_r <= false;
+      else
+        // dv dropped, end of frame
+        state_r <= 2;
+        valid_r <= true;
+        last_r <= true;
+      end if
+    else
+      // FINISHED
+      if m_axis_tready
+        state_r <= 0;
+        valid_r <= false;
+        last_r <= false;
+      end if
+    end if
+  end seq
+
+  comb m_axis_tdata = data_r;
+  comb m_axis_tvalid = valid_r;
+  comb m_axis_tlast = last_r;
+end module gmii_rx_to_axi_stream

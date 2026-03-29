@@ -1,0 +1,207 @@
+module binary_search_tree_sort
+  param DATA_WIDTH: const = 32;
+  param ARRAY_SIZE: const = 8;
+
+  param PTR_W: const = $clog2(ARRAY_SIZE) + 1;
+
+  port clk:        in Clock<SysDomain>;
+  port reset:      in Reset<Async, High>;
+  port data_in:    in UInt<ARRAY_SIZE * DATA_WIDTH>;
+  port start:      in Bool;
+  port sorted_out: out UInt<ARRAY_SIZE * DATA_WIDTH>;
+  port done:       out Bool;
+
+  // Top-level FSM states: 0=IDLE, 1=BUILD_TREE, 2=SORT_TREE
+  reg top_state: UInt<2> reset reset=>0;
+
+  // Build FSM states: 0=INIT, 1=CHECK_ROOT, 2=TRAVERSE, 4=COMPLETE
+  reg build_state: UInt<3> reset reset=>0;
+
+  // Sort FSM states:
+  // 0=S_INIT, 1=TRAVERSE_LEFT, 2=POP_PROCESS, 3=ASSIGN_RIGHT, 4=CHECK_RIGHT, 5=S_COMPLETE
+  reg sort_state: UInt<3> reset reset=>0;
+
+  // BST representation
+  reg keys: UInt<ARRAY_SIZE * DATA_WIDTH> reset reset=>0;
+  reg left_child: UInt<ARRAY_SIZE * PTR_W> reset reset=>0;
+  reg right_child: UInt<ARRAY_SIZE * PTR_W> reset reset=>0;
+  reg root: UInt<PTR_W> reset reset=>0;
+  reg next_free_node: UInt<PTR_W> reset reset=>0;
+
+  // Stack for in-order traversal
+  reg stack_mem: UInt<ARRAY_SIZE * PTR_W> reset reset=>0;
+  reg sp: UInt<PTR_W> reset reset=>0;
+
+  // Working registers
+  reg current_node: UInt<PTR_W> reset reset=>0;
+  reg input_index: UInt<PTR_W> reset reset=>0;
+  reg output_index: UInt<PTR_W> reset reset=>0;
+  reg temp_data: UInt<DATA_WIDTH> reset reset=>0;
+
+  reg r_sorted_out: UInt<ARRAY_SIZE * DATA_WIDTH> reset reset=>0;
+  reg r_done: Bool reset reset=>false;
+
+  let null_ptr: UInt<PTR_W> = (1 << PTR_W) - 1;
+
+  // Combinational extraction of current_node fields
+  wire cur_key: UInt<DATA_WIDTH>;
+  wire cur_left: UInt<PTR_W>;
+  wire cur_right: UInt<PTR_W>;
+  // Stack top (safe when sp>0)
+  wire sp_m1: UInt<PTR_W>;
+  wire stack_top_ptr: UInt<PTR_W>;
+  wire stack_top_key: UInt<DATA_WIDTH>;
+
+  comb
+    cur_key = keys[current_node * DATA_WIDTH + DATA_WIDTH - 1 : current_node * DATA_WIDTH];
+    cur_left = left_child[current_node * PTR_W + PTR_W - 1 : current_node * PTR_W];
+    cur_right = right_child[current_node * PTR_W + PTR_W - 1 : current_node * PTR_W];
+    if sp > 0
+      sp_m1 = (sp - 1).trunc<PTR_W>();
+    else
+      sp_m1 = 0;
+    end if
+    stack_top_ptr = stack_mem[sp_m1 * PTR_W + PTR_W - 1 : sp_m1 * PTR_W];
+    stack_top_key = keys[stack_top_ptr * DATA_WIDTH + DATA_WIDTH - 1 : stack_top_ptr * DATA_WIDTH];
+  end comb
+
+  comb
+    sorted_out = r_sorted_out;
+    done = r_done;
+  end comb
+
+  seq on clk rising
+    if top_state == 0
+      // IDLE
+      r_done <= false;
+      r_sorted_out <= 0;
+      input_index <= 0;
+      output_index <= 0;
+      root <= null_ptr;
+      next_free_node <= 0;
+      sp <= 0;
+      keys <= 0;
+      for i in 0..ARRAY_SIZE-1
+        left_child[i * PTR_W + PTR_W - 1 : i * PTR_W] <= null_ptr;
+        right_child[i * PTR_W + PTR_W - 1 : i * PTR_W] <= null_ptr;
+        stack_mem[i * PTR_W + PTR_W - 1 : i * PTR_W] <= null_ptr;
+      end for
+      if start
+        top_state <= 1;
+        build_state <= 0;
+      end if
+
+    elsif top_state == 1
+      // BUILD_TREE
+      if build_state == 0
+        // INIT
+        if input_index.zext<32>() < ARRAY_SIZE
+          temp_data <= data_in[input_index * DATA_WIDTH + DATA_WIDTH - 1 : input_index * DATA_WIDTH];
+          input_index <= (input_index + 1).trunc<PTR_W>();
+          build_state <= 1;
+        else
+          build_state <= 4;
+        end if
+
+      elsif build_state == 1
+        // CHECK_ROOT
+        if root == null_ptr
+          keys[next_free_node * DATA_WIDTH + DATA_WIDTH - 1 : next_free_node * DATA_WIDTH] <= temp_data;
+          left_child[next_free_node * PTR_W + PTR_W - 1 : next_free_node * PTR_W] <= null_ptr;
+          right_child[next_free_node * PTR_W + PTR_W - 1 : next_free_node * PTR_W] <= null_ptr;
+          root <= next_free_node;
+          next_free_node <= (next_free_node + 1).trunc<PTR_W>();
+          build_state <= 0;
+        else
+          current_node <= root;
+          build_state <= 2;
+        end if
+
+      elsif build_state == 2
+        // TRAVERSE
+        if temp_data > cur_key
+          if cur_right == null_ptr
+            keys[next_free_node * DATA_WIDTH + DATA_WIDTH - 1 : next_free_node * DATA_WIDTH] <= temp_data;
+            left_child[next_free_node * PTR_W + PTR_W - 1 : next_free_node * PTR_W] <= null_ptr;
+            right_child[next_free_node * PTR_W + PTR_W - 1 : next_free_node * PTR_W] <= null_ptr;
+            right_child[current_node * PTR_W + PTR_W - 1 : current_node * PTR_W] <= next_free_node;
+            next_free_node <= (next_free_node + 1).trunc<PTR_W>();
+            build_state <= 0;
+          else
+            current_node <= cur_right;
+          end if
+        else
+          if cur_left == null_ptr
+            keys[next_free_node * DATA_WIDTH + DATA_WIDTH - 1 : next_free_node * DATA_WIDTH] <= temp_data;
+            left_child[next_free_node * PTR_W + PTR_W - 1 : next_free_node * PTR_W] <= null_ptr;
+            right_child[next_free_node * PTR_W + PTR_W - 1 : next_free_node * PTR_W] <= null_ptr;
+            left_child[current_node * PTR_W + PTR_W - 1 : current_node * PTR_W] <= next_free_node;
+            next_free_node <= (next_free_node + 1).trunc<PTR_W>();
+            build_state <= 0;
+          else
+            current_node <= cur_left;
+          end if
+        end if
+
+      elsif build_state == 4
+        // COMPLETE
+        top_state <= 2;
+        sort_state <= 0;
+      end if
+
+    elsif top_state == 2
+      // SORT_TREE
+      if sort_state == 0
+        // S_INIT
+        if root != null_ptr
+          current_node <= root;
+          sort_state <= 1;
+        else
+          sort_state <= 5;
+        end if
+
+      elsif sort_state == 1
+        // TRAVERSE_LEFT: push current, go left if possible
+        stack_mem[sp * PTR_W + PTR_W - 1 : sp * PTR_W] <= current_node;
+        sp <= (sp + 1).trunc<PTR_W>();
+        if cur_left != null_ptr
+          current_node <= cur_left;
+        else
+          // No left child - go directly to pop
+          sort_state <= 2;
+        end if
+
+      elsif sort_state == 2
+        // POP_PROCESS: pop and output
+        if sp > 0
+          current_node <= stack_top_ptr;
+          r_sorted_out[output_index * DATA_WIDTH + DATA_WIDTH - 1 : output_index * DATA_WIDTH] <= stack_top_key;
+          output_index <= (output_index + 1).trunc<PTR_W>();
+          sp <= (sp - 1).trunc<PTR_W>();
+          sort_state <= 3;
+        else
+          sort_state <= 5;
+        end if
+
+      elsif sort_state == 3
+        // ASSIGN_RIGHT
+        current_node <= cur_right;
+        sort_state <= 4;
+
+      elsif sort_state == 4
+        // CHECK_RIGHT
+        if current_node != null_ptr
+          sort_state <= 1;
+        else
+          // No right child - always go to POP (even if sp=0, POP will route to DONE)
+          sort_state <= 2;
+        end if
+
+      elsif sort_state == 5
+        // S_COMPLETE
+        r_done <= true;
+        top_state <= 0;
+      end if
+    end if
+  end seq
+end module binary_search_tree_sort

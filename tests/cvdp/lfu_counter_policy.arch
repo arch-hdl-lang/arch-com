@@ -1,0 +1,74 @@
+module lfu_counter_policy
+  param NWAYS: const = 4;
+  param NINDEXES: const = 32;
+  param COUNTERW: const = 2;
+  param MAX_FREQUENCY: const = (1 << COUNTERW) - 1;
+
+  port clock:       in Clock<SysDomain>;
+  port reset:       in Reset<Async>;
+  port index:       in UInt<$clog2(NINDEXES)>;
+  port way_select:  in UInt<$clog2(NWAYS)>;
+  port access:      in Bool;
+  port hit:         in Bool;
+  port way_replace: out UInt<$clog2(NWAYS)>;
+
+  default seq on clock rising;
+
+  // Frequency array: each index has NWAYS counters, each COUNTERW bits
+  reg frequency: Vec<UInt<NWAYS * COUNTERW>, NINDEXES> reset reset=>0;
+
+  // Combinational signals
+  wire min_val: UInt<COUNTERW>;
+  wire lfu_way: UInt<$clog2(NWAYS)>;
+  wire cur_freq: UInt<NWAYS * COUNTERW>;
+  wire accessed_cnt: UInt<COUNTERW>;
+
+  let idx: UInt<$clog2(NINDEXES)> = index;
+  let ws: UInt<$clog2(NWAYS)> = way_select;
+  let max_f: UInt<COUNTERW> = MAX_FREQUENCY[COUNTERW - 1 : 0];
+
+  // Combinational: extract counters for current index and find LFU way
+  comb
+    cur_freq = frequency[idx];
+
+    // Extract accessed way's counter
+    accessed_cnt = cur_freq[ws * COUNTERW + COUNTERW - 1 : ws * COUNTERW];
+
+    // Find minimum counter value (LFU), lower index wins ties
+    min_val = cur_freq[COUNTERW - 1 : 0];
+    lfu_way = 0;
+    for i in 1..NWAYS-1
+      if cur_freq[i * COUNTERW + COUNTERW - 1 : i * COUNTERW] < min_val
+        min_val = cur_freq[i * COUNTERW + COUNTERW - 1 : i * COUNTERW];
+        lfu_way = i.trunc<$clog2(NWAYS)>();
+      end if
+    end for
+
+    way_replace = lfu_way;
+  end comb
+
+  // Sequential logic for frequency counter updates
+  seq
+    if access
+      if hit
+        // Cache hit
+        if accessed_cnt < max_f
+          // Increment the accessed way's counter
+          frequency[idx][ws * COUNTERW + COUNTERW - 1 : ws * COUNTERW] <= (accessed_cnt + 1).trunc<COUNTERW>();
+        else
+          // Accessed way already at MAX_FREQUENCY: decrement others > 2
+          for i in 0..NWAYS-1
+            if i.trunc<$clog2(NWAYS)>() != ws
+              if cur_freq[i * COUNTERW + COUNTERW - 1 : i * COUNTERW] > 2
+                frequency[idx][i * COUNTERW + COUNTERW - 1 : i * COUNTERW] <= (cur_freq[i * COUNTERW + COUNTERW - 1 : i * COUNTERW] - 1).trunc<COUNTERW>();
+              end if
+            end if
+          end for
+        end if
+      else
+        // Cache miss: set replacement way counter to 1
+        frequency[idx][lfu_way * COUNTERW + COUNTERW - 1 : lfu_way * COUNTERW] <= 1;
+      end if
+    end if
+  end seq
+end module lfu_counter_policy

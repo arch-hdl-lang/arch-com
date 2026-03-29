@@ -1,0 +1,40 @@
+module barrel_shifter
+  param data_width: const = 16;
+  param shift_bits_width: const = 4;
+
+  port data_in: in UInt<data_width>;
+  port shift_bits: in UInt<shift_bits_width>;
+  port left_right: in Bit;
+  port rotate_left_right: in Bit;
+  port data_out: out UInt<data_width>;
+
+  wire shift_amt: UInt<data_width>;
+  wire rev_amt: UInt<data_width>;
+  wire shifted_left: UInt<data_width>;
+  wire shifted_right: UInt<data_width>;
+  wire rotated_left: UInt<data_width>;
+  wire rotated_right: UInt<data_width>;
+
+  comb
+    shift_amt = shift_bits.zext<data_width>();
+    rev_amt = (data_width - shift_amt).trunc<data_width>();
+    shifted_left = data_in << shift_amt;
+    shifted_right = data_in >> shift_amt;
+    rotated_left = (data_in << shift_amt) | (data_in >> rev_amt);
+    rotated_right = (data_in >> shift_amt) | (data_in << rev_amt);
+
+    if rotate_left_right == 1
+      if left_right == 1
+        data_out = rotated_left;
+      else
+        data_out = rotated_right;
+      end if
+    else
+      if left_right == 1
+        data_out = shifted_left;
+      else
+        data_out = shifted_right;
+      end if
+    end if
+  end comb
+end module barrel_shifter

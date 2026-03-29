@@ -1,0 +1,77 @@
+module cvdp_copilot_decode_firstbit
+  param InWidth_g: const = 32;
+  param InReg_g:   const = 1;
+  param OutReg_g:  const = 1;
+  param PlRegs_g:  const = 1;
+  port Clk:          in Clock<SysDomain>;
+  port Rst:          in Reset<Async>;
+  port In_Data:      in UInt<InWidth_g>;
+  port In_Valid:     in Bool;
+  port Out_FirstBit: out UInt<5>;
+  port Out_Found:    out Bool;
+  port Out_Valid:    out Bool;
+
+  reg in_data_r:  UInt<InWidth_g> reset Rst=>0;
+  reg in_valid_r: Bool reset Rst=>false;
+
+  reg pl_firstbit: UInt<5> reset Rst=>0;
+  reg pl_found:    Bool reset Rst=>false;
+  reg pl_valid:    Bool reset Rst=>false;
+
+  reg out_firstbit_r: UInt<5> reset Rst=>0;
+  reg out_found_r:    Bool reset Rst=>false;
+  reg out_valid_r:    Bool reset Rst=>false;
+
+  wire first_bit_comb: UInt<5>;
+  wire found_comb: Bool;
+
+  let lo16: UInt<16> = in_data_r[15:0];
+  let hi16: UInt<16> = in_data_r[31:16];
+  let lo_nz: Bool = lo16 != 0;
+
+  let sel16: UInt<16> = lo_nz ? lo16 : hi16;
+  let lo8: UInt<8> = sel16[7:0];
+  let hi8: UInt<8> = sel16[15:8];
+  let lo8_nz: Bool = lo8 != 0;
+
+  let sel8: UInt<8> = lo8_nz ? lo8 : hi8;
+  let lo4: UInt<4> = sel8[3:0];
+  let hi4: UInt<4> = sel8[7:4];
+  let lo4_nz: Bool = lo4 != 0;
+
+  let sel4: UInt<4> = lo4_nz ? lo4 : hi4;
+  let lo2: UInt<2> = sel4[1:0];
+  let hi2: UInt<2> = sel4[3:2];
+  let lo2_nz: Bool = lo2 != 0;
+
+  let sel2: UInt<2> = lo2_nz ? lo2 : hi2;
+  let bit0: Bool = sel2[0:0] != 0;
+
+  comb
+    found_comb = in_data_r != 0;
+    first_bit_comb = {~lo_nz, ~lo8_nz, ~lo4_nz, ~lo2_nz, ~bit0}.trunc<5>();
+  end comb
+
+  seq on Clk rising
+    in_data_r <= In_Data;
+    in_valid_r <= In_Valid;
+  end seq
+
+  seq on Clk rising
+    pl_firstbit <= first_bit_comb;
+    pl_found    <= found_comb;
+    pl_valid    <= in_valid_r;
+  end seq
+
+  seq on Clk rising
+    out_firstbit_r <= pl_firstbit;
+    out_found_r    <= pl_found;
+    out_valid_r    <= pl_valid;
+  end seq
+
+  comb
+    Out_FirstBit = out_firstbit_r;
+    Out_Found    = out_found_r;
+    Out_Valid    = out_valid_r;
+  end comb
+end module cvdp_copilot_decode_firstbit

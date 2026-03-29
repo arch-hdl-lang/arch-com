@@ -1,0 +1,68 @@
+module wishbone_to_ahb_bridge
+  // Wishbone ports
+  port clk_i:    in Clock<SysDomain>;
+  port rst_i:    in Bool;
+  port cyc_i:    in Bool;
+  port stb_i:    in Bool;
+  port sel_i:    in UInt<4>;
+  port we_i:     in Bool;
+  port addr_i:   in UInt<32>;
+  port data_i:   in UInt<32>;
+
+  // AHB ports
+  port hclk:     in Clock<AhbDomain>;
+  port hreset_n: in Bool;
+  port hrdata:   in UInt<32>;
+  port hresp:    in UInt<2>;
+  port hready:   in Bool;
+
+  // Wishbone outputs
+  port data_o:   out UInt<32>;
+  port ack_o:    out Bool;
+
+  // AHB outputs
+  port htrans:   out UInt<2>;
+  port hsize:    out UInt<3>;
+  port hburst:   out UInt<3>;
+  port hwrite:   out Bool;
+  port haddr:    out UInt<32>;
+  port hwdata:   out UInt<32>;
+
+  // Active when both cyc and stb are asserted
+  let wb_active: Bool = cyc_i & stb_i;
+
+  // Determine hsize from sel_i
+  wire size_val: UInt<3>;
+  comb
+    if sel_i == 0b1111
+      size_val = 0b010.zext<3>();
+    elsif (sel_i == 0b0011) | (sel_i == 0b1100)
+      size_val = 0b001.zext<3>();
+    else
+      size_val = 0b000.zext<3>();
+    end if
+  end comb
+
+  // AHB outputs - directly driven from WB inputs
+  comb hwrite = we_i;
+  comb haddr = addr_i;
+  comb hwdata = data_i;
+  comb hburst = 0b000.zext<3>();
+  comb hsize = size_val;
+
+  // htrans: NONSEQ (2'b10) when active, IDLE (2'b00) otherwise
+  comb
+    if wb_active
+      htrans = 0b10.zext<2>();
+    else
+      htrans = 0b00.zext<2>();
+    end if
+  end comb
+
+  // data_o: pass through hrdata
+  comb data_o = hrdata;
+
+  // ack_o: acknowledge when active and hready
+  comb ack_o = wb_active & hready;
+
+end module wishbone_to_ahb_bridge

@@ -1,0 +1,131 @@
+module sdram_controller
+  port clk: in Clock<SysDomain>;
+  port reset: in Reset<Async, High>;
+  port addr: in UInt<24>;
+  port data_in: in UInt<16>;
+  port data_out: out UInt<16>;
+  port read: in Bool;
+  port write: in Bool;
+  port sdram_clk: out Bool;
+  port sdram_cke: out Bool;
+  port sdram_cs: out Bool;
+  port sdram_ras: out Bool;
+  port sdram_cas: out Bool;
+  port sdram_we: out Bool;
+  port sdram_addr: out UInt<13>;
+  port sdram_ba: out UInt<2>;
+  port sdram_dq: in UInt<16>;
+  port dq_out: out UInt<16>;
+
+  default seq on clk rising;
+
+  reg state: UInt<3> reset reset=>0;
+  reg init_cnt: UInt<4> reset reset=>0;
+  reg refresh_cnt: UInt<11> reset reset=>0;
+  reg data_out_r: UInt<16> reset reset=>0;
+  reg dq_out_r: UInt<16> reset reset=>0;
+  reg sdram_cs_r: Bool reset reset=>false;
+  reg sdram_ras_r: Bool reset reset=>false;
+  reg sdram_cas_r: Bool reset reset=>false;
+  reg sdram_we_r: Bool reset reset=>false;
+  reg sdram_addr_r: UInt<13> reset reset=>0;
+  reg sdram_ba_r: UInt<2> reset reset=>0;
+  reg read_pending: Bool reset reset=>false;
+
+  comb
+    sdram_clk = clk;
+    sdram_cke = true;
+    sdram_cs = sdram_cs_r;
+    sdram_ras = sdram_ras_r;
+    sdram_cas = sdram_cas_r;
+    sdram_we = sdram_we_r;
+    sdram_addr = sdram_addr_r;
+    sdram_ba = sdram_ba_r;
+    data_out = data_out_r;
+    dq_out = dq_out_r;
+  end comb
+
+  seq
+    if state == 0
+      // INIT state
+      if init_cnt == 9
+        state <= 1;
+        init_cnt <= 0;
+      else
+        init_cnt <= (init_cnt + 1).trunc<4>();
+      end if
+      sdram_cs_r <= false;
+      sdram_ras_r <= false;
+      sdram_cas_r <= false;
+      sdram_we_r <= false;
+
+    elsif state == 1
+      // IDLE state
+      if read | write
+        state <= 2;
+        sdram_cs_r <= true;
+        sdram_ras_r <= true;
+        sdram_cas_r <= true;
+        sdram_we_r <= false;
+        sdram_addr_r <= addr[23:11];
+        sdram_ba_r <= addr[10:9];
+        read_pending <= read;
+        refresh_cnt <= 0;
+      elsif refresh_cnt == 1024
+        state <= 5;
+        sdram_cs_r <= true;
+        sdram_ras_r <= true;
+        sdram_cas_r <= true;
+        sdram_we_r <= false;
+        refresh_cnt <= 0;
+      else
+        refresh_cnt <= (refresh_cnt + 1).trunc<11>();
+        sdram_cs_r <= false;
+        sdram_ras_r <= false;
+        sdram_cas_r <= false;
+        sdram_we_r <= false;
+      end if
+
+    elsif state == 2
+      if read_pending
+        state <= 3;
+        sdram_cs_r <= true;
+        sdram_ras_r <= false;
+        sdram_cas_r <= true;
+        sdram_we_r <= false;
+        sdram_addr_r <= addr[8:0].zext<13>();
+      else
+        state <= 4;
+        sdram_cs_r <= true;
+        sdram_ras_r <= false;
+        sdram_cas_r <= true;
+        sdram_we_r <= true;
+        sdram_addr_r <= addr[8:0].zext<13>();
+      end if
+
+    elsif state == 3
+      data_out_r <= sdram_dq;
+      state <= 1;
+      sdram_cs_r <= false;
+      sdram_ras_r <= false;
+      sdram_cas_r <= false;
+      sdram_we_r <= false;
+
+    elsif state == 4
+      dq_out_r <= data_in;
+      state <= 1;
+      sdram_cs_r <= false;
+      sdram_ras_r <= false;
+      sdram_cas_r <= false;
+      sdram_we_r <= false;
+
+    elsif state == 5
+      state <= 1;
+      sdram_cs_r <= false;
+      sdram_ras_r <= false;
+      sdram_cas_r <= false;
+      sdram_we_r <= false;
+    end if
+  end seq
+
+end module sdram_controller

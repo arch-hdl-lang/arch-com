@@ -14,8 +14,8 @@ module MultiClockSync
   port data_out: out UInt<8>;
   port fast_count: out UInt<8>;
 
-  reg fast_r: UInt<8> init 0 reset rst=0;
-  reg slow_r: UInt<8> init 0 reset rst=0;
+  reg fast_r: UInt<8> init 0 reset rst=>0;
+  reg slow_r: UInt<8> init 0 reset rst=>0;
 
   seq on fast_clk rising
     fast_r <= (fast_r + 1).trunc<8>();

@@ -1,0 +1,97 @@
+module ir_receiver
+  port clk_in: in Clock<SysDomain>;
+  port reset_in: in Reset<Async, High>;
+  port ir_signal_in: in Bool;
+  port reg ir_frame_out: out UInt<12> reset reset_in=>0;
+  port reg ir_frame_valid: out Bool reset reset_in=>false;
+
+  default seq on clk_in rising;
+
+  reg present_state: UInt<3> reset reset_in=>0;
+  reg cycle_cnt: UInt<16> reset reset_in=>0;
+  reg bit_cnt: UInt<4> reset reset_in=>0;
+  reg ir_frame_reg: UInt<12> reset reset_in=>0;
+
+  seq
+    if present_state == 0
+      ir_frame_valid <= false;
+      cycle_cnt <= 0;
+      bit_cnt <= 0;
+      ir_frame_reg <= 0;
+      if ir_signal_in
+        present_state <= 1;
+      end if
+
+    elsif present_state == 1
+      // START: count HIGH pulse for start bit (~2400 cycles at 1MHz = 2.4ms)
+      ir_frame_valid <= false;
+      if ir_signal_in
+        cycle_cnt <= (cycle_cnt + 1).trunc<16>();
+      else
+        if (cycle_cnt >= 1800) & (cycle_cnt < 3001)
+          cycle_cnt <= 0;
+          present_state <= 2;
+        else
+          present_state <= 0;
+          cycle_cnt <= 0;
+        end if
+      end if
+
+    elsif present_state == 2
+      // DECODE_LOW: count LOW pulse (~600 cycles at 1MHz = 0.6ms)
+      ir_frame_valid <= false;
+      if ir_signal_in
+        if (cycle_cnt >= 300) & (cycle_cnt < 901)
+          cycle_cnt <= 0;
+          present_state <= 3;
+        else
+          present_state <= 0;
+          cycle_cnt <= 0;
+        end if
+      else
+        cycle_cnt <= (cycle_cnt + 1).trunc<16>();
+      end if
+
+    elsif present_state == 3
+      // DECODE_HIGH: 0=~600cyc, 1=~1200cyc
+      ir_frame_valid <= false;
+      if ir_signal_in
+        cycle_cnt <= (cycle_cnt + 1).trunc<16>();
+      else
+        if (cycle_cnt >= 901) & (cycle_cnt < 1501)
+          // bit is 1
+          ir_frame_reg <= ir_frame_reg | (1.zext<12>() << bit_cnt);
+          bit_cnt <= (bit_cnt + 1).trunc<4>();
+          cycle_cnt <= 0;
+          if bit_cnt == 11
+            present_state <= 4;
+          else
+            present_state <= 2;
+          end if
+        elsif (cycle_cnt >= 300) & (cycle_cnt < 901)
+          // bit is 0
+          bit_cnt <= (bit_cnt + 1).trunc<4>();
+          cycle_cnt <= 0;
+          if bit_cnt == 11
+            present_state <= 4;
+          else
+            present_state <= 2;
+          end if
+        else
+          present_state <= 0;
+          cycle_cnt <= 0;
+        end if
+      end if
+
+    elsif present_state == 4
+      // DONE: output decoded frame for one cycle
+      ir_frame_out <= ir_frame_reg;
+      ir_frame_valid <= true;
+      present_state <= 0;
+
+    else
+      ir_frame_valid <= false;
+      present_state <= 0;
+    end if
+  end seq
+end module ir_receiver

@@ -1,0 +1,41 @@
+// 4-tap FIR filter with 4-cycle latency
+module fir_filter
+  port clk: in Clock<SysDomain>;
+  port reset: in Reset<Async, High>;
+  port input_sample: in SInt<16>;
+  port output_sample: out SInt<16>;
+  port coeff0: in SInt<16>;
+  port coeff1: in SInt<16>;
+  port coeff2: in SInt<16>;
+  port coeff3: in SInt<16>;
+
+  reg sample_delay1: SInt<16> reset reset=>0;
+  reg sample_delay2: SInt<16> reset reset=>0;
+  reg sample_delay3: SInt<16> reset reset=>0;
+  reg accumulator: SInt<32> reset reset=>0;
+  reg out_reg: SInt<16> reset reset=>0;
+
+  wire prod0: SInt<32>;
+  wire prod1: SInt<32>;
+  wire prod2: SInt<32>;
+  wire prod3: SInt<32>;
+  wire acc_sum: SInt<32>;
+
+  comb
+    prod0 = input_sample * coeff0;
+    prod1 = sample_delay1 * coeff1;
+    prod2 = sample_delay2 * coeff2;
+    prod3 = sample_delay3 * coeff3;
+    acc_sum = (prod0.sext<34>() + prod1.sext<34>() + prod2.sext<34>() + prod3.sext<34>()).trunc<32>();
+  end comb
+
+  seq on clk rising
+    sample_delay1 <= input_sample;
+    sample_delay2 <= sample_delay1;
+    sample_delay3 <= sample_delay2;
+    accumulator <= acc_sum;
+    out_reg <= accumulator.trunc<16>();
+  end seq
+
+  comb output_sample = out_reg;
+end module fir_filter

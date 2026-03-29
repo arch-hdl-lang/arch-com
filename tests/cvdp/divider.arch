@@ -1,0 +1,98 @@
+module divider
+  param WIDTH: const = 32;
+  param AW: const = WIDTH + 1;
+  param AQW: const = WIDTH + WIDTH + 1;
+
+  port clk:       in Clock<SysDomain>;
+  port rst_n:     in Reset<Async, Low>;
+  port start:     in Bool;
+  port dividend:  in UInt<WIDTH>;
+  port divisor:   in UInt<WIDTH>;
+  port quotient:  out UInt<WIDTH>;
+  port remainder: out UInt<WIDTH>;
+  port valid:     out Bool;
+
+  default seq on clk rising;
+
+  // FSM states as constants
+  let ST_IDLE: UInt<2> = 0;
+  let ST_BUSY: UInt<2> = 1;
+  let ST_DONE: UInt<2> = 2;
+
+  reg state_r: UInt<2> reset rst_n=>0;
+
+  // AQ combined register: A is top AW bits, Q is bottom WIDTH bits
+  reg aq_r: UInt<AQW> reset rst_n=>0;
+  reg m_r: UInt<AW> reset rst_n=>0;
+  reg n_r: UInt<WIDTH> reset rst_n=>0;
+  reg quotient_r: UInt<WIDTH> reset rst_n=>0;
+  reg remainder_r: UInt<WIDTH> reset rst_n=>0;
+  reg valid_r: Bool reset rst_n=>false;
+
+  // Shift AQ left by 1: take top AQW-1 bits and append 0
+  let a_shifted: UInt<AW> = aq_r[AQW - 2 : WIDTH - 1];
+  let q_shifted: UInt<WIDTH> = {aq_r[WIDTH - 2 : 0], 1'b0};
+
+  // Current A (top bits of aq_r) for sign check
+  let a_current: UInt<AW> = aq_r[AQW - 1 : WIDTH];
+
+  // Add and subtract with trunc to stay at AW
+  let a_plus_m: UInt<AW> = (a_shifted + m_r).trunc<AW>();
+  let a_minus_m: UInt<AW> = (a_shifted - m_r).trunc<AW>();
+
+  // New A after operation based on current A sign
+  wire a_new: UInt<AW>;
+  wire q_new_lsb: UInt<1>;
+
+  comb
+    if a_current[WIDTH]
+      a_new = a_plus_m;
+    else
+      a_new = a_minus_m;
+    end if
+    if a_new[WIDTH]
+      q_new_lsb = 0;
+    else
+      q_new_lsb = 1;
+    end if
+  end comb
+
+  // Final adjustment for remainder
+  let a_final_adj: UInt<AW> = (a_current + m_r).trunc<AW>();
+
+  seq
+    if state_r == ST_IDLE
+      valid_r <= false;
+      if start
+        aq_r <= dividend.zext<AQW>();
+        m_r <= divisor.zext<AW>();
+        n_r <= (WIDTH - 1).zext<WIDTH>();
+        state_r <= ST_BUSY;
+      end if
+    elsif state_r == ST_BUSY
+      aq_r <= {a_new, q_shifted[WIDTH - 1 : 1], q_new_lsb};
+      n_r <= (n_r - 1).trunc<WIDTH>();
+      if n_r == 0
+        state_r <= ST_DONE;
+      end if
+    elsif state_r == ST_DONE
+      if a_current[WIDTH]
+        quotient_r <= aq_r[WIDTH - 1 : 0];
+        remainder_r <= a_final_adj[WIDTH - 1 : 0];
+      else
+        quotient_r <= aq_r[WIDTH - 1 : 0];
+        remainder_r <= a_current[WIDTH - 1 : 0];
+      end if
+      valid_r <= true;
+      if ~start
+        state_r <= ST_IDLE;
+      end if
+    end if
+  end seq
+
+  comb
+    quotient = quotient_r;
+    remainder = remainder_r;
+    valid = valid_r;
+  end comb
+end module divider

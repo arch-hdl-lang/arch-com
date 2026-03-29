@@ -1,0 +1,75 @@
+module cvdp_copilot_register_file_2R1W
+  param DATA_WIDTH: const = 32;
+
+  port din:    in UInt<DATA_WIDTH>;
+  port wad1:   in UInt<5>;
+  port rad1:   in UInt<5>;
+  port rad2:   in UInt<5>;
+  port wen1:   in Bool;
+  port ren1:   in Bool;
+  port ren2:   in Bool;
+  port clk:    in Clock<SysDomain>;
+  port resetn: in Reset<Async, Low>;
+
+  port reg dout1:     out UInt<DATA_WIDTH> reset resetn=>0;
+  port reg dout2:     out UInt<DATA_WIDTH> reset resetn=>0;
+  port reg collision: out Bool reset resetn=>false;
+
+  // Clock gating: enable latch captured on falling edge
+  reg en_latch_r: Bool init false;
+  wire gated_clk_w: Bool;
+
+  seq on clk falling
+    en_latch_r <= wen1 | ren1 | ren2;
+  end seq
+
+  comb gated_clk_w = en_latch_r & clk;
+
+  // Register file memory
+  reg rf_mem: Vec<UInt<DATA_WIDTH>, 32> reset resetn=>0;
+  reg rf_valid: UInt<32> reset resetn=>0;
+
+  // Write logic on gated clock
+  seq on gated_clk_w rising
+    if wen1
+      rf_mem[wad1] <= din;
+      rf_valid <= rf_valid | (32'h1 << wad1);
+    end if
+  end seq
+
+  // Read port 1 on gated clock
+  seq on gated_clk_w rising
+    if ren1
+      if rf_valid[rad1]
+        dout1 <= rf_mem[rad1];
+      else
+        dout1 <= 0;
+      end if
+    else
+      dout1 <= 0;
+    end if
+  end seq
+
+  // Read port 2 on gated clock
+  seq on gated_clk_w rising
+    if ren2
+      if rf_valid[rad2]
+        dout2 <= rf_mem[rad2];
+      else
+        dout2 <= 0;
+      end if
+    else
+      dout2 <= 0;
+    end if
+  end seq
+
+  // Collision detection on original clock
+  seq on clk rising
+    if (ren1 & ren2 & (rad1 == rad2)) | (wen1 & ren1 & (wad1 == rad1)) | (wen1 & ren2 & (wad1 == rad2))
+      collision <= true;
+    else
+      collision <= false;
+    end if
+  end seq
+
+end module cvdp_copilot_register_file_2R1W

@@ -1,0 +1,44 @@
+module gcd_datapath
+  param WIDTH: const = 4;
+  port clk:               in Clock<SysDomain>;
+  port rst:               in Reset<Sync>;
+  port A:                 in UInt<WIDTH>;
+  port B:                 in UInt<WIDTH>;
+  port controlpath_state: in UInt<2>;
+  port OUT:               out UInt<WIDTH>;
+  port equal:             out Bool;
+  port greater_than:      out Bool;
+
+  reg a_ff: UInt<WIDTH> init 0 reset rst=>0;
+  reg b_ff: UInt<WIDTH> init 0 reset rst=>0;
+  reg out_r: UInt<WIDTH> init 0 reset rst=>0;
+
+  wire cmp_a: UInt<WIDTH>;
+  wire cmp_b: UInt<WIDTH>;
+
+  comb
+    if controlpath_state == 2'd0
+      cmp_a = A;
+      cmp_b = B;
+    else
+      cmp_a = a_ff;
+      cmp_b = b_ff;
+    end if
+    equal = cmp_a == cmp_b;
+    greater_than = cmp_a > cmp_b;
+    OUT = out_r;
+  end comb
+
+  seq on clk rising
+    if controlpath_state == 2'd0
+      a_ff <= A;
+      b_ff <= B;
+    elsif controlpath_state == 2'd1
+      out_r <= a_ff;
+    elsif controlpath_state == 2'd2
+      a_ff <= (a_ff - b_ff).trunc<WIDTH>();
+    else
+      b_ff <= (b_ff - a_ff).trunc<WIDTH>();
+    end if
+  end seq
+end module gcd_datapath

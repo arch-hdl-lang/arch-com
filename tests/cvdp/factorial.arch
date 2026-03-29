@@ -1,0 +1,51 @@
+fsm factorial
+  port clk: in Clock<SysDomain>;
+  port arst_n: in Reset<Async, Low>;
+  port num_in: in UInt<5>;
+  port start: in Bool;
+  port reg busy: out Bool reset arst_n=>false;
+  port reg done: out Bool reset arst_n=>false;
+  port reg fact: out UInt<64> reset arst_n=>0;
+
+  reg cnt: UInt<5> reset arst_n=>0;
+  reg acc: UInt<64> reset arst_n=>1;
+
+  state Idle, Busy, Done;
+  default state Idle;
+  default seq on clk rising;
+
+  state Idle
+    seq
+      if start
+        cnt <= num_in;
+        acc <= 1;
+        busy <= true;
+        done <= false;
+        fact <= 0;
+      end if
+    end seq
+    transition to Busy when start;
+  end state Idle
+
+  state Busy
+    seq
+      if cnt < 2
+        done <= true;
+        busy <= false;
+        fact <= acc;
+        cnt <= 0;
+      else
+        acc <= acc * cnt.zext<64>();
+        cnt <= cnt - 1;
+      end if
+    end seq
+    transition to Done when cnt < 2;
+  end state Busy
+
+  state Done
+    seq
+      done <= false;
+    end seq
+    transition to Idle when done;
+  end state Done
+end fsm factorial

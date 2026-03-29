@@ -2,7 +2,7 @@ module serial_in_parallel_out_8bit
   port clock: in Clock<SysDomain>;
   port reset: in Reset<Async, High>;
   port serial_in: in Bool;
-  port reg parallel_out: out UInt<8> reset reset=0;
+  port reg parallel_out: out UInt<8> reset reset=>0;
 
   seq on clock rising
     parallel_out <= {parallel_out[6:0], serial_in};

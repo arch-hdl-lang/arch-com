@@ -1,0 +1,88 @@
+module ping_pong_buffer
+  port clk: in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+  port write_enable: in Bool;
+  port read_enable: in Bool;
+  port data_in: in UInt<8>;
+  port data_out: out UInt<8>;
+  port reg buffer_full: out Bool reset rst_n = false;
+  port reg buffer_empty: out Bool reset rst_n = true;
+  port reg buffer_select: out Bool reset rst_n = false;
+
+  default seq on clk rising;
+
+  // Memory arrays - two banks of 255 x 8-bit  
+  reg mem0: Vec<UInt<8>, 256>;
+  reg mem1: Vec<UInt<8>, 256>;
+
+  // Pointers
+  reg write_ptr: UInt<8> reset rst_n = 0;
+  reg read_ptr: UInt<8> reset rst_n = 0;
+
+  // Reset pipeline: high for 2 cycles after reset deassert
+  // Prevents stale write_enable from corrupting state
+  reg rst_pipe0: Bool reset rst_n = true;
+  reg rst_pipe1: Bool reset rst_n = true;
+
+  let in_reset_pipe: Bool = rst_pipe0 or rst_pipe1;
+
+  // Async read from memories and output mux
+  comb
+    if buffer_select
+      data_out = mem1[read_ptr];
+    else
+      data_out = mem0[read_ptr];
+    end if
+  end comb
+
+  // Memory write logic
+  seq
+    if write_enable and not buffer_full and not in_reset_pipe
+      if not buffer_select
+        mem0[write_ptr] <= data_in;
+      else
+        mem1[write_ptr] <= data_in;
+      end if
+    end if
+  end seq
+
+  // Pointer and state management
+  seq
+    if rst_n == false
+      write_ptr <= 0;
+      read_ptr <= 0;
+      buffer_full <= false;
+      buffer_empty <= true;
+      buffer_select <= false;
+      rst_pipe0 <= true;
+      rst_pipe1 <= true;
+    else
+      // Reset pipeline shift
+      rst_pipe0 <= false;
+      rst_pipe1 <= rst_pipe0;
+
+      // Write path - blocked during reset pipeline
+      if write_enable and not buffer_full and not in_reset_pipe
+        buffer_empty <= false;
+        if write_ptr == 254
+          write_ptr <= 0;
+          buffer_full <= true;
+        else
+          write_ptr <= (write_ptr + 1).trunc<8>();
+        end if
+      end if
+      // Read path
+      if read_enable and not buffer_empty
+        if read_ptr == 254
+          read_ptr <= 0;
+          buffer_select <= not buffer_select;
+          buffer_empty <= true;
+          buffer_full <= false;
+        else
+          read_ptr <= (read_ptr + 1).trunc<8>();
+        end if
+      end if
+    end if
+  end seq
+
+end module ping_pong_buffer

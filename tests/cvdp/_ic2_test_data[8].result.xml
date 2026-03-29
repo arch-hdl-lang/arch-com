@@ -1,0 +1,8 @@
+<testsuites name="results">
+  <testsuite name="all" package="all">
+    <property name="random_seed" value="1774813858" />
+    <testcase name="test_int_controller" classname="test_int_controller" file="/var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/debug_interrupt_controller_apb_brjy1nu0/src/test_int_controller.py" lineno="8" time="0.01130986213684082" sim_time_ns="385.0" ratio_time="34041.086915277105">
+      <failure error_type="AssertionError" error_msg="Got wrong ID: 3, Expected: 2&#10;assert 3 == 2&#10; +  where 2 = min({2, 4, 5, 6, 7}, key=&lt;function gen_ack.&lt;locals&gt;.&lt;lambda&gt; at 0x10b7c72e0&gt;)" />
+    </testcase>
+  </testsuite>
+</testsuites>

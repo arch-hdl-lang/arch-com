@@ -1,0 +1,236 @@
+MODULE: axis_joiner
+ID: cvdp_copilot_axis_joiner_0001
+
+=== SPEC ===
+
+
+Design a **SystemVerilog RTL module** named `axis_joiner` that merges multiple AXI Stream (AXIS) inputs into a single AXIS output. This module should allow seamless data transfer from three independent input streams (`s_axis`) to a single output stream (`m_axis`).  
+
+The design should incorporate the following key features:  
+
+### **1. AXI Stream Interfaces**  
+#### **Input Ports and output ports**  
+- The module receives data from **three independent AXI Stream interfaces** (`s_axis_tdata_1`, `s_axis_tdata_2`, `s_axis_tdata_3`).  
+- Each input stream includes the standard **AXI Stream handshake signals**:  
+  - `tdata` (data bus)  
+  - `tvalid` (data valid indicator)  
+  - `tready` (ready signal for backpressure handling)  
+  - `tlast` (indicating the last transfer of a packet)  
+
+#### **Output Port:**  
+- A **single merged AXI Stream output** (`m_axis`) that transmits data from one of the three input streams at any given time.  
+- The output interface follows the **AXI Stream protocol**, including the standard signals:  
+  - `tdata`, `tvalid`, `tready`, `tlast`, and `tuser`.  
+
+Port Name | Direction | Width | Description
+-- | -- | -- | --
+clk | Input | 1 bit | System clock signal.
+rst | Input | 1 bit | Asynchronous active-high reset.
+s_axis_tdata_1 | Input | 8-bit | Data from AXI Stream 1.
+s_axis_tvalid_1 | Input | 1 bit | Valid signal for AXIS 1.
+s_axis_tready_1 | Output | 1 bit | Ready signal for AXIS 1.
+s_axis_tlast_1 | Input | 1 bit | Last data word indicator for AXIS 1.
+s_axis_tdata_2 | Input | 8-bit  | Data from AXI Stream 2.
+s_axis_tvalid_2 | Input | 1 bit | Valid signal for AXIS 2.
+s_axis_tready_2 | Output | 1 bit | Ready signal for AXIS 2.
+s_axis_tlast_2 | Input | 1 bit | Last data word indicator for AXIS 2.
+s_axis_tdata_3 | Input | 8-bit  | Data from AXI Stream 3.
+s_axis_tvalid_3 | Input | 1 bit | Valid signal for AXIS 3.
+s_axis_tready_3 | Output | 1 bit | Ready signal for AXIS 3.
+s_axis_tlast_3 | Input | 1 bit | Last data word indicator for AXIS 3.
+m_axis_tdata | Output | 8-bit  | Merged output data.
+m_axis_tvalid | Output | 1 bit | Valid signal for merged stream.
+m_axis_tready | Input | 1 bit | Ready signal for merged stream.
+m_axis_tlast | Output | 1 bit | Last data word indicator for output.
+m_axis_tuser | Output | 2-bit  | Identifies source of output data with TAG_ID.
+busy | Output | 1 bit | Indicates module is processing data.
+
+
+### **2. Arbitration and Control Logic**  
+The module should operate based on a simple round-robin arbitration scheme, prioritizing valid input streams.
+- The module uses a **Finite State Machine (FSM)** to control the selection of input streams.  
+- The FSM operates in the following states:  
+  - `STATE_IDLE`: Waits for a valid input stream.  
+  - `STATE_1`: Transfers data from `s_axis_tdata_1`.  
+  - `STATE_2`: Transfers data from `s_axis_tdata_2`.  
+  - `STATE_3`: Transfers data from `s_axis_tdata_3`.  
+- The selection priority is determined as follows:  
+  1. If `s_axis_tvalid_1` is asserted, the FSM transitions to `STATE_1`.  
+  2. If `s_axis_tvalid_2` is asserted and `s_axis_tvalid_1` is not available, the FSM transitions to `STATE_2`.  
+  3. If `s_axis_tvalid_3` is asserted and both `s_axis_tvalid_1` and `s_axis_tvalid_2` are unavailable, the FSM transitions to `STATE_3`.  
+- Once the selected input stream completes its packet (`tlast` asserted), the FSM returns to `STATE_IDLE` and waits for the next available stream.  
+
+### **3. Data Buffering and Synchronization**  
+- If `m_axis_tready` is deasserted while transferring data, the module should **temporarily store the current data** in internal registers.  
+- Buffered data should be output once `m_axis_tready` is reasserted to maintain **seamless and lossless data transfer**.  
+- The `temp` flag ensures that data is retained when output is stalled.  
+
+### **4. Signal Assignments and Muxing**  
+- A multiplexer (`MUX`) selects the appropriate input data (`tdata`, `tvalid`, `tlast`, `tuser`) based on the current FSM state.  
+- The `tuser` field is assigned a unique tag (`TAG_ID_1`, `TAG_ID_2`, `TAG_ID_3`) to indicate the originating stream.  
+    `TAG_ID_1`: TAG_ID for AXI stream input 1 is 0x1.
+    `TAG_ID_2`: TAG_ID for AXI stream input 2 is 0x2.
+    `TAG_ID_3`: TAG_ID for AXI stream input 3 is 0x3.
+- `tready` signals are managed based on the FSM state, ensuring that only the active input stream is acknowledged.  
+
+
+### **5. Reset Behavior**  
+- The design should include an **asynchronous reset (`rst`)** that properly initializes all state variables and output signals.  
+
+### **6. Status Signals**  
+- A `busy` output signal should indicate when the module is actively processing data from any input stream.  
+
+
+
+
+
+
+
+
+
+
+=== src/.env ===
+SIM             = icarus
+WAVE            = False
+TOPLEVEL_LANG   = verilog
+VERILOG_SOURCES = /code/rtl/axis_joiner.sv 
+TOPLEVEL        = axis_joiner
+MODULE          = test_axis_joiner
+PYTHONPATH      = /src
+HASH            = eaef2a5732f3a70708e4bc7fcee6182810470f16
+
+
+=== src/test_axis_joiner.py ===
+import cocotb
+from cocotb.clock import Clock
+from cocotb.triggers import FallingEdge, RisingEdge, ClockCycles, Timer
+import random
+import time
+import harness_library as hrs_lb
+
+@cocotb.test()
+async def test_axis_joiner(dut):
+    # Seed the random number generator with the current time or another unique value
+    random.seed(time.time())
+    # Start clock
+    cocotb.start_soon(Clock(dut.clk, 5, units='ns').start())
+    
+    await hrs_lb.dut_init(dut)
+    
+
+
+    await FallingEdge(dut.clk)
+    dut.rst.value = 0
+    await FallingEdge(dut.clk)
+    dut.rst.value = 1
+    await FallingEdge(dut.clk)
+    dut.rst.value = 0
+    await RisingEdge(dut.clk)
+    assert dut.m_axis_tdata.value == 0, f"[ERROR] m_axis_tdata value is : {dut.m_axis_tdata.value}"
+    print(f'reset successful ')
+
+    dut.m_axis_tready.value = 1
+ 
+    
+    await FallingEdge(dut.clk)
+    dut.s_axis_tdata_1.value = 0xff
+    dut.s_axis_tvalid_1.value = 1
+    dut.s_axis_tlast_1.value = 0
+    await FallingEdge(dut.clk)
+    dut.s_axis_tdata_1.value = 0xf0
+    dut.s_axis_tvalid_1.value = 1
+    dut.s_axis_tlast_1.value = 0
+    assert dut.m_axis_tdata.value == 0xff, f"[ERROR] m_axis_tdata value is : {dut.m_axis_tdata.value}"
+    assert dut.m_axis_tvalid.value == 1, f"[ERROR] m_axis_tvalid value is : {dut.m_axis_tvalid.value}"
+    assert dut.m_axis_tlast.value == 0, f"[ERROR] m_axis_tlast value is : {dut.m_axis_tlast.value}"
+    assert dut.m_axis_tuser.value == 0x1, f"[ERROR] m_axis_tuser value is : {dut.m_axis_tuser.value}"
+    
+
+    await FallingEdge(dut.clk)
+    dut.s_axis_tdata_1.value = 0xfa
+    dut.s_axis_tvalid_1.value = 1
+    dut.s_axis_tlast_1.value = 1
+    assert dut.m_axis_tdata.value == 0xf0, f"[ERROR] m_axis_tdata value is : {dut.m_axis_tdata.value}"
+    assert dut.m_axis_tvalid.value == 1, f"[ERROR] m_axis_tvalid value is : {dut.m_axis_tvalid.value}"
+    assert dut.m_axis_tlast.value == 0, f"[ERROR] m_axis_tlast value is : {dut.m_axis_tlast.value}"
+    assert dut.m_axis_tuser.value == 0x1, f"[ERROR] m_axis_tuser value is : {dut.m_axis_tuser.value}"
+    await RisingEdge(dut.clk)
+    assert dut.m_axis_tdata.value == 0xfa, f"[ERROR] m_axis_tdata value is : {dut.m_axis_tdata.value}"
+    assert dut.m_axis_tvalid.value == 1, f"[ERROR] m_axis_tvalid value is : {dut.m_axis_tvalid.value}"
+    assert dut.m_axis_tlast.value == 1, f"[ERROR] m_axis_tlast value is : {dut.m_axis_tlast.value}"
+    assert dut.m_axis_tuser.value == 0x1, f"[ERROR] m_axis_tuser value is : {dut.m_axis_tuser.value}"
+
+    print(f'successfully received data from stream 1 with correct tag id in m_axis_tuser channel  ')
+
+    await FallingEdge(dut.clk)
+    dut.s_axis_tvalid_1.value = 0
+    await FallingEdge(dut.clk)
+    await FallingEdge(dut.clk)
+    
+    await FallingEdge(dut.clk)
+    dut.s_axis_tdata_2.value = 0xff
+    dut.s_axis_tvalid_2.value = 1
+    dut.s_axis_tlast_2.value = 0
+    await FallingEdge(dut.clk)
+    dut.s_axis_tdata_2.value = 0xf0
+    dut.s_axis_tvalid_2.value = 1
+    dut.s_axis_tlast_2.value = 0
+    assert dut.m_axis_tdata.value == 0xff, f"[ERROR] m_axis_tdata value is : {dut.m_axis_tdata.value}"
+    assert dut.m_axis_tvalid.value == 1, f"[ERROR] m_axis_tvalid value is : {dut.m_axis_tvalid.value}"
+    assert dut.m_axis_tlast.value == 0, f"[ERROR] m_axis_tlast value is : {dut.m_axis_tlast.value}"
+    assert dut.m_axis_tuser.value == 0x2, f"[ERROR] m_axis_tuser value is : {dut.m_axis_tuser.value}"
+
+    await FallingEdge(dut.clk)
+    dut.s_axis_tdata_2.value = 0xfa
+    dut.s_axis_tvalid_2.value = 1
+    dut.s_axis_tlast_2.value = 1
+    assert dut.m_axis_tdata.value == 0xf0, f"[ERROR] m_axis_tdata value is : {dut.m_axis_tdata.value}"
+    assert dut.m_axis_tvalid.value == 1, f"[ERROR] m_axis_tvalid value is : {dut.m_axis_tvalid.value}"
+    assert dut.m_axis_tlast.value == 0, f"[ERROR] m_axis_tlast value is : {dut.m_axis_tlast.value}"
+    assert dut.m_axis_tuser.value == 0x2, f"[ERROR] m_axis_tuser value is : {dut.m_axis_tuser.value}"
+    await RisingEdge(dut.clk)
+    assert dut.m_axis_tdata.value == 0xfa, f"[ERROR] m_axis_tdata value is : {dut.m_axis_tdata.value}"
+    assert dut.m_axis_tvalid.value == 1, f"[ERROR] m_axis_tvalid value is : {dut.m_axis_tvalid.value}"
+    assert dut.m_axis_tlast.value == 1, f"[ERROR] m_axis_tlast value is : {dut.m_axis_tlast.value}"
+    assert dut.m_axis_tuser.value == 0x2, f"[ERROR] m_axis_tuser value is : {dut.m_axis_tuser.value}"
+
+    print(f'successfully received data from stream 2 with correct tag id in m_axis_tuser channel  ')
+
+    await FallingEdge(dut.clk)
+    dut.s_axis_tvalid_2.value = 0
+    await FallingEdge(dut.clk)
+    await FallingEdge(dut.clk)
+
+    await FallingEdge(dut.clk)
+    dut.s_axis_tdata_3.value = 0xff
+    dut.s_axis_tvalid_3.value = 1
+    dut.s_axis_tlast_3.value = 0
+    await FallingEdge(dut.clk)
+    dut.s_axis_tdata_3.value = 0xf0
+    dut.s_axis_tvalid_3.value = 1
+    dut.s_axis_tlast_3.value = 0
+    assert dut.m_axis_tdata.value == 0xff, f"[ERROR] m_axis_tdata value is : {dut.m_axis_tdata.value}"
+    assert dut.m_axis_tvalid.value == 1, f"[ERROR] m_axis_tvalid value is : {dut.m_axis_tvalid.value}"
+    assert dut.m_axis_tlast.value == 0, f"[ERROR] m_axis_tlast value is : {dut.m_axis_tlast.value}"
+    assert dut.m_axis_tuser.value == 0x3, f"[ERROR] m_axis_tuser value is : {dut.m_axis_tuser.value}"
+
+    await FallingEdge(dut.clk)
+    dut.s_axis_tdata_3.value = 0xfa
+    dut.s_axis_tvalid_3.value = 1
+    dut.s_axis_tlast_3.value = 1
+    assert dut.m_axis_tdata.value == 0xf0, f"[ERROR] m_axis_tdata value is : {dut.m_axis_tdata.value}"
+    assert dut.m_axis_tvalid.value == 1, f"[ERROR] m_axis_tvalid value is : {dut.m_axis_tvalid.value}"
+    assert dut.m_axis_tlast.value == 0, f"[ERROR] m_axis_tlast value is : {dut.m_axis_tlast.value}"
+    assert dut.m_axis_tuser.value == 0x3, f"[ERROR] m_axis_tuser value is : {dut.m_axis_tuser.value}"
+    await RisingEdge(dut.clk)
+    assert dut.m_axis_tdata.value == 0xfa, f"[ERROR] m_axis_tdata value is : {dut.m_axis_tdata.value}"
+    assert dut.m_axis_tvalid.value == 1, f"[ERROR] m_axis_tvalid value is : {dut.m_axis_tvalid.value}"
+    assert dut.m_axis_tlast.value == 1, f"[ERROR] m_axis_tlast value is : {dut.m_axis_tlast.value}"
+    assert dut.m_axis_tuser.value == 0x3, f"[ERROR] m_axis_tuser value is : {dut.m_axis_tuser.value}"
+
+    print(f'successfully received data from stream 3 with correct tag id in m_axis_tuser channel  ')
+
+   
+    print(f' tested successfully')
+    
+

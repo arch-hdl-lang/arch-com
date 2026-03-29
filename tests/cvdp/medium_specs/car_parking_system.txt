@@ -1,0 +1,72 @@
+MODULE: car_parking_system
+ID: cvdp_copilot_car_parking_management_0001
+
+=== SPEC ===
+# Car Parking Management System
+
+Design a **Car Parking Management System** that efficiently manages vehicle entry and exit, tracks parking space availability, and displays the current status using LEDs and 7-segment displays. The system uses an FSM to handle state transitions for parking operations, ensuring robust and synchronized functionality.
+
+## Design Specification
+
+### **Module Name:**  
+`car_parking_system`
+
+## Key Considerations:
+- The system manages the entry and exit of vehicles in a controlled manner.
+- Dynamically tracks the number of available parking spaces.
+- Tracks the total number of cars present in the parking lot.
+- Displays parking availability using:
+  - **LED Indicators**: Indicate whether parking is full or available.
+  - **7-Segment Displays**: Show the number of remaining spaces and the number of cars currently parked in real time.
+  - **System is designed to support and display a 2-digit number** for total spaces (up to 99) on the 7-segment display.
+  - **Segment Mapping**: The 7-segment display uses a binary format where the most significant bit (MSB) represents segment A, and the least significant bit (LSB) represents segment G.
+
+## **Parameters**
+- `TOTAL_SPACES` *(Default = 12)*: Specifies the total number of parking spaces available.
+
+## **Inputs:**
+- `clk`: Clock signal driving the FSM transitions, operating at a 50:50 duty cycle. clk operating frequency is 100Mhz (10ns)
+- `reset`: Active-high asynchronous reset signal to initialize or reset the system.
+- `vehicle_entry_sensor`: Active-high input signal indicating a vehicle attempting to enter the parking lot.
+- `vehicle_exit_sensor`: Active-high input signal indicating a vehicle exiting the parking lot.
+
+## **Outputs:**
+- `available_spaces` *(log2(TOTAL_SPACES)-bits, [log2(TOTAL_SPACES)-1:0])*: Indicates the number of available parking spaces.
+- `count_car` *(log2(TOTAL_SPACES)-bits, [log2(TOTAL_SPACES)-1:0])*: Indicates the number of cars in the parking lot.
+- `led_status`: LED indicator where `1` indicates parking availability, and `0` indicates parking is full.
+- `seven_seg_display_available_tens`[6:0]: Encodes the number of available spaces for the tens digit of display on a 7-segment module.
+- `seven_seg_display_available_units`[6:0]: Encodes the number of available spaces for the units digit of display on a 7-segment module.
+- `seven_seg_display_count_tens`[6:0]: Encodes the number of cars present for the tens of display on a 7-segment module.
+- `seven_seg_display_count_units`[6:0]: Encodes the number of cars present for the units of display on a 7-segment module.
+
+## **FSM States:**
+1. **`Idle`**: No vehicles are detected; the system waits for a sensor trigger.
+2. **`Entry Processing`**: A vehicle is entering; decrement the available space count and increment the car count.
+3. **`Exit Processing`**: A vehicle is exiting; increment the available space count and decrement the car count.
+4. **`Full`**: Parking is full; entry is denied.
+
+## **Edge Cases:**
+1. **Reset Condition**: When `reset` is asserted, the system resets to its initial state where all spaces are available, and no cars are present.
+2. **Parking Full**: When all spaces are occupied, the system denies entry to vehicles and lights the "full" indicator.
+
+## Example Operation:
+
+
+| Clock Cycles | Reset | vehicle_entry_sensor | vehicle_exit_sensor | available_spaces | count_car | led_status | seven_seg_display_available_tens | seven_seg_display_available_units | seven_seg_display_count_tens | seven_seg_display_count_units |  
+|--------------|-------|----------------------|---------------------|------------------|-----------|------------|----------------------------------|-----------------------------------|-----------------------------|------------------------------|  
+| 1            | 1’b0  | 1'b0                | 1'b0               | 12               | 0         | 1          | `1`                              | `2`                              | `0`                         | `0`                          |  
+| 2            | 1’b0  | 1'b1                | 1'b0               | 11               | 1         | 1          | `1`                              | `1`                              | `0`                         | `1`                          |  
+| 3            | 1’b0  | 1'b0                | 1'b1               | 12               | 0         | 1          | `1`                              | `2`                              | `0`                         | `0`                          |  
+| 4            | 1’b0  | 1'b1                | 1'b0               | 0                | 12        | 0          | `0`                              | `0`                              | `1`                         | `2`                          |  
+
+
+=== src/.env ===
+SIM             = icarus
+TOPLEVEL_LANG   = verilog
+WAVE            = 1
+VERILOG_SOURCES = /code/rtl/car_parking_system.sv
+TOPLEVEL        = car_parking_system
+MODULE          = car_parking_control
+PYTHONPATH      = /src
+HASH            = 1-rtl-implementation-for-car-parking
+

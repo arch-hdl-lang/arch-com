@@ -1,0 +1,216 @@
+MODULE: low_pass_filter
+ID: cvdp_copilot_configurable_digital_low_pass_filter_0001
+
+=== SPEC ===
+Implement a complete SystemVerilog module for a low-pass filter, referred to as the `low_pass_filter` module. The module should process incoming data streams using configurable coefficients and output the filtered result. The filter performs convolution on input data using a finite impulse response (FIR) structure, with the following specifications:
+
+---
+
+## Parameters
+
+| **Parameter**   | **Description**                          | **Default Value** | **Constraint**                                  |
+|------------------|------------------------------------------|--------------------|------------------------------------------------|
+| `DATA_WIDTH`    | Bit-width of the input data              | 16                 | Minimum: 2                                    |
+| `COEFF_WIDTH`   | Bit-width of the filter coefficients      | 16                 | Minimum: 2                                     |
+| `NUM_TAPS`      | Number of filter taps (convolution size) | 8                  | Minimum: 2                      |
+| `NBW_MULT`      | Bit-width of intermediate multiplication results | 32 | Calculated as `NBW_MULT = DATA_WIDTH + COEFF_WIDTH`. This parameter should not be configured externally since it is derived internally based on the values of `DATA_WIDTH` and `COEFF_WIDTH`. |
+
+---
+
+## Inputs and Outputs
+
+### Inputs
+
+| **Port**      | **Size**                            | **Description**                                                | **Constraint**              |
+|---------------|-------------------------------------|----------------------------------------------------------------|-----------------------------|
+| `clk`         | 1 bit                              | Clock signal, active on the rising edge                        | None                        |
+| `reset`       | 1 bit                              | Synchronous reset, active high                                | None                        |
+| `data_in`     | `DATA_WIDTH * NUM_TAPS` bits       | Packed input data (NUM_TAPS samples of integer signed values, each of width DATA_WIDTH) | None |
+| `valid_in`    | 1 bit                              | Validity flag for input data                                   | None                        |
+| `coeffs`      | `COEFF_WIDTH * NUM_TAPS` bits      | Packed coefficients (NUM_TAPS integer signed values, each of width COEFF_WIDTH) | None |
+
+### Outputs
+
+| **Port**      | **Size**                            | **Description**                                                | **Constraint**              |
+|---------------|-------------------------------------|----------------------------------------------------------------|-----------------------------|
+| `data_out`    | `(NBW_MULT + $clog2(NUM_TAPS))` bits | Filtered output data (integer signed value resulting from the sum of multiplied taps) | None |
+| `valid_out`   | 1 bit                              | Validity flag for output data                                  | None                        |
+
+---
+
+### Example of Usage
+
+#### Parameters
+- `NUM_TAPS = 8`
+- `DATA_WIDTH = 6`
+- `COEF_WIDTH = 4`
+
+#### Inputs
+- `data_in = {6'b001100, 6'b110011, 6'b101010, 6'b010101, 6'b111000, 6'b000111, 6'b100100, 6'b011011}`  
+- `coeffs = {4'b1100, 4'b1010, 4'b0110, 4'b1111, 4'b0001, 4'b0011, 4'b1001, 4'b0100}`  
+
+## Behavioral Description
+
+### Internal Signal Breakdown
+
+1. **2D Internal Representation** (Sequential and Combinational Logic):
+   - Before any processing, the input data (`data_in`) and coefficients (`coeffs`) are registered once and stored in flip-flops. This ensures that the input data is stable and synchronized with the computation pipeline.
+   - After being registered, the packed 1D input streams are converted into multidimensional (2D) arrays. This conversion is done using combinational logic to enable efficient parallel computation, such as element-wise multiplication and summation across the taps.
+   
+   1.1 **Valid Signal Requirement**:
+   - The `valid_in` signal must be high (`1`) to ensure the input data (`data_in`) and coefficients (`coeffs`) are correctly registered into their respective internal arrays.
+   - If `valid_in` is de-asserted (`0`), the input data and coefficients are not updated, and the module continues processing using the previously registered values.
+   - This ensures that the filter maintains consistent operation even if new valid data is temporarily unavailable, avoiding interruptions or invalid outputs.
+   - **Reset Behavior**: When the `reset` signal is active (`1`), the internal registers that store the input data and coefficients are cleared to zero. This guarantees a known initial state and prevents invalid computations when the module is restarted.
+
+2. **Element-wise Multiplication** (Combinational Logic):
+   - Perform element-wise multiplication between the converted data and coefficients arrays, following the principles of convolution.
+   - **Note**: The coefficients should be applied in reverse order relative to the input data. This means that the first data value is multiplied by the last coefficient, the second data value by the second-to-last coefficient, and so on.
+
+3. **Summation** (Combinational Logic):  
+   - The intermediate multiplication results are accumulated using a combinational adder tree to compute the final result.  
+
+4. **Edge Case Handling**:
+   - **Maximum Values**:
+     - When both `data_in` and `coeffs` are at their maximum values, the module must ensure that there is no overflow during intermediate computations or in the final result.
+     - To handle this:
+       4.1. **Intermediate Multiplication**:
+          - The size of `NBW_MULT` is defined as `DATA_WIDTH + COEFF_WIDTH`.
+       4.2. **Final Summation**:
+          - The summation result is accommodated in the final output width, calculated as `(NBW_MULT + $clog2(NUM_TAPS))`.
+          - This ensures the result fits within the defined output width, avoiding overflow.
+          
+   - **Zero Values**:
+     - When both `data_in` and `coeffs` are all zeros, the output will naturally be zero, as all intermediate multiplication and summation results will yield `0`. This behavior is inherent to the convolution operation.
+
+   - **Note on `$clog2` Usage**:
+     - The `$clog2` function in SystemVerilog must be used to calculate the number of bits required for the output width. This ensures accurate computation of the ceiling of the base-2 logarithm for the number of filter taps (`NUM_TAPS`).
+     - The output width is calculated as `(NBW_MULT + $clog2(NUM_TAPS))`, where:
+       - `NBW_MULT = DATA_WIDTH + COEFF_WIDTH`
+       - `$clog2(NUM_TAPS)` accounts for the summation of up to `NUM_TAPS` elements.
+
+5. **Output Signals**
+
+   - **Sequential Signal (`valid_out`)**:
+     - The `valid_out` signal is sequential and is derived by registering the `valid_in` signal. This introduces a latency of one clock cycle, ensuring proper synchronization with the computation pipeline.
+
+   - **Combinational Signal (`data_out`)**:
+     - The `data_out` signal is combinational and represents the result of the convolution operation performed on the input data and coefficients.
+     - Despite being combinational, `data_out` effectively has a latency of one clock cycle because it is registered once before being output, ensuring both `data_out` and `valid_out` are synchronized.
+
+
+---
+
+### Reset and Latency
+
+- **Reset Behavior**:
+  - When `reset` is high, the output validity signal (`valid_out`) is cleared.
+
+- **Pipeline Latency**:  
+  - The input-to-output latency is fixed at 1 clock cycle.
+
+=== src/.env ===
+SIM             = icarus
+TOPLEVEL_LANG   = verilog
+VERILOG_SOURCES = /code/rtl/low_pass_filter.sv
+TOPLEVEL        = low_pass_filter
+MODULE          = test_low_pass_filter
+PYTHONPATH      = /src
+HASH            = 1-create-rtl-of-low-pass-filter
+
+=== src/test_low_pass_filter.py ===
+import cocotb
+from cocotb.clock import Clock
+from cocotb.triggers import RisingEdge
+import harness_library as hrs_lb
+import random
+
+# ----------------------------------------
+# - Test Low Pass Filter
+# ----------------------------------------
+
+@cocotb.test()
+async def test_low_pass_filter(dut):
+    """Test the Low Pass Filter module with edge cases and random data."""
+
+    cocotb.start_soon(Clock(dut.clk, 10, units='ns').start())
+
+    # Debug mode
+    debug = 0
+
+    # Retrieve parameters from the DUT
+    DATA_WIDTH = int(dut.DATA_WIDTH.value)
+    COEFF_WIDTH = int(dut.COEFF_WIDTH.value)
+    NUM_TAPS = int(dut.NUM_TAPS.value)
+
+    # Initialize DUT
+    await hrs_lb.dut_init(dut)
+
+    # Apply reset and enable
+    await hrs_lb.reset_dut(dut.reset)
+
+    # Calculate min and max values for data and coefficients
+    data_min = int(-2**DATA_WIDTH / 2)
+    data_max = int((2**DATA_WIDTH / 2) - 1)
+    coeff_min = int(-2**COEFF_WIDTH / 2)
+    coeff_max = int((2**COEFF_WIDTH / 2) - 1)
+
+    # Number of random test iterations
+    num_random_iterations = 98  # Adjust to complement explicit cases for 100 total tests
+
+    # Explicit test cases to ensure edge coverage
+    test_cases = [
+        ([0] * NUM_TAPS, [0] * NUM_TAPS),  # All zeros
+        ([data_max] * NUM_TAPS, [coeff_max] * NUM_TAPS),  # All maximum values
+        ([data_min] * NUM_TAPS, [coeff_min] * NUM_TAPS),  # All minimum values
+    ]
+
+    # Add random test cases
+    for _ in range(num_random_iterations):
+        data_in = [random.randint(data_min, data_max) for _ in range(NUM_TAPS)]
+        coeffs = [random.randint(coeff_min, coeff_max) for _ in range(NUM_TAPS)]
+        test_cases.append((data_in, coeffs))
+
+    # Iterate through all test cases
+    for test_num, (data_in, coeffs) in enumerate(test_cases):
+        #cocotb.log.info(f"[INFO] Test Case {test_num + 1}")
+
+        # Flatten input data and coefficients into a single concatenated value
+        data_in_concat = int(''.join(format(x & ((1 << DATA_WIDTH) - 1), f'0{DATA_WIDTH}b') for x in data_in), 2)
+        coeffs_concat = int(''.join(format(x & ((1 << COEFF_WIDTH) - 1), f'0{COEFF_WIDTH}b') for x in coeffs), 2)
+
+        valid_in = 1 if test_num < 3 else random.randint(0, 1)  # Valid always high for edge cases
+
+        # Apply inputs to the DUT
+        dut.data_in.value = data_in_concat
+        dut.coeffs.value = coeffs_concat
+        dut.valid_in.value = valid_in
+
+        for _ in range(2):  # Wait for computation to propagate
+            await RisingEdge(dut.clk)
+
+        if valid_in:
+            # Calculate expected output
+            expected_output = sum(d * c for d, c in zip(data_in, coeffs[::-1]))
+
+            # Read the output from the DUT
+            data_out = dut.data_out.value.to_signed()
+
+            # Assertions
+            assert data_out == expected_output, f"Test {test_num + 1}: Output mismatch: {data_out} != {expected_output}"
+            assert dut.valid_out.value == valid_in, f"Test {test_num + 1}: Valid mismatch: {dut.valid_out.value} != {valid_in}"
+
+            # Debug logging
+            if debug:
+                cocotb.log.info(f"[DEBUG] Test {test_num + 1}")
+                cocotb.log.info(f"[DEBUG] Data_in = {data_in}")
+                cocotb.log.info(f"[DEBUG] Coeffs = {coeffs}")
+                cocotb.log.info(f"[DEBUG] Data_out = {data_out}, Expected = {expected_output}")
+                cocotb.log.info(f"[DEBUG] Valid_out = {dut.valid_out.value}, Valid_in = {valid_in}")
+
+        # Deactivate valid_in for the next iteration
+        dut.valid_in.value = 0
+
+    cocotb.log.info(f"All {len(test_cases)} tests passed successfully.")
+
+

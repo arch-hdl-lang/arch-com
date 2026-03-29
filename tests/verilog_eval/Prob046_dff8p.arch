@@ -3,7 +3,7 @@ module TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
   port d: in UInt<8>;
-  port reg q: out UInt<8> reset reset=0x34;
+  port reg q: out UInt<8> reset reset=>0x34;
 
   default seq on clk falling;
 

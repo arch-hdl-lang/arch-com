@@ -1,0 +1,189 @@
+MODULE: enhanced_fsm_signal_processor
+ID: cvdp_copilot_concatenate_0001
+
+=== SPEC ===
+Design a Verilog module named `enhanced_fsm_signal_processor` that uses a finite state machine (FSM) to manage signal processing operations, handle fault conditions, and report the FSM's current status.  
+
+### **Inputs**  
+- `i_clk`: Clock signal for sequential operation.  
+- `i_rst_n`: Active-low reset signal that resets the FSM and clears outputs.  
+- `i_enable`(1 bit): Enable signal to start processing; when low, the FSM remains in IDLE.  
+- `i_clear`(1 bit): Signal to clear outputs and reset the fault state.  
+- `i_ack`(1 bit): Acknowledgment signal to transition the FSM from READY to IDLE after processing is complete. It will be a pulse of 1 clock cycle. 
+- `i_fault`(1 bit): Signal indicating a fault condition during operation.  
+- `i_vector_1`: 5-bit input vector.  
+- `i_vector_2`: 5-bit input vector.  
+- `i_vector_3`: 5-bit input vector.  
+- `i_vector_4`: 5-bit input vector.  
+- `i_vector_5`: 5-bit input vector.  
+- `i_vector_6`: 5-bit input vector.  
+
+### **Outputs**  
+- `o_ready`(1 bit): Signal that indicates when outputs are valid and processing is complete. Default 0.
+- `o_error`(1 bit): Signal that asserts when a fault condition is detected. Default 0.
+- `o_fsm_status`(2 bits): Current FSM state, encoded as a 2-bit signal, representing one of the FSM states: IDLE(00), PROCESS(01), READY(10), or FAULT(11). Default is IDLE.
+- `o_vector_1`: 8-bit output vector. Default 0.
+- `o_vector_2`: 8-bit output vector. Default 0.
+- `o_vector_3`: 8-bit output vector. Default 0.
+- `o_vector_4`: 8-bit output vector. Default 0.
+
+---
+
+## **FSM States and Functionality**  
+
+### **States**  
+1. **IDLE**:  
+   - Default state. 
+   - FSM waits for `i_enable` to assert high to transition to PROCESS. 
+   - If `i_fault` is detected, FSM transitions to FAULT.  
+
+2. **PROCESS**:  
+   - Concatenates six 5-bit input vectors into a single 30-bit bus, appends two `1` bits at the LSB to form a 32-bit bus, and splits it into four 8-bit output vectors.  
+   - `o_vector_1` to `o_vector_4` maps from MSB to LSB of concatenation bus.
+   - If `i_fault` is detected during this state, FSM transitions to FAULT.  
+
+3. **READY**:  
+   - Indicates processing is complete by asserting `o_ready`.  
+   - FSM waits for `i_ack` to transition back to IDLE.  
+   - If `i_fault` is detected, FSM transitions to FAULT.  
+
+4. **FAULT**:  
+   - Asserts `o_error` to indicate a fault condition.  
+   - Outputs are set to default.
+   - FSM transitions to IDLE only when `i_clear` is asserted and `i_fault` is deasserted.
+
+---
+
+## **Operational Rules**  
+- The FSM must progress through states sequentially, synchronized to `i_clk`.  
+- When `i_rst_n` is low, FSM resets to IDLE, clears outputs, and resets the fault state.  
+- When in FAULT, the `i_clear` signal must clear the fault condition and reset the FSM to IDLE.  
+- Outputs (`o_vector_1`, `o_vector_2`, `o_vector_3`, `o_vector_4`) must strictly adhere to the concatenation and splitting logic specified.  
+- Fault handling (`o_error` and FAULT state) must take precedence over other operations.  
+- All the outputs are synchronous to `i_clk`.
+- `i_fault` always take precedence over any other input except `i_clk` and `i_rst_n`.
+- All the input are synchronous to `i_clk`.
+
+
+
+=== src/.env ===
+SIM             = icarus
+WAVE            = False
+TOPLEVEL_LANG   = verilog
+VERILOG_SOURCES = /code/rtl/enhanced_fsm_signal_processor.v
+TOPLEVEL        = enhanced_fsm_signal_processor
+MODULE          = test_enhanced_fsm_signal_processor
+PYTHONPATH      = /src
+HASH            = 1-rtl-design
+
+=== src/test_enhanced_fsm_signal_processor.py ===
+import cocotb
+from cocotb.triggers import RisingEdge, Timer
+from cocotb.clock import Clock
+
+def assert_equal(actual, expected, msg=""):
+    """Custom assertion with message."""
+    assert actual == expected, f"{msg}: Expected {expected}, but got {actual}"
+
+@cocotb.test()
+async def test_enhanced_fsm_signal_processor(dut):
+    # Setup clock: 10 ns period (100 MHz)
+    clock = Clock(dut.i_clk, 10, units="ns")
+    cocotb.start_soon(clock.start())
+
+    # Initialize all inputs
+    dut.i_rst_n.value = 0
+    dut.i_enable.value = 0
+    dut.i_clear.value = 0
+    dut.i_ack.value = 0
+    dut.i_fault.value = 0
+    dut.i_vector_1.value = 0
+    dut.i_vector_2.value = 0
+    dut.i_vector_3.value = 0
+    dut.i_vector_4.value = 0
+    dut.i_vector_5.value = 0
+    dut.i_vector_6.value = 0
+
+    # Apply asynchronous reset
+    await Timer(20, units="ns")  # Hold reset for 20 ns
+    dut.i_rst_n.value = 1
+    await RisingEdge(dut.i_clk)
+    await Timer(1, units="ns")
+
+    # Check initial state after reset
+    assert_equal(dut.o_fsm_status.value, 0b00, "FSM should be in IDLE after reset")
+    assert_equal(dut.o_ready.value, 0, "o_ready should be 0 in IDLE")
+    assert_equal(dut.o_error.value, 0, "o_error should be 0 in IDLE")
+
+    # Test IDLE to PROCESS transition
+    dut.i_enable.value = 1
+    dut.i_vector_1.value = 0b00001
+    dut.i_vector_2.value = 0b00010
+    dut.i_vector_3.value = 0b00100
+    dut.i_vector_4.value = 0b01000
+    dut.i_vector_5.value = 0b10000
+    dut.i_vector_6.value = 0b11111
+    await RisingEdge(dut.i_clk)
+    await RisingEdge(dut.i_clk)
+    await Timer(1, units="ns")
+    assert_equal(dut.o_fsm_status.value, 0b01, "FSM should transition to PROCESS on i_enable")
+
+    # Test vector processing in PROCESS state
+    
+    await RisingEdge(dut.i_clk)
+    await Timer(1, units="ns")
+    assert_equal(dut.o_vector_1.value, 0b00001000, "o_vector_1 should match MSB of concatenation")
+    assert_equal(dut.o_vector_2.value, 0b10001000, "o_vector_2 should match second MSB segment")
+    assert_equal(dut.o_vector_3.value, 0b10001000, "o_vector_3 should match third MSB segment")
+    assert_equal(dut.o_vector_4.value, 0b01111111, "o_vector_4 should match LSB segment")
+
+    assert_equal(dut.o_fsm_status.value, 0b10, "FSM should transition to READY after processing")
+    assert_equal(dut.o_ready.value, 1, "o_ready should be 1 in READY state")
+
+    # Test READY to IDLE transition
+    dut.i_ack.value = 1
+    await RisingEdge(dut.i_clk)
+    await RisingEdge(dut.i_clk)
+    await Timer(1, units="ns")
+    dut.i_ack.value = 0
+    assert_equal(dut.o_fsm_status.value, 0b00, "FSM should transition to IDLE on i_ack")
+    assert_equal(dut.o_ready.value, 0, "o_ready should be 0 in IDLE")
+
+    # Test fault condition from IDLE
+    dut.i_fault.value = 1
+    await RisingEdge(dut.i_clk)
+    await RisingEdge(dut.i_clk)
+    await Timer(1, units="ns")
+    assert_equal(dut.o_fsm_status.value, 0b11, "FSM should transition to FAULT on i_fault")
+    assert_equal(dut.o_error.value, 1, "o_error should be 1 in FAULT state")
+
+    # Test clearing fault condition
+    dut.i_clear.value = 1
+    dut.i_fault.value = 0
+    dut.i_enable.value = 0
+    await RisingEdge(dut.i_clk)
+    await RisingEdge(dut.i_clk)
+    await Timer(1, units="ns")
+    dut.i_clear.value = 0
+    assert_equal(dut.o_fsm_status.value, 0b00, "FSM should transition to IDLE after clearing fault")
+    assert_equal(dut.o_error.value, 0, "o_error should be 0 after fault is cleared")
+
+    # Test fault during PROCESS
+    dut.i_enable.value = 1
+    await RisingEdge(dut.i_clk)
+    await RisingEdge(dut.i_clk)
+    await Timer(1, units="ns")
+    assert_equal(dut.o_fsm_status.value, 0b01, "FSM should transition to PROCESS on i_enable")
+    dut.i_fault.value = 1
+    await RisingEdge(dut.i_clk)
+    await RisingEdge(dut.i_clk)
+    await Timer(1, units="ns")
+    assert_equal(dut.o_fsm_status.value, 0b11, "FSM should transition to FAULT on i_fault in PROCESS")
+
+    # Test all outputs reset in FAULT
+    assert_equal(dut.o_vector_1.value, 0, "o_vector_1 should reset in FAULT")
+    assert_equal(dut.o_vector_2.value, 0, "o_vector_2 should reset in FAULT")
+    assert_equal(dut.o_vector_3.value, 0, "o_vector_3 should reset in FAULT")
+    assert_equal(dut.o_vector_4.value, 0, "o_vector_4 should reset in FAULT")
+
+

@@ -1,0 +1,61 @@
+module low_pass_filter
+  param DATA_WIDTH: const = 16;
+  param COEFF_WIDTH: const = 16;
+  param NUM_TAPS: const = 8;
+  param NBW_MULT: const = DATA_WIDTH + COEFF_WIDTH;
+  param OUT_WIDTH: const = NBW_MULT + $clog2(NUM_TAPS);
+
+  port clk: in Clock<SysDomain>;
+  port reset: in Reset<Sync>;
+  port data_in: in UInt<DATA_WIDTH * NUM_TAPS>;
+  port valid_in: in Bool;
+  port coeffs: in UInt<COEFF_WIDTH * NUM_TAPS>;
+  port data_out: out SInt<OUT_WIDTH>;
+  port reg valid_out: out Bool reset reset=>false;
+
+  default seq on clk rising;
+
+  reg data_reg: Vec<SInt<DATA_WIDTH>, NUM_TAPS> reset reset=>0;
+  reg coeff_reg: Vec<SInt<COEFF_WIDTH>, NUM_TAPS> reset reset=>0;
+
+  seq
+    if reset
+      for i in 0..NUM_TAPS-1
+        data_reg[i] <= 0;
+        coeff_reg[i] <= 0;
+      end for
+    elsif valid_in
+      for i in 0..NUM_TAPS-1
+        data_reg[i] <= data_in[i*DATA_WIDTH + DATA_WIDTH - 1 : i*DATA_WIDTH] as SInt<DATA_WIDTH>;
+        coeff_reg[i] <= coeffs[i*COEFF_WIDTH + COEFF_WIDTH - 1 : i*COEFF_WIDTH] as SInt<COEFF_WIDTH>;
+      end for
+    end if
+  end seq
+
+  seq
+    if reset
+      valid_out <= false;
+    else
+      valid_out <= valid_in;
+    end if
+  end seq
+
+  wire mult: Vec<SInt<NBW_MULT>, NUM_TAPS>;
+  wire acc: SInt<OUT_WIDTH>;
+
+  comb
+    for i in 0..NUM_TAPS-1
+      mult[i] = (data_reg[i] * coeff_reg[NUM_TAPS-1-i]).trunc<NBW_MULT>();
+    end for
+  end comb
+
+  comb
+    acc = 0;
+    for i in 0..NUM_TAPS-1
+      acc = (acc + mult[i].sext<OUT_WIDTH>()).trunc<OUT_WIDTH>();
+    end for
+  end comb
+
+  comb data_out = acc;
+
+end module low_pass_filter

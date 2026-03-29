@@ -1,0 +1,14 @@
+module ControlUnit
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port hit: in Bool;
+  port miss: in Bool;
+  port ready: in Bool;
+  port tlb_write_enable: out Bool;
+  port flsh: out Bool;
+
+  comb
+    tlb_write_enable = miss;
+    flsh = false;
+  end comb
+end module ControlUnit

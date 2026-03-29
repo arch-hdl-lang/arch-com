@@ -1,0 +1,96 @@
+module axis_image_resizer
+  param IMG_WIDTH_IN:   const = 640;
+  param IMG_HEIGHT_IN:  const = 480;
+  param IMG_WIDTH_OUT:  const = 320;
+  param IMG_HEIGHT_OUT: const = 240;
+  param DATA_WIDTH:     const = 16;
+
+  port clk:            in Clock<SysDomain>;
+  port resetn:         in Reset<Async, Low>;
+
+  port s_axis_tdata:   in  UInt<DATA_WIDTH>;
+  port s_axis_tvalid:  in  Bool;
+  port s_axis_tready:  out Bool;
+  port s_axis_tlast:   in  Bool;
+  port s_axis_tuser:   in  Bool;
+
+  port m_axis_tdata:   out UInt<DATA_WIDTH>;
+  port m_axis_tvalid:  out Bool;
+  port m_axis_tready:  in  Bool;
+  port m_axis_tlast:   out Bool;
+  port m_axis_tuser:   out Bool;
+
+  default seq on clk rising;
+
+  // Downsampling factors (compile-time constants)
+  let X_SCALE: UInt<16> = (IMG_WIDTH_IN / IMG_WIDTH_OUT).zext<16>();
+  let Y_SCALE: UInt<16> = (IMG_HEIGHT_IN / IMG_HEIGHT_OUT).zext<16>();
+  let WIDTH_IN:  UInt<16> = IMG_WIDTH_IN.zext<16>();
+  let HEIGHT_IN: UInt<16> = IMG_HEIGHT_IN.zext<16>();
+
+  // Input pixel counters
+  reg x_count_in:  UInt<16> reset resetn=>0;
+  reg y_count_in:  UInt<16> reset resetn=>0;
+
+  // Output buffer
+  reg m_axis_tdata_r:  UInt<DATA_WIDTH> reset resetn=>0;
+  reg m_axis_tvalid_r: Bool reset resetn=>false;
+  reg m_axis_tlast_r:  Bool reset resetn=>false;
+  reg m_axis_tuser_r:  Bool reset resetn=>false;
+
+  wire pixel_sel:  Bool;
+  wire handshake:  Bool;
+  wire out_free:   Bool;
+  wire at_row_end: Bool;
+
+  comb
+    // Output handshake: downstream consuming current output
+    out_free    = ~m_axis_tvalid_r | m_axis_tready;
+    // Accept input when output buffer is free
+    handshake   = s_axis_tvalid & s_axis_tready;
+    at_row_end  = x_count_in == WIDTH_IN - 1;
+    pixel_sel   = (x_count_in % X_SCALE == 0.zext<16>()) & (y_count_in % Y_SCALE == 0.zext<16>());
+    // Ready when output buffer not holding data (or being consumed this cycle)
+    s_axis_tready = out_free;
+  end comb
+
+  // Output driven from registers
+  comb
+    m_axis_tdata  = m_axis_tdata_r;
+    m_axis_tvalid = m_axis_tvalid_r;
+    m_axis_tlast  = m_axis_tlast_r;
+    m_axis_tuser  = m_axis_tuser_r;
+  end comb
+
+  seq
+    // Clear valid when downstream consumes
+    if m_axis_tvalid_r & m_axis_tready
+      m_axis_tvalid_r <= false;
+      m_axis_tlast_r  <= false;
+      m_axis_tuser_r  <= false;
+    end if
+
+    if handshake
+      // Update input counters
+      if at_row_end
+        x_count_in <= 0.zext<16>();
+        if y_count_in == HEIGHT_IN - 1
+          y_count_in <= 0.zext<16>();
+        else
+          y_count_in <= (y_count_in + 1).trunc<16>();
+        end if
+      else
+        x_count_in <= (x_count_in + 1).trunc<16>();
+      end if
+
+      // Emit pixel if it falls on sampling grid
+      if pixel_sel
+        m_axis_tdata_r  <= s_axis_tdata;
+        m_axis_tvalid_r <= true;
+        m_axis_tlast_r  <= at_row_end;
+        m_axis_tuser_r  <= s_axis_tuser;
+      end if
+    end if
+  end seq
+
+end module axis_image_resizer

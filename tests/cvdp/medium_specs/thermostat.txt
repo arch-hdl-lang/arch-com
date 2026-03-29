@@ -1,0 +1,362 @@
+MODULE: thermostat
+ID: cvdp_copilot_thermostat_0001
+
+=== SPEC ===
+Design a Sequential Verilog Module named `thermostat` for a Thermostat Controller with an FSM that automatically switches between heating and cooling based on temperature feedback.
+
+## Inputs
+
+1. **6-bit**: `i_temp_feedback[5:0]`  
+   Each bit represents a distinct temperature condition :
+   - `i_temp_feedback[5]` : `i_full_cold`  (1 = too cold)  
+   - `i_temp_feedback[4]` : `i_medium_cold` (1 = medium cold)  
+   - `i_temp_feedback[3]` : `i_low_cold`   (1 = low cold)  
+   - `i_temp_feedback[2]` : `i_low_hot`    (1 = low hot)  
+   - `i_temp_feedback[1]` : `i_medium_hot` (1 = medium hot)  
+   - `i_temp_feedback[0]` : `i_full_hot`   (1 = too hot)  
+
+2. **1-bit**: `i_fan_on`  
+   - User control to turn the fan on manually (`1` = fan on, `0` = fan off).
+
+3. **1-bit**: `i_enable`  
+   - Enables or disables the thermostat.  
+   - When `i_enable = 0`, all thermostat outputs must be forced to `0` regardless of temperature feedback.
+
+4. **1-bit**: `i_fault`  
+   - Signals a fault/error condition.  
+   - When `i_fault = 1`, all outputs must be forced to `0` (overridden), ignoring normal FSM logic.
+
+5. **1-bit**: `i_clr`  
+   - Clears the error state set by `i_fault`. Upon assertion, the thermostat should return to `AMBIENT`.
+6. **Clock/Reset**  
+   - `i_clk`: Clock for sequential logic.
+   - `i_rst`: Asynchronous active-low reset.
+---
+
+## Outputs
+
+1. **Heating Control (1-bit each)**  
+   - `o_heater_full`  
+   - `o_heater_medium`  
+   - `o_heater_low`  
+
+2. **Cooling Control (1-bit each)**  
+   - `o_aircon_full`  
+   - `o_aircon_medium`  
+   - `o_aircon_low`  
+
+3. **Fan Control (1-bit)**  
+   - `o_fan`  
+
+4. **FSM Output State (3-bit)**  
+   - `o_state[2:0]`: Indicates the current FSM state among the seven valid states:
+     - `3'b000` = `HEAT_LOW`
+     - `3'b001` = `HEAT_MED`
+     - `3'b010` = `HEAT_FULL`
+     - `3'b011` = `AMBIENT`
+     - `3'b100` = `COOL_LOW`
+     - `3'b101` = `COOL_MED`
+     - `3'b110` = `COOL_FULL`
+
+---
+
+## Reset/Idle Behavior
+
+- **Asynchronous Reset (`i_rst` active low)**  
+  - When `i_rst` is asserted (`0`), force the FSM to `AMBIENT` and all outputs to `0`.
+- **Idle/Default State**  
+  - `AMBIENT` state when no heating or cooling is required.  
+  - When `i_clr` is asserted (to clear a fault), the FSM should go back to `AMBIENT` on the next rising clock edge if `i_rst` is not active.
+
+---
+
+## Fault Handling
+
+- If `i_fault = 1`, **all outputs** (`o_heater_full`, `o_heater_medium`, `o_heater_low`, `o_aircon_full` , `o_aircon_medium`, `o_aircon_low`, `o_fan`) must be forced to `0`, overriding any state-based or feedback logic.
+- Once a fault is signaled, the thermostat remains forced off until `i_clr` is asserted to clear the fault.  
+  - After clearing the fault (`i_clr = 1`), the controller returns to `AMBIENT` state on the next rising clock edge.
+
+---
+
+## Enable Control
+
+- If `i_enable = 0`, the thermostat is turned off.  
+  - Force **all outputs** to `0` (similar to a disable override).  
+  - Internally, the FSM move to `AMBIENT`.
+
+---
+
+## FSM State Transition Logic
+
+On each rising edge of `i_clk` (while `i_rst = 1` and no fault override), the FSM evaluates the temperature feedback bits to determine the next state:
+
+1. **Cold Conditions** (highest priority first)
+   - If `i_full_cold = 1`: transition to `HEAT_FULL`.  
+   - Else if `i_medium_cold = 1`: transition to `HEAT_MED`.  
+   - Else if `i_low_cold = 1`: transition to `HEAT_LOW`.
+
+2. **Hot Conditions** (highest priority first)
+   - If `i_full_hot = 1`: transition to `COOL_FULL`.  
+   - Else if `i_medium_hot = 1`: transition to `COOL_MED`.  
+   - Else if `i_low_hot = 1`: transition to `COOL_LOW`.
+
+3. **Ambient Condition**
+   - If none of the cold/hot feedback bits are asserted, transition to `AMBIENT`.
+
+> **Note**: The bits `i_full_cold`, `i_medium_cold`, `i_low_cold` are mutually exclusive with `i_full_hot`, `i_medium_hot`, `i_low_hot`, meaning they will never be asserted at the same time.
+
+---
+
+## Output Logic
+
+The output will be synchronous to `i_clk`, and should get asynchronously reset.
+Given the current FSM state **(unless overridden by `i_fault` or disabled by `i_enable`)**:
+
+- **Heating States**  
+  - `HEAT_FULL`  
+    - `o_heater_full = 1`, all other heater/cooler outputs = 0  
+  - `HEAT_MED`  
+    - `o_heater_medium = 1`, all other heater/cooler outputs = 0  
+  - `HEAT_LOW`  
+    - `o_heater_low = 1`, all other heater/cooler outputs = 0  
+
+- **Cooling States**  
+  - `COOL_FULL`  
+    - `o_aircon_full = 1`, all other heater/cooler outputs = 0  
+  - `COOL_MED`  
+    - `o_aircon_medium = 1`, all other heater/cooler outputs = 0  
+  - `COOL_LOW`  
+    - `o_aircon_low = 1`, all other heater/cooler outputs = 0  
+
+- **AMBIENT**  
+  - All heater/aircon outputs = 0  
+
+- **Fan Control** (`o_fan`)  
+  - `o_fan = 1` if any heater or air conditioner output is active in the current state **OR** if `i_fan_on = 1`.  
+  - Otherwise, `o_fan = 0`.
+
+---
+
+## Overriding Conditions Summary
+
+1. **Reset (`i_rst = 0`)**  
+   - Highest-priority override: sets FSM to `AMBIENT`, outputs = 0 immediately (asynchronous).  
+
+2. **Fault (`i_fault = 1`)**  
+   - Next-highest priority: overrides *all outputs* to 0, regardless of state or temperature feedback.
+
+3. **Disable (`i_enable = 0`)**  
+   - Next priority: thermostat outputs forced off (0). The FSM logic may remain in its current state internally, but no heat/cool/fan outputs are driven.
+
+4. **Normal Operation**  
+   - When `i_rst=1`, `i_fault=0`, and `i_enable=1`, the FSM outputs follow the state-based transitions and normal fan logic.
+
+5. **Clearing Fault (`i_clr = 1`)**  
+   - On the next rising clock edge, if `i_fault` is deasserted, the FSM moves to `AMBIENT` and resumes normal functionality.
+
+
+=== src/.env ===
+SIM             = icarus
+WAVE            = False
+TOPLEVEL_LANG   = verilog
+VERILOG_SOURCES = /code/rtl/thermostat.v
+TOPLEVEL        = thermostat
+MODULE          = test_thermostat
+PYTHONPATH      = /src
+HASH            = 1-rtl-code-completion
+
+=== src/test_thermostat.py ===
+import cocotb
+from cocotb.triggers import RisingEdge, FallingEdge, Timer
+from cocotb.clock import Clock
+
+def assert_equal(actual, expected, msg=""):
+    """Custom assertion with message."""
+    assert actual == expected, f"{msg}: Expected {expected}, but got {actual}"
+
+@cocotb.test()
+async def test_thermostat(dut):
+    """Testbench for thermostat FSM Verilog module."""
+
+    # Setup clock: 10 ns period (100 MHz)
+    clock = Clock(dut.i_clk, 10, units="ns")
+    cocotb.start_soon(clock.start())
+
+    # Initialize all inputs
+    dut.i_temp_feedback.value = 0
+    dut.i_fan_on.value = 0
+    dut.i_enable.value = 0
+    dut.i_fault.value = 0
+    dut.i_clr.value = 0
+    dut.i_rst.value = 1  # Initially deassert reset
+
+    # Apply asynchronous reset
+    dut.i_rst.value = 0
+    await Timer(20, units="ns")  # Hold reset for 20 ns
+    dut.i_rst.value = 1
+    await RisingEdge(dut.i_clk)
+    await RisingEdge(dut.i_clk)  # Wait for a clock edge
+    await Timer(1, units="ns")
+    # Check initial state after reset
+    assert_equal(dut.o_state.value, 0b011, "FSM should initialize to AMBIENT state")
+    assert_equal(dut.o_heater_full.value, 0, "Heater full output should be 0 after reset")
+    assert_equal(dut.o_aircon_full.value, 0, "Aircon full output should be 0 after reset")
+    assert_equal(dut.o_fan.value, 0, "Fan output should be 0 after reset")
+
+    # Enable the thermostat and test state transitions
+    dut.i_enable.value = 1
+    await RisingEdge(dut.i_clk)
+
+    # Test heating states
+    dut.i_temp_feedback.value = 0b100000  # i_full_cold
+    await RisingEdge(dut.i_clk)
+    await RisingEdge(dut.i_clk)
+    await Timer(1, units="ns")
+    assert_equal(dut.o_state.value, 0b010, "FSM should transition to HEAT_FULL")
+    assert_equal(dut.o_heater_full.value, 1, "Heater full output should be 1 in HEAT_FULL")
+    assert_equal(dut.o_fan.value, 1, "Fan output should be 1")
+
+    dut.i_temp_feedback.value = 0b010000  # i_medium_cold
+    await RisingEdge(dut.i_clk)
+    await RisingEdge(dut.i_clk)
+    await Timer(1, units="ns")
+    assert_equal(dut.o_state.value, 0b001, "FSM should transition to HEAT_MED")
+    assert_equal(dut.o_heater_medium.value, 1, "Heater medium output should be 1 in HEAT_MED")
+    assert_equal(dut.o_fan.value, 1, "Fan output should be 1")
+
+    dut.i_temp_feedback.value = 0b001000  # i_low_cold
+    await RisingEdge(dut.i_clk)
+    await RisingEdge(dut.i_clk)
+    await Timer(1, units="ns")
+    assert_equal(dut.o_state.value, 0b000, "FSM should transition to HEAT_LOW")
+    assert_equal(dut.o_heater_low.value, 1, "Heater low output should be 1 in HEAT_LOW")
+    assert_equal(dut.o_fan.value, 1, "Fan output should be 1")
+
+    # Test cooling states
+    dut.i_temp_feedback.value = 0b000001  # i_full_hot
+    await RisingEdge(dut.i_clk)
+    await RisingEdge(dut.i_clk)
+    await Timer(1, units="ns")
+    assert_equal(dut.o_state.value, 0b110, "FSM should transition to COOL_FULL")
+    assert_equal(dut.o_aircon_full.value, 1, "Aircon full output should be 1 in COOL_FULL")
+    assert_equal(dut.o_fan.value, 1, "Fan output should be 1")
+
+    dut.i_temp_feedback.value = 0b000010  # i_medium_hot
+    await RisingEdge(dut.i_clk)
+    await RisingEdge(dut.i_clk)
+    await Timer(1, units="ns")
+    assert_equal(dut.o_state.value, 0b101, "FSM should transition to COOL_MED")
+    assert_equal(dut.o_aircon_medium.value, 1, "Aircon medium output should be 1 in COOL_MED")
+    assert_equal(dut.o_fan.value, 1, "Fan output should be 1")
+
+    dut.i_temp_feedback.value = 0b000100  # i_low_hot
+    await RisingEdge(dut.i_clk)
+    await RisingEdge(dut.i_clk)
+    await Timer(1, units="ns")
+    assert_equal(dut.o_state.value, 0b100, "FSM should transition to COOL_LOW")
+    assert_equal(dut.o_aircon_low.value, 1, "Aircon low output should be 1 in COOL_LOW")
+    assert_equal(dut.o_fan.value, 1, "Fan output should be 1")
+
+    # Test ambient state
+    dut.i_temp_feedback.value = 0b000000  # No temperature feedback
+    await RisingEdge(dut.i_clk)
+    await RisingEdge(dut.i_clk)
+    await Timer(1, units="ns")
+    assert_equal(dut.o_state.value, 0b011, "FSM should transition to AMBIENT")
+    assert_equal(dut.o_fan.value, 0, "Fan output should be 0 in AMBIENT")
+
+    # Test fault handling
+    dut.i_fault.value = 1
+    await RisingEdge(dut.i_clk)
+    await RisingEdge(dut.i_clk)
+    await Timer(1, units="ns")
+    assert_equal(dut.o_state.value, 0b011, "FSM should remain in AMBIENT during fault")
+    assert_equal(dut.o_heater_full.value, 0, "All outputs should be 0 during fault")
+    assert_equal(dut.o_aircon_full.value, 0, "All outputs should be 0 during fault")
+    assert_equal(dut.o_fan.value, 0, "All outputs should be 0 during fault")
+
+    # Clear fault
+    dut.i_fault.value = 0
+    dut.i_clr.value = 1
+    await RisingEdge(dut.i_clk)
+    dut.i_clr.value = 0
+    await RisingEdge(dut.i_clk)
+    await RisingEdge(dut.i_clk)
+    await Timer(1, units="ns")
+    assert_equal(dut.o_state.value, 0b011, "FSM should transition back to AMBIENT after fault is cleared")
+
+    # Test disable functionality
+    dut.i_enable.value = 0
+    await RisingEdge(dut.i_clk)
+    await RisingEdge(dut.i_clk)
+    await Timer(1, units="ns")
+    assert_equal(dut.o_state.value, 0b011, "FSM should remain in AMBIENT when disabled")
+    assert_equal(dut.o_heater_full.value, 0, "All outputs should be 0 when disabled")
+    assert_equal(dut.o_aircon_full.value, 0, "All outputs should be 0 when disabled")
+    assert_equal(dut.o_fan.value, 0, "All outputs should be 0 when disabled")
+
+    # Re-enable and verify transitions again
+    dut.i_enable.value = 1
+    dut.i_temp_feedback.value = 0b100000  # i_full_cold
+    await RisingEdge(dut.i_clk)
+    await RisingEdge(dut.i_clk)
+    await Timer(1, units="ns")
+    assert_equal(dut.o_state.value, 0b010, "FSM should transition to HEAT_FULL after re-enabling")
+    assert_equal(dut.o_heater_full.value, 1, "Heater full output should be 1 after re-enabling")
+    assert_equal(dut.o_fan.value, 1, "Fan output should be 1")
+
+    # Test priority when multiple hot inputs are set
+    dut.i_temp_feedback.value = 0b000101  # i_full_hot and i_low_hot
+    await RisingEdge(dut.i_clk)
+    await RisingEdge(dut.i_clk)
+    await Timer(1, units="ns")
+    assert_equal(dut.o_state.value, 0b110, "FSM should prioritize COOL_FULL when multiple hot inputs are set")
+    assert_equal(dut.o_aircon_full.value, 1, "Aircon full output should be 1 in COOL_FULL")
+    assert_equal(dut.o_aircon_low.value, 0, "Aircon low output should be 0 when COOL_FULL is prioritized")
+    assert_equal(dut.o_fan.value, 1, "Fan output should be 1")
+
+    dut.i_temp_feedback.value = 0b000110  # i_medium_hot and i_low_hot
+    await RisingEdge(dut.i_clk)
+    await RisingEdge(dut.i_clk)
+    await Timer(1, units="ns")
+    assert_equal(dut.o_state.value, 0b101, "FSM should prioritize COOL_MED when multiple hot inputs are set")
+    assert_equal(dut.o_aircon_medium.value, 1, "Aircon medium output should be 1 in COOL_MED")
+    assert_equal(dut.o_aircon_low.value, 0, "Aircon low output should be 0 when COOL_MED is prioritized")
+    assert_equal(dut.o_fan.value, 1, "Fan output should be 1")
+
+    dut.i_temp_feedback.value = 0b000111  # i_full_hot, i_medium_hot, and i_low_hot
+    await RisingEdge(dut.i_clk)
+    await RisingEdge(dut.i_clk)
+    await Timer(1, units="ns")
+    assert_equal(dut.o_state.value, 0b110, "FSM should prioritize COOL_FULL over other hot inputs")
+    assert_equal(dut.o_aircon_full.value, 1, "Aircon full output should be 1 in COOL_FULL")
+    assert_equal(dut.o_fan.value, 1, "Fan output should be 1")
+
+    # Test priority when multiple cold inputs are set
+    dut.i_temp_feedback.value = 0b101000  # i_full_cold and i_low_cold
+    await RisingEdge(dut.i_clk)
+    await RisingEdge(dut.i_clk)
+    await Timer(1, units="ns")
+    assert_equal(dut.o_state.value, 0b010, "FSM should prioritize HEAT_FULL when multiple cold inputs are set")
+    assert_equal(dut.o_heater_full.value, 1, "Heater full output should be 1 in HEAT_FULL")
+    assert_equal(dut.o_heater_low.value, 0, "Heater low output should be 0 when HEAT_FULL is prioritized")
+    assert_equal(dut.o_fan.value, 1, "Fan output should be 1")
+
+    dut.i_temp_feedback.value = 0b011000  # i_medium_cold and i_low_cold
+    await RisingEdge(dut.i_clk)
+    await RisingEdge(dut.i_clk)
+    await Timer(1, units="ns")
+    assert_equal(dut.o_state.value, 0b001, "FSM should prioritize HEAT_MED when multiple cold inputs are set")
+    assert_equal(dut.o_heater_medium.value, 1, "Heater medium output should be 1 in HEAT_MED")
+    assert_equal(dut.o_heater_low.value, 0, "Heater low output should be 0 when HEAT_MED is prioritized")
+    assert_equal(dut.o_fan.value, 1, "Fan output should be 1")
+
+    dut.i_temp_feedback.value = 0b111000  # i_full_cold, i_medium_cold, and i_low_cold
+    await RisingEdge(dut.i_clk)
+    await RisingEdge(dut.i_clk)
+    await Timer(1, units="ns")
+    assert_equal(dut.o_state.value, 0b010, "FSM should prioritize HEAT_FULL over other cold inputs")
+    assert_equal(dut.o_heater_full.value, 1, "Heater full output should be 1 in HEAT_FULL")
+    assert_equal(dut.o_fan.value, 1, "Fan output should be 1")
+
+

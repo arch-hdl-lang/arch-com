@@ -491,8 +491,8 @@ impl Parser {
         }
         let rst_signal = self.expect_ident()?;
 
-        // Parse `=VALUE` — required reset value
-        self.expect(TokenKind::Eq)?;
+        // Parse `=> VALUE` — required reset value
+        self.expect(TokenKind::FatArrow)?;
         let reset_value = self.parse_expr()?;
 
         if self.check(TokenKind::Sync) || self.check(TokenKind::Async) {

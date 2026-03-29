@@ -1,0 +1,90 @@
+// AXI Stream Multiplexer: selects one of NUM_INPUTS AXI streams based on sel
+module axis_mux
+  param C_AXIS_DATA_WIDTH: const = 32;
+  param C_AXIS_TUSER_WIDTH: const = 4;
+  param C_AXIS_TID_WIDTH: const = 2;
+  param C_AXIS_TDEST_WIDTH: const = 2;
+  param NUM_INPUTS: const = 4;
+
+  port aclk: in Clock<SysDomain>;
+  port aresetn: in Reset<Sync, Low>;
+
+  port sel: in UInt<2>;
+
+  port s_axis_tvalid: in Vec<Bool, NUM_INPUTS>;
+  port s_axis_tready: out Vec<Bool, NUM_INPUTS>;
+  port s_axis_tdata: in UInt<128>;
+  port s_axis_tkeep: in UInt<16>;
+  port s_axis_tlast: in Vec<Bool, NUM_INPUTS>;
+  port s_axis_tid: in UInt<8>;
+  port s_axis_tdest: in UInt<8>;
+  port s_axis_tuser: in UInt<16>;
+
+  port m_axis_tvalid: out Bool;
+  port m_axis_tready: in Bool;
+  port m_axis_tdata: out UInt<C_AXIS_DATA_WIDTH>;
+  port m_axis_tkeep: out UInt<4>;
+  port m_axis_tlast: out Bool;
+  port m_axis_tid: out UInt<C_AXIS_TID_WIDTH>;
+  port m_axis_tdest: out UInt<C_AXIS_TDEST_WIDTH>;
+  port m_axis_tuser: out UInt<C_AXIS_TUSER_WIDTH>;
+
+  // Combinational mux: directly select input based on sel
+  comb
+    m_axis_tvalid = s_axis_tvalid[sel];
+    m_axis_tlast = s_axis_tlast[sel];
+  end comb
+
+  comb
+    if sel == 0
+      m_axis_tdata = s_axis_tdata[31:0];
+      m_axis_tkeep = s_axis_tkeep[3:0];
+      m_axis_tid = s_axis_tid[1:0];
+      m_axis_tdest = s_axis_tdest[1:0];
+      m_axis_tuser = s_axis_tuser[3:0];
+    elsif sel == 1
+      m_axis_tdata = s_axis_tdata[63:32];
+      m_axis_tkeep = s_axis_tkeep[7:4];
+      m_axis_tid = s_axis_tid[3:2];
+      m_axis_tdest = s_axis_tdest[3:2];
+      m_axis_tuser = s_axis_tuser[7:4];
+    elsif sel == 2
+      m_axis_tdata = s_axis_tdata[95:64];
+      m_axis_tkeep = s_axis_tkeep[11:8];
+      m_axis_tid = s_axis_tid[5:4];
+      m_axis_tdest = s_axis_tdest[5:4];
+      m_axis_tuser = s_axis_tuser[11:8];
+    else
+      m_axis_tdata = s_axis_tdata[127:96];
+      m_axis_tkeep = s_axis_tkeep[15:12];
+      m_axis_tid = s_axis_tid[7:6];
+      m_axis_tdest = s_axis_tdest[7:6];
+      m_axis_tuser = s_axis_tuser[15:12];
+    end if
+  end comb
+
+  // Ready: route m_axis_tready back to selected input only
+  comb
+    if sel == 0
+      s_axis_tready[0] = m_axis_tready;
+      s_axis_tready[1] = false;
+      s_axis_tready[2] = false;
+      s_axis_tready[3] = false;
+    elsif sel == 1
+      s_axis_tready[0] = false;
+      s_axis_tready[1] = m_axis_tready;
+      s_axis_tready[2] = false;
+      s_axis_tready[3] = false;
+    elsif sel == 2
+      s_axis_tready[0] = false;
+      s_axis_tready[1] = false;
+      s_axis_tready[2] = m_axis_tready;
+      s_axis_tready[3] = false;
+    else
+      s_axis_tready[0] = false;
+      s_axis_tready[1] = false;
+      s_axis_tready[2] = false;
+      s_axis_tready[3] = m_axis_tready;
+    end if
+  end comb
+end module axis_mux

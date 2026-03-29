@@ -12,7 +12,7 @@ fsm TopModule
   port aaah: out Bool;
   port digging: out Bool;
 
-  reg fall_count: UInt<5> reset areset=0;
+  reg fall_count: UInt<5> reset areset=>0;
 
   state WalkLeft, WalkRight, FallLeft, FallRight, DigLeft, DigRight, Splat;
   default state WalkLeft;

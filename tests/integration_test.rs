@@ -214,6 +214,57 @@ end fifo BadFifo
     assert!(checker.check().is_err());
 }
 
+#[test]
+fn test_lifo() {
+    let source = include_str!("lifo.arch");
+    let sv = compile_to_sv(source);
+    // LIFO uses single stack pointer, not wr_ptr/rd_ptr
+    assert!(sv.contains("sp"));
+    assert!(!sv.contains("wr_ptr"));
+    assert!(!sv.contains("rd_ptr"));
+    assert!(sv.contains("$clog2(DEPTH + 1)"));
+    assert!(sv.contains("assign full"));
+    assert!(sv.contains("assign empty"));
+    assert!(sv.contains("mem[sp - 1]"));
+    assert!(sv.contains("sp <= sp + 1"));
+    assert!(sv.contains("sp <= sp - 1"));
+    insta::assert_snapshot!(sv);
+}
+
+#[test]
+fn test_lifo_async_error() {
+    let source = r#"
+domain WrDomain
+  freq_mhz: 100
+end domain WrDomain
+domain RdDomain
+  freq_mhz: 50
+end domain RdDomain
+
+fifo BadLifo
+  kind lifo;
+  param DEPTH: const = 8;
+  param TYPE: type = UInt<8>;
+  port wr_clk: in Clock<WrDomain>;
+  port rd_clk: in Clock<RdDomain>;
+  port rst: in Reset<Async>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data: in TYPE;
+  port pop_valid: out Bool;
+  port pop_ready: in Bool;
+  port pop_data: out TYPE;
+end fifo BadLifo
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err());
+}
+
 // ── RAM ───────────────────────────────────────────────────────────────────────
 
 #[test]

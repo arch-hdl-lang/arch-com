@@ -1,0 +1,25 @@
+module bit_sync
+  param STAGES: const = 2;
+
+  port aclk:    in Clock<ADomain>;
+  port bclk:    in Clock<BDomain>;
+  port rst_n:   in Reset<Async, Low>;
+  port adata:   in Bit;
+  port aq2_data: out Bit;
+  port bq2_data: out Bit;
+
+  reg b_sync_chain: UInt<STAGES> reset rst_n=>0;
+  reg a_sync_chain: UInt<STAGES> reset rst_n=>0;
+
+  seq on bclk rising
+    b_sync_chain <= {b_sync_chain[STAGES-2:0], adata};
+  end seq
+
+  comb bq2_data = b_sync_chain[STAGES-1];
+
+  seq on aclk rising
+    a_sync_chain <= {a_sync_chain[STAGES-2:0], bq2_data};
+  end seq
+
+  comb aq2_data = a_sync_chain[STAGES-1];
+end module bit_sync

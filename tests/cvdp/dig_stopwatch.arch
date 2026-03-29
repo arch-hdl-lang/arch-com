@@ -1,0 +1,70 @@
+module dig_stopwatch
+  param CLK_FREQ: const = 50000000;
+
+  port clk:        in Clock<SysDomain>;
+  port reset:      in Reset<Async, High>;
+  port start_stop: in Bool;
+  port seconds:    out UInt<6>;
+  port minutes:    out UInt<6>;
+  port hour:       out UInt<1>;
+
+  reg clk_cnt: UInt<32> reset reset=>0;
+  reg one_sec_pulse: Bool reset reset=>false;
+  reg r_seconds: UInt<6> reset reset=>0;
+  reg r_minutes: UInt<6> reset reset=>0;
+  reg r_hour:    UInt<1> reset reset=>0;
+
+  seq on clk rising
+    one_sec_pulse <= false;
+    // Clock divider keeps running after hour=1 so cocotb can still
+    // await RisingEdge(one_sec_pulse) in the test loop.
+    if start_stop
+      if clk_cnt == (CLK_FREQ - 1).trunc<32>()
+        clk_cnt <= 0;
+        one_sec_pulse <= true;
+      else
+        clk_cnt <= (clk_cnt + 1).trunc<32>();
+      end if
+    end if
+
+    // Counter updates (gated by ~r_hour to stop at 1:00:00)
+    if one_sec_pulse & start_stop & ~r_hour
+      if r_seconds == 59
+        r_seconds <= 0;
+        if r_minutes == 59
+          r_minutes <= 0;
+          r_hour <= 1;
+        else
+          r_minutes <= (r_minutes + 1).trunc<6>();
+        end if
+      else
+        r_seconds <= (r_seconds + 1).trunc<6>();
+      end if
+    end if
+  end seq
+
+  // Combinational outputs: show next-state when pulse is active,
+  // so cocotb sees updated values at RisingEdge(clk) before NBA.
+  comb
+    if one_sec_pulse & start_stop & ~r_hour
+      if r_seconds == 59
+        seconds = 0;
+        if r_minutes == 59
+          minutes = 0;
+          hour    = 1;
+        else
+          minutes = (r_minutes + 1).trunc<6>();
+          hour    = r_hour;
+        end if
+      else
+        seconds = (r_seconds + 1).trunc<6>();
+        minutes = r_minutes;
+        hour    = r_hour;
+      end if
+    else
+      seconds = r_seconds;
+      minutes = r_minutes;
+      hour    = r_hour;
+    end if
+  end comb
+end module dig_stopwatch

@@ -1,0 +1,50 @@
+module sgd_linear_regression
+  param DATA_WIDTH: const = 16;
+  param LEARNING_RATE: const = 1;
+  param NBW_PRED: const = 2 * DATA_WIDTH + 1;
+  param NBW_ERROR: const = NBW_PRED + 1;
+  param NBW_DELTA: const = 3 + NBW_ERROR + DATA_WIDTH;
+
+  port clk: in Clock<SysDomain>;
+  port reset: in Reset<Async, High>;
+  port x_in: in SInt<DATA_WIDTH>;
+  port y_true: in SInt<DATA_WIDTH>;
+  port reg w_out: out SInt<DATA_WIDTH> reset reset=>0;
+  port reg b_out: out SInt<DATA_WIDTH> reset reset=>0;
+
+  default seq on clk rising;
+
+  let lr: SInt<NBW_DELTA> = LEARNING_RATE.zext<NBW_DELTA>() as SInt<NBW_DELTA>;
+
+  wire y_pred: SInt<NBW_PRED>;
+  wire error: SInt<NBW_ERROR>;
+  wire delta_w: SInt<NBW_DELTA>;
+  wire delta_b: SInt<NBW_DELTA>;
+
+  comb
+    y_pred = ((w_out.sext<NBW_PRED>() * x_in.sext<NBW_PRED>()).trunc<NBW_PRED>() + b_out.sext<NBW_PRED>()).trunc<NBW_PRED>();
+  end comb
+
+  comb
+    error = (y_true.sext<NBW_ERROR>() - y_pred.sext<NBW_ERROR>()).trunc<NBW_ERROR>();
+  end comb
+
+  comb
+    delta_w = ((lr * error.sext<NBW_DELTA>()).trunc<NBW_DELTA>() * x_in.sext<NBW_DELTA>()).trunc<NBW_DELTA>();
+  end comb
+
+  comb
+    delta_b = (lr * error.sext<NBW_DELTA>()).trunc<NBW_DELTA>();
+  end comb
+
+  seq
+    if reset
+      w_out <= 0;
+      b_out <= 0;
+    else
+      w_out <= (w_out.sext<NBW_DELTA>() + delta_w).trunc<DATA_WIDTH>();
+      b_out <= (b_out.sext<NBW_DELTA>() + delta_b).trunc<DATA_WIDTH>();
+    end if
+  end seq
+
+end module sgd_linear_regression

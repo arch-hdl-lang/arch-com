@@ -1,0 +1,53 @@
+module dot_product
+  port clk_in:                in Clock<SysDomain>;
+  port reset_in:              in Reset<Async>;
+  port start_in:              in Bool;
+  port dot_length_in:         in UInt<7>;
+  port vector_a_in:           in UInt<8>;
+  port vector_a_valid_in:     in Bool;
+  port vector_b_in:           in UInt<16>;
+  port vector_b_valid_in:     in Bool;
+  port dot_product_out:       out UInt<32>;
+  port dot_product_valid_out: out Bool;
+
+  default seq on clk_in rising;
+
+  reg state: UInt<2> reset reset_in=>0;
+  reg accumulator: UInt<32> reset reset_in=>0;
+  reg cnt: UInt<7> reset reset_in=>0;
+  reg length_reg: UInt<7> reset reset_in=>0;
+  reg result_reg: UInt<32> reset reset_in=>0;
+  reg valid_reg: Bool reset reset_in=>false;
+
+  let product: UInt<24> = vector_a_in * vector_b_in;
+
+  seq
+    if state == 0
+      valid_reg <= false;
+      result_reg <= 0;
+      if start_in
+        state <= 1;
+        accumulator <= 0;
+        cnt <= 0;
+        length_reg <= dot_length_in;
+      end if
+    elsif state == 1
+      if vector_a_valid_in & vector_b_valid_in
+        accumulator <= (accumulator + product.zext<32>()).trunc<32>();
+        cnt <= (cnt + 1).trunc<7>();
+        if (cnt + 1).trunc<7>() == length_reg
+          state <= 2;
+        end if
+      end if
+    elsif state == 2
+      result_reg <= accumulator;
+      valid_reg <= true;
+      state <= 0;
+    end if
+  end seq
+
+  comb
+    dot_product_out = result_reg;
+    dot_product_valid_out = valid_reg;
+  end comb
+end module dot_product

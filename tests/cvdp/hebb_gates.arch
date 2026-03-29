@@ -1,0 +1,286 @@
+module hebb_gates
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+  port start: in Bool;
+  port a: in SInt<4>;
+  port b: in SInt<4>;
+  port gate_select: in UInt<2>;
+  port reg w1: out SInt<4> reset rst=>0;
+  port reg w2: out SInt<4> reset rst=>0;
+  port reg bias: out SInt<4> reset rst=>0;
+  port reg present_state: out UInt<4> reset rst=>0;
+  port reg next_state: out UInt<4> reset rst=>0;
+  port reg test_x1: out SInt<4> reset rst=>0;
+  port reg test_x2: out SInt<4> reset rst=>0;
+  port reg expected_output: out SInt<4> reset rst=>0;
+  port reg test_output: out SInt<4> reset rst=>0;
+  port reg test_result: out SInt<4> reset rst=>0;
+  port reg test_done: out UInt<1> reset rst=>0;
+  port reg test_present_state: out UInt<4> reset rst=>0;
+  port reg test_index: out UInt<4> reset rst=>0;
+
+  default seq on clk rising;
+
+  reg x1: SInt<4> reset rst=>0;
+  reg x2: SInt<4> reset rst=>0;
+  reg target_r: SInt<4> reset rst=>0;
+  reg delta_w1: SInt<8> reset rst=>0;
+  reg delta_w2: SInt<8> reset rst=>0;
+  reg delta_b: SInt<4> reset rst=>0;
+  reg iter: UInt<4> reset rst=>0;
+  reg wait_cnt: UInt<4> reset rst=>0;
+  reg gs_r: UInt<2> reset rst=>0;
+
+  wire ns: UInt<4>;
+
+  let pos_one: SInt<4> = {false, false, false, true} as SInt<4>;
+  let neg_one: SInt<4> = {true, true, true, true} as SInt<4>;
+  let zero4: SInt<4> = {false, false, false, false} as SInt<4>;
+
+  // Determine if a and b are positive (bipolar: +1 or -1)
+  wire a_pos: Bool;
+  wire b_pos: Bool;
+  comb a_pos = (~a[3] & a[0]);
+  comb b_pos = (~b[3] & b[0]);
+
+  // Gate target logic based on external inputs
+  wire gate_result: Bool;
+  comb
+    if gate_select == 0
+      gate_result = a_pos & b_pos;
+    elsif gate_select == 1
+      gate_result = a_pos | b_pos;
+    elsif gate_select == 2
+      gate_result = ~(a_pos & b_pos);
+    else
+      gate_result = ~(a_pos | b_pos);
+    end if
+  end comb
+
+  wire tgt_val: SInt<4>;
+  comb
+    if gate_result
+      tgt_val = pos_one;
+    else
+      tgt_val = neg_one;
+    end if
+  end comb
+
+  // Gate target logic based on test inputs (for self-test phase)
+  wire tx1_pos: Bool;
+  wire tx2_pos: Bool;
+  comb tx1_pos = (~test_x1[3] & test_x1[0]);
+  comb tx2_pos = (~test_x2[3] & test_x2[0]);
+
+  wire test_gate_result: Bool;
+  comb
+    if gs_r == 0
+      test_gate_result = tx1_pos & tx2_pos;
+    elsif gs_r == 1
+      test_gate_result = tx1_pos | tx2_pos;
+    elsif gs_r == 2
+      test_gate_result = ~(tx1_pos & tx2_pos);
+    else
+      test_gate_result = ~(tx1_pos | tx2_pos);
+    end if
+  end comb
+
+  wire test_tgt_val: SInt<4>;
+  comb
+    if test_gate_result
+      test_tgt_val = pos_one;
+    else
+      test_tgt_val = neg_one;
+    end if
+  end comb
+
+  // Compute net for testing: w1*test_x1 + w2*test_x2 + bias
+  wire prod1: SInt<8>;
+  wire prod2: SInt<8>;
+  wire bias_ext: SInt<8>;
+  wire net_sum: SInt<8>;
+  comb prod1 = (w1 * test_x1).trunc<8>() as SInt<8>;
+  comb prod2 = (w2 * test_x2).trunc<8>() as SInt<8>;
+  comb bias_ext = bias.sext<8>() as SInt<8>;
+  comb net_sum = (prod1 + prod2 + bias_ext).trunc<8>() as SInt<8>;
+
+  // Test input vectors: depend on gate type (stored in gs_r)
+  // AND(0): (1,1),(1,-1),(-1,1),(-1,-1)
+  // OR(1):  (1,1),(-1,1),(1,-1),(-1,-1)
+  // NAND(2): (-1,-1),(-1,1),(1,-1),(1,1)
+  // NOR(3):  (-1,-1),(-1,1),(1,-1),(1,1)
+  wire tv_x1: SInt<4>;
+  wire tv_x2: SInt<4>;
+  comb
+    if gs_r == 0
+      if test_index == 0
+        tv_x1 = pos_one; tv_x2 = pos_one;
+      elsif test_index == 1
+        tv_x1 = pos_one; tv_x2 = neg_one;
+      elsif test_index == 2
+        tv_x1 = neg_one; tv_x2 = pos_one;
+      else
+        tv_x1 = neg_one; tv_x2 = neg_one;
+      end if
+    elsif gs_r == 1
+      if test_index == 0
+        tv_x1 = pos_one; tv_x2 = pos_one;
+      elsif test_index == 1
+        tv_x1 = neg_one; tv_x2 = pos_one;
+      elsif test_index == 2
+        tv_x1 = pos_one; tv_x2 = neg_one;
+      else
+        tv_x1 = neg_one; tv_x2 = neg_one;
+      end if
+    elsif gs_r == 2
+      if test_index == 0
+        tv_x1 = neg_one; tv_x2 = neg_one;
+      elsif test_index == 1
+        tv_x1 = neg_one; tv_x2 = pos_one;
+      elsif test_index == 2
+        tv_x1 = pos_one; tv_x2 = neg_one;
+      else
+        tv_x1 = pos_one; tv_x2 = pos_one;
+      end if
+    else
+      if test_index == 0
+        tv_x1 = neg_one; tv_x2 = neg_one;
+      elsif test_index == 1
+        tv_x1 = neg_one; tv_x2 = pos_one;
+      elsif test_index == 2
+        tv_x1 = pos_one; tv_x2 = neg_one;
+      else
+        tv_x1 = pos_one; tv_x2 = pos_one;
+      end if
+    end if
+  end comb
+
+  // FSM next state logic
+  // Training: 0(init)->1(capture)->2-5(target)->6(pass)->7(delta)->8(update)->9(iter check)
+  // Testing: 10(init)->11(load)->12(compute)->13(wait)->11 or 0(done)
+  comb
+    if present_state == 0
+      if start
+        ns = 1;
+      else
+        ns = 0;
+      end if
+    elsif present_state == 1
+      if a_pos & b_pos
+        ns = 2;
+      elsif a_pos & ~b_pos
+        ns = 3;
+      elsif ~a_pos & b_pos
+        ns = 4;
+      else
+        ns = 5;
+      end if
+    elsif present_state == 2
+      ns = 6;
+    elsif present_state == 3
+      ns = 6;
+    elsif present_state == 4
+      ns = 6;
+    elsif present_state == 5
+      ns = 6;
+    elsif present_state == 6
+      ns = 7;
+    elsif present_state == 7
+      ns = 8;
+    elsif present_state == 8
+      ns = 9;
+    elsif present_state == 9
+      if iter >= 3
+        ns = 10;
+      else
+        ns = 1;
+      end if
+    elsif present_state == 10
+      ns = 11;
+    elsif present_state == 11
+      ns = 12;
+    elsif present_state == 12
+      ns = 13;
+    elsif present_state == 13
+      if wait_cnt >= 5
+        if test_index >= 3
+          ns = 0;
+        else
+          ns = 11;
+        end if
+      else
+        ns = 13;
+      end if
+    else
+      ns = 0;
+    end if
+  end comb
+
+  seq next_state <= ns;
+  seq present_state <= ns;
+
+  // State actions
+  seq
+    if present_state == 0
+      w1 <= zero4;
+      w2 <= zero4;
+      bias <= zero4;
+      iter <= 0;
+      test_done <= 0;
+      test_index <= 0;
+      test_present_state <= 0;
+      wait_cnt <= 0;
+      gs_r <= gate_select;
+    elsif present_state == 1
+      x1 <= a;
+      x2 <= b;
+    elsif present_state == 2
+      target_r <= tgt_val;
+    elsif present_state == 3
+      target_r <= tgt_val;
+    elsif present_state == 4
+      target_r <= tgt_val;
+    elsif present_state == 5
+      target_r <= tgt_val;
+    elsif present_state == 7
+      delta_w1 <= x1 * target_r;
+      delta_w2 <= x2 * target_r;
+      delta_b <= target_r;
+    elsif present_state == 8
+      w1 <= (w1.sext<8>() + delta_w1).trunc<4>() as SInt<4>;
+      w2 <= (w2.sext<8>() + delta_w2).trunc<4>() as SInt<4>;
+      bias <= (bias + delta_b).trunc<4>() as SInt<4>;
+    elsif present_state == 9
+      iter <= (iter + 1).trunc<4>();
+    elsif present_state == 10
+      test_index <= 0;
+      test_present_state <= 1;
+      wait_cnt <= 0;
+    elsif present_state == 11
+      test_present_state <= 2;
+      wait_cnt <= 0;
+      test_x1 <= tv_x1;
+      test_x2 <= tv_x2;
+    elsif present_state == 12
+      test_present_state <= 3;
+      if net_sum[7]
+        test_output <= neg_one;
+      else
+        test_output <= pos_one;
+      end if
+      expected_output <= test_tgt_val;
+      test_result <= zero4;
+    elsif present_state == 13
+      test_present_state <= 4;
+      if wait_cnt >= 5
+        test_index <= (test_index + 1).trunc<4>();
+        if test_index >= 3
+          test_done <= 1;
+        end if
+      else
+        wait_cnt <= (wait_cnt + 1).trunc<4>();
+      end if
+    end if
+  end seq
+
+end module hebb_gates

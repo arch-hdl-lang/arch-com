@@ -6,7 +6,7 @@ fsm TopModule
   port w: in Bool;
   port z: out Bool;
 
-  reg cnt: UInt<2> reset reset=0;
+  reg cnt: UInt<2> reset reset=>0;
 
   state A, B1, B2, B3, Out;
   default state A;

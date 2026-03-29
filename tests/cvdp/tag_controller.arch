@@ -1,0 +1,36 @@
+module tag_controller
+  port clk:          in Clock<SysDomain>;
+  port rst:          in Reset<Async>;
+  port write_enable: in Bool;
+  port write_addr:   in UInt<9>;
+  port read_addr_0:  in UInt<8>;
+  port read_addr_1:  in UInt<8>;
+  port data_in_0:    in UInt<8>;
+  port data_in_1:    in UInt<8>;
+  port data_out_0:   out UInt<9>;
+  port data_out_1:   out UInt<9>;
+  port write_enable_0: out Bool;
+  port write_enable_1: out Bool;
+  port addr_out_0:   out UInt<8>;
+  port addr_out_1:   out UInt<8>;
+
+  reg ram_store: UInt<256> reset rst=>0;
+
+  let tag_addr_0: UInt<8> = write_enable ? write_addr[7:0] : read_addr_0;
+  let tag_addr_1: UInt<8> = write_enable ? write_addr[7:0] : read_addr_1;
+
+  seq on clk rising
+    if write_enable
+      ram_store[write_addr[7:0]] <= 1;
+    end if
+  end seq
+
+  comb
+    addr_out_0 = tag_addr_0;
+    addr_out_1 = tag_addr_1;
+    write_enable_0 = write_enable;
+    write_enable_1 = write_enable;
+    data_out_0 = {ram_store[read_addr_0], data_in_0};
+    data_out_1 = {ram_store[read_addr_1], data_in_1};
+  end comb
+end module tag_controller

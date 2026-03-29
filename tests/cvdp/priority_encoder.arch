@@ -1,0 +1,24 @@
+module priority_encoder_8x3
+  port in:  in UInt<8>;
+  port out: out UInt<3>;
+
+  comb
+    if in[7]
+      out = 3'd7;
+    elsif in[6]
+      out = 3'd6;
+    elsif in[5]
+      out = 3'd5;
+    elsif in[4]
+      out = 3'd4;
+    elsif in[3]
+      out = 3'd3;
+    elsif in[2]
+      out = 3'd2;
+    elsif in[1]
+      out = 3'd1;
+    else
+      out = 3'd0;
+    end if
+  end comb
+end module priority_encoder_8x3

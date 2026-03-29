@@ -41,7 +41,7 @@ module BufMgr
   port free_count_out: out UInt<15>;
   port init_done:      out Bool;
 
-  reg default: init 0 reset rst=0;
+  reg default: init 0 reset rst=>0;
 
   // ── Flop arrays (256 entries) ──
   reg head_arr:  Vec<UInt<14>, 256>;

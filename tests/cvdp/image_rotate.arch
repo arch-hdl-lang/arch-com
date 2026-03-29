@@ -1,0 +1,84 @@
+module image_rotate
+  param IN_ROW: const = 4;
+  param IN_COL: const = 4;
+  param OUT_ROW: const = IN_ROW > IN_COL ? IN_ROW : IN_COL;
+  param OUT_COL: const = IN_ROW > IN_COL ? IN_ROW : IN_COL;
+  param DATA_WIDTH: const = 8;
+
+  port rotation_angle: in UInt<2>;
+  port image_in: in UInt<IN_ROW * IN_COL * DATA_WIDTH>;
+  port image_out: out UInt<OUT_ROW * OUT_COL * DATA_WIDTH>;
+
+  wire padded_image: UInt<OUT_ROW * OUT_COL * DATA_WIDTH>;
+  wire transposed_image: UInt<OUT_ROW * OUT_COL * DATA_WIDTH>;
+
+  // Padding: copy image_in into top-left of square matrix, zeros elsewhere
+  comb
+    for pad_row in 0..OUT_ROW-1
+      for pad_col in 0..OUT_COL-1
+        if (pad_row < IN_ROW)
+          if (pad_col < IN_COL)
+            padded_image[(pad_row * OUT_COL + pad_col) * DATA_WIDTH + DATA_WIDTH - 1 : (pad_row * OUT_COL + pad_col) * DATA_WIDTH] = image_in[(pad_row * IN_COL + pad_col) * DATA_WIDTH + DATA_WIDTH - 1 : (pad_row * IN_COL + pad_col) * DATA_WIDTH];
+          else
+            padded_image[(pad_row * OUT_COL + pad_col) * DATA_WIDTH + DATA_WIDTH - 1 : (pad_row * OUT_COL + pad_col) * DATA_WIDTH] = 0;
+          end if
+        else
+          padded_image[(pad_row * OUT_COL + pad_col) * DATA_WIDTH + DATA_WIDTH - 1 : (pad_row * OUT_COL + pad_col) * DATA_WIDTH] = 0;
+        end if
+      end for
+    end for
+  end comb
+
+  // Transpose
+  comb
+    for trans_row in 0..OUT_ROW-1
+      for trans_col in 0..OUT_COL-1
+        transposed_image[(trans_row * OUT_COL + trans_col) * DATA_WIDTH + DATA_WIDTH - 1 : (trans_row * OUT_COL + trans_col) * DATA_WIDTH] = padded_image[(trans_col * OUT_ROW + trans_row) * DATA_WIDTH + DATA_WIDTH - 1 : (trans_col * OUT_ROW + trans_row) * DATA_WIDTH];
+      end for
+    end for
+  end comb
+
+  // Rotation output: 90 CW (transpose then reverse each row)
+  wire rot90: UInt<OUT_ROW * OUT_COL * DATA_WIDTH>;
+  comb
+    for r in 0..OUT_ROW-1
+      for c in 0..OUT_COL-1
+        rot90[(r * OUT_COL + c) * DATA_WIDTH + DATA_WIDTH - 1 : (r * OUT_COL + c) * DATA_WIDTH] = transposed_image[(r * OUT_COL + (OUT_COL - 1 - c)) * DATA_WIDTH + DATA_WIDTH - 1 : (r * OUT_COL + (OUT_COL - 1 - c)) * DATA_WIDTH];
+      end for
+    end for
+  end comb
+
+  // Rotation output: 180 (reverse rows and columns)
+  wire rot180: UInt<OUT_ROW * OUT_COL * DATA_WIDTH>;
+  comb
+    for r in 0..OUT_ROW-1
+      for c in 0..OUT_COL-1
+        rot180[(r * OUT_COL + c) * DATA_WIDTH + DATA_WIDTH - 1 : (r * OUT_COL + c) * DATA_WIDTH] = padded_image[((OUT_ROW - 1 - r) * OUT_COL + (OUT_COL - 1 - c)) * DATA_WIDTH + DATA_WIDTH - 1 : ((OUT_ROW - 1 - r) * OUT_COL + (OUT_COL - 1 - c)) * DATA_WIDTH];
+      end for
+    end for
+  end comb
+
+  // Rotation output: 270 CW (transpose then reverse columns)
+  wire rot270: UInt<OUT_ROW * OUT_COL * DATA_WIDTH>;
+  comb
+    for r in 0..OUT_ROW-1
+      for c in 0..OUT_COL-1
+        rot270[(r * OUT_COL + c) * DATA_WIDTH + DATA_WIDTH - 1 : (r * OUT_COL + c) * DATA_WIDTH] = transposed_image[((OUT_ROW - 1 - r) * OUT_COL + c) * DATA_WIDTH + DATA_WIDTH - 1 : ((OUT_ROW - 1 - r) * OUT_COL + c) * DATA_WIDTH];
+      end for
+    end for
+  end comb
+
+  // Output mux
+  comb
+    if rotation_angle == 0b00
+      image_out = rot90;
+    elsif rotation_angle == 0b01
+      image_out = rot180;
+    elsif rotation_angle == 0b10
+      image_out = rot270;
+    else
+      image_out = padded_image;
+    end if
+  end comb
+
+end module image_rotate

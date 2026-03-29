@@ -1,0 +1,124 @@
+module load_store_unit
+  port clk:   in Clock<SysDomain>;
+  port rst_n:  in Reset<Async, Low>;
+
+  // Data-cache interface
+  port reg dmem_req_o:       out Bool reset rst_n=>false;
+  port reg dmem_req_addr_o:  out UInt<32> reset rst_n=>0;
+  port reg dmem_req_we_o:    out Bool reset rst_n=>false;
+  port reg dmem_req_be_o:    out UInt<4> reset rst_n=>0;
+  port reg dmem_req_wdata_o: out UInt<32> reset rst_n=>0;
+  port dmem_gnt_i:           in Bool;
+  port dmem_rvalid_i:        in Bool;
+  port dmem_rsp_rdata_i:     in UInt<32>;
+
+  // Execute stage interface
+  port ex_if_req_i:          in Bool;
+  port ex_if_we_i:           in Bool;
+  port ex_if_type_i:         in UInt<2>;
+  port ex_if_wdata_i:        in UInt<32>;
+  port ex_if_addr_base_i:    in UInt<32>;
+  port ex_if_addr_offset_i:  in UInt<32>;
+  port reg ex_if_ready_o:    out Bool reset rst_n=>true;
+
+  // Writeback interface
+  port reg wb_if_rdata_o:    out UInt<32> reset rst_n=>0;
+  port reg wb_if_rvalid_o:   out Bool reset rst_n=>false;
+
+  default seq on clk rising;
+
+  // FSM states: 0=IDLE, 1=WAIT_GNT, 2=WAIT_RVALID
+  reg state: UInt<2> reset rst_n=>0;
+  reg is_store: Bool reset rst_n=>false;
+
+  // Combinational address calculation
+  let addr: UInt<32> = (ex_if_addr_base_i + ex_if_addr_offset_i).trunc<32>();
+  let addr_lsb: UInt<2> = addr[1:0];
+
+  // Combinational byte enable and misaligned detection
+  wire be: UInt<4>;
+  wire misaligned: Bool;
+
+  // Accept condition: combine into single wire to avoid && codegen issue
+  wire accept: Bool;
+  comb accept = ex_if_req_i & ex_if_ready_o & (misaligned == false);
+
+  comb
+    if ex_if_type_i == 0
+      misaligned = false;
+      if addr_lsb == 0
+        be = 1;
+      elsif addr_lsb == 1
+        be = 2;
+      elsif addr_lsb == 2
+        be = 4;
+      else
+        be = 8;
+      end if
+    elsif ex_if_type_i == 1
+      if addr_lsb == 0
+        be = 3;
+        misaligned = false;
+      elsif addr_lsb == 2
+        be = 12;
+        misaligned = false;
+      else
+        be = 0;
+        misaligned = true;
+      end if
+    elsif ex_if_type_i == 2
+      if addr_lsb == 0
+        be = 15;
+        misaligned = false;
+      else
+        be = 0;
+        misaligned = true;
+      end if
+    else
+      be = 0;
+      misaligned = true;
+    end if
+  end comb
+
+  seq
+    if state == 0
+      wb_if_rvalid_o <= false;
+      if accept
+        dmem_req_o      <= true;
+        dmem_req_addr_o <= addr;
+        dmem_req_we_o   <= ex_if_we_i;
+        dmem_req_be_o   <= be;
+        dmem_req_wdata_o <= ex_if_wdata_i;
+        ex_if_ready_o   <= false;
+        is_store        <= ex_if_we_i;
+        state           <= 1;
+      end if
+    elsif state == 1
+      wb_if_rvalid_o <= false;
+      if dmem_gnt_i
+        dmem_req_o      <= false;
+        dmem_req_we_o   <= false;
+        dmem_req_addr_o <= 0;
+        dmem_req_be_o   <= 0;
+        dmem_req_wdata_o <= 0;
+        if is_store
+          ex_if_ready_o <= true;
+          state         <= 0;
+        else
+          state <= 2;
+        end if
+      end if
+    elsif state == 2
+      if dmem_rvalid_i
+        wb_if_rvalid_o <= true;
+        wb_if_rdata_o  <= dmem_rsp_rdata_i;
+        ex_if_ready_o  <= true;
+        state          <= 0;
+      else
+        wb_if_rvalid_o <= false;
+      end if
+    else
+      state <= 0;
+    end if
+  end seq
+end module load_store_unit

@@ -1,0 +1,109 @@
+module crossbar_switch
+  param DATA_WIDTH: const = 8;
+  param NUM_PORTS: const = 4;
+  param DATA_WIDTH_IN: const = DATA_WIDTH + 2;
+
+  port clk: in Clock<SysDomain>;
+  port reset: in Reset<Async, Low>;
+
+  port in0: in UInt<DATA_WIDTH_IN>;
+  port in1: in UInt<DATA_WIDTH_IN>;
+  port in2: in UInt<DATA_WIDTH_IN>;
+  port in3: in UInt<DATA_WIDTH_IN>;
+
+  port valid_in0: in Bit;
+  port valid_in1: in Bit;
+  port valid_in2: in Bit;
+  port valid_in3: in Bit;
+
+  port reg out0: out UInt<DATA_WIDTH> reset reset=>0;
+  port reg out1: out UInt<DATA_WIDTH> reset reset=>0;
+  port reg out2: out UInt<DATA_WIDTH> reset reset=>0;
+  port reg out3: out UInt<DATA_WIDTH> reset reset=>0;
+
+  port reg valid_out0: out Bit reset reset=>0;
+  port reg valid_out1: out Bit reset reset=>0;
+  port reg valid_out2: out Bit reset reset=>0;
+  port reg valid_out3: out Bit reset reset=>0;
+
+  default seq on clk rising;
+
+  let dest0: UInt<2> = in0[DATA_WIDTH_IN - 1 : DATA_WIDTH_IN - 2];
+  let dest1: UInt<2> = in1[DATA_WIDTH_IN - 1 : DATA_WIDTH_IN - 2];
+  let dest2: UInt<2> = in2[DATA_WIDTH_IN - 1 : DATA_WIDTH_IN - 2];
+  let dest3: UInt<2> = in3[DATA_WIDTH_IN - 1 : DATA_WIDTH_IN - 2];
+
+  let data0: UInt<DATA_WIDTH> = in0[DATA_WIDTH - 1 : 0];
+  let data1: UInt<DATA_WIDTH> = in1[DATA_WIDTH - 1 : 0];
+  let data2: UInt<DATA_WIDTH> = in2[DATA_WIDTH - 1 : 0];
+  let data3: UInt<DATA_WIDTH> = in3[DATA_WIDTH - 1 : 0];
+
+  seq
+    out0 <= 0;
+    out1 <= 0;
+    out2 <= 0;
+    out3 <= 0;
+    valid_out0 <= 0;
+    valid_out1 <= 0;
+    valid_out2 <= 0;
+    valid_out3 <= 0;
+
+    if valid_in0 == 1
+      if dest0 == 0
+        out0 <= data0;
+        valid_out0 <= 1;
+      elsif dest0 == 1
+        out1 <= data0;
+        valid_out1 <= 1;
+      elsif dest0 == 2
+        out2 <= data0;
+        valid_out2 <= 1;
+      else
+        out3 <= data0;
+        valid_out3 <= 1;
+      end if
+    elsif valid_in1 == 1
+      if dest1 == 0
+        out0 <= data1;
+        valid_out0 <= 1;
+      elsif dest1 == 1
+        out1 <= data1;
+        valid_out1 <= 1;
+      elsif dest1 == 2
+        out2 <= data1;
+        valid_out2 <= 1;
+      else
+        out3 <= data1;
+        valid_out3 <= 1;
+      end if
+    elsif valid_in2 == 1
+      if dest2 == 0
+        out0 <= data2;
+        valid_out0 <= 1;
+      elsif dest2 == 1
+        out1 <= data2;
+        valid_out1 <= 1;
+      elsif dest2 == 2
+        out2 <= data2;
+        valid_out2 <= 1;
+      else
+        out3 <= data2;
+        valid_out3 <= 1;
+      end if
+    elsif valid_in3 == 1
+      if dest3 == 0
+        out0 <= data3;
+        valid_out0 <= 1;
+      elsif dest3 == 1
+        out1 <= data3;
+        valid_out1 <= 1;
+      elsif dest3 == 2
+        out2 <= data3;
+        valid_out2 <= 1;
+      else
+        out3 <= data3;
+        valid_out3 <= 1;
+      end if
+    end if
+  end seq
+end module crossbar_switch

@@ -1,0 +1,16 @@
+module Bit_Change_Detector
+  port clk:          in Clock<SysDomain>;
+  port reset:        in Reset<Async>;
+  port bit_in:       in Bit;
+  port change_pulse: out Bit;
+
+  reg bit_in_d: Bit reset reset=>0;
+
+  default seq on clk rising;
+
+  seq
+    bit_in_d <= bit_in;
+  end seq
+
+  comb change_pulse = bit_in ^ bit_in_d;
+end module Bit_Change_Detector

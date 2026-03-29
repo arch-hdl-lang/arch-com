@@ -157,7 +157,7 @@ module CoreTop
 
   // ── ITCM fetch: IFU cmd → ITCM read port ──────────────────────────
   // ITCM rsp_valid: delay cmd_valid by 1 cycle (ITCM latency 1)
-  reg itcm_rsp_valid_r: Bool init false reset rst_n=false;
+  reg itcm_rsp_valid_r: Bool init false reset rst_n=>false;
 
   seq on clk rising
     itcm_rsp_valid_r <= itcm_cmd_valid;

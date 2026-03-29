@@ -5,9 +5,9 @@ module SetBitStreamCalculator
   port i_rst_n: in Reset<Async, Low>;
   port i_bit_in: in Bool;
   port i_ready: in Bool;
-  port reg o_set_bit_count: out UInt<p_max_set_bit_count_width> reset i_rst_n=0;
+  port reg o_set_bit_count: out UInt<p_max_set_bit_count_width> reset i_rst_n=>0;
 
-  reg prev_ready: Bool reset i_rst_n=0;
+  reg prev_ready: Bool reset i_rst_n=>0;
 
   let max_val: UInt<p_max_set_bit_count_width> = 8'hFF;
 

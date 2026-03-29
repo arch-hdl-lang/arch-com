@@ -1,0 +1,288 @@
+module microcode_sequencer
+  port clk:     in Clock<SysDomain>;
+  port c_n_in:  in Bool;
+  port c_inc_in: in Bool;
+  port r_en:    in Bool;
+  port cc:      in Bool;
+  port ien:     in Bool;
+  port d_in:    in UInt<4>;
+  port instr_in: in UInt<5>;
+  port oen:     in Bool;
+  port d_out:    out UInt<4>;
+  port c_n_out:  out Bool;
+  port c_inc_out: out Bool;
+  port full:    out Bool;
+  port empty:   out Bool;
+
+  default seq on clk rising;
+
+  // ---- Instruction Decoder (combinational) ----
+  wire dec_cen: Bool;
+  wire dec_rst: Bool;
+  wire dec_oen: Bool;
+  wire dec_inc: Bool;
+  wire dec_rsel: Bool;
+  wire dec_rce: Bool;
+  wire dec_pc_mux_sel: Bool;
+  wire dec_a_mux_sel: UInt<2>;
+  wire dec_b_mux_sel: UInt<2>;
+  wire dec_push: Bool;
+  wire dec_pop: Bool;
+  wire dec_src_sel: Bool;
+  wire dec_stack_we: Bool;
+  wire dec_stack_re: Bool;
+  wire dec_out_ce: Bool;
+
+  comb
+    dec_cen = false;
+    dec_rst = false;
+    dec_oen = false;
+    dec_inc = false;
+    dec_rsel = false;
+    dec_rce = false;
+    dec_pc_mux_sel = false;
+    dec_a_mux_sel = 0;
+    dec_b_mux_sel = 0;
+    dec_push = false;
+    dec_pop = false;
+    dec_src_sel = false;
+    dec_stack_we = false;
+    dec_stack_re = false;
+    dec_out_ce = false;
+
+    if ~ien & ~cc
+      if instr_in == 0
+        // PRST: reset stack, output 0, load PC
+        dec_rst = true;
+        dec_oen = true;
+        dec_inc = true;
+        dec_a_mux_sel = 2;
+        dec_b_mux_sel = 2;
+        dec_out_ce = true;
+      elsif instr_in == 1
+        // Fetch PC: a=0, b=pc
+        dec_oen = true;
+        dec_inc = true;
+        dec_a_mux_sel = 2;
+        dec_b_mux_sel = 0;
+        dec_out_ce = true;
+      elsif instr_in == 2
+        // Fetch R: a=reg, b=0
+        dec_oen = true;
+        dec_inc = true;
+        dec_a_mux_sel = 1;
+        dec_b_mux_sel = 2;
+        dec_out_ce = true;
+      elsif instr_in == 3
+        // Fetch D: a=d_in, b=0
+        dec_oen = true;
+        dec_inc = true;
+        dec_a_mux_sel = 0;
+        dec_b_mux_sel = 2;
+        dec_out_ce = true;
+      elsif instr_in == 4
+        // Fetch R+D: a=d_in, b=reg, carry enabled
+        dec_cen = true;
+        dec_oen = true;
+        dec_inc = true;
+        dec_a_mux_sel = 0;
+        dec_b_mux_sel = 3;
+        dec_out_ce = true;
+      elsif instr_in == 11
+        // Push PC: output PC via adder, push to stack
+        dec_oen = true;
+        dec_inc = true;
+        dec_push = true;
+        dec_src_sel = false;
+        dec_stack_we = true;
+        dec_a_mux_sel = 2;
+        dec_b_mux_sel = 0;
+        dec_out_ce = true;
+      elsif instr_in == 14
+        // Pop PC
+        dec_oen = true;
+        dec_pop = true;
+        dec_stack_re = true;
+        dec_pc_mux_sel = true;
+        dec_a_mux_sel = 2;
+        dec_b_mux_sel = 1;
+        dec_out_ce = true;
+      end if
+    end if
+  end comb
+
+  // ---- Stack Pointer (5-bit register) ----
+  reg sp: UInt<5> init 0;
+
+  let sp_full: Bool = sp == 16;
+  let sp_empty: Bool = sp == 0;
+  comb
+    full = sp_full;
+    empty = sp_empty;
+  end comb
+
+  seq
+    if dec_rst
+      sp <= 0;
+    elsif dec_push & ~sp_full
+      sp <= (sp + 1).trunc<5>();
+    elsif dec_pop & ~sp_empty
+      sp <= (sp - 1).trunc<5>();
+    end if
+  end seq
+
+  // ---- Stack RAM (16 x 4-bit) ----
+  reg stack_mem: Vec<UInt<4>, 16>;
+  reg stack_data_rd: UInt<4> init 0;
+
+  wire pc_out_w: UInt<4>;
+  wire stack_write_data: UInt<4>;
+  comb
+    if dec_src_sel
+      stack_write_data = d_in;
+    else
+      stack_write_data = pc_out_w;
+    end if
+  end comb
+
+  seq
+    if dec_stack_we
+      stack_mem[sp[3:0]] <= stack_write_data;
+    end if
+    if dec_stack_re
+      stack_data_rd <= stack_mem[sp[3:0]];
+    end if
+  end seq
+
+  // ---- aux_reg_mux and aux_reg ----
+  let aux_reg_mux_sel_v: Bool = dec_rsel & ~r_en;
+
+  wire fa_sum: UInt<4>;
+  wire aux_reg_mux_out: UInt<4>;
+  reg aux_reg_r: UInt<4> init 0;
+
+  comb
+    if aux_reg_mux_sel_v
+      aux_reg_mux_out = fa_sum;
+    else
+      aux_reg_mux_out = d_in;
+    end if
+  end comb
+
+  let aux_reg_en_v: Bool = dec_rce | ~r_en;
+
+  seq
+    if aux_reg_en_v
+      aux_reg_r <= aux_reg_mux_out;
+    end if
+  end seq
+
+  // ---- a_mux ----
+  wire a_mux_out: UInt<4>;
+  comb
+    if dec_a_mux_sel == 0
+      a_mux_out = d_in;
+    elsif dec_a_mux_sel == 1
+      a_mux_out = aux_reg_r;
+    else
+      a_mux_out = 0;
+    end if
+  end comb
+
+  // ---- b_mux ----
+  wire b_mux_out: UInt<4>;
+  comb
+    if dec_b_mux_sel == 0
+      b_mux_out = pc_out_w;
+    elsif dec_b_mux_sel == 1
+      b_mux_out = stack_data_rd;
+    elsif dec_b_mux_sel == 2
+      b_mux_out = 0;
+    else
+      b_mux_out = aux_reg_r;
+    end if
+  end comb
+
+  // ---- Full Adder (4-bit with carry) ----
+  wire fa_cin: Bool;
+  comb
+    if dec_cen
+      fa_cin = c_n_in;
+    else
+      fa_cin = false;
+    end if
+  end comb
+
+  // Extend to 5 bits via concat, then add
+  let a_ext: UInt<5> = {false, a_mux_out};
+  let b_ext: UInt<5> = {false, b_mux_out};
+  let cin_ext: UInt<5> = {false, false, false, false, fa_cin};
+  let fa_ab: UInt<6> = a_ext + b_ext;
+  let fa_full_v: UInt<7> = fa_ab + cin_ext.zext<6>();
+  comb fa_sum = fa_full_v[3:0];
+
+  wire fa_cout: Bool;
+  comb fa_cout = fa_full_v[4:4] == 1;
+
+  // ---- output enable ----
+  wire arith_d_out: UInt<4>;
+  comb
+    if dec_oen & ~oen
+      arith_d_out = fa_sum;
+    else
+      arith_d_out = 0;
+    end if
+  end comb
+
+  // ---- PC mux, incrementer, reg ----
+  wire pc_mux_out: UInt<4>;
+  comb
+    if dec_pc_mux_sel
+      pc_mux_out = fa_sum;
+    else
+      pc_mux_out = pc_out_w;
+    end if
+  end comb
+
+  wire pc_inc_cin: Bool;
+  comb
+    if dec_inc
+      pc_inc_cin = c_inc_in;
+    else
+      pc_inc_cin = false;
+    end if
+  end comb
+
+  let pc_ext: UInt<5> = {false, pc_mux_out};
+  let pci_ext: UInt<5> = {false, false, false, false, pc_inc_cin};
+  let pc_inc_result: UInt<6> = pc_ext + pci_ext;
+  wire pc_inc_out: UInt<4>;
+  comb pc_inc_out = pc_inc_result[3:0];
+  wire pc_inc_cout: Bool;
+  comb pc_inc_cout = pc_inc_result[4:4] == 1;
+
+  reg pc_reg_r: UInt<4> init 0;
+  seq pc_reg_r <= pc_inc_out;
+  comb pc_out_w = pc_reg_r;
+
+  // ---- Result Register ----
+  reg result_reg: UInt<4> init 0;
+  seq
+    if dec_out_ce
+      result_reg <= arith_d_out;
+    end if
+  end seq
+
+  // ---- Output assignments ----
+  // d_out: combinational bypass when dec_out_ce active, else hold from register
+  comb
+    if dec_out_ce
+      d_out = arith_d_out;
+    else
+      d_out = result_reg;
+    end if
+    c_n_out = fa_cout;
+    c_inc_out = pc_inc_cout;
+  end comb
+
+end module microcode_sequencer

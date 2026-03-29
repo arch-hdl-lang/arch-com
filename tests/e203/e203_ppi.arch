@@ -65,13 +65,13 @@ module Ppi
   let sel_timer: Bool = (icb_cmd_addr[31:24] == 0x02);
 
   // ── FSM: IDLE → SETUP → ACCESS ────────────────────────────────
-  reg fsm_st: UInt<2> init 0 reset rst_n=0;
-  reg sel_r:  UInt<3> init 0 reset rst_n=0;  // latched slave select
-  reg cmd_addr_r:  UInt<32> init 0 reset rst_n=0;
-  reg cmd_wdata_r: UInt<32> init 0 reset rst_n=0;
-  reg cmd_read_r:  Bool     init false reset rst_n=false;
-  reg rsp_valid_r: Bool     init false reset rst_n=false;
-  reg rsp_rdata_r: UInt<32> init 0 reset rst_n=0;
+  reg fsm_st: UInt<2> init 0 reset rst_n=>0;
+  reg sel_r:  UInt<3> init 0 reset rst_n=>0;  // latched slave select
+  reg cmd_addr_r:  UInt<32> init 0 reset rst_n=>0;
+  reg cmd_wdata_r: UInt<32> init 0 reset rst_n=>0;
+  reg cmd_read_r:  Bool     init false reset rst_n=>false;
+  reg rsp_valid_r: Bool     init false reset rst_n=>false;
+  reg rsp_rdata_r: UInt<32> init 0 reset rst_n=>0;
 
   // Encode slave select
   let sel_enc: UInt<3> = sel_gpio  ? 1 :

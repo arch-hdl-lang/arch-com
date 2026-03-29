@@ -1,0 +1,75 @@
+module sorting_engine
+  param N:     const = 8;
+  param WIDTH: const = 8;
+
+  port clk:      in Clock<SysDomain>;
+  port rst:      in Reset<Async, High>;
+  port start:    in Bool;
+  port in_data:  in UInt<N * WIDTH>;
+  port done:     out Bool;
+  port out_data: out UInt<N * WIDTH>;
+
+  // FSM states: 0=IDLE, 1=SORTING, 2=DONE
+  reg state: UInt<2> reset rst=>0;
+  reg r_done: Bool reset rst=>false;
+
+  // Sort array stored as flat register
+  reg arr: UInt<N * WIDTH> init 0;
+
+  // Iteration counters
+  reg pass_cnt: UInt<32> reset rst=>0;
+  reg idx:      UInt<32> reset rst=>0;
+
+  // Extract elements at idx and idx+1 for comparison
+  wire elem_a: UInt<WIDTH>;
+  wire elem_b: UInt<WIDTH>;
+  wire swapped_arr: UInt<N * WIDTH>;
+
+  comb
+    elem_a = arr[idx * WIDTH + WIDTH - 1 : idx * WIDTH];
+    elem_b = arr[(idx + 1) * WIDTH + WIDTH - 1 : (idx + 1) * WIDTH];
+
+    // Build array with potential swap
+    swapped_arr = arr;
+    if elem_a > elem_b
+      swapped_arr[idx * WIDTH + WIDTH - 1 : idx * WIDTH] = elem_b;
+      swapped_arr[(idx + 1) * WIDTH + WIDTH - 1 : (idx + 1) * WIDTH] = elem_a;
+    end if
+  end comb
+
+  seq on clk rising
+    if state == 0
+      // IDLE
+      r_done <= false;
+      if start
+        arr <= in_data;
+        pass_cnt <= 0;
+        idx <= 0;
+        state <= 1;
+      end if
+    elsif state == 1
+      // SORTING: one comparison per cycle
+      arr <= swapped_arr;
+      if idx == (N - 2).trunc<32>()
+        idx <= 0;
+        pass_cnt <= (pass_cnt + 1).trunc<32>();
+        if (pass_cnt + 1).trunc<32>() == N.trunc<32>()
+          state <= 2;
+        end if
+      else
+        idx <= (idx + 1).trunc<32>();
+      end if
+    elsif state == 2
+      // DONE
+      r_done <= true;
+      state <= 0;
+    else
+      state <= 0;
+    end if
+  end seq
+
+  comb
+    done = r_done;
+    out_data = arr;
+  end comb
+end module sorting_engine

@@ -1,0 +1,25 @@
+module dbi_dec
+  port clk: in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+  port data_in: in UInt<40>;
+  port dbi_cntrl: in UInt<2>;
+  port reg data_out: out UInt<40> reset rst_n=>0;
+
+  default seq on clk rising;
+
+  // Group-0 = data_in[19:0], Group-1 = data_in[39:20]
+  // If dbi_cntrl[0]=1, invert Group-0; if dbi_cntrl[1]=1, invert Group-1
+  wire decoded: UInt<40>;
+  comb
+    decoded[19:0] = data_in[19:0];
+    decoded[39:20] = data_in[39:20];
+    if dbi_cntrl[0:0] == 1
+      decoded[19:0] = ~data_in[19:0];
+    end if
+    if dbi_cntrl[1:1] == 1
+      decoded[39:20] = ~data_in[39:20];
+    end if
+  end comb
+
+  seq data_out <= decoded;
+end module dbi_dec

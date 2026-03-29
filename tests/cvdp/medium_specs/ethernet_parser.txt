@@ -1,0 +1,73 @@
+MODULE: ethernet_parser
+ID: cvdp_copilot_ethernet_packet_parser_0001
+
+=== SPEC ===
+**Design a Verilog module to extract specific bytes from a data stream in digital logic. The module interfaces with a simple bus protocol commonly used in FPGA designs. The objective is to extract exactly 2 bytes from a specific beat (the 2nd beat in a burst) of the data stream and output them based on the defined protocol signals. Each data transfer, or beat, sends 32-bit chunks (4 bytes) of data in each cycle.**
+
+### Module Interface:
+
+#### Inputs:
+1. **`clk` (Clock Signal):**  
+   - The module operates synchronously with this clock signal.
+  
+2. **`rst` (Reset Signal):**  
+   - A high-level signal that resets the module, returning it to an idle state and clearing internal state variables.
+
+3. **Protocol Signals from Transmitter:**
+   - **`vld` (1-bit Valid Signal):**  
+     - Indicates that the current data on the bus is valid for processing.
+   - **`sof` (1-bit Start-of-Frame Signal):**  
+     - Asserts at the start of a new packet, initializing the extraction process.
+   - **`data` (32-bit Data Signal):**  
+     - Carries 32 bits of data per cycle, with each beat containing exactly 4 valid bytes.
+   - **`eof` (1-bit End-of-Frame Signal):**  
+     - Marks the end of the current data burst, signaling the module to return to an idle state after completing the extraction.
+
+#### Outputs:
+1. **Protocol Signal to Transmitter:**
+   - **`ack` (1-bit Acknowledge Signal):**  
+     - Fixed as `1`, indicating the receiver always accepts valid data without delay.
+
+2. **Field Extraction Outputs:**
+   - **`field` (16-bit Output):**  
+     - Contains the 2 extracted bytes from the 2nd beat of the burst, specifically the most significant two bytes of the `data` signal (`data[31:16]`).
+   - **`field_vld` (1-bit Field Valid Signal):**  
+     - Signals the validity of the extracted `field`. It is asserted after extracting the 2 bytes from the 2nd beat and cleared once `eof` is asserted.
+
+### Internal Design and Operation:
+
+1. **Beat Counter (`beat_cnt`):**
+   - A 4-bit counter that increments with each valid beat (`vld` asserted). It counts the beats in each burst, ensuring the extraction occurs precisely at the 2nd beat.
+
+2. **Temporary Storage (`temp_extracted_field`):**
+   - A 16-bit register for temporarily storing the extracted bytes. Once the correct beat is reached, the `temp_extracted_field` stores the value of `data[31:16]` from the 2nd beat.
+
+3. **State Machine:**
+   - The module utilizes a 2-bit state machine with four states:
+     - **IDLE (0):**  
+       - Awaits the start of a new packet (`vld` and `sof` asserted together). Initializes internal registers, including clearing the `beat_cnt`, `field`, and `field_vld`.
+     - **EXTRACTING (1):**  
+       - Monitors the beats. At the 2nd beat (`beat_cnt == 1`), the module captures `data[31:16]` into `temp_extracted_field` and prepares to complete extraction.
+     - **DONE (2):**  
+       - Assigns the `temp_extracted_field` to the `field` output and asserts `field_vld`. The `field` output is held steady until `eof` is received, indicating burst completion.
+     - **FAIL_FINAL (3):**  
+       - Clears `field_vld` and resets to IDLE upon detecting `eof`, preparing for the next burst.
+
+### Protocol Compliance:
+
+- The module initiates byte extraction when a new burst begins (`sof` asserted).
+- The beat counter (`beat_cnt`) increments for each beat, tracking the position within the burst.
+- Upon reaching the 2nd beat, it extracts the 2 most significant bytes (`data[31:16]`) and outputs them on `field` once `DONE` is entered.
+- The `ack` signal remains constantly high (`1`), as the receiver does not apply backpressure to the transmitter.
+- At the end of the burst (signaled by `eof`), `field_vld` is cleared, and the state returns to `IDLE`.
+
+
+=== src/.env ===
+SIM             = icarus
+TOPLEVEL_LANG   = verilog
+VERILOG_SOURCES = /code/rtl/ethernet_parser.v
+TOPLEVEL        = field_extract
+MODULE          = tb
+PYTHONPATH      = /src
+HASH            = 1-ethernet-parser-verilog-code
+

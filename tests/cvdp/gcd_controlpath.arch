@@ -1,0 +1,49 @@
+module gcd_controlpath
+  param WIDTH: const = 4;
+  port clk:               in Clock<SysDomain>;
+  port rst:               in Reset<Sync>;
+  port go:                in Bool;
+  port equal:             in Bool;
+  port greater_than:      in Bool;
+  port controlpath_state: out UInt<2>;
+  port done:              out Bool;
+
+  reg state_r: UInt<2> init 0 reset rst=>0;
+  reg done_r:  Bool init false reset rst=>false;
+
+  wire next_state: UInt<2>;
+
+  comb
+    if state_r == 2'd0
+      if go
+        if equal
+          next_state = 2'd1;
+        elsif greater_than
+          next_state = 2'd2;
+        else
+          next_state = 2'd3;
+        end if
+      else
+        next_state = 2'd0;
+      end if
+    elsif state_r == 2'd1
+      next_state = 2'd0;
+    else
+      if equal
+        next_state = 2'd1;
+      elsif greater_than
+        next_state = 2'd2;
+      else
+        next_state = 2'd3;
+      end if
+    end if
+
+    controlpath_state = state_r;
+    done = done_r;
+  end comb
+
+  seq on clk rising
+    state_r <= next_state;
+    done_r <= state_r == 2'd1;
+  end seq
+end module gcd_controlpath

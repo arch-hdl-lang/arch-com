@@ -1,0 +1,156 @@
+module hmac_reg_interface
+  param DATA_WIDTH: const = 8;
+  param ADDR_WIDTH: const = 8;
+
+  port clk:       in Clock<SysDomain>;
+  port rst_n:     in Reset<Async, Low>;
+  port write_en:  in Bool;
+  port read_en:   in Bool;
+  port addr:      in UInt<ADDR_WIDTH>;
+  port wdata:     in UInt<DATA_WIDTH>;
+  port i_wait_en: in Bool;
+  port reg rdata:          out UInt<DATA_WIDTH> reset rst_n=>0;
+  port reg hmac_valid:     out Bool reset rst_n=>false;
+  port reg hmac_key_error: out Bool reset rst_n=>false;
+
+  default seq on clk rising;
+
+  // FSM state encoding
+  let ST_IDLE:      UInt<3> = 0;
+  let ST_ANALYZE:   UInt<3> = 1;
+  let ST_XOR_DATA:  UInt<3> = 2;
+  let ST_WRITE:     UInt<3> = 3;
+  let ST_LOST:      UInt<3> = 4;
+  let ST_CHECK_KEY: UInt<3> = 5;
+  let ST_TRIG_WAIT: UInt<3> = 6;
+
+  reg current_state: UInt<3> reset rst_n=>0;
+  reg hmac_key:  UInt<DATA_WIDTH> reset rst_n=>0;
+  reg hmac_data: UInt<DATA_WIDTH> reset rst_n=>0;
+  reg registers: Vec<UInt<DATA_WIDTH>, 256> reset rst_n=>0;
+
+  // xor_data: current wdata XOR'd with '01010101...' mask — exposed for testbench visibility.
+  // The Python model sets processed_data = wdata (plain) for all states except PROCESS/XOR_DATA,
+  // and in WRITE state it immediately uses that overwritten value. This means the WRITE state
+  // always writes the current wdata directly, not a previously XOR'd value.
+  wire xor_data: UInt<DATA_WIDTH>;
+  wire xor_mask: UInt<DATA_WIDTH>;
+
+  comb
+    xor_mask = 0.zext<DATA_WIDTH>();
+    for i in 0..DATA_WIDTH/2-1
+      xor_mask[i*2+1:i*2] = 2'd1;
+    end for
+  end comb
+
+  comb
+    xor_data = wdata ^ xor_mask;
+  end comb
+
+  // Key validation: 2 MSB and 2 LSB of hmac_key must be zero for key to be valid
+  wire key_valid: Bool;
+  comb
+    key_valid = (hmac_key[DATA_WIDTH-1:DATA_WIDTH-2] == 0) & (hmac_key[1:0] == 0);
+  end comb
+
+  // Next-cycle hmac_key (what hmac_key will be after the next clock edge)
+  // Used so hmac_key_error is updated in same cycle as hmac_key write
+  wire next_hmac_key: UInt<DATA_WIDTH>;
+  comb
+    if (current_state == ST_WRITE) & (addr == 0)
+      next_hmac_key = wdata;
+    else
+      next_hmac_key = hmac_key;
+    end if
+  end comb
+
+  wire next_key_valid: Bool;
+  comb
+    next_key_valid = (next_hmac_key[DATA_WIDTH-1:DATA_WIDTH-2] == 0) & (next_hmac_key[1:0] == 0);
+  end comb
+
+  // Next state combinational logic
+  wire next_state: UInt<3>;
+  comb
+    if current_state == ST_IDLE
+      if write_en
+        next_state = ST_ANALYZE;
+      else
+        next_state = ST_IDLE;
+      end if
+    elsif current_state == ST_ANALYZE
+      if wdata[DATA_WIDTH-1:DATA_WIDTH-1] == 1
+        next_state = ST_XOR_DATA;
+      else
+        next_state = ST_WRITE;
+      end if
+    elsif current_state == ST_XOR_DATA
+      next_state = ST_WRITE;
+    elsif current_state == ST_WRITE
+      if write_en
+        next_state = ST_IDLE;
+      else
+        next_state = ST_LOST;
+      end if
+    elsif current_state == ST_LOST
+      if read_en
+        next_state = ST_CHECK_KEY;
+      else
+        next_state = ST_LOST;
+      end if
+    elsif current_state == ST_CHECK_KEY
+      if key_valid
+        next_state = ST_TRIG_WAIT;
+      else
+        next_state = ST_WRITE;
+      end if
+    elsif current_state == ST_TRIG_WAIT
+      if i_wait_en
+        next_state = ST_TRIG_WAIT;
+      elsif (hmac_data != 0) & (hmac_key != 0)
+        next_state = ST_IDLE;
+      else
+        next_state = ST_WRITE;
+      end if
+    else
+      next_state = ST_IDLE;
+    end if
+  end comb
+
+  // Sequential: state register
+  seq current_state <= next_state;
+
+  // Sequential: key error flag — updated with look-ahead so it reflects
+  // the key value being written in WRITE state in the same cycle
+  seq hmac_key_error <= ~next_key_valid;
+
+  // Sequential: Write and valid logic
+  // The model writes wdata (current cycle's value) directly in WRITE state.
+  seq
+    hmac_valid <= false;
+    if current_state == ST_WRITE
+      if addr == 0
+        hmac_key <= wdata;
+      elsif addr == 1
+        hmac_data <= wdata;
+        hmac_valid <= true;
+      else
+        registers[addr] <= wdata;
+      end if
+    end if
+  end seq
+
+  // Sequential: Read logic
+  seq
+    if read_en & (current_state != ST_WRITE)
+      if addr == 0
+        rdata <= hmac_key;
+      elsif addr == 1
+        rdata <= hmac_data;
+      else
+        rdata <= registers[addr];
+      end if
+    end if
+  end seq
+
+end module hmac_reg_interface

@@ -1,0 +1,56 @@
+module ahb_clock_counter
+  param ADDR_WIDTH: const = 32;
+  param DATA_WIDTH: const = 32;
+
+  port HCLK:    in Clock<SysDomain>;
+  port HRESETn: in Reset<Async, Low>;
+  port HSEL:    in Bit;
+  port HADDR:   in UInt<ADDR_WIDTH>;
+  port HWRITE:  in Bit;
+  port HWDATA:  in UInt<DATA_WIDTH>;
+  port HREADY:  in Bit;
+  port HRDATA:  out UInt<DATA_WIDTH>;
+  port HRESP:   out Bit;
+  port COUNTER: out UInt<DATA_WIDTH>;
+
+  default seq on HCLK rising;
+
+  reg cnt:      UInt<DATA_WIDTH> reset HRESETn=>0;
+  reg enable:   Bit reset HRESETn=>0;
+  reg overflow: Bit reset HRESETn=>0;
+  reg max_cnt:  UInt<DATA_WIDTH> reset HRESETn=>0;
+
+  seq
+    // Write logic
+    if HSEL & HWRITE & HREADY
+      if HADDR == 0x00
+        enable <= HWDATA[0:0];
+      elsif HADDR == 0x04
+        if HWDATA[0:0]
+          enable <= 0;
+        end if
+      elsif HADDR == 0x10
+        max_cnt <= HWDATA;
+      end if
+    end if
+
+    // Counter always counts when enabled
+    if enable
+      cnt <= (cnt + 1).trunc<DATA_WIDTH>();
+    end if
+
+    // Overflow flag (sticky until reset)
+    if enable & ~overflow
+      if (cnt + 1).trunc<DATA_WIDTH>() == max_cnt
+        overflow <= 1;
+      end if
+    end if
+  end seq
+
+  let hrdata_val: UInt<DATA_WIDTH> = (HADDR == 0x08) ? cnt : ((HADDR == 0x0C) ? overflow.zext<DATA_WIDTH>() : ((HADDR == 0x10) ? max_cnt : ((HADDR == 0x00) ? enable.zext<DATA_WIDTH>() : 0)));
+
+  comb HRDATA = hrdata_val;
+  comb COUNTER = cnt;
+  comb HRESP = 0;
+
+end module ahb_clock_counter

@@ -1,0 +1,65 @@
+module pseudo_lru_tree_policy
+  param NWAYS: const = 4;
+  param NINDEXES: const = 32;
+  param NBITS_TREE: const = NWAYS - 1;
+  param MAX_DEPTH: const = $clog2(NWAYS);
+
+  port clock:      in Clock<SysDomain>;
+  port reset:      in Reset<Async, High>;
+  port index:      in UInt<$clog2(NINDEXES)>;
+  port way_select: in UInt<$clog2(NWAYS)>;
+  port access:     in Bool;
+  port hit:        in Bool;
+  port way_replace: out UInt<$clog2(NWAYS)>;
+
+  default seq on clock rising;
+
+  reg recency: Vec<UInt<NBITS_TREE>, NINDEXES> reset reset=>0;
+
+  wire recency_updated: UInt<NBITS_TREE>;
+  wire pseudo_lru_slot: UInt<$clog2(NWAYS)>;
+
+  let idx: UInt<$clog2(NINDEXES)> = index;
+
+  // Submodule: find pseudo-LRU slot from current recency tree
+  inst slot_select_unit: slot_select_pseudo_lru_tree
+    param NWAYS = NWAYS;
+    connect array <- recency[idx];
+    connect index -> pseudo_lru_slot;
+  end inst slot_select_unit
+
+  comb way_replace = pseudo_lru_slot;
+
+  // Compute recency_updated: mark the target way as MRU
+  // On hit: target is way_select. On miss: target is pseudo_lru_slot.
+  wire target_way: UInt<$clog2(NWAYS)>;
+  wire step: UInt<32>;
+  wire way_bit: Bool;
+
+  comb
+    if hit
+      target_way = way_select;
+    else
+      target_way = pseudo_lru_slot;
+    end if
+
+    // Start with current recency and update the path for target_way
+    recency_updated = recency[idx];
+    step = 0;
+    way_bit = false;
+    for depth in 0..MAX_DEPTH-1
+      way_bit = target_way[MAX_DEPTH - 1 - depth];
+      // Set the bit along the path to mark target_way as MRU
+      recency_updated[(1 << depth) - 1 + step.trunc<NBITS_TREE>()] = way_bit;
+      // Advance step: follow the way bit
+      step = (step << 1) | way_bit.zext<32>();
+    end for
+  end comb
+
+  // Update recency array on access
+  seq
+    if access
+      recency[idx] <= recency_updated;
+    end if
+  end seq
+end module pseudo_lru_tree_policy

@@ -1,0 +1,244 @@
+module huffman_encoder
+  port clk:     in Clock<SysDomain>;
+  port reset:   in Reset<Async>;
+
+  port data_valid:     in Bool;
+  port data_in:        in UInt<4>;
+  port data_priority:  in UInt<2>;
+  port update_enable:  in Bool;
+  port config_symbol:  in UInt<4>;
+  port config_code:    in UInt<7>;
+  port config_length:  in UInt<3>;
+
+  port reg huffman_code_out: out UInt<7> reset reset=>0;
+  port reg code_valid:       out Bool reset reset=>false;
+  port reg error_flag:       out Bool reset reset=>false;
+
+  default seq on clk rising;
+
+  // FSM states: 0=IDLE,1=PREPARE,2=CHECK_UPDATE,3=ENCODE,4=OUTPUT,5=HANDLE_ERROR,6=UPDATE_TABLE
+  reg state: UInt<3> reset reset=>0;
+
+  // RAM interface wires
+  wire ht_we: Bool;
+  wire ht_addr: UInt<4>;
+  wire ht_din: UInt<7>;
+  wire ht_dout: UInt<7>;
+
+  wire cl_we: Bool;
+  wire cl_addr: UInt<4>;
+  wire cl_din: UInt<3>;
+  wire cl_dout: UInt<3>;
+
+  wire qh_we: Bool;
+  wire qh_addr: UInt<4>;
+  wire qh_din: UInt<4>;
+  wire qh_dout: UInt<4>;
+
+  wire qm_we: Bool;
+  wire qm_addr: UInt<4>;
+  wire qm_din: UInt<4>;
+  wire qm_dout: UInt<4>;
+
+  wire ql_we: Bool;
+  wire ql_addr: UInt<4>;
+  wire ql_din: UInt<4>;
+  wire ql_dout: UInt<4>;
+
+  // Queue write pointers
+  reg qh_wptr: UInt<4> reset reset=>0;
+  reg qm_wptr: UInt<4> reset reset=>0;
+  reg ql_wptr: UInt<4> reset reset=>0;
+
+  // Queue read pointers
+  reg qh_rptr: UInt<4> reset reset=>0;
+  reg qm_rptr: UInt<4> reset reset=>0;
+  reg ql_rptr: UInt<4> reset reset=>0;
+
+  // Saved symbol for encoding
+  reg cur_symbol: UInt<4> reset reset=>0;
+  // Saved update params
+  reg upd_symbol: UInt<4> reset reset=>0;
+  reg upd_code: UInt<7> reset reset=>0;
+  reg upd_length: UInt<3> reset reset=>0;
+  reg upd_pending: Bool reset reset=>false;
+
+  // RAM instances
+  inst ht_ram: single_port_ram
+    param DATA_WIDTH = 7;
+    param ADDR_WIDTH = 4;
+    connect clk  <- clk;
+    connect we   <- ht_we;
+    connect addr <- ht_addr;
+    connect din  <- ht_din;
+    connect dout -> ht_dout;
+  end inst ht_ram
+
+  inst cl_ram: single_port_ram
+    param DATA_WIDTH = 3;
+    param ADDR_WIDTH = 4;
+    connect clk  <- clk;
+    connect we   <- cl_we;
+    connect addr <- cl_addr;
+    connect din  <- cl_din;
+    connect dout -> cl_dout;
+  end inst cl_ram
+
+  inst qh_ram: single_port_ram
+    param DATA_WIDTH = 4;
+    param ADDR_WIDTH = 4;
+    connect clk  <- clk;
+    connect we   <- qh_we;
+    connect addr <- qh_addr;
+    connect din  <- qh_din;
+    connect dout -> qh_dout;
+  end inst qh_ram
+
+  inst qm_ram: single_port_ram
+    param DATA_WIDTH = 4;
+    param ADDR_WIDTH = 4;
+    connect clk  <- clk;
+    connect we   <- qm_we;
+    connect addr <- qm_addr;
+    connect din  <- qm_din;
+    connect dout -> qm_dout;
+  end inst qm_ram
+
+  inst ql_ram: single_port_ram
+    param DATA_WIDTH = 4;
+    param ADDR_WIDTH = 4;
+    connect clk  <- clk;
+    connect we   <- ql_we;
+    connect addr <- ql_addr;
+    connect din  <- ql_din;
+    connect dout -> ql_dout;
+  end inst ql_ram
+
+  // Default RAM drive signals (combinational)
+  comb
+    ht_we = false;
+    ht_addr = 0;
+    ht_din = 0;
+    cl_we = false;
+    cl_addr = 0;
+    cl_din = 0;
+    qh_we = false;
+    qh_addr = 0;
+    qh_din = 0;
+    qm_we = false;
+    qm_addr = 0;
+    qm_din = 0;
+    ql_we = false;
+    ql_addr = 0;
+    ql_din = 0;
+
+    if state == 0
+      // IDLE: enqueue data if valid
+      if data_valid
+        if data_priority == 3
+          qh_we = true;
+          qh_addr = qh_wptr;
+          qh_din = data_in;
+        elsif data_priority == 2
+          qm_we = true;
+          qm_addr = qm_wptr;
+          qm_din = data_in;
+        else
+          ql_we = true;
+          ql_addr = ql_wptr;
+          ql_din = data_in;
+        end if
+      end if
+    elsif state == 1
+      // PREPARE: read from highest priority queue
+      if qh_rptr != qh_wptr
+        qh_addr = qh_rptr;
+      elsif qm_rptr != qm_wptr
+        qm_addr = qm_rptr;
+      elsif ql_rptr != ql_wptr
+        ql_addr = ql_rptr;
+      end if
+    elsif state == 2
+      // CHECK_UPDATE
+      ht_addr = upd_symbol;
+      cl_addr = upd_symbol;
+    elsif state == 3
+      // ENCODE: read huffman table for current symbol
+      ht_addr = cur_symbol;
+      cl_addr = cur_symbol;
+    elsif state == 6
+      // UPDATE_TABLE: write new code and length
+      ht_we = true;
+      ht_addr = upd_symbol;
+      ht_din = upd_code;
+      cl_we = true;
+      cl_addr = upd_symbol;
+      cl_din = upd_length;
+    end if
+  end comb
+
+  // FSM sequential logic
+  seq
+    if state == 0
+      // IDLE
+      code_valid <= false;
+      error_flag <= false;
+      if update_enable
+        upd_symbol <= config_symbol;
+        upd_code <= config_code;
+        upd_length <= config_length;
+        upd_pending <= true;
+        state <= 2;
+      elsif data_valid
+        if data_priority == 3
+          qh_wptr <= (qh_wptr + 1).trunc<4>();
+        elsif data_priority == 2
+          qm_wptr <= (qm_wptr + 1).trunc<4>();
+        else
+          ql_wptr <= (ql_wptr + 1).trunc<4>();
+        end if
+        state <= 1;
+      end if
+    elsif state == 1
+      // PREPARE
+      if qh_rptr != qh_wptr
+        cur_symbol <= qh_dout;
+        qh_rptr <= (qh_rptr + 1).trunc<4>();
+        state <= 3;
+      elsif qm_rptr != qm_wptr
+        cur_symbol <= qm_dout;
+        qm_rptr <= (qm_rptr + 1).trunc<4>();
+        state <= 3;
+      elsif ql_rptr != ql_wptr
+        cur_symbol <= ql_dout;
+        ql_rptr <= (ql_rptr + 1).trunc<4>();
+        state <= 3;
+      else
+        state <= 0;
+      end if
+    elsif state == 2
+      // CHECK_UPDATE
+      if upd_length == 0
+        error_flag <= true;
+        state <= 5;
+      else
+        state <= 6;
+      end if
+    elsif state == 3
+      // ENCODE
+      state <= 4;
+    elsif state == 4
+      // OUTPUT
+      huffman_code_out <= ht_dout;
+      code_valid <= true;
+      state <= 0;
+    elsif state == 5
+      // HANDLE_ERROR
+      state <= 0;
+    elsif state == 6
+      // UPDATE_TABLE
+      upd_pending <= false;
+      state <= 0;
+    end if
+  end seq
+end module huffman_encoder

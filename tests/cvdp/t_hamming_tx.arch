@@ -1,0 +1,41 @@
+module t_hamming_tx
+  param DATA_WIDTH: const = 4;
+  param PARITY_BIT: const = 3;
+  param ENCODED_DATA: const = PARITY_BIT + DATA_WIDTH + 1;
+  param ENCODED_DATA_BIT: const = $clog2(ENCODED_DATA);
+  port data_in:  in UInt<DATA_WIDTH>;
+  port data_out: out UInt<ENCODED_DATA>;
+
+  wire parity_w: UInt<PARITY_BIT>;
+  wire enc: UInt<ENCODED_DATA>;
+  wire cnt: UInt<ENCODED_DATA_BIT+1>;
+
+  comb
+    enc = 0;
+    parity_w = 0;
+    cnt = 0;
+
+    for pos in 1..ENCODED_DATA-1
+      if (pos & (pos - 1)) != 0
+        if cnt < DATA_WIDTH
+          enc[pos:pos] = data_in[cnt.trunc<ENCODED_DATA_BIT>() : cnt.trunc<ENCODED_DATA_BIT>()];
+          cnt = (cnt + 1).trunc<ENCODED_DATA_BIT+1>();
+        end if
+      end if
+    end for
+
+    for j in 0..PARITY_BIT-1
+      for i in 1..ENCODED_DATA-1
+        if (i & (1 << j)) != 0
+          parity_w[j:j] = parity_w[j:j] ^ enc[i:i];
+        end if
+      end for
+    end for
+
+    for j in 0..PARITY_BIT-1
+      enc[1 << j : 1 << j] = parity_w[j:j];
+    end for
+
+    data_out = enc;
+  end comb
+end module t_hamming_tx

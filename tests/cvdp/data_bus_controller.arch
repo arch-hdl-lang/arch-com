@@ -1,0 +1,50 @@
+module data_bus_controller
+  param AFINITY: const = 0;
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n:  in Reset<Async, Low>;
+
+  port m0_ready: out Bool;
+  port m0_valid: in Bool;
+  port m0_data:  in UInt<32>;
+
+  port m1_ready: out Bool;
+  port m1_valid: in Bool;
+  port m1_data:  in UInt<32>;
+
+  port s_ready:  in Bool;
+  port reg s_valid: out Bool reset rst_n=>false;
+  port reg s_data:  out UInt<32> reset rst_n=>0;
+
+  default seq on clk rising;
+
+  comb
+    m0_ready = s_ready;
+    m1_ready = s_ready;
+  end comb
+
+  seq
+    if rst_n
+      if m0_valid & m1_valid
+        if AFINITY == 0
+          s_valid <= true;
+          s_data  <= m0_data;
+        else
+          s_valid <= true;
+          s_data  <= m1_data;
+        end if
+      elsif m0_valid
+        s_valid <= true;
+        s_data  <= m0_data;
+      elsif m1_valid
+        s_valid <= true;
+        s_data  <= m1_data;
+      else
+        s_valid <= false;
+      end if
+    else
+      s_valid <= false;
+      s_data  <= 0;
+    end if
+  end seq
+end module data_bus_controller

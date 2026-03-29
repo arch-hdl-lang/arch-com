@@ -1,0 +1,204 @@
+MODULE: restore_division
+ID: cvdp_copilot_restoring_division_0001
+
+=== SPEC ===
+Design a System Verilog module that performs division using the restoring division algorithm. The restoring division algorithm is a method used for binary division in computer architecture. It involves repeatedly subtracting the divisor from the dividend and restoring the partial remainder if the result is negative. The module efficiently handles division between two unsigned integers (dividend and divisor) and provides outputs for both quotient and remainder. The design supports varying input widths specified by the WIDTH parameter.
+
+
+### Interface: `restoring_division`
+
+### Parameter:
+- `WIDTH` (default value = 6): Defines the bit-width of the dividend and divisor.
+
+### Inputs:
+- `clk`: Clock signal. All operations are synchronized with the rising edge of the clock.
+- `rst`: Reset signal (active-low asynchronous reset).
+- `start`: Start signal (active-high) to initiate the division process.
+- `[WIDTH-1:0] dividend`: The dividend input, `WIDTH` bits wide.
+- `[WIDTH-1:0] divisor`: The divisor input, `WIDTH` bits wide.
+
+### Outputs:
+- `[WIDTH-1:0] quotient`: The quotient of the division process;  `WIDTH` bits wide.
+- `[WIDTH-1:0] remainder`: The remainder of the division process, `WIDTH` bits wide.
+- `valid`: Valid signal (active-high) indicating the completion of the division operation.
+
+---
+
+## Specifications
+
+### Control Logic:
+The module processes a new pair of dividend and divisor inputs in each division cycle. New inputs can be supplied along with `start` signal only when the previous outputs have been provided, indicated by the `valid` going high for one clock cycles.
+
+### Division Process:
+
+#### Initialization:
+At the start of the division process:
+- The dividend is registered internally.
+- The remainder is initialized to zero.
+
+#### Shift and Subtract:
+1. At each iteration, the remainder is shifted left by one bit, and the next MSB of the dividend is appended to the remainder.
+2. The divisor is subtracted from the remainder to check if it can fit.
+   - If the most significant bit (MSB) of the subtraction result is 0, the quotient bit for this step is set to 1, and the result of the subtraction is kept as the new remainder.
+   - If the most significant bit (MSB) of the subtraction result is 1, the quotient bit for this step is set to 0, and the original remainder is restored by discarding the quotient bit.
+
+#### Completion:
+The division process must finish within `WIDTH` clock cycles if `WIDTH` is a power of 2 (2^n) to ensuring all data is processed; otherwise (if WIDTH is not a power of 2), it will take `WIDTH+1` clock cycles.
+
+### Reset Behavior:
+When `rst` is asserted (active-low asynchronous reset), the outputs clear to zero.
+
+### Output Validity:
+The correctness of the quotient and remainder is guaranteed for all valid inputs within the specified bit-width. 
+
+---
+
+## Edge Conditions:
+- The dividend must be strictly greater than or equal to the divisor.
+- Both dividend and divisor must be non-zero.
+
+---
+
+## Example
+**Parameters**:
+- WIDTH = 3
+
+- Dividend = 3'd7 (binary: 111)
+
+- Divisor = 3'd5 (binary: 101)
+
+**Initialization**:
+
+- Remainder = 000 (set to 0 initially)
+
+- Dividend = 111
+
+- Quotient is initially unknown and will be calculated over 3 iterations.
+
+- The division starts from the MSB of the dividend.
+
+**Iteration 1**:
+- Shift remainder left, append MSB of dividend (1):  
+  - Remainder = 001  
+  - Subtract 101: result is negative.  
+  - Quotient = 0-- (set bit to 0).
+
+**Iteration 2**:
+- Shift remainder left, append next dividend bit (1):  
+  - Remainder = 0011  
+  - Subtract 101: result is negative.  
+  - Quotient = 00- (set bit to 0).
+
+**Iteration 3**:
+- Shift remainder left, append final dividend bit (1):  
+  - Remainder = 0111  
+  - Subtract 101: result is positive.  
+  - Remainder = 0010  
+  - Quotient = 001 (set bit to 1).
+
+**Final Output**:
+- Quotient = 3'd1 (binary: 001)
+- Remainder = 3'd2 (binary: 010)
+
+=== src/.env ===
+SIM             = icarus
+WAVE            = True
+TOPLEVEL_LANG   = verilog
+VERILOG_SOURCES = /code/rtl/restore_division.sv
+TOPLEVEL        = restoring_division
+MODULE          = test_restoring_division
+PYTHONPATH      = /src
+HASH            = 3c3a009e2d1487e4f5f689276b2fb62ebd55d238
+
+=== src/test_restoring_division.py ===
+import cocotb
+from cocotb.clock import Clock
+from cocotb.triggers import FallingEdge, RisingEdge, ClockCycles, Timer
+import random
+import time
+import harness_library as hrs_lb
+
+@cocotb.test()
+async def test_restoring_division(dut):
+    # Retrieve the width of the data from the DUT's WIDTH parameter
+    data_wd = int(dut.WIDTH.value)
+    print(f"data_wd = {data_wd}")
+    # Start the clock with a 10 nanosecond period
+    cocotb.start_soon(Clock(dut.clk, 10, units='ns').start())
+    
+    # Initialize the DUT signals to default values (usually zero)
+    await hrs_lb.dut_init(dut)
+
+    # Apply an asynchronous reset to the DUT; reset is active low
+    await hrs_lb.reset_dut(dut.rst, duration_ns=25, active=False)
+
+    # Determine a random number of test cycles between 20 to 50
+    cycle_num = random.randint(20, 50)
+    # Schedule a reset at the midpoint of the test cycles
+    reset_cycle = cycle_num // 2
+    print(f"[INFO] Total cycles = {cycle_num}, Reset will be applied at cycle {reset_cycle}")
+    
+    # Execute a loop through the predetermined number of cycles
+    for cycle in range(cycle_num):
+        # Apply reset halfway through the test
+        if cycle == reset_cycle:
+            # Assert the reset signal (active low)
+            dut.rst.value = 0
+            # Wait for two clock cycles while the reset is active
+            await RisingEdge(dut.clk)
+            await RisingEdge(dut.clk)
+            # Check if the outputs are correctly reset to zero
+            assert dut.quotient.value == 0, f"[ERROR] quotient is not zero after reset: {dut.quotient.value}"
+            assert dut.remainder.value == 0, f"[ERROR] remainder is not zero after reset: {dut.remainder.value}"
+            assert dut.valid.value == 0, f"[ERROR] valid is not zero after reset: {dut.valid.value}"
+            # Wait for 2 more cycles to allow the DUT to stabilize after reset
+            for i in range(2):
+                await RisingEdge(dut.clk)
+            # Deactivate the reset signal
+            dut.rst.value = 1
+            print("[INFO] Reset applied to the DUT")
+
+        # Generate random values for dividend and divisor within specified ranges
+        wdata1 = random.randint(data_wd, (2**data_wd)-1)  # Dividend should be between WIDTH and 2^WIDTH - 1
+        wdata2 = random.randint(1, data_wd)               # Divisor should be between 1 and WIDTH - 1
+        
+        # Write generated values to the DUT
+        dut.dividend.value = wdata1
+        dut.divisor.value = wdata2
+        print(f"Performing write operation: dividend = {wdata1}, divisor = {wdata2}")
+        
+        # Start the division operation
+        dut.start.value = 1
+        await RisingEdge(dut.clk)
+        # Ensure the start signal is only high for one clock cycle
+        dut.start.value = 0
+
+        # Wait for the division process to complete, indicated by the 'valid' signal
+        #await RisingEdge(dut.valid)
+       #Explicit Check for valid: Ensure valid asserts after WIDTH cycles
+        for _ in range(data_wd):
+            await RisingEdge(dut.clk)
+            assert dut.valid.value == 0, "ERROR: Valid asserted prematurely"
+        
+        # Check for valid to assert indicating division complete
+        await RisingEdge(dut.valid)
+        assert dut.valid.value == 1, "ERROR: Valid did not assert as expected" 
+        # Read the results from the DUT after the division is complete
+        await RisingEdge(dut.clk)
+        out_q = int(dut.quotient.value)
+        out_r = int(dut.remainder.value)
+        print(f"Read operation: quotient = {out_q}, remainder = {out_r}")
+         
+        # Checker: Validate quotient and remainder against expected values calculated by Python
+        expected_q = wdata1 // wdata2
+        expected_r = wdata1 % wdata2
+           
+        assert out_q == expected_q, f"ERROR: Quotient mismatch! Expected: {expected_q}, Got: {out_q}"
+        assert out_r == expected_r, f"ERROR: Remainder mismatch! Expected: {expected_r}, Got: {out_r}"
+ 
+	# Ensure valid remains high for only one cycle
+        await RisingEdge(dut.clk)
+        assert dut.valid.value == 0, "ERROR: Valid did not deassert as expected"
+
+        print(f"Check Passed: quotient = {out_q}, remainder = {out_r}")
+

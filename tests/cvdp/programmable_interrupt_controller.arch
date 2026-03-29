@@ -1,0 +1,115 @@
+module interrupt_controller
+  param NUM_INTERRUPTS: const = 4;
+  param ADDR_WIDTH: const = 8;
+
+  port clk: in Clock<SysDomain>;
+  port rst_n: in Reset<Sync, Low>;
+  port interrupt_requests: in UInt<NUM_INTERRUPTS>;
+  port interrupt_service: out UInt<NUM_INTERRUPTS>;
+  port cpu_interrupt: out Bool;
+  port cpu_ack: in Bool;
+  port interrupt_idx: out UInt<$clog2(NUM_INTERRUPTS)>;
+  port interrupt_vector: out UInt<ADDR_WIDTH>;
+  port priority_map_value: in Vec<UInt<NUM_INTERRUPTS>, NUM_INTERRUPTS>;
+  port priority_map_update: in Bool;
+  port vector_table_value: in Vec<UInt<ADDR_WIDTH>, NUM_INTERRUPTS>;
+  port vector_table_update: in Bool;
+  port interrupt_mask_value: in UInt<NUM_INTERRUPTS>;
+  port interrupt_mask_update: in Bool;
+
+  let all_ones_n: UInt<NUM_INTERRUPTS> = ~(0.zext<NUM_INTERRUPTS>());
+  let one_wide: UInt<NUM_INTERRUPTS> = 1.zext<NUM_INTERRUPTS>();
+
+  // Complex reset values — opt out of auto-reset; handled manually in seq
+  reg priority_map: Vec<UInt<NUM_INTERRUPTS>, NUM_INTERRUPTS> reset none;
+  reg vector_table: Vec<UInt<ADDR_WIDTH>, NUM_INTERRUPTS> reset none;
+  reg interrupt_mask: UInt<NUM_INTERRUPTS> reset none;
+
+  reg pending_interrupts: UInt<NUM_INTERRUPTS> reset rst_n=>0;
+  reg sync_requests_0: UInt<NUM_INTERRUPTS> reset rst_n=>0;
+  reg sync_requests_1: UInt<NUM_INTERRUPTS> reset rst_n=>0;
+  reg r_interrupt_service: UInt<NUM_INTERRUPTS> reset rst_n=>0;
+  reg r_cpu_interrupt: Bool reset rst_n=>false;
+  reg r_interrupt_idx: UInt<$clog2(NUM_INTERRUPTS)> reset rst_n=>0;
+  reg r_interrupt_vector: UInt<ADDR_WIDTH> reset rst_n=>0;
+  reg servicing: Bool reset rst_n=>false;
+
+  wire highest_pri_idx: UInt<$clog2(NUM_INTERRUPTS)>;
+  wire highest_pri_val: UInt<NUM_INTERRUPTS>;
+  wire has_pending: Bool;
+  wire masked_pending: UInt<NUM_INTERRUPTS>;
+
+  comb
+    interrupt_service = r_interrupt_service;
+    cpu_interrupt = r_cpu_interrupt;
+    interrupt_idx = r_interrupt_idx;
+    interrupt_vector = r_interrupt_vector;
+  end comb
+
+  comb masked_pending = pending_interrupts & interrupt_mask;
+
+  comb
+    highest_pri_idx = 0;
+    highest_pri_val = all_ones_n;
+    has_pending = false;
+    for i in 0..NUM_INTERRUPTS-1
+      if masked_pending[i]
+        if ~has_pending | (priority_map[i] < highest_pri_val)
+          highest_pri_idx = i.trunc<$clog2(NUM_INTERRUPTS)>();
+          highest_pri_val = priority_map[i];
+          has_pending = true;
+        end if
+      end if
+    end for
+  end comb
+
+  seq on clk rising
+    sync_requests_0 <= interrupt_requests;
+    sync_requests_1 <= sync_requests_0;
+  end seq
+
+  // Separate seq for complex-reset regs (no auto-reset guard)
+  seq on clk rising
+    if ~rst_n
+      for i in 0..NUM_INTERRUPTS-1
+        priority_map[i] <= i.trunc<NUM_INTERRUPTS>();
+        vector_table[i] <= (i * 4).trunc<ADDR_WIDTH>();
+      end for
+      interrupt_mask <= all_ones_n;
+    else
+      if priority_map_update
+        for i in 0..NUM_INTERRUPTS-1
+          priority_map[i] <= priority_map_value[i];
+        end for
+      end if
+
+      if vector_table_update
+        for i in 0..NUM_INTERRUPTS-1
+          vector_table[i] <= vector_table_value[i];
+        end for
+      end if
+
+      if interrupt_mask_update
+        interrupt_mask <= interrupt_mask_value;
+      end if
+    end if
+  end seq
+
+  // Separate seq for simple-reset regs (auto-reset guard handles reset)
+  seq on clk rising
+    pending_interrupts <= (pending_interrupts | sync_requests_1);
+
+    if cpu_ack
+      r_cpu_interrupt <= false;
+      r_interrupt_service <= 0;
+      pending_interrupts <= (pending_interrupts | sync_requests_1) & ~r_interrupt_service;
+      servicing <= false;
+    elsif has_pending & ~servicing
+      r_cpu_interrupt <= true;
+      r_interrupt_idx <= highest_pri_idx;
+      r_interrupt_vector <= vector_table[highest_pri_idx];
+      r_interrupt_service <= one_wide << highest_pri_idx;
+      servicing <= true;
+    end if
+  end seq
+end module interrupt_controller

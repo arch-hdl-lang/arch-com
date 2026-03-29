@@ -1,0 +1,37 @@
+module data_width_converter
+  port clk:              in Clock<SysDomain>;
+  port reset:            in Reset<Async, High>;
+  port data_in:          in UInt<32>;
+  port data_valid:       in Bool;
+  port reg o_data_out:       out UInt<128> init 0 reset reset=>0;
+  port reg o_data_out_valid: out Bool init 0 reset reset=>0;
+
+  reg cnt: UInt<2> init 0 reset reset=>0;
+  reg buf0: UInt<32> init 0 reset reset=>0;
+  reg buf1: UInt<32> init 0 reset reset=>0;
+  reg buf2: UInt<32> init 0 reset reset=>0;
+
+  seq on clk rising
+    o_data_out_valid <= false;
+
+    if data_valid & (cnt == 0)
+      buf0 <= data_in;
+    elsif data_valid & (cnt == 1)
+      buf1 <= data_in;
+    elsif data_valid & (cnt == 2)
+      buf2 <= data_in;
+    elsif data_valid & (cnt == 3)
+      o_data_out <= {buf0, buf1, buf2, data_in};
+    end if
+
+    if data_valid & (cnt == 3)
+      o_data_out_valid <= true;
+    end if
+
+    if data_valid & (cnt == 3)
+      cnt <= 0;
+    elsif data_valid
+      cnt <= (cnt + 1).trunc<2>();
+    end if
+  end seq
+end module data_width_converter

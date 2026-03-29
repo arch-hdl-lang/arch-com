@@ -3,7 +3,7 @@ domain SysDomain
 end domain SysDomain
 
 counter WrapCounter
-  mode: wrap;
+  kind wrap;
   direction: up;
   init: 0;
   param MAX: const = 15;

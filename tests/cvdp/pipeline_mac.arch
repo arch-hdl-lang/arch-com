@@ -13,12 +13,12 @@ module pipeline_mac
 
   default seq on clk rising;
 
-  reg mult_result_reg: UInt<DWIDTH_ACCUMULATOR> reset rstn=0;
-  reg accumulation_reg: UInt<DWIDTH_ACCUMULATOR> reset rstn=0;
-  reg counter_reg: UInt<$clog2(N)+1> reset rstn=0;
-  reg valid_out_s1: Bool reset rstn=false;
-  reg valid_out_s2: Bool reset rstn=false;
-  reg valid_i_s1: Bool reset rstn=false;
+  reg mult_result_reg: UInt<DWIDTH_ACCUMULATOR> reset rstn=>0;
+  reg accumulation_reg: UInt<DWIDTH_ACCUMULATOR> reset rstn=>0;
+  reg counter_reg: UInt<$clog2(N)+1> reset rstn=>0;
+  reg valid_out_s1: Bool reset rstn=>false;
+  reg valid_out_s2: Bool reset rstn=>false;
+  reg valid_i_s1: Bool reset rstn=>false;
 
   let valid_out_s0: Bool = counter_reg == (N - 1).trunc<$clog2(N)+1>();
   let count_rst: Bool = valid_out_s1;

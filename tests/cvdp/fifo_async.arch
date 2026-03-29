@@ -1,0 +1,103 @@
+module fifo_async
+  param DATA_WIDTH: const = 32;
+  param DEPTH: const = 8;
+  param ADDR_WIDTH: const = 3;
+
+  port w_clk:  in Clock<WDomain>;
+  port w_rst:  in Reset<Sync>;
+  port w_inc:  in Bool;
+  port w_data: in UInt<DATA_WIDTH>;
+
+  port r_clk:  in Clock<RDomain>;
+  port r_rst:  in Reset<Sync>;
+  port r_inc:  in Bool;
+
+  port reg w_full:  out Bool reset w_rst = false;
+  port reg r_empty: out Bool reset r_rst = true;
+  port r_data: out UInt<DATA_WIDTH>;
+
+  // Memory array
+  reg mem: Vec<UInt<DATA_WIDTH>, DEPTH> reset w_rst = 0;
+
+  // Write pointer binary
+  reg w_bin: UInt<ADDR_WIDTH+1> reset w_rst = 0;
+
+  // Read pointer binary
+  reg r_bin: UInt<ADDR_WIDTH+1> reset r_rst = 0;
+
+  // Synchronized pointers (binary, after gray sync)
+  wire r_bin_synced: UInt<ADDR_WIDTH+1>;
+  wire w_bin_synced: UInt<ADDR_WIDTH+1>;
+
+  // Synchronize read pointer into write domain (gray CDC)
+  inst r2w: r2w_sync
+    connect src_clk  <- r_clk;
+    connect dst_clk  <- w_clk;
+    connect rst      <- w_rst;
+    connect data_in  <- r_bin;
+    connect data_out -> r_bin_synced;
+  end inst r2w
+
+  // Synchronize write pointer into read domain (gray CDC)
+  inst w2r: w2r_sync
+    connect src_clk  <- w_clk;
+    connect dst_clk  <- r_clk;
+    connect rst      <- r_rst;
+    connect data_in  <- w_bin;
+    connect data_out -> w_bin_synced;
+  end inst w2r
+
+  // Next values
+  wire w_bin_next: UInt<ADDR_WIDTH+1>;
+  wire r_bin_next: UInt<ADDR_WIDTH+1>;
+  wire w_full_next: Bool;
+  wire r_empty_next: Bool;
+  wire w_addr: UInt<ADDR_WIDTH>;
+  wire r_addr: UInt<ADDR_WIDTH>;
+
+  // Write/read addresses are lower bits of binary pointer
+  comb w_addr = w_bin[ADDR_WIDTH-1:0];
+  comb r_addr = r_bin[ADDR_WIDTH-1:0];
+
+  // Next binary pointers
+  comb
+    if w_inc & ~w_full
+      w_bin_next = (w_bin + 1).trunc<ADDR_WIDTH+1>();
+    else
+      w_bin_next = w_bin;
+    end if
+  end comb
+
+  comb
+    if r_inc & ~r_empty
+      r_bin_next = (r_bin + 1).trunc<ADDR_WIDTH+1>();
+    else
+      r_bin_next = r_bin;
+    end if
+  end comb
+
+  // Full: MSB different, rest same (binary comparison)
+  comb w_full_next = (w_bin_next[ADDR_WIDTH] != r_bin_synced[ADDR_WIDTH]) & (w_bin_next[ADDR_WIDTH-1:0] == r_bin_synced[ADDR_WIDTH-1:0]);
+
+  // Empty: pointers identical (binary comparison)
+  comb r_empty_next = (r_bin_next == w_bin_synced);
+
+  // Async read
+  comb r_data = mem[r_addr];
+
+  // Write domain sequential logic
+  seq on w_clk rising
+    w_bin <= w_bin_next;
+    w_full <= w_full_next;
+    if w_inc & ~w_full
+      mem[w_addr] <= w_data;
+    end if
+  end seq
+
+  // Read domain sequential logic
+  seq on r_clk rising
+    r_bin <= r_bin_next;
+    r_empty <= r_empty_next;
+  end seq
+
+end module fifo_async

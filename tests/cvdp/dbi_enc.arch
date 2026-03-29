@@ -1,0 +1,63 @@
+module dbi_enc
+  port clk:      in Clock<SysDomain>;
+  port rst_n:    in Reset<Async, Low>;
+  port data_in:  in UInt<40>;
+  port reg data_out:  out UInt<40> reset rst_n=>0;
+  port reg dbi_cntrl: out UInt<2> reset rst_n=>0;
+
+  default seq on clk rising;
+
+  reg prev_data: UInt<40> reset rst_n=>0;
+
+  let group1: UInt<20> = data_in[39:20];
+  let group0: UInt<20> = data_in[19:0];
+
+  let prev1: UInt<20> = prev_data[39:20];
+  let prev0: UInt<20> = prev_data[19:0];
+
+  let xor1: UInt<20> = group1 ^ prev1;
+  let xor0: UInt<20> = group0 ^ prev0;
+
+  wire cnt1: UInt<5>;
+  wire cnt0: UInt<5>;
+
+  comb
+    cnt1 = (xor1[0].zext<5>() + xor1[1].zext<5>() + xor1[2].zext<5>() + xor1[3].zext<5>()
+         + xor1[4].zext<5>() + xor1[5].zext<5>() + xor1[6].zext<5>() + xor1[7].zext<5>()
+         + xor1[8].zext<5>() + xor1[9].zext<5>() + xor1[10].zext<5>() + xor1[11].zext<5>()
+         + xor1[12].zext<5>() + xor1[13].zext<5>() + xor1[14].zext<5>() + xor1[15].zext<5>()
+         + xor1[16].zext<5>() + xor1[17].zext<5>() + xor1[18].zext<5>() + xor1[19].zext<5>()).trunc<5>();
+    cnt0 = (xor0[0].zext<5>() + xor0[1].zext<5>() + xor0[2].zext<5>() + xor0[3].zext<5>()
+         + xor0[4].zext<5>() + xor0[5].zext<5>() + xor0[6].zext<5>() + xor0[7].zext<5>()
+         + xor0[8].zext<5>() + xor0[9].zext<5>() + xor0[10].zext<5>() + xor0[11].zext<5>()
+         + xor0[12].zext<5>() + xor0[13].zext<5>() + xor0[14].zext<5>() + xor0[15].zext<5>()
+         + xor0[16].zext<5>() + xor0[17].zext<5>() + xor0[18].zext<5>() + xor0[19].zext<5>()).trunc<5>();
+  end comb
+
+  wire ctrl1: Bool;
+  wire ctrl0: Bool;
+  wire out_hi: UInt<20>;
+  wire out_lo: UInt<20>;
+
+  comb
+    ctrl1 = cnt1 > 10;
+    ctrl0 = cnt0 > 10;
+    if ctrl1
+      out_hi = ~group1;
+    else
+      out_hi = group1;
+    end if
+    if ctrl0
+      out_lo = ~group0;
+    else
+      out_lo = group0;
+    end if
+  end comb
+
+  seq
+    dbi_cntrl <= {ctrl1, ctrl0}.zext<2>();
+    data_out <= {out_hi, out_lo};
+    prev_data <= {out_hi, out_lo};
+  end seq
+
+end module dbi_enc

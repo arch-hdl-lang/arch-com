@@ -1,0 +1,79 @@
+module hill_cipher
+  port clk: in Clock<SysDomain>;
+  port reset: in Reset<Async>;
+  port start: in Bool;
+  port plaintext: in UInt<15>;
+  port key: in UInt<45>;
+  port reg ciphertext: out UInt<15> reset reset=>0;
+  port reg done: out Bool reset reset=>0;
+
+  default seq on clk rising;
+
+  reg cyc: UInt<2> reset reset=>0;
+
+  let p0: UInt<10> = plaintext[14:10].zext<10>();
+  let p1: UInt<10> = plaintext[9:5].zext<10>();
+  let p2: UInt<10> = plaintext[4:0].zext<10>();
+
+  let k00: UInt<10> = key[44:40].zext<10>();
+  let k01: UInt<10> = key[39:35].zext<10>();
+  let k02: UInt<10> = key[34:30].zext<10>();
+  let k10: UInt<10> = key[29:25].zext<10>();
+  let k11: UInt<10> = key[24:20].zext<10>();
+  let k12: UInt<10> = key[19:15].zext<10>();
+  let k20: UInt<10> = key[14:10].zext<10>();
+  let k21: UInt<10> = key[9:5].zext<10>();
+  let k22: UInt<10> = key[4:0].zext<10>();
+
+  let prod00: UInt<10> = (k00 * p0).trunc<10>();
+  let prod01: UInt<10> = (k01 * p1).trunc<10>();
+  let prod02: UInt<10> = (k02 * p2).trunc<10>();
+  let prod10: UInt<10> = (k10 * p0).trunc<10>();
+  let prod11: UInt<10> = (k11 * p1).trunc<10>();
+  let prod12: UInt<10> = (k12 * p2).trunc<10>();
+  let prod20: UInt<10> = (k20 * p0).trunc<10>();
+  let prod21: UInt<10> = (k21 * p1).trunc<10>();
+  let prod22: UInt<10> = (k22 * p2).trunc<10>();
+
+  let m00: UInt<5> = (prod00 % 26).trunc<5>();
+  let m01: UInt<5> = (prod01 % 26).trunc<5>();
+  let m02: UInt<5> = (prod02 % 26).trunc<5>();
+  let m10: UInt<5> = (prod10 % 26).trunc<5>();
+  let m11: UInt<5> = (prod11 % 26).trunc<5>();
+  let m12: UInt<5> = (prod12 % 26).trunc<5>();
+  let m20: UInt<5> = (prod20 % 26).trunc<5>();
+  let m21: UInt<5> = (prod21 % 26).trunc<5>();
+  let m22: UInt<5> = (prod22 % 26).trunc<5>();
+
+  let sum0_ab: UInt<8> = m00.zext<7>() + m01.zext<7>();
+  let sum0: UInt<8> = (sum0_ab + m02.zext<8>()).trunc<8>();
+  let sum1_ab: UInt<8> = m10.zext<7>() + m11.zext<7>();
+  let sum1: UInt<8> = (sum1_ab + m12.zext<8>()).trunc<8>();
+  let sum2_ab: UInt<8> = m20.zext<7>() + m21.zext<7>();
+  let sum2: UInt<8> = (sum2_ab + m22.zext<8>()).trunc<8>();
+
+  let s0_mod64: UInt<6> = sum0.trunc<6>();
+  let s1_mod64: UInt<6> = sum1.trunc<6>();
+  let s2_mod64: UInt<6> = sum2.trunc<6>();
+
+  let c0: UInt<5> = (s0_mod64 % 26).trunc<5>();
+  let c1: UInt<5> = (s1_mod64 % 26).trunc<5>();
+  let c2: UInt<5> = (s2_mod64 % 26).trunc<5>();
+
+  let result: UInt<15> = {c0, c1, c2};
+
+  seq
+    if cyc == 0
+      done <= 0;
+      if start
+        cyc <= 1;
+      end if
+    elsif cyc == 1
+      cyc <= 2;
+    elsif cyc == 2
+      ciphertext <= result;
+      done <= 1;
+      cyc <= 0;
+    end if
+  end seq
+end module hill_cipher

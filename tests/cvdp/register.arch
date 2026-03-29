@@ -1,0 +1,41 @@
+module register
+  port clk:       in Clock<SysDomain>;
+  port rst:        in Reset<Sync>;
+  port data_in:    in UInt<4>;
+  port valid_in:   in Bool;
+  port ready_in:   in Bool;
+  port data_out:   out UInt<4>;
+  port valid_out:  out Bool;
+  port ready_out:  out Bool;
+
+  reg mem: UInt<4> reset rst=>0;
+  reg data_present: Bool reset rst=>false;
+
+  default seq on clk rising;
+
+  comb ready_out = (~data_present) | ready_in;
+  comb valid_out = data_present;
+  comb data_out = mem;
+
+  seq
+    if rst
+      mem <= 0;
+      data_present <= false;
+    elsif data_present
+      if ready_in
+        if valid_in
+          mem <= data_in;
+          data_present <= true;
+        else
+          mem <= 0;
+          data_present <= false;
+        end if
+      end if
+    else
+      if valid_in
+        mem <= data_in;
+        data_present <= true;
+      end if
+    end if
+  end seq
+end module register

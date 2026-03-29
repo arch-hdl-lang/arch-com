@@ -31,18 +31,18 @@ fsm ExuMuldiv
   port o_wdat:  out UInt<32> default 0;
 
   // Datapath registers
-  reg cyc_r:   UInt<6> init 0 reset rst_n=0;
-  reg acc_hi_r:  UInt<32> init 0 reset rst_n=0;
-  reg acc_lo_r:  UInt<32> init 0 reset rst_n=0;
-  reg mcand_r:   UInt<32> init 0 reset rst_n=0;
-  reg rem_r:   UInt<33> init 0 reset rst_n=0;
-  reg quot_r:  UInt<32> init 0 reset rst_n=0;
-  reg dvsr_r:  UInt<32> init 0 reset rst_n=0;
-  reg is_mul_r:    Bool init 0 reset rst_n=0;
-  reg want_hi_r:   Bool init 0 reset rst_n=0;
-  reg want_rem_r:  Bool init 0 reset rst_n=0;
-  reg neg_res_r:   Bool init 0 reset rst_n=0;
-  reg div_zero_r:  Bool init 0 reset rst_n=0;
+  reg cyc_r:   UInt<6> init 0 reset rst_n=>0;
+  reg acc_hi_r:  UInt<32> init 0 reset rst_n=>0;
+  reg acc_lo_r:  UInt<32> init 0 reset rst_n=>0;
+  reg mcand_r:   UInt<32> init 0 reset rst_n=>0;
+  reg rem_r:   UInt<33> init 0 reset rst_n=>0;
+  reg quot_r:  UInt<32> init 0 reset rst_n=>0;
+  reg dvsr_r:  UInt<32> init 0 reset rst_n=>0;
+  reg is_mul_r:    Bool init 0 reset rst_n=>0;
+  reg want_hi_r:   Bool init 0 reset rst_n=>0;
+  reg want_rem_r:  Bool init 0 reset rst_n=>0;
+  reg neg_res_r:   Bool init 0 reset rst_n=>0;
+  reg div_zero_r:  Bool init 0 reset rst_n=>0;
 
   // Operand sign handling
   let rs1_sign: Bool = (i_rs1 >> 31) != 0;

@@ -36,13 +36,13 @@ module DebugModule
   port dbg_reg_rdata:  in  UInt<32>;  // register read data
 
   // ── DM registers ───────────────────────────────────────────────
-  reg dmactive_r:    Bool     init false reset rst_n=false;
-  reg haltreq_r:     Bool     init false reset rst_n=false;
-  reg resumereq_r:   Bool     init false reset rst_n=false;
-  reg data0_r:       UInt<32> init 0 reset rst_n=0;
-  reg cmd_valid_r:   Bool     init false reset rst_n=false;
-  reg cmd_reg_r:     UInt<16> init 0 reset rst_n=0;
-  reg cmd_write_r:   Bool     init false reset rst_n=false;
+  reg dmactive_r:    Bool     init false reset rst_n=>false;
+  reg haltreq_r:     Bool     init false reset rst_n=>false;
+  reg resumereq_r:   Bool     init false reset rst_n=>false;
+  reg data0_r:       UInt<32> init 0 reset rst_n=>0;
+  reg cmd_valid_r:   Bool     init false reset rst_n=>false;
+  reg cmd_reg_r:     UInt<16> init 0 reset rst_n=>0;
+  reg cmd_write_r:   Bool     init false reset rst_n=>false;
 
   let reg_off: UInt<8> = paddr[7:0];
   let apb_wr: Bool = psel & penable & pwrite;

@@ -1,0 +1,126 @@
+module packet_controller
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, High>;
+  port rx_valid_i: in Bool;
+  port rx_data_8_i: in UInt<8>;
+  port tx_done_tick_i: in Bool;
+  port reg tx_start_o: out Bool reset rst=>false;
+  port reg tx_data_8_o: out UInt<8> reset rst=>0;
+
+  default seq on clk rising;
+
+  reg buf0: UInt<8> reset rst=>0;
+  reg buf1: UInt<8> reset rst=>0;
+  reg buf2: UInt<8> reset rst=>0;
+  reg buf3: UInt<8> reset rst=>0;
+  reg buf4: UInt<8> reset rst=>0;
+  reg buf5: UInt<8> reset rst=>0;
+  reg buf6: UInt<8> reset rst=>0;
+  reg buf7: UInt<8> reset rst=>0;
+  reg byte_cnt: UInt<4> reset rst=>0;
+  reg resp0: UInt<8> reset rst=>0;
+  reg resp1: UInt<8> reset rst=>0;
+  reg resp2: UInt<8> reset rst=>0;
+  reg resp3: UInt<8> reset rst=>0;
+  reg resp4: UInt<8> reset rst=>0;
+  reg tx_idx: UInt<3> reset rst=>0;
+  reg st: UInt<3> reset rst=>0;
+
+  let ST_IDLE: UInt<3> = 3'd0;
+  let ST_GOT_8: UInt<3> = 3'd1;
+  let ST_BUILD: UInt<3> = 3'd2;
+  let ST_SEND: UInt<3> = 3'd3;
+
+  let cksum: UInt<8> = (buf0 + buf1 + buf2 + buf3 + buf4 + buf5 + buf6 + buf7).trunc<8>();
+  let header_ok: Bool = (buf0 == 8'hBA) & (buf1 == 8'hCD);
+  let cksum_ok: Bool = cksum == 8'd0;
+  let num1_val: UInt<16> = {buf2, buf3};
+  let num2_val: UInt<16> = {buf4, buf5};
+  let opcode_val: UInt<8> = buf6;
+  let result_add: UInt<16> = (num1_val + num2_val).trunc<16>();
+  let result_sub: UInt<16> = (num1_val - num2_val).trunc<16>();
+  wire result_val: UInt<16>;
+  comb
+    if opcode_val == 8'h00
+      result_val = result_add;
+    elsif opcode_val == 8'h01
+      result_val = result_sub;
+    else
+      result_val = 16'd0;
+    end if
+  end comb
+  let partial_sum: UInt<8> = (8'hAB + 8'hCD + result_val[15:8] + result_val[7:0]).trunc<8>();
+  let resp_cksum: UInt<8> = (8'd0 - partial_sum).trunc<8>();
+
+  seq
+    if st == ST_IDLE
+      tx_start_o <= false;
+      tx_data_8_o <= 8'd0;
+      if rx_valid_i
+        if byte_cnt == 4'd0
+          buf0 <= rx_data_8_i;
+        elsif byte_cnt == 4'd1
+          buf1 <= rx_data_8_i;
+        elsif byte_cnt == 4'd2
+          buf2 <= rx_data_8_i;
+        elsif byte_cnt == 4'd3
+          buf3 <= rx_data_8_i;
+        elsif byte_cnt == 4'd4
+          buf4 <= rx_data_8_i;
+        elsif byte_cnt == 4'd5
+          buf5 <= rx_data_8_i;
+        elsif byte_cnt == 4'd6
+          buf6 <= rx_data_8_i;
+        elsif byte_cnt == 4'd7
+          buf7 <= rx_data_8_i;
+        end if
+        if byte_cnt == 4'd7
+          st <= ST_GOT_8;
+          byte_cnt <= 4'd0;
+        else
+          byte_cnt <= (byte_cnt + 4'd1).trunc<4>();
+        end if
+      end if
+
+    elsif st == ST_GOT_8
+      if header_ok & cksum_ok
+        resp0 <= 8'hAB;
+        resp1 <= 8'hCD;
+        resp2 <= result_val[15:8];
+        resp3 <= result_val[7:0];
+        resp4 <= resp_cksum;
+        st <= ST_BUILD;
+      else
+        st <= ST_IDLE;
+      end if
+
+    elsif st == ST_BUILD
+      tx_idx <= 3'd0;
+      st <= ST_SEND;
+
+    elsif st == ST_SEND
+      tx_start_o <= true;
+      if tx_idx == 3'd0
+        tx_data_8_o <= resp0;
+      elsif tx_idx == 3'd1
+        tx_data_8_o <= resp1;
+      elsif tx_idx == 3'd2
+        tx_data_8_o <= resp2;
+      elsif tx_idx == 3'd3
+        tx_data_8_o <= resp3;
+      else
+        tx_data_8_o <= resp4;
+      end if
+      if tx_done_tick_i
+        if tx_idx == 3'd4
+          tx_start_o <= false;
+          tx_data_8_o <= 8'd0;
+          st <= ST_IDLE;
+        else
+          tx_idx <= (tx_idx + 3'd1).trunc<3>();
+        end if
+      end if
+    end if
+  end seq
+
+end module packet_controller

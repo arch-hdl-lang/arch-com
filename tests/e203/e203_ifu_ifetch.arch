@@ -44,11 +44,11 @@ fsm IfuIfetch
   port redirect_pc: in UInt<32>;
 
   // Datapath registers
-  reg pc_r:        UInt<32> init 0 reset rst=0;
-  reg instr_r:     UInt<32> init 0 reset rst=0;
-  reg pc_out_r:    UInt<32> init 0 reset rst=0;
-  reg bus_err_r:   Bool     init 0 reset rst=0;
-  reg out_valid_r: Bool     init 0 reset rst=0;
+  reg pc_r:        UInt<32> init 0 reset rst=>0;
+  reg instr_r:     UInt<32> init 0 reset rst=>0;
+  reg pc_out_r:    UInt<32> init 0 reset rst=>0;
+  reg bus_err_r:   Bool     init 0 reset rst=>0;
+  reg out_valid_r: Bool     init 0 reset rst=>0;
 
   // Next PC: PC+4 with bottom 2 bits forced to 0 (aligned)
   let pc_plus4: UInt<32> = (pc_r + 4).trunc<32>();

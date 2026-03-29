@@ -6,10 +6,10 @@ module TopModule
 
   default seq on clk rising;
 
-  reg ones: UInt<4> reset reset=0;
-  reg tens: UInt<4> reset reset=0;
-  reg hund: UInt<4> reset reset=0;
-  reg thou: UInt<4> reset reset=0;
+  reg ones: UInt<4> reset reset=>0;
+  reg tens: UInt<4> reset reset=>0;
+  reg hund: UInt<4> reset reset=>0;
+  reg thou: UInt<4> reset reset=>0;
 
   seq
     if ones == 9

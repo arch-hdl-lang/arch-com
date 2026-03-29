@@ -1,0 +1,85 @@
+module ttc_counter_lite
+  port clk:          in Clock<SysDomain>;
+  port reset:        in Reset<Sync>;
+  port axi_addr:     in UInt<4>;
+  port axi_wdata:    in UInt<32>;
+  port axi_write_en: in Bool;
+  port axi_read_en:  in Bool;
+  port axi_rdata:    out UInt<32>;
+  port reg interrupt:     out Bool reset reset=>0;
+
+  default seq on clk rising;
+
+  reg count:            UInt<32> reset reset=>0;
+  reg match_value:      UInt<32> reset reset=>0;
+  reg reload_value:     UInt<32> reset reset=>0;
+  reg enable:           Bool reset reset=>0;
+  reg interval_mode:    Bool reset reset=>0;
+  reg interrupt_enable: Bool reset reset=>0;
+  reg match_flag:       Bool reset reset=>0;
+
+  wire status_clear: Bool;
+  comb status_clear = axi_write_en & (axi_addr == 4);
+
+  // Main sequential logic
+  seq
+    // AXI register writes
+    if axi_write_en
+      if axi_addr == 1
+        match_value <= axi_wdata;
+      elsif axi_addr == 2
+        reload_value <= axi_wdata;
+      elsif axi_addr == 3
+        enable <= axi_wdata[0:0];
+        interval_mode <= axi_wdata[1:1];
+        interrupt_enable <= axi_wdata[2:2];
+      end if
+    end if
+
+    // Counter logic
+    if enable
+      if count == match_value
+        if interval_mode
+          count <= reload_value;
+        end if
+        if ~status_clear
+          match_flag <= true;
+        else
+          match_flag <= false;
+        end if
+      else
+        count <= (count + 1).trunc<32>();
+      end if
+    end if
+
+    // match_flag clear on status write (when counter not at match)
+    if status_clear & ~(enable & (count == match_value))
+      match_flag <= false;
+    end if
+
+    // Interrupt generation
+    if status_clear
+      interrupt <= false;
+    elsif match_flag & interrupt_enable
+      interrupt <= true;
+    end if
+  end seq
+
+  // AXI read logic (combinational)
+  comb
+    if axi_addr == 0
+      axi_rdata = count;
+    elsif axi_addr == 1
+      axi_rdata = match_value;
+    elsif axi_addr == 2
+      axi_rdata = reload_value;
+    elsif axi_addr == 3
+      axi_rdata = {29'b0, interrupt_enable, interval_mode, enable}.zext<32>();
+    elsif axi_addr == 4
+      axi_rdata = interrupt.zext<32>();
+    else
+      axi_rdata = 0;
+    end if
+  end comb
+
+end module ttc_counter_lite

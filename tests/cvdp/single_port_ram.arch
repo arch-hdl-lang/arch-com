@@ -1,0 +1,21 @@
+module single_port_ram
+  param DATA_WIDTH: const = 8;
+  param ADDR_WIDTH: const = 4;
+
+  port clk:  in Clock<SysDomain>;
+  port we:   in Bool;
+  port addr: in UInt<ADDR_WIDTH>;
+  port din:  in UInt<DATA_WIDTH>;
+  port reg dout: out UInt<DATA_WIDTH>;
+
+  default seq on clk rising;
+
+  reg mem: Vec<UInt<DATA_WIDTH>, 16>;
+
+  seq
+    if we
+      mem[addr.trunc<4>()] <= din;
+    end if
+    dout <= mem[addr.trunc<4>()];
+  end seq
+end module single_port_ram

@@ -1,0 +1,15 @@
+module encoder_64b66b
+  port clk_in:  in Clock<SysDomain>;
+  port rst_in:  in Reset<Async, High>;
+  port encoder_data_in:    in UInt<64>;
+  port encoder_control_in: in UInt<8>;
+  port reg encoder_data_out: out UInt<66> reset rst_in=>0;
+
+  seq on clk_in rising
+    if encoder_control_in == 8'd0
+      encoder_data_out <= {2'd1, encoder_data_in};
+    else
+      encoder_data_out <= {2'd2, 64'd0};
+    end if
+  end seq
+end module encoder_64b66b

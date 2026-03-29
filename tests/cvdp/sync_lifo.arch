@@ -1,0 +1,45 @@
+module sync_lifo
+  param DATA_WIDTH: const = 8;
+  param ADDR_WIDTH: const = 3;
+  param MEM_DEPTH: const = 1 << ADDR_WIDTH;
+
+  port clock: in Clock<SysDomain>;
+  port reset: in Reset<Sync>;
+  port write_en: in Bool;
+  port read_en: in Bool;
+  port data_in: in UInt<DATA_WIDTH>;
+  port reg empty: out Bool reset reset=>true;
+  port reg full: out Bool reset reset=>false;
+  port reg data_out: out UInt<DATA_WIDTH> reset reset=>0;
+
+  default seq on clock rising;
+
+  reg sp: UInt<ADDR_WIDTH + 1> reset reset=>0;
+  reg mem: Vec<UInt<DATA_WIDTH>, MEM_DEPTH> reset reset=>0;
+
+  let sp_inc: UInt<ADDR_WIDTH + 1> = (sp + 1).trunc<ADDR_WIDTH + 1>();
+  let sp_dec: UInt<ADDR_WIDTH + 1> = (sp - 1).trunc<ADDR_WIDTH + 1>();
+  let sp_inc_msb: Bool = sp_inc[ADDR_WIDTH:ADDR_WIDTH] == 1;
+
+  seq
+    if write_en & ~full
+      mem[sp.trunc<ADDR_WIDTH>()] <= data_in;
+      if read_en & ~empty
+        data_out <= mem[sp_dec.trunc<ADDR_WIDTH>()];
+      else
+        sp <= sp_inc;
+        empty <= false;
+        if sp_inc_msb
+          full <= true;
+        end if
+      end if
+    elsif read_en & ~empty
+      sp <= sp_dec;
+      data_out <= mem[sp_dec.trunc<ADDR_WIDTH>()];
+      full <= false;
+      if sp_dec == 0
+        empty <= true;
+      end if
+    end if
+  end seq
+end module sync_lifo

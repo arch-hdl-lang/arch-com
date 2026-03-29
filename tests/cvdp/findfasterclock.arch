@@ -1,0 +1,93 @@
+module findfasterclock
+  pragma cdc_safe;
+
+  port clk_A:           in Clock<ADomain>;
+  port clk_B:           in Clock<BDomain>;
+  port rst_n:           in Reset<Async, Low>;
+  port A_faster_than_B: out Bool;
+  port valid:           out Bool;
+
+  // State encoding
+  let ST_IDLE: UInt<2> = 0;
+  let ST_COUNT: UInt<2> = 1;
+  let ST_DONE: UInt<2> = 2;
+
+  // A-domain FSM registers
+  reg stateA:    UInt<2> reset rst_n=>0;
+  reg measure_B: Bool reset rst_n=>false;
+  reg periodA:   UInt<32> reset rst_n=>0;
+  reg done_A:    Bool reset rst_n=>false;
+
+  // B-domain FSM registers
+  reg stateB:    UInt<2> reset rst_n=>0;
+  reg measure_A: Bool reset rst_n=>false;
+  reg periodB:   UInt<32> reset rst_n=>0;
+  reg done_B:    Bool reset rst_n=>false;
+
+  // Cross-domain counters
+  reg b_count: UInt<32> reset rst_n=>0;
+  reg a_count: UInt<32> reset rst_n=>0;
+
+  // A-domain FSM: measures periodA by counting B pulses during one A cycle
+  seq on clk_A rising
+    if stateA == ST_IDLE
+      measure_B <= true;
+      stateA <= ST_COUNT;
+    elsif stateA == ST_COUNT
+      periodA <= b_count;
+      measure_B <= false;
+      done_A <= true;
+      stateA <= ST_DONE;
+    else
+      stateA <= ST_DONE;
+    end if
+  end seq
+
+  // B-domain FSM: measures periodB by counting A pulses during one B cycle
+  seq on clk_B rising
+    if stateB == ST_IDLE
+      measure_A <= true;
+      stateB <= ST_COUNT;
+    elsif stateB == ST_COUNT
+      periodB <= a_count;
+      measure_A <= false;
+      done_B <= true;
+      stateB <= ST_DONE;
+    else
+      stateB <= ST_DONE;
+    end if
+  end seq
+
+  // B-domain counter: count B rising edges while measure_B is asserted
+  seq on clk_B rising
+    if measure_B
+      b_count <= (b_count + 1).trunc<32>();
+    else
+      b_count <= 0;
+    end if
+  end seq
+
+  // A-domain counter: count A rising edges while measure_A is asserted
+  seq on clk_A rising
+    if measure_A
+      a_count <= (a_count + 1).trunc<32>();
+    else
+      a_count <= 0;
+    end if
+  end seq
+
+  // Combinational output logic
+  comb
+    if ~rst_n
+      valid = false;
+      A_faster_than_B = false;
+    else
+      valid = done_A & done_B;
+      if done_A & done_B
+        A_faster_than_B = periodB > periodA;
+      else
+        A_faster_than_B = false;
+      end if
+    end if
+  end comb
+end module findfasterclock

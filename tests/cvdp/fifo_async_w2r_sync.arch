@@ -1,0 +1,9 @@
+synchronizer w2r_sync
+  kind gray;
+  param STAGES: const = 2;
+  port src_clk: in Clock<WDomain>;
+  port dst_clk: in Clock<RDomain>;
+  port rst:     in Reset<Sync>;
+  port data_in: in UInt<4>;
+  port data_out: out UInt<4>;
+end synchronizer w2r_sync

@@ -1,0 +1,21 @@
+module bcd_adder
+  port a: in UInt<4>;
+  port b: in UInt<4>;
+  port cin: in Bool;
+  port sum: out UInt<4>;
+  port cout: out Bool;
+
+  let raw_sum: UInt<5> = (a.zext<5>() + b.zext<5>() + cin.zext<5>()).trunc<5>();
+  let needs_correction: Bool = (raw_sum > 9);
+  let corrected: UInt<5> = (raw_sum + 6).trunc<5>();
+
+  comb
+    if needs_correction
+      sum = corrected[3:0];
+      cout = true;
+    else
+      sum = raw_sum[3:0];
+      cout = (raw_sum[4:4] == 1);
+    end if
+  end comb
+end module bcd_adder

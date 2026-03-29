@@ -1,0 +1,54 @@
+module qam16_mapper_interpolated
+  param N: const = 4;
+  param IN_WIDTH: const = 4;
+  param OUT_WIDTH: const = 3;
+
+  port bits: in UInt<N*IN_WIDTH>;
+  port I: out UInt<(N + N/2)*OUT_WIDTH>;
+  port Q: out UInt<(N + N/2)*OUT_WIDTH>;
+
+  // Per-symbol mapped values
+  wire mi: Vec<UInt<OUT_WIDTH>, N>;
+  wire mq: Vec<UInt<OUT_WIDTH>, N>;
+
+  // Output elements: N + N/2 total
+  wire out_i: Vec<UInt<OUT_WIDTH>, N + N/2>;
+  wire out_q: Vec<UInt<OUT_WIDTH>, N + N/2>;
+
+  // Accumulator for packing
+  wire acc_i: Vec<UInt<(N + N/2)*OUT_WIDTH>, N + N/2 + 1>;
+  wire acc_q: Vec<UInt<(N + N/2)*OUT_WIDTH>, N + N/2 + 1>;
+
+  // Map: 00->-3(101), 01->-1(111), 10->1(001), 11->3(011)
+  // Formula: (2*x + 5) mod 8
+  comb
+    for i in 0..N-1
+      mi[i] = (bits[i*IN_WIDTH + IN_WIDTH - 1 : i*IN_WIDTH + IN_WIDTH - 2] * 2 + 5).trunc<OUT_WIDTH>();
+      mq[i] = (bits[i*IN_WIDTH + 1 : i*IN_WIDTH] * 2 + 5).trunc<OUT_WIDTH>();
+    end for
+  end comb
+
+  // Build output elements: for each pair, first/interp/second
+  comb
+    for j in 0..N/2-1
+      out_i[3*j] = mi[2*j];
+      out_q[3*j] = mq[2*j];
+      out_i[3*j+1] = (({mi[2*j][OUT_WIDTH-1], mi[2*j]} + {mi[2*j+1][OUT_WIDTH-1], mi[2*j+1]}) >> 1).trunc<OUT_WIDTH>();
+      out_q[3*j+1] = (({mq[2*j][OUT_WIDTH-1], mq[2*j]} + {mq[2*j+1][OUT_WIDTH-1], mq[2*j+1]}) >> 1).trunc<OUT_WIDTH>();
+      out_i[3*j+2] = mi[2*j+1];
+      out_q[3*j+2] = mq[2*j+1];
+    end for
+  end comb
+
+  // Pack via accumulator: acc[0]=0, acc[k+1] = acc[k] | (out[k] << k*OUT_WIDTH)
+  comb
+    acc_i[0] = 0;
+    acc_q[0] = 0;
+    for k in 0..N+N/2-1
+      acc_i[k+1] = acc_i[k] | (out_i[k].zext<(N + N/2)*OUT_WIDTH>() << (k * OUT_WIDTH));
+      acc_q[k+1] = acc_q[k] | (out_q[k].zext<(N + N/2)*OUT_WIDTH>() << (k * OUT_WIDTH));
+    end for
+    I = acc_i[N + N/2];
+    Q = acc_q[N + N/2];
+  end comb
+end module qam16_mapper_interpolated

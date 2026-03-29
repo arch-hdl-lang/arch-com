@@ -1,0 +1,100 @@
+module apb_controller
+  port clk:          in Clock<SysDomain>;
+  port reset_n:      in Reset<Async, Low>;
+  port select_a_i:   in Bool;
+  port select_b_i:   in Bool;
+  port select_c_i:   in Bool;
+  port addr_a_i:     in UInt<32>;
+  port data_a_i:     in UInt<32>;
+  port addr_b_i:     in UInt<32>;
+  port data_b_i:     in UInt<32>;
+  port addr_c_i:     in UInt<32>;
+  port data_c_i:     in UInt<32>;
+  port apb_pready_i: in Bool;
+  port apb_psel_o:    out Bool;
+  port apb_penable_o: out Bool;
+  port apb_pwrite_o:  out Bool;
+  port apb_paddr_o:   out UInt<32>;
+  port apb_pwdata_o:  out UInt<32>;
+
+  // FSM states: 0=IDLE, 1=SETUP, 2=ACCESS
+  reg state: UInt<2> reset reset_n=>0;
+  reg r_psel:    Bool reset reset_n=>false;
+  reg r_penable: Bool reset reset_n=>false;
+  reg r_pwrite:  Bool reset reset_n=>false;
+  reg r_paddr:   UInt<32> reset reset_n=>0;
+  reg r_pwdata:  UInt<32> reset reset_n=>0;
+  reg timeout_cnt: UInt<4> reset reset_n=>0;
+
+  seq on clk rising
+    if state == 0
+      // IDLE: check for events with priority A > B > C
+      if select_a_i
+        r_psel   <= true;
+        r_pwrite <= true;
+        r_paddr  <= addr_a_i;
+        r_pwdata <= data_a_i;
+        r_penable <= false;
+        state <= 1;
+      elsif select_b_i
+        r_psel   <= true;
+        r_pwrite <= true;
+        r_paddr  <= addr_b_i;
+        r_pwdata <= data_b_i;
+        r_penable <= false;
+        state <= 1;
+      elsif select_c_i
+        r_psel   <= true;
+        r_pwrite <= true;
+        r_paddr  <= addr_c_i;
+        r_pwdata <= data_c_i;
+        r_penable <= false;
+        state <= 1;
+      else
+        r_psel    <= false;
+        r_penable <= false;
+        r_pwrite  <= false;
+        r_paddr   <= 0;
+        r_pwdata  <= 0;
+      end if
+      timeout_cnt <= 0;
+    elsif state == 1
+      // SETUP: assert penable, move to ACCESS
+      r_penable <= true;
+      state <= 2;
+    elsif state == 2
+      // ACCESS: wait for pready or timeout
+      if apb_pready_i
+        // Transaction complete, return to IDLE
+        r_psel    <= false;
+        r_penable <= false;
+        r_pwrite  <= false;
+        r_paddr   <= 0;
+        r_pwdata  <= 0;
+        timeout_cnt <= 0;
+        state <= 0;
+      elsif timeout_cnt == 15
+        // Timeout: abort, return to IDLE
+        r_psel    <= false;
+        r_penable <= false;
+        r_pwrite  <= false;
+        r_paddr   <= 0;
+        r_pwdata  <= 0;
+        timeout_cnt <= 0;
+        state <= 0;
+      else
+        timeout_cnt <= (timeout_cnt + 1).trunc<4>();
+      end if
+    else
+      state <= 0;
+    end if
+  end seq
+
+  comb
+    apb_psel_o    = r_psel;
+    apb_penable_o = r_penable;
+    apb_pwrite_o  = r_pwrite;
+    apb_paddr_o   = r_paddr;
+    apb_pwdata_o  = r_pwdata;
+  end comb
+end module apb_controller

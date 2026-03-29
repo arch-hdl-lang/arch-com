@@ -14,22 +14,22 @@ module vga_controller
   port reset: in Reset<Async, High>;
   port color_in: in UInt<8>;
 
-  port reg hsync: out Bool reset reset=true;
-  port reg vsync: out Bool reset reset=true;
-  port reg red: out UInt<8> reset reset=0;
-  port reg green: out UInt<8> reset reset=0;
-  port reg blue: out UInt<8> reset reset=0;
-  port reg next_x: out UInt<10> reset reset=0;
-  port reg next_y: out UInt<10> reset reset=0;
+  port reg hsync: out Bool reset reset=>true;
+  port reg vsync: out Bool reset reset=>true;
+  port reg red: out UInt<8> reset reset=>0;
+  port reg green: out UInt<8> reset reset=>0;
+  port reg blue: out UInt<8> reset reset=>0;
+  port reg next_x: out UInt<10> reset reset=>0;
+  port reg next_y: out UInt<10> reset reset=>0;
   port sync: out Bool;
   port clk_out: out Clock<SysDomain>;
-  port reg blank: out Bool reset reset=0;
+  port reg blank: out Bool reset reset=>0;
 
-  reg h_counter: UInt<10> reset reset=0;
-  reg v_counter: UInt<10> reset reset=0;
-  reg h_state: VgaPhase reset reset=VgaPhase::ST_ACTIVE;
-  reg v_state: VgaPhase reset reset=VgaPhase::ST_ACTIVE;
-  reg line_done: Bool reset reset=false;
+  reg h_counter: UInt<10> reset reset=>0;
+  reg v_counter: UInt<10> reset reset=>0;
+  reg h_state: VgaPhase reset reset=>VgaPhase::ST_ACTIVE;
+  reg v_state: VgaPhase reset reset=>VgaPhase::ST_ACTIVE;
+  reg line_done: Bool reset reset=>false;
 
   wire h_active: Bool;
   wire v_active: Bool;

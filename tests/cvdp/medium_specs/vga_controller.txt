@@ -1,0 +1,271 @@
+MODULE: vga_controller
+ID: cvdp_copilot_vga_controller_0001
+
+=== SPEC ===
+Develop a System Verilog RTL module `vga_controller` that takes a 25 MHz clock signal, a reset signal, and an 8-bit color input as inputs, and generates the necessary VGA synchronization and color signals to drive a VGA-compatible display. The design should follow the VGA timing protocol for a 640x480 resolution.
+
+### Design Specification :
+The `vga_controller` module implements a VGA signal generation mechanism to output pixel color data and synchronize signals, controlling the display of pixels on the screen according to the VGA timing standard. The controller should divide each frame into defined intervals and maintain precise horizontal and vertical timing cycles to manage pixel rendering and screen refresh.
+
+###  Interface :
+
+#### Inputs :
+  - `clock`(1-bit): 25 MHz clock signal to control the VGA timings.
+  - `reset`(1-bit): An ACTIVE-HIGH  asynchronous signal to initialize the VGA controller. When HIGH, the module performs the 
+  following:
+        -  Initializes the horizontal and vertical FSMs to their ACTIVE state.
+        -  Resets the 10-bit counters (h_counter and v_counter) to zero.
+        -  Sets the 1-bit output signal line_done to LOW.
+  - `color_in`([7:0], 8-bit): Pixel color data in `RRRGGGBB` format, where `color_in` [7:5] represents `red`, `color_in`[4:2] represents `green`, and `color_in`[1:0] represents blue intensities.
+
+#### Outputs :
+  - `hsync`(1-bit): An ACTIVE-HIGH in this signal indicates the occurrence of a horizontal sync pulse.
+  - `vsync`(1-bit): An ACTIVE-HIGH in this signal indicates the occurrence of a vertical sync pulse.
+  - `red`, `green`, `blue` ([7:0],8-bit each):  RGB color signals, used to control pixel color output to the VGA DAC (Digital-to-Analog Converter)
+  - `next_x`, `next_y` ([9:0], 10-bit each): Current pixel coordinates within the active display area
+  - `sync`(1-bit): ACTIVE HIGH Sync signal for VGA; should be held constant at 0.
+  - `clk` (1-bit): VGA clock, directly connected to the input clock.
+  - `blank`(1-bit): ACTIVE HIGH Blank signal. When HIGH, it indicates the occurrence of a blanking interval.
+  
+### Features :
+  - `640x480 Resolution`: Support VGA display timing for a resolution of 640x480. 
+  - `Sync Signal Generation`: Generate `hsync` and `vsync` signals appropriately for VGA display synchronization. 
+  - `Pixel Position Tracking`: Track the current pixel position in terms of `next_x` and `next_y` for each frame, wrapping to zero outside of the active display area.
+  - `Color Output Control`: Display the color values (red, green, blue) when within the active display region; output zero for blanking periods.
+    
+### VGA Timing Protocol for a 640 x 480 resolution :
+- Step 1: The VGA pixel clock runs at 25 MHz
+- Step 2: Both `hsync` and `vsync` start in active mode (logic level HIGH).
+- Step 3: `hsync` remains HIGH while displaying 640 pixels across one row(640 cycles)
+- Step 4: For each of the 640 clock cycles, the voltages on the `red`, `green`, and `blue` output lines generate an 8-bit value corresponding to their intensities. These intensities are converted into a voltage ranging between 0 and 0.7 V by three separate Digital to Analog Converter (DAC) units provided externally. The DAC implementation is not included in the design.
+- Step 5: After 640 clock cycles, the `red`, `green`, and `blue` output lines are set to 0000_0000 and `hsync` remains HIGH for additional 16-pixel clocks. This period is referred as FRONTPORCH.
+- Step 6: After the 16-pixel clocks, `hsync` is set to logic-level LOW for 96-pixel clocks. This period is referred as HORIZONTAL SYNC PULSE period
+- Step 7: After the 96-pixel clocks `hsync` is set to logic-level HIGH through for 48-pixel clocks. This period is referred as BACKPORCH.
+- Step 8: `hsync` then returns to the start of active mode (step 2, above), and the process is repeated for the next row of pixels. Each row of pixels is a line.
+- Step 9: `vsync` remains in active mode (logic level HIGH) for 480 lines.
+- Step 10: After 480 lines, the voltages on the `red`, `green`, and `blue` output lines are set to 0, and the VSYNC line remains high through its frontporch (10 lines)
+- Step 11: `vsync` is set to logic-level LOW for 2 lines (this is the vertical sync pulse).
+- Step 12: `vsync` is set to logic-level HIGH through its backporch (33 lines).
+- Step 13: `vsync` then returns to the start of active mode (step 2, above), and the process is repeated for the next frame.
+
+### Parameters :
+  #### Horizontal Timing:
+  - `H_ACTIVE`: Number of cycles in the active display period (fixed at 640).
+  - `H_FRONT`: Number of cycles in the front porch period (fixed at 16).
+  - `H_PULSE`: Number of cycles for the horizontal sync pulse (fixed at 96).
+  - `H_BACK`: Number of cycles for the back porch period (fixed at 48)
+  
+  #### Vertical Timing:
+   - `V_ACTIVE`: Number of lines in the active display area (fixed at 480).
+   - `V_FRONT`: Number of lines in the vertical front porch period (fixed at 10).
+   - `V_PULSE`: Number of lines in the vertical sync pulse (fixed at 2).
+   - `V_BACK`: Number of lines in the vertical back porch period (fixed at 33)
+   
+## `1. State Tracking`:
+Two state machines govern the horizontal and vertical cycles:
+Horizontal State Machine: Transitions through the active, front porch, pulse, and back porch states.
+Vertical State Machine: Transitions similarly but advances one line for each completed horizontal frame.
+
+## 2. Counters:
+`h_counter ([9:0], 10-bit)`: Tracks the current pixel position within a horizontal line.
+`v_counter ([9:0], 10-bit)`: Tracks the current line position within a frame.
+
+## `3. Sync Signals`:
+`hsync` and `vsync`: Generated based on the horizontal and vertical state machines, respectively, with sync pulses active during their corresponding pulse periods.
+
+## `4. Color Control Signals`:
+red, green, blue Registers: Hold pixel color data based on color_in during the active display period.
+Outside the active period, these registers are cleared to ensure blanking.
+
+## `Functional Behavior`:
+### `1. Reset Behavior`:
+During Reset (reset = 1):
+- 10-bit counters `hcounter` and `vcounter` are set to zero
+- Horizontal FSM is set to the `H_ACTIVE` state and Vertical FSM is set to the `V_ACTIVE` state
+- `line_done` is set to logic LOW.
+
+### `2. Horizontal and Vertical State Machine Operation`:
+The horizontal state machine increments `h_counter` and transitions between states (active, front porch, sync pulse, back porch) based on predefined timing parameters.
+The vertical state machine increments `v_counter` and transitions similarly, but only when the horizontal machine signals the end of a line.
+
+### `3. Pixel Position Tracking:`
+`next_x` and `next_y` track the upcoming pixel's coordinates during the active display period. These are reset outside the active region.
+
+### `4. RGB Signal Assignment`:
+Active Period: RGB outputs are derived from `color_in`, scaled to 8 bits.
+ -  `red`     = {`color_in[7:5]`, 5'd0};
+ -  `green` = {`color_in[4:2]`, 5'd0};
+ -  `blue`   = {`color_in[1:0]`, 6'd0};
+Blanking Period: RGB outputs are set to zero.
+
+### `5. Display Control`:
+blank Signal: Combines hsync and vsync to indicate whether the display is in a blanking interval.
+sync Signal: Fixed to LOW in this design.
+
+## Key Notes:
+- All logic is implemented within a single always_ff block, without explicitly separating combinational and sequential logic.
+- State transitions and counter updates are triggered on the positive edge of the clock.
+- The module ensures proper synchronization and blanking for a VGA display with a resolution of 640x480 pixels at 25 MHz clock input.
+ 
+### `Sample Signal Waveform` :
+```wavedrom
+{
+  "signal": [
+    {"name": "clock", "wave": "p.|.|.|.|.|.|.|.|.", "data": ["Clock"]},
+    {"name": "reset", "wave": "1.0...............", "data": ["Reset"]},
+    {
+      "name": "h_counter",
+      "wave": "3.45678999.9999999",
+      "data": [
+        "0 (Active Start)",
+        "1",
+        "2",
+        "3",
+        "...",
+        "639 (Active End)",
+        "0 (Front Porch Start)",
+        "...",
+        "15 (Front Porch End)",
+        "0 (Sync Pulse Start)",
+        "...",
+        "95 (Sync Pulse End)",
+        "0 (Back Porch Start)",
+        "...",
+        "47 (Back Porch End)",
+        "0 (Active Start)"
+      ]
+    },
+    {"name": "line_done", "wave": "3................5", "data": ["LOW (Start)", "HIGH (Back Porch End)"]},
+    {"name": "hsync", "wave": "0.1........0..1..0", "data": ["HIGH (Active)", "LOW (Sync Pulse)"]},
+    {
+      "name": "v_counter",
+      "wave": "3...............45",
+      "data": [
+        "0 (Initial)",
+        "0 (No Increment )",
+        "1 (Row Complete)"
+      ]
+    },
+    {"name": "vsync", "wave": "0.................", "data": ["LOW (Inactive)", "LOW (No Sync Pulse)"]},
+    {"name": "blank", "wave": "0.................", "data": ["LOW (Inactive)", "LOW (No Sync Pulse)"]}
+  ],
+  "foot": {
+    "text": "This shows the interaction between the Horizontal and Vertical FSMs. The Vertical FSM increments v_counter when the Horizontal FSM signals line_done at the end of a row."
+  },
+  "config": {
+    "hscale": 4
+  }
+}
+```
+
+=== src/.env ===
+SIM             = icarus
+TOPLEVEL_LANG   = verilog
+VERILOG_SOURCES = /code/rtl/vga_controller.sv
+TOPLEVEL        = vga_controller
+MODULE          = test_vga_controller
+PYTHONPATH      = /src
+HASH            = 1-vga_controller_rtl_generation_issue-1
+
+
+=== src/test_vga_controller.py ===
+import cocotb
+from cocotb.triggers import Timer, RisingEdge
+import random
+from cocotb.result import TestSuccess
+
+# Constants for 640x480 VGA with 25 MHz clock
+CLOCK_PERIOD_NS = 40
+H_ACTIVE_PIXELS = 640
+H_FRONT_PORCH = 16
+H_SYNC_PULSE = 96
+H_BACK_PORCH = 48
+
+V_ACTIVE_LINES = 480
+V_FRONT_PORCH = 10
+V_SYNC_PULSE = 2
+V_BACK_PORCH = 33
+
+@cocotb.test()
+async def test_vga_controller(dut):
+    """VGA Controller Test with Phase Tracking, limited to 1 frame, with input stimulus."""
+
+    # Start clock generator
+    cocotb.start_soon(clock_gen(dut, CLOCK_PERIOD_NS))
+
+    # Apply reset
+    dut.reset.value = 1
+    await Timer(100, units="ns")
+    dut.reset.value = 0
+    dut._log.info("Reset released")
+
+    # Initialize counters
+    cycle_count = 0
+    line_count = 0
+
+    # Define input changes
+    color_patterns = [
+        0b11100011,  # Red high, blue high
+        0b00011100,  # Green high
+        0b11111111,  # White color
+        0b00000000   # Black color
+    ]
+
+    # Apply a new color pattern at the start of the frame
+    new_color = random.choice(color_patterns)
+    dut.color_in.value = new_color
+    dut._log.info(f"Color pattern applied at frame start: {bin(new_color)}")
+
+    # Track exactly one complete frame
+    while line_count < V_ACTIVE_LINES + V_FRONT_PORCH + V_SYNC_PULSE + V_BACK_PORCH:
+        await RisingEdge(dut.clock)
+
+        # Track Horizontal Phases
+        if cycle_count == 0:
+            dut._log.info("Horizontal Phase: Active Region started.")
+        elif cycle_count == H_ACTIVE_PIXELS:
+            dut._log.info("Horizontal Phase: Front Porch started.")
+        elif cycle_count == H_ACTIVE_PIXELS + H_FRONT_PORCH:
+            dut._log.info("Horizontal Phase: Sync Pulse started.")
+        elif cycle_count == H_ACTIVE_PIXELS + H_FRONT_PORCH + H_SYNC_PULSE:
+            dut._log.info("Horizontal Phase: Back Porch started.")
+
+        # Check for end of horizontal line
+        if cycle_count == H_ACTIVE_PIXELS + H_FRONT_PORCH + H_SYNC_PULSE + H_BACK_PORCH - 1:
+            dut._log.info("Horizontal Line completed.")
+            cycle_count = 0  # Reset cycle count for next line
+            line_count += 1  # Increment line count
+
+            # Track Vertical Phases
+            if line_count == 0:
+                dut._log.info("Vertical Phase: Active Region started.")
+            elif line_count == V_ACTIVE_LINES:
+                dut._log.info("Vertical Phase: Front Porch started.")
+            elif line_count == V_ACTIVE_LINES + V_FRONT_PORCH:
+                dut._log.info("Vertical Phase: Sync Pulse started.")
+            elif line_count == V_ACTIVE_LINES + V_FRONT_PORCH + V_SYNC_PULSE:
+                dut._log.info("Vertical Phase: Back Porch started.")
+
+            # Check for end of frame
+            if line_count == V_ACTIVE_LINES + V_FRONT_PORCH + V_SYNC_PULSE + V_BACK_PORCH:
+                dut._log.info("One Vertical Frame completed.")
+                break  # Stop after one frame
+
+        else:
+            # Increment horizontal cycle count
+            cycle_count += 1
+
+    # End the test successfully after 1 frame
+    raise TestSuccess("VGA Controller phase tracking test completed after 1 frame with input stimulus.")
+
+
+async def clock_gen(dut, period_ns):
+    """Clock generation"""
+    while True:
+        dut.clock.value = 0
+        await Timer(period_ns / 2, units="ns")
+        dut.clock.value = 1
+        await Timer(period_ns / 2, units="ns")
+
+
+

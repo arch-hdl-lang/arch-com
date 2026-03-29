@@ -1,0 +1,133 @@
+module axi_register
+  param ADDR_WIDTH: const = 32;
+  param DATA_WIDTH: const = 32;
+  port clk_i:      in Clock<SysDomain>;
+  port rst_n_i:    in Reset<Async, Low>;
+
+  // Write address channel
+  port awaddr_i:   in UInt<ADDR_WIDTH>;
+  port awvalid_i:  in Bool;
+  port reg awready_o: out Bool reset rst_n_i=>false;
+
+  // Write data channel
+  port wdata_i:    in UInt<DATA_WIDTH>;
+  port wstrb_i:    in UInt<DATA_WIDTH/8>;
+  port wvalid_i:   in Bool;
+  port reg wready_o: out Bool reset rst_n_i=>false;
+
+  // Write response channel
+  port reg bresp_o:  out UInt<2> reset rst_n_i=>0;
+  port reg bvalid_o: out Bool reset rst_n_i=>false;
+  port bready_i:     in Bool;
+
+  // Read address channel
+  port araddr_i:   in UInt<ADDR_WIDTH>;
+  port arvalid_i:  in Bool;
+  port reg arready_o: out Bool reset rst_n_i=>false;
+
+  // Read data channel
+  port reg rdata_o:  out UInt<DATA_WIDTH> reset rst_n_i=>0;
+  port reg rvalid_o: out Bool reset rst_n_i=>false;
+  port reg rresp_o:  out UInt<2> reset rst_n_i=>0;
+  port rready_i:     in Bool;
+
+  // Control outputs
+  port reg beat_o:      out UInt<20> reset rst_n_i=>0;
+  port reg start_o:     out Bool reset rst_n_i=>false;
+  port reg writeback_o: out Bool reset rst_n_i=>false;
+  port done_i:          in Bool;
+
+  // Internal registers
+  reg done_reg: Bool reset rst_n_i=>false;
+
+  // All-ones strobe check
+  let strb_all: Bool = (wstrb_i == ~(0.trunc<DATA_WIDTH/8>()));
+
+  default seq on clk_i rising;
+
+  // All logic in one seq block
+  seq
+    // Latch done_i
+    if done_i
+      done_reg <= true;
+    end if
+
+    // Write defaults: one-cycle pulses
+    awready_o <= false;
+    wready_o <= false;
+
+    // bvalid: clear on handshake
+    if bvalid_o & bready_i
+      bvalid_o <= false;
+    end if
+
+    // Accept simultaneous AW+W
+    if awvalid_i & wvalid_i
+      awready_o <= true;
+      wready_o <= true;
+      bvalid_o <= true;
+      // Decode address and update registers
+      if awaddr_i[11:8] == 1
+        if strb_all
+          beat_o <= wdata_i.zext<20>();
+        end if
+        bresp_o <= 0;
+      elsif awaddr_i[11:8] == 2
+        if strb_all
+          start_o <= (wdata_i[0:0] == 1);
+        end if
+        bresp_o <= 0;
+      elsif awaddr_i[11:8] == 3
+        if strb_all
+          if wdata_i[0:0] == 1
+            done_reg <= false;
+          end if
+        end if
+        bresp_o <= 0;
+      elsif awaddr_i[11:8] == 4
+        if strb_all
+          writeback_o <= (wdata_i[0:0] == 1);
+        end if
+        bresp_o <= 0;
+      elsif awaddr_i[11:8] == 5
+        bresp_o <= 2;
+      else
+        bresp_o <= 2;
+      end if
+    end if
+
+    // Read defaults
+    arready_o <= false;
+
+    // Clear rvalid when master acknowledges
+    if rvalid_o & rready_i
+      rvalid_o <= false;
+    end if
+
+    // Accept read when not already responding
+    if arvalid_i & ~rvalid_o
+      arready_o <= true;
+      rvalid_o <= true;
+      if araddr_i[11:8] == 1
+        rdata_o <= beat_o.zext<DATA_WIDTH>();
+        rresp_o <= 0;
+      elsif araddr_i[11:8] == 2
+        rdata_o <= start_o.zext<DATA_WIDTH>();
+        rresp_o <= 0;
+      elsif araddr_i[11:8] == 3
+        rdata_o <= done_reg.zext<DATA_WIDTH>();
+        rresp_o <= 0;
+      elsif araddr_i[11:8] == 4
+        rdata_o <= writeback_o.zext<DATA_WIDTH>();
+        rresp_o <= 0;
+      elsif araddr_i[11:8] == 5
+        rdata_o <= 65537.trunc<DATA_WIDTH>();
+        rresp_o <= 0;
+      else
+        rdata_o <= 0;
+        rresp_o <= 2;
+      end if
+    end if
+  end seq
+
+end module axi_register

@@ -1,0 +1,95 @@
+module copilot_rs_232
+  param CLOCK_FREQ: const = 100000000;
+  param BAUD_RATE: const = 115200;
+  param BAUD_ACC_WIDTH: const = 16;
+  param REG_INPUT: const = 1;
+  port clock:     in Clock<SysDomain>;
+  port reset_neg: in Reset<Async, Low>;
+  port tx_datain_ready: in Bool;
+  port Present_Processing_Completed: in Bool;
+  port tx_datain: in UInt<8>;
+  port tx_transmitter: out Bool;
+  port tx_transmitter_valid: out Bool;
+
+  default seq on clock rising;
+
+  reg State: UInt<4> reset reset_neg=>0;
+  reg tx_data_reg: UInt<8> reset reset_neg=>0;
+  wire baud_pulse_w: Bool;
+  wire MuxBit: Bool;
+
+  inst baud_gen: baud_rate_generator
+    param BAUD_ACC_WIDTH = BAUD_ACC_WIDTH;
+    param CLOCK_FREQ = CLOCK_FREQ;
+    param BAUD_RATE = BAUD_RATE;
+    connect clock <- clock;
+    connect reset_neg <- reset_neg;
+    connect enable <- tx_transmitter_valid;
+    connect baud_pulse -> baud_pulse_w;
+  end inst baud_gen
+
+  comb tx_transmitter_valid = (State != 0);
+
+  seq
+    if ~reset_neg
+      tx_data_reg <= 0;
+    elsif Present_Processing_Completed
+      tx_data_reg <= 0;
+    elsif tx_datain_ready & (State == 0)
+      tx_data_reg <= tx_datain;
+    end if
+  end seq
+
+  seq
+    if ~reset_neg
+      State <= 0;
+    elsif Present_Processing_Completed
+      State <= 0;
+    elsif (State == 0) & tx_datain_ready
+      State <= 4;
+    elsif baud_pulse_w
+      if State == 15
+        State <= 1;
+      elsif State == 1
+        State <= 0;
+      else
+        State <= (State + 1).trunc<4>();
+      end if
+    end if
+  end seq
+
+  // Output mux
+  comb
+    if State[2:0] == 0
+      MuxBit = tx_data_reg[0];
+    elsif State[2:0] == 1
+      MuxBit = tx_data_reg[1];
+    elsif State[2:0] == 2
+      MuxBit = tx_data_reg[2];
+    elsif State[2:0] == 3
+      MuxBit = tx_data_reg[3];
+    elsif State[2:0] == 4
+      MuxBit = tx_data_reg[4];
+    elsif State[2:0] == 5
+      MuxBit = tx_data_reg[5];
+    elsif State[2:0] == 6
+      MuxBit = tx_data_reg[6];
+    else
+      MuxBit = tx_data_reg[7];
+    end if
+  end comb
+
+  reg tx_out: Bool reset reset_neg=>1;
+
+  seq
+    if ~reset_neg
+      tx_out <= true;
+    elsif Present_Processing_Completed
+      tx_out <= true;
+    else
+      tx_out <= (State < 4) | (State[3] & MuxBit);
+    end if
+  end seq
+
+  comb tx_transmitter = tx_out;
+end module copilot_rs_232

@@ -1,0 +1,477 @@
+MODULE: precision_counter_axi
+ID: cvdp_copilot_axil_precision_counter_0001
+
+=== SPEC ===
+
+Design a Verilog module named precision_counter_axi that implements a configurable AXI4-Lite Slave interface to manage a high-precision countdown counter. The module facilitates software control through read and write operations, supporting features such as starting and stopping the counter, interrupt generation based on configurable thresholds, and tracking elapsed time after countdown completion. The module adheres to the AXI4-Lite protocol, ensuring proper handshaking, flow control, and error handling for invalid or undefined operations.
+
+---
+
+## Design Specification
+
+### AXI4-Lite Protocol Features
+
+### 1. Handshake Mechanism
+The AXI4-Lite protocol uses a valid-and-ready handshake mechanism to ensure successful transactions:
+
+- **Write Transaction Handshake**:
+  - The AXI master asserts `axi_awvalid` to indicate a valid write address and control signals.
+  - The slave asserts `axi_awready` when ready to accept the address.
+  - After the write address handshake, the master asserts `axi_wvalid` with valid data, and the slave responds with `axi_wready` when ready to accept the data.
+  - Finally, the slave sends a write response (`axi_bresp`), asserting `axi_bvalid` when the response is valid. The master acknowledges the response by asserting `axi_bready`.
+
+- **Read Transaction Handshake**:
+  - The AXI master asserts `axi_arvalid` to indicate a valid read address.
+  - The slave asserts `axi_arready` when ready to accept the address.
+  - After address handshaking, the slave provides the requested data (`axi_rdata`) and response (`axi_rresp`), asserting `axi_rvalid` to indicate data availability. The master asserts `axi_rready` to acknowledge the data reception.
+
+### 2. Flow Control
+- The module ensures proper flow control by using `axi_awready`, `axi_wready`, and `axi_arready` signals. These signals allow the slave to introduce backpressure, preventing data loss or overflow when it is not ready to process requests.
+
+### 3. Address Decoding
+- The incoming address (`axi_awaddr` or `axi_araddr`) is decoded to access specific control and data registers. Unrecognized addresses result in error responses (`axi_bresp` or `axi_rresp` set to `2'b10`).
+
+---
+
+### Interface
+
+#### Parameters
+- `C_S_AXI_DATA_WIDTH`: Specifies the width of the AXI data bus. The default value is 32. This parameter defines the size of the data transferred during read and write operations, and it must be a positive integer greater than or equal to 8.
+- `C_S_AXI_ADDR_WIDTH`: Specifies the width of the AXI address bus. The default value is 8. This parameter determines the maximum addressable range of the registers. It must be a positive integer greater than or equal to 8.
+
+#### Inputs
+- **Clock and Reset Signals:**
+  - `axi_aclk`:The clock signal for synchronous operations. The design operates on the positive edge of the clock signal..
+  - `axi_aresetn`: Active-low asynchronous reset. When de-asserted, the module returns to its initial state.
+
+- **AXI Write Address Channel:**
+  - `[C_S_AXI_ADDR_WIDTH-1:0] axi_awaddr`: Write the address from the AXI master.
+  - `axi_awvalid`: Indicates that the write address and control signals are valid.
+
+- **AXI Write Data Channel:**
+  - `[C_S_AXI_DATA_WIDTH-1:0] axi_wdata`: Data to be written to the addressed location.
+  - `[(C_S_AXI_DATA_WIDTH/8)-1:0] axi_wstrb`: Write strobes, indicating which bytes in `axi_wdata` are valid.
+  - `axi_wvalid`: Indicates that valid write data is available.
+
+- **AXI Write Response Channel:**
+  - `axi_bready`: Indicates that the AXI master is ready to accept the write response.
+
+- **AXI Read Address Channel:**
+  - `[C_S_AXI_ADDR_WIDTH-1:0] axi_araddr`: Read address from the AXI master.
+  - `axi_arvalid`: Indicates that the read address and control signals are valid.
+
+- **AXI Read Response Channel:**
+  - `axi_rready`: Indicates that the AXI master is ready to accept the read data.
+
+#### Outputs
+- **AXI Write Address Channel:**
+  - `axi_awready`: Indicates that the module is ready to accept a write address.
+
+- **AXI Write Data Channel:**
+  - `axi_wready`: Indicates that the module is ready to accept write data.
+
+- **AXI Write Response Channel:**
+  - `[1:0] axi_bresp`: Write response, where `2'b00` indicates success and `2'b10` indicates an error.
+  - `axi_bvalid`: Indicates that the write response is valid.
+
+- **AXI Read Address Channel:**
+  - `axi_arready`: Indicates that the module is ready to accept a read address.
+
+- **AXI Read Data Channel:**
+  - `[C_S_AXI_DATA_WIDTH-1:0] axi_rdata`: Data being read by the AXI master.
+  - `[1:0] axi_rresp`: Read response, where `2'b00` indicates success and `2'b10` indicates an error.
+  - `axi_rvalid`: Indicates that the read data is valid.
+
+- **Control Outputs:**
+  - `axi_ap_done`: Indicates that the countdown has completed.
+  - `irq`: Interrupt request signal triggered when the interrupt threshold is reached.
+
+---
+
+### Register Map
+
+| Register             | Offset | Description                                   | Access      | Bit Width |
+|----------------------|--------|-----------------------------------------------|-------------|-----------|
+| `slv_reg_ctl`        | 0x00   | Control register (start/stop countdown)       | Read/Write  | 32        |
+| `slv_reg_t`          | 0x10   | Elapsed time counter                          | Read/Write  | 32        |
+| `slv_reg_v`          | 0x20   | Countdown value                               | Read/Write  | 32        |
+| `slv_reg_irq_mask`   | 0x24   | Mask to enable or disable interrupt requests  | Read/Write  | 32        |
+| `slv_reg_irq_thresh` | 0x28   | Threshold value for generating interrupts     | Read/Write  | 32        |
+
+---
+
+
+
+### Functional Description
+
+#### 1. **Control Register (`slv_reg_ctl`):**
+- **Bit 0 (Start/Stop):**
+  - Writing `1` starts the countdown.
+  - Writing `0` stops the countdown.
+  - When stopped, the countdown value (`slv_reg_v`) retains its current value.
+- **Reset Behavior:**
+  - Writing to this register resets the elapsed time register (`slv_reg_t`) to zero.
+- **Default Value:**
+  - Initializes to `0` after reset, meaning the countdown is stopped.
+
+#### 2. **Countdown Register (`slv_reg_v`):**
+- **Purpose:**
+  - Holds the countdown value.
+  - The counter decrements by `1` every clock cycle while running.
+- **Completion Behavior:**
+  - When the countdown reaches `0`, the `axi_ap_done` signal is asserted.
+- **Writing Behavior:**
+  - Writing a new value updates the countdown value, even while the counter is running.
+
+#### 3. **Elapsed Time Register (`slv_reg_t`):**
+- **Purpose:**
+  - Tracks the number of clock cycles elapsed after the countdown reaches `0`.
+- **Behavior:**
+  - Increments by `1` every clock cycle when the counter is finished (`slv_reg_v == 0`).
+- **Reset Behavior:**
+  - Automatically resets to `0` whenever the control register (`slv_reg_ctl`) is written.
+
+#### 4. **Interrupt Mechanism:**
+- **Interrupt Mask Register (`slv_reg_irq_mask`):**
+  - Enables or disables interrupt generation.
+  - Interrupts are enabled when `slv_reg_irq_mask[0]` is set to `1`.
+- **Interrupt Threshold Register (`slv_reg_irq_thresh`):**
+  - Defines the countdown value at which the interrupt is triggered.
+- **IRQ Signal (`irq`):**
+  - Asserted when the countdown value (`slv_reg_v`) matches the interrupt threshold (`slv_reg_irq_thresh`) and interrupts are enabled.
+  - Automatically cleared when:
+    - The countdown stops.
+    - The threshold condition is no longer met.
+    - The reset signal (`axi_aresetn`) is asserted.
+
+#### 5. **Write Response (`axi_bresp`):**
+- **Purpose:**
+  - Indicates the success or failure of a write transaction.
+- **Conditions:**
+  - **`2'b00` (OKAY):**
+    - The write operation completed successfully.
+    - Generated when the write address and data handshake (`axi_awvalid`, `axi_wvalid`) are completed and processed correctly.
+  - **`2'b10` (SLVERR - Slave Error):**
+    - The write operation failed due to invalid conditions, such as accessing an unsupported address.
+    - Generated when the address is outside the implemented range or the operation is otherwise invalid.
+
+#### 6. **Read Response (`axi_rresp`):**
+- **Purpose:**
+  - Indicates the success or failure of a read transaction.
+- **Conditions:**
+  - **`2'b00` (OKAY):**
+    - The read operation completed successfully.
+    - Generated when a valid read address (`axi_arvalid`) is provided, and the requested data is available.
+  - **`2'b10` (SLVERR - Slave Error):**
+    - The read operation failed due to invalid conditions, such as accessing an unsupported address.
+    - Generated when the address is outside the implemented range.
+
+
+---
+
+### Timing and Synchronization
+
+- **Clock:** The module operates on the rising edge of `axi_aclk`.
+- **Reset:** Active-low (`axi_aresetn`). Resets all internal registers and outputs to their default state.
+
+---
+
+### Constraints and Edge Cases
+
+1. **Reset Behavior:**
+   - When reset is asserted, all registers are cleared to zero.
+
+2. **Invalid AXI Operations:**
+   - Writing to undefined or reserved addresses is ignored, and the registers remain unchanged.
+   - Read/write transactions without proper handshaking (valid and ready signals) are ignored to ensure AXI protocol compliance.
+
+3. **Interrupt Handling:**
+   - Interrupts are only generated if `slv_reg_irq_mask` is enabled and the counter value matches the threshold.
+
+---
+
+### Example Operations
+
+#### Write Operation Example
+- **Operation:** Start the counter and set the countdown value.
+  - Write `0x1` to the control register (`slv_reg_ctl`) to start the countdown.
+    - Address: `0x00`
+    - Data: `0x00000001`
+    - **Result:** The countdown starts, and `slv_reg_ctl[0]` is set to `1`.
+
+  - Write `0x00000010` to the countdown value register (`slv_reg_v`).
+    - Address: `0x20`
+    - Data: `0x00000010`
+    - **Result:** The countdown value is set to `16`.
+
+#### Read Operation Example
+- **Operation:** Read the elapsed time and status.
+  - Read from the elapsed time register (`slv_reg_t`).
+    - Address: `0x10`
+    - **Result:** The current elapsed time value is returned.
+
+  - Read the `axi_ap_done` status by accessing the control register.
+    - Address: `0x0C`
+    - **Result:** Returns `1` if the countdown is complete, otherwise `0`.
+
+#### Interrupt Example
+- **Condition:** Set the interrupt threshold and enable interrupts.
+  - Write `0x00000005` to the interrupt threshold register (`slv_reg_irq_thresh`).
+    - Address: `0x28`
+    - Data: `0x00000005`
+    - **Result:** The interrupt threshold is set to `5`.
+
+  - Write `0x00000001` to the interrupt mask register (`slv_reg_irq_mask`) to enable interrupts.
+    - Address: `0x24`
+    - Data: `0x00000001`
+    - **Result:** Interrupts are enabled.
+
+  - **Trigger:** When the countdown value reaches `5`, the `irq` signal is asserted.
+
+---
+
+#### Write Transaction Handshake
+ {
+"signal": [
+{ "name": "axi_aclk", "wave": "p............." },
+{ "name": "axi_aresetn", "wave": "01............" },
+
+{ "name": "axi_awaddr", "wave": "x.=....=......", "data": ["0x00","0x20"] },
+{ "name": "axi_wdata", "wave": "x.=....=......", "data": ["0x00000001","0xABCDEF01"] },
+{ "name": "axi_awvalid", "wave": "0.1.0..1.0....", "data": ["Write Addr Valid"] },
+{ "name": "axi_wvalid", "wave": "0.1.0..1.0....", "data": ["Write Data Valid"] },
+{ "name": "axi_wstrb", "wave": "x.=...........", "data": ["0xF"] },
+{ "name": "axi_awready", "wave": "0..10...10....", "data": ["Write Addr Ready"] },
+
+{ "name": "axi_wready", "wave": "0..10...10....", "data": ["Write Data Ready"] },
+{ "name": "slv_reg_ctl[31:0]", "wave": "x...=.........", "data": ["0x00000001"] },
+{ "name": "slv_reg_v[31:0]", "wave": "x.=......=====", "data": ["0x00000000","0xABCDEF01","ABCD EF00","ABCD EEFF","ABCD EEFE","ABCD EEFD"] },
+
+{ "name": "axi_bvalid", "wave": "0...10...10...", "data": ["Write Response Valid"] },
+{ "name": "axi_bready", "wave": "0...10...10...", "data": ["Write Data Ready"] },
+{ "name": "axi_bresp", "wave": "x...==...==...", "data": ["00","10","00","10"] },
+
+],
+"head": {
+"text": "AXI4-Lite Write Transaction Handshake"
+}
+}
+
+---
+#### Read  Transaction Handshake
+{
+"signal": [
+{ "name": "axi_aclk", "wave": "p............." },
+{ "name": "axi_aresetn", "wave": "1............0" },
+{ "name": "slv_reg_ctl[31:0]", "wave": "x=............", "data": ["0x00000001"] },
+{ "name": "slv_reg_v[31:0]", "wave": "x.============", "data": ["0x00000000","0xABCDEF01","ABCDEF00","ABCDEEFF","ABCDEEFE","ABCDEEFD","ABCDEEFC","ABCDEEFB","ABCDEEFA","ABCDEEF9","ABCDEEF8","ABCDEEF7"] },
+{ "name": "axi_araddr", "wave": "x.=....=......", "data": ["0x00","0x20"] },
+{ "name": "axi_arvalid", "wave": "0.1.0..1.0....", "data": ["Read Addr Valid"] },
+{ "name": "axi_arready", "wave": "0..10...10....", "data": ["Read Addr Ready"] },
+{ "name": "axi_rready", "wave": "0.1..0.1..0...", "data": ["Read Data Ready"] },
+
+{ "name": "axi_rvalid", "wave": "0...10...10...", "data": ["Read Data Valid"] },
+
+{ "name": "axi_rdata", "wave": "x...=....=....", "data": ["0x00000001","ABCDEEFC"] },
+{ "name": "axi_rresp", "wave": "x...==...==...", "data": ["00","10","00","10"] },
+],
+"head": {
+"text": "AXI4-Lite Read Transaction Handshake"
+}
+}
+
+=== src/.env ===
+SIM             = icarus
+WAVE            = True
+TOPLEVEL_LANG   = verilog
+VERILOG_SOURCES = /code/rtl/precision_counter_axi.sv
+TOPLEVEL        = precision_counter_axi
+MODULE          = test_precision_counter_axi
+PYTHONPATH      = /src
+HASH            = d0878158d85167051ff4db2164e1b6799a524f77
+
+=== src/test_precision_counter_axi.py ===
+import cocotb
+from cocotb.clock import Clock
+from cocotb.triggers import RisingEdge, FallingEdge, ReadOnly , Timer
+
+import harness_library as hrs_lb
+import random
+
+# Function to initialize the DUT
+async def initialize_dut(dut):
+    dut.axi_awvalid.value = 0
+    dut.axi_wvalid.value = 0
+    dut.axi_arvalid.value = 0
+    dut.axi_bready.value = 0
+    dut.axi_rready.value = 0
+    dut.axi_awaddr.value = 0
+    dut.axi_wdata.value = 0
+    dut.axi_wstrb.value = 0
+    dut.axi_araddr.value = 0
+
+# Function to reset the DUT
+async def reset_dut(reset_signal, duration_ns=25, active=True):
+    reset_signal.value = 0 if active else 1
+    await Timer(duration_ns, units="ns")
+    reset_signal.value = 1 if active else 0
+    await Timer(duration_ns, units="ns")
+
+# AXI write transaction helper function
+async def axi_write(dut, address, data, strb=0xF):
+    dut.axi_awaddr.value = address
+    dut.axi_wdata.value = data
+    dut.axi_awvalid.value = 1
+    dut.axi_wvalid.value = 1
+    dut.axi_wstrb.value = strb
+    await RisingEdge(dut.axi_aclk)
+
+    while not (dut.axi_awready.value and dut.axi_wready.value):
+        await RisingEdge(dut.axi_aclk)
+
+    await RisingEdge(dut.axi_aclk)
+    dut.axi_awvalid.value = 0
+    dut.axi_wvalid.value = 0
+
+    dut.axi_bready.value = 1
+    await RisingEdge(dut.axi_aclk)
+    dut.axi_bready.value = 0
+
+# AXI read transaction helper function
+async def axi_read(dut, address):
+    dut.axi_araddr.value = address
+    dut.axi_arvalid.value = 1
+    dut.axi_rready.value = 1
+
+    while not dut.axi_arready.value:
+        await RisingEdge(dut.axi_aclk)
+
+    await RisingEdge(dut.axi_aclk)
+    await RisingEdge(dut.axi_aclk)
+
+    dut.axi_arvalid.value = 0
+
+    while not dut.axi_rvalid.value:
+        await RisingEdge(dut.axi_aclk)
+
+    await RisingEdge(dut.axi_aclk)
+    dut.axi_rready.value = 0
+
+# Function to check output values
+async def check_output(dut, address, expected_value, description):
+    await axi_read(dut, address)
+    assert  dut.axi_rdata.value == expected_value, f"{description}: Expected {expected_value}, got { dut.axi_rdata.value}"
+
+# Function to test random countdown values
+async def test_random_countdown(dut,DATA_WIDTH):
+    for _ in range(10):
+        strb = (1 << (DATA_WIDTH // 8)) - 1
+        random_value = random.randint(0, (1 << DATA_WIDTH) - 1)
+        await axi_write(dut, 0x20, random_value,strb)
+        await check_output(dut, 0x20, random_value-2, f"Random countdown value {random_value}")
+
+
+# Function to test IRQ output
+async def test_irq_output(dut,DATA_WIDTH):
+    strb = (1 << (DATA_WIDTH // 8)) - 1
+    await axi_write(dut, 0x24, 0x1,strb)  # Enable IRQ
+    await RisingEdge(dut.axi_aclk)
+    await axi_write(dut, 0x28, 0x5,strb)  # Write to threshold register
+    await RisingEdge(dut.axi_aclk)
+    await axi_write(dut, 0x20, 0x5,strb)  # Write to countdown value
+    await RisingEdge(dut.axi_aclk)
+    await axi_write(dut, 0x00, 0x1,strb)  # Start the counter
+    await RisingEdge(dut.axi_aclk)
+
+    # Check IRQ output
+    if dut.irq.value:
+        dut._log.info("[PASS] IRQ triggered successfully.")
+    else:
+        dut._log.error("[FAIL] IRQ not triggered.")
+
+# Function to test additional reads
+async def test_additional_reads(dut):
+    await axi_read(dut, 0x20)  # Read counter value register
+    await RisingEdge(dut.axi_aclk)
+
+    await axi_read(dut, 0x04)  # Read dummy register
+    dut._log.info("Reading from dummy register 0x04")
+    await RisingEdge(dut.axi_aclk)
+
+    await axi_read(dut, 0x08)  # Read another dummy register
+    dut._log.info("Reading from dummy register 0x08")
+    await RisingEdge(dut.axi_aclk)
+
+    await axi_read(dut, 0x50)  # Attempt to read invalid register
+    dut._log.info(" Invalid register 0x50 read .")
+    await RisingEdge(dut.axi_aclk)
+
+# Function to test reset behavior
+async def test_reset_behavior(dut):
+    await axi_write(dut, 0x00, 0x1)  # Start the counter
+    random_value = random.randint(1, 100)
+    await axi_write(dut, 0x20, random_value)  # Set countdown value
+
+    await reset_dut(dut.axi_aresetn)
+
+    # Verify all registers reset to default values
+    await check_output(dut, 0x00, 0x0, "Control register after reset")
+    await check_output(dut, 0x20, 0x0, "Countdown value after reset")
+    await check_output(dut, 0x10, 0x0, "Elapsed time register after reset")
+
+@cocotb.test()
+async def test_precision_counter_axi(dut):
+    ADDR_WIDTH = int(dut.C_S_AXI_ADDR_WIDTH.value)
+    DATA_WIDTH = int(dut.C_S_AXI_DATA_WIDTH.value)
+    # Start the clock with a 10ns time period (100 MHz clock)
+    cocotb.start_soon(Clock(dut.axi_aclk, 10, units='ns').start())
+
+    # Initialize the DUT signals with default 0
+    await hrs_lb.dut_init(dut)
+
+    # Reset the DUT rst_n signal
+    await hrs_lb.reset_dut(dut.axi_aresetn, duration_ns=25, active=True)
+
+    await RisingEdge(dut.axi_aclk) 
+
+     # Test case 1: Write to the control register and verify
+    strb = (1 << (DATA_WIDTH // 8)) - 1
+    await axi_write(dut, 0x00, 0x1,strb)  # Start the counter
+    await check_output(dut, 0x00, 0x1, "Control register value mismatch")
+    await RisingEdge(dut.axi_aclk) 
+
+    # Test case 2: Set countdown value and verify
+    random_value = random.randint(0, (1 << DATA_WIDTH) - 1)
+    await axi_write(dut, 0x20, random_value,strb)  # Set countdown value to 100
+    await check_output(dut, 0x20, (random_value-2), "Countdown value mismatch")
+    await RisingEdge(dut.axi_aclk) 
+
+    # Test case 3: Verify interrupt mask functionality
+    random_value = random.randint(0, (1 << DATA_WIDTH) - 1)
+    await axi_write(dut, 0x24, random_value,strb)  # Enable interrupt
+    await check_output(dut, 0x24, random_value, "Interrupt mask mismatch")
+    
+    # Test case 4: Verify Write to address 0x28
+    random_value = random.randint(0, (1 << DATA_WIDTH) - 1)
+    await axi_write(dut, 0x28, random_value,strb)
+    await check_output(dut, 0x28, random_value, f"Write to address 0x28 with value {random_value}")
+
+    # Test case 4: Countdown functionality and interrupt generation
+    for i in range(10):
+        await RisingEdge(dut.axi_aclk)
+
+    await check_output(dut, 0x10, 6, "Elapsed time mismatch")
+    # Test case 5: Additional register reads
+    await test_additional_reads(dut)
+
+    # Test case 6: IRQ output checking
+    await test_irq_output(dut,DATA_WIDTH)
+
+    # Corner case 2: Test random countdown values
+    await test_random_countdown(dut,DATA_WIDTH)
+
+    # Corner case 3: Test reset behavior
+    await test_reset_behavior(dut)
+
+    dut._log.info("All test cases, including corner cases, passed.")   
+

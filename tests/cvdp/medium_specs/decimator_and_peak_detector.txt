@@ -1,0 +1,180 @@
+MODULE: decimator_and_peak_detector
+ID: cvdp_copilot_configurable_digital_low_pass_filter_0004
+
+=== SPEC ===
+Implement a complete SystemVerilog `advanced_decimator_with_adaptive_peak_detection` module that performs data decimation and peak detection. The module should process input samples, reduce the dataset based on a configurable decimation factor, and identify the peak value among the decimated samples. The implementation should be parameterizable.
+
+---
+
+## Module Specification
+
+### Parameters
+
+| **Parameter**   | **Description**                          | **Default Value** | **Constraints**                                  |
+|-----------------|------------------------------------------|--------------------|-------------------------------------------------|
+| `N`             | Total number of input samples            | 8                  | Minimum: Any positive integer greater than 1    |
+| `DATA_WIDTH`    | Bit-width of each sample                 | 16                 | Minimum: Any positive integer greater than 1    |
+| `DEC_FACTOR`    | Decimation factor                        | 4                  | Must be a integer divisor of `N`                |
+
+---
+
+### Inputs and Outputs
+
+#### Inputs
+
+| **Port**      | **Size**                           | **Description**                                                | **Constraints**             |
+|---------------|------------------------------------|----------------------------------------------------------------|-----------------------------|
+| `clk`         | 1 bit                              | Clock signal, active on the rising edge                        | None                        |
+| `reset`       | 1 bit                              | Asynchronous reset, active high                                | None                        |
+| `valid_in`    | 1 bit                              | Input validation signal indicating valid data                  | None                        |
+| `data_in`     | `DATA_WIDTH * N` bits              | Packed input data (N samples of integer signed values)         | None                        |
+
+#### Outputs
+
+| **Port**      | **Size**                             | **Description**                                                                                 |
+|---------------|--------------------------------------|-------------------------------------------------------------------------------------------------|
+| `valid_out`   | 1 bit                                | Output validation signal, indicating valid decimated data                                       |
+| `data_out`    | `DATA_WIDTH * (N / DEC_FACTOR)` bits | Packed decimated output data, containing `(N / DEC_FACTOR)` samples, each of size `DATA_WIDTH`  |
+| `peak_value`  | `DATA_WIDTH` bits                    | Peak value among the decimated samples, with a size of `DATA_WIDTH`                             |
+
+---
+
+### Example of Usage
+
+#### Parameters
+- `N = 8`
+- `DATA_WIDTH = 16`
+- `DEC_FACTOR = 4`
+
+#### Inputs
+- `data_in = {16'd10, 16'd20, 16'd30, 16'd40, 16'd50, 16'd60, 16'd70, 16'd80}`
+- `valid_in = 1`
+
+#### Outputs
+- `data_out = {16'd10, 16'd50}`
+- `peak_value = 16'd50`
+- `valid_out = 1`
+
+---
+
+## Module Behavior
+
+1. **Input Data Registering**:
+   - The input samples are registered on the rising edge of the clock. When `reset` is active, the register value is cleared to zero.
+
+2. **Input Unpacking**:
+   - Combinational logic is used to unpack the packed input data bus into individual samples for processing.
+
+3. **Decimation**
+- The decimation process iterates through the input data, selecting one sample for every `DEC_FACTOR` samples.
+- A combinational loop calculates the position of each selected sample and places it into the decimated dataset.
+- The resulting decimated dataset contains `N / DEC_FACTOR` samples, each spaced by `DEC_FACTOR` positions from the original dataset.
+
+4. **Peak Detection**
+- This block uses combinational logic to identify the maximum value among the decimated data samples.
+- The process starts by initializing the peak value with the first sample from the decimated data.
+- It then iterates through all remaining decimated samples, comparing each with the current peak value.
+- If a sample is larger than the current peak value, the peak is updated to this new value.
+- After processing all samples, the peak value (`output peak_value`) represents the maximum data point among the decimated samples.
+
+5. **Output Packing**:
+   - The decimated samples are combined into a packed data bus (`output data_out`) using combinational logic.
+
+6. **Validation Control**:
+   - Sequential logic generates the `output valid_out` signal based on the `input valid_in` signal. When the reset is active, the validation signal is cleared.
+
+---
+## Pipeline Latency:
+
+- The input-to-output latency is fixed at 1 clock cycle.
+
+=== src/.env ===
+SIM             = icarus
+TOPLEVEL_LANG   = verilog
+VERILOG_SOURCES = /code/rtl/decimator_and_peak_detector.sv
+TOPLEVEL        = advanced_decimator_with_adaptive_peak_detection
+MODULE          = test_advanced_decimator_with_adaptive_peak_detection
+PYTHONPATH      = /src
+HASH            = 4-create-an-rtl-of-decimator-with-peak-detector
+
+=== src/test_advanced_decimator_with_adaptive_peak_detection.py ===
+import cocotb
+from cocotb.clock import Clock
+from cocotb.triggers import RisingEdge
+import harness_library as hrs_lb
+import random
+
+# ----------------------------------------
+# - Test Advanced Decimator with Adaptive Peak Detection
+# ----------------------------------------
+
+@cocotb.test()
+async def test_advanced_decimator_with_adaptive_peak_detection_0(dut):
+    cocotb.start_soon(Clock(dut.clk, 10, units='ns').start())
+
+    # Debug mode
+    debug = 0
+
+    # Retrieve parameters from the DUT
+    DATA_WIDTH = int(dut.DATA_WIDTH.value)
+    DEC_FACTOR = int(dut.DEC_FACTOR.value)
+    N = int(dut.N.value)
+
+    # Initialize DUT
+    await hrs_lb.dut_init(dut)
+
+    # Apply reset
+    await hrs_lb.reset_dut(dut.reset)
+
+    # Test parameters
+    num_samples = 10  # Number of sets of input data to test
+    max_value = (1 << (DATA_WIDTH - 1)) - 1  # Max positive value for signed DATA_WIDTH
+    min_value = -(1 << (DATA_WIDTH - 1))    # Min negative value for signed DATA_WIDTH
+
+    for test_case in range(num_samples):
+        # Generate random input values for the decimator
+        input_values = [random.randint(min_value, max_value) for _ in range(N)]
+        packed_signal = await hrs_lb.pack_signal(input_values, DATA_WIDTH)
+        
+        dec_model = []
+        input_values = input_values[::-1]
+        for i in range(N // DEC_FACTOR):
+            dec_model.append(input_values[i * DEC_FACTOR])
+        dec_model = dec_model[::-1]
+        peak_model = max(dec_model)
+
+        valid_in = random.randint(0,1)
+        # Apply input to DUT
+        dut.data_in.value = packed_signal
+        dut.valid_in.value = valid_in
+
+        if debug:
+            cocotb.log.info(f"[DEBUG] Test Case {test_case + 1}")
+            cocotb.log.info(f"[DEBUG] Input Values: {input_values}")
+            cocotb.log.info(f"[DEBUG] Packed Signal: {packed_signal:#0{N * DATA_WIDTH // 4 + 2}x}")
+            
+
+        # Wait for one clock cycle
+        await RisingEdge(dut.clk)
+        await RisingEdge(dut.clk)
+
+        # Retrieve outputs
+        output_data = await hrs_lb.extract_signed(dut.data_out, DATA_WIDTH, N//DEC_FACTOR)
+        peak_value = dut.peak_value.value.to_signed()
+
+        # Debug output
+        if debug:
+            for i in range(N):
+               cocotb.log.info(f"[DEBUG] In data 2D: {dut.data_vec_in.value[i].to_signed()}")
+            cocotb.log.info(f"[DEBUG] Output Data: {output_data}")
+            cocotb.log.info(f"[DEBUG] Model Data: {dec_model}")
+            cocotb.log.info(f"[DEBUG] Peak Value: {peak_value}")
+            cocotb.log.info(f"[DEBUG] Model Peak: {peak_model}")
+
+        # Assertions (replace with specific checks for your DUT logic)
+        assert dut.valid_out.value == valid_in, f"[ERROR] DUT did not assert valid_out on Test Case {test_case + 1}"
+        if valid_in == 1:
+          assert output_data == dec_model, f"[ERROR] DUT output data does not match model output data on Test Case {test_case + 1}"
+          assert peak_value == peak_model, f"[ERROR] DUT peak value does not match model peak value on Test Case {test_case + 1}"
+            
+

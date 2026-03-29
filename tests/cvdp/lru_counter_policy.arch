@@ -1,0 +1,82 @@
+module lru_counter_policy
+  param NWAYS: const = 4;
+  param NINDEXES: const = 32;
+  param CNT_W: const = $clog2(NWAYS);
+  param TOTAL_W: const = NWAYS * $clog2(NWAYS);
+
+  port clock:       in Clock<SysDomain>;
+  port reset:       in Reset<Async>;
+  port index:       in UInt<$clog2(NINDEXES)>;
+  port way_select:  in UInt<$clog2(NWAYS)>;
+  port access:      in Bool;
+  port hit:         in Bool;
+  port way_replace: out UInt<$clog2(NWAYS)>;
+
+  default seq on clock rising;
+
+  // Packed recency counters: each index has NWAYS counters, each CNT_W bits
+  reg recency: Vec<UInt<TOTAL_W>, NINDEXES> reset reset=>0;
+
+  // Combinational signals
+  wire lru_slot: UInt<$clog2(NWAYS)>;
+  wire cur_rec: UInt<TOTAL_W>;
+  wire accessed_cnt: UInt<CNT_W>;
+  wire replace_cnt: UInt<CNT_W>;
+
+  let idx: UInt<$clog2(NINDEXES)> = index;
+  let ws: UInt<$clog2(NWAYS)> = way_select;
+
+  // Combinational: read current recency and find LRU slot (counter == 0)
+  comb
+    cur_rec = recency[idx];
+
+    // Extract the accessed way's counter
+    accessed_cnt = cur_rec[ws * CNT_W + CNT_W - 1 : ws * CNT_W].trunc<CNT_W>();
+
+    // Find LRU: way with counter == 0 (scan high to low, last-write-wins = lowest index)
+    lru_slot = 0;
+    for i in 0..NWAYS-1
+      if cur_rec[(NWAYS - 1 - i) * CNT_W + CNT_W - 1 : (NWAYS - 1 - i) * CNT_W].trunc<CNT_W>() == 0
+        lru_slot = (NWAYS - 1 - i).trunc<$clog2(NWAYS)>();
+      end if
+    end for
+
+    // Extract replaced way's counter (for miss path)
+    replace_cnt = cur_rec[lru_slot * CNT_W + CNT_W - 1 : lru_slot * CNT_W].trunc<CNT_W>();
+  end comb
+
+  comb way_replace = lru_slot;
+
+  // Sequential update with reset initialization
+  seq
+    if reset
+      // Initialize: way i gets counter value i
+      for n in 0..NINDEXES-1
+        for w in 0..NWAYS-1
+          recency[n][w * CNT_W + CNT_W - 1 : w * CNT_W] <= w.trunc<CNT_W>();
+        end for
+      end for
+    elsif access
+      if hit
+        // Hit: set accessed way to NWAYS-1, decrement those > accessed_cnt
+        for i in 0..NWAYS-1
+          if i.trunc<$clog2(NWAYS)>() == ws
+            recency[idx][i * CNT_W + CNT_W - 1 : i * CNT_W] <= (NWAYS - 1).trunc<CNT_W>();
+          elsif cur_rec[i * CNT_W + CNT_W - 1 : i * CNT_W].trunc<CNT_W>() > accessed_cnt
+            recency[idx][i * CNT_W + CNT_W - 1 : i * CNT_W] <= (cur_rec[i * CNT_W + CNT_W - 1 : i * CNT_W] - 1).trunc<CNT_W>();
+          end if
+        end for
+      else
+        // Miss: replace lru_slot (counter==0), set to NWAYS-1, decrement those > replace_cnt
+        for i in 0..NWAYS-1
+          if i.trunc<$clog2(NWAYS)>() == lru_slot
+            recency[idx][i * CNT_W + CNT_W - 1 : i * CNT_W] <= (NWAYS - 1).trunc<CNT_W>();
+          elsif cur_rec[i * CNT_W + CNT_W - 1 : i * CNT_W].trunc<CNT_W>() > replace_cnt
+            recency[idx][i * CNT_W + CNT_W - 1 : i * CNT_W] <= (cur_rec[i * CNT_W + CNT_W - 1 : i * CNT_W] - 1).trunc<CNT_W>();
+          end if
+        end for
+      end if
+    end if
+  end seq
+
+end module lru_counter_policy

@@ -1,0 +1,170 @@
+MODULE: 16qam_mapper
+ID: cvdp_copilot_16qam_mapper_0001
+
+=== SPEC ===
+Design a combinational RTL (using SystemVerilog) module to implement a QAM16 mapper with interpolation. The module maps input bits into QAM16 symbols, computes interpolated values between adjacent symbols, and outputs real (`I`) and imaginary (`Q`) components of the mapped and interpolated values.
+
+### Module Name:
+`qam16_mapper_interpolated`
+
+The module is parameterized for flexibility in the number of input symbols while maintaining fixed bit widths for inputs and outputs to support QAM16 mapping.
+
+---
+
+## Parameters
+
+# Parameter Table
+
+| Parameter   | Description                            | Default | Constraints             |
+|-------------|----------------------------------------|---------|-------------------------|
+| `N`         | Number of input symbols               | 4       | ≥ 2 and multiple of 2 (e.g., 2, 4, 6, 8, etc.) |
+| `IN_WIDTH`  | Bit width of each input symbol (fixed) | 4       | Fixed at 4              |
+| `OUT_WIDTH` | Bit width of the output components (fixed) | 3   | Fixed at 3              |
+
+
+---
+
+## Inputs and Outputs
+
+### Inputs
+
+| Name        | Width                     | Description                                                                                     |
+|-------------|---------------------------|-------------------------------------------------------------------------------------------------|
+| `bits`      | `N*IN_WIDTH`              | Packed input bits. Each group of 4 bits (of width `IN_WIDTH`) represents a QAM16 symbol. Any combination of 4 bits is valid. The input is a packed set of `N` entries, each of `IN_WIDTH` (4 bits). |
+
+### Outputs
+
+| Name        | Width                     | Description                                                                                                               |
+|-------------|---------------------------|---------------------------------------------------------------------------------------------------------------------------|
+| `I`         | `(N + N/2)*OUT_WIDTH`     | Packed output of real (I) components, including mapped and interpolated values. Each `OUT_WIDTH` interval represents a signed integer. The size is automatically determined based on the existing parameters `N` and `OUT_WIDTH`. |
+| `Q`         | `(N + N/2)*OUT_WIDTH`     | Packed output of imaginary (Q) components, including mapped and interpolated values. Each `OUT_WIDTH` interval represents a signed integer. The size is automatically determined based on the existing parameters `N` and `OUT_WIDTH`. |
+
+---
+
+## Behavioral Definitions
+
+1. **Mapping Input Bits**:
+   - Each input symbol is divided into two distinct parts, based on the bit positions within the `IN_WIDTH` group:
+     - **MSBs** (most significant 2 bits): These correspond to bits `[IN_WIDTH-1 : IN_WIDTH-2]` of the symbol and are mapped to the `I` (real) component using the following values:
+       - `00`: `-3`
+       - `01`: `-1`
+       - `10`: `1`
+       - `11`: `3`
+     - **LSBs** (least significant 2 bits): These correspond to bits `[1 : 0]` of the symbol and are mapped to the `Q` (imaginary) component using the same values as above.
+   - This process is repeated for all `N` input symbols, with each symbol being extracted sequentially from the packed `bits` input vector.
+
+2. **Interpolation**:
+   - For every two consecutive symbols, compute the interpolated values for the `I` and `Q` components using a simple arithmetic mean:
+     - **Interpolated `I`**: This is the result of adding the `I` components of the two symbols and dividing the sum by 2.
+     - **Interpolated `Q`**: This is the result of adding the `Q` components of the two symbols and dividing the sum by 2.
+   - This process is repeated for all pairs of consecutive input symbols.
+   - The signals holding the interpolated samples need to have 1 bit more than `OUT_WIDTH` to accommodate the addition of two signed `OUT_WIDTH` signals.
+
+3. **Output Arrangement**:
+   - The outputs `I` and `Q` are arranged in the following order:
+     - First mapped symbol
+     - Interpolated value
+     - Second mapped symbol
+   - This pattern repeats for every pair of input symbols.
+
+---
+
+## Timing and Synchronization
+- The module operates entirely combinationally, with no clock or reset inputs.
+- Outputs are updated based on the current values of the input bits.
+
+=== src/.env ===
+SIM             = icarus
+TOPLEVEL_LANG   = verilog
+VERILOG_SOURCES = /code/rtl/16qam_mapper.sv
+TOPLEVEL        = qam16_mapper_interpolated
+MODULE          = test_qam16_mapper_interpolated
+PYTHONPATH      = /src
+HASH            = 1-create-a-rtl-of-16qam-mapper
+
+=== src/test_qam16_mapper_interpolated.py ===
+import cocotb
+from cocotb.triggers import Timer
+import random
+import harness_library as hrs_lb
+
+
+@cocotb.test()
+async def test_qam16_mapper_interpolated(dut):
+    """Test the 16-QAM mapper with interpolation."""
+
+    # Parameters from the DUT
+    N = int(dut.N.value)
+    IN_WIDTH = int(dut.IN_WIDTH.value)
+    OUT_WIDTH = int(dut.OUT_WIDTH.value)
+
+    # Debug mode
+    debug = 0
+
+    # Number of random test iterations
+    num_random_iterations = 98  # Adjust to complement the explicit cases for 100 total tests
+
+    # Explicit test cases to ensure edge coverage
+    test_cases = [
+        [0] * N,             # All zeros
+        [(1 << IN_WIDTH) - 1] * N  # All maximum values (e.g., 15 for IN_WIDTH=4)
+    ]
+
+    # Add random test cases
+    for _ in range(num_random_iterations):
+        test_cases.append([random.randint(0, (1 << IN_WIDTH) - 1) for _ in range(N)])
+
+    # Iterate through all test cases
+    for test_num, bits in enumerate(test_cases):
+        # Flatten the bits into a single input vector
+        bits_concat = sum((b << (i * IN_WIDTH)) for i, b in enumerate(reversed(bits)))
+
+        # Apply the input to the DUT
+        dut.bits.value = bits_concat
+
+        # Wait for 10 ns (1 clock cycle duration)
+        await Timer(10, units='ns')
+
+        # Extract the mapped I/Q values for validation
+        mapped_I = []
+        mapped_Q = []
+        for b in bits:
+            mapped_I.append({0b00: -3, 0b01: -1, 0b10: 1, 0b11: 3}[b >> 2])
+            mapped_Q.append({0b00: -3, 0b01: -1, 0b10: 1, 0b11: 3}[b & 0b11])
+
+        # Calculate interpolated I/Q values and build the expected output vectors
+        expected_I = []
+        expected_Q = []
+        for i in range(N // 2):
+            expected_I.extend([
+                mapped_I[2 * i],
+                (mapped_I[2 * i] + mapped_I[2 * i + 1]) // 2,
+                mapped_I[2 * i + 1]
+            ])
+            expected_Q.extend([
+                mapped_Q[2 * i],
+                (mapped_Q[2 * i] + mapped_Q[2 * i + 1]) // 2,
+                mapped_Q[2 * i + 1]
+            ])
+
+        # Use the helper function to extract DUT outputs
+        dut_I = await hrs_lb.extract_signed(dut.I, OUT_WIDTH, N + N // 2)
+        dut_Q = await hrs_lb.extract_signed(dut.Q, OUT_WIDTH, N + N // 2)
+
+        # Assertions
+        assert dut_I == expected_I, f"Test {test_num}: I mismatch: DUT={dut_I}, Expected={expected_I}"
+        assert dut_Q == expected_Q, f"Test {test_num}: Q mismatch: DUT={dut_Q}, Expected={expected_Q}"
+
+        if debug:
+            cocotb.log.info(f"[DEBUG] Test {test_num}")
+            cocotb.log.info(f"[DEBUG] Input bits: {bits}")
+            cocotb.log.info(f"[DEBUG] Mapped I: {mapped_I}")
+            cocotb.log.info(f"[DEBUG] Mapped Q: {mapped_Q}")
+            cocotb.log.info(f"[DEBUG] DUT I: {dut_I}")
+            cocotb.log.info(f"[DEBUG] DUT Q: {dut_Q}")
+            cocotb.log.info(f"[DEBUG] Expected I: {expected_I}")
+            cocotb.log.info(f"[DEBUG] Expected Q: {expected_Q}")
+
+    cocotb.log.info(f"All {len(test_cases)} tests passed successfully.")
+
+

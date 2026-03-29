@@ -1,0 +1,166 @@
+module car_parking_system
+  param TOTAL_SPACES: const = 12;
+  port clk: in Clock<SysDomain>;
+  port reset: in Reset<Async, High>;
+  port vehicle_entry_sensor: in Bool;
+  port vehicle_exit_sensor: in Bool;
+  port reg available_spaces: out UInt<4> reset reset=>12;
+  port reg count_car: out UInt<4> reset reset=>0;
+  port reg led_status: out Bool reset reset=>true;
+  port reg seven_seg_display_available_tens: out UInt<7> reset reset=>0;
+  port reg seven_seg_display_available_units: out UInt<7> reset reset=>0;
+  port reg seven_seg_display_count_tens: out UInt<7> reset reset=>0;
+  port reg seven_seg_display_count_units: out UInt<7> reset reset=>0;
+
+  default seq on clk rising;
+
+  reg state: UInt<2> reset reset=>0;
+
+  wire avail_tens_digit: UInt<4>;
+  wire avail_units_digit: UInt<4>;
+  wire count_tens_digit: UInt<4>;
+  wire count_units_digit: UInt<4>;
+
+  wire seg_avail_tens: UInt<7>;
+  wire seg_avail_units: UInt<7>;
+  wire seg_count_tens: UInt<7>;
+  wire seg_count_units: UInt<7>;
+
+  comb
+    if available_spaces >= 10
+      avail_tens_digit = 1;
+    else
+      avail_tens_digit = 0;
+    end if
+  end comb
+
+  wire avail_tens_x10: UInt<4>;
+  comb avail_tens_x10 = (avail_tens_digit * 10).trunc<4>();
+  comb avail_units_digit = (available_spaces - avail_tens_x10).trunc<4>();
+
+  comb
+    if count_car >= 10
+      count_tens_digit = 1;
+    else
+      count_tens_digit = 0;
+    end if
+  end comb
+
+  wire count_tens_x10: UInt<4>;
+  comb count_tens_x10 = (count_tens_digit * 10).trunc<4>();
+  comb count_units_digit = (count_car - count_tens_x10).trunc<4>();
+
+  comb
+    if avail_tens_digit == 0
+      seg_avail_tens = 126;
+    elsif avail_tens_digit == 1
+      seg_avail_tens = 48;
+    else
+      seg_avail_tens = 0;
+    end if
+  end comb
+
+  comb
+    if avail_units_digit == 0
+      seg_avail_units = 126;
+    elsif avail_units_digit == 1
+      seg_avail_units = 48;
+    elsif avail_units_digit == 2
+      seg_avail_units = 109;
+    elsif avail_units_digit == 3
+      seg_avail_units = 121;
+    elsif avail_units_digit == 4
+      seg_avail_units = 51;
+    elsif avail_units_digit == 5
+      seg_avail_units = 91;
+    elsif avail_units_digit == 6
+      seg_avail_units = 95;
+    elsif avail_units_digit == 7
+      seg_avail_units = 112;
+    elsif avail_units_digit == 8
+      seg_avail_units = 127;
+    elsif avail_units_digit == 9
+      seg_avail_units = 123;
+    else
+      seg_avail_units = 0;
+    end if
+  end comb
+
+  comb
+    if count_tens_digit == 0
+      seg_count_tens = 126;
+    elsif count_tens_digit == 1
+      seg_count_tens = 48;
+    else
+      seg_count_tens = 0;
+    end if
+  end comb
+
+  comb
+    if count_units_digit == 0
+      seg_count_units = 126;
+    elsif count_units_digit == 1
+      seg_count_units = 48;
+    elsif count_units_digit == 2
+      seg_count_units = 109;
+    elsif count_units_digit == 3
+      seg_count_units = 121;
+    elsif count_units_digit == 4
+      seg_count_units = 51;
+    elsif count_units_digit == 5
+      seg_count_units = 91;
+    elsif count_units_digit == 6
+      seg_count_units = 95;
+    elsif count_units_digit == 7
+      seg_count_units = 112;
+    elsif count_units_digit == 8
+      seg_count_units = 127;
+    elsif count_units_digit == 9
+      seg_count_units = 123;
+    else
+      seg_count_units = 0;
+    end if
+  end comb
+
+  // FSM: 0=Idle, 1=Entry, 2=Exit, 3=Full
+  seq
+    if state == 0
+      if vehicle_entry_sensor & (available_spaces > 0)
+        available_spaces <= (available_spaces - 1).trunc<4>();
+        count_car <= (count_car + 1).trunc<4>();
+        state <= 1;
+      elsif vehicle_entry_sensor & (available_spaces == 0)
+        state <= 3;
+      elsif vehicle_exit_sensor & (count_car > 0)
+        available_spaces <= (available_spaces + 1).trunc<4>();
+        count_car <= (count_car - 1).trunc<4>();
+        state <= 2;
+      end if
+
+    elsif state == 1
+      if ~vehicle_entry_sensor
+        state <= 0;
+      end if
+
+    elsif state == 2
+      if ~vehicle_exit_sensor
+        state <= 0;
+      end if
+
+    elsif state == 3
+      if vehicle_exit_sensor & (count_car > 0)
+        available_spaces <= (available_spaces + 1).trunc<4>();
+        count_car <= (count_car - 1).trunc<4>();
+        state <= 2;
+      elsif ~vehicle_entry_sensor
+        state <= 0;
+      end if
+    end if
+
+    led_status <= (available_spaces > 0);
+    seven_seg_display_available_tens <= seg_avail_tens;
+    seven_seg_display_available_units <= seg_avail_units;
+    seven_seg_display_count_tens <= seg_count_tens;
+    seven_seg_display_count_units <= seg_count_units;
+  end seq
+end module car_parking_system

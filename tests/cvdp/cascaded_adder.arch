@@ -7,11 +7,11 @@ module cascaded_adder
   port rst_n: in Reset<Async, Low>;
   port i_valid: in Bool;
   port i_data: in UInt<IN_DATA_WIDTH * IN_DATA_NS>;
-  port reg o_valid: out Bool reset rst_n=0;
-  port reg o_data: out UInt<OUT_WIDTH> reset rst_n=0;
+  port reg o_valid: out Bool reset rst_n=>0;
+  port reg o_data: out UInt<OUT_WIDTH> reset rst_n=>0;
 
-  reg valid_d1: Bool reset rst_n=0;
-  reg sum_reg: UInt<OUT_WIDTH> reset rst_n=0;
+  reg valid_d1: Bool reset rst_n=>0;
+  reg sum_reg: UInt<OUT_WIDTH> reset rst_n=>0;
 
   wire sum_comb: UInt<OUT_WIDTH>;
   comb

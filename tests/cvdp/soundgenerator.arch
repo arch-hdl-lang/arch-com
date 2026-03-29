@@ -1,0 +1,91 @@
+module soundgenerator
+  param CLOCK_HZ: const = 10000000;
+  port clk:            in Clock<SysDomain>;
+  port nrst:           in Reset<Async, Low>;
+  port start:          in Bool;
+  port finish:         in Bool;
+  port sond_dur_ms_i:  in UInt<16>;
+  port half_period_us_i: in UInt<16>;
+  port soundwave_o:    out Bool;
+  port busy:           out Bool;
+  port done:           out Bool;
+
+  default seq on clk rising;
+
+  // Internal registers
+  reg duration_cnt: UInt<16> reset nrst=>0;
+  reg halfperiodtimer: UInt<16> reset nrst=>0;
+  reg signal_r: Bool reset nrst=>false;
+  reg busy_d: Bool reset nrst=>false;
+
+  // Wires for strobe outputs
+  wire TickMilli: Bool;
+  wire tickmicro: Bool;
+  wire busy_w: Bool;
+
+  // Strobe generators
+  inst u_tick_milli: strob_gen
+    param CLOCK_HZ = CLOCK_HZ;
+    param PERIOD_US = 1000;
+    connect clk <- clk;
+    connect nrst <- nrst;
+    connect enable <- busy_w;
+    connect strobe_o -> TickMilli;
+  end inst u_tick_milli
+
+  inst u_tick_micro: strob_gen
+    param CLOCK_HZ = CLOCK_HZ;
+    param PERIOD_US = 1;
+    connect clk <- clk;
+    connect nrst <- nrst;
+    connect enable <- busy_w;
+    connect strobe_o -> tickmicro;
+  end inst u_tick_micro
+
+  // busy when duration counter is non-zero
+  comb busy_w = (duration_cnt != 0);
+
+  // Combinational outputs
+  comb
+    busy = busy_w;
+    done = busy_d & (~busy_w);
+    if busy_w == true
+      soundwave_o = signal_r;
+    else
+      soundwave_o = false;
+    end if
+  end comb
+
+  // Sequential logic
+  seq
+    busy_d <= busy_w;
+
+    if start == true
+      duration_cnt <= sond_dur_ms_i;
+      halfperiodtimer <= half_period_us_i;
+      signal_r <= false;
+    elsif finish == true
+      duration_cnt <= 0;
+      signal_r <= false;
+    else
+      // Duration countdown
+      if TickMilli == true
+        if duration_cnt != 0
+          duration_cnt <= (duration_cnt - 1).trunc<16>();
+        end if
+      end if
+
+      // Half-period countdown for square wave
+      if tickmicro == true
+        if busy_w == true
+          if halfperiodtimer == 0
+            halfperiodtimer <= half_period_us_i;
+            signal_r <= signal_r ^ true;
+          else
+            halfperiodtimer <= (halfperiodtimer - 1).trunc<16>();
+          end if
+        end if
+      end if
+    end if
+  end seq
+end module soundgenerator

@@ -1,0 +1,75 @@
+module strob_gen__PERIOD_US_1000 #(
+  parameter int CLOCK_HZ = 10000000,
+  parameter int PERIOD_US = 100,
+  parameter int DELAY = CLOCK_HZ * PERIOD_US / 1000000 - 1
+) (
+  input logic clk,
+  input logic nrst,
+  input logic enable,
+  output logic strobe_o
+);
+
+  // DELAY = (CLOCK_HZ * PERIOD_US / 1_000_000) - 1
+  logic [32-1:0] cnt;
+  always_ff @(posedge clk or negedge nrst) begin
+    if ((!nrst)) begin
+      cnt <= DELAY;
+      strobe_o <= 1'b0;
+    end else begin
+      if (cnt == 0) begin
+        if (enable == 1'b1) begin
+          strobe_o <= 1'b1;
+        end else begin
+          strobe_o <= 1'b0;
+        end
+        cnt <= DELAY;
+      end else begin
+        strobe_o <= 1'b0;
+        if (enable == 1'b1) begin
+          cnt <= 32'(cnt - 1);
+        end else begin
+          cnt <= DELAY;
+        end
+      end
+    end
+  end
+
+endmodule
+
+module strob_gen__PERIOD_US_1 #(
+  parameter int CLOCK_HZ = 10000000,
+  parameter int PERIOD_US = 100,
+  parameter int DELAY = CLOCK_HZ * PERIOD_US / 1000000 - 1
+) (
+  input logic clk,
+  input logic nrst,
+  input logic enable,
+  output logic strobe_o
+);
+
+  logic [32-1:0] cnt;
+  always_ff @(posedge clk or negedge nrst) begin
+    if ((!nrst)) begin
+      cnt <= DELAY;
+      strobe_o <= 1'b0;
+    end else begin
+      if (cnt == 0) begin
+        if (enable == 1'b1) begin
+          strobe_o <= 1'b1;
+        end else begin
+          strobe_o <= 1'b0;
+        end
+        cnt <= DELAY;
+      end else begin
+        strobe_o <= 1'b0;
+        if (enable == 1'b1) begin
+          cnt <= 32'(cnt - 1);
+        end else begin
+          cnt <= DELAY;
+        end
+      end
+    end
+  end
+
+endmodule
+

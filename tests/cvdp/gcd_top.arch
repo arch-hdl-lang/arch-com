@@ -1,0 +1,37 @@
+module gcd_top
+  param WIDTH: const = 4;
+  port clk:  in Clock<SysDomain>;
+  port rst:  in Reset<Sync>;
+  port A:    in UInt<WIDTH>;
+  port B:    in UInt<WIDTH>;
+  port go:   in Bool;
+  port OUT:  out UInt<WIDTH>;
+  port done: out Bool;
+
+  wire cp_state: UInt<2>;
+  wire eq: Bool;
+  wire gt: Bool;
+
+  inst u_ctrl: gcd_controlpath
+    param WIDTH = WIDTH;
+    connect clk <- clk;
+    connect rst <- rst;
+    connect go <- go;
+    connect equal <- eq;
+    connect greater_than <- gt;
+    connect controlpath_state -> cp_state;
+    connect done -> done;
+  end inst u_ctrl
+
+  inst u_dp: gcd_datapath
+    param WIDTH = WIDTH;
+    connect clk <- clk;
+    connect rst <- rst;
+    connect A <- A;
+    connect B <- B;
+    connect controlpath_state <- cp_state;
+    connect OUT -> OUT;
+    connect equal -> eq;
+    connect greater_than -> gt;
+  end inst u_dp
+end module gcd_top

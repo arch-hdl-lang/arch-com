@@ -6,7 +6,7 @@ module TopModule
 
   default seq on clk rising;
 
-  reg q_r: UInt<5> reset reset=1;
+  reg q_r: UInt<5> reset reset=>1;
 
   wire q_next: UInt<5>;
 

@@ -1,0 +1,67 @@
+module cvdp_copilot_bus_arbiter
+  port clk: in Clock<SysDomain>;
+  port reset: in Reset<Async, High>;
+  port req1: in Bool;
+  port req2: in Bool;
+  port reg grant1: out Bool init false reset reset=>false;
+  port reg grant2: out Bool init false reset reset=>false;
+
+  default seq on clk rising;
+
+  reg state_r: UInt<3> init 0 reset reset=>0;
+
+  wire next_state: UInt<3>;
+
+  comb
+    if state_r == 0
+      // IDLE
+      if req1 & req2
+        next_state = 2;
+      elsif req1
+        next_state = 1;
+      elsif req2
+        next_state = 2;
+      else
+        next_state = 0;
+      end if
+    elsif state_r == 1
+      // GRANT_1
+      if req2
+        next_state = 2;
+      elsif req1
+        next_state = 1;
+      else
+        next_state = 3;
+      end if
+    elsif state_r == 2
+      // GRANT_2
+      if req2
+        next_state = 2;
+      elsif req1
+        next_state = 1;
+      else
+        next_state = 3;
+      end if
+    elsif state_r == 3
+      // CLEAR
+      if req1 & req2
+        next_state = 2;
+      elsif req1
+        next_state = 1;
+      elsif req2
+        next_state = 2;
+      else
+        next_state = 0;
+      end if
+    else
+      next_state = 0;
+    end if
+  end comb
+
+  seq
+    state_r <= next_state;
+    grant1 <= (next_state == 1);
+    grant2 <= (next_state == 2);
+  end seq
+
+end module cvdp_copilot_bus_arbiter

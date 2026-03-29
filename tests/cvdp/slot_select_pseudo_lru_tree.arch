@@ -1,0 +1,24 @@
+module slot_select_pseudo_lru_tree
+  param NWAYS: const = 4;
+  param MAX_DEPTH: const = $clog2(NWAYS);
+
+  port array: in UInt<NWAYS - 1>;
+  port index: out UInt<$clog2(NWAYS)>;
+
+  wire idx: UInt<$clog2(NWAYS)>;
+
+  comb
+    idx = 0;
+    for depth in 0..MAX_DEPTH-1
+      if array[(1 << depth) - 1 + idx.zext<NWAYS - 1>()] == 0
+        // bit is 0 -> go right (LRU direction)
+        idx = ((idx.zext<32>() << 1) | 1).trunc<$clog2(NWAYS)>();
+      else
+        // bit is 1 -> go left
+        idx = (idx.zext<32>() << 1).trunc<$clog2(NWAYS)>();
+      end if
+    end for
+  end comb
+
+  comb index = idx;
+end module slot_select_pseudo_lru_tree

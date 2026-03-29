@@ -2,11 +2,11 @@ module convolutional_encoder
   port clk:              in Clock<SysDomain>;
   port rst:              in Reset<Async, High>;
   port data_in:          in Bool;
-  port reg encoded_bit1: out Bool reset rst=0;
-  port reg encoded_bit2: out Bool reset rst=0;
+  port reg encoded_bit1: out Bool reset rst=>0;
+  port reg encoded_bit2: out Bool reset rst=>0;
 
   // shift_reg[0] = most recent, shift_reg[1] = oldest
-  reg shift_reg: UInt<2> reset rst=0;
+  reg shift_reg: UInt<2> reset rst=>0;
 
   seq on clk rising
     // g1 = 111: data_in ^ shift_reg[0] ^ shift_reg[1]

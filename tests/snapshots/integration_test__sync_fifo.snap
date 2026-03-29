@@ -26,8 +26,6 @@ module TxQueue #(
   TYPE                  mem [0:DEPTH-1];
   logic [PTR_W-1:0]     wr_ptr;
   logic [PTR_W-1:0]     rd_ptr;
-  logic                 full;
-  logic                 empty;
   
   // Full when MSBs differ and lower bits match
   assign full        = (wr_ptr[PTR_W-1] != rd_ptr[PTR_W-1]) &&

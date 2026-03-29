@@ -1,0 +1,43 @@
+// AXI stream downsizer: 16-bit input to 8-bit output (2 beats per transfer)
+// First beat: high byte [15:8], second beat: low byte [7:0]
+module axis_resize
+  port clk: in Clock<SysDomain>;
+  port resetn: in Reset<Sync, Low>;
+  port s_valid: in Bool;
+  port s_ready: out Bool;
+  port s_data: in UInt<16>;
+  port m_valid: out Bool;
+  port m_ready: in Bool;
+  port m_data: out UInt<8>;
+
+  // phase 0: idle/accept, phase 1: sending low byte
+  reg phase: UInt<1> reset resetn=>0;
+  reg data_buf: UInt<8> reset resetn=>0;
+  reg m_valid_r: Bool reset resetn=>false;
+  reg m_data_r: UInt<8> reset resetn=>0;
+
+  seq on clk rising
+    if phase == 0
+      if s_valid & s_ready
+        // Latch high byte out, save low byte
+        m_data_r <= s_data[15:8];
+        data_buf <= s_data[7:0];
+        m_valid_r <= true;
+        phase <= 1;
+      end if
+    else
+      if m_ready
+        // Send low byte
+        m_data_r <= data_buf;
+        m_valid_r <= true;
+        phase <= 0;
+      end if
+    end if
+  end seq
+
+  comb
+    s_ready = ~phase;
+    m_valid = m_valid_r;
+    m_data = m_data_r;
+  end comb
+end module axis_resize

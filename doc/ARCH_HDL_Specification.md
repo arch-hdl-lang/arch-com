@@ -456,7 +456,7 @@ Arch has exactly two assignment forms. Mixing operators between them is a compil
 | **end** **module** Counter                                         |
 +--------------------------------------------------------------------+
 
-> *⚑ The clock is named in `seq on clk rising`; reset is declared per register (`reset rst=0 sync high` or `reset none`). The `reset SIGNAL=VALUE` syntax requires an explicit reset value after the signal name. `init` is optional and only sets the SV declaration initializer (`logic x = VALUE;`). The compiler auto-generates the `if (rst)` guard and propagates domain membership automatically through all downstream logic in the module.*
+> *⚑ The clock is named in `seq on clk rising`; reset is declared per register (`reset rst=>0 sync high` or `reset none`). The `reset SIGNAL=>VALUE` syntax requires an explicit reset value after the signal name. `init` is optional and only sets the SV declaration initializer (`logic x = VALUE;`). The compiler auto-generates the `if (rst)` guard and propagates domain membership automatically through all downstream logic in the module.*
 
 **Default Clock for seq Blocks**
 
@@ -472,7 +472,7 @@ This sets the default clock and edge for all `seq` blocks in the construct. With
 module Counter
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
-  port reg count: out UInt<8> reset rst=0;
+  port reg count: out UInt<8> reset rst=>0;
 
   default seq on clk rising;
 
@@ -658,15 +658,15 @@ Arch has three kinds of module-scope signal declarations. Each has a distinct sy
 |-----------|--------|-------------|---------------|
 | `let` | `let x: T = expr;` | declaration (fixed combinational expr) | `logic [W-1:0] x; assign x = expr;` |
 | `wire` | `wire x: T;` | `comb` block (`=`) | `logic [W-1:0] x;` (driven in `assign`/`always_comb`) |
-| `reg` | `reg x: T [init V] [reset R=V];` | `seq` block (`<=`) | `logic [W-1:0] x = V;` (driven in `always_ff`) |
+| `reg` | `reg x: T [init V] [reset R=>V];` | `seq` block (`<=`) | `logic [W-1:0] x = V;` (driven in `always_ff`) |
 
 **`let`** declares a combinational binding fixed to a single expression at the declaration site. It cannot appear on the left-hand side of a `comb` or `seq` block.
 
 **`wire`** declares an explicitly-typed combinational net with no initializer. It must be driven exactly once inside a `comb` block using `=`. This is the right choice when the combinational expression is too complex for a single inline `let`, or when the wire must be conditionally driven using `if/elsif/else` inside the `comb` block. The type checker enforces that only `wire` declarations and output ports are valid targets for `comb` assignment — assigning to a `reg` inside a `comb` block is a compile error.
 
-**`reg`** declares a flip-flop. It must be assigned inside a `seq` block using `<=`. Reset polarity and mode are declared per register. The syntax is `reg x: T [init VALUE] [reset SIGNAL=VALUE];` where `init` is optional (sets only the SV declaration initializer `logic x = VALUE;`) and `reset SIGNAL=VALUE` specifies both the reset signal and the value to load on reset. Use `reset none` for registers that should not be reset. A `reg default:` declaration sets the default init and reset for all subsequent registers in scope: `reg default: [init VALUE] reset SIGNAL=VALUE;`.
+**`reg`** declares a flip-flop. It must be assigned inside a `seq` block using `<=`. Reset polarity and mode are declared per register. The syntax is `reg x: T [init VALUE] [reset SIGNAL=>VALUE];` where `init` is optional (sets only the SV declaration initializer `logic x = VALUE;`) and `reset SIGNAL=>VALUE` specifies both the reset signal and the value to load on reset. Use `reset none` for registers that should not be reset. A `reg default:` declaration sets the default init and reset for all subsequent registers in scope: `reg default: [init VALUE] reset SIGNAL=>VALUE;`.
 
-**`port reg`** declares an output port that is also a register, eliminating the common `reg r` + `comb out = r; end comb` boilerplate. The syntax is `port reg name: out T [init V] [reset R=V];`. It can only be used on output ports (`in` direction is a compile error). The port is assigned with `<=` inside a `seq` block, just like a regular `reg`. If `reg default:` is in scope, it inherits the default init and reset. In generated SV, the port is declared as `output logic [W-1:0] name` and driven directly in the `always_ff` block.
+**`port reg`** declares an output port that is also a register, eliminating the common `reg r` + `comb out = r; end comb` boilerplate. The syntax is `port reg name: out T [init V] [reset R=>V];`. It can only be used on output ports (`in` direction is a compile error). The port is assigned with `<=` inside a `seq` block, just like a regular `reg`. If `reg default:` is in scope, it inherits the default init and reset. In generated SV, the port is declared as `output logic [W-1:0] name` and driven directly in the `always_ff` block.
 
 ```
 module Mux2
@@ -690,7 +690,7 @@ end module Mux2
 
 > *⚑ The type checker enforces: `reg` cannot be a `comb` target (error: "cannot assign to register `x` in a comb block; use `<=` inside a seq block"). Only `wire` declarations and output ports are valid comb targets.*
 
-**`multicycle` reg annotation (planned)** — `reg result: UInt<32> multicycle 3 reset rst=0;` declares that the combinational path feeding this register has a multi-cycle timing budget. Unlike `pipe_reg` (which inserts N physical flip-flop stages), a `multicycle` register remains a single flop — no extra area or power. The compiler emits an SDC constraint (`set_multicycle_path N -to result`) and can statically verify that consumers only sample the value at the correct rate. This is useful for slow-settling operations (multipliers, dividers, complex ALU) where the path does not affect end-to-end throughput.
+**`multicycle` reg annotation (planned)** — `reg result: UInt<32> multicycle 3 reset rst=>0;` declares that the combinational path feeding this register has a multi-cycle timing budget. Unlike `pipe_reg` (which inserts N physical flip-flop stages), a `multicycle` register remains a single flop — no extra area or power. The compiler emits an SDC constraint (`set_multicycle_path N -to result`) and can statically verify that consumers only sample the value at the correct rate. This is useful for slow-settling operations (multipliers, dividers, complex ALU) where the path does not affect end-to-end throughput.
 
 The Counter example from §4.2 can be simplified using `port reg`:
 
@@ -700,7 +700,7 @@ module Counter
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
   port en: in Bool;
-  port reg count: out UInt<WIDTH> reset rst=0;
+  port reg count: out UInt<WIDTH> reset rst=>0;
 
   seq on clk rising
     if en
@@ -712,7 +712,7 @@ end module Counter
 
 > *⚑ `port reg` eliminates the intermediate `reg count_r` and the `comb count = count_r; end comb` wiring block. The port is directly assigned in the `seq` block. This is the preferred style when the output port is a straightforward registered value.*
 
-**`multicycle` reg annotation (planned)** — `reg result: UInt<32> multicycle 3 reset rst=0;` declares that the combinational path feeding this register has a multi-cycle timing budget. Unlike `pipe_reg` (which inserts N physical flip-flop stages), a `multicycle` register remains a single flop — no extra area or power. The compiler auto-detects all input signals feeding the register by walking the assignment expression tree. Three modes of enforcement: (1) **Simulation** (`--check-uninit`): hidden valid tracking with input change detection and latency counter; reads before the counter expires return poison/X. (2) **Synthesis**: SDC constraint generation (`set_multicycle_path N -to result`). (3) **Formal**: optional `assert property` to verify the multicycle timing assumption holds.
+**`multicycle` reg annotation (planned)** — `reg result: UInt<32> multicycle 3 reset rst=>0;` declares that the combinational path feeding this register has a multi-cycle timing budget. Unlike `pipe_reg` (which inserts N physical flip-flop stages), a `multicycle` register remains a single flop — no extra area or power. The compiler auto-detects all input signals feeding the register by walking the assignment expression tree. Three modes of enforcement: (1) **Simulation** (`--check-uninit`): hidden valid tracking with input change detection and latency counter; reads before the counter expires return poison/X. (2) **Synthesis**: SDC constraint generation (`set_multicycle_path N -to result`). (3) **Formal**: optional `assert property` to verify the multicycle timing assumption holds.
 
 **4.2.4 Width-Qualified Parameters**
 
@@ -870,7 +870,7 @@ module ClkDiv2
   port clk_in:  in Clock<SysDomain>;
   port rst:     in Reset<Sync>;
   port clk_out: out Clock<SysDomain>;
-  reg toggle: Bool reset rst=false;
+  reg toggle: Bool reset rst=>false;
   default seq on clk_in rising;
   seq toggle <= ~toggle; end seq
   comb clk_out = toggle;
@@ -7856,13 +7856,13 @@ A practical AI workflow: generate a correct skeleton with todo! for all logic, t
   ------------------------------------------------ -------------------------------------------------------------
   **Undriven output defaults to high-Z**           Compile error --- every output must have exactly one driver
 
-  **reg with no reset holds unknown state**        Reset value required: reg x: UInt\<8\> reset rst=0;
+  **reg with no reset holds unknown state**        Reset value required: reg x: UInt\<8\> reset rst=>0;
 
   **Wire driven by last assignment wins**          Compile error --- single-driver rule enforced statically
 
   **Unsigned/signed determined by context**        Explicit: .zext\<N\>() .sext\<N\>() as SInt\<N\>
 
-  **Clock inferred from sensitivity list**         Explicit: seq on clk rising; reset on reg decl: reset rst=0 sync high
+  **Clock inferred from sensitivity list**         Explicit: seq on clk rising; reset on reg decl: reset rst=>0 sync high
 
   **Module port width from implicit param math**   Explicit: port sum: out UInt\<WIDTH+1\>;
 
@@ -7899,7 +7899,7 @@ The generated SystemVerilog is guaranteed to contain none of the following:
 
 - Unresolved high-Z outputs --- every output port has exactly one driver.
 
-- X-propagation from uninitialised state --- all reg declarations require a reset value (via `reset SIGNAL=VALUE`).
+- X-propagation from uninitialised state --- all reg declarations require a reset value (via `reset SIGNAL=>VALUE`).
 
 - Implicit clock-domain crossings --- all CDCs are declared and synchroniser-wrapped.
 

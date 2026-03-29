@@ -1,0 +1,27 @@
+module leading_zero_cnt
+  param DATA_WIDTH: const = 32;
+  param REVERSE: const = 0;
+  param OUT_WIDTH: const = $clog2(DATA_WIDTH);
+
+  port data: in UInt<DATA_WIDTH>;
+  port leading_zeros: out UInt<OUT_WIDTH>;
+  port all_zeros: out Bool;
+
+  wire result: UInt<OUT_WIDTH>;
+  wire found: Bool;
+
+  comb
+    // Find first set bit from LSB (trailing zero count for REVERSE=1)
+    result = 0;
+    found = false;
+    for i in 0..DATA_WIDTH-1
+      if (~found) & data[i:i]
+        result = i.trunc<OUT_WIDTH>();
+        found = true;
+      end if
+    end for
+
+    leading_zeros = result;
+    all_zeros = data == 0;
+  end comb
+end module leading_zero_cnt

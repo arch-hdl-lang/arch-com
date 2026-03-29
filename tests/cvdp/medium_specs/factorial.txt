@@ -1,0 +1,106 @@
+MODULE: factorial
+ID: cvdp_copilot_factorial_0001
+
+=== SPEC ===
+Write a System Verilog RTL for Factorial computation.  The design should take a number as input and computes factorial on it and return its factorial. Here are some design specifications and port list signals description. 
+
+1- `clk` (Input): This is a single bit input to the design. The design runs on this clock. 
+2- `arst_n`  (Input): Asynchronous Active low reset signal for the design.
+3- `num_in` (Input): 5 bit input number who's factorial to be calculated.  The input can range from 0 to 31.
+4- `start`  (input): This signal indicates that design should start calculating factorial on the provided input. This should be driven along with `num_in` for one clock cycle when busy is not asserted.
+5- `busy` (output) : This signal indicates that design is busy in calculating the factorial for the provided input. During this signal asserted, design should not accept any new input to process. Design should de-assert it when done is asserted. 
+6- `fact` (Outputs): A 64-bit output that holds the factorial of the input number. This result is updated in the next clock cycle after the input is provided.
+7- `done` (output) : This signal indicates that the factorial is calculated the on previous input and now design is ready to accept new input. This should be asserted for one cycle and along with `fact` output. 
+To achieve these feature, implement an FSM which will handle the entire factorial computation flow. The FSM should consist of three states i.e. IDLE, BUSY and DONE. Design will accept the input at IDLE state and then will move to BUSY state, asserting busy signal high. At BUSY state, the factorial computation will be done. Design should stay at BUSY state until the computation is completed. Once all the iterations for factorial calculations are done, then design should move to DONE state, de-asserting the busy signal and asserting the done signal for one cycle. 
+One of the major feature of the design is that it should take as many cycles to compute the factorial as the input value is. For example, if design get input to calculate factorial for 5, it will take 5 cycles to compute the factorial and finally drive it to output signal. 
+
+Factorial Overview:
+A factorial, denoted by n!, is the product of all positive integers from 1 to n. It’s a mathematical function that grows very quickly as n increases. The factorial of 0 is defined as 1, and for any positive integer n, the factorial is calculated as:
+
+    n!=nx(n−1)x(n−2)x⋯x1
+
+For example:
+
+    4!=4x3x2x1=24
+    5!=5x4x3x2x1=120
+
+Factorials are commonly used in permutations, combinations, and probability theory.
+
+=== src/.env ===
+SIM             = icarus
+TOPLEVEL_LANG   = verilog
+VERILOG_SOURCES = /code/rtl/factorial.sv
+TOPLEVEL        = factorial
+MODULE          = test_factorial
+PYTHONPATH      = /src
+HASH            = 1-rtl-design-for-factorial
+
+=== src/test_factorial.py ===
+import cocotb
+from cocotb.clock import Clock
+from cocotb.triggers import RisingEdge
+from cocotb.triggers import FallingEdge
+from cocotb.regression import TestFactory
+import random
+
+
+# Function to calculate the expected factorial value
+def reference_factorial(num):
+  if num == 0 or num == 1:
+    return 1
+  fact = 1
+  for i in range(2, num + 1):
+    fact *= i
+  return fact
+
+async def initialize_dut(dut):
+  cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
+  dut.arst_n.value = 0
+  # dut.num_in.value = 0
+  await RisingEdge(dut.clk)
+  dut.arst_n.value = 1
+  await RisingEdge(dut.clk)
+
+@cocotb.test()
+async def test_factorial(dut):
+  match = 0
+  mismatch = 0
+  await initialize_dut(dut)
+  
+  # Randomize the number of test cases
+  NUM_TESTS = 100  # Max number of tests to run
+  test_count = 0   # Number of random test casesi
+  # for i in range(NUM_TESTS+1):
+  while (test_count<NUM_TESTS):
+    # Randomize input value (8-bit input)
+    random_input = random.randint(0, 15)  # Limiting to 12 due to large factorial values
+    
+    # Apply input to DUT
+    if (dut.busy.value!=1 and dut.start.value!=1):
+      dut.num_in.value = random_input
+      dut.start.value  = 1
+      expected_fact = reference_factorial(random_input)
+    else:
+      dut.num_in.value = 0
+      dut.start.value  = 0
+
+    await RisingEdge(dut.clk)
+    
+    # Get the DUT result
+    if (dut.done.value==1):
+      actual_fact = dut.fact.value
+    
+      if (actual_fact == expected_fact):
+        print(f"Test {test_count} Passed: result = {int(actual_fact)} matches reference {expected_fact}")
+        match = match+1
+      else:
+        print(f"Test {test_count} Failed: result = {int(actual_fact)} do not matches reference {expected_fact}")
+        mismatch = mismatch+1
+      test_count = test_count+1
+
+  if (mismatch==0):
+    print(f"All {NUM_TESTS} test cases PASSED successfully.")
+  else: 
+    print(f"Matched: {match} , Mismatched {mismatch} - TEST FAILED.")
+
+

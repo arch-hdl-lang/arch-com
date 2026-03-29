@@ -1,0 +1,60 @@
+module decoder_8b10b
+  port clk_in:      in Clock<SysDomain>;
+  port reset_in:    in Reset<Async>;
+  port decoder_in:  in UInt<10>;
+  port reg decoder_out: out UInt<8> reset reset_in=>0;
+  port reg control_out: out Bool reset reset_in=>0;
+
+  default seq on clk_in rising;
+
+  wire dec_val: UInt<8>;
+  wire ctrl_val: Bool;
+
+  comb
+    if decoder_in == 10'h0F4 or decoder_in == 10'h30B
+      dec_val = 8'h1C;
+      ctrl_val = true;
+    elsif decoder_in == 10'h0F9 or decoder_in == 10'h306
+      dec_val = 8'h3C;
+      ctrl_val = true;
+    elsif decoder_in == 10'h0F5 or decoder_in == 10'h30A
+      dec_val = 8'h5C;
+      ctrl_val = true;
+    elsif decoder_in == 10'h0F3 or decoder_in == 10'h30C
+      dec_val = 8'h7C;
+      ctrl_val = true;
+    elsif decoder_in == 10'h0F2 or decoder_in == 10'h30D
+      dec_val = 8'h9C;
+      ctrl_val = true;
+    elsif decoder_in == 10'h0FA or decoder_in == 10'h305
+      dec_val = 8'hBC;
+      ctrl_val = true;
+    elsif decoder_in == 10'h0F6 or decoder_in == 10'h309
+      dec_val = 8'hDC;
+      ctrl_val = true;
+    elsif decoder_in == 10'h0F8 or decoder_in == 10'h307
+      dec_val = 8'hFC;
+      ctrl_val = true;
+    elsif decoder_in == 10'h3A8 or decoder_in == 10'h057
+      dec_val = 8'hF7;
+      ctrl_val = true;
+    elsif decoder_in == 10'h368 or decoder_in == 10'h097
+      dec_val = 8'hFB;
+      ctrl_val = true;
+    elsif decoder_in == 10'h2E8 or decoder_in == 10'h117
+      dec_val = 8'hFD;
+      ctrl_val = true;
+    elsif decoder_in == 10'h1E8 or decoder_in == 10'h217
+      dec_val = 8'hFE;
+      ctrl_val = true;
+    else
+      dec_val = 8'h00;
+      ctrl_val = false;
+    end if
+  end comb
+
+  seq
+    decoder_out <= dec_val;
+    control_out <= ctrl_val;
+  end seq
+end module decoder_8b10b

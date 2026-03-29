@@ -8,9 +8,9 @@ fsm TopModule
   port counting: out Bool;
   port done: out Bool;
 
-  reg delay_r: UInt<4> reset reset=0;
-  reg cnt_r: UInt<4> reset reset=0;
-  reg sub_cnt: UInt<10> reset reset=0;
+  reg delay_r: UInt<4> reset reset=>0;
+  reg cnt_r: UInt<4> reset reset=>0;
+  reg sub_cnt: UInt<10> reset reset=>0;
 
   state S, S1, S11, S110, B0, B1, B2, B3, Count_St, Done_St;
   default state S;

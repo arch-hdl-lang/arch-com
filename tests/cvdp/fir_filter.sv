@@ -1,0 +1,46 @@
+// 4-tap FIR filter with 4-cycle latency
+module fir_filter (
+  input logic clk,
+  input logic reset,
+  input logic signed [16-1:0] input_sample,
+  output logic signed [16-1:0] output_sample,
+  input logic signed [16-1:0] coeff0,
+  input logic signed [16-1:0] coeff1,
+  input logic signed [16-1:0] coeff2,
+  input logic signed [16-1:0] coeff3
+);
+
+  logic signed [16-1:0] sample_delay1;
+  logic signed [16-1:0] sample_delay2;
+  logic signed [16-1:0] sample_delay3;
+  logic signed [32-1:0] accumulator;
+  logic signed [16-1:0] out_reg;
+  logic signed [32-1:0] prod0;
+  logic signed [32-1:0] prod1;
+  logic signed [32-1:0] prod2;
+  logic signed [32-1:0] prod3;
+  logic signed [32-1:0] acc_sum;
+  assign prod0 = input_sample * coeff0;
+  assign prod1 = sample_delay1 * coeff1;
+  assign prod2 = sample_delay2 * coeff2;
+  assign prod3 = sample_delay3 * coeff3;
+  assign acc_sum = 32'({{(34-$bits(prod0)){prod0[$bits(prod0)-1]}}, prod0} + {{(34-$bits(prod1)){prod1[$bits(prod1)-1]}}, prod1} + {{(34-$bits(prod2)){prod2[$bits(prod2)-1]}}, prod2} + {{(34-$bits(prod3)){prod3[$bits(prod3)-1]}}, prod3});
+  always_ff @(posedge clk or posedge reset) begin
+    if (reset) begin
+      accumulator <= 0;
+      out_reg <= 0;
+      sample_delay1 <= 0;
+      sample_delay2 <= 0;
+      sample_delay3 <= 0;
+    end else begin
+      sample_delay1 <= input_sample;
+      sample_delay2 <= sample_delay1;
+      sample_delay3 <= sample_delay2;
+      accumulator <= acc_sum;
+      out_reg <= 16'(accumulator);
+    end
+  end
+  assign output_sample = out_reg;
+
+endmodule
+

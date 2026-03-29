@@ -19,10 +19,10 @@ module async_filo
   reg mem: Vec<UInt<DATA_WIDTH>, DEPTH> init 0;
 
   // Write domain: monotonically increasing push count (ADDR_WIDTH+1 bits)
-  reg w_ptr: UInt<ADDR_WIDTH+1> reset w_rst=0;
+  reg w_ptr: UInt<ADDR_WIDTH+1> reset w_rst=>0;
 
   // Read domain: monotonically increasing pop count
-  reg r_pop_cnt: UInt<ADDR_WIDTH+1> reset r_rst=0;
+  reg r_pop_cnt: UInt<ADDR_WIDTH+1> reset r_rst=>0;
 
   // Gray-code CDC: w_ptr (WDomain) → RDomain
   wire rq2_wptr: UInt<ADDR_WIDTH+1>;
@@ -47,8 +47,8 @@ module async_filo
   end inst rptr_sync
 
   // Stack pointer and empty-edge detection (read domain only — no CDC needed)
-  reg r_ptr:    UInt<ADDR_WIDTH+1> reset r_rst=0;
-  reg was_empty: Bool reset r_rst=1;
+  reg r_ptr:    UInt<ADDR_WIDTH+1> reset r_rst=>0;
+  reg was_empty: Bool reset r_rst=>1;
 
   wire full_i:  Bool;
   wire empty_i: Bool;

@@ -1,0 +1,79 @@
+module mru_counter_policy
+  param NWAYS: const = 4;
+  param NINDEXES: const = 32;
+  param WAY_W: const = $clog2(NWAYS);
+  param REC_W: const = NWAYS * WAY_W;
+
+  port clock:      in Clock<SysDomain>;
+  port reset:      in Reset<Async, High>;
+  port index:      in UInt<$clog2(NINDEXES)>;
+  port way_select: in UInt<WAY_W>;
+  port access:     in Bool;
+  port hit:        in Bool;
+  port way_replace: out UInt<WAY_W>;
+
+  default seq on clock rising;
+
+  reg recency: Vec<UInt<REC_W>, NINDEXES>;
+
+  wire mru_slot: UInt<WAY_W>;
+  wire cur_rec: UInt<REC_W>;
+  wire old_val: UInt<WAY_W>;
+  wire next_rec: UInt<REC_W>;
+
+  let max_val: UInt<WAY_W> = (NWAYS - 1).trunc<WAY_W>();
+  let idx: UInt<$clog2(NINDEXES)> = index;
+  let ws: UInt<WAY_W> = way_select;
+
+  comb
+    cur_rec = recency[idx];
+
+    // Find the way with counter == NWAYS-1 (the MRU way for replacement)
+    mru_slot = 0;
+    for i in 0..NWAYS-1
+      if cur_rec[i * WAY_W + WAY_W - 1 : i * WAY_W] == max_val
+        mru_slot = i.trunc<WAY_W>();
+      end if
+    end for
+
+    // Get old counter of the way being updated
+    if hit
+      old_val = cur_rec[ws * WAY_W + WAY_W - 1 : ws * WAY_W].trunc<WAY_W>();
+    else
+      old_val = cur_rec[mru_slot * WAY_W + WAY_W - 1 : mru_slot * WAY_W].trunc<WAY_W>();
+    end if
+
+    // Build next recency
+    next_rec = cur_rec;
+    for j in 0..NWAYS-1
+      if hit
+        if j.trunc<WAY_W>() == ws
+          next_rec[j * WAY_W + WAY_W - 1 : j * WAY_W] = max_val;
+        elsif cur_rec[j * WAY_W + WAY_W - 1 : j * WAY_W] > old_val
+          next_rec[j * WAY_W + WAY_W - 1 : j * WAY_W] = (cur_rec[j * WAY_W + WAY_W - 1 : j * WAY_W] - 1).trunc<WAY_W>();
+        end if
+      else
+        if j.trunc<WAY_W>() == mru_slot
+          next_rec[j * WAY_W + WAY_W - 1 : j * WAY_W] = max_val;
+        elsif cur_rec[j * WAY_W + WAY_W - 1 : j * WAY_W] > old_val
+          next_rec[j * WAY_W + WAY_W - 1 : j * WAY_W] = (cur_rec[j * WAY_W + WAY_W - 1 : j * WAY_W] - 1).trunc<WAY_W>();
+        end if
+      end if
+    end for
+  end comb
+
+  comb way_replace = mru_slot;
+
+  seq
+    if reset
+      for i in 0..NINDEXES-1
+        for n in 0..NWAYS-1
+          recency[i][n * WAY_W + WAY_W - 1 : n * WAY_W] <= n.trunc<WAY_W>();
+        end for
+      end for
+    elsif access
+      recency[idx] <= next_rec;
+    end if
+  end seq
+
+end module mru_counter_policy

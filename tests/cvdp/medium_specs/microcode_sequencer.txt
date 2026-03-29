@@ -1,0 +1,569 @@
+MODULE: microcode_sequencer
+ID: cvdp_copilot_microcode_sequencer_0001
+
+=== SPEC ===
+Design a SystemVerilog RTL module `microcode_sequencer` that takes a 5-bit instruction as input and generates a 4-bit address for the control store as output. The module decodes the instruction using combinational logic and computes the corresponding control store address based on predefined mappings. This address is an index to access control store entries in an external module, enabling precise microcode execution sequencing. The design ensures low-latency decoding and compatibility with a microcoded architecture.
+
+## Design Specification :
+The `microcode_sequencer` RTL module manages the execution of instructions, stack operations, and control signals for a microcoded system. It combines inputs like condition codes, instructions, and data inputs, and enables the generation of outputs for data, stack status, and control signals. The module integrates submodules for stack management, program counter control, instruction decoding, and arithmetic operations.
+
+## Interface:
+### Inputs:
+- `clk`(1-bit): The positive edge-triggered clock  signal required for the sequential components.
+- `c_n_in`(1-bit): Carry-in signal for the ripple carry adder.
+- `c_inc_in`(1-bit): Carry-in for the program counter incrementer.
+- `r_en`(1-bit): ACTIVE LOW auxiliary register enable signal.
+- `cc`(1-bit): ACTIVE LOW condition code input for instruction decoding.
+- `ien`(1-bit): ACTIVE LOW instruction enable signal.
+- `d_in`(4-bit , [3:0]): A 4-bit data input bus.
+- `instr_in`(5-bit, [4:0]): A 5-bit opcode representing the instruction.
+- `oen`(1-bit): ACTIVE LOW output enable for the data output path.
+
+### Outputs:
+- `d_out`(4-bit,[3:0]): A 4-bit address output bus.
+- `c_n_out`(1-bit): Carry-out signal from the ripple carry adder. LOGIC HIGH in this signal indicates the presence of carry.
+- `c_inc_out`(1-bit): Carry-out signal from the program counter incremented. LOGIC HIGH in this signal indicates the presence of carry.
+- `full`(1-bit): ACTIVE HIGH signal indicates if the Last In First Out (LIFO) stack is full.
+- `empty`(1-bit): ACTIVE HIGH signal indicates if the LIFO stack is empty.
+
+## Submodule Overview:
+### 1. Stack Management:
+#### LIFO Stack: (`lifo_stack`)
+- Implements stack operations using submodules for pointer management(`stack_pointer` submodule), memory storage(`stack_ram` submodule), and data selection(`stack_data_mux` submodule).
+- Handles push and pop operations based on decoded instructions.
+- Provides stack full and empty flags for status monitoring.
+
+## Interface
+  ##### Inputs
+  - `clk`(1-bit):  The positive edge-triggered clock signal for controlling reset , incrementing , decrementing of `stack_pointer` and read, write of `stack_ram` locations.
+  - `stack_data1_in`(4-bit,[3:0]) : Data coming from the data bus input port `d_in`.
+  - `stack_data2_in`(4-bit,[3:0]) : Data coming from the program counter
+  - `stack_reset`(1-bit): Control signal coming from the instruction decoder to initialize the stack pointer register to 5'b00000.
+  - `stack_push`(1-bit): Used in combination with `full_o` output signal to increment the stack pointer by 1.
+  - `stack_pop`(1-bit): Used in conjunction with `empty_o` output signal to decrement the stack pointer by 1.
+  - `stack_mux_sel`(1-bit): ACTIVE HIGH control signal coming from the instruction decoder to select one of the two data available at the input of `stack_mux` submodule.
+  - `stack_we`(1-bit): Control signal coming from the instruction decoder to write the selected data coming out from the `stack_mux_select` submodule into the `stack_ram` submodule given by the address provided by the `stack_pointer` submodule.
+  - `stack_re`(1-bit): Control signal coming from the instruction decoder to read the data from the selected address of the `stack_ram` submodule.
+  ##### Outputs :
+  - `stack_data_out` (4-bit,[3:0]) - The 4-bit data that is read from a stack location.
+  - `full_o` - Indicates whether the `stack_pointer` has reached the highest location of `stack_ram` submodule(i.e. Location number 16).
+  - `empty_o` - Indicates whether the `stack_pointer` has reached the lowest location of `stack_ram` submodule(i.e. Location number 0).
+  
+##### Submodules:
+- `stack_pointer`: Maintains the current stack address with full and empty detection.
+    ##### Interface
+    ##### Inputs :
+    - `clk`(1-bit):The positive edge-triggered clock signal to control reset, increment and decrement of 5-bit `stack_pointer` register.
+    - `rst`(1-bit) :  ACTIVE HIGH control signal that is coming out from the `instruction_decoder` module to initialize the `stack_pointer` register to 5'b00000.
+    - `push`(1-bit) : ACTIVE HIGH signal used in combination with `full` output signal to increment the stack pointer register by 1.
+    - `pop`(1-bit) : ACTIVE HIGH signal used in conjunction with `empty` output signal to decrement the stack pointer register by 1.
+   ##### Outputs :
+    - `stack_addr`(5-bit,[4:0]) : Value generated by the `stack_pointer` register to address a `stack_ram` location.
+    - `full`(1-bit) : ACTIVE HIGH signal indicates whether the `stack_pointer` has reached the highest location of `stack_ram` submodule(i.e. Location number 16). This condition is checked combinationally through continuous assignment statement.
+    - `empty`(1-bit): ACTIVE HIGH indicates whether the `stack_pointer` has reached the lowest location of `stack_ram` submodule(i.e. Location number 0). This condition is checked combinationally through continuous assignment statement.
+    
+- `stack_ram`: Stores 4-bit data words for stack operations.
+   ##### Interface
+   ##### Inputs :
+   - `clk`(1-bit) : The positive edge-triggered clock signal to control the read and write of `stack_ram` locations.
+   - `stack_addr`(5-bit,[4:0]) : 5-bit data coming from the `stack_pointer` submodule
+   - `stack_data_in`(4-bit,[3:0]) : 4-bit data coming from the `stack_data_mux` submodule.
+   - `stack_we`(1-bit) :  ACTIVE HIGH Write Enable control signal that is coming out from the `instruction_decoder` module to write the data coming out from`stack_data_mux` submodule into the location generated by `stack_pointer` submodule.
+   - `stack_re`(1-bit) :  ACTIVE HIGH Read Enable control signal that is coming out from the `instruction_decoder` module to read the data from `stack_ram` location that is provided by `stack_pointer` submodule
+   ##### Outputs :
+   - `stack_data_out` (4-bit,[3:0]) : Data coming out from the `stack_ram` location during a `read` operation
+   
+- `stack_data_mux`: Selects data input for stack operations based on control signals.
+   ##### Interface 
+   ##### Inputs :
+   - `data_in`(4-bit,[3:0]): Data coming from the data bus input port `d_in`.
+   - `pc_in`(4-bit,[3:0]): Data coming from the `program_counter` module
+   - `stack_mux_sel`(1-bit):  
+               - `stack_mux_sel` == 1'b1 : `data_in` is selected.
+               - `stack_mux_sel` == 1'b0 : `pc_in` is selected.
+   ##### Output :
+   - `stack_mux_out`(4-bit,[3:0]) : Data selected from one of the two inputs `data_in` or `pc_in`.
+
+### 2. Program Counter (PC) Control:
+#### Program Counter: (`program_counter`)
+- Computes the next PC value using a multiplexer(`pc_mux` submodule) and an incremented(`pc_incrementer` submodule)
+- Supports branching or sequential execution based on decoded signals.
+##### Interface 
+##### Inputs :
+- `clk`(1-bit): The positive edge-triggered clock signal to control the transfer the data from input to output of `pc_reg` submodule.
+- `full_adder_data_i`(4-bit,[3:0]) : 4-bit sum coming out of the `full_adder` submodule of `microcode_arithmetic` module.
+- `pc_c_in`(1-bit) : Input carry to control whether the data going into `pc_reg` module should get incremented or not.
+- `inc`(1-bit): ACTIVE HIGH control signal coming from the `instructicon_decoder` module to inhibit or allow the `pc_c_in` to have effect on the program counter increment operation.
+- `pc_mux_sel`(1-bit):  
+              - `pc_mux_sel` == 1'b1 : `full_adder_data` is selected.
+              - `pc_mux_sel` == 1'b0 : `pc_data` is selected.
+##### Outputs :
+- `pc_out`(4-bit,[3:0]) : 4-bit data coming out from the `pc_reg` submodule.
+- `pc_c_out`(1-bit) : Carry output coming out from the `pc_incrementer` submodule.
+
+##### Submodules:
+- `pc_mux`: Selects between the full adder output and the current PC value.
+   ##### Interface
+   ##### Inputs :
+   - `full_adder_data`(4-bit,[3:0]) : 4-bit sum coming out from the `full_adder` submodule of `microcode_arithmetic` submodule.
+   - `pc_data`(4-bit,[3:0]): 4-bit data coming out from the `pc_reg` submodule.
+   - `pc_mux_sel`(1-bit) : 
+                 - `pc_mux_sel` == 1'b1 : `full_adder_data` is selected.
+                 - `pc_mux_sel` == 1'b0 : `pc_data` is selected.
+   ##### Output :
+   - `pc_mux_out`(4-bit,[3:0]): 4-bit data selected from the inputs of the `pc_mux` submodule.
+   
+- `pc_incrementer`: Computes the incremented PC value with an optional `carry_in`
+   ##### Interface
+   ##### Inputs :
+   - `pc_c_in` (1-bit): Carry input to the ripple carry adder based `pc_incrementer` submodule.
+   - `inc` (1-bit): If ACTIVE HIGH , `pc_data_in` gets incremented with the value of `pc_c_in` and then goes to `pc_inc_out`. If  ACTIVE LOW , `pc_data_in` goes to `pc_inc_out` without any change.
+   - `pc_data_in`(4-bit,[3:0]) : 4-bit data coming from `pc_mux` submodule
+   ##### Outputs :
+   - `pc_inc_out`(4-bit,[3:0]) : 4-bit data coming out from the `pc_incrementer` submodule.
+   - `pc_c_out` (1-bit) : Carry output of the ripple carry adder based `pc_incrementer` submodule.
+   
+- `pc_reg`: Stores the updated PC value on the positive clock edge.
+   ##### Interface
+   ##### Inputs :
+   - `clk`(1-bit) : The positive edge-triggered clock signal to control the transfer the data from input to output of `pc_reg` submodule.
+   - `pc_data_in`(4-bit,[3:0]) : Data coming from the `pc_incrementer` submodule
+   ##### Output :
+   - `pc_data_out`(4-bit,[3:0]) : Data coming out from the `pc_reg` submodule. 
+
+### 3. Arithmetic Operations:
+#### Microcode Arithmetic: (`microcode_arithmetic`)
+- Executes addition microoperation through ripple carry full adder(`full_adder` submodule).
+- Provides flexibility for data selection through multiplexers for A(`a_in` of `full_adder` submodule) and B inputs(`b_in` of `full_adder` submodule).
+
+#### Interface
+##### Inputs :
+- `clk` (1-bit) : The positive edge-triggered clock signal to control the transfer of data from input to output of `aux_reg` submodule.
+- `fa_in`(4-bit,[3:0]) : The 4-bit sum coming out from the ripple carry adder is fed back into the adder through `aux_reg_mux` submodule.
+- `d_in`(4-bit,[3:0]): The 4-bit coming from the `d_in` input port of the `microcode_sequencer` module.
+- `stack_data_in`(4-bit,[3:0]) : The 4-bit data coming out from the `lifo_stack` module and is applied to one of the inputs of `b_mux` submodule.
+- `pc_data_in`(4-bit,[3:0]): The 4-bit data coming out from the `program_counter` module and is applied to one of the inputs of `b_mux` submodule.
+- `reg_en`(1-bit) : Used along with ACTIVE HIGH `rce` signal from `instruction_decoder` module to transfer the data from input to output of `aux_reg` submodule.
+- `oen`(1-bit) : ACTIVE LOW signal coming from the `microcode_sequencer` module.
+- `rce`(1-bit) : Used along with ACTIVE LOW `reg_en` signal from `microcode_sequencer` module to transfer the data from input to output of `aux_reg` submodule.
+- `cen` (1-bit): ACTIVE HIGH control signal from `instruction_decoder` module to allow or inhibit the input carry of the ripple carry `full_adder` submodule which in turn affect the addition microoperation.
+- `a_mux_sel`(2-bit,[1:0]) : Signal to select one of the three inputs of `a_mux` submodule.
+- `b_mux_sel`(2-bit,[1:0]): Signal to select one of the four inputs of `b_mux` submodule.
+- `arith_cin`(1-bit): Carry input coming from the `microcode_sequencer` module.
+- `oe`(1-bit) : ACTIVE HIGH control signal from `instruction_decoder` module that is used along with ACTIVE LOW `oen` signal to control the output of ripple carry `full_adder` module.
+##### Outputs :
+- `arith_cout`(1-bit): Carry output coming out from the ripple carry `full_adder` submodule.
+- `d_out`(4-bit,[3:0]): 4-bit sum coming out from the ripple carry `full_adder` submodule.
+
+##### Submodules:
+- `aux_reg_mux` : Selects one of the two inputs : sum from `full_adder` submodule or `d_in`
+   ##### Interface
+   ##### Inputs :
+   - `reg1_in`(4-bit,[3:0]): 4-bit sum of the ripple carry `full_adder` submodule
+   - `reg2_in`(4-bit,[3:0]): 4-bit data coming from the data bus input port `d_in` from `microcode_sequencer` module
+   - `rsel`(1-bit),`re`(1-bit) : `rsel`(**r**egister **sel**ect) is an ACTIVE HIGH control signal coming from `instruction_decoder` module. `re`(**r**egister **en**able) is the ACTIVE LOW signal coming from the `r_en` of `microcode_sequencer` module. Logical AND of the `rsel` and ~(`re`) signal generates the `aux_reg_mux` select signal.
+              `aux_reg_mux` select signal == 1'b1 : `reg1_in` is selected.
+              `aux_reg_mux` select signal == 1'b0 : `reg2_in` is selected.
+   ##### Output :
+   - `reg_mux_out`(4-bit,[3:0]) : Data coming out from the `aux_reg_
+- `aux_reg` : Transfers the data coming out from the `aux_reg_mux` submodule on the positive edge of clock signal.
+   ##### Interface
+   ##### Inputs :
+   - `clk`(1-bit): The positive edge-triggered clock signal that controls the transfer of data from input to output of `aux_reg` submodule.
+   - `reg_in`(4-bit,[3:0]): Data coming from the `aux_reg_mux` submodule.
+   - `rce`(1-bit),`re`(1-bit): `rce`(**r**egister **c**hip **e**nable) is an ACTIVE HIGH control signal coming from `instruction_decoder` module. `re`(**r**egister **en**able) is the ACTIVE LOW signal coming from the `r_en` of `microcode_sequencer` module. Logical  OR  of `rce` and ~(`re`) generate the enable signal for data transfer from input to output of `aux_reg` submodule.
+   ##### Output :
+   - `reg_out`(4-bit,[3:0]): Data transferred coming out of the `aux_reg` submodule.
+   
+- `a_mux` : Selects data from `full_adder` submodule , `aux_reg` submodule or 4-bit constant , 4'b0000
+   ##### Interface
+   ##### Inputs :
+   - `register_data`(4-bit,[3:0]) : Data coming from `aux_reg` submodule.
+   - `data_in`(4-bit,[3:0]): Data coming from data bus input `d_in`
+   - A 4-bit constant . 4'b0000
+   - `a_mux_sel`(2-bit,[1:0]) : Control signal coming from `instruction_decoder` module to select either `register_data` or `data_in` or 4'b0000.
+           - `a_mux_sel` == 2'b00 : `data_in`  is selected.
+           - `a_mux_sel` == 2'b01 : `register_data` is selected.
+           - `a_mux_sel` == 2'b10 : 4'b0000 is selected.
+   ##### Output :
+   - `a_mux_out`(4-bit,[3:0]): The 4-bit selected data coming out from the multiplexer module.
+
+- `b_mux` : Selects data from `aux_reg` submodule , `program_counter` module , `lifo_stack` module or 4-bit constant, 4'b0000.
+   ##### Interface
+   ##### Inputs :
+   - `register_data`(4-bit,[3:0]): 4-bit data coming from `aux_reg` submodule of the `microcode_arithmetic` module.
+   - `stack_data`(4-bit,[3:0]): 4-bit data coming from `lifo_stack` module.
+   - `pc_data`(4-bit,[3:0]): 4-bit data coming from `program_counter` module
+   - `b_mux_sel`(2-bit,[1:0]): Control signal coming from `instruction_decoder` module to select data coming from `aux_reg` submodule or `program_counter` module or `lifo_stack` module or 4-bit constant, 4'b0000.
+             - `b_mux_sel` == 2'b00 : `pc_data` is selected.
+             - `b_mux_sel` == 2'b01 : `stack_data` is selected.
+             - `b_mux_sel` == 2'b10 : 4'b0000 is selected
+             - `b_mux_sel` == 2'b11 : `register_data` is selected
+   ##### Output :
+   - `b_mux_out`(4-bit,[3:0]): The 4-bit selected data coming out from the multiplexer module.
+
+- `full_adder`: Performs 4-bit ripple-carry addition operation with optional carry-in.
+   ##### Interface
+   ##### Inputs :
+   - `a_in`(4-bit,[3:0]) : 4-bit data coming from the `a_mux` submodule. This is called **A operand** of the `full_adder` submodule
+   - `b_in`(4-bit,[3:0]): 4-bit data coming from the `b_mux` submodule. This is called **B operand** of the `full_adder` submodule
+   - `c_in`(1-bit) : Carry input of the ripple carry `full_adder` submodule.
+   - `cen`(1-bit) : ACTIVE HIGH control signal coming from `instruction_decoder` module , which inhibits or allows `c_in` from affecting the 4-bit sum.
+   ##### Output :
+   - `c_out`(4-bit,[3:0]) : 4-bit sum generated by the `full_adder` submodule.
+
+### 4. Instruction Decoder: (`instruction_decoder`)
+- Decodes the 5-bit instruction opcode and generates control signals for `microcode_arithmetic` , `lifo_stack` `program_counter` and `result_register` modules.
+- Supports conditional execution based on condition code (`cc`) input.
+##### Interface :
+##### Inputs :
+- `instr_in`(5-bit,[4:0]) : A 5-bit opcode 
+   Supported opcodes :
+   
+  - `5'b00000 - PRST (Program ReSeT)` - Forces the D output(`d_out`) of the `microcode_sequencer` module to 4'b0000. Loads zero or one into `program_counter` module , depending on the carry input of the `pc_incrementer` submodule of the `program_counter` module and reset  `stack_pointer` submodule of `lifo_stack` module. The contents in locations of `stack_ram` submodule of `lifo_stack` module remains unchanged and the `aux_reg` submodule and `aux_reg_mux` submodules are controlled by `reg_en` input signal of the `microcode_sequencer` module.
+   
+  - `5'b00001 - Fetch PC` - To provide the content of the `program_counter` module at the D output (`d_out) of the `microcode_sequencer` module.
+   
+  - `5'b00010 - Fetch R` - To provide the content of the `aux_reg` submodule of the `microcode_arithmetic` module at the D output (`d_out`) of the `microcode_sequencer_module`.
+   
+  - `5'b00011 - Fetch D` - To provide the content of `d_in` at the D output (`d_out`) of the `microcode_sequencer` module
+
+  - `5'b00100 - Fetch R + D` - To read `d_in` and `aux_reg` contents and provides their sum at the D output (`d_out`) of the `microcode_sequencer` module.
+   
+  - `5b01011 - Push PC` - To write the contents of `program_counter` module onto the `Top of Stack` given by the content of `stack_pointer` submodule of `lifo_stack` module. This operation also causes increment of the `stack_pointer` submodule
+   
+  - `5'b01110 - Pop PC` - To read the contents of  `Top of Stack` given by the content of `stack_pointer` submodule of `lifo_stack`  module and provide it at the D output (`d_out`) of `microcode_sequencer` module.
+
+- `cc_in`(1-bit) - Condition code . Generally maintained at LOGIC LOW for the opcodes to be decoded.
+- `instr_en`(1-bit) - ACTIVE LOW signal to enable the `instruction_decoder` module to generate control signals.
+##### Outputs :
+- `cen`(1-bit) : ACTIVE HIGH control signal that allows carry input of `full_adder` submodule of `microcode_arithmetic` module to have effect on addition operation.
+- `rst`(1-bit): ACTIVE HIGH control signal that resets the `stack_pointer` register of `stack_pointer` submodule of `lifo_stack` module.
+- `oen`(1-bit) : ACTIVE HIGH control signal that enables the output of `full_adder` submodule to be available at D output (`d_out`) of `microcode_sequencer` module.
+- `inc`(1-bit) : ACTIVE HIGH control signal that enables the increment operation of `pc_incrementer` submodule of `program_counter` module by 1.
+- `rsel`(1-bit) : ACTIVE HIGH control signal LOGICALLY ANDed with ACTIVE LOW `reg_en` signal of `microcode_sequencer` to select a value from `aux_reg_mux` submodule of `microcode_arithmetic` module.
+- `rce`(1-bit) : ACTIVE HIGH control signal LOGICALLY ORed with ACTIVE LOW `reg_en` signal of `microcode_sequencer` to transfer the content from input to output of `aux_reg` submodule of `microcode_arithmetic` module.
+- `pc_mux_sel`(1-bit) : ACTIVE HIGH control signal to select one of the two data available at the input of `pc_mux`
+- `a_mux_sel`(2-bit,[1:0]): Control signal coming from `instruction_decoder` module to select data either from `aux_reg` submodule of `microcode_arithmetic` module , `d_in` coming from the `microcode_sequencer` module or 4-bit constant , 4'b0000.
+- `b_mux_sel`(2-bit,[1:0]): Control signal coming from `instruction_decoder` module to select data coming from `aux_reg` submodule or `program_counter` module or `lifo_stack` module or 4-bit constant, 4'b0000.
+- `push`(1-bit) : ACTIVE HIGH control signal used along with `full` signal from `stack_pointer` submodule to increment the `stack_pointer` register of `stack_pointer` submodule of `lifo_stack` module by 1.
+- `pop`(1-bit):ACTIVE HIGH control signal used along with `empty` signal from `stack_pointer` submodule to decrement the `stack_pointer` register of `stack_pointer` submodule of `lifo_stack` module by 1.
+- `src_sel`(1-bit): ACTIVE HIGH control signal  to select one of the two data available at the input of `stack_mux` submodule of `lifo_stack` module.
+- `stack_we`(1-bit) : ACTIVE HIGH Write Enable control signal to write the data coming out from`stack_data_mux` submodule into the location generated by `stack_pointer` submodule.
+- `stack_re`(1-bit): ACTIVE HIGH Read Enable control signal  to read the data from `stack_ram` location that is provided by `stack_pointer` submodule.
+- `out_ce`(1-bit): ACTIVE HIGH control signal to enable the `result_register` module to output the data (`d_out`) from `microcode_arithmetic` module.
+   
+### 5. Result Register: (`result_register`)
+- Captures the output of the arithmetic unit 
+- Enables output only when instructed by control signal `out_ce` coming from `instruction_decoder` module.
+##### Interface
+##### Inputs :
+- `clk`(1-bit) : The positive edge-triggered clock signal which controls the data transfer from input to output of `result_register` module
+- `data_in`(4-bit,[3:0]) - Data coming from the D output (`d_out`) of `microcode_arithmetic` module.
+- `out_ce`(1-bit): ACTIVE HIGH control signal coming from `instruction_decoder` module that is synchronous with `clk` signal to transfer data rom input to output of `result_register` module.
+##### Output :
+- `data_out(4-bit,[3:0])` : 4-bit data coming out from the `result_register` module.
+
+## Control Flow and Signal Logic:
+### Instruction Decoding:
+- The instruction decoder interprets the `instr_in` opcode and generates control signals for stack, PC, and arithmetic units.
+- Outputs such as `push`, `pop`, `cen`, `rst`, and multiplexer select (`a_mux_sel`, `b_mux_sel`) are driven by the decoded signals.
+
+### Program Counter:
+- The PC value is updated based on the instruction, either incrementing or branching to a target address.
+- Branching is controlled by the `pc_mux_sel` signal.
+
+### Stack Operations:
+- Stack data is pushed or popped based on the `stack_push` and `stack_pop` signals.
+- The data source is selected via `stack_mux_sel`, either from the PC or from the output of `microcode_arithmetic` module.
+
+### Data Flow:
+- Addition operation is performed using the full adder, with inputs selected by the A(`a_mux` submodule of `microcode_arithmetic` module ) and B multiplexers(`b_mux` submodule of `microcode_arithmetic` module)
+- Results are written to the result register or output via `d_out`.
+
+## Key Assumptions and Constraints :
+- Instruction and Control Flow:
+Based on decoded signals, the module takes a 5-bit instruction opcode (`instr_in`) and determines the appropriate operations for the program counter, stack, and arithmetic unit.
+- Pipeline Integration:
+This module is designed to function as part of a microcoded pipeline. Based on micro-instructions, it coordinates stack pushes/pops, data flow, and PC updates.
+- Behavior:
+The module works sequentially, with support of combinational modules such as `full_adder`  , `a_mux` , `b_mux` , `stack_data_mux`  , `pc_mux` submodules. The various submodules of the design are :
+  - `lifo_stack` (Submodules present in this are :  `stack_data_mux` , `stack_pointer` , and `stack_ram`)
+  - `program_counter` (Submodules present in this are : `pc_mux` , `pc_incrementer` , and `pc_reg`)
+  - `microcode_arithmetic` (Submodules present in this are: `aux_reg_mux`, `aux_reg` , `a_mux` , `b_mux` , and `full_adder`) 
+  - `instruction_decoder`
+  - `result_register` 
+- Operating frequency of this module should be 50MHz. The module won't exhibit  correct behavior if there is any deviation in this operating frequency
+- Operational Latency :
+- The output latency for PUSH and POP instructions will be 2 and 3 clock cycles, respectively. For the remaining instructions, the output will be reflected for the immediate input change without delay.
+
+
+## Example Scenario:
+Instruction: Push PC onto the Stack (`instr_in` = 5'b01011).
+
+The decoder enables `stack_push` and `stack_we`.
+The data from the `program_counter` is selected via the multiplexer and written to the stack.
+
+Instruction: Fetch PC (`instr_in` = 5'b00001).
+
+The decoder enables the multiplexers in the `microcode_arithmetic` module, such that the PC value is routed to the Full Adder Output
+
+Instruction: Fetch Auxiliary Register (`instr_in` = 5'b00010).
+
+The decoder configures `a_mux_sel` and `b_mux_sel` for desired inputs.
+The value of the auxiliary register is routed to the `full_adder` output
+
+## Example Waveform :
+```wavedrom
+{
+  "signal": [
+    {"name": "clk", "wave": "p..............."},
+    {"name": "c_inc_in", "wave": "01....0.........", "data": []},
+    {"name": "c_inc_out", "wave": "0...............", "data": []},
+    {"name": "c_n_in", "wave": "0........1.0....", "data": []},
+    {"name": "c_n_out", "wave": "0...............", "data": []},
+    {"name": "cc", "wave": "0...1...........", "data": []},
+    {"name": "d_in[3:0]", "wave": "x...4..5.6....7.", "data": ["A", "B", "3","X"]},
+    {"name": "d_out[3:0]", "wave": "34567..8.9.9..99", "data": ["0","1","2","X","A","B","F","7","6","7"]},
+    {"name": "empty", "wave": "1..............0", "data": []},
+    {"name": "full", "wave": "0...............", "data": []},
+    {"name": "ien", "wave": "0...............", "data": []},
+    {"name": "instr_in[4:0]", "wave": "34.5...6.7....8.", "data": ["00", "01", "02", "03", "04","0B"]},
+    {"name": "oen", "wave": "0...............", "data": []},
+    {"name": "r_en", "wave": "0...............", "data": []}
+  ],
+  "config": {"hscale": 4}
+}
+```
+
+=== src/.env ===
+SIM             = icarus
+TOPLEVEL_LANG   = verilog
+VERILOG_SOURCES = /code/rtl/microcode_sequencer.sv
+TOPLEVEL        = microcode_sequencer
+MODULE          = test_microcode_sequencer
+PYTHONPATH      = /src
+HASH            = 1-microcode_sequence_rtl_generation_issue-2
+
+
+=== src/test_microcode_sequencer.py ===
+import cocotb
+from cocotb.clock import Clock
+from cocotb.triggers import RisingEdge, FallingEdge , Timer
+import random
+
+
+@cocotb.test()
+async def test_microcode_sequencer(dut):
+    """Testbench for microcode_sequencer"""
+
+    # Create a clock with a period of 20 ns (50 MHz)
+    cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
+
+    # Initialize all inputs
+    dut.instr_in.value = 0
+    dut.c_n_in.value = 0
+    dut.c_inc_in.value = 0
+    dut.r_en.value = 0
+    dut.cc.value = 0
+    dut.ien.value = 0
+    dut.d_in.value = 0
+    dut.oen.value = 0
+
+    # Reset DUT
+    dut._log.info("Resetting DUT...")
+    await Timer(3, units="ns")  # Wait for reset to propagate
+    dut._log.info("Reset complete.")
+
+    # Allow signals to settle
+    await Timer(20, units="ns")
+
+    # Utility function to safely read signal values
+    def safe_read(signal):
+        """Safely read a signal, handling unknown ('X') values."""
+        try:
+            return int(signal.value)
+        except ValueError:
+            dut._log.warning(f"Signal {signal._name} has an unknown value ('X'). Defaulting to 0.")
+            return 0
+
+    @cocotb.test()
+    async def test_push_pc_instruction(dut):
+        """Testbench for Push PC Instruction"""
+        dut._log.info(f"Push_PC_instruction")
+        # Start a clock with a period of 20 ns
+        cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
+
+        # Initialize inputs
+        dut.instr_in.value = 0
+        dut.c_n_in.value = 0
+        dut.c_inc_in.value = 0
+        dut.r_en.value = 0
+        dut.cc.value = 0
+        dut.ien.value = 0
+        dut.d_in.value = 0
+        dut.oen.value = 0
+
+        # Reset DUT
+        await Timer(9, units="ns")
+
+        # Apply Push PC Instruction inputs
+        dut.instr_in.value = 0b01011
+        dut.c_n_in.value = 0
+        dut.c_inc_in.value = 0
+        dut.r_en.value = 0
+        dut.cc.value = 0
+        dut.ien.value = 0
+        dut.d_in.value = 0
+        dut.oen.value = 0
+
+        # Wait for the DUT to process the inputs
+        await RisingEdge(dut.clk)
+        await RisingEdge(dut.clk)
+        
+        # Assertions
+        expected_d_out = 0b01000  # Update based on expected PC value
+        actual_d_out = safe_read(dut.d_out)
+        assert actual_d_out == expected_d_out, f"Push PC Instruction failed: Expected {expected_d_out}, got {actual_d_out}"
+
+        dut._log.info("Push PC Instruction test passed.")
+    
+    @cocotb.test()
+    async def test_pop_pc_instruction(dut):
+        """Testbench for Pop PC Instruction"""
+        dut._log.info(f"Pop_PC_instruction")
+        # Start a clock with a period of 20 ns
+        cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
+
+        # Initialize inputs
+        dut.instr_in.value = 0
+        dut.c_n_in.value = 0
+        dut.c_inc_in.value = 0
+        dut.r_en.value = 0
+        dut.cc.value = 0
+        dut.ien.value = 0
+        dut.d_in.value = 0
+        dut.oen.value = 0
+
+        # Reset DUT
+        await Timer(15, units="ns")
+
+        # Apply Pop PC Instruction inputs
+        dut.instr_in.value = 0b01110
+        dut.c_n_in.value = 0
+        dut.c_inc_in.value = 0
+        dut.r_en.value = 0
+        dut.cc.value = 0
+        dut.ien.value = 0
+        dut.d_in.value = 0
+        dut.oen.value = 0
+
+        # Wait for the DUT to process the inputs
+        await RisingEdge(dut.clk)
+        await RisingEdge(dut.clk)
+        
+        # Assertions
+        expected_d_out = 0b01000  # Update based on expected PC value
+        actual_d_out = safe_read(dut.d_out)
+        assert actual_d_out == expected_d_out, f"Push PC Instruction failed: Expected {expected_d_out}, got {actual_d_out}"
+
+        dut._log.info("Pop PC Instruction test passed.")
+
+    # Test Task equivalent
+    async def run_test_case(
+        test_instr,          # Instruction input
+        test_carry_in,       # Carry input
+        test_carry_inc,      # Carry increment input
+        test_reg_en,         # Register enable
+        test_cond_code,      # Condition code
+        test_instr_en,       # Instruction enable
+        test_data_in,        # Data input
+        test_output_en,      # Output enable
+        expected_d_out,      # Expected data output
+        expected_c_n_out,    # Expected carry out (full adder)
+        expected_c_inc_out,  # Expected carry increment out
+        expected_full,       # Expected full condition
+        expected_empty,      # Expected empty condition
+        case_name            # Name of the test case
+    ):
+        # Apply inputs
+        dut.instr_in.value = test_instr
+        dut.c_n_in.value = test_carry_in
+        dut.c_inc_in.value = test_carry_inc
+        dut.r_en.value = test_reg_en
+        dut.cc.value = test_cond_code
+        dut.ien.value = test_instr_en
+        dut.d_in.value = test_data_in
+        dut.oen.value = test_output_en
+
+        # Wait for two clock cycles to allow the DUT to settle
+        await RisingEdge(dut.clk)
+        await RisingEdge(dut.clk)
+
+        # Log inputs, internal signals, and outputs
+        dut._log.info(f"Running test case: {case_name}")
+        dut._log.info(f"Inputs: instr_in = {int(dut.instr_in.value)}, c_n_in = {dut.c_n_in.value}, "
+                      f"c_inc_in = {dut.c_inc_in.value}, r_en = {dut.r_en.value}, cc = {dut.cc.value}, "
+                      f"ien = {dut.ien.value}, d_in = {int(dut.d_in.value)}, oen = {dut.oen.value}")
+        dut._log.info(f"Expected: d_out = {expected_d_out}, c_n_out = {expected_c_n_out}, "
+                      f"c_inc_out = {expected_c_inc_out}, full = {expected_full}, empty = {expected_empty}")
+        dut._log.info(f"Actual: d_out = {int(dut.d_out.value)}, c_n_out = {dut.c_n_out.value}, "
+                      f"c_inc_out = {dut.c_inc_out.value}, full = {dut.full.value}, empty = {dut.empty.value}")
+
+        # Assertions
+        assert int(dut.d_out.value) == expected_d_out, f"{case_name} - d_out mismatch"
+        assert dut.c_n_out.value == expected_c_n_out, f"{case_name} - c_n_out mismatch"
+        assert dut.c_inc_out.value == expected_c_inc_out, f"{case_name} - c_inc_out mismatch"
+        assert dut.full.value == expected_full, f"{case_name} - full mismatch"
+        assert dut.empty.value == expected_empty, f"{case_name} - empty mismatch"
+
+    # Run fixed test cases
+    await run_test_case(0b00000, 0, 0, 0, 0, 0, 0b0000, 0, 0b0000, 0, 0, 0, 1, "Reset Instruction")
+    await run_test_case(0b00001, 0, 1, 0, 0, 0, 0b0000, 0, 0b0001, 0, 0, 0, 1, "Fetch PC Instruction 1")
+    await run_test_case(0b00001, 0, 0, 0, 0, 0, 0b0000, 0, 0b0010, 0, 0, 0, 1, "Fetch PC Instruction 2")
+    await run_test_case(0b00010, 0, 1, 0, 0, 0, 0b1010, 0, 0b1010, 0, 0, 0, 1, "Fetch R Instruction")
+    await run_test_case(0b00011, 0, 1, 0, 0, 0, 0b1011, 0, 0b1011, 0, 0, 0, 1, "Fetch D Instruction")
+    await run_test_case(0b00100, 1, 1, 0, 0, 0, 0b0011, 0, 0b0111, 0, 0, 0, 1, "Fetch R+D Instruction")
+    await test_push_pc_instruction(dut)
+    await test_push_pc_instruction(dut) 
+    await test_pop_pc_instruction(dut)
+    await test_pop_pc_instruction(dut)
+    # Add randomized test case
+    for i in range(2):  # Run 2 randomized test cases
+        random_instr = 0  # Reset Instruction
+        random_carry_in = 0
+        random_carry_inc = 0
+        random_reg_en = 0
+        random_cond_code = 0
+        random_instr_en = 0
+        random_data_in = random.randint(0, 15)  # Random 4-bit data input
+        random_output_en = 0
+
+        # Determine expected values based on DUT behavior
+        expected_d_out = 0  # Example behavior, adjust as per DUT logic
+        expected_c_n_out = 0  # Adjust based on DUT
+        expected_c_inc_out = 0  # Adjust based on DUT
+        expected_full = 0  # Adjust based on DUT
+        expected_empty = 1  # Adjust based on DUT
+
+        await run_test_case(
+            random_instr,
+            random_carry_in,
+            random_carry_inc,
+            random_reg_en,
+            random_cond_code,
+            random_instr_en,
+            random_data_in,
+            random_output_en,
+            expected_d_out,
+            expected_c_n_out,
+            expected_c_inc_out,
+            expected_full,
+            expected_empty,
+            f"Random Test Case {i+1}"
+        )
+
+    dut._log.info("All test cases, including randomized tests, completed successfully.")
+
+
+

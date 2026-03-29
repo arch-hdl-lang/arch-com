@@ -1,0 +1,395 @@
+MODULE: vending_machine
+ID: cvdp_copilot_vending_machine_0001
+
+=== SPEC ===
+# Vending Machine
+
+Design a vending machine module using SystemVerilog. The vending machine allows users to select items, insert coins, calculate change, and handle transaction cancellations. It includes error handling for invalid operations and proper validation of coin inputs. The design ensures the machine resets to the idle state upon cancellation or error.
+
+## **Interface**
+
+### **Inputs**
+- **clk:** Clock signal for timing and synchronizing state transitions, operating on the rising edge.
+- **rst:** Asynchronous, active-high reset signal that resets all internal states, outputs, and accumulated values, returning the machine to the `IDLE` state.
+- **item_button:** Signal indicating that the user has pressed the button to initiate item selection (active high). This acts as a toggle signal and should only register on the rising edge.
+- **[2:0]item_selected:** 3-bit input representing the item chosen by the user, with valid values corresponding to the four available items (valid values: `3'b001` to `3'b100`).
+- **[3:0]coin_input:** 4-bit input representing the value of the coin inserted, with valid values of 1, 2, 5, or 10 units.
+- **cancel:** Signal allowing the user to cancel the current transaction before the item is dispensed (active high).
+
+### **Outputs**
+- **dispense_item:** Indicates that the selected item is ready for dispensing after the required amount is met. Active high for one clock cycle when the item is being dispensed.
+- **return_change:** Signals that excess coins are being returned as change. Active high for one clock cycle when change is being returned.
+- **[4:0]item_price:** 5-bit output displaying the price of the currently selected item.
+- **[4:0]change_amount:** 5-bit output representing the amount of change to be returned if excess coins were inserted.
+- **[2:0]dispense_item_id:** 3-bit output indicating the ID of the item being dispensed.
+- **error:** Indicates that an invalid operation has occurred, such as inserting coins without selecting an item or entering invalid coin values. Active high for one clock cycle during an error condition.
+- **return_money:** Indicates that all inserted money should be returned due to cancellation or an error. Active high for one clock cycle when returning money.
+
+## **Requirements**
+
+1. **Basic Transaction Flow**
+   - When the user presses `item_button` in the `IDLE` state, the machine transitions to the `ITEM_SELECTION` state and waits for the item selection.
+   - The user selects an item using `item_selected`. Upon a valid selection, the machine immediately displays the item's price on `item_price`.
+   - The user inserts valid coins through `coin_input`. The machine accumulates the inserted coins and compares the total amount to the selected `item_price`. Only 1, 2, 5, or 10 unit coin values are accepted. Invalid coin inputs trigger an error.
+   - Once the accumulated coins meet or exceed `item_price`, the machine sets `dispense_item` high for one cycle, signaling that the item will be dispensed.
+   - If excess coins were inserted, the machine calculates the change and, in the following clock cycle, sets `return_change` high for one cycle, with the change amount on `change_amount`.
+
+2. **Cancel Transaction Flow**
+   - At any time before the item is dispensed, the user can cancel the transaction by setting `cancel` high.
+   - Upon detecting `cancel`, the machine in the next clock cycle `error` sets to high for one cycle and moves to the `RETURN_MONEY` state.
+   - In the `RETURN_MONEY` state, if the accumulated amount is greater than zero, the machine sets `return_money` high for one cycle to return all accumulated coins.
+   - The machine then resets to the `IDLE` state in the next clock cycle, clearing all outputs and internal registers, ready for a new transaction.
+
+3. **Invalid Item Selection Handling**
+   - If the user selects an invalid item ID (an item without a defined price), the machine immediately triggers the `error` signal for one cycle and moves to the `RETURN_MONEY` state.
+   - In the `RETURN_MONEY` state, any inserted coins are returned, and the machine resets to `IDLE`.
+
+4. **Coin Validation and Error Handling**
+   - Only coin values of 1, 2, 5, and 10 units are accepted.
+   - If any other coin value is provided via `coin_input`, the machine triggers the `error` signal and moves to error handling.
+   - The machine sets `error` high for one cycle, sets `return_money` high in the same cycle to return all inserted coins, and resets to `IDLE`.
+
+5. **Inserting Coins Without Item Selection**
+   - If the user attempts to insert coins without first pressing `item_button` and selecting an item, the machine triggers the `error` signal for one cycle, moves to the `RETURN_MONEY` state, returns any inserted coins, and resets to `IDLE`.
+   - This ensures a structured flow where item selection is required before coin insertion.
+
+6. **Reset During Transaction**
+   - If `rst` is set high during any stage of the transaction, the machine immediately resets to `IDLE`.
+   - All internal states, outputs, and accumulated values are cleared, ready for a new transaction.
+
+7. **Handling Continuous Signals for `item_button` and `cancel`**
+   - `item_button` and `cancel` are treated as toggle signals and should only respond to the rising edge for state transitions.
+   - This prevents the machine from registering continuous signals, which could cause unintended state transitions.
+
+## **State Machine and Control Logic**
+
+The vending machine operates using a finite state machine (FSM) with the following states:
+
+1. **IDLE State:**
+   - The default state, waiting for the user to initiate a transaction by pressing `item_button`.
+   - If `item_button` is pressed, the machine transitions to `ITEM_SELECTION`.
+   - If coins are inserted without pressing `item_button`, the machine triggers an error, moves to `RETURN_MONEY`, and resets to `IDLE`.
+
+2. **ITEM_SELECTION State:**
+   - The machine waits for a valid item selection.
+   - Upon a valid `item_selected`, the machine displays the price on `item_price` and transitions to `PAYMENT_VALIDATION`.
+   - If `cancel` is pressed or an invalid item is selected, the machine triggers an error, moves to `RETURN_MONEY`, and resets to `IDLE`.
+
+3. **PAYMENT_VALIDATION State:**
+   - Valid coins are accumulated in `coins_accumulated` until the total meets or exceeds the `item_price`.
+   - If the amount is sufficient, the machine transitions to `DISPENSING_ITEM`.
+   - If `cancel` is pressed or an invalid coin is inserted, the machine triggers an error, moves to `RETURN_MONEY`, and resets to `IDLE`.
+
+4. **DISPENSING_ITEM State:**
+   - The machine sets `dispense_item` high for one cycle to dispense the selected item.
+   - If the inserted amount exceeds the `item_price`, the machine calculates the change and transitions to `RETURN_CHANGE`.
+   - If no excess coins remain, the machine resets to `IDLE`.
+
+5. **RETURN_CHANGE State:**
+   - The machine sets `return_change` high for one cycle to return the calculated `change_amount`.
+   - Once the change is returned, the machine resets to `IDLE`.
+
+6. **RETURN_MONEY State:**
+   - The machine sets `return_money` high for one cycle to refund all `coins_accumulated` due to a cancel or error.
+   - After returning the money, the machine resets to `IDLE`, ensuring no transaction lockups.
+   
+## Timing and Synchronization
+
+- Clock: The `clk` signal is assumed to be the rising edge of the clock.
+- Reset: The `reset` signal (`rst`) is active-high and asynchronous, which clears all internal states, outputs, and registers upon assertion.
+- State Transitions: The system uses a finite-state machine (FSM) with the following states: IDLE, ITEM_SELECTION, PAYMENT_VALIDATION, DISPENSING_ITEM, RETURN_CHANGE, and RETURN_MONEY.
+
+## Constraints and Edge Cases
+
+- Valid Coin Inputs: Only coins with values of 1, 2, 5, and 10 units are accepted. If any other values are inserted, an error occurs.
+- Invalid Item Selection: Only item selections within the range 3'b001 to 3'b100 are valid. Selecting an invalid item triggers an error.
+- Cancellation and Return of Money:  If the transaction is canceled or if an error occurs, all inserted coins are returned, and the system transitions back to the IDLE state.
+
+=== src/.env ===
+SIM             = icarus
+WAVE            = True
+TOPLEVEL_LANG   = verilog
+VERILOG_SOURCES = /code/rtl/vending_machine.sv
+TOPLEVEL        = vending_machine
+MODULE          = test_vending_machine
+PYTHONPATH      = /src
+HASH            = b6c86a459bbdb651489db82d2127c8a5d50f3b45
+
+
+=== src/test_vending_machine.py ===
+import cocotb
+from cocotb.clock import Clock
+from cocotb.triggers import RisingEdge, FallingEdge, ReadOnly , Timer
+
+import harness_library as hrs_lb
+import random
+
+# Task to select item
+async def select_item(dut, item):
+    await RisingEdge(dut.clk)
+    dut.item_button.value = 1   
+    await RisingEdge(dut.clk)
+    dut.item_selected.value = item
+    dut.item_button.value = 0
+    await RisingEdge(dut.clk)
+
+# Task to insert coins
+async def insert_coins(dut, amount):
+    dut.coin_input.value = amount
+    await RisingEdge(dut.clk)
+    dut.coin_input.value = 0
+    await RisingEdge(dut.clk)
+
+# Task to simulate cancel button press
+async def cancel_purchase(dut):
+    dut.cancel.value = 1
+    await RisingEdge(dut.clk)
+    dut.cancel.value = 0
+
+# Task to check if the item is dispensed and no errors occurred
+async def check_dispense(dut, expected_item_id):
+    await RisingEdge(dut.clk)
+    assert dut.dispense_item.value == 1, f"Expected item to be dispensed!"
+    await RisingEdge(dut.clk)
+    assert dut.dispense_item_id.value == expected_item_id, f"Dispensed item ID mismatch, got {dut.dispense_item_id.value}, expected {expected_item_id}"
+    assert dut.error.value == 0, f"Error signal should not be high!"
+    assert dut.return_change.value == 0, "Change should not be returned change in this clock cycle"
+    print(f"Dispense_item_id  - {int(dut.dispense_item_id.value)} , Error - {int(dut.error.value)} ")
+
+# Task to check if the correct change is returned
+async def check_change(dut, expected_change): 
+    if expected_change > 0:
+        await RisingEdge(dut.clk)
+        assert dut.return_change.value == 1, "Change should be returned"
+        print(f"expected_chang amount - {int(expected_change)}")
+        print(f"Return change amount - {int(dut.change_amount.value)}")
+        assert dut.change_amount.value == expected_change, f"Expected change {expected_change}, but got {dut.change_amount.value}"
+    else:
+        assert dut.return_change.value == 0, "No change should be returned"
+    await RisingEdge(dut.clk)
+    assert dut.return_change.value == 0, "Change should not be returned after one cycle"
+    assert dut.change_amount.value == 0, f"Expected change {0}, but got {dut.change_amount.value}"
+
+# Task to randomly buy an item with random coins and validate results
+async def random_purchase(dut):
+    item_id = random.randint(1, 4)
+    item_prices = {1: 5, 2: 10, 3: 15, 4: 20}
+    expected_price = item_prices[item_id]
+    dut._log.info(f"Randomly selecting item {item_id}, expected price: {expected_price}")
+
+    await select_item(dut, item_id)
+
+    # Randomly insert coins until we meet or exceed the price
+    total_inserted = 0
+    while total_inserted < expected_price:
+        coin = random.choice([1, 2, 5, 10])  
+        await insert_coins(dut, coin)
+        total_inserted += coin
+        dut._log.info(f"Inserted coin: {coin}, total so far: {total_inserted}")
+
+    await check_dispense(dut, item_id)
+    expected_change = total_inserted - expected_price   
+
+    await check_change(dut, expected_change)
+    await Timer(50, units='ns')
+
+# Task to randomly cancel a purchase
+async def random_cancel_purchase(dut):
+    item_prices = {1: 5, 2: 10, 3: 15, 4: 20}
+    item_id = random.randint(1, 4)
+    expected_price = item_prices[item_id]
+
+    dut._log.info(f"Randomly selecting item {item_id} with price {expected_price} and canceling the operation")
+    await select_item(dut, item_id)
+    dut.coin_input.value = 1
+    await RisingEdge(dut.clk)
+    dut.coin_input.value = 0
+    await RisingEdge(dut.clk)
+    dut.coin_input.value = 2
+    await RisingEdge(dut.clk) 
+    dut.coin_input.value = 0
+    await RisingEdge(dut.clk)
+    await cancel_purchase(dut)
+    await RisingEdge(dut.clk)
+    assert dut.error.value == 1, "Error should be high for cancellation"
+    await RisingEdge(dut.clk)
+    assert dut.return_money.value == 1, "Expected money to be returned after cancellation"
+    assert dut.error.value == 0, "Error should not be high for cancellation after clock"
+    await RisingEdge(dut.clk)
+    assert dut.return_money.value == 0, "when cancle Expected money not be returned after clock"
+    await Timer(50, units='ns')
+
+# Task to simulate invalid item selection
+async def invalid_item_selection(dut):
+    invalid_item_id = random.choice([0, 6, 5, 7])
+    dut._log.info(f"Selecting invalid item ID: {invalid_item_id}")
+    await select_item(dut, invalid_item_id)
+    dut.coin_input.value = 2
+    await RisingEdge(dut.clk)
+    dut.coin_input.value = 0
+    await RisingEdge(dut.clk)
+    assert dut.error.value == 1, "Error should be high for invalid item selection"
+    assert dut.dispense_item.value == 0, "No item should be dispensed"
+    await insert_coins(dut, 0)
+    assert dut.error.value == 0, "Error should not be high for invalid item selection after clock" 
+    await Timer(50, units='ns')
+
+# Task to simulate multiple purchases without resetting the machine
+async def multiple_purchases_without_reset(dut):
+    for _ in range(3):  
+        await random_purchase(dut)
+        await RisingEdge(dut.clk) 
+    await Timer(50, units='ns')
+
+# Task to simulate random coin validation
+async def random_coin_validation(dut):
+    coin = random.choice([1,2,5,7,10]) 
+    dut._log.info(f"Inserting random coin value: {coin}")
+
+    await select_item(dut, random.randint(1, 4)) 
+    await insert_coins(dut, coin)
+    if coin == 7:
+        assert dut.error.value == 1, "Expected error for invalid coin input"
+    else:
+        assert dut.error.value == 0, "Unexpected error for valid coin input"
+    await insert_coins(dut, 0)
+    await Timer(50, units='ns')
+
+async def reset_during_transaction(dut):
+    await select_item(dut, 3)
+    await insert_coins(dut, 5)
+    await insert_coins(dut, 0)
+    dut._log.info("Resetting the machine during the transaction.")
+    dut.rst.value = 1
+    dut.item_selected.value = 0
+    await Timer(30, units='ns')
+
+    assert dut.dispense_item.value == 0, "No item should be dispensed after reset"
+    assert dut.return_money.value == 0, "No money should be returned after reset"
+    await RisingEdge(dut.clk)
+    dut.rst.value = 0
+    await RisingEdge(dut.clk)
+    dut._log.info("reset_during_transaction: Machine successfully reset during transaction.")
+    await Timer(50, units='ns')
+
+# Task to simulate inserting coins without selecting an item
+async def insert_coins_without_selecting_item(dut):
+    cocotb.log.info("Simulating coin insertion without selecting an item")
+    await RisingEdge(dut.clk)
+    dut.item_button.value = 1   
+    dut.item_selected.value = 0
+    await RisingEdge(dut.clk)
+    dut.item_button.value = 0
+    await RisingEdge(dut.clk)
+    await insert_coins(dut, 10)
+
+    assert dut.error.value == 1, "Error should be raised when inserting coins without selecting an item"
+    await RisingEdge(dut.clk)  
+    assert dut.error.value == 0, "Error should  not be raised when inserting coins without selecting an item after a clock"
+    assert dut.return_money.value == 1, "Money should be returned when no item is selected"
+    await insert_coins(dut, 0)
+    await RisingEdge(dut.clk)
+
+
+    assert dut.dispense_item.value == 0, "No item should be dispensed without item selection"
+    assert dut.return_money.value == 0, "Money should not be returned when no item is selected after a clock"
+    cocotb.log.info("Simulating coin insertion without selecting an item: Coins returned when no item is selected.")
+    await Timer(50, units='ns')
+
+# Task to cancel after selecting an item
+async def cancel_after_selecting_item(dut):
+    item_id = 2
+    await select_item(dut, item_id)
+    dut._log.info(f"Selected item {item_id}")
+
+    dut.cancel.value = 1
+    await RisingEdge(dut.clk)
+    dut.cancel.value = 0
+    await RisingEdge(dut.clk)
+    assert dut.error.value == 1, "Expected error signal to be set after cancellation"
+    await RisingEdge(dut.clk)
+
+    await RisingEdge(dut.clk)
+    assert dut.error.value == 0, "Expected error signal not be set in cancellation after a clock  "
+    await Timer(50, units='ns')   
+
+
+# Task to insert coins without selecting an item
+async def insert_coins_without_item_button(dut):
+    coin = 5
+    await RisingEdge(dut.clk) 
+    dut.item_selected.value = 0
+    await RisingEdge(dut.clk) 
+    dut.coin_input.value = coin
+    await RisingEdge(dut.clk)
+    dut.coin_input.value = 0
+    await RisingEdge(dut.clk) 
+    assert dut.error.value == 1, "Expected error signal to be set when coins are inserted without item selection"
+    dut._log.info(f"Inserted coin: {coin} without selecting an item")
+    await RisingEdge(dut.clk)   
+    assert dut.return_money.value == 1, "Expected return_money signal to be high when no item selected"
+    assert dut.error.value == 0, "Expected error signal not be set when coins are inserted without item selection after a clock"
+    dut._log.info("Coins returned successfully when inserted without item selection.")
+    await RisingEdge(dut.clk) 
+    assert dut.return_money.value == 0, "Expected return_money signal not be high when no item selected after a clock"
+    await Timer(50, units='ns')
+
+# Task to insert an invalid coin during payment validation
+async def insert_invalid_coin_during_payment_validation(dut):
+    item_id = 1
+    await select_item(dut, item_id)
+    dut._log.info(f"Selected item {item_id}")
+    await insert_coins(dut, 1)
+    dut.coin_input.value = 3
+    await RisingEdge(dut.clk)   
+    dut.coin_input.value = 0 
+    await RisingEdge(dut.clk) 
+    assert dut.return_money.value == 1, "Expected return_money signal to be high after inserting invalid coin"
+    assert dut.error.value == 1, "Expected error signal to be set after inserting invalid coin"
+    dut._log.info("Invalid coin insertion handled successfully.")
+    await RisingEdge(dut.clk) 
+
+    assert dut.return_money.value == 0, "Expected return_money signal not be high after inserting invalid coin after a clock"
+    assert dut.error.value == 0, "Expected error signal not be set after inserting invalid coin after a clock"
+    await Timer(50, units='ns') 
+
+
+@cocotb.test()
+async def test_vending_machine(dut):
+
+    print("start of vending machine")
+
+    # Start the clock with a 10ns time period (100 MHz clock)
+    cocotb.start_soon(Clock(dut.clk, 10, units='ns').start())
+
+    # Initialize the DUT signals with default 0
+    await hrs_lb.dut_init(dut)
+
+    # Reset the DUT rst_n signal
+    await hrs_lb.reset_dut(dut.rst, duration_ns=25, active=False)
+
+    await RisingEdge(dut.clk) 
+
+    await random_purchase(dut)
+
+    await random_cancel_purchase(dut)
+
+    await invalid_item_selection(dut)
+
+    await multiple_purchases_without_reset(dut)
+
+    await random_coin_validation(dut)
+
+    await reset_during_transaction(dut)
+
+    await random_purchase(dut)
+
+    await insert_coins_without_selecting_item(dut)
+
+    await cancel_after_selecting_item(dut)
+
+    await insert_coins_without_item_button(dut)
+
+    await insert_invalid_coin_during_payment_validation(dut)
+
+

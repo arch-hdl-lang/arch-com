@@ -1,0 +1,55 @@
+module sync_muller_c_element
+  param NUM_INPUT: const = 2;
+  param PIPE_DEPTH: const = 1;
+
+  port clk:    in Clock<SysDomain>;
+  port srst:   in Reset<Sync>;
+  port clr:    in UInt<1>;
+  port clk_en: in UInt<1>;
+  port inp:    in UInt<NUM_INPUT>;
+  port out:    out UInt<1>;
+
+  default seq on clk rising;
+
+  reg pipe: Vec<UInt<NUM_INPUT>, PIPE_DEPTH> reset srst=>0;
+  reg out_r: UInt<1> reset srst=>0;
+
+  wire all_ones: Bool;
+  wire all_zeros: Bool;
+
+  comb
+    all_ones = &pipe[PIPE_DEPTH - 1];
+    all_zeros = ~|pipe[PIPE_DEPTH - 1];
+  end comb
+
+  seq
+    if srst
+      for i in 0..PIPE_DEPTH-1
+        pipe[i] <= 0;
+      end for
+      out_r <= 0;
+    elsif clr
+      for i in 0..PIPE_DEPTH-1
+        pipe[i] <= 0;
+      end for
+      out_r <= 0;
+    else
+      if clk_en
+        pipe[0] <= inp;
+        for i in 1..PIPE_DEPTH-1
+          pipe[i] <= pipe[i - 1];
+        end for
+      end if
+
+      if clk_en
+        if all_ones
+          out_r <= 1;
+        elsif all_zeros
+          out_r <= 0;
+        end if
+      end if
+    end if
+  end seq
+
+  comb out = out_r;
+end module sync_muller_c_element

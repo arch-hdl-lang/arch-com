@@ -1,0 +1,27 @@
+module baud_rate_generator
+  param CLOCK_FREQ: const = 100000000;
+  param BAUD_RATE: const = 115200;
+  param BAUD_ACC_WIDTH: const = 16;
+  port clock:     in Clock<SysDomain>;
+  port reset_neg: in Reset<Async, Low>;
+  port enable:    in Bool;
+  port baud_pulse: out Bool;
+
+  default seq on clock rising;
+
+  let baud_inc: UInt<BAUD_ACC_WIDTH + 1> = (((BAUD_RATE << (BAUD_ACC_WIDTH - 4)) + (CLOCK_FREQ >> 5)) / (CLOCK_FREQ >> 4)).trunc<BAUD_ACC_WIDTH + 1>();
+
+  reg baud_acc: UInt<BAUD_ACC_WIDTH + 1> reset reset_neg=>0;
+
+  seq
+    if ~reset_neg
+      baud_acc <= 0;
+    elsif enable
+      baud_acc <= (baud_acc[BAUD_ACC_WIDTH - 1 : 0].zext<BAUD_ACC_WIDTH + 1>() + baud_inc).trunc<BAUD_ACC_WIDTH + 1>();
+    else
+      baud_acc <= 0;
+    end if
+  end seq
+
+  comb baud_pulse = baud_acc[BAUD_ACC_WIDTH];
+end module baud_rate_generator

@@ -1,0 +1,19 @@
+module single_neuron_dut
+  port clk:     in Clock<SysDomain>;
+  port rst_n:   in Reset<Sync, Low>;
+  port ctrl:    in Bool;
+  port seq_in:  in UInt<8>;
+  port seq_out: out UInt<8>;
+
+  default seq on clk rising;
+
+  reg state_r: UInt<8> reset rst_n = 0;
+
+  seq
+    if ctrl
+      state_r <= seq_in;
+    end if
+  end seq
+
+  comb seq_out = state_r;
+end module single_neuron_dut

@@ -34,7 +34,7 @@ module LiteBpu
   port bpu2rf_rs1_ena:   out Bool;
 
   // State: tracks whether an xN regfile read is pending
-  reg rs1xn_rdrf_r: Bool init 0 reset rst_n=0;
+  reg rs1xn_rdrf_r: Bool init 0 reset rst_n=>0;
 
   // ── Combinational intermediates ──────────────────────────────────────────
 
