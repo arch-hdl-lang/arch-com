@@ -1,0 +1,144 @@
+fsm vending_machine
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, High>;
+  port item_button: in Bool;
+  port item_selected: in UInt<3>;
+  port coin_input: in UInt<4>;
+  port cancel: in Bool;
+  port reg dispense_item: out Bool reset rst=false;
+  port reg return_change: out Bool reset rst=false;
+  port reg item_price: out UInt<5> reset rst=0;
+  port reg change_amount: out UInt<5> reset rst=0;
+  port reg dispense_item_id: out UInt<3> reset rst=0;
+  port reg error: out Bool reset rst=false;
+  port reg return_money: out Bool reset rst=false;
+
+  reg coins_accumulated: UInt<5> reset rst=0;
+  reg selected_item: UInt<3> reset rst=0;
+  reg selected_price: UInt<5> reset rst=0;
+  reg item_button_prev: Bool reset rst=false;
+  reg cancel_prev: Bool reset rst=false;
+
+  let item_button_edge: Bool = item_button & ~item_button_prev;
+  let cancel_edge: Bool = cancel & ~cancel_prev;
+  let valid_coin: Bool = (coin_input == 1) | (coin_input == 2) | (coin_input == 5) | (coin_input == 10);
+  let valid_item: Bool = (item_selected == 1) | (item_selected == 2) | (item_selected == 3) | (item_selected == 4);
+  let new_total: UInt<6> = (coins_accumulated.zext<6>() + coin_input.zext<6>()).trunc<6>();
+  let change_val: UInt<5> = (coins_accumulated - selected_price).trunc<5>();
+  let enough: Bool = new_total >= selected_price.zext<6>();
+  let lookup_price: UInt<5> = item_selected == 1 ? 5 :
+                              item_selected == 2 ? 10 :
+                              item_selected == 3 ? 15 :
+                              item_selected == 4 ? 20 : 0;
+
+  state IDLE, ITEM_SELECTION, COIN_ACCEPT, DISPENSE, CHANGE_CHECK, RETURN_CHANGE, ERROR;
+  default state IDLE;
+  default seq on clk rising;
+
+  default
+    seq
+      item_button_prev <= item_button;
+      cancel_prev <= cancel;
+      dispense_item <= false;
+      return_change <= false;
+      error <= false;
+      return_money <= false;
+      change_amount <= 0;
+    end seq
+  end default
+
+  state IDLE
+    seq
+      item_price <= 0;
+      coins_accumulated <= 0;
+      if coin_input != 0
+        coins_accumulated <= coin_input.zext<5>();
+        error <= true;
+      end if
+    end seq
+    transition to ITEM_SELECTION when item_button_edge;
+    transition to ERROR when coin_input != 0;
+  end state IDLE
+
+  state ITEM_SELECTION
+    seq
+      if cancel_edge
+        error <= true;
+      elsif valid_item
+        selected_item <= item_selected;
+        selected_price <= lookup_price;
+        item_price <= lookup_price;
+      elsif coin_input != 0
+        coins_accumulated <= coin_input.zext<5>();
+        error <= true;
+      end if
+    end seq
+    transition to ERROR when cancel_edge;
+    transition to COIN_ACCEPT when valid_item;
+    transition to ERROR when coin_input != 0;
+  end state ITEM_SELECTION
+
+  state COIN_ACCEPT
+    seq
+      item_price <= selected_price;
+      if cancel_edge
+        error <= true;
+      elsif coin_input != 0
+        if valid_coin
+          coins_accumulated <= new_total.trunc<5>();
+        else
+          error <= true;
+          return_money <= true;
+          coins_accumulated <= 0;
+          item_price <= 0;
+        end if
+      end if
+    end seq
+    transition to ERROR when cancel_edge;
+    transition to IDLE when (coin_input != 0) & ~valid_coin;
+    transition to DISPENSE when (coin_input != 0) & valid_coin & enough;
+  end state COIN_ACCEPT
+
+  state DISPENSE
+    seq
+      dispense_item <= true;
+      dispense_item_id <= selected_item;
+    end seq
+    transition to CHANGE_CHECK;
+  end state DISPENSE
+
+  state CHANGE_CHECK
+    seq
+      if coins_accumulated > selected_price
+        change_amount <= change_val;
+      else
+        coins_accumulated <= 0;
+        item_price <= 0;
+      end if
+    end seq
+    transition to RETURN_CHANGE when coins_accumulated > selected_price;
+    transition to IDLE when ~(coins_accumulated > selected_price);
+  end state CHANGE_CHECK
+
+  state RETURN_CHANGE
+    seq
+      return_change <= true;
+      change_amount <= change_val;
+      coins_accumulated <= 0;
+      item_price <= 0;
+    end seq
+    transition to IDLE;
+  end state RETURN_CHANGE
+
+  state ERROR
+    seq
+      if coins_accumulated > 0
+        return_money <= true;
+      end if
+      coins_accumulated <= 0;
+      item_price <= 0;
+    end seq
+    transition to IDLE;
+  end state ERROR
+
+end fsm vending_machine

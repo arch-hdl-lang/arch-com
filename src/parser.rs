@@ -1911,8 +1911,15 @@ impl Parser {
                     self.expect(TokenKind::Semi)?;
                 }
                 Some(TokenKind::Default) => {
-                    // Peek ahead: `default seq on ...;` sets the seq clock default
-                    if self.pos + 1 < self.tokens.len() && self.tokens[self.pos + 1].kind == TokenKind::Seq {
+                    // Peek ahead: `default seq on ...;` sets the seq clock default.
+                    // Only treat it as the one-liner form if `seq` is on the same line
+                    // (no newline between `default` and `seq`), so that a `default` block
+                    // whose first body line is `seq ...` is not misidentified.
+                    let default_span = self.tokens[self.pos].span;
+                    let next_is_seq_same_line = self.pos + 1 < self.tokens.len()
+                        && self.tokens[self.pos + 1].kind == TokenKind::Seq
+                        && !self.has_newline_between(default_span.end, self.tokens[self.pos + 1].span.start);
+                    if next_is_seq_same_line {
                         self.parse_seq_default_decl()?;
                         continue;
                     }
@@ -2097,8 +2104,12 @@ impl Parser {
         let start = self.expect(TokenKind::Transition)?.span;
         self.expect(TokenKind::To)?;
         let target = self.expect_ident()?;
-        self.expect(TokenKind::When)?;
-        let condition = self.parse_expr()?;
+        // `when <cond>` is optional — omitting it means unconditional (always true)
+        let condition = if self.eat(TokenKind::When) {
+            self.parse_expr()?
+        } else {
+            Expr { kind: ExprKind::Bool(true), span: target.span, parenthesized: false }
+        };
         self.expect(TokenKind::Semi)?;
         let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
         Ok(Transition {
@@ -2297,11 +2308,25 @@ impl Parser {
         let start = self.expect(TokenKind::Fifo)?.span;
         let name = self.expect_ident()?;
 
+        let mut kind: Option<FifoKind> = None;
         let mut params = Vec::new();
         let mut ports = Vec::new();
 
         while !self.check_end_fifo() {
             match self.peek_kind() {
+                Some(TokenKind::Kind) => {
+                    self.advance();
+                    let val = self.expect_ident()?;
+                    self.expect(TokenKind::Semi)?;
+                    kind = Some(match val.name.as_str() {
+                        "fifo" => FifoKind::Fifo,
+                        "lifo" => FifoKind::Lifo,
+                        other => return Err(CompileError::general(
+                            &format!("unknown fifo kind `{other}`; expected fifo or lifo"),
+                            val.span,
+                        )),
+                    });
+                }
                 Some(TokenKind::Param) => params.push(self.parse_param_decl()?),
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
@@ -2312,7 +2337,7 @@ impl Parser {
                 }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "param, port, assert, or cover",
+                        "kind, param, port, assert, or cover",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -2331,6 +2356,7 @@ impl Parser {
         Ok(FifoDecl {
             span: start.merge(closing.span),
             name,
+            kind: kind.unwrap_or(FifoKind::Fifo),
             params,
             ports,
         })
@@ -2810,11 +2836,11 @@ impl Parser {
 
         let mut params = Vec::new();
         let mut ports = Vec::new();
-        let mut mode: Option<CounterMode> = None;
+        let mut kind: Option<CounterMode> = None;
         let mut direction: Option<CounterDirection> = None;
         let mut init: Option<Expr> = None;
 
-        // Phase 1: attributes (mode, direction, init) — must come first
+        // Phase 1: attributes (kind, direction, init) — must come first
         while !self.check_end_of(TokenKind::Counter) {
             if self.check(TokenKind::Param) || self.check(TokenKind::Port)
                 || self.check(TokenKind::Assert) || self.check(TokenKind::Cover) {
@@ -2825,19 +2851,18 @@ impl Parser {
                 self.expect(TokenKind::Colon)?;
                 init = Some(self.parse_expr()?);
                 self.expect(TokenKind::Semi)?;
-            } else if self.check_ident("mode") {
+            } else if self.check(TokenKind::Kind) {
                 self.advance();
-                self.expect(TokenKind::Colon)?;
                 let val = self.expect_ident()?;
                 self.expect(TokenKind::Semi)?;
-                mode = Some(match val.name.as_str() {
+                kind = Some(match val.name.as_str() {
                     "wrap"     => CounterMode::Wrap,
                     "saturate" => CounterMode::Saturate,
                     "gray"     => CounterMode::Gray,
                     "one_hot"  => CounterMode::OneHot,
                     "johnson"  => CounterMode::Johnson,
                     other => return Err(CompileError::general(
-                        &format!("unknown counter mode `{other}`"),
+                        &format!("unknown counter kind `{other}`; expected wrap, saturate, gray, one_hot, or johnson"),
                         val.span,
                     )),
                 });
@@ -2857,7 +2882,7 @@ impl Parser {
                 });
             } else {
                 return Err(CompileError::unexpected_token(
-                    "mode, direction, or init",
+                    "kind, direction, or init",
                     &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
                     self.peek_span(),
                 ));
@@ -2893,10 +2918,10 @@ impl Parser {
             return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
         }
 
-        let mode = mode.unwrap_or(CounterMode::Wrap);
+        let kind = kind.unwrap_or(CounterMode::Wrap);
         let direction = direction.unwrap_or(CounterDirection::Up);
         let span = start.merge(closing.span);
-        Ok(CounterDecl { span, name, params, ports, mode, direction, init })
+        Ok(CounterDecl { span, name, params, ports, kind, direction, init })
     }
 
     fn check_end_of(&self, kw: TokenKind) -> bool {

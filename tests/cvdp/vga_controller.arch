@@ -1,0 +1,153 @@
+use VgaPkg;
+
+module vga_controller
+  param H_ACTIVE[9:0]: const = 640;
+  param H_FRONT[9:0]:  const = 16;
+  param H_PULSE[9:0]:  const = 96;
+  param H_BACK[9:0]:   const = 48;
+  param V_ACTIVE[9:0]: const = 480;
+  param V_FRONT[9:0]:  const = 10;
+  param V_PULSE[9:0]:  const = 2;
+  param V_BACK[9:0]:   const = 33;
+
+  port clock: in Clock<SysDomain>;
+  port reset: in Reset<Async, High>;
+  port color_in: in UInt<8>;
+
+  port reg hsync: out Bool reset reset=true;
+  port reg vsync: out Bool reset reset=true;
+  port reg red: out UInt<8> reset reset=0;
+  port reg green: out UInt<8> reset reset=0;
+  port reg blue: out UInt<8> reset reset=0;
+  port reg next_x: out UInt<10> reset reset=0;
+  port reg next_y: out UInt<10> reset reset=0;
+  port sync: out Bool;
+  port clk_out: out Clock<SysDomain>;
+  port reg blank: out Bool reset reset=0;
+
+  reg h_counter: UInt<10> reset reset=0;
+  reg v_counter: UInt<10> reset reset=0;
+  reg h_state: VgaPhase reset reset=VgaPhase::ST_ACTIVE;
+  reg v_state: VgaPhase reset reset=VgaPhase::ST_ACTIVE;
+  reg line_done: Bool reset reset=false;
+
+  wire h_active: Bool;
+  wire v_active: Bool;
+
+  comb sync = false;
+  comb clk_out = clock;
+  comb h_active = (h_state == VgaPhase::ST_ACTIVE);
+  comb v_active = (v_state == VgaPhase::ST_ACTIVE);
+
+  default seq on clock rising;
+
+  seq
+    if h_state == VgaPhase::ST_ACTIVE
+      if h_counter == H_ACTIVE - 1
+        h_counter <= 0;
+        h_state <= VgaPhase::ST_FRONT;
+      else
+        h_counter <= (h_counter + 1).trunc<10>();
+      end if
+    elsif h_state == VgaPhase::ST_FRONT
+      if h_counter == H_FRONT - 1
+        h_counter <= 0;
+        h_state <= VgaPhase::ST_PULSE;
+      else
+        h_counter <= (h_counter + 1).trunc<10>();
+      end if
+    elsif h_state == VgaPhase::ST_PULSE
+      if h_counter == H_PULSE - 1
+        h_counter <= 0;
+        h_state <= VgaPhase::ST_BACK;
+      else
+        h_counter <= (h_counter + 1).trunc<10>();
+      end if
+    else
+      if h_counter == H_BACK - 1
+        h_counter <= 0;
+        h_state <= VgaPhase::ST_ACTIVE;
+        line_done <= true;
+      else
+        h_counter <= (h_counter + 1).trunc<10>();
+        line_done <= false;
+      end if
+    end if
+  end seq
+
+  seq
+    if line_done
+      if v_state == VgaPhase::ST_ACTIVE
+        if v_counter == V_ACTIVE - 1
+          v_counter <= 0;
+          v_state <= VgaPhase::ST_FRONT;
+        else
+          v_counter <= (v_counter + 1).trunc<10>();
+        end if
+      elsif v_state == VgaPhase::ST_FRONT
+        if v_counter == V_FRONT - 1
+          v_counter <= 0;
+          v_state <= VgaPhase::ST_PULSE;
+        else
+          v_counter <= (v_counter + 1).trunc<10>();
+        end if
+      elsif v_state == VgaPhase::ST_PULSE
+        if v_counter == V_PULSE - 1
+          v_counter <= 0;
+          v_state <= VgaPhase::ST_BACK;
+        else
+          v_counter <= (v_counter + 1).trunc<10>();
+        end if
+      else
+        if v_counter == V_BACK - 1
+          v_counter <= 0;
+          v_state <= VgaPhase::ST_ACTIVE;
+        else
+          v_counter <= (v_counter + 1).trunc<10>();
+        end if
+      end if
+    end if
+  end seq
+
+  seq
+    if h_state == VgaPhase::ST_PULSE
+      hsync <= false;
+    else
+      hsync <= true;
+    end if
+
+    if v_state == VgaPhase::ST_PULSE
+      vsync <= false;
+    else
+      vsync <= true;
+    end if
+  end seq
+
+  seq
+    if h_active
+      if v_active
+        red <= {color_in[7:5], 5'b00000};
+        green <= {color_in[4:2], 5'b00000};
+        blue <= {color_in[1:0], 6'b000000};
+        next_x <= h_counter;
+        next_y <= v_counter;
+        blank <= false;
+      else
+        red <= 0;
+        green <= 0;
+        blue <= 0;
+        next_x <= 0;
+        next_y <= 0;
+        blank <= true;
+      end if
+    else
+      red <= 0;
+      green <= 0;
+      blue <= 0;
+      next_x <= 0;
+      next_y <= 0;
+      blank <= true;
+    end if
+  end seq
+
+end module vga_controller

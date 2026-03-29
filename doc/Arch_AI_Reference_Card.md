@@ -6,9 +6,11 @@
 
 > keyword Name
 >
-> param NAME: const = value; // compile-time constant
+> param NAME: const = value;        // untyped int → `parameter int` (32-bit)
 >
-> param NAME: type = SomeType; // compile-time type parameter
+> param NAME[hi:lo]: const = value; // width-qualified → `parameter [hi:lo]` (use to avoid WIDTHEXPAND)
+>
+> param NAME: type = SomeType;      // compile-time type parameter
 >
 > port name: in TypeExpr;
 >
@@ -95,6 +97,8 @@
 > UInt\<N\> SInt\<N\> Bool Bit
 >
 > Clock\<Domain\> Reset\<Sync\|Async, High\|Low\> (polarity defaults High)
+>
+> Clock\<Domain\> may be `out` — use for passthrough (`comb clk_out = clk_in;`), gating (`comb clk_out = clk_in & en;`), or division (`reg toggle; seq toggle <= ~toggle; comb clk_out = toggle;`). For integrated latch-based gating use the `clkgate` construct.
 >
 > SysDomain is built-in --- no `domain SysDomain end domain SysDomain` needed
 >
@@ -309,11 +313,11 @@
 |                                          |                                           |
 | comb fire\_irq = true; end comb          |                                           |
 |                                          |                                           |
-| transition to Idle when true;            |                                           |
-|                                          |                                           |
+| transition to Idle;                      | Unconditional transition (no `when`):     |
+|                                          | omit `when` to always advance.            |
 | end state Done                           |                                           |
-|                                          |                                           |
-| end fsm Name                             |                                           |
+|                                          | One-liner unconditional:                  |
+| end fsm Name                             | state Flush transition to Idle;           |
 +------------------------------------------+-------------------------------------------+
 
 **fsm datapath extension** --- `reg`, `let`, and `seq` inside FSMs:
@@ -334,18 +338,20 @@ fsm MulDiv
 end fsm MulDiv
 ```
 
-**fifo --- sync or dual-clock async (gray-code auto-generated)**
+**fifo --- sync or dual-clock async (gray-code auto-generated); kind: fifo (default) | lifo**
 
 +--------------------------------------------------------+-------------------------------+
 | fifo Name                                              | Dual-clock: replace clk with  |
 |                                                        |                               |
-| param DEPTH: const = 64;                               | port wr_clk: in Clock\<WrD\>; |
+| kind lifo; // optional, default fifo                   | port wr_clk: in Clock\<WrD\>; |
 |                                                        |                               |
-| param WIDTH: type = UInt\<32\>;                        | port rd_clk: in Clock\<RdD\>; |
+| param DEPTH: const = 64;                               | port rd_clk: in Clock\<RdD\>; |
 |                                                        |                               |
-| port clk: in Clock\<D\>; // or wr_clk+rd_clk for async | Compiler adds gray-code CDC.  |
+| param WIDTH: type = UInt\<32\>;                        | Compiler adds gray-code CDC.  |
 |                                                        |                               |
-| port rst: in Reset\<Sync\>;                            |                               |
+| port clk: in Clock\<D\>; // or wr_clk+rd_clk for async | kind lifo restricted to       |
+|                                                        |                               |
+| port rst: in Reset\<Sync\>;                            | single-clock only.            |
 |                                                        |                               |
 | port push_valid: in Bool;                              |                               |
 |                                                        |                               |
@@ -441,7 +447,7 @@ CDC detection covers both seq→seq and comb→seq crossings: a comb block readi
 **counter --- wrap/saturate/gray/one_hot/johnson**
 
 +-----------------------------------+--------------------------------------+
-| counter Name                      | mode: wrap\|saturate\|gray\|         |
+| counter Name                      | kind wrap\|saturate\|gray\|          |
 |                                   |   one_hot\|johnson                   |
 | param WIDTH: const = 8;           |                                      |
 |                                   | direction: up\|down\|up_down         |
@@ -455,7 +461,7 @@ CDC detection covers both seq→seq and comb→seq crossings: a comb block readi
 |                                   |                                      |
 | port at_max: out Bool;            |                                      |
 |                                   |                                      |
-| mode: wrap;                       |                                      |
+| kind wrap;                        |                                      |
 |                                   |                                      |
 | direction: up;                    |                                      |
 |                                   |                                      |

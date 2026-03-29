@@ -363,9 +363,11 @@ A module is the fundamental unit of design in Arch. Every module follows the sam
 |                                                                                |
 | // keyword Name                                                                |
 |                                                                                |
-| // param NAME: const = value; // section 1: compile-time parameters            |
+| // param NAME: const = value;       // untyped int — emits `parameter int`     |
 |                                                                                |
-| // param NAME: type = SomeType;                                                |
+| // param NAME[hi:lo]: const = value; // width-qualified — emits `parameter [hi:lo]` |
+|                                                                                |
+| // param NAME: type = SomeType;     // type alias — emits `parameter type`     |
 |                                                                                |
 | //                                                                             |
 |                                                                                |
@@ -712,6 +714,17 @@ end module Counter
 
 **`multicycle` reg annotation (planned)** — `reg result: UInt<32> multicycle 3 reset rst=0;` declares that the combinational path feeding this register has a multi-cycle timing budget. Unlike `pipe_reg` (which inserts N physical flip-flop stages), a `multicycle` register remains a single flop — no extra area or power. The compiler auto-detects all input signals feeding the register by walking the assignment expression tree. Three modes of enforcement: (1) **Simulation** (`--check-uninit`): hidden valid tracking with input change detection and latency counter; reads before the counter expires return poison/X. (2) **Synthesis**: SDC constraint generation (`set_multicycle_path N -to result`). (3) **Formal**: optional `assert property` to verify the multicycle timing assumption holds.
 
+**4.2.4 Width-Qualified Parameters**
+
+An untyped `param NAME: const = value` emits `parameter int NAME = value` in SystemVerilog (32-bit signed). When a parameter is compared or assigned against a specific-width signal, this width mismatch produces Verilator `WIDTHEXPAND` warnings. Use the bracket form to declare the parameter's bit width explicitly:
+
+```
+param H_ACTIVE[9:0]: const = 640;   // emits: parameter [9:0] H_ACTIVE = 640
+param H_FRONT[9:0]:  const = 16;    // emits: parameter [9:0] H_FRONT  = 16
+```
+
+The compiler validates that the default value fits within the declared range. Comparisons with `UInt<10>` signals are now width-matched and Verilator-clean.
+
 **4.3 Module Instantiation**
 
 +--------------------------------------------------------------------+
@@ -831,6 +844,40 @@ Every Clock signal in Arch carries a domain tag as part of its type. The compile
 +---------------------------------------------------------------------------+
 
 > *⚑ The compiler generates a verified synchroniser for each crossing declaration. Engineers choose the policy; correctness of the CDC structure is guaranteed by the language, not by convention or code review.*
+
+**5.3 Clock Output Ports**
+
+`Clock<Domain>` may appear as an output port direction in any module, enabling clock passthrough, gating, and division:
+
+```
+// Passthrough
+module ClkPassthrough
+  port clk_in:  in Clock<SysDomain>;
+  port clk_out: out Clock<SysDomain>;
+  comb clk_out = clk_in;
+end module ClkPassthrough
+
+// Inline gate (AND with enable)
+module ClkGate
+  port clk_in:  in Clock<SysDomain>;
+  port enable:  in Bool;
+  port clk_out: out Clock<SysDomain>;
+  comb clk_out = clk_in & enable;
+end module ClkGate
+
+// Divide-by-2
+module ClkDiv2
+  port clk_in:  in Clock<SysDomain>;
+  port rst:     in Reset<Sync>;
+  port clk_out: out Clock<SysDomain>;
+  reg toggle: Bool reset rst=false;
+  default seq on clk_in rising;
+  seq toggle <= ~toggle; end seq
+  comb clk_out = toggle;
+end module ClkDiv2
+```
+
+A `Clock<>` output port emits `output logic` in SV and may be driven by a `comb` assignment. For dedicated clock gating with integrated latch, use the first-class `clkgate` construct instead.
 
 **6. First-Class Construct: pipeline**
 
@@ -980,6 +1027,15 @@ The compiler generates clean, separated SystemVerilog:
 
 > *⚑ The compiler verifies: every state has at least one outgoing transition (dead-end states are a compile error); no two transitions from the same state can be simultaneously enabled. If no transition fires in a given cycle, the FSM holds in the current state — a catch-all `transition to Self when true` is not required. Output ports not driven in a state and not covered by a `default` block will be X in the generated Verilog.*
 
+**Unconditional transitions.** The `when <cond>` clause is optional. Omitting it produces an unconditional transition that always fires:
+
+```
+state Dispense
+  seq dispense_item <= true; end seq
+  transition to ChangeCheck;        // always advances — no `when` needed
+end state Dispense
+```
+
 **7.1.1 One-Line State Syntax**
 
 States that have only a single transition and no output or datapath logic can be written on one line, omitting the `end state Name` closing:
@@ -987,6 +1043,7 @@ States that have only a single transition and no output or datapath logic can be
 ```
 state Idle transition to Run when go;
 state Wait transition to Done when ack;
+state Flush transition to Idle;     // unconditional one-liner
 ```
 
 This is equivalent to the full form:
@@ -1039,6 +1096,15 @@ end
 **8. First-Class Construct: fifo**
 
 A fifo is a first-class construct with compile-time-verified flow control. The designer specifies depth, width, and domain. The compiler generates the full implementation --- counters, full/empty flags, and gray-code pointer CDC for dual-clock FIFOs.
+
+The optional `kind` keyword selects the buffering discipline (same syntax as `ram`). If omitted, the default is `fifo`.
+
+| **Kind** | **Behaviour** | **Implementation** |
+|----------|---------------|--------------------|
+| `fifo` (default) | First-in, first-out (queue) | Circular buffer with read/write pointers |
+| `lifo` | Last-in, first-out (stack) | Memory with single stack pointer; push writes at sp, pop reads at sp-1 |
+
+> ◈ `kind lifo` is restricted to single-clock (synchronous) FIFOs. Dual-clock LIFO is a compile error --- stacks are inherently single-domain structures.
 
 **8.1 Single-Clock FIFO**
 
@@ -1107,6 +1173,44 @@ A fifo is a first-class construct with compile-time-verified flow control. The d
 +--------------------------------------------------------------------+
 
 > ◈ When two different Clock domains are detected on wr_clk and rd_clk, the compiler automatically selects gray-code pointer synchronisation. This can be overridden with an explicit sync: policy annotation inside the fifo body.
+
+**8.2a LIFO (Stack)**
+
++--------------------------------------------------------------------+
+| *lifo_stack.arch*                                                  |
+|                                                                    |
+| **fifo** LifoStack                                                 |
+|                                                                    |
+| **kind** lifo;                                                     |
+|                                                                    |
+| **param** DEPTH: **const** = 16;                                   |
+|                                                                    |
+| **param** TYPE: **type** = UInt\<8\>;                              |
+|                                                                    |
+| **port** clk: **in** Clock\<SysDomain\>;                           |
+|                                                                    |
+| **port** rst: **in** Reset\<Sync\>;                                |
+|                                                                    |
+| **port** push_valid: **in** Bool;                                  |
+|                                                                    |
+| **port** push_ready: **out** Bool;                                 |
+|                                                                    |
+| **port** push_data: **in** TYPE;                                   |
+|                                                                    |
+| **port** pop_valid: **out** Bool;                                  |
+|                                                                    |
+| **port** pop_ready: **in** Bool;                                   |
+|                                                                    |
+| **port** pop_data: **out** TYPE;                                   |
+|                                                                    |
+| **port** **full**: **out** Bool;                                   |
+|                                                                    |
+| **port** **empty**: **out** Bool;                                  |
+|                                                                    |
+| **end** **fifo** LifoStack                                         |
++--------------------------------------------------------------------+
+
+> ◈ The LIFO uses a single stack pointer `sp`. Push writes at `mem[sp]` and increments; pop decrements and reads `mem[sp-1]`. Simultaneous push+pop replaces the top of stack without changing the pointer. The same push/pop handshake protocol (valid/ready) is used for both FIFO and LIFO.
 
 **8.3 First-Class Construct: synchronizer**
 
@@ -3342,7 +3446,7 @@ A counter is a first-class construct that captures the full variety of hardware 
 **17.1 Counter Modes**
 
   -----------------------------------------------------------------------------------------------------------------------------------------------
-  **mode**       **Behaviour at Limit**                          **Encoding**   **Primary Use**
+  **kind**       **Behaviour at Limit**                          **Encoding**   **Primary Use**
   -------------- ----------------------------------------------- -------------- -----------------------------------------------------------------
   **wrap**       Overflows back to 0 (or max)                    Binary         FIFOs, address generators, time slices
 
@@ -3370,7 +3474,7 @@ A counter is a first-class construct that captures the full variety of hardware 
 |                                                                                            |
 | **port** rst: **in** Reset\<Sync\>;                                                        |
 |                                                                                            |
-| mode: saturate;                                                                            |
+| **kind** saturate;                                                                         |
 |                                                                                            |
 | direction: up_down; // up \| down \| up_down                                               |
 |                                                                                            |
@@ -3398,7 +3502,7 @@ A counter is a first-class construct that captures the full variety of hardware 
 |                                                                                            |
 | **port** rst: **in** Reset\<Async\>;                                                       |
 |                                                                                            |
-| mode: gray;                                                                                |
+| **kind** gray;                                                                             |
 |                                                                                            |
 | direction: up;                                                                             |
 |                                                                                            |
@@ -3428,7 +3532,7 @@ A counter is a first-class construct that captures the full variety of hardware 
 |                                                                          |
 | **port** rst: **in** Reset\<Sync\>;                                      |
 |                                                                          |
-| mode: one_hot;                                                           |
+| **kind** one_hot;                                                        |
 |                                                                          |
 | direction: up;                                                           |
 |                                                                          |
@@ -3452,7 +3556,7 @@ A counter is a first-class construct that captures the full variety of hardware 
 |                                                                          |
 | **port** rst: **in** Reset\<Sync\>;                                      |
 |                                                                          |
-| mode: johnson;                                                           |
+| **kind** johnson;                                                        |
 |                                                                          |
 | direction: up;                                                           |
 |                                                                          |
@@ -3465,7 +3569,7 @@ A counter is a first-class construct that captures the full variety of hardware 
 | **end** counter PhaseGen                                                 |
 +--------------------------------------------------------------------------+
 
-> *⚑ The compiler rejects impossible combinations at compile time --- for example, mode: gray with direction: up_down is undefined (Gray codes only have a defined unidirectional sequence) and mode: one_hot with saturate semantics is self-contradictory.*
+> *⚑ The compiler rejects impossible combinations at compile time --- for example, kind gray with direction: up_down is undefined (Gray codes only have a defined unidirectional sequence) and kind one_hot with saturate semantics is self-contradictory.*
 
 **18. First-Class Construct: pqueue**
 
