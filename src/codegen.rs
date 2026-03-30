@@ -1717,7 +1717,19 @@ impl<'a> Codegen<'a> {
                 self.indent -= 1;
                 self.line("end");
             }
-            GenerateDecl::If(_) => {} // not yet supported
+            GenerateDecl::If(gi) => {
+                let cond_str = self.emit_expr_str(&gi.cond);
+                self.line(&format!("if ({cond_str}) begin : gen_if"));
+                self.indent += 1;
+                for item in &gi.then_items {
+                    match item {
+                        GenItem::Inst(inst) => self.emit_inst(inst),
+                        GenItem::Port(_) => {}
+                    }
+                }
+                self.indent -= 1;
+                self.line("end");
+            }
         }
     }
 
