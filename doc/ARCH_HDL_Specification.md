@@ -435,7 +435,7 @@ Arch has exactly two assignment forms. Mixing operators between them is a compil
 |                                                                    |
 | **port** count: **out** UInt\<WIDTH\>;                             |
 |                                                                    |
-| **reg** count_r: UInt\<WIDTH\> **reset** rst=0;                    |
+| **reg** count_r: UInt\<WIDTH\> **reset** rst=\>0;                  |
 |                                                                    |
 | **always** **on** clk rising                                       |
 |                                                                    |
@@ -7902,6 +7902,33 @@ The generated SystemVerilog is guaranteed to contain none of the following:
 - X-propagation from uninitialised state --- all reg declarations require a reset value (via `reset SIGNAL=>VALUE`).
 
 - Implicit clock-domain crossings --- all CDCs are declared and synchroniser-wrapped.
+
+**14.2.1 Compiler Warnings**
+
+The compiler emits warnings (non-fatal, printed before "OK: no errors") for the following:
+
+- **`todo!` sites** --- every `todo!` expression or block body emits a warning. Simulation aborts if one is reached at runtime.
+
+- **Redundant reset branch** --- a `seq` block whose top-level `if` tests a reset signal that also appears in a `reset signal=>value` declaration. The `if` branch is dead code because the declaration already generates an outer reset guard:
+
+  ```
+  reg q: UInt<8> reset rst=>0;
+  seq on clk rising
+    if rst          // WARNING: redundant — dead inside the outer reset guard
+      q <= 0;
+    else
+      q <= d;
+    end if
+  end seq
+  ```
+
+  Correct form:
+
+  ```
+  seq on clk rising
+    q <= d;         // reset guard is generated from the declaration
+  end seq
+  ```
 
 > *⚑ The output guarantee means synthesis tools receive RTL that passes lint clean with no attributes, no translate_off pragmas, and no synthesis workarounds required.*
 

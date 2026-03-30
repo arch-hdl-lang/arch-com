@@ -400,6 +400,13 @@ Notes: two Clock ports must reference different domains (compile error otherwise
 
 Type checker warnings/errors: `kind ff` with multi-bit data (UInt\<N\> where N>1) warns — use `kind gray` or `kind handshake` instead. `kind reset` and `kind pulse` error if data is not Bool.
 
+**Compiler Warnings**
+
+| Warning | Cause | Fix |
+|---------|-------|-----|
+| `todo!` site | `todo!` used as placeholder | Replace with real logic |
+| Redundant reset branch | `if rst` at top of `seq` body when regs have `reset rst=>value` | Remove the `if rst` branch — the declaration generates the outer guard automatically |
+
 CDC detection covers both seq→seq and comb→seq crossings: a comb block reading a register from domain A whose output feeds a seq block in domain B is a compile error. CDC checking also extends across `inst` boundaries — the compiler traces clock port connections to map child domains to parent domains and flags any data connection that crosses domain boundaries without a synchronizer or async fifo.
 
 **ram --- FPGA BRAM / ASIC SRAM**

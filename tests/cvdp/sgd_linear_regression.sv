@@ -28,13 +28,8 @@ module sgd_linear_regression #(
       b_out <= 0;
       w_out <= 0;
     end else begin
-      if (reset) begin
-        w_out <= 0;
-        b_out <= 0;
-      end else begin
-        w_out <= DATA_WIDTH'({{(NBW_DELTA-$bits(w_out)){w_out[$bits(w_out)-1]}}, w_out} + delta_w);
-        b_out <= DATA_WIDTH'({{(NBW_DELTA-$bits(b_out)){b_out[$bits(b_out)-1]}}, b_out} + delta_b);
-      end
+      w_out <= DATA_WIDTH'({{(NBW_DELTA-$bits(w_out)){w_out[$bits(w_out)-1]}}, w_out} + delta_w);
+      b_out <= DATA_WIDTH'({{(NBW_DELTA-$bits(b_out)){b_out[$bits(b_out)-1]}}, b_out} + delta_b);
     end
   end
 

@@ -23,12 +23,7 @@ module sync_muller_c_element #(
         pipe[__ri0] <= 0;
       end
     end else begin
-      if (srst) begin
-        for (int i = 0; i <= PIPE_DEPTH - 1; i++) begin
-          pipe[i] <= 0;
-        end
-        out_r <= 0;
-      end else if (clr) begin
+      if (clr) begin
         for (int i = 0; i <= PIPE_DEPTH - 1; i++) begin
           pipe[i] <= 0;
         end

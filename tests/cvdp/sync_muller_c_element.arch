@@ -23,12 +23,7 @@ module sync_muller_c_element
   end comb
 
   seq
-    if srst
-      for i in 0..PIPE_DEPTH-1
-        pipe[i] <= 0;
-      end for
-      out_r <= 0;
-    elsif clr
+    if clr
       for i in 0..PIPE_DEPTH-1
         pipe[i] <= 0;
       end for

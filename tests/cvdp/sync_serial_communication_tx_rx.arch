@@ -9,8 +9,6 @@ module sync_serial_communication_tx_rx
   wire serial_out_w: Bool;
   wire tx_done_w:    Bool;
   wire serial_clk_w: Bool;
-  wire rx_data_out:  UInt<64>;
-  wire rx_done_w:    Bool;
 
   inst tx: tx_block
     connect clk        <- clk;
@@ -28,12 +26,8 @@ module sync_serial_communication_tx_rx
     connect data_in    <- serial_out_w;
     connect sel        <- sel;
     connect serial_clk <- serial_clk_w;
-    connect data_out   -> rx_data_out;
-    connect done       -> rx_done_w;
+    connect data_out   -> data_out;
+    connect done       -> done;
   end inst rx
 
-  comb
-    data_out = rx_data_out;
-    done = rx_done_w;
-  end comb
 end module sync_serial_communication_tx_rx

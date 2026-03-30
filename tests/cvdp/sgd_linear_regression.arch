@@ -38,13 +38,8 @@ module sgd_linear_regression
   end comb
 
   seq
-    if reset
-      w_out <= 0;
-      b_out <= 0;
-    else
-      w_out <= (w_out.sext<NBW_DELTA>() + delta_w).trunc<DATA_WIDTH>();
-      b_out <= (b_out.sext<NBW_DELTA>() + delta_b).trunc<DATA_WIDTH>();
-    end if
+    w_out <= (w_out.sext<NBW_DELTA>() + delta_w).trunc<DATA_WIDTH>();
+    b_out <= (b_out.sext<NBW_DELTA>() + delta_b).trunc<DATA_WIDTH>();
   end seq
 
 end module sgd_linear_regression

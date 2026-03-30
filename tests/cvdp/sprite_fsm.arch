@@ -1,4 +1,4 @@
-module sprite_controller_fsm
+fsm sprite_controller_fsm
   param MEM_ADDR_WIDTH: const = 16;
   param PIXEL_WIDTH: const = 24;
   param SPRITE_WIDTH: const = 16;
@@ -17,67 +17,72 @@ module sprite_controller_fsm
   port pixel_out: in UInt<PIXEL_WIDTH>;
   port reg done: out Bool reset rst_n=>false;
 
-  default seq on clk rising;
-
-  // State encoding: IDLE=0, INIT_WRITE=1, WRITE=2, INIT_READ=3, READ=4, WAIT=5, DONE=6
-  reg st: UInt<3> reset rst_n=>0;
   reg addr_cnt: UInt<MEM_ADDR_WIDTH> reset rst_n=>0;
   reg data_cnt: UInt<PIXEL_WIDTH> reset rst_n=>0;
   reg wait_cnt: UInt<WAIT_WIDTH> reset rst_n=>0;
 
-  seq
-    if st == 0
-      // IDLE
+  state IDLE, INIT_WRITE, WRITE, INIT_READ, READ, WAIT, DONE;
+  default state IDLE;
+  default seq on clk rising;
+
+  state IDLE
+    seq
       rw <= false;
       addr_cnt <= 0;
       data_cnt <= 0;
       done <= false;
-      st <= 1;
+    end seq
+    transition to INIT_WRITE;
+  end state IDLE
 
-    elsif st == 1
-      // INIT_WRITE
+  state INIT_WRITE
+    seq
       rw <= true;
       write_data <= 24'hFF0000;
       write_addr <= addr_cnt;
-      st <= 2;
+    end seq
+    transition to WRITE;
+  end state INIT_WRITE
 
-    elsif st == 2
-      // WRITE
+  state WRITE
+    seq
       write_addr <= addr_cnt;
       write_data <= data_cnt;
       addr_cnt <= (addr_cnt + 1).trunc<MEM_ADDR_WIDTH>();
       data_cnt <= (data_cnt + 1).trunc<PIXEL_WIDTH>();
-      if addr_cnt.zext<32>() == (N_ROM - 1)
-        st <= 3;
-      end if
+    end seq
+    transition to INIT_READ when addr_cnt.zext<32>() == (N_ROM - 1);
+  end state WRITE
 
-    elsif st == 3
-      // INIT_READ
+  state INIT_READ
+    seq
       rw <= false;
       addr_cnt <= 0;
-      st <= 4;
+    end seq
+    transition to READ;
+  end state INIT_READ
 
-    elsif st == 4
-      // READ: compute x/y position and advance address counter; do NOT drive write_addr
+  state READ
+    seq
       x_pos <= (addr_cnt.zext<32>() % SPRITE_WIDTH).trunc<SPRITE_WIDTH>();
       y_pos <= (addr_cnt.zext<32>() / SPRITE_WIDTH).trunc<SPRITE_HEIGHT>();
       addr_cnt <= (addr_cnt + 1).trunc<MEM_ADDR_WIDTH>();
-      if addr_cnt.zext<32>() == (SPRITE_WIDTH * SPRITE_HEIGHT - 1)
-        st <= 5;
-      end if
+    end seq
+    transition to WAIT when addr_cnt.zext<32>() == (SPRITE_WIDTH * SPRITE_HEIGHT - 1);
+  end state READ
 
-    elsif st == 5
-      // WAIT
+  state WAIT
+    seq
       wait_cnt <= (wait_cnt + 1).trunc<WAIT_WIDTH>();
-      if wait_cnt == i_wait
-        st <= 6;
-      end if
+    end seq
+    transition to DONE when wait_cnt == i_wait;
+  end state WAIT
 
-    elsif st == 6
-      // DONE
+  state DONE
+    seq
       done <= true;
-      st <= 0;
-    end if
-  end seq
+    end seq
+    transition to IDLE;
+  end state DONE
 
-end module sprite_controller_fsm
+end fsm sprite_controller_fsm
