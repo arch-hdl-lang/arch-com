@@ -1728,6 +1728,17 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 self.indent -= 1;
+                if !gi.else_items.is_empty() {
+                    self.line("end else begin : gen_else");
+                    self.indent += 1;
+                    for item in &gi.else_items {
+                        match item {
+                            GenItem::Inst(inst) => self.emit_inst(inst),
+                            GenItem::Port(_) => {}
+                        }
+                    }
+                    self.indent -= 1;
+                }
                 self.line("end");
             }
         }

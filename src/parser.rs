@@ -1343,6 +1343,17 @@ impl Parser {
                 self.advance(); // consume `if`
                 let cond = self.parse_expr()?;
                 let then_items = self.parse_gen_items_if()?;
+                // Optional `generate else ... end generate if`
+                let else_items = if self.check(TokenKind::Generate)
+                    && self.pos + 1 < self.tokens.len()
+                    && self.tokens[self.pos + 1].kind == TokenKind::Else
+                {
+                    self.advance(); // consume `generate`
+                    self.advance(); // consume `else`
+                    self.parse_gen_items_if()?
+                } else {
+                    Vec::new()
+                };
                 // Consume `end generate if`
                 self.expect(TokenKind::End)?;
                 self.expect(TokenKind::Generate)?;
@@ -1351,6 +1362,7 @@ impl Parser {
                     span: start.merge(end_span),
                     cond,
                     then_items,
+                    else_items,
                 }))
             }
             Some(other) => Err(CompileError::unexpected_token(

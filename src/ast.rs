@@ -217,6 +217,7 @@ pub struct GenerateFor {
 pub struct GenerateIf {
     pub cond: Expr,
     pub then_items: Vec<GenItem>,
+    pub else_items: Vec<GenItem>,
     pub span: Span,
 }
 

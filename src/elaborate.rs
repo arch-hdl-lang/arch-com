@@ -97,12 +97,13 @@ fn collect_raw_overrides_from_body(
         match item {
             ModuleBodyItem::Inst(inst) => record_inst(inst, out),
             ModuleBodyItem::Generate(gen) => {
-                let items = match gen {
-                    GenerateDecl::For(gf) => &gf.items,
-                    GenerateDecl::If(gi) => &gi.then_items,
+                let all_items: Vec<&GenItem> = match gen {
+                    GenerateDecl::For(gf) => gf.items.iter().collect(),
+                    GenerateDecl::If(gi) => gi.then_items.iter()
+                        .chain(gi.else_items.iter()).collect(),
                 };
-                for gi in items {
-                    if let GenItem::Inst(inst) = gi {
+                for item in all_items {
+                    if let GenItem::Inst(inst) = item {
                         record_inst(inst, out);
                     }
                 }
@@ -383,13 +384,11 @@ fn expand_generate_if(
         )]
     })?;
 
-    if !cond {
-        return Ok((Vec::new(), Vec::new()));
-    }
+    let active_items = if cond { gi.then_items } else { gi.else_items };
 
     let mut ports = Vec::new();
     let mut body = Vec::new();
-    for item in gi.then_items {
+    for item in active_items {
         match item {
             GenItem::Port(p) => ports.push(p),
             GenItem::Inst(inst) => body.push(ModuleBodyItem::Inst(inst)),
