@@ -18,10 +18,7 @@ module register
   comb data_out = mem;
 
   seq
-    if rst
-      mem <= 0;
-      data_present <= false;
-    elsif data_present
+    if data_present
       if ready_in
         if valid_in
           mem <= data_in;

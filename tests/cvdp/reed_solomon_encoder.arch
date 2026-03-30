@@ -27,12 +27,7 @@ module reed_solomon_encoder
   default seq on clk rising;
 
   seq
-    if reset
-      parity_0 <= 0;
-      parity_1 <= 0;
-      codeword_out <= 0;
-      valid_out <= false;
-    elsif enable & valid_in
+    if enable & valid_in
       parity_0 <= feedback;
       parity_1 <= parity_0 ^ fb_mult;
       codeword_out <= data_in;

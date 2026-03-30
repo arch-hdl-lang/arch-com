@@ -49,10 +49,6 @@ module pseudoRandGenerator_ca
   end comb
 
   seq
-    if reset
-      CA_out <= CA_seed;
-    else
-      CA_out <= next_ca;
-    end if
+    CA_out <= next_ca;
   end seq
 end module pseudoRandGenerator_ca

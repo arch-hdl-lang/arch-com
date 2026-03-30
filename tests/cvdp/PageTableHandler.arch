@@ -18,9 +18,7 @@ module PageTableHandler
   comb ready = rdy;
 
   seq
-    if rst
-      rdy <= false;
-    elsif miss
+    if miss
       rdy <= true;
     else
       rdy <= false;

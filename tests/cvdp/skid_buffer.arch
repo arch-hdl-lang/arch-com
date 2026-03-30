@@ -29,10 +29,7 @@ module skid_buffer
   end comb
 
   seq
-    if rst
-      buf_flag <= false;
-      data_reg <= 0;
-    elsif buf_flag
+    if buf_flag
       // buffer has data, downstream ready => release
       if i_ready
         buf_flag <= false;

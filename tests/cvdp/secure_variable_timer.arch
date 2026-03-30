@@ -20,61 +20,49 @@ module secure_variable_timer
   reg pat: UInt<4> reset i_rst_n=>0;
 
   seq
-    if i_rst_n
-      if st == 0
-        // IDLE: detect 1101 pattern
-        pat <= {pat[2:0], i_data_in};
-        if pat == 4'b1101
-          st <= 1;
-          shift_reg <= {3'b000, i_data_in};
-          bit_cnt <= 1;
-          pat <= 0;
-        end if
-      elsif st == 1
-        // CONFIG: shift in 4 bits MSB first
-        shift_reg <= {shift_reg[2:0], i_data_in};
-        bit_cnt <= (bit_cnt + 1).trunc<3>();
-        if bit_cnt == 3
-          st <= 2;
-          delay_val <= {shift_reg[2:0], i_data_in};
-          o_time_left <= {shift_reg[2:0], i_data_in};
-          o_processing <= true;
-          cycle_cnt <= 0;
-        end if
-      elsif st == 2
-        // COUNT
-        if cycle_cnt == 999
-          cycle_cnt <= 0;
-          if o_time_left == 0
-            st <= 3;
-            o_processing <= false;
-            o_completed <= true;
-          else
-            o_time_left <= (o_time_left - 1).trunc<4>();
-          end if
+    if st == 0
+      // IDLE: detect 1101 pattern
+      pat <= {pat[2:0], i_data_in};
+      if pat == 4'b1101
+        st <= 1;
+        shift_reg <= {3'b000, i_data_in};
+        bit_cnt <= 1;
+        pat <= 0;
+      end if
+    elsif st == 1
+      // CONFIG: shift in 4 bits MSB first
+      shift_reg <= {shift_reg[2:0], i_data_in};
+      bit_cnt <= (bit_cnt + 1).trunc<3>();
+      if bit_cnt == 3
+        st <= 2;
+        delay_val <= {shift_reg[2:0], i_data_in};
+        o_time_left <= {shift_reg[2:0], i_data_in};
+        o_processing <= true;
+        cycle_cnt <= 0;
+      end if
+    elsif st == 2
+      // COUNT
+      if cycle_cnt == 999
+        cycle_cnt <= 0;
+        if o_time_left == 0
+          st <= 3;
+          o_processing <= false;
+          o_completed <= true;
         else
-          cycle_cnt <= (cycle_cnt + 1).trunc<10>();
+          o_time_left <= (o_time_left - 1).trunc<4>();
         end if
       else
-        // DONE: wait for ack
-        if i_ack
-          st <= 0;
-          o_completed <= false;
-          o_processing <= false;
-          o_time_left <= 0;
-          pat <= 0;
-        end if
+        cycle_cnt <= (cycle_cnt + 1).trunc<10>();
       end if
     else
-      st <= 0;
-      pat <= 0;
-      shift_reg <= 0;
-      bit_cnt <= 0;
-      delay_val <= 0;
-      cycle_cnt <= 0;
-      o_time_left <= 0;
-      o_processing <= false;
-      o_completed <= false;
+      // DONE: wait for ack
+      if i_ack
+        st <= 0;
+        o_completed <= false;
+        o_processing <= false;
+        o_time_left <= 0;
+        pat <= 0;
+      end if
     end if
   end seq
 end module secure_variable_timer

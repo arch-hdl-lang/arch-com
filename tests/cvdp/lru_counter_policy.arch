@@ -47,16 +47,9 @@ module lru_counter_policy
 
   comb way_replace = lru_slot;
 
-  // Sequential update with reset initialization
+  // Sequential update
   seq
-    if reset
-      // Initialize: way i gets counter value i
-      for n in 0..NINDEXES-1
-        for w in 0..NWAYS-1
-          recency[n][w * CNT_W + CNT_W - 1 : w * CNT_W] <= w.trunc<CNT_W>();
-        end for
-      end for
-    elsif access
+    if access
       if hit
         // Hit: set accessed way to NWAYS-1, decrement those > accessed_cnt
         for i in 0..NWAYS-1
