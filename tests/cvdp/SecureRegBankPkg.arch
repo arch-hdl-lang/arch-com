@@ -1,0 +1,5 @@
+package SecureRegBankPkg
+  enum LockState
+    LOCKED, GOT_CODE0, UNLOCKED
+  end enum LockState
+end package SecureRegBankPkg

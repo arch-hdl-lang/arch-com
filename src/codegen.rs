@@ -1821,8 +1821,8 @@ impl<'a> Codegen<'a> {
 
         // ── Datapath register declarations ───────────────────────────────────
         for reg in &f.regs {
-            let ty = self.emit_type_str(&reg.ty);
-            self.line(&format!("{ty} {};", reg.name.name));
+            let (ty, arr_suffix) = self.emit_type_and_array_suffix(&reg.ty);
+            self.line(&format!("{ty} {}{arr_suffix};", reg.name.name));
         }
         if !f.regs.is_empty() {
             self.line("");
@@ -1859,12 +1859,21 @@ impl<'a> Codegen<'a> {
         self.line(&format!("state_r <= {};", f.default_state.name.to_uppercase()));
         // Reset datapath registers
         for reg in &f.regs {
-            if let Some(reset_val) = Self::reset_value_expr(&reg.reset) {
-                let init_str = self.emit_expr_str(reset_val);
-                self.line(&format!("{} <= {};", reg.name.name, init_str));
-            } else if let Some(ref init_expr) = reg.init {
-                let init_str = self.emit_expr_str(init_expr);
-                self.line(&format!("{} <= {};", reg.name.name, init_str));
+            let reset_expr = Self::reset_value_expr(&reg.reset)
+                .or(reg.init.as_ref());
+            if let Some(val_expr) = reset_expr {
+                let init_str = self.emit_expr_str(val_expr);
+                if let TypeExpr::Vec(_, size_expr) = &reg.ty {
+                    let sz = self.emit_expr_str(size_expr);
+                    let ri = format!("__ri_{}", reg.name.name);
+                    self.line(&format!("for (int {ri} = 0; {ri} < {sz}; {ri}++) begin"));
+                    self.indent += 1;
+                    self.line(&format!("{}[{ri}] <= {init_str};", reg.name.name));
+                    self.indent -= 1;
+                    self.line("end");
+                } else {
+                    self.line(&format!("{} <= {init_str};", reg.name.name));
+                }
             }
         }
         self.indent -= 1;
