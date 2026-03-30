@@ -196,6 +196,9 @@ impl<'a> TypeChecker<'a> {
                     // Validate reset consistency: all registers with reset in the
                     // same seq block must agree on signal name, sync/async, and polarity.
                     self.check_always_block_reset_consistency(rb, m);
+                    // Warn if the seq body contains a redundant `if reset_signal` branch
+                    // that shadows the declaration-level reset guard.
+                    self.check_redundant_reset_branch(rb, m);
                 }
                 ModuleBodyItem::LatchBlock(lb) => {
                     // Validate enable signal exists and is Bool
@@ -720,6 +723,69 @@ impl<'a> TypeChecker<'a> {
                     Some(enum_width(info.variants.len()))
                 } else {
                     None
+                }
+            }
+        }
+    }
+
+    /// Warn when a seq block contains a top-level `if reset_signal` branch that
+    /// is dead code because the declaration-level `reset signal=>value` already
+    /// generates an outer reset guard wrapping the entire seq body.
+    fn check_redundant_reset_branch(&mut self, rb: &RegBlock, m: &ModuleDecl) {
+        // Collect all reset signal names used by regs (decl or port reg) assigned in this block.
+        let mut assigned = std::collections::BTreeSet::new();
+        Self::collect_assigned_roots_tc(&rb.stmts, &mut assigned);
+
+        let mut reset_signals: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for name in &assigned {
+            // Check RegDecl
+            for item in &m.body {
+                if let ModuleBodyItem::RegDecl(r) = item {
+                    if r.name.name != *name { continue; }
+                    let sig = match &r.reset {
+                        RegReset::Inherit(sig, _) | RegReset::Explicit(sig, _, _, _) => Some(sig.name.clone()),
+                        RegReset::None => None,
+                    };
+                    if let Some(s) = sig { reset_signals.insert(s); }
+                }
+            }
+            // Check port reg
+            for p in &m.ports {
+                if p.name.name != *name { continue; }
+                if let Some(ri) = &p.reg_info {
+                    let sig = match &ri.reset {
+                        RegReset::Inherit(sig, _) | RegReset::Explicit(sig, _, _, _) => Some(sig.name.clone()),
+                        RegReset::None => None,
+                    };
+                    if let Some(s) = sig { reset_signals.insert(s); }
+                }
+            }
+        }
+
+        if reset_signals.is_empty() { return; }
+
+        // Check top-level stmts for `if reset_signal { ... }` or `if ~reset_signal { ... }`
+        for stmt in &rb.stmts {
+            if let Stmt::IfElse(ie) = stmt {
+                let tested = match &ie.cond.kind {
+                    ExprKind::Ident(id) => Some(id.clone()),
+                    ExprKind::Unary(crate::ast::UnaryOp::Not, inner) => {
+                        if let ExprKind::Ident(id) = &inner.kind { Some(id.clone()) } else { None }
+                    }
+                    _ => None,
+                };
+                if let Some(sig) = tested {
+                    if reset_signals.contains(&sig) {
+                        self.warnings.push(crate::diagnostics::CompileWarning {
+                            message: format!(
+                                "redundant reset branch: `if {}` in seq body is dead code — \
+                                 the `reset {}=>...` declaration already generates an outer reset guard",
+                                sig, sig
+                            ),
+                            span: ie.span,
+                        });
+                    }
                 }
             }
         }
@@ -2003,6 +2069,17 @@ impl<'a> TypeChecker<'a> {
             if !present.contains(req) {
                 self.errors.push(CompileError::general(
                     &format!("fifo `{}` is missing required port `{req}`", f.name.name),
+                    f.name.span,
+                ));
+            }
+        }
+
+        // LIFO must be single-clock (synchronous)
+        if f.kind == FifoKind::Lifo {
+            let is_async = crate::resolve::detect_async_fifo(&f.ports);
+            if is_async {
+                self.errors.push(CompileError::general(
+                    &format!("lifo `{}` must be single-clock (synchronous); dual-clock lifo is not supported", f.name.name),
                     f.name.span,
                 ));
             }
