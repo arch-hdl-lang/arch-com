@@ -11,7 +11,7 @@ fsm TopModule
   port aaah: out Bool;
   port digging: out Bool;
 
-  state WalkLeft, WalkRight, FallLeft, FallRight, DigLeft, DigRight;
+  state [WalkLeft, WalkRight, FallLeft, FallRight, DigLeft, DigRight]
   default state WalkLeft;
   default
     comb walk_left = false;
@@ -22,35 +22,35 @@ fsm TopModule
 
   state WalkLeft
     comb walk_left = true;
-    transition to FallLeft when ~ground;
-    transition to DigLeft when ground & dig;
-    transition to WalkRight when ground & ~dig & bump_left;
+    -> FallLeft when ~ground;
+    -> DigLeft when ground & dig;
+    -> WalkRight when ground & ~dig & bump_left;
   end state WalkLeft
 
   state WalkRight
     comb walk_right = true;
-    transition to FallRight when ~ground;
-    transition to DigRight when ground & dig;
-    transition to WalkLeft when ground & ~dig & bump_right;
+    -> FallRight when ~ground;
+    -> DigRight when ground & dig;
+    -> WalkLeft when ground & ~dig & bump_right;
   end state WalkRight
 
   state FallLeft
     comb aaah = true;
-    transition to WalkLeft when ground;
+    -> WalkLeft when ground;
   end state FallLeft
 
   state FallRight
     comb aaah = true;
-    transition to WalkRight when ground;
+    -> WalkRight when ground;
   end state FallRight
 
   state DigLeft
     comb digging = true;
-    transition to FallLeft when ~ground;
+    -> FallLeft when ~ground;
   end state DigLeft
 
   state DigRight
     comb digging = true;
-    transition to FallRight when ~ground;
+    -> FallRight when ~ground;
   end state DigRight
 end fsm TopModule

@@ -16,7 +16,7 @@ fsm FsmCounter
   reg cnt_r: UInt<8> init 0 reset rst=>0;
   reg tgt_r: UInt<8> init 0 reset rst=>0;
 
-  state Idle, Counting, Done;
+  state [Idle, Counting, Done]
   default state Idle;
 
   state Idle
@@ -32,7 +32,7 @@ fsm FsmCounter
       end if
     end seq
 
-    transition to Counting when go;
+    -> Counting when go;
     // no fallthrough needed — compiler defaults to stay in Idle
   end state Idle
 
@@ -46,7 +46,7 @@ fsm FsmCounter
       cnt_r <= (cnt_r + 1).trunc<8>();
     end seq
 
-    transition to Done when cnt_r == tgt_r;
+    -> Done when cnt_r == tgt_r;
     // implicit stay in Counting
   end state Counting
 
@@ -56,7 +56,7 @@ fsm FsmCounter
       count = cnt_r;
     end comb
 
-    transition to Idle when true;
+    -> Idle when true;
   end state Done
 
 end fsm FsmCounter

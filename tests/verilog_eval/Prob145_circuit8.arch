@@ -14,7 +14,9 @@ module TopModule
     p_r <= a;
   end latch
 
-  seq q_r <= a;
+  seq
+    q_r <= a;
+  end seq
 
   comb
     p = p_r;

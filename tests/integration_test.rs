@@ -131,19 +131,19 @@ fsm Broken
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
   port result: out Bool;
-  state A, B;
+  state [A, B]
   default state C;
   state A
     comb
       result = true;
     end comb
-    transition to B when true;
+    -> B when true;
   end state A
   state B
     comb
       result = false;
     end comb
-    transition to A when true;
+    -> A when true;
   end state B
 end fsm Broken
 "#;

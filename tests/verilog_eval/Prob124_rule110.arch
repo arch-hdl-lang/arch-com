@@ -33,5 +33,7 @@ module TopModule
     q_next[511] = ~((left_i & center_i & right_i) | (~left_i & ~center_i & ~right_i) | (left_i & ~center_i & ~right_i));
   end comb
 
-  seq q <= load ? data : q_next;
+  seq
+    q <= load ? data : q_next;
+  end seq
 end module TopModule

@@ -5,15 +5,15 @@ fsm TopModule
   port x: in Bool;
   port z: out Bool;
 
-  state S0, S1, S10;
+  state [S0, S1, S10]
   default state S0;
   default
     comb z = false;
   end default
 
-  state S0 transition to S1 when x;
+  state S0 -> S1 when x;
 
-  state S1 transition to S10 when ~x;
+  state S1 -> S10 when ~x;
 
   state S10
     comb
@@ -22,7 +22,7 @@ fsm TopModule
         z = true;
       end if
     end comb
-    transition to S1 when x;
-    transition to S0 when ~x;
+    -> S1 when x;
+    -> S0 when ~x;
   end state S10
 end fsm TopModule

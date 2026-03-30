@@ -8,45 +8,45 @@ fsm TopModule
   port f: out Bool;
   port g: out Bool;
 
-  state A, SetF, X1, X0, X01, SetG1, SetG2, GoodG, BadG;
+  state [A, SetF, X1, X0, X01, SetG1, SetG2, GoodG, BadG]
   default state A;
   default
     comb f = false;
     comb g = false;
   end default
 
-  state A transition to SetF when true;
+  state A -> SetF when true;
 
   state SetF
     comb f = true;
-    transition to X1 when true;
+    -> X1 when true;
   end state SetF
 
-  state X1 transition to X0 when x;
+  state X1 -> X0 when x;
 
-  state X0 transition to X01 when ~x;
+  state X0 -> X01 when ~x;
 
   state X01
-    transition to SetG1 when x;
-    transition to X1 when ~x;
+    -> SetG1 when x;
+    -> X1 when ~x;
   end state X01
 
   state SetG1
     comb g = true;
-    transition to GoodG when y;
-    transition to SetG2 when ~y;
+    -> GoodG when y;
+    -> SetG2 when ~y;
   end state SetG1
 
   state SetG2
     comb g = true;
-    transition to GoodG when y;
-    transition to BadG when ~y;
+    -> GoodG when y;
+    -> BadG when ~y;
   end state SetG2
 
   state GoodG
     comb g = true;
-    transition to GoodG when true;
+    -> GoodG when true;
   end state GoodG
 
-  state BadG transition to BadG when true;
+  state BadG -> BadG when true;
 end fsm TopModule

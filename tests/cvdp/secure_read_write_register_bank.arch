@@ -19,7 +19,7 @@ fsm secure_read_write_register_bank
   let code0_match: Bool = i_data_in == P_UNLOCK_CODE_0.trunc<P_DATA_WIDTH>();
   let code1_match: Bool = i_data_in == P_UNLOCK_CODE_1.trunc<P_DATA_WIDTH>();
 
-  state LOCKED, GOT_CODE0, UNLOCKED;
+  state [LOCKED, GOT_CODE0, UNLOCKED]
   default state LOCKED;
   default seq on i_capture_pulse rising;
 
@@ -34,7 +34,7 @@ fsm secure_read_write_register_bank
         end if
       end if
     end seq
-    transition to GOT_CODE0 when is_write & (i_addr == 0) & code0_match;
+    -> GOT_CODE0 when is_write & (i_addr == 0) & code0_match;
   end state LOCKED
 
   state GOT_CODE0
@@ -48,10 +48,10 @@ fsm secure_read_write_register_bank
         end if
       end if
     end seq
-    transition to UNLOCKED when is_write & (i_addr == 1) & code1_match;
-    transition to LOCKED   when is_write & (i_addr == 1) & ~code1_match;
-    transition to LOCKED   when is_write & (i_addr != 0) & (i_addr != 1);
-    transition to LOCKED   when ~is_write;
+    -> UNLOCKED when is_write & (i_addr == 1) & code1_match;
+    -> LOCKED when is_write & (i_addr == 1) & ~code1_match;
+    -> LOCKED when is_write & (i_addr != 0) & (i_addr != 1);
+    -> LOCKED when ~is_write;
   end state GOT_CODE0
 
   state UNLOCKED
@@ -75,7 +75,7 @@ fsm secure_read_write_register_bank
         end if
       end if
     end seq
-    transition to UNLOCKED;
+    -> UNLOCKED;
   end state UNLOCKED
 
 end fsm secure_read_write_register_bank

@@ -146,10 +146,6 @@ pub enum TokenKind {
     // `state` is a contextual keyword — lexed as Ident
     #[token("default")]
     Default,
-    #[token("transition")]
-    Transition,
-    #[token("to")]
-    To,
     #[token("when")]
     When,
     #[token("todo!")]
@@ -396,8 +392,6 @@ impl fmt::Display for TokenKind {
             TokenKind::Pipelined => write!(f, "pipelined"),
             TokenKind::Kind => write!(f, "kind"),
             TokenKind::Default => write!(f, "default"),
-            TokenKind::Transition => write!(f, "transition"),
-            TokenKind::To => write!(f, "to"),
             TokenKind::When => write!(f, "when"),
             TokenKind::UInt => write!(f, "UInt"),
             TokenKind::SInt => write!(f, "SInt"),

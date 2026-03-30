@@ -4174,7 +4174,7 @@ impl<'a> Codegen<'a> {
             self.line("else if (load) count_r <= load_data;");
         }
 
-        match (c.direction, c.kind) {
+        match (c.direction, c.mode) {
             (CounterDirection::Up, CounterMode::Wrap) => {
                 let max_cond = if max_param.is_some() {
                     format!("count_r == {count_width}'(MAX)")

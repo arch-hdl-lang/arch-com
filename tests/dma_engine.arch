@@ -41,10 +41,6 @@ regfile DmaRegs
     addr: in UInt<3>;
     data: in UInt<32>;
   end ports write
-  init [0] = 0;
-  init [1] = 0;
-  init [2] = 0;
-  init [3] = 0;
   forward write_before_read: true;
 end regfile DmaRegs
 
@@ -126,7 +122,7 @@ fsm TransferFsm
   port reg active:   out Bool reset rst=>false;
   port reg fire_irq: out Bool reset rst=>false;
 
-  state Idle, Running, Done;
+  state [Idle, Running, Done]
   default state Idle;
   default seq on clk rising;
 
@@ -138,21 +134,21 @@ fsm TransferFsm
   end default
 
   state Idle
-    transition to Running when start;
+    -> Running when start;
   end state Idle
 
   state Running
     seq
       active <= true;
     end seq
-    transition to Done when all_done;
+    -> Done when all_done;
   end state Running
 
   state Done
     seq
       fire_irq <= true;
     end seq
-    transition to Idle;
+    -> Idle;
   end state Done
 
 end fsm TransferFsm
@@ -236,15 +232,15 @@ module DmaEngine
 
   // ── Instances ────────────────────────────────────────────────────────────
   inst regs: DmaRegs
-    connect clk        <- clk;
-    connect rst        <- rst;
-    connect read0_addr <- 0;
-    connect read0_data -> regs_src;
-    connect read1_addr <- 1;
-    connect read1_data -> regs_dst;
-    connect write_en   <- apb_sel & apb_enable & apb_write;
-    connect write_addr <- apb_addr;
-    connect write_data <- apb_wdata;
+    connect clk          <- clk;
+    connect rst          <- rst;
+    connect read[0].addr <- 0;
+    connect read[0].data -> regs_src;
+    connect read[1].addr <- 1;
+    connect read[1].data -> regs_dst;
+    connect write.en     <- apb_sel & apb_enable & apb_write;
+    connect write.addr   <- apb_addr;
+    connect write.data   <- apb_wdata;
   end inst regs
 
   inst ctrl: TransferFsm

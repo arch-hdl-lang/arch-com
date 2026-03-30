@@ -56,12 +56,12 @@ Common mistakes to avoid:
 - Bit/byte reverse: expr.reverse(1) for bit-reverse, expr.reverse(8) for byte-reverse (width must be divisible by N)
 - Prefer concat {a, b} over bit-by-bit for loops; prefer direct boolean (z = (A == B);) over if/else
 - Prefer putting next-value logic directly in seq (if/elsif) instead of splitting into separate comb + seq blocks. Use 'let' for pure combinational expressions that feed into seq. Only use 'wire' + 'comb' when the combinational value drives multiple consumers or output ports.
-- In fsm states, do NOT write 'transition to X when true;' — omit the transition to stay in the current state (implicit hold), or restructure so the last branch uses a real condition
+- In fsm states, do NOT write '-> X when true;' — omit the transition to stay in the current state (implicit hold), or restructure so the last branch uses a real condition
 - Do NOT declare 'domain ... end domain' in pure combinational modules — domains are only needed when Clock/Reset ports are used
 - SysDomain is built-in — do NOT declare 'domain SysDomain end domain SysDomain'; just use Clock<SysDomain> directly
 - Bus signal access uses dot notation (itcm.cmd_valid), NOT underscore (itcm_cmd_valid)
 - Bus ports use 'initiator BusName' or 'target BusName' to set the perspective — 'initiator' keeps signal directions as declared in the bus; 'target' flips them (in↔out)
-- Use 'default seq on clk rising;' to set the default clock, then use one-line 'seq target <= expr;' (no 'on clk', no 'end seq')
+- Use 'default seq on clk rising;' to set the default clock for seq blocks in the scope
 - One-line seq requires 'default seq' — without it, 'seq' must have 'on clk rising/falling'
 - Use 'package PkgName ... end package PkgName' to group shared enums/structs/functions/domains; import with 'use PkgName;' at file scope
 - Domains declared in a package are shared across files via 'use PkgName;'
@@ -237,19 +237,23 @@ fsm FsmName
 
   reg cnt: UInt<4> reset rst=0;
 
-  state Idle, Running, Done;
+  state [Idle, Running, Done]
   default state Idle;                    // reset state
   default seq on clk rising;             // default clock for all seq in states
   default                                // default outputs (overridden per-state)
     comb done = false;
   end default
 
-  state Idle transition to Running when go;   // one-line state (1 transition, no comb/seq)
+  state Idle
+    -> Running when go;
+  end state Idle
 
   state Running
     comb done = false;                   // override default if needed
-    seq cnt <= cnt + 1;                  // one-line seq inside state
-    transition to Done when cnt == 10;
+    seq
+      cnt <= cnt + 1;
+    end seq
+    -> Done when cnt == 10;
   end state Running
 
   state Done

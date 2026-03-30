@@ -5,30 +5,30 @@ fsm TopModule
   port r: in UInt<3>;
   port g: out UInt<3>;
 
-  state Idle, Grant0, Grant1, Grant2;
+  state [Idle, Grant0, Grant1, Grant2]
   default state Idle;
   default
     comb g = 0;
   end default
 
   state Idle
-    transition to Grant0 when r[0];
-    transition to Grant1 when ~r[0] & r[1];
-    transition to Grant2 when ~r[0] & ~r[1] & r[2];
+    -> Grant0 when r[0];
+    -> Grant1 when ~r[0] & r[1];
+    -> Grant2 when ~r[0] & ~r[1] & r[2];
   end state Idle
 
   state Grant0
     comb g = 1;
-    transition to Idle when ~r[0];
+    -> Idle when ~r[0];
   end state Grant0
 
   state Grant1
     comb g = 2;
-    transition to Idle when ~r[1];
+    -> Idle when ~r[1];
   end state Grant1
 
   state Grant2
     comb g = 4;
-    transition to Idle when ~r[2];
+    -> Idle when ~r[2];
   end state Grant2
 end fsm TopModule

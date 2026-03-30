@@ -12,7 +12,7 @@ fsm TopModule
   reg cnt_r: UInt<4> reset reset=>0;
   reg sub_cnt: UInt<10> reset reset=>0;
 
-  state S, S1, S11, S110, B0, B1, B2, B3, Count_St, Done_St;
+  state [S, S1, S11, S110, B0, B1, B2, B3, Count_St, Done_St]
   default state S;
   default seq on clk rising;
   default
@@ -21,33 +21,39 @@ fsm TopModule
     comb done = false;
   end default
 
-  state S transition to S1 when data;
+  state S -> S1 when data;
 
   state S1
-    transition to S11 when data;
-    transition to S when ~data;
+    -> S11 when data;
+    -> S when ~data;
   end state S1
 
-  state S11 transition to S110 when ~data;
+  state S11 -> S110 when ~data;
 
   state S110
-    transition to B0 when data;
-    transition to S when ~data;
+    -> B0 when data;
+    -> S when ~data;
   end state S110
 
   state B0
-    seq delay_r[3] <= data;
-    transition to B1 when true;
+    seq
+      delay_r[3] <= data;
+    end seq
+    -> B1 when true;
   end state B0
 
   state B1
-    seq delay_r[2] <= data;
-    transition to B2 when true;
+    seq
+      delay_r[2] <= data;
+    end seq
+    -> B2 when true;
   end state B1
 
   state B2
-    seq delay_r[1] <= data;
-    transition to B3 when true;
+    seq
+      delay_r[1] <= data;
+    end seq
+    -> B3 when true;
   end state B2
 
   state B3
@@ -59,7 +65,7 @@ fsm TopModule
       cnt_r[0] <= data;
       sub_cnt <= 0;
     end seq
-    transition to Count_St when true;
+    -> Count_St when true;
   end state B3
 
   state Count_St
@@ -78,7 +84,7 @@ fsm TopModule
         sub_cnt <= (sub_cnt + 1).trunc<10>();
       end if
     end seq
-    transition to Done_St when (sub_cnt == 999) & (cnt_r == 0);
+    -> Done_St when (sub_cnt == 999) & (cnt_r == 0);
   end state Count_St
 
   state Done_St
@@ -86,6 +92,6 @@ fsm TopModule
       done = true;
       count = cnt_r;
     end comb
-    transition to S when ack;
+    -> S when ack;
   end state Done_St
 end fsm TopModule

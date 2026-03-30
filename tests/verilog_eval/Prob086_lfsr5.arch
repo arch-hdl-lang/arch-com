@@ -19,5 +19,7 @@ module TopModule
     q = q_r;
   end comb
 
-  seq q_r <= q_next;
+  seq
+    q_r <= q_next;
+  end seq
 end module TopModule

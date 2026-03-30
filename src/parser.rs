@@ -644,7 +644,7 @@ impl Parser {
             return Ok(RegBlock { clock, clock_edge, stmts, span: start.merge(end_span) });
         }
 
-        // No `on` — use default clock. Could be one-liner or multi-line.
+        // No `on` — use default clock.
         let (clock, clock_edge) = self.seq_default.clone().ok_or_else(|| {
             CompileError::general(
                 "`seq` without `on <clk>` requires `default seq on <clk> rising|falling;`",
@@ -652,20 +652,6 @@ impl Parser {
             )
         })?;
 
-        // One-line form: seq target <= expr; (no newline between `seq` and next token)
-        let is_oneline = if let Some(next) = self.tokens.get(self.pos) {
-            !self.has_newline_between(start.end, next.span.start)
-        } else {
-            false
-        };
-
-        if is_oneline {
-            let stmt = self.parse_reg_stmt()?;
-            let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
-            return Ok(RegBlock { clock, clock_edge, stmts: vec![stmt], span: start.merge(end_span) });
-        }
-
-        // Multi-line without explicit clock
         let mut stmts = Vec::new();
         while !self.check_end_always() {
             stmts.push(self.parse_reg_stmt()?);
@@ -1188,8 +1174,24 @@ impl Parser {
             } else if self.check(TokenKind::Connect) {
                 let cstart = self.advance().span;
                 let mut port_name = self.expect_ident()?;
+                // Support indexed port group syntax: name[i].member → namei_member
+                if self.eat(TokenKind::LBracket) {
+                    let idx_tok = self.advance();
+                    let idx = match &idx_tok.kind {
+                        TokenKind::DecLiteral(s) => s.parse::<u32>().map_err(|_|
+                            CompileError::general("invalid port index", idx_tok.span))?,
+                        _ => return Err(CompileError::unexpected_token(
+                            "integer index", &idx_tok.kind.to_string(), idx_tok.span)),
+                    };
+                    self.expect(TokenKind::RBracket)?;
+                    self.expect(TokenKind::Dot)?;
+                    let member = self.expect_ident()?;
+                    port_name = Ident::new(
+                        format!("{}{idx}_{}", port_name.name, member.name),
+                        port_name.span.merge(member.span),
+                    );
                 // Support dot notation for port group members: group.member → group_member
-                if self.eat(TokenKind::Dot) {
+                } else if self.eat(TokenKind::Dot) {
                     let member = self.expect_ident()?;
                     port_name = Ident::new(
                         format!("{}_{}", port_name.name, member.name),
@@ -1895,20 +1897,22 @@ impl Parser {
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Reg) => regs.push(self.parse_reg_decl()?),
                 Some(TokenKind::Let) => lets.push(self.parse_let_binding()?),
-                // `state A, B, C;` — flat declaration list
-                _ if self.check_contextual("state") && self.is_state_list() => {
+                // `state [A, B, C]` — flat declaration list
+                _ if self.check_contextual("state") && self.pos + 1 < self.tokens.len()
+                    && self.tokens[self.pos + 1].kind == TokenKind::LBracket => {
                     self.advance(); // consume `state`
+                    self.expect(TokenKind::LBracket)?;
                     loop {
                         state_names.push(self.expect_ident()?);
                         if !self.eat(TokenKind::Comma) {
                             break;
                         }
-                        // allow trailing comma before `;`
-                        if self.check(TokenKind::Semi) {
+                        // allow trailing comma before `]`
+                        if self.check(TokenKind::RBracket) {
                             break;
                         }
                     }
-                    self.expect(TokenKind::Semi)?;
+                    self.expect(TokenKind::RBracket)?;
                 }
                 Some(TokenKind::Default) => {
                     // Peek ahead: `default seq on ...;` sets the seq clock default.
@@ -2007,17 +2011,6 @@ impl Parser {
         })
     }
 
-    /// Returns true when `state` is followed by an ident and then `,` or `;`
-    /// (state list declaration), not a state body.
-    fn is_state_list(&self) -> bool {
-        // peek: state IDENT ,|;
-        if self.pos + 2 >= self.tokens.len() {
-            return false;
-        }
-        let after_ident = &self.tokens[self.pos + 2];
-        matches!(after_ident.kind, TokenKind::Comma | TokenKind::Semi)
-    }
-
     fn check_end_fsm(&self) -> bool {
         self.pos + 1 < self.tokens.len()
             && self.tokens[self.pos].kind == TokenKind::End
@@ -2028,25 +2021,6 @@ impl Parser {
         let start = self.expect_contextual("state")?.span;
         let name = self.expect_ident()?;
 
-        // One-line form: state A transition to B when cond;
-        // If transition is on the same line as state name (no newline), it's a one-liner.
-        let is_oneline_state = if let Some(next) = self.tokens.get(self.pos) {
-            self.check(TokenKind::Transition) && !self.has_newline_between(name.span.end, next.span.start)
-        } else {
-            false
-        };
-        if is_oneline_state {
-            let t = self.parse_transition()?;
-            let end_span = t.span;
-            return Ok(StateBody {
-                span: start.merge(end_span),
-                name,
-                comb_stmts: Vec::new(),
-                seq_stmts: Vec::new(),
-                transitions: vec![t],
-            });
-        }
-
         let mut comb_stmts = Vec::new();
         let mut seq_stmts = Vec::new();
         let mut transitions = Vec::new();
@@ -2054,21 +2028,19 @@ impl Parser {
         while !self.check_end_state() {
             match self.peek_kind() {
                 Some(TokenKind::Comb) => {
-                    // parse comb block, collect its statements
                     let cb = self.parse_comb_block()?;
                     comb_stmts.extend(cb.stmts);
                 }
                 Some(TokenKind::Seq) => {
-                    // parse seq block, collect its statements
                     let rb = self.parse_always_block()?;
                     seq_stmts.extend(rb.stmts);
                 }
-                Some(TokenKind::Transition) => {
+                Some(TokenKind::RArrow) => {
                     transitions.push(self.parse_transition()?);
                 }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "comb, seq, or transition",
+                        "comb, seq, or ->",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -2101,8 +2073,7 @@ impl Parser {
 
 
     fn parse_transition(&mut self) -> Result<Transition, CompileError> {
-        let start = self.expect(TokenKind::Transition)?.span;
-        self.expect(TokenKind::To)?;
+        let start = self.expect(TokenKind::RArrow)?.span;
         let target = self.expect_ident()?;
         // `when <cond>` is optional — omitting it means unconditional (always true)
         let condition = if self.eat(TokenKind::When) {
@@ -2921,7 +2892,7 @@ impl Parser {
         let kind = kind.unwrap_or(CounterMode::Wrap);
         let direction = direction.unwrap_or(CounterDirection::Up);
         let span = start.merge(closing.span);
-        Ok(CounterDecl { span, name, params, ports, kind, direction, init })
+        Ok(CounterDecl { span, name, params, ports, mode: kind, direction, init })
     }
 
     fn check_end_of(&self, kw: TokenKind) -> bool {

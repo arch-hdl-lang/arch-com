@@ -10,7 +10,9 @@ module TopModule
 
   default seq on clk rising;
 
-  seq state <= (a & b) | (state & (a ^ b));
+  seq
+    state <= (a & b) | (state & (a ^ b));
+  end seq
 
   comb
     q = a ^ b ^ state;

@@ -1,0 +1,716 @@
+(* ==========================================================================
+   ARCH HDL Grammar — Extended Backus-Naur Form (ISO 14977 notation)
+
+   Conventions:
+     { x }      zero or more repetitions of x
+     [ x ]      optional x
+     x | y      alternation
+     ( x )      grouping
+     "x"        terminal keyword or punctuation
+     (* ... *)  comment
+
+   Identifiers and literals are defined in the LEXICAL section.
+   Every top-level construct uses the symmetric bracketing convention:
+     keyword Name ... end keyword Name
+   The closing name MUST match the opening name exactly.
+   ========================================================================== *)
+
+
+(* ─── Top-level ─────────────────────────────────────────────────────────── *)
+
+source_file = { item } ;
+
+item = domain_decl
+     | struct_decl
+     | enum_decl
+     | bus_decl
+     | module_decl
+     | fsm_decl
+     | fifo_decl
+     | ram_decl
+     | counter_decl
+     | arbiter_decl
+     | regfile_decl
+     | pipeline_decl
+     | function_decl
+     | linklist_decl
+     | template_decl
+     | synchronizer_decl
+     | clkgate_decl
+     | package_decl
+     | use_decl
+     ;
+
+
+(* ─── Domain ─────────────────────────────────────────────────────────────── *)
+
+domain_decl = "domain" ident
+                { domain_field }
+              "end" "domain" ident ;
+
+domain_field = ident ":" expr ;
+
+
+(* ─── Struct ─────────────────────────────────────────────────────────────── *)
+
+struct_decl = "struct" ident
+                { struct_field }
+              "end" "struct" ident ;
+
+struct_field = ident ":" type_expr ";" ;
+
+
+(* ─── Enum ───────────────────────────────────────────────────────────────── *)
+
+enum_decl = "enum" ident
+              ident { "," ident } [ "," ]
+            "end" "enum" ident ;
+
+
+(* ─── Bus ────────────────────────────────────────────────────────────────── *)
+
+bus_decl = "bus" ident
+             { param_decl | bus_signal }
+           "end" "bus" ident ;
+
+bus_signal = ident ":" ( "in" | "out" ) type_expr ";" ;
+
+
+(* ─── Module ─────────────────────────────────────────────────────────────── *)
+
+module_decl = "module" ident [ "implements" ident ]
+                { module_item }
+              "end" "module" ident ;
+
+module_item = pragma_decl
+            | param_decl
+            | port_decl
+            | reg_default_decl
+            | reg_decl
+            | wire_decl
+            | let_binding
+            | seq_default_decl
+            | seq_block
+            | latch_block
+            | comb_block
+            | inst_decl
+            | pipe_reg_decl
+            | generate_block
+            | hook_binding_decl
+            ;
+
+pragma_decl = "pragma" ident ";" ;
+
+(* `reg default` sets a default init/reset applied to all subsequent reg declarations
+   in the same scope that omit those clauses. *)
+reg_default_decl = "reg" "default" ":" [ "init" expr ] [ "reset" reset_clause ] ";" ;
+
+(* `default seq on <clk> rising|falling;` sets the implicit clock for seq blocks
+   in the scope that omit an explicit `on` clause. *)
+seq_default_decl = "default" "seq" "on" ident ( "rising" | "falling" ) ";" ;
+
+
+(* ─── Params ─────────────────────────────────────────────────────────────── *)
+
+param_decl = "param" ident [ "[" expr ":" expr "]" ] ":" param_kind [ "=" expr ] ";" ;
+
+param_kind = "const"
+           | "type" "=" type_expr
+           ;
+
+
+(* ─── Ports ──────────────────────────────────────────────────────────────── *)
+
+(* Top-level port declaration (single port) *)
+port_decl = "port" [ "reg" ] ident ":" port_kind ";" ;
+
+port_kind = "initiator" ident [ "<" param_assign { "," param_assign } ">" ]
+          | "target"    ident [ "<" param_assign { "," param_assign } ">" ]
+          | ( "in" | "out" ) type_expr [ port_reg_suffix ] [ "default" expr ]
+          ;
+
+(* Additional clauses on `port reg` outputs — provides init value and reset behaviour *)
+port_reg_suffix = [ "init" expr ] [ "reset" reset_clause ] ;
+
+(* Indexed port array declaration: ports[N] name ... end ports name *)
+ports_array_decl = "ports" "[" expr "]" ident
+                     { inner_signal }
+                   "end" "ports" ident ;
+
+inner_signal = ident ":" ( "in" | "out" ) type_expr ";" ;
+
+param_assign = ident "=" expr ;
+
+
+(* ─── Register / Wire / Let ─────────────────────────────────────────────── *)
+
+reg_decl = "reg" ident ":" type_expr
+             [ "init" expr ]
+             [ "reset" reset_clause ]
+           ";" ;
+
+reset_clause = "none"
+             | ident "=>" expr
+                 [ ( "sync" | "async" ) ( "high" | "low" ) ]
+             ;
+
+wire_decl = "wire" ident ":" type_expr ";" ;
+
+let_binding = "let" ident [ ":" type_expr ] "=" expr ";" ;
+
+(* Pipeline inter-stage register *)
+pipe_reg_decl = "pipe_reg" ident ":" type_expr
+                  [ "init" expr ]
+                  [ "reset" reset_clause ]
+                ";" ;
+
+
+(* ─── Sequential (registered) blocks ────────────────────────────────────── *)
+
+(* Full form: explicit clock; or multi-line with default clock *)
+seq_block = "seq" [ "on" ident ( "rising" | "falling" ) ]
+              { seq_stmt }
+            "end" "seq" ;
+
+(* One-liner (default clock, single statement, no newline before statement) *)
+(* seq_oneliner = "seq" seq_stmt ; *)    (* desugars to the above *)
+
+seq_stmt = if_seq_stmt
+         | match_seq_stmt
+         | for_seq_stmt
+         | seq_assign
+         ;
+
+if_seq_stmt  = "if" expr { seq_stmt }
+               { "elsif" expr { seq_stmt } }
+               [ "else" { seq_stmt } ]
+               "end" "if" ;
+
+match_seq_stmt = "match" expr
+                   { match_pattern "=>" seq_stmt }
+                 "end" "match" ;
+
+for_seq_stmt = "for" ident "in" expr ".." expr
+                 { seq_stmt }
+               "end" "for" ;
+
+seq_assign = lvalue "<=" expr ";" ;
+
+lvalue = ident
+       | lvalue "." ident
+       | lvalue "[" expr "]"
+       ;
+
+
+(* ─── Latch blocks ──────────────────────────────────────────────────────── *)
+
+latch_block = "latch" "on" ident
+                { seq_stmt }
+              "end" "latch" ;
+
+
+(* ─── Combinational blocks ───────────────────────────────────────────────── *)
+
+comb_block = "comb"
+               { comb_stmt }
+             "end" "comb" ;
+
+comb_stmt = if_comb_stmt
+           | match_comb_stmt
+           | for_comb_stmt
+           | comb_assign
+           ;
+
+if_comb_stmt  = "if" expr { comb_stmt }
+                { "elsif" expr { comb_stmt } }
+                [ "else" { comb_stmt } ]
+                "end" "if" ;
+
+match_comb_stmt = "match" expr
+                    { match_pattern "=>" comb_stmt }
+                  "end" "match" ;
+
+for_comb_stmt = "for" ident "in" expr ".." expr
+                  { comb_stmt }
+                "end" "for" ;
+
+comb_assign = lvalue "=" expr ";" ;
+
+
+(* ─── Instance ───────────────────────────────────────────────────────────── *)
+
+inst_decl = "inst" ident ":" ident
+              { connect_stmt }
+            "end" "inst" ident ;
+
+(* Connection directions:
+     "<-" drives an input port from a signal in the enclosing scope
+     "->" captures an output port into a wire/reg in the enclosing scope *)
+connect_stmt = "connect" connect_port_ref ( "<-" | "->" ) expr ";" ;
+
+(* Port reference on the instance: plain name, dot-member, or bracket-index-dot-member *)
+connect_port_ref = ident
+                 | ident "." ident
+                 | ident "[" integer_literal "]" "." ident
+                 ;
+
+
+(* ─── Generate ───────────────────────────────────────────────────────────── *)
+
+generate_block = generate_for | generate_if ;
+
+generate_for = "generate" "for" ident "in" expr ".." expr
+                 { module_item }
+               "end" "generate" "for" ident ;
+
+generate_if  = "generate" "if" expr
+                 { module_item }
+               [ "generate" "else"
+                 { module_item } ]
+               "end" "generate" "if" ;
+
+
+(* ─── Hook binding (module) ─────────────────────────────────────────────── *)
+
+hook_binding_decl = "hook" ident
+                      "(" [ hook_param { "," hook_param } ] ")"
+                      "->" type_expr
+                      "=" ident "(" [ ident { "," ident } ] ")"
+                    ";" ;
+
+hook_param = ident ":" type_expr ;
+
+
+(* ─── FSM ────────────────────────────────────────────────────────────────── *)
+
+fsm_decl = "fsm" ident
+             { fsm_item }
+           "end" "fsm" ident ;
+
+fsm_item = param_decl
+         | port_decl
+         | reg_decl
+         | let_binding
+         | state_list_decl
+         | default_state_decl
+         | seq_default_decl
+         | default_block
+         | state_body
+         | assert_cover
+         ;
+
+(* Flat list of state names: state [A, B, C] *)
+state_list_decl = "state" "[" ident { "," ident } [ "," ] "]" ;
+
+default_state_decl = "default" "state" ident ";" ;
+
+default_block = "default"
+                  { ( comb_block | seq_block ) }
+                "end" "default" ;
+
+state_body = "state" ident
+               { state_body_item }
+             "end" "state" ident ;
+
+(* One-liner state: state A transition to B when cond; (no newline before transition) *)
+(* state_oneliner = "state" ident transition_stmt ; *)
+
+state_body_item = comb_block | seq_block | transition_stmt ;
+
+transition_stmt = "->" ident [ "when" expr ] ";" ;
+
+
+(* ─── Pipeline ───────────────────────────────────────────────────────────── *)
+
+pipeline_decl = "pipeline" ident
+                  { pipeline_item }
+                "end" "pipeline" ident ;
+
+pipeline_item = param_decl
+              | port_decl
+              | stage_decl
+              | stall_decl
+              | flush_decl
+              | forward_decl
+              | assert_cover
+              ;
+
+stage_decl = "stage" ident [ "stall" "when" expr ]
+               { module_item }
+             "end" "stage" ident ;
+
+stall_decl = "stall" "when" expr ";" ;
+
+flush_decl = "flush" ident "when" expr ";" ;
+
+forward_decl = "forward" expr "from" expr "when" expr ";" ;
+
+
+(* ─── FIFO ───────────────────────────────────────────────────────────────── *)
+
+fifo_decl = "fifo" ident
+              { fifo_item }
+            "end" "fifo" ident ;
+
+fifo_item = "kind" fifo_kind ";"
+           | param_decl
+           | port_decl
+           | assert_cover
+           ;
+
+fifo_kind = "fifo" | "lifo" ;
+
+
+(* ─── RAM ────────────────────────────────────────────────────────────────── *)
+
+ram_decl = "ram" ident
+             { ram_attr }
+             { param_decl }
+             { ram_body_item }
+           "end" "ram" ident ;
+
+ram_attr = "kind" ram_kind ";"
+         | "latency" integer_literal ";"
+         | "write" ":" write_mode ";"
+         | "collision" ":" collision_policy ";"
+         | ram_init_decl
+         ;
+
+ram_kind = "single" | "simple_dual" | "true_dual" | "rom" ;
+
+write_mode = "first" | "read_first" | "no_change" ;
+
+collision_policy = "port_a_wins" | "port_b_wins" | "undefined" ;
+
+ram_init_decl = "init" ":" ram_init_value ";" ;
+
+ram_init_value = "zero"
+               | "none"
+               | "file" "(" string_literal [ "," ( "hex" | "bin" ) ] ")"
+               | "value" expr
+               | "[" [ expr { "," expr } ] "]"
+               ;
+
+ram_body_item = port_decl
+              | ram_port_group
+              | store_block
+              | ram_init_decl
+              | assert_cover
+              ;
+
+(* Named port group for read/write port signals *)
+ram_port_group = "port" ident
+                   { inner_signal }
+                 "end" "port" ident ;
+
+(* Multi-variable store block (for structured payloads) *)
+store_block = "store"
+                { ident ":" type_expr ";" }
+              "end" "store" ;
+
+
+(* ─── Counter ────────────────────────────────────────────────────────────── *)
+
+counter_decl = "counter" ident
+                 { counter_attr }
+                 { param_decl }
+                 { port_decl | assert_cover }
+               "end" "counter" ident ;
+
+counter_attr = "kind" counter_kind ";"
+             | "direction" ":" counter_direction ";"
+             | "init" ":" expr ";"
+             ;
+
+counter_kind = "wrap" | "saturate" | "gray" | "one_hot" | "johnson" ;
+
+counter_direction = "up" | "down" | "up_down" ;
+
+
+(* ─── Arbiter ────────────────────────────────────────────────────────────── *)
+
+arbiter_decl = "arbiter" ident
+                 { arbiter_attr }
+                 { param_decl }
+                 { arbiter_body_item }
+               "end" "arbiter" ident ;
+
+arbiter_attr = "policy" arbiter_policy ";"
+             | "latency" integer_literal ";"
+             ;
+
+arbiter_policy = "round_robin" | "priority" | "lru" | "weighted" | ident ;
+
+arbiter_body_item = port_decl
+                  | ports_array_decl
+                  | arbiter_hook_decl
+                  | assert_cover
+                  ;
+
+arbiter_hook_decl = "hook" ident
+                      "(" [ hook_param { "," hook_param } ] ")"
+                      "->" type_expr
+                      "=" ident "(" [ ident { "," ident } ] ")"
+                    ";" ;
+
+
+(* ─── Regfile ────────────────────────────────────────────────────────────── *)
+
+regfile_decl = "regfile" ident
+                 { regfile_item }
+               "end" "regfile" ident ;
+
+regfile_item = param_decl
+             | port_decl
+             | ports_array_decl
+             | regfile_init
+             | "forward" "write_before_read" ":" ( "true" | "false" ) ";"
+             | assert_cover
+             ;
+
+regfile_init = "init" "[" expr "]" "=" expr ";" ;
+
+
+(* ─── Template ───────────────────────────────────────────────────────────── *)
+
+template_decl = "template" ident
+                  { template_item }
+                "end" "template" ident ;
+
+template_item = param_decl
+              | port_decl
+              | ports_array_decl
+              | template_hook_decl
+              ;
+
+(* Template hook: signature only (no binding), implemented by conforming modules *)
+template_hook_decl = "hook" ident
+                       "(" [ hook_param { "," hook_param } ] ")"
+                       "->" type_expr
+                     ";" ;
+
+
+(* ─── Synchronizer ───────────────────────────────────────────────────────── *)
+
+synchronizer_decl = "synchronizer" ident
+                      { param_decl | port_decl | ( "kind" sync_kind ";" ) }
+                    "end" "synchronizer" ident ;
+
+sync_kind = "ff" | "gray" | "handshake" | "reset" | "pulse" ;
+
+
+(* ─── Clock Gate ─────────────────────────────────────────────────────────── *)
+
+clkgate_decl = "clkgate" ident
+                 { param_decl | port_decl | ( "kind" clkgate_kind ";" ) }
+               "end" "clkgate" ident ;
+
+clkgate_kind = "latch" | "and" ;
+
+
+(* ─── Linklist ───────────────────────────────────────────────────────────── *)
+
+linklist_decl = "linklist" ident
+                  { linklist_item }
+                "end" "linklist" ident ;
+
+linklist_item = param_decl
+              | port_decl
+              | "kind" linklist_kind ";"
+              | "track" ( "tail" | "length" ) ":" ( "true" | "false" ) ";"
+              | op_decl
+              | assert_cover
+              ;
+
+linklist_kind = "singly" | "doubly" | "circular_singly" | "circular_doubly" ;
+
+op_decl = "op" ident
+            { op_item }
+          "end" "op" ident ;
+
+op_item = "latency" ":" integer_literal ";"
+        | "pipelined" ":" ( "true" | "false" ) ";"
+        | port_decl
+        | assert_cover
+        ;
+
+
+(* ─── Function ───────────────────────────────────────────────────────────── *)
+
+function_decl = "function" ident
+                  "(" [ function_arg { "," function_arg } ] ")"
+                  "->" type_expr
+                  { function_body_item }
+                "end" "function" ident ;
+
+function_arg = ident ":" type_expr ;
+
+function_body_item = let_binding
+                   | "return" expr ";"
+                   ;
+
+
+(* ─── Package ────────────────────────────────────────────────────────────── *)
+
+package_decl = "package" ident
+                 { param_decl | domain_decl | enum_decl | struct_decl | function_decl }
+               "end" "package" ident ;
+
+
+(* ─── Use ────────────────────────────────────────────────────────────────── *)
+
+use_decl = "use" ident ";" ;
+
+
+(* ─── Assert / Cover (skipped in MVP, syntactically consumed) ────────────── *)
+
+assert_cover = ( "assert" | "cover" ) ident ":" expr ";" ;
+
+
+(* ─── Type Expressions ───────────────────────────────────────────────────── *)
+
+type_expr = "UInt" "<" expr ">"
+           | "SInt" "<" expr ">"
+           | "Bool"
+           | "Bit"
+           | "Clock" "<" ident ">"
+           | "Reset" "<" reset_sync_async [ "," reset_polarity ] ">"
+           | "Vec"  "<" type_expr "," expr ">"
+           | "Token"
+           | "Future" "<" type_expr ">"
+           | ident                           (* named type: struct, enum, bus, etc. *)
+           ;
+
+reset_sync_async = "Sync" | "Async" ;
+reset_polarity   = "High" | "Low" ;
+
+
+(* ─── Expressions ────────────────────────────────────────────────────────── *)
+
+(* Operator precedence (lowest to highest):
+     1-2  :  ||  (logical or)
+     3-4  :  &&  (logical and)
+     5-6  :  ==  !=
+     7-8  :  <  >  <=  >=
+     9-10 :  |   (bitwise or)
+     11-12:  ^   (bitwise xor)
+     13-14:  &   (bitwise and)
+     15-16:  <<  >>
+     17-18:  +  -
+     19-20:  *  /  %
+     21   :  prefix unary (!, ~, -, &, |, ^)
+     postfix: . [] as inside  (highest)
+*)
+
+expr = ternary_expr ;
+
+ternary_expr = binary_expr [ "?" expr ":" expr ] ;
+
+binary_expr = prefix_expr { binary_op prefix_expr } ;
+
+binary_op = "||" | "&&"
+           | "==" | "!="
+           | "<" | ">" | "<=" | ">="
+           | "|" | "^" | "&"
+           | "<<" | ">>"
+           | "+" | "-"
+           | "*" | "/" | "%"
+           ;
+
+prefix_expr = [ prefix_op ] postfix_expr ;
+
+prefix_op = "!"       (* logical not *)
+           | "~"      (* bitwise not *)
+           | "-"      (* arithmetic negation *)
+           | "&"      (* reduction and *)
+           | "|"      (* reduction or *)
+           | "^"      (* reduction xor *)
+           ;
+
+postfix_expr = atom_expr { postfix_op } ;
+
+postfix_op = "." ident                               (* field access *)
+            | "." ident "<" expr ">" "()"            (* method call: .trunc<N>(), .zext<N>(), .sext<N>(), .reverse<N>() *)
+            | "." "reverse" "(" expr ")"             (* .reverse(N) *)
+            | "[" expr "]"                            (* index *)
+            | "[" expr ":" expr "]"                   (* bit-slice [hi:lo] *)
+            | "as" type_expr                          (* cast *)
+            | "inside" "{" inside_member { "," inside_member } "}"
+            ;
+
+inside_member = expr ".." expr    (* range *)
+              | expr              (* single value *)
+              ;
+
+atom_expr = literal
+          | "true"
+          | "false"
+          | "todo!"
+          | "$clog2" "(" expr ")"
+          | "{" expr "{" expr "}" "}"    (* bit replication: {N{value}} *)
+          | "{" [ expr { "," expr } ] "}" (* bit concatenation: {a, b, c} *)
+          | "(" expr ")"
+          | ident "::" ident             (* enum variant: Enum::Variant *)
+          | ident "{" [ field_init { "," field_init } ] "}"  (* struct literal *)
+          | ident "(" [ expr { "," expr } ] ")"              (* function call *)
+          | "match" expr
+              { match_pattern "=>" expr [ "," ] }
+            "end" "match"
+          | ident                         (* variable / signal reference *)
+          ;
+
+field_init = ident ":" expr ;
+
+match_pattern = "_"
+              | ident "::" ident         (* enum variant *)
+              | literal
+              ;
+
+
+(* ─── Literals ───────────────────────────────────────────────────────────── *)
+
+literal = integer_literal | sized_literal | string_literal ;
+
+integer_literal = decimal_literal | hex_literal | binary_literal ;
+
+decimal_literal = digit { digit | "_" } ;             (* e.g. 42, 1_000 *)
+hex_literal     = "0x" hex_digit { hex_digit | "_" }; (* e.g. 0xFF *)
+binary_literal  = "0b" ( "0" | "1" ) { "0" | "1" | "_" } ; (* e.g. 0b1010 *)
+
+(* Verilog-style sized literal: WIDTH'BASE VALUE *)
+sized_literal = decimal_literal "'" ( "h" | "H" | "b" | "B" | "d" | "D" )
+                  ( hex_digit | digit | "0" | "1" ) { hex_digit | digit | "0" | "1" | "_" } ;
+(* Examples: 8'hFF, 4'b1010, 16'd255 *)
+
+string_literal = '"' { any_char_except_quote } '"' ;
+
+
+(* ─── Lexical primitives ─────────────────────────────────────────────────── *)
+
+ident = letter { letter | digit | "_" } ;
+
+letter    = "A" | ... | "Z" | "a" | ... | "z" | "_" ;
+digit     = "0" | ... | "9" ;
+hex_digit = digit | "A" | ... | "F" | "a" | ... | "f" ;
+
+(* Line comments start with // and run to end of line. *)
+(* Block comments use (* ... *) — but ARCH uses // only. *)
+comment = "//" { any_char_except_newline } newline ;
+
+
+(* ─── Reserved Keywords ─────────────────────────────────────────────────── *)
+
+(* The following identifiers are reserved as hard keywords and cannot be used
+   as user-defined names:
+
+   and, arbiter, as, assert, async, bus, clkgate, comb, const, counter,
+   cover, default, domain, else, end, enum, false, fifo, flush, for, forward,
+   from, fsm, function, generate, high, hook, if, implements, in, init, inside,
+   latch, latency, let, linklist, low, match, module, none, on, op, or, out,
+   package, param, pipeline, port, ports, ram, reg, regfile, reset, return,
+   seq, stage, stall, store, struct, synchronizer, template, todo!, to,
+   track, transition, true, type, use, when, wire
+
+   Contextual keywords (lexed as identifiers, given meaning by position):
+   direction, file, fifo, in, kind, latency, lifo, op, out, pipelined,
+   policy, pragma, read_first, state, track, write, write_before_read *)

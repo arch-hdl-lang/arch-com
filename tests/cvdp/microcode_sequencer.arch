@@ -262,7 +262,9 @@ module microcode_sequencer
   comb pc_inc_cout = pc_inc_result[4:4] == 1;
 
   reg pc_reg_r: UInt<4> init 0;
-  seq pc_reg_r <= pc_inc_out;
+  seq
+    pc_reg_r <= pc_inc_out;
+  end seq
   comb pc_out_w = pc_reg_r;
 
   // ---- Result Register ----

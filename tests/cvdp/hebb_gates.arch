@@ -216,8 +216,12 @@ module hebb_gates
     end if
   end comb
 
-  seq next_state <= ns;
-  seq present_state <= ns;
+  seq
+    next_state <= ns;
+  end seq
+  seq
+    present_state <= ns;
+  end seq
 
   // State actions
   seq

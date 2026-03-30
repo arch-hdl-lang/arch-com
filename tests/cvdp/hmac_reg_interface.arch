@@ -118,11 +118,15 @@ module hmac_reg_interface
   end comb
 
   // Sequential: state register
-  seq current_state <= next_state;
+  seq
+    current_state <= next_state;
+  end seq
 
   // Sequential: key error flag — updated with look-ahead so it reflects
   // the key value being written in WRITE state in the same cycle
-  seq hmac_key_error <= ~next_key_valid;
+  seq
+    hmac_key_error <= ~next_key_valid;
+  end seq
 
   // Sequential: Write and valid logic
   // The model writes wdata (current cycle's value) directly in WRITE state.

@@ -4,16 +4,16 @@ fsm TopModule
   port in: in Bool;
   port out: out Bool;
 
-  state A, B;
+  state [A, B]
   default state B;
 
   state A
     comb out = false;
-    transition to B when ~in;
+    -> B when ~in;
   end state A
 
   state B
     comb out = true;
-    transition to A when ~in;
+    -> A when ~in;
   end state B
 end fsm TopModule

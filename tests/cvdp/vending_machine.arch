@@ -31,7 +31,7 @@ fsm vending_machine
                               item_selected == 3 ? 15 :
                               item_selected == 4 ? 20 : 0;
 
-  state IDLE, ITEM_SELECTION, COIN_ACCEPT, DISPENSE, CHANGE_CHECK, RETURN_CHANGE, ERROR;
+  state [IDLE, ITEM_SELECTION, COIN_ACCEPT, DISPENSE, CHANGE_CHECK, RETURN_CHANGE, ERROR]
   default state IDLE;
   default seq on clk rising;
 
@@ -56,8 +56,8 @@ fsm vending_machine
         error <= true;
       end if
     end seq
-    transition to ITEM_SELECTION when item_button_edge;
-    transition to ERROR when coin_input != 0;
+    -> ITEM_SELECTION when item_button_edge;
+    -> ERROR when coin_input != 0;
   end state IDLE
 
   state ITEM_SELECTION
@@ -73,9 +73,9 @@ fsm vending_machine
         error <= true;
       end if
     end seq
-    transition to ERROR when cancel_edge;
-    transition to COIN_ACCEPT when valid_item;
-    transition to ERROR when coin_input != 0;
+    -> ERROR when cancel_edge;
+    -> COIN_ACCEPT when valid_item;
+    -> ERROR when coin_input != 0;
   end state ITEM_SELECTION
 
   state COIN_ACCEPT
@@ -94,9 +94,9 @@ fsm vending_machine
         end if
       end if
     end seq
-    transition to ERROR when cancel_edge;
-    transition to IDLE when (coin_input != 0) & ~valid_coin;
-    transition to DISPENSE when (coin_input != 0) & valid_coin & enough;
+    -> ERROR when cancel_edge;
+    -> IDLE when (coin_input != 0) & ~valid_coin;
+    -> DISPENSE when (coin_input != 0) & valid_coin & enough;
   end state COIN_ACCEPT
 
   state DISPENSE
@@ -104,7 +104,7 @@ fsm vending_machine
       dispense_item <= true;
       dispense_item_id <= selected_item;
     end seq
-    transition to CHANGE_CHECK;
+    -> CHANGE_CHECK;
   end state DISPENSE
 
   state CHANGE_CHECK
@@ -116,8 +116,8 @@ fsm vending_machine
         item_price <= 0;
       end if
     end seq
-    transition to RETURN_CHANGE when coins_accumulated > selected_price;
-    transition to IDLE when ~(coins_accumulated > selected_price);
+    -> RETURN_CHANGE when coins_accumulated > selected_price;
+    -> IDLE when ~(coins_accumulated > selected_price);
   end state CHANGE_CHECK
 
   state RETURN_CHANGE
@@ -127,7 +127,7 @@ fsm vending_machine
       coins_accumulated <= 0;
       item_price <= 0;
     end seq
-    transition to IDLE;
+    -> IDLE;
   end state RETURN_CHANGE
 
   state ERROR
@@ -138,7 +138,7 @@ fsm vending_machine
       coins_accumulated <= 0;
       item_price <= 0;
     end seq
-    transition to IDLE;
+    -> IDLE;
   end state ERROR
 
 end fsm vending_machine

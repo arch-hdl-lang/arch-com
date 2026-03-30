@@ -160,11 +160,11 @@ state WRITE_REQ:
   if w_ready & ~w_done
     w_done <= 1;
   end if
-  transition to WRITE_RESP when (aw_done | aw_ready) & (w_done | w_ready);
+  -> WRITE_RESP when (aw_done | aw_ready) & (w_done | w_ready);
 
 state WRITE_RESP:
   b_ready = 1;
-  transition to IDLE when b_valid;
+  -> IDLE when b_valid;
 ```
 
 Each `fork` arm becomes a done-bit register.  Each arm's `wait until` conditionally sets its done-bit.  The `join` transitions when all arms have completed (either previously or in the current cycle).  Done-bits reset on the outgoing transition.

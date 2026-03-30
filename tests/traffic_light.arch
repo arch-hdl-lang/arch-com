@@ -11,28 +11,28 @@ fsm TrafficLight
   port yellow: out Bool default false;
   port green:  out Bool default false;
 
-  state Red, Yellow, Green;
+  state [Red, Yellow, Green]
   default state Red;
 
   state Red
     comb
       red = true;
     end comb
-    transition to Green when timer == 0;
+    -> Green when timer == 0;
   end state Red
 
   state Green
     comb
       green = true;
     end comb
-    transition to Yellow when timer == 0;
+    -> Yellow when timer == 0;
   end state Green
 
   state Yellow
     comb
       yellow = true;
     end comb
-    transition to Red when timer == 0;
+    -> Red when timer == 0;
   end state Yellow
 
 end fsm TrafficLight

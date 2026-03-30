@@ -15,7 +15,9 @@ module gmii_rx_to_axi_stream
   reg last_r: Bool init false;
   reg dv_prev: Bool init false;
 
-  seq dv_prev <= gmii_rx_dv;
+  seq
+    dv_prev <= gmii_rx_dv;
+  end seq
 
   seq
     if state_r == 0

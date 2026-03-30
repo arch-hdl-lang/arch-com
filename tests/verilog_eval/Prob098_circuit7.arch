@@ -5,5 +5,7 @@ module TopModule
 
   default seq on clk rising;
 
-  seq q <= ~a;
+  seq
+    q <= ~a;
+  end seq
 end module TopModule

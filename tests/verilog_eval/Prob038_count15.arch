@@ -8,7 +8,9 @@ module TopModule
 
   reg count_r: UInt<4> init 0 reset reset=>0;
 
-  seq count_r <= (count_r + 1).trunc<4>();
+  seq
+    count_r <= (count_r + 1).trunc<4>();
+  end seq
 
   comb
     q = count_r;

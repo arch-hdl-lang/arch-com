@@ -7,7 +7,7 @@ fsm TopModule
   port flag: out Bool;
   port err: out Bool;
 
-  state S0, S1, S2, S3, S4, S5, S6, Serr, Sdisc, Sflag;
+  state [S0, S1, S2, S3, S4, S5, S6, Serr, Sdisc, Sflag]
   default state S0;
   default
     comb disc = false;
@@ -15,54 +15,54 @@ fsm TopModule
     comb err = false;
   end default
 
-  state S0 transition to S1 when in;
+  state S0 -> S1 when in;
 
   state S1
-    transition to S2 when in;
-    transition to S0 when ~in;
+    -> S2 when in;
+    -> S0 when ~in;
   end state S1
 
   state S2
-    transition to S3 when in;
-    transition to S0 when ~in;
+    -> S3 when in;
+    -> S0 when ~in;
   end state S2
 
   state S3
-    transition to S4 when in;
-    transition to S0 when ~in;
+    -> S4 when in;
+    -> S0 when ~in;
   end state S3
 
   state S4
-    transition to S5 when in;
-    transition to S0 when ~in;
+    -> S5 when in;
+    -> S0 when ~in;
   end state S4
 
   state S5
-    transition to S6 when in;
-    transition to Sdisc when ~in;
+    -> S6 when in;
+    -> Sdisc when ~in;
   end state S5
 
   state S6
-    transition to Serr when in;
-    transition to Sflag when ~in;
+    -> Serr when in;
+    -> Sflag when ~in;
   end state S6
 
   state Serr
     comb err = true;
-    transition to Serr when in;
-    transition to S0 when ~in;
+    -> Serr when in;
+    -> S0 when ~in;
   end state Serr
 
   state Sdisc
     comb disc = true;
-    transition to S1 when in;
-    transition to S0 when ~in;
+    -> S1 when in;
+    -> S0 when ~in;
   end state Sdisc
 
   state Sflag
     comb flag = true;
-    transition to S1 when in;
-    transition to S0 when ~in;
+    -> S1 when in;
+    -> S0 when ~in;
   end state Sflag
 
 end fsm TopModule

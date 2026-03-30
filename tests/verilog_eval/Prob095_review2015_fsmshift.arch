@@ -4,23 +4,23 @@ fsm TopModule
   port reset: in Reset<Sync>;
   port shift_ena: out Bool;
 
-  state B0, B1, B2, B3, Done;
+  state [B0, B1, B2, B3, Done]
   default state B0;
   default
     comb shift_ena = true;
   end default
 
-  state B0 transition to B1 when true;
+  state B0 -> B1 when true;
 
-  state B1 transition to B2 when true;
+  state B1 -> B2 when true;
 
-  state B2 transition to B3 when true;
+  state B2 -> B3 when true;
 
-  state B3 transition to Done when true;
+  state B3 -> Done when true;
 
   state Done
     comb shift_ena = false;
-    transition to Done when true;
+    -> Done when true;
   end state Done
 
 end fsm TopModule

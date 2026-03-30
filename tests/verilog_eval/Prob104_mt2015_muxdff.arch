@@ -7,5 +7,7 @@ module TopModule
 
   default seq on clk rising;
 
-  seq Q <= L ? r_in : q_in;
+  seq
+    Q <= L ? r_in : q_in;
+  end seq
 end module TopModule

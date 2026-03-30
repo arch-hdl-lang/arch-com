@@ -8,7 +8,9 @@ module TopModule
 
   default seq on clk rising;
 
-  seq out_always_ff <= a ^ b;
+  seq
+    out_always_ff <= a ^ b;
+  end seq
 
   comb
     out_assign = a ^ b;

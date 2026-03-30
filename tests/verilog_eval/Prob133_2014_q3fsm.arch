@@ -8,7 +8,7 @@ fsm TopModule
 
   reg cnt: UInt<2> reset reset=>0;
 
-  state A, B1, B2, B3, Out;
+  state [A, B1, B2, B3, Out]
   default state A;
   default seq on clk rising;
   default
@@ -16,28 +16,38 @@ fsm TopModule
   end default
 
   state A
-    seq cnt <= 0;
-    transition to B1 when s;
+    seq
+      cnt <= 0;
+    end seq
+    -> B1 when s;
   end state A
 
   state B1
-    seq cnt <= w ? 1 : 0;
-    transition to B2 when true;
+    seq
+      cnt <= w ? 1 : 0;
+    end seq
+    -> B2 when true;
   end state B1
 
   state B2
-    seq cnt <= w ? (cnt + 1).trunc<2>() : cnt;
-    transition to B3 when true;
+    seq
+      cnt <= w ? (cnt + 1).trunc<2>() : cnt;
+    end seq
+    -> B3 when true;
   end state B2
 
   state B3
-    seq cnt <= w ? (cnt + 1).trunc<2>() : cnt;
-    transition to Out when true;
+    seq
+      cnt <= w ? (cnt + 1).trunc<2>() : cnt;
+    end seq
+    -> Out when true;
   end state B3
 
   state Out
     comb z = (cnt == 2);
-    seq cnt <= w ? 1 : 0;
-    transition to B2 when true;
+    seq
+      cnt <= w ? 1 : 0;
+    end seq
+    -> B2 when true;
   end state Out
 end fsm TopModule

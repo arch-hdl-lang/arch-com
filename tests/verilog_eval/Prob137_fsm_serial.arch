@@ -4,40 +4,40 @@ fsm TopModule
   port in: in Bool;
   port done: out Bool;
 
-  state Bit0, Bit1, Bit2, Bit3, Bit4, Bit5, Bit6, Bit7, Idle, Stop, Ok, Err;
+  state [Bit0, Bit1, Bit2, Bit3, Bit4, Bit5, Bit6, Bit7, Idle, Stop, Ok, Err]
   default state Idle;
   default
     comb done = false;
   end default
 
-  state Idle transition to Bit0 when ~in;
+  state Idle -> Bit0 when ~in;
 
-  state Bit0 transition to Bit1 when true;
+  state Bit0 -> Bit1 when true;
 
-  state Bit1 transition to Bit2 when true;
+  state Bit1 -> Bit2 when true;
 
-  state Bit2 transition to Bit3 when true;
+  state Bit2 -> Bit3 when true;
 
-  state Bit3 transition to Bit4 when true;
+  state Bit3 -> Bit4 when true;
 
-  state Bit4 transition to Bit5 when true;
+  state Bit4 -> Bit5 when true;
 
-  state Bit5 transition to Bit6 when true;
+  state Bit5 -> Bit6 when true;
 
-  state Bit6 transition to Bit7 when true;
+  state Bit6 -> Bit7 when true;
 
-  state Bit7 transition to Stop when true;
+  state Bit7 -> Stop when true;
 
   state Stop
-    transition to Ok when in;
-    transition to Err when ~in;
+    -> Ok when in;
+    -> Err when ~in;
   end state Stop
 
   state Ok
     comb done = true;
-    transition to Idle when in;
-    transition to Bit0 when ~in;
+    -> Idle when in;
+    -> Bit0 when ~in;
   end state Ok
 
-  state Err transition to Idle when in;
+  state Err -> Idle when in;
 end fsm TopModule

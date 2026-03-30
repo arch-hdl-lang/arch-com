@@ -21,7 +21,7 @@ fsm sprite_controller_fsm
   reg data_cnt: UInt<PIXEL_WIDTH> reset rst_n=>0;
   reg wait_cnt: UInt<WAIT_WIDTH> reset rst_n=>0;
 
-  state IDLE, INIT_WRITE, WRITE, INIT_READ, READ, WAIT, DONE;
+  state [IDLE, INIT_WRITE, WRITE, INIT_READ, READ, WAIT, DONE]
   default state IDLE;
   default seq on clk rising;
 
@@ -32,7 +32,7 @@ fsm sprite_controller_fsm
       data_cnt <= 0;
       done <= false;
     end seq
-    transition to INIT_WRITE;
+    -> INIT_WRITE;
   end state IDLE
 
   state INIT_WRITE
@@ -41,7 +41,7 @@ fsm sprite_controller_fsm
       write_data <= 24'hFF0000;
       write_addr <= addr_cnt;
     end seq
-    transition to WRITE;
+    -> WRITE;
   end state INIT_WRITE
 
   state WRITE
@@ -51,7 +51,7 @@ fsm sprite_controller_fsm
       addr_cnt <= (addr_cnt + 1).trunc<MEM_ADDR_WIDTH>();
       data_cnt <= (data_cnt + 1).trunc<PIXEL_WIDTH>();
     end seq
-    transition to INIT_READ when addr_cnt.zext<32>() == (N_ROM - 1);
+    -> INIT_READ when addr_cnt.zext<32>() == (N_ROM - 1);
   end state WRITE
 
   state INIT_READ
@@ -59,7 +59,7 @@ fsm sprite_controller_fsm
       rw <= false;
       addr_cnt <= 0;
     end seq
-    transition to READ;
+    -> READ;
   end state INIT_READ
 
   state READ
@@ -68,21 +68,21 @@ fsm sprite_controller_fsm
       y_pos <= (addr_cnt.zext<32>() / SPRITE_WIDTH).trunc<SPRITE_HEIGHT>();
       addr_cnt <= (addr_cnt + 1).trunc<MEM_ADDR_WIDTH>();
     end seq
-    transition to WAIT when addr_cnt.zext<32>() == (SPRITE_WIDTH * SPRITE_HEIGHT - 1);
+    -> WAIT when addr_cnt.zext<32>() == (SPRITE_WIDTH * SPRITE_HEIGHT - 1);
   end state READ
 
   state WAIT
     seq
       wait_cnt <= (wait_cnt + 1).trunc<WAIT_WIDTH>();
     end seq
-    transition to DONE when wait_cnt == i_wait;
+    -> DONE when wait_cnt == i_wait;
   end state WAIT
 
   state DONE
     seq
       done <= true;
     end seq
-    transition to IDLE;
+    -> IDLE;
   end state DONE
 
 end fsm sprite_controller_fsm

@@ -17,5 +17,7 @@ module TopModule
     q_next[0] = q[1] ^ q[0];
   end comb
 
-  seq q <= q_next;
+  seq
+    q <= q_next;
+  end seq
 end module TopModule

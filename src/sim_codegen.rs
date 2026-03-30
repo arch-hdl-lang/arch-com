@@ -71,17 +71,22 @@ impl<'a> SimCodegen<'a> {
             models.push(self.gen_functions(&fn_items));
         }
 
+        // Always emit VStructs.h/cpp (contains enum typedefs + struct definitions)
+        models.push(self.gen_structs_file());
+
         for item in &self.source.items {
             match item {
-                Item::Module(m)   => models.push(self.gen_module(m)),
-                Item::Counter(c)  => models.push(self.gen_counter(c)),
-                Item::Fsm(f)      => models.push(self.gen_fsm(f)),
-                Item::Regfile(r)  => models.push(self.gen_regfile(r)),
-                Item::Linklist(l) => models.push(self.gen_linklist(l)),
-                Item::Ram(r)      => models.push(self.gen_ram(r)),
+                Item::Module(m)      => models.push(self.gen_module(m)),
+                Item::Counter(c)     => models.push(self.gen_counter(c)),
+                Item::Fsm(f)         => models.push(self.gen_fsm(f)),
+                Item::Regfile(r)     => models.push(self.gen_regfile(r)),
+                Item::Linklist(l)    => models.push(self.gen_linklist(l)),
+                Item::Ram(r)         => models.push(self.gen_ram(r)),
                 Item::Synchronizer(s) => models.push(self.gen_synchronizer(s)),
-                Item::Clkgate(c) => models.push(self.gen_clkgate(c)),
-                _ => {} // fifo/arbiter: TODO
+                Item::Clkgate(c)     => models.push(self.gen_clkgate(c)),
+                Item::Fifo(f)        => models.push(self.gen_fifo(f)),
+                Item::Arbiter(a)     => models.push(self.gen_arbiter(a)),
+                _ => {}
             }
         }
         models
@@ -294,9 +299,10 @@ fn collect_trace_signals(
         });
     }
 
-    // Registers
+    // Registers (skip struct/named types — can't bit-shift a struct)
     for item in body {
         if let ModuleBodyItem::RegDecl(r) = item {
+            if matches!(r.ty, TypeExpr::Named(_)) { continue; }
             let name = &r.name.name;
             let width = type_width(&r.ty);
             let is_wide = wide_names.contains(name.as_str());
@@ -454,7 +460,8 @@ fn cpp_port_type(ty: &TypeExpr) -> String {
             else { cpp_sint(b).to_string() }
         }
         TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(..) => "uint8_t".to_string(),
-        TypeExpr::Vec(_, _) | TypeExpr::Named(_) => "uint32_t".to_string(),
+        TypeExpr::Named(n) => n.name.clone(),
+        TypeExpr::Vec(_, _) => "uint32_t".to_string(),
     }
 }
 
@@ -522,7 +529,8 @@ fn cpp_internal_type(ty: &TypeExpr) -> String {
             else { cpp_sint(b).to_string() }
         }
         TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(..) => "uint8_t".to_string(),
-        TypeExpr::Vec(_, _) | TypeExpr::Named(_) => "uint32_t".to_string(),
+        TypeExpr::Named(n) => n.name.clone(),
+        TypeExpr::Vec(_, _) => "uint32_t".to_string(),
     }
 }
 
@@ -628,6 +636,9 @@ struct Ctx<'a> {
     enum_map:    &'a HashMap<String, Vec<String>>,
     /// Bus port names (for FieldAccess rewriting: itcm.cmd_valid → itcm_cmd_valid).
     bus_ports:   &'a HashSet<String>,
+    /// Reg/wire names whose type is Vec<T,N> — these use C array subscript `[i]`.
+    /// All other subscripts on scalar UInt/SInt use bit extraction `(x >> i) & 1`.
+    vec_names:   &'a HashSet<String>,
 }
 
 impl<'a> Ctx<'a> {
@@ -642,8 +653,16 @@ impl<'a> Ctx<'a> {
         enum_map:   &'a HashMap<String, Vec<String>>,
         bus_ports:  &'a HashSet<String>,
     ) -> Self {
+        static EMPTY_VEC_NAMES: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
+        let vec_names = EMPTY_VEC_NAMES.get_or_init(HashSet::new);
         Ctx { reg_names, port_names, let_names, inst_names, wide_names,
-              widths, posedge_lhs: false, fsm_mode: false, enum_map, bus_ports }
+              widths, posedge_lhs: false, fsm_mode: false, enum_map, bus_ports,
+              vec_names }
+    }
+
+    fn with_vec_names(mut self, vec_names: &'a HashSet<String>) -> Self {
+        self.vec_names = vec_names;
+        self
     }
 
     fn posedge(mut self) -> Self { self.posedge_lhs = true; self }
@@ -835,7 +854,8 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                     return format!("_inst_{}.{}", base_name, field.name);
                 }
             }
-            let b = cpp_expr(base, ctx);
+            // Use is_lhs when evaluating base so struct reg fields get _n_ prefix on LHS
+            let b = cpp_expr_inner(base, ctx, is_lhs);
             format!("{b}.{}", field.name)
         }
 
@@ -915,7 +935,17 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
         ExprKind::Index(base, idx) => {
             let b = cpp_expr_inner(base, ctx, is_lhs);
             let i = cpp_expr(idx, ctx);
-            format!("{b}[{i}]")
+            // Vec-typed regs use C array subscript; scalar signals use bit extraction
+            let is_vec = if let ExprKind::Ident(name) = &base.kind {
+                ctx.vec_names.contains(name.as_str())
+            } else {
+                false
+            };
+            if is_vec {
+                format!("{b}[{i}]")
+            } else {
+                format!("(({b}) >> ({i})) & 1")
+            }
         }
 
         ExprKind::BitSlice(base, hi, lo) => {
@@ -1717,6 +1747,13 @@ impl<'a> SimCodegen<'a> {
             if bits > 64 { wide_names.insert(flat_name.clone()); }
         }
 
+        // Vec-typed reg names (use C array subscript `[i]` instead of bit extraction)
+        let vec_reg_names: HashSet<String> = m.body.iter()
+            .filter_map(|i| if let ModuleBodyItem::RegDecl(r) = i {
+                if matches!(r.ty, TypeExpr::Vec(..)) { Some(r.name.name.clone()) } else { None }
+            } else { None })
+            .collect();
+
         // Collect reset-none reg names for --check-uninit
         let uninit_regs: HashSet<String> = if self.check_uninit {
             m.body.iter()
@@ -1744,8 +1781,13 @@ impl<'a> SimCodegen<'a> {
         let has_functions = self.source.items.iter().any(|i| matches!(i, Item::Function(_)));
 
         // ── Header ───────────────────────────────────────────────────────────
+        let has_structs = m.body.iter().any(|i| matches!(i, ModuleBodyItem::RegDecl(r) if matches!(r.ty, TypeExpr::Named(_))))
+            || m.ports.iter().any(|p| matches!(p.ty, TypeExpr::Named(_)));
         let mut h = String::new();
         h.push_str(&format!("#pragma once\n#include <cstdint>\n#include <cstdio>\n#include \"verilated.h\"\n"));
+        if has_structs {
+            h.push_str("#include \"VStructs.h\"\n");
+        }
         if has_functions {
             h.push_str("#include \"VFunctions.h\"\n");
         }
@@ -1804,6 +1846,8 @@ impl<'a> SimCodegen<'a> {
             .filter_map(|i| if let ModuleBodyItem::RegDecl(r) = i {
                 if vec_array_info(&r.ty).is_some() {
                     None  // handled via memset in constructor body
+                } else if matches!(r.ty, TypeExpr::Named(_)) {
+                    Some(format!("_{}()", r.name.name))  // struct default constructor
                 } else if wide_names.contains(&r.name.name) {
                     Some(format!("_{}()", r.name.name))  // VlWide or _arch_u128 zero-inits
                 } else {
@@ -2062,7 +2106,8 @@ impl<'a> SimCodegen<'a> {
         // Helper closure: emit sub-instance input assignments + eval_comb + output reads
         // Returns (input_code, comb_call, output_read_code) per inst
         let ctx = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
-                           &wide_names, &widths, &enum_map, &bus_port_names);
+                           &wide_names, &widths, &enum_map, &bus_port_names)
+                      .with_vec_names(&vec_reg_names);
 
         if insts.is_empty() {
             // No sub-instances: simple path
@@ -2236,7 +2281,8 @@ impl<'a> SimCodegen<'a> {
             cpp.push('\n');
 
             let ctx = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
-                               &wide_names, &widths, &enum_map, &bus_port_names).posedge();
+                               &wide_names, &widths, &enum_map, &bus_port_names)
+                          .with_vec_names(&vec_reg_names).posedge();
 
             for rb in &reg_blocks {
                 let mut assigned = std::collections::BTreeSet::new();
@@ -2320,7 +2366,8 @@ impl<'a> SimCodegen<'a> {
                         }
                     }
                     let ctx_pe = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
-                                           &wide_names, &widths, &enum_map, &bus_port_names);
+                                           &wide_names, &widths, &enum_map, &bus_port_names)
+                                       .with_vec_names(&vec_reg_names);
                     let src = ctx_pe.resolve_name(&p.source.name, false);
                     if let Some((ref rst_name, is_low)) = rst_info {
                         let cond = if is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
@@ -2409,10 +2456,24 @@ impl<'a> SimCodegen<'a> {
         }
 
         // Propagate eval_posedge to sub-instances so grandchild registers fire
-        // when a parent calls this module's eval_posedge()
+        // when a parent calls this module's eval_posedge().
+        // Guard with the rising edge flag(s) so sub-instances only fire on actual
+        // posedges, not on negedge eval() calls that also invoke eval_posedge().
         if !insts.is_empty() {
-            for inst in &insts {
-                cpp.push_str(&format!("  _inst_{}.eval_posedge();\n", inst.name.name));
+            if !all_clks.is_empty() {
+                let any_rising = all_clks.iter()
+                    .map(|c| format!("_rising_{c}"))
+                    .collect::<Vec<_>>()
+                    .join(" || ");
+                cpp.push_str(&format!("  if ({any_rising}) {{\n"));
+                for inst in &insts {
+                    cpp.push_str(&format!("    _inst_{}.eval_posedge();\n", inst.name.name));
+                }
+                cpp.push_str("  }\n");
+            } else {
+                for inst in &insts {
+                    cpp.push_str(&format!("  _inst_{}.eval_posedge();\n", inst.name.name));
+                }
             }
         }
 
@@ -2423,7 +2484,8 @@ impl<'a> SimCodegen<'a> {
         // inst chain so that combinational feedback settles when called from parent.
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
         let ctx_comb = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
-                                &wide_names, &widths, &enum_map, &bus_port_names);
+                                &wide_names, &widths, &enum_map, &bus_port_names)
+                           .with_vec_names(&vec_reg_names);
 
         // Let bindings → private fields (assign before inst eval so instances see current values)
         for item in &m.body {
@@ -2578,6 +2640,7 @@ impl<'a> SimCodegen<'a> {
 
         let has_inc    = c.ports.iter().any(|p| p.name.name == "inc");
         let has_dec    = c.ports.iter().any(|p| p.name.name == "dec");
+        let has_clear  = c.ports.iter().any(|p| p.name.name == "clear");
         let has_at_max = c.ports.iter().any(|p| p.name.name == "at_max");
         let has_at_min = c.ports.iter().any(|p| p.name.name == "at_min");
 
@@ -2598,10 +2661,11 @@ impl<'a> SimCodegen<'a> {
         let state_inits = vec!["_clk_prev(0)".to_string(), format!("_count_r({})", init_val)];
         let all_inits: Vec<String> = port_inits.into_iter().chain(state_inits).collect();
         h.push_str(&format!("  {class}() : {} {{}}\n", all_inits.join(", ")));
-        h.push_str("  void eval();\n  void final() { trace_close(); }\nprivate:\n");
+        h.push_str("  void eval();\n  void final() { trace_close(); }\n");
+        h.push_str("  void eval_posedge();\n  void eval_comb();\n");
+        h.push_str("private:\n");
         h.push_str("  uint8_t _clk_prev;\n");
         h.push_str(&format!("  {count_ty} _count_r;\n"));
-        h.push_str("  void eval_posedge();\n  void eval_comb();\n");
 
         let mut cpp = String::new();
         cpp.push_str(&format!("#include \"{class}.h\"\n\n"));
@@ -2684,6 +2748,9 @@ impl<'a> SimCodegen<'a> {
                 let inc_cond = if has_inc { "    if (inc)" } else { "" };
                 cpp.push_str(&format!("    {inc_cond} _n = ({count_ty})(_count_r + 1);\n"));
             }
+        }
+        if has_clear {
+            cpp.push_str(&format!("    if (clear) _n = {init_val}; // clear overrides inc\n"));
         }
         cpp.push_str("  }\n  _count_r = _n;\n}\n\n");
 
@@ -2952,11 +3019,6 @@ impl<'a> SimCodegen<'a> {
         let read_pfx  = r.read_ports.as_ref().map(|rp| rp.name.name.clone()).unwrap_or_else(|| "read".to_string());
         let write_pfx = r.write_ports.as_ref().map(|wp| wp.name.name.clone()).unwrap_or_else(|| "write".to_string());
 
-        // Addresses that are permanently fixed (init [k] = v ⇒ k is write-guarded)
-        let guarded: Vec<u64> = r.inits.iter()
-            .filter_map(|init| if let ExprKind::Literal(LitKind::Dec(v)) = &init.index.kind { Some(*v) } else { None })
-            .collect();
-
         // ── Header ────────────────────────────────────────────────────────────
         let mut h = String::new();
         h.push_str(&format!("#pragma once\n#include <cstdint>\n#include <cstring>\n#include \"verilated.h\"\n\nclass {class} {{\npublic:\n"));
@@ -3007,15 +3069,13 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("  if (_trace_fp) trace_dump(_trace_time++);\n");
         cpp.push_str("}\n\n");
 
-        // eval_posedge(): write ports with address guards for init-protected entries
+        // eval_posedge(): write ports
         cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
         for wi in 0..nwrite {
             let wen   = flat(&write_pfx, wi, nwrite, "en");
             let waddr = flat(&write_pfx, wi, nwrite, "addr");
             let wdata = flat(&write_pfx, wi, nwrite, "data");
-            let mut cond = wen.clone();
-            for g in &guarded { cond.push_str(&format!(" && {waddr} != {g}")); }
-            cpp.push_str(&format!("  if ({cond})\n    _rf[{waddr}] = {wdata};\n"));
+            cpp.push_str(&format!("  if ({wen})\n    _rf[{waddr}] = {wdata};\n"));
         }
         cpp.push_str("}\n\n");
 
@@ -3881,6 +3941,352 @@ impl<'a> SimCodegen<'a> {
 
         // eval — calls both
         cpp.push_str(&format!("void {}::eval() {{ eval_comb(); }}\n", class));
+
+        SimModel { class_name: class, header: h, impl_: cpp }
+    }
+
+    // ── Structs + Enums file ─────────────────────────────────────────────────
+
+    /// Generate VStructs.h containing C++ type definitions for all ARCH structs and enums.
+    fn gen_structs_file(&self) -> SimModel {
+        let mut h = String::new();
+        h.push_str("#pragma once\n#include <cstdint>\n#include <cstring>\n\n");
+
+        for item in &self.source.items {
+            match item {
+                Item::Enum(e) => {
+                    // Enums are uint32_t aliases — variants are used as integer indices
+                    h.push_str(&format!("typedef uint32_t {};\n", e.name.name));
+                    for (i, v) in e.variants.iter().enumerate() {
+                        h.push_str(&format!("static const uint32_t {}_{} = {}u;\n", e.name.name, v.name, i));
+                    }
+                    h.push('\n');
+                }
+                Item::Struct(s) => {
+                    h.push_str(&format!("struct {} {{\n", s.name.name));
+                    let mut field_inits = Vec::new();
+                    for f in &s.fields {
+                        let ty = cpp_internal_type(&f.ty);
+                        h.push_str(&format!("  {} {};\n", ty, f.name.name));
+                        // Struct fields use default init for non-trivial types
+                        if matches!(f.ty, TypeExpr::Named(_)) {
+                            field_inits.push(format!("{}()", f.name.name));
+                        } else {
+                            field_inits.push(format!("{}(0)", f.name.name));
+                        }
+                    }
+                    h.push_str(&format!("  {}() : {} {{}}\n", s.name.name, field_inits.join(", ")));
+                    h.push_str("};\n\n");
+                }
+                _ => {}
+            }
+        }
+
+        SimModel {
+            class_name: "VStructs".to_string(),
+            header: h,
+            impl_: "#include \"VStructs.h\"\n".to_string(),
+        }
+    }
+
+    // ── FIFO sim model ───────────────────────────────────────────────────────
+
+    fn gen_fifo(&self, f: &FifoDecl) -> SimModel {
+        let name = &f.name.name;
+        let class = format!("V{name}");
+        let is_lifo = f.kind == FifoKind::Lifo;
+
+        // Resolve DEPTH and TYPE params
+        let depth: u64 = f.params.iter()
+            .find(|p| p.name.name == "DEPTH")
+            .and_then(|p| p.default.as_ref())
+            .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(*v) } else { None })
+            .unwrap_or(8);
+
+        let elem_ty: String = f.params.iter()
+            .find(|p| p.name.name == "TYPE")
+            .and_then(|p| if let ParamKind::Type(te) = &p.kind { Some(te) } else { None })
+            .map(cpp_internal_type)
+            .unwrap_or_else(|| "uint32_t".to_string());
+
+        let (rst_name, _is_async, is_low) = extract_reset_info(&f.ports);
+        let rst_cond = if is_low { format!("(!{rst_name})") } else { rst_name.clone() };
+
+        // Build type-param substitution: param name → concrete TypeExpr (from default)
+        let type_param_map: std::collections::HashMap<String, TypeExpr> = f.params.iter()
+            .filter_map(|p| if let ParamKind::Type(te) = &p.kind { Some((p.name.name.clone(), te.clone())) } else { None })
+            .collect();
+        // Resolve a port's TypeExpr, substituting Named types that match type params
+        let resolve_port_ty = |ty: &TypeExpr| -> String {
+            if let TypeExpr::Named(n) = ty {
+                if let Some(concrete) = type_param_map.get(&n.name) {
+                    return cpp_port_type(concrete);
+                }
+            }
+            cpp_port_type(ty)
+        };
+
+        let mut h = String::new();
+        h.push_str("#pragma once\n#include <cstdint>\n#include <cstring>\n#include \"verilated.h\"\n\n");
+        h.push_str(&format!("class {class} {{\npublic:\n"));
+        for p in &f.ports {
+            let ty = resolve_port_ty(&p.ty);
+            h.push_str(&format!("  {ty} {};\n", p.name.name));
+        }
+        if !is_lifo {
+            h.push_str("  uint8_t full;\n  uint8_t empty;\n");
+        }
+        h.push('\n');
+
+        // Constructor — use () for data ports, 0 for scalars
+        let mut port_inits: Vec<String> = f.ports.iter().map(|p| {
+            if matches!(p.ty, TypeExpr::Named(_)) { format!("{}()", p.name.name) }
+            else { format!("{}(0)", p.name.name) }
+        }).collect();
+        if !is_lifo {
+            port_inits.push("full(0)".to_string());
+            port_inits.push("empty(1)".to_string());
+        }
+        port_inits.push("_clk_prev(0)".to_string());
+        if is_lifo {
+            port_inits.push("_sp(0)".to_string());
+        } else {
+            port_inits.push("_wr_ptr(0)".to_string());
+            port_inits.push("_rd_ptr(0)".to_string());
+        }
+        h.push_str(&format!("  {class}() : {} {{\n    memset(_mem, 0, sizeof(_mem));\n  }}\n",
+            port_inits.join(", ")));
+        h.push_str("  void eval();\n  void eval_posedge();\n  void eval_comb();\n");
+        h.push_str("  void final() { trace_close(); }\n");
+        h.push_str("private:\n");
+        h.push_str("  uint8_t _clk_prev;\n");
+        if is_lifo {
+            h.push_str("  uint32_t _sp;\n");
+        } else {
+            h.push_str("  uint32_t _wr_ptr;\n  uint32_t _rd_ptr;\n");
+        }
+        h.push_str(&format!("  {elem_ty} _mem[{depth}];\n"));
+        h.push_str("  void trace_open(const char* filename);\n");
+        h.push_str("  void trace_dump(uint64_t time);\n");
+        h.push_str("  void trace_close();\n");
+        h.push_str("  FILE* _trace_fp = nullptr;\n  uint64_t _trace_time = 0;\n");
+        h.push_str("};\n");
+
+        let mut cpp = String::new();
+        cpp.push_str(&format!("#include \"{class}.h\"\n\n"));
+
+        let clk_port = f.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            .map(|p| p.name.name.as_str()).unwrap_or("clk");
+
+        // eval()
+        cpp.push_str(&format!("void {class}::eval() {{\n"));
+        cpp.push_str("  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n");
+        cpp.push_str("    trace_open(Verilated::traceFile());\n");
+        cpp.push_str(&format!("  if ({clk_port} && !_clk_prev) eval_posedge();\n"));
+        cpp.push_str(&format!("  _clk_prev = {clk_port};\n"));
+        cpp.push_str("  eval_comb();\n");
+        cpp.push_str("  if (_trace_fp) trace_dump(_trace_time++);\n");
+        cpp.push_str("}\n\n");
+
+        // eval_posedge()
+        cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
+        cpp.push_str(&format!("  if ({rst_cond}) {{\n"));
+        if is_lifo {
+            cpp.push_str("    _sp = 0;\n");
+        } else {
+            cpp.push_str("    _wr_ptr = 0; _rd_ptr = 0;\n");
+        }
+        cpp.push_str("  } else {\n");
+        if is_lifo {
+            cpp.push_str("    if (push_valid && push_ready) {\n");
+            cpp.push_str(&format!("      _mem[_sp % {depth}] = push_data;\n"));
+            cpp.push_str("      _sp++;\n    }\n");
+            cpp.push_str("    if (pop_ready && pop_valid) {\n");
+            cpp.push_str("      if (_sp > 0) _sp--;\n    }\n");
+        } else {
+            cpp.push_str("    if (push_valid && push_ready) {\n");
+            cpp.push_str(&format!("      _mem[_wr_ptr % {depth}] = push_data;\n"));
+            cpp.push_str("      _wr_ptr++;\n");
+            cpp.push_str(&format!("      if (_wr_ptr >= 2u * {depth}) _wr_ptr = 0;\n    }}\n"));
+            cpp.push_str("    if (pop_ready && pop_valid) {\n");
+            cpp.push_str("      _rd_ptr++;\n");
+            cpp.push_str(&format!("      if (_rd_ptr >= 2u * {depth}) _rd_ptr = 0;\n    }}\n"));
+        }
+        cpp.push_str("  }\n}\n\n");
+
+        // eval_comb()
+        cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
+        if is_lifo {
+            cpp.push_str(&format!("  push_ready = (_sp < {depth}u);\n"));
+            cpp.push_str("  pop_valid  = (_sp > 0);\n");
+            cpp.push_str(&format!("  pop_data   = _mem[(_sp > 0 ? _sp - 1 : 0) % {depth}];\n"));
+        } else {
+            cpp.push_str(&format!("  uint32_t _depth = {depth};\n"));
+            cpp.push_str("  uint32_t _count = (_wr_ptr >= _rd_ptr)\n");
+            cpp.push_str("    ? (_wr_ptr - _rd_ptr)\n");
+            cpp.push_str("    : (2u * _depth - _rd_ptr + _wr_ptr);\n");
+            cpp.push_str("  full       = (_count >= _depth);\n");
+            cpp.push_str("  empty      = (_count == 0);\n");
+            cpp.push_str("  push_ready = !full;\n");
+            cpp.push_str("  pop_valid  = !empty;\n");
+            cpp.push_str("  pop_data = _mem[_rd_ptr % _depth];\n");
+        }
+        cpp.push_str("}\n\n");
+
+        // Trace methods
+        cpp.push_str(&format!("void {class}::trace_open(const char* filename) {{\n"));
+        cpp.push_str("  _trace_fp = fopen(filename, \"w\");\n");
+        cpp.push_str("  if (!_trace_fp) return;\n");
+        cpp.push_str("  fprintf(_trace_fp, \"$timescale 1ns $end\\n\");\n");
+        cpp.push_str(&format!("  fprintf(_trace_fp, \"$scope module {} $end\\n\");\n", name));
+        let mut sig_idx = 0usize;
+        for p in &f.ports {
+            let w = type_width(&p.ty);
+            let id = vcd_id(sig_idx); sig_idx += 1;
+            let pname = &p.name.name;
+            cpp.push_str(&format!("  fprintf(_trace_fp, \"$var wire {w} {id} {pname} $end\\n\");\n"));
+        }
+        cpp.push_str("  fprintf(_trace_fp, \"$upscope $end\\n$enddefinitions $end\\n\");\n");
+        cpp.push_str("}\n\n");
+
+        cpp.push_str(&format!("void {class}::trace_dump(uint64_t time) {{\n"));
+        cpp.push_str("  if (!_trace_fp) return;\n");
+        cpp.push_str("  fprintf(_trace_fp, \"#%lu\\n\", (unsigned long)time);\n");
+        sig_idx = 0;
+        for p in &f.ports {
+            let w = type_width(&p.ty);
+            let id = vcd_id(sig_idx); sig_idx += 1;
+            let pname = &p.name.name;
+            if w == 1 {
+                cpp.push_str(&format!("  fprintf(_trace_fp, \"%c{}\\n\", {pname} ? '1' : '0');\n", id));
+            } else {
+                cpp.push_str("  fprintf(_trace_fp, \"b\");\n");
+                cpp.push_str(&format!("  for (int _i = {w} - 1; _i >= 0; _i--) fprintf(_trace_fp, \"%c\", (int)(({pname} >> _i) & 1) ? '1' : '0');\n"));
+                cpp.push_str(&format!("  fprintf(_trace_fp, \" {}\\n\");\n", id));
+            }
+        }
+        cpp.push_str("}\n\n");
+        cpp.push_str(&format!("void {class}::trace_close() {{\n"));
+        cpp.push_str("  if (_trace_fp) {{ fclose(_trace_fp); _trace_fp = nullptr; }}\n");
+        cpp.push_str("}\n");
+
+        SimModel { class_name: class, header: h, impl_: cpp }
+    }
+
+    // ── Arbiter sim model ────────────────────────────────────────────────────
+
+    fn gen_arbiter(&self, a: &ArbiterDecl) -> SimModel {
+        let name = &a.name.name;
+        let class = format!("V{name}");
+
+        let num_req: u64 = a.params.iter()
+            .find(|p| p.name.name == "NUM_REQ")
+            .and_then(|p| p.default.as_ref())
+            .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(*v) } else { None })
+            .unwrap_or(2);
+
+        let (rst_name, _is_async, is_low) = extract_reset_info(&a.ports);
+        let rst_cond = if is_low { format!("(!{rst_name})") } else { rst_name.clone() };
+
+        let mut h = String::new();
+        h.push_str("#pragma once\n#include <cstdint>\n#include <cstring>\n#include \"verilated.h\"\n\n");
+        h.push_str(&format!("class {class} {{\npublic:\n"));
+        for p in &a.ports {
+            let ty = cpp_port_type(&p.ty);
+            h.push_str(&format!("  {ty} {};\n", p.name.name));
+        }
+        for pa in &a.port_arrays {
+            h.push_str(&format!("  uint64_t {}_valid;\n", pa.name.name));
+            h.push_str(&format!("  uint64_t {}_ready;\n", pa.name.name));
+        }
+        h.push('\n');
+
+        let mut all_port_inits: Vec<String> = a.ports.iter()
+            .map(|p| format!("{}(0)", p.name.name))
+            .collect();
+        for pa in &a.port_arrays {
+            all_port_inits.push(format!("{}_valid(0)", pa.name.name));
+            all_port_inits.push(format!("{}_ready(0)", pa.name.name));
+        }
+        all_port_inits.push("_clk_prev(0)".to_string());
+        all_port_inits.push("_last_grant(0)".to_string());
+
+        h.push_str(&format!("  {class}() : {} {{}}\n", all_port_inits.join(", ")));
+        h.push_str("  void eval();\n  void eval_posedge();\n  void eval_comb();\n");
+        h.push_str("  void final() { trace_close(); }\n");
+        h.push_str("private:\n");
+        h.push_str("  uint8_t _clk_prev;\n  uint8_t _last_grant;\n");
+        h.push_str("  void trace_open(const char* filename);\n");
+        h.push_str("  void trace_dump(uint64_t time);\n");
+        h.push_str("  void trace_close();\n");
+        h.push_str("  FILE* _trace_fp = nullptr;\n  uint64_t _trace_time = 0;\n");
+        h.push_str("};\n");
+
+        let mut cpp = String::new();
+        cpp.push_str(&format!("#include \"{class}.h\"\n\n"));
+
+        let clk_port = a.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            .map(|p| p.name.name.as_str()).unwrap_or("clk");
+
+        let req_pa_name = a.port_arrays.first()
+            .map(|pa| pa.name.name.as_str()).unwrap_or("request");
+
+        // eval()
+        cpp.push_str(&format!("void {class}::eval() {{\n"));
+        cpp.push_str("  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n");
+        cpp.push_str("    trace_open(Verilated::traceFile());\n");
+        cpp.push_str(&format!("  if ({clk_port} && !_clk_prev) eval_posedge();\n"));
+        cpp.push_str(&format!("  _clk_prev = {clk_port};\n"));
+        cpp.push_str("  eval_comb();\n");
+        cpp.push_str("  if (_trace_fp) trace_dump(_trace_time++);\n");
+        cpp.push_str("}\n\n");
+
+        // eval_posedge()
+        cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
+        cpp.push_str(&format!("  if ({rst_cond}) {{\n    _last_grant = 0;\n  }} else {{\n"));
+        cpp.push_str("    if (grant_valid) _last_grant = grant_requester;\n");
+        cpp.push_str("  }\n}\n\n");
+
+        // eval_comb() — round-robin
+        cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
+        cpp.push_str("  grant_valid = 0;\n  grant_requester = 0;\n");
+        cpp.push_str(&format!("  for (int _i = 0; _i < (int){num_req}; _i++) {{\n"));
+        cpp.push_str(&format!("    int _idx = (_last_grant + 1 + _i) % {num_req};\n"));
+        cpp.push_str(&format!("    if (({req_pa_name}_valid >> _idx) & 1) {{\n"));
+        cpp.push_str("      grant_valid = 1;\n      grant_requester = _idx;\n      break;\n    }\n  }\n");
+        cpp.push_str(&format!("  {req_pa_name}_ready = grant_valid ? (1ULL << grant_requester) : 0;\n"));
+        cpp.push_str("}\n\n");
+
+        // Trace methods
+        cpp.push_str(&format!("void {class}::trace_open(const char* filename) {{\n"));
+        cpp.push_str("  _trace_fp = fopen(filename, \"w\");\n");
+        cpp.push_str("  if (!_trace_fp) return;\n");
+        cpp.push_str("  fprintf(_trace_fp, \"$timescale 1ns $end\\n\");\n");
+        cpp.push_str(&format!("  fprintf(_trace_fp, \"$scope module {} $end\\n\");\n", name));
+        let mut sig_idx = 0usize;
+        for p in &a.ports {
+            if matches!(p.ty, TypeExpr::Clock(_) | TypeExpr::Reset(..)) { continue; }
+            let id = vcd_id(sig_idx); sig_idx += 1;
+            cpp.push_str(&format!("  fprintf(_trace_fp, \"$var wire 1 {} {} $end\\n\");\n", id, p.name.name));
+        }
+        cpp.push_str("  fprintf(_trace_fp, \"$upscope $end\\n$enddefinitions $end\\n\");\n");
+        cpp.push_str("}\n\n");
+
+        cpp.push_str(&format!("void {class}::trace_dump(uint64_t time) {{\n"));
+        cpp.push_str("  if (!_trace_fp) return;\n");
+        cpp.push_str("  fprintf(_trace_fp, \"#%lu\\n\", (unsigned long)time);\n");
+        sig_idx = 0;
+        for p in &a.ports {
+            if matches!(p.ty, TypeExpr::Clock(_) | TypeExpr::Reset(..)) { continue; }
+            let id = vcd_id(sig_idx); sig_idx += 1;
+            let pname = &p.name.name;
+            cpp.push_str(&format!("  fprintf(_trace_fp, \"%c{}\\n\", {pname} ? '1' : '0');\n", id));
+        }
+        cpp.push_str("}\n\n");
+
+        cpp.push_str(&format!("void {class}::trace_close() {{\n"));
+        cpp.push_str("  if (_trace_fp) {{ fclose(_trace_fp); _trace_fp = nullptr; }}\n");
+        cpp.push_str("}\n");
 
         SimModel { class_name: class, header: h, impl_: cpp }
     }

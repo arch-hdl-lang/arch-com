@@ -16,5 +16,7 @@ module TopModule
     q_next[511] = q[510];
   end comb
 
-  seq q <= load ? data : q_next;
+  seq
+    q <= load ? data : q_next;
+  end seq
 end module TopModule

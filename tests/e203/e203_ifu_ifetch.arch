@@ -54,7 +54,7 @@ fsm IfuIfetch
   let pc_plus4: UInt<32> = (pc_r + 4).trunc<32>();
   let pc_aligned: UInt<32> = {pc_plus4[31:2], {2{false}}};
 
-  state Idle, WaitGnt, WaitRsp, Abort;
+  state [Idle, WaitGnt, WaitRsp, Abort]
   default state Idle;
 
   state Idle
@@ -63,7 +63,7 @@ fsm IfuIfetch
       out_valid_r <= false;
     end seq
 
-    transition to WaitGnt when true;
+    -> WaitGnt when true;
   end state Idle
 
   state WaitGnt
@@ -85,8 +85,8 @@ fsm IfuIfetch
       end if
     end seq
 
-    transition to Abort   when redirect;
-    transition to WaitRsp when req_ready;
+    -> Abort when redirect;
+    -> WaitRsp when req_ready;
   end state WaitGnt
 
   state WaitRsp
@@ -113,8 +113,8 @@ fsm IfuIfetch
       end if
     end seq
 
-    transition to Abort   when redirect;
-    transition to WaitGnt when rsp_valid;
+    -> Abort when redirect;
+    -> WaitGnt when rsp_valid;
   end state WaitRsp
 
   state Abort
@@ -126,7 +126,7 @@ fsm IfuIfetch
       out_valid_r <= false;
     end seq
 
-    transition to WaitGnt when true;
+    -> WaitGnt when true;
   end state Abort
 
 end fsm IfuIfetch

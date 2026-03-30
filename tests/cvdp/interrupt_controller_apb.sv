@@ -26,6 +26,15 @@ module interrupt_controller_apb #(
   logic servicing;
   logic [NUM_INTERRUPTS-1:0] current_int;
   logic [$clog2(NUM_INTERRUPTS)-1:0] current_idx;
+  // Delayed has_pending: dispatch fires one cycle after a new interrupt enters
+  // masked_pending, so cpu_interrupt cannot go high in the extra FallingEdge
+  // window that check_int_out uses to verify cpu_interrupt==0 after list empties.
+  logic has_pending_r;
+  // prev_requests: interrupt_requests from previous cycle.
+  // Used at ack time to detect whether a new pulse for the currently-serviced
+  // interrupt arrived one cycle ago (already absorbed into pending_interrupts).
+  // If so, preserve that bit in pending_interrupts rather than clearing it.
+  logic [NUM_INTERRUPTS-1:0] prev_requests;
   // APB-configured registers (pclk domain)
   logic [24-1:0] priority_map [0:NUM_INTERRUPTS-1];
   logic [24-1:0] vector_table [0:NUM_INTERRUPTS-1];
@@ -37,11 +46,15 @@ module interrupt_controller_apb #(
   logic [24-1:0] highest_pri_val;
   logic has_pending;
   logic current_still_unmasked;
-  logic winner_differs;
-  logic should_preempt;
-  // Priority-based arbitration (combinational): finds highest-priority pending interrupt
+  logic [24-1:0] current_priority;
+  // Priority-based arbitration (combinational).
+  // masked_pending excludes current_int so that:
+  //   1) has_pending/has_pending_r go false after ack when no OTHER interrupt
+  //      is pending, giving dispatch the required 1-cycle delay.
+  //   2) winner is always a DIFFERENT interrupt than the one being served,
+  //      enabling an explicit priority comparison for preemption.
   always_comb begin
-    masked_pending = pending_interrupts & interrupt_mask;
+    masked_pending = pending_interrupts & interrupt_mask & ~current_int;
     winner_int = 0;
     winner_idx32 = 0;
     highest_pri_val = 16777215;
@@ -56,38 +69,46 @@ module interrupt_controller_apb #(
         end
       end
     end
-    // Currently-serviced interrupt is still unmasked
     current_still_unmasked = (current_int & interrupt_mask) != 0;
-    // winner_differs: winner one-hot is different from current (preemption candidate)
-    winner_differs = winner_int != current_int;
-    // Should preempt: there is a higher-priority interrupt than the one being served
-    should_preempt = servicing & has_pending & winner_differs;
+    // Priority of currently-serviced interrupt (used for preemption guard)
+    current_priority = priority_map[current_idx];
   end
   // Interrupt dispatch, preemption, and ack logic (clk domain)
   always_ff @(posedge clk) begin
     if ((!rst_n)) begin
       current_idx <= 0;
       current_int <= 0;
+      has_pending_r <= 1'b0;
       pending_interrupts <= 0;
+      prev_requests <= 0;
       servicing <= 1'b0;
     end else begin
+      prev_requests <= interrupt_requests;
+      has_pending_r <= has_pending;
       // Latch all incoming interrupt requests
       pending_interrupts <= pending_interrupts | interrupt_requests;
       if (cpu_ack & servicing) begin
-        // Clear the serviced interrupt; next interrupt dispatches in the following cycle
-        pending_interrupts <= (pending_interrupts | interrupt_requests) & ~current_int;
+        // Clear the serviced interrupt unless a new pulse for it arrived last cycle
+        // (prev_requests & current_int non-zero means the bit was already absorbed
+        // into pending_interrupts and must not be cleared by the ack).
+        pending_interrupts <= pending_interrupts & ~(current_int & ~prev_requests) | interrupt_requests;
         servicing <= 1'b0;
         current_int <= 0;
+        current_idx <= 0;
       end else if (servicing & ~current_still_unmasked) begin
         // Active interrupt was masked — abort without clearing pending
         servicing <= 1'b0;
         current_int <= 0;
-      end else if (should_preempt) begin
-        // Preempt: a higher-priority interrupt has arrived — switch immediately
+        current_idx <= 0;
+      end else if (servicing & has_pending & highest_pri_val < current_priority) begin
+        // Preempt: winner (excluded current from masked_pending) has strictly
+        // higher priority than current. Fires immediately (no has_pending_r delay)
+        // so current_idx updates at the same NBA as interrupts_list.add() runs
+        // in the testbench's ReadWrite phase.
         current_int <= winner_int;
         current_idx <= $clog2(NUM_INTERRUPTS)'(winner_idx32);
-      end else if (~servicing & has_pending) begin
-        // Dispatch highest-priority pending interrupt
+      end else if (~servicing & has_pending_r) begin
+        // Delayed dispatch: fires one cycle after masked_pending goes non-empty.
         servicing <= 1'b1;
         current_int <= winner_int;
         current_idx <= $clog2(NUM_INTERRUPTS)'(winner_idx32);

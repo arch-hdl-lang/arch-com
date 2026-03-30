@@ -14,7 +14,7 @@ fsm TopModule
 
   reg fall_count: UInt<5> reset areset=>0;
 
-  state WalkLeft, WalkRight, FallLeft, FallRight, DigLeft, DigRight, Splat;
+  state [WalkLeft, WalkRight, FallLeft, FallRight, DigLeft, DigRight, Splat]
   default state WalkLeft;
   default seq on clk rising;
   default
@@ -26,49 +26,63 @@ fsm TopModule
 
   state WalkLeft
     comb walk_left = true;
-    seq fall_count <= 0;
-    transition to FallLeft when ~ground;
-    transition to DigLeft when ground & dig;
-    transition to WalkRight when ground & ~dig & bump_left;
+    seq
+      fall_count <= 0;
+    end seq
+    -> FallLeft when ~ground;
+    -> DigLeft when ground & dig;
+    -> WalkRight when ground & ~dig & bump_left;
   end state WalkLeft
 
   state WalkRight
     comb walk_right = true;
-    seq fall_count <= 0;
-    transition to FallRight when ~ground;
-    transition to DigRight when ground & dig;
-    transition to WalkLeft when ground & ~dig & bump_right;
+    seq
+      fall_count <= 0;
+    end seq
+    -> FallRight when ~ground;
+    -> DigRight when ground & dig;
+    -> WalkLeft when ground & ~dig & bump_right;
   end state WalkRight
 
   state FallLeft
     comb aaah = true;
-    seq fall_count <= fall_count < 20 ? (fall_count + 1).trunc<5>() : fall_count;
-    transition to Splat when ground & (fall_count >= 20);
-    transition to WalkLeft when ground & (fall_count < 20);
+    seq
+      fall_count <= fall_count < 20 ? (fall_count + 1).trunc<5>() : fall_count;
+    end seq
+    -> Splat when ground & (fall_count >= 20);
+    -> WalkLeft when ground & (fall_count < 20);
   end state FallLeft
 
   state FallRight
     comb aaah = true;
-    seq fall_count <= fall_count < 20 ? (fall_count + 1).trunc<5>() : fall_count;
-    transition to Splat when ground & (fall_count >= 20);
-    transition to WalkRight when ground & (fall_count < 20);
+    seq
+      fall_count <= fall_count < 20 ? (fall_count + 1).trunc<5>() : fall_count;
+    end seq
+    -> Splat when ground & (fall_count >= 20);
+    -> WalkRight when ground & (fall_count < 20);
   end state FallRight
 
   state DigLeft
     comb digging = true;
-    seq fall_count <= 0;
-    transition to FallLeft when ~ground;
+    seq
+      fall_count <= 0;
+    end seq
+    -> FallLeft when ~ground;
   end state DigLeft
 
   state DigRight
     comb digging = true;
-    seq fall_count <= 0;
-    transition to FallRight when ~ground;
+    seq
+      fall_count <= 0;
+    end seq
+    -> FallRight when ~ground;
   end state DigRight
 
   state Splat
-    seq fall_count <= 0;
-    transition to Splat when ground;
-    transition to Splat when ~ground;
+    seq
+      fall_count <= 0;
+    end seq
+    -> Splat when ground;
+    -> Splat when ~ground;
   end state Splat
 end fsm TopModule

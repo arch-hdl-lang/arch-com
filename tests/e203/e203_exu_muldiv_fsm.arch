@@ -87,7 +87,7 @@ fsm ExuMuldiv
   let raw_result: UInt<32> = is_mul_r ? mul_res : div_raw;
   let neg_result: UInt<32> = is_mul_r ? mul_res_neg : div_res_neg;
 
-  state Idle, Exec, Done;
+  state [Idle, Exec, Done]
   default state Idle;
 
   state Idle
@@ -116,7 +116,7 @@ fsm ExuMuldiv
       end if
     end seq
 
-    transition to Exec when i_valid & (is_mul_op | is_div_op);
+    -> Exec when i_valid & (is_mul_op | is_div_op);
   end state Idle
 
   state Exec
@@ -145,7 +145,7 @@ fsm ExuMuldiv
       end if
     end seq
 
-    transition to Done when cyc_r == 31;
+    -> Done when cyc_r == 31;
   end state Exec
 
   state Done
@@ -165,7 +165,7 @@ fsm ExuMuldiv
       end if
     end comb
 
-    transition to Idle when o_ready;
+    -> Idle when o_ready;
   end state Done
 
 end fsm ExuMuldiv

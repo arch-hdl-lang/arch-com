@@ -9,7 +9,9 @@ module TopModule
 
   reg sr: UInt<4> init 0 reset none;
 
-  seq sr <= ~resetn ? 0 : (sr << 1).trunc<4>() | in.zext<4>();
+  seq
+    sr <= ~resetn ? 0 : (sr << 1).trunc<4>() | in.zext<4>();
+  end seq
 
   comb
     out = sr[3:3];

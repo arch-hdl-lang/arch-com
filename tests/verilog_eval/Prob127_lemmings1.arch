@@ -6,7 +6,7 @@ fsm TopModule
   port walk_left: out Bool;
   port walk_right: out Bool;
 
-  state WalkLeft, WalkRight;
+  state [WalkLeft, WalkRight]
   default state WalkLeft;
   default
     comb walk_left = false;
@@ -15,11 +15,11 @@ fsm TopModule
 
   state WalkLeft
     comb walk_left = true;
-    transition to WalkRight when bump_left;
+    -> WalkRight when bump_left;
   end state WalkLeft
 
   state WalkRight
     comb walk_right = true;
-    transition to WalkLeft when bump_right;
+    -> WalkLeft when bump_right;
   end state WalkRight
 end fsm TopModule

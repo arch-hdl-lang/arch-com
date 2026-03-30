@@ -21,5 +21,7 @@ module dbi_dec
     end if
   end comb
 
-  seq data_out <= decoded;
+  seq
+    data_out <= decoded;
+  end seq
 end module dbi_dec

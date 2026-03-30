@@ -49,5 +49,7 @@ module TopModule
     end for
   end comb
 
-  seq q <= load ? data : next_grid;
+  seq
+    q <= load ? data : next_grid;
+  end seq
 end module TopModule

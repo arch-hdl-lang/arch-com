@@ -6,17 +6,17 @@ fsm TopModule
   port k: in Bool;
   port out: out Bool;
 
-  state Off, On;
+  state [Off, On]
   default state Off;
 
   state Off
     comb out = false;
-    transition to On when j;
+    -> On when j;
   end state Off
 
   state On
     comb out = true;
-    transition to Off when k;
+    -> Off when k;
   end state On
 
 end fsm TopModule

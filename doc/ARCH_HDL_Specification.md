@@ -1025,36 +1025,20 @@ The compiler generates clean, separated SystemVerilog:
 | **end** **fsm** TrafficLight                                       |
 +--------------------------------------------------------------------+
 
-> *⚑ The compiler verifies: every state has at least one outgoing transition (dead-end states are a compile error); no two transitions from the same state can be simultaneously enabled. If no transition fires in a given cycle, the FSM holds in the current state — a catch-all `transition to Self when true` is not required. Output ports not driven in a state and not covered by a `default` block will be X in the generated Verilog.*
+> *⚑ The compiler verifies: every state has at least one outgoing transition (dead-end states are a compile error); no two transitions from the same state can be simultaneously enabled. If no transition fires in a given cycle, the FSM holds in the current state — a catch-all `-> Self when true` is not required. Output ports not driven in a state and not covered by a `default` block will be X in the generated Verilog.*
 
-**Unconditional transitions.** The `when <cond>` clause is optional. Omitting it produces an unconditional transition that always fires:
+**Transitions** use the `->` arrow syntax. The `when <cond>` clause is optional; omitting it produces an unconditional transition that always fires:
 
 ```
 state Dispense
-  seq dispense_item <= true; end seq
-  transition to ChangeCheck;        // always advances — no `when` needed
+  seq
+    dispense_item <= true;
+  end seq
+  -> ChangeCheck;        // always advances — no `when` needed
 end state Dispense
 ```
 
-**7.1.1 One-Line State Syntax**
-
-States that have only a single transition and no output or datapath logic can be written on one line, omitting the `end state Name` closing:
-
-```
-state Idle transition to Run when go;
-state Wait transition to Done when ack;
-state Flush transition to Idle;     // unconditional one-liner
-```
-
-This is equivalent to the full form:
-
-```
-state Idle
-  transition to Run when go;
-end state Idle
-```
-
-States with comb/seq blocks or multiple transitions must use the full multi-line form. Both forms may be mixed freely within the same FSM.
+Every state body must be closed with `end state Name`.
 
 **7.2 FSM Default Block**
 

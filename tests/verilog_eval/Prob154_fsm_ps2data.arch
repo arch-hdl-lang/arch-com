@@ -9,7 +9,7 @@ fsm TopModule
 
   reg out_r: UInt<24> reset reset=>0;
 
-  state Find, Got1, Got2, Done_St;
+  state [Find, Got1, Got2, Done_St]
   default state Find;
   default seq on clk rising;
   default
@@ -18,18 +18,24 @@ fsm TopModule
   end default
 
   state Find
-    seq out_r <= {out_r[15:0], in};
-    transition to Got1 when in[3];
+    seq
+      out_r <= {out_r[15:0], in};
+    end seq
+    -> Got1 when in[3];
   end state Find
 
   state Got1
-    seq out_r <= {out_r[15:0], in};
-    transition to Got2 when true;
+    seq
+      out_r <= {out_r[15:0], in};
+    end seq
+    -> Got2 when true;
   end state Got1
 
   state Got2
-    seq out_r <= {out_r[15:0], in};
-    transition to Done_St when true;
+    seq
+      out_r <= {out_r[15:0], in};
+    end seq
+    -> Done_St when true;
   end state Got2
 
   state Done_St
@@ -37,8 +43,10 @@ fsm TopModule
       done = true;
       out_bytes = out_r;
     end comb
-    seq out_r <= {out_r[15:0], in};
-    transition to Got1 when in[3];
-    transition to Find when ~in[3];
+    seq
+      out_r <= {out_r[15:0], in};
+    end seq
+    -> Got1 when in[3];
+    -> Find when ~in[3];
   end state Done_St
 end fsm TopModule

@@ -5,22 +5,22 @@ fsm TopModule
   port in: in UInt<8>;
   port done: out Bool;
 
-  state Byte1, Byte2, Byte3, DoneS;
+  state [Byte1, Byte2, Byte3, DoneS]
   default state Byte1;
   default
     comb done = false;
   end default
 
-  state Byte1 transition to Byte2 when in[3];
+  state Byte1 -> Byte2 when in[3];
 
-  state Byte2 transition to Byte3 when true;
+  state Byte2 -> Byte3 when true;
 
-  state Byte3 transition to DoneS when true;
+  state Byte3 -> DoneS when true;
 
   state DoneS
     comb done = true;
-    transition to Byte2 when in[3];
-    transition to Byte1 when ~in[3];
+    -> Byte2 when in[3];
+    -> Byte1 when ~in[3];
   end state DoneS
 
 end fsm TopModule

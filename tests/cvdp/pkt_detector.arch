@@ -80,7 +80,9 @@ module pkt_detector
   end comb
 
   // State register
-  seq curr_state <= nxt_state;
+  seq
+    curr_state <= nxt_state;
+  end seq
 
   // Datapath
   seq

@@ -9,7 +9,7 @@ fsm TopModule
   port walk_right: out Bool;
   port aaah: out Bool;
 
-  state WalkLeft, WalkRight, FallLeft, FallRight;
+  state [WalkLeft, WalkRight, FallLeft, FallRight]
   default state WalkLeft;
   default
     comb walk_left = false;
@@ -19,23 +19,23 @@ fsm TopModule
 
   state WalkLeft
     comb walk_left = true;
-    transition to FallLeft when ~ground;
-    transition to WalkRight when ground & bump_left;
+    -> FallLeft when ~ground;
+    -> WalkRight when ground & bump_left;
   end state WalkLeft
 
   state WalkRight
     comb walk_right = true;
-    transition to FallRight when ~ground;
-    transition to WalkLeft when ground & bump_right;
+    -> FallRight when ~ground;
+    -> WalkLeft when ground & bump_right;
   end state WalkRight
 
   state FallLeft
     comb aaah = true;
-    transition to WalkLeft when ground;
+    -> WalkLeft when ground;
   end state FallLeft
 
   state FallRight
     comb aaah = true;
-    transition to WalkRight when ground;
+    -> WalkRight when ground;
   end state FallRight
 end fsm TopModule

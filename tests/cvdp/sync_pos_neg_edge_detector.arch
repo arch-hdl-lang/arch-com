@@ -9,7 +9,9 @@ module sync_pos_neg_edge_detector
 
   default seq on i_clk rising;
 
-  seq prev_signal <= i_detection_signal;
+  seq
+    prev_signal <= i_detection_signal;
+  end seq
 
   seq
     o_positive_edge_detected <= i_detection_signal & ~prev_signal;

@@ -10,7 +10,7 @@ fsm factorial
   reg cnt: UInt<5> reset arst_n=>0;
   reg acc: UInt<64> reset arst_n=>1;
 
-  state Idle, Busy, Done;
+  state [Idle, Busy, Done]
   default state Idle;
   default seq on clk rising;
 
@@ -24,7 +24,7 @@ fsm factorial
         fact <= 0;
       end if
     end seq
-    transition to Busy when start;
+    -> Busy when start;
   end state Idle
 
   state Busy
@@ -39,13 +39,13 @@ fsm factorial
         cnt <= cnt - 1;
       end if
     end seq
-    transition to Done when cnt < 2;
+    -> Done when cnt < 2;
   end state Busy
 
   state Done
     seq
       done <= false;
     end seq
-    transition to Idle when done;
+    -> Idle when done;
   end state Done
 end fsm factorial

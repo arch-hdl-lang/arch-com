@@ -712,11 +712,18 @@ pub struct Transition {
 
 // ── FIFO ─────────────────────────────────────────────────────────────────────
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FifoKind {
+    Fifo,
+    Lifo,
+}
+
 #[derive(Debug, Clone)]
 pub struct FifoDecl {
     pub name: Ident,
     pub params: Vec<ParamDecl>,
     pub ports: Vec<PortDecl>,
+    pub kind: FifoKind,
     pub span: Span,
 }
 

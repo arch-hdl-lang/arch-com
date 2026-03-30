@@ -9,7 +9,7 @@ fsm TopModule
   port fr0: out Bool;
   port dfr: out Bool;
 
-  state A2, B1, B2, C1, C2, D1;
+  state [A2, B1, B2, C1, C2, D1]
   default state A2;
   default
     comb fr2 = false;
@@ -22,38 +22,38 @@ fsm TopModule
     comb
       fr2 = true; fr1 = true; fr0 = true; dfr = true;
     end comb
-    transition to B1 when s[0];
+    -> B1 when s[0];
   end state A2
 
   state B1
     comb
       fr1 = true; fr0 = true;
     end comb
-    transition to C1 when s[1];
-    transition to A2 when ~s[0];
+    -> C1 when s[1];
+    -> A2 when ~s[0];
   end state B1
 
   state B2
     comb
       fr1 = true; fr0 = true; dfr = true;
     end comb
-    transition to C1 when s[1];
-    transition to A2 when ~s[0];
+    -> C1 when s[1];
+    -> A2 when ~s[0];
   end state B2
 
   state C1
     comb fr0 = true;
-    transition to D1 when s[2];
-    transition to B2 when ~s[1];
+    -> D1 when s[2];
+    -> B2 when ~s[1];
   end state C1
 
   state C2
     comb
       fr0 = true; dfr = true;
     end comb
-    transition to D1 when s[2];
-    transition to B2 when ~s[1];
+    -> D1 when s[2];
+    -> B2 when ~s[1];
   end state C2
 
-  state D1 transition to C2 when ~s[2];
+  state D1 -> C2 when ~s[2];
 end fsm TopModule

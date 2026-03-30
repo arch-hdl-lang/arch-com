@@ -5,28 +5,28 @@ fsm TopModule
   port in: in Bool;
   port out: out Bool;
 
-  state A, B, C, D;
+  state [A, B, C, D]
   default state A;
   default
     comb out = false;
   end default
 
-  state A transition to B when in;
+  state A -> B when in;
 
   state B
-    transition to B when in;
-    transition to C when ~in;
+    -> B when in;
+    -> C when ~in;
   end state B
 
   state C
-    transition to D when in;
-    transition to A when ~in;
+    -> D when in;
+    -> A when ~in;
   end state C
 
   state D
     comb out = true;
-    transition to B when in;
-    transition to C when ~in;
+    -> B when in;
+    -> C when ~in;
   end state D
 
 end fsm TopModule

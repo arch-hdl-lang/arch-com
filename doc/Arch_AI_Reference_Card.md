@@ -278,7 +278,7 @@
 |                                          | only override what differs.               |
 | port fire\_irq: out Bool;               |                                           |
 |                                          | Undriven outputs are X (real HW).         |
-| state Idle, Running, Done;               |                                           |
+| state [Idle, Running, Done]              |                                           |
 |                                          |                                           |
 | default state Idle;                      |                                           |
 |                                          |                                           |
@@ -290,34 +290,31 @@
 | end default                              |                                           |
 |                                          |                                           |
 | state Idle                               | Transition syntax:                        |
-|   transition to Running when start;      |                                           |
-| end state Idle                           | transition to Next when \<expr\>;         |
+|   -> Running when start;                 |                                           |
+| end state Idle                           | -> Next when \<expr\>;                    |
 |                                          |                                           |
-| // or one-line (no end state needed):    | Multiple transitions are checked for      |
-| state Idle                               | mutual exclusivity; `unique if` emitted   |
-|   transition to Running when start;      | when exclusive, `priority if` otherwise.  |
-|                                          | Implicit hold: if no transition fires,    |
-|                                          | FSM stays in current state. No catch-all  |
-|                                          | `transition to Self when true` needed.    |
-|                                          |                                           |
-| state Running                            |                                           |
-|                                          |                                           |
-| comb active = true; end comb             |                                           |
-|                                          |                                           |
-| transition to Done when all\_done;       |                                           |
-| transition to Running when not all\_done;|                                           |
-|                                          |                                           |
+| state Running                            | Multiple transitions are checked for      |
+|                                          | mutual exclusivity; `unique if` emitted   |
+|   comb                                   | when exclusive, `priority if` otherwise.  |
+|     active = true;                       | Implicit hold: if no transition fires,    |
+|   end comb                               | FSM stays in current state. No catch-all  |
+|                                          | `-> Self when true` needed.               |
+|   -> Done when all\_done;               |                                           |
+|   -> Running when not all\_done;        | Unconditional transition (no `when`):     |
+|                                          | omit `when` to always advance.            |
 | end state Running                        |                                           |
 |                                          |                                           |
 | state Done                               |                                           |
 |                                          |                                           |
-| comb fire\_irq = true; end comb          |                                           |
+|   comb                                   |                                           |
+|     fire\_irq = true;                    |                                           |
+|   end comb                               |                                           |
 |                                          |                                           |
-| transition to Idle;                      | Unconditional transition (no `when`):     |
-|                                          | omit `when` to always advance.            |
+|   -> Idle;                               |                                           |
+|                                          |                                           |
 | end state Done                           |                                           |
-|                                          | One-liner unconditional:                  |
-| end fsm Name                             | state Flush transition to Idle;           |
+|                                          |                                           |
+| end fsm Name                             |                                           |
 +------------------------------------------+-------------------------------------------+
 
 **fsm datapath extension** --- `reg`, `let`, and `seq` inside FSMs:
@@ -332,7 +329,7 @@ fsm MulDiv
     seq on clk rising
       acc_r <= 0;
     end seq
-    transition to Multiply when req_valid;
+    -> Multiply when req_valid;
   end state Idle
   ...
 end fsm MulDiv
