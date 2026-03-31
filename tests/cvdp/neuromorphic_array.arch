@@ -12,11 +12,11 @@ module neuromorphic_array
 
   generate for i in 0..NEURONS-1
     inst neuron_i: single_neuron_dut
-      connect clk    <- clk;
-      connect rst_n  <- rst_n;
-      connect ctrl   <- ui_in[0];
-      connect seq_in <- uio_in;
-      connect seq_out -> neuron_outputs[i];
+      clk    <- clk;
+      rst_n  <- rst_n;
+      ctrl   <- ui_in[0];
+      seq_in <- uio_in;
+      seq_out -> neuron_outputs[i];
     end inst neuron_i
   end generate for i
 

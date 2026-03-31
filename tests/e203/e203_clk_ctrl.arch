@@ -28,31 +28,31 @@ module ClkCtrl
 
   // ICG instances
   inst icg_ifu: E203ClkGate
-    connect clk_in  <- clk;
-    connect enable  <- ifu_gate_en;
-    connect test_en <- test_en;
-    connect clk_out -> clk_ifu_w;
+    clk_in  <- clk;
+    enable  <- ifu_gate_en;
+    test_en <- test_en;
+    clk_out -> clk_ifu_w;
   end inst icg_ifu
 
   inst icg_exu: E203ClkGate
-    connect clk_in  <- clk;
-    connect enable  <- exu_gate_en;
-    connect test_en <- test_en;
-    connect clk_out -> clk_exu_w;
+    clk_in  <- clk;
+    enable  <- exu_gate_en;
+    test_en <- test_en;
+    clk_out -> clk_exu_w;
   end inst icg_exu
 
   inst icg_lsu: E203ClkGate
-    connect clk_in  <- clk;
-    connect enable  <- lsu_gate_en;
-    connect test_en <- test_en;
-    connect clk_out -> clk_lsu_w;
+    clk_in  <- clk;
+    enable  <- lsu_gate_en;
+    test_en <- test_en;
+    clk_out -> clk_lsu_w;
   end inst icg_lsu
 
   inst icg_biu: E203ClkGate
-    connect clk_in  <- clk;
-    connect enable  <- biu_gate_en;
-    connect test_en <- test_en;
-    connect clk_out -> clk_biu_w;
+    clk_in  <- clk;
+    enable  <- biu_gate_en;
+    test_en <- test_en;
+    clk_out -> clk_biu_w;
   end inst icg_biu
 
   comb

@@ -12,8 +12,8 @@ module hamming_tx
     inst tx_i: t_hamming_tx
       param DATA_WIDTH = PART_WIDTH;
       param PARITY_BIT = PARITY_BIT;
-      connect data_in  <- data_in[i*PART_WIDTH + PART_WIDTH - 1 : i*PART_WIDTH];
-      connect data_out -> data_out[i*ENCODED_DATA + ENCODED_DATA - 1 : i*ENCODED_DATA];
+      data_in  <- data_in[i*PART_WIDTH + PART_WIDTH - 1 : i*PART_WIDTH];
+      data_out -> data_out[i*ENCODED_DATA + ENCODED_DATA - 1 : i*ENCODED_DATA];
     end inst tx_i
   end generate for i
 end module hamming_tx

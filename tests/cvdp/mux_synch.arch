@@ -10,10 +10,10 @@ module mux_synch
   wire req_syncd: Bit;
 
   inst sync_req: nff
-    connect d_in    <- req;
-    connect dst_clk <- dst_clk;
-    connect rst     <- nrst;
-    connect syncd   -> req_syncd;
+    d_in    <- req;
+    dst_clk <- dst_clk;
+    rst     <- nrst;
+    syncd   -> req_syncd;
   end inst sync_req
 
   // Mux: select data_in when req_syncd is high, else feed back data_out

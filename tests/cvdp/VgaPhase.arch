@@ -1,5 +1,5 @@
-package VgaPhase
+package VgaPhasePkg
   enum VgaPhase
     ST_ACTIVE, ST_FRONT, ST_PULSE, ST_BACK
   end enum VgaPhase
-end package VgaPhase
+end package VgaPhasePkg

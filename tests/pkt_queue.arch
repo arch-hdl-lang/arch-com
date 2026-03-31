@@ -72,20 +72,20 @@ module PacketQueue
 
   inst q: TaskQueue
     param DEPTH = 8;
-    connect clk                       <- clk;
-    connect rst                       <- rst;
-    connect insert_tail_req_valid     <- push_valid;
-    connect insert_tail_req_data      <- push_data;
-    connect insert_tail_req_ready     -> push_ready;
-    connect insert_tail_resp_valid    -> push_resp_valid;
-    connect insert_tail_resp_handle   -> _push_handle;
-    connect delete_head_req_valid     <- pop_valid;
-    connect delete_head_req_ready     -> pop_ready;
-    connect delete_head_resp_valid    -> pop_resp_valid;
-    connect delete_head_resp_data     -> pop_data;
-    connect empty                     -> empty;
-    connect full                      -> full;
-    connect length                    -> length;
+    clk                       <- clk;
+    rst                       <- rst;
+    insert_tail_req_valid     <- push_valid;
+    insert_tail_req_data      <- push_data;
+    insert_tail_req_ready     -> push_ready;
+    insert_tail_resp_valid    -> push_resp_valid;
+    insert_tail_resp_handle   -> _push_handle;
+    delete_head_req_valid     <- pop_valid;
+    delete_head_req_ready     -> pop_ready;
+    delete_head_resp_valid    -> pop_resp_valid;
+    delete_head_resp_data     -> pop_data;
+    empty                     -> empty;
+    full                      -> full;
+    length                    -> length;
   end inst q
 
 end module PacketQueue

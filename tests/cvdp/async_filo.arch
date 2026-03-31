@@ -28,22 +28,22 @@ module async_filo
   wire rq2_wptr: UInt<ADDR_WIDTH+1>;
   inst wptr_sync: WToRGraySync
     param WIDTH = ADDR_WIDTH+1;
-    connect src_clk  <- w_clk;
-    connect dst_clk  <- r_clk;
-    connect rst      <- r_rst;
-    connect data_in  <- w_ptr;
-    connect data_out -> rq2_wptr;
+    src_clk  <- w_clk;
+    dst_clk  <- r_clk;
+    rst      <- r_rst;
+    data_in  <- w_ptr;
+    data_out -> rq2_wptr;
   end inst wptr_sync
 
   // Gray-code CDC: r_pop_cnt (RDomain) → WDomain
   wire wq2_rcnt: UInt<ADDR_WIDTH+1>;
   inst rptr_sync: RToWGraySync
     param WIDTH = ADDR_WIDTH+1;
-    connect src_clk  <- r_clk;
-    connect dst_clk  <- w_clk;
-    connect rst      <- w_rst;
-    connect data_in  <- r_pop_cnt;
-    connect data_out -> wq2_rcnt;
+    src_clk  <- r_clk;
+    dst_clk  <- w_clk;
+    rst      <- w_rst;
+    data_in  <- r_pop_cnt;
+    data_out -> wq2_rcnt;
   end inst rptr_sync
 
   // Stack pointer and empty-edge detection (read domain only — no CDC needed)

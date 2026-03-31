@@ -44,15 +44,15 @@ module TopSafe
   reg synced_data: UInt<8> init 0 reset rst=>0;
 
   inst prod: Producer
-    connect clk <- clk_a;
-    connect rst <- rst;
-    connect data_out -> synced_data;
+    clk <- clk_a;
+    rst <- rst;
+    data_out -> synced_data;
   end inst prod
 
   inst cons: Consumer
-    connect clk <- clk_b;
-    connect rst <- rst;
-    connect data_in <- synced_data;
-    connect data_out -> result;
+    clk <- clk_b;
+    rst <- rst;
+    data_in <- synced_data;
+    data_out -> result;
   end inst cons
 end module TopSafe

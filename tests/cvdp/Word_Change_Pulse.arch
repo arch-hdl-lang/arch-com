@@ -21,10 +21,10 @@ module Word_Change_Pulse
 
   generate for i in 0..DATA_WIDTH-1
     inst det_i: Bit_Change_Detector
-      connect clk          <- clk;
-      connect reset        <- reset;
-      connect bit_in       <- data_in[i:i];
-      connect change_pulse -> change_pulses[i:i];
+      clk          <- clk;
+      reset        <- reset;
+      bit_in       <- data_in[i:i];
+      change_pulse -> change_pulses[i:i];
     end inst det_i
   end generate for i
 

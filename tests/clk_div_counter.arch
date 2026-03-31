@@ -9,9 +9,9 @@ module ClkDivCounter
 
   // Divide-by-2 instance
   inst div: ClkDiv2
-    connect clk_in  <- clk;
-    connect rst_n   <- rst_n;
-    connect clk_out -> clk_slow;
+    clk_in  <- clk;
+    rst_n   <- rst_n;
+    clk_out -> clk_slow;
   end inst div
 
   comb

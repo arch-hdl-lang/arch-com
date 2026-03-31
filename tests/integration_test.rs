@@ -645,8 +645,8 @@ module Outer
 
   inst inner: Inner
     param ENABLE_DEBUG = 1;
-    connect clk <- clk;
-    connect debug_out -> out_dbg;
+    clk <- clk;
+    debug_out -> out_dbg;
   end inst inner
 end module Outer
 "#;
@@ -682,7 +682,7 @@ module Outer2
 
   inst inner2: Inner2
     param ENABLE_DEBUG = 0;
-    connect clk <- clk;
+    clk <- clk;
   end inst inner2
 end module Outer2
 "#;
@@ -717,14 +717,14 @@ module Top
 
   inst sub_on: Sub
     param ENABLE = 1;
-    connect clk <- clk;
-    connect result -> out_a;
+    clk <- clk;
+    result -> out_a;
   end inst sub_on
 
   inst sub_off: Sub
     param ENABLE = 0;
-    connect clk <- clk;
-    connect result -> out_b;
+    clk <- clk;
+    result -> out_b;
   end inst sub_off
 end module Top
 "#;
@@ -772,15 +772,15 @@ module Outer
 
   inst inner_on: Inner
     param ENABLE_DEBUG = 1;
-    connect clk <- clk;
-    connect result -> out_a;
-    connect debug_in <- dbg_val;
+    clk <- clk;
+    result -> out_a;
+    debug_in <- dbg_val;
   end inst inner_on
 
   inst inner_off: Inner
     param ENABLE_DEBUG = 0;
-    connect clk <- clk;
-    connect result -> out_b;
+    clk <- clk;
+    result -> out_b;
   end inst inner_off
 end module Outer
 "#;
@@ -1153,10 +1153,10 @@ module Top
   port dout: out UInt<32>;
 
   inst pipe0: SimplePipe
-    connect clk <- clk;
-    connect rst <- rst;
-    connect data_in <- din;
-    connect data_out -> dout;
+    clk <- clk;
+    rst <- rst;
+    data_in <- din;
+    data_out -> dout;
   end inst pipe0
 end module Top
 "#;
@@ -1213,9 +1213,9 @@ pipeline AluPipe
       alu_out <= (Fetch.a_r + Fetch.b_r).trunc<XLEN>();
     end seq
     inst alu0: Alu
-      connect a <- Fetch.a_r;
-      connect b <- Fetch.b_r;
-      connect result -> result_out;
+      a <- Fetch.a_r;
+      b <- Fetch.b_r;
+      result -> result_out;
     end inst alu0
   end stage Execute
 

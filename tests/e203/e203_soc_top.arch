@@ -67,56 +67,56 @@ module SocTop
   // CPU Core
   // ══════════════════════════════════════════════════════════════
   inst core: CoreTop
-    connect clk            <- clk;
-    connect rst_n          <- rst_n;
-    connect itcm_wr_en     <- itcm_wr_en;
-    connect itcm_wr_addr   <- itcm_wr_addr;
-    connect itcm_wr_data   <- itcm_wr_data;
-    connect exu_redirect   <- false;
-    connect exu_redirect_pc <- 0;
-    connect commit_valid   -> core_commit_w;
-    connect o_instr        -> core_instr_w;
-    connect o_pc           -> core_pc_w;
-    connect o_valid        -> core_valid_w;
-    connect tmr_irq        -> tmr_irq_w;
+    clk            <- clk;
+    rst_n          <- rst_n;
+    itcm_wr_en     <- itcm_wr_en;
+    itcm_wr_addr   <- itcm_wr_addr;
+    itcm_wr_data   <- itcm_wr_data;
+    exu_redirect   <- false;
+    exu_redirect_pc <- 0;
+    commit_valid   -> core_commit_w;
+    o_instr        -> core_instr_w;
+    o_pc           -> core_pc_w;
+    o_valid        -> core_valid_w;
+    tmr_irq        -> tmr_irq_w;
   end inst core
 
   // ══════════════════════════════════════════════════════════════
   // ICB Bus Arbiter: M0=external port, M1=unused → Slave bus
   // ══════════════════════════════════════════════════════════════
   inst arbt: IcbArbt
-    connect clk   <- clk;
-    connect rst_n <- rst_n;
-    connect m0_cmd_valid <- ext_cmd_valid;
-    connect m0_cmd_addr  <- ext_cmd_addr;
-    connect m0_cmd_wdata <- ext_cmd_wdata;
-    connect m0_cmd_wmask <- ext_cmd_wmask;
-    connect m0_cmd_read  <- ext_cmd_read;
-    connect m0_cmd_ready -> arbt_m0_ready;
-    connect m0_rsp_valid -> arbt_m0_rsp_valid;
-    connect m0_rsp_ready <- true;
-    connect m0_rsp_rdata -> arbt_m0_rsp_rdata;
-    connect m0_rsp_err   -> arbt_m0_rsp_err;
-    connect m1_cmd_valid <- false;
-    connect m1_cmd_addr  <- 0;
-    connect m1_cmd_wdata <- 0;
-    connect m1_cmd_wmask <- 0;
-    connect m1_cmd_read  <- false;
-    connect m1_cmd_ready -> arbt_m1_ready;
-    connect m1_rsp_valid -> arbt_m1_rsp_valid;
-    connect m1_rsp_ready <- true;
-    connect m1_rsp_rdata -> arbt_m1_rsp_rdata;
-    connect m1_rsp_err   -> arbt_m1_rsp_err;
-    connect s_cmd_valid -> bus_cmd_valid;
-    connect s_cmd_ready <- bus_cmd_ready;
-    connect s_cmd_addr  -> bus_cmd_addr;
-    connect s_cmd_wdata -> bus_cmd_wdata;
-    connect s_cmd_wmask -> bus_cmd_wmask;
-    connect s_cmd_read  -> bus_cmd_read;
-    connect s_rsp_valid <- bus_rsp_valid;
-    connect s_rsp_ready -> bus_rsp_ready;
-    connect s_rsp_rdata <- bus_rsp_rdata;
-    connect s_rsp_err   <- bus_rsp_err;
+    clk   <- clk;
+    rst_n <- rst_n;
+    m0_cmd_valid <- ext_cmd_valid;
+    m0_cmd_addr  <- ext_cmd_addr;
+    m0_cmd_wdata <- ext_cmd_wdata;
+    m0_cmd_wmask <- ext_cmd_wmask;
+    m0_cmd_read  <- ext_cmd_read;
+    m0_cmd_ready -> arbt_m0_ready;
+    m0_rsp_valid -> arbt_m0_rsp_valid;
+    m0_rsp_ready <- true;
+    m0_rsp_rdata -> arbt_m0_rsp_rdata;
+    m0_rsp_err   -> arbt_m0_rsp_err;
+    m1_cmd_valid <- false;
+    m1_cmd_addr  <- 0;
+    m1_cmd_wdata <- 0;
+    m1_cmd_wmask <- 0;
+    m1_cmd_read  <- false;
+    m1_cmd_ready -> arbt_m1_ready;
+    m1_rsp_valid -> arbt_m1_rsp_valid;
+    m1_rsp_ready <- true;
+    m1_rsp_rdata -> arbt_m1_rsp_rdata;
+    m1_rsp_err   -> arbt_m1_rsp_err;
+    s_cmd_valid -> bus_cmd_valid;
+    s_cmd_ready <- bus_cmd_ready;
+    s_cmd_addr  -> bus_cmd_addr;
+    s_cmd_wdata -> bus_cmd_wdata;
+    s_cmd_wmask -> bus_cmd_wmask;
+    s_cmd_read  -> bus_cmd_read;
+    s_rsp_valid <- bus_rsp_valid;
+    s_rsp_ready -> bus_rsp_ready;
+    s_rsp_rdata <- bus_rsp_rdata;
+    s_rsp_err   <- bus_rsp_err;
   end inst arbt
 
   // Address decode (combinational — valid only while bus_cmd_valid)
@@ -141,190 +141,190 @@ module SocTop
   // SRAM Controller
   // ══════════════════════════════════════════════════════════════
   inst sram: SramCtrl
-    connect clk           <- clk;
-    connect rst_n         <- rst_n;
-    connect icb_cmd_valid <- bus_cmd_valid & sel_sram;
-    connect icb_cmd_ready -> sram_ready;
-    connect icb_cmd_addr  <- bus_cmd_addr;
-    connect icb_cmd_wdata <- bus_cmd_wdata;
-    connect icb_cmd_wmask <- bus_cmd_wmask;
-    connect icb_cmd_read  <- bus_cmd_read;
-    connect icb_rsp_valid -> sram_rsp_valid;
-    connect icb_rsp_ready <- bus_rsp_ready;
-    connect icb_rsp_rdata -> sram_rsp_rdata;
-    connect icb_rsp_err   -> sram_rsp_err;
+    clk           <- clk;
+    rst_n         <- rst_n;
+    icb_cmd_valid <- bus_cmd_valid & sel_sram;
+    icb_cmd_ready -> sram_ready;
+    icb_cmd_addr  <- bus_cmd_addr;
+    icb_cmd_wdata <- bus_cmd_wdata;
+    icb_cmd_wmask <- bus_cmd_wmask;
+    icb_cmd_read  <- bus_cmd_read;
+    icb_rsp_valid -> sram_rsp_valid;
+    icb_rsp_ready <- bus_rsp_ready;
+    icb_rsp_rdata -> sram_rsp_rdata;
+    icb_rsp_err   -> sram_rsp_err;
   end inst sram
 
   // ══════════════════════════════════════════════════════════════
   // Fast I/O
   // ══════════════════════════════════════════════════════════════
   inst fio: Fio
-    connect clk           <- clk;
-    connect rst_n         <- rst_n;
-    connect icb_cmd_valid <- bus_cmd_valid & sel_fio;
-    connect icb_cmd_ready -> fio_ready;
-    connect icb_cmd_addr  <- bus_cmd_addr;
-    connect icb_cmd_wdata <- bus_cmd_wdata;
-    connect icb_cmd_wmask <- bus_cmd_wmask;
-    connect icb_cmd_read  <- bus_cmd_read;
-    connect icb_rsp_valid -> fio_rsp_valid;
-    connect icb_rsp_ready <- bus_rsp_ready;
-    connect icb_rsp_rdata -> fio_rsp_rdata;
-    connect icb_rsp_err   -> fio_rsp_err;
-    connect fio_in_0      <- fio_in_0;
-    connect fio_in_1      <- fio_in_1;
-    connect fio_out_0     -> fio_out_0_w;
-    connect fio_out_1     -> fio_out_1_w;
-    connect fio_out_2     -> fio_out_2_w;
-    connect fio_out_3     -> fio_out_3_w;
+    clk           <- clk;
+    rst_n         <- rst_n;
+    icb_cmd_valid <- bus_cmd_valid & sel_fio;
+    icb_cmd_ready -> fio_ready;
+    icb_cmd_addr  <- bus_cmd_addr;
+    icb_cmd_wdata <- bus_cmd_wdata;
+    icb_cmd_wmask <- bus_cmd_wmask;
+    icb_cmd_read  <- bus_cmd_read;
+    icb_rsp_valid -> fio_rsp_valid;
+    icb_rsp_ready <- bus_rsp_ready;
+    icb_rsp_rdata -> fio_rsp_rdata;
+    icb_rsp_err   -> fio_rsp_err;
+    fio_in_0      <- fio_in_0;
+    fio_in_1      <- fio_in_1;
+    fio_out_0     -> fio_out_0_w;
+    fio_out_1     -> fio_out_1_w;
+    fio_out_2     -> fio_out_2_w;
+    fio_out_3     -> fio_out_3_w;
   end inst fio
 
   // ══════════════════════════════════════════════════════════════
   // PPI: ICB → APB bridge with 4-slave address decode
   // ══════════════════════════════════════════════════════════════
   inst ppi: Ppi
-    connect clk           <- clk;
-    connect rst_n         <- rst_n;
-    connect icb_cmd_valid <- bus_cmd_valid & sel_ppi;
-    connect icb_cmd_ready -> ppi_ready;
-    connect icb_cmd_addr  <- bus_cmd_addr;
-    connect icb_cmd_wdata <- bus_cmd_wdata;
-    connect icb_cmd_wmask <- bus_cmd_wmask;
-    connect icb_cmd_read  <- bus_cmd_read;
-    connect icb_rsp_valid -> ppi_rsp_valid;
-    connect icb_rsp_ready <- bus_rsp_ready;
-    connect icb_rsp_rdata -> ppi_rsp_rdata;
-    connect icb_rsp_err   -> ppi_rsp_err;
-    connect apb0_psel     -> gpio_psel;
-    connect apb0_penable  -> gpio_penable;
-    connect apb0_paddr    -> gpio_paddr;
-    connect apb0_pwdata   -> gpio_pwdata;
-    connect apb0_pwrite   -> gpio_pwrite;
-    connect apb0_prdata   <- gpio_prdata_w;
-    connect apb0_pready   <- gpio_pready_w;
-    connect apb1_psel     -> uart_psel;
-    connect apb1_penable  -> uart_penable;
-    connect apb1_paddr    -> uart_paddr;
-    connect apb1_pwdata   -> uart_pwdata;
-    connect apb1_pwrite   -> uart_pwrite;
-    connect apb1_prdata   <- uart_prdata_w;
-    connect apb1_pready   <- uart_pready_w;
-    connect apb2_psel     -> spi_psel;
-    connect apb2_penable  -> spi_penable;
-    connect apb2_paddr    -> spi_paddr;
-    connect apb2_pwdata   -> spi_pwdata;
-    connect apb2_pwrite   -> spi_pwrite;
-    connect apb2_prdata   <- spi_prdata_w;
-    connect apb2_pready   <- spi_pready_w;
-    connect apb3_psel     -> apb3_psel_w;
-    connect apb3_penable  -> apb3_penable_w;
-    connect apb3_paddr    -> apb3_paddr_w;
-    connect apb3_pwdata   -> apb3_pwdata_w;
-    connect apb3_pwrite   -> apb3_pwrite_w;
-    connect apb3_prdata   <- 0;
-    connect apb3_pready   <- true;
+    clk           <- clk;
+    rst_n         <- rst_n;
+    icb_cmd_valid <- bus_cmd_valid & sel_ppi;
+    icb_cmd_ready -> ppi_ready;
+    icb_cmd_addr  <- bus_cmd_addr;
+    icb_cmd_wdata <- bus_cmd_wdata;
+    icb_cmd_wmask <- bus_cmd_wmask;
+    icb_cmd_read  <- bus_cmd_read;
+    icb_rsp_valid -> ppi_rsp_valid;
+    icb_rsp_ready <- bus_rsp_ready;
+    icb_rsp_rdata -> ppi_rsp_rdata;
+    icb_rsp_err   -> ppi_rsp_err;
+    apb0_psel     -> gpio_psel;
+    apb0_penable  -> gpio_penable;
+    apb0_paddr    -> gpio_paddr;
+    apb0_pwdata   -> gpio_pwdata;
+    apb0_pwrite   -> gpio_pwrite;
+    apb0_prdata   <- gpio_prdata_w;
+    apb0_pready   <- gpio_pready_w;
+    apb1_psel     -> uart_psel;
+    apb1_penable  -> uart_penable;
+    apb1_paddr    -> uart_paddr;
+    apb1_pwdata   -> uart_pwdata;
+    apb1_pwrite   -> uart_pwrite;
+    apb1_prdata   <- uart_prdata_w;
+    apb1_pready   <- uart_pready_w;
+    apb2_psel     -> spi_psel;
+    apb2_penable  -> spi_penable;
+    apb2_paddr    -> spi_paddr;
+    apb2_pwdata   -> spi_pwdata;
+    apb2_pwrite   -> spi_pwrite;
+    apb2_prdata   <- spi_prdata_w;
+    apb2_pready   <- spi_pready_w;
+    apb3_psel     -> apb3_psel_w;
+    apb3_penable  -> apb3_penable_w;
+    apb3_paddr    -> apb3_paddr_w;
+    apb3_pwdata   -> apb3_pwdata_w;
+    apb3_pwrite   -> apb3_pwrite_w;
+    apb3_prdata   <- 0;
+    apb3_pready   <- true;
   end inst ppi
 
   // ══════════════════════════════════════════════════════════════
   // GPIO Peripheral
   // ══════════════════════════════════════════════════════════════
   inst gpio_p: Gpio
-    connect clk     <- clk;
-    connect rst_n   <- rst_n;
-    connect psel    <- gpio_psel;
-    connect penable <- gpio_penable;
-    connect paddr   <- gpio_paddr;
-    connect pwdata  <- gpio_pwdata;
-    connect pwrite  <- gpio_pwrite;
-    connect prdata  -> gpio_prdata_w;
-    connect pready  -> gpio_pready_w;
-    connect gpio_in <- gpio_in;
-    connect gpio_out -> gpio_out_w;
-    connect gpio_oe  -> gpio_oe_w;
-    connect gpio_irq -> gpio_irq_w;
+    clk     <- clk;
+    rst_n   <- rst_n;
+    psel    <- gpio_psel;
+    penable <- gpio_penable;
+    paddr   <- gpio_paddr;
+    pwdata  <- gpio_pwdata;
+    pwrite  <- gpio_pwrite;
+    prdata  -> gpio_prdata_w;
+    pready  -> gpio_pready_w;
+    gpio_in <- gpio_in;
+    gpio_out -> gpio_out_w;
+    gpio_oe  -> gpio_oe_w;
+    gpio_irq -> gpio_irq_w;
   end inst gpio_p
 
   // ══════════════════════════════════════════════════════════════
   // UART Peripheral
   // ══════════════════════════════════════════════════════════════
   inst uart_p: Uart
-    connect clk     <- clk;
-    connect rst_n   <- rst_n;
-    connect psel    <- uart_psel;
-    connect penable <- uart_penable;
-    connect paddr   <- uart_paddr;
-    connect pwdata  <- uart_pwdata;
-    connect pwrite  <- uart_pwrite;
-    connect prdata  -> uart_prdata_w;
-    connect pready  -> uart_pready_w;
-    connect uart_tx -> uart_tx_w;
-    connect uart_rx <- uart_rx;
-    connect uart_irq -> uart_irq_w;
+    clk     <- clk;
+    rst_n   <- rst_n;
+    psel    <- uart_psel;
+    penable <- uart_penable;
+    paddr   <- uart_paddr;
+    pwdata  <- uart_pwdata;
+    pwrite  <- uart_pwrite;
+    prdata  -> uart_prdata_w;
+    pready  -> uart_pready_w;
+    uart_tx -> uart_tx_w;
+    uart_rx <- uart_rx;
+    uart_irq -> uart_irq_w;
   end inst uart_p
 
   // ══════════════════════════════════════════════════════════════
   // SPI Peripheral
   // ══════════════════════════════════════════════════════════════
   inst spi_p: Spi
-    connect clk     <- clk;
-    connect rst_n   <- rst_n;
-    connect psel    <- spi_psel;
-    connect penable <- spi_penable;
-    connect paddr   <- spi_paddr;
-    connect pwdata  <- spi_pwdata;
-    connect pwrite  <- spi_pwrite;
-    connect prdata  -> spi_prdata_w;
-    connect pready  -> spi_pready_w;
-    connect spi_sclk -> spi_sclk_w;
-    connect spi_mosi -> spi_mosi_w;
-    connect spi_miso <- spi_miso;
-    connect spi_cs_n -> spi_cs_n_w;
-    connect spi_irq  -> spi_irq_w;
+    clk     <- clk;
+    rst_n   <- rst_n;
+    psel    <- spi_psel;
+    penable <- spi_penable;
+    paddr   <- spi_paddr;
+    pwdata  <- spi_pwdata;
+    pwrite  <- spi_pwrite;
+    prdata  -> spi_prdata_w;
+    pready  -> spi_pready_w;
+    spi_sclk -> spi_sclk_w;
+    spi_mosi -> spi_mosi_w;
+    spi_miso <- spi_miso;
+    spi_cs_n -> spi_cs_n_w;
+    spi_irq  -> spi_irq_w;
   end inst spi_p
 
   // ══════════════════════════════════════════════════════════════
   // Interrupt Controller
   // ══════════════════════════════════════════════════════════════
   inst irq: IrqCtrl
-    connect clk          <- clk;
-    connect rst_n        <- rst_n;
-    connect ext_irq_i    <- gpio_irq_w;
-    connect sw_irq_i     <- false;
-    connect tmr_irq_i    <- tmr_irq_w;
-    connect mstatus_mie  <- true;
-    connect mie_meie     <- true;
-    connect mie_mtie     <- true;
-    connect mie_msie     <- true;
-    connect pipe_flush_ack <- false;
-    connect commit_valid   <- core_commit_w;
-    connect irq_req      -> irq_req_w;
-    connect irq_cause    -> irq_cause_w;
-    connect mip_meip     -> irq_mip_meip;
-    connect mip_mtip     -> irq_mip_mtip;
-    connect mip_msip     -> irq_mip_msip;
+    clk          <- clk;
+    rst_n        <- rst_n;
+    ext_irq_i    <- gpio_irq_w;
+    sw_irq_i     <- false;
+    tmr_irq_i    <- tmr_irq_w;
+    mstatus_mie  <- true;
+    mie_meie     <- true;
+    mie_mtie     <- true;
+    mie_msie     <- true;
+    pipe_flush_ack <- false;
+    commit_valid   <- core_commit_w;
+    irq_req      -> irq_req_w;
+    irq_cause    -> irq_cause_w;
+    mip_meip     -> irq_mip_meip;
+    mip_mtip     -> irq_mip_mtip;
+    mip_msip     -> irq_mip_msip;
   end inst irq
 
   // ══════════════════════════════════════════════════════════════
   // Debug Module
   // ══════════════════════════════════════════════════════════════
   inst dbg: DebugModule
-    connect clk          <- clk;
-    connect rst_n        <- rst_n;
-    connect psel         <- dbg_psel;
-    connect penable      <- dbg_penable;
-    connect paddr        <- dbg_paddr;
-    connect pwdata       <- dbg_pwdata;
-    connect pwrite       <- dbg_pwrite;
-    connect prdata       -> dbg_prdata_w;
-    connect pready       -> dbg_pready_w;
-    connect hart_halted  <- false;
-    connect hart_running <- true;
-    connect halt_req     -> dbg_halt_req;
-    connect resume_req   -> dbg_resume_req;
-    connect dbg_reg_addr -> dbg_reg_addr_w;
-    connect dbg_reg_wdata -> dbg_reg_wdata_w;
-    connect dbg_reg_wen   -> dbg_reg_wen_w;
-    connect dbg_reg_rdata <- 0;
+    clk          <- clk;
+    rst_n        <- rst_n;
+    psel         <- dbg_psel;
+    penable      <- dbg_penable;
+    paddr        <- dbg_paddr;
+    pwdata       <- dbg_pwdata;
+    pwrite       <- dbg_pwrite;
+    prdata       -> dbg_prdata_w;
+    pready       -> dbg_pready_w;
+    hart_halted  <- false;
+    hart_running <- true;
+    halt_req     -> dbg_halt_req;
+    resume_req   -> dbg_resume_req;
+    dbg_reg_addr -> dbg_reg_addr_w;
+    dbg_reg_wdata -> dbg_reg_wdata_w;
+    dbg_reg_wen   -> dbg_reg_wen_w;
+    dbg_reg_rdata <- 0;
   end inst dbg
 
   // ══════════════════════════════════════════════════════════════

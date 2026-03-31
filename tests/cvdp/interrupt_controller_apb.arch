@@ -57,7 +57,7 @@ module interrupt_controller_apb
   //   2) winner is always a DIFFERENT interrupt than the one being served,
   //      enabling an explicit priority comparison for preemption.
   comb
-    masked_pending = pending_interrupts & interrupt_mask & ~current_int;
+    masked_pending = (pending_interrupts | interrupt_requests) & interrupt_mask & ~current_int;
     winner_int = 0;
     winner_idx32 = 0;
     highest_pri_val = 16777215;

@@ -1,216 +1,107 @@
 module elevator_control_system #(
-    parameter N = 8,
-    parameter DOOR_OPEN_TIME_MS = 500
+  parameter int NUM_FLOORS = 4
 ) (
-    input wire clk,
-    input wire reset,
-    input wire [N-1:0] call_requests,
-    input wire emergency_stop,
-    input wire overload_detected,
-    output wire [$clog2(N)-1:0] current_floor,
-    output reg direction,
-    output reg door_open,
-    output reg [2:0] system_status,
-    output overload_warning,
-    output wire [6:0] seven_seg_out,
-    output wire [3:0] seven_seg_out_anode,
-    output wire [3:0] thousand,
-    output wire [3:0] hundred,
-    output wire [3:0] ten,
-    output wire [3:0] one
+  input logic clk,
+  input logic rst_n,
+  input logic [NUM_FLOORS-1:0] floor_request,
+  output logic [2-1:0] current_floor,
+  output logic door_open,
+  output logic [7-1:0] seven_seg_out
 );
 
-// State Encoding
-localparam IDLE = 3'b000;
-localparam MOVING_UP = 3'b001;
-localparam MOVING_DOWN = 3'b010;
-localparam EMERGENCY_HALT = 3'b011;
-localparam DOOR_OPEN_ST = 3'b100;
-localparam OVERLOAD_HALT = 3'b101;
-
-// Internal registers
-reg [N-1:0] call_requests_internal;
-reg [2:0] present_state, next_state;
-reg [$clog2(N)-1:0] max_request;
-reg [$clog2(N)-1:0] min_request;
-
-`ifdef SIMULATION
-    localparam CLK_FREQ_MHZ = 100;
-    localparam real SIM_DOOR_OPEN_TIME_MS = 0.05;
-    localparam DOOR_OPEN_CYCLES = int'(SIM_DOOR_OPEN_TIME_MS * CLK_FREQ_MHZ * 1000);
-`else
-    localparam CLK_FREQ_MHZ = 100;
-    localparam DOOR_OPEN_CYCLES = (DOOR_OPEN_TIME_MS * CLK_FREQ_MHZ * 1000);
-`endif
-
-reg [$clog2(DOOR_OPEN_CYCLES)-1:0] door_open_counter;
-
-reg [$clog2(N)-1:0] current_floor_reg, current_floor_next;
-
-assign current_floor = current_floor_reg;
-assign overload_warning = (overload_detected == 1 && present_state == OVERLOAD_HALT);
-
-// FSM state transition
-always @(posedge clk or posedge reset) begin
-    if (reset) begin
-        present_state <= IDLE;
-        system_status <= IDLE;
-        current_floor_reg <= 0;
-        max_request <= 0;
-        min_request <= N-1;
+  typedef enum logic [1:0] {
+    IDLE = 2'd0,
+    MOVING_UP = 2'd1,
+    MOVING_DOWN = 2'd2,
+    DOOR_OPEN = 2'd3
+  } elevator_control_system_state_t;
+  
+  elevator_control_system_state_t state_r, state_next;
+  
+  logic [2-1:0] floor_r;
+  logic [4-1:0] door_cnt;
+  
+  logic [7-1:0] seg;
+  assign seg = floor_r == 0 ? 7'd126 : floor_r == 1 ? 7'd48 : floor_r == 2 ? 7'd109 : 7'd121;
+  logic req_any_above;
+  assign req_any_above = floor_r == 0 ? floor_request[3:1] != 0 : floor_r == 1 ? floor_request[3:2] != 0 : floor_r == 2 ? floor_request[3:3] != 0 : 1'b0;
+  logic req_any_below;
+  assign req_any_below = floor_r == 3 ? floor_request[2:0] != 0 : floor_r == 2 ? floor_request[1:0] != 0 : floor_r == 1 ? floor_request[0:0] != 0 : 1'b0;
+  logic at_floor_req;
+  assign at_floor_req = floor_request[floor_r] == 1;
+  
+  always_ff @(posedge clk or negedge rst_n) begin
+    if ((!rst_n)) begin
+      state_r <= IDLE;
+      floor_r <= 0;
+      door_cnt <= 0;
     end else begin
-        present_state <= next_state;
-        system_status <= next_state;
-        current_floor_reg <= current_floor_next;
-
-        max_request = 0;
-        min_request = N-1;
-        for (integer i = 0; i < N; i = i + 1) begin
-            if (call_requests_internal[i]) begin
-                if (i > max_request) max_request = i;
-                if (i < min_request) min_request = i;
-            end
-        end
-    end
-end
-
-// Next state logic
-always @(*) begin
-    next_state = present_state;
-    current_floor_next = current_floor_reg;
-
-    case (present_state)
-        IDLE: begin
-            if (overload_detected) begin
-                next_state = OVERLOAD_HALT;
-            end else if (emergency_stop) begin
-                next_state = EMERGENCY_HALT;
-            end else if (call_requests_internal != 0) begin
-                if (max_request > current_floor_reg) begin
-                    next_state = MOVING_UP;
-                end else if (min_request < current_floor_reg) begin
-                    next_state = MOVING_DOWN;
-                end
-            end
-        end
-
+      state_r <= state_next;
+      case (state_r)
         MOVING_UP: begin
-            if (emergency_stop) begin
-                next_state = EMERGENCY_HALT;
-            end else if (call_requests_internal[current_floor_reg+1]) begin
-                current_floor_next = current_floor_reg + 1;
-                next_state = DOOR_OPEN_ST;
-            end else if (current_floor_reg >= max_request) begin
-                next_state = IDLE;
-            end else begin
-                current_floor_next = current_floor_reg + 1;
-                next_state = MOVING_UP;
-            end
+          floor_r <= floor_r + 1;
         end
-
         MOVING_DOWN: begin
-            if (emergency_stop) begin
-                next_state = EMERGENCY_HALT;
-            end else if (call_requests_internal[current_floor_reg-1]) begin
-                current_floor_next = current_floor_reg - 1;
-                next_state = DOOR_OPEN_ST;
-            end else if (current_floor_reg <= min_request) begin
-                next_state = IDLE;
-            end else begin
-                current_floor_next = current_floor_reg - 1;
-                next_state = MOVING_DOWN;
-            end
+          floor_r <= floor_r - 1;
         end
-
-        EMERGENCY_HALT: begin
-            if (!emergency_stop) begin
-                next_state = IDLE;
-                current_floor_next = 0;
-            end
+        DOOR_OPEN: begin
+          if (door_cnt == 0) begin
+            door_cnt <= 8;
+          end else begin
+            door_cnt <= door_cnt - 1;
+          end
         end
-
-        DOOR_OPEN_ST: begin
-            if (overload_detected) begin
-                next_state = OVERLOAD_HALT;
-            end else if (door_open_counter == 0) begin
-                next_state = IDLE;
-            end else begin
-                next_state = DOOR_OPEN_ST;
-            end
-        end
-
-        OVERLOAD_HALT: begin
-            if (!overload_detected) begin
-                if (door_open) begin
-                    next_state = DOOR_OPEN_ST;
-                end else begin
-                    next_state = IDLE;
-                end
-            end
-        end
+        default: ;
+      endcase
+    end
+  end
+  
+  always_comb begin
+    state_next = state_r; // hold by default
+    case (state_r)
+      IDLE: begin
+        if (at_floor_req) state_next = DOOR_OPEN;
+        else if (req_any_above) state_next = MOVING_UP;
+        else if (req_any_below) state_next = MOVING_DOWN;
+      end
+      MOVING_UP: begin
+        if (req_any_above == 1'b0) state_next = IDLE;
+      end
+      MOVING_DOWN: begin
+        if (req_any_below == 1'b0) state_next = IDLE;
+      end
+      DOOR_OPEN: begin
+        if (door_cnt == 1) state_next = IDLE;
+      end
+      default: state_next = state_r;
     endcase
-end
-
-// Door open control
-always @(posedge clk or posedge reset) begin
-    if (reset) begin
-        door_open_counter <= 0;
-        door_open <= 0;
-    end else begin
-        if (present_state == OVERLOAD_HALT) begin
-            door_open_counter <= DOOR_OPEN_CYCLES;
-            door_open <= 1;
-        end else if (present_state == DOOR_OPEN_ST) begin
-            if (door_open_counter > 0) begin
-                door_open <= 1;
-                door_open_counter <= door_open_counter - 1;
-            end else begin
-                door_open <= 0;
-            end
-        end else begin
-            door_open <= 0;
-            door_open_counter <= DOOR_OPEN_CYCLES;
-        end
-    end
-end
-
-// Call request management
-always @(*) begin
-    if (reset) begin
-        call_requests_internal = 0;
-    end else begin
-        if (call_requests_internal[current_floor_reg]) begin
-            call_requests_internal[current_floor_reg] = 0;
-        end
-        call_requests_internal = call_requests_internal | call_requests;
-    end
-end
-
-// Direction control
-always @(*) begin
-    if (reset) begin
-        direction = 1;
-    end else begin
-        if (present_state == MOVING_UP) begin
-            direction = 1;
-        end else if (present_state == MOVING_DOWN) begin
-            direction = 0;
-        end else begin
-            direction = 1;
-        end
-    end
-end
-
-// Seven-segment display
-floor_to_seven_segment floor_display_converter (
-    .clk(clk),
-    .floor_display(current_floor_reg),
-    .seven_seg_out(seven_seg_out),
-    .seven_seg_out_anode(seven_seg_out_anode),
-    .thousand(thousand),
-    .hundred(hundred),
-    .ten(ten),
-    .one(one)
-);
+  end
+  
+  always_comb begin
+    case (state_r)
+      IDLE: begin
+        current_floor = floor_r;
+        seven_seg_out = seg;
+        door_open = 1'b0;
+      end
+      MOVING_UP: begin
+        current_floor = floor_r;
+        seven_seg_out = seg;
+        door_open = 1'b0;
+      end
+      MOVING_DOWN: begin
+        current_floor = floor_r;
+        seven_seg_out = seg;
+        door_open = 1'b0;
+      end
+      DOOR_OPEN: begin
+        current_floor = floor_r;
+        seven_seg_out = seg;
+        door_open = 1'b1;
+      end
+      default: ;
+    endcase
+  end
 
 endmodule
+

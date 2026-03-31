@@ -655,7 +655,7 @@ impl<'a> TypeChecker<'a> {
         match &expr.kind {
             ExprKind::Ident(n) => n.clone(),
             ExprKind::FieldAccess(base, _) => Self::expr_root_name_tc(base),
-            ExprKind::Index(base, _) | ExprKind::BitSlice(base, _, _) => Self::expr_root_name_tc(base),
+            ExprKind::Index(base, _) | ExprKind::BitSlice(base, _, _) | ExprKind::PartSelect(base, _, _, _) => Self::expr_root_name_tc(base),
             _ => String::new(),
         }
     }
@@ -672,7 +672,7 @@ impl<'a> TypeChecker<'a> {
                     Self::expr_root_name_tc(base)
                 }
             }
-            ExprKind::Index(base, _) | ExprKind::BitSlice(base, _, _) => Self::expr_flat_name_tc(base),
+            ExprKind::Index(base, _) | ExprKind::BitSlice(base, _, _) | ExprKind::PartSelect(base, _, _, _) => Self::expr_flat_name_tc(base),
             _ => String::new(),
         }
     }
@@ -1312,6 +1312,13 @@ impl<'a> TypeChecker<'a> {
                     _ => Ty::Error,
                 }
             }
+            ExprKind::PartSelect(_base, _start, width, _up) => {
+                // width is const; result type is UInt<width>
+                match self.eval_const_expr(width, local_types) {
+                    Some(w) if w > 0 => Ty::UInt(w as u32),
+                    _ => Ty::Error,
+                }
+            }
             ExprKind::StructLiteral(name, _) => Ty::Struct(name.name.clone()),
             ExprKind::EnumVariant(name, _) => {
                 if let Some((sym, _)) = self.symbols.globals.get(&name.name) {
@@ -1839,6 +1846,11 @@ impl<'a> TypeChecker<'a> {
                 Self::collect_expr_reads(base, out);
                 Self::collect_expr_reads(hi, out);
                 Self::collect_expr_reads(lo, out);
+            }
+            ExprKind::PartSelect(base, start, width, _) => {
+                Self::collect_expr_reads(base, out);
+                Self::collect_expr_reads(start, out);
+                Self::collect_expr_reads(width, out);
             }
             ExprKind::FieldAccess(base, _) => Self::collect_expr_reads(base, out),
             ExprKind::MethodCall(base, _, args) => {

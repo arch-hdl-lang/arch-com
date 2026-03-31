@@ -89,33 +89,33 @@ module BufMgrSm
 
   // RAM instances
   inst dmem: DataMemSm
-    connect clk           <- clk;
-    connect wr_port.en    <- eq2_valid;
-    connect wr_port.addr  <- eq2_free_slot;
-    connect wr_port.data  <- eq2_data;
-    connect rd_port.en    <- dequeue_valid and setup_done;
-    connect rd_port.addr  <- dq0_head_bypassed;
-    connect rd_port.data  -> data_rd_data;
+    clk           <- clk;
+    wr_port.en    <- eq2_valid;
+    wr_port.addr  <- eq2_free_slot;
+    wr_port.data  <- eq2_data;
+    rd_port.en    <- dequeue_valid and setup_done;
+    rd_port.addr  <- dq0_head_bypassed;
+    rd_port.data  -> data_rd_data;
   end inst dmem
 
   inst nptr: NextPtrMemSm
-    connect clk           <- clk;
-    connect wr_port.en    <- eq2_valid and (not eq2_was_empty);
-    connect wr_port.addr  <- eq2_old_tail;
-    connect wr_port.data  <- eq2_free_slot;
-    connect rd_port.en    <- dequeue_valid and setup_done;
-    connect rd_port.addr  <- dq0_head_bypassed;
-    connect rd_port.data  -> next_ptr_rd_data;
+    clk           <- clk;
+    wr_port.en    <- eq2_valid and (not eq2_was_empty);
+    wr_port.addr  <- eq2_old_tail;
+    wr_port.data  <- eq2_free_slot;
+    rd_port.en    <- dequeue_valid and setup_done;
+    rd_port.addr  <- dq0_head_bypassed;
+    rd_port.data  -> next_ptr_rd_data;
   end inst nptr
 
   inst flist: FreeListMemSm
-    connect clk           <- clk;
-    connect rd_port.en    <- (enqueue_valid and setup_done) or (not setup_done);
-    connect rd_port.addr  <- setup_done ? free_rd_ptr : setup_ctr;
-    connect wr_port.en    <- (dq2_valid and setup_done) or (not setup_done);
-    connect wr_port.addr  <- setup_done ? free_wr_ptr : setup_ctr;
-    connect wr_port.data  <- setup_done ? dq2_old_head : setup_ctr;
-    connect rd_port.data  -> free_slot_rd_data;
+    clk           <- clk;
+    rd_port.en    <- (enqueue_valid and setup_done) or (not setup_done);
+    rd_port.addr  <- setup_done ? free_rd_ptr : setup_ctr;
+    wr_port.en    <- (dq2_valid and setup_done) or (not setup_done);
+    wr_port.addr  <- setup_done ? free_wr_ptr : setup_ctr;
+    wr_port.data  <- setup_done ? dq2_old_head : setup_ctr;
+    rd_port.data  -> free_slot_rd_data;
   end inst flist
 
   seq on clk rising

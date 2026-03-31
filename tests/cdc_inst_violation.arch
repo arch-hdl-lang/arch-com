@@ -34,9 +34,9 @@ module TopBad
   end seq
 
   inst cons: Consumer
-    connect clk <- clk_b;
-    connect rst <- rst;
-    connect data_in <- counter_a;
-    connect data_out -> result;
+    clk <- clk_b;
+    rst <- rst;
+    data_in <- counter_a;
+    data_out -> result;
   end inst cons
 end module TopBad

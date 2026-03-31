@@ -505,6 +505,7 @@ pub enum ExprKind {
     Cast(Box<Expr>, Box<TypeExpr>),
     Index(Box<Expr>, Box<Expr>),
     BitSlice(Box<Expr>, Box<Expr>, Box<Expr>),  // base[hi:lo]
+    PartSelect(Box<Expr>, Box<Expr>, Box<Expr>, bool),  // base[start +: width] (true=+:, false=-:)
     StructLiteral(Ident, Vec<FieldInit>),
     EnumVariant(Ident, Ident), // EnumName::Variant
     Todo,

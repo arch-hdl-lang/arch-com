@@ -40,13 +40,13 @@ module AesCipherTop
 
   // ── Key expansion instance ──
   inst key_exp: AesKeyExpand128
-    connect clk <- clk;
-    connect kld <- ld;
-    connect key <- key;
-    connect wo_0 -> w0;
-    connect wo_1 -> w1;
-    connect wo_2 -> w2;
-    connect wo_3 -> w3;
+    clk <- clk;
+    kld <- ld;
+    key <- key;
+    wo_0 -> w0;
+    wo_1 -> w1;
+    wo_2 -> w2;
+    wo_3 -> w3;
   end inst key_exp
 
   // ── 16 S-box instances ──

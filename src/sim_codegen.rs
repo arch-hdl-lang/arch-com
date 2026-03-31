@@ -123,21 +123,84 @@ public:
     static bool _s_trace_claimed;
 };
 
+/// Stub VerilatedContext for Verilator testbench portability.
+/// Arch-sim testbenches can use `new VerilatedContext` without changes.
+class VerilatedContext {
+public:
+    void commandArgs(int argc, char** argv) { Verilated::commandArgs(argc, argv); }
+    void traceEverOn(bool) {}
+};
+
 // ── Wide signal support ───────────────────────────────────────────────────────
 
 /// Wide word type for signals wider than 64 bits (matches Verilator VlWide).
 /// Word layout: _data[0] = bits 31:0 (LSB), _data[N-1] = MSB words.
+/// Supports signals up to 2048 bits (WORDS=64).
 template<int WORDS>
 struct VlWide {
     uint32_t _data[WORDS];
     VlWide()                    { memset(_data, 0, sizeof(_data)); }
     VlWide(const VlWide& o)     { memcpy(_data, o._data, sizeof(_data)); }
+    /// Construct from a 64-bit integer (zero-extends into MSB words).
+    explicit VlWide(uint64_t v) { memset(_data, 0, sizeof(_data));
+        _data[0] = (uint32_t)v; if (WORDS > 1) _data[1] = (uint32_t)(v >> 32); }
     VlWide& operator=(const VlWide& o) { memcpy(_data, o._data, sizeof(_data)); return *this; }
+    VlWide& operator=(uint64_t v)      { memset(_data, 0, sizeof(_data));
+        _data[0] = (uint32_t)v; if (WORDS > 1) _data[1] = (uint32_t)(v >> 32); return *this; }
     uint32_t*       data()       { return _data; }
     const uint32_t* data() const { return _data; }
+
+    // ── Bitwise operators ────────────────────────────────────────────────────
+    VlWide operator|(const VlWide& b) const {
+        VlWide r; for (int i=0;i<WORDS;i++) r._data[i]=_data[i]|b._data[i]; return r; }
+    VlWide operator&(const VlWide& b) const {
+        VlWide r; for (int i=0;i<WORDS;i++) r._data[i]=_data[i]&b._data[i]; return r; }
+    VlWide operator^(const VlWide& b) const {
+        VlWide r; for (int i=0;i<WORDS;i++) r._data[i]=_data[i]^b._data[i]; return r; }
+    VlWide operator~() const {
+        VlWide r; for (int i=0;i<WORDS;i++) r._data[i]=~_data[i]; return r; }
+
+    // ── Arithmetic ───────────────────────────────────────────────────────────
+    VlWide operator+(const VlWide& b) const {
+        VlWide r; uint64_t c=0;
+        for (int i=0;i<WORDS;i++) { uint64_t s=(uint64_t)_data[i]+b._data[i]+c; r._data[i]=(uint32_t)s; c=s>>32; }
+        return r; }
+    VlWide operator-(const VlWide& b) const {
+        VlWide r; int64_t c=0;
+        for (int i=0;i<WORDS;i++) { int64_t s=(int64_t)(uint64_t)_data[i]-(int64_t)(uint64_t)b._data[i]+c; r._data[i]=(uint32_t)(uint64_t)s; c=(s<0)?-1:0; }
+        return r; }
+
+    // ── Shifts ───────────────────────────────────────────────────────────────
+    VlWide operator<<(int n) const {
+        VlWide r{};
+        if (n<=0) return *this; if (n>=WORDS*32) return r;
+        const int ws=n/32, bs=n%32;
+        for (int di=0;di<WORDS;di++) {
+            const int sh=di-ws, sl=sh-1;
+            if (sh>=0&&sh<WORDS) r._data[di]|=_data[sh]<<bs;
+            if (bs>0&&sl>=0&&sl<WORDS) r._data[di]|=_data[sl]>>(32-bs);
+        }
+        return r; }
+    VlWide operator>>(int n) const {
+        VlWide r{};
+        if (n<=0) return *this; if (n>=WORDS*32) return r;
+        const int ws=n/32, bs=n%32;
+        for (int di=0;di<WORDS;di++) {
+            const int sl=di+ws, sh=sl+1;
+            if (sl>=0&&sl<WORDS) r._data[di]|=_data[sl]>>bs;
+            if (bs>0&&sh>=0&&sh<WORDS) r._data[di]|=_data[sh]<<(32-bs);
+        }
+        return r; }
+
+    // ── Comparisons ──────────────────────────────────────────────────────────
+    bool operator==(const VlWide& b) const {
+        for (int i=0;i<WORDS;i++) if (_data[i]!=b._data[i]) return false; return true; }
+    bool operator!=(const VlWide& b) const { return !(*this==b); }
+    explicit operator bool() const {
+        for (int i=0;i<WORDS;i++) if (_data[i]) return true; return false; }
 };
 
-/// 128-bit internal arithmetic type.
+/// 128-bit internal arithmetic type (used for 65–128 bit signals).
 typedef unsigned __int128 _arch_u128;
 
 /// Convert VlWide<4> → 128-bit integer (bit 127 = MSB = _data[3] MSB).
@@ -152,6 +215,18 @@ static inline void _arch_u128_to_vl(const _arch_u128 v, uint32_t* w) {
     w[1] = (uint32_t)(v >> 32);
     w[2] = (uint32_t)(v >> 64);
     w[3] = (uint32_t)(v >> 96);
+}
+
+/// Extract up to 64 bits [hi:lo] from a VlWide _data array.
+static inline uint64_t _arch_vw_bits(const uint32_t* data, uint32_t hi, uint32_t lo) {
+    uint32_t width = hi - lo + 1; if (width > 64) width = 64;
+    uint32_t w0 = lo >> 5, b0 = lo & 31;
+    uint64_t v = (uint64_t)data[w0];
+    v |= (uint64_t)data[w0+1] << 32;
+    v >>= b0;
+    if (b0 > 0 && width > (64 - b0)) v |= (uint64_t)data[w0+2] << (64 - b0);
+    uint64_t mask = (width >= 64) ? ~0ULL : ((1ULL << width) - 1ULL);
+    return v & mask;
 }
 
 /// Ceiling log2 helper.
@@ -394,8 +469,10 @@ fn add_trace_to_simple_construct(
     extra_signals: &[(&str, &str, u32)],
 ) {
     // Build signal list from ports + extras
+    // Vec ports are skipped (their flat fields are passed via extra_signals by caller).
     let mut signals = Vec::new();
     for p in ports {
+        if matches!(p.ty, TypeExpr::Vec(..)) { continue; }  // handled as flat via extra_signals
         let width = type_width(&p.ty);
         signals.push(TraceSignal {
             vcd_name: p.name.name.clone(),
@@ -515,17 +592,22 @@ fn flatten_bus_port(
     }
 }
 
-/// C++ type for a private reg/let field (wide → _arch_u128, narrow → uint).
+/// C++ type for a private reg/let field.
+/// 1–64 bits   → uint8/16/32/64_t
+/// 65–128 bits → _arch_u128
+/// >128 bits   → VlWide<N>  (same as port type, no conversion needed)
 fn cpp_internal_type(ty: &TypeExpr) -> String {
     match ty {
         TypeExpr::UInt(w) => {
             let b = eval_width(w);
-            if is_wide_bits(b) { "_arch_u128".to_string() }
+            if b > 128 { format!("VlWide<{}>", wide_words(b)) }
+            else if b > 64 { "_arch_u128".to_string() }
             else { cpp_uint(b).to_string() }
         }
         TypeExpr::SInt(w) => {
             let b = eval_width(w);
-            if is_wide_bits(b) { "_arch_u128".to_string() }
+            if b > 128 { format!("VlWide<{}>", wide_words(b)) }
+            else if b > 64 { "_arch_u128".to_string() }
             else { cpp_sint(b).to_string() }
         }
         TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(..) => "uint8_t".to_string(),
@@ -639,6 +721,9 @@ struct Ctx<'a> {
     /// Reg/wire names whose type is Vec<T,N> — these use C array subscript `[i]`.
     /// All other subscripts on scalar UInt/SInt use bit extraction `(x >> i) & 1`.
     vec_names:   &'a HashSet<String>,
+    /// FSM Vec port-regs: always resolve to `_name` (internal C array), regardless of fsm_mode.
+    /// These ports have flat public fields (name_0..name_N-1) but internal storage `_name[N]`.
+    fsm_vec_port_regs: &'a HashSet<String>,
 }
 
 impl<'a> Ctx<'a> {
@@ -653,11 +738,11 @@ impl<'a> Ctx<'a> {
         enum_map:   &'a HashMap<String, Vec<String>>,
         bus_ports:  &'a HashSet<String>,
     ) -> Self {
-        static EMPTY_VEC_NAMES: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
-        let vec_names = EMPTY_VEC_NAMES.get_or_init(HashSet::new);
+        static EMPTY_SET: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
+        let empty = EMPTY_SET.get_or_init(HashSet::new);
         Ctx { reg_names, port_names, let_names, inst_names, wide_names,
               widths, posedge_lhs: false, fsm_mode: false, enum_map, bus_ports,
-              vec_names }
+              vec_names: empty, fsm_vec_port_regs: empty }
     }
 
     fn with_vec_names(mut self, vec_names: &'a HashSet<String>) -> Self {
@@ -665,10 +750,19 @@ impl<'a> Ctx<'a> {
         self
     }
 
+    fn with_fsm_vec_port_regs(mut self, fsm_vec_port_regs: &'a HashSet<String>) -> Self {
+        self.fsm_vec_port_regs = fsm_vec_port_regs;
+        self
+    }
+
     fn posedge(mut self) -> Self { self.posedge_lhs = true; self }
 
     /// Resolve a name to its C++ field/variable name.
     fn resolve_name(&self, name: &str, is_lhs: bool) -> String {
+        // FSM Vec port-regs always use `_name` (internal C array) regardless of mode.
+        if self.fsm_vec_port_regs.contains(name) {
+            return format!("_{name}");
+        }
         if self.reg_names.contains(name) {
             if is_lhs && self.posedge_lhs {
                 format!("_n_{name}")
@@ -690,12 +784,20 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// Emit a signal read, wrapping wide input ports with the conversion call.
+    /// Emit a signal read.
+    /// • 65–128-bit input ports: VlWide<4> → _arch_u128 conversion
+    /// • >128-bit input ports:   return VlWide<N> directly (same as internal type)
     fn read_signal(&self, name: &str) -> String {
         let base = self.resolve_name(name, false);
         if self.wide_names.contains(name) && self.port_names.contains(name) {
-            // Wide input port: convert to _arch_u128 for arithmetic
-            format!("_arch_vl_to_u128({base}._data)")
+            let bits = self.widths.get(name).copied().unwrap_or(0);
+            if bits > 128 {
+                // Internal and port both VlWide<N> — no conversion needed
+                base
+            } else {
+                // 65–128 bit: port is VlWide<4>, internal arithmetic uses _arch_u128
+                format!("_arch_vl_to_u128({base}._data)")
+            }
         } else {
             base
         }
@@ -726,6 +828,7 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
             let l = eval_width(lo);
             h - l + 1
         }
+        ExprKind::PartSelect(_, _, width, _) => eval_width(width),
         ExprKind::Cast(_, ty) => {
             match ty.as_ref() {
                 TypeExpr::UInt(w) => eval_width(w),
@@ -826,7 +929,13 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                 UnaryOp::RedAnd => {
                     // Reduction AND: all bits set → 1
                     let w = infer_expr_width(operand, ctx);
-                    if w <= 1 {
+                    if w > 128 {
+                        let words = wide_words(w);
+                        let last_bits = w % 32;
+                        let last_mask = if last_bits == 0 { "0xFFFFFFFFU".to_string() }
+                                        else { format!("0x{:X}U", (1u32 << last_bits) - 1) };
+                        format!("[&](){{auto& _v={o};for(int _i=0;_i<{}-1;_i++)if(_v._data[_i]!=0xFFFFFFFFU)return(uint8_t)0;return(uint8_t)(_v._data[{}]=={last_mask}?1:0);}}()", words, words-1)
+                    } else if w <= 1 {
                         format!("({o} & 1)")
                     } else {
                         let mask = if w >= 64 { u64::MAX } else { (1u64 << w) - 1 };
@@ -835,11 +944,23 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                 }
                 UnaryOp::RedOr => {
                     // Reduction OR: any bit set → 1
-                    format!("(uint8_t)(({o}) != 0)")
+                    let w = infer_expr_width(operand, ctx);
+                    if w > 128 {
+                        let words = wide_words(w);
+                        format!("[&](){{auto& _v={o};for(int _i=0;_i<{words};_i++)if(_v._data[_i])return(uint8_t)1;return(uint8_t)0;}}()")
+                    } else {
+                        format!("(uint8_t)(({o}) != 0)")
+                    }
                 }
                 UnaryOp::RedXor => {
-                    // Reduction XOR: parity — use __builtin_parityll
-                    format!("(uint8_t)(__builtin_parityll((uint64_t)({o})))")
+                    // Reduction XOR: parity
+                    let w = infer_expr_width(operand, ctx);
+                    if w > 128 {
+                        let words = wide_words(w);
+                        format!("[&](){{auto& _v={o};uint8_t _p=0;for(int _i=0;_i<{words};_i++)_p^=(uint8_t)__builtin_parity(_v._data[_i]);return _p;}}()")
+                    } else {
+                        format!("(uint8_t)(__builtin_parityll((uint64_t)({o})))")
+                    }
                 }
             }
         }
@@ -865,7 +986,13 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                 "trunc" => {
                     if let Some(w_expr) = args.first() {
                         let bits = eval_width(w_expr);
-                        cast_to_bits(&b, bits)
+                        let base_w = infer_expr_width(base, ctx);
+                        if base_w > 128 && bits <= 64 {
+                            // VlWide → narrow: extract low bits via word array
+                            format!("({})_arch_vw_bits({b}.data(), {}, 0)", cpp_uint(bits), bits - 1)
+                        } else {
+                            cast_to_bits(&b, bits)
+                        }
                     } else {
                         b
                     }
@@ -873,7 +1000,16 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                 "zext" => {
                     if let Some(w_expr) = args.first() {
                         let bits = eval_width(w_expr);
-                        format!("({})({})", cpp_uint(bits), b)
+                        let base_w = infer_expr_width(base, ctx);
+                        if bits > 128 {
+                            // Narrow → VlWide: use uint64_t constructor
+                            let words = wide_words(bits);
+                            format!("VlWide<{words}>(static_cast<uint64_t>({b}))")
+                        } else if base_w > 128 && bits <= 64 {
+                            format!("({})_arch_vw_bits({b}.data(), {}, 0)", cpp_uint(bits), bits - 1)
+                        } else {
+                            format!("({})({})", cpp_uint(bits), b)
+                        }
                     } else {
                         b
                     }
@@ -944,7 +1080,7 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             if is_vec {
                 format!("{b}[{i}]")
             } else {
-                format!("(({b}) >> ({i})) & 1")
+                format!("((({b}) >> ({i})) & 1)")
             }
         }
 
@@ -953,10 +1089,54 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             let h = eval_width(hi);
             let l = eval_width(lo);
             let base_w = infer_expr_width(base, ctx);
-            if base_w > 64 {
+            if base_w > 128 {
+                // VlWide<N>: use word-array bit extractor
+                let result_w = h - l + 1;
+                let result_ty = if result_w <= 64 { cpp_uint(result_w) } else { "uint64_t" };
+                format!("({result_ty})_arch_vw_bits({b}.data(), {h}, {l})")
+            } else if base_w > 64 {
                 bit_range_u128(&b, h, l)
             } else {
                 bit_range(&b, h, l)
+            }
+        }
+
+        ExprKind::PartSelect(base, start, width, up) => {
+            let b = cpp_expr(base, ctx);
+            let s = cpp_expr(start, ctx);
+            let w = eval_width(width);
+            let base_w = infer_expr_width(base, ctx);
+            let result_ty = cpp_uint(w);
+            if base_w > 128 {
+                // VlWide<N>: use _arch_vw_bits with runtime start
+                let hi_expr = if *up {
+                    format!("(({s}) + {w} - 1)")
+                } else {
+                    format!("({s})")
+                };
+                let lo_expr = if *up {
+                    format!("({s})")
+                } else {
+                    format!("(({s}) - {} + 1)", w)
+                };
+                format!("({result_ty})_arch_vw_bits({b}.data(), {hi_expr}, {lo_expr})")
+            } else if base_w > 64 {
+                // _arch_u128: shift right then mask
+                let mask = (1u128 << w).wrapping_sub(1);
+                let mask_str = format!("0x{:x}ULL", mask as u64);
+                if *up {
+                    format!("({result_ty})(({b} >> ({s})) & {mask_str})")
+                } else {
+                    format!("({result_ty})(({b} >> (({s}) - {} + 1)) & {mask_str})", w)
+                }
+            } else {
+                let mask = if w >= 64 { u64::MAX } else { (1u64 << w) - 1 };
+                let mask_str = format!("0x{:x}ULL", mask);
+                if *up {
+                    format!("({result_ty})((uint64_t)({b}) >> ({s}) & {mask_str})")
+                } else {
+                    format!("({result_ty})((uint64_t)({b}) >> (({s}) - {} + 1) & {mask_str})", w)
+                }
             }
         }
 
@@ -979,20 +1159,37 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             let part_widths: Vec<u32> = parts.iter().map(|p| infer_expr_width(p, ctx)).collect();
             let total: u32 = part_widths.iter().sum();
 
-            // Build expression: accumulate shifts from LSB (last part offset=0)
-            let mut terms = Vec::new();
-            let mut bit_offset = 0u32;
-            for (i, part) in parts.iter().enumerate().rev() {
-                let w = part_widths[i];
-                let val = cpp_expr(part, ctx);
-                if total > 64 {
-                    terms.push(format!("((_arch_u128)(uint64_t)({val}) << {bit_offset})"));
-                } else {
-                    terms.push(format!("((uint64_t)({val}) << {bit_offset})"));
+            if total > 128 {
+                // Result is a VlWide<N>: build via OR-shifted parts in a lambda
+                let words = wide_words(total);
+                let mut stmts = Vec::new();
+                let mut bit_offset = 0u32;
+                for (i, part) in parts.iter().enumerate().rev() {
+                    let w = part_widths[i];
+                    let val = cpp_expr(part, ctx);
+                    // Each part is cast to uint64_t (narrow) then placed into VlWide
+                    stmts.push(format!(
+                        "_r = _r | (VlWide<{words}>(static_cast<uint64_t>({val})) << {bit_offset});"));
+                    bit_offset += w;
                 }
-                bit_offset += w;
+                format!("[&]() -> VlWide<{words}> {{ VlWide<{words}> _r{{}}; {} return _r; }}()",
+                        stmts.join(" "))
+            } else {
+                // Build expression: accumulate shifts from LSB (last part offset=0)
+                let mut terms = Vec::new();
+                let mut bit_offset = 0u32;
+                for (i, part) in parts.iter().enumerate().rev() {
+                    let w = part_widths[i];
+                    let val = cpp_expr(part, ctx);
+                    if total > 64 {
+                        terms.push(format!("((_arch_u128)(uint64_t)({val}) << {bit_offset})"));
+                    } else {
+                        terms.push(format!("((uint64_t)({val}) << {bit_offset})"));
+                    }
+                    bit_offset += w;
+                }
+                format!("({})", terms.join(" | "))
             }
-            format!("({})", terms.join(" | "))
         }
 
         ExprKind::Repeat(count, value) => {
@@ -1080,6 +1277,22 @@ fn emit_reg_stmts(stmts: &[Stmt], ctx: &Ctx, out: &mut String, indent: usize) {
 fn emit_reg_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize) {
     match stmt {
         Stmt::Assign(a) => {
+            // Scalar bit-indexed LHS: name[idx] = val where name is NOT a Vec
+            // Emit mask-and-OR: base = (base & ~(1ULL << idx)) | (uint64_t(val & 1) << idx)
+            if let ExprKind::Index(base, idx_expr) = &a.target.kind {
+                if let ExprKind::Ident(base_name) = &base.kind {
+                    if !ctx.vec_names.contains(base_name.as_str()) {
+                        let resolved_base = ctx.resolve_name(base_name, true);
+                        let idx_cpp = cpp_expr(idx_expr, ctx);
+                        let rhs = cpp_expr(&a.value, ctx);
+                        out.push_str(&format!(
+                            "{}{resolved_base} = ({resolved_base} & ~(uint64_t(1) << ({idx_cpp}))) | (uint64_t(({rhs}) & 1) << ({idx_cpp}));\n",
+                            ind(indent)
+                        ));
+                        return;
+                    }
+                }
+            }
             let lhs = cpp_expr_lhs(&a.target, ctx);
             // Wide reg assignment from wide port: convert VlWide → _arch_u128
             let rhs = cpp_expr(&a.value, ctx);
@@ -1162,13 +1375,36 @@ fn emit_comb_stmts(stmts: &[CombStmt], ctx: &Ctx, out: &mut String, indent: usiz
 fn emit_comb_stmt(stmt: &CombStmt, ctx: &Ctx, out: &mut String, indent: usize) {
     match stmt {
         CombStmt::Assign(a) => {
+            // Scalar bit-indexed LHS: name[idx] = val where name is NOT a Vec
+            // Emit mask-and-OR: base = (base & ~(1ULL << idx)) | (uint64_t(val & 1) << idx)
+            if let ExprKind::Index(base, idx_expr) = &a.target.kind {
+                if let ExprKind::Ident(base_name) = &base.kind {
+                    if !ctx.vec_names.contains(base_name.as_str()) {
+                        let resolved_base = ctx.resolve_name(base_name, false);
+                        let idx_cpp = cpp_expr(idx_expr, ctx);
+                        let rhs = cpp_expr(&a.value, ctx);
+                        out.push_str(&format!(
+                            "{}{resolved_base} = ({resolved_base} & ~(uint64_t(1) << ({idx_cpp}))) | (uint64_t(({rhs}) & 1) << ({idx_cpp}));\n",
+                            ind(indent)
+                        ));
+                        return;
+                    }
+                }
+            }
             let rhs = cpp_expr(&a.value, ctx);
             let target_name = if let ExprKind::Ident(name) = &a.target.kind { name.clone() } else { cpp_expr(&a.target, ctx) };
             let resolved_target = ctx.resolve_name(&target_name, false);
-            // Wide output port: use conversion instead of direct assignment
+            // Wide output port: may need conversion depending on width
             if ctx.wide_names.contains(target_name.as_str()) {
-                out.push_str(&format!("{}  _arch_u128_to_vl({}, {}._data);\n",
-                    ind(indent), rhs, target_name));
+                let bits = ctx.widths.get(target_name.as_str()).copied().unwrap_or(0);
+                if bits > 128 {
+                    // >128 bits: both internal and port are VlWide<N> — direct assignment
+                    out.push_str(&format!("{}{} = {};\n", ind(indent), target_name, rhs));
+                } else {
+                    // 65–128 bits: internal is _arch_u128, port is VlWide<4>
+                    out.push_str(&format!("{}  _arch_u128_to_vl({}, {}._data);\n",
+                        ind(indent), rhs, target_name));
+                }
             } else {
                 out.push_str(&format!("{}{}  = {};\n", ind(indent), resolved_target, rhs));
             }
@@ -1390,6 +1626,11 @@ fn collect_expr_idents(expr: &Expr, out: &mut std::collections::BTreeSet<String>
             collect_expr_idents(base, out);
             collect_expr_idents(hi, out);
             collect_expr_idents(lo, out);
+        }
+        ExprKind::PartSelect(base, start, width, _) => {
+            collect_expr_idents(base, out);
+            collect_expr_idents(start, out);
+            collect_expr_idents(width, out);
         }
         ExprKind::FieldAccess(base, _) => collect_expr_idents(base, out),
         ExprKind::MethodCall(base, _, args) => {
@@ -1748,11 +1989,57 @@ impl<'a> SimCodegen<'a> {
         }
 
         // Vec-typed reg names (use C array subscript `[i]` instead of bit extraction)
-        let vec_reg_names: HashSet<String> = m.body.iter()
+        let mut vec_reg_names: HashSet<String> = m.body.iter()
             .filter_map(|i| if let ModuleBodyItem::RegDecl(r) = i {
                 if matches!(r.ty, TypeExpr::Vec(..)) { Some(r.name.name.clone()) } else { None }
             } else { None })
             .collect();
+
+        // Vec-typed wires also use C-array indexing internally
+        let vec_wire_names: HashSet<String> = m.body.iter()
+            .filter_map(|i| if let ModuleBodyItem::WireDecl(w) = i {
+                if matches!(w.ty, TypeExpr::Vec(..)) { Some(w.name.name.clone()) } else { None }
+            } else { None })
+            .collect();
+        vec_reg_names.extend(vec_wire_names.iter().cloned());
+
+        // Vec wire name → element count (for expanding inst port connections)
+        let vec_wire_counts: HashMap<String, u64> = m.body.iter()
+            .filter_map(|i| if let ModuleBodyItem::WireDecl(w) = i {
+                if let TypeExpr::Vec(_, count_expr) = &w.ty {
+                    Some((w.name.name.clone(), eval_const_expr(count_expr)))
+                } else { None }
+            } else { None })
+            .collect();
+
+        // Collect Vec port info early (needed for header, constructor, and eval_comb).
+        struct VecPortInfo {
+            name: String,
+            elem_ty: String,
+            count: u64,
+            is_input: bool,
+            is_port_reg: bool,
+        }
+        let vec_port_infos: Vec<VecPortInfo> = m.ports.iter()
+            .filter(|p| p.bus_info.is_none())
+            .filter_map(|p| {
+                if let Some((elem_ty, count_str)) = vec_array_info(&p.ty) {
+                    let count: u64 = count_str.parse().unwrap_or(0);
+                    Some(VecPortInfo {
+                        name: p.name.name.clone(),
+                        elem_ty,
+                        count,
+                        is_input: p.direction == Direction::In,
+                        is_port_reg: p.reg_info.is_some(),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let vec_port_names: HashSet<String> = vec_port_infos.iter().map(|v| v.name.clone()).collect();
+        // Vec ports also use C array subscript `[i]` internally
+        vec_reg_names.extend(vec_port_names.iter().cloned());
 
         // Collect reset-none reg names for --check-uninit
         let uninit_regs: HashSet<String> = if self.check_uninit {
@@ -1807,11 +2094,18 @@ impl<'a> SimCodegen<'a> {
         h.push('\n');
         h.push_str(&format!("class {class} {{\npublic:\n"));
 
-        // Public port fields (bus ports are flattened)
+        // Public port fields (bus ports are flattened; Vec ports become N flat fields)
         for p in &m.ports {
             if p.bus_info.is_some() { continue; }
-            let ty = cpp_port_type(&p.ty);
-            h.push_str(&format!("  {ty} {};\n", p.name.name));
+            if let Some(vi) = vec_port_infos.iter().find(|v| v.name == p.name.name) {
+                // Emit N flat fields: name_0, name_1, ..., name_N-1
+                for i in 0..vi.count {
+                    h.push_str(&format!("  {} {}_{i};\n", vi.elem_ty, vi.name));
+                }
+            } else {
+                let ty = cpp_port_type(&p.ty);
+                h.push_str(&format!("  {ty} {};\n", p.name.name));
+            }
         }
         for (flat_name, flat_ty) in &bus_flat {
             let ty = cpp_port_type(flat_ty);
@@ -1821,9 +2115,16 @@ impl<'a> SimCodegen<'a> {
 
         // Constructor — build init list
         let mut port_inits: Vec<String> = m.ports.iter()
-            .filter(|p| p.bus_info.is_none() && !wide_names.contains(&p.name.name))
+            .filter(|p| p.bus_info.is_none() && !wide_names.contains(&p.name.name)
+                        && !vec_port_names.contains(&p.name.name))
             .map(|p| format!("{}(0)", p.name.name))
             .collect();
+        // Add flat Vec port field inits (name_0(0), name_1(0), ...)
+        for vi in &vec_port_infos {
+            for i in 0..vi.count {
+                port_inits.push(format!("{}_{i}(0)", vi.name));
+            }
+        }
         // Add flattened bus signal inits
         for (flat_name, _) in &bus_flat {
             if !wide_names.contains(flat_name) {
@@ -1831,7 +2132,7 @@ impl<'a> SimCodegen<'a> {
             }
         }
         // Collect Vec-array regs that need memset in constructor body
-        let vec_reg_inits: Vec<String> = m.body.iter()
+        let mut vec_reg_inits: Vec<String> = m.body.iter()
             .filter_map(|i| {
                 if let ModuleBodyItem::RegDecl(r) = i {
                     if vec_array_info(&r.ty).is_some() {
@@ -1841,6 +2142,11 @@ impl<'a> SimCodegen<'a> {
                 } else { None }
             })
             .collect();
+        // Add memset for Vec port internal arrays
+        for vi in &vec_port_infos {
+            let n = &vi.name;
+            vec_reg_inits.push(format!("    memset(_{n}, 0, sizeof(_{n}));"));
+        }
 
         let reg_inits: Vec<String> = m.body.iter()
             .filter_map(|i| if let ModuleBodyItem::RegDecl(r) = i {
@@ -1953,6 +2259,8 @@ impl<'a> SimCodegen<'a> {
         }
         // Note: VCD auto-open is deferred to first eval() call via Verilated::claimTrace()
         h.push_str("  }\n");
+        // Verilator-compatible constructor: accepts VerilatedContext* but ignores it
+        h.push_str(&format!("  explicit {class}(VerilatedContext*) : {class}() {{}}\n"));
         // Collect trace signals for VCD waveform support
         let trace_signals = collect_trace_signals(&m.ports, &m.body, &wide_names, &widths, &bus_flat);
         let (trace_h_decls, trace_cpp_impl) = emit_trace_methods(&class, name, &trace_signals);
@@ -1994,11 +2302,20 @@ impl<'a> SimCodegen<'a> {
             }
         }
 
-        // Private shadow fields for port reg outputs
+        // Private shadow fields for port reg outputs (and internal arrays for Vec ports)
         for p in &m.ports {
             if p.reg_info.is_some() {
-                let ty = cpp_internal_type(&p.ty);
-                h.push_str(&format!("  {ty} _{};\n", p.name.name));
+                if let Some(vi) = vec_port_infos.iter().find(|v| v.name == p.name.name) {
+                    // Vec port-reg: internal C array
+                    h.push_str(&format!("  {} _{}[{}];\n", vi.elem_ty, vi.name, vi.count));
+                } else {
+                    let ty = cpp_internal_type(&p.ty);
+                    h.push_str(&format!("  {ty} _{};\n", p.name.name));
+                }
+            } else if vec_port_names.contains(&p.name.name) {
+                // Vec non-reg port: also needs internal array for indexed access
+                let vi = vec_port_infos.iter().find(|v| v.name == p.name.name).unwrap();
+                h.push_str(&format!("  {} _{}[{}];\n", vi.elem_ty, vi.name, vi.count));
             }
         }
 
@@ -2033,8 +2350,12 @@ impl<'a> SimCodegen<'a> {
                     h.push_str(&format!("  {ty} _let_{};\n", l.name.name));
                 }
                 ModuleBodyItem::WireDecl(w) => {
-                    let ty = cpp_internal_type(&w.ty);
-                    h.push_str(&format!("  {ty} _let_{};\n", w.name.name));
+                    if let Some((elem_ty, count)) = vec_array_info(&w.ty) {
+                        h.push_str(&format!("  {elem_ty} _let_{}[{count}];\n", w.name.name));
+                    } else {
+                        let ty = cpp_internal_type(&w.ty);
+                        h.push_str(&format!("  {ty} _let_{};\n", w.name.name));
+                    }
                 }
                 _ => {}
             }
@@ -2143,6 +2464,14 @@ impl<'a> SimCodegen<'a> {
                 for conn in &inst.connections {
                     if conn.direction == ConnectDir::Input {
                         if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
+                            // Vec wire → inst Vec port: expand element-by-element
+                            if let Some(&n) = vec_wire_counts.get(src_name.as_str()) {
+                                for i in 0..n {
+                                    cpp.push_str(&format!("    _inst_{}.{}_{i} = _let_{src_name}[{i}];\n",
+                                        inst.name.name, conn.port_name.name));
+                                }
+                                continue;
+                            }
                             if wide_names.contains(src_name.as_str()) {
                                 let resolved = ctx.resolve_name(src_name, false);
                                 cpp.push_str(&format!("    _inst_{}.{} = {};\n",
@@ -2158,6 +2487,16 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str(&format!("    _inst_{}.eval_comb();\n", inst.name.name));
                 for conn in &inst.connections {
                     if conn.direction == ConnectDir::Output {
+                        // inst Vec port → Vec wire: expand element-by-element
+                        if let ExprKind::Ident(sig_name) = &conn.signal.kind {
+                            if let Some(&n) = vec_wire_counts.get(sig_name.as_str()) {
+                                for i in 0..n {
+                                    cpp.push_str(&format!("    _let_{sig_name}[{i}] = _inst_{}.{}_{i};\n",
+                                        inst.name.name, conn.port_name.name));
+                                }
+                                continue;
+                            }
+                        }
                         let sig = cpp_expr(&conn.signal, &ctx);
                         cpp.push_str(&format!("    {} = _inst_{}.{};\n",
                             sig, inst.name.name, conn.port_name.name));
@@ -2186,6 +2525,14 @@ impl<'a> SimCodegen<'a> {
                 for conn in &inst.connections {
                     if conn.direction == ConnectDir::Input {
                         if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
+                            // Vec wire → inst Vec port: expand element-by-element
+                            if let Some(&n) = vec_wire_counts.get(src_name.as_str()) {
+                                for i in 0..n {
+                                    cpp.push_str(&format!("    _inst_{}.{}_{i} = _let_{src_name}[{i}];\n",
+                                        inst.name.name, conn.port_name.name));
+                                }
+                                continue;
+                            }
                             if wide_names.contains(src_name.as_str()) {
                                 let resolved = ctx.resolve_name(src_name, false);
                                 cpp.push_str(&format!("    _inst_{}.{} = {};\n",
@@ -2201,6 +2548,16 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str(&format!("    _inst_{}.eval_comb();\n", inst.name.name));
                 for conn in &inst.connections {
                     if conn.direction == ConnectDir::Output {
+                        // inst Vec port → Vec wire: expand element-by-element
+                        if let ExprKind::Ident(sig_name) = &conn.signal.kind {
+                            if let Some(&n) = vec_wire_counts.get(sig_name.as_str()) {
+                                for i in 0..n {
+                                    cpp.push_str(&format!("    _let_{sig_name}[{i}] = _inst_{}.{}_{i};\n",
+                                        inst.name.name, conn.port_name.name));
+                                }
+                                continue;
+                            }
+                        }
                         let sig = cpp_expr(&conn.signal, &ctx);
                         cpp.push_str(&format!("    {} = _inst_{}.{};\n",
                             sig, inst.name.name, conn.port_name.name));
@@ -2261,8 +2618,13 @@ impl<'a> SimCodegen<'a> {
             for p in &m.ports {
                 if p.reg_info.is_some() {
                     let n = &p.name.name;
-                    let ty = cpp_internal_type(&p.ty);
-                    cpp.push_str(&format!("  {ty} _n_{n} = _{n};\n"));
+                    if let Some(vi) = vec_port_infos.iter().find(|v| v.name == *n) {
+                        // Vec port-reg: _n_ is an array, initialized by memcpy
+                        cpp.push_str(&format!("  {} _n_{n}[{}]; memcpy(_n_{n}, _{n}, sizeof(_{n}));\n", vi.elem_ty, vi.count));
+                    } else {
+                        let ty = cpp_internal_type(&p.ty);
+                        cpp.push_str(&format!("  {ty} _n_{n} = _{n};\n"));
+                    }
                 }
             }
             // Declare _n_ temporaries for pipe_reg stages
@@ -2329,7 +2691,13 @@ impl<'a> SimCodegen<'a> {
                     cpp.push_str(&format!("{}if ({cond}) {{\n", "  ".repeat(base_indent)));
                     for (reg_name, init) in &reset_regs {
                         if wide_names.contains(*reg_name) {
-                            cpp.push_str(&format!("{}_n_{reg_name} = (_arch_u128){init};\n", "  ".repeat(base_indent + 1)));
+                            let bits = widths.get(*reg_name).copied().unwrap_or(0);
+                            if bits > 128 {
+                                let words = wide_words(bits);
+                                cpp.push_str(&format!("{}_n_{reg_name} = VlWide<{words}>({init});\n", "  ".repeat(base_indent + 1)));
+                            } else {
+                                cpp.push_str(&format!("{}_n_{reg_name} = (_arch_u128){init};\n", "  ".repeat(base_indent + 1)));
+                            }
                         } else {
                             cpp.push_str(&format!("{}_n_{reg_name} = {init};\n", "  ".repeat(base_indent + 1)));
                         }
@@ -2421,8 +2789,16 @@ impl<'a> SimCodegen<'a> {
             for p in &m.ports {
                 if p.reg_info.is_some() {
                     let n = &p.name.name;
-                    cpp.push_str(&format!("  _{n} = _n_{n};\n"));
-                    cpp.push_str(&format!("  {n} = _{n};\n"));
+                    if let Some(vi) = vec_port_infos.iter().find(|v| v.name == *n) {
+                        // Vec port-reg: memcpy shadow array, then fan out to flat fields
+                        cpp.push_str(&format!("  memcpy(_{n}, _n_{n}, sizeof(_{n}));\n"));
+                        for i in 0..vi.count {
+                            cpp.push_str(&format!("  {n}_{i} = _{n}[{i}];\n"));
+                        }
+                    } else {
+                        cpp.push_str(&format!("  _{n} = _n_{n};\n"));
+                        cpp.push_str(&format!("  {n} = _{n};\n"));
+                    }
                 }
             }
 
@@ -2486,6 +2862,16 @@ impl<'a> SimCodegen<'a> {
         let ctx_comb = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                 &wide_names, &widths, &enum_map, &bus_port_names)
                            .with_vec_names(&vec_reg_names);
+
+        // Flat → internal bridge for input Vec ports (non-reg)
+        for vi in &vec_port_infos {
+            if vi.is_input && !vi.is_port_reg {
+                let n = &vi.name;
+                for i in 0..vi.count {
+                    cpp.push_str(&format!("  _{n}[{i}] = {n}_{i};\n"));
+                }
+            }
+        }
 
         // Let bindings → private fields (assign before inst eval so instances see current values)
         for item in &m.body {
@@ -2575,6 +2961,16 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str("  }\n");
             }
         }
+
+        // Internal → flat bridge for output Vec ports (non-reg; reg outputs are committed in eval_posedge)
+        for vi in &vec_port_infos {
+            if !vi.is_input && !vi.is_port_reg {
+                let n = &vi.name;
+                for i in 0..vi.count {
+                    cpp.push_str(&format!("  {n}_{i} = _{n}[{i}];\n"));
+                }
+            }
+        }
         cpp.push_str("}\n");
 
         // Generate tick() for multi-clock modules with known frequencies
@@ -2661,6 +3057,7 @@ impl<'a> SimCodegen<'a> {
         let state_inits = vec!["_clk_prev(0)".to_string(), format!("_count_r({})", init_val)];
         let all_inits: Vec<String> = port_inits.into_iter().chain(state_inits).collect();
         h.push_str(&format!("  {class}() : {} {{}}\n", all_inits.join(", ")));
+        h.push_str(&format!("  explicit {class}(VerilatedContext*) : {class}() {{}}\n"));
         h.push_str("  void eval();\n  void final() { trace_close(); }\n");
         h.push_str("  void eval_posedge();\n  void eval_comb();\n");
         h.push_str("private:\n");
@@ -2815,17 +3212,67 @@ impl<'a> SimCodegen<'a> {
                 }
             }
         }
+        // Collect FSM Vec port infos (for flat field emission and internal arrays)
+        struct FsmVecPortInfo {
+            name: String,
+            elem_ty: String,
+            count: u64,
+            is_input: bool,
+            is_port_reg: bool,
+        }
+        let fsm_vec_port_infos: Vec<FsmVecPortInfo> = f.ports.iter()
+            .filter_map(|p| {
+                if let Some((elem_ty, count_str)) = vec_array_info(&p.ty) {
+                    let count: u64 = count_str.parse().unwrap_or(0);
+                    Some(FsmVecPortInfo {
+                        name: p.name.name.clone(),
+                        elem_ty,
+                        count,
+                        is_input: p.direction == Direction::In,
+                        is_port_reg: p.reg_info.is_some(),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let fsm_vec_port_names: HashSet<String> = fsm_vec_port_infos.iter().map(|v| v.name.clone()).collect();
+        // All FSM Vec ports have internal C arrays `_name[N]` and always resolve to `_name` in ctx.
+        // (Both input and output Vec ports, whether port-reg or not.)
+        let fsm_vec_port_reg_names: HashSet<String> = fsm_vec_port_names.clone();
+        // Vec-typed regs in f.regs also need array subscript in Index expressions.
+        let fsm_vec_reg_names: HashSet<String> = f.regs.iter()
+            .filter(|r| matches!(r.ty, TypeExpr::Vec(..)))
+            .map(|r| r.name.name.clone())
+            .collect();
+        // All Vec names for the ctx (so Index uses `[i]` syntax): ports + regs
+        let mut fsm_vec_names: HashSet<String> = fsm_vec_port_names.clone();
+        fsm_vec_names.extend(fsm_vec_reg_names.iter().cloned());
+
         h.push('\n');
         h.push_str(&format!("class {class} {{\npublic:\n  // State constants\n"));
         for (i, sn) in f.state_names.iter().enumerate() {
             h.push_str(&format!("  static const {state_ty} STATE_{} = {i};\n", sn.name.to_uppercase()));
         }
         h.push('\n');
-        for p in &f.ports { h.push_str(&format!("  {} {};\n", cpp_port_type(&p.ty), p.name.name)); }
+        // Port fields: Vec ports → N flat fields; others → single field
+        for p in &f.ports {
+            if let Some(vi) = fsm_vec_port_infos.iter().find(|v| v.name == p.name.name) {
+                for i in 0..vi.count {
+                    h.push_str(&format!("  {} {}_{i};\n", vi.elem_ty, vi.name));
+                }
+            } else {
+                h.push_str(&format!("  {} {};\n", cpp_port_type(&p.ty), p.name.name));
+            }
+        }
         // Datapath registers as public members (accessible from testbench)
         for reg in &f.regs {
-            let ty = cpp_internal_type(&reg.ty);
-            h.push_str(&format!("  {} {};\n", ty, reg.name.name));
+            if let Some((elem_ty, count)) = vec_array_info(&reg.ty) {
+                h.push_str(&format!("  {} {}[{}];\n", elem_ty, reg.name.name, count));
+            } else {
+                let ty = cpp_internal_type(&reg.ty);
+                h.push_str(&format!("  {} {};\n", ty, reg.name.name));
+            }
         }
         // Let bindings as public members
         for lb in &f.lets {
@@ -2834,22 +3281,57 @@ impl<'a> SimCodegen<'a> {
         }
         h.push('\n');
 
-        let port_inits: Vec<String> = f.ports.iter().map(|p| format!("{}(0)", p.name.name)).collect();
-        let reg_inits: Vec<String> = f.regs.iter().map(|r| {
-            let init_expr = reset_value_from_reg_reset(&r.reset)
-                .or(r.init.as_ref());
-            if let Some(expr) = init_expr {
-                let empty_bus: HashSet<String> = HashSet::new();
-                let init_val = cpp_expr(expr, &Ctx::new(&empty_regs, &port_names, &empty_lets, &empty_insts, &empty_wide, &empty_w, &enum_map, &empty_bus));
-                format!("{}({})", r.name.name, init_val)
-            } else {
-                format!("{}(0)", r.name.name)
-            }
-        }).collect();
+        // Constructor inits: skip Vec port names (they use flat fields), add flat field inits
+        let port_inits: Vec<String> = f.ports.iter()
+            .filter(|p| !fsm_vec_port_names.contains(&p.name.name))
+            .map(|p| format!("{}(0)", p.name.name))
+            .collect();
+        let vec_port_flat_inits: Vec<String> = fsm_vec_port_infos.iter()
+            .flat_map(|vi| (0..vi.count).map(move |i| format!("{}_{i}(0)", vi.name)))
+            .collect();
+        let reg_inits: Vec<String> = f.regs.iter()
+            .filter(|r| !matches!(r.ty, TypeExpr::Vec(..)))  // Vec regs use memset in ctor body
+            .map(|r| {
+                let init_expr = reset_value_from_reg_reset(&r.reset)
+                    .or(r.init.as_ref());
+                if let Some(expr) = init_expr {
+                    let empty_bus: HashSet<String> = HashSet::new();
+                    let init_val = cpp_expr(expr, &Ctx::new(&empty_regs, &port_names, &empty_lets, &empty_insts, &empty_wide, &empty_w, &enum_map, &empty_bus));
+                    format!("{}({})", r.name.name, init_val)
+                } else {
+                    format!("{}(0)", r.name.name)
+                }
+            }).collect();
         let state_inits = vec!["_clk_prev(0)".to_string(), format!("_state_r({default_idx})")];
-        let all_inits: Vec<String> = port_inits.into_iter().chain(reg_inits).chain(state_inits).collect();
-        h.push_str(&format!("  {class}() : {} {{}}\n", all_inits.join(", ")));
+        let all_inits: Vec<String> = port_inits.into_iter()
+            .chain(vec_port_flat_inits)
+            .chain(reg_inits)
+            .chain(state_inits)
+            .collect();
+        // Constructor body: memset internal arrays for Vec ports + Vec regs
+        let mut fsm_vec_memsets: Vec<String> = fsm_vec_port_infos.iter()
+            .map(|vi| format!("    memset(_{}, 0, sizeof(_{}));", vi.name, vi.name))
+            .collect();
+        // Vec regs in FSM: public array members, initialized via memset
+        for reg in &f.regs {
+            if matches!(reg.ty, TypeExpr::Vec(..)) {
+                let n = &reg.name.name;
+                fsm_vec_memsets.push(format!("    memset({n}, 0, sizeof({n}));"));
+            }
+        }
+        if fsm_vec_memsets.is_empty() {
+            h.push_str(&format!("  {class}() : {} {{}}\n", all_inits.join(", ")));
+        } else {
+            h.push_str(&format!("  {class}() : {} {{\n", all_inits.join(", ")));
+            for ms in &fsm_vec_memsets { h.push_str(&format!("{ms}\n")); }
+            h.push_str("  }\n");
+        }
+        h.push_str(&format!("  explicit {class}(VerilatedContext*) : {class}() {{}}\n"));
         h.push_str("  void eval();\n  void eval_posedge();\n  void eval_comb();\n  void final() { trace_close(); }\nprivate:\n");
+        // Private internal arrays for Vec ports
+        for vi in &fsm_vec_port_infos {
+            h.push_str(&format!("  {} _{}[{}];\n", vi.elem_ty, vi.name, vi.count));
+        }
         h.push_str("  uint8_t _clk_prev;\n");
         h.push_str(&format!("  {state_ty} _state_r;\n"));
         // };\n deferred until after trace support added
@@ -2880,7 +3362,9 @@ impl<'a> SimCodegen<'a> {
         let empty_bus: HashSet<String> = HashSet::new();
         let ctx_fsm = {
             let mut c = Ctx::new(&fsm_reg_names, &port_names, &fsm_let_names, &empty_insts,
-                                 &empty_wide, &fsm_widths, &enum_map, &empty_bus);
+                                 &empty_wide, &fsm_widths, &enum_map, &empty_bus)
+                .with_vec_names(&fsm_vec_names)
+                .with_fsm_vec_port_regs(&fsm_vec_port_reg_names);
             c.fsm_mode = true;
             c
         };
@@ -2889,8 +3373,13 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("  {state_ty} _n_state = _state_r;\n"));
         // Shadow variables for datapath regs
         for reg in &f.regs {
-            let ty = cpp_internal_type(&reg.ty);
-            cpp.push_str(&format!("  {ty} _n_{name} = {name};\n", name = reg.name.name));
+            let n = &reg.name.name;
+            if let Some((elem_ty, count)) = vec_array_info(&reg.ty) {
+                cpp.push_str(&format!("  {elem_ty} _n_{n}[{count}]; memcpy(_n_{n}, {n}, sizeof({n}));\n"));
+            } else {
+                let ty = cpp_internal_type(&reg.ty);
+                cpp.push_str(&format!("  {ty} _n_{n} = {n};\n"));
+            }
         }
         cpp.push_str(&format!("  if ({rst_cond}) {{\n    _n_state = {default_idx};\n"));
         // Reset datapath regs
@@ -2898,14 +3387,37 @@ impl<'a> SimCodegen<'a> {
             let reset_expr = reset_value_from_reg_reset(&reg.reset)
                 .or(reg.init.as_ref());
             if let Some(expr) = reset_expr {
-                let init_val = cpp_expr(expr, &ctx_fsm);
-                cpp.push_str(&format!("    _n_{} = {};\n", reg.name.name, init_val));
+                let n = &reg.name.name;
+                if vec_array_info(&reg.ty).is_some() {
+                    let init_val = cpp_expr(expr, &ctx_fsm);
+                    let count = if let TypeExpr::Vec(_, c) = &reg.ty { eval_const_expr(c) } else { 0 };
+                    cpp.push_str(&format!("    for (int _i = 0; _i < {count}; _i++) _n_{n}[_i] = {init_val};\n"));
+                } else {
+                    let init_val = cpp_expr(expr, &ctx_fsm);
+                    cpp.push_str(&format!("    _n_{n} = {init_val};\n"));
+                }
+            }
+        }
+        // Reset Vec port-regs
+        for vi in &fsm_vec_port_infos {
+            if vi.is_port_reg {
+                let p = f.ports.iter().find(|p| p.name.name == vi.name).unwrap();
+                let reset_expr = p.reg_info.as_ref().and_then(|ri| reset_value_from_reg_reset(&ri.reset).or(ri.init.as_ref()));
+                let reset_val = if let Some(expr) = reset_expr {
+                    cpp_expr(expr, &ctx_fsm)
+                } else {
+                    "0".to_string()
+                };
+                cpp.push_str(&format!("    for (int _i = 0; _i < {}; _i++) _{}[_i] = {};\n",
+                    vi.count, vi.name, reset_val));
             }
         }
         cpp.push_str("  } else {\n");
         let ctx_posedge = {
             let mut c = Ctx::new(&fsm_reg_names, &port_names, &fsm_let_names, &empty_insts,
-                                 &empty_wide, &fsm_widths, &enum_map, &empty_bus);
+                                 &empty_wide, &fsm_widths, &enum_map, &empty_bus)
+                .with_vec_names(&fsm_vec_names)
+                .with_fsm_vec_port_regs(&fsm_vec_port_reg_names);
             c.posedge_lhs = true;
             c.fsm_mode = true;
             c
@@ -2936,11 +3448,32 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("    }\n  }\n  _state_r = _n_state;\n");
         // Commit datapath regs
         for reg in &f.regs {
-            cpp.push_str(&format!("  {} = _n_{};\n", reg.name.name, reg.name.name));
+            let n = &reg.name.name;
+            if vec_array_info(&reg.ty).is_some() {
+                cpp.push_str(&format!("  memcpy({n}, _n_{n}, sizeof({n}));\n"));
+            } else {
+                cpp.push_str(&format!("  {n} = _n_{n};\n"));
+            }
+        }
+        // Fan out Vec port-reg internal arrays to flat public fields
+        for vi in &fsm_vec_port_infos {
+            if vi.is_port_reg {
+                for i in 0..vi.count {
+                    cpp.push_str(&format!("  {}_{i} = _{}[{i}];\n", vi.name, vi.name));
+                }
+            }
         }
         cpp.push_str("}\n\n");
 
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
+        // Flat → internal bridge for input Vec ports
+        for vi in &fsm_vec_port_infos {
+            if vi.is_input && !vi.is_port_reg {
+                for i in 0..vi.count {
+                    cpp.push_str(&format!("  _{}[{i}] = {}_{i};\n", vi.name, vi.name));
+                }
+            }
+        }
         // Let bindings
         for lb in &f.lets {
             let val = cpp_expr(&lb.value, &ctx_fsm);
@@ -2961,11 +3494,38 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str(&body);
             cpp.push_str("      break;\n    }\n");
         }
-        cpp.push_str("  }\n}\n");
+        cpp.push_str("  }\n");
+        // Internal → flat bridge for output Vec ports (non-reg)
+        for vi in &fsm_vec_port_infos {
+            if !vi.is_input && !vi.is_port_reg {
+                for i in 0..vi.count {
+                    cpp.push_str(&format!("  {}_{i} = _{}[{i}];\n", vi.name, vi.name));
+                }
+            }
+        }
+        cpp.push_str("}\n");
 
         // Add trace support
-        let extra_sigs: Vec<(&str, &str, u32)> = vec![("state_r", "_state_r", state_bits as u32)];
-        add_trace_to_simple_construct(&mut h, &mut cpp, &class, name, &f.ports, &extra_sigs);
+        // Build flat Vec port trace signals (name_i → field name_i, width = elem_width)
+        let mut fsm_flat_vec_traces: Vec<(String, String, u32)> = Vec::new();
+        for vi in &fsm_vec_port_infos {
+            let elem_bits = if let TypeExpr::Vec(elem, _) = f.ports.iter()
+                .find(|p| p.name.name == vi.name).map(|p| &p.ty).unwrap() {
+                type_width(elem)
+            } else { 32 };
+            for i in 0..vi.count {
+                let fname = format!("{}_{i}", vi.name);
+                fsm_flat_vec_traces.push((fname.clone(), fname, elem_bits));
+            }
+        }
+        let mut extra_sigs_owned: Vec<(String, String, u32)> = vec![
+            ("state_r".to_string(), "_state_r".to_string(), state_bits as u32),
+        ];
+        extra_sigs_owned.extend(fsm_flat_vec_traces);
+        let extra_sigs_ref: Vec<(&str, &str, u32)> = extra_sigs_owned.iter()
+            .map(|(n, e, w)| (n.as_str(), e.as_str(), *w))
+            .collect();
+        add_trace_to_simple_construct(&mut h, &mut cpp, &class, name, &f.ports, &extra_sigs_ref);
         h.push_str("};\n");
 
         SimModel { class_name: class, header: h, impl_: cpp }
@@ -3403,18 +3963,37 @@ impl<'a> SimCodegen<'a> {
             })
             .unwrap_or(256);
 
+        // Build type-param map: param name → resolved TypeExpr
+        // e.g. `param WIDTH: type = UInt<54>` → "WIDTH" → UInt<54>
+        let type_params: HashMap<String, &TypeExpr> = r.params.iter()
+            .filter_map(|p| {
+                if let ParamKind::Type(ty) = &p.kind {
+                    Some((p.name.name.clone(), ty))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Resolve a signal TypeExpr width through the param map
+        let resolve_sig_bits = |ty: &TypeExpr| -> u32 {
+            let resolved = match ty {
+                TypeExpr::Named(n) => type_params.get(&n.name).copied().unwrap_or(ty),
+                other => other,
+            };
+            type_width(resolved)
+        };
+
         // Extract data width from output port signal type
         let data_bits: u32 = r.port_groups.iter()
             .flat_map(|pg| pg.signals.iter())
             .find(|s| s.direction == Direction::Out)
-            .map(|s| match &s.ty {
-                TypeExpr::UInt(w) => eval_width(w),
-                TypeExpr::Named(_) => 32,
-                _ => 32,
-            })
+            .map(|s| resolve_sig_bits(&s.ty))
             .unwrap_or(32);
 
-        let elem_ty = if data_bits > 64 { "_arch_u128".to_string() } else { cpp_uint(data_bits).to_string() };
+        let elem_ty = if data_bits > 128 { format!("VlWide<{}>", wide_words(data_bits)) }
+                      else if data_bits > 64 { "_arch_u128".to_string() }
+                      else { cpp_uint(data_bits).to_string() };
         let port_elem_ty = if data_bits > 64 { format!("VlWide<{}>", wide_words(data_bits)) } else { cpp_uint(data_bits).to_string() };
         let is_wide = data_bits > 64;
 
@@ -3446,12 +4025,12 @@ impl<'a> SimCodegen<'a> {
                     .find(|(n, _)| *n == fs.full_name)
                     .map(|(_, ty)| ty);
                 match orig_ty {
-                    Some(TypeExpr::UInt(w)) => {
-                        let b = eval_width(w);
+                    Some(TypeExpr::Bool) => "uint8_t".to_string(),
+                    Some(ty) => {
+                        let b = resolve_sig_bits(ty);
                         if b > 64 { port_elem_ty.clone() } else { cpp_uint(b).to_string() }
                     }
-                    Some(TypeExpr::Bool) => "uint8_t".to_string(),
-                    _ => "uint32_t".to_string(),
+                    None => "uint32_t".to_string(),
                 }
             };
             h.push_str(&format!("  {} {};\n", ty_str, fs.full_name));
@@ -3503,6 +4082,7 @@ impl<'a> SimCodegen<'a> {
             }
         }
         h.push_str("  }\n");
+        h.push_str(&format!("  explicit {class}(VerilatedContext*) : {class}() {{}}\n"));
         h.push_str("  void eval();\n  void eval_posedge();\n  void eval_comb();\n  void final() { trace_close(); }\n");
         h.push_str("private:\n");
         h.push_str("  uint8_t _clk_prev;\n");
@@ -4056,6 +4636,7 @@ impl<'a> SimCodegen<'a> {
         }
         h.push_str(&format!("  {class}() : {} {{\n    memset(_mem, 0, sizeof(_mem));\n  }}\n",
             port_inits.join(", ")));
+        h.push_str(&format!("  explicit {class}(VerilatedContext*) : {class}() {{}}\n"));
         h.push_str("  void eval();\n  void eval_posedge();\n  void eval_comb();\n");
         h.push_str("  void final() { trace_close(); }\n");
         h.push_str("private:\n");

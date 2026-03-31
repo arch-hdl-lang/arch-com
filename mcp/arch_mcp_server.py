@@ -4,7 +4,7 @@ ARCH language reference and invoke the compiler (check / build / sim).
 
 WORKFLOW: Before writing any .arch code, call get_construct_syntax() or read
 the arch://reference-card resource. This avoids common syntax mistakes
-(inst connect syntax, reserved keywords, let requiring initializer, etc.)."""
+(inst port connection syntax, reserved keywords, let requiring initializer, etc.)."""
 
 import os
 import subprocess
@@ -45,12 +45,12 @@ CONSTRUCT SELECTION — use first-class constructs when possible:
 - Only use 'module' for pure combinational/registered logic that doesn't fit the above
 
 Common mistakes to avoid:
-- inst connections use 'connect port <- signal' and 'connect port -> wire' (NOT '=' or direct assignment)
+- inst connections use 'port <- signal' for inputs and 'port -> wire' for outputs (NOT '=' or direct assignment, no 'connect' keyword)
 - Hierarchical references (inst_name.port_name) are FORBIDDEN — always connect outputs explicitly
 - 'let' declarations REQUIRE an initializer (let x: UInt<8> = expr;)
 - Do NOT use reserved keywords as signal/register names (counter, interface, domain, etc.)
 - 'in', 'out', 'state' are contextual keywords — safe to use as port/signal names
-- All output ports of an inst MUST be explicitly connected via 'connect port -> wire'
+- All output ports of an inst MUST be explicitly connected via 'port -> wire'
 - Use 'elsif' for chained conditionals (NOT 'else if'). 'else' starts a body block; 'elsif' chains.
 - Bit-slice syntax: expr[hi:lo] extracts bits (NOT .trunc<Hi,Lo>())
 - Bit/byte reverse: expr.reverse(1) for bit-reverse, expr.reverse(8) for byte-reverse (width must be divisible by N)
@@ -138,7 +138,7 @@ RESERVED_KEYWORDS = {
     "comb", "seq", "latch", "assert", "cover", "if", "else", "elsif", "end",
     "for", "on", "rising", "falling", "init", "reset", "sync", "async",
     "high", "low", "none", "forward", "stall", "flush", "when", "kind",
-    "policy", "connect", "true", "false", "todo", "use", "inside", "bus",
+    "policy", "true", "false", "todo", "use", "inside", "bus",
     "template", "function", "return", "stage", "store", "default",
     "testbench", "initial", "repeat", "clkgate", "linklist", "hook",
     "implements", "from", "match", "transition", "to", "unique",
@@ -212,17 +212,17 @@ end module ModuleName
 """,
 
     "inst": """\
-// Instance syntax — use 'connect port <- signal' for inputs,
-//                       'connect port -> wire' for outputs.
+// Instance syntax — use 'port <- signal' for inputs,
+//                       'port -> wire' for outputs.
 // Hierarchical references (inst_name.port) are FORBIDDEN.
 // All output ports MUST be explicitly connected.
 
   inst my_inst: ChildModule
     param WIDTH = 16;
-    connect clk   <- clk;
-    connect rst   <- rst;
-    connect data_in  <- input_signal;
-    connect data_out -> output_wire;
+    clk   <- clk;
+    rst   <- rst;
+    data_in  <- input_signal;
+    data_out -> output_wire;
   end inst my_inst
 
   // Then use output_wire in comb/seq blocks (NOT my_inst.data_out)
@@ -439,8 +439,8 @@ end module Slave
 
 // ── Instance connections: use dot notation on port name ──
 // inst m: Master
-//   connect itcm.cmd_valid -> cmd_valid_w;
-//   connect itcm.cmd_ready <- cmd_ready_w;
+//   itcm.cmd_valid -> cmd_valid_w;
+//   itcm.cmd_ready <- cmd_ready_w;
 // end inst m
 
 // ── SV output: flattened to individual ports ──

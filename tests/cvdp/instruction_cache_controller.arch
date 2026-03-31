@@ -156,19 +156,19 @@ module instruction_cache_controller
 
   // Tag controller instance
   inst tag_ctrl: tag_controller
-    connect clk          <- clk;
-    connect rst          <- rst;
-    connect write_enable <- write_en_r;
-    connect write_addr   <- io_mem_addr[8:0];
-    connect read_addr_0  <- data_addr_0[7:0];
-    connect read_addr_1  <- data_addr_1[7:0];
-    connect data_in_0    <- ram256_t0_data;
-    connect data_in_1    <- ram256_t1_data;
-    connect data_out_0   -> tc_data_out_0;
-    connect data_out_1   -> tc_data_out_1;
-    connect write_enable_0 -> ram256_t0_we;
-    connect write_enable_1 -> ram256_t1_we;
-    connect addr_out_0   -> ram256_t0_addr;
-    connect addr_out_1   -> ram256_t1_addr;
+    clk          <- clk;
+    rst          <- rst;
+    write_enable <- write_en_r;
+    write_addr   <- io_mem_addr[8:0];
+    read_addr_0  <- data_addr_0[7:0];
+    read_addr_1  <- data_addr_1[7:0];
+    data_in_0    <- ram256_t0_data;
+    data_in_1    <- ram256_t1_data;
+    data_out_0   -> tc_data_out_0;
+    data_out_1   -> tc_data_out_1;
+    write_enable_0 -> ram256_t0_we;
+    write_enable_1 -> ram256_t1_we;
+    addr_out_0   -> ram256_t0_addr;
+    addr_out_1   -> ram256_t1_addr;
   end inst tag_ctrl
 end module instruction_cache_controller

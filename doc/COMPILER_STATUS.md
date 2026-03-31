@@ -40,7 +40,7 @@
 | `clkgate` | ✅ | First-class ICG (Integrated Clock Gating) cell; `kind latch` (default, ASIC: latch-based `always_latch`) or `kind and` (FPGA: simple AND gate); ports: `clk_in: in Clock<D>`, `enable: in Bool`, optional `test_en: in Bool`, `clk_out: out Clock<D>`; type checker enforces matching clock domains; SV + sim codegen |
 | `.as_clock<D>()` | ✅ | Type cast: `Bool` or `UInt<1>` → `Clock<Domain>`; identity in SV (1-bit logic used as clock); enables clock dividers and custom clock generation in `module` without requiring a first-class construct |
 | `regfile` | ✅ | Multi-read-port / multi-write-port; `forward write_before_read`; `init [i] = v` |
-| `bus` | ✅ | Reusable port bundles with `initiator`/`target` perspectives; parameterized; signals have explicit `in`/`out` from initiator's perspective, `target` flips all directions; late flattening at codegen: `axi.aw_valid` → `axi_aw_valid` in SV; inst connections via `connect axi.signal <- wire` (initiator) and `connect axi.signal -> wire` (target); per-signal driven-port check in type checker (each bus signal treated as an individual port for drive coverage); sim codegen emits flattened C++ struct fields (`uint32_t axi_aw_valid`) and auto-traces all bus signals in VCD waveform output; clean Verilator lint |
+| `bus` | ✅ | Reusable port bundles with `initiator`/`target` perspectives; parameterized; signals have explicit `in`/`out` from initiator's perspective, `target` flips all directions; late flattening at codegen: `axi.aw_valid` → `axi_aw_valid` in SV; inst connections via `axi.signal <- wire` (initiator) and `axi.signal -> wire` (target); per-signal driven-port check in type checker (each bus signal treated as an individual port for drive coverage); sim codegen emits flattened C++ struct fields (`uint32_t axi_aw_valid`) and auto-traces all bus signals in VCD waveform output; clean Verilator lint |
 | `package` / `use` | ✅ | `package PkgName ... end package PkgName` groups enums, structs, functions, params; `use PkgName;` imports all names; emits SV `package`/`endpackage` + `import PkgName::*;` before module; file resolution: `PkgName.arch` in same directory; cycle detection; each file parsed once |
 | `assert` / `cover` | ❌ | Lexed but skipped at parse time |
 | `pipeline` | ✅ | Stages with reg/comb/let/inst body; per-stage `stall when`; `flush` directives; explicit forwarding mux via comb if/else; `valid_r` per-stage signal; cross-stage refs (`Stage.signal`); `inst` inside stages with auto-declared output wires |
@@ -143,7 +143,7 @@
 | Width mismatch at assignment | ✅ Any RHS wider than LHS errors in both `always` and `comb` blocks; arithmetic widening hint included |
 | Clock domain crossing errors | ✅ | seq→seq and comb→seq crossings detected; extends across `inst` boundaries (compiler traces clock port connections to map child domains to parent domains) |
 | Exhaustive match arm checking | ✅ Enum matches must cover all variants or include a wildcard `_`; missing variants named in error |
-| Hierarchical instance references forbidden | ✅ `inst_name.port_name` in expressions is a compile error; must use `connect port -> wire_name` in the inst block instead |
+| Hierarchical instance references forbidden | ✅ `inst_name.port_name` in expressions is a compile error; must use `port -> wire_name` in the inst block instead |
 | Const param evaluation (complex exprs) | ⚠️ Literals + simple arithmetic only |
 
 ---

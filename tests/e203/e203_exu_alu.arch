@@ -78,76 +78,76 @@ module ExuAlu
 
   // ── Instantiate AluDpath ─────────────────────────────────────────────────
   inst dpath: AluDpath
-    connect clk   <- clk;
-    connect rst_n <- rst_n;
+    clk   <- clk;
+    rst_n <- rst_n;
 
-    connect alu_req_alu      <- i_alu;
-    connect alu_req_alu_add  <- i_alu_add;
-    connect alu_req_alu_sub  <- i_alu_sub;
-    connect alu_req_alu_xor  <- i_alu_xor;
-    connect alu_req_alu_sll  <- i_alu_sll;
-    connect alu_req_alu_srl  <- i_alu_srl;
-    connect alu_req_alu_sra  <- i_alu_sra;
-    connect alu_req_alu_or   <- i_alu_or;
-    connect alu_req_alu_and  <- i_alu_and;
-    connect alu_req_alu_slt  <- i_alu_slt;
-    connect alu_req_alu_sltu <- i_alu_sltu;
-    connect alu_req_alu_lui  <- i_alu_lui;
-    connect alu_req_alu_op1  <- i_rs1;
-    connect alu_req_alu_op2  <- i_rs2;
-    connect alu_req_alu_res  -> dpath_alu_res;
+    alu_req_alu      <- i_alu;
+    alu_req_alu_add  <- i_alu_add;
+    alu_req_alu_sub  <- i_alu_sub;
+    alu_req_alu_xor  <- i_alu_xor;
+    alu_req_alu_sll  <- i_alu_sll;
+    alu_req_alu_srl  <- i_alu_srl;
+    alu_req_alu_sra  <- i_alu_sra;
+    alu_req_alu_or   <- i_alu_or;
+    alu_req_alu_and  <- i_alu_and;
+    alu_req_alu_slt  <- i_alu_slt;
+    alu_req_alu_sltu <- i_alu_sltu;
+    alu_req_alu_lui  <- i_alu_lui;
+    alu_req_alu_op1  <- i_rs1;
+    alu_req_alu_op2  <- i_rs2;
+    alu_req_alu_res  -> dpath_alu_res;
 
-    connect bjp_req_alu         <- i_bjp;
-    connect bjp_req_alu_op1     <- i_rs1;
-    connect bjp_req_alu_op2     <- i_rs2;
-    connect bjp_req_alu_cmp_eq  <- i_beq;
-    connect bjp_req_alu_cmp_ne  <- i_bne;
-    connect bjp_req_alu_cmp_lt  <- i_blt;
-    connect bjp_req_alu_cmp_gt  <- i_bge;
-    connect bjp_req_alu_cmp_ltu <- i_bltu;
-    connect bjp_req_alu_cmp_gtu <- i_bgeu;
-    connect bjp_req_alu_add     <- i_bjp;
-    connect bjp_req_alu_add_res -> dpath_bjp_add_res;
-    connect bjp_req_alu_cmp_res -> dpath_bjp_cmp_res;
+    bjp_req_alu         <- i_bjp;
+    bjp_req_alu_op1     <- i_rs1;
+    bjp_req_alu_op2     <- i_rs2;
+    bjp_req_alu_cmp_eq  <- i_beq;
+    bjp_req_alu_cmp_ne  <- i_bne;
+    bjp_req_alu_cmp_lt  <- i_blt;
+    bjp_req_alu_cmp_gt  <- i_bge;
+    bjp_req_alu_cmp_ltu <- i_bltu;
+    bjp_req_alu_cmp_gtu <- i_bgeu;
+    bjp_req_alu_add     <- i_bjp;
+    bjp_req_alu_add_res -> dpath_bjp_add_res;
+    bjp_req_alu_cmp_res -> dpath_bjp_cmp_res;
 
-    connect agu_req_alu      <- i_agu;
-    connect agu_req_alu_op1  <- i_rs1;
-    connect agu_req_alu_op2  <- i_imm;
-    connect agu_req_alu_swap <- i_agu_swap;
-    connect agu_req_alu_add  <- i_agu_add;
-    connect agu_req_alu_and  <- i_agu_and;
-    connect agu_req_alu_or   <- i_agu_or;
-    connect agu_req_alu_xor  <- i_agu_xor;
-    connect agu_req_alu_max  <- i_agu_max;
-    connect agu_req_alu_min  <- i_agu_min;
-    connect agu_req_alu_maxu <- i_agu_maxu;
-    connect agu_req_alu_minu <- i_agu_minu;
-    connect agu_req_alu_res  -> dpath_agu_res;
+    agu_req_alu      <- i_agu;
+    agu_req_alu_op1  <- i_rs1;
+    agu_req_alu_op2  <- i_imm;
+    agu_req_alu_swap <- i_agu_swap;
+    agu_req_alu_add  <- i_agu_add;
+    agu_req_alu_and  <- i_agu_and;
+    agu_req_alu_or   <- i_agu_or;
+    agu_req_alu_xor  <- i_agu_xor;
+    agu_req_alu_max  <- i_agu_max;
+    agu_req_alu_min  <- i_agu_min;
+    agu_req_alu_maxu <- i_agu_maxu;
+    agu_req_alu_minu <- i_agu_minu;
+    agu_req_alu_res  -> dpath_agu_res;
 
-    connect agu_sbf_0_ena <- i_agu_sbf_0_ena;
-    connect agu_sbf_0_nxt <- i_agu_sbf_0_nxt;
-    connect agu_sbf_1_ena <- i_agu_sbf_1_ena;
-    connect agu_sbf_1_nxt <- i_agu_sbf_1_nxt;
+    agu_sbf_0_ena <- i_agu_sbf_0_ena;
+    agu_sbf_0_nxt <- i_agu_sbf_0_nxt;
+    agu_sbf_1_ena <- i_agu_sbf_1_ena;
+    agu_sbf_1_nxt <- i_agu_sbf_1_nxt;
   end inst dpath
 
   // ── Instantiate BjpUnit ──────────────────────────────────────────────────
   inst bjp_unit: BjpUnit
-    connect i_tgt_op1 <- i_pc;
-    connect i_tgt_op2 <- i_imm;
-    connect i_cmp_rs1 <- i_rs1;
-    connect i_cmp_rs2 <- i_rs2;
-    connect i_beq  <- i_beq;
-    connect i_bne  <- i_bne;
-    connect i_blt  <- i_blt;
-    connect i_bge  <- i_bge;
-    connect i_bltu <- i_bltu;
-    connect i_bgeu <- i_bgeu;
-    connect i_jump <- i_jump;
-    connect i_lnk_pc <- i_pc;
-    connect o_taken   -> bjp_taken;
-    connect o_tgt     -> bjp_tgt;
-    connect o_lnk     -> bjp_lnk;
-    connect o_cmp_res -> bjp_cmp_res;
+    i_tgt_op1 <- i_pc;
+    i_tgt_op2 <- i_imm;
+    i_cmp_rs1 <- i_rs1;
+    i_cmp_rs2 <- i_rs2;
+    i_beq  <- i_beq;
+    i_bne  <- i_bne;
+    i_blt  <- i_blt;
+    i_bge  <- i_bge;
+    i_bltu <- i_bltu;
+    i_bgeu <- i_bgeu;
+    i_jump <- i_jump;
+    i_lnk_pc <- i_pc;
+    o_taken   -> bjp_taken;
+    o_tgt     -> bjp_tgt;
+    o_lnk     -> bjp_lnk;
+    o_cmp_res -> bjp_cmp_res;
   end inst bjp_unit
 
   // ── Result mux and output logic ──────────────────────────────────────────

@@ -67,51 +67,51 @@ module huffman_encoder
   inst ht_ram: single_port_ram
     param DATA_WIDTH = 7;
     param ADDR_WIDTH = 4;
-    connect clk  <- clk;
-    connect we   <- ht_we;
-    connect addr <- ht_addr;
-    connect din  <- ht_din;
-    connect dout -> ht_dout;
+    clk  <- clk;
+    we   <- ht_we;
+    addr <- ht_addr;
+    din  <- ht_din;
+    dout -> ht_dout;
   end inst ht_ram
 
   inst cl_ram: single_port_ram
     param DATA_WIDTH = 3;
     param ADDR_WIDTH = 4;
-    connect clk  <- clk;
-    connect we   <- cl_we;
-    connect addr <- cl_addr;
-    connect din  <- cl_din;
-    connect dout -> cl_dout;
+    clk  <- clk;
+    we   <- cl_we;
+    addr <- cl_addr;
+    din  <- cl_din;
+    dout -> cl_dout;
   end inst cl_ram
 
   inst qh_ram: single_port_ram
     param DATA_WIDTH = 4;
     param ADDR_WIDTH = 4;
-    connect clk  <- clk;
-    connect we   <- qh_we;
-    connect addr <- qh_addr;
-    connect din  <- qh_din;
-    connect dout -> qh_dout;
+    clk  <- clk;
+    we   <- qh_we;
+    addr <- qh_addr;
+    din  <- qh_din;
+    dout -> qh_dout;
   end inst qh_ram
 
   inst qm_ram: single_port_ram
     param DATA_WIDTH = 4;
     param ADDR_WIDTH = 4;
-    connect clk  <- clk;
-    connect we   <- qm_we;
-    connect addr <- qm_addr;
-    connect din  <- qm_din;
-    connect dout -> qm_dout;
+    clk  <- clk;
+    we   <- qm_we;
+    addr <- qm_addr;
+    din  <- qm_din;
+    dout -> qm_dout;
   end inst qm_ram
 
   inst ql_ram: single_port_ram
     param DATA_WIDTH = 4;
     param ADDR_WIDTH = 4;
-    connect clk  <- clk;
-    connect we   <- ql_we;
-    connect addr <- ql_addr;
-    connect din  <- ql_din;
-    connect dout -> ql_dout;
+    clk  <- clk;
+    we   <- ql_we;
+    addr <- ql_addr;
+    din  <- ql_din;
+    dout -> ql_dout;
   end inst ql_ram
 
   // Default RAM drive signals (combinational)

@@ -746,24 +746,24 @@ The compiler validates that the default value fits within the declared range. Co
 |                                                                    |
 | **param** WIDTH = 8;                                               |
 |                                                                    |
-| **connect** clk \<- clk;                                           |
+| **clk \<- clk;                                           |
 |                                                                    |
-| **connect** rst \<- rst;                                           |
+| **rst \<- rst;                                           |
 |                                                                    |
-| **connect** a \<- a;                                               |
+| **a \<- a;                                               |
 |                                                                    |
-| **connect** b \<- b;                                               |
+| **b \<- b;                                               |
 |                                                                    |
-| **connect** sum -\> **out**;                                       |
+| **sum -\> **out**;                                       |
 |                                                                    |
 | **end** **inst** add                                               |
 |                                                                    |
 | **end** **module** Top                                             |
 +--------------------------------------------------------------------+
 
-> ◈ connect port \<- signal drives an input. connect port -\> signal reads an output. The arrow direction always shows which way data flows --- a property that makes the design readable to both humans and AI without any context lookup.
+> ◈ port \<- signal drives an input. port -\> signal reads an output. The arrow direction always shows which way data flows --- a property that makes the design readable to both humans and AI without any context lookup.
 >
-> ◈ **Hierarchical instance references are forbidden.** Expressions like `inst_name.port_name` (e.g. `add.sum`) are a compile error. To read an instance output, use `connect port -> wire_name` inside the `inst` block and reference `wire_name` in the enclosing scope. Error message: *"hierarchical reference \`u.y\` is not allowed; use \`connect y -> wire_name\` in the inst block instead."*
+> ◈ **Hierarchical instance references are forbidden.** Expressions like `inst_name.port_name` (e.g. `add.sum`) are a compile error. To read an instance output, use `port -> wire_name` inside the `inst` block and reference `wire_name` in the enclosing scope. Error message: *"hierarchical reference \`u.y\` is not allowed; use \`y -> wire_name\` in the inst block instead."*
 >
 > ◈ **SV codegen notes.** The SystemVerilog backend applies the following transformations for correctness across simulators and lint tools: (1) signed casts emit `$signed(x)` (not `logic signed [N-1:0]'(x)`) for Verilator compatibility; (2) right-shift `>>` on an `SInt` operand emits arithmetic shift `>>>` (correct SRA behavior); (3) `.zext<N>()` emits `N'($unsigned(x))` to prevent context-dependent width expansion.
 
@@ -1718,23 +1718,23 @@ A ram\'s store block can declare multiple logical variables of different types a
 |                                                                                            |
 | **inst** regram: UnifiedRegRam                                                             |
 |                                                                                            |
-| **connect** clk \<- clk;                                                                   |
+| **clk \<- clk;                                                                   |
 |                                                                                            |
 | // Access int_regs\[rs1\] --- compiler emits physical address rs1 + base(int_regs)         |
 |                                                                                            |
-| **connect** read_port.en \<- true;                                                         |
+| **read_port.en \<- true;                                                         |
 |                                                                                            |
-| **connect** read_port.addr \<- int_regs\[rs1_addr\];                                       |
+| **read_port.addr \<- int_regs\[rs1_addr\];                                       |
 |                                                                                            |
-| **connect** read_port.data -\> rs1_val;                                                    |
+| **read_port.data -\> rs1_val;                                                    |
 |                                                                                            |
 | // Access csr_regs\[csr_idx\] --- compiler emits physical address csr_idx + base(csr_regs) |
 |                                                                                            |
-| **connect** write_port.en \<- csr_wen;                                                     |
+| **write_port.en \<- csr_wen;                                                     |
 |                                                                                            |
-| **connect** write_port.addr \<- csr_regs\[csr_idx\];                                       |
+| **write_port.addr \<- csr_regs\[csr_idx\];                                       |
 |                                                                                            |
-| **connect** write_port.data \<- csr_wdata;                                                 |
+| **write_port.data \<- csr_wdata;                                                 |
 |                                                                                            |
 | **end** **inst** regram                                                                    |
 +--------------------------------------------------------------------------------------------+
@@ -3354,69 +3354,69 @@ The Arch reorder_buf construct captures this circular, decoupled head/tail struc
 |                                                                     |
 | **inst** sb: OooBoard // scoreboard from §15                        |
 |                                                                     |
-| **connect** clk \<- clk;                                            |
+| **clk \<- clk;                                            |
 |                                                                     |
-| **connect** rst \<- rst;                                            |
+| **rst \<- rst;                                            |
 |                                                                     |
 | // issue port 0 connected to decode stage output                    |
 |                                                                     |
-| **connect** issue\[0\].**valid** \<- dec_valid;                     |
+| **issue\[0\].**valid** \<- dec_valid;                     |
 |                                                                     |
-| **connect** issue\[0\].rs1_addr \<- dec_rs1;                        |
+| **issue\[0\].rs1_addr \<- dec_rs1;                        |
 |                                                                     |
-| **connect** issue\[0\].rs2_addr \<- dec_rs2;                        |
+| **issue\[0\].rs2_addr \<- dec_rs2;                        |
 |                                                                     |
-| **connect** issue\[0\].rd_addr \<- dec_rd;                          |
+| **issue\[0\].rd_addr \<- dec_rd;                          |
 |                                                                     |
-| **connect** issue\[0\].rd_valid \<- dec_rd_en;                      |
+| **issue\[0\].rd_valid \<- dec_rd_en;                      |
 |                                                                     |
-| **connect** issue\[0\].**ready** -\> can_issue;                     |
+| **issue\[0\].**ready** -\> can_issue;                     |
 |                                                                     |
-| **connect** issue\[0\].token -\> sb_token;                          |
+| **issue\[0\].token -\> sb_token;                          |
 |                                                                     |
 | // writeback from execution units                                   |
 |                                                                     |
-| **connect** writeback\[0\].**valid** \<- ex0_done;                  |
+| **writeback\[0\].**valid** \<- ex0_done;                  |
 |                                                                     |
-| **connect** writeback\[0\].token \<- ex0_token;                     |
+| **writeback\[0\].token \<- ex0_token;                     |
 |                                                                     |
-| **connect** flush_valid \<- **flush**;                              |
+| **flush_valid \<- **flush**;                              |
 |                                                                     |
 | **end** **inst** sb                                                 |
 |                                                                     |
 | **inst** rob: Rob                                                   |
 |                                                                     |
-| **connect** clk \<- clk;                                            |
+| **clk \<- clk;                                            |
 |                                                                     |
-| **connect** rst \<- rst;                                            |
+| **rst \<- rst;                                            |
 |                                                                     |
 | // allocate one ROB entry per issued instruction                    |
 |                                                                     |
-| **connect** alloc\[0\].**valid** \<- can_issue;                     |
+| **alloc\[0\].**valid** \<- can_issue;                     |
 |                                                                     |
-| **connect** alloc\[0\].data \<- dec_rob_entry;                      |
+| **alloc\[0\].data \<- dec_rob_entry;                      |
 |                                                                     |
-| **connect** alloc\[0\].token -\> rob_token;                         |
+| **alloc\[0\].token -\> rob_token;                         |
 |                                                                     |
 | // complete from execution units                                    |
 |                                                                     |
-| **connect** complete\[0\].**valid** \<- ex0_done;                   |
+| **complete\[0\].**valid** \<- ex0_done;                   |
 |                                                                     |
-| **connect** complete\[0\].token \<- ex0_rob_token;                  |
+| **complete\[0\].token \<- ex0_rob_token;                  |
 |                                                                     |
-| **connect** complete\[0\].result \<- ex0_result;                    |
+| **complete\[0\].result \<- ex0_result;                    |
 |                                                                     |
 | // commit to architectural state                                    |
 |                                                                     |
-| **connect** commit\[0\].**valid** -\> commit_valid;                 |
+| **commit\[0\].**valid** -\> commit_valid;                 |
 |                                                                     |
-| **connect** commit\[0\].data -\> commit_entry;                      |
+| **commit\[0\].data -\> commit_entry;                      |
 |                                                                     |
-| **connect** commit\[0\].ack \<- retire_ack;                         |
+| **commit\[0\].ack \<- retire_ack;                         |
 |                                                                     |
-| **connect** flush_valid \<- **flush**;                              |
+| **flush_valid \<- **flush**;                              |
 |                                                                     |
-| **connect** flush_token \<- flush_rob_token;                        |
+| **flush_token \<- flush_rob_token;                        |
 |                                                                     |
 | **end** **inst** rob                                                |
 |                                                                     |
@@ -3937,7 +3937,7 @@ A generate if block is evaluated entirely at compile time. If the condition is t
 | **end** **module** Accelerator                                              |
 +-----------------------------------------------------------------------------+
 
-> *⚑ A caller that instantiates Accelerator with DEBUG_EN = false and attempts to connect dbg_pc receives a compile-time error: port dbg_pc does not exist when DEBUG_EN = false. The type system is fully aware of which ports exist for each parameter combination.*
+> *⚑ A caller that instantiates Accelerator with DEBUG_EN = false and attempts to dbg_pc receives a compile-time error: port dbg_pc does not exist when DEBUG_EN = false. The type system is fully aware of which ports exist for each parameter combination.*
 
 **19.3 generate match --- Structural Variant Selection**
 
@@ -4088,21 +4088,21 @@ The primary structural use of generate for is instantiating N copies of a submod
 |                                                                                   |
 | **param** ACC_W = ACC_W;                                                          |
 |                                                                                   |
-| **connect** clk \<- clk;                                                          |
+| **clk \<- clk;                                                          |
 |                                                                                   |
-| **connect** rst \<- rst;                                                          |
+| **rst \<- rst;                                                          |
 |                                                                                   |
-| **connect** en \<- en;                                                            |
+| **en \<- en;                                                            |
 |                                                                                   |
-| **connect** a_in \<- a_in\[i\];                                                   |
+| **a_in \<- a_in\[i\];                                                   |
 |                                                                                   |
-| **connect** b_in \<- b_in\[i\];                                                   |
+| **b_in \<- b_in\[i\];                                                   |
 |                                                                                   |
 | // Boundary expression: PE\[0\] gets 0; PE\[i\] gets PE\[i-1\].sum_out            |
 |                                                                                   |
-| **connect** sum_in \<- i == 0 ? 0.sext\<ACC_W\>() : pe\[i-1\].sum_out;            |
+| **sum_in \<- i == 0 ? 0.sext\<ACC_W\>() : pe\[i-1\].sum_out;            |
 |                                                                                   |
-| **connect** sum_out -\> result\[i\];                                              |
+| **sum_out -\> result\[i\];                                              |
 |                                                                                   |
 | **end** **inst** pe\[i\]                                                          |
 |                                                                                   |
@@ -4132,19 +4132,19 @@ The primary structural use of generate for is instantiating N copies of a submod
 |                                                                                   |
 | **param** ACC_W = 32;                                                             |
 |                                                                                   |
-| **connect** clk \<- clk;                                                          |
+| **clk \<- clk;                                                          |
 |                                                                                   |
-| **connect** en \<- compute_en;                                                    |
+| **en \<- compute_en;                                                    |
 |                                                                                   |
 | // Generated ports accessed by index                                              |
 |                                                                                   |
 | generate **for** i **in** 0..7                                                    |
 |                                                                                   |
-| **connect** a_in\[i\] \<- act_row\[i\];                                           |
+| **a_in\[i\] \<- act_row\[i\];                                           |
 |                                                                                   |
-| **connect** b_in\[i\] \<- wgt_col\[i\];                                           |
+| **b_in\[i\] \<- wgt_col\[i\];                                           |
 |                                                                                   |
-| **connect** result\[i\] -\> output_row\[i\];                                      |
+| **result\[i\] -\> output_row\[i\];                                      |
 |                                                                                   |
 | **end** generate **for** i                                                        |
 |                                                                                   |
@@ -4241,7 +4241,7 @@ Generated ports are fully supported inside interface declarations. This allows a
 | **end** **module** SimplePeripheral                                     |
 +-------------------------------------------------------------------------+
 
-> *⚑ When ID_W = 0, any attempt to connect axi.awid is a compile-time error. This is structurally impossible in SystemVerilog --- optional fields in an interface must be worked around with unused signals or conditional compilation macros.*
+> *⚑ When ID_W = 0, any attempt to axi.awid is a compile-time error. This is structurally impossible in SystemVerilog --- optional fields in an interface must be worked around with unused signals or conditional compilation macros.*
 
 **19.6 generate for over Type Lists**
 
@@ -4310,7 +4310,7 @@ A generate for loop may iterate over a list of types in addition to integer rang
 
   **No overlap between generated and manual ports**       A hand-written port name matches a generated port name
 
-  **Boundary expression must be type-safe**               i-1 boundary in connect sum_in \<- i==0 ? 0 : pe\[i-1\].sum_out has mismatched types
+  **Boundary expression must be type-safe**               i-1 boundary in sum_in \<- i==0 ? 0 : pe\[i-1\].sum_out has mismatched types
 
   **generate if condition must be const**                 Condition references a port signal rather than a param
 
@@ -5074,17 +5074,17 @@ Module instances that are independent within a cycle --- no signal flows from on
 |                                                                               |
 | **param** SEQ_LEN = 2048;                                                     |
 |                                                                               |
-| **connect** clk \<- clk;                                                      |
+| **clk \<- clk;                                                      |
 |                                                                               |
-| **connect** rst \<- rst;                                                      |
+| **rst \<- rst;                                                      |
 |                                                                               |
-| **connect** in_valid \<- head_in_valid\[i\];                                  |
+| **in_valid \<- head_in_valid\[i\];                                  |
 |                                                                               |
-| **connect** in_token \<- head_in_token\[i\];                                  |
+| **in_token \<- head_in_token\[i\];                                  |
 |                                                                               |
-| **connect** out_ready \<- head_out_ready\[i\];                                |
+| **out_ready \<- head_out_ready\[i\];                                |
 |                                                                               |
-| **connect** out_score -\> head_out_score\[i\];                                |
+| **out_score -\> head_out_score\[i\];                                |
 |                                                                               |
 | **end** **inst** head\[i\]                                                    |
 |                                                                               |
@@ -5100,7 +5100,7 @@ Module instances that are independent within a cycle --- no signal flows from on
 |                                                                               |
 | generate **for** i **in** 0..NUM_LANES-1                                      |
 |                                                                               |
-| **connect** score_in\[i\] \<- head_out_score\[i\];                            |
+| **score_in\[i\] \<- head_out_score\[i\];                            |
 |                                                                               |
 | **end** generate **for** i                                                    |
 |                                                                               |
@@ -7470,7 +7470,7 @@ When the AI generates Arch with errors, the compiler output is sufficient for se
 |                                                                                              |
 | // inst pe\[3\]: SystolicPE --- port sum_in not connected.                                   |
 |                                                                                              |
-| // Expected: connect sum_in \<- pe\[2\].sum_out (or boundary value for i=0)                  |
+| // Expected: sum_in \<- pe\[2\].sum_out (or boundary value for i=0)                  |
 |                                                                                              |
 | // CDC violation:                                                                            |
 |                                                                                              |
@@ -7761,14 +7761,14 @@ The most common failure mode in LLM-generated code is incorrect nesting --- clos
 
 **13.3 Directional Connect Arrows Encode Data Flow**
 
-In Verilog, signal assignment direction is determined by context --- LLMs frequently confuse this. In Arch, every connect statement encodes direction explicitly:
+In Verilog, signal assignment direction is determined by context --- LLMs frequently confuse this. In Arch, every port connection encodes direction explicitly:
 
 +-----------------------------------------------------------------------------------+
 | *connect_arrows.arch*                                                             |
 |                                                                                   |
-| **connect** data_in \<- local_signal; // \<- drives an input FROM a local signal  |
+| **data_in \<- local_signal; // \<- drives an input FROM a local signal  |
 |                                                                                   |
-| **connect** data_out -\> local_signal; // -\> reads an output INTO a local signal |
+| **data_out -\> local_signal; // -\> reads an output INTO a local signal |
 |                                                                                   |
 | // Direction is visible in the syntax itself.                                     |
 |                                                                                   |
@@ -8257,27 +8257,27 @@ Design: a 3-stage in-order RISC-V integer pipeline with a unified register + CSR
 |                                                                        |
 | **inst** regs: UnifiedRegs                                             |
 |                                                                        |
-| **connect** clk \<- clk;                                               |
+| **clk \<- clk;                                               |
 |                                                                        |
-| **connect** rst \<- rst;                                               |
+| **rst \<- rst;                                               |
 |                                                                        |
 | // Read port: address is either int_regs\[rs1\] or csr_regs\[csr_idx\] |
 |                                                                        |
 | // Compiler translates logical names to physical addresses             |
 |                                                                        |
-| **connect** read_port.en \<- true;                                     |
+| **read_port.en \<- true;                                     |
 |                                                                        |
-| **connect** read_port.addr \<- int_regs\[rs1_addr\];                   |
+| **read_port.addr \<- int_regs\[rs1_addr\];                   |
 |                                                                        |
-| **connect** read_port.data -\> rs1_val;                                |
+| **read_port.data -\> rs1_val;                                |
 |                                                                        |
 | // Write port: writeback from execute stage                            |
 |                                                                        |
-| **connect** write_port.en \<- rd_wen;                                  |
+| **write_port.en \<- rd_wen;                                  |
 |                                                                        |
-| **connect** write_port.addr \<- int_regs\[rd_addr\];                   |
+| **write_port.addr \<- int_regs\[rd_addr\];                   |
 |                                                                        |
-| **connect** write_port.data \<- rd_data;                               |
+| **write_port.data \<- rd_data;                               |
 |                                                                        |
 | **end** **inst** regs                                                  |
 |                                                                        |
@@ -8289,19 +8289,19 @@ Design: a 3-stage in-order RISC-V integer pipeline with a unified register + CSR
 |                                                                        |
 | **param** WIDTH = UInt\<32\>;                                          |
 |                                                                        |
-| **connect** clk \<- clk;                                               |
+| **clk \<- clk;                                               |
 |                                                                        |
-| **connect** rst \<- rst;                                               |
+| **rst \<- rst;                                               |
 |                                                                        |
-| **connect** push_valid \<- imem.**valid**;                             |
+| **push_valid \<- imem.**valid**;                             |
 |                                                                        |
-| **connect** push_data \<- imem.rdata;                                  |
+| **push_data \<- imem.rdata;                                  |
 |                                                                        |
-| **connect** push_ready -\> imem.**ready**;                             |
+| **push_ready -\> imem.**ready**;                             |
 |                                                                        |
-| **connect** pop_ready \<- true;                                        |
+| **pop_ready \<- true;                                        |
 |                                                                        |
-| **connect** **full** -\> iq_full;                                      |
+| ****full** -\> iq_full;                                      |
 |                                                                        |
 | **end** **inst** iq                                                    |
 |                                                                        |
@@ -8313,21 +8313,21 @@ Design: a 3-stage in-order RISC-V integer pipeline with a unified register + CSR
 |                                                                        |
 | **param** NUM_RSRC = 1;                                                |
 |                                                                        |
-| **connect** clk \<- clk;                                               |
+| **clk \<- clk;                                               |
 |                                                                        |
-| **connect** rst \<- rst;                                               |
+| **rst \<- rst;                                               |
 |                                                                        |
-| **connect** **request**\[0\].**valid** \<- imem.**valid**;             |
+| ****request**\[0\].**valid** \<- imem.**valid**;             |
 |                                                                        |
-| **connect** **request**\[0\].**ready** -\> imem.**ready**;             |
+| ****request**\[0\].**ready** -\> imem.**ready**;             |
 |                                                                        |
-| **connect** **request**\[1\].**valid** \<- dmem.**valid**;             |
+| ****request**\[1\].**valid** \<- dmem.**valid**;             |
 |                                                                        |
-| **connect** **request**\[1\].**ready** -\> dmem.**ready**;             |
+| ****request**\[1\].**ready** -\> dmem.**ready**;             |
 |                                                                        |
-| **connect** **grant**\[0\].**valid** -\> bus_grant;                    |
+| ****grant**\[0\].**valid** -\> bus_grant;                    |
 |                                                                        |
-| **connect** **grant**\[0\].requester -\> bus_winner;                   |
+| ****grant**\[0\].requester -\> bus_winner;                   |
 |                                                                        |
 | **end** **inst** arb                                                   |
 |                                                                        |
@@ -8337,23 +8337,23 @@ Design: a 3-stage in-order RISC-V integer pipeline with a unified register + CSR
 |                                                                        |
 | **param** XLEN = 32;                                                   |
 |                                                                        |
-| **connect** clk \<- clk;                                               |
+| **clk \<- clk;                                               |
 |                                                                        |
-| **connect** rst \<- rst;                                               |
+| **rst \<- rst;                                               |
 |                                                                        |
-| **connect** imem -\> imem;                                             |
+| **imem -\> imem;                                             |
 |                                                                        |
-| **connect** dmem -\> dmem;                                             |
+| **dmem -\> dmem;                                             |
 |                                                                        |
-| **connect** rs1_val \<- rs1_val;                                       |
+| **rs1_val \<- rs1_val;                                       |
 |                                                                        |
-| **connect** rs2_val \<- rs2_val;                                       |
+| **rs2_val \<- rs2_val;                                       |
 |                                                                        |
-| **connect** rd_wen -\> rd_wen;                                         |
+| **rd_wen -\> rd_wen;                                         |
 |                                                                        |
-| **connect** rd_addr -\> rd_addr;                                       |
+| **rd_addr -\> rd_addr;                                       |
 |                                                                        |
-| **connect** rd_data -\> rd_data;                                       |
+| **rd_data -\> rd_data;                                       |
 |                                                                        |
 | **end** **inst** pipe                                                  |
 |                                                                        |

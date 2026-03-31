@@ -36,8 +36,8 @@ module interrupt_controller_apb #(
   // If so, preserve that bit in pending_interrupts rather than clearing it.
   logic [NUM_INTERRUPTS-1:0] prev_requests;
   // APB-configured registers (pclk domain)
-  logic [24-1:0] priority_map [0:NUM_INTERRUPTS-1];
-  logic [24-1:0] vector_table [0:NUM_INTERRUPTS-1];
+  logic [24-1:0] priority_map [NUM_INTERRUPTS-1:0];
+  logic [24-1:0] vector_table [NUM_INTERRUPTS-1:0];
   logic [NUM_INTERRUPTS-1:0] interrupt_mask;
   // Combinational wires for priority arbitration
   logic [NUM_INTERRUPTS-1:0] masked_pending;
@@ -54,7 +54,7 @@ module interrupt_controller_apb #(
   //   2) winner is always a DIFFERENT interrupt than the one being served,
   //      enabling an explicit priority comparison for preemption.
   always_comb begin
-    masked_pending = pending_interrupts & interrupt_mask & ~current_int;
+    masked_pending = (pending_interrupts | interrupt_requests) & interrupt_mask & ~current_int;
     winner_int = 0;
     winner_idx32 = 0;
     highest_pri_val = 16777215;

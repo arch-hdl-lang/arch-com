@@ -1373,7 +1373,7 @@ impl<'a> Codegen<'a> {
         match &expr.kind {
             ExprKind::Ident(n) => n.clone(),
             ExprKind::FieldAccess(base, _) => Self::expr_root_name(base),
-            ExprKind::Index(base, _) | ExprKind::BitSlice(base, _, _) => Self::expr_root_name(base),
+            ExprKind::Index(base, _) | ExprKind::BitSlice(base, _, _) | ExprKind::PartSelect(base, _, _, _) => Self::expr_root_name(base),
             _ => String::new(),
         }
     }
@@ -1818,9 +1818,14 @@ impl<'a> Codegen<'a> {
         self.indent += 1;
         for (i, p) in f.ports.iter().enumerate() {
             let dir = match p.direction { Direction::In => "input", Direction::Out => "output" };
-            let ty = self.emit_port_type_str(&p.ty);
             let comma = if i < f.ports.len() - 1 { "," } else { "" };
-            self.line(&format!("{dir} {ty} {}{comma}", p.name.name));
+            if let TypeExpr::Vec(_, _) = &p.ty {
+                let (base_ty, suffix) = self.emit_type_and_array_suffix(&p.ty);
+                self.line(&format!("{dir} {base_ty} {}{suffix}{comma}", p.name.name));
+            } else {
+                let ty = self.emit_port_type_str(&p.ty);
+                self.line(&format!("{dir} {ty} {}{comma}", p.name.name));
+            }
         }
         self.indent -= 1;
         self.line(");");
@@ -2753,7 +2758,7 @@ impl<'a> Codegen<'a> {
                     "sext" => {
                         if let Some(width) = args.first() {
                             let w = self.emit_expr_str(width);
-                            format!("{{{{({w}-$bits({b})){{{b}[$bits({b})-1]}}}}}}, {b}}}")
+                            format!("{{{{({w}-$bits({b})){{{b}[$bits({b})-1]}}}}, {b}}}")
                         } else {
                             b
                         }
@@ -2785,6 +2790,13 @@ impl<'a> Codegen<'a> {
                     let l = self.emit_expr_str(lo);
                     format!("{b}[{h}:{l}]")
                 }
+            }
+            ExprKind::PartSelect(base, start, width, up) => {
+                let b = self.emit_pipeline_stage_expr_str(base, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                let s = self.emit_expr_str(start);
+                let w = self.emit_expr_str(width);
+                let op = if *up { "+:" } else { "-:" };
+                format!("{b}[{s} {op} {w}]")
             }
             _ => self.emit_expr_str(expr),
         }
@@ -2862,7 +2874,7 @@ impl<'a> Codegen<'a> {
                     "sext" => {
                         if let Some(width) = args.first() {
                             let w = self.emit_expr_str(width);
-                            format!("{{{{({w}-$bits({b})){{{b}[$bits({b})-1]}}}}}}, {b}}}")
+                            format!("{{{{({w}-$bits({b})){{{b}[$bits({b})-1]}}}}, {b}}}")
                         } else {
                             b
                         }
@@ -2894,6 +2906,13 @@ impl<'a> Codegen<'a> {
                     let l = self.emit_expr_str(lo);
                     format!("{b}[{h}:{l}]")
                 }
+            }
+            ExprKind::PartSelect(base, start, width, up) => {
+                let b = self.emit_pipeline_expr_str(base, stage_names, stage_regs, port_names);
+                let s = self.emit_expr_str(start);
+                let w = self.emit_expr_str(width);
+                let op = if *up { "+:" } else { "-:" };
+                format!("{b}[{s} {op} {w}]")
             }
             // For everything else, fall back to regular emit
             _ => self.emit_expr_str(expr),
@@ -3413,6 +3432,13 @@ impl<'a> Codegen<'a> {
                     format!("{b}[{h}:{l}]")
                 }
             }
+            ExprKind::PartSelect(base, start, width, up) => {
+                let b = self.emit_expr_str(base);
+                let s = self.emit_expr_str(start);
+                let w = self.emit_expr_str(width);
+                let op = if *up { "+:" } else { "-:" };
+                format!("{b}[{s} {op} {w}]")
+            }
             ExprKind::StructLiteral(_name, fields) => {
                 let field_strs: Vec<String> = fields
                     .iter()
@@ -3595,7 +3621,7 @@ impl<'a> Codegen<'a> {
         let mut cur = ty;
         while let TypeExpr::Vec(inner, size) = cur {
             let size_str = self.emit_expr_str(size);
-            dims.push(format!(" [0:{size_str}-1]"));
+            dims.push(format!(" [{size_str}-1:0]"));
             cur = inner;
         }
         if dims.is_empty() {

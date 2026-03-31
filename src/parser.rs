@@ -1171,8 +1171,8 @@ impl Parser {
                 let value = self.parse_expr()?;
                 self.expect(TokenKind::Semi)?;
                 param_assigns.push(ParamAssign { name: pname, value });
-            } else if self.check(TokenKind::Connect) {
-                let cstart = self.advance().span;
+            } else if matches!(self.peek_kind(), Some(TokenKind::Ident(_))) {
+                let cstart = self.peek_span();
                 let mut port_name = self.expect_ident()?;
                 // Support indexed port group syntax: name[i].member → namei_member
                 if self.eat(TokenKind::LBracket) {
@@ -1220,7 +1220,7 @@ impl Parser {
                 });
             } else {
                 return Err(CompileError::unexpected_token(
-                    "param or connect",
+                    "param or port connection",
                     &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
                     self.peek_span(),
                 ));
@@ -1549,7 +1549,25 @@ impl Parser {
             if self.check(TokenKind::LBracket) {
                 self.advance();
                 let first = self.parse_expr()?;
-                if self.check(TokenKind::Colon) {
+                // Part-select: expr[start +: width] or expr[start -: width]
+                // `+:` / `-:` may arrive as a single PlusColon/MinusColon token (no space)
+                // OR as a separate Plus/Minus + Colon token pair (with space); handle both.
+                let is_plus_colon  = self.check(TokenKind::PlusColon)
+                    || (self.check(TokenKind::Plus)  && self.peek_kind_at(self.pos + 1) == Some(TokenKind::Colon));
+                let is_minus_colon = self.check(TokenKind::MinusColon)
+                    || (self.check(TokenKind::Minus) && self.peek_kind_at(self.pos + 1) == Some(TokenKind::Colon));
+                if is_plus_colon || is_minus_colon {
+                    let up = is_plus_colon;
+                    self.advance(); // consume + or - (or +: as one token)
+                    // If spaced form, also consume the separate `:` token
+                    if self.check(TokenKind::Colon) { self.advance(); }
+                    let width = self.parse_expr()?;
+                    self.expect(TokenKind::RBracket)?;
+                    let span = lhs.span.merge(self.tokens[self.pos.saturating_sub(1)].span);
+                    lhs = Expr {
+                        kind: ExprKind::PartSelect(Box::new(lhs), Box::new(first), Box::new(width), up),
+                        span, parenthesized: false };
+                } else if self.check(TokenKind::Colon) {
                     // bit-slice: expr[hi:lo]
                     self.advance();
                     let lo = self.parse_expr()?;
@@ -1865,6 +1883,9 @@ impl Parser {
 
     fn peek_binop(&self) -> Option<BinOp> {
         match self.peek_kind()? {
+            // Don't treat `+ :` or `- :` as binary ops — they are part-select separators
+            TokenKind::Plus if self.peek_kind_at(self.pos + 1) == Some(TokenKind::Colon) => None,
+            TokenKind::Minus if self.peek_kind_at(self.pos + 1) == Some(TokenKind::Colon) => None,
             TokenKind::Plus => Some(BinOp::Add),
             TokenKind::Minus => Some(BinOp::Sub),
             TokenKind::Star => Some(BinOp::Mul),
@@ -3283,6 +3304,10 @@ impl Parser {
     // --- Token utilities ---
     fn peek_kind(&self) -> Option<TokenKind> {
         self.tokens.get(self.pos).map(|t| t.kind.clone())
+    }
+
+    fn peek_kind_at(&self, idx: usize) -> Option<TokenKind> {
+        self.tokens.get(idx).map(|t| t.kind.clone())
     }
 
     fn peek_span(&self) -> Span {

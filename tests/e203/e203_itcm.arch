@@ -34,13 +34,13 @@ module E203Itcm
   port wr_data:  in UInt<32>;
 
   inst mem: ItcmSram
-    connect clk          <- clk;
-    connect rd_port.en   <- rd_en;
-    connect rd_port.addr <- rd_addr;
-    connect rd_port.data -> rd_data;
-    connect wr_port.en   <- wr_en;
-    connect wr_port.addr <- wr_addr;
-    connect wr_port.data <- wr_data;
+    clk          <- clk;
+    rd_port.en   <- rd_en;
+    rd_port.addr <- rd_addr;
+    rd_port.data -> rd_data;
+    wr_port.en   <- wr_en;
+    wr_port.addr <- wr_addr;
+    wr_port.data <- wr_data;
   end inst mem
 
 end module E203Itcm

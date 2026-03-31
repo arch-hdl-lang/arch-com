@@ -42,78 +42,78 @@ module IfuTop
 
   // ── IfuIfetch: PC generation + fetch state machine ──────────────────
   inst ifetch: IfuIfetch
-    connect clk         <- clk;
-    connect rst         <- rst_n;
-    connect req_ready   <- icb_req_ready;
-    connect rsp_valid   <- icb_rsp_valid;
-    connect rsp_instr   <- icb_rsp_instr;
-    connect rsp_err     <- false;
-    connect o_ready     <- o_ready;
-    connect redirect    <- exu_redirect;
-    connect redirect_pc <- exu_redirect_pc;
-    connect req_valid   -> ifetch_req_valid;
-    connect req_addr    -> ifetch_req_addr;
-    connect rsp_ready   -> ifetch_rsp_ready;
-    connect o_valid     -> o_valid;
-    connect o_instr     -> o_instr;
-    connect o_pc        -> o_pc;
-    connect o_bus_err   -> o_bus_err;
+    clk         <- clk;
+    rst         <- rst_n;
+    req_ready   <- icb_req_ready;
+    rsp_valid   <- icb_rsp_valid;
+    rsp_instr   <- icb_rsp_instr;
+    rsp_err     <- false;
+    o_ready     <- o_ready;
+    redirect    <- exu_redirect;
+    redirect_pc <- exu_redirect_pc;
+    req_valid   -> ifetch_req_valid;
+    req_addr    -> ifetch_req_addr;
+    rsp_ready   -> ifetch_rsp_ready;
+    o_valid     -> o_valid;
+    o_instr     -> o_instr;
+    o_pc        -> o_pc;
+    o_bus_err   -> o_bus_err;
   end inst ifetch
 
   // ── Ift2Icb: fetch-to-ITCM bridge ──────────────────────────────────
   inst icb: Ift2Icb
-    connect clk            <- clk;
-    connect rst_n          <- rst_n;
-    connect ifu_req_valid  <- ifetch_req_valid;
-    connect ifu_req_pc     <- ifetch_req_addr;
-    connect ifu_rsp_ready  <- ifetch_rsp_ready;
-    connect itcm.cmd_ready <- itcm.cmd_ready;
-    connect itcm.rsp_valid <- itcm.rsp_valid;
-    connect itcm.rsp_data  <- itcm.rsp_data;
-    connect ifu_req_ready  -> icb_req_ready;
-    connect ifu_rsp_valid  -> icb_rsp_valid;
-    connect ifu_rsp_instr  -> icb_rsp_instr;
-    connect itcm.cmd_valid -> itcm.cmd_valid;
-    connect itcm.cmd_addr  -> itcm.cmd_addr;
-    connect itcm.rsp_ready -> itcm.rsp_ready;
+    clk            <- clk;
+    rst_n          <- rst_n;
+    ifu_req_valid  <- ifetch_req_valid;
+    ifu_req_pc     <- ifetch_req_addr;
+    ifu_rsp_ready  <- ifetch_rsp_ready;
+    itcm.cmd_ready <- itcm.cmd_ready;
+    itcm.rsp_valid <- itcm.rsp_valid;
+    itcm.rsp_data  <- itcm.rsp_data;
+    ifu_req_ready  -> icb_req_ready;
+    ifu_rsp_valid  -> icb_rsp_valid;
+    ifu_rsp_instr  -> icb_rsp_instr;
+    itcm.cmd_valid -> itcm.cmd_valid;
+    itcm.cmd_addr  -> itcm.cmd_addr;
+    itcm.rsp_ready -> itcm.rsp_ready;
   end inst icb
 
   // ── IfuMinidec: classify fetched instruction ────────────────────────
   inst mdec: IfuMinidec
-    connect instr      <- o_instr;
-    connect o_is_bjp   -> dec_is_bjp;
-    connect o_is_jal   -> mdec_is_jal;
-    connect o_is_jalr  -> mdec_is_jalr;
-    connect o_is_bxx   -> mdec_is_bxx;
-    connect o_is_lui   -> dec_is_lui;
-    connect o_is_auipc -> dec_is_auipc;
-    connect o_bjp_imm  -> mdec_bjp_imm;
-    connect o_rs1_idx  -> mdec_rs1_idx;
+    instr      <- o_instr;
+    o_is_bjp   -> dec_is_bjp;
+    o_is_jal   -> mdec_is_jal;
+    o_is_jalr  -> mdec_is_jalr;
+    o_is_bxx   -> mdec_is_bxx;
+    o_is_lui   -> dec_is_lui;
+    o_is_auipc -> dec_is_auipc;
+    o_bjp_imm  -> mdec_bjp_imm;
+    o_rs1_idx  -> mdec_rs1_idx;
   end inst mdec
 
   // ── LiteBpu: static branch prediction ──────────────────────────────
   inst bpu: LiteBpu
-    connect clk                       <- clk;
-    connect rst_n                     <- rst_n;
-    connect pc                        <- o_pc;
-    connect dec_jal                   <- mdec_is_jal;
-    connect dec_jalr                  <- mdec_is_jalr;
-    connect dec_bxx                   <- mdec_is_bxx;
-    connect dec_bjp_imm               <- mdec_bjp_imm.zext<32>();
-    connect dec_jalr_rs1idx           <- mdec_rs1_idx;
-    connect oitf_empty                <- oitf_empty;
-    connect ir_empty                  <- ir_empty;
-    connect ir_rs1en                  <- ir_rs1en;
-    connect jalr_rs1idx_cam_irrdidx   <- jalr_rs1idx_cam_irrdidx;
-    connect dec_i_valid               <- o_valid;
-    connect ir_valid_clr              <- ir_valid_clr;
-    connect rf2bpu_x1                 <- rf2bpu_x1;
-    connect rf2bpu_rs1                <- rf2bpu_rs1;
-    connect prdt_taken                -> prdt_taken;
-    connect prdt_pc_add_op1           -> prdt_pc_add_op1;
-    connect prdt_pc_add_op2           -> prdt_pc_add_op2;
-    connect bpu_wait                  -> bpu_wait;
-    connect bpu2rf_rs1_ena            -> bpu2rf_rs1_ena;
+    clk                       <- clk;
+    rst_n                     <- rst_n;
+    pc                        <- o_pc;
+    dec_jal                   <- mdec_is_jal;
+    dec_jalr                  <- mdec_is_jalr;
+    dec_bxx                   <- mdec_is_bxx;
+    dec_bjp_imm               <- mdec_bjp_imm.zext<32>();
+    dec_jalr_rs1idx           <- mdec_rs1_idx;
+    oitf_empty                <- oitf_empty;
+    ir_empty                  <- ir_empty;
+    ir_rs1en                  <- ir_rs1en;
+    jalr_rs1idx_cam_irrdidx   <- jalr_rs1idx_cam_irrdidx;
+    dec_i_valid               <- o_valid;
+    ir_valid_clr              <- ir_valid_clr;
+    rf2bpu_x1                 <- rf2bpu_x1;
+    rf2bpu_rs1                <- rf2bpu_rs1;
+    prdt_taken                -> prdt_taken;
+    prdt_pc_add_op1           -> prdt_pc_add_op1;
+    prdt_pc_add_op2           -> prdt_pc_add_op2;
+    bpu_wait                  -> bpu_wait;
+    bpu2rf_rs1_ena            -> bpu2rf_rs1_ena;
   end inst bpu
 
 end module IfuTop

@@ -34,18 +34,18 @@ module axis_border_gen_with_resize
     param IMG_WIDTH_OUT  = IMG_WIDTH_OUT;
     param IMG_HEIGHT_OUT = IMG_HEIGHT_OUT;
     param DATA_WIDTH     = DATA_WIDTH;
-    connect clk            <- clk;
-    connect resetn         <- resetn;
-    connect s_axis_tdata   <- s_axis_tdata;
-    connect s_axis_tvalid  <- s_axis_tvalid;
-    connect s_axis_tready  -> s_axis_tready;
-    connect s_axis_tlast   <- s_axis_tlast;
-    connect s_axis_tuser   <- s_axis_tuser;
-    connect m_axis_tdata   -> mid_tdata;
-    connect m_axis_tvalid  -> mid_tvalid;
-    connect m_axis_tready  <- mid_tready;
-    connect m_axis_tlast   -> mid_tlast;
-    connect m_axis_tuser   -> mid_tuser;
+    clk            <- clk;
+    resetn         <- resetn;
+    s_axis_tdata   <- s_axis_tdata;
+    s_axis_tvalid  <- s_axis_tvalid;
+    s_axis_tready  -> s_axis_tready;
+    s_axis_tlast   <- s_axis_tlast;
+    s_axis_tuser   <- s_axis_tuser;
+    m_axis_tdata   -> mid_tdata;
+    m_axis_tvalid  -> mid_tvalid;
+    m_axis_tready  <- mid_tready;
+    m_axis_tlast   -> mid_tlast;
+    m_axis_tuser   -> mid_tuser;
   end inst resizer
 
   inst border_gen: axis_image_border_gen
@@ -53,18 +53,18 @@ module axis_border_gen_with_resize
     param IMG_HEIGHT   = IMG_HEIGHT_OUT;
     param BORDER_COLOR = BORDER_COLOR;
     param DATA_WIDTH   = DATA_WIDTH;
-    connect clk            <- clk;
-    connect resetn         <- resetn;
-    connect s_axis_tdata   <- mid_tdata;
-    connect s_axis_tvalid  <- mid_tvalid;
-    connect s_axis_tready  -> mid_tready;
-    connect s_axis_tlast   <- mid_tlast;
-    connect s_axis_tuser   <- mid_tuser;
-    connect m_axis_tdata   -> m_axis_tdata;
-    connect m_axis_tvalid  -> m_axis_tvalid;
-    connect m_axis_tready  <- m_axis_tready;
-    connect m_axis_tlast   -> m_axis_tlast;
-    connect m_axis_tuser   -> m_axis_tuser;
+    clk            <- clk;
+    resetn         <- resetn;
+    s_axis_tdata   <- mid_tdata;
+    s_axis_tvalid  <- mid_tvalid;
+    s_axis_tready  -> mid_tready;
+    s_axis_tlast   <- mid_tlast;
+    s_axis_tuser   <- mid_tuser;
+    m_axis_tdata   -> m_axis_tdata;
+    m_axis_tvalid  -> m_axis_tvalid;
+    m_axis_tready  <- m_axis_tready;
+    m_axis_tlast   -> m_axis_tlast;
+    m_axis_tuser   -> m_axis_tuser;
   end inst border_gen
 
 end module axis_border_gen_with_resize

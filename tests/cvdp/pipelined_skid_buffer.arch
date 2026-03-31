@@ -25,47 +25,47 @@ module pipelined_skid_buffer
   wire r3_ready: Bool;
 
   inst skid_0: skid_buffer
-    connect clk     <- clock;
-    connect rst     <- rst;
-    connect i_data  <- i_data;
-    connect i_valid <- i_valid;
-    connect i_ready <- r1_ready;
-    connect o_data  -> s0_data;
-    connect o_valid -> s0_valid;
-    connect o_ready -> s0_ready;
+    clk     <- clock;
+    rst     <- rst;
+    i_data  <- i_data;
+    i_valid <- i_valid;
+    i_ready <- r1_ready;
+    o_data  -> s0_data;
+    o_valid -> s0_valid;
+    o_ready -> s0_ready;
   end inst skid_0
 
   inst reg1: register
-    connect clk       <- clock;
-    connect rst       <- rst;
-    connect data_in   <- s0_data;
-    connect valid_in  <- s0_valid;
-    connect ready_in  <- s2_ready;
-    connect data_out  -> r1_data;
-    connect valid_out -> r1_valid;
-    connect ready_out -> r1_ready;
+    clk       <- clock;
+    rst       <- rst;
+    data_in   <- s0_data;
+    valid_in  <- s0_valid;
+    ready_in  <- s2_ready;
+    data_out  -> r1_data;
+    valid_out -> r1_valid;
+    ready_out -> r1_ready;
   end inst reg1
 
   inst skid_2: skid_buffer
-    connect clk     <- clock;
-    connect rst     <- rst;
-    connect i_data  <- r1_data;
-    connect i_valid <- r1_valid;
-    connect i_ready <- r3_ready;
-    connect o_data  -> s2_data;
-    connect o_valid -> s2_valid;
-    connect o_ready -> s2_ready;
+    clk     <- clock;
+    rst     <- rst;
+    i_data  <- r1_data;
+    i_valid <- r1_valid;
+    i_ready <- r3_ready;
+    o_data  -> s2_data;
+    o_valid -> s2_valid;
+    o_ready -> s2_ready;
   end inst skid_2
 
   inst reg3: register
-    connect clk       <- clock;
-    connect rst       <- rst;
-    connect data_in   <- s2_data;
-    connect valid_in  <- s2_valid;
-    connect ready_in  <- ready_i;
-    connect data_out  -> r3_data;
-    connect valid_out -> r3_valid;
-    connect ready_out -> r3_ready;
+    clk       <- clock;
+    rst       <- rst;
+    data_in   <- s2_data;
+    valid_in  <- s2_valid;
+    ready_in  <- ready_i;
+    data_out  -> r3_data;
+    valid_out -> r3_valid;
+    ready_out -> r3_ready;
   end inst reg3
 
   comb data_o = r3_data;

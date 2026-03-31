@@ -76,7 +76,7 @@
     },
     "block-keywords": {
       "name": "keyword.other.arch",
-      "match": "\\b(port|ports|param|socket|state|default|comb|seq|reg|wire|let|inst|connect|generate|assert|cover|function|return|use|stage|store|hook|implements|testbench|initial|repeat)\\b"
+      "match": "\\b(port|ports|param|socket|state|default|comb|seq|reg|wire|let|inst|generate|assert|cover|function|return|use|stage|store|hook|implements|testbench|initial|repeat)\\b"
     },
     "attribute-keywords": {
       "name": "keyword.other.attribute.arch",

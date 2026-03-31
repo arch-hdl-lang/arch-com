@@ -24,9 +24,9 @@ module cvdp_copilot_mem_allocator
   inst free_slots_sel: cvdp_leading_zero_cnt
     param DATA_WIDTH = SIZE;
     param REVERSE = 1;
-    connect data <- free_slots_n;
-    connect leading_zeros -> free_index;
-    connect all_zeros -> full_d;
+    data <- free_slots_n;
+    leading_zeros -> free_index;
+    all_zeros -> full_d;
   end inst free_slots_sel
 
   // Combinational next-state for free_slots

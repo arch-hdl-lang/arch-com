@@ -93,9 +93,9 @@ pipeline CpuPipe
     // Combinational ALU instance
     inst alu0: Alu
       param WIDTH = XLEN;
-      connect a <- Decode.rs1_fwd;
-      connect b <- Decode.rs2_val;
-      connect result -> alu_out;
+      a <- Decode.rs1_fwd;
+      b <- Decode.rs2_val;
+      result -> alu_out;
     end inst alu0
   end stage Execute
 

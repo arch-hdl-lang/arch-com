@@ -52,13 +52,13 @@ module Dtcm
   let masked_wdata: UInt<32> = wr_din & full_mask;
 
   inst sram: DtcmSram
-    connect clk          <- clk;
-    connect rd_port.en   <- rd_en;
-    connect rd_port.addr <- rd_addr;
-    connect rd_port.data -> rd_dout;
-    connect wr_port.en   <- wr_en;
-    connect wr_port.addr <- wr_addr;
-    connect wr_port.data <- masked_wdata;
+    clk          <- clk;
+    rd_port.en   <- rd_en;
+    rd_port.addr <- rd_addr;
+    rd_port.data -> rd_dout;
+    wr_port.en   <- wr_en;
+    wr_port.addr <- wr_addr;
+    wr_port.data <- masked_wdata;
   end inst sram
 
 end module Dtcm

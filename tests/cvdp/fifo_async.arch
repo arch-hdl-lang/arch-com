@@ -31,20 +31,20 @@ module fifo_async
 
   // Synchronize read pointer into write domain (gray CDC)
   inst r2w: r2w_sync
-    connect src_clk  <- r_clk;
-    connect dst_clk  <- w_clk;
-    connect rst      <- w_rst;
-    connect data_in  <- r_bin;
-    connect data_out -> r_bin_synced;
+    src_clk  <- r_clk;
+    dst_clk  <- w_clk;
+    rst      <- w_rst;
+    data_in  <- r_bin;
+    data_out -> r_bin_synced;
   end inst r2w
 
   // Synchronize write pointer into read domain (gray CDC)
   inst w2r: w2r_sync
-    connect src_clk  <- w_clk;
-    connect dst_clk  <- r_clk;
-    connect rst      <- r_rst;
-    connect data_in  <- w_bin;
-    connect data_out -> w_bin_synced;
+    src_clk  <- w_clk;
+    dst_clk  <- r_clk;
+    rst      <- r_rst;
+    data_in  <- w_bin;
+    data_out -> w_bin_synced;
   end inst w2r
 
   // Next values

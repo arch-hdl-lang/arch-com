@@ -47,12 +47,12 @@ module SramCtrl
 
   // SRAM instance
   inst mem: SramBank
-    connect clk      <- clk;
-    connect rw.en    <- icb_cmd_valid;
-    connect rw.wen   <- ~icb_cmd_read;
-    connect rw.addr  <- word_addr;
-    connect rw.wdata <- icb_cmd_wdata;
-    connect rw.rdata -> sram_rdata;
+    clk      <- clk;
+    rw.en    <- icb_cmd_valid;
+    rw.wen   <- ~icb_cmd_read;
+    rw.addr  <- word_addr;
+    rw.wdata <- icb_cmd_wdata;
+    rw.rdata -> sram_rdata;
   end inst mem
 
   // Response valid: 1-cycle latency

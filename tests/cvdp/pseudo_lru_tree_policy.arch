@@ -24,8 +24,8 @@ module pseudo_lru_tree_policy
   // Submodule: find pseudo-LRU slot from current recency tree
   inst slot_select_unit: slot_select_pseudo_lru_tree
     param NWAYS = NWAYS;
-    connect array <- recency[idx];
-    connect index -> pseudo_lru_slot;
+    array <- recency[idx];
+    index -> pseudo_lru_slot;
   end inst slot_select_unit
 
   comb way_replace = pseudo_lru_slot;

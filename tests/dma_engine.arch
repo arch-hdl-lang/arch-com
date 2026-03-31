@@ -232,73 +232,73 @@ module DmaEngine
 
   // ── Instances ────────────────────────────────────────────────────────────
   inst regs: DmaRegs
-    connect clk          <- clk;
-    connect rst          <- rst;
-    connect read[0].addr <- 0;
-    connect read[0].data -> regs_src;
-    connect read[1].addr <- 1;
-    connect read[1].data -> regs_dst;
-    connect write.en     <- apb_sel & apb_enable & apb_write;
-    connect write.addr   <- apb_addr;
-    connect write.data   <- apb_wdata;
+    clk          <- clk;
+    rst          <- rst;
+    read[0].addr <- 0;
+    read[0].data -> regs_src;
+    read[1].addr <- 1;
+    read[1].data -> regs_dst;
+    write.en     <- apb_sel & apb_enable & apb_write;
+    write.addr   <- apb_addr;
+    write.data   <- apb_wdata;
   end inst regs
 
   inst ctrl: TransferFsm
-    connect clk      <- clk;
-    connect rst      <- rst;
-    connect start    <- start_pulse;
-    connect all_done <- all_done;
-    connect active   -> busy;
-    connect fire_irq -> irq;
+    clk      <- clk;
+    rst      <- rst;
+    start    <- start_pulse;
+    all_done <- all_done;
+    active   -> busy;
+    fire_irq -> irq;
   end inst ctrl
 
   inst read_ctr: BeatCounter
-    connect clk    <- clk;
-    connect rst    <- rst;
-    connect inc    <- read_fired;
-    connect clear  <- read_done;
-    connect value  -> read_val;
-    connect at_max -> read_at_max_r;
+    clk    <- clk;
+    rst    <- rst;
+    inc    <- read_fired;
+    clear  <- read_done;
+    value  -> read_val;
+    at_max -> read_at_max_r;
   end inst read_ctr
 
   inst beat: BeatCounter
-    connect clk    <- clk;
-    connect rst    <- rst;
-    connect inc    <- beat_fired;
-    connect clear  <- all_done;
-    connect value  -> beat_val;
-    connect at_max -> at_max_r;
+    clk    <- clk;
+    rst    <- rst;
+    inc    <- beat_fired;
+    clear  <- all_done;
+    value  -> beat_val;
+    at_max -> at_max_r;
   end inst beat
 
   inst wb: WriteBuffer
-    connect clk        <- clk;
-    connect rst        <- rst;
-    connect push_valid <- read_fired;
-    connect push_ready -> wb_push_ready;
-    connect push_data  <- mem_rd_data;
-    connect pop_valid  -> wb_pop_valid;
-    connect pop_ready  <- mem_wr_ready & write_granted;
-    connect pop_data   -> wb_pop_data;
+    clk        <- clk;
+    rst        <- rst;
+    push_valid <- read_fired;
+    push_ready -> wb_push_ready;
+    push_data  <- mem_rd_data;
+    pop_valid  -> wb_pop_valid;
+    pop_ready  <- mem_wr_ready & write_granted;
+    pop_data   -> wb_pop_data;
   end inst wb
 
   inst desc: DescTable
-    connect clk            <- clk;
-    connect rd_port.addr   <- desc_rd_addr;
-    connect rd_port.en     <- desc_rd_en;
-    connect rd_port.rdata  -> desc_rdata;
-    connect wr_port.addr   <- apb_addr.zext<4>();
-    connect wr_port.en     <- apb_sel & apb_enable & apb_write;
-    connect wr_port.wen    <- apb_sel & apb_enable & apb_write;
-    connect wr_port.wdata  <- apb_wdata;
+    clk            <- clk;
+    rd_port.addr   <- desc_rd_addr;
+    rd_port.en     <- desc_rd_en;
+    rd_port.rdata  -> desc_rdata;
+    wr_port.addr   <- apb_addr.zext<4>();
+    wr_port.en     <- apb_sel & apb_enable & apb_write;
+    wr_port.wen    <- apb_sel & apb_enable & apb_write;
+    wr_port.wdata  <- apb_wdata;
   end inst desc
 
   inst arb: MemArbiter
-    connect clk               <- clk;
-    connect rst               <- rst;
-    connect request.valid     <- {write_wants, read_wants};
-    connect request.ready     -> arb_req_ready;
-    connect grant_valid       -> arb_grant_valid;
-    connect grant_requester   -> arb_grant_req;
+    clk               <- clk;
+    rst               <- rst;
+    request.valid     <- {write_wants, read_wants};
+    request.ready     -> arb_req_ready;
+    grant_valid       -> arb_grant_valid;
+    grant_requester   -> arb_grant_req;
   end inst arb
 
   // ── All-reads-done latch ───────────────────────────────────────────────────

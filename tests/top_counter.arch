@@ -26,9 +26,9 @@ module Top
   port count_out: out UInt<8>;
   inst ctr: Counter
     param WIDTH = 8;
-    connect clk <- clk;
-    connect rst <- rst;
-    connect en <- en;
-    connect count -> count_out;
+    clk <- clk;
+    rst <- rst;
+    en <- en;
+    count -> count_out;
   end inst ctr
 end module Top

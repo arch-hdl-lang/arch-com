@@ -27,132 +27,132 @@ module CoreTop
 
   // ── ITCM ───────────────────────────────────────────────────────────
   inst itcm: E203Itcm
-    connect clk     <- clk;
-    connect rst_n   <- rst_n;
-    connect rd_en   <- itcm_fetch_rd_en;
-    connect rd_addr <- itcm_fetch_rd_addr;
-    connect rd_data -> itcm_fetch_rd_data;
-    connect wr_en   <- itcm_wr_mux_en;
-    connect wr_addr <- itcm_wr_mux_addr;
-    connect wr_data <- itcm_wr_mux_data;
+    clk     <- clk;
+    rst_n   <- rst_n;
+    rd_en   <- itcm_fetch_rd_en;
+    rd_addr <- itcm_fetch_rd_addr;
+    rd_data -> itcm_fetch_rd_data;
+    wr_en   <- itcm_wr_mux_en;
+    wr_addr <- itcm_wr_mux_addr;
+    wr_data <- itcm_wr_mux_data;
   end inst itcm
 
   // ── IFU ────────────────────────────────────────────────────────────
   inst ifu: IfuTop
-    connect clk              <- clk;
-    connect rst_n            <- rst_n;
-    connect o_ready          <- true;
-    connect exu_redirect     <- exu_redirect;
-    connect exu_redirect_pc  <- exu_redirect_pc;
-    connect itcm_cmd_ready   <- true;
-    connect itcm_rsp_valid   <- itcm_rsp_valid_d;
-    connect itcm_rsp_data    <- itcm_fetch_rd_data;
-    connect oitf_empty       <- true;
-    connect ir_empty         <- true;
-    connect ir_rs1en         <- false;
-    connect jalr_rs1idx_cam_irrdidx <- false;
-    connect ir_valid_clr     <- false;
-    connect rf2bpu_x1        <- 0;
-    connect rf2bpu_rs1       <- 0;
-    connect o_valid          -> ifu_o_valid;
-    connect o_instr          -> ifu_o_instr;
-    connect o_pc             -> ifu_o_pc;
-    connect o_bus_err        -> ifu_bus_err;
-    connect itcm_cmd_valid   -> itcm_cmd_valid;
-    connect itcm_cmd_addr    -> itcm_cmd_addr;
-    connect itcm_rsp_ready   -> ifu_rsp_ready;
-    connect bpu_wait         -> ifu_bpu_wait;
-    connect bpu2rf_rs1_ena   -> ifu_bpu_rs1_ena;
-    connect prdt_taken       -> ifu_prdt_taken;
-    connect prdt_pc_add_op1  -> ifu_pc_op1;
-    connect prdt_pc_add_op2  -> ifu_pc_op2;
-    connect dec_is_bjp       -> ifu_dec_bjp;
-    connect dec_is_lui       -> ifu_dec_lui;
-    connect dec_is_auipc     -> ifu_dec_auipc;
+    clk              <- clk;
+    rst_n            <- rst_n;
+    o_ready          <- true;
+    exu_redirect     <- exu_redirect;
+    exu_redirect_pc  <- exu_redirect_pc;
+    itcm_cmd_ready   <- true;
+    itcm_rsp_valid   <- itcm_rsp_valid_d;
+    itcm_rsp_data    <- itcm_fetch_rd_data;
+    oitf_empty       <- true;
+    ir_empty         <- true;
+    ir_rs1en         <- false;
+    jalr_rs1idx_cam_irrdidx <- false;
+    ir_valid_clr     <- false;
+    rf2bpu_x1        <- 0;
+    rf2bpu_rs1       <- 0;
+    o_valid          -> ifu_o_valid;
+    o_instr          -> ifu_o_instr;
+    o_pc             -> ifu_o_pc;
+    o_bus_err        -> ifu_bus_err;
+    itcm_cmd_valid   -> itcm_cmd_valid;
+    itcm_cmd_addr    -> itcm_cmd_addr;
+    itcm_rsp_ready   -> ifu_rsp_ready;
+    bpu_wait         -> ifu_bpu_wait;
+    bpu2rf_rs1_ena   -> ifu_bpu_rs1_ena;
+    prdt_taken       -> ifu_prdt_taken;
+    prdt_pc_add_op1  -> ifu_pc_op1;
+    prdt_pc_add_op2  -> ifu_pc_op2;
+    dec_is_bjp       -> ifu_dec_bjp;
+    dec_is_lui       -> ifu_dec_lui;
+    dec_is_auipc     -> ifu_dec_auipc;
   end inst ifu
 
   // ── EXU ────────────────────────────────────────────────────────────
   inst exu: ExuTop
-    connect clk        <- clk;
-    connect rst_n      <- rst_n;
-    connect ifu_valid  <- ifu_o_valid;
-    connect ifu_instr  <- ifu_o_instr;
-    connect ifu_pc     <- ifu_o_pc;
-    connect ifu_ready  -> exu_ifu_ready;
-    connect o_bjp_valid -> exu_bjp_valid;
-    connect o_bjp_taken -> exu_bjp_taken;
-    connect o_bjp_tgt   -> exu_bjp_tgt;
-    connect lsu_valid   -> exu_lsu_valid;
-    connect lsu_ready   <- true;
-    connect lsu_addr    -> exu_lsu_addr;
-    connect lsu_wdata   -> exu_lsu_wdata;
-    connect lsu_load    -> exu_lsu_load;
-    connect lsu_store   -> exu_lsu_store;
-    connect lsu_resp_valid <- false;
-    connect lsu_resp_data  <- 0;
-    connect o_commit_valid -> exu_commit_valid;
+    clk        <- clk;
+    rst_n      <- rst_n;
+    ifu_valid  <- ifu_o_valid;
+    ifu_instr  <- ifu_o_instr;
+    ifu_pc     <- ifu_o_pc;
+    ifu_ready  -> exu_ifu_ready;
+    o_bjp_valid -> exu_bjp_valid;
+    o_bjp_taken -> exu_bjp_taken;
+    o_bjp_tgt   -> exu_bjp_tgt;
+    lsu_valid   -> exu_lsu_valid;
+    lsu_ready   <- true;
+    lsu_addr    -> exu_lsu_addr;
+    lsu_wdata   -> exu_lsu_wdata;
+    lsu_load    -> exu_lsu_load;
+    lsu_store   -> exu_lsu_store;
+    lsu_resp_valid <- false;
+    lsu_resp_data  <- 0;
+    o_commit_valid -> exu_commit_valid;
   end inst exu
 
   // ── LSU ────────────────────────────────────────────────────────────
   inst lsu: LsuCtrl
-    connect addr     <- exu_lsu_addr;
-    connect wdata    <- exu_lsu_wdata;
-    connect funct3   <- 2;
-    connect is_load  <- exu_lsu_load;
-    connect is_store <- exu_lsu_store;
-    connect mem_addr  -> lsu_mem_addr;
-    connect mem_wdata -> lsu_mem_wdata;
-    connect mem_wstrb -> lsu_mem_wstrb;
-    connect mem_wen   -> lsu_mem_wen;
-    connect mem_rdata <- biu_lsu_rdata;
-    connect load_result -> lsu_load_result;
+    addr     <- exu_lsu_addr;
+    wdata    <- exu_lsu_wdata;
+    funct3   <- 2;
+    is_load  <- exu_lsu_load;
+    is_store <- exu_lsu_store;
+    mem_addr  -> lsu_mem_addr;
+    mem_wdata -> lsu_mem_wdata;
+    mem_wstrb -> lsu_mem_wstrb;
+    mem_wen   -> lsu_mem_wen;
+    mem_rdata <- biu_lsu_rdata;
+    load_result -> lsu_load_result;
   end inst lsu
 
   // ── BIU ────────────────────────────────────────────────────────────
   inst bus: Biu
-    connect lsu_addr   <- lsu_mem_addr;
-    connect lsu_wdata  <- lsu_mem_wdata;
-    connect lsu_wstrb  <- lsu_mem_wstrb;
-    connect lsu_wen    <- lsu_mem_wen;
-    connect lsu_ren    <- exu_lsu_load;
-    connect itcm_rd_data <- itcm_fetch_rd_data;
-    connect dtcm_rd_data <- dtcm_rd_data;
-    connect lsu_rdata    -> biu_lsu_rdata;
-    connect itcm_rd_en   -> biu_itcm_rd_en;
-    connect itcm_rd_addr -> biu_itcm_rd_addr;
-    connect itcm_wr_en   -> biu_itcm_wr_en;
-    connect itcm_wr_addr -> biu_itcm_wr_addr;
-    connect itcm_wr_data -> biu_itcm_wr_data;
-    connect dtcm_rd_en   -> biu_dtcm_rd_en;
-    connect dtcm_rd_addr -> biu_dtcm_rd_addr;
-    connect dtcm_wr_en   -> biu_dtcm_wr_en;
-    connect dtcm_wr_addr -> biu_dtcm_wr_addr;
-    connect dtcm_wr_data -> biu_dtcm_wr_data;
-    connect dtcm_wr_be   -> biu_dtcm_wr_be;
+    lsu_addr   <- lsu_mem_addr;
+    lsu_wdata  <- lsu_mem_wdata;
+    lsu_wstrb  <- lsu_mem_wstrb;
+    lsu_wen    <- lsu_mem_wen;
+    lsu_ren    <- exu_lsu_load;
+    itcm_rd_data <- itcm_fetch_rd_data;
+    dtcm_rd_data <- dtcm_rd_data;
+    lsu_rdata    -> biu_lsu_rdata;
+    itcm_rd_en   -> biu_itcm_rd_en;
+    itcm_rd_addr -> biu_itcm_rd_addr;
+    itcm_wr_en   -> biu_itcm_wr_en;
+    itcm_wr_addr -> biu_itcm_wr_addr;
+    itcm_wr_data -> biu_itcm_wr_data;
+    dtcm_rd_en   -> biu_dtcm_rd_en;
+    dtcm_rd_addr -> biu_dtcm_rd_addr;
+    dtcm_wr_en   -> biu_dtcm_wr_en;
+    dtcm_wr_addr -> biu_dtcm_wr_addr;
+    dtcm_wr_data -> biu_dtcm_wr_data;
+    dtcm_wr_be   -> biu_dtcm_wr_be;
   end inst bus
 
   // ── DTCM ───────────────────────────────────────────────────────────
   inst dtcm: Dtcm
-    connect clk     <- clk;
-    connect rst_n   <- rst_n;
-    connect rd_en   <- biu_dtcm_rd_en;
-    connect rd_addr <- biu_dtcm_rd_addr;
-    connect rd_dout -> dtcm_rd_data;
-    connect wr_en   <- biu_dtcm_wr_en;
-    connect wr_be   <- biu_dtcm_wr_be;
-    connect wr_addr <- biu_dtcm_wr_addr;
-    connect wr_din  <- biu_dtcm_wr_data;
+    clk     <- clk;
+    rst_n   <- rst_n;
+    rd_en   <- biu_dtcm_rd_en;
+    rd_addr <- biu_dtcm_rd_addr;
+    rd_dout -> dtcm_rd_data;
+    wr_en   <- biu_dtcm_wr_en;
+    wr_be   <- biu_dtcm_wr_be;
+    wr_addr <- biu_dtcm_wr_addr;
+    wr_din  <- biu_dtcm_wr_data;
   end inst dtcm
 
   // ── CLINT Timer ────────────────────────────────────────────────────
   inst timer: ClintTimer
-    connect clk       <- clk;
-    connect rst       <- false;
-    connect reg_addr  <- 0;
-    connect reg_wdata <- 0;
-    connect reg_wen   <- false;
-    connect reg_rdata -> timer_rdata;
-    connect tmr_irq   -> tmr_irq;
+    clk       <- clk;
+    rst       <- false;
+    reg_addr  <- 0;
+    reg_wdata <- 0;
+    reg_wen   <- false;
+    reg_rdata -> timer_rdata;
+    tmr_irq   -> tmr_irq;
   end inst timer
 
   // ── ITCM fetch: IFU cmd → ITCM read port ──────────────────────────

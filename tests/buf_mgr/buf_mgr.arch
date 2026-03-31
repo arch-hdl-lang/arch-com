@@ -147,43 +147,43 @@ module BufMgr
   // ── RAM Instances ──
 
   inst dmem: DataMem
-    connect clk           <- clk;
-    connect wr_port.en    <- eq2_valid;
-    connect wr_port.addr  <- eq2_alloc_slot;
-    connect wr_port.data  <- eq2_data;
-    connect rd_port.en    <- dequeue_valid and setup_done;
-    connect rd_port.addr  <- dq0_head_bypassed;
-    connect rd_port.data  -> data_rd_data;
+    clk           <- clk;
+    wr_port.en    <- eq2_valid;
+    wr_port.addr  <- eq2_alloc_slot;
+    wr_port.data  <- eq2_data;
+    rd_port.en    <- dequeue_valid and setup_done;
+    rd_port.addr  <- dq0_head_bypassed;
+    rd_port.data  -> data_rd_data;
   end inst dmem
 
   inst nptr: NextPtrMem
-    connect clk           <- clk;
-    connect wr_port.en    <- eq2_valid and (not eq2_was_empty);
-    connect wr_port.addr  <- eq2_old_tail;
-    connect wr_port.data  <- eq2_alloc_slot;
-    connect rd_port.en    <- dequeue_valid and setup_done;
-    connect rd_port.addr  <- dq0_head_bypassed;
-    connect rd_port.data  -> next_ptr_rd_data;
+    clk           <- clk;
+    wr_port.en    <- eq2_valid and (not eq2_was_empty);
+    wr_port.addr  <- eq2_old_tail;
+    wr_port.data  <- eq2_alloc_slot;
+    rd_port.en    <- dequeue_valid and setup_done;
+    rd_port.addr  <- dq0_head_bypassed;
+    rd_port.data  -> next_ptr_rd_data;
   end inst nptr
 
   inst fbank0: FreeListBank
-    connect clk           <- clk;
-    connect rd_port.en    <- fl_do_prefetch and (not fl_rd_bank);
-    connect rd_port.addr  <- setup_done ? fl_rd_addr : setup_addr;
-    connect wr_port.en    <- (not setup_done and not setup_bank) or (setup_done and dq2_valid and not fl_wr_bank);
-    connect wr_port.addr  <- setup_done ? fl_wr_addr : setup_addr;
-    connect wr_port.data  <- setup_done ? dq2_old_head : setup_ctr;
-    connect rd_port.data  -> fbank0_rd_data;
+    clk           <- clk;
+    rd_port.en    <- fl_do_prefetch and (not fl_rd_bank);
+    rd_port.addr  <- setup_done ? fl_rd_addr : setup_addr;
+    wr_port.en    <- (not setup_done and not setup_bank) or (setup_done and dq2_valid and not fl_wr_bank);
+    wr_port.addr  <- setup_done ? fl_wr_addr : setup_addr;
+    wr_port.data  <- setup_done ? dq2_old_head : setup_ctr;
+    rd_port.data  -> fbank0_rd_data;
   end inst fbank0
 
   inst fbank1: FreeListBank
-    connect clk           <- clk;
-    connect rd_port.en    <- fl_do_prefetch and fl_rd_bank;
-    connect rd_port.addr  <- setup_done ? fl_rd_addr : setup_addr;
-    connect wr_port.en    <- (not setup_done and setup_bank) or (setup_done and dq2_valid and fl_wr_bank);
-    connect wr_port.addr  <- setup_done ? fl_wr_addr : setup_addr;
-    connect wr_port.data  <- setup_done ? dq2_old_head : setup_ctr;
-    connect rd_port.data  -> fbank1_rd_data;
+    clk           <- clk;
+    rd_port.en    <- fl_do_prefetch and fl_rd_bank;
+    rd_port.addr  <- setup_done ? fl_rd_addr : setup_addr;
+    wr_port.en    <- (not setup_done and setup_bank) or (setup_done and dq2_valid and fl_wr_bank);
+    wr_port.addr  <- setup_done ? fl_wr_addr : setup_addr;
+    wr_port.data  <- setup_done ? dq2_old_head : setup_ctr;
+    rd_port.data  -> fbank1_rd_data;
   end inst fbank1
 
   // ══════════════════════════════════════════════════════════════════════════

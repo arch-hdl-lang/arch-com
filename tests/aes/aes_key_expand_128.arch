@@ -137,30 +137,30 @@ module AesKeyExpand128
   // RotWord: [a0,a1,a2,a3] -> [a1,a2,a3,a0]
   // So we feed w3[23:16], w3[15:8], w3[7:0], w3[31:24]
   inst sbox0: AesSbox
-    connect a <- w3[23:16];
-    connect b -> subword0;
+    a <- w3[23:16];
+    b -> subword0;
   end inst sbox0
 
   inst sbox1: AesSbox
-    connect a <- w3[15:8];
-    connect b -> subword1;
+    a <- w3[15:8];
+    b -> subword1;
   end inst sbox1
 
   inst sbox2: AesSbox
-    connect a <- w3[7:0];
-    connect b -> subword2;
+    a <- w3[7:0];
+    b -> subword2;
   end inst sbox2
 
   inst sbox3: AesSbox
-    connect a <- w3[31:24];
-    connect b -> subword3;
+    a <- w3[31:24];
+    b -> subword3;
   end inst sbox3
 
   // Round constant
   inst rcon0: AesRcon
-    connect clk <- clk;
-    connect kld <- kld;
-    connect out_rcon -> rcon_val;
+    clk <- clk;
+    kld <- kld;
+    out_rcon -> rcon_val;
   end inst rcon0
 
   // Combinational: compute next key words

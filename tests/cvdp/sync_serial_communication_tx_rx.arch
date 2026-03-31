@@ -11,23 +11,23 @@ module sync_serial_communication_tx_rx
   wire serial_clk_w: Bool;
 
   inst tx: tx_block
-    connect clk        <- clk;
-    connect reset_n    <- reset_n;
-    connect data_in    <- data_in;
-    connect sel        <- sel;
-    connect serial_out -> serial_out_w;
-    connect done       -> tx_done_w;
-    connect serial_clk -> serial_clk_w;
+    clk        <- clk;
+    reset_n    <- reset_n;
+    data_in    <- data_in;
+    sel        <- sel;
+    serial_out -> serial_out_w;
+    done       -> tx_done_w;
+    serial_clk -> serial_clk_w;
   end inst tx
 
   inst rx: rx_block
-    connect clk        <- clk;
-    connect reset_n    <- reset_n;
-    connect data_in    <- serial_out_w;
-    connect sel        <- sel;
-    connect serial_clk <- serial_clk_w;
-    connect data_out   -> data_out;
-    connect done       -> done;
+    clk        <- clk;
+    reset_n    <- reset_n;
+    data_in    <- serial_out_w;
+    sel        <- sel;
+    serial_clk <- serial_clk_w;
+    data_out   -> data_out;
+    done       -> done;
   end inst rx
 
 end module sync_serial_communication_tx_rx

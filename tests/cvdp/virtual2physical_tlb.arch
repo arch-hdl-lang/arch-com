@@ -19,36 +19,36 @@ module virtual2physical_tlb
     param TLB_SIZE = TLB_SIZE;
     param ADDR_WIDTH = ADDR_WIDTH;
     param PAGE_WIDTH = PAGE_WIDTH;
-    connect clk <- clk;
-    connect rst <- reset;
-    connect virtual_address <- virtual_address;
-    connect tlb_write_enable <- tlb_write_enable;
-    connect flsh <- flsh;
-    connect page_table_entry <- page_table_entry;
-    connect physical_address -> physical_address;
-    connect hit -> hit;
-    connect miss -> miss;
+    clk <- clk;
+    rst <- reset;
+    virtual_address <- virtual_address;
+    tlb_write_enable <- tlb_write_enable;
+    flsh <- flsh;
+    page_table_entry <- page_table_entry;
+    physical_address -> physical_address;
+    hit -> hit;
+    miss -> miss;
   end inst tlb_inst
 
   inst pth_inst: PageTableHandler
     param ADDR_WIDTH = ADDR_WIDTH;
     param PAGE_WIDTH = PAGE_WIDTH;
     param PAGE_TABLE_SIZE = PAGE_TABLE_SIZE;
-    connect clk <- clk;
-    connect rst <- reset;
-    connect miss <- miss;
-    connect virtual_page <- virtual_address;
-    connect page_table_entry -> page_table_entry;
-    connect ready -> ready;
+    clk <- clk;
+    rst <- reset;
+    miss <- miss;
+    virtual_page <- virtual_address;
+    page_table_entry -> page_table_entry;
+    ready -> ready;
   end inst pth_inst
 
   inst cu_inst: ControlUnit
-    connect clk <- clk;
-    connect rst <- reset;
-    connect hit <- hit;
-    connect miss <- miss;
-    connect ready <- ready;
-    connect tlb_write_enable -> tlb_write_enable;
-    connect flsh -> flsh;
+    clk <- clk;
+    rst <- reset;
+    hit <- hit;
+    miss <- miss;
+    ready <- ready;
+    tlb_write_enable -> tlb_write_enable;
+    flsh -> flsh;
   end inst cu_inst
 end module virtual2physical_tlb

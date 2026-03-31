@@ -77,8 +77,6 @@ pub enum TokenKind {
     Let,
     #[token("inst")]
     Inst,
-    #[token("connect")]
-    Connect,
     #[token("struct")]
     Struct,
     #[token("enum")]
@@ -210,6 +208,10 @@ pub enum TokenKind {
     KwVec,
 
     // Operators and punctuation
+    #[token("+:")]
+    PlusColon,
+    #[token("-:")]
+    MinusColon,
     #[token("+")]
     Plus,
     #[token("-")]
@@ -338,7 +340,6 @@ impl fmt::Display for TokenKind {
             TokenKind::Match => write!(f, "match"),
             TokenKind::Let => write!(f, "let"),
             TokenKind::Inst => write!(f, "inst"),
-            TokenKind::Connect => write!(f, "connect"),
             TokenKind::Struct => write!(f, "struct"),
             TokenKind::Enum => write!(f, "enum"),
             TokenKind::Domain => write!(f, "domain"),
@@ -413,6 +414,8 @@ impl fmt::Display for TokenKind {
             TokenKind::GtEq => write!(f, ">="),
             TokenKind::LArrow => write!(f, "<-"),
             TokenKind::RArrow => write!(f, "->"),
+            TokenKind::PlusColon  => write!(f, "+:"),
+            TokenKind::MinusColon => write!(f, "-:"),
             TokenKind::FatArrow => write!(f, "=>"),
             TokenKind::Lt => write!(f, "<"),
             TokenKind::Gt => write!(f, ">"),

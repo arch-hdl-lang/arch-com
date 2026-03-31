@@ -1,27 +1,21 @@
-module priority_encoder_8x3 (
-  input logic [8-1:0] in,
-  output logic [3-1:0] out
+module priority_encoder #(
+  parameter int N = 8,
+  parameter int M = 3
+) (
+  input logic [N-1:0] input_signal,
+  output logic [M-1:0] out
 );
 
+  logic [M-1:0] result;
   always_comb begin
-    if (in[7]) begin
-      out = 3'd7;
-    end else if (in[6]) begin
-      out = 3'd6;
-    end else if (in[5]) begin
-      out = 3'd5;
-    end else if (in[4]) begin
-      out = 3'd4;
-    end else if (in[3]) begin
-      out = 3'd3;
-    end else if (in[2]) begin
-      out = 3'd2;
-    end else if (in[1]) begin
-      out = 3'd1;
-    end else begin
-      out = 3'd0;
+    result = 0;
+    for (int i = 0; i <= N - 1; i++) begin
+      if (input_signal[i +: 1]) begin
+        result = i[M - 1:0];
+      end
     end
   end
+  assign out = result;
 
 endmodule
 

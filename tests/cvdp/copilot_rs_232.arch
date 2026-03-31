@@ -22,10 +22,10 @@ module copilot_rs_232
     param BAUD_ACC_WIDTH = BAUD_ACC_WIDTH;
     param CLOCK_FREQ = CLOCK_FREQ;
     param BAUD_RATE = BAUD_RATE;
-    connect clock <- clock;
-    connect reset_neg <- reset_neg;
-    connect enable <- tx_transmitter_valid;
-    connect baud_pulse -> baud_pulse_w;
+    clock <- clock;
+    reset_neg <- reset_neg;
+    enable <- tx_transmitter_valid;
+    baud_pulse -> baud_pulse_w;
   end inst baud_gen
 
   comb tx_transmitter_valid = (State != 0);

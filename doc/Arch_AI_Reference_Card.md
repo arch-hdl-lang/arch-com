@@ -191,17 +191,17 @@
 |                                       |                                  |
 | param W = 16;                         |                                  |
 |                                       |                                  |
-| connect clk \<- clk;                  |                                  |
+| clk \<- clk;                  |                                  |
 |                                       |                                  |
-| connect a \<- sig; connect y -\> out; |                                  |
+| a \<- sig; y -\> out; |                                  |
 |                                       |                                  |
 | end inst u                            |                                  |
 |                                       |                                  |
 | // Hierarchical refs FORBIDDEN:       | inst_name.port is a compile      |
-|                                       | error. Use connect y -> wire     |
+|                                       | error. Use y -> wire     |
 | // ✗ add.sum  (compile error)         | in the inst block and reference  |
 |                                       | wire in the enclosing scope.     |
-| // ✓ connect sum -> my_sum;           |                                  |
+| // ✓ sum -> my_sum;           |                                  |
 |    // then use my_sum                 |                                  |
 +---------------------------------------+----------------------------------+
 
@@ -254,7 +254,7 @@
 |                                       |                               |
 | inst alu0: Alu                        | inst inside stages supported  |
 |                                       |                               |
-| connect a \<- Fetch.r1;               | (output wires auto-declared). |
+| a \<- Fetch.r1;               | (output wires auto-declared). |
 |                                       |                               |
 | end inst alu0                         |                               |
 |                                       |                               |
@@ -563,11 +563,11 @@ CDC detection covers both seq→seq and comb→seq crossings: a comb block readi
 |                                      |                                   |
 | inst pe\[i\]: ProcElem               | Type-checked per index.           |
 |                                      |                                   |
-| connect clk \<- clk;                 | Boundary expression handles       |
+| clk \<- clk;                 | Boundary expression handles       |
 |                                      |                                   |
-| connect a_in \<- a\[i\];             | chain wiring: i==0 ? 0 : prev     |
+| a_in \<- a\[i\];             | chain wiring: i==0 ? 0 : prev     |
 |                                      |                                   |
-| connect sum_in \<-                   | generate if: port does NOT        |
+| sum_in \<-                   | generate if: port does NOT        |
 |                                      |                                   |
 | i==0 ? 0 : pe\[i-1\].sum_out;        | exist when condition false.       |
 |                                      |                                   |

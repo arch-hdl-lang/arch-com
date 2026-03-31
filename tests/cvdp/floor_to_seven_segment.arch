@@ -15,11 +15,11 @@ module floor_to_seven_segment
   wire bcd_one: UInt<4>;
 
   inst u_bcd: Binary2BCD
-    connect num <- floor_display.zext<8>();
-    connect thousand -> bcd_thou;
-    connect hundred -> bcd_hund;
-    connect ten -> bcd_ten;
-    connect one -> bcd_one;
+    num <- floor_display.zext<8>();
+    thousand -> bcd_thou;
+    hundred -> bcd_hund;
+    ten -> bcd_ten;
+    one -> bcd_one;
   end inst u_bcd
 
   comb

@@ -27,19 +27,19 @@ module soundgenerator
   inst u_tick_milli: strob_gen
     param CLOCK_HZ = CLOCK_HZ;
     param PERIOD_US = 1000;
-    connect clk <- clk;
-    connect nrst <- nrst;
-    connect enable <- busy_w;
-    connect strobe_o -> TickMilli;
+    clk <- clk;
+    nrst <- nrst;
+    enable <- busy_w;
+    strobe_o -> TickMilli;
   end inst u_tick_milli
 
   inst u_tick_micro: strob_gen
     param CLOCK_HZ = CLOCK_HZ;
     param PERIOD_US = 1;
-    connect clk <- clk;
-    connect nrst <- nrst;
-    connect enable <- busy_w;
-    connect strobe_o -> tickmicro;
+    clk <- clk;
+    nrst <- nrst;
+    enable <- busy_w;
+    strobe_o -> tickmicro;
   end inst u_tick_micro
 
   // busy when duration counter is non-zero

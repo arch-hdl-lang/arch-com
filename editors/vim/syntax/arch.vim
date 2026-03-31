@@ -20,7 +20,7 @@ syn keyword archEnd        end
 " ── Block-structure keywords ──────────────────────────────────────────────────
 " Appear inside construct bodies to declare sub-sections
 syn keyword archBlock      port ports param socket state default
-syn keyword archBlock      comb seq reg wire let inst connect generate
+syn keyword archBlock      comb seq reg wire let inst generate
 syn keyword archBlock      assert cover function return use
 syn keyword archBlock      stage store hook implements
 syn keyword archBlock      testbench initial repeat

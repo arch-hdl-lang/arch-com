@@ -58,31 +58,31 @@ module Top
   wire b_resp_w: UInt<2>;
 
   inst m: Master
-    connect clk <- clk;
-    connect rst <- rst;
-    connect axi.aw_valid -> aw_valid_w;
-    connect axi.aw_ready <- aw_ready_w;
-    connect axi.aw_addr -> aw_addr_w;
-    connect axi.w_valid -> w_valid_w;
-    connect axi.w_ready <- w_ready_w;
-    connect axi.w_data -> w_data_w;
-    connect axi.b_valid <- b_valid_w;
-    connect axi.b_ready -> b_ready_w;
-    connect axi.b_resp <- b_resp_w;
+    clk <- clk;
+    rst <- rst;
+    axi.aw_valid -> aw_valid_w;
+    axi.aw_ready <- aw_ready_w;
+    axi.aw_addr -> aw_addr_w;
+    axi.w_valid -> w_valid_w;
+    axi.w_ready <- w_ready_w;
+    axi.w_data -> w_data_w;
+    axi.b_valid <- b_valid_w;
+    axi.b_ready -> b_ready_w;
+    axi.b_resp <- b_resp_w;
   end inst m
 
   inst s: Slave
-    connect clk <- clk;
-    connect rst <- rst;
-    connect axi.aw_valid <- aw_valid_w;
-    connect axi.aw_ready -> aw_ready_w;
-    connect axi.aw_addr <- aw_addr_w;
-    connect axi.w_valid <- w_valid_w;
-    connect axi.w_ready -> w_ready_w;
-    connect axi.w_data <- w_data_w;
-    connect axi.b_valid -> b_valid_w;
-    connect axi.b_ready <- b_ready_w;
-    connect axi.b_resp -> b_resp_w;
+    clk <- clk;
+    rst <- rst;
+    axi.aw_valid <- aw_valid_w;
+    axi.aw_ready -> aw_ready_w;
+    axi.aw_addr <- aw_addr_w;
+    axi.w_valid <- w_valid_w;
+    axi.w_ready -> w_ready_w;
+    axi.w_data <- w_data_w;
+    axi.b_valid -> b_valid_w;
+    axi.b_ready <- b_ready_w;
+    axi.b_resp -> b_resp_w;
   end inst s
 
   comb
