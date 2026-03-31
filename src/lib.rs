@@ -1,5 +1,6 @@
 pub mod ast;
 pub mod codegen;
+pub mod comb_graph;
 pub mod diagnostics;
 pub mod elaborate;
 pub mod lexer;

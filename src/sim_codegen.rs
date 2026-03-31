@@ -15,6 +15,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
+use crate::comb_graph;
 use crate::resolve::{Symbol, SymbolTable};
 use crate::typecheck::enum_width;
 
@@ -2064,6 +2065,27 @@ impl<'a> SimCodegen<'a> {
             .filter_map(|i| if let ModuleBodyItem::Inst(inst) = i { Some(inst) } else { None })
             .collect();
 
+        // Analyze combinational instance dependency graph.
+        // Detects feedback cycles (compile error) and computes topological
+        // evaluation order + minimum settle depth for the eval() loop.
+        let (inst_eval_order, settle_depth) = {
+            match comb_graph::analyze_module(m, self.symbols, self.source) {
+                Ok(analysis) => (analysis.sorted_inst_indices, analysis.settle_depth),
+                Err(e) => {
+                    eprintln!("error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        };
+        // If analysis produced fewer indices than insts (e.g. only partial
+        // coverage due to unknown construct types), use identity order for
+        // any remaining instances.
+        let inst_eval_order: Vec<usize> = if inst_eval_order.len() == insts.len() {
+            inst_eval_order
+        } else {
+            (0..insts.len()).collect()
+        };
+
         // Determine if there are any functions defined in the same source file
         let has_functions = self.source.items.iter().any(|i| matches!(i, Item::Function(_)));
 
@@ -2455,11 +2477,15 @@ impl<'a> SimCodegen<'a> {
             //   3. If rising: parent eval_posedge() + sub-inst eval_posedge() (simultaneous)
             //   4. Re-settle: refresh sub-inst + parent comb with post-posedge state
 
-            // Step 1 + 2: set sub-inst inputs, run comb, read outputs (pre-posedge)
-            // Wrapped in a 2-pass loop to settle combinational feedback across inst boundaries
-            // (e.g., valid/ready handshake loops: disp → alu → commit → disp)
-            cpp.push_str("  for (int _settle = 0; _settle < 2; _settle++) {\n");
-            for inst in &insts {
+            // Step 1 + 2: set sub-inst inputs, run comb, read outputs (pre-posedge).
+            // Instances are evaluated in topological order (producers before consumers).
+            // settle_depth=1 when the graph is a strict DAG with no parent comb
+            // intermediates; 2 when parent comb blocks produce signals that feed
+            // instance inputs (they're updated by eval_comb() at loop end, so a
+            // second pass is needed to propagate them).
+            cpp.push_str(&format!("  for (int _settle = 0; _settle < {settle_depth}; _settle++) {{\n"));
+            for &inst_idx in &inst_eval_order {
+            let inst = insts[inst_idx];
                 cpp.push('\n');
                 for conn in &inst.connections {
                     if conn.direction == ConnectDir::Input {
@@ -2519,8 +2545,9 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str("  eval_posedge();\n");
 
             // Step 3: refresh sub-inst comb outputs, then parent comb (with settle loop)
-            cpp.push_str("  for (int _settle = 0; _settle < 2; _settle++) {\n");
-            for inst in &insts {
+            cpp.push_str(&format!("  for (int _settle = 0; _settle < {settle_depth}; _settle++) {{\n"));
+            for &inst_idx in &inst_eval_order {
+            let inst = insts[inst_idx];
                 // Re-set sub-inst inputs (may have changed after posedge)
                 for conn in &inst.connections {
                     if conn.direction == ConnectDir::Input {
