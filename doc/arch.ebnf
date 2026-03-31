@@ -245,10 +245,14 @@ inst_decl = "inst" ident ":" ident
 
 (* Connection directions:
      "<-" drives an input port from a signal in the enclosing scope
-     "->" captures an output port into a wire/reg in the enclosing scope *)
-connect_stmt = "connect" connect_port_ref ( "<-" | "->" ) expr ";" ;
+     "->" captures an output port into a wire/reg in the enclosing scope
+   Port references may use dot-member or bracket-index-dot-member syntax
+   for regfile port groups or structured ports:
+     port_name              plain port
+     group.member           port group member (flattened to group_member)
+     group[i].member        indexed port group (flattened to groupN_member) *)
+connect_stmt = connect_port_ref ( "<-" | "->" ) expr ";" ;
 
-(* Port reference on the instance: plain name, dot-member, or bracket-index-dot-member *)
 connect_port_ref = ident
                  | ident "." ident
                  | ident "[" integer_literal "]" "." ident

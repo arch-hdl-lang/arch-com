@@ -1445,3 +1445,63 @@ fn test_pipe_reg() {
     assert!(sv.contains("always_ff"));
     insta::assert_snapshot!(sv);
 }
+
+// ── Indexed member connection syntax ─────────────────────────────────────────
+
+#[test]
+fn test_connect_indexed_member() {
+    // Tests `port[i].member` syntax in inst connections.
+    // The parser transforms `read[0].addr` → `read0_addr`, etc.
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+regfile SmallRf
+  param NREGS: const = 4;
+  param WIDTH: type = UInt<8>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  ports[2] read
+    addr: in UInt<2>;
+    data: out UInt<8>;
+  end ports read
+  ports[1] write
+    en:   in Bool;
+    addr: in UInt<2>;
+    data: in UInt<8>;
+  end ports write
+end regfile SmallRf
+
+module RfUser
+  port clk:   in Clock<SysDomain>;
+  port rst:   in Reset<Sync>;
+  port sel:   in UInt<2>;
+  port out_a: out UInt<8>;
+  port out_b: out UInt<8>;
+
+  inst rf: SmallRf
+    clk          <- clk;
+    rst          <- rst;
+    read[0].addr <- sel;
+    read[0].data -> out_a;
+    read[1].addr <- 0;
+    read[1].data -> out_b;
+    write.en     <- false;
+    write.addr   <- 0;
+    write.data   <- 0;
+  end inst rf
+end module RfUser
+"#;
+    let sv = compile_to_sv(source);
+    // Parser transforms read[0].addr → read0_addr, read[1].data → read1_data
+    assert!(sv.contains(".read0_addr"), "expected .read0_addr port connection, got:\n{sv}");
+    assert!(sv.contains(".read0_data"), "expected .read0_data port connection, got:\n{sv}");
+    assert!(sv.contains(".read1_addr"), "expected .read1_addr port connection, got:\n{sv}");
+    assert!(sv.contains(".read1_data"), "expected .read1_data port connection, got:\n{sv}");
+    // Also check dot-only syntax: write.en → write_en
+    assert!(sv.contains(".write_en"),   "expected .write_en port connection, got:\n{sv}");
+    assert!(sv.contains(".write_addr"), "expected .write_addr port connection, got:\n{sv}");
+    assert!(sv.contains(".write_data"), "expected .write_data port connection, got:\n{sv}");
+    insta::assert_snapshot!(sv);
+}

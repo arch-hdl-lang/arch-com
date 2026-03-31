@@ -1,0 +1,57 @@
+---
+source: tests/integration_test.rs
+expression: sv
+---
+// domain SysDomain
+//   freq_mhz: 100
+
+module SmallRf #(
+  parameter int NREGS = 4,
+  parameter int WIDTH = 0
+) (
+  input logic clk,
+  input logic rst,
+  input logic [2-1:0] read0_addr,
+  output logic [8-1:0] read0_data,
+  input logic [2-1:0] read1_addr,
+  output logic [8-1:0] read1_data,
+  input logic write_en,
+  input logic [2-1:0] write_addr,
+  input logic [8-1:0] write_data
+);
+
+  logic [8-1:0] rf_data [0:NREGS-1];
+  
+  always_ff @(posedge clk) begin
+    if (write_en)
+      rf_data[write_addr] <= write_data;
+  end
+  
+  always_comb begin
+    read0_data = rf_data[read0_addr];
+    read1_data = rf_data[read1_addr];
+  end
+
+endmodule
+
+module RfUser (
+  input logic clk,
+  input logic rst,
+  input logic [2-1:0] sel,
+  output logic [8-1:0] out_a,
+  output logic [8-1:0] out_b
+);
+
+  SmallRf rf (
+    .clk(clk),
+    .rst(rst),
+    .read0_addr(sel),
+    .read0_data(out_a),
+    .read1_addr(0),
+    .read1_data(out_b),
+    .write_en(1'b0),
+    .write_addr(0),
+    .write_data(0)
+  );
+
+endmodule
