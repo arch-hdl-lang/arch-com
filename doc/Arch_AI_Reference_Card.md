@@ -195,6 +195,14 @@
 |                                       |                                  |
 | a \<- sig; y -\> out; |                                  |
 |                                       |                                  |
+| // Port group member syntax:          | Flattened at parse time:         |
+|                                       |                                  |
+| write.en \<- wr_en;           | write.en → write\_en             |
+|                                       |                                  |
+| read\[0\].addr \<- sel;       | read\[0\].addr → read0\_addr     |
+|                                       |                                  |
+| read\[1\].data -\> out\_b;    | Index must be integer literal.   |
+|                                       |                                  |
 | end inst u                            |                                  |
 |                                       |                                  |
 | // Hierarchical refs FORBIDDEN:       | inst_name.port is a compile      |
