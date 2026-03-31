@@ -1263,10 +1263,18 @@ impl Parser {
     }
 
     fn check_end_generate_if(&self) -> bool {
-        self.pos + 2 < self.tokens.len()
+        // Stop at `end generate if`
+        if self.pos + 2 < self.tokens.len()
             && self.tokens[self.pos].kind == TokenKind::End
             && self.tokens[self.pos + 1].kind == TokenKind::Generate
             && self.tokens[self.pos + 2].kind == TokenKind::If
+        { return true; }
+        // Also stop at `generate else` so the caller can consume it
+        if self.pos + 1 < self.tokens.len()
+            && self.tokens[self.pos].kind == TokenKind::Generate
+            && self.tokens[self.pos + 1].kind == TokenKind::Else
+        { return true; }
+        false
     }
 
     fn parse_gen_items_for(&mut self) -> Result<Vec<GenItem>, CompileError> {
@@ -2840,7 +2848,7 @@ impl Parser {
 
         let mut params = Vec::new();
         let mut ports = Vec::new();
-        let mut kind: Option<CounterMode> = None;
+        let mut mode: Option<CounterMode> = None;
         let mut direction: Option<CounterDirection> = None;
         let mut init: Option<Expr> = None;
 
@@ -2859,7 +2867,7 @@ impl Parser {
                 self.advance();
                 let val = self.expect_ident()?;
                 self.expect(TokenKind::Semi)?;
-                kind = Some(match val.name.as_str() {
+                mode = Some(match val.name.as_str() {
                     "wrap"     => CounterMode::Wrap,
                     "saturate" => CounterMode::Saturate,
                     "gray"     => CounterMode::Gray,
@@ -2922,10 +2930,10 @@ impl Parser {
             return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
         }
 
-        let kind = kind.unwrap_or(CounterMode::Wrap);
+        let mode = mode.unwrap_or(CounterMode::Wrap);
         let direction = direction.unwrap_or(CounterDirection::Up);
         let span = start.merge(closing.span);
-        Ok(CounterDecl { span, name, params, ports, mode: kind, direction, init })
+        Ok(CounterDecl { span, name, params, ports, mode, direction, init })
     }
 
     fn check_end_of(&self, kw: TokenKind) -> bool {

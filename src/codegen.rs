@@ -1711,7 +1711,7 @@ impl<'a> Codegen<'a> {
                 for item in &gf.items {
                     match item {
                         GenItem::Inst(inst) => self.emit_inst(inst),
-                        GenItem::Port(_) => {} // port items should not appear here
+                        GenItem::Port(_) => unreachable!("port GenItems should have been lifted to module ports by elaboration"),
                     }
                 }
                 self.indent -= 1;
@@ -1724,7 +1724,7 @@ impl<'a> Codegen<'a> {
                 for item in &gi.then_items {
                     match item {
                         GenItem::Inst(inst) => self.emit_inst(inst),
-                        GenItem::Port(_) => {}
+                        GenItem::Port(_) => unreachable!("port GenItems should have been lifted to module ports by elaboration"),
                     }
                 }
                 self.indent -= 1;
@@ -1734,7 +1734,7 @@ impl<'a> Codegen<'a> {
                     for item in &gi.else_items {
                         match item {
                             GenItem::Inst(inst) => self.emit_inst(inst),
-                            GenItem::Port(_) => {}
+                            GenItem::Port(_) => unreachable!("port GenItems should have been lifted to module ports by elaboration"),
                         }
                     }
                     self.indent -= 1;

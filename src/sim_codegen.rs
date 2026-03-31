@@ -374,10 +374,10 @@ fn collect_trace_signals(
         });
     }
 
-    // Registers (skip struct/named types — can't bit-shift a struct)
+    // Registers (skip struct/named types and Vec types — can't bit-shift)
     for item in body {
         if let ModuleBodyItem::RegDecl(r) = item {
-            if matches!(r.ty, TypeExpr::Named(_)) { continue; }
+            if matches!(r.ty, TypeExpr::Named(_) | TypeExpr::Vec(..)) { continue; }
             let name = &r.name.name;
             let width = type_width(&r.ty);
             let is_wide = wide_names.contains(name.as_str());
@@ -390,11 +390,12 @@ fn collect_trace_signals(
         }
     }
 
-    // Let bindings and wire decls
+    // Let bindings and wire decls (skip Vec types — they're C arrays, not scalar)
     for item in body {
         match item {
             ModuleBodyItem::LetBinding(l) => {
                 let name = &l.name.name;
+                if l.ty.as_ref().map_or(false, |t| matches!(t, TypeExpr::Vec(..))) { continue; }
                 let width = l.ty.as_ref().map(|t| type_width(t)).unwrap_or(
                     widths.get(name.as_str()).copied().unwrap_or(32)
                 );
@@ -406,6 +407,7 @@ fn collect_trace_signals(
                 });
             }
             ModuleBodyItem::WireDecl(w) => {
+                if matches!(w.ty, TypeExpr::Vec(..)) { continue; }
                 let name = &w.name.name;
                 let width = type_width(&w.ty);
                 sigs.push(TraceSignal {
@@ -720,10 +722,10 @@ struct Ctx<'a> {
     bus_ports:   &'a HashSet<String>,
     /// Reg/wire names whose type is Vec<T,N> — these use C array subscript `[i]`.
     /// All other subscripts on scalar UInt/SInt use bit extraction `(x >> i) & 1`.
-    vec_names:   &'a HashSet<String>,
+    vec_names:   Option<&'a HashSet<String>>,
     /// FSM Vec port-regs: always resolve to `_name` (internal C array), regardless of fsm_mode.
     /// These ports have flat public fields (name_0..name_N-1) but internal storage `_name[N]`.
-    fsm_vec_port_regs: &'a HashSet<String>,
+    fsm_vec_port_regs: Option<&'a HashSet<String>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -738,20 +740,18 @@ impl<'a> Ctx<'a> {
         enum_map:   &'a HashMap<String, Vec<String>>,
         bus_ports:  &'a HashSet<String>,
     ) -> Self {
-        static EMPTY_SET: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
-        let empty = EMPTY_SET.get_or_init(HashSet::new);
         Ctx { reg_names, port_names, let_names, inst_names, wide_names,
               widths, posedge_lhs: false, fsm_mode: false, enum_map, bus_ports,
-              vec_names: empty, fsm_vec_port_regs: empty }
+              vec_names: None, fsm_vec_port_regs: None }
     }
 
     fn with_vec_names(mut self, vec_names: &'a HashSet<String>) -> Self {
-        self.vec_names = vec_names;
+        self.vec_names = Some(vec_names);
         self
     }
 
     fn with_fsm_vec_port_regs(mut self, fsm_vec_port_regs: &'a HashSet<String>) -> Self {
-        self.fsm_vec_port_regs = fsm_vec_port_regs;
+        self.fsm_vec_port_regs = Some(fsm_vec_port_regs);
         self
     }
 
@@ -760,7 +760,7 @@ impl<'a> Ctx<'a> {
     /// Resolve a name to its C++ field/variable name.
     fn resolve_name(&self, name: &str, is_lhs: bool) -> String {
         // FSM Vec port-regs always use `_name` (internal C array) regardless of mode.
-        if self.fsm_vec_port_regs.contains(name) {
+        if self.fsm_vec_port_regs.map_or(false, |s| s.contains(name)) {
             return format!("_{name}");
         }
         if self.reg_names.contains(name) {
@@ -1073,7 +1073,7 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             let i = cpp_expr(idx, ctx);
             // Vec-typed regs use C array subscript; scalar signals use bit extraction
             let is_vec = if let ExprKind::Ident(name) = &base.kind {
-                ctx.vec_names.contains(name.as_str())
+                ctx.vec_names.map_or(false, |s| s.contains(name.as_str()))
             } else {
                 false
             };
@@ -1281,7 +1281,7 @@ fn emit_reg_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize) {
             // Emit mask-and-OR: base = (base & ~(1ULL << idx)) | (uint64_t(val & 1) << idx)
             if let ExprKind::Index(base, idx_expr) = &a.target.kind {
                 if let ExprKind::Ident(base_name) = &base.kind {
-                    if !ctx.vec_names.contains(base_name.as_str()) {
+                    if !ctx.vec_names.map_or(false, |s| s.contains(base_name.as_str())) {
                         let resolved_base = ctx.resolve_name(base_name, true);
                         let idx_cpp = cpp_expr(idx_expr, ctx);
                         let rhs = cpp_expr(&a.value, ctx);
@@ -1379,7 +1379,7 @@ fn emit_comb_stmt(stmt: &CombStmt, ctx: &Ctx, out: &mut String, indent: usize) {
             // Emit mask-and-OR: base = (base & ~(1ULL << idx)) | (uint64_t(val & 1) << idx)
             if let ExprKind::Index(base, idx_expr) = &a.target.kind {
                 if let ExprKind::Ident(base_name) = &base.kind {
-                    if !ctx.vec_names.contains(base_name.as_str()) {
+                    if !ctx.vec_names.map_or(false, |s| s.contains(base_name.as_str())) {
                         let resolved_base = ctx.resolve_name(base_name, false);
                         let idx_cpp = cpp_expr(idx_expr, ctx);
                         let rhs = cpp_expr(&a.value, ctx);
@@ -2831,25 +2831,14 @@ impl<'a> SimCodegen<'a> {
             }
         }
 
-        // Propagate eval_posedge to sub-instances so grandchild registers fire
-        // when a parent calls this module's eval_posedge().
-        // Guard with the rising edge flag(s) so sub-instances only fire on actual
-        // posedges, not on negedge eval() calls that also invoke eval_posedge().
+        // Propagate eval_posedge to sub-instances unconditionally.
+        // Each sub-instance tracks its own _clk_prev and determines internally
+        // whether this call is a rising edge. Guarding with the parent's
+        // _rising_clk would prevent the child's _clk_prev from being updated on
+        // falling edges, causing the child to miss every other rising edge.
         if !insts.is_empty() {
-            if !all_clks.is_empty() {
-                let any_rising = all_clks.iter()
-                    .map(|c| format!("_rising_{c}"))
-                    .collect::<Vec<_>>()
-                    .join(" || ");
-                cpp.push_str(&format!("  if ({any_rising}) {{\n"));
-                for inst in &insts {
-                    cpp.push_str(&format!("    _inst_{}.eval_posedge();\n", inst.name.name));
-                }
-                cpp.push_str("  }\n");
-            } else {
-                for inst in &insts {
-                    cpp.push_str(&format!("  _inst_{}.eval_posedge();\n", inst.name.name));
-                }
+            for inst in &insts {
+                cpp.push_str(&format!("  _inst_{}.eval_posedge();\n", inst.name.name));
             }
         }
 
@@ -2887,6 +2876,14 @@ impl<'a> SimCodegen<'a> {
                 for conn in &inst.connections {
                     if conn.direction == ConnectDir::Input {
                         if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
+                            // Vec wire → inst Vec port: expand element-by-element
+                            if let Some(&n) = vec_wire_counts.get(src_name.as_str()) {
+                                for i in 0..n {
+                                    cpp.push_str(&format!("  _inst_{}.{}_{i} = _let_{src_name}[{i}];\n",
+                                        inst.name.name, conn.port_name.name));
+                                }
+                                continue;
+                            }
                             if wide_names.contains(src_name.as_str()) {
                                 let resolved = ctx_comb.resolve_name(src_name, false);
                                 cpp.push_str(&format!("  _inst_{}.{} = {};\n",
@@ -2902,6 +2899,16 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str(&format!("  _inst_{}.eval_comb();\n", inst.name.name));
                 for conn in &inst.connections {
                     if conn.direction == ConnectDir::Output {
+                        // inst Vec port → Vec wire: expand element-by-element
+                        if let ExprKind::Ident(sig_name) = &conn.signal.kind {
+                            if let Some(&n) = vec_wire_counts.get(sig_name.as_str()) {
+                                for i in 0..n {
+                                    cpp.push_str(&format!("  _let_{sig_name}[{i}] = _inst_{}.{}_{i};\n",
+                                        inst.name.name, conn.port_name.name));
+                                }
+                                continue;
+                            }
+                        }
                         let sig = cpp_expr(&conn.signal, &ctx_comb);
                         cpp.push_str(&format!("  {} = _inst_{}.{};\n",
                             sig, inst.name.name, conn.port_name.name));
@@ -3073,13 +3080,14 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("void {class}::eval() {{\n"));
         cpp.push_str("  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n");
         cpp.push_str("    trace_open(Verilated::traceFile());\n");
-        cpp.push_str(&format!("  bool _rising = ({clk_port} && !_clk_prev);\n"));
-        cpp.push_str(&format!("  _clk_prev = {clk_port};\n"));
-        cpp.push_str("  if (_rising) eval_posedge();\n  eval_comb();\n");
+        cpp.push_str("  eval_posedge();\n  eval_comb();\n");
         cpp.push_str("  if (_trace_fp) trace_dump(_trace_time++);\n");
         cpp.push_str("}\n\n");
 
         cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
+        cpp.push_str(&format!("  bool _rising = ({clk_port} && !_clk_prev);\n"));
+        cpp.push_str(&format!("  _clk_prev = {clk_port};\n"));
+        cpp.push_str("  if (!_rising) return;\n");
         cpp.push_str(&format!("  {count_ty} _n = _count_r;\n"));
         cpp.push_str(&format!("  if ({rst_cond}) {{\n    _n = {init_val};\n  }} else {{\n"));
 
@@ -3345,9 +3353,7 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("void {class}::eval() {{\n"));
         cpp.push_str("  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n");
         cpp.push_str("    trace_open(Verilated::traceFile());\n");
-        cpp.push_str(&format!("  bool _rising = ({clk_port} && !_clk_prev);\n"));
-        cpp.push_str(&format!("  _clk_prev = {clk_port};\n"));
-        cpp.push_str("  eval_comb();\n  if (_rising) eval_posedge();\n  eval_comb();\n");
+        cpp.push_str("  eval_comb();\n  eval_posedge();\n  eval_comb();\n");
         cpp.push_str("  if (_trace_fp) trace_dump(_trace_time++);\n");
         cpp.push_str("}\n\n");
 
@@ -3370,6 +3376,9 @@ impl<'a> SimCodegen<'a> {
         };
 
         cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
+        cpp.push_str(&format!("  bool _rising = ({clk_port} && !_clk_prev);\n"));
+        cpp.push_str(&format!("  _clk_prev = {clk_port};\n"));
+        cpp.push_str("  if (!_rising) return;\n");
         cpp.push_str(&format!("  {state_ty} _n_state = _state_r;\n"));
         // Shadow variables for datapath regs
         for reg in &f.regs {
@@ -3625,12 +3634,15 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("void {class}::eval() {{\n"));
         cpp.push_str("  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n");
         cpp.push_str("    trace_open(Verilated::traceFile());\n");
-        cpp.push_str(&format!("  bool _rising = ({clk_port} && !_clk_prev);\n  _clk_prev = {clk_port};\n  eval_comb();\n  if (_rising) eval_posedge();\n  eval_comb();\n"));
+        cpp.push_str("  eval_comb();\n  eval_posedge();\n  eval_comb();\n");
         cpp.push_str("  if (_trace_fp) trace_dump(_trace_time++);\n");
         cpp.push_str("}\n\n");
 
         // eval_posedge(): write ports
         cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
+        cpp.push_str(&format!("  bool _rising = ({clk_port} && !_clk_prev);\n"));
+        cpp.push_str(&format!("  _clk_prev = {clk_port};\n"));
+        cpp.push_str("  if (!_rising) return;\n");
         for wi in 0..nwrite {
             let wen   = flat(&write_pfx, wi, nwrite, "en");
             let waddr = flat(&write_pfx, wi, nwrite, "addr");
@@ -4101,14 +4113,15 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("void {class}::eval() {{\n"));
         cpp.push_str("  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n");
         cpp.push_str("    trace_open(Verilated::traceFile());\n");
-        cpp.push_str("  bool _rising = (clk && !_clk_prev);\n");
-        cpp.push_str("  _clk_prev = clk;\n");
-        cpp.push_str("  if (_rising) eval_posedge();\n");
+        cpp.push_str("  eval_posedge();\n");
         cpp.push_str("  eval_comb();\n");
         cpp.push_str("  if (_trace_fp) trace_dump(_trace_time++);\n");
         cpp.push_str("}\n\n");
 
         cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
+        cpp.push_str("  bool _rising = (clk && !_clk_prev);\n");
+        cpp.push_str("  _clk_prev = clk;\n");
+        cpp.push_str("  if (!_rising) return;\n");
         match r.kind {
             RamKind::Single => {
                 let pg = &r.port_groups[0];
