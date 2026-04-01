@@ -43,6 +43,12 @@ static void reset() {
     dut.m_axi_s2mm_b_valid = 0;
     dut.m_axis_mm2s_tready = 0;
     dut.s_axis_s2mm_tvalid = 0; dut.s_axis_s2mm_tdata = 0; dut.s_axis_s2mm_tlast = 0;
+    // SG ports
+    dut.sg_ar_ready = 0;
+    dut.sg_r_valid = 0; dut.sg_r_data = 0; dut.sg_r_last = 0;
+    dut.sg_aw_ready = 0;
+    dut.sg_w_ready = 0;
+    dut.sg_b_valid = 0;
 
     tick(); tick(); tick();
     dut.rst = 0;
@@ -201,9 +207,59 @@ static void axis_source_model() {
     }
 }
 
+// ── SG AXI4 memory model (descriptor read/write) ────────────────────────────
+// Shares axi_mem[] with data models.
+static int sg_ar_pending = 0;
+static uint32_t sg_ar_addr_l = 0;
+static int sg_ar_len_l = 0, sg_r_beat = 0;
+static int sg_aw_pending = 0, sg_w_beat = 0, sg_b_pending = 0;
+static uint32_t sg_aw_addr_l = 0;
+
+static void sg_read_model() {
+    if (dut.sg_ar_valid && !sg_ar_pending) {
+        dut.sg_ar_ready = 1;
+        sg_ar_addr_l = dut.sg_ar_addr;
+        sg_ar_len_l = dut.sg_ar_len;
+        sg_ar_pending = 1; sg_r_beat = 0;
+    } else { dut.sg_ar_ready = 0; }
+    if (sg_ar_pending && sg_r_beat <= sg_ar_len_l) {
+        uint32_t wa = (sg_ar_addr_l >> 2) + sg_r_beat;
+        dut.sg_r_valid = 1;
+        dut.sg_r_data = axi_mem[wa & 0xFFF];
+        dut.sg_r_last = (sg_r_beat == sg_ar_len_l) ? 1 : 0;
+        if (dut.sg_r_ready) sg_r_beat++;
+    } else {
+        if (sg_ar_pending && sg_r_beat > sg_ar_len_l) sg_ar_pending = 0;
+        dut.sg_r_valid = 0; dut.sg_r_last = 0;
+    }
+}
+
+static void sg_write_model() {
+    if (dut.sg_aw_valid && !sg_aw_pending) {
+        dut.sg_aw_ready = 1;
+        sg_aw_addr_l = dut.sg_aw_addr;
+        sg_aw_pending = 1; sg_w_beat = 0;
+    } else { dut.sg_aw_ready = 0; }
+    if (sg_aw_pending) {
+        dut.sg_w_ready = 1;
+        if (dut.sg_w_valid) {
+            uint32_t wa = (sg_aw_addr_l >> 2) + sg_w_beat;
+            axi_mem[wa & 0xFFF] = dut.sg_w_data;
+            sg_w_beat++;
+            if (dut.sg_w_last) { sg_b_pending = 1; sg_aw_pending = 0; }
+        }
+    } else { dut.sg_w_ready = 0; }
+    if (sg_b_pending) {
+        dut.sg_b_valid = 1;
+        if (dut.sg_b_ready) sg_b_pending = 0;
+    } else { dut.sg_b_valid = 0; }
+}
+
 static void run_models() {
     mm2s_mem_model();
     s2mm_mem_model();
+    sg_read_model();
+    sg_write_model();
     axis_sink_model();
     axis_source_model();
 }
@@ -371,11 +427,80 @@ static void test_bidirectional() {
     printf("Test 4 PASS: bidirectional transfer\n");
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Test 5: MM2S Scatter-Gather — 2-descriptor chain
+// ═══════════════════════════════════════════════════════════════════════════════
+static void write_desc(uint32_t byte_addr, uint32_t next, uint32_t buf, uint32_t len) {
+    uint32_t wa = byte_addr >> 2;
+    axi_mem[wa + 0] = next;
+    axi_mem[wa + 1] = buf;
+    axi_mem[wa + 2] = len;
+    axi_mem[wa + 3] = 0;
+}
+
+static void test_mm2s_sg() {
+    reset();
+    mm2s_ar_pending = 0; s2mm_aw_pending = 0; s2mm_b_pending = 0;
+    sg_ar_pending = 0; sg_aw_pending = 0; sg_b_pending = 0;
+    axis_sink_count = 0;
+
+    // Pre-load data memory: 4 words at 0x1000, 4 words at 0x2000
+    for (int i = 0; i < 4; i++) {
+        axi_mem[0x400 + i] = 0xAA000000 + i;  // buf 0x1000
+        axi_mem[0x800 + i] = 0xBB000000 + i;  // buf 0x2000
+    }
+
+    // Place 2 descriptors at 0x100 and 0x110
+    // Desc 0: next=0x110, buf=0x1000, len=16 bytes (4 beats)
+    write_desc(0x100, 0x110, 0x1000, 16);
+    // Desc 1: next=0x110 (tail=self), buf=0x2000, len=16 bytes
+    write_desc(0x110, 0x110, 0x2000, 16);
+
+    // Configure MM2S: RS=1, IOC_IrqEn=1
+    axil_write(0x00, (1 << 12) | 1);
+    // Write CURDESC
+    axil_write(0x08, 0x100);
+    // Write TAILDESC — triggers SG
+    axil_write(0x10, 0x110);
+
+    // Run until both transfers complete + interrupt
+    int intr_seen = 0;
+    for (int i = 0; i < 300; i++) {
+        run_models();
+        tick();
+        if (dut.mm2s_introut) { intr_seen = 1; break; }
+    }
+
+    ASSERT_EQ(intr_seen, 1, "SG MM2S interrupt");
+    // Should have streamed 8 beats total (4 from each buffer)
+    ASSERT_EQ(axis_sink_count, 8, "SG MM2S total stream beats");
+
+    // First 4 beats from buf 0x1000
+    for (int i = 0; i < 4; i++) {
+        char msg[64]; snprintf(msg, sizeof(msg), "SG MM2S desc0 data[%d]", i);
+        ASSERT_EQ(axis_sink_buf[i], (uint32_t)(0xAA000000 + i), msg);
+    }
+    // Next 4 beats from buf 0x2000
+    for (int i = 0; i < 4; i++) {
+        char msg[64]; snprintf(msg, sizeof(msg), "SG MM2S desc1 data[%d]", i);
+        ASSERT_EQ(axis_sink_buf[4 + i], (uint32_t)(0xBB000000 + i), msg);
+    }
+
+    // Check descriptor status words: Cmplt bit set
+    uint32_t status0 = axi_mem[0x100/4 + 3];
+    uint32_t status1 = axi_mem[0x110/4 + 3];
+    ASSERT_EQ(status0 >> 31, 1u, "SG desc0 Cmplt");
+    ASSERT_EQ(status1 >> 31, 1u, "SG desc1 Cmplt");
+
+    printf("Test 5 PASS: MM2S scatter-gather 2-descriptor chain\n");
+}
+
 int main() {
     test_mm2s();
     test_s2mm();
     test_register_readback();
     test_bidirectional();
+    test_mm2s_sg();
     printf("PASS\n");
     return 0;
 }

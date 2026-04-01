@@ -1,5 +1,6 @@
-// AXI4-Lite slave register interface — PG021 Simple DMA register map.
-// Implements DMACR, DMASR (with W1C), SA/DA, LENGTH for both channels.
+// AXI4-Lite slave register interface — PG021 register map.
+// Supports both Simple DMA mode (LENGTH write triggers transfer) and
+// Scatter-Gather mode (TAILDESC write triggers SG engine).
 module AxiLiteRegs
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
@@ -27,7 +28,7 @@ module AxiLiteRegs
   port reg rvalid_o: out Bool reset rst=>false;
   port rready_i:     in Bool;
 
-  // MM2S control outputs
+  // MM2S direct control outputs (simple DMA mode)
   port reg mm2s_start:     out Bool reset rst=>false;
   port reg mm2s_src_addr:  out UInt<32> reset rst=>0;
   port reg mm2s_num_beats: out UInt<8> reset rst=>0;
@@ -37,7 +38,7 @@ module AxiLiteRegs
   port mm2s_halted: in Bool;
   port mm2s_idle:   in Bool;
 
-  // S2MM control outputs
+  // S2MM direct control outputs (simple DMA mode)
   port reg s2mm_start:     out Bool reset rst=>false;
   port reg s2mm_dst_addr:  out UInt<32> reset rst=>0;
   port reg s2mm_num_beats: out UInt<8> reset rst=>0;
@@ -46,6 +47,21 @@ module AxiLiteRegs
   port s2mm_done:   in Bool;
   port s2mm_halted: in Bool;
   port s2mm_idle:   in Bool;
+
+  // Scatter-Gather control outputs
+  port reg mm2s_sg_start:  out Bool reset rst=>false;
+  port reg mm2s_curdesc_o: out UInt<32> reset rst=>0;
+  port reg mm2s_taildesc_o: out UInt<32> reset rst=>0;
+  port mm2s_sg_done: in Bool;
+
+  port reg s2mm_sg_start:  out Bool reset rst=>false;
+  port reg s2mm_curdesc_o: out UInt<32> reset rst=>0;
+  port reg s2mm_taildesc_o: out UInt<32> reset rst=>0;
+  port s2mm_sg_done: in Bool;
+
+  // SG active flags (when true, only sg_done triggers IOC_Irq)
+  port mm2s_sg_active: in Bool;
+  port s2mm_sg_active: in Bool;
 
   // Interrupt outputs
   port reg mm2s_introut: out Bool reset rst=>false;
@@ -56,21 +72,27 @@ module AxiLiteRegs
   reg mm2s_sa_r:     UInt<32> reset rst=>0;
   reg mm2s_length_r: UInt<32> reset rst=>0;
   reg mm2s_ioc_irq:  Bool reset rst=>false;
+  reg mm2s_curdesc_r: UInt<32> reset rst=>0;
+  reg mm2s_taildesc_r: UInt<32> reset rst=>0;
 
   reg s2mm_dmacr_r:  UInt<32> reset rst=>0;
   reg s2mm_da_r:     UInt<32> reset rst=>0;
   reg s2mm_length_r: UInt<32> reset rst=>0;
   reg s2mm_ioc_irq:  Bool reset rst=>false;
+  reg s2mm_curdesc_r: UInt<32> reset rst=>0;
+  reg s2mm_taildesc_r: UInt<32> reset rst=>0;
 
   default seq on clk rising;
 
   seq
     // Clear one-cycle pulses
-    mm2s_start <= false;
-    s2mm_start <= false;
-    awready_o  <= false;
-    wready_o   <= false;
-    arready_o  <= false;
+    mm2s_start    <= false;
+    s2mm_start    <= false;
+    mm2s_sg_start <= false;
+    s2mm_sg_start <= false;
+    awready_o     <= false;
+    wready_o      <= false;
+    arready_o     <= false;
 
     // B channel: clear bvalid on handshake
     if bvalid_o & bready_i
@@ -82,12 +104,25 @@ module AxiLiteRegs
       rvalid_o <= false;
     end if
 
-    // Hardware-set IOC_Irq on done pulses
-    if mm2s_done
-      mm2s_ioc_irq <= true;
+    // Hardware-set IOC_Irq: in SG mode only sg_done triggers;
+    // in simple mode, data FSM done triggers.
+    if mm2s_sg_active
+      if mm2s_sg_done
+        mm2s_ioc_irq <= true;
+      end if
+    else
+      if mm2s_done
+        mm2s_ioc_irq <= true;
+      end if
     end if
-    if s2mm_done
-      s2mm_ioc_irq <= true;
+    if s2mm_sg_active
+      if s2mm_sg_done
+        s2mm_ioc_irq <= true;
+      end if
+    else
+      if s2mm_done
+        s2mm_ioc_irq <= true;
+      end if
     end if
 
     // ── Write path: simultaneous AW+W ──────────────────────────────────
@@ -106,11 +141,23 @@ module AxiLiteRegs
         if wdata_i[12:12] == 1
           mm2s_ioc_irq <= false;
         end if
+      elsif awaddr_i == 0x08
+        // MM2S_CURDESC
+        mm2s_curdesc_r <= wdata_i;
+        mm2s_curdesc_o <= wdata_i;
+      elsif awaddr_i == 0x10
+        // MM2S_TAILDESC — triggers SG if RS=1
+        mm2s_taildesc_r <= wdata_i;
+        mm2s_taildesc_o <= wdata_i;
+        if mm2s_dmacr_r[0:0] == 1
+          mm2s_sg_start  <= true;
+          mm2s_curdesc_o <= mm2s_curdesc_r;
+        end if
       elsif awaddr_i == 0x18
         // MM2S_SA
         mm2s_sa_r <= wdata_i;
       elsif awaddr_i == 0x28
-        // MM2S_LENGTH — triggers start if RS=1
+        // MM2S_LENGTH — triggers direct transfer if RS=1
         mm2s_length_r <= wdata_i;
         if mm2s_dmacr_r[0:0] == 1
           mm2s_start     <= true;
@@ -125,11 +172,23 @@ module AxiLiteRegs
         if wdata_i[12:12] == 1
           s2mm_ioc_irq <= false;
         end if
+      elsif awaddr_i == 0x38
+        // S2MM_CURDESC
+        s2mm_curdesc_r <= wdata_i;
+        s2mm_curdesc_o <= wdata_i;
+      elsif awaddr_i == 0x40
+        // S2MM_TAILDESC — triggers SG if RS=1
+        s2mm_taildesc_r <= wdata_i;
+        s2mm_taildesc_o <= wdata_i;
+        if s2mm_dmacr_r[0:0] == 1
+          s2mm_sg_start  <= true;
+          s2mm_curdesc_o <= s2mm_curdesc_r;
+        end if
       elsif awaddr_i == 0x48
         // S2MM_DA
         s2mm_da_r <= wdata_i;
       elsif awaddr_i == 0x58
-        // S2MM_LENGTH — triggers start if RS=1
+        // S2MM_LENGTH — triggers direct transfer if RS=1
         s2mm_length_r <= wdata_i;
         if s2mm_dmacr_r[0:0] == 1
           s2mm_start     <= true;
@@ -148,8 +207,11 @@ module AxiLiteRegs
       if araddr_i == 0x00
         rdata_o <= mm2s_dmacr_r;
       elsif araddr_i == 0x04
-        // MM2S_DMASR: compose from status inputs + IOC_Irq
         rdata_o <= {19'b0, mm2s_ioc_irq, 10'b0, mm2s_idle, mm2s_halted};
+      elsif araddr_i == 0x08
+        rdata_o <= mm2s_curdesc_r;
+      elsif araddr_i == 0x10
+        rdata_o <= mm2s_taildesc_r;
       elsif araddr_i == 0x18
         rdata_o <= mm2s_sa_r;
       elsif araddr_i == 0x28
@@ -158,6 +220,10 @@ module AxiLiteRegs
         rdata_o <= s2mm_dmacr_r;
       elsif araddr_i == 0x34
         rdata_o <= {19'b0, s2mm_ioc_irq, 10'b0, s2mm_idle, s2mm_halted};
+      elsif araddr_i == 0x38
+        rdata_o <= s2mm_curdesc_r;
+      elsif araddr_i == 0x40
+        rdata_o <= s2mm_taildesc_r;
       elsif araddr_i == 0x48
         rdata_o <= s2mm_da_r;
       elsif araddr_i == 0x58

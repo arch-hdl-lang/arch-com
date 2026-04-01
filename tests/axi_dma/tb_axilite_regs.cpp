@@ -20,6 +20,8 @@ static void reset() {
     dut.rready_i = 1;
     dut.mm2s_done = 0; dut.mm2s_halted = 1; dut.mm2s_idle = 1;
     dut.s2mm_done = 0; dut.s2mm_halted = 1; dut.s2mm_idle = 1;
+    dut.mm2s_sg_done = 0; dut.s2mm_sg_done = 0;
+    dut.mm2s_sg_active = 0; dut.s2mm_sg_active = 0;
     tick(); tick();
     dut.rst = 0;
     tick();
@@ -208,12 +210,51 @@ static void test_s2mm_registers() {
     printf("Test 5 PASS: S2MM registers\n");
 }
 
+// Test 6: SG registers — CURDESC/TAILDESC R/W + sg_start pulse
+static void test_sg_registers() {
+    reset();
+
+    // Write DMACR.RS=1
+    axil_write(0x00, 0x0001);
+
+    // Write CURDESC (0x08)
+    axil_write(0x08, 0x1000);
+    ASSERT_EQ(axil_read(0x08), 0x1000u, "MM2S_CURDESC readback");
+
+    // Write TAILDESC (0x10) — should trigger mm2s_sg_start
+    int sg_start_seen = 0;
+    dut.awaddr_i = 0x10; dut.awvalid_i = 1;
+    dut.wdata_i = 0x1030; dut.wstrb_i = 0xF; dut.wvalid_i = 1;
+    for (int i = 0; i < 10; i++) {
+        tick();
+        if (dut.mm2s_sg_start) sg_start_seen = 1;
+        if (dut.bvalid_o) break;
+    }
+    dut.awvalid_i = 0; dut.wvalid_i = 0;
+    tick();
+
+    ASSERT_EQ(sg_start_seen, 1, "mm2s_sg_start pulsed on TAILDESC write");
+    ASSERT_EQ(dut.mm2s_curdesc_o, 0x1000u, "mm2s_curdesc_o");
+    ASSERT_EQ(dut.mm2s_taildesc_o, 0x1030u, "mm2s_taildesc_o");
+    ASSERT_EQ(axil_read(0x10), 0x1030u, "MM2S_TAILDESC readback");
+
+    // SG done should set IOC_Irq (with IRQ enabled, SG active)
+    axil_write(0x00, (1 << 12) | 1); // IOC_IrqEn + RS
+    dut.mm2s_sg_active = 1;
+    dut.mm2s_sg_done = 1; tick(); dut.mm2s_sg_done = 0; tick();
+    dut.eval();
+    ASSERT_EQ(dut.mm2s_introut, 1, "interrupt after sg_done");
+
+    printf("Test 6 PASS: SG registers\n");
+}
+
 int main() {
     test_mm2s_register_rw();
     test_mm2s_start_pulse();
     test_dmasr_status_and_w1c();
     test_interrupt();
     test_s2mm_registers();
+    test_sg_registers();
     printf("PASS\n");
     return 0;
 }
