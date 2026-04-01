@@ -1,0 +1,381 @@
+// L1D cache controller FSM.
+// States: Idle → Lookup → HitRdData → Idle           (load hit, 3 cycles)
+//                       → WbCollect → WbWait → MissAlloc → Refill → RefillWrite → Idle (dirty evict)
+//                       → MissAlloc → Refill → RefillWrite → Idle                       (clean miss)
+//                                                          → PostRefillStore → Idle      (store miss)
+fsm FsmCacheCtrl
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  // CPU request interface
+  port req_valid:    in  Bool;
+  port req_ready:    out Bool;
+  port req_vaddr:    in  UInt<64>;
+  port req_data:     in  UInt<64>;
+  port req_be:       in  UInt<8>;
+  port req_is_store: in  Bool;
+
+  // CPU response interface
+  port resp_valid:   out Bool;
+  port resp_data:    out UInt<64>;
+  port resp_error:   out Bool;
+
+  // Tag SRAM — 8 ways (Vec ports, one element per way)
+  port tag_rd_en:   out Vec<Bool, 8>;
+  port tag_rd_addr: out Vec<UInt<6>, 8>;
+  port tag_rd_data: in  Vec<UInt<54>, 8>;
+  port tag_wr_en:   out Vec<Bool, 8>;
+  port tag_wr_addr: out Vec<UInt<6>, 8>;
+  port tag_wr_data: out Vec<UInt<54>, 8>;
+
+  // Data SRAM (addr = {set[5:0], way[2:0], word[2:0]} = 12 bits)
+  port data_rd_en:   out Bool;
+  port data_rd_addr: out UInt<12>;
+  port data_rd_data: in  UInt<64>;
+  port data_wr_en:   out Bool;
+  port data_wr_addr: out UInt<12>;
+  port data_wr_data: out UInt<64>;
+
+  // LRU SRAM
+  port lru_rd_en:   out Bool;
+  port lru_rd_addr: out UInt<6>;
+  port lru_rd_data: in  UInt<7>;
+  port lru_wr_en:   out Bool;
+  port lru_wr_addr: out UInt<6>;
+  port lru_wr_data: out UInt<7>;
+
+  // LRU update module (combinational)
+  port lru_tree_in:    out UInt<7>;
+  port lru_access_way: out UInt<3>;
+  port lru_access_en:  out Bool;
+  port lru_tree_out:   in  UInt<7>;
+  port lru_victim_way: in  UInt<3>;
+
+  // Fill FSM
+  port fill_start: out Bool;
+  port fill_addr:  out UInt<64>;
+  port fill_done:  in  Bool;
+  port fill_word:  in  Vec<UInt<64>, 8>;
+
+  // Writeback FSM
+  port wb_start: out Bool;
+  port wb_addr:  out UInt<64>;
+  port wb_done:  in  Bool;
+  port wb_word:  out Vec<UInt<64>, 8>;
+
+  // ── Latched request ───────────────────────────────────────────────────────
+  reg req_addr_r:      UInt<64> reset none;
+  reg req_data_r:      UInt<64> reset none;
+  reg req_be_r:        UInt<8>  reset none;
+  reg req_is_store_r:  Bool     reset none;
+
+  // ── Lookup results ────────────────────────────────────────────────────────
+  reg hit_way_r:       UInt<3>  reset none;
+  reg victim_way_r:    UInt<3>  reset none;
+  reg victim_tag_r:    UInt<52> reset none;
+  reg lru_tree_r:      UInt<7>  reset none;
+  reg miss_is_store_r: Bool     reset none;
+
+  // ── Sub-state counter ─────────────────────────────────────────────────────
+  reg beat_ctr_r: UInt<4> init 0 reset rst=>0;
+
+  // ── Writeback line buffer ─────────────────────────────────────────────────
+  reg wb_buf: Vec<UInt<64>, 8> reset none;
+
+  // ── Lookup decision registers (set in Lookup, read in transitions) ────────
+  reg lookup_hit_r:           Bool reset none;
+  reg lookup_victim_dirty_r:  Bool reset none;
+
+  // ── Parallel tag hit signals (comb, all computed simultaneously) ────────
+  // 8 comparisons run in parallel (7 logic levels), then one-hot encode
+  // to binary (3 levels) = 10 total.  Previous elsif chain was 14 levels.
+  let hit_0: Bool = (tag_rd_data[0][53:2] == req_addr_r[63:12]) & tag_rd_data[0][0];
+  let hit_1: Bool = (tag_rd_data[1][53:2] == req_addr_r[63:12]) & tag_rd_data[1][0];
+  let hit_2: Bool = (tag_rd_data[2][53:2] == req_addr_r[63:12]) & tag_rd_data[2][0];
+  let hit_3: Bool = (tag_rd_data[3][53:2] == req_addr_r[63:12]) & tag_rd_data[3][0];
+  let hit_4: Bool = (tag_rd_data[4][53:2] == req_addr_r[63:12]) & tag_rd_data[4][0];
+  let hit_5: Bool = (tag_rd_data[5][53:2] == req_addr_r[63:12]) & tag_rd_data[5][0];
+  let hit_6: Bool = (tag_rd_data[6][53:2] == req_addr_r[63:12]) & tag_rd_data[6][0];
+  let hit_7: Bool = (tag_rd_data[7][53:2] == req_addr_r[63:12]) & tag_rd_data[7][0];
+  let any_hit: Bool = hit_0 | hit_1 | hit_2 | hit_3 | hit_4 | hit_5 | hit_6 | hit_7;
+  // One-hot to binary: 3-level OR tree (each bit computed from 4 hit signals)
+  let hit_way_enc: UInt<3> =
+    ((hit_4 | hit_5 | hit_6 | hit_7).zext<3>() << 2) |
+    ((hit_2 | hit_3 | hit_6 | hit_7).zext<3>() << 1) |
+    (hit_1 | hit_3 | hit_5 | hit_7).zext<3>();
+
+  state [Idle, Lookup, HitRdData,
+         MissAlloc, Refill, RefillWrite, PostRefillStore,
+         WbCollect, WbWait]
+  default state Idle;
+  default seq on clk rising;
+
+  default
+    comb
+      req_ready  = false;
+      resp_valid = false;
+      resp_data  = 0;
+      resp_error = false;
+      for i in 0..7
+        tag_rd_en[i]   = false; tag_rd_addr[i] = 0;
+        tag_wr_en[i]   = false; tag_wr_addr[i] = 0; tag_wr_data[i] = 0;
+        wb_word[i]     = 0;
+      end for
+      data_rd_en = false; data_rd_addr = 0;
+      data_wr_en = false; data_wr_addr = 0; data_wr_data = 0;
+      lru_rd_en = false; lru_rd_addr = 0;
+      lru_wr_en = false; lru_wr_addr = 0; lru_wr_data = 0;
+      lru_tree_in = 0; lru_access_way = 0; lru_access_en = false;
+      fill_start = false; fill_addr = 0;
+      wb_start = false; wb_addr = 0;
+    end comb
+  end default
+
+  // ── Idle ──────────────────────────────────────────────────────────────────
+  state Idle
+    comb req_ready = true;
+    comb
+      if req_valid
+        for i in 0..7
+          tag_rd_en[i]   = true;
+          tag_rd_addr[i] = req_vaddr[11:6];
+        end for
+        lru_rd_en   = true; lru_rd_addr   = req_vaddr[11:6];
+      end if
+    end comb
+    seq
+      if req_valid
+        req_addr_r     <= req_vaddr;
+        req_data_r     <= req_data;
+        req_be_r       <= req_be;
+        req_is_store_r <= req_is_store;
+        beat_ctr_r     <= 0;
+      end if
+    end seq
+    -> Lookup when req_valid;
+  end state Idle
+
+  // ── Lookup ────────────────────────────────────────────────────────────────
+  // Tag/LRU data now available. Compute hit/miss using parallel hit signals.
+  state Lookup
+    comb
+      lru_tree_in    = lru_rd_data;
+      lru_access_way = 0;
+      lru_access_en  = false;
+
+      // Issue data read for hit candidate using one-hot mux (1 level after hit signals)
+      data_rd_en   = any_hit;
+      data_rd_addr = {req_addr_r[11:6], hit_way_enc, req_addr_r[5:3]};
+    end comb
+
+    seq
+      // Latch hit way from parallel one-hot encoder (10 levels total vs 14 before)
+      hit_way_r    <= hit_way_enc;
+      lookup_hit_r <= any_hit;
+
+      victim_way_r <= lru_victim_way;
+      lru_tree_r   <= lru_rd_data;
+      miss_is_store_r <= req_is_store_r;
+
+      // Capture victim tag and dirty bit via variable index
+      victim_tag_r          <= tag_rd_data[lru_victim_way][53:2];
+      lookup_victim_dirty_r <= tag_rd_data[lru_victim_way][1];
+    end seq
+
+    -> HitRdData when true;
+  end state Lookup
+
+  // ── HitRdData ─────────────────────────────────────────────────────────────
+  state HitRdData
+    comb
+      resp_valid = lookup_hit_r;
+      resp_data  = data_rd_data;
+
+      // LRU update on hit
+      if lookup_hit_r
+        lru_tree_in    = lru_tree_r;
+        lru_access_way = hit_way_r;
+        lru_access_en  = true;
+        lru_wr_en      = true;
+        lru_wr_addr    = req_addr_r[11:6];
+        lru_wr_data    = lru_tree_out;
+
+        // For store hit: write data + set dirty via variable-indexed tag write
+        if req_is_store_r
+          data_wr_en             = true;
+          data_wr_addr           = {req_addr_r[11:6], hit_way_r, req_addr_r[5:3]};
+          data_wr_data           = req_data_r;
+          tag_wr_en[hit_way_r]   = true;
+          tag_wr_addr[hit_way_r] = req_addr_r[11:6];
+          tag_wr_data[hit_way_r] = {req_addr_r[63:12], (3).trunc<2>()};
+        end if
+      end if
+    end comb
+
+    -> Idle         when lookup_hit_r;
+    -> WbCollect    when ~lookup_hit_r & lookup_victim_dirty_r;
+    -> MissAlloc    when ~lookup_hit_r & ~lookup_victim_dirty_r;
+  end state HitRdData
+
+  // ── MissAlloc ─────────────────────────────────────────────────────────────
+  // Write new tag (valid=1, dirty=0) for victim way; issue fill; update LRU.
+  state MissAlloc
+    comb
+      fill_start = true;
+      fill_addr  = req_addr_r;
+
+      lru_tree_in    = lru_tree_r;
+      lru_access_way = victim_way_r;
+      lru_access_en  = true;
+      lru_wr_en      = true;
+      lru_wr_addr    = req_addr_r[11:6];
+      lru_wr_data    = lru_tree_out;
+
+      // Write new tag: valid=1, dirty=0 → {tag, 01}
+      tag_wr_en[victim_way_r]   = true;
+      tag_wr_addr[victim_way_r] = req_addr_r[11:6];
+      tag_wr_data[victim_way_r] = {req_addr_r[63:12], (1).trunc<2>()};
+    end comb
+    -> Refill;
+  end state MissAlloc
+
+  // ── Refill ────────────────────────────────────────────────────────────────
+  state Refill
+    seq
+      beat_ctr_r <= 0;
+    end seq
+    -> RefillWrite when fill_done;
+  end state Refill
+
+  // ── RefillWrite ───────────────────────────────────────────────────────────
+  // Write 8 fill words to data SRAM (one per cycle, beat_ctr_r 0..7).
+  state RefillWrite
+    comb
+      data_wr_en = true;
+      data_wr_data = fill_word[0];
+      data_wr_addr = {req_addr_r[11:6], victim_way_r, (0).trunc<3>()};
+      if beat_ctr_r == 0
+        data_wr_addr = {req_addr_r[11:6], victim_way_r, (0).trunc<3>()};
+        data_wr_data = fill_word[0];
+      elsif beat_ctr_r == 1
+        data_wr_addr = {req_addr_r[11:6], victim_way_r, (1).trunc<3>()};
+        data_wr_data = fill_word[1];
+      elsif beat_ctr_r == 2
+        data_wr_addr = {req_addr_r[11:6], victim_way_r, (2).trunc<3>()};
+        data_wr_data = fill_word[2];
+      elsif beat_ctr_r == 3
+        data_wr_addr = {req_addr_r[11:6], victim_way_r, (3).trunc<3>()};
+        data_wr_data = fill_word[3];
+      elsif beat_ctr_r == 4
+        data_wr_addr = {req_addr_r[11:6], victim_way_r, (4).trunc<3>()};
+        data_wr_data = fill_word[4];
+      elsif beat_ctr_r == 5
+        data_wr_addr = {req_addr_r[11:6], victim_way_r, (5).trunc<3>()};
+        data_wr_data = fill_word[5];
+      elsif beat_ctr_r == 6
+        data_wr_addr = {req_addr_r[11:6], victim_way_r, (6).trunc<3>()};
+        data_wr_data = fill_word[6];
+      elsif beat_ctr_r == 7
+        data_wr_addr = {req_addr_r[11:6], victim_way_r, (7).trunc<3>()};
+        data_wr_data = fill_word[7];
+      end if
+
+      // For load miss on last beat: return requested word directly
+      if (beat_ctr_r == 7) & ~miss_is_store_r
+        resp_valid = true;
+        resp_data  = fill_word[req_addr_r[5:3]];
+      end if
+    end comb
+
+    seq
+      beat_ctr_r <= (beat_ctr_r + 1).trunc<4>();
+    end seq
+
+    -> Idle             when (beat_ctr_r == 7) & ~miss_is_store_r;
+    -> PostRefillStore  when (beat_ctr_r == 7) & miss_is_store_r;
+  end state RefillWrite
+
+  // ── PostRefillStore ───────────────────────────────────────────────────────
+  // After refill completes for a store miss: write req_data to victim way,
+  // set dirty=1 in tag, drive response.
+  state PostRefillStore
+    comb
+      data_wr_en   = true;
+      data_wr_addr = {req_addr_r[11:6], victim_way_r, req_addr_r[5:3]};
+      data_wr_data = req_data_r;
+      resp_valid   = true;
+      resp_data    = req_data_r;
+
+      tag_wr_en[victim_way_r]   = true;
+      tag_wr_addr[victim_way_r] = req_addr_r[11:6];
+      tag_wr_data[victim_way_r] = {req_addr_r[63:12], (3).trunc<2>()};
+    end comb
+    -> Idle;
+  end state PostRefillStore
+
+  // ── WbCollect ─────────────────────────────────────────────────────────────
+  // Read dirty victim line (8 words, 9 cycles accounting for SRAM latency 1).
+  state WbCollect
+    comb
+      if beat_ctr_r == 0
+        data_rd_en = true;
+        data_rd_addr = {req_addr_r[11:6], victim_way_r, (0).trunc<3>()};
+      elsif beat_ctr_r == 1
+        data_rd_en = true;
+        data_rd_addr = {req_addr_r[11:6], victim_way_r, (1).trunc<3>()};
+      elsif beat_ctr_r == 2
+        data_rd_en = true;
+        data_rd_addr = {req_addr_r[11:6], victim_way_r, (2).trunc<3>()};
+      elsif beat_ctr_r == 3
+        data_rd_en = true;
+        data_rd_addr = {req_addr_r[11:6], victim_way_r, (3).trunc<3>()};
+      elsif beat_ctr_r == 4
+        data_rd_en = true;
+        data_rd_addr = {req_addr_r[11:6], victim_way_r, (4).trunc<3>()};
+      elsif beat_ctr_r == 5
+        data_rd_en = true;
+        data_rd_addr = {req_addr_r[11:6], victim_way_r, (5).trunc<3>()};
+      elsif beat_ctr_r == 6
+        data_rd_en = true;
+        data_rd_addr = {req_addr_r[11:6], victim_way_r, (6).trunc<3>()};
+      elsif beat_ctr_r == 7
+        data_rd_en = true;
+        data_rd_addr = {req_addr_r[11:6], victim_way_r, (7).trunc<3>()};
+      end if
+    end comb
+
+    seq
+      beat_ctr_r <= (beat_ctr_r + 1).trunc<4>();
+      if beat_ctr_r == 1      wb_buf[0] <= data_rd_data;
+      elsif beat_ctr_r == 2   wb_buf[1] <= data_rd_data;
+      elsif beat_ctr_r == 3   wb_buf[2] <= data_rd_data;
+      elsif beat_ctr_r == 4   wb_buf[3] <= data_rd_data;
+      elsif beat_ctr_r == 5   wb_buf[4] <= data_rd_data;
+      elsif beat_ctr_r == 6   wb_buf[5] <= data_rd_data;
+      elsif beat_ctr_r == 7   wb_buf[6] <= data_rd_data;
+      elsif beat_ctr_r == 8   wb_buf[7] <= data_rd_data;
+      end if
+    end seq
+
+    -> WbWait when beat_ctr_r == 8;
+  end state WbCollect
+
+  // ── WbWait ────────────────────────────────────────────────────────────────
+  // Drive wb_start and wb line data; wait for writeback FSM to complete.
+  state WbWait
+    comb
+      wb_start = true;
+      wb_addr  = (victim_tag_r.zext<64>() << 12) | (req_addr_r[11:6].zext<64>() << 6);
+      for i in 0..7
+        wb_word[i] = wb_buf[i];
+      end for
+    end comb
+
+    seq
+      beat_ctr_r <= 0;
+    end seq
+
+    -> MissAlloc when wb_done;
+  end state WbWait
+
+end fsm FsmCacheCtrl
