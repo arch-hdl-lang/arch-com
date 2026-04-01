@@ -1053,6 +1053,15 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                     return format!("_inst_{}.{}", base_name, field.name);
                 }
             }
+            // Indexed bus port: m_axi[0].valid → m_axi_0_valid
+            if let ExprKind::Index(arr, idx) = &base.kind {
+                if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i))) = (&arr.kind, &idx.kind) {
+                    let expanded = format!("{}_{}", arr_name, i);
+                    if ctx.bus_ports.contains(expanded.as_str()) {
+                        return format!("{}_{}_{}", arr_name, i, field.name);
+                    }
+                }
+            }
             // Use is_lhs when evaluating base so struct reg fields get _n_ prefix on LHS
             let b = cpp_expr_inner(base, ctx, is_lhs);
             format!("{b}.{}", field.name)

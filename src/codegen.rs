@@ -3387,6 +3387,15 @@ impl<'a> Codegen<'a> {
                         return format!("{}_{}", base_name, field.name);
                     }
                 }
+                // Indexed bus port: m_axi[0].valid → m_axi_0_valid
+                if let ExprKind::Index(arr, idx) = &base.kind {
+                    if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i))) = (&arr.kind, &idx.kind) {
+                        let expanded = format!("{}_{}", arr_name, i);
+                        if self.bus_ports.contains_key(&expanded) {
+                            return format!("{}_{}_{}", arr_name, i, field.name);
+                        }
+                    }
+                }
                 let b = self.emit_expr_str(base);
                 format!("{b}.{}", field.name)
             }

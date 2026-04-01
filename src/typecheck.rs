@@ -713,6 +713,13 @@ impl<'a> TypeChecker<'a> {
             ExprKind::FieldAccess(base, field) => {
                 if let ExprKind::Ident(base_name) = &base.kind {
                     format!("{}_{}", base_name, field.name)
+                // Indexed bus: m_axi[0].valid → m_axi_0_valid
+                } else if let ExprKind::Index(arr, idx) = &base.kind {
+                    if let (ExprKind::Ident(arr_name), ExprKind::Literal(LitKind::Dec(i))) = (&arr.kind, &idx.kind) {
+                        format!("{}_{}_{}", arr_name, i, field.name)
+                    } else {
+                        Self::expr_root_name_tc(base)
+                    }
                 } else {
                     Self::expr_root_name_tc(base)
                 }
