@@ -99,10 +99,9 @@ fsm FsmCacheCtrl
   let hit_7: Bool = (tag_rd_data[7][53:2] == req_addr_r[63:12]) & tag_rd_data[7][0];
   let any_hit: Bool = hit_0 | hit_1 | hit_2 | hit_3 | hit_4 | hit_5 | hit_6 | hit_7;
   // One-hot to binary: 3-level OR tree (each bit computed from 4 hit signals)
-  let hit_way_enc: UInt<3> =
-    ((hit_4 | hit_5 | hit_6 | hit_7).zext<3>() << 2) |
-    ((hit_2 | hit_3 | hit_6 | hit_7).zext<3>() << 1) |
-    (hit_1 | hit_3 | hit_5 | hit_7).zext<3>();
+  let hit_way_enc: UInt<3> = {(hit_4 | hit_5 | hit_6 | hit_7),
+                              (hit_2 | hit_3 | hit_6 | hit_7),
+                              (hit_1 | hit_3 | hit_5 | hit_7)};
 
   state [Idle, Lookup, HitRdData,
          MissAlloc, Refill, RefillWrite, PostRefillStore,

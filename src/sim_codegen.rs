@@ -922,17 +922,38 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
             let w = infer_expr_width(value, ctx);
             n * w
         }
-        ExprKind::Binary(op, _, _) => {
+        ExprKind::Binary(op, lhs, rhs) => {
             match op {
+                // Comparison and logical ops always produce 1-bit Bool
                 BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt |
                 BinOp::Lte | BinOp::Gte | BinOp::And | BinOp::Or => 1,
-                _ => 8,
+                // Bitwise ops: result width = max of operand widths
+                BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => {
+                    let lw = infer_expr_width(lhs, ctx);
+                    let rw = infer_expr_width(rhs, ctx);
+                    std::cmp::max(lw, rw)
+                }
+                // Shift ops: result width = left operand width
+                BinOp::Shl | BinOp::Shr => infer_expr_width(lhs, ctx),
+                // Arithmetic ops: result width = max of operand widths
+                _ => {
+                    let lw = infer_expr_width(lhs, ctx);
+                    let rw = infer_expr_width(rhs, ctx);
+                    std::cmp::max(lw, rw)
+                }
             }
         }
-        ExprKind::Unary(UnaryOp::Not, _)
-        | ExprKind::Unary(UnaryOp::RedAnd, _)
+        ExprKind::Unary(UnaryOp::Not, inner) => infer_expr_width(inner, ctx),
+        ExprKind::Unary(UnaryOp::RedAnd, _)
         | ExprKind::Unary(UnaryOp::RedOr, _)
         | ExprKind::Unary(UnaryOp::RedXor, _) => 1,
+        ExprKind::Ternary(_, then_expr, _) => infer_expr_width(then_expr, ctx),
+        ExprKind::FieldAccess(_, _) => {
+            // Bus field or struct field — check widths map via flattened name
+            let flat = cpp_expr_inner(expr, ctx, false);
+            // Try to look up the width; default to 8 if unknown
+            ctx.widths.get(flat.as_str()).copied().unwrap_or(8)
+        }
         _ => 8,
     }
 }
