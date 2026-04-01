@@ -1661,14 +1661,19 @@ impl<'a> Codegen<'a> {
 
         // Expand bus port connections: one bus connect → N signal connects
         let mut connections: Vec<String> = Vec::new();
-        // Find the target module's ports to detect bus ports
-        let target_bus_ports: Vec<(String, String)> = self.source.items.iter()
-            .filter_map(|item| if let Item::Module(m) = item { Some(m) } else { None })
-            .find(|m| m.name.name == inst.module_name.name)
-            .map(|m| m.ports.iter()
+        // Find the target construct's ports to detect bus ports (modules and FSMs)
+        let target_bus_ports: Vec<(String, String)> = {
+            let target_ports: Option<&[PortDecl]> = self.source.items.iter()
+                .find_map(|item| match item {
+                    Item::Module(m) if m.name.name == inst.module_name.name => Some(m.ports.as_slice()),
+                    Item::Fsm(f) if f.name.name == inst.module_name.name => Some(f.ports.as_slice()),
+                    _ => None,
+                });
+            target_ports.map(|ports| ports.iter()
                 .filter_map(|p| p.bus_info.as_ref().map(|bi| (p.name.name.clone(), bi.bus_name.name.clone())))
                 .collect())
-            .unwrap_or_default();
+                .unwrap_or_default()
+        };
 
         for c in &inst.connections {
             if let Some((_, bus_name)) = target_bus_ports.iter().find(|(pn, _)| *pn == c.port_name.name) {
@@ -1815,17 +1820,49 @@ impl<'a> Codegen<'a> {
             self.indent -= 1;
             self.line(") (");
         }
-        self.indent += 1;
-        for (i, p) in f.ports.iter().enumerate() {
-            let dir = match p.direction { Direction::In => "input", Direction::Out => "output" };
-            let comma = if i < f.ports.len() - 1 { "," } else { "" };
-            if let TypeExpr::Vec(_, _) = &p.ty {
-                let (base_ty, suffix) = self.emit_type_and_array_suffix(&p.ty);
-                self.line(&format!("{dir} {base_ty} {}{suffix}{comma}", p.name.name));
+        // Collect all port lines (bus ports are flattened, same as module codegen)
+        self.bus_ports.clear();
+        let mut port_lines: Vec<String> = Vec::new();
+        for p in f.ports.iter() {
+            if let Some(ref bi) = p.bus_info {
+                let bus_name = &bi.bus_name.name;
+                self.bus_ports.insert(p.name.name.clone(), bus_name.clone());
+                if let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
+                    let mut param_map: std::collections::HashMap<String, &Expr> = info.params.iter()
+                        .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
+                        .collect();
+                    for pa in &bi.params {
+                        param_map.insert(pa.name.name.clone(), &pa.value);
+                    }
+                    for (sname, sdir, sty) in &info.signals {
+                        let actual_dir = match bi.perspective {
+                            BusPerspective::Initiator => *sdir,
+                            BusPerspective::Target => (*sdir).flip(),
+                        };
+                        let dir_str = match actual_dir {
+                            Direction::In => "input",
+                            Direction::Out => "output",
+                        };
+                        let subst_ty = Self::subst_type_expr(sty, &param_map);
+                        let ty_str = self.emit_port_type_str(&subst_ty);
+                        port_lines.push(format!("{} {} {}_{}", dir_str, ty_str, p.name.name, sname));
+                    }
+                }
             } else {
-                let ty = self.emit_port_type_str(&p.ty);
-                self.line(&format!("{dir} {ty} {}{comma}", p.name.name));
+                let dir = match p.direction { Direction::In => "input", Direction::Out => "output" };
+                if let TypeExpr::Vec(_, _) = &p.ty {
+                    let (base_ty, suffix) = self.emit_type_and_array_suffix(&p.ty);
+                    port_lines.push(format!("{dir} {base_ty} {}{suffix}", p.name.name));
+                } else {
+                    let ty = self.emit_port_type_str(&p.ty);
+                    port_lines.push(format!("{dir} {ty} {}", p.name.name));
+                }
             }
+        }
+        self.indent += 1;
+        for (i, line) in port_lines.iter().enumerate() {
+            let comma = if i < port_lines.len() - 1 { "," } else { "" };
+            self.line(&format!("{line}{comma}"));
         }
         self.indent -= 1;
         self.line(");");

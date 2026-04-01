@@ -225,8 +225,6 @@ module AxiDmaTop
     s2mm_push_data_w      = s_axis_s2mm.tdata;
     s2mm_push_valid_w     = s_axis_s2mm.tvalid;
     s_axis_s2mm.tready    = s2mm_push_ready_w;
-    s_axis_s2mm.tlast     = false;
-    s_axis_s2mm.tkeep     = 0;
   end comb
 
   // Route register block AXI-Lite outputs to top ports
