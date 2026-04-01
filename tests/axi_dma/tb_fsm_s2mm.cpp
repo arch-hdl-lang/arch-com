@@ -19,9 +19,9 @@ static void reset() {
     dut.recv_count = 0;
     dut.pop_valid = 0;
     dut.pop_data = 0;
-    dut.aw_ready = 0;
-    dut.w_ready = 0;
-    dut.b_valid = 0;
+    dut.axi_wr_aw_ready = 0;
+    dut.axi_wr_w_ready = 0;
+    dut.axi_wr_b_valid = 0;
     tick(); tick();
     dut.rst = 0;
     tick();
@@ -52,7 +52,7 @@ static void test_basic_transfer() {
     // Now in WaitRecv — recv_count < num_beats, waiting for stream data
     dut.eval();
     ASSERT_EQ(dut.halted, 0, "not halted in WaitRecv");
-    ASSERT_EQ(dut.aw_valid, 0, "aw_valid=0 in WaitRecv");
+    ASSERT_EQ(dut.axi_wr_aw_valid, 0, "aw_valid=0 in WaitRecv");
 
     // Simulate: all 4 beats received into FIFO
     dut.recv_count = 4;
@@ -60,48 +60,48 @@ static void test_basic_transfer() {
 
     // Now in SendAW
     dut.eval();
-    ASSERT_EQ(dut.aw_valid, 1, "aw_valid in SendAW");
-    ASSERT_EQ(dut.aw_addr, 0x2000u, "aw_addr");
-    ASSERT_EQ(dut.aw_len, 3u, "aw_len (4-1=3)");
-    ASSERT_EQ(dut.aw_size, 2u, "aw_size");
-    ASSERT_EQ(dut.aw_burst, 1u, "aw_burst (INCR)");
+    ASSERT_EQ(dut.axi_wr_aw_valid, 1, "aw_valid in SendAW");
+    ASSERT_EQ(dut.axi_wr_aw_addr, 0x2000u, "aw_addr");
+    ASSERT_EQ(dut.axi_wr_aw_len, 3u, "aw_len (4-1=3)");
+    ASSERT_EQ(dut.axi_wr_aw_size, 2u, "aw_size");
+    ASSERT_EQ(dut.axi_wr_aw_burst, 1u, "aw_burst (INCR)");
 
     // Accept AW
-    dut.aw_ready = 1;
+    dut.axi_wr_aw_ready = 1;
     tick();
-    dut.aw_ready = 0;
+    dut.axi_wr_aw_ready = 0;
 
     // Now in SendW — drive 4 beats from FIFO pop
     uint32_t data[4] = {0xBEEF0000, 0xBEEF0001, 0xBEEF0002, 0xBEEF0003};
     for (int i = 0; i < 4; i++) {
         dut.pop_valid = 1;
         dut.pop_data = data[i];
-        dut.w_ready = 1;
+        dut.axi_wr_w_ready = 1;
         dut.eval();
 
-        ASSERT_EQ(dut.w_valid, 1, "w_valid in SendW");
-        ASSERT_EQ(dut.w_data, data[i], "w_data matches pop_data");
-        ASSERT_EQ(dut.w_strb, 0xFu, "w_strb all bytes");
+        ASSERT_EQ(dut.axi_wr_w_valid, 1, "w_valid in SendW");
+        ASSERT_EQ(dut.axi_wr_w_data, data[i], "w_data matches pop_data");
+        ASSERT_EQ(dut.axi_wr_w_strb, 0xFu, "w_strb all bytes");
         ASSERT_EQ(dut.pop_ready, 1, "pop_ready = w_ready");
 
         if (i == 3) {
-            ASSERT_EQ(dut.w_last, 1, "w_last on beat 3");
+            ASSERT_EQ(dut.axi_wr_w_last, 1, "w_last on beat 3");
         } else {
-            ASSERT_EQ(dut.w_last, 0, "w_last=0 before last beat");
+            ASSERT_EQ(dut.axi_wr_w_last, 0, "w_last=0 before last beat");
         }
         tick();
     }
     dut.pop_valid = 0;
-    dut.w_ready = 0;
+    dut.axi_wr_w_ready = 0;
 
     // Now in WaitB
     dut.eval();
-    ASSERT_EQ(dut.b_ready, 1, "b_ready in WaitB");
+    ASSERT_EQ(dut.axi_wr_b_ready, 1, "b_ready in WaitB");
 
     // Send B response
-    dut.b_valid = 1;
+    dut.axi_wr_b_valid = 1;
     tick();
-    dut.b_valid = 0;
+    dut.axi_wr_b_valid = 0;
 
     // Done
     dut.eval();
@@ -136,18 +136,18 @@ static void test_status_signals() {
     // Complete transfer quickly
     dut.recv_count = 1;
     tick();
-    dut.aw_ready = 1;
+    dut.axi_wr_aw_ready = 1;
     tick();
-    dut.aw_ready = 0;
+    dut.axi_wr_aw_ready = 0;
     dut.pop_valid = 1;
     dut.pop_data = 0x42;
-    dut.w_ready = 1;
+    dut.axi_wr_w_ready = 1;
     tick();
     dut.pop_valid = 0;
-    dut.w_ready = 0;
-    dut.b_valid = 1;
+    dut.axi_wr_w_ready = 0;
+    dut.axi_wr_b_valid = 1;
     tick();
-    dut.b_valid = 0;
+    dut.axi_wr_b_valid = 0;
     // Done
     tick();
     dut.eval();

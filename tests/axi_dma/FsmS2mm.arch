@@ -20,24 +20,8 @@ fsm FsmS2mm
   port pop_ready: out Bool;
   port pop_data:  in  UInt<32>;
 
-  // AXI4 Write Address channel
-  port aw_valid: out Bool;
-  port aw_ready: in  Bool;
-  port aw_addr:  out UInt<32>;
-  port aw_len:   out UInt<8>;
-  port aw_size:  out UInt<3>;
-  port aw_burst: out UInt<2>;
-
-  // AXI4 Write Data channel
-  port w_valid: out Bool;
-  port w_ready: in  Bool;
-  port w_data:  out UInt<32>;
-  port w_strb:  out UInt<4>;
-  port w_last:  out Bool;
-
-  // AXI4 Write Response channel
-  port b_valid: in  Bool;
-  port b_ready: out Bool;
+  // AXI4 Write Master
+  port axi_wr: initiator BusAxi4Write;
 
   // Internal registers
   reg dst_addr_r:  UInt<32> reset none;
@@ -54,16 +38,17 @@ fsm FsmS2mm
       halted    = false;
       idle_out  = false;
       pop_ready = false;
-      aw_valid  = false;
-      aw_addr   = 0;
-      aw_len    = 0;
-      aw_size   = 0;
-      aw_burst  = 0;
-      w_valid   = false;
-      w_data    = 0;
-      w_strb    = 0;
-      w_last    = false;
-      b_ready   = false;
+      axi_wr.aw_valid = false;
+      axi_wr.aw_addr  = 0;
+      axi_wr.aw_len   = 0;
+      axi_wr.aw_size  = 0;
+      axi_wr.aw_burst = 0;
+      axi_wr.aw_id    = 0;
+      axi_wr.w_valid  = false;
+      axi_wr.w_data   = 0;
+      axi_wr.w_strb   = 0;
+      axi_wr.w_last   = false;
+      axi_wr.b_ready  = false;
     end comb
   end default
 
@@ -88,36 +73,36 @@ fsm FsmS2mm
 
   state SendAW
     comb
-      aw_valid = true;
-      aw_addr  = dst_addr_r;
-      aw_len   = (num_beats_r - 1).trunc<8>();
-      aw_size  = 2;
-      aw_burst = 1;
+      axi_wr.aw_valid = true;
+      axi_wr.aw_addr  = dst_addr_r;
+      axi_wr.aw_len   = (num_beats_r - 1).trunc<8>();
+      axi_wr.aw_size  = 2;
+      axi_wr.aw_burst = 1;
     end comb
-    -> SendW when aw_ready;
+    -> SendW when axi_wr.aw_ready;
   end state SendAW
 
   state SendW
     comb
-      w_valid   = pop_valid;
-      w_data    = pop_data;
-      w_strb    = 0xF;
-      w_last    = (beat_ctr_r == (num_beats_r - 1).trunc<8>());
-      pop_ready = w_ready;
+      axi_wr.w_valid = pop_valid;
+      axi_wr.w_data  = pop_data;
+      axi_wr.w_strb  = 0xF;
+      axi_wr.w_last  = (beat_ctr_r == (num_beats_r - 1).trunc<8>());
+      pop_ready      = axi_wr.w_ready;
     end comb
     seq
-      if w_ready & pop_valid
+      if axi_wr.w_ready & pop_valid
         beat_ctr_r <= (beat_ctr_r + 1).trunc<8>();
       end if
     end seq
-    -> WaitB when w_ready & pop_valid & w_last;
+    -> WaitB when axi_wr.w_ready & pop_valid & axi_wr.w_last;
   end state SendW
 
   state WaitB
     comb
-      b_ready = true;
+      axi_wr.b_ready = true;
     end comb
-    -> Done when b_valid;
+    -> Done when axi_wr.b_valid;
   end state WaitB
 
   state Done

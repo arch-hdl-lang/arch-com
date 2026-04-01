@@ -14,19 +14,8 @@ fsm FsmMm2s
   port halted:   out Bool;
   port idle_out: out Bool;
 
-  // AXI4 Read Address channel
-  port ar_valid: out Bool;
-  port ar_ready: in  Bool;
-  port ar_addr:  out UInt<32>;
-  port ar_len:   out UInt<8>;
-  port ar_size:  out UInt<3>;
-  port ar_burst: out UInt<2>;
-
-  // AXI4 Read Data channel
-  port r_valid: in  Bool;
-  port r_ready: out Bool;
-  port r_data:  in  UInt<32>;
-  port r_last:  in  Bool;
+  // AXI4 Read Master
+  port axi_rd: initiator BusAxi4Read;
 
   // FIFO push interface
   port push_valid: out Bool;
@@ -47,12 +36,13 @@ fsm FsmMm2s
       done       = false;
       halted     = false;
       idle_out   = false;
-      ar_valid   = false;
-      ar_addr    = 0;
-      ar_len     = 0;
-      ar_size    = 0;
-      ar_burst   = 0;
-      r_ready    = false;
+      axi_rd.ar_valid = false;
+      axi_rd.ar_addr  = 0;
+      axi_rd.ar_len   = 0;
+      axi_rd.ar_size  = 0;
+      axi_rd.ar_burst = 0;
+      axi_rd.ar_id    = 0;
+      axi_rd.r_ready  = false;
       push_valid = false;
       push_data  = 0;
     end comb
@@ -75,27 +65,27 @@ fsm FsmMm2s
 
   state SendAR
     comb
-      ar_valid = true;
-      ar_addr  = src_addr_r;
-      ar_len   = (num_beats_r - 1).trunc<8>();
-      ar_size  = 2;
-      ar_burst = 1;
+      axi_rd.ar_valid = true;
+      axi_rd.ar_addr  = src_addr_r;
+      axi_rd.ar_len   = (num_beats_r - 1).trunc<8>();
+      axi_rd.ar_size  = 2;
+      axi_rd.ar_burst = 1;
     end comb
-    -> WaitR when ar_ready;
+    -> WaitR when axi_rd.ar_ready;
   end state SendAR
 
   state WaitR
     comb
-      r_ready    = push_ready;
-      push_valid = r_valid;
-      push_data  = r_data;
+      axi_rd.r_ready = push_ready;
+      push_valid     = axi_rd.r_valid;
+      push_data      = axi_rd.r_data;
     end comb
     seq
-      if r_valid & push_ready
+      if axi_rd.r_valid & push_ready
         beat_ctr_r <= (beat_ctr_r + 1).trunc<8>();
       end if
     end seq
-    -> Done when r_valid & r_last & push_ready;
+    -> Done when axi_rd.r_valid & axi_rd.r_last & push_ready;
   end state WaitR
 
   state Done

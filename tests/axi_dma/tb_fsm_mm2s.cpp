@@ -16,10 +16,10 @@ static void reset() {
     dut.start = 0;
     dut.src_addr = 0;
     dut.num_beats = 0;
-    dut.ar_ready = 0;
-    dut.r_valid = 0;
-    dut.r_data = 0;
-    dut.r_last = 0;
+    dut.axi_rd_ar_ready = 0;
+    dut.axi_rd_r_valid = 0;
+    dut.axi_rd_r_data = 0;
+    dut.axi_rd_r_last = 0;
     dut.push_ready = 1;
     tick(); tick();
     dut.rst = 0;
@@ -41,7 +41,7 @@ static void test_basic_transfer() {
     // Initially halted
     ASSERT_EQ(dut.halted, 1, "halted at idle");
     ASSERT_EQ(dut.done, 0, "done at idle");
-    ASSERT_EQ(dut.ar_valid, 0, "ar_valid at idle");
+    ASSERT_EQ(dut.axi_rd_ar_valid, 0, "ar_valid at idle");
 
     // Start transfer: 4 beats from 0x1000
     dut.start = 1;
@@ -52,34 +52,34 @@ static void test_basic_transfer() {
 
     // Should now be in SendAR — check after eval
     dut.eval();
-    ASSERT_EQ(dut.ar_valid, 1, "ar_valid in SendAR");
-    ASSERT_EQ(dut.ar_addr, 0x1000u, "ar_addr");
-    ASSERT_EQ(dut.ar_len, 3u, "ar_len (4-1=3)");
-    ASSERT_EQ(dut.ar_size, 2u, "ar_size (4 bytes)");
-    ASSERT_EQ(dut.ar_burst, 1u, "ar_burst (INCR)");
+    ASSERT_EQ(dut.axi_rd_ar_valid, 1, "ar_valid in SendAR");
+    ASSERT_EQ(dut.axi_rd_ar_addr, 0x1000u, "ar_addr");
+    ASSERT_EQ(dut.axi_rd_ar_len, 3u, "ar_len (4-1=3)");
+    ASSERT_EQ(dut.axi_rd_ar_size, 2u, "ar_size (4 bytes)");
+    ASSERT_EQ(dut.axi_rd_ar_burst, 1u, "ar_burst (INCR)");
     ASSERT_EQ(dut.halted, 0, "not halted in SendAR");
 
     // Accept AR
-    dut.ar_ready = 1;
+    dut.axi_rd_ar_ready = 1;
     tick();
-    dut.ar_ready = 0;
+    dut.axi_rd_ar_ready = 0;
 
     // Should now be in WaitR — send 4 R beats
     uint32_t expected[4] = {0xDEAD0000, 0xDEAD0001, 0xDEAD0002, 0xDEAD0003};
     for (int i = 0; i < 4; i++) {
-        dut.r_valid = 1;
-        dut.r_data = expected[i];
-        dut.r_last = (i == 3) ? 1 : 0;
+        dut.axi_rd_r_valid = 1;
+        dut.axi_rd_r_data = expected[i];
+        dut.axi_rd_r_last = (i == 3) ? 1 : 0;
         dut.push_ready = 1;
         dut.eval(); // propagate comb: r_ready = push_ready, push_valid = r_valid
 
-        ASSERT_EQ(dut.r_ready, 1, "r_ready when push_ready");
+        ASSERT_EQ(dut.axi_rd_r_ready, 1, "r_ready when push_ready");
         ASSERT_EQ(dut.push_valid, 1, "push_valid when r_valid");
         ASSERT_EQ(dut.push_data, expected[i], "push_data matches r_data");
         tick();
     }
-    dut.r_valid = 0;
-    dut.r_last = 0;
+    dut.axi_rd_r_valid = 0;
+    dut.axi_rd_r_last = 0;
 
     // Should now be in Done
     dut.eval();
@@ -105,25 +105,25 @@ static void test_backpressure() {
     dut.start = 0;
 
     // Accept AR
-    dut.ar_ready = 1;
+    dut.axi_rd_ar_ready = 1;
     tick();
-    dut.ar_ready = 0;
+    dut.axi_rd_ar_ready = 0;
 
     // Beat 0: normal
-    dut.r_valid = 1;
-    dut.r_data = 0xAAAA;
-    dut.r_last = 0;
+    dut.axi_rd_r_valid = 1;
+    dut.axi_rd_r_data = 0xAAAA;
+    dut.axi_rd_r_last = 0;
     dut.push_ready = 1;
     dut.eval();
-    ASSERT_EQ(dut.r_ready, 1, "r_ready when push_ready=1");
+    ASSERT_EQ(dut.axi_rd_r_ready, 1, "r_ready when push_ready=1");
     tick();
 
     // Beat 1: push_ready goes low — should stall
-    dut.r_data = 0xBBBB;
-    dut.r_last = 1;
+    dut.axi_rd_r_data = 0xBBBB;
+    dut.axi_rd_r_last = 1;
     dut.push_ready = 0;
     dut.eval();
-    ASSERT_EQ(dut.r_ready, 0, "r_ready drops when push_ready=0");
+    ASSERT_EQ(dut.axi_rd_r_ready, 0, "r_ready drops when push_ready=0");
     tick();
 
     // Still in WaitR, not Done yet (last beat not pushed)
@@ -133,7 +133,7 @@ static void test_backpressure() {
     // Resume push_ready
     dut.push_ready = 1;
     dut.eval();
-    ASSERT_EQ(dut.r_ready, 1, "r_ready resumes");
+    ASSERT_EQ(dut.axi_rd_r_ready, 1, "r_ready resumes");
     ASSERT_EQ(dut.push_valid, 1, "push_valid when r_valid");
     ASSERT_EQ(dut.push_data, 0xBBBBu, "push_data correct after stall");
     tick();
@@ -164,16 +164,16 @@ static void test_idle_signal() {
     ASSERT_EQ(dut.idle_out, 0, "not idle during transfer");
 
     // Complete the transfer quickly
-    dut.ar_ready = 1;
+    dut.axi_rd_ar_ready = 1;
     tick();
-    dut.ar_ready = 0;
+    dut.axi_rd_ar_ready = 0;
 
-    dut.r_valid = 1;
-    dut.r_data = 0x12;
-    dut.r_last = 1;
+    dut.axi_rd_r_valid = 1;
+    dut.axi_rd_r_data = 0x12;
+    dut.axi_rd_r_last = 1;
     dut.push_ready = 1;
     tick();
-    dut.r_valid = 0;
+    dut.axi_rd_r_valid = 0;
 
     // Done state
     dut.eval();

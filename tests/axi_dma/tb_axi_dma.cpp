@@ -36,13 +36,13 @@ static void reset() {
     dut.s_bready = 1;
     dut.s_araddr = 0; dut.s_arvalid = 0;
     dut.s_rready = 1;
-    dut.mm2s_ar_ready = 0;
-    dut.mm2s_r_valid = 0; dut.mm2s_r_data = 0; dut.mm2s_r_last = 0;
-    dut.s2mm_aw_ready = 0;
-    dut.s2mm_w_ready = 0;
-    dut.s2mm_b_valid = 0;
-    dut.m_axis_tready = 0;
-    dut.s_axis_tvalid = 0; dut.s_axis_tdata = 0; dut.s_axis_tlast = 0;
+    dut.m_axi_mm2s_ar_ready = 0;
+    dut.m_axi_mm2s_r_valid = 0; dut.m_axi_mm2s_r_data = 0; dut.m_axi_mm2s_r_last = 0;
+    dut.m_axi_s2mm_aw_ready = 0;
+    dut.m_axi_s2mm_w_ready = 0;
+    dut.m_axi_s2mm_b_valid = 0;
+    dut.m_axis_mm2s_tready = 0;
+    dut.s_axis_s2mm_tvalid = 0; dut.s_axis_s2mm_tdata = 0; dut.s_axis_s2mm_tlast = 0;
 
     tick(); tick(); tick();
     dut.rst = 0;
@@ -98,33 +98,33 @@ static int mm2s_r_beat = 0;
 
 static void mm2s_mem_model() {
     // Accept AR
-    if (dut.mm2s_ar_valid && !mm2s_ar_pending) {
-        dut.mm2s_ar_ready = 1;
-        mm2s_ar_addr_latched = dut.mm2s_ar_addr;
-        mm2s_ar_len_latched = dut.mm2s_ar_len;
+    if (dut.m_axi_mm2s_ar_valid && !mm2s_ar_pending) {
+        dut.m_axi_mm2s_ar_ready = 1;
+        mm2s_ar_addr_latched = dut.m_axi_mm2s_ar_addr;
+        mm2s_ar_len_latched = dut.m_axi_mm2s_ar_len;
         mm2s_ar_pending = 1;
         mm2s_r_beat = 0;
     } else {
-        dut.mm2s_ar_ready = 0;
+        dut.m_axi_mm2s_ar_ready = 0;
     }
 
     // Drive R data — present current beat, advance on handshake.
     // Don't clear r_valid on the acceptance cycle; let the next call clear it.
     if (mm2s_ar_pending && mm2s_r_beat <= mm2s_ar_len_latched) {
         uint32_t word_addr = (mm2s_ar_addr_latched >> 2) + mm2s_r_beat;
-        dut.mm2s_r_valid = 1;
-        dut.mm2s_r_data = axi_mem[word_addr & 0xFFF];
-        dut.mm2s_r_last = (mm2s_r_beat == mm2s_ar_len_latched) ? 1 : 0;
+        dut.m_axi_mm2s_r_valid = 1;
+        dut.m_axi_mm2s_r_data = axi_mem[word_addr & 0xFFF];
+        dut.m_axi_mm2s_r_last = (mm2s_r_beat == mm2s_ar_len_latched) ? 1 : 0;
 
-        if (dut.mm2s_r_ready) {
+        if (dut.m_axi_mm2s_r_ready) {
             mm2s_r_beat++;
         }
     } else {
         if (mm2s_ar_pending && mm2s_r_beat > mm2s_ar_len_latched) {
             mm2s_ar_pending = 0;
         }
-        dut.mm2s_r_valid = 0;
-        dut.mm2s_r_last = 0;
+        dut.m_axi_mm2s_r_valid = 0;
+        dut.m_axi_mm2s_r_last = 0;
     }
 }
 
@@ -136,24 +136,24 @@ static int s2mm_b_pending = 0;
 
 static void s2mm_mem_model() {
     // Accept AW
-    if (dut.s2mm_aw_valid && !s2mm_aw_pending) {
-        dut.s2mm_aw_ready = 1;
-        s2mm_aw_addr_latched = dut.s2mm_aw_addr;
+    if (dut.m_axi_s2mm_aw_valid && !s2mm_aw_pending) {
+        dut.m_axi_s2mm_aw_ready = 1;
+        s2mm_aw_addr_latched = dut.m_axi_s2mm_aw_addr;
         s2mm_aw_pending = 1;
         s2mm_w_beat = 0;
     } else {
-        dut.s2mm_aw_ready = 0;
+        dut.m_axi_s2mm_aw_ready = 0;
     }
 
     // Accept W data — keep w_ready=1 through the last beat so FSM sees
     // the simultaneous w_ready & w_last for its transition condition.
     if (s2mm_aw_pending) {
-        dut.s2mm_w_ready = 1;
-        if (dut.s2mm_w_valid) {
+        dut.m_axi_s2mm_w_ready = 1;
+        if (dut.m_axi_s2mm_w_valid) {
             uint32_t word_addr = (s2mm_aw_addr_latched >> 2) + s2mm_w_beat;
-            axi_mem[word_addr & 0xFFF] = dut.s2mm_w_data;
+            axi_mem[word_addr & 0xFFF] = dut.m_axi_s2mm_w_data;
             s2mm_w_beat++;
-            if (dut.s2mm_w_last) {
+            if (dut.m_axi_s2mm_w_last) {
                 // Don't clear w_ready yet — FSM needs to see it this cycle.
                 // Set b_pending; aw_pending will be cleared next cycle.
                 s2mm_b_pending = 1;
@@ -161,43 +161,43 @@ static void s2mm_mem_model() {
             }
         }
     } else {
-        dut.s2mm_w_ready = 0;
+        dut.m_axi_s2mm_w_ready = 0;
     }
 
     // B response — hold b_valid until b_ready handshake completes.
     // Don't clear b_valid on the acceptance cycle (FSM needs to see it).
     if (s2mm_b_pending) {
-        dut.s2mm_b_valid = 1;
-        if (dut.s2mm_b_ready) {
+        dut.m_axi_s2mm_b_valid = 1;
+        if (dut.m_axi_s2mm_b_ready) {
             s2mm_b_pending = 0;
             // Keep b_valid=1 through this tick so FSM sees it
         }
     } else {
-        dut.s2mm_b_valid = 0;
+        dut.m_axi_s2mm_b_valid = 0;
     }
 }
 
 // ── AXIS sink (captures MM2S stream output) ─────────────────────────────────
 static void axis_sink_model() {
-    dut.m_axis_tready = 1;
-    if (dut.m_axis_tvalid && dut.m_axis_tready) {
-        axis_sink_buf[axis_sink_count++] = dut.m_axis_tdata;
+    dut.m_axis_mm2s_tready = 1;
+    if (dut.m_axis_mm2s_tvalid && dut.m_axis_mm2s_tready) {
+        axis_sink_buf[axis_sink_count++] = dut.m_axis_mm2s_tdata;
     }
 }
 
 // ── AXIS source (drives S2MM stream input) ──────────────────────────────────
 static void axis_source_model() {
     if (axis_src_idx < axis_src_len) {
-        dut.s_axis_tvalid = 1;
-        dut.s_axis_tdata = axis_src_buf[axis_src_idx];
-        dut.s_axis_tlast = (axis_src_idx == axis_src_len - 1) ? 1 : 0;
-        if (dut.s_axis_tready) {
+        dut.s_axis_s2mm_tvalid = 1;
+        dut.s_axis_s2mm_tdata = axis_src_buf[axis_src_idx];
+        dut.s_axis_s2mm_tlast = (axis_src_idx == axis_src_len - 1) ? 1 : 0;
+        if (dut.s_axis_s2mm_tready) {
             axis_src_idx++;
         }
     } else {
-        dut.s_axis_tvalid = 0;
-        dut.s_axis_tdata = 0;
-        dut.s_axis_tlast = 0;
+        dut.s_axis_s2mm_tvalid = 0;
+        dut.s_axis_s2mm_tdata = 0;
+        dut.s_axis_s2mm_tlast = 0;
     }
 }
 
