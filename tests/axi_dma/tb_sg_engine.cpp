@@ -27,11 +27,11 @@ static void reset() {
     dut.sg_start = 0;
     dut.curdesc = 0; dut.taildesc = 0;
     dut.xfer_done = 0;
-    dut.sg_ar_ready = 0;
-    dut.sg_r_valid = 0; dut.sg_r_data = 0; dut.sg_r_last = 0;
-    dut.sg_aw_ready = 0;
-    dut.sg_w_ready = 0;
-    dut.sg_b_valid = 0;
+    dut.sg_axi_ar_ready = 0;
+    dut.sg_axi_r_valid = 0; dut.sg_axi_r_data = 0; dut.sg_axi_r_last = 0;
+    dut.sg_axi_aw_ready = 0;
+    dut.sg_axi_w_ready = 0;
+    dut.sg_axi_b_valid = 0;
     tick(); tick();
     dut.rst = 0;
     tick();
@@ -51,23 +51,23 @@ static uint32_t ar_addr_l = 0;
 static int ar_len_l = 0, r_beat = 0;
 
 static void axi_read_model() {
-    if (dut.sg_ar_valid && !ar_pending) {
-        dut.sg_ar_ready = 1;
-        ar_addr_l = dut.sg_ar_addr;
-        ar_len_l = dut.sg_ar_len;
+    if (dut.sg_axi_ar_valid && !ar_pending) {
+        dut.sg_axi_ar_ready = 1;
+        ar_addr_l = dut.sg_axi_ar_addr;
+        ar_len_l = dut.sg_axi_ar_len;
         ar_pending = 1; r_beat = 0;
     } else {
-        dut.sg_ar_ready = 0;
+        dut.sg_axi_ar_ready = 0;
     }
     if (ar_pending && r_beat <= ar_len_l) {
         uint32_t wa = (ar_addr_l >> 2) + r_beat;
-        dut.sg_r_valid = 1;
-        dut.sg_r_data = desc_mem[wa & 0x3FF];
-        dut.sg_r_last = (r_beat == ar_len_l) ? 1 : 0;
-        if (dut.sg_r_ready) r_beat++;
+        dut.sg_axi_r_valid = 1;
+        dut.sg_axi_r_data = desc_mem[wa & 0x3FF];
+        dut.sg_axi_r_last = (r_beat == ar_len_l) ? 1 : 0;
+        if (dut.sg_axi_r_ready) r_beat++;
     } else {
         if (ar_pending && r_beat > ar_len_l) ar_pending = 0;
-        dut.sg_r_valid = 0; dut.sg_r_last = 0;
+        dut.sg_axi_r_valid = 0; dut.sg_axi_r_last = 0;
     }
 }
 
@@ -76,26 +76,26 @@ static int aw_pending = 0, w_beat = 0, b_pending = 0;
 static uint32_t aw_addr_l = 0;
 
 static void axi_write_model() {
-    if (dut.sg_aw_valid && !aw_pending) {
-        dut.sg_aw_ready = 1;
-        aw_addr_l = dut.sg_aw_addr;
+    if (dut.sg_axi_aw_valid && !aw_pending) {
+        dut.sg_axi_aw_ready = 1;
+        aw_addr_l = dut.sg_axi_aw_addr;
         aw_pending = 1; w_beat = 0;
     } else {
-        dut.sg_aw_ready = 0;
+        dut.sg_axi_aw_ready = 0;
     }
     if (aw_pending) {
-        dut.sg_w_ready = 1;
-        if (dut.sg_w_valid) {
+        dut.sg_axi_w_ready = 1;
+        if (dut.sg_axi_w_valid) {
             uint32_t wa = (aw_addr_l >> 2) + w_beat;
-            desc_mem[wa & 0x3FF] = dut.sg_w_data;
+            desc_mem[wa & 0x3FF] = dut.sg_axi_w_data;
             w_beat++;
-            if (dut.sg_w_last) { b_pending = 1; aw_pending = 0; }
+            if (dut.sg_axi_w_last) { b_pending = 1; aw_pending = 0; }
         }
-    } else { dut.sg_w_ready = 0; }
+    } else { dut.sg_axi_w_ready = 0; }
     if (b_pending) {
-        dut.sg_b_valid = 1;
-        if (dut.sg_b_ready) b_pending = 0;
-    } else { dut.sg_b_valid = 0; }
+        dut.sg_axi_b_valid = 1;
+        if (dut.sg_axi_b_ready) b_pending = 0;
+    } else { dut.sg_axi_b_valid = 0; }
 }
 
 static void run_models() { axi_read_model(); axi_write_model(); }

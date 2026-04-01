@@ -25,32 +25,8 @@ fsm FsmSgEngine
   // Completion
   port sg_done: out Bool;
 
-  // AXI4 read master — descriptor fetch
-  port sg_ar_valid: out Bool;
-  port sg_ar_ready: in  Bool;
-  port sg_ar_addr:  out UInt<32>;
-  port sg_ar_len:   out UInt<8>;
-  port sg_ar_size:  out UInt<3>;
-  port sg_ar_burst: out UInt<2>;
-  port sg_r_valid:  in  Bool;
-  port sg_r_ready:  out Bool;
-  port sg_r_data:   in  UInt<32>;
-  port sg_r_last:   in  Bool;
-
-  // AXI4 write master — status writeback
-  port sg_aw_valid: out Bool;
-  port sg_aw_ready: in  Bool;
-  port sg_aw_addr:  out UInt<32>;
-  port sg_aw_len:   out UInt<8>;
-  port sg_aw_size:  out UInt<3>;
-  port sg_aw_burst: out UInt<2>;
-  port sg_w_valid:  out Bool;
-  port sg_w_ready:  in  Bool;
-  port sg_w_data:   out UInt<32>;
-  port sg_w_strb:   out UInt<4>;
-  port sg_w_last:   out Bool;
-  port sg_b_valid:  in  Bool;
-  port sg_b_ready:  out Bool;
+  // AXI4 full master — descriptor fetch (read) + status writeback (write)
+  port sg_axi: initiator BusAxi4Full;
 
   // Internal registers
   reg curdesc_r:  UInt<32> reset none;
@@ -70,11 +46,13 @@ fsm FsmSgEngine
       xfer_addr      = 0;
       xfer_num_beats = 0;
       sg_done        = false;
-      sg_ar_valid = false; sg_ar_addr = 0; sg_ar_len = 0; sg_ar_size = 0; sg_ar_burst = 0;
-      sg_r_ready  = false;
-      sg_aw_valid = false; sg_aw_addr = 0; sg_aw_len = 0; sg_aw_size = 0; sg_aw_burst = 0;
-      sg_w_valid  = false; sg_w_data  = 0; sg_w_strb  = 0; sg_w_last  = false;
-      sg_b_ready  = false;
+      sg_axi.ar_valid = false; sg_axi.ar_addr = 0; sg_axi.ar_id = 0;
+      sg_axi.ar_len = 0; sg_axi.ar_size = 0; sg_axi.ar_burst = 0;
+      sg_axi.r_ready  = false;
+      sg_axi.aw_valid = false; sg_axi.aw_addr = 0; sg_axi.aw_id = 0;
+      sg_axi.aw_len = 0; sg_axi.aw_size = 0; sg_axi.aw_burst = 0;
+      sg_axi.w_valid  = false; sg_axi.w_data  = 0; sg_axi.w_strb  = 0; sg_axi.w_last  = false;
+      sg_axi.b_ready  = false;
     end comb
   end default
 
@@ -92,36 +70,36 @@ fsm FsmSgEngine
   // ── FetchAR: issue AXI4 read for 4-word descriptor ──────────────────
   state FetchAR
     comb
-      sg_ar_valid = true;
-      sg_ar_addr  = curdesc_r;
-      sg_ar_len   = 3;
-      sg_ar_size  = 2;
-      sg_ar_burst = 1;
+      sg_axi.ar_valid = true;
+      sg_axi.ar_addr  = curdesc_r;
+      sg_axi.ar_len   = 3;
+      sg_axi.ar_size  = 2;
+      sg_axi.ar_burst = 1;
     end comb
     seq
       fetch_idx <= 0;
     end seq
-    -> FetchR when sg_ar_ready;
+    -> FetchR when sg_axi.ar_ready;
   end state FetchAR
 
   // ── FetchR: receive 4 descriptor words ──────────────────────────────
   state FetchR
     comb
-      sg_r_ready = true;
+      sg_axi.r_ready = true;
     end comb
     seq
-      if sg_r_valid
+      if sg_axi.r_valid
         if fetch_idx == 0
-          nxtdesc_r  <= sg_r_data;
+          nxtdesc_r  <= sg_axi.r_data;
         elsif fetch_idx == 1
-          buf_addr_r <= sg_r_data;
+          buf_addr_r <= sg_axi.r_data;
         elsif fetch_idx == 2
-          xfer_len_r <= sg_r_data;
+          xfer_len_r <= sg_axi.r_data;
         end if
         fetch_idx <= (fetch_idx + 1).trunc<2>();
       end if
     end seq
-    -> RunXfer when sg_r_valid & sg_r_last;
+    -> RunXfer when sg_axi.r_valid & sg_axi.r_last;
   end state FetchR
 
   // ── RunXfer: trigger data transfer and wait ─────────────────────────
@@ -137,32 +115,32 @@ fsm FsmSgEngine
   // ── StatusAW: write completion status back to descriptor word 3 ─────
   state StatusAW
     comb
-      sg_aw_valid = true;
-      sg_aw_addr  = (curdesc_r + 12).trunc<32>();
-      sg_aw_len   = 0;
-      sg_aw_size  = 2;
-      sg_aw_burst = 1;
+      sg_axi.aw_valid = true;
+      sg_axi.aw_addr  = (curdesc_r + 12).trunc<32>();
+      sg_axi.aw_len   = 0;
+      sg_axi.aw_size  = 2;
+      sg_axi.aw_burst = 1;
     end comb
-    -> StatusW when sg_aw_ready;
+    -> StatusW when sg_axi.aw_ready;
   end state StatusAW
 
   // ── StatusW: send status word (Cmplt[31] | length[25:0]) ───────────
   state StatusW
     comb
-      sg_w_valid = true;
-      sg_w_data  = {1'b1, 5'b0, xfer_len_r[25:0]};
-      sg_w_strb  = 0xF;
-      sg_w_last  = true;
+      sg_axi.w_valid = true;
+      sg_axi.w_data  = {1'b1, 5'b0, xfer_len_r[25:0]};
+      sg_axi.w_strb  = 0xF;
+      sg_axi.w_last  = true;
     end comb
-    -> StatusB when sg_w_ready;
+    -> StatusB when sg_axi.w_ready;
   end state StatusW
 
   // ── StatusB: wait for write response ────────────────────────────────
   state StatusB
     comb
-      sg_b_ready = true;
+      sg_axi.b_ready = true;
     end comb
-    -> CheckNext when sg_b_valid;
+    -> CheckNext when sg_axi.b_valid;
   end state StatusB
 
   // ── CheckNext: advance to next descriptor or finish ─────────────────

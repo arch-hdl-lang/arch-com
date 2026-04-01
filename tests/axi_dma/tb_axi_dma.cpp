@@ -44,11 +44,11 @@ static void reset() {
     dut.m_axis_mm2s_tready = 0;
     dut.s_axis_s2mm_tvalid = 0; dut.s_axis_s2mm_tdata = 0; dut.s_axis_s2mm_tlast = 0;
     // SG ports
-    dut.sg_ar_ready = 0;
-    dut.sg_r_valid = 0; dut.sg_r_data = 0; dut.sg_r_last = 0;
-    dut.sg_aw_ready = 0;
-    dut.sg_w_ready = 0;
-    dut.sg_b_valid = 0;
+    dut.m_axi_sg_ar_ready = 0;
+    dut.m_axi_sg_r_valid = 0; dut.m_axi_sg_r_data = 0; dut.m_axi_sg_r_last = 0;
+    dut.m_axi_sg_aw_ready = 0;
+    dut.m_axi_sg_w_ready = 0;
+    dut.m_axi_sg_b_valid = 0;
 
     tick(); tick(); tick();
     dut.rst = 0;
@@ -216,43 +216,43 @@ static int sg_aw_pending = 0, sg_w_beat = 0, sg_b_pending = 0;
 static uint32_t sg_aw_addr_l = 0;
 
 static void sg_read_model() {
-    if (dut.sg_ar_valid && !sg_ar_pending) {
-        dut.sg_ar_ready = 1;
-        sg_ar_addr_l = dut.sg_ar_addr;
-        sg_ar_len_l = dut.sg_ar_len;
+    if (dut.m_axi_sg_ar_valid && !sg_ar_pending) {
+        dut.m_axi_sg_ar_ready = 1;
+        sg_ar_addr_l = dut.m_axi_sg_ar_addr;
+        sg_ar_len_l = dut.m_axi_sg_ar_len;
         sg_ar_pending = 1; sg_r_beat = 0;
-    } else { dut.sg_ar_ready = 0; }
+    } else { dut.m_axi_sg_ar_ready = 0; }
     if (sg_ar_pending && sg_r_beat <= sg_ar_len_l) {
         uint32_t wa = (sg_ar_addr_l >> 2) + sg_r_beat;
-        dut.sg_r_valid = 1;
-        dut.sg_r_data = axi_mem[wa & 0xFFF];
-        dut.sg_r_last = (sg_r_beat == sg_ar_len_l) ? 1 : 0;
-        if (dut.sg_r_ready) sg_r_beat++;
+        dut.m_axi_sg_r_valid = 1;
+        dut.m_axi_sg_r_data = axi_mem[wa & 0xFFF];
+        dut.m_axi_sg_r_last = (sg_r_beat == sg_ar_len_l) ? 1 : 0;
+        if (dut.m_axi_sg_r_ready) sg_r_beat++;
     } else {
         if (sg_ar_pending && sg_r_beat > sg_ar_len_l) sg_ar_pending = 0;
-        dut.sg_r_valid = 0; dut.sg_r_last = 0;
+        dut.m_axi_sg_r_valid = 0; dut.m_axi_sg_r_last = 0;
     }
 }
 
 static void sg_write_model() {
-    if (dut.sg_aw_valid && !sg_aw_pending) {
-        dut.sg_aw_ready = 1;
-        sg_aw_addr_l = dut.sg_aw_addr;
+    if (dut.m_axi_sg_aw_valid && !sg_aw_pending) {
+        dut.m_axi_sg_aw_ready = 1;
+        sg_aw_addr_l = dut.m_axi_sg_aw_addr;
         sg_aw_pending = 1; sg_w_beat = 0;
-    } else { dut.sg_aw_ready = 0; }
+    } else { dut.m_axi_sg_aw_ready = 0; }
     if (sg_aw_pending) {
-        dut.sg_w_ready = 1;
-        if (dut.sg_w_valid) {
+        dut.m_axi_sg_w_ready = 1;
+        if (dut.m_axi_sg_w_valid) {
             uint32_t wa = (sg_aw_addr_l >> 2) + sg_w_beat;
-            axi_mem[wa & 0xFFF] = dut.sg_w_data;
+            axi_mem[wa & 0xFFF] = dut.m_axi_sg_w_data;
             sg_w_beat++;
-            if (dut.sg_w_last) { sg_b_pending = 1; sg_aw_pending = 0; }
+            if (dut.m_axi_sg_w_last) { sg_b_pending = 1; sg_aw_pending = 0; }
         }
-    } else { dut.sg_w_ready = 0; }
+    } else { dut.m_axi_sg_w_ready = 0; }
     if (sg_b_pending) {
-        dut.sg_b_valid = 1;
-        if (dut.sg_b_ready) sg_b_pending = 0;
-    } else { dut.sg_b_valid = 0; }
+        dut.m_axi_sg_b_valid = 1;
+        if (dut.m_axi_sg_b_ready) sg_b_pending = 0;
+    } else { dut.m_axi_sg_b_valid = 0; }
 }
 
 static void run_models() {

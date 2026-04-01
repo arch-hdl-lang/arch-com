@@ -1,6 +1,5 @@
 // PG021-compatible AXI DMA — top-level integration.
 // Supports Simple DMA mode (LENGTH write) and Scatter-Gather mode (TAILDESC write).
-// Two independent channels: MM2S (mem→stream) and S2MM (stream→mem).
 module AxiDmaTop
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
@@ -24,39 +23,14 @@ module AxiDmaTop
   port s_rvalid:  out Bool;
   port s_rready:  in Bool;
 
-  // ── AXI4 Read Master (MM2S memory reads) ────────────────────────────
-  port m_axi_mm2s: initiator BusAxi4Read;
-  // ── AXI4 Write Master (S2MM memory writes) ──────────────────────────
-  port m_axi_s2mm: initiator BusAxi4Write;
-  // ── AXI4-Stream Master (MM2S output) ────────────────────────────────
-  port m_axis_mm2s: initiator BusAxis;
-  // ── AXI4-Stream Slave (S2MM input) ──────────────────────────────────
-  port s_axis_s2mm: target BusAxis;
+  // ── AXI4 masters ────────────────────────────────────────────────────
+  port m_axi_mm2s: initiator BusAxi4Read;    // MM2S data reads
+  port m_axi_s2mm: initiator BusAxi4Write;   // S2MM data writes
+  port m_axi_sg:   initiator BusAxi4Full;    // SG descriptor fetch/writeback
 
-  // ── AXI4 SG Master (descriptor fetch/status writeback) ──────────────
-  port sg_ar_valid: out Bool;
-  port sg_ar_ready: in  Bool;
-  port sg_ar_addr:  out UInt<32>;
-  port sg_ar_len:   out UInt<8>;
-  port sg_ar_size:  out UInt<3>;
-  port sg_ar_burst: out UInt<2>;
-  port sg_r_valid:  in  Bool;
-  port sg_r_ready:  out Bool;
-  port sg_r_data:   in  UInt<32>;
-  port sg_r_last:   in  Bool;
-  port sg_aw_valid: out Bool;
-  port sg_aw_ready: in  Bool;
-  port sg_aw_addr:  out UInt<32>;
-  port sg_aw_len:   out UInt<8>;
-  port sg_aw_size:  out UInt<3>;
-  port sg_aw_burst: out UInt<2>;
-  port sg_w_valid:  out Bool;
-  port sg_w_ready:  in  Bool;
-  port sg_w_data:   out UInt<32>;
-  port sg_w_strb:   out UInt<4>;
-  port sg_w_last:   out Bool;
-  port sg_b_valid:  in  Bool;
-  port sg_b_ready:  out Bool;
+  // ── AXI4-Stream ─────────────────────────────────────────────────────
+  port m_axis_mm2s: initiator BusAxis;        // MM2S output stream
+  port s_axis_s2mm: target BusAxis;           // S2MM input stream
 
   // ── Interrupts ──────────────────────────────────────────────────────
   port mm2s_introut: out Bool;
@@ -64,119 +38,60 @@ module AxiDmaTop
 
   // ── Internal wires ──────────────────────────────────────────────────
 
-  // Register block ↔ data FSMs (simple DMA mode)
-  wire mm2s_start_w:     Bool;
-  wire mm2s_src_addr_w:  UInt<32>;
-  wire mm2s_num_beats_w: UInt<8>;
-  wire mm2s_done_w:      Bool;
-  wire mm2s_halted_w:    Bool;
-  wire mm2s_idle_w:      Bool;
+  // Register block ↔ data FSMs
+  wire mm2s_start_w: Bool; wire mm2s_src_addr_w: UInt<32>; wire mm2s_num_beats_w: UInt<8>;
+  wire mm2s_done_w: Bool; wire mm2s_halted_w: Bool; wire mm2s_idle_w: Bool;
+  wire s2mm_start_w: Bool; wire s2mm_dst_addr_w: UInt<32>; wire s2mm_num_beats_w: UInt<8>;
+  wire s2mm_done_w: Bool; wire s2mm_halted_w: Bool; wire s2mm_idle_w: Bool;
 
-  wire s2mm_start_w:     Bool;
-  wire s2mm_dst_addr_w:  UInt<32>;
-  wire s2mm_num_beats_w: UInt<8>;
-  wire s2mm_done_w:      Bool;
-  wire s2mm_halted_w:    Bool;
-  wire s2mm_idle_w:      Bool;
+  // Register block ↔ SG
+  wire mm2s_sg_start_w: Bool; wire mm2s_curdesc_w: UInt<32>; wire mm2s_taildesc_w: UInt<32>;
+  wire mm2s_sg_done_w: Bool;
+  wire s2mm_sg_start_w: Bool; wire s2mm_curdesc_w: UInt<32>; wire s2mm_taildesc_w: UInt<32>;
+  wire s2mm_sg_done_w: Bool;
 
-  // Register block ↔ SG engines
-  wire mm2s_sg_start_w:  Bool;
-  wire mm2s_curdesc_w:   UInt<32>;
-  wire mm2s_taildesc_w:  UInt<32>;
-  wire mm2s_sg_done_w:   Bool;
+  // SG ↔ data FSM (transfer triggers)
+  wire mm2s_sg_xfer_start_w: Bool; wire mm2s_sg_xfer_addr_w: UInt<32>; wire mm2s_sg_xfer_beats_w: UInt<8>;
+  wire s2mm_sg_xfer_start_w: Bool; wire s2mm_sg_xfer_addr_w: UInt<32>; wire s2mm_sg_xfer_beats_w: UInt<8>;
 
-  wire s2mm_sg_start_w:  Bool;
-  wire s2mm_curdesc_w:   UInt<32>;
-  wire s2mm_taildesc_w:  UInt<32>;
-  wire s2mm_sg_done_w:   Bool;
+  // SG engine AXI4 wires — needed for mux between two SG engines
+  wire mm2s_sg_ar_valid_w: Bool; wire mm2s_sg_ar_addr_w: UInt<32>;
+  wire mm2s_sg_ar_len_w: UInt<8>; wire mm2s_sg_ar_size_w: UInt<3>; wire mm2s_sg_ar_burst_w: UInt<2>;
+  wire mm2s_sg_r_ready_w: Bool;
+  wire mm2s_sg_aw_valid_w: Bool; wire mm2s_sg_aw_addr_w: UInt<32>;
+  wire mm2s_sg_aw_len_w: UInt<8>; wire mm2s_sg_aw_size_w: UInt<3>; wire mm2s_sg_aw_burst_w: UInt<2>;
+  wire mm2s_sg_w_valid_w: Bool; wire mm2s_sg_w_data_w: UInt<32>;
+  wire mm2s_sg_w_strb_w: UInt<4>; wire mm2s_sg_w_last_w: Bool;
+  wire mm2s_sg_b_ready_w: Bool;
 
-  // SG engine ↔ data FSM (SG drives transfer via xfer_ signals)
-  wire mm2s_sg_xfer_start_w: Bool;
-  wire mm2s_sg_xfer_addr_w:  UInt<32>;
-  wire mm2s_sg_xfer_beats_w: UInt<8>;
+  wire s2mm_sg_ar_valid_w: Bool; wire s2mm_sg_ar_addr_w: UInt<32>;
+  wire s2mm_sg_ar_len_w: UInt<8>; wire s2mm_sg_ar_size_w: UInt<3>; wire s2mm_sg_ar_burst_w: UInt<2>;
+  wire s2mm_sg_r_ready_w: Bool;
+  wire s2mm_sg_aw_valid_w: Bool; wire s2mm_sg_aw_addr_w: UInt<32>;
+  wire s2mm_sg_aw_len_w: UInt<8>; wire s2mm_sg_aw_size_w: UInt<3>; wire s2mm_sg_aw_burst_w: UInt<2>;
+  wire s2mm_sg_w_valid_w: Bool; wire s2mm_sg_w_data_w: UInt<32>;
+  wire s2mm_sg_w_strb_w: UInt<4>; wire s2mm_sg_w_last_w: Bool;
+  wire s2mm_sg_b_ready_w: Bool;
 
-  wire s2mm_sg_xfer_start_w: Bool;
-  wire s2mm_sg_xfer_addr_w:  UInt<32>;
-  wire s2mm_sg_xfer_beats_w: UInt<8>;
+  wire mm2s_introut_w: Bool; wire s2mm_introut_w: Bool;
 
-  // SG engine AXI4 wires (MM2S SG engine)
-  wire mm2s_sg_ar_valid_w: Bool;
-  wire mm2s_sg_ar_addr_w:  UInt<32>;
-  wire mm2s_sg_ar_len_w:   UInt<8>;
-  wire mm2s_sg_ar_size_w:  UInt<3>;
-  wire mm2s_sg_ar_burst_w: UInt<2>;
-  wire mm2s_sg_r_ready_w:  Bool;
-  wire mm2s_sg_aw_valid_w: Bool;
-  wire mm2s_sg_aw_addr_w:  UInt<32>;
-  wire mm2s_sg_aw_len_w:   UInt<8>;
-  wire mm2s_sg_aw_size_w:  UInt<3>;
-  wire mm2s_sg_aw_burst_w: UInt<2>;
-  wire mm2s_sg_w_valid_w:  Bool;
-  wire mm2s_sg_w_data_w:   UInt<32>;
-  wire mm2s_sg_w_strb_w:   UInt<4>;
-  wire mm2s_sg_w_last_w:   Bool;
-  wire mm2s_sg_b_ready_w:  Bool;
+  // AXI-Lite output wires
+  wire s_awready_w: Bool; wire s_wready_w: Bool; wire s_bresp_w: UInt<2>; wire s_bvalid_w: Bool;
+  wire s_arready_w: Bool; wire s_rdata_w: UInt<32>; wire s_rresp_w: UInt<2>; wire s_rvalid_w: Bool;
 
-  // SG engine AXI4 wires (S2MM SG engine)
-  wire s2mm_sg_ar_valid_w: Bool;
-  wire s2mm_sg_ar_addr_w:  UInt<32>;
-  wire s2mm_sg_ar_len_w:   UInt<8>;
-  wire s2mm_sg_ar_size_w:  UInt<3>;
-  wire s2mm_sg_ar_burst_w: UInt<2>;
-  wire s2mm_sg_r_ready_w:  Bool;
-  wire s2mm_sg_aw_valid_w: Bool;
-  wire s2mm_sg_aw_addr_w:  UInt<32>;
-  wire s2mm_sg_aw_len_w:   UInt<8>;
-  wire s2mm_sg_aw_size_w:  UInt<3>;
-  wire s2mm_sg_aw_burst_w: UInt<2>;
-  wire s2mm_sg_w_valid_w:  Bool;
-  wire s2mm_sg_w_data_w:   UInt<32>;
-  wire s2mm_sg_w_strb_w:   UInt<4>;
-  wire s2mm_sg_w_last_w:   Bool;
-  wire s2mm_sg_b_ready_w:  Bool;
+  // FIFO wires
+  wire mm2s_push_valid_w: Bool; wire mm2s_push_ready_w: Bool; wire mm2s_push_data_w: UInt<32>;
+  wire mm2s_pop_valid_w: Bool; wire mm2s_pop_ready_w: Bool; wire mm2s_pop_data_w: UInt<32>;
+  wire s2mm_push_valid_w: Bool; wire s2mm_push_ready_w: Bool; wire s2mm_push_data_w: UInt<32>;
+  wire s2mm_pop_valid_w: Bool; wire s2mm_pop_ready_w: Bool; wire s2mm_pop_data_w: UInt<32>;
 
-  wire mm2s_introut_w: Bool;
-  wire s2mm_introut_w: Bool;
+  // Muxed data FSM control
+  wire mm2s_fsm_start_w: Bool; wire mm2s_fsm_addr_w: UInt<32>; wire mm2s_fsm_beats_w: UInt<8>;
+  wire s2mm_fsm_start_w: Bool; wire s2mm_fsm_addr_w: UInt<32>; wire s2mm_fsm_beats_w: UInt<8>;
 
-  // Register block AXI-Lite outputs
-  wire s_awready_w: Bool;
-  wire s_wready_w:  Bool;
-  wire s_bresp_w:   UInt<2>;
-  wire s_bvalid_w:  Bool;
-  wire s_arready_w: Bool;
-  wire s_rdata_w:   UInt<32>;
-  wire s_rresp_w:   UInt<2>;
-  wire s_rvalid_w:  Bool;
-
-  // MM2S FIFO wires
-  wire mm2s_push_valid_w: Bool;
-  wire mm2s_push_ready_w: Bool;
-  wire mm2s_push_data_w:  UInt<32>;
-  wire mm2s_pop_valid_w:  Bool;
-  wire mm2s_pop_ready_w:  Bool;
-  wire mm2s_pop_data_w:   UInt<32>;
-
-  // S2MM FIFO wires
-  wire s2mm_push_valid_w: Bool;
-  wire s2mm_push_ready_w: Bool;
-  wire s2mm_push_data_w:  UInt<32>;
-  wire s2mm_pop_valid_w:  Bool;
-  wire s2mm_pop_ready_w:  Bool;
-  wire s2mm_pop_data_w:   UInt<32>;
-
-  // Muxed data FSM control (simple DMA or SG)
-  wire mm2s_fsm_start_w: Bool;
-  wire mm2s_fsm_addr_w:  UInt<32>;
-  wire mm2s_fsm_beats_w: UInt<8>;
-  wire s2mm_fsm_start_w: Bool;
-  wire s2mm_fsm_addr_w:  UInt<32>;
-  wire s2mm_fsm_beats_w: UInt<8>;
-
-  // Stream beat counters
+  // Counters + flags
   reg mm2s_stream_ctr: UInt<8> reset rst=>0;
-  reg s2mm_recv_ctr:   UInt<8> reset rst=>0;
-
-  // SG active flags (latched on sg_start, cleared on sg_done)
+  reg s2mm_recv_ctr: UInt<8> reset rst=>0;
   reg mm2s_sg_active: Bool reset rst=>false;
   reg s2mm_sg_active: Bool reset rst=>false;
 
@@ -209,17 +124,21 @@ module AxiDmaTop
     xfer_start -> mm2s_sg_xfer_start_w; xfer_addr -> mm2s_sg_xfer_addr_w; xfer_num_beats -> mm2s_sg_xfer_beats_w;
     xfer_done <- mm2s_done_w;
     sg_done -> mm2s_sg_done_w;
-    sg_ar_valid -> mm2s_sg_ar_valid_w; sg_ar_ready <- sg_ar_ready;
-    sg_ar_addr -> mm2s_sg_ar_addr_w; sg_ar_len -> mm2s_sg_ar_len_w;
-    sg_ar_size -> mm2s_sg_ar_size_w; sg_ar_burst -> mm2s_sg_ar_burst_w;
-    sg_r_valid <- sg_r_valid; sg_r_ready -> mm2s_sg_r_ready_w;
-    sg_r_data <- sg_r_data; sg_r_last <- sg_r_last;
-    sg_aw_valid -> mm2s_sg_aw_valid_w; sg_aw_ready <- sg_aw_ready;
-    sg_aw_addr -> mm2s_sg_aw_addr_w; sg_aw_len -> mm2s_sg_aw_len_w;
-    sg_aw_size -> mm2s_sg_aw_size_w; sg_aw_burst -> mm2s_sg_aw_burst_w;
-    sg_w_valid -> mm2s_sg_w_valid_w; sg_w_ready <- sg_w_ready;
-    sg_w_data -> mm2s_sg_w_data_w; sg_w_strb -> mm2s_sg_w_strb_w; sg_w_last -> mm2s_sg_w_last_w;
-    sg_b_valid <- sg_b_valid; sg_b_ready -> mm2s_sg_b_ready_w;
+    sg_axi.ar_valid -> mm2s_sg_ar_valid_w; sg_axi.ar_ready <- m_axi_sg.ar_ready;
+    sg_axi.ar_addr -> mm2s_sg_ar_addr_w; sg_axi.ar_len -> mm2s_sg_ar_len_w;
+    sg_axi.ar_size -> mm2s_sg_ar_size_w; sg_axi.ar_burst -> mm2s_sg_ar_burst_w;
+    sg_axi.ar_id <- 0;
+    sg_axi.r_valid <- m_axi_sg.r_valid; sg_axi.r_ready -> mm2s_sg_r_ready_w;
+    sg_axi.r_data <- m_axi_sg.r_data; sg_axi.r_last <- m_axi_sg.r_last;
+    sg_axi.r_id <- 0; sg_axi.r_resp <- 0;
+    sg_axi.aw_valid -> mm2s_sg_aw_valid_w; sg_axi.aw_ready <- m_axi_sg.aw_ready;
+    sg_axi.aw_addr -> mm2s_sg_aw_addr_w; sg_axi.aw_len -> mm2s_sg_aw_len_w;
+    sg_axi.aw_size -> mm2s_sg_aw_size_w; sg_axi.aw_burst -> mm2s_sg_aw_burst_w;
+    sg_axi.aw_id <- 0;
+    sg_axi.w_valid -> mm2s_sg_w_valid_w; sg_axi.w_ready <- m_axi_sg.w_ready;
+    sg_axi.w_data -> mm2s_sg_w_data_w; sg_axi.w_strb -> mm2s_sg_w_strb_w; sg_axi.w_last -> mm2s_sg_w_last_w;
+    sg_axi.b_valid <- m_axi_sg.b_valid; sg_axi.b_ready -> mm2s_sg_b_ready_w;
+    sg_axi.b_id <- 0; sg_axi.b_resp <- 0;
   end inst mm2s_sg
 
   inst s2mm_sg: FsmSgEngine
@@ -228,17 +147,21 @@ module AxiDmaTop
     xfer_start -> s2mm_sg_xfer_start_w; xfer_addr -> s2mm_sg_xfer_addr_w; xfer_num_beats -> s2mm_sg_xfer_beats_w;
     xfer_done <- s2mm_done_w;
     sg_done -> s2mm_sg_done_w;
-    sg_ar_valid -> s2mm_sg_ar_valid_w; sg_ar_ready <- sg_ar_ready;
-    sg_ar_addr -> s2mm_sg_ar_addr_w; sg_ar_len -> s2mm_sg_ar_len_w;
-    sg_ar_size -> s2mm_sg_ar_size_w; sg_ar_burst -> s2mm_sg_ar_burst_w;
-    sg_r_valid <- sg_r_valid; sg_r_ready -> s2mm_sg_r_ready_w;
-    sg_r_data <- sg_r_data; sg_r_last <- sg_r_last;
-    sg_aw_valid -> s2mm_sg_aw_valid_w; sg_aw_ready <- sg_aw_ready;
-    sg_aw_addr -> s2mm_sg_aw_addr_w; sg_aw_len -> s2mm_sg_aw_len_w;
-    sg_aw_size -> s2mm_sg_aw_size_w; sg_aw_burst -> s2mm_sg_aw_burst_w;
-    sg_w_valid -> s2mm_sg_w_valid_w; sg_w_ready <- sg_w_ready;
-    sg_w_data -> s2mm_sg_w_data_w; sg_w_strb -> s2mm_sg_w_strb_w; sg_w_last -> s2mm_sg_w_last_w;
-    sg_b_valid <- sg_b_valid; sg_b_ready -> s2mm_sg_b_ready_w;
+    sg_axi.ar_valid -> s2mm_sg_ar_valid_w; sg_axi.ar_ready <- m_axi_sg.ar_ready;
+    sg_axi.ar_addr -> s2mm_sg_ar_addr_w; sg_axi.ar_len -> s2mm_sg_ar_len_w;
+    sg_axi.ar_size -> s2mm_sg_ar_size_w; sg_axi.ar_burst -> s2mm_sg_ar_burst_w;
+    sg_axi.ar_id <- 0;
+    sg_axi.r_valid <- m_axi_sg.r_valid; sg_axi.r_ready -> s2mm_sg_r_ready_w;
+    sg_axi.r_data <- m_axi_sg.r_data; sg_axi.r_last <- m_axi_sg.r_last;
+    sg_axi.r_id <- 0; sg_axi.r_resp <- 0;
+    sg_axi.aw_valid -> s2mm_sg_aw_valid_w; sg_axi.aw_ready <- m_axi_sg.aw_ready;
+    sg_axi.aw_addr -> s2mm_sg_aw_addr_w; sg_axi.aw_len -> s2mm_sg_aw_len_w;
+    sg_axi.aw_size -> s2mm_sg_aw_size_w; sg_axi.aw_burst -> s2mm_sg_aw_burst_w;
+    sg_axi.aw_id <- 0;
+    sg_axi.w_valid -> s2mm_sg_w_valid_w; sg_axi.w_ready <- m_axi_sg.w_ready;
+    sg_axi.w_data -> s2mm_sg_w_data_w; sg_axi.w_strb -> s2mm_sg_w_strb_w; sg_axi.w_last -> s2mm_sg_w_last_w;
+    sg_axi.b_valid <- m_axi_sg.b_valid; sg_axi.b_ready -> s2mm_sg_b_ready_w;
+    sg_axi.b_id <- 0; sg_axi.b_resp <- 0;
   end inst s2mm_sg
 
   inst mm2s_fsm: FsmMm2s
@@ -270,9 +193,8 @@ module AxiDmaTop
     axi_wr -> m_axi_s2mm;
   end inst s2mm_fsm
 
-  // ── Mux: simple DMA vs SG for data FSM control ─────────────────────
+  // ── Simple/SG mux ──────────────────────────────────────────────────
   comb
-    // MM2S: if SG active, SG engine drives the data FSM; else direct from regs
     if mm2s_sg_active
       mm2s_fsm_start_w = mm2s_sg_xfer_start_w;
       mm2s_fsm_addr_w  = mm2s_sg_xfer_addr_w;
@@ -282,8 +204,6 @@ module AxiDmaTop
       mm2s_fsm_addr_w  = mm2s_src_addr_w;
       mm2s_fsm_beats_w = mm2s_num_beats_w;
     end if
-
-    // S2MM: same mux
     if s2mm_sg_active
       s2mm_fsm_start_w = s2mm_sg_xfer_start_w;
       s2mm_fsm_addr_w  = s2mm_sg_xfer_addr_w;
@@ -295,109 +215,74 @@ module AxiDmaTop
     end if
   end comb
 
-  // ── SG AXI4 port mux (MM2S SG has priority; sequential, not simultaneous) ──
+  // ── SG AXI4 port mux (MM2S SG priority; sequential access) ─────────
   comb
     if mm2s_sg_ar_valid_w
-      sg_ar_valid = mm2s_sg_ar_valid_w;
-      sg_ar_addr  = mm2s_sg_ar_addr_w;
-      sg_ar_len   = mm2s_sg_ar_len_w;
-      sg_ar_size  = mm2s_sg_ar_size_w;
-      sg_ar_burst = mm2s_sg_ar_burst_w;
+      m_axi_sg.ar_valid = true;  m_axi_sg.ar_addr = mm2s_sg_ar_addr_w;
+      m_axi_sg.ar_len = mm2s_sg_ar_len_w; m_axi_sg.ar_size = mm2s_sg_ar_size_w;
+      m_axi_sg.ar_burst = mm2s_sg_ar_burst_w; m_axi_sg.ar_id = 0;
     else
-      sg_ar_valid = s2mm_sg_ar_valid_w;
-      sg_ar_addr  = s2mm_sg_ar_addr_w;
-      sg_ar_len   = s2mm_sg_ar_len_w;
-      sg_ar_size  = s2mm_sg_ar_size_w;
-      sg_ar_burst = s2mm_sg_ar_burst_w;
+      m_axi_sg.ar_valid = s2mm_sg_ar_valid_w; m_axi_sg.ar_addr = s2mm_sg_ar_addr_w;
+      m_axi_sg.ar_len = s2mm_sg_ar_len_w; m_axi_sg.ar_size = s2mm_sg_ar_size_w;
+      m_axi_sg.ar_burst = s2mm_sg_ar_burst_w; m_axi_sg.ar_id = 0;
     end if
-
-    sg_r_ready = mm2s_sg_r_ready_w | s2mm_sg_r_ready_w;
-
+    m_axi_sg.r_ready = mm2s_sg_r_ready_w | s2mm_sg_r_ready_w;
     if mm2s_sg_aw_valid_w
-      sg_aw_valid = mm2s_sg_aw_valid_w;
-      sg_aw_addr  = mm2s_sg_aw_addr_w;
-      sg_aw_len   = mm2s_sg_aw_len_w;
-      sg_aw_size  = mm2s_sg_aw_size_w;
-      sg_aw_burst = mm2s_sg_aw_burst_w;
+      m_axi_sg.aw_valid = true;  m_axi_sg.aw_addr = mm2s_sg_aw_addr_w;
+      m_axi_sg.aw_len = mm2s_sg_aw_len_w; m_axi_sg.aw_size = mm2s_sg_aw_size_w;
+      m_axi_sg.aw_burst = mm2s_sg_aw_burst_w; m_axi_sg.aw_id = 0;
     else
-      sg_aw_valid = s2mm_sg_aw_valid_w;
-      sg_aw_addr  = s2mm_sg_aw_addr_w;
-      sg_aw_len   = s2mm_sg_aw_len_w;
-      sg_aw_size  = s2mm_sg_aw_size_w;
-      sg_aw_burst = s2mm_sg_aw_burst_w;
+      m_axi_sg.aw_valid = s2mm_sg_aw_valid_w; m_axi_sg.aw_addr = s2mm_sg_aw_addr_w;
+      m_axi_sg.aw_len = s2mm_sg_aw_len_w; m_axi_sg.aw_size = s2mm_sg_aw_size_w;
+      m_axi_sg.aw_burst = s2mm_sg_aw_burst_w; m_axi_sg.aw_id = 0;
     end if
-
     if mm2s_sg_w_valid_w
-      sg_w_valid = mm2s_sg_w_valid_w;
-      sg_w_data  = mm2s_sg_w_data_w;
-      sg_w_strb  = mm2s_sg_w_strb_w;
-      sg_w_last  = mm2s_sg_w_last_w;
+      m_axi_sg.w_valid = true; m_axi_sg.w_data = mm2s_sg_w_data_w;
+      m_axi_sg.w_strb = mm2s_sg_w_strb_w; m_axi_sg.w_last = mm2s_sg_w_last_w;
     else
-      sg_w_valid = s2mm_sg_w_valid_w;
-      sg_w_data  = s2mm_sg_w_data_w;
-      sg_w_strb  = s2mm_sg_w_strb_w;
-      sg_w_last  = s2mm_sg_w_last_w;
+      m_axi_sg.w_valid = s2mm_sg_w_valid_w; m_axi_sg.w_data = s2mm_sg_w_data_w;
+      m_axi_sg.w_strb = s2mm_sg_w_strb_w; m_axi_sg.w_last = s2mm_sg_w_last_w;
     end if
-
-    sg_b_ready = mm2s_sg_b_ready_w | s2mm_sg_b_ready_w;
+    m_axi_sg.b_ready = mm2s_sg_b_ready_w | s2mm_sg_b_ready_w;
   end comb
 
   // ── Stream wiring ───────────────────────────────────────────────────
-
-  // MM2S: FIFO pop → AXI4-Stream master output
   comb
-    m_axis_mm2s.tdata  = mm2s_pop_data_w;
-    m_axis_mm2s.tvalid = mm2s_pop_valid_w;
-    m_axis_mm2s.tkeep  = 0xF;
-    mm2s_pop_ready_w   = m_axis_mm2s.tready;
-    m_axis_mm2s.tlast  = mm2s_pop_valid_w & (mm2s_stream_ctr == (mm2s_fsm_beats_w - 1).trunc<8>());
+    m_axis_mm2s.tdata = mm2s_pop_data_w; m_axis_mm2s.tvalid = mm2s_pop_valid_w;
+    m_axis_mm2s.tkeep = 0xF; mm2s_pop_ready_w = m_axis_mm2s.tready;
+    m_axis_mm2s.tlast = mm2s_pop_valid_w & (mm2s_stream_ctr == (mm2s_fsm_beats_w - 1).trunc<8>());
+  end comb
+  comb
+    s2mm_push_data_w = s_axis_s2mm.tdata; s2mm_push_valid_w = s_axis_s2mm.tvalid;
+    s_axis_s2mm.tready = s2mm_push_ready_w;
   end comb
 
-  // S2MM: AXI4-Stream slave input → FIFO push
-  comb
-    s2mm_push_data_w      = s_axis_s2mm.tdata;
-    s2mm_push_valid_w     = s_axis_s2mm.tvalid;
-    s_axis_s2mm.tready    = s2mm_push_ready_w;
-  end comb
-
-  // Route AXI-Lite outputs
+  // ── Route outputs ───────────────────────────────────────────────────
   comb
     s_awready = s_awready_w; s_wready = s_wready_w;
     s_bresp = s_bresp_w; s_bvalid = s_bvalid_w;
     s_arready = s_arready_w; s_rdata = s_rdata_w;
     s_rresp = s_rresp_w; s_rvalid = s_rvalid_w;
-  end comb
-
-  // Route interrupts
-  comb
-    mm2s_introut = mm2s_introut_w;
-    s2mm_introut = s2mm_introut_w;
+    mm2s_introut = mm2s_introut_w; s2mm_introut = s2mm_introut_w;
   end comb
 
   // ── Registered state ────────────────────────────────────────────────
-
   seq
-    // SG active flags
     if mm2s_sg_start_w
       mm2s_sg_active <= true;
     elsif mm2s_sg_done_w
       mm2s_sg_active <= false;
     end if
-
     if s2mm_sg_start_w
       s2mm_sg_active <= true;
     elsif s2mm_sg_done_w
       s2mm_sg_active <= false;
     end if
-
-    // MM2S stream output beat counter
     if mm2s_fsm_start_w
       mm2s_stream_ctr <= 0;
     elsif mm2s_pop_valid_w & m_axis_mm2s.tready
       mm2s_stream_ctr <= (mm2s_stream_ctr + 1).trunc<8>();
     end if
-
-    // S2MM stream input beat counter
     if s2mm_fsm_start_w
       s2mm_recv_ctr <= 0;
     elsif s_axis_s2mm.tvalid & s2mm_push_ready_w
