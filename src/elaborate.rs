@@ -250,7 +250,19 @@ fn elaborate_module_variant(
     let mut all_ports = m.ports;
     all_ports.extend(extra_ports);
 
-    Ok(ModuleDecl { name: new_name, params: m.params, ports: all_ports, body: new_body, implements: m.implements, hooks: m.hooks, cdc_safe: m.cdc_safe, span: m.span })
+    // Update param defaults to match the monomorphized values so
+    // the SV declaration is consistent with the expanded body.
+    let new_params: Vec<ParamDecl> = m.params.into_iter().map(|mut p| {
+        if let Some(&val) = param_vals.get(&p.name.name) {
+            p.default = Some(Expr::new(
+                ExprKind::Literal(LitKind::Dec(val as u64)),
+                p.name.span,
+            ));
+        }
+        p
+    }).collect();
+
+    Ok(ModuleDecl { name: new_name, params: new_params, ports: all_ports, body: new_body, implements: m.implements, hooks: m.hooks, cdc_safe: m.cdc_safe, span: m.span })
 }
 
 /// Rewrite an inst's `module_name` to the correct variant name.
