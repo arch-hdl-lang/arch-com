@@ -1,0 +1,24 @@
+// AXI4 read-only master bus (AR + R channels).
+// Direction: from initiator (master) perspective.
+bus BusAxi4Read
+  param ADDR_W: const = 32;
+  param DATA_W: const = 32;
+  param ID_W:   const = 1;
+
+  // Read address channel
+  ar_valid: out Bool;
+  ar_ready: in  Bool;
+  ar_addr:  out UInt<ADDR_W>;
+  ar_id:    out UInt<ID_W>;
+  ar_len:   out UInt<8>;
+  ar_size:  out UInt<3>;
+  ar_burst: out UInt<2>;
+
+  // Read data channel
+  r_valid:  in  Bool;
+  r_ready:  out Bool;
+  r_data:   in  UInt<DATA_W>;
+  r_id:     in  UInt<ID_W>;
+  r_resp:   in  UInt<2>;
+  r_last:   in  Bool;
+end bus BusAxi4Read

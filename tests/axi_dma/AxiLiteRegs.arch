@@ -1,0 +1,176 @@
+// AXI4-Lite slave register interface — PG021 Simple DMA register map.
+// Implements DMACR, DMASR (with W1C), SA/DA, LENGTH for both channels.
+module AxiLiteRegs
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  // AXI4-Lite slave interface
+  port awaddr_i:  in UInt<8>;
+  port awvalid_i: in Bool;
+  port reg awready_o: out Bool reset rst=>false;
+
+  port wdata_i:   in UInt<32>;
+  port wstrb_i:   in UInt<4>;
+  port wvalid_i:  in Bool;
+  port reg wready_o: out Bool reset rst=>false;
+
+  port reg bresp_o:  out UInt<2> reset rst=>0;
+  port reg bvalid_o: out Bool reset rst=>false;
+  port bready_i:     in Bool;
+
+  port araddr_i:  in UInt<8>;
+  port arvalid_i: in Bool;
+  port reg arready_o: out Bool reset rst=>false;
+
+  port reg rdata_o:  out UInt<32> reset rst=>0;
+  port reg rresp_o:  out UInt<2> reset rst=>0;
+  port reg rvalid_o: out Bool reset rst=>false;
+  port rready_i:     in Bool;
+
+  // MM2S control outputs
+  port reg mm2s_start:     out Bool reset rst=>false;
+  port reg mm2s_src_addr:  out UInt<32> reset rst=>0;
+  port reg mm2s_num_beats: out UInt<8> reset rst=>0;
+
+  // MM2S status inputs
+  port mm2s_done:   in Bool;
+  port mm2s_halted: in Bool;
+  port mm2s_idle:   in Bool;
+
+  // S2MM control outputs
+  port reg s2mm_start:     out Bool reset rst=>false;
+  port reg s2mm_dst_addr:  out UInt<32> reset rst=>0;
+  port reg s2mm_num_beats: out UInt<8> reset rst=>0;
+
+  // S2MM status inputs
+  port s2mm_done:   in Bool;
+  port s2mm_halted: in Bool;
+  port s2mm_idle:   in Bool;
+
+  // Interrupt outputs
+  port reg mm2s_introut: out Bool reset rst=>false;
+  port reg s2mm_introut: out Bool reset rst=>false;
+
+  // Internal register storage
+  reg mm2s_dmacr_r:  UInt<32> reset rst=>0;
+  reg mm2s_sa_r:     UInt<32> reset rst=>0;
+  reg mm2s_length_r: UInt<32> reset rst=>0;
+  reg mm2s_ioc_irq:  Bool reset rst=>false;
+
+  reg s2mm_dmacr_r:  UInt<32> reset rst=>0;
+  reg s2mm_da_r:     UInt<32> reset rst=>0;
+  reg s2mm_length_r: UInt<32> reset rst=>0;
+  reg s2mm_ioc_irq:  Bool reset rst=>false;
+
+  default seq on clk rising;
+
+  seq
+    // Clear one-cycle pulses
+    mm2s_start <= false;
+    s2mm_start <= false;
+    awready_o  <= false;
+    wready_o   <= false;
+    arready_o  <= false;
+
+    // B channel: clear bvalid on handshake
+    if bvalid_o & bready_i
+      bvalid_o <= false;
+    end if
+
+    // R channel: clear rvalid on handshake
+    if rvalid_o & rready_i
+      rvalid_o <= false;
+    end if
+
+    // Hardware-set IOC_Irq on done pulses
+    if mm2s_done
+      mm2s_ioc_irq <= true;
+    end if
+    if s2mm_done
+      s2mm_ioc_irq <= true;
+    end if
+
+    // ── Write path: simultaneous AW+W ──────────────────────────────────
+    if awvalid_i & wvalid_i
+      awready_o <= true;
+      wready_o  <= true;
+      bvalid_o  <= true;
+      bresp_o   <= 0;
+
+      // Address decode (byte offsets)
+      if awaddr_i == 0x00
+        // MM2S_DMACR
+        mm2s_dmacr_r <= wdata_i;
+      elsif awaddr_i == 0x04
+        // MM2S_DMASR — W1C: writing 1 to bit 12 clears IOC_Irq
+        if wdata_i[12:12] == 1
+          mm2s_ioc_irq <= false;
+        end if
+      elsif awaddr_i == 0x18
+        // MM2S_SA
+        mm2s_sa_r <= wdata_i;
+      elsif awaddr_i == 0x28
+        // MM2S_LENGTH — triggers start if RS=1
+        mm2s_length_r <= wdata_i;
+        if mm2s_dmacr_r[0:0] == 1
+          mm2s_start     <= true;
+          mm2s_src_addr  <= mm2s_sa_r;
+          mm2s_num_beats <= wdata_i[25:2].trunc<8>();
+        end if
+      elsif awaddr_i == 0x30
+        // S2MM_DMACR
+        s2mm_dmacr_r <= wdata_i;
+      elsif awaddr_i == 0x34
+        // S2MM_DMASR — W1C
+        if wdata_i[12:12] == 1
+          s2mm_ioc_irq <= false;
+        end if
+      elsif awaddr_i == 0x48
+        // S2MM_DA
+        s2mm_da_r <= wdata_i;
+      elsif awaddr_i == 0x58
+        // S2MM_LENGTH — triggers start if RS=1
+        s2mm_length_r <= wdata_i;
+        if s2mm_dmacr_r[0:0] == 1
+          s2mm_start     <= true;
+          s2mm_dst_addr  <= s2mm_da_r;
+          s2mm_num_beats <= wdata_i[25:2].trunc<8>();
+        end if
+      end if
+    end if
+
+    // ── Read path ──────────────────────────────────────────────────────
+    if arvalid_i & ~rvalid_o
+      arready_o <= true;
+      rvalid_o  <= true;
+      rresp_o   <= 0;
+
+      if araddr_i == 0x00
+        rdata_o <= mm2s_dmacr_r;
+      elsif araddr_i == 0x04
+        // MM2S_DMASR: compose from status inputs + IOC_Irq
+        rdata_o <= {19'b0, mm2s_ioc_irq, 10'b0, mm2s_idle, mm2s_halted};
+      elsif araddr_i == 0x18
+        rdata_o <= mm2s_sa_r;
+      elsif araddr_i == 0x28
+        rdata_o <= mm2s_length_r;
+      elsif araddr_i == 0x30
+        rdata_o <= s2mm_dmacr_r;
+      elsif araddr_i == 0x34
+        rdata_o <= {19'b0, s2mm_ioc_irq, 10'b0, s2mm_idle, s2mm_halted};
+      elsif araddr_i == 0x48
+        rdata_o <= s2mm_da_r;
+      elsif araddr_i == 0x58
+        rdata_o <= s2mm_length_r;
+      else
+        rdata_o <= 0;
+        rresp_o <= 2;
+      end if
+    end if
+
+    // Interrupt outputs: IRQ asserted when both flag and enable are set
+    mm2s_introut <= mm2s_ioc_irq & (mm2s_dmacr_r[12:12] == 1);
+    s2mm_introut <= s2mm_ioc_irq & (s2mm_dmacr_r[12:12] == 1);
+  end seq
+
+end module AxiLiteRegs

@@ -1,0 +1,7 @@
+package PkgAxiDma
+
+  domain SysDomain
+    freq_mhz: 100
+  end domain SysDomain
+
+end package PkgAxiDma

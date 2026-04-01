@@ -1,0 +1,130 @@
+// S2MM channel FSM — pops data from FIFO, writes to memory via AXI4.
+// States: Idle → WaitRecv → SendAW → SendW → WaitB → Done
+fsm FsmS2mm
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  // Control interface (from register block)
+  port start:      in  Bool;
+  port dst_addr:   in  UInt<32>;
+  port num_beats:  in  UInt<8>;
+  port recv_count: in  UInt<8>;
+
+  // Status outputs
+  port done:     out Bool;
+  port halted:   out Bool;
+  port idle_out: out Bool;
+
+  // FIFO pop interface
+  port pop_valid: in  Bool;
+  port pop_ready: out Bool;
+  port pop_data:  in  UInt<32>;
+
+  // AXI4 Write Address channel
+  port aw_valid: out Bool;
+  port aw_ready: in  Bool;
+  port aw_addr:  out UInt<32>;
+  port aw_len:   out UInt<8>;
+  port aw_size:  out UInt<3>;
+  port aw_burst: out UInt<2>;
+
+  // AXI4 Write Data channel
+  port w_valid: out Bool;
+  port w_ready: in  Bool;
+  port w_data:  out UInt<32>;
+  port w_strb:  out UInt<4>;
+  port w_last:  out Bool;
+
+  // AXI4 Write Response channel
+  port b_valid: in  Bool;
+  port b_ready: out Bool;
+
+  // Internal registers
+  reg dst_addr_r:  UInt<32> reset none;
+  reg num_beats_r: UInt<8>  reset none;
+  reg beat_ctr_r:  UInt<8>  reset rst=>0;
+
+  state [Idle, WaitRecv, SendAW, SendW, WaitB, Done]
+  default state Idle;
+  default seq on clk rising;
+
+  default
+    comb
+      done      = false;
+      halted    = false;
+      idle_out  = false;
+      pop_ready = false;
+      aw_valid  = false;
+      aw_addr   = 0;
+      aw_len    = 0;
+      aw_size   = 0;
+      aw_burst  = 0;
+      w_valid   = false;
+      w_data    = 0;
+      w_strb    = 0;
+      w_last    = false;
+      b_ready   = false;
+    end comb
+  end default
+
+  state Idle
+    comb
+      halted   = true;
+      idle_out = true;
+    end comb
+    seq
+      if start
+        dst_addr_r  <= dst_addr;
+        num_beats_r <= num_beats;
+        beat_ctr_r  <= 0;
+      end if
+    end seq
+    -> WaitRecv when start;
+  end state Idle
+
+  state WaitRecv
+    -> SendAW when recv_count >= num_beats_r;
+  end state WaitRecv
+
+  state SendAW
+    comb
+      aw_valid = true;
+      aw_addr  = dst_addr_r;
+      aw_len   = (num_beats_r - 1).trunc<8>();
+      aw_size  = 2;
+      aw_burst = 1;
+    end comb
+    -> SendW when aw_ready;
+  end state SendAW
+
+  state SendW
+    comb
+      w_valid   = pop_valid;
+      w_data    = pop_data;
+      w_strb    = 0xF;
+      w_last    = (beat_ctr_r == (num_beats_r - 1).trunc<8>());
+      pop_ready = w_ready;
+    end comb
+    seq
+      if w_ready & pop_valid
+        beat_ctr_r <= (beat_ctr_r + 1).trunc<8>();
+      end if
+    end seq
+    -> WaitB when w_ready & pop_valid & w_last;
+  end state SendW
+
+  state WaitB
+    comb
+      b_ready = true;
+    end comb
+    -> Done when b_valid;
+  end state WaitB
+
+  state Done
+    comb
+      done = true;
+    end comb
+    -> Idle when true;
+  end state Done
+
+end fsm FsmS2mm

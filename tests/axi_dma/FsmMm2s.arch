@@ -1,0 +1,108 @@
+// MM2S channel FSM — reads from memory via AXI4, pushes data into FIFO.
+// States: Idle → SendAR → WaitR → Done
+fsm FsmMm2s
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  // Control interface (from register block)
+  port start:     in  Bool;
+  port src_addr:  in  UInt<32>;
+  port num_beats: in  UInt<8>;
+
+  // Status outputs
+  port done:     out Bool;
+  port halted:   out Bool;
+  port idle_out: out Bool;
+
+  // AXI4 Read Address channel
+  port ar_valid: out Bool;
+  port ar_ready: in  Bool;
+  port ar_addr:  out UInt<32>;
+  port ar_len:   out UInt<8>;
+  port ar_size:  out UInt<3>;
+  port ar_burst: out UInt<2>;
+
+  // AXI4 Read Data channel
+  port r_valid: in  Bool;
+  port r_ready: out Bool;
+  port r_data:  in  UInt<32>;
+  port r_last:  in  Bool;
+
+  // FIFO push interface
+  port push_valid: out Bool;
+  port push_ready: in  Bool;
+  port push_data:  out UInt<32>;
+
+  // Internal registers
+  reg src_addr_r:  UInt<32> reset none;
+  reg num_beats_r: UInt<8>  reset none;
+  reg beat_ctr_r:  UInt<8>  reset rst=>0;
+
+  state [Idle, SendAR, WaitR, Done]
+  default state Idle;
+  default seq on clk rising;
+
+  default
+    comb
+      done       = false;
+      halted     = false;
+      idle_out   = false;
+      ar_valid   = false;
+      ar_addr    = 0;
+      ar_len     = 0;
+      ar_size    = 0;
+      ar_burst   = 0;
+      r_ready    = false;
+      push_valid = false;
+      push_data  = 0;
+    end comb
+  end default
+
+  state Idle
+    comb
+      halted   = true;
+      idle_out = true;
+    end comb
+    seq
+      if start
+        src_addr_r  <= src_addr;
+        num_beats_r <= num_beats;
+        beat_ctr_r  <= 0;
+      end if
+    end seq
+    -> SendAR when start;
+  end state Idle
+
+  state SendAR
+    comb
+      ar_valid = true;
+      ar_addr  = src_addr_r;
+      ar_len   = (num_beats_r - 1).trunc<8>();
+      ar_size  = 2;
+      ar_burst = 1;
+    end comb
+    -> WaitR when ar_ready;
+  end state SendAR
+
+  state WaitR
+    comb
+      r_ready    = push_ready;
+      push_valid = r_valid;
+      push_data  = r_data;
+    end comb
+    seq
+      if r_valid & push_ready
+        beat_ctr_r <= (beat_ctr_r + 1).trunc<8>();
+      end if
+    end seq
+    -> Done when r_valid & r_last & push_ready;
+  end state WaitR
+
+  state Done
+    comb
+      done = true;
+    end comb
+    -> Idle when true;
+  end state Done
+
+end fsm FsmMm2s

@@ -4649,12 +4649,15 @@ impl<'a> SimCodegen<'a> {
         let mut h = String::new();
         h.push_str("#pragma once\n#include <cstdint>\n#include <cstring>\n#include \"verilated.h\"\n\n");
         h.push_str(&format!("class {class} {{\npublic:\n"));
+        let port_names: HashSet<&str> = f.ports.iter().map(|p| p.name.name.as_str()).collect();
         for p in &f.ports {
             let ty = resolve_port_ty(&p.ty);
             h.push_str(&format!("  {ty} {};\n", p.name.name));
         }
+        // Add full/empty fields only if not already declared as ports
         if !is_lifo {
-            h.push_str("  uint8_t full;\n  uint8_t empty;\n");
+            if !port_names.contains("full") { h.push_str("  uint8_t full;\n"); }
+            if !port_names.contains("empty") { h.push_str("  uint8_t empty;\n"); }
         }
         h.push('\n');
 
@@ -4664,8 +4667,8 @@ impl<'a> SimCodegen<'a> {
             else { format!("{}(0)", p.name.name) }
         }).collect();
         if !is_lifo {
-            port_inits.push("full(0)".to_string());
-            port_inits.push("empty(1)".to_string());
+            if !port_names.contains("full") { port_inits.push("full(0)".to_string()); }
+            if !port_names.contains("empty") { port_inits.push("empty(1)".to_string()); }
         }
         port_inits.push("_clk_prev(0)".to_string());
         if is_lifo {
