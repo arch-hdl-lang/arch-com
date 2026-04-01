@@ -203,6 +203,14 @@
 |                                       |                                  |
 | read\[1\].data -\> out\_b;    | Index must be integer literal.   |
 |                                       |                                  |
+| // Whole-bus connection:              | Expands to per-signal connects   |
+|                                       | using bus definition. Directions |
+| axi\_rd -\> m\_axi\_mm2s;    | derived from bus + perspective.  |
+|                                       |                                  |
+| // Indexed bus port in comb/seq:      | Flattened at codegen time:       |
+|                                       |                                  |
+| m\_axi\[0\].ar\_valid = true; | → m\_axi\_0\_ar\_valid           |
+|                                       |                                  |
 | end inst u                            |                                  |
 |                                       |                                  |
 | // Hierarchical refs FORBIDDEN:       | inst_name.port is a compile      |

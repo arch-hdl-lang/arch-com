@@ -248,9 +248,14 @@ inst_decl = "inst" ident ":" ident
      "->" captures an output port into a wire/reg in the enclosing scope
    Port references may use dot-member or bracket-index-dot-member syntax
    for regfile port groups or structured ports:
-     port_name              plain port
+     port_name              plain port (or whole-bus: expands to all signals)
      group.member           port group member (flattened to group_member)
-     group[i].member        indexed port group (flattened to groupN_member) *)
+     group[i].member        indexed port group (flattened to groupN_member)
+   Whole-bus connection: if port_name is a bus port on the inst, one
+   connection expands to all signals in the bus definition:
+     axi_rd -> m_axi;       expands to axi_rd_ar_valid -> m_axi_ar_valid, etc.
+   Indexed bus in expressions (comb/seq):
+     m_axi[0].ar_valid      flattened to m_axi_0_ar_valid *)
 connect_stmt = connect_port_ref ( "<-" | "->" ) expr ";" ;
 
 connect_port_ref = ident

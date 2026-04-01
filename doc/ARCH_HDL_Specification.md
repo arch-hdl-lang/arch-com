@@ -765,6 +765,10 @@ The compiler validates that the default value fits within the declared range. Co
 >
 > ◈ **Port group member syntax.** For constructs with named port groups (e.g. `regfile` with `ports[N] read`), connections use dot notation: `write.en <- wr_en;` (flattened to `write_en`). For indexed port groups, use bracket-dot notation: `read[0].addr <- sel;` (flattened to `read0_addr`). The index must be an integer literal. Both forms are resolved at parse time --- the rest of the compiler sees only the flattened name.
 >
+> ◈ **Whole-bus connections.** When an inst's bus port connects to a parent bus port (or wire), a single connection expands to all signals in the bus definition: `axi_rd -> m_axi_mm2s;` expands to `axi_rd_ar_valid -> m_axi_mm2s_ar_valid`, etc. Signal directions are derived from the bus definition and the port's perspective (`initiator` or `target`). This works for both `module` and `fsm` constructs.
+>
+> ◈ **Indexed bus port expressions.** Generated bus port arrays (via `generate for i in 0..N / port m_axi_i: initiator Bus`) can be referenced in comb/seq blocks using bracket-dot syntax: `m_axi[0].ar_valid = true;` flattens to `m_axi_0_ar_valid`. The index must be an integer literal.
+>
 > ◈ **Hierarchical instance references are forbidden.** Expressions like `inst_name.port_name` (e.g. `add.sum`) are a compile error. To read an instance output, use `port -> wire_name` inside the `inst` block and reference `wire_name` in the enclosing scope. Error message: *"hierarchical reference \`u.y\` is not allowed; use \`y -> wire_name\` in the inst block instead."*
 >
 > ◈ **SV codegen notes.** The SystemVerilog backend applies the following transformations for correctness across simulators and lint tools: (1) signed casts emit `$signed(x)` (not `logic signed [N-1:0]'(x)`) for Verilator compatibility; (2) right-shift `>>` on an `SInt` operand emits arithmetic shift `>>>` (correct SRA behavior); (3) `.zext<N>()` emits `N'($unsigned(x))` to prevent context-dependent width expansion.
