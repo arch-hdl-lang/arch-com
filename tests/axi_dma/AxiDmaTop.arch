@@ -24,13 +24,14 @@ module AxiDmaTop
   port s_rready:  in Bool;
 
   // ── AXI4 masters ────────────────────────────────────────────────────
-  port m_axi_mm2s: initiator BusAxi4Read;    // MM2S data reads
-  port m_axi_s2mm: initiator BusAxi4Write;   // S2MM data writes
-  port m_axi_sg:   initiator BusAxi4Full;    // SG descriptor fetch/writeback
+  port m_axi_mm2s:    initiator BusAxi4Read;     // MM2S data reads
+  port m_axi_s2mm:    initiator BusAxi4Write;    // S2MM data writes
+  port m_axi_mm2s_sg: initiator BusAxi4Full;     // MM2S SG descriptor access
+  port m_axi_s2mm_sg: initiator BusAxi4Full;     // S2MM SG descriptor access
 
   // ── AXI4-Stream ─────────────────────────────────────────────────────
-  port m_axis_mm2s: initiator BusAxis;        // MM2S output stream
-  port s_axis_s2mm: target BusAxis;           // S2MM input stream
+  port m_axis_mm2s: initiator BusAxis;
+  port s_axis_s2mm: target BusAxis;
 
   // ── Interrupts ──────────────────────────────────────────────────────
   port mm2s_introut: out Bool;
@@ -53,25 +54,6 @@ module AxiDmaTop
   // SG ↔ data FSM (transfer triggers)
   wire mm2s_sg_xfer_start_w: Bool; wire mm2s_sg_xfer_addr_w: UInt<32>; wire mm2s_sg_xfer_beats_w: UInt<8>;
   wire s2mm_sg_xfer_start_w: Bool; wire s2mm_sg_xfer_addr_w: UInt<32>; wire s2mm_sg_xfer_beats_w: UInt<8>;
-
-  // SG engine AXI4 wires — needed for mux between two SG engines
-  wire mm2s_sg_ar_valid_w: Bool; wire mm2s_sg_ar_addr_w: UInt<32>;
-  wire mm2s_sg_ar_len_w: UInt<8>; wire mm2s_sg_ar_size_w: UInt<3>; wire mm2s_sg_ar_burst_w: UInt<2>;
-  wire mm2s_sg_r_ready_w: Bool;
-  wire mm2s_sg_aw_valid_w: Bool; wire mm2s_sg_aw_addr_w: UInt<32>;
-  wire mm2s_sg_aw_len_w: UInt<8>; wire mm2s_sg_aw_size_w: UInt<3>; wire mm2s_sg_aw_burst_w: UInt<2>;
-  wire mm2s_sg_w_valid_w: Bool; wire mm2s_sg_w_data_w: UInt<32>;
-  wire mm2s_sg_w_strb_w: UInt<4>; wire mm2s_sg_w_last_w: Bool;
-  wire mm2s_sg_b_ready_w: Bool;
-
-  wire s2mm_sg_ar_valid_w: Bool; wire s2mm_sg_ar_addr_w: UInt<32>;
-  wire s2mm_sg_ar_len_w: UInt<8>; wire s2mm_sg_ar_size_w: UInt<3>; wire s2mm_sg_ar_burst_w: UInt<2>;
-  wire s2mm_sg_r_ready_w: Bool;
-  wire s2mm_sg_aw_valid_w: Bool; wire s2mm_sg_aw_addr_w: UInt<32>;
-  wire s2mm_sg_aw_len_w: UInt<8>; wire s2mm_sg_aw_size_w: UInt<3>; wire s2mm_sg_aw_burst_w: UInt<2>;
-  wire s2mm_sg_w_valid_w: Bool; wire s2mm_sg_w_data_w: UInt<32>;
-  wire s2mm_sg_w_strb_w: UInt<4>; wire s2mm_sg_w_last_w: Bool;
-  wire s2mm_sg_b_ready_w: Bool;
 
   wire mm2s_introut_w: Bool; wire s2mm_introut_w: Bool;
 
@@ -124,21 +106,7 @@ module AxiDmaTop
     xfer_start -> mm2s_sg_xfer_start_w; xfer_addr -> mm2s_sg_xfer_addr_w; xfer_num_beats -> mm2s_sg_xfer_beats_w;
     xfer_done <- mm2s_done_w;
     sg_done -> mm2s_sg_done_w;
-    sg_axi.ar_valid -> mm2s_sg_ar_valid_w; sg_axi.ar_ready <- m_axi_sg.ar_ready;
-    sg_axi.ar_addr -> mm2s_sg_ar_addr_w; sg_axi.ar_len -> mm2s_sg_ar_len_w;
-    sg_axi.ar_size -> mm2s_sg_ar_size_w; sg_axi.ar_burst -> mm2s_sg_ar_burst_w;
-    sg_axi.ar_id <- 0;
-    sg_axi.r_valid <- m_axi_sg.r_valid; sg_axi.r_ready -> mm2s_sg_r_ready_w;
-    sg_axi.r_data <- m_axi_sg.r_data; sg_axi.r_last <- m_axi_sg.r_last;
-    sg_axi.r_id <- 0; sg_axi.r_resp <- 0;
-    sg_axi.aw_valid -> mm2s_sg_aw_valid_w; sg_axi.aw_ready <- m_axi_sg.aw_ready;
-    sg_axi.aw_addr -> mm2s_sg_aw_addr_w; sg_axi.aw_len -> mm2s_sg_aw_len_w;
-    sg_axi.aw_size -> mm2s_sg_aw_size_w; sg_axi.aw_burst -> mm2s_sg_aw_burst_w;
-    sg_axi.aw_id <- 0;
-    sg_axi.w_valid -> mm2s_sg_w_valid_w; sg_axi.w_ready <- m_axi_sg.w_ready;
-    sg_axi.w_data -> mm2s_sg_w_data_w; sg_axi.w_strb -> mm2s_sg_w_strb_w; sg_axi.w_last -> mm2s_sg_w_last_w;
-    sg_axi.b_valid <- m_axi_sg.b_valid; sg_axi.b_ready -> mm2s_sg_b_ready_w;
-    sg_axi.b_id <- 0; sg_axi.b_resp <- 0;
+    sg_axi -> m_axi_mm2s_sg;
   end inst mm2s_sg
 
   inst s2mm_sg: FsmSgEngine
@@ -147,21 +115,7 @@ module AxiDmaTop
     xfer_start -> s2mm_sg_xfer_start_w; xfer_addr -> s2mm_sg_xfer_addr_w; xfer_num_beats -> s2mm_sg_xfer_beats_w;
     xfer_done <- s2mm_done_w;
     sg_done -> s2mm_sg_done_w;
-    sg_axi.ar_valid -> s2mm_sg_ar_valid_w; sg_axi.ar_ready <- m_axi_sg.ar_ready;
-    sg_axi.ar_addr -> s2mm_sg_ar_addr_w; sg_axi.ar_len -> s2mm_sg_ar_len_w;
-    sg_axi.ar_size -> s2mm_sg_ar_size_w; sg_axi.ar_burst -> s2mm_sg_ar_burst_w;
-    sg_axi.ar_id <- 0;
-    sg_axi.r_valid <- m_axi_sg.r_valid; sg_axi.r_ready -> s2mm_sg_r_ready_w;
-    sg_axi.r_data <- m_axi_sg.r_data; sg_axi.r_last <- m_axi_sg.r_last;
-    sg_axi.r_id <- 0; sg_axi.r_resp <- 0;
-    sg_axi.aw_valid -> s2mm_sg_aw_valid_w; sg_axi.aw_ready <- m_axi_sg.aw_ready;
-    sg_axi.aw_addr -> s2mm_sg_aw_addr_w; sg_axi.aw_len -> s2mm_sg_aw_len_w;
-    sg_axi.aw_size -> s2mm_sg_aw_size_w; sg_axi.aw_burst -> s2mm_sg_aw_burst_w;
-    sg_axi.aw_id <- 0;
-    sg_axi.w_valid -> s2mm_sg_w_valid_w; sg_axi.w_ready <- m_axi_sg.w_ready;
-    sg_axi.w_data -> s2mm_sg_w_data_w; sg_axi.w_strb -> s2mm_sg_w_strb_w; sg_axi.w_last -> s2mm_sg_w_last_w;
-    sg_axi.b_valid <- m_axi_sg.b_valid; sg_axi.b_ready -> s2mm_sg_b_ready_w;
-    sg_axi.b_id <- 0; sg_axi.b_resp <- 0;
+    sg_axi -> m_axi_s2mm_sg;
   end inst s2mm_sg
 
   inst mm2s_fsm: FsmMm2s
@@ -213,37 +167,6 @@ module AxiDmaTop
       s2mm_fsm_addr_w  = s2mm_dst_addr_w;
       s2mm_fsm_beats_w = s2mm_num_beats_w;
     end if
-  end comb
-
-  // ── SG AXI4 port mux (MM2S SG priority; sequential access) ─────────
-  comb
-    if mm2s_sg_ar_valid_w
-      m_axi_sg.ar_valid = true;  m_axi_sg.ar_addr = mm2s_sg_ar_addr_w;
-      m_axi_sg.ar_len = mm2s_sg_ar_len_w; m_axi_sg.ar_size = mm2s_sg_ar_size_w;
-      m_axi_sg.ar_burst = mm2s_sg_ar_burst_w; m_axi_sg.ar_id = 0;
-    else
-      m_axi_sg.ar_valid = s2mm_sg_ar_valid_w; m_axi_sg.ar_addr = s2mm_sg_ar_addr_w;
-      m_axi_sg.ar_len = s2mm_sg_ar_len_w; m_axi_sg.ar_size = s2mm_sg_ar_size_w;
-      m_axi_sg.ar_burst = s2mm_sg_ar_burst_w; m_axi_sg.ar_id = 0;
-    end if
-    m_axi_sg.r_ready = mm2s_sg_r_ready_w | s2mm_sg_r_ready_w;
-    if mm2s_sg_aw_valid_w
-      m_axi_sg.aw_valid = true;  m_axi_sg.aw_addr = mm2s_sg_aw_addr_w;
-      m_axi_sg.aw_len = mm2s_sg_aw_len_w; m_axi_sg.aw_size = mm2s_sg_aw_size_w;
-      m_axi_sg.aw_burst = mm2s_sg_aw_burst_w; m_axi_sg.aw_id = 0;
-    else
-      m_axi_sg.aw_valid = s2mm_sg_aw_valid_w; m_axi_sg.aw_addr = s2mm_sg_aw_addr_w;
-      m_axi_sg.aw_len = s2mm_sg_aw_len_w; m_axi_sg.aw_size = s2mm_sg_aw_size_w;
-      m_axi_sg.aw_burst = s2mm_sg_aw_burst_w; m_axi_sg.aw_id = 0;
-    end if
-    if mm2s_sg_w_valid_w
-      m_axi_sg.w_valid = true; m_axi_sg.w_data = mm2s_sg_w_data_w;
-      m_axi_sg.w_strb = mm2s_sg_w_strb_w; m_axi_sg.w_last = mm2s_sg_w_last_w;
-    else
-      m_axi_sg.w_valid = s2mm_sg_w_valid_w; m_axi_sg.w_data = s2mm_sg_w_data_w;
-      m_axi_sg.w_strb = s2mm_sg_w_strb_w; m_axi_sg.w_last = s2mm_sg_w_last_w;
-    end if
-    m_axi_sg.b_ready = mm2s_sg_b_ready_w | s2mm_sg_b_ready_w;
   end comb
 
   // ── Stream wiring ───────────────────────────────────────────────────
