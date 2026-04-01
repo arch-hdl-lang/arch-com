@@ -245,13 +245,7 @@ module AxiDmaTop
     clk <- clk; rst <- rst;
     start <- mm2s_fsm_start_w; src_addr <- mm2s_fsm_addr_w; num_beats <- mm2s_fsm_beats_w;
     done -> mm2s_done_w; halted -> mm2s_halted_w; idle_out -> mm2s_idle_w;
-    axi_rd.ar_valid -> m_axi_mm2s.ar_valid; axi_rd.ar_ready <- m_axi_mm2s.ar_ready;
-    axi_rd.ar_addr -> m_axi_mm2s.ar_addr; axi_rd.ar_id -> m_axi_mm2s.ar_id;
-    axi_rd.ar_len -> m_axi_mm2s.ar_len; axi_rd.ar_size -> m_axi_mm2s.ar_size;
-    axi_rd.ar_burst -> m_axi_mm2s.ar_burst;
-    axi_rd.r_valid <- m_axi_mm2s.r_valid; axi_rd.r_ready -> m_axi_mm2s.r_ready;
-    axi_rd.r_data <- m_axi_mm2s.r_data; axi_rd.r_id <- m_axi_mm2s.r_id;
-    axi_rd.r_resp <- m_axi_mm2s.r_resp; axi_rd.r_last <- m_axi_mm2s.r_last;
+    axi_rd -> m_axi_mm2s;
     push_valid -> mm2s_push_valid_w; push_ready <- mm2s_push_ready_w; push_data -> mm2s_push_data_w;
   end inst mm2s_fsm
 
@@ -273,15 +267,7 @@ module AxiDmaTop
     recv_count <- s2mm_recv_ctr;
     done -> s2mm_done_w; halted -> s2mm_halted_w; idle_out -> s2mm_idle_w;
     pop_valid <- s2mm_pop_valid_w; pop_ready -> s2mm_pop_ready_w; pop_data <- s2mm_pop_data_w;
-    axi_wr.aw_valid -> m_axi_s2mm.aw_valid; axi_wr.aw_ready <- m_axi_s2mm.aw_ready;
-    axi_wr.aw_addr -> m_axi_s2mm.aw_addr; axi_wr.aw_id -> m_axi_s2mm.aw_id;
-    axi_wr.aw_len -> m_axi_s2mm.aw_len; axi_wr.aw_size -> m_axi_s2mm.aw_size;
-    axi_wr.aw_burst -> m_axi_s2mm.aw_burst;
-    axi_wr.w_valid -> m_axi_s2mm.w_valid; axi_wr.w_ready <- m_axi_s2mm.w_ready;
-    axi_wr.w_data -> m_axi_s2mm.w_data; axi_wr.w_strb -> m_axi_s2mm.w_strb;
-    axi_wr.w_last -> m_axi_s2mm.w_last;
-    axi_wr.b_valid <- m_axi_s2mm.b_valid; axi_wr.b_ready -> m_axi_s2mm.b_ready;
-    axi_wr.b_id <- m_axi_s2mm.b_id; axi_wr.b_resp <- m_axi_s2mm.b_resp;
+    axi_wr -> m_axi_s2mm;
   end inst s2mm_fsm
 
   // ── Mux: simple DMA vs SG for data FSM control ─────────────────────

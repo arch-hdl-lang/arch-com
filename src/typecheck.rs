@@ -282,6 +282,18 @@ impl<'a> TypeChecker<'a> {
                 }
                 ModuleBodyItem::Inst(inst) => {
                     self.check_snake_case(&inst.name);
+                    // Find the target construct's bus port info for whole-bus expansion
+                    let target_bus_ports: Vec<(String, String)> = self.source.items.iter()
+                        .find_map(|item| match item {
+                            Item::Module(m2) if m2.name.name == inst.module_name.name => Some(m2.ports.as_slice()),
+                            Item::Fsm(f2) if f2.name.name == inst.module_name.name => Some(f2.ports.as_slice()),
+                            _ => None,
+                        })
+                        .map(|ports| ports.iter()
+                            .filter_map(|p| p.bus_info.as_ref().map(|bi| (p.name.name.clone(), bi.bus_name.name.clone())))
+                            .collect())
+                        .unwrap_or_default();
+
                     // Mark connected output ports as driven
                     for conn in &inst.connections {
                         if conn.direction == ConnectDir::Output {
@@ -292,6 +304,19 @@ impl<'a> TypeChecker<'a> {
                             let flat = Self::expr_flat_name_tc(&conn.signal);
                             if !flat.is_empty() {
                                 driven.insert(flat);
+                            }
+                        }
+                        // Whole-bus connection: axi_rd -> m_axi_mm2s expands to N signals
+                        if let Some((_, bus_name)) = target_bus_ports.iter().find(|(pn, _)| *pn == conn.port_name.name) {
+                            if let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
+                                if let ExprKind::Ident(sig_base) = &conn.signal.kind {
+                                    for (sname, sdir, _) in &info.signals {
+                                        // Output signals from the inst drive parent wires
+                                        if *sdir == Direction::Out {
+                                            driven.insert(format!("{}_{}", sig_base, sname));
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

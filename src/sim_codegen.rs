@@ -596,6 +596,81 @@ fn flatten_bus_port(
     }
 }
 
+/// Expand whole-bus connections in an inst block into per-signal connections.
+/// E.g. `axi_rd -> m_axi_mm2s` where axi_rd is a bus port on the target
+/// construct expands to `axi_rd_ar_valid -> m_axi_mm2s_ar_valid`, etc.
+/// Non-bus connections are returned unchanged.
+fn expand_bus_connections(
+    inst: &InstDecl,
+    source: &SourceFile,
+    symbols: &crate::resolve::SymbolTable,
+) -> Vec<Connection> {
+    // Find the target construct's bus ports
+    let target_ports: Option<&[PortDecl]> = source.items.iter()
+        .find_map(|item| match item {
+            Item::Module(m) if m.name.name == inst.module_name.name => Some(m.ports.as_slice()),
+            Item::Fsm(f) if f.name.name == inst.module_name.name => Some(f.ports.as_slice()),
+            _ => None,
+        });
+    let target_bus_ports: Vec<(&str, &str)> = target_ports
+        .map(|ports| ports.iter()
+            .filter_map(|p| p.bus_info.as_ref().map(|bi| (p.name.name.as_str(), bi.bus_name.name.as_str())))
+            .collect())
+        .unwrap_or_default();
+
+    let mut expanded = Vec::new();
+    for c in &inst.connections {
+        if let Some((_, bus_name)) = target_bus_ports.iter().find(|(pn, _)| *pn == c.port_name.name) {
+            // Bus connection — expand to individual signal connections
+            if let Some((crate::resolve::Symbol::Bus(info), _)) = symbols.globals.get(*bus_name) {
+                let sig_name = match &c.signal.kind {
+                    ExprKind::Ident(name) => name.clone(),
+                    ExprKind::FieldAccess(base, field) => {
+                        // axi_rd -> parent.bus_port — just use the field access text
+                        if let ExprKind::Ident(base_name) = &base.kind {
+                            format!("{}_{}", base_name, field.name)
+                        } else {
+                            continue;
+                        }
+                    }
+                    _ => continue,
+                };
+                for (sname, sdir, _) in &info.signals {
+                    let inst_flat = format!("{}_{}", c.port_name.name, sname);
+                    let parent_flat = format!("{}_{}", sig_name, sname);
+                    // Determine direction: for the inst connection, the direction
+                    // depends on whether this signal is an output or input of the
+                    // target construct's bus port.
+                    // For "port axi_rd: initiator BusAxi4Read" on the inst:
+                    //   ar_valid is out → from inst perspective, this is Output (inst drives it)
+                    //   ar_ready is in  → from inst perspective, this is Input (parent drives it)
+                    let dir = match sdir {
+                        Direction::Out => ConnectDir::Output,
+                        Direction::In => ConnectDir::Input,
+                    };
+                    // If the ORIGINAL connection direction is Input (parent → inst),
+                    // we need to flip: the user wrote `axi_rd <- parent_bus` meaning
+                    // all signals flow from parent to inst. But for a bus, the actual
+                    // direction per signal comes from the bus definition.
+                    // Actually, for bus connections we should use the bus signal direction
+                    // (from initiator perspective) regardless of the `<-` or `->` in the
+                    // connection. The user writes `axi_rd -> parent_bus` to mean "connect
+                    // the whole bus", and each signal's direction comes from the bus def.
+                    expanded.push(Connection {
+                        port_name: Ident::new(inst_flat, c.port_name.span),
+                        direction: dir,
+                        signal: Expr::new(ExprKind::Ident(parent_flat), c.signal.span),
+                        span: c.span,
+                    });
+                }
+            }
+        } else {
+            expanded.push(c.clone());
+        }
+    }
+    expanded
+}
+
 /// C++ type for a private reg/let field.
 /// 1–64 bits   → uint8/16/32/64_t
 /// 65–128 bits → _arch_u128
@@ -2066,6 +2141,12 @@ impl<'a> SimCodegen<'a> {
             .filter_map(|i| if let ModuleBodyItem::Inst(inst) = i { Some(inst) } else { None })
             .collect();
 
+        // Pre-expand bus connections: whole-bus connections like `axi_rd -> m_axi_mm2s`
+        // are expanded to per-signal connections using the bus definition.
+        let expanded_conns: Vec<Vec<Connection>> = insts.iter()
+            .map(|inst| expand_bus_connections(inst, self.source, self.symbols))
+            .collect();
+
         // Analyze combinational instance dependency graph.
         // Detects feedback cycles (compile error) and computes topological
         // evaluation order + minimum settle depth for the eval() loop.
@@ -2487,8 +2568,9 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str(&format!("  for (int _settle = 0; _settle < {settle_depth}; _settle++) {{\n"));
             for &inst_idx in &inst_eval_order {
             let inst = insts[inst_idx];
+            let conns = &expanded_conns[inst_idx];
                 cpp.push('\n');
-                for conn in &inst.connections {
+                for conn in conns {
                     if conn.direction == ConnectDir::Input {
                         if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
                             // Vec wire → inst Vec port: expand element-by-element
@@ -2512,7 +2594,7 @@ impl<'a> SimCodegen<'a> {
                     }
                 }
                 cpp.push_str(&format!("    _inst_{}.eval_comb();\n", inst.name.name));
-                for conn in &inst.connections {
+                for conn in conns {
                     if conn.direction == ConnectDir::Output {
                         // inst Vec port → Vec wire: expand element-by-element
                         if let ExprKind::Ident(sig_name) = &conn.signal.kind {
@@ -2549,8 +2631,9 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str(&format!("  for (int _settle = 0; _settle < {settle_depth}; _settle++) {{\n"));
             for &inst_idx in &inst_eval_order {
             let inst = insts[inst_idx];
+            let conns = &expanded_conns[inst_idx];
                 // Re-set sub-inst inputs (may have changed after posedge)
-                for conn in &inst.connections {
+                for conn in conns {
                     if conn.direction == ConnectDir::Input {
                         if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
                             // Vec wire → inst Vec port: expand element-by-element
@@ -2574,7 +2657,7 @@ impl<'a> SimCodegen<'a> {
                     }
                 }
                 cpp.push_str(&format!("    _inst_{}.eval_comb();\n", inst.name.name));
-                for conn in &inst.connections {
+                for conn in conns {
                     if conn.direction == ConnectDir::Output {
                         // inst Vec port → Vec wire: expand element-by-element
                         if let ExprKind::Ident(sig_name) = &conn.signal.kind {
@@ -2900,8 +2983,9 @@ impl<'a> SimCodegen<'a> {
 
         // If there are sub-instances, re-evaluate the inst chain
         if !insts.is_empty() {
-            for inst in &insts {
-                for conn in &inst.connections {
+            for (inst_i, inst) in insts.iter().enumerate() {
+                let conns = &expanded_conns[inst_i];
+                for conn in conns {
                     if conn.direction == ConnectDir::Input {
                         if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
                             // Vec wire → inst Vec port: expand element-by-element
@@ -2925,7 +3009,7 @@ impl<'a> SimCodegen<'a> {
                     }
                 }
                 cpp.push_str(&format!("  _inst_{}.eval_comb();\n", inst.name.name));
-                for conn in &inst.connections {
+                for conn in conns {
                     if conn.direction == ConnectDir::Output {
                         // inst Vec port → Vec wire: expand element-by-element
                         if let ExprKind::Ident(sig_name) = &conn.signal.kind {
