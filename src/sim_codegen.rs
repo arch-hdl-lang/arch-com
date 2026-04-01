@@ -605,22 +605,22 @@ fn expand_bus_connections(
     source: &SourceFile,
     symbols: &crate::resolve::SymbolTable,
 ) -> Vec<Connection> {
-    // Find the target construct's bus ports
+    // Find the target construct's bus ports (with perspective info)
     let target_ports: Option<&[PortDecl]> = source.items.iter()
         .find_map(|item| match item {
             Item::Module(m) if m.name.name == inst.module_name.name => Some(m.ports.as_slice()),
             Item::Fsm(f) if f.name.name == inst.module_name.name => Some(f.ports.as_slice()),
             _ => None,
         });
-    let target_bus_ports: Vec<(&str, &str)> = target_ports
+    let target_bus_ports: Vec<(&str, &str, BusPerspective)> = target_ports
         .map(|ports| ports.iter()
-            .filter_map(|p| p.bus_info.as_ref().map(|bi| (p.name.name.as_str(), bi.bus_name.name.as_str())))
+            .filter_map(|p| p.bus_info.as_ref().map(|bi| (p.name.name.as_str(), bi.bus_name.name.as_str(), bi.perspective)))
             .collect())
         .unwrap_or_default();
 
     let mut expanded = Vec::new();
     for c in &inst.connections {
-        if let Some((_, bus_name)) = target_bus_ports.iter().find(|(pn, _)| *pn == c.port_name.name) {
+        if let Some((_, bus_name, perspective)) = target_bus_ports.iter().find(|(pn, _, _)| *pn == c.port_name.name) {
             // Bus connection — expand to individual signal connections
             if let Some((crate::resolve::Symbol::Bus(info), _)) = symbols.globals.get(*bus_name) {
                 let sig_name = match &c.signal.kind {
@@ -638,13 +638,14 @@ fn expand_bus_connections(
                 for (sname, sdir, _) in &info.signals {
                     let inst_flat = format!("{}_{}", c.port_name.name, sname);
                     let parent_flat = format!("{}_{}", sig_name, sname);
-                    // Determine direction: for the inst connection, the direction
-                    // depends on whether this signal is an output or input of the
-                    // target construct's bus port.
-                    // For "port axi_rd: initiator BusAxi4Read" on the inst:
-                    //   ar_valid is out → from inst perspective, this is Output (inst drives it)
-                    //   ar_ready is in  → from inst perspective, this is Input (parent drives it)
-                    let dir = match sdir {
+                    // Determine actual direction from the inst's bus perspective.
+                    // For initiator: bus out → inst Output, bus in → inst Input.
+                    // For target: bus out → inst Input (flipped), bus in → inst Output (flipped).
+                    let actual_dir = match perspective {
+                        BusPerspective::Initiator => *sdir,
+                        BusPerspective::Target => (*sdir).flip(),
+                    };
+                    let dir = match actual_dir {
                         Direction::Out => ConnectDir::Output,
                         Direction::In => ConnectDir::Input,
                     };

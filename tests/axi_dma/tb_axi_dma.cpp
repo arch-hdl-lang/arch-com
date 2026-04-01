@@ -31,11 +31,11 @@ static void reset() {
     axis_src_idx = 0;
 
     dut.rst = 1;
-    dut.s_awaddr = 0; dut.s_awvalid = 0;
-    dut.s_wdata = 0; dut.s_wstrb = 0xF; dut.s_wvalid = 0;
-    dut.s_bready = 1;
-    dut.s_araddr = 0; dut.s_arvalid = 0;
-    dut.s_rready = 1;
+    dut.s_axil_aw_addr = 0; dut.s_axil_aw_valid = 0;
+    dut.s_axil_w_data = 0; dut.s_axil_w_strb = 0xF; dut.s_axil_w_valid = 0;
+    dut.s_axil_b_ready = 1;
+    dut.s_axil_ar_addr = 0; dut.s_axil_ar_valid = 0;
+    dut.s_axil_r_ready = 1;
     dut.m_axi_mm2s_ar_ready = 0;
     dut.m_axi_mm2s_r_valid = 0; dut.m_axi_mm2s_r_data = 0; dut.m_axi_mm2s_r_last = 0;
     dut.m_axi_s2mm_aw_ready = 0;
@@ -71,31 +71,31 @@ static void reset() {
 // ── AXI4-Lite helpers ────────────────────────────────────────────────────────
 
 static void axil_write(uint32_t addr, uint32_t data) {
-    dut.s_awaddr = addr;
-    dut.s_awvalid = 1;
-    dut.s_wdata = data;
-    dut.s_wstrb = 0xF;
-    dut.s_wvalid = 1;
-    dut.s_bready = 1;
+    dut.s_axil_aw_addr = addr;
+    dut.s_axil_aw_valid = 1;
+    dut.s_axil_w_data = data;
+    dut.s_axil_w_strb = 0xF;
+    dut.s_axil_w_valid = 1;
+    dut.s_axil_b_ready = 1;
     for (int i = 0; i < 20; i++) {
         tick();
-        if (dut.s_bvalid) break;
+        if (dut.s_axil_b_valid) break;
     }
-    dut.s_awvalid = 0;
-    dut.s_wvalid = 0;
+    dut.s_axil_aw_valid = 0;
+    dut.s_axil_w_valid = 0;
     tick();
 }
 
 static uint32_t axil_read(uint32_t addr) {
-    dut.s_araddr = addr;
-    dut.s_arvalid = 1;
-    dut.s_rready = 1;
+    dut.s_axil_ar_addr = addr;
+    dut.s_axil_ar_valid = 1;
+    dut.s_axil_r_ready = 1;
     for (int i = 0; i < 20; i++) {
         tick();
-        if (dut.s_rvalid) break;
+        if (dut.s_axil_r_valid) break;
     }
-    dut.s_arvalid = 0;
-    uint32_t val = dut.s_rdata;
+    dut.s_axil_ar_valid = 0;
+    uint32_t val = dut.s_axil_r_data;
     tick();
     return val;
 }

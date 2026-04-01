@@ -306,13 +306,33 @@ impl<'a> TypeChecker<'a> {
                                 driven.insert(flat);
                             }
                         }
-                        // Whole-bus connection: axi_rd -> m_axi_mm2s expands to N signals
+                        // Whole-bus connection: axi_rd -> m_axi_mm2s expands to N signals.
+                        // The inst's bus port drives/receives signals based on its perspective.
+                        // We need to mark parent signals as "driven" when the inst OUTPUTS them.
                         if let Some((_, bus_name)) = target_bus_ports.iter().find(|(pn, _)| *pn == conn.port_name.name) {
                             if let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
                                 if let ExprKind::Ident(sig_base) = &conn.signal.kind {
+                                    // Find the inst's bus port perspective
+                                    let inst_perspective = self.source.items.iter()
+                                        .find_map(|item| match item {
+                                            Item::Module(m2) if m2.name.name == inst.module_name.name => Some(m2.ports.as_slice()),
+                                            Item::Fsm(f2) if f2.name.name == inst.module_name.name => Some(f2.ports.as_slice()),
+                                            _ => None,
+                                        })
+                                        .and_then(|ports| ports.iter()
+                                            .find(|p| p.name.name == conn.port_name.name)
+                                            .and_then(|p| p.bus_info.as_ref())
+                                            .map(|bi| bi.perspective));
+
                                     for (sname, sdir, _) in &info.signals {
-                                        // Output signals from the inst drive parent wires
-                                        if *sdir == Direction::Out {
+                                        // Determine actual direction from inst's perspective
+                                        let inst_dir = match inst_perspective {
+                                            Some(BusPerspective::Initiator) => *sdir,
+                                            Some(BusPerspective::Target) => (*sdir).flip(),
+                                            None => *sdir,
+                                        };
+                                        // If signal is an output FROM the inst, it drives the parent wire/port
+                                        if inst_dir == Direction::Out {
                                             driven.insert(format!("{}_{}", sig_base, sname));
                                         }
                                     }

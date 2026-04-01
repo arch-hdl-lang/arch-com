@@ -5,23 +5,7 @@ module AxiDmaTop
   port rst: in Reset<Sync>;
 
   // ── AXI4-Lite slave (register access) ───────────────────────────────
-  port s_awaddr:  in UInt<8>;
-  port s_awvalid: in Bool;
-  port s_awready: out Bool;
-  port s_wdata:   in UInt<32>;
-  port s_wstrb:   in UInt<4>;
-  port s_wvalid:  in Bool;
-  port s_wready:  out Bool;
-  port s_bresp:   out UInt<2>;
-  port s_bvalid:  out Bool;
-  port s_bready:  in Bool;
-  port s_araddr:  in UInt<8>;
-  port s_arvalid: in Bool;
-  port s_arready: out Bool;
-  port s_rdata:   out UInt<32>;
-  port s_rresp:   out UInt<2>;
-  port s_rvalid:  out Bool;
-  port s_rready:  in Bool;
+  port s_axil: target BusAxiLite;
 
   // ── AXI4 masters ────────────────────────────────────────────────────
   port m_axi_mm2s:    initiator BusAxi4Read;     // MM2S data reads
@@ -57,10 +41,6 @@ module AxiDmaTop
 
   wire mm2s_introut_w: Bool; wire s2mm_introut_w: Bool;
 
-  // AXI-Lite output wires
-  wire s_awready_w: Bool; wire s_wready_w: Bool; wire s_bresp_w: UInt<2>; wire s_bvalid_w: Bool;
-  wire s_arready_w: Bool; wire s_rdata_w: UInt<32>; wire s_rresp_w: UInt<2>; wire s_rvalid_w: Bool;
-
   // FIFO wires
   wire mm2s_push_valid_w: Bool; wire mm2s_push_ready_w: Bool; wire mm2s_push_data_w: UInt<32>;
   wire mm2s_pop_valid_w: Bool; wire mm2s_pop_ready_w: Bool; wire mm2s_pop_data_w: UInt<32>;
@@ -83,11 +63,7 @@ module AxiDmaTop
 
   inst regs: AxiLiteRegs
     clk <- clk; rst <- rst;
-    awaddr_i <- s_awaddr; awvalid_i <- s_awvalid; awready_o -> s_awready_w;
-    wdata_i <- s_wdata; wstrb_i <- s_wstrb; wvalid_i <- s_wvalid; wready_o -> s_wready_w;
-    bresp_o -> s_bresp_w; bvalid_o -> s_bvalid_w; bready_i <- s_bready;
-    araddr_i <- s_araddr; arvalid_i <- s_arvalid; arready_o -> s_arready_w;
-    rdata_o -> s_rdata_w; rresp_o -> s_rresp_w; rvalid_o -> s_rvalid_w; rready_i <- s_rready;
+    axil -> s_axil;
     mm2s_start -> mm2s_start_w; mm2s_src_addr -> mm2s_src_addr_w; mm2s_num_beats -> mm2s_num_beats_w;
     mm2s_done <- mm2s_done_w; mm2s_halted <- mm2s_halted_w; mm2s_idle <- mm2s_idle_w;
     s2mm_start -> s2mm_start_w; s2mm_dst_addr -> s2mm_dst_addr_w; s2mm_num_beats -> s2mm_num_beats_w;
@@ -180,12 +156,8 @@ module AxiDmaTop
     s_axis_s2mm.tready = s2mm_push_ready_w;
   end comb
 
-  // ── Route outputs ───────────────────────────────────────────────────
+  // ── Route interrupt outputs ──────────────────────────────────────────
   comb
-    s_awready = s_awready_w; s_wready = s_wready_w;
-    s_bresp = s_bresp_w; s_bvalid = s_bvalid_w;
-    s_arready = s_arready_w; s_rdata = s_rdata_w;
-    s_rresp = s_rresp_w; s_rvalid = s_rvalid_w;
     mm2s_introut = mm2s_introut_w; s2mm_introut = s2mm_introut_w;
   end comb
 

@@ -1,32 +1,11 @@
 // AXI4-Lite slave register interface — PG021 register map.
-// Supports both Simple DMA mode (LENGTH write triggers transfer) and
-// Scatter-Gather mode (TAILDESC write triggers SG engine).
+// Supports Simple DMA mode and Scatter-Gather mode.
 module AxiLiteRegs
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
 
   // AXI4-Lite slave interface
-  port awaddr_i:  in UInt<8>;
-  port awvalid_i: in Bool;
-  port reg awready_o: out Bool reset rst=>false;
-
-  port wdata_i:   in UInt<32>;
-  port wstrb_i:   in UInt<4>;
-  port wvalid_i:  in Bool;
-  port reg wready_o: out Bool reset rst=>false;
-
-  port reg bresp_o:  out UInt<2> reset rst=>0;
-  port reg bvalid_o: out Bool reset rst=>false;
-  port bready_i:     in Bool;
-
-  port araddr_i:  in UInt<8>;
-  port arvalid_i: in Bool;
-  port reg arready_o: out Bool reset rst=>false;
-
-  port reg rdata_o:  out UInt<32> reset rst=>0;
-  port reg rresp_o:  out UInt<2> reset rst=>0;
-  port reg rvalid_o: out Bool reset rst=>false;
-  port rready_i:     in Bool;
+  port axil: target BusAxiLite;
 
   // MM2S direct control outputs (simple DMA mode)
   port reg mm2s_start:     out Bool reset rst=>false;
@@ -49,17 +28,17 @@ module AxiLiteRegs
   port s2mm_idle:   in Bool;
 
   // Scatter-Gather control outputs
-  port reg mm2s_sg_start:  out Bool reset rst=>false;
-  port reg mm2s_curdesc_o: out UInt<32> reset rst=>0;
+  port reg mm2s_sg_start:   out Bool reset rst=>false;
+  port reg mm2s_curdesc_o:  out UInt<32> reset rst=>0;
   port reg mm2s_taildesc_o: out UInt<32> reset rst=>0;
   port mm2s_sg_done: in Bool;
 
-  port reg s2mm_sg_start:  out Bool reset rst=>false;
-  port reg s2mm_curdesc_o: out UInt<32> reset rst=>0;
+  port reg s2mm_sg_start:   out Bool reset rst=>false;
+  port reg s2mm_curdesc_o:  out UInt<32> reset rst=>0;
   port reg s2mm_taildesc_o: out UInt<32> reset rst=>0;
   port s2mm_sg_done: in Bool;
 
-  // SG active flags (when true, only sg_done triggers IOC_Irq)
+  // SG active flags
   port mm2s_sg_active: in Bool;
   port s2mm_sg_active: in Bool;
 
@@ -67,22 +46,44 @@ module AxiLiteRegs
   port reg mm2s_introut: out Bool reset rst=>false;
   port reg s2mm_introut: out Bool reset rst=>false;
 
-  // Internal register storage
-  reg mm2s_dmacr_r:  UInt<32> reset rst=>0;
-  reg mm2s_sa_r:     UInt<32> reset rst=>0;
-  reg mm2s_length_r: UInt<32> reset rst=>0;
-  reg mm2s_ioc_irq:  Bool reset rst=>false;
-  reg mm2s_curdesc_r: UInt<32> reset rst=>0;
+  // Internal registers for AXI-Lite outputs (bus port can't be port reg)
+  reg awready_r: Bool reset rst=>false;
+  reg wready_r:  Bool reset rst=>false;
+  reg bresp_r:   UInt<2> reset rst=>0;
+  reg bvalid_r:  Bool reset rst=>false;
+  reg arready_r: Bool reset rst=>false;
+  reg rdata_r:   UInt<32> reset rst=>0;
+  reg rresp_r:   UInt<2> reset rst=>0;
+  reg rvalid_r:  Bool reset rst=>false;
+
+  // DMA register storage
+  reg mm2s_dmacr_r:    UInt<32> reset rst=>0;
+  reg mm2s_sa_r:       UInt<32> reset rst=>0;
+  reg mm2s_length_r:   UInt<32> reset rst=>0;
+  reg mm2s_ioc_irq:    Bool reset rst=>false;
+  reg mm2s_curdesc_r:  UInt<32> reset rst=>0;
   reg mm2s_taildesc_r: UInt<32> reset rst=>0;
 
-  reg s2mm_dmacr_r:  UInt<32> reset rst=>0;
-  reg s2mm_da_r:     UInt<32> reset rst=>0;
-  reg s2mm_length_r: UInt<32> reset rst=>0;
-  reg s2mm_ioc_irq:  Bool reset rst=>false;
-  reg s2mm_curdesc_r: UInt<32> reset rst=>0;
+  reg s2mm_dmacr_r:    UInt<32> reset rst=>0;
+  reg s2mm_da_r:       UInt<32> reset rst=>0;
+  reg s2mm_length_r:   UInt<32> reset rst=>0;
+  reg s2mm_ioc_irq:    Bool reset rst=>false;
+  reg s2mm_curdesc_r:  UInt<32> reset rst=>0;
   reg s2mm_taildesc_r: UInt<32> reset rst=>0;
 
   default seq on clk rising;
+
+  // Drive AXI-Lite bus outputs from registers
+  comb
+    axil.aw_ready = awready_r;
+    axil.w_ready  = wready_r;
+    axil.b_resp   = bresp_r;
+    axil.b_valid  = bvalid_r;
+    axil.ar_ready = arready_r;
+    axil.r_data   = rdata_r;
+    axil.r_resp   = rresp_r;
+    axil.r_valid  = rvalid_r;
+  end comb
 
   seq
     // Clear one-cycle pulses
@@ -90,22 +91,21 @@ module AxiLiteRegs
     s2mm_start    <= false;
     mm2s_sg_start <= false;
     s2mm_sg_start <= false;
-    awready_o     <= false;
-    wready_o      <= false;
-    arready_o     <= false;
+    awready_r     <= false;
+    wready_r      <= false;
+    arready_r     <= false;
 
     // B channel: clear bvalid on handshake
-    if bvalid_o & bready_i
-      bvalid_o <= false;
+    if bvalid_r & axil.b_ready
+      bvalid_r <= false;
     end if
 
     // R channel: clear rvalid on handshake
-    if rvalid_o & rready_i
-      rvalid_o <= false;
+    if rvalid_r & axil.r_ready
+      rvalid_r <= false;
     end if
 
-    // Hardware-set IOC_Irq: in SG mode only sg_done triggers;
-    // in simple mode, data FSM done triggers.
+    // Hardware-set IOC_Irq
     if mm2s_sg_active
       if mm2s_sg_done
         mm2s_ioc_irq <= true;
@@ -126,115 +126,102 @@ module AxiLiteRegs
     end if
 
     // ── Write path: simultaneous AW+W ──────────────────────────────────
-    if awvalid_i & wvalid_i
-      awready_o <= true;
-      wready_o  <= true;
-      bvalid_o  <= true;
-      bresp_o   <= 0;
+    if axil.aw_valid & axil.w_valid
+      awready_r <= true;
+      wready_r  <= true;
+      bvalid_r  <= true;
+      bresp_r   <= 0;
 
-      // Address decode (byte offsets)
-      if awaddr_i == 0x00
-        // MM2S_DMACR
-        mm2s_dmacr_r <= wdata_i;
-      elsif awaddr_i == 0x04
-        // MM2S_DMASR — W1C: writing 1 to bit 12 clears IOC_Irq
-        if wdata_i[12:12] == 1
+      if axil.aw_addr == 0x00
+        mm2s_dmacr_r <= axil.w_data;
+      elsif axil.aw_addr == 0x04
+        if axil.w_data[12:12] == 1
           mm2s_ioc_irq <= false;
         end if
-      elsif awaddr_i == 0x08
-        // MM2S_CURDESC
-        mm2s_curdesc_r <= wdata_i;
-        mm2s_curdesc_o <= wdata_i;
-      elsif awaddr_i == 0x10
-        // MM2S_TAILDESC — triggers SG if RS=1
-        mm2s_taildesc_r <= wdata_i;
-        mm2s_taildesc_o <= wdata_i;
+      elsif axil.aw_addr == 0x08
+        mm2s_curdesc_r <= axil.w_data;
+        mm2s_curdesc_o <= axil.w_data;
+      elsif axil.aw_addr == 0x10
+        mm2s_taildesc_r <= axil.w_data;
+        mm2s_taildesc_o <= axil.w_data;
         if mm2s_dmacr_r[0:0] == 1
           mm2s_sg_start  <= true;
           mm2s_curdesc_o <= mm2s_curdesc_r;
         end if
-      elsif awaddr_i == 0x18
-        // MM2S_SA
-        mm2s_sa_r <= wdata_i;
-      elsif awaddr_i == 0x28
-        // MM2S_LENGTH — triggers direct transfer if RS=1
-        mm2s_length_r <= wdata_i;
+      elsif axil.aw_addr == 0x18
+        mm2s_sa_r <= axil.w_data;
+      elsif axil.aw_addr == 0x28
+        mm2s_length_r <= axil.w_data;
         if mm2s_dmacr_r[0:0] == 1
           mm2s_start     <= true;
           mm2s_src_addr  <= mm2s_sa_r;
-          mm2s_num_beats <= wdata_i[25:2].trunc<8>();
+          mm2s_num_beats <= axil.w_data[25:2].trunc<8>();
         end if
-      elsif awaddr_i == 0x30
-        // S2MM_DMACR
-        s2mm_dmacr_r <= wdata_i;
-      elsif awaddr_i == 0x34
-        // S2MM_DMASR — W1C
-        if wdata_i[12:12] == 1
+      elsif axil.aw_addr == 0x30
+        s2mm_dmacr_r <= axil.w_data;
+      elsif axil.aw_addr == 0x34
+        if axil.w_data[12:12] == 1
           s2mm_ioc_irq <= false;
         end if
-      elsif awaddr_i == 0x38
-        // S2MM_CURDESC
-        s2mm_curdesc_r <= wdata_i;
-        s2mm_curdesc_o <= wdata_i;
-      elsif awaddr_i == 0x40
-        // S2MM_TAILDESC — triggers SG if RS=1
-        s2mm_taildesc_r <= wdata_i;
-        s2mm_taildesc_o <= wdata_i;
+      elsif axil.aw_addr == 0x38
+        s2mm_curdesc_r <= axil.w_data;
+        s2mm_curdesc_o <= axil.w_data;
+      elsif axil.aw_addr == 0x40
+        s2mm_taildesc_r <= axil.w_data;
+        s2mm_taildesc_o <= axil.w_data;
         if s2mm_dmacr_r[0:0] == 1
           s2mm_sg_start  <= true;
           s2mm_curdesc_o <= s2mm_curdesc_r;
         end if
-      elsif awaddr_i == 0x48
-        // S2MM_DA
-        s2mm_da_r <= wdata_i;
-      elsif awaddr_i == 0x58
-        // S2MM_LENGTH — triggers direct transfer if RS=1
-        s2mm_length_r <= wdata_i;
+      elsif axil.aw_addr == 0x48
+        s2mm_da_r <= axil.w_data;
+      elsif axil.aw_addr == 0x58
+        s2mm_length_r <= axil.w_data;
         if s2mm_dmacr_r[0:0] == 1
           s2mm_start     <= true;
           s2mm_dst_addr  <= s2mm_da_r;
-          s2mm_num_beats <= wdata_i[25:2].trunc<8>();
+          s2mm_num_beats <= axil.w_data[25:2].trunc<8>();
         end if
       end if
     end if
 
     // ── Read path ──────────────────────────────────────────────────────
-    if arvalid_i & ~rvalid_o
-      arready_o <= true;
-      rvalid_o  <= true;
-      rresp_o   <= 0;
+    if axil.ar_valid & ~rvalid_r
+      arready_r <= true;
+      rvalid_r  <= true;
+      rresp_r   <= 0;
 
-      if araddr_i == 0x00
-        rdata_o <= mm2s_dmacr_r;
-      elsif araddr_i == 0x04
-        rdata_o <= {19'b0, mm2s_ioc_irq, 10'b0, mm2s_idle, mm2s_halted};
-      elsif araddr_i == 0x08
-        rdata_o <= mm2s_curdesc_r;
-      elsif araddr_i == 0x10
-        rdata_o <= mm2s_taildesc_r;
-      elsif araddr_i == 0x18
-        rdata_o <= mm2s_sa_r;
-      elsif araddr_i == 0x28
-        rdata_o <= mm2s_length_r;
-      elsif araddr_i == 0x30
-        rdata_o <= s2mm_dmacr_r;
-      elsif araddr_i == 0x34
-        rdata_o <= {19'b0, s2mm_ioc_irq, 10'b0, s2mm_idle, s2mm_halted};
-      elsif araddr_i == 0x38
-        rdata_o <= s2mm_curdesc_r;
-      elsif araddr_i == 0x40
-        rdata_o <= s2mm_taildesc_r;
-      elsif araddr_i == 0x48
-        rdata_o <= s2mm_da_r;
-      elsif araddr_i == 0x58
-        rdata_o <= s2mm_length_r;
+      if axil.ar_addr == 0x00
+        rdata_r <= mm2s_dmacr_r;
+      elsif axil.ar_addr == 0x04
+        rdata_r <= {19'b0, mm2s_ioc_irq, 10'b0, mm2s_idle, mm2s_halted};
+      elsif axil.ar_addr == 0x08
+        rdata_r <= mm2s_curdesc_r;
+      elsif axil.ar_addr == 0x10
+        rdata_r <= mm2s_taildesc_r;
+      elsif axil.ar_addr == 0x18
+        rdata_r <= mm2s_sa_r;
+      elsif axil.ar_addr == 0x28
+        rdata_r <= mm2s_length_r;
+      elsif axil.ar_addr == 0x30
+        rdata_r <= s2mm_dmacr_r;
+      elsif axil.ar_addr == 0x34
+        rdata_r <= {19'b0, s2mm_ioc_irq, 10'b0, s2mm_idle, s2mm_halted};
+      elsif axil.ar_addr == 0x38
+        rdata_r <= s2mm_curdesc_r;
+      elsif axil.ar_addr == 0x40
+        rdata_r <= s2mm_taildesc_r;
+      elsif axil.ar_addr == 0x48
+        rdata_r <= s2mm_da_r;
+      elsif axil.ar_addr == 0x58
+        rdata_r <= s2mm_length_r;
       else
-        rdata_o <= 0;
-        rresp_o <= 2;
+        rdata_r <= 0;
+        rresp_r <= 2;
       end if
     end if
 
-    // Interrupt outputs: IRQ asserted when both flag and enable are set
+    // Interrupt outputs
     mm2s_introut <= mm2s_ioc_irq & (mm2s_dmacr_r[12:12] == 1);
     s2mm_introut <= s2mm_ioc_irq & (s2mm_dmacr_r[12:12] == 1);
   end seq
