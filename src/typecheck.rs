@@ -222,6 +222,7 @@ impl<'a> TypeChecker<'a> {
                     for stmt in &cb.stmts {
                         self.check_comb_stmt(stmt, &m.name.name, &local_types, &mut driven, &reg_names);
                     }
+                    self.check_comb_latch(&cb.stmts, cb.span);
                 }
                 ModuleBodyItem::LetBinding(l) => {
                     self.check_snake_case(&l.name);
@@ -1027,6 +1028,97 @@ impl<'a> TypeChecker<'a> {
                 for s in &f.body {
                     self.check_reg_stmt(s, module_name, local_types, driven);
                 }
+            }
+        }
+    }
+
+    /// Check for latches: signals assigned on some but not all paths in a comb block.
+    /// Returns (all_assigned, fully_assigned) for the statement list.
+    fn comb_latch_targets(stmts: &[CombStmt]) -> (HashSet<String>, HashSet<String>) {
+        let mut all = HashSet::new();
+        let mut full = HashSet::new();
+
+        for stmt in stmts {
+            match stmt {
+                CombStmt::Assign(a) => {
+                    let name = Self::expr_flat_name_tc(&a.target);
+                    if !name.is_empty() {
+                        all.insert(name.clone());
+                        full.insert(name);
+                    }
+                }
+                CombStmt::IfElse(ie) => {
+                    let (then_all, then_full) = Self::comb_latch_targets(&ie.then_stmts);
+                    let (else_all, else_full) = Self::comb_latch_targets(&ie.else_stmts);
+                    all.extend(then_all); all.extend(else_all);
+                    // A signal is fully assigned through an if/else only if
+                    // assigned on BOTH branches.  No else = empty else_full.
+                    for name in then_full.intersection(&else_full) {
+                        full.insert(name.clone());
+                    }
+                }
+                CombStmt::MatchExpr(m) => {
+                    let has_wildcard = m.arms.iter().any(|a| matches!(a.pattern, Pattern::Wildcard));
+                    let arm_results: Vec<(HashSet<String>, HashSet<String>)> = m.arms.iter()
+                        .map(|arm| {
+                            // Match arm bodies are Vec<Stmt> — extract assign targets
+                            let mut arm_all = HashSet::new();
+                            let mut arm_full = HashSet::new();
+                            for s in &arm.body {
+                                if let Stmt::Assign(a) = s {
+                                    let name = Self::expr_flat_name_tc(&a.target);
+                                    if !name.is_empty() {
+                                        arm_all.insert(name.clone());
+                                        arm_full.insert(name);
+                                    }
+                                }
+                            }
+                            (arm_all, arm_full)
+                        })
+                        .collect();
+                    for (arm_all, _) in &arm_results {
+                        all.extend(arm_all.iter().cloned());
+                    }
+                    // Fully assigned only if all arms (+ wildcard coverage) assign it
+                    if has_wildcard || m.unique {
+                        if let Some(first_full) = arm_results.first().map(|(_, f)| f.clone()) {
+                            let intersection: HashSet<String> = arm_results.iter()
+                                .fold(first_full, |acc, (_, f)| acc.intersection(f).cloned().collect());
+                            full.extend(intersection);
+                        }
+                    }
+                }
+                CombStmt::For(f) => {
+                    // For-loop body uses Stmt — treat assigns as fully driven
+                    for s in &f.body {
+                        if let Stmt::Assign(a) = s {
+                            let name = Self::expr_flat_name_tc(&a.target);
+                            if !name.is_empty() {
+                                all.insert(name.clone());
+                                full.insert(name);
+                            }
+                        }
+                    }
+                }
+                CombStmt::Log(_) => {}
+            }
+        }
+        (all, full)
+    }
+
+    /// Check a comb block for latch-inducing patterns and emit warnings.
+    fn check_comb_latch(&mut self, stmts: &[CombStmt], span: Span) {
+        let (all_assigned, fully_assigned) = Self::comb_latch_targets(stmts);
+        for name in &all_assigned {
+            if !fully_assigned.contains(name) {
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "signal `{}` is not assigned on all control paths in comb block \
+                         (infers a latch); add an `else` branch or a default assignment",
+                        name
+                    ),
+                    span,
+                ));
             }
         }
     }
