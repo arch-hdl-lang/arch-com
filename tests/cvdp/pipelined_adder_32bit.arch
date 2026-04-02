@@ -12,7 +12,7 @@ pipeline pipelined_adder_32bit
   port Co:     out Bool;
   port done:   out Bool;
 
-  // Stage 1: Add byte 0, capture remaining bytes and start signal
+  // Stage 1: Add byte 0, capture remaining bytes
   stage Add0
     reg s0: UInt<8>  reset reset => 0;
     reg c0: Bool     reset reset => false;
@@ -22,11 +22,11 @@ pipeline pipelined_adder_32bit
     reg b2: UInt<8>  reset reset => 0;
     reg a3: UInt<8>  reset reset => 0;
     reg b3: UInt<8>  reset reset => 0;
-    reg go: Bool     reset reset => false;
 
     let sum0: UInt<9> = A[7:0].zext<9>() + B[7:0].zext<9>();
 
     seq on clk rising
+      valid_r <= start;
       s0 <= sum0.trunc<8>();
       c0 <= sum0[8];
       a1 <= A[15:8];
@@ -35,7 +35,6 @@ pipeline pipelined_adder_32bit
       b2 <= B[23:16];
       a3 <= A[31:24];
       b3 <= B[31:24];
-      go <= start;
     end seq
   end stage Add0
 
@@ -48,7 +47,6 @@ pipeline pipelined_adder_32bit
     reg b2_d: UInt<8>  reset reset => 0;
     reg a3_d: UInt<8>  reset reset => 0;
     reg b3_d: UInt<8>  reset reset => 0;
-    reg go:   Bool     reset reset => false;
 
     let sum1: UInt<9> = Add0.a1.zext<9>() + Add0.b1.zext<9>() + Add0.c0.zext<9>();
 
@@ -60,7 +58,6 @@ pipeline pipelined_adder_32bit
       b2_d <= Add0.b2;
       a3_d <= Add0.a3;
       b3_d <= Add0.b3;
-      go   <= Add0.go;
     end seq
   end stage Add1
 
@@ -72,7 +69,6 @@ pipeline pipelined_adder_32bit
     reg s1_d:   UInt<8>  reset reset => 0;
     reg a3_dd:  UInt<8>  reset reset => 0;
     reg b3_dd:  UInt<8>  reset reset => 0;
-    reg go:     Bool     reset reset => false;
 
     let sum2: UInt<9> = Add1.a2_d.zext<9>() + Add1.b2_d.zext<9>() + Add1.c1.zext<9>();
 
@@ -83,7 +79,6 @@ pipeline pipelined_adder_32bit
       s1_d  <= Add1.s1;
       a3_dd <= Add1.a3_d;
       b3_dd <= Add1.b3_d;
-      go    <= Add1.go;
     end seq
   end stage Add2
 
@@ -94,7 +89,6 @@ pipeline pipelined_adder_32bit
     reg s0_ddd: UInt<8>  reset reset => 0;
     reg s1_dd:  UInt<8>  reset reset => 0;
     reg s2_d:   UInt<8>  reset reset => 0;
-    reg go:     Bool     reset reset => false;
 
     let sum3: UInt<9> = Add2.a3_dd.zext<9>() + Add2.b3_dd.zext<9>() + Add2.c2.zext<9>();
 
@@ -104,13 +98,12 @@ pipeline pipelined_adder_32bit
       s0_ddd <= Add2.s0_dd;
       s1_dd  <= Add2.s1_d;
       s2_d   <= Add2.s2;
-      go     <= Add2.go;
     end seq
 
     comb
       S    = {Add3.s3, Add3.s2_d, Add3.s1_dd, Add3.s0_ddd};
       Co   = Add3.c3;
-      done = Add3.go;
+      done = valid_r;
     end comb
   end stage Add3
 end pipeline pipelined_adder_32bit
