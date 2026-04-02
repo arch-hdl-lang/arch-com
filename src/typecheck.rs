@@ -1034,7 +1034,7 @@ impl<'a> TypeChecker<'a> {
 
     /// Check for latches: signals assigned on some but not all paths in a comb block.
     /// Returns (all_assigned, fully_assigned) for the statement list.
-    fn comb_latch_targets(stmts: &[CombStmt]) -> (HashSet<String>, HashSet<String>) {
+    fn comb_latch_targets(stmts: &[CombStmt], symbols: &crate::resolve::SymbolTable) -> (HashSet<String>, HashSet<String>) {
         let mut all = HashSet::new();
         let mut full = HashSet::new();
 
@@ -1048,8 +1048,8 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 CombStmt::IfElse(ie) => {
-                    let (then_all, then_full) = Self::comb_latch_targets(&ie.then_stmts);
-                    let (else_all, else_full) = Self::comb_latch_targets(&ie.else_stmts);
+                    let (then_all, then_full) = Self::comb_latch_targets(&ie.then_stmts, symbols);
+                    let (else_all, else_full) = Self::comb_latch_targets(&ie.else_stmts, symbols);
                     all.extend(then_all); all.extend(else_all);
                     // A signal is fully assigned through an if/else only if
                     // assigned on BOTH branches.  No else = empty else_full.
@@ -1079,8 +1079,23 @@ impl<'a> TypeChecker<'a> {
                     for (arm_all, _) in &arm_results {
                         all.extend(arm_all.iter().cloned());
                     }
-                    // Fully assigned only if all arms (+ wildcard coverage) assign it
-                    if has_wildcard || m.unique {
+                    // Check if match is exhaustive: wildcard, unique, or all enum variants covered
+                    let mut is_exhaustive = has_wildcard || m.unique;
+                    if !is_exhaustive {
+                        // Check if all arms are EnumVariant patterns covering every variant
+                        let covered: HashSet<String> = m.arms.iter().filter_map(|a| {
+                            if let Pattern::EnumVariant(_, v) = &a.pattern { Some(v.name.clone()) } else { None }
+                        }).collect();
+                        // Find the enum name from the first EnumVariant pattern
+                        if let Some(enum_name) = m.arms.iter().find_map(|a| {
+                            if let Pattern::EnumVariant(e, _) = &a.pattern { Some(e.name.clone()) } else { None }
+                        }) {
+                            if let Some((Symbol::Enum(info), _)) = symbols.globals.get(&enum_name) {
+                                is_exhaustive = info.variants.iter().all(|v| covered.contains(v));
+                            }
+                        }
+                    }
+                    if is_exhaustive {
                         if let Some(first_full) = arm_results.first().map(|(_, f)| f.clone()) {
                             let intersection: HashSet<String> = arm_results.iter()
                                 .fold(first_full, |acc, (_, f)| acc.intersection(f).cloned().collect());
@@ -1108,7 +1123,7 @@ impl<'a> TypeChecker<'a> {
 
     /// Check a comb block for latch-inducing patterns and emit warnings.
     fn check_comb_latch(&mut self, stmts: &[CombStmt], span: Span) {
-        let (all_assigned, fully_assigned) = Self::comb_latch_targets(stmts);
+        let (all_assigned, fully_assigned) = Self::comb_latch_targets(stmts, self.symbols);
         for name in &all_assigned {
             if !fully_assigned.contains(name) {
                 self.errors.push(CompileError::general(
