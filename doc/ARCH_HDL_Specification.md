@@ -347,6 +347,10 @@ Every signal in Arch has exactly one driver --- the block (comb or reg) that ass
 +--------------------------------------------------------------------+
 
 > *⚑ The single-driver rule eliminates the most common class of RTL bugs: multiply-driven nets and unintentional latches. It also makes AI-generated code safe --- the compiler rejects any double-assignment.*
+>
+> ◈ **No implicit latches.** The compiler verifies that every signal assigned in a `comb` block is assigned on ALL control paths. A missing `else` branch or incomplete `match` is a compile error: *"signal \`x\` is not assigned on all control paths in comb block (infers a latch)."* The common default-then-override pattern is safe: `x = 0; if sel / x = a; end if` --- the unconditional default covers the missing else. An exhaustive enum `match` (all variants listed without `_` wildcard) also satisfies this check.
+>
+> ◈ **Comb match uses `=` syntax.** In `comb` blocks, `match` arms use `=` (combinational assign). In `seq` blocks, arms use `<=` (register assign). Enum exhaustiveness is checked in both contexts.
 
 **4. Modules**
 

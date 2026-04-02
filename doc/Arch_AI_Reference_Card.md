@@ -84,6 +84,10 @@
 >
 > unique match opcode 0 =\> r \<= a; 1 =\> r \<= b; \_ =\> r \<= 0; end match
 >
+> MATCH in comb uses = (not \<=); in seq uses \<=. Exhaustive enum match (all variants listed) satisfies the latch check without needing \_ wildcard:
+>
+> comb match color Color::Red =\> out = 1; Color::Green =\> out = 2; Color::Blue =\> out = 3; end match
+>
 > FOR LOOPS (runtime, in comb/seq blocks):
 >
 > for i in 0..7 out\[i\] = data\[7 - i\]; end for // inclusive range, emits SV for loop
@@ -151,9 +155,10 @@
 **module --- combinational or registered logic**
 
 +---------------------------------------+----------------------------------+
-| module Name                           | No implicit latches (error)      |
-|                                       |                                  |
-| param W: const = 8;                   | Single driver per signal (error) |
+| module Name                           | No implicit latches: comb block  |
+|                                       | signals must be assigned on ALL  |
+| param W: const = 8;                   | paths (missing else = error).    |
+|                                       | Single driver per signal (error) |
 |                                       |                                  |
 | port clk: in Clock\<D\>;              | All ports must be connected      |
 |                                       |                                  |

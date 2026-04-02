@@ -236,6 +236,10 @@ for_comb_stmt = "for" ident "in" expr ".." expr
 
 comb_assign = lvalue "=" expr ";" ;
 
+(* Latch prevention: the compiler verifies every signal assigned in a
+   comb block is assigned on ALL control paths. Missing else = error.
+   Exhaustive enum match (all variants covered) satisfies this check. *)
+
 
 (* ─── Instance ───────────────────────────────────────────────────────────── *)
 
