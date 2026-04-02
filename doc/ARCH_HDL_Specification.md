@@ -233,6 +233,16 @@ Every assignment, port connection, and arithmetic result is width-checked at com
 |                                                                             |
 | **let** sx: SInt\<16\> = (a **as** SInt\<8\>).sext\<16\>();                 |
 |                                                                             |
+| // Same-width signed/unsigned reinterpret (no width argument needed)       |
+|                                                                             |
+| **let** sa: SInt\<8\> = signed(a);   // UInt\<8\> → SInt\<8\>              |
+|                                                                             |
+| **let** ua: UInt\<8\> = unsigned(sa); // SInt\<8\> → UInt\<8\>             |
+|                                                                             |
+| // signed() is ideal for entering signed arithmetic chains:                |
+|                                                                             |
+| **let** diff: SInt\<9\> = signed(a) - signed(b);  // SInt\<8\> - SInt\<8\> → SInt\<9\> |
+|                                                                             |
 | // Arithmetic: result widths conservatively inferred; must match ascription |
 |                                                                             |
 | **let** sum: UInt\<9\> = a + a; // UInt\<8\> + UInt\<8\> → UInt\<9\>        |
@@ -460,7 +470,7 @@ Arch has exactly two assignment forms. Mixing operators between them is a compil
 | **end** **module** Counter                                         |
 +--------------------------------------------------------------------+
 
-> *⚑ The clock is named in `seq on clk rising`; reset is declared per register (`reset rst=>0 sync high` or `reset none`). The `reset SIGNAL=>VALUE` syntax requires an explicit reset value after the signal name. `init` is optional and only sets the SV declaration initializer (`logic x = VALUE;`). The compiler auto-generates the `if (rst)` guard and propagates domain membership automatically through all downstream logic in the module.*
+> *⚑ The clock is named in `seq on clk rising`; reset is declared per register (`reset rst => 0 sync high` or `reset none`). The `reset SIGNAL=>VALUE` syntax requires an explicit reset value after the signal name. `init` is optional and only sets the SV declaration initializer (`logic x = VALUE;`). The compiler auto-generates the `if (rst)` guard and propagates domain membership automatically through all downstream logic in the module.*
 
 **Default Clock for seq Blocks**
 
@@ -476,7 +486,7 @@ This sets the default clock and edge for all `seq` blocks in the construct. With
 module Counter
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
-  port reg count: out UInt<8> reset rst=>0;
+  port reg count: out UInt<8> reset rst => 0;
 
   default seq on clk rising;
 
@@ -694,7 +704,7 @@ end module Mux2
 
 > *⚑ The type checker enforces: `reg` cannot be a `comb` target (error: "cannot assign to register `x` in a comb block; use `<=` inside a seq block"). Only `wire` declarations and output ports are valid comb targets.*
 
-**`multicycle` reg annotation (planned)** — `reg result: UInt<32> multicycle 3 reset rst=>0;` declares that the combinational path feeding this register has a multi-cycle timing budget. Unlike `pipe_reg` (which inserts N physical flip-flop stages), a `multicycle` register remains a single flop — no extra area or power. The compiler emits an SDC constraint (`set_multicycle_path N -to result`) and can statically verify that consumers only sample the value at the correct rate. This is useful for slow-settling operations (multipliers, dividers, complex ALU) where the path does not affect end-to-end throughput.
+**`multicycle` reg annotation (planned)** — `reg result: UInt<32> multicycle 3 reset rst => 0;` declares that the combinational path feeding this register has a multi-cycle timing budget. Unlike `pipe_reg` (which inserts N physical flip-flop stages), a `multicycle` register remains a single flop — no extra area or power. The compiler emits an SDC constraint (`set_multicycle_path N -to result`) and can statically verify that consumers only sample the value at the correct rate. This is useful for slow-settling operations (multipliers, dividers, complex ALU) where the path does not affect end-to-end throughput.
 
 The Counter example from §4.2 can be simplified using `port reg`:
 
@@ -704,7 +714,7 @@ module Counter
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
   port en: in Bool;
-  port reg count: out UInt<WIDTH> reset rst=>0;
+  port reg count: out UInt<WIDTH> reset rst => 0;
 
   seq on clk rising
     if en
@@ -716,7 +726,7 @@ end module Counter
 
 > *⚑ `port reg` eliminates the intermediate `reg count_r` and the `comb count = count_r; end comb` wiring block. The port is directly assigned in the `seq` block. This is the preferred style when the output port is a straightforward registered value.*
 
-**`multicycle` reg annotation (planned)** — `reg result: UInt<32> multicycle 3 reset rst=>0;` declares that the combinational path feeding this register has a multi-cycle timing budget. Unlike `pipe_reg` (which inserts N physical flip-flop stages), a `multicycle` register remains a single flop — no extra area or power. The compiler auto-detects all input signals feeding the register by walking the assignment expression tree. Three modes of enforcement: (1) **Simulation** (`--check-uninit`): hidden valid tracking with input change detection and latency counter; reads before the counter expires return poison/X. (2) **Synthesis**: SDC constraint generation (`set_multicycle_path N -to result`). (3) **Formal**: optional `assert property` to verify the multicycle timing assumption holds.
+**`multicycle` reg annotation (planned)** — `reg result: UInt<32> multicycle 3 reset rst => 0;` declares that the combinational path feeding this register has a multi-cycle timing budget. Unlike `pipe_reg` (which inserts N physical flip-flop stages), a `multicycle` register remains a single flop — no extra area or power. The compiler auto-detects all input signals feeding the register by walking the assignment expression tree. Three modes of enforcement: (1) **Simulation** (`--check-uninit`): hidden valid tracking with input change detection and latency counter; reads before the counter expires return poison/X. (2) **Synthesis**: SDC constraint generation (`set_multicycle_path N -to result`). (3) **Formal**: optional `assert property` to verify the multicycle timing assumption holds.
 
 **4.2.4 Width-Qualified Parameters**
 
@@ -7850,13 +7860,13 @@ A practical AI workflow: generate a correct skeleton with todo! for all logic, t
   ------------------------------------------------ -------------------------------------------------------------
   **Undriven output defaults to high-Z**           Compile error --- every output must have exactly one driver
 
-  **reg with no reset holds unknown state**        Reset value required: reg x: UInt\<8\> reset rst=>0;
+  **reg with no reset holds unknown state**        Reset value required: reg x: UInt\<8\> reset rst => 0;
 
   **Wire driven by last assignment wins**          Compile error --- single-driver rule enforced statically
 
   **Unsigned/signed determined by context**        Explicit: .zext\<N\>() .sext\<N\>() as SInt\<N\>
 
-  **Clock inferred from sensitivity list**         Explicit: seq on clk rising; reset on reg decl: reset rst=>0 sync high
+  **Clock inferred from sensitivity list**         Explicit: seq on clk rising; reset on reg decl: reset rst => 0 sync high
 
   **Module port width from implicit param math**   Explicit: port sum: out UInt\<WIDTH+1\>;
 
@@ -7906,7 +7916,7 @@ The compiler emits warnings (non-fatal, printed before "OK: no errors") for the 
 - **Redundant reset branch** --- a `seq` block whose top-level `if` tests a reset signal that also appears in a `reset signal=>value` declaration. The `if` branch is dead code because the declaration already generates an outer reset guard:
 
   ```
-  reg q: UInt<8> reset rst=>0;
+  reg q: UInt<8> reset rst => 0;
   seq on clk rising
     if rst          // WARNING: redundant — dead inside the outer reset guard
       q <= 0;

@@ -69,6 +69,7 @@ Common mistakes to avoid:
 - 'for i in {a, b, c}' — compile-time unrolled value-list iteration (inside comb/seq blocks)
 - 'unique if' and 'unique match' assert mutual exclusivity to synthesis (parallel mux): use 'unique if sel == 0 ... end if' or 'unique match opcode ... end match'; emits SV 'unique if' / 'unique case'
 - .trunc<N>() errors if N >= source width (not truncating); .zext<N>()/.sext<N>() error if N <= source width (not extending)
+- signed(x) / unsigned(x): same-width reinterpret cast (no width arg needed); prefer signed(x) over x.sext<N>() when entering signed arithmetic chains
 """,
 )
 
@@ -463,6 +464,9 @@ end module Slave
 // No implicit conversions — use .trunc<N>(), .zext<N>(), .sext<N>()
 // .trunc<N>() requires N < source width (compiler error otherwise)
 // .zext<N>()/.sext<N>() require N > source width (compiler error otherwise)
+// signed(x): same-width UInt<N>→SInt<N> reinterpret (SV: $signed(x))
+// unsigned(x): same-width SInt<N>→UInt<N> reinterpret (SV: $unsigned(x))
+// Use signed() for signed arithmetic chains: signed(a) + signed(b) → SInt<9>
 // Bit slice: x[7:4] extracts bits 7 down to 4
 // Single bit: x[3] extracts bit 3
 // Cast: (x as SInt<32>), (x as UInt<32>)

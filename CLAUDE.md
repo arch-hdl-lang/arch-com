@@ -71,17 +71,17 @@ Arch has three kinds of module-scope signal declarations:
 |-----------|--------|-------------|---------------|
 | `let` | `let x: T = expr;` | declaration (fixed combinational expr) | `logic [W-1:0] x; assign x = expr;` |
 | `wire` | `wire x: T;` | `comb` block (`=`) | `logic [W-1:0] x;` (driven in `assign`/`always_comb`) |
-| `reg` | `reg x: T [init V] [reset R=V];` | `seq` block (`<=`) | `logic [W-1:0] x [= V];` (driven in `always_ff`) |
+| `reg` | `reg x: T [init V] [reset R => V];` | `seq` block (`<=`) | `logic [W-1:0] x [= V];` (driven in `always_ff`) |
 
 - `comb y = expr; end comb` — combinational, uses `=`. Valid targets are `wire` declarations, output ports, and indexed expressions (`out[i]`); assigning to a `reg` in `comb` is a compile error.
 - `wire x: T;` — declares a combinational net driven inside a `comb` block. No initializer. SV codegen emits `logic [N-1:0] x;`. Sim codegen treats it as a private member in `eval_comb()`.
-- `reg r: T reset rst=0;` + `seq on clk rising ... end seq` — registered, uses `<=`. Reset value is specified after `=` in the reset clause. `init` is optional (SV declaration initializer only). Reset is declared per register; compiler auto-generates reset guards.
+- `reg r: T reset rst => 0;` + `seq on clk rising ... end seq` — registered, uses `<=`. Reset value is specified after `=>` in the reset clause. `init` is optional (SV declaration initializer only). Reset is declared per register; compiler auto-generates reset guards.
 - `for i in 0..N ... end for` — loop in `comb` or `seq` blocks; range is inclusive; emits SV `for` loop.
 - No implicit latches (error). Single driver per signal (error). All ports must be connected.
 
 ### Type System
 - **Primitive types:** `UInt<N>`, `SInt<N>`, `Bool`, `Bit`, `Clock<Domain>`, `Reset<Sync|Async, High|Low>` (polarity defaults High), `Vec<T,N>`, `struct`, `enum`, `Token`, `Future<T>`, `Token<T, id_width: N>`
-- **No implicit conversions.** All width casts are explicit: `.trunc<N>()`, `.zext<N>()`, `.sext<N>()`
+- **No implicit conversions.** All width casts are explicit: `.trunc<N>()`, `.zext<N>()`, `.sext<N>()`. Same-width signedness reinterpret: `signed(x)`, `unsigned(x)`
 - Arithmetic result widths follow IEEE 1800-2012 §11.6 (e.g. `UInt<8> + UInt<8>` → `UInt<9>`)
 - Clock domain mismatches are **compile errors**, not warnings
 

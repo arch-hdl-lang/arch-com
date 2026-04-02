@@ -143,17 +143,18 @@ impl<'a> Codegen<'a> {
         } else {
             String::new()
         };
+        let kw = if p.is_local { "localparam" } else { "parameter" };
         match &p.kind {
             ParamKind::WidthConst(hi, lo) => {
                 let hi_s = self.emit_expr_str(hi);
                 let lo_s = self.emit_expr_str(lo);
-                self.line(&format!("parameter [{}:{}] {}{}{}", hi_s, lo_s, p.name.name, default_str, comma));
+                self.line(&format!("{kw} [{}:{}] {}{}{}", hi_s, lo_s, p.name.name, default_str, comma));
             }
             ParamKind::EnumConst(enum_name) => {
-                self.line(&format!("parameter {} {}{}{}", enum_name, p.name.name, default_str, comma));
+                self.line(&format!("{kw} {} {}{}{}", enum_name, p.name.name, default_str, comma));
             }
             _ => {
-                self.line(&format!("parameter int {}{}{}", p.name.name, default_str, comma));
+                self.line(&format!("{kw} int {}{}{}", p.name.name, default_str, comma));
             }
         }
     }
@@ -1203,6 +1204,8 @@ impl<'a> Codegen<'a> {
                     _ => false,
                 }
             }
+            ExprKind::Signed(_) => true,
+            ExprKind::Unsigned(_) => false,
             ExprKind::Binary(_, lhs, _) => self.expr_is_signed(lhs),
             _ => false,
         }
@@ -3521,6 +3524,14 @@ impl<'a> Codegen<'a> {
             ExprKind::Clog2(arg) => {
                 let a = self.emit_expr_str(arg);
                 format!("$clog2({a})")
+            }
+            ExprKind::Signed(inner) => {
+                let e = self.emit_expr_str(inner);
+                format!("$signed({e})")
+            }
+            ExprKind::Unsigned(inner) => {
+                let e = self.emit_expr_str(inner);
+                format!("$unsigned({e})")
             }
             ExprKind::Match(scrutinee, _arms) => {
                 let s = self.emit_expr_str(scrutinee);

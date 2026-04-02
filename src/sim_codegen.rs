@@ -948,6 +948,9 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
         | ExprKind::Unary(UnaryOp::RedOr, _)
         | ExprKind::Unary(UnaryOp::RedXor, _) => 1,
         ExprKind::Ternary(_, then_expr, _) => infer_expr_width(then_expr, ctx),
+        ExprKind::Signed(inner) | ExprKind::Unsigned(inner) => {
+            infer_expr_width(inner, ctx)
+        }
         ExprKind::FieldAccess(_, _) => {
             // Bus field or struct field — check widths map via flattened name
             let flat = cpp_expr_inner(expr, ctx, false);
@@ -1311,6 +1314,10 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
         ExprKind::Clog2(arg) => {
             let a = cpp_expr(arg, ctx);
             format!("_arch_clog2({a})")
+        }
+        ExprKind::Signed(inner) | ExprKind::Unsigned(inner) => {
+            // Same-width reinterpret — C++ sim model is bitwise, no-op
+            cpp_expr(inner, ctx)
         }
 
         ExprKind::Ternary(cond, then_expr, else_expr) => {

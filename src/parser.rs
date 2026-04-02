@@ -134,7 +134,7 @@ impl Parser {
         let mut params = Vec::new();
         let mut signals = Vec::new();
         while !self.check_end_keyword() {
-            if self.check(TokenKind::Param) {
+            if self.check_param() {
                 params.push(self.parse_param_decl()?);
             } else {
                 // Signal: name: in/out Type;
@@ -260,7 +260,7 @@ impl Parser {
                     self.expect(TokenKind::Semi)?;
                     continue;
                 }
-                Some(TokenKind::Param) => params.push(self.parse_param_decl()?),
+                _ if self.check_param() => params.push(self.parse_param_decl()?),
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Reg) => {
                     if self.peek_default_at(1) {
@@ -335,6 +335,9 @@ impl Parser {
     }
 
     fn parse_param_decl(&mut self) -> Result<ParamDecl, CompileError> {
+        // Check for `local param` prefix (local is a contextual keyword)
+        let is_local = self.check_contextual("local");
+        if is_local { self.advance(); }
         let start = self.expect(TokenKind::Param)?.span;
         let name = self.expect_ident()?;
         // Optional width qualifier: param NAME[hi:lo]: const
@@ -377,6 +380,7 @@ impl Parser {
             name,
             kind,
             default,
+            is_local,
             span: start.merge(end_span),
         })
     }
@@ -1182,7 +1186,7 @@ impl Parser {
         let mut connections = Vec::new();
 
         while !self.check_end_inst() {
-            if self.check(TokenKind::Param) {
+            if self.check_param() {
                 self.advance();
                 let pname = self.expect_ident()?;
                 self.expect(TokenKind::Eq)?;
@@ -1728,6 +1732,26 @@ impl Parser {
                     kind: ExprKind::Clog2(Box::new(arg)),
                     span: start.merge(end.span), parenthesized: false })
             }
+            // signed(expr) — same-width reinterpret to SInt
+            Some(TokenKind::Signed) => {
+                let start = self.advance().span;
+                self.expect(TokenKind::LParen)?;
+                let arg = self.parse_expr()?;
+                let end = self.expect(TokenKind::RParen)?;
+                Ok(Expr {
+                    kind: ExprKind::Signed(Box::new(arg)),
+                    span: start.merge(end.span), parenthesized: false })
+            }
+            // unsigned(expr) — same-width reinterpret to UInt
+            Some(TokenKind::KwUnsigned) => {
+                let start = self.advance().span;
+                self.expect(TokenKind::LParen)?;
+                let arg = self.parse_expr()?;
+                let end = self.expect(TokenKind::RParen)?;
+                Ok(Expr {
+                    kind: ExprKind::Unsigned(Box::new(arg)),
+                    span: start.merge(end.span), parenthesized: false })
+            }
             // Bit concatenation {a, b, c} or bit replication {N{expr}}
             Some(TokenKind::LBrace) => {
                 let start = self.advance().span;
@@ -1952,7 +1976,7 @@ impl Parser {
 
         while !self.check_end_fsm() {
             match self.peek_kind() {
-                Some(TokenKind::Param) => params.push(self.parse_param_decl()?),
+                _ if self.check_param() => params.push(self.parse_param_decl()?),
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Reg) => regs.push(self.parse_reg_decl()?),
                 Some(TokenKind::Let) => lets.push(self.parse_let_binding()?),
@@ -2164,7 +2188,7 @@ impl Parser {
 
         while !self.check_end_pipeline() {
             match self.peek_kind() {
-                Some(TokenKind::Param) => params.push(self.parse_param_decl()?),
+                _ if self.check_param() => params.push(self.parse_param_decl()?),
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Stage) => stages.push(self.parse_stage_decl()?),
                 Some(TokenKind::Stall) => stall_conds.push(self.parse_stall_decl()?),
@@ -2357,7 +2381,7 @@ impl Parser {
                         )),
                     });
                 }
-                Some(TokenKind::Param) => params.push(self.parse_param_decl()?),
+                _ if self.check_param() => params.push(self.parse_param_decl()?),
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
                     while !self.check(TokenKind::Semi) && !self.at_end() {
@@ -2410,7 +2434,7 @@ impl Parser {
 
         while !self.check_end_synchronizer() {
             match self.peek_kind() {
-                Some(TokenKind::Param) => params.push(self.parse_param_decl()?),
+                _ if self.check_param() => params.push(self.parse_param_decl()?),
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Kind) => {
                     self.advance();
@@ -2473,7 +2497,7 @@ impl Parser {
 
         while !self.check_end_clkgate() {
             match self.peek_kind() {
-                Some(TokenKind::Param) => params.push(self.parse_param_decl()?),
+                _ if self.check_param() => params.push(self.parse_param_decl()?),
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Kind) => {
                     self.advance();
@@ -3158,7 +3182,7 @@ impl Parser {
 
         while !self.check_end_of(TokenKind::Template) {
             match self.peek_kind() {
-                Some(TokenKind::Param) => params.push(self.parse_param_decl()?),
+                _ if self.check_param() => params.push(self.parse_param_decl()?),
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Ports) => port_arrays.push(self.parse_port_array()?),
                 Some(TokenKind::Hook) => hooks.push(self.parse_template_hook_decl()?),
@@ -3256,7 +3280,7 @@ impl Parser {
 
         while !self.check_end_of(TokenKind::Regfile) {
             match self.peek_kind() {
-                Some(TokenKind::Param) => params.push(self.parse_param_decl()?),
+                _ if self.check_param() => params.push(self.parse_param_decl()?),
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Ports) => {
                     let arr = self.parse_port_array()?;
@@ -3392,6 +3416,17 @@ impl Parser {
         }
     }
 
+    /// Check if the next token(s) start a param decl: `param` or `local param`.
+    fn check_param(&self) -> bool {
+        if self.check(TokenKind::Param) { return true; }
+        if self.check_ident("local") {
+            if let Some(t) = self.tokens.get(self.pos + 1) {
+                return t.kind == TokenKind::Param;
+            }
+        }
+        false
+    }
+
     /// Check if next token is a contextual keyword (for lookahead).
     fn check_contextual(&self, name: &str) -> bool {
         self.check_ident(name)
@@ -3457,7 +3492,7 @@ impl Parser {
 
         while !self.check_end_linklist() {
             match self.peek_kind() {
-                Some(TokenKind::Param) => params.push(self.parse_param_decl()?),
+                _ if self.check_param() => params.push(self.parse_param_decl()?),
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Kind) => {
                     self.advance(); // consume 'kind'
@@ -3722,7 +3757,7 @@ impl Parser {
 
         while !self.check_end_keyword() {
             match self.peek_kind() {
-                Some(TokenKind::Param) => params.push(self.parse_param_decl()?),
+                _ if self.check_param() => params.push(self.parse_param_decl()?),
                 Some(TokenKind::Domain) => domains.push(self.parse_domain()?),
                 Some(TokenKind::Enum) => enums.push(self.parse_enum()?),
                 Some(TokenKind::Struct) => structs.push(self.parse_struct()?),

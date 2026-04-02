@@ -1534,6 +1534,36 @@ impl<'a> TypeChecker<'a> {
                     Ty::UInt(32) // fallback: treat as generic integer
                 }
             }
+            ExprKind::Signed(inner) => {
+                let inner_ty = self.resolve_expr_type(inner, module_name, local_types);
+                match inner_ty {
+                    Ty::UInt(w) | Ty::SInt(w) => Ty::SInt(w),
+                    Ty::Bool | Ty::Bit => Ty::SInt(1),
+                    Ty::Enum(_, w) => Ty::SInt(w),
+                    _ => {
+                        self.errors.push(CompileError::general(
+                            &format!("signed() requires UInt, SInt, Bool, or Bit operand, got {}", inner_ty.display()),
+                            expr.span,
+                        ));
+                        Ty::Error
+                    }
+                }
+            }
+            ExprKind::Unsigned(inner) => {
+                let inner_ty = self.resolve_expr_type(inner, module_name, local_types);
+                match inner_ty {
+                    Ty::UInt(w) | Ty::SInt(w) => Ty::UInt(w),
+                    Ty::Bool | Ty::Bit => Ty::UInt(1),
+                    Ty::Enum(_, w) => Ty::UInt(w),
+                    _ => {
+                        self.errors.push(CompileError::general(
+                            &format!("unsigned() requires UInt, SInt, Bool, or Bit operand, got {}", inner_ty.display()),
+                            expr.span,
+                        ));
+                        Ty::Error
+                    }
+                }
+            }
             ExprKind::Ternary(_cond, then_expr, else_expr) => {
                 // Return the type of the then branch; else branch should match.
                 let then_ty = self.resolve_expr_type(then_expr, module_name, local_types);

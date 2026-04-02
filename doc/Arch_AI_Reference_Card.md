@@ -44,17 +44,17 @@
 >
 > comb y = expr; end comb // equivalent multi-line form
 >
-> reg r: T reset rst=>0 sync high; // register decl with reset (reset value after =)
+> reg r: T reset rst => 0 sync high; // register decl with reset (reset value after =)
 >
-> reg r: T init 0 reset rst=>0; // optional init sets SV declaration initializer
+> reg r: T init 0 reset rst => 0; // optional init sets SV declaration initializer
 >
 > reg p: T reset none; // register decl without reset
 >
-> reg default: reset rst=>0; // wildcard default for all regs in scope
+> reg default: reset rst => 0; // wildcard default for all regs in scope
 >
 > reg r: UInt\<8\>; // inherits reset from reg default
 >
-> port reg q: out UInt\<8\> reset rst=>0; // output port + register combined
+> port reg q: out UInt\<8\> reset rst => 0; // output port + register combined
 >
 > port reg q: out UInt\<8\>; // inherits reset from reg default
 >
@@ -116,6 +116,12 @@
 >
 > trunc\<N\>() → lowest N bits (SV: N'(x)); x[hi:lo] → bit-slice (SV: x[hi:lo])
 >
+> Signedness reinterpret (same width, no N needed): signed(x) unsigned(x)
+>
+> signed(UInt\<8\>) → SInt\<8\> (SV: $signed(x)); unsigned(SInt\<8\>) → UInt\<8\> (SV: $unsigned(x))
+>
+> Use signed() to enter signed arithmetic chains: signed(a) + signed(b) → SInt\<9\>
+>
 > Arithmetic: UInt\<8\> + UInt\<8\> → UInt\<9\> (auto-widen); must .trunc\<8\>() to assign back
 >
 > $clog2(expr) supported in type args: UInt\<$clog2(DEPTH)\>
@@ -168,7 +174,7 @@
 |                                       |                                  |
 | port y: out UInt\<W\>;                |                                  |
 |                                       |                                  |
-| reg default: reset rst=>0;             | Wildcard default for all regs    |
+| reg default: reset rst => 0;             | Wildcard default for all regs    |
 |                                       |                                  |
 | reg r: UInt\<W\>;                     | Inherits reset from default      |
 |                                       |                                  |
@@ -253,7 +259,7 @@
 |                                       |                               |
 | stage Fetch stall when !in\_valid     | flush masks, comb wire decls. |
 |                                       |                               |
-| reg r1: T reset rst=>0;           | Cross-stage refs rewritten:   |
+| reg r1: T reset rst => 0;           | Cross-stage refs rewritten:   |
 |                                       |                               |
 | seq on clk rising                     | Fetch.pc → fetch\_pc          |
 |                                       |                               |
@@ -265,7 +271,7 @@
 |                                       |                               |
 | stage Exec                            | wb\_we = valid and valid\_r;  |
 |                                       |                               |
-| reg r2: T reset rst=>0;           |                               |
+| reg r2: T reset rst => 0;           |                               |
 |                                       |                               |
 | seq on clk rising                     | Explicit forwarding via comb  |
 |                                       |                               |
@@ -344,7 +350,7 @@ FSMs may declare `reg` and `let` at scope level, and `seq on clk rising ... end 
 
 ```
 fsm MulDiv
-  reg acc_r: UInt<64> reset rst=>0 sync high;
+  reg acc_r: UInt<64> reset rst => 0 sync high;
   let done: Bool = (cycle_r == 31);
   state Idle
     seq on clk rising

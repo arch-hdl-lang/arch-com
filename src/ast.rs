@@ -104,6 +104,8 @@ pub struct ParamDecl {
     pub name: Ident,
     pub kind: ParamKind,
     pub default: Option<Expr>,
+    /// `local param` → emits SV `localparam` (not overridable at inst site)
+    pub is_local: bool,
     pub span: Span,
 }
 
@@ -524,6 +526,10 @@ pub enum ExprKind {
     Repeat(Box<Expr>, Box<Expr>),
     /// $clog2(expr) — ceiling log2, used in type width expressions.
     Clog2(Box<Expr>),
+    /// signed(expr) — same-width reinterpret cast to SInt.
+    Signed(Box<Expr>),
+    /// unsigned(expr) — same-width reinterpret cast to UInt.
+    Unsigned(Box<Expr>),
     /// Pure combinational function call: Name(arg, ...)
     FunctionCall(String, Vec<Expr>),
     /// Set membership: expr inside {val, lo..hi, ...}

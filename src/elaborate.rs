@@ -352,7 +352,9 @@ fn expr_references_param(expr: &Expr, param_names: &[String]) -> bool {
                 || expr_references_param(r, param_names)
         }
         ExprKind::Unary(_, e) => expr_references_param(e, param_names),
-        ExprKind::Clog2(e) => expr_references_param(e, param_names),
+        ExprKind::Clog2(e)
+        | ExprKind::Signed(e)
+        | ExprKind::Unsigned(e) => expr_references_param(e, param_names),
         _ => false,
     }
 }
