@@ -964,7 +964,12 @@ impl Parser {
             }),
             CombStmt::Log(l) => Stmt::Log(l),
             CombStmt::For(f) => Stmt::For(f),
-            CombStmt::MatchExpr(_) => todo!("match in for-loop comb body"),
+            CombStmt::MatchExpr(m) => Stmt::Match(MatchStmt {
+                scrutinee: m.scrutinee,
+                arms: m.arms,
+                unique: m.unique,
+                span: m.span,
+            }),
         }
     }
 
@@ -1092,11 +1097,11 @@ impl Parser {
         while !self.check_end_match() {
             let pattern = self.parse_pattern()?;
             self.expect(TokenKind::FatArrow)?;
-            // For comb match, we parse a single assignment as a reg stmt then convert
-            let stmt = self.parse_reg_stmt()?;
+            // Parse comb-style statements (with =) and convert to Stmt for MatchArm
+            let comb_stmt = self.parse_comb_stmt()?;
             arms.push(MatchArm {
                 pattern,
-                body: vec![stmt],
+                body: vec![Self::comb_stmt_to_stmt(comb_stmt)],
             });
         }
         self.expect(TokenKind::End)?;
