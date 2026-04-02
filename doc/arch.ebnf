@@ -112,10 +112,14 @@ seq_default_decl = "default" "seq" "on" ident ( "rising" | "falling" ) ";" ;
 
 (* ─── Params ─────────────────────────────────────────────────────────────── *)
 
-param_decl = "param" ident [ "[" expr ":" expr "]" ] ":" param_kind [ "=" expr ] ";" ;
+(* param: overridable at inst site (SV parameter).
+   local param: derived, not overridable (SV localparam).
+   Enum-typed: param NAME: EnumName = EnumName::Variant *)
+param_decl = [ "local" ] "param" ident [ "[" expr ":" expr "]" ] ":" param_kind [ "=" expr ] ";" ;
 
 param_kind = "const"
            | "type" "=" type_expr
+           | ident                    (* enum type name *)
            ;
 
 

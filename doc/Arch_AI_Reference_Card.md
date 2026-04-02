@@ -165,6 +165,9 @@
 |                                       | signals must be assigned on ALL  |
 | param W: const = 8;                   | paths (missing else = error).    |
 |                                       | Single driver per signal (error) |
+| local param ADDR: const = \$clog2(W); | localparam: not overridable      |
+|                                       |                                  |
+| param CFG: Mode = Mode::Fast;         | Enum-typed param (type-safe)     |
 |                                       |                                  |
 | port clk: in Clock\<D\>;              | All ports must be connected      |
 |                                       |                                  |

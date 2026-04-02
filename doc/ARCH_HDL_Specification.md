@@ -383,6 +383,10 @@ A module is the fundamental unit of design in Arch. Every module follows the sam
 |                                                                                |
 | // param NAME: type = SomeType;     // type alias — emits `parameter type`     |
 |                                                                                |
+| // param NAME: EnumName = EnumName::Variant; // enum-typed — emits `parameter EnumName` |
+|                                                                                |
+| // local param NAME: const = expr;  // derived — emits `localparam` (not overridable) |
+|                                                                                |
 | //                                                                             |
 |                                                                                |
 | // port name: dir Type; // section 2: interface ports                          |
