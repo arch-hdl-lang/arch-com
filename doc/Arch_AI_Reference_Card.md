@@ -272,7 +272,10 @@
 |                                       |                               |
 | end stage Fetch                       | for output gating:            |
 |                                       |                               |
-| stage Exec                            | wb\_we = valid and valid\_r;  |
+|                                       | valid\_r \<= start; in stage0 |
+|                                       | seq overrides default (=1).   |
+|                                       |                               |
+| stage Exec                            | done = valid\_r; in last stage|
 |                                       |                               |
 | reg r2: T reset rst => 0;           |                               |
 |                                       |                               |

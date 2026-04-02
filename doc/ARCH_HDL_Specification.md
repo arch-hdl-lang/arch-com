@@ -924,27 +924,17 @@ A pipeline is a first-class Arch construct --- not a pattern you build from regi
 |                                                                    |
 | **port** out_pc: **out** UInt\<XLEN\>;                             |
 |                                                                    |
-| **port** out_instr: **out** DecodedInstr;                          |
+| **port** out_instr: **out** UInt\<32\>;                            |
 |                                                                    |
 | **stage** Fetch                                                    |
 |                                                                    |
-| **reg** pc: UInt\<XLEN\> **init** 0;                               |
+| **reg** pc: UInt\<XLEN\> **reset** rst => 0;                      |
 |                                                                    |
-| **reg** **on** clk rising, rst high                                |
-|                                                                    |
-| **if** rst                                                         |
-|                                                                    |
-| pc \<= 0;                                                          |
-|                                                                    |
-| **end** **if**                                                     |
-|                                                                    |
-| **else**                                                           |
+| **seq** **on** clk rising                                          |
 |                                                                    |
 | pc \<= in_pc;                                                      |
 |                                                                    |
-| **end** **else**                                                   |
-|                                                                    |
-| **end** **reg**                                                    |
+| **end** **seq**                                                    |
 |                                                                    |
 | **end** **stage** Fetch                                            |
 |                                                                    |
@@ -956,13 +946,13 @@ A pipeline is a first-class Arch construct --- not a pattern you build from regi
 |                                                                    |
 | out_pc = Fetch.pc;                                                 |
 |                                                                    |
-| out_instr = decode(raw);                                           |
+| out_instr = raw;                                                   |
 |                                                                    |
 | **end** **comb**                                                   |
 |                                                                    |
 | **end** **stage** Decode                                           |
 |                                                                    |
-| **stall** **when** Decode.out_instr.rd == 0;                       |
+| **stall** **when** Decode.out_instr == 0;                          |
 |                                                                    |
 | **flush** Fetch **when** branch_mispred;                           |
 |                                                                    |
@@ -972,6 +962,8 @@ A pipeline is a first-class Arch construct --- not a pattern you build from regi
 |                                                                    |
 | **end** **pipeline** Decode                                        |
 +--------------------------------------------------------------------+
+
+Each stage has a compiler-generated `valid_r` register that tracks whether the stage holds valid data. The first stage sets `valid_r <= 1` by default; downstream stages inherit from upstream. Users can override the first stage's valid in a `seq` block (e.g. `valid_r <= start;`) to gate pipeline entry on an input signal. The last stage's `valid_r` can be read in a `comb` block to drive a `done` output.
 
 > ◈ stall, flush, and forward are declarative. The compiler generates all enable signals, bubble insertion logic, and bypass muxes. The designer describes intent; the compiler generates mechanism.
 
