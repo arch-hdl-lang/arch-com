@@ -281,12 +281,22 @@ impl<'a> Codegen<'a> {
     }
 
     fn emit_enum(&mut self, e: &EnumDecl) {
-        let width = enum_width(e.variants.len());
-        let variants: Vec<String> = e
-            .variants
-            .iter()
-            .enumerate()
-            .map(|(i, v)| format!("{} = {}'d{}", v.name.to_uppercase(), width, i))
+        // Compute effective values: explicit where provided, auto-sequential otherwise
+        let effective_values: Vec<u64> = e.values.iter().enumerate().map(|(i, v)| {
+            v.as_ref().and_then(|expr| match &expr.kind {
+                ExprKind::Literal(LitKind::Dec(n)) => Some(*n),
+                ExprKind::Literal(LitKind::Hex(n)) => Some(*n),
+                ExprKind::Literal(LitKind::Bin(n)) => Some(*n),
+                ExprKind::Literal(LitKind::Sized(_, n)) => Some(*n),
+                _ => None,
+            }).unwrap_or(i as u64)
+        }).collect();
+        // Width: from max value (covers explicit encodings like one-hot)
+        let max_val = effective_values.iter().copied().max().unwrap_or(0);
+        let width = if max_val == 0 { 1 } else { (64 - max_val.leading_zeros()) };
+        let width = std::cmp::max(width, enum_width(e.variants.len()));
+        let variants: Vec<String> = e.variants.iter().zip(effective_values.iter())
+            .map(|(v, val)| format!("{} = {}'d{}", v.name.to_uppercase(), width, val))
             .collect();
         self.line(&format!(
             "typedef enum logic [{}:0] {{",

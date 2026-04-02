@@ -81,6 +81,9 @@ pub struct BusPortInfo {
 pub struct EnumDecl {
     pub name: Ident,
     pub variants: Vec<Ident>,
+    /// Optional explicit encoding value per variant (index matches `variants`).
+    /// None = auto-assign sequential from 0.
+    pub values: Vec<Option<Expr>>,
     pub span: Span,
 }
 

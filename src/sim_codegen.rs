@@ -795,7 +795,7 @@ struct Ctx<'a> {
     posedge_lhs: bool,
     /// FSM mode: regs are public members, no `_` prefix on reads
     fsm_mode:    bool,
-    enum_map:    &'a HashMap<String, Vec<String>>,
+    enum_map:    &'a HashMap<String, Vec<(String, u64)>>,
     /// Bus port names (for FieldAccess rewriting: itcm.cmd_valid → itcm_cmd_valid).
     bus_ports:   &'a HashSet<String>,
     /// Reg/wire names whose type is Vec<T,N> — these use C array subscript `[i]`.
@@ -815,7 +815,7 @@ impl<'a> Ctx<'a> {
         inst_names: &'a HashSet<String>,
         wide_names: &'a HashSet<String>,
         widths:     &'a HashMap<String, u32>,
-        enum_map:   &'a HashMap<String, Vec<String>>,
+        enum_map:   &'a HashMap<String, Vec<(String, u64)>>,
         bus_ports:  &'a HashSet<String>,
     ) -> Self {
         Ctx { reg_names, port_names, let_names, inst_names, wide_names,
@@ -1250,7 +1250,7 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
 
         ExprKind::EnumVariant(enum_name, variant) => {
             if let Some(variants) = ctx.enum_map.get(&enum_name.name) {
-                let idx = variants.iter().position(|v| *v == variant.name).unwrap_or(0);
+                let idx = variants.iter().find(|(n, _)| *n == variant.name).map(|(_, v)| *v).unwrap_or(0);
                 format!("{idx}")
             } else {
                 format!("/* {}::{} */ 0", enum_name.name, variant.name)
@@ -1338,7 +1338,7 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                     }
                     Pattern::EnumVariant(en, vr) => {
                         if let Some(variants) = ctx.enum_map.get(&en.name) {
-                            let idx = variants.iter().position(|v| *v == vr.name).unwrap_or(0);
+                            let idx = variants.iter().find(|(n, _)| *n == vr.name).map(|(_, v)| *v).unwrap_or(0);
                             format!("({s} == {idx})")
                         } else {
                             format!("({s} == 0)")
@@ -1416,7 +1416,7 @@ fn emit_reg_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize) {
                     Pattern::Literal(e) => format!("case {}", cpp_expr(e, ctx)),
                     Pattern::EnumVariant(en, vr) => {
                         if let Some(variants) = ctx.enum_map.get(&en.name) {
-                            let idx = variants.iter().position(|v| *v == vr.name).unwrap_or(0);
+                            let idx = variants.iter().find(|(n, _)| *n == vr.name).map(|(_, v)| *v).unwrap_or(0);
                             format!("case {idx}")
                         } else { "default".to_string() }
                     }
@@ -1527,7 +1527,7 @@ fn emit_comb_stmt(stmt: &CombStmt, ctx: &Ctx, out: &mut String, indent: usize) {
                     Pattern::Literal(e) => format!("case {}", cpp_expr(e, ctx)),
                     Pattern::EnumVariant(en, vr) => {
                         if let Some(variants) = ctx.enum_map.get(&en.name) {
-                            let idx = variants.iter().position(|v| *v == vr.name).unwrap_or(0);
+                            let idx = variants.iter().find(|(n, _)| *n == vr.name).map(|(_, v)| *v).unwrap_or(0);
                             format!("case {idx}")
                         } else { "default".to_string() }
                     }
@@ -1866,11 +1866,18 @@ fn reset_value_from_reg_reset(reset: &RegReset) -> Option<&Expr> {
     }
 }
 
-fn build_enum_map(symbols: &SymbolTable) -> HashMap<String, Vec<String>> {
+/// Build enum_name → Vec<(variant_name, encoding_value)>.
+fn build_enum_map(symbols: &SymbolTable) -> HashMap<String, Vec<(String, u64)>> {
     let mut m = HashMap::new();
     for (name, (sym, _)) in &symbols.globals {
         if let Symbol::Enum(info) = sym {
-            m.insert(name.clone(), info.variants.clone());
+            let entries: Vec<(String, u64)> = info.variants.iter().enumerate()
+                .map(|(i, v)| {
+                    let val = info.values.get(i).and_then(|v| *v).unwrap_or(i as u64);
+                    (v.clone(), val)
+                })
+                .collect();
+            m.insert(name.clone(), entries);
         }
     }
     m
@@ -2007,7 +2014,7 @@ impl<'a> SimCodegen<'a> {
                                     }
                                     Pattern::EnumVariant(en, vr) => {
                                         if let Some(variants) = enum_map.get(&en.name) {
-                                            let idx = variants.iter().position(|v| *v == vr.name).unwrap_or(0);
+                                            let idx = variants.iter().find(|(n, _)| *n == vr.name).map(|(_, v)| *v).unwrap_or(0);
                                             h.push_str(&format!("    case {idx}: return {val};\n"));
                                         }
                                     }

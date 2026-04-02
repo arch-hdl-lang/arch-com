@@ -127,6 +127,8 @@ pub struct BusInfo {
 pub struct EnumInfo {
     pub name: String,
     pub variants: Vec<String>,
+    /// Explicit encoding values per variant (None = auto-sequential).
+    pub values: Vec<Option<u64>>,
 }
 
 #[derive(Debug, Clone)]
@@ -222,9 +224,19 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                 if table.globals.contains_key(&e.name.name) {
                     errors.push(CompileError::duplicate(&e.name.name, e.name.span));
                 } else {
+                    let values: Vec<Option<u64>> = e.values.iter().map(|v| {
+                        v.as_ref().and_then(|expr| match &expr.kind {
+                            crate::ast::ExprKind::Literal(crate::ast::LitKind::Dec(n)) => Some(*n),
+                            crate::ast::ExprKind::Literal(crate::ast::LitKind::Hex(n)) => Some(*n),
+                            crate::ast::ExprKind::Literal(crate::ast::LitKind::Bin(n)) => Some(*n),
+                            crate::ast::ExprKind::Literal(crate::ast::LitKind::Sized(_, n)) => Some(*n),
+                            _ => None,
+                        })
+                    }).collect();
                     let info = EnumInfo {
                         name: e.name.name.clone(),
                         variants: e.variants.iter().map(|v| v.name.clone()).collect(),
+                        values,
                     };
                     table.globals.insert(
                         e.name.name.clone(),
@@ -423,9 +435,19 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                         if table.globals.contains_key(&e.name.name) {
                             errors.push(CompileError::duplicate(&e.name.name, e.name.span));
                         } else {
+                            let values: Vec<Option<u64>> = e.values.iter().map(|v| {
+                                v.as_ref().and_then(|expr| match &expr.kind {
+                                    crate::ast::ExprKind::Literal(crate::ast::LitKind::Dec(n)) => Some(*n),
+                                    crate::ast::ExprKind::Literal(crate::ast::LitKind::Hex(n)) => Some(*n),
+                                    crate::ast::ExprKind::Literal(crate::ast::LitKind::Bin(n)) => Some(*n),
+                                    crate::ast::ExprKind::Literal(crate::ast::LitKind::Sized(_, n)) => Some(*n),
+                                    _ => None,
+                                })
+                            }).collect();
                             let info = EnumInfo {
                                 name: e.name.name.clone(),
                                 variants: e.variants.iter().map(|v| v.name.clone()).collect(),
+                                values,
                             };
                             table.globals.insert(e.name.name.clone(), (Symbol::Enum(info), e.name.span));
                         }

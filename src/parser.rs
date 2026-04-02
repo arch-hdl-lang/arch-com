@@ -188,13 +188,21 @@ impl Parser {
         let start = self.expect(TokenKind::Enum)?.span;
         let name = self.expect_ident()?;
         let mut variants = Vec::new();
+        let mut values = Vec::new();
         while !self.check_end_keyword() {
             let variant = self.expect_ident()?;
+            // Optional explicit value: Variant = expr
+            let value = if self.eat(TokenKind::Eq) {
+                Some(self.parse_expr()?)
+            } else {
+                None
+            };
             // Comma is optional before `end`
             if !self.check_end_keyword() {
                 self.expect(TokenKind::Comma)?;
             }
             variants.push(variant);
+            values.push(value);
         }
         self.expect(TokenKind::End)?;
         self.expect(TokenKind::Enum)?;
@@ -210,6 +218,7 @@ impl Parser {
             span: start.merge(closing_name.span),
             name,
             variants,
+            values,
         })
     }
 
