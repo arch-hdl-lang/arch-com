@@ -2134,6 +2134,16 @@ impl<'a> Codegen<'a> {
                     };
                     regs.push((r.name.name.clone(), ty_str, init_str));
                 }
+                // LetBindings in stages are combinational wires — add to stage_regs
+                // so they get declared as `logic` and their names get stage-prefixed.
+                if let ModuleBodyItem::LetBinding(l) = item {
+                    let ty_str = if let Some(ref te) = l.ty {
+                        self.emit_logic_type_str(te)
+                    } else {
+                        "logic".to_string()
+                    };
+                    regs.push((l.name.name.clone(), ty_str, String::new())); // empty init = comb wire
+                }
             }
             stage_regs.push(regs);
         }
@@ -2420,7 +2430,7 @@ impl<'a> Codegen<'a> {
                 }
                 if let ModuleBodyItem::LetBinding(l) = item {
                     let val = self.emit_pipeline_stage_expr_str(&l.value, &prefix, si, &stage_names, &stage_regs, &port_names);
-                    self.line(&format!("assign {} = {};", l.name.name, val));
+                    self.line(&format!("assign {}_{} = {};", prefix, l.name.name, val));
                 }
                 if let ModuleBodyItem::Inst(inst) = item {
                     self.emit_pipeline_inst(inst, &prefix, si, &stage_names, &stage_regs, &port_names);
@@ -2850,6 +2860,45 @@ impl<'a> Codegen<'a> {
                 let w = self.emit_expr_str(width);
                 let op = if *up { "+:" } else { "-:" };
                 format!("{b}[{s} {op} {w}]")
+            }
+            ExprKind::Concat(parts) => {
+                let parts_str: Vec<String> = parts.iter()
+                    .map(|p| self.emit_pipeline_stage_expr_str(p, current_prefix, current_stage_idx, stage_names, stage_regs, port_names))
+                    .collect();
+                format!("{{{}}}", parts_str.join(", "))
+            }
+            ExprKind::Cast(inner, ty) => {
+                let e = self.emit_pipeline_stage_expr_str(inner, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                match &**ty {
+                    TypeExpr::SInt(_) => format!("$signed({e})"),
+                    TypeExpr::UInt(w) => {
+                        let ws = self.emit_expr_str(w);
+                        format!("{ws}'($unsigned({e}))")
+                    }
+                    _ => {
+                        let t = self.emit_type_str(ty);
+                        format!("{t}'({e})")
+                    }
+                }
+            }
+            ExprKind::Signed(inner) => {
+                let e = self.emit_pipeline_stage_expr_str(inner, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                format!("$signed({e})")
+            }
+            ExprKind::Unsigned(inner) => {
+                let e = self.emit_pipeline_stage_expr_str(inner, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                format!("$unsigned({e})")
+            }
+            ExprKind::Ternary(cond, then_expr, else_expr) => {
+                let c = self.emit_pipeline_stage_expr_str(cond, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                let t = self.emit_pipeline_stage_expr_str(then_expr, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                let e = self.emit_pipeline_stage_expr_str(else_expr, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                format!("({c}) ? ({t}) : ({e})")
+            }
+            ExprKind::Bool(b) => if *b { "1'b1".to_string() } else { "1'b0".to_string() },
+            ExprKind::Clog2(arg) => {
+                let a = self.emit_pipeline_stage_expr_str(arg, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                format!("$clog2({a})")
             }
             _ => self.emit_expr_str(expr),
         }

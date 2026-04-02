@@ -1,0 +1,116 @@
+// 4-stage pipelined 32-bit adder using the pipeline construct.
+// Each stage adds one 8-bit byte with carry from the previous stage.
+// The pipeline auto-generates inter-stage registers and valid propagation.
+
+pipeline pipelined_adder_32bit
+  port clk:    in Clock<SysDomain>;
+  port reset:  in Reset<Sync, High>;
+  port A:      in UInt<32>;
+  port B:      in UInt<32>;
+  port start:  in Bool;
+  port S:      out UInt<32>;
+  port Co:     out Bool;
+  port done:   out Bool;
+
+  // Stage 1: Add byte 0, capture remaining bytes and start signal
+  stage Add0
+    reg s0: UInt<8>  reset reset => 0;
+    reg c0: Bool     reset reset => false;
+    reg a1: UInt<8>  reset reset => 0;
+    reg b1: UInt<8>  reset reset => 0;
+    reg a2: UInt<8>  reset reset => 0;
+    reg b2: UInt<8>  reset reset => 0;
+    reg a3: UInt<8>  reset reset => 0;
+    reg b3: UInt<8>  reset reset => 0;
+    reg go: Bool     reset reset => false;
+
+    let sum0: UInt<9> = A[7:0].zext<9>() + B[7:0].zext<9>();
+
+    seq on clk rising
+      s0 <= sum0.trunc<8>();
+      c0 <= sum0[8];
+      a1 <= A[15:8];
+      b1 <= B[15:8];
+      a2 <= A[23:16];
+      b2 <= B[23:16];
+      a3 <= A[31:24];
+      b3 <= B[31:24];
+      go <= start;
+    end seq
+  end stage Add0
+
+  // Stage 2: Add byte 1 with carry from stage 1
+  stage Add1
+    reg s1:   UInt<8>  reset reset => 0;
+    reg c1:   Bool     reset reset => false;
+    reg s0_d: UInt<8>  reset reset => 0;
+    reg a2_d: UInt<8>  reset reset => 0;
+    reg b2_d: UInt<8>  reset reset => 0;
+    reg a3_d: UInt<8>  reset reset => 0;
+    reg b3_d: UInt<8>  reset reset => 0;
+    reg go:   Bool     reset reset => false;
+
+    let sum1: UInt<9> = Add0.a1.zext<9>() + Add0.b1.zext<9>() + Add0.c0.zext<9>();
+
+    seq on clk rising
+      s1   <= sum1.trunc<8>();
+      c1   <= sum1[8];
+      s0_d <= Add0.s0;
+      a2_d <= Add0.a2;
+      b2_d <= Add0.b2;
+      a3_d <= Add0.a3;
+      b3_d <= Add0.b3;
+      go   <= Add0.go;
+    end seq
+  end stage Add1
+
+  // Stage 3: Add byte 2 with carry from stage 2
+  stage Add2
+    reg s2:     UInt<8>  reset reset => 0;
+    reg c2:     Bool     reset reset => false;
+    reg s0_dd:  UInt<8>  reset reset => 0;
+    reg s1_d:   UInt<8>  reset reset => 0;
+    reg a3_dd:  UInt<8>  reset reset => 0;
+    reg b3_dd:  UInt<8>  reset reset => 0;
+    reg go:     Bool     reset reset => false;
+
+    let sum2: UInt<9> = Add1.a2_d.zext<9>() + Add1.b2_d.zext<9>() + Add1.c1.zext<9>();
+
+    seq on clk rising
+      s2    <= sum2.trunc<8>();
+      c2    <= sum2[8];
+      s0_dd <= Add1.s0_d;
+      s1_d  <= Add1.s1;
+      a3_dd <= Add1.a3_d;
+      b3_dd <= Add1.b3_d;
+      go    <= Add1.go;
+    end seq
+  end stage Add2
+
+  // Stage 4: Add byte 3 with carry from stage 3, assemble output
+  stage Add3
+    reg s3:     UInt<8>  reset reset => 0;
+    reg c3:     Bool     reset reset => false;
+    reg s0_ddd: UInt<8>  reset reset => 0;
+    reg s1_dd:  UInt<8>  reset reset => 0;
+    reg s2_d:   UInt<8>  reset reset => 0;
+    reg go:     Bool     reset reset => false;
+
+    let sum3: UInt<9> = Add2.a3_dd.zext<9>() + Add2.b3_dd.zext<9>() + Add2.c2.zext<9>();
+
+    seq on clk rising
+      s3     <= sum3.trunc<8>();
+      c3     <= sum3[8];
+      s0_ddd <= Add2.s0_dd;
+      s1_dd  <= Add2.s1_d;
+      s2_d   <= Add2.s2;
+      go     <= Add2.go;
+    end seq
+
+    comb
+      S    = {Add3.s3, Add3.s2_d, Add3.s1_dd, Add3.s0_ddd};
+      Co   = Add3.c3;
+      done = Add3.go;
+    end comb
+  end stage Add3
+end pipeline pipelined_adder_32bit
