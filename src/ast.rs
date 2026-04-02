@@ -114,6 +114,8 @@ pub enum ParamKind {
     /// Width-qualified const: `param NAME[hi:lo]: const` (emits `parameter [hi:lo]`)
     WidthConst(Expr, Expr),
     Type(TypeExpr),
+    /// Enum-typed const: `param MODE: EnumName = EnumName::Variant`
+    EnumConst(String),
 }
 
 #[derive(Debug, Clone)]

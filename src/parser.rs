@@ -359,6 +359,10 @@ impl Parser {
             self.expect(TokenKind::Eq)?;
             let ty = self.parse_type_expr()?;
             ParamKind::Type(ty)
+        } else if matches!(self.peek_kind(), Some(TokenKind::Ident(_))) {
+            // Enum-typed const: param MODE: EnumName = EnumName::Variant
+            let enum_name = self.expect_ident()?;
+            ParamKind::EnumConst(enum_name.name)
         } else {
             ParamKind::Const
         };

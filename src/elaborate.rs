@@ -25,13 +25,38 @@ use crate::lexer::Span;
 // ── Public entry point ────────────────────────────────────────────────────────
 
 pub fn elaborate(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
-    // Step 1 — default params
+    // Build enum variant → value map for resolving enum-typed params
+    let enum_values: HashMap<String, Vec<(String, u64)>> = ast.items.iter()
+        .filter_map(|item| {
+            let e = match item {
+                Item::Enum(e) => Some(e),
+                Item::Package(p) => p.enums.first(),  // simplification: first enum in pkg
+                _ => None,
+            }?;
+            let entries: Vec<(String, u64)> = e.variants.iter().enumerate().map(|(i, v)| {
+                let val = e.values.get(i)
+                    .and_then(|opt| opt.as_ref())
+                    .and_then(|expr| match &expr.kind {
+                        ExprKind::Literal(LitKind::Dec(n)) => Some(*n),
+                        ExprKind::Literal(LitKind::Hex(n)) => Some(*n),
+                        ExprKind::Literal(LitKind::Bin(n)) => Some(*n),
+                        ExprKind::Literal(LitKind::Sized(_, n)) => Some(*n),
+                        _ => None,
+                    })
+                    .unwrap_or(i as u64);
+                (v.name.clone(), val)
+            }).collect();
+            Some((e.name.name.clone(), entries))
+        })
+        .collect();
+
+    // Step 1 — default params (resolve enum variant defaults to integers first)
     let module_defaults: HashMap<String, HashMap<String, i64>> = ast
         .items
         .iter()
         .filter_map(|item| {
             if let Item::Module(m) = item {
-                Some((m.name.name.clone(), compute_defaults(&m.params)))
+                Some((m.name.name.clone(), compute_defaults_with_enums(&m.params, &enum_values)))
             } else {
                 None
             }
@@ -252,12 +277,18 @@ fn elaborate_module_variant(
 
     // Update param defaults to match the monomorphized values so
     // the SV declaration is consistent with the expanded body.
+    // For enum-typed params, preserve the original EnumVariant expression
+    // so the SV output uses the enum constant name, not a raw integer.
     let new_params: Vec<ParamDecl> = m.params.into_iter().map(|mut p| {
         if let Some(&val) = param_vals.get(&p.name.name) {
-            p.default = Some(Expr::new(
-                ExprKind::Literal(LitKind::Dec(val as u64)),
-                p.name.span,
-            ));
+            if matches!(p.kind, ParamKind::EnumConst(_)) {
+                // Preserve the EnumVariant expression for clean SV output
+            } else {
+                p.default = Some(Expr::new(
+                    ExprKind::Literal(LitKind::Dec(val as u64)),
+                    p.name.span,
+                ));
+            }
         }
         p
     }).collect();
@@ -518,12 +549,47 @@ fn subst_expr(expr: Expr, var: &str, val: i64) -> Expr {
 fn compute_defaults(params: &[ParamDecl]) -> HashMap<String, i64> {
     let mut map = HashMap::new();
     for p in params {
-        if matches!(p.kind, ParamKind::Const | ParamKind::WidthConst(..)) {
+        if matches!(p.kind, ParamKind::Const | ParamKind::WidthConst(..) | ParamKind::EnumConst(_)) {
             if let Some(default) = &p.default {
                 if let Some(v) = try_eval_i64(default, &map) {
                     map.insert(p.name.name.clone(), v);
                 }
             }
+        }
+    }
+    map
+}
+
+fn compute_defaults_with_enums(
+    params: &[ParamDecl],
+    enum_values: &HashMap<String, Vec<(String, u64)>>,
+) -> HashMap<String, i64> {
+    let mut map = HashMap::new();
+    for p in params {
+        match &p.kind {
+            ParamKind::Const | ParamKind::WidthConst(..) => {
+                if let Some(default) = &p.default {
+                    if let Some(v) = try_eval_i64(default, &map) {
+                        map.insert(p.name.name.clone(), v);
+                    }
+                }
+            }
+            ParamKind::EnumConst(enum_name) => {
+                if let Some(default) = &p.default {
+                    // Resolve EnumVariant expr to its integer value
+                    let val = if let ExprKind::EnumVariant(_, variant) = &default.kind {
+                        enum_values.get(enum_name)
+                            .and_then(|entries| entries.iter().find(|(n, _)| *n == variant.name))
+                            .map(|(_, v)| *v as i64)
+                    } else {
+                        try_eval_i64(default, &map)
+                    };
+                    if let Some(v) = val {
+                        map.insert(p.name.name.clone(), v);
+                    }
+                }
+            }
+            _ => {}
         }
     }
     map

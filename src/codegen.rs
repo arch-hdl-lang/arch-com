@@ -149,6 +149,9 @@ impl<'a> Codegen<'a> {
                 let lo_s = self.emit_expr_str(lo);
                 self.line(&format!("parameter [{}:{}] {}{}{}", hi_s, lo_s, p.name.name, default_str, comma));
             }
+            ParamKind::EnumConst(enum_name) => {
+                self.line(&format!("parameter {} {}{}{}", enum_name, p.name.name, default_str, comma));
+            }
             _ => {
                 self.line(&format!("parameter int {}{}{}", p.name.name, default_str, comma));
             }
