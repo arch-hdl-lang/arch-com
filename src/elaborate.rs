@@ -621,6 +621,62 @@ pub fn try_eval_i64(expr: &Expr, param_vals: &HashMap<String, i64>) -> Option<i6
             if rv == 0 { None } else { Some(try_eval_i64(l, param_vals)? % rv) }
         }
         ExprKind::Unary(UnaryOp::Neg, e) => Some(-try_eval_i64(e, param_vals)?),
+        ExprKind::Unary(UnaryOp::Not, e) => {
+            Some(if try_eval_i64(e, param_vals)? != 0 { 0 } else { 1 })
+        }
+        // Comparison operators → 0 or 1
+        ExprKind::Binary(BinOp::Eq, l, r) => {
+            Some(if try_eval_i64(l, param_vals)? == try_eval_i64(r, param_vals)? { 1 } else { 0 })
+        }
+        ExprKind::Binary(BinOp::Neq, l, r) => {
+            Some(if try_eval_i64(l, param_vals)? != try_eval_i64(r, param_vals)? { 1 } else { 0 })
+        }
+        ExprKind::Binary(BinOp::Lt, l, r) => {
+            Some(if try_eval_i64(l, param_vals)? < try_eval_i64(r, param_vals)? { 1 } else { 0 })
+        }
+        ExprKind::Binary(BinOp::Gt, l, r) => {
+            Some(if try_eval_i64(l, param_vals)? > try_eval_i64(r, param_vals)? { 1 } else { 0 })
+        }
+        ExprKind::Binary(BinOp::Lte, l, r) => {
+            Some(if try_eval_i64(l, param_vals)? <= try_eval_i64(r, param_vals)? { 1 } else { 0 })
+        }
+        ExprKind::Binary(BinOp::Gte, l, r) => {
+            Some(if try_eval_i64(l, param_vals)? >= try_eval_i64(r, param_vals)? { 1 } else { 0 })
+        }
+        // Logical operators
+        ExprKind::Binary(BinOp::And, l, r) => {
+            Some(if try_eval_i64(l, param_vals)? != 0 && try_eval_i64(r, param_vals)? != 0 { 1 } else { 0 })
+        }
+        ExprKind::Binary(BinOp::Or, l, r) => {
+            Some(if try_eval_i64(l, param_vals)? != 0 || try_eval_i64(r, param_vals)? != 0 { 1 } else { 0 })
+        }
+        // Bitwise operators
+        ExprKind::Binary(BinOp::BitAnd, l, r) => {
+            Some(try_eval_i64(l, param_vals)? & try_eval_i64(r, param_vals)?)
+        }
+        ExprKind::Binary(BinOp::BitOr, l, r) => {
+            Some(try_eval_i64(l, param_vals)? | try_eval_i64(r, param_vals)?)
+        }
+        ExprKind::Binary(BinOp::BitXor, l, r) => {
+            Some(try_eval_i64(l, param_vals)? ^ try_eval_i64(r, param_vals)?)
+        }
+        ExprKind::Binary(BinOp::Shl, l, r) => {
+            Some(try_eval_i64(l, param_vals)? << try_eval_i64(r, param_vals)?)
+        }
+        ExprKind::Binary(BinOp::Shr, l, r) => {
+            Some(try_eval_i64(l, param_vals)? >> try_eval_i64(r, param_vals)?)
+        }
+        // Ternary: cond ? then : else
+        ExprKind::Ternary(cond, then_expr, else_expr) => {
+            let c = try_eval_i64(cond, param_vals)?;
+            if c != 0 {
+                try_eval_i64(then_expr, param_vals)
+            } else {
+                try_eval_i64(else_expr, param_vals)
+            }
+        }
+        // Bool literals
+        ExprKind::Bool(b) => Some(if *b { 1 } else { 0 }),
         ExprKind::Clog2(arg) => {
             let v = try_eval_i64(arg, param_vals)? as u64;
             if v <= 1 { Some(1) } else { Some(64 - (v - 1).leading_zeros() as i64) }
