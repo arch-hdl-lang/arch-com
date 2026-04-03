@@ -1,0 +1,41 @@
+// hw_task_queue: Hardware task queue using the linklist construct.
+// A FIFO-ordered ready queue for hardware task scheduling.
+//
+// Tasks are submitted with a 32-bit payload and dispatched in FIFO order.
+// insert_tail: enqueue a task — 2-cycle latency, resp_valid signals done
+// delete_head: dequeue oldest task — 2-cycle latency, resp_valid + resp_data
+
+linklist hw_task_queue
+  param DEPTH: const = 8;
+  param DATA: type = UInt<32>;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+
+  kind singly;
+
+  track tail:   true;
+  track length: true;
+
+  op insert_tail
+    latency: 2;
+    port req_valid:   in Bool;
+    port req_ready:   out Bool;
+    port req_data:    in UInt<32>;
+    port resp_valid:  out Bool;
+    port resp_handle: out UInt<3>;
+  end op insert_tail
+
+  op delete_head
+    latency: 2;
+    port req_valid:   in Bool;
+    port req_ready:   out Bool;
+    port resp_valid:  out Bool;
+    port resp_data:   out UInt<32>;
+  end op delete_head
+
+  port empty:  out Bool;
+  port full:   out Bool;
+  port length: out UInt<4>;
+
+end linklist hw_task_queue
