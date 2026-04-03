@@ -1,6 +1,5 @@
-// domain SysDomain
-//   freq_mhz: 100
-
+// Isolate lowest set bit of (req_mask with last_grant deprioritized)
+// ~pick + 1 = two's complement negate; use XOR-with-mask to avoid width warnings
 module QosArbiter #(
   parameter int NUM_REQ = 4
 ) (
@@ -14,10 +13,10 @@ module QosArbiter #(
 );
 
   function automatic logic [4-1:0] QosGrant(input logic [4-1:0] req_mask, input logic [4-1:0] last_grant, input logic [8-1:0] qos);
-    logic [4-1:0] masked = req_mask & ~last_grant;
+    logic [4-1:0] masked = req_mask & (last_grant ^ 'hF);
     logic [4-1:0] pick = masked != 0 ? masked : req_mask;
-    logic [4-1:0] neg_pick = 4'(~pick + 1);
-    return pick & neg_pick;
+    logic [5-1:0] pick_neg = 5'($unsigned(pick ^ 'hF)) + 1;
+    return pick & 4'(pick_neg);
   endfunction
   
   logic [4-1:0] last_grant_r;

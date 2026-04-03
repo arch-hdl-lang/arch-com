@@ -1,0 +1,29 @@
+// Round-robin grant function for 2-requester bus arbiter.
+// When both request, prefer the one not last granted.
+// Returns one-hot grant mask.
+function BusArbRRGrant(req_mask: UInt<2>, last_grant: UInt<2>) -> UInt<2>
+  let both: Bool = req_mask == 3;
+  // deprioritize last winner; if masked set is empty, fall back to all requesters
+  let masked: UInt<2> = req_mask & (last_grant ^ 3);
+  let pick: UInt<2>   = both ? masked : req_mask;
+  // isolate lowest set bit: pick & (-pick) via pick & ((pick^3)+1)
+  let pick_neg: UInt<3> = (pick ^ 3).zext<3>() + 1;
+  return pick & pick_neg.trunc<2>();
+end function BusArbRRGrant
+
+// 2-requester round-robin bus arbiter using the arbiter construct
+// with a custom policy function (BusArbRRGrant).
+arbiter bus_arbiter_rr
+  policy BusArbRRGrant;
+  param NUM_REQ: const = 2;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, High>;
+  ports[NUM_REQ] request
+    valid: in Bool;
+    ready: out Bool;
+  end ports request
+  port grant_valid: out Bool;
+  port grant_requester: out UInt<1>;
+  hook grant_select(req_mask: UInt<2>, last_grant: UInt<2>) -> UInt<2>
+    = BusArbRRGrant(req_mask, last_grant);
+end arbiter bus_arbiter_rr
