@@ -51,15 +51,49 @@ module AxiDmaTop
   wire mm2s_fsm_start_w: Bool; wire mm2s_fsm_addr_w: UInt<32>; wire mm2s_fsm_beats_w: UInt<8>;
   wire s2mm_fsm_start_w: Bool; wire s2mm_fsm_addr_w: UInt<32>; wire s2mm_fsm_beats_w: UInt<8>;
 
+  // Channel clock enables — active when channel is NOT halted
+  wire mm2s_clk_en_w: Bool;
+  wire s2mm_clk_en_w: Bool;
+
+  // Gated clocks produced by ICG cells
+  wire mm2s_gated_clk_w: Clock<SysDomain>;
+  wire s2mm_gated_clk_w: Clock<SysDomain>;
+
   // Counters + flags
-  reg mm2s_stream_ctr: UInt<8> reset rst=>0;
-  reg s2mm_recv_ctr: UInt<8> reset rst=>0;
-  reg mm2s_sg_active: Bool reset rst=>false;
-  reg s2mm_sg_active: Bool reset rst=>false;
+  reg mm2s_stream_ctr: UInt<8> reset rst => 0;
+  reg s2mm_recv_ctr:   UInt<8> reset rst => 0;
+  reg mm2s_sg_active: Bool reset rst => false;
+  reg s2mm_sg_active: Bool reset rst => false;
+  // Timing: latch mm2s_fsm_beats_w at start so tlast logic starts from a FF,
+  // not from the combinational SG-state → xfer_num_beats → beats-mux chain.
+  reg mm2s_beats_r: UInt<8> reset rst => 0;
+  // Timing: lookahead register — true when the CURRENT stream beat is the last.
+  // Precomputed one cycle early; critical path for tlast is 1 gate (AND with tvalid).
+  reg mm2s_tlast_r: Bool reset rst => false;
 
   default seq on clk rising;
 
+  // ── Clock gate enables ──────────────────────────────────────────────
+  // OR the start signals so the clock wakes up on the same cycle start fires,
+  // before the FSM has had a chance to leave Idle (which would clear halted).
+  // Without this, start fires into a gated clock and is permanently lost.
+  comb
+    mm2s_clk_en_w = ~mm2s_halted_w | mm2s_fsm_start_w | mm2s_sg_start_w;
+    s2mm_clk_en_w = ~s2mm_halted_w | s2mm_fsm_start_w | s2mm_sg_start_w;
+  end comb
+
   // ── Instances ───────────────────────────────────────────────────────
+
+  // ICG cells: gate each channel clock when that channel is halted
+  inst mm2s_icg: ClkGateDma
+    clk_in <- clk; enable <- mm2s_clk_en_w;
+    clk_out -> mm2s_gated_clk_w;
+  end inst mm2s_icg
+
+  inst s2mm_icg: ClkGateDma
+    clk_in <- clk; enable <- s2mm_clk_en_w;
+    clk_out -> s2mm_gated_clk_w;
+  end inst s2mm_icg
 
   inst regs: AxiLiteRegs
     clk <- clk; rst <- rst;
@@ -77,7 +111,7 @@ module AxiDmaTop
   end inst regs
 
   inst mm2s_sg: FsmSgEngine
-    clk <- clk; rst <- rst;
+    clk <- mm2s_gated_clk_w; rst <- rst;
     sg_start <- mm2s_sg_start_w; curdesc <- mm2s_curdesc_w; taildesc <- mm2s_taildesc_w;
     xfer_start -> mm2s_sg_xfer_start_w; xfer_addr -> mm2s_sg_xfer_addr_w; xfer_num_beats -> mm2s_sg_xfer_beats_w;
     xfer_done <- mm2s_done_w;
@@ -86,7 +120,7 @@ module AxiDmaTop
   end inst mm2s_sg
 
   inst s2mm_sg: FsmSgEngine
-    clk <- clk; rst <- rst;
+    clk <- s2mm_gated_clk_w; rst <- rst;
     sg_start <- s2mm_sg_start_w; curdesc <- s2mm_curdesc_w; taildesc <- s2mm_taildesc_w;
     xfer_start -> s2mm_sg_xfer_start_w; xfer_addr -> s2mm_sg_xfer_addr_w; xfer_num_beats -> s2mm_sg_xfer_beats_w;
     xfer_done <- s2mm_done_w;
@@ -95,7 +129,7 @@ module AxiDmaTop
   end inst s2mm_sg
 
   inst mm2s_fsm: FsmMm2s
-    clk <- clk; rst <- rst;
+    clk <- mm2s_gated_clk_w; rst <- rst;
     start <- mm2s_fsm_start_w; src_addr <- mm2s_fsm_addr_w; num_beats <- mm2s_fsm_beats_w;
     done -> mm2s_done_w; halted -> mm2s_halted_w; idle_out -> mm2s_idle_w;
     axi_rd -> m_axi_mm2s;
@@ -103,19 +137,19 @@ module AxiDmaTop
   end inst mm2s_fsm
 
   inst mm2s_fifo: Mm2sFifo
-    clk <- clk; rst <- rst;
+    clk <- mm2s_gated_clk_w; rst <- rst;
     push_valid <- mm2s_push_valid_w; push_ready -> mm2s_push_ready_w; push_data <- mm2s_push_data_w;
     pop_valid -> mm2s_pop_valid_w; pop_ready <- mm2s_pop_ready_w; pop_data -> mm2s_pop_data_w;
   end inst mm2s_fifo
 
   inst s2mm_fifo: S2mmFifo
-    clk <- clk; rst <- rst;
+    clk <- s2mm_gated_clk_w; rst <- rst;
     push_valid <- s2mm_push_valid_w; push_ready -> s2mm_push_ready_w; push_data <- s2mm_push_data_w;
     pop_valid -> s2mm_pop_valid_w; pop_ready <- s2mm_pop_ready_w; pop_data -> s2mm_pop_data_w;
   end inst s2mm_fifo
 
   inst s2mm_fsm: FsmS2mm
-    clk <- clk; rst <- rst;
+    clk <- s2mm_gated_clk_w; rst <- rst;
     start <- s2mm_fsm_start_w; dst_addr <- s2mm_fsm_addr_w; num_beats <- s2mm_fsm_beats_w;
     recv_count <- s2mm_recv_ctr;
     done -> s2mm_done_w; halted -> s2mm_halted_w; idle_out -> s2mm_idle_w;
@@ -149,7 +183,8 @@ module AxiDmaTop
   comb
     m_axis_mm2s.tdata = mm2s_pop_data_w; m_axis_mm2s.tvalid = mm2s_pop_valid_w;
     m_axis_mm2s.tkeep = 0xF; mm2s_pop_ready_w = m_axis_mm2s.tready;
-    m_axis_mm2s.tlast = mm2s_pop_valid_w & (mm2s_stream_ctr == (mm2s_fsm_beats_w - 1).trunc<8>());
+    // tlast uses precomputed lookahead register — 1 gate on critical path
+    m_axis_mm2s.tlast = mm2s_pop_valid_w & mm2s_tlast_r;
   end comb
   comb
     s2mm_push_data_w = s_axis_s2mm.tdata; s2mm_push_valid_w = s_axis_s2mm.tvalid;
@@ -175,8 +210,15 @@ module AxiDmaTop
     end if
     if mm2s_fsm_start_w
       mm2s_stream_ctr <= 0;
+      // Latch beats count — breaks SG-state combinational path from future cycles
+      mm2s_beats_r <= mm2s_fsm_beats_w;
+      // Lookahead: beat 0 is last iff total beats == 1
+      mm2s_tlast_r <= (mm2s_fsm_beats_w == 1);
     elsif mm2s_pop_valid_w & m_axis_mm2s.tready
       mm2s_stream_ctr <= (mm2s_stream_ctr + 1).trunc<8>();
+      // Lookahead: next beat (stream_ctr+1) is last when stream_ctr+1 == beats_r-1
+      //            i.e. stream_ctr + 2 == beats_r (no subtraction, both are FFs)
+      mm2s_tlast_r <= ((mm2s_stream_ctr + 2).trunc<8>() == mm2s_beats_r);
     end if
     if s2mm_fsm_start_w
       s2mm_recv_ctr <= 0;

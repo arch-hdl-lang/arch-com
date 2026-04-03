@@ -356,6 +356,9 @@ pub struct Connection {
     pub port_name: Ident,
     pub direction: ConnectDir,
     pub signal: Expr,
+    /// Optional reset-type override: `rst <- my_rst as Reset<Async, Low>`
+    /// Allows instantiation-time override of the reset port kind/polarity.
+    pub reset_override: Option<(ResetKind, ResetLevel)>,
     pub span: Span,
 }
 
@@ -399,6 +402,18 @@ pub enum Stmt {
     Match(MatchStmt),
     Log(LogStmt),
     For(ForLoop),
+    /// `init on RST.asserted ... end init`
+    /// Reset initialization block: body runs when reset is asserted.
+    /// Determines async sensitivity when the reset port is Reset<Async, ...>.
+    Init(InitBlock),
+}
+
+#[derive(Debug, Clone)]
+pub struct InitBlock {
+    /// The reset signal referenced (e.g. `rst` from `init on rst.asserted`)
+    pub reset_signal: Ident,
+    pub body: Vec<Stmt>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

@@ -11,6 +11,7 @@ fn stmt_span_start(stmt: &Stmt) -> usize {
         Stmt::Match(m) => m.span.start,
         Stmt::Log(l) => l.span.start,
         Stmt::For(f) => f.span.start,
+        Stmt::Init(ib) => ib.span.start,
     }
 }
 
@@ -40,6 +41,8 @@ pub struct Codegen<'a> {
     overload_map: std::collections::HashMap<usize, usize>,
     /// Bus port names in the current module → bus name (for FieldAccess rewriting).
     bus_ports: std::collections::HashMap<String, String>,
+    /// Reset port names in the current module → (kind, level), for `.asserted` emission.
+    reset_ports: std::collections::HashMap<String, (ResetKind, ResetLevel)>,
     /// Name of the construct currently being emitted (for symbol lookups).
     current_construct: String,
 }
@@ -61,6 +64,7 @@ impl<'a> Codegen<'a> {
             pending_functions: Vec::new(),
             overload_map,
             bus_ports: std::collections::HashMap::new(),
+            reset_ports: std::collections::HashMap::new(),
             current_construct: String::new(),
         }
     }
@@ -344,6 +348,12 @@ impl<'a> Codegen<'a> {
 
         // Ports — bus ports are flattened to individual signals
         self.bus_ports.clear();
+        self.reset_ports.clear();
+        for p in m.ports.iter() {
+            if let TypeExpr::Reset(kind, level) = &p.ty {
+                self.reset_ports.insert(p.name.name.clone(), (*kind, *level));
+            }
+        }
         // Collect all flattened port lines first so we can add commas correctly
         let mut port_lines: Vec<String> = Vec::new();
         for p in m.ports.iter() {
@@ -711,6 +721,7 @@ impl<'a> Codegen<'a> {
             Stmt::Match(m) => m.arms.iter().any(|a| a.body.iter().any(Self::stmt_has_log)),
             Stmt::Assign(_) => false,
             Stmt::For(f) => f.body.iter().any(Self::stmt_has_log),
+            Stmt::Init(ib) => ib.body.iter().any(Self::stmt_has_log),
         }
     }
 
@@ -909,6 +920,7 @@ impl<'a> Codegen<'a> {
             Stmt::For(f) => {
                 self.emit_for_loop_sv(f, |s, stmt| s.emit_reg_stmt_as_comb(stmt));
             }
+            Stmt::Init(_ib) => unreachable!("Stmt::Init should not appear in latch/comb context"),
         }
     }
 
@@ -1076,7 +1088,18 @@ impl<'a> Codegen<'a> {
             self.line("end else begin");
             self.indent += 1;
             for stmt in &guarded_stmts {
-                self.emit_reg_stmt(stmt);
+                if let Stmt::Init(ib) = stmt {
+                    let port = m.ports.iter().find(|p| p.name.name == ib.reset_signal.name);
+                    let is_low = port.map_or(false, |p| matches!(&p.ty, TypeExpr::Reset(_, ResetLevel::Low)));
+                    let cond = if is_low { format!("(!{})", ib.reset_signal.name) } else { ib.reset_signal.name.clone() };
+                    self.line(&format!("if ({cond}) begin"));
+                    self.indent += 1;
+                    for s in &ib.body { self.emit_reg_stmt(s); }
+                    self.indent -= 1;
+                    self.line("end");
+                } else {
+                    self.emit_reg_stmt(stmt);
+                }
             }
             self.emit_comments_before(rb.span.end);
             self.indent -= 1;
@@ -1092,23 +1115,113 @@ impl<'a> Codegen<'a> {
                 self.line(&format!("always_ff @({clk_edge} {}) begin", rb.clock.name));
                 self.indent += 1;
                 for stmt in &unguarded_stmts {
-                    self.emit_reg_stmt(stmt);
+                    if let Stmt::Init(ib) = stmt {
+                        let port = m.ports.iter().find(|p| p.name.name == ib.reset_signal.name);
+                        let is_low = port.map_or(false, |p| matches!(&p.ty, TypeExpr::Reset(_, ResetLevel::Low)));
+                        let cond = if is_low { format!("(!{})", ib.reset_signal.name) } else { ib.reset_signal.name.clone() };
+                        self.line(&format!("if ({cond}) begin"));
+                        self.indent += 1;
+                        for s in &ib.body { self.emit_reg_stmt(s); }
+                        self.indent -= 1;
+                        self.line("end");
+                    } else {
+                        self.emit_reg_stmt(stmt);
+                    }
                 }
                 self.emit_comments_before(rb.span.end);
                 self.indent -= 1;
                 self.line("end");
             }
         } else {
-            // No registers with reset — emit body directly
-            self.line(&format!("always_ff @({clk_edge} {}) begin", rb.clock.name));
+            // No registers with declared reset.
+            // Check for explicit `init on rst.asserted` blocks — these drive async sensitivity.
+            let init_block = rb.stmts.iter().find_map(|s| {
+                if let Stmt::Init(ib) = s { Some(ib) } else { None }
+            });
+            let async_asserted = if let Some(ib) = init_block {
+                // Determine async/sync and polarity from the referenced reset port
+                m.ports.iter().find(|p| p.name.name == ib.reset_signal.name)
+                    .and_then(|p| if let TypeExpr::Reset(ResetKind::Async, level) = &p.ty {
+                        Some((ib.reset_signal.name.clone(), *level == ResetLevel::Low))
+                    } else { None })
+            } else {
+                // Still check for `rst.asserted` expressions in the body — if any reference an
+                // async reset port, we must add the async edge to the sensitivity list.
+                Self::find_asserted_async_reset(&rb.stmts, &m.ports)
+            };
+            let sens = if let Some((ref rst_sig, is_low)) = async_asserted {
+                let rst_edge = if is_low { "negedge" } else { "posedge" };
+                format!("always_ff @({clk_edge} {} or {rst_edge} {rst_sig}) begin", rb.clock.name)
+            } else {
+                format!("always_ff @({clk_edge} {}) begin", rb.clock.name)
+            };
+            self.line(&sens);
             self.indent += 1;
             for stmt in &rb.stmts {
-                self.emit_reg_stmt(stmt);
+                if let Stmt::Init(ib) = stmt {
+                    // Emit as an explicit `if (rst_cond) begin ... end` block
+                    let port = m.ports.iter().find(|p| p.name.name == ib.reset_signal.name);
+                    let is_low = port.map_or(false, |p| matches!(&p.ty, TypeExpr::Reset(_, ResetLevel::Low)));
+                    let cond = if is_low {
+                        format!("(!{})", ib.reset_signal.name)
+                    } else {
+                        ib.reset_signal.name.clone()
+                    };
+                    self.line(&format!("if ({cond}) begin"));
+                    self.indent += 1;
+                    for s in &ib.body {
+                        self.emit_reg_stmt(s);
+                    }
+                    self.indent -= 1;
+                    self.line("end");
+                } else {
+                    self.emit_reg_stmt(stmt);
+                }
             }
             self.emit_comments_before(rb.span.end);
             self.indent -= 1;
             self.line("end");
         }
+    }
+
+    /// Scan statements for `name.asserted` where `name` is an async Reset port.
+    /// Returns `Some((signal_name, is_low))` for the first one found.
+    fn find_asserted_async_reset(stmts: &[Stmt], ports: &[PortDecl]) -> Option<(String, bool)> {
+        fn scan_expr(expr: &Expr, ports: &[PortDecl]) -> Option<(String, bool)> {
+            if let ExprKind::FieldAccess(base, field) = &expr.kind {
+                if field.name == "asserted" {
+                    if let ExprKind::Ident(name) = &base.kind {
+                        if let Some(port) = ports.iter().find(|p| p.name.name == *name) {
+                            if let TypeExpr::Reset(ResetKind::Async, level) = &port.ty {
+                                return Some((name.clone(), *level == ResetLevel::Low));
+                            }
+                        }
+                    }
+                }
+            }
+            // Recurse into sub-expressions
+            match &expr.kind {
+                ExprKind::Binary(_, l, r) => scan_expr(l, ports).or_else(|| scan_expr(r, ports)),
+                ExprKind::Unary(_, inner) | ExprKind::FieldAccess(inner, _) => scan_expr(inner, ports),
+                ExprKind::Ternary(c, t, e) => scan_expr(c, ports).or_else(|| scan_expr(t, ports)).or_else(|| scan_expr(e, ports)),
+                ExprKind::MethodCall(base, _, args) => scan_expr(base, ports).or_else(|| args.iter().find_map(|a| scan_expr(a, ports))),
+                ExprKind::Index(base, idx) => scan_expr(base, ports).or_else(|| scan_expr(idx, ports)),
+                ExprKind::Cast(inner, _) => scan_expr(inner, ports),
+                _ => None,
+            }
+        }
+        fn scan_stmt(stmt: &Stmt, ports: &[PortDecl]) -> Option<(String, bool)> {
+            match stmt {
+                Stmt::Assign(a) => scan_expr(&a.value, ports),
+                Stmt::IfElse(ie) => scan_expr(&ie.cond, ports)
+                    .or_else(|| ie.then_stmts.iter().find_map(|s| scan_stmt(s, ports)))
+                    .or_else(|| ie.else_stmts.iter().find_map(|s| scan_stmt(s, ports))),
+                Stmt::For(f) => f.body.iter().find_map(|s| scan_stmt(s, ports)),
+                Stmt::Match(m) => m.arms.iter().find_map(|arm| arm.body.iter().find_map(|s| scan_stmt(s, ports))),
+                _ => None,
+            }
+        }
+        stmts.iter().find_map(|s| scan_stmt(s, ports))
     }
 
     fn emit_latch_block(&mut self, lb: &LatchBlock) {
@@ -1186,6 +1299,9 @@ impl<'a> Codegen<'a> {
                 Stmt::Log(_) => {}
                 Stmt::For(f) => {
                     Self::collect_assigned_roots(&f.body, out);
+                }
+                Stmt::Init(ib) => {
+                    Self::collect_assigned_roots(&ib.body, out);
                 }
             }
         }
@@ -1460,6 +1576,10 @@ impl<'a> Codegen<'a> {
             Stmt::Log(l) => { self.emit_log_stmt(l); }
             Stmt::For(f) => {
                 self.emit_for_loop_sv(f, |s, stmt| s.emit_reg_stmt(stmt));
+            }
+            Stmt::Init(_ib) => {
+                // init blocks are extracted and emitted by emit_reg_block before this point
+                unreachable!("Stmt::Init should be handled by emit_reg_block, not emit_reg_stmt")
             }
         }
     }
@@ -2498,6 +2618,7 @@ impl<'a> Codegen<'a> {
                     }
                 }
             }
+            Stmt::Init(_) => unreachable!("Stmt::Init should not appear in pipeline reg stmt context"),
         }
     }
 
@@ -3446,6 +3567,18 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::FieldAccess(base, field) => {
+                // rst.asserted — polarity-abstracted reset active check
+                if field.name == "asserted" {
+                    if let ExprKind::Ident(base_name) = &base.kind {
+                        if let Some((_, level)) = self.reset_ports.get(base_name) {
+                            return if *level == ResetLevel::Low {
+                                format!("(!{base_name})")
+                            } else {
+                                base_name.clone()
+                            };
+                        }
+                    }
+                }
                 // Bus port: axi.aw_valid → axi_aw_valid (underscore, not dot)
                 if let ExprKind::Ident(base_name) = &base.kind {
                     if self.bus_ports.contains_key(base_name) {

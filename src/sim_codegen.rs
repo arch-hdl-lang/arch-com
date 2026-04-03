@@ -662,6 +662,7 @@ fn expand_bus_connections(
                         port_name: Ident::new(inst_flat, c.port_name.span),
                         direction: dir,
                         signal: Expr::new(ExprKind::Ident(parent_flat), c.signal.span),
+                        reset_override: None,
                         span: c.span,
                     });
                 }
@@ -799,6 +800,8 @@ struct Ctx<'a> {
     enum_map:    &'a HashMap<String, Vec<(String, u64)>>,
     /// Bus port names (for FieldAccess rewriting: itcm.cmd_valid → itcm_cmd_valid).
     bus_ports:   &'a HashSet<String>,
+    /// Reset port name → level, for `.asserted` polarity abstraction.
+    reset_levels: &'a HashMap<String, ResetLevel>,
     /// Reg/wire names whose type is Vec<T,N> — these use C array subscript `[i]`.
     /// All other subscripts on scalar UInt/SInt use bit extraction `(x >> i) & 1`.
     vec_names:   Option<&'a HashSet<String>>,
@@ -819,9 +822,16 @@ impl<'a> Ctx<'a> {
         enum_map:   &'a HashMap<String, Vec<(String, u64)>>,
         bus_ports:  &'a HashSet<String>,
     ) -> Self {
+        static EMPTY_RESET_LEVELS: std::sync::OnceLock<HashMap<String, ResetLevel>> = std::sync::OnceLock::new();
+        let reset_levels = EMPTY_RESET_LEVELS.get_or_init(HashMap::new);
         Ctx { reg_names, port_names, let_names, inst_names, wide_names,
               widths, posedge_lhs: false, fsm_mode: false, enum_map, bus_ports,
-              vec_names: None, fsm_vec_port_regs: None }
+              reset_levels, vec_names: None, fsm_vec_port_regs: None }
+    }
+
+    fn with_reset_levels(mut self, reset_levels: &'a HashMap<String, ResetLevel>) -> Self {
+        self.reset_levels = reset_levels;
+        self
     }
 
     fn with_vec_names(mut self, vec_names: &'a HashSet<String>) -> Self {
@@ -1070,6 +1080,17 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
 
         ExprKind::FieldAccess(base, field) => {
             if let ExprKind::Ident(base_name) = &base.kind {
+                // rst.asserted — polarity-abstracted reset active check
+                if field.name == "asserted" {
+                    if let Some(level) = ctx.reset_levels.get(base_name.as_str()) {
+                        let resolved = ctx.resolve_name(base_name, false);
+                        return if *level == ResetLevel::Low {
+                            format!("(!{resolved})")
+                        } else {
+                            resolved
+                        };
+                    }
+                }
                 // Bus port: itcm.cmd_valid → itcm_cmd_valid
                 if ctx.bus_ports.contains(base_name.as_str()) {
                     return format!("{}_{}", base_name, field.name);
@@ -1457,6 +1478,19 @@ fn emit_reg_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize) {
                     }
                 }
             }
+        }
+        Stmt::Init(ib) => {
+            let rst_name = &ib.reset_signal.name;
+            let is_low = ctx.reset_levels.get(rst_name.as_str())
+                .map_or(false, |level| *level == ResetLevel::Low);
+            let cond = if is_low {
+                format!("(!{})", rst_name)
+            } else {
+                rst_name.clone()
+            };
+            out.push_str(&format!("{}if ({}) {{\n", ind(indent), cond));
+            emit_reg_stmts(&ib.body, ctx, out, indent + 1);
+            out.push_str(&format!("{}}}\n", ind(indent)));
         }
     }
 }
@@ -2067,6 +2101,9 @@ fn collect_stmt_assigns(stmts: &[Stmt], out: &mut std::collections::BTreeSet<Str
             Stmt::For(f) => {
                 collect_stmt_assigns(&f.body, out);
             }
+            Stmt::Init(ib) => {
+                collect_stmt_assigns(&ib.body, out);
+            }
         }
     }
 }
@@ -2095,6 +2132,13 @@ impl<'a> SimCodegen<'a> {
         for (flat_name, _) in &bus_flat {
             port_names.insert(flat_name.clone());
         }
+
+        // Collect reset port levels for `.asserted` polarity abstraction
+        let reset_levels: HashMap<String, ResetLevel> = m.ports.iter()
+            .filter_map(|p| if let TypeExpr::Reset(_, level) = &p.ty {
+                Some((p.name.name.clone(), *level))
+            } else { None })
+            .collect();
 
         let mut reg_names = collect_reg_names(&m.body, &m.ports);
         reg_names.extend(collect_pipe_reg_names(&m.body));
@@ -2578,6 +2622,7 @@ impl<'a> SimCodegen<'a> {
         // Returns (input_code, comb_call, output_read_code) per inst
         let ctx = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                            &wide_names, &widths, &enum_map, &bus_port_names)
+                      .with_reset_levels(&reset_levels)
                       .with_vec_names(&vec_reg_names);
 
         if insts.is_empty() {
@@ -4468,7 +4513,7 @@ impl<'a> SimCodegen<'a> {
         };
 
         let rst_port = s.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Reset(..)));
-        let rst_is_low = rst_port.map_or(false, |rp| matches!(&rp.ty, TypeExpr::Reset(_, level) if *level == crate::ast::ResetLevel::Low));
+        let rst_is_low = rst_port.map_or(false, |rp| matches!(&rp.ty, TypeExpr::Reset(_, level) if *level == ResetLevel::Low));
         let rst_guard = rst_port.map(|rp| {
             if rst_is_low { format!("!{}", rp.name.name) } else { rp.name.name.clone() }
         });
@@ -5354,7 +5399,8 @@ impl<'a> SimCodegen<'a> {
         w: &HashMap<String, u32>, em: &HashMap<String, Vec<(String, u64)>>,
     ) -> String {
         let empty = HashSet::new();
-        let ctx = Ctx { reg_names: rn, port_names: pn, let_names: ln, inst_names: &empty, wide_names: &empty, widths: w, posedge_lhs: false, fsm_mode: false, enum_map: em, bus_ports: &empty, vec_names: None, fsm_vec_port_regs: None };
+        let empty_rl: HashMap<String, ResetLevel> = HashMap::new();
+        let ctx = Ctx { reg_names: rn, port_names: pn, let_names: ln, inst_names: &empty, wide_names: &empty, widths: w, posedge_lhs: false, fsm_mode: false, enum_map: em, bus_ports: &empty, reset_levels: &empty_rl, vec_names: None, fsm_vec_port_regs: None };
         match &expr.kind {
             ExprKind::FieldAccess(base, field) => {
                 if let ExprKind::Ident(bn) = &base.kind {

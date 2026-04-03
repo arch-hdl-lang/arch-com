@@ -813,6 +813,9 @@ impl Parser {
         if self.check(TokenKind::For) {
             return self.parse_for_loop(true);
         }
+        if self.check(TokenKind::Init) {
+            return self.parse_init_block();
+        }
         // Assignment: target <= value;
         let target = self.parse_expr()?;
         self.expect(TokenKind::LtEq)?;
@@ -1035,6 +1038,33 @@ impl Parser {
         }))
     }
 
+    /// Parse `init on RST.asserted \n body \n end init`
+    fn parse_init_block(&mut self) -> Result<Stmt, CompileError> {
+        let start = self.expect(TokenKind::Init)?.span;
+        self.expect(TokenKind::On)?;
+        // Expect: IDENT.asserted
+        let reset_signal = self.expect_ident()?;
+        self.expect(TokenKind::Dot)?;
+        let field = self.expect_ident()?;
+        if field.name != "asserted" {
+            return Err(CompileError::general(
+                "expected `.asserted` after reset signal in `init on`",
+                field.span,
+            ));
+        }
+        let mut body = Vec::new();
+        while !(self.check(TokenKind::End) && self.peek_kind_at(self.pos + 1) == Some(TokenKind::Init)) {
+            body.push(self.parse_reg_stmt()?);
+        }
+        self.expect(TokenKind::End)?;
+        let end_span = self.expect(TokenKind::Init)?.span;
+        Ok(Stmt::Init(InitBlock {
+            reset_signal,
+            body,
+            span: start.merge(end_span),
+        }))
+    }
+
     fn parse_comb_stmt(&mut self) -> Result<CombStmt, CompileError> {
         let unique = self.eat(TokenKind::Unique);
         if self.check(TokenKind::If) {
@@ -1232,12 +1262,51 @@ impl Parser {
                     ));
                 };
                 let signal = self.parse_expr()?;
+                // Optional: `as Reset<Async[, Low]>` — override reset type at instantiation
+                let reset_override = if self.check(TokenKind::As) {
+                    if matches!(self.peek_kind_at(self.pos + 1), Some(TokenKind::Reset)) {
+                        self.advance(); // consume `as`
+                        self.advance(); // consume `Reset`
+                        self.expect(TokenKind::Lt)?;
+                        let kind = if self.eat(TokenKind::Sync) {
+                            ResetKind::Sync
+                        } else if self.eat(TokenKind::Async) {
+                            ResetKind::Async
+                        } else {
+                            return Err(CompileError::unexpected_token(
+                                "Sync or Async",
+                                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                                self.peek_span(),
+                            ));
+                        };
+                        let level = if self.eat(TokenKind::Comma) {
+                            match self.peek_kind() {
+                                Some(TokenKind::Ident(s)) if s == "High" => { self.advance(); ResetLevel::High }
+                                Some(TokenKind::Ident(s)) if s == "Low"  => { self.advance(); ResetLevel::Low  }
+                                _ => return Err(CompileError::unexpected_token(
+                                    "High or Low",
+                                    &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                                    self.peek_span(),
+                                )),
+                            }
+                        } else {
+                            ResetLevel::High
+                        };
+                        self.expect(TokenKind::Gt)?;
+                        Some((kind, level))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
                 self.expect(TokenKind::Semi)?;
                 let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(cstart);
                 connections.push(Connection {
                     port_name,
                     direction,
                     signal,
+                    reset_override,
                     span: cstart.merge(end_span),
                 });
             } else {
@@ -1448,6 +1517,7 @@ impl Parser {
             Some(TokenKind::Reset) => {
                 self.advance();
                 self.expect(TokenKind::Lt)?;
+                // kind: Sync | Async
                 let kind = if self.eat(TokenKind::Sync) {
                     ResetKind::Sync
                 } else if self.eat(TokenKind::Async) {
@@ -1462,11 +1532,11 @@ impl Parser {
                 // Optional polarity: Reset<Sync, High> or Reset<Sync> (defaults High)
                 let level = if self.eat(TokenKind::Comma) {
                     match self.peek_kind() {
-                        Some(TokenKind::Ident(ref s)) if s == "High" => {
+                        Some(TokenKind::Ident(s)) if s == "High" => {
                             self.advance();
                             ResetLevel::High
                         }
-                        Some(TokenKind::Ident(ref s)) if s == "Low" => {
+                        Some(TokenKind::Ident(s)) if s == "Low" => {
                             self.advance();
                             ResetLevel::Low
                         }
@@ -2501,10 +2571,11 @@ impl Parser {
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Kind) => {
                     self.advance();
-                    // 'and' is a keyword token, so handle it specially
+                    // 'and' and 'latch' are both keyword tokens, handle both specially
                     let span = self.peek_span();
                     let kind_val = match self.peek_kind() {
                         Some(TokenKind::And) => { self.advance(); "and" }
+                        Some(TokenKind::Latch) => { self.advance(); "latch" }
                         Some(TokenKind::Ident(_)) => {
                             let val = self.expect_ident()?;
                             match val.name.as_str() {
