@@ -226,8 +226,10 @@ def extract_and_run(name_substr, sv_file=None):
         if not func_match:
             func_match = _re.search(r'def (test_\w+)\(\)', content)
         func_name = func_match.group(1) if func_match else 'test_runner'
-        # If pytest.mark.parametrize is used, always use pytest
-        if '@pytest.mark.parametrize' in content:
+        # Use pytest when: parametrize decorator, multiple test_ functions,
+        # or runner function requires positional args
+        num_test_fns = len(_re.findall(r'\ndef (test_\w+)\(', content))
+        if '@pytest.mark.parametrize' in content or num_test_fns > 1:
             content = content.rstrip() + f'\n\nif __name__ == "__main__":\n    import pytest; pytest.main([__file__, "-x", "-v"])\n'
         else:
             # Check if runner needs positional args
