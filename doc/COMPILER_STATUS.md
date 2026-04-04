@@ -146,6 +146,7 @@
 | Clock domain crossing errors | ✅ | seq→seq and comb→seq crossings detected; extends across `inst` boundaries (compiler traces clock port connections to map child domains to parent domains) |
 | Exhaustive match arm checking | ✅ Enum matches must cover all variants or include a wildcard `_`; missing variants named in error |
 | Hierarchical instance references forbidden | ✅ `inst_name.port_name` in expressions is a compile error; must use `port -> wire_name` in the inst block instead |
+| Unconnected inst ports | ✅ Missing input port in an `inst` block → compile error; missing output port → warning. Clock/Reset ports are exempt (may be wired implicitly via domain). |
 | Const param evaluation (complex exprs) | ⚠️ Literals + simple arithmetic only |
 
 ---

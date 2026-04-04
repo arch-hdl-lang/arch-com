@@ -793,6 +793,8 @@ The compiler validates that the default value fits within the declared range. Co
 >
 > ◈ **Hierarchical instance references are forbidden.** Expressions like `inst_name.port_name` (e.g. `add.sum`) are a compile error. To read an instance output, use `port -> wire_name` inside the `inst` block and reference `wire_name` in the enclosing scope. Error message: *"hierarchical reference \`u.y\` is not allowed; use \`y -> wire_name\` in the inst block instead."*
 >
+> ◈ **Port connection completeness.** Every input port of an instantiated construct must appear in the connection list --- a missing input port is a compile error. Unconnected output ports produce a warning (discarding an output is sometimes intentional). Clock and Reset ports are exempt from this check.
+>
 > ◈ **SV codegen notes.** The SystemVerilog backend applies the following transformations for correctness across simulators and lint tools: (1) signed casts emit `$signed(x)` (not `logic signed [N-1:0]'(x)`) for Verilator compatibility; (2) right-shift `>>` on an `SInt` operand emits arithmetic shift `>>>` (correct SRA behavior); (3) `.zext<N>()` emits `N'($unsigned(x))` to prevent context-dependent width expansion.
 
 > ◈ **Sim codegen notes.** The C++ simulation backend applies the following fixes for correctness: (1) `.sext<N>()` properly replicates the MSB of the source value into all upper bits of the result — previously it was treated identically to `.zext<N>()` (plain C++ cast, no sign extension); the correct formula is `((val & ((1<<src)-1)) ^ (1<<(src-1))) - (1<<(src-1))` where `src` is the source width; (2) bit-slice `expr[Hi:Lo]` correctly computes the inferred width as `Hi-Lo+1` for subsequent operations.

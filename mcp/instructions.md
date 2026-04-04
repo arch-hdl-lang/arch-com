@@ -20,7 +20,7 @@ Common mistakes to avoid:
 - 'let' has two forms: 'let x: T = expr;' declares a new wire (type required); 'let x = expr;' (no type) assigns to an already-declared output port or wire
 - Do NOT use reserved keywords as signal/register names (counter, interface, domain, etc.)
 - 'in', 'out', 'state' are contextual keywords — safe to use as port/signal names
-- All output ports of an inst MUST be explicitly connected via 'port -> wire'
+- All input ports of an inst MUST be connected (compile error if missing); all output ports SHOULD be connected (warning if missing); Clock/Reset ports are exempt
 - Use 'elsif' for chained conditionals (NOT 'else if'). 'else' starts a body block; 'elsif' chains.
 - Bit-slice syntax: expr[hi:lo] extracts bits (NOT .trunc<Hi,Lo>())
 - Bit/byte reverse: expr.reverse(1) for bit-reverse, expr.reverse(8) for byte-reverse (width must be divisible by N)
