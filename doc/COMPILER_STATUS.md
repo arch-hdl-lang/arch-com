@@ -1,6 +1,6 @@
 # ARCH Compiler — Status & Roadmap
 
-> Last updated: 2026-03-25
+> Last updated: 2026-04-03
 > Compiler version: 0.40.0 (built-in SysDomain, default seq, one-line seq, bus construct, VerilogEval simplifications)
 
 ---
@@ -112,13 +112,13 @@
 
 | Feature | Status |
 |---------|--------|
-| `comb` assignment | ✅ One-line form: `comb y = expr;` (no `end comb` needed for single assignments) |
+| `comb` block | ✅ `comb ... end comb` block for conditional assignments; one-liner `comb y = expr;` removed — use `let y = expr;` instead |
 | `reg` assignment `<=` | ✅ |
 | `if / elsif / else` | ✅ `elsif` keyword for chained conditionals (not `else if`); resolves ambiguity in brace-free syntax |
 | `unique if` / `unique match` | ✅ `unique if cond ...` and `unique match expr ...` assert mutual exclusivity to the synthesis tool; emits SV `unique if (...)` and `unique case (...)`; enables parallel mux optimization |
 | `match` (reg and comb blocks) | ✅ |
 | Wildcard `_` → `default:` | ✅ |
-| `let` bindings | ✅ `logic` local in module scope; **explicit type annotation required** (e.g. `let x: UInt<32> = ...`) — omitting the type is a compile error since bit widths are semantically meaningful |
+| `let` bindings | ✅ Two forms: `let x: T = expr;` declares a new combinational wire (type required); `let x = expr;` (no type) assigns to an already-declared output port or wire — replaces the former `comb x = expr;` one-liner |
 | `wire` declarations | ✅ `wire x: T;` — combinational net with explicit type, no initializer; must be driven in a `comb` block with `=`; SV codegen emits `logic [N-1:0] x;` driven in `assign`/`always_comb`; sim codegen emits private member assigned in `eval_comb()`; type checker enforces only `wire` and output ports are valid `comb` targets (`reg` in `comb` is a compile error) |
 | `port reg` declarations | ✅ `port reg name: out T [init V] [reset R=V];` — output port that is also a register; assigned with `<=` in `seq` blocks; eliminates `reg r` + `comb out = r;` boilerplate; inherits from `reg default:` if present; `in` direction is a compile error; SV codegen emits `output logic` driven in `always_ff`; sim codegen uses private shadow register with commit-to-port |
 | `log(Level, "TAG", "fmt", args...)` | ✅ In `seq` and `comb` blocks; runtime verbosity via `+arch_verbosity=N`; **file logging**: `log file("path") (Level, "TAG", "fmt", args...)` writes to file via `$fwrite`/`fprintf`; auto `$fopen` in `initial`/constructor, `$fclose` in `final`/destructor |
@@ -134,7 +134,7 @@
 
 | Check | Status |
 |-------|--------|
-| PascalCase (types), snake_case (signals), UPPER_SNAKE (params) | ⚪ Removed — style convention, not compiler-enforced |
+| PascalCase (types), snake_case (signals), UPPER_SNAKE (params) | ⚪ Recommended, not compiler-enforced |
 | `in`, `out`, `state` as contextual keywords | ✅ | Can be used as port/signal names; only act as keywords in their specific grammar positions |
 | Duplicate definitions | ✅ |
 | Undefined name references | ✅ |
@@ -154,7 +154,7 @@
 ### Tests
 
 - **VerilogEval benchmark**: 154/154 problems passing (combinational, sequential, latches, counters, shift registers, LFSRs, edge detectors, BCD counters, rotators, muxes, vector ops, cellular automata, branch predictors, dual-edge FF, FSMs — Moore, Mealy, one-hot, serial protocol, PS/2, lemmings, timers, arbiters, reservoir controllers); 18 of 21 FSM problems now use the first-class `fsm` construct (3 remain as `module`: Prob137/Prob146 serial receivers, Prob155 lemmings4 — complex datapath interactions); 2 dataset bugs skipped (Prob099: test/ref port mismatch, Prob118: ref Verilator incompatibility); **98.7% coverage** of the 156-problem NVIDIA/HDLBits spec-to-RTL dataset; covers Prob001–Prob156 from the NVIDIA/HDLBits spec-to-RTL dataset; each solution is an `.arch` file compiled to SV and verified against golden reference via Verilator
-- 49 integration tests (snapshot + error-case), including `let` binding, `generate for`, `generate if`, mixed reset/no-reset partitioning, reset consistency validation, pipeline (simple, CPU 4-stage, instantiation, stage inst, bit-range trunc), `$clog2` in type args, function overloading, width mismatch errors, exhaustive match checking, linklist (basic singly + doubly), ROM (`kind: rom` with inline hex array)
+- 52 integration tests (snapshot + error-case), including `let` binding, `generate for`, `generate if`, mixed reset/no-reset partitioning, reset consistency validation, pipeline (simple, CPU 4-stage, instantiation, stage inst, bit-range trunc), `$clog2` in type args, function overloading, width mismatch errors, exhaustive match checking, linklist (basic singly + doubly), ROM (`kind: rom` with inline hex array)
 - 9 Verilator simulations: Counter, TrafficLight FSM, TxQueue sync FIFO, AsyncBridge async FIFO, SimpleMem RAM, WrapCounter, BusArbiter (round-robin), IntRegs (regfile + forwarding), CpuPipe 4-stage pipeline (reset, flow, stall, flush, forwarding), BufMgr (16K×128b, 256 queues, 19 tests — multi-file split SV verified)
 - 13 `arch sim` native C++ simulations verified: WrapCounter (`counter`), TrafficLight (`fsm`), Top+Counter (`module` with sub-instance), AesCipherTop (AES-128 full cipher with sub-instance + wide signals + functions), AesKeyExpand128 (key expansion with sub-instance timing), e203_exu_alu_dpath (26 tests), e203_exu_alu_bjp (25 tests — first clock-free module in test suite), linklist_basic (singly FIFO; arch sim output identical to Verilator), linklist_doubly (doubly list with next/prev/insert_after; arch sim output identical to Verilator), buf_mgr_sm (16×32b shared buffer manager; 4 queues; 17 tests), buf_mgr (16K×128b shared buffer manager; 256 queues; 2-bank free-list with prefetch; 19 tests), RomLut (ROM inline hex array; 5 tests), RomLutFile (ROM `init: file(...)` hex; 9 tests — verifies `$readmemh` / `fopen` file-load path)
 - **BufMgr benchmark** (shared-memory buffer manager): 16K entries × 128-bit data pool, 256 dynamically-sharing queues, simultaneous enqueue + dequeue every cycle; all RAMs `sync_out` (2-cycle read latency); 2-bank free-list interleaving with 4-entry prefetch FIFO to sustain 1 alloc/cycle; 3-stage enqueue/dequeue pipelines with tail/head bypass forwarding; small variant (`buf_mgr_sm`, 16×32b, 4 queues, 17 tests) and full variant (`buf_mgr`, 16K×128b, 256 queues, 19 tests); exercises `ram` sim codegen with `module` hierarchical instantiation
