@@ -2,9 +2,9 @@
 """ARCH HDL MCP Server — gives any AI assistant the ability to read the
 ARCH language reference and invoke the compiler (check / build / sim).
 
-WORKFLOW: Before writing any .arch code, call get_construct_syntax() or read
-the arch://reference-card resource. This avoids common syntax mistakes
-(inst port connection syntax, reserved keywords, let requiring initializer, etc.)."""
+MCP instructions are in instructions.md.
+Construct syntax snippets are in construct_syntax.md.
+"""
 
 import os
 import subprocess
@@ -26,52 +26,61 @@ if _env_file.exists():
 ARCH_BIN = os.environ.get("ARCH_BIN", str(PROJECT_ROOT / "target" / "release" / "arch"))
 VERILATOR_BIN = shutil.which("verilator") or "verilator"
 
-mcp = FastMCP(
-    "arch-hdl",
-    instructions="""You are working with the ARCH hardware description language.
+# ── Load instructions and construct syntax from markdown files ────────────
 
-IMPORTANT WORKFLOW — follow this order when writing .arch code:
-1. FIRST call get_construct_syntax() for each construct you will use (module, inst, fsm, etc.)
-2. THEN write the .arch code using write_and_check() (writes + type-checks in one call)
-3. THEN call arch_build_and_lint() to generate SV and verify with Verilator
+_INSTRUCTIONS = (SCRIPT_DIR / "instructions.md").read_text()
 
-CONSTRUCT SELECTION — use first-class constructs when possible:
-- FSM behavior → use 'fsm' (NOT a module with manual state register)
-- FIFO → use 'fifo' (NOT a module with manual pointers)
-- RAM/ROM → use 'ram' with appropriate kind (NOT a module with reg array)
-- Arbiter → use 'arbiter' with policy (NOT manual grant logic in a module); built-in policies: round_robin, priority, lru, weighted<W>; if the requirement doesn't match any built-in policy (e.g. QoS-aware, starvation-prevention, custom fairness), use 'policy <FnName>' with a 'hook grant_select(...) -> UInt<N> = FnName(...);' and define the logic in a 'function' in the same file — the function receives req_mask + last_grant and returns a one-hot grant mask
-- Pipeline → use 'pipeline' with stages (NOT manual valid/stall registers)
-- Bus → use 'bus' for reusable port bundles (NOT manual individual port declarations for standard interfaces like AXI, APB, custom)
-- Only use 'module' for pure combinational/registered logic that doesn't fit the above
 
-Common mistakes to avoid:
-- inst connections use 'port <- signal' for inputs and 'port -> wire' for outputs (NOT '=' or direct assignment, no 'connect' keyword)
-- Hierarchical references (inst_name.port_name) are FORBIDDEN — always connect outputs explicitly
-- 'let' declarations REQUIRE an initializer (let x: UInt<8> = expr;)
-- Do NOT use reserved keywords as signal/register names (counter, interface, domain, etc.)
-- 'in', 'out', 'state' are contextual keywords — safe to use as port/signal names
-- All output ports of an inst MUST be explicitly connected via 'port -> wire'
-- Use 'elsif' for chained conditionals (NOT 'else if'). 'else' starts a body block; 'elsif' chains.
-- Bit-slice syntax: expr[hi:lo] extracts bits (NOT .trunc<Hi,Lo>())
-- Bit/byte reverse: expr.reverse(1) for bit-reverse, expr.reverse(8) for byte-reverse (width must be divisible by N)
-- Prefer concat {a, b} over bit-by-bit for loops; prefer direct boolean (z = (A == B);) over if/else
-- Prefer putting next-value logic directly in seq (if/elsif) instead of splitting into separate comb + seq blocks. Use 'let' for pure combinational expressions that feed into seq. Only use 'wire' + 'comb' when the combinational value drives multiple consumers or output ports.
-- In fsm states, do NOT write '-> X when true;' — omit the transition to stay in the current state (implicit hold), or restructure so the last branch uses a real condition
-- Do NOT declare 'domain ... end domain' in pure combinational modules — domains are only needed when Clock/Reset ports are used
-- SysDomain is built-in — do NOT declare 'domain SysDomain end domain SysDomain'; just use Clock<SysDomain> directly
-- Bus signal access uses dot notation (itcm.cmd_valid), NOT underscore (itcm_cmd_valid)
-- Bus ports use 'initiator BusName' or 'target BusName' to set the perspective — 'initiator' keeps signal directions as declared in the bus; 'target' flips them (in↔out)
-- Use 'default seq on clk rising;' to set the default clock for seq blocks in the scope
-- One-line seq requires 'default seq' — without it, 'seq' must have 'on clk rising/falling'
-- Use 'package PkgName ... end package PkgName' to group shared enums/structs/functions/domains; import with 'use PkgName;' at file scope
-- Domains declared in a package are shared across files via 'use PkgName;'
-- 'inside' operator: expr inside {val1, val2, lo..hi} — returns Bool, set membership
-- 'for i in {a, b, c}' — compile-time unrolled value-list iteration (inside comb/seq blocks)
-- 'unique if' and 'unique match' assert mutual exclusivity to synthesis (parallel mux): use 'unique if sel == 0 ... end if' or 'unique match opcode ... end match'; emits SV 'unique if' / 'unique case'
-- .trunc<N>() errors if N >= source width (not truncating); .zext<N>()/.sext<N>() error if N <= source width (not extending)
-- signed(x) / unsigned(x): same-width reinterpret cast (no width arg needed); prefer signed(x) over x.sext<N>() when entering signed arithmetic chains
-""",
-)
+def _load_construct_syntax() -> dict[str, str]:
+    """Parse construct_syntax.md into a dict keyed by construct name.
+
+    Format: blocks delimited by '### name' ... '### end' (lines starting with ###).
+    """
+    text = (SCRIPT_DIR / "construct_syntax.md").read_text()
+    constructs: dict[str, str] = {}
+    current_name: str | None = None
+    current_lines: list[str] = []
+
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith("### "):
+            if current_name is not None and stripped != "### end":
+                # New section starts before an end — flush previous
+                constructs[current_name] = "".join(current_lines)
+            tag = stripped[4:].strip()
+            if tag == "end":
+                if current_name is not None:
+                    constructs[current_name] = "".join(current_lines)
+                current_name = None
+                current_lines = []
+            else:
+                current_name = tag
+                current_lines = []
+        elif current_name is not None:
+            # Skip top-level comment lines (lines starting with #) outside blocks
+            current_lines.append(line)
+
+    return constructs
+
+
+CONSTRUCT_SYNTAX = _load_construct_syntax()
+
+# ── Reserved keywords (for syntax hints) ────────────────────────────────
+
+RESERVED_KEYWORDS = {
+    "module", "pipeline", "fsm", "fifo", "ram", "arbiter", "synchronizer",
+    "counter", "regfile", "interface", "domain", "struct", "enum", "package",
+    "generate", "inst", "port", "ports", "param", "reg", "wire", "let",
+    "comb", "seq", "latch", "assert", "cover", "if", "else", "elsif", "end",
+    "for", "on", "rising", "falling", "init", "reset", "sync", "async",
+    "high", "low", "none", "forward", "stall", "flush", "when", "kind",
+    "policy", "true", "false", "todo", "use", "inside", "bus",
+    "template", "function", "return", "stage", "store", "default",
+    "testbench", "initial", "repeat", "clkgate", "linklist", "hook",
+    "implements", "from", "match", "transition", "to", "unique",
+}
+
+mcp = FastMCP("arch-hdl", instructions=_INSTRUCTIONS)
 
 
 # ── Resources ────────────────────────────────────────────────────────────
@@ -130,397 +139,6 @@ def _run(args: list[str], timeout: int = 30, cwd: str | None = None) -> str:
         )
 
 
-# ── Reserved keywords (for syntax hints) ────────────────────────────────
-
-RESERVED_KEYWORDS = {
-    "module", "pipeline", "fsm", "fifo", "ram", "arbiter", "synchronizer",
-    "counter", "regfile", "interface", "domain", "struct", "enum", "package",
-    "generate", "inst", "port", "ports", "param", "reg", "wire", "let",
-    "comb", "seq", "latch", "assert", "cover", "if", "else", "elsif", "end",
-    "for", "on", "rising", "falling", "init", "reset", "sync", "async",
-    "high", "low", "none", "forward", "stall", "flush", "when", "kind",
-    "policy", "true", "false", "todo", "use", "inside", "bus",
-    "template", "function", "return", "stage", "store", "default",
-    "testbench", "initial", "repeat", "clkgate", "linklist", "hook",
-    "implements", "from", "match", "transition", "to", "unique",
-}
-
-# ── Construct syntax snippets ────────────────────────────────────────────
-
-CONSTRUCT_SYNTAX = {
-    "module": """\
-module ModuleName
-  param PARAM_NAME: const = 32;
-  port clk:   in Clock<SysDomain>;      // SysDomain is built-in
-  port rst:   in Reset<Sync>;
-  port a:     in UInt<8>;
-  port reg q: out UInt<8> reset rst=0;  // port reg: output + register in one
-
-  default seq on clk rising;             // sets default clock for all seq
-
-  let sum: UInt<9> = a + 1;             // let REQUIRES initializer
-  wire w: UInt<8>;                       // wire: driven in comb blocks
-
-  comb w = a;                            // one-line comb (single assignment)
-
-  comb                                   // multi-line comb (multiple assignments or if/else)
-    w = a;
-    q = w + 1;                           // ERROR: q is reg, can only assign in seq
-  end comb
-
-  seq q <= a;                            // one-line seq (uses default clock)
-
-  seq                                    // multi-line seq (omits 'on clk' when default is set)
-    if rst
-      q <= 0;
-    else
-      q <= a;
-    end if
-  end seq
-
-  seq on clk falling                     // explicit clock overrides default
-    q <= a;
-  end seq
-
-  // Value-list for (compile-time unrolled, each value gets its own block):
-  comb
-    for i in {0, 3, 7, 15}
-      mask[i] = true;
-    end for
-  end comb
-
-  // inside operator (set membership, returns Bool):
-  let is_special: Bool = opcode inside {3, 7, 16..31};
-
-  // unique if — assert mutual exclusivity; synthesis emits parallel mux:
-  comb
-    unique if sel == 0
-      y = a;
-    else
-      y = b;
-    end if
-  end comb
-
-  // unique match — assert mutual exclusivity; emits SV unique case:
-  comb
-    unique match opcode
-      0 => result = a;
-      1 => result = b;
-      _ => result = 0;
-    end match
-  end comb
-end module ModuleName
-""",
-
-    "inst": """\
-// Instance syntax — use 'port <- signal' for inputs,
-//                       'port -> wire' for outputs.
-// Hierarchical references (inst_name.port) are FORBIDDEN.
-// All output ports MUST be explicitly connected.
-
-  inst my_inst: ChildModule
-    param WIDTH = 16;
-    clk   <- clk;
-    rst   <- rst;
-    data_in  <- input_signal;
-    data_out -> output_wire;
-  end inst my_inst
-
-  // Then use output_wire in comb/seq blocks (NOT my_inst.data_out)
-""",
-
-    "fsm": """\
-fsm FsmName
-  port clk: in Clock<SysDomain>;
-  port rst: in Reset<Sync>;
-  port go:  in Bool;
-  port done: out Bool;
-
-  reg cnt: UInt<4> reset rst=0;
-
-  state [Idle, Running, Done]
-  default state Idle;                    // reset state
-  default seq on clk rising;             // default clock for all seq in states
-  default                                // default outputs (overridden per-state)
-    comb done = false;
-  end default
-
-  state Idle
-    -> Running when go;
-  end state Idle
-
-  state Running
-    comb done = false;                   // override default if needed
-    seq
-      cnt <= cnt + 1;
-    end seq
-    -> Done when cnt == 10;
-  end state Running
-
-  state Done
-    comb done = true;                    // override default
-  end state Done                         // no transition = stays in Done
-end fsm FsmName
-""",
-
-    "pipeline": """\
-pipeline PipeName
-  param DEPTH: const = 3;
-  port clk:  in Clock<SysDomain>;
-  port rst:  in Reset<Sync>;
-  port data_in:  in UInt<32>;
-  port data_out: out UInt<32>;
-
-  stage S0
-    let x: UInt<32> = data_in + 1;
-  end stage S0
-
-  stage S1
-    let y: UInt<32> = S0.x + 2;
-  end stage S1
-
-  comb
-    data_out = S1.y;
-  end comb
-end pipeline PipeName
-""",
-
-    "synchronizer": """\
-// kind: ff | gray | handshake | reset | pulse
-synchronizer SyncName
-  kind ff;
-  param STAGES: const = 2;
-  port src_clk:  in Clock<SrcDomain>;
-  port dst_clk:  in Clock<DstDomain>;
-  port rst:      in Reset<Async>;
-  port data_in:  in Bool;
-  port data_out: out Bool;
-end synchronizer SyncName
-""",
-
-    "fifo": """\
-fifo FifoName
-  param DEPTH: const = 16;
-  port wr_clk:  in Clock<WrDomain>;
-  port rd_clk:  in Clock<RdDomain>;   // different domain = async FIFO
-  port rst:     in Reset<Async>;
-  port wr_en:   in Bool;
-  port wr_data: in UInt<8>;
-  port rd_en:   in Bool;
-  port rd_data: out UInt<8>;
-  port full:    out Bool;
-  port empty:   out Bool;
-end fifo FifoName
-""",
-
-    "ram": """\
-// kind: single | simple_dual | true_dual
-// latency: 0 (async read) | 1 (sync read) | 2 (output reg)
-ram RamName
-  kind simple_dual;
-  latency 1;
-  param DEPTH: const = 256;
-  param WIDTH: const = 32;
-  port clk:    in Clock<SysDomain>;
-  port wr_en:  in Bool;
-  port wr_addr: in UInt<8>;
-  port wr_data: in UInt<32>;
-  port rd_addr: in UInt<8>;
-  port rd_data: out UInt<32>;
-end ram RamName
-""",
-
-    "arbiter": """\
-// policy: round_robin | priority | weighted<W> | lru | <FnName> (custom)
-// Built-in policies handle standard cases; use custom when requirement
-// doesn't fit (e.g. QoS-aware, starvation-prevention, custom fairness).
-
-// ── Built-in policy example ──────────────────────────────────────────────
-arbiter ArbName
-  policy round_robin;
-  param N: const = 4;
-  port clk:   in Clock<SysDomain>;
-  port rst:   in Reset<Sync>;
-  ports[N] request
-    valid: in Bool;
-    ready: out Bool;
-  end ports request
-  port grant_valid:      out Bool;
-  port grant_requester:  out UInt<2>;
-end arbiter ArbName
-
-// ── Custom policy example ────────────────────────────────────────────────
-// Define the grant function in the SAME file (compiler inlines it into SV).
-// Function receives req_mask (one-hot of pending requesters) and last_grant
-// (one-hot of previous winner for fairness) and returns one-hot grant mask.
-function MyGrant(req_mask: UInt<4>, last_grant: UInt<4>) -> UInt<4>
-  // Example: lowest-set-bit with last-grant deprioritization
-  let masked: UInt<4> = req_mask & (last_grant ^ 0xF);
-  let pick: UInt<4>   = masked != 0 ? masked : req_mask;
-  let pick_neg: UInt<5> = (pick ^ 0xF).zext<5>() + 1;
-  return pick & pick_neg.trunc<4>();
-end function MyGrant
-
-arbiter CustomArbiter
-  policy MyGrant;                // <— name of the function above
-  param N: const = 4;
-  port clk: in Clock<SysDomain>;
-  port rst: in Reset<Sync>;
-  ports[N] request
-    valid: in Bool;
-    ready: out Bool;
-  end ports request
-  port grant_valid:      out Bool;
-  port grant_requester:  out UInt<2>;
-  // Hook wires the function into the arbiter's grant logic:
-  hook grant_select(req_mask: UInt<4>, last_grant: UInt<4>) -> UInt<4>
-    = MyGrant(req_mask, last_grant);
-end arbiter CustomArbiter
-""",
-
-    "regfile": """\
-regfile RegfileName
-  param XLEN: const = 32;
-  param REGS: const = 32;
-  port clk: in Clock<SysDomain>;
-  port rst: in Reset<Async, Low>;
-  port rs1_idx: in UInt<5>;
-  port rs1_data: out UInt<32>;
-  port wr_en:  in Bool;
-  port wr_idx: in UInt<5>;
-  port wr_data: in UInt<32>;
-
-  init [0] = 0;
-  forward write_before_read: false;
-end regfile RegfileName
-""",
-
-    "package": """\
-// Package: reusable namespace for enums, structs, functions, params, domains.
-// File must be named PkgName.arch; consumer imports with 'use PkgName;'
-
-// BusPkg.arch
-package BusPkg
-  domain FastClk
-    freq_mhz: 500
-  end domain FastClk
-
-  enum BusOp
-    Read, Write, Idle
-  end enum BusOp
-
-  struct BusReq
-    op: BusOp;
-    addr: UInt<32>;
-    data: UInt<32>;
-  end struct BusReq
-
-  function max(a: UInt<32>, b: UInt<32>) -> UInt<32>
-    return a > b ? a : b;
-  end function max
-end package BusPkg
-
-// Consumer.arch
-use BusPkg;
-
-module Consumer
-  port req: in BusReq;
-  port addr_out: out UInt<32>;
-  comb addr_out = req.addr;
-end module Consumer
-
-// SV output:
-//   package BusPkg; ... endpackage
-//   import BusPkg::*;
-//   module Consumer (...); ... endmodule
-""",
-
-    "bus": """\
-// ── Bus declaration: reusable port bundle ──
-bus ItcmIcb
-  param ADDR_W: const = 14;
-  param DATA_W: const = 32;
-
-  cmd_valid: out Bool;          // direction from initiator's perspective
-  cmd_addr:  out UInt<ADDR_W>;
-  cmd_ready: in  Bool;
-  rsp_valid: in  Bool;
-  rsp_data:  in  UInt<DATA_W>;
-  rsp_ready: out Bool;
-end bus ItcmIcb
-
-// ── Using a bus port ──
-module Master
-  port clk:  in Clock<SysDomain>;
-  port rst:  in Reset<Sync>;
-  port itcm: initiator ItcmIcb;                    // directions as declared
-  // With param overrides:
-  // port axi: initiator AxiLite<ADDR_W=32, DATA_W=64>;
-
-  comb
-    itcm.cmd_valid = 1;          // dot notation for signal access
-    itcm.cmd_addr  = addr_r;
-  end comb
-end module Master
-
-module Slave
-  port clk:  in Clock<SysDomain>;
-  port rst:  in Reset<Sync>;
-  port itcm: target ItcmIcb;                       // directions FLIPPED (in↔out)
-
-  comb
-    itcm.cmd_ready = 1;          // cmd_ready is output for target
-    itcm.rsp_valid = 1;
-  end comb
-end module Slave
-
-// ── Instance connections: use dot notation on port name ──
-// inst m: Master
-//   itcm.cmd_valid -> cmd_valid_w;
-//   itcm.cmd_ready <- cmd_ready_w;
-// end inst m
-
-// ── SV output: flattened to individual ports ──
-// module Master (
-//   output logic        itcm_cmd_valid,    // {port}_{signal}
-//   output logic [13:0] itcm_cmd_addr,
-//   input  logic        itcm_cmd_ready,
-//   ...
-// );
-""",
-    "types": """\
-// ── Type System ──
-// UInt<N>, SInt<N>, Bool, Bit
-// Clock<DomainName>, Reset<Sync|Async, High|Low>
-// Vec<T, N>, struct StructName / ... / end struct StructName
-// enum EnumName / ... / end enum EnumName
-
-// ── Width rules ──
-// UInt<8> + UInt<8> → UInt<9>   (result widens by 1)
-// No implicit conversions — use .trunc<N>(), .zext<N>(), .sext<N>()
-// .trunc<N>() requires N < source width (compiler error otherwise)
-// .zext<N>()/.sext<N>() require N > source width (compiler error otherwise)
-// signed(x): same-width UInt<N>→SInt<N> reinterpret (SV: $signed(x))
-// unsigned(x): same-width SInt<N>→UInt<N> reinterpret (SV: $unsigned(x))
-// Use signed() for signed arithmetic chains: signed(a) + signed(b) → SInt<9>
-// Bit slice: x[7:4] extracts bits 7 down to 4
-// Single bit: x[3] extracts bit 3
-// Cast: (x as SInt<32>), (x as UInt<32>)
-// Concat: {a, b}   Replication: {4{a}}
-// Reduction: &x (AND), |x (OR), ^x (XOR)
-// Set membership: expr inside {val1, val2, lo..hi} — returns Bool, emits SV inside
-// Ternary: cond ? a : b
-// Bit/byte reverse: x.reverse(1) for bit-reverse, x.reverse(8) for byte-reverse
-
-// ── Naming conventions (recommended, NOT compiler-enforced) ──
-// Modules/structs/enums: PascalCase (recommended)
-// Signals/ports/regs:    snake_case (recommended)
-// Params/constants:      UPPER_SNAKE (recommended)
-// Module names are emitted as-is in SV — use the exact name the testbench expects
-""",
-}
-
-
 # ── Tools ────────────────────────────────────────────────────────────────
 
 @mcp.tool()
@@ -541,7 +159,7 @@ def get_construct_syntax(construct: str) -> str:
         return f"[ERROR] Unknown construct '{construct}'. Available: {available}"
 
     result = f"--- ARCH syntax: {construct} ---\n{syntax}\n"
-    result += f"--- Reserved keywords (do NOT use as signal names) ---\n"
+    result += "--- Reserved keywords (do NOT use as signal names) ---\n"
     result += ", ".join(sorted(RESERVED_KEYWORDS))
     return result
 
