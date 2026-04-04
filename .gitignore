@@ -38,6 +38,10 @@ doc/arch_vs_other_hdls.md
 *.md.old
 mcp/*.old
 
+# Python bytecode
+__pycache__/
+*.pyc
+
 # macOS
 .DS_Store
 
