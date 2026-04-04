@@ -1,6 +1,6 @@
 # Arch HDL — AI Reference Card
 
-*Compact AI context for hardware generation · v0.24.0 · Put this in context, add design intent, paste compiler errors to self-correct.*
+*Compact AI context for hardware generation · v0.40.0 · Put this in context, add design intent, paste compiler errors to self-correct.*
 
 ---
 
@@ -745,7 +745,9 @@ Levels: `Always`, `Low`, `Medium`, `High`, `Full`, `Debug`
 
 ---
 
-## 6. TLM Concurrency Modes (planned)
+## 6. TLM Concurrency Modes (planned — not in v0.40.0)
+
+> **Not yet implemented.** Compiler v0.40.0 supports RTL signal bundling only (`bus` RTL ports, `initiator`/`target`). TLM methods, `implement` blocks, `Future<T>`, and `Token<T>` are planned for a future release. Use `fsm` or `thread` (when available) for sequential protocol logic in the meantime.
 
 | Mode | Return type | Use case |
 |------|-------------|----------|

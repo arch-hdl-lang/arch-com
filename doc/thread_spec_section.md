@@ -1,5 +1,7 @@
 # 20.  Thread Block
 
+> **Status: Planned — not in compiler v0.40.0.** The `thread` construct is specified here but not yet implemented. Compiler v0.40.0 will reject `thread` with a parse error. Use `fsm` for equivalent sequential control logic in the meantime.
+
 A `thread` block is a sequential block that may span multiple clock cycles.  The compiler lowers it to a synthesizable FSM — each `wait` statement becomes a state boundary.  It provides the same expressive power as a hand-written `fsm` but reads as straight-line sequential code.
 
 `seq` remains stateless (one clock edge, no implicit state).  `thread` is explicitly stateful.

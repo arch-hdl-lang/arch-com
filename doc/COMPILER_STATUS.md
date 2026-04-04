@@ -96,7 +96,7 @@
 | Array index `[i]` | ✅ |
 | `.trunc<N>()` / `.zext<N>()` / `.sext<N>()` / `expr[hi:lo]` bit-slice / `.reverse(N)` | ✅ | `.reverse(N)` reverses in N-bit chunks; emits SV `{<<N{expr}}`; type checker enforces width divisible by N |
 | `signed(expr)` / `unsigned(expr)` | ✅ | Same-width reinterpret cast: `signed(UInt<8>)` → `SInt<8>`, `unsigned(SInt<8>)` → `UInt<8>`; emits `$signed()`/`$unsigned()` in SV; eliminates `.sext<N>()` when entering signed arithmetic chains |
-| `as` cast | ✅ Width-checked: source and target must have same total bit width; struct-to-struct casts supported for same-width packed structs |
+| `as` cast | ✅ | Width-checked: source and target must have same total bit width; emits SV `Type'(expr)`; struct-to-struct casts supported for same-width packed structs |
 | Struct literals | ✅ |
 | Enum variants `E::Variant` | ✅ |
 | `todo!` | ✅ |
