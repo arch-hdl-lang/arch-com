@@ -18,6 +18,8 @@ This benchmark implements four representative AI accelerator micro-architecture 
 
 - **AI-generatability score:** a qualitative 1--10 rating of how reliably an LLM without domain-specific training can generate correct code, based on ambiguity, implicit behaviour, and structural regularity.
 
+> **Note on assert/cover:** The `assert` and `cover` constructs are parsed and accepted by the compiler. SVA emission (for formal verification tools) and simulation checking are planned for a future release. Claims below marked *(planned)* reflect the intended behaviour of these constructs, not current compiler output.
+
 **Summary Scorecard**
 
   ----------------------------------------------------------------------------------------------------------------------------------------------
@@ -517,7 +519,7 @@ This block is presented twice: first with explicit PE wiring (as in the original
 
   **Scale 4×4 → 8×8**                Change param SIZE = 8                   Rewrite 8 ports + 64 inst lines             Arch: truly one param
 
-  **Generated assertions**           3 lines (generate for + assert)         Not present                                 Arch: formal-ready per-PE
+  **Generated assertions**           3 lines (generate for + assert)         Not present                                 Arch: formal-ready per-PE *(planned)*
 
   **SV port generation**             Fully supported                         Impossible --- fundamental language limit   Arch: unique capability
   -------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -940,7 +942,7 @@ A direct-mapped on-chip weight cache for an AI accelerator. 256 cache lines, eac
 >
 > *✓ Eviction on full: the cover full_evict property ensures simulation exercises LRU eviction. Without it, a cache that never fills passes all tests but silently drops data in production.*
 >
-> *✓ Liveness: assert lru_valid ensures the cache is never simultaneously full and empty --- a structural impossibility that can be violated by pointer corruption. Arch emits this as a formal SVA property.*
+> *✓ Liveness: assert lru_valid ensures the cache is never simultaneously full and empty --- a structural impossibility that can be violated by pointer corruption. Arch will emit this as a formal SVA property (planned).*
 >
 > *✗ The SV hit_idx priority encoder loop iterates i from SETS-1 downto 0 --- a subtle direction dependency for priority resolution that LLMs frequently reverse.*
 
@@ -1433,7 +1435,7 @@ A single-head attention score unit for a transformer accelerator. Computes scale
 
   **Scale truncation**               Compiler computes correct bit window          Manual s1_acc\[23:8\] --- error-prone     Arch: zero bit slicing
 
-  **Pipeline assertions**            3 formal properties, 8 lines                  Not present in SV version                 Arch: formal-ready
+  **Pipeline assertions**            3 formal properties, 8 lines                  Not present in SV version                 Arch: formal-ready *(planned)*
   ------------------------------------------------------------------------------------------------------------------------------------------------------
 
 **Compile-Time Safety Properties**
@@ -1501,7 +1503,7 @@ SystemVerilog score: 2.0 / 10. This block is consistently generated incorrectly 
 
   **struct word type**   Bit-pack/unpack at RAM boundary                                 \~15 lines                3
 
-  **assert/cover**       SVA formal properties, simulation checks                        \~0 SV lines (missing)    1--4
+  **assert/cover**       SVA formal properties, simulation checks *(planned)*            \~0 SV lines (missing)    1--4
   ------------------------------------------------------------------------------------------------------------------------------
 
 **5.3 Safety Properties: What Arch Catches, SV Does Not**
@@ -1525,11 +1527,11 @@ SystemVerilog score: 2.0 / 10. This block is consistently generated incorrectly 
 
   **Tag width mismatch in CAM**      Compile error             Silent comparison of wrong bits                      High
 
-  **Accumulator overflow**           assert catches formally   Not present unless manually added                    Medium
+  **Accumulator overflow**           assert catches formally *(planned)*   Not present unless manually added                    Medium
 
-  **Softmax output zero**            assert catches formally   Not present unless manually added                    High
+  **Softmax output zero**            assert catches formally *(planned)*   Not present unless manually added                    High
 
-  **Push to full not exercised**     cover ensures it is       Not present unless manually added                    Medium
+  **Push to full not exercised**     cover ensures it is *(planned)*       Not present unless manually added                    Medium
   --------------------------------------------------------------------------------------------------------------------------------
 
 **5.4 AI-Generatability Score Breakdown**
