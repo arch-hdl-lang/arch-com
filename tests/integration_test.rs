@@ -285,6 +285,24 @@ fn test_single_port_ram() {
 }
 
 #[test]
+fn test_rom_lut() {
+    let source = include_str!("rom_lut.arch");
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module RomLut"));
+    // ROM has no write port — only read
+    assert!(!sv.contains("wr_"), "ROM must not have a write port");
+    // Init values from inline array (hex literals)
+    assert!(sv.contains("mem[0] = 8'h0"));
+    assert!(sv.contains("mem[4] = 8'h7F"));
+    assert!(sv.contains("mem[7] = 8'h31"));
+    // latency 1 — registered read
+    assert!(sv.contains("always_ff @(posedge clk)"));
+    assert!(sv.contains("rd_data_r <= mem[rd_addr]"));
+    assert!(sv.contains("assign rd_data = rd_data_r"));
+    insta::assert_snapshot!(sv);
+}
+
+#[test]
 fn test_simple_dual_ram() {
     let source = include_str!("simple_dual_ram.arch");
     let sv = compile_to_sv(source);
