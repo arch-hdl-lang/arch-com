@@ -24,9 +24,11 @@ doc/node_modules/
 doc/package.json
 doc/package-lock.json
 
+# Generated docx — rebuilt from .md via update_arch_spec.py
+doc/*.docx
+
 # Not ready for publication
 doc/Arch_Benchmark_Report.md
-doc/Arch_Benchmark_Report.docx
 
 # Backup / scratch files
 *.old.docx
