@@ -24,6 +24,10 @@ doc/node_modules/
 doc/package.json
 doc/package-lock.json
 
+# Not ready for publication
+doc/Arch_Benchmark_Report.md
+doc/Arch_Benchmark_Report.docx
+
 # Backup / scratch files
 *.old.docx
 *.docx.old
