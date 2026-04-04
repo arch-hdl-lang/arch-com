@@ -2,7 +2,7 @@
 
 Hardware Description Language
 
-Language Specification · v0.1 · March 2026
+Language Specification · v0.40.0 · April 2026
 
 *A purpose-built micro-architecture HDL --- clean RTL semantics, strong types, and first-class pipelines, FSMs, FIFOs, and arbiters. Incorrect design patterns --- multiple drivers, undriven ports, clock-domain crossings, width mismatches --- are compile-time errors, never runtime surprises. Designed to be generated correctly by AI without prior training.*
 
@@ -42,7 +42,7 @@ Arch makes a hard design commitment: a large language model that has read this s
 
 **2. Lexical Conventions**
 
-**2.1 Naming Rules (compiler-enforced)**
+**2.1 Naming Rules (recommended, not compiler-enforced)**
 
   -------------------------------------------------------------------------------------------------------
   **Category**                              **Convention**               **Examples**
@@ -7880,7 +7880,7 @@ A practical AI workflow: generate a correct skeleton with todo! for all logic, t
   ---------------------------------------------------------------------------------------------------------
   **Phase**                 **Key Checks and Actions**
   ------------------------- -------------------------------------------------------------------------------
-  **Parse**                 Syntax, named-block matching, naming convention enforcement
+  **Parse**                 Syntax, named-block matching
 
   **Elaboration**           Parameter resolution, generic instantiation, type expansion
 
