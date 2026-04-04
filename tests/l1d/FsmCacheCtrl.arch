@@ -132,7 +132,7 @@ fsm FsmCacheCtrl
 
   // ── Idle ──────────────────────────────────────────────────────────────────
   state Idle
-    comb req_ready = true;
+    let req_ready = true;
     comb
       if req_valid
         for i in 0..7

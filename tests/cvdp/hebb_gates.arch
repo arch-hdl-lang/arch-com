@@ -40,8 +40,8 @@ module hebb_gates
   // Determine if a and b are positive (bipolar: +1 or -1)
   wire a_pos: Bool;
   wire b_pos: Bool;
-  comb a_pos = (~a[3] & a[0]);
-  comb b_pos = (~b[3] & b[0]);
+  let a_pos = (~a[3] & a[0]);
+  let b_pos = (~b[3] & b[0]);
 
   // Gate target logic based on external inputs
   wire gate_result: Bool;
@@ -69,8 +69,8 @@ module hebb_gates
   // Gate target logic based on test inputs (for self-test phase)
   wire tx1_pos: Bool;
   wire tx2_pos: Bool;
-  comb tx1_pos = (~test_x1[3] & test_x1[0]);
-  comb tx2_pos = (~test_x2[3] & test_x2[0]);
+  let tx1_pos = (~test_x1[3] & test_x1[0]);
+  let tx2_pos = (~test_x2[3] & test_x2[0]);
 
   wire test_gate_result: Bool;
   comb
@@ -99,10 +99,10 @@ module hebb_gates
   wire prod2: SInt<8>;
   wire bias_ext: SInt<8>;
   wire net_sum: SInt<8>;
-  comb prod1 = (w1 * test_x1).trunc<8>() as SInt<8>;
-  comb prod2 = (w2 * test_x2).trunc<8>() as SInt<8>;
-  comb bias_ext = bias.sext<8>() as SInt<8>;
-  comb net_sum = (prod1 + prod2 + bias_ext).trunc<8>() as SInt<8>;
+  let prod1 = (w1 * test_x1).trunc<8>() as SInt<8>;
+  let prod2 = (w2 * test_x2).trunc<8>() as SInt<8>;
+  let bias_ext = bias.sext<8>() as SInt<8>;
+  let net_sum = (prod1 + prod2 + bias_ext).trunc<8>() as SInt<8>;
 
   // Test input vectors: depend on gate type (stored in gs_r)
   // AND(0): (1,1),(1,-1),(-1,1),(-1,-1)

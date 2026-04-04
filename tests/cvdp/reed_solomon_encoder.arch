@@ -22,7 +22,7 @@ module reed_solomon_encoder
   // feedback * gp product truncated to DATA_WIDTH
   let fb_prod: UInt<16> = feedback * gp;
   wire fb_mult: UInt<DATA_WIDTH>;
-  comb fb_mult = fb_prod[DATA_WIDTH - 1 : 0];
+  let fb_mult = fb_prod[DATA_WIDTH - 1 : 0];
 
   default seq on clk rising;
 

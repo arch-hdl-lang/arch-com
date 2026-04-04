@@ -1,0 +1,23 @@
+// Tag SRAM — one instance per cache way.
+// Entry encoding (54 bits): tag[53:2] | dirty[1] | valid[0]
+// TAG_WIDTH=52 for SETS=64, LINE_BYTES=64, ADDR_W=64
+ram RamTagArray
+  kind simple_dual;
+  latency 1;
+  param DEPTH: const = 64;
+  param WIDTH: type  = UInt<54>;
+  port clk: in Clock<SysDomain>;
+  store
+    buf: Vec<WIDTH, DEPTH>;
+  end store
+  port rd_port
+    en:    in  Bool;
+    addr:  in  UInt<6>;
+    rdata: out WIDTH;
+  end port rd_port
+  port wr_port
+    en:    in  Bool;
+    addr:  in  UInt<6>;
+    wdata: in  WIDTH;
+  end port wr_port
+end ram RamTagArray

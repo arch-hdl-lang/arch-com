@@ -8,12 +8,12 @@ fsm TopModule
   default state A;
 
   state A
-    comb z = x;
+    let z = x;
     -> B when x;
   end state A
 
   state B
-    comb z = ~x;
+    let z = ~x;
     -> B when true;
   end state B
 end fsm TopModule

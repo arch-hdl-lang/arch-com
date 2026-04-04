@@ -23,8 +23,8 @@ module pipeline_mac
   let valid_out_s0: Bool = counter_reg == (N - 1).trunc<$clog2(N)+1>();
   let count_rst: Bool = valid_out_s1;
   let accumulator_rst: Bool = valid_out_s1;
-  comb result = accumulation_reg;
-  comb valid_out = valid_out_s1 & ~valid_out_s2;
+  let result = accumulation_reg;
+  let valid_out = valid_out_s1 & ~valid_out_s2;
 
   // Extend inputs for full-width multiplication
   let mcand_ext: UInt<DWIDTH_ACCUMULATOR> = multiplicand.zext<DWIDTH_ACCUMULATOR>();

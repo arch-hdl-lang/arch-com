@@ -56,8 +56,8 @@ module fifo_async
   wire r_addr: UInt<ADDR_WIDTH>;
 
   // Write/read addresses are lower bits of binary pointer
-  comb w_addr = w_bin[ADDR_WIDTH-1:0];
-  comb r_addr = r_bin[ADDR_WIDTH-1:0];
+  let w_addr = w_bin[ADDR_WIDTH-1:0];
+  let r_addr = r_bin[ADDR_WIDTH-1:0];
 
   // Next binary pointers
   comb
@@ -77,13 +77,13 @@ module fifo_async
   end comb
 
   // Full: MSB different, rest same (binary comparison)
-  comb w_full_next = (w_bin_next[ADDR_WIDTH] != r_bin_synced[ADDR_WIDTH]) & (w_bin_next[ADDR_WIDTH-1:0] == r_bin_synced[ADDR_WIDTH-1:0]);
+  let w_full_next = (w_bin_next[ADDR_WIDTH] != r_bin_synced[ADDR_WIDTH]) & (w_bin_next[ADDR_WIDTH-1:0] == r_bin_synced[ADDR_WIDTH-1:0]);
 
   // Empty: pointers identical (binary comparison)
-  comb r_empty_next = (r_bin_next == w_bin_synced);
+  let r_empty_next = (r_bin_next == w_bin_synced);
 
   // Async read
-  comb r_data = mem[r_addr];
+  let r_data = mem[r_addr];
 
   // Write domain sequential logic
   seq on w_clk rising

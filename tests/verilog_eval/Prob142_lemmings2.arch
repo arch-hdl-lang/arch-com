@@ -12,30 +12,30 @@ fsm TopModule
   state [WalkLeft, WalkRight, FallLeft, FallRight]
   default state WalkLeft;
   default
-    comb walk_left = false;
-    comb walk_right = false;
-    comb aaah = false;
+    let walk_left = false;
+    let walk_right = false;
+    let aaah = false;
   end default
 
   state WalkLeft
-    comb walk_left = true;
+    let walk_left = true;
     -> FallLeft when ~ground;
     -> WalkRight when ground & bump_left;
   end state WalkLeft
 
   state WalkRight
-    comb walk_right = true;
+    let walk_right = true;
     -> FallRight when ~ground;
     -> WalkLeft when ground & bump_right;
   end state WalkRight
 
   state FallLeft
-    comb aaah = true;
+    let aaah = true;
     -> WalkLeft when ground;
   end state FallLeft
 
   state FallRight
-    comb aaah = true;
+    let aaah = true;
     -> WalkRight when ground;
   end state FallRight
 end fsm TopModule

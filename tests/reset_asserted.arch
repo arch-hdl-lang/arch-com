@@ -1,0 +1,52 @@
+// Test: rst.asserted — polarity-abstracted reset expression.
+// Active-high: rst.asserted emits `rst`
+// Active-low:  rst_n.asserted emits `(!rst_n)`
+// Allows polarity-independent seq bodies (e.g. reset none + manual if).
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module HighRstAsserted
+  port clk:   in Clock<SysDomain>;
+  port rst:   in Reset<Sync>;
+  port en:    in Bool;
+  port count: out UInt<8>;
+
+  reg count_r: UInt<8> reset none;
+
+  seq on clk rising
+    if rst.asserted
+      count_r <= 0;
+    elsif en
+      count_r <= (count_r + 1).trunc<8>();
+    end if
+  end seq
+
+  comb
+    count = count_r;
+  end comb
+
+end module HighRstAsserted
+
+module LowRstAsserted
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Sync, Low>;
+  port en:    in Bool;
+  port count: out UInt<8>;
+
+  reg count_r: UInt<8> reset none;
+
+  seq on clk rising
+    if rst_n.asserted
+      count_r <= 0;
+    elsif en
+      count_r <= (count_r + 1).trunc<8>();
+    end if
+  end seq
+
+  comb
+    count = count_r;
+  end comb
+
+end module LowRstAsserted

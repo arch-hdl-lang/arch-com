@@ -14,7 +14,7 @@ module one_hot_gen
   reg addr_r: UInt<NS_A+NS_B> reset rst_async_n=>0;
   reg idx:    UInt<4>          reset rst_async_n=>0;
 
-  comb o_address_one_hot = addr_r;
+  let o_address_one_hot = addr_r;
 
   seq
     if i_start & o_ready

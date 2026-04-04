@@ -7,19 +7,19 @@ fsm TopModule
   state [A, B, C, D]
   default state A;
   default
-    comb z = false;
+    let z = false;
   end default
 
   state A -> B when x;
 
   state B
-    comb z = true;
+    let z = true;
     -> D when x;
     -> C when ~x;
   end state B
 
   state C
-    comb z = true;
+    let z = true;
     -> D when x;
   end state C
 

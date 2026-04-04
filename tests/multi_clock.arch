@@ -25,6 +25,4 @@ module MultiClockSync
     slow_r <= data_in;
   end seq
 
-  comb data_out = slow_r; end comb
-  comb fast_count = fast_r; end comb
-end module MultiClockSync
+  let data_out = slow_r;  let fast_count = fast_r;end module MultiClockSync

@@ -10,7 +10,7 @@ module elastic_buffer_pattern_matcher
   port o_match: out Bool;
 
   wire xor_data: UInt<WIDTH>;
-  comb xor_data = i_data ^ i_pattern;
+  let xor_data = i_data ^ i_pattern;
 
   // Count ones (popcount)
   wire err_count: UInt<WIDTH>;
@@ -31,5 +31,5 @@ module elastic_buffer_pattern_matcher
     end if
   end seq
 
-  comb o_match = match_r;
+  let o_match = match_r;
 end module elastic_buffer_pattern_matcher

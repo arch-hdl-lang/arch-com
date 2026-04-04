@@ -17,8 +17,7 @@ module Producer
     cnt <= (cnt + 1).trunc<8>();
   end seq
 
-  comb data_out = cnt; end comb
-end module Producer
+  let data_out = cnt;end module Producer
 
 module Consumer
   port clk: in Clock<DomainB>;
@@ -32,8 +31,7 @@ module Consumer
     r <= data_in;
   end seq
 
-  comb data_out = r; end comb
-end module Consumer
+  let data_out = r;end module Consumer
 
 module TopSafe
   port clk_a: in Clock<DomainA>;

@@ -224,35 +224,99 @@ impl<'a> TypeChecker<'a> {
                 ModuleBodyItem::LetBinding(l) => {
                     self.check_snake_case(&l.name);
                     if l.ty.is_none() {
-                        self.errors.push(CompileError::general(
-                            &format!(
-                                "let binding '{}' requires an explicit type annotation: let {}: Type = ...",
-                                l.name.name, l.name.name
-                            ),
-                            l.span,
-                        ));
-                    }
-                    let ty = self.resolve_expr_type(&l.value, &m.name.name, &local_types);
-                    if let Some(declared_ty) = &l.ty {
-                        let expected = self.resolve_type_expr(declared_ty, &m.name.name, &local_types);
-                        if expected != Ty::Error && ty != Ty::Error && ty != Ty::Todo && expected != ty
-                            && !types_compatible(&expected, &ty)
-                        {
-                            self.errors.push(CompileError::type_mismatch(
-                                &expected.display(),
-                                &ty.display(),
-                                l.value.span,
+                        // `let x = expr;` without type annotation — assign to existing port/wire
+                        let name = &l.name.name;
+                        // Check if it's an input port
+                        let is_input_port = m.ports.iter().any(|p| &p.name.name == name && p.direction == Direction::In);
+                        // Check if it's an output port (non-reg)
+                        let is_output_port = m.ports.iter().any(|p| &p.name.name == name && p.direction == Direction::Out && p.reg_info.is_none());
+                        // Check if it's a reg (declared reg or port-reg)
+                        let is_reg = reg_names.contains(name);
+
+                        if is_input_port {
+                            self.errors.push(CompileError::general(
+                                &format!("cannot assign to input port `{}` in let", name),
+                                l.span,
+                            ));
+                        } else if is_reg {
+                            self.errors.push(CompileError::general(
+                                &format!("cannot assign to reg `{}` in let; use seq block", name),
+                                l.span,
+                            ));
+                        } else if is_output_port {
+                            // Comb assignment to output port
+                            let rhs_ty = self.resolve_expr_type(&l.value, &m.name.name, &local_types);
+                            if let Some(port_ty) = local_types.get(name).cloned() {
+                                if rhs_ty != Ty::Error && rhs_ty != Ty::Todo && port_ty != rhs_ty
+                                    && !types_compatible(&port_ty, &rhs_ty)
+                                {
+                                    self.errors.push(CompileError::type_mismatch(
+                                        &port_ty.display(),
+                                        &rhs_ty.display(),
+                                        l.value.span,
+                                    ));
+                                }
+                            }
+                            if driven.contains(name) {
+                                self.errors.push(CompileError::general(
+                                    &format!("signal `{}` already has a driver", name),
+                                    l.span,
+                                ));
+                            } else {
+                                driven.insert(name.clone());
+                            }
+                        } else if local_types.contains_key(name) {
+                            // Wire or previously declared let
+                            let rhs_ty = self.resolve_expr_type(&l.value, &m.name.name, &local_types);
+                            if let Some(wire_ty) = local_types.get(name).cloned() {
+                                if rhs_ty != Ty::Error && rhs_ty != Ty::Todo && wire_ty != rhs_ty
+                                    && !types_compatible(&wire_ty, &rhs_ty)
+                                {
+                                    self.errors.push(CompileError::type_mismatch(
+                                        &wire_ty.display(),
+                                        &rhs_ty.display(),
+                                        l.value.span,
+                                    ));
+                                }
+                            }
+                            if driven.contains(name) {
+                                self.errors.push(CompileError::general(
+                                    &format!("signal `{}` already has a driver", name),
+                                    l.span,
+                                ));
+                            } else {
+                                driven.insert(name.clone());
+                            }
+                        } else {
+                            self.errors.push(CompileError::general(
+                                &format!("`{}` is not declared; use `let {}: T = expr;` to declare a new wire", name, name),
+                                l.span,
                             ));
                         }
-                    }
-                    // Use the declared type if provided (it may be wider than what was inferred)
-                    let final_ty = if let Some(declared_ty) = &l.ty {
-                        self.resolve_type_expr(declared_ty, &m.name.name, &local_types)
+                        // Do NOT insert into local_types or driven here — handled above per case
                     } else {
-                        ty
-                    };
-                    local_types.insert(l.name.name.clone(), final_ty);
-                    driven.insert(l.name.name.clone());
+                        let ty = self.resolve_expr_type(&l.value, &m.name.name, &local_types);
+                        if let Some(declared_ty) = &l.ty {
+                            let expected = self.resolve_type_expr(declared_ty, &m.name.name, &local_types);
+                            if expected != Ty::Error && ty != Ty::Error && ty != Ty::Todo && expected != ty
+                                && !types_compatible(&expected, &ty)
+                            {
+                                self.errors.push(CompileError::type_mismatch(
+                                    &expected.display(),
+                                    &ty.display(),
+                                    l.value.span,
+                                ));
+                            }
+                        }
+                        // Use the declared type if provided (it may be wider than what was inferred)
+                        let final_ty = if let Some(declared_ty) = &l.ty {
+                            self.resolve_type_expr(declared_ty, &m.name.name, &local_types)
+                        } else {
+                            ty
+                        };
+                        local_types.insert(l.name.name.clone(), final_ty);
+                        driven.insert(l.name.name.clone());
+                    }
                 }
                 ModuleBodyItem::PipeRegDecl(p) => {
                     self.check_snake_case(&p.name);

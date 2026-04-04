@@ -14,5 +14,5 @@ module dff
     Q_r <= D;
   end seq
 
-  comb Q = Q_r;
+  let Q = Q_r;
 end module dff

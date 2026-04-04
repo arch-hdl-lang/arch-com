@@ -46,7 +46,7 @@ module interrupt_controller
     interrupt_vector = r_interrupt_vector;
   end comb
 
-  comb masked_pending = pending_interrupts & interrupt_mask;
+  let masked_pending = pending_interrupts & interrupt_mask;
 
   comb
     highest_pri_idx = 0;

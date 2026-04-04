@@ -18,8 +18,7 @@ module Consumer
     r <= data_in;
   end seq
 
-  comb data_out = r; end comb
-end module Consumer
+  let data_out = r;end module Consumer
 
 module TopBad
   port clk_a: in Clock<DomainA>;

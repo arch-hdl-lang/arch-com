@@ -7,7 +7,7 @@ fsm TopModule
   state [A, B, C, D]
   default state A;
   default
-    comb out = false;
+    let out = false;
   end default
 
   state A -> B when in;
@@ -20,7 +20,7 @@ fsm TopModule
   end state C
 
   state D
-    comb out = true;
+    let out = true;
     -> B when in;
     -> C when ~in;
   end state D

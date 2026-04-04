@@ -1,0 +1,20 @@
+// CVA6-compatible CPU-to-dcache bus.
+// Directions declared from the CPU initiator perspective.
+// When the cache uses 'port cpu: target BusDcpu', all in/out flip.
+bus BusDcpu
+  // Request channel (CPU → cache)
+  req_valid:    out Bool;
+  req_ready:    in  Bool;
+  req_vaddr:    out UInt<64>;
+  req_data:     out UInt<64>;
+  req_be:       out UInt<8>;
+  req_size:     out UInt<2>;
+  req_is_store: out Bool;
+
+  // Response channel (cache → CPU)
+  // resp_ready prevents silent response drop when CPU is stalled.
+  resp_valid:   in  Bool;
+  resp_ready:   out Bool;
+  resp_data:    in  UInt<64>;
+  resp_error:   in  Bool;
+end bus BusDcpu

@@ -13,8 +13,8 @@ fsm TopModule
   default state Find;
   default seq on clk rising;
   default
-    comb out_bytes = 0;
-    comb done = false;
+    let out_bytes = 0;
+    let done = false;
   end default
 
   state Find

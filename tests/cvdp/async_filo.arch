@@ -52,13 +52,10 @@ module async_filo
 
   wire full_i:  Bool;
   wire empty_i: Bool;
-  comb full_i  = (w_ptr - wq2_rcnt) == DEPTH;
-  comb empty_i = (rq2_wptr == r_pop_cnt);
+  let full_i = (w_ptr - wq2_rcnt) == DEPTH;  let empty_i = (rq2_wptr == r_pop_cnt);
 
-  comb r_data  = mem[r_ptr[ADDR_WIDTH-1:0]];
-  comb r_empty = empty_i;
-  comb w_full  = full_i;
-
+  let r_data = mem[r_ptr[ADDR_WIDTH-1:0]];  let r_empty = empty_i;
+  let w_full = full_i;
   // Write domain: push data
   seq on w_clk rising
     if push & ~full_i

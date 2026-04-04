@@ -28,7 +28,7 @@ module pseudo_lru_tree_policy
     index -> pseudo_lru_slot;
   end inst slot_select_unit
 
-  comb way_replace = pseudo_lru_slot;
+  let way_replace = pseudo_lru_slot;
 
   // Compute recency_updated: mark the target way as MRU
   // On hit: target is way_select. On miss: target is pseudo_lru_slot.

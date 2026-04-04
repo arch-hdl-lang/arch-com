@@ -14,10 +14,10 @@ module skid_buffer
   default seq on clk rising;
 
   // o_ready: we can accept data when buffer is empty
-  comb o_ready = ~buf_flag;
+  let o_ready = ~buf_flag;
 
   // o_valid: valid when input valid or buffer has data
-  comb o_valid = i_valid | buf_flag;
+  let o_valid = i_valid | buf_flag;
 
   // o_data: output buffered data if buffer active, else pass through
   comb

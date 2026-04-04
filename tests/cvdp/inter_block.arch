@@ -22,7 +22,7 @@ module inter_block
     end for
   end comb
 
-  comb out_data = data_reg;
+  let out_data = data_reg;
 
   seq
     if i_valid

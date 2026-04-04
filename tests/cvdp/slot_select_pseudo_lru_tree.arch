@@ -20,5 +20,5 @@ module slot_select_pseudo_lru_tree
     end for
   end comb
 
-  comb index = idx;
+  let index = idx;
 end module slot_select_pseudo_lru_tree

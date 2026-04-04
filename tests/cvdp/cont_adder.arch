@@ -23,14 +23,10 @@ module cont_adder
   wire weighted:   UInt<ACCUM_WIDTH>;
   wire cnt_nonzero: Bool;
 
-  comb data_ext    = data_in.zext<ACCUM_WIDTH>();
-  comb weighted    = (data_ext * WEIGHT).trunc<ACCUM_WIDTH>();
-  comb cnt_nonzero = sample_cnt != 0;
+  let data_ext = data_in.zext<ACCUM_WIDTH>();  let weighted = (data_ext * WEIGHT).trunc<ACCUM_WIDTH>();  let cnt_nonzero = sample_cnt != 0;
 
-  comb accum_out      = accum;
-  comb threshold_high = accum >= THRESHOLD.zext<ACCUM_WIDTH>();
-  comb threshold_low  = accum == 0;
-
+  let accum_out = accum;  let threshold_high = accum >= THRESHOLD.zext<ACCUM_WIDTH>();
+  let threshold_low = accum == 0;
   comb
     if cnt_nonzero
       avg_out = (accum / sample_cnt.zext<ACCUM_WIDTH>()).trunc<DATA_WIDTH>();

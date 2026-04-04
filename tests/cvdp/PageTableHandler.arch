@@ -13,9 +13,9 @@ module PageTableHandler
 
   reg rdy: Bool reset rst=>false;
 
-  comb page_table_entry = virtual_page[PAGE_WIDTH-1:0];
+  let page_table_entry = virtual_page[PAGE_WIDTH-1:0];
 
-  comb ready = rdy;
+  let ready = rdy;
 
   seq
     if miss

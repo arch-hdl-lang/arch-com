@@ -49,8 +49,8 @@ module ahb_clock_counter
 
   let hrdata_val: UInt<DATA_WIDTH> = (HADDR == 0x08) ? cnt : ((HADDR == 0x0C) ? overflow.zext<DATA_WIDTH>() : ((HADDR == 0x10) ? max_cnt : ((HADDR == 0x00) ? enable.zext<DATA_WIDTH>() : 0)));
 
-  comb HRDATA = hrdata_val;
-  comb COUNTER = cnt;
-  comb HRESP = 0;
+  let HRDATA = hrdata_val;
+  let COUNTER = cnt;
+  let HRESP = 0;
 
 end module ahb_clock_counter

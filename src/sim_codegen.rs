@@ -396,6 +396,8 @@ fn collect_trace_signals(
     for item in body {
         match item {
             ModuleBodyItem::LetBinding(l) => {
+                // ty=None means assignment to existing port/wire — already traced, skip
+                if l.ty.is_none() { continue; }
                 let name = &l.name.name;
                 if l.ty.as_ref().map_or(false, |t| matches!(t, TypeExpr::Vec(..))) { continue; }
                 let width = l.ty.as_ref().map(|t| type_width(t)).unwrap_or(
@@ -2539,6 +2541,8 @@ impl<'a> SimCodegen<'a> {
         for item in &m.body {
             match item {
                 ModuleBodyItem::LetBinding(l) => {
+                    // ty=None: assignment to existing port/wire — no new field needed
+                    if l.ty.is_none() { continue; }
                     let ty = l.ty.as_ref().map(|t| cpp_internal_type(t))
                         .unwrap_or_else(|| "uint32_t".to_string());
                     h.push_str(&format!("  {ty} _let_{};\n", l.name.name));
@@ -3068,7 +3072,20 @@ impl<'a> SimCodegen<'a> {
         for item in &m.body {
             if let ModuleBodyItem::LetBinding(l) = item {
                 let val = cpp_expr(&l.value, &ctx_comb);
-                cpp.push_str(&format!("  _let_{} = {};\n", l.name.name, val));
+                if l.ty.is_none() {
+                    // ty=None: assignment to existing port or wire
+                    let name = &l.name.name;
+                    let target = if port_names.contains(name) {
+                        // Output port — public field, plain name
+                        name.clone()
+                    } else {
+                        // Wire — private field with _let_ prefix
+                        format!("_let_{name}")
+                    };
+                    cpp.push_str(&format!("  {target} = {val};\n"));
+                } else {
+                    cpp.push_str(&format!("  _let_{} = {};\n", l.name.name, val));
+                }
             }
         }
 
@@ -5155,6 +5172,8 @@ impl<'a> SimCodegen<'a> {
                         all_regs.push(StageReg { prefixed, ty, reset_val, bits, is_let: false });
                     }
                     ModuleBodyItem::LetBinding(l) => {
+                        // ty=None means assignment to existing port/wire — skip as new binding
+                        if l.ty.is_none() { continue; }
                         let prefixed = format!("{}_{}", prefix, l.name.name);
                         let ty = if let Some(ref te) = l.ty { cpp_internal_type(te) } else { "uint32_t".to_string() };
                         let bits = if let Some(ref te) = l.ty { type_bits_te(te) } else { 32 };
@@ -5299,6 +5318,8 @@ impl<'a> SimCodegen<'a> {
             for item in &stage.body {
                 match item {
                     ModuleBodyItem::LetBinding(l) => {
+                        // ty=None means assignment to existing port/wire — skip as new binding
+                        if l.ty.is_none() { continue; }
                         let val = self.pipeline_sim_expr(&l.value, prefix, si,
                             &stage_names, &stage_prefixes, &stage_reg_names,
                             &port_names, &reg_names, &let_names, &widths, &_enum_map);

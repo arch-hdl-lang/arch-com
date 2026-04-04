@@ -56,6 +56,6 @@ module low_pass_filter
     end for
   end comb
 
-  comb data_out = acc;
+  let data_out = acc;
 
 end module low_pass_filter

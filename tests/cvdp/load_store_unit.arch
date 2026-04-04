@@ -41,7 +41,7 @@ module load_store_unit
 
   // Accept condition: combine into single wire to avoid && codegen issue
   wire accept: Bool;
-  comb accept = ex_if_req_i & ex_if_ready_o & (misaligned == false);
+  let accept = ex_if_req_i & ex_if_ready_o & (misaligned == false);
 
   comb
     if ex_if_type_i == 0

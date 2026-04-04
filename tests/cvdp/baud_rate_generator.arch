@@ -23,5 +23,5 @@ module baud_rate_generator
     end if
   end seq
 
-  comb baud_pulse = baud_acc[BAUD_ACC_WIDTH];
+  let baud_pulse = baud_acc[BAUD_ACC_WIDTH];
 end module baud_rate_generator

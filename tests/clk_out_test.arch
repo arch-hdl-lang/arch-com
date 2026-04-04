@@ -11,5 +11,5 @@ module ClkDiv2
     toggle <= ~toggle;
   end seq
 
-  comb clk_out = toggle;
+  let clk_out = toggle;
 end module ClkDiv2

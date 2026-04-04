@@ -28,7 +28,7 @@ module copilot_rs_232
     baud_pulse -> baud_pulse_w;
   end inst baud_gen
 
-  comb tx_transmitter_valid = (State != 0);
+  let tx_transmitter_valid = (State != 0);
 
   seq
     if ~reset_neg
@@ -91,5 +91,5 @@ module copilot_rs_232
     end if
   end seq
 
-  comb tx_transmitter = tx_out;
+  let tx_transmitter = tx_out;
 end module copilot_rs_232

@@ -15,5 +15,5 @@ module priority_encoder
     end for
   end comb
 
-  comb out = result;
+  let out = result;
 end module priority_encoder

@@ -8,7 +8,7 @@ fsm TopModule
   state [S0, S1, S10]
   default state S0;
   default
-    comb z = false;
+    let z = false;
   end default
 
   state S0 -> S1 when x;

@@ -478,7 +478,7 @@ impl<'a> Codegen<'a> {
                         self.line(&format!("{} {}{};", ty_str, l.name.name, arr_suffix));
                         self.line(&format!("assign {} = {};", l.name.name, val_str));
                     } else {
-                        self.line(&format!("logic {};", l.name.name));
+                        // ty=None: assignment to existing port or wire — no logic declaration
                         self.line(&format!("assign {} = {};", l.name.name, val_str));
                     }
                 }

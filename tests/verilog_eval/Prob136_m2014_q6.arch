@@ -7,7 +7,7 @@ fsm TopModule
   state [A, B, C, D, E, F]
   default state A;
   default
-    comb z = false;
+    let z = false;
   end default
 
   state A -> B when ~w;
@@ -28,12 +28,12 @@ fsm TopModule
   end state D
 
   state E
-    comb z = true;
+    let z = true;
     -> D when w;
   end state E
 
   state F
-    comb z = true;
+    let z = true;
     -> C when ~w;
     -> D when w;
   end state F

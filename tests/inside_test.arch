@@ -4,6 +4,6 @@ module InsideTest
   port hit: out Bool;
   port in_range: out Bool;
 
-  comb hit = addr inside {8'h10, 8'h20, 8'h30};
-  comb in_range = addr inside {8'h00..8'h0F, 8'h80..8'hFF};
+  let hit = addr inside {8'h10, 8'h20, 8'h30};
+  let in_range = addr inside {8'h00..8'h0F, 8'h80..8'hFF};
 end module InsideTest

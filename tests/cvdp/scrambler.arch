@@ -41,7 +41,7 @@ module scrambler
     lfsr_next = {lfsr[14:0], feedback_w};
   end comb
 
-  comb feedback = feedback_w;
+  let feedback = feedback_w;
 
   // Replicate 16-bit lfsr_next to fill DATA_WIDTH bits (cyclic: bit i → lfsr_next[i%16])
   wire lfsr_mask: UInt<DATA_WIDTH>;
@@ -56,5 +56,5 @@ module scrambler
     data_out_r <= data_in ^ lfsr_mask;
   end seq
 
-  comb data_out = data_out_r;
+  let data_out = data_out_r;
 end module scrambler

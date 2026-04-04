@@ -36,6 +36,5 @@ module manchester_encoder
     end if
   end seq
 
-  comb enc_data_out  = data_reg;
-  comb enc_valid_out = valid_reg;
+  let enc_data_out = data_reg;  let enc_valid_out = valid_reg;
 end module manchester_encoder

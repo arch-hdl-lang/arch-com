@@ -1,0 +1,91 @@
+// AXI4 read burst FSM: fetches one cache line (8 x 64-bit beats, INCR).
+// fill_word is a registered Vec output — valid after fill_done is pulsed
+// and retained until the next fill starts.
+fsm FsmAxi4Fill
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  // Handshake with cache controller
+  port fill_start: in Bool;
+  port fill_addr:  in UInt<64>;
+  port fill_done:  out Bool;
+
+  // Filled line words — registered Vec, retain value after Done
+  port reg fill_word: out Vec<UInt<64>, 8> reset rst=>0;
+
+  // AXI4 read address channel
+  port ar_valid: out Bool;
+  port ar_ready: in  Bool;
+  port ar_addr:  out UInt<64>;
+  port ar_id:    out UInt<4>;
+  port ar_len:   out UInt<8>;
+  port ar_size:  out UInt<3>;
+  port ar_burst: out UInt<2>;
+
+  // AXI4 read data channel
+  port r_valid: in  Bool;
+  port r_ready: out Bool;
+  port r_data:  in  UInt<64>;
+  port r_id:    in  UInt<4>;
+  port r_resp:  in  UInt<2>;
+  port r_last:  in  Bool;
+
+  reg fill_addr_r: UInt<64> init 0 reset rst=>0;
+  reg beat_ctr_r:  UInt<4>  init 0 reset rst=>0;
+
+  state [Idle, SendAR, WaitR, Done]
+  default state Idle;
+  default seq on clk rising;
+
+  default
+    comb
+      fill_done = false;
+      ar_valid  = false;
+      ar_addr   = 0;
+      ar_id     = 0;
+      ar_len    = 0;
+      ar_size   = 0;
+      ar_burst  = 0;
+      r_ready   = false;
+    end comb
+  end default
+
+  state Idle
+    seq
+      if fill_start
+        fill_addr_r <= fill_addr;
+        beat_ctr_r  <= 0;
+      end if
+    end seq
+    -> SendAR when fill_start;
+  end state Idle
+
+  state SendAR
+    comb
+      ar_valid = true;
+      ar_addr  = fill_addr_r & ~(63.zext<64>());
+      ar_id    = 0;
+      ar_len   = 7;
+      ar_size  = 3;
+      ar_burst = 1;
+    end comb
+    -> WaitR when ar_ready;
+  end state SendAR
+
+  state WaitR
+    let r_ready = true;
+    seq
+      if r_valid
+        fill_word[beat_ctr_r.trunc<3>()] <= r_data;
+        beat_ctr_r <= (beat_ctr_r + 1).trunc<4>();
+      end if
+    end seq
+    -> Done when r_valid & r_last;
+  end state WaitR
+
+  state Done
+    let fill_done = true;
+    -> Idle;
+  end state Done
+
+end fsm FsmAxi4Fill

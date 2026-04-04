@@ -8,12 +8,12 @@ fsm TopModule
   default state B;
 
   state A
-    comb out = false;
+    let out = false;
     -> B when ~in;
   end state A
 
   state B
-    comb out = true;
+    let out = true;
     -> A when ~in;
   end state B
 end fsm TopModule

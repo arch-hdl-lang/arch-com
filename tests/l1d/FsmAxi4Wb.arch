@@ -1,0 +1,107 @@
+// AXI4 write burst FSM: evicts one dirty cache line (8 x 64-bit beats, INCR).
+// wb_word must be driven valid from wb_start until wb_done.
+// Uses AXI4 write ID=1 to distinguish from fills (ID=0).
+fsm FsmAxi4Wb
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  // Handshake with cache controller
+  port wb_start:  in Bool;
+  port wb_addr:   in UInt<64>;
+  port wb_done:   out Bool;
+
+  // Dirty line words to write (held valid by controller during entire WB)
+  port wb_word: in Vec<UInt<64>, 8>;
+
+  // AXI4 write address channel
+  port aw_valid: out Bool;
+  port aw_ready: in  Bool;
+  port aw_addr:  out UInt<64>;
+  port aw_id:    out UInt<4>;
+  port aw_len:   out UInt<8>;
+  port aw_size:  out UInt<3>;
+  port aw_burst: out UInt<2>;
+
+  // AXI4 write data channel
+  port w_valid: out Bool;
+  port w_ready: in  Bool;
+  port w_data:  out UInt<64>;
+  port w_strb:  out UInt<8>;
+  port w_last:  out Bool;
+
+  // AXI4 write response channel
+  port b_valid: in  Bool;
+  port b_ready: out Bool;
+  port b_id:    in  UInt<4>;
+  port b_resp:  in  UInt<2>;
+
+  reg wb_addr_r:  UInt<64> init 0 reset rst=>0;
+  reg beat_ctr_r: UInt<4>  init 0 reset rst=>0;
+
+  state [Idle, SendAW, SendW, WaitB]
+  default state Idle;
+  default seq on clk rising;
+
+  default
+    comb
+      wb_done  = false;
+      aw_valid = false;
+      aw_addr  = 0;
+      aw_id    = 0;
+      aw_len   = 0;
+      aw_size  = 0;
+      aw_burst = 0;
+      w_valid  = false;
+      w_data   = 0;
+      w_strb   = 0;
+      w_last   = false;
+      b_ready  = false;
+    end comb
+  end default
+
+  state Idle
+    seq
+      if wb_start
+        wb_addr_r  <= wb_addr;
+        beat_ctr_r <= 0;
+      end if
+    end seq
+    -> SendAW when wb_start;
+  end state Idle
+
+  state SendAW
+    comb
+      aw_valid = true;
+      aw_addr  = wb_addr_r & ~(63.zext<64>());
+      aw_id    = 1;
+      aw_len   = 7;
+      aw_size  = 3;
+      aw_burst = 1;
+    end comb
+    -> SendW when aw_ready;
+  end state SendAW
+
+  state SendW
+    comb
+      w_valid = true;
+      w_strb  = 255;
+      w_last  = (beat_ctr_r == 7);
+      w_data  = wb_word[beat_ctr_r.trunc<3>()];
+    end comb
+    seq
+      if w_ready
+        beat_ctr_r <= (beat_ctr_r + 1).trunc<4>();
+      end if
+    end seq
+    -> WaitB when w_ready & (beat_ctr_r == 7);
+  end state SendW
+
+  state WaitB
+    comb
+      b_ready = true;
+      wb_done = b_valid;
+    end comb
+    -> Idle when b_valid;
+  end state WaitB
+
+end fsm FsmAxi4Wb

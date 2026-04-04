@@ -7,7 +7,7 @@ fsm fsm_seq_detector
   state [S0, S1, S2, S3, S4, S5, S6, S7, S8]
   default state S0;
   default
-    comb seq_detected = false;
+    let seq_detected = false;
   end default
 
   state S0
@@ -50,7 +50,7 @@ fsm fsm_seq_detector
   end state S7
 
   state S8
-    comb seq_detected = true;
+    let seq_detected = true;
     -> S1 when seq_in;
     -> S2 when ~seq_in;
   end state S8

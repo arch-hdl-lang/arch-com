@@ -68,7 +68,7 @@ module pipelined_skid_buffer
     ready_out -> r3_ready;
   end inst reg3
 
-  comb data_o = r3_data;
-  comb valid_o = r3_valid;
-  comb ready_o = s0_ready;
+  let data_o = r3_data;
+  let valid_o = r3_valid;
+  let ready_o = s0_ready;
 end module pipelined_skid_buffer

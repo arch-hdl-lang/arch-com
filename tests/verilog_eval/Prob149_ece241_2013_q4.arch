@@ -12,10 +12,10 @@ fsm TopModule
   state [A2, B1, B2, C1, C2, D1]
   default state A2;
   default
-    comb fr2 = false;
-    comb fr1 = false;
-    comb fr0 = false;
-    comb dfr = false;
+    let fr2 = false;
+    let fr1 = false;
+    let fr0 = false;
+    let dfr = false;
   end default
 
   state A2
@@ -42,7 +42,7 @@ fsm TopModule
   end state B2
 
   state C1
-    comb fr0 = true;
+    let fr0 = true;
     -> D1 when s[2];
     -> B2 when ~s[1];
   end state C1

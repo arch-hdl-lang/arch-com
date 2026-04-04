@@ -9,12 +9,12 @@ fsm TopModule
   default state OFF;
 
   state OFF
-    comb out = false;
+    let out = false;
     -> ON when j;
   end state OFF
 
   state ON
-    comb out = true;
+    let out = true;
     -> OFF when k;
   end state ON
 end fsm TopModule

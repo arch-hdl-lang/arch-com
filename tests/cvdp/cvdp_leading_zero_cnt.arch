@@ -30,6 +30,6 @@ module cvdp_leading_zero_cnt
     end if
   end comb
 
-  comb leading_zeros = zcount;
-  comb all_zeros = data == 0;
+  let leading_zeros = zcount;
+  let all_zeros = data == 0;
 end module cvdp_leading_zero_cnt

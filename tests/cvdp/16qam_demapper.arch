@@ -116,6 +116,6 @@ module qam16_demapper_interpolated
     end for
   end comb
 
-  comb bits = bits_acc[N];
-  comb error_flag = err_acc[NUM_GROUPS];
+  let bits = bits_acc[N];
+  let error_flag = err_acc[NUM_GROUPS];
 end module qam16_demapper_interpolated

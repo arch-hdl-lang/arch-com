@@ -417,7 +417,7 @@ end template MyTmpl
 module BadModule implements MyTmpl
   port clk: in Clock<SysDomain>;
   port other: out UInt<8>;
-  comb other = 0;
+  let other = 0;
 end module BadModule
 "#;
     let tokens = lexer::tokenize(source).expect("lexer error");

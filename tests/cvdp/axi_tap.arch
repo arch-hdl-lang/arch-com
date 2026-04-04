@@ -159,21 +159,21 @@ module axi_tap
   //---------------------------------------------------------------
   // Read accept
   //---------------------------------------------------------------
-  comb read_accept_w = ((read_port_q == read_port_r) & (read_pending_q != 4'hF)) | (read_pending_q == 0);
+  let read_accept_w = ((read_port_q == read_port_r) & (read_pending_q != 4'hF)) | (read_pending_q == 0);
 
   //---------------------------------------------------------------
   // Read channel: outport default
   //---------------------------------------------------------------
-  comb outport_arvalid_o = inport_arvalid_i & read_accept_w & (read_port_r == 0);
-  comb outport_araddr_o = inport_araddr_i;
-  comb outport_rready_o = inport_rready_i;
+  let outport_arvalid_o = inport_arvalid_i & read_accept_w & (read_port_r == 0);
+  let outport_araddr_o = inport_araddr_i;
+  let outport_rready_o = inport_rready_i;
 
   //---------------------------------------------------------------
   // Read channel: peripheral0
   //---------------------------------------------------------------
-  comb outport_peripheral0_arvalid_o = inport_arvalid_i & read_accept_w & (read_port_r == 1);
-  comb outport_peripheral0_araddr_o = inport_araddr_i;
-  comb outport_peripheral0_rready_o = inport_rready_i;
+  let outport_peripheral0_arvalid_o = inport_arvalid_i & read_accept_w & (read_port_r == 1);
+  let outport_peripheral0_araddr_o = inport_araddr_i;
+  let outport_peripheral0_rready_o = inport_rready_i;
 
   //---------------------------------------------------------------
   // Read response mux
@@ -190,10 +190,8 @@ module axi_tap
     end if
   end comb
 
-  comb inport_rvalid_o = outport_rvalid_r;
-  comb inport_rdata_o  = outport_rdata_r;
-  comb inport_rresp_o  = outport_rresp_r;
-
+  let inport_rvalid_o = outport_rvalid_r;
+  let inport_rdata_o = outport_rdata_r;  let inport_rresp_o = outport_rresp_r;
   //---------------------------------------------------------------
   // Read arready mux
   //---------------------------------------------------------------
@@ -205,13 +203,12 @@ module axi_tap
     end if
   end comb
 
-  comb inport_arready_o = read_accept_w & inport_arready_r;
+  let inport_arready_o = read_accept_w & inport_arready_r;
 
   //---------------------------------------------------------------
   // Write command/data tracking
   //---------------------------------------------------------------
-  comb wr_cmd_accepted_w  = (inport_awvalid_i & inport_awready_o) | awvalid_q;
-  comb wr_data_accepted_w = (inport_wvalid_i & inport_wready_o) | wvalid_q;
+  let wr_cmd_accepted_w = (inport_awvalid_i & inport_awready_o) | awvalid_q;  let wr_data_accepted_w = (inport_wvalid_i & inport_wready_o) | wvalid_q;
 
   seq
     if inport_awvalid_i & inport_awready_o & ~wr_data_accepted_w
@@ -266,28 +263,18 @@ module axi_tap
   //---------------------------------------------------------------
   // Write accept
   //---------------------------------------------------------------
-  comb write_accept_w = ((write_port_q == write_port_r) & (write_pending_q != 4'hF)) | (write_pending_q == 0);
+  let write_accept_w = ((write_port_q == write_port_r) & (write_pending_q != 4'hF)) | (write_pending_q == 0);
 
   //---------------------------------------------------------------
   // Write channel: outport default
   //---------------------------------------------------------------
-  comb outport_awvalid_o = inport_awvalid_i & ~awvalid_q & write_accept_w & (write_port_r == 0);
-  comb outport_awaddr_o  = inport_awaddr_i;
-  comb outport_wvalid_o  = inport_wvalid_i & ~wvalid_q & (inport_awvalid_i | awvalid_q) & (write_port_r == 0);
-  comb outport_wdata_o   = inport_wdata_i;
-  comb outport_wstrb_o   = inport_wstrb_i;
-  comb outport_bready_o  = inport_bready_i;
-
+  let outport_awvalid_o = inport_awvalid_i & ~awvalid_q & write_accept_w & (write_port_r == 0);
+  let outport_awaddr_o = inport_awaddr_i;  let outport_wvalid_o = inport_wvalid_i & ~wvalid_q & (inport_awvalid_i | awvalid_q) & (write_port_r == 0);  let outport_wdata_o = inport_wdata_i;  let outport_wstrb_o = inport_wstrb_i;  let outport_bready_o = inport_bready_i;
   //---------------------------------------------------------------
   // Write channel: peripheral0
   //---------------------------------------------------------------
-  comb outport_peripheral0_awvalid_o = inport_awvalid_i & ~awvalid_q & write_accept_w & (write_port_r == 1);
-  comb outport_peripheral0_awaddr_o  = inport_awaddr_i;
-  comb outport_peripheral0_wvalid_o  = inport_wvalid_i & ~wvalid_q & ((inport_awvalid_i & write_accept_w) | awvalid_q) & (write_port_r == 1);
-  comb outport_peripheral0_wdata_o   = inport_wdata_i;
-  comb outport_peripheral0_wstrb_o   = inport_wstrb_i;
-  comb outport_peripheral0_bready_o  = inport_bready_i;
-
+  let outport_peripheral0_awvalid_o = inport_awvalid_i & ~awvalid_q & write_accept_w & (write_port_r == 1);
+  let outport_peripheral0_awaddr_o = inport_awaddr_i;  let outport_peripheral0_wvalid_o = inport_wvalid_i & ~wvalid_q & ((inport_awvalid_i & write_accept_w) | awvalid_q) & (write_port_r == 1);  let outport_peripheral0_wdata_o = inport_wdata_i;  let outport_peripheral0_wstrb_o = inport_wstrb_i;  let outport_peripheral0_bready_o = inport_bready_i;
   //---------------------------------------------------------------
   // Write response mux
   //---------------------------------------------------------------
@@ -301,9 +288,8 @@ module axi_tap
     end if
   end comb
 
-  comb inport_bvalid_o = outport_bvalid_r;
-  comb inport_bresp_o  = outport_bresp_r;
-
+  let inport_bvalid_o = outport_bvalid_r;
+  let inport_bresp_o = outport_bresp_r;
   //---------------------------------------------------------------
   // Write awready/wready mux
   //---------------------------------------------------------------
@@ -317,7 +303,6 @@ module axi_tap
     end if
   end comb
 
-  comb inport_awready_o = write_accept_w & ~awvalid_q & inport_awready_r;
-  comb inport_wready_o  = write_accept_w & ~wvalid_q & inport_wready_r;
-
+  let inport_awready_o = write_accept_w & ~awvalid_q & inport_awready_r;
+  let inport_wready_o = write_accept_w & ~wvalid_q & inport_wready_r;
 end module axi_tap

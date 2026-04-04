@@ -13,10 +13,8 @@ module String_to_ASCII_Converter
   reg valid_reg: Bool            reset rst_n => false;
   reg ready_reg: Bool            reset rst_n => true;
 
-  comb ascii_out = ascii_reg;
-  comb valid     = valid_reg;
-  comb ready     = ready_reg;
-
+  let ascii_out = ascii_reg;
+  let valid = valid_reg;  let ready = ready_reg;
   // Conversion function: map encoded value to ASCII
   // 0..9   -> 48..57
   // 10..35 -> 65..90

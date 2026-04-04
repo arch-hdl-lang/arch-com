@@ -6,5 +6,5 @@ module TopModule
   port e: in Bool;
   port out: out UInt<25>;
 
-  comb out = ~{{5{a}}, {5{b}}, {5{c}}, {5{d}}, {5{e}}} ^ {5{{a, b, c, d, e}}};
+  let out = ~{{5{a}}, {5{b}}, {5{c}}, {5{d}}, {5{e}}} ^ {5{{a, b, c, d, e}}};
 end module TopModule

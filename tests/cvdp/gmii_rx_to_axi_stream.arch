@@ -57,7 +57,7 @@ module gmii_rx_to_axi_stream
     end if
   end seq
 
-  comb m_axis_tdata = data_r;
-  comb m_axis_tvalid = valid_r;
-  comb m_axis_tlast = last_r;
+  let m_axis_tdata = data_r;
+  let m_axis_tvalid = valid_r;
+  let m_axis_tlast = last_r;
 end module gmii_rx_to_axi_stream

@@ -20,7 +20,7 @@ module strobe_divider
 
   // Precompute count match to avoid && in if conditions
   let ratio_minus1: UInt<$clog2(MaxRatio_g)> = (In_Ratio - 1).trunc<$clog2(MaxRatio_g)>();
-  comb count_match = (r_Count == ratio_minus1);
+  let count_match = (r_Count == ratio_minus1);
 
   comb
     // Default: hold current state

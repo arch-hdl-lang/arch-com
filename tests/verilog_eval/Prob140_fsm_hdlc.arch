@@ -10,9 +10,9 @@ fsm TopModule
   state [S0, S1, S2, S3, S4, S5, S6, Serr, Sdisc, Sflag]
   default state S0;
   default
-    comb disc = false;
-    comb flag = false;
-    comb err = false;
+    let disc = false;
+    let flag = false;
+    let err = false;
   end default
 
   state S0 -> S1 when in;
@@ -48,19 +48,19 @@ fsm TopModule
   end state S6
 
   state Serr
-    comb err = true;
+    let err = true;
     -> Serr when in;
     -> S0 when ~in;
   end state Serr
 
   state Sdisc
-    comb disc = true;
+    let disc = true;
     -> S1 when in;
     -> S0 when ~in;
   end state Sdisc
 
   state Sflag
-    comb flag = true;
+    let flag = true;
     -> S1 when in;
     -> S0 when ~in;
   end state Sflag

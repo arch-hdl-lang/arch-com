@@ -55,7 +55,7 @@ module cvdp_copilot_mem_allocator
     end if
   end seq
 
-  comb acquire_addr = acquire_addr_r;
-  comb empty = empty_r;
-  comb full = full_r;
+  let acquire_addr = acquire_addr_r;
+  let empty = empty_r;
+  let full = full_r;
 end module cvdp_copilot_mem_allocator

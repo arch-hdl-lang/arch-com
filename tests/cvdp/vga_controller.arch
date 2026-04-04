@@ -34,10 +34,10 @@ module vga_controller
   wire h_active: Bool;
   wire v_active: Bool;
 
-  comb sync = false;
-  comb clk_out = clock;
-  comb h_active = (h_state == VgaPhase::ST_ACTIVE);
-  comb v_active = (v_state == VgaPhase::ST_ACTIVE);
+  let sync = false;
+  let clk_out = clock;
+  let h_active = (h_state == VgaPhase::ST_ACTIVE);
+  let v_active = (v_state == VgaPhase::ST_ACTIVE);
 
   default seq on clock rising;
 

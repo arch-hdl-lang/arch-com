@@ -15,5 +15,5 @@ module single_neuron_dut
     end if
   end seq
 
-  comb seq_out = state_r;
+  let seq_out = state_r;
 end module single_neuron_dut

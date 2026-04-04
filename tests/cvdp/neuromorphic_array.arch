@@ -20,5 +20,5 @@ module neuromorphic_array
     end inst neuron_i
   end generate for i
 
-  comb uo_out = neuron_outputs[NEURONS - 1];
+  let uo_out = neuron_outputs[NEURONS - 1];
 end module neuromorphic_array

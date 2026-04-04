@@ -24,14 +24,10 @@ module radix2_div
   wire p_upper:  UInt<8>;
   wire p_ge_dvs: Bool;
 
-  comb shifted  = {partial[7:0], dvd[7:7]};
-  comb p_upper  = shifted[8:1];
-  comb p_ge_dvs = p_upper.zext<9>() >= dvs.zext<9>();
+  let shifted = {partial[7:0], dvd[7:7]};  let p_upper = shifted[8:1];  let p_ge_dvs = p_upper.zext<9>() >= dvs.zext<9>();
 
-  comb quotient  = quot;
-  comb remainder = partial[7:0];
-  comb done      = done_reg;
-
+  let quotient = quot;  let remainder = partial[7:0];
+  let done = done_reg;
   seq
     done_reg <= false;
     if start

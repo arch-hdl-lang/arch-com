@@ -62,7 +62,7 @@ module mru_counter_policy
     end for
   end comb
 
-  comb way_replace = mru_slot;
+  let way_replace = mru_slot;
 
   seq
     if reset

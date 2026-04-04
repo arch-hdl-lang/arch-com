@@ -36,6 +36,5 @@ module manchester_decoder
     end if
   end seq
 
-  comb dec_data_out  = data_reg;
-  comb dec_valid_out = valid_reg;
+  let dec_data_out = data_reg;  let dec_valid_out = valid_reg;
 end module manchester_decoder

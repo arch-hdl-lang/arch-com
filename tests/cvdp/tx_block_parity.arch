@@ -14,9 +14,8 @@ module tx_block_parity
   reg shift_reg:   UInt<DATA_WIDTH> reset rst_n=>0;
   reg parity_reg:  Bool             reset rst_n=>false;
 
-  comb serial_out = shift_reg[0:0] == 1;
-  comb parity     = parity_reg;
-
+  let serial_out = shift_reg[0:0] == 1;
+  let parity = parity_reg;
   // Compute parity over data_in[sel-1:0] combinationally
   // Since sel is dynamic, we XOR all DATA_WIDTH bits but masked by index < sel
   wire par_comb: Bool;

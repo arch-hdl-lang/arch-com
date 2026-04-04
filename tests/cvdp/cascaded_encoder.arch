@@ -24,10 +24,10 @@ module cascaded_encoder
     out -> lower_out;
   end inst lower_enc
 
-  comb out_upper_half = upper_out;
-  comb out_lower_half = lower_out;
+  let out_upper_half = upper_out;
+  let out_lower_half = lower_out;
 
-  comb upper_active = input_signal[7:4] != 0;
+  let upper_active = input_signal[7:4] != 0;
 
   comb
     if upper_active

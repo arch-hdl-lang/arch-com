@@ -931,22 +931,6 @@ impl Parser {
     fn parse_comb_block(&mut self) -> Result<CombBlock, CompileError> {
         let start = self.expect(TokenKind::Comb)?.span;
 
-        // One-line form: comb target = expr;
-        // If everything after `comb` is on the same line (no newline), it's a one-liner.
-        let is_oneline = if let Some(next) = self.tokens.get(self.pos) {
-            !self.has_newline_between(start.end, next.span.start)
-        } else {
-            false
-        };
-        if is_oneline {
-            let stmt = self.parse_comb_stmt()?;
-            let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
-            return Ok(CombBlock {
-                stmts: vec![stmt],
-                span: start.merge(end_span),
-            });
-        }
-
         let mut stmts = Vec::new();
         while !self.check_end_comb() {
             stmts.push(self.parse_comb_stmt()?);

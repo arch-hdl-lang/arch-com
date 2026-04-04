@@ -1,0 +1,49 @@
+package PkgL1d
+
+  // Cache operation type
+  enum CacheCmd
+    CmdLoad,
+    CmdStore
+  end enum CacheCmd
+
+  // Main cache controller states
+  // Full corrected state machine:
+  //
+  //  Idle ──► Lookup ──► HitResp ──────────────────────────────► Idle
+  //                   └─► HitMerge (store RMW: read old word)
+  //                         └─► HitWrite (write merged + mark dirty) ──► Idle
+  //                   └─► MissAlloc ──► Refill ──► RefillWrite
+  //                   │                              └─► PostRefillStore ──► Idle (store miss)
+  //                   │                              └─────────────────────► Idle (load miss)
+  //                   └─► Writeback ──► MissAlloc (see above)
+  //
+  enum CacheState
+    Idle,
+    Lookup,
+    HitResp,        // load hit: data SRAM result available this cycle → resp_valid
+    HitMerge,       // store hit: old word available; compute merged = (old & ~mask) | (new & mask)
+    HitWrite,       // store hit: write merged word + update dirty bit in tag
+    MissAlloc,      // write new tag (valid=1, dirty=0, new addr); start fill FSM
+    Refill,         // wait for fill_done from AXI fill FSM
+    RefillWrite,    // write 8 fill words to data SRAM (beat counter 0..7)
+    PostRefillStore,// store-miss: apply store RMW on freshly filled line (like HitMerge+HitWrite)
+    Writeback       // read 8 dirty words from data SRAM (beat counter 0..7); pass to wb FSM
+  end enum CacheState
+
+  // AXI4 fill FSM states
+  enum FillState
+    FillIdle,
+    FillSendAR,
+    FillWaitR,
+    FillDone
+  end enum FillState
+
+  // AXI4 writeback FSM states
+  enum WbState
+    WbIdle,
+    WbSendAW,
+    WbSendW,
+    WbWaitB
+  end enum WbState
+
+end package PkgL1d

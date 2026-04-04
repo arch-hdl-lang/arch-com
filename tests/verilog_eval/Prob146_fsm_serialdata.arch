@@ -13,8 +13,8 @@ fsm TopModule
   default state Idle;
   default seq on clk rising;
   default
-    comb out_byte = 0;
-    comb done = false;
+    let out_byte = 0;
+    let done = false;
   end default
 
   state Idle -> Bit0 when ~in;

@@ -4,7 +4,7 @@ module TopModule
   port out_or: out Bool;
   port out_xor: out Bool;
 
-  comb out_and = &in;
-  comb out_or = |in;
-  comb out_xor = ^in;
+  let out_and = &in;
+  let out_or = |in;
+  let out_xor = ^in;
 end module TopModule

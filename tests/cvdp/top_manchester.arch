@@ -37,8 +37,6 @@ module top_manchester
     dec_data_out  -> dec_do;
   end inst dec
 
-  comb enc_valid_out = enc_vo;
-  comb enc_data_out  = enc_do;
-  comb dec_valid_out = dec_vo;
-  comb dec_data_out  = dec_do;
-end module top_manchester
+  let enc_valid_out = enc_vo;
+  let enc_data_out = enc_do;  let dec_valid_out = dec_vo;
+  let dec_data_out = dec_do;end module top_manchester

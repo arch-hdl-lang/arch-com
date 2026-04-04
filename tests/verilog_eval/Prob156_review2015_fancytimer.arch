@@ -16,9 +16,9 @@ fsm TopModule
   default state S;
   default seq on clk rising;
   default
-    comb count = 0;
-    comb counting = false;
-    comb done = false;
+    let count = 0;
+    let counting = false;
+    let done = false;
   end default
 
   state S -> S1 when data;

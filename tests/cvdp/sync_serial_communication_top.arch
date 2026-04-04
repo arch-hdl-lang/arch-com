@@ -33,6 +33,5 @@ module sync_serial_communication_tx_rx
     done       -> rx_done;
   end inst rx
 
-  comb data_out = rx_data_out;
-  comb done     = rx_done;
-end module sync_serial_communication_tx_rx
+  let data_out = rx_data_out;
+  let done = rx_done;end module sync_serial_communication_tx_rx

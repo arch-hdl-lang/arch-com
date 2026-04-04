@@ -1,0 +1,23 @@
+// LRU pseudo-tree state SRAM — one 7-bit tree per set.
+// 7 bits = WAYS-1 internal nodes for 8-way pseudo-LRU tree.
+// Bit layout: tree[6:0] where bit i steers left(0)/right(1) at node i.
+ram RamLruState
+  kind simple_dual;
+  latency 1;
+  param DEPTH: const = 64;
+  param WIDTH: type  = UInt<7>;
+  port clk: in Clock<SysDomain>;
+  store
+    buf: Vec<WIDTH, DEPTH>;
+  end store
+  port rd_port
+    en:    in  Bool;
+    addr:  in  UInt<6>;
+    rdata: out WIDTH;
+  end port rd_port
+  port wr_port
+    en:    in  Bool;
+    addr:  in  UInt<6>;
+    wdata: in  WIDTH;
+  end port wr_port
+end ram RamLruState

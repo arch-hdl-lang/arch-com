@@ -64,7 +64,7 @@ module iir_filter
 
   let zero16: SInt<16> = 0.zext<16>() as SInt<16>;
 
-  comb y = y_reg;
+  let y = y_reg;
 
   seq
     if rst

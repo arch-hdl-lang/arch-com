@@ -7,7 +7,7 @@ fsm TopModule
   state [Bit0, Bit1, Bit2, Bit3, Bit4, Bit5, Bit6, Bit7, Idle, Stop, Ok, Err]
   default state Idle;
   default
-    comb done = false;
+    let done = false;
   end default
 
   state Idle -> Bit0 when ~in;
@@ -34,7 +34,7 @@ fsm TopModule
   end state Stop
 
   state Ok
-    comb done = true;
+    let done = true;
     -> Idle when in;
     -> Bit0 when ~in;
   end state Ok

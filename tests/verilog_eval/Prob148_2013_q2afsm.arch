@@ -8,7 +8,7 @@ fsm TopModule
   state [Idle, Grant0, Grant1, Grant2]
   default state Idle;
   default
-    comb g = 0;
+    let g = 0;
   end default
 
   state Idle
@@ -18,17 +18,17 @@ fsm TopModule
   end state Idle
 
   state Grant0
-    comb g = 1;
+    let g = 1;
     -> Idle when ~r[0];
   end state Grant0
 
   state Grant1
-    comb g = 2;
+    let g = 2;
     -> Idle when ~r[1];
   end state Grant1
 
   state Grant2
-    comb g = 4;
+    let g = 4;
     -> Idle when ~r[2];
   end state Grant2
 end fsm TopModule

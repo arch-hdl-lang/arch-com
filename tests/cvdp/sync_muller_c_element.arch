@@ -46,5 +46,5 @@ module sync_muller_c_element
     end if
   end seq
 
-  comb out = out_r;
+  let out = out_r;
 end module sync_muller_c_element

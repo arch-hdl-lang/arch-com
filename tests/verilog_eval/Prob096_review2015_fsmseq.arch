@@ -8,7 +8,7 @@ fsm TopModule
   state [S, S1, S11, S110, Done]
   default state S;
   default
-    comb start_shifting = false;
+    let start_shifting = false;
   end default
 
   state S -> S1 when data;
@@ -29,7 +29,7 @@ fsm TopModule
   end state S110
 
   state Done
-    comb start_shifting = true;
+    let start_shifting = true;
     -> Done when true;
   end state Done
 

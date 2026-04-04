@@ -12,7 +12,7 @@ fsm TopModule
   default state A;
   default seq on clk rising;
   default
-    comb z = false;
+    let z = false;
   end default
 
   state A
@@ -44,7 +44,7 @@ fsm TopModule
   end state B3
 
   state Out
-    comb z = (cnt == 2);
+    let z = (cnt == 2);
     seq
       cnt <= w ? 1 : 0;
     end seq

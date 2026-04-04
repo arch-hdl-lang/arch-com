@@ -560,7 +560,10 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                         }
                     }
                     ModuleBodyItem::LetBinding(l) => {
-                        if scope.contains_key(&l.name.name) {
+                        if l.ty.is_none() {
+                            // ty=None: assignment to existing port or wire — not a new binding,
+                            // so don't check for or insert into scope.
+                        } else if scope.contains_key(&l.name.name) {
                             errors.push(CompileError::duplicate(&l.name.name, l.name.span));
                         } else {
                             scope.insert(

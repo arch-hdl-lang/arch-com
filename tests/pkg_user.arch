@@ -6,5 +6,5 @@ module PkgUser
   port b: in UInt<8>;
   port result: out UInt<8>;
 
-  comb result = max(a, b);
+  let result = max(a, b);
 end module PkgUser

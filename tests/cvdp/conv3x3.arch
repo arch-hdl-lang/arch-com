@@ -48,7 +48,7 @@ module conv3x3
   // Stage 4: normalized result (divide by 9)
   reg result_reg: UInt<16> reset rst_n => 0;
 
-  comb convolved_data = result_reg;
+  let convolved_data = result_reg;
 
   seq
     // Stage 1

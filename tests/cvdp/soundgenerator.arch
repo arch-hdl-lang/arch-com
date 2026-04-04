@@ -43,7 +43,7 @@ module soundgenerator
   end inst u_tick_micro
 
   // busy when duration counter is non-zero
-  comb busy_w = (duration_cnt != 0);
+  let busy_w = (duration_cnt != 0);
 
   // Combinational outputs
   comb

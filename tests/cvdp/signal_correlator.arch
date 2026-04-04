@@ -22,7 +22,7 @@ module signal_correlator
     end for
   end comb
 
-  comb correlation_output = corr_r;
+  let correlation_output = corr_r;
 
   seq on clk rising
     corr_r <= match_sum.trunc<4>();

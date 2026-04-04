@@ -20,9 +20,8 @@ module binary_multiplier
   reg prod_reg: UInt<2*WIDTH>   reset rst_n => 0;
   reg vout:     Bool            reset rst_n => false;
 
-  comb valid_out = vout;
-  comb Product   = prod_reg;
-
+  let valid_out = vout;
+  let Product = prod_reg;
   // phase 0: iterating through bits 0..31
   // phase 1: done, output result
   seq

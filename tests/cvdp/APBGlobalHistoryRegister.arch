@@ -25,7 +25,7 @@ module APBGlobalHistoryRegister
     clk_gate_latch <= clk_gate_en;
   end seq
 
-  comb pclk_gated_en = ~clk_gate_latch;
+  let pclk_gated_en = ~clk_gate_latch;
 
   // CSR registers
   reg control_reg: UInt<8> reset presetn=>0;

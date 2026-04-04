@@ -12,9 +12,9 @@ fsm TopModule
   state [S, S1, S11, S110, B0, B1, B2, B3, Count, Wait]
   default state S;
   default
-    comb shift_ena = false;
-    comb counting = false;
-    comb done = false;
+    let shift_ena = false;
+    let counting = false;
+    let done = false;
   end default
 
   state S -> S1 when data;
@@ -35,33 +35,33 @@ fsm TopModule
   end state S110
 
   state B0
-    comb shift_ena = true;
+    let shift_ena = true;
     -> B1 when true;
   end state B0
 
   state B1
-    comb shift_ena = true;
+    let shift_ena = true;
     -> B2 when true;
   end state B1
 
   state B2
-    comb shift_ena = true;
+    let shift_ena = true;
     -> B3 when true;
   end state B2
 
   state B3
-    comb shift_ena = true;
+    let shift_ena = true;
     -> Count when true;
   end state B3
 
   state Count
-    comb counting = true;
+    let counting = true;
     -> Wait when done_counting;
     -> Count when ~done_counting;
   end state Count
 
   state Wait
-    comb done = true;
+    let done = true;
     -> S when ack;
     -> Wait when ~ack;
   end state Wait

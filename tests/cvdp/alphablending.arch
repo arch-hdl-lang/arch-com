@@ -83,7 +83,7 @@ module alphablending
   end comb
 
   wire blended_pixel: UInt<24>;
-  comb blended_pixel = {out_r, out_g, out_b};
+  let blended_pixel = {out_r, out_g, out_b};
 
   comb
     done       = finished_r;

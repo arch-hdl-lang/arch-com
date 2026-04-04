@@ -1,0 +1,319 @@
+// L1D Cache — top-level integration.
+// SETS=64, WAYS=8, LINE_BYTES=64, ADDR_W=64, DATA_W=64, TAG_W=52
+// CPU-side: req/resp flat ports  |  Memory-side: AXI4 flat ports
+module L1DCache
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  // ── CPU request ─────────────────────────────────────────────────────────────
+  port req_valid:    in  Bool;
+  port req_ready:    out Bool;
+  port req_vaddr:    in  UInt<64>;
+  port req_data:     in  UInt<64>;
+  port req_be:       in  UInt<8>;
+  port req_is_store: in  Bool;
+
+  // ── CPU response ─────────────────────────────────────────────────────────────
+  port resp_valid:   out Bool;
+  port resp_data:    out UInt<64>;
+  port resp_error:   out Bool;
+
+  // ── AXI4 AR channel (fill reads) ─────────────────────────────────────────────
+  port ar_valid: out Bool;
+  port ar_ready: in  Bool;
+  port ar_addr:  out UInt<64>;
+  port ar_id:    out UInt<4>;
+  port ar_len:   out UInt<8>;
+  port ar_size:  out UInt<3>;
+  port ar_burst: out UInt<2>;
+
+  // ── AXI4 R channel (fill data) ───────────────────────────────────────────────
+  port r_valid: in  Bool;
+  port r_ready: out Bool;
+  port r_data:  in  UInt<64>;
+  port r_id:    in  UInt<4>;
+  port r_resp:  in  UInt<2>;
+  port r_last:  in  Bool;
+
+  // ── AXI4 AW channel (writeback address) ──────────────────────────────────────
+  port aw_valid: out Bool;
+  port aw_ready: in  Bool;
+  port aw_addr:  out UInt<64>;
+  port aw_id:    out UInt<4>;
+  port aw_len:   out UInt<8>;
+  port aw_size:  out UInt<3>;
+  port aw_burst: out UInt<2>;
+
+  // ── AXI4 W channel (writeback data) ──────────────────────────────────────────
+  port w_valid: out Bool;
+  port w_ready: in  Bool;
+  port w_data:  out UInt<64>;
+  port w_strb:  out UInt<8>;
+  port w_last:  out Bool;
+
+  // ── AXI4 B channel (writeback response) ──────────────────────────────────────
+  port b_valid: in  Bool;
+  port b_ready: out Bool;
+  port b_id:    in  UInt<4>;
+  port b_resp:  in  UInt<2>;
+
+  // ── Tag array wires — Vec per signal, one element per way ────────────────────
+  wire tag_rd_en_w:   Vec<Bool, 8>;
+  wire tag_rd_addr_w: Vec<UInt<6>, 8>;
+  wire tag_rd_data_w: Vec<UInt<54>, 8>;
+  wire tag_wr_en_w:   Vec<Bool, 8>;
+  wire tag_wr_addr_w: Vec<UInt<6>, 8>;
+  wire tag_wr_data_w: Vec<UInt<54>, 8>;
+
+  // ── Data SRAM wires ──────────────────────────────────────────────────────────
+  wire data_rd_en_w:   Bool;
+  wire data_rd_addr_w: UInt<12>;
+  wire data_rd_data_w: UInt<64>;
+  wire data_wr_en_w:   Bool;
+  wire data_wr_addr_w: UInt<12>;
+  wire data_wr_data_w: UInt<64>;
+
+  // ── LRU SRAM wires ───────────────────────────────────────────────────────────
+  wire lru_rd_en_w:   Bool;
+  wire lru_rd_addr_w: UInt<6>;
+  wire lru_rd_data_w: UInt<7>;
+  wire lru_wr_en_w:   Bool;
+  wire lru_wr_addr_w: UInt<6>;
+  wire lru_wr_data_w: UInt<7>;
+
+  // ── LRU module wires ─────────────────────────────────────────────────────────
+  wire lru_tree_in_w:    UInt<7>;
+  wire lru_access_way_w: UInt<3>;
+  wire lru_access_en_w:  Bool;
+  wire lru_tree_out_w:   UInt<7>;
+  wire lru_victim_way_w: UInt<3>;
+
+  // ── Fill / Writeback FSM interface wires ─────────────────────────────────────
+  wire fill_start_w: Bool;
+  wire fill_addr_w:  UInt<64>;
+  wire fill_done_w:  Bool;
+  wire fill_word_w:  Vec<UInt<64>, 8>;
+
+  wire wb_start_w: Bool;
+  wire wb_addr_w:  UInt<64>;
+  wire wb_done_w:  Bool;
+  wire wb_word_w:  Vec<UInt<64>, 8>;
+
+  // ── CPU interface output wires ────────────────────────────────────────────────
+  wire req_ready_w:  Bool;
+  wire resp_valid_w: Bool;
+  wire resp_data_w:  UInt<64>;
+  wire resp_error_w: Bool;
+
+  // ── AXI fill output wires ─────────────────────────────────────────────────────
+  wire ar_valid_w: Bool;
+  wire ar_addr_w:  UInt<64>;
+  wire ar_id_w:    UInt<4>;
+  wire ar_len_w:   UInt<8>;
+  wire ar_size_w:  UInt<3>;
+  wire ar_burst_w: UInt<2>;
+  wire r_ready_w:  Bool;
+
+  // ── AXI writeback output wires ────────────────────────────────────────────────
+  wire aw_valid_w: Bool;
+  wire aw_addr_w:  UInt<64>;
+  wire aw_id_w:    UInt<4>;
+  wire aw_len_w:   UInt<8>;
+  wire aw_size_w:  UInt<3>;
+  wire aw_burst_w: UInt<2>;
+  wire w_valid_w:  Bool;
+  wire w_data_w:   UInt<64>;
+  wire w_strb_w:   UInt<8>;
+  wire w_last_w:   Bool;
+  wire b_ready_w:  Bool;
+
+  // ── Tag arrays — 8 ways via generate for ─────────────────────────────────────
+  generate for i in 0..7
+    inst tag_i: RamTagArray
+      clk <- clk;
+      rd_port.en    <- tag_rd_en_w[i];
+      rd_port.addr  <- tag_rd_addr_w[i];
+      rd_port.rdata -> tag_rd_data_w[i];
+      wr_port.en    <- tag_wr_en_w[i];
+      wr_port.addr  <- tag_wr_addr_w[i];
+      wr_port.wdata <- tag_wr_data_w[i];
+    end inst tag_i
+  end generate for i
+
+  // ── Data array ────────────────────────────────────────────────────────────────
+  inst data_ram: RamDataArray
+    clk <- clk;
+    rd_port.en    <- data_rd_en_w;
+    rd_port.addr  <- data_rd_addr_w;
+    rd_port.rdata -> data_rd_data_w;
+    wr_port.en    <- data_wr_en_w;
+    wr_port.addr  <- data_wr_addr_w;
+    wr_port.wdata <- data_wr_data_w;
+  end inst data_ram
+
+  // ── LRU state array ───────────────────────────────────────────────────────────
+  inst lru_ram: RamLruState
+    clk <- clk;
+    rd_port.en    <- lru_rd_en_w;
+    rd_port.addr  <- lru_rd_addr_w;
+    rd_port.rdata -> lru_rd_data_w;
+    wr_port.en    <- lru_wr_en_w;
+    wr_port.addr  <- lru_wr_addr_w;
+    wr_port.wdata <- lru_wr_data_w;
+  end inst lru_ram
+
+  // ── LRU update module ─────────────────────────────────────────────────────────
+  inst lru_upd: ModuleLruUpdate
+    tree_in    <- lru_tree_in_w;
+    access_way <- lru_access_way_w;
+    access_en  <- lru_access_en_w;
+    tree_out   -> lru_tree_out_w;
+    victim_way -> lru_victim_way_w;
+  end inst lru_upd
+
+  // ── Cache controller ──────────────────────────────────────────────────────────
+  inst ctrl: FsmCacheCtrl
+    clk <- clk;
+    rst <- rst;
+
+    // CPU interface
+    req_valid    <- req_valid;
+    req_ready    -> req_ready_w;
+    req_vaddr    <- req_vaddr;
+    req_data     <- req_data;
+    req_be       <- req_be;
+    req_is_store <- req_is_store;
+    resp_valid   -> resp_valid_w;
+    resp_data    -> resp_data_w;
+    resp_error   -> resp_error_w;
+
+    // Tag SRAM (Vec ports — one connection per Vec signal)
+    tag_rd_en   -> tag_rd_en_w;
+    tag_rd_addr -> tag_rd_addr_w;
+    tag_rd_data <- tag_rd_data_w;
+    tag_wr_en   -> tag_wr_en_w;
+    tag_wr_addr -> tag_wr_addr_w;
+    tag_wr_data -> tag_wr_data_w;
+
+    // Data SRAM
+    data_rd_en   -> data_rd_en_w;
+    data_rd_addr -> data_rd_addr_w;
+    data_rd_data <- data_rd_data_w;
+    data_wr_en   -> data_wr_en_w;
+    data_wr_addr -> data_wr_addr_w;
+    data_wr_data -> data_wr_data_w;
+
+    // LRU SRAM
+    lru_rd_en   -> lru_rd_en_w;
+    lru_rd_addr -> lru_rd_addr_w;
+    lru_rd_data <- lru_rd_data_w;
+    lru_wr_en   -> lru_wr_en_w;
+    lru_wr_addr -> lru_wr_addr_w;
+    lru_wr_data -> lru_wr_data_w;
+
+    // LRU module
+    lru_tree_in    -> lru_tree_in_w;
+    lru_access_way -> lru_access_way_w;
+    lru_access_en  -> lru_access_en_w;
+    lru_tree_out   <- lru_tree_out_w;
+    lru_victim_way <- lru_victim_way_w;
+
+    // Fill FSM
+    fill_start -> fill_start_w;
+    fill_addr  -> fill_addr_w;
+    fill_done  <- fill_done_w;
+    fill_word  <- fill_word_w;
+
+    // Writeback FSM
+    wb_start -> wb_start_w;
+    wb_addr  -> wb_addr_w;
+    wb_done  <- wb_done_w;
+    wb_word  -> wb_word_w;
+  end inst ctrl
+
+  // ── Fill FSM ─────────────────────────────────────────────────────────────────
+  inst fill_fsm: FsmAxi4Fill
+    clk <- clk;
+    rst <- rst;
+
+    fill_start <- fill_start_w;
+    fill_addr  <- fill_addr_w;
+    fill_done  -> fill_done_w;
+    fill_word  -> fill_word_w;
+
+    ar_valid -> ar_valid_w;
+    ar_ready <- ar_ready;
+    ar_addr  -> ar_addr_w;
+    ar_id    -> ar_id_w;
+    ar_len   -> ar_len_w;
+    ar_size  -> ar_size_w;
+    ar_burst -> ar_burst_w;
+
+    r_valid <- r_valid;
+    r_ready -> r_ready_w;
+    r_data  <- r_data;
+    r_id    <- r_id;
+    r_resp  <- r_resp;
+    r_last  <- r_last;
+  end inst fill_fsm
+
+  // ── Writeback FSM ─────────────────────────────────────────────────────────────
+  inst wb_fsm: FsmAxi4Wb
+    clk <- clk;
+    rst <- rst;
+
+    wb_start <- wb_start_w;
+    wb_addr  <- wb_addr_w;
+    wb_done  -> wb_done_w;
+    wb_word  <- wb_word_w;
+
+    aw_valid -> aw_valid_w;
+    aw_ready <- aw_ready;
+    aw_addr  -> aw_addr_w;
+    aw_id    -> aw_id_w;
+    aw_len   -> aw_len_w;
+    aw_size  -> aw_size_w;
+    aw_burst -> aw_burst_w;
+
+    w_valid -> w_valid_w;
+    w_ready <- w_ready;
+    w_data  -> w_data_w;
+    w_strb  -> w_strb_w;
+    w_last  -> w_last_w;
+
+    b_valid <- b_valid;
+    b_ready -> b_ready_w;
+    b_id    <- b_id;
+    b_resp  <- b_resp;
+  end inst wb_fsm
+
+  // ── Route wires to top-level output ports ────────────────────────────────────
+  comb
+    req_ready  = req_ready_w;
+    resp_valid = resp_valid_w;
+    resp_data  = resp_data_w;
+    resp_error = resp_error_w;
+
+    ar_valid = ar_valid_w;
+    ar_addr  = ar_addr_w;
+    ar_id    = ar_id_w;
+    ar_len   = ar_len_w;
+    ar_size  = ar_size_w;
+    ar_burst = ar_burst_w;
+    r_ready  = r_ready_w;
+
+    aw_valid = aw_valid_w;
+    aw_addr  = aw_addr_w;
+    aw_id    = aw_id_w;
+    aw_len   = aw_len_w;
+    aw_size  = aw_size_w;
+    aw_burst = aw_burst_w;
+    w_valid  = w_valid_w;
+    w_data   = w_data_w;
+    w_strb   = w_strb_w;
+    w_last   = w_last_w;
+    b_ready  = b_ready_w;
+  end comb
+
+end module L1DCache

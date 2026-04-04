@@ -44,11 +44,11 @@ module wishbone_to_ahb_bridge
   end comb
 
   // AHB outputs - directly driven from WB inputs
-  comb hwrite = we_i;
-  comb haddr = addr_i;
-  comb hwdata = data_i;
-  comb hburst = 0b000.zext<3>();
-  comb hsize = size_val;
+  let hwrite = we_i;
+  let haddr = addr_i;
+  let hwdata = data_i;
+  let hburst = 0b000.zext<3>();
+  let hsize = size_val;
 
   // htrans: NONSEQ (2'b10) when active, IDLE (2'b00) otherwise
   comb
@@ -60,9 +60,9 @@ module wishbone_to_ahb_bridge
   end comb
 
   // data_o: pass through hrdata
-  comb data_o = hrdata;
+  let data_o = hrdata;
 
   // ack_o: acknowledge when active and hready
-  comb ack_o = wb_active & hready;
+  let ack_o = wb_active & hready;
 
 end module wishbone_to_ahb_bridge

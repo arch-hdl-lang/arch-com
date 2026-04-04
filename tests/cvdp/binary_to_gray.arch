@@ -4,5 +4,5 @@ module binary_to_gray
   port gray_out: out UInt<WIDTH>;
 
   let shifted: UInt<WIDTH> = binary_in >> 1;
-  comb gray_out = binary_in ^ shifted;
+  let gray_out = binary_in ^ shifted;
 end module binary_to_gray

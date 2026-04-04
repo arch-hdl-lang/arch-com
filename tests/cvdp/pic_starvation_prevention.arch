@@ -76,7 +76,7 @@ module interrupt_controller
   wire any_starvation: Bool;
 
   // Inverted mask
-  comb mask_inv = ~interrupt_mask;
+  let mask_inv = ~interrupt_mask;
 
   // Compute effective priorities combinationally
   comb

@@ -7,7 +7,7 @@ fsm TopModule
   state [B0, B1, B2, B3, Done]
   default state B0;
   default
-    comb shift_ena = true;
+    let shift_ena = true;
   end default
 
   state B0 -> B1 when true;
@@ -19,7 +19,7 @@ fsm TopModule
   state B3 -> Done when true;
 
   state Done
-    comb shift_ena = false;
+    let shift_ena = false;
     -> Done when true;
   end state Done
 

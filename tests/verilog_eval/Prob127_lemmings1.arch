@@ -9,17 +9,17 @@ fsm TopModule
   state [WalkLeft, WalkRight]
   default state WalkLeft;
   default
-    comb walk_left = false;
-    comb walk_right = false;
+    let walk_left = false;
+    let walk_right = false;
   end default
 
   state WalkLeft
-    comb walk_left = true;
+    let walk_left = true;
     -> WalkRight when bump_left;
   end state WalkLeft
 
   state WalkRight
-    comb walk_right = true;
+    let walk_right = true;
     -> WalkLeft when bump_right;
   end state WalkRight
 end fsm TopModule

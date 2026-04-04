@@ -35,8 +35,8 @@ module car_parking_system
   end comb
 
   wire avail_tens_x10: UInt<4>;
-  comb avail_tens_x10 = (avail_tens_digit * 10).trunc<4>();
-  comb avail_units_digit = (available_spaces - avail_tens_x10).trunc<4>();
+  let avail_tens_x10 = (avail_tens_digit * 10).trunc<4>();
+  let avail_units_digit = (available_spaces - avail_tens_x10).trunc<4>();
 
   comb
     if count_car >= 10
@@ -47,8 +47,8 @@ module car_parking_system
   end comb
 
   wire count_tens_x10: UInt<4>;
-  comb count_tens_x10 = (count_tens_digit * 10).trunc<4>();
-  comb count_units_digit = (count_car - count_tens_x10).trunc<4>();
+  let count_tens_x10 = (count_tens_digit * 10).trunc<4>();
+  let count_units_digit = (count_car - count_tens_x10).trunc<4>();
 
   comb
     if avail_tens_digit == 0

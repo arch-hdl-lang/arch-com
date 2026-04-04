@@ -34,7 +34,7 @@ module cdc_pulse_synchronizer
     prev_r  <= sync2_r;
   end seq
 
-  comb des_pulse = sync2_r ^ prev_r;
+  let des_pulse = sync2_r ^ prev_r;
 
   // Reset synchronizers: 2FF sync of rst_in into each clock domain
   reg rst_src1: Bool reset rst_in=>true;
@@ -43,7 +43,7 @@ module cdc_pulse_synchronizer
     rst_src1 <= false;
     rst_src2 <= rst_src1;
   end seq
-  comb rst_src_sync = rst_src2;
+  let rst_src_sync = rst_src2;
 
   reg rst_des1: Bool reset rst_in=>true;
   reg rst_des2: Bool reset rst_in=>true;
@@ -51,5 +51,5 @@ module cdc_pulse_synchronizer
     rst_des1 <= false;
     rst_des2 <= rst_des1;
   end seq
-  comb rst_des_sync = rst_des2;
+  let rst_des_sync = rst_des2;
 end module cdc_pulse_synchronizer

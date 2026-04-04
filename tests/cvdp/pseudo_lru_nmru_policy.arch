@@ -43,7 +43,7 @@ module pseudo_lru_nmru_policy
     end for
   end comb
 
-  comb way_replace = replace_way;
+  let way_replace = replace_way;
 
   seq
     if access & hit

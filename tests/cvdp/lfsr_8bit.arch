@@ -8,7 +8,7 @@ module lfsr_8bit
 
   wire feedback: Bool;
   // Fibonacci LFSR: taps at bits 6,5,1,0 (0-indexed); right-shift
-  comb feedback = state[6] ^ state[5] ^ state[1] ^ state[0];
+  let feedback = state[6] ^ state[5] ^ state[1] ^ state[0];
 
   seq on clock rising
     if ~reset
@@ -18,5 +18,5 @@ module lfsr_8bit
     end if
   end seq
 
-  comb lfsr_out = state;
+  let lfsr_out = state;
 end module lfsr_8bit

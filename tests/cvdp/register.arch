@@ -13,9 +13,9 @@ module register
 
   default seq on clk rising;
 
-  comb ready_out = (~data_present) | ready_in;
-  comb valid_out = data_present;
-  comb data_out = mem;
+  let ready_out = (~data_present) | ready_in;
+  let valid_out = data_present;
+  let data_out = mem;
 
   seq
     if data_present

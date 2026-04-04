@@ -41,6 +41,5 @@ module carry_lookahead_adder
     carry_r <= carry_next;
   end seq
 
-  comb S     = S_r;
-  comb carry = carry_r;
+  let S = S_r;  let carry = carry_r;
 end module carry_lookahead_adder

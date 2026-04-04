@@ -12,5 +12,5 @@ module Bit_Change_Detector
     bit_in_d <= bit_in;
   end seq
 
-  comb change_pulse = bit_in ^ bit_in_d;
+  let change_pulse = bit_in ^ bit_in_d;
 end module Bit_Change_Detector

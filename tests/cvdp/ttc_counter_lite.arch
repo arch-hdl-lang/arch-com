@@ -19,7 +19,7 @@ module ttc_counter_lite
   reg match_flag:       Bool reset reset=>0;
 
   wire status_clear: Bool;
-  comb status_clear = axi_write_en & (axi_addr == 4);
+  let status_clear = axi_write_en & (axi_addr == 4);
 
   // Main sequential logic
   seq

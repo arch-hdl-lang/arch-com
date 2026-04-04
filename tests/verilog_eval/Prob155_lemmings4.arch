@@ -18,14 +18,14 @@ fsm TopModule
   default state WalkLeft;
   default seq on clk rising;
   default
-    comb walk_left = false;
-    comb walk_right = false;
-    comb aaah = false;
-    comb digging = false;
+    let walk_left = false;
+    let walk_right = false;
+    let aaah = false;
+    let digging = false;
   end default
 
   state WalkLeft
-    comb walk_left = true;
+    let walk_left = true;
     seq
       fall_count <= 0;
     end seq
@@ -35,7 +35,7 @@ fsm TopModule
   end state WalkLeft
 
   state WalkRight
-    comb walk_right = true;
+    let walk_right = true;
     seq
       fall_count <= 0;
     end seq
@@ -45,7 +45,7 @@ fsm TopModule
   end state WalkRight
 
   state FallLeft
-    comb aaah = true;
+    let aaah = true;
     seq
       fall_count <= fall_count < 20 ? (fall_count + 1).trunc<5>() : fall_count;
     end seq
@@ -54,7 +54,7 @@ fsm TopModule
   end state FallLeft
 
   state FallRight
-    comb aaah = true;
+    let aaah = true;
     seq
       fall_count <= fall_count < 20 ? (fall_count + 1).trunc<5>() : fall_count;
     end seq
@@ -63,7 +63,7 @@ fsm TopModule
   end state FallRight
 
   state DigLeft
-    comb digging = true;
+    let digging = true;
     seq
       fall_count <= 0;
     end seq
@@ -71,7 +71,7 @@ fsm TopModule
   end state DigLeft
 
   state DigRight
-    comb digging = true;
+    let digging = true;
     seq
       fall_count <= 0;
     end seq

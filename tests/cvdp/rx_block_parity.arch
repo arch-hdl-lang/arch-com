@@ -18,9 +18,7 @@ module rx_block_parity
   reg par_err_reg: Bool             reset rst_n=>false;
   reg par_acc:     Bool             reset rst_n=>false;
 
-  comb data_out   = shift_reg;
-  comb valid      = valid_reg;
-  comb parity_err = par_err_reg;
+  let data_out = shift_reg;  let valid = valid_reg;  let parity_err = par_err_reg;
 
   seq
     if bit_cnt == DATA_WIDTH.zext<8>()

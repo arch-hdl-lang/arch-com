@@ -23,7 +23,7 @@ module cvdp_copilot_register_file_2R1W
     en_latch_r <= wen1 | ren1 | ren2;
   end seq
 
-  comb gated_clk_w = en_latch_r & clk;
+  let gated_clk_w = en_latch_r & clk;
 
   // Register file memory
   reg rf_mem: Vec<UInt<DATA_WIDTH>, 32> reset resetn=>0;

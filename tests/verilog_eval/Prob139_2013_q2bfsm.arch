@@ -11,14 +11,14 @@ fsm TopModule
   state [A, SetF, X1, X0, X01, SetG1, SetG2, GoodG, BadG]
   default state A;
   default
-    comb f = false;
-    comb g = false;
+    let f = false;
+    let g = false;
   end default
 
   state A -> SetF when true;
 
   state SetF
-    comb f = true;
+    let f = true;
     -> X1 when true;
   end state SetF
 
@@ -32,19 +32,19 @@ fsm TopModule
   end state X01
 
   state SetG1
-    comb g = true;
+    let g = true;
     -> GoodG when y;
     -> SetG2 when ~y;
   end state SetG1
 
   state SetG2
-    comb g = true;
+    let g = true;
     -> GoodG when y;
     -> BadG when ~y;
   end state SetG2
 
   state GoodG
-    comb g = true;
+    let g = true;
     -> GoodG when true;
   end state GoodG
 

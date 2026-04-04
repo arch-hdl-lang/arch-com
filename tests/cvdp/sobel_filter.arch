@@ -38,8 +38,7 @@ module sobel_filter
     magnitude = (abs_gx.zext<13>() + abs_gy.zext<13>()).trunc<13>();
   end comb
 
-  comb edge_out  = edge_out_r;
-  comb valid_out = valid_out_r;
+  let edge_out = edge_out_r;  let valid_out = valid_out_r;
 
   seq on clk rising
     valid_out_r <= false;

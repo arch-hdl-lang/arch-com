@@ -219,10 +219,10 @@ module microcode_sequencer
   let cin_ext: UInt<5> = {false, false, false, false, fa_cin};
   let fa_ab: UInt<6> = a_ext + b_ext;
   let fa_full_v: UInt<7> = fa_ab + cin_ext.zext<6>();
-  comb fa_sum = fa_full_v[3:0];
+  let fa_sum = fa_full_v[3:0];
 
   wire fa_cout: Bool;
-  comb fa_cout = fa_full_v[4:4] == 1;
+  let fa_cout = fa_full_v[4:4] == 1;
 
   // ---- output enable ----
   wire arith_d_out: UInt<4>;
@@ -257,15 +257,15 @@ module microcode_sequencer
   let pci_ext: UInt<5> = {false, false, false, false, pc_inc_cin};
   let pc_inc_result: UInt<6> = pc_ext + pci_ext;
   wire pc_inc_out: UInt<4>;
-  comb pc_inc_out = pc_inc_result[3:0];
+  let pc_inc_out = pc_inc_result[3:0];
   wire pc_inc_cout: Bool;
-  comb pc_inc_cout = pc_inc_result[4:4] == 1;
+  let pc_inc_cout = pc_inc_result[4:4] == 1;
 
   reg pc_reg_r: UInt<4> init 0;
   seq
     pc_reg_r <= pc_inc_out;
   end seq
-  comb pc_out_w = pc_reg_r;
+  let pc_out_w = pc_reg_r;
 
   // ---- Result Register ----
   reg result_reg: UInt<4> init 0;
