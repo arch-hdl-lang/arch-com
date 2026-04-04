@@ -24,8 +24,9 @@ doc/node_modules/
 doc/package.json
 doc/package-lock.json
 
-# Generated docx — rebuilt from .md via update_arch_spec.py
+# Generated docx and build script — not source of truth
 doc/*.docx
+doc/update_arch_spec.py
 
 # Not ready for publication
 doc/Arch_Benchmark_Report.md
