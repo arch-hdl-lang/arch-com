@@ -157,6 +157,33 @@ def extract_and_run(name_substr, sv_file=None):
         if 'cocotb.sim_time_utils' in pycontent:
             pycontent = pycontent.replace('from cocotb.sim_time_utils import', 'from cocotb.utils import')
             changed = True
+        # Fix cocotb 2.0: TestFailure removed — replace with AssertionError
+        if 'cocotb.result' in pycontent and 'TestFailure' in pycontent:
+            pycontent = pycontent.replace('from cocotb.result import TestFailure', '# cocotb 2.0: TestFailure removed\nTestFailure = AssertionError')
+            changed = True
+        # Fix cocotb 2.0: cocotb.runner moved to cocotb_tools.runner
+        if 'from cocotb.runner import' in pycontent:
+            pycontent = pycontent.replace('from cocotb.runner import', 'from cocotb_tools.runner import')
+            changed = True
+        if 'import cocotb.runner' in pycontent:
+            pycontent = pycontent.replace('import cocotb.runner', 'import cocotb_tools.runner')
+            changed = True
+        # Fix combined test files: cocotb test + pytest runner in same file.
+        # The simulator imports the module to find @cocotb.test() functions, but
+        # a pytest runner function with the same name shadows the cocotb test.
+        # Fix: rename all non-cocotb `def test_X(` functions to `def run_test_X(`,
+        # and update @pytest.mark.parametrize + __main__ references accordingly.
+        if 'get_runner' in pycontent and '@cocotb.test()' in pycontent and 'test_runner' not in os.path.basename(pyfile):
+            import re as _re3
+            # Find cocotb test function names
+            cocotb_tests = set(_re3.findall(r'@cocotb\.test\(\)\s*\nasync def (\w+)', pycontent))
+            # Find all non-cocotb def test_X functions that shadow them
+            for ct_name in cocotb_tests:
+                # Rename the pytest wrapper (non-async def with same name)
+                pattern = r'(?<!async )def ' + ct_name + r'\('
+                if _re3.search(pattern, pycontent):
+                    pycontent = _re3.sub(pattern, f'def run_{ct_name}(', pycontent)
+                    changed = True
         # Fix Logic vs LogicArray: .integer on single-bit Logic (cocotb 2.0)
         if '.value.integer' in pycontent:
             fix = "\n# Monkey-patch cocotb Logic to support .integer\ntry:\n    from cocotb.types import Logic\n    if not hasattr(Logic, 'integer'):\n        Logic.integer = property(lambda self: int(self))\nexcept Exception:\n    pass\n"
