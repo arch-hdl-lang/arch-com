@@ -35,9 +35,21 @@ end keyword Name
 **Signal assignment:**
 
 ```
-comb y = expr;                        // one-line combinational
-comb y = expr; end comb              // equivalent multi-line form
+// ── Combinational (let) ──────────────────────────────────────────────────
+let x: UInt<32> = a + b;            // declare new wire, type required
+let out_port = acc;                  // assign to existing output port or wire
+                                     //   (no type — inferred from declaration)
+wire w: UInt<8>;                     // declare wire; drive it in comb block
+comb                                 // multi-assignment / conditional
+  if sel
+    w = a;
+  else
+    w = b;
+  end if
+  other_port = w;
+end comb
 
+// ── Registered (seq) ─────────────────────────────────────────────────────
 reg r: T reset rst => 0 sync high;  // register with reset (value after =>)
 reg r: T init 0 reset rst => 0;    // init sets SV declaration initializer
 reg r: T reset none;                 // register without reset
@@ -55,8 +67,6 @@ seq on clk rising                    // clocked process — uses <=
 end seq
 
 seq r <= expr;                       // one-line seq (uses default clock)
-
-let x: UInt<32> = a + b;            // combinational wire (explicit type required)
 ```
 
 **Conditionals:** use `elsif` (one word), NOT `else if`:

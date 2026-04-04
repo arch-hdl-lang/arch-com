@@ -674,13 +674,17 @@ Arch has three kinds of module-scope signal declarations. Each has a distinct sy
 
 | Construct | Syntax | Assigned in | SV equivalent |
 |-----------|--------|-------------|---------------|
-| `let` | `let x: T = expr;` | declaration (fixed combinational expr) | `logic [W-1:0] x; assign x = expr;` |
+| `let` (declare) | `let x: T = expr;` | declaration — type required | `logic [W-1:0] x; assign x = expr;` |
+| `let` (assign) | `let x = expr;` | declaration — x must already exist as output port or wire | `assign x = expr;` (no new declaration) |
 | `wire` | `wire x: T;` | `comb` block (`=`) | `logic [W-1:0] x;` (driven in `assign`/`always_comb`) |
 | `reg` | `reg x: T [init V] [reset R=>V];` | `seq` block (`<=`) | `logic [W-1:0] x = V;` (driven in `always_ff`) |
 
-**`let`** declares a combinational binding fixed to a single expression at the declaration site. It cannot appear on the left-hand side of a `comb` or `seq` block.
+**`let`** has two forms:
 
-**`wire`** declares an explicitly-typed combinational net with no initializer. It must be driven exactly once inside a `comb` block using `=`. This is the right choice when the combinational expression is too complex for a single inline `let`, or when the wire must be conditionally driven using `if/elsif/else` inside the `comb` block. The type checker enforces that only `wire` declarations and output ports are valid targets for `comb` assignment — assigning to a `reg` inside a `comb` block is a compile error.
+- `let x: T = expr;` — declares a new combinational wire `x` of type `T`, fixed to `expr`. Emits `logic [W-1:0] x; assign x = expr;` in SV. Type annotation is required when declaring.
+- `let x = expr;` — assigns to an **already-declared** output port or wire named `x`. No new signal is created; the type is taken from the existing declaration. Emits `assign x = expr;`. This replaces the old one-liner `comb x = expr;` form. Errors if `x` is not in scope, is an input port, or is a `reg` (use `seq` for those).
+
+**`wire`** declares an explicitly-typed combinational net with no initializer. It must be driven by a `let x = expr;` assignment or inside a `comb ... end comb` block. Use `wire` when the value is conditionally assigned (`if/elsif/else`) — `let x: T = expr;` only supports a single fixed expression. The type checker enforces that only `wire` declarations and output ports are valid comb targets — assigning to a `reg` in `comb` is a compile error.
 
 **`reg`** declares a flip-flop. It must be assigned inside a `seq` block using `<=`. Reset polarity and mode are declared per register. The syntax is `reg x: T [init VALUE] [reset SIGNAL=>VALUE];` where `init` is optional (sets only the SV declaration initializer `logic x = VALUE;`) and `reset SIGNAL=>VALUE` specifies both the reset signal and the value to load on reset. Use `reset none` for registers that should not be reset. A `reg default:` declaration sets the default init and reset for all subsequent registers in scope: `reg default: [init VALUE] reset SIGNAL=>VALUE;`.
 

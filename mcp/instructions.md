@@ -17,7 +17,7 @@ CONSTRUCT SELECTION — use first-class constructs when possible:
 Common mistakes to avoid:
 - inst connections use 'port <- signal' for inputs and 'port -> wire' for outputs (NOT '=' or direct assignment, no 'connect' keyword)
 - Hierarchical references (inst_name.port_name) are FORBIDDEN — always connect outputs explicitly
-- 'let' declarations REQUIRE an initializer (let x: UInt<8> = expr;)
+- 'let' has two forms: 'let x: T = expr;' declares a new wire (type required); 'let x = expr;' (no type) assigns to an already-declared output port or wire
 - Do NOT use reserved keywords as signal/register names (counter, interface, domain, etc.)
 - 'in', 'out', 'state' are contextual keywords — safe to use as port/signal names
 - All output ports of an inst MUST be explicitly connected via 'port -> wire'
@@ -25,7 +25,7 @@ Common mistakes to avoid:
 - Bit-slice syntax: expr[hi:lo] extracts bits (NOT .trunc<Hi,Lo>())
 - Bit/byte reverse: expr.reverse(1) for bit-reverse, expr.reverse(8) for byte-reverse (width must be divisible by N)
 - Prefer concat {a, b} over bit-by-bit for loops; prefer direct boolean (z = (A == B);) over if/else
-- Prefer putting next-value logic directly in seq (if/elsif) instead of splitting into separate comb + seq blocks. Use 'let' for pure combinational expressions that feed into seq. Only use 'wire' + 'comb' when the combinational value drives multiple consumers or output ports.
+- Prefer putting next-value logic directly in seq (if/elsif) instead of splitting into separate comb + seq blocks. Use 'let x: T = expr;' for pure combinational expressions that feed into seq. Use 'let x = expr;' to drive an existing output port or wire. Only use 'wire' + 'comb ... end comb' when the value is conditionally assigned (if/elsif/else).
 - In fsm states, do NOT write '-> X when true;' — omit the transition to stay in the current state (implicit hold), or restructure so the last branch uses a real condition
 - Do NOT declare 'domain ... end domain' in pure combinational modules — domains are only needed when Clock/Reset ports are used
 - SysDomain is built-in — do NOT declare 'domain SysDomain end domain SysDomain'; just use Clock<SysDomain> directly
