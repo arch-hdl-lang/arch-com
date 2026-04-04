@@ -4,7 +4,7 @@ Hardware Description Language
 
 Language Specification · v0.1 · March 2026
 
-*A purpose-built micro-architecture HDL --- clean RTL semantics, ownership-aware types, and first-class pipelines, FSMs, FIFOs, and arbiters. Designed to be generated correctly by AI without prior training.*
+*A purpose-built micro-architecture HDL --- strong types and first-class pipelines, FSMs, FIFOs, and arbiters. Incorrect design patterns --- multiple drivers, undriven ports, clock-domain crossings, width mismatches --- are compile-time errors, never runtime surprises. Designed to be generated correctly by AI without prior training.*
 
 **1. Design Philosophy**
 
