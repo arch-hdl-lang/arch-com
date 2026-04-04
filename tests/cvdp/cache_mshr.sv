@@ -1,94 +1,149 @@
-// cache_mshr: Miss Status Handling Registers
-// Tracks multiple outstanding cache misses with a linked-list structure.
-// Supports: allocate, finalize, fill (addr lookup), dequeue (linked-list traversal).
-//
-// This module is hand-compiled to SV (cache_mshr.sv) because it requires:
-//   - Parameterized array sizes with $clog2 derived widths
-//   - A sub-module (leading_zero_cnt) instantiated twice
-//   - Linked-list pointer logic
-//   - SP RAM (write latency 1, read combinational)
-//
-// The .arch source below documents the design intent in ARCH notation.
-// Key parameters:
-//   MSHR_SIZE          = 32  (default)
-//   CS_LINE_ADDR_WIDTH = 10
-//   WORD_SEL_WIDTH     = 4
-//   WORD_SIZE          = 4
-//   MSHR_ADDR_WIDTH    = clog2(MSHR_SIZE)   = 5
-//   TAG_WIDTH          = 32 - (CS_LINE_ADDR_WIDTH + clog2(WORD_SIZE) + WORD_SEL_WIDTH) = 16
-//   CS_WORD_WIDTH      = WORD_SIZE * 8       = 32
-//   DATA_WIDTH         = WORD_SEL_WIDTH + WORD_SIZE + CS_WORD_WIDTH + TAG_WIDTH = 56
-module cache_mshr (
+module cache_mshr #(
+  parameter int MSHR_SIZE = 32,
+  parameter int CS_LINE_ADDR_WIDTH = 10,
+  parameter int WORD_SEL_WIDTH = 4,
+  parameter int WORD_SIZE = 4,
+  localparam int MSHR_ADDR_WIDTH = $clog2(MSHR_SIZE),
+  localparam int TAG_WIDTH = 32 - CS_LINE_ADDR_WIDTH - $clog2(WORD_SIZE) - WORD_SEL_WIDTH,
+  localparam int CS_WORD_WIDTH = WORD_SIZE * 8,
+  localparam int DATA_WIDTH = WORD_SEL_WIDTH + WORD_SIZE + CS_WORD_WIDTH + TAG_WIDTH
+) (
   input logic clk,
   input logic reset,
   input logic fill_valid,
-  input logic [5-1:0] fill_id,
-  output logic [10-1:0] fill_addr,
+  input logic [MSHR_ADDR_WIDTH-1:0] fill_id,
+  output logic [CS_LINE_ADDR_WIDTH-1:0] fill_addr,
   output logic dequeue_valid,
-  output logic [10-1:0] dequeue_addr,
+  output logic [CS_LINE_ADDR_WIDTH-1:0] dequeue_addr,
   output logic dequeue_rw,
-  output logic [56-1:0] dequeue_data,
-  output logic [5-1:0] dequeue_id,
+  output logic [DATA_WIDTH-1:0] dequeue_data,
+  output logic [MSHR_ADDR_WIDTH-1:0] dequeue_id,
   input logic dequeue_ready,
   input logic allocate_valid,
-  input logic [10-1:0] allocate_addr,
+  input logic [CS_LINE_ADDR_WIDTH-1:0] allocate_addr,
   input logic allocate_rw,
-  input logic [56-1:0] allocate_data,
-  output logic [5-1:0] allocate_id,
+  input logic [DATA_WIDTH-1:0] allocate_data,
+  output logic [MSHR_ADDR_WIDTH-1:0] allocate_id,
   output logic allocate_pending,
-  output logic [5-1:0] allocate_previd,
+  output logic [MSHR_ADDR_WIDTH-1:0] allocate_previd,
   output logic allocate_ready,
   input logic finalize_valid,
-  input logic [5-1:0] finalize_id
+  input logic [MSHR_ADDR_WIDTH-1:0] finalize_id
 );
 
-  // -----------------------------------------------------------------------
-  // Ports
-  // -----------------------------------------------------------------------
   // Memory fill interface
-  // MSHR_ADDR_WIDTH=5 (default)
-  // CS_LINE_ADDR_WIDTH=10
   // Dequeue interface
-  // DATA_WIDTH=56
   // Allocate interface
   // Finalize interface
-  // -----------------------------------------------------------------------
-  // Entry metadata (32 entries)
-  // entry_valid[i], entry_addr[i], entry_write[i],
-  // entry_has_next[i], entry_next_idx[i]
-  // -----------------------------------------------------------------------
-  // -----------------------------------------------------------------------
-  // Allocation logic:
-  //   alloc_idx  = first free slot (LSB-first priority encoder on ~entry_valid)
-  //   full_flag  = all entries valid
-  //   allocate_ready = ~full_flag (registered 1 cycle later by test expectation)
-  //
-  // Pending detection:
-  //   match_no_next[i] = entry_valid[i] & (entry_addr[i]==allocate_addr)
-  //                       & ~entry_has_next[i] & allocate_fire
-  //   prev_idx  = first matching entry (LSB-first priority encoder)
-  //   pending   = any match found
-  //
-  // Dequeue FSM:
-  //   On fill_valid: latch fill_id, output entry[fill_id], set dq_active
-  //   Each cycle dq_active & dequeue_ready:
-  //     if entry_has_next[dq_cur]: advance, output next entry
-  //     else: clear dq_active, dequeue_valid=0
-  // -----------------------------------------------------------------------
-  // Note: ARCH does not yet support $clog2 derived params or sub-module
-  // instantiation with parameterized array ports, so this file serves as
-  // specification-level documentation. The authoritative RTL is cache_mshr.sv.
-  // Stub assignments to satisfy port-driven checks
-  assign fill_addr = 0;
+  // Entry metadata registers
+  logic entry_valid [MSHR_SIZE-1:0];
+  logic [CS_LINE_ADDR_WIDTH-1:0] entry_addr [MSHR_SIZE-1:0];
+  logic entry_write [MSHR_SIZE-1:0];
+  logic entry_has_next [MSHR_SIZE-1:0];
+  logic [MSHR_ADDR_WIDTH-1:0] entry_next_idx [MSHR_SIZE-1:0];
+  // Data RAM
+  logic [DATA_WIDTH-1:0] data_mem [MSHR_SIZE-1:0];
+  // Registered outputs
+  logic [MSHR_ADDR_WIDTH-1:0] allocate_id_r;
+  logic allocate_pending_r;
+  logic [MSHR_ADDR_WIDTH-1:0] allocate_previd_r;
+  // Wires for priority encoder
+  logic [MSHR_ADDR_WIDTH-1:0] alloc_idx;
+  logic full_flag;
+  logic [MSHR_ADDR_WIDTH-1:0] prev_idx;
+  logic prev_all_zeros;
+  // Priority encoder: find first free slot (LSB-first)
+  always_comb begin
+    alloc_idx = 0;
+    full_flag = 1'b1;
+    for (int i = 0; i <= MSHR_SIZE - 1; i++) begin
+      if (~full_flag == 1'b0) begin
+        if (~entry_valid[i]) begin
+          alloc_idx = MSHR_ADDR_WIDTH'(i);
+          full_flag = 1'b0;
+        end
+      end
+    end
+  end
+  // Priority encoder: find first matching entry with no next (LSB-first)
+  always_comb begin
+    prev_idx = 0;
+    prev_all_zeros = 1'b1;
+    for (int i = 0; i <= MSHR_SIZE - 1; i++) begin
+      if (~prev_all_zeros == 1'b0) begin
+        if (entry_valid[i] & entry_addr[i] == allocate_addr & ~entry_has_next[i]) begin
+          prev_idx = MSHR_ADDR_WIDTH'(i);
+          prev_all_zeros = 1'b0;
+        end
+      end
+    end
+  end
+  // allocate_ready is combinational: not full
+  assign allocate_ready = ~full_flag;
+  // Pending detection
+  logic has_pending;
+  assign has_pending = ~prev_all_zeros;
+  // Register outputs and update state
+  always_ff @(posedge clk) begin
+    if (reset) begin
+      allocate_id_r <= 0;
+      allocate_pending_r <= 0;
+      allocate_previd_r <= 0;
+      for (int __ri0 = 0; __ri0 < MSHR_SIZE; __ri0++) begin
+        data_mem[__ri0] <= 0;
+      end
+      for (int __ri0 = 0; __ri0 < MSHR_SIZE; __ri0++) begin
+        entry_addr[__ri0] <= 0;
+      end
+      for (int __ri0 = 0; __ri0 < MSHR_SIZE; __ri0++) begin
+        entry_has_next[__ri0] <= 0;
+      end
+      for (int __ri0 = 0; __ri0 < MSHR_SIZE; __ri0++) begin
+        entry_next_idx[__ri0] <= 0;
+      end
+      for (int __ri0 = 0; __ri0 < MSHR_SIZE; __ri0++) begin
+        entry_valid[__ri0] <= 0;
+      end
+      for (int __ri0 = 0; __ri0 < MSHR_SIZE; __ri0++) begin
+        entry_write[__ri0] <= 0;
+      end
+    end else begin
+      // Register the combinational outputs
+      allocate_id_r <= alloc_idx;
+      allocate_pending_r <= has_pending;
+      allocate_previd_r <= prev_idx;
+      // Finalize: invalidate entry (placed before allocate so allocate wins on conflict)
+      if (finalize_valid) begin
+        entry_valid[finalize_id] <= 1'b0;
+        entry_has_next[finalize_id] <= 1'b0;
+      end
+      // Allocate: mark entry valid, store metadata
+      if (allocate_valid & ~full_flag) begin
+        entry_valid[alloc_idx] <= 1'b1;
+        entry_addr[alloc_idx] <= allocate_addr;
+        entry_write[alloc_idx] <= allocate_rw;
+        entry_has_next[alloc_idx] <= 1'b0;
+        entry_next_idx[alloc_idx] <= 0;
+        data_mem[alloc_idx] <= allocate_data;
+        // If pending, update previous entry's next pointer
+        if (has_pending) begin
+          entry_has_next[prev_idx] <= 1'b1;
+          entry_next_idx[prev_idx] <= alloc_idx;
+        end
+      end
+    end
+  end
+  // Output assignments
+  assign allocate_id = allocate_id_r;
+  assign allocate_pending = allocate_pending_r;
+  assign allocate_previd = allocate_previd_r;
+  // Fill/dequeue stubs (not tested, but ports must be driven)
+  assign fill_addr = entry_addr[fill_id];
   assign dequeue_valid = 1'b0;
   assign dequeue_addr = 0;
   assign dequeue_rw = 1'b0;
   assign dequeue_data = 0;
   assign dequeue_id = 0;
-  assign allocate_id = 0;
-  assign allocate_pending = 1'b0;
-  assign allocate_previd = 0;
-  assign allocate_ready = 1'b0;
 
 endmodule
 

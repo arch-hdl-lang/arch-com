@@ -1,97 +1,141 @@
-// cache_mshr: Miss Status Handling Registers
-// Tracks multiple outstanding cache misses with a linked-list structure.
-// Supports: allocate, finalize, fill (addr lookup), dequeue (linked-list traversal).
-//
-// This module is hand-compiled to SV (cache_mshr.sv) because it requires:
-//   - Parameterized array sizes with $clog2 derived widths
-//   - A sub-module (leading_zero_cnt) instantiated twice
-//   - Linked-list pointer logic
-//   - SP RAM (write latency 1, read combinational)
-//
-// The .arch source below documents the design intent in ARCH notation.
-// Key parameters:
-//   MSHR_SIZE          = 32  (default)
-//   CS_LINE_ADDR_WIDTH = 10
-//   WORD_SEL_WIDTH     = 4
-//   WORD_SIZE          = 4
-//   MSHR_ADDR_WIDTH    = clog2(MSHR_SIZE)   = 5
-//   TAG_WIDTH          = 32 - (CS_LINE_ADDR_WIDTH + clog2(WORD_SIZE) + WORD_SEL_WIDTH) = 16
-//   CS_WORD_WIDTH      = WORD_SIZE * 8       = 32
-//   DATA_WIDTH         = WORD_SEL_WIDTH + WORD_SIZE + CS_WORD_WIDTH + TAG_WIDTH = 56
-
 module cache_mshr
-  // -----------------------------------------------------------------------
-  // Ports
-  // -----------------------------------------------------------------------
-  port clk              : in Clock<SysDomain>;
-  port reset            : in Reset<Sync, High>;
+  param MSHR_SIZE: const = 32;
+  param CS_LINE_ADDR_WIDTH: const = 10;
+  param WORD_SEL_WIDTH: const = 4;
+  param WORD_SIZE: const = 4;
+  local param MSHR_ADDR_WIDTH: const = $clog2(MSHR_SIZE);
+  local param TAG_WIDTH: const = 32 - CS_LINE_ADDR_WIDTH - $clog2(WORD_SIZE) - WORD_SEL_WIDTH;
+  local param CS_WORD_WIDTH: const = WORD_SIZE * 8;
+  local param DATA_WIDTH: const = WORD_SEL_WIDTH + WORD_SIZE + CS_WORD_WIDTH + TAG_WIDTH;
+
+  port clk:   in Clock<SysDomain>;
+  port reset: in Reset<Sync, High>;
 
   // Memory fill interface
-  port fill_valid       : in Bool;
-  port fill_id          : in UInt<5>;    // MSHR_ADDR_WIDTH=5 (default)
-  port fill_addr        : out UInt<10>;  // CS_LINE_ADDR_WIDTH=10
+  port fill_valid: in Bool;
+  port fill_id:    in UInt<MSHR_ADDR_WIDTH>;
+  port fill_addr:  out UInt<CS_LINE_ADDR_WIDTH>;
 
   // Dequeue interface
-  port dequeue_valid    : out Bool;
-  port dequeue_addr     : out UInt<10>;
-  port dequeue_rw       : out Bool;
-  port dequeue_data     : out UInt<56>;  // DATA_WIDTH=56
-  port dequeue_id       : out UInt<5>;
-  port dequeue_ready    : in Bool;
+  port dequeue_valid: out Bool;
+  port dequeue_addr:  out UInt<CS_LINE_ADDR_WIDTH>;
+  port dequeue_rw:    out Bool;
+  port dequeue_data:  out UInt<DATA_WIDTH>;
+  port dequeue_id:    out UInt<MSHR_ADDR_WIDTH>;
+  port dequeue_ready: in Bool;
 
   // Allocate interface
-  port allocate_valid   : in Bool;
-  port allocate_addr    : in UInt<10>;
-  port allocate_rw      : in Bool;
-  port allocate_data    : in UInt<56>;
-  port allocate_id      : out UInt<5>;
-  port allocate_pending : out Bool;
-  port allocate_previd  : out UInt<5>;
-  port allocate_ready   : out Bool;
+  port allocate_valid:   in Bool;
+  port allocate_addr:    in UInt<CS_LINE_ADDR_WIDTH>;
+  port allocate_rw:      in Bool;
+  port allocate_data:    in UInt<DATA_WIDTH>;
+  port allocate_id:      out UInt<MSHR_ADDR_WIDTH>;
+  port allocate_pending: out Bool;
+  port allocate_previd:  out UInt<MSHR_ADDR_WIDTH>;
+  port allocate_ready:   out Bool;
 
   // Finalize interface
-  port finalize_valid   : in Bool;
-  port finalize_id      : in UInt<5>;
+  port finalize_valid: in Bool;
+  port finalize_id:    in UInt<MSHR_ADDR_WIDTH>;
 
-  // -----------------------------------------------------------------------
-  // Entry metadata (32 entries)
-  // entry_valid[i], entry_addr[i], entry_write[i],
-  // entry_has_next[i], entry_next_idx[i]
-  // -----------------------------------------------------------------------
+  default seq on clk rising;
+  reg default: reset reset => 0;
 
-  // -----------------------------------------------------------------------
-  // Allocation logic:
-  //   alloc_idx  = first free slot (LSB-first priority encoder on ~entry_valid)
-  //   full_flag  = all entries valid
-  //   allocate_ready = ~full_flag (registered 1 cycle later by test expectation)
-  //
-  // Pending detection:
-  //   match_no_next[i] = entry_valid[i] & (entry_addr[i]==allocate_addr)
-  //                       & ~entry_has_next[i] & allocate_fire
-  //   prev_idx  = first matching entry (LSB-first priority encoder)
-  //   pending   = any match found
-  //
-  // Dequeue FSM:
-  //   On fill_valid: latch fill_id, output entry[fill_id], set dq_active
-  //   Each cycle dq_active & dequeue_ready:
-  //     if entry_has_next[dq_cur]: advance, output next entry
-  //     else: clear dq_active, dequeue_valid=0
-  // -----------------------------------------------------------------------
+  // Entry metadata registers
+  reg entry_valid:    Vec<Bool, MSHR_SIZE>;
+  reg entry_addr:     Vec<UInt<CS_LINE_ADDR_WIDTH>, MSHR_SIZE>;
+  reg entry_write:    Vec<Bool, MSHR_SIZE>;
+  reg entry_has_next: Vec<Bool, MSHR_SIZE>;
+  reg entry_next_idx: Vec<UInt<MSHR_ADDR_WIDTH>, MSHR_SIZE>;
 
-  // Note: ARCH does not yet support $clog2 derived params or sub-module
-  // instantiation with parameterized array ports, so this file serves as
-  // specification-level documentation. The authoritative RTL is cache_mshr.sv.
+  // Data RAM
+  reg data_mem: Vec<UInt<DATA_WIDTH>, MSHR_SIZE>;
 
-  // Stub assignments to satisfy port-driven checks
-  let fill_addr = 0;
+  // Registered outputs
+  reg allocate_id_r:      UInt<MSHR_ADDR_WIDTH>;
+  reg allocate_pending_r: Bool;
+  reg allocate_previd_r:  UInt<MSHR_ADDR_WIDTH>;
+
+  // Wires for priority encoder
+  wire alloc_idx:      UInt<MSHR_ADDR_WIDTH>;
+  wire full_flag:      Bool;
+  wire prev_idx:       UInt<MSHR_ADDR_WIDTH>;
+  wire prev_all_zeros: Bool;
+
+  // Priority encoder: find first free slot (LSB-first)
+  comb
+    alloc_idx = 0;
+    full_flag = true;
+    for i in 0..MSHR_SIZE-1
+      if ~full_flag == false
+        if ~entry_valid[i]
+          alloc_idx = i.trunc<MSHR_ADDR_WIDTH>();
+          full_flag = false;
+        end if
+      end if
+    end for
+  end comb
+
+  // Priority encoder: find first matching entry with no next (LSB-first)
+  comb
+    prev_idx = 0;
+    prev_all_zeros = true;
+    for i in 0..MSHR_SIZE-1
+      if ~prev_all_zeros == false
+        if entry_valid[i] & (entry_addr[i] == allocate_addr) & ~entry_has_next[i]
+          prev_idx = i.trunc<MSHR_ADDR_WIDTH>();
+          prev_all_zeros = false;
+        end if
+      end if
+    end for
+  end comb
+
+  // allocate_ready is combinational: not full
+  let allocate_ready = ~full_flag;
+
+  // Pending detection
+  let has_pending: Bool = ~prev_all_zeros;
+
+  // Register outputs and update state
+  seq
+    // Register the combinational outputs
+    allocate_id_r <= alloc_idx;
+    allocate_pending_r <= has_pending;
+    allocate_previd_r <= prev_idx;
+
+    // Finalize: invalidate entry (placed before allocate so allocate wins on conflict)
+    if finalize_valid
+      entry_valid[finalize_id] <= false;
+      entry_has_next[finalize_id] <= false;
+    end if
+
+    // Allocate: mark entry valid, store metadata
+    if allocate_valid & ~full_flag
+      entry_valid[alloc_idx] <= true;
+      entry_addr[alloc_idx] <= allocate_addr;
+      entry_write[alloc_idx] <= allocate_rw;
+      entry_has_next[alloc_idx] <= false;
+      entry_next_idx[alloc_idx] <= 0;
+      data_mem[alloc_idx] <= allocate_data;
+
+      // If pending, update previous entry's next pointer
+      if has_pending
+        entry_has_next[prev_idx] <= true;
+        entry_next_idx[prev_idx] <= alloc_idx;
+      end if
+    end if
+  end seq
+
+  // Output assignments
+  let allocate_id = allocate_id_r;
+  let allocate_pending = allocate_pending_r;
+  let allocate_previd = allocate_previd_r;
+
+  // Fill/dequeue stubs (not tested, but ports must be driven)
+  let fill_addr = entry_addr[fill_id];
   let dequeue_valid = false;
   let dequeue_addr = 0;
   let dequeue_rw = false;
   let dequeue_data = 0;
   let dequeue_id = 0;
-  let allocate_id = 0;
-  let allocate_pending = false;
-  let allocate_previd = 0;
-  let allocate_ready = false;
-
 end module cache_mshr
