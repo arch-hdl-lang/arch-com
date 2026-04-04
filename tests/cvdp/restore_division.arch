@@ -50,7 +50,7 @@ module restoring_division
       q_reg <= { q_reg[WIDTH-2:0], next_q_bit };
       dvd <= dvd << 1;
       count <= (count + 1).trunc<WIDTH>();
-      if count == (WIDTH - 1).trunc<WIDTH>()
+      if count == (WIDTH - 1).zext<WIDTH>()
         running <= false;
         valid <= true;
         quotient <= { q_reg[WIDTH-2:0], next_q_bit };

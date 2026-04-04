@@ -7,7 +7,7 @@ module single_neuron_dut
 
   default seq on clk rising;
 
-  reg state_r: UInt<8> reset rst_n = 0;
+  reg state_r: UInt<8> reset rst_n =>0;
 
   seq
     if ctrl

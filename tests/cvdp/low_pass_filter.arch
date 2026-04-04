@@ -45,7 +45,7 @@ module low_pass_filter
 
   comb
     for i in 0..NUM_TAPS-1
-      mult[i] = (data_reg[i] * coeff_reg[NUM_TAPS-1-i]).trunc<NBW_MULT>();
+      mult[i] = data_reg[i] * coeff_reg[NUM_TAPS-1-i];
     end for
   end comb
 

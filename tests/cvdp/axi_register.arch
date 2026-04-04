@@ -69,7 +69,7 @@ module axi_register
       // Decode address and update registers
       if awaddr_i[11:8] == 1
         if strb_all
-          beat_o <= wdata_i.zext<20>();
+          beat_o <= wdata_i.trunc<20>();
         end if
         bresp_o <= 0;
       elsif awaddr_i[11:8] == 2
@@ -121,7 +121,7 @@ module axi_register
         rdata_o <= writeback_o.zext<DATA_WIDTH>();
         rresp_o <= 0;
       elsif araddr_i[11:8] == 5
-        rdata_o <= 65537.trunc<DATA_WIDTH>();
+        rdata_o <= 65537.zext<DATA_WIDTH>();
         rresp_o <= 0;
       else
         rdata_o <= 0;

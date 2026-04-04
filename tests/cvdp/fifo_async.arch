@@ -12,18 +12,18 @@ module fifo_async
   port r_rst:  in Reset<Sync>;
   port r_inc:  in Bool;
 
-  port reg w_full:  out Bool reset w_rst = false;
-  port reg r_empty: out Bool reset r_rst = true;
+  port reg w_full:  out Bool reset w_rst =>false;
+  port reg r_empty: out Bool reset r_rst =>true;
   port r_data: out UInt<DATA_WIDTH>;
 
   // Memory array
-  reg mem: Vec<UInt<DATA_WIDTH>, DEPTH> reset w_rst = 0;
+  reg mem: Vec<UInt<DATA_WIDTH>, DEPTH> reset w_rst =>0;
 
   // Write pointer binary
-  reg w_bin: UInt<ADDR_WIDTH+1> reset w_rst = 0;
+  reg w_bin: UInt<ADDR_WIDTH+1> reset w_rst =>0;
 
   // Read pointer binary
-  reg r_bin: UInt<ADDR_WIDTH+1> reset r_rst = 0;
+  reg r_bin: UInt<ADDR_WIDTH+1> reset r_rst =>0;
 
   // Synchronized pointers (binary, after gray sync)
   wire r_bin_synced: UInt<ADDR_WIDTH+1>;

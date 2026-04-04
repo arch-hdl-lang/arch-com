@@ -53,9 +53,9 @@ module wishbone_to_ahb_bridge
   // htrans: NONSEQ (2'b10) when active, IDLE (2'b00) otherwise
   comb
     if wb_active
-      htrans = 0b10.zext<2>();
+      htrans = 0b10;
     else
-      htrans = 0b00.zext<2>();
+      htrans = 0b00;
     end if
   end comb
 

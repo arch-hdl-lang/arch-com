@@ -19,7 +19,7 @@ module dig_stopwatch
     // Clock divider keeps running after hour=1 so cocotb can still
     // await RisingEdge(one_sec_pulse) in the test loop.
     if start_stop
-      if clk_cnt == (CLK_FREQ - 1).trunc<32>()
+      if clk_cnt == (CLK_FREQ - 1).zext<32>()
         clk_cnt <= 0;
         one_sec_pulse <= true;
       else

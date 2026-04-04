@@ -5,9 +5,9 @@ module ping_pong_buffer
   port read_enable: in Bool;
   port data_in: in UInt<8>;
   port data_out: out UInt<8>;
-  port reg buffer_full: out Bool reset rst_n = false;
-  port reg buffer_empty: out Bool reset rst_n = true;
-  port reg buffer_select: out Bool reset rst_n = false;
+  port reg buffer_full: out Bool reset rst_n =>false;
+  port reg buffer_empty: out Bool reset rst_n =>true;
+  port reg buffer_select: out Bool reset rst_n =>false;
 
   default seq on clk rising;
 
@@ -16,13 +16,13 @@ module ping_pong_buffer
   reg mem1: Vec<UInt<8>, 256>;
 
   // Pointers
-  reg write_ptr: UInt<8> reset rst_n = 0;
-  reg read_ptr: UInt<8> reset rst_n = 0;
+  reg write_ptr: UInt<8> reset rst_n =>0;
+  reg read_ptr: UInt<8> reset rst_n =>0;
 
   // Reset pipeline: high for 2 cycles after reset deassert
   // Prevents stale write_enable from corrupting state
-  reg rst_pipe0: Bool reset rst_n = true;
-  reg rst_pipe1: Bool reset rst_n = true;
+  reg rst_pipe0: Bool reset rst_n =>true;
+  reg rst_pipe1: Bool reset rst_n =>true;
 
   let in_reset_pipe: Bool = rst_pipe0 or rst_pipe1;
 

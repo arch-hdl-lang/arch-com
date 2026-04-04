@@ -21,7 +21,7 @@ module FILO_RTL
       buffer[top] <= data_in;
       top <= (top + 1).trunc<32>();
       empty <= false;
-      if (top + 1).trunc<32>() == FILO_DEPTH.trunc<32>()
+      if (top + 1).trunc<32>() == FILO_DEPTH.zext<32>()
         full <= true;
       end if
     elsif pop & ~push & ~empty

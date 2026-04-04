@@ -17,7 +17,7 @@ module secure_read_write_bus_interface
   reg mem: Vec<UInt<P_DATA_WIDTH>, 256> reset i_reset_bar=>0;
 
   seq
-    if i_key_in == P_CONFIGURABLE_KEY.trunc<8>()
+    if i_key_in == P_CONFIGURABLE_KEY
       o_error <= 0;
       if i_read_write_enable == 0
         mem[i_addr] <= i_data_in;

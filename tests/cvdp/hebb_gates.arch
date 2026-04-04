@@ -99,8 +99,8 @@ module hebb_gates
   wire prod2: SInt<8>;
   wire bias_ext: SInt<8>;
   wire net_sum: SInt<8>;
-  let prod1 = (w1 * test_x1).trunc<8>() as SInt<8>;
-  let prod2 = (w2 * test_x2).trunc<8>() as SInt<8>;
+  let prod1 = (w1 * test_x1) as SInt<8>;
+  let prod2 = (w2 * test_x2) as SInt<8>;
   let bias_ext = bias.sext<8>() as SInt<8>;
   let net_sum = (prod1 + prod2 + bias_ext).trunc<8>() as SInt<8>;
 

@@ -74,7 +74,7 @@ module ttc_counter_lite
     elsif axi_addr == 2
       axi_rdata = reload_value;
     elsif axi_addr == 3
-      axi_rdata = {29'b0, interrupt_enable, interval_mode, enable}.zext<32>();
+      axi_rdata = {29'b0, interrupt_enable, interval_mode, enable};
     elsif axi_addr == 4
       axi_rdata = interrupt.zext<32>();
     else

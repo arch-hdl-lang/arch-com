@@ -50,10 +50,10 @@ module sorting_engine
     elsif state == 1
       // SORTING: one comparison per cycle
       arr <= swapped_arr;
-      if idx == (N - 2).trunc<32>()
+      if idx == (N - 2).zext<32>()
         idx <= 0;
         pass_cnt <= (pass_cnt + 1).trunc<32>();
-        if (pass_cnt + 1).trunc<32>() == N.trunc<32>()
+        if (pass_cnt + 1).trunc<32>() == N.zext<32>()
           state <= 2;
         end if
       else

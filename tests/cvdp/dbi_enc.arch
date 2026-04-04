@@ -55,7 +55,7 @@ module dbi_enc
   end comb
 
   seq
-    dbi_cntrl <= {ctrl1, ctrl0}.zext<2>();
+    dbi_cntrl <= {ctrl1, ctrl0};
     data_out <= {out_hi, out_lo};
     prev_data <= {out_hi, out_lo};
   end seq

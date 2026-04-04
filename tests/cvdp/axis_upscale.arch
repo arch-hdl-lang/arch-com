@@ -37,7 +37,7 @@ module axis_upscale
     if dfmt_enable
       fmt_data = {ext_bits, bit23, s_axis_data[22:0]};
     else
-      fmt_data = {0.trunc<8>(), s_axis_data};
+      fmt_data = {0.zext<8>(), s_axis_data};
     end if
   end comb
 

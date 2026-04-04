@@ -31,7 +31,7 @@ module fsm_linear_reg
       buf_result2 <= 0;
       buf_done    <= false;
     elsif state == 1
-      buf_result1 <= (product >> 1).trunc<DATA_WIDTH * 2>();
+      buf_result1 <= product >> 1;
       buf_result2 <= (b_in.sext<DATA_WIDTH + 1>() + x_shifted.sext<DATA_WIDTH + 1>()).trunc<DATA_WIDTH + 1>();
       buf_done    <= false;
       state       <= 2;

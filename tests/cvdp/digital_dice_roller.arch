@@ -8,7 +8,7 @@ module digital_dice_roller
 
   seq on clk rising
     if button
-      if dice_value >= DICE_MAX.trunc<3>()
+      if dice_value >= DICE_MAX
         dice_value <= 3'd1;
       else
         dice_value <= (dice_value + 3'd1).trunc<3>();

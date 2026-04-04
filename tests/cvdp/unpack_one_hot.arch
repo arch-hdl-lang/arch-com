@@ -10,7 +10,7 @@ module unpack_one_hot
     if one_hot_selector == 1
       for i in 0..255
         if sign & source_reg[i]
-          destination_reg[i * 8 + 7 : i * 8] = 0xFF.trunc<8>();
+          destination_reg[i * 8 + 7 : i * 8] = 0xFF;
         else
           destination_reg[i * 8 + 7 : i * 8] = source_reg[i].zext<8>();
         end if

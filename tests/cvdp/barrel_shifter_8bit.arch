@@ -6,9 +6,9 @@ module barrel_shifter_8bit
 
   comb
     if left_right
-      data_out = (data_in << shift_bits.zext<8>()).trunc<8>();
+      data_out = data_in << shift_bits.zext<8>();
     else
-      data_out = (data_in >> shift_bits.zext<8>()).trunc<8>();
+      data_out = data_in >> shift_bits.zext<8>();
     end if
   end comb
 end module barrel_shifter_8bit

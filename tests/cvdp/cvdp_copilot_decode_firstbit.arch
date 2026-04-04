@@ -49,7 +49,7 @@ module cvdp_copilot_decode_firstbit
 
   comb
     found_comb = in_data_r != 0;
-    first_bit_comb = {~lo_nz, ~lo8_nz, ~lo4_nz, ~lo2_nz, ~bit0}.trunc<5>();
+    first_bit_comb = {~lo_nz, ~lo8_nz, ~lo4_nz, ~lo2_nz, ~bit0};
   end comb
 
   seq on Clk rising

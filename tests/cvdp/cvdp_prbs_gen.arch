@@ -18,8 +18,8 @@ module cvdp_prbs_gen
   wire xor_bits: UInt<WIDTH>;
 
   // All-ones constants
-  let ones_poly: UInt<POLY_LENGTH> = ~(0.trunc<POLY_LENGTH>());
-  let ones_width: UInt<WIDTH> = ~(0.trunc<WIDTH>());
+  let ones_poly: UInt<POLY_LENGTH> = ~(0.zext<POLY_LENGTH>());
+  let ones_width: UInt<WIDTH> = ~(0.zext<WIDTH>());
 
   comb
     prbs_cur = prbs_reg;

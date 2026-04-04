@@ -113,7 +113,7 @@ module precision_counter_axi
     end if
 
     // === IRQ ===
-    if slv_reg_irq_mask[0:0] == 1 & slv_reg_ctl[0:0] == 1 & slv_reg_v == slv_reg_irq_thresh
+    if (slv_reg_irq_mask[0:0] == 1) & (slv_reg_ctl[0:0] == 1) & (slv_reg_v == slv_reg_irq_thresh)
       irq <= true;
     else
       irq <= false;
