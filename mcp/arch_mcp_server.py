@@ -32,34 +32,48 @@ _INSTRUCTIONS = (SCRIPT_DIR / "instructions.md").read_text()
 
 
 def _load_construct_syntax() -> dict[str, str]:
-    """Parse construct_syntax.md into a dict keyed by construct name.
+    """Parse Arch_AI_Reference_Card.md into a dict keyed by construct name.
 
-    Format: blocks delimited by '### name' ... '### end' (lines starting with ###).
+    Extracts:
+    - Each '### name' subsection under '## 4. Construct Cards'
+    - '## 2. Types' as 'types'
+    - '## 3. Expressions & Operators' as 'expressions'
     """
-    text = (SCRIPT_DIR / "construct_syntax.md").read_text()
+    text = (PROJECT_ROOT / "doc" / "Arch_AI_Reference_Card.md").read_text()
     constructs: dict[str, str] = {}
     current_name: str | None = None
     current_lines: list[str] = []
+    in_section: str | None = None  # 'types' | 'expressions' | 'constructs'
+
+    def flush() -> None:
+        if current_name is not None:
+            constructs[current_name] = "".join(current_lines)
 
     for line in text.splitlines(keepends=True):
         stripped = line.strip()
-        if stripped.startswith("### "):
-            if current_name is not None and stripped != "### end":
-                # New section starts before an end — flush previous
-                constructs[current_name] = "".join(current_lines)
-            tag = stripped[4:].strip()
-            if tag == "end":
-                if current_name is not None:
-                    constructs[current_name] = "".join(current_lines)
-                current_name = None
-                current_lines = []
+
+        if stripped.startswith("## "):
+            flush()
+            current_name = None
+            current_lines = []
+            if "2." in stripped and "Types" in stripped:
+                in_section = "types"
+                current_name = "types"
+            elif "3." in stripped and "Expressions" in stripped:
+                in_section = "expressions"
+                current_name = "expressions"
+            elif "4." in stripped and "Construct" in stripped:
+                in_section = "constructs"
             else:
-                current_name = tag
-                current_lines = []
+                in_section = None
+        elif stripped.startswith("### ") and in_section in ("types", "expressions", "constructs"):
+            flush()
+            current_name = stripped[4:].strip().lower()
+            current_lines = []
         elif current_name is not None:
-            # Skip top-level comment lines (lines starting with #) outside blocks
             current_lines.append(line)
 
+    flush()
     return constructs
 
 
@@ -146,8 +160,9 @@ def get_construct_syntax(construct: str) -> str:
     """Get the ARCH syntax for a specific construct. Call this BEFORE writing
     any .arch code to avoid common mistakes.
 
-    Available constructs: module, inst, fsm, pipeline, synchronizer, fifo,
-    ram, arbiter, regfile, bus, package, types
+    Available constructs: module, function, pipeline, fsm, fifo, synchronizer,
+    ram, counter, arbiter, regfile, linklist, generate, bus, template, package,
+    types, expressions
 
     Also returns reserved keywords to avoid as signal/register names.
     Note: 'in', 'out', 'state' are contextual — safe to use as port/signal names.
