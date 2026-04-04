@@ -39,7 +39,7 @@ CONSTRUCT SELECTION — use first-class constructs when possible:
 - FSM behavior → use 'fsm' (NOT a module with manual state register)
 - FIFO → use 'fifo' (NOT a module with manual pointers)
 - RAM/ROM → use 'ram' with appropriate kind (NOT a module with reg array)
-- Arbiter → use 'arbiter' with policy (NOT manual grant logic in a module)
+- Arbiter → use 'arbiter' with policy (NOT manual grant logic in a module); built-in policies: round_robin, priority, lru, weighted<W>; if the requirement doesn't match any built-in policy (e.g. QoS-aware, starvation-prevention, custom fairness), use 'policy <FnName>' with a 'hook grant_select(...) -> UInt<N> = FnName(...);' and define the logic in a 'function' in the same file — the function receives req_mask + last_grant and returns a one-hot grant mask
 - Pipeline → use 'pipeline' with stages (NOT manual valid/stall registers)
 - Bus → use 'bus' for reusable port bundles (NOT manual individual port declarations for standard interfaces like AXI, APB, custom)
 - Only use 'module' for pure combinational/registered logic that doesn't fit the above
@@ -331,15 +331,51 @@ end ram RamName
 """,
 
     "arbiter": """\
-// policy: round_robin | priority | weighted<W> | lru | custom
+// policy: round_robin | priority | weighted<W> | lru | <FnName> (custom)
+// Built-in policies handle standard cases; use custom when requirement
+// doesn't fit (e.g. QoS-aware, starvation-prevention, custom fairness).
+
+// ── Built-in policy example ──────────────────────────────────────────────
 arbiter ArbName
   policy round_robin;
   param N: const = 4;
   port clk:   in Clock<SysDomain>;
   port rst:   in Reset<Sync>;
-  port req:   in UInt<N>;
-  port grant: out UInt<N>;
+  ports[N] request
+    valid: in Bool;
+    ready: out Bool;
+  end ports request
+  port grant_valid:      out Bool;
+  port grant_requester:  out UInt<2>;
 end arbiter ArbName
+
+// ── Custom policy example ────────────────────────────────────────────────
+// Define the grant function in the SAME file (compiler inlines it into SV).
+// Function receives req_mask (one-hot of pending requesters) and last_grant
+// (one-hot of previous winner for fairness) and returns one-hot grant mask.
+function MyGrant(req_mask: UInt<4>, last_grant: UInt<4>) -> UInt<4>
+  // Example: lowest-set-bit with last-grant deprioritization
+  let masked: UInt<4> = req_mask & (last_grant ^ 0xF);
+  let pick: UInt<4>   = masked != 0 ? masked : req_mask;
+  let pick_neg: UInt<5> = (pick ^ 0xF).zext<5>() + 1;
+  return pick & pick_neg.trunc<4>();
+end function MyGrant
+
+arbiter CustomArbiter
+  policy MyGrant;                // <— name of the function above
+  param N: const = 4;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  ports[N] request
+    valid: in Bool;
+    ready: out Bool;
+  end ports request
+  port grant_valid:      out Bool;
+  port grant_requester:  out UInt<2>;
+  // Hook wires the function into the arbiter's grant logic:
+  hook grant_select(req_mask: UInt<4>, last_grant: UInt<4>) -> UInt<4>
+    = MyGrant(req_mask, last_grant);
+end arbiter CustomArbiter
 """,
 
     "regfile": """\
