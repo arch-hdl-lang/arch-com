@@ -356,6 +356,46 @@ impl<'a> TypeChecker<'a> {
                             .collect())
                         .unwrap_or_default();
 
+                    // Check for unconnected ports on the instantiated construct
+                    {
+                        let child_ports: Option<&[PortDecl]> = self.source.items.iter()
+                            .find_map(|item| match item {
+                                Item::Module(m2) if m2.name.name == inst.module_name.name => Some(m2.ports.as_slice()),
+                                Item::Fsm(f2)    if f2.name.name == inst.module_name.name => Some(f2.ports.as_slice()),
+                                Item::Pipeline(p2) if p2.name.name == inst.module_name.name => Some(p2.ports.as_slice()),
+                                _ => None,
+                            });
+                        if let Some(ports) = child_ports {
+                            let connected: std::collections::HashSet<&str> = inst.connections.iter()
+                                .map(|c| c.port_name.name.as_str())
+                                .collect();
+                            for port in ports {
+                                // Skip Clock and Reset ports — they may be handled via domain defaults
+                                let is_infra = matches!(&port.ty, TypeExpr::Clock(_) | TypeExpr::Reset(_, _));
+                                if is_infra { continue; }
+                                if !connected.contains(port.name.name.as_str()) {
+                                    if port.direction == Direction::In {
+                                        self.errors.push(CompileError::general(
+                                            &format!(
+                                                "input port `{}` of `{}` is not connected in inst `{}`",
+                                                port.name.name, inst.module_name.name, inst.name.name
+                                            ),
+                                            inst.span,
+                                        ));
+                                    } else {
+                                        self.warnings.push(CompileWarning {
+                                            message: format!(
+                                                "output port `{}` of `{}` is not connected in inst `{}`",
+                                                port.name.name, inst.module_name.name, inst.name.name
+                                            ),
+                                            span: inst.span,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Mark connected output ports as driven
                     for conn in &inst.connections {
                         if conn.direction == ConnectDir::Output {
