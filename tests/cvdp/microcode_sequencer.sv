@@ -49,6 +49,7 @@ module microcode_sequencer (
     dec_out_ce = 1'b0;
     if (~ien & ~cc) begin
       if (instr_in == 0) begin
+        // PRST: reset stack, output 0, load PC
         dec_rst = 1'b1;
         dec_oen = 1'b1;
         dec_inc = 1'b1;
@@ -56,24 +57,28 @@ module microcode_sequencer (
         dec_b_mux_sel = 2;
         dec_out_ce = 1'b1;
       end else if (instr_in == 1) begin
+        // Fetch PC: a=0, b=pc
         dec_oen = 1'b1;
         dec_inc = 1'b1;
         dec_a_mux_sel = 2;
         dec_b_mux_sel = 0;
         dec_out_ce = 1'b1;
       end else if (instr_in == 2) begin
+        // Fetch R: a=reg, b=0
         dec_oen = 1'b1;
         dec_inc = 1'b1;
         dec_a_mux_sel = 1;
         dec_b_mux_sel = 2;
         dec_out_ce = 1'b1;
       end else if (instr_in == 3) begin
+        // Fetch D: a=d_in, b=0
         dec_oen = 1'b1;
         dec_inc = 1'b1;
         dec_a_mux_sel = 0;
         dec_b_mux_sel = 2;
         dec_out_ce = 1'b1;
       end else if (instr_in == 4) begin
+        // Fetch R+D: a=d_in, b=reg, carry enabled
         dec_cen = 1'b1;
         dec_oen = 1'b1;
         dec_inc = 1'b1;
@@ -81,6 +86,7 @@ module microcode_sequencer (
         dec_b_mux_sel = 3;
         dec_out_ce = 1'b1;
       end else if (instr_in == 11) begin
+        // Push PC: output PC via adder, push to stack
         dec_oen = 1'b1;
         dec_inc = 1'b1;
         dec_push = 1'b1;
@@ -90,6 +96,7 @@ module microcode_sequencer (
         dec_b_mux_sel = 0;
         dec_out_ce = 1'b1;
       end else if (instr_in == 14) begin
+        // Pop PC
         dec_oen = 1'b1;
         dec_pop = 1'b1;
         dec_stack_re = 1'b1;
@@ -100,13 +107,6 @@ module microcode_sequencer (
       end
     end
   end
-  // PRST: reset stack, output 0, load PC
-  // Fetch PC: a=0, b=pc
-  // Fetch R: a=reg, b=0
-  // Fetch D: a=d_in, b=0
-  // Fetch R+D: a=d_in, b=reg, carry enabled
-  // Push PC: output PC via adder, push to stack
-  // Pop PC
   // ---- Stack Pointer (5-bit register) ----
   logic [5-1:0] sp = 0;
   logic sp_full;
@@ -125,7 +125,7 @@ module microcode_sequencer (
     end
   end
   // ---- Stack RAM (16 x 4-bit) ----
-  logic [4-1:0] stack_mem [0:16-1];
+  logic [4-1:0] stack_mem [16-1:0];
   logic [4-1:0] stack_data_rd = 0;
   logic [4-1:0] pc_out_w;
   logic [4-1:0] stack_write_data;

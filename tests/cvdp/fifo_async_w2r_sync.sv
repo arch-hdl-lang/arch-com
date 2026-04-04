@@ -24,11 +24,11 @@ module w2r_sync #(
     end
   end
   
-  // Gray-to-binary decode
+  // Gray-to-binary decode (prefix XOR — no self-reference)
   always_comb begin
-    gray_to_bin[$bits(logic [4-1:0])-1] = gray_chain[STAGES-1][$bits(logic [4-1:0])-1];
-    for (int i = $bits(logic [4-1:0])-2; i >= 0; i--)
-      gray_to_bin[i] = gray_chain[STAGES-1][i] ^ gray_to_bin[i+1];
+    gray_to_bin = gray_chain[STAGES-1];
+    for (int i = 1; i < $bits(logic [4-1:0]); i++)
+      gray_to_bin ^= gray_chain[STAGES-1] >> i;
   end
   
   assign data_out = gray_to_bin;

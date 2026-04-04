@@ -1,0 +1,73 @@
+module conv3x3
+  port clk:          in Clock<SysDomain>;
+  port rst_n:        in Reset<Async, Low>;
+
+  port image_data0:  in UInt<8>;
+  port image_data1:  in UInt<8>;
+  port image_data2:  in UInt<8>;
+  port image_data3:  in UInt<8>;
+  port image_data4:  in UInt<8>;
+  port image_data5:  in UInt<8>;
+  port image_data6:  in UInt<8>;
+  port image_data7:  in UInt<8>;
+  port image_data8:  in UInt<8>;
+
+  port kernel0:      in UInt<8>;
+  port kernel1:      in UInt<8>;
+  port kernel2:      in UInt<8>;
+  port kernel3:      in UInt<8>;
+  port kernel4:      in UInt<8>;
+  port kernel5:      in UInt<8>;
+  port kernel6:      in UInt<8>;
+  port kernel7:      in UInt<8>;
+  port kernel8:      in UInt<8>;
+
+  port convolved_data: out UInt<16>;
+
+  default seq on clk rising;
+
+  // Stage 1: element-wise unsigned multiply (8x8 -> 16 bits)
+  reg mult0: UInt<16> reset rst_n => 0;
+  reg mult1: UInt<16> reset rst_n => 0;
+  reg mult2: UInt<16> reset rst_n => 0;
+  reg mult3: UInt<16> reset rst_n => 0;
+  reg mult4: UInt<16> reset rst_n => 0;
+  reg mult5: UInt<16> reset rst_n => 0;
+  reg mult6: UInt<16> reset rst_n => 0;
+  reg mult7: UInt<16> reset rst_n => 0;
+  reg mult8: UInt<16> reset rst_n => 0;
+
+  // Stage 2: row-wise sums
+  reg row0: UInt<20> reset rst_n => 0;
+  reg row1: UInt<20> reset rst_n => 0;
+  reg row2: UInt<20> reset rst_n => 0;
+
+  // Stage 3: total sum
+  reg total: UInt<20> reset rst_n => 0;
+
+  // Stage 4: normalized result (divide by 9)
+  reg result_reg: UInt<16> reset rst_n => 0;
+
+  comb convolved_data = result_reg;
+
+  seq
+    // Stage 1
+    mult0 <= (image_data0.zext<16>() * kernel0.zext<16>()).trunc<16>();
+    mult1 <= (image_data1.zext<16>() * kernel1.zext<16>()).trunc<16>();
+    mult2 <= (image_data2.zext<16>() * kernel2.zext<16>()).trunc<16>();
+    mult3 <= (image_data3.zext<16>() * kernel3.zext<16>()).trunc<16>();
+    mult4 <= (image_data4.zext<16>() * kernel4.zext<16>()).trunc<16>();
+    mult5 <= (image_data5.zext<16>() * kernel5.zext<16>()).trunc<16>();
+    mult6 <= (image_data6.zext<16>() * kernel6.zext<16>()).trunc<16>();
+    mult7 <= (image_data7.zext<16>() * kernel7.zext<16>()).trunc<16>();
+    mult8 <= (image_data8.zext<16>() * kernel8.zext<16>()).trunc<16>();
+    // Stage 2: row sums
+    row0 <= (mult0.zext<20>() + mult1.zext<20>() + mult2.zext<20>()).trunc<20>();
+    row1 <= (mult3.zext<20>() + mult4.zext<20>() + mult5.zext<20>()).trunc<20>();
+    row2 <= (mult6.zext<20>() + mult7.zext<20>() + mult8.zext<20>()).trunc<20>();
+    // Stage 3: total sum
+    total <= (row0 + row1 + row2).trunc<20>();
+    // Stage 4: normalize by 9
+    result_reg <= (total / 9).trunc<16>();
+  end seq
+end module conv3x3

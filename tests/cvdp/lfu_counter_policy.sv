@@ -14,7 +14,7 @@ module lfu_counter_policy #(
 );
 
   // Frequency array: each index has NWAYS counters, each COUNTERW bits
-  logic [NWAYS * COUNTERW-1:0] frequency [0:NINDEXES-1];
+  logic [NWAYS * COUNTERW-1:0] frequency [NINDEXES-1:0];
   // Combinational signals
   logic [COUNTERW-1:0] min_val;
   logic [$clog2(NWAYS)-1:0] lfu_way;

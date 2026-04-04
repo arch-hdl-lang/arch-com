@@ -1,5 +1,8 @@
 // S2MM channel FSM — pops data from FIFO, writes to memory via AXI4.
 // States: Idle → WaitRecv → SendAW → SendW → WaitB → Done
+// Timing: w_last_r is a lookahead register — set one cycle early so the
+// critical path reads a FF output instead of computing beat_ctr == num_beats-1
+// combinationally through a subtractor and into the FSM next-state mux.
 fsm FsmS2mm
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
@@ -26,7 +29,11 @@ fsm FsmS2mm
   // Internal registers
   reg dst_addr_r:  UInt<32> reset none;
   reg num_beats_r: UInt<8>  reset none;
-  reg beat_ctr_r:  UInt<8>  reset rst=>0;
+  reg beat_ctr_r:  UInt<8>  reset rst => 0;
+  // Lookahead: w_last_r is true when the CURRENT beat is the last one.
+  // Precomputed one cycle early so w_last is a FF output on the critical path,
+  // not a combinational subtractor+comparator chain.
+  reg w_last_r: Bool reset rst => false;
 
   state [Idle, WaitRecv, SendAW, SendW, WaitB, Done]
   default state Idle;
@@ -79,6 +86,12 @@ fsm FsmS2mm
       axi_wr.aw_size  = 2;
       axi_wr.aw_burst = 1;
     end comb
+    seq
+      if axi_wr.aw_ready
+        // Preload lookahead: beat 0 is last iff num_beats_r == 1
+        w_last_r <= (num_beats_r == 1);
+      end if
+    end seq
     -> SendW when axi_wr.aw_ready;
   end state SendAW
 
@@ -87,15 +100,21 @@ fsm FsmS2mm
       axi_wr.w_valid = pop_valid;
       axi_wr.w_data  = pop_data;
       axi_wr.w_strb  = 0xF;
-      axi_wr.w_last  = (beat_ctr_r == (num_beats_r - 1).trunc<8>());
+      // w_last_r was precomputed one cycle ago — no subtractor on critical path
+      axi_wr.w_last  = w_last_r;
       pop_ready      = axi_wr.w_ready;
     end comb
     seq
       if axi_wr.w_ready & pop_valid
         beat_ctr_r <= (beat_ctr_r + 1).trunc<8>();
+        // Lookahead: will the beat AFTER next be the last?
+        // next beat_ctr = beat_ctr_r + 1; last beat = num_beats_r - 1
+        // so w_last_r for next cycle = (beat_ctr_r + 1 == num_beats_r - 1)
+        //                            = (beat_ctr_r + 2 == num_beats_r)
+        w_last_r <= ((beat_ctr_r + 2).trunc<8>() == num_beats_r);
       end if
     end seq
-    -> WaitB when axi_wr.w_ready & pop_valid & axi_wr.w_last;
+    -> WaitB when axi_wr.w_ready & pop_valid & w_last_r;
   end state SendW
 
   state WaitB

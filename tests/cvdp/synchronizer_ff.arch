@@ -1,0 +1,9 @@
+synchronizer synchronizer_ff
+  kind ff;
+  param STAGES: const = 2;
+  port src_clk: in Clock<SrcDomain>;
+  port dst_clk: in Clock<DesDomain>;
+  port rst: in Reset<Async, High>;
+  port data_in: in Bool;
+  port data_out: out Bool;
+end synchronizer synchronizer_ff

@@ -12,6 +12,7 @@ module piso_8bit (
       serial_out <= 0;
       tmp <= 1;
     end else begin
+      // Output MSB-first: bit (7 - bit_cnt)
       serial_out <= tmp[7 - bit_cnt];
       if (bit_cnt == 3'd7) begin
         bit_cnt <= 3'd0;
@@ -24,4 +25,3 @@ module piso_8bit (
 
 endmodule
 
-// Output MSB-first: bit (7 - bit_cnt)

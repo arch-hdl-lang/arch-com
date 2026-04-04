@@ -1,5 +1,8 @@
 // S2MM channel FSM — pops data from FIFO, writes to memory via AXI4.
 // States: Idle → WaitRecv → SendAW → SendW → WaitB → Done
+// Timing: w_last_r is a lookahead register — set one cycle early so the
+// critical path reads a FF output instead of computing beat_ctr == num_beats-1
+// combinationally through a subtractor and into the FSM next-state mux.
 module FsmS2mm (
   input logic clk,
   input logic rst,
@@ -13,19 +16,22 @@ module FsmS2mm (
   input logic pop_valid,
   output logic pop_ready,
   input logic [32-1:0] pop_data,
-  output logic aw_valid,
-  input logic aw_ready,
-  output logic [32-1:0] aw_addr,
-  output logic [8-1:0] aw_len,
-  output logic [3-1:0] aw_size,
-  output logic [2-1:0] aw_burst,
-  output logic w_valid,
-  input logic w_ready,
-  output logic [32-1:0] w_data,
-  output logic [4-1:0] w_strb,
-  output logic w_last,
-  input logic b_valid,
-  output logic b_ready
+  output logic axi_wr_aw_valid,
+  input logic axi_wr_aw_ready,
+  output logic [32-1:0] axi_wr_aw_addr,
+  output logic [1-1:0] axi_wr_aw_id,
+  output logic [8-1:0] axi_wr_aw_len,
+  output logic [3-1:0] axi_wr_aw_size,
+  output logic [2-1:0] axi_wr_aw_burst,
+  output logic axi_wr_w_valid,
+  input logic axi_wr_w_ready,
+  output logic [32-1:0] axi_wr_w_data,
+  output logic [4-1:0] axi_wr_w_strb,
+  output logic axi_wr_w_last,
+  input logic axi_wr_b_valid,
+  output logic axi_wr_b_ready,
+  input logic [1-1:0] axi_wr_b_id,
+  input logic [2-1:0] axi_wr_b_resp
 );
 
   typedef enum logic [2:0] {
@@ -42,11 +48,13 @@ module FsmS2mm (
   logic [32-1:0] dst_addr_r;
   logic [8-1:0] num_beats_r;
   logic [8-1:0] beat_ctr_r;
+  logic w_last_r;
   
   always_ff @(posedge clk) begin
     if (rst) begin
       state_r <= IDLE;
       beat_ctr_r <= 0;
+      w_last_r <= 1'b0;
     end else begin
       state_r <= state_next;
       case (state_r)
@@ -54,19 +62,32 @@ module FsmS2mm (
           // Control interface (from register block)
           // Status outputs
           // FIFO pop interface
-          // AXI4 Write Address channel
-          // AXI4 Write Data channel
-          // AXI4 Write Response channel
+          // AXI4 Write Master
           // Internal registers
+          // Lookahead: w_last_r is true when the CURRENT beat is the last one.
+          // Precomputed one cycle early so w_last is a FF output on the critical path,
+          // not a combinational subtractor+comparator chain.
           if (start) begin
             dst_addr_r <= dst_addr;
             num_beats_r <= num_beats;
             beat_ctr_r <= 0;
           end
         end
+        SENDAW: begin
+          if (axi_wr_aw_ready) begin
+            // Preload lookahead: beat 0 is last iff num_beats_r == 1
+            w_last_r <= num_beats_r == 1;
+          end
+        end
         SENDW: begin
-          if (w_ready & pop_valid) begin
+          // w_last_r was precomputed one cycle ago — no subtractor on critical path
+          if (axi_wr_w_ready & pop_valid) begin
             beat_ctr_r <= 8'(beat_ctr_r + 1);
+            // Lookahead: will the beat AFTER next be the last?
+            // next beat_ctr = beat_ctr_r + 1; last beat = num_beats_r - 1
+            // so w_last_r for next cycle = (beat_ctr_r + 1 == num_beats_r - 1)
+            //                            = (beat_ctr_r + 2 == num_beats_r)
+            w_last_r <= 8'(beat_ctr_r + 2) == num_beats_r;
           end
         end
         default: ;
@@ -84,13 +105,13 @@ module FsmS2mm (
         if (recv_count >= num_beats_r) state_next = SENDAW;
       end
       SENDAW: begin
-        if (aw_ready) state_next = SENDW;
+        if (axi_wr_aw_ready) state_next = SENDW;
       end
       SENDW: begin
-        if (w_ready & pop_valid & w_last) state_next = WAITB;
+        if (axi_wr_w_ready & pop_valid & w_last_r) state_next = WAITB;
       end
       WAITB: begin
-        if (b_valid) state_next = DONE;
+        if (axi_wr_b_valid) state_next = DONE;
       end
       DONE: begin
         state_next = IDLE;
@@ -104,16 +125,17 @@ module FsmS2mm (
     halted = 1'b0;
     idle_out = 1'b0;
     pop_ready = 1'b0;
-    aw_valid = 1'b0;
-    aw_addr = 0;
-    aw_len = 0;
-    aw_size = 0;
-    aw_burst = 0;
-    w_valid = 1'b0;
-    w_data = 0;
-    w_strb = 0;
-    w_last = 1'b0;
-    b_ready = 1'b0;
+    axi_wr_aw_valid = 1'b0;
+    axi_wr_aw_addr = 0;
+    axi_wr_aw_len = 0;
+    axi_wr_aw_size = 0;
+    axi_wr_aw_burst = 0;
+    axi_wr_aw_id = 0;
+    axi_wr_w_valid = 1'b0;
+    axi_wr_w_data = 0;
+    axi_wr_w_strb = 0;
+    axi_wr_w_last = 1'b0;
+    axi_wr_b_ready = 1'b0;
     case (state_r)
       IDLE: begin
         halted = 1'b1;
@@ -122,21 +144,21 @@ module FsmS2mm (
       WAITRECV: begin
       end
       SENDAW: begin
-        aw_valid = 1'b1;
-        aw_addr = dst_addr_r;
-        aw_len = 8'(num_beats_r - 1);
-        aw_size = 2;
-        aw_burst = 1;
+        axi_wr_aw_valid = 1'b1;
+        axi_wr_aw_addr = dst_addr_r;
+        axi_wr_aw_len = 8'(num_beats_r - 1);
+        axi_wr_aw_size = 2;
+        axi_wr_aw_burst = 1;
       end
       SENDW: begin
-        w_valid = pop_valid;
-        w_data = pop_data;
-        w_strb = 'hF;
-        w_last = beat_ctr_r == 8'(num_beats_r - 1);
-        pop_ready = w_ready;
+        axi_wr_w_valid = pop_valid;
+        axi_wr_w_data = pop_data;
+        axi_wr_w_strb = 'hF;
+        axi_wr_w_last = w_last_r;
+        pop_ready = axi_wr_w_ready;
       end
       WAITB: begin
-        b_ready = 1'b1;
+        axi_wr_b_ready = 1'b1;
       end
       DONE: begin
         done = 1'b1;

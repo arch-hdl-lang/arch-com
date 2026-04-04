@@ -37,6 +37,7 @@ module apb_controller (
       timeout_cnt <= 0;
     end else begin
       if (state == 0) begin
+        // IDLE: check for events with priority A > B > C
         if (select_a_i) begin
           r_psel <= 1'b1;
           r_pwrite <= 1'b1;
@@ -67,10 +68,13 @@ module apb_controller (
         end
         timeout_cnt <= 0;
       end else if (state == 1) begin
+        // SETUP: assert penable, move to ACCESS
         r_penable <= 1'b1;
         state <= 2;
       end else if (state == 2) begin
+        // ACCESS: wait for pready or timeout
         if (apb_pready_i) begin
+          // Transaction complete, return to IDLE
           r_psel <= 1'b0;
           r_penable <= 1'b0;
           r_pwrite <= 1'b0;
@@ -79,6 +83,7 @@ module apb_controller (
           timeout_cnt <= 0;
           state <= 0;
         end else if (timeout_cnt == 15) begin
+          // Timeout: abort, return to IDLE
           r_psel <= 1'b0;
           r_penable <= 1'b0;
           r_pwrite <= 1'b0;
@@ -94,11 +99,6 @@ module apb_controller (
       end
     end
   end
-  // IDLE: check for events with priority A > B > C
-  // SETUP: assert penable, move to ACCESS
-  // ACCESS: wait for pready or timeout
-  // Transaction complete, return to IDLE
-  // Timeout: abort, return to IDLE
   assign apb_psel_o = r_psel;
   assign apb_penable_o = r_penable;
   assign apb_pwrite_o = r_pwrite;

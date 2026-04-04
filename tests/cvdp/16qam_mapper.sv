@@ -9,14 +9,14 @@ module qam16_mapper_interpolated #(
 );
 
   // Per-symbol mapped values
-  logic [OUT_WIDTH-1:0] mi [0:N-1];
-  logic [OUT_WIDTH-1:0] mq [0:N-1];
+  logic [OUT_WIDTH-1:0] mi [N-1:0];
+  logic [OUT_WIDTH-1:0] mq [N-1:0];
   // Output elements: N + N/2 total
-  logic [OUT_WIDTH-1:0] out_i [0:N + N / 2-1];
-  logic [OUT_WIDTH-1:0] out_q [0:N + N / 2-1];
+  logic [OUT_WIDTH-1:0] out_i [N + N / 2-1:0];
+  logic [OUT_WIDTH-1:0] out_q [N + N / 2-1:0];
   // Accumulator for packing
-  logic [(N + N / 2) * OUT_WIDTH-1:0] acc_i [0:N + N / 2 + 1-1];
-  logic [(N + N / 2) * OUT_WIDTH-1:0] acc_q [0:N + N / 2 + 1-1];
+  logic [(N + N / 2) * OUT_WIDTH-1:0] acc_i [N + N / 2 + 1-1:0];
+  logic [(N + N / 2) * OUT_WIDTH-1:0] acc_q [N + N / 2 + 1-1:0];
   // Map: 00->-3(101), 01->-1(111), 10->1(001), 11->3(011)
   // Formula: (2*x + 5) mod 8
   always_comb begin

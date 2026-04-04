@@ -1,0 +1,100 @@
+// Montgomery modular multiplication: result = (a * b) mod N
+// Uses Montgomery reduction with R = power-of-2
+module montgomery_mult
+  param N:        const = 7;
+  param R:        const = 8;
+  param R_INVERSE: const = 1;
+  param NWIDTH:   const = 3;
+
+  port clk:      in Clock<SysDomain>;
+  port rst_n:    in Reset<Async, Low>;
+  port a:        in  UInt<NWIDTH>;
+  port b:        in  UInt<NWIDTH>;
+  port valid_in: in  Bool;
+  port result:   out UInt<NWIDTH>;
+  port valid_out: out Bool;
+
+  default seq on clk rising;
+
+  // R_MOD_N = R mod N (precomputed as R - N when R > N and a power of 2 less than 2*N)
+  let r_mod_n: UInt<NWIDTH> = (R.zext<16>() - N.zext<16>()).trunc<NWIDTH>();
+
+  // Pipeline registers
+  reg a_q:        UInt<NWIDTH> reset rst_n=>0;
+  reg b_q:        UInt<NWIDTH> reset rst_n=>0;
+  reg a_redc_q:   UInt<NWIDTH> reset rst_n=>0;
+  reg b_redc_q:   UInt<NWIDTH> reset rst_n=>0;
+  reg result_q:   UInt<NWIDTH> reset rst_n=>0;
+  reg vin_q:      Bool         reset rst_n=>false;
+  reg vin_q1:     Bool         reset rst_n=>false;
+  reg vin_q2:     Bool         reset rst_n=>false;
+  reg vout_q:     Bool         reset rst_n=>false;
+
+  // TWIDTH = NWIDTH + r_log2; use generous 2*NWIDTH+4 for the multiplied input to redc
+  param TWIDTH: const = 6;
+
+  // Compute ar = a_q * R_MOD_N and br = b_q * R_MOD_N (result fits in TWIDTH=2*NWIDTH bits)
+  let ar: UInt<TWIDTH> = (a_q.zext<TWIDTH>() * r_mod_n.zext<TWIDTH>()).trunc<TWIDTH>();
+  let br: UInt<TWIDTH> = (b_q.zext<TWIDTH>() * r_mod_n.zext<TWIDTH>()).trunc<TWIDTH>();
+
+  // Montgomery redc for a and b
+  wire a_redc: UInt<NWIDTH>;
+  wire b_redc: UInt<NWIDTH>;
+
+  inst redc_a: montgomery_redc
+    param N        = N;
+    param R        = R;
+    param R_INVERSE = R_INVERSE;
+    param NWIDTH   = NWIDTH;
+    param TWIDTH   = TWIDTH;
+    T      <- ar;
+    result -> a_redc;
+  end inst redc_a
+
+  inst redc_b: montgomery_redc
+    param N        = N;
+    param R        = R;
+    param R_INVERSE = R_INVERSE;
+    param NWIDTH   = NWIDTH;
+    param TWIDTH   = TWIDTH;
+    T      <- br;
+    result -> b_redc;
+  end inst redc_b
+
+  // Product of a_redc_q and b_redc_q (fits in TWIDTH=2*NWIDTH bits)
+  let ab_t: UInt<TWIDTH> = (a_redc_q.zext<TWIDTH>() * b_redc_q.zext<TWIDTH>()).trunc<TWIDTH>();
+
+  // Final redc of product
+  wire result_d: UInt<NWIDTH>;
+
+  inst redc_ab: montgomery_redc
+    param N        = N;
+    param R        = R;
+    param R_INVERSE = R_INVERSE;
+    param NWIDTH   = NWIDTH;
+    param TWIDTH   = TWIDTH;
+    T      <- ab_t;
+    result -> result_d;
+  end inst redc_ab
+
+  comb
+    result   = result_q;
+    valid_out = vout_q;
+  end comb
+
+  seq
+    vin_q  <= valid_in;
+    vin_q1 <= vin_q;
+    vin_q2 <= vin_q1;
+    vout_q <= vin_q2;
+
+    if valid_in
+      a_q <= a;
+      b_q <= b;
+    end if
+
+    a_redc_q <= a_redc;
+    b_redc_q <= b_redc;
+    result_q <= result_d;
+  end seq
+end module montgomery_mult

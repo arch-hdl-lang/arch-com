@@ -14,7 +14,7 @@ module lru_counter_policy #(
 );
 
   // Packed recency counters: each index has NWAYS counters, each CNT_W bits
-  logic [TOTAL_W-1:0] recency [0:NINDEXES-1];
+  logic [TOTAL_W-1:0] recency [NINDEXES-1:0];
   // Combinational signals
   logic [$clog2(NWAYS)-1:0] lru_slot;
   logic [TOTAL_W-1:0] cur_rec;
@@ -40,21 +40,14 @@ module lru_counter_policy #(
     replace_cnt = CNT_W'(cur_rec[lru_slot * CNT_W +: CNT_W]);
   end
   assign way_replace = lru_slot;
-  // Sequential update with reset initialization
+  // Sequential update
   always_ff @(posedge clock or posedge reset) begin
     if (reset) begin
       for (int __ri0 = 0; __ri0 < NINDEXES; __ri0++) begin
         recency[__ri0] <= 0;
       end
     end else begin
-      if (reset) begin
-        // Initialize: way i gets counter value i
-        for (int n = 0; n <= NINDEXES - 1; n++) begin
-          for (int w = 0; w <= NWAYS - 1; w++) begin
-            recency[n][w * CNT_W +: CNT_W] <= CNT_W'(w);
-          end
-        end
-      end else if (access) begin
+      if (access) begin
         if (hit) begin
           // Hit: set accessed way to NWAYS-1, decrement those > accessed_cnt
           for (int i = 0; i <= NWAYS - 1; i++) begin

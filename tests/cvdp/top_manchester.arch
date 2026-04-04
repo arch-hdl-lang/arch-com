@@ -1,0 +1,44 @@
+module top_manchester
+  param N: const = 8;
+
+  port clk_in:        in  Clock<SysDomain>;
+  port rst_in:        in  Reset<Async, High>;
+  port enc_valid_in:  in  Bool;
+  port enc_data_in:   in  UInt<N>;
+  port enc_valid_out: out Bool;
+  port enc_data_out:  out UInt<2*N>;
+  port dec_valid_in:  in  Bool;
+  port dec_data_in:   in  UInt<2*N>;
+  port dec_valid_out: out Bool;
+  port dec_data_out:  out UInt<N>;
+
+  wire enc_vo: Bool;
+  wire enc_do: UInt<2*N>;
+  wire dec_vo: Bool;
+  wire dec_do: UInt<N>;
+
+  inst enc: manchester_encoder
+    param N = N;
+    clk_in      <- clk_in;
+    rst_in      <- rst_in;
+    enc_valid_in <- enc_valid_in;
+    enc_data_in  <- enc_data_in;
+    enc_valid_out -> enc_vo;
+    enc_data_out  -> enc_do;
+  end inst enc
+
+  inst dec: manchester_decoder
+    param N = N;
+    clk_in       <- clk_in;
+    rst_in       <- rst_in;
+    dec_valid_in <- dec_valid_in;
+    dec_data_in  <- dec_data_in;
+    dec_valid_out -> dec_vo;
+    dec_data_out  -> dec_do;
+  end inst dec
+
+  comb enc_valid_out = enc_vo;
+  comb enc_data_out  = enc_do;
+  comb dec_valid_out = dec_vo;
+  comb dec_data_out  = dec_do;
+end module top_manchester

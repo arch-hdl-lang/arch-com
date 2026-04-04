@@ -1,0 +1,37 @@
+module inter_block
+  param ROW_COL_WIDTH: const = 16;
+  param SUB_BLOCKS:    const = 4;
+  param DATA_WIDTH:    const = ROW_COL_WIDTH * ROW_COL_WIDTH;
+
+  port clk:       in  Clock<SysDomain>;
+  port rst_n:     in  Reset<Async, Low>;
+  port i_valid:   in  Bool;
+  port in_data:   in  UInt<DATA_WIDTH>;
+  port out_data:  out UInt<DATA_WIDTH>;
+
+  default seq on clk rising;
+
+  reg data_reg: UInt<DATA_WIDTH> reset rst_n=>0;
+  reg blk_cnt:  UInt<8>          reset rst_n=>0;
+
+  wire xor_pattern: UInt<DATA_WIDTH>;
+
+  comb
+    for i in 0..DATA_WIDTH/8-1
+      xor_pattern[8*i+7:8*i] = blk_cnt;
+    end for
+  end comb
+
+  comb out_data = data_reg;
+
+  seq
+    if i_valid
+      data_reg <= in_data ^ xor_pattern;
+      if blk_cnt == (SUB_BLOCKS - 1).zext<8>()
+        blk_cnt <= 0;
+      else
+        blk_cnt <= (blk_cnt + 1).trunc<8>();
+      end if
+    end if
+  end seq
+end module inter_block

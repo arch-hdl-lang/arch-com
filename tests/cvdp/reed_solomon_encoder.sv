@@ -32,12 +32,7 @@ module reed_solomon_encoder #(
       parity_1 <= 0;
       valid_out <= 1'b0;
     end else begin
-      if (reset) begin
-        parity_0 <= 0;
-        parity_1 <= 0;
-        codeword_out <= 0;
-        valid_out <= 1'b0;
-      end else if (enable & valid_in) begin
+      if (enable & valid_in) begin
         parity_0 <= feedback;
         parity_1 <= parity_0 ^ fb_mult;
         codeword_out <= data_in;

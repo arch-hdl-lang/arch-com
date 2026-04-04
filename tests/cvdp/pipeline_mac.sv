@@ -18,22 +18,11 @@ module pipeline_mac #(
   logic valid_out_s1;
   logic valid_out_s2;
   logic valid_i_s1;
-  logic [$clog2(N) + 1-1:0] cnt;
   logic valid_out_s0;
-  logic count_rst;
-  logic accumulator_rst;
-  // Combinational: counter next value (counts stage-1 completions via valid_i_s1)
-  always_comb begin
-    if (count_rst) begin
-      cnt = ($clog2(N) + 1)'($unsigned(1));
-    end else if (valid_i_s1 & rstn) begin
-      cnt = ($clog2(N) + 1)'(counter_reg + 1);
-    end else begin
-      cnt = counter_reg;
-    end
-  end
   assign valid_out_s0 = counter_reg == ($clog2(N) + 1)'(N - 1);
+  logic count_rst;
   assign count_rst = valid_out_s1;
+  logic accumulator_rst;
   assign accumulator_rst = valid_out_s1;
   assign result = accumulation_reg;
   assign valid_out = valid_out_s1 & ~valid_out_s2;
@@ -73,8 +62,10 @@ module pipeline_mac #(
     if ((!rstn)) begin
       counter_reg <= 0;
     end else begin
-      if (valid_i_s1 | count_rst) begin
-        counter_reg <= cnt;
+      if (count_rst) begin
+        counter_reg <= ($clog2(N) + 1)'($unsigned(1));
+      end else if (valid_i_s1) begin
+        counter_reg <= ($clog2(N) + 1)'(counter_reg + 1);
       end
     end
   end

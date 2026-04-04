@@ -1,0 +1,151 @@
+// Elevator control system
+// param N: number of floors (default 8)
+// system_status: 0=IDLE, 1=MOVING_UP, 2=MOVING_DOWN, 3=EMERGENCY
+module elevator_control_system
+  param N: const = 8;
+
+  port clk:            in  Clock<SysDomain>;
+  port reset:          in  Reset<Sync, High>;
+  port call_requests:  in  UInt<N>;
+  port emergency_stop: in  Bool;
+  port current_floor:  out UInt<4>;
+  port door_open:      out Bool;
+  port seven_seg_out:  out UInt<7>;
+  port system_status:  out UInt<2>;
+
+  // State encoding: 0=IDLE, 1=MOVING_UP, 2=MOVING_DOWN, 3=DOOR_OPEN, 4=EMERGENCY
+  reg state_r:    UInt<3> reset none;
+  reg floor_r:    UInt<4> reset none;
+  reg door_cnt:   UInt<8> reset none;
+
+  // Seven-segment decode for current floor
+  wire seg: UInt<7>;
+  comb
+    if floor_r == 0
+      seg = 7'b1111110;
+    elsif floor_r == 1
+      seg = 7'b0110000;
+    elsif floor_r == 2
+      seg = 7'b1101101;
+    elsif floor_r == 3
+      seg = 7'b1111001;
+    elsif floor_r == 4
+      seg = 7'b0110011;
+    elsif floor_r == 5
+      seg = 7'b1011011;
+    elsif floor_r == 6
+      seg = 7'b1011111;
+    elsif floor_r == 7
+      seg = 7'b1110000;
+    elsif floor_r == 8
+      seg = 7'b1111111;
+    else
+      seg = 7'b1111011;
+    end if
+  end comb
+
+  // Check for pending requests above/below/at current floor
+  wire req_above: Bool;
+  wire req_below: Bool;
+  wire req_here:  Bool;
+  comb
+    req_above = false;
+    req_below = false;
+    req_here  = false;
+    for i in 0..N-1
+      if (i.zext<4>() > floor_r) & call_requests[i:i]
+        req_above = true;
+      end if
+      if (i.zext<4>() < floor_r) & call_requests[i:i]
+        req_below = true;
+      end if
+      if (i.zext<4>() == floor_r) & call_requests[i:i]
+        req_here = true;
+      end if
+    end for
+  end comb
+
+  // Output logic
+  comb
+    current_floor = floor_r;
+    seven_seg_out = seg;
+    if state_r == 3
+      door_open = true;
+    else
+      door_open = false;
+    end if
+    if state_r == 4
+      system_status = 3;
+    elsif state_r == 1
+      system_status = 1;
+    elsif state_r == 2
+      system_status = 2;
+    else
+      system_status = 0;
+    end if
+  end comb
+
+  // Next state logic
+  seq on clk rising
+    if reset
+      state_r   <= 0;
+      floor_r   <= 0;
+      door_cnt  <= 0;
+    elsif state_r == 0  // IDLE
+      if emergency_stop
+        state_r <= 4;
+      elsif req_here
+        state_r  <= 3;
+        door_cnt <= 50;
+      elsif req_above
+        state_r <= 1;
+      elsif req_below
+        state_r <= 2;
+      end if
+    elsif state_r == 1  // MOVING_UP
+      if emergency_stop
+        state_r <= 4;
+      elsif req_here
+        state_r  <= 3;
+        door_cnt <= 50;
+      elsif ~req_above & ~req_here
+        state_r <= 0;
+      else
+        if call_requests[floor_r:floor_r] == 0
+          floor_r <= (floor_r + 1).trunc<4>();
+        end if
+      end if
+    elsif state_r == 2  // MOVING_DOWN
+      if emergency_stop
+        state_r <= 4;
+      elsif req_here
+        state_r  <= 3;
+        door_cnt <= 50;
+      elsif ~req_below & ~req_here
+        state_r <= 0;
+      else
+        if call_requests[floor_r:floor_r] == 0
+          floor_r <= (floor_r - 1).trunc<4>();
+        end if
+      end if
+    elsif state_r == 3  // DOOR_OPEN
+      if emergency_stop
+        state_r <= 4;
+      elsif door_cnt == 0
+        if req_above
+          state_r <= 1;
+        elsif req_below
+          state_r <= 2;
+        else
+          state_r <= 0;
+        end if
+      else
+        door_cnt <= (door_cnt - 1).trunc<8>();
+      end if
+    elsif state_r == 4  // EMERGENCY
+      if ~emergency_stop
+        state_r <= 0;
+      end if
+    end if
+  end seq
+end module elevator_control_system

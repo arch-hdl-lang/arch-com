@@ -1,0 +1,72 @@
+module sobel_filter
+  param THRESHOLD: const = 128;
+
+  port clk:       in Clock<SysDomain>;
+  port rst_n:     in Reset<Async, Low>;
+  port pixel_in:  in UInt<8>;
+  port valid_in:  in Bool;
+  port edge_out:  out UInt<8>;
+  port valid_out: out Bool;
+
+  // 9-pixel shift register (p0=newest, p8=oldest)
+  reg p0: UInt<8> reset rst_n=>0;
+  reg p1: UInt<8> reset rst_n=>0;
+  reg p2: UInt<8> reset rst_n=>0;
+  reg p3: UInt<8> reset rst_n=>0;
+  reg p4: UInt<8> reset rst_n=>0;
+  reg p5: UInt<8> reset rst_n=>0;
+  reg p6: UInt<8> reset rst_n=>0;
+  reg p7: UInt<8> reset rst_n=>0;
+  reg p8: UInt<8> reset rst_n=>0;
+
+  // Gradient registers (computed from current buffer, used next cycle for output)
+  reg gx_r: SInt<11> reset rst_n=>0;
+  reg gy_r: SInt<11> reset rst_n=>0;
+  reg edge_out_r:  UInt<8> reset rst_n=>0;
+  reg valid_out_r: Bool    reset rst_n=>false;
+
+  // Count valid_in pulses; only assert valid_out after 9 pixels loaded
+  reg pixel_cnt: UInt<4> reset rst_n=>0;
+
+  wire abs_gx:    UInt<11>;
+  wire abs_gy:    UInt<11>;
+  wire magnitude: UInt<13>;
+
+  comb
+    abs_gx = gx_r[10] ? unsigned(~gx_r + 1).trunc<11>() : unsigned(gx_r).trunc<11>();
+    abs_gy = gy_r[10] ? unsigned(~gy_r + 1).trunc<11>() : unsigned(gy_r).trunc<11>();
+    magnitude = (abs_gx.zext<13>() + abs_gy.zext<13>()).trunc<13>();
+  end comb
+
+  comb edge_out  = edge_out_r;
+  comb valid_out = valid_out_r;
+
+  seq on clk rising
+    valid_out_r <= false;
+    if valid_in
+      // Shift buffer
+      p8 <= p7; p7 <= p6; p6 <= p5; p5 <= p4; p4 <= p3; p3 <= p2; p2 <= p1; p1 <= p0; p0 <= pixel_in;
+
+      // Sobel Gx: img[0][0] - img[0][2] + 2*img[1][0] - 2*img[1][2] + img[2][0] - img[2][2]
+      // With p8=img[0][0]...p0=img[2][2]:
+      gx_r <= (signed(p8) - signed(p6) + (signed(p5) << 1) - (signed(p3) << 1) + signed(p2) - signed(p0)).trunc<11>();
+
+      // Sobel Gy: img[0][0] + 2*img[0][1] + img[0][2] - img[2][0] - 2*img[2][1] - img[2][2]
+      gy_r <= (signed(p8) + (signed(p7) << 1) + signed(p6) - signed(p2) - (signed(p1) << 1) - signed(p0)).trunc<11>();
+
+      // Threshold from PREVIOUS gx_r/gy_r (pipeline delay)
+      edge_out_r <= magnitude > THRESHOLD.zext<13>() ? 8'hff : 8'h00;
+
+      // Count pixels; valid_out asserts after 9th pixel (and on every subsequent pixel)
+      if pixel_cnt < 9
+        pixel_cnt <= (pixel_cnt + 1).trunc<4>();
+      end if
+      if pixel_cnt >= 9
+        valid_out_r <= true;
+      end if
+    else
+      // Reset counter when valid_in deasserts
+      pixel_cnt <= 0;
+    end if
+  end seq
+end module sobel_filter

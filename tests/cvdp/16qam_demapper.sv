@@ -15,23 +15,23 @@ module qam16_demapper_interpolated #(
 );
 
   // Extract all samples
-  logic signed [IN_WIDTH-1:0] si_val [0:TOTAL_SAMPLES-1];
-  logic signed [IN_WIDTH-1:0] sq_val [0:TOTAL_SAMPLES-1];
+  logic signed [IN_WIDTH-1:0] si_val [TOTAL_SAMPLES-1:0];
+  logic signed [IN_WIDTH-1:0] sq_val [TOTAL_SAMPLES-1:0];
   // Mapped values per output symbol
-  logic signed [IN_WIDTH-1:0] mi [0:N-1];
-  logic signed [IN_WIDTH-1:0] mq [0:N-1];
+  logic signed [IN_WIDTH-1:0] mi [N-1:0];
+  logic signed [IN_WIDTH-1:0] mq [N-1:0];
   // Error detection: use 2x scale to avoid division
   // 2*interp - (m0 + m1) vs 2*threshold
-  logic signed [IN_WIDTH + 2-1:0] twice_interp_i [0:NUM_GROUPS-1];
-  logic signed [IN_WIDTH + 1-1:0] sum_mapped_i [0:NUM_GROUPS-1];
-  logic signed [IN_WIDTH + 2-1:0] diff2_i [0:NUM_GROUPS-1];
-  logic signed [IN_WIDTH + 2-1:0] twice_interp_q [0:NUM_GROUPS-1];
-  logic signed [IN_WIDTH + 1-1:0] sum_mapped_q [0:NUM_GROUPS-1];
-  logic signed [IN_WIDTH + 2-1:0] diff2_q [0:NUM_GROUPS-1];
-  logic [1-1:0] err_acc [0:NUM_GROUPS + 1-1];
-  logic [2-1:0] i_bits [0:N-1];
-  logic [2-1:0] q_bits [0:N-1];
-  logic [TOTAL_OUT_WIDTH-1:0] bits_acc [0:N + 1-1];
+  logic signed [IN_WIDTH + 2-1:0] twice_interp_i [NUM_GROUPS-1:0];
+  logic signed [IN_WIDTH + 1-1:0] sum_mapped_i [NUM_GROUPS-1:0];
+  logic signed [IN_WIDTH + 2-1:0] diff2_i [NUM_GROUPS-1:0];
+  logic signed [IN_WIDTH + 2-1:0] twice_interp_q [NUM_GROUPS-1:0];
+  logic signed [IN_WIDTH + 1-1:0] sum_mapped_q [NUM_GROUPS-1:0];
+  logic signed [IN_WIDTH + 2-1:0] diff2_q [NUM_GROUPS-1:0];
+  logic [1-1:0] err_acc [NUM_GROUPS + 1-1:0];
+  logic [2-1:0] i_bits [N-1:0];
+  logic [2-1:0] q_bits [N-1:0];
+  logic [TOTAL_OUT_WIDTH-1:0] bits_acc [N + 1-1:0];
   // Extract samples using shift+trunc (MSB-first packing)
   always_comb begin
     for (int k = 0; k <= TOTAL_SAMPLES - 1; k++) begin
@@ -73,11 +73,11 @@ module qam16_demapper_interpolated #(
         err_acc[gi + 1] = err_acc[gi];
       end
     end
+    // 2 * interp (shift left 1 of sign-extended value)
+    // sum of two mapped values
+    // diff2 = 2*interp - sum
+    // |diff2| > 2*threshold
   end
-  // 2 * interp (shift left 1 of sign-extended value)
-  // sum of two mapped values
-  // diff2 = 2*interp - sum
-  // |diff2| > 2*threshold
   // Bit mapping: -3->00, -1->01, 1->10, 3->11
   always_comb begin
     bits_acc[0] = 0;

@@ -10,7 +10,7 @@ module sync_muller_c_element #(
   output logic [1-1:0] out
 );
 
-  logic [NUM_INPUT-1:0] pipe [0:PIPE_DEPTH-1];
+  logic [NUM_INPUT-1:0] pipe [PIPE_DEPTH-1:0];
   logic [1-1:0] out_r;
   logic all_ones;
   logic all_zeros;

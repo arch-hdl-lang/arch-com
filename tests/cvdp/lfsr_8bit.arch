@@ -1,0 +1,22 @@
+module lfsr_8bit
+  port clock:     in Clock<SysDomain>;
+  port reset:     in Reset<Async, Low>;
+  port lfsr_seed: in UInt<8>;
+  port lfsr_out:  out UInt<8>;
+
+  reg state: UInt<8> reset reset=>0;
+
+  wire feedback: Bool;
+  // Fibonacci LFSR: taps at bits 6,5,1,0 (0-indexed); right-shift
+  comb feedback = state[6] ^ state[5] ^ state[1] ^ state[0];
+
+  seq on clock rising
+    if ~reset
+      state <= lfsr_seed;
+    else
+      state <= {feedback, state[7:1]};
+    end if
+  end seq
+
+  comb lfsr_out = state;
+end module lfsr_8bit

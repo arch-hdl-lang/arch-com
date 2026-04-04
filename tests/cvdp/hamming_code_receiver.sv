@@ -30,9 +30,9 @@ module hamming_code_receiver (
     end else begin
       corrected = data_in ^ 8'd128;
     end
+    // d3=corrected[7], d2=corrected[6], d1=corrected[5], d0=corrected[3]
     data_out = {corrected[7], corrected[6], corrected[5], corrected[3]};
   end
 
 endmodule
 
-// d3=corrected[7], d2=corrected[6], d1=corrected[5], d0=corrected[3]

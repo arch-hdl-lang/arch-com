@@ -1,0 +1,59 @@
+module ddm_cache
+  port clk:        in  Clock<SysDomain>;
+  port rst_n:      in  Reset<Async, Low>;
+  port cpu_addr:   in  UInt<32>;
+  port cpu_dout:   in  UInt<32>;
+  port cpu_strobe: in  Bool;
+  port cpu_rw:     in  Bool;
+  port uncached:   in  Bool;
+  port mem_dout:   in  UInt<32>;
+  port mem_ready:  in  Bool;
+  port cpu_din:    out UInt<32>;
+  port mem_din:    out UInt<32>;
+  port cpu_ready:  out Bool;
+  port mem_strobe: out Bool;
+  port mem_rw:     out Bool;
+  port mem_addr:   out UInt<32>;
+  port cache_hit:  out Bool;
+  port cache_miss: out Bool;
+  port d_data_dout: out UInt<32>;
+
+  default seq on clk rising;
+
+  // 64-entry direct-mapped cache
+  // index = cpu_addr[7:2] (6 bits), tag = cpu_addr[31:8] (24 bits)
+  reg d_valid: Vec<Bool, 64>     reset rst_n => false;
+  reg d_tags:  Vec<UInt<24>, 64> reset none;
+  reg d_data:  Vec<UInt<32>, 64> reset none;
+
+  wire idx:        UInt<6>;
+  wire tag:        UInt<24>;
+  wire cache_hit_w:  Bool;
+  wire cache_miss_w: Bool;
+  wire cache_write:  Bool;
+
+  comb
+    idx  = cpu_addr[7:2];
+    tag  = cpu_addr[31:8];
+    cache_hit_w  = cpu_strobe & d_valid[idx] & (d_tags[idx] == tag);
+    cache_miss_w = cpu_strobe & ~(d_valid[idx] & (d_tags[idx] == tag));
+    cache_write  = ~uncached & (cpu_rw | (cache_miss_w & mem_ready));
+    cache_hit    = cache_hit_w;
+    cache_miss   = cache_miss_w;
+    cpu_din      = d_data[idx];
+    d_data_dout  = d_data[idx];
+    mem_din      = cpu_dout;
+    mem_addr     = cpu_addr;
+    mem_rw       = cpu_rw;
+    mem_strobe   = cpu_strobe & ~uncached & (cpu_rw | cache_miss_w);
+    cpu_ready    = cache_hit_w | (~uncached & cache_miss_w & mem_ready);
+  end comb
+
+  seq
+    if cache_write
+      d_tags[idx] <= tag;
+      d_data[idx] <= cpu_rw ? cpu_dout : mem_dout;
+      d_valid[idx] <= true;
+    end if
+  end seq
+end module ddm_cache

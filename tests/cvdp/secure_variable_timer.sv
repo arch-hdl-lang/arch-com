@@ -28,59 +28,47 @@ module secure_variable_timer (
       shift_reg <= 0;
       st <= 0;
     end else begin
-      if (i_rst_n) begin
-        if (st == 0) begin
-          // IDLE: detect 1101 pattern
-          pat <= {pat[2:0], i_data_in};
-          if (pat == 4'd13) begin
-            st <= 1;
-            shift_reg <= {3'd0, i_data_in};
-            bit_cnt <= 1;
-            pat <= 0;
-          end
-        end else if (st == 1) begin
-          // CONFIG: shift in 4 bits MSB first
-          shift_reg <= {shift_reg[2:0], i_data_in};
-          bit_cnt <= 3'(bit_cnt + 1);
-          if (bit_cnt == 3) begin
-            st <= 2;
-            delay_val <= {shift_reg[2:0], i_data_in};
-            o_time_left <= {shift_reg[2:0], i_data_in};
-            o_processing <= 1'b1;
-            cycle_cnt <= 0;
-          end
-        end else if (st == 2) begin
-          // COUNT
-          if (cycle_cnt == 999) begin
-            cycle_cnt <= 0;
-            if (o_time_left == 0) begin
-              st <= 3;
-              o_processing <= 1'b0;
-              o_completed <= 1'b1;
-            end else begin
-              o_time_left <= 4'(o_time_left - 1);
-            end
-          end else begin
-            cycle_cnt <= 10'(cycle_cnt + 1);
-          end
-        end else if (i_ack) begin
-          // DONE: wait for ack
-          st <= 0;
-          o_completed <= 1'b0;
-          o_processing <= 1'b0;
-          o_time_left <= 0;
+      if (st == 0) begin
+        // IDLE: detect 1101 pattern
+        pat <= {pat[2:0], i_data_in};
+        if (pat == 4'd13) begin
+          st <= 1;
+          shift_reg <= {3'd0, i_data_in};
+          bit_cnt <= 1;
           pat <= 0;
         end
-      end else begin
+      end else if (st == 1) begin
+        // CONFIG: shift in 4 bits MSB first
+        shift_reg <= {shift_reg[2:0], i_data_in};
+        bit_cnt <= 3'(bit_cnt + 1);
+        if (bit_cnt == 3) begin
+          st <= 2;
+          delay_val <= {shift_reg[2:0], i_data_in};
+          o_time_left <= {shift_reg[2:0], i_data_in};
+          o_processing <= 1'b1;
+          cycle_cnt <= 0;
+        end
+      end else if (st == 2) begin
+        // COUNT
+        if (cycle_cnt == 999) begin
+          cycle_cnt <= 0;
+          if (o_time_left == 0) begin
+            st <= 3;
+            o_processing <= 1'b0;
+            o_completed <= 1'b1;
+          end else begin
+            o_time_left <= 4'(o_time_left - 1);
+          end
+        end else begin
+          cycle_cnt <= 10'(cycle_cnt + 1);
+        end
+      end else if (i_ack) begin
+        // DONE: wait for ack
         st <= 0;
-        pat <= 0;
-        shift_reg <= 0;
-        bit_cnt <= 0;
-        delay_val <= 0;
-        cycle_cnt <= 0;
-        o_time_left <= 0;
-        o_processing <= 1'b0;
         o_completed <= 1'b0;
+        o_processing <= 1'b0;
+        o_time_left <= 0;
+        pat <= 0;
       end
     end
   end

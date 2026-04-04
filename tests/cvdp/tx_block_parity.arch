@@ -1,0 +1,40 @@
+module tx_block_parity
+  param DATA_WIDTH: const = 8;
+
+  port clk:        in  Clock<SysDomain>;
+  port rst_n:      in  Reset<Async, Low>;
+  port data_in:    in  UInt<DATA_WIDTH>;
+  port sel:        in  UInt<3>;
+  port load:       in  Bool;
+  port serial_out: out Bool;
+  port parity:     out Bool;
+
+  default seq on clk rising;
+
+  reg shift_reg:   UInt<DATA_WIDTH> reset rst_n=>0;
+  reg parity_reg:  Bool             reset rst_n=>false;
+
+  comb serial_out = shift_reg[0:0] == 1;
+  comb parity     = parity_reg;
+
+  // Compute parity over data_in[sel-1:0] combinationally
+  // Since sel is dynamic, we XOR all DATA_WIDTH bits but masked by index < sel
+  wire par_comb: Bool;
+  comb
+    par_comb = false;
+    for i in 0..DATA_WIDTH-1
+      if i.zext<3>() < sel
+        par_comb = par_comb ^ (data_in[i:i] == 1);
+      end if
+    end for
+  end comb
+
+  seq
+    if load
+      shift_reg  <= data_in;
+      parity_reg <= par_comb;
+    else
+      shift_reg  <= shift_reg >> 1;
+    end if
+  end seq
+end module tx_block_parity

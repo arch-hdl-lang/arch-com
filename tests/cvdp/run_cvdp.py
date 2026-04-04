@@ -107,7 +107,27 @@ def extract_and_run(name_substr, sv_file=None):
     run_env['MODULE'] = module
     run_env['TOPLEVEL_LANG'] = toplevel_lang
     run_env['COCOTB_RESULTS_FILE'] = os.path.join(workdir, 'results.xml')
-    run_env['VERILOG_SOURCES'] = os.path.join(rtl_dir, f"{module_name}.sv")
+    # Build VERILOG_SOURCES: include all SV files listed in the harness env
+    raw_sources = env_vars.get('VERILOG_SOURCES', f'/code/rtl/{module_name}.sv')
+    sv_sources = []
+    for src in raw_sources.split():
+        # Map /code/rtl/NAME.sv -> our local rtl_dir/NAME.sv
+        import posixpath
+        fname = posixpath.basename(src)
+        local = os.path.join(rtl_dir, fname)
+        # Copy the matching arch-generated SV if available
+        stem = fname.replace('.sv', '').replace('.v', '')
+        for ext in ['.sv', '.v']:
+            arch_sv = os.path.join(CVDP_DIR, f'{stem}{ext}')
+            if os.path.exists(arch_sv):
+                import shutil as _sh
+                _sh.copy(arch_sv, local)
+                break
+        if os.path.exists(local):
+            sv_sources.append(local)
+        else:
+            sv_sources.append(os.path.join(rtl_dir, f"{module_name}.sv"))
+    run_env['VERILOG_SOURCES'] = ' '.join(sv_sources) if sv_sources else os.path.join(rtl_dir, f"{module_name}.sv")
 
     # Patch harness_library dut_init: icarus exposes inputs as GPI_LOGIC/GPI_LOGIC_ARRAY, not GPI_NET,
     # so the original dut_init never initializes inputs on icarus, leaving them X.
@@ -177,6 +197,15 @@ def extract_and_run(name_substr, sv_file=None):
         # Fix cocotb 2.0 defines={...: None} — None not serializable as SV literal
         if ': None}' in pycontent or ': None,' in pycontent:
             pycontent = pycontent.replace(': None}', ': 1}').replace(': None,', ': 1,')
+            changed = True
+        # Fix cocotb 2.0: packed arrays cannot be subscript-indexed (dut.sig[i])
+        # Replace int(dut.X[N]) patterns with bit-extract from int value
+        if _re2.search(r'int\(dut\.\w+\[\d+\]\)', pycontent):
+            pycontent = _re2.sub(
+                r'int\(dut\.(\w+)\[(\d+)\]\)',
+                lambda m: f'((int(dut.{m.group(1)}.value) >> {m.group(2)}) & 1)',
+                pycontent
+            )
             changed = True
         if changed:
             open(pyfile, 'w').write(pycontent)

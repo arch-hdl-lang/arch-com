@@ -1,0 +1,54 @@
+module gf_mac
+  param WIDTH: const = 8;
+
+  port a:      in UInt<WIDTH>;
+  port b:      in UInt<WIDTH>;
+  port result: out UInt<8>;
+
+  // GF(2^8) multiply-accumulate: XOR of all segment-wise GF products
+  // Each segment is 8 bits. This implementation supports WIDTH=8 (1 segment).
+  // Irreducible polynomial: x^8 + x^4 + x^3 + x + 1 (0x11B), reduction byte 0x1B
+
+  // Segment 0: compute gf_mul(a[7:0], b[7:0]) using Russian peasant algorithm
+  wire sh0s0: UInt<9>; wire sh1s0: UInt<9>; wire sh2s0: UInt<9>;
+  wire sh3s0: UInt<9>; wire sh4s0: UInt<9>; wire sh5s0: UInt<9>; wire sh6s0: UInt<9>;
+  wire a0s0: UInt<8>;  wire a1s0: UInt<8>;  wire a2s0: UInt<8>;
+  wire a3s0: UInt<8>;  wire a4s0: UInt<8>;  wire a5s0: UInt<8>;  wire a6s0: UInt<8>;
+  wire p0s0: UInt<8>;  wire p1s0: UInt<8>;  wire p2s0: UInt<8>;
+  wire p3s0: UInt<8>;  wire p4s0: UInt<8>;  wire p5s0: UInt<8>;
+  wire p6s0: UInt<8>;  wire gfp0: UInt<8>;
+
+  comb
+    // iteration 0: accumulate a if b[0]=1
+    p0s0  = (b[0:0] == 1) ? a[7:0] : 0.zext<8>();
+    sh0s0 = a[7:0].zext<9>() << 1;
+    a0s0  = (sh0s0[8:8] == 1) ? sh0s0[7:0] ^ 0x1B.zext<8>() : sh0s0[7:0];
+    // iteration 1
+    p1s0  = (b[1:1] == 1) ? p0s0 ^ a0s0 : p0s0;
+    sh1s0 = a0s0.zext<9>() << 1;
+    a1s0  = (sh1s0[8:8] == 1) ? sh1s0[7:0] ^ 0x1B.zext<8>() : sh1s0[7:0];
+    // iteration 2
+    p2s0  = (b[2:2] == 1) ? p1s0 ^ a1s0 : p1s0;
+    sh2s0 = a1s0.zext<9>() << 1;
+    a2s0  = (sh2s0[8:8] == 1) ? sh2s0[7:0] ^ 0x1B.zext<8>() : sh2s0[7:0];
+    // iteration 3
+    p3s0  = (b[3:3] == 1) ? p2s0 ^ a2s0 : p2s0;
+    sh3s0 = a2s0.zext<9>() << 1;
+    a3s0  = (sh3s0[8:8] == 1) ? sh3s0[7:0] ^ 0x1B.zext<8>() : sh3s0[7:0];
+    // iteration 4
+    p4s0  = (b[4:4] == 1) ? p3s0 ^ a3s0 : p3s0;
+    sh4s0 = a3s0.zext<9>() << 1;
+    a4s0  = (sh4s0[8:8] == 1) ? sh4s0[7:0] ^ 0x1B.zext<8>() : sh4s0[7:0];
+    // iteration 5
+    p5s0  = (b[5:5] == 1) ? p4s0 ^ a4s0 : p4s0;
+    sh5s0 = a4s0.zext<9>() << 1;
+    a5s0  = (sh5s0[8:8] == 1) ? sh5s0[7:0] ^ 0x1B.zext<8>() : sh5s0[7:0];
+    // iteration 6
+    p6s0  = (b[6:6] == 1) ? p5s0 ^ a5s0 : p5s0;
+    sh6s0 = a5s0.zext<9>() << 1;
+    a6s0  = (sh6s0[8:8] == 1) ? sh6s0[7:0] ^ 0x1B.zext<8>() : sh6s0[7:0];
+    // iteration 7
+    gfp0  = (b[7:7] == 1) ? p6s0 ^ a6s0 : p6s0;
+    result = gfp0;
+  end comb
+end module gf_mac

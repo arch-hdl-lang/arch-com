@@ -76,18 +76,7 @@ module TLB #(
       virtual_tags_2 <= 0;
       virtual_tags_3 <= 0;
     end else begin
-      if (rst) begin
-        valid_bits <= 0;
-        replacement_idx <= 0;
-        virtual_tags_0 <= 0;
-        virtual_tags_1 <= 0;
-        virtual_tags_2 <= 0;
-        virtual_tags_3 <= 0;
-        physical_pages_0 <= 0;
-        physical_pages_1 <= 0;
-        physical_pages_2 <= 0;
-        physical_pages_3 <= 0;
-      end else if (flsh) begin
+      if (flsh) begin
         valid_bits <= 0;
       end else if (tlb_write_enable) begin
         if (replacement_idx == 0) begin

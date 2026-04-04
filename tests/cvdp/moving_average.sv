@@ -5,7 +5,7 @@ module moving_average (
   output logic [12-1:0] data_out
 );
 
-  logic [12-1:0] mem [0:8-1];
+  logic [12-1:0] mem [8-1:0];
   logic [15-1:0] sum_reg = 0;
   always_ff @(posedge clk) begin
     if (reset) begin

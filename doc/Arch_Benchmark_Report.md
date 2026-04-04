@@ -1565,3 +1565,94 @@ SystemVerilog score: 2.0 / 10. This block is consistently generated incorrectly 
 > *✗ Intrinsic functions (vec_dot, vec_scale) are assumed available in Block 4. A real compiler would need a standard library specification for these operations.*
 
 *Arch HDL Benchmark Report · AI Accelerator Blocks · March 2026*
+
+---
+
+# Appendix: External Benchmark Results
+
+## VerilogEval v2 (completed 2026-03-27)
+
+VerilogEval v2 contains 156 Verilog design problems ranging from simple combinational logic to sequential state machines.
+
+| Metric | Result |
+|--------|--------|
+| Problems solved | 156 / 156 (100%) |
+| Verilator-clean | 154 / 156 (99%) |
+| ARCH source vs generated SV | ~25% shorter |
+
+All 156 problems were solved from specification only (no reference SV). Two designs use SV constructs that Verilator does not support but are valid IEEE 1800.
+
+**Files:** `tests/verilog_eval/*.arch`
+
+---
+
+## CVDP v1.0.4 (as of 2026-03-30)
+
+The CVDP benchmark (Chip Verification Design Problems) contains 302 cocotb-verified design problems across 213 unique modules. Each problem provides a natural language spec, buggy reference SV, and a cocotb testbench.
+
+### Coverage
+
+| Category | Total | With .arch | Passing |
+|----------|-------|-----------|---------|
+| Easy | 162 | ~162 | ~80+ |
+| Medium | 140 | ~123 | ~40+ |
+| **Total** | **302** | **~285** | **~121+** |
+
+22 modules (24 problems) have no .arch files yet, mostly medium-difficulty.
+
+### Test Infrastructure
+
+- **Test runner:** `tests/cvdp/run_cvdp.py` — extracts harness from JSONL, copies generated SV, runs cocotb via Icarus Verilog
+- **JSONL:** `~/github/cvdp_benchmark/full_dataset/cvdp_v1.0.4_nonagentic_code_generation_no_commercial.jsonl`
+
+### Failure Categories
+
+| Category | ~Count | Description |
+|----------|--------|-------------|
+| Behavioral mismatch | ~100 | Wrong algorithm, FSM logic, or protocol implementation |
+| Port/module name mismatch | ~30 | Harness expects exact names from reference SV |
+| Multi-file test runner gap | ~10 | `run_cvdp.py` passes one SV; harness expects top + submodules |
+| Internal signal probing | ~10 | Cocotb probes internal names that differ in ARCH-generated SV |
+| Cocotb 2.0 incompatibility | 1 | `radix2_div` uses deprecated `@cocotb.coroutine` |
+| Test timeout | ~5 | Infinite loops from port mismatches |
+
+Note: failures are primarily implementation bugs (wrong algorithm written), not ARCH language limitations. The multi-file gap is a test-runner issue — `arch build` already supports multi-file compilation.
+
+### Strengths Observed
+
+1. **~25% shorter source** — boilerplate reduction from `reg` declarations with inline reset, `seq`/`comb` blocks
+2. **Width errors caught at compile time** — many reference SVs had silent truncation bugs surfaced by ARCH's type system
+3. **First-class FSM** — `fsm` construct with exhaustive state checking eliminated state-encoding bugs
+4. **Reset consistency** — reset tied to register declaration prevents forgotten-reset bugs
+5. **Single-driver enforcement** — caught overlapping assignments in reference designs
+6. **Comb blocks with for-loops** — combinational algorithms (sqrt, priority encoding, Hamming) work naturally
+
+### Friction Points
+
+1. **Signed arithmetic verbosity** — addressed with `signed()`/`unsigned()` reinterpret casts
+2. **Internal signal naming** — benchmark-specific: cocotb probes names that may differ from ARCH-generated SV
+
+### Representative Passing Designs
+
+| Domain | Modules |
+|--------|---------|
+| DSP | iir_filter, sigma_delta_audio, fir_filter, low_pass_filter, moving_average, decimator_and_peak_detector |
+| Arithmetic | lfsr_8bit, square_root_seq, bcd_adder, binary_to_gray, gray_to_binary, divider, dot_product |
+| Caches | single_port_ram, lru/mru/pseudo_lru policies |
+| Communication | baud_rate_generator, bit_sync, copilot_rs_232 |
+| FSMs | car_parking_system, vending_machine, dig_stopwatch, thermostat, alphablending |
+| Image | sobel_filter, signal_correlator, image_rotate |
+| Bus | apb_controller, skid_buffer, pipelined_skid_buffer, axi_register |
+| Encoding | encoder_64b66b, decoder_64b66b, decoder_8b10b, hamming_tx |
+
+### ARCH Constructs Used
+
+| Construct | Count | Examples |
+|-----------|-------|---------|
+| `module` | ~190 | Most designs |
+| `fsm` | ~25 | elevator, vending_machine, alphablending |
+| `pipeline` | ~5 | pipelined_adder, conv3x3 |
+| `ram` | ~5 | single_port_ram, cache designs |
+| `fifo` / `counter` | ~5 | sync_lifo, ttc_counter_lite |
+
+**Files:** `tests/cvdp/*.arch`

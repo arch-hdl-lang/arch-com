@@ -13,7 +13,7 @@ module mru_counter_policy #(
   output logic [WAY_W-1:0] way_replace
 );
 
-  logic [REC_W-1:0] recency [0:NINDEXES-1];
+  logic [REC_W-1:0] recency [NINDEXES-1:0];
   logic [WAY_W-1:0] mru_slot;
   logic [REC_W-1:0] cur_rec;
   logic [WAY_W-1:0] old_val;

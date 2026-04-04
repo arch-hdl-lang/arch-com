@@ -2,7 +2,7 @@ module t_hamming_tx #(
   parameter int DATA_WIDTH = 4,
   parameter int PARITY_BIT = 3,
   parameter int ENCODED_DATA = PARITY_BIT + DATA_WIDTH + 1,
-  parameter int ENCODED_DATA_BIT = 4
+  parameter int ENCODED_DATA_BIT = $clog2(ENCODED_DATA)
 ) (
   input logic [DATA_WIDTH-1:0] data_in,
   output logic [ENCODED_DATA-1:0] data_out

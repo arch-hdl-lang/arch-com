@@ -1,85 +1,32 @@
+// Simple floor number to 7-segment display decoder
+// Maps floor number 0-9 to 7-segment patterns
 module floor_to_seven_segment
-  port clk: in Clock<SysDomain>;
-  port floor_display: in UInt<4>;
-  port seven_seg_out: out UInt<7>;
-  port seven_seg_out_anode: out UInt<4>;
-  port thousand: out UInt<4>;
-  port hundred: out UInt<4>;
-  port ten: out UInt<4>;
-  port one: out UInt<4>;
-
-  // BCD conversion
-  wire bcd_thou: UInt<4>;
-  wire bcd_hund: UInt<4>;
-  wire bcd_ten: UInt<4>;
-  wire bcd_one: UInt<4>;
-
-  inst u_bcd: Binary2BCD
-    num <- floor_display.zext<8>();
-    thousand -> bcd_thou;
-    hundred -> bcd_hund;
-    ten -> bcd_ten;
-    one -> bcd_one;
-  end inst u_bcd
+  port floor_in:    in  UInt<4>;
+  port seven_seg:   out UInt<7>;
 
   comb
-    thousand = bcd_thou;
-    hundred = bcd_hund;
-    ten = bcd_ten;
-    one = bcd_one;
-  end comb
-
-  // 2-bit counter for digit mux
-  reg digit_sel: UInt<2>;
-  default seq on clk rising;
-
-  seq
-    digit_sel <= (digit_sel + 1).trunc<2>();
-  end seq
-
-  // Select which digit to display and which anode to activate
-  wire current_digit: UInt<4>;
-
-  comb
-    if digit_sel == 0
-      current_digit = bcd_one;
-      seven_seg_out_anode = 14;
-    elsif digit_sel == 1
-      current_digit = bcd_ten;
-      seven_seg_out_anode = 13;
-    elsif digit_sel == 2
-      current_digit = bcd_hund;
-      seven_seg_out_anode = 11;
+    if floor_in == 0
+      seven_seg = 7'b1111110;
+    elsif floor_in == 1
+      seven_seg = 7'b0110000;
+    elsif floor_in == 2
+      seven_seg = 7'b1101101;
+    elsif floor_in == 3
+      seven_seg = 7'b1111001;
+    elsif floor_in == 4
+      seven_seg = 7'b0110011;
+    elsif floor_in == 5
+      seven_seg = 7'b1011011;
+    elsif floor_in == 6
+      seven_seg = 7'b1011111;
+    elsif floor_in == 7
+      seven_seg = 7'b1110000;
+    elsif floor_in == 8
+      seven_seg = 7'b1111111;
+    elsif floor_in == 9
+      seven_seg = 7'b1111011;
     else
-      current_digit = bcd_thou;
-      seven_seg_out_anode = 7;
-    end if
-  end comb
-
-  // Seven-segment decoder
-  comb
-    if current_digit == 0
-      seven_seg_out = 126;
-    elsif current_digit == 1
-      seven_seg_out = 48;
-    elsif current_digit == 2
-      seven_seg_out = 109;
-    elsif current_digit == 3
-      seven_seg_out = 121;
-    elsif current_digit == 4
-      seven_seg_out = 51;
-    elsif current_digit == 5
-      seven_seg_out = 91;
-    elsif current_digit == 6
-      seven_seg_out = 95;
-    elsif current_digit == 7
-      seven_seg_out = 112;
-    elsif current_digit == 8
-      seven_seg_out = 127;
-    elsif current_digit == 9
-      seven_seg_out = 123;
-    else
-      seven_seg_out = 0;
+      seven_seg = 7'b0000000;
     end if
   end comb
 end module floor_to_seven_segment

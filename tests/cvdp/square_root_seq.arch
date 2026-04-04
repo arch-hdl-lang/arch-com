@@ -1,0 +1,62 @@
+// Sequential square root using digit-by-digit algorithm
+// Ports: clk, rst (sync high), start, num (WIDTH-bit), done, final_root (WIDTH/2-bit)
+module square_root_seq
+  param WIDTH: const = 16;
+
+  port clk:        in  Clock<SysDomain>;
+  port rst:        in  Reset<Sync, High>;
+  port start:      in  Bool;
+  port num:        in  UInt<WIDTH>;
+  port done:       out Bool;
+  port final_root: out UInt<WIDTH>;
+
+  reg running:   Bool         reset none;
+  reg finished:  Bool         reset none;
+  reg radicand:  UInt<WIDTH>  reset none;
+  reg root_r:    UInt<WIDTH>  reset none;
+  reg remainder: UInt<WIDTH>  reset none;
+  reg bit_r:     UInt<WIDTH>  reset none;
+  reg result_r:  UInt<WIDTH>  reset none;
+
+  comb
+    done       = finished;
+    final_root = result_r;
+  end comb
+
+  seq on clk rising
+    if rst
+      running   <= false;
+      finished  <= false;
+      radicand  <= 0;
+      root_r    <= 0;
+      remainder <= 0;
+      bit_r     <= 0;
+      result_r  <= 0;
+    elsif start & ~running & ~finished
+      running   <= true;
+      finished  <= false;
+      radicand  <= num;
+      root_r    <= 0;
+      remainder <= 0;
+      // Start bit: highest even power of 4 not exceeding num (use 1<<(WIDTH-2) as initial)
+      bit_r     <= 1 << (WIDTH - 2);
+      result_r  <= 0;
+    elsif running
+      if bit_r == 0
+        running  <= false;
+        finished <= true;
+        result_r <= root_r;
+      else
+        if radicand >= root_r + bit_r
+          radicand  <= (radicand - root_r - bit_r).trunc<WIDTH>();
+          root_r    <= ((root_r >> 1) + bit_r).trunc<WIDTH>();
+        else
+          root_r    <= root_r >> 1;
+        end if
+        bit_r <= bit_r >> 2;
+      end if
+    elsif finished & ~start
+      finished <= false;
+    end if
+  end seq
+end module square_root_seq

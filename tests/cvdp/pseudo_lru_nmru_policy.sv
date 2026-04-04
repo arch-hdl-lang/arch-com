@@ -11,7 +11,7 @@ module pseudo_lru_nmru_policy #(
   output logic [$clog2(NWAYS)-1:0] way_replace
 );
 
-  logic [NWAYS-1:0] recency [0:NINDEXES-1];
+  logic [NWAYS-1:0] recency [NINDEXES-1:0];
   logic [$clog2(NWAYS)-1:0] replace_way;
   logic only_one_zero;
   logic [NWAYS-1:0] cur_recency;

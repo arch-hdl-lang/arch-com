@@ -1,33 +1,35 @@
 module tx_block
-  port clk:       in Clock<SysDomain>;
-  port reset_n:   in Reset<Async, Low>;
-  port data_in:   in UInt<64>;
-  port sel:       in UInt<3>;
+  port clk:        in Clock<SysDomain>;
+  port reset_n:    in Reset<Async, Low>;
+  port data_in:    in UInt<64>;
+  port sel:        in UInt<3>;
   port serial_out: out Bool;
-  port reg done:       out Bool reset reset_n=>false;
+  port done:       out Bool;
   port serial_clk: out Bool;
 
   reg shift_reg: UInt<64> reset reset_n=>0;
-  reg bit_cnt:   UInt<7> reset reset_n=>0;
-  reg active:    Bool reset reset_n=>false;
+  reg bit_cnt:   UInt<7>  reset reset_n=>0;
+  reg active:    Bool     reset reset_n=>false;
+  reg done_r:    Bool     reset reset_n=>false;
 
   default seq on clk rising;
 
   comb
     serial_clk = active;
     serial_out = active & shift_reg[0];
+    done = done_r;
   end comb
 
   seq
+    done_r <= false;
     if active
       shift_reg <= shift_reg >> 1;
       bit_cnt <= (bit_cnt - 1).trunc<7>();
       if bit_cnt == 0
         active <= false;
-        done <= true;
+        done_r <= true;
       end if
     else
-      done <= false;
       if sel == 1
         shift_reg <= data_in;
         bit_cnt <= 7;

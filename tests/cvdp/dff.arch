@@ -1,0 +1,18 @@
+module dff
+  param N: const = 8;
+
+  port clk:   in  Clock<SysDomain>;
+  port reset: in  Reset<Sync, High>;
+  port D:     in  UInt<N>;
+  port Q:     out UInt<N>;
+
+  default seq on clk rising;
+
+  reg Q_r: UInt<N> reset reset=>0;
+
+  seq
+    Q_r <= D;
+  end seq
+
+  comb Q = Q_r;
+end module dff

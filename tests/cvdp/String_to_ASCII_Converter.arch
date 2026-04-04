@@ -1,0 +1,95 @@
+module String_to_ASCII_Converter
+  port clk:       in Clock<SysDomain>;
+  port rst_n:     in Reset<Sync, Low>;
+  port start:     in Bool;
+  port char_in:   in Vec<UInt<8>, 8>;
+  port ascii_out: out Vec<UInt<8>, 8>;
+  port valid:     out Bool;
+  port ready:     out Bool;
+
+  default seq on clk rising;
+
+  reg ascii_reg: Vec<UInt<8>, 8> reset rst_n => 0;
+  reg valid_reg: Bool            reset rst_n => false;
+  reg ready_reg: Bool            reset rst_n => true;
+
+  comb ascii_out = ascii_reg;
+  comb valid     = valid_reg;
+  comb ready     = ready_reg;
+
+  // Conversion function: map encoded value to ASCII
+  // 0..9   -> 48..57
+  // 10..35 -> 65..90
+  // 36..61 -> 97..122
+  // 62..95 -> 33..66
+  wire conv0: UInt<8>;
+  wire conv1: UInt<8>;
+  wire conv2: UInt<8>;
+  wire conv3: UInt<8>;
+  wire conv4: UInt<8>;
+  wire conv5: UInt<8>;
+  wire conv6: UInt<8>;
+  wire conv7: UInt<8>;
+
+  comb
+    conv0 = (char_in[0] < 10) ? (char_in[0] + 48).trunc<8>() :
+            (char_in[0] < 36) ? (char_in[0] + 55).trunc<8>() :
+            (char_in[0] < 62) ? (char_in[0] + 61).trunc<8>() :
+                                 (char_in[0] - 29).trunc<8>();
+    conv1 = (char_in[1] < 10) ? (char_in[1] + 48).trunc<8>() :
+            (char_in[1] < 36) ? (char_in[1] + 55).trunc<8>() :
+            (char_in[1] < 62) ? (char_in[1] + 61).trunc<8>() :
+                                 (char_in[1] - 29).trunc<8>();
+    conv2 = (char_in[2] < 10) ? (char_in[2] + 48).trunc<8>() :
+            (char_in[2] < 36) ? (char_in[2] + 55).trunc<8>() :
+            (char_in[2] < 62) ? (char_in[2] + 61).trunc<8>() :
+                                 (char_in[2] - 29).trunc<8>();
+    conv3 = (char_in[3] < 10) ? (char_in[3] + 48).trunc<8>() :
+            (char_in[3] < 36) ? (char_in[3] + 55).trunc<8>() :
+            (char_in[3] < 62) ? (char_in[3] + 61).trunc<8>() :
+                                 (char_in[3] - 29).trunc<8>();
+    conv4 = (char_in[4] < 10) ? (char_in[4] + 48).trunc<8>() :
+            (char_in[4] < 36) ? (char_in[4] + 55).trunc<8>() :
+            (char_in[4] < 62) ? (char_in[4] + 61).trunc<8>() :
+                                 (char_in[4] - 29).trunc<8>();
+    conv5 = (char_in[5] < 10) ? (char_in[5] + 48).trunc<8>() :
+            (char_in[5] < 36) ? (char_in[5] + 55).trunc<8>() :
+            (char_in[5] < 62) ? (char_in[5] + 61).trunc<8>() :
+                                 (char_in[5] - 29).trunc<8>();
+    conv6 = (char_in[6] < 10) ? (char_in[6] + 48).trunc<8>() :
+            (char_in[6] < 36) ? (char_in[6] + 55).trunc<8>() :
+            (char_in[6] < 62) ? (char_in[6] + 61).trunc<8>() :
+                                 (char_in[6] - 29).trunc<8>();
+    conv7 = (char_in[7] < 10) ? (char_in[7] + 48).trunc<8>() :
+            (char_in[7] < 36) ? (char_in[7] + 55).trunc<8>() :
+            (char_in[7] < 62) ? (char_in[7] + 61).trunc<8>() :
+                                 (char_in[7] - 29).trunc<8>();
+  end comb
+
+  seq
+    if ~rst_n
+      for i in 0..7
+        ascii_reg[i] <= 0;
+      end for
+      valid_reg <= false;
+      ready_reg <= true;
+    elsif start
+      ascii_reg[0] <= conv0;
+      ascii_reg[1] <= conv1;
+      ascii_reg[2] <= conv2;
+      ascii_reg[3] <= conv3;
+      ascii_reg[4] <= conv4;
+      ascii_reg[5] <= conv5;
+      ascii_reg[6] <= conv6;
+      ascii_reg[7] <= conv7;
+      valid_reg <= true;
+      ready_reg <= false;
+    else
+      for i in 0..7
+        ascii_reg[i] <= 0;
+      end for
+      valid_reg <= false;
+      ready_reg <= true;
+    end if
+  end seq
+end module String_to_ASCII_Converter

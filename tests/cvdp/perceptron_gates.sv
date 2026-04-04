@@ -117,6 +117,7 @@ module perceptron_gates (
       y_in <= 0;
     end else begin
       if (mc == 0) begin
+        // Action 0: Initialize
         percep_w1 <= 0;
         percep_w2 <= 0;
         percep_bias <= 0;
@@ -130,6 +131,7 @@ module perceptron_gates (
         mc <= 1;
         present_addr <= 1;
       end else if (mc == 1) begin
+        // Action 1: Compute y_in and y
         y_in <= yin_calc;
         if (yin_calc > threshold) begin
           y <= 1;
@@ -141,15 +143,18 @@ module perceptron_gates (
         mc <= 2;
         present_addr <= 2;
       end else if (mc == 2) begin
+        // Action 2: target selected combinationally, advance
         mc <= 3;
         present_addr <= 3;
       end else if (mc == 3) begin
+        // Action 3: Update weights and bias
         percep_w1 <= 4'(percep_w1 + wt1_update);
         percep_w2 <= 4'(percep_w2 + wt2_update);
         percep_bias <= 4'(percep_bias + bias_update);
         mc <= 4;
         present_addr <= 4;
       end else if (mc == 4) begin
+        // Action 4: Check convergence
         if (converged) begin
           stop <= 1'b1;
         end else begin
@@ -161,6 +166,7 @@ module perceptron_gates (
         mc <= 5;
         present_addr <= 5;
       end else if (mc == 5) begin
+        // Action 5: Next input or loop
         if (input_index == 3) begin
           input_index <= 0;
         end else begin
@@ -177,9 +183,3 @@ module perceptron_gates (
 
 endmodule
 
-// Action 0: Initialize
-// Action 1: Compute y_in and y
-// Action 2: target selected combinationally, advance
-// Action 3: Update weights and bias
-// Action 4: Check convergence
-// Action 5: Next input or loop

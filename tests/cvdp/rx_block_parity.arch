@@ -1,0 +1,38 @@
+module rx_block_parity
+  param DATA_WIDTH: const = 8;
+
+  port clk:        in  Clock<SysDomain>;
+  port rst_n:      in  Reset<Async, Low>;
+  port serial_in:  in  Bool;
+  port parity_in:  in  Bool;
+  port sel:        in  UInt<3>;
+  port data_out:   out UInt<DATA_WIDTH>;
+  port parity_err: out Bool;
+  port valid:      out Bool;
+
+  default seq on clk rising;
+
+  reg shift_reg:   UInt<DATA_WIDTH> reset rst_n=>0;
+  reg bit_cnt:     UInt<8>          reset rst_n=>0;
+  reg valid_reg:   Bool             reset rst_n=>false;
+  reg par_err_reg: Bool             reset rst_n=>false;
+  reg par_acc:     Bool             reset rst_n=>false;
+
+  comb data_out   = shift_reg;
+  comb valid      = valid_reg;
+  comb parity_err = par_err_reg;
+
+  seq
+    if bit_cnt == DATA_WIDTH.zext<8>()
+      valid_reg   <= true;
+      par_err_reg <= par_acc ^ parity_in;
+      bit_cnt     <= 0;
+      par_acc     <= false;
+    else
+      shift_reg <= {serial_in, shift_reg[DATA_WIDTH-1:1]};
+      par_acc   <= par_acc ^ serial_in;
+      bit_cnt   <= (bit_cnt + 1).trunc<8>();
+      valid_reg <= false;
+    end if
+  end seq
+end module rx_block_parity

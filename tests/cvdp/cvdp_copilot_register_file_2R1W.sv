@@ -23,7 +23,7 @@ module cvdp_copilot_register_file_2R1W #(
   end
   assign gated_clk_w = en_latch_r & clk;
   // Register file memory
-  logic [DATA_WIDTH-1:0] rf_mem [0:32-1];
+  logic [DATA_WIDTH-1:0] rf_mem [32-1:0];
   logic [32-1:0] rf_valid;
   // Write logic on gated clock
   always_ff @(posedge gated_clk_w or negedge resetn) begin

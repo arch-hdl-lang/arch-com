@@ -15,10 +15,12 @@ module signed_unsigned_comparator #(
   logic eq;
   always_comb begin
     if (i_mode) begin
+      // Signed mode
       gt = $signed(i_A) > $signed(i_B) ? 1'd1 : 1'd0;
       lt = $signed(i_A) < $signed(i_B) ? 1'd1 : 1'd0;
       eq = i_A == i_B ? 1'd1 : 1'd0;
     end else begin
+      // Magnitude (unsigned) mode
       gt = i_A > i_B ? 1'd1 : 1'd0;
       lt = i_A < i_B ? 1'd1 : 1'd0;
       eq = i_A == i_B ? 1'd1 : 1'd0;
@@ -30,5 +32,3 @@ module signed_unsigned_comparator #(
 
 endmodule
 
-// Signed mode
-// Magnitude (unsigned) mode

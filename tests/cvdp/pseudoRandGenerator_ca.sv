@@ -47,11 +47,7 @@ module pseudoRandGenerator_ca (
     if (reset) begin
       CA_out <= 0;
     end else begin
-      if (reset) begin
-        CA_out <= CA_seed;
-      end else begin
-        CA_out <= next_ca;
-      end
+      CA_out <= next_ca;
     end
   end
 

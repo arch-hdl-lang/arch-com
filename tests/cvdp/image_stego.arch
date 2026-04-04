@@ -1,0 +1,29 @@
+module image_stego
+  param row: const = 2;
+  param col: const = 2;
+
+  port bpp:     in  UInt<2>;
+  port img_in:  in  UInt<row*col*8>;
+  port data_in: in  UInt<row*col*4>;
+  port img_out: out UInt<row*col*8>;
+
+  // Purely combinational: embed data_in into LSBs of each pixel's blue channel
+  // based on bpp (bits per pixel to embed: 1, 2, 3, or 4)
+  // Each pixel is 8 bits. row*col pixels total.
+  // For each pixel i, embed data_in[bpp*(i+1)-1 : bpp*i] into img_in[8*i+bpp-1 : 8*i]
+
+  wire out_val: UInt<row*col*8>;
+
+  comb
+    out_val = img_in;
+    for i in 0..row*col-1
+      out_val[8*i+3:8*i] = match bpp
+        0 => {img_in[8*i+3:8*i+1], data_in[4*i:4*i]},
+        1 => {img_in[8*i+3:8*i+2], data_in[4*i+1:4*i]},
+        2 => {img_in[8*i+3:8*i+3], data_in[4*i+2:4*i]},
+        _ => data_in[4*i+3:4*i],
+      end match;
+    end for
+    img_out = out_val;
+  end comb
+end module image_stego

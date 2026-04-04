@@ -7,7 +7,7 @@ module password_generator #(
 );
 
   logic [8-1:0] cnt;
-  logic [8-1:0] char_array [0:WIDTH-1];
+  logic [8-1:0] char_array [WIDTH-1:0];
   always_ff @(posedge clk or posedge reset) begin
     if (reset) begin
       cnt <= 0;

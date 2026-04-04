@@ -11,15 +11,19 @@ module nbit_swizzling #(
   logic [DATA_WIDTH-1:0] rev_quarter;
   logic [DATA_WIDTH-1:0] rev_eighth;
   always_comb begin
+    // sel=0: reverse entire input
     for (int i = 0; i <= DATA_WIDTH - 1; i++) begin
       rev_full[i] = data_in[DATA_WIDTH - 1 - i];
     end
+    // sel=1: reverse two halves
     for (int i = 0; i <= DATA_WIDTH - 1; i++) begin
       rev_half[i] = data_in[i / (DATA_WIDTH / 2) * (DATA_WIDTH / 2) + (DATA_WIDTH / 2 - 1) - i % (DATA_WIDTH / 2)];
     end
+    // sel=2: reverse four quarters
     for (int i = 0; i <= DATA_WIDTH - 1; i++) begin
       rev_quarter[i] = data_in[i / (DATA_WIDTH / 4) * (DATA_WIDTH / 4) + (DATA_WIDTH / 4 - 1) - i % (DATA_WIDTH / 4)];
     end
+    // sel=3: reverse eight eighths
     for (int i = 0; i <= DATA_WIDTH - 1; i++) begin
       rev_eighth[i] = data_in[i / (DATA_WIDTH / 8) * (DATA_WIDTH / 8) + (DATA_WIDTH / 8 - 1) - i % (DATA_WIDTH / 8)];
     end
@@ -38,7 +42,3 @@ module nbit_swizzling #(
 
 endmodule
 
-// sel=0: reverse entire input
-// sel=1: reverse two halves
-// sel=2: reverse four quarters
-// sel=3: reverse eight eighths

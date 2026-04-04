@@ -14,7 +14,7 @@ module sync_lifo #(
 );
 
   logic [ADDR_WIDTH + 1-1:0] sp;
-  logic [DATA_WIDTH-1:0] mem [0:MEM_DEPTH-1];
+  logic [DATA_WIDTH-1:0] mem [MEM_DEPTH-1:0];
   logic [ADDR_WIDTH + 1-1:0] sp_inc;
   assign sp_inc = (ADDR_WIDTH + 1)'(sp + 1);
   logic [ADDR_WIDTH + 1-1:0] sp_dec;

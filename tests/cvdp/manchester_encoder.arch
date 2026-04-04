@@ -1,0 +1,41 @@
+module manchester_encoder
+  param N: const = 8;
+
+  port clk_in:       in  Clock<SysDomain>;
+  port rst_in:       in  Reset<Async, High>;
+  port enc_valid_in: in  Bool;
+  port enc_data_in:  in  UInt<N>;
+  port enc_valid_out: out Bool;
+  port enc_data_out: out UInt<2*N>;
+
+  default seq on clk_in rising;
+
+  reg data_reg:  UInt<2*N> reset rst_in => 0;
+  reg valid_reg: Bool      reset rst_in => false;
+
+  wire encoded: UInt<2*N>;
+
+  // Combinational Manchester encoding: '1' -> "10", '0' -> "01"
+  comb
+    for i in 0..N-1
+      if enc_data_in[i:i] == 1
+        encoded[2*i+1:2*i] = 2;
+      else
+        encoded[2*i+1:2*i] = 1;
+      end if
+    end for
+  end comb
+
+  seq
+    if enc_valid_in
+      data_reg  <= encoded;
+      valid_reg <= true;
+    else
+      data_reg  <= 0.zext<2*N>();
+      valid_reg <= false;
+    end if
+  end seq
+
+  comb enc_data_out  = data_reg;
+  comb enc_valid_out = valid_reg;
+end module manchester_encoder

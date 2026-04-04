@@ -21,7 +21,7 @@ module apb_dsp_unit (
   logic [10-1:0] r_write_address;
   logic [8-1:0] r_write_data;
   // SRAM 1KB - init only
-  logic [8-1:0] mem [0:1024-1];
+  logic [8-1:0] mem [1024-1:0];
   // Result register at address 0x5
   logic [8-1:0] r_result;
   // SRAM write on posedge sram_valid

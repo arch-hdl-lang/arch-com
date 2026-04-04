@@ -1,0 +1,53 @@
+module cont_adder
+  param DATA_WIDTH:  const = 16;
+  param ACCUM_WIDTH: const = 32;
+  param WINDOW_SIZE: const = 8;
+  param THRESHOLD:   const = 1000;
+  param WEIGHT:      const = 1;
+
+  port clk:             in  Clock<SysDomain>;
+  port rst_n:           in  Reset<Async, Low>;
+  port data_in:         in  UInt<DATA_WIDTH>;
+  port valid_in:        in  Bool;
+  port accum_out:       out UInt<ACCUM_WIDTH>;
+  port avg_out:         out UInt<DATA_WIDTH>;
+  port threshold_high:  out Bool;
+  port threshold_low:   out Bool;
+
+  default seq on clk rising;
+
+  reg accum:      UInt<ACCUM_WIDTH> reset rst_n=>0;
+  reg sample_cnt: UInt<8>           reset rst_n=>0;
+
+  wire data_ext:   UInt<ACCUM_WIDTH>;
+  wire weighted:   UInt<ACCUM_WIDTH>;
+  wire cnt_nonzero: Bool;
+
+  comb data_ext    = data_in.zext<ACCUM_WIDTH>();
+  comb weighted    = (data_ext * WEIGHT).trunc<ACCUM_WIDTH>();
+  comb cnt_nonzero = sample_cnt != 0;
+
+  comb accum_out      = accum;
+  comb threshold_high = accum >= THRESHOLD.zext<ACCUM_WIDTH>();
+  comb threshold_low  = accum == 0;
+
+  comb
+    if cnt_nonzero
+      avg_out = (accum / sample_cnt.zext<ACCUM_WIDTH>()).trunc<DATA_WIDTH>();
+    else
+      avg_out = 0;
+    end if
+  end comb
+
+  seq
+    if valid_in
+      if sample_cnt == (WINDOW_SIZE - 1).zext<8>()
+        accum      <= weighted;
+        sample_cnt <= 0;
+      else
+        accum      <= (accum + weighted).trunc<ACCUM_WIDTH>();
+        sample_cnt <= (sample_cnt + 1).trunc<8>();
+      end if
+    end if
+  end seq
+end module cont_adder

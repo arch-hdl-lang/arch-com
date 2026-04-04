@@ -40,6 +40,7 @@ module enhanced_fsm_signal_processor (
       if (entered) begin
         entered <= 0;
       end else if (o_fsm_status == 2'd0) begin
+        // IDLE
         if (i_fault) begin
           o_fsm_status <= 2'd3;
           o_error <= 1;
@@ -54,6 +55,7 @@ module enhanced_fsm_signal_processor (
           entered <= 1;
         end
       end else if (o_fsm_status == 2'd1) begin
+        // PROCESS
         if (i_fault) begin
           o_fsm_status <= 2'd3;
           o_error <= 1;
@@ -73,6 +75,7 @@ module enhanced_fsm_signal_processor (
           entered <= 1;
         end
       end else if (o_fsm_status == 2'd2) begin
+        // READY
         if (i_fault) begin
           o_fsm_status <= 2'd3;
           o_error <= 1;
@@ -88,6 +91,7 @@ module enhanced_fsm_signal_processor (
           entered <= 1;
         end
       end else if (o_fsm_status == 2'd3) begin
+        // FAULT
         if (~i_fault & i_clear) begin
           o_fsm_status <= 2'd0;
           o_error <= 0;
@@ -104,7 +108,3 @@ module enhanced_fsm_signal_processor (
 
 endmodule
 
-// IDLE
-// PROCESS
-// READY
-// FAULT

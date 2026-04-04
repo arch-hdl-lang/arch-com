@@ -44,7 +44,7 @@ module gcd_controlpath #(
       state_r <= 0;
     end else begin
       state_r <= next_state;
-      done_r <= next_state == 2'd1;
+      done_r <= state_r == 2'd1;
     end
   end
 

@@ -73,6 +73,7 @@ module cvdp_copilot_apb_gpio #(
       reg_int_state <= 0;
       reg_int_type <= 0;
     end else begin
+      // Edge interrupt accumulation: accumulate edges, keep only edge-type bits
       reg_int_state <= (reg_int_state | edge_detect & reg_int_en) & reg_int_type;
       if (apb_write_en) begin
         if (paddr == 1) begin
@@ -86,13 +87,12 @@ module cvdp_copilot_apb_gpio #(
         end else if (paddr == 5) begin
           reg_int_pol <= pwdata[GPIO_WIDTH - 1:0];
         end else if (paddr == 6) begin
+          // Write-1-to-clear for edge interrupts
           reg_int_state <= (reg_int_state | edge_detect & reg_int_en) & reg_int_type & ~(pwdata[GPIO_WIDTH - 1:0] & reg_int_type);
         end
       end
     end
   end
-  // Edge interrupt accumulation: accumulate edges, keep only edge-type bits
-  // Write-1-to-clear for edge interrupts
   // APB read logic (combinational)
   always_comb begin
     if (apb_read_en) begin

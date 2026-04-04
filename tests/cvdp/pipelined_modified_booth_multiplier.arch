@@ -1,0 +1,150 @@
+module pipelined_modified_booth_multiplier
+  port clk:    in Clock<SysDomain>;
+  port rst:    in Reset<Async, High>;
+  port start:  in Bool;
+  port X:      in SInt<16>;
+  port Y:      in SInt<16>;
+  port result: out SInt<32>;
+  port done:   out Bool;
+
+  default seq on clk rising;
+
+  // Stage 1 registers: latch inputs on start
+  reg s1_x: SInt<16> reset rst=>0;
+  reg s1_y: SInt<16> reset rst=>0;
+  reg s1_v: Bool     reset rst=>false;
+
+  // Stage 2 registers: partial products
+  reg s2_pp0: SInt<16> reset rst=>0;
+  reg s2_pp1: SInt<16> reset rst=>0;
+  reg s2_pp2: SInt<16> reset rst=>0;
+  reg s2_pp3: SInt<16> reset rst=>0;
+  reg s2_pp4: SInt<16> reset rst=>0;
+  reg s2_pp5: SInt<16> reset rst=>0;
+  reg s2_pp6: SInt<16> reset rst=>0;
+  reg s2_pp7: SInt<16> reset rst=>0;
+  reg s2_v:   Bool     reset rst=>false;
+
+  // Stage 3 registers: pair sums
+  reg s3_s01: SInt<17> reset rst=>0;
+  reg s3_s23: SInt<17> reset rst=>0;
+  reg s3_s45: SInt<17> reset rst=>0;
+  reg s3_s67: SInt<17> reset rst=>0;
+  reg s3_v:   Bool     reset rst=>false;
+
+  // Stage 4 output
+  reg s4_out: SInt<32> reset rst=>0;
+  reg s4_v:   Bool     reset rst=>false;
+
+  // --- Stage 1 comb: Booth decode and partial products using s1_x, s1_y ---
+  let b1_ext: UInt<17> = {s1_y, 1'b0};
+
+  let b1sh0: UInt<17> = b1_ext;
+  let b1sh1: UInt<17> = b1_ext >> 2;
+  let b1sh2: UInt<17> = b1_ext >> 4;
+  let b1sh3: UInt<17> = b1_ext >> 6;
+  let b1sh4: UInt<17> = b1_ext >> 8;
+  let b1sh5: UInt<17> = b1_ext >> 10;
+  let b1sh6: UInt<17> = b1_ext >> 12;
+  let b1sh7: UInt<17> = b1_ext >> 14;
+
+  let c0: UInt<3> = b1sh0[2:0];
+  let c1: UInt<3> = b1sh1[2:0];
+  let c2: UInt<3> = b1sh2[2:0];
+  let c3: UInt<3> = b1sh3[2:0];
+  let c4: UInt<3> = b1sh4[2:0];
+  let c5: UInt<3> = b1sh5[2:0];
+  let c6: UInt<3> = b1sh6[2:0];
+  let c7: UInt<3> = b1sh7[2:0];
+
+  let az:    SInt<16> = (s1_x - s1_x).trunc<16>();
+  let a2p:   SInt<16> = s1_x << 1;
+  let aneg:  SInt<16> = (az - s1_x).trunc<16>();
+  let a2neg: SInt<16> = (az - a2p).trunc<16>();
+
+  let iz0: Bool = (c0 == 0) | (c0 == 7);
+  let ip0: Bool = (c0 == 1) | (c0 == 2);
+  let pp0: SInt<16> = iz0 ? az : ip0 ? s1_x : (c0 == 3) ? a2p : (c0 == 4) ? a2neg : aneg;
+
+  let iz1: Bool = (c1 == 0) | (c1 == 7);
+  let ip1: Bool = (c1 == 1) | (c1 == 2);
+  let pp1: SInt<16> = iz1 ? az : ip1 ? s1_x : (c1 == 3) ? a2p : (c1 == 4) ? a2neg : aneg;
+
+  let iz2: Bool = (c2 == 0) | (c2 == 7);
+  let ip2: Bool = (c2 == 1) | (c2 == 2);
+  let pp2: SInt<16> = iz2 ? az : ip2 ? s1_x : (c2 == 3) ? a2p : (c2 == 4) ? a2neg : aneg;
+
+  let iz3: Bool = (c3 == 0) | (c3 == 7);
+  let ip3: Bool = (c3 == 1) | (c3 == 2);
+  let pp3: SInt<16> = iz3 ? az : ip3 ? s1_x : (c3 == 3) ? a2p : (c3 == 4) ? a2neg : aneg;
+
+  let iz4: Bool = (c4 == 0) | (c4 == 7);
+  let ip4: Bool = (c4 == 1) | (c4 == 2);
+  let pp4: SInt<16> = iz4 ? az : ip4 ? s1_x : (c4 == 3) ? a2p : (c4 == 4) ? a2neg : aneg;
+
+  let iz5: Bool = (c5 == 0) | (c5 == 7);
+  let ip5: Bool = (c5 == 1) | (c5 == 2);
+  let pp5: SInt<16> = iz5 ? az : ip5 ? s1_x : (c5 == 3) ? a2p : (c5 == 4) ? a2neg : aneg;
+
+  let iz6: Bool = (c6 == 0) | (c6 == 7);
+  let ip6: Bool = (c6 == 1) | (c6 == 2);
+  let pp6: SInt<16> = iz6 ? az : ip6 ? s1_x : (c6 == 3) ? a2p : (c6 == 4) ? a2neg : aneg;
+
+  let iz7: Bool = (c7 == 0) | (c7 == 7);
+  let ip7: Bool = (c7 == 1) | (c7 == 2);
+  let pp7: SInt<16> = iz7 ? az : ip7 ? s1_x : (c7 == 3) ? a2p : (c7 == 4) ? a2neg : aneg;
+
+  // --- Stage 2 comb: shift and add pairs ---
+  let e0: SInt<17> = s2_pp0.sext<17>();
+  let e1: SInt<17> = s2_pp1.sext<17>();
+  let e2: SInt<17> = s2_pp2.sext<17>();
+  let e3: SInt<17> = s2_pp3.sext<17>();
+  let e4: SInt<17> = s2_pp4.sext<17>();
+  let e5: SInt<17> = s2_pp5.sext<17>();
+  let e6: SInt<17> = s2_pp6.sext<17>();
+  let e7: SInt<17> = s2_pp7.sext<17>();
+
+  let t01: SInt<17> = (e0 + (e1 << 2)).trunc<17>();
+  let t23: SInt<17> = ((e2 << 4) + (e3 << 6)).trunc<17>();
+  let t45: SInt<17> = ((e4 << 8) + (e5 << 10)).trunc<17>();
+  let t67: SInt<17> = ((e6 << 12) + (e7 << 14)).trunc<17>();
+
+  // --- Stage 3 comb: final sum ---
+  let sum_lo: SInt<18> = s3_s01 + s3_s23;
+  let sum_hi: SInt<18> = s3_s45 + s3_s67;
+  let fsum:   SInt<19> = sum_lo + sum_hi;
+
+  comb
+    result = s4_out;
+    done   = s4_v;
+  end comb
+
+  seq
+    // Stage 1: latch inputs on start
+    s1_x <= X;
+    s1_y <= Y;
+    s1_v <= start;
+
+    // Stage 2: compute partial products from s1 latched values
+    s2_pp0 <= pp0;
+    s2_pp1 <= pp1;
+    s2_pp2 <= pp2;
+    s2_pp3 <= pp3;
+    s2_pp4 <= pp4;
+    s2_pp5 <= pp5;
+    s2_pp6 <= pp6;
+    s2_pp7 <= pp7;
+    s2_v   <= s1_v;
+
+    // Stage 3: add pairs
+    s3_s01 <= t01;
+    s3_s23 <= t23;
+    s3_s45 <= t45;
+    s3_s67 <= t67;
+    s3_v   <= s2_v;
+
+    // Stage 4: final sum
+    s4_out <= fsum.sext<32>();
+    s4_v   <= s3_v;
+  end seq
+end module pipelined_modified_booth_multiplier

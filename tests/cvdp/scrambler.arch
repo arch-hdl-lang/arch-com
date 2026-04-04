@@ -1,0 +1,60 @@
+module scrambler
+  param DATA_WIDTH: const = 128;
+
+  port clk:      in Clock<SysDomain>;
+  port rst_n:    in Reset<Async, Low>;
+  port data_in:  in UInt<DATA_WIDTH>;
+  port mode:     in UInt<4>;
+  port data_out: out UInt<DATA_WIDTH>;
+  port feedback: out Bool;
+
+  default seq on clk rising;
+
+  // 16-bit LFSR initialized to 0x4000 (bit 14 set)
+  reg lfsr:       UInt<16>          reset rst_n=>16384;
+  reg data_out_r: UInt<DATA_WIDTH>  reset rst_n=>0;
+
+  wire feedback_w: Bool;
+  wire lfsr_next:  UInt<16>;
+
+  // Polynomial selection: right-shift LFSR (feedback inserted at MSB=bit15)
+  comb
+    if mode == 0
+      feedback_w = lfsr[15] ^ lfsr[14];
+    elsif mode == 1
+      feedback_w = lfsr[15] ^ lfsr[13];
+    elsif mode == 2
+      feedback_w = lfsr[15] ^ lfsr[7] ^ lfsr[0];
+    elsif mode == 3
+      feedback_w = lfsr[15] ^ lfsr[7];
+    elsif mode == 4
+      feedback_w = lfsr[15] ^ lfsr[12] ^ lfsr[1];
+    elsif mode == 5
+      feedback_w = lfsr[15] ^ lfsr[11];
+    elsif mode == 6
+      feedback_w = lfsr[15] ^ lfsr[2] ^ lfsr[0];
+    elsif mode == 7
+      feedback_w = lfsr[15] ^ lfsr[10] ^ lfsr[3];
+    else
+      feedback_w = lfsr[15] ^ lfsr[0];
+    end if
+    lfsr_next = {lfsr[14:0], feedback_w};
+  end comb
+
+  comb feedback = feedback_w;
+
+  // Replicate 16-bit lfsr_next to fill DATA_WIDTH bits (cyclic: bit i → lfsr_next[i%16])
+  wire lfsr_mask: UInt<DATA_WIDTH>;
+  comb
+    for i in 0..DATA_WIDTH-1
+      lfsr_mask[i:i] = lfsr_next[i & 15 : i & 15];
+    end for
+  end comb
+
+  seq
+    lfsr       <= lfsr_next;
+    data_out_r <= data_in ^ lfsr_mask;
+  end seq
+
+  comb data_out = data_out_r;
+end module scrambler

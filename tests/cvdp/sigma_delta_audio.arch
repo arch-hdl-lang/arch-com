@@ -1,0 +1,41 @@
+module sigma_delta_audio
+  port clk_sig:       in  Clock<SysDomain>;
+  port clk_en_sig:    in  Bool;
+  port load_data_sum: in  UInt<15>;
+  port read_data_sum: out UInt<15>;
+  port left_sig:      out Bool;
+  port right_sig:     out Bool;
+
+  default seq on clk_sig rising;
+
+  // Two independent sigma-delta accumulators: left and right channels
+  // The load_data_sum is the audio data written each clock enable cycle
+  // read_data_sum feeds back the current accumulator value
+  // left_sig/right_sig are the 1-bit PDM outputs (MSB of accumulator)
+
+  reg acc_left:  UInt<15> reset none;
+  reg acc_right: UInt<15> reset none;
+  reg left_r:    Bool     reset none;
+  reg right_r:   Bool     reset none;
+  reg rd_sum_r:  UInt<15> reset none;
+
+  // Sigma-delta: accumulate input, output MSB as bitstream
+  let sum_left:  UInt<16> = (acc_left.zext<16>()  + load_data_sum.zext<16>()).trunc<16>();
+  let sum_right: UInt<16> = (acc_right.zext<16>() + load_data_sum.zext<16>()).trunc<16>();
+
+  comb
+    left_sig      = left_r;
+    right_sig     = right_r;
+    read_data_sum = rd_sum_r;
+  end comb
+
+  seq
+    if clk_en_sig
+      acc_left  <= sum_left.trunc<15>();
+      acc_right <= sum_right.trunc<15>();
+      left_r    <= sum_left[15:15] == 1;
+      right_r   <= sum_right[15:15] == 1;
+      rd_sum_r  <= acc_left;
+    end if
+  end seq
+end module sigma_delta_audio

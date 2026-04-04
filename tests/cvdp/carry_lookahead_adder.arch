@@ -1,0 +1,46 @@
+module carry_lookahead_adder
+  param WIDTH: const = 8;
+
+  port clk:    in  Clock<SysDomain>;
+  port reset:  in  Reset<Sync, High>;
+  port A:      in  UInt<WIDTH>;
+  port B:      in  UInt<WIDTH>;
+  port Cin:    in  Bool;
+  port S:      out UInt<WIDTH>;
+  port carry:  out Bool;
+
+  default seq on clk rising;
+
+  wire g: Vec<Bool, WIDTH>;
+  wire p: Vec<Bool, WIDTH>;
+  wire c: Vec<Bool, WIDTH+1>;
+
+  wire S_next:     UInt<WIDTH>;
+  wire carry_next: Bool;
+
+  reg S_r:     UInt<WIDTH> reset reset=>0;
+  reg carry_r: Bool        reset reset=>false;
+
+  comb
+    for i in 0..WIDTH-1
+      g[i] = (A[i:i] != 0) & (B[i:i] != 0);
+      p[i] = (A[i:i] != 0) ^ (B[i:i] != 0);
+    end for
+    c[0] = Cin;
+    for i in 0..WIDTH-1
+      c[i+1] = g[i] | (p[i] & c[i]);
+    end for
+    for i in 0..WIDTH-1
+      S_next[i] = p[i] ^ c[i];
+    end for
+    carry_next = c[WIDTH];
+  end comb
+
+  seq
+    S_r     <= S_next;
+    carry_r <= carry_next;
+  end seq
+
+  comb S     = S_r;
+  comb carry = carry_r;
+end module carry_lookahead_adder

@@ -21,27 +21,22 @@ module data_bus_controller #(
       s_data <= 0;
       s_valid <= 1'b0;
     end else begin
-      if (rst_n) begin
-        if (m0_valid & m1_valid) begin
-          if (AFINITY == 0) begin
-            s_valid <= 1'b1;
-            s_data <= m0_data;
-          end else begin
-            s_valid <= 1'b1;
-            s_data <= m1_data;
-          end
-        end else if (m0_valid) begin
+      if (m0_valid & m1_valid) begin
+        if (AFINITY == 0) begin
           s_valid <= 1'b1;
           s_data <= m0_data;
-        end else if (m1_valid) begin
+        end else begin
           s_valid <= 1'b1;
           s_data <= m1_data;
-        end else begin
-          s_valid <= 1'b0;
         end
+      end else if (m0_valid) begin
+        s_valid <= 1'b1;
+        s_data <= m0_data;
+      end else if (m1_valid) begin
+        s_valid <= 1'b1;
+        s_data <= m1_data;
       end else begin
         s_valid <= 1'b0;
-        s_data <= 0;
       end
     end
   end

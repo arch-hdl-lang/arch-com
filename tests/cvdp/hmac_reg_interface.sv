@@ -32,7 +32,7 @@ module hmac_reg_interface #(
   logic [3-1:0] current_state;
   logic [DATA_WIDTH-1:0] hmac_key;
   logic [DATA_WIDTH-1:0] hmac_data;
-  logic [DATA_WIDTH-1:0] registers [0:256-1];
+  logic [DATA_WIDTH-1:0] registers [256-1:0];
   // xor_data: current wdata XOR'd with '01010101...' mask — exposed for testbench visibility.
   // The Python model sets processed_data = wdata (plain) for all states except PROCESS/XOR_DATA,
   // and in WRITE state it immediately uses that overwritten value. This means the WRITE state

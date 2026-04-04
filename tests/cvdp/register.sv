@@ -19,10 +19,7 @@ module register (
       data_present <= 1'b0;
       mem <= 0;
     end else begin
-      if (rst) begin
-        mem <= 0;
-        data_present <= 1'b0;
-      end else if (data_present) begin
+      if (data_present) begin
         if (ready_in) begin
           if (valid_in) begin
             mem <= data_in;

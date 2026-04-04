@@ -1,0 +1,41 @@
+module manchester_decoder
+  param N: const = 8;
+
+  port clk_in:        in  Clock<SysDomain>;
+  port rst_in:        in  Reset<Async, High>;
+  port dec_valid_in:  in  Bool;
+  port dec_data_in:   in  UInt<2*N>;
+  port dec_valid_out: out Bool;
+  port dec_data_out:  out UInt<N>;
+
+  default seq on clk_in rising;
+
+  wire decoded: UInt<N>;
+
+  // Decode Manchester: pair bit[2i+1:2i]
+  // "10" (=2) -> 1, "01" (=1) -> 0
+  comb
+    for i in 0..N-1
+      if dec_data_in[2*i+1:2*i] == 2
+        decoded[i:i] = 1;
+      else
+        decoded[i:i] = 0;
+      end if
+    end for
+  end comb
+
+  reg data_reg:  UInt<N> reset rst_in => 0;
+  reg valid_reg: Bool    reset rst_in => false;
+
+  seq
+    if dec_valid_in
+      data_reg  <= decoded;
+      valid_reg <= true;
+    else
+      valid_reg <= false;
+    end if
+  end seq
+
+  comb dec_data_out  = data_reg;
+  comb dec_valid_out = valid_reg;
+end module manchester_decoder

@@ -1,0 +1,93 @@
+fsm signed_sequential_booth_multiplier
+  param WIDTH: const = 8;
+
+  port clk:    in Clock<SysDomain>;
+  port rst:    in Reset<Async, High>;
+  port start:  in Bool;
+  port A:      in SInt<WIDTH>;
+  port B:      in SInt<WIDTH>;
+  port result: out SInt<2*WIDTH> default 0;
+  port done:   out Bool default false;
+
+  default seq on clk rising;
+
+  param HALF: const = WIDTH / 2;
+
+  reg accum:   SInt<2*WIDTH> reset rst=>0;
+  reg mcand:   SInt<WIDTH>   reset rst=>0;
+  reg mplier:  SInt<WIDTH>   reset rst=>0;
+  reg step:    UInt<4>       reset rst=>0;
+
+  // Extended multiplier with appended 0 at bit -1: {mplier, 1'b0}
+  let mplier_ext: UInt<9>  = {mplier, 1'b0};
+  let shift_amt:  UInt<4>  = step * 2;
+
+  // Shift mplier_ext right then take bottom 3 bits
+  let shifted9: UInt<9> = mplier_ext >> shift_amt;
+  let grp3:     UInt<3> = shifted9[2:0];
+
+  // Booth encoding partial products
+  let m_ext:  SInt<2*WIDTH> = mcand.sext<2*WIDTH>();
+  let m2_pos: SInt<2*WIDTH> = m_ext << 1;
+  let zero16: SInt<2*WIDTH> = accum ^ accum;
+
+  let m_neg:  SInt<2*WIDTH+1> = zero16.sext<2*WIDTH+1>() - m_ext.sext<2*WIDTH+1>();
+  let m2_neg: SInt<2*WIDTH+1> = zero16.sext<2*WIDTH+1>() - m2_pos.sext<2*WIDTH+1>();
+
+  let is_zero: Bool = (grp3 == 0) | (grp3 == 7);
+  let is_pos1: Bool = (grp3 == 1) | (grp3 == 2);
+  let is_pos2: Bool = grp3 == 3;
+  let is_neg2: Bool = grp3 == 4;
+
+  let pp_sel: SInt<2*WIDTH+1> =
+    is_zero  ? zero16.sext<2*WIDTH+1>() :
+    is_pos1  ? m_ext.sext<2*WIDTH+1>() :
+    is_pos2  ? m2_pos.sext<2*WIDTH+1>() :
+    is_neg2  ? m2_neg :
+               m_neg;
+
+  let pp_shifted: SInt<2*WIDTH+1> = pp_sel << shift_amt;
+  let accum_next: SInt<2*WIDTH+2> = accum.sext<2*WIDTH+2>() + pp_shifted.sext<2*WIDTH+2>();
+
+  // Last step index as UInt<4>
+  let last_step: UInt<4> = 3;
+
+  state [IDLE, COMPUTE, DONE]
+  default state IDLE;
+
+  state IDLE
+    comb
+      result = accum;
+      done   = false;
+    end comb
+    -> COMPUTE when start;
+    seq
+      if start
+        accum  <= zero16;
+        mcand  <= A;
+        mplier <= B;
+        step   <= 0;
+      end if
+    end seq
+  end state IDLE
+
+  state COMPUTE
+    comb
+      result = accum;
+      done   = false;
+    end comb
+    -> DONE when step == last_step;
+    seq
+      accum <= accum_next.trunc<2*WIDTH>();
+      step  <= step + 1;
+    end seq
+  end state COMPUTE
+
+  state DONE
+    comb
+      result = accum;
+      done   = true;
+    end comb
+    -> IDLE when start == false;
+  end state DONE
+end fsm signed_sequential_booth_multiplier

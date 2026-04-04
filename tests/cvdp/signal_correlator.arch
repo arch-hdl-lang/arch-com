@@ -1,0 +1,30 @@
+module signal_correlator
+  port clk:    in Clock<SysDomain>;
+  port reset:  in Reset<Async, High>;
+  port input_signal:       in UInt<8>;
+  port reference_signal:   in UInt<8>;
+  port correlation_output: out UInt<4>;
+
+  reg corr_r: UInt<4> reset reset=>0;
+
+  // Each matching 1-bit AND pair adds 2; clamp at 15
+  wire match_sum: UInt<5>;
+  comb
+    match_sum = 0;
+    for i in 0..7
+      if input_signal[i:i] & reference_signal[i:i]
+        if match_sum < 14
+          match_sum = (match_sum + 2).trunc<5>();
+        else
+          match_sum = 15;
+        end if
+      end if
+    end for
+  end comb
+
+  comb correlation_output = corr_r;
+
+  seq on clk rising
+    corr_r <= match_sum.trunc<4>();
+  end seq
+end module signal_correlator

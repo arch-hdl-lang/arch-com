@@ -1,0 +1,39 @@
+module cont_adder_top
+  param DATA_WIDTH: const = 32;
+  param THRESHOLD_VALUE: const = 100;
+  param SIGNED_INPUTS: const = 1;
+
+  port clk: in Clock<SysDomain>;
+  port rst_n: in Reset<Sync, Low>;
+  port data_in: in SInt<DATA_WIDTH>;
+  port sum_out: out SInt<DATA_WIDTH>;
+  port threshold_reached: out Bool;
+
+  default seq on clk rising;
+
+  reg accumulator: SInt<DATA_WIDTH> reset rst_n=>0;
+
+  wire thresh: Bool;
+  wire thresh_pos: Bool;
+  wire thresh_neg: Bool;
+
+  comb
+    thresh_pos = accumulator >= THRESHOLD_VALUE.sext<DATA_WIDTH>();
+    thresh_neg = accumulator < -(THRESHOLD_VALUE.sext<DATA_WIDTH>());
+    if SIGNED_INPUTS == 1
+      thresh = thresh_pos | thresh_neg;
+    else
+      thresh = thresh_pos;
+    end if
+    threshold_reached = thresh;
+    sum_out = accumulator;
+  end comb
+
+  seq
+    if thresh
+      accumulator <= 0;
+    else
+      accumulator <= (accumulator + data_in).trunc<DATA_WIDTH>();
+    end if
+  end seq
+end module cont_adder_top

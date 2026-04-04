@@ -1,0 +1,117 @@
+// Alpha blending module: blends foreground pixels with background using alpha
+// pixel_in and bg_pixel_in are H*W pixels, each 24-bit RGB packed LSB-first
+// alpha_in is H*W alpha values, each 8-bit packed LSB-first
+// blended_out is H*W blended pixels, each 24-bit RGB packed LSB-first
+// Formula: blended_channel = (alpha*fg + (255-alpha)*bg) / 255
+module alphablending
+  param H: const = 4;
+  param W: const = 4;
+  param N: const = 1;
+
+  port clk:        in  Clock<SysDomain>;
+  port reset:      in  Reset<Sync, High>;
+  port start:      in  Bool;
+  port pixel_in:    in  UInt<H*W*24>;
+  port bg_pixel_in: in  UInt<H*W*24>;
+  port alpha_in:    in  UInt<H*W*8>;
+  port blended_out: out UInt<H*W*24>;
+  port done:        out Bool;
+
+  param NUM_PIXELS: const = H * W;
+
+  reg running_r:  Bool reset none;
+  reg finished_r: Bool reset none;
+  reg pix_idx_r:  UInt<16> reset none;
+
+  // Blended output accumulator: NUM_PIXELS * 24 bits
+  reg blend_r: UInt<H*W*24> reset none;
+
+  // Extract current pixel's data
+  wire fg_pix:  UInt<24>;
+  wire bg_pix:  UInt<24>;
+  wire alp_pix: UInt<8>;
+
+  comb
+    // Extract 24-bit foreground, background pixel and 8-bit alpha for current index
+    fg_pix  = pixel_in[(pix_idx_r*24 + 23) : (pix_idx_r*24)];
+    bg_pix  = bg_pixel_in[(pix_idx_r*24 + 23) : (pix_idx_r*24)];
+    alp_pix = alpha_in[(pix_idx_r*8 + 7) : (pix_idx_r*8)];
+  end comb
+
+  // Per-channel blending: blended = (alpha*fg + (255-alpha)*bg) / 255
+  wire alp_ext: UInt<9>;
+  wire alp_inv: UInt<9>;
+  comb
+    alp_ext = alp_pix.zext<9>();
+    alp_inv = (255 - alp_ext).trunc<9>();
+  end comb
+
+  wire fg_r: UInt<8>;
+  wire fg_g: UInt<8>;
+  wire fg_b: UInt<8>;
+  wire bg_r: UInt<8>;
+  wire bg_g: UInt<8>;
+  wire bg_b: UInt<8>;
+  comb
+    fg_r = fg_pix[23:16];
+    fg_g = fg_pix[15:8];
+    fg_b = fg_pix[7:0];
+    bg_r = bg_pix[23:16];
+    bg_g = bg_pix[15:8];
+    bg_b = bg_pix[7:0];
+  end comb
+
+  // alp_ext max = 255 (9-bit), fg_r max = 255 (8-bit) → product max = 65025 (17-bit)
+  // sum of two products max = 130050 (18-bit)
+  wire blend_r_ch: UInt<18>;
+  wire blend_g_ch: UInt<18>;
+  wire blend_b_ch: UInt<18>;
+  comb
+    blend_r_ch = (alp_ext.zext<17>() * fg_r.zext<17>() + alp_inv.zext<17>() * bg_r.zext<17>()).trunc<18>();
+    blend_g_ch = (alp_ext.zext<17>() * fg_g.zext<17>() + alp_inv.zext<17>() * bg_g.zext<17>()).trunc<18>();
+    blend_b_ch = (alp_ext.zext<17>() * fg_b.zext<17>() + alp_inv.zext<17>() * bg_b.zext<17>()).trunc<18>();
+  end comb
+
+  // Divide by 255 to get 8-bit result
+  wire out_r: UInt<8>;
+  wire out_g: UInt<8>;
+  wire out_b: UInt<8>;
+  comb
+    out_r = (blend_r_ch / 255).trunc<8>();
+    out_g = (blend_g_ch / 255).trunc<8>();
+    out_b = (blend_b_ch / 255).trunc<8>();
+  end comb
+
+  wire blended_pixel: UInt<24>;
+  comb blended_pixel = {out_r, out_g, out_b};
+
+  comb
+    done       = finished_r;
+    blended_out = blend_r;
+  end comb
+
+  seq on clk rising
+    if reset
+      running_r  <= false;
+      finished_r <= false;
+      pix_idx_r  <= 0;
+      blend_r    <= 0;
+    elsif start & ~running_r & ~finished_r
+      running_r  <= true;
+      finished_r <= false;
+      pix_idx_r  <= 0;
+      blend_r    <= 0;
+    elsif running_r
+      blend_r[(pix_idx_r*24 + 23) : (pix_idx_r*24)] <= blended_pixel;
+      if pix_idx_r == (NUM_PIXELS - 1).zext<16>()
+        running_r  <= false;
+        finished_r <= true;
+        pix_idx_r  <= 0;
+      else
+        pix_idx_r <= (pix_idx_r + 1).trunc<16>();
+      end if
+    elsif finished_r & ~start
+      finished_r <= false;
+    end if
+  end seq
+end module alphablending

@@ -9,16 +9,19 @@ module FsmMm2s (
   output logic done,
   output logic halted,
   output logic idle_out,
-  output logic ar_valid,
-  input logic ar_ready,
-  output logic [32-1:0] ar_addr,
-  output logic [8-1:0] ar_len,
-  output logic [3-1:0] ar_size,
-  output logic [2-1:0] ar_burst,
-  input logic r_valid,
-  output logic r_ready,
-  input logic [32-1:0] r_data,
-  input logic r_last,
+  output logic axi_rd_ar_valid,
+  input logic axi_rd_ar_ready,
+  output logic [32-1:0] axi_rd_ar_addr,
+  output logic [1-1:0] axi_rd_ar_id,
+  output logic [8-1:0] axi_rd_ar_len,
+  output logic [3-1:0] axi_rd_ar_size,
+  output logic [2-1:0] axi_rd_ar_burst,
+  input logic axi_rd_r_valid,
+  output logic axi_rd_r_ready,
+  input logic [32-1:0] axi_rd_r_data,
+  input logic [1-1:0] axi_rd_r_id,
+  input logic [2-1:0] axi_rd_r_resp,
+  input logic axi_rd_r_last,
   output logic push_valid,
   input logic push_ready,
   output logic [32-1:0] push_data
@@ -47,8 +50,7 @@ module FsmMm2s (
         IDLE: begin
           // Control interface (from register block)
           // Status outputs
-          // AXI4 Read Address channel
-          // AXI4 Read Data channel
+          // AXI4 Read Master
           // FIFO push interface
           // Internal registers
           if (start) begin
@@ -58,7 +60,7 @@ module FsmMm2s (
           end
         end
         WAITR: begin
-          if (r_valid & push_ready) begin
+          if (axi_rd_r_valid & push_ready) begin
             beat_ctr_r <= 8'(beat_ctr_r + 1);
           end
         end
@@ -74,10 +76,10 @@ module FsmMm2s (
         if (start) state_next = SENDAR;
       end
       SENDAR: begin
-        if (ar_ready) state_next = WAITR;
+        if (axi_rd_ar_ready) state_next = WAITR;
       end
       WAITR: begin
-        if (r_valid & r_last & push_ready) state_next = DONE;
+        if (axi_rd_r_valid & axi_rd_r_last & push_ready) state_next = DONE;
       end
       DONE: begin
         state_next = IDLE;
@@ -90,12 +92,13 @@ module FsmMm2s (
     done = 1'b0;
     halted = 1'b0;
     idle_out = 1'b0;
-    ar_valid = 1'b0;
-    ar_addr = 0;
-    ar_len = 0;
-    ar_size = 0;
-    ar_burst = 0;
-    r_ready = 1'b0;
+    axi_rd_ar_valid = 1'b0;
+    axi_rd_ar_addr = 0;
+    axi_rd_ar_len = 0;
+    axi_rd_ar_size = 0;
+    axi_rd_ar_burst = 0;
+    axi_rd_ar_id = 0;
+    axi_rd_r_ready = 1'b0;
     push_valid = 1'b0;
     push_data = 0;
     case (state_r)
@@ -104,16 +107,16 @@ module FsmMm2s (
         idle_out = 1'b1;
       end
       SENDAR: begin
-        ar_valid = 1'b1;
-        ar_addr = src_addr_r;
-        ar_len = 8'(num_beats_r - 1);
-        ar_size = 2;
-        ar_burst = 1;
+        axi_rd_ar_valid = 1'b1;
+        axi_rd_ar_addr = src_addr_r;
+        axi_rd_ar_len = 8'(num_beats_r - 1);
+        axi_rd_ar_size = 2;
+        axi_rd_ar_burst = 1;
       end
       WAITR: begin
-        r_ready = push_ready;
-        push_valid = r_valid;
-        push_data = r_data;
+        axi_rd_r_ready = push_ready;
+        push_valid = axi_rd_r_valid;
+        push_data = axi_rd_r_data;
       end
       DONE: begin
         done = 1'b1;

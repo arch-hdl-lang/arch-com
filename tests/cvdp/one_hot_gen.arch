@@ -1,0 +1,32 @@
+module one_hot_gen
+  param NS_A: const = 8;
+  param NS_B: const = 4;
+
+  port clk:               in  Clock<SysDomain>;
+  port rst_async_n:       in  Reset<Async, Low>;
+  port i_config:          in  UInt<2>;
+  port i_start:           in  Bool;
+  port o_ready:           in  Bool;
+  port o_address_one_hot: out UInt<NS_A+NS_B>;
+
+  default seq on clk rising;
+
+  reg addr_r: UInt<NS_A+NS_B> reset rst_async_n=>0;
+  reg idx:    UInt<4>          reset rst_async_n=>0;
+
+  comb o_address_one_hot = addr_r;
+
+  seq
+    if i_start & o_ready
+      addr_r <= 1.zext<NS_A+NS_B>() << idx;
+      if idx == (NS_A + NS_B - 1).trunc<4>()
+        idx <= 0;
+      else
+        idx <= (idx + 1).trunc<4>();
+      end if
+    elsif ~i_start
+      idx    <= 0;
+      addr_r <= 0;
+    end if
+  end seq
+end module one_hot_gen

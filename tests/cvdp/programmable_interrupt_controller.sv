@@ -10,9 +10,9 @@ module interrupt_controller #(
   input logic cpu_ack,
   output logic [$clog2(NUM_INTERRUPTS)-1:0] interrupt_idx,
   output logic [ADDR_WIDTH-1:0] interrupt_vector,
-  input logic [NUM_INTERRUPTS-1:0] priority_map_value [0:NUM_INTERRUPTS-1],
+  input logic [NUM_INTERRUPTS-1:0] priority_map_value [NUM_INTERRUPTS-1:0],
   input logic priority_map_update,
-  input logic [ADDR_WIDTH-1:0] vector_table_value [0:NUM_INTERRUPTS-1],
+  input logic [ADDR_WIDTH-1:0] vector_table_value [NUM_INTERRUPTS-1:0],
   input logic vector_table_update,
   input logic [NUM_INTERRUPTS-1:0] interrupt_mask_value,
   input logic interrupt_mask_update
@@ -23,8 +23,8 @@ module interrupt_controller #(
   logic [NUM_INTERRUPTS-1:0] one_wide;
   assign one_wide = NUM_INTERRUPTS'($unsigned(1));
   // Complex reset values — opt out of auto-reset; handled manually in seq
-  logic [NUM_INTERRUPTS-1:0] priority_map [0:NUM_INTERRUPTS-1];
-  logic [ADDR_WIDTH-1:0] vector_table [0:NUM_INTERRUPTS-1];
+  logic [NUM_INTERRUPTS-1:0] priority_map [NUM_INTERRUPTS-1:0];
+  logic [ADDR_WIDTH-1:0] vector_table [NUM_INTERRUPTS-1:0];
   logic [NUM_INTERRUPTS-1:0] interrupt_mask;
   logic [NUM_INTERRUPTS-1:0] pending_interrupts;
   logic [NUM_INTERRUPTS-1:0] sync_requests_0;

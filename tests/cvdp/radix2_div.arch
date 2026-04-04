@@ -1,0 +1,61 @@
+module radix2_div
+  port clk:       in  Clock<SysDomain>;
+  port rst_n:     in  Reset<Async, Low>;
+  port start:     in  Bool;
+  port dividend:  in  UInt<8>;
+  port divisor:   in  UInt<8>;
+  port quotient:  out UInt<8>;
+  port remainder: out UInt<8>;
+  port done:      out Bool;
+
+  default seq on clk rising;
+
+  reg dvd:      UInt<8>  reset rst_n=>0;
+  reg dvs:      UInt<8>  reset rst_n=>0;
+  reg quot:     UInt<8>  reset rst_n=>0;
+  reg partial:  UInt<9>  reset rst_n=>0;
+  reg bit_idx:  UInt<4>  reset rst_n=>0;
+  reg active:   Bool     reset rst_n=>false;
+  reg done_reg: Bool     reset rst_n=>false;
+
+  // Combinational helpers for the shift/subtract step
+  // Shift partial left 1, bring in next dividend MSB
+  wire shifted:  UInt<9>;
+  wire p_upper:  UInt<8>;
+  wire p_ge_dvs: Bool;
+
+  comb shifted  = {partial[7:0], dvd[7:7]};
+  comb p_upper  = shifted[8:1];
+  comb p_ge_dvs = p_upper.zext<9>() >= dvs.zext<9>();
+
+  comb quotient  = quot;
+  comb remainder = partial[7:0];
+  comb done      = done_reg;
+
+  seq
+    done_reg <= false;
+    if start
+      dvd     <= dividend;
+      dvs     <= divisor;
+      quot    <= 0.zext<8>();
+      partial <= dividend[7:7].zext<9>();
+      bit_idx <= 0.zext<4>();
+      active  <= true;
+    elsif active
+      if p_ge_dvs
+        partial <= (p_upper.zext<9>() - dvs.zext<9>()).trunc<9>();
+        quot    <= {quot[6:0], 1'b1};
+      else
+        partial <= p_upper.zext<9>();
+        quot    <= {quot[6:0], 1'b0};
+      end if
+      dvd <= {dvd[6:0], 1'b0};
+      if bit_idx == 7
+        active   <= false;
+        done_reg <= true;
+      else
+        bit_idx <= (bit_idx + 1).trunc<4>();
+      end if
+    end if
+  end seq
+end module radix2_div

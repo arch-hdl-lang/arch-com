@@ -16,7 +16,9 @@ module binary_to_bcd (
   logic [20-1:0] s8;
   always_comb begin
     s0 = 20'($unsigned(binary_in));
+    // Iteration 1: shift left, then adjust
     s1 = s0 << 1;
+    // Iteration 2
     s2[7:0] = s1[7:0];
     s2[11:8] = s1[11:8];
     if (s1[11:8] >= 5) begin
@@ -24,6 +26,7 @@ module binary_to_bcd (
     end
     s2[19:12] = s1[19:12];
     s2 = s2 << 1;
+    // Iteration 3
     s3[7:0] = s2[7:0];
     s3[11:8] = s2[11:8];
     if (s2[11:8] >= 5) begin
@@ -31,6 +34,7 @@ module binary_to_bcd (
     end
     s3[19:12] = s2[19:12];
     s3 = s3 << 1;
+    // Iteration 4
     s4[7:0] = s3[7:0];
     s4[11:8] = s3[11:8];
     if (s3[11:8] >= 5) begin
@@ -42,6 +46,7 @@ module binary_to_bcd (
     end
     s4[19:16] = s3[19:16];
     s4 = s4 << 1;
+    // Iteration 5
     s5[7:0] = s4[7:0];
     s5[11:8] = s4[11:8];
     if (s4[11:8] >= 5) begin
@@ -53,6 +58,7 @@ module binary_to_bcd (
     end
     s5[19:16] = s4[19:16];
     s5 = s5 << 1;
+    // Iteration 6
     s6[7:0] = s5[7:0];
     s6[11:8] = s5[11:8];
     if (s5[11:8] >= 5) begin
@@ -64,6 +70,7 @@ module binary_to_bcd (
     end
     s6[19:16] = s5[19:16];
     s6 = s6 << 1;
+    // Iteration 7
     s7[7:0] = s6[7:0];
     s7[11:8] = s6[11:8];
     if (s6[11:8] >= 5) begin
@@ -75,6 +82,7 @@ module binary_to_bcd (
     end
     s7[19:16] = s6[19:16];
     s7 = s7 << 1;
+    // Iteration 8 (last): adjust then shift
     s8[7:0] = s7[7:0];
     s8[11:8] = s7[11:8];
     if (s7[11:8] >= 5) begin
@@ -91,11 +99,3 @@ module binary_to_bcd (
 
 endmodule
 
-// Iteration 1: shift left, then adjust
-// Iteration 2
-// Iteration 3
-// Iteration 4
-// Iteration 5
-// Iteration 6
-// Iteration 7
-// Iteration 8 (last): adjust then shift

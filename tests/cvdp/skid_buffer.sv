@@ -28,10 +28,7 @@ module skid_buffer (
       buf_flag <= 1'b0;
       data_reg <= 0;
     end else begin
-      if (rst) begin
-        buf_flag <= 1'b0;
-        data_reg <= 0;
-      end else if (buf_flag) begin
+      if (buf_flag) begin
         // buffer has data, downstream ready => release
         if (i_ready) begin
           buf_flag <= 1'b0;

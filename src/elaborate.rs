@@ -145,6 +145,19 @@ fn record_inst(inst: &InstDecl, out: &mut HashMap<String, Vec<HashMap<String, i6
             overrides.insert(pa.name.name.clone(), v);
         }
     }
+    // Encode reset-type overrides as synthetic params so the variant system tracks them.
+    // A connection of the form `rst <- signal as Reset<Async, Low>` is parsed as an
+    // `ExprKind::As(signal, TypeExpr::Reset(...))` expression. Extract those here.
+    // Key format: "__ro__<port_name>__kind" (0=Sync,1=Async) and "__ro__<port_name>__level" (0=High,1=Low)
+    for conn in &inst.connections {
+        if let ExprKind::Cast(_, ty) = &conn.signal.kind {
+            if let TypeExpr::Reset(kind, level) = ty.as_ref() {
+                let pname = &conn.port_name.name;
+                overrides.insert(format!("__ro__{pname}__kind"),  if kind == &ResetKind::Async { 1 } else { 0 });
+                overrides.insert(format!("__ro__{pname}__level"), if level == &ResetLevel::Low { 1 } else { 0 });
+            }
+        }
+    }
     out.entry(inst.module_name.name.clone()).or_default().push(overrides);
 }
 
@@ -219,12 +232,38 @@ fn find_varying_params(param_sets: &[HashMap<String, i64>]) -> Vec<String> {
 }
 
 fn make_variant_name(base: &str, params: &HashMap<String, i64>, varying: &[String]) -> String {
-    let suffix = varying
+    // Regular param suffixes (skip __ro__* synthetic reset-override keys)
+    let regular: Vec<String> = varying
         .iter()
+        .filter(|k| !k.starts_with("__ro__"))
         .map(|k| format!("{}_{}", k, params.get(k).copied().unwrap_or(0)))
-        .collect::<Vec<_>>()
-        .join("_");
-    format!("{}__{}", base, suffix)
+        .collect();
+
+    // Reset-override suffixes: group by port name for a clean suffix like rst_Async_Low
+    let mut ro_ports: Vec<String> = varying
+        .iter()
+        .filter(|k| k.starts_with("__ro__") && k.ends_with("__kind"))
+        .map(|k| {
+            // Extract port name: "__ro__PORT__kind" → "PORT"
+            let port = &k["__ro__".len()..k.len() - "__kind".len()];
+            let kind_val = params.get(k.as_str()).copied().unwrap_or(0);
+            let level_key = format!("__ro__{port}__level");
+            let level_val = params.get(&level_key).copied().unwrap_or(0);
+            let kind_str  = if kind_val  == 1 { "Async" } else { "Sync"  };
+            let level_str = if level_val == 1 { "Low"   } else { "High"  };
+            format!("{port}_{kind_str}_{level_str}")
+        })
+        .collect();
+    ro_ports.sort();
+
+    let mut parts = regular;
+    parts.extend(ro_ports);
+
+    if parts.is_empty() {
+        base.to_string()
+    } else {
+        format!("{}__{}", base, parts.join("_"))
+    }
 }
 
 // ── Step 4: elaborate a single module variant ─────────────────────────────────
@@ -275,6 +314,21 @@ fn elaborate_module_variant(
     let mut all_ports = m.ports;
     all_ports.extend(extra_ports);
 
+    // Apply reset-type overrides from inst-site `as Reset<...>` annotations.
+    // Synthetic keys: "__ro__<port>__kind" (0=Sync,1=Async), "__ro__<port>__level" (0=High,1=Low)
+    for port in &mut all_ports {
+        if let TypeExpr::Reset(_, _) = &port.ty {
+            let kind_key  = format!("__ro__{}__kind",  port.name.name);
+            let level_key = format!("__ro__{}__level", port.name.name);
+            if let Some(&k) = param_vals.get(&kind_key) {
+                let l = param_vals.get(&level_key).copied().unwrap_or(0);
+                let new_kind  = if k == 1 { ResetKind::Async } else { ResetKind::Sync  };
+                let new_level = if l == 1 { ResetLevel::Low   } else { ResetLevel::High };
+                port.ty = TypeExpr::Reset(new_kind, new_level);
+            }
+        }
+    }
+
     // Update param defaults to match the monomorphized values so
     // the SV declaration is consistent with the expanded body.
     // For enum-typed params, preserve the original EnumVariant expression
@@ -307,7 +361,7 @@ fn rewrite_inst(
         _ => return inst, // single variant → name unchanged
     };
 
-    // Compute effective params for this inst
+    // Compute effective params for this inst (regular + reset-override synthetic params)
     let defaults = module_defaults
         .get(&inst.module_name.name)
         .cloned()
@@ -316,6 +370,15 @@ fn rewrite_inst(
     for pa in &inst.param_assigns {
         if let Some(v) = try_eval_i64(&pa.value, &HashMap::new()) {
             effective.insert(pa.name.name.clone(), v);
+        }
+    }
+    for conn in &inst.connections {
+        if let ExprKind::Cast(_, ty) = &conn.signal.kind {
+            if let TypeExpr::Reset(kind, level) = ty.as_ref() {
+                let pname = &conn.port_name.name;
+                effective.insert(format!("__ro__{pname}__kind"),  if kind == &ResetKind::Async { 1 } else { 0 });
+                effective.insert(format!("__ro__{pname}__level"), if level == &ResetLevel::Low { 1 } else { 0 });
+            }
         }
     }
 
@@ -475,6 +538,7 @@ fn subst_inst(inst: &InstDecl, var: &str, val: i64) -> InstDecl {
                 port_name: subst_ident(&c.port_name, var, val),
                 direction: c.direction,
                 signal: subst_expr(c.signal.clone(), var, val),
+                reset_override: c.reset_override,
                 span: c.span,
             })
             .collect(),

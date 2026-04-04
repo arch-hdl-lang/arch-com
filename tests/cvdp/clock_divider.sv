@@ -12,9 +12,11 @@ module clock_divider (
       cnt <= 0;
     end else begin
       if (sel == 2'd0) begin
+        // Divide by 2: toggle every cycle
         clk_out <= ~clk_out;
         cnt <= 3'd0;
       end else if (sel == 2'd1) begin
+        // Divide by 4: toggle every 2 cycles
         if (cnt == 3'd1) begin
           clk_out <= ~clk_out;
           cnt <= 3'd0;
@@ -22,6 +24,7 @@ module clock_divider (
           cnt <= 3'(cnt + 3'd1);
         end
       end else if (sel == 2'd2) begin
+        // Divide by 8: toggle every 4 cycles
         if (cnt == 3'd3) begin
           clk_out <= ~clk_out;
           cnt <= 3'd0;
@@ -37,6 +40,3 @@ module clock_divider (
 
 endmodule
 
-// Divide by 2: toggle every cycle
-// Divide by 4: toggle every 2 cycles
-// Divide by 8: toggle every 4 cycles

@@ -1,0 +1,58 @@
+module binary_multiplier
+  param WIDTH: const = 32;
+
+  port clk:       in Clock<SysDomain>;
+  port rst_n:     in Reset<Async, Low>;
+  port valid_in:  in Bool;
+  port A:         in UInt<WIDTH>;
+  port B:         in UInt<WIDTH>;
+  port valid_out: out Bool;
+  port Product:   out UInt<2*WIDTH>;
+
+  default seq on clk rising;
+
+  reg a_reg:    UInt<WIDTH>     reset rst_n => 0;
+  reg b_reg:    UInt<WIDTH>     reset rst_n => 0;
+  reg acc:      UInt<2*WIDTH>   reset rst_n => 0;
+  reg bit_idx:  UInt<5>         reset rst_n => 0;
+  reg phase:    UInt<2>         reset rst_n => 0;
+  reg running:  Bool            reset rst_n => false;
+  reg prod_reg: UInt<2*WIDTH>   reset rst_n => 0;
+  reg vout:     Bool            reset rst_n => false;
+
+  comb valid_out = vout;
+  comb Product   = prod_reg;
+
+  // phase 0: iterating through bits 0..31
+  // phase 1: done, output result
+  seq
+    vout <= false;
+    if running
+      if phase == 0
+        if a_reg[bit_idx:bit_idx] == 1
+          acc <= (acc + (b_reg.zext<2*WIDTH>() << bit_idx)).trunc<2*WIDTH>();
+        end if
+        if bit_idx == 31
+          phase   <= 1;
+          bit_idx <= 0;
+        else
+          bit_idx <= (bit_idx + 1).trunc<5>();
+        end if
+      else
+        prod_reg <= acc;
+        vout     <= true;
+        running  <= false;
+        phase    <= 0;
+        acc      <= 0;
+      end if
+    end if
+    if valid_in
+      a_reg   <= A;
+      b_reg   <= B;
+      acc     <= 0;
+      bit_idx <= 0;
+      phase   <= 0;
+      running <= true;
+    end if
+  end seq
+end module binary_multiplier

@@ -1,0 +1,39 @@
+module cascaded_encoder
+  param N: const = 8;
+  param M: const = 3;
+  port input_signal: in UInt<N>;
+  port out: out UInt<M>;
+  port out_upper_half: out UInt<2>;
+  port out_lower_half: out UInt<2>;
+
+  wire upper_out: UInt<2>;
+  wire lower_out: UInt<2>;
+  wire upper_active: Bool;
+
+  inst upper_enc: priority_encoder
+    param N = 4;
+    param M = 2;
+    input_signal <- input_signal[7:4];
+    out -> upper_out;
+  end inst upper_enc
+
+  inst lower_enc: priority_encoder
+    param N = 4;
+    param M = 2;
+    input_signal <- input_signal[3:0];
+    out -> lower_out;
+  end inst lower_enc
+
+  comb out_upper_half = upper_out;
+  comb out_lower_half = lower_out;
+
+  comb upper_active = input_signal[7:4] != 0;
+
+  comb
+    if upper_active
+      out = {true, upper_out};
+    else
+      out = {false, lower_out};
+    end if
+  end comb
+end module cascaded_encoder

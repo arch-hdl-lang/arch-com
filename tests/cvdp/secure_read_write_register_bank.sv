@@ -1,3 +1,12 @@
+package SecureRegBankPkg;
+  typedef enum logic [1:0] {
+    LOCKED = 2'd0,
+    GOT_CODE0 = 2'd1,
+    UNLOCKED = 2'd2
+  } LockState;
+  
+endpackage
+
 module secure_read_write_register_bank #(
   parameter int P_ADDRESS_WIDTH = 8,
   parameter int P_DATA_WIDTH = 8,
@@ -20,7 +29,7 @@ module secure_read_write_register_bank #(
   
   secure_read_write_register_bank_state_t state_r, state_next;
   
-  logic [P_DATA_WIDTH-1:0] mem [0:256-1];
+  logic [P_DATA_WIDTH-1:0] mem [256-1:0];
   
   logic is_write;
   assign is_write = i_read_write_enable == 0;

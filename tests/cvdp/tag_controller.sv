@@ -15,7 +15,7 @@ module tag_controller (
   output logic [8-1:0] addr_out_1
 );
 
-  logic [512-1:0] ram_store;
+  logic [256-1:0] ram_store;
   logic [8-1:0] tag_addr_0;
   assign tag_addr_0 = write_enable ? write_addr[7:0] : read_addr_0;
   logic [8-1:0] tag_addr_1;
@@ -33,8 +33,8 @@ module tag_controller (
   assign addr_out_1 = tag_addr_1;
   assign write_enable_0 = write_enable;
   assign write_enable_1 = write_enable;
-  assign data_out_0 = {ram_store[read_addr_0[7:0]], data_in_0};
-  assign data_out_1 = {ram_store[read_addr_1[7:0]], data_in_1};
+  assign data_out_0 = {ram_store[read_addr_0], data_in_0};
+  assign data_out_1 = {ram_store[read_addr_1], data_in_1};
 
 endmodule
 

@@ -1,41 +1,48 @@
 module rx_block
-  port clk:         in Clock<SysDomain>;
-  port reset_n:     in Reset<Async, Low>;
-  port data_in:     in Bool;
-  port sel:         in UInt<3>;
-  port serial_clk:  in Bool;
-  port reg data_out: out UInt<64> reset reset_n=>0;
-  port reg done:     out Bool reset reset_n=>false;
+  port clk:        in Clock<SysDomain>;
+  port reset_n:    in Reset<Async, Low>;
+  port serial_clk: in Bool;
+  port sel:        in UInt<3>;
+  port data_in:    in Bool;
+  port data_out:   out UInt<64>;
+  port done:       out Bool;
 
-  reg shift_reg: UInt<64> reset reset_n=>0;
-  reg bit_cnt:   UInt<7> reset reset_n=>0;
-  reg active:    Bool reset reset_n=>false;
+  reg shift_reg:  UInt<64> reset reset_n=>0;
+  reg bit_cnt:    UInt<7>  reset reset_n=>0;
+  reg active:     Bool     reset reset_n=>false;
+  reg data_out_r: UInt<64> reset reset_n=>0;
+  reg done_r:     Bool     reset reset_n=>false;
 
   default seq on clk rising;
 
+  comb
+    data_out = data_out_r;
+    done = done_r;
+  end comb
+
   seq
+    done_r <= false;
     if active
       if serial_clk
         shift_reg <= {data_in, shift_reg[63:1]};
         bit_cnt <= (bit_cnt - 1).trunc<7>();
         if bit_cnt == 0
           active <= false;
-          done <= true;
+          done_r <= true;
           if sel == 1
-            data_out <= {56'h0, data_in, shift_reg[63:57]};
+            data_out_r <= {56'h0, data_in, shift_reg[63:57]};
           elsif sel == 2
-            data_out <= {48'h0, data_in, shift_reg[63:49]};
+            data_out_r <= {48'h0, data_in, shift_reg[63:49]};
           elsif sel == 3
-            data_out <= {32'h0, data_in, shift_reg[63:33]};
+            data_out_r <= {32'h0, data_in, shift_reg[63:33]};
           elsif sel == 4
-            data_out <= {data_in, shift_reg[63:1]};
+            data_out_r <= {data_in, shift_reg[63:1]};
           else
-            data_out <= 0;
+            data_out_r <= 0;
           end if
         end if
       end if
     else
-      done <= false;
       if serial_clk
         if sel == 1
           shift_reg <= {data_in, shift_reg[63:1]};
