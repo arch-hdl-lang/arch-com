@@ -301,7 +301,7 @@ impl<'a> Codegen<'a> {
         }).collect();
         // Width: from max value (covers explicit encodings like one-hot)
         let max_val = effective_values.iter().copied().max().unwrap_or(0);
-        let width = if max_val == 0 { 1 } else { (64 - max_val.leading_zeros()) };
+        let width = if max_val == 0 { 1 } else { 64 - max_val.leading_zeros() };
         let width = std::cmp::max(width, enum_width(e.variants.len()));
         let variants: Vec<String> = e.variants.iter().zip(effective_values.iter())
             .map(|(v, val)| format!("{} = {}'d{}", v.name.to_uppercase(), width, val))

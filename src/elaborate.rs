@@ -612,6 +612,7 @@ fn subst_expr(expr: Expr, var: &str, val: i64) -> Expr {
 /// Compute default values for all `const` params (used in Step 1).
 /// Uses the accumulated map so that derived params (e.g. `NUM = A / B`)
 /// can resolve if their dependencies were declared earlier.
+#[allow(dead_code)]
 fn compute_defaults(params: &[ParamDecl]) -> HashMap<String, i64> {
     let mut map = HashMap::new();
     for p in params {
