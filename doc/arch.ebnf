@@ -63,8 +63,10 @@ struct_field = ident ":" type_expr ";" ;
 (* ─── Enum ───────────────────────────────────────────────────────────────── *)
 
 enum_decl = "enum" ident
-              ident { "," ident } [ "," ]
+              enum_variant { "," enum_variant } [ "," ]
             "end" "enum" ident ;
+
+enum_variant = ident [ "=" expr ] ;       (* optional explicit encoding value *)
 
 
 (* ─── Bus ────────────────────────────────────────────────────────────────── *)
@@ -182,21 +184,39 @@ seq_block = "seq" [ "on" ident ( "rising" | "falling" ) ]
 seq_stmt = if_seq_stmt
          | match_seq_stmt
          | for_seq_stmt
+         | init_block
+         | log_stmt
          | seq_assign
          ;
 
-if_seq_stmt  = "if" expr { seq_stmt }
+if_seq_stmt  = [ "unique" ] "if" expr { seq_stmt }
                { "elsif" expr { seq_stmt } }
                [ "else" { seq_stmt } ]
                "end" "if" ;
 
-match_seq_stmt = "match" expr
+match_seq_stmt = [ "unique" ] "match" expr
                    { match_pattern "=>" seq_stmt }
                  "end" "match" ;
 
-for_seq_stmt = "for" ident "in" expr ".." expr
+for_seq_stmt = "for" ident "in" for_range
                  { seq_stmt }
                "end" "for" ;
+
+for_range = expr ".." expr                            (* inclusive range *)
+          | "{" expr { "," expr } "}"                 (* value list *)
+          ;
+
+(* Reset initialization block inside seq — runs when reset asserted *)
+init_block = "init" "on" ident "." "asserted"
+               { seq_stmt }
+             "end" "init" ;
+
+(* Logging — available in both seq and comb blocks *)
+log_stmt = "log" [ "file" "(" string_literal ")" ]
+             "(" log_level "," string_literal "," string_literal
+                  { "," expr } ")" ";" ;
+
+log_level = "Always" | "Low" | "Medium" | "High" | "Full" | "Debug" ;
 
 seq_assign = lvalue "<=" expr ";" ;
 
@@ -222,19 +242,20 @@ comb_block = "comb"
 comb_stmt = if_comb_stmt
            | match_comb_stmt
            | for_comb_stmt
+           | log_stmt
            | comb_assign
            ;
 
-if_comb_stmt  = "if" expr { comb_stmt }
+if_comb_stmt  = [ "unique" ] "if" expr { comb_stmt }
                 { "elsif" expr { comb_stmt } }
                 [ "else" { comb_stmt } ]
                 "end" "if" ;
 
-match_comb_stmt = "match" expr
+match_comb_stmt = [ "unique" ] "match" expr
                     { match_pattern "=>" comb_stmt }
                   "end" "match" ;
 
-for_comb_stmt = "for" ident "in" expr ".." expr
+for_comb_stmt = "for" ident "in" for_range
                   { comb_stmt }
                 "end" "for" ;
 
