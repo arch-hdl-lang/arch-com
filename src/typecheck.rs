@@ -11,9 +11,8 @@ pub enum Ty {
     UInt(u32),
     SInt(u32),
     Bool,
-    Bit,
     Clock(String), // domain name
-    Reset(ResetKind),
+    Reset(ResetKind, ResetLevel), // always concrete (Param resolved during elaboration)
     Vec(Box<Ty>, u32),
     Struct(String),
     Enum(String, u32), // name, bit width
@@ -27,11 +26,10 @@ impl Ty {
         match self {
             Ty::UInt(w) | Ty::SInt(w) => Some(*w),
             Ty::Bool => Some(1),
-            Ty::Bit => Some(1),
             Ty::Enum(_, w) => Some(*w),
             Ty::Vec(inner, count) => inner.width().map(|w| w * count),
             Ty::Struct(_) | Ty::Bus(_) => None,
-            Ty::Clock(_) | Ty::Reset(_) => Some(1),
+            Ty::Clock(_) | Ty::Reset(_, _) => Some(1),
             Ty::Todo | Ty::Error => None,
         }
     }
@@ -41,12 +39,11 @@ impl Ty {
             Ty::UInt(w) => format!("UInt<{w}>"),
             Ty::SInt(w) => format!("SInt<{w}>"),
             Ty::Bool => "Bool".to_string(),
-            Ty::Bit => "Bit".to_string(),
             Ty::Clock(d) => format!("Clock<{d}>"),
-            Ty::Reset(k) => format!("Reset<{}>", match k {
-                ResetKind::Sync => "Sync",
-                ResetKind::Async => "Async",
-            }),
+            Ty::Reset(k, l) => format!("Reset<{}, {}>",
+                match k { ResetKind::Sync => "Sync", ResetKind::Async => "Async" },
+                match l { ResetLevel::High => "High", ResetLevel::Low => "Low" },
+            ),
             Ty::Vec(inner, n) => format!("Vec<{}, {n}>", inner.display()),
             Ty::Struct(name) => name.clone(),
             Ty::Enum(name, _) => name.clone(),
@@ -693,6 +690,9 @@ impl<'a> TypeChecker<'a> {
                 Stmt::For(f) => {
                     Self::collect_assigned_roots_tc(&f.body, out);
                 }
+                Stmt::Init(ib) => {
+                    Self::collect_assigned_roots_tc(&ib.body, out);
+                }
             }
         }
     }
@@ -735,7 +735,7 @@ impl<'a> TypeChecker<'a> {
     fn type_total_width(&self, ty: &Ty) -> Option<u32> {
         match ty {
             Ty::UInt(w) | Ty::SInt(w) => Some(*w),
-            Ty::Bool | Ty::Bit | Ty::Clock(_) | Ty::Reset(_) => Some(1),
+            Ty::Bool | Ty::Clock(_) | Ty::Reset(_, _) => Some(1),
             Ty::Enum(_, w) => Some(*w),
             Ty::Vec(inner, count) => self.type_total_width(inner).map(|w| w * count),
             Ty::Struct(name) => {
@@ -950,6 +950,32 @@ impl<'a> TypeChecker<'a> {
                     self.check_reg_stmt(s, module_name, local_types, driven);
                 }
             }
+            Stmt::Init(ib) => {
+                // Validate that reset_signal is a Reset port in this module
+                let valid_reset = self.source.items.iter().find_map(|item| {
+                    if let Item::Module(m) = item {
+                        if m.name.name == module_name {
+                            return Some(m.ports.iter().any(|p| {
+                                p.name.name == ib.reset_signal.name
+                                    && matches!(&p.ty, TypeExpr::Reset(_, _))
+                            }));
+                        }
+                    }
+                    None
+                }).unwrap_or(false);
+                if !valid_reset {
+                    self.errors.push(CompileError::general(
+                        &format!(
+                            "`init on {}.asserted`: `{}` is not a Reset port in module `{}`",
+                            ib.reset_signal.name, ib.reset_signal.name, module_name
+                        ),
+                        ib.reset_signal.span,
+                    ));
+                }
+                for s in &ib.body {
+                    self.check_reg_stmt(s, module_name, local_types, driven);
+                }
+            }
         }
     }
 
@@ -1160,9 +1186,9 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             TypeExpr::Bool => Ty::Bool,
-            TypeExpr::Bit => Ty::Bit,
+            TypeExpr::Bit => Ty::UInt(1),
             TypeExpr::Clock(domain) => Ty::Clock(domain.name.clone()),
-            TypeExpr::Reset(kind, _level) => Ty::Reset(*kind),
+            TypeExpr::Reset(kind, level) => Ty::Reset(*kind, *level),
             TypeExpr::Vec(inner, size_expr) => {
                 let inner_ty = self.resolve_type_expr(inner, _module_name, local_types);
                 if let Some(n) = self.eval_const_expr(size_expr, local_types) {
@@ -1259,6 +1285,17 @@ impl<'a> TypeChecker<'a> {
             }
             ExprKind::FieldAccess(base, field) => {
                 let base_ty = self.resolve_expr_type(base, module_name, local_types);
+                // rst.asserted — polarity-abstracted boolean: true when reset is active
+                if field.name == "asserted" {
+                    if matches!(base_ty, Ty::Reset(_, _)) {
+                        return Ty::Bool;
+                    }
+                    self.errors.push(CompileError::general(
+                        "`.asserted` is only valid on Reset ports",
+                        field.span,
+                    ));
+                    return Ty::Error;
+                }
                 if let Ty::Struct(name) = &base_ty {
                     if let Some((sym, _)) = self.symbols.globals.get(name) {
                         if let crate::resolve::Symbol::Struct(info) = sym {
@@ -1456,7 +1493,7 @@ impl<'a> TypeChecker<'a> {
                     // Bit-select of a UInt/SInt produces a single bit; treat as Bool
                     // so it can be used directly in boolean expressions.
                     Ty::UInt(_) | Ty::SInt(_) => Ty::Bool,
-                    _ => Ty::Bit,
+                    _ => Ty::UInt(1),
                 }
             }
             ExprKind::BitSlice(base, hi, lo) => {
@@ -1509,7 +1546,7 @@ impl<'a> TypeChecker<'a> {
                 let total: u32 = parts.iter().map(|p| {
                     match self.resolve_expr_type(p, module_name, local_types) {
                         Ty::UInt(w) | Ty::SInt(w) => w,
-                        Ty::Bool | Ty::Bit => 1,
+                        Ty::Bool => 1,
                         _ => 1,
                     }
                 }).sum();
@@ -1519,7 +1556,7 @@ impl<'a> TypeChecker<'a> {
                 // {N{expr}} — total width = N * width(expr)
                 let val_width = match self.resolve_expr_type(value, module_name, local_types) {
                     Ty::UInt(w) | Ty::SInt(w) => w,
-                    Ty::Bool | Ty::Bit => 1,
+                    Ty::Bool => 1,
                     _ => 1,
                 };
                 let n = self.eval_const_expr(count, local_types).unwrap_or(1) as u32;
@@ -1538,11 +1575,11 @@ impl<'a> TypeChecker<'a> {
                 let inner_ty = self.resolve_expr_type(inner, module_name, local_types);
                 match inner_ty {
                     Ty::UInt(w) | Ty::SInt(w) => Ty::SInt(w),
-                    Ty::Bool | Ty::Bit => Ty::SInt(1),
+                    Ty::Bool => Ty::SInt(1),
                     Ty::Enum(_, w) => Ty::SInt(w),
                     _ => {
                         self.errors.push(CompileError::general(
-                            &format!("signed() requires UInt, SInt, Bool, or Bit operand, got {}", inner_ty.display()),
+                            &format!("signed() requires UInt, SInt, or Bool operand, got {}", inner_ty.display()),
                             expr.span,
                         ));
                         Ty::Error
@@ -1553,11 +1590,11 @@ impl<'a> TypeChecker<'a> {
                 let inner_ty = self.resolve_expr_type(inner, module_name, local_types);
                 match inner_ty {
                     Ty::UInt(w) | Ty::SInt(w) => Ty::UInt(w),
-                    Ty::Bool | Ty::Bit => Ty::UInt(1),
+                    Ty::Bool => Ty::UInt(1),
                     Ty::Enum(_, w) => Ty::UInt(w),
                     _ => {
                         self.errors.push(CompileError::general(
-                            &format!("unsigned() requires UInt, SInt, Bool, or Bit operand, got {}", inner_ty.display()),
+                            &format!("unsigned() requires UInt, SInt, or Bool operand, got {}", inner_ty.display()),
                             expr.span,
                         ));
                         Ty::Error
@@ -1610,7 +1647,7 @@ impl<'a> TypeChecker<'a> {
                                     eval_type_width_expr(we).map_or(true, |ew| ew == *wa)
                                 }
                                 (TypeExpr::Bool, Ty::Bool) => true,
-                                (TypeExpr::Bit,  Ty::Bit)  => true,
+                                (TypeExpr::Bit,  Ty::UInt(1)) => true,
                                 (TypeExpr::UInt(_), Ty::Todo)
                                 | (TypeExpr::SInt(_), Ty::Todo) => true,
                                 _ => false,
@@ -1987,6 +2024,9 @@ impl<'a> TypeChecker<'a> {
                 Stmt::For(f) => {
                     Self::collect_stmt_targets(&f.body, out);
                 }
+                Stmt::Init(ib) => {
+                    Self::collect_stmt_targets(&ib.body, out);
+                }
             }
         }
     }
@@ -2014,6 +2054,9 @@ impl<'a> TypeChecker<'a> {
                 }
                 Stmt::For(f) => {
                     Self::collect_stmt_reads(&f.body, out);
+                }
+                Stmt::Init(ib) => {
+                    Self::collect_stmt_reads(&ib.body, out);
                 }
             }
         }
