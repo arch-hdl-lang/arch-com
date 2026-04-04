@@ -3,9 +3,35 @@
 
 # Verilator simulation build artifacts
 obj_dir/
+*_build/
+*_vltr/
+sim_build/
+sim_out
+verilated.o
+verilated.cpp
+*.o
+a.out
+
+# Waveform dumps
+*.vcd
+*.fst
 
 # Generated HTML from docs
 *.html
 
+# Doc tooling
+doc/node_modules/
+doc/package.json
+doc/package-lock.json
+
+# Backup / scratch files
+*.old.docx
+*.docx.old
+*.md.old
+mcp/*.old
+
 # macOS
 .DS_Store
+
+# Claude session data
+.claude/
