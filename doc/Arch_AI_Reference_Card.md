@@ -1,804 +1,832 @@
-**Arch HDL --- AI Reference Card**
+# Arch HDL — AI Reference Card
 
 *Compact AI context for hardware generation · v0.24.0 · Put this in context, add design intent, paste compiler errors to self-correct.*
 
-**1. Universal Block Schema --- Every Construct Uses This**
+---
 
-> keyword Name
->
-> param NAME: const = value;        // untyped int → `parameter int` (32-bit)
->
-> param NAME[hi:lo]: const = value; // width-qualified → `parameter [hi:lo]` (use to avoid WIDTHEXPAND)
->
-> param NAME: type = SomeType;      // compile-time type parameter
->
-> port name: in TypeExpr;
->
-> port name: out TypeExpr;
->
-> port name: initiator BusName; // bus port (initiator perspective)
->
-> port name: target BusName; // bus port (directions flipped)
->
-> generate for i in 0..N-1 // generated ports / instances
->
-> port p\[i\]: in UInt\<8\>;
->
-> end generate for i
->
-> generate if PARAM \> 0 // conditional ports
->
-> port opt: out Bool;
->
-> end generate if
->
-> assert name: expression; // (planned)
->
-> cover name: expression; // (planned)
->
-> end keyword Name
->
-> SIGNAL ASSIGNMENT:
->
-> comb y = expr; // one-line combinational (no end comb needed)
->
-> comb y = expr; end comb // equivalent multi-line form
->
-> reg r: T reset rst => 0 sync high; // register decl with reset (reset value after =)
->
-> reg r: T init 0 reset rst => 0; // optional init sets SV declaration initializer
->
-> reg p: T reset none; // register decl without reset
->
-> reg default: reset rst => 0; // wildcard default for all regs in scope
->
-> reg r: UInt\<8\>; // inherits reset from reg default
->
-> port reg q: out UInt\<8\> reset rst => 0; // output port + register combined
->
-> port reg q: out UInt\<8\>; // inherits reset from reg default
->
-> pipe_reg delayed: source stages 3; // N-stage delay chain, type inferred
->
-> default seq on clk rising; // set default clock for all seq blocks
->
-> seq on clk rising // clocked process --- uses \<=
->
-> r \<= expr; // compiler auto-generates if(rst) guard
->
-> p \<= expr; // no reset guard (reset none)
->
-> end seq
->
-> seq r \<= expr; // one-line seq (uses default clock, no end seq)
->
-> let x: UInt\<32\> = a + b; // combinational wire (explicit type required)
->
-> CONDITIONALS: use elsif (one word), NOT else if (two words):
->
-> if cond\_a r \<= val\_a; elsif cond\_b r \<= val\_b; else r \<= val\_c; end if
->
-> unique if / unique match — assert mutual exclusivity; emits SV unique if / unique case:
->
-> unique if sel == 0 y = a; else y = b; end if
->
-> unique match opcode 0 =\> r \<= a; 1 =\> r \<= b; \_ =\> r \<= 0; end match
->
-> MATCH in comb uses = (not \<=); in seq uses \<=. Exhaustive enum match (all variants listed) satisfies the latch check without needing \_ wildcard:
->
-> comb match color Color::Red =\> out = 1; Color::Green =\> out = 2; Color::Blue =\> out = 3; end match
->
-> FOR LOOPS (runtime, in comb/seq blocks):
->
-> for i in 0..7 out\[i\] = data\[7 - i\]; end for // inclusive range, emits SV for loop
->
-> for i in {0, 3, 7, 15} mask\[i\] = true; end for // value-list, compile-time unrolled
->
-> // Range for = runtime SV loop; value-list for = compile-time unroll; generate for = ports/instances
+## 1. Universal Block Schema
 
-**2. Types**
+Every construct uses the same layout:
 
-> UInt\<N\> SInt\<N\> Bool Bit
->
-> Clock\<Domain\> Reset\<Sync\|Async, High\|Low\> (polarity defaults High)
->
-> Clock\<Domain\> may be `out` — use for passthrough (`comb clk_out = clk_in;`), gating (`comb clk_out = clk_in & en;`), or division (`reg toggle; seq toggle <= ~toggle; comb clk_out = toggle;`). For integrated latch-based gating use the `clkgate` construct.
->
-> SysDomain is built-in --- no `domain SysDomain end domain SysDomain` needed
->
-> Vec\<T,N\> struct S { f: T, } enum E { A, B, }
->
-> Bool and UInt\<1\> are identical --- freely assignable, bitwise ops on 1-bit return Bool
->
-> Token Future\<T\> Token\<T, id_width: N\> (planned --- TLM only)
->
-> Width conversions (always explicit): x.trunc\<N\>() x.zext\<N\>() x.sext\<N\>() x[hi:lo]
->
-> trunc\<N\>() → lowest N bits (SV: N'(x)); x[hi:lo] → bit-slice (SV: x[hi:lo])
->
-> Signedness reinterpret (same width, no N needed): signed(x) unsigned(x)
->
-> signed(UInt\<8\>) → SInt\<8\> (SV: $signed(x)); unsigned(SInt\<8\>) → UInt\<8\> (SV: $unsigned(x))
->
-> Use signed() to enter signed arithmetic chains: signed(a) + signed(b) → SInt\<9\>
->
-> Arithmetic: UInt\<8\> + UInt\<8\> → UInt\<9\> (auto-widen); must .trunc\<8\>() to assign back
->
-> $clog2(expr) supported in type args: UInt\<$clog2(DEPTH)\>
->
-> Bit concat: {a, b} → SV {a, b} (MSB first). Bit repeat: {N{expr}} → SV {N{expr}}.
->
-> Nestable: {{8{sign\_bit}}, byte\_val} → 16-bit sign-extended value.
+```
+keyword Name
+  param NAME: const = value;          // untyped int → parameter int (32-bit)
+  param NAME[hi:lo]: const = value;   // width-qualified → parameter [hi:lo]
+  param NAME: type = SomeType;        // compile-time type parameter
 
-**3. Expressions & Operators**
+  port name: in TypeExpr;
+  port name: out TypeExpr;
+  port name: initiator BusName;       // bus port (initiator perspective)
+  port name: target BusName;          // bus port (directions flipped)
 
-> Arithmetic: + - \* / %
->
-> Comparison: == != \< \> \<= \>=
->
-> Logical: and or not
->
-> Bitwise: & \| ^ ~ \<\< \>\>
->
-> Ternary: cond ? a : b (right-associative; chains for priority muxes)
->
-> Match expression: match x { E::A => val1, E::B => val2, _ => default }
->
-> Set membership: expr inside {val1, val2, lo..hi} — returns Bool, emits SV inside operator
->
-> Field access: s.field Array index: a\[i\]
->
-> Function call: FnName(arg1, arg2) (overload-resolved by argument types)
->
-> Enum variant: E::Variant Struct literal: S { f: val }
->
-> Sized literals: 8'hFF 16'd1024 4'b1010 (Verilog-style)
->
-> todo! --- compilable placeholder; warns at compile, aborts at sim runtime
+  generate for i in 0..N-1           // generated ports / instances
+    port p[i]: in UInt<8>;
+  end generate for i
 
-**4. Construct Cards**
+  generate if PARAM > 0              // conditional ports
+    port opt: out Bool;
+  end generate if
 
-**module --- combinational or registered logic**
+  assert name: expression;
+  cover name: expression;
+end keyword Name
+```
 
-+---------------------------------------+----------------------------------+
-| module Name                           | No implicit latches: comb block  |
-|                                       | signals must be assigned on ALL  |
-| param W: const = 8;                   | paths (missing else = error).    |
-|                                       | Single driver per signal (error) |
-| local param ADDR: const = \$clog2(W); | localparam: not overridable      |
-|                                       |                                  |
-| param CFG: Mode = Mode::Fast;         | Enum-typed param (type-safe)     |
-|                                       |                                  |
-| port clk: in Clock\<D\>;              | All ports must be connected      |
-|                                       |                                  |
-| port rst: in Reset\<Sync\>;           |                                  |
-|                                       |                                  |
-| port a: in UInt\<W\>;                 |                                  |
-|                                       |                                  |
-| port y: out UInt\<W\>;                |                                  |
-|                                       |                                  |
-| reg default: reset rst => 0;             | Wildcard default for all regs    |
-|                                       |                                  |
-| reg r: UInt\<W\>;                     | Inherits reset from default      |
-|                                       |                                  |
-| port reg y: out UInt\<W\>;            | Output port + register combined  |
-|                                       |                                  |
-| pipe_reg d: r stages 2;              | 2-stage delay of r (read-only)   |
-|                                       |                                  |
-| default seq on clk rising;            | Set default clock for seq blocks |
-|                                       |                                  |
-| seq on clk rising                     | Compiler auto-generates          |
-|                                       |                                  |
-| r \<= a;                              | if(rst) reset guard from reg decl|
-|                                       |                                  |
-| y \<= r;                              | port reg assigned directly       |
-|                                       |                                  |
-| end seq                               |                                  |
-|                                       |                                  |
-| seq r \<= a;                          | One-line seq (uses default clk)  |
-|                                       |                                  |
-| end module Name                       |                                  |
-|                                       |                                  |
-| // Instantiation:                     |                                  |
-|                                       |                                  |
-| inst u: Name                          |                                  |
-|                                       |                                  |
-| param W = 16;                         |                                  |
-|                                       |                                  |
-| clk \<- clk;                  |                                  |
-|                                       |                                  |
-| a \<- sig; y -\> out; |                                  |
-|                                       |                                  |
-| // Port group member syntax:          | Flattened at parse time:         |
-|                                       |                                  |
-| write.en \<- wr_en;           | write.en → write\_en             |
-|                                       |                                  |
-| read\[0\].addr \<- sel;       | read\[0\].addr → read0\_addr     |
-|                                       |                                  |
-| read\[1\].data -\> out\_b;    | Index must be integer literal.   |
-|                                       |                                  |
-| // Whole-bus connection:              | Expands to per-signal connects   |
-|                                       | using bus definition. Directions |
-| axi\_rd -\> m\_axi\_mm2s;    | derived from bus + perspective.  |
-|                                       |                                  |
-| // Indexed bus port in comb/seq:      | Flattened at codegen time:       |
-|                                       |                                  |
-| m\_axi\[0\].ar\_valid = true; | → m\_axi\_0\_ar\_valid           |
-|                                       |                                  |
-| end inst u                            |                                  |
-|                                       |                                  |
-| // Hierarchical refs FORBIDDEN:       | inst_name.port is a compile      |
-|                                       | error. Use y -> wire     |
-| // ✗ add.sum  (compile error)         | in the inst block and reference  |
-|                                       | wire in the enclosing scope.     |
-| // ✓ sum -> my_sum;           |                                  |
-|    // then use my_sum                 |                                  |
-+---------------------------------------+----------------------------------+
+**Signal assignment:**
 
-**function --- pure combinational, overloadable**
+```
+comb y = expr;                        // one-line combinational
+comb y = expr; end comb              // equivalent multi-line form
 
-+---------------------------------------+----------------------------------+
-| function AddSat(a: UInt\<8\>,         | Pure comb --- no state, no clk   |
-|                 b: UInt\<8\>)          |                                  |
-|   -\> UInt\<8\>                       | Overloading: same name, different|
-|                                       | arg types (mangled in SV)        |
-| let sum: UInt\<9\> = a.zext\<9\>()   |                                  |
-|   + b.zext\<9\>();                    | let bindings as temporaries      |
-|                                       |                                  |
-| return sum\[8\] ? 8'hFF              | Ternary / match in return        |
-|   : sum[7:0];                        |                                  |
-|                                       | Emits SV: function automatic     |
-| end function AddSat                   |                                  |
-+---------------------------------------+----------------------------------+
+reg r: T reset rst => 0 sync high;  // register with reset (value after =>)
+reg r: T init 0 reset rst => 0;    // init sets SV declaration initializer
+reg r: T reset none;                 // register without reset
+reg default: reset rst => 0;         // wildcard default for all regs in scope
+reg r: UInt<8>;                      // inherits reset from reg default
+port reg q: out UInt<8> reset rst => 0;  // output port + register combined
+port reg q: out UInt<8>;             // inherits reset from reg default
+pipe_reg delayed: source stages 3;  // N-stage delay chain, type inferred
 
-**pipeline --- staged datapath, compiler generates hazard logic**
+default seq on clk rising;           // set default clock for all seq blocks
 
-+---------------------------------------+-------------------------------+
-| pipeline Name                         | Compiler generates:           |
-|                                       |                               |
-| port clk: in Clock\<D\>;              | per-stage valid\_r registers, |
-|                                       |                               |
-| port rst: in Reset\<Sync\>;           | stall chain (backpressure),   |
-|                                       |                               |
-| stage Fetch stall when !in\_valid     | flush masks, comb wire decls. |
-|                                       |                               |
-| reg r1: T reset rst => 0;           | Cross-stage refs rewritten:   |
-|                                       |                               |
-| seq on clk rising                     | Fetch.pc → fetch\_pc          |
-|                                       |                               |
-| r1 \<= in;                            |                               |
-|                                       |                               |
-| end seq                               | valid\_r accessible per-stage |
-|                                       |                               |
-| end stage Fetch                       | for output gating:            |
-|                                       |                               |
-|                                       | valid\_r \<= start; in stage0 |
-|                                       | seq overrides default (=1).   |
-|                                       |                               |
-| stage Exec                            | done = valid\_r; in last stage|
-|                                       |                               |
-| reg r2: T reset rst => 0;           |                               |
-|                                       |                               |
-| seq on clk rising                     | Explicit forwarding via comb  |
-|                                       |                               |
-| r2 \<= Fetch.r1;                      | if/else mux inside stage.     |
-|                                       |                               |
-| end seq                               |                               |
-|                                       |                               |
-| inst alu0: Alu                        | inst inside stages supported  |
-|                                       |                               |
-| a \<- Fetch.r1;               | (output wires auto-declared). |
-|                                       |                               |
-| end inst alu0                         |                               |
-|                                       |                               |
-| end stage Exec                        |                               |
-|                                       |                               |
-| flush Fetch when mispredict;          |                               |
-|                                       |                               |
-| end pipeline Name                     |                               |
-+---------------------------------------+-------------------------------+
+seq on clk rising                    // clocked process — uses <=
+  r <= expr;                         // compiler auto-generates if(rst) guard
+  p <= expr;                         // no reset guard (reset none)
+end seq
 
-**fsm --- finite state machine**
+seq r <= expr;                       // one-line seq (uses default clock)
 
-+------------------------------------------+-------------------------------------------+
-| fsm Name                                 | Compiler checks exhaustive transitions.   |
-|                                          |                                           |
-| port clk: in Clock\<D\>;                 | `default state` required (reset value).  |
-|                                          |                                           |
-| port rst: in Reset\<Sync\>;              | `default ... end default` block provides  |
-|                                          | default comb/seq assignments emitted      |
-| port active: out Bool;                   | before the state case statement; states   |
-|                                          | only override what differs.               |
-| port fire\_irq: out Bool;               |                                           |
-|                                          | Undriven outputs are X (real HW).         |
-| state [Idle, Running, Done]              |                                           |
-|                                          |                                           |
-| default state Idle;                      |                                           |
-|                                          |                                           |
-| default                                  |                                           |
-|   comb                                   |                                           |
-|     active = false;                      |                                           |
-|     fire\_irq = false;                   |                                           |
-|   end comb                               |                                           |
-| end default                              |                                           |
-|                                          |                                           |
-| state Idle                               | Transition syntax:                        |
-|   -> Running when start;                 |                                           |
-| end state Idle                           | -> Next when \<expr\>;                    |
-|                                          |                                           |
-| state Running                            | Multiple transitions are checked for      |
-|                                          | mutual exclusivity; `unique if` emitted   |
-|   comb                                   | when exclusive, `priority if` otherwise.  |
-|     active = true;                       | Implicit hold: if no transition fires,    |
-|   end comb                               | FSM stays in current state. No catch-all  |
-|                                          | `-> Self when true` needed.               |
-|   -> Done when all\_done;               |                                           |
-|   -> Running when not all\_done;        | Unconditional transition (no `when`):     |
-|                                          | omit `when` to always advance.            |
-| end state Running                        |                                           |
-|                                          |                                           |
-| state Done                               |                                           |
-|                                          |                                           |
-|   comb                                   |                                           |
-|     fire\_irq = true;                    |                                           |
-|   end comb                               |                                           |
-|                                          |                                           |
-|   -> Idle;                               |                                           |
-|                                          |                                           |
-| end state Done                           |                                           |
-|                                          |                                           |
-| end fsm Name                             |                                           |
-+------------------------------------------+-------------------------------------------+
+let x: UInt<32> = a + b;            // combinational wire (explicit type required)
+```
 
-**fsm datapath extension** --- `reg`, `let`, and `seq` inside FSMs:
+**Conditionals:** use `elsif` (one word), NOT `else if`:
 
-FSMs may declare `reg` and `let` at scope level, and `seq on clk rising ... end seq` blocks inside state bodies. The compiler emits separate `always_ff` (state + datapath regs) and `always_comb` (transitions + outputs). This co-locates control and datapath — a readability win over SV's split-block style.
+```
+if cond_a
+  r <= val_a;
+elsif cond_b
+  r <= val_b;
+else
+  r <= val_c;
+end if
+```
+
+**unique if / unique match** — assert mutual exclusivity; emits SV `unique if` / `unique case`:
+
+```
+unique if sel == 0
+  y = a;
+else
+  y = b;
+end if
+
+unique match opcode
+  0 => r <= a;
+  1 => r <= b;
+  _ => r <= 0;
+end match
+```
+
+`match` in `comb` uses `=`; in `seq` uses `<=`. Exhaustive enum match (all variants listed) satisfies the latch check without needing `_` wildcard:
+
+```
+comb
+  match color
+    Color::Red   => out = 1;
+    Color::Green => out = 2;
+    Color::Blue  => out = 3;
+  end match
+end comb
+```
+
+**For loops** (runtime, in comb/seq blocks):
+
+```
+for i in 0..7
+  out[i] = data[7 - i];            // inclusive range, emits SV for loop
+end for
+
+for i in {0, 3, 7, 15}
+  mask[i] = true;                  // value-list, compile-time unrolled
+end for
+```
+
+Range `for` = runtime SV loop; value-list `for` = compile-time unroll; `generate for` = ports/instances.
+
+---
+
+## 2. Types
+
+```
+UInt<N>  SInt<N>  Bool  Bit
+Clock<Domain>  Reset<Sync|Async, High|Low>   // polarity defaults High
+Vec<T,N>
+struct S  { f: T; }
+enum E   { A, B, }
+```
+
+- `SysDomain` is built-in — no `domain SysDomain end domain SysDomain` needed
+- `Bool` and `UInt<1>` are identical — freely assignable, bitwise ops on 1-bit return Bool
+- `Bit` is an alias for `UInt<1>`
+- `Token`, `Future<T>`, `Token<T, id_width: N>` (planned — TLM only)
+- `Clock<Domain>` may be `out` — use for passthrough (`comb clk_out = clk_in;`), gating (`comb clk_out = clk_in & en;`), or division. For integrated latch-based gating use the `clkgate` construct.
+
+**Width conversions** (always explicit):
+
+```
+x.trunc<N>()   // lowest N bits (SV: N'(x)); N must be < source width
+x.zext<N>()    // zero-extend; N must be > source width
+x.sext<N>()    // sign-extend; N must be > source width
+x[hi:lo]       // bit-slice (SV: x[hi:lo])
+x[i]           // single bit extract
+```
+
+**Signedness reinterpret** (same width, no N needed):
+
+```
+signed(x)      // UInt<8> → SInt<8>  (SV: $signed(x))
+unsigned(x)    // SInt<8> → UInt<8>  (SV: $unsigned(x))
+```
+
+Use `signed()` for signed arithmetic chains: `signed(a) + signed(b)` → `SInt<9>`
+
+**Arithmetic:** `UInt<8> + UInt<8>` → `UInt<9>` (auto-widen); must `.trunc<8>()` to assign back.
+
+`$clog2(expr)` supported in type args: `UInt<$clog2(DEPTH)>`
+
+**Bit ops:**
+
+```
+{a, b}          // concat (MSB first) → SV {a, b}
+{N{expr}}       // replication → SV {N{expr}}
+{{8{sign}}, b}  // nestable: 16-bit sign-extended value
+```
+
+---
+
+## 3. Expressions & Operators
+
+```
+Arithmetic:  + - * / %
+Comparison:  == != < > <= >=
+Logical:     and or not
+Bitwise:     & | ^ ~ << >>
+Ternary:     cond ? a : b      // right-associative; chains for priority muxes
+Match:       match x { E::A => val1, E::B => val2, _ => default }
+Set member:  expr inside {val1, val2, lo..hi}   // returns Bool, emits SV inside
+Field:       s.field
+Index:       a[i]
+Call:        FnName(arg1, arg2)    // overload-resolved by argument types
+Enum:        E::Variant
+Struct lit:  S { f: val }
+Sized lit:   8'hFF  16'd1024  4'b1010   // Verilog-style
+todo!        // compilable placeholder; warns at compile, aborts at sim runtime
+```
+
+---
+
+## 4. Construct Cards
+
+### module
+
+Combinational or registered logic.
+
+```
+module Name
+  param W: const = 8;
+  local param ADDR: const = $clog2(W);  // localparam: not overridable
+  param CFG: Mode = Mode::Fast;          // enum-typed param (type-safe)
+
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port a:   in UInt<W>;
+  port y:   out UInt<W>;
+
+  reg default: reset rst => 0;           // wildcard default for all regs
+  reg r: UInt<W>;                        // inherits reset from default
+  port reg y: out UInt<W>;              // output port + register combined
+  pipe_reg d: r stages 2;               // 2-stage delay of r (read-only)
+
+  default seq on clk rising;
+
+  seq on clk rising
+    r <= a;
+    y <= r;
+  end seq
+
+  seq r <= a;                            // one-line seq (uses default clk)
+end module Name
+```
+
+Notes:
+- No implicit latches: `comb` signals must be assigned on all paths (missing `else` = error)
+- Single driver per signal (error)
+- All ports must be connected at instantiation
+
+**Instantiation:**
+
+```
+inst u: Name
+  param W = 16;
+  clk       <- clk;
+  a         <- sig;
+  y         -> out;
+  write.en  <- wr_en;        // port group member: write.en → write_en in SV
+  read[0].addr <- sel;       // indexed: read[0].addr → read0_addr
+  read[1].data -> out_b;     // index must be integer literal
+  axi_rd   -> m_axi_mm2s;   // whole-bus connection (expands per-signal)
+end inst u
+```
+
+Hierarchical refs **FORBIDDEN**: `inst_name.port` is a compile error. Connect outputs with `-> wire` and use `wire` in enclosing scope.
+
+---
+
+### function
+
+Pure combinational, overloadable.
+
+```
+function AddSat(a: UInt<8>, b: UInt<8>) -> UInt<8>
+  let sum: UInt<9> = a.zext<9>() + b.zext<9>();
+  return sum[8] ? 8'hFF : sum[7:0];
+end function AddSat
+```
+
+- No state, no clock
+- Overloading: same name, different arg types (mangled in SV)
+- Emits SV `function automatic`
+
+---
+
+### pipeline
+
+Staged datapath — compiler generates hazard logic.
+
+```
+pipeline Name
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+
+  stage Fetch
+    stall when !in_valid;
+    reg r1: T reset rst => 0;
+    seq on clk rising
+      r1 <= in;
+    end seq
+  end stage Fetch
+
+  stage Exec
+    reg r2: T reset rst => 0;
+    seq on clk rising
+      r2 <= Fetch.r1;             // cross-stage reference
+    end seq
+    inst alu0: Alu
+      a <- Fetch.r1;
+    end inst alu0
+  end stage Exec
+
+  flush Fetch when mispredict;
+end pipeline Name
+```
+
+Compiler generates:
+- Per-stage `valid_r` registers
+- Stall chain (backpressure)
+- Flush masks, comb wire declarations
+
+Cross-stage refs rewritten: `Fetch.pc` → `fetch_pc` in SV.
+
+`valid_r` per-stage for output gating:
+- `valid_r <= start;` in first-stage `seq` overrides default (=1)
+- `done = valid_r;` in last-stage `comb` signals pipeline output valid
+
+---
+
+### fsm
+
+Finite state machine — compiler checks exhaustive transitions.
+
+```
+fsm Name
+  port clk:      in Clock<D>;
+  port rst:      in Reset<Sync>;
+  port active:   out Bool;
+  port fire_irq: out Bool;
+
+  state [Idle, Running, Done]
+  default state Idle;
+
+  default
+    comb
+      active   = false;
+      fire_irq = false;
+    end comb
+  end default
+
+  state Idle
+    -> Running when start;
+  end state Idle
+
+  state Running
+    comb active = true; end comb
+    -> Done    when all_done;
+    -> Running when not all_done;
+  end state Running
+
+  state Done
+    comb fire_irq = true; end comb
+    -> Idle;                          // unconditional: always advance
+  end state Done
+end fsm Name
+```
+
+- `default state` required (reset value)
+- `default ... end default` provides defaults emitted before state `case`; states only override what differs
+- Implicit hold: if no transition fires, FSM stays in current state — no `-> Self when true` needed
+- Multiple transitions: mutual exclusivity checked; `unique if` emitted when exclusive, `priority if` otherwise
+
+**FSM datapath extension** — `reg`, `let`, and `seq` inside FSM states:
 
 ```
 fsm MulDiv
-  reg acc_r: UInt<64> reset rst => 0 sync high;
+  reg acc_r: UInt<64> reset rst => 0;
   let done: Bool = (cycle_r == 31);
+
   state Idle
     seq on clk rising
       acc_r <= 0;
     end seq
     -> Multiply when req_valid;
   end state Idle
-  ...
 end fsm MulDiv
 ```
 
-**fifo --- sync or dual-clock async (gray-code auto-generated); kind: fifo (default) | lifo**
+Co-locates control and datapath — emits separate `always_ff` and `always_comb` in SV.
 
-+--------------------------------------------------------+-------------------------------+
-| fifo Name                                              | Dual-clock: replace clk with  |
-|                                                        |                               |
-| kind lifo; // optional, default fifo                   | port wr_clk: in Clock\<WrD\>; |
-|                                                        |                               |
-| param DEPTH: const = 64;                               | port rd_clk: in Clock\<RdD\>; |
-|                                                        |                               |
-| param WIDTH: type = UInt\<32\>;                        | Compiler adds gray-code CDC.  |
-|                                                        |                               |
-| port clk: in Clock\<D\>; // or wr_clk+rd_clk for async | kind lifo restricted to       |
-|                                                        |                               |
-| port rst: in Reset\<Sync\>;                            | single-clock only.            |
-|                                                        |                               |
-| port push_valid: in Bool;                              |                               |
-|                                                        |                               |
-| port push_ready: out Bool;                             |                               |
-|                                                        |                               |
-| port push_data: in WIDTH;                              |                               |
-|                                                        |                               |
-| port pop_valid: out Bool;                              |                               |
-|                                                        |                               |
-| port pop_ready: in Bool;                               |                               |
-|                                                        |                               |
-| port pop_data: out WIDTH;                              |                               |
-|                                                        |                               |
-| end fifo Name                                          |                               |
-+--------------------------------------------------------+-------------------------------+
+---
 
-**synchronizer --- CDC synchronizer (ff / gray / handshake / reset / pulse)**
+### fifo
 
-> synchronizer Name
->
-> kind ff; // ff (default) | gray | handshake | reset | pulse
->
-> param STAGES: const = 2; // 2 or 3 (default 2)
->
-> port src_clk: in Clock\<SrcDomain\>;
->
-> port dst_clk: in Clock\<DstDomain\>; // chain clocked on dst_clk
->
-> port rst: in Reset\<Async\>; // optional
->
-> port data_in: in Bool; // or UInt\<N\> for multi-bit
->
-> port data_out: out Bool;
->
-> end synchronizer Name
+Sync or dual-clock async FIFO (gray-code auto-generated). `kind: fifo` (default) | `lifo`.
+
+```
+fifo Name
+  kind lifo;                          // optional, default fifo
+  param DEPTH: const = 64;
+  param WIDTH: type = UInt<32>;
+
+  port clk: in Clock<D>;             // or wr_clk + rd_clk for async
+  port rst: in Reset<Sync>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data:  in WIDTH;
+  port pop_valid:  out Bool;
+  port pop_ready:  in Bool;
+  port pop_data:   out WIDTH;
+end fifo Name
+```
+
+- Dual-clock: replace `clk` with `wr_clk: in Clock<WrD>` + `rd_clk: in Clock<RdD>`; compiler adds gray-code CDC
+- `kind lifo` restricted to single-clock only
+
+---
+
+### synchronizer
+
+CDC synchronizer. `kind: ff | gray | handshake | reset | pulse`.
+
+```
+synchronizer Name
+  kind ff;                            // ff (default) | gray | handshake | reset | pulse
+  param STAGES: const = 2;           // 2 or 3 (default 2)
+  port src_clk:  in Clock<SrcDomain>;
+  port dst_clk:  in Clock<DstDomain>;
+  port rst:      in Reset<Async>;
+  port data_in:  in Bool;            // or UInt<N> for multi-bit
+  port data_out: out Bool;
+end synchronizer Name
+```
 
 Strategies:
+- `kind ff` — N-stage FF shift chain on dst clock. Best for 1-bit signals.
+- `kind gray` — Binary→gray encode, FF chain, gray→binary decode. Safe for multi-bit counters/pointers.
+- `kind handshake` — Req/ack toggle protocol. Safe for arbitrary multi-bit data.
+- `kind reset` — Async assert (immediate), sync deassert through FF chain. Bool only.
+- `kind pulse` — Toggle in src domain, sync FF chain, edge-detect in dst. Bool only.
 
-- `kind ff;` (default) --- N-stage flip-flop shift chain on dst clock. Best for 1-bit signals.
-- `kind gray;` --- Binary-to-gray encode, FF chain, gray-to-binary decode. Safe for multi-bit counters/pointers.
-- `kind handshake;` --- Req/ack toggle protocol with synchronized control signals. Safe for arbitrary multi-bit data.
-- `kind reset;` --- Reset synchronizer: async assert (immediate), sync deassert through N-stage FF chain. Single-bit only (Bool). Used for synchronizing reset deassertion to a clock domain.
-- `kind pulse;` --- Pulse synchronizer: converts a single-cycle pulse into a level toggle in the source domain, syncs the toggle through the FF chain, then edge-detects in the destination domain to regenerate a single-cycle pulse. Single-bit only (Bool). Used for events, interrupts, triggers across clock domains.
+Notes:
+- Two `Clock` ports must reference different domains (compile error otherwise)
+- `kind ff` with multi-bit data (`UInt<N>` where N>1) warns — use `kind gray` or `kind handshake`
+- `kind reset` and `kind pulse` error if data is not `Bool`
+- CDC checking extends across `inst` boundaries; comb→seq crossings across domains are compile errors
 
-Notes: two Clock ports must reference different domains (compile error otherwise). SV codegen emits strategy-specific logic; sim codegen generates C++ models for all 5 kinds.
+---
 
-Type checker warnings/errors: `kind ff` with multi-bit data (UInt\<N\> where N>1) warns — use `kind gray` or `kind handshake` instead. `kind reset` and `kind pulse` error if data is not Bool.
+### ram
 
-**Compiler Warnings**
+FPGA BRAM / ASIC SRAM.
 
-| Warning | Cause | Fix |
-|---------|-------|-----|
-| `todo!` site | `todo!` used as placeholder | Replace with real logic |
-| Redundant reset branch | `if rst` at top of `seq` body when regs have `reset rst=>value` | Remove the `if rst` branch — the declaration generates the outer guard automatically |
+```
+ram Name
+  kind simple_dual;                   // single | simple_dual | true_dual
+  latency 1;                          // 0=async read, 1=sync, 2=sync_out
+  param DEPTH: const = 1024;
+  port clk: in Clock<D>;
 
-CDC detection covers both seq→seq and comb→seq crossings: a comb block reading a register from domain A whose output feeds a seq block in domain B is a compile error. CDC checking also extends across `inst` boundaries — the compiler traces clock port connections to map child domains to parent domains and flags any data connection that crosses domain boundaries without a synchronizer or async fifo.
+  store
+    weights: Vec<SInt<8>,  DEPTH>;   // multiple named logical address ranges
+    biases:  Vec<SInt<16>, DEPTH>;
+  end store
 
-**ram --- FPGA BRAM / ASIC SRAM**
+  port rd
+    en:   in Bool;
+    addr: in UInt<10>;
+    data: out SInt<8>;
+  end port rd
 
-+-----------------------------------+--------------------------------------+
-| ram Name                          | kind: single\|simple_dual\|true_dual |
-|                                   |                                      |
-| param DEPTH: const = 1024;        | latency 0 = async (comb read)        |
-|                                   | latency 1 = sync (1-cycle read)      |
-| port clk: in Clock\<D\>;          | latency 2 = sync_out (2-cycle read)  |
-|                                   |                                      |
-| kind simple_dual;                 | init: zero\|none\|file \'x.hex\'     |
-|                                   |                                      |
-| latency 1;                        | store: multiple named logical         |
-|                                   |                                      |
-| store                             | address ranges (planned).            |
-|                                   |                                      |
-| weights: Vec\<SInt\<8\>, DEPTH\>; |                                      |
-|                                   |                                      |
-| biases: Vec\<SInt\<16\>, DEPTH\>; |                                      |
-|                                   |                                      |
-| end store                         |                                      |
-|                                   |                                      |
-| port rd                           |                                      |
-|                                   |                                      |
-| en: in Bool; addr: in UInt\<10\>; |                                      |
-|                                   |                                      |
-| data: out SInt\<8\>;              |                                      |
-|                                   |                                      |
-| end port rd                       |                                      |
-|                                   |                                      |
-| port wr                           |                                      |
-|                                   |                                      |
-| en: in Bool; addr: in UInt\<10\>; |                                      |
-|                                   |                                      |
-| data: in SInt\<8\>;               |                                      |
-|                                   |                                      |
-| end port wr                       |                                      |
-|                                   |                                      |
-| init: zero;                       |                                      |
-|                                   |                                      |
-| end ram Name                      |                                      |
-+-----------------------------------+--------------------------------------+
+  port wr
+    en:   in Bool;
+    addr: in UInt<10>;
+    data: in SInt<8>;
+  end port wr
 
-**counter --- wrap/saturate/gray/one_hot/johnson**
+  init: zero;                         // zero | none | file 'x.hex'
+end ram Name
+```
 
-+-----------------------------------+--------------------------------------+
-| counter Name                      | kind wrap\|saturate\|gray\|          |
-|                                   |   one_hot\|johnson                   |
-| param WIDTH: const = 8;           |                                      |
-|                                   | direction: up\|down\|up_down         |
-| port clk: in Clock\<D\>;          |                                      |
-|                                   | at_max / at_min output ports         |
-| port rst: in Reset\<Sync\>;       |                                      |
-|                                   |                                      |
-| port en: in Bool;                 |                                      |
-|                                   |                                      |
-| port count: out UInt\<WIDTH\>;    |                                      |
-|                                   |                                      |
-| port at_max: out Bool;            |                                      |
-|                                   |                                      |
-| kind wrap;                        |                                      |
-|                                   |                                      |
-| direction: up;                    |                                      |
-|                                   |                                      |
-| end counter Name                  |                                      |
-+-----------------------------------+--------------------------------------+
+---
 
-**arbiter --- N requesters, policy-driven grant with hook + latency**
+### counter
 
-+--------------------------------------------+---------------------------------+
-| arbiter Name                               | Built-in policies:              |
-|                                            |   round_robin, priority,        |
-| param N: const = 4;                        |   lru, weighted                 |
-|                                            |                                 |
-| port clk: in Clock\<D\>;                   | Custom policy: use function     |
-|                                            | name as policy + hook decl:     |
-| port rst: in Reset\<Sync\>;                |                                 |
-|                                            | policy: MyGrantFn;              |
-| ports\[N\] req                             | hook grant_select(              |
-|                                            |   req_mask: UInt\<N\>,          |
-| valid: in Bool; ready: out Bool;           |   last_grant: UInt\<N\>,        |
-|                                            |   extra_port: UInt\<8\>)        |
-| end ports req                              |   -\> UInt\<N\>                 |
-|                                            |   = MyGrantFn(req_mask,         |
-| port grant_valid: out Bool;                |     last_grant, extra_port);    |
-|                                            |                                 |
-| port grant_requester: out UInt\<$clog2(N)\>; | Hook args bind to:           |
-|                                            |   hook params (internal sigs),  |
-| policy: round_robin;                       |   user-declared ports/params    |
-|                                            |                                 |
-| latency 1;  // default: comb grant        | latency 2 = +1 pipeline stage   |
-|                                            | latency 3 = +2 pipeline stages  |
-| end arbiter Name                           |                                 |
-+--------------------------------------------+---------------------------------+
+Configurable counter. `kind: wrap | saturate | gray | one_hot | johnson`.
 
-**regfile --- multi-port register file**
+```
+counter Name
+  param WIDTH: const = 8;
+  port clk:   in Clock<D>;
+  port rst:   in Reset<Sync>;
+  port en:    in Bool;
+  port count: out UInt<WIDTH>;
+  port at_max: out Bool;
+  port at_min: out Bool;
+  kind wrap;
+  direction: up;                      // up | down | up_down
+end counter Name
+```
 
-+-----------------------------------+--------------------------------------+
-| regfile Name                      | Multiple read + write ports          |
-|                                   |                                      |
-| param DEPTH: const = 32;          | forward write_before_read: true      |
-|                                   | enables bypass forwarding            |
-| param WIDTH: const = 32;          |                                      |
-|                                   | init \[i\] = v; sets reset values   |
-| port clk: in Clock\<D\>;          |                                      |
-|                                   |                                      |
-| port rst: in Reset\<Sync\>;       |                                      |
-|                                   |                                      |
-| port rd0                          |                                      |
-|                                   |                                      |
-| addr: in UInt\<5\>;               |                                      |
-|                                   |                                      |
-| data: out UInt\<WIDTH\>;          |                                      |
-|                                   |                                      |
-| end port rd0                      |                                      |
-|                                   |                                      |
-| port wr0                          |                                      |
-|                                   |                                      |
-| en: in Bool; addr: in UInt\<5\>;  |                                      |
-|                                   |                                      |
-| data: in UInt\<WIDTH\>;           |                                      |
-|                                   |                                      |
-| end port wr0                      |                                      |
-|                                   |                                      |
-| forward write_before_read: false; |                                      |
-|                                   |                                      |
-| init \[0\] = 0;                   |                                      |
-|                                   |                                      |
-| end regfile Name                  |                                      |
-+-----------------------------------+--------------------------------------+
+---
 
-**linklist --- singly/doubly/circular linked list**
+### arbiter
 
-+-------------------------------------------+--------------------------------------+
-| linklist Name                             | variant: singly\|doubly\|            |
-|                                           |   circular_singly\|circular_doubly   |
-| param DEPTH: const = 256;                 |                                      |
-|                                           | Operations (via op port):            |
-| param DATA_WIDTH: const = 32;             |   insert_head, insert_tail,          |
-|                                           |   insert_after, delete_head,         |
-| port clk: in Clock\<D\>;                  |   delete, next, prev (doubly),       |
-|                                           |   alloc, free, read_data, write_data |
-| port rst: in Reset\<Sync\>;               |                                      |
-|                                           | Built-in free list + FSM controller  |
-| variant: doubly;                          |                                      |
-|                                           | 2-cycle latency per operation        |
-| end linklist Name                         |                                      |
-+-------------------------------------------+--------------------------------------+
+N-requester, policy-driven grant with optional hook and latency.
 
-**generate --- compile-time ports and instances**
+```
+arbiter Name
+  param N: const = 4;
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  ports[N] req
+    valid: in Bool;
+    ready: out Bool;
+  end ports req
+  port grant_valid:      out Bool;
+  port grant_requester:  out UInt<$clog2(N)>;
+  policy: round_robin;               // round_robin | priority | lru | weighted<W> | <FnName>
+  latency 1;                         // 1=comb grant (default), 2=+1 stage, 3=+2 stages
+end arbiter Name
+```
 
-+--------------------------------------+-----------------------------------+
-| generate for i in 0..SIZE-1          | Generates REAL named ports.       |
-|                                      |                                   |
-| port a\[i\]: in SInt\<8\>;           | Caller uses: a\[0\], a\[3\], etc. |
-|                                      |                                   |
-| inst pe\[i\]: ProcElem               | Type-checked per index.           |
-|                                      |                                   |
-| clk \<- clk;                 | Boundary expression handles       |
-|                                      |                                   |
-| a_in \<- a\[i\];             | chain wiring: i==0 ? 0 : prev     |
-|                                      |                                   |
-| sum_in \<-                   | generate if: port does NOT        |
-|                                      |                                   |
-| i==0 ? 0 : pe\[i-1\].sum_out;        | exist when condition false.       |
-|                                      |                                   |
-| end inst pe\[i\]                     |                                   |
-|                                      |                                   |
-| end generate for i                   |                                   |
-|                                      |                                   |
-| generate if DEBUG_EN                 |                                   |
-|                                      |                                   |
-| port dbg: out UInt\<32\>;            |                                   |
-|                                      |                                   |
-| end generate if                      |                                   |
-|                                      |                                   |
-| // accessing dbg when DEBUG_EN=false |                                   |
-|                                      |                                   |
-| // is a COMPILE ERROR                |                                   |
-+--------------------------------------+-----------------------------------+
+**Custom policy:** define a `function` in the same file and reference by name. The function receives `req_mask` (one-hot pending) and `last_grant` (one-hot previous winner) and returns a one-hot grant mask.
 
-**bus --- reusable port bundle with initiator/target perspectives**
+```
+function MyGrantFn(req_mask: UInt<4>, last_grant: UInt<4>, extra_port: UInt<8>) -> UInt<4>
+  let masked: UInt<4> = req_mask & (last_grant ^ 0xF);
+  let pick: UInt<4>   = masked != 0 ? masked : req_mask;
+  let pick_neg: UInt<5> = (pick ^ 0xF).zext<5>() + 1;
+  return pick & pick_neg.trunc<4>();
+end function MyGrantFn
 
-+-------------------------------------------+--------------------------------------+
-| bus AxiLite                               | Signals from initiator's perspective |
-|                                           |                                      |
-| param ADDR_W: const = 32;                 | `initiator` keeps directions         |
-|                                           |                                      |
-| aw_valid: out Bool;                       | `target` flips all directions        |
-|                                           |                                      |
-| aw_ready: in Bool;                        | Usage in module:                     |
-|                                           |                                      |
-| aw_addr: out UInt\<ADDR_W\>;             | port axi: initiator AxiLite;         |
-|                                           |                                      |
-| end bus AxiLite                           | port axi: target AxiLite;            |
-|                                           |                                      |
-|                                           | Access: axi.aw\_valid (dot notation) |
-|                                           |                                      |
-|                                           | SV: flattened axi\_aw\_valid, etc.   |
-+-------------------------------------------+--------------------------------------+
+arbiter CustomArb
+  policy MyGrantFn;
+  param N: const = 4;
+  port clk:        in Clock<D>;
+  port rst:        in Reset<Sync>;
+  port extra_port: in UInt<8>;      // extra port passed through to hook
+  ports[N] req
+    valid: in Bool;
+    ready: out Bool;
+  end ports req
+  port grant_valid:     out Bool;
+  port grant_requester: out UInt<2>;
+  hook grant_select(req_mask: UInt<4>, last_grant: UInt<4>, extra_port: UInt<8>) -> UInt<4>
+    = MyGrantFn(req_mask, last_grant, extra_port);
+end arbiter CustomArb
+```
 
-**template --- user-defined interface contract**
+Hook args bind to: hook params (internal signals) or user-declared ports/params on the arbiter.
 
-+-------------------------------------------+--------------------------------------+
-| template MyInterface                      | Compile-time only --- no SV emitted  |
-|                                           |                                      |
-| param NUM_REQ: const;                     | Defines required params, ports,      |
-|                                           | and hooks that implementing          |
-| port clk: in Clock\<D\>;                  | modules must provide.                |
-|                                           |                                      |
-| port rst: in Reset\<Sync\>;               | Missing any required item is a       |
-|                                           | compile error.                       |
-| port grant_valid: out Bool;               |                                      |
-|                                           | Modules opt in with:                 |
-| hook grant_select(                        | module Foo implements MyInterface    |
-|   req_mask: UInt\<4\>)                    |                                      |
-|   -\> UInt\<4\>;                          | Hooks in template: signature only    |
-|                                           | Hooks in module: + binding           |
-| end template MyInterface                  |   = FnName(args);                    |
-+-------------------------------------------+--------------------------------------+
+---
 
-**package --- reusable type/function namespace**
+### regfile
 
-+-------------------------------------------+--------------------------------------+
-| package BusPkg                            | Contains: enum, struct, function,    |
-|                                           | param, domain declarations.          |
-| enum BusOp                                |                                      |
-|   Read, Write, Idle                       | No modules/pipelines/FSMs inside.    |
-| end enum BusOp                            |                                      |
-|                                           |                                      |
-| domain FastClk                            | domain inside package: share clock   |
-|   freq\_mhz: 500                          | domains across files via             |
-| end domain FastClk                        |   use ClockPkg;                      |                                      |
-|                                           | File: PkgName.arch (one package      |
-| struct BusReq                             | per file, name must match).          |
-|   op: BusOp;                              |                                      |
-|   addr: UInt\<32\>;                       | Consumer imports with:               |
-|   data: UInt\<32\>;                       |   use BusPkg;                        |
-| end struct BusReq                         |                                      |
-|                                           | Emits SV:                            |
-| function max(a: UInt\<32\>,               |   package BusPkg; ... endpackage     |
-|              b: UInt\<32\>)               |   import BusPkg::*;                  |
-|   -> UInt\<32\>                           |                                      |
-| return a > b ? a : b;                     | Resolved from same directory or      |
-| end function max                          | multi-file command line.             |
-|                                           |                                      |
-| end package BusPkg                        |                                      |
-+-------------------------------------------+--------------------------------------+
+Multi-port register file.
 
-**5. Logging**
+```
+regfile Name
+  param DEPTH: const = 32;
+  param WIDTH: const = 32;
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
 
-> log(Level, "TAG", "format %0d", arg);
->
-> Levels: Always, Low, Medium, High, Full, Debug
->
-> Works in seq and comb blocks
->
-> Runtime control: +arch_verbosity=N (0=Always only ... 5=Debug)
->
-> NBA semantics in seq: value printed is last cycle's registered value
+  port rd0
+    addr: in UInt<5>;
+    data: out UInt<WIDTH>;
+  end port rd0
 
-**6. TLM Concurrency Modes (planned)**
+  port wr0
+    en:   in Bool;
+    addr: in UInt<5>;
+    data: in UInt<WIDTH>;
+  end port wr0
 
-> blocking ret: T directly --- caller suspends until done --- APB/MMIO
->
-> pipelined ret: Future\<T\> --- issue many, await later --- AXI in-order
->
-> out_of_order ret: Token\<T,id: N\> --- any-order response by ID --- Full AXI
->
-> burst ret: Future\<Vec\<T,L\>\>--- one AR, N data beats --- AXI INCR burst
->
-> await f // wait for one Future
->
-> await_all(f0,f1,f2) // wait for all
->
-> await_any(t0,t1) // first Token to complete (out_of_order only)
+  forward write_before_read: false;  // true = enable bypass forwarding
+  init [0] = 0;                      // per-index reset values
+end regfile Name
+```
 
-**7. Simulation & Build**
+---
 
-> arch check F.arch // type-check only
->
-> arch build F.arch // emit SystemVerilog
->
-> arch build F.arch -o out.sv // combined output
->
-> arch build a.arch b.arch // multi-file: one .sv per input
->
-> arch sim F.arch --tb F_tb.cpp // compile + run C++ testbench
->
-> arch sim F.arch --tb F_tb.cpp --outdir build/
->
-> arch sim F.arch --tb F_tb.cpp --check-uninit // warn on reads of uninitialized reset-none regs
->
-> arch sim F.arch --tb F_tb.cpp --cdc-random // randomize synchronizer latency; cdc_skip_pct (0-100, default 25) controllable from testbench
->
-> arch sim F.arch // generate models only (no testbench)
->
-> arch formal F.arch // emit SMT-LIB2 (planned)
+### linklist
 
-> **arch sim C++ testbench interface (Verilator-compatible)**
->
-> // Ports map to public fields: dut->clk, dut->rst, dut->data_in
->
-> // Wide ports (UInt\<N\> where N\>64) use VlWide\<WORDS\>:
->
-> // dut->key.data() returns uint32_t\* (word 0 = LSB, word N-1 = MSB)
->
-> // Standard cycle loop:
->
-> auto tick = \[\&\]() \{ dut->clk=0; dut->eval(); dut->clk=1; dut->eval(); \};
->
-> // Multi-clock modules: compiler auto-generates tick() from domain freq\_mhz.
->
-> // tick() toggles each clock at the correct frequency ratio and calls eval().
->
-> dut.tick(); // auto-toggles fast\_clk (200MHz) and slow\_clk (50MHz) at 4:1 ratio
->
-> // Manual control also works — each seq block fires only on its own clock's rising edge.
->
-> // Compile: g++ -std=c++17 build/verilated.cpp build/V\*.cpp tb.cpp -Ibuild -o sim
+Singly/doubly/circular linked list with built-in free-list and FSM controllers.
 
-**8. AI Prompting Patterns**
+```
+linklist Name
+  param DEPTH: const = 256;
+  param DATA: type = UInt<32>;
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  kind singly;                        // singly | doubly | circular_singly | circular_doubly
+  track tail:   true;
+  track length: true;
 
-> 1\. CONSTRUCT-FIRST (most reliable)
->
-> 'Generate an Arch fifo named InstrQueue, depth 64, element type
->
-> InstrPacket, single clock SysDomain. Add cover push_when_full.'
->
-> 2\. todo! SCAFFOLDING
->
-> 'Generate the skeleton for a 5-stage RISC-V pipeline.
->
-> Use todo! for all stage bodies.'
->
-> 3\. PASTE COMPILER ERRORS
->
-> 'Fix this Arch error: \[paste arch check output\]'
->
-> Errors are self-sufficient --- no spec lookup needed.
->
-> 4\. ONE CONSTRUCT PER PROMPT
->
-> structs → functions → primitives → pipeline → top module → testbench
->
-> Compile and verify each before moving to the next.
->
-> 5\. ABSTRACTION PROGRESSION
->
-> Start --tlm-lt. Add rtl_accurate only after function verified.
+  op insert_tail
+    latency: 2;
+    port req_valid:   in Bool;
+    port req_ready:   out Bool;
+    port req_data:    in DATA;
+    port resp_valid:  out Bool;
+    port resp_handle: out UInt<3>;
+  end op insert_tail
 
-**9. ARCH MCP Server**
+  op delete_head
+    latency: 2;
+    port req_valid:  in Bool;
+    port req_ready:  out Bool;
+    port resp_valid: out Bool;
+    port resp_data:  out DATA;
+  end op delete_head
 
-> Tools available when running under the ARCH MCP server:
->
-> `get_construct_syntax(construct)` — returns syntax template + reserved keywords for any construct
->
-> `write_and_check(path, content)` — write .arch file + type-check in one call
->
-> `arch_build_and_lint(files, top_module)` — build SV + Verilator lint in one call
->
-> Recommended AI workflow: fetch syntax first → write_and_check → arch_build_and_lint
+  port empty:  out Bool;
+  port full:   out Bool;
+  port length: out UInt<4>;
+end linklist Name
+```
 
-*Arch AI Reference Card · March 2026 · v0.24.0 · arch check is your first line of defence*
+Operations (via `op` port): `insert_head`, `insert_tail`, `insert_after`, `delete_head`, `delete`, `next`, `prev` (doubly), `alloc`, `free`, `read_data`, `write_data`. 2-cycle latency per operation.
+
+---
+
+### generate
+
+Compile-time port and instance generation.
+
+```
+generate for i in 0..SIZE-1
+  port a[i]: in SInt<8>;
+  inst pe[i]: ProcElem
+    clk   <- clk;
+    a_in  <- a[i];
+    sum_in <- i == 0 ? 0 : pe[i-1].sum_out;  // boundary expression
+  end inst pe[i]
+end generate for i
+
+generate if DEBUG_EN
+  port dbg: out UInt<32>;
+end generate if
+```
+
+- Generates real named ports: caller uses `a[0]`, `a[3]`, etc.
+- Type-checked per index
+- `generate if`: port does not exist when condition is false — accessing it is a compile error
+
+---
+
+### bus
+
+Reusable port bundle with initiator/target perspectives.
+
+```
+bus AxiLite
+  param ADDR_W: const = 32;
+  aw_valid: out Bool;                 // direction from initiator's perspective
+  aw_ready: in  Bool;
+  aw_addr:  out UInt<ADDR_W>;
+end bus AxiLite
+```
+
+Usage:
+
+```
+module Master
+  port axi: initiator AxiLite;       // directions as declared
+  comb
+    axi.aw_valid = 1;                // dot notation for signal access
+    axi.aw_addr  = addr_r;
+  end comb
+end module Master
+
+module Slave
+  port axi: target AxiLite;         // directions FLIPPED (in↔out)
+end module Slave
+```
+
+SV output: flattened to individual ports (`axi_aw_valid`, `axi_aw_addr`, etc.).
+
+---
+
+### template
+
+User-defined interface contract. Compile-time only — no SV emitted.
+
+```
+template MyInterface
+  param NUM_REQ: const;
+  port clk:         in Clock<D>;
+  port rst:         in Reset<Sync>;
+  port grant_valid: out Bool;
+  hook grant_select(req_mask: UInt<4>) -> UInt<4>;  // signature only
+end template MyInterface
+```
+
+Modules opt in with `implements`:
+
+```
+module Foo implements MyInterface
+  ...
+  hook grant_select(req_mask: UInt<4>) -> UInt<4>
+    = FixedGrant(req_mask);          // binding required in implementing module
+end module Foo
+```
+
+Missing any required param, port, or hook is a compile error.
+
+---
+
+### package
+
+Reusable type/function namespace.
+
+```
+// BusPkg.arch  (filename must match package name)
+package BusPkg
+  domain FastClk
+    freq_mhz: 500
+  end domain FastClk
+
+  enum BusOp
+    Read, Write, Idle
+  end enum BusOp
+
+  struct BusReq
+    op:   BusOp;
+    addr: UInt<32>;
+    data: UInt<32>;
+  end struct BusReq
+
+  function max(a: UInt<32>, b: UInt<32>) -> UInt<32>
+    return a > b ? a : b;
+  end function max
+end package BusPkg
+```
+
+Consumer:
+
+```
+use BusPkg;
+
+module Consumer
+  port req:      in BusReq;
+  port addr_out: out UInt<32>;
+  comb addr_out = req.addr;
+end module Consumer
+```
+
+SV output: `package BusPkg; ... endpackage` + `import BusPkg::*;`
+
+- Contains: `enum`, `struct`, `function`, `param`, `domain` — no modules/pipelines/FSMs
+- Domains in a package are shared across files via `use`
+- Resolved from same directory or multi-file command line
+
+---
+
+## 5. Logging
+
+```
+log(Level, "TAG", "format %0d", arg);
+```
+
+Levels: `Always`, `Low`, `Medium`, `High`, `Full`, `Debug`
+
+- Works in `seq` and `comb` blocks
+- Runtime control: `+arch_verbosity=N` (0=Always only … 5=Debug)
+- NBA semantics in `seq`: value printed is last cycle's registered value
+
+---
+
+## 6. TLM Concurrency Modes (planned)
+
+| Mode | Return type | Use case |
+|------|-------------|----------|
+| `blocking` | `ret: T` directly | Caller suspends until done — APB/MMIO |
+| `pipelined` | `ret: Future<T>` | Issue many, await later — AXI in-order |
+| `out_of_order` | `ret: Token<T, id: N>` | Any-order response by ID — Full AXI |
+| `burst` | `ret: Future<Vec<T,L>>` | One AR, N data beats — AXI INCR burst |
+
+```
+await f                        // wait for one Future
+await_all(f0, f1, f2)         // wait for all
+await_any(t0, t1)             // first Token to complete (out_of_order only)
+```
+
+---
+
+## 7. Simulation & Build
+
+```
+arch check F.arch                              // type-check only
+arch build F.arch                              // emit SystemVerilog
+arch build F.arch -o out.sv                   // combined output
+arch build a.arch b.arch                       // multi-file: one .sv per input
+arch sim F.arch --tb F_tb.cpp                 // compile + run C++ testbench
+arch sim F.arch --tb F_tb.cpp --outdir build/
+arch sim F.arch --tb F_tb.cpp --check-uninit  // warn on uninitialized reset-none regs
+arch sim F.arch --tb F_tb.cpp --cdc-random    // randomize synchronizer latency
+arch sim F.arch                                // generate models only (no testbench)
+arch formal F.arch                             // emit SMT-LIB2 (planned)
+```
+
+**arch sim C++ testbench interface** (Verilator-compatible):
+
+```cpp
+// Ports map to public fields: dut->clk, dut->rst, dut->data_in
+// Wide ports (UInt<N> where N>64) use VlWide<WORDS>:
+//   dut->key.data() returns uint32_t* (word 0 = LSB)
+
+// Standard cycle loop:
+auto tick = [&]() { dut->clk=0; dut->eval(); dut->clk=1; dut->eval(); };
+
+// Multi-clock: compiler auto-generates tick() from domain freq_mhz
+dut.tick();   // auto-toggles fast_clk (200MHz) and slow_clk (50MHz) at 4:1 ratio
+
+// Compile:
+// g++ -std=c++17 build/verilated.cpp build/V*.cpp tb.cpp -Ibuild -o sim
+```
+
+---
+
+## 8. AI Prompting Patterns
+
+1. **CONSTRUCT-FIRST** (most reliable):
+   > "Generate an Arch fifo named InstrQueue, depth 64, element type InstrPacket, single clock SysDomain. Add cover push_when_full."
+
+2. **todo! SCAFFOLDING**:
+   > "Generate the skeleton for a 5-stage RISC-V pipeline. Use todo! for all stage bodies."
+
+3. **PASTE COMPILER ERRORS**:
+   > "Fix this Arch error: [paste arch check output]"
+   Errors are self-sufficient — no spec lookup needed.
+
+4. **ONE CONSTRUCT PER PROMPT**:
+   structs → functions → primitives → pipeline → top module → testbench.
+   Compile and verify each before moving to the next.
+
+5. **ABSTRACTION PROGRESSION**:
+   Start `--tlm-lt`. Add `rtl_accurate` only after function verified.
+
+---
+
+## 9. ARCH MCP Server
+
+Tools available when running under the ARCH MCP server:
+
+- `get_construct_syntax(construct)` — returns syntax template + reserved keywords for any construct
+- `write_and_check(path, content)` — write `.arch` file + type-check in one call
+- `arch_build_and_lint(files, top_module)` — build SV + Verilator lint in one call
+
+Recommended AI workflow: fetch syntax first → `write_and_check` → `arch_build_and_lint`
+
+---
+
+*Arch AI Reference Card · March 2026 · v0.24.0 · `arch check` is your first line of defence*
