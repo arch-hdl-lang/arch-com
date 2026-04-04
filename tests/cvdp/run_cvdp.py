@@ -127,6 +127,8 @@ def extract_and_run(name_substr, sv_file=None):
             sv_sources.append(local)
         else:
             sv_sources.append(os.path.join(rtl_dir, f"{module_name}.sv"))
+    # Deduplicate: some harness .env files list the same source twice
+    sv_sources = list(dict.fromkeys(sv_sources))
     run_env['VERILOG_SOURCES'] = ' '.join(sv_sources) if sv_sources else os.path.join(rtl_dir, f"{module_name}.sv")
 
     # Patch harness_library dut_init: icarus exposes inputs as GPI_LOGIC/GPI_LOGIC_ARRAY, not GPI_NET,
