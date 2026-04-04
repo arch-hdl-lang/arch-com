@@ -42,6 +42,9 @@ mcp/*.old
 __pycache__/
 *.pyc
 
+# CVDP scratch scripts, logs, and test results
+tests/cvdp/_*
+
 # macOS
 .DS_Store
 
