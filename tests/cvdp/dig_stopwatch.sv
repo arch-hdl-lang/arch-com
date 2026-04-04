@@ -11,6 +11,7 @@ module dig_stopwatch #(
 
   logic [32-1:0] clk_cnt;
   logic one_sec_pulse;
+  logic prev_start;
   logic [6-1:0] r_seconds;
   logic [6-1:0] r_minutes;
   logic [1-1:0] r_hour;
@@ -18,13 +19,14 @@ module dig_stopwatch #(
     if (reset) begin
       clk_cnt <= 0;
       one_sec_pulse <= 1'b0;
+      prev_start <= 1'b0;
       r_hour <= 0;
       r_minutes <= 0;
       r_seconds <= 0;
     end else begin
       one_sec_pulse <= 1'b0;
-      // Clock divider keeps running after hour=1 so cocotb can still
-      // await RisingEdge(one_sec_pulse) in the test loop.
+      prev_start <= start_stop;
+      // Clock divider: advance counter while running.
       if (start_stop) begin
         if (clk_cnt == 32'($unsigned(CLK_FREQ - 1))) begin
           clk_cnt <= 0;
@@ -33,8 +35,9 @@ module dig_stopwatch #(
           clk_cnt <= 32'(clk_cnt + 1);
         end
       end
-      // Counter updates (gated by ~r_hour to stop at 1:00:00)
-      if (one_sec_pulse & start_stop & ~r_hour) begin
+      // Counter updates: use (start_stop | prev_start) so that a pending
+      // pulse from the clock when start_stop dropped still counts.
+      if (one_sec_pulse & (start_stop | prev_start) & ~r_hour) begin
         if (r_seconds == 59) begin
           r_seconds <= 0;
           if (r_minutes == 59) begin
@@ -49,10 +52,10 @@ module dig_stopwatch #(
       end
     end
   end
-  // Combinational outputs: show next-state when pulse is active,
-  // so cocotb sees updated values at RisingEdge(clk) before NBA.
+  // Combinational outputs: lookahead when pulse is active and running
+  // (or was running one cycle ago via prev_start).
   always_comb begin
-    if (one_sec_pulse & start_stop & ~r_hour) begin
+    if (one_sec_pulse & (start_stop | prev_start) & ~r_hour) begin
       if (r_seconds == 59) begin
         seconds = 0;
         if (r_minutes == 59) begin

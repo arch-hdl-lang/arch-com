@@ -178,6 +178,10 @@ def extract_and_run(name_substr, sv_file=None):
         if pycontent_new != pycontent:
             pycontent = pycontent_new
             changed = True
+        # Fix computed clock periods: PERIOD // 2 might be odd
+        if 'PERIOD // 2' in pycontent and 'Clock' in pycontent:
+            pycontent = pycontent.replace('PERIOD // 2', '((PERIOD // 2 + 1) // 2 * 2)')
+            changed = True
         # Fix variable clock periods: ensure randint ranges produce even values
         if 'random.randint(2, 20)' in pycontent and 'clock' in pycontent.lower():
             pycontent = pycontent.replace('random.randint(2, 20)', 'random.randint(1, 10) * 2')
@@ -255,9 +259,9 @@ def extract_and_run(name_substr, sv_file=None):
             capture_output=True, text=True, timeout=600
         )
 
-    print("STDOUT:", result.stdout[-1000:] if len(result.stdout) > 1000 else result.stdout)
+    print("STDOUT:", result.stdout[-3000:] if len(result.stdout) > 3000 else result.stdout)
     if result.stderr:
-        print("STDERR:", result.stderr[-2000:] if len(result.stderr) > 2000 else result.stderr)
+        print("STDERR:", result.stderr[-5000:] if len(result.stderr) > 5000 else result.stderr)
     print(f"Return code: {result.returncode}")
 
     passed = result.returncode == 0 and ('FAIL=0' in result.stdout or ('passed' in result.stdout and 'failed' not in result.stdout.lower()))

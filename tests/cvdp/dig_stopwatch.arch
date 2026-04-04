@@ -10,14 +10,16 @@ module dig_stopwatch
 
   reg clk_cnt: UInt<32> reset reset=>0;
   reg one_sec_pulse: Bool reset reset=>false;
+  reg prev_start: Bool reset reset=>false;
   reg r_seconds: UInt<6> reset reset=>0;
   reg r_minutes: UInt<6> reset reset=>0;
   reg r_hour:    UInt<1> reset reset=>0;
 
   seq on clk rising
     one_sec_pulse <= false;
-    // Clock divider keeps running after hour=1 so cocotb can still
-    // await RisingEdge(one_sec_pulse) in the test loop.
+    prev_start <= start_stop;
+
+    // Clock divider: advance counter while running.
     if start_stop
       if clk_cnt == (CLK_FREQ - 1).zext<32>()
         clk_cnt <= 0;
@@ -27,8 +29,9 @@ module dig_stopwatch
       end if
     end if
 
-    // Counter updates (gated by ~r_hour to stop at 1:00:00)
-    if one_sec_pulse & start_stop & ~r_hour
+    // Counter updates: use (start_stop | prev_start) so that a pending
+    // pulse from the clock when start_stop dropped still counts.
+    if one_sec_pulse & (start_stop | prev_start) & ~r_hour
       if r_seconds == 59
         r_seconds <= 0;
         if r_minutes == 59
@@ -43,10 +46,10 @@ module dig_stopwatch
     end if
   end seq
 
-  // Combinational outputs: show next-state when pulse is active,
-  // so cocotb sees updated values at RisingEdge(clk) before NBA.
+  // Combinational outputs: lookahead when pulse is active and running
+  // (or was running one cycle ago via prev_start).
   comb
-    if one_sec_pulse & start_stop & ~r_hour
+    if one_sec_pulse & (start_stop | prev_start) & ~r_hour
       if r_seconds == 59
         seconds = 0;
         if r_minutes == 59
