@@ -147,7 +147,7 @@
 | Exhaustive match arm checking | ✅ Enum matches must cover all variants or include a wildcard `_`; missing variants named in error |
 | Hierarchical instance references forbidden | ✅ `inst_name.port_name` in expressions is a compile error; must use `port -> wire_name` in the inst block instead |
 | Unconnected inst ports | ✅ Missing input port in an `inst` block → compile error; missing output port → warning. Clock/Reset ports are exempt (may be wired implicitly via domain). |
-| Const param evaluation (complex exprs) | ⚠️ Literals + simple arithmetic only |
+| Const param evaluation (complex exprs) | ✅ Derived params (default expr references other params) preserve expressions in SV output; non-derived params evaluate to literals |
 
 ---
 
@@ -222,7 +222,7 @@
 | ~~1~~ | ~~**Width mismatch at assignment**~~ | **DONE** — any width delta errors in `seq` and `comb` |
 | ~~2~~ | ~~**Exhaustive `match` checking**~~ | **DONE** — missing variants named in error; wildcard `_` suppresses |
 | ~~3~~ | ~~**CDC error detection**~~ | **DONE** — cross-domain register read → compile error (seq→seq and comb→seq paths); `synchronizer` and async `fifo` are the legal CDC crossing mechanisms |
-| 4 | **Const param evaluation at instantiation** — `UInt<WIDTH*2>` with param override | Medium |
+| ~~4~~ | ~~**Const param evaluation at instantiation**~~ | **DONE** — derived params preserve expressions in SV; `UInt<WIDTH*2>` works when parent param overridden |
 | 5 | **Function type-parametric overloads** — type parameters on functions (e.g. `function Foo<T>(a: T) -> T`) | High |
 
 ### Missing Constructs (in spec order)
