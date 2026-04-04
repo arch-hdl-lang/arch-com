@@ -610,23 +610,6 @@ fn subst_expr(expr: Expr, var: &str, val: i64) -> Expr {
 // ── Const evaluation ──────────────────────────────────────────────────────────
 
 /// Compute default values for all `const` params (used in Step 1).
-/// Uses the accumulated map so that derived params (e.g. `NUM = A / B`)
-/// can resolve if their dependencies were declared earlier.
-#[allow(dead_code)]
-fn compute_defaults(params: &[ParamDecl]) -> HashMap<String, i64> {
-    let mut map = HashMap::new();
-    for p in params {
-        if matches!(p.kind, ParamKind::Const | ParamKind::WidthConst(..) | ParamKind::EnumConst(_)) {
-            if let Some(default) = &p.default {
-                if let Some(v) = try_eval_i64(default, &map) {
-                    map.insert(p.name.name.clone(), v);
-                }
-            }
-        }
-    }
-    map
-}
-
 fn compute_defaults_with_enums(
     params: &[ParamDecl],
     enum_values: &HashMap<String, Vec<(String, u64)>>,
