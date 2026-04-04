@@ -30,6 +30,7 @@ doc/update_arch_spec.py
 
 # Not ready for publication
 doc/Arch_Benchmark_Report.md
+doc/arch_vs_other_hdls.md
 
 # Backup / scratch files
 *.old.docx
