@@ -6,9 +6,9 @@ module fsm_linear_reg
   port x_in:    in SInt<DATA_WIDTH>;
   port w_in:    in SInt<DATA_WIDTH>;
   port b_in:    in SInt<DATA_WIDTH>;
-  port reg result1: out SInt<DATA_WIDTH * 2> reset reset=>0;
-  port reg result2: out SInt<DATA_WIDTH + 1> reset reset=>0;
-  port reg done:    out Bool reset reset=>0;
+  port result1: out SInt<DATA_WIDTH * 2>;
+  port result2: out SInt<DATA_WIDTH + 1>;
+  port done:    out Bool;
 
   reg state: UInt<2> reset reset=>0;
   reg buf_result1: SInt<DATA_WIDTH * 2> reset reset=>0;
@@ -16,13 +16,19 @@ module fsm_linear_reg
   reg buf_done: Bool reset reset=>0;
 
   let x_shifted: SInt<DATA_WIDTH> = x_in >> 2;
-  let product: SInt<DATA_WIDTH * 2> = (w_in.sext<DATA_WIDTH * 2>() * x_in.sext<DATA_WIDTH * 2>()).trunc<DATA_WIDTH * 2>();
+  let w_ext: SInt<DATA_WIDTH * 2> = w_in.sext<DATA_WIDTH * 2>();
+  let x_ext: SInt<DATA_WIDTH * 2> = x_in.sext<DATA_WIDTH * 2>();
+  let product: SInt<DATA_WIDTH * 2> = (w_ext * x_ext).trunc<DATA_WIDTH * 2>();
+  let b_ext: SInt<DATA_WIDTH + 1> = b_in.sext<DATA_WIDTH + 1>();
+  let xs_ext: SInt<DATA_WIDTH + 1> = x_shifted.sext<DATA_WIDTH + 1>();
+
+  comb
+    result1 = buf_result1;
+    result2 = buf_result2;
+    done    = buf_done;
+  end comb
 
   seq on clk rising
-    result1 <= buf_result1;
-    result2 <= buf_result2;
-    done    <= buf_done;
-
     if state == 0
       if start
         state <= 1;
@@ -32,7 +38,7 @@ module fsm_linear_reg
       buf_done    <= false;
     elsif state == 1
       buf_result1 <= product >> 1;
-      buf_result2 <= (b_in.sext<DATA_WIDTH + 1>() + x_shifted.sext<DATA_WIDTH + 1>()).trunc<DATA_WIDTH + 1>();
+      buf_result2 <= (b_ext + xs_ext).trunc<DATA_WIDTH + 1>();
       buf_done    <= false;
       state       <= 2;
     elsif state == 2
