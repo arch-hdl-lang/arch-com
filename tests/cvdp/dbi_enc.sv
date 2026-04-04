@@ -47,7 +47,7 @@ module dbi_enc (
       dbi_cntrl <= 0;
       prev_data <= 0;
     end else begin
-      dbi_cntrl <= 2'($unsigned({ctrl1, ctrl0}));
+      dbi_cntrl <= {ctrl1, ctrl0};
       data_out <= {out_hi, out_lo};
       prev_data <= {out_hi, out_lo};
     end

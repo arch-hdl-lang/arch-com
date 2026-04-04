@@ -58,7 +58,7 @@ module cvdp_copilot_decode_firstbit #(
   logic bit0;
   assign bit0 = sel2[0:0] != 0;
   assign found_comb = in_data_r != 0;
-  assign first_bit_comb = 5'({~lo_nz, ~lo8_nz, ~lo4_nz, ~lo2_nz, ~bit0});
+  assign first_bit_comb = {~lo_nz, ~lo8_nz, ~lo4_nz, ~lo2_nz, ~bit0};
   always_ff @(posedge Clk or posedge Rst) begin
     if (Rst) begin
       in_data_r <= 0;

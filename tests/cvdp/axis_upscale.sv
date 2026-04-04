@@ -19,11 +19,13 @@ module axis_upscale (
   logic [1-1:0] bit23;
   logic [8-1:0] ext_bits;
   always_comb begin
+    // Determine bit[23]: dfmt_type=1 inverts MSB, dfmt_type=0 passes through
     if (dfmt_type) begin
       bit23 = ~s_axis_data[23:23];
     end else begin
       bit23 = s_axis_data[23:23];
     end
+    // Sign extension uses the NEW bit23 (after dfmt_type transform)
     if (dfmt_se) begin
       ext_bits = {bit23, bit23, bit23, bit23, bit23, bit23, bit23, bit23};
     end else begin
@@ -32,11 +34,9 @@ module axis_upscale (
     if (dfmt_enable) begin
       fmt_data = {ext_bits, bit23, s_axis_data[22:0]};
     end else begin
-      fmt_data = {8'(0), s_axis_data};
+      fmt_data = {8'($unsigned(0)), s_axis_data};
     end
   end
-  // Determine bit[23]: dfmt_type=1 inverts MSB, dfmt_type=0 passes through
-  // Sign extension uses the NEW bit23 (after dfmt_type transform)
   always_ff @(posedge clk) begin
     if ((!resetn)) begin
       r_data <= 0;

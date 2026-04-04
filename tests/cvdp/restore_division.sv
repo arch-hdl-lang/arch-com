@@ -58,7 +58,7 @@ module restoring_division #(
         q_reg <= {q_reg[WIDTH - 2:0], next_q_bit};
         dvd <= dvd << 1;
         count <= WIDTH'(count + 1);
-        if (count == WIDTH'(WIDTH - 1)) begin
+        if (count == WIDTH'($unsigned(WIDTH - 1))) begin
           running <= 1'b0;
           valid <= 1'b1;
           quotient <= {q_reg[WIDTH - 2:0], next_q_bit};

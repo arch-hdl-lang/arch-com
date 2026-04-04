@@ -49,9 +49,9 @@ module wishbone_to_ahb_bridge (
   // htrans: NONSEQ (2'b10) when active, IDLE (2'b00) otherwise
   always_comb begin
     if (wb_active) begin
-      htrans = 2'($unsigned('b10));
+      htrans = 'b10;
     end else begin
-      htrans = 2'($unsigned('b0));
+      htrans = 'b0;
     end
   end
   // data_o: pass through hrdata

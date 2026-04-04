@@ -13,7 +13,7 @@ module secure_read_write_bus_interface #(
   output logic o_error
 );
 
-  logic [P_DATA_WIDTH-1:0] mem [0:256-1];
+  logic [P_DATA_WIDTH-1:0] mem [256-1:0];
   always_ff @(posedge i_capture_pulse or negedge i_reset_bar) begin
     if ((!i_reset_bar)) begin
       for (int __ri0 = 0; __ri0 < 256; __ri0++) begin
@@ -22,7 +22,7 @@ module secure_read_write_bus_interface #(
       o_data_out <= 0;
       o_error <= 0;
     end else begin
-      if (i_key_in == 8'(P_CONFIGURABLE_KEY)) begin
+      if (i_key_in == P_CONFIGURABLE_KEY) begin
         o_error <= 0;
         if (i_read_write_enable == 0) begin
           mem[i_addr] <= i_data_in;

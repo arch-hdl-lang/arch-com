@@ -92,8 +92,8 @@ module hebb_gates (
   logic signed [8-1:0] prod2;
   logic signed [8-1:0] bias_ext;
   logic signed [8-1:0] net_sum;
-  assign prod1 = $signed(8'(w1 * test_x1));
-  assign prod2 = $signed(8'(w2 * test_x2));
+  assign prod1 = $signed(w1 * test_x1);
+  assign prod2 = $signed(w2 * test_x2);
   assign bias_ext = $signed({{(8-$bits(bias)){bias[$bits(bias)-1]}}, bias});
   assign net_sum = $signed(8'(prod1 + prod2 + bias_ext));
   // Test input vectors: depend on gate type (stored in gs_r)

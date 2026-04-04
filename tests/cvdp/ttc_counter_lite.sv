@@ -30,6 +30,7 @@ module ttc_counter_lite (
       match_value <= 0;
       reload_value <= 0;
     end else begin
+      // AXI register writes
       if (axi_write_en) begin
         if (axi_addr == 1) begin
           match_value <= axi_wdata;
@@ -41,6 +42,7 @@ module ttc_counter_lite (
           interrupt_enable <= axi_wdata[2:2];
         end
       end
+      // Counter logic
       if (enable) begin
         if (count == match_value) begin
           if (interval_mode) begin
@@ -55,9 +57,11 @@ module ttc_counter_lite (
           count <= 32'(count + 1);
         end
       end
+      // match_flag clear on status write (when counter not at match)
       if (status_clear & ~(enable & count == match_value)) begin
         match_flag <= 1'b0;
       end
+      // Interrupt generation
       if (status_clear) begin
         interrupt <= 1'b0;
       end else if (match_flag & interrupt_enable) begin
@@ -65,10 +69,6 @@ module ttc_counter_lite (
       end
     end
   end
-  // AXI register writes
-  // Counter logic
-  // match_flag clear on status write (when counter not at match)
-  // Interrupt generation
   // AXI read logic (combinational)
   always_comb begin
     if (axi_addr == 0) begin
@@ -78,7 +78,7 @@ module ttc_counter_lite (
     end else if (axi_addr == 2) begin
       axi_rdata = reload_value;
     end else if (axi_addr == 3) begin
-      axi_rdata = 32'($unsigned({29'd0, interrupt_enable, interval_mode, enable}));
+      axi_rdata = {29'd0, interrupt_enable, interval_mode, enable};
     end else if (axi_addr == 4) begin
       axi_rdata = 32'($unsigned(interrupt));
     end else begin

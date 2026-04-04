@@ -11,8 +11,8 @@ module ping_pong_buffer (
 );
 
   // Memory arrays - two banks of 255 x 8-bit  
-  logic [8-1:0] mem0 [0:256-1];
-  logic [8-1:0] mem1 [0:256-1];
+  logic [8-1:0] mem0 [256-1:0];
+  logic [8-1:0] mem1 [256-1:0];
   // Pointers
   logic [8-1:0] write_ptr;
   logic [8-1:0] read_ptr;

@@ -12,7 +12,7 @@ module digital_dice_roller #(
       dice_value <= 1;
     end else begin
       if (button) begin
-        if (dice_value >= 3'(DICE_MAX)) begin
+        if (dice_value >= DICE_MAX) begin
           dice_value <= 3'd1;
         end else begin
           dice_value <= 3'(dice_value + 3'd1);

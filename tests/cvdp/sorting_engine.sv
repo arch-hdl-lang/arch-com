@@ -25,13 +25,13 @@ module sorting_engine #(
   always_comb begin
     elem_a = arr[idx * WIDTH +: WIDTH];
     elem_b = arr[(idx + 1) * WIDTH +: WIDTH];
+    // Build array with potential swap
     swapped_arr = arr;
     if (elem_a > elem_b) begin
       swapped_arr[idx * WIDTH +: WIDTH] = elem_b;
       swapped_arr[(idx + 1) * WIDTH +: WIDTH] = elem_a;
     end
   end
-  // Build array with potential swap
   always_ff @(posedge clk or posedge rst) begin
     if (rst) begin
       idx <= 0;
@@ -40,6 +40,7 @@ module sorting_engine #(
       state <= 0;
     end else begin
       if (state == 0) begin
+        // IDLE
         r_done <= 1'b0;
         if (start) begin
           arr <= in_data;
@@ -48,17 +49,19 @@ module sorting_engine #(
           state <= 1;
         end
       end else if (state == 1) begin
+        // SORTING: one comparison per cycle
         arr <= swapped_arr;
-        if (idx == 32'(N - 2)) begin
+        if (idx == 32'($unsigned(N - 2))) begin
           idx <= 0;
           pass_cnt <= 32'(pass_cnt + 1);
-          if (32'(pass_cnt + 1) == 32'(N)) begin
+          if (32'(pass_cnt + 1) == 32'($unsigned(N))) begin
             state <= 2;
           end
         end else begin
           idx <= 32'(idx + 1);
         end
       end else if (state == 2) begin
+        // DONE
         r_done <= 1'b1;
         state <= 0;
       end else begin
@@ -66,9 +69,6 @@ module sorting_engine #(
       end
     end
   end
-  // IDLE
-  // SORTING: one comparison per cycle
-  // DONE
   assign done = r_done;
   assign out_data = arr;
 

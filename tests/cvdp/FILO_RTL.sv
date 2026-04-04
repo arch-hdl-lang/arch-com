@@ -13,7 +13,7 @@ module FILO_RTL #(
 );
 
   logic [32-1:0] top;
-  logic [DATA_WIDTH-1:0] buffer [0:FILO_DEPTH-1];
+  logic [DATA_WIDTH-1:0] buffer [FILO_DEPTH-1:0];
   always_ff @(posedge clk or posedge reset) begin
     if (reset) begin
       for (int __ri0 = 0; __ri0 < FILO_DEPTH; __ri0++) begin
@@ -28,7 +28,7 @@ module FILO_RTL #(
         buffer[top] <= data_in;
         top <= 32'(top + 1);
         empty <= 1'b0;
-        if (32'(top + 1) == 32'(FILO_DEPTH)) begin
+        if (32'(top + 1) == 32'($unsigned(FILO_DEPTH))) begin
           full <= 1'b1;
         end
       end else if (pop & ~push & ~empty) begin

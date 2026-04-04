@@ -11,7 +11,7 @@ module unpack_one_hot (
     if (one_hot_selector == 1) begin
       for (int i = 0; i <= 255; i++) begin
         if (sign & source_reg[i]) begin
-          destination_reg[i * 8 +: 8] = 8'('hFF);
+          destination_reg[i * 8 +: 8] = 'hFF;
         end else begin
           destination_reg[i * 8 +: 8] = 8'($unsigned(source_reg[i]));
         end

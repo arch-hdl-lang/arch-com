@@ -54,21 +54,26 @@ module axi_register #(
       wready_o <= 1'b0;
       writeback_o <= 1'b0;
     end else begin
+      // Latch done_i
       if (done_i) begin
         done_reg <= 1'b1;
       end
+      // Write defaults: one-cycle pulses
       awready_o <= 1'b0;
       wready_o <= 1'b0;
+      // bvalid: clear on handshake
       if (bvalid_o & bready_i) begin
         bvalid_o <= 1'b0;
       end
+      // Accept simultaneous AW+W
       if (awvalid_i & wvalid_i) begin
         awready_o <= 1'b1;
         wready_o <= 1'b1;
         bvalid_o <= 1'b1;
+        // Decode address and update registers
         if (awaddr_i[11:8] == 1) begin
           if (strb_all) begin
-            beat_o <= 20'($unsigned(wdata_i));
+            beat_o <= 20'(wdata_i);
           end
           bresp_o <= 0;
         end else if (awaddr_i[11:8] == 2) begin
@@ -94,10 +99,13 @@ module axi_register #(
           bresp_o <= 2;
         end
       end
+      // Read defaults
       arready_o <= 1'b0;
+      // Clear rvalid when master acknowledges
       if (rvalid_o & rready_i) begin
         rvalid_o <= 1'b0;
       end
+      // Accept read when not already responding
       if (arvalid_i & ~rvalid_o) begin
         arready_o <= 1'b1;
         rvalid_o <= 1'b1;
@@ -114,7 +122,7 @@ module axi_register #(
           rdata_o <= DATA_WIDTH'($unsigned(writeback_o));
           rresp_o <= 0;
         end else if (araddr_i[11:8] == 5) begin
-          rdata_o <= DATA_WIDTH'(65537);
+          rdata_o <= DATA_WIDTH'($unsigned(65537));
           rresp_o <= 0;
         end else begin
           rdata_o <= 0;
@@ -126,11 +134,3 @@ module axi_register #(
 
 endmodule
 
-// Latch done_i
-// Write defaults: one-cycle pulses
-// bvalid: clear on handshake
-// Accept simultaneous AW+W
-// Decode address and update registers
-// Read defaults
-// Clear rvalid when master acknowledges
-// Accept read when not already responding

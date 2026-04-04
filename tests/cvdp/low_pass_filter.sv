@@ -2,8 +2,8 @@ module low_pass_filter #(
   parameter int DATA_WIDTH = 16,
   parameter int COEFF_WIDTH = 16,
   parameter int NUM_TAPS = 8,
-  parameter int NBW_MULT = DATA_WIDTH + COEFF_WIDTH,
-  parameter int OUT_WIDTH = NBW_MULT + $clog2(NUM_TAPS)
+  parameter int NBW_MULT = 32,
+  parameter int OUT_WIDTH = 35
 ) (
   input logic clk,
   input logic reset,
@@ -14,8 +14,8 @@ module low_pass_filter #(
   output logic valid_out
 );
 
-  logic signed [DATA_WIDTH-1:0] data_reg [0:NUM_TAPS-1];
-  logic signed [COEFF_WIDTH-1:0] coeff_reg [0:NUM_TAPS-1];
+  logic signed [DATA_WIDTH-1:0] data_reg [NUM_TAPS-1:0];
+  logic signed [COEFF_WIDTH-1:0] coeff_reg [NUM_TAPS-1:0];
   always_ff @(posedge clk) begin
     if (reset) begin
       for (int __ri0 = 0; __ri0 < NUM_TAPS; __ri0++) begin
@@ -49,11 +49,11 @@ module low_pass_filter #(
       end
     end
   end
-  logic signed [NBW_MULT-1:0] mult [0:NUM_TAPS-1];
+  logic signed [NBW_MULT-1:0] mult [NUM_TAPS-1:0];
   logic signed [OUT_WIDTH-1:0] acc;
   always_comb begin
     for (int i = 0; i <= NUM_TAPS - 1; i++) begin
-      mult[i] = NBW_MULT'(data_reg[i] * coeff_reg[NUM_TAPS - 1 - i]);
+      mult[i] = data_reg[i] * coeff_reg[NUM_TAPS - 1 - i];
     end
   end
   always_comb begin
