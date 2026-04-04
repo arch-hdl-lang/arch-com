@@ -331,12 +331,19 @@ fn elaborate_module_variant(
 
     // Update param defaults to match the monomorphized values so
     // the SV declaration is consistent with the expanded body.
-    // For enum-typed params, preserve the original EnumVariant expression
-    // so the SV output uses the enum constant name, not a raw integer.
+    // - Enum-typed params: preserve the EnumVariant expression for clean SV output.
+    // - Derived params (default expr references other params): preserve the original
+    //   expression so SV emits e.g. `parameter int NBW_MULT = DATA_WIDTH + COEFF_WIDTH`
+    //   instead of a hardcoded literal. This allows derived params to update correctly
+    //   when a parent param is overridden at instantiation.
+    // - Literal-only params: replace with the evaluated literal.
+    let param_names: std::collections::HashSet<&str> = param_vals.keys().map(|s| s.as_str()).collect();
     let new_params: Vec<ParamDecl> = m.params.into_iter().map(|mut p| {
         if let Some(&val) = param_vals.get(&p.name.name) {
             if matches!(p.kind, ParamKind::EnumConst(_)) {
                 // Preserve the EnumVariant expression for clean SV output
+            } else if p.default.as_ref().map_or(false, |d| expr_references_params(d, &param_names)) {
+                // Preserve original expression for derived params
             } else {
                 p.default = Some(Expr::new(
                     ExprKind::Literal(LitKind::Dec(val as u64)),
@@ -605,6 +612,28 @@ fn subst_expr(expr: Expr, var: &str, val: i64) -> Expr {
         other => other,
     };
     Expr { kind: new_kind, span: expr.span, parenthesized: false }
+}
+
+/// Returns true if the expression references any identifier in `param_names`.
+fn expr_references_params(expr: &Expr, param_names: &std::collections::HashSet<&str>) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => param_names.contains(name.as_str()),
+        ExprKind::Binary(_, l, r) => {
+            expr_references_params(l, param_names) || expr_references_params(r, param_names)
+        }
+        ExprKind::Unary(_, e) => expr_references_params(e, param_names),
+        ExprKind::Clog2(e) => expr_references_params(e, param_names),
+        ExprKind::FieldAccess(e, _) => expr_references_params(e, param_names),
+        ExprKind::Index(e, i) => {
+            expr_references_params(e, param_names) || expr_references_params(i, param_names)
+        }
+        ExprKind::Ternary(c, t, f) => {
+            expr_references_params(c, param_names)
+                || expr_references_params(t, param_names)
+                || expr_references_params(f, param_names)
+        }
+        _ => false,
+    }
 }
 
 // ── Const evaluation ──────────────────────────────────────────────────────────

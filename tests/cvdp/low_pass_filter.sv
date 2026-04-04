@@ -2,8 +2,8 @@ module low_pass_filter #(
   parameter int DATA_WIDTH = 16,
   parameter int COEFF_WIDTH = 16,
   parameter int NUM_TAPS = 8,
-  parameter int NBW_MULT = 32,
-  parameter int OUT_WIDTH = 35
+  parameter int NBW_MULT = DATA_WIDTH + COEFF_WIDTH,
+  parameter int OUT_WIDTH = NBW_MULT + $clog2(NUM_TAPS)
 ) (
   input logic clk,
   input logic reset,
