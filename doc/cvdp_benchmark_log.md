@@ -95,6 +95,22 @@ Three bugs found and fixed in the test runner:
 
 ---
 
+### Phase 5: Full cocotb sweep (2026-04-04)
+
+Ran all 191 testable modules (those with matching CVDP JSONL entries) through cocotb. Results saved to `tests/cvdp/cocotb_results.log`.
+
+**Result: 133/191 pass (70%)**
+
+58 failures include:
+- Multi-file designs with missing sub-module SV (cocotb only copies one file)
+- Logic bugs in the `.arch` implementations
+- Test harness timeouts (e.g. `Binary2BCD`, `floor_to_seven_segment`)
+- Parameterized test edge cases
+
+40 additional `.arch` files have no matching CVDP JSONL entry and cannot be cocotb-tested.
+
+---
+
 ## Current Status (2026-04-04)
 
 | Metric | Value |
@@ -102,9 +118,10 @@ Three bugs found and fixed in the test runner:
 | Total `.arch` files | 231 |
 | Pass `arch check` | 213 (92%) |
 | Fail `arch check` (multi-file) | 18 |
-| Cocotb tested (from fixed batch) | 25 |
-| Cocotb passing | 24 (96%) |
-| Cocotb failing (harness issue) | 1 |
+| Testable via cocotb (has JSONL entry) | 191 |
+| **Cocotb PASS** | **133 (70%)** |
+| Cocotb FAIL | 58 |
+| No JSONL entry (untestable) | 40 |
 
 ---
 
@@ -122,4 +139,8 @@ python3 tests/cvdp/run_cvdp.py MODULE_NAME [tests/cvdp/MODULE.sv]
 
 # Full arch check sweep
 for f in tests/cvdp/*.arch; do cargo run --release --quiet -- check "$f" 2>/dev/null || echo "FAIL: $f"; done
+
+# Full cocotb sweep (slow — ~30 min)
+python3 /tmp/run_all_cvdp.py
+# Results saved to tests/cvdp/cocotb_results.log
 ```
