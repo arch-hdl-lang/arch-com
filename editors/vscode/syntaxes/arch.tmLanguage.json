@@ -20,6 +20,7 @@
     { "include": "#param-kind" },
     { "include": "#boolean-operators" },
     { "include": "#cast-operator" },
+    { "include": "#builtin-functions" },
     { "include": "#multi-char-operators" },
     { "include": "#single-char-operators" },
     { "include": "#decimal-literals" },
@@ -72,11 +73,11 @@
     },
     "control-flow": {
       "name": "keyword.control.flow.arch",
-      "match": "\\b(if|elsif|else|match|unique|when|on|rising|falling|high|low|await|await_all|await_any|forward|init|reset|always|for|in|from|stall|flush|inside)\\b"
+      "match": "\\b(if|elsif|else|match|unique|when|on|rising|falling|high|low|await|await_all|await_any|forward|init|reset|for|in|from|stall|flush|inside)\\b"
     },
     "block-keywords": {
       "name": "keyword.other.arch",
-      "match": "\\b(port|ports|param|socket|state|default|comb|seq|reg|wire|let|inst|generate|assert|cover|function|return|use|stage|store|hook|implements|testbench|initial|repeat)\\b"
+      "match": "\\b(port|ports|param|socket|state|default|comb|seq|latch|reg|wire|let|inst|generate|assert|cover|function|return|use|stage|store|hook|implements|testbench|initial|repeat|none)\\b"
     },
     "attribute-keywords": {
       "name": "keyword.other.attribute.arch",
@@ -100,7 +101,11 @@
     },
     "cast-operator": {
       "name": "keyword.operator.cast.arch",
-      "match": "\\bas\\b"
+      "match": "\\b(as|signed|unsigned)\\b"
+    },
+    "builtin-functions": {
+      "name": "support.function.arch",
+      "match": "\\$clog2|\\blog\\b"
     },
     "multi-char-operators": {
       "name": "keyword.operator.arch",

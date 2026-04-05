@@ -20,16 +20,16 @@ syn keyword archEnd        end
 " ── Block-structure keywords ──────────────────────────────────────────────────
 " Appear inside construct bodies to declare sub-sections
 syn keyword archBlock      port ports param socket state default
-syn keyword archBlock      comb seq reg wire let inst generate
+syn keyword archBlock      comb seq latch reg wire let inst generate
 syn keyword archBlock      assert cover function return use
 syn keyword archBlock      stage store hook implements
-syn keyword archBlock      testbench initial repeat
+syn keyword archBlock      testbench initial repeat none
 
 " ── Signal / control flow keywords ───────────────────────────────────────────
-syn keyword archControl    if elsif else match unique transition to when
+syn keyword archControl    if elsif else match unique when
 syn keyword archControl    on rising falling high low
 syn keyword archControl    await await_all await_any
-syn keyword archControl    forward init for in from
+syn keyword archControl    forward init reset for in from
 syn keyword archControl    stall flush inside
 
 " ── RAM / FIFO / counter attributes ──────────────────────────────────────────
@@ -59,6 +59,13 @@ syn keyword archBool       true false
 
 " ── todo! escape hatch ────────────────────────────────────────────────────────
 syn keyword archTodo       todo!
+
+" ── Cast keywords ────────────────────────────────────────────────────────────
+syn keyword archCast       as signed unsigned
+
+" ── Built-in functions ──────────────────────────────────────────────────────
+syn match   archBuiltinFn  /\$clog2/
+syn keyword archBuiltinFn  log
 
 " ── Boolean operators (word-form) ────────────────────────────────────────────
 syn keyword archBoolOp     and or not
@@ -113,6 +120,8 @@ hi def link archType         Type
 hi def link archParamKind    StorageClass
 hi def link archBool         Boolean
 hi def link archTodo         Todo
+hi def link archCast         Operator
+hi def link archBuiltinFn    Function
 hi def link archBoolOp       Operator
 hi def link archOp           Operator
 hi def link archSizedLit     Number
