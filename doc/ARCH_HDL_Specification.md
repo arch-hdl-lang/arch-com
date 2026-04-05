@@ -199,6 +199,10 @@ The Arch type system enforces four independent safety dimensions simultaneously.
 
   **Reset\<Async, High\|Low\>**   1 bit                Asynchronous reset --- deasserted immediately. Polarity defaults High.
 
+  **Reset\<..., ..., Domain\>**   1 bit                Optional third parameter tags the reset with a domain name for RDC (Reset Domain Crossing) checking. See §5.4.
+
+  **Tristate\<T\>**    \|T\| bits            Bidirectional pad type. Decomposes to \_out, \_oe, \_in internally. See §5.5.
+
   **Vec\<T,N\>**       N × \|T\|            Fixed-size array of any hardware type T.
 
   **struct S**         Σ fields             Named aggregate. Width = sum of field widths (packed).
@@ -909,6 +913,87 @@ end module ClkDiv2
 
 A `Clock<>` output port emits `output logic` in SV and may be driven by a `comb` assignment. For dedicated clock gating with integrated latch, use the first-class `clkgate` construct instead.
 
+**5.4 Reset Domain Crossing (RDC)** *(planned)*
+
+Just as `Clock<Domain>` carries a domain tag for CDC checking, `Reset<Kind, Polarity, Domain>` can carry an optional domain tag for RDC checking. When two or more reset domains are present in a module, the compiler will flag unsafe crossings:
+
+```
+port rst_a: in Reset<Async, High, PowerDomain>;
+port rst_b: in Reset<Async, High, IoDomain>;
+```
+
+**RDC violations detected at compile time (planned):**
+
+1. **Cross-reset-domain register read** --- a register held in reset by `rst_a` is read in a `seq` block governed by `rst_b`. The register may still be in reset (or just released) when the consumer is active, causing metastability or stale values.
+
+2. **Asynchronous reset deassertion ordering** --- module B depends on module A's output, but A's reset releases after B's, so B may sample undefined values during the gap.
+
+3. **Reset glitch propagation** --- an async reset from one domain is connected directly to another domain without a reset synchronizer.
+
+The compiler will require a `reset_synchronizer` or explicit `rdc_safe` annotation to suppress the error, mirroring the existing CDC flow. The implementation will extend the existing `reg_domain` tracking in the type checker to build a parallel `reg_reset_domain` map.
+
+> *⚑ Until RDC checking is implemented, the third domain parameter on `Reset<>` is accepted by the parser but not enforced. Engineers should manually verify reset domain crossings.*
+
+**5.5 Tristate and Bidirectional I/O** *(planned)*
+
+Inside a chip, all signals are unidirectional. Tristate (high-impedance) behavior only exists at the **pad ring** — the boundary between the chip and the outside world. Common examples include I2C (open-drain SDA/SCL), bidirectional data buses, and GPIO pins.
+
+ARCH provides a `Tristate<T>` type and a `tristate` block for modeling pad-level bidirectional I/O:
+
+```
+module I2cPad
+  port clk:     in Clock<SysDomain>;
+  port rst:     in Reset<Sync>;
+  port sda:     tristate UInt<1>;     // bidirectional pad
+  port sda_oe:  in Bool;              // output enable from core
+  port sda_out: in Bool;              // drive value from core
+  port sda_in:  out Bool;             // read value to core
+
+  tristate sda
+    drive: sda_oe ? sda_out : high_z;
+    read:  sda_in;
+  end tristate
+end module I2cPad
+```
+
+**Compiler behavior:**
+
+| Backend | Behavior |
+|---------|----------|
+| **SV codegen** (`arch build`) | Emits `inout` port with `assign sda = sda_oe ? sda_out : 1'bz` |
+| **Simulation** (`arch sim`) | Decomposes into `_out` / `_oe` / `_in` signals (2-state, Verilator-compatible); resolution logic: wire-OR of enables, mux of values; undriven nets default to 0 |
+| **Type checker** | Restricts `tristate` ports to top-level modules or pad cells; using `tristate` on internal module ports is a compile error |
+
+**Open-drain modeling (I2C, wire-AND):**
+
+```
+tristate sda
+  drive: sda_oe ? 1'b0 : high_z;   // can only pull low
+  read:  sda_in;                     // pull-up is external
+end tristate
+```
+
+The sim backend resolves multiple open-drain drivers as `sda = ~(oe_a | oe_b)` — a wire-AND with implicit pull-up. The testbench must model external pull-ups explicitly.
+
+> *⚑ Until tristate support is implemented, bidirectional pads should be modeled manually using separate `_out`, `_oe`, and `_in` ports. The compiler does not yet parse `tristate` blocks.*
+
+**Design decision: pad-only tristate, no internal tristate buses.**
+
+Tristate buses were widely used for on-chip shared buses in older process nodes (250nm and above, 1980s--early 2000s). The appeal was clear: N modules sharing a 32-bit bus needed only 32 wires instead of N×32 point-to-point wires. Early CPU architectures (8086, 68000, early ARM) and FPGAs (Xilinx 4000 TBUFs) relied heavily on this technique.
+
+The industry abandoned internal tristate buses below 130nm for several reasons:
+
+- **Contention and shoot-through current** — overlapping drivers during arbitration cause simultaneous PMOS/NMOS conduction, producing large current spikes that damage reliability at deep submicron.
+- **Bus turnaround penalty** — dead cycles or guard time required between drivers became a significant performance cost as clock speeds rose.
+- **DFT incompatibility** — tristate nets are difficult to control and observe during scan testing; ATPG tools struggle with bus contention states.
+- **STA complexity** — N drivers on one net produce O(N²) timing arcs for static timing analysis.
+- **Process scaling** — below 130nm, tristate buffers are physically larger than multiplexers for the same function; leakage through floating nets also becomes problematic.
+- **FPGA removal** — Xilinx dropped internal TBUFs after Spartan-3 (~2003); Intel/Altera never supported them. Tools auto-convert to mux-based equivalents.
+
+Modern replacements: crossbar (NxM mux fabric), multiplexed read/write buses, forwarding networks, and switched interconnects (AXI, NoC). These use more wires but are faster, testable, and timing-clean.
+
+ARCH's restriction of `Tristate<T>` to pad-level I/O reflects this industry consensus. Internal buses should use ARCH's `bus` + `arbiter` constructs (mux-based), which the language already provides as first-class citizens. The type checker enforces this boundary: `tristate` on an internal module port is a compile error.
+
 **6. First-Class Construct: pipeline**
 
 A pipeline is a first-class Arch construct --- not a pattern you build from registers and muxes. The compiler understands stall, flush, and forward semantics natively and generates all hazard control logic automatically from declarative annotations.
@@ -1217,6 +1302,45 @@ The optional `kind` keyword selects the buffering discipline (same syntax as `ra
 +--------------------------------------------------------------------+
 
 > ◈ The LIFO uses a single stack pointer `sp`. Push writes at `mem[sp]` and increments; pop decrements and reads `mem[sp-1]`. Simultaneous push+pop replaces the top of stack without changing the pointer. The same push/pop handshake protocol (valid/ready) is used for both FIFO and LIFO.
+
+**8.2b Output Latency and FWFT** *(planned)*
+
+The optional `latency` keyword controls how `pop_data` is driven:
+
+| **Latency** | **pop_data source** | **Use case** |
+|-------------|---------------------|--------------|
+| `latency 0` (default) | Combinational read from memory array | Shallow FIFOs (depth <= 16); simple, lowest area |
+| `latency 1` | Registered output with FWFT (first-word fall-through) prefetch | Deep FIFOs (depth > 16); timing-clean `pop_data` from a flop |
+
+```
+fifo DeepQueue
+  param DEPTH: const = 256;
+  param TYPE: type = UInt<64>;
+  latency 1;                      // registered output + FWFT prefetch
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data: in TYPE;
+  port pop_valid: out Bool;
+  port pop_ready: in Bool;
+  port pop_data: out TYPE;
+end fifo DeepQueue
+```
+
+**`latency 0` behavior (current):**
+
+`pop_data` is driven by a combinational read from the memory array: `assign pop_data = mem[rd_ptr]`. Data is available on `pop_data` one cycle after a push to a previously empty FIFO (the `empty` flag clears on the next rising edge, exposing the combinational read). For large depths, this combinational read path through the memory array mux tree becomes a timing bottleneck.
+
+**`latency 1` behavior (FWFT prefetch):**
+
+The FIFO maintains an output register (`pop_data_r`). When the FIFO transitions from empty to non-empty, or after each successful pop, the FIFO automatically **prefetches** the next word: the read pointer advances and the memory output is captured into `pop_data_r` on the next clock edge.
+
+From the consumer's perspective, the interface is identical: when `pop_valid` is high, `pop_data` holds valid data and asserting `pop_ready` consumes it. The difference is purely timing --- `pop_data` comes from a flop, not a memory read mux, giving a clean registered output suitable for deep FIFOs.
+
+This is the same pattern used by Xilinx FIFO Generator's "First Word Fall Through" mode and Altera's "show-ahead" mode.
+
+> ◈ The compiler does not auto-select latency --- the designer must choose explicitly. This follows ARCH's principle of no hidden behavior that affects timing.
 
 **8.3 First-Class Construct: synchronizer**
 
