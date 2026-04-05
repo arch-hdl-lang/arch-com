@@ -5,6 +5,7 @@ module write_buffer_merge
   param INPUT_DATA_WIDTH: const = 32;
   param INPUT_ADDR_WIDTH: const = 16;
   param BUFFER_DEPTH: const = 8;
+  param CNT_W: const = $clog2(BUFFER_DEPTH + 1);
   param OUTPUT_DATA_WIDTH: const = INPUT_DATA_WIDTH * BUFFER_DEPTH;
   param OUTPUT_ADDR_WIDTH: const = INPUT_ADDR_WIDTH - $clog2(BUFFER_DEPTH);
 
@@ -19,15 +20,21 @@ module write_buffer_merge
 
   default seq on clk rising;
 
-  reg write_cnt: UInt<$clog2(BUFFER_DEPTH)> reset srst=>0;
+  reg write_cnt: UInt<CNT_W> reset srst=>0;
   reg base_addr: UInt<OUTPUT_ADDR_WIDTH> reset srst=>0;
   reg merged_data: UInt<OUTPUT_DATA_WIDTH> reset srst=>0;
   reg write_complete: Bool reset srst=>false;
+  reg out_addr_pending: UInt<OUTPUT_ADDR_WIDTH> reset srst=>0;
+  reg out_data_pending: UInt<OUTPUT_DATA_WIDTH> reset srst=>0;
 
   // Write count logic
   seq
     if wr_en_in
-      write_cnt <= (write_cnt + 1).trunc<$clog2(BUFFER_DEPTH)>();
+      if write_cnt == (BUFFER_DEPTH - 1).trunc<CNT_W>()
+        write_cnt <= 0;
+      else
+        write_cnt <= (write_cnt + 1).trunc<CNT_W>();
+      end if
     end if
   end seq
 
@@ -41,25 +48,35 @@ module write_buffer_merge
   // Merged data logic: shift right and append new data at MSB
   seq
     if wr_en_in
-      merged_data <= {wr_data_in, merged_data[OUTPUT_DATA_WIDTH-1:INPUT_DATA_WIDTH]};
+      merged_data <= ((merged_data >> INPUT_DATA_WIDTH) | (wr_data_in.zext<OUTPUT_DATA_WIDTH>() << (OUTPUT_DATA_WIDTH - INPUT_DATA_WIDTH)));
     end if
   end seq
 
   // Write completion: buffer full
   seq
-    if (write_cnt == (BUFFER_DEPTH - 1).trunc<$clog2(BUFFER_DEPTH)>()) & wr_en_in
+    if (write_cnt == (BUFFER_DEPTH - 1).trunc<CNT_W>()) & wr_en_in
       write_complete <= true;
+      out_addr_pending <= wr_addr_in[INPUT_ADDR_WIDTH-1:$clog2(BUFFER_DEPTH)];
+      out_data_pending <= ((merged_data >> INPUT_DATA_WIDTH) | (wr_data_in.zext<OUTPUT_DATA_WIDTH>() << (OUTPUT_DATA_WIDTH - INPUT_DATA_WIDTH)));
     else
       write_complete <= false;
     end if
   end seq
 
-  // Output logic: 2 cycle latency
+  // Output logic: depth==1 is pass-through (1-cycle), depth>1 emits merged writes.
   seq
-    if write_complete
+    if BUFFER_DEPTH == 1
+      if wr_en_in
+        wr_en_out <= true;
+        wr_addr_out <= wr_addr_in[INPUT_ADDR_WIDTH-1:$clog2(BUFFER_DEPTH)];
+        wr_data_out <= wr_data_in.zext<OUTPUT_DATA_WIDTH>();
+      else
+        wr_en_out <= false;
+      end if
+    elsif write_complete
       wr_en_out <= true;
-      wr_addr_out <= base_addr;
-      wr_data_out <= merged_data;
+      wr_addr_out <= out_addr_pending;
+      wr_data_out <= out_data_pending;
     else
       wr_en_out <= false;
     end if

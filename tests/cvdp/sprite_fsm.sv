@@ -33,6 +33,7 @@ module sprite_controller_fsm #(
   logic [MEM_ADDR_WIDTH-1:0] addr_cnt;
   logic [PIXEL_WIDTH-1:0] data_cnt;
   logic [WAIT_WIDTH-1:0] wait_cnt;
+  logic cold_start;
   
   always_ff @(posedge clk) begin
     if ((!rst_n)) begin
@@ -40,6 +41,7 @@ module sprite_controller_fsm #(
       addr_cnt <= 0;
       data_cnt <= 0;
       wait_cnt <= 0;
+      cold_start <= 1'b1;
     end else begin
       state_r <= state_next;
       case (state_r)
@@ -48,6 +50,13 @@ module sprite_controller_fsm #(
           addr_cnt <= 0;
           data_cnt <= 0;
           done <= 1'b0;
+          if (cold_start) begin
+            write_addr <= 0;
+            write_data <= 0;
+            x_pos <= 0;
+            y_pos <= 0;
+            cold_start <= 1'b0;
+          end
         end
         INIT_WRITE: begin
           rw <= 1'b1;
