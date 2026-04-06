@@ -279,7 +279,7 @@ let wide: UInt<9> = a.zext<9>() << 1;    // UInt<9>, MSB preserved — explicit 
 | `a << n` | `W(a)` | **Non-widening** — shift amount does not affect result width |
 | `a >> n` | `W(a)` | **Non-widening** |
 
-> *⚑ The compiler emits a warning when a shift result is assigned to a wider target (e.g. `let wide: UInt<9> = a << 1;`), because the extra bit will always be zero --- the shift did not capture the overflow. The fix is to widen the operand first: `a.zext<9>() << 1`.*
+> *⚑ The compiler emits a **compile error** when a shift result is assigned to a wider target (e.g. `let wide: UInt<9> = a << 1;`), because the extra bit will always be zero --- the shift did not capture the overflow. The fix is to widen the operand first: `a.zext<9>() << 1`. Same-width shifts (e.g. `let x: UInt<8> = a << 1;`) are silent --- MSB loss is the normal, intended behavior of a fixed-width shift.*
 
 > *⚑ Width inference follows IEEE 1800-2012 §11.6. Arch promotes all mismatches to hard errors --- never warnings. The arithmetic widening trap (`r <= r + 1`) is caught at the register-assignment level: the compiler diagnoses it and suggests `.trunc<N>()`. The `.trunc<N>()` method emits a SystemVerilog size cast `N'(expr)`, which is valid on any expression including compound ones. Bit-slice syntax `expr[hi:lo]` extracts a bit range: `instr[11:7]` emits `instr[11:7]` with result width hi−lo+1. This is essential for instruction field decoding.*
 

@@ -307,18 +307,18 @@ impl<'a> TypeChecker<'a> {
                                     l.value.span,
                                 ));
                             }
-                            // Warn: shift assigned to wider target — MSB is always zero
+                            // Shift width check (IEEE §11.6.1: shifts are non-widening)
                             if let (Some(ew), Some(aw)) = (expected.width(), ty.width()) {
                                 if ew > aw && expr_is_shift(&l.value) {
-                                    self.warnings.push(CompileWarning {
-                                        message: format!(
+                                    self.errors.push(CompileError::general(
+                                        &format!(
                                             "shift result is UInt<{aw}> but target `{}` is UInt<{ew}>; \
-                                             the extra bit(s) will always be zero. \
+                                             shifts do not widen (IEEE §11.6.1). \
                                              To capture overflow, widen the operand first: `.zext<{ew}>() << n`",
                                             l.name.name
                                         ),
-                                        span: l.value.span,
-                                    });
+                                        l.value.span,
+                                    ));
                                 }
                             }
                         }
@@ -1037,17 +1037,17 @@ impl<'a> TypeChecker<'a> {
                     let rhs_ty = self.resolve_expr_type(&a.value, module_name, local_types);
                     if let Some(lhs_ty) = local_types.get(&name).cloned() {
                         self.check_width_compatible(&lhs_ty, &rhs_ty, &name, a.span);
-                        // Warn: shift assigned to wider target
+                        // Shift width check (IEEE §11.6.1: shifts are non-widening)
                         if let (Some(lw), Some(rw)) = (lhs_ty.width(), rhs_ty.width()) {
                             if lw > rw && expr_is_shift(&a.value) {
-                                self.warnings.push(CompileWarning {
-                                    message: format!(
+                                self.errors.push(CompileError::general(
+                                    &format!(
                                         "shift result is UInt<{rw}> but target `{name}` is UInt<{lw}>; \
-                                         the extra bit(s) will always be zero. \
+                                         shifts do not widen (IEEE §11.6.1). \
                                          To capture overflow, widen the operand first: `.zext<{lw}>() << n`"
                                     ),
-                                    span: a.span,
-                                });
+                                    a.span,
+                                ));
                             }
                         }
                     }
@@ -1146,17 +1146,17 @@ impl<'a> TypeChecker<'a> {
                 if !is_indexed {
                     if let Some(lhs_ty) = local_types.get(&target_name).cloned() {
                         self.check_width_compatible(&lhs_ty, &rhs_ty, &target_name, a.span);
-                        // Warn: shift assigned to wider target
+                        // Shift width checks (IEEE §11.6.1: shifts are non-widening)
                         if let (Some(lw), Some(rw)) = (lhs_ty.width(), rhs_ty.width()) {
                             if lw > rw && expr_is_shift(&a.value) {
-                                self.warnings.push(CompileWarning {
-                                    message: format!(
+                                self.errors.push(CompileError::general(
+                                    &format!(
                                         "shift result is UInt<{rw}> but target `{target_name}` is UInt<{lw}>; \
-                                         the extra bit(s) will always be zero. \
+                                         shifts do not widen (IEEE §11.6.1). \
                                          To capture overflow, widen the operand first: `.zext<{lw}>() << n`"
                                     ),
-                                    span: a.span,
-                                });
+                                    a.span,
+                                ));
                             }
                         }
                     }
