@@ -54,17 +54,17 @@ ram DescTable
   param DEPTH: const = 16;
   param WIDTH: type = UInt<32>;
   port clk: in Clock<SysDomain>;
-  port rd_port
+  ports rd_port
     addr:  in UInt<4>;
     en:    in Bool;
     rdata: out WIDTH;
-  end port rd_port
-  port wr_port
+  end ports rd_port
+  ports wr_port
     addr:  in UInt<4>;
     en:    in Bool;
     wen:   in Bool;
     wdata: in WIDTH;
-  end port wr_port
+  end ports wr_port
 end ram DescTable
 
 // ── Write-side data FIFO ──────────────────────────────────────────────────────

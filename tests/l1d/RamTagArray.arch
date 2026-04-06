@@ -10,14 +10,14 @@ ram RamTagArray
   store
     buf: Vec<WIDTH, DEPTH>;
   end store
-  port rd_port
+  ports rd_port
     en:    in  Bool;
     addr:  in  UInt<6>;
     rdata: out WIDTH;
-  end port rd_port
-  port wr_port
+  end ports rd_port
+  ports wr_port
     en:    in  Bool;
     addr:  in  UInt<6>;
     wdata: in  WIDTH;
-  end port wr_port
+  end ports wr_port
 end ram RamTagArray

@@ -9,9 +9,9 @@ ram RomLutFile
 
   port clk: in Clock<CoreDomain>;
 
-  port rd
+  ports rd
     addr: in UInt<3>;
     en:   in Bool;
     data: out UInt<8>;
-  end port rd
+  end ports rd
 end ram RomLutFile

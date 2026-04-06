@@ -13,11 +13,11 @@ ram SimpleMem
   store
     data: Vec<WIDTH, DEPTH>;
   end store
-  port access
+  ports access
     en: in Bool;
     wen: in Bool;
     addr: in UInt<8>;
     wdata: in WIDTH;
     rdata: out WIDTH;
-  end port access
+  end ports access
 end ram SimpleMem

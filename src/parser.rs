@@ -2713,15 +2713,10 @@ impl Parser {
         while !self.check_end_ram() {
             match self.peek_kind() {
                 Some(TokenKind::Port) => {
-                    // Disambiguate: port IDENT : → top-level port
-                    //               port IDENT <signals> end port IDENT → port group
-                    if self.pos + 2 < self.tokens.len()
-                        && self.tokens[self.pos + 2].kind == TokenKind::Colon
-                    {
-                        ports.push(self.parse_port_decl()?);
-                    } else {
-                        port_groups.push(self.parse_ram_port_group()?);
-                    }
+                    ports.push(self.parse_port_decl()?);
+                }
+                Some(TokenKind::Ports) => {
+                    port_groups.push(self.parse_ram_port_group()?);
                 }
                 Some(TokenKind::Store) => {
                     store_vars = self.parse_store_block()?;
@@ -2799,14 +2794,14 @@ impl Parser {
     }
 
     fn parse_ram_port_group(&mut self) -> Result<RamPortGroup, CompileError> {
-        let start = self.expect(TokenKind::Port)?.span;
+        let start = self.expect(TokenKind::Ports)?.span;
         let name = self.expect_ident()?;
         let mut signals = Vec::new();
         while !self.check_end_port_group() {
             signals.push(self.parse_inner_signal()?);
         }
         self.expect(TokenKind::End)?;
-        self.expect(TokenKind::Port)?;
+        self.expect(TokenKind::Ports)?;
         let closing = self.expect_ident()?;
         if closing.name != name.name {
             return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
@@ -2821,7 +2816,7 @@ impl Parser {
     fn check_end_port_group(&self) -> bool {
         self.pos + 1 < self.tokens.len()
             && self.tokens[self.pos].kind == TokenKind::End
-            && self.tokens[self.pos + 1].kind == TokenKind::Port
+            && self.tokens[self.pos + 1].kind == TokenKind::Ports
     }
 
     /// Parse a signal declaration inside a port group: `name: in|out TypeExpr;`
