@@ -297,15 +297,15 @@ connect_port_ref = ident
 
 generate_block = generate_for | generate_if ;
 
-generate_for = "generate" "for" ident "in" expr ".." expr
+generate_for = "generate_for" ident "in" expr ".." expr
                  { module_item }
-               "end" "generate" "for" ident ;
+               "end" "generate_for" ;
 
-generate_if  = "generate" "if" expr
+generate_if  = "generate_if" expr
                  { module_item }
-               [ "generate" "else"
+               [ "generate_else"
                  { module_item } ]
-               "end" "generate" "if" ;
+               "end" "generate_if" ;
 
 
 (* ─── Hook binding (module) ─────────────────────────────────────────────── *)

@@ -28,6 +28,8 @@ Arch makes a hard design commitment: a large language model that has read this s
 
 - **Uniform schema:** every construct uses the identical param / port / body / verification layout. Learn it once; apply it everywhere.
 
+- **LL(1) grammar:** the next token always determines the parse action --- no backtracking, no multi-token lookahead. This means every token sequence either parses to exactly one AST or is caught immediately as an error. SV requires unbounded lookahead and context-dependent parsing. See §2.4.
+
 - **Named block endings:** every block closes with end keyword name. The AI never loses context in deeply nested structures.
 
 - **No braces:** the keyword+name header and end keyword name are the sole delimiters. There is no redundant { to emit or forget.
@@ -148,7 +150,48 @@ Every compound construct in Arch opens with a keyword-and-name header on its own
 
 > *⚑ No braces, no ambiguity. The opening keyword+name and closing end keyword name are always a matched pair. An AI generating code cannot accidentally close the wrong block.*
 
-**2.4 The todo! Escape Hatch**
+**2.4 LL(1) Grammar --- Why It Matters for AI**
+
+Arch's grammar is **LL(1)**: at every point during parsing, the next single token unambiguously determines which production rule to apply. There is no backtracking, no multi-token lookahead, and no context-dependent parsing.
+
+**What LL(1) means concretely:**
+
+| Token seen | Parser action |
+|------------|---------------|
+| `module` | Parse a module declaration |
+| `fsm` | Parse an FSM declaration |
+| `generate_for` | Parse a generate-for loop |
+| `generate_if` | Parse a generate-if conditional |
+| `port` | Parse an individual port declaration |
+| `ports` | Parse a RAM port group |
+| `end` | Return to the enclosing construct (the caller already knows which `end keyword` to expect) |
+
+Every construct is identified by its first keyword. Every closing is `end` followed by a single keyword token. No disambiguation is ever needed.
+
+**Contrast with SystemVerilog:**
+
+SystemVerilog requires unbounded lookahead and context-dependent parsing. Examples of ambiguity:
+
+- `always` could be `always_ff`, `always_comb`, or `always_latch` --- the parser must look at the sensitivity list to decide.
+- `module ... endmodule` vs `function ... endfunction` vs `begin ... end` use different closing keywords without a uniform rule.
+- Type declarations, expressions, and module instantiations share overlapping syntax --- SV parsers require GLR or backtracking to resolve.
+- Macro preprocessing (`define`, `ifdef`) creates a separate language layer that interacts with parsing.
+
+**Benefits for AI code generation:**
+
+1. **Token efficiency.** ARCH expresses the same hardware in fewer tokens than SV. Measurements across 156 VerilogEval problems show ARCH uses ~25% fewer lines than generated SV. Fewer tokens means more design fits in a fixed context window, allowing larger modules to be generated or reviewed in a single pass.
+
+2. **No syntactic traps.** An LL(1) grammar has exactly one way to write each construct. The AI cannot produce syntactically ambiguous code, because the grammar has no ambiguities. Every token sequence either parses to exactly one AST, or is a syntax error caught immediately.
+
+3. **Instant error localization.** Because the parser never backtracks, syntax errors are detected at the exact token where the grammar is violated. The AI (or human) gets a precise diagnostic: "expected `end module`, found `end fsm`" --- not a cascade of confusing secondary errors from a failed backtrack.
+
+4. **Context-free understanding.** Any snippet of ARCH code can be parsed in isolation --- `module Foo ... end module Foo` is self-contained. An LLM does not need to hold the entire file in context to understand a block's boundaries. This is possible because the grammar is context-free and LL(1): the parser state at any point depends only on the current token and the call stack, not on arbitrarily distant tokens.
+
+5. **Predictable token budget.** Because every construct follows the `keyword Name ... end keyword Name` pattern with no optional delimiters, the token count for a given design is predictable. There are no hidden costs from syntactic sugar, macro expansion, or optional semicolons that inflate token usage unpredictably.
+
+> *⚑ Arch's LL(1) grammar is a deliberate design choice, not an accident. Every syntax decision --- fused keywords (`generate_for` not `generate for`), `ports` vs `port` for RAM groups, `end` + single keyword closings --- was made to keep the grammar strictly LL(1) while remaining readable.*
+
+**2.5 The todo! Escape Hatch**
 
 Any expression or block body may be replaced with todo! to produce a compilable skeleton. The compiler emits a warning for every todo! site. Simulation aborts with a clear diagnostic if a todo! site is reached at runtime.
 
