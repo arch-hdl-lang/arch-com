@@ -1,15 +1,15 @@
 // MM2S data FIFO — buffers AXI4 read data before AXI4-Stream output.
 fifo Mm2sFifo
   param DEPTH: const = 16;
-  param TYPE: type = UInt<32>;
+  param WIDTH: type = UInt<32>;
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
   port push_valid: in Bool;
   port push_ready: out Bool;
-  port push_data: in TYPE;
+  port push_data: in WIDTH;
   port pop_valid: out Bool;
   port pop_ready: in Bool;
-  port pop_data: out TYPE;
+  port pop_data: out WIDTH;
   port full: out Bool;
   port empty: out Bool;
 end fifo Mm2sFifo

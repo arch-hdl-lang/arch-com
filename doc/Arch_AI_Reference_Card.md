@@ -384,7 +384,7 @@ Sync or dual-clock async FIFO (gray-code auto-generated). `kind: fifo` (default)
 fifo Name
   kind lifo;                          // optional, default fifo
   param DEPTH: const = 64;
-  param WIDTH: type = UInt<32>;       // REQUIRED — sets memory element width
+  param WIDTH: type = UInt<32>;       // REQUIRED — sets memory element type
 
   port clk: in Clock<D>;             // or wr_clk + rd_clk for async
   port rst: in Reset<Sync>;
