@@ -1,0 +1,124 @@
+// 4-stage RISC-V-style pipeline: Fetch → Decode → Execute → Writeback
+//
+// Demonstrates:
+//   - Per-stage stall (Fetch stalls on cache miss)
+//   - Flush (branch misprediction clears Fetch + Decode)
+//   - Forward (bypass ALU result to Decode to avoid RAW hazard)
+//   - Cross-stage signal references (Decode reads Fetch.instr, etc.)
+
+domain CoreDomain
+  freq_mhz: 200
+end domain CoreDomain
+
+// Combinational ALU — instantiated inside Execute stage
+module Alu
+  param WIDTH: const = 32;
+  port a: in UInt<WIDTH>;
+  port b: in UInt<WIDTH>;
+  port result: out UInt<WIDTH>;
+
+  comb
+    result = (a + b).trunc<WIDTH>();
+  end comb
+end module Alu
+
+pipeline CpuPipe
+  param XLEN: const = 32;
+  param REG_ADDR_W: const = 5;
+
+  port clk: in Clock<CoreDomain>;
+  port rst: in Reset<Sync>;
+
+  // Instruction memory interface
+  port imem_data: in UInt<XLEN>;
+  port imem_valid: in Bool;
+
+  // Register file read interface (external regfile)
+  port rs1_data: in UInt<XLEN>;
+  port rs2_data: in UInt<XLEN>;
+
+  // Outputs
+  port pc_out: out UInt<XLEN>;
+  port wb_data: out UInt<XLEN>;
+  port wb_rd: out UInt<REG_ADDR_W>;
+  port wb_we: out Bool;
+
+  // Control
+  port branch_taken: in Bool;
+  port branch_target: in UInt<XLEN>;
+
+  // ── Fetch: capture instruction, advance PC ──
+  stage Fetch stall when not imem_valid
+    reg pc: UInt<XLEN> init 0 reset rst=>0;
+    reg instr: UInt<XLEN> init 0 reset rst=>0;
+    seq on clk rising
+      pc <= branch_target;
+      instr <= imem_data;
+    end seq
+  end stage Fetch
+
+  // ── Decode: latch register values from external regfile ──
+  // Stall on load-use hazard: Execute is a load writing to a register Decode needs
+  stage Decode stall when Execute.we and (Execute.rd == Fetch.instr[11:7]) and Execute.rd != 0
+    reg opcode: UInt<7> init 0 reset rst=>0;
+    reg rd: UInt<REG_ADDR_W> init 0 reset rst=>0;
+    reg rs1_val: UInt<XLEN> init 0 reset rst=>0;
+    reg rs2_val: UInt<XLEN> init 0 reset rst=>0;
+    seq on clk rising
+      opcode  <= Fetch.instr[6:0];
+      rd      <= Fetch.instr[11:7];
+      rs1_val <= rs1_data;
+      rs2_val <= rs2_data;
+    end seq
+    // Explicit forwarding mux: bypass ALU result on RAW hazard
+    comb
+      if Execute.we and (Execute.rd == rd) and Execute.rd != 0
+        rs1_fwd = Execute.alu_result;
+      else
+        rs1_fwd = rs1_val;
+      end if
+    end comb
+  end stage Decode
+
+  // ── Execute: ALU module computes result, registered for next stage ──
+  stage Execute
+    reg alu_result: UInt<XLEN> init 0 reset rst=>0;
+    reg rd: UInt<REG_ADDR_W> init 0 reset rst=>0;
+    reg we: Bool init false reset rst=>false;
+    seq on clk rising
+      alu_result <= alu_out;
+      rd <= Decode.rd;
+      we <= Decode.opcode != 0;
+    end seq
+    // Combinational ALU instance
+    inst alu0: Alu
+      param WIDTH = XLEN;
+      a <- Decode.rs1_fwd;
+      b <- Decode.rs2_val;
+      result -> alu_out;
+    end inst alu0
+  end stage Execute
+
+  // ── Writeback: commit to register file ──
+  stage Writeback
+    reg result: UInt<XLEN> init 0 reset rst=>0;
+    reg rd: UInt<REG_ADDR_W> init 0 reset rst=>0;
+    reg valid: Bool init false reset rst=>false;
+    seq on clk rising
+      result <= Execute.alu_result;
+      rd <= Execute.rd;
+      valid <= Execute.we;
+    end seq
+    comb
+      wb_data = result;
+      wb_rd = rd;
+      wb_we = valid and valid_r;
+      pc_out = Fetch.pc;
+    end comb
+  end stage Writeback
+
+  // Branch misprediction flushes early stages
+  flush Fetch when branch_taken;
+  flush Decode when branch_taken;
+
+end pipeline CpuPipe

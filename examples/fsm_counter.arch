@@ -1,0 +1,62 @@
+// Simple FSM with datapath registers to test reg/seq in FSM
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+fsm FsmCounter
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+
+  port go:     in Bool;
+  port target: in UInt<8>;
+  port done:   out Bool default false;
+  port count:  out UInt<8> default 0;
+
+  reg cnt_r: UInt<8> init 0 reset rst=>0;
+  reg tgt_r: UInt<8> init 0 reset rst=>0;
+
+  state [Idle, Counting, Done]
+  default state Idle;
+
+  state Idle
+    comb
+      done  = false;
+      count = cnt_r;
+    end comb
+
+    seq on clk rising
+      if go
+        cnt_r <= 0;
+        tgt_r <= target;
+      end if
+    end seq
+
+    -> Counting when go;
+    // no fallthrough needed — compiler defaults to stay in Idle
+  end state Idle
+
+  state Counting
+    comb
+      done  = false;
+      count = cnt_r;
+    end comb
+
+    seq on clk rising
+      cnt_r <= (cnt_r + 1).trunc<8>();
+    end seq
+
+    -> Done when cnt_r == tgt_r;
+    // implicit stay in Counting
+  end state Counting
+
+  state Done
+    comb
+      done  = true;
+      count = cnt_r;
+    end comb
+
+    -> Idle when true;
+  end state Done
+
+end fsm FsmCounter

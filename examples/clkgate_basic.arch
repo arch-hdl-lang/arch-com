@@ -1,0 +1,8 @@
+// Basic latch-based clock gate (ASIC standard ICG)
+clkgate IcgCell
+  kind latch;
+  port clk_in:  in Clock<SysDomain>;
+  port enable:  in Bool;
+  port test_en: in Bool;
+  port clk_out: out Clock<SysDomain>;
+end clkgate IcgCell

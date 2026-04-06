@@ -19,7 +19,7 @@ fn compile_to_sv(source: &str) -> String {
 
 #[test]
 fn test_top_counter_compiles() {
-    let source = include_str!("top_counter.arch");
+    let source = include_str!("../examples/top_counter.arch");
     let sv = compile_to_sv(source);
     assert!(sv.contains("module Counter"));
     assert!(sv.contains("module Top"));
@@ -84,7 +84,7 @@ end module Placeholder
 
 #[test]
 fn test_let_bindings() {
-    let source = include_str!("let_bindings.arch");
+    let source = include_str!("../examples/let_bindings.arch");
     let sv = compile_to_sv(source);
     // Typed let: emits declared type then a separate assign
     assert!(sv.contains("logic [8-1:0] mask;"), "expected typed let decl, got:\n{sv}");
@@ -102,7 +102,7 @@ fn test_let_bindings() {
 
 #[test]
 fn test_fsm_traffic_light() {
-    let source = include_str!("traffic_light.arch");
+    let source = include_str!("../examples/traffic_light.arch");
     let sv = compile_to_sv(source);
     // State enum
     assert!(sv.contains("TrafficLight_state_t"));
@@ -158,7 +158,7 @@ end fsm Broken
 
 #[test]
 fn test_sync_fifo() {
-    let source = include_str!("sync_fifo.arch");
+    let source = include_str!("../examples/sync_fifo.arch");
     let sv = compile_to_sv(source);
     assert!(sv.contains("$clog2(DEPTH)"));
     assert!(sv.contains("assign full"));
@@ -175,7 +175,7 @@ fn test_sync_fifo() {
 
 #[test]
 fn test_async_fifo() {
-    let source = include_str!("async_fifo.arch");
+    let source = include_str!("../examples/async_fifo.arch");
     let sv = compile_to_sv(source);
     // Gray-code CDC
     assert!(sv.contains("bin2gray"));
@@ -216,7 +216,7 @@ end fifo BadFifo
 
 #[test]
 fn test_lifo() {
-    let source = include_str!("lifo.arch");
+    let source = include_str!("../examples/lifo.arch");
     let sv = compile_to_sv(source);
     // LIFO uses single stack pointer, not wr_ptr/rd_ptr
     assert!(sv.contains("sp"));
@@ -269,7 +269,7 @@ end fifo BadLifo
 
 #[test]
 fn test_single_port_ram() {
-    let source = include_str!("single_port_ram.arch");
+    let source = include_str!("../examples/single_port_ram.arch");
     let sv = compile_to_sv(source);
     assert!(sv.contains("module SimpleMem"));
     assert!(sv.contains("parameter int DEPTH = 256"));
@@ -286,7 +286,7 @@ fn test_single_port_ram() {
 
 #[test]
 fn test_rom_lut() {
-    let source = include_str!("rom_lut.arch");
+    let source = include_str!("../examples/rom_lut.arch");
     let sv = compile_to_sv(source);
     assert!(sv.contains("module RomLut"));
     // ROM has no write port — only read
@@ -304,7 +304,7 @@ fn test_rom_lut() {
 
 #[test]
 fn test_simple_dual_ram() {
-    let source = include_str!("simple_dual_ram.arch");
+    let source = include_str!("../examples/simple_dual_ram.arch");
     let sv = compile_to_sv(source);
     assert!(sv.contains("module DualMem"));
     assert!(sv.contains("logic [DATA_WIDTH-1:0] mem [0:DEPTH-1]"));
@@ -322,7 +322,7 @@ fn test_simple_dual_ram() {
 
 #[test]
 fn test_wrap_counter() {
-    let source = include_str!("wrap_counter.arch");
+    let source = include_str!("../examples/wrap_counter.arch");
     let sv = compile_to_sv(source);
     assert!(sv.contains("module WrapCounter"));
     assert!(sv.contains("parameter int MAX = 15"));
@@ -337,7 +337,7 @@ fn test_wrap_counter() {
 
 #[test]
 fn test_bus_arbiter() {
-    let source = include_str!("bus_arbiter.arch");
+    let source = include_str!("../examples/bus_arbiter.arch");
     let sv = compile_to_sv(source);
     assert!(sv.contains("module BusArbiter"));
     assert!(sv.contains("parameter int NUM_REQ = 4"));
@@ -351,7 +351,7 @@ fn test_bus_arbiter() {
 
 #[test]
 fn test_arbiter_custom_hook() {
-    let source = include_str!("arbiter_custom_hook.arch");
+    let source = include_str!("../examples/arbiter_custom_hook.arch");
     let sv = compile_to_sv(source);
     assert!(sv.contains("module QosArbiter"));
     assert!(sv.contains("function automatic"));
@@ -394,7 +394,7 @@ end arbiter BadArb
 
 #[test]
 fn test_arbiter_latency2() {
-    let source = include_str!("arbiter_latency2.arch");
+    let source = include_str!("../examples/arbiter_latency2.arch");
     let sv = compile_to_sv(source);
     assert!(sv.contains("module LatencyArbiter"));
     // Should have _comb intermediate signals
@@ -412,7 +412,7 @@ fn test_arbiter_latency2() {
 
 #[test]
 fn test_template_basic() {
-    let source = include_str!("template_basic.arch");
+    let source = include_str!("../examples/template_basic.arch");
     let sv = compile_to_sv(source);
     assert!(sv.contains("module MyArbiter"));
     assert!(!sv.contains("template")); // templates don't emit SV
@@ -452,7 +452,7 @@ end module BadModule
 
 #[test]
 fn test_int_regs() {
-    let source = include_str!("int_regs.arch");
+    let source = include_str!("../examples/int_regs.arch");
     let sv = compile_to_sv(source);
     assert!(sv.contains("module IntRegs"));
     assert!(sv.contains("parameter int NREGS = 32"));
@@ -466,7 +466,7 @@ fn test_int_regs() {
 
 #[test]
 fn test_active_low_reset() {
-    let source = include_str!("reset_low.arch");
+    let source = include_str!("../examples/reset_low.arch");
     let sv = compile_to_sv(source);
     // reset condition must be inverted
     assert!(sv.contains("if ((!rst_n))"), "expected inverted reset condition, got:\n{sv}");
@@ -543,7 +543,7 @@ end module BadCounter
 
 #[test]
 fn test_generate_for() {
-    let source = include_str!("generate_for.arch");
+    let source = include_str!("../examples/generate_for.arch");
     let sv = compile_to_sv(source);
     // After elaboration, generate for 0..1 should expand to 2 ports each
     assert!(sv.contains("req_0"), "expected req_0 port, got:\n{sv}");
@@ -555,7 +555,7 @@ fn test_generate_for() {
 
 #[test]
 fn test_generate_if_true() {
-    let source = include_str!("generate_if.arch");
+    let source = include_str!("../examples/generate_if.arch");
     let sv = compile_to_sv(source);
     // generate if true → debug_out port is included
     assert!(sv.contains("debug_out"), "expected debug_out port, got:\n{sv}");
@@ -966,7 +966,7 @@ end module BadSyncAsync
 
 #[test]
 fn test_simple_pipeline() {
-    let source = include_str!("simple_pipeline.arch");
+    let source = include_str!("../examples/simple_pipeline.arch");
     let sv = compile_to_sv(source);
     assert!(sv.contains("module SimplePipe"), "missing module header");
     assert!(sv.contains("fetch_valid_r"), "missing fetch valid register");
@@ -1055,7 +1055,7 @@ end pipeline BadFlush
 
 #[test]
 fn test_cpu_pipeline() {
-    let source = include_str!("cpu_pipeline.arch");
+    let source = include_str!("../examples/cpu_pipeline.arch");
     let sv = compile_to_sv(source);
     // Module header
     assert!(sv.contains("module CpuPipe"), "missing module header");
@@ -1439,7 +1439,7 @@ fn test_linklist_inst_in_module() {
     // PacketQueue wraps TaskQueue linklist as a push/pop FIFO interface.
     // Verifies that: linklist can be instantiated inside a module,
     // inst output ports are auto-declared as wires, and codegen succeeds.
-    let source = std::fs::read_to_string("tests/pkt_queue.arch")
+    let source = std::fs::read_to_string("examples/pkt_queue.arch")
         .expect("pkt_queue.arch not found");
     let tokens = lexer::tokenize(&source).expect("lexer error");
     let mut parser = Parser::new(tokens, &source);
@@ -1455,7 +1455,7 @@ fn test_linklist_inst_in_module() {
 
 #[test]
 fn test_pipe_reg() {
-    let source = include_str!("pipe_reg_test.arch");
+    let source = include_str!("../examples/pipe_reg_test.arch");
     let sv = compile_to_sv(source);
     assert!(sv.contains("delayed_stg1"));
     assert!(sv.contains("delayed_stg2"));

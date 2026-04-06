@@ -1,0 +1,17 @@
+domain SrcDomain
+  freq_mhz: 100
+end domain SrcDomain
+
+domain DstDomain
+  freq_mhz: 133
+end domain DstDomain
+
+synchronizer PtrSync
+  kind gray;
+  param STAGES: const = 2;
+  port src_clk: in Clock<SrcDomain>;
+  port dst_clk: in Clock<DstDomain>;
+  port rst: in Reset<Sync>;
+  port data_in: in UInt<4>;
+  port data_out: out UInt<4>;
+end synchronizer PtrSync

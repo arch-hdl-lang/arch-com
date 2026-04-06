@@ -1,0 +1,17 @@
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+arbiter LatencyArbiter
+  policy round_robin;
+  latency 2;
+  param NUM_REQ: const = 4;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  ports[NUM_REQ] request
+    valid: in Bool;
+    ready: out Bool;
+  end ports request
+  port grant_valid: out Bool;
+  port grant_requester: out UInt<2>;
+end arbiter LatencyArbiter

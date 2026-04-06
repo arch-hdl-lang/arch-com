@@ -1,0 +1,18 @@
+// Clock divider using .as_clock<Domain>() cast
+module ClkDiv2
+
+  port clk_in:  in Clock<SysDomain>;
+  port rst_n:   in Reset<Async, Low>;
+  port clk_out: out Clock<SysDomain>;
+
+  reg toggle_r: Bool init false reset rst_n=>false;
+
+  seq on clk_in rising
+    toggle_r <= ~toggle_r;
+  end seq
+
+  comb
+    clk_out = toggle_r.as_clock<SysDomain>();
+  end comb
+
+end module ClkDiv2

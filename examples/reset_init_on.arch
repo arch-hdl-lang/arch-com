@@ -1,0 +1,74 @@
+// Test: `init on rst.asserted` block in seq.
+// Allows polarity-independent, complex reset logic (e.g. Vec resets via for loops).
+// Sync/async and polarity are determined by the reset port declaration —
+// and can be overridden at instantiation via `as Reset<Async, Low>`.
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+// Active-high sync reset with Vec initialization
+module SyncHighInitOn
+  port clk:   in Clock<SysDomain>;
+  port rst:   in Reset<Sync>;
+  port en:    in Bool;
+  port out0:  out UInt<8>;
+  port out1:  out UInt<8>;
+  port out2:  out UInt<8>;
+  port out3:  out UInt<8>;
+
+  reg table: Vec<UInt<8>, 4> reset none;
+
+  seq on clk rising
+    init on rst.asserted
+      for i in 0..3
+        table[i] <= i.trunc<8>();
+      end for
+    end init
+
+    if en
+      table[0] <= (table[0] + 1).trunc<8>();
+    end if
+  end seq
+
+  comb
+    out0 = table[0];
+    out1 = table[1];
+    out2 = table[2];
+    out3 = table[3];
+  end comb
+
+end module SyncHighInitOn
+
+// Active-low async reset with Vec initialization
+module AsyncLowInitOn
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+  port en:    in Bool;
+  port out0:  out UInt<8>;
+  port out1:  out UInt<8>;
+  port out2:  out UInt<8>;
+  port out3:  out UInt<8>;
+
+  reg table: Vec<UInt<8>, 4> reset none;
+
+  seq on clk rising
+    init on rst_n.asserted
+      for i in 0..3
+        table[i] <= i.trunc<8>();
+      end for
+    end init
+
+    if en
+      table[0] <= (table[0] + 1).trunc<8>();
+    end if
+  end seq
+
+  comb
+    out0 = table[0];
+    out1 = table[1];
+    out2 = table[2];
+    out3 = table[3];
+  end comb
+
+end module AsyncLowInitOn

@@ -1,0 +1,17 @@
+package TestPkg
+  param WIDTH: const = 8;
+
+  enum AluOp
+    Add, Sub, And, Or
+  end enum AluOp
+
+  struct BusReq
+    addr: UInt<32>;
+    data: UInt<32>;
+    wr: Bool;
+  end struct BusReq
+
+  function max(a: UInt<8>, b: UInt<8>) -> UInt<8>
+    return a > b ? a : b;
+  end function max
+end package TestPkg

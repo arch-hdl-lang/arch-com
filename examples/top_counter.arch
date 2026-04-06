@@ -1,0 +1,34 @@
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module Counter
+  param WIDTH: const = 8;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port count: out UInt<WIDTH>;
+  reg count_r: UInt<WIDTH> init 0 reset rst=>0;
+  seq on clk rising
+    if en
+      count_r <= (count_r + 1).trunc<WIDTH>();
+    end if
+  end seq
+  comb
+    count = count_r;
+  end comb
+end module Counter
+
+module Top
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port count_out: out UInt<8>;
+  inst ctr: Counter
+    param WIDTH = 8;
+    clk <- clk;
+    rst <- rst;
+    en <- en;
+    count -> count_out;
+  end inst ctr
+end module Top

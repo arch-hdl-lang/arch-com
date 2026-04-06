@@ -1,0 +1,54 @@
+// Test wide UInt types: pack/unpack 512-bit cache line, equality, shifts
+module WideUintTest
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  // 512-bit cache line ports
+  port line_in:  in  UInt<512>;
+  port line_out: out UInt<512>;
+
+  // Extract word 0 (bits 63:0)
+  port word0_out: out UInt<64>;
+
+  // 2048-bit max port
+  port huge_in:  in  UInt<2048>;
+  port huge_out: out UInt<2048>;
+
+  // Pack 8 × 64-bit words into 512-bit line
+  port w0: in UInt<64>;
+  port w1: in UInt<64>;
+  port w2: in UInt<64>;
+  port w3: in UInt<64>;
+  port w4: in UInt<64>;
+  port w5: in UInt<64>;
+  port w6: in UInt<64>;
+  port w7: in UInt<64>;
+  port packed_out: out UInt<512>;
+
+  // Equality check
+  port eq_result: out Bool;
+
+  // Registered 512-bit buffer
+  reg line_buf: UInt<512> reset rst=>0;
+
+  seq on clk rising
+    line_buf <= line_in;
+  end seq
+
+  comb
+    // Pass through
+    line_out  = line_buf;
+    huge_out  = huge_in;
+
+    // Extract word 0 from registered line
+    word0_out = line_buf[63:0];
+
+    // Pack 8 words into 512-bit line
+    packed_out = {w7, w6, w5, w4, w3, w2, w1, w0};
+
+    // Equality
+    eq_result = (line_buf == line_in);
+  end comb
+
+end module WideUintTest

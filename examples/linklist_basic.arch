@@ -1,0 +1,69 @@
+// Basic singly-linked task queue
+// Exercises: alloc, free, insert_tail, delete_head, read_data, write_data
+// with full/empty/length status outputs.
+
+linklist TaskQueue
+  param DEPTH: const = 8;
+  param DATA: type = UInt<32>;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  kind singly;
+
+  track tail: true;
+  track length: true;
+
+  op alloc
+    latency: 1;
+    port req_valid:   in Bool;
+    port req_ready:   out Bool;
+    port resp_valid:  out Bool;
+    port resp_handle: out UInt<3>;
+  end op alloc
+
+  op free
+    latency: 1;
+    port req_valid:   in Bool;
+    port req_ready:   out Bool;
+    port req_handle:  in UInt<3>;
+  end op free
+
+  op insert_tail
+    latency: 2;
+    port req_valid:   in Bool;
+    port req_ready:   out Bool;
+    port req_data:    in DATA;
+    port resp_valid:  out Bool;
+    port resp_handle: out UInt<3>;
+  end op insert_tail
+
+  op delete_head
+    latency: 2;
+    port req_valid:   in Bool;
+    port req_ready:   out Bool;
+    port resp_valid:  out Bool;
+    port resp_data:   out DATA;
+  end op delete_head
+
+  op read_data
+    latency: 1;
+    port req_valid:   in Bool;
+    port req_handle:  in UInt<3>;
+    port resp_valid:  out Bool;
+    port resp_data:   out DATA;
+  end op read_data
+
+  op write_data
+    latency: 1;
+    port req_valid:   in Bool;
+    port req_handle:  in UInt<3>;
+    port req_data:    in DATA;
+    port resp_valid:  out Bool;
+  end op write_data
+
+  port empty:  out Bool;
+  port full:   out Bool;
+  port length: out UInt<4>;
+
+end linklist TaskQueue

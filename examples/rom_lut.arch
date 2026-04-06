@@ -1,0 +1,17 @@
+// ROM lookup table — sine approximation (8 entries, 8-bit values)
+ram RomLut
+  kind rom;
+  latency 1;
+  init: [0x00, 0x31, 0x5A, 0x76, 0x7F, 0x76, 0x5A, 0x31];
+
+  param DEPTH: const = 8;
+  param WIDTH: type = UInt<8>;
+
+  port clk: in Clock<CoreDomain>;
+
+  port rd
+    addr: in UInt<3>;
+    en:   in Bool;
+    data: out UInt<8>;
+  end port rd
+end ram RomLut

@@ -1,0 +1,34 @@
+// domain SysDomain
+//   freq_mhz: 100
+
+module SimpleMem #(
+  parameter int DEPTH = 256,
+  parameter int DATA_WIDTH = 8
+) (
+  input logic clk,
+  input logic access_en,
+  input logic access_wen,
+  input logic [8-1:0] access_addr,
+  input logic [DATA_WIDTH-1:0] access_wdata,
+  output logic [DATA_WIDTH-1:0] access_rdata
+);
+
+  logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];
+  logic [DATA_WIDTH-1:0] access_rdata_r;
+  
+  always_ff @(posedge clk) begin
+    if (access_en) begin
+      if (access_wen)
+        mem[access_addr] <= access_wdata;
+      else
+        access_rdata_r <= mem[access_addr];
+    end
+  end
+  assign access_rdata = access_rdata_r;
+  
+  initial begin
+    for (int i = 0; i < DEPTH; i++) mem[i] = '0;
+  end
+
+endmodule
+

@@ -1,0 +1,38 @@
+// domain SysDomain
+//   freq_mhz: 100
+
+module IntRegs #(
+  parameter int NREGS = 32,
+  parameter int WIDTH = 0
+) (
+  input logic clk,
+  input logic rst,
+  input logic [5-1:0] read0_addr,
+  output logic [8-1:0] read0_data,
+  input logic [5-1:0] read1_addr,
+  output logic [8-1:0] read1_data,
+  input logic write_en,
+  input logic [5-1:0] write_addr,
+  input logic [8-1:0] write_data
+);
+
+  logic [8-1:0] rf_data [0:NREGS-1];
+  
+  always_ff @(posedge clk) begin
+    if (write_en && write_addr != 0)
+      rf_data[write_addr] <= write_data;
+  end
+  
+  always_comb begin
+    if (write_en && write_addr == read0_addr)
+      read0_data = write_data;
+    else
+      read0_data = rf_data[read0_addr];
+    if (write_en && write_addr == read1_addr)
+      read1_data = write_data;
+    else
+      read1_data = rf_data[read1_addr];
+  end
+
+endmodule
+

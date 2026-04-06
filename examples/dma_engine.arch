@@ -1,0 +1,361 @@
+// =============================================================================
+// Simple DMA Engine
+// Demonstrates: domain, struct, enum, regfile, ram, fifo, counter,
+//               arbiter, fsm, module (comb + reg blocks, match, inst)
+// =============================================================================
+
+// ── Clock domain ─────────────────────────────────────────────────────────────
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+// ── Shared types ──────────────────────────────────────────────────────────────
+
+struct DmaDescriptor
+  src_addr: UInt<32>;
+  dst_addr: UInt<32>;
+  length:   UInt<16>;
+  flags:    UInt<8>;
+end struct DmaDescriptor
+
+enum BusCmd
+  BusIdle,
+  BusRead,
+  BusWrite
+end enum BusCmd
+
+// ── CSR register file ─────────────────────────────────────────────────────────
+
+regfile DmaRegs
+  param NREGS: const = 8;
+  param WIDTH: type = UInt<32>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  ports[2] read
+    addr: in UInt<3>;
+    data: out UInt<32>;
+  end ports read
+  ports[1] write
+    en:   in Bool;
+    addr: in UInt<3>;
+    data: in UInt<32>;
+  end ports write
+  forward write_before_read: true;
+end regfile DmaRegs
+
+// ── Descriptor table RAM ──────────────────────────────────────────────────────
+
+ram DescTable
+  kind simple_dual;
+  latency 1;
+  write: no_change;
+  init: zero;
+  param DEPTH: const = 16;
+  param WIDTH: type = UInt<32>;
+  port clk: in Clock<SysDomain>;
+  port rd_port
+    addr:  in UInt<4>;
+    en:    in Bool;
+    rdata: out WIDTH;
+  end port rd_port
+  port wr_port
+    addr:  in UInt<4>;
+    en:    in Bool;
+    wen:   in Bool;
+    wdata: in WIDTH;
+  end port wr_port
+end ram DescTable
+
+// ── Write-side data FIFO ──────────────────────────────────────────────────────
+
+fifo WriteBuffer
+  param DEPTH: const = 8;
+  param TYPE: type = UInt<32>;
+  port clk:        in Clock<SysDomain>;
+  port rst:        in Reset<Sync>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data:  in TYPE;
+  port pop_valid:  out Bool;
+  port pop_ready:  in Bool;
+  port pop_data:   out TYPE;
+end fifo WriteBuffer
+
+// ── Beat counter ──────────────────────────────────────────────────────────────
+
+counter BeatCounter
+  kind       wrap;
+  direction: up;
+  init: 0;
+  param MAX: const = 255;
+  port clk:    in Clock<SysDomain>;
+  port rst:    in Reset<Sync>;
+  port inc:    in Bool;
+  port clear:  in Bool;
+  port value:  out UInt<8>;
+  port at_max: out Bool;
+end counter BeatCounter
+
+// ── Memory bus arbiter ────────────────────────────────────────────────────────
+
+arbiter MemArbiter
+  policy round_robin;
+  param NUM_REQ: const = 2;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  ports[NUM_REQ] request
+    valid: in Bool;
+    ready: out Bool;
+  end ports request
+  port grant_valid:     out Bool;
+  port grant_requester: out UInt<1>;
+end arbiter MemArbiter
+
+// ── Transfer FSM ──────────────────────────────────────────────────────────────
+
+fsm TransferFsm
+  port clk:      in Clock<SysDomain>;
+  port rst:      in Reset<Sync>;
+  port start:    in Bool;
+  port all_done: in Bool;
+  port reg active:   out Bool reset rst=>false;
+  port reg fire_irq: out Bool reset rst=>false;
+
+  state [Idle, Running, Done]
+  default state Idle;
+  default seq on clk rising;
+
+  default
+    seq
+      active   <= false;
+      fire_irq <= false;
+    end seq
+  end default
+
+  state Idle
+    -> Running when start;
+  end state Idle
+
+  state Running
+    seq
+      active <= true;
+    end seq
+    -> Done when all_done;
+  end state Running
+
+  state Done
+    seq
+      fire_irq <= true;
+    end seq
+    -> Idle;
+  end state Done
+
+end fsm TransferFsm
+
+// ── DMA engine top-level module ───────────────────────────────────────────────
+
+module DmaEngine
+  param DATA_WIDTH: const = 32;
+
+  port clk:      in Clock<SysDomain>;
+  port rst:      in Reset<Sync>;
+
+  // ── APB slave ──────────────────────────────────────────────────────────────
+  port apb_sel:    in Bool;
+  port apb_enable: in Bool;
+  port apb_write:  in Bool;
+  port apb_addr:   in UInt<3>;
+  port apb_wdata:  in UInt<32>;
+  port apb_rdata:  out UInt<32>;
+  port apb_ready:  out Bool;
+
+  // ── Memory read master ─────────────────────────────────────────────────────
+  port mem_rd_valid: out Bool;
+  port mem_rd_ready: in Bool;
+  port mem_rd_addr:  out UInt<32>;
+  port mem_rd_data:  in UInt<32>;
+
+  // ── Memory write master ────────────────────────────────────────────────────
+  port mem_wr_valid: out Bool;
+  port mem_wr_ready: in Bool;
+  port mem_wr_addr:  out UInt<32>;
+  port mem_wr_data:  out UInt<32>;
+
+  // ── Status and interrupt ───────────────────────────────────────────────────
+  port irq:  out Bool;
+  port busy: out Bool;
+
+  // ── Instance output wires ─────────────────────────────────────────────────
+  reg regs_src: UInt<32> init 0 reset none;
+  reg regs_dst: UInt<32> init 0 reset none;
+
+  reg beat_val:  UInt<8> init 0 reset none;
+  reg at_max_r:  Bool    init false reset none;
+
+  reg wb_push_ready: Bool     init false reset none;
+  reg wb_pop_valid:  Bool     init false reset none;
+  reg wb_pop_data:   UInt<32> init 0 reset none;
+
+  reg read_val:      UInt<8>  init 0 reset none;
+  reg read_at_max_r: Bool     init false reset none;
+
+  reg reads_done_r:  Bool     init false reset rst=>false;
+
+  // ── Descriptor fetch state ────────────────────────────────────────────────
+  reg desc_rdata: UInt<32>      init 0 reset none;
+  reg fetch_cnt:  UInt<2>       init 0 reset rst=>0;
+  reg desc_r:     DmaDescriptor init DmaDescriptor { src_addr: 0, dst_addr: 0, length: 0, flags: 0 } reset none;
+
+  // ── Arbiter output wires ──────────────────────────────────────────────────
+  reg arb_req_ready:   UInt<2> init 0     reset none;
+  reg arb_grant_valid: Bool    init false reset none;
+  reg arb_grant_req:   UInt<1> init 0     reset none;
+
+  // ── Let bindings ──────────────────────────────────────────────────────────
+  let start_pulse:  Bool    = apb_sel & apb_enable & apb_write & (apb_addr == 3) & (apb_wdata == 1);
+  let desc_rd_en:   Bool    = (fetch_cnt == 1) | (fetch_cnt == 2);
+  let desc_rd_addr: UInt<4> = (fetch_cnt == 2).zext<4>();
+  let read_granted:  Bool   = arb_req_ready[0];
+  let write_granted: Bool   = arb_req_ready[1];
+  let bus_cmd: BusCmd = match arb_req_ready
+    0b01 => BusCmd::BusRead,
+    0b10 => BusCmd::BusWrite,
+    _    => BusCmd::BusIdle
+  end match;
+  let read_wants:  Bool = busy & wb_push_ready & ~reads_done_r & (fetch_cnt == 3);
+  let write_wants: Bool = wb_pop_valid;
+  let read_fired:  Bool = mem_rd_valid & mem_rd_ready;
+  let read_done:   Bool = read_fired & (read_val.zext<16>() == desc_r.length);
+  let beat_fired:  Bool = mem_wr_valid & mem_wr_ready;
+  let all_done:    Bool = beat_fired & (beat_val.zext<16>() == desc_r.length);
+
+  // ── Instances ────────────────────────────────────────────────────────────
+  inst regs: DmaRegs
+    clk          <- clk;
+    rst          <- rst;
+    read[0].addr <- 0;
+    read[0].data -> regs_src;
+    read[1].addr <- 1;
+    read[1].data -> regs_dst;
+    write.en     <- apb_sel & apb_enable & apb_write;
+    write.addr   <- apb_addr;
+    write.data   <- apb_wdata;
+  end inst regs
+
+  inst ctrl: TransferFsm
+    clk      <- clk;
+    rst      <- rst;
+    start    <- start_pulse;
+    all_done <- all_done;
+    active   -> busy;
+    fire_irq -> irq;
+  end inst ctrl
+
+  inst read_ctr: BeatCounter
+    clk    <- clk;
+    rst    <- rst;
+    inc    <- read_fired;
+    clear  <- read_done;
+    value  -> read_val;
+    at_max -> read_at_max_r;
+  end inst read_ctr
+
+  inst beat: BeatCounter
+    clk    <- clk;
+    rst    <- rst;
+    inc    <- beat_fired;
+    clear  <- all_done;
+    value  -> beat_val;
+    at_max -> at_max_r;
+  end inst beat
+
+  inst wb: WriteBuffer
+    clk        <- clk;
+    rst        <- rst;
+    push_valid <- read_fired;
+    push_ready -> wb_push_ready;
+    push_data  <- mem_rd_data;
+    pop_valid  -> wb_pop_valid;
+    pop_ready  <- mem_wr_ready & write_granted;
+    pop_data   -> wb_pop_data;
+  end inst wb
+
+  inst desc: DescTable
+    clk            <- clk;
+    rd_port.addr   <- desc_rd_addr;
+    rd_port.en     <- desc_rd_en;
+    rd_port.rdata  -> desc_rdata;
+    wr_port.addr   <- apb_addr.zext<4>();
+    wr_port.en     <- apb_sel & apb_enable & apb_write;
+    wr_port.wen    <- apb_sel & apb_enable & apb_write;
+    wr_port.wdata  <- apb_wdata;
+  end inst desc
+
+  inst arb: MemArbiter
+    clk               <- clk;
+    rst               <- rst;
+    request.valid     <- {write_wants, read_wants};
+    request.ready     -> arb_req_ready;
+    grant_valid       -> arb_grant_valid;
+    grant_requester   -> arb_grant_req;
+  end inst arb
+
+  // ── All-reads-done latch ───────────────────────────────────────────────────
+  seq on clk rising
+    if ~busy
+      reads_done_r <= false;
+    elsif read_done
+      reads_done_r <= true;
+    end if
+  end seq
+
+  // ── Descriptor fetch state machine ────────────────────────────────────────
+  seq on clk rising
+    if start_pulse
+      fetch_cnt <= 1;
+    end if
+    if fetch_cnt == 1
+      fetch_cnt <= 2;
+    end if
+    if fetch_cnt == 2
+      desc_r.src_addr <= desc_rdata;
+      fetch_cnt       <= 3;
+    end if
+    if fetch_cnt == 3
+      desc_r.dst_addr <= desc_rdata;
+    end if
+    if all_done
+      fetch_cnt <= 0;
+    end if
+  end seq
+
+  // ── APB write: latch desc_r.length ────────────────────────────────────────
+  seq on clk rising
+    if apb_sel & apb_enable & apb_write
+      if apb_addr == 2
+        desc_r.length <= apb_wdata.trunc<16>();
+      end if
+    end if
+  end seq
+
+  // ── Combinational outputs ─────────────────────────────────────────────────
+  comb
+    mem_rd_valid = bus_cmd == BusCmd::BusRead;
+    mem_rd_addr  = (desc_r.src_addr + read_val.zext<32>()).trunc<32>();
+
+    mem_wr_valid = bus_cmd == BusCmd::BusWrite;
+    mem_wr_addr  = (desc_r.dst_addr + beat_val.zext<32>()).trunc<32>();
+    mem_wr_data  = wb_pop_data;
+
+    apb_ready = true;
+
+    apb_rdata = match apb_addr
+      0 => regs_src,
+      1 => regs_dst,
+      2 => beat_val.zext<32>(),
+      _ => 0
+    end match;
+  end comb
+
+end module DmaEngine

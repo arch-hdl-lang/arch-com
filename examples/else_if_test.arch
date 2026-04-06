@@ -1,0 +1,41 @@
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module ElseIfTest
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port sel: in UInt<2>;
+  port data_in: in UInt<8>;
+  port result: out UInt<8>;
+  port comb_out: out UInt<8>;
+
+  reg result_r: UInt<8> init 0 reset rst=>0;
+
+  // Test else-if in seq block
+  seq on clk rising
+    if sel == 0
+      result_r <= data_in;
+    elsif sel == 1
+      result_r <= data_in ^ 0xff;
+    elsif sel == 2
+      result_r <= (data_in << 1).trunc<8>();
+    else
+      result_r <= 0;
+    end if
+  end seq
+
+  // Test else-if in comb block
+  comb
+    if sel == 0
+      comb_out = data_in;
+    elsif sel == 1
+      comb_out = data_in ^ 0xff;
+    elsif sel == 2
+      comb_out = (data_in << 1).trunc<8>();
+    else
+      comb_out = 0;
+    end if
+    result = result_r;
+  end comb
+end module ElseIfTest

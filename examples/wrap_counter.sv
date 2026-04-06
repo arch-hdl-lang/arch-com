@@ -1,0 +1,26 @@
+// domain SysDomain
+//   freq_mhz: 100
+
+module WrapCounter #(
+  parameter int MAX = 15
+) (
+  input logic clk,
+  input logic rst,
+  input logic inc,
+  output logic [4-1:0] value,
+  output logic at_max
+);
+
+  logic [4-1:0] count_r;
+  always_ff @(posedge clk) begin
+    if (rst) count_r <= 0;
+    else if (inc) begin
+      if (count_r == 4'(MAX)) count_r <= 0;
+      else count_r <= count_r + 1;
+    end
+  end
+  assign value = count_r;
+  assign at_max = (count_r == 4'(MAX));
+
+endmodule
+

@@ -1,0 +1,7 @@
+// AND-based clock gate (FPGA)
+clkgate IcgCellAnd
+  kind and;
+  port clk_in:  in Clock<SysDomain>;
+  port enable:  in Bool;
+  port clk_out: out Clock<SysDomain>;
+end clkgate IcgCellAnd

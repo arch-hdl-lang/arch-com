@@ -1,0 +1,91 @@
+// PacketQueue: a module that wraps TaskQueue (singly linked list) as a simple
+// push/pop FIFO interface.  Demonstrates linklist instantiation inside a module.
+//
+// Tests: arch build (multi-file → SV with both modules), arch sim (wrapper
+//        module drives sub-instance linklist C++ model).
+
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+// ── linklist ────────────────────────────────────────────────────────────────
+
+linklist TaskQueue
+  param DEPTH: const = 8;
+  param DATA: type = UInt<32>;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  kind singly;
+
+  track tail:   true;
+  track length: true;
+
+  op insert_tail
+    latency: 2;
+    port req_valid:   in Bool;
+    port req_ready:   out Bool;
+    port req_data:    in DATA;
+    port resp_valid:  out Bool;
+    port resp_handle: out UInt<3>;
+  end op insert_tail
+
+  op delete_head
+    latency: 2;
+    port req_valid:   in Bool;
+    port req_ready:   out Bool;
+    port resp_valid:  out Bool;
+    port resp_data:   out DATA;
+  end op delete_head
+
+  port empty:  out Bool;
+  port full:   out Bool;
+  port length: out UInt<4>;
+
+end linklist TaskQueue
+
+// ── wrapper module ───────────────────────────────────────────────────────────
+
+module PacketQueue
+  param DEPTH: const = 8;
+
+  port clk:            in Clock<SysDomain>;
+  port rst:            in Reset<Sync>;
+
+  // Push (enqueue) interface — maps to insert_tail
+  port push_valid:      in Bool;
+  port push_ready:      out Bool;
+  port push_data:       in UInt<32>;
+  port push_resp_valid: out Bool;
+
+  // Pop (dequeue) interface — maps to delete_head
+  port pop_valid:       in Bool;
+  port pop_ready:       out Bool;
+  port pop_resp_valid:  out Bool;
+  port pop_data:        out UInt<32>;
+
+  // Status forwarded from linklist
+  port empty:           out Bool;
+  port full:            out Bool;
+  port length:          out UInt<4>;
+
+  inst q: TaskQueue
+    param DEPTH = 8;
+    clk                       <- clk;
+    rst                       <- rst;
+    insert_tail_req_valid     <- push_valid;
+    insert_tail_req_data      <- push_data;
+    insert_tail_req_ready     -> push_ready;
+    insert_tail_resp_valid    -> push_resp_valid;
+    insert_tail_resp_handle   -> _push_handle;
+    delete_head_req_valid     <- pop_valid;
+    delete_head_req_ready     -> pop_ready;
+    delete_head_resp_valid    -> pop_resp_valid;
+    delete_head_resp_data     -> pop_data;
+    empty                     -> empty;
+    full                      -> full;
+    length                    -> length;
+  end inst q
+
+end module PacketQueue

@@ -1,0 +1,87 @@
+// Doubly-linked list with next/prev traversal and insert_after
+// Exercises: doubly-specific prev pointer RAM, insert_after, delete
+
+linklist SchedList
+  param DEPTH: const = 16;
+  param DATA: type = UInt<32>;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  kind doubly;
+
+  track tail: true;
+  track length: true;
+
+  op alloc
+    latency: 1;
+    port req_valid:   in Bool;
+    port req_ready:   out Bool;
+    port resp_valid:  out Bool;
+    port resp_handle: out UInt<4>;
+  end op alloc
+
+  op free
+    latency: 1;
+    port req_valid:   in Bool;
+    port req_ready:   out Bool;
+    port req_handle:  in UInt<4>;
+  end op free
+
+  op insert_head
+    latency: 2;
+    port req_valid:   in Bool;
+    port req_ready:   out Bool;
+    port req_data:    in DATA;
+    port resp_valid:  out Bool;
+    port resp_handle: out UInt<4>;
+  end op insert_head
+
+  op insert_tail
+    latency: 2;
+    port req_valid:   in Bool;
+    port req_ready:   out Bool;
+    port req_data:    in DATA;
+    port resp_valid:  out Bool;
+    port resp_handle: out UInt<4>;
+  end op insert_tail
+
+  op insert_after
+    latency: 2;
+    port req_valid:   in Bool;
+    port req_ready:   out Bool;
+    port req_handle:  in UInt<4>;
+    port req_data:    in DATA;
+    port resp_valid:  out Bool;
+    port resp_handle: out UInt<4>;
+  end op insert_after
+
+  op delete_head
+    latency: 2;
+    port req_valid:   in Bool;
+    port req_ready:   out Bool;
+    port resp_valid:  out Bool;
+    port resp_data:   out DATA;
+  end op delete_head
+
+  op next
+    latency: 1;
+    port req_valid:   in Bool;
+    port req_handle:  in UInt<4>;
+    port resp_valid:  out Bool;
+    port resp_handle: out UInt<4>;
+  end op next
+
+  op prev
+    latency: 1;
+    port req_valid:   in Bool;
+    port req_handle:  in UInt<4>;
+    port resp_valid:  out Bool;
+    port resp_handle: out UInt<4>;
+  end op prev
+
+  port empty:  out Bool;
+  port full:   out Bool;
+  port length: out UInt<5>;
+
+end linklist SchedList

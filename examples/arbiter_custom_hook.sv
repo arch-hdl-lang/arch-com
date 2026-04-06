@@ -1,0 +1,42 @@
+// Isolate lowest set bit of (req_mask with last_grant deprioritized)
+// ~pick + 1 = two's complement negate; use XOR-with-mask to avoid width warnings
+module QosArbiter #(
+  parameter int NUM_REQ = 4
+) (
+  input logic clk,
+  input logic rst,
+  input logic [8-1:0] qos,
+  output logic grant_valid,
+  output logic [2-1:0] grant_requester,
+  input logic [NUM_REQ-1:0] request_valid,
+  output logic [NUM_REQ-1:0] request_ready
+);
+
+  function automatic logic [4-1:0] QosGrant(input logic [4-1:0] req_mask, input logic [4-1:0] last_grant, input logic [8-1:0] qos);
+    logic [4-1:0] masked = req_mask & (last_grant ^ 'hF);
+    logic [4-1:0] pick = masked != 0 ? masked : req_mask;
+    logic [5-1:0] pick_neg = 5'($unsigned(pick ^ 'hF)) + 1;
+    return pick & 4'(pick_neg);
+  endfunction
+  
+  logic [4-1:0] last_grant_r;
+  
+  always_ff @(posedge clk) begin
+    if (rst) last_grant_r <= '0;
+    else if (grant_valid) last_grant_r <= grant_onehot;
+  end
+  
+  logic [4-1:0] grant_onehot;
+  
+  always_comb begin
+    grant_onehot = QosGrant(request_valid, last_grant_r, qos);
+    grant_valid = |grant_onehot;
+    request_ready = grant_onehot;
+    grant_requester = '0;
+    for (int ci = 0; ci < 4; ci++) begin
+      if (grant_onehot[ci]) grant_requester = 2'(ci);
+    end
+  end
+
+endmodule
+
