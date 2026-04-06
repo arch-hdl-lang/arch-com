@@ -73,7 +73,7 @@ fsm FsmAxi4Fill
   end state SendAR
 
   state WaitR
-    let r_ready = true;
+    comb r_ready = true; end comb
     seq
       if r_valid
         fill_word[beat_ctr_r.trunc<3>()] <= r_data;
@@ -84,7 +84,7 @@ fsm FsmAxi4Fill
   end state WaitR
 
   state Done
-    let fill_done = true;
+    comb fill_done = true; end comb
     -> Idle;
   end state Done
 

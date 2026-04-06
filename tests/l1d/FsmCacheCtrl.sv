@@ -76,6 +76,27 @@ module FsmCacheCtrl (
   logic lookup_hit_r;
   logic lookup_victim_dirty_r;
   
+  logic hit_0;
+  assign hit_0 = tag_rd_data[0][53:2] == req_addr_r[63:12] & tag_rd_data[0][0];
+  logic hit_1;
+  assign hit_1 = tag_rd_data[1][53:2] == req_addr_r[63:12] & tag_rd_data[1][0];
+  logic hit_2;
+  assign hit_2 = tag_rd_data[2][53:2] == req_addr_r[63:12] & tag_rd_data[2][0];
+  logic hit_3;
+  assign hit_3 = tag_rd_data[3][53:2] == req_addr_r[63:12] & tag_rd_data[3][0];
+  logic hit_4;
+  assign hit_4 = tag_rd_data[4][53:2] == req_addr_r[63:12] & tag_rd_data[4][0];
+  logic hit_5;
+  assign hit_5 = tag_rd_data[5][53:2] == req_addr_r[63:12] & tag_rd_data[5][0];
+  logic hit_6;
+  assign hit_6 = tag_rd_data[6][53:2] == req_addr_r[63:12] & tag_rd_data[6][0];
+  logic hit_7;
+  assign hit_7 = tag_rd_data[7][53:2] == req_addr_r[63:12] & tag_rd_data[7][0];
+  logic any_hit;
+  assign any_hit = hit_0 | hit_1 | hit_2 | hit_3 | hit_4 | hit_5 | hit_6 | hit_7;
+  logic [3-1:0] hit_way_enc;
+  assign hit_way_enc = {hit_4 | hit_5 | hit_6 | hit_7, hit_2 | hit_3 | hit_6 | hit_7, hit_1 | hit_3 | hit_5 | hit_7};
+  
   always_ff @(posedge clk) begin
     if (rst) begin
       state_r <= IDLE;
@@ -97,6 +118,10 @@ module FsmCacheCtrl (
           // ── Sub-state counter ─────────────────────────────────────────────────────
           // ── Writeback line buffer ─────────────────────────────────────────────────
           // ── Lookup decision registers (set in Lookup, read in transitions) ────────
+          // ── Parallel tag hit signals (comb, all computed simultaneously) ────────
+          // 8 comparisons run in parallel (7 logic levels), then one-hot encode
+          // to binary (3 levels) = 10 total.  Previous elsif chain was 14 levels.
+          // One-hot to binary: 3-level OR tree (each bit computed from 4 hit signals)
           // ── Idle ──────────────────────────────────────────────────────────────────
           if (req_valid) begin
             req_addr_r <= req_vaddr;
@@ -108,26 +133,11 @@ module FsmCacheCtrl (
         end
         LOOKUP: begin
           // ── Lookup ────────────────────────────────────────────────────────────────
-          // Tag/LRU data now available. Compute hit/miss, latch decision.
-          // Issue data read for hit candidate (combinational, will be used in HitRdData)
-          // Compute and latch hit way
-          hit_way_r <= 0;
-          if (tag_rd_data[1][53:2] == req_addr_r[63:12] & tag_rd_data[1][0]) begin
-            hit_way_r <= 1;
-          end else if (tag_rd_data[2][53:2] == req_addr_r[63:12] & tag_rd_data[2][0]) begin
-            hit_way_r <= 2;
-          end else if (tag_rd_data[3][53:2] == req_addr_r[63:12] & tag_rd_data[3][0]) begin
-            hit_way_r <= 3;
-          end else if (tag_rd_data[4][53:2] == req_addr_r[63:12] & tag_rd_data[4][0]) begin
-            hit_way_r <= 4;
-          end else if (tag_rd_data[5][53:2] == req_addr_r[63:12] & tag_rd_data[5][0]) begin
-            hit_way_r <= 5;
-          end else if (tag_rd_data[6][53:2] == req_addr_r[63:12] & tag_rd_data[6][0]) begin
-            hit_way_r <= 6;
-          end else if (tag_rd_data[7][53:2] == req_addr_r[63:12] & tag_rd_data[7][0]) begin
-            hit_way_r <= 7;
-          end
-          lookup_hit_r <= tag_rd_data[0][53:2] == req_addr_r[63:12] & tag_rd_data[0][0] | tag_rd_data[1][53:2] == req_addr_r[63:12] & tag_rd_data[1][0] | tag_rd_data[2][53:2] == req_addr_r[63:12] & tag_rd_data[2][0] | tag_rd_data[3][53:2] == req_addr_r[63:12] & tag_rd_data[3][0] | tag_rd_data[4][53:2] == req_addr_r[63:12] & tag_rd_data[4][0] | tag_rd_data[5][53:2] == req_addr_r[63:12] & tag_rd_data[5][0] | tag_rd_data[6][53:2] == req_addr_r[63:12] & tag_rd_data[6][0] | tag_rd_data[7][53:2] == req_addr_r[63:12] & tag_rd_data[7][0];
+          // Tag/LRU data now available. Compute hit/miss using parallel hit signals.
+          // Issue data read for hit candidate using one-hot mux (1 level after hit signals)
+          // Latch hit way from parallel one-hot encoder (10 levels total vs 14 before)
+          hit_way_r <= hit_way_enc;
+          lookup_hit_r <= any_hit;
           victim_way_r <= lru_victim_way;
           lru_tree_r <= lru_rd_data;
           miss_is_store_r <= req_is_store_r;
@@ -269,27 +279,8 @@ module FsmCacheCtrl (
         lru_tree_in = lru_rd_data;
         lru_access_way = 0;
         lru_access_en = 1'b0;
-        data_rd_en = 1'b1;
-        data_rd_addr = 0;
-        if (tag_rd_data[0][53:2] == req_addr_r[63:12] & tag_rd_data[0][0]) begin
-          data_rd_addr = {req_addr_r[11:6], 3'(0), req_addr_r[5:3]};
-        end else if (tag_rd_data[1][53:2] == req_addr_r[63:12] & tag_rd_data[1][0]) begin
-          data_rd_addr = {req_addr_r[11:6], 3'(1), req_addr_r[5:3]};
-        end else if (tag_rd_data[2][53:2] == req_addr_r[63:12] & tag_rd_data[2][0]) begin
-          data_rd_addr = {req_addr_r[11:6], 3'(2), req_addr_r[5:3]};
-        end else if (tag_rd_data[3][53:2] == req_addr_r[63:12] & tag_rd_data[3][0]) begin
-          data_rd_addr = {req_addr_r[11:6], 3'(3), req_addr_r[5:3]};
-        end else if (tag_rd_data[4][53:2] == req_addr_r[63:12] & tag_rd_data[4][0]) begin
-          data_rd_addr = {req_addr_r[11:6], 3'(4), req_addr_r[5:3]};
-        end else if (tag_rd_data[5][53:2] == req_addr_r[63:12] & tag_rd_data[5][0]) begin
-          data_rd_addr = {req_addr_r[11:6], 3'(5), req_addr_r[5:3]};
-        end else if (tag_rd_data[6][53:2] == req_addr_r[63:12] & tag_rd_data[6][0]) begin
-          data_rd_addr = {req_addr_r[11:6], 3'(6), req_addr_r[5:3]};
-        end else if (tag_rd_data[7][53:2] == req_addr_r[63:12] & tag_rd_data[7][0]) begin
-          data_rd_addr = {req_addr_r[11:6], 3'(7), req_addr_r[5:3]};
-        end else begin
-          data_rd_en = 1'b0;
-        end
+        data_rd_en = any_hit;
+        data_rd_addr = {req_addr_r[11:6], hit_way_enc, req_addr_r[5:3]};
       end
       HITRDDATA: begin
         resp_valid = lookup_hit_r;
