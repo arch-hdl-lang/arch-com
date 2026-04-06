@@ -48,6 +48,7 @@ tests/verilog_eval/vltor_build/
 # CVDP scratch scripts, logs, and test results
 tests/cvdp/_*
 tests/cvdp/mshr_debug*/
+tests/realbench/debug/
 
 # macOS
 .DS_Store
