@@ -3165,6 +3165,14 @@ impl<'a> Codegen<'a> {
             })
             .unwrap_or_else(|| "8".to_string());
 
+        // Check for OVERFLOW param (0 = block when full, 1 = overwrite oldest)
+        let overflow_expr = f.params.iter()
+            .find(|p| p.name.name == "OVERFLOW")
+            .and_then(|p| p.default.as_ref())
+            .map(|e| self.emit_expr_str(e))
+            .unwrap_or_else(|| "0".to_string());
+        let has_overflow_param = f.params.iter().any(|p| p.name.name == "OVERFLOW");
+
         // Collect port names to know what's declared
         let port_names: Vec<&str> = f.ports.iter().map(|p| p.name.name.as_str()).collect();
 
@@ -3174,6 +3182,9 @@ impl<'a> Codegen<'a> {
         self.line(&format!("module {n} #("));
         self.indent += 1;
         self.line(&format!("parameter int  DEPTH      = {depth_expr},"));
+        if has_overflow_param {
+            self.line(&format!("parameter int  OVERFLOW   = {overflow_expr},"));
+        }
         self.line(&format!("parameter int  DATA_WIDTH = {data_width_str}"));
         self.indent -= 1;
         self.line(") (");
@@ -3193,11 +3204,11 @@ impl<'a> Codegen<'a> {
         self.indent += 1;
 
         if is_async {
-            self.emit_fifo_async_body(f, &port_names);
+            self.emit_fifo_async_body(f, &port_names, has_overflow_param);
         } else if f.kind == FifoKind::Lifo {
             self.emit_fifo_lifo_body(f, &port_names);
         } else {
-            self.emit_fifo_sync_body(f, &port_names);
+            self.emit_fifo_sync_body(f, &port_names, has_overflow_param);
         }
 
         self.indent -= 1;
@@ -3271,7 +3282,7 @@ impl<'a> Codegen<'a> {
         self.emit_port_type_str(ty)
     }
 
-    fn emit_fifo_sync_body(&mut self, f: &FifoDecl, port_names: &[&str]) {
+    fn emit_fifo_sync_body(&mut self, f: &FifoDecl, port_names: &[&str], has_overflow_param: bool) {
         self.line("localparam int PTR_W = $clog2(DEPTH) + 1;");
         self.line("");
         self.line("logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];");
@@ -3288,7 +3299,12 @@ impl<'a> Codegen<'a> {
         self.line("assign full        = (wr_ptr[PTR_W-1] != rd_ptr[PTR_W-1]) &&");
         self.line("                     (wr_ptr[PTR_W-2:0] == rd_ptr[PTR_W-2:0]);");
         self.line("assign empty       = (wr_ptr == rd_ptr);");
-        self.line("assign push_ready  = !full;");
+        if has_overflow_param {
+            self.line("// OVERFLOW mode: push_ready always high; overwrite oldest when full");
+            self.line("assign push_ready  = (OVERFLOW != 0) ? 1'b1 : !full;");
+        } else {
+            self.line("assign push_ready  = !full;");
+        }
         self.line("assign pop_valid   = !empty;");
         self.line("assign pop_data    = mem[rd_ptr[PTR_W-2:0]];");
         self.line("");
@@ -3311,12 +3327,23 @@ impl<'a> Codegen<'a> {
         self.indent -= 1;
         self.line("end else begin");
         self.indent += 1;
-        self.line("if (push_valid && push_ready) begin");
-        self.indent += 1;
-        self.line("mem[wr_ptr[PTR_W-2:0]] <= push_data;");
-        self.line("wr_ptr <= wr_ptr + 1;");
-        self.indent -= 1;
-        self.line("end");
+        if has_overflow_param {
+            self.line("if (push_valid && push_ready) begin");
+            self.indent += 1;
+            self.line("mem[wr_ptr[PTR_W-2:0]] <= push_data;");
+            self.line("wr_ptr <= wr_ptr + 1;");
+            self.line("// In overflow mode, advance rd_ptr when writing to a full FIFO");
+            self.line("if ((OVERFLOW != 0) && full && !(pop_ready)) rd_ptr <= rd_ptr + 1;");
+            self.indent -= 1;
+            self.line("end");
+        } else {
+            self.line("if (push_valid && push_ready) begin");
+            self.indent += 1;
+            self.line("mem[wr_ptr[PTR_W-2:0]] <= push_data;");
+            self.line("wr_ptr <= wr_ptr + 1;");
+            self.indent -= 1;
+            self.line("end");
+        }
         self.line("if (pop_valid && pop_ready) begin");
         self.indent += 1;
         self.line("rd_ptr <= rd_ptr + 1;");
@@ -3384,7 +3411,7 @@ impl<'a> Codegen<'a> {
         self.line("end");
     }
 
-    fn emit_fifo_async_body(&mut self, f: &FifoDecl, port_names: &[&str]) {
+    fn emit_fifo_async_body(&mut self, f: &FifoDecl, port_names: &[&str], has_overflow_param: bool) {
         // Find wr_clk, rd_clk, rst port names
         let clock_ports: Vec<&PortDecl> = f.ports.iter()
             .filter(|p| matches!(&p.ty, TypeExpr::Clock(_)))
@@ -3444,7 +3471,11 @@ impl<'a> Codegen<'a> {
         self.line("assign rd_ptr_bin_wr = gray2bin(rd_ptr_gray_sync);");
         self.line("assign full_r  = (wr_ptr_bin[PTR_W-1] != rd_ptr_bin_wr[PTR_W-1]) &&");
         self.line("                 (wr_ptr_bin[PTR_W-2:0] == rd_ptr_bin_wr[PTR_W-2:0]);");
-        self.line("assign push_ready = !full_r;");
+        if has_overflow_param {
+            self.line("assign push_ready = (OVERFLOW != 0) ? 1'b1 : !full_r;");
+        } else {
+            self.line("assign push_ready = !full_r;");
+        }
         self.line(&format!("always_ff @(posedge {wr_clk} or {rst_edge} {rst}) begin"));
         self.indent += 1;
         self.line(&format!("if ({rst_cond}) wr_ptr_bin <= '0;"));

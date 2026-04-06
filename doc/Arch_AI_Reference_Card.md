@@ -398,6 +398,7 @@ end fifo Name
 ```
 
 - A `type` parameter (e.g. `param WIDTH: type = UInt<32>`) is **required** — it sets the internal memory element width. Using `in UInt<32>` directly on push_data/pop_data without a type parameter is a compile error.
+- `param OVERFLOW: const = 1;` — optional. When set, `push_ready` is always high and writing to a full FIFO overwrites the oldest entry (circular buffer / drop-oldest mode). Default 0 = block when full.
 - Dual-clock: replace `clk` with `wr_clk: in Clock<WrD>` + `rd_clk: in Clock<RdD>`; compiler adds gray-code CDC
 - `kind lifo` restricted to single-clock only
 
