@@ -1,8 +1,0 @@
-<testsuites name="results">
-  <testsuite name="all" package="all">
-    <property name="random_seed" value="1774762827" />
-    <testcase name="test_cvdp_copilot_cache_mshr" classname="test_cvdp_copilot_cache_mshr" file="/var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_cache_mshr_dane71fy/src/test_cvdp_copilot_cache_mshr.py" lineno="10" time="0.0012390613555908203" sim_time_ns="0.0" ratio_time="0.0">
-      <failure error_type="ValueError" error_msg="Bad `period`: Must be divisible by 2 if `period_high` is not given." />
-    </testcase>
-  </testsuite>
-</testsuites>

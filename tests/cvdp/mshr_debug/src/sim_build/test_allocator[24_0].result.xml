@@ -1,8 +1,0 @@
-<testsuites name="results">
-  <testsuite name="all" package="all">
-    <property name="random_seed" value="1774762322" />
-    <testcase name="test_cvdp_copilot_cache_mshr" classname="test_cvdp_copilot_cache_mshr" file="/var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_cache_mshr_tgkspc95/src/test_cvdp_copilot_cache_mshr.py" lineno="10" time="0.043065786361694336" sim_time_ns="405.0" ratio_time="9404.216994867991">
-      <failure error_type="AssertionError" error_msg="ID mismatch: expected 1, got: 0&#10;assert 0 == 1" />
-    </testcase>
-  </testsuite>
-</testsuites>
