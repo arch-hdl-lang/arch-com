@@ -132,8 +132,8 @@ fsm FsmCacheCtrl
 
   // ── Idle ──────────────────────────────────────────────────────────────────
   state Idle
+    let req_ready = true;
     comb
-      req_ready = true;
       if req_valid
         for i in 0..7
           tag_rd_en[i]   = true;

@@ -2149,9 +2149,18 @@ impl Parser {
                 Some(TokenKind::RArrow) => {
                     transitions.push(self.parse_transition()?);
                 }
+                Some(TokenKind::Let) => {
+                    // `let x = expr;` inside state — shorthand for comb assignment
+                    let l = self.parse_let_binding()?;
+                    comb_stmts.push(CombStmt::Assign(crate::ast::CombAssign {
+                        target: Expr { kind: ExprKind::Ident(l.name.name.clone()), span: l.name.span, parenthesized: false },
+                        value: l.value,
+                        span: l.span,
+                    }));
+                }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "comb, seq, or ->",
+                        "comb, seq, let, or ->",
                         &other.to_string(),
                         self.peek_span(),
                     ));
