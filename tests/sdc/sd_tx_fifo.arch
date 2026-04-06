@@ -1,5 +1,6 @@
 // SD TX FIFO (Dual-clock, 32-bit wide, depth 8)
 // Write side on wclk, read side on rclk.
+// Uses raw binary pointers (matching reference — no gray-code CDC).
 
 module sd_tx_fifo
 
@@ -35,10 +36,13 @@ module sd_tx_fifo
     end if
   end seq
 
+  // Occupancy: 4-bit difference, zero-extended to 6
+  let diff: UInt<4> = (adr_i - adr_o).trunc<4>();
+
   comb
     q = mem[adr_o[2:0]];
     full  = full_w;
     empty = empty_w;
-    mem_empt = (adr_i - adr_o).zext<6>();
+    mem_empt = diff.zext<6>();
   end comb
 end module sd_tx_fifo

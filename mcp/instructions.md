@@ -7,7 +7,7 @@ IMPORTANT WORKFLOW — follow this order when writing .arch code:
 
 CONSTRUCT SELECTION — use first-class constructs when possible:
 - FSM behavior → use 'fsm' (NOT a module with manual state register)
-- FIFO → use 'fifo' (NOT a module with manual pointers)
+- FIFO → use 'fifo' (NOT a module with manual pointers); MUST declare a type parameter (e.g. 'param WIDTH: type = UInt<32>;') and use it on push_data/pop_data ports ('in WIDTH', NOT 'in UInt<32>')
 - RAM/ROM → use 'ram' with appropriate kind (NOT a module with reg array)
 - Arbiter → use 'arbiter' with policy (NOT manual grant logic in a module); built-in policies: round_robin, priority, lru, weighted<W>; if the requirement doesn't match any built-in policy (e.g. QoS-aware, starvation-prevention, custom fairness), use 'policy <FnName>' with a 'hook grant_select(...) -> UInt<N> = FnName(...);' and define the logic in a 'function' in the same file — the function receives req_mask + last_grant and returns a one-hot grant mask
 - Pipeline → use 'pipeline' with stages (NOT manual valid/stall registers)

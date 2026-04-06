@@ -1250,6 +1250,8 @@ end
 
 A fifo is a first-class construct with compile-time-verified flow control. The designer specifies depth, width, and domain. The compiler generates the full implementation --- counters, full/empty flags, and gray-code pointer CDC for dual-clock FIFOs.
 
+A **type parameter** is required to set the memory element width. The `push_data` and `pop_data` ports must reference this type parameter (e.g. `in WIDTH`), not a concrete type like `UInt<32>`. Omitting the type parameter is a compile error.
+
 The optional `kind` keyword selects the buffering discipline (same syntax as `ram`). If omitted, the default is `fifo`.
 
 | **Kind** | **Behaviour** | **Implementation** |

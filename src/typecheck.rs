@@ -2449,6 +2449,21 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // Require a type parameter for memory element width.
+        // Without it, push_data/pop_data widths won't propagate to the
+        // internal memory array, producing silently wrong codegen.
+        let has_type_param = f.params.iter().any(|p| matches!(p.kind, crate::ast::ParamKind::Type(_)));
+        if !has_type_param {
+            self.errors.push(CompileError::general(
+                &format!(
+                    "fifo `{}` requires a `param NAME: type = UInt<N>;` to set memory element width.\n  \
+                     push_data and pop_data ports must use this type parameter, e.g. `in WIDTH`.",
+                    f.name.name
+                ),
+                f.name.span,
+            ));
+        }
+
         // LIFO must be single-clock (synchronous)
         if f.kind == FifoKind::Lifo {
             let is_async = crate::resolve::detect_async_fifo(&f.ports);
