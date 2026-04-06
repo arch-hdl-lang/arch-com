@@ -8691,7 +8691,34 @@ A **package** groups related type definitions, constants, and functions into a r
 | `param` | `param BUS_WIDTH: const = 64;` |
 | `domain` | `domain FastClk freq_mhz: 500 end domain FastClk` |
 
-Packages may **not** contain modules, pipelines, FSMs, or any other construct that produces hardware. They are purely compile-time organizational units.
+Packages currently contain only compile-time definitions (types, functions, constants, domains). A planned extension will allow **package-scoped hardware constructs** (modules, FSMs, pipelines, etc.), enabling namespace-qualified instantiation:
+
+```
+package FloatLib
+  module Adder
+    ...
+  end module Adder
+end package FloatLib
+
+package FixedLib
+  module Adder
+    ...
+  end module Adder
+end package FixedLib
+
+module Top
+  inst a: FloatLib::Adder
+    ...
+  end inst a
+  inst b: FixedLib::Adder
+    ...
+  end inst b
+end module Top
+```
+
+SV codegen flattens to unique names: `FloatLib_Adder`, `FixedLib_Adder`.
+
+> *⚑ SystemVerilog does not allow modules inside packages --- modules are always in the global namespace, disambiguated only through tool-specific library mapping. ARCH's package-scoped modules provide compile-time namespace resolution without external tool configuration. This is a planned feature; currently all constructs share a flat global namespace.*
 
 **29.2 The use Import**
 
