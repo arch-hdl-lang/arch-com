@@ -11,5 +11,7 @@ module ClkDiv2
     toggle <= ~toggle;
   end seq
 
-  let clk_out = toggle;
+  comb
+    clk_out = toggle.as_clock<SysDomain>();
+  end comb
 end module ClkDiv2
