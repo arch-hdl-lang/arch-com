@@ -1,4 +1,4 @@
-// Test: generate if with a compile-time true condition includes the port.
+// Test: generate_if with a compile-time true condition includes the port.
 // domain SysDomain
 //   freq_mhz: 100
 

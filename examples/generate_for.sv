@@ -1,5 +1,5 @@
-// Test: generate for loop expanding ports
-// `generate for i in 0..1` creates two copies of req_i and gnt_i.
+// Test: generate_for loop expanding ports
+// `generate_for i in 0..1` creates two copies of req_i and gnt_i.
 // domain SysDomain
 //   freq_mhz: 100
 

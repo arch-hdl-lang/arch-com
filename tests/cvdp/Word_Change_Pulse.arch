@@ -19,14 +19,14 @@ module Word_Change_Pulse
 
   default seq on clk rising;
 
-  generate for i in 0..DATA_WIDTH-1
+  generate_for i in 0..DATA_WIDTH-1
     inst det_i: Bit_Change_Detector
       clk          <- clk;
       reset        <- reset;
       bit_in       <- data_in[i:i];
       change_pulse -> change_pulses[i:i];
     end inst det_i
-  end generate for i
+  end generate_for
 
   seq
     if enable

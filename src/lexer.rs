@@ -170,6 +170,12 @@ pub enum TokenKind {
     Cover,
     #[token("generate")]
     Generate,
+    #[token("generate_for")]
+    GenerateFor,
+    #[token("generate_if")]
+    GenerateIf,
+    #[token("generate_else")]
+    GenerateElse,
     #[token("for")]
     For,
     #[token("package")]
@@ -361,6 +367,9 @@ impl fmt::Display for TokenKind {
             TokenKind::Assert => write!(f, "assert"),
             TokenKind::Cover => write!(f, "cover"),
             TokenKind::Generate => write!(f, "generate"),
+            TokenKind::GenerateFor => write!(f, "generate_for"),
+            TokenKind::GenerateIf => write!(f, "generate_if"),
+            TokenKind::GenerateElse => write!(f, "generate_else"),
             TokenKind::For => write!(f, "for"),
             TokenKind::Package => write!(f, "package"),
             TokenKind::Use => write!(f, "use"),

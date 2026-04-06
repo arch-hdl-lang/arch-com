@@ -128,8 +128,8 @@ module L1DCache
   wire w_last_w:   Bool;
   wire b_ready_w:  Bool;
 
-  // ── Tag arrays — 8 ways via generate for ─────────────────────────────────────
-  generate for i in 0..7
+  // ── Tag arrays — 8 ways via generate_for ─────────────────────────────────────
+  generate_for i in 0..7
     inst tag_i: RamTagArray
       clk <- clk;
       rd_port.en    <- tag_rd_en_w[i];
@@ -139,7 +139,7 @@ module L1DCache
       wr_port.addr  <- tag_wr_addr_w[i];
       wr_port.wdata <- tag_wr_data_w[i];
     end inst tag_i
-  end generate for i
+  end generate_for
 
   // ── Data array ────────────────────────────────────────────────────────────────
   inst data_ram: RamDataArray

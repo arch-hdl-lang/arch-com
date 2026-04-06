@@ -1,5 +1,5 @@
-// Test: generate for loop expanding ports
-// `generate for i in 0..1` creates two copies of req_i and gnt_i.
+// Test: generate_for loop expanding ports
+// `generate_for i in 0..1` creates two copies of req_i and gnt_i.
 
 domain SysDomain
   freq_mhz: 100
@@ -9,10 +9,10 @@ module GenDemo
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
 
-  generate for i in 0..1
+  generate_for i in 0..1
     port req_i: in Bool;
     port gnt_i: out Bool;
-  end generate for i
+  end generate_for
 
   comb
     gnt_0 = req_0;

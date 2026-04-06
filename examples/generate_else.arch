@@ -1,20 +1,20 @@
-// Integration test for generate if/else: when condition is false, else ports/insts are active.
+// Integration test for generate_if/else: when condition is false, else ports/insts are active.
 module GenElseTest
   port clk: in Clock<SysDomain>;
 
   // false → else branch: main_out exists, debug_out does not
-  generate if false
+  generate_if false
     port debug_out: out UInt<8>;
-  generate else
+  generate_else
     port main_out: out UInt<16>;
-  end generate if
+  end generate_if
 
   // true → then branch: then_out exists, skip_out does not
-  generate if true
+  generate_if true
     port then_out: out UInt<8>;
-  generate else
+  generate_else
     port skip_out: out UInt<8>;
-  end generate if
+  end generate_if
 
   comb
     main_out = 16'hABCD;

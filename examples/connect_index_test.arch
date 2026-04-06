@@ -1,5 +1,5 @@
 // Integration test for:
-//   1. generate for + connect port.member <- signal[i]   (dotted port + Vec element as source)
+//   1. generate_for + connect port.member <- signal[i]   (dotted port + Vec element as source)
 //   2. connect port.member -> signal[i]                  (dotted port + Vec element as sink)
 //
 // Pattern: 2-way tag store — each way has a RAM-like port bundle.
@@ -32,7 +32,7 @@ module TinyRam
   end comb
 end module TinyRam
 
-// Wrapper: 2 ways, Vec-typed wires, connected via generate for + dotted port names.
+// Wrapper: 2 ways, Vec-typed wires, connected via generate_for + dotted port names.
 module ConnectIndexTest
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
@@ -54,7 +54,7 @@ module ConnectIndexTest
     wr_en_w[1] = wr_en & (wr_way == 0b1);
   end comb
 
-  generate for i in 0..1
+  generate_for i in 0..1
     inst ram_i: TinyRam
       clk      <- clk;
       wr_en    <- wr_en_w[i];
@@ -63,7 +63,7 @@ module ConnectIndexTest
       rd_addr  <- rd_addr;
       rd_data  -> rd_data_w[i];
     end inst ram_i
-  end generate for i
+  end generate_for
 
   comb
     rd_data0 = rd_data_w[0];

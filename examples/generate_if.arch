@@ -1,4 +1,4 @@
-// Test: generate if with a compile-time true condition includes the port.
+// Test: generate_if with a compile-time true condition includes the port.
 
 domain SysDomain
   freq_mhz: 100
@@ -7,9 +7,9 @@ end domain SysDomain
 module DebugModule
   port clk: in Clock<SysDomain>;
 
-  generate if true
+  generate_if true
     port debug_out: out UInt<8>;
-  end generate if
+  end generate_if
 
   comb
     debug_out = 0;

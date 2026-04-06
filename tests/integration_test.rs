@@ -545,7 +545,7 @@ end module BadCounter
 fn test_generate_for() {
     let source = include_str!("../examples/generate_for.arch");
     let sv = compile_to_sv(source);
-    // After elaboration, generate for 0..1 should expand to 2 ports each
+    // After elaboration, generate_for 0..1 should expand to 2 ports each
     assert!(sv.contains("req_0"), "expected req_0 port, got:\n{sv}");
     assert!(sv.contains("req_1"), "expected req_1 port, got:\n{sv}");
     assert!(sv.contains("gnt_0"), "expected gnt_0 port, got:\n{sv}");
@@ -557,14 +557,14 @@ fn test_generate_for() {
 fn test_generate_if_true() {
     let source = include_str!("../examples/generate_if.arch");
     let sv = compile_to_sv(source);
-    // generate if true → debug_out port is included
+    // generate_if true → debug_out port is included
     assert!(sv.contains("debug_out"), "expected debug_out port, got:\n{sv}");
     insta::assert_snapshot!(sv);
 }
 
 #[test]
 fn test_generate_if_param_default_true() {
-    // generate if using a param default value of 1 → port included
+    // generate_if using a param default value of 1 → port included
     let source = r#"
 domain SysDomain
   freq_mhz: 100
@@ -574,9 +574,9 @@ module ParamDebug
   param ENABLE_DEBUG: const = 1;
   port clk: in Clock<SysDomain>;
 
-  generate if ENABLE_DEBUG
+  generate_if ENABLE_DEBUG
     port debug_out: out UInt<8>;
-  end generate if
+  end generate_if
 
   comb
     debug_out = 0;
@@ -589,7 +589,7 @@ end module ParamDebug
 
 #[test]
 fn test_generate_if_param_zero_excludes_port() {
-    // generate if PARAM where PARAM default = 0 should exclude
+    // generate_if PARAM where PARAM default = 0 should exclude
     let source = r#"
 domain SysDomain
   freq_mhz: 100
@@ -599,9 +599,9 @@ module NoDebug2
   param ENABLE_DEBUG: const = 0;
   port clk: in Clock<SysDomain>;
 
-  generate if ENABLE_DEBUG
+  generate_if ENABLE_DEBUG
     port debug_out: out UInt<8>;
-  end generate if
+  end generate_if
 
   comb
   end comb
@@ -613,7 +613,7 @@ end module NoDebug2
 
 #[test]
 fn test_generate_if_param_comparison() {
-    // generate if PARAM > 0 style condition
+    // generate_if PARAM > 0 style condition
     let source = r#"
 domain SysDomain
   freq_mhz: 100
@@ -623,9 +623,9 @@ module CmpDebug
   param LOG_LEVEL: const = 2;
   port clk: in Clock<SysDomain>;
 
-  generate if LOG_LEVEL > 1
+  generate_if LOG_LEVEL > 1
     port verbose_out: out UInt<8>;
-  end generate if
+  end generate_if
 
   comb
     verbose_out = 0;
@@ -648,9 +648,9 @@ module Inner
   param ENABLE_DEBUG: const = 0;
   port clk: in Clock<SysDomain>;
 
-  generate if ENABLE_DEBUG
+  generate_if ENABLE_DEBUG
     port debug_out: out UInt<8>;
-  end generate if
+  end generate_if
 
   comb
     debug_out = 0;
@@ -687,9 +687,9 @@ module Inner2
   param ENABLE_DEBUG: const = 1;
   port clk: in Clock<SysDomain>;
 
-  generate if ENABLE_DEBUG
+  generate_if ENABLE_DEBUG
     port debug_out: out UInt<8>;
-  end generate if
+  end generate_if
 
   comb
   end comb
@@ -761,7 +761,7 @@ end module Top
 #[test]
 fn test_generate_monomorphize_different_port_lists() {
     // Critical test: same module instantiated twice with params that produce
-    // DIFFERENT port lists via `generate if`.  Uses a conditional INPUT port
+    // DIFFERENT port lists via `generate_if`.  Uses a conditional INPUT port
     // so the module's comb block doesn't need to reference non-existent ports.
     let source = r#"
 domain SysDomain
@@ -773,9 +773,9 @@ module Inner
   port clk: in Clock<SysDomain>;
   port result: out Bool;
 
-  generate if ENABLE_DEBUG
+  generate_if ENABLE_DEBUG
     port debug_in: in UInt<8>;
-  end generate if
+  end generate_if
 
   comb
     result = false;
@@ -832,9 +832,9 @@ end domain SysDomain
 
 module NoDebug
   port clk: in Clock<SysDomain>;
-  generate if false
+  generate_if false
     port debug_out: out UInt<8>;
-  end generate if
+  end generate_if
   comb
   end comb
 end module NoDebug
