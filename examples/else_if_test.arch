@@ -19,7 +19,7 @@ module ElseIfTest
     elsif sel == 1
       result_r <= data_in ^ 0xff;
     elsif sel == 2
-      result_r <= (data_in << 1).trunc<8>();
+      result_r <= data_in << 1;
     else
       result_r <= 0;
     end if
@@ -32,7 +32,7 @@ module ElseIfTest
     elsif sel == 1
       comb_out = data_in ^ 0xff;
     elsif sel == 2
-      comb_out = (data_in << 1).trunc<8>();
+      comb_out = data_in << 1;
     else
       comb_out = 0;
     end if

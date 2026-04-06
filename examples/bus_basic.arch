@@ -18,8 +18,8 @@ module Master
   port rst: in Reset<Sync>;
   port axi: initiator AxiLite<ADDR_W=32, DATA_W=64>;
 
-  reg addr_r: UInt<32> reset rst = 0;
-  reg data_r: UInt<64> reset rst = 0;
+  reg addr_r: UInt<32> reset rst => 0;
+  reg data_r: UInt<64> reset rst => 0;
 
   comb
     axi.aw_valid = 1;

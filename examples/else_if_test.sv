@@ -10,7 +10,7 @@ module ElseIfTest (
   output logic [8-1:0] comb_out
 );
 
-  logic [8-1:0] result_r = 0;
+  logic [8-1:0] result_r;
   // Test else-if in seq block
   always_ff @(posedge clk) begin
     if (rst) begin
@@ -21,7 +21,7 @@ module ElseIfTest (
       end else if (sel == 1) begin
         result_r <= data_in ^ 'hFF;
       end else if (sel == 2) begin
-        result_r <= 8'(data_in << 1);
+        result_r <= data_in << 1;
       end else begin
         result_r <= 0;
       end
@@ -34,7 +34,7 @@ module ElseIfTest (
     end else if (sel == 1) begin
       comb_out = data_in ^ 'hFF;
     end else if (sel == 2) begin
-      comb_out = 8'(data_in << 1);
+      comb_out = data_in << 1;
     end else begin
       comb_out = 0;
     end

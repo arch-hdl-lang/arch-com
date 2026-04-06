@@ -2,7 +2,7 @@
 // Xtime: GF(2^8) multiply by 2
 
 function Xtime(a: UInt<8>) -> UInt<8>
-  let shifted: UInt<8> = (a << 1).trunc<8>();
+  let shifted: UInt<8> = a << 1;
   return match a & 0x80
     0x80 => shifted ^ 0x1b,
     _    => shifted,
