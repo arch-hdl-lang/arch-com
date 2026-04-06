@@ -3,7 +3,7 @@ module ClkDiv2
   port rst:     in Reset<Sync>;
   port clk_out: out Clock<SysDomain>;
 
-  reg toggle: Bool reset rst=>false;
+  reg toggle: Bool reset rst => false;
 
   default seq on clk_in rising;
 

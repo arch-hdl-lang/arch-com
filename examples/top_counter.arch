@@ -8,7 +8,7 @@ module Counter
   port rst: in Reset<Sync>;
   port en: in Bool;
   port count: out UInt<WIDTH>;
-  reg count_r: UInt<WIDTH> init 0 reset rst=>0;
+  reg count_r: UInt<WIDTH> reset rst => 0;
   seq on clk rising
     if en
       count_r <= (count_r + 1).trunc<WIDTH>();

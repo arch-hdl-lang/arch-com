@@ -9,10 +9,14 @@ module MultiDimVec (
 );
 
   // 2D array: 4 rows x 8 cols of UInt<8>
-  logic [8-1:0] storage [0:4-1] [0:8-1];
+  logic [8-1:0] storage [4-1:0] [8-1:0];
   always_ff @(posedge clk) begin
     if (rst) begin
-      storage <= '{default: '{default: 0}};
+      for (int __ri0 = 0; __ri0 < 4; __ri0++) begin
+        for (int __ri1 = 0; __ri1 < 8; __ri1++) begin
+          storage[__ri0][__ri1] <= 0;
+        end
+      end
     end else begin
       if (wr_en == 1) begin
         storage[row_sel][col_sel] <= din;

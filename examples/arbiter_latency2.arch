@@ -1,7 +1,3 @@
-domain SysDomain
-  freq_mhz: 100
-end domain SysDomain
-
 arbiter LatencyArbiter
   policy round_robin;
   latency 2;

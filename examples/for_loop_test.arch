@@ -7,7 +7,7 @@ module ForLoopTest
   port din: in UInt<8>;
   port dout: out UInt<8>;
 
-  reg sr: Vec<UInt<8>, 4> init 0 reset rst=>0;
+  reg sr: Vec<UInt<8>, 4> reset rst => 0;
 
   seq on clk rising
     sr[0] <= din;

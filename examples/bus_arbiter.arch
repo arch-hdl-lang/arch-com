@@ -1,7 +1,3 @@
-domain SysDomain
-  freq_mhz: 100
-end domain SysDomain
-
 arbiter BusArbiter
   policy round_robin;
   param NUM_REQ: const = 4;

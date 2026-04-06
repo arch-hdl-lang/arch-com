@@ -1,6 +1,3 @@
-// domain SysDomain
-//   freq_mhz: 100
-
 module BusArbiter #(
   parameter int NUM_REQ = 4
 ) (

@@ -10,7 +10,7 @@ module ElseIfTest
   port result: out UInt<8>;
   port comb_out: out UInt<8>;
 
-  reg result_r: UInt<8> init 0 reset rst=>0;
+  reg result_r: UInt<8> reset rst => 0;
 
   // Test else-if in seq block
   seq on clk rising

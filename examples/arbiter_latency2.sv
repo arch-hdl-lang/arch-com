@@ -1,6 +1,3 @@
-// domain SysDomain
-//   freq_mhz: 100
-
 module LatencyArbiter #(
   parameter int NUM_REQ = 4
 ) (

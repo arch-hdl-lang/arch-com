@@ -10,7 +10,7 @@ module Producer (
   output logic [8-1:0] data_out
 );
 
-  logic [8-1:0] cnt = 0;
+  logic [8-1:0] cnt;
   always_ff @(posedge clk) begin
     if (rst) begin
       cnt <= 0;
@@ -29,7 +29,7 @@ module Consumer (
   output logic [8-1:0] data_out
 );
 
-  logic [8-1:0] r = 0;
+  logic [8-1:0] r;
   always_ff @(posedge clk) begin
     if (rst) begin
       r <= 0;
@@ -48,7 +48,7 @@ module TopSafe (
   output logic [8-1:0] result
 );
 
-  logic [8-1:0] synced_data = 0;
+  logic [8-1:0] synced_data;
   Producer prod (
     .clk(clk_a),
     .rst(rst),

@@ -49,8 +49,8 @@ pipeline CpuPipe
 
   // ── Fetch: capture instruction, advance PC ──
   stage Fetch stall when not imem_valid
-    reg pc: UInt<XLEN> init 0 reset rst=>0;
-    reg instr: UInt<XLEN> init 0 reset rst=>0;
+    reg pc: UInt<XLEN> reset rst => 0;
+    reg instr: UInt<XLEN> reset rst => 0;
     seq on clk rising
       pc <= branch_target;
       instr <= imem_data;
@@ -60,10 +60,10 @@ pipeline CpuPipe
   // ── Decode: latch register values from external regfile ──
   // Stall on load-use hazard: Execute is a load writing to a register Decode needs
   stage Decode stall when Execute.we and (Execute.rd == Fetch.instr[11:7]) and Execute.rd != 0
-    reg opcode: UInt<7> init 0 reset rst=>0;
-    reg rd: UInt<REG_ADDR_W> init 0 reset rst=>0;
-    reg rs1_val: UInt<XLEN> init 0 reset rst=>0;
-    reg rs2_val: UInt<XLEN> init 0 reset rst=>0;
+    reg opcode: UInt<7> reset rst => 0;
+    reg rd: UInt<REG_ADDR_W> reset rst => 0;
+    reg rs1_val: UInt<XLEN> reset rst => 0;
+    reg rs2_val: UInt<XLEN> reset rst => 0;
     seq on clk rising
       opcode  <= Fetch.instr[6:0];
       rd      <= Fetch.instr[11:7];
@@ -82,9 +82,9 @@ pipeline CpuPipe
 
   // ── Execute: ALU module computes result, registered for next stage ──
   stage Execute
-    reg alu_result: UInt<XLEN> init 0 reset rst=>0;
-    reg rd: UInt<REG_ADDR_W> init 0 reset rst=>0;
-    reg we: Bool init false reset rst=>false;
+    reg alu_result: UInt<XLEN> reset rst => 0;
+    reg rd: UInt<REG_ADDR_W> reset rst => 0;
+    reg we: Bool reset rst => false;
     seq on clk rising
       alu_result <= alu_out;
       rd <= Decode.rd;
@@ -101,9 +101,9 @@ pipeline CpuPipe
 
   // ── Writeback: commit to register file ──
   stage Writeback
-    reg result: UInt<XLEN> init 0 reset rst=>0;
-    reg rd: UInt<REG_ADDR_W> init 0 reset rst=>0;
-    reg valid: Bool init false reset rst=>false;
+    reg result: UInt<XLEN> reset rst => 0;
+    reg rd: UInt<REG_ADDR_W> reset rst => 0;
+    reg valid: Bool reset rst => false;
     seq on clk rising
       result <= Execute.alu_result;
       rd <= Execute.rd;

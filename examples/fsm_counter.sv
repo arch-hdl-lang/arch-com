@@ -37,6 +37,7 @@ module FsmCounter (
           end
         end
         COUNTING: begin
+          // no fallthrough needed — compiler defaults to stay in Idle
           cnt_r <= 8'(cnt_r + 1);
         end
         default: ;
@@ -71,6 +72,7 @@ module FsmCounter (
         count = cnt_r;
       end
       DONE: begin
+        // implicit stay in Counting
         done = 1'b1;
         count = cnt_r;
       end
@@ -80,5 +82,3 @@ module FsmCounter (
 
 endmodule
 
-// no fallthrough needed — compiler defaults to stay in Idle
-// implicit stay in Counting

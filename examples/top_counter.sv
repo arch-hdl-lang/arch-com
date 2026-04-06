@@ -10,7 +10,7 @@ module Counter #(
   output logic [WIDTH-1:0] count
 );
 
-  logic [WIDTH-1:0] count_r = 0;
+  logic [WIDTH-1:0] count_r;
   always_ff @(posedge clk) begin
     if (rst) begin
       count_r <= 0;

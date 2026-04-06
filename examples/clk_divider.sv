@@ -5,7 +5,7 @@ module ClkDiv2 (
   output logic clk_out
 );
 
-  logic toggle_r = 1'b0;
+  logic toggle_r;
   always_ff @(posedge clk_in or negedge rst_n) begin
     if ((!rst_n)) begin
       toggle_r <= 1'b0;

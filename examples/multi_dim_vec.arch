@@ -8,7 +8,7 @@ module MultiDimVec
   port dout: out UInt<8>;
 
   // 2D array: 4 rows x 8 cols of UInt<8>
-  reg storage: Vec<Vec<UInt<8>, 8>, 4> reset rst = 0;
+  reg storage: Vec<Vec<UInt<8>, 8>, 4> reset rst => 0;
 
   seq on clk rising
     if wr_en == 1

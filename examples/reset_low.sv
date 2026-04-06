@@ -10,7 +10,7 @@ module ActiveLowRst (
   output logic [8-1:0] count
 );
 
-  logic [8-1:0] count_r = 0;
+  logic [8-1:0] count_r;
   always_ff @(posedge clk) begin
     if ((!rst_n)) begin
       count_r <= 0;

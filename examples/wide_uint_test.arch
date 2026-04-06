@@ -30,7 +30,7 @@ module WideUintTest
   port eq_result: out Bool;
 
   // Registered 512-bit buffer
-  reg line_buf: UInt<512> reset rst=>0;
+  reg line_buf: UInt<512> reset rst => 0;
 
   seq on clk rising
     line_buf <= line_in;

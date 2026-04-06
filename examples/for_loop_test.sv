@@ -7,10 +7,12 @@ module ForLoopTest (
   output logic [8-1:0] dout
 );
 
-  logic [8-1:0] sr [0:4-1] = '{default: 0};
+  logic [8-1:0] sr [4-1:0];
   always_ff @(posedge clk) begin
     if (rst) begin
-      sr <= '{default: 0};
+      for (int __ri0 = 0; __ri0 < 4; __ri0++) begin
+        sr[__ri0] <= 0;
+      end
     end else begin
       sr[0] <= din;
       for (int i = 1; i <= 3; i++) begin

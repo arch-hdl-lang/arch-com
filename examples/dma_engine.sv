@@ -40,7 +40,7 @@ module DmaRegs #(
   logic [32-1:0] rf_data [0:NREGS-1];
   
   always_ff @(posedge clk) begin
-    if (write_en && write_addr != 0 && write_addr != 1 && write_addr != 2 && write_addr != 3)
+    if (write_en)
       rf_data[write_addr] <= write_data;
   end
   
@@ -307,10 +307,10 @@ module DmaEngine #(
   logic [32-1:0] wb_pop_data = 0;
   logic [8-1:0] read_val = 0;
   logic read_at_max_r = 1'b0;
-  logic reads_done_r = 1'b0;
+  logic reads_done_r;
   // ── Descriptor fetch state ────────────────────────────────────────────────
   logic [32-1:0] desc_rdata = 0;
-  logic [2-1:0] fetch_cnt = 0;
+  logic [2-1:0] fetch_cnt;
   DmaDescriptor desc_r = '{src_addr: 0, dst_addr: 0, length: 0, flags: 0};
   // ── Arbiter output wires ──────────────────────────────────────────────────
   logic [2-1:0] arb_req_ready = 0;
