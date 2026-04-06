@@ -42,6 +42,9 @@ mcp/*.old
 __pycache__/
 *.pyc
 
+# Verilator build outputs (VerilogEval benchmark)
+tests/verilog_eval/vltor_build/
+
 # CVDP scratch scripts, logs, and test results
 tests/cvdp/_*
 
