@@ -1,0 +1,249 @@
+// SD Data Master (Data Transfer Orchestrator)
+// 9-state one-hot FSM. Orchestrates data transfers: reads BDs, constructs
+// commands, monitors transfers, handles errors with retry (up to 3 retries).
+
+module sd_data_master
+
+  port clk:  in Clock<SysDomain>;
+  port rst:  in Reset<Async, High>;
+
+  // TX BD interface
+  port dat_in_tx:   in UInt<16>;
+  port free_tx_bd:  in UInt<5>;
+  port ack_i_s_tx:  in Bool;
+  port re_s_tx:     out Bool;
+  port a_cmp_tx:    out Bool;
+
+  // RX BD interface
+  port dat_in_rx:   in UInt<16>;
+  port free_rx_bd:  in UInt<5>;
+  port ack_i_s_rx:  in Bool;
+  port re_s_rx:     out Bool;
+  port a_cmp_rx:    out Bool;
+
+  // Command interface
+  port cmd_busy:     in Bool;
+  port we_req:       out Bool;
+  port we_ack:       in Bool;
+  port d_write:      out Bool;
+  port d_read:       out Bool;
+  port cmd_arg:      out UInt<32>;
+  port cmd_set:      out UInt<16>;
+  port cmd_tsf_err:  in Bool;
+  port card_status:  in UInt<5>;
+
+  // FIFO controls
+  port start_tx_fifo: out Bool;
+  port start_rx_fifo: out Bool;
+
+  // System address
+  port sys_adr:   out UInt<32>;
+
+  // TX/RX FIFO status
+  port tx_empt:   in Bool;
+  port tx_full:   in Bool;
+  port rx_full:   in Bool;
+
+  // Data serial host status
+  port busy_n:          in Bool;
+  port transm_complete: in Bool;
+  port crc_ok:          in Bool;
+  port ack_transfer:    out Bool;
+
+  // Interrupt status
+  port Dat_Int_Status:     out UInt<8>;
+  port Dat_Int_Status_rst: in Bool;
+
+  // Card detect / transfer type
+  port CIDAT:          out Bool;
+  port transfer_type:  in UInt<2>;
+
+  // State encoding:
+  // 0=IDLE, 1=GET_TX_BD, 2=GET_RX_BD, 3=SEND_CMD, 4=RECIVE_CMD,
+  // 5=DATA_TRANSFER, 6=STOP, 7=STOP_SEND, 8=STOP_RECIVE_CMD
+  reg st_r: UInt<4> reset rst => 0;
+
+  // BD read data registers (two 16-bit reads per BD)
+  reg bd_adr_lo: UInt<16> reset rst => 0;
+  reg bd_adr_hi: UInt<16> reset rst => 0;
+  reg bd_blk:    UInt<16> reset rst => 0;
+
+  // Sub-state counter for BD reading
+  reg sub_cnt: UInt<3> reset rst => 0;
+
+  // Retry counter
+  reg retry_cnt: UInt<2> reset rst => 0;
+
+  // Output registers
+  reg re_s_tx_r:      Bool reset rst => false;
+  reg re_s_rx_r:      Bool reset rst => false;
+  reg a_cmp_tx_r:     Bool reset rst => false;
+  reg a_cmp_rx_r:     Bool reset rst => false;
+  reg we_req_r:       Bool reset rst => false;
+  reg d_write_r:      Bool reset rst => false;
+  reg d_read_r:       Bool reset rst => false;
+  reg cmd_arg_r:      UInt<32> reset rst => 0;
+  reg cmd_set_r:      UInt<16> reset rst => 0;
+  reg start_tx_fifo_r: Bool reset rst => false;
+  reg start_rx_fifo_r: Bool reset rst => false;
+  reg sys_adr_r:      UInt<32> reset rst => 0;
+  reg ack_transfer_r: Bool reset rst => false;
+  reg dat_int_r:      UInt<8> reset rst => 0;
+  reg cidat_r:        Bool reset rst => false;
+
+  // Is TX transfer?
+  let is_tx: Bool = (transfer_type == 2'b01);
+
+  default seq on clk rising;
+
+  // Main FSM
+  seq
+    re_s_tx_r <= false;
+    re_s_rx_r <= false;
+    we_req_r  <= false;
+    ack_transfer_r <= false;
+
+    if st_r == 0  // IDLE
+      d_write_r      <= false;
+      d_read_r       <= false;
+      start_tx_fifo_r <= false;
+      start_rx_fifo_r <= false;
+      a_cmp_tx_r     <= false;
+      a_cmp_rx_r     <= false;
+      cidat_r        <= false;
+      retry_cnt      <= 0;
+      sub_cnt        <= 0;
+
+      if is_tx & (free_tx_bd > 0)
+        st_r      <= 1;  // GET_TX_BD
+        re_s_tx_r <= true;
+        sub_cnt   <= 0;
+      elsif (~is_tx) & (free_rx_bd > 0)
+        st_r      <= 2;  // GET_RX_BD
+        re_s_rx_r <= true;
+        sub_cnt   <= 0;
+      end if
+
+    elsif st_r == 1  // GET_TX_BD
+      if sub_cnt == 0
+        // First read: system address low
+        bd_adr_lo <= dat_in_tx;
+        re_s_tx_r <= true;
+        sub_cnt   <= 1;
+      elsif sub_cnt == 1
+        // Second read: system address high
+        bd_adr_hi <= dat_in_tx;
+        sub_cnt   <= 2;
+      else
+        sys_adr_r <= {bd_adr_hi, bd_adr_lo};
+        cmd_arg_r <= {bd_adr_hi, bd_adr_lo};
+        st_r      <= 3;  // SEND_CMD
+        we_req_r  <= true;
+        d_write_r <= true;
+      end if
+
+    elsif st_r == 2  // GET_RX_BD
+      if sub_cnt == 0
+        bd_adr_lo <= dat_in_rx;
+        re_s_rx_r <= true;
+        sub_cnt   <= 1;
+      elsif sub_cnt == 1
+        bd_adr_hi <= dat_in_rx;
+        sub_cnt   <= 2;
+      else
+        sys_adr_r <= {bd_adr_hi, bd_adr_lo};
+        cmd_arg_r <= {bd_adr_hi, bd_adr_lo};
+        st_r      <= 3;  // SEND_CMD
+        we_req_r  <= true;
+        d_read_r  <= true;
+      end if
+
+    elsif st_r == 3  // SEND_CMD
+      cidat_r <= true;
+      if we_ack
+        st_r <= 4;  // RECIVE_CMD
+      end if
+
+    elsif st_r == 4  // RECIVE_CMD
+      if ~cmd_busy
+        if cmd_tsf_err
+          dat_int_r[0:0] <= 1'b1;  // Command error
+          st_r <= 0;  // IDLE
+          cidat_r <= false;
+        else
+          st_r <= 5;  // DATA_TRANSFER
+          if d_write_r
+            start_tx_fifo_r <= true;
+          else
+            start_rx_fifo_r <= true;
+          end if
+        end if
+      end if
+
+    elsif st_r == 5  // DATA_TRANSFER
+      if transm_complete
+        ack_transfer_r <= true;
+        if crc_ok
+          dat_int_r[2:2] <= 1'b1;  // Transfer complete
+          if d_write_r
+            a_cmp_tx_r <= true;
+          else
+            a_cmp_rx_r <= true;
+          end if
+          st_r <= 0;  // IDLE
+          cidat_r <= false;
+        else
+          // CRC error
+          dat_int_r[5:5] <= 1'b1;
+          if retry_cnt < 3
+            retry_cnt <= (retry_cnt + 1).trunc<2>();
+            st_r      <= 3;  // Retry: SEND_CMD
+            we_req_r  <= true;
+          else
+            st_r    <= 0;  // IDLE
+            cidat_r <= false;
+          end if
+        end if
+      end if
+
+    elsif st_r == 6  // STOP
+      we_req_r <= true;
+      st_r     <= 7;
+
+    elsif st_r == 7  // STOP_SEND
+      if we_ack
+        st_r <= 8;
+      end if
+
+    elsif st_r == 8  // STOP_RECIVE_CMD
+      if ~cmd_busy
+        st_r    <= 0;
+        cidat_r <= false;
+      end if
+    end if
+
+    // Clear interrupt status on reset signal
+    if Dat_Int_Status_rst
+      dat_int_r <= 0;
+    end if
+  end seq
+
+  // Output assignments
+  comb
+    re_s_tx       = re_s_tx_r;
+    re_s_rx       = re_s_rx_r;
+    a_cmp_tx      = a_cmp_tx_r;
+    a_cmp_rx      = a_cmp_rx_r;
+    we_req        = we_req_r;
+    d_write       = d_write_r;
+    d_read        = d_read_r;
+    cmd_arg       = cmd_arg_r;
+    cmd_set       = cmd_set_r;
+    start_tx_fifo = start_tx_fifo_r;
+    start_rx_fifo = start_rx_fifo_r;
+    sys_adr       = sys_adr_r;
+    ack_transfer  = ack_transfer_r;
+    Dat_Int_Status = dat_int_r;
+    CIDAT         = cidat_r;
+  end comb
+end module sd_data_master

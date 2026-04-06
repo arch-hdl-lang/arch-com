@@ -1,9 +1,23 @@
-// E203 Clock Gate Cell (Integrated Clock Gating)
-// Standard ASIC latch-based ICG
-clkgate E203ClkGate
+// E203 Clock Gate Cell — wraps ARCH clkgate construct with RealBench port names.
+
+clkgate E203Icg
   kind latch;
   port clk_in:  in Clock<SysDomain>;
   port enable:  in Bool;
   port test_en: in Bool;
   port clk_out: out Clock<SysDomain>;
-end clkgate E203ClkGate
+end clkgate E203Icg
+
+module e203_clkgate
+  port clk_in:    in Clock<SysDomain>;
+  port test_mode: in Bool;
+  port clock_en:  in Bool;
+  port clk_out:   out Bool;
+
+  inst icg: E203Icg
+    clk_in  <- clk_in;
+    enable  <- clock_en;
+    test_en <- test_mode;
+    clk_out -> clk_out;
+  end inst icg
+end module e203_clkgate

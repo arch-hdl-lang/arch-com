@@ -1,0 +1,186 @@
+// E203 CPU Top
+// Top-level wrapper: integrates e203_cpu + e203_srams.
+
+module e203_cpu_top
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+  port test_mode: in Bool;
+  port pc_rtvec: in UInt<32>;
+  port core_mhartid: in UInt<1>;
+
+  // Async IRQ inputs
+  port dbg_irq_a: in Bool;
+  port ext_irq_a: in Bool;
+  port sft_irq_a: in Bool;
+  port tmr_irq_a: in Bool;
+
+  // Debug
+  port dbg_mode:      in Bool;
+  port dbg_halt_r:    in Bool;
+  port dbg_step_r:    in Bool;
+  port dbg_ebreakm_r: in Bool;
+  port dbg_stopcycle:  in Bool;
+  port cmt_dpc:       out UInt<32>;
+  port cmt_dpc_ena:   out Bool;
+  port cmt_dcause:    out UInt<3>;
+  port cmt_dcause_ena: out Bool;
+
+  // TCM power management
+  port tcm_sd: in Bool;
+  port tcm_ds: in Bool;
+
+  // CSR debug write interface
+  port dbg_irq_r:       out Bool;
+  port wr_dcsr_ena:     out Bool;
+  port wr_dpc_ena:      out Bool;
+  port wr_dscratch_ena: out Bool;
+  port wr_csr_nxt:      out UInt<32>;
+  port dcsr_r:          in  UInt<32>;
+  port dpc_r:           in  UInt<32>;
+  port dscratch_r:      in  UInt<32>;
+
+  // External debug ICB to ITCM
+  port ext2itcm_icb_cmd_valid: in Bool;
+  port ext2itcm_icb_cmd_ready: out Bool;
+  port ext2itcm_icb_cmd_addr:  in UInt<16>;
+  port ext2itcm_icb_cmd_read:  in Bool;
+  port ext2itcm_icb_cmd_wdata: in UInt<32>;
+  port ext2itcm_icb_cmd_wmask: in UInt<4>;
+  port ext2itcm_icb_rsp_valid: out Bool;
+  port ext2itcm_icb_rsp_ready: in Bool;
+  port ext2itcm_icb_rsp_err:   out Bool;
+  port ext2itcm_icb_rsp_rdata: out UInt<32>;
+
+  // External debug ICB to DTCM
+  port ext2dtcm_icb_cmd_valid: in Bool;
+  port ext2dtcm_icb_cmd_ready: out Bool;
+  port ext2dtcm_icb_cmd_addr:  in UInt<16>;
+  port ext2dtcm_icb_cmd_read:  in Bool;
+  port ext2dtcm_icb_cmd_wdata: in UInt<32>;
+  port ext2dtcm_icb_cmd_wmask: in UInt<4>;
+  port ext2dtcm_icb_rsp_valid: out Bool;
+  port ext2dtcm_icb_rsp_ready: in Bool;
+  port ext2dtcm_icb_rsp_err:   out Bool;
+  port ext2dtcm_icb_rsp_rdata: out UInt<32>;
+
+  // PPI ICB
+  port ppi_icb_cmd_valid:  out Bool;
+  port ppi_icb_cmd_ready:  in Bool;
+  port ppi_icb_cmd_addr:   out UInt<32>;
+  port ppi_icb_cmd_read:   out Bool;
+  port ppi_icb_cmd_wdata:  out UInt<32>;
+  port ppi_icb_cmd_wmask:  out UInt<4>;
+  port ppi_icb_rsp_valid:  in Bool;
+  port ppi_icb_rsp_ready:  out Bool;
+  port ppi_icb_rsp_err:    in Bool;
+  port ppi_icb_rsp_rdata:  in UInt<32>;
+
+  // CLINT ICB
+  port clint_icb_cmd_valid:  out Bool;
+  port clint_icb_cmd_ready:  in Bool;
+  port clint_icb_cmd_addr:   out UInt<32>;
+  port clint_icb_cmd_read:   out Bool;
+  port clint_icb_cmd_wdata:  out UInt<32>;
+  port clint_icb_cmd_wmask:  out UInt<4>;
+  port clint_icb_rsp_valid:  in Bool;
+  port clint_icb_rsp_ready:  out Bool;
+  port clint_icb_rsp_err:    in Bool;
+  port clint_icb_rsp_rdata:  in UInt<32>;
+
+  // PLIC ICB
+  port plic_icb_cmd_valid:  out Bool;
+  port plic_icb_cmd_ready:  in Bool;
+  port plic_icb_cmd_addr:   out UInt<32>;
+  port plic_icb_cmd_read:   out Bool;
+  port plic_icb_cmd_wdata:  out UInt<32>;
+  port plic_icb_cmd_wmask:  out UInt<4>;
+  port plic_icb_rsp_valid:  in Bool;
+  port plic_icb_rsp_ready:  out Bool;
+  port plic_icb_rsp_err:    in Bool;
+  port plic_icb_rsp_rdata:  in UInt<32>;
+
+  // FIO ICB
+  port fio_icb_cmd_valid:  out Bool;
+  port fio_icb_cmd_ready:  in Bool;
+  port fio_icb_cmd_addr:   out UInt<32>;
+  port fio_icb_cmd_read:   out Bool;
+  port fio_icb_cmd_wdata:  out UInt<32>;
+  port fio_icb_cmd_wmask:  out UInt<4>;
+  port fio_icb_rsp_valid:  in Bool;
+  port fio_icb_rsp_ready:  out Bool;
+  port fio_icb_rsp_err:    in Bool;
+  port fio_icb_rsp_rdata:  in UInt<32>;
+
+  // MEM ICB
+  port mem_icb_cmd_valid:  out Bool;
+  port mem_icb_cmd_ready:  in Bool;
+  port mem_icb_cmd_addr:   out UInt<32>;
+  port mem_icb_cmd_read:   out Bool;
+  port mem_icb_cmd_wdata:  out UInt<32>;
+  port mem_icb_cmd_wmask:  out UInt<4>;
+  port mem_icb_rsp_valid:  in Bool;
+  port mem_icb_rsp_ready:  out Bool;
+  port mem_icb_rsp_err:    in Bool;
+  port mem_icb_rsp_rdata:  in UInt<32>;
+
+  // Inspect/diagnostic outputs
+  port inspect_pc:             out UInt<32>;
+  port inspect_dbg_irq:        out Bool;
+  port inspect_mem_cmd_valid:  out Bool;
+  port inspect_mem_cmd_ready:  out Bool;
+  port inspect_mem_rsp_valid:  out Bool;
+  port inspect_mem_rsp_ready:  out Bool;
+  port inspect_core_clk:       out Bool;
+  port core_csr_clk:           out Bool;
+  port core_wfi:               out Bool;
+  port tm_stop:                out Bool;
+
+  // Stub integration: all outputs tied to zero/false
+  comb
+    inspect_pc = 0;
+    inspect_dbg_irq = false;
+    inspect_mem_cmd_valid = false;
+    inspect_mem_cmd_ready = false;
+    inspect_mem_rsp_valid = false;
+    inspect_mem_rsp_ready = false;
+    inspect_core_clk = false;
+    core_csr_clk = false;
+    core_wfi = false;
+    tm_stop = false;
+    dbg_irq_r = false;
+
+    cmt_dpc = 0;  cmt_dpc_ena = false;
+    cmt_dcause = 0;  cmt_dcause_ena = false;
+    wr_dcsr_ena = false;  wr_dpc_ena = false;
+    wr_dscratch_ena = false;  wr_csr_nxt = 0;
+
+    // Ext ITCM ICB (stub)
+    ext2itcm_icb_cmd_ready = false;  ext2itcm_icb_rsp_valid = false;
+    ext2itcm_icb_rsp_err = false;  ext2itcm_icb_rsp_rdata = 0;
+
+    // Ext DTCM ICB (stub)
+    ext2dtcm_icb_cmd_ready = false;  ext2dtcm_icb_rsp_valid = false;
+    ext2dtcm_icb_rsp_err = false;  ext2dtcm_icb_rsp_rdata = 0;
+
+    // PPI ICB (stub)
+    ppi_icb_cmd_valid = false;  ppi_icb_cmd_addr = 0;  ppi_icb_cmd_read = true;
+    ppi_icb_cmd_wdata = 0;  ppi_icb_cmd_wmask = 0;  ppi_icb_rsp_ready = true;
+
+    // CLINT ICB (stub)
+    clint_icb_cmd_valid = false;  clint_icb_cmd_addr = 0;  clint_icb_cmd_read = true;
+    clint_icb_cmd_wdata = 0;  clint_icb_cmd_wmask = 0;  clint_icb_rsp_ready = true;
+
+    // PLIC ICB (stub)
+    plic_icb_cmd_valid = false;  plic_icb_cmd_addr = 0;  plic_icb_cmd_read = true;
+    plic_icb_cmd_wdata = 0;  plic_icb_cmd_wmask = 0;  plic_icb_rsp_ready = true;
+
+    // FIO ICB (stub)
+    fio_icb_cmd_valid = false;  fio_icb_cmd_addr = 0;  fio_icb_cmd_read = true;
+    fio_icb_cmd_wdata = 0;  fio_icb_cmd_wmask = 0;  fio_icb_rsp_ready = true;
+
+    // MEM ICB (stub)
+    mem_icb_cmd_valid = false;  mem_icb_cmd_addr = 0;  mem_icb_cmd_read = true;
+    mem_icb_cmd_wdata = 0;  mem_icb_cmd_wmask = 0;  mem_icb_rsp_ready = true;
+  end comb
+end module e203_cpu_top

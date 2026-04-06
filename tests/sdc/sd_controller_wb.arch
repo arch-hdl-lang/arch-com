@@ -1,0 +1,294 @@
+// SD Controller Wishbone Slave Interface
+// Register bank for SD controller. Matches OpenCores SDC reference port interface.
+// Uses RAM_MEM_WIDTH=16 (ACTEL config from sd_defines.v).
+
+module sd_controller_wb
+
+  port wb_clk_i:   in Clock<SysDomain>;
+  port wb_rst_i:   in Reset<Async, High>;
+  port wb_dat_i:   in UInt<32>;
+  port wb_dat_o:   out UInt<32>;
+
+  // Wishbone slave
+  port wb_adr_i:   in UInt<8>;
+  port wb_sel_i:   in UInt<4>;
+  port wb_we_i:    in Bool;
+  port wb_cyc_i:   in Bool;
+  port wb_stb_i:   in Bool;
+  port wb_ack_o:   out Bool;
+
+  // Control outputs
+  port we_m_tx_bd: out Bool;
+  port new_cmd:    out Bool;
+  port we_ack:     out Bool;
+  port int_ack:    out Bool;
+  port cmd_int_busy: out Bool;
+  port we_m_rx_bd: out Bool;
+  port int_busy:   out Bool;
+
+  // Data master cmd write request
+  port write_req_s: in Bool;
+  port cmd_set_s:   in UInt<16>;
+  port cmd_arg_s:   in UInt<32>;
+
+  // Bus-accessible registers (outputs)
+  port argument_reg:                  out UInt<32>;
+  port cmd_setting_reg:               out UInt<16>;
+  port software_reset_reg:            out UInt<8>;
+  port time_out_reg:                  out UInt<16>;
+  port normal_int_signal_enable_reg:  out UInt<16>;
+  port error_int_signal_enable_reg:   out UInt<16>;
+  port clock_divider:                 out UInt<8>;
+  port Bd_isr_enable_reg:             out UInt<8>;
+
+  // Status inputs
+  port status_reg:              in UInt<16>;
+  port cmd_resp_1:              in UInt<32>;
+  port normal_int_status_reg:   in UInt<16>;
+  port error_int_status_reg:    in UInt<16>;
+  port Bd_Status_reg:           in UInt<16>;
+  port Bd_isr_reg:              in UInt<8>;
+
+  // Register control
+  port Bd_isr_reset:      out Bool;
+  port normal_isr_reset:  out Bool;
+  port error_isr_reset:   out Bool;
+  port dat_in_m_rx_bd:    out UInt<16>;
+  port dat_in_m_tx_bd:    out UInt<16>;
+
+  // --- Internal registers ---
+  reg default: reset wb_rst_i => 0;
+
+  reg argument_reg_r:                  UInt<32>;
+  reg cmd_setting_reg_r:               UInt<16>;
+  reg software_reset_reg_r:            UInt<8>;
+  reg time_out_reg_r:                  UInt<16>;
+  reg normal_int_signal_enable_reg_r:  UInt<16>;
+  reg error_int_signal_enable_reg_r:   UInt<16>;
+  reg clock_divider_r:                 UInt<8> reset wb_rst_i => 0;
+  reg Bd_isr_enable_reg_r:             UInt<8>;
+
+  reg we_r:         UInt<2>;
+  reg int_busy_r:   Bool;
+  reg wb_ack_o_r:   Bool;
+
+  reg we_m_tx_bd_r: Bool;
+  reg we_m_rx_bd_r: Bool;
+  reg new_cmd_r:    Bool;
+  reg we_ack_r:     Bool;
+  reg cmd_int_busy_r: Bool;
+
+  reg Bd_isr_reset_r:     Bool;
+  reg normal_isr_reset_r: Bool;
+  reg error_isr_reset_r:  Bool;
+  reg dat_in_m_rx_bd_r:   UInt<16>;
+  reg dat_in_m_tx_bd_r:   UInt<16>;
+
+  // Combinational int_ack (blocking in reference)
+  wire int_ack_w: Bool;
+  // Combinational wb_ack (blocking in reference)
+  wire wb_ack_comb: Bool;
+  wire wb_dat_o_r: UInt<32>;
+
+  // Register address constants
+  // argument=0x00, command=0x04, status=0x08, resp1=0x0c,
+  // controller=0x1c, block=0x20, power=0x24, software=0x28,
+  // timeout=0x2c, normal_isr=0x30, error_isr=0x34, normal_iser=0x38,
+  // error_iser=0x3c, capa=0x48, clock_d=0x4c, bd_status=0x50,
+  // bd_isr=0x54, bd_iser=0x58, bd_rx=0x60, bd_tx=0x80
+
+  // Parameters (from sd_defines.v with ACTEL + SD_BUS_WIDTH_4 + SUPPLY_VOLTAGE_3_3)
+  let power_controll_reg: UInt<8> = 8'b00001111;
+  let block_size_reg: UInt<32> = 512;
+  let controll_setting_reg: UInt<16> = 16'b0000000000000010;
+  let capabilies_reg: UInt<16> = 0;
+
+  default seq on wb_clk_i rising;
+
+  // --- Main clocked logic ---
+  // Reference uses mixed blocking/non-blocking. We model int_ack as combinational
+  // (it's set blocking at start and conditionally cleared in bd_rx/bd_tx writes).
+  // wb_ack_o is also combinational in reference (blocking assign).
+
+  seq
+    // Defaults (non-blocking, set each cycle)
+    we_m_rx_bd_r <= false;
+    we_m_tx_bd_r <= false;
+    new_cmd_r <= false;
+    we_ack_r <= false;
+    cmd_int_busy_r <= false;
+
+    // After reset
+    Bd_isr_reset_r <= false;
+    normal_isr_reset_r <= false;
+    error_isr_reset_r <= false;
+
+    if (wb_stb_i & wb_cyc_i) | wb_ack_o_r
+      if wb_we_i
+        if wb_adr_i == 8'h00       // argument
+          argument_reg_r <= wb_dat_i;
+          new_cmd_r <= true;
+        elsif wb_adr_i == 8'h04    // command
+          cmd_setting_reg_r <= wb_dat_i[15:0];
+          int_busy_r <= true;
+        elsif wb_adr_i == 8'h28    // software
+          software_reset_reg_r <= wb_dat_i[7:0];
+        elsif wb_adr_i == 8'h2C    // timeout
+          time_out_reg_r <= wb_dat_i[15:0];
+        elsif wb_adr_i == 8'h38    // normal_iser
+          normal_int_signal_enable_reg_r <= wb_dat_i[15:0];
+        elsif wb_adr_i == 8'h3C    // error_iser
+          error_int_signal_enable_reg_r <= wb_dat_i[15:0];
+        elsif wb_adr_i == 8'h30    // normal_isr
+          normal_isr_reset_r <= true;
+        elsif wb_adr_i == 8'h34    // error_isr
+          error_isr_reset_r <= true;
+        elsif wb_adr_i == 8'h4C    // clock_d
+          clock_divider_r <= wb_dat_i[7:0];
+        elsif wb_adr_i == 8'h54    // bd_isr
+          Bd_isr_reset_r <= true;
+        elsif wb_adr_i == 8'h58    // bd_iser
+          Bd_isr_enable_reg_r <= wb_dat_i[7:0];
+        // RAM_MEM_WIDTH_16 bd_rx (0x60)
+        elsif wb_adr_i == 8'h60
+          we_r <= (we_r + 1).trunc<2>();
+          we_m_rx_bd_r <= true;
+          if we_r[1:0] == 2'b00
+            we_m_rx_bd_r <= false;
+          elsif we_r[1:0] == 2'b01
+            dat_in_m_rx_bd_r <= wb_dat_i[15:0];
+          elsif we_r[1:0] == 2'b10
+            dat_in_m_rx_bd_r <= wb_dat_i[31:16];
+          else
+            we_r <= 0;
+            we_m_rx_bd_r <= false;
+          end if
+        // RAM_MEM_WIDTH_16 bd_tx (0x80)
+        elsif wb_adr_i == 8'h80
+          we_r <= (we_r + 1).trunc<2>();
+          we_m_tx_bd_r <= true;
+          if we_r[1:0] == 2'b00
+            we_m_tx_bd_r <= false;
+          elsif we_r[1:0] == 2'b01
+            dat_in_m_tx_bd_r <= wb_dat_i[15:0];
+          elsif we_r[1:0] == 2'b10
+            dat_in_m_tx_bd_r <= wb_dat_i[31:16];
+          else
+            we_r <= 0;
+            we_m_tx_bd_r <= false;
+          end if
+        end if
+      end if
+      // wb_ack_o computed combinationally below
+    elsif write_req_s
+      new_cmd_r <= true;
+      cmd_setting_reg_r <= cmd_set_s;
+      argument_reg_r <= cmd_arg_s;
+      cmd_int_busy_r <= true;
+      we_ack_r <= true;
+    end if
+
+    if status_reg[0]
+      int_busy_r <= false;
+    end if
+
+    wb_ack_o_r <= wb_ack_comb;
+  end seq
+
+  // --- Combinational: int_ack ---
+  // In the reference, int_ack is set to 1 (blocking) at the start of the always block,
+  // then cleared to 0 in bd_rx/bd_tx multi-cycle writes. Since our model is non-blocking,
+  // we compute it combinationally.
+  comb
+    int_ack_w = true;
+    if (wb_stb_i & wb_cyc_i) | wb_ack_o_r
+      if wb_we_i
+        if wb_adr_i == 8'h60  // bd_rx
+          if we_r[1:0] != 2'b11
+            int_ack_w = false;
+          end if
+        elsif wb_adr_i == 8'h80  // bd_tx
+          if we_r[1:0] != 2'b11
+            int_ack_w = false;
+          end if
+        end if
+      end if
+    end if
+  end comb
+
+  // --- Combinational: wb_ack_o ---
+  comb
+    wb_ack_comb = wb_cyc_i & wb_stb_i & (~wb_ack_o_r) & int_ack_w;
+  end comb
+
+  // --- Read data mux (separate clocked block, no reset) ---
+  // The reference uses a separate always @(posedge wb_clk_i) for reads.
+  reg wb_dat_o_rd: UInt<32>;
+  seq
+    if wb_stb_i & wb_cyc_i
+      if wb_adr_i == 8'h00
+        wb_dat_o_rd <= argument_reg_r;
+      elsif wb_adr_i == 8'h04
+        wb_dat_o_rd <= cmd_setting_reg_r.zext<32>();
+      elsif wb_adr_i == 8'h08
+        wb_dat_o_rd <= status_reg.zext<32>();
+      elsif wb_adr_i == 8'h0C
+        wb_dat_o_rd <= cmd_resp_1;
+      elsif wb_adr_i == 8'h1C
+        wb_dat_o_rd <= controll_setting_reg.zext<32>();
+      elsif wb_adr_i == 8'h20
+        wb_dat_o_rd <= block_size_reg;
+      elsif wb_adr_i == 8'h24
+        wb_dat_o_rd <= power_controll_reg.zext<32>();
+      elsif wb_adr_i == 8'h28
+        wb_dat_o_rd <= software_reset_reg_r.zext<32>();
+      elsif wb_adr_i == 8'h2C
+        wb_dat_o_rd <= time_out_reg_r.zext<32>();
+      elsif wb_adr_i == 8'h30
+        wb_dat_o_rd <= normal_int_status_reg.zext<32>();
+      elsif wb_adr_i == 8'h34
+        wb_dat_o_rd <= error_int_status_reg.zext<32>();
+      elsif wb_adr_i == 8'h38
+        wb_dat_o_rd <= normal_int_signal_enable_reg_r.zext<32>();
+      elsif wb_adr_i == 8'h3C
+        wb_dat_o_rd <= error_int_signal_enable_reg_r.zext<32>();
+      elsif wb_adr_i == 8'h48
+        wb_dat_o_rd <= capabilies_reg.zext<32>();
+      elsif wb_adr_i == 8'h4C
+        wb_dat_o_rd <= clock_divider_r.zext<32>();
+      elsif wb_adr_i == 8'h50
+        wb_dat_o_rd <= Bd_Status_reg.zext<32>();
+      elsif wb_adr_i == 8'h54
+        wb_dat_o_rd <= Bd_isr_reg.zext<32>();
+      elsif wb_adr_i == 8'h58
+        wb_dat_o_rd <= Bd_isr_enable_reg_r.zext<32>();
+      end if
+    end if
+  end seq
+
+  // --- Output assignments ---
+  comb
+    wb_dat_o     = wb_dat_o_rd;
+    wb_ack_o     = wb_ack_o_r;
+    we_m_tx_bd   = we_m_tx_bd_r;
+    new_cmd      = new_cmd_r;
+    we_ack       = we_ack_r;
+    int_ack      = int_ack_w;
+    cmd_int_busy = cmd_int_busy_r;
+    we_m_rx_bd   = we_m_rx_bd_r;
+    int_busy     = int_busy_r;
+    argument_reg = argument_reg_r;
+    cmd_setting_reg = cmd_setting_reg_r;
+    software_reset_reg = software_reset_reg_r;
+    time_out_reg = time_out_reg_r;
+    normal_int_signal_enable_reg = normal_int_signal_enable_reg_r;
+    error_int_signal_enable_reg = error_int_signal_enable_reg_r;
+    clock_divider = clock_divider_r;
+    Bd_isr_enable_reg = Bd_isr_enable_reg_r;
+    Bd_isr_reset = Bd_isr_reset_r;
+    normal_isr_reset = normal_isr_reset_r;
+    error_isr_reset = error_isr_reset_r;
+    dat_in_m_rx_bd = dat_in_m_rx_bd_r;
+    dat_in_m_tx_bd = dat_in_m_tx_bd_r;
+  end comb
+end module sd_controller_wb

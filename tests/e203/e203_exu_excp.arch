@@ -1,0 +1,367 @@
+// E203 Exception Handler
+// Manages exceptions, interrupts, debug-mode entry, and WFI.
+// Priority: longpipe_excp > debug_entry > IRQ > ALU_excp.
+
+module e203_exu_excp
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  port commit_trap: out Bool;
+  port core_wfi:    out Bool;
+  port wfi_halt_ifu_req: out Bool;
+  port wfi_halt_exu_req: out Bool;
+  port wfi_halt_ifu_ack: in Bool;
+  port wfi_halt_exu_ack: in Bool;
+  port amo_wait: in Bool;
+
+  // ALU exception inputs
+  port alu_excp_i_ready:       out Bool;
+  port alu_excp_i_valid:       in Bool;
+  port alu_excp_i_ld:          in Bool;
+  port alu_excp_i_stamo:       in Bool;
+  port alu_excp_i_misalgn:     in Bool;
+  port alu_excp_i_buserr:      in Bool;
+  port alu_excp_i_ecall:       in Bool;
+  port alu_excp_i_ebreak:      in Bool;
+  port alu_excp_i_wfi:         in Bool;
+  port alu_excp_i_ifu_misalgn: in Bool;
+  port alu_excp_i_ifu_buserr:  in Bool;
+  port alu_excp_i_ifu_ilegl:   in Bool;
+  port alu_excp_i_badaddr:     in UInt<32>;
+  port alu_excp_i_pc:          in UInt<32>;
+  port alu_excp_i_instr:       in UInt<32>;
+  port alu_excp_i_pc_vld:      in Bool;
+
+  // Long-pipe exception inputs
+  port longp_excp_i_ready:    out Bool;
+  port longp_excp_i_valid:    in Bool;
+  port longp_excp_i_ld:       in Bool;
+  port longp_excp_i_st:       in Bool;
+  port longp_excp_i_buserr:   in Bool;
+  port longp_excp_i_insterr:  in Bool;
+  port longp_excp_i_badaddr:  in UInt<32>;
+  port longp_excp_i_pc:       in UInt<32>;
+
+  // Flush interface
+  port excpirq_flush_ack:              in Bool;
+  port excpirq_flush_req:              out Bool;
+  port nonalu_excpirq_flush_req_raw:   out Bool;
+  port excpirq_flush_add_op1:          out UInt<32>;
+  port excpirq_flush_add_op2:          out UInt<32>;
+  port excpirq_flush_pc:               out UInt<32>;
+
+  // CSR inputs
+  port csr_mtvec_r: in UInt<32>;
+  port cmt_dret_ena: in Bool;
+  port cmt_ena: in Bool;
+
+  // CSR outputs
+  port cmt_badaddr:     out UInt<32>;
+  port cmt_epc:         out UInt<32>;
+  port cmt_cause:       out UInt<32>;
+  port cmt_badaddr_ena: out Bool;
+  port cmt_epc_ena:     out Bool;
+  port cmt_cause_ena:   out Bool;
+  port cmt_status_ena:  out Bool;
+  port cmt_dpc:         out UInt<32>;
+  port cmt_dpc_ena:     out Bool;
+  port cmt_dcause:      out UInt<3>;
+  port cmt_dcause_ena:  out Bool;
+
+  // IRQ inputs
+  port dbg_irq_r: in Bool;
+  port lcl_irq_r: in Bool;
+  port ext_irq_r: in Bool;
+  port sft_irq_r: in Bool;
+  port tmr_irq_r: in Bool;
+
+  // CSR status
+  port status_mie_r: in Bool;
+  port mtie_r: in Bool;
+  port msie_r: in Bool;
+  port meie_r: in Bool;
+
+  // Debug
+  port dbg_mode:     in Bool;
+  port dbg_halt_r:   in Bool;
+  port dbg_step_r:   in Bool;
+  port dbg_ebreakm_r: in Bool;
+  port oitf_empty:   in Bool;
+
+  // Privilege mode
+  port u_mode: in Bool;
+  port s_mode: in Bool;
+  port h_mode: in Bool;
+  port m_mode: in Bool;
+
+  port excp_active: out Bool;
+
+  // Internal state
+  reg wfi_flag_r:     Bool reset rst_n => false;
+  reg wfi_halt_req_r: Bool reset rst_n => false;
+  reg step_req_r:     Bool reset rst_n => false;
+
+  // Wires for complex combinational logic
+  wire irq_req: Bool;
+  wire wfi_irq_req: Bool;
+  wire irq_req_active_w: Bool;
+  wire longp_need_flush: Bool;
+  wire alu_need_flush: Bool;
+  wire dbg_entry_req: Bool;
+  wire nonalu_dbg_entry_req: Bool;
+  wire nonalu_dbg_entry_req_raw_w: Bool;
+  wire dbg_step_req: Bool;
+  wire dbg_trig_req: Bool;
+  wire dbg_ebrk_req: Bool;
+  wire dbg_irq_req_w: Bool;
+  wire dbg_halt_req: Bool;
+  wire alu_ebreakm_flush_req: Bool;
+  wire alu_excp_i_ebreak4excp: Bool;
+  wire alu_excp_i_ebreak4dbg: Bool;
+
+  wire longp_excp_flush_req: Bool;
+  wire dbg_entry_flush_req: Bool;
+  wire irq_flush_req: Bool;
+  wire alu_excp_flush_req: Bool;
+  wire all_excp_flush_req: Bool;
+
+  wire excpirq_taken_ena: Bool;
+  wire excp_taken_ena: Bool;
+  wire irq_taken_ena: Bool;
+  wire dbg_entry_taken_ena: Bool;
+
+  wire wfi_flag_set: Bool;
+  wire wfi_flag_clr: Bool;
+  wire wfi_halt_req_set: Bool;
+
+  wire irq_cause_w: UInt<32>;
+  wire excp_cause_w: UInt<32>;
+
+  wire excp_flush_by_alu_agu: Bool;
+  wire excp_flush_by_longp_ldst: Bool;
+
+  default seq on clk rising;
+
+  // WFI flag: set on 4-way handshake, clear on irq/dbg
+  seq
+    if wfi_flag_set | wfi_flag_clr
+      wfi_flag_r <= wfi_flag_set & (~wfi_flag_clr);
+    end if
+  end seq
+
+  // WFI halt request: set on WFI commit, clear same as wfi_flag
+  seq
+    if wfi_halt_req_set | wfi_flag_clr
+      wfi_halt_req_r <= wfi_halt_req_set & (~wfi_flag_clr);
+    end if
+  end seq
+
+  // Step request
+  seq
+    if dbg_entry_taken_ena
+      step_req_r <= false;
+    elsif (~dbg_mode) & dbg_step_r & cmt_ena & (~dbg_entry_taken_ena)
+      step_req_r <= true;
+    end if
+  end seq
+
+  comb
+    // Long-pipe exception always causes flush
+    longp_need_flush = longp_excp_i_valid;
+
+    // ebreak handling: ebreak4excp does NOT depend on alu_need_flush
+    alu_excp_i_ebreak4excp = alu_excp_i_ebreak & ((~dbg_ebreakm_r) | dbg_mode);
+
+    // ALU exceptions (computed before ebreak4dbg to break circular dep)
+    alu_need_flush = alu_excp_i_misalgn | alu_excp_i_buserr
+                   | alu_excp_i_ebreak4excp | alu_excp_i_ecall
+                   | alu_excp_i_ifu_misalgn | alu_excp_i_ifu_buserr
+                   | alu_excp_i_ifu_ilegl;
+
+    // ebreak4dbg depends on alu_need_flush (overridden by other ALU exceptions)
+    alu_excp_i_ebreak4dbg = alu_excp_i_ebreak & (~alu_need_flush) & dbg_ebreakm_r & (~dbg_mode);
+    alu_ebreakm_flush_req = alu_excp_i_valid & alu_excp_i_ebreak4dbg;
+
+    // Debug entry priority
+    dbg_step_req = step_req_r;
+    dbg_trig_req = false;  // No trigger support
+    dbg_ebrk_req = alu_ebreakm_flush_req & (~step_req_r);
+    dbg_irq_req_w = dbg_irq_r & (~alu_ebreakm_flush_req) & (~step_req_r);
+    dbg_halt_req = dbg_halt_r & (~dbg_irq_r) & (~alu_ebreakm_flush_req) & (~step_req_r) & (~dbg_step_r);
+
+    dbg_entry_req = (~dbg_mode) & (
+        (dbg_irq_req_w & (~amo_wait))
+      | (dbg_halt_req & (~amo_wait))
+      | dbg_step_req
+      | dbg_ebrk_req
+    );
+
+    nonalu_dbg_entry_req = (~dbg_mode) & (
+        (dbg_irq_r & (~step_req_r) & (~amo_wait))
+      | (dbg_halt_r & (~dbg_irq_r) & (~step_req_r) & (~dbg_step_r) & (~amo_wait))
+      | step_req_r
+    );
+
+    nonalu_dbg_entry_req_raw_w = (~dbg_mode) & (
+        dbg_irq_r | dbg_halt_r | step_req_r
+    );
+
+    // IRQ handling
+    irq_req = (~(dbg_mode | dbg_step_r | (~status_mie_r) | amo_wait))
+            & ((ext_irq_r & meie_r) | (sft_irq_r & msie_r) | (tmr_irq_r & mtie_r));
+    wfi_irq_req = (~(dbg_mode | dbg_step_r))
+                & ((ext_irq_r & meie_r) | (sft_irq_r & msie_r) | (tmr_irq_r & mtie_r));
+
+    irq_req_active_w = wfi_flag_r ? wfi_irq_req : irq_req;
+    excp_active = irq_req_active_w | nonalu_dbg_entry_req_raw_w;
+
+    // Flush request priority
+    longp_excp_flush_req = longp_need_flush;
+    dbg_entry_flush_req = dbg_entry_req & oitf_empty & alu_excp_i_pc_vld & (~longp_need_flush);
+    irq_flush_req = irq_req & oitf_empty & alu_excp_i_pc_vld
+                  & (~dbg_entry_req) & (~longp_need_flush);
+    alu_excp_flush_req = alu_excp_i_valid & alu_need_flush & oitf_empty
+                       & (~irq_req) & (~dbg_entry_req) & (~longp_need_flush);
+    all_excp_flush_req = longp_excp_flush_req | alu_excp_flush_req;
+
+    excpirq_flush_req = longp_excp_flush_req | dbg_entry_flush_req
+                      | irq_flush_req | alu_excp_flush_req;
+    nonalu_excpirq_flush_req_raw = longp_need_flush | nonalu_dbg_entry_req_raw_w | irq_req;
+
+    // Taken enables
+    excpirq_taken_ena = excpirq_flush_req & excpirq_flush_ack;
+    excp_taken_ena = all_excp_flush_req & excpirq_taken_ena;
+    irq_taken_ena = irq_flush_req & excpirq_taken_ena;
+    dbg_entry_taken_ena = dbg_entry_flush_req & excpirq_taken_ena;
+
+    commit_trap = excpirq_taken_ena;
+
+    // WFI control
+    // wfi_halt_req set on WFI commit (not in debug mode)
+    wfi_halt_req_set = alu_excp_i_wfi & cmt_ena & (~dbg_mode);
+
+    // wfi_flag_clr computed first (depends only on irq/dbg, no circularity)
+    wfi_flag_clr = wfi_irq_req | dbg_entry_req;
+
+    // wfi_halt outputs (depend on registered values and wfi_flag_clr)
+    wfi_halt_ifu_req = wfi_halt_req_r & (~wfi_flag_clr);
+    wfi_halt_exu_req = wfi_halt_req_r;
+
+    // wfi_flag set on full 4-way handshake
+    wfi_flag_set = wfi_halt_ifu_req & wfi_halt_ifu_ack & wfi_halt_exu_req & wfi_halt_exu_ack;
+
+    core_wfi = wfi_flag_r & (~wfi_flag_clr);
+
+    // Ready signals
+    longp_excp_i_ready = excpirq_flush_ack;
+
+    // alu_excp_i_ready: complex priority
+    if alu_ebreakm_flush_req
+      alu_excp_i_ready = excpirq_flush_ack & oitf_empty & alu_excp_i_pc_vld & (~longp_need_flush);
+    elsif alu_need_flush
+      alu_excp_i_ready = excpirq_flush_ack & oitf_empty & (~irq_req) & (~nonalu_dbg_entry_req) & (~longp_need_flush);
+    else
+      alu_excp_i_ready = (~irq_req) & (~nonalu_dbg_entry_req) & (~longp_need_flush);
+    end if
+
+    // Flush target
+    if dbg_entry_flush_req
+      excpirq_flush_add_op1 = 32'h00000800;
+      excpirq_flush_add_op2 = 0;
+      excpirq_flush_pc = 32'h00000800;
+    elsif all_excp_flush_req & dbg_mode
+      excpirq_flush_add_op1 = 32'h00000808;
+      excpirq_flush_add_op2 = 0;
+      excpirq_flush_pc = 32'h00000808;
+    else
+      excpirq_flush_add_op1 = csr_mtvec_r;
+      excpirq_flush_add_op2 = 0;
+      excpirq_flush_pc = csr_mtvec_r;
+    end if
+
+    // IRQ cause
+    irq_cause_w = {1'b1, 27'b0,
+        ((sft_irq_r & msie_r) ? 4'd3
+       : (tmr_irq_r & mtie_r) ? 4'd7
+       : (ext_irq_r & meie_r) ? 4'd11
+       : 4'b0)};
+
+    // Exception cause helpers
+    excp_flush_by_alu_agu = (alu_excp_flush_req & alu_excp_i_ld & alu_excp_i_misalgn)
+                          | (alu_excp_flush_req & alu_excp_i_ld & alu_excp_i_buserr)
+                          | (alu_excp_flush_req & alu_excp_i_stamo & alu_excp_i_misalgn)
+                          | (alu_excp_flush_req & alu_excp_i_stamo & alu_excp_i_buserr);
+
+    excp_flush_by_longp_ldst = (longp_excp_flush_req & longp_excp_i_ld & longp_excp_i_buserr)
+                             | (longp_excp_flush_req & longp_excp_i_st & longp_excp_i_buserr);
+
+    // Exception cause encoding
+    if alu_excp_flush_req & alu_excp_i_ifu_misalgn
+      excp_cause_w = 0;
+    elsif alu_excp_flush_req & alu_excp_i_ifu_buserr
+      excp_cause_w = 1;
+    elsif alu_excp_flush_req & alu_excp_i_ifu_ilegl
+      excp_cause_w = 2;
+    elsif alu_excp_flush_req & alu_excp_i_ebreak4excp
+      excp_cause_w = 3;
+    elsif alu_excp_flush_req & alu_excp_i_ld & alu_excp_i_misalgn
+      excp_cause_w = 4;
+    elsif (longp_excp_flush_req & longp_excp_i_ld & longp_excp_i_buserr) | (alu_excp_flush_req & alu_excp_i_ld & alu_excp_i_buserr)
+      excp_cause_w = 5;
+    elsif alu_excp_flush_req & alu_excp_i_stamo & alu_excp_i_misalgn
+      excp_cause_w = 6;
+    elsif (longp_excp_flush_req & longp_excp_i_st & longp_excp_i_buserr) | (alu_excp_flush_req & alu_excp_i_stamo & alu_excp_i_buserr)
+      excp_cause_w = 7;
+    elsif alu_excp_flush_req & alu_excp_i_ecall & u_mode
+      excp_cause_w = 8;
+    elsif alu_excp_flush_req & alu_excp_i_ecall & s_mode
+      excp_cause_w = 9;
+    elsif alu_excp_flush_req & alu_excp_i_ecall & h_mode
+      excp_cause_w = 10;
+    elsif alu_excp_flush_req & alu_excp_i_ecall & m_mode
+      excp_cause_w = 11;
+    elsif longp_excp_flush_req & longp_excp_i_insterr
+      excp_cause_w = 16;
+    else
+      excp_cause_w = 31;
+    end if
+
+    // CSR updates
+    cmt_cause = excp_taken_ena ? excp_cause_w : irq_cause_w;
+    cmt_epc = longp_excp_i_valid ? longp_excp_i_pc : alu_excp_i_pc;
+
+    // Badaddr
+    if excp_flush_by_longp_ldst
+      cmt_badaddr = longp_excp_i_badaddr;
+    elsif excp_flush_by_alu_agu
+      cmt_badaddr = alu_excp_i_badaddr;
+    elsif (alu_excp_flush_req & alu_excp_i_ebreak4excp)
+        | (alu_excp_flush_req & alu_excp_i_ifu_misalgn)
+        | (alu_excp_flush_req & alu_excp_i_ifu_buserr)
+      cmt_badaddr = alu_excp_i_pc;
+    elsif alu_excp_flush_req & alu_excp_i_ifu_ilegl
+      cmt_badaddr = alu_excp_i_instr;
+    else
+      cmt_badaddr = 0;
+    end if
+
+    cmt_epc_ena     = (~dbg_mode) & (excp_taken_ena | irq_taken_ena);
+    cmt_cause_ena   = cmt_epc_ena;
+    cmt_status_ena  = cmt_epc_ena;
+    cmt_badaddr_ena = cmt_epc_ena & excpirq_flush_req;
+
+    // Debug CSR updates
+    cmt_dpc = alu_excp_i_pc;
+    cmt_dpc_ena = dbg_entry_taken_ena;
+    cmt_dcause = dbg_entry_taken_ena
+               ? (dbg_trig_req ? 2
+                : dbg_ebrk_req ? 1
+                : dbg_irq_req_w ? 3
+                : dbg_step_req ? 4
+                : dbg_halt_req ? 5
+                : 0)
+               : 0;
+    cmt_dcause_ena = dbg_entry_taken_ena | cmt_dret_ena;
+  end comb
+end module e203_exu_excp

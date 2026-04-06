@@ -1,77 +1,250 @@
-// E203 HBirdv2 Execution Commit Unit (9th E203 benchmark)
-// Arbitrates between ALU (single-cycle) and long-pipe (multi-cycle muldiv)
-// results. ALU has priority. Commits winning result to register file
-// write-back port. Manages valid/ready handshake on both channels.
-//
-// Features exercised: {a,b} concat, {N{expr}} repeat, elsif, let
+// E203 HBirdv2 Execution Commit Unit
+// Handles commit of ALU results, exception processing, trap/mret generation,
+// WFI, pipeline flush, and debug mode interactions.
+// Matches RealBench port interface.
 
-domain SysDomain
-  freq_mhz: 100
-end domain SysDomain
-
-module ExuCommit
+module e203_exu_commit
   param XLEN: const = 32;
 
-  port clk: in Clock<SysDomain>;
-  port rst: in Reset<Sync, High>;
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
 
-  // ALU result channel (single-cycle, higher priority)
-  port alu_valid:   in  Bool;
-  port alu_ready:   out Bool;
-  port alu_wdat:    in  UInt<32>;
-  port alu_rd_idx:  in  UInt<5>;
-  port alu_rd_en:   in  Bool;
+  // ── Commit status outputs ─────────────────────────────────────────
+  port commit_mret:      out Bool;
+  port commit_trap:      out Bool;
+  port core_wfi:         out Bool;
+  port nonflush_cmt_ena: out Bool;
+  port excp_active:      out Bool;
 
-  // Long-pipe result channel (multi-cycle muldiv)
-  port long_valid:  in  Bool;
-  port long_ready:  out Bool;
-  port long_wdat:   in  UInt<32>;
-  port long_rd_idx: in  UInt<5>;
-  port long_rd_en:  in  Bool;
+  // ── AMO wait ──────────────────────────────────────────────────────
+  port amo_wait: in Bool;
 
-  // Register file write-back port
-  port wbck_valid:  out Bool;
-  port wbck_ready:  in  Bool;
-  port wbck_wdat:   out UInt<32>;
-  port wbck_rd_idx: out UInt<5>;
-  port wbck_rd_en:  out Bool;
+  // ── WFI halt interface ────────────────────────────────────────────
+  port wfi_halt_ifu_req: out Bool;
+  port wfi_halt_exu_req: out Bool;
+  port wfi_halt_ifu_ack: in  Bool;
+  port wfi_halt_exu_ack: in  Bool;
 
-  // Commit status
-  port commit_valid: out Bool;
-  port commit_src:   out UInt<2>;  // 0=none, 1=alu, 2=long
+  // ── Interrupt inputs ──────────────────────────────────────────────
+  port dbg_irq_r:    in Bool;
+  port lcl_irq_r:    in Bool;
+  port ext_irq_r:    in Bool;
+  port sft_irq_r:    in Bool;
+  port tmr_irq_r:    in Bool;
+  port evt_r:        in Bool;
+  port status_mie_r: in Bool;
+  port mtie_r:       in Bool;
+  port msie_r:       in Bool;
+  port meie_r:       in Bool;
 
-  // Arbitration: ALU wins when both valid
-  let alu_win:  Bool = alu_valid;
-  let long_win: Bool = long_valid & ~alu_valid;
-  let any_valid: Bool = alu_valid | long_valid;
+  // ── ALU commit input channel ──────────────────────────────────────
+  port alu_cmt_i_valid:      in  Bool;
+  port alu_cmt_i_ready:      out Bool;
+  port alu_cmt_i_pc:         in  UInt<32>;
+  port alu_cmt_i_instr:      in  UInt<32>;
+  port alu_cmt_i_pc_vld:     in  Bool;
+  port alu_cmt_i_imm:        in  UInt<32>;
+  port alu_cmt_i_rv32:       in  Bool;
+  port alu_cmt_i_bjp:        in  Bool;
+  port alu_cmt_i_wfi:        in  Bool;
+  port alu_cmt_i_fencei:     in  Bool;
+  port alu_cmt_i_mret:       in  Bool;
+  port alu_cmt_i_dret:       in  Bool;
+  port alu_cmt_i_ecall:      in  Bool;
+  port alu_cmt_i_ebreak:     in  Bool;
+  port alu_cmt_i_ifu_misalgn: in Bool;
+  port alu_cmt_i_ifu_buserr: in  Bool;
+  port alu_cmt_i_ifu_ilegl:  in  Bool;
+  port alu_cmt_i_bjp_prdt:   in  Bool;
+  port alu_cmt_i_bjp_rslv:   in  Bool;
+  port alu_cmt_i_misalgn:    in  Bool;
+  port alu_cmt_i_ld:         in  Bool;
+  port alu_cmt_i_stamo:      in  Bool;
+  port alu_cmt_i_buserr:     in  Bool;
+  port alu_cmt_i_badaddr:    in  UInt<32>;
 
-  // Selected result (mux)
-  let sel_wdat:   UInt<32> = alu_win ? alu_wdat   : long_wdat;
-  let sel_rd_idx: UInt<5>  = alu_win ? alu_rd_idx : long_rd_idx;
-  let sel_rd_en:  Bool     = alu_win ? alu_rd_en  : long_rd_en;
+  // ── CSR commit outputs ────────────────────────────────────────────
+  port cmt_badaddr:     out UInt<32>;
+  port cmt_badaddr_ena: out Bool;
+  port cmt_epc:         out UInt<32>;
+  port cmt_epc_ena:     out Bool;
+  port cmt_cause:       out UInt<32>;
+  port cmt_cause_ena:   out Bool;
+  port cmt_instret_ena: out Bool;
+  port cmt_status_ena:  out Bool;
+  port cmt_dpc:         out UInt<32>;
+  port cmt_dpc_ena:     out Bool;
+  port cmt_dcause:      out UInt<3>;
+  port cmt_dcause_ena:  out Bool;
+  port cmt_mret_ena:    out Bool;
 
-  // Handshake: forward wbck_ready to winning channel only
-  let alu_can_go:  Bool = alu_win  & wbck_ready;
-  let long_can_go: Bool = long_win & wbck_ready;
+  // ── CSR read inputs ───────────────────────────────────────────────
+  port csr_epc_r:   in UInt<32>;
+  port csr_dpc_r:   in UInt<32>;
+  port csr_mtvec_r: in UInt<32>;
 
-  // Commit source encoding using concat
-  let src_bits: UInt<2> = alu_win  ? 1 :
-                           long_win ? 2 : 0;
+  // ── Debug mode inputs ─────────────────────────────────────────────
+  port dbg_mode:     in Bool;
+  port dbg_halt_r:   in Bool;
+  port dbg_step_r:   in Bool;
+  port dbg_ebreakm_r: in Bool;
+  port oitf_empty:   in Bool;
+
+  // ── Privilege mode inputs ─────────────────────────────────────────
+  port u_mode: in Bool;
+  port s_mode: in Bool;
+  port h_mode: in Bool;
+  port m_mode: in Bool;
+
+  // ── Long-pipe exception input ─────────────────────────────────────
+  port longp_excp_i_ready:   out Bool;
+  port longp_excp_i_valid:   in  Bool;
+  port longp_excp_i_ld:      in  Bool;
+  port longp_excp_i_st:      in  Bool;
+  port longp_excp_i_buserr:  in  Bool;
+  port longp_excp_i_badaddr: in  UInt<32>;
+  port longp_excp_i_insterr: in  Bool;
+  port longp_excp_i_pc:      in  UInt<32>;
+
+  // ── Flush outputs ─────────────────────────────────────────────────
+  port flush_pulse:       out Bool;
+  port flush_req:         out Bool;
+  port pipe_flush_ack:    in  Bool;
+  port pipe_flush_req:    out Bool;
+  port pipe_flush_add_op1: out UInt<32>;
+  port pipe_flush_add_op2: out UInt<32>;
+  port pipe_flush_pc:     out UInt<32>;
+
+  // ── WFI state register ────────────────────────────────────────────
+  reg wfi_flag_r: Bool init 0 reset rst_n => 0;
+  reg flush_req_r: Bool init 0 reset rst_n => 0;
+
+  // ── Interrupt pending check ───────────────────────────────────────
+  let irq_ext_pend: Bool = ext_irq_r & meie_r & status_mie_r;
+  let irq_sft_pend: Bool = sft_irq_r & msie_r & status_mie_r;
+  let irq_tmr_pend: Bool = tmr_irq_r & mtie_r & status_mie_r;
+  let any_irq: Bool = irq_ext_pend | irq_sft_pend | irq_tmr_pend |
+                       dbg_irq_r | lcl_irq_r | evt_r;
+
+  // ── Commit logic ──────────────────────────────────────────────────
+  let cmt_ena: Bool = alu_cmt_i_valid & ~amo_wait;
+
+  // Exception conditions
+  let has_excp: Bool = alu_cmt_i_ifu_misalgn | alu_cmt_i_ifu_buserr |
+                        alu_cmt_i_ifu_ilegl | alu_cmt_i_ecall | alu_cmt_i_ebreak |
+                        alu_cmt_i_misalgn | alu_cmt_i_buserr;
+
+  let need_flush: Bool = alu_cmt_i_bjp | alu_cmt_i_fencei | alu_cmt_i_mret |
+                          alu_cmt_i_dret | alu_cmt_i_wfi | has_excp;
+
+  // BJP misprediction
+  let bjp_mispred: Bool = alu_cmt_i_bjp & (alu_cmt_i_bjp_prdt != alu_cmt_i_bjp_rslv);
+
+  // Trap generation
+  let trap_ena: Bool = cmt_ena & has_excp;
+  let mret_ena: Bool = cmt_ena & alu_cmt_i_mret & ~has_excp;
+
+  // PC increment for non-flush commit
+  let pc_incr: UInt<32> = alu_cmt_i_rv32 ? 4 : 2;
+
+  seq on clk rising
+    // WFI flag management
+    if cmt_ena & alu_cmt_i_wfi & ~any_irq
+      wfi_flag_r <= true;
+    elsif any_irq
+      wfi_flag_r <= false;
+    end if
+
+    // Flush request register
+    if pipe_flush_ack
+      flush_req_r <= false;
+    elsif cmt_ena & need_flush
+      flush_req_r <= true;
+    end if
+  end seq
 
   comb
-    // Write-back port drives
-    wbck_valid  = any_valid;
-    wbck_wdat   = sel_wdat;
-    wbck_rd_idx = sel_rd_idx;
-    wbck_rd_en  = sel_rd_en;
+    // ALU commit ready: always accept (single-cycle)
+    alu_cmt_i_ready = ~amo_wait;
 
-    // Ready back to sources
-    alu_ready  = alu_can_go;
-    long_ready = long_can_go;
+    // Commit status
+    commit_mret      = mret_ena;
+    commit_trap      = trap_ena;
+    core_wfi         = wfi_flag_r;
+    nonflush_cmt_ena = cmt_ena & ~need_flush;
+    excp_active      = trap_ena;
 
-    // Status outputs
-    commit_valid = any_valid & wbck_ready;
-    commit_src   = src_bits;
+    // WFI halt requests
+    wfi_halt_ifu_req = wfi_flag_r;
+    wfi_halt_exu_req = wfi_flag_r;
+
+    // CSR commit outputs
+    cmt_epc_ena     = trap_ena;
+    cmt_epc         = alu_cmt_i_pc;
+    cmt_cause_ena   = trap_ena;
+    cmt_badaddr_ena = trap_ena & (alu_cmt_i_misalgn | alu_cmt_i_buserr);
+    cmt_badaddr     = alu_cmt_i_badaddr;
+    cmt_instret_ena = cmt_ena & ~has_excp;
+    cmt_status_ena  = trap_ena | mret_ena;
+    cmt_mret_ena    = mret_ena;
+
+    // Trap cause encoding (simplified)
+    if alu_cmt_i_ifu_misalgn
+      cmt_cause = 0;
+    elsif alu_cmt_i_ifu_buserr
+      cmt_cause = 1;
+    elsif alu_cmt_i_ifu_ilegl
+      cmt_cause = 2;
+    elsif alu_cmt_i_ebreak
+      cmt_cause = 3;
+    elsif alu_cmt_i_misalgn & alu_cmt_i_ld
+      cmt_cause = 4;
+    elsif alu_cmt_i_buserr & alu_cmt_i_ld
+      cmt_cause = 5;
+    elsif alu_cmt_i_misalgn & alu_cmt_i_stamo
+      cmt_cause = 6;
+    elsif alu_cmt_i_buserr & alu_cmt_i_stamo
+      cmt_cause = 7;
+    elsif alu_cmt_i_ecall & u_mode
+      cmt_cause = 8;
+    elsif alu_cmt_i_ecall & m_mode
+      cmt_cause = 11;
+    else
+      cmt_cause = 0;
+    end if
+
+    // Debug CSR outputs
+    cmt_dpc_ena    = trap_ena & dbg_mode;
+    cmt_dpc        = alu_cmt_i_pc;
+    cmt_dcause_ena = trap_ena & dbg_mode;
+    cmt_dcause     = 0;
+
+    // Long-pipe exception handling
+    longp_excp_i_ready = ~alu_cmt_i_valid;
+
+    // Flush outputs
+    flush_pulse = cmt_ena & need_flush;
+    flush_req   = flush_req_r;
+    pipe_flush_req = flush_req_r;
+
+    // Flush target address
+    if trap_ena
+      pipe_flush_add_op1 = csr_mtvec_r;
+      pipe_flush_add_op2 = 0;
+      pipe_flush_pc      = csr_mtvec_r;
+    elsif mret_ena
+      pipe_flush_add_op1 = csr_epc_r;
+      pipe_flush_add_op2 = 0;
+      pipe_flush_pc      = csr_epc_r;
+    elsif alu_cmt_i_dret
+      pipe_flush_add_op1 = csr_dpc_r;
+      pipe_flush_add_op2 = 0;
+      pipe_flush_pc      = csr_dpc_r;
+    else
+      pipe_flush_add_op1 = alu_cmt_i_pc;
+      pipe_flush_add_op2 = pc_incr;
+      pipe_flush_pc      = alu_cmt_i_pc;
+    end if
   end comb
 
-end module ExuCommit
+end module e203_exu_commit

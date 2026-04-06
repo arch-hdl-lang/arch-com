@@ -18,6 +18,8 @@ module elevator_control_system #(
   logic [3-1:0] state_r;
   logic [4-1:0] floor_r;
   logic [8-1:0] door_cnt;
+  // Latch one-cycle call pulses so requests are not lost between cycles.
+  logic [N-1:0] pending_r;
   // Seven-segment decode for current floor
   logic [7-1:0] seg;
   always_comb begin
@@ -52,13 +54,13 @@ module elevator_control_system #(
     req_below = 1'b0;
     req_here = 1'b0;
     for (int i = 0; i <= N - 1; i++) begin
-      if (4'($unsigned(i)) > floor_r & call_requests[i +: 1]) begin
+      if (4'($unsigned(i)) > floor_r & pending_r[i +: 1]) begin
         req_above = 1'b1;
       end
-      if (4'($unsigned(i)) < floor_r & call_requests[i +: 1]) begin
+      if (4'($unsigned(i)) < floor_r & pending_r[i +: 1]) begin
         req_below = 1'b1;
       end
-      if (4'($unsigned(i)) == floor_r & call_requests[i +: 1]) begin
+      if (4'($unsigned(i)) == floor_r & pending_r[i +: 1]) begin
         req_here = 1'b1;
       end
     end
@@ -88,61 +90,70 @@ module elevator_control_system #(
       state_r <= 0;
       floor_r <= 0;
       door_cnt <= 0;
-    end else if (state_r == 0) begin
-      // IDLE
-      if (emergency_stop) begin
-        state_r <= 4;
-      end else if (req_here) begin
-        state_r <= 3;
-        door_cnt <= 50;
-      end else if (req_above) begin
-        state_r <= 1;
-      end else if (req_below) begin
-        state_r <= 2;
+      pending_r <= 0;
+    end else begin
+      // Capture incoming one-cycle requests.
+      pending_r <= pending_r | call_requests;
+      if (req_here) begin
+        // Clear the request once this floor is being served.
+        pending_r[floor_r +: 1] <= 0;
       end
-    end else if (state_r == 1) begin
-      // MOVING_UP
-      if (emergency_stop) begin
-        state_r <= 4;
-      end else if (req_here) begin
-        state_r <= 3;
-        door_cnt <= 50;
-      end else if (~req_above & ~req_here) begin
-        state_r <= 0;
-      end else if (call_requests[floor_r +: 1] == 0) begin
-        floor_r <= 4'(floor_r + 1);
-      end
-    end else if (state_r == 2) begin
-      // MOVING_DOWN
-      if (emergency_stop) begin
-        state_r <= 4;
-      end else if (req_here) begin
-        state_r <= 3;
-        door_cnt <= 50;
-      end else if (~req_below & ~req_here) begin
-        state_r <= 0;
-      end else if (call_requests[floor_r +: 1] == 0) begin
-        floor_r <= 4'(floor_r - 1);
-      end
-    end else if (state_r == 3) begin
-      // DOOR_OPEN
-      if (emergency_stop) begin
-        state_r <= 4;
-      end else if (door_cnt == 0) begin
-        if (req_above) begin
+      if (state_r == 0) begin
+        // IDLE
+        if (emergency_stop) begin
+          state_r <= 4;
+        end else if (req_here) begin
+          state_r <= 3;
+          door_cnt <= 50;
+        end else if (req_above) begin
           state_r <= 1;
         end else if (req_below) begin
           state_r <= 2;
+        end
+      end else if (state_r == 1) begin
+        // MOVING_UP
+        if (emergency_stop) begin
+          state_r <= 4;
+        end else if (req_here) begin
+          state_r <= 3;
+          door_cnt <= 50;
+        end else if (~req_above & ~req_here) begin
+          state_r <= 0;
+        end else if (pending_r[floor_r +: 1] == 0) begin
+          floor_r <= 4'(floor_r + 1);
+        end
+      end else if (state_r == 2) begin
+        // MOVING_DOWN
+        if (emergency_stop) begin
+          state_r <= 4;
+        end else if (req_here) begin
+          state_r <= 3;
+          door_cnt <= 50;
+        end else if (~req_below & ~req_here) begin
+          state_r <= 0;
+        end else if (pending_r[floor_r +: 1] == 0) begin
+          floor_r <= 4'(floor_r - 1);
+        end
+      end else if (state_r == 3) begin
+        // DOOR_OPEN
+        if (emergency_stop) begin
+          state_r <= 4;
+        end else if (door_cnt == 0) begin
+          if (req_above) begin
+            state_r <= 1;
+          end else if (req_below) begin
+            state_r <= 2;
+          end else begin
+            state_r <= 0;
+          end
         end else begin
+          door_cnt <= 8'(door_cnt - 1);
+        end
+      end else if (state_r == 4) begin
+        // EMERGENCY
+        if (~emergency_stop) begin
           state_r <= 0;
         end
-      end else begin
-        door_cnt <= 8'(door_cnt - 1);
-      end
-    end else if (state_r == 4) begin
-      // EMERGENCY
-      if (~emergency_stop) begin
-        state_r <= 0;
       end
     end
   end

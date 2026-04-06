@@ -1,132 +1,152 @@
-// E203 HBirdv2 Instruction Fetch Mini-Controller (10th E203 benchmark)
-// FSM managing PC generation, instruction fetch requests, and branch redirects.
-// Exercises: FSM with reg/seq datapath, {a,b} concat, {N{expr}} repeat, elsif.
-//
-// States:
-//   Idle    — wait for reset release, then start fetching
-//   WaitGnt — issue memory request, wait for bus grant
-//   WaitRsp — wait for memory response (instruction data)
-//   Abort   — branch redirect received; cancel in-flight fetch
-//
-// Handshake: req_valid/req_ready to memory, rsp_valid/rsp_ready from memory.
-// On branch redirect: current fetch is aborted, PC reloaded.
+// E203 HBirdv2 Instruction Fetch Unit
+// Manages PC generation, instruction fetch requests, branch prediction,
+// pipeline flush, and output to decode stage.
+// Matches RealBench port interface.
 
-domain SysDomain
-  freq_mhz: 100
-end domain SysDomain
+module e203_ifu_ifetch
+  param XLEN: const = 32;
 
-fsm IfuIfetch
-  param RESET_PC: const = 0x80000000;
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
 
-  port clk: in Clock<SysDomain>;
-  port rst: in Reset<Async, Low>;
+  // ── PC inspect output ─────────────────────────────────────────────
+  port inspect_pc: out UInt<32>;
+  port pc_rtvec:   in  UInt<32>;
 
-  // Instruction memory request interface
-  port req_valid: out Bool default false;
-  port req_ready: in  Bool;
-  port req_addr:  out UInt<32> default 0;
+  // ── Instruction memory request ────────────────────────────────────
+  port ifu_req_valid:    out Bool;
+  port ifu_req_ready:    in  Bool;
+  port ifu_req_pc:       out UInt<32>;
+  port ifu_req_seq:      out Bool;
+  port ifu_req_seq_rv32: out Bool;
+  port ifu_req_last_pc:  out UInt<32>;
 
-  // Instruction memory response interface
-  port rsp_valid:  in  Bool;
-  port rsp_ready:  out Bool default false;
-  port rsp_instr:  in  UInt<32>;
-  port rsp_err:    in  Bool;
+  // ── Instruction memory response ───────────────────────────────────
+  port ifu_rsp_valid: in  Bool;
+  port ifu_rsp_ready: out Bool;
+  port ifu_rsp_err:   in  Bool;
+  port ifu_rsp_instr: in  UInt<32>;
 
-  // Output to decode stage
-  port o_valid:    out Bool default false;
-  port o_ready:    in  Bool;
-  port o_instr:    out UInt<32> default 0;
-  port o_pc:       out UInt<32> default 0;
-  port o_bus_err:  out Bool default false;
+  // ── Output to decode stage ────────────────────────────────────────
+  port ifu_o_ir:          out UInt<32>;
+  port ifu_o_pc:          out UInt<32>;
+  port ifu_o_pc_vld:      out Bool;
+  port ifu_o_rs1idx:      out UInt<5>;
+  port ifu_o_rs2idx:      out UInt<5>;
+  port ifu_o_prdt_taken:  out Bool;
+  port ifu_o_misalgn:     out Bool;
+  port ifu_o_buserr:      out Bool;
+  port ifu_o_muldiv_b2b:  out Bool;
+  port ifu_o_valid:       out Bool;
+  port ifu_o_ready:       in  Bool;
 
-  // Branch redirect from EXU
-  port redirect:    in Bool;
-  port redirect_pc: in UInt<32>;
+  // ── Pipeline flush interface ──────────────────────────────────────
+  port pipe_flush_ack:     out Bool;
+  port pipe_flush_req:     in  Bool;
+  port pipe_flush_add_op1: in  UInt<32>;
+  port pipe_flush_add_op2: in  UInt<32>;
+  port pipe_flush_pc:      in  UInt<32>;
 
-  // Datapath registers
-  reg pc_r:        UInt<32> init 0 reset rst=>0;
-  reg instr_r:     UInt<32> init 0 reset rst=>0;
-  reg pc_out_r:    UInt<32> init 0 reset rst=>0;
-  reg bus_err_r:   Bool     init 0 reset rst=>0;
-  reg out_valid_r: Bool     init 0 reset rst=>0;
+  // ── Halt interface ────────────────────────────────────────────────
+  port ifu_halt_req: in  Bool;
+  port ifu_halt_ack: out Bool;
 
-  // Next PC: PC+4 with bottom 2 bits forced to 0 (aligned)
+  // ── OITF and register file ────────────────────────────────────────
+  port oitf_empty:   in Bool;
+  port rf2ifu_x1:    in UInt<32>;
+  port rf2ifu_rs1:   in UInt<32>;
+
+  // ── Decode feedback for branch prediction ─────────────────────────
+  port dec2ifu_rs1en:  in Bool;
+  port dec2ifu_rden:   in Bool;
+  port dec2ifu_rdidx:  in UInt<5>;
+  port dec2ifu_mulhsu: in Bool;
+  port dec2ifu_div:    in Bool;
+  port dec2ifu_rem:    in Bool;
+  port dec2ifu_divu:   in Bool;
+  port dec2ifu_remu:   in Bool;
+
+  // ── PC registers ──────────────────────────────────────────────────
+  reg pc_r:         UInt<32> init 0 reset rst_n => 0;
+  reg ir_r:         UInt<32> init 0 reset rst_n => 0;
+  reg pc_out_r:     UInt<32> init 0 reset rst_n => 0;
+  reg pc_vld_r:     Bool     init 0 reset rst_n => 0;
+  reg buserr_r:     Bool     init 0 reset rst_n => 0;
+  reg out_valid_r:  Bool     init 0 reset rst_n => 0;
+  reg req_pending_r: Bool    init 0 reset rst_n => 0;
+  reg last_pc_r:    UInt<32> init 0 reset rst_n => 0;
+  reg last_rv32_r:  Bool     init 0 reset rst_n => 0;
+
+  // ── Flush target address ──────────────────────────────────────────
+  let flush_target: UInt<33> = (pipe_flush_add_op1.zext<33>() + pipe_flush_add_op2.zext<33>()).trunc<33>();
+  let flush_pc: UInt<32> = flush_target.trunc<32>();
+
+  // ── Sequential PC: PC+4 ──────────────────────────────────────────
   let pc_plus4: UInt<32> = (pc_r + 4).trunc<32>();
-  let pc_aligned: UInt<32> = {pc_plus4[31:2], {2{false}}};
 
-  state [Idle, WaitGnt, WaitRsp, Abort]
-  default state Idle;
+  // ── MulDiv back-to-back detection ─────────────────────────────────
+  let muldiv_b2b: Bool = dec2ifu_rden &
+    (dec2ifu_mulhsu | dec2ifu_div | dec2ifu_rem | dec2ifu_divu | dec2ifu_remu);
 
-  state Idle
-    seq on clk rising
-      pc_r <= RESET_PC;
+  seq on clk rising
+    // Pipeline flush: reload PC
+    if pipe_flush_req
+      pc_r <= flush_pc;
       out_valid_r <= false;
-    end seq
-
-    -> WaitGnt when true;
-  end state Idle
-
-  state WaitGnt
-    comb
-      req_valid = true;
-      req_addr  = pc_r;
-      o_valid   = out_valid_r;
-      o_instr   = instr_r;
-      o_pc      = pc_out_r;
-      o_bus_err = bus_err_r;
-    end comb
-
-    seq on clk rising
-      if redirect
-        pc_r <= redirect_pc;
-        out_valid_r <= false;
-      elsif o_ready
-        out_valid_r <= false;
-      end if
-    end seq
-
-    -> Abort when redirect;
-    -> WaitRsp when req_ready;
-  end state WaitGnt
-
-  state WaitRsp
-    comb
-      rsp_ready = true;
-      o_valid   = out_valid_r;
-      o_instr   = instr_r;
-      o_pc      = pc_out_r;
-      o_bus_err = bus_err_r;
-    end comb
-
-    seq on clk rising
-      if redirect
-        pc_r <= redirect_pc;
-        out_valid_r <= false;
-      elsif rsp_valid
-        instr_r     <= rsp_instr;
-        pc_out_r    <= pc_r;
-        bus_err_r   <= rsp_err;
-        out_valid_r <= true;
-        pc_r        <= pc_aligned;
-      elsif o_ready
-        out_valid_r <= false;
-      end if
-    end seq
-
-    -> Abort when redirect;
-    -> WaitGnt when rsp_valid;
-  end state WaitRsp
-
-  state Abort
-    comb
-      rsp_ready = true;
-    end comb
-
-    seq on clk rising
+      req_pending_r <= false;
+    elsif ifu_halt_req
       out_valid_r <= false;
-    end seq
+      req_pending_r <= false;
+    elsif ifu_req_valid & ifu_req_ready
+      // Request accepted
+      last_pc_r   <= pc_r;
+      last_rv32_r <= (pc_r[1:0] == 0);
+      req_pending_r <= true;
+    end if
 
-    -> WaitGnt when true;
-  end state Abort
+    if req_pending_r & ifu_rsp_valid
+      // Response received
+      ir_r        <= ifu_rsp_instr;
+      pc_out_r    <= pc_r;
+      pc_vld_r    <= true;
+      buserr_r    <= ifu_rsp_err;
+      out_valid_r <= true;
+      pc_r        <= pc_plus4;
+      req_pending_r <= false;
+    elsif ifu_o_valid & ifu_o_ready
+      out_valid_r <= false;
+    end if
+  end seq
 
-end fsm IfuIfetch
+  comb
+    // PC inspection
+    inspect_pc = pc_r;
+
+    // Fetch request
+    ifu_req_valid    = ~pipe_flush_req & ~ifu_halt_req & ~req_pending_r & ~out_valid_r;
+    ifu_req_pc       = pc_r;
+    ifu_req_seq      = ~pipe_flush_req;
+    ifu_req_seq_rv32 = last_rv32_r;
+    ifu_req_last_pc  = last_pc_r;
+
+    // Response accept
+    ifu_rsp_ready = req_pending_r;
+
+    // Output to decode
+    ifu_o_valid      = out_valid_r;
+    ifu_o_ir         = ir_r;
+    ifu_o_pc         = pc_out_r;
+    ifu_o_pc_vld     = pc_vld_r;
+    ifu_o_rs1idx     = ir_r[19:15];
+    ifu_o_rs2idx     = ir_r[24:20];
+    ifu_o_prdt_taken = false;
+    ifu_o_misalgn    = false;
+    ifu_o_buserr     = buserr_r;
+    ifu_o_muldiv_b2b = muldiv_b2b;
+
+    // Flush/halt ack
+    pipe_flush_ack = pipe_flush_req;
+    ifu_halt_ack   = ifu_halt_req & ~req_pending_r;
+  end comb
+
+end module e203_ifu_ifetch

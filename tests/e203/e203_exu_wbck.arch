@@ -3,7 +3,7 @@
 // write-back requests, forwarding the winner to the integer register file.
 // Purely combinational — no registers, no reset used.
 
-module ExuWbck
+module e203_exu_wbck
   param XLEN:        const = 32;
   param RFIDX_WIDTH: const = 5;
 
@@ -34,17 +34,14 @@ module ExuWbck
     longp_wbck_i_ready = 1;
     alu_wbck_i_ready   = ~longp_wbck_i_valid;
 
-    // Data / index mux: longp wins when valid
-    if longp_wbck_i_valid
-      rf_wbck_o_wdat  = longp_wbck_i_wdat;
-      rf_wbck_o_rdidx = longp_wbck_i_rdidx;
-      // Write enable: suppress if longp is writing to FPU register
-      rf_wbck_o_ena   = ~longp_wbck_i_rdfpu;
-    else
-      rf_wbck_o_wdat  = alu_wbck_i_wdat;
-      rf_wbck_o_rdidx = alu_wbck_i_rdidx;
-      rf_wbck_o_ena   = alu_wbck_i_valid;
-    end if
+    // Priority mux: longp_valid selects longp, else ALU passthrough
+    rf_wbck_o_wdat  = longp_wbck_i_valid ? longp_wbck_i_wdat : alu_wbck_i_wdat;
+    rf_wbck_o_rdidx = longp_wbck_i_valid ? longp_wbck_i_rdidx : alu_wbck_i_rdidx;
+    // ena: wbck_valid & ~rdfpu
+    // wbck_valid = longp_valid | (alu_valid & ~longp_valid)
+    // rdfpu = longp_valid ? longp_rdfpu : 0
+    rf_wbck_o_ena   = (longp_wbck_i_valid & (~longp_wbck_i_rdfpu))
+                    | ((~longp_wbck_i_valid) & alu_wbck_i_valid);
   end comb
 
-end module ExuWbck
+end module e203_exu_wbck

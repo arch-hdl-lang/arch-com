@@ -2,7 +2,7 @@
 // Arbitrates between ALU (lower priority) and long-pipeline (higher priority)
 // write-back requests, forwarding the winner to the integer register file.
 // Purely combinational — no registers, no reset used.
-module ExuWbck #(
+module e203_exu_wbck #(
   parameter int XLEN = 32,
   parameter int RFIDX_WIDTH = 5
 ) (
@@ -27,22 +27,16 @@ module ExuWbck #(
   // ALU write-back (lower priority)
   // Long-pipeline write-back (higher priority)
   // Register file write port
-  always_comb begin
-    longp_wbck_i_ready = 1;
-    alu_wbck_i_ready = (~longp_wbck_i_valid);
-    if (longp_wbck_i_valid) begin
-      rf_wbck_o_wdat = longp_wbck_i_wdat;
-      rf_wbck_o_rdidx = longp_wbck_i_rdidx;
-      rf_wbck_o_ena = (~longp_wbck_i_rdfpu);
-    end else begin
-      rf_wbck_o_wdat = alu_wbck_i_wdat;
-      rf_wbck_o_rdidx = alu_wbck_i_rdidx;
-      rf_wbck_o_ena = alu_wbck_i_valid;
-    end
-  end
+  assign longp_wbck_i_ready = 1;
+  assign alu_wbck_i_ready = ~longp_wbck_i_valid;
+  assign rf_wbck_o_wdat = longp_wbck_i_valid ? longp_wbck_i_wdat : alu_wbck_i_wdat;
+  assign rf_wbck_o_rdidx = longp_wbck_i_valid ? longp_wbck_i_rdidx : alu_wbck_i_rdidx;
+  assign rf_wbck_o_ena = longp_wbck_i_valid & ~longp_wbck_i_rdfpu | ~longp_wbck_i_valid & alu_wbck_i_valid;
 
 endmodule
 
 // RF is seq ready; longp has unconditional priority.
-// Data / index mux: longp wins when valid
-// Write enable: suppress if longp is writing to FPU register
+// Priority mux: longp_valid selects longp, else ALU passthrough
+// ena: wbck_valid & ~rdfpu
+// wbck_valid = longp_valid | (alu_valid & ~longp_valid)
+// rdfpu = longp_valid ? longp_rdfpu : 0

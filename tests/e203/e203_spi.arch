@@ -8,7 +8,7 @@ domain SysDomain
   freq_mhz: 100
 end domain SysDomain
 
-module Spi
+module e203_spi
 
   port clk:   in Clock<SysDomain>;
   port rst_n: in Reset<Async, Low>;
@@ -130,4 +130,4 @@ module Spi
     spi_irq = done_r;
   end comb
 
-end module Spi
+end module e203_spi

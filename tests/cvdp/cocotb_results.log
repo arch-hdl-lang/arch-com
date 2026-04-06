@@ -1,29 +1,24 @@
-CVDP Cocotb Test Run — 2026-04-04 16:49:14
+CVDP Cocotb Test Run — 2026-04-05 09:58:20
 Testable modules: 191
 
-PASS 16qam_demapper
-PASS 16qam_mapper
+FAIL 16qam_demapper
+  
+FAIL 16qam_mapper
+  
+  Return code: 0
+  PASS: qam16_mapper_interpolated
 PASS APBGlobalHistoryRegister
 PASS Attenuator
-FAIL Binary2BCD — TIMEOUT
+FAIL Binary2BCD
+  
 PASS Data_Reduction
 PASS FILO_RTL
 PASS GP
 PASS JK_flipflop
 PASS SR_flipflop
 PASS SetBitStreamCalculator
-FAIL String_to_ASCII_Converter
-  ============================== 1 failed in 0.90s ===============================
-  
-  Return code: 0
-  FAIL: String_to_ASCII_Converter
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_String_to_ASCII_Converter_hdyh67ht
-FAIL Word_Change_Pulse
-  ============================== 1 failed in 0.22s ===============================
-  
-  Return code: 0
-  FAIL: Word_Change_Pulse
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_Word_Change_Pulse_9zehvnlu
+PASS String_to_ASCII_Converter
+PASS Word_Change_Pulse
 PASS adc_data_rotate
 PASS ahb_clock_counter
 PASS alphablending
@@ -31,32 +26,13 @@ PASS alu_seq
 PASS apb_controller
 PASS apb_dsp_unit
 PASS arithmetic_progression_generator
-FAIL async_filo
-  ============================== 1 failed in 0.22s ===============================
-  
-  Return code: 0
-  FAIL: async_filo
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_async_filo_icxmx72e
+PASS async_filo
 PASS axi_register
 PASS axi_tap
-FAIL axis_border_gen_with_resize
-  ============================== 1 failed in 0.28s ===============================
-  
-  Return code: 0
-  FAIL: axis_border_gen_with_resize
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_axis_border_gen_with_resize_ckh45rrd
-FAIL axis_image_border_gen
-  ============================== 1 failed in 0.81s ===============================
-  
-  Return code: 0
-  FAIL: axis_image_border_gen
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_axis_image_border_gen_kbzdvlxh
+PASS axis_border_gen_with_resize
+PASS axis_image_border_gen
 FAIL axis_image_resizer
-  ============================== 1 failed in 0.26s ===============================
   
-  Return code: 0
-  FAIL: axis_border_gen_with_resize
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_axis_border_gen_with_resize_2orynh9_
 PASS axis_joiner
 PASS axis_mux
 PASS axis_resize
@@ -66,469 +42,270 @@ PASS barrel_shifter_8bit
 PASS bcd_adder
 PASS bcd_counter
 PASS bcd_to_excess_3
-FAIL binary_multiplier
-  ============================== 1 failed in 0.96s ===============================
-  
-  Return code: 0
-  FAIL: binary_multiplier
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_binary_multiplier_2p5ztlm_
+PASS binary_multiplier
 PASS binary_search_tree_sort
 PASS binary_to_bcd
 PASS binary_to_gray
 PASS binary_to_one_hot_decoder
 PASS binary_to_one_hot_decoder_sequential
 PASS bit_sync
-PASS cache_mshr
+FAIL cache_mshr
+  ============================== 1 failed in 2.42s ===============================
+  
+  Return code: 0
+  FAIL: cache_mshr
+  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_cache_mshr_2wyy4zct
 PASS caesar_cipher
-FAIL car_parking_system
-  ============================== 1 failed in 0.79s ===============================
-  
-  Return code: 0
-  FAIL: car_parking_system
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_car_parking_system_mu8a7c9h
+PASS car_parking_system
 PASS cascaded_adder
-FAIL cascaded_encoder
-  ============================== 1 failed in 0.20s ===============================
-  
-  Return code: 0
-  FAIL: cascaded_encoder
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_cascaded_encoder_2pia174e
-FAIL cdc_pulse_synchronizer
-  FST info: dumpfile /private/var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_cdc_pulse_synchronizer_k1o1htkr/src/sim_build/cdc_pulse_synchronizer.fst opened for output.
-  
-  Return code: 0
-  FAIL: cdc_pulse_synchronizer
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_cdc_pulse_synchronizer_k1o1htkr
+PASS cascaded_encoder
+PASS cdc_pulse_synchronizer
 PASS clock_divider
-FAIL clock_jitter_detection_module
-  ========================= 1 failed, 2 passed in 2.37s ==========================
-  
-  Return code: 0
-  FAIL: clock_jitter_detection_module
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_clock_jitter_detection_module_w2ql34ot
+PASS clock_jitter_detection_module
 PASS complex_multiplier
 PASS compression_engine
-FAIL cont_adder
-  ============================== 1 failed in 0.25s ===============================
-  
-  Return code: 0
-  FAIL: cont_adder_top
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_cont_adder_top_s42qjdpj
+PASS cont_adder
 FAIL cont_adder_top
-  ============================== 1 failed in 0.23s ===============================
   
-  Return code: 0
-  FAIL: cont_adder_top
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_cont_adder_top_qu8v2sbk
-FAIL conv3x3
-  FST info: dumpfile /private/var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_conv3x3_w3a3yiud/src/sim_build/conv3x3.fst opened for output.
-  
-  Return code: 0
-  FAIL: conv3x3
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_conv3x3_w3a3yiud
+PASS conv3x3
 PASS convolutional_encoder
 FAIL copilot_rs_232
-  ============================== 1 failed in 4.00s ===============================
+  ============================== 1 failed in 8.85s ===============================
   
   Return code: 0
   FAIL: copilot_rs_232
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_copilot_rs_232_ynxmymnv
+  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_copilot_rs_232_7bc64h98
 PASS crossbar_switch
-PASS cvdp_convolutional_encoder_RTL_comp
-PASS cvdp_copilot_apb_gpio
-FAIL cvdp_copilot_bus_arbiter
-  AttributeError: 'RegressionManager' object has no attribute '_running_test'
+FAIL cvdp_convolutional_encoder_RTL_comp
   
-  Return code: 0
-  FAIL: cvdp_copilot_bus_arbiter
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_cvdp_copilot_bus_arbiter__8furuz5
+PASS cvdp_copilot_apb_gpio
+PASS cvdp_copilot_bus_arbiter
 PASS cvdp_copilot_decode_firstbit
 PASS cvdp_copilot_mem_allocator
 PASS cvdp_copilot_perf_counters
-FAIL cvdp_copilot_register_file_2R1W
-                                                          *******************************************************************************************************
-  
-  Return code: 0
-  FAIL: cvdp_copilot_register_file_2R1W
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_cvdp_copilot_register_file_2R1W_u_ntlcj4
+PASS cvdp_copilot_register_file_2R1W
 PASS cvdp_prbs_gen
 PASS data_bus_controller
 PASS data_width_converter
 PASS dbi_dec
 PASS dbi_enc
 FAIL ddm_cache
-  FST info: dumpfile /private/var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_ddm_cache_2hhrfaes/src/sim_build/ddm_cache.fst opened for output.
+  VCD info: dumping is suppressed.
   
   Return code: 0
   FAIL: ddm_cache
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_ddm_cache_2hhrfaes
-PASS decimator_and_peak_detector
+  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_ddm_cache_9nbx8scl
+FAIL decimator_and_peak_detector
+  
 PASS decoder_64b66b
 PASS decoder_8b10b
 PASS dig_stopwatch
-PASS digital_dice_roller
+FAIL digital_dice_roller — TIMEOUT
 PASS divider
 PASS dot_product
 PASS elastic_buffer_pattern_matcher
-FAIL elevator_control_system — TIMEOUT
+PASS elevator_control_system
 PASS encoder_64b66b
 PASS enhanced_fsm_signal_processor
 PASS factorial
 PASS fan_controller
 PASS fibonacci_series
-FAIL fifo_async
-  subprocess.CalledProcessError: Command '['iverilog', '-o', '/private/var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_fifo_async_g84xwrxs/src/sim_build/sim.vvp', '-s', 'fifo_async', '-g2012', '-s', 'cocotb_iverilog_dump', '-f', '/private/var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_fifo_async_g84xwrxs/src/sim_build/cmds.f', '/private/var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_fifo_async_g84xwrxs/rtl/fifo_async.sv', '/private/var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_fifo_async_g84xwrxs/src/sim_build/cocotb_iverilog_dump.v']' returned non-zero exit status 4.
-  
-  Return code: 1
-  FAIL: fifo_async
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_fifo_async_g84xwrxs
+PASS fifo_async
 FAIL fifo_policy
-  ============================== 1 failed in 0.99s ===============================
+  ============================== 1 failed in 4.35s ===============================
   
   Return code: 0
   FAIL: fifo_policy
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_fifo_policy_cncr4xpc
-FAIL findfasterclock
-  AttributeError: 'RegressionManager' object has no attribute '_running_test'
-  
-  Return code: 0
-  FAIL: findfasterclock
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_findfasterclock_6bou8ddr
+  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_fifo_policy_d7ulyjoh
+PASS findfasterclock
 PASS fir_filter
-FAIL floor_to_seven_segment — TIMEOUT
+FAIL floor_to_seven_segment
+  
 PASS fsm_linear_reg
 PASS fsm_seq_detector
 FAIL gcd_top
-  ============================== 1 failed in 1.30s ===============================
+  ============================== 1 failed in 4.83s ===============================
   
   Return code: 0
   FAIL: gcd_top
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_gcd_top_khzvck5f
+  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_gcd_top_ys30n_3a
 FAIL gf_mac
-  FST info: dumpfile /private/var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_gf_mac_u3o77a62/src/sim_build/gf_mac.fst opened for output.
+  VCD info: dumping is suppressed.
   
   Return code: 0
   FAIL: gf_mac
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_gf_mac_u3o77a62
+  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_gf_mac_5wxsi2t6
 PASS gf_multiplier
 PASS glitch_free_mux
 PASS gmii_rx_to_axi_stream
 PASS gray_to_binary
 FAIL halfband_fir
-  ============================== 1 failed in 1.14s ===============================
+  ============================== 1 failed in 4.31s ===============================
   
   Return code: 0
   FAIL: halfband_fir
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_halfband_fir_g9yb4dte
+  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_halfband_fir_21st15u0
 PASS hamming_code_receiver
 PASS hamming_code_tx_for_4bit
-FAIL hamming_rx
-  ========================= 1 failed, 1 passed in 2.62s ==========================
-  
-  Return code: 0
-  FAIL: hamming_rx
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_hamming_rx_1g801_fo
-FAIL hamming_tx
-  ============================== 1 failed in 0.43s ===============================
-  
-  Return code: 0
-  FAIL: hamming_tx
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_hamming_tx_e9ifa551
+PASS hamming_rx
+PASS hamming_tx
 PASS hebb_gates
 PASS hill_cipher
 PASS hmac_reg_interface
-FAIL huffman_encoder
-  ============================== 1 failed in 0.36s ===============================
-  
-  Return code: 0
-  FAIL: huffman_encoder
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_huffman_encoder_3xiy3r4m
+PASS huffman_encoder
 PASS iir_filter
 PASS image_rotate
 FAIL image_stego
-  FST info: dumpfile /private/var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_image_stego_sx9o8q_2/src/sim_build/image_stego.fst opened for output.
+  VCD info: dumping is suppressed.
   
   Return code: 0
   FAIL: image_stego
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_image_stego_sx9o8q_2
+  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_image_stego__2bng59_
 FAIL instruction_cache_controller
-  ============================== 1 failed in 0.41s ===============================
+  ============================== 1 failed in 4.31s ===============================
   
   Return code: 0
   FAIL: instruction_cache_controller
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_instruction_cache_controller_gpcc0oki
+  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_instruction_cache_controller_0bmjxenq
 FAIL inter_block
-  ============================== 1 failed in 0.49s ===============================
+  ============================== 1 failed in 3.70s ===============================
   
   Return code: 0
-  FAIL: deinter_block
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_deinter_block_p6fb4fo1
+  FAIL: inter_block
+  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_inter_block_6v9a9rmv
 FAIL interrupt_controller_apb
-  ============================== 1 failed in 1.63s ===============================
+  ============================== 1 failed in 4.13s ===============================
   
   Return code: 0
   FAIL: interrupt_controller_apb
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_interrupt_controller_apb_vwr1scza
+  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_interrupt_controller_apb_1xcovkh_
 PASS ir_receiver
 PASS lfsr_8bit
-PASS lfu_counter_policy
+FAIL lfu_counter_policy
+  ============================== 1 failed in 4.00s ===============================
+  
+  Return code: 0
+  FAIL: lfu_counter_policy
+  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_lfu_counter_policy_0hq0mlkh
 FAIL load_store_unit
-                                                          ***************************************************************************************************
+  VCD info: dumping is suppressed.
   
   Return code: 0
   FAIL: load_store_unit
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_load_store_unit_nz63x2ec
-PASS low_pass_filter
+  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_load_store_unit_1a8a32zx
+FAIL low_pass_filter — TIMEOUT
 PASS lru_counter_policy
 FAIL manchester_encoder
-  ============================== 1 failed in 1.13s ===============================
+  ============================== 1 failed in 6.69s ===============================
   
   Return code: 0
   FAIL: manchester_encoder
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_manchester_encoder_ynjfeimg
+  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_manchester_encoder_axvl9t1_
 PASS matrix_multiplier
 FAIL microcode_sequencer
-  FST info: dumpfile /private/var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_microcode_sequencer_5osunf6w/src/sim_build/microcode_sequencer.fst opened for output.
+  VCD info: dumping is suppressed.
   
   Return code: 0
   FAIL: microcode_sequencer
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_microcode_sequencer_5osunf6w
+  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_microcode_sequencer_88g59482
 FAIL montgomery_redc
-  ============================== 1 failed in 1.18s ===============================
+  ============================== 1 failed in 11.21s ==============================
   
   Return code: 0
   FAIL: montgomery_redc
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_montgomery_redc_24uopjcd
+  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_montgomery_redc_h9hv9p0w
 PASS morse_encoder
 PASS moving_average
 PASS mru_counter_policy
 PASS mux_synch
 PASS nbit_swizzling
-FAIL neuromorphic_array
-  ============================== 1 failed in 0.36s ===============================
-  
-  Return code: 0
-  FAIL: neuromorphic_array
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_neuromorphic_array_wx3j61yv
+PASS neuromorphic_array
 FAIL one_hot_gen
-  ============================== 1 failed in 1.72s ===============================
+  ============================== 1 failed in 9.94s ===============================
   
   Return code: 0
   FAIL: one_hot_gen
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_one_hot_gen_g5intx59
+  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_one_hot_gen_ketwa9aj
 PASS packet_controller
 PASS palindrome_detect
 PASS password_generator
 PASS perceptron_gates
 PASS perfect_squares_generator
 FAIL pic_starvation_prevention
-  ============================== 1 failed in 1.62s ===============================
   
-  Return code: 0
-  FAIL: pic_starvation_prevention
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_pic_starvation_prevention_6ksb1df0
 PASS ping_pong_buffer
-FAIL ping_pong_fifo_2_axi_stream
-  TypeError: int() argument must be a string, a bytes-like object or a real number, not 'NoneType'
-  
-  Return code: 1
-  FAIL: ping_pong_fifo_2_axi_stream
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_ping_pong_fifo_2_axi_stream_nm6t42pi
-FAIL pipeline_mac
-  ============================== 1 failed in 1.25s ===============================
-  
-  Return code: 0
-  FAIL: pipeline_mac
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_pipeline_mac_948gt5u2
+PASS ping_pong_fifo_2_axi_stream
+PASS pipeline_mac
 PASS pipelined_adder_32bit
 FAIL pipelined_modified_booth_multiplier
-  ============================== 1 failed in 1.36s ===============================
+  ============================== 1 failed in 4.05s ===============================
   
   Return code: 0
   FAIL: pipelined_modified_booth_multiplier
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_pipelined_modified_booth_multiplier_xk21ctqp
+  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_pipelined_modified_booth_multiplier_iv837rz5
 PASS pipelined_skid_buffer
 PASS piso_8bit
 PASS pkt_detector
 PASS precision_counter_axi
 FAIL prim_max_find
-  ========================= 1 failed, 8 passed in 10.87s =========================
+  ========================= 1 failed, 8 passed in 32.99s =========================
   
   Return code: 0
   FAIL: prim_max_find
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_prim_max_find_32bg5mtn
-FAIL priority_encoder
-  ============================== 1 failed in 0.33s ===============================
-  
-  Return code: 0
-  FAIL: priority_encoder
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_priority_encoder_9vknxezg
+  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_prim_max_find_kpptrfe8
+PASS priority_encoder
 FAIL programmable_interrupt_controller
-  ============================== 1 failed in 0.40s ===============================
   
-  Return code: 0
-  FAIL: programmable_interrupt_controller
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_programmable_interrupt_controller_7ksxs7cl
 PASS pseudoRandGenerator_ca
 PASS pseudo_lru_nmru_policy
 PASS pseudo_lru_tree_policy
 FAIL radix2_div
-  ========================= 1 failed, 1 warning in 1.18s =========================
+  ========================= 1 failed, 1 warning in 3.37s =========================
   
   Return code: 0
   FAIL: radix2_div
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_radix2_div_sxgqz1p_
+  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_radix2_div_2khxf1lk
 PASS reed_solomon_encoder
-PASS restore_division
-PASS reverse_bits
-FAIL rounding
+FAIL restore_division
   
-  Return code: 0
-  PASS: divider
+PASS reverse_bits
+PASS rounding
 PASS run_length
 FAIL scrambler
-  ============================== 1 failed in 1.30s ===============================
+  ============================== 1 failed in 3.32s ===============================
   
   Return code: 0
   FAIL: scrambler
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_scrambler_xo23poqi
+  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_scrambler_5byc37lv
 PASS sdram_controller
 FAIL search_binary_search_tree
-  ============================== 1 failed in 1.33s ===============================
+  ============================== 1 failed in 3.96s ===============================
   
   Return code: 0
   FAIL: search_binary_search_tree
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_search_binary_search_tree_6jt077w2
+  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_search_binary_search_tree_tptfi2kh
 PASS secure_read_write_bus_interface
 FAIL secure_read_write_register_bank
-  FST info: dumpfile /private/var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_secure_read_write_register_bank_jgu_3q0m/src/sim_build/secure_read_write_register_bank.fst opened for output.
+  VCD info: dumping is suppressed.
   
   Return code: 0
   FAIL: secure_read_write_register_bank
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_secure_read_write_register_bank_jgu_3q0m
+  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_secure_read_write_register_bank_5zvd6afk
 PASS secure_variable_timer
 PASS serial_in_parallel_out_8bit
 PASS serial_line_code_converter
 PASS sgd_linear_regression
 PASS sigma_delta_audio
 PASS signal_correlator
-PASS signed_comparator
+FAIL signed_comparator
+  
 FAIL signed_sequential_booth_multiplier
-  ============================== 1 failed in 1.01s ===============================
+  ============================== 1 failed in 4.87s ===============================
   
   Return code: 0
   FAIL: signed_sequential_booth_multiplier
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_signed_sequential_booth_multiplier__2wcgf57
+  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_signed_sequential_booth_multiplier_5m2df9ss
 FAIL single_port_ram
-  ============================== 1 failed in 0.35s ===============================
   
-  Return code: 0
-  FAIL: huffman_encoder
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_huffman_encoder_dlv9lf1a
 PASS sobel_filter
 PASS sorting_engine
-PASS soundgenerator
-FAIL sprite_fsm
-  ============================== 1 failed in 1.06s ===============================
-  
-  Return code: 0
-  FAIL: sprite_fsm
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_sprite_fsm_84ezeu6x
-PASS square_root_seq
-PASS static_branch_predict
-PASS strobe_divider
-PASS sync_lifo
-PASS sync_muller_c_element
-PASS sync_pos_neg_edge_detector
-FAIL sync_serial_communication_top
-  ============================== 1 failed in 0.46s ===============================
-  
-  Return code: 0
-  FAIL: sync_serial_communication_top
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_sync_serial_communication_top_a106zuw2
-PASS thermostat
-FAIL top_manchester
-  subprocess.CalledProcessError: Command '['iverilog', '-o', '/private/var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_top_manchester_ss8_tyfg/src/sim_build/sim.vvp', '-s', 'top_manchester', '-g2012', '-s', 'cocotb_iverilog_dump', '-f', '/private/var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_top_manchester_ss8_tyfg/src/sim_build/cmds.f', '/private/var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_top_manchester_ss8_tyfg/rtl/top_manchester.sv', '/private/var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_top_manchester_ss8_tyfg/src/sim_build/cocotb_iverilog_dump.v']' returned non-zero exit status 4.
-  
-  Return code: 1
-  FAIL: top_manchester
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_top_manchester_ss8_tyfg
-PASS ttc_counter_lite
-PASS unpack_one_hot
-PASS vending_machine
-PASS vga_controller
-PASS virtual2physical_tlb
-PASS wishbone_to_ahb_bridge
-FAIL write_buffer_merge
-  ======================== 1 failed, 10 passed in 13.50s =========================
-  
-  Return code: 0
-  FAIL: write_buffer_merge
-  Workdir preserved: /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/cvdp_write_buffer_merge_2g4i6adb
-
-============================================================
-PASS: 133/191
-FAIL: 58
-SKIP: 0
-
-Failed modules:
-  Binary2BCD
-  String_to_ASCII_Converter
-  Word_Change_Pulse
-  async_filo
-  axis_border_gen_with_resize
-  axis_image_border_gen
-  axis_image_resizer
-  binary_multiplier
-  car_parking_system
-  cascaded_encoder
-  cdc_pulse_synchronizer
-  clock_jitter_detection_module
-  cont_adder
-  cont_adder_top
-  conv3x3
-  copilot_rs_232
-  cvdp_copilot_bus_arbiter
-  cvdp_copilot_register_file_2R1W
-  ddm_cache
-  elevator_control_system
-  fifo_async
-  fifo_policy
-  findfasterclock
-  floor_to_seven_segment
-  gcd_top
-  gf_mac
-  halfband_fir
-  hamming_rx
-  hamming_tx
-  huffman_encoder
-  image_stego
-  instruction_cache_controller
-  inter_block
-  interrupt_controller_apb
-  load_store_unit
-  manchester_encoder
-  microcode_sequencer
-  montgomery_redc
-  neuromorphic_array
-  one_hot_gen
-  pic_starvation_prevention
-  ping_pong_fifo_2_axi_stream
-  pipeline_mac
-  pipelined_modified_booth_multiplier
-  prim_max_find
-  priority_encoder
-  programmable_interrupt_controller
-  radix2_div
-  rounding
-  scrambler
-  search_binary_search_tree
-  secure_read_write_register_bank
-  signed_sequential_booth_multiplier
-  single_port_ram
-  sprite_fsm
-  sync_serial_communication_top
-  top_manchester
-  write_buffer_merge
-
-Skipped modules:

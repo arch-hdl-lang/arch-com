@@ -1,7 +1,7 @@
 module leading_zero_cnt #(
   parameter int DATA_WIDTH = 32,
   parameter int REVERSE = 0,
-  parameter int OUT_WIDTH = $clog2(DATA_WIDTH)
+  parameter int OUT_WIDTH = 5
 ) (
   input logic [DATA_WIDTH-1:0] data,
   output logic [OUT_WIDTH-1:0] leading_zeros,

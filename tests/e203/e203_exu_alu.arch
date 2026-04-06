@@ -1,172 +1,334 @@
 // E203 HBirdv2 ALU Top-Level
-// Orchestrates the shared ALU datapath (AluDpath) and branch/jump unit (BjpUnit).
-// Receives dispatched instructions, decodes operation type, routes operands to
-// sub-units, and presents results to the write-back path.
-//
-// Three sub-unit request types share the AluDpath adder:
-//   ALU — register-register / register-immediate arithmetic
-//   BJP — branch comparison + target/link address computation
-//   AGU — load/store/AMO effective address + atomic ALU ops
-//
-// Purely combinational top-level; registers live only inside AluDpath (shared buffers).
+// Orchestrates the ALU datapath, branch/jump unit, AGU, CSR access, and NICE
+// co-processor interface. Receives dispatched instructions via i_info encoding,
+// routes operands to sub-units, and presents results to write-back and commit paths.
 
-module ExuAlu
+module e203_exu_alu
   param XLEN: const = 32;
 
   port clk:   in Clock<SysDomain>;
   port rst_n: in Reset<Async, Low>;
 
   // ── Dispatch interface ───────────────────────────────────────────────────
-  port i_valid:   in  Bool;
-  port i_ready:   out Bool;
-  port i_rs1:     in  UInt<32>;
-  port i_rs2:     in  UInt<32>;
-  port i_pc:      in  UInt<32>;
-  port i_imm:     in  UInt<32>;
-  port i_rdidx:   in  UInt<5>;
+  port i_valid:    in  Bool;
+  port i_ready:    out Bool;
+  port i_longpipe: out Bool;
+  port nice_xs_off: in Bool;
+  port amo_wait:   out Bool;
+  port oitf_empty: in  Bool;
 
-  // ── ALU operation decode (one-hot) ───────────────────────────────────────
-  port i_alu:       in Bool;
-  port i_alu_add:   in Bool;
-  port i_alu_sub:   in Bool;
-  port i_alu_xor:   in Bool;
-  port i_alu_sll:   in Bool;
-  port i_alu_srl:   in Bool;
-  port i_alu_sra:   in Bool;
-  port i_alu_or:    in Bool;
-  port i_alu_and:   in Bool;
-  port i_alu_slt:   in Bool;
-  port i_alu_sltu:  in Bool;
-  port i_alu_lui:   in Bool;
+  port i_itag:   in  Bool;
+  port i_rs1:    in  UInt<32>;
+  port i_rs2:    in  UInt<32>;
+  port i_imm:    in  UInt<32>;
+  port i_info:   in  UInt<32>;
+  port i_pc:     in  UInt<32>;
+  port i_instr:  in  UInt<32>;
+  port i_pc_vld: in  Bool;
+  port i_rdidx:  in  UInt<5>;
+  port i_rdwen:  in  Bool;
+  port i_ilegl:  in  Bool;
+  port i_buserr: in  Bool;
+  port i_misalgn: in Bool;
 
-  // ── BJP operation decode ─────────────────────────────────────────────────
-  port i_bjp:       in Bool;
-  port i_beq:       in Bool;
-  port i_bne:       in Bool;
-  port i_blt:       in Bool;
-  port i_bge:       in Bool;
-  port i_bltu:      in Bool;
-  port i_bgeu:      in Bool;
-  port i_jump:      in Bool;
+  // ── Flush signals ────────────────────────────────────────────────────────
+  port flush_req:   in Bool;
+  port flush_pulse: in Bool;
 
-  // ── AGU operation decode ─────────────────────────────────────────────────
-  port i_agu:           in Bool;
-  port i_agu_swap:      in Bool;
-  port i_agu_add:       in Bool;
-  port i_agu_and:       in Bool;
-  port i_agu_or:        in Bool;
-  port i_agu_xor:       in Bool;
-  port i_agu_max:       in Bool;
-  port i_agu_min:       in Bool;
-  port i_agu_maxu:      in Bool;
-  port i_agu_minu:      in Bool;
-  port i_agu_sbf_0_ena: in Bool;
-  port i_agu_sbf_0_nxt: in UInt<32>;
-  port i_agu_sbf_1_ena: in Bool;
-  port i_agu_sbf_1_nxt: in UInt<32>;
+  // ── Commit output ────────────────────────────────────────────────────────
+  port cmt_o_valid:       out Bool;
+  port cmt_o_ready:       in  Bool;
+  port cmt_o_pc_vld:      out Bool;
+  port cmt_o_pc:          out UInt<32>;
+  port cmt_o_instr:       out UInt<32>;
+  port cmt_o_imm:         out UInt<32>;
+  port cmt_o_rv32:        out Bool;
+  port cmt_o_bjp:         out Bool;
+  port cmt_o_mret:        out Bool;
+  port cmt_o_dret:        out Bool;
+  port cmt_o_ecall:       out Bool;
+  port cmt_o_ebreak:      out Bool;
+  port cmt_o_fencei:      out Bool;
+  port cmt_o_wfi:         out Bool;
+  port cmt_o_ifu_misalgn: out Bool;
+  port cmt_o_ifu_buserr:  out Bool;
+  port cmt_o_ifu_ilegl:   out Bool;
+  port cmt_o_bjp_prdt:    out Bool;
+  port cmt_o_bjp_rslv:    out Bool;
+  port cmt_o_misalgn:     out Bool;
+  port cmt_o_ld:          out Bool;
+  port cmt_o_stamo:       out Bool;
+  port cmt_o_buserr:      out Bool;
+  port cmt_o_badaddr:     out UInt<32>;
 
   // ── Write-back output ────────────────────────────────────────────────────
-  port o_valid:   out Bool;
-  port o_ready:   in  Bool;
-  port o_wdat:    out UInt<32>;
-  port o_rdidx:   out UInt<5>;
+  port wbck_o_valid: out Bool;
+  port wbck_o_ready: in  Bool;
+  port wbck_o_wdat:  out UInt<32>;
+  port wbck_o_rdidx: out UInt<5>;
 
-  // ── BJP result output (to PC update logic) ───────────────────────────────
-  port o_bjp_taken: out Bool;
-  port o_bjp_tgt:   out UInt<32>;
-  port o_bjp_lnk:   out UInt<32>;
+  // ── MDV control ──────────────────────────────────────────────────────────
+  port mdv_nob2b: in Bool;
 
-  // ── Instantiate AluDpath ─────────────────────────────────────────────────
-  inst dpath: AluDpath
-    clk   <- clk;
-    rst_n <- rst_n;
+  // ── CSR access ───────────────────────────────────────────────────────────
+  port csr_ena:       out Bool;
+  port csr_wr_en:     out Bool;
+  port csr_rd_en:     out Bool;
+  port csr_idx:       out UInt<12>;
+  port nonflush_cmt_ena: in Bool;
+  port csr_access_ilgl:  in Bool;
+  port read_csr_dat:     in UInt<32>;
+  port wbck_csr_dat:     out UInt<32>;
 
-    alu_req_alu      <- i_alu;
-    alu_req_alu_add  <- i_alu_add;
-    alu_req_alu_sub  <- i_alu_sub;
-    alu_req_alu_xor  <- i_alu_xor;
-    alu_req_alu_sll  <- i_alu_sll;
-    alu_req_alu_srl  <- i_alu_srl;
-    alu_req_alu_sra  <- i_alu_sra;
-    alu_req_alu_or   <- i_alu_or;
-    alu_req_alu_and  <- i_alu_and;
-    alu_req_alu_slt  <- i_alu_slt;
-    alu_req_alu_sltu <- i_alu_sltu;
-    alu_req_alu_lui  <- i_alu_lui;
-    alu_req_alu_op1  <- i_rs1;
-    alu_req_alu_op2  <- i_rs2;
-    alu_req_alu_res  -> dpath_alu_res;
+  // ── AGU ICB master interface ─────────────────────────────────────────────
+  port agu_icb_cmd_valid:    out Bool;
+  port agu_icb_cmd_ready:    in  Bool;
+  port agu_icb_cmd_addr:     out UInt<32>;
+  port agu_icb_cmd_read:     out Bool;
+  port agu_icb_cmd_wdata:    out UInt<32>;
+  port agu_icb_cmd_wmask:    out UInt<4>;
+  port agu_icb_cmd_lock:     out Bool;
+  port agu_icb_cmd_excl:     out Bool;
+  port agu_icb_cmd_size:     out UInt<2>;
+  port agu_icb_cmd_back2agu: out Bool;
+  port agu_icb_cmd_usign:    out Bool;
+  port agu_icb_cmd_itag:     out Bool;
+  port agu_icb_rsp_valid:    in  Bool;
+  port agu_icb_rsp_ready:    out Bool;
+  port agu_icb_rsp_err:      in  Bool;
+  port agu_icb_rsp_excl_ok:  in  Bool;
+  port agu_icb_rsp_rdata:    in  UInt<32>;
 
-    bjp_req_alu         <- i_bjp;
-    bjp_req_alu_op1     <- i_rs1;
-    bjp_req_alu_op2     <- i_rs2;
-    bjp_req_alu_cmp_eq  <- i_beq;
-    bjp_req_alu_cmp_ne  <- i_bne;
-    bjp_req_alu_cmp_lt  <- i_blt;
-    bjp_req_alu_cmp_gt  <- i_bge;
-    bjp_req_alu_cmp_ltu <- i_bltu;
-    bjp_req_alu_cmp_gtu <- i_bgeu;
-    bjp_req_alu_add     <- i_bjp;
-    bjp_req_alu_add_res -> dpath_bjp_add_res;
-    bjp_req_alu_cmp_res -> dpath_bjp_cmp_res;
+  // ── NICE co-processor interface ──────────────────────────────────────────
+  port nice_req_valid:  out Bool;
+  port nice_req_ready:  in  Bool;
+  port nice_req_instr:  out UInt<32>;
+  port nice_req_rs1:    out UInt<32>;
+  port nice_req_rs2:    out UInt<32>;
+  port nice_rsp_multicyc_valid: in  Bool;
+  port nice_rsp_multicyc_ready: out Bool;
+  port nice_longp_wbck_valid:   out Bool;
+  port nice_longp_wbck_ready:   in  Bool;
+  port nice_o_itag:             out Bool;
+  port i_nice_cmt_off_ilgl:     in  Bool;
 
-    agu_req_alu      <- i_agu;
-    agu_req_alu_op1  <- i_rs1;
-    agu_req_alu_op2  <- i_imm;
-    agu_req_alu_swap <- i_agu_swap;
-    agu_req_alu_add  <- i_agu_add;
-    agu_req_alu_and  <- i_agu_and;
-    agu_req_alu_or   <- i_agu_or;
-    agu_req_alu_xor  <- i_agu_xor;
-    agu_req_alu_max  <- i_agu_max;
-    agu_req_alu_min  <- i_agu_min;
-    agu_req_alu_maxu <- i_agu_maxu;
-    agu_req_alu_minu <- i_agu_minu;
-    agu_req_alu_res  -> dpath_agu_res;
+  // ── Decode i_info fields (E203 encoding) ─────────────────────────────────
+  // i_info bit assignments (simplified E203 convention):
+  //   [0]  = ALU op
+  //   [1]  = BJP op
+  //   [2]  = CSR op
+  //   [3]  = AGU (load/store/AMO)
+  //   [4]  = NICE op
+  //   [5]  = mret
+  //   [6]  = dret
+  //   [7]  = ecall
+  //   [8]  = ebreak
+  //   [9]  = fencei
+  //   [10] = wfi
+  //   [11] = rv32 flag
+  //   [12] = bjp_prdt
+  //   [13..31] = sub-op encoding
 
-    agu_sbf_0_ena <- i_agu_sbf_0_ena;
-    agu_sbf_0_nxt <- i_agu_sbf_0_nxt;
-    agu_sbf_1_ena <- i_agu_sbf_1_ena;
-    agu_sbf_1_nxt <- i_agu_sbf_1_nxt;
-  end inst dpath
+  let is_alu:    Bool = i_info[0:0] != 0;
+  let is_bjp:    Bool = i_info[1:1] != 0;
+  let is_csr:    Bool = i_info[2:2] != 0;
+  let is_agu:    Bool = i_info[3:3] != 0;
+  let is_nice:   Bool = i_info[4:4] != 0;
+  let is_mret:   Bool = i_info[5:5] != 0;
+  let is_dret:   Bool = i_info[6:6] != 0;
+  let is_ecall:  Bool = i_info[7:7] != 0;
+  let is_ebreak: Bool = i_info[8:8] != 0;
+  let is_fencei: Bool = i_info[9:9] != 0;
+  let is_wfi:    Bool = i_info[10:10] != 0;
+  let is_rv32:   Bool = i_info[11:11] != 0;
+  let bjp_prdt:  Bool = i_info[12:12] != 0;
 
-  // ── Instantiate BjpUnit ──────────────────────────────────────────────────
-  inst bjp_unit: BjpUnit
-    i_tgt_op1 <- i_pc;
-    i_tgt_op2 <- i_imm;
-    i_cmp_rs1 <- i_rs1;
-    i_cmp_rs2 <- i_rs2;
-    i_beq  <- i_beq;
-    i_bne  <- i_bne;
-    i_blt  <- i_blt;
-    i_bge  <- i_bge;
-    i_bltu <- i_bltu;
-    i_bgeu <- i_bgeu;
-    i_jump <- i_jump;
-    i_lnk_pc <- i_pc;
-    o_taken   -> bjp_taken;
-    o_tgt     -> bjp_tgt;
-    o_lnk     -> bjp_lnk;
-    o_cmp_res -> bjp_cmp_res;
-  end inst bjp_unit
+  // ── ALU sub-operation decode from i_info[31:13] ──────────────────────────
+  let alu_add:  Bool = is_alu & (i_info[13:13] != 0);
+  let alu_sub:  Bool = is_alu & (i_info[14:14] != 0);
+  let alu_xor:  Bool = is_alu & (i_info[15:15] != 0);
+  let alu_sll:  Bool = is_alu & (i_info[16:16] != 0);
+  let alu_srl:  Bool = is_alu & (i_info[17:17] != 0);
+  let alu_sra:  Bool = is_alu & (i_info[18:18] != 0);
+  let alu_or:   Bool = is_alu & (i_info[19:19] != 0);
+  let alu_and:  Bool = is_alu & (i_info[20:20] != 0);
+  let alu_slt:  Bool = is_alu & (i_info[21:21] != 0);
+  let alu_sltu: Bool = is_alu & (i_info[22:22] != 0);
+  let alu_lui:  Bool = is_alu & (i_info[23:23] != 0);
 
-  // ── Result mux and output logic ──────────────────────────────────────────
+  // ── Simple ALU result ────────────────────────────────────────────────────
+  wire alu_result: UInt<32>;
   comb
-    i_ready = o_ready;
-    o_valid = i_valid;
-    o_rdidx = i_rdidx;
-
-    o_bjp_taken = bjp_taken & i_bjp;
-    o_bjp_tgt   = bjp_tgt;
-    o_bjp_lnk   = bjp_lnk;
-
-    if i_bjp
-      o_wdat = bjp_lnk;
-    elsif i_agu
-      o_wdat = dpath_agu_res;
+    if alu_add
+      alu_result = (i_rs1 + i_rs2).trunc<32>();
+    elsif alu_sub
+      alu_result = (i_rs1 - i_rs2).trunc<32>();
+    elsif alu_xor
+      alu_result = i_rs1 ^ i_rs2;
+    elsif alu_sll
+      alu_result = i_rs1 << i_rs2[4:0].zext<32>();
+    elsif alu_srl
+      alu_result = i_rs1 >> i_rs2[4:0].zext<32>();
+    elsif alu_sra
+      alu_result = unsigned(signed(i_rs1) >> i_rs2[4:0].zext<32>());
+    elsif alu_or
+      alu_result = i_rs1 | i_rs2;
+    elsif alu_and
+      alu_result = i_rs1 & i_rs2;
+    elsif alu_slt
+      alu_result = (signed(i_rs1) < signed(i_rs2)) ? 1 : 0;
+    elsif alu_sltu
+      alu_result = (i_rs1 < i_rs2) ? 1 : 0;
+    elsif alu_lui
+      alu_result = i_imm;
     else
-      o_wdat = dpath_alu_res;
+      alu_result = 0;
     end if
   end comb
 
-end module ExuAlu
+  // ── BJP: branch comparison and target computation ────────────────────────
+  let bjp_add_res: UInt<32> = (i_pc + i_imm).trunc<32>();
+  let bjp_link:    UInt<32> = (i_pc + 4).trunc<32>();
+
+  let cmp_eq:  Bool = (i_rs1 == i_rs2);
+  let cmp_lt:  Bool = (signed(i_rs1) < signed(i_rs2));
+  let cmp_ltu: Bool = (i_rs1 < i_rs2);
+
+  // BJP sub-op from i_info
+  let bjp_beq:  Bool = is_bjp & (i_info[13:13] != 0);
+  let bjp_bne:  Bool = is_bjp & (i_info[14:14] != 0);
+  let bjp_blt:  Bool = is_bjp & (i_info[15:15] != 0);
+  let bjp_bge:  Bool = is_bjp & (i_info[16:16] != 0);
+  let bjp_bltu: Bool = is_bjp & (i_info[17:17] != 0);
+  let bjp_bgeu: Bool = is_bjp & (i_info[18:18] != 0);
+  let bjp_jump: Bool = is_bjp & (i_info[19:19] != 0);
+
+  wire bjp_taken: Bool;
+  comb
+    if bjp_beq
+      bjp_taken = cmp_eq;
+    elsif bjp_bne
+      bjp_taken = ~cmp_eq;
+    elsif bjp_blt
+      bjp_taken = cmp_lt;
+    elsif bjp_bge
+      bjp_taken = ~cmp_lt;
+    elsif bjp_bltu
+      bjp_taken = cmp_ltu;
+    elsif bjp_bgeu
+      bjp_taken = ~cmp_ltu;
+    elsif bjp_jump
+      bjp_taken = true;
+    else
+      bjp_taken = false;
+    end if
+  end comb
+
+  // ── CSR operations ───────────────────────────────────────────────────────
+  let csr_imm: UInt<12> = i_imm[11:0];
+
+  // ── AGU: address generation ──────────────────────────────────────────────
+  let agu_addr: UInt<32> = (i_rs1 + i_imm).trunc<32>();
+
+  // AGU sub-ops from i_info
+  let agu_load:  Bool = is_agu & (i_info[13:13] != 0);
+  let agu_store: Bool = is_agu & (i_info[14:14] != 0);
+  let agu_amo:   Bool = is_agu & (i_info[15:15] != 0);
+
+  // ── NICE interface ───────────────────────────────────────────────────────
+  reg nice_longp_r: Bool init 0 reset rst_n => 0;
+
+  seq on clk rising
+    if flush_pulse
+      nice_longp_r <= false;
+    elsif is_nice & i_valid & nice_req_ready
+      nice_longp_r <= true;
+    elsif nice_rsp_multicyc_valid
+      nice_longp_r <= false;
+    end if
+  end seq
+
+  // ── Output logic ─────────────────────────────────────────────────────────
+  comb
+    // Dispatch ready
+    i_ready = wbck_o_ready & cmt_o_ready &
+              (~is_agu | agu_icb_cmd_ready) &
+              (~is_nice | nice_req_ready);
+
+    // Long pipe flag (AGU or NICE can be long-pipe)
+    i_longpipe = is_agu | is_nice;
+
+    // AMO wait
+    amo_wait = is_agu & agu_amo & ~oitf_empty;
+
+    // ── Write-back ──────────────────────────────────────────────
+    wbck_o_valid = i_valid & i_rdwen & ~flush_req;
+    wbck_o_rdidx = i_rdidx;
+
+    if is_bjp
+      wbck_o_wdat = bjp_link;
+    elsif is_csr
+      wbck_o_wdat = read_csr_dat;
+    elsif is_agu
+      wbck_o_wdat = agu_icb_rsp_rdata;
+    else
+      wbck_o_wdat = alu_result;
+    end if
+
+    // ── Commit ──────────────────────────────────────────────────
+    cmt_o_valid       = i_valid & ~flush_req;
+    cmt_o_pc_vld      = i_pc_vld;
+    cmt_o_pc          = i_pc;
+    cmt_o_instr       = i_instr;
+    cmt_o_imm         = i_imm;
+    cmt_o_rv32        = is_rv32;
+    cmt_o_bjp         = is_bjp;
+    cmt_o_mret        = is_mret;
+    cmt_o_dret        = is_dret;
+    cmt_o_ecall       = is_ecall;
+    cmt_o_ebreak      = is_ebreak;
+    cmt_o_fencei      = is_fencei;
+    cmt_o_wfi         = is_wfi;
+    cmt_o_ifu_misalgn = i_misalgn;
+    cmt_o_ifu_buserr  = i_buserr;
+    cmt_o_ifu_ilegl   = i_ilegl;
+    cmt_o_bjp_prdt    = bjp_prdt;
+    cmt_o_bjp_rslv    = bjp_taken;
+    cmt_o_misalgn     = false;
+    cmt_o_ld          = agu_load;
+    cmt_o_stamo       = agu_store | agu_amo;
+    cmt_o_buserr      = agu_icb_rsp_err;
+    cmt_o_badaddr     = agu_addr;
+
+    // ── CSR interface ───────────────────────────────────────────
+    csr_ena    = is_csr & i_valid & ~flush_req;
+    csr_wr_en  = is_csr & i_valid;
+    csr_rd_en  = is_csr & i_valid;
+    csr_idx    = csr_imm;
+    wbck_csr_dat = i_rs1;
+
+    // ── AGU ICB command ─────────────────────────────────────────
+    agu_icb_cmd_valid    = is_agu & i_valid & ~flush_req;
+    agu_icb_cmd_addr     = agu_addr;
+    agu_icb_cmd_read     = agu_load;
+    agu_icb_cmd_wdata    = i_rs2;
+    agu_icb_cmd_wmask    = 0xF;
+    agu_icb_cmd_lock     = agu_amo;
+    agu_icb_cmd_excl     = agu_amo;
+    agu_icb_cmd_size     = i_info[25:24];
+    agu_icb_cmd_back2agu = agu_amo;
+    agu_icb_cmd_usign    = i_info[26:26] != 0;
+    agu_icb_cmd_itag     = i_itag;
+    agu_icb_rsp_ready    = wbck_o_ready & cmt_o_ready;
+
+    // ── NICE interface ──────────────────────────────────────────
+    nice_req_valid  = is_nice & i_valid & ~flush_req;
+    nice_req_instr  = i_instr;
+    nice_req_rs1    = i_rs1;
+    nice_req_rs2    = i_rs2;
+    nice_rsp_multicyc_ready = true;
+    nice_longp_wbck_valid   = nice_longp_r & nice_rsp_multicyc_valid;
+    nice_o_itag             = i_itag;
+  end comb
+
+end module e203_exu_alu

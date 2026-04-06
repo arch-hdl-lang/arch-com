@@ -1,78 +1,121 @@
 // E203 HBirdv2 Branch/Jump Unit
-// Computes: branch target address, link address (PC+4), and branch comparison
-// result.  Purely combinational.
-//
-// The caller muxes op1/op2 appropriately:
-//   Branch : op1 = PC,  op2 = sign-extended offset
-//   JAL    : op1 = PC,  op2 = sign-extended 21-bit offset
-//   JALR   : op1 = rs1, op2 = sign-extended 12-bit offset (JALR clears bit 0)
-module BjpUnit #(
+// Decodes the 17-bit info bus to determine branch type, then issues
+// ALU datapath requests (add for target addr, compare for branch condition).
+// Purely combinational — matches RealBench port interface.
+module e203_exu_alu_bjp #(
   parameter int XLEN = 32
 ) (
-  input logic [32-1:0] i_tgt_op1,
-  input logic [32-1:0] i_tgt_op2,
-  input logic [32-1:0] i_cmp_rs1,
-  input logic [32-1:0] i_cmp_rs2,
-  input logic i_beq,
-  input logic i_bne,
-  input logic i_blt,
-  input logic i_bge,
-  input logic i_bltu,
-  input logic i_bgeu,
-  input logic i_jump,
-  input logic [32-1:0] i_lnk_pc,
-  output logic o_taken,
-  output logic [32-1:0] o_tgt,
-  output logic [32-1:0] o_lnk,
-  output logic o_cmp_res
+  input logic clk,
+  input logic rst_n,
+  input logic bjp_i_valid,
+  output logic bjp_i_ready,
+  input logic [32-1:0] bjp_i_rs1,
+  input logic [32-1:0] bjp_i_rs2,
+  input logic [32-1:0] bjp_i_imm,
+  input logic [32-1:0] bjp_i_pc,
+  input logic [17-1:0] bjp_i_info,
+  output logic bjp_o_valid,
+  input logic bjp_o_ready,
+  output logic [32-1:0] bjp_o_wbck_wdat,
+  output logic bjp_o_wbck_err,
+  output logic bjp_o_cmt_bjp,
+  output logic bjp_o_cmt_mret,
+  output logic bjp_o_cmt_dret,
+  output logic bjp_o_cmt_fencei,
+  output logic bjp_o_cmt_prdt,
+  output logic bjp_o_cmt_rslv,
+  output logic [32-1:0] bjp_req_alu_op1,
+  output logic [32-1:0] bjp_req_alu_op2,
+  output logic bjp_req_alu_cmp_eq,
+  output logic bjp_req_alu_cmp_ne,
+  output logic bjp_req_alu_cmp_lt,
+  output logic bjp_req_alu_cmp_gt,
+  output logic bjp_req_alu_cmp_ltu,
+  output logic bjp_req_alu_cmp_gtu,
+  output logic bjp_req_alu_add,
+  input logic bjp_req_alu_cmp_res,
+  input logic [32-1:0] bjp_req_alu_add_res
 );
 
-  // ── Target address operands ────────────────────────────────────────────
-  // target = op1 + op2 (with bit[0] forced to 0 by caller for JALR)
-  // ── Comparison operands ────────────────────────────────────────────────
-  // ── Branch type selectors ──────────────────────────────────────────────
-  // ── Unconditional jump (JAL/JALR — seq taken) ───────────────────────
-  // ── Link address: input PC → output PC+4 ──────────────────────────────
-  // ── Outputs ────────────────────────────────────────────────────────────
-  // branch/jump taken
-  // target address
-  // link address (i_lnk_pc + 4)
-  // raw comparison result (independent of jump)
-  // ── Target address: op1 + op2, keep lower 32 bits ─────────────────────
-  logic [33-1:0] tgt_sum;
-  assign tgt_sum = 33'((33'($unsigned(i_tgt_op1)) + 33'($unsigned(i_tgt_op2))));
-  logic [32-1:0] tgt_addr;
-  assign tgt_addr = 32'(tgt_sum);
-  // ── Link address: PC + 4 ──────────────────────────────────────────────
-  logic [33-1:0] lnk_sum;
-  assign lnk_sum = 33'((33'($unsigned(i_lnk_pc)) + 33'($unsigned(32'($unsigned(4))))));
-  logic [32-1:0] lnk_addr;
-  assign lnk_addr = 32'(lnk_sum);
-  // ── Comparison logic ───────────────────────────────────────────────────
-  // XOR-based equality
-  logic [32-1:0] xor_res;
-  assign xor_res = (i_cmp_rs1 ^ i_cmp_rs2);
-  logic xor_zero;
-  assign xor_zero = (xor_res == 0);
-  // Subtraction via two's-complement: rs1 + ~rs2 + 1
-  logic [32-1:0] cmp_op2_inv;
-  assign cmp_op2_inv = (~i_cmp_rs2);
-  logic [33-1:0] sub_res;
-  assign sub_res = 33'(((33'($unsigned(i_cmp_rs1)) + 33'($unsigned(cmp_op2_inv))) + 33'($unsigned(1'b1))));
-  // carry=1 → rs1 >= rs2 unsigned (no borrow)
-  logic sub_carry;
-  assign sub_carry = ((sub_res >> 32) != 0);
-  // Signed less-than via SInt cast
-  logic signed_lt;
-  assign signed_lt = ($signed(i_cmp_rs1) < $signed(i_cmp_rs2));
-  // ── Comparison result mux ──────────────────────────────────────────────
-  logic cmp_result;
-  assign cmp_result = (i_beq) ? (xor_zero) : ((i_bne) ? ((~xor_zero)) : ((i_blt) ? (signed_lt) : ((i_bge) ? ((~signed_lt)) : ((i_bltu) ? ((~sub_carry)) : ((i_bgeu) ? (sub_carry) : (1'b0))))));
-  // ── Drive outputs ──────────────────────────────────────────────────────
-  assign o_cmp_res = cmp_result;
-  assign o_taken = (i_jump | cmp_result);
-  assign o_tgt = tgt_addr;
-  assign o_lnk = lnk_addr;
+  // ── Dispatch handshake ────────────────────────────────────────────
+  // ── Writeback handshake ───────────────────────────────────────────
+  // ── Commit signals ────────────────────────────────────────────────
+  // ── ALU datapath request ──────────────────────────────────────────
+  // ── ALU datapath results (from shared datapath) ───────────────────
+  // ── Decode info bus ───────────────────────────────────────────────
+  // info[3:0] = branch type one-hot: beq, bne, blt, bge, bltu, bgeu
+  // We decode branch type from the info bus.
+  logic is_beq;
+  assign is_beq = bjp_i_info[0:0] != 0;
+  logic is_bne;
+  assign is_bne = bjp_i_info[1:1] != 0;
+  logic is_blt;
+  assign is_blt = bjp_i_info[2:2] != 0;
+  logic is_bge;
+  assign is_bge = bjp_i_info[3:3] != 0;
+  logic is_bltu;
+  assign is_bltu = bjp_i_info[4:4] != 0;
+  logic is_bgeu;
+  assign is_bgeu = bjp_i_info[5:5] != 0;
+  logic is_jal;
+  assign is_jal = bjp_i_info[6:6] != 0;
+  logic is_jalr;
+  assign is_jalr = bjp_i_info[7:7] != 0;
+  logic is_mret;
+  assign is_mret = bjp_i_info[8:8] != 0;
+  logic is_dret;
+  assign is_dret = bjp_i_info[9:9] != 0;
+  logic is_fencei;
+  assign is_fencei = bjp_i_info[10:10] != 0;
+  logic prdt_taken;
+  assign prdt_taken = bjp_i_info[11:11] != 0;
+  logic is_bxx;
+  assign is_bxx = is_beq | is_bne | is_blt | is_bge | is_bltu | is_bgeu;
+  logic is_jump;
+  assign is_jump = is_jal | is_jalr;
+  // Branch resolved (taken or not)
+  logic branch_taken;
+  assign branch_taken = is_bxx & bjp_req_alu_cmp_res;
+  logic jump_taken;
+  assign jump_taken = is_jump;
+  logic taken;
+  assign taken = branch_taken | jump_taken;
+  // Link address = PC + imm (for JAL/JALR the add_res gives target;
+  // wbck_wdat = PC+4 for link)
+  logic [33-1:0] pc_plus4;
+  assign pc_plus4 = 33'(33'($unsigned(bjp_i_pc)) + 33'($unsigned(4)));
+  logic [32-1:0] link_addr;
+  assign link_addr = 32'(pc_plus4);
+  always_comb begin
+    // Always ready (combinational unit)
+    bjp_i_ready = bjp_o_ready;
+    bjp_o_valid = bjp_i_valid;
+    bjp_o_wbck_err = 1'b0;
+    // Writeback data: link address for JAL/JALR, else 0
+    if (is_jump) begin
+      bjp_o_wbck_wdat = link_addr;
+    end else begin
+      bjp_o_wbck_wdat = 0;
+    end
+    // Commit outputs
+    bjp_o_cmt_bjp = is_bxx | is_jump;
+    bjp_o_cmt_mret = is_mret;
+    bjp_o_cmt_dret = is_dret;
+    bjp_o_cmt_fencei = is_fencei;
+    bjp_o_cmt_prdt = prdt_taken;
+    bjp_o_cmt_rslv = taken;
+    // ALU datapath requests: operands for compare and add
+    bjp_req_alu_op1 = bjp_i_rs1;
+    bjp_req_alu_op2 = bjp_i_rs2;
+    // Compare request one-hot
+    bjp_req_alu_cmp_eq = is_beq;
+    bjp_req_alu_cmp_ne = is_bne;
+    bjp_req_alu_cmp_lt = is_blt;
+    bjp_req_alu_cmp_gt = is_bge;
+    bjp_req_alu_cmp_ltu = is_bltu;
+    bjp_req_alu_cmp_gtu = is_bgeu;
+    bjp_req_alu_add = is_jump | is_bxx;
+  end
 
 endmodule
 

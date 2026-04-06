@@ -17,6 +17,8 @@ module elevator_control_system
   reg state_r:    UInt<3> reset none;
   reg floor_r:    UInt<4> reset none;
   reg door_cnt:   UInt<8> reset none;
+  // Latch one-cycle call pulses so requests are not lost between cycles.
+  reg pending_r:  UInt<N> reset none;
 
   // Seven-segment decode for current floor
   wire seg: UInt<7>;
@@ -53,13 +55,13 @@ module elevator_control_system
     req_below = false;
     req_here  = false;
     for i in 0..N-1
-      if (i.zext<4>() > floor_r) & call_requests[i:i]
+      if (i.zext<4>() > floor_r) & pending_r[i:i]
         req_above = true;
       end if
-      if (i.zext<4>() < floor_r) & call_requests[i:i]
+      if (i.zext<4>() < floor_r) & pending_r[i:i]
         req_below = true;
       end if
-      if (i.zext<4>() == floor_r) & call_requests[i:i]
+      if (i.zext<4>() == floor_r) & pending_r[i:i]
         req_here = true;
       end if
     end for
@@ -91,60 +93,69 @@ module elevator_control_system
       state_r   <= 0;
       floor_r   <= 0;
       door_cnt  <= 0;
-    elsif state_r == 0  // IDLE
-      if emergency_stop
-        state_r <= 4;
-      elsif req_here
-        state_r  <= 3;
-        door_cnt <= 50;
-      elsif req_above
-        state_r <= 1;
-      elsif req_below
-        state_r <= 2;
+      pending_r <= 0;
+    else
+      // Capture incoming one-cycle requests.
+      pending_r <= pending_r | call_requests;
+      if req_here
+        // Clear the request once this floor is being served.
+        pending_r[floor_r:floor_r] <= 0;
       end if
-    elsif state_r == 1  // MOVING_UP
-      if emergency_stop
-        state_r <= 4;
-      elsif req_here
-        state_r  <= 3;
-        door_cnt <= 50;
-      elsif ~req_above & ~req_here
-        state_r <= 0;
-      else
-        if call_requests[floor_r:floor_r] == 0
-          floor_r <= (floor_r + 1).trunc<4>();
-        end if
-      end if
-    elsif state_r == 2  // MOVING_DOWN
-      if emergency_stop
-        state_r <= 4;
-      elsif req_here
-        state_r  <= 3;
-        door_cnt <= 50;
-      elsif ~req_below & ~req_here
-        state_r <= 0;
-      else
-        if call_requests[floor_r:floor_r] == 0
-          floor_r <= (floor_r - 1).trunc<4>();
-        end if
-      end if
-    elsif state_r == 3  // DOOR_OPEN
-      if emergency_stop
-        state_r <= 4;
-      elsif door_cnt == 0
-        if req_above
+      if state_r == 0  // IDLE
+        if emergency_stop
+          state_r <= 4;
+        elsif req_here
+          state_r  <= 3;
+          door_cnt <= 50;
+        elsif req_above
           state_r <= 1;
         elsif req_below
           state_r <= 2;
+        end if
+      elsif state_r == 1  // MOVING_UP
+        if emergency_stop
+          state_r <= 4;
+        elsif req_here
+          state_r  <= 3;
+          door_cnt <= 50;
+        elsif ~req_above & ~req_here
+          state_r <= 0;
         else
+          if pending_r[floor_r:floor_r] == 0
+            floor_r <= (floor_r + 1).trunc<4>();
+          end if
+        end if
+      elsif state_r == 2  // MOVING_DOWN
+        if emergency_stop
+          state_r <= 4;
+        elsif req_here
+          state_r  <= 3;
+          door_cnt <= 50;
+        elsif ~req_below & ~req_here
+          state_r <= 0;
+        else
+          if pending_r[floor_r:floor_r] == 0
+            floor_r <= (floor_r - 1).trunc<4>();
+          end if
+        end if
+      elsif state_r == 3  // DOOR_OPEN
+        if emergency_stop
+          state_r <= 4;
+        elsif door_cnt == 0
+          if req_above
+            state_r <= 1;
+          elsif req_below
+            state_r <= 2;
+          else
+            state_r <= 0;
+          end if
+        else
+          door_cnt <= (door_cnt - 1).trunc<8>();
+        end if
+      elsif state_r == 4  // EMERGENCY
+        if ~emergency_stop
           state_r <= 0;
         end if
-      else
-        door_cnt <= (door_cnt - 1).trunc<8>();
-      end if
-    elsif state_r == 4  // EMERGENCY
-      if ~emergency_stop
-        state_r <= 0;
       end if
     end if
   end seq

@@ -1,0 +1,37 @@
+Info: Synchronous reset succeed.
+Info: Asynchronous reset succeed.
+- /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/tmpkkhefczj/e203_exu_disp_stimulus_gen.sv:552: Verilog $finish
+Hint: Output 'wfi_halt_exu_ack' has no mismatches.
+Hint: Output 'disp_i_ready' has no mismatches.
+Hint: Output 'disp_o_alu_valid' has 6 mismatches. First mismatch occurred at time 565.
+Hint: Output 'disp_o_alu_rs1' has no mismatches.
+Hint: Output 'disp_o_alu_rs2' has no mismatches.
+Hint: Output 'disp_o_alu_rdwen' has no mismatches.
+Hint: Output 'disp_o_alu_rdidx' has no mismatches.
+Hint: Output 'disp_o_alu_info' has no mismatches.
+Hint: Output 'disp_o_alu_imm' has no mismatches.
+Hint: Output 'disp_o_alu_pc' has no mismatches.
+Hint: Output 'disp_o_alu_itag' has no mismatches.
+Hint: Output 'disp_o_alu_misalgn' has no mismatches.
+Hint: Output 'disp_o_alu_buserr' has no mismatches.
+Hint: Output 'disp_o_alu_ilegl' has no mismatches.
+Hint: Output 'disp_oitf_ena' has no mismatches.
+Hint: Output 'disp_oitf_rs1fpu' has no mismatches.
+Hint: Output 'disp_oitf_rs2fpu' has no mismatches.
+Hint: Output 'disp_oitf_rs3fpu' has no mismatches.
+Hint: Output 'disp_oitf_rdfpu' has no mismatches.
+Hint: Output 'disp_oitf_rs1en' has no mismatches.
+Hint: Output 'disp_oitf_rs2en' has no mismatches.
+Hint: Output 'disp_oitf_rs3en' has no mismatches.
+Hint: Output 'disp_oitf_rdwen' has no mismatches.
+Hint: Output 'disp_oitf_rs1idx' has no mismatches.
+Hint: Output 'disp_oitf_rs2idx' has no mismatches.
+Hint: Output 'disp_oitf_rs3idx' has no mismatches.
+Hint: Output 'disp_oitf_rdidx' has no mismatches.
+Hint: Output 'disp_oitf_pc' has no mismatches.
+Hint: Total mismatched samples is 6 out of 63 samples
+
+Simulation finished at 635 ps
+- S i m u l a t i o n   R e p o r t: Verilator 5.034 2025-02-24
+- Verilator: $finish at 635ps; walltime 0.003 s; speed 777.234 ns/s
+- Verilator: cpu 0.001 s on 1 threads; alloced 0 MB

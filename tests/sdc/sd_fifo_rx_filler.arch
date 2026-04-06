@@ -1,0 +1,114 @@
+// SD FIFO RX Filler
+// Reads data from RX FIFO and writes to system memory via Wishbone master.
+// Internally instantiates sd_rx_fifo. Port interface matches OpenCores SDC reference.
+
+module sd_fifo_rx_filler
+
+  port clk:        in Clock<SysDomain>;
+  port rst:        in Reset<Async, High>;
+
+  // Wishbone master
+  port m_wb_adr_o: out UInt<32>;
+  port m_wb_we_o:  out Bool;
+  port m_wb_dat_o: out UInt<32>;
+  port m_wb_cyc_o: out Bool;
+  port m_wb_stb_o: out Bool;
+  port m_wb_ack_i: in Bool;
+  port m_wb_cti_o: out UInt<3>;
+  port m_wb_bte_o: out UInt<2>;
+
+  // Data master control
+  port en:  in Bool;
+  port adr: in UInt<32>;
+
+  // Data serial signals (directly to RX FIFO write side)
+  port sd_clk: in Clock<SysDomain>;
+  port dat_i:  in UInt<4>;
+  port wr:     in Bool;
+  port full:   out Bool;
+  port empty:  out Bool;
+
+  // Internal RX FIFO
+  wire rx_dat_out: UInt<32>;
+  wire rx_full_w:  Bool;
+  wire rx_empty_w: Bool;
+  wire rx_mem_w:   UInt<2>;
+
+  reg rd_int_r: Bool reset rst => false;
+  reg reset_rx_fifo_r: Bool reset rst => false;
+
+  inst u_fifo: sd_rx_fifo
+    d     <- dat_i;
+    wr    <- wr;
+    wclk  <- sd_clk;
+    q     -> rx_dat_out;
+    rd    <- rd_int_r;
+    full  -> rx_full_w;
+    empty -> rx_empty_w;
+    mem_empt -> rx_mem_w;
+    rclk  <- clk;
+    rst   <- rst;
+  end inst u_fifo
+
+  // WB master state machine: read from FIFO, write to system memory
+  reg st_r:     UInt<2> reset rst => 0;
+  reg offset_r: UInt<9> reset rst => 0;
+  reg cyc_r:    Bool reset rst => false;
+  reg stb_r:    Bool reset rst => false;
+  reg we_r:     Bool reset rst => false;
+  reg dat_r:    UInt<32> reset rst => 0;
+  reg first_r:  Bool reset rst => false;
+
+  default seq on clk rising;
+
+  seq
+    rd_int_r <= false;
+
+    if en
+      if ~first_r
+        first_r <= true;
+        offset_r <= 0;
+        reset_rx_fifo_r <= true;
+      else
+        reset_rx_fifo_r <= false;
+        if st_r == 0  // WAIT_DATA
+          if ~rx_empty_w
+            dat_r    <= rx_dat_out;
+            rd_int_r <= true;
+            st_r     <= 1;
+          end if
+        elsif st_r == 1  // WRITE_WB
+          cyc_r <= true;
+          stb_r <= true;
+          we_r  <= true;
+          if m_wb_ack_i
+            offset_r <= (offset_r + 1).trunc<9>();
+            cyc_r <= false;
+            stb_r <= false;
+            we_r  <= false;
+            st_r  <= 0;
+          end if
+        end if
+      end if
+    else
+      first_r  <= false;
+      cyc_r    <= false;
+      stb_r    <= false;
+      we_r     <= false;
+      st_r     <= 0;
+      offset_r <= 0;
+    end if
+  end seq
+
+  comb
+    m_wb_adr_o = (adr + (offset_r.zext<32>() << 2)).trunc<32>();
+    m_wb_we_o  = we_r;
+    m_wb_dat_o = dat_r;
+    m_wb_cyc_o = cyc_r;
+    m_wb_stb_o = stb_r;
+    m_wb_cti_o = 0;
+    m_wb_bte_o = 0;
+    full  = rx_full_w;
+    empty = rx_empty_w;
+  end comb
+end module sd_fifo_rx_filler

@@ -4,7 +4,7 @@ module car_parking_system
   port reset: in Reset<Async, High>;
   port vehicle_entry_sensor: in Bool;
   port vehicle_exit_sensor: in Bool;
-  port reg available_spaces: out UInt<4> reset reset=>12;
+  port reg available_spaces: out UInt<4> reset reset=>TOTAL_SPACES;
   port reg count_car: out UInt<4> reset reset=>0;
   port reg led_status: out Bool reset reset=>true;
   port reg seven_seg_display_available_tens: out UInt<7> reset reset=>0;

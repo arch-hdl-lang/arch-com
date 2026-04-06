@@ -1,0 +1,21 @@
+// E203 Extended CSR (NICE Co-processor CSR stub)
+// Placeholder for custom NICE accelerator CSR registers.
+// Always ready, reads return zero.
+
+module e203_extend_csr
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  port nice_csr_valid: in Bool;
+  port nice_csr_ready: out Bool;
+  port nice_csr_addr:  in UInt<32>;
+  port nice_csr_wr:    in Bool;
+  port nice_csr_wdata: in UInt<32>;
+  port nice_csr_rdata: out UInt<32>;
+
+  comb
+    nice_csr_ready = true;
+    nice_csr_rdata = 0;
+  end comb
+end module e203_extend_csr

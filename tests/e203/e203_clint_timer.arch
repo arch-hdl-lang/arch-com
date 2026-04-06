@@ -8,7 +8,7 @@ domain SysDomain
   freq_mhz: 100
 end domain SysDomain
 
-module ClintTimer
+module e203_clint_timer
   param XLEN: const = 32;
 
   port clk: in Clock<SysDomain>;
@@ -80,4 +80,4 @@ module ClintTimer
     tmr_irq = irq_pending;
   end comb
 
-end module ClintTimer
+end module e203_clint_timer

@@ -3,7 +3,7 @@
 // Decodes ICB address to select one of N APB slaves.
 // Base addresses: GPIO=0x10012000, UART=0x10013000, SPI=0x10014000, Timer=0x02000000
 
-module Ppi
+module e203_ppi
   param NUM_SLAVES: const = 4;
 
   port clk:   in Clock<SysDomain>;
@@ -148,4 +148,4 @@ module Ppi
     icb_rsp_err   = false;
   end comb
 
-end module Ppi
+end module e203_ppi

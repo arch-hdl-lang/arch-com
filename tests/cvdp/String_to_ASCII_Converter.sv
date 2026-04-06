@@ -1,6 +1,6 @@
 module String_to_ASCII_Converter (
   input logic clk,
-  input logic rst_n,
+  input logic reset,
   input logic start,
   input logic [8-1:0] char_in [8-1:0],
   output logic [8-1:0] ascii_out [8-1:0],
@@ -36,20 +36,14 @@ module String_to_ASCII_Converter (
   assign conv6 = char_in[6] < 10 ? 8'(char_in[6] + 48) : char_in[6] < 36 ? 8'(char_in[6] + 55) : char_in[6] < 62 ? 8'(char_in[6] + 61) : 8'(char_in[6] - 29);
   assign conv7 = char_in[7] < 10 ? 8'(char_in[7] + 48) : char_in[7] < 36 ? 8'(char_in[7] + 55) : char_in[7] < 62 ? 8'(char_in[7] + 61) : 8'(char_in[7] - 29);
   always_ff @(posedge clk) begin
-    if ((!rst_n)) begin
+    if (reset) begin
       for (int __ri0 = 0; __ri0 < 8; __ri0++) begin
         ascii_reg[__ri0] <= 0;
       end
       ready_reg <= 1'b1;
       valid_reg <= 1'b0;
     end else begin
-      if (~rst_n) begin
-        for (int i = 0; i <= 7; i++) begin
-          ascii_reg[i] <= 0;
-        end
-        valid_reg <= 1'b0;
-        ready_reg <= 1'b1;
-      end else if (start) begin
+      if (start) begin
         ascii_reg[0] <= conv0;
         ascii_reg[1] <= conv1;
         ascii_reg[2] <= conv2;

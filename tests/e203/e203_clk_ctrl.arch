@@ -1,69 +1,99 @@
 // E203 Clock Control
-// Generates gated clocks for core subsystems: IFU, EXU, LSU, BIU
-// Each sub-block clock can be independently gated for power savings.
+// Generates gated clocks for core subsystems and TCMs.
+// Port list matches RealBench testbench.
 
-module ClkCtrl
+module e203_clk_ctrl
 
-  port clk:      in Clock<SysDomain>;
-  port rst_n:    in Reset<Async, Low>;
-  port test_en:  in Bool;
+  port clk:         in Clock<SysDomain>;
+  port rst_n:       in Reset<Async, Low>;
+  port test_mode:   in Bool;
+  port core_cgstop: in Bool;
 
-  // Gate enables from CSR/power management
-  port ifu_gate_en: in Bool;
-  port exu_gate_en: in Bool;
-  port lsu_gate_en: in Bool;
-  port biu_gate_en: in Bool;
+  // Subsystem active flags (inputs — used for clock gating decisions)
+  port core_ifu_active: in Bool;
+  port core_exu_active: in Bool;
+  port core_lsu_active: in Bool;
+  port core_biu_active: in Bool;
+  port itcm_active:     in Bool;
+  port dtcm_active:     in Bool;
+  port core_wfi:        in Bool;
 
   // Gated clocks out
-  port clk_ifu: out Clock<SysDomain>;
-  port clk_exu: out Clock<SysDomain>;
-  port clk_lsu: out Clock<SysDomain>;
-  port clk_biu: out Clock<SysDomain>;
+  port clk_core_ifu: out Clock<SysDomain>;
+  port clk_core_exu: out Clock<SysDomain>;
+  port clk_core_lsu: out Clock<SysDomain>;
+  port clk_core_biu: out Clock<SysDomain>;
+  port clk_itcm:     out Clock<SysDomain>;
+  port clk_dtcm:     out Clock<SysDomain>;
+  port clk_aon:      out Clock<SysDomain>;
 
-  // Status: whether each clock is active
-  port ifu_clk_active: out Bool;
-  port exu_clk_active: out Bool;
-  port lsu_clk_active: out Bool;
-  port biu_clk_active: out Bool;
+  // TCM light-sleep outputs
+  port itcm_ls: out Bool;
+  port dtcm_ls: out Bool;
+
+  // Gate enable: active & not stopped
+  let ifu_gate_en: Bool = core_ifu_active & (~core_cgstop);
+  let exu_gate_en: Bool = core_exu_active & (~core_cgstop);
+  let lsu_gate_en: Bool = core_lsu_active & (~core_cgstop);
+  let biu_gate_en: Bool = core_biu_active & (~core_cgstop);
+  let itcm_gate_en: Bool = itcm_active & (~core_cgstop);
+  let dtcm_gate_en: Bool = dtcm_active & (~core_cgstop);
 
   // ICG instances
-  inst icg_ifu: E203ClkGate
-    clk_in  <- clk;
-    enable  <- ifu_gate_en;
-    test_en <- test_en;
-    clk_out -> clk_ifu_w;
+  inst icg_ifu: e203_clkgate
+    clk_in    <- clk;
+    clock_en  <- ifu_gate_en;
+    test_mode <- test_mode;
+    clk_out   -> clk_ifu_w;
   end inst icg_ifu
 
-  inst icg_exu: E203ClkGate
-    clk_in  <- clk;
-    enable  <- exu_gate_en;
-    test_en <- test_en;
-    clk_out -> clk_exu_w;
+  inst icg_exu: e203_clkgate
+    clk_in    <- clk;
+    clock_en  <- exu_gate_en;
+    test_mode <- test_mode;
+    clk_out   -> clk_exu_w;
   end inst icg_exu
 
-  inst icg_lsu: E203ClkGate
-    clk_in  <- clk;
-    enable  <- lsu_gate_en;
-    test_en <- test_en;
-    clk_out -> clk_lsu_w;
+  inst icg_lsu: e203_clkgate
+    clk_in    <- clk;
+    clock_en  <- lsu_gate_en;
+    test_mode <- test_mode;
+    clk_out   -> clk_lsu_w;
   end inst icg_lsu
 
-  inst icg_biu: E203ClkGate
-    clk_in  <- clk;
-    enable  <- biu_gate_en;
-    test_en <- test_en;
-    clk_out -> clk_biu_w;
+  inst icg_biu: e203_clkgate
+    clk_in    <- clk;
+    clock_en  <- biu_gate_en;
+    test_mode <- test_mode;
+    clk_out   -> clk_biu_w;
   end inst icg_biu
 
+  inst icg_itcm: e203_clkgate
+    clk_in    <- clk;
+    clock_en  <- itcm_gate_en;
+    test_mode <- test_mode;
+    clk_out   -> clk_itcm_w;
+  end inst icg_itcm
+
+  inst icg_dtcm: e203_clkgate
+    clk_in    <- clk;
+    clock_en  <- dtcm_gate_en;
+    test_mode <- test_mode;
+    clk_out   -> clk_dtcm_w;
+  end inst icg_dtcm
+
   comb
-    clk_ifu = clk_ifu_w;
-    clk_exu = clk_exu_w;
-    clk_lsu = clk_lsu_w;
-    clk_biu = clk_biu_w;
-    ifu_clk_active = ifu_gate_en | test_en;
-    exu_clk_active = exu_gate_en | test_en;
-    lsu_clk_active = lsu_gate_en | test_en;
-    biu_clk_active = biu_gate_en | test_en;
+    clk_core_ifu = clk_ifu_w;
+    clk_core_exu = clk_exu_w;
+    clk_core_lsu = clk_lsu_w;
+    clk_core_biu = clk_biu_w;
+    clk_itcm = clk_itcm_w;
+    clk_dtcm = clk_dtcm_w;
+    clk_aon  = clk;  // Always-on = ungated
+
+    // TCM light-sleep: enter when inactive and WFI
+    itcm_ls = (~itcm_active) & core_wfi;
+    dtcm_ls = (~dtcm_active) & core_wfi;
   end comb
 
-end module ClkCtrl
+end module e203_clk_ctrl

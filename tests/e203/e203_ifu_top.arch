@@ -1,7 +1,7 @@
 // E203 HBirdv2 IFU Top — wires IfuIfetch, IfuMinidec, LiteBpu, Ift2Icb
 // Simplified: no RVC (16-bit) support, ITCM-only fetch path.
 
-module IfuTop
+module e203_ifu_top
   port clk:   in Clock<SysDomain>;
   port rst_n: in Reset<Async, Low>;
 
@@ -41,7 +41,7 @@ module IfuTop
   port dec_is_auipc: out Bool;
 
   // ── IfuIfetch: PC generation + fetch state machine ──────────────────
-  inst ifetch: IfuIfetch
+  inst ifetch: e203_ifu_ifetch
     clk         <- clk;
     rst         <- rst_n;
     req_ready   <- icb_req_ready;
@@ -61,7 +61,7 @@ module IfuTop
   end inst ifetch
 
   // ── Ift2Icb: fetch-to-ITCM bridge ──────────────────────────────────
-  inst icb: Ift2Icb
+  inst icb: e203_ifu_ift2icb
     clk            <- clk;
     rst_n          <- rst_n;
     ifu_req_valid  <- ifetch_req_valid;
@@ -79,7 +79,7 @@ module IfuTop
   end inst icb
 
   // ── IfuMinidec: classify fetched instruction ────────────────────────
-  inst mdec: IfuMinidec
+  inst mdec: e203_ifu_minidec
     instr      <- o_instr;
     o_is_bjp   -> dec_is_bjp;
     o_is_jal   -> mdec_is_jal;
@@ -92,7 +92,7 @@ module IfuTop
   end inst mdec
 
   // ── LiteBpu: static branch prediction ──────────────────────────────
-  inst bpu: LiteBpu
+  inst bpu: e203_ifu_litebpu
     clk                       <- clk;
     rst_n                     <- rst_n;
     pc                        <- o_pc;
@@ -116,4 +116,4 @@ module IfuTop
     bpu2rf_rs1_ena            -> bpu2rf_rs1_ena;
   end inst bpu
 
-end module IfuTop
+end module e203_ifu_top

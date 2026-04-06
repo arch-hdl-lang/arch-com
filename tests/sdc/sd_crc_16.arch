@@ -1,0 +1,39 @@
+// SD CRC-16 Generator (LFSR)
+// CRC-CCITT: x^16 + x^12 + x^5 + 1. Taps at positions 0, 5, 12.
+
+module sd_crc_16
+
+  port CLK:    in Clock<SysDomain>;
+  port RST:    in Reset<Async, High>;
+  port BITVAL: in Bool;
+  port Enable: in Bool;
+  port CRC:    out UInt<16>;
+
+  reg crc_r: UInt<16> reset RST => 0;
+  let inv: Bool = BITVAL ^ crc_r[15:15];
+
+  default seq on CLK rising;
+
+  seq
+    if Enable
+      crc_r[15:15] <= crc_r[14:14];
+      crc_r[14:14] <= crc_r[13:13];
+      crc_r[13:13] <= crc_r[12:12];
+      crc_r[12:12] <= crc_r[11:11] ^ inv;
+      crc_r[11:11] <= crc_r[10:10];
+      crc_r[10:10] <= crc_r[9:9];
+      crc_r[9:9]   <= crc_r[8:8];
+      crc_r[8:8]   <= crc_r[7:7];
+      crc_r[7:7]   <= crc_r[6:6];
+      crc_r[6:6]   <= crc_r[5:5];
+      crc_r[5:5]   <= crc_r[4:4] ^ inv;
+      crc_r[4:4]   <= crc_r[3:3];
+      crc_r[3:3]   <= crc_r[2:2];
+      crc_r[2:2]   <= crc_r[1:1];
+      crc_r[1:1]   <= crc_r[0:0];
+      crc_r[0:0]   <= inv;
+    end if
+  end seq
+
+  let CRC = crc_r;
+end module sd_crc_16

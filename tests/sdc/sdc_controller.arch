@@ -1,0 +1,465 @@
+// SDC Controller (Top-level integration)
+// Instantiates all sub-modules with port interfaces matching the OpenCores
+// SDC reference Verilog. WB master mux, status register pipeline, IRQ generation.
+
+module sdc_controller
+
+  port wb_clk_i:     in Clock<SysDomain>;
+  port wb_rst_i:     in Reset<Async, High>;
+
+  // Wishbone slave
+  port wb_dat_i:     in UInt<32>;
+  port wb_dat_o:     out UInt<32>;
+  port wb_adr_i:     in UInt<8>;
+  port wb_sel_i:     in UInt<4>;
+  port wb_we_i:      in Bool;
+  port wb_cyc_i:     in Bool;
+  port wb_stb_i:     in Bool;
+  port wb_ack_o:     out Bool;
+
+  // Wishbone master
+  port m_wb_adr_o:   out UInt<32>;
+  port m_wb_sel_o:   out UInt<4>;
+  port m_wb_we_o:    out Bool;
+  port m_wb_dat_o:   out UInt<32>;
+  port m_wb_dat_i:   in UInt<32>;
+  port m_wb_cyc_o:   out Bool;
+  port m_wb_stb_o:   out Bool;
+  port m_wb_ack_i:   in Bool;
+  port m_wb_cti_o:   out UInt<3>;
+  port m_wb_bte_o:   out UInt<2>;
+
+  // SD card interface
+  port sd_cmd_dat_i: in Bool;
+  port sd_cmd_out_o: out Bool;
+  port sd_cmd_oe_o:  out Bool;
+  port card_detect:  in Bool;
+  port sd_dat_dat_i: in UInt<4>;
+  port sd_dat_out_o: out UInt<4>;
+  port sd_dat_oe_o:  out Bool;
+  port sd_clk_o_pad: out Bool;
+
+  // Interrupts
+  port int_a:        out Bool;
+  port int_b:        out Bool;
+  port int_c:        out Bool;
+
+  // ---- Internal wires ----
+
+  // Clock divider
+  wire clock_divider_w: UInt<8>;
+  wire sd_clk_w: Bool;
+
+  // Controller WB outputs
+  wire new_cmd_w:     Bool;
+  wire d_write_w:     Bool;
+  wire d_read_w:      Bool;
+  wire we_ack_w:      Bool;
+  wire int_ack_w:     Bool;
+  wire cmd_int_busy_w: Bool;
+  wire int_busy_w:    Bool;
+  wire we_m_tx_bd_w:  Bool;
+  wire we_m_rx_bd_w:  Bool;
+  wire Bd_isr_reset_w: Bool;
+  wire normal_isr_reset_w: Bool;
+  wire error_isr_reset_w: Bool;
+  wire dat_in_m_tx_bd_w: UInt<16>;
+  wire dat_in_m_rx_bd_w: UInt<16>;
+
+  wire argument_reg_w:  UInt<32>;
+  wire cmd_setting_reg_w: UInt<16>;
+  wire software_reset_reg_w: UInt<8>;
+  wire time_out_reg_w: UInt<16>;
+  wire normal_int_signal_enable_reg_w: UInt<16>;
+  wire error_int_signal_enable_reg_w: UInt<16>;
+  wire Bd_isr_enable_reg_w: UInt<8>;
+
+  // Command master outputs
+  wire status_reg_cm: UInt<16>;
+  wire cmd_resp_1_cm: UInt<32>;
+  wire err_int_cm:    UInt<5>;
+  wire normal_int_cm: UInt<16>;
+  wire settings_w:    UInt<16>;
+  wire go_idle_w:     Bool;
+  wire cmd_out_master: UInt<40>;
+  wire req_out_master: Bool;
+  wire ack_out_master: Bool;
+
+  // Command serial host outputs
+  wire cmd_in_host:  UInt<40>;
+  wire ack_in_host:  Bool;
+  wire req_in_host:  Bool;
+  wire serial_status_w: UInt<8>;
+  wire cs_cmd_oe_w:  Bool;
+  wire cs_cmd_out_w: Bool;
+  wire st_dat_t_w:   UInt<2>;
+
+  // Data master outputs
+  wire dm_re_s_tx_w:      Bool;
+  wire dm_a_cmp_tx_w:     Bool;
+  wire dm_re_s_rx_w:      Bool;
+  wire dm_a_cmp_rx_w:     Bool;
+  wire dm_we_req_w:       Bool;
+  wire dm_d_write_w:      Bool;
+  wire dm_d_read_w:       Bool;
+  wire dm_cmd_arg_w:      UInt<32>;
+  wire dm_cmd_set_w:      UInt<16>;
+  wire dm_start_tx_fifo_w: Bool;
+  wire dm_start_rx_fifo_w: Bool;
+  wire dm_sys_adr_w:      UInt<32>;
+  wire dm_ack_transfer_w: Bool;
+  wire dm_dat_int_w:      UInt<8>;
+  wire dm_cidat_w:        Bool;
+
+  // Data serial host outputs
+  wire ds_rd_w:       Bool;
+  wire ds_data_out_w: UInt<4>;
+  wire ds_we_w:       Bool;
+  wire ds_dat_oe_w:   Bool;
+  wire ds_dat_out_w:  UInt<4>;
+  wire ds_busy_n_w:   Bool;
+  wire ds_transm_w:   Bool;
+  wire ds_crc_ok_w:   Bool;
+
+  // TX BD
+  wire tx_bd_dat_out_w: UInt<16>;
+  wire tx_bd_free_w:    UInt<5>;
+  wire tx_bd_ack_w:     Bool;
+
+  // RX BD
+  wire rx_bd_dat_out_w: UInt<16>;
+  wire rx_bd_free_w:    UInt<5>;
+  wire rx_bd_ack_w:     Bool;
+
+  // TX filler (contains internal TX FIFO)
+  wire txf_q_w:     UInt<32>;
+  wire txf_full_w:  Bool;
+  wire txf_empty_w: Bool;
+  wire txf_adr_w:   UInt<32>;
+  wire txf_we_w:    Bool;
+  wire txf_cyc_w:   Bool;
+  wire txf_stb_w:   Bool;
+  wire txf_cti_w:   UInt<3>;
+  wire txf_bte_w:   UInt<2>;
+
+  // RX filler (contains internal RX FIFO)
+  wire rxf_full_w:  Bool;
+  wire rxf_empty_w: Bool;
+  wire rxf_adr_w:   UInt<32>;
+  wire rxf_we_w:    Bool;
+  wire rxf_dato_w:  UInt<32>;
+  wire rxf_cyc_w:   Bool;
+  wire rxf_stb_w:   Bool;
+  wire rxf_cti_w:   UInt<3>;
+  wire rxf_bte_w:   UInt<2>;
+
+  // Status registers (pipelined)
+  reg status_reg_r: UInt<16> reset wb_rst_i => 0;
+  reg cmd_resp_1_r: UInt<32> reset wb_rst_i => 0;
+  reg normal_int_status_reg_r: UInt<16> reset wb_rst_i => 0;
+  reg error_int_status_reg_r: UInt<16> reset wb_rst_i => 0;
+  reg Bd_Status_reg_r: UInt<16> reset wb_rst_i => 0;
+  reg Bd_isr_reg_r: UInt<8> reset wb_rst_i => 0;
+
+  // write_req_s: data master wants CMD bus access
+  wire write_req_s_w: Bool;
+  wire cmd_set_s_w: UInt<16>;
+  wire cmd_arg_s_w: UInt<32>;
+  wire cmd_busy_w: Bool;
+
+  // --- Clock divider ---
+  inst u_clk_div: sd_clock_divider
+    CLK     <- wb_clk_i;
+    RST     <- wb_rst_i;
+    DIVIDER <- clock_divider_w;
+    SD_CLK  -> sd_clk_w;
+  end inst u_clk_div
+
+  // --- Controller WB ---
+  inst u_wb: sd_controller_wb
+    wb_clk_i  <- wb_clk_i;
+    wb_rst_i  <- wb_rst_i;
+    wb_dat_i  <- wb_dat_i;
+    wb_dat_o  -> wb_dat_o;
+    wb_adr_i  <- wb_adr_i;
+    wb_sel_i  <- wb_sel_i;
+    wb_we_i   <- wb_we_i;
+    wb_cyc_i  <- wb_cyc_i;
+    wb_stb_i  <- wb_stb_i;
+    wb_ack_o  -> wb_ack_o;
+    we_m_tx_bd -> we_m_tx_bd_w;
+    new_cmd    -> new_cmd_w;
+    we_ack     -> we_ack_w;
+    int_ack    -> int_ack_w;
+    cmd_int_busy -> cmd_int_busy_w;
+    we_m_rx_bd -> we_m_rx_bd_w;
+    int_busy   -> int_busy_w;
+    write_req_s <- write_req_s_w;
+    cmd_set_s   <- cmd_set_s_w;
+    cmd_arg_s   <- cmd_arg_s_w;
+    argument_reg -> argument_reg_w;
+    cmd_setting_reg -> cmd_setting_reg_w;
+    software_reset_reg -> software_reset_reg_w;
+    time_out_reg -> time_out_reg_w;
+    normal_int_signal_enable_reg -> normal_int_signal_enable_reg_w;
+    error_int_signal_enable_reg -> error_int_signal_enable_reg_w;
+    clock_divider -> clock_divider_w;
+    Bd_isr_enable_reg -> Bd_isr_enable_reg_w;
+    status_reg -> status_reg_r;
+    cmd_resp_1 -> cmd_resp_1_r;
+    normal_int_status_reg -> normal_int_status_reg_r;
+    error_int_status_reg  -> error_int_status_reg_r;
+    Bd_Status_reg -> Bd_Status_reg_r;
+    Bd_isr_reg    -> Bd_isr_reg_r;
+    Bd_isr_reset     -> Bd_isr_reset_w;
+    normal_isr_reset -> normal_isr_reset_w;
+    error_isr_reset  -> error_isr_reset_w;
+    dat_in_m_rx_bd -> dat_in_m_rx_bd_w;
+    dat_in_m_tx_bd -> dat_in_m_tx_bd_w;
+  end inst u_wb
+
+  // --- Command Master ---
+  // Reset = wb_rst_i | software_reset_reg_w[0] in reference.
+  // We connect the base reset; software reset would need OR'd externally.
+  inst u_cmd_master: sd_cmd_master
+    CLK_PAD_IO   <- wb_clk_i;
+    RST_PAD_I    <- wb_rst_i;
+    New_CMD      <- new_cmd_w;
+    data_write   <- dm_d_write_w;
+    data_read    <- dm_d_read_w;
+    ARG_REG      <- argument_reg_w;
+    CMD_SET_REG  <- cmd_setting_reg_w[13:0];
+    TIMEOUT_REG  <- time_out_reg_w;
+    STATUS_REG   -> status_reg_cm;
+    RESP_1_REG   -> cmd_resp_1_cm;
+    ERR_INT_REG  -> err_int_cm;
+    NORMAL_INT_REG -> normal_int_cm;
+    ERR_INT_RST  <- error_isr_reset_w;
+    NORMAL_INT_RST <- normal_isr_reset_w;
+    settings     -> settings_w;
+    go_idle_o    -> go_idle_w;
+    cmd_out      -> cmd_out_master;
+    req_out      -> req_out_master;
+    ack_out      -> ack_out_master;
+    req_in       <- req_in_host;
+    ack_in       <- ack_in_host;
+    cmd_in       <- cmd_in_host;
+    serial_status <- serial_status_w;
+    card_detect  <- card_detect;
+  end inst u_cmd_master
+
+  // --- Command Serial Host ---
+  inst u_cmd_serial: sd_cmd_serial_host
+    SD_CLK_IN  <- wb_clk_i;
+    RST_IN     <- wb_rst_i;
+    SETTING_IN <- settings_w;
+    CMD_IN     <- cmd_out_master;
+    REQ_IN     <- req_out_master;
+    ACK_IN     <- ack_out_master;
+    cmd_dat_i  <- sd_cmd_dat_i;
+    CMD_OUT    -> cmd_in_host;
+    ACK_OUT    -> ack_in_host;
+    REQ_OUT    -> req_in_host;
+    STATUS     -> serial_status_w;
+    cmd_oe_o   -> cs_cmd_oe_w;
+    cmd_out_o  -> cs_cmd_out_w;
+    st_dat_t   -> st_dat_t_w;
+  end inst u_cmd_serial
+
+  // --- Data Master ---
+  inst u_data_master: sd_data_master
+    clk            <- wb_clk_i;
+    rst            <- wb_rst_i;
+    dat_in_tx      <- tx_bd_dat_out_w;
+    free_tx_bd     <- tx_bd_free_w;
+    ack_i_s_tx     <- tx_bd_ack_w;
+    re_s_tx        -> dm_re_s_tx_w;
+    a_cmp_tx       -> dm_a_cmp_tx_w;
+    dat_in_rx      <- rx_bd_dat_out_w;
+    free_rx_bd     <- rx_bd_free_w;
+    ack_i_s_rx     <- rx_bd_ack_w;
+    re_s_rx        -> dm_re_s_rx_w;
+    a_cmp_rx       -> dm_a_cmp_rx_w;
+    cmd_busy       <- cmd_busy_w;
+    we_req         -> write_req_s_w;
+    we_ack         <- we_ack_w;
+    d_write        -> dm_d_write_w;
+    d_read         -> dm_d_read_w;
+    cmd_arg        -> cmd_arg_s_w;
+    cmd_set        -> cmd_set_s_w;
+    cmd_tsf_err    <- normal_int_status_reg_r[15];
+    card_status    <- cmd_resp_1_r[12:8];
+    start_tx_fifo  -> dm_start_tx_fifo_w;
+    start_rx_fifo  -> dm_start_rx_fifo_w;
+    sys_adr        -> dm_sys_adr_w;
+    tx_empt        <- txf_empty_w;
+    tx_full        <- txf_full_w;
+    rx_full        <- rxf_full_w;
+    busy_n         <- ds_busy_n_w;
+    transm_complete <- ds_transm_w;
+    crc_ok         <- ds_crc_ok_w;
+    ack_transfer   -> dm_ack_transfer_w;
+    Dat_Int_Status -> dm_dat_int_w;
+    Dat_Int_Status_rst <- Bd_isr_reset_w;
+    CIDAT          -> dm_cidat_w;
+    transfer_type  <- cmd_setting_reg_w[15:14];
+  end inst u_data_master
+
+  // --- Data Serial Host ---
+  inst u_data_serial: sd_data_serial_host
+    sd_clk          <- wb_clk_i;
+    rst             <- wb_rst_i;
+    data_in         <- txf_q_w;
+    rd              -> ds_rd_w;
+    data_out        -> ds_data_out_w;
+    we              -> ds_we_w;
+    DAT_oe_o        -> ds_dat_oe_w;
+    DAT_dat_o       -> ds_dat_out_w;
+    DAT_dat_i       <- sd_dat_dat_i;
+    start_dat       <- st_dat_t_w;
+    ack_transfer    <- dm_ack_transfer_w;
+    busy_n          -> ds_busy_n_w;
+    transm_complete -> ds_transm_w;
+    crc_ok          -> ds_crc_ok_w;
+  end inst u_data_serial
+
+  // --- TX BD ---
+  inst u_tx_bd: sd_bd
+    clk       <- wb_clk_i;
+    rst       <- wb_rst_i;
+    we_m      <- we_m_tx_bd_w;
+    dat_in_m  <- dat_in_m_tx_bd_w;
+    free_bd   -> tx_bd_free_w;
+    re_s      <- dm_re_s_tx_w;
+    ack_o_s   -> tx_bd_ack_w;
+    a_cmp     <- dm_a_cmp_tx_w;
+    dat_out_s -> tx_bd_dat_out_w;
+  end inst u_tx_bd
+
+  // --- RX BD ---
+  inst u_rx_bd: sd_bd
+    clk       <- wb_clk_i;
+    rst       <- wb_rst_i;
+    we_m      <- we_m_rx_bd_w;
+    dat_in_m  <- dat_in_m_rx_bd_w;
+    free_bd   -> rx_bd_free_w;
+    re_s      <- dm_re_s_rx_w;
+    ack_o_s   -> rx_bd_ack_w;
+    a_cmp     <- dm_a_cmp_rx_w;
+    dat_out_s -> rx_bd_dat_out_w;
+  end inst u_rx_bd
+
+  // --- TX filler (internally contains sd_tx_fifo) ---
+  inst u_tx_filler: sd_fifo_tx_filler
+    clk        <- wb_clk_i;
+    rst        <- wb_rst_i;
+    m_wb_adr_o -> txf_adr_w;
+    m_wb_we_o  -> txf_we_w;
+    m_wb_dat_i <- m_wb_dat_i;
+    m_wb_cyc_o -> txf_cyc_w;
+    m_wb_stb_o -> txf_stb_w;
+    m_wb_ack_i <- m_wb_ack_i;
+    m_wb_cti_o -> txf_cti_w;
+    m_wb_bte_o -> txf_bte_w;
+    en         <- dm_start_tx_fifo_w;
+    adr        <- dm_sys_adr_w;
+    sd_clk     <- wb_clk_i;
+    dat_o      -> txf_q_w;
+    rd         <- ds_rd_w;
+    empty      -> txf_empty_w;
+    fe         -> txf_full_w;
+  end inst u_tx_filler
+
+  // --- RX filler (internally contains sd_rx_fifo) ---
+  inst u_rx_filler: sd_fifo_rx_filler
+    clk        <- wb_clk_i;
+    rst        <- wb_rst_i;
+    m_wb_adr_o -> rxf_adr_w;
+    m_wb_we_o  -> rxf_we_w;
+    m_wb_dat_o -> rxf_dato_w;
+    m_wb_cyc_o -> rxf_cyc_w;
+    m_wb_stb_o -> rxf_stb_w;
+    m_wb_ack_i <- m_wb_ack_i;
+    m_wb_cti_o -> rxf_cti_w;
+    m_wb_bte_o -> rxf_bte_w;
+    en         <- dm_start_rx_fifo_w;
+    adr        <- dm_sys_adr_w;
+    sd_clk     <- wb_clk_i;
+    dat_i      <- ds_data_out_w;
+    wr         <- ds_we_w;
+    full       -> rxf_full_w;
+    empty      -> rxf_empty_w;
+  end inst u_rx_filler
+
+  // --- WB master mux: TX filler vs RX filler ---
+  comb
+    if dm_start_tx_fifo_w
+      m_wb_adr_o = txf_adr_w;
+      m_wb_we_o  = txf_we_w;
+      m_wb_cyc_o = txf_cyc_w;
+      m_wb_stb_o = txf_stb_w;
+      m_wb_cti_o = txf_cti_w;
+      m_wb_bte_o = txf_bte_w;
+      m_wb_dat_o = 0;
+    elsif dm_start_rx_fifo_w
+      m_wb_adr_o = rxf_adr_w;
+      m_wb_we_o  = rxf_we_w;
+      m_wb_cyc_o = rxf_cyc_w;
+      m_wb_stb_o = rxf_stb_w;
+      m_wb_cti_o = rxf_cti_w;
+      m_wb_bte_o = rxf_bte_w;
+      m_wb_dat_o = rxf_dato_w;
+    else
+      m_wb_adr_o = 0;
+      m_wb_we_o  = false;
+      m_wb_cyc_o = false;
+      m_wb_stb_o = false;
+      m_wb_cti_o = 0;
+      m_wb_bte_o = 0;
+      m_wb_dat_o = 0;
+    end if
+    m_wb_sel_o = 4'b1111;
+  end comb
+
+  // --- SD card outputs ---
+  comb
+    sd_cmd_out_o = cs_cmd_out_w;
+    sd_cmd_oe_o  = cs_cmd_oe_w;
+    sd_dat_out_o = ds_dat_out_w;
+    sd_dat_oe_o  = ds_dat_oe_w;
+    sd_clk_o_pad = sd_clk_w;
+  end comb
+
+  // --- cmd_busy: int_busy | status_reg[0] ---
+  comb
+    cmd_busy_w = int_busy_w | status_reg_r[0];
+  end comb
+
+  // --- Status register pipeline ---
+  // Reference: always @(posedge wb_clk_i) (no reset)
+  wire status_reg_busy_w: Bool;
+  comb
+    status_reg_busy_w = cmd_int_busy_w | status_reg_cm[0];
+  end comb
+
+  default seq on wb_clk_i rising;
+
+  seq
+    Bd_Status_reg_r[15:8] <= rx_bd_free_w.zext<8>();
+    Bd_Status_reg_r[7:0]  <= tx_bd_free_w.zext<8>();
+    cmd_resp_1_r <= cmd_resp_1_cm;
+    normal_int_status_reg_r <= normal_int_cm;
+    error_int_status_reg_r <= err_int_cm.zext<16>();
+    status_reg_r[0] <= status_reg_busy_w;
+    status_reg_r[15:1] <= status_reg_cm[15:1];
+    status_reg_r[1] <= dm_cidat_w;
+    Bd_isr_reg_r <= dm_dat_int_w;
+  end seq
+
+  // --- Interrupts ---
+  comb
+    int_a = (normal_int_status_reg_r & normal_int_signal_enable_reg_w) != 0;
+    int_b = (error_int_status_reg_r & error_int_signal_enable_reg_w) != 0;
+    int_c = (Bd_isr_reg_r & Bd_isr_enable_reg_w) != 0;
+  end comb
+end module sdc_controller

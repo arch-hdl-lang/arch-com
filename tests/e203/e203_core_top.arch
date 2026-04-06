@@ -3,7 +3,7 @@
 // Testbench loads instructions into ITCM via write port, then
 // the IFU fetches and the core executes autonomously.
 
-module CoreTop
+module e203_core_top
   param XLEN: const = 32;
 
   port clk:   in Clock<SysDomain>;
@@ -26,7 +26,7 @@ module CoreTop
   port tmr_irq:      out Bool;
 
   // ── ITCM ───────────────────────────────────────────────────────────
-  inst itcm: E203Itcm
+  inst itcm: e203_itcm
     clk     <- clk;
     rst_n   <- rst_n;
     rd_en   <- itcm_fetch_rd_en;
@@ -38,7 +38,7 @@ module CoreTop
   end inst itcm
 
   // ── IFU ────────────────────────────────────────────────────────────
-  inst ifu: IfuTop
+  inst ifu: e203_ifu_top
     clk              <- clk;
     rst_n            <- rst_n;
     o_ready          <- true;
@@ -72,7 +72,7 @@ module CoreTop
   end inst ifu
 
   // ── EXU ────────────────────────────────────────────────────────────
-  inst exu: ExuTop
+  inst exu: e203_exu_top
     clk        <- clk;
     rst_n      <- rst_n;
     ifu_valid  <- ifu_o_valid;
@@ -94,7 +94,7 @@ module CoreTop
   end inst exu
 
   // ── LSU ────────────────────────────────────────────────────────────
-  inst lsu: LsuCtrl
+  inst lsu: e203_lsu_ctrl
     addr     <- exu_lsu_addr;
     wdata    <- exu_lsu_wdata;
     funct3   <- 2;
@@ -109,7 +109,7 @@ module CoreTop
   end inst lsu
 
   // ── BIU ────────────────────────────────────────────────────────────
-  inst bus: Biu
+  inst bus: e203_biu
     lsu_addr   <- lsu_mem_addr;
     lsu_wdata  <- lsu_mem_wdata;
     lsu_wstrb  <- lsu_mem_wstrb;
@@ -132,7 +132,7 @@ module CoreTop
   end inst bus
 
   // ── DTCM ───────────────────────────────────────────────────────────
-  inst dtcm: Dtcm
+  inst dtcm: e203_dtcm
     clk     <- clk;
     rst_n   <- rst_n;
     rd_en   <- biu_dtcm_rd_en;
@@ -145,7 +145,7 @@ module CoreTop
   end inst dtcm
 
   // ── CLINT Timer ────────────────────────────────────────────────────
-  inst timer: ClintTimer
+  inst timer: e203_clint_timer
     clk       <- clk;
     rst       <- false;
     reg_addr  <- 0;
@@ -178,4 +178,4 @@ module CoreTop
     commit_valid = exu_commit_valid;
   end comb
 
-end module CoreTop
+end module e203_core_top

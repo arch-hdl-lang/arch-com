@@ -24,7 +24,7 @@ ram SramBank
   end port rw
 end ram SramBank
 
-module SramCtrl
+module e203_sram_ctrl
   param DEPTH: const = 4096;
 
   port clk:   in Clock<SysDomain>;
@@ -69,4 +69,4 @@ module SramCtrl
     icb_rsp_err   = false;
   end comb
 
-end module SramCtrl
+end module e203_sram_ctrl

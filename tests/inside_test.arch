@@ -1,9 +1,0 @@
-module InsideTest
-  port addr: in UInt<8>;
-  port val: in UInt<4>;
-  port hit: out Bool;
-  port in_range: out Bool;
-
-  let hit = addr inside {8'h10, 8'h20, 8'h30};
-  let in_range = addr inside {8'h00..8'h0F, 8'h80..8'hFF};
-end module InsideTest

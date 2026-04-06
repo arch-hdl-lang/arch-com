@@ -96,10 +96,11 @@ module Binary2BCD (
     end
     sh8[19:16] = sh7[19:16];
     sh8 = sh8 << 1;
-    thousand = sh8[19:16];
-    hundred = sh8[15:12];
-    ten = sh8[11:8];
-    one = sh8[7:4];
+    // For 8-bit input (0..255), valid BCD digits are in sh8[19:8].
+    thousand = 0;
+    hundred = sh8[19:16];
+    ten = sh8[15:12];
+    one = sh8[11:8];
   end
 
 endmodule

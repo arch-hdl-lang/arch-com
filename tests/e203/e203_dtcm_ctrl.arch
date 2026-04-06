@@ -1,0 +1,95 @@
+// E203 DTCM Controller
+// Arbitrates LSU ICB access to DTCM SRAM.
+// Single outstanding, 1-cycle latency SRAM access.
+// Priority: LSU (only requestor without EXTITF).
+
+module e203_dtcm_ctrl
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+  port test_mode: in Bool;
+  port tcm_cgstop: in Bool;
+
+  port dtcm_active: out Bool;
+
+  // LSU ICB command
+  port lsu2dtcm_icb_cmd_valid: in Bool;
+  port lsu2dtcm_icb_cmd_ready: out Bool;
+  port lsu2dtcm_icb_cmd_addr:  in UInt<16>;
+  port lsu2dtcm_icb_cmd_read:  in Bool;
+  port lsu2dtcm_icb_cmd_wdata: in UInt<32>;
+  port lsu2dtcm_icb_cmd_wmask: in UInt<4>;
+
+  // LSU ICB response
+  port lsu2dtcm_icb_rsp_valid: out Bool;
+  port lsu2dtcm_icb_rsp_ready: in Bool;
+  port lsu2dtcm_icb_rsp_err:   out Bool;
+  port lsu2dtcm_icb_rsp_rdata: out UInt<32>;
+
+  // External debug ICB command
+  port ext2dtcm_icb_cmd_valid: in Bool;
+  port ext2dtcm_icb_cmd_ready: out Bool;
+  port ext2dtcm_icb_cmd_addr:  in UInt<16>;
+  port ext2dtcm_icb_cmd_read:  in Bool;
+  port ext2dtcm_icb_cmd_wdata: in UInt<32>;
+  port ext2dtcm_icb_cmd_wmask: in UInt<4>;
+
+  // External debug ICB response
+  port ext2dtcm_icb_rsp_valid: out Bool;
+  port ext2dtcm_icb_rsp_ready: in Bool;
+  port ext2dtcm_icb_rsp_err:   out Bool;
+  port ext2dtcm_icb_rsp_rdata: out UInt<32>;
+
+  // SRAM interface
+  port dtcm_ram_cs:   out Bool;
+  port dtcm_ram_we:   out Bool;
+  port dtcm_ram_addr: out UInt<14>;
+  port dtcm_ram_wem:  out UInt<4>;
+  port dtcm_ram_din:  out UInt<32>;
+  port dtcm_ram_dout: in UInt<32>;
+  port clk_dtcm_ram:  out Bool;
+
+  // 1-cycle pipeline: cmd fires -> response available next cycle
+  reg rsp_valid_r: Bool reset rst_n => false;
+  reg rsp_read_r:  Bool reset rst_n => false;
+
+  default seq on clk rising;
+
+  seq
+    if lsu2dtcm_icb_cmd_valid & lsu2dtcm_icb_cmd_ready
+      rsp_valid_r <= true;
+      rsp_read_r  <= lsu2dtcm_icb_cmd_read;
+    elsif lsu2dtcm_icb_rsp_valid & lsu2dtcm_icb_rsp_ready
+      rsp_valid_r <= false;
+    end if
+  end seq
+
+  comb
+    // SRAM command: pass through when cmd valid and no pending response
+    dtcm_ram_cs   = lsu2dtcm_icb_cmd_valid & (~rsp_valid_r | lsu2dtcm_icb_rsp_ready);
+    dtcm_ram_we   = ~lsu2dtcm_icb_cmd_read;
+    dtcm_ram_addr = lsu2dtcm_icb_cmd_addr[15:2];  // Word-aligned: drop 2 LSBs
+    dtcm_ram_wem  = lsu2dtcm_icb_cmd_wmask;
+    dtcm_ram_din  = lsu2dtcm_icb_cmd_wdata;
+
+    // Clock passthrough
+    clk_dtcm_ram = clk;
+
+    // LSU handshake
+    lsu2dtcm_icb_cmd_ready = ~rsp_valid_r | lsu2dtcm_icb_rsp_ready;
+
+    // Response
+    lsu2dtcm_icb_rsp_valid = rsp_valid_r;
+    lsu2dtcm_icb_rsp_err   = false;
+    lsu2dtcm_icb_rsp_rdata = dtcm_ram_dout;
+
+    // External debug interface: low priority, always not ready when LSU active
+    ext2dtcm_icb_cmd_ready = (~lsu2dtcm_icb_cmd_valid) & (~rsp_valid_r | ext2dtcm_icb_rsp_ready);
+    ext2dtcm_icb_rsp_valid = false;
+    ext2dtcm_icb_rsp_err   = false;
+    ext2dtcm_icb_rsp_rdata = dtcm_ram_dout;
+
+    // Active
+    dtcm_active = lsu2dtcm_icb_cmd_valid | ext2dtcm_icb_cmd_valid | rsp_valid_r;
+  end comb
+end module e203_dtcm_ctrl

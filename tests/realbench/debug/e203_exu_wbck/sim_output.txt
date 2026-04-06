@@ -1,0 +1,12 @@
+- /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/tmpbezchdsl/e203_exu_wbck_stimulus_gen.sv:146: Verilog $finish
+Hint: Output 'alu_wbck_i_ready' has no mismatches.
+Hint: Output 'longp_wbck_i_ready' has no mismatches.
+Hint: Output 'rf_wbck_o_ena' has no mismatches.
+Hint: Output 'rf_wbck_o_wdat' has 6611 mismatches. First mismatch occurred at time 205.
+Hint: Output 'rf_wbck_o_rdidx' has 3048 mismatches. First mismatch occurred at time 205.
+Hint: Total mismatched samples is 6611 out of 16021 samples
+
+Simulation finished at 160210 ps
+- S i m u l a t i o n   R e p o r t: Verilator 5.034 2025-02-24
+- Verilator: $finish at 160ns; walltime 0.032 s; speed 6.129 us/s
+- Verilator: cpu 0.026 s on 1 threads; alloced 0 MB

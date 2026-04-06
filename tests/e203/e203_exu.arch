@@ -1,0 +1,1071 @@
+// E203 Execution Unit Integration Module
+// Integrates: Decode -> Dispatch -> ALU/OITF -> LongpWbck -> Wbck -> Commit
+// Plus: CSR register file, integer register file
+// 2-stage pipeline: IFU input -> decode -> dispatch -> ALU/OITF -> writeback -> commit
+
+module e203_exu
+  param XLEN: const = 32;
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // IFU interface
+  // ══════════════════════════════════════════════════════════════════════
+  port i_valid:       in  Bool;
+  port i_ready:       out Bool;
+  port i_ir:          in  UInt<32>;
+  port i_pc:          in  UInt<32>;
+  port i_pc_vld:      in  Bool;
+  port i_misalgn:     in  Bool;
+  port i_buserr:      in  Bool;
+  port i_prdt_taken:  in  Bool;
+  port i_muldiv_b2b:  in  Bool;
+  port i_rs1idx:      in  UInt<5>;
+  port i_rs2idx:      in  UInt<5>;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // Pipe flush interface
+  // ══════════════════════════════════════════════════════════════════════
+  port pipe_flush_req:     out Bool;
+  port pipe_flush_ack:     in  Bool;
+  port pipe_flush_add_op1: out UInt<32>;
+  port pipe_flush_add_op2: out UInt<32>;
+  port pipe_flush_pc:      out UInt<32>;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // LSU writeback interface
+  // ══════════════════════════════════════════════════════════════════════
+  port lsu_o_valid:        in  Bool;
+  port lsu_o_ready:        out Bool;
+  port lsu_o_wbck_wdat:    in  UInt<32>;
+  port lsu_o_wbck_itag:    in  UInt<5>;
+  port lsu_o_wbck_err:     in  Bool;
+  port lsu_o_cmt_ld:       in  Bool;
+  port lsu_o_cmt_st:       in  Bool;
+  port lsu_o_cmt_badaddr:  in  UInt<32>;
+  port lsu_o_cmt_buserr:   in  Bool;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // AGU ICB command interface
+  // ══════════════════════════════════════════════════════════════════════
+  port agu_icb_cmd_valid:  out Bool;
+  port agu_icb_cmd_ready:  in  Bool;
+  port agu_icb_cmd_addr:   out UInt<32>;
+  port agu_icb_cmd_read:   out Bool;
+  port agu_icb_cmd_wdata:  out UInt<32>;
+  port agu_icb_cmd_wmask:  out UInt<4>;
+  port agu_icb_cmd_lock:   out Bool;
+  port agu_icb_cmd_excl:   out Bool;
+  port agu_icb_cmd_size:   out UInt<2>;
+  port agu_icb_cmd_back2agu: out Bool;
+  port agu_icb_cmd_usign:  out Bool;
+  port agu_icb_cmd_itag:   out Bool;
+
+  // AGU ICB response interface
+  port agu_icb_rsp_valid:  in  Bool;
+  port agu_icb_rsp_ready:  out Bool;
+  port agu_icb_rsp_rdata:  in  UInt<32>;
+  port agu_icb_rsp_err:    in  Bool;
+  port agu_icb_rsp_excl_ok: in Bool;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // Debug signals
+  // ══════════════════════════════════════════════════════════════════════
+  port dbg_mode:      in Bool;
+  port dbg_halt_r:    in Bool;
+  port dbg_step_r:    in Bool;
+  port dbg_ebreakm_r: in Bool;
+  port dbg_stopcycle:  in Bool;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // IRQ inputs
+  // ══════════════════════════════════════════════════════════════════════
+  port dbg_irq_r: in Bool;
+  port lcl_irq_r: in Bool;
+  port evt_r:     in Bool;
+  port ext_irq_r: in Bool;
+  port sft_irq_r: in Bool;
+  port tmr_irq_r: in Bool;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // CSR debug interface
+  // ══════════════════════════════════════════════════════════════════════
+  port cmt_dpc:         out UInt<32>;
+  port cmt_dpc_ena:     out Bool;
+  port cmt_dcause:      out UInt<3>;
+  port cmt_dcause_ena:  out Bool;
+  port wr_dcsr_ena:     out Bool;
+  port wr_dpc_ena:      out Bool;
+  port wr_dscratch_ena: out Bool;
+  port wr_csr_nxt:      out UInt<32>;
+  port dcsr_r:          in  UInt<32>;
+  port dpc_r:           in  UInt<32>;
+  port dscratch_r:      in  UInt<32>;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // WFI signals
+  // ══════════════════════════════════════════════════════════════════════
+  port wfi_halt_ifu_req: out Bool;
+  port wfi_halt_ifu_ack: in  Bool;
+  port core_wfi:         out Bool;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // Regfile to IFU
+  // ══════════════════════════════════════════════════════════════════════
+  port rf2ifu_x1:       out UInt<32>;
+  port rf2ifu_rs1:      out UInt<32>;
+  port dec2ifu_rden:    out Bool;
+  port dec2ifu_rs1en:   out Bool;
+  port dec2ifu_rdidx:   out UInt<5>;
+  port dec2ifu_mulhsu:  out Bool;
+  port dec2ifu_div:     out Bool;
+  port dec2ifu_rem:     out Bool;
+  port dec2ifu_divu:    out Bool;
+  port dec2ifu_remu:    out Bool;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // Misc status/control
+  // ══════════════════════════════════════════════════════════════════════
+  port oitf_empty:     out Bool;
+  port exu_active:     out Bool;
+  port excp_active:    out Bool;
+  port commit_mret:    out Bool;
+  port commit_trap:    out Bool;
+  port core_mhartid:   in  UInt<32>;
+  port tm_stop:        out Bool;
+  port itcm_nohold:    out Bool;
+  port core_cgstop:    out Bool;
+  port tcm_cgstop:     out Bool;
+
+  // NICE coprocessor interface
+  port nice_req_valid:          out Bool;
+  port nice_req_ready:          in  Bool;
+  port nice_req_inst:           out UInt<32>;
+  port nice_req_rs1:            out UInt<32>;
+  port nice_req_rs2:            out UInt<32>;
+  port nice_rsp_multicyc_valid: in  Bool;
+  port nice_rsp_multicyc_ready: out Bool;
+  port nice_rsp_multicyc_dat:   in  UInt<32>;
+  port nice_rsp_multicyc_err:   in  Bool;
+
+  port test_mode:      in  Bool;
+  port clk_aon:        in  Clock<SysDomain>;
+
+  // ════════════════════════════════════════════════════════════════════
+  // Internal wires -- Decode outputs
+  // ════════════════════════════════════════════════════════════════════
+  wire dec_rs1_idx: UInt<5>;
+  wire dec_rs2_idx: UInt<5>;
+  wire dec_rd_idx:  UInt<5>;
+  wire dec_imm:     UInt<32>;
+  wire dec_alu:     Bool;
+  wire dec_bjp:     Bool;
+  wire dec_agu:     Bool;
+  wire dec_alu_add: Bool;
+  wire dec_alu_sub: Bool;
+  wire dec_alu_xor: Bool;
+  wire dec_alu_sll: Bool;
+  wire dec_alu_srl: Bool;
+  wire dec_alu_sra: Bool;
+  wire dec_alu_or:  Bool;
+  wire dec_alu_and: Bool;
+  wire dec_alu_slt: Bool;
+  wire dec_alu_sltu: Bool;
+  wire dec_alu_lui: Bool;
+  wire dec_beq:     Bool;
+  wire dec_bne:     Bool;
+  wire dec_blt:     Bool;
+  wire dec_bge:     Bool;
+  wire dec_bltu:    Bool;
+  wire dec_bgeu:    Bool;
+  wire dec_jump:    Bool;
+  wire dec_mul:     Bool;
+  wire dec_mulh:    Bool;
+  wire dec_mulhsu:  Bool;
+  wire dec_mulhu:   Bool;
+  wire dec_div:     Bool;
+  wire dec_divu:    Bool;
+  wire dec_rem:     Bool;
+  wire dec_remu:    Bool;
+  wire dec_load:    Bool;
+  wire dec_store:   Bool;
+  wire dec_rs1_en:  Bool;
+  wire dec_rs2_en:  Bool;
+  wire dec_rd_en:   Bool;
+  wire dec_rs1x0:   Bool;
+  wire dec_rs2x0:   Bool;
+  wire dec_info:    UInt<32>;
+  wire dec_pc_out:  UInt<32>;
+  wire dec_misalgn: Bool;
+  wire dec_buserr_out: Bool;
+  wire dec_ilegl:   Bool;
+  wire dec_nice:    Bool;
+  wire dec_nice_cmt_off_ilgl: Bool;
+  wire dec_rv32:    Bool;
+  wire dec_jal:     Bool;
+  wire dec_jalr:    Bool;
+  wire dec_bxx:     Bool;
+  wire dec_jalr_rs1idx: UInt<5>;
+  wire dec_bjp_imm: UInt<32>;
+
+  // ════════════════════════════════════════════════════════════════════
+  // Internal wires -- Regfile read data
+  // ════════════════════════════════════════════════════════════════════
+  wire rf_rs1_data: UInt<32>;
+  wire rf_rs2_data: UInt<32>;
+
+  // ════════════════════════════════════════════════════════════════════
+  // Internal wires -- Dispatch outputs
+  // ════════════════════════════════════════════════════════════════════
+  wire disp_rdy: Bool;
+  wire disp_wfi_halt_exu_ack: Bool;
+
+  // Dispatch -> ALU
+  wire disp_alu_valid:   Bool;
+  wire disp_alu_rs1:     UInt<32>;
+  wire disp_alu_rs2:     UInt<32>;
+  wire disp_alu_pc:      UInt<32>;
+  wire disp_alu_imm:     UInt<32>;
+  wire disp_alu_rdidx:   UInt<5>;
+  wire disp_alu_rdwen:   Bool;
+  wire disp_alu_info:    UInt<32>;
+  wire disp_alu_itag:    UInt<1>;
+  wire disp_alu_instr:   UInt<32>;
+  wire disp_alu_pc_vld:  Bool;
+  wire disp_alu_misalgn: Bool;
+  wire disp_alu_buserr:  Bool;
+  wire disp_alu_ilegl:   Bool;
+
+  // Dispatch -> OITF
+  wire disp_oitf_rs1fpu_w: Bool;
+  wire disp_oitf_rs2fpu_w: Bool;
+  wire disp_oitf_rs3fpu_w: Bool;
+  wire disp_oitf_rdfpu_w:  Bool;
+  wire disp_oitf_rs1en_w:  Bool;
+  wire disp_oitf_rs2en_w:  Bool;
+  wire disp_oitf_rs3en_w:  Bool;
+  wire disp_oitf_rdwen_w:  Bool;
+  wire disp_oitf_rs1idx_w: UInt<5>;
+  wire disp_oitf_rs2idx_w: UInt<5>;
+  wire disp_oitf_rs3idx_w: UInt<5>;
+  wire disp_oitf_rdidx_w:  UInt<5>;
+  wire disp_oitf_pc_w:     UInt<32>;
+
+  // ════════════════════════════════════════════════════════════════════
+  // Internal wires -- OITF
+  // ════════════════════════════════════════════════════════════════════
+  wire oitf_dis_ready:  Bool;
+  wire oitf_dis_ptr:    UInt<1>;
+  wire oitf_ret_ptr:    UInt<1>;
+  wire oitf_ret_rdidx:  UInt<5>;
+  wire oitf_ret_rdwen:  Bool;
+  wire oitf_ret_rdfpu:  Bool;
+  wire oitf_ret_pc:     UInt<32>;
+  wire oitf_match_rs1:  Bool;
+  wire oitf_match_rs2:  Bool;
+  wire oitf_match_rs3:  Bool;
+  wire oitf_match_rd:   Bool;
+  wire oitf_is_empty:   Bool;
+
+  // ════════════════════════════════════════════════════════════════════
+  // Internal wires -- ALU outputs
+  // ════════════════════════════════════════════════════════════════════
+  wire alu_o_ready:    Bool;
+  wire alu_longpipe:   Bool;
+  wire alu_wdat:       UInt<32>;
+  wire alu_rdidx:      UInt<5>;
+  wire alu_wbck_valid: Bool;
+  // ALU commit outputs
+  wire alu_cmt_valid:       Bool;
+  wire alu_cmt_pc_vld:      Bool;
+  wire alu_cmt_pc:          UInt<32>;
+  wire alu_cmt_instr:       UInt<32>;
+  wire alu_cmt_imm:         UInt<32>;
+  wire alu_cmt_rv32:        Bool;
+  wire alu_cmt_bjp:         Bool;
+  wire alu_cmt_mret:        Bool;
+  wire alu_cmt_dret:        Bool;
+  wire alu_cmt_ecall:       Bool;
+  wire alu_cmt_ebreak:      Bool;
+  wire alu_cmt_fencei:      Bool;
+  wire alu_cmt_wfi:         Bool;
+  wire alu_cmt_ifu_misalgn: Bool;
+  wire alu_cmt_ifu_buserr:  Bool;
+  wire alu_cmt_ifu_ilegl:   Bool;
+  wire alu_cmt_bjp_prdt:    Bool;
+  wire alu_cmt_bjp_rslv:    Bool;
+  wire alu_cmt_misalgn:     Bool;
+  wire alu_cmt_ld:          Bool;
+  wire alu_cmt_stamo:       Bool;
+  wire alu_cmt_buserr:      Bool;
+  wire alu_cmt_badaddr:     UInt<32>;
+  // ALU CSR interface
+  wire alu_csr_ena:          Bool;
+  wire alu_csr_wr_en:        Bool;
+  wire alu_csr_rd_en:        Bool;
+  wire alu_csr_idx:          UInt<12>;
+  wire alu_nonflush_cmt_ena: Bool;
+  // csr_access_ilgl_w, read_csr_dat_w declared elsewhere
+  wire alu_wbck_csr_dat:     UInt<32>;
+  // ALU NICE
+  wire alu_nice_longp_wbck_valid: Bool;
+  wire alu_nice_longp_wbck_ready: Bool;
+  wire alu_nice_o_itag:           UInt<1>;
+  // ALU misc wires: amo_wait_w, oitf_empty_w, pipe_flush_req_w, pipe_flush_pulse_w
+  // declared elsewhere in this module
+
+  // ════════════════════════════════════════════════════════════════════
+  // Internal wires -- LongpWbck outputs
+  // ════════════════════════════════════════════════════════════════════
+  wire longp_wbck_valid: Bool;
+  wire longp_wbck_wdat:  UInt<32>;
+  wire longp_wbck_rdidx: UInt<5>;
+  wire longp_wbck_flags: UInt<5>;
+  wire longp_wbck_rdfpu: Bool;
+  wire longp_lsu_ready:  Bool;
+  wire longp_nice_ready: Bool;
+
+  // LongpWbck exception outputs
+  wire longp_excp_valid:   Bool;
+  wire longp_excp_insterr: Bool;
+  wire longp_excp_ld:      Bool;
+  wire longp_excp_st:      Bool;
+  wire longp_excp_buserr:  Bool;
+  wire longp_excp_badaddr: UInt<32>;
+  wire longp_excp_pc:      UInt<32>;
+  wire longp_excp_ready_from_commit: Bool;
+
+  // ════════════════════════════════════════════════════════════════════
+  // Internal wires -- Wbck outputs
+  // ════════════════════════════════════════════════════════════════════
+  wire wbck_alu_ready:   Bool;
+  wire wbck_longp_ready: Bool;
+  wire wbck_rf_ena:      Bool;
+  wire wbck_rf_wdat:     UInt<32>;
+  wire wbck_rf_rdidx:    UInt<5>;
+
+  // ════════════════════════════════════════════════════════════════════
+  // Internal wires -- Commit outputs
+  // ════════════════════════════════════════════════════════════════════
+  wire commit_alu_ready:     Bool;
+  wire commit_mret_w:        Bool;
+  wire commit_trap_w:        Bool;
+  wire core_wfi_w:           Bool;
+  wire nonflush_cmt_ena_w:   Bool;
+  wire excp_active_w:        Bool;
+  wire wfi_halt_ifu_req_w:   Bool;
+  wire wfi_halt_exu_req_w:   Bool;
+  wire cmt_badaddr_w:        UInt<32>;
+  wire cmt_badaddr_ena_w:    Bool;
+  wire cmt_epc_w:            UInt<32>;
+  wire cmt_epc_ena_w:        Bool;
+  wire cmt_cause_w:          UInt<32>;
+  wire cmt_cause_ena_w:      Bool;
+  wire cmt_instret_ena_w:    Bool;
+  wire cmt_status_ena_w:     Bool;
+  wire cmt_dpc_w:            UInt<32>;
+  wire cmt_dpc_ena_w:        Bool;
+  wire cmt_dcause_w:         UInt<3>;
+  wire cmt_dcause_ena_w:     Bool;
+  wire cmt_mret_ena_w:       Bool;
+  wire flush_pulse_w:        Bool;
+  wire flush_req_w:          Bool;
+  wire pipe_flush_req_w:     Bool;
+  wire pipe_flush_add_op1_w: UInt<32>;
+  wire pipe_flush_add_op2_w: UInt<32>;
+  wire pipe_flush_pc_w:      UInt<32>;
+
+  // ════════════════════════════════════════════════════════════════════
+  // Internal wires -- CSR outputs
+  // ════════════════════════════════════════════════════════════════════
+  wire csr_rdata:          UInt<32>;
+  wire csr_mtvec_val:      UInt<32>;
+  wire csr_mepc_val:       UInt<32>;
+  wire csr_dpc_val:        UInt<32>;
+  wire csr_access_ilgl_w:  Bool;
+  wire csr_nice_xs_off:    Bool;
+  wire csr_tm_stop:        Bool;
+  wire csr_core_cgstop:    Bool;
+  wire csr_tcm_cgstop:     Bool;
+  wire csr_itcm_nohold:    Bool;
+  wire csr_mdv_nob2b:      Bool;
+  wire csr_status_mie:     Bool;
+  wire csr_mtie:           Bool;
+  wire csr_msie:           Bool;
+  wire csr_meie:           Bool;
+  wire csr_wr_dcsr_ena:    Bool;
+  wire csr_wr_dpc_ena:     Bool;
+  wire csr_wr_dscratch_ena: Bool;
+  wire csr_wr_csr_nxt:     UInt<32>;
+  wire csr_u_mode:         Bool;
+  wire csr_s_mode:         Bool;
+  wire csr_h_mode:         Bool;
+  wire csr_m_mode:         Bool;
+
+  // ════════════════════════════════════════════════════════════════════
+  // Internal wires -- Regfile
+  // ════════════════════════════════════════════════════════════════════
+  wire rf_x1_r: UInt<32>;
+
+  // ════════════════════════════════════════════════════════════════════
+  // Internal wires -- Glue
+  // ════════════════════════════════════════════════════════════════════
+  wire disp_valid_gated:    Bool;
+  wire oitf_dis_ena:        Bool;
+  wire oitf_ret_ena:        Bool;
+
+  // ════════════════════════════════════════════════════════════════════
+  // 1. Decode
+  // ════════════════════════════════════════════════════════════════════
+  inst dec: e203_exu_decode
+    // Inputs
+    i_instr      <- i_ir;
+    i_pc         <- i_pc;
+    i_prdt_taken <- i_prdt_taken;
+    i_misalgn    <- i_misalgn;
+    i_buserr     <- i_buserr;
+    i_muldiv_b2b <- i_muldiv_b2b;
+    dbg_mode     <- dbg_mode;
+    nice_xs_off  <- 0;
+    // Reference-design outputs
+    dec_rs1idx   -> dec_rs1_idx;
+    dec_rs2idx   -> dec_rs2_idx;
+    dec_rdidx    -> dec_rd_idx;
+    dec_imm      -> dec_imm;
+    dec_bjp      -> dec_bjp;
+    dec_rs1en    -> dec_rs1_en;
+    dec_rs2en    -> dec_rs2_en;
+    dec_rdwen    -> dec_rd_en;
+    dec_mul      -> dec_mul;
+    dec_mulhsu   -> dec_mulhsu;
+    dec_div      -> dec_div;
+    dec_divu     -> dec_divu;
+    dec_rem      -> dec_rem;
+    dec_remu     -> dec_remu;
+    dec_rs1x0    -> dec_rs1x0;
+    dec_rs2x0    -> dec_rs2x0;
+    dec_info     -> dec_info;
+    dec_pc       -> dec_pc_out;
+    dec_misalgn  -> dec_misalgn;
+    dec_buserr   -> dec_buserr_out;
+    dec_ilegl    -> dec_ilegl;
+    dec_nice     -> dec_nice;
+    nice_cmt_off_ilgl_o -> dec_nice_cmt_off_ilgl;
+    dec_rv32     -> dec_rv32;
+    dec_jal      -> dec_jal;
+    dec_jalr     -> dec_jalr;
+    dec_bxx      -> dec_bxx;
+    dec_jalr_rs1idx -> dec_jalr_rs1idx;
+    dec_bjp_imm  -> dec_bjp_imm;
+    // Simplified control outputs
+    o_alu        -> dec_alu;
+    o_agu        -> dec_agu;
+    o_alu_add    -> dec_alu_add;
+    o_alu_sub    -> dec_alu_sub;
+    o_alu_xor    -> dec_alu_xor;
+    o_alu_sll    -> dec_alu_sll;
+    o_alu_srl    -> dec_alu_srl;
+    o_alu_sra    -> dec_alu_sra;
+    o_alu_or     -> dec_alu_or;
+    o_alu_and    -> dec_alu_and;
+    o_alu_slt    -> dec_alu_slt;
+    o_alu_sltu   -> dec_alu_sltu;
+    o_alu_lui    -> dec_alu_lui;
+    o_beq        -> dec_beq;
+    o_bne        -> dec_bne;
+    o_blt        -> dec_blt;
+    o_bge        -> dec_bge;
+    o_bltu       -> dec_bltu;
+    o_bgeu       -> dec_bgeu;
+    o_jump       -> dec_jump;
+    o_mulh       -> dec_mulh;
+    o_mulhu      -> dec_mulhu;
+    o_load       -> dec_load;
+    o_store      -> dec_store;
+  end inst dec
+
+  // ════════════════════════════════════════════════════════════════════
+  // 2. Dispatch
+  // ════════════════════════════════════════════════════════════════════
+  inst disp: e203_exu_disp
+    clk   <- clk;
+    rst_n <- rst_n;
+
+    // WFI halt interface
+    wfi_halt_exu_req <- false;
+    wfi_halt_exu_ack -> disp_wfi_halt_exu_ack;
+
+    // OITF status
+    oitf_empty <- oitf_is_empty;
+    amo_wait   <- false;
+
+    // Dispatch input (from decode)
+    disp_i_valid   <- disp_valid_gated;
+    disp_i_ready   -> disp_rdy;
+    disp_i_rs1x0   <- dec_rs1x0;
+    disp_i_rs2x0   <- dec_rs2x0;
+    disp_i_rs1en   <- dec_rs1_en;
+    disp_i_rs2en   <- dec_rs2_en;
+    disp_i_rs1idx  <- dec_rs1_idx;
+    disp_i_rs2idx  <- dec_rs2_idx;
+    disp_i_rs1     <- rf_rs1_data;
+    disp_i_rs2     <- rf_rs2_data;
+    disp_i_rdwen   <- dec_rd_en;
+    disp_i_rdidx   <- dec_rd_idx;
+    disp_i_info    <- dec_info;
+    disp_i_imm     <- dec_imm;
+    disp_i_pc      <- i_pc;
+    disp_i_misalgn <- i_misalgn;
+    disp_i_buserr  <- i_buserr;
+    disp_i_ilegl   <- dec_ilegl;
+
+    // ALU dispatch output
+    disp_o_alu_valid    -> disp_alu_valid;
+    disp_o_alu_ready    <- alu_o_ready;
+    disp_o_alu_longpipe <- false;
+    disp_o_alu_rs1      -> disp_alu_rs1;
+    disp_o_alu_rs2      -> disp_alu_rs2;
+    disp_o_alu_rdwen    -> disp_alu_rdwen;
+    disp_o_alu_rdidx    -> disp_alu_rdidx;
+    disp_o_alu_info     -> disp_alu_info;
+    disp_o_alu_imm      -> disp_alu_imm;
+    disp_o_alu_pc       -> disp_alu_pc;
+    disp_o_alu_itag     -> disp_alu_itag;
+    disp_o_alu_misalgn  -> disp_alu_misalgn;
+    disp_o_alu_buserr   -> disp_alu_buserr;
+    disp_o_alu_ilegl    -> disp_alu_ilegl;
+
+    // OITF hazard check inputs
+    oitfrd_match_disprs1 <- oitf_match_rs1;
+    oitfrd_match_disprs2 <- oitf_match_rs2;
+    oitfrd_match_disprs3 <- oitf_match_rs3;
+    oitfrd_match_disprd  <- oitf_match_rd;
+
+    // OITF dispatch interface
+    disp_oitf_ptr    <- oitf_dis_ptr;
+    disp_oitf_ena    -> oitf_dis_ena;
+    disp_oitf_ready  <- oitf_dis_ready;
+    disp_oitf_rs1fpu -> disp_oitf_rs1fpu_w;
+    disp_oitf_rs2fpu -> disp_oitf_rs2fpu_w;
+    disp_oitf_rs3fpu -> disp_oitf_rs3fpu_w;
+    disp_oitf_rdfpu  -> disp_oitf_rdfpu_w;
+    disp_oitf_rs1en  -> disp_oitf_rs1en_w;
+    disp_oitf_rs2en  -> disp_oitf_rs2en_w;
+    disp_oitf_rs3en  -> disp_oitf_rs3en_w;
+    disp_oitf_rdwen  -> disp_oitf_rdwen_w;
+    disp_oitf_rs1idx -> disp_oitf_rs1idx_w;
+    disp_oitf_rs2idx -> disp_oitf_rs2idx_w;
+    disp_oitf_rs3idx -> disp_oitf_rs3idx_w;
+    disp_oitf_rdidx  -> disp_oitf_rdidx_w;
+    disp_oitf_pc     -> disp_oitf_pc_w;
+  end inst disp
+
+  // ════════════════════════════════════════════════════════════════════
+  // 3. OITF (Outstanding Instruction Track FIFO)
+  // ════════════════════════════════════════════════════════════════════
+  inst oitf_u: e203_exu_oitf
+    clk   <- clk;
+    rst_n <- rst_n;
+
+    dis_ready -> oitf_dis_ready;
+    dis_ena   <- oitf_dis_ena;
+    ret_ena   <- oitf_ret_ena;
+
+    dis_ptr -> oitf_dis_ptr;
+    ret_ptr -> oitf_ret_ptr;
+
+    ret_rdidx -> oitf_ret_rdidx;
+    ret_rdwen -> oitf_ret_rdwen;
+    ret_rdfpu -> oitf_ret_rdfpu;
+    ret_pc    -> oitf_ret_pc;
+
+    disp_i_rs1en  <- disp_oitf_rs1en_w;
+    disp_i_rs2en  <- disp_oitf_rs2en_w;
+    disp_i_rs3en  <- disp_oitf_rs3en_w;
+    disp_i_rdwen  <- disp_oitf_rdwen_w;
+    disp_i_rs1fpu <- disp_oitf_rs1fpu_w;
+    disp_i_rs2fpu <- disp_oitf_rs2fpu_w;
+    disp_i_rs3fpu <- disp_oitf_rs3fpu_w;
+    disp_i_rdfpu  <- disp_oitf_rdfpu_w;
+    disp_i_rs1idx <- disp_oitf_rs1idx_w;
+    disp_i_rs2idx <- disp_oitf_rs2idx_w;
+    disp_i_rs3idx <- disp_oitf_rs3idx_w;
+    disp_i_rdidx  <- disp_oitf_rdidx_w;
+    disp_i_pc     <- disp_oitf_pc_w;
+
+    oitfrd_match_disprs1 -> oitf_match_rs1;
+    oitfrd_match_disprs2 -> oitf_match_rs2;
+    oitfrd_match_disprs3 -> oitf_match_rs3;
+    oitfrd_match_disprd  -> oitf_match_rd;
+    oitf_empty           -> oitf_is_empty;
+  end inst oitf_u
+
+  // ════════════════════════════════════════════════════════════════════
+  // 4. ALU execution
+  // ════════════════════════════════════════════════════════════════════
+  inst alu_u: e203_exu_alu
+    clk        <- clk;
+    rst_n      <- rst_n;
+    // Dispatch inputs
+    i_valid    <- disp_alu_valid;
+    i_ready    -> alu_o_ready;
+    i_longpipe -> alu_longpipe;
+    i_rs1      <- disp_alu_rs1;
+    i_rs2      <- disp_alu_rs2;
+    i_imm      <- disp_alu_imm;
+    i_info     <- disp_alu_info;
+    i_pc       <- disp_alu_pc;
+    i_instr    <- disp_alu_instr;
+    i_pc_vld   <- disp_alu_pc_vld;
+    i_rdidx    <- disp_alu_rdidx;
+    i_rdwen    <- disp_alu_rdwen;
+    i_itag     <- disp_alu_itag;
+    i_ilegl    <- disp_alu_ilegl;
+    i_buserr   <- disp_alu_buserr;
+    i_misalgn  <- disp_alu_misalgn;
+    // Control
+    nice_xs_off <- csr_nice_xs_off;
+    amo_wait    <- amo_wait_w;
+    oitf_empty  <- oitf_empty_w;
+    flush_req   <- pipe_flush_req_w;
+    flush_pulse <- pipe_flush_pulse_w;
+    mdv_nob2b   <- false;
+    i_nice_cmt_off_ilgl <- false;
+    // Commit outputs
+    cmt_o_valid       -> alu_cmt_valid;
+    cmt_o_ready       <- true;
+    cmt_o_pc_vld      -> alu_cmt_pc_vld;
+    cmt_o_pc          -> alu_cmt_pc;
+    cmt_o_instr       -> alu_cmt_instr;
+    cmt_o_imm         -> alu_cmt_imm;
+    cmt_o_rv32        -> alu_cmt_rv32;
+    cmt_o_bjp         -> alu_cmt_bjp;
+    cmt_o_mret        -> alu_cmt_mret;
+    cmt_o_dret        -> alu_cmt_dret;
+    cmt_o_ecall       -> alu_cmt_ecall;
+    cmt_o_ebreak      -> alu_cmt_ebreak;
+    cmt_o_fencei      -> alu_cmt_fencei;
+    cmt_o_wfi         -> alu_cmt_wfi;
+    cmt_o_ifu_misalgn -> alu_cmt_ifu_misalgn;
+    cmt_o_ifu_buserr  -> alu_cmt_ifu_buserr;
+    cmt_o_ifu_ilegl   -> alu_cmt_ifu_ilegl;
+    cmt_o_bjp_prdt    -> alu_cmt_bjp_prdt;
+    cmt_o_bjp_rslv    -> alu_cmt_bjp_rslv;
+    cmt_o_misalgn     -> alu_cmt_misalgn;
+    cmt_o_ld          -> alu_cmt_ld;
+    cmt_o_stamo       -> alu_cmt_stamo;
+    cmt_o_buserr      -> alu_cmt_buserr;
+    cmt_o_badaddr     -> alu_cmt_badaddr;
+    // Writeback outputs
+    wbck_o_valid  -> alu_wbck_valid;
+    wbck_o_ready  <- wbck_alu_ready;
+    wbck_o_wdat   -> alu_wdat;
+    wbck_o_rdidx  -> alu_rdidx;
+    // CSR interface
+    csr_ena           -> alu_csr_ena;
+    csr_wr_en         -> alu_csr_wr_en;
+    csr_rd_en         -> alu_csr_rd_en;
+    csr_idx           -> alu_csr_idx;
+    nonflush_cmt_ena  -> alu_nonflush_cmt_ena;
+    csr_access_ilgl   <- csr_access_ilgl_w;
+    read_csr_dat      <- read_csr_dat_w;
+    wbck_csr_dat      -> alu_wbck_csr_dat;
+    // AGU ICB
+    agu_icb_cmd_valid    -> agu_icb_cmd_valid;
+    agu_icb_cmd_ready    <- agu_icb_cmd_ready;
+    agu_icb_cmd_addr     -> agu_icb_cmd_addr;
+    agu_icb_cmd_read     -> agu_icb_cmd_read;
+    agu_icb_cmd_wdata    -> agu_icb_cmd_wdata;
+    agu_icb_cmd_wmask    -> agu_icb_cmd_wmask;
+    agu_icb_cmd_lock     -> agu_icb_cmd_lock;
+    agu_icb_cmd_excl     -> agu_icb_cmd_excl;
+    agu_icb_cmd_size     -> agu_icb_cmd_size;
+    agu_icb_cmd_back2agu -> agu_icb_cmd_back2agu;
+    agu_icb_cmd_usign    -> agu_icb_cmd_usign;
+    agu_icb_cmd_itag     -> agu_icb_cmd_itag;
+    agu_icb_rsp_valid    <- agu_icb_rsp_valid;
+    agu_icb_rsp_ready    -> agu_icb_rsp_ready;
+    agu_icb_rsp_err      <- agu_icb_rsp_err;
+    agu_icb_rsp_excl_ok  <- agu_icb_rsp_excl_ok;
+    agu_icb_rsp_rdata    <- agu_icb_rsp_rdata;
+    // NICE
+    nice_req_valid          -> nice_req_valid;
+    nice_req_ready          <- nice_req_ready;
+    nice_req_instr          -> nice_req_instr;
+    nice_req_rs1            -> nice_req_rs1;
+    nice_req_rs2            -> nice_req_rs2;
+    nice_rsp_multicyc_valid <- nice_rsp_multicyc_valid;
+    nice_rsp_multicyc_ready -> nice_rsp_multicyc_ready;
+    nice_longp_wbck_valid   -> alu_nice_longp_wbck_valid;
+    nice_longp_wbck_ready   <- alu_nice_longp_wbck_ready;
+    nice_o_itag             -> alu_nice_o_itag;
+  end inst alu_u
+
+  // ════════════════════════════════════════════════════════════════════
+  // 5. Long-pipe writeback collector (LSU + MulDiv -> single port)
+  // ════════════════════════════════════════════════════════════════════
+  inst longp_u: e203_exu_longpwbck
+    clk   <- clk;
+    rst_n <- rst_n;
+
+    // LSU writeback input
+    lsu_wbck_i_valid <- lsu_o_valid;
+    lsu_wbck_i_ready -> longp_lsu_ready;
+    lsu_wbck_i_wdat  <- lsu_o_wbck_wdat;
+    lsu_wbck_i_itag  <- lsu_o_wbck_itag.trunc<1>();
+    lsu_wbck_i_err   <- lsu_o_wbck_err;
+
+    // LSU commit info
+    lsu_cmt_i_buserr  <- lsu_o_cmt_buserr;
+    lsu_cmt_i_badaddr <- lsu_o_cmt_badaddr;
+    lsu_cmt_i_ld      <- lsu_o_cmt_ld;
+    lsu_cmt_i_st      <- lsu_o_cmt_st;
+
+    // Merged writeback output
+    longp_wbck_o_valid -> longp_wbck_valid;
+    longp_wbck_o_ready <- wbck_longp_ready;
+    longp_wbck_o_wdat  -> longp_wbck_wdat;
+    longp_wbck_o_flags -> longp_wbck_flags;
+    longp_wbck_o_rdidx -> longp_wbck_rdidx;
+    longp_wbck_o_rdfpu -> longp_wbck_rdfpu;
+
+    // Exception output
+    longp_excp_o_valid   -> longp_excp_valid;
+    longp_excp_o_ready   <- true;
+    longp_excp_o_insterr -> longp_excp_insterr;
+    longp_excp_o_ld      -> longp_excp_ld;
+    longp_excp_o_st      -> longp_excp_st;
+    longp_excp_o_buserr  -> longp_excp_buserr;
+    longp_excp_o_badaddr -> longp_excp_badaddr;
+    longp_excp_o_pc      -> longp_excp_pc;
+
+    // OITF interface
+    oitf_empty     <- oitf_is_empty;
+    oitf_ret_ptr   <- oitf_ret_ptr;
+    oitf_ret_rdidx <- oitf_ret_rdidx;
+    oitf_ret_pc    <- oitf_ret_pc;
+    oitf_ret_rdwen <- oitf_ret_rdwen;
+    oitf_ret_rdfpu <- oitf_ret_rdfpu;
+    oitf_ret_ena   -> oitf_ret_ena;
+
+    // NICE writeback input (stub)
+    nice_longp_wbck_i_valid <- false;
+    nice_longp_wbck_i_ready -> longp_nice_ready;
+    nice_longp_wbck_i_wdat  <- 0;
+    nice_longp_wbck_i_itag  <- 0;
+    nice_longp_wbck_i_err   <- false;
+  end inst longp_u
+
+  // ════════════════════════════════════════════════════════════════════
+  // 6. Writeback arbiter (ALU vs long-pipe -> regfile)
+  // ════════════════════════════════════════════════════════════════════
+  inst wbck_u: e203_exu_wbck
+    clk   <- clk;
+    rst_n <- rst_n;
+    alu_wbck_i_valid  <- alu_done_valid;
+    alu_wbck_i_ready  -> wbck_alu_ready;
+    alu_wbck_i_wdat   <- alu_wdat;
+    alu_wbck_i_rdidx  <- alu_rdidx;
+    longp_wbck_i_valid  <- longp_wbck_valid;
+    longp_wbck_i_ready  -> wbck_longp_ready;
+    longp_wbck_i_wdat   <- longp_wbck_wdat;
+    longp_wbck_i_flags  <- 0;
+    longp_wbck_i_rdidx  <- longp_wbck_rdidx;
+    longp_wbck_i_rdfpu  <- false;
+    rf_wbck_o_ena   -> wbck_rf_ena;
+    rf_wbck_o_wdat  -> wbck_rf_wdat;
+    rf_wbck_o_rdidx -> wbck_rf_rdidx;
+  end inst wbck_u
+
+  // ════════════════════════════════════════════════════════════════════
+  // 7. Commit stage
+  // ════════════════════════════════════════════════════════════════════
+  inst commit_u: e203_exu_commit
+    clk   <- clk;
+    rst_n <- rst_n;
+
+    // Commit status outputs
+    commit_mret      -> commit_mret_w;
+    commit_trap      -> commit_trap_w;
+    core_wfi         -> core_wfi_w;
+    nonflush_cmt_ena -> nonflush_cmt_ena_w;
+    excp_active      -> excp_active_w;
+
+    // AMO wait
+    amo_wait <- false;
+
+    // WFI halt interface
+    wfi_halt_ifu_req -> wfi_halt_ifu_req_w;
+    wfi_halt_exu_req -> wfi_halt_exu_req_w;
+    wfi_halt_ifu_ack <- wfi_halt_ifu_ack;
+    wfi_halt_exu_ack <- disp_wfi_halt_exu_ack;
+
+    // Interrupt inputs
+    dbg_irq_r    <- dbg_irq_r;
+    lcl_irq_r    <- lcl_irq_r;
+    ext_irq_r    <- ext_irq_r;
+    sft_irq_r    <- sft_irq_r;
+    tmr_irq_r    <- tmr_irq_r;
+    evt_r        <- evt_r;
+    status_mie_r <- csr_status_mie;
+    mtie_r       <- csr_mtie;
+    msie_r       <- csr_msie;
+    meie_r       <- csr_meie;
+
+    // ALU commit input channel
+    alu_cmt_i_valid      <- alu_done_valid;
+    alu_cmt_i_ready      -> commit_alu_ready;
+    alu_cmt_i_pc         <- i_pc;
+    alu_cmt_i_instr      <- i_ir;
+    alu_cmt_i_pc_vld     <- i_pc_vld;
+    alu_cmt_i_imm        <- dec_imm;
+    alu_cmt_i_rv32       <- dec_rv32;
+    alu_cmt_i_bjp        <- alu_bjp_taken;
+    alu_cmt_i_wfi        <- false;
+    alu_cmt_i_fencei     <- false;
+    alu_cmt_i_mret       <- false;
+    alu_cmt_i_dret       <- false;
+    alu_cmt_i_ecall      <- false;
+    alu_cmt_i_ebreak     <- false;
+    alu_cmt_i_ifu_misalgn <- i_misalgn;
+    alu_cmt_i_ifu_buserr <- i_buserr;
+    alu_cmt_i_ifu_ilegl  <- dec_ilegl;
+    alu_cmt_i_bjp_prdt   <- false;
+    alu_cmt_i_bjp_rslv   <- alu_bjp_taken;
+    alu_cmt_i_misalgn    <- false;
+    alu_cmt_i_ld         <- false;
+    alu_cmt_i_stamo      <- false;
+    alu_cmt_i_buserr     <- false;
+    alu_cmt_i_badaddr    <- 0;
+
+    // CSR commit outputs
+    cmt_badaddr     -> cmt_badaddr_w;
+    cmt_badaddr_ena -> cmt_badaddr_ena_w;
+    cmt_epc         -> cmt_epc_w;
+    cmt_epc_ena     -> cmt_epc_ena_w;
+    cmt_cause       -> cmt_cause_w;
+    cmt_cause_ena   -> cmt_cause_ena_w;
+    cmt_instret_ena -> cmt_instret_ena_w;
+    cmt_status_ena  -> cmt_status_ena_w;
+    cmt_dpc         -> cmt_dpc_w;
+    cmt_dpc_ena     -> cmt_dpc_ena_w;
+    cmt_dcause      -> cmt_dcause_w;
+    cmt_dcause_ena  -> cmt_dcause_ena_w;
+    cmt_mret_ena    -> cmt_mret_ena_w;
+
+    // CSR read inputs
+    csr_epc_r   <- csr_mepc_val;
+    csr_dpc_r   <- 0;
+    csr_mtvec_r <- csr_mtvec_val;
+
+    // Debug mode inputs
+    dbg_mode      <- dbg_mode;
+    dbg_halt_r    <- dbg_halt_r;
+    dbg_step_r    <- dbg_step_r;
+    dbg_ebreakm_r <- dbg_ebreakm_r;
+    oitf_empty    <- oitf_is_empty;
+
+    // Privilege mode inputs
+    u_mode <- csr_u_mode;
+    s_mode <- csr_s_mode;
+    h_mode <- csr_h_mode;
+    m_mode <- csr_m_mode;
+
+    // Long-pipe exception input
+    longp_excp_i_ready   -> longp_excp_ready_from_commit;
+    longp_excp_i_valid   <- longp_excp_valid;
+    longp_excp_i_ld      <- longp_excp_ld;
+    longp_excp_i_st      <- longp_excp_st;
+    longp_excp_i_buserr  <- longp_excp_buserr;
+    longp_excp_i_badaddr <- longp_excp_badaddr;
+    longp_excp_i_insterr <- longp_excp_insterr;
+    longp_excp_i_pc      <- longp_excp_pc;
+
+    // Flush outputs
+    flush_pulse       -> flush_pulse_w;
+    flush_req         -> flush_req_w;
+    pipe_flush_ack    <- pipe_flush_ack;
+    pipe_flush_req    -> pipe_flush_req_w;
+    pipe_flush_add_op1 -> pipe_flush_add_op1_w;
+    pipe_flush_add_op2 -> pipe_flush_add_op2_w;
+    pipe_flush_pc     -> pipe_flush_pc_w;
+  end inst commit_u
+
+  // ════════════════════════════════════════════════════════════════════
+  // 8. CSR register file
+  // ════════════════════════════════════════════════════════════════════
+  inst csr_u: e203_exu_csr
+    clk     <- clk;
+    rst_n   <- rst_n;
+    clk_aon <- clk_aon;
+
+    // CSR access interface
+    nonflush_cmt_ena <- nonflush_cmt_ena_w;
+    csr_ena      <- false;
+    csr_wr_en    <- false;
+    csr_rd_en    <- false;
+    csr_idx      <- 0;
+    csr_access_ilgl -> csr_access_ilgl_w;
+    read_csr_dat -> csr_rdata;
+    wbck_csr_dat <- 0;
+
+    // Control outputs
+    nice_xs_off  -> csr_nice_xs_off;
+    tm_stop      -> csr_tm_stop;
+    core_cgstop  -> csr_core_cgstop;
+    tcm_cgstop   -> csr_tcm_cgstop;
+    itcm_nohold  -> csr_itcm_nohold;
+    mdv_nob2b    -> csr_mdv_nob2b;
+
+    // Hart ID
+    core_mhartid <- false;
+
+    // Interrupt status
+    ext_irq_r    <- ext_irq_r;
+    sft_irq_r    <- sft_irq_r;
+    tmr_irq_r    <- tmr_irq_r;
+    status_mie_r -> csr_status_mie;
+    mtie_r       -> csr_mtie;
+    msie_r       -> csr_msie;
+    meie_r       -> csr_meie;
+
+    // Debug CSR interface
+    wr_dcsr_ena     -> csr_wr_dcsr_ena;
+    wr_dpc_ena      -> csr_wr_dpc_ena;
+    wr_dscratch_ena -> csr_wr_dscratch_ena;
+    dcsr_r          <- dcsr_r;
+    dpc_r           <- dpc_r;
+    dscratch_r      <- dscratch_r;
+    wr_csr_nxt      -> csr_wr_csr_nxt;
+
+    // Debug mode
+    dbg_mode     <- dbg_mode;
+    dbg_stopcycle <- dbg_stopcycle;
+
+    // Privilege mode outputs
+    u_mode -> csr_u_mode;
+    s_mode -> csr_s_mode;
+    h_mode -> csr_h_mode;
+    m_mode -> csr_m_mode;
+
+    // Commit inputs
+    cmt_badaddr     <- cmt_badaddr_w;
+    cmt_badaddr_ena <- cmt_badaddr_ena_w;
+    cmt_epc         <- cmt_epc_w;
+    cmt_epc_ena     <- cmt_epc_ena_w;
+    cmt_cause       <- cmt_cause_w;
+    cmt_cause_ena   <- cmt_cause_ena_w;
+    cmt_status_ena  <- cmt_status_ena_w;
+    cmt_instret_ena <- cmt_instret_ena_w;
+    cmt_mret_ena    <- cmt_mret_ena_w;
+
+    // CSR vector outputs
+    csr_epc_r   -> csr_mepc_val;
+    csr_dpc_r   -> csr_dpc_val;
+    csr_mtvec_r -> csr_mtvec_val;
+  end inst csr_u
+
+  // ════════════════════════════════════════════════════════════════════
+  // 9. Integer register file (2R1W)
+  // ════════════════════════════════════════════════════════════════════
+  inst rf_u: e203_exu_regfile
+    clk       <- clk;
+    rst_n     <- rst_n;
+    test_mode <- test_mode;
+
+    read_src1_idx <- dec_rs1_idx;
+    read_src1_dat -> rf_rs1_data;
+    read_src2_idx <- dec_rs2_idx;
+    read_src2_dat -> rf_rs2_data;
+
+    wbck_dest_wen <- wbck_rf_ena;
+    wbck_dest_idx <- wbck_rf_rdidx;
+    wbck_dest_dat <- wbck_rf_wdat;
+
+    x1_r -> rf_x1_r;
+  end inst rf_u
+
+  // ════════════════════════════════════════════════════════════════════
+  // Glue logic
+  // ════════════════════════════════════════════════════════════════════
+  comb
+    // Gate dispatch valid
+    disp_valid_gated = i_valid;
+    i_ready = disp_rdy;
+
+    // Pipe flush: from commit unit
+    pipe_flush_req     = pipe_flush_req_w;
+    pipe_flush_add_op1 = pipe_flush_add_op1_w;
+    pipe_flush_add_op2 = pipe_flush_add_op2_w;
+    pipe_flush_pc      = pipe_flush_pc_w;
+
+    // LSU writeback ready
+    lsu_o_ready = longp_lsu_ready;
+
+    // AGU ICB command interface (stub — LSU not integrated here)
+    agu_icb_cmd_valid = false;
+    agu_icb_cmd_addr  = 0;
+    agu_icb_cmd_read  = false;
+    agu_icb_cmd_wdata = 0;
+    agu_icb_cmd_wmask = 0xF;
+    agu_icb_cmd_lock  = false;
+    agu_icb_cmd_excl  = false;
+    agu_icb_cmd_size  = 2;
+    agu_icb_cmd_back2agu = false;
+    agu_icb_cmd_usign = false;
+    agu_icb_cmd_itag  = false;
+
+    // AGU ICB response
+    agu_icb_rsp_ready = true;
+
+    // OITF empty status
+    oitf_empty = oitf_is_empty;
+
+    // Regfile to IFU
+    rf2ifu_x1  = rf_x1_r;
+    rf2ifu_rs1 = rf_rs1_data;
+
+    // Decode to IFU feedback
+    dec2ifu_rden   = dec_rd_en;
+    dec2ifu_rs1en  = dec_rs1_en;
+    dec2ifu_rdidx  = dec_rd_idx;
+    dec2ifu_mulhsu = dec_mulhsu;
+    dec2ifu_div    = dec_div;
+    dec2ifu_rem    = dec_rem;
+    dec2ifu_divu   = dec_divu;
+    dec2ifu_remu   = dec_remu;
+
+    // Status outputs from commit
+    exu_active       = i_valid | alu_done_valid | longp_wbck_valid;
+    excp_active      = excp_active_w;
+    commit_mret      = commit_mret_w;
+    commit_trap      = commit_trap_w;
+    core_wfi         = core_wfi_w;
+    wfi_halt_ifu_req = wfi_halt_ifu_req_w;
+
+    // CSR control outputs
+    tm_stop     = csr_tm_stop;
+    itcm_nohold = csr_itcm_nohold;
+    core_cgstop = csr_core_cgstop;
+    tcm_cgstop  = csr_tcm_cgstop;
+
+    // CSR debug outputs
+    cmt_dpc         = cmt_dpc_w;
+    cmt_dpc_ena     = cmt_dpc_ena_w;
+    cmt_dcause      = cmt_dcause_w;
+    cmt_dcause_ena  = cmt_dcause_ena_w;
+    wr_dcsr_ena     = csr_wr_dcsr_ena;
+    wr_dpc_ena      = csr_wr_dpc_ena;
+    wr_dscratch_ena = csr_wr_dscratch_ena;
+    wr_csr_nxt      = csr_wr_csr_nxt;
+
+    // NICE coprocessor (stub)
+    nice_req_valid          = false;
+    nice_req_inst           = 0;
+    nice_req_rs1            = 0;
+    nice_req_rs2            = 0;
+    nice_rsp_multicyc_ready = false;
+  end comb
+
+end module e203_exu

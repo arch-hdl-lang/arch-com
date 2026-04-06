@@ -1,154 +1,237 @@
-// E203 CSR Register File
-// Implements machine-mode CSRs for RV32IM:
-//   mstatus, mie, mtvec, mepc, mcause, mtval, mip, mscratch
-//   mcycle (low/high), minstret (low/high)
-// CSR read/write via APB-like interface with 12-bit CSR address.
+// E203 HBirdv2 CSR Register File
+// Machine-mode CSRs for RV32IM with debug support.
+// Matches RealBench port interface.
 
-domain SysDomain
-  freq_mhz: 100
-end domain SysDomain
-
-module ExuCsr
+module e203_exu_csr
   param XLEN: const = 32;
 
-  port clk:   in Clock<SysDomain>;
-  port rst_n: in Reset<Async, Low>;
+  port clk:     in Clock<SysDomain>;
+  port rst_n:   in Reset<Async, Low>;
+  port clk_aon: in Clock<SysDomain>;
 
-  // CSR read/write interface
-  port csr_addr:    in UInt<12>;
-  port csr_wen:     in Bool;
-  port csr_wdata:   in UInt<32>;
-  port csr_rdata:   out UInt<32>;
+  // ── CSR access interface ──────────────────────────────────────────
+  port nonflush_cmt_ena: in Bool;
+  port csr_ena:      in Bool;
+  port csr_wr_en:    in Bool;
+  port csr_rd_en:    in Bool;
+  port csr_idx:      in UInt<12>;
+  port csr_access_ilgl: out Bool;
+  port read_csr_dat: out UInt<32>;
+  port wbck_csr_dat: in  UInt<32>;
 
-  // Trap entry/exit
-  port trap_taken:  in Bool;
-  port trap_cause:  in UInt<32>;
-  port trap_pc:     in UInt<32>;   // PC of trapping instruction
-  port trap_val:    in UInt<32>;   // mtval (fault addr / instr)
-  port mret_taken:  in Bool;
+  // ── Control outputs ───────────────────────────────────────────────
+  port nice_xs_off:  out Bool;
+  port tm_stop:      out Bool;
+  port core_cgstop:  out Bool;
+  port tcm_cgstop:   out Bool;
+  port itcm_nohold:  out Bool;
+  port mdv_nob2b:    out Bool;
 
-  // Interrupt pending inputs
-  port ext_irq:     in Bool;       // external interrupt
-  port sw_irq:      in Bool;       // software interrupt
-  port tmr_irq:     in Bool;       // timer interrupt
+  // ── Hart ID ───────────────────────────────────────────────────────
+  port core_mhartid: in Bool;
 
-  // Outputs to pipeline
-  port mtvec_val:   out UInt<32>;  // trap vector base
-  port mepc_val:    out UInt<32>;  // return address for MRET
-  port mstatus_mie: out Bool;      // global interrupt enable
-  port irq_pending: out Bool;      // any enabled interrupt pending
+  // ── Interrupt status outputs ──────────────────────────────────────
+  port ext_irq_r:    in Bool;
+  port sft_irq_r:    in Bool;
+  port tmr_irq_r:    in Bool;
+  port status_mie_r: out Bool;
+  port mtie_r:       out Bool;
+  port msie_r:       out Bool;
+  port meie_r:       out Bool;
 
-  // ── CSR address constants ───────────────────────────────────────
-  // mstatus=0x300, mie=0x304, mtvec=0x305, mscratch=0x340
-  // mepc=0x341, mcause=0x342, mtval=0x343, mip=0x344
-  // mcyclel=0xB00, mcycleh=0xB80, minstretl=0xB02, minstreth=0xB82
+  // ── Debug CSR interface ───────────────────────────────────────────
+  port wr_dcsr_ena:     out Bool;
+  port wr_dpc_ena:      out Bool;
+  port wr_dscratch_ena: out Bool;
+  port dcsr_r:          in UInt<32>;
+  port dpc_r:           in UInt<32>;
+  port dscratch_r:      in UInt<32>;
+  port wr_csr_nxt:      out UInt<32>;
 
-  // ── CSR registers ──────────────────────────────────────────────
-  reg mstatus_r:   UInt<32> init 0 reset rst_n=>0;
-  reg mie_r:       UInt<32> init 0 reset rst_n=>0;
-  reg mtvec_r:     UInt<32> init 0 reset rst_n=>0;
-  reg mscratch_r:  UInt<32> init 0 reset rst_n=>0;
-  reg mepc_r:      UInt<32> init 0 reset rst_n=>0;
-  reg mcause_r:    UInt<32> init 0 reset rst_n=>0;
-  reg mtval_r:     UInt<32> init 0 reset rst_n=>0;
-  reg mcycle_lo_r: UInt<32> init 0 reset rst_n=>0;
-  reg mcycle_hi_r: UInt<32> init 0 reset rst_n=>0;
-  reg minstret_lo_r: UInt<32> init 0 reset rst_n=>0;
-  reg minstret_hi_r: UInt<32> init 0 reset rst_n=>0;
+  // ── Debug mode ────────────────────────────────────────────────────
+  port dbg_mode:     in Bool;
+  port dbg_stopcycle: in Bool;
 
-  // ── mip is read-only (directly reflects external signals) ──────
-  let mip_val: UInt<32> = {{20{false}}, ext_irq, {3{false}}, tmr_irq, {3{false}}, sw_irq, {3{false}}};
-  // bit 11 = MEIP, bit 7 = MTIP, bit 3 = MSIP
+  // ── Privilege mode outputs ────────────────────────────────────────
+  port u_mode: out Bool;
+  port s_mode: out Bool;
+  port h_mode: out Bool;
+  port m_mode: out Bool;
 
-  // ── mstatus fields ─────────────────────────────────────────────
+  // ── Commit inputs ─────────────────────────────────────────────────
+  port cmt_badaddr:     in UInt<32>;
+  port cmt_badaddr_ena: in Bool;
+  port cmt_epc:         in UInt<32>;
+  port cmt_epc_ena:     in Bool;
+  port cmt_cause:       in UInt<32>;
+  port cmt_cause_ena:   in Bool;
+  port cmt_status_ena:  in Bool;
+  port cmt_instret_ena: in Bool;
+  port cmt_mret_ena:    in Bool;
+
+  // ── CSR vector outputs ────────────────────────────────────────────
+  port csr_epc_r:   out UInt<32>;
+  port csr_dpc_r:   out UInt<32>;
+  port csr_mtvec_r: out UInt<32>;
+
+  // ── CSR registers ─────────────────────────────────────────────────
+  reg mstatus_r:     UInt<32> init 0 reset rst_n => 0;
+  reg mie_r_reg:     UInt<32> init 0 reset rst_n => 0;
+  reg mtvec_r_reg:   UInt<32> init 0 reset rst_n => 0;
+  reg mscratch_r:    UInt<32> init 0 reset rst_n => 0;
+  reg mepc_r:        UInt<32> init 0 reset rst_n => 0;
+  reg mcause_r:      UInt<32> init 0 reset rst_n => 0;
+  reg mtval_r:       UInt<32> init 0 reset rst_n => 0;
+  reg mcycle_lo_r:   UInt<32> init 0 reset rst_n => 0;
+  reg mcycle_hi_r:   UInt<32> init 0 reset rst_n => 0;
+  reg minstret_lo_r: UInt<32> init 0 reset rst_n => 0;
+  reg minstret_hi_r: UInt<32> init 0 reset rst_n => 0;
+
+  // mip is read-only
+  let mip_val: UInt<32> = {{20{false}}, ext_irq_r, {3{false}}, tmr_irq_r, {3{false}}, sft_irq_r, {3{false}}};
+
+  // mstatus fields
   let mie_bit:  Bool = mstatus_r[3:3] != 0;
   let mpie_bit: Bool = mstatus_r[7:7] != 0;
 
-  // ── Interrupt pending check ────────────────────────────────────
-  let irq_en: UInt<32> = mie_r & mip_val;
-  let any_irq: Bool = (irq_en != 0) & mie_bit;
-
   seq on clk rising
-    // ── mcycle auto-increment ──────────────────────────────────
-    if (mcycle_lo_r == 0xFFFFFFFF)
+    // mcycle auto-increment
+    if mcycle_lo_r == 0xFFFFFFFF
       mcycle_lo_r <= 0;
       mcycle_hi_r <= (mcycle_hi_r + 1).trunc<32>();
     else
       mcycle_lo_r <= (mcycle_lo_r + 1).trunc<32>();
     end if
 
-    // ── Trap entry: save context ───────────────────────────────
-    if trap_taken
-      mepc_r   <= trap_pc;
-      mcause_r <= trap_cause;
-      mtval_r  <= trap_val;
-      // Set MPIE = MIE, clear MIE
+    // minstret increment on commit
+    if cmt_instret_ena
+      if minstret_lo_r == 0xFFFFFFFF
+        minstret_lo_r <= 0;
+        minstret_hi_r <= (minstret_hi_r + 1).trunc<32>();
+      else
+        minstret_lo_r <= (minstret_lo_r + 1).trunc<32>();
+      end if
+    end if
+
+    // Trap entry
+    if cmt_epc_ena
+      mepc_r <= cmt_epc;
+    end if
+    if cmt_cause_ena
+      mcause_r <= cmt_cause;
+    end if
+    if cmt_badaddr_ena
+      mtval_r <= cmt_badaddr;
+    end if
+    if cmt_status_ena & ~cmt_mret_ena
+      // Save MPIE = MIE, clear MIE
       mstatus_r <= {mstatus_r[31:8], mie_bit, mstatus_r[6:4], false, mstatus_r[2:0]};
-    elsif mret_taken
-      // Restore: MIE = MPIE, MPIE = 1
+    elsif cmt_mret_ena
+      // Restore MIE = MPIE, MPIE = 1
       mstatus_r <= {mstatus_r[31:8], true, mstatus_r[6:4], mpie_bit, mstatus_r[2:0]};
-    elsif csr_wen
-      // ── CSR write ────────────────────────────────────────────
-      if csr_addr == 0x300
-        mstatus_r <= csr_wdata;
-      elsif csr_addr == 0x304
-        mie_r <= csr_wdata;
-      elsif csr_addr == 0x305
-        mtvec_r <= csr_wdata;
-      elsif csr_addr == 0x340
-        mscratch_r <= csr_wdata;
-      elsif csr_addr == 0x341
-        mepc_r <= csr_wdata;
-      elsif csr_addr == 0x342
-        mcause_r <= csr_wdata;
-      elsif csr_addr == 0x343
-        mtval_r <= csr_wdata;
-      elsif csr_addr == 0xB00
-        mcycle_lo_r <= csr_wdata;
-      elsif csr_addr == 0xB80
-        mcycle_hi_r <= csr_wdata;
-      elsif csr_addr == 0xB02
-        minstret_lo_r <= csr_wdata;
-      elsif csr_addr == 0xB82
-        minstret_hi_r <= csr_wdata;
+    elsif csr_ena & csr_wr_en & (csr_idx == 0x300)
+      mstatus_r <= wbck_csr_dat;
+    end if
+
+    // CSR writes (non-mstatus)
+    if csr_ena & csr_wr_en
+      if csr_idx == 0x304
+        mie_r_reg <= wbck_csr_dat;
+      elsif csr_idx == 0x305
+        mtvec_r_reg <= wbck_csr_dat;
+      elsif csr_idx == 0x340
+        mscratch_r <= wbck_csr_dat;
+      elsif csr_idx == 0x341
+        mepc_r <= wbck_csr_dat;
+      elsif csr_idx == 0x342
+        mcause_r <= wbck_csr_dat;
+      elsif csr_idx == 0x343
+        mtval_r <= wbck_csr_dat;
+      elsif csr_idx == 0xB00
+        mcycle_lo_r <= wbck_csr_dat;
+      elsif csr_idx == 0xB80
+        mcycle_hi_r <= wbck_csr_dat;
+      elsif csr_idx == 0xB02
+        minstret_lo_r <= wbck_csr_dat;
+      elsif csr_idx == 0xB82
+        minstret_hi_r <= wbck_csr_dat;
       end if
     end if
   end seq
 
-  // ── CSR read mux ───────────────────────────────────────────────
   comb
-    if csr_addr == 0x300
-      csr_rdata = mstatus_r;
-    elsif csr_addr == 0x304
-      csr_rdata = mie_r;
-    elsif csr_addr == 0x305
-      csr_rdata = mtvec_r;
-    elsif csr_addr == 0x340
-      csr_rdata = mscratch_r;
-    elsif csr_addr == 0x341
-      csr_rdata = mepc_r;
-    elsif csr_addr == 0x342
-      csr_rdata = mcause_r;
-    elsif csr_addr == 0x343
-      csr_rdata = mtval_r;
-    elsif csr_addr == 0x344
-      csr_rdata = mip_val;
-    elsif csr_addr == 0xB00
-      csr_rdata = mcycle_lo_r;
-    elsif csr_addr == 0xB80
-      csr_rdata = mcycle_hi_r;
-    elsif csr_addr == 0xB02
-      csr_rdata = minstret_lo_r;
-    elsif csr_addr == 0xB82
-      csr_rdata = minstret_hi_r;
+    // CSR read mux
+    if csr_idx == 0x300
+      read_csr_dat = mstatus_r;
+    elsif csr_idx == 0x304
+      read_csr_dat = mie_r_reg;
+    elsif csr_idx == 0x305
+      read_csr_dat = mtvec_r_reg;
+    elsif csr_idx == 0x340
+      read_csr_dat = mscratch_r;
+    elsif csr_idx == 0x341
+      read_csr_dat = mepc_r;
+    elsif csr_idx == 0x342
+      read_csr_dat = mcause_r;
+    elsif csr_idx == 0x343
+      read_csr_dat = mtval_r;
+    elsif csr_idx == 0x344
+      read_csr_dat = mip_val;
+    elsif csr_idx == 0xB00
+      read_csr_dat = mcycle_lo_r;
+    elsif csr_idx == 0xB80
+      read_csr_dat = mcycle_hi_r;
+    elsif csr_idx == 0xB02
+      read_csr_dat = minstret_lo_r;
+    elsif csr_idx == 0xB82
+      read_csr_dat = minstret_hi_r;
+    elsif csr_idx == 0xF11
+      read_csr_dat = 0;
+    elsif csr_idx == 0xF14
+      read_csr_dat = core_mhartid.zext<32>();
+    elsif csr_idx == 0x7B0
+      read_csr_dat = dcsr_r;
+    elsif csr_idx == 0x7B1
+      read_csr_dat = dpc_r;
+    elsif csr_idx == 0x7B2
+      read_csr_dat = dscratch_r;
     else
-      csr_rdata = 0;
+      read_csr_dat = 0;
     end if
 
-    mtvec_val   = mtvec_r;
-    mepc_val    = mepc_r;
-    mstatus_mie = mie_bit;
-    irq_pending = any_irq;
+    // CSR output values
+    csr_epc_r   = mepc_r;
+    csr_dpc_r   = dpc_r;
+    csr_mtvec_r = mtvec_r_reg;
+
+    // Interrupt enables from mie register
+    status_mie_r = mie_bit;
+    meie_r       = mie_r_reg[11:11] != 0;
+    mtie_r       = mie_r_reg[7:7] != 0;
+    msie_r       = mie_r_reg[3:3] != 0;
+
+    // Control outputs (simplified)
+    nice_xs_off = false;
+    tm_stop     = dbg_stopcycle;
+    core_cgstop = dbg_stopcycle;
+    tcm_cgstop  = dbg_stopcycle;
+    itcm_nohold = false;
+    mdv_nob2b   = false;
+
+    // Privilege mode (machine mode only in E203)
+    m_mode = true;
+    s_mode = false;
+    h_mode = false;
+    u_mode = false;
+
+    // CSR access illegal check (simplified)
+    csr_access_ilgl = false;
+
+    // Debug CSR write enables
+    wr_dcsr_ena     = csr_ena & csr_wr_en & (csr_idx == 0x7B0);
+    wr_dpc_ena      = csr_ena & csr_wr_en & (csr_idx == 0x7B1);
+    wr_dscratch_ena = csr_ena & csr_wr_en & (csr_idx == 0x7B2);
+    wr_csr_nxt      = wbck_csr_dat;
   end comb
 
-end module ExuCsr
+end module e203_exu_csr

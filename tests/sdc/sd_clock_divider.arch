@@ -1,0 +1,26 @@
+// SD Clock Divider
+// Generates SD_CLK at CLK/(2*(DIVIDER+1)) frequency.
+
+module sd_clock_divider
+
+  port CLK:     in Clock<SysDomain>;
+  port RST:     in Reset<Async, High>;
+  port DIVIDER: in UInt<8>;
+  port SD_CLK:  out Bool;
+
+  reg clock_div: UInt<8> reset RST => 0;
+  reg sd_clk_o:  Bool reset RST => false;
+
+  default seq on CLK rising;
+
+  seq
+    if clock_div == DIVIDER
+      clock_div <= 0;
+      sd_clk_o  <= ~sd_clk_o;
+    else
+      clock_div <= (clock_div + 1).trunc<8>();
+    end if
+  end seq
+
+  let SD_CLK = sd_clk_o;
+end module sd_clock_divider

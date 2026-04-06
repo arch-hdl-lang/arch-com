@@ -1,0 +1,48 @@
+// E203 DTCM RAM Wrapper
+// 16K x 32-bit single-port SRAM with byte-write mask.
+// Thin wrapper with ASIC power management pins (sd/ds/ls).
+// Read address is registered on cs & !we; output is combinational from stored address.
+
+module e203_dtcm_ram
+  param DEPTH: const = 16384;
+
+  port clk:  in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  // ASIC power management (unused in sim, present for macro compatibility)
+  port sd: in Bool;
+  port ds: in Bool;
+  port ls: in Bool;
+
+  // SRAM interface
+  port cs:   in Bool;
+  port we:   in Bool;
+  port addr: in UInt<14>;
+  port wem:  in UInt<4>;
+  port din:  in UInt<32>;
+  port dout: out UInt<32>;
+
+  reg mem: Vec<UInt<32>, 16384> reset none;
+  reg addr_r: UInt<14> reset none;
+
+  default seq on clk rising;
+
+  seq
+    // Read: latch address when cs=1 and we=0
+    if cs & (~we)
+      addr_r <= addr;
+    end if
+
+    // Write: byte-masked when cs=1 and we=1
+    if cs & we
+      for i in 0..3
+        if wem[i:i]
+          mem[addr][(i * 8 + 7):(i * 8)] <= din[(i * 8 + 7):(i * 8)];
+        end if
+      end for
+    end if
+  end seq
+
+  // Output is combinational from registered address (FORCE_X2ZERO)
+  let dout = mem[addr_r];
+end module e203_dtcm_ram

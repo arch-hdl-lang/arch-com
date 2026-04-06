@@ -4,7 +4,7 @@
 // The core's internal BIU handles ITCM/DTCM. External bus accesses
 // (peripherals, SRAM) go through the ICB fabric.
 
-module SocTop
+module e203_soc_top
 
   port clk:   in Clock<SysDomain>;
   port rst_n: in Reset<Async, Low>;
@@ -66,7 +66,7 @@ module SocTop
   // ══════════════════════════════════════════════════════════════
   // CPU Core
   // ══════════════════════════════════════════════════════════════
-  inst core: CoreTop
+  inst core: e203_core_top
     clk            <- clk;
     rst_n          <- rst_n;
     itcm_wr_en     <- itcm_wr_en;
@@ -84,7 +84,7 @@ module SocTop
   // ══════════════════════════════════════════════════════════════
   // ICB Bus Arbiter: M0=external port, M1=unused → Slave bus
   // ══════════════════════════════════════════════════════════════
-  inst arbt: IcbArbt
+  inst arbt: e203_icb_arbt
     clk   <- clk;
     rst_n <- rst_n;
     m0_cmd_valid <- ext_cmd_valid;
@@ -140,7 +140,7 @@ module SocTop
   // ══════════════════════════════════════════════════════════════
   // SRAM Controller
   // ══════════════════════════════════════════════════════════════
-  inst sram: SramCtrl
+  inst sram: e203_sram_ctrl
     clk           <- clk;
     rst_n         <- rst_n;
     icb_cmd_valid <- bus_cmd_valid & sel_sram;
@@ -158,7 +158,7 @@ module SocTop
   // ══════════════════════════════════════════════════════════════
   // Fast I/O
   // ══════════════════════════════════════════════════════════════
-  inst fio: Fio
+  inst fio: e203_fio
     clk           <- clk;
     rst_n         <- rst_n;
     icb_cmd_valid <- bus_cmd_valid & sel_fio;
@@ -182,7 +182,7 @@ module SocTop
   // ══════════════════════════════════════════════════════════════
   // PPI: ICB → APB bridge with 4-slave address decode
   // ══════════════════════════════════════════════════════════════
-  inst ppi: Ppi
+  inst ppi: e203_ppi
     clk           <- clk;
     rst_n         <- rst_n;
     icb_cmd_valid <- bus_cmd_valid & sel_ppi;
@@ -228,7 +228,7 @@ module SocTop
   // ══════════════════════════════════════════════════════════════
   // GPIO Peripheral
   // ══════════════════════════════════════════════════════════════
-  inst gpio_p: Gpio
+  inst gpio_p: e203_gpio
     clk     <- clk;
     rst_n   <- rst_n;
     psel    <- gpio_psel;
@@ -247,7 +247,7 @@ module SocTop
   // ══════════════════════════════════════════════════════════════
   // UART Peripheral
   // ══════════════════════════════════════════════════════════════
-  inst uart_p: Uart
+  inst uart_p: e203_uart
     clk     <- clk;
     rst_n   <- rst_n;
     psel    <- uart_psel;
@@ -265,7 +265,7 @@ module SocTop
   // ══════════════════════════════════════════════════════════════
   // SPI Peripheral
   // ══════════════════════════════════════════════════════════════
-  inst spi_p: Spi
+  inst spi_p: e203_spi
     clk     <- clk;
     rst_n   <- rst_n;
     psel    <- spi_psel;
@@ -285,7 +285,7 @@ module SocTop
   // ══════════════════════════════════════════════════════════════
   // Interrupt Controller
   // ══════════════════════════════════════════════════════════════
-  inst irq: IrqCtrl
+  inst irq: e203_irq_ctrl
     clk          <- clk;
     rst_n        <- rst_n;
     ext_irq_i    <- gpio_irq_w;
@@ -307,7 +307,7 @@ module SocTop
   // ══════════════════════════════════════════════════════════════
   // Debug Module
   // ══════════════════════════════════════════════════════════════
-  inst dbg: DebugModule
+  inst dbg: e203_debug_module
     clk          <- clk;
     rst_n        <- rst_n;
     psel         <- dbg_psel;
@@ -384,4 +384,4 @@ module SocTop
     dbg_prdata  = dbg_prdata_w;
   end comb
 
-end module SocTop
+end module e203_soc_top

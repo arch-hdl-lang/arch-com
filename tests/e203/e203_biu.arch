@@ -1,71 +1,303 @@
 // E203 HBirdv2 Bus Interface Unit (BIU)
-// Routes memory transactions from LSU to ITCM, DTCM, or external bus
-// based on address decoding.
-//   ITCM: 0x80000000 - 0x8000FFFF (64KB)
-//   DTCM: 0x90000000 - 0x9000FFFF (64KB)
-// Pure combinational address decode + mux.
+// Arbitrates LSU and IFU ICB requests, routes to downstream targets
+// (PPI, CLINT, PLIC, FIO, MEM) based on address region indicators.
+// Matches RealBench port interface.
 
-module Biu
-  param ITCM_BASE: const = 0x80000000;
-  param DTCM_BASE: const = 0x90000000;
-  param TCM_SIZE:  const = 0x10000;
+module e203_biu
 
-  // LSU interface (from core)
-  port lsu_addr:    in  UInt<32>;
-  port lsu_wdata:   in  UInt<32>;
-  port lsu_wstrb:   in  UInt<4>;
-  port lsu_wen:     in  Bool;
-  port lsu_ren:     in  Bool;
-  port lsu_rdata:   out UInt<32>;
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
 
-  // ITCM interface
-  port itcm_rd_en:   out Bool;
-  port itcm_rd_addr: out UInt<14>;
-  port itcm_rd_data: in  UInt<32>;
-  port itcm_wr_en:   out Bool;
-  port itcm_wr_addr: out UInt<14>;
-  port itcm_wr_data: out UInt<32>;
+  port biu_active: out Bool;
 
-  // DTCM interface
-  port dtcm_rd_en:   out Bool;
-  port dtcm_rd_addr: out UInt<14>;
-  port dtcm_rd_data: in  UInt<32>;
-  port dtcm_wr_en:   out Bool;
-  port dtcm_wr_addr: out UInt<14>;
-  port dtcm_wr_data: out UInt<32>;
-  port dtcm_wr_be:   out UInt<4>;
+  // ── LSU to BIU ICB interface ──────────────────────────────────────
+  port lsu2biu_icb_cmd_valid: in  Bool;
+  port lsu2biu_icb_cmd_ready: out Bool;
+  port lsu2biu_icb_cmd_addr:  in  UInt<32>;
+  port lsu2biu_icb_cmd_read:  in  Bool;
+  port lsu2biu_icb_cmd_wdata: in  UInt<32>;
+  port lsu2biu_icb_cmd_wmask: in  UInt<4>;
+  port lsu2biu_icb_cmd_burst: in  UInt<2>;
+  port lsu2biu_icb_cmd_beat:  in  UInt<2>;
+  port lsu2biu_icb_cmd_lock:  in  Bool;
+  port lsu2biu_icb_cmd_excl:  in  Bool;
+  port lsu2biu_icb_cmd_size:  in  UInt<2>;
+  port lsu2biu_icb_rsp_valid: out Bool;
+  port lsu2biu_icb_rsp_ready: in  Bool;
+  port lsu2biu_icb_rsp_err:   out Bool;
+  port lsu2biu_icb_rsp_excl_ok: out Bool;
+  port lsu2biu_icb_rsp_rdata: out UInt<32>;
 
-  // Address decode
-  let addr_top: UInt<16> = lsu_addr[31:16];
-  let is_itcm: Bool = (addr_top == ITCM_BASE[31:16]);
-  let is_dtcm: Bool = (addr_top == DTCM_BASE[31:16]);
-  let word_addr: UInt<14> = lsu_addr[15:2];
+  // ── IFU to BIU ICB interface ──────────────────────────────────────
+  port ifu2biu_icb_cmd_valid: in  Bool;
+  port ifu2biu_icb_cmd_ready: out Bool;
+  port ifu2biu_icb_cmd_addr:  in  UInt<32>;
+  port ifu2biu_icb_cmd_read:  in  Bool;
+  port ifu2biu_icb_cmd_wdata: in  UInt<32>;
+  port ifu2biu_icb_cmd_wmask: in  UInt<4>;
+  port ifu2biu_icb_cmd_burst: in  UInt<2>;
+  port ifu2biu_icb_cmd_beat:  in  UInt<2>;
+  port ifu2biu_icb_cmd_lock:  in  Bool;
+  port ifu2biu_icb_cmd_excl:  in  Bool;
+  port ifu2biu_icb_cmd_size:  in  UInt<2>;
+  port ifu2biu_icb_rsp_valid: out Bool;
+  port ifu2biu_icb_rsp_ready: in  Bool;
+  port ifu2biu_icb_rsp_err:   out Bool;
+  port ifu2biu_icb_rsp_excl_ok: out Bool;
+  port ifu2biu_icb_rsp_rdata: out UInt<32>;
+
+  // ── PPI downstream ───────────────────────────────────────────────
+  port ppi_region_indic:   in  UInt<32>;
+  port ppi_icb_enable:     in  Bool;
+  port ppi_icb_cmd_valid:  out Bool;
+  port ppi_icb_cmd_ready:  in  Bool;
+  port ppi_icb_cmd_addr:   out UInt<32>;
+  port ppi_icb_cmd_read:   out Bool;
+  port ppi_icb_cmd_wdata:  out UInt<32>;
+  port ppi_icb_cmd_wmask:  out UInt<4>;
+  port ppi_icb_cmd_burst:  out UInt<2>;
+  port ppi_icb_cmd_beat:   out UInt<2>;
+  port ppi_icb_cmd_lock:   out Bool;
+  port ppi_icb_cmd_excl:   out Bool;
+  port ppi_icb_cmd_size:   out UInt<2>;
+  port ppi_icb_rsp_valid:  in  Bool;
+  port ppi_icb_rsp_ready:  out Bool;
+  port ppi_icb_rsp_err:    in  Bool;
+  port ppi_icb_rsp_excl_ok: in Bool;
+  port ppi_icb_rsp_rdata:  in  UInt<32>;
+
+  // ── CLINT downstream ─────────────────────────────────────────────
+  port clint_region_indic:   in  UInt<32>;
+  port clint_icb_enable:     in  Bool;
+  port clint_icb_cmd_valid:  out Bool;
+  port clint_icb_cmd_ready:  in  Bool;
+  port clint_icb_cmd_addr:   out UInt<32>;
+  port clint_icb_cmd_read:   out Bool;
+  port clint_icb_cmd_wdata:  out UInt<32>;
+  port clint_icb_cmd_wmask:  out UInt<4>;
+  port clint_icb_cmd_burst:  out UInt<2>;
+  port clint_icb_cmd_beat:   out UInt<2>;
+  port clint_icb_cmd_lock:   out Bool;
+  port clint_icb_cmd_excl:   out Bool;
+  port clint_icb_cmd_size:   out UInt<2>;
+  port clint_icb_rsp_valid:  in  Bool;
+  port clint_icb_rsp_ready:  out Bool;
+  port clint_icb_rsp_err:    in  Bool;
+  port clint_icb_rsp_excl_ok: in Bool;
+  port clint_icb_rsp_rdata:  in  UInt<32>;
+
+  // ── PLIC downstream ──────────────────────────────────────────────
+  port plic_region_indic:   in  UInt<32>;
+  port plic_icb_enable:     in  Bool;
+  port plic_icb_cmd_valid:  out Bool;
+  port plic_icb_cmd_ready:  in  Bool;
+  port plic_icb_cmd_addr:   out UInt<32>;
+  port plic_icb_cmd_read:   out Bool;
+  port plic_icb_cmd_wdata:  out UInt<32>;
+  port plic_icb_cmd_wmask:  out UInt<4>;
+  port plic_icb_cmd_burst:  out UInt<2>;
+  port plic_icb_cmd_beat:   out UInt<2>;
+  port plic_icb_cmd_lock:   out Bool;
+  port plic_icb_cmd_excl:   out Bool;
+  port plic_icb_cmd_size:   out UInt<2>;
+  port plic_icb_rsp_valid:  in  Bool;
+  port plic_icb_rsp_ready:  out Bool;
+  port plic_icb_rsp_err:    in  Bool;
+  port plic_icb_rsp_excl_ok: in Bool;
+  port plic_icb_rsp_rdata:  in  UInt<32>;
+
+  // ── FIO downstream ───────────────────────────────────────────────
+  port fio_region_indic:   in  UInt<32>;
+  port fio_icb_enable:     in  Bool;
+  port fio_icb_cmd_valid:  out Bool;
+  port fio_icb_cmd_ready:  in  Bool;
+  port fio_icb_cmd_addr:   out UInt<32>;
+  port fio_icb_cmd_read:   out Bool;
+  port fio_icb_cmd_wdata:  out UInt<32>;
+  port fio_icb_cmd_wmask:  out UInt<4>;
+  port fio_icb_cmd_burst:  out UInt<2>;
+  port fio_icb_cmd_beat:   out UInt<2>;
+  port fio_icb_cmd_lock:   out Bool;
+  port fio_icb_cmd_excl:   out Bool;
+  port fio_icb_cmd_size:   out UInt<2>;
+  port fio_icb_rsp_valid:  in  Bool;
+  port fio_icb_rsp_ready:  out Bool;
+  port fio_icb_rsp_err:    in  Bool;
+  port fio_icb_rsp_excl_ok: in Bool;
+  port fio_icb_rsp_rdata:  in  UInt<32>;
+
+  // ── MEM downstream (default) ─────────────────────────────────────
+  port mem_icb_enable:     in  Bool;
+  port mem_icb_cmd_valid:  out Bool;
+  port mem_icb_cmd_ready:  in  Bool;
+  port mem_icb_cmd_addr:   out UInt<32>;
+  port mem_icb_cmd_read:   out Bool;
+  port mem_icb_cmd_wdata:  out UInt<32>;
+  port mem_icb_cmd_wmask:  out UInt<4>;
+  port mem_icb_cmd_burst:  out UInt<2>;
+  port mem_icb_cmd_beat:   out UInt<2>;
+  port mem_icb_cmd_lock:   out Bool;
+  port mem_icb_cmd_excl:   out Bool;
+  port mem_icb_cmd_size:   out UInt<2>;
+  port mem_icb_rsp_valid:  in  Bool;
+  port mem_icb_rsp_ready:  out Bool;
+  port mem_icb_rsp_err:    in  Bool;
+  port mem_icb_rsp_excl_ok: in Bool;
+  port mem_icb_rsp_rdata:  in  UInt<32>;
+
+  // ── Arbiter: LSU has priority over IFU ────────────────────────────
+  let lsu_win: Bool = lsu2biu_icb_cmd_valid;
+  let arb_valid: Bool = lsu2biu_icb_cmd_valid | ifu2biu_icb_cmd_valid;
+  let arb_addr:  UInt<32> = lsu_win ? lsu2biu_icb_cmd_addr  : ifu2biu_icb_cmd_addr;
+  let arb_read:  Bool     = lsu_win ? lsu2biu_icb_cmd_read  : ifu2biu_icb_cmd_read;
+  let arb_wdata: UInt<32> = lsu_win ? lsu2biu_icb_cmd_wdata : ifu2biu_icb_cmd_wdata;
+  let arb_wmask: UInt<4>  = lsu_win ? lsu2biu_icb_cmd_wmask : ifu2biu_icb_cmd_wmask;
+  let arb_burst: UInt<2>  = lsu_win ? lsu2biu_icb_cmd_burst : ifu2biu_icb_cmd_burst;
+  let arb_beat:  UInt<2>  = lsu_win ? lsu2biu_icb_cmd_beat  : ifu2biu_icb_cmd_beat;
+  let arb_lock:  Bool     = lsu_win ? lsu2biu_icb_cmd_lock  : ifu2biu_icb_cmd_lock;
+  let arb_excl:  Bool     = lsu_win ? lsu2biu_icb_cmd_excl  : ifu2biu_icb_cmd_excl;
+  let arb_size:  UInt<2>  = lsu_win ? lsu2biu_icb_cmd_size  : ifu2biu_icb_cmd_size;
+
+  // ── Address decode ────────────────────────────────────────��───────
+  let is_ppi:   Bool = ppi_icb_enable   & (arb_addr[31:16] == ppi_region_indic[31:16]);
+  let is_clint: Bool = clint_icb_enable & (arb_addr[31:16] == clint_region_indic[31:16]);
+  let is_plic:  Bool = plic_icb_enable  & (arb_addr[31:16] == plic_region_indic[31:16]);
+  let is_fio:   Bool = fio_icb_enable   & (arb_addr[31:16] == fio_region_indic[31:16]);
+  let is_mem:   Bool = mem_icb_enable   & ~is_ppi & ~is_clint & ~is_plic & ~is_fio;
+
+  // Track which downstream port is selected for response routing
+  reg sel_ppi_r:   Bool init 0 reset rst_n => 0;
+  reg sel_clint_r: Bool init 0 reset rst_n => 0;
+  reg sel_plic_r:  Bool init 0 reset rst_n => 0;
+  reg sel_fio_r:   Bool init 0 reset rst_n => 0;
+  reg sel_mem_r:   Bool init 0 reset rst_n => 0;
+  reg sel_lsu_r:   Bool init 0 reset rst_n => 0;
+
+  // Downstream ready mux
+  let arb_cmd_ready: Bool = (is_ppi & ppi_icb_cmd_ready) |
+                             (is_clint & clint_icb_cmd_ready) |
+                             (is_plic & plic_icb_cmd_ready) |
+                             (is_fio & fio_icb_cmd_ready) |
+                             (is_mem & mem_icb_cmd_ready);
+
+  seq on clk rising
+    if arb_valid & arb_cmd_ready
+      sel_ppi_r   <= is_ppi;
+      sel_clint_r <= is_clint;
+      sel_plic_r  <= is_plic;
+      sel_fio_r   <= is_fio;
+      sel_mem_r   <= is_mem;
+      sel_lsu_r   <= lsu_win;
+    end if
+  end seq
+
+  // Response mux
+  let rsp_valid: Bool = (sel_ppi_r & ppi_icb_rsp_valid) |
+                         (sel_clint_r & clint_icb_rsp_valid) |
+                         (sel_plic_r & plic_icb_rsp_valid) |
+                         (sel_fio_r & fio_icb_rsp_valid) |
+                         (sel_mem_r & mem_icb_rsp_valid);
+
+  let rsp_err: Bool = (sel_ppi_r & ppi_icb_rsp_err) |
+                       (sel_clint_r & clint_icb_rsp_err) |
+                       (sel_plic_r & plic_icb_rsp_err) |
+                       (sel_fio_r & fio_icb_rsp_err) |
+                       (sel_mem_r & mem_icb_rsp_err);
+
+  let rsp_excl_ok: Bool = (sel_ppi_r & ppi_icb_rsp_excl_ok) |
+                           (sel_clint_r & clint_icb_rsp_excl_ok) |
+                           (sel_plic_r & plic_icb_rsp_excl_ok) |
+                           (sel_fio_r & fio_icb_rsp_excl_ok) |
+                           (sel_mem_r & mem_icb_rsp_excl_ok);
+
+  let rsp_rdata: UInt<32> = sel_ppi_r ? ppi_icb_rsp_rdata :
+                              sel_clint_r ? clint_icb_rsp_rdata :
+                              sel_plic_r ? plic_icb_rsp_rdata :
+                              sel_fio_r ? fio_icb_rsp_rdata :
+                                          mem_icb_rsp_rdata;
+
+  let rsp_ready: Bool = sel_lsu_r ? lsu2biu_icb_rsp_ready : ifu2biu_icb_rsp_ready;
 
   comb
-    // ITCM: read-only from BIU perspective (writes go through IFU path)
-    // But allow store to ITCM for self-modifying code / boot loading
-    itcm_rd_en   = is_itcm & lsu_ren;
-    itcm_rd_addr = word_addr;
-    itcm_wr_en   = is_itcm & lsu_wen;
-    itcm_wr_addr = word_addr;
-    itcm_wr_data = lsu_wdata;
+    biu_active = arb_valid;
 
-    // DTCM: primary data memory
-    dtcm_rd_en   = is_dtcm & lsu_ren;
-    dtcm_rd_addr = word_addr;
-    dtcm_wr_en   = is_dtcm & lsu_wen;
-    dtcm_wr_addr = word_addr;
-    dtcm_wr_data = lsu_wdata;
-    dtcm_wr_be   = lsu_wstrb;
+    // Arbiter ready back to requestors
+    lsu2biu_icb_cmd_ready = lsu_win & arb_cmd_ready;
+    ifu2biu_icb_cmd_ready = ~lsu_win & arb_cmd_ready;
 
-    // Read data mux
-    if is_itcm
-      lsu_rdata = itcm_rd_data;
-    elsif is_dtcm
-      lsu_rdata = dtcm_rd_data;
-    else
-      lsu_rdata = 0;
-    end if
+    // Command to downstream ports
+    ppi_icb_cmd_valid  = arb_valid & is_ppi;
+    ppi_icb_cmd_addr   = arb_addr;
+    ppi_icb_cmd_read   = arb_read;
+    ppi_icb_cmd_wdata  = arb_wdata;
+    ppi_icb_cmd_wmask  = arb_wmask;
+    ppi_icb_cmd_burst  = arb_burst;
+    ppi_icb_cmd_beat   = arb_beat;
+    ppi_icb_cmd_lock   = arb_lock;
+    ppi_icb_cmd_excl   = arb_excl;
+    ppi_icb_cmd_size   = arb_size;
+
+    clint_icb_cmd_valid = arb_valid & is_clint;
+    clint_icb_cmd_addr  = arb_addr;
+    clint_icb_cmd_read  = arb_read;
+    clint_icb_cmd_wdata = arb_wdata;
+    clint_icb_cmd_wmask = arb_wmask;
+    clint_icb_cmd_burst = arb_burst;
+    clint_icb_cmd_beat  = arb_beat;
+    clint_icb_cmd_lock  = arb_lock;
+    clint_icb_cmd_excl  = arb_excl;
+    clint_icb_cmd_size  = arb_size;
+
+    plic_icb_cmd_valid = arb_valid & is_plic;
+    plic_icb_cmd_addr  = arb_addr;
+    plic_icb_cmd_read  = arb_read;
+    plic_icb_cmd_wdata = arb_wdata;
+    plic_icb_cmd_wmask = arb_wmask;
+    plic_icb_cmd_burst = arb_burst;
+    plic_icb_cmd_beat  = arb_beat;
+    plic_icb_cmd_lock  = arb_lock;
+    plic_icb_cmd_excl  = arb_excl;
+    plic_icb_cmd_size  = arb_size;
+
+    fio_icb_cmd_valid = arb_valid & is_fio;
+    fio_icb_cmd_addr  = arb_addr;
+    fio_icb_cmd_read  = arb_read;
+    fio_icb_cmd_wdata = arb_wdata;
+    fio_icb_cmd_wmask = arb_wmask;
+    fio_icb_cmd_burst = arb_burst;
+    fio_icb_cmd_beat  = arb_beat;
+    fio_icb_cmd_lock  = arb_lock;
+    fio_icb_cmd_excl  = arb_excl;
+    fio_icb_cmd_size  = arb_size;
+
+    mem_icb_cmd_valid = arb_valid & is_mem;
+    mem_icb_cmd_addr  = arb_addr;
+    mem_icb_cmd_read  = arb_read;
+    mem_icb_cmd_wdata = arb_wdata;
+    mem_icb_cmd_wmask = arb_wmask;
+    mem_icb_cmd_burst = arb_burst;
+    mem_icb_cmd_beat  = arb_beat;
+    mem_icb_cmd_lock  = arb_lock;
+    mem_icb_cmd_excl  = arb_excl;
+    mem_icb_cmd_size  = arb_size;
+
+    // Response ready to downstream
+    ppi_icb_rsp_ready   = sel_ppi_r   & rsp_ready;
+    clint_icb_rsp_ready = sel_clint_r & rsp_ready;
+    plic_icb_rsp_ready  = sel_plic_r  & rsp_ready;
+    fio_icb_rsp_ready   = sel_fio_r   & rsp_ready;
+    mem_icb_rsp_ready   = sel_mem_r   & rsp_ready;
+
+    // Response to LSU/IFU
+    lsu2biu_icb_rsp_valid   = sel_lsu_r & rsp_valid;
+    lsu2biu_icb_rsp_err     = rsp_err;
+    lsu2biu_icb_rsp_excl_ok = rsp_excl_ok;
+    lsu2biu_icb_rsp_rdata   = rsp_rdata;
+
+    ifu2biu_icb_rsp_valid   = ~sel_lsu_r & rsp_valid;
+    ifu2biu_icb_rsp_err     = rsp_err;
+    ifu2biu_icb_rsp_excl_ok = rsp_excl_ok;
+    ifu2biu_icb_rsp_rdata   = rsp_rdata;
   end comb
 
-end module Biu
+end module e203_biu

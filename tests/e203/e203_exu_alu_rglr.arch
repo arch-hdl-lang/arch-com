@@ -1,0 +1,83 @@
+// E203 Regular ALU Sub-unit
+// Pure combinational: decodes info bits, selects operands (rs1/pc, rs2/imm),
+// routes to shared ALU datapath, passes result back. ecall/ebreak/wfi set error.
+
+module e203_exu_alu_rglr
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  // Dispatch handshake
+  port alu_i_valid: in Bool;
+  port alu_i_ready: out Bool;
+  port alu_i_rs1:   in UInt<32>;
+  port alu_i_rs2:   in UInt<32>;
+  port alu_i_imm:   in UInt<32>;
+  port alu_i_pc:    in UInt<32>;
+  port alu_i_info:  in UInt<21>;  // E203_DECINFO_ALU_WIDTH
+
+  // Result handshake
+  port alu_o_valid:      out Bool;
+  port alu_o_ready:      in Bool;
+  port alu_o_wbck_wdat:  out UInt<32>;
+  port alu_o_wbck_err:   out Bool;
+
+  // Exception signals
+  port alu_o_cmt_ecall:  out Bool;
+  port alu_o_cmt_ebreak: out Bool;
+  port alu_o_cmt_wfi:    out Bool;
+
+  // Shared ALU datapath request
+  port alu_req_alu_add:  out Bool;
+  port alu_req_alu_sub:  out Bool;
+  port alu_req_alu_xor:  out Bool;
+  port alu_req_alu_sll:  out Bool;
+  port alu_req_alu_srl:  out Bool;
+  port alu_req_alu_sra:  out Bool;
+  port alu_req_alu_or:   out Bool;
+  port alu_req_alu_and:  out Bool;
+  port alu_req_alu_slt:  out Bool;
+  port alu_req_alu_sltu: out Bool;
+  port alu_req_alu_lui:  out Bool;
+  port alu_req_alu_op1:  out UInt<32>;
+  port alu_req_alu_op2:  out UInt<32>;
+  port alu_req_alu_res:  in UInt<32>;
+
+  // Decode info fields
+  let op2imm: Bool = alu_i_info[15:15];
+  let op1pc:  Bool = alu_i_info[16:16];
+  let nop:    Bool = alu_i_info[17:17];
+  let ecall:  Bool = alu_i_info[18:18];
+  let ebreak: Bool = alu_i_info[19:19];
+  let wfi:    Bool = alu_i_info[20:20];
+
+  comb
+    // Operand selection
+    alu_req_alu_op1 = op1pc ? alu_i_pc : alu_i_rs1;
+    alu_req_alu_op2 = op2imm ? alu_i_imm : alu_i_rs2;
+
+    // Operation select (one-hot from info bits)
+    alu_req_alu_add  = alu_i_info[4:4] & (~nop);
+    alu_req_alu_sub  = alu_i_info[5:5];
+    alu_req_alu_xor  = alu_i_info[6:6];
+    alu_req_alu_sll  = alu_i_info[7:7];
+    alu_req_alu_srl  = alu_i_info[8:8];
+    alu_req_alu_sra  = alu_i_info[9:9];
+    alu_req_alu_or   = alu_i_info[10:10];
+    alu_req_alu_and  = alu_i_info[11:11];
+    alu_req_alu_slt  = alu_i_info[12:12];
+    alu_req_alu_sltu = alu_i_info[13:13];
+    alu_req_alu_lui  = alu_i_info[14:14];
+
+    // Pass-through handshake
+    alu_o_valid = alu_i_valid;
+    alu_i_ready = alu_o_ready;
+    alu_o_wbck_wdat = alu_req_alu_res;
+
+    // Exception signals
+    alu_o_cmt_ecall  = ecall;
+    alu_o_cmt_ebreak = ebreak;
+    alu_o_cmt_wfi    = wfi;
+    alu_o_wbck_err   = ecall | ebreak | wfi;
+  end comb
+end module e203_exu_alu_rglr

@@ -1,0 +1,24 @@
+Hint: Your reset doesn't seem to be working.
+Hint: Your reset doesn't seem to be working.
+- /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/tmp3mnz1n20/e203_exu_longpwbck_stimulus_gen.sv:237: Verilog $finish
+Hint: Output 'lsu_wbck_i_ready' has 3319 mismatches. First mismatch occurred at time 5.
+Hint: Output 'longp_wbck_o_valid' has 3125 mismatches. First mismatch occurred at time 10185.
+Hint: Output 'longp_wbck_o_wdat' has 6351 mismatches. First mismatch occurred at time 185.
+Hint: Output 'longp_wbck_o_flags' has no mismatches.
+Hint: Output 'longp_wbck_o_rdidx' has no mismatches.
+Hint: Output 'longp_wbck_o_rdfpu' has no mismatches.
+Hint: Output 'longp_excp_o_valid' has 3913 mismatches. First mismatch occurred at time 10205.
+Hint: Output 'longp_excp_o_insterr' has no mismatches.
+Hint: Output 'longp_excp_o_ld' has 3388 mismatches. First mismatch occurred at time 185.
+Hint: Output 'longp_excp_o_st' has 4223 mismatches. First mismatch occurred at time 185.
+Hint: Output 'longp_excp_o_buserr' has 2173 mismatches. First mismatch occurred at time 40235.
+Hint: Output 'longp_excp_o_badaddr' has 7698 mismatches. First mismatch occurred at time 185.
+Hint: Output 'longp_excp_o_pc' has no mismatches.
+Hint: Output 'oitf_ret_ena' has 5170 mismatches. First mismatch occurred at time 10185.
+Hint: Output 'nice_longp_wbck_i_ready' has 5450 mismatches. First mismatch occurred at time 5.
+Hint: Total mismatched samples is 8627 out of 9020 samples
+
+Simulation finished at 90200 ps
+- S i m u l a t i o n   R e p o r t: Verilator 5.034 2025-02-24
+- Verilator: $finish at 90ns; walltime 0.094 s; speed 4.532 us/s
+- Verilator: cpu 0.020 s on 1 threads; alloced 0 MB

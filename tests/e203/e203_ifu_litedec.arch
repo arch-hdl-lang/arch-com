@@ -4,7 +4,7 @@
 // Also extracts basic info for branch prediction: is it a branch/JAL/JALR,
 // and the register indices for BPU RAW hazard checking.
 
-module IfuLiteDec
+module e203_ifu_litedec
 
   port instr:       in UInt<32>;
 
@@ -85,4 +85,4 @@ module IfuLiteDec
     end if
   end comb
 
-end module IfuLiteDec
+end module e203_ifu_litedec

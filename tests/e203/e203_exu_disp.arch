@@ -1,174 +1,130 @@
-// E203 Execution Dispatch Unit
-// Routes decoded instructions to ALU, MulDiv, or LSU.
-// Valid/ready handshake: backpressure from any unit stalls dispatch.
+// E203 HBirdv2 Execution Dispatch Unit
+// Routes decoded instructions to ALU pipeline, checks OITF hazards,
+// manages WFI halt handshake. Matches RealBench port interface.
 
-module ExuDisp
+module e203_exu_disp
 
-  port disp_valid:    in  Bool;
-  port disp_ready:    out Bool;
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
 
-  // Decoded instruction info
-  port i_rs1:         in UInt<32>;
-  port i_rs2:         in UInt<32>;
-  port i_pc:          in UInt<32>;
-  port i_imm:         in UInt<32>;
-  port i_rd_idx:      in UInt<5>;
-  port i_rd_en:       in Bool;
-  port i_rs2_en:      in Bool;
+  // ── WFI halt interface ────────────────────────────────────────────
+  port wfi_halt_exu_req: in  Bool;
+  port wfi_halt_exu_ack: out Bool;
 
-  // Decode flags — which unit
-  port i_alu:         in Bool;
-  port i_bjp:         in Bool;
-  port i_agu:         in Bool;
-  port i_load:        in Bool;
-  port i_store:       in Bool;
-  port i_mul:         in Bool;
-  port i_mulh:        in Bool;
-  port i_mulhsu:      in Bool;
-  port i_mulhu:       in Bool;
-  port i_div:         in Bool;
-  port i_divu:        in Bool;
-  port i_rem:         in Bool;
-  port i_remu:        in Bool;
+  // ── OITF status ───────────────────────────────────────────────────
+  port oitf_empty: in Bool;
+  port amo_wait:   in Bool;
 
-  // ALU op flags (pass-through)
-  port i_alu_add:     in Bool;
-  port i_alu_sub:     in Bool;
-  port i_alu_xor:     in Bool;
-  port i_alu_sll:     in Bool;
-  port i_alu_srl:     in Bool;
-  port i_alu_sra:     in Bool;
-  port i_alu_or:      in Bool;
-  port i_alu_and:     in Bool;
-  port i_alu_slt:     in Bool;
-  port i_alu_sltu:    in Bool;
-  port i_alu_lui:     in Bool;
+  // ── Dispatch input (from decode) ──────────────────────────────────
+  port disp_i_valid:   in  Bool;
+  port disp_i_ready:   out Bool;
+  port disp_i_rs1x0:   in  Bool;
+  port disp_i_rs2x0:   in  Bool;
+  port disp_i_rs1en:   in  Bool;
+  port disp_i_rs2en:   in  Bool;
+  port disp_i_rs1idx:  in  UInt<5>;
+  port disp_i_rs2idx:  in  UInt<5>;
+  port disp_i_rs1:     in  UInt<32>;
+  port disp_i_rs2:     in  UInt<32>;
+  port disp_i_rdwen:   in  Bool;
+  port disp_i_rdidx:   in  UInt<5>;
+  port disp_i_info:    in  UInt<32>;
+  port disp_i_imm:     in  UInt<32>;
+  port disp_i_pc:      in  UInt<32>;
+  port disp_i_misalgn: in  Bool;
+  port disp_i_buserr:  in  Bool;
+  port disp_i_ilegl:   in  Bool;
 
-  // BJP flags (pass-through)
-  port i_beq:         in Bool;
-  port i_bne:         in Bool;
-  port i_blt:         in Bool;
-  port i_bge:         in Bool;
-  port i_bltu:        in Bool;
-  port i_bgeu:        in Bool;
-  port i_jump:        in Bool;
+  // ── ALU dispatch output ───────────────────────────────────────────
+  port disp_o_alu_valid:    out Bool;
+  port disp_o_alu_ready:    in  Bool;
+  port disp_o_alu_longpipe: in  Bool;
+  port disp_o_alu_rs1:      out UInt<32>;
+  port disp_o_alu_rs2:      out UInt<32>;
+  port disp_o_alu_rdwen:    out Bool;
+  port disp_o_alu_rdidx:    out UInt<5>;
+  port disp_o_alu_info:     out UInt<32>;
+  port disp_o_alu_imm:      out UInt<32>;
+  port disp_o_alu_pc:       out UInt<32>;
+  port disp_o_alu_itag:     out UInt<1>;
+  port disp_o_alu_misalgn:  out Bool;
+  port disp_o_alu_buserr:   out Bool;
+  port disp_o_alu_ilegl:    out Bool;
 
-  // ALU interface
-  port alu_valid:     out Bool;
-  port alu_ready:     in  Bool;
-  port alu_rs1:       out UInt<32>;
-  port alu_rs2:       out UInt<32>;
-  port alu_pc:        out UInt<32>;
-  port alu_imm:       out UInt<32>;
-  port alu_rdidx:     out UInt<5>;
-  port alu_op_add:    out Bool;
-  port alu_op_sub:    out Bool;
-  port alu_op_xor:    out Bool;
-  port alu_op_sll:    out Bool;
-  port alu_op_srl:    out Bool;
-  port alu_op_sra:    out Bool;
-  port alu_op_or:     out Bool;
-  port alu_op_and:    out Bool;
-  port alu_op_slt:    out Bool;
-  port alu_op_sltu:   out Bool;
-  port alu_op_lui:    out Bool;
-  port alu_is_bjp:    out Bool;
-  port alu_beq:       out Bool;
-  port alu_bne:       out Bool;
-  port alu_blt:       out Bool;
-  port alu_bge:       out Bool;
-  port alu_bltu:      out Bool;
-  port alu_bgeu:      out Bool;
-  port alu_is_jump:   out Bool;
-  port alu_is_agu:    out Bool;
+  // ── OITF hazard check inputs ──────────────────────────────────────
+  port oitfrd_match_disprs1: in Bool;
+  port oitfrd_match_disprs2: in Bool;
+  port oitfrd_match_disprs3: in Bool;
+  port oitfrd_match_disprd:  in Bool;
 
-  // MulDiv interface
-  port mdv_valid:     out Bool;
-  port mdv_ready:     in  Bool;
-  port mdv_rs1:       out UInt<32>;
-  port mdv_rs2:       out UInt<32>;
-  port mdv_rdidx:     out UInt<5>;
-  port mdv_rd_en:     out Bool;
-  port mdv_mul:       out Bool;
-  port mdv_mulh:      out Bool;
-  port mdv_mulhsu:    out Bool;
-  port mdv_mulhu:     out Bool;
-  port mdv_div:       out Bool;
-  port mdv_divu:      out Bool;
-  port mdv_rem:       out Bool;
-  port mdv_remu:      out Bool;
+  // ── OITF dispatch interface ───────────────────────────────────────
+  port disp_oitf_ptr:    in  UInt<1>;
+  port disp_oitf_ena:    out Bool;
+  port disp_oitf_ready:  in  Bool;
+  port disp_oitf_rs1fpu: out Bool;
+  port disp_oitf_rs2fpu: out Bool;
+  port disp_oitf_rs3fpu: out Bool;
+  port disp_oitf_rdfpu:  out Bool;
+  port disp_oitf_rs1en:  out Bool;
+  port disp_oitf_rs2en:  out Bool;
+  port disp_oitf_rs3en:  out Bool;
+  port disp_oitf_rdwen:  out Bool;
+  port disp_oitf_rs1idx: out UInt<5>;
+  port disp_oitf_rs2idx: out UInt<5>;
+  port disp_oitf_rs3idx: out UInt<5>;
+  port disp_oitf_rdidx:  out UInt<5>;
+  port disp_oitf_pc:     out UInt<32>;
 
-  // LSU interface
-  port lsu_valid:     out Bool;
-  port lsu_ready:     in  Bool;
-  port lsu_rs1:       out UInt<32>;
-  port lsu_rs2:       out UInt<32>;
-  port lsu_imm:       out UInt<32>;
-  port lsu_load:      out Bool;
-  port lsu_store:     out Bool;
+  // ── Hazard detection ──────────────────────────────────────────────
+  let raw_dep: Bool = (disp_i_rs1en & oitfrd_match_disprs1) |
+                       (disp_i_rs2en & oitfrd_match_disprs2);
+  let waw_dep: Bool = disp_i_rdwen & oitfrd_match_disprd;
+  let dep_stall: Bool = raw_dep | waw_dep;
+
+  // For long-pipe instructions, OITF must be ready
+  let oitf_stall: Bool = disp_o_alu_longpipe & ~disp_oitf_ready;
+
+  // Dispatch can proceed when ALU is ready, no hazard, no WFI, no AMO
+  let disp_condition: Bool = ~dep_stall & ~oitf_stall & ~wfi_halt_exu_req & ~amo_wait;
 
   comb
-    // Valid signals — only one unit gets valid
-    alu_valid = disp_valid & (i_alu | i_bjp | i_agu);
-    mdv_valid = disp_valid & (i_mul | i_mulh | i_mulhsu | i_mulhu | i_div | i_divu | i_rem | i_remu);
-    lsu_valid = disp_valid & (i_load | i_store);
+    // Dispatch handshake
+    disp_o_alu_valid = disp_i_valid & disp_condition;
+    disp_i_ready     = disp_o_alu_ready & disp_condition;
 
-    // Ready: accept when the targeted unit is ready
-    disp_ready = ((i_alu | i_bjp | i_agu) & alu_ready)
-               | ((i_mul | i_mulh | i_mulhsu | i_mulhu | i_div | i_divu | i_rem | i_remu) & mdv_ready)
-               | ((i_load | i_store) & lsu_ready);
+    // Pass-through to ALU (x0 hardwired to 0)
+    disp_o_alu_rs1     = disp_i_rs1x0 ? 0 : disp_i_rs1;
+    disp_o_alu_rs2     = disp_i_rs2x0 ? 0 : disp_i_rs2;
+    disp_o_alu_rdwen   = disp_i_rdwen;
+    disp_o_alu_rdidx   = disp_i_rdidx;
+    disp_o_alu_info    = disp_i_info;
+    disp_o_alu_imm     = disp_i_imm;
+    disp_o_alu_pc      = disp_i_pc;
+    disp_o_alu_itag    = disp_oitf_ptr;
+    disp_o_alu_misalgn = disp_i_misalgn;
+    disp_o_alu_buserr  = disp_i_buserr;
+    disp_o_alu_ilegl   = disp_i_ilegl;
 
-    // ALU operands — mux immediate into rs2 for I-type ALU/LUI (rs2_en=0)
-    alu_rs1    = i_rs1;
-    if i_rs2_en
-      alu_rs2 = i_rs2;
-    else
-      alu_rs2 = i_imm;
-    end if
-    alu_pc     = i_pc;
-    alu_imm    = i_imm;
-    alu_rdidx  = i_rd_idx;
-    alu_op_add = i_alu_add;
-    alu_op_sub = i_alu_sub;
-    alu_op_xor = i_alu_xor;
-    alu_op_sll = i_alu_sll;
-    alu_op_srl = i_alu_srl;
-    alu_op_sra = i_alu_sra;
-    alu_op_or  = i_alu_or;
-    alu_op_and = i_alu_and;
-    alu_op_slt = i_alu_slt;
-    alu_op_sltu = i_alu_sltu;
-    alu_op_lui = i_alu_lui;
-    alu_is_bjp = i_bjp;
-    alu_beq    = i_beq;
-    alu_bne    = i_bne;
-    alu_blt    = i_blt;
-    alu_bge    = i_bge;
-    alu_bltu   = i_bltu;
-    alu_bgeu   = i_bgeu;
-    alu_is_jump = i_jump;
-    alu_is_agu = i_agu;
+    // OITF dispatch: allocate entry for long-pipe instructions
+    disp_oitf_ena    = disp_i_valid & disp_i_ready & disp_o_alu_longpipe;
+    disp_oitf_rs1en  = disp_i_rs1en;
+    disp_oitf_rs2en  = disp_i_rs2en;
+    disp_oitf_rs3en  = false;
+    disp_oitf_rdwen  = disp_i_rdwen;
+    disp_oitf_rs1idx = disp_i_rs1idx;
+    disp_oitf_rs2idx = disp_i_rs2idx;
+    disp_oitf_rs3idx = 0;
+    disp_oitf_rdidx  = disp_i_rdidx;
+    disp_oitf_pc     = disp_i_pc;
 
-    // MulDiv operands
-    mdv_rs1    = i_rs1;
-    mdv_rs2    = i_rs2;
-    mdv_rdidx  = i_rd_idx;
-    mdv_rd_en  = i_rd_en;
-    mdv_mul    = i_mul;
-    mdv_mulh   = i_mulh;
-    mdv_mulhsu = i_mulhsu;
-    mdv_mulhu  = i_mulhu;
-    mdv_div    = i_div;
-    mdv_divu   = i_divu;
-    mdv_rem    = i_rem;
-    mdv_remu   = i_remu;
+    // No FPU in E203
+    disp_oitf_rs1fpu = false;
+    disp_oitf_rs2fpu = false;
+    disp_oitf_rs3fpu = false;
+    disp_oitf_rdfpu  = false;
 
-    // LSU operands
-    lsu_rs1   = i_rs1;
-    lsu_rs2   = i_rs2;
-    lsu_imm   = i_imm;
-    lsu_load  = i_load;
-    lsu_store = i_store;
+    // WFI halt ack: EXU ready to halt when OITF is empty and no AMO
+    wfi_halt_exu_ack = oitf_empty & ~amo_wait;
   end comb
 
-end module ExuDisp
+end module e203_exu_disp

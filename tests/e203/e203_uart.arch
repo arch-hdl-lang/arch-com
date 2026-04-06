@@ -10,7 +10,7 @@ domain SysDomain
   freq_mhz: 100
 end domain SysDomain
 
-module Uart
+module e203_uart
 
   port clk:   in Clock<SysDomain>;
   port rst_n: in Reset<Async, Low>;
@@ -148,4 +148,4 @@ module Uart
     uart_irq = rx_valid_r;
   end comb
 
-end module Uart
+end module e203_uart

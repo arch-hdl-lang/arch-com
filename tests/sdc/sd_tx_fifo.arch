@@ -1,0 +1,44 @@
+// SD TX FIFO (Dual-clock, 32-bit wide, depth 8)
+// Write side on wclk, read side on rclk.
+
+module sd_tx_fifo
+
+  port wclk:  in Clock<SysDomain>;
+  port rclk:  in Clock<SysDomain>;
+  port rst:   in Reset<Async, High>;
+
+  port d:     in UInt<32>;
+  port wr:    in Bool;
+  port q:     out UInt<32>;
+  port rd:    in Bool;
+  port full:  out Bool;
+  port empty: out Bool;
+  port mem_empt: out UInt<6>;
+
+  reg mem: Vec<UInt<32>, 8> reset none;
+  reg adr_i: UInt<4> reset rst => 0;
+  reg adr_o: UInt<4> reset rst => 0;
+
+  let full_w:  Bool = (adr_i[2:0] == adr_o[2:0]) & (adr_i[3:3] != adr_o[3:3]);
+  let empty_w: Bool = (adr_i == adr_o);
+
+  seq on wclk rising
+    if wr & (~full_w)
+      mem[adr_i[2:0]] <= d;
+      adr_i <= (adr_i + 1).trunc<4>();
+    end if
+  end seq
+
+  seq on rclk rising
+    if rd & (~empty_w)
+      adr_o <= (adr_o + 1).trunc<4>();
+    end if
+  end seq
+
+  comb
+    q = mem[adr_o[2:0]];
+    full  = full_w;
+    empty = empty_w;
+    mem_empt = (adr_i - adr_o).zext<6>();
+  end comb
+end module sd_tx_fifo

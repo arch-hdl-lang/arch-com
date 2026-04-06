@@ -8,30 +8,37 @@ module gcd_top
   port OUT:  out UInt<WIDTH>;
   port done: out Bool;
 
-  wire cp_state: UInt<2>;
-  wire eq: Bool;
-  wire gt: Bool;
+  reg a_r: UInt<WIDTH> reset rst=>0;
+  reg b_r: UInt<WIDTH> reset rst=>0;
+  reg out_r: UInt<WIDTH> reset rst=>0;
+  reg busy_r: Bool reset rst=>false;
+  reg done_r: Bool reset rst=>false;
 
-  inst u_ctrl: gcd_controlpath
-    param WIDTH = WIDTH;
-    clk <- clk;
-    rst <- rst;
-    go <- go;
-    equal <- eq;
-    greater_than <- gt;
-    controlpath_state -> cp_state;
-    done -> done;
-  end inst u_ctrl
+  let OUT = out_r;
+  let done = done_r;
 
-  inst u_dp: gcd_datapath
-    param WIDTH = WIDTH;
-    clk <- clk;
-    rst <- rst;
-    A <- A;
-    B <- B;
-    controlpath_state <- cp_state;
-    OUT -> OUT;
-    equal -> eq;
-    greater_than -> gt;
-  end inst u_dp
+  default seq on clk rising;
+
+  seq
+    done_r <= false;
+
+    if ~busy_r
+      if go
+        a_r <= A;
+        b_r <= B;
+        out_r <= 0;
+        busy_r <= true;
+      end if
+    else
+      if a_r == b_r
+        out_r <= a_r;
+        busy_r <= false;
+        done_r <= true;
+      elsif a_r > b_r
+        a_r <= (a_r - b_r).trunc<WIDTH>();
+      else
+        b_r <= (b_r - a_r).trunc<WIDTH>();
+      end if
+    end if
+  end seq
 end module gcd_top

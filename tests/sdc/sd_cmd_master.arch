@@ -1,0 +1,284 @@
+// SD Command Master
+// 3-state FSM (IDLE/SETUP/EXECUTE) with card detect debounce, command
+// timeout watchdog, CRC/index error checking. Port interface matches
+// the OpenCores SDC reference exactly.
+
+module sd_cmd_master
+
+  port CLK_PAD_IO:     in Clock<SysDomain>;
+  port RST_PAD_I:      in Reset<Async, High>;
+
+  port New_CMD:        in Bool;
+  port data_write:     in Bool;
+  port data_read:      in Bool;
+
+  port ARG_REG:        in UInt<32>;
+  port CMD_SET_REG:    in UInt<14>;
+  port TIMEOUT_REG:    in UInt<16>;
+  port STATUS_REG:     out UInt<16>;
+  port RESP_1_REG:     out UInt<32>;
+
+  port ERR_INT_REG:    out UInt<5>;
+  port NORMAL_INT_REG: out UInt<16>;
+  port ERR_INT_RST:    in Bool;
+  port NORMAL_INT_RST: in Bool;
+
+  port settings:       out UInt<16>;
+  port go_idle_o:      out Bool;
+  port cmd_out:        out UInt<40>;
+  port req_out:        out Bool;
+  port ack_out:        out Bool;
+  port req_in:         in Bool;
+  port ack_in:         in Bool;
+  port cmd_in:         in UInt<40>;
+  port serial_status:  in UInt<8>;
+  port card_detect:    in Bool;
+
+  // --- Internal registers ---
+
+  reg default: reset RST_PAD_I => 0;
+
+  // Input synchronizers (2-stage)
+  reg req_q: Bool;
+  reg req_in_int: Bool;
+  reg ack_q: Bool;
+  reg ack_in_int: Bool;
+
+  // Card detect debounce
+  reg debounce_r: UInt<4>;
+  reg card_present_r: Bool;
+
+  // FSM state (one-hot: IDLE=001, SETUP=010, EXECUTE=100)
+  reg state_r: UInt<3> reset RST_PAD_I => 1;
+
+  // Registered outputs & internals
+  reg CRC_check_enable_r: Bool;
+  reg index_check_enable_r: Bool;
+  reg response_size_r: UInt<7>;
+  reg status_r: UInt<16>;
+  reg Watchdog_Cnt_r: UInt<16>;
+
+  reg STATUS_REG_r: UInt<16>;
+  reg RESP_1_REG_r: UInt<32>;
+  reg ERR_INT_REG_r: UInt<5>;
+  reg NORMAL_INT_REG_r: UInt<16>;
+  reg settings_r: UInt<16>;
+  reg go_idle_o_r: Bool;
+  reg cmd_out_r: UInt<40>;
+  reg req_out_r: Bool;
+  reg ack_out_r: Bool;
+
+  // Combinational signals computed each cycle (blocking equivalents)
+  wire complete_w: Bool;
+  wire next_state_w: UInt<3>;
+  wire Watchdog_next: UInt<16>;
+
+  default seq on CLK_PAD_IO rising;
+
+  // --- Input synchronizers ---
+  seq
+    req_q <= req_in;
+    req_in_int <= req_q;
+  end seq
+
+  seq
+    ack_q <= ack_in;
+    ack_in_int <= ack_q;
+  end seq
+
+  // --- Card detect debounce ---
+  seq
+    if ~card_detect
+      if debounce_r != 4'b1111
+        debounce_r <= (debounce_r + 1).trunc<4>();
+      end if
+    else
+      debounce_r <= 0;
+    end if
+
+    if debounce_r == 4'b1111
+      card_present_r <= true;
+    else
+      card_present_r <= false;
+    end if
+  end seq
+
+  // --- Combinational: next_state and complete ---
+  // complete is set combinationally so that the FSM combo sees it same-cycle
+  comb
+    Watchdog_next = (Watchdog_Cnt_r + 1).trunc<16>();
+    complete_w = false;
+
+    if state_r == 3'b100  // EXECUTE
+      if Watchdog_next > TIMEOUT_REG
+        if ack_in
+          complete_w = true;
+        end if
+      end if
+      if req_in_int
+        if serial_status[6]  // dat_ava from freshly latched status
+          complete_w = true;
+        end if
+      end if
+    end if
+  end comb
+
+  comb
+    next_state_w = 0;
+    if state_r == 3'b001  // IDLE
+      if New_CMD
+        next_state_w = 3'b010;  // SETUP
+      else
+        next_state_w = 3'b001;  // IDLE
+      end if
+    elsif state_r == 3'b010  // SETUP
+      if ack_in_int
+        next_state_w = 3'b100;  // EXECUTE
+      else
+        next_state_w = 3'b010;  // SETUP
+      end if
+    elsif state_r == 3'b100  // EXECUTE
+      if complete_w
+        next_state_w = 3'b001;  // IDLE
+      else
+        next_state_w = 3'b100;  // EXECUTE
+      end if
+    else
+      next_state_w = 3'b001;  // default IDLE
+    end if
+  end comb
+
+  // --- FSM state register ---
+  seq
+    state_r <= next_state_w;
+  end seq
+
+  // --- Main output logic ---
+  // The reference uses blocking assignments in a clocked block. We replicate
+  // the same behavior using combinational "next value" wires fed into regs.
+  // However, many signals in the reference depend on ordering (blocking);
+  // we carefully break them into comb + seq to preserve cycle-accuracy.
+
+  // Aliases for CMD_SET_REG fields
+  let CMDI: UInt<6> = CMD_SET_REG[13:8];
+  let WORD_SELECT: UInt<2> = CMD_SET_REG[7:6];
+  let CICE: Bool = CMD_SET_REG[4];
+  let CRCE: Bool = CMD_SET_REG[3];
+  let RTS: UInt<2> = CMD_SET_REG[1:0];
+
+  seq
+    // --- NORMAL_INT_REG card present bits (always updated) ---
+    NORMAL_INT_REG_r[1] <= card_present_r;
+    NORMAL_INT_REG_r[2] <= ~card_present_r;
+
+    if state_r == 3'b001  // IDLE
+      go_idle_o_r <= false;
+      req_out_r <= false;
+      ack_out_r <= false;
+      STATUS_REG_r[0] <= false;  // CICMD = 0
+      if req_in_int
+        status_r <= serial_status.zext<16>();
+        ack_out_r <= true;
+      end if
+
+    elsif state_r == 3'b010  // SETUP
+      NORMAL_INT_REG_r <= 0;
+      ERR_INT_REG_r <= 0;
+
+      index_check_enable_r <= CICE;
+      CRC_check_enable_r <= CRCE;
+
+      if (RTS == 2'b10) | (RTS == 2'b11)
+        response_size_r <= 7'b0101000;
+      elsif RTS == 2'b01
+        response_size_r <= 7'b1111111;
+      else
+        response_size_r <= 0;
+      end if
+
+      cmd_out_r[39:38] <= 2'b01;
+      cmd_out_r[37:32] <= CMDI;
+      cmd_out_r[31:0] <= ARG_REG;
+      settings_r[14:13] <= WORD_SELECT;
+      settings_r[12] <= data_read;
+      settings_r[11] <= data_write;
+      settings_r[10:8] <= 3'b111;
+      settings_r[7] <= CRCE;
+      // response_size computed above — assign combinationally
+      if (RTS == 2'b10) | (RTS == 2'b11)
+        settings_r[6:0] <= 7'b0101000;
+      elsif RTS == 2'b01
+        settings_r[6:0] <= 7'b1111111;
+      else
+        settings_r[6:0] <= 0;
+      end if
+      Watchdog_Cnt_r <= 0;
+
+      STATUS_REG_r[0] <= true;  // CICMD = 1
+
+    elsif state_r == 3'b100  // EXECUTE
+      Watchdog_Cnt_r <= Watchdog_next;
+
+      if Watchdog_next > TIMEOUT_REG
+        ERR_INT_REG_r[0] <= true;  // CTE
+        NORMAL_INT_REG_r[15] <= true;  // EI
+        if ack_in
+          // complete handled combinationally
+        end if
+        go_idle_o_r <= true;
+      end if
+
+      // Default
+      req_out_r <= false;
+      ack_out_r <= false;
+
+      // Start sending when serial module is ready
+      if ack_in_int
+        req_out_r <= true;
+      // Incoming New Status
+      elsif req_in_int
+        status_r <= serial_status.zext<16>();
+        ack_out_r <= true;
+        if serial_status[6]  // dat_ava
+          NORMAL_INT_REG_r[15] <= false;  // EI = 0
+
+          if CRC_check_enable_r & ~serial_status[5]  // ~crc_valid
+            ERR_INT_REG_r[1] <= true;  // CCRCE
+            NORMAL_INT_REG_r[15] <= true;  // EI = 1
+          end if
+          if index_check_enable_r & (cmd_out_r[37:32] != cmd_in[37:32])
+            ERR_INT_REG_r[3] <= true;  // CIE
+            NORMAL_INT_REG_r[15] <= true;  // EI = 1
+          end if
+
+          NORMAL_INT_REG_r[0] <= true;  // CC
+
+          if response_size_r != 0
+            RESP_1_REG_r <= cmd_in[31:0];
+          end if
+        end if  // dat_ava
+      end if  // req_in_int vs ack_in_int
+    end if  // state
+
+    // Interrupt reset (always, overrides above)
+    if ERR_INT_RST
+      ERR_INT_REG_r <= 0;
+    end if
+    if NORMAL_INT_RST
+      NORMAL_INT_REG_r <= 0;
+    end if
+  end seq
+
+  // --- Output assignments ---
+  comb
+    STATUS_REG     = STATUS_REG_r;
+    RESP_1_REG     = RESP_1_REG_r;
+    ERR_INT_REG    = ERR_INT_REG_r;
+    NORMAL_INT_REG = NORMAL_INT_REG_r;
+    settings       = settings_r;
+    go_idle_o      = go_idle_o_r;
+    cmd_out        = cmd_out_r;
+    req_out        = req_out_r;
+    ack_out        = ack_out_r;
+  end comb
+end module sd_cmd_master

@@ -3,7 +3,7 @@
 // Supports RV32M: MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU.
 // Valid/ready handshake: accepts when Idle, produces result in Done.
 
-fsm ExuMuldiv
+fsm e203_exu_muldiv_fsm
   param XLEN: const = 32;
 
   port clk:   in Clock<SysDomain>;
@@ -168,4 +168,4 @@ fsm ExuMuldiv
     -> Idle when o_ready;
   end state Done
 
-end fsm ExuMuldiv
+end fsm e203_exu_muldiv_fsm

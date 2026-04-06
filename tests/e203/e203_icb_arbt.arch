@@ -4,7 +4,7 @@
 //   cmd: valid/ready + addr + wdata + wmask + read
 //   rsp: valid/ready + rdata + err
 
-module IcbArbt
+module e203_icb_arbt
 
   port clk:   in Clock<SysDomain>;
   port rst_n: in Reset<Async, Low>;
@@ -96,4 +96,4 @@ module IcbArbt
     s_rsp_ready = rsp_owner ? m1_rsp_ready : m0_rsp_ready;
   end comb
 
-end module IcbArbt
+end module e203_icb_arbt

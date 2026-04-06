@@ -6,27 +6,73 @@ module one_hot_gen
   port rst_async_n:       in  Reset<Async, Low>;
   port i_config:          in  UInt<2>;
   port i_start:           in  Bool;
-  port o_ready:           in  Bool;
-  port o_address_one_hot: out UInt<NS_A+NS_B>;
+  port reg o_ready:       out Bool reset rst_async_n=>true;
+  port reg o_address_one_hot: out UInt<NS_A+NS_B> reset rst_async_n=>0;
 
   default seq on clk rising;
 
-  reg addr_r: UInt<NS_A+NS_B> reset rst_async_n=>0;
-  reg idx:    UInt<4>          reset rst_async_n=>0;
-
-  let o_address_one_hot = addr_r;
+  // 0=IDLE, 1=REGION_A, 2=REGION_B
+  reg state_ff: UInt<2> reset rst_async_n=>0;
+  reg position: UInt<$clog2(NS_A + NS_B + 1)> reset rst_async_n=>1;
+  reg active_config: UInt<2> reset rst_async_n=>0;
+  wire pos32: UInt<32>;
+  let pos32 = position.zext<32>();
 
   seq
-    if i_start & o_ready
-      addr_r <= 1.zext<NS_A+NS_B>() << idx;
-      if idx == (NS_A + NS_B - 1).trunc<4>()
-        idx <= 0;
+    if state_ff == 0
+      if i_start
+        if (i_config & 1) == 0
+          state_ff <= 1;
+          active_config <= i_config;
+          o_address_one_hot <= 1.zext<NS_A+NS_B>() << (NS_A + NS_B - 1);
+          position <= 2.zext<$clog2(NS_A + NS_B + 1)>();
+          o_ready <= false;
+        else
+          state_ff <= 2;
+          active_config <= i_config;
+          o_address_one_hot <= 1.zext<NS_A+NS_B>() << (NS_B - 1);
+          position <= 2.zext<$clog2(NS_A + NS_B + 1)>();
+          o_ready <= false;
+        end if
       else
-        idx <= (idx + 1).trunc<4>();
+        o_address_one_hot <= 0;
+        position <= 1.zext<$clog2(NS_A + NS_B + 1)>();
+        o_ready <= true;
       end if
-    elsif ~i_start
-      idx    <= 0;
-      addr_r <= 0;
+
+    elsif state_ff == 1
+      if pos32 < (NS_A + 1)
+        o_address_one_hot <= 1.zext<NS_A+NS_B>() << (NS_A + NS_B - pos32);
+        position <= (position + 1).trunc<$clog2(NS_A + NS_B + 1)>();
+        o_ready <= false;
+      elsif active_config == 2
+        state_ff <= 2;
+        o_address_one_hot <= 1.zext<NS_A+NS_B>() << (NS_B - 1);
+        position <= 2.zext<$clog2(NS_A + NS_B + 1)>();
+        o_ready <= false;
+      else
+        state_ff <= 0;
+        position <= 1.zext<$clog2(NS_A + NS_B + 1)>();
+        o_address_one_hot <= 0;
+        o_ready <= true;
+      end if
+
+    else
+      if pos32 < (NS_B + 1)
+        o_address_one_hot <= 1.zext<NS_A+NS_B>() << (NS_B - pos32);
+        position <= (position + 1).trunc<$clog2(NS_A + NS_B + 1)>();
+        o_ready <= false;
+      elsif active_config == 3
+        state_ff <= 1;
+        o_address_one_hot <= 1.zext<NS_A+NS_B>() << (NS_A + NS_B - 1);
+        position <= 2.zext<$clog2(NS_A + NS_B + 1)>();
+        o_ready <= false;
+      else
+        state_ff <= 0;
+        position <= 1.zext<$clog2(NS_A + NS_B + 1)>();
+        o_address_one_hot <= 0;
+        o_ready <= true;
+      end if
     end if
   end seq
 end module one_hot_gen

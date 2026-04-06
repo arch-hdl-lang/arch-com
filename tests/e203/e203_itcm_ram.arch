@@ -1,0 +1,48 @@
+// E203 ITCM RAM Wrapper
+// 8K x 64-bit single-port SRAM with byte-write mask.
+// Thin wrapper with ASIC power management pins (sd/ds/ls).
+// Read address is registered on cs & !we; output is combinational from stored address.
+
+module e203_itcm_ram
+  param DEPTH: const = 8192;
+
+  port clk:  in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  // ASIC power management (unused in sim, present for macro compatibility)
+  port sd: in Bool;
+  port ds: in Bool;
+  port ls: in Bool;
+
+  // SRAM interface
+  port cs:   in Bool;
+  port we:   in Bool;
+  port addr: in UInt<13>;
+  port wem:  in UInt<8>;
+  port din:  in UInt<64>;
+  port dout: out UInt<64>;
+
+  reg mem: Vec<UInt<64>, 8192> reset none;
+  reg addr_r: UInt<13> reset none;
+
+  default seq on clk rising;
+
+  seq
+    // Read: latch address when cs=1 and we=0
+    if cs & (~we)
+      addr_r <= addr;
+    end if
+
+    // Write: byte-masked when cs=1 and we=1
+    if cs & we
+      for i in 0..7
+        if wem[i:i]
+          mem[addr][(i * 8 + 7):(i * 8)] <= din[(i * 8 + 7):(i * 8)];
+        end if
+      end for
+    end if
+  end seq
+
+  // Output is combinational from registered address
+  let dout = mem[addr_r];
+end module e203_itcm_ram

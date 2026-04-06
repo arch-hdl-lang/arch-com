@@ -114,7 +114,7 @@ module car_parking_system #(
   // FSM: 0=Idle, 1=Entry, 2=Exit, 3=Full
   always_ff @(posedge clk or posedge reset) begin
     if (reset) begin
-      available_spaces <= 12;
+      available_spaces <= TOTAL_SPACES;
       count_car <= 0;
       led_status <= 1'b1;
       seven_seg_display_available_tens <= 0;

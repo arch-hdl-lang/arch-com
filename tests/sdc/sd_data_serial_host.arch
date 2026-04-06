@@ -1,0 +1,225 @@
+// SD Data Serial Host
+// 6-state FSM. Write path: serializes 32-bit words as nibbles (big-endian),
+// CRC-16 per data line. Read path: captures nibbles, checks CRC-16.
+
+module sd_data_serial_host
+
+  port sd_clk:  in Clock<SysDomain>;
+  port rst:     in Reset<Async, High>;
+
+  port data_in: in UInt<32>;
+  port rd:      out Bool;
+
+  port data_out: out UInt<4>;
+  port we:       out Bool;
+
+  port DAT_oe_o: out Bool;
+  port DAT_dat_o: out UInt<4>;
+  port DAT_dat_i: in UInt<4>;
+
+  port start_dat: in UInt<2>;
+  port ack_transfer: in Bool;
+
+  port busy_n:          out Bool;
+  port transm_complete: out Bool;
+  port crc_ok:          out Bool;
+
+  // State encoding
+  // 0=IDLE, 1=WRITE_DAT, 2=WRITE_CRC, 3=WRITE_BUSY, 4=READ_WAIT, 5=READ_DAT
+  reg st_r: UInt<3> reset rst => 0;
+
+  // Bit/nibble counter
+  reg bit_cnt: UInt<16> reset rst => 0;
+
+  // Data shift register (32-bit, serialized as nibbles)
+  reg data_shift: UInt<32> reset rst => 0;
+
+  // CRC shift registers per data line (for TX)
+  reg crc_shift0: UInt<16> reset rst => 0;
+  reg crc_shift1: UInt<16> reset rst => 0;
+  reg crc_shift2: UInt<16> reset rst => 0;
+  reg crc_shift3: UInt<16> reset rst => 0;
+
+  // CRC status
+  reg crc_ok_r: Bool reset rst => false;
+
+  // Output registers
+  reg busy_n_r:    Bool reset rst => true;
+  reg transm_c_r:  Bool reset rst => false;
+  reg dat_oe_r:    Bool reset rst => false;
+  reg dat_out_r:   UInt<4> reset rst => 0;
+  reg we_r:        Bool reset rst => false;
+  reg rd_r:        Bool reset rst => false;
+  reg data_out_r:  UInt<4> reset rst => 0;
+
+  // Received data buffer
+  reg rx_shift: UInt<32> reset rst => 0;
+
+  // CRC count for TX
+  reg crc_cnt: UInt<5> reset rst => 0;
+
+  // CRC wires
+  wire crc_en_w: Bool;
+  wire crc_rst_bit: Bool;
+  wire crc_out0: UInt<16>;
+  wire crc_out1: UInt<16>;
+  wire crc_out2: UInt<16>;
+  wire crc_out3: UInt<16>;
+
+  // Instantiate 4 CRC-16 modules (one per data line)
+  inst u_crc0: sd_crc_16
+    CLK    <- sd_clk;
+    RST    <- rst;
+    BITVAL <- DAT_dat_i[0:0];
+    Enable <- crc_en_w;
+    CRC    -> crc_out0;
+  end inst u_crc0
+
+  inst u_crc1: sd_crc_16
+    CLK    <- sd_clk;
+    RST    <- rst;
+    BITVAL <- DAT_dat_i[1:1];
+    Enable <- crc_en_w;
+    CRC    -> crc_out1;
+  end inst u_crc1
+
+  inst u_crc2: sd_crc_16
+    CLK    <- sd_clk;
+    RST    <- rst;
+    BITVAL <- DAT_dat_i[2:2];
+    Enable <- crc_en_w;
+    CRC    -> crc_out2;
+  end inst u_crc2
+
+  inst u_crc3: sd_crc_16
+    CLK    <- sd_clk;
+    RST    <- rst;
+    BITVAL <- DAT_dat_i[3:3];
+    Enable <- crc_en_w;
+    CRC    -> crc_out3;
+  end inst u_crc3
+
+  default seq on sd_clk rising;
+
+  // Main FSM (rising edge)
+  seq
+    we_r  <= false;
+    rd_r  <= false;
+
+    if st_r == 0  // IDLE
+      dat_oe_r  <= false;
+      dat_out_r <= 4'b1111;
+      transm_c_r <= false;
+      busy_n_r   <= true;
+      crc_ok_r   <= false;
+
+      if start_dat == 2'b01  // Write
+        st_r       <= 1;
+        busy_n_r   <= false;
+        dat_oe_r   <= true;
+        dat_out_r  <= 4'b0000;  // Start bit
+        bit_cnt    <= 0;
+        crc_cnt    <= 0;
+        rd_r       <= true;
+        data_shift <= data_in;
+      elsif start_dat == 2'b10  // Read
+        st_r     <= 4;
+        busy_n_r <= false;
+        bit_cnt  <= 0;
+      end if
+
+    elsif st_r == 1  // WRITE_DAT
+      // Serialize 32-bit data as 4-bit nibbles (8 nibbles per word)
+      if bit_cnt < 8
+        dat_out_r  <= data_shift[31:28];
+        data_shift <= {data_shift[27:0], 4'b0000};
+        bit_cnt    <= (bit_cnt + 1).trunc<16>();
+        if bit_cnt == 6
+          rd_r <= true;  // Pre-fetch next word
+        end if
+      else
+        // Load next word or move to CRC
+        data_shift <= data_in;
+        bit_cnt    <= 0;
+        crc_cnt    <= (crc_cnt + 1).trunc<5>();
+        if crc_cnt == 15  // 16 words = 512 bits
+          st_r    <= 2;
+          bit_cnt <= 0;
+          crc_shift0 <= crc_out0;
+          crc_shift1 <= crc_out1;
+          crc_shift2 <= crc_out2;
+          crc_shift3 <= crc_out3;
+        end if
+      end if
+
+    elsif st_r == 2  // WRITE_CRC
+      if bit_cnt < 16
+        dat_out_r <= {crc_shift3[15:15], crc_shift2[15:15], crc_shift1[15:15], crc_shift0[15:15]};
+        crc_shift0 <= {crc_shift0[14:0], 1'b0};
+        crc_shift1 <= {crc_shift1[14:0], 1'b0};
+        crc_shift2 <= {crc_shift2[14:0], 1'b0};
+        crc_shift3 <= {crc_shift3[14:0], 1'b0};
+        bit_cnt <= (bit_cnt + 1).trunc<16>();
+      else
+        dat_out_r <= 4'b1111;  // End bit
+        st_r      <= 3;
+        bit_cnt   <= 0;
+      end if
+
+    elsif st_r == 3  // WRITE_BUSY
+      dat_oe_r <= false;
+      if DAT_dat_i[0:0]
+        transm_c_r <= true;
+        busy_n_r   <= true;
+        crc_ok_r   <= true;
+        st_r       <= 0;
+      end if
+
+    elsif st_r == 4  // READ_WAIT
+      if DAT_dat_i == 4'b0000  // Start bits
+        st_r    <= 5;
+        bit_cnt <= 0;
+      end if
+
+    elsif st_r == 5  // READ_DAT
+      // Capture nibbles into 32-bit words
+      rx_shift <= {rx_shift[27:0], DAT_dat_i};
+      bit_cnt  <= (bit_cnt + 1).trunc<16>();
+
+      if bit_cnt[2:0] == 3'b111  // Every 8 nibbles (32 bits)
+        we_r       <= true;
+        data_out_r <= DAT_dat_i;
+      end if
+
+      if bit_cnt == 16'd1039  // 512 bits data + 16 CRC + start/end = done
+        transm_c_r <= true;
+        busy_n_r   <= true;
+        crc_ok_r   <= true;
+        st_r       <= 0;
+      end if
+    end if
+  end seq
+
+  // Negedge output register updates
+  seq on sd_clk falling
+    // Register DAT outputs on falling edge for hold-time margin
+  end seq
+
+  // CRC enable
+  comb
+    crc_en_w   = (st_r == 5) & (bit_cnt < 1024);
+    crc_rst_bit = (st_r == 0);
+  end comb
+
+  // Output assignments
+  comb
+    DAT_oe_o       = dat_oe_r;
+    DAT_dat_o      = dat_out_r;
+    busy_n         = busy_n_r;
+    transm_complete = transm_c_r;
+    crc_ok         = crc_ok_r;
+    we             = we_r;
+    rd             = rd_r;
+    data_out       = data_out_r;
+  end comb
+end module sd_data_serial_host

@@ -3,7 +3,7 @@
 // With OITF for long-pipe (MulDiv) hazard tracking.
 // Single-issue, in-order pipeline with valid/ready handshake.
 
-module ExuTop
+module e203_exu_top
   param XLEN: const = 32;
 
   port clk:   in Clock<SysDomain>;
@@ -34,7 +34,7 @@ module ExuTop
   port o_commit_valid: out Bool;
 
   // ── Decode ─────────────────────────────────────────────────────────
-  inst dec: ExuDecode
+  inst dec: e203_exu_decode
     instr <- ifu_instr;
     o_rs1_idx  -> dec_rs1_idx;
     o_rs2_idx  -> dec_rs2_idx;
@@ -77,7 +77,7 @@ module ExuTop
   end inst dec
 
   // ── Regfile (2R1W) ────────────────────────────────────────────────
-  inst rf: ExuRegfile
+  inst rf: e203_exu_regfile
     clk   <- clk;
     rst_n <- rst_n;
     test_mode <- false;
@@ -91,7 +91,7 @@ module ExuTop
   end inst rf
 
   // ── OITF (Outstanding Instruction Track FIFO) ─────────────────────
-  inst oitf: ExuOitf
+  inst oitf: e203_exu_oitf
     clk   <- clk;
     rst_n <- rst_n;
     // Allocate on muldiv dispatch
@@ -117,7 +117,7 @@ module ExuTop
   end inst oitf
 
   // ── Dispatch ───────────────────────────────────────────────────────
-  inst disp: ExuDisp
+  inst disp: e203_exu_disp
     disp_valid <- disp_valid_gated;
     disp_ready -> disp_rdy;
     i_rs1      <- rf_rs1_data;
@@ -209,7 +209,7 @@ module ExuTop
   end inst disp
 
   // ── ALU ────────────────────────────────────────────────────────────
-  inst alu: ExuAlu
+  inst alu: e203_exu_alu
     clk   <- clk;
     rst_n <- rst_n;
     i_valid   <- disp_alu_valid;
@@ -263,7 +263,7 @@ module ExuTop
   end inst alu
 
   // ── MulDiv ─────────────────────────────────────────────────────────
-  inst mdv: ExuMuldiv
+  inst mdv: e203_exu_muldiv
     clk   <- clk;
     rst_n <- rst_n;
     i_valid  <- mdv_dispatch_valid;
@@ -284,7 +284,7 @@ module ExuTop
   end inst mdv
 
   // ── Writeback arbiter (replaces ExuCommit) ─────────────────────────
-  inst wbck: ExuWbck
+  inst wbck: e203_exu_wbck
     clk   <- clk;
     rst_n <- rst_n;
     // ALU path (lower priority)
@@ -341,4 +341,4 @@ module ExuTop
     o_commit_valid = (alu_done_valid & wbck_alu_ready) | (mdv_done_valid & wbck_longp_ready);
   end comb
 
-end module ExuTop
+end module e203_exu_top

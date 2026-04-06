@@ -1,50 +1,87 @@
 // E203 Long-Pipe Writeback Collector
-// Collects results from long-latency units (MulDiv, LSU load)
-// and arbitrates them into a single writeback port.
-// Priority: LSU > MulDiv (loads are more latency-critical).
+// Collects results from LSU and NICE coprocessor, arbitrates into
+// a single writeback port and exception port.
+// Matches RealBench port interface.
 
-module ExuLongpWbck
+module e203_exu_longpwbck
 
-  // LSU load result
-  port lsu_wbck_valid:  in  Bool;
-  port lsu_wbck_ready:  out Bool;
-  port lsu_wbck_wdat:   in  UInt<32>;
-  port lsu_wbck_rd_idx: in  UInt<5>;
-  port lsu_wbck_rd_en:  in  Bool;
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
 
-  // MulDiv result
-  port mdv_wbck_valid:  in  Bool;
-  port mdv_wbck_ready:  out Bool;
-  port mdv_wbck_wdat:   in  UInt<32>;
-  port mdv_wbck_rd_idx: in  UInt<5>;
-  port mdv_wbck_rd_en:  in  Bool;
+  // ── LSU writeback input ───────────────────────────────────────────
+  port lsu_wbck_i_valid: in  Bool;
+  port lsu_wbck_i_ready: out Bool;
+  port lsu_wbck_i_wdat:  in  UInt<32>;
+  port lsu_wbck_i_itag:  in  UInt<1>;
+  port lsu_wbck_i_err:   in  Bool;
 
-  // Merged output to ExuWbck long-pipe port
-  port o_valid:    out Bool;
-  port o_ready:    in  Bool;
-  port o_wdat:     out UInt<32>;
-  port o_rd_idx:   out UInt<5>;
-  port o_rd_en:    out Bool;
+  // ── LSU commit info ───────────────────────────────────────────────
+  port lsu_cmt_i_buserr:  in Bool;
+  port lsu_cmt_i_badaddr: in UInt<32>;
+  port lsu_cmt_i_ld:      in Bool;
+  port lsu_cmt_i_st:      in Bool;
 
-  // LSU wins when both valid (priority arbiter)
-  let lsu_win: Bool = lsu_wbck_valid;
+  // ── Merged writeback output ───────────────────────────────────────
+  port longp_wbck_o_valid: out Bool;
+  port longp_wbck_o_ready: in  Bool;
+  port longp_wbck_o_wdat:  out UInt<32>;
+  port longp_wbck_o_flags: out UInt<5>;
+  port longp_wbck_o_rdidx: out UInt<5>;
+  port longp_wbck_o_rdfpu: out Bool;
+
+  // ── Exception output ──────────────────────────────────────────────
+  port longp_excp_o_valid:   out Bool;
+  port longp_excp_o_ready:   in  Bool;
+  port longp_excp_o_insterr: out Bool;
+  port longp_excp_o_ld:      out Bool;
+  port longp_excp_o_st:      out Bool;
+  port longp_excp_o_buserr:  out Bool;
+  port longp_excp_o_badaddr: out UInt<32>;
+  port longp_excp_o_pc:      out UInt<32>;
+
+  // ── OITF interface ────────────────────────────────────────────────
+  port oitf_empty:      in Bool;
+  port oitf_ret_ptr:    in UInt<1>;
+  port oitf_ret_rdidx:  in UInt<5>;
+  port oitf_ret_pc:     in UInt<32>;
+  port oitf_ret_rdwen:  in Bool;
+  port oitf_ret_rdfpu:  in Bool;
+  port oitf_ret_ena:    out Bool;
+
+  // ── NICE writeback input ──────────────────────────────────────────
+  port nice_longp_wbck_i_valid: in  Bool;
+  port nice_longp_wbck_i_ready: out Bool;
+  port nice_longp_wbck_i_wdat:  in  UInt<32>;
+  port nice_longp_wbck_i_itag:  in  UInt<1>;
+  port nice_longp_wbck_i_err:   in  Bool;
+
+  // LSU has priority over NICE
+  let lsu_win: Bool = lsu_wbck_i_valid;
+  let sel_valid: Bool = lsu_wbck_i_valid | nice_longp_wbck_i_valid;
+  let sel_wdat: UInt<32> = lsu_win ? lsu_wbck_i_wdat : nice_longp_wbck_i_wdat;
+  let sel_err: Bool = lsu_win ? lsu_wbck_i_err : nice_longp_wbck_i_err;
 
   comb
-    o_valid = lsu_wbck_valid | mdv_wbck_valid;
+    // Writeback output
+    longp_wbck_o_valid = sel_valid & ~sel_err;
+    longp_wbck_o_wdat  = sel_wdat;
+    longp_wbck_o_rdidx = oitf_ret_rdidx;
+    longp_wbck_o_rdfpu = oitf_ret_rdfpu;
+    longp_wbck_o_flags = 0;
 
-    if lsu_win
-      o_wdat   = lsu_wbck_wdat;
-      o_rd_idx = lsu_wbck_rd_idx;
-      o_rd_en  = lsu_wbck_rd_en;
-    else
-      o_wdat   = mdv_wbck_wdat;
-      o_rd_idx = mdv_wbck_rd_idx;
-      o_rd_en  = mdv_wbck_rd_en;
-    end if
+    // Exception output
+    longp_excp_o_valid   = sel_valid & sel_err;
+    longp_excp_o_insterr = false;
+    longp_excp_o_ld      = lsu_cmt_i_ld;
+    longp_excp_o_st      = lsu_cmt_i_st;
+    longp_excp_o_buserr  = lsu_cmt_i_buserr;
+    longp_excp_o_badaddr = lsu_cmt_i_badaddr;
+    longp_excp_o_pc      = oitf_ret_pc;
 
-    // Handshake: grant to winner
-    lsu_wbck_ready = lsu_win & o_ready;
-    mdv_wbck_ready = ~lsu_win & o_ready;
+    // Handshake: grant to winner, retire OITF entry
+    lsu_wbck_i_ready            = lsu_win & (longp_wbck_o_ready | sel_err);
+    nice_longp_wbck_i_ready     = ~lsu_win & (longp_wbck_o_ready | sel_err);
+    oitf_ret_ena                = sel_valid & (longp_wbck_o_ready | sel_err);
   end comb
 
-end module ExuLongpWbck
+end module e203_exu_longpwbck

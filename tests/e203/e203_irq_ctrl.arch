@@ -3,7 +3,7 @@
 // Interfaces with CSR (mie/mip) and generates trap request to pipeline.
 // Supports RISC-V machine-mode interrupts: MEI (11), MTI (7), MSI (3).
 
-module IrqCtrl
+module e203_irq_ctrl
 
   port clk:   in Clock<SysDomain>;
   port rst_n: in Reset<Async, Low>;
@@ -60,4 +60,4 @@ module IrqCtrl
     mip_msip = sw_irq_i;
   end comb
 
-end module IrqCtrl
+end module e203_irq_ctrl

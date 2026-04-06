@@ -7,7 +7,7 @@ domain SysDomain
   freq_mhz: 100
 end domain SysDomain
 
-module Fio
+module e203_fio
   param NUM_REGS: const = 16;
 
   port clk:   in Clock<SysDomain>;
@@ -96,4 +96,4 @@ module Fio
     fio_out_3 = fio_r3;
   end comb
 
-end module Fio
+end module e203_fio

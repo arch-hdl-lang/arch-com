@@ -1,97 +1,350 @@
-// E203 HBirdv2 Load-Store Unit Controller (11th E203 benchmark)
-// Handles load/store memory requests with byte/halfword/word access.
-// Load path: reads memory, aligns and sign-extends based on funct3.
-// Store path: generates byte-enable mask and aligned write data.
-// Exercises: {a,b} concat, {N{expr}} repeat, elsif, let chains.
-//
-// funct3 encoding (RV32I):
-//   000 = LB/SB  (byte)
-//   001 = LH/SH  (halfword)
-//   010 = LW/SW  (word)
-//   100 = LBU    (byte unsigned)
-//   101 = LHU    (halfword unsigned)
+// E203 HBirdv2 Load-Store Unit Controller
+// Routes AGU and NICE ICB commands to DTCM, ITCM, or BIU based on address region.
+// Handles commit events (mret, trap) and generates write-back/commit signals.
 
-domain SysDomain
-  freq_mhz: 100
-end domain SysDomain
+module e203_lsu_ctrl
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
 
-module LsuCtrl
-  param XLEN: const = 32;
+  // Commit signals
+  port commit_mret: in Bool;
+  port commit_trap: in Bool;
 
-  // Request from EXU
-  port addr:    in UInt<32>;    // byte address
-  port wdata:   in UInt<32>;    // store data (unaligned)
-  port funct3:  in UInt<3>;     // access type
-  port is_load: in Bool;
-  port is_store: in Bool;
+  // Active status
+  port lsu_ctrl_active: out Bool;
 
-  // Memory interface (aligned, word-addressed)
-  port mem_addr:  out UInt<32>;
-  port mem_wdata: out UInt<32>;
-  port mem_wstrb: out UInt<4>;   // byte enables
-  port mem_wen:   out Bool;
+  // Region indicators
+  port itcm_region_indic: in UInt<32>;
+  port dtcm_region_indic: in UInt<32>;
 
-  // Load result (from memory read data)
-  port mem_rdata: in  UInt<32>;  // aligned word from memory
-  port load_result: out UInt<32>;
+  // LSU output (write-back)
+  port lsu_o_valid:       out Bool;
+  port lsu_o_ready:       in  Bool;
+  port lsu_o_wbck_wdat:   out UInt<32>;
+  port lsu_o_wbck_itag:   out Bool;
+  port lsu_o_wbck_err:    out Bool;
+  port lsu_o_cmt_buserr:  out Bool;
+  port lsu_o_cmt_badaddr: out UInt<32>;
+  port lsu_o_cmt_ld:      out Bool;
+  port lsu_o_cmt_st:      out Bool;
 
-  // ── Address alignment ──────────────────────────────────────
-  let byte_off: UInt<2> = addr[1:0];
-  let word_addr: UInt<32> = {addr[31:2], {2{false}}};
+  // AGU ICB command input
+  port agu_icb_cmd_valid:    in  Bool;
+  port agu_icb_cmd_ready:    out Bool;
+  port agu_icb_cmd_addr:     in  UInt<32>;
+  port agu_icb_cmd_read:     in  Bool;
+  port agu_icb_cmd_wdata:    in  UInt<32>;
+  port agu_icb_cmd_wmask:    in  UInt<4>;
+  port agu_icb_cmd_lock:     in  Bool;
+  port agu_icb_cmd_excl:     in  Bool;
+  port agu_icb_cmd_size:     in  UInt<2>;
+  port agu_icb_cmd_back2agu: in  Bool;
+  port agu_icb_cmd_usign:    in  Bool;
+  port agu_icb_cmd_itag:     in  Bool;
 
-  // ── funct3 decode ──────────────────────────────────────────
-  let is_byte:  Bool = (funct3[1:0] == 0);
-  let is_half:  Bool = (funct3[1:0] == 1);
-  let is_word:  Bool = (funct3[1:0] == 2);
-  let is_unsigned: Bool = funct3[2:2] != 0;
+  // AGU ICB response output
+  port agu_icb_rsp_valid:    out Bool;
+  port agu_icb_rsp_ready:    in  Bool;
+  port agu_icb_rsp_err:      out Bool;
+  port agu_icb_rsp_excl_ok:  out Bool;
+  port agu_icb_rsp_rdata:    out UInt<32>;
 
-  // ── Store: byte-enable and data alignment ──────────────────
-  let wstrb_byte: UInt<4> = (byte_off == 0) ? 0x1 :
-                             (byte_off == 1) ? 0x2 :
-                             (byte_off == 2) ? 0x4 : 0x8;
+  // NICE ICB command input
+  port nice_mem_holdup:      in  Bool;
+  port nice_icb_cmd_valid:   in  Bool;
+  port nice_icb_cmd_ready:   out Bool;
+  port nice_icb_cmd_addr:    in  UInt<32>;
+  port nice_icb_cmd_read:    in  Bool;
+  port nice_icb_cmd_wdata:   in  UInt<32>;
+  port nice_icb_cmd_wmask:   in  UInt<4>;
+  port nice_icb_cmd_lock:    in  Bool;
+  port nice_icb_cmd_excl:    in  Bool;
+  port nice_icb_cmd_size:    in  UInt<2>;
 
-  let wstrb_half: UInt<4> = (byte_off[1:1] == 0) ? 0x3 : 0xC;
+  // NICE ICB response output
+  port nice_icb_rsp_valid:   out Bool;
+  port nice_icb_rsp_ready:   in  Bool;
+  port nice_icb_rsp_err:     out Bool;
+  port nice_icb_rsp_excl_ok: out Bool;
+  port nice_icb_rsp_rdata:   out UInt<32>;
 
-  let wstrb_word: UInt<4> = 0xF;
+  // DTCM ICB master
+  port dtcm_icb_cmd_valid: out Bool;
+  port dtcm_icb_cmd_ready: in  Bool;
+  port dtcm_icb_cmd_addr:  out UInt<16>;
+  port dtcm_icb_cmd_read:  out Bool;
+  port dtcm_icb_cmd_wdata: out UInt<32>;
+  port dtcm_icb_cmd_wmask: out UInt<4>;
+  port dtcm_icb_cmd_lock:  out Bool;
+  port dtcm_icb_cmd_excl:  out Bool;
+  port dtcm_icb_cmd_size:  out UInt<2>;
+  port dtcm_icb_rsp_valid: in  Bool;
+  port dtcm_icb_rsp_ready: out Bool;
+  port dtcm_icb_rsp_err:   in  Bool;
+  port dtcm_icb_rsp_excl_ok: in Bool;
+  port dtcm_icb_rsp_rdata: in  UInt<32>;
 
-  let store_strb: UInt<4> = is_byte ? wstrb_byte :
-                             is_half ? wstrb_half : wstrb_word;
+  // ITCM ICB master
+  port itcm_icb_cmd_valid: out Bool;
+  port itcm_icb_cmd_ready: in  Bool;
+  port itcm_icb_cmd_addr:  out UInt<16>;
+  port itcm_icb_cmd_read:  out Bool;
+  port itcm_icb_cmd_wdata: out UInt<32>;
+  port itcm_icb_cmd_wmask: out UInt<4>;
+  port itcm_icb_cmd_lock:  out Bool;
+  port itcm_icb_cmd_excl:  out Bool;
+  port itcm_icb_cmd_size:  out UInt<2>;
+  port itcm_icb_rsp_valid: in  Bool;
+  port itcm_icb_rsp_ready: out Bool;
+  port itcm_icb_rsp_err:   in  Bool;
+  port itcm_icb_rsp_excl_ok: in Bool;
+  port itcm_icb_rsp_rdata: in  UInt<32>;
 
-  // Shift store data to correct byte lane
-  let wdata_byte: UInt<8> = wdata[7:0];
-  let wdata_half: UInt<16> = wdata[15:0];
+  // BIU ICB master
+  port biu_icb_cmd_valid: out Bool;
+  port biu_icb_cmd_ready: in  Bool;
+  port biu_icb_cmd_addr:  out UInt<32>;
+  port biu_icb_cmd_read:  out Bool;
+  port biu_icb_cmd_wdata: out UInt<32>;
+  port biu_icb_cmd_wmask: out UInt<4>;
+  port biu_icb_cmd_lock:  out Bool;
+  port biu_icb_cmd_excl:  out Bool;
+  port biu_icb_cmd_size:  out UInt<2>;
+  port biu_icb_rsp_valid: in  Bool;
+  port biu_icb_rsp_ready: out Bool;
+  port biu_icb_rsp_err:   in  Bool;
+  port biu_icb_rsp_excl_ok: in Bool;
+  port biu_icb_rsp_rdata: in  UInt<32>;
 
-  let store_data: UInt<32> = is_byte ? (wdata_byte.zext<32>() << (byte_off.zext<32>() << 3).trunc<32>()).trunc<32>() :
-                              is_half ? (wdata_half.zext<32>() << (byte_off[1:1].zext<32>() << 4).trunc<32>()).trunc<32>() :
-                                        wdata;
+  // ── Arbiter between AGU and NICE ─────────────────────────────────
+  // AGU has priority over NICE; NICE only accepted when AGU not requesting
+  // or when nice_mem_holdup forces it
+  wire arb_cmd_valid:    Bool;
+  wire arb_cmd_addr:     UInt<32>;
+  wire arb_cmd_read:     Bool;
+  wire arb_cmd_wdata:    UInt<32>;
+  wire arb_cmd_wmask:    UInt<4>;
+  wire arb_cmd_lock:     Bool;
+  wire arb_cmd_excl:     Bool;
+  wire arb_cmd_size:     UInt<2>;
+  wire arb_cmd_back2agu: Bool;
+  wire arb_cmd_usign:    Bool;
+  wire arb_cmd_itag:     Bool;
+  wire arb_cmd_ready:    Bool;
+  wire arb_is_nice:      Bool;
 
-  // ── Load: extract and sign-extend ──────────────────────────
-  // Select the right byte from the word
-  let rdata_shifted: UInt<32> = (mem_rdata >> (byte_off.zext<32>() << 3).trunc<32>()).trunc<32>();
-
-  let load_byte: UInt<8> = rdata_shifted[7:0];
-  let load_half: UInt<16> = rdata_shifted[15:0];
-
-  // Sign extension using {N{sign_bit}}
-  let byte_sign: Bool = load_byte[7:7] != 0;
-  let half_sign: Bool = load_half[15:15] != 0;
-
-  let lb_result:  UInt<32> = {{24{byte_sign}}, load_byte};
-  let lbu_result: UInt<32> = {{24{false}}, load_byte};
-  let lh_result:  UInt<32> = {{16{half_sign}}, load_half};
-  let lhu_result: UInt<32> = {{16{false}}, load_half};
-
-  let load_val: UInt<32> = is_byte ? (is_unsigned ? lbu_result : lb_result) :
-                            is_half ? (is_unsigned ? lhu_result : lh_result) :
-                                      mem_rdata;
-
-  // ── Output drives ──────────────────────────────────────────
   comb
-    mem_addr  = word_addr;
-    mem_wdata = store_data;
-    mem_wstrb = is_store ? store_strb : 0;
-    mem_wen   = is_store;
-    load_result = load_val;
+    if nice_mem_holdup & nice_icb_cmd_valid
+      arb_is_nice      = true;
+      arb_cmd_valid    = nice_icb_cmd_valid;
+      arb_cmd_addr     = nice_icb_cmd_addr;
+      arb_cmd_read     = nice_icb_cmd_read;
+      arb_cmd_wdata    = nice_icb_cmd_wdata;
+      arb_cmd_wmask    = nice_icb_cmd_wmask;
+      arb_cmd_lock     = nice_icb_cmd_lock;
+      arb_cmd_excl     = nice_icb_cmd_excl;
+      arb_cmd_size     = nice_icb_cmd_size;
+      arb_cmd_back2agu = false;
+      arb_cmd_usign    = false;
+      arb_cmd_itag     = false;
+      nice_icb_cmd_ready = arb_cmd_ready;
+      agu_icb_cmd_ready  = false;
+    elsif agu_icb_cmd_valid
+      arb_is_nice      = false;
+      arb_cmd_valid    = agu_icb_cmd_valid;
+      arb_cmd_addr     = agu_icb_cmd_addr;
+      arb_cmd_read     = agu_icb_cmd_read;
+      arb_cmd_wdata    = agu_icb_cmd_wdata;
+      arb_cmd_wmask    = agu_icb_cmd_wmask;
+      arb_cmd_lock     = agu_icb_cmd_lock;
+      arb_cmd_excl     = agu_icb_cmd_excl;
+      arb_cmd_size     = agu_icb_cmd_size;
+      arb_cmd_back2agu = agu_icb_cmd_back2agu;
+      arb_cmd_usign    = agu_icb_cmd_usign;
+      arb_cmd_itag     = agu_icb_cmd_itag;
+      agu_icb_cmd_ready  = arb_cmd_ready;
+      nice_icb_cmd_ready = false;
+    elsif nice_icb_cmd_valid
+      arb_is_nice      = true;
+      arb_cmd_valid    = nice_icb_cmd_valid;
+      arb_cmd_addr     = nice_icb_cmd_addr;
+      arb_cmd_read     = nice_icb_cmd_read;
+      arb_cmd_wdata    = nice_icb_cmd_wdata;
+      arb_cmd_wmask    = nice_icb_cmd_wmask;
+      arb_cmd_lock     = nice_icb_cmd_lock;
+      arb_cmd_excl     = nice_icb_cmd_excl;
+      arb_cmd_size     = nice_icb_cmd_size;
+      arb_cmd_back2agu = false;
+      arb_cmd_usign    = false;
+      arb_cmd_itag     = false;
+      nice_icb_cmd_ready = arb_cmd_ready;
+      agu_icb_cmd_ready  = false;
+    else
+      arb_is_nice      = false;
+      arb_cmd_valid    = false;
+      arb_cmd_addr     = 0;
+      arb_cmd_read     = false;
+      arb_cmd_wdata    = 0;
+      arb_cmd_wmask    = 0;
+      arb_cmd_lock     = false;
+      arb_cmd_excl     = false;
+      arb_cmd_size     = 0;
+      arb_cmd_back2agu = false;
+      arb_cmd_usign    = false;
+      arb_cmd_itag     = false;
+      agu_icb_cmd_ready  = false;
+      nice_icb_cmd_ready = false;
+    end if
   end comb
 
-end module LsuCtrl
+  // ── Address region decode ────────────────────────────────────────
+  let addr_region: UInt<16> = arb_cmd_addr[31:16];
+  let is_dtcm: Bool = (addr_region == dtcm_region_indic[31:16]);
+  let is_itcm: Bool = (addr_region == itcm_region_indic[31:16]);
+  let is_biu:  Bool = ~is_dtcm & ~is_itcm;
+
+  // ── Command routing ──────────────────────────────────────────────
+  comb
+    // DTCM
+    dtcm_icb_cmd_valid = arb_cmd_valid & is_dtcm;
+    dtcm_icb_cmd_addr  = arb_cmd_addr[15:0];
+    dtcm_icb_cmd_read  = arb_cmd_read;
+    dtcm_icb_cmd_wdata = arb_cmd_wdata;
+    dtcm_icb_cmd_wmask = arb_cmd_wmask;
+    dtcm_icb_cmd_lock  = arb_cmd_lock;
+    dtcm_icb_cmd_excl  = arb_cmd_excl;
+    dtcm_icb_cmd_size  = arb_cmd_size;
+
+    // ITCM
+    itcm_icb_cmd_valid = arb_cmd_valid & is_itcm;
+    itcm_icb_cmd_addr  = arb_cmd_addr[15:0];
+    itcm_icb_cmd_read  = arb_cmd_read;
+    itcm_icb_cmd_wdata = arb_cmd_wdata;
+    itcm_icb_cmd_wmask = arb_cmd_wmask;
+    itcm_icb_cmd_lock  = arb_cmd_lock;
+    itcm_icb_cmd_excl  = arb_cmd_excl;
+    itcm_icb_cmd_size  = arb_cmd_size;
+
+    // BIU
+    biu_icb_cmd_valid = arb_cmd_valid & is_biu;
+    biu_icb_cmd_addr  = arb_cmd_addr;
+    biu_icb_cmd_read  = arb_cmd_read;
+    biu_icb_cmd_wdata = arb_cmd_wdata;
+    biu_icb_cmd_wmask = arb_cmd_wmask;
+    biu_icb_cmd_lock  = arb_cmd_lock;
+    biu_icb_cmd_excl  = arb_cmd_excl;
+    biu_icb_cmd_size  = arb_cmd_size;
+
+    // Ready back to arbiter
+    arb_cmd_ready = (is_dtcm & dtcm_icb_cmd_ready) |
+                    (is_itcm & itcm_icb_cmd_ready) |
+                    (is_biu  & biu_icb_cmd_ready);
+  end comb
+
+  // ── Track outstanding request target for response routing ────────
+  reg rsp_target_dtcm: Bool init 0 reset rst_n => 0;
+  reg rsp_target_itcm: Bool init 0 reset rst_n => 0;
+  reg rsp_target_biu:  Bool init 0 reset rst_n => 0;
+  reg rsp_is_nice:     Bool init 0 reset rst_n => 0;
+  reg rsp_back2agu:    Bool init 0 reset rst_n => 0;
+  reg rsp_usign:       Bool init 0 reset rst_n => 0;
+  reg rsp_itag:        Bool init 0 reset rst_n => 0;
+  reg rsp_read:        Bool init 0 reset rst_n => 0;
+  reg rsp_addr:        UInt<32> init 0 reset rst_n => 0;
+
+  let cmd_fire: Bool = arb_cmd_valid & arb_cmd_ready;
+
+  seq on clk rising
+    if cmd_fire
+      rsp_target_dtcm <= is_dtcm;
+      rsp_target_itcm <= is_itcm;
+      rsp_target_biu  <= is_biu;
+      rsp_is_nice     <= arb_is_nice;
+      rsp_back2agu    <= arb_cmd_back2agu;
+      rsp_usign       <= arb_cmd_usign;
+      rsp_itag        <= arb_cmd_itag;
+      rsp_read        <= arb_cmd_read;
+      rsp_addr        <= arb_cmd_addr;
+    end if
+  end seq
+
+  // ── Response mux ─────────────────────────────────────────────────
+  wire rsp_valid_raw: Bool;
+  wire rsp_err_raw:   Bool;
+  wire rsp_excl_ok_raw: Bool;
+  wire rsp_rdata_raw: UInt<32>;
+
+  comb
+    if rsp_target_dtcm
+      rsp_valid_raw    = dtcm_icb_rsp_valid;
+      rsp_err_raw      = dtcm_icb_rsp_err;
+      rsp_excl_ok_raw  = dtcm_icb_rsp_excl_ok;
+      rsp_rdata_raw    = dtcm_icb_rsp_rdata;
+      dtcm_icb_rsp_ready = agu_icb_rsp_ready | (rsp_is_nice & nice_icb_rsp_ready);
+      itcm_icb_rsp_ready = false;
+      biu_icb_rsp_ready  = false;
+    elsif rsp_target_itcm
+      rsp_valid_raw    = itcm_icb_rsp_valid;
+      rsp_err_raw      = itcm_icb_rsp_err;
+      rsp_excl_ok_raw  = itcm_icb_rsp_excl_ok;
+      rsp_rdata_raw    = itcm_icb_rsp_rdata;
+      itcm_icb_rsp_ready = agu_icb_rsp_ready | (rsp_is_nice & nice_icb_rsp_ready);
+      dtcm_icb_rsp_ready = false;
+      biu_icb_rsp_ready  = false;
+    elsif rsp_target_biu
+      rsp_valid_raw    = biu_icb_rsp_valid;
+      rsp_err_raw      = biu_icb_rsp_err;
+      rsp_excl_ok_raw  = biu_icb_rsp_excl_ok;
+      rsp_rdata_raw    = biu_icb_rsp_rdata;
+      biu_icb_rsp_ready  = agu_icb_rsp_ready | (rsp_is_nice & nice_icb_rsp_ready);
+      dtcm_icb_rsp_ready = false;
+      itcm_icb_rsp_ready = false;
+    else
+      rsp_valid_raw    = false;
+      rsp_err_raw      = false;
+      rsp_excl_ok_raw  = false;
+      rsp_rdata_raw    = 0;
+      dtcm_icb_rsp_ready = false;
+      itcm_icb_rsp_ready = false;
+      biu_icb_rsp_ready  = false;
+    end if
+  end comb
+
+  // ── Route response to AGU or NICE ────────────────────────────────
+  comb
+    if rsp_is_nice
+      nice_icb_rsp_valid   = rsp_valid_raw;
+      nice_icb_rsp_err     = rsp_err_raw;
+      nice_icb_rsp_excl_ok = rsp_excl_ok_raw;
+      nice_icb_rsp_rdata   = rsp_rdata_raw;
+      agu_icb_rsp_valid    = false;
+      agu_icb_rsp_err      = false;
+      agu_icb_rsp_excl_ok  = false;
+      agu_icb_rsp_rdata    = 0;
+    else
+      agu_icb_rsp_valid    = rsp_valid_raw;
+      agu_icb_rsp_err      = rsp_err_raw;
+      agu_icb_rsp_excl_ok  = rsp_excl_ok_raw;
+      agu_icb_rsp_rdata    = rsp_rdata_raw;
+      nice_icb_rsp_valid   = false;
+      nice_icb_rsp_err     = false;
+      nice_icb_rsp_excl_ok = false;
+      nice_icb_rsp_rdata   = 0;
+    end if
+  end comb
+
+  // ── LSU output: write-back and commit ────────────────────────────
+  comb
+    lsu_o_valid       = agu_icb_rsp_valid & ~rsp_is_nice;
+    lsu_o_wbck_wdat   = agu_icb_rsp_rdata;
+    lsu_o_wbck_itag   = rsp_itag;
+    lsu_o_wbck_err    = agu_icb_rsp_err;
+    lsu_o_cmt_buserr  = agu_icb_rsp_err;
+    lsu_o_cmt_badaddr = rsp_addr;
+    lsu_o_cmt_ld      = rsp_read;
+    lsu_o_cmt_st      = ~rsp_read;
+    lsu_ctrl_active   = agu_icb_cmd_valid | nice_icb_cmd_valid |
+                         rsp_target_dtcm | rsp_target_itcm | rsp_target_biu;
+  end comb
+
+end module e203_lsu_ctrl

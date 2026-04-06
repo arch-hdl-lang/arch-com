@@ -1,83 +1,114 @@
 // E203 HBirdv2 Branch/Jump Unit
-// Computes: branch target address, link address (PC+4), and branch comparison
-// result.  Purely combinational.
-//
-// The caller muxes op1/op2 appropriately:
-//   Branch : op1 = PC,  op2 = sign-extended offset
-//   JAL    : op1 = PC,  op2 = sign-extended 21-bit offset
-//   JALR   : op1 = rs1, op2 = sign-extended 12-bit offset (JALR clears bit 0)
+// Decodes the 17-bit info bus to determine branch type, then issues
+// ALU datapath requests (add for target addr, compare for branch condition).
+// Purely combinational — matches RealBench port interface.
 
-module BjpUnit
+module e203_exu_alu_bjp
   param XLEN: const = 32;
 
-  // ── Target address operands ────────────────────────────────────────────
-  // target = op1 + op2 (with bit[0] forced to 0 by caller for JALR)
-  port i_tgt_op1:  in UInt<32>;
-  port i_tgt_op2:  in UInt<32>;
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
 
-  // ── Comparison operands ────────────────────────────────────────────────
-  port i_cmp_rs1:  in UInt<32>;
-  port i_cmp_rs2:  in UInt<32>;
+  // ── Dispatch handshake ────────────────────────────────────────────
+  port bjp_i_valid: in  Bool;
+  port bjp_i_ready: out Bool;
+  port bjp_i_rs1:   in  UInt<32>;
+  port bjp_i_rs2:   in  UInt<32>;
+  port bjp_i_imm:   in  UInt<32>;
+  port bjp_i_pc:    in  UInt<32>;
+  port bjp_i_info:  in  UInt<17>;
 
-  // ── Branch type selectors ──────────────────────────────────────────────
-  port i_beq:   in Bool;
-  port i_bne:   in Bool;
-  port i_blt:   in Bool;
-  port i_bge:   in Bool;
-  port i_bltu:  in Bool;
-  port i_bgeu:  in Bool;
+  // ── Writeback handshake ───────────────────────────────────────────
+  port bjp_o_valid:     out Bool;
+  port bjp_o_ready:     in  Bool;
+  port bjp_o_wbck_wdat: out UInt<32>;
+  port bjp_o_wbck_err:  out Bool;
 
-  // ── Unconditional jump (JAL/JALR — seq taken) ───────────────────────
-  port i_jump:  in Bool;
+  // ── Commit signals ────────────────────────────────────────────────
+  port bjp_o_cmt_bjp:    out Bool;
+  port bjp_o_cmt_mret:   out Bool;
+  port bjp_o_cmt_dret:   out Bool;
+  port bjp_o_cmt_fencei: out Bool;
+  port bjp_o_cmt_prdt:   out Bool;
+  port bjp_o_cmt_rslv:   out Bool;
 
-  // ── Link address: input PC → output PC+4 ──────────────────────────────
-  port i_lnk_pc:  in UInt<32>;
+  // ── ALU datapath request ──────────────────────────────────────────
+  port bjp_req_alu_op1:     out UInt<32>;
+  port bjp_req_alu_op2:     out UInt<32>;
+  port bjp_req_alu_cmp_eq:  out Bool;
+  port bjp_req_alu_cmp_ne:  out Bool;
+  port bjp_req_alu_cmp_lt:  out Bool;
+  port bjp_req_alu_cmp_gt:  out Bool;
+  port bjp_req_alu_cmp_ltu: out Bool;
+  port bjp_req_alu_cmp_gtu: out Bool;
+  port bjp_req_alu_add:     out Bool;
 
-  // ── Outputs ────────────────────────────────────────────────────────────
-  port o_taken:    out Bool;       // branch/jump taken
-  port o_tgt:      out UInt<32>;   // target address
-  port o_lnk:      out UInt<32>;   // link address (i_lnk_pc + 4)
-  port o_cmp_res:  out Bool;       // raw comparison result (independent of jump)
+  // ── ALU datapath results (from shared datapath) ───────────────────
+  port bjp_req_alu_cmp_res: in  Bool;
+  port bjp_req_alu_add_res: in  UInt<32>;
 
-  // ── Target address: op1 + op2, keep lower 32 bits ─────────────────────
-  let tgt_sum: UInt<33> = (i_tgt_op1.zext<33>() + i_tgt_op2.zext<33>()).trunc<33>();
-  let tgt_addr: UInt<32> = tgt_sum.trunc<32>();
+  // ── Decode info bus ───────────────────────────────────────────────
+  // info[3:0] = branch type one-hot: beq, bne, blt, bge, bltu, bgeu
+  // We decode branch type from the info bus.
+  let is_beq:  Bool = bjp_i_info[0:0] != 0;
+  let is_bne:  Bool = bjp_i_info[1:1] != 0;
+  let is_blt:  Bool = bjp_i_info[2:2] != 0;
+  let is_bge:  Bool = bjp_i_info[3:3] != 0;
+  let is_bltu: Bool = bjp_i_info[4:4] != 0;
+  let is_bgeu: Bool = bjp_i_info[5:5] != 0;
+  let is_jal:  Bool = bjp_i_info[6:6] != 0;
+  let is_jalr: Bool = bjp_i_info[7:7] != 0;
+  let is_mret: Bool = bjp_i_info[8:8] != 0;
+  let is_dret: Bool = bjp_i_info[9:9] != 0;
+  let is_fencei: Bool = bjp_i_info[10:10] != 0;
+  let prdt_taken: Bool = bjp_i_info[11:11] != 0;
 
-  // ── Link address: PC + 4 ──────────────────────────────────────────────
-  let lnk_sum: UInt<33> = (i_lnk_pc.zext<33>() + (4 as UInt<32>).zext<33>()).trunc<33>();
-  let lnk_addr: UInt<32> = lnk_sum.trunc<32>();
+  let is_bxx: Bool = is_beq | is_bne | is_blt | is_bge | is_bltu | is_bgeu;
+  let is_jump: Bool = is_jal | is_jalr;
 
-  // ── Comparison logic ───────────────────────────────────────────────────
-  // XOR-based equality
-  let xor_res: UInt<32>  = i_cmp_rs1 ^ i_cmp_rs2;
-  let xor_zero: Bool     = xor_res == 0;
+  // Branch resolved (taken or not)
+  let branch_taken: Bool = is_bxx & bjp_req_alu_cmp_res;
+  let jump_taken: Bool = is_jump;
+  let taken: Bool = branch_taken | jump_taken;
 
-  // Subtraction via two's-complement: rs1 + ~rs2 + 1
-  let cmp_op2_inv: UInt<32>  = ~i_cmp_rs2;
-  let sub_res: UInt<33>      = (i_cmp_rs1.zext<33>() + cmp_op2_inv.zext<33>() +
-                                true.zext<33>()).trunc<33>();
-  // carry=1 → rs1 >= rs2 unsigned (no borrow)
-  let sub_carry: Bool = (sub_res >> 32) != 0;
+  // Link address = PC + imm (for JAL/JALR the add_res gives target;
+  // wbck_wdat = PC+4 for link)
+  let pc_plus4: UInt<33> = (bjp_i_pc.zext<33>() + 4.zext<33>()).trunc<33>();
+  let link_addr: UInt<32> = pc_plus4.trunc<32>();
 
-  // Signed less-than via SInt cast
-  let signed_lt: Bool = (i_cmp_rs1 as SInt<32>) < (i_cmp_rs2 as SInt<32>);
-
-  // ── Comparison result mux ──────────────────────────────────────────────
-  let cmp_result: Bool =
-    i_beq  ? xor_zero    :
-    i_bne  ? ~xor_zero   :
-    i_blt  ? signed_lt   :
-    i_bge  ? ~signed_lt  :
-    i_bltu ? ~sub_carry  :
-    i_bgeu ? sub_carry   :
-             false;
-
-  // ── Drive outputs ──────────────────────────────────────────────────────
   comb
-    o_cmp_res = cmp_result;
-    o_taken   = i_jump | cmp_result;
-    o_tgt     = tgt_addr;
-    o_lnk     = lnk_addr;
+    // Always ready (combinational unit)
+    bjp_i_ready = bjp_o_ready;
+    bjp_o_valid = bjp_i_valid;
+    bjp_o_wbck_err = false;
+
+    // Writeback data: link address for JAL/JALR, else 0
+    if is_jump
+      bjp_o_wbck_wdat = link_addr;
+    else
+      bjp_o_wbck_wdat = 0;
+    end if
+
+    // Commit outputs
+    bjp_o_cmt_bjp    = is_bxx | is_jump;
+    bjp_o_cmt_mret   = is_mret;
+    bjp_o_cmt_dret   = is_dret;
+    bjp_o_cmt_fencei = is_fencei;
+    bjp_o_cmt_prdt   = prdt_taken;
+    bjp_o_cmt_rslv   = taken;
+
+    // ALU datapath requests: operands for compare and add
+    bjp_req_alu_op1 = bjp_i_rs1;
+    bjp_req_alu_op2 = bjp_i_rs2;
+
+    // Compare request one-hot
+    bjp_req_alu_cmp_eq  = is_beq;
+    bjp_req_alu_cmp_ne  = is_bne;
+    bjp_req_alu_cmp_lt  = is_blt;
+    bjp_req_alu_cmp_gt  = is_bge;
+    bjp_req_alu_cmp_ltu = is_bltu;
+    bjp_req_alu_cmp_gtu = is_bgeu;
+    bjp_req_alu_add     = is_jump | is_bxx;
   end comb
 
-end module BjpUnit
+end module e203_exu_alu_bjp

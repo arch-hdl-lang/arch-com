@@ -1,0 +1,49 @@
+// E203 Reset Controller
+// 2-stage reset release synchronizer with test_mode bypass.
+// MASTER=1: after async rst_n deasserts, outputs stay low for 2 clk cycles
+// before releasing (going high). test_mode bypasses synchronizer.
+// MASTER=0 (slave/lockstep): just pass rst_n through directly.
+
+module e203_reset_ctrl
+  param MASTER: const = 1;
+
+  port clk:       in Clock<SysDomain>;
+  port rst_n:     in Reset<Async, Low>;
+  port test_mode: in Bool;
+
+  // Reset release status (active-high = not in reset)
+  port rst_core: out Bool;
+  port rst_itcm: out Bool;
+  port rst_dtcm: out Bool;
+  port rst_aon:  out Bool;
+
+  // 2-stage reset synchronizer shift register
+  // After rst_n deasserts, shifts in 1s: 00 -> 01 -> 11
+  reg rst_sync_r0: Bool reset rst_n => false;
+  reg rst_sync_r1: Bool reset rst_n => false;
+
+  wire rst_sync_n: Bool;
+
+  default seq on clk rising;
+
+  seq
+    // Only shift in master mode; in slave mode regs are unused
+    rst_sync_r0 <= true;
+    rst_sync_r1 <= rst_sync_r0;
+  end seq
+
+  comb
+    // MASTER=1: in test_mode bypass synchronizer, else use rst_sync_r1
+    // MASTER=0: just pass rst_n through directly
+    if MASTER > 0
+      rst_sync_n = test_mode ? rst_n : rst_sync_r1;
+    else
+      rst_sync_n = rst_n;
+    end if
+
+    rst_core = rst_sync_n;
+    rst_itcm = rst_sync_n;
+    rst_dtcm = rst_sync_n;
+    rst_aon  = rst_sync_n;
+  end comb
+end module e203_reset_ctrl

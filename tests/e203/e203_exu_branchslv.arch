@@ -1,0 +1,78 @@
+// E203 Branch Resolve Unit
+// Pure combinational: detects mispredictions, generates flush requests,
+// computes flush target PC for branches, jumps, mret, dret, fencei.
+
+module e203_exu_branchslv
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  // Commit interface
+  port cmt_i_valid:    in Bool;
+  port cmt_i_ready:    out Bool;
+  port cmt_i_rv32:     in Bool;
+  port cmt_i_dret:     in Bool;
+  port cmt_i_mret:     in Bool;
+  port cmt_i_fencei:   in Bool;
+  port cmt_i_bjp:      in Bool;
+  port cmt_i_bjp_prdt: in Bool;
+  port cmt_i_bjp_rslv: in Bool;
+  port cmt_i_pc:       in UInt<32>;
+  port cmt_i_imm:      in UInt<32>;
+
+  // CSR values
+  port csr_epc_r: in UInt<32>;
+  port csr_dpc_r: in UInt<32>;
+
+  // Flush interface
+  port nonalu_excpirq_flush_req_raw: in Bool;
+  port brchmis_flush_ack:     in Bool;
+  port brchmis_flush_req:     out Bool;
+  port brchmis_flush_add_op1: out UInt<32>;
+  port brchmis_flush_add_op2: out UInt<32>;
+  port brchmis_flush_pc:      out UInt<32>;
+
+  // Commit enables
+  port cmt_mret_ena:   out Bool;
+  port cmt_dret_ena:   out Bool;
+  port cmt_fencei_ena: out Bool;
+
+  let is_branch: Bool = cmt_i_bjp | cmt_i_fencei | cmt_i_mret | cmt_i_dret;
+  let need_flush: Bool = (cmt_i_bjp & (cmt_i_bjp_prdt ^ cmt_i_bjp_rslv))
+                       | cmt_i_fencei | cmt_i_mret | cmt_i_dret;
+
+  let flush_req_pre: Bool = cmt_i_valid & need_flush;
+  let flush_ack_pre: Bool = brchmis_flush_ack & (~nonalu_excpirq_flush_req_raw);
+
+  let pc_incr: UInt<32> = cmt_i_rv32 ? 4 : 2;
+
+  comb
+    brchmis_flush_req = flush_req_pre & (~nonalu_excpirq_flush_req_raw);
+
+    // Flush target operands (for external adder)
+    brchmis_flush_add_op1 = cmt_i_dret ? csr_dpc_r
+                          : cmt_i_mret ? csr_epc_r
+                          : cmt_i_pc;
+    brchmis_flush_add_op2 = cmt_i_dret ? 0
+                          : cmt_i_mret ? 0
+                          : (cmt_i_fencei | cmt_i_bjp_prdt) ? pc_incr
+                          : cmt_i_imm;
+
+    // Pre-computed flush PC (timing boost path, matching reference priority)
+    brchmis_flush_pc = (cmt_i_fencei | (cmt_i_bjp & cmt_i_bjp_prdt))
+                       ? (cmt_i_pc + pc_incr).trunc<32>()
+                     : (cmt_i_bjp & (~cmt_i_bjp_prdt))
+                       ? (cmt_i_pc + cmt_i_imm).trunc<32>()
+                     : cmt_i_dret ? csr_dpc_r
+                     : csr_epc_r;
+
+    // Commit enables: fire on flush handshake (req & ack)
+    cmt_mret_ena   = cmt_i_mret   & brchmis_flush_req & brchmis_flush_ack;
+    cmt_dret_ena   = cmt_i_dret   & brchmis_flush_req & brchmis_flush_ack;
+    cmt_fencei_ena = cmt_i_fencei & brchmis_flush_req & brchmis_flush_ack;
+
+    // Ready: non-branch always ready; branch waits for flush ack
+    cmt_i_ready = (~is_branch)
+                | ((need_flush ? flush_ack_pre : true) & (~nonalu_excpirq_flush_req_raw));
+  end comb
+end module e203_exu_branchslv

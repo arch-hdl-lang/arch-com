@@ -1,0 +1,304 @@
+// E203 Load/Store Address Generation Unit
+// Generates addresses for load/store/AMO instructions.
+// AMO uses a multi-step state machine: read -> ALU compute -> write -> writeback.
+
+module e203_exu_alu_lsuagu
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  // Dispatch handshake
+  port agu_i_valid:    in Bool;
+  port agu_i_ready:    out Bool;
+  port agu_i_rs1:      in UInt<32>;
+  port agu_i_rs2:      in UInt<32>;
+  port agu_i_imm:      in UInt<32>;
+  port agu_i_info:     in UInt<21>;
+  port agu_i_itag:     in UInt<1>;
+  port agu_i_longpipe: out Bool;
+
+  // Flush
+  port flush_req:   in Bool;
+  port flush_pulse: in Bool;
+
+  // AMO state
+  port amo_wait:    out Bool;
+  port oitf_empty:  in Bool;
+
+  // Result handshake
+  port agu_o_valid:       out Bool;
+  port agu_o_ready:       in Bool;
+  port agu_o_wbck_wdat:   out UInt<32>;
+  port agu_o_wbck_err:    out Bool;
+  port agu_o_cmt_misalgn: out Bool;
+  port agu_o_cmt_ld:      out Bool;
+  port agu_o_cmt_stamo:   out Bool;
+  port agu_o_cmt_buserr:  out Bool;
+  port agu_o_cmt_badaddr: out UInt<32>;
+
+  // ICB command interface
+  port agu_icb_cmd_valid:    out Bool;
+  port agu_icb_cmd_ready:    in Bool;
+  port agu_icb_cmd_addr:     out UInt<32>;
+  port agu_icb_cmd_read:     out Bool;
+  port agu_icb_cmd_wdata:    out UInt<32>;
+  port agu_icb_cmd_wmask:    out UInt<4>;
+  port agu_icb_cmd_back2agu: out Bool;
+  port agu_icb_cmd_lock:     out Bool;
+  port agu_icb_cmd_excl:     out Bool;
+  port agu_icb_cmd_size:     out UInt<2>;
+  port agu_icb_cmd_itag:     out UInt<1>;
+  port agu_icb_cmd_usign:    out Bool;
+
+  // ICB response interface
+  port agu_icb_rsp_valid:   in Bool;
+  port agu_icb_rsp_ready:   out Bool;
+  port agu_icb_rsp_err:     in Bool;
+  port agu_icb_rsp_excl_ok: in Bool;
+  port agu_icb_rsp_rdata:   in UInt<32>;
+
+  // Shared ALU datapath
+  port agu_req_alu_op1:  out UInt<32>;
+  port agu_req_alu_op2:  out UInt<32>;
+  port agu_req_alu_swap: out Bool;
+  port agu_req_alu_add:  out Bool;
+  port agu_req_alu_and:  out Bool;
+  port agu_req_alu_or:   out Bool;
+  port agu_req_alu_xor:  out Bool;
+  port agu_req_alu_max:  out Bool;
+  port agu_req_alu_min:  out Bool;
+  port agu_req_alu_maxu: out Bool;
+  port agu_req_alu_minu: out Bool;
+  port agu_req_alu_res:  in UInt<32>;
+
+  // Shared buffers
+  port agu_sbf_0_ena: out Bool;
+  port agu_sbf_0_nxt: out UInt<32>;
+  port agu_sbf_0_r:   in UInt<32>;
+  port agu_sbf_1_ena: out Bool;
+  port agu_sbf_1_nxt: out UInt<32>;
+  port agu_sbf_1_r:   in UInt<32>;
+
+  // Decode info fields (from agu_i_info)
+  let i_load:    Bool    = agu_i_info[4:4];
+  let i_store:   Bool    = agu_i_info[5:5];
+  let i_size:    UInt<2> = agu_i_info[7:6];
+  let i_usign:   Bool    = agu_i_info[8:8];
+  let i_excl:    Bool    = agu_i_info[9:9];
+  let i_amo:     Bool    = agu_i_info[10:10];
+  let i_amoswap: Bool    = agu_i_info[11:11];
+  let i_amoadd:  Bool    = agu_i_info[12:12];
+  let i_amoand:  Bool    = agu_i_info[13:13];
+  let i_amoor:   Bool    = agu_i_info[14:14];
+  let i_amoxor:  Bool    = agu_i_info[15:15];
+  let i_amomax:  Bool    = agu_i_info[16:16];
+  let i_amomin:  Bool    = agu_i_info[17:17];
+  let i_amomaxu: Bool    = agu_i_info[18:18];
+  let i_amominu: Bool    = agu_i_info[19:19];
+
+  let size_b:  Bool = (i_size == 0);
+  let size_hw: Bool = (i_size == 1);
+  let size_w:  Bool = (i_size == 2);
+
+  // AMO ICB state machine
+  // IDLE=0, 1ST=1, WAIT2ND=2, 2ND=3, AMOALU=4, AMORDY=5, WBCK=6
+  reg icb_state_r: UInt<4> reset rst_n => 0;
+
+  let sta_idle:    Bool = (icb_state_r == 0);
+  let sta_1st:     Bool = (icb_state_r == 1);
+  let sta_wait2nd: Bool = (icb_state_r == 2);
+  let sta_2nd:     Bool = (icb_state_r == 3);
+  let sta_amoalu:  Bool = (icb_state_r == 4);
+  let sta_amordy:  Bool = (icb_state_r == 5);
+  let sta_wbck:    Bool = (icb_state_r == 6);
+
+  let flush_block: Bool = flush_req & sta_idle;
+  let ld:  Bool = i_load  & (~flush_block);
+  let st:  Bool = i_store & (~flush_block);
+  let amo: Bool = i_amo   & (~flush_block);
+  let ofst0: Bool = amo | ((ld | st) & i_excl);
+
+  // Address alignment check (uses agu_req_alu_res = computed address)
+  wire addr_unalgn: Bool;
+  wire algnld: Bool;
+  wire algnst: Bool;
+  wire algn_ldst: Bool;
+  wire algn_amo: Bool;
+  wire unalgn_ldst: Bool;
+  wire unalgn_amo: Bool;
+
+  // Store data/mask
+  wire algnst_wdata: UInt<32>;
+  wire algnst_wmask: UInt<4>;
+
+  // Address generation offset
+  let addr_gen_op2: UInt<32> = ofst0 ? 0 : agu_i_imm;
+
+  // ICB handshake signals
+  let icb_cmd_hsked: Bool = agu_icb_cmd_valid & agu_icb_cmd_ready;
+  let icb_rsp_hsked: Bool = agu_icb_rsp_valid & agu_icb_rsp_ready;
+
+  // AMO uop flags
+  let amo_1stuop: Bool = sta_1st & algn_amo;
+  let amo_2nduop: Bool = sta_2nd & algn_amo;
+
+  // Leftover buffer (shared with sbf_0)
+  wire leftover_ena: Bool;
+  wire leftover_nxt: UInt<32>;
+  let leftover_r: UInt<32> = agu_sbf_0_r;
+
+  // Leftover error tracking
+  wire leftover_err_ena: Bool;
+  wire leftover_err_nxt: Bool;
+  reg leftover_err_r: Bool reset rst_n => false;
+
+  // Leftover_1 buffer (shared with sbf_1) for ALU result
+  wire leftover_1_ena: Bool;
+  wire leftover_1_nxt: UInt<32>;
+  let leftover_1_r: UInt<32> = agu_sbf_1_r;
+
+  // State machine exit enable signals
+  let state_idle_exit_ena: Bool = sta_idle & algn_amo & oitf_empty & icb_cmd_hsked & (~flush_pulse);
+  let state_1st_exit_ena: Bool = sta_1st & (icb_rsp_hsked | flush_pulse);
+  let state_amoalu_exit_ena: Bool = sta_amoalu;
+  let state_amordy_exit_ena: Bool = sta_amordy;
+  let state_wait2nd_exit_ena: Bool = sta_wait2nd & (agu_icb_cmd_ready | flush_pulse);
+  let state_2nd_exit_ena: Bool = sta_2nd & (icb_rsp_hsked | flush_pulse);
+  let state_wbck_exit_ena: Bool = sta_wbck & (agu_o_ready | flush_pulse);
+
+  let state_last_exit_ena: Bool = state_wbck_exit_ena;
+
+  default seq on clk rising;
+
+  // State machine update
+  seq
+    if state_idle_exit_ena
+      icb_state_r <= 1;
+    elsif state_1st_exit_ena
+      icb_state_r <= flush_pulse ? 0 : 4;
+    elsif state_amoalu_exit_ena
+      icb_state_r <= flush_pulse ? 0 : 5;
+    elsif state_amordy_exit_ena
+      icb_state_r <= flush_pulse ? 0 : 2;
+    elsif state_wait2nd_exit_ena
+      icb_state_r <= flush_pulse ? 0 : 3;
+    elsif state_2nd_exit_ena
+      icb_state_r <= flush_pulse ? 0 : 6;
+    elsif state_wbck_exit_ena
+      icb_state_r <= 0;
+    end if
+  end seq
+
+  // Leftover error register
+  seq
+    if leftover_err_ena
+      leftover_err_r <= leftover_err_nxt;
+    end if
+  end seq
+
+  comb
+    // Address alignment
+    addr_unalgn = (size_hw & agu_icb_cmd_addr[0:0]) | (size_w & (agu_icb_cmd_addr[1:0] != 0));
+
+    algnld  = (~addr_unalgn) & ld & (~amo);
+    algnst  = (~addr_unalgn) & st & (~amo);
+    algn_ldst = algnld | algnst;
+    algn_amo  = (~addr_unalgn) & amo;
+    unalgn_ldst = addr_unalgn & (ld | st) & (~amo);
+    unalgn_amo  = addr_unalgn & amo;
+
+    // Store data: byte/half replicated
+    algnst_wdata = size_b  ? {4{agu_i_rs2[7:0]}}
+                 : size_hw ? {2{agu_i_rs2[15:0]}}
+                 : agu_i_rs2;
+
+    // Store mask: shifted based on address LSBs
+    algnst_wmask = size_b  ? (4'b0001 << agu_icb_cmd_addr[1:0])
+                 : size_hw ? (4'b0011 << {agu_icb_cmd_addr[1:1], 1'b0})
+                 : 4'b1111;
+
+    // ALU operand 1
+    agu_req_alu_op1 = sta_idle ? agu_i_rs1
+                    : sta_amoalu ? leftover_r
+                    : (i_amo & (sta_wait2nd | sta_2nd | sta_wbck)) ? agu_i_rs1
+                    : 0;
+
+    // ALU operand 2
+    agu_req_alu_op2 = sta_idle ? addr_gen_op2
+                    : sta_amoalu ? agu_i_rs2
+                    : (i_amo & (sta_wait2nd | sta_2nd | sta_wbck)) ? addr_gen_op2
+                    : 0;
+
+    // ALU operation selection
+    agu_req_alu_add  = (sta_amoalu & i_amoadd)
+                     | (i_amo & (sta_wait2nd | sta_2nd | sta_wbck))
+                     | sta_idle;
+    agu_req_alu_swap = sta_amoalu & i_amoswap;
+    agu_req_alu_and  = sta_amoalu & i_amoand;
+    agu_req_alu_or   = sta_amoalu & i_amoor;
+    agu_req_alu_xor  = sta_amoalu & i_amoxor;
+    agu_req_alu_max  = sta_amoalu & i_amomax;
+    agu_req_alu_min  = sta_amoalu & i_amomin;
+    agu_req_alu_maxu = sta_amoalu & i_amomaxu;
+    agu_req_alu_minu = sta_amoalu & i_amominu;
+
+    // Leftover buffer 0: loaded on response handshake during AMO 1st or 2nd uop
+    leftover_ena = icb_rsp_hsked & (amo_1stuop | amo_2nduop);
+    leftover_nxt = amo_1stuop ? agu_icb_rsp_rdata : leftover_r;
+
+    // Leftover error: merge errors from both uops
+    leftover_err_ena = leftover_ena;
+    leftover_err_nxt = (amo_1stuop & agu_icb_rsp_err)
+                     | (amo_2nduop & (agu_icb_rsp_err | leftover_err_r));
+
+    agu_sbf_0_ena = leftover_ena;
+    agu_sbf_0_nxt = leftover_nxt;
+
+    // Leftover buffer 1: ALU result saved during AMOALU
+    leftover_1_ena = sta_amoalu;
+    leftover_1_nxt = agu_req_alu_res;
+    agu_sbf_1_ena = leftover_1_ena;
+    agu_sbf_1_nxt = leftover_1_nxt;
+
+    // ICB command valid
+    agu_icb_cmd_valid = (algn_ldst & agu_i_valid & agu_o_ready)
+                      | (algn_amo & ((sta_idle & agu_i_valid & agu_o_ready) | sta_wait2nd))
+                      | (unalgn_amo & false);
+
+    agu_icb_cmd_addr  = agu_req_alu_res;
+    agu_icb_cmd_read  = (algn_ldst & ld) | (algn_amo & sta_idle);
+    agu_icb_cmd_wdata = amo ? leftover_1_r : algnst_wdata;
+    agu_icb_cmd_wmask = amo ? (leftover_err_r ? 0 : 4'b1111) : algnst_wmask;
+    agu_icb_cmd_back2agu = algn_amo;
+    agu_icb_cmd_lock  = algn_amo & sta_idle;
+    agu_icb_cmd_excl  = i_excl;
+    agu_icb_cmd_size  = i_size;
+    agu_icb_cmd_itag  = agu_i_itag;
+    agu_icb_cmd_usign = i_usign;
+
+    agu_icb_rsp_ready = true;
+
+    // Output valid: AMO wbck state OR (normal ldst/unalgn at dispatch with cmd_ready)
+    agu_o_valid = sta_wbck
+               | (agu_i_valid & (algn_ldst | unalgn_ldst | unalgn_amo) & agu_icb_cmd_ready);
+
+    // Output data
+    agu_o_wbck_wdat = (algn_amo ? leftover_r : 0);
+
+    // Commit signals (use flush-blocked versions matching reference)
+    agu_o_cmt_misalgn = unalgn_amo | unalgn_ldst;
+    agu_o_cmt_ld      = ld & (~i_excl);
+    agu_o_cmt_stamo   = st | amo | i_excl;
+    agu_o_cmt_buserr  = algn_amo & leftover_err_r;
+    agu_o_cmt_badaddr = agu_icb_cmd_addr;
+
+    agu_o_wbck_err = agu_o_cmt_buserr | agu_o_cmt_misalgn;
+
+    // Ready: AMO goes through state machine, others go directly
+    agu_i_ready = algn_amo ? state_last_exit_ena
+                : (agu_icb_cmd_ready & agu_o_ready);
+
+    agu_i_longpipe = algn_ldst;
+    amo_wait = ~sta_idle;
+  end comb
+end module e203_exu_alu_lsuagu

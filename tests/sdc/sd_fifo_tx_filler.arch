@@ -1,0 +1,113 @@
+// SD FIFO TX Filler
+// Reads data from system memory via Wishbone master and writes to TX FIFO.
+// Internally instantiates sd_tx_fifo. Port interface matches OpenCores SDC reference.
+
+module sd_fifo_tx_filler
+
+  port clk:        in Clock<SysDomain>;
+  port rst:        in Reset<Async, High>;
+
+  // Wishbone master
+  port m_wb_adr_o: out UInt<32>;
+  port m_wb_we_o:  out Bool;
+  port m_wb_dat_i: in UInt<32>;
+  port m_wb_cyc_o: out Bool;
+  port m_wb_stb_o: out Bool;
+  port m_wb_ack_i: in Bool;
+  port m_wb_cti_o: out UInt<3>;
+  port m_wb_bte_o: out UInt<2>;
+
+  // Data master control
+  port en:  in Bool;
+  port adr: in UInt<32>;
+
+  // Data serial signals (directly to TX FIFO read side)
+  port sd_clk: in Clock<SysDomain>;
+  port dat_o:  out UInt<32>;
+  port rd:     in Bool;
+  port empty:  out Bool;
+  port fe:     out Bool;
+
+  // Internal signals
+  reg reset_tx_fifo_r: Bool reset rst => false;
+  reg din_r:    UInt<32> reset rst => 0;
+  reg wr_tx_r:  Bool reset rst => false;
+  reg we_r:     UInt<9> reset rst => 0;
+  reg offset_r: UInt<9> reset rst => 0;
+  reg first_r:  Bool reset rst => false;
+  reg ackd_r:   Bool reset rst => false;
+  reg delay_r:  Bool reset rst => false;
+
+  wire mem_empt_w: UInt<6>;
+  wire fe_w: Bool;
+  wire empty_w: Bool;
+
+  // Internal TX FIFO instance
+  inst u_fifo: sd_tx_fifo
+    d     <- din_r;
+    wr    <- wr_tx_r;
+    wclk  <- clk;
+    q     -> dat_o;
+    rd    <- rd;
+    full  -> fe_w;
+    empty -> empty_w;
+    mem_empt -> mem_empt_w;
+    rclk  <- sd_clk;
+    rst   <- rst;
+  end inst u_fifo
+
+  reg m_wb_cyc_r: Bool reset rst => false;
+  reg m_wb_stb_r: Bool reset rst => false;
+  reg m_wb_cti_r: UInt<3> reset rst => 0;
+  reg m_wb_bte_r: UInt<2> reset rst => 0;
+
+  default seq on clk rising;
+
+  seq
+    wr_tx_r <= false;
+    ackd_r <= false;
+
+    if en
+      // When enabled, read from WB and fill FIFO
+      if ~first_r
+        // Initialize: set up for burst read
+        first_r <= true;
+        offset_r <= 0;
+        we_r <= 0;
+        reset_tx_fifo_r <= true;
+      else
+        reset_tx_fifo_r <= false;
+        if ~fe_w
+          // FIFO not full, do WB read
+          m_wb_cyc_r <= true;
+          m_wb_stb_r <= true;
+          if m_wb_ack_i
+            din_r <= m_wb_dat_i;
+            wr_tx_r <= true;
+            offset_r <= (offset_r + 1).trunc<9>();
+            ackd_r <= true;
+          end if
+        else
+          m_wb_cyc_r <= false;
+          m_wb_stb_r <= false;
+        end if
+      end if
+    else
+      first_r <= false;
+      m_wb_cyc_r <= false;
+      m_wb_stb_r <= false;
+      offset_r <= 0;
+    end if
+  end seq
+
+  comb
+    m_wb_adr_o = (adr + (offset_r.zext<32>() << 2)).trunc<32>();
+    m_wb_we_o  = false;
+    m_wb_cyc_o = m_wb_cyc_r;
+    m_wb_stb_o = m_wb_stb_r;
+    m_wb_cti_o = 0;
+    m_wb_bte_o = 0;
+    fe    = fe_w;
+    empty = empty_w;
+  end comb
+end module sd_fifo_tx_filler

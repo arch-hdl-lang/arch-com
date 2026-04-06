@@ -1,0 +1,159 @@
+#!/bin/bash
+# RealBench integration test runner
+# Usage: ./run_realbench.sh <problem_set> [module_name]
+# Example: ./run_realbench.sh e203_hbirdv2
+#          ./run_realbench.sh sdc sd_crc_7
+
+set -euo pipefail
+
+ARCH_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+REALBENCH_DIR="$ARCH_DIR/../RealBench"
+ARCH_BIN="$ARCH_DIR/target/release/arch"
+
+PROBLEM_SET="${1:?Usage: $0 <problem_set> [module_name]}"
+MODULE_FILTER="${2:-}"
+
+# Build arch compiler in release mode (faster)
+if [ ! -f "$ARCH_BIN" ]; then
+    echo "Building arch compiler (release)..."
+    cd "$ARCH_DIR" && cargo build --release --quiet
+fi
+
+# Determine test directories and arch source dirs
+case "$PROBLEM_SET" in
+    e203_hbirdv2|e203)
+        BENCH_DIR="$REALBENCH_DIR/e203_hbirdv2"
+        ARCH_SRC_DIR="$ARCH_DIR/tests/e203"
+        ;;
+    sdc)
+        BENCH_DIR="$REALBENCH_DIR/sdc"
+        ARCH_SRC_DIR="$ARCH_DIR/tests/sdc"
+        ;;
+    aes)
+        BENCH_DIR="$REALBENCH_DIR/aes"
+        ARCH_SRC_DIR="$ARCH_DIR/tests/aes"
+        ;;
+    *)
+        echo "Unknown problem set: $PROBLEM_SET"
+        exit 1
+        ;;
+esac
+
+PASS=0
+FAIL=0
+SKIP=0
+ERRORS=""
+
+# Get module list
+if [ -n "$MODULE_FILTER" ]; then
+    MODULES="$MODULE_FILTER"
+else
+    MODULES=$(ls -d "$BENCH_DIR"/*/verification 2>/dev/null | xargs -I{} dirname {} | xargs -I{} basename {})
+fi
+
+TOTAL=$(echo "$MODULES" | wc -w | tr -d ' ')
+echo "Running $TOTAL RealBench $PROBLEM_SET integration tests..."
+echo "============================================================"
+
+for MOD in $MODULES; do
+    VERIF_DIR="$BENCH_DIR/$MOD/verification"
+    TOP_SV="$VERIF_DIR/${MOD}_top.sv"
+    ARCH_FILE="$ARCH_SRC_DIR/$MOD.arch"
+
+    if [ ! -d "$VERIF_DIR" ]; then
+        echo "SKIP $MOD (no verification dir)"
+        SKIP=$((SKIP + 1))
+        continue
+    fi
+
+    if [ ! -f "$ARCH_FILE" ]; then
+        echo "SKIP $MOD (no .arch file)"
+        SKIP=$((SKIP + 1))
+        continue
+    fi
+
+    printf "%-45s " "$MOD"
+
+    # Create temp work directory
+    WORK_DIR=$(mktemp -d)
+    trap "rm -rf $WORK_DIR" EXIT
+
+    # Copy all verification files
+    cp "$VERIF_DIR"/* "$WORK_DIR/" 2>/dev/null || true
+
+    # Build ARCH -> SV (may need extra files for submodules)
+    EXTRA_ARCH=$(ls "$ARCH_SRC_DIR"/*.arch 2>/dev/null | tr '\n' ' ')
+    GEN_SV="$WORK_DIR/${MOD}_gen.sv"
+
+    if ! "$ARCH_BIN" build $EXTRA_ARCH -o "$WORK_DIR/" 2>"$WORK_DIR/arch_err.txt"; then
+        echo "FAIL (arch build error)"
+        FAIL=$((FAIL + 1))
+        ERRORS="$ERRORS\n  $MOD: arch build failed - $(head -1 $WORK_DIR/arch_err.txt)"
+        rm -rf "$WORK_DIR"
+        continue
+    fi
+
+    # Replace the _top.sv (DUT) with our generated SV
+    # Our generated SV file should be named after the module
+    GEN_FILE="$WORK_DIR/$MOD.sv"
+    if [ -f "$GEN_FILE" ]; then
+        cp "$GEN_FILE" "$TOP_SV"
+    fi
+
+    # Run Verilator compile
+    cd "$WORK_DIR"
+    VFLAGS="-cc --exe --binary --trace --assert --timing -j 4 --top tb"
+    VFLAGS="$VFLAGS -Wno-SIDEEFFECT -Wno-CASEOVERLAP -Wno-LATCH -Wno-UNOPTFLAT"
+    VFLAGS="$VFLAGS -Wno-MULTIDRIVEN -Wno-ASCRANGE -Wno-COMBDLY -Wno-IMPLICIT"
+    VFLAGS="$VFLAGS -Wno-CASEINCOMPLETE -Wno-PINMISSING -Wno-WIDTHTRUNC"
+    VFLAGS="$VFLAGS -Wno-TIMESCALEMOD -Wno-INITIALDLY -Wno-EOFNEWLINE"
+    VFLAGS="$VFLAGS -Wno-DECLFILENAME -Wno-WIDTHEXPAND -Wno-WIDTHCONCAT"
+    VFLAGS="$VFLAGS -fno-table"
+
+    if ! verilator $VFLAGS *v *.sv 2>"$WORK_DIR/vltor_err.txt"; then
+        echo "FAIL (verilator compile)"
+        FAIL=$((FAIL + 1))
+        ERRORS="$ERRORS\n  $MOD: verilator compile - $(grep '%Error' $WORK_DIR/vltor_err.txt | head -3)"
+        cd "$ARCH_DIR"
+        rm -rf "$WORK_DIR"
+        continue
+    fi
+
+    # Run simulation with timeout
+    if timeout 30 obj_dir/Vtb >"$WORK_DIR/sim_out.txt" 2>&1; then
+        # Check for mismatches
+        if grep -q "Mismatches: 0" "$WORK_DIR/sim_out.txt"; then
+            SAMPLES=$(grep -o '[0-9]* samples' "$WORK_DIR/sim_out.txt" | head -1)
+            echo "PASS ($SAMPLES)"
+            PASS=$((PASS + 1))
+        elif grep -q "Hint: Total mismatched samples is 0" "$WORK_DIR/sim_out.txt"; then
+            SAMPLES=$(grep -o '[0-9]* samples' "$WORK_DIR/sim_out.txt" | head -1)
+            echo "PASS ($SAMPLES)"
+            PASS=$((PASS + 1))
+        elif grep -q "mismatched" "$WORK_DIR/sim_out.txt"; then
+            MISMATCH=$(grep -o '[0-9]* mismatched' "$WORK_DIR/sim_out.txt" | head -1)
+            echo "FAIL ($MISMATCH)"
+            FAIL=$((FAIL + 1))
+            ERRORS="$ERRORS\n  $MOD: $MISMATCH"
+        else
+            echo "PASS (completed)"
+            PASS=$((PASS + 1))
+        fi
+    else
+        echo "FAIL (timeout/crash)"
+        FAIL=$((FAIL + 1))
+        ERRORS="$ERRORS\n  $MOD: sim timeout or crash"
+    fi
+
+    cd "$ARCH_DIR"
+    rm -rf "$WORK_DIR"
+done
+
+echo ""
+echo "============================================================"
+echo "Results: $PASS PASS, $FAIL FAIL, $SKIP SKIP (of $TOTAL)"
+if [ -n "$ERRORS" ]; then
+    echo ""
+    echo "Failures:"
+    echo -e "$ERRORS"
+fi

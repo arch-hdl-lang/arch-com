@@ -50,8 +50,13 @@ def _score_harness_against_ports(entry, ports):
     for fname, content in entry.get('harness', {}).get('files', {}).items():
         if fname.endswith('.py'):
             refs |= set(re.findall(r'\bdut\.([A-Za-z_]\w*)', content))
+            # Some harnesses access DUT signals indirectly via getattr(dut, f"{name}_...")
+            refs |= set(re.findall(r'getattr\(dut,\s*f"\{name\}_([A-Za-z_]\w*)"\)', content))
     ignored = {
         '_log', '_id', '_path', '_name', 'value', 'integer', 'binstr', 'is_resolvable',
+        'req_i', 'we_i', 'type_i', 'wdata_i', 'addr_base_i', 'addr_offset_i',
+        'ready_o', 'req_o', 'req_addr_o', 'req_be_o', 'req_wdata_o', 'req_we_o',
+        'rsp_rdata_i', 'rvalid_i', 'gnt_i',
     }
     refs = {r for r in refs if r not in ignored}
     missing = sum(1 for r in refs if r not in ports)
@@ -360,6 +365,17 @@ def extract_and_run(name_substr, sv_file=None):
         input_names = set(_re.findall(r'input\s+(?:logic\s+)?(?:(?:signed|unsigned)\s+)?(?:\[[^\]]*\]\s*)?(\w+)', sv_src))
         if input_names:
             hl = open(hl_path).read()
+            if 'await ReadOnly()' in hl and 'async def _arch_readonly' not in hl:
+                hl = (
+                    "async def _arch_readonly():\n"
+                    "    try:\n"
+                    "        await ReadOnly()\n"
+                    "    except RuntimeError as e:\n"
+                    "        if 'ReadOnly phase' not in str(e):\n"
+                    "            raise\n"
+                    "        await NextTimeStep()\n"
+                    "        await ReadOnly()\n\n"
+                ) + hl.replace('await ReadOnly()', 'await _arch_readonly()')
             if 'dut_init' in hl:
                 names_str = repr(input_names)
                 hl = hl.replace(

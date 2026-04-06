@@ -1,0 +1,70 @@
+// E203 CSR Control Sub-unit
+// Pure combinational: executes CSRRW/CSRRS/CSRRC instructions.
+// Computes new CSR value from set/clear/write semantics.
+
+module e203_exu_alu_csrctrl
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  // Dispatch handshake
+  port csr_i_valid: in Bool;
+  port csr_i_ready: out Bool;
+  port csr_i_rs1:   in UInt<32>;
+  port csr_i_info:  in UInt<26>;  // E203_DECINFO_CSR_WIDTH
+  port csr_i_rdwen: in Bool;      // rd write enable (is rd != x0?)
+
+  // CSR register file interface
+  port csr_ena:        out Bool;
+  port csr_wr_en:      out Bool;
+  port csr_rd_en:      out Bool;
+  port csr_idx:        out UInt<12>;
+  port csr_access_ilgl: in Bool;
+  port read_csr_dat:   in UInt<32>;
+  port wbck_csr_dat:   out UInt<32>;
+
+  // Result handshake
+  port csr_o_valid:     out Bool;
+  port csr_o_ready:     in Bool;
+  port csr_o_wbck_wdat: out UInt<32>;
+  port csr_o_wbck_err:  out Bool;
+
+  // Decode info fields
+  let csrrw:  Bool     = csr_i_info[4:4];
+  let csrrs:  Bool     = csr_i_info[5:5];
+  let csrrc:  Bool     = csr_i_info[6:6];
+  let rs1imm: Bool     = csr_i_info[7:7];
+  let zimm:   UInt<5>  = csr_i_info[12:8];
+  let rs1is0: Bool     = csr_i_info[13:13];
+  let csridx: UInt<12> = csr_i_info[25:14];
+
+  // Operand: zero-extended zimm or rs1
+  let csr_op1: UInt<32> = rs1imm ? zimm.zext<32>() : csr_i_rs1;
+
+  comb
+    // Pass-through handshake
+    csr_o_valid = csr_i_valid;
+    csr_i_ready = csr_o_ready;
+
+    // Writeback to register file = CSR read data
+    csr_o_wbck_wdat = read_csr_dat;
+    csr_o_wbck_err  = csr_access_ilgl;
+
+    // CSR index passthrough
+    csr_idx = csridx;
+
+    // CSR enable: fire when handshake completes
+    csr_ena = csr_o_valid & csr_o_ready;
+
+    // Read enable: CSRRW reads only if rd written; CSRRS/CSRRC always read
+    csr_rd_en = csr_i_valid & ((csrrw & csr_i_rdwen) | csrrs | csrrc);
+
+    // Write enable: CSRRW always writes; CSRRS/CSRRC write only if rs1 != x0
+    csr_wr_en = csr_i_valid & (csrrw | ((csrrs | csrrc) & (~rs1is0)));
+
+    // Write data: CSRRW=direct, CSRRS=set bits, CSRRC=clear bits
+    wbck_csr_dat = (csr_op1 & {32{csrrw}})
+                 | ((csr_op1 | read_csr_dat) & {32{csrrs}})
+                 | ((~csr_op1 & read_csr_dat) & {32{csrrc}});
+  end comb
+end module e203_exu_alu_csrctrl

@@ -1,0 +1,30 @@
+// SD CRC-7 Generator (LFSR)
+// Polynomial: x^7 + x^3 + 1. Taps at positions 0 and 3.
+
+module sd_crc_7
+
+  port CLK:    in Clock<SysDomain>;
+  port RST:    in Reset<Async, High>;
+  port BITVAL: in Bool;
+  port Enable: in Bool;
+  port CRC:    out UInt<7>;
+
+  reg crc_r: UInt<7> reset RST => 0;
+  let inv: Bool = BITVAL ^ crc_r[6:6];
+
+  default seq on CLK rising;
+
+  seq
+    if Enable
+      crc_r[6:6] <= crc_r[5:5];
+      crc_r[5:5] <= crc_r[4:4];
+      crc_r[4:4] <= crc_r[3:3];
+      crc_r[3:3] <= crc_r[2:2] ^ inv;
+      crc_r[2:2] <= crc_r[1:1];
+      crc_r[1:1] <= crc_r[0:0];
+      crc_r[0:0] <= inv;
+    end if
+  end seq
+
+  let CRC = crc_r;
+end module sd_crc_7

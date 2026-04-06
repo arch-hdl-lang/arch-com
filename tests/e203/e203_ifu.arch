@@ -1,0 +1,171 @@
+// E203 HBirdv2 Instruction Fetch Unit — integration wrapper
+// Instantiates e203_ifu_ifetch (PC gen + fetch FSM) and e203_ifu_ift2icb (fetch-to-ICB bridge).
+// Exposes full RealBench port list; hardwires ifu_active = true.
+
+module e203_ifu
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  // ── Inspect / status ───────────────────────────────────────────────
+  port inspect_pc:  out UInt<32>;
+  port ifu_active:  out Bool;
+
+  // ── ITCM config ────────────────────────────────────────────────────
+  port itcm_nohold:      in Bool;
+  port pc_rtvec:         in UInt<32>;
+  port ifu2itcm_holdup:  in Bool;
+  port itcm_region_indic: in UInt<32>;
+
+  // ── ITCM ICB master ────────────────────────────────────────────────
+  port ifu2itcm_icb_cmd_valid: out Bool;
+  port ifu2itcm_icb_cmd_ready: in  Bool;
+  port ifu2itcm_icb_cmd_addr:  out UInt<16>;
+  port ifu2itcm_icb_rsp_valid: in  Bool;
+  port ifu2itcm_icb_rsp_ready: out Bool;
+  port ifu2itcm_icb_rsp_err:   in  Bool;
+  port ifu2itcm_icb_rsp_rdata: in  UInt<64>;
+
+  // ── BIU ICB master (external memory path) ──────────────────────────
+  port ifu2biu_icb_cmd_valid: out Bool;
+  port ifu2biu_icb_cmd_ready: in  Bool;
+  port ifu2biu_icb_cmd_addr:  out UInt<32>;
+  port ifu2biu_icb_rsp_valid: in  Bool;
+  port ifu2biu_icb_rsp_ready: out Bool;
+  port ifu2biu_icb_rsp_err:   in  Bool;
+  port ifu2biu_icb_rsp_rdata: in  UInt<32>;
+
+  // ── Instruction output to decode ───────────────────────────────────
+  port ifu_o_ir:          out UInt<32>;
+  port ifu_o_pc:          out UInt<32>;
+  port ifu_o_pc_vld:      out Bool;
+  port ifu_o_misalgn:     out Bool;
+  port ifu_o_buserr:      out Bool;
+  port ifu_o_rs1idx:      out UInt<5>;
+  port ifu_o_rs2idx:      out UInt<5>;
+  port ifu_o_prdt_taken:  out Bool;
+  port ifu_o_muldiv_b2b:  out Bool;
+  port ifu_o_valid:       out Bool;
+  port ifu_o_ready:       in  Bool;
+
+  // ── Pipe flush ─────────────────────────────────────────────────────
+  port pipe_flush_ack:     out Bool;
+  port pipe_flush_req:     in  Bool;
+  port pipe_flush_add_op1: in  UInt<32>;
+  port pipe_flush_add_op2: in  UInt<32>;
+  port pipe_flush_pc:      in  UInt<32>;
+
+  // ── Halt ───────────────────────────────────────────────────────────
+  port ifu_halt_req: in  Bool;
+  port ifu_halt_ack: out Bool;
+
+  // ── OITF / regfile / decode feedback ───────────────────────────────
+  port oitf_empty:    in Bool;
+  port rf2ifu_x1:     in UInt<32>;
+  port rf2ifu_rs1:    in UInt<32>;
+  port dec2ifu_rden:  in Bool;
+  port dec2ifu_rs1en: in Bool;
+  port dec2ifu_rdidx: in UInt<5>;
+  port dec2ifu_mulhsu: in Bool;
+  port dec2ifu_div:    in Bool;
+  port dec2ifu_rem:    in Bool;
+  port dec2ifu_divu:   in Bool;
+  port dec2ifu_remu:   in Bool;
+
+  // ── Hardwired outputs ──────────────────────────────────────────────
+  let ifu_active = true;
+
+  // ── Internal wires: ifetch <-> ift2icb ─────────────────────────────
+  wire ifu_req_valid_w:    Bool;
+  wire ifu_req_ready_w:    Bool;
+  wire ifu_req_pc_w:       UInt<32>;
+  wire ifu_rsp_valid_w:    Bool;
+  wire ifu_rsp_ready_w:    Bool;
+  wire ifu_rsp_instr_w:    UInt<32>;
+
+  // ── Ifetch -> ift2icb wires (seq/last_pc) ────────────────────────────
+  wire ifu_req_seq_w:      Bool;
+  wire ifu_req_seq_rv32_w: Bool;
+  wire ifu_req_last_pc_w:  UInt<32>;
+  wire ifu_rsp_err_w:      Bool;
+
+  // ── e203_ifu_ifetch: PC generation + fetch state machine ───────────
+  inst ifetch: e203_ifu_ifetch
+    clk              <- clk;
+    rst_n            <- rst_n;
+    pc_rtvec         <- pc_rtvec;
+    ifu_req_ready    <- ifu_req_ready_w;
+    ifu_rsp_valid    <- ifu_rsp_valid_w;
+    ifu_rsp_err      <- false;
+    ifu_rsp_instr    <- ifu_rsp_instr_w;
+    ifu_o_ready      <- ifu_o_ready;
+    pipe_flush_req     <- pipe_flush_req;
+    pipe_flush_add_op1 <- pipe_flush_add_op1;
+    pipe_flush_add_op2 <- pipe_flush_add_op2;
+    pipe_flush_pc      <- pipe_flush_pc;
+    ifu_halt_req     <- ifu_halt_req;
+    oitf_empty       <- oitf_empty;
+    rf2ifu_x1        <- rf2ifu_x1;
+    rf2ifu_rs1       <- rf2ifu_rs1;
+    dec2ifu_rs1en    <- dec2ifu_rs1en;
+    dec2ifu_rden     <- dec2ifu_rden;
+    dec2ifu_rdidx    <- dec2ifu_rdidx;
+    dec2ifu_mulhsu   <- dec2ifu_mulhsu;
+    dec2ifu_div      <- dec2ifu_div;
+    dec2ifu_rem      <- dec2ifu_rem;
+    dec2ifu_divu     <- dec2ifu_divu;
+    dec2ifu_remu     <- dec2ifu_remu;
+    inspect_pc       -> inspect_pc;
+    ifu_req_valid    -> ifu_req_valid_w;
+    ifu_req_pc       -> ifu_req_pc_w;
+    ifu_req_seq      -> ifu_req_seq_w;
+    ifu_req_seq_rv32 -> ifu_req_seq_rv32_w;
+    ifu_req_last_pc  -> ifu_req_last_pc_w;
+    ifu_rsp_ready    -> ifu_rsp_ready_w;
+    ifu_o_ir         -> ifu_o_ir;
+    ifu_o_pc         -> ifu_o_pc;
+    ifu_o_pc_vld     -> ifu_o_pc_vld;
+    ifu_o_rs1idx     -> ifu_o_rs1idx;
+    ifu_o_rs2idx     -> ifu_o_rs2idx;
+    ifu_o_prdt_taken -> ifu_o_prdt_taken;
+    ifu_o_misalgn    -> ifu_o_misalgn;
+    ifu_o_buserr     -> ifu_o_buserr;
+    ifu_o_muldiv_b2b -> ifu_o_muldiv_b2b;
+    ifu_o_valid      -> ifu_o_valid;
+    pipe_flush_ack   -> pipe_flush_ack;
+    ifu_halt_ack     -> ifu_halt_ack;
+  end inst ifetch
+
+  // ── e203_ifu_ift2icb: fetch-to-ITCM ICB bridge ────────────────────
+  inst icb: e203_ifu_ift2icb
+    clk            <- clk;
+    rst_n          <- rst_n;
+    itcm_nohold    <- itcm_nohold;
+    ifu_req_valid  <- ifu_req_valid_w;
+    ifu_req_pc     <- ifu_req_pc_w;
+    ifu_req_seq       <- ifu_req_seq_w;
+    ifu_req_seq_rv32  <- ifu_req_seq_rv32_w;
+    ifu_req_last_pc   <- ifu_req_last_pc_w;
+    ifu_rsp_ready  <- ifu_rsp_ready_w;
+    itcm_region_indic <- itcm_region_indic;
+    ifu2itcm_icb_cmd_ready <- ifu2itcm_icb_cmd_ready;
+    ifu2itcm_icb_rsp_valid <- ifu2itcm_icb_rsp_valid;
+    ifu2itcm_icb_rsp_err   <- ifu2itcm_icb_rsp_err;
+    ifu2itcm_icb_rsp_rdata <- ifu2itcm_icb_rsp_rdata;
+    ifu2biu_icb_cmd_ready  <- ifu2biu_icb_cmd_ready;
+    ifu2biu_icb_rsp_valid  <- ifu2biu_icb_rsp_valid;
+    ifu2biu_icb_rsp_err    <- ifu2biu_icb_rsp_err;
+    ifu2biu_icb_rsp_rdata  <- ifu2biu_icb_rsp_rdata;
+    ifu2itcm_holdup        <- ifu2itcm_holdup;
+    ifu_req_ready  -> ifu_req_ready_w;
+    ifu_rsp_valid  -> ifu_rsp_valid_w;
+    ifu_rsp_err    -> ifu_rsp_err_w;
+    ifu_rsp_instr  -> ifu_rsp_instr_w;
+    ifu2itcm_icb_cmd_valid -> ifu2itcm_icb_cmd_valid;
+    ifu2itcm_icb_cmd_addr  -> ifu2itcm_icb_cmd_addr;
+    ifu2itcm_icb_rsp_ready -> ifu2itcm_icb_rsp_ready;
+    ifu2biu_icb_cmd_valid  -> ifu2biu_icb_cmd_valid;
+    ifu2biu_icb_cmd_addr   -> ifu2biu_icb_cmd_addr;
+    ifu2biu_icb_rsp_ready  -> ifu2biu_icb_rsp_ready;
+  end inst icb
+
+end module e203_ifu

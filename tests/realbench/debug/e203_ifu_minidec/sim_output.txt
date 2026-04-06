@@ -1,0 +1,24 @@
+- /var/folders/t9/v1b5k29j301gs_lsdrnlvdjw0000gn/T/tmp0n8dam4j/e203_ifu_minidec_stimulus_gen.sv:60: Verilog $finish
+Hint: Output 'dec_rs1en' has 6 mismatches. First mismatch occurred at time 1215.
+Hint: Output 'dec_rs2en' has no mismatches.
+Hint: Output 'dec_rs1idx' has no mismatches.
+Hint: Output 'dec_rs2idx' has no mismatches.
+Hint: Output 'dec_mulhsu' has no mismatches.
+Hint: Output 'dec_mul' has no mismatches.
+Hint: Output 'dec_div' has no mismatches.
+Hint: Output 'dec_rem' has no mismatches.
+Hint: Output 'dec_divu' has no mismatches.
+Hint: Output 'dec_remu' has no mismatches.
+Hint: Output 'dec_rv32' has no mismatches.
+Hint: Output 'dec_bjp' has no mismatches.
+Hint: Output 'dec_jal' has no mismatches.
+Hint: Output 'dec_jalr' has no mismatches.
+Hint: Output 'dec_bxx' has no mismatches.
+Hint: Output 'dec_jalr_rs1idx' has no mismatches.
+Hint: Output 'dec_bjp_imm' has no mismatches.
+Hint: Total mismatched samples is 6 out of 204 samples
+
+Simulation finished at 2040 ps
+- S i m u l a t i o n   R e p o r t: Verilator 5.034 2025-02-24
+- Verilator: $finish at 2ns; walltime 0.001 s; speed 2.239 us/s
+- Verilator: cpu 0.001 s on 1 threads; alloced 0 MB

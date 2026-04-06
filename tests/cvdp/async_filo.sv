@@ -1,6 +1,6 @@
 module async_filo #(
   parameter int DATA_WIDTH = 16,
-  parameter [3:0] DEPTH = 8,
+  parameter int DEPTH = 8,
   parameter int ADDR_WIDTH = 3
 ) (
   input logic w_clk,
@@ -15,10 +15,10 @@ module async_filo #(
   output logic w_full
 );
 
-  // max 15; width matches ADDR_WIDTH+1
+  // Use unbounded const so testbench overrides like DEPTH=16 are preserved.
   // must equal log2(DEPTH)
   // Memory array
-  logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];
+  logic [DATA_WIDTH-1:0] mem [DEPTH-1:0];
   // Write domain: monotonically increasing push count (ADDR_WIDTH+1 bits)
   logic [ADDR_WIDTH + 1-1:0] w_ptr;
   // Read domain: monotonically increasing pop count
@@ -78,6 +78,82 @@ module async_filo #(
       end
     end
   end
+
+endmodule
+
+module RToWGraySync #(
+  parameter int STAGES = 2,
+  parameter int WIDTH = 4
+) (
+  input logic src_clk,
+  input logic dst_clk,
+  input logic rst,
+  input logic [WIDTH-1:0] data_in,
+  output logic [WIDTH-1:0] data_out
+);
+
+  // Gray-code synchronizer (2 stages, src_clk → dst_clk)
+  logic [WIDTH-1:0] bin_to_gray;
+  logic [WIDTH-1:0] gray_chain [0:STAGES-1];
+  logic [WIDTH-1:0] gray_to_bin;
+  
+  assign bin_to_gray = data_in ^ (data_in >> 1);
+  
+  always_ff @(posedge dst_clk or posedge rst) begin
+    if (rst) begin
+      for (int i = 0; i < STAGES; i++) gray_chain[i] <= '0;
+    end else begin
+      gray_chain[0] <= bin_to_gray;
+      for (int i = 1; i < STAGES; i++) gray_chain[i] <= gray_chain[i-1];
+    end
+  end
+  
+  // Gray-to-binary decode (prefix XOR — no self-reference)
+  always_comb begin
+    gray_to_bin = gray_chain[STAGES-1];
+    for (int i = 1; i < $bits(logic [WIDTH-1:0]); i++)
+      gray_to_bin ^= gray_chain[STAGES-1] >> i;
+  end
+  
+  assign data_out = gray_to_bin;
+
+endmodule
+
+module WToRGraySync #(
+  parameter int STAGES = 2,
+  parameter int WIDTH = 4
+) (
+  input logic src_clk,
+  input logic dst_clk,
+  input logic rst,
+  input logic [WIDTH-1:0] data_in,
+  output logic [WIDTH-1:0] data_out
+);
+
+  // Gray-code synchronizer (2 stages, src_clk → dst_clk)
+  logic [WIDTH-1:0] bin_to_gray;
+  logic [WIDTH-1:0] gray_chain [0:STAGES-1];
+  logic [WIDTH-1:0] gray_to_bin;
+  
+  assign bin_to_gray = data_in ^ (data_in >> 1);
+  
+  always_ff @(posedge dst_clk or posedge rst) begin
+    if (rst) begin
+      for (int i = 0; i < STAGES; i++) gray_chain[i] <= '0;
+    end else begin
+      gray_chain[0] <= bin_to_gray;
+      for (int i = 1; i < STAGES; i++) gray_chain[i] <= gray_chain[i-1];
+    end
+  end
+  
+  // Gray-to-binary decode (prefix XOR — no self-reference)
+  always_comb begin
+    gray_to_bin = gray_chain[STAGES-1];
+    for (int i = 1; i < $bits(logic [WIDTH-1:0]); i++)
+      gray_to_bin ^= gray_chain[STAGES-1] >> i;
+  end
+  
+  assign data_out = gray_to_bin;
 
 endmodule
 

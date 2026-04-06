@@ -27,7 +27,7 @@ ram DtcmSram
   end port wr_port
 end ram DtcmSram
 
-module Dtcm
+module e203_dtcm
   port clk:   in Clock<SysDomain>;
   port rst_n: in Reset<Async, Low>;
 
@@ -61,4 +61,4 @@ module Dtcm
     wr_port.data <- masked_wdata;
   end inst sram
 
-end module Dtcm
+end module e203_dtcm

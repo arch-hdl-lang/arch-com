@@ -1,0 +1,84 @@
+// E203 NICE Co-processor Interface
+// Routes custom instructions to external NICE accelerator.
+// Includes itag FIFO for long-pipe tracking.
+
+module e203_exu_nice
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  port nice_i_xs_off: in Bool;  // NICE extension disabled
+
+  // Dispatch handshake
+  port nice_i_valid: in Bool;
+  port nice_i_ready: out Bool;
+  port nice_i_instr: in UInt<32>;
+  port nice_i_rs1:   in UInt<32>;
+  port nice_i_rs2:   in UInt<32>;
+  port nice_i_itag:  in UInt<1>;
+
+  // Output interface
+  port nice_o_longpipe: out Bool;
+  port nice_o_valid:    out Bool;
+  port nice_o_ready:    in Bool;
+
+  // Itag writeback (for long-pipe tracking)
+  port nice_o_itag_valid: out Bool;
+  port nice_o_itag_ready: in Bool;
+  port nice_o_itag:       out UInt<1>;
+
+  // Multi-cycle response
+  port nice_rsp_multicyc_valid: in Bool;
+  port nice_rsp_multicyc_ready: out Bool;
+
+  // Request to coprocessor
+  port nice_req_valid: out Bool;
+  port nice_req_ready: in Bool;
+  port nice_req_instr: out UInt<32>;
+  port nice_req_rs1:   out UInt<32>;
+  port nice_req_rs2:   out UInt<32>;
+
+  // Itag FIFO (4-deep, 1-bit wide)
+  reg fifo_mem: Vec<UInt<1>, 4> reset rst_n => 0;
+  reg fifo_wptr: UInt<3> reset rst_n => 0;
+  reg fifo_rptr: UInt<3> reset rst_n => 0;
+
+  let fifo_empty: Bool = (fifo_wptr == fifo_rptr);
+  let fifo_full:  Bool = (fifo_wptr[1:0] == fifo_rptr[1:0]) & (fifo_wptr[2:2] != fifo_rptr[2:2]);
+  let fifo_o_vld: Bool = ~fifo_empty;
+  let fifo_o_dat: UInt<1> = fifo_mem[fifo_rptr[1:0]];
+
+  let nice_req_ready_pos: Bool = nice_i_xs_off ? true : nice_req_ready;
+
+  // FIFO write: when long-pipe request fires
+  let fifo_wen: Bool = nice_o_longpipe & nice_req_valid & nice_req_ready;
+  // FIFO read: when multi-cycle response acknowledged
+  let fifo_ren: Bool = nice_rsp_multicyc_valid & nice_rsp_multicyc_ready;
+
+  default seq on clk rising;
+
+  seq
+    if fifo_wen
+      fifo_mem[fifo_wptr[1:0]] <= nice_i_itag;
+      fifo_wptr <= (fifo_wptr + 1).trunc<3>();
+    end if
+    if fifo_ren
+      fifo_rptr <= (fifo_rptr + 1).trunc<3>();
+    end if
+  end seq
+
+  comb
+    nice_req_valid = (~nice_i_xs_off) & nice_i_valid & nice_o_ready;
+    nice_req_instr = nice_i_instr;
+    nice_req_rs1   = nice_i_rs1;
+    nice_req_rs2   = nice_i_rs2;
+
+    nice_i_ready = nice_req_ready_pos & nice_o_ready;
+    nice_o_valid = nice_i_valid & nice_req_ready_pos;
+    nice_o_longpipe = ~nice_i_xs_off;
+
+    nice_o_itag_valid = fifo_o_vld & nice_rsp_multicyc_valid;
+    nice_o_itag = fifo_o_dat;
+    nice_rsp_multicyc_ready = nice_o_itag_ready & fifo_o_vld;
+  end comb
+end module e203_exu_nice

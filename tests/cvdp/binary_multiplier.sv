@@ -13,7 +13,8 @@ module binary_multiplier #(
   logic [WIDTH-1:0] a_reg;
   logic [WIDTH-1:0] b_reg;
   logic [2 * WIDTH-1:0] acc;
-  logic [5-1:0] bit_idx;
+  // Support WIDTH up to 32 in CVDP tests.
+  logic [6-1:0] bit_idx;
   logic [2-1:0] phase;
   logic running;
   logic [2 * WIDTH-1:0] prod_reg;
@@ -39,11 +40,11 @@ module binary_multiplier #(
           if (a_reg[bit_idx +: 1] == 1) begin
             acc <= (2 * WIDTH)'(acc + ((2 * WIDTH)'($unsigned(b_reg)) << bit_idx));
           end
-          if (bit_idx == 31) begin
+          if (bit_idx == WIDTH - 1) begin
             phase <= 1;
             bit_idx <= 0;
           end else begin
-            bit_idx <= 5'(bit_idx + 1);
+            bit_idx <= 6'(bit_idx + 1);
           end
         end else begin
           prod_reg <= acc;

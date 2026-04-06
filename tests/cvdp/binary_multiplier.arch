@@ -14,7 +14,8 @@ module binary_multiplier
   reg a_reg:    UInt<WIDTH>     reset rst_n => 0;
   reg b_reg:    UInt<WIDTH>     reset rst_n => 0;
   reg acc:      UInt<2*WIDTH>   reset rst_n => 0;
-  reg bit_idx:  UInt<5>         reset rst_n => 0;
+  // Support WIDTH up to 32 in CVDP tests.
+  reg bit_idx:  UInt<6>         reset rst_n => 0;
   reg phase:    UInt<2>         reset rst_n => 0;
   reg running:  Bool            reset rst_n => false;
   reg prod_reg: UInt<2*WIDTH>   reset rst_n => 0;
@@ -31,11 +32,11 @@ module binary_multiplier
         if a_reg[bit_idx:bit_idx] == 1
           acc <= (acc + (b_reg.zext<2*WIDTH>() << bit_idx)).trunc<2*WIDTH>();
         end if
-        if bit_idx == 31
+        if bit_idx == (WIDTH - 1)
           phase   <= 1;
           bit_idx <= 0;
         else
-          bit_idx <= (bit_idx + 1).trunc<5>();
+          bit_idx <= (bit_idx + 1).trunc<6>();
         end if
       else
         prod_reg <= acc;

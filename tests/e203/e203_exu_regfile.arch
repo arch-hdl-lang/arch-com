@@ -1,30 +1,271 @@
 // E203 HBirdv2 integer register file
-// 32 × 32-bit, 2 async read ports, 1 sync write port.
-// x0 hardwired to 0 via init[0]=0 and write guard in the pipeline.
+// 32 x 32-bit, 2 async read ports, 1 sync write port.
+// x0 hardwired to 0. x1 exposed as output for link register.
 // No reset on data entries (matches E203 spec).
 
-regfile ExuRegfile
-  param XLEN:   const = 32;
-  param NREGS:  const = 32;
-  param NREAD:  const = 2;
-  param NWRITE: const = 1;
+module e203_exu_regfile
+  param XLEN:  const = 32;
+  param NREGS: const = 32;
 
-  port clk:    in Clock<SysDomain>;
-  port rst_n:  in Reset<Async, Low>;
+  port clk:       in Clock<SysDomain>;
+  port rst_n:     in Reset<Async, Low>;
   port test_mode: in Bool;
 
-  ports[NREAD] read
-    addr: in  UInt<5>;
-    data: out UInt<32>;
-  end ports read
+  // Read port 1
+  port read_src1_idx: in  UInt<5>;
+  port read_src1_dat: out UInt<32>;
 
-  ports[NWRITE] write
-    en:   in Bool;
-    addr: in UInt<5>;
-    data: in UInt<32>;
-  end ports write
+  // Read port 2
+  port read_src2_idx: in  UInt<5>;
+  port read_src2_dat: out UInt<32>;
 
-  init [0] = 0;                    // x0 hardwired to 0
-  forward write_before_read: false; // no bypass — hazards resolved by pipeline
+  // Write port
+  port wbck_dest_wen: in Bool;
+  port wbck_dest_idx: in UInt<5>;
+  port wbck_dest_dat: in UInt<32>;
 
-end regfile ExuRegfile
+  // x1 (ra) exposed for IFU link-register read
+  port x1_r: out UInt<32>;
+
+  // Register file storage — 32 registers, no reset
+  reg rf_0:  UInt<32> init 0 reset none;
+  reg rf_1:  UInt<32> init 0 reset none;
+  reg rf_2:  UInt<32> init 0 reset none;
+  reg rf_3:  UInt<32> init 0 reset none;
+  reg rf_4:  UInt<32> init 0 reset none;
+  reg rf_5:  UInt<32> init 0 reset none;
+  reg rf_6:  UInt<32> init 0 reset none;
+  reg rf_7:  UInt<32> init 0 reset none;
+  reg rf_8:  UInt<32> init 0 reset none;
+  reg rf_9:  UInt<32> init 0 reset none;
+  reg rf_10: UInt<32> init 0 reset none;
+  reg rf_11: UInt<32> init 0 reset none;
+  reg rf_12: UInt<32> init 0 reset none;
+  reg rf_13: UInt<32> init 0 reset none;
+  reg rf_14: UInt<32> init 0 reset none;
+  reg rf_15: UInt<32> init 0 reset none;
+  reg rf_16: UInt<32> init 0 reset none;
+  reg rf_17: UInt<32> init 0 reset none;
+  reg rf_18: UInt<32> init 0 reset none;
+  reg rf_19: UInt<32> init 0 reset none;
+  reg rf_20: UInt<32> init 0 reset none;
+  reg rf_21: UInt<32> init 0 reset none;
+  reg rf_22: UInt<32> init 0 reset none;
+  reg rf_23: UInt<32> init 0 reset none;
+  reg rf_24: UInt<32> init 0 reset none;
+  reg rf_25: UInt<32> init 0 reset none;
+  reg rf_26: UInt<32> init 0 reset none;
+  reg rf_27: UInt<32> init 0 reset none;
+  reg rf_28: UInt<32> init 0 reset none;
+  reg rf_29: UInt<32> init 0 reset none;
+  reg rf_30: UInt<32> init 0 reset none;
+  reg rf_31: UInt<32> init 0 reset none;
+
+  // Write port — x0 is hardwired to 0 (skip writes to index 0)
+  seq on clk rising
+    if wbck_dest_wen & (wbck_dest_idx != 0)
+      if wbck_dest_idx == 1
+        rf_1 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 2
+        rf_2 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 3
+        rf_3 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 4
+        rf_4 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 5
+        rf_5 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 6
+        rf_6 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 7
+        rf_7 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 8
+        rf_8 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 9
+        rf_9 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 10
+        rf_10 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 11
+        rf_11 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 12
+        rf_12 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 13
+        rf_13 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 14
+        rf_14 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 15
+        rf_15 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 16
+        rf_16 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 17
+        rf_17 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 18
+        rf_18 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 19
+        rf_19 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 20
+        rf_20 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 21
+        rf_21 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 22
+        rf_22 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 23
+        rf_23 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 24
+        rf_24 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 25
+        rf_25 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 26
+        rf_26 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 27
+        rf_27 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 28
+        rf_28 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 29
+        rf_29 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 30
+        rf_30 <= wbck_dest_dat;
+      elsif wbck_dest_idx == 31
+        rf_31 <= wbck_dest_dat;
+      end if
+    end if
+  end seq
+
+  // Read ports — async (combinational), x0 always reads 0
+  comb
+    if read_src1_idx == 0
+      read_src1_dat = 0;
+    elsif read_src1_idx == 1
+      read_src1_dat = rf_1;
+    elsif read_src1_idx == 2
+      read_src1_dat = rf_2;
+    elsif read_src1_idx == 3
+      read_src1_dat = rf_3;
+    elsif read_src1_idx == 4
+      read_src1_dat = rf_4;
+    elsif read_src1_idx == 5
+      read_src1_dat = rf_5;
+    elsif read_src1_idx == 6
+      read_src1_dat = rf_6;
+    elsif read_src1_idx == 7
+      read_src1_dat = rf_7;
+    elsif read_src1_idx == 8
+      read_src1_dat = rf_8;
+    elsif read_src1_idx == 9
+      read_src1_dat = rf_9;
+    elsif read_src1_idx == 10
+      read_src1_dat = rf_10;
+    elsif read_src1_idx == 11
+      read_src1_dat = rf_11;
+    elsif read_src1_idx == 12
+      read_src1_dat = rf_12;
+    elsif read_src1_idx == 13
+      read_src1_dat = rf_13;
+    elsif read_src1_idx == 14
+      read_src1_dat = rf_14;
+    elsif read_src1_idx == 15
+      read_src1_dat = rf_15;
+    elsif read_src1_idx == 16
+      read_src1_dat = rf_16;
+    elsif read_src1_idx == 17
+      read_src1_dat = rf_17;
+    elsif read_src1_idx == 18
+      read_src1_dat = rf_18;
+    elsif read_src1_idx == 19
+      read_src1_dat = rf_19;
+    elsif read_src1_idx == 20
+      read_src1_dat = rf_20;
+    elsif read_src1_idx == 21
+      read_src1_dat = rf_21;
+    elsif read_src1_idx == 22
+      read_src1_dat = rf_22;
+    elsif read_src1_idx == 23
+      read_src1_dat = rf_23;
+    elsif read_src1_idx == 24
+      read_src1_dat = rf_24;
+    elsif read_src1_idx == 25
+      read_src1_dat = rf_25;
+    elsif read_src1_idx == 26
+      read_src1_dat = rf_26;
+    elsif read_src1_idx == 27
+      read_src1_dat = rf_27;
+    elsif read_src1_idx == 28
+      read_src1_dat = rf_28;
+    elsif read_src1_idx == 29
+      read_src1_dat = rf_29;
+    elsif read_src1_idx == 30
+      read_src1_dat = rf_30;
+    else
+      read_src1_dat = rf_31;
+    end if
+
+    if read_src2_idx == 0
+      read_src2_dat = 0;
+    elsif read_src2_idx == 1
+      read_src2_dat = rf_1;
+    elsif read_src2_idx == 2
+      read_src2_dat = rf_2;
+    elsif read_src2_idx == 3
+      read_src2_dat = rf_3;
+    elsif read_src2_idx == 4
+      read_src2_dat = rf_4;
+    elsif read_src2_idx == 5
+      read_src2_dat = rf_5;
+    elsif read_src2_idx == 6
+      read_src2_dat = rf_6;
+    elsif read_src2_idx == 7
+      read_src2_dat = rf_7;
+    elsif read_src2_idx == 8
+      read_src2_dat = rf_8;
+    elsif read_src2_idx == 9
+      read_src2_dat = rf_9;
+    elsif read_src2_idx == 10
+      read_src2_dat = rf_10;
+    elsif read_src2_idx == 11
+      read_src2_dat = rf_11;
+    elsif read_src2_idx == 12
+      read_src2_dat = rf_12;
+    elsif read_src2_idx == 13
+      read_src2_dat = rf_13;
+    elsif read_src2_idx == 14
+      read_src2_dat = rf_14;
+    elsif read_src2_idx == 15
+      read_src2_dat = rf_15;
+    elsif read_src2_idx == 16
+      read_src2_dat = rf_16;
+    elsif read_src2_idx == 17
+      read_src2_dat = rf_17;
+    elsif read_src2_idx == 18
+      read_src2_dat = rf_18;
+    elsif read_src2_idx == 19
+      read_src2_dat = rf_19;
+    elsif read_src2_idx == 20
+      read_src2_dat = rf_20;
+    elsif read_src2_idx == 21
+      read_src2_dat = rf_21;
+    elsif read_src2_idx == 22
+      read_src2_dat = rf_22;
+    elsif read_src2_idx == 23
+      read_src2_dat = rf_23;
+    elsif read_src2_idx == 24
+      read_src2_dat = rf_24;
+    elsif read_src2_idx == 25
+      read_src2_dat = rf_25;
+    elsif read_src2_idx == 26
+      read_src2_dat = rf_26;
+    elsif read_src2_idx == 27
+      read_src2_dat = rf_27;
+    elsif read_src2_idx == 28
+      read_src2_dat = rf_28;
+    elsif read_src2_idx == 29
+      read_src2_dat = rf_29;
+    elsif read_src2_idx == 30
+      read_src2_dat = rf_30;
+    else
+      read_src2_dat = rf_31;
+    end if
+
+    // x1 (ra) direct output
+    x1_r = rf_1;
+  end comb
+
+end module e203_exu_regfile

@@ -36,9 +36,13 @@ module gcd_datapath
     elsif controlpath_state == 2'd1
       out_r <= a_ff;
     elsif controlpath_state == 2'd2
-      a_ff <= (a_ff - b_ff).trunc<WIDTH>();
+      if greater_than
+        a_ff <= (a_ff - b_ff).trunc<WIDTH>();
+      end if
     else
-      b_ff <= (b_ff - a_ff).trunc<WIDTH>();
+      if ~equal & ~greater_than
+        b_ff <= (b_ff - a_ff).trunc<WIDTH>();
+      end if
     end if
   end seq
 end module gcd_datapath

@@ -11,7 +11,7 @@ domain SysDomain
   freq_mhz: 100
 end domain SysDomain
 
-module DebugModule
+module e203_debug_module
 
   port clk:   in Clock<SysDomain>;
   port rst_n: in Reset<Async, Low>;
@@ -106,4 +106,4 @@ module DebugModule
     pready = true;
   end comb
 
-end module DebugModule
+end module e203_debug_module

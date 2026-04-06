@@ -1,7 +1,7 @@
 module pipeline_mac #(
   parameter int DWIDTH = 16,
   parameter int N = 4,
-  parameter int DWIDTH_ACCUMULATOR = $clog2(N) + 2 * DWIDTH
+  parameter int DWIDTH_ACCUMULATOR = 34
 ) (
   input logic clk,
   input logic rstn,

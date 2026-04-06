@@ -1,0 +1,194 @@
+// SD Command Serial Host
+// 10-state one-hot FSM. Serializes 48-bit SD commands on cmd_out_o.
+// Reads 40-bit or 128-bit responses on cmd_dat_i. CRC-7 via sd_crc_7 instance.
+
+module sd_cmd_serial_host
+
+  port SD_CLK_IN: in Clock<SysDomain>;
+  port RST_IN:    in Reset<Async, High>;
+  port SETTING_IN: in UInt<16>;
+  port CMD_IN:    in UInt<40>;
+  port REQ_IN:    in Bool;
+  port ACK_IN:    in Bool;
+  port cmd_dat_i: in Bool;
+
+  port CMD_OUT:   out UInt<40>;
+  port ACK_OUT:   out Bool;
+  port REQ_OUT:   out Bool;
+  port STATUS:    out UInt<8>;
+  port cmd_oe_o:  out Bool;
+  port cmd_out_o: out Bool;
+  port st_dat_t:  out UInt<2>;
+
+  // SETTING_IN decode
+  let NEED_RESP:   Bool     = SETTING_IN[15:15];
+  let RESP_136:    Bool     = SETTING_IN[14:14];
+  let CMD_INDEX:   UInt<5>  = SETTING_IN[12:8];
+  let CRC_CHECK:   Bool     = SETTING_IN[7:7];
+  let INDEX_CHECK: Bool     = SETTING_IN[6:6];
+  let DELAY_VAL:   UInt<6>  = SETTING_IN[5:0];
+
+  // State index 0..9
+  reg st_r: UInt<4> reset RST_IN => 0;
+
+  // Double-flop syncs for REQ_IN, ACK_IN
+  reg req_sync1: Bool reset RST_IN => false;
+  reg req_sync2: Bool reset RST_IN => false;
+  reg ack_sync1: Bool reset RST_IN => false;
+  reg ack_sync2: Bool reset RST_IN => false;
+
+  // Shift register for command/response
+  reg cmd_shift: UInt<48> reset RST_IN => 0;
+  reg resp_shift: UInt<40> reset RST_IN => 0;
+
+  // Bit counter
+  reg bit_cnt: UInt<8> reset RST_IN => 0;
+
+  // Delay counter
+  reg dly_cnt: UInt<6> reset RST_IN => 0;
+
+  // CRC accumulation
+  reg crc_val: UInt<7> reset RST_IN => 0;
+  reg crc_cnt: UInt<4> reset RST_IN => 0;
+
+  // Output registers
+  reg ack_out_r: Bool reset RST_IN => false;
+  reg req_out_r: Bool reset RST_IN => false;
+  reg status_r:  UInt<8> reset RST_IN => 0;
+  reg cmd_oe_r:  Bool reset RST_IN => false;
+  reg cmd_out_r: Bool reset RST_IN => true;
+  reg st_dat_r:  UInt<2> reset RST_IN => 0;
+
+  // Response length
+  let resp_len: UInt<8> = RESP_136 ? 8'd135 : 8'd39;
+
+  // CRC enable and bit value for CRC module
+  wire crc_en_w: Bool;
+  wire crc_bit_w: Bool;
+  wire crc_out_w: UInt<7>;
+
+  inst u_crc7: sd_crc_7
+    CLK    <- SD_CLK_IN;
+    RST    <- RST_IN;
+    BITVAL <- crc_bit_w;
+    Enable <- crc_en_w;
+    CRC    -> crc_out_w;
+  end inst u_crc7
+
+  default seq on SD_CLK_IN rising;
+
+  // Double-flop synchronizers
+  seq
+    req_sync1 <= REQ_IN;
+    req_sync2 <= req_sync1;
+    ack_sync1 <= ACK_IN;
+    ack_sync2 <= ack_sync1;
+  end seq
+
+  // Main FSM
+  seq
+    if st_r == 0  // INIT
+      cmd_oe_r  <= true;
+      cmd_out_r <= true;
+      bit_cnt   <= 0;
+      st_r      <= 1;
+      ack_out_r <= false;
+      req_out_r <= false;
+      status_r  <= 0;
+      st_dat_r  <= 0;
+    elsif st_r == 1  // IDLE
+      cmd_oe_r  <= false;
+      cmd_out_r <= true;
+      st_dat_r  <= 0;
+      if req_sync2
+        cmd_shift <= {2'b01, CMD_INDEX, CMD_IN, 1'b1};
+        bit_cnt   <= 0;
+        crc_cnt   <= 0;
+        st_r      <= 2;
+        cmd_oe_r  <= true;
+      end if
+    elsif st_r == 2  // WRITE_WR: serialize command bits
+      if bit_cnt < 48
+        cmd_out_r <= cmd_shift[47:47];
+        cmd_shift <= {cmd_shift[46:0], 1'b1};
+        bit_cnt   <= (bit_cnt + 1).trunc<8>();
+      else
+        dly_cnt <= 0;
+        st_r    <= 3;
+        cmd_oe_r <= false;
+      end if
+    elsif st_r == 3  // DLY_WR: inter-frame delay
+      cmd_out_r <= true;
+      if dly_cnt >= DELAY_VAL
+        if NEED_RESP
+          bit_cnt <= 0;
+          st_r    <= 4;
+        else
+          st_r  <= 7;
+        end if
+      else
+        dly_cnt <= (dly_cnt + 1).trunc<6>();
+      end if
+    elsif st_r == 4  // READ_WR: receive response
+      if bit_cnt == 0
+        if ~cmd_dat_i
+          resp_shift <= 0;
+          bit_cnt    <= (bit_cnt + 1).trunc<8>();
+          st_dat_r   <= 2'b01;
+        end if
+      elsif bit_cnt < resp_len
+        resp_shift <= {resp_shift[38:0], cmd_dat_i};
+        bit_cnt    <= (bit_cnt + 1).trunc<8>();
+      else
+        dly_cnt <= 0;
+        st_r    <= 5;
+      end if
+    elsif st_r == 5  // DLY_READ
+      if dly_cnt >= DELAY_VAL
+        st_r <= 6;
+      else
+        dly_cnt <= (dly_cnt + 1).trunc<6>();
+      end if
+    elsif st_r == 6  // ACK_WR: acknowledge with response
+      ack_out_r <= true;
+      status_r  <= 0;
+      st_dat_r  <= 2'b10;
+      if ack_sync2
+        ack_out_r <= false;
+        st_r      <= 1;
+      end if
+    elsif st_r == 7  // WRITE_WO: write-only (no response)
+      dly_cnt <= 0;
+      st_r    <= 8;
+    elsif st_r == 8  // DLY_WO
+      if dly_cnt >= DELAY_VAL
+        st_r <= 9;
+      else
+        dly_cnt <= (dly_cnt + 1).trunc<6>();
+      end if
+    elsif st_r == 9  // ACK_WO: acknowledge without response
+      req_out_r <= true;
+      if ack_sync2
+        req_out_r <= false;
+        st_r      <= 1;
+      end if
+    end if
+  end seq
+
+  // CRC interface
+  comb
+    crc_en_w  = (st_r == 2) & (bit_cnt < 48);
+    crc_bit_w = cmd_shift[47:47];
+  end comb
+
+  // Output assignments
+  comb
+    CMD_OUT   = resp_shift;
+    ACK_OUT   = ack_out_r;
+    REQ_OUT   = req_out_r;
+    STATUS    = status_r;
+    cmd_oe_o  = cmd_oe_r;
+    cmd_out_o = cmd_out_r;
+    st_dat_t  = st_dat_r;
+  end comb
+end module sd_cmd_serial_host

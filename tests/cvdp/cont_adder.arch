@@ -1,49 +1,91 @@
 module cont_adder
-  param DATA_WIDTH:  const = 16;
-  param ACCUM_WIDTH: const = 32;
-  param WINDOW_SIZE: const = 8;
-  param THRESHOLD:   const = 1000;
-  param WEIGHT:      const = 1;
+  param DATA_WIDTH:        const = 32;
+  param ACCUM_WIDTH:       const = 32;
+  param THRESHOLD_VALUE_1: const = 50;
+  param THRESHOLD_VALUE_2: const = 100;
+  param WEIGHT:            const = 1;
+  param ACCUM_MODE:        const = 0;
+  param WINDOW_SIZE:       const = 8;
 
-  port clk:             in  Clock<SysDomain>;
-  port rst_n:           in  Reset<Async, Low>;
-  port data_in:         in  UInt<DATA_WIDTH>;
-  port valid_in:        in  Bool;
-  port accum_out:       out UInt<ACCUM_WIDTH>;
-  port avg_out:         out UInt<DATA_WIDTH>;
-  port threshold_high:  out Bool;
-  port threshold_low:   out Bool;
+  port clk:        in Clock<SysDomain>;
+  port rst_n:      in Reset<Async, Low>;
+  port data_in:    in SInt<DATA_WIDTH>;
+  port data_valid: in Bool;
+  port window_size: in UInt<8>;
+
+  port reg sum_out:      out SInt<ACCUM_WIDTH> reset rst_n=>0;
+  port reg avg_out:      out SInt<DATA_WIDTH> reset rst_n=>0;
+  port reg threshold_1:  out Bool reset rst_n=>false;
+  port reg threshold_2:  out Bool reset rst_n=>false;
+  port reg sum_ready:    out Bool reset rst_n=>false;
+
+  // Backward-compatible aliases used by some older harnesses.
+  port accum_out:      out UInt<ACCUM_WIDTH>;
+  port threshold_high: out Bool;
+  port threshold_low:  out Bool;
+  port valid_in:       in Bool;
 
   default seq on clk rising;
 
-  reg accum:      UInt<ACCUM_WIDTH> reset rst_n=>0;
+  reg accum:      SInt<ACCUM_WIDTH> reset rst_n=>0;
   reg sample_cnt: UInt<8>           reset rst_n=>0;
 
-  wire data_ext:   UInt<ACCUM_WIDTH>;
-  wire weighted:   UInt<ACCUM_WIDTH>;
+  wire use_valid: Bool;
+  wire data_ext: SInt<ACCUM_WIDTH>;
+  wire weight_ext: SInt<ACCUM_WIDTH>;
+  wire valid_weighted: SInt<ACCUM_WIDTH>;
+  wire next_accum: SInt<ACCUM_WIDTH>;
+  wire thresh1_hit: Bool;
+  wire thresh2_hit: Bool;
+  wire win_eff: UInt<8>;
+  wire win_done: Bool;
   wire cnt_nonzero: Bool;
 
-  let data_ext = data_in.zext<ACCUM_WIDTH>();  let weighted = (data_ext * WEIGHT).trunc<ACCUM_WIDTH>();  let cnt_nonzero = sample_cnt != 0;
+  let use_valid = data_valid | valid_in;
+  let data_ext = data_in as SInt<ACCUM_WIDTH>;
+  let weight_ext = WEIGHT.zext<ACCUM_WIDTH>() as SInt<ACCUM_WIDTH>;
+  let valid_weighted = (data_ext * weight_ext).trunc<ACCUM_WIDTH>();
+  let next_accum = (accum + valid_weighted).trunc<ACCUM_WIDTH>();
+  let thresh1_hit = next_accum >= (THRESHOLD_VALUE_1.zext<ACCUM_WIDTH>() as SInt<ACCUM_WIDTH>);
+  let thresh2_hit = next_accum >= (THRESHOLD_VALUE_2.zext<ACCUM_WIDTH>() as SInt<ACCUM_WIDTH>);
+  let win_eff = window_size;
+  let win_done = (sample_cnt + 1).trunc<8>() >= win_eff;
+  let cnt_nonzero = sample_cnt != 0;
 
-  let accum_out = accum;  let threshold_high = accum >= THRESHOLD.zext<ACCUM_WIDTH>();
-  let threshold_low = accum == 0;
-  comb
-    if cnt_nonzero
-      avg_out = (accum / sample_cnt.zext<ACCUM_WIDTH>()).trunc<DATA_WIDTH>();
-    else
-      avg_out = 0;
-    end if
-  end comb
+  let accum_out = sum_out as UInt<ACCUM_WIDTH>;
+  let threshold_high = threshold_1;
+  let threshold_low = ~threshold_1 & ~threshold_2;
 
   seq
-    if valid_in
-      if sample_cnt == (WINDOW_SIZE - 1).zext<8>()
-        accum      <= weighted;
-        sample_cnt <= 0;
+    sum_ready <= false;
+
+    if use_valid
+      if ACCUM_MODE == 0
+        accum <= next_accum;
+        sum_out <= next_accum;
+        threshold_1 <= thresh1_hit;
+        threshold_2 <= thresh2_hit;
+        if thresh1_hit | thresh2_hit
+          sum_ready <= true;
+        end if
       else
-        accum      <= (accum + weighted).trunc<ACCUM_WIDTH>();
+        accum <= next_accum;
         sample_cnt <= (sample_cnt + 1).trunc<8>();
+        if win_done
+          sum_out <= next_accum;
+          threshold_1 <= false;
+          threshold_2 <= false;
+          sum_ready <= true;
+          accum <= 0;
+          sample_cnt <= 0;
+        end if
       end if
+    end if
+
+    if cnt_nonzero
+      avg_out <= sum_out / (sample_cnt.zext<ACCUM_WIDTH>() as SInt<ACCUM_WIDTH>);
+    else
+      avg_out <= 0;
     end if
   end seq
 end module cont_adder

@@ -45,7 +45,7 @@ module axis_image_border_gen #(
   assign m_axis_tdata = is_border ? border_pixel : s_axis_tdata;
   assign m_axis_tvalid = out_valid;
   assign m_axis_tlast = active & at_col_end;
-  assign m_axis_tuser = s_axis_tuser;
+  assign m_axis_tuser = active & x_count == 16'($unsigned(0)) & y_count == 16'($unsigned(0));
   always_ff @(posedge clk or negedge resetn) begin
     if ((!resetn)) begin
       active <= 1'b0;
@@ -54,7 +54,7 @@ module axis_image_border_gen #(
     end else begin
       if (~active) begin
         // Observe (but do not consume) upstream: activate when tuser seen
-        if (s_axis_tvalid & s_axis_tuser) begin
+        if (s_axis_tuser) begin
           active <= 1'b1;
           x_count <= 16'($unsigned(0));
           y_count <= 16'($unsigned(0));

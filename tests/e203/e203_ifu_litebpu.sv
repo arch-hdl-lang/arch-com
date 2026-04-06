@@ -1,7 +1,7 @@
 // E203 HBirdv2 static branch prediction unit (LiteBPU)
 // Handles JAL (seq taken), JALR (seq taken), and Bxx (taken if backward).
 // Generates PC-adder operands and stall signal for data-dependent JALR.
-module LiteBpu (
+module e203_ifu_litebpu (
   input logic clk,
   input logic rst_n,
   input logic [32-1:0] pc,
@@ -65,10 +65,15 @@ module LiteBpu (
   end
   // ── Combinational outputs ─────────────────────────────────────────────────
   always_comb begin
+    // JAL/JALR: seq taken; Bxx: taken if backward (negative offset)
     prdt_taken = dec_jal | dec_jalr | dec_bxx & bjp_imm_neg;
+    // PC-adder op2 is seq the branch immediate (truncated to PC_SIZE bits)
     prdt_pc_add_op2 = dec_bjp_imm;
+    // BPU wait: JALR x1 dep unresolved, or JALR xN dep unresolved and read not issued
     bpu_wait = dec_jalr & dec_jalr_rs1x1 & jalr_rs1x1_dep | dec_jalr & dec_jalr_rs1xn & jalr_rs1xn_dep & ~rs1xn_rdrf_r;
+    // Issue regfile read for xN
     bpu2rf_rs1_ena = rs1xn_rdrf_set;
+    // PC-adder op1: rs1 value for JALR, PC for JAL/Bxx
     if (dec_jalr) begin
       if (dec_jalr_rs1x0) begin
         prdt_pc_add_op1 = 0;
@@ -84,8 +89,3 @@ module LiteBpu (
 
 endmodule
 
-// JAL/JALR: seq taken; Bxx: taken if backward (negative offset)
-// PC-adder op2 is seq the branch immediate (truncated to PC_SIZE bits)
-// BPU wait: JALR x1 dep unresolved, or JALR xN dep unresolved and read not issued
-// Issue regfile read for xN
-// PC-adder op1: rs1 value for JALR, PC for JAL/Bxx

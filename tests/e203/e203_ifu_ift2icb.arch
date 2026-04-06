@@ -1,56 +1,134 @@
 // E203 HBirdv2 IFU Ift2Icb — Instruction Fetch to ICB bridge
-// Converts IFU fetch requests into ITCM ICB transactions.
-// Simplified: ITCM-only path (no external memory).
+// Converts IFU fetch requests into ITCM or BIU ICB transactions.
+// Routes to ITCM when address matches itcm_region_indic, else to BIU.
 // Response path has a 1-cycle pipeline register.
 
-module Ift2Icb
+module e203_ifu_ift2icb
+  param ITCM_ADDR_WIDTH: const = 16;
+
   port clk:       in Clock<SysDomain>;
   port rst_n:     in Reset<Async, Low>;
 
+  // ITCM hold control
+  port itcm_nohold:  in Bool;
+
   // IFU fetch request
-  port ifu_req_valid:  in Bool;
-  port ifu_req_pc:     in UInt<32>;
-  port ifu_req_ready:  out Bool;
+  port ifu_req_valid:    in  Bool;
+  port ifu_req_ready:    out Bool;
+  port ifu_req_pc:       in  UInt<32>;
+  port ifu_req_seq:      in  Bool;
+  port ifu_req_seq_rv32: in  Bool;
+  port ifu_req_last_pc:  in  UInt<32>;
 
   // IFU fetch response
   port ifu_rsp_valid:  out Bool;
+  port ifu_rsp_ready:  in  Bool;
+  port ifu_rsp_err:    out Bool;
   port ifu_rsp_instr:  out UInt<32>;
-  port ifu_rsp_ready:  in Bool;
+
+  // ITCM region indicator
+  port itcm_region_indic: in UInt<32>;
 
   // ITCM ICB master interface
-  port itcm: initiator ItcmIcb;
+  port ifu2itcm_icb_cmd_valid: out Bool;
+  port ifu2itcm_icb_cmd_ready: in  Bool;
+  port ifu2itcm_icb_cmd_addr:  out UInt<16>;
+  port ifu2itcm_icb_rsp_valid: in  Bool;
+  port ifu2itcm_icb_rsp_ready: out Bool;
+  port ifu2itcm_icb_rsp_err:   in  Bool;
+  port ifu2itcm_icb_rsp_rdata: in  UInt<64>;
 
-  // Response pipeline register
-  reg rsp_valid_r: Bool   init 0 reset rst_n=>0;
-  reg rsp_data_r:  UInt<32> init 0 reset rst_n=>0;
+  // BIU ICB master interface
+  port ifu2biu_icb_cmd_valid: out Bool;
+  port ifu2biu_icb_cmd_ready: in  Bool;
+  port ifu2biu_icb_cmd_addr:  out UInt<32>;
+  port ifu2biu_icb_rsp_valid: in  Bool;
+  port ifu2biu_icb_rsp_ready: out Bool;
+  port ifu2biu_icb_rsp_err:   in  Bool;
+  port ifu2biu_icb_rsp_rdata: in  UInt<32>;
 
-  // Backpressure: don't accept new request if response register is full
-  // and downstream is not ready
+  // ITCM holdup signal
+  port ifu2itcm_holdup: in Bool;
+
+  // ── Region decode ──────────────────────────────────────────────────────
+  let pc_region: UInt<16> = ifu_req_pc[31:16];
+  let itcm_region: UInt<16> = itcm_region_indic[31:16];
+  let is_itcm_region: Bool = (pc_region == itcm_region);
+  let is_biu_region:  Bool = ~is_itcm_region;
+
+  // ── Sequential PC calculation for sequential fetch ─────────────────────
+  // For sequential access: last_pc + 4 (rv32) or last_pc + 2
+  let seq_pc: UInt<32> = ifu_req_seq_rv32 ?
+    (ifu_req_last_pc + 4).trunc<32>() : (ifu_req_last_pc + 2).trunc<32>();
+
+  // Use seq_pc when sequential, otherwise use ifu_req_pc
+  let fetch_pc: UInt<32> = ifu_req_seq ? seq_pc : ifu_req_pc;
+
+  // ── Response pipeline register ─────────────────────────────────────────
+  reg rsp_valid_r: Bool      init 0 reset rst_n => 0;
+  reg rsp_err_r:   Bool      init 0 reset rst_n => 0;
+  reg rsp_instr_r: UInt<32>  init 0 reset rst_n => 0;
+
+  // Backpressure
   let stall_pipe: Bool = rsp_valid_r & ~ifu_rsp_ready;
 
-  // Request path: pass through to ITCM when not stalled
+  // ── ITCM request path ──────────────────────────────────────────────────
+  let itcm_cmd_fire: Bool = ifu2itcm_icb_cmd_valid & ifu2itcm_icb_cmd_ready;
+  let biu_cmd_fire:  Bool = ifu2biu_icb_cmd_valid & ifu2biu_icb_cmd_ready;
+
+  // ── Select response data from ITCM (64-bit) based on PC alignment ─────
+  let itcm_rsp_data_sel: UInt<32> = fetch_pc[2:2] != 0 ?
+    ifu2itcm_icb_rsp_rdata[63:32] : ifu2itcm_icb_rsp_rdata[31:0];
+
+  // ── ITCM or BIU response mux ──────────────────────────────────────────
+  // Track which path is active for response routing
+  reg itcm_active_r: Bool init 0 reset rst_n => 0;
+
   comb
-    itcm.cmd_valid = ifu_req_valid & ~stall_pipe;
-    itcm.cmd_addr  = ifu_req_pc[15:2];
-    ifu_req_ready  = itcm.cmd_ready & ~stall_pipe;
+    // Command routing
+    ifu2itcm_icb_cmd_valid = ifu_req_valid & is_itcm_region & ~stall_pipe;
+    ifu2itcm_icb_cmd_addr  = fetch_pc[15:0];
+
+    ifu2biu_icb_cmd_valid = ifu_req_valid & is_biu_region & ~stall_pipe;
+    ifu2biu_icb_cmd_addr  = fetch_pc;
+
+    // Ready back to IFU
+    ifu_req_ready = (is_itcm_region ? ifu2itcm_icb_cmd_ready : ifu2biu_icb_cmd_ready) & ~stall_pipe;
+
+    // Response ready
+    ifu2itcm_icb_rsp_ready = ~stall_pipe;
+    ifu2biu_icb_rsp_ready  = ~stall_pipe;
+
+    // IFU response
+    ifu_rsp_valid = rsp_valid_r;
+    ifu_rsp_err   = rsp_err_r;
+    ifu_rsp_instr = rsp_instr_r;
   end comb
 
-  // Accept ITCM response when we can
-  comb
-    itcm.rsp_ready = ~stall_pipe;
-  end comb
-
-  // Response pipeline: register ITCM response for IFU
+  // ── Response pipeline register ─────────────────────────────────────────
   seq on clk rising
     if ~stall_pipe
-      rsp_valid_r <= itcm.rsp_valid;
-      rsp_data_r  <= itcm.rsp_data;
+      if itcm_active_r & ifu2itcm_icb_rsp_valid
+        rsp_valid_r <= true;
+        rsp_err_r   <= ifu2itcm_icb_rsp_err;
+        rsp_instr_r <= itcm_rsp_data_sel;
+      elsif ~itcm_active_r & ifu2biu_icb_rsp_valid
+        rsp_valid_r <= true;
+        rsp_err_r   <= ifu2biu_icb_rsp_err;
+        rsp_instr_r <= ifu2biu_icb_rsp_rdata;
+      else
+        rsp_valid_r <= false;
+        rsp_err_r   <= false;
+        rsp_instr_r <= 0;
+      end if
+    end if
+
+    // Track which path was requested
+    if itcm_cmd_fire
+      itcm_active_r <= true;
+    elsif biu_cmd_fire
+      itcm_active_r <= false;
     end if
   end seq
 
-  // IFU response output
-  comb
-    ifu_rsp_valid = rsp_valid_r;
-    ifu_rsp_instr = rsp_data_r;
-  end comb
-end module Ift2Icb
+end module e203_ifu_ift2icb

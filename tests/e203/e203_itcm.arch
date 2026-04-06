@@ -23,7 +23,7 @@ ram ItcmSram
   end port wr_port
 end ram ItcmSram
 
-module E203Itcm
+module e203_itcm
   port clk:      in Clock<SysDomain>;
   port rst_n:    in Reset<Async, Low>;
   port rd_en:    in Bool;
@@ -43,4 +43,4 @@ module E203Itcm
     wr_port.data <- wr_data;
   end inst mem
 
-end module E203Itcm
+end module e203_itcm

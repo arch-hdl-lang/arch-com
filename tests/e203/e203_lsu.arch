@@ -1,0 +1,205 @@
+// E203 Load/Store Unit (Wrapper)
+// Passes all ports through to e203_lsu_ctrl.
+// lsu_active = ctrl_active | excp_active.
+
+module e203_lsu
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  port commit_mret: in Bool;
+  port commit_trap: in Bool;
+  port excp_active: in Bool;
+  port lsu_active:  out Bool;
+
+  // Memory region indicators
+  port itcm_region_indic: in UInt<32>;
+  port dtcm_region_indic: in UInt<32>;
+
+  // LSU writeback
+  port lsu_o_valid:     out Bool;
+  port lsu_o_ready:     in Bool;
+  port lsu_o_wbck_wdat: out UInt<32>;
+  port lsu_o_wbck_itag: out UInt<1>;
+  port lsu_o_wbck_err:  out Bool;
+  port lsu_o_cmt_ld:       out Bool;
+  port lsu_o_cmt_st:       out Bool;
+  port lsu_o_cmt_badaddr:  out UInt<32>;
+  port lsu_o_cmt_buserr:   out Bool;
+
+  // AGU ICB command
+  port agu_icb_cmd_valid:    in Bool;
+  port agu_icb_cmd_ready:    out Bool;
+  port agu_icb_cmd_addr:     in UInt<32>;
+  port agu_icb_cmd_read:     in Bool;
+  port agu_icb_cmd_wdata:    in UInt<32>;
+  port agu_icb_cmd_wmask:    in UInt<4>;
+  port agu_icb_cmd_lock:     in Bool;
+  port agu_icb_cmd_excl:     in Bool;
+  port agu_icb_cmd_size:     in UInt<2>;
+  port agu_icb_cmd_back2agu: in Bool;
+  port agu_icb_cmd_usign:    in Bool;
+  port agu_icb_cmd_itag:     in UInt<1>;
+
+  // AGU ICB response
+  port agu_icb_rsp_valid:   out Bool;
+  port agu_icb_rsp_ready:   in Bool;
+  port agu_icb_rsp_err:     out Bool;
+  port agu_icb_rsp_excl_ok: out Bool;
+  port agu_icb_rsp_rdata:   out UInt<32>;
+
+  // ITCM ICB
+  port itcm_icb_cmd_valid: out Bool;
+  port itcm_icb_cmd_ready: in Bool;
+  port itcm_icb_cmd_addr:  out UInt<16>;
+  port itcm_icb_cmd_read:  out Bool;
+  port itcm_icb_cmd_wdata: out UInt<32>;
+  port itcm_icb_cmd_wmask: out UInt<4>;
+  port itcm_icb_cmd_lock:  out Bool;
+  port itcm_icb_cmd_excl:  out Bool;
+  port itcm_icb_cmd_size:  out UInt<2>;
+  port itcm_icb_rsp_valid: in Bool;
+  port itcm_icb_rsp_ready: out Bool;
+  port itcm_icb_rsp_err:   in Bool;
+  port itcm_icb_rsp_excl_ok: in Bool;
+  port itcm_icb_rsp_rdata: in UInt<32>;
+
+  // DTCM ICB
+  port dtcm_icb_cmd_valid: out Bool;
+  port dtcm_icb_cmd_ready: in Bool;
+  port dtcm_icb_cmd_addr:  out UInt<16>;
+  port dtcm_icb_cmd_read:  out Bool;
+  port dtcm_icb_cmd_wdata: out UInt<32>;
+  port dtcm_icb_cmd_wmask: out UInt<4>;
+  port dtcm_icb_cmd_lock:  out Bool;
+  port dtcm_icb_cmd_excl:  out Bool;
+  port dtcm_icb_cmd_size:  out UInt<2>;
+  port dtcm_icb_rsp_valid: in Bool;
+  port dtcm_icb_rsp_ready: out Bool;
+  port dtcm_icb_rsp_err:   in Bool;
+  port dtcm_icb_rsp_excl_ok: in Bool;
+  port dtcm_icb_rsp_rdata: in UInt<32>;
+
+  // BIU ICB
+  port biu_icb_cmd_valid: out Bool;
+  port biu_icb_cmd_ready: in Bool;
+  port biu_icb_cmd_addr:  out UInt<32>;
+  port biu_icb_cmd_read:  out Bool;
+  port biu_icb_cmd_wdata: out UInt<32>;
+  port biu_icb_cmd_wmask: out UInt<4>;
+  port biu_icb_cmd_lock:  out Bool;
+  port biu_icb_cmd_excl:  out Bool;
+  port biu_icb_cmd_size:  out UInt<2>;
+  port biu_icb_rsp_valid: in Bool;
+  port biu_icb_rsp_ready: out Bool;
+  port biu_icb_rsp_err:   in Bool;
+  port biu_icb_rsp_excl_ok: in Bool;
+  port biu_icb_rsp_rdata: in UInt<32>;
+
+  // NICE ICB passthrough
+  port nice_mem_holdup: in Bool;
+  port nice_icb_cmd_valid: in Bool;
+  port nice_icb_cmd_ready: out Bool;
+  port nice_icb_cmd_addr:  in UInt<32>;
+  port nice_icb_cmd_read:  in Bool;
+  port nice_icb_cmd_wdata: in UInt<32>;
+  port nice_icb_cmd_wmask: in UInt<4>;
+  port nice_icb_cmd_lock:  in Bool;
+  port nice_icb_cmd_excl:  in Bool;
+  port nice_icb_cmd_size:  in UInt<2>;
+  port nice_icb_rsp_valid: out Bool;
+  port nice_icb_rsp_ready: in Bool;
+  port nice_icb_rsp_err:   out Bool;
+  port nice_icb_rsp_excl_ok: out Bool;
+  port nice_icb_rsp_rdata: out UInt<32>;
+
+  // Address decode: route AGU ICB to ITCM, DTCM, or BIU
+  let addr_in_itcm: Bool = (agu_icb_cmd_addr[31:16] == itcm_region_indic[31:16]);
+  let addr_in_dtcm: Bool = (agu_icb_cmd_addr[31:16] == dtcm_region_indic[31:16]);
+
+  // Response tracking: remember which target was selected
+  reg rsp_sel_r: UInt<2> reset rst_n => 0;  // 0=BIU, 1=ITCM, 2=DTCM
+
+  default seq on clk rising;
+
+  seq
+    if agu_icb_cmd_valid & agu_icb_cmd_ready
+      rsp_sel_r <= addr_in_itcm ? 1
+                 : addr_in_dtcm ? 2
+                 : 0;
+    end if
+  end seq
+
+  comb
+    // Command routing
+    itcm_icb_cmd_valid = agu_icb_cmd_valid & addr_in_itcm;
+    dtcm_icb_cmd_valid = agu_icb_cmd_valid & addr_in_dtcm;
+    biu_icb_cmd_valid  = agu_icb_cmd_valid & (~addr_in_itcm) & (~addr_in_dtcm);
+
+    agu_icb_cmd_ready = addr_in_itcm ? itcm_icb_cmd_ready
+                      : addr_in_dtcm ? dtcm_icb_cmd_ready
+                      : biu_icb_cmd_ready;
+
+    // Shared command fields
+    itcm_icb_cmd_addr  = agu_icb_cmd_addr[15:0];
+    itcm_icb_cmd_read  = agu_icb_cmd_read;
+    itcm_icb_cmd_wdata = agu_icb_cmd_wdata;
+    itcm_icb_cmd_wmask = agu_icb_cmd_wmask;
+    itcm_icb_cmd_lock  = agu_icb_cmd_lock;
+    itcm_icb_cmd_excl  = agu_icb_cmd_excl;
+    itcm_icb_cmd_size  = agu_icb_cmd_size;
+
+    dtcm_icb_cmd_addr  = agu_icb_cmd_addr[15:0];
+    dtcm_icb_cmd_read  = agu_icb_cmd_read;
+    dtcm_icb_cmd_wdata = agu_icb_cmd_wdata;
+    dtcm_icb_cmd_wmask = agu_icb_cmd_wmask;
+    dtcm_icb_cmd_lock  = agu_icb_cmd_lock;
+    dtcm_icb_cmd_excl  = agu_icb_cmd_excl;
+    dtcm_icb_cmd_size  = agu_icb_cmd_size;
+
+    biu_icb_cmd_addr  = agu_icb_cmd_addr;
+    biu_icb_cmd_read  = agu_icb_cmd_read;
+    biu_icb_cmd_wdata = agu_icb_cmd_wdata;
+    biu_icb_cmd_wmask = agu_icb_cmd_wmask;
+    biu_icb_cmd_lock  = agu_icb_cmd_lock;
+    biu_icb_cmd_excl  = agu_icb_cmd_excl;
+    biu_icb_cmd_size  = agu_icb_cmd_size;
+
+    // Response mux
+    agu_icb_rsp_valid = (rsp_sel_r == 1) ? itcm_icb_rsp_valid
+                      : (rsp_sel_r == 2) ? dtcm_icb_rsp_valid
+                      : biu_icb_rsp_valid;
+    agu_icb_rsp_err = (rsp_sel_r == 1) ? itcm_icb_rsp_err
+                    : (rsp_sel_r == 2) ? dtcm_icb_rsp_err
+                    : biu_icb_rsp_err;
+    agu_icb_rsp_excl_ok = (rsp_sel_r == 1) ? itcm_icb_rsp_excl_ok
+                        : (rsp_sel_r == 2) ? dtcm_icb_rsp_excl_ok
+                        : biu_icb_rsp_excl_ok;
+    agu_icb_rsp_rdata = (rsp_sel_r == 1) ? itcm_icb_rsp_rdata
+                      : (rsp_sel_r == 2) ? dtcm_icb_rsp_rdata
+                      : biu_icb_rsp_rdata;
+
+    itcm_icb_rsp_ready = agu_icb_rsp_ready;
+    dtcm_icb_rsp_ready = agu_icb_rsp_ready;
+    biu_icb_rsp_ready  = agu_icb_rsp_ready;
+
+    // Writeback: passthrough from AGU response (load sign-extension in lsu_ctrl)
+    lsu_o_valid     = agu_icb_rsp_valid & agu_icb_cmd_back2agu;
+    lsu_o_wbck_wdat = agu_icb_rsp_rdata;
+    lsu_o_wbck_itag = agu_icb_cmd_itag;
+    lsu_o_wbck_err  = agu_icb_rsp_err;
+    lsu_o_cmt_ld       = false;
+    lsu_o_cmt_st       = false;
+    lsu_o_cmt_badaddr  = 0;
+    lsu_o_cmt_buserr   = false;
+
+    // NICE ICB passthrough (stub: tie off)
+    nice_icb_cmd_ready = false;
+    nice_icb_rsp_valid = false;
+    nice_icb_rsp_err   = false;
+    nice_icb_rsp_excl_ok = false;
+    nice_icb_rsp_rdata = 0;
+
+    lsu_active = agu_icb_cmd_valid | (rsp_sel_r != 0) | excp_active;
+  end comb
+end module e203_lsu

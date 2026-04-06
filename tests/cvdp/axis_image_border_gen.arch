@@ -54,13 +54,13 @@ module axis_image_border_gen
     m_axis_tdata  = is_border ? border_pixel : s_axis_tdata;
     m_axis_tvalid = out_valid;
     m_axis_tlast  = active & at_col_end;
-    m_axis_tuser  = s_axis_tuser;
+    m_axis_tuser  = active & (x_count == 0.zext<16>()) & (y_count == 0.zext<16>());
   end comb
 
   seq
     if ~active
       // Observe (but do not consume) upstream: activate when tuser seen
-      if s_axis_tvalid & s_axis_tuser
+      if s_axis_tuser
         active  <= true;
         x_count <= 0.zext<16>();
         y_count <= 0.zext<16>();

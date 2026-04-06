@@ -1,0 +1,390 @@
+// E203 MUL/DIV Sub-unit (Iterative, Shared Adder)
+// 17-cycle Booth-4 multiply, 33-cycle non-restoring divide + correction.
+// Uses shared 35-bit adder and two 33-bit buffers from the ALU top.
+
+module e203_exu_alu_muldiv
+
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+
+  port mdv_nob2b: in Bool;
+
+  // Dispatch handshake
+  port muldiv_i_valid:    in Bool;
+  port muldiv_i_ready:    out Bool;
+  port muldiv_i_rs1:      in UInt<32>;
+  port muldiv_i_rs2:      in UInt<32>;
+  port muldiv_i_imm:      in UInt<32>;
+  port muldiv_i_info:     in UInt<13>;
+  port muldiv_i_itag:     in UInt<1>;
+  port muldiv_i_longpipe: out Bool;
+
+  port flush_pulse: in Bool;
+
+  // Result handshake
+  port muldiv_o_valid:     out Bool;
+  port muldiv_o_ready:     in Bool;
+  port muldiv_o_wbck_wdat: out UInt<32>;
+  port muldiv_o_wbck_err:  out Bool;
+
+  // Shared 35-bit adder
+  port muldiv_req_alu_op1: out UInt<35>;
+  port muldiv_req_alu_op2: out UInt<35>;
+  port muldiv_req_alu_add: out Bool;
+  port muldiv_req_alu_sub: out Bool;
+  port muldiv_req_alu_res: in UInt<35>;
+
+  // Shared buffers (33-bit each)
+  port muldiv_sbf_0_ena: out Bool;
+  port muldiv_sbf_0_nxt: out UInt<33>;
+  port muldiv_sbf_0_r:   in UInt<33>;
+  port muldiv_sbf_1_ena: out Bool;
+  port muldiv_sbf_1_nxt: out UInt<33>;
+  port muldiv_sbf_1_r:   in UInt<33>;
+
+  // Decode info fields
+  let i_mul:    Bool = muldiv_i_info[4:4];
+  let i_mulh:   Bool = muldiv_i_info[5:5];
+  let i_mulhsu: Bool = muldiv_i_info[6:6];
+  let i_mulhu:  Bool = muldiv_i_info[7:7];
+  let i_div:    Bool = muldiv_i_info[8:8];
+  let i_divu:   Bool = muldiv_i_info[9:9];
+  let i_rem:    Bool = muldiv_i_info[10:10];
+  let i_remu:   Bool = muldiv_i_info[11:11];
+  let i_b2b:    Bool = muldiv_i_info[12:12];
+
+  let is_mul: Bool = i_mul | i_mulh | i_mulhsu | i_mulhu;
+  let is_div: Bool = i_div | i_divu | i_rem | i_remu;
+
+  // Signed handling
+  let mul_rs1_sign: Bool = i_mulhu ? false : muldiv_i_rs1[31:31];
+  let mul_rs2_sign: Bool = (i_mulhsu | i_mulhu) ? false : muldiv_i_rs2[31:31];
+  let div_rs1_sign: Bool = (i_divu | i_remu) ? false : muldiv_i_rs1[31:31];
+  let div_rs2_sign: Bool = (i_divu | i_remu) ? false : muldiv_i_rs2[31:31];
+
+  // States: 0TH=0, EXEC=1, REMD_CHCK=2, QUOT_CORR=3, REMD_CORR=4
+  reg state_r: UInt<3> reset rst_n => 0;
+  reg exec_cnt_r: UInt<6> reset rst_n => 0;
+  reg flushed_r: Bool reset rst_n => false;
+  reg part_prdt_sft1_r: Bool reset rst_n => false;
+  reg part_remd_sft1_r: Bool reset rst_n => false;
+
+  let sta_0th:       Bool = (state_r == 0);
+  let sta_exec:      Bool = (state_r == 1);
+  let sta_remd_chck: Bool = (state_r == 2);
+  let sta_quot_corr: Bool = (state_r == 3);
+  let sta_remd_corr: Bool = (state_r == 4);
+
+  let o_hsked: Bool = muldiv_o_valid & muldiv_o_ready;
+  let back2back_seq: Bool = i_b2b & (~flushed_r) & (~mdv_nob2b);
+
+  // Div special cases
+  let div_by_0: Bool = (muldiv_i_rs2 == 0);
+  let div_ovf: Bool = (i_div | i_rem) & (muldiv_i_rs2 == 32'hFFFFFFFF)
+                     & muldiv_i_rs1[31:31] & (muldiv_i_rs1[30:0] == 0);
+  let special_cases: Bool = is_div & (div_by_0 | div_ovf);
+  let muldiv_i_valid_nb2b: Bool = muldiv_i_valid & (~back2back_seq) & (~special_cases);
+
+  // Cycle counting
+  let cycle_0th:  Bool = sta_0th;
+  let cycle_16th: Bool = (exec_cnt_r == 16);
+  let cycle_32nd: Bool = (exec_cnt_r == 32);
+  let exec_last: Bool = is_mul ? cycle_16th : cycle_32nd;
+
+  // State exit enables
+  let state_0th_exit_ena: Bool = sta_0th & muldiv_i_valid_nb2b & (~flush_pulse);
+  let state_exec_exit_ena: Bool = sta_exec & ((exec_last & (is_div | o_hsked)) | flush_pulse);
+  let state_quot_corr_exit_ena: Bool = sta_quot_corr;
+  let state_remd_corr_exit_ena: Bool = sta_remd_corr & (flush_pulse | o_hsked);
+  let state_exec_enter_ena: Bool = state_0th_exit_ena;
+
+  // Aliases to shared buffers
+  let part_prdt_hi_r: UInt<33> = muldiv_sbf_0_r;
+  let part_prdt_lo_r: UInt<33> = muldiv_sbf_1_r;
+  let part_remd_r: UInt<33> = muldiv_sbf_0_r;
+  let part_quot_r: UInt<33> = muldiv_sbf_1_r;
+
+  // All intermediate wires
+  wire div_need_corrct: Bool;
+  wire state_remd_chck_exit_ena: Bool;
+  wire booth_code: UInt<3>;
+  wire booth_sel_zero: Bool;
+  wire booth_sel_two: Bool;
+  wire booth_sel_one: Bool;
+  wire booth_sel_sub: Bool;
+  wire mul_exe_alu_op1: UInt<35>;
+  wire mul_exe_alu_op2: UInt<35>;
+  wire mul_exe_alu_add: Bool;
+  wire mul_exe_alu_sub: Bool;
+  wire dividend: UInt<66>;
+  wire divisor: UInt<34>;
+  wire quot_0cycl: Bool;
+  wire dividend_lsft1: UInt<67>;
+  wire prev_quot: Bool;
+  wire current_quot: Bool;
+  wire div_exe_alu_op1: UInt<34>;
+  wire div_exe_alu_op2: UInt<34>;
+  wire div_exe_alu_add: Bool;
+  wire div_exe_alu_sub: Bool;
+  wire div_exe_alu_res: UInt<34>;
+  wire div_exe_part_remd: UInt<67>;
+  wire div_exe_part_remd_lsft1: UInt<68>;
+  wire corrct_phase: Bool;
+  wire check_phase: Bool;
+  wire div_remd: UInt<33>;
+  wire div_quot: UInt<33>;
+  wire remd_is_0: Bool;
+  wire div_remd_chck_alu_res_w: UInt<34>;
+  wire remd_is_neg_divs: Bool;
+  wire remd_is_divs: Bool;
+  wire remd_inc_quot_dec: Bool;
+  wire div_remd_chck_alu_op1: UInt<34>;
+  wire div_remd_chck_alu_op2: UInt<34>;
+  wire div_quot_corr_alu_op1: UInt<34>;
+  wire div_quot_corr_alu_op2: UInt<34>;
+  wire div_quot_corr_alu_add: Bool;
+  wire div_quot_corr_alu_sub: Bool;
+  wire div_remd_corr_alu_op1: UInt<34>;
+  wire div_remd_corr_alu_op2: UInt<34>;
+  wire div_remd_corr_alu_add: Bool;
+  wire div_remd_corr_alu_sub: Bool;
+  wire part_prdt_hi_nxt: UInt<33>;
+  wire part_prdt_lo_nxt: UInt<33>;
+  wire part_remd_nxt: UInt<33>;
+  wire part_quot_nxt: UInt<33>;
+  wire mul_exe_cnt_set: Bool;
+  wire mul_exe_cnt_inc: Bool;
+  wire div_exe_cnt_set: Bool;
+  wire div_exe_cnt_inc: Bool;
+  wire part_prdt_hi_ena: Bool;
+  wire part_remd_ena: Bool;
+  wire part_quot_ena: Bool;
+  wire req_alu_sel1: Bool;
+  wire req_alu_sel2: Bool;
+  wire req_alu_sel3: Bool;
+  wire req_alu_sel4: Bool;
+  wire req_alu_sel5: Bool;
+  wire mul_res: UInt<32>;
+  wire div_res: UInt<32>;
+  wire div_special_res: UInt<32>;
+  wire back2back_res: UInt<32>;
+  wire wbck_condi: Bool;
+
+  default seq on clk rising;
+
+  // State register
+  seq
+    if state_0th_exit_ena
+      state_r <= 1;
+    elsif state_exec_exit_ena
+      state_r <= flush_pulse ? 0 : (is_div ? 2 : 0);
+    elsif state_remd_chck_exit_ena
+      state_r <= flush_pulse ? 0 : (div_need_corrct ? 3 : 0);
+    elsif state_quot_corr_exit_ena
+      state_r <= flush_pulse ? 0 : 4;
+    elsif state_remd_corr_exit_ena
+      state_r <= 0;
+    end if
+  end seq
+
+  // Exec counter
+  seq
+    if state_exec_enter_ena
+      exec_cnt_r <= 1;
+    elsif sta_exec & (~exec_last)
+      exec_cnt_r <= (exec_cnt_r + 1).trunc<6>();
+    elsif state_exec_exit_ena
+      exec_cnt_r <= 0;
+    end if
+  end seq
+
+  // Flushed flag
+  seq
+    if flush_pulse
+      flushed_r <= true;
+    elsif o_hsked & (~flush_pulse)
+      flushed_r <= false;
+    end if
+  end seq
+
+  // Part product shift1 register
+  seq
+    if (is_mul & (state_exec_enter_ena | (sta_exec & (~exec_last)))) | state_exec_exit_ena
+      part_prdt_sft1_r <= cycle_0th ? muldiv_i_rs1[1:1] : part_prdt_lo_r[1:1];
+    end if
+  end seq
+
+  // Part remainder shift1 register
+  seq
+    if (is_div & (state_exec_enter_ena | (sta_exec & (~exec_last)))) | state_exec_exit_ena | state_remd_corr_exit_ena
+      part_remd_sft1_r <= muldiv_req_alu_res[32:32];
+    end if
+  end seq
+
+  comb
+    // Booth multiply
+    booth_code = cycle_0th ? {muldiv_i_rs1[1:0], 1'b0}
+               : cycle_16th ? {mul_rs1_sign, part_prdt_lo_r[0:0], part_prdt_sft1_r}
+               : {part_prdt_lo_r[1:0], part_prdt_sft1_r};
+
+    booth_sel_zero = (booth_code == 0) | (booth_code == 7);
+    booth_sel_two  = (booth_code == 3) | (booth_code == 4);
+    booth_sel_one  = (~booth_sel_zero) & (~booth_sel_two);
+    booth_sel_sub  = booth_code[2:2];
+
+    mul_exe_alu_op1 = cycle_0th ? 0
+        : {part_prdt_hi_r[32:32], part_prdt_hi_r[32:32], part_prdt_hi_r};
+    mul_exe_alu_op2 =
+        (booth_sel_one ? {mul_rs2_sign, mul_rs2_sign, mul_rs2_sign, muldiv_i_rs2} : 0)
+      | (booth_sel_two ? {mul_rs2_sign, mul_rs2_sign, muldiv_i_rs2, 1'b0} : 0);
+    mul_exe_alu_add = ~booth_sel_sub;
+    mul_exe_alu_sub = booth_sel_sub;
+
+    // Divide
+    dividend = {{33{div_rs1_sign}}, div_rs1_sign, muldiv_i_rs1};
+    divisor  = {div_rs2_sign, div_rs2_sign, muldiv_i_rs2};
+
+    quot_0cycl = (dividend[65:65] ^ divisor[33:33]) ? false : true;
+    dividend_lsft1 = {dividend[65:0], quot_0cycl};
+
+    prev_quot = cycle_0th ? quot_0cycl : part_quot_r[0:0];
+
+    div_exe_alu_op1 = cycle_0th ? dividend_lsft1[66:33] : {part_remd_sft1_r, part_remd_r[32:0]};
+    div_exe_alu_op2 = divisor;
+    div_exe_alu_add = ~prev_quot;
+    div_exe_alu_sub = prev_quot;
+
+    div_exe_alu_res = muldiv_req_alu_res[33:0];
+    current_quot = (div_exe_alu_res[33:33] ^ divisor[33:33]) ? false : true;
+
+    div_exe_part_remd = {div_exe_alu_res, (cycle_0th ? dividend_lsft1[32:0] : part_quot_r[32:0])};
+    div_exe_part_remd_lsft1 = {div_exe_part_remd[66:0], current_quot};
+
+    corrct_phase = sta_remd_corr | sta_quot_corr;
+    check_phase = sta_remd_chck;
+
+    div_remd = check_phase ? part_remd_r
+             : corrct_phase ? muldiv_req_alu_res[32:0]
+             : div_exe_part_remd[65:33];
+    div_quot = check_phase ? part_quot_r
+             : corrct_phase ? part_quot_r
+             : {div_exe_part_remd[31:0], 1'b1};
+
+    // Correction check
+    remd_is_0 = (part_remd_r == 0);
+    div_remd_chck_alu_res_w = muldiv_req_alu_res[33:0];
+    remd_is_neg_divs = (div_remd_chck_alu_res_w == 0);
+    remd_is_divs = (part_remd_r == divisor[32:0]);
+    div_need_corrct = is_div & (
+        ((part_remd_r[32:32] ^ dividend[65:65]) & (~remd_is_0))
+      | remd_is_neg_divs
+      | remd_is_divs
+    );
+
+    state_remd_chck_exit_ena = sta_remd_chck & (div_need_corrct | o_hsked | flush_pulse);
+
+    remd_inc_quot_dec = part_remd_r[32:32] ^ divisor[33:33];
+
+    // Correction ALU operands
+    div_remd_chck_alu_op1 = {part_remd_r[32:32], part_remd_r};
+    div_remd_chck_alu_op2 = divisor;
+
+    div_quot_corr_alu_op1 = {part_quot_r[32:32], part_quot_r};
+    div_quot_corr_alu_op2 = 1;
+    div_quot_corr_alu_add = ~remd_inc_quot_dec;
+    div_quot_corr_alu_sub = remd_inc_quot_dec;
+
+    div_remd_corr_alu_op1 = {part_remd_r[32:32], part_remd_r};
+    div_remd_corr_alu_op2 = divisor;
+    div_remd_corr_alu_add = remd_inc_quot_dec;
+    div_remd_corr_alu_sub = ~remd_inc_quot_dec;
+
+    // Buffer next values
+    part_prdt_hi_nxt = muldiv_req_alu_res[34:2];
+    part_prdt_lo_nxt = {muldiv_req_alu_res[1:0],
+                        (cycle_0th ? {mul_rs1_sign, muldiv_i_rs1[31:2]} : part_prdt_lo_r[32:2])};
+
+    part_remd_nxt = corrct_phase ? muldiv_req_alu_res[32:0]
+                  : (sta_exec & cycle_32nd) ? div_remd
+                  : div_exe_part_remd_lsft1[65:33];
+    part_quot_nxt = corrct_phase ? muldiv_req_alu_res[32:0]
+                  : (sta_exec & cycle_32nd) ? div_quot
+                  : div_exe_part_remd_lsft1[32:0];
+
+    // Buffer enables
+    mul_exe_cnt_set = state_exec_enter_ena & is_mul;
+    mul_exe_cnt_inc = (sta_exec & (~exec_last)) & is_mul;
+    div_exe_cnt_set = state_exec_enter_ena & is_div;
+    div_exe_cnt_inc = (sta_exec & (~exec_last)) & is_div;
+
+    part_prdt_hi_ena = mul_exe_cnt_set | mul_exe_cnt_inc | state_exec_exit_ena;
+    part_remd_ena = div_exe_cnt_set | div_exe_cnt_inc | state_exec_exit_ena | state_remd_corr_exit_ena;
+    part_quot_ena = div_exe_cnt_set | div_exe_cnt_inc | state_exec_exit_ena | state_quot_corr_exit_ena;
+
+    muldiv_sbf_0_ena = part_remd_ena | part_prdt_hi_ena;
+    muldiv_sbf_0_nxt = is_mul ? part_prdt_hi_nxt : part_remd_nxt;
+    muldiv_sbf_1_ena = part_quot_ena | part_prdt_hi_ena;
+    muldiv_sbf_1_nxt = is_mul ? part_prdt_lo_nxt : part_quot_nxt;
+
+    // ALU operand muxing
+    req_alu_sel1 = is_mul;
+    req_alu_sel2 = is_div & (sta_0th | sta_exec);
+    req_alu_sel3 = is_div & sta_quot_corr;
+    req_alu_sel4 = is_div & sta_remd_corr;
+    req_alu_sel5 = is_div & sta_remd_chck;
+
+    muldiv_req_alu_op1 = (req_alu_sel1 ? mul_exe_alu_op1 : 0)
+                       | (req_alu_sel2 ? div_exe_alu_op1.zext<35>() : 0)
+                       | (req_alu_sel3 ? div_quot_corr_alu_op1.zext<35>() : 0)
+                       | (req_alu_sel4 ? div_remd_corr_alu_op1.zext<35>() : 0)
+                       | (req_alu_sel5 ? div_remd_chck_alu_op1.zext<35>() : 0);
+
+    muldiv_req_alu_op2 = (req_alu_sel1 ? mul_exe_alu_op2 : 0)
+                       | (req_alu_sel2 ? div_exe_alu_op2.zext<35>() : 0)
+                       | (req_alu_sel3 ? div_quot_corr_alu_op2.zext<35>() : 0)
+                       | (req_alu_sel4 ? div_remd_corr_alu_op2.zext<35>() : 0)
+                       | (req_alu_sel5 ? div_remd_chck_alu_op2.zext<35>() : 0);
+
+    muldiv_req_alu_add = (req_alu_sel1 & mul_exe_alu_add)
+                       | (req_alu_sel2 & div_exe_alu_add)
+                       | (req_alu_sel3 & div_quot_corr_alu_add)
+                       | (req_alu_sel4 & div_remd_corr_alu_add)
+                       | req_alu_sel5;
+
+    muldiv_req_alu_sub = (req_alu_sel1 & mul_exe_alu_sub)
+                       | (req_alu_sel2 & div_exe_alu_sub)
+                       | (req_alu_sel3 & div_quot_corr_alu_sub)
+                       | (req_alu_sel4 & div_remd_corr_alu_sub);
+
+    // Results
+    mul_res = i_mul ? part_prdt_lo_r[32:1] : muldiv_req_alu_res[31:0];
+    div_res = (i_div | i_divu) ? div_quot[31:0] : div_remd[31:0];
+
+    // Special results
+    div_special_res = div_by_0
+        ? ((i_div | i_divu) ? 32'hFFFFFFFF : muldiv_i_rs1)
+        : ((i_div | i_divu) ? 32'h80000000 : 0);
+
+    // Back-to-back results
+    back2back_res = (i_mul ? {part_prdt_lo_r[30:0], part_prdt_sft1_r} : 0)
+                  | ((i_rem | i_remu) ? part_remd_r[31:0] : 0)
+                  | ((i_div | i_divu) ? part_quot_r[31:0] : 0);
+
+    // Output
+    wbck_condi = (back2back_seq | special_cases) ? true
+        : ((sta_exec & exec_last & (~is_div))
+         | (sta_remd_chck & (~div_need_corrct))
+         | sta_remd_corr);
+
+    muldiv_o_valid = wbck_condi & muldiv_i_valid;
+    muldiv_i_ready = wbck_condi & muldiv_o_ready;
+
+    muldiv_o_wbck_wdat = (back2back_seq & (~special_cases) ? back2back_res : 0)
+                       | (special_cases ? div_special_res : 0)
+                       | ((~back2back_seq) & (~special_cases) & is_div ? div_res : 0)
+                       | ((~back2back_seq) & (~special_cases) & is_mul ? mul_res : 0);
+
+    muldiv_o_wbck_err = false;
+    muldiv_i_longpipe = false;
+  end comb
+end module e203_exu_alu_muldiv

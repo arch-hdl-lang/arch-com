@@ -1,76 +1,92 @@
 // E203 Outstanding Instruction Track FIFO (OITF)
-// Tracks in-flight long-latency instructions (MulDiv, LSU) for hazard detection.
-// Circular FIFO with 2 entries; each entry stores destination register index
-// and a "has rd" flag.
-//
-// On dispatch of a long-pipe op: allocate (push) entry with rd info.
-// On long-pipe writeback: deallocate (pop) oldest entry.
-// Hazard check: compare new instruction's rs1/rs2/rd against all valid entries.
+// Tracks in-flight long-latency instructions for hazard detection.
+// Circular FIFO with 2 entries; stores rd info + FPU flags.
+// Matches RealBench port interface.
 
-module ExuOitf
+module e203_exu_oitf
   param OITF_DEPTH: const = 2;
 
   port clk:   in Clock<SysDomain>;
   port rst_n: in Reset<Async, Low>;
 
-  // ── Dispatch interface (allocate on long-pipe dispatch) ────────────
-  port dis_ena:     in  Bool;
-  port dis_rd_idx:  in  UInt<5>;
-  port dis_rd_en:   in  Bool;
-  port dis_ready:   out Bool;
+  // ── Dispatch interface ────────────────────────────────────────────
+  port dis_ready: out Bool;
+  port dis_ena:   in  Bool;
+  port ret_ena:   in  Bool;
 
-  // ── Writeback interface (deallocate on long-pipe completion) ────────
-  port ret_ena:     in  Bool;
-  port ret_rd_idx:  out UInt<5>;
-  port ret_rd_en:   out Bool;
+  // ── Pointer outputs ───────────────────────────────────────────────
+  port dis_ptr: out UInt<1>;
+  port ret_ptr: out UInt<1>;
 
-  // ── Hazard check inputs (from decode of new instruction) ───────────
-  port chk_rs1_idx: in  UInt<5>;
-  port chk_rs1_en:  in  Bool;
-  port chk_rs2_idx: in  UInt<5>;
-  port chk_rs2_en:  in  Bool;
-  port chk_rd_idx:  in  UInt<5>;
-  port chk_rd_en:   in  Bool;
+  // ── Retire info outputs ───────────────────────────────────────────
+  port ret_rdidx: out UInt<5>;
+  port ret_rdwen: out Bool;
+  port ret_rdfpu: out Bool;
+  port ret_pc:    out UInt<32>;
 
-  // ── Hazard outputs ─────────────────────────────────────────────────
-  port raw_dep:     out Bool;
-  port waw_dep:     out Bool;
-  port dep_stall:   out Bool;
-  port oitf_empty:  out Bool;
+  // ── Dispatch info inputs ──────────────────────────────────────────
+  port disp_i_rs1en:  in Bool;
+  port disp_i_rs2en:  in Bool;
+  port disp_i_rs3en:  in Bool;
+  port disp_i_rdwen:  in Bool;
+  port disp_i_rs1fpu: in Bool;
+  port disp_i_rs2fpu: in Bool;
+  port disp_i_rs3fpu: in Bool;
+  port disp_i_rdfpu:  in Bool;
+  port disp_i_rs1idx: in UInt<5>;
+  port disp_i_rs2idx: in UInt<5>;
+  port disp_i_rs3idx: in UInt<5>;
+  port disp_i_rdidx:  in UInt<5>;
+  port disp_i_pc:     in UInt<32>;
 
-  // ── FIFO state ─────────────────────────────────────────────────────
-  reg valid_0:  Bool    init false reset rst_n=>false;
-  reg valid_1:  Bool    init false reset rst_n=>false;
-  reg rdidx_0:  UInt<5> init 0     reset rst_n=>0;
-  reg rdidx_1:  UInt<5> init 0     reset rst_n=>0;
-  reg rden_0:   Bool    init false reset rst_n=>false;
-  reg rden_1:   Bool    init false reset rst_n=>false;
-  reg wr_ptr:   Bool    init false reset rst_n=>false;
-  reg rd_ptr:   Bool    init false reset rst_n=>false;
+  // ── Hazard check outputs ──────────────────────────────────────────
+  port oitfrd_match_disprs1: out Bool;
+  port oitfrd_match_disprs2: out Bool;
+  port oitfrd_match_disprs3: out Bool;
+  port oitfrd_match_disprd:  out Bool;
+  port oitf_empty:           out Bool;
+
+  // ── FIFO state registers ──────────────────────────────────────────
+  reg valid_0:  Bool    init false reset rst_n => false;
+  reg valid_1:  Bool    init false reset rst_n => false;
+  reg rdidx_0:  UInt<5> reset none;
+  reg rdidx_1:  UInt<5> reset none;
+  reg rdwen_0:  Bool    reset none;
+  reg rdwen_1:  Bool    reset none;
+  reg rdfpu_0:  Bool    reset none;
+  reg rdfpu_1:  Bool    reset none;
+  reg pc_0:     UInt<32> reset none;
+  reg pc_1:     UInt<32> reset none;
+  reg wr_ptr_r: Bool    init false reset rst_n => false;
+  reg rd_ptr_r: Bool    init false reset rst_n => false;
 
   seq on clk rising
     // Allocate: write new entry at wr_ptr
     if dis_ena & dis_ready
-      if wr_ptr == false
-        valid_0  <= true;
-        rdidx_0  <= dis_rd_idx;
-        rden_0   <= dis_rd_en;
+      if wr_ptr_r == false
+        valid_0 <= true;
+        rdidx_0 <= disp_i_rdidx;
+        rdwen_0 <= disp_i_rdwen;
+        rdfpu_0 <= disp_i_rdfpu;
+        pc_0    <= disp_i_pc;
       else
-        valid_1  <= true;
-        rdidx_1  <= dis_rd_idx;
-        rden_1   <= dis_rd_en;
+        valid_1 <= true;
+        rdidx_1 <= disp_i_rdidx;
+        rdwen_1 <= disp_i_rdwen;
+        rdfpu_1 <= disp_i_rdfpu;
+        pc_1    <= disp_i_pc;
       end if
-      wr_ptr <= ~wr_ptr;
+      wr_ptr_r <= ~wr_ptr_r;
     end if
 
     // Deallocate: clear oldest entry at rd_ptr
     if ret_ena
-      if rd_ptr == false
+      if rd_ptr_r == false
         valid_0 <= false;
       else
         valid_1 <= false;
       end if
-      rd_ptr <= ~rd_ptr;
+      rd_ptr_r <= ~rd_ptr_r;
     end if
   end seq
 
@@ -79,27 +95,41 @@ module ExuOitf
     oitf_empty = ~valid_0 & ~valid_1;
     dis_ready  = ~(valid_0 & valid_1);
 
+    // Pointer outputs
+    dis_ptr = wr_ptr_r.zext<1>();
+    ret_ptr = rd_ptr_r.zext<1>();
+
     // Return oldest entry info (at rd_ptr)
-    if rd_ptr == false
-      ret_rd_idx = rdidx_0;
-      ret_rd_en  = rden_0;
+    if rd_ptr_r == false
+      ret_rdidx = rdidx_0;
+      ret_rdwen = rdwen_0;
+      ret_rdfpu = rdfpu_0;
+      ret_pc    = pc_0;
     else
-      ret_rd_idx = rdidx_1;
-      ret_rd_en  = rden_1;
+      ret_rdidx = rdidx_1;
+      ret_rdwen = rdwen_1;
+      ret_rdfpu = rdfpu_1;
+      ret_pc    = pc_1;
     end if
 
-    // ── RAW dependency: new rs1/rs2 matches any valid entry's rd ─────
-    raw_dep = (valid_0 & rden_0 & ((chk_rs1_en & (chk_rs1_idx == rdidx_0))
-                                  | (chk_rs2_en & (chk_rs2_idx == rdidx_0))))
-            | (valid_1 & rden_1 & ((chk_rs1_en & (chk_rs1_idx == rdidx_1))
-                                  | (chk_rs2_en & (chk_rs2_idx == rdidx_1))));
+    // ── Hazard checks: compare dispatch rs/rd against all valid entries ──
+    // Hazard checks: compare dispatch rs/rd against valid OITF entries
+    // Match only when FPU types agree: both FPU or both integer
+    oitfrd_match_disprs1 =
+      (valid_0 & rdwen_0 & disp_i_rs1en & (disp_i_rs1idx == rdidx_0) & (disp_i_rs1fpu == rdfpu_0)) |
+      (valid_1 & rdwen_1 & disp_i_rs1en & (disp_i_rs1idx == rdidx_1) & (disp_i_rs1fpu == rdfpu_1));
 
-    // ── WAW dependency: new rd matches any valid entry's rd ──────────
-    waw_dep = (valid_0 & rden_0 & chk_rd_en & (chk_rd_idx == rdidx_0))
-            | (valid_1 & rden_1 & chk_rd_en & (chk_rd_idx == rdidx_1));
+    oitfrd_match_disprs2 =
+      (valid_0 & rdwen_0 & disp_i_rs2en & (disp_i_rs2idx == rdidx_0) & (disp_i_rs2fpu == rdfpu_0)) |
+      (valid_1 & rdwen_1 & disp_i_rs2en & (disp_i_rs2idx == rdidx_1) & (disp_i_rs2fpu == rdfpu_1));
 
-    // Stall dispatch if any dependency exists
-    dep_stall = raw_dep | waw_dep;
+    oitfrd_match_disprs3 =
+      (valid_0 & rdwen_0 & disp_i_rs3en & (disp_i_rs3idx == rdidx_0) & (disp_i_rs3fpu == rdfpu_0)) |
+      (valid_1 & rdwen_1 & disp_i_rs3en & (disp_i_rs3idx == rdidx_1) & (disp_i_rs3fpu == rdfpu_1));
+
+    oitfrd_match_disprd =
+      (valid_0 & rdwen_0 & disp_i_rdwen & (disp_i_rdidx == rdidx_0) & (disp_i_rdfpu == rdfpu_0)) |
+      (valid_1 & rdwen_1 & disp_i_rdwen & (disp_i_rdidx == rdidx_1) & (disp_i_rdfpu == rdfpu_1));
   end comb
 
-end module ExuOitf
+end module e203_exu_oitf

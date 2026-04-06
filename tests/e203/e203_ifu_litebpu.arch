@@ -2,7 +2,7 @@
 // Handles JAL (seq taken), JALR (seq taken), and Bxx (taken if backward).
 // Generates PC-adder operands and stall signal for data-dependent JALR.
 
-module LiteBpu
+module e203_ifu_litebpu
   port clk:   in Clock<SysDomain>;
   port rst_n: in Reset<Async, Low>;
 
@@ -94,4 +94,4 @@ module LiteBpu
     end if
   end comb
 
-end module LiteBpu
+end module e203_ifu_litebpu

@@ -1,19 +1,55 @@
 module hamming_tx
-  param DATA_WIDTH: const = 64;
-  param PART_WIDTH: const = 4;
-  param PARITY_BIT: const = 3;
-  param ENCODED_DATA: const = PARITY_BIT + PART_WIDTH + 1;
-  param NUM_MODULES: const = DATA_WIDTH / PART_WIDTH;
-  param TOTAL_ENCODED: const = ENCODED_DATA * NUM_MODULES;
-  port data_in:  in UInt<DATA_WIDTH>;
-  port data_out: out UInt<TOTAL_ENCODED>;
+  param DATA_WIDTH: const = 8;
+  param PARITY_BIT: const = 4;
+  param ENCODED_DATA: const = DATA_WIDTH + PARITY_BIT + 1;
+  param ENCODED_DATA_BIT: const = $clog2(ENCODED_DATA);
 
-  generate for i in 0..NUM_MODULES-1
-    inst tx_i: t_hamming_tx
-      param DATA_WIDTH = PART_WIDTH;
-      param PARITY_BIT = PARITY_BIT;
-      data_in  <- data_in[i*PART_WIDTH + PART_WIDTH - 1 : i*PART_WIDTH];
-      data_out -> data_out[i*ENCODED_DATA + ENCODED_DATA - 1 : i*ENCODED_DATA];
-    end inst tx_i
-  end generate for i
+  port data_in:  in UInt<DATA_WIDTH>;
+  port data_out: out UInt<ENCODED_DATA>;
+
+  wire parity: Vec<UInt<1>, ENCODED_DATA_BIT>;
+  wire data_idx: UInt<$clog2(DATA_WIDTH)>;
+  wire parity_idx: UInt<$clog2(ENCODED_DATA_BIT + 1)>;
+
+  comb
+    data_out = 0;
+    data_idx = 0;
+
+    // Place data bits in non-parity positions; parity positions are powers of two.
+    for i in 0..ENCODED_DATA-1
+      if i == 0
+        data_out[i:i] = 0;
+      else
+        if (i & (i - 1)) == 0
+          data_out[i:i] = 0;
+        else
+          data_out[i:i] = data_in[data_idx:data_idx];
+          if data_idx == DATA_WIDTH - 1
+            data_idx = 0;
+          else
+            data_idx = (data_idx + 1).trunc<$clog2(DATA_WIDTH)>();
+          end if
+        end if
+      end if
+    end for
+
+    // Calculate parity bits.
+    for j in 0..ENCODED_DATA_BIT-1
+      parity[j] = 0;
+      for k in 0..ENCODED_DATA-1
+        if ((k >> j) & 1) == 1
+          parity[j] = parity[j] ^ data_out[k:k];
+        end if
+      end for
+    end for
+
+    // Write parity bits into power-of-two positions (1,2,4,8,...).
+    parity_idx = 0;
+    for l in 0..ENCODED_DATA-1
+      if (l != 0) & ((l & (l - 1)) == 0)
+        data_out[l:l] = parity[parity_idx];
+        parity_idx = (parity_idx + 1).trunc<$clog2(ENCODED_DATA_BIT + 1)>();
+      end if
+    end for
+  end comb
 end module hamming_tx

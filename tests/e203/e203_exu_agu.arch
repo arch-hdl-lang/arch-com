@@ -4,7 +4,7 @@
 // In E203, AGU uses the shared adder in AluDpath via agu_req_alu signals.
 // This module wraps the address calculation and generates ICB cmd signals.
 
-module ExuAgu
+module e203_exu_agu
   param XLEN: const = 32;
 
   // From dispatch
@@ -60,12 +60,12 @@ module ExuAgu
   // ── Store data alignment ────────────────────────────────────────
   let wdata_byte: UInt<8> = i_rs2[7:0];
   let wdata_half: UInt<16> = i_rs2[15:0];
-  let store_aligned: UInt<32> = is_byte ? (wdata_byte.zext<32>() << (byte_off.zext<32>() << 3).trunc<32>()).trunc<32>() :
-                                  is_half ? (wdata_half.zext<32>() << (byte_off[1:1].zext<32>() << 4).trunc<32>()).trunc<32>() :
+  let store_aligned: UInt<32> = is_byte ? (wdata_byte.zext<32>() << (byte_off.zext<32>() << 3)) :
+                                  is_half ? (wdata_half.zext<32>() << (byte_off[1:1].zext<32>() << 4)) :
                                             i_rs2;
 
   // ── Load result alignment ───────────────────────────────────────
-  let rdata_shifted: UInt<32> = (icb_rsp_rdata >> (byte_off.zext<32>() << 3).trunc<32>()).trunc<32>();
+  let rdata_shifted: UInt<32> = (icb_rsp_rdata >> (byte_off.zext<32>() << 3));
   let load_byte: UInt<8> = rdata_shifted[7:0];
   let load_half: UInt<16> = rdata_shifted[15:0];
   let byte_sign: Bool = load_byte[7:7] != 0;
@@ -99,4 +99,4 @@ module ExuAgu
     o_rd_en  = i_rd_en & i_load;
   end comb
 
-end module ExuAgu
+end module e203_exu_agu

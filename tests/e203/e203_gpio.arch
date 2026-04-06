@@ -8,7 +8,7 @@ domain SysDomain
   freq_mhz: 100
 end domain SysDomain
 
-module Gpio
+module e203_gpio
   param WIDTH: const = 32;
 
   port clk:   in Clock<SysDomain>;
@@ -98,4 +98,4 @@ module Gpio
     gpio_irq = ((rise_ip_r & rise_ie_r) | (fall_ip_r & fall_ie_r)) != 0;
   end comb
 
-end module Gpio
+end module e203_gpio

@@ -3,7 +3,7 @@
 // APB is a 2-phase protocol: SETUP (psel=1, penable=0) → ACCESS (penable=1).
 // ICB cmd maps to APB write/read; ICB rsp returns when pready=1.
 
-module Icb2Apb
+module e203_icb2apb
 
   port clk:   in Clock<SysDomain>;
   port rst_n: in Reset<Async, Low>;
@@ -92,4 +92,4 @@ module Icb2Apb
     icb_rsp_err   = rsp_err_r;
   end comb
 
-end module Icb2Apb
+end module e203_icb2apb
