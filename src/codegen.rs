@@ -3153,14 +3153,17 @@ impl<'a> Codegen<'a> {
             .map(|e| self.emit_expr_str(e))
             .unwrap_or_else(|| "16".to_string());
 
-        // Resolve TYPE default as an SV type string
-        let type_default_sv = f.params.iter()
-            .find(|p| p.name.name == "TYPE")
+        // Find the type parameter (any name) and compute its bit-width for DATA_WIDTH
+        let type_param_name = f.params.iter()
+            .find(|p| matches!(p.kind, crate::ast::ParamKind::Type(_)))
+            .map(|p| p.name.name.clone());
+        let data_width_str = f.params.iter()
+            .find(|p| matches!(p.kind, crate::ast::ParamKind::Type(_)))
             .and_then(|p| match &p.kind {
-                crate::ast::ParamKind::Type(ty) => Some(self.emit_port_type_str(ty)),
+                crate::ast::ParamKind::Type(ty) => self.type_expr_data_width(ty),
                 _ => None,
             })
-            .unwrap_or_else(|| "logic [7:0]".to_string());
+            .unwrap_or_else(|| "8".to_string());
 
         // Collect port names to know what's declared
         let port_names: Vec<&str> = f.ports.iter().map(|p| p.name.name.as_str()).collect();
@@ -3170,8 +3173,8 @@ impl<'a> Codegen<'a> {
         // ── Module header ────────────────────────────────────────────────────
         self.line(&format!("module {n} #("));
         self.indent += 1;
-        self.line(&format!("parameter int  DEPTH = {depth_expr},"));
-        self.line(&format!("parameter type TYPE  = {type_default_sv}"));
+        self.line(&format!("parameter int  DEPTH      = {depth_expr},"));
+        self.line(&format!("parameter int  DATA_WIDTH = {data_width_str}"));
         self.indent -= 1;
         self.line(") (");
         self.indent += 1;
@@ -3179,8 +3182,8 @@ impl<'a> Codegen<'a> {
         // Emit declared ports
         for (i, p) in f.ports.iter().enumerate() {
             let dir = match p.direction { Direction::In => "input", Direction::Out => "output" };
-            // Named("TYPE") references → use the TYPE parameter directly
-            let ty_str = self.emit_fifo_port_type(&p.ty);
+            // Type param references → use DATA_WIDTH
+            let ty_str = self.emit_fifo_port_type(&p.ty, &type_param_name);
             let comma = if i < f.ports.len() - 1 { "," } else { "" };
             self.line(&format!("{dir} {ty_str} {}{comma}", p.name.name));
         }
@@ -3203,6 +3206,43 @@ impl<'a> Codegen<'a> {
         self.line("");
     }
 
+    /// Compute the total bit-width of a TypeExpr (for FIFO DATA_WIDTH parameter).
+    fn type_expr_data_width(&self, ty: &TypeExpr) -> Option<String> {
+        match ty {
+            TypeExpr::UInt(w) | TypeExpr::SInt(w) => {
+                Some(self.emit_expr_str(w))
+            }
+            TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(_, _) => {
+                Some("1".to_string())
+            }
+            TypeExpr::Vec(inner, size) => {
+                let iw = self.type_expr_data_width(inner)?;
+                let n = self.emit_expr_str(size);
+                Some(format!("({iw}) * ({n})"))
+            }
+            TypeExpr::Named(ident) => {
+                // Look up struct in symbol table to sum field widths
+                if let Some((crate::resolve::Symbol::Struct(info), _)) = self.symbols.globals.get(&ident.name) {
+                    let mut parts = Vec::new();
+                    for (_, field_ty) in &info.fields {
+                        parts.push(self.type_expr_data_width(field_ty)?);
+                    }
+                    if parts.len() == 1 {
+                        Some(parts.into_iter().next().unwrap())
+                    } else {
+                        Some(parts.join(" + "))
+                    }
+                } else if let Some((crate::resolve::Symbol::Enum(info), _)) = self.symbols.globals.get(&ident.name) {
+                    let n = info.variants.len();
+                    let bits = if n <= 1 { 1 } else { (n as f64).log2().ceil() as u32 };
+                    Some(bits.to_string())
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
     fn width_of_type_str(&self, ty_str: &str) -> String {
         // Extract bit width from "logic [N-1:0]" → "N"
         // or "logic" → "1"
@@ -3220,17 +3260,21 @@ impl<'a> Codegen<'a> {
         "1".to_string()
     }
 
-    fn emit_fifo_port_type(&self, ty: &TypeExpr) -> String {
-        match ty {
-            TypeExpr::Named(ident) if ident.name == "TYPE" => "TYPE".to_string(),
-            other => self.emit_port_type_str(other),
+    fn emit_fifo_port_type(&self, ty: &TypeExpr, type_param_name: &Option<String>) -> String {
+        if let Some(tpn) = type_param_name {
+            if let TypeExpr::Named(ident) = ty {
+                if ident.name == *tpn {
+                    return "logic [DATA_WIDTH-1:0]".to_string();
+                }
+            }
         }
+        self.emit_port_type_str(ty)
     }
 
     fn emit_fifo_sync_body(&mut self, f: &FifoDecl, port_names: &[&str]) {
         self.line("localparam int PTR_W = $clog2(DEPTH) + 1;");
         self.line("");
-        self.line("TYPE                  mem [0:DEPTH-1];");
+        self.line("logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];");
         self.line("logic [PTR_W-1:0]     wr_ptr;");
         self.line("logic [PTR_W-1:0]     rd_ptr;");
         if !port_names.contains(&"full") {
@@ -3287,7 +3331,7 @@ impl<'a> Codegen<'a> {
     fn emit_fifo_lifo_body(&mut self, f: &FifoDecl, port_names: &[&str]) {
         self.line("localparam int PTR_W = $clog2(DEPTH + 1);");
         self.line("");
-        self.line("TYPE                  mem [0:DEPTH-1];");
+        self.line("logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];");
         self.line("logic [PTR_W-1:0]     sp;");
         if !port_names.contains(&"full") {
             self.line("logic                 full;");
@@ -3369,7 +3413,7 @@ impl<'a> Codegen<'a> {
         self.indent -= 1;
         self.line("endfunction");
         self.line("");
-        self.line("TYPE              mem [0:DEPTH-1];");
+        self.line("logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];");
         self.line("logic [PTR_W-1:0] wr_ptr_bin, rd_ptr_bin;");
         self.line("logic [PTR_W-1:0] wr_ptr_gray, rd_ptr_gray;");
         self.line("// Two-stage synchronizers");

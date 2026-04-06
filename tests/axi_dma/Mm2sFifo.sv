@@ -1,23 +1,23 @@
 // MM2S data FIFO — buffers AXI4 read data before AXI4-Stream output.
 module Mm2sFifo #(
-  parameter int  DEPTH = 16,
-  parameter type TYPE  = logic [32-1:0]
+  parameter int  DEPTH      = 16,
+  parameter int  DATA_WIDTH = 32
 ) (
   input logic clk,
   input logic rst,
   input logic push_valid,
   output logic push_ready,
-  input TYPE push_data,
+  input logic [DATA_WIDTH-1:0] push_data,
   output logic pop_valid,
   input logic pop_ready,
-  output TYPE pop_data,
+  output logic [DATA_WIDTH-1:0] pop_data,
   output logic full,
   output logic empty
 );
 
   localparam int PTR_W = $clog2(DEPTH) + 1;
   
-  TYPE                  mem [0:DEPTH-1];
+  logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];
   logic [PTR_W-1:0]     wr_ptr;
   logic [PTR_W-1:0]     rd_ptr;
   
