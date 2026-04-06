@@ -1614,6 +1614,22 @@ impl<'a> TypeChecker<'a> {
             ExprKind::Cast(inner, ty) => {
                 let src_ty = self.resolve_expr_type(inner, module_name, local_types);
                 let dst_ty = self.resolve_type_expr(ty, module_name, local_types);
+                // Bool/UInt<1> as Clock<Domain> — same as .as_clock<Domain>()
+                if let Ty::Clock(_) = &dst_ty {
+                    match &src_ty {
+                        Ty::Bool | Ty::UInt(1) => {}
+                        _ => {
+                            self.errors.push(CompileError::general(
+                                &format!(
+                                    "`as Clock<D>` requires Bool or UInt<1> source, got {}",
+                                    src_ty.display()
+                                ),
+                                inner.span,
+                            ));
+                        }
+                    }
+                    return dst_ty;
+                }
                 // Width check: if both widths are known and differ, emit error
                 let src_w = self.type_total_width(&src_ty);
                 let dst_w = self.type_total_width(&dst_ty);

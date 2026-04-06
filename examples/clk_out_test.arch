@@ -12,6 +12,6 @@ module ClkDiv2
   end seq
 
   comb
-    clk_out = toggle.as_clock<SysDomain>();
+    clk_out = toggle as Clock<SysDomain>;
   end comb
 end module ClkDiv2

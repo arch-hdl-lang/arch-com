@@ -12,7 +12,7 @@ module ClkDiv2 (
       toggle <= ~toggle;
     end
   end
-  assign clk_out = toggle;
+  assign clk_out = logic'(toggle);
 
 endmodule
 
