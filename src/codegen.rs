@@ -2947,7 +2947,6 @@ impl<'a> Codegen<'a> {
                             b
                         }
                     }
-                    "as_clock" => b,
                     "reverse" => {
                         if let Some(chunk) = args.first() {
                             let c = self.emit_expr_str(chunk);
@@ -3102,7 +3101,6 @@ impl<'a> Codegen<'a> {
                             b
                         }
                     }
-                    "as_clock" => b,
                     "reverse" => {
                         if let Some(chunk) = args.first() {
                             let c = self.emit_expr_str(chunk);
@@ -3630,7 +3628,7 @@ impl<'a> Codegen<'a> {
                             b
                         }
                     }
-                    "as_clock" => b, // identity — 1-bit logic used as clock
+                    // as_clock removed — use `as Clock<Domain>` cast syntax // identity — 1-bit logic used as clock
                     "reverse" => {
                         if let Some(chunk) = args.first() {
                             let c = self.emit_expr_str(chunk);

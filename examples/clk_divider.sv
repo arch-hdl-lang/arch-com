@@ -1,4 +1,4 @@
-// Clock divider using .as_clock<Domain>() cast
+// Clock divider using as Clock<Domain> cast
 module ClkDiv2 (
   input logic clk_in,
   input logic rst_n,
@@ -13,7 +13,7 @@ module ClkDiv2 (
       toggle_r <= ~toggle_r;
     end
   end
-  assign clk_out = toggle_r;
+  assign clk_out = logic'(toggle_r);
 
 endmodule
 

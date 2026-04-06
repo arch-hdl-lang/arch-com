@@ -1498,35 +1498,6 @@ impl<'a> TypeChecker<'a> {
             ExprKind::MethodCall(base, method, args) => {
                 let base_ty = self.resolve_expr_type(base, module_name, local_types);
                 match method.name.as_str() {
-                    "as_clock" => {
-                        // .as_clock<Domain>() — converts Bool/UInt<1> to Clock<Domain>
-                        match &base_ty {
-                            Ty::Bool | Ty::UInt(1) => {}
-                            _ => {
-                                self.errors.push(CompileError::general(
-                                    &format!(".as_clock<D>() requires Bool or UInt<1> base, got {}", base_ty.display()),
-                                    method.span,
-                                ));
-                            }
-                        }
-                        if let Some(domain_expr) = args.first() {
-                            if let ExprKind::Ident(domain_name) = &domain_expr.kind {
-                                Ty::Clock(domain_name.clone())
-                            } else {
-                                self.errors.push(CompileError::general(
-                                    ".as_clock<D>() requires a domain name argument",
-                                    method.span,
-                                ));
-                                Ty::Error
-                            }
-                        } else {
-                            self.errors.push(CompileError::general(
-                                ".as_clock<D>() requires a domain name argument",
-                                method.span,
-                            ));
-                            Ty::Error
-                        }
-                    }
                     "trunc" | "zext" | "sext" => {
                         if let Some(width_expr) = args.first() {
                             if let Some(w) = self.eval_const_expr(width_expr, local_types) {

@@ -903,7 +903,6 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
         ExprKind::Literal(LitKind::Sized(w, _)) => *w,
         ExprKind::Literal(_) => 32,
         ExprKind::Bool(_) => 1,
-        ExprKind::MethodCall(_, method, _) if method.name == "as_clock" => 1,
         ExprKind::MethodCall(base, method, _) if method.name == "reverse" => {
             infer_expr_width(base, ctx)
         }
@@ -1166,7 +1165,6 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                         b
                     }
                 }
-                "as_clock" => b, // identity — Bool used as clock
                 "reverse" => {
                     let base_w = infer_expr_width(base, ctx);
                     let chunk = if let Some(c) = args.first() { eval_width(c) } else { 1 };

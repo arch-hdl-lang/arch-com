@@ -1,4 +1,4 @@
-// Clock divider using .as_clock<Domain>() cast
+// Clock divider using as Clock<Domain> cast
 module ClkDiv2
 
   port clk_in:  in Clock<SysDomain>;
@@ -12,7 +12,7 @@ module ClkDiv2
   end seq
 
   comb
-    clk_out = toggle_r.as_clock<SysDomain>();
+    clk_out = toggle_r as Clock<SysDomain>;
   end comb
 
 end module ClkDiv2
