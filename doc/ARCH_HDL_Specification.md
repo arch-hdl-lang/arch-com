@@ -262,6 +262,25 @@ Every assignment, port connection, and arithmetic result is width-checked at com
 | cnt \<= (cnt + 1).trunc\<8\>(); // ✓ explicit wrap-around truncation        |
 +-----------------------------------------------------------------------------+
 
+**Shift operators: non-widening (IEEE 1800-2012 §11.6.1)**
+
+Unlike addition and multiplication, shift operators (`<<`, `>>`) do **not** widen the result. The result width equals the left operand width, regardless of the shift amount:
+
+```
+let a: UInt<8> = 0xAB;
+let shifted: UInt<8> = a << 1;           // UInt<8>, MSB lost — no widening
+let wide: UInt<9> = a.zext<9>() << 1;    // UInt<9>, MSB preserved — explicit widen first
+```
+
+| Operation | Result width | IEEE §11.6 rule |
+|-----------|-------------|-----------------|
+| `a + b` | `max(W(a), W(b)) + 1` | Arithmetic widening |
+| `a * b` | `W(a) + W(b)` | Multiplication widening |
+| `a << n` | `W(a)` | **Non-widening** — shift amount does not affect result width |
+| `a >> n` | `W(a)` | **Non-widening** |
+
+> *⚑ The compiler emits a warning when a shift result is assigned to a wider target (e.g. `let wide: UInt<9> = a << 1;`), because the extra bit will always be zero --- the shift did not capture the overflow. The fix is to widen the operand first: `a.zext<9>() << 1`.*
+
 > *⚑ Width inference follows IEEE 1800-2012 §11.6. Arch promotes all mismatches to hard errors --- never warnings. The arithmetic widening trap (`r <= r + 1`) is caught at the register-assignment level: the compiler diagnoses it and suggests `.trunc<N>()`. The `.trunc<N>()` method emits a SystemVerilog size cast `N'(expr)`, which is valid on any expression including compound ones. Bit-slice syntax `expr[hi:lo]` extracts a bit range: `instr[11:7]` emits `instr[11:7]` with result width hi−lo+1. This is essential for instruction field decoding.*
 
 **3.3 Struct and Enum Types**

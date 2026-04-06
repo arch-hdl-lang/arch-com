@@ -307,6 +307,20 @@ impl<'a> TypeChecker<'a> {
                                     l.value.span,
                                 ));
                             }
+                            // Warn: shift assigned to wider target — MSB is always zero
+                            if let (Some(ew), Some(aw)) = (expected.width(), ty.width()) {
+                                if ew > aw && expr_is_shift(&l.value) {
+                                    self.warnings.push(CompileWarning {
+                                        message: format!(
+                                            "shift result is UInt<{aw}> but target `{}` is UInt<{ew}>; \
+                                             the extra bit(s) will always be zero. \
+                                             To capture overflow, widen the operand first: `.zext<{ew}>() << n`",
+                                            l.name.name
+                                        ),
+                                        span: l.value.span,
+                                    });
+                                }
+                            }
                         }
                         // Use the declared type if provided (it may be wider than what was inferred)
                         let final_ty = if let Some(declared_ty) = &l.ty {
@@ -1023,6 +1037,19 @@ impl<'a> TypeChecker<'a> {
                     let rhs_ty = self.resolve_expr_type(&a.value, module_name, local_types);
                     if let Some(lhs_ty) = local_types.get(&name).cloned() {
                         self.check_width_compatible(&lhs_ty, &rhs_ty, &name, a.span);
+                        // Warn: shift assigned to wider target
+                        if let (Some(lw), Some(rw)) = (lhs_ty.width(), rhs_ty.width()) {
+                            if lw > rw && expr_is_shift(&a.value) {
+                                self.warnings.push(CompileWarning {
+                                    message: format!(
+                                        "shift result is UInt<{rw}> but target `{name}` is UInt<{lw}>; \
+                                         the extra bit(s) will always be zero. \
+                                         To capture overflow, widen the operand first: `.zext<{lw}>() << n`"
+                                    ),
+                                    span: a.span,
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -1119,6 +1146,19 @@ impl<'a> TypeChecker<'a> {
                 if !is_indexed {
                     if let Some(lhs_ty) = local_types.get(&target_name).cloned() {
                         self.check_width_compatible(&lhs_ty, &rhs_ty, &target_name, a.span);
+                        // Warn: shift assigned to wider target
+                        if let (Some(lw), Some(rw)) = (lhs_ty.width(), rhs_ty.width()) {
+                            if lw > rw && expr_is_shift(&a.value) {
+                                self.warnings.push(CompileWarning {
+                                    message: format!(
+                                        "shift result is UInt<{rw}> but target `{target_name}` is UInt<{lw}>; \
+                                         the extra bit(s) will always be zero. \
+                                         To capture overflow, widen the operand first: `.zext<{lw}>() << n`"
+                                    ),
+                                    span: a.span,
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -2939,6 +2979,11 @@ impl<'a> TypeChecker<'a> {
             }
         }
     }
+}
+
+/// Returns true if the expression's top-level operation is a shift (`<<` or `>>`).
+fn expr_is_shift(e: &Expr) -> bool {
+    matches!(&e.kind, ExprKind::Binary(BinOp::Shl | BinOp::Shr, _, _))
 }
 
 /// Evaluate a simple literal type-width expression (e.g. the `8` in `UInt<8>`).
