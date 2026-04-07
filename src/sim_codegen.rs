@@ -616,15 +616,15 @@ fn expand_bus_connections(
             Item::Fsm(f) if f.name.name == inst.module_name.name => Some(f.ports.as_slice()),
             _ => None,
         });
-    let target_bus_ports: Vec<(&str, &str, BusPerspective)> = target_ports
+    let target_bus_ports: Vec<(&str, &str, BusPerspective, &[ParamAssign])> = target_ports
         .map(|ports| ports.iter()
-            .filter_map(|p| p.bus_info.as_ref().map(|bi| (p.name.name.as_str(), bi.bus_name.name.as_str(), bi.perspective)))
+            .filter_map(|p| p.bus_info.as_ref().map(|bi| (p.name.name.as_str(), bi.bus_name.name.as_str(), bi.perspective, bi.params.as_slice())))
             .collect())
         .unwrap_or_default();
 
     let mut expanded = Vec::new();
     for c in &inst.connections {
-        if let Some((_, bus_name, perspective)) = target_bus_ports.iter().find(|(pn, _, _)| *pn == c.port_name.name) {
+        if let Some((_, bus_name, perspective, bus_params)) = target_bus_ports.iter().find(|(pn, _, _, _)| *pn == c.port_name.name) {
             // Bus connection — expand to individual signal connections
             if let Some((crate::resolve::Symbol::Bus(info), _)) = symbols.globals.get(*bus_name) {
                 let sig_name = match &c.signal.kind {
@@ -639,7 +639,9 @@ fn expand_bus_connections(
                     }
                     _ => continue,
                 };
-                let _eff = info.effective_signals(&info.default_param_map()); for (sname, sdir, _) in &_eff {
+                let mut _pm = info.default_param_map();
+                for pa in *bus_params { _pm.insert(pa.name.name.clone(), &pa.value); }
+                let _eff = info.effective_signals(&_pm); for (sname, sdir, _) in &_eff {
                     let inst_flat = format!("{}_{}", c.port_name.name, sname);
                     let parent_flat = format!("{}_{}", sig_name, sname);
                     // Determine actual direction from the inst's bus perspective.
