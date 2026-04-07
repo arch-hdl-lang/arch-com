@@ -1,0 +1,41 @@
+// Retimed multiplier: pipe_reg delays the product to meet timing.
+//
+// A 16x16 multiply produces a 32-bit result in one cycle, but the
+// combinational delay through the multiplier may exceed the clock period.
+// pipe_reg inserts N pipeline stages between the multiply output and
+// the consumer, giving synthesis tools room to retime logic into the
+// flip-flop chain. The result is available N cycles later.
+//
+// This is the ARCH equivalent of manually inserting pipeline registers:
+//   reg stg1 <= product;
+//   reg stg2 <= stg1;
+//   result = stg2;
+// but expressed in a single line with compile-time stage tracking.
+
+module MulRetimed
+  param WIDTH: const = 16;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a:   in UInt<WIDTH>;
+  port b:   in UInt<WIDTH>;
+  port valid_in: in Bool;
+  port result: out UInt<32>;
+  port valid_out: out Bool;
+
+  reg default: reset rst => 0;
+
+  // Combinational multiply — wide result, long critical path
+  let product: UInt<32> = (a.zext<32>() * b.zext<32>()).trunc<32>();
+
+  // Pipeline the result by 2 stages for timing closure
+  pipe_reg product_d2: product stages 2;
+
+  // Pipeline the valid signal by the same depth to stay aligned
+  pipe_reg valid_d2: valid_in stages 2;
+
+  comb
+    result = product_d2;
+    valid_out = valid_d2;
+  end comb
+end module MulRetimed
