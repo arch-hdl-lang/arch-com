@@ -440,7 +440,7 @@ impl<'a> TypeChecker<'a> {
                                             .and_then(|p| p.bus_info.as_ref())
                                             .map(|bi| bi.perspective));
 
-                                    for (sname, sdir, _) in &info.signals {
+                                    let _eff = info.effective_signals(&info.default_param_map()); for (sname, sdir, _) in &_eff {
                                         // Determine actual direction from inst's perspective
                                         let inst_dir = match inst_perspective {
                                             Some(BusPerspective::Initiator) => *sdir,
@@ -501,7 +501,7 @@ impl<'a> TypeChecker<'a> {
                 // Bus port: check each output signal is driven (flattened name: port_signal)
                 let bus_name = &bi.bus_name.name;
                 if let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
-                    for (sname, sdir, _) in &info.signals {
+                    let _eff = info.effective_signals(&info.default_param_map()); for (sname, sdir, _) in &_eff {
                         let actual_dir = match bi.perspective {
                             BusPerspective::Initiator => *sdir,
                             BusPerspective::Target => (*sdir).flip(),
@@ -1454,7 +1454,7 @@ impl<'a> TypeChecker<'a> {
                 if let Ty::Bus(name) = &base_ty {
                     if let Some((sym, _)) = self.symbols.globals.get(name) {
                         if let crate::resolve::Symbol::Bus(info) = sym {
-                            for (sname, _dir, sty) in &info.signals {
+                            let _eff = info.effective_signals(&info.default_param_map()); for (sname, _dir, sty) in &_eff {
                                 if sname == &field.name {
                                     return self.resolve_type_expr(sty, module_name, local_types);
                                 }

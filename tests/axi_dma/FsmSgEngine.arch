@@ -26,7 +26,7 @@ fsm FsmSgEngine
   port sg_done: out Bool;
 
   // AXI4 full master — descriptor fetch (read) + status writeback (write)
-  port sg_axi: initiator BusAxi4Full;
+  port sg_axi: initiator BusAxi4;
 
   // Internal registers
   reg curdesc_r:  UInt<32> reset none;

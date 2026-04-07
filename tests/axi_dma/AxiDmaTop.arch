@@ -8,10 +8,10 @@ module AxiDmaTop
   port s_axil: target BusAxiLite;
 
   // ── AXI4 masters ────────────────────────────────────────────────────
-  port m_axi_mm2s:    initiator BusAxi4Read;     // MM2S data reads
-  port m_axi_s2mm:    initiator BusAxi4Write;    // S2MM data writes
-  port m_axi_mm2s_sg: initiator BusAxi4Full;     // MM2S SG descriptor access
-  port m_axi_s2mm_sg: initiator BusAxi4Full;     // S2MM SG descriptor access
+  port m_axi_mm2s:    initiator BusAxi4<WRITE=0>;   // MM2S data reads
+  port m_axi_s2mm:    initiator BusAxi4<READ=0>;   // S2MM data writes
+  port m_axi_mm2s_sg: initiator BusAxi4;            // MM2S SG descriptor access
+  port m_axi_s2mm_sg: initiator BusAxi4;            // S2MM SG descriptor access
 
   // ── AXI4-Stream ─────────────────────────────────────────────────────
   port m_axis_mm2s: initiator BusAxis;

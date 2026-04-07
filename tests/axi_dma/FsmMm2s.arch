@@ -15,7 +15,7 @@ fsm FsmMm2s
   port idle_out: out Bool;
 
   // AXI4 Read Master
-  port axi_rd: initiator BusAxi4Read;
+  port axi_rd: initiator BusAxi4<WRITE=0>;
 
   // FIFO push interface
   port push_valid: out Bool;

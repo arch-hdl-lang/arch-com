@@ -133,36 +133,14 @@ impl Parser {
         let name = self.expect_ident()?;
         let mut params = Vec::new();
         let mut signals = Vec::new();
+        let mut generates = Vec::new();
         while !self.check_end_keyword() {
             if self.check_param() {
                 params.push(self.parse_param_decl()?);
+            } else if self.check(TokenKind::GenerateIf) {
+                generates.push(self.parse_bus_generate_if(start)?);
             } else {
-                // Signal: name: in/out Type;
-                let sig_name = self.expect_ident()?;
-                self.expect(TokenKind::Colon)?;
-                let direction = if self.eat_contextual("in") {
-                    Direction::In
-                } else if self.eat_contextual("out") {
-                    Direction::Out
-                } else {
-                    return Err(CompileError::unexpected_token(
-                        "in or out",
-                        &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
-                        self.peek_span(),
-                    ));
-                };
-                let ty = self.parse_type_expr()?;
-                self.expect(TokenKind::Semi)?;
-                let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
-                signals.push(PortDecl {
-                    name: sig_name,
-                    direction,
-                    ty,
-                    default: None,
-                    reg_info: None,
-                    bus_info: None,
-                    span: start.merge(end_span),
-                });
+                signals.push(self.parse_bus_signal(start)?);
             }
         }
         self.expect(TokenKind::End)?;
@@ -180,7 +158,76 @@ impl Parser {
             name,
             params,
             signals,
+            generates,
         })
+    }
+
+    fn parse_bus_signal(&mut self, parent_span: Span) -> Result<PortDecl, CompileError> {
+        let sig_name = self.expect_ident()?;
+        self.expect(TokenKind::Colon)?;
+        let direction = if self.eat_contextual("in") {
+            Direction::In
+        } else if self.eat_contextual("out") {
+            Direction::Out
+        } else {
+            return Err(CompileError::unexpected_token(
+                "in or out",
+                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                self.peek_span(),
+            ));
+        };
+        let ty = self.parse_type_expr()?;
+        self.expect(TokenKind::Semi)?;
+        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(parent_span);
+        Ok(PortDecl {
+            name: sig_name,
+            direction,
+            ty,
+            default: None,
+            reg_info: None,
+            bus_info: None,
+            span: parent_span.merge(end_span),
+        })
+    }
+
+    fn parse_bus_generate_if(&mut self, parent_span: Span) -> Result<BusGenerateIf, CompileError> {
+        let start = self.expect(TokenKind::GenerateIf)?.span;
+        let cond = self.parse_expr()?;
+        let mut then_signals = Vec::new();
+        // Parse then-branch signals until end generate_if or generate_else
+        while !self.check_bus_gen_end() {
+            then_signals.push(self.parse_bus_signal(parent_span)?);
+        }
+        // Optional generate_else
+        let else_signals = if self.check(TokenKind::GenerateElse) {
+            self.advance();
+            let mut sigs = Vec::new();
+            while !(self.pos + 1 < self.tokens.len()
+                && self.tokens[self.pos].kind == TokenKind::End
+                && self.tokens[self.pos + 1].kind == TokenKind::GenerateIf)
+            {
+                sigs.push(self.parse_bus_signal(parent_span)?);
+            }
+            sigs
+        } else {
+            Vec::new()
+        };
+        self.expect(TokenKind::End)?;
+        let end_span = self.expect(TokenKind::GenerateIf)?.span;
+        Ok(BusGenerateIf {
+            cond,
+            then_signals,
+            else_signals,
+            span: start.merge(end_span),
+        })
+    }
+
+    fn check_bus_gen_end(&self) -> bool {
+        // Stop at `end generate_if` or `generate_else`
+        if self.check(TokenKind::GenerateElse) { return true; }
+        self.pos + 1 < self.tokens.len()
+            && self.tokens[self.pos].kind == TokenKind::End
+            && self.tokens[self.pos + 1].kind == TokenKind::GenerateIf
     }
 
     // --- Enum ---

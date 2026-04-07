@@ -121,6 +121,52 @@ pub struct BusInfo {
     pub name: String,
     pub params: Vec<ParamDecl>,
     pub signals: Vec<(String, Direction, TypeExpr)>,
+    pub generates: Vec<BusGenerateIf>,
+}
+
+impl BusInfo {
+    /// Build a param map from this bus's default param values.
+    pub fn default_param_map(&self) -> HashMap<String, &Expr> {
+        self.params.iter()
+            .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
+            .collect()
+    }
+
+    /// Return the effective signal list after evaluating generate_if blocks
+    /// using the given param map (bus defaults + port-site overrides).
+    pub fn effective_signals(&self, param_map: &HashMap<String, &Expr>) -> Vec<(String, Direction, TypeExpr)> {
+        let mut result = self.signals.clone();
+        for gen in &self.generates {
+            let cond_val = eval_bus_cond(&gen.cond, param_map);
+            let sigs = if cond_val { &gen.then_signals } else { &gen.else_signals };
+            for s in sigs {
+                result.push((s.name.name.clone(), s.direction, s.ty.clone()));
+            }
+        }
+        result
+    }
+}
+
+/// Evaluate a generate_if condition in a bus context.
+/// Supports simple param references (truthy if nonzero) and literal integers.
+fn eval_bus_cond(expr: &Expr, param_map: &HashMap<String, &Expr>) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => {
+            if let Some(val_expr) = param_map.get(name.as_str()) {
+                eval_bus_cond(val_expr, param_map)
+            } else {
+                false
+            }
+        }
+        ExprKind::Literal(lit) => {
+            match lit {
+                LitKind::Dec(n) | LitKind::Hex(n) | LitKind::Bin(n) => *n != 0,
+                LitKind::Sized(_, n) => *n != 0,
+            }
+        }
+        ExprKind::Bool(b) => *b,
+        _ => true, // conservative: include signals if condition can't be evaluated
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -402,6 +448,7 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                         signals: b.signals.iter()
                             .map(|s| (s.name.name.clone(), s.direction, s.ty.clone()))
                             .collect(),
+                        generates: b.generates.clone(),
                     };
                     table.globals.insert(b.name.name.clone(), (Symbol::Bus(info), b.name.span));
                 }

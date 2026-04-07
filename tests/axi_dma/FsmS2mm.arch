@@ -24,7 +24,7 @@ fsm FsmS2mm
   port pop_data:  in  UInt<32>;
 
   // AXI4 Write Master
-  port axi_wr: initiator BusAxi4Write;
+  port axi_wr: initiator BusAxi4<READ=0>;
 
   // Internal registers
   reg dst_addr_r:  UInt<32> reset none;

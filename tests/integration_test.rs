@@ -166,8 +166,8 @@ fn test_sync_fifo() {
     assert!(sv.contains("assign push_ready"));
     assert!(sv.contains("assign pop_valid"));
     assert!(sv.contains("always_ff @(posedge clk)"));
-    assert!(sv.contains("parameter type TYPE"));
-    assert!(sv.contains("TYPE                  mem [0:DEPTH-1]"));
+    assert!(sv.contains("parameter int") && sv.contains("DATA_WIDTH"));
+    assert!(sv.contains("mem [0:DEPTH-1]"));
     // Not async
     assert!(!sv.contains("bin2gray"));
     insta::assert_snapshot!(sv);

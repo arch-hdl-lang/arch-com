@@ -61,6 +61,17 @@ pub struct BusDecl {
     pub name: Ident,
     pub params: Vec<ParamDecl>,
     pub signals: Vec<PortDecl>,  // direction = from initiator's perspective
+    pub generates: Vec<BusGenerateIf>,  // conditional signal groups
+    pub span: Span,
+}
+
+/// Conditional signal group inside a bus definition.
+/// `generate_if COND ... [generate_else ...] end generate_if`
+#[derive(Debug, Clone)]
+pub struct BusGenerateIf {
+    pub cond: Expr,
+    pub then_signals: Vec<PortDecl>,
+    pub else_signals: Vec<PortDecl>,
     pub span: Span,
 }
 

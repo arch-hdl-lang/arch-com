@@ -368,7 +368,8 @@ impl<'a> Codegen<'a> {
                     for pa in &bi.params {
                         param_map.insert(pa.name.name.clone(), &pa.value);
                     }
-                    for (sname, sdir, sty) in &info.signals {
+                    let eff_signals = info.effective_signals(&param_map);
+                    for (sname, sdir, sty) in &eff_signals {
                         let actual_dir = match bi.perspective {
                             BusPerspective::Initiator => *sdir,
                             BusPerspective::Target => (*sdir).flip(),
@@ -1798,7 +1799,7 @@ impl<'a> Codegen<'a> {
         // Expand bus port connections: one bus connect → N signal connects
         let mut connections: Vec<String> = Vec::new();
         // Find the target construct's ports to detect bus ports (modules and FSMs)
-        let target_bus_ports: Vec<(String, String)> = {
+        let target_bus_ports: Vec<(String, String, Vec<ParamAssign>)> = {
             let target_ports: Option<&[PortDecl]> = self.source.items.iter()
                 .find_map(|item| match item {
                     Item::Module(m) if m.name.name == inst.module_name.name => Some(m.ports.as_slice()),
@@ -1806,17 +1807,24 @@ impl<'a> Codegen<'a> {
                     _ => None,
                 });
             target_ports.map(|ports| ports.iter()
-                .filter_map(|p| p.bus_info.as_ref().map(|bi| (p.name.name.clone(), bi.bus_name.name.clone())))
+                .filter_map(|p| p.bus_info.as_ref().map(|bi| (p.name.name.clone(), bi.bus_name.name.clone(), bi.params.clone())))
                 .collect())
                 .unwrap_or_default()
         };
 
         for c in &inst.connections {
-            if let Some((_, bus_name)) = target_bus_ports.iter().find(|(pn, _)| *pn == c.port_name.name) {
+            if let Some((_, bus_name, bus_params)) = target_bus_ports.iter().find(|(pn, _, _)| *pn == c.port_name.name) {
                 // Bus connection — expand to individual signals
                 if let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
+                    let mut param_map: std::collections::HashMap<String, &Expr> = info.params.iter()
+                        .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
+                        .collect();
+                    for pa in bus_params {
+                        param_map.insert(pa.name.name.clone(), &pa.value);
+                    }
+                    let eff_signals = info.effective_signals(&param_map);
                     let sig_str = self.emit_expr_str(&c.signal);
-                    for (sname, _, _) in &info.signals {
+                    for (sname, _, _) in &eff_signals {
                         connections.push(format!(".{}_{}({}_{})", c.port_name.name, sname, sig_str, sname));
                     }
                 }
@@ -1970,7 +1978,8 @@ impl<'a> Codegen<'a> {
                     for pa in &bi.params {
                         param_map.insert(pa.name.name.clone(), &pa.value);
                     }
-                    for (sname, sdir, sty) in &info.signals {
+                    let eff_signals = info.effective_signals(&param_map);
+                    for (sname, sdir, sty) in &eff_signals {
                         let actual_dir = match bi.perspective {
                             BusPerspective::Initiator => *sdir,
                             BusPerspective::Target => (*sdir).flip(),

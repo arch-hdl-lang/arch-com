@@ -590,7 +590,8 @@ fn flatten_bus_port(
         for pa in &bi.params {
             param_map.insert(pa.name.name.clone(), &pa.value);
         }
-        info.signals.iter().map(|(sname, _sdir, sty)| {
+        let eff = info.effective_signals(&param_map);
+        eff.iter().map(|(sname, _sdir, sty)| {
             let subst_ty = subst_type_expr_sim(sty, &param_map);
             (format!("{}_{}", port_name, sname), subst_ty)
         }).collect()
@@ -638,7 +639,7 @@ fn expand_bus_connections(
                     }
                     _ => continue,
                 };
-                for (sname, sdir, _) in &info.signals {
+                let _eff = info.effective_signals(&info.default_param_map()); for (sname, sdir, _) in &_eff {
                     let inst_flat = format!("{}_{}", c.port_name.name, sname);
                     let parent_flat = format!("{}_{}", sig_name, sname);
                     // Determine actual direction from the inst's bus perspective.

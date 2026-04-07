@@ -181,6 +181,12 @@ module AxiDmaTop (
   logic s2mm_fsm_start_w;
   logic [32-1:0] s2mm_fsm_addr_w;
   logic [8-1:0] s2mm_fsm_beats_w;
+  // Channel clock enables — active when channel is NOT halted
+  logic mm2s_clk_en_w;
+  logic s2mm_clk_en_w;
+  // Gated clocks produced by ICG cells
+  logic mm2s_gated_clk_w;
+  logic s2mm_gated_clk_w;
   // Counters + flags
   logic [8-1:0] mm2s_stream_ctr;
   logic [8-1:0] s2mm_recv_ctr;
@@ -192,7 +198,24 @@ module AxiDmaTop (
   // Timing: lookahead register — true when the CURRENT stream beat is the last.
   // Precomputed one cycle early; critical path for tlast is 1 gate (AND with tvalid).
   logic mm2s_tlast_r;
+  // ── Clock gate enables ──────────────────────────────────────────────
+  // OR the start signals so the clock wakes up on the same cycle start fires,
+  // before the FSM has had a chance to leave Idle (which would clear halted).
+  // Without this, start fires into a gated clock and is permanently lost.
+  assign mm2s_clk_en_w = ~mm2s_halted_w | mm2s_fsm_start_w | mm2s_sg_start_w;
+  assign s2mm_clk_en_w = ~s2mm_halted_w | s2mm_fsm_start_w | s2mm_sg_start_w;
   // ── Instances ───────────────────────────────────────────────────────
+  // ICG cells: gate each channel clock when that channel is halted
+  ClkGateDma mm2s_icg (
+    .clk_in(clk),
+    .enable(mm2s_clk_en_w),
+    .clk_out(mm2s_gated_clk_w)
+  );
+  ClkGateDma s2mm_icg (
+    .clk_in(clk),
+    .enable(s2mm_clk_en_w),
+    .clk_out(s2mm_gated_clk_w)
+  );
   AxiLiteRegs regs (
     .clk(clk),
     .rst(rst),
@@ -239,7 +262,7 @@ module AxiDmaTop (
     .s2mm_introut(s2mm_introut_w)
   );
   FsmSgEngine mm2s_sg (
-    .clk(clk),
+    .clk(mm2s_gated_clk_w),
     .rst(rst),
     .sg_start(mm2s_sg_start_w),
     .curdesc(mm2s_curdesc_w),
@@ -280,7 +303,7 @@ module AxiDmaTop (
     .sg_axi_b_resp(m_axi_mm2s_sg_b_resp)
   );
   FsmSgEngine s2mm_sg (
-    .clk(clk),
+    .clk(s2mm_gated_clk_w),
     .rst(rst),
     .sg_start(s2mm_sg_start_w),
     .curdesc(s2mm_curdesc_w),
@@ -321,7 +344,7 @@ module AxiDmaTop (
     .sg_axi_b_resp(m_axi_s2mm_sg_b_resp)
   );
   FsmMm2s mm2s_fsm (
-    .clk(clk),
+    .clk(mm2s_gated_clk_w),
     .rst(rst),
     .start(mm2s_fsm_start_w),
     .src_addr(mm2s_fsm_addr_w),
@@ -347,7 +370,7 @@ module AxiDmaTop (
     .push_data(mm2s_push_data_w)
   );
   Mm2sFifo mm2s_fifo (
-    .clk(clk),
+    .clk(mm2s_gated_clk_w),
     .rst(rst),
     .push_valid(mm2s_push_valid_w),
     .push_ready(mm2s_push_ready_w),
@@ -357,7 +380,7 @@ module AxiDmaTop (
     .pop_data(mm2s_pop_data_w)
   );
   S2mmFifo s2mm_fifo (
-    .clk(clk),
+    .clk(s2mm_gated_clk_w),
     .rst(rst),
     .push_valid(s2mm_push_valid_w),
     .push_ready(s2mm_push_ready_w),
@@ -367,7 +390,7 @@ module AxiDmaTop (
     .pop_data(s2mm_pop_data_w)
   );
   FsmS2mm s2mm_fsm (
-    .clk(clk),
+    .clk(s2mm_gated_clk_w),
     .rst(rst),
     .start(s2mm_fsm_start_w),
     .dst_addr(s2mm_fsm_addr_w),
