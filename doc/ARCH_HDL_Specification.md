@@ -4596,9 +4596,9 @@ Traditional Verilog simulators carry a heavyweight runtime because the language 
   --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
   **Verilog/SV Runtime Complexity**                                                    **Arch Equivalent**                                                                         **Enables**
   ------------------------------------------------------------------------------------ ------------------------------------------------------------------------------------------- -----------------------------------------------------------------------------
-  **Delta cycles --- multiple zero-time evaluation passes until stability**            No combinational loops (compile error) --- evaluation order is a static DAG computed once   Single-pass evaluation per clock edge; no convergence loop
+  **Delta cycles --- multiple zero-time evaluation passes until stability**            No combinational loops (compile error) --- evaluation order is a static DAG computed once   Bounded settle (1--2 passes, statically determined); no unbounded convergence loop
 
-  **X/Z propagation --- unknown and high-impedance states require 4-valued logic**     No undriven signals (single-driver rule) --- all signals have defined values at all times   2-valued logic throughout; eliminates 4-state simulation kernel
+  **X/Z propagation --- unknown and high-impedance states require 4-valued logic**     No undriven signals (single-driver rule) --- all signals have defined values at all times   2-valued logic + runtime undefined-behavior detection (`--check-uninit`); see §20.1a for residual X sources
 
   **Multiple drivers --- wired-OR/AND resolution requires dynamic arbitration**        Single-driver rule enforced at compile time --- no multi-driver resolution at runtime       Every signal has exactly one update site; no resolution function needed
 
@@ -4610,6 +4610,32 @@ Traditional Verilog simulators carry a heavyweight runtime because the language 
   --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 > ◈ These are not runtime workarounds --- they are language-level invariants. The compiler proves them once during type-checking. The simulation binary never needs to check them again. This is what makes the simulation kernel fast: it is executing a pre-verified, topologically ordered dataflow graph, not interpreting an arbitrary event-driven program.
+
+**20.1a Limitations of 2-State Simulation**
+
+Arch's 2-state simulation eliminates X/Z propagation by construction, but several categories of undefined behavior remain that would manifest as X in a 4-state simulator. The `--check-uninit` flag detects some but not all of these at runtime:
+
+| **Undefined Behavior Source** | **Detection** | **Status** |
+|-------------------------------|---------------|------------|
+| Read of `reset none` register before first write | `--check-uninit` runtime warning | ✅ Implemented |
+| Read of `pipe_reg` before pipeline fills | `--check-uninit` runtime warning (propagates through chain) | ✅ Implemented |
+| Read of RAM cell before first write | Undetected — returns 0 or `init` value silently | ❌ Planned |
+| Out-of-bounds `Vec` index at runtime | Undetected — silently wraps | ❌ Planned |
+| Division by zero | Undetected — undefined C++ behavior | ❌ Planned |
+| Undriven output port | Compile-time error (single-driver rule) | ✅ Static |
+| Implicit latch (incomplete `comb`) | Compile-time error | ✅ Static |
+| Multiple drivers | Compile-time error | ✅ Static |
+| Clock-domain crossing without synchronizer | Compile-time error | ✅ Static |
+
+The first column lists sources of undefined values. The second column indicates how each is detected. The third column shows implementation status.
+
+**Planned extensions to `--check-uninit`:**
+
+1. **RAM cell tracking** --- per-cell valid bitmap. On read of an address that has never been written (and has no `init` declaration), emit a runtime warning. Cost: one bit per RAM word (e.g., 512 bytes for a 4096-entry RAM).
+2. **Dynamic `Vec` index bounds checking** --- insert runtime bounds check before indexed access. On out-of-range index, emit a warning and clamp to the valid range.
+3. **Division-by-zero trap** --- insert a zero-check before every `/` and `%` operation. On division by zero, emit a warning and return zero (matching SV `x` semantics collapsed to 0).
+
+> ◈ These runtime checks are simulation-only; they have no effect on generated SystemVerilog. The goal is to detect, at simulation time, the undefined behaviors that a 4-state simulator would expose via X propagation, without the overhead of a full 4-state simulation kernel.
 
 **20.2 Arch Intermediate Representation (FIR)**
 

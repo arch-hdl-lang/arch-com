@@ -6,23 +6,6 @@
 
 ---
 
-## What's Fixed (good)
-
-- LL(1) grammar now prominently featured in abstract, §2.1, §5.1, and comparison table
-- L1D cache case study (§8) with real code stats, verification details, and lessons — far stronger than old RISC-V sketch
-- AXI DMA case study (§9) with actual Yosys synthesis results and power analysis
-- RDC section added (§3.4) with three violation classes
-- FSM example now shows `default` block pattern (Listing 6)
-- `Reset<S,P,D?>` type with optional domain in type table
-- Email changed to arch.hdl.lang@gmail.com
-- VerilogEval density table (Table 8) now uses exact totals in bottom row (3,199 / 4,518)
-- RTL++ and SystemC references added to related work
-- `arch sim` performance claims now say "same performance class as Verilator" — more honest
-- Comparison table adds LL(1) grammar row
-- Yosys, OpenSTA, Sky130, PG021 references added
-
----
-
 ## Remaining Inconsistencies
 
 ### R1. `generate for` syntax still uses old multi-token form (HIGH)
@@ -87,33 +70,6 @@ The actual pipeline includes **Resolve** (symbol table construction) between Ela
 
 ## New Content Review — Accuracy Check
 
-### L1D Case Study (§8) — Verified Accurate
-
-| Claim | Status |
-|-------|--------|
-| 1,143 lines across 12 files | ✅ Matches doc/l1d_case_study.md |
-| 1,217 lines SV (~6% more concise) | ✅ |
-| 8-way, 64 sets × 64B lines = 32 KiB | ✅ |
-| 3 FSMs (9-state, 4-state, 4-state) | ✅ |
-| 3 RAMs (tag, data, LRU) | ✅ |
-| 2 buses (AXI4, CPU) | ✅ |
-| 9 testbenches, 1,321 lines | ✅ |
-| Tag hit: 10 logic levels (from 14) | ✅ |
-| Load hit 3 cycles, miss ~15, dirty eviction ~25 | ✅ |
-
-### AXI DMA Case Study (§9) — Verified Accurate
-
-| Claim | Status |
-|-------|--------|
-| 1,042 lines across 14 files | ✅ Matches doc/axi_dma_case_study.md |
-| 1,176 lines SV (~11% more concise) | ✅ |
-| PG021-compatible | ✅ |
-| 3 FSMs, 2 FIFOs, 5 buses | ✅ |
-| Xilinx: 913 LUTs, 993 FFs | ✅ |
-| Sky130: 78,134 µm², 2,017 FFs | ✅ |
-| Critical path 4.478 ns, 200 MHz met | ✅ |
-| 8 testbenches, 2,075 lines | ✅ |
-| Clock gating: 9.73 mW → ~0.02 mW idle | ✅ |
 
 ### RDC Section (§3.4) — Matches Spec
 
@@ -125,17 +81,39 @@ Three violation classes match spec §5.4 exactly. Correctly marked as planned (p
 
 ### S1. The `todo!` example is still just text — show code
 
-§5.1 describes `todo!` but never shows it in a listing. A 4-line example would be compelling:
+§5.1 describes `todo!` but never shows it in a listing.
+This is one of ARCH's most unique features for AI workflows and deserves a code listing.
+The todo! escape hatch is important because it solves a fundamental problem in AI-assisted hardware design: partial correctness.
 
-```
+Without todo!, an AI generating hardware code faces an all-or-nothing situation — every signal must have a valid driver, every port must be connected, every expression must have the right width. If the AI gets 90% of a module right but is uncertain about one piece of logic, the entire file fails to compile. The AI gets no useful feedback on the 90% it got right.
+
+With todo!:
+
+
 module Cache
   port req: in CacheReq;
   port resp: out CacheResp;
-  comb resp = todo!; end comb  // compiles, aborts if simulated
-end module Cache
-```
+  port mem_req: out MemReq;
 
-This is one of ARCH's most unique features for AI workflows and deserves a code listing.
+  // AI is confident about this part:
+  comb
+    mem_req.addr = req.addr;
+    mem_req.valid = req.valid;
+  end comb
+
+  // AI is unsure about eviction logic:
+  comb resp = todo!; end comb
+end module Cache
+This compiles and type-checks. The compiler verifies the parts the AI got right (widths, types, port connections) and warns about the todo! sites. The AI can then:
+
+Get confirmation that the structure is correct
+Fill in todo! sites one at a time
+Each intermediate state still compiles
+This is the hardware equivalent of red-green-refactor in TDD — skeleton first, logic second. No other HDL has this. In SV, you'd need to wire dummy values (which might silently mask bugs) or leave compilation errors (which block all other checking).
+
+It's especially powerful combined with the tight arch check loop — the AI can iterate many times per second, progressively replacing todo! with real logic, getting compile-time feedback at each step.
+
+That said, the paper does mention todo! in §5.1 — the suggestion S1 in my review was just to add a code listing showing it in action, since it's currently described only in prose. A few lines code example would make the value immediately obvious to a reader.
 
 ### S2. No `let` in FSM state bodies shown
 
@@ -164,14 +142,15 @@ The compiler now errors on `let wide: UInt<9> = a << 1;` (shifts are non-widenin
 
 SV cannot place modules inside packages (flat global namespace only). ARCH plans `inst a: PkgName::Module` with compile-time resolution. This is a concrete improvement over SV worth mentioning in Future Work, even as a single sentence.
 
+### S7. 2-state simulation limitations need honest disclosure
+
+The paper should:
+1. Add a "Limitations of 2-State Simulation" subsection in §6 enumerating residual X sources (unwritten RAM cells, out-of-bounds Vec index, division-by-zero) and their detection status (static / runtime / unhandled).
+2. Soften Table 4 row from "2-valued logic throughout" to "2-valued logic + runtime undefined-behavior detection (--check-uninit)" with footnote pointing to the limitations subsection.
+3. Soften Table 4 row from "Single-pass evaluation" to "Bounded settle (1–2 passes, statically determined)" — still a major win over SV's unbounded delta cycles, but honest about the implementation.
+4. Add to §15 Future Work that `--check-uninit` should grow to cover RAM cells (per-cell valid bitmap), dynamic Vec index bounds checking, and division-by-zero trapping.
+
+**Spec and COMPILER_STATUS already updated to reflect these limitations.**
+
 ---
 
-## Summary
-
-| Category | Count | Severity |
-|----------|-------|----------|
-| Remaining inconsistencies | 5 (R1-R5) | 1 HIGH, 1 MEDIUM, 3 LOW |
-| New content accuracy | All verified | ✅ |
-| Strengthening suggestions | 6 (S1-S6) | Nice-to-have |
-
-**The paper is substantially improved.** The two case studies with synthesis data are the strongest addition. The LL(1) grammar discussion is well-integrated. The main remaining issue is **R1** — the `generate for` syntax in Listing 8 directly contradicts the LL(1) claim made elsewhere in the paper. Fix that and R2, and the paper is internally consistent.
