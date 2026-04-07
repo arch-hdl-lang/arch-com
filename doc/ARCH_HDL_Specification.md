@@ -941,6 +941,39 @@ Every Clock signal in Arch carries a domain tag as part of its type. The compile
 
 > *⚑ The compiler generates a verified synchroniser for each crossing declaration. Engineers choose the policy; correctness of the CDC structure is guaranteed by the language, not by convention or code review.*
 
+**5.2a Reconvergent CDC Path Detection** *(planned)*
+
+A reconvergent CDC hazard occurs when multiple bits of a source-domain signal cross independently through separate synchronizers, then recombine in the destination domain. Each bit is individually synchronized, but they may arrive on different clock cycles, causing the receiver to see a value that never existed in the source domain.
+
+```
+// BAD: two bits of 'data' cross through independent synchronizers
+inst sync_lo: FfSync
+  data_in <- data[0];     // from DomainA
+  data_out -> synced_lo;  // in DomainB
+end inst sync_lo
+
+inst sync_hi: FfSync
+  data_in <- data[1];     // from DomainA
+  data_out -> synced_hi;  // in DomainB
+end inst sync_hi
+
+// synced_lo and synced_hi may arrive on different cycles
+// → reconvergent CDC hazard
+let result: UInt<2> = {synced_hi, synced_lo};  // may see a value that never existed
+```
+
+The compiler will detect this by:
+
+1. At each synchronizer instance, recording `(source_signal, source_domain) → synchronizer_instance`.
+2. Tracing `source_signal` back to its originating register (through bit-slices and simple combinational logic).
+3. If two or more synchronizer instances in the same destination domain trace back to the same source register (or bits of it), emitting a warning:
+
+> *warning: `sync_lo` and `sync_hi` both originate from register `data` in DomainA but cross independently --- reconvergent CDC hazard. Use a single `kind gray` or `kind handshake` synchronizer for multi-bit coherence.*
+
+The compiler already warns when `kind ff` is used on multi-bit data (suggesting `kind gray` or `kind handshake`). Reconvergent path detection extends this to catch the case where a designer splits a multi-bit signal into individual bits and synchronizes each separately.
+
+> *⚑ Reconvergent CDC detection is planned. Currently, the compiler detects direct cross-domain register reads and warns on multi-bit `kind ff` synchronizers, but does not trace signal origins across synchronizer boundaries.*
+
 **5.3 Clock Output Ports**
 
 `Clock<Domain>` may appear as an output port direction in any module, enabling clock passthrough, gating, and division:
