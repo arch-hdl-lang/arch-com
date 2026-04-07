@@ -1,11 +1,36 @@
 // SD TX FIFO (Dual-clock, 32-bit wide, depth 8)
-// Write side on wclk, read side on rclk.
-// Uses raw binary pointers (matching reference — no gray-code CDC).
+// Wrapper around ARCH fifo construct with OVERFLOW mode.
+
+domain WrDomain
+  freq_mhz: 100
+end domain WrDomain
+
+domain RdDomain
+  freq_mhz: 50
+end domain RdDomain
+
+fifo TxFifoCore
+  param DEPTH: const = 8;
+  param WIDTH: type = UInt<32>;
+  param OVERFLOW: const = 1;
+
+  port wr_clk: in Clock<WrDomain>;
+  port rd_clk: in Clock<RdDomain>;
+  port rst:    in Reset<Async, High>;
+
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data:  in WIDTH;
+
+  port pop_valid:  out Bool;
+  port pop_ready:  in Bool;
+  port pop_data:   out WIDTH;
+end fifo TxFifoCore
 
 module sd_tx_fifo
 
-  port wclk:  in Clock<SysDomain>;
-  port rclk:  in Clock<SysDomain>;
+  port wclk:  in Clock<WrDomain>;
+  port rclk:  in Clock<RdDomain>;
   port rst:   in Reset<Async, High>;
 
   port d:     in UInt<32>;
@@ -16,33 +41,24 @@ module sd_tx_fifo
   port empty: out Bool;
   port mem_empt: out UInt<6>;
 
-  reg mem: Vec<UInt<32>, 8> reset none;
-  reg adr_i: UInt<4> reset rst => 0;
-  reg adr_o: UInt<4> reset rst => 0;
+  wire push_ready_w: Bool;
+  wire pop_valid_w: Bool;
 
-  let full_w:  Bool = (adr_i[2:0] == adr_o[2:0]) & (adr_i[3:3] != adr_o[3:3]);
-  let empty_w: Bool = (adr_i == adr_o);
-
-  seq on wclk rising
-    if wr & (~full_w)
-      mem[adr_i[2:0]] <= d;
-      adr_i <= (adr_i + 1).trunc<4>();
-    end if
-  end seq
-
-  seq on rclk rising
-    if rd & (~empty_w)
-      adr_o <= (adr_o + 1).trunc<4>();
-    end if
-  end seq
-
-  // Occupancy: 4-bit difference, zero-extended to 6
-  let diff: UInt<4> = (adr_i - adr_o).trunc<4>();
+  inst fifo_core: TxFifoCore
+    wr_clk     <- wclk;
+    rd_clk     <- rclk;
+    rst        <- rst;
+    push_valid <- wr;
+    push_ready -> push_ready_w;
+    push_data  <- d;
+    pop_valid  -> pop_valid_w;
+    pop_ready  <- rd;
+    pop_data   -> q;
+  end inst fifo_core
 
   comb
-    q = mem[adr_o[2:0]];
-    full  = full_w;
-    empty = empty_w;
-    mem_empt = diff.zext<6>();
+    full     = ~push_ready_w;
+    empty    = ~pop_valid_w;
+    mem_empt = 0;
   end comb
 end module sd_tx_fifo

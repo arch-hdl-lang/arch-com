@@ -1,4 +1,5 @@
-// SD TX FIFO — dual-clock async FIFO using ARCH fifo construct.
+// SD TX FIFO (Dual-clock, 32-bit wide, depth 8)
+// Wrapper around ARCH fifo construct with OVERFLOW mode.
 // domain WrDomain
 //   freq_mhz: 100
 
@@ -6,18 +7,19 @@
 //   freq_mhz: 50
 
 module TxFifoCore #(
-  parameter int  DEPTH = 8,
-  parameter type TYPE  = logic [32-1:0]
+  parameter int  DEPTH      = 8,
+  parameter int  OVERFLOW   = 1,
+  parameter int  DATA_WIDTH = 32
 ) (
   input logic wr_clk,
   input logic rd_clk,
   input logic rst,
   input logic push_valid,
   output logic push_ready,
-  input TYPE push_data,
+  input logic [DATA_WIDTH-1:0] push_data,
   output logic pop_valid,
   input logic pop_ready,
-  output TYPE pop_data
+  output logic [DATA_WIDTH-1:0] pop_data
 );
 
   localparam int PTR_W = $clog2(DEPTH) + 1;
@@ -33,7 +35,7 @@ module TxFifoCore #(
     return b;
   endfunction
   
-  TYPE              mem [0:DEPTH-1];
+  logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];
   logic [PTR_W-1:0] wr_ptr_bin, rd_ptr_bin;
   logic [PTR_W-1:0] wr_ptr_gray, rd_ptr_gray;
   // Two-stage synchronizers
@@ -60,7 +62,7 @@ module TxFifoCore #(
   assign rd_ptr_bin_wr = gray2bin(rd_ptr_gray_sync);
   assign full_r  = (wr_ptr_bin[PTR_W-1] != rd_ptr_bin_wr[PTR_W-1]) &&
                    (wr_ptr_bin[PTR_W-2:0] == rd_ptr_bin_wr[PTR_W-2:0]);
-  assign push_ready = !full_r;
+  assign push_ready = (OVERFLOW != 0) ? 1'b1 : !full_r;
   always_ff @(posedge wr_clk or posedge rst) begin
     if (rst) wr_ptr_bin <= '0;
     else if (push_valid && push_ready) begin
@@ -109,22 +111,9 @@ module sd_tx_fifo (
     .pop_ready(rd),
     .pop_data(q)
   );
-  // Occupancy counter (write domain)
-  logic [4-1:0] occupancy;
-  always_ff @(posedge wclk or posedge rst) begin
-    if (rst) begin
-      occupancy <= 0;
-    end else begin
-      if (wr & push_ready_w & ~(rd & pop_valid_w)) begin
-        occupancy <= 4'(occupancy + 1);
-      end else if (~(wr & push_ready_w) & rd & pop_valid_w) begin
-        occupancy <= 4'(occupancy - 1);
-      end
-    end
-  end
   assign full = ~push_ready_w;
   assign empty = ~pop_valid_w;
-  assign mem_empt = 6'($unsigned(occupancy));
+  assign mem_empt = 0;
 
 endmodule
 
