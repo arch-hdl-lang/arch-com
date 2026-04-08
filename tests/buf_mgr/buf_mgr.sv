@@ -49,10 +49,33 @@ module BufMgr #(
   logic [14-1:0] fl_wr_ptr = 0;
   // Prefetch pipeline: tracks reads in-flight through sync_out latency
   logic [14-1:0] fl_rd_ptr = 0;
-  logic fl_pipe_d1 = 0;
-  logic fl_pipe_d2 = 0;
-  logic fl_pipe_bank_d1 = 0;
-  logic fl_pipe_bank_d2 = 0;
+  logic fl_pipe_d1;
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      fl_pipe_d1 <= '0;
+    end else begin
+      fl_pipe_d1 <= fl_do_prefetch;
+    end
+  end
+  logic fl_pipe_d2;
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      fl_pipe_d2 <= '0;
+    end else begin
+      fl_pipe_d2 <= fl_pipe_d1;
+    end
+  end
+  logic fl_pipe_bank_d2_stg1;
+  logic fl_pipe_bank_d2;
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      fl_pipe_bank_d2_stg1 <= '0;
+      fl_pipe_bank_d2 <= '0;
+    end else begin
+      fl_pipe_bank_d2_stg1 <= fl_rd_bank;
+      fl_pipe_bank_d2 <= fl_pipe_bank_d2_stg1;
+    end
+  end
   // 4-entry flop FIFO for prefetched free slots (circular buffer)
   logic [14-1:0] fl_buf0 = 0;
   logic [14-1:0] fl_buf1 = 0;
@@ -205,10 +228,6 @@ module BufMgr #(
       fl_buf_count <= 0;
       fl_buf_rd <= 0;
       fl_buf_wr <= 0;
-      fl_pipe_bank_d1 <= 0;
-      fl_pipe_bank_d2 <= 0;
-      fl_pipe_d1 <= 0;
-      fl_pipe_d2 <= 0;
       fl_rd_ptr <= 0;
       fl_wr_ptr <= 0;
       free_count <= 0;
@@ -227,16 +246,9 @@ module BufMgr #(
         fl_rd_ptr <= 14'd0;
         fl_wr_ptr <= 14'd0;
       end
-      // ── Prefetch pipeline shift ──
-      fl_pipe_d2 <= fl_pipe_d1;
-      fl_pipe_bank_d2 <= fl_pipe_bank_d1;
-      // Issue prefetch read
+      // ── Prefetch: advance read pointer when issuing ──
       if (fl_do_prefetch) begin
-        fl_pipe_d1 <= 1'd1;
-        fl_pipe_bank_d1 <= fl_rd_bank;
         fl_rd_ptr <= 14'(fl_rd_ptr + 14'd1);
-      end else begin
-        fl_pipe_d1 <= 1'd0;
       end
       // Capture arriving prefetch result into FIFO
       if (fl_pipe_d2) begin

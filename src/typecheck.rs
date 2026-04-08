@@ -177,7 +177,34 @@ impl<'a> TypeChecker<'a> {
             local_types.insert(p.name.name.clone(), ty);
         }
 
-        // Check body items
+        // Pre-pass: collect all declared names/types so declarations are order-independent.
+        // No validation here — just populate local_types for forward reference resolution.
+        for item in &m.body {
+            match item {
+                ModuleBodyItem::RegDecl(r) => {
+                    let ty = self.resolve_type_expr(&r.ty, &m.name.name, &local_types);
+                    local_types.insert(r.name.name.clone(), ty);
+                }
+                ModuleBodyItem::LetBinding(l) => {
+                    if let Some(ty) = &l.ty {
+                        let resolved = self.resolve_type_expr(ty, &m.name.name, &local_types);
+                        local_types.insert(l.name.name.clone(), resolved);
+                    }
+                }
+                ModuleBodyItem::WireDecl(w) => {
+                    let ty = self.resolve_type_expr(&w.ty, &m.name.name, &local_types);
+                    local_types.insert(w.name.name.clone(), ty);
+                }
+                ModuleBodyItem::PipeRegDecl(p) => {
+                    // Type = source type; may not be resolved yet, will be set in main pass
+                    // Just reserve the name so other pipe_regs can chain from it
+                    local_types.entry(p.name.name.clone()).or_insert(Ty::Error);
+                }
+                _ => {}
+            }
+        }
+
+        // Main pass: check body items (validation, expression checking, driver tracking)
         for item in &m.body {
             match item {
                 ModuleBodyItem::RegDecl(r) => {
@@ -346,12 +373,7 @@ impl<'a> TypeChecker<'a> {
                             p.source.span,
                         ));
                     }
-                    if local_types.contains_key(&p.name.name) {
-                        self.errors.push(CompileError::general(
-                            &format!("pipe_reg '{}': name already declared", p.name.name),
-                            p.name.span,
-                        ));
-                    }
+                    // Update type from pre-pass placeholder (Ty::Error) to actual source type
                     let ty = local_types.get(&p.source.name).cloned().unwrap_or(Ty::Error);
                     local_types.insert(p.name.name.clone(), ty);
                     driven.insert(p.name.name.clone());

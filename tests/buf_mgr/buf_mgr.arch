@@ -56,11 +56,10 @@ module BufMgr
   reg fl_wr_ptr:    UInt<14>;
 
   // Prefetch pipeline: tracks reads in-flight through sync_out latency
-  reg fl_rd_ptr:       UInt<14>;
-  reg fl_pipe_d1:      Bool;
-  reg fl_pipe_d2:      Bool;
-  reg fl_pipe_bank_d1: Bool;
-  reg fl_pipe_bank_d2: Bool;
+  reg fl_rd_ptr: UInt<14>;
+  pipe_reg fl_pipe_d1: fl_do_prefetch stages 1;
+  pipe_reg fl_pipe_d2: fl_pipe_d1 stages 1;
+  pipe_reg fl_pipe_bank_d2: fl_rd_bank stages 2;
 
   // 4-entry flop FIFO for prefetched free slots (circular buffer)
   reg fl_buf0:      UInt<14>;
@@ -211,17 +210,9 @@ module BufMgr
       fl_wr_ptr  <= 14'h0;
     end if
 
-    // ── Prefetch pipeline shift ──
-    fl_pipe_d2      <= fl_pipe_d1;
-    fl_pipe_bank_d2 <= fl_pipe_bank_d1;
-
-    // Issue prefetch read
+    // ── Prefetch: advance read pointer when issuing ──
     if fl_do_prefetch
-      fl_pipe_d1      <= 1'b1;
-      fl_pipe_bank_d1 <= fl_rd_bank;
-      fl_rd_ptr       <= (fl_rd_ptr + 14'h1).trunc<14>();
-    else
-      fl_pipe_d1      <= 1'b0;
+      fl_rd_ptr <= (fl_rd_ptr + 14'h1).trunc<14>();
     end if
 
     // Capture arriving prefetch result into FIFO
