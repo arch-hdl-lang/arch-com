@@ -13,11 +13,11 @@ static void tick() {
 
 static void reset() {
     dut.rst = 1;
-    dut.awaddr_i = 0; dut.awvalid_i = 0;
-    dut.wdata_i = 0; dut.wstrb_i = 0xF; dut.wvalid_i = 0;
-    dut.bready_i = 1;
-    dut.araddr_i = 0; dut.arvalid_i = 0;
-    dut.rready_i = 1;
+    dut.axil_aw_addr = 0; dut.axil_aw_valid = 0;
+    dut.axil_w_data = 0; dut.axil_w_strb = 0xF; dut.axil_w_valid = 0;
+    dut.axil_b_ready = 1;
+    dut.axil_ar_addr = 0; dut.axil_ar_valid = 0;
+    dut.axil_r_ready = 1;
     dut.mm2s_done = 0; dut.mm2s_halted = 1; dut.mm2s_idle = 1;
     dut.s2mm_done = 0; dut.s2mm_halted = 1; dut.s2mm_idle = 1;
     dut.mm2s_sg_done = 0; dut.s2mm_sg_done = 0;
@@ -37,35 +37,35 @@ static void reset() {
 
 // AXI4-Lite write: drive AW+W simultaneously, wait for B
 static void axil_write(uint32_t addr, uint32_t data) {
-    dut.awaddr_i = addr;
-    dut.awvalid_i = 1;
-    dut.wdata_i = data;
-    dut.wstrb_i = 0xF;
-    dut.wvalid_i = 1;
-    dut.bready_i = 1;
+    dut.axil_aw_addr = addr;
+    dut.axil_aw_valid = 1;
+    dut.axil_w_data = data;
+    dut.axil_w_strb = 0xF;
+    dut.axil_w_valid = 1;
+    dut.axil_b_ready = 1;
     // Wait for awready + wready
     for (int i = 0; i < 10; i++) {
         tick();
-        if (dut.bvalid_o) break;
+        if (dut.axil_b_valid) break;
     }
-    dut.awvalid_i = 0;
-    dut.wvalid_i = 0;
+    dut.axil_aw_valid = 0;
+    dut.axil_w_valid = 0;
     // Consume B response
-    if (!dut.bvalid_o) tick();
+    if (!dut.axil_b_valid) tick();
     tick(); // clear bvalid
 }
 
 // AXI4-Lite read: drive AR, wait for R
 static uint32_t axil_read(uint32_t addr) {
-    dut.araddr_i = addr;
-    dut.arvalid_i = 1;
-    dut.rready_i = 1;
+    dut.axil_ar_addr = addr;
+    dut.axil_ar_valid = 1;
+    dut.axil_r_ready = 1;
     for (int i = 0; i < 10; i++) {
         tick();
-        if (dut.rvalid_o) break;
+        if (dut.axil_r_valid) break;
     }
-    dut.arvalid_i = 0;
-    uint32_t val = dut.rdata_o;
+    dut.axil_ar_valid = 0;
+    uint32_t val = dut.axil_r_data;
     tick(); // consume R
     return val;
 }
@@ -101,22 +101,22 @@ static void test_mm2s_start_pulse() {
     // Write SA
     axil_write(0x18, 0x1000);
     // Write LENGTH — should trigger mm2s_start pulse
-    dut.awaddr_i = 0x28;
-    dut.awvalid_i = 1;
-    dut.wdata_i = 16; // 16 bytes = 4 beats
-    dut.wstrb_i = 0xF;
-    dut.wvalid_i = 1;
-    dut.bready_i = 1;
+    dut.axil_aw_addr = 0x28;
+    dut.axil_aw_valid = 1;
+    dut.axil_w_data = 16; // 16 bytes = 4 beats
+    dut.axil_w_strb = 0xF;
+    dut.axil_w_valid = 1;
+    dut.axil_b_ready = 1;
 
     // Tick until bvalid, watch for start pulse
     int start_seen = 0;
     for (int i = 0; i < 10; i++) {
         tick();
         if (dut.mm2s_start) start_seen = 1;
-        if (dut.bvalid_o) break;
+        if (dut.axil_b_valid) break;
     }
-    dut.awvalid_i = 0;
-    dut.wvalid_i = 0;
+    dut.axil_aw_valid = 0;
+    dut.axil_w_valid = 0;
 
     // Check start pulse + outputs
     ASSERT_EQ(start_seen, 1, "mm2s_start pulsed");
@@ -223,14 +223,14 @@ static void test_sg_registers() {
 
     // Write TAILDESC (0x10) — should trigger mm2s_sg_start
     int sg_start_seen = 0;
-    dut.awaddr_i = 0x10; dut.awvalid_i = 1;
-    dut.wdata_i = 0x1030; dut.wstrb_i = 0xF; dut.wvalid_i = 1;
+    dut.axil_aw_addr = 0x10; dut.axil_aw_valid = 1;
+    dut.axil_w_data = 0x1030; dut.axil_w_strb = 0xF; dut.axil_w_valid = 1;
     for (int i = 0; i < 10; i++) {
         tick();
         if (dut.mm2s_sg_start) sg_start_seen = 1;
-        if (dut.bvalid_o) break;
+        if (dut.axil_b_valid) break;
     }
-    dut.awvalid_i = 0; dut.wvalid_i = 0;
+    dut.axil_aw_valid = 0; dut.axil_w_valid = 0;
     tick();
 
     ASSERT_EQ(sg_start_seen, 1, "mm2s_sg_start pulsed on TAILDESC write");
