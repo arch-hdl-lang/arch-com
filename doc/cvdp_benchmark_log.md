@@ -111,7 +111,53 @@ Ran all 191 testable modules (those with matching CVDP JSONL entries) through co
 
 ---
 
-## Current Status (2026-04-04)
+### Phase 6: Binary2BCD root-cause fix (2026-04-05)
+
+Investigated `FAIL Binary2BCD — TIMEOUT` from `tests/cvdp/cocotb_results.log`.
+
+Root cause in `tests/cvdp/Binary2BCD.arch`:
+- Final BCD nibble extraction was shifted by one nibble:
+  - old: `thousand=sh8[19:16], hundred=sh8[15:12], ten=sh8[11:8], one=sh8[7:4]`
+  - correct for this 8-bit double-dabble implementation: `thousand=0, hundred=sh8[19:16], ten=sh8[15:12], one=sh8[11:8]`
+
+Fix applied:
+- Updated `tests/cvdp/Binary2BCD.arch`
+- Regenerated `tests/cvdp/Binary2BCD.sv`
+
+Validation:
+- `cargo run -- check tests/cvdp/Binary2BCD.arch` → pass
+- `cargo run -- build tests/cvdp/Binary2BCD.arch -o tests/cvdp/Binary2BCD.sv` → pass
+- Brute-force check over all 256 input values (0..255) → 0 mismatches
+
+Note:
+- CVDP problem selection for `Binary2BCD` maps to an elevator-system integration harness (`TOPLEVEL=elevator_control_system`) that includes multiple RTL files. The fixed `Binary2BCD` logic removes a confirmed functional bug in this module; a full cocotb re-sweep is still required to update aggregate pass/fail counts.
+
+---
+
+### Phase 7: Filename mismatch discovery (2026-04-07)
+
+Discovered 10 `.arch` files where the ARCH module name differs from the file name (e.g., `16qam_mapper.arch` contains `module qam16_mapper_interpolated`). The cocotb runner looks for `{module_name}.sv` but the compiler outputs `{arch_file_name}.sv`, causing false negatives.
+
+Created SV copies with module-name filenames and re-tested all 10:
+
+| File | Module | Result |
+|------|--------|--------|
+| 16qam_mapper | qam16_mapper_interpolated | **PASS** (15/15) |
+| 16qam_demapper | qam16_demapper_interpolated | **PASS** (60/60) |
+| decimator_and_peak_detector | advanced_decimator_with_adaptive_peak_detection | **PASS** |
+| restore_division | restoring_division | **PASS** |
+| sprite_fsm | sprite_controller_fsm | **PASS** |
+| cvdp_convolutional_encoder_RTL_comp | convolutional_encoder | **PASS** |
+| signed_comparator | signed_unsigned_comparator | **PASS** |
+| sync_serial_communication_top | sync_serial_communication_tx_rx | **PASS** |
+| pic_starvation_prevention | interrupt_controller | FAIL (logic bug) |
+| programmable_interrupt_controller | interrupt_controller | (shares module name, not re-tested) |
+
+**8 false negatives recovered.** Updated count: 133 + 8 = **141/191 (74%)**.
+
+---
+
+## Current Status (2026-04-07)
 
 | Metric | Value |
 |--------|-------|
@@ -119,8 +165,8 @@ Ran all 191 testable modules (those with matching CVDP JSONL entries) through co
 | Pass `arch check` | 213 (92%) |
 | Fail `arch check` (multi-file) | 18 |
 | Testable via cocotb (has JSONL entry) | 191 |
-| **Cocotb PASS** | **133 (70%)** |
-| Cocotb FAIL | 58 |
+| **Cocotb PASS** | **141 (74%)** |
+| Cocotb FAIL | 50 |
 | No JSONL entry (untestable) | 40 |
 
 ---
