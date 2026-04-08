@@ -46,9 +46,22 @@ module BufMgr #(
   logic setup_done = 0;
   // ── Free-list state ──
   logic [15-1:0] free_count = 0;
-  logic [14-1:0] fl_wr_ptr = 0;
+  // Free-list pointers — wrap counters reset at boot and init completion
+  logic [14-1:0] fl_rd_ptr_val;
+  logic [14-1:0] fl_wr_ptr_val;
+  SetupCounter fl_rd_ctr (
+    .clk(clk),
+    .rst(rst || setup_at_max),
+    .inc(fl_do_prefetch),
+    .value(fl_rd_ptr_val)
+  );
+  SetupCounter fl_wr_ctr (
+    .clk(clk),
+    .rst(rst || setup_at_max && !setup_done),
+    .inc(dq2_valid),
+    .value(fl_wr_ptr_val)
+  );
   // Prefetch pipeline: tracks reads in-flight through sync_out latency
-  logic [14-1:0] fl_rd_ptr = 0;
   logic fl_pipe_d1;
   always_ff @(posedge clk) begin
     if (rst) begin
@@ -127,13 +140,13 @@ module BufMgr #(
   assign dq0_head_bypassed = dq2_valid && dq2_qn == dequeue_queue_number ? next_ptr_rd_data : head_arr[dequeue_queue_number];
   // ── Combinational: free-list bank address/select ──
   logic fl_rd_bank;
-  assign fl_rd_bank = 1'(fl_rd_ptr);
+  assign fl_rd_bank = 1'(fl_rd_ptr_val);
   logic [13-1:0] fl_rd_addr;
-  assign fl_rd_addr = 13'(fl_rd_ptr >> 1);
+  assign fl_rd_addr = 13'(fl_rd_ptr_val >> 1);
   logic fl_wr_bank;
-  assign fl_wr_bank = 1'(fl_wr_ptr);
+  assign fl_wr_bank = 1'(fl_wr_ptr_val);
   logic [13-1:0] fl_wr_addr;
-  assign fl_wr_addr = 13'(fl_wr_ptr >> 1);
+  assign fl_wr_addr = 13'(fl_wr_ptr_val >> 1);
   logic setup_bank;
   assign setup_bank = 1'(setup_ctr_val);
   logic [13-1:0] setup_addr;
@@ -228,8 +241,6 @@ module BufMgr #(
       fl_buf_count <= 0;
       fl_buf_rd <= 0;
       fl_buf_wr <= 0;
-      fl_rd_ptr <= 0;
-      fl_wr_ptr <= 0;
       free_count <= 0;
       for (int __ri0 = 0; __ri0 < 256; __ri0++) begin
         head_arr[__ri0] <= 0;
@@ -240,15 +251,10 @@ module BufMgr #(
       end
     end else begin
       // ── Init: counter fills free-list banks; at_max signals completion ──
+      // (fl_rd_ptr and fl_wr_ptr reset via counter rst <- rst or setup_at_max)
       if (setup_at_max && !setup_done) begin
         setup_done <= 1'd1;
         free_count <= 15'd16384;
-        fl_rd_ptr <= 14'd0;
-        fl_wr_ptr <= 14'd0;
-      end
-      // ── Prefetch: advance read pointer when issuing ──
-      if (fl_do_prefetch) begin
-        fl_rd_ptr <= 14'(fl_rd_ptr + 14'd1);
       end
       // Capture arriving prefetch result into FIFO
       if (fl_pipe_d2) begin
@@ -315,10 +321,10 @@ module BufMgr #(
       dq2_qn <= dq1_qn;
       dq2_old_head <= dq1_old_head;
       // DQ2 commit: return freed slot to free-list bank, update flop arrays
+      // (fl_wr_ptr incremented by fl_wr_ctr counter via inc <- dq2_valid)
       if (dq2_valid) begin
         head_arr[dq2_qn] <= next_ptr_rd_data;
         count_arr[dq2_qn] <= 15'(count_arr[dq2_qn] - 15'd1);
-        fl_wr_ptr <= 14'(fl_wr_ptr + 14'd1);
         free_count <= 15'(free_count + 15'd1);
       end
       // ── Simultaneous EQ2 + DQ2 same-queue count fix ──
