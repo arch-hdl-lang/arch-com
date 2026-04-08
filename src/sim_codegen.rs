@@ -3576,6 +3576,11 @@ impl<'a> SimCodegen<'a> {
             let ty = lb.ty.as_ref().map(|t| cpp_internal_type(t)).unwrap_or_else(|| "uint32_t".to_string());
             h.push_str(&format!("  {} {};\n", ty, lb.name.name));
         }
+        // Wire declarations as public members
+        for w in &f.wires {
+            let ty = cpp_internal_type(&w.ty);
+            h.push_str(&format!("  {} {};\n", ty, w.name.name));
+        }
         h.push('\n');
 
         // Constructor inits: skip Vec/bus port names (they use flat fields), add flat field inits
@@ -3650,13 +3655,15 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("}\n\n");
 
         let fsm_reg_names: HashSet<String> = f.regs.iter().map(|r| r.name.name.clone()).collect();
-        let fsm_let_names: HashSet<String> = f.lets.iter().map(|l| l.name.name.clone()).collect();
+        let fsm_let_names: HashSet<String> = f.lets.iter().map(|l| l.name.name.clone())
+            .chain(f.wires.iter().map(|w| w.name.name.clone())).collect();
         let mut fsm_widths: HashMap<String, u32> = HashMap::new();
         for p in &f.ports { fsm_widths.insert(p.name.name.clone(), type_bits_te(&p.ty)); }
         for r in &f.regs { fsm_widths.insert(r.name.name.clone(), type_bits_te(&r.ty)); }
         for l in &f.lets {
             if let Some(ty) = &l.ty { fsm_widths.insert(l.name.name.clone(), type_bits_te(ty)); }
         }
+        for w in &f.wires { fsm_widths.insert(w.name.name.clone(), type_bits_te(&w.ty)); }
         let ctx_fsm = {
             let mut c = Ctx::new(&fsm_reg_names, &port_names, &fsm_let_names, &empty_insts,
                                  &empty_wide, &fsm_widths, &enum_map, &bus_port_names)

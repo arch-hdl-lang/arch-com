@@ -2043,6 +2043,7 @@ impl Parser {
         let mut ports = Vec::new();
         let mut regs = Vec::new();
         let mut lets = Vec::new();
+        let mut wires = Vec::new();
         let mut state_names: Vec<Ident> = Vec::new();
         let mut default_state: Option<Ident> = None;
         let mut default_comb: Vec<CombStmt> = Vec::new();
@@ -2054,6 +2055,7 @@ impl Parser {
                 _ if self.check_param() => params.push(self.parse_param_decl()?),
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Reg) => regs.push(self.parse_reg_decl()?),
+                Some(TokenKind::Wire) => wires.push(self.parse_wire_decl()?),
                 Some(TokenKind::Let) => lets.push(self.parse_let_binding()?),
                 // `state [A, B, C]` — flat declaration list
                 _ if self.check_contextual("state") && self.pos + 1 < self.tokens.len()
@@ -2161,6 +2163,7 @@ impl Parser {
             ports,
             regs,
             lets,
+            wires,
             state_names,
             default_state: ds,
             default_comb,

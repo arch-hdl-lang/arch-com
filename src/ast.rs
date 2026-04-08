@@ -719,6 +719,8 @@ pub struct FsmDecl {
     pub regs: Vec<RegDecl>,
     /// Combinational let bindings at FSM scope
     pub lets: Vec<LetBinding>,
+    /// Wire declarations (combinational nets driven in comb blocks)
+    pub wires: Vec<WireDecl>,
     /// Flat list of declared state names (`state A, B, C;`)
     pub state_names: Vec<Ident>,
     /// The reset / default state

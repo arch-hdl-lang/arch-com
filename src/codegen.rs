@@ -2053,6 +2053,15 @@ impl<'a> Codegen<'a> {
             self.line("");
         }
 
+        // ── Wire declarations ───────────────────────────────────────────────
+        for w in &f.wires {
+            let (ty, arr_suffix) = self.emit_type_and_array_suffix(&w.ty);
+            self.line(&format!("{ty} {}{arr_suffix};", w.name.name));
+        }
+        if !f.wires.is_empty() {
+            self.line("");
+        }
+
         // Identify clock and reset port names
         let clk_port = f.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)));
         let clk_name = clk_port.map(|p| p.name.name.as_str()).unwrap_or("clk");
