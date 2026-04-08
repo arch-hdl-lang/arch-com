@@ -314,10 +314,18 @@ fn emit_trace_methods(class: &str, module_name: &str, signals: &[TraceSignal]) -
                 id, sig.cpp_expr
             ));
         } else if sig.is_wide {
-            // Wide signal: emit bit-by-bit from VlWide
+            // Wide signal (VlWide port): emit bit-by-bit via .data()
             cpp.push_str("  fprintf(_trace_fp, \"b\");\n");
             cpp.push_str(&format!(
                 "  for (int _i = {w} - 1; _i >= 0; _i--) fprintf(_trace_fp, \"%c\", ({expr}.data()[_i/32] >> (_i%32)) & 1 ? '1' : '0');\n",
+                w = sig.width, expr = sig.cpp_expr
+            ));
+            cpp.push_str(&format!("  fprintf(_trace_fp, \" {}\\n\");\n", id));
+        } else if sig.width > 64 {
+            // Wide signal (_arch_u128 reg/let): emit bit-by-bit via shift
+            cpp.push_str("  fprintf(_trace_fp, \"b\");\n");
+            cpp.push_str(&format!(
+                "  for (int _i = {w} - 1; _i >= 0; _i--) fprintf(_trace_fp, \"%c\", (int)(({expr} >> _i) & 1) ? '1' : '0');\n",
                 w = sig.width, expr = sig.cpp_expr
             ));
             cpp.push_str(&format!("  fprintf(_trace_fp, \" {}\\n\");\n", id));
@@ -377,12 +385,13 @@ fn collect_trace_signals(
     }
 
     // Registers (skip struct/named types and Vec types — can't bit-shift)
+    // Regs >64 bits use _arch_u128, not VlWide, so is_wide = false
     for item in body {
         if let ModuleBodyItem::RegDecl(r) = item {
             if matches!(r.ty, TypeExpr::Named(_) | TypeExpr::Vec(..)) { continue; }
             let name = &r.name.name;
             let width = type_width(&r.ty);
-            let is_wide = wide_names.contains(name.as_str());
+            let is_wide = false; // regs use _arch_u128, not VlWide
             sigs.push(TraceSignal {
                 vcd_name: name.clone(),
                 cpp_expr: format!("_{name}"),
@@ -2703,8 +2712,17 @@ impl<'a> SimCodegen<'a> {
                             }
                         }
                         let sig = cpp_expr(&conn.signal, &ctx);
-                        cpp.push_str(&format!("    {} = _inst_{}.{};\n",
-                            sig, inst.name.name, conn.port_name.name));
+                        // Wide type (>64 bits): inst port is VlWide, parent reg is _arch_u128
+                        let _out_w = if let ExprKind::Ident(n) = &conn.signal.kind {
+                            widths.get(n.as_str()).copied().unwrap_or(0)
+                        } else { 0 };
+                        if _out_w > 64 {
+                            cpp.push_str(&format!("    {} = _arch_vl_to_u128(_inst_{}.{}.data());\n",
+                                sig, inst.name.name, conn.port_name.name));
+                        } else {
+                            cpp.push_str(&format!("    {} = _inst_{}.{};\n",
+                                sig, inst.name.name, conn.port_name.name));
+                        }
                         // --check-uninit: mark inst output as initialized
                         if let ExprKind::Ident(name) = &conn.signal.kind {
                             if uninit_regs.contains(name.as_str()) {
@@ -2766,8 +2784,17 @@ impl<'a> SimCodegen<'a> {
                             }
                         }
                         let sig = cpp_expr(&conn.signal, &ctx);
-                        cpp.push_str(&format!("    {} = _inst_{}.{};\n",
-                            sig, inst.name.name, conn.port_name.name));
+                        // Wide type (>64 bits): inst port is VlWide, parent reg is _arch_u128
+                        let _out_w = if let ExprKind::Ident(n) = &conn.signal.kind {
+                            widths.get(n.as_str()).copied().unwrap_or(0)
+                        } else { 0 };
+                        if _out_w > 64 {
+                            cpp.push_str(&format!("    {} = _arch_vl_to_u128(_inst_{}.{}.data());\n",
+                                sig, inst.name.name, conn.port_name.name));
+                        } else {
+                            cpp.push_str(&format!("    {} = _inst_{}.{};\n",
+                                sig, inst.name.name, conn.port_name.name));
+                        }
                         // --check-uninit: mark inst output as initialized
                         if let ExprKind::Ident(name) = &conn.signal.kind {
                             if uninit_regs.contains(name.as_str()) {
@@ -3113,8 +3140,17 @@ impl<'a> SimCodegen<'a> {
                             }
                         }
                         let sig = cpp_expr(&conn.signal, &ctx_comb);
-                        cpp.push_str(&format!("  _inst_{}.{} = {};\n",
-                            inst.name.name, conn.port_name.name, sig));
+                        // Wide type (>64 bits): parent _arch_u128 → inst VlWide
+                        let _in_w = if let ExprKind::Ident(n) = &conn.signal.kind {
+                            widths.get(n.as_str()).copied().unwrap_or(0)
+                        } else { 0 };
+                        if _in_w > 64 {
+                            cpp.push_str(&format!("  _arch_u128_to_vl({}, _inst_{}.{}.data());\n",
+                                sig, inst.name.name, conn.port_name.name));
+                        } else {
+                            cpp.push_str(&format!("  _inst_{}.{} = {};\n",
+                                inst.name.name, conn.port_name.name, sig));
+                        }
                     }
                 }
                 cpp.push_str(&format!("  _inst_{}.eval_comb();\n", inst.name.name));
@@ -3131,8 +3167,16 @@ impl<'a> SimCodegen<'a> {
                             }
                         }
                         let sig = cpp_expr(&conn.signal, &ctx_comb);
-                        cpp.push_str(&format!("  {} = _inst_{}.{};\n",
-                            sig, inst.name.name, conn.port_name.name));
+                        let _out_w = if let ExprKind::Ident(n) = &conn.signal.kind {
+                            widths.get(n.as_str()).copied().unwrap_or(0)
+                        } else { 0 };
+                        if _out_w > 64 {
+                            cpp.push_str(&format!("  {} = _arch_vl_to_u128(_inst_{}.{}.data());\n",
+                                sig, inst.name.name, conn.port_name.name));
+                        } else {
+                            cpp.push_str(&format!("  {} = _inst_{}.{};\n",
+                                sig, inst.name.name, conn.port_name.name));
+                        }
                     }
                 }
             }
