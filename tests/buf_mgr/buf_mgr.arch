@@ -50,7 +50,6 @@ module BufMgr
 
   // ── Init FSM ──
   reg setup_done: Bool;
-  reg setup_ctr:  UInt<14>;
 
   // ── Free-list state ──
   reg free_count:   UInt<15>;
@@ -133,8 +132,8 @@ module BufMgr
   let fl_rd_addr: UInt<13> = (fl_rd_ptr >> 1).trunc<13>();
   let fl_wr_bank: Bool = fl_wr_ptr.trunc<1>();
   let fl_wr_addr: UInt<13> = (fl_wr_ptr >> 1).trunc<13>();
-  let setup_bank: Bool = setup_ctr.trunc<1>();
-  let setup_addr: UInt<13> = (setup_ctr >> 1).trunc<13>();
+  let setup_bank: Bool = setup_ctr_val.trunc<1>();
+  let setup_addr: UInt<13> = (setup_ctr_val >> 1).trunc<13>();
 
   // Prefetch control: issue read if buffer + in-flight < 4
   let fl_inflight: UInt<3> = (fl_pipe_d1.zext<3>() + fl_pipe_d2.zext<3>()).trunc<3>();
@@ -143,6 +142,18 @@ module BufMgr
 
   // Arriving data from whichever bank was read 2 cycles ago
   let fl_arriving_slot: UInt<14> = fl_pipe_bank_d2 ? fbank1_rd_data : fbank0_rd_data;
+
+  // ── Init counter ──
+  wire setup_ctr_val: UInt<14>;
+  wire setup_at_max: Bool;
+
+  inst setup_ctr: SetupCounter
+    clk    <- clk;
+    rst    <- rst;
+    inc    <- not setup_done;
+    value  -> setup_ctr_val;
+    at_max -> setup_at_max;
+  end inst setup_ctr
 
   // ── RAM Instances ──
 
@@ -172,7 +183,7 @@ module BufMgr
     rd_port.addr  <- setup_done ? fl_rd_addr : setup_addr;
     wr_port.en    <- (not setup_done and not setup_bank) or (setup_done and dq2_valid and not fl_wr_bank);
     wr_port.addr  <- setup_done ? fl_wr_addr : setup_addr;
-    wr_port.data  <- setup_done ? dq2_old_head : setup_ctr;
+    wr_port.data  <- setup_done ? dq2_old_head : setup_ctr_val;
     rd_port.data  -> fbank0_rd_data;
   end inst fbank0
 
@@ -182,7 +193,7 @@ module BufMgr
     rd_port.addr  <- setup_done ? fl_rd_addr : setup_addr;
     wr_port.en    <- (not setup_done and setup_bank) or (setup_done and dq2_valid and fl_wr_bank);
     wr_port.addr  <- setup_done ? fl_wr_addr : setup_addr;
-    wr_port.data  <- setup_done ? dq2_old_head : setup_ctr;
+    wr_port.data  <- setup_done ? dq2_old_head : setup_ctr_val;
     rd_port.data  -> fbank1_rd_data;
   end inst fbank1
 
@@ -192,15 +203,12 @@ module BufMgr
 
   seq on clk rising
 
-    // ── Init FSM: fill both free-list banks ──
-    if not setup_done
-      setup_ctr <= (setup_ctr + 14'h1).trunc<14>();
-      if setup_ctr == 14'h3FFF
-        setup_done <= 1'b1;
-        free_count <= 15'h4000;
-        fl_rd_ptr  <= 14'h0;
-        fl_wr_ptr  <= 14'h0;
-      end if
+    // ── Init: counter fills free-list banks; at_max signals completion ──
+    if setup_at_max and not setup_done
+      setup_done <= 1'b1;
+      free_count <= 15'h4000;
+      fl_rd_ptr  <= 14'h0;
+      fl_wr_ptr  <= 14'h0;
     end if
 
     // ── Prefetch pipeline shift ──
