@@ -1,4 +1,6 @@
-module Attenuator
+// SPI-style attenuator controller: shifts 5-bit data out serially
+// when input changes, with clock gating and latch-enable pulse.
+fsm Attenuator
   port clk:      in Clock<SysDomain>;
   port reset:    in Reset<Async>;
   port data:     in UInt<5>;
@@ -6,71 +8,78 @@ module Attenuator
   port ATTN_DATA: out UInt<1>;
   port ATTN_LE:  out UInt<1>;
 
-  default seq on clk rising;
+  state [Idle, Load, Shift, Latch]
+  default state Idle;
 
-  reg clk_div2:    UInt<1> reset reset=>0;
-  reg shift_reg:   UInt<5> reset reset=>0;
-  reg bit_cnt:     UInt<3> reset reset=>0;
-  reg old_data:    UInt<5> reset reset=>0;
-  reg attn_clk_r:  UInt<1> reset reset=>0;
-  reg attn_data_r: UInt<1> reset reset=>0;
-  reg attn_le_r:   UInt<1> reset reset=>0;
-  reg cur_state:   UInt<2> reset reset=>0;
-
-  let IDLE:  UInt<2> = 0;
-  let LOAD:  UInt<2> = 1;
-  let SHIFT: UInt<2> = 2;
-  let LATCH: UInt<2> = 3;
+  reg clk_div2:    UInt<1> reset reset => 0;
+  reg shift_reg:   UInt<5> reset reset => 0;
+  reg bit_cnt:     UInt<3> reset reset => 0;
+  reg old_data:    UInt<5> reset reset => 0;
+  reg attn_clk_r:  UInt<1> reset reset => 0;
+  reg attn_data_r: UInt<1> reset reset => 0;
+  reg attn_le_r:   UInt<1> reset reset => 0;
 
   let zero1: UInt<1> = 0;
 
-  comb
-    ATTN_CLK  = attn_clk_r;
-    ATTN_DATA = attn_data_r;
-    ATTN_LE   = attn_le_r;
-  end comb
+  default
+    comb
+      ATTN_CLK  = attn_clk_r;
+      ATTN_DATA = attn_data_r;
+      ATTN_LE   = attn_le_r;
+    end comb
+    seq on clk rising
+      clk_div2 <= ~clk_div2;
+    end seq
+  end default
 
-  seq
-    clk_div2 <= ~clk_div2;
-
-    if cur_state == IDLE
+  state Idle
+    seq on clk rising
       attn_clk_r  <= 0;
       attn_data_r <= 0;
       attn_le_r   <= 0;
       if data != old_data
-        cur_state <= LOAD;
-        old_data  <= data;
+        old_data <= data;
       end if
+    end seq
+    -> Load when data != old_data;
+  end state Idle
 
-    elsif cur_state == LOAD
-      shift_reg <= data;
-      bit_cnt   <= 0;
+  state Load
+    seq on clk rising
+      shift_reg   <= data;
+      bit_cnt     <= 0;
       attn_clk_r  <= 0;
       attn_data_r <= 0;
       attn_le_r   <= 0;
-      cur_state <= SHIFT;
+    end seq
+    -> Shift;
+  end state Load
 
-    elsif cur_state == SHIFT
+  state Shift
+    seq on clk rising
       if clk_div2 == 1
         attn_data_r <= shift_reg[4:4];
         attn_clk_r  <= 1;
         shift_reg   <= {shift_reg[3:0], zero1};
         if bit_cnt == 4
-          cur_state <= LATCH;
-          bit_cnt   <= 0;
+          bit_cnt <= 0;
         else
           bit_cnt <= (bit_cnt + 1).trunc<3>();
         end if
       else
         attn_clk_r <= 0;
       end if
+    end seq
+    -> Latch when clk_div2 == 1 and bit_cnt == 4;
+  end state Shift
 
-    elsif cur_state == LATCH
+  state Latch
+    seq on clk rising
       attn_clk_r  <= 0;
       attn_data_r <= 0;
       attn_le_r   <= 1;
-      cur_state   <= IDLE;
+    end seq
+    -> Idle;
+  end state Latch
 
-    end if
-  end seq
-end module Attenuator
+end fsm Attenuator
