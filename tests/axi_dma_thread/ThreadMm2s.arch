@@ -1,0 +1,95 @@
+// Thread-based multi-outstanding MM2S read engine.
+// Compare with FsmMm2sMulti.arch (165 lines, 3 states, manual tracking).
+
+module ThreadMm2s
+  param NUM_OUTSTANDING: const = 4;
+  param ID_W: const = 2;
+
+  port clk:  in Clock<SysDomain>;
+  port rst:  in Reset<Sync>;
+
+  port start:       in Bool;
+  port total_xfers: in UInt<16>;
+  port base_addr:   in UInt<32>;
+  port burst_len:   in UInt<8>;
+
+  port done:     out Bool;
+  port halted:   out Bool;
+  port idle_out: out Bool;
+
+  port ar_valid: out Bool;
+  port ar_ready: in Bool;
+  port ar_addr:  out UInt<32>;
+  port ar_id:    out UInt<2>;
+  port ar_len:   out UInt<8>;
+  port ar_size:  out UInt<3>;
+  port ar_burst: out UInt<2>;
+
+  port r_valid:  in Bool;
+  port r_ready:  out Bool shared(or);
+  port r_data:   in UInt<32>;
+  port r_id:     in UInt<2>;
+  port r_last:   in Bool;
+
+  port push_valid: out Bool;
+  port push_ready: in Bool;
+  port push_data:  out UInt<32>;
+
+  // Shared state — all written only inside locks (mutual exclusion)
+  reg xfers_issued_r:   UInt<16> reset rst => 0;
+  reg xfers_complete_r: UInt<16> reset rst => 0;
+  reg next_addr_r:      UInt<32> reset rst => 0;
+
+  // done/idle are combinational from shared counters
+  let halted   = false;
+  let idle_out = (xfers_issued_r == 0) and (xfers_complete_r == 0);
+  let done     = (xfers_complete_r == total_xfers) and (xfers_complete_r != 0);
+
+  resource ar_ch   : mutex<round_robin>;
+  resource push_ch : mutex<round_robin>;
+  resource done_ch : mutex<priority>;
+
+  generate_for i in 0..NUM_OUTSTANDING-1
+    thread ReadReq_i on clk rising, rst low
+      // Wait for start pulse — first thread to see it initializes counters
+      wait until start;
+
+      lock ar_ch
+        // First thread resets counters (xfers_issued == 0 means fresh start)
+        if xfers_issued_r == 0
+          next_addr_r <= base_addr;
+        end if
+        // Claim next xfer
+        ar_valid = 1;
+        ar_addr  = next_addr_r;
+        ar_id    = i;
+        ar_len   = (burst_len - 1).trunc<8>();
+        ar_size  = 3'd2;
+        ar_burst = 2'd1;
+        xfers_issued_r <= xfers_issued_r + 1;
+        next_addr_r    <= next_addr_r + (burst_len.zext<32>() << 2);
+        wait until ar_ready;
+        ar_valid = 0;
+      end lock ar_ch
+
+      // Collect R beats
+      for b in 0..burst_len-1
+        r_ready = 1;
+        wait until r_valid and r_id == i;
+        lock push_ch
+          push_valid = 1;
+          push_data  = r_data;
+          wait until push_ready;
+          push_valid = 0;
+        end lock push_ch
+      end for
+      r_ready = 0;
+
+      // Mark complete
+      lock done_ch
+        xfers_complete_r <= xfers_complete_r + 1;
+        wait 1 cycle;
+      end lock done_ch
+    end thread ReadReq_i
+  end generate_for
+end module ThreadMm2s

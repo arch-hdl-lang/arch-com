@@ -619,13 +619,17 @@ fn subst_thread_stmt(stmt: &ThreadStmt, var: &str, val: i64) -> ThreadStmt {
 fn subst_expr_names(expr: Expr, var: &str, val: i64) -> Expr {
     let new_kind = match expr.kind {
         ExprKind::Ident(ref name) => {
-            let new_name = subst_name(name, var, val);
-            if new_name != *name {
-                ExprKind::Ident(new_name)
-            } else if name == var {
+            // Exact match: bare loop variable → replace with literal
+            if name == var {
                 ExprKind::Literal(LitKind::Dec(val as u64))
             } else {
-                return expr;
+                // Suffix match: signal_i → signal_0 (name substitution)
+                let new_name = subst_name(name, var, val);
+                if new_name != *name {
+                    ExprKind::Ident(new_name)
+                } else {
+                    return expr;
+                }
             }
         }
         ExprKind::Binary(op, l, r) => ExprKind::Binary(
@@ -973,6 +977,15 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
         .filter_map(|item| if let ModuleBodyItem::Resource(r) = item { Some(r.clone()) } else { None })
         .collect();
 
+    // Collect all seq-driven signals across threads (regs that move into FSMs)
+    let mut thread_seq_driven: HashSet<String> = HashSet::new();
+    for item in &m.body {
+        if let ModuleBodyItem::Thread(t) = item {
+            let (_, seq_driven, _) = collect_thread_signals(&t.body);
+            thread_seq_driven.extend(seq_driven);
+        }
+    }
+
     // Track which threads use which resources, and their inst names
     let mut resource_users: HashMap<String, Vec<String>> = HashMap::new(); // resource → [inst_name]
 
@@ -1005,6 +1018,15 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
             }
             ModuleBodyItem::Resource(_) => {
                 // Resource declarations are consumed here; arbiter logic generated below
+            }
+            // Convert RegDecl to WireDecl for regs that are seq-driven by threads
+            // (the register itself moves into the FSM; the module just needs a wire)
+            ModuleBodyItem::RegDecl(ref r) if thread_seq_driven.contains(&r.name.name) => {
+                new_body.push(ModuleBodyItem::WireDecl(WireDecl {
+                    name: r.name.clone(),
+                    ty: r.ty.clone(),
+                    span: r.span,
+                }));
             }
             other => new_body.push(other),
         }

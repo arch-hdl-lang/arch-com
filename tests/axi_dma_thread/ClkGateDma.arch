@@ -1,0 +1,10 @@
+// Latch-based ICG for AXI DMA channel clock gating.
+// enable=1 → clock passes; enable=0 → clock gated (DMA channel halted).
+// Emits: always_latch if (!clk_in) en_latched = enable;
+//        assign clk_out = clk_in & en_latched;
+clkgate ClkGateDma
+  kind latch;
+  port clk_in:  in Clock<SysDomain>;
+  port enable:  in Bool;
+  port clk_out: out Clock<SysDomain>;
+end clkgate ClkGateDma

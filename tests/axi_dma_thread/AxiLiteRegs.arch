@@ -1,0 +1,229 @@
+// AXI4-Lite slave register interface — PG021 register map.
+// Supports Simple DMA mode and Scatter-Gather mode.
+module AxiLiteRegs
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  // AXI4-Lite slave interface
+  port axil: target BusAxiLite;
+
+  // MM2S direct control outputs (simple DMA mode)
+  port reg mm2s_start:     out Bool reset rst=>false;
+  port reg mm2s_src_addr:  out UInt<32> reset rst=>0;
+  port reg mm2s_num_beats: out UInt<8> reset rst=>0;
+
+  // MM2S status inputs
+  port mm2s_done:   in Bool;
+  port mm2s_halted: in Bool;
+  port mm2s_idle:   in Bool;
+
+  // S2MM direct control outputs (simple DMA mode)
+  port reg s2mm_start:     out Bool reset rst=>false;
+  port reg s2mm_dst_addr:  out UInt<32> reset rst=>0;
+  port reg s2mm_num_beats: out UInt<8> reset rst=>0;
+
+  // S2MM status inputs
+  port s2mm_done:   in Bool;
+  port s2mm_halted: in Bool;
+  port s2mm_idle:   in Bool;
+
+  // Scatter-Gather control outputs
+  port reg mm2s_sg_start:   out Bool reset rst=>false;
+  port reg mm2s_curdesc_o:  out UInt<32> reset rst=>0;
+  port reg mm2s_taildesc_o: out UInt<32> reset rst=>0;
+  port mm2s_sg_done: in Bool;
+
+  port reg s2mm_sg_start:   out Bool reset rst=>false;
+  port reg s2mm_curdesc_o:  out UInt<32> reset rst=>0;
+  port reg s2mm_taildesc_o: out UInt<32> reset rst=>0;
+  port s2mm_sg_done: in Bool;
+
+  // SG active flags
+  port mm2s_sg_active: in Bool;
+  port s2mm_sg_active: in Bool;
+
+  // Interrupt outputs
+  port reg mm2s_introut: out Bool reset rst=>false;
+  port reg s2mm_introut: out Bool reset rst=>false;
+
+  // Internal registers for AXI-Lite outputs (bus port can't be port reg)
+  reg awready_r: Bool reset rst=>false;
+  reg wready_r:  Bool reset rst=>false;
+  reg bresp_r:   UInt<2> reset rst=>0;
+  reg bvalid_r:  Bool reset rst=>false;
+  reg arready_r: Bool reset rst=>false;
+  reg rdata_r:   UInt<32> reset rst=>0;
+  reg rresp_r:   UInt<2> reset rst=>0;
+  reg rvalid_r:  Bool reset rst=>false;
+
+  // DMA register storage
+  reg mm2s_dmacr_r:    UInt<32> reset rst=>0;
+  reg mm2s_sa_r:       UInt<32> reset rst=>0;
+  reg mm2s_length_r:   UInt<32> reset rst=>0;
+  reg mm2s_ioc_irq:    Bool reset rst=>false;
+  reg mm2s_curdesc_r:  UInt<32> reset rst=>0;
+  reg mm2s_taildesc_r: UInt<32> reset rst=>0;
+
+  reg s2mm_dmacr_r:    UInt<32> reset rst=>0;
+  reg s2mm_da_r:       UInt<32> reset rst=>0;
+  reg s2mm_length_r:   UInt<32> reset rst=>0;
+  reg s2mm_ioc_irq:    Bool reset rst=>false;
+  reg s2mm_curdesc_r:  UInt<32> reset rst=>0;
+  reg s2mm_taildesc_r: UInt<32> reset rst=>0;
+
+  default seq on clk rising;
+
+  // Drive AXI-Lite bus outputs from registers
+  comb
+    axil.aw_ready = awready_r;
+    axil.w_ready  = wready_r;
+    axil.b_resp   = bresp_r;
+    axil.b_valid  = bvalid_r;
+    axil.ar_ready = arready_r;
+    axil.r_data   = rdata_r;
+    axil.r_resp   = rresp_r;
+    axil.r_valid  = rvalid_r;
+  end comb
+
+  seq
+    // Clear one-cycle pulses
+    mm2s_start    <= false;
+    s2mm_start    <= false;
+    mm2s_sg_start <= false;
+    s2mm_sg_start <= false;
+    awready_r     <= false;
+    wready_r      <= false;
+    arready_r     <= false;
+
+    // B channel: clear bvalid on handshake
+    if bvalid_r & axil.b_ready
+      bvalid_r <= false;
+    end if
+
+    // R channel: clear rvalid on handshake
+    if rvalid_r & axil.r_ready
+      rvalid_r <= false;
+    end if
+
+    // Hardware-set IOC_Irq
+    if mm2s_sg_active
+      if mm2s_sg_done
+        mm2s_ioc_irq <= true;
+      end if
+    else
+      if mm2s_done
+        mm2s_ioc_irq <= true;
+      end if
+    end if
+    if s2mm_sg_active
+      if s2mm_sg_done
+        s2mm_ioc_irq <= true;
+      end if
+    else
+      if s2mm_done
+        s2mm_ioc_irq <= true;
+      end if
+    end if
+
+    // ── Write path: simultaneous AW+W ──────────────────────────────────
+    if axil.aw_valid & axil.w_valid
+      awready_r <= true;
+      wready_r  <= true;
+      bvalid_r  <= true;
+      bresp_r   <= 0;
+
+      if axil.aw_addr == 0x00
+        mm2s_dmacr_r <= axil.w_data;
+      elsif axil.aw_addr == 0x04
+        if axil.w_data[12:12] == 1
+          mm2s_ioc_irq <= false;
+        end if
+      elsif axil.aw_addr == 0x08
+        mm2s_curdesc_r <= axil.w_data;
+        mm2s_curdesc_o <= axil.w_data;
+      elsif axil.aw_addr == 0x10
+        mm2s_taildesc_r <= axil.w_data;
+        mm2s_taildesc_o <= axil.w_data;
+        if mm2s_dmacr_r[0:0] == 1
+          mm2s_sg_start  <= true;
+          mm2s_curdesc_o <= mm2s_curdesc_r;
+        end if
+      elsif axil.aw_addr == 0x18
+        mm2s_sa_r <= axil.w_data;
+      elsif axil.aw_addr == 0x28
+        mm2s_length_r <= axil.w_data;
+        if mm2s_dmacr_r[0:0] == 1
+          mm2s_start     <= true;
+          mm2s_src_addr  <= mm2s_sa_r;
+          mm2s_num_beats <= axil.w_data[25:2].trunc<8>();
+        end if
+      elsif axil.aw_addr == 0x30
+        s2mm_dmacr_r <= axil.w_data;
+      elsif axil.aw_addr == 0x34
+        if axil.w_data[12:12] == 1
+          s2mm_ioc_irq <= false;
+        end if
+      elsif axil.aw_addr == 0x38
+        s2mm_curdesc_r <= axil.w_data;
+        s2mm_curdesc_o <= axil.w_data;
+      elsif axil.aw_addr == 0x40
+        s2mm_taildesc_r <= axil.w_data;
+        s2mm_taildesc_o <= axil.w_data;
+        if s2mm_dmacr_r[0:0] == 1
+          s2mm_sg_start  <= true;
+          s2mm_curdesc_o <= s2mm_curdesc_r;
+        end if
+      elsif axil.aw_addr == 0x48
+        s2mm_da_r <= axil.w_data;
+      elsif axil.aw_addr == 0x58
+        s2mm_length_r <= axil.w_data;
+        if s2mm_dmacr_r[0:0] == 1
+          s2mm_start     <= true;
+          s2mm_dst_addr  <= s2mm_da_r;
+          s2mm_num_beats <= axil.w_data[25:2].trunc<8>();
+        end if
+      end if
+    end if
+
+    // ── Read path ──────────────────────────────────────────────────────
+    if axil.ar_valid & ~rvalid_r
+      arready_r <= true;
+      rvalid_r  <= true;
+      rresp_r   <= 0;
+
+      if axil.ar_addr == 0x00
+        rdata_r <= mm2s_dmacr_r;
+      elsif axil.ar_addr == 0x04
+        rdata_r <= {19'b0, mm2s_ioc_irq, 10'b0, mm2s_idle, mm2s_halted};
+      elsif axil.ar_addr == 0x08
+        rdata_r <= mm2s_curdesc_r;
+      elsif axil.ar_addr == 0x10
+        rdata_r <= mm2s_taildesc_r;
+      elsif axil.ar_addr == 0x18
+        rdata_r <= mm2s_sa_r;
+      elsif axil.ar_addr == 0x28
+        rdata_r <= mm2s_length_r;
+      elsif axil.ar_addr == 0x30
+        rdata_r <= s2mm_dmacr_r;
+      elsif axil.ar_addr == 0x34
+        rdata_r <= {19'b0, s2mm_ioc_irq, 10'b0, s2mm_idle, s2mm_halted};
+      elsif axil.ar_addr == 0x38
+        rdata_r <= s2mm_curdesc_r;
+      elsif axil.ar_addr == 0x40
+        rdata_r <= s2mm_taildesc_r;
+      elsif axil.ar_addr == 0x48
+        rdata_r <= s2mm_da_r;
+      elsif axil.ar_addr == 0x58
+        rdata_r <= s2mm_length_r;
+      else
+        rdata_r <= 0;
+        rresp_r <= 2;
+      end if
+    end if
+
+    // Interrupt outputs
+    mm2s_introut <= mm2s_ioc_irq & (mm2s_dmacr_r[12:12] == 1);
+    s2mm_introut <= s2mm_ioc_irq & (s2mm_dmacr_r[12:12] == 1);
+  end seq
+
+end module AxiLiteRegs

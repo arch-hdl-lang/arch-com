@@ -1,0 +1,237 @@
+// Multi-outstanding Scatter-Gather descriptor engine.
+//
+// Fetches 4-word descriptors, triggers data transfers, writes completion
+// status, then chains to the next descriptor.  Overlaps descriptor fetch
+// with ongoing data transfer for higher throughput.
+//
+// Descriptor format (16 bytes, 4 words):
+//   Word 0: NXTDESC    — next descriptor pointer [31:0]
+//   Word 1: BUF_ADDR   — buffer address [31:0]
+//   Word 2: CONTROL    — length in bytes [25:0]
+//   Word 3: STATUS     — DMA writes: transferred[25:0] | Cmplt[31]
+//
+// Enhancement over single-outstanding: prefetches next descriptor while
+// current xfer is in progress.
+
+fsm FsmSgEngine
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  // Control from register block
+  port sg_start: in Bool;
+  port curdesc:  in UInt<32>;
+  port taildesc: in UInt<32>;
+
+  // Transfer interface — drives the data-path FSM
+  port xfer_start:     out Bool;
+  port xfer_addr:      out UInt<32>;
+  port xfer_num_beats: out UInt<8>;
+  port xfer_done:      in  Bool;
+
+  // Completion
+  port sg_done: out Bool;
+
+  // AXI4 master — descriptor fetch (read) + status writeback (write)
+  port sg_axi: initiator BusAxi4;
+
+  // Current descriptor registers
+  reg curdesc_r:  UInt<32> reset none;
+  reg taildesc_r: UInt<32> reset none;
+  reg nxtdesc_r:  UInt<32> reset none;
+  reg buf_addr_r: UInt<32> reset none;
+  reg xfer_len_r: UInt<32> reset none;
+  reg fetch_idx:  UInt<2>  reset rst => 0;
+
+  // Prefetch buffer (next descriptor, fetched during xfer)
+  reg prefetch_valid_r: Bool    reset rst => 0;
+  reg pre_nxtdesc_r:   UInt<32> reset none;
+  reg pre_buf_addr_r:  UInt<32> reset none;
+  reg pre_xfer_len_r:  UInt<32> reset none;
+  reg pre_fetch_idx:   UInt<2>  reset rst => 0;
+
+  state [Idle, FetchAR, FetchR, RunXfer, PrefetchAR, PrefetchR,
+         WaitXfer, StatusAW, StatusW, StatusB, CheckNext, Done]
+  default state Idle;
+  default seq on clk rising;
+
+  default
+    comb
+      xfer_start     = false;
+      xfer_addr      = 0;
+      xfer_num_beats = 0;
+      sg_done        = false;
+      sg_axi.ar_valid = false; sg_axi.ar_addr = 0; sg_axi.ar_id = 0;
+      sg_axi.ar_len = 0; sg_axi.ar_size = 0; sg_axi.ar_burst = 0;
+      sg_axi.r_ready  = false;
+      sg_axi.aw_valid = false; sg_axi.aw_addr = 0; sg_axi.aw_id = 0;
+      sg_axi.aw_len = 0; sg_axi.aw_size = 0; sg_axi.aw_burst = 0;
+      sg_axi.w_valid  = false; sg_axi.w_data  = 0; sg_axi.w_strb  = 0; sg_axi.w_last  = false;
+      sg_axi.b_ready  = false;
+    end comb
+  end default
+
+  // ── Idle ────────────────────────────────────────────────────────────
+  state Idle
+    seq
+      if sg_start
+        curdesc_r  <= curdesc;
+        taildesc_r <= taildesc;
+        prefetch_valid_r <= false;
+      end if
+    end seq
+    -> FetchAR when sg_start;
+  end state Idle
+
+  // ── FetchAR: issue read for 4-word descriptor ──────────────────────
+  state FetchAR
+    comb
+      sg_axi.ar_valid = true;
+      sg_axi.ar_addr  = curdesc_r;
+      sg_axi.ar_len   = 3;
+      sg_axi.ar_size  = 2;
+      sg_axi.ar_burst = 1;
+    end comb
+    seq
+      fetch_idx <= 0;
+    end seq
+    -> FetchR when sg_axi.ar_ready;
+  end state FetchAR
+
+  // ── FetchR: receive 4 descriptor words ─────────────────────────────
+  state FetchR
+    comb
+      sg_axi.r_ready = true;
+    end comb
+    seq
+      if sg_axi.r_valid
+        if fetch_idx == 0
+          nxtdesc_r  <= sg_axi.r_data;
+        elsif fetch_idx == 1
+          buf_addr_r <= sg_axi.r_data;
+        elsif fetch_idx == 2
+          xfer_len_r <= sg_axi.r_data;
+        end if
+        fetch_idx <= (fetch_idx + 1).trunc<2>();
+      end if
+    end seq
+    -> RunXfer when sg_axi.r_valid and sg_axi.r_last;
+  end state FetchR
+
+  // ── RunXfer: trigger data transfer, then prefetch next desc ────────
+  state RunXfer
+    comb
+      xfer_start     = true;
+      xfer_addr      = buf_addr_r;
+      xfer_num_beats = xfer_len_r[25:2].trunc<8>();
+    end comb
+    seq
+      prefetch_valid_r <= false;
+    end seq
+    // If more descriptors: prefetch while xfer runs
+    -> PrefetchAR when (not xfer_done) and (curdesc_r != taildesc_r);
+    // If last descriptor or xfer already done: skip prefetch
+    -> WaitXfer   when (not xfer_done) and (curdesc_r == taildesc_r);
+    -> StatusAW   when xfer_done;
+  end state RunXfer
+
+  // ── PrefetchAR: issue read for NEXT descriptor (while xfer runs) ──
+  state PrefetchAR
+    comb
+      sg_axi.ar_valid = true;
+      sg_axi.ar_addr  = nxtdesc_r;
+      sg_axi.ar_len   = 3;
+      sg_axi.ar_size  = 2;
+      sg_axi.ar_burst = 1;
+    end comb
+    seq
+      pre_fetch_idx <= 0;
+    end seq
+    -> PrefetchR when sg_axi.ar_ready;
+  end state PrefetchAR
+
+  // ── PrefetchR: receive next descriptor words (xfer still running) ──
+  state PrefetchR
+    comb
+      sg_axi.r_ready = true;
+    end comb
+    seq
+      if sg_axi.r_valid
+        if pre_fetch_idx == 0
+          pre_nxtdesc_r  <= sg_axi.r_data;
+        elsif pre_fetch_idx == 1
+          pre_buf_addr_r <= sg_axi.r_data;
+        elsif pre_fetch_idx == 2
+          pre_xfer_len_r <= sg_axi.r_data;
+        end if
+        pre_fetch_idx <= (pre_fetch_idx + 1).trunc<2>();
+      end if
+      if sg_axi.r_valid and sg_axi.r_last
+        prefetch_valid_r <= true;
+      end if
+    end seq
+    -> WaitXfer when sg_axi.r_valid and sg_axi.r_last;
+  end state PrefetchR
+
+  // ── WaitXfer: wait for data transfer to complete ───────────────────
+  state WaitXfer
+    -> StatusAW when xfer_done;
+  end state WaitXfer
+
+  // ── StatusAW: write completion to descriptor word 3 ────────────────
+  state StatusAW
+    comb
+      sg_axi.aw_valid = true;
+      sg_axi.aw_addr  = (curdesc_r + 12).trunc<32>();
+      sg_axi.aw_len   = 0;
+      sg_axi.aw_size  = 2;
+      sg_axi.aw_burst = 1;
+    end comb
+    -> StatusW when sg_axi.aw_ready;
+  end state StatusAW
+
+  // ── StatusW: send status word ──────────────────────────────────────
+  state StatusW
+    comb
+      sg_axi.w_valid = true;
+      sg_axi.w_data  = {1'b1, 5'b0, xfer_len_r[25:0]};
+      sg_axi.w_strb  = 0xF;
+      sg_axi.w_last  = true;
+    end comb
+    -> StatusB when sg_axi.w_ready;
+  end state StatusW
+
+  // ── StatusB: wait for write response ───────────────────────────────
+  state StatusB
+    comb
+      sg_axi.b_ready = true;
+    end comb
+    -> CheckNext when sg_axi.b_valid;
+  end state StatusB
+
+  // ── CheckNext: use prefetched descriptor or finish ─────────────────
+  state CheckNext
+    seq
+      if prefetch_valid_r
+        // Use prefetched descriptor — skip a full fetch cycle
+        nxtdesc_r  <= pre_nxtdesc_r;
+        buf_addr_r <= pre_buf_addr_r;
+        xfer_len_r <= pre_xfer_len_r;
+        curdesc_r  <= nxtdesc_r;
+      else
+        curdesc_r <= nxtdesc_r;
+      end if
+    end seq
+    -> Done     when curdesc_r == taildesc_r;
+    -> RunXfer  when (curdesc_r != taildesc_r) and prefetch_valid_r;
+    -> FetchAR  when (curdesc_r != taildesc_r) and (not prefetch_valid_r);
+  end state CheckNext
+
+  // ── Done ───────────────────────────────────────────────────────────
+  state Done
+    comb
+      sg_done = true;
+    end comb
+    -> Idle when true;
+  end state Done
+
+end fsm FsmSgEngine
