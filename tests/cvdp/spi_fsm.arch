@@ -1,0 +1,88 @@
+// SPI FSM — serializes 16-bit data via SPI protocol (MSB first).
+// States: Idle(00) → Transmit(01) → ClkToggle(10), Error(11).
+module spi_fsm
+  port i_clk:      in Clock<SysDomain>;
+  port i_rst_b:    in Reset<Async, Low>;
+  port i_data_in:  in UInt<16>;
+  port i_enable:   in Bool;
+  port i_fault:    in Bool;
+  port i_clear:    in Bool;
+
+  port reg o_spi_cs_b:  out Bool      reset i_rst_b => true;
+  port reg o_spi_clk:   out Bool      reset i_rst_b => false;
+  port reg o_spi_data:  out Bool      reset i_rst_b => false;
+  port reg o_bits_left: out UInt<5>   reset i_rst_b => 5'h10;
+  port reg o_done:      out Bool      reset i_rst_b => false;
+  port reg o_fsm_state: out UInt<2>   reset i_rst_b => 0;
+
+  reg shift_r: UInt<16> reset i_rst_b => 0;
+  reg state_r: UInt<2>  reset i_rst_b => 0;
+
+  seq on i_clk rising
+    o_done <= false;
+    if i_clear
+      state_r     <= 0;
+      o_spi_cs_b  <= true;
+      o_spi_clk   <= false;
+      o_spi_data  <= false;
+      o_bits_left <= 5'h10;
+      o_fsm_state <= 0;
+    elsif i_fault & (state_r != 2'b11)
+      state_r     <= 2'b11;
+      o_spi_cs_b  <= true;
+      o_spi_clk   <= false;
+      o_spi_data  <= false;
+      o_bits_left <= 5'h10;
+      o_fsm_state <= 2'b11;
+    elsif ~i_enable & (state_r != 2'b11)
+      state_r     <= 0;
+      o_spi_cs_b  <= true;
+      o_spi_clk   <= false;
+      o_spi_data  <= false;
+      o_bits_left <= 5'h10;
+      o_fsm_state <= 0;
+    else
+      if state_r == 0
+        // IDLE: wait for enable to start transmission
+        if i_enable
+          state_r     <= 2'b01;
+          o_spi_cs_b  <= false;
+          o_spi_data  <= i_data_in[15];
+          shift_r     <= i_data_in;
+          o_fsm_state <= 2'b01;
+          o_bits_left <= 5'h0F;
+        end if
+      elsif state_r == 2'b01
+        // TRANSMIT: data is on the line, raise spi_clk
+        o_spi_clk   <= true;
+        o_fsm_state <= 2'b10;
+        state_r     <= 2'b10;
+      elsif state_r == 2'b10
+        // CLK_TOGGLE: lower spi_clk, shift to next bit
+        o_spi_clk <= false;
+        if o_bits_left == 0
+          // Transmission complete
+          o_done      <= true;
+          o_spi_cs_b  <= true;
+          o_spi_data  <= false;
+          o_bits_left <= 5'h10;
+          o_fsm_state <= 0;
+          state_r     <= 0;
+        else
+          o_spi_data  <= shift_r[14];
+          shift_r     <= shift_r << 1;
+          o_bits_left <= (o_bits_left - 1).trunc<5>();
+          o_fsm_state <= 2'b01;
+          state_r     <= 2'b01;
+        end if
+      elsif state_r == 2'b11
+        // ERROR: hold safe values
+        o_spi_cs_b  <= true;
+        o_spi_clk   <= false;
+        o_spi_data  <= false;
+        o_bits_left <= 5'h10;
+        o_fsm_state <= 2'b11;
+      end if
+    end if
+  end seq
+end module spi_fsm
