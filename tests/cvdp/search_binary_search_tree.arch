@@ -16,35 +16,34 @@ module search_binary_search_tree
   port search_invalid: out Bool;
 
   // FSM: 0=S_IDLE,1=S_INIT,2=S_SEARCH_LEFT,3=S_SEARCH_LEFT_RIGHT,4=S_COMPLETE_SEARCH
-  reg search_state: UInt<3> reset reset=>0;
+  reg search_state: UInt<3> reset reset => 0;
 
-  // S_INIT takes 3 cycles: two warmup registers then process on third
-  reg init_r1: Bool reset reset=>false;
-  reg init_r2: Bool reset reset=>false;
+  // S_INIT takes 2 cycles: one warmup register then process on second
+  reg init_r1: Bool reset reset => false;
 
   // found: key was found at root (need to count left subtree for position)
-  reg found: Bool reset reset=>false;
+  reg found: Bool reset reset => false;
 
   // Left traversal state
-  reg cur_left:     UInt<PTR_W> reset reset=>0;
-  reg left_stack:   UInt<ARRAY_SIZE * PTR_W> reset reset=>0;
-  reg sp_left:      UInt<PTR_W> reset reset=>0;
-  reg left_out_idx: UInt<PTR_W> reset reset=>0;
+  reg cur_left:     UInt<PTR_W> reset reset => 0;
+  reg left_stack:   UInt<ARRAY_SIZE * PTR_W> reset reset => 0;
+  reg sp_left:      UInt<PTR_W> reset reset => 0;
+  reg left_out_idx: UInt<PTR_W> reset reset => 0;
 
   // Right traversal state
-  reg cur_right:     UInt<PTR_W> reset reset=>0;
-  reg right_stack:   UInt<ARRAY_SIZE * PTR_W> reset reset=>0;
-  reg sp_right:      UInt<PTR_W> reset reset=>0;
-  reg right_out_idx: UInt<PTR_W> reset reset=>0;
+  reg cur_right:     UInt<PTR_W> reset reset => 0;
+  reg right_stack:   UInt<ARRAY_SIZE * PTR_W> reset reset => 0;
+  reg sp_right:      UInt<PTR_W> reset reset => 0;
+  reg right_out_idx: UInt<PTR_W> reset reset => 0;
 
   // Phase 1 done flag and root position offset
-  reg left_done: Bool reset reset=>false;
-  reg pos:       UInt<PTR_W> reset reset=>0;
+  reg left_done: Bool reset reset => false;
+  reg pos:       UInt<PTR_W> reset reset => 0;
 
   // Registered outputs
-  reg r_key_position:   UInt<PTR_W> reset reset=>0;
-  reg r_complete_found: Bool reset reset=>false;
-  reg r_search_invalid: Bool reset reset=>false;
+  reg r_key_position:   UInt<PTR_W> reset reset => 0;
+  reg r_complete_found: Bool reset reset => false;
+  reg r_search_invalid: Bool reset reset => false;
 
   let null_ptr: UInt<PTR_W> = (1 << PTR_W) - 1;
 
@@ -113,7 +112,6 @@ module search_binary_search_tree
       r_complete_found <= false;
       r_search_invalid <= false;
       init_r1 <= false;
-      init_r2 <= false;
       if start
         r_key_position <= null_ptr;
         left_out_idx   <= 0;
@@ -127,14 +125,11 @@ module search_binary_search_tree
       end if
 
     elsif search_state == 1
-      // S_INIT: 3 cycles (two warmup + one processing)
+      // S_INIT: 2 cycles (one warmup + one processing)
       if init_r1 == false
         init_r1 <= true;
-      elsif init_r2 == false
-        init_r2 <= true;
       else
         init_r1 <= false;
-        init_r2 <= false;
         if root == null_ptr
           // Empty tree
           r_key_position   <= null_ptr;

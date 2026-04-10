@@ -58,9 +58,9 @@ module instruction_cache_controller #(
   assign valid_1 = tc_data_out_1[8];
   assign tag_1 = tc_data_out_1[7:0];
   logic data_0_ready;
-  assign data_0_ready = l1b_addr[17:9] == tag_0 & valid_0;
+  assign data_0_ready = l1b_addr[17:9] == 9'($unsigned(tag_0)) & valid_0;
   logic data_1_ready;
-  assign data_1_ready = l1b_addr[17:9] == tag_1 & valid_1;
+  assign data_1_ready = l1b_addr[17:9] == 9'($unsigned(tag_1)) & valid_1;
   // Next state + output logic (all wires)
   logic [3-1:0] next_state;
   logic mem_valid_w;
@@ -124,8 +124,8 @@ module instruction_cache_controller #(
     ram512_d1_addr = addr_1_r;
   end
   // Sequential logic
-  always_ff @(posedge clk or posedge rst) begin
-    if (rst) begin
+  always_ff @(posedge clk or negedge rst) begin
+    if ((!rst)) begin
       addr_0_r <= 0;
       addr_1_r <= 0;
       state_r <= 0;

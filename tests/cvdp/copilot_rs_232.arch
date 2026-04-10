@@ -13,10 +13,15 @@ module copilot_rs_232
 
   default seq on clock rising;
 
-  reg State: UInt<4> reset reset_neg=>0;
-  reg tx_data_reg: UInt<8> reset reset_neg=>0;
+  // Shift register: {stop, data[7:0], start} = {1, D7..D0, 0}
+  reg tx_shift: UInt<10> reset reset_neg => 0b1111111111;
+  reg bit_cnt: UInt<4> reset reset_neg => 0;
   wire baud_pulse_w: Bool;
-  wire MuxBit: Bool;
+  wire active: Bool;
+
+  comb
+    active = (bit_cnt != 0);
+  end comb
 
   inst baud_gen: baud_rate_generator
     param BAUD_ACC_WIDTH = BAUD_ACC_WIDTH;
@@ -24,72 +29,34 @@ module copilot_rs_232
     param BAUD_RATE = BAUD_RATE;
     clock <- clock;
     reset_neg <- reset_neg;
-    enable <- tx_transmitter_valid;
+    enable <- active;
     baud_pulse -> baud_pulse_w;
   end inst baud_gen
 
-  let tx_transmitter_valid = (State != 0);
+  // Registered valid output
+  reg valid_r: Bool reset reset_neg => false;
+  seq
+    valid_r <= active;
+  end seq
+  let tx_transmitter_valid = valid_r;
 
+  // Load shift register and start transmission
   seq
     if ~reset_neg
-      tx_data_reg <= 0;
+      tx_shift <= 0b1111111111;
+      bit_cnt <= 0;
     elsif Present_Processing_Completed
-      tx_data_reg <= 0;
-    elsif tx_datain_ready & (State == 0)
-      tx_data_reg <= tx_datain;
+      tx_shift <= 0b1111111111;
+      bit_cnt <= 0;
+    elsif (bit_cnt == 0) & tx_datain_ready
+      tx_shift <= {true, tx_datain, false};
+      bit_cnt <= 10;
+    elsif baud_pulse_w & (bit_cnt != 0)
+      tx_shift <= {true, tx_shift[9:1]};
+      bit_cnt <= (bit_cnt - 1).trunc<4>();
     end if
   end seq
 
-  seq
-    if ~reset_neg
-      State <= 0;
-    elsif Present_Processing_Completed
-      State <= 0;
-    elsif (State == 0) & tx_datain_ready
-      State <= 4;
-    elsif baud_pulse_w
-      if State == 15
-        State <= 1;
-      elsif State == 1
-        State <= 0;
-      else
-        State <= (State + 1).trunc<4>();
-      end if
-    end if
-  end seq
-
-  // Output mux
-  comb
-    if State[2:0] == 0
-      MuxBit = tx_data_reg[0];
-    elsif State[2:0] == 1
-      MuxBit = tx_data_reg[1];
-    elsif State[2:0] == 2
-      MuxBit = tx_data_reg[2];
-    elsif State[2:0] == 3
-      MuxBit = tx_data_reg[3];
-    elsif State[2:0] == 4
-      MuxBit = tx_data_reg[4];
-    elsif State[2:0] == 5
-      MuxBit = tx_data_reg[5];
-    elsif State[2:0] == 6
-      MuxBit = tx_data_reg[6];
-    else
-      MuxBit = tx_data_reg[7];
-    end if
-  end comb
-
-  reg tx_out: Bool reset reset_neg=>1;
-
-  seq
-    if ~reset_neg
-      tx_out <= true;
-    elsif Present_Processing_Completed
-      tx_out <= true;
-    else
-      tx_out <= (State < 4) | (State[3] & MuxBit);
-    end if
-  end seq
-
-  let tx_transmitter = tx_out;
+  // Output is LSB of shift register
+  let tx_transmitter = tx_shift[0];
 end module copilot_rs_232

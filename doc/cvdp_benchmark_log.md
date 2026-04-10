@@ -246,18 +246,37 @@ Fixed 10 failing cid016 modules, bringing cid016 from 65% to 97%.
 
 ---
 
+### Phase 10: cid002 bug fixes (2026-04-10)
+
+Fixed 8 failing cid002 tasks (6 unique modules), bringing cid002 from 87% to 96%.
+
+**Fixes:**
+
+| Module | Bug | Fix | Tests |
+|--------|-----|-----|-------|
+| **cache_mshr** | Dequeue interface was stub zeros — `dequeue_valid` never asserted after fill | Added dequeue FSM: latch fill_id, traverse linked list via next pointers | PASS (10/10 × 2 problems) |
+| **search_binary_search_tree** | Off-by-one latency (got 6, expected 5) | Removed extra warmup register in S_INIT, reducing init from 3 to 2 cycles | PASS (9/9) |
+| **instruction_cache_controller** | Reset polarity mismatch — `Reset<Async>` (HIGH) vs test's active-LOW reset | Changed to `Reset<Async, Low>` | PASS (5/5) |
+| **lfu_counter_policy** | `run_cvdp.py` assert-patching broke multi-line asserts referencing internal signals | Added parameter/internal signal names to known names; handle line continuations | PASS |
+| **interrupt_controller_apb** | Priority encoder didn't see same-cycle requests; preemption caused tracking desync | Use `pending | requests` for winner selection; removed preemption; added delayed dispatch guard | PASS |
+| **copilot_rs_232** | `run_cvdp.py` clock period rounding changed 5ns→6ns, causing 20% baud rate mismatch | Use cocotb 2.0 `period_high` for asymmetric phases; also fixed baud_rate_generator to exact counter | PASS (6/6) |
+
+**Still failing:** interrupt_controller (×2 tasks) — no `.arch` file exists, only a copied `.sv` from filename mismatch resolution.
+
+---
+
 ## Current Status (2026-04-10)
 
 ### Per-Category Results
 
 | Category | Tasks | Testable | PASS | Rate |
 |----------|-------|----------|------|------|
-| cid002 | 94 | 91 | 79 | 87% |
+| cid002 | 94 | 91 | 87 | 96% |
 | cid003 | 78 | 77 | 70 | 91% |
 | cid004 | 55 | 53 | 49 | 92% |
 | cid007 | 40 | 23 | 20 | 87% |
 | cid016 | 35 | 31 | 30 | 97% |
-| **Total** | **302** | **275** | **248** | **90%** |
+| **Total** | **302** | **275** | **256** | **93%** |
 
 "Testable" excludes TOPLEVEL=verilog (~19 tasks) and modules with no `.arch`/`.sv`.
 
@@ -267,14 +286,14 @@ Fixed 10 failing cid016 modules, bringing cid016 from 65% to 97%.
 |--------|-------|
 | Total `.arch` files | ~260 |
 | Testable via cocotb | 275 |
-| **Cocotb PASS** | **248 (90%)** |
-| Cocotb FAIL | 18 |
+| **Cocotb PASS** | **256 (93%)** |
+| Cocotb FAIL | 10 |
 | Cocotb TIMEOUT | 9 |
 | Not testable (TOPLEVEL=verilog + missing) | 27 |
 
-### Failures by Category
+### Remaining Failures
 
-**cid002 (9 fail, 3 timeout):** cache_mshr(2), search_binary_search_tree, lfu_counter_policy, instruction_cache_controller, interrupt_controller(2), interrupt_controller_apb, copilot_rs_232. Timeouts: sgd_linear_regression, vga_controller, Data_Reduction.
+**cid002 (2 fail, 3 timeout):** interrupt_controller(2, no .arch). Timeouts: sgd_linear_regression, vga_controller, Data_Reduction.
 
 **cid003 (3 fail, 3 timeout, 1 missing):** load_store_unit, microcode_sequencer, secure_read_write_register_bank. Timeouts: digital_dice_roller, low_pass_filter, vga_controller. Missing: field_extract.
 

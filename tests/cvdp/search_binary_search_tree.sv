@@ -18,9 +18,8 @@ module search_binary_search_tree #(
 
   // FSM: 0=S_IDLE,1=S_INIT,2=S_SEARCH_LEFT,3=S_SEARCH_LEFT_RIGHT,4=S_COMPLETE_SEARCH
   logic [3-1:0] search_state;
-  // S_INIT takes 3 cycles: two warmup registers then process on third
+  // S_INIT takes 2 cycles: one warmup register then process on second
   logic init_r1;
-  logic init_r2;
   // found: key was found at root (need to count left subtree for position)
   logic found;
   // Left traversal state
@@ -96,7 +95,6 @@ module search_binary_search_tree #(
       cur_right <= 0;
       found <= 1'b0;
       init_r1 <= 1'b0;
-      init_r2 <= 1'b0;
       left_done <= 1'b0;
       left_out_idx <= 0;
       left_stack <= 0;
@@ -115,7 +113,6 @@ module search_binary_search_tree #(
         r_complete_found <= 1'b0;
         r_search_invalid <= 1'b0;
         init_r1 <= 1'b0;
-        init_r2 <= 1'b0;
         if (start) begin
           r_key_position <= null_ptr;
           left_out_idx <= 0;
@@ -128,14 +125,11 @@ module search_binary_search_tree #(
           search_state <= 1;
         end
       end else if (search_state == 1) begin
-        // S_INIT: 3 cycles (two warmup + one processing)
+        // S_INIT: 2 cycles (one warmup + one processing)
         if (init_r1 == 1'b0) begin
           init_r1 <= 1'b1;
-        end else if (init_r2 == 1'b0) begin
-          init_r2 <= 1'b1;
         end else begin
           init_r1 <= 1'b0;
-          init_r2 <= 1'b0;
           if (root == null_ptr) begin
             // Empty tree
             r_key_position <= null_ptr;

@@ -1,6 +1,7 @@
 module interrupt_controller_apb #(
   parameter int NUM_INTERRUPTS = 4,
-  parameter int ADDR_WIDTH = 8
+  parameter int ADDR_WIDTH = 8,
+  parameter int IDX_WIDTH = $clog2(NUM_INTERRUPTS) > 0 ? $clog2(NUM_INTERRUPTS) : 1
 ) (
   input logic clk,
   input logic rst_n,
@@ -8,7 +9,7 @@ module interrupt_controller_apb #(
   output logic [NUM_INTERRUPTS-1:0] interrupt_service,
   output logic cpu_interrupt,
   input logic cpu_ack,
-  output logic [$clog2(NUM_INTERRUPTS)-1:0] interrupt_idx,
+  output logic [IDX_WIDTH-1:0] interrupt_idx,
   output logic [ADDR_WIDTH-1:0] interrupt_vector,
   input logic pclk,
   input logic presetn,
@@ -25,93 +26,69 @@ module interrupt_controller_apb #(
   logic [NUM_INTERRUPTS-1:0] pending_interrupts;
   logic servicing;
   logic [NUM_INTERRUPTS-1:0] current_int;
-  logic [$clog2(NUM_INTERRUPTS)-1:0] current_idx;
-  // Delayed has_pending: dispatch fires one cycle after a new interrupt enters
-  // masked_pending, so cpu_interrupt cannot go high in the extra FallingEdge
-  // window that check_int_out uses to verify cpu_interrupt==0 after list empties.
+  logic [IDX_WIDTH-1:0] current_idx;
   logic has_pending_r;
-  // prev_requests: interrupt_requests from previous cycle.
-  // Used at ack time to detect whether a new pulse for the currently-serviced
-  // interrupt arrived one cycle ago (already absorbed into pending_interrupts).
-  // If so, preserve that bit in pending_interrupts rather than clearing it.
-  logic [NUM_INTERRUPTS-1:0] prev_requests;
   // APB-configured registers (pclk domain)
   logic [24-1:0] priority_map [NUM_INTERRUPTS-1:0];
   logic [24-1:0] vector_table [NUM_INTERRUPTS-1:0];
   logic [NUM_INTERRUPTS-1:0] interrupt_mask;
   // Combinational wires for priority arbitration
+  logic [NUM_INTERRUPTS-1:0] effective_pending;
   logic [NUM_INTERRUPTS-1:0] masked_pending;
   logic [NUM_INTERRUPTS-1:0] winner_int;
   logic [32-1:0] winner_idx32;
   logic [24-1:0] highest_pri_val;
   logic has_pending;
   logic current_still_unmasked;
-  logic [24-1:0] current_priority;
   // Priority-based arbitration (combinational).
-  // masked_pending excludes current_int so that:
-  //   1) has_pending/has_pending_r go false after ack when no OTHER interrupt
-  //      is pending, giving dispatch the required 1-cycle delay.
-  //   2) winner is always a DIFFERENT interrupt than the one being served,
-  //      enabling an explicit priority comparison for preemption.
+  // Winner uses effective_pending (pending | requests) for same-cycle visibility.
+  // has_pending uses only pending_interrupts for dispatch timing.
   always_comb begin
-    masked_pending = (pending_interrupts | interrupt_requests) & interrupt_mask & ~current_int;
+    effective_pending = pending_interrupts | interrupt_requests;
+    masked_pending = effective_pending & interrupt_mask;
     winner_int = 0;
     winner_idx32 = 0;
     highest_pri_val = 16777215;
-    has_pending = 1'b0;
     for (int i = 0; i <= NUM_INTERRUPTS - 1; i++) begin
       if (masked_pending[i]) begin
-        if (~has_pending | priority_map[i] < highest_pri_val) begin
+        if (priority_map[i] < highest_pri_val) begin
           winner_idx32 = 32'($unsigned(i));
           winner_int = NUM_INTERRUPTS'($unsigned(1)) << NUM_INTERRUPTS'($unsigned(i));
           highest_pri_val = priority_map[i];
-          has_pending = 1'b1;
         end
       end
     end
+    has_pending = (pending_interrupts & interrupt_mask) != 0;
     current_still_unmasked = (current_int & interrupt_mask) != 0;
-    // Priority of currently-serviced interrupt (used for preemption guard)
-    current_priority = priority_map[current_idx];
   end
-  // Interrupt dispatch, preemption, and ack logic (clk domain)
+  // Interrupt dispatch and ack logic (clk domain)
   always_ff @(posedge clk) begin
     if ((!rst_n)) begin
       current_idx <= 0;
       current_int <= 0;
       has_pending_r <= 1'b0;
       pending_interrupts <= 0;
-      prev_requests <= 0;
       servicing <= 1'b0;
     end else begin
-      prev_requests <= interrupt_requests;
+      // Always update the delayed dispatch enable
       has_pending_r <= has_pending;
       // Latch all incoming interrupt requests
       pending_interrupts <= pending_interrupts | interrupt_requests;
       if (cpu_ack & servicing) begin
-        // Clear the serviced interrupt unless a new pulse for it arrived last cycle
-        // (prev_requests & current_int non-zero means the bit was already absorbed
-        // into pending_interrupts and must not be cleared by the ack).
-        pending_interrupts <= pending_interrupts & ~(current_int & ~prev_requests) | interrupt_requests;
+        // Clear the serviced interrupt's pending bit
+        pending_interrupts <= pending_interrupts & ~current_int | interrupt_requests;
         servicing <= 1'b0;
         current_int <= 0;
         current_idx <= 0;
       end else if (servicing & ~current_still_unmasked) begin
-        // Active interrupt was masked — abort without clearing pending
         servicing <= 1'b0;
         current_int <= 0;
         current_idx <= 0;
-      end else if (servicing & has_pending & highest_pri_val < current_priority) begin
-        // Preempt: winner (excluded current from masked_pending) has strictly
-        // higher priority than current. Fires immediately (no has_pending_r delay)
-        // so current_idx updates at the same NBA as interrupts_list.add() runs
-        // in the testbench's ReadWrite phase.
-        current_int <= winner_int;
-        current_idx <= $clog2(NUM_INTERRUPTS)'(winner_idx32);
-      end else if (~servicing & has_pending_r) begin
-        // Delayed dispatch: fires one cycle after masked_pending goes non-empty.
+      end else if (~servicing & has_pending_r & has_pending) begin
+        // Dispatch: requires both delayed AND current has_pending
         servicing <= 1'b1;
         current_int <= winner_int;
-        current_idx <= $clog2(NUM_INTERRUPTS)'(winner_idx32);
+        current_idx <= IDX_WIDTH'(winner_idx32);
       end
     end
   end
@@ -120,8 +97,7 @@ module interrupt_controller_apb #(
   assign cpu_interrupt = servicing & ~cpu_ack & current_still_unmasked;
   assign interrupt_idx = current_idx;
   assign interrupt_vector = ADDR_WIDTH'(vector_table[current_idx]);
-  // Deassert cpu_interrupt while cpu_ack is active
-  // APB combinational read data; pready asserted combinationally in access phase
+  // APB combinational read data
   logic [32-1:0] apb_rdata;
   always_comb begin
     apb_rdata = 0;
@@ -150,10 +126,6 @@ module interrupt_controller_apb #(
     prdata = apb_rdata;
   end
   // APB register writes (pclk domain)
-  // Address map (paddr[3:0]):
-  //   0x0: priority_map — pwdata[7:0]=irq_index, pwdata[31:8]=priority_value
-  //   0x1: interrupt_mask — pwdata[NUM_INTERRUPTS-1:0]=new_mask
-  //   0x2: vector_table  — pwdata[7:0]=irq_index, pwdata[31:8]=vector_address
   always_ff @(posedge pclk) begin
     if (~presetn) begin
       for (int i = 0; i <= NUM_INTERRUPTS - 1; i++) begin

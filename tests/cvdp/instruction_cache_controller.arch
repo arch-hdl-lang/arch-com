@@ -3,7 +3,7 @@ module instruction_cache_controller
   param ADR_BITS: const = 9;
 
   port clk:  in Clock<SysDomain>;
-  port rst:  in Reset<Async>;
+  port rst:  in Reset<Async, Low>;
 
   port io_mem_valid: out Bool;
   port io_mem_ready: in  Bool;
@@ -45,10 +45,10 @@ module instruction_cache_controller
   end comb
 
   // FSM states: IDLE=0, READMEM0=1, READMEM1=2, READCACHE=3
-  reg state_r:    UInt<3> reset rst=>0;
-  reg addr_0_r:   UInt<9> reset rst=>0;
-  reg addr_1_r:   UInt<9> reset rst=>0;
-  reg write_en_r: Bool    reset rst=>false;
+  reg state_r:    UInt<3> reset rst => 0;
+  reg addr_0_r:   UInt<9> reset rst => 0;
+  reg addr_1_r:   UInt<9> reset rst => 0;
+  reg write_en_r: Bool    reset rst => false;
 
   let data_addr_0: UInt<9> = (l1b_addr[17:9] + {8'd0, l1b_addr[0]}).trunc<9>();
   let data_addr_1: UInt<9> = l1b_addr[17:9];

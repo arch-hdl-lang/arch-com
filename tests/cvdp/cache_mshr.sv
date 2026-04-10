@@ -43,10 +43,13 @@ module cache_mshr #(
   logic [MSHR_ADDR_WIDTH-1:0] entry_next_idx [MSHR_SIZE-1:0];
   // Data RAM
   logic [DATA_WIDTH-1:0] data_mem [MSHR_SIZE-1:0];
-  // Registered outputs
+  // Registered outputs for allocate
   logic [MSHR_ADDR_WIDTH-1:0] allocate_id_r;
   logic allocate_pending_r;
   logic [MSHR_ADDR_WIDTH-1:0] allocate_previd_r;
+  // Dequeue state registers
+  logic dq_valid_r;
+  logic [MSHR_ADDR_WIDTH-1:0] dq_idx_r;
   // Wires for priority encoder
   logic [MSHR_ADDR_WIDTH-1:0] alloc_idx;
   logic full_flag;
@@ -92,6 +95,8 @@ module cache_mshr #(
       for (int __ri0 = 0; __ri0 < MSHR_SIZE; __ri0++) begin
         data_mem[__ri0] <= 0;
       end
+      dq_idx_r <= 0;
+      dq_valid_r <= 0;
       for (int __ri0 = 0; __ri0 < MSHR_SIZE; __ri0++) begin
         entry_addr[__ri0] <= 0;
       end
@@ -112,6 +117,17 @@ module cache_mshr #(
       allocate_id_r <= alloc_idx;
       allocate_pending_r <= has_pending;
       allocate_previd_r <= prev_idx;
+      // Dequeue FSM: fill_valid starts traversal, then walk linked list
+      if (fill_valid) begin
+        dq_valid_r <= 1'b1;
+        dq_idx_r <= fill_id;
+      end else if (dq_valid_r & dequeue_ready) begin
+        if (entry_has_next[dq_idx_r]) begin
+          dq_idx_r <= entry_next_idx[dq_idx_r];
+        end else begin
+          dq_valid_r <= 1'b0;
+        end
+      end
       // Finalize: invalidate entry (placed before allocate so allocate wins on conflict)
       if (finalize_valid) begin
         entry_valid[finalize_id] <= 1'b0;
@@ -137,13 +153,14 @@ module cache_mshr #(
   assign allocate_id = allocate_id_r;
   assign allocate_pending = allocate_pending_r;
   assign allocate_previd = allocate_previd_r;
-  // Fill/dequeue stubs (not tested, but ports must be driven)
+  // Fill address output
   assign fill_addr = entry_addr[fill_id];
-  assign dequeue_valid = 1'b0;
-  assign dequeue_addr = 0;
-  assign dequeue_rw = 1'b0;
-  assign dequeue_data = 0;
-  assign dequeue_id = 0;
+  // Dequeue outputs: driven from registered index
+  assign dequeue_valid = dq_valid_r;
+  assign dequeue_addr = entry_addr[dq_idx_r];
+  assign dequeue_rw = entry_write[dq_idx_r];
+  assign dequeue_data = data_mem[dq_idx_r];
+  assign dequeue_id = dq_idx_r;
 
 endmodule
 

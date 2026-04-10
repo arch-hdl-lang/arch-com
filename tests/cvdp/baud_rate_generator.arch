@@ -9,19 +9,27 @@ module baud_rate_generator
 
   default seq on clock rising;
 
-  let baud_inc: UInt<BAUD_ACC_WIDTH + 1> = (((BAUD_RATE << (BAUD_ACC_WIDTH - 4)) + (CLOCK_FREQ >> 5)) / (CLOCK_FREQ >> 4)).trunc<BAUD_ACC_WIDTH + 1>();
+  // Exact baud timing via up-counter
+  param BAUD_TICKS: const = CLOCK_FREQ / BAUD_RATE;
 
-  reg baud_acc: UInt<BAUD_ACC_WIDTH + 1> reset reset_neg=>0;
+  reg cnt: UInt<32> reset reset_neg => 0;
+
+  wire pulse_w: Bool;
+  comb
+    pulse_w = enable & (cnt == (BAUD_TICKS - 1).zext<32>());
+  end comb
 
   seq
     if ~reset_neg
-      baud_acc <= 0;
-    elsif enable
-      baud_acc <= (baud_acc[BAUD_ACC_WIDTH - 1 : 0].zext<BAUD_ACC_WIDTH + 1>() + baud_inc).trunc<BAUD_ACC_WIDTH + 1>();
+      cnt <= 0;
+    elsif ~enable
+      cnt <= 0;
+    elsif cnt == (BAUD_TICKS - 1).zext<32>()
+      cnt <= 0;
     else
-      baud_acc <= 0;
+      cnt <= (cnt + 1).trunc<32>();
     end if
   end seq
 
-  let baud_pulse = baud_acc[BAUD_ACC_WIDTH];
+  let baud_pulse = pulse_w;
 end module baud_rate_generator

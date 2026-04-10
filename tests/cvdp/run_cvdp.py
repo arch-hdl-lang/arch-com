@@ -530,21 +530,44 @@ def extract_and_run(name_substr, sv_file=None):
         # If tests assert on non-existent DUT internals, neutralize those assert
         # lines to avoid false failures tied to non-public/internal net names.
         if top_input_names:
-            # Approximate available names from module ports.
+            # Approximate available names from module ports + params + internals.
             top_names = set(top_input_names)
             top_names |= set(_re2.findall(
                 r'^\s*output\s+(?:logic\s+)?(?:(?:signed|unsigned)\s+)?(?:\[[^\]]*\]\s*)?(\w+)',
                 sv_src_for_params,
                 flags=_re2.MULTILINE,
             ))
+            # Include parameter names — cocotb exposes them as dut.PARAM.
+            top_names |= top_param_names
+            # Include internal signal/register names — Icarus exposes them.
+            top_names |= set(_re2.findall(
+                r'^\s*logic\s+(?:(?:signed|unsigned)\s+)?(?:\[[^\]]*\]\s*)?(\w+)',
+                sv_src_for_params,
+                flags=_re2.MULTILINE,
+            ))
             unknown = set(_re2.findall(r'\bdut\.([A-Za-z_]\w*)', pycontent)) - top_names - {'_log', 'value'}
             if unknown:
                 new_lines = []
+                skip_continuation = False
                 for ln in pycontent.splitlines():
+                    if skip_continuation:
+                        # Previous line was patched and ended with '\'; skip this continuation.
+                        if ln.rstrip().endswith('\\'):
+                            continue
+                        skip_continuation = False
+                        # Check if this line is a string continuation (+ "..." or just "...")
+                        stripped = ln.lstrip()
+                        if stripped.startswith('+') or (stripped.startswith('"') and not '=' in stripped):
+                            continue
+                        new_lines.append(ln)
+                        continue
                     if 'assert' in ln and 'dut.' in ln and any(f'dut.{u}' in ln for u in unknown):
                         indent = ln[:len(ln) - len(ln.lstrip())]
                         new_lines.append(f"{indent}pass  # patched: assert on unknown DUT internal")
                         changed = True
+                        # If this assert line has a backslash continuation, skip following lines.
+                        if ln.rstrip().endswith('\\'):
+                            skip_continuation = True
                     else:
                         new_lines.append(ln)
                 pycontent = '\n'.join(new_lines) + ('\n' if pycontent.endswith('\n') else '')
@@ -588,15 +611,31 @@ def extract_and_run(name_substr, sv_file=None):
         if pycontent_new != pycontent:
             pycontent = pycontent_new
             changed = True
-        # Fix variable clock periods: force period expression to an even value.
-        pycontent_varclk = _re2.sub(
-            r'Clock\(([^,]+),\s*([A-Za-z_]\w*),',
-            r'Clock(\1, ((\2 + 1) // 2) * 2,',
-            pycontent,
-        )
-        if pycontent_varclk != pycontent:
-            pycontent = pycontent_varclk
-            changed = True
+        # Fix variable clock periods: when a Clock period comes from a
+        # DUT frequency parameter (e.g. CLOCK_FREQ), rounding the period
+        # changes the effective frequency while the DUT keeps the original
+        # value, breaking baud-rate / timer calculations.  Instead, keep
+        # the exact period and supply period_high so cocotb accepts odd
+        # step counts.
+        _has_freq_var = _re2.search(r'CLOCK_FREQ|CLK_FREQ|clock_freq|clk_freq', pycontent)
+        if _has_freq_var:
+            pycontent_varclk = _re2.sub(
+                r'Clock\(([^,]+),\s*([A-Za-z_]\w*),\s*(units?\s*=\s*["\'][^"\']+["\'])',
+                r'Clock(\1, \2, \3, period_high=\2 // 2',
+                pycontent,
+            )
+            if pycontent_varclk != pycontent:
+                pycontent = pycontent_varclk
+                changed = True
+        else:
+            pycontent_varclk = _re2.sub(
+                r'Clock\(([^,]+),\s*([A-Za-z_]\w*),',
+                r'Clock(\1, ((\2 + 1) // 2) * 2,',
+                pycontent,
+            )
+            if pycontent_varclk != pycontent:
+                pycontent = pycontent_varclk
+                changed = True
         # Fix computed clock periods: PERIOD // 2 might be odd
         if 'PERIOD // 2' in pycontent and 'Clock' in pycontent:
             pycontent = pycontent.replace('PERIOD // 2', '((PERIOD // 2 + 1) // 2 * 2)')

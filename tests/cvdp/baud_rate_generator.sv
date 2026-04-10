@@ -1,7 +1,8 @@
 module baud_rate_generator #(
   parameter int CLOCK_FREQ = 100000000,
   parameter int BAUD_RATE = 115200,
-  parameter int BAUD_ACC_WIDTH = 16
+  parameter int BAUD_ACC_WIDTH = 16,
+  parameter int BAUD_TICKS = CLOCK_FREQ / BAUD_RATE
 ) (
   input logic clock,
   input logic reset_neg,
@@ -9,23 +10,26 @@ module baud_rate_generator #(
   output logic baud_pulse
 );
 
-  logic [BAUD_ACC_WIDTH + 1-1:0] baud_inc;
-  assign baud_inc = (BAUD_ACC_WIDTH + 1)'(((BAUD_RATE << BAUD_ACC_WIDTH - 4) + (CLOCK_FREQ >> 5)) / (CLOCK_FREQ >> 4));
-  logic [BAUD_ACC_WIDTH + 1-1:0] baud_acc;
+  // Exact baud timing via up-counter
+  logic [32-1:0] cnt;
+  logic pulse_w;
+  assign pulse_w = enable & cnt == 32'($unsigned(BAUD_TICKS - 1));
   always_ff @(posedge clock or negedge reset_neg) begin
     if ((!reset_neg)) begin
-      baud_acc <= 0;
+      cnt <= 0;
     end else begin
       if (~reset_neg) begin
-        baud_acc <= 0;
-      end else if (enable) begin
-        baud_acc <= (BAUD_ACC_WIDTH + 1)'((BAUD_ACC_WIDTH + 1)'($unsigned(baud_acc[BAUD_ACC_WIDTH - 1:0])) + baud_inc);
+        cnt <= 0;
+      end else if (~enable) begin
+        cnt <= 0;
+      end else if (cnt == 32'($unsigned(BAUD_TICKS - 1))) begin
+        cnt <= 0;
       end else begin
-        baud_acc <= 0;
+        cnt <= 32'(cnt + 1);
       end
     end
   end
-  assign baud_pulse = baud_acc[BAUD_ACC_WIDTH];
+  assign baud_pulse = pulse_w;
 
 endmodule
 
