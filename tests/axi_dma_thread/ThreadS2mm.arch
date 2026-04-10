@@ -1,0 +1,103 @@
+// Thread-based multi-outstanding S2MM write engine.
+// Compare with FsmS2mmMulti.arch (226 lines, 4 states, manual AW/W/B).
+// Uses fork/join for AW+W parallelism, resource/lock for arbitration.
+
+module ThreadS2mm
+  param NUM_OUTSTANDING: const = 4;
+  param ID_W: const = 2;
+
+  port clk:  in Clock<SysDomain>;
+  port rst:  in Reset<Sync>;
+
+  port start:       in Bool;
+  port total_xfers: in UInt<16>;
+  port base_addr:   in UInt<32>;
+  port burst_len:   in UInt<8>;
+
+  port done:     out Bool;
+  port halted:   out Bool;
+  port idle_out: out Bool;
+
+  port aw_valid: out Bool;
+  port aw_ready: in Bool;
+  port aw_addr:  out UInt<32>;
+  port aw_id:    out UInt<2>;
+  port aw_len:   out UInt<8>;
+  port aw_size:  out UInt<3>;
+  port aw_burst: out UInt<2>;
+
+  port w_valid:  out Bool;
+  port w_ready:  in Bool;
+  port w_data:   out UInt<32>;
+  port w_strb:   out UInt<4>;
+  port w_last:   out Bool;
+
+  port b_valid:  in Bool;
+  port b_ready:  out Bool shared(or);
+  port b_id:     in UInt<2>;
+
+  port pop_valid: in Bool;
+  port pop_ready: out Bool;
+  port pop_data:  in UInt<32>;
+
+  // Shared state — protected by locks
+  reg aw_issued_r:   UInt<16> reset rst => 0;
+  reg b_received_r:  UInt<16> reset rst => 0;
+  reg next_addr_r:   UInt<32> reset rst => 0;
+
+  let halted   = false;
+  let idle_out = (aw_issued_r == 0) and (b_received_r == 0);
+  let done     = (b_received_r == total_xfers) and (b_received_r != 0);
+
+  resource aw_ch  : mutex<round_robin>;
+  resource w_ch   : mutex<round_robin>;
+  resource done_ch: mutex<priority>;
+
+  generate_for i in 0..NUM_OUTSTANDING-1
+    thread WriteReq_i on clk rising, rst low
+      wait until start;
+
+      // AW+W in parallel via fork/join
+      fork
+        // AW branch: exclusive access to address channel
+        lock aw_ch
+          aw_valid = 1;
+          aw_addr  = next_addr_r;
+          aw_id    = i;
+          aw_len   = (burst_len - 1).trunc<8>();
+          aw_size  = 3'd2;
+          aw_burst = 2'd1;
+          aw_issued_r <= aw_issued_r + 1;
+          next_addr_r <= next_addr_r + (burst_len.zext<32>() << 2);
+          wait until aw_ready;
+          aw_valid = 0;
+        end lock aw_ch
+      and
+        // W branch: exclusive access to data channel
+        lock w_ch
+          for b in 0..burst_len-1
+            w_valid   = 1;
+            w_data    = pop_data;
+            w_strb    = 4'hF;
+            w_last    = (b == (burst_len - 1).trunc<8>());
+            pop_ready = 1;
+            wait until w_ready and pop_valid;
+          end for
+          w_valid   = 0;
+          pop_ready = 0;
+        end lock w_ch
+      join
+
+      // B phase: wait for write response matching this ID
+      b_ready = 1;
+      wait until b_valid and b_id == i;
+      b_ready = 0;
+
+      // Mark complete
+      lock done_ch
+        b_received_r <= b_received_r + 1;
+        wait 1 cycle;
+      end lock done_ch
+    end thread WriteReq_i
+  end generate_for
+end module ThreadS2mm

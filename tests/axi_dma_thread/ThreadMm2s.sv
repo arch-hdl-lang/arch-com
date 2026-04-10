@@ -25,12 +25,12 @@ module _ThreadMm2s_ReadReq_0 (
   output logic [32-1:0] next_addr_r,
   output logic [16-1:0] xfers_complete_r,
   output logic [16-1:0] xfers_issued_r,
-  output logic _ar_ch_req,
-  input logic _ar_ch_grant,
+  output logic _done_ch_req,
+  input logic _done_ch_grant,
   output logic _push_ch_req,
   input logic _push_ch_grant,
-  output logic _done_ch_req,
-  input logic _done_ch_grant
+  output logic _ar_ch_req,
+  input logic _ar_ch_grant
 );
 
   typedef enum logic [3:0] {
@@ -158,9 +158,9 @@ module _ThreadMm2s_ReadReq_0 (
     push_data = 0;
     push_valid = 0;
     r_ready = 0;
-    _ar_ch_req = 0;
-    _push_ch_req = 0;
     _done_ch_req = 0;
+    _push_ch_req = 0;
+    _ar_ch_req = 0;
     case (state_r)
       S0: begin
       end
@@ -237,12 +237,12 @@ module _ThreadMm2s_ReadReq_1 (
   output logic [32-1:0] next_addr_r,
   output logic [16-1:0] xfers_complete_r,
   output logic [16-1:0] xfers_issued_r,
-  output logic _done_ch_req,
-  input logic _done_ch_grant,
+  output logic _ar_ch_req,
+  input logic _ar_ch_grant,
   output logic _push_ch_req,
   input logic _push_ch_grant,
-  output logic _ar_ch_req,
-  input logic _ar_ch_grant
+  output logic _done_ch_req,
+  input logic _done_ch_grant
 );
 
   typedef enum logic [3:0] {
@@ -365,9 +365,9 @@ module _ThreadMm2s_ReadReq_1 (
     push_data = 0;
     push_valid = 0;
     r_ready = 0;
-    _done_ch_req = 0;
-    _push_ch_req = 0;
     _ar_ch_req = 0;
+    _push_ch_req = 0;
+    _done_ch_req = 0;
     case (state_r)
       S0: begin
       end
@@ -446,10 +446,10 @@ module _ThreadMm2s_ReadReq_2 (
   output logic [16-1:0] xfers_issued_r,
   output logic _push_ch_req,
   input logic _push_ch_grant,
-  output logic _done_ch_req,
-  input logic _done_ch_grant,
   output logic _ar_ch_req,
-  input logic _ar_ch_grant
+  input logic _ar_ch_grant,
+  output logic _done_ch_req,
+  input logic _done_ch_grant
 );
 
   typedef enum logic [3:0] {
@@ -573,8 +573,8 @@ module _ThreadMm2s_ReadReq_2 (
     push_valid = 0;
     r_ready = 0;
     _push_ch_req = 0;
-    _done_ch_req = 0;
     _ar_ch_req = 0;
+    _done_ch_req = 0;
     case (state_r)
       S0: begin
       end
@@ -653,10 +653,10 @@ module _ThreadMm2s_ReadReq_3 (
   output logic [16-1:0] xfers_issued_r,
   output logic _ar_ch_req,
   input logic _ar_ch_grant,
-  output logic _done_ch_req,
-  input logic _done_ch_grant,
   output logic _push_ch_req,
-  input logic _push_ch_grant
+  input logic _push_ch_grant,
+  output logic _done_ch_req,
+  input logic _done_ch_grant
 );
 
   typedef enum logic [3:0] {
@@ -780,8 +780,8 @@ module _ThreadMm2s_ReadReq_3 (
     push_valid = 0;
     r_ready = 0;
     _ar_ch_req = 0;
-    _done_ch_req = 0;
     _push_ch_req = 0;
+    _done_ch_req = 0;
     case (state_r)
       S0: begin
       end
@@ -865,58 +865,54 @@ module ThreadMm2s #(
   output logic [32-1:0] push_data
 );
 
-  logic [8-1:0] ar_len__t3;
-  logic [8-1:0] ar_len__t2;
-  logic [8-1:0] ar_len__t1;
-  logic [8-1:0] ar_len__t0;
-  logic [32-1:0] push_data__t3;
-  logic [32-1:0] push_data__t2;
-  logic [32-1:0] push_data__t1;
-  logic [32-1:0] push_data__t0;
-  logic [2-1:0] ar_burst__t3;
-  logic [2-1:0] ar_burst__t2;
-  logic [2-1:0] ar_burst__t1;
-  logic [2-1:0] ar_burst__t0;
-  logic [32-1:0] next_addr_r__t3;
-  logic [32-1:0] next_addr_r__t2;
-  logic [32-1:0] next_addr_r__t1;
-  logic [32-1:0] next_addr_r__t0;
-  logic [3-1:0] ar_size__t3;
-  logic [3-1:0] ar_size__t2;
-  logic [3-1:0] ar_size__t1;
-  logic [3-1:0] ar_size__t0;
-  logic push_valid__t3;
-  logic push_valid__t2;
-  logic push_valid__t1;
-  logic push_valid__t0;
-  logic [16-1:0] xfers_issued_r__t3;
-  logic [16-1:0] xfers_issued_r__t2;
-  logic [16-1:0] xfers_issued_r__t1;
-  logic [16-1:0] xfers_issued_r__t0;
-  logic [32-1:0] ar_addr__t3;
-  logic [32-1:0] ar_addr__t2;
-  logic [32-1:0] ar_addr__t1;
-  logic [32-1:0] ar_addr__t0;
   logic [16-1:0] xfers_complete_r__t3;
   logic [16-1:0] xfers_complete_r__t2;
   logic [16-1:0] xfers_complete_r__t1;
   logic [16-1:0] xfers_complete_r__t0;
-  logic ar_valid__t3;
-  logic ar_valid__t2;
-  logic ar_valid__t1;
-  logic ar_valid__t0;
+  logic [32-1:0] ar_addr__t3;
+  logic [32-1:0] ar_addr__t2;
+  logic [32-1:0] ar_addr__t1;
+  logic [32-1:0] ar_addr__t0;
+  logic push_valid__t3;
+  logic push_valid__t2;
+  logic push_valid__t1;
+  logic push_valid__t0;
   logic [2-1:0] ar_id__t3;
   logic [2-1:0] ar_id__t2;
   logic [2-1:0] ar_id__t1;
   logic [2-1:0] ar_id__t0;
+  logic [3-1:0] ar_size__t3;
+  logic [3-1:0] ar_size__t2;
+  logic [3-1:0] ar_size__t1;
+  logic [3-1:0] ar_size__t0;
+  logic [32-1:0] push_data__t3;
+  logic [32-1:0] push_data__t2;
+  logic [32-1:0] push_data__t1;
+  logic [32-1:0] push_data__t0;
+  logic [8-1:0] ar_len__t3;
+  logic [8-1:0] ar_len__t2;
+  logic [8-1:0] ar_len__t1;
+  logic [8-1:0] ar_len__t0;
+  logic [32-1:0] next_addr_r__t3;
+  logic [32-1:0] next_addr_r__t2;
+  logic [32-1:0] next_addr_r__t1;
+  logic [32-1:0] next_addr_r__t0;
+  logic [16-1:0] xfers_issued_r__t3;
+  logic [16-1:0] xfers_issued_r__t2;
+  logic [16-1:0] xfers_issued_r__t1;
+  logic [16-1:0] xfers_issued_r__t0;
+  logic ar_valid__t3;
+  logic ar_valid__t2;
+  logic ar_valid__t1;
+  logic ar_valid__t0;
+  logic [2-1:0] ar_burst__t3;
+  logic [2-1:0] ar_burst__t2;
+  logic [2-1:0] ar_burst__t1;
+  logic [2-1:0] ar_burst__t0;
   logic r_ready__t3;
   logic r_ready__t2;
   logic r_ready__t1;
   logic r_ready__t0;
-  logic _done_ch_req_3;
-  logic _done_ch_req_2;
-  logic _done_ch_req_1;
-  logic _done_ch_req_0;
   logic _push_ch_req_3;
   logic _push_ch_req_2;
   logic _push_ch_req_1;
@@ -925,6 +921,10 @@ module ThreadMm2s #(
   logic _ar_ch_req_2;
   logic _ar_ch_req_1;
   logic _ar_ch_req_0;
+  logic _done_ch_req_3;
+  logic _done_ch_req_2;
+  logic _done_ch_req_1;
+  logic _done_ch_req_0;
   logic [16-1:0] xfers_issued_r;
   logic [16-1:0] xfers_complete_r;
   logic [32-1:0] next_addr_r;
@@ -954,12 +954,12 @@ module ThreadMm2s #(
     .next_addr_r(next_addr_r__t0),
     .xfers_complete_r(xfers_complete_r__t0),
     .xfers_issued_r(xfers_issued_r__t0),
-    ._ar_ch_req(_ar_ch_req_0),
-    ._ar_ch_grant(_ar_ch_grant_0),
+    ._done_ch_req(_done_ch_req_0),
+    ._done_ch_grant(_done_ch_grant_0),
     ._push_ch_req(_push_ch_req_0),
     ._push_ch_grant(_push_ch_grant_0),
-    ._done_ch_req(_done_ch_req_0),
-    ._done_ch_grant(_done_ch_grant_0)
+    ._ar_ch_req(_ar_ch_req_0),
+    ._ar_ch_grant(_ar_ch_grant_0)
   );
   _ThreadMm2s_ReadReq_1 _ReadReq_1 (
     .clk(clk),
@@ -984,12 +984,12 @@ module ThreadMm2s #(
     .next_addr_r(next_addr_r__t1),
     .xfers_complete_r(xfers_complete_r__t1),
     .xfers_issued_r(xfers_issued_r__t1),
-    ._done_ch_req(_done_ch_req_1),
-    ._done_ch_grant(_done_ch_grant_1),
+    ._ar_ch_req(_ar_ch_req_1),
+    ._ar_ch_grant(_ar_ch_grant_1),
     ._push_ch_req(_push_ch_req_1),
     ._push_ch_grant(_push_ch_grant_1),
-    ._ar_ch_req(_ar_ch_req_1),
-    ._ar_ch_grant(_ar_ch_grant_1)
+    ._done_ch_req(_done_ch_req_1),
+    ._done_ch_grant(_done_ch_grant_1)
   );
   _ThreadMm2s_ReadReq_2 _ReadReq_2 (
     .clk(clk),
@@ -1016,10 +1016,10 @@ module ThreadMm2s #(
     .xfers_issued_r(xfers_issued_r__t2),
     ._push_ch_req(_push_ch_req_2),
     ._push_ch_grant(_push_ch_grant_2),
-    ._done_ch_req(_done_ch_req_2),
-    ._done_ch_grant(_done_ch_grant_2),
     ._ar_ch_req(_ar_ch_req_2),
-    ._ar_ch_grant(_ar_ch_grant_2)
+    ._ar_ch_grant(_ar_ch_grant_2),
+    ._done_ch_req(_done_ch_req_2),
+    ._done_ch_grant(_done_ch_grant_2)
   );
   _ThreadMm2s_ReadReq_3 _ReadReq_3 (
     .clk(clk),
@@ -1046,10 +1046,10 @@ module ThreadMm2s #(
     .xfers_issued_r(xfers_issued_r__t3),
     ._ar_ch_req(_ar_ch_req_3),
     ._ar_ch_grant(_ar_ch_grant_3),
-    ._done_ch_req(_done_ch_req_3),
-    ._done_ch_grant(_done_ch_grant_3),
     ._push_ch_req(_push_ch_req_3),
-    ._push_ch_grant(_push_ch_grant_3)
+    ._push_ch_grant(_push_ch_grant_3),
+    ._done_ch_req(_done_ch_req_3),
+    ._done_ch_grant(_done_ch_grant_3)
   );
   logic _ar_ch_grant_0;
   logic _ar_ch_grant_1;
@@ -1106,17 +1106,17 @@ module ThreadMm2s #(
   assign _done_ch_grant_2 = _done_ch_req_2 && !_done_ch_grant_0 && !_done_ch_grant_1;
   assign _done_ch_grant_3 = _done_ch_req_3 && !_done_ch_grant_0 && !_done_ch_grant_1 && !_done_ch_grant_2;
   assign r_ready = r_ready__t0 | r_ready__t1 | r_ready__t2 | r_ready__t3;
-  assign ar_id = ar_id__t0 | ar_id__t1 | ar_id__t2 | ar_id__t3;
-  assign ar_valid = ar_valid__t0 | ar_valid__t1 | ar_valid__t2 | ar_valid__t3;
-  assign xfers_complete_r = xfers_complete_r__t0 | xfers_complete_r__t1 | xfers_complete_r__t2 | xfers_complete_r__t3;
-  assign ar_addr = ar_addr__t0 | ar_addr__t1 | ar_addr__t2 | ar_addr__t3;
-  assign xfers_issued_r = xfers_issued_r__t0 | xfers_issued_r__t1 | xfers_issued_r__t2 | xfers_issued_r__t3;
-  assign push_valid = push_valid__t0 | push_valid__t1 | push_valid__t2 | push_valid__t3;
-  assign ar_size = ar_size__t0 | ar_size__t1 | ar_size__t2 | ar_size__t3;
-  assign next_addr_r = next_addr_r__t0 | next_addr_r__t1 | next_addr_r__t2 | next_addr_r__t3;
   assign ar_burst = ar_burst__t0 | ar_burst__t1 | ar_burst__t2 | ar_burst__t3;
-  assign push_data = push_data__t0 | push_data__t1 | push_data__t2 | push_data__t3;
+  assign ar_valid = ar_valid__t0 | ar_valid__t1 | ar_valid__t2 | ar_valid__t3;
+  assign xfers_issued_r = xfers_issued_r__t0 | xfers_issued_r__t1 | xfers_issued_r__t2 | xfers_issued_r__t3;
+  assign next_addr_r = next_addr_r__t0 | next_addr_r__t1 | next_addr_r__t2 | next_addr_r__t3;
   assign ar_len = ar_len__t0 | ar_len__t1 | ar_len__t2 | ar_len__t3;
+  assign push_data = push_data__t0 | push_data__t1 | push_data__t2 | push_data__t3;
+  assign ar_size = ar_size__t0 | ar_size__t1 | ar_size__t2 | ar_size__t3;
+  assign ar_id = ar_id__t0 | ar_id__t1 | ar_id__t2 | ar_id__t3;
+  assign push_valid = push_valid__t0 | push_valid__t1 | push_valid__t2 | push_valid__t3;
+  assign ar_addr = ar_addr__t0 | ar_addr__t1 | ar_addr__t2 | ar_addr__t3;
+  assign xfers_complete_r = xfers_complete_r__t0 | xfers_complete_r__t1 | xfers_complete_r__t2 | xfers_complete_r__t3;
 
 endmodule
 

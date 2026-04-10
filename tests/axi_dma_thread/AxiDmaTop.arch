@@ -1,0 +1,256 @@
+// Multi-outstanding AXI DMA — top-level integration.
+// Supports Simple DMA mode and Scatter-Gather mode.
+// Data-path FSMs issue multiple outstanding AXI transactions.
+module AxiDmaTop
+  param NUM_OUTSTANDING: const = 4;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  // AXI4-Lite slave (register access)
+  port s_axil: target BusAxiLite;
+
+  // AXI4 masters
+  port m_axi_mm2s:    initiator BusAxi4<ID_W=2>;
+  port m_axi_s2mm:    initiator BusAxi4<ID_W=2>;
+  port m_axi_mm2s_sg: initiator BusAxi4;
+  port m_axi_s2mm_sg: initiator BusAxi4;
+
+  // AXI4-Stream
+  port m_axis_mm2s: initiator BusAxis;
+  port s_axis_s2mm: target BusAxis;
+
+  // Interrupts
+  port mm2s_introut: out Bool;
+  port s2mm_introut: out Bool;
+
+  // ── Internal wires ──────────────────────────────────────────────────
+
+  // Register block ↔ data FSMs
+  wire mm2s_start_w: Bool; wire mm2s_src_addr_w: UInt<32>; wire mm2s_num_beats_w: UInt<8>;
+  wire mm2s_done_w: Bool; wire mm2s_halted_w: Bool; wire mm2s_idle_w: Bool;
+  wire s2mm_start_w: Bool; wire s2mm_dst_addr_w: UInt<32>; wire s2mm_num_beats_w: UInt<8>;
+  wire s2mm_done_w: Bool; wire s2mm_halted_w: Bool; wire s2mm_idle_w: Bool;
+
+  // Register block ↔ SG
+  wire mm2s_sg_start_w: Bool; wire mm2s_curdesc_w: UInt<32>; wire mm2s_taildesc_w: UInt<32>;
+  wire mm2s_sg_done_w: Bool;
+  wire s2mm_sg_start_w: Bool; wire s2mm_curdesc_w: UInt<32>; wire s2mm_taildesc_w: UInt<32>;
+  wire s2mm_sg_done_w: Bool;
+
+  // SG ↔ data FSM
+  wire mm2s_sg_xfer_start_w: Bool; wire mm2s_sg_xfer_addr_w: UInt<32>; wire mm2s_sg_xfer_beats_w: UInt<8>;
+  wire s2mm_sg_xfer_start_w: Bool; wire s2mm_sg_xfer_addr_w: UInt<32>; wire s2mm_sg_xfer_beats_w: UInt<8>;
+
+  wire mm2s_introut_w: Bool; wire s2mm_introut_w: Bool;
+
+  // FIFO wires
+  wire mm2s_push_valid_w: Bool; wire mm2s_push_ready_w: Bool; wire mm2s_push_data_w: UInt<32>;
+  wire mm2s_pop_valid_w: Bool; wire mm2s_pop_ready_w: Bool; wire mm2s_pop_data_w: UInt<32>;
+  wire s2mm_push_valid_w: Bool; wire s2mm_push_ready_w: Bool; wire s2mm_push_data_w: UInt<32>;
+  wire s2mm_pop_valid_w: Bool; wire s2mm_pop_ready_w: Bool; wire s2mm_pop_data_w: UInt<32>;
+
+  // Muxed FSM control
+  wire mm2s_fsm_start_w: Bool; wire mm2s_fsm_addr_w: UInt<32>; wire mm2s_fsm_beats_w: UInt<8>;
+  wire s2mm_fsm_start_w: Bool; wire s2mm_fsm_addr_w: UInt<32>; wire s2mm_fsm_beats_w: UInt<8>;
+
+  // Clock gate
+  wire mm2s_clk_en_w: Bool; wire s2mm_clk_en_w: Bool;
+  wire mm2s_gated_clk_w: Clock<SysDomain>;
+  wire s2mm_gated_clk_w: Clock<SysDomain>;
+
+  // Counters
+  reg mm2s_stream_ctr: UInt<8> reset rst => 0;
+  reg s2mm_recv_ctr:   UInt<8> reset rst => 0;
+  reg mm2s_sg_active: Bool reset rst => false;
+  reg s2mm_sg_active: Bool reset rst => false;
+  reg mm2s_beats_r: UInt<8> reset rst => 0;
+  reg mm2s_tlast_r: Bool reset rst => false;
+
+  default seq on clk rising;
+
+  // ── Clock gate ──────────────────────────────────────────────────────
+  comb
+    mm2s_clk_en_w = ~mm2s_halted_w | mm2s_fsm_start_w | mm2s_sg_start_w;
+    s2mm_clk_en_w = ~s2mm_halted_w | s2mm_fsm_start_w | s2mm_sg_start_w;
+  end comb
+
+  inst mm2s_icg: ClkGateDma
+    clk_in <- clk; enable <- mm2s_clk_en_w; clk_out -> mm2s_gated_clk_w;
+  end inst mm2s_icg
+
+  inst s2mm_icg: ClkGateDma
+    clk_in <- clk; enable <- s2mm_clk_en_w; clk_out -> s2mm_gated_clk_w;
+  end inst s2mm_icg
+
+  // ── Register block ──────────────────────────────────────────────────
+  inst regs: AxiLiteRegs
+    clk <- clk; rst <- rst;
+    axil -> s_axil;
+    mm2s_start -> mm2s_start_w; mm2s_src_addr -> mm2s_src_addr_w; mm2s_num_beats -> mm2s_num_beats_w;
+    mm2s_done <- mm2s_done_w; mm2s_halted <- mm2s_halted_w; mm2s_idle <- mm2s_idle_w;
+    s2mm_start -> s2mm_start_w; s2mm_dst_addr -> s2mm_dst_addr_w; s2mm_num_beats -> s2mm_num_beats_w;
+    s2mm_done <- s2mm_done_w; s2mm_halted <- s2mm_halted_w; s2mm_idle <- s2mm_idle_w;
+    mm2s_sg_start -> mm2s_sg_start_w; mm2s_curdesc_o -> mm2s_curdesc_w; mm2s_taildesc_o -> mm2s_taildesc_w;
+    mm2s_sg_done <- mm2s_sg_done_w;
+    s2mm_sg_start -> s2mm_sg_start_w; s2mm_curdesc_o -> s2mm_curdesc_w; s2mm_taildesc_o -> s2mm_taildesc_w;
+    s2mm_sg_done <- s2mm_sg_done_w;
+    mm2s_sg_active <- mm2s_sg_active; s2mm_sg_active <- s2mm_sg_active;
+    mm2s_introut -> mm2s_introut_w; s2mm_introut -> s2mm_introut_w;
+  end inst regs
+
+  // ── SG engines ──────────────────────────────────────────────────────
+  inst mm2s_sg: FsmSgEngine
+    clk <- mm2s_gated_clk_w; rst <- rst;
+    sg_start <- mm2s_sg_start_w; curdesc <- mm2s_curdesc_w; taildesc <- mm2s_taildesc_w;
+    xfer_start -> mm2s_sg_xfer_start_w; xfer_addr -> mm2s_sg_xfer_addr_w; xfer_num_beats -> mm2s_sg_xfer_beats_w;
+    xfer_done <- mm2s_done_w;
+    sg_done -> mm2s_sg_done_w;
+    sg_axi -> m_axi_mm2s_sg;
+  end inst mm2s_sg
+
+  inst s2mm_sg: FsmSgEngine
+    clk <- s2mm_gated_clk_w; rst <- rst;
+    sg_start <- s2mm_sg_start_w; curdesc <- s2mm_curdesc_w; taildesc <- s2mm_taildesc_w;
+    xfer_start -> s2mm_sg_xfer_start_w; xfer_addr -> s2mm_sg_xfer_addr_w; xfer_num_beats -> s2mm_sg_xfer_beats_w;
+    xfer_done <- s2mm_done_w;
+    sg_done -> s2mm_sg_done_w;
+    sg_axi -> m_axi_s2mm_sg;
+  end inst s2mm_sg
+
+  // ── MM2S multi-outstanding read FSM ─────────────────────────────────
+  inst mm2s_fsm: ThreadMm2s
+    clk <- mm2s_gated_clk_w; rst <- rst;
+    start <- mm2s_fsm_start_w;
+    total_xfers <- 1;
+    base_addr <- mm2s_fsm_addr_w;
+    burst_len <- mm2s_fsm_beats_w;
+    done -> mm2s_done_w; halted -> mm2s_halted_w; idle_out -> mm2s_idle_w;
+    ar_valid -> m_axi_mm2s.ar_valid; ar_ready <- m_axi_mm2s.ar_ready;
+    ar_addr  -> m_axi_mm2s.ar_addr;  ar_id    -> m_axi_mm2s.ar_id;
+    ar_len   -> m_axi_mm2s.ar_len;   ar_size  -> m_axi_mm2s.ar_size;
+    ar_burst -> m_axi_mm2s.ar_burst;
+    r_valid  <- m_axi_mm2s.r_valid;  r_ready  -> m_axi_mm2s.r_ready;
+    r_data   <- m_axi_mm2s.r_data;   r_id     <- m_axi_mm2s.r_id;
+    r_last   <- m_axi_mm2s.r_last;
+    push_valid -> mm2s_push_valid_w; push_ready <- mm2s_push_ready_w; push_data -> mm2s_push_data_w;
+  end inst mm2s_fsm
+
+  // ── MM2S FIFO ───────────────────────────────────────────────────────
+  inst mm2s_fifo: Mm2sFifo
+    clk <- mm2s_gated_clk_w; rst <- rst;
+    push_valid <- mm2s_push_valid_w; push_ready -> mm2s_push_ready_w; push_data <- mm2s_push_data_w;
+    pop_valid -> mm2s_pop_valid_w; pop_ready <- mm2s_pop_ready_w; pop_data -> mm2s_pop_data_w;
+  end inst mm2s_fifo
+
+  // ── S2MM multi-outstanding write FSM ────────────────────────────────
+  inst s2mm_fsm: ThreadS2mm
+    clk <- s2mm_gated_clk_w; rst <- rst;
+    start <- s2mm_fsm_start_w;
+    total_xfers <- 1;
+    base_addr <- s2mm_fsm_addr_w;
+    burst_len <- s2mm_fsm_beats_w;
+    done -> s2mm_done_w; halted -> s2mm_halted_w; idle_out -> s2mm_idle_w;
+    aw_valid -> m_axi_s2mm.aw_valid; aw_ready <- m_axi_s2mm.aw_ready;
+    aw_addr  -> m_axi_s2mm.aw_addr;  aw_id    -> m_axi_s2mm.aw_id;
+    aw_len   -> m_axi_s2mm.aw_len;   aw_size  -> m_axi_s2mm.aw_size;
+    aw_burst -> m_axi_s2mm.aw_burst;
+    w_valid  -> m_axi_s2mm.w_valid;   w_ready  <- m_axi_s2mm.w_ready;
+    w_data   -> m_axi_s2mm.w_data;    w_strb   -> m_axi_s2mm.w_strb;
+    w_last   -> m_axi_s2mm.w_last;
+    b_valid  <- m_axi_s2mm.b_valid;   b_ready  -> m_axi_s2mm.b_ready;
+    b_id     <- m_axi_s2mm.b_id;
+    pop_valid <- s2mm_pop_valid_w; pop_ready -> s2mm_pop_ready_w; pop_data <- s2mm_pop_data_w;
+  end inst s2mm_fsm
+
+  // ── S2MM FIFO ───────────────────────────────────────────────────────
+  inst s2mm_fifo: S2mmFifo
+    clk <- s2mm_gated_clk_w; rst <- rst;
+    push_valid <- s2mm_push_valid_w; push_ready -> s2mm_push_ready_w; push_data <- s2mm_push_data_w;
+    pop_valid -> s2mm_pop_valid_w; pop_ready <- s2mm_pop_ready_w; pop_data -> s2mm_pop_data_w;
+  end inst s2mm_fifo
+
+  // ── Simple/SG mux ──────────────────────────────────────────────────
+  comb
+    if mm2s_sg_active
+      mm2s_fsm_start_w = mm2s_sg_xfer_start_w;
+      mm2s_fsm_addr_w  = mm2s_sg_xfer_addr_w;
+      mm2s_fsm_beats_w = mm2s_sg_xfer_beats_w;
+    else
+      mm2s_fsm_start_w = mm2s_start_w;
+      mm2s_fsm_addr_w  = mm2s_src_addr_w;
+      mm2s_fsm_beats_w = mm2s_num_beats_w;
+    end if
+    if s2mm_sg_active
+      s2mm_fsm_start_w = s2mm_sg_xfer_start_w;
+      s2mm_fsm_addr_w  = s2mm_sg_xfer_addr_w;
+      s2mm_fsm_beats_w = s2mm_sg_xfer_beats_w;
+    else
+      s2mm_fsm_start_w = s2mm_start_w;
+      s2mm_fsm_addr_w  = s2mm_dst_addr_w;
+      s2mm_fsm_beats_w = s2mm_num_beats_w;
+    end if
+  end comb
+
+  // ── Stream wiring ───────────────────────────────────────────────────
+  comb
+    m_axis_mm2s.tdata = mm2s_pop_data_w; m_axis_mm2s.tvalid = mm2s_pop_valid_w;
+    m_axis_mm2s.tkeep = 0xF; mm2s_pop_ready_w = m_axis_mm2s.tready;
+    // tlast via lookahead register — set when current beat is the last
+    m_axis_mm2s.tlast = mm2s_pop_valid_w and mm2s_tlast_r;
+  end comb
+  comb
+    s2mm_push_data_w = s_axis_s2mm.tdata; s2mm_push_valid_w = s_axis_s2mm.tvalid;
+    s_axis_s2mm.tready = s2mm_push_ready_w;
+  end comb
+
+  // ── Tie-off unused channels ──────────────────────────────────────────
+  // MM2S is read-only: tie off write channels
+  comb
+    m_axi_mm2s.aw_valid = false; m_axi_mm2s.aw_addr = 0; m_axi_mm2s.aw_id = 0;
+    m_axi_mm2s.aw_len = 0; m_axi_mm2s.aw_size = 0; m_axi_mm2s.aw_burst = 0;
+    m_axi_mm2s.w_valid = false; m_axi_mm2s.w_data = 0; m_axi_mm2s.w_strb = 0; m_axi_mm2s.w_last = false;
+    m_axi_mm2s.b_ready = false;
+  end comb
+  // S2MM is write-only: tie off read channels
+  comb
+    m_axi_s2mm.ar_valid = false; m_axi_s2mm.ar_addr = 0; m_axi_s2mm.ar_id = 0;
+    m_axi_s2mm.ar_len = 0; m_axi_s2mm.ar_size = 0; m_axi_s2mm.ar_burst = 0;
+    m_axi_s2mm.r_ready = false;
+  end comb
+
+  // ── Interrupts ──────────────────────────────────────────────────────
+  comb
+    mm2s_introut = mm2s_introut_w; s2mm_introut = s2mm_introut_w;
+  end comb
+
+  // ── Registered state ────────────────────────────────────────────────
+  seq
+    if mm2s_sg_start_w
+      mm2s_sg_active <= true;
+    elsif mm2s_sg_done_w
+      mm2s_sg_active <= false;
+    end if
+    if s2mm_sg_start_w
+      s2mm_sg_active <= true;
+    elsif s2mm_sg_done_w
+      s2mm_sg_active <= false;
+    end if
+    if mm2s_fsm_start_w
+      mm2s_stream_ctr <= 0;
+      mm2s_beats_r <= mm2s_fsm_beats_w;
+      // tlast for single-beat transfer
+      mm2s_tlast_r <= (mm2s_fsm_beats_w == 1);
+    elsif mm2s_pop_valid_w and m_axis_mm2s.tready
+      mm2s_stream_ctr <= (mm2s_stream_ctr + 1).trunc<8>();
+      // tlast lookahead: set when current beat IS the last
+      mm2s_tlast_r <= ((mm2s_stream_ctr + 1).trunc<8>() == mm2s_beats_r);
+    end if
+    if s2mm_fsm_start_w
+      s2mm_recv_ctr <= 0;
+    elsif s_axis_s2mm.tvalid and s2mm_push_ready_w
+      s2mm_recv_ctr <= (s2mm_recv_ctr + 1).trunc<8>();
+    end if
+  end seq
+
+end module AxiDmaTop

@@ -50,7 +50,7 @@ module ThreadMm2s
   resource done_ch : mutex<priority>;
 
   generate_for i in 0..NUM_OUTSTANDING-1
-    thread ReadReq_i on clk rising, rst low
+    thread ReadReq_i on clk rising, rst high
       // Wait for start pulse — first thread to see it initializes counters
       wait until start;
 
