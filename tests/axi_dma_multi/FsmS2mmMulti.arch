@@ -84,7 +84,8 @@ fsm FsmS2mmMulti
   let all_b_done: Bool = (b_received_r == total_xfers_r) and (aw_issued_r == total_xfers_r);
   let w_is_last: Bool = w_last_r;
 
-  state [Idle, SendAW, SendW, Drain, Done]
+  // AW+W combined state: issue AW first, then W beats, no dead cycles
+  state [Idle, Active, Drain, Done]
   default state Idle;
 
   default
@@ -127,24 +128,57 @@ fsm FsmS2mmMulti
         w_last_r      <= false;
       end if
     end seq
-    -> SendAW when start;
+    -> Active when start;
   end state Idle
 
-  state SendAW
+  // Combined AW+W state: issues AW, then sends W beats, loops back for next burst.
+  // AW is issued on the FIRST cycle (when w_sending_r=false) or OVERLAPPED with
+  // the last W beat of the previous burst (w_sending_r transitions false→true).
+  state Active
     comb
-      halted = false;
-      // Issue AW
-      aw_valid = true;
-      aw_addr  = next_addr_r;
-      aw_id    = next_id_r.trunc<ID_W>();
-      aw_len   = (burst_len_r - 1).trunc<8>();
-      aw_size  = 3'd2;
-      aw_burst = 2'd1;
-      // Always accept B responses
-      b_ready  = true;
+      halted  = false;
+      b_ready = true;
+
+      // AW channel: issue when not sending W beats, OR overlap with last W beat
+      if can_issue_aw and ((not w_sending_r) or (w_beat_ctr_r == (burst_len_r - 1).trunc<8>()))
+        aw_valid = true;
+        aw_addr  = next_addr_r;
+        aw_id    = next_id_r.trunc<ID_W>();
+        aw_len   = (burst_len_r - 1).trunc<8>();
+        aw_size  = 3'd2;
+        aw_burst = 2'd1;
+      end if
+
+      // W channel: drive from FIFO when sending
+      if w_sending_r
+        w_valid   = pop_valid;
+        w_data    = pop_data;
+        w_strb    = 4'hF;
+        w_last    = (w_beat_ctr_r == (burst_len_r - 1).trunc<8>());
+        pop_ready = w_ready;
+      end if
     end comb
     seq on clk rising
-      if aw_fire
+      // W beat accepted
+      if w_fire
+        w_beat_ctr_r <= w_beat_ctr_r + 1;
+      end if
+
+      // Last W beat + AW simultaneously: seamless burst transition (zero gap)
+      if w_fire and (w_beat_ctr_r == (burst_len_r - 1).trunc<8>()) and aw_fire
+        // AW for next burst accepted on same cycle as last W beat
+        next_addr_r  <= next_addr_r + (burst_len_r.zext<32>() << 2);
+        next_id_r    <= (next_id_r + 1).trunc<ID_W>();
+        aw_issued_r  <= aw_issued_r + 1;
+        inflight_r   <= inflight_r + 1;
+        w_beat_ctr_r <= 0;
+        w_sending_r  <= true;
+        w_last_r     <= (burst_len_r == 1);
+      elsif w_fire and (w_beat_ctr_r == (burst_len_r - 1).trunc<8>())
+        // Last W beat, no AW overlap
+        w_sending_r <= false;
+      elsif aw_fire
+        // AW accepted (first burst or after gap)
         next_addr_r  <= next_addr_r + (burst_len_r.zext<32>() << 2);
         next_id_r    <= (next_id_r + 1).trunc<ID_W>();
         aw_issued_r  <= aw_issued_r + 1;
@@ -153,44 +187,20 @@ fsm FsmS2mmMulti
         w_sending_r  <= true;
         w_last_r     <= (burst_len_r == 1);
       end if
+
+      // B response
       if b_fire
         b_received_r <= b_received_r + 1;
         inflight_r   <= inflight_r - 1;
       end if
-      // Simultaneous AW + B: net inflight +1 -1 = 0 change handled by priority
+
+      // Simultaneous AW + B: net zero inflight change
       if aw_fire and b_fire
         inflight_r <= inflight_r;
       end if
     end seq
-    -> SendW when aw_fire;
-  end state SendAW
-
-  state SendW
-    comb
-      halted    = false;
-      // Drive W channel from FIFO
-      w_valid   = pop_valid;
-      w_data    = pop_data;
-      w_strb    = 4'hF;
-      w_last    = (w_beat_ctr_r == (burst_len_r - 1).trunc<8>());
-      pop_ready = w_ready;
-      // Always accept B responses
-      b_ready   = true;
-    end comb
-    seq on clk rising
-      if w_fire
-        w_beat_ctr_r <= w_beat_ctr_r + 1;
-        w_last_r <= ((w_beat_ctr_r + 1).trunc<8>() == burst_len_r);
-      end if
-      if b_fire
-        b_received_r <= b_received_r + 1;
-        inflight_r   <= inflight_r - 1;
-      end if
-    end seq
-    // Transition when the last W beat fires (combinational check on counter)
-    -> SendAW when w_fire and (w_beat_ctr_r == (burst_len_r - 1).trunc<8>()) and (aw_issued_r < total_xfers_r) and (inflight_r < NUM_OUTSTANDING.trunc<16>());
-    -> Drain  when w_fire and (w_beat_ctr_r == (burst_len_r - 1).trunc<8>()) and ((aw_issued_r == total_xfers_r) or (inflight_r >= NUM_OUTSTANDING.trunc<16>()));
-  end state SendW
+    -> Drain when (aw_issued_r == total_xfers_r) and (not w_sending_r);
+  end state Active
 
   state Drain
     comb
@@ -203,9 +213,7 @@ fsm FsmS2mmMulti
         inflight_r   <= inflight_r - 1;
       end if
     end seq
-    // If more AW to issue and inflight dropped, go back to SendAW
-    -> SendAW when (aw_issued_r < total_xfers_r) and (inflight_r < NUM_OUTSTANDING.trunc<16>()) and (not b_fire or inflight_r > 1);
-    -> Done   when all_b_done;
+    -> Done when all_b_done;
   end state Drain
 
   state Done

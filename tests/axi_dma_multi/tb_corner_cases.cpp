@@ -335,9 +335,10 @@ void test_s2mm_fifo_underrun() {
 
     // Send W with pop_valid toggling (FIFO underrun)
     int w_beats = 0;
+    int w_last_seen = 0;
+    int b_sent = 0;
     wr.w_ready = 1;
-    bool saw_wlast = false;
-    for (int c = 0; c < 60; c++) {
+    for (int c = 0; c < 80; c++) {
         // Toggle pop_valid: 2 beats on, 3 beats off
         wr.pop_valid = ((c / 2) % 3 != 2) ? 1 : 0;
         wr.pop_data = 0x6000 + w_beats;
@@ -345,12 +346,15 @@ void test_s2mm_fifo_underrun() {
         // Count W before tick
         if (wr.w_valid && wr.w_ready) {
             w_beats++;
-            if (wr.w_last) saw_wlast = true;
+            if (wr.w_last) w_last_seen++;
         }
 
-        // Send B when ready
-        if (!saw_wlast) wr.b_valid = 0;
-        else if (wr.b_ready) { wr.b_valid = 1; wr.b_id = 0; }
+        // Send exactly 1 B response after w_last
+        if (b_sent < w_last_seen && wr.b_ready) {
+            wr.b_valid = 1; wr.b_id = 0; b_sent++;
+        } else {
+            wr.b_valid = 0;
+        }
 
         tick();
         if (wr.done) break;

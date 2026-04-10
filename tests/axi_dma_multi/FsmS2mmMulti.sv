@@ -46,12 +46,11 @@ module FsmS2mmMulti #(
   input logic [32-1:0] pop_data
 );
 
-  typedef enum logic [2:0] {
-    IDLE = 3'd0,
-    SENDAW = 3'd1,
-    SENDW = 3'd2,
-    DRAIN = 3'd3,
-    DONE = 3'd4
+  typedef enum logic [1:0] {
+    IDLE = 2'd0,
+    ACTIVE = 2'd1,
+    DRAIN = 2'd2,
+    DONE = 2'd3
   } FsmS2mmMulti_state_t;
   
   FsmS2mmMulti_state_t state_r, state_next;
@@ -108,6 +107,7 @@ module FsmS2mmMulti #(
           // W tracking (within current burst)
           // B tracking
           // Derived signals
+          // AW+W combined state: issue AW first, then W beats, no dead cycles
           if (start) begin
             total_xfers_r <= total_xfers;
             base_addr_r <= base_addr;
@@ -122,10 +122,31 @@ module FsmS2mmMulti #(
             w_last_r <= 1'b0;
           end
         end
-        SENDAW: begin
-          // Issue AW
-          // Always accept B responses
-          if (aw_fire) begin
+        ACTIVE: begin
+          // Combined AW+W state: issues AW, then sends W beats, loops back for next burst.
+          // AW is issued on the FIRST cycle (when w_sending_r=false) or OVERLAPPED with
+          // the last W beat of the previous burst (w_sending_r transitions false→true).
+          // AW channel: issue when not sending W beats, OR overlap with last W beat
+          // W channel: drive from FIFO when sending
+          // W beat accepted
+          if (w_fire) begin
+            w_beat_ctr_r <= w_beat_ctr_r + 1;
+          end
+          // Last W beat + AW simultaneously: seamless burst transition (zero gap)
+          if (w_fire && w_beat_ctr_r == 8'(burst_len_r - 1) && aw_fire) begin
+            // AW for next burst accepted on same cycle as last W beat
+            next_addr_r <= next_addr_r + (32'($unsigned(burst_len_r)) << 2);
+            next_id_r <= ID_W'(next_id_r + 1);
+            aw_issued_r <= aw_issued_r + 1;
+            inflight_r <= inflight_r + 1;
+            w_beat_ctr_r <= 0;
+            w_sending_r <= 1'b1;
+            w_last_r <= burst_len_r == 1;
+          end else if (w_fire && w_beat_ctr_r == 8'(burst_len_r - 1)) begin
+            // Last W beat, no AW overlap
+            w_sending_r <= 1'b0;
+          end else if (aw_fire) begin
+            // AW accepted (first burst or after gap)
             next_addr_r <= next_addr_r + (32'($unsigned(burst_len_r)) << 2);
             next_id_r <= ID_W'(next_id_r + 1);
             aw_issued_r <= aw_issued_r + 1;
@@ -134,29 +155,17 @@ module FsmS2mmMulti #(
             w_sending_r <= 1'b1;
             w_last_r <= burst_len_r == 1;
           end
+          // B response
           if (b_fire) begin
             b_received_r <= b_received_r + 1;
             inflight_r <= inflight_r - 1;
           end
-          // Simultaneous AW + B: net inflight +1 -1 = 0 change handled by priority
+          // Simultaneous AW + B: net zero inflight change
           if (aw_fire && b_fire) begin
             inflight_r <= inflight_r;
           end
         end
-        SENDW: begin
-          // Drive W channel from FIFO
-          // Always accept B responses
-          if (w_fire) begin
-            w_beat_ctr_r <= w_beat_ctr_r + 1;
-            w_last_r <= 8'(w_beat_ctr_r + 1) == burst_len_r;
-          end
-          if (b_fire) begin
-            b_received_r <= b_received_r + 1;
-            inflight_r <= inflight_r - 1;
-          end
-        end
         DRAIN: begin
-          // Last W beat registered — transition on next cycle when w_last_r is set
           if (b_fire) begin
             b_received_r <= b_received_r + 1;
             inflight_r <= inflight_r - 1;
@@ -171,18 +180,13 @@ module FsmS2mmMulti #(
     state_next = state_r; // hold by default
     case (state_r)
       IDLE: begin
-        if (start) state_next = SENDAW;
+        if (start) state_next = ACTIVE;
       end
-      SENDAW: begin
-        if (aw_fire) state_next = SENDW;
-      end
-      SENDW: begin
-        if (w_last_r && aw_issued_r < total_xfers_r && inflight_r < 16'(NUM_OUTSTANDING)) state_next = SENDAW;
-        else if (w_last_r && (aw_issued_r == total_xfers_r || inflight_r >= 16'(NUM_OUTSTANDING))) state_next = DRAIN;
+      ACTIVE: begin
+        if (aw_issued_r == total_xfers_r && !w_sending_r) state_next = DRAIN;
       end
       DRAIN: begin
-        if (aw_issued_r < total_xfers_r && inflight_r < 16'(NUM_OUTSTANDING) && (!b_fire || inflight_r > 1)) state_next = SENDAW;
-        else if (all_b_done) state_next = DONE;
+        if (all_b_done) state_next = DONE;
       end
       DONE: begin
         state_next = IDLE;
@@ -212,31 +216,30 @@ module FsmS2mmMulti #(
         idle_out = 1'b1;
         halted = 1'b0;
       end
-      SENDAW: begin
+      ACTIVE: begin
         halted = 1'b0;
-        aw_valid = 1'b1;
-        aw_addr = next_addr_r;
-        aw_id = ID_W'(next_id_r);
-        aw_len = 8'(burst_len_r - 1);
-        aw_size = 3'd2;
-        aw_burst = 2'd1;
         b_ready = 1'b1;
-      end
-      SENDW: begin
-        halted = 1'b0;
-        w_valid = pop_valid;
-        w_data = pop_data;
-        w_strb = 4'd15;
-        w_last = w_last_r;
-        pop_ready = w_ready;
-        b_ready = 1'b1;
+        if (can_issue_aw && (!w_sending_r || w_beat_ctr_r == 8'(burst_len_r - 1))) begin
+          aw_valid = 1'b1;
+          aw_addr = next_addr_r;
+          aw_id = ID_W'(next_id_r);
+          aw_len = 8'(burst_len_r - 1);
+          aw_size = 3'd2;
+          aw_burst = 2'd1;
+        end
+        if (w_sending_r) begin
+          w_valid = pop_valid;
+          w_data = pop_data;
+          w_strb = 4'd15;
+          w_last = w_beat_ctr_r == 8'(burst_len_r - 1);
+          pop_ready = w_ready;
+        end
       end
       DRAIN: begin
         halted = 1'b0;
         b_ready = 1'b1;
       end
       DONE: begin
-        // If more AW to issue and inflight dropped, go back to SendAW
         done = 1'b1;
         halted = 1'b0;
       end
