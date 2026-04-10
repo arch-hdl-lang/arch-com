@@ -1,0 +1,164 @@
+// Multi-outstanding MM2S (Memory-Mapped to Stream) read engine.
+//
+// Issues up to NUM_OUTSTANDING AXI4 read bursts concurrently.
+// Each burst is tagged with a unique AXI ID.  R responses are
+// collected in-order (FIFO push), with r_id used to track
+// per-transaction beat counts.
+//
+// Architecture:
+//   Idle → Active (concurrent AR issue + R collection) → Done
+//
+//   In Active state:
+//     AR channel: issues bursts while inflight < NUM_OUTSTANDING
+//                 and xfers_issued < total_xfers
+//     R channel:  always accepts beats, pushes to FIFO,
+//                 frees ID slot on r_last
+//
+// FSM-based (no threads) — baseline for thread comparison.
+
+fsm FsmMm2sMulti
+  param NUM_OUTSTANDING: const = 4;
+  param ID_W: const = 2;
+
+  port clk:  in Clock<SysDomain>;
+  port rst:  in Reset<Sync>;
+
+  // Control interface
+  port start:      in Bool;
+  port total_xfers: in UInt<16>;
+  port base_addr:  in UInt<32>;
+  port burst_len:  in UInt<8>;
+
+  // Status
+  port done:    out Bool;
+  port halted:  out Bool;
+  port idle_out: out Bool;
+
+  // AXI4 read channels (directly wired, not using bus construct)
+  port ar_valid: out Bool;
+  port ar_ready: in Bool;
+  port ar_addr:  out UInt<32>;
+  port ar_id:    out UInt<ID_W>;
+  port ar_len:   out UInt<8>;
+  port ar_size:  out UInt<3>;
+  port ar_burst: out UInt<2>;
+
+  port r_valid:  in Bool;
+  port r_ready:  out Bool;
+  port r_data:   in UInt<32>;
+  port r_id:     in UInt<ID_W>;
+  port r_last:   in Bool;
+
+  // FIFO push interface
+  port push_valid: out Bool;
+  port push_ready: in Bool;
+  port push_data:  out UInt<32>;
+
+  // Latched control registers
+  reg total_xfers_r: UInt<16> reset rst => 0;
+  reg base_addr_r:   UInt<32> reset rst => 0;
+  reg burst_len_r:   UInt<8>  reset rst => 0;
+
+  // Transaction tracking
+  reg xfers_issued_r:  UInt<16> reset rst => 0;
+  reg xfers_complete_r: UInt<16> reset rst => 0;
+  reg next_addr_r:     UInt<32> reset rst => 0;
+  reg next_id_r:       UInt<ID_W> reset rst => 0;
+  reg inflight_r:      UInt<16> reset rst => 0;
+
+  // Derived signals
+  let can_issue: Bool = (inflight_r < NUM_OUTSTANDING.trunc<16>()) and (xfers_issued_r < total_xfers_r);
+  let all_done: Bool = (xfers_complete_r == total_xfers_r) and (xfers_issued_r == total_xfers_r);
+  let ar_fire: Bool = ar_valid and ar_ready;
+  let r_fire: Bool = r_valid and r_ready and push_ready;
+
+  state [Idle, Active, Done]
+  default state Idle;
+
+  default
+    comb
+      done     = false;
+      halted   = true;
+      idle_out = false;
+      ar_valid = false;
+      ar_addr  = 0;
+      ar_id    = 0;
+      ar_len   = 0;
+      ar_size  = 3'd2;
+      ar_burst = 2'd1;
+      r_ready  = false;
+      push_valid = false;
+      push_data  = 0;
+    end comb
+  end default
+
+  state Idle
+    comb
+      idle_out = true;
+      halted   = false;
+    end comb
+    seq on clk rising
+      if start
+        total_xfers_r  <= total_xfers;
+        base_addr_r    <= base_addr;
+        burst_len_r    <= burst_len;
+        next_addr_r    <= base_addr;
+        next_id_r      <= 0;
+        xfers_issued_r <= 0;
+        xfers_complete_r <= 0;
+        inflight_r     <= 0;
+      end if
+    end seq
+    -> Active when start;
+  end state Idle
+
+  state Active
+    comb
+      halted = false;
+
+      // AR channel: issue next burst if possible
+      if can_issue
+        ar_valid = true;
+        ar_addr  = next_addr_r;
+        ar_id    = next_id_r.trunc<ID_W>();
+        ar_len   = (burst_len_r - 1).trunc<8>();
+        ar_size  = 3'd2;
+        ar_burst = 2'd1;
+      end if
+
+      // R channel: always accept and push to FIFO
+      r_ready    = push_ready;
+      push_valid = r_valid;
+      push_data  = r_data;
+    end comb
+    seq on clk rising
+      // AR handshake: advance to next transfer
+      if ar_fire
+        next_addr_r <= next_addr_r + (burst_len_r.zext<32>() << 2);
+        next_id_r   <= (next_id_r + 1).trunc<ID_W>();
+        xfers_issued_r <= xfers_issued_r + 1;
+        inflight_r  <= inflight_r + 1;
+      end if
+
+      // R last beat: free ID slot
+      if r_fire and r_last
+        xfers_complete_r <= xfers_complete_r + 1;
+        inflight_r <= inflight_r - 1;
+      end if
+
+      // Handle simultaneous AR fire and R last (net inflight unchanged)
+      if ar_fire and r_fire and r_last
+        inflight_r <= inflight_r;
+      end if
+    end seq
+    -> Done when all_done;
+  end state Active
+
+  state Done
+    comb
+      done   = true;
+      halted = false;
+    end comb
+    -> Idle;
+  end state Done
+end fsm FsmMm2sMulti

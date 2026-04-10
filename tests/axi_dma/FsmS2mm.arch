@@ -100,21 +100,15 @@ fsm FsmS2mm
       axi_wr.w_valid = pop_valid;
       axi_wr.w_data  = pop_data;
       axi_wr.w_strb  = 0xF;
-      // w_last_r was precomputed one cycle ago — no subtractor on critical path
-      axi_wr.w_last  = w_last_r;
+      axi_wr.w_last  = (beat_ctr_r == (num_beats_r - 1).trunc<8>());
       pop_ready      = axi_wr.w_ready;
     end comb
     seq
       if axi_wr.w_ready & pop_valid
         beat_ctr_r <= (beat_ctr_r + 1).trunc<8>();
-        // Lookahead: will the beat AFTER next be the last?
-        // next beat_ctr = beat_ctr_r + 1; last beat = num_beats_r - 1
-        // so w_last_r for next cycle = (beat_ctr_r + 1 == num_beats_r - 1)
-        //                            = (beat_ctr_r + 2 == num_beats_r)
-        w_last_r <= ((beat_ctr_r + 2).trunc<8>() == num_beats_r);
       end if
     end seq
-    -> WaitB when axi_wr.w_ready & pop_valid & w_last_r;
+    -> WaitB when axi_wr.w_ready & pop_valid & (beat_ctr_r == (num_beats_r - 1).trunc<8>());
   end state SendW
 
   state WaitB

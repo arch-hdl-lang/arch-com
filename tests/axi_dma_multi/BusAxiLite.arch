@@ -1,0 +1,32 @@
+// AXI4-Lite bus (register access interface).
+bus BusAxiLite
+  param ADDR_W: const = 8;
+  param DATA_W: const = 32;
+
+  // Write address
+  aw_valid: out Bool;
+  aw_ready: in  Bool;
+  aw_addr:  out UInt<ADDR_W>;
+
+  // Write data
+  w_valid:  out Bool;
+  w_ready:  in  Bool;
+  w_data:   out UInt<DATA_W>;
+  w_strb:   out UInt<4>;
+
+  // Write response
+  b_valid:  in  Bool;
+  b_ready:  out Bool;
+  b_resp:   in  UInt<2>;
+
+  // Read address
+  ar_valid: out Bool;
+  ar_ready: in  Bool;
+  ar_addr:  out UInt<ADDR_W>;
+
+  // Read data
+  r_valid:  in  Bool;
+  r_ready:  out Bool;
+  r_data:   in  UInt<DATA_W>;
+  r_resp:   in  UInt<2>;
+end bus BusAxiLite

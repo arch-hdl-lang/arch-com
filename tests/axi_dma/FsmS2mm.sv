@@ -80,14 +80,8 @@ module FsmS2mm (
           end
         end
         SENDW: begin
-          // w_last_r was precomputed one cycle ago — no subtractor on critical path
           if (axi_wr_w_ready & pop_valid) begin
             beat_ctr_r <= 8'(beat_ctr_r + 1);
-            // Lookahead: will the beat AFTER next be the last?
-            // next beat_ctr = beat_ctr_r + 1; last beat = num_beats_r - 1
-            // so w_last_r for next cycle = (beat_ctr_r + 1 == num_beats_r - 1)
-            //                            = (beat_ctr_r + 2 == num_beats_r)
-            w_last_r <= 8'(beat_ctr_r + 2) == num_beats_r;
           end
         end
         default: ;
@@ -108,7 +102,7 @@ module FsmS2mm (
         if (axi_wr_aw_ready) state_next = SENDW;
       end
       SENDW: begin
-        if (axi_wr_w_ready & pop_valid & w_last_r) state_next = WAITB;
+        if (axi_wr_w_ready & pop_valid & beat_ctr_r == 8'(num_beats_r - 1)) state_next = WAITB;
       end
       WAITB: begin
         if (axi_wr_b_valid) state_next = DONE;
@@ -154,7 +148,7 @@ module FsmS2mm (
         axi_wr_w_valid = pop_valid;
         axi_wr_w_data = pop_data;
         axi_wr_w_strb = 'hF;
-        axi_wr_w_last = w_last_r;
+        axi_wr_w_last = beat_ctr_r == 8'(num_beats_r - 1);
         pop_ready = axi_wr_w_ready;
       end
       WAITB: begin

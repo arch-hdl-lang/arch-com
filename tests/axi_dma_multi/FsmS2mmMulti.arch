@@ -1,0 +1,218 @@
+// Multi-outstanding S2MM (Stream to Memory-Mapped) write engine.
+//
+// Pops data from FIFO and writes to memory via AXI4.
+// Issues AW+W for one burst, then immediately starts next AW+W
+// while previous B response is still outstanding.
+// Up to NUM_OUTSTANDING B responses can be in-flight.
+//
+// Architecture:
+//   Idle → Active (AW+W issue + B collection) → Drain → Done
+//
+//   AW/W path: sequential per-burst (AW then W beats), but next
+//              burst starts immediately after current finishes W.
+//   B path:    collected asynchronously; inflight count tracks.
+//
+// FSM-based (no threads) — baseline for thread comparison.
+
+fsm FsmS2mmMulti
+  param NUM_OUTSTANDING: const = 4;
+  param ID_W: const = 2;
+
+  port clk:  in Clock<SysDomain>;
+  port rst:  in Reset<Sync>;
+
+  // Control
+  port start:       in Bool;
+  port total_xfers: in UInt<16>;
+  port base_addr:   in UInt<32>;
+  port burst_len:   in UInt<8>;
+
+  // Status
+  port done:     out Bool;
+  port halted:   out Bool;
+  port idle_out: out Bool;
+
+  // AXI4 write channels
+  port aw_valid: out Bool;
+  port aw_ready: in Bool;
+  port aw_addr:  out UInt<32>;
+  port aw_id:    out UInt<ID_W>;
+  port aw_len:   out UInt<8>;
+  port aw_size:  out UInt<3>;
+  port aw_burst: out UInt<2>;
+
+  port w_valid:  out Bool;
+  port w_ready:  in Bool;
+  port w_data:   out UInt<32>;
+  port w_strb:   out UInt<4>;
+  port w_last:   out Bool;
+
+  port b_valid:  in Bool;
+  port b_ready:  out Bool;
+  port b_id:     in UInt<ID_W>;
+
+  // FIFO pop interface
+  port pop_valid: in Bool;
+  port pop_ready: out Bool;
+  port pop_data:  in UInt<32>;
+
+  // Latched control
+  reg total_xfers_r: UInt<16> reset rst => 0;
+  reg base_addr_r:   UInt<32> reset rst => 0;
+  reg burst_len_r:   UInt<8>  reset rst => 0;
+
+  // AW tracking
+  reg aw_issued_r:  UInt<16> reset rst => 0;
+  reg next_addr_r:  UInt<32> reset rst => 0;
+  reg next_id_r:    UInt<ID_W> reset rst => 0;
+
+  // W tracking (within current burst)
+  reg w_beat_ctr_r: UInt<8> reset rst => 0;
+  reg w_sending_r:  Bool reset rst => 0;
+
+  // B tracking
+  reg b_received_r: UInt<16> reset rst => 0;
+  reg inflight_r:   UInt<16> reset rst => 0;
+
+  reg w_last_r: Bool reset rst => 0;
+
+  // Derived signals
+  let aw_fire: Bool = aw_valid and aw_ready;
+  let w_fire: Bool = w_valid and w_ready;
+  let b_fire: Bool = b_valid and b_ready;
+  let can_issue_aw: Bool = (not w_sending_r) and (aw_issued_r < total_xfers_r) and (inflight_r < NUM_OUTSTANDING.trunc<16>());
+  let all_b_done: Bool = (b_received_r == total_xfers_r) and (aw_issued_r == total_xfers_r);
+  let w_is_last: Bool = w_last_r;
+
+  state [Idle, SendAW, SendW, Drain, Done]
+  default state Idle;
+
+  default
+    comb
+      done     = false;
+      halted   = true;
+      idle_out = false;
+      aw_valid = false;
+      aw_addr  = 0;
+      aw_id    = 0;
+      aw_len   = 0;
+      aw_size  = 3'd2;
+      aw_burst = 2'd1;
+      w_valid  = false;
+      w_data   = 0;
+      w_strb   = 4'hF;
+      w_last   = false;
+      b_ready  = false;
+      pop_ready = false;
+    end comb
+  end default
+
+  state Idle
+    comb
+      idle_out = true;
+      halted   = false;
+    end comb
+    seq on clk rising
+      if start
+        total_xfers_r <= total_xfers;
+        base_addr_r   <= base_addr;
+        burst_len_r   <= burst_len;
+        next_addr_r   <= base_addr;
+        next_id_r     <= 0;
+        aw_issued_r   <= 0;
+        b_received_r  <= 0;
+        inflight_r    <= 0;
+        w_beat_ctr_r  <= (burst_len_r - 1).trunc<8>();
+        w_sending_r   <= false;
+        w_last_r      <= false;
+      end if
+    end seq
+    -> SendAW when start;
+  end state Idle
+
+  state SendAW
+    comb
+      halted = false;
+      // Issue AW
+      aw_valid = true;
+      aw_addr  = next_addr_r;
+      aw_id    = next_id_r.trunc<ID_W>();
+      aw_len   = (burst_len_r - 1).trunc<8>();
+      aw_size  = 3'd2;
+      aw_burst = 2'd1;
+      // Always accept B responses
+      b_ready  = true;
+    end comb
+    seq on clk rising
+      if aw_fire
+        next_addr_r  <= next_addr_r + (burst_len_r.zext<32>() << 2);
+        next_id_r    <= (next_id_r + 1).trunc<ID_W>();
+        aw_issued_r  <= aw_issued_r + 1;
+        inflight_r   <= inflight_r + 1;
+        w_beat_ctr_r <= 0;
+        w_sending_r  <= true;
+        w_last_r     <= (burst_len_r == 1);
+      end if
+      if b_fire
+        b_received_r <= b_received_r + 1;
+        inflight_r   <= inflight_r - 1;
+      end if
+      // Simultaneous AW + B: net inflight +1 -1 = 0 change handled by priority
+      if aw_fire and b_fire
+        inflight_r <= inflight_r;
+      end if
+    end seq
+    -> SendW when aw_fire;
+  end state SendAW
+
+  state SendW
+    comb
+      halted    = false;
+      // Drive W channel from FIFO
+      w_valid   = pop_valid;
+      w_data    = pop_data;
+      w_strb    = 4'hF;
+      w_last    = (w_beat_ctr_r == (burst_len_r - 1).trunc<8>());
+      pop_ready = w_ready;
+      // Always accept B responses
+      b_ready   = true;
+    end comb
+    seq on clk rising
+      if w_fire
+        w_beat_ctr_r <= w_beat_ctr_r + 1;
+        w_last_r <= ((w_beat_ctr_r + 1).trunc<8>() == burst_len_r);
+      end if
+      if b_fire
+        b_received_r <= b_received_r + 1;
+        inflight_r   <= inflight_r - 1;
+      end if
+    end seq
+    // Transition when the last W beat fires (combinational check on counter)
+    -> SendAW when w_fire and (w_beat_ctr_r == (burst_len_r - 1).trunc<8>()) and (aw_issued_r < total_xfers_r) and (inflight_r < NUM_OUTSTANDING.trunc<16>());
+    -> Drain  when w_fire and (w_beat_ctr_r == (burst_len_r - 1).trunc<8>()) and ((aw_issued_r == total_xfers_r) or (inflight_r >= NUM_OUTSTANDING.trunc<16>()));
+  end state SendW
+
+  state Drain
+    comb
+      halted  = false;
+      b_ready = true;
+    end comb
+    seq on clk rising
+      if b_fire
+        b_received_r <= b_received_r + 1;
+        inflight_r   <= inflight_r - 1;
+      end if
+    end seq
+    // If more AW to issue and inflight dropped, go back to SendAW
+    -> SendAW when (aw_issued_r < total_xfers_r) and (inflight_r < NUM_OUTSTANDING.trunc<16>()) and (not b_fire or inflight_r > 1);
+    -> Done   when all_b_done;
+  end state Drain
+
+  state Done
+    comb
+      done   = true;
+      halted = false;
+    end comb
+    -> Idle;
+  end state Done
+end fsm FsmS2mmMulti

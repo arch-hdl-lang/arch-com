@@ -1,0 +1,11 @@
+// AXI4-Stream bus.
+// Direction: from initiator (master/source) perspective.
+bus BusAxis
+  param DATA_W: const = 32;
+
+  tvalid: out Bool;
+  tready: in  Bool;
+  tdata:  out UInt<DATA_W>;
+  tlast:  out Bool;
+  tkeep:  out UInt<4>;
+end bus BusAxis

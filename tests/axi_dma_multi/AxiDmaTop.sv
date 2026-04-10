@@ -1,6 +1,9 @@
-// PG021-compatible AXI DMA — top-level integration.
-// Supports Simple DMA mode (LENGTH write) and Scatter-Gather mode (TAILDESC write).
-module AxiDmaTop (
+// Multi-outstanding AXI DMA — top-level integration.
+// Supports Simple DMA mode and Scatter-Gather mode.
+// Data-path FSMs issue multiple outstanding AXI transactions.
+module AxiDmaTop #(
+  parameter int NUM_OUTSTANDING = 4
+) (
   input logic clk,
   input logic rst,
   input logic s_axil_aw_valid,
@@ -23,20 +26,49 @@ module AxiDmaTop (
   output logic m_axi_mm2s_ar_valid,
   input logic m_axi_mm2s_ar_ready,
   output logic [32-1:0] m_axi_mm2s_ar_addr,
-  output logic [1-1:0] m_axi_mm2s_ar_id,
+  output logic [2-1:0] m_axi_mm2s_ar_id,
   output logic [8-1:0] m_axi_mm2s_ar_len,
   output logic [3-1:0] m_axi_mm2s_ar_size,
   output logic [2-1:0] m_axi_mm2s_ar_burst,
   input logic m_axi_mm2s_r_valid,
   output logic m_axi_mm2s_r_ready,
   input logic [32-1:0] m_axi_mm2s_r_data,
-  input logic [1-1:0] m_axi_mm2s_r_id,
+  input logic [2-1:0] m_axi_mm2s_r_id,
   input logic [2-1:0] m_axi_mm2s_r_resp,
   input logic m_axi_mm2s_r_last,
+  output logic m_axi_mm2s_aw_valid,
+  input logic m_axi_mm2s_aw_ready,
+  output logic [32-1:0] m_axi_mm2s_aw_addr,
+  output logic [2-1:0] m_axi_mm2s_aw_id,
+  output logic [8-1:0] m_axi_mm2s_aw_len,
+  output logic [3-1:0] m_axi_mm2s_aw_size,
+  output logic [2-1:0] m_axi_mm2s_aw_burst,
+  output logic m_axi_mm2s_w_valid,
+  input logic m_axi_mm2s_w_ready,
+  output logic [32-1:0] m_axi_mm2s_w_data,
+  output logic [4-1:0] m_axi_mm2s_w_strb,
+  output logic m_axi_mm2s_w_last,
+  input logic m_axi_mm2s_b_valid,
+  output logic m_axi_mm2s_b_ready,
+  input logic [2-1:0] m_axi_mm2s_b_id,
+  input logic [2-1:0] m_axi_mm2s_b_resp,
+  output logic m_axi_s2mm_ar_valid,
+  input logic m_axi_s2mm_ar_ready,
+  output logic [32-1:0] m_axi_s2mm_ar_addr,
+  output logic [2-1:0] m_axi_s2mm_ar_id,
+  output logic [8-1:0] m_axi_s2mm_ar_len,
+  output logic [3-1:0] m_axi_s2mm_ar_size,
+  output logic [2-1:0] m_axi_s2mm_ar_burst,
+  input logic m_axi_s2mm_r_valid,
+  output logic m_axi_s2mm_r_ready,
+  input logic [32-1:0] m_axi_s2mm_r_data,
+  input logic [2-1:0] m_axi_s2mm_r_id,
+  input logic [2-1:0] m_axi_s2mm_r_resp,
+  input logic m_axi_s2mm_r_last,
   output logic m_axi_s2mm_aw_valid,
   input logic m_axi_s2mm_aw_ready,
   output logic [32-1:0] m_axi_s2mm_aw_addr,
-  output logic [1-1:0] m_axi_s2mm_aw_id,
+  output logic [2-1:0] m_axi_s2mm_aw_id,
   output logic [8-1:0] m_axi_s2mm_aw_len,
   output logic [3-1:0] m_axi_s2mm_aw_size,
   output logic [2-1:0] m_axi_s2mm_aw_burst,
@@ -47,7 +79,7 @@ module AxiDmaTop (
   output logic m_axi_s2mm_w_last,
   input logic m_axi_s2mm_b_valid,
   output logic m_axi_s2mm_b_ready,
-  input logic [1-1:0] m_axi_s2mm_b_id,
+  input logic [2-1:0] m_axi_s2mm_b_id,
   input logic [2-1:0] m_axi_s2mm_b_resp,
   output logic m_axi_mm2s_sg_ar_valid,
   input logic m_axi_mm2s_sg_ar_ready,
@@ -121,14 +153,10 @@ module AxiDmaTop (
   output logic s2mm_introut
 );
 
-  // ── AXI4-Lite slave (register access) ───────────────────────────────
-  // ── AXI4 masters ────────────────────────────────────────────────────
-  // MM2S data reads
-  // S2MM data writes
-  // MM2S SG descriptor access
-  // S2MM SG descriptor access
-  // ── AXI4-Stream ─────────────────────────────────────────────────────
-  // ── Interrupts ──────────────────────────────────────────────────────
+  // AXI4-Lite slave (register access)
+  // AXI4 masters
+  // AXI4-Stream
+  // Interrupts
   // ── Internal wires ──────────────────────────────────────────────────
   // Register block ↔ data FSMs
   logic mm2s_start_w;
@@ -152,7 +180,7 @@ module AxiDmaTop (
   logic [32-1:0] s2mm_curdesc_w;
   logic [32-1:0] s2mm_taildesc_w;
   logic s2mm_sg_done_w;
-  // SG ↔ data FSM (transfer triggers)
+  // SG ↔ data FSM
   logic mm2s_sg_xfer_start_w;
   logic [32-1:0] mm2s_sg_xfer_addr_w;
   logic [8-1:0] mm2s_sg_xfer_beats_w;
@@ -174,38 +202,28 @@ module AxiDmaTop (
   logic s2mm_pop_valid_w;
   logic s2mm_pop_ready_w;
   logic [32-1:0] s2mm_pop_data_w;
-  // Muxed data FSM control
+  // Muxed FSM control
   logic mm2s_fsm_start_w;
   logic [32-1:0] mm2s_fsm_addr_w;
   logic [8-1:0] mm2s_fsm_beats_w;
   logic s2mm_fsm_start_w;
   logic [32-1:0] s2mm_fsm_addr_w;
   logic [8-1:0] s2mm_fsm_beats_w;
-  // Channel clock enables — active when channel is NOT halted
+  // Clock gate
   logic mm2s_clk_en_w;
   logic s2mm_clk_en_w;
-  // Gated clocks produced by ICG cells
   logic mm2s_gated_clk_w;
   logic s2mm_gated_clk_w;
-  // Counters + flags
+  // Counters
   logic [8-1:0] mm2s_stream_ctr;
   logic [8-1:0] s2mm_recv_ctr;
   logic mm2s_sg_active;
   logic s2mm_sg_active;
-  // Timing: latch mm2s_fsm_beats_w at start so tlast logic starts from a FF,
-  // not from the combinational SG-state → xfer_num_beats → beats-mux chain.
   logic [8-1:0] mm2s_beats_r;
-  // Timing: lookahead register — true when the CURRENT stream beat is the last.
-  // Precomputed one cycle early; critical path for tlast is 1 gate (AND with tvalid).
   logic mm2s_tlast_r;
-  // ── Clock gate enables ──────────────────────────────────────────────
-  // OR the start signals so the clock wakes up on the same cycle start fires,
-  // before the FSM has had a chance to leave Idle (which would clear halted).
-  // Without this, start fires into a gated clock and is permanently lost.
+  // ── Clock gate ──────────────────────────────────────────────────────
   assign mm2s_clk_en_w = ~mm2s_halted_w | mm2s_fsm_start_w | mm2s_sg_start_w;
   assign s2mm_clk_en_w = ~s2mm_halted_w | s2mm_fsm_start_w | s2mm_sg_start_w;
-  // ── Instances ───────────────────────────────────────────────────────
-  // ICG cells: gate each channel clock when that channel is halted
   ClkGateDma mm2s_icg (
     .clk_in(clk),
     .enable(mm2s_clk_en_w),
@@ -216,6 +234,7 @@ module AxiDmaTop (
     .enable(s2mm_clk_en_w),
     .clk_out(s2mm_gated_clk_w)
   );
+  // ── Register block ──────────────────────────────────────────────────
   AxiLiteRegs regs (
     .clk(clk),
     .rst(rst),
@@ -261,6 +280,7 @@ module AxiDmaTop (
     .mm2s_introut(mm2s_introut_w),
     .s2mm_introut(s2mm_introut_w)
   );
+  // ── SG engines ──────────────────────────────────────────────────────
   FsmSgEngine mm2s_sg (
     .clk(mm2s_gated_clk_w),
     .rst(rst),
@@ -343,32 +363,34 @@ module AxiDmaTop (
     .sg_axi_b_id(m_axi_s2mm_sg_b_id),
     .sg_axi_b_resp(m_axi_s2mm_sg_b_resp)
   );
-  FsmMm2s mm2s_fsm (
+  // ── MM2S multi-outstanding read FSM ─────────────────────────────────
+  FsmMm2sMulti mm2s_fsm (
     .clk(mm2s_gated_clk_w),
     .rst(rst),
     .start(mm2s_fsm_start_w),
-    .src_addr(mm2s_fsm_addr_w),
-    .num_beats(mm2s_fsm_beats_w),
+    .total_xfers(1),
+    .base_addr(mm2s_fsm_addr_w),
+    .burst_len(mm2s_fsm_beats_w),
     .done(mm2s_done_w),
     .halted(mm2s_halted_w),
     .idle_out(mm2s_idle_w),
-    .axi_rd_ar_valid(m_axi_mm2s_ar_valid),
-    .axi_rd_ar_ready(m_axi_mm2s_ar_ready),
-    .axi_rd_ar_addr(m_axi_mm2s_ar_addr),
-    .axi_rd_ar_id(m_axi_mm2s_ar_id),
-    .axi_rd_ar_len(m_axi_mm2s_ar_len),
-    .axi_rd_ar_size(m_axi_mm2s_ar_size),
-    .axi_rd_ar_burst(m_axi_mm2s_ar_burst),
-    .axi_rd_r_valid(m_axi_mm2s_r_valid),
-    .axi_rd_r_ready(m_axi_mm2s_r_ready),
-    .axi_rd_r_data(m_axi_mm2s_r_data),
-    .axi_rd_r_id(m_axi_mm2s_r_id),
-    .axi_rd_r_resp(m_axi_mm2s_r_resp),
-    .axi_rd_r_last(m_axi_mm2s_r_last),
+    .ar_valid(m_axi_mm2s_ar_valid),
+    .ar_ready(m_axi_mm2s_ar_ready),
+    .ar_addr(m_axi_mm2s_ar_addr),
+    .ar_id(m_axi_mm2s_ar_id),
+    .ar_len(m_axi_mm2s_ar_len),
+    .ar_size(m_axi_mm2s_ar_size),
+    .ar_burst(m_axi_mm2s_ar_burst),
+    .r_valid(m_axi_mm2s_r_valid),
+    .r_ready(m_axi_mm2s_r_ready),
+    .r_data(m_axi_mm2s_r_data),
+    .r_id(m_axi_mm2s_r_id),
+    .r_last(m_axi_mm2s_r_last),
     .push_valid(mm2s_push_valid_w),
     .push_ready(mm2s_push_ready_w),
     .push_data(mm2s_push_data_w)
   );
+  // ── MM2S FIFO ───────────────────────────────────────────────────────
   Mm2sFifo mm2s_fifo (
     .clk(mm2s_gated_clk_w),
     .rst(rst),
@@ -379,6 +401,37 @@ module AxiDmaTop (
     .pop_ready(mm2s_pop_ready_w),
     .pop_data(mm2s_pop_data_w)
   );
+  // ── S2MM multi-outstanding write FSM ────────────────────────────────
+  FsmS2mmMulti s2mm_fsm (
+    .clk(s2mm_gated_clk_w),
+    .rst(rst),
+    .start(s2mm_fsm_start_w),
+    .total_xfers(1),
+    .base_addr(s2mm_fsm_addr_w),
+    .burst_len(s2mm_fsm_beats_w),
+    .done(s2mm_done_w),
+    .halted(s2mm_halted_w),
+    .idle_out(s2mm_idle_w),
+    .aw_valid(m_axi_s2mm_aw_valid),
+    .aw_ready(m_axi_s2mm_aw_ready),
+    .aw_addr(m_axi_s2mm_aw_addr),
+    .aw_id(m_axi_s2mm_aw_id),
+    .aw_len(m_axi_s2mm_aw_len),
+    .aw_size(m_axi_s2mm_aw_size),
+    .aw_burst(m_axi_s2mm_aw_burst),
+    .w_valid(m_axi_s2mm_w_valid),
+    .w_ready(m_axi_s2mm_w_ready),
+    .w_data(m_axi_s2mm_w_data),
+    .w_strb(m_axi_s2mm_w_strb),
+    .w_last(m_axi_s2mm_w_last),
+    .b_valid(m_axi_s2mm_b_valid),
+    .b_ready(m_axi_s2mm_b_ready),
+    .b_id(m_axi_s2mm_b_id),
+    .pop_valid(s2mm_pop_valid_w),
+    .pop_ready(s2mm_pop_ready_w),
+    .pop_data(s2mm_pop_data_w)
+  );
+  // ── S2MM FIFO ───────────────────────────────────────────────────────
   S2mmFifo s2mm_fifo (
     .clk(s2mm_gated_clk_w),
     .rst(rst),
@@ -388,36 +441,6 @@ module AxiDmaTop (
     .pop_valid(s2mm_pop_valid_w),
     .pop_ready(s2mm_pop_ready_w),
     .pop_data(s2mm_pop_data_w)
-  );
-  FsmS2mm s2mm_fsm (
-    .clk(s2mm_gated_clk_w),
-    .rst(rst),
-    .start(s2mm_fsm_start_w),
-    .dst_addr(s2mm_fsm_addr_w),
-    .num_beats(s2mm_fsm_beats_w),
-    .recv_count(s2mm_recv_ctr),
-    .done(s2mm_done_w),
-    .halted(s2mm_halted_w),
-    .idle_out(s2mm_idle_w),
-    .pop_valid(s2mm_pop_valid_w),
-    .pop_ready(s2mm_pop_ready_w),
-    .pop_data(s2mm_pop_data_w),
-    .axi_wr_aw_valid(m_axi_s2mm_aw_valid),
-    .axi_wr_aw_ready(m_axi_s2mm_aw_ready),
-    .axi_wr_aw_addr(m_axi_s2mm_aw_addr),
-    .axi_wr_aw_id(m_axi_s2mm_aw_id),
-    .axi_wr_aw_len(m_axi_s2mm_aw_len),
-    .axi_wr_aw_size(m_axi_s2mm_aw_size),
-    .axi_wr_aw_burst(m_axi_s2mm_aw_burst),
-    .axi_wr_w_valid(m_axi_s2mm_w_valid),
-    .axi_wr_w_ready(m_axi_s2mm_w_ready),
-    .axi_wr_w_data(m_axi_s2mm_w_data),
-    .axi_wr_w_strb(m_axi_s2mm_w_strb),
-    .axi_wr_w_last(m_axi_s2mm_w_last),
-    .axi_wr_b_valid(m_axi_s2mm_b_valid),
-    .axi_wr_b_ready(m_axi_s2mm_b_ready),
-    .axi_wr_b_id(m_axi_s2mm_b_id),
-    .axi_wr_b_resp(m_axi_s2mm_b_resp)
   );
   // ── Simple/SG mux ──────────────────────────────────────────────────
   always_comb begin
@@ -445,12 +468,32 @@ module AxiDmaTop (
   assign m_axis_mm2s_tvalid = mm2s_pop_valid_w;
   assign m_axis_mm2s_tkeep = 'hF;
   assign mm2s_pop_ready_w = m_axis_mm2s_tready;
-  assign m_axis_mm2s_tlast = mm2s_pop_valid_w & mm2s_tlast_r;
-  // tlast uses precomputed lookahead register — 1 gate on critical path
+  assign m_axis_mm2s_tlast = mm2s_pop_valid_w && mm2s_tlast_r;
   assign s2mm_push_data_w = s_axis_s2mm_tdata;
   assign s2mm_push_valid_w = s_axis_s2mm_tvalid;
   assign s_axis_s2mm_tready = s2mm_push_ready_w;
-  // ── Route interrupt outputs ──────────────────────────────────────────
+  // ── Tie-off unused channels ──────────────────────────────────────────
+  // MM2S is read-only: tie off write channels
+  assign m_axi_mm2s_aw_valid = 1'b0;
+  assign m_axi_mm2s_aw_addr = 0;
+  assign m_axi_mm2s_aw_id = 0;
+  assign m_axi_mm2s_aw_len = 0;
+  assign m_axi_mm2s_aw_size = 0;
+  assign m_axi_mm2s_aw_burst = 0;
+  assign m_axi_mm2s_w_valid = 1'b0;
+  assign m_axi_mm2s_w_data = 0;
+  assign m_axi_mm2s_w_strb = 0;
+  assign m_axi_mm2s_w_last = 1'b0;
+  assign m_axi_mm2s_b_ready = 1'b0;
+  // S2MM is write-only: tie off read channels
+  assign m_axi_s2mm_ar_valid = 1'b0;
+  assign m_axi_s2mm_ar_addr = 0;
+  assign m_axi_s2mm_ar_id = 0;
+  assign m_axi_s2mm_ar_len = 0;
+  assign m_axi_s2mm_ar_size = 0;
+  assign m_axi_s2mm_ar_burst = 0;
+  assign m_axi_s2mm_r_ready = 1'b0;
+  // ── Interrupts ──────────────────────────────────────────────────────
   assign mm2s_introut = mm2s_introut_w;
   assign s2mm_introut = s2mm_introut_w;
   // ── Registered state ────────────────────────────────────────────────
@@ -476,17 +519,27 @@ module AxiDmaTop (
       if (mm2s_fsm_start_w) begin
         mm2s_stream_ctr <= 0;
         mm2s_beats_r <= mm2s_fsm_beats_w;
-        // tlast for single-beat transfer
+        // Lookahead: will beat 0 (the first one out) be the last?
+        // Yes only if total beats == 1.
         mm2s_tlast_r <= mm2s_fsm_beats_w == 1;
-      end else if (mm2s_pop_valid_w & m_axis_mm2s_tready) begin
+      end else if (mm2s_pop_valid_w && m_axis_mm2s_tready) begin
         mm2s_stream_ctr <= 8'(mm2s_stream_ctr + 1);
-        // tlast lookahead: set when current beat IS the last
-        // (stream_ctr + 1 == beats_r means stream_ctr is the last index)
-        mm2s_tlast_r <= 8'(mm2s_stream_ctr + 1) == mm2s_beats_r;
+        // Lookahead: after consuming beat N (stream_ctr), will the NEXT beat
+        // (stream_ctr+1) be the last? Last beat index = beats_r - 1,
+        // so next is last when stream_ctr + 1 == beats_r - 1,
+        // i.e. stream_ctr + 2 == beats_r.
+        // BUT: in non-blocking semantics, stream_ctr here is the OLD value
+        // (pre-increment). We need: (old_ctr + 1) == beats_r - 1,
+        // i.e. old_ctr + 2 == beats_r.
+        // However the sim shows this fires 1 beat early, which means the
+        // comb output reads tlast_r on the same cycle the register updates.
+        // Fix: use +1 offset instead, so tlast_r is set when the CURRENT
+        // beat being output (not the next one) is the last.
+        mm2s_tlast_r <= 8'(mm2s_stream_ctr + 1) == 8'(mm2s_beats_r - 1);
       end
       if (s2mm_fsm_start_w) begin
         s2mm_recv_ctr <= 0;
-      end else if (s_axis_s2mm_tvalid & s2mm_push_ready_w) begin
+      end else if (s_axis_s2mm_tvalid && s2mm_push_ready_w) begin
         s2mm_recv_ctr <= 8'(s2mm_recv_ctr + 1);
       end
     end
