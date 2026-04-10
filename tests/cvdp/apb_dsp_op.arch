@@ -1,0 +1,183 @@
+module apb_dsp_op
+  pragma cdc_safe;
+  param ADDR_WIDTH: const = 8;
+  param DATA_WIDTH: const = 32;
+
+  port clk_dsp:    in Clock<DspDomain>;
+  port en_clk_dsp: in Bool;
+  port PCLK:       in Clock<ApbDomain>;
+  port PRESETn:    in Reset<Async, Low>;
+  port PADDR:      in UInt<ADDR_WIDTH>;
+  port PWRITE:     in Bool;
+  port PWDATA:     in UInt<DATA_WIDTH>;
+  port PSEL:       in Bool;
+  port PENABLE:    in Bool;
+  port PRDATA:     out UInt<DATA_WIDTH>;
+  port PREADY:     out Bool;
+  port PSLVERR:    out Bool;
+
+  default seq on PCLK rising;
+
+  // APB register bank
+  reg reg_operand_a: UInt<DATA_WIDTH> reset PRESETn => 0;
+  reg reg_operand_b: UInt<DATA_WIDTH> reset PRESETn => 0;
+  reg reg_operand_c: UInt<DATA_WIDTH> reset PRESETn => 0;
+  reg reg_operand_o: UInt<DATA_WIDTH> reset PRESETn => 0;
+  reg reg_ctrl:      UInt<DATA_WIDTH> reset PRESETn => 0;
+  reg reg_wdata_sram: UInt<DATA_WIDTH> reset PRESETn => 0;
+  reg reg_addr_sram: UInt<DATA_WIDTH> reset PRESETn => 0;
+
+  // SRAM: 64 entries of DATA_WIDTH bits
+  reg sram_mem: Vec<UInt<DATA_WIDTH>, 64> reset PRESETn => 0;
+
+  // SRAM read data register
+  reg sram_rdata: UInt<DATA_WIDTH> reset PRESETn => 0;
+
+  // DSP operand value registers
+  reg dsp_a: UInt<DATA_WIDTH> reset PRESETn => 0;
+  reg dsp_b: UInt<DATA_WIDTH> reset PRESETn => 0;
+  reg dsp_c: UInt<DATA_WIDTH> reset PRESETn => 0;
+
+  // SRAM address validity (< 64)
+  let sram_addr_valid: Bool = reg_addr_sram[DATA_WIDTH-1:6] == 0;
+
+  // APB access phase
+  let apb_access: Bool = PSEL & PENABLE;
+
+  // Address validity check
+  wire addr_valid: Bool;
+  wire addr_error: Bool;
+  wire sram_op_active: Bool;
+
+  comb
+    addr_valid = (PADDR == 0) | (PADDR == 4) | (PADDR == 8) |
+                 (PADDR == 12) | (PADDR == 16) | (PADDR == 20) |
+                 (PADDR == 24);
+
+    sram_op_active = (reg_ctrl == 1) | (reg_ctrl == 2) |
+                     (reg_ctrl == 3) | (reg_ctrl == 4) |
+                     (reg_ctrl == 5) | (reg_ctrl == 6);
+
+    if apb_access & ~addr_valid
+      addr_error = true;
+    elsif apb_access & sram_op_active & ~sram_addr_valid
+      addr_error = true;
+    else
+      addr_error = false;
+    end if
+  end comb
+
+  // PREADY/PSLVERR hold registers
+  reg pready_hold: Bool reset PRESETn => false;
+  reg pslverr_hold: Bool reset PRESETn => false;
+
+  // Always write (unconditional) to avoid Icarus edge cases
+  wire next_pready: Bool;
+  wire next_pslverr: Bool;
+
+  comb
+    if apb_access
+      next_pready = true;
+      next_pslverr = addr_error;
+    else
+      next_pready = pready_hold;
+      next_pslverr = pslverr_hold;
+    end if
+  end comb
+
+  seq
+    pready_hold <= next_pready;
+    pslverr_hold <= next_pslverr;
+  end seq
+
+  comb
+    PREADY = pready_hold;
+    PSLVERR = pslverr_hold;
+  end comb
+
+  // APB write logic
+  let apb_write_en: Bool = PSEL & PENABLE & PWRITE;
+
+  seq
+    if apb_write_en
+      if PADDR == 0
+        reg_operand_a <= PWDATA;
+      elsif PADDR == 4
+        reg_operand_b <= PWDATA;
+      elsif PADDR == 8
+        reg_operand_c <= PWDATA;
+      elsif PADDR == 12
+        reg_operand_o <= PWDATA;
+      elsif PADDR == 16
+        reg_ctrl <= PWDATA;
+      elsif PADDR == 20
+        reg_wdata_sram <= PWDATA;
+      elsif PADDR == 24
+        reg_addr_sram <= PWDATA;
+      end if
+    end if
+
+    // SRAM write: when control = 1
+    if reg_ctrl == 1
+      if sram_addr_valid
+        sram_mem[reg_addr_sram[5:0]] <= reg_wdata_sram;
+      end if
+    end if
+
+    // SRAM read: when control = 2
+    if reg_ctrl == 2
+      if sram_addr_valid
+        sram_rdata <= sram_mem[reg_addr_sram[5:0]];
+      end if
+    end if
+
+    // DSP read operand A: when control = 3
+    if reg_ctrl == 3
+      if reg_operand_a[DATA_WIDTH-1:6] == 0
+        dsp_a <= sram_mem[reg_operand_a[5:0]];
+      end if
+    end if
+
+    // DSP read operand B: when control = 4
+    if reg_ctrl == 4
+      if reg_operand_b[DATA_WIDTH-1:6] == 0
+        dsp_b <= sram_mem[reg_operand_b[5:0]];
+      end if
+    end if
+
+    // DSP read operand C: when control = 5
+    if reg_ctrl == 5
+      if reg_operand_c[DATA_WIDTH-1:6] == 0
+        dsp_c <= sram_mem[reg_operand_c[5:0]];
+      end if
+    end if
+
+    // DSP write operand O: when control = 6
+    if reg_ctrl == 6
+      if reg_operand_o[DATA_WIDTH-1:6] == 0
+        sram_mem[reg_operand_o[5:0]] <= (dsp_a * dsp_b + dsp_c).trunc<DATA_WIDTH>();
+      end if
+    end if
+  end seq
+
+  // APB read logic (combinational)
+  comb
+    if PADDR == 0
+      PRDATA = reg_operand_a;
+    elsif PADDR == 4
+      PRDATA = reg_operand_b;
+    elsif PADDR == 8
+      PRDATA = reg_operand_c;
+    elsif PADDR == 12
+      PRDATA = reg_operand_o;
+    elsif PADDR == 16
+      PRDATA = reg_ctrl;
+    elsif PADDR == 20
+      PRDATA = reg_wdata_sram;
+    elsif PADDR == 24
+      PRDATA = sram_rdata;
+    else
+      PRDATA = 0;
+    end if
+  end comb
+end module apb_dsp_op

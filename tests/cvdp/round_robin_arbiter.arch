@@ -1,0 +1,87 @@
+module round_robin_arbiter
+  param N: const = 4;
+  param TIMEOUT: const = 16;
+
+  port clk: in Clock<SysDomain>;
+  port rstn: in Reset<Sync, Low>;
+  port req: in UInt<N>;
+  port priority_level: in UInt<N>;
+  port grant: out UInt<N>;
+  port idle: out Bool;
+
+  reg default: reset rstn => 0;
+
+  // Per-channel timeout counters (Vec of 32-bit)
+  reg tout_cnt: Vec<UInt<32>, N>;
+
+  // Round-robin pointer: last granted channel (one-hot)
+  reg last_grant_idx: UInt<N>;
+
+  default seq on clk rising;
+
+  // Timeout flags: channel timed out if counter >= TIMEOUT
+  wire timed_out: UInt<N>;
+  comb
+    timed_out = 0;
+    for i in 0..N-1
+      if tout_cnt[i] >= TIMEOUT.zext<32>()
+        timed_out = timed_out | (1.zext<N>() << i.trunc<$clog2(N)>());
+      end if
+    end for
+  end comb
+
+  // Effective priority: original priority OR timed-out elevation
+  let eff_prio: UInt<N> = priority_level | timed_out;
+
+  // High-priority requesting channels
+  let hi_req: UInt<N> = req & eff_prio;
+  // Low-priority requesting channels
+  let lo_req: UInt<N> = req & ~eff_prio;
+
+  // Active request set: prefer high-priority, fallback to low
+  let active_req: UInt<N> = hi_req != 0 ? hi_req : lo_req;
+
+  // Round-robin masking: mask off channels at or below last granted
+  wire upper_mask: UInt<N>;
+  comb
+    upper_mask = 0;
+    for i in 0..N-1
+      if (1.zext<N>() << i.trunc<$clog2(N)>()) > last_grant_idx
+        upper_mask = upper_mask | (1.zext<N>() << i.trunc<$clog2(N)>());
+      end if
+    end for
+  end comb
+
+  // Masked requests: only channels above last granted
+  let masked_req: UInt<N> = active_req & upper_mask;
+
+  // If masked set is empty, use full active set (wrap around)
+  let rr_req: UInt<N> = masked_req != 0 ? masked_req : active_req;
+
+  // Isolate lowest set bit: x & (-x) = x & (~x + 1)
+  let rr_neg: UInt<N> = (~rr_req + 1.zext<N>()).trunc<N>();
+  let grant_sel: UInt<N> = rr_req & rr_neg;
+
+  // Final grant: only if there are active requests
+  let grant = req != 0 ? grant_sel : 0.zext<N>();
+
+  // Idle output
+  let idle = req == 0;
+
+  // Update last_grant_idx and timeout counters
+  seq
+    if req != 0
+      last_grant_idx <= grant_sel;
+    end if
+
+    for i in 0..N-1
+      if grant[i]
+        tout_cnt[i] <= 0;
+      elsif req[i]
+        tout_cnt[i] <= tout_cnt[i] + 1;
+      else
+        tout_cnt[i] <= 0;
+      end if
+    end for
+  end seq
+end module round_robin_arbiter

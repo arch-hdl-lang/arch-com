@@ -1,0 +1,104 @@
+module swizzler
+  param N: const = 8;
+  local param M: const = $clog2(N + 1);
+  local param LOG_N: const = $clog2(N);
+
+  port clk: in Clock<SysDomain>;
+  port reset: in Reset<Sync>;
+  port data_in: in UInt<N>;
+  port mapping_in: in UInt<N * M>;
+  port config_in: in Bit;
+  port operation_mode: in UInt<3>;
+  // Pipeline registers
+  reg default: reset reset => 0;
+  reg swizzle_reg: UInt<N>;
+  reg error_reg: Bit;
+  reg operation_reg: UInt<N>;
+  port reg data_out: out UInt<N>;
+  port reg error_flag: out Bit;
+
+  // Combinational wires
+  wire temp_error_flag: Bit;
+  wire temp_swizzled_data: UInt<N>;
+  wire processed_swizzle_data: UInt<N>;
+  wire op_result: UInt<N>;
+
+  default seq on clk rising;
+
+  // Swizzle + error detection
+  comb
+    temp_error_flag = 0;
+    temp_swizzled_data = 0;
+
+    for i in 0..N-1
+      if mapping_in[i * M + M - 1 : i * M].zext<M + 1>() >= N.zext<M + 1>()
+        temp_error_flag = 1;
+      end if
+    end for
+
+    if temp_error_flag == 1
+      temp_swizzled_data = 0;
+    else
+      for i in 0..N-1
+        temp_swizzled_data[i] = data_in[mapping_in[i * M + M - 1 : i * M].trunc<LOG_N>()];
+      end for
+    end if
+
+    // Config: straight or mirror
+    if config_in == 1
+      processed_swizzle_data = temp_swizzled_data;
+    else
+      for i in 0..N-1
+        processed_swizzle_data[i] = temp_swizzled_data[N - 1 - i];
+      end for
+    end if
+  end comb
+
+  // Stage 1: swizzle register
+  seq
+    swizzle_reg <= processed_swizzle_data;
+    error_reg <= temp_error_flag;
+  end seq
+
+  // Operation mode
+  comb
+    if operation_mode == 3'b000
+      op_result = swizzle_reg;
+    elsif operation_mode == 3'b001
+      op_result = swizzle_reg;
+    elsif operation_mode == 3'b010
+      // Reverse bits
+      op_result = 0;
+      for i in 0..N-1
+        op_result[i] = swizzle_reg[N - 1 - i];
+      end for
+    elsif operation_mode == 3'b011
+      // Swap halves
+      op_result = {swizzle_reg[N/2 - 1 : 0], swizzle_reg[N - 1 : N/2]};
+    elsif operation_mode == 3'b100
+      // Bitwise inversion
+      op_result = ~swizzle_reg;
+    elsif operation_mode == 3'b101
+      // Circular left shift
+      op_result = {swizzle_reg[N - 2 : 0], swizzle_reg[N - 1 : N - 1]};
+    elsif operation_mode == 3'b110
+      // Circular right shift
+      op_result = {swizzle_reg[0 : 0], swizzle_reg[N - 1 : 1]};
+    else
+      op_result = swizzle_reg;
+    end if
+  end comb
+
+  // Stage 2: operation register
+  seq
+    operation_reg <= op_result;
+  end seq
+
+  // Stage 3: final bit reversal + output
+  seq
+    for i in 0..N-1
+      data_out[i] <= operation_reg[N - 1 - i];
+    end for
+    error_flag <= error_reg;
+  end seq
+end module swizzler

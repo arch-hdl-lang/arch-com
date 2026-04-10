@@ -1,0 +1,96 @@
+module gcd_3_ip
+  param WIDTH: const = 4;
+  port clk:  in Clock<SysDomain>;
+  port rst:  in Reset<Sync>;
+  port A:    in UInt<WIDTH>;
+  port B:    in UInt<WIDTH>;
+  port C:    in UInt<WIDTH>;
+  port go:   in Bool;
+  port OUT:  out UInt<WIDTH>;
+  port done: out Bool;
+
+  wire gcd_ab_out: UInt<WIDTH>;
+  wire gcd_bc_out: UInt<WIDTH>;
+  wire gcd_ab_done: Bool;
+  wire gcd_bc_done: Bool;
+
+  reg ab_done_r: Bool reset rst => false;
+  reg bc_done_r: Bool reset rst => false;
+  reg ab_result_r: UInt<WIDTH> reset rst => 0;
+  reg bc_result_r: UInt<WIDTH> reset rst => 0;
+  reg go_final_r: Bool reset rst => false;
+  reg busy_r: Bool reset rst => false;
+
+  // Mux: use combinational output if just became done, else latched result
+  wire final_a: UInt<WIDTH>;
+  wire final_b: UInt<WIDTH>;
+  comb
+    final_a = gcd_ab_done ? gcd_ab_out : ab_result_r;
+    final_b = gcd_bc_done ? gcd_bc_out : bc_result_r;
+  end comb
+
+  default seq on clk rising;
+
+  inst u_gcd_ab: gcd_top
+    param WIDTH = WIDTH;
+    clk  <- clk;
+    rst  <- rst;
+    A    <- A;
+    B    <- B;
+    go   <- go;
+    OUT  -> gcd_ab_out;
+    done -> gcd_ab_done;
+  end inst u_gcd_ab
+
+  inst u_gcd_bc: gcd_top
+    param WIDTH = WIDTH;
+    clk  <- clk;
+    rst  <- rst;
+    A    <- B;
+    B    <- C;
+    go   <- go;
+    OUT  -> gcd_bc_out;
+    done -> gcd_bc_done;
+  end inst u_gcd_bc
+
+  // Final GCD uses muxed combinational inputs
+  inst u_gcd_final: gcd_top
+    param WIDTH = WIDTH;
+    clk  <- clk;
+    rst  <- rst;
+    A    <- final_a;
+    B    <- final_b;
+    go   <- go_final_r;
+    OUT  -> OUT;
+    done -> done;
+  end inst u_gcd_final
+
+  seq
+    go_final_r <= false;
+
+    if go
+      busy_r <= true;
+      ab_done_r <= false;
+      bc_done_r <= false;
+    end if
+
+    if busy_r
+      if gcd_ab_done
+        ab_done_r <= true;
+        ab_result_r <= gcd_ab_out;
+      end if
+
+      if gcd_bc_done
+        bc_done_r <= true;
+        bc_result_r <= gcd_bc_out;
+      end if
+
+      if (ab_done_r | gcd_ab_done) & (bc_done_r | gcd_bc_done)
+        go_final_r <= true;
+        busy_r <= false;
+        ab_done_r <= false;
+        bc_done_r <= false;
+      end if
+    end if
+  end seq
+end module gcd_3_ip

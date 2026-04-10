@@ -1,0 +1,51 @@
+module sipo_top
+  param DATA_WIDTH: const = 16;
+  param SHIFT_DIRECTION: const = 1;
+  param CODE_WIDTH: const = DATA_WIDTH + $clog2(DATA_WIDTH + 1);
+
+  port clk:             in  Clock<SysDomain>;
+  port reset_n:         in  Reset<Sync, Low>;
+  port serial_in:       in  Bool;
+  port shift_en:        in  Bool;
+  port received:        in  UInt<CODE_WIDTH>;
+  port done:            out Bool;
+  port data_out:        out UInt<DATA_WIDTH>;
+  port encoded:         out UInt<CODE_WIDTH>;
+  port error_detected:  out Bool;
+  port error_corrected: out Bool;
+
+  wire sipo_done: Bool;
+  wire sipo_pout: UInt<DATA_WIDTH>;
+  wire ecc_data_out: UInt<DATA_WIDTH>;
+  wire ecc_encoded: UInt<CODE_WIDTH>;
+  wire ecc_err_det: Bool;
+  wire ecc_err_cor: Bool;
+
+  inst uut_sipo: serial_in_parallel_out_8bit
+    param WIDTH = DATA_WIDTH;
+    param SHIFT_DIRECTION = SHIFT_DIRECTION;
+    clk          <- clk;
+    rst          <- reset_n;
+    sin          <- serial_in;
+    shift_en     <- shift_en;
+    done         -> sipo_done;
+    parallel_out -> sipo_pout;
+  end inst uut_sipo
+
+  inst uut_ecc: onebit_ecc
+    param DATA_WIDTH = DATA_WIDTH;
+    param CODE_WIDTH = CODE_WIDTH;
+    data_in         <- sipo_pout;
+    received        <- received;
+    data_out        -> ecc_data_out;
+    encoded         -> ecc_encoded;
+    error_detected  -> ecc_err_det;
+    error_corrected -> ecc_err_cor;
+  end inst uut_ecc
+
+  let done = sipo_done;
+  let data_out = ecc_data_out;
+  let encoded = ecc_encoded;
+  let error_detected = ecc_err_det;
+  let error_corrected = ecc_err_cor;
+end module sipo_top

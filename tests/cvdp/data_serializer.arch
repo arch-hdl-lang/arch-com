@@ -1,0 +1,80 @@
+fsm data_serializer
+  param DATA_W: const = 8;
+  param BIT_ORDER: const = 0;
+  param PARITY: const = 0;
+
+  local param EXTRA_BIT: const = (PARITY != 0) ? 1 : 0;
+  local param SHIFT_W: const = DATA_W + EXTRA_BIT;
+  local param CNT_W: const = $clog2(SHIFT_W) + 1;
+
+  port clk: in Clock<SysDomain>;
+  port reset: in Reset<Sync, High>;
+  port p_valid_i: in Bool;
+  port p_data_i: in UInt<DATA_W>;
+  port s_ready_i: in Bool;
+  port tx_en_i: in Bool;
+  port p_ready_o: out Bool;
+  port s_valid_o: out Bool;
+  port s_data_o: out Bool;
+
+  reg shift_reg_q: UInt<SHIFT_W> reset reset => 0;
+  reg bit_cnt_r: UInt<CNT_W> reset reset => 0;
+
+  // Compute parity: XOR reduction of p_data_i
+  let parity_even: Bool = ^p_data_i;
+  let parity_bit: Bool = (PARITY == 2) ? ~parity_even : parity_even;
+
+  // Build the shift register load value — always shift out bit[0] first.
+  // LSB-first (BIT_ORDER==0): bit[0]=data[0], ..., bit[7]=data[7], bit[8]=parity
+  //   => load data as-is in lower bits, parity in MSB
+  // MSB-first (BIT_ORDER==1): bit[0]=data[7], ..., bit[7]=data[0], bit[8]=parity
+  //   => reverse data bits in lower positions, parity in MSB
+  let load_val: UInt<SHIFT_W> = (BIT_ORDER == 0) ?
+    ((PARITY != 0) ? {parity_bit, p_data_i}.trunc<SHIFT_W>() : p_data_i.zext<SHIFT_W>()) :
+    ((PARITY != 0) ?
+      {parity_bit, p_data_i[0], p_data_i[1], p_data_i[2], p_data_i[3],
+       p_data_i[4], p_data_i[5], p_data_i[6], p_data_i[7]}.trunc<SHIFT_W>() :
+      {p_data_i[0], p_data_i[1], p_data_i[2], p_data_i[3],
+       p_data_i[4], p_data_i[5], p_data_i[6], p_data_i[7]}.trunc<SHIFT_W>());
+
+  // Terminal count for comparison
+  let cnt_max: UInt<CNT_W> = (SHIFT_W - 1).trunc<CNT_W>();
+
+  state [StRx, StTx]
+  default state StRx;
+
+  default
+    comb
+      p_ready_o = false;
+      s_valid_o = false;
+      s_data_o  = false;
+    end comb
+  end default
+
+  state StRx
+    comb
+      p_ready_o = true;
+    end comb
+    seq on clk rising
+      if p_valid_i
+        shift_reg_q <= load_val;
+        bit_cnt_r <= 0;
+      end if
+    end seq
+    -> StTx when p_valid_i;
+  end state StRx
+
+  state StTx
+    comb
+      s_valid_o = true;
+      s_data_o = shift_reg_q[0];
+    end comb
+    seq on clk rising
+      if s_ready_i and tx_en_i
+        shift_reg_q <= {1'b0, shift_reg_q[SHIFT_W - 1 : 1]};
+        bit_cnt_r <= bit_cnt_r + 1;
+      end if
+    end seq
+    -> StRx when s_ready_i and tx_en_i and (bit_cnt_r == cnt_max);
+  end state StTx
+end fsm data_serializer

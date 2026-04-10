@@ -1,0 +1,56 @@
+module continuous_adder
+  param DATA_WIDTH: const = 32;
+  param THRESHOLD_VALUE: const = 100;
+  param SIGNED_INPUTS: const = 1;
+
+  port clk: in Clock<SysDomain>;
+  port reset: in Reset<Sync>;
+  port data_in: in UInt<DATA_WIDTH>;
+  port data_valid: in Bool;
+  port sum_out: out UInt<DATA_WIDTH>;
+  port sum_ready: out Bool;
+
+  reg default: reset reset => 0;
+
+  reg sum_accum: UInt<DATA_WIDTH>;
+  reg sum_out_r: UInt<DATA_WIDTH>;
+  reg sum_ready_r: Bool;
+
+  default seq on clk rising;
+
+  // Threshold as properly-sized signal
+  let thresh_u: UInt<DATA_WIDTH> = THRESHOLD_VALUE.zext<DATA_WIDTH>();
+  let thresh_s: SInt<DATA_WIDTH> = thresh_u as SInt<DATA_WIDTH>;
+  let neg_thresh_s: SInt<DATA_WIDTH> = -thresh_s;
+
+  // Combinational next-sum and threshold detection
+  let next_sum: UInt<DATA_WIDTH> = data_valid ? (sum_accum + data_in).trunc<DATA_WIDTH>() : sum_accum;
+  let next_sum_s: SInt<DATA_WIDTH> = next_sum as SInt<DATA_WIDTH>;
+
+  wire thresh_hit: Bool;
+  comb
+    if SIGNED_INPUTS == 1
+      thresh_hit = (next_sum_s >= thresh_s) | (neg_thresh_s >= next_sum_s);
+    else
+      thresh_hit = next_sum >= thresh_u;
+    end if
+  end comb
+
+  seq
+    if data_valid
+      if thresh_hit
+        sum_accum <= 0;
+        sum_out_r <= next_sum;
+        sum_ready_r <= 1'd1;
+      else
+        sum_accum <= next_sum;
+        sum_ready_r <= 1'd0;
+      end if
+    else
+      sum_ready_r <= 1'd0;
+    end if
+  end seq
+
+  let sum_out = sum_out_r;
+  let sum_ready = sum_ready_r;
+end module continuous_adder

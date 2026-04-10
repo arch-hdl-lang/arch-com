@@ -1,0 +1,114 @@
+module kogge_stone_adder
+  port clk:   in Clock<SysDomain>;
+  port reset: in Reset<Sync>;
+  port A:     in UInt<16>;
+  port B:     in UInt<16>;
+  port start: in Bool;
+  port Sum:   out UInt<17>;
+  port done:  out Bool;
+
+  reg default: reset reset => 0;
+
+  reg done_reg: Bool;
+  reg sum_reg: UInt<17>;
+
+  // Kogge-Stone carry computation
+  // Initial generate and propagate
+  wire g0: Vec<Bool, 16>;
+  wire p0: Vec<Bool, 16>;
+
+  comb
+    for i in 0..15
+      g0[i] = A[i] & B[i];
+      p0[i] = A[i] ^ B[i];
+    end for
+  end comb
+
+  // Stage 1: span 1
+  wire g1: Vec<Bool, 16>;
+  wire p1: Vec<Bool, 16>;
+
+  comb
+    g1[0] = g0[0];
+    p1[0] = p0[0];
+    for i in 1..15
+      g1[i] = g0[i] | (p0[i] & g0[i - 1]);
+      p1[i] = p0[i] & p0[i - 1];
+    end for
+  end comb
+
+  // Stage 2: span 2
+  wire g2: Vec<Bool, 16>;
+  wire p2: Vec<Bool, 16>;
+
+  comb
+    g2[0] = g1[0];
+    p2[0] = p1[0];
+    g2[1] = g1[1];
+    p2[1] = p1[1];
+    for i in 2..15
+      g2[i] = g1[i] | (p1[i] & g1[i - 2]);
+      p2[i] = p1[i] & p1[i - 2];
+    end for
+  end comb
+
+  // Stage 3: span 4
+  wire g3: Vec<Bool, 16>;
+  wire p3: Vec<Bool, 16>;
+
+  comb
+    for i in 0..3
+      g3[i] = g2[i];
+      p3[i] = p2[i];
+    end for
+    for i in 4..15
+      g3[i] = g2[i] | (p2[i] & g2[i - 4]);
+      p3[i] = p2[i] & p2[i - 4];
+    end for
+  end comb
+
+  // Stage 4: span 8
+  wire g4: Vec<Bool, 16>;
+  wire p4: Vec<Bool, 16>;
+
+  comb
+    for i in 0..7
+      g4[i] = g3[i];
+      p4[i] = p3[i];
+    end for
+    for i in 8..15
+      g4[i] = g3[i] | (p3[i] & g3[i - 8]);
+      p4[i] = p3[i] & p3[i - 8];
+    end for
+  end comb
+
+  // Compute sum bits: sum[i] = p0[i] ^ carry[i]
+  // carry[0] = 0, carry[i] = g4[i-1] for i >= 1
+  // carry[16] = g4[15] (MSB carry out)
+  wire sum_comb: Vec<Bool, 17>;
+
+  comb
+    sum_comb[0] = p0[0];
+    for i in 1..15
+      sum_comb[i] = p0[i] ^ g4[i - 1];
+    end for
+    sum_comb[16] = g4[15];
+  end comb
+
+  // Register output on start
+  default seq on clk rising;
+
+  seq
+    if start == true
+      for i in 0..16
+        sum_reg[i] <= sum_comb[i];
+      end for
+      done_reg <= true;
+    else
+      done_reg <= false;
+    end if
+  end seq
+
+  let Sum = sum_reg;
+  let done = done_reg;
+end module kogge_stone_adder

@@ -1,0 +1,142 @@
+// AXI-Stream RGB565 to YCbCr converter with internal FIFO
+module axis_rgb2ycbcr
+  port aclk: in Clock<SysDomain>;
+  port aresetn: in Reset<Sync, Low>;
+
+  // AXI-Stream slave (input)
+  port s_axis_tdata: in UInt<16>;
+  port s_axis_tvalid: in Bool;
+  port s_axis_tready: out Bool;
+  port s_axis_tlast: in Bool;
+  port s_axis_tuser: in Bool;
+
+  // AXI-Stream master (output)
+  port m_axis_tdata: out UInt<16>;
+  port m_axis_tvalid: out Bool;
+  port m_axis_tready: in Bool;
+  port m_axis_tlast: out Bool;
+  port m_axis_tuser: out Bool;
+
+  // FIFO depth = 16
+  reg fifo_data: Vec<UInt<16>, 16> reset aresetn => 0;
+  reg fifo_last: Vec<Bool, 16> reset aresetn => false;
+  reg fifo_user: Vec<Bool, 16> reset aresetn => false;
+  reg write_ptr: UInt<4> reset aresetn => 0;
+  reg read_ptr: UInt<4> reset aresetn => 0;
+  reg fifo_count: UInt<5> reset aresetn => 0;
+
+  // Status signals
+  wire full: Bool;
+  wire empty: Bool;
+  wire fifo_read: Bool;
+  wire fifo_write: Bool;
+
+  // Extract RGB components and expand to 8-bit
+  let r8: UInt<8> = (s_axis_tdata[15:11]).zext<8>() << 3;
+  let g8: UInt<8> = (s_axis_tdata[10:5]).zext<8>() << 2;
+  let b8: UInt<8> = (s_axis_tdata[4:0]).zext<8>() << 3;
+
+  // Widen to 16 bits unsigned for multiply, keep unsigned for Y channel
+  let r16: UInt<16> = r8.zext<16>();
+  let g16: UInt<16> = g8.zext<16>();
+  let b16: UInt<16> = b8.zext<16>();
+
+  // Y  = 16 + (77*R + 150*G + 29*B) >> 8  (all positive, unsigned is fine)
+  let y_prod: UInt<16> = (16'd77 * r16 + 16'd150 * g16 + 16'd29 * b16).trunc<16>();
+  let y_shifted: UInt<16> = y_prod >> 8;
+  let y_raw: UInt<16> = (16'd16 + y_shifted).trunc<16>();
+
+  // For Cb and Cr we need signed math
+  let r_s: SInt<10> = signed(r8.zext<10>());
+  let g_s: SInt<10> = signed(g8.zext<10>());
+  let b_s: SInt<10> = signed(b8.zext<10>());
+
+  // Cb = 128 + (-43*R - 85*G + 128*B) >> 8
+  let cb_t0: SInt<20> = signed(10'd43) * r_s;
+  let cb_t1: SInt<20> = signed(10'd85) * g_s;
+  let cb_t2: SInt<20> = signed(10'd128) * b_s;
+  let cb_neg: SInt<22> = (cb_t2.sext<22>() - cb_t0.sext<22>() - cb_t1.sext<22>()).trunc<22>();
+  let cb_shifted: SInt<22> = cb_neg >> 8;
+  let cb_raw: SInt<22> = (signed(22'd128) + cb_shifted).trunc<22>();
+
+  // Cr = 128 + (128*R - 107*G - 21*B) >> 8
+  let cr_t0: SInt<20> = signed(10'd128) * r_s;
+  let cr_t1: SInt<20> = signed(10'd107) * g_s;
+  let cr_t2: SInt<20> = signed(10'd21) * b_s;
+  let cr_neg: SInt<22> = (cr_t0.sext<22>() - cr_t1.sext<22>() - cr_t2.sext<22>()).trunc<22>();
+  let cr_shifted: SInt<22> = cr_neg >> 8;
+  let cr_raw: SInt<22> = (signed(22'd128) + cr_shifted).trunc<22>();
+
+  // Clamping
+  wire y_clamped: UInt<8>;
+  wire cb_clamped: UInt<8>;
+  wire cr_clamped: UInt<8>;
+
+  comb
+    if y_raw > 16'd235
+      y_clamped = 8'd235;
+    elsif y_raw < 16'd16
+      y_clamped = 8'd16;
+    else
+      y_clamped = y_raw.trunc<8>();
+    end if
+
+    if cb_raw > signed(22'd240)
+      cb_clamped = 8'd240;
+    elsif cb_raw < signed(22'd16)
+      cb_clamped = 8'd16;
+    else
+      cb_clamped = unsigned(cb_raw).trunc<8>();
+    end if
+
+    if cr_raw > signed(22'd240)
+      cr_clamped = 8'd240;
+    elsif cr_raw < signed(22'd16)
+      cr_clamped = 8'd16;
+    else
+      cr_clamped = unsigned(cr_raw).trunc<8>();
+    end if
+  end comb
+
+  // Pack YCbCr as 5-6-5
+  let ycbcr_packed: UInt<16> = ((y_clamped.zext<16>() & 16'hF8) << 8)
+                              | ((cb_clamped.zext<16>() & 16'hFC) << 3)
+                              | (cr_clamped.zext<16>() >> 3);
+
+  // Handshake: accept input when FIFO not full
+  comb
+    full = fifo_count == 5'd16;
+    empty = fifo_count == 5'd0;
+    s_axis_tready = ~full;
+    fifo_write = s_axis_tvalid & ~full;
+    fifo_read = ~empty & m_axis_tready;
+  end comb
+
+  // Write converted data directly to FIFO (no pipeline delay)
+  seq on aclk rising
+    if fifo_write
+      fifo_data[write_ptr] <= ycbcr_packed;
+      fifo_last[write_ptr] <= s_axis_tlast;
+      fifo_user[write_ptr] <= s_axis_tuser;
+      write_ptr <= (write_ptr + 4'd1).trunc<4>();
+    end if
+
+    if fifo_read
+      read_ptr <= (read_ptr + 4'd1).trunc<4>();
+    end if
+
+    if fifo_write & ~fifo_read
+      fifo_count <= (fifo_count + 5'd1).trunc<5>();
+    elsif ~fifo_write & fifo_read
+      fifo_count <= (fifo_count - 5'd1).trunc<5>();
+    end if
+  end seq
+
+  // Output from FIFO
+  comb
+    m_axis_tdata = fifo_data[read_ptr];
+    m_axis_tvalid = ~empty;
+    m_axis_tlast = fifo_last[read_ptr];
+    m_axis_tuser = fifo_user[read_ptr];
+  end comb
+end module axis_rgb2ycbcr

@@ -157,17 +157,111 @@ Created SV copies with module-name filenames and re-tested all 10:
 
 ---
 
-## Current Status (2026-04-07)
+### Phase 8: Per-category full sweep + new modules (2026-04-08 – 2026-04-09)
+
+Ran all 302 CVDP tasks grouped by category (cid002/003/004/007/016). Wrote ~25 new `.arch` files and fixed several existing ones.
+
+**New modules written:**
+
+| Module | Category | Tests | Result |
+|--------|----------|-------|--------|
+| signedadder | cid002 | 8/8 | PASS |
+| unique_number_identifier | cid002 | 1/1 | PASS |
+| Bit_Difference_Counter | cid004 | 4/4 | PASS |
+| binary_bcd_converter_twoway | cid004 | 2/2 | PASS |
+| continuous_adder | cid004 | 25/25 | PASS |
+| gcd_3_ip | cid004 | 5/5 | PASS |
+| lcm_3_ip | cid004 | 5/5 | PASS |
+| parallel_run_length | cid004 | 16/16 | PASS |
+| round_robin_arbiter | cid004 | 5/5 | PASS |
+| sipo_top | cid004 | 10/10 | PASS |
+| swizzler | cid004 | 9/9 | PASS |
+| generic_counter | cid007 | 8/8 | PASS |
+| intra_block | cid007 | 5/5 | PASS |
+| key_expansion_128aes | cid007 | 1/1 | PASS |
+| apb_dsp_op | cid016 | 14/15 | FAIL (1 edge case) |
+| axi_alu | cid016 | 10/10 | PASS |
+| axis_rgb2ycbcr | cid016 | 4/4 | PASS |
+| brent_kung_adder | cid016 | 1/1 | PASS |
+| data_serializer | cid016 | 6/6 | PASS |
+| deinter_block | cid016 | 36/36 | PASS |
+| kogge_stone_adder | cid016 | 1/1 | PASS |
+
+**Key fixes:**
+
+| Module | Issue | Fix |
+|--------|-------|-----|
+| **gcd_top** | Cocotb latency off-by-1 | Changed to `port reg` outputs — FF output gives correct pre-edge visibility in cocotb |
+| **gcd_3_ip** | Extra pipeline cycle in wrapper | Added combinational muxes (`final_a`/`final_b`) to forward fresh GCD results directly to final instance |
+| **apb_controller** | Manual state register | Rewritten as `fsm` construct with named states (Idle, Setup, Access) |
+| **apb_dsp_unit** | Manual state register | Rewritten as `fsm` construct (Idle, WriteAccess, ReadAccess) |
+| **APBGlobalHistoryRegister** | Manual clock gating (falling-edge latch + conditional) | Replaced with `clkgate` construct instance |
+
+**Construct usage improvements:**
+- 2 modules rewritten from `module` → `fsm` (apb_controller, apb_dsp_unit)
+- 1 module rewritten to use `clkgate` (APBGlobalHistoryRegister)
+- All new modules use first-class constructs where appropriate (fsm for data_serializer, module for others)
+
+---
+
+### Learnings: ARCH for Spec-to-RTL
+
+**What works well:**
+- First-class constructs (`fsm`, `clkgate`, `counter`) eliminate manual encoding and catch bugs at compile time
+- Parameterized modules with derived params compose correctly (gcd_3_ip → gcd_top chain)
+- Combinational-heavy designs (adders, encoders, ciphers) pass on first attempt
+- No-implicit-conversion rule catches real width bugs
+
+**Common pitfalls:**
+1. **`port reg` vs `let` for outputs** — `port reg` makes output a FF; cocotb reads pre-edge value. `let out = reg_r` is combinational; cocotb sees new value immediately. Critical for cycle-accurate tests.
+2. **Reset polarity/type** — Some cocotb tests assert immediately after reset. `Reset<Async>` visible instantly; `Reset<Sync>` delays one cycle.
+3. **Filename vs module name** — Cocotb runner looks for `{module_name}.sv`; ARCH compiler outputs `{file_name}.sv`. Mismatch causes false negatives.
+4. **TOPLEVEL=verilog** — ~19 tasks use generic placeholder name, not testable without special handling.
+
+**Remaining failure patterns:**
+- Algorithmic complexity: booth multipliers, montgomery, radix divider (cid016)
+- Multi-cycle latency assertions: tests with exact cycle-count checks
+- Timeouts: vga_controller (3 categories), sgd_linear_regression, digital_dice_roller
+
+---
+
+## Current Status (2026-04-09)
+
+### Per-Category Results
+
+| Category | Tasks | Testable | PASS | Rate |
+|----------|-------|----------|------|------|
+| cid002 | 94 | 91 | 79 | 87% |
+| cid003 | 78 | 77 | 70 | 91% |
+| cid004 | 55 | 53 | 49 | 92% |
+| cid007 | 40 | 23 | 20 | 87% |
+| cid016 | 35 | 31 | 20 | 65% |
+| **Total** | **302** | **275** | **238** | **87%** |
+
+"Testable" excludes TOPLEVEL=verilog (~19 tasks) and modules with no `.arch`/`.sv`.
+
+### Aggregate Metrics
 
 | Metric | Value |
 |--------|-------|
-| Total `.arch` files | 231 |
-| Pass `arch check` | 213 (92%) |
-| Fail `arch check` (multi-file) | 18 |
-| Testable via cocotb (has JSONL entry) | 191 |
-| **Cocotb PASS** | **141 (74%)** |
-| Cocotb FAIL | 50 |
-| No JSONL entry (untestable) | 40 |
+| Total `.arch` files | ~256 |
+| Testable via cocotb | 275 |
+| **Cocotb PASS** | **238 (87%)** |
+| Cocotb FAIL | 28 |
+| Cocotb TIMEOUT | 9 |
+| Not testable (TOPLEVEL=verilog + missing) | 27 |
+
+### Failures by Category
+
+**cid002 (9 fail, 3 timeout):** cache_mshr(2), search_binary_search_tree, lfu_counter_policy, instruction_cache_controller, interrupt_controller(2), interrupt_controller_apb, copilot_rs_232. Timeouts: sgd_linear_regression, vga_controller, Data_Reduction.
+
+**cid003 (3 fail, 3 timeout, 1 missing):** load_store_unit, microcode_sequencer, secure_read_write_register_bank. Timeouts: digital_dice_roller, low_pass_filter, vga_controller. Missing: field_extract.
+
+**cid004 (2 fail, 2 timeout):** gf_mac(2). Timeouts: digital_dice_roller, dig_stopwatch.
+
+**cid007 (2 fail, 1 timeout):** halfband_fir, inter_block. Timeout: vga_controller.
+
+**cid016 (10 fail + 1 partial):** fifo_policy, image_stego, manchester_encoder, signed_sequential_booth_multiplier, pipelined_modified_booth_multiplier, montgomery_redc, montgomery_mult, prim_max_find, radix2_div, scrambler. Partial: apb_dsp_op (14/15).
 
 ---
 

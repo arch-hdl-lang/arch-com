@@ -1,0 +1,21 @@
+module unique_number_identifier
+  param p_bit_width: const = 8;
+  param p_max_numbers: const = 16;
+
+  port i_clk: in Clock<SysDomain>;
+  port i_rst_n: in Reset<Async, Low>;
+  port i_ready: in Bool;
+  port i_number: in UInt<p_bit_width>;
+  port o_unique_number: out UInt<p_bit_width>;
+
+  reg default: reset i_rst_n => 0;
+  reg xor_acc: UInt<p_bit_width>;
+
+  seq on i_clk rising
+    if i_ready
+      xor_acc <= xor_acc ^ i_number;
+    end if
+  end seq
+
+  let o_unique_number = xor_acc;
+end module unique_number_identifier

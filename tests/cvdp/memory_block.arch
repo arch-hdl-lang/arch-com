@@ -1,0 +1,41 @@
+module memory_block
+  port axi_clk: in Clock<SysDomain>;
+  port ctrld_clk: in Clock<SysDomain>;
+  port reset_in: in Reset<Sync>;
+
+  port we: in Bool;
+  port write_address: in UInt<4>;
+  port write_data: in UInt<32>;
+
+  port address_a: in UInt<4>;
+  port address_b: in UInt<4>;
+  port address_c: in UInt<4>;
+
+  port data_a: out UInt<32>;
+  port data_b: out UInt<32>;
+  port data_c: out UInt<32>;
+  port result_address: out UInt<32>;
+
+  reg mem: Vec<UInt<32>, 16> reset reset_in => 0;
+  reg result_address_r: UInt<32> reset reset_in => 0;
+
+  default seq on axi_clk rising;
+
+  // Synchronous write on axi_clk
+  seq
+    if we
+      mem[write_address] <= write_data;
+      if write_address == 0
+        result_address_r <= write_data;
+      end if
+    end if
+  end seq
+
+  // Asynchronous read (combinational)
+  comb
+    data_a = mem[address_a];
+    data_b = mem[address_b];
+    data_c = mem[address_c];
+    result_address = result_address_r;
+  end comb
+end module memory_block

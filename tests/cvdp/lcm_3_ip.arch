@@ -1,0 +1,67 @@
+module lcm_3_ip
+  param WIDTH: const = 4;
+  local param W2: const = 2 * WIDTH;
+  local param W3: const = 3 * WIDTH;
+
+  port clk:  in Clock<SysDomain>;
+  port rst:  in Reset<Sync>;
+  port A:    in UInt<WIDTH>;
+  port B:    in UInt<WIDTH>;
+  port C:    in UInt<WIDTH>;
+  port go:   in Bool;
+  port OUT:  out UInt<W3>;
+  port done: out Bool;
+
+  // Register the products and go signal (1 cycle delay before GCD)
+  reg go_d: Bool reset rst => false;
+  reg ab_r: UInt<W2> reset rst => 0;
+  reg bc_r: UInt<W2> reset rst => 0;
+  reg ca_r: UInt<W2> reset rst => 0;
+  reg abc_r: UInt<W3> reset rst => 0;
+
+  // Output registers
+  reg out_r: UInt<W3> reset rst => 0;
+  reg done_r: Bool reset rst => false;
+
+  let OUT = out_r;
+  let done = done_r;
+
+  // GCD output wires
+  wire gcd_out: UInt<W2>;
+  wire gcd_done: Bool;
+
+  default seq on clk rising;
+
+  // Instantiate gcd_3_ip to compute GCD(A*B, B*C, C*A)
+  inst u_gcd: gcd_3_ip
+    param WIDTH = W2;
+    clk  <- clk;
+    rst  <- rst;
+    A    <- ab_r;
+    B    <- bc_r;
+    C    <- ca_r;
+    go   <- go_d;
+    OUT  -> gcd_out;
+    done -> gcd_done;
+  end inst u_gcd
+
+  seq
+    go_d <= false;
+    done_r <= false;
+
+    // Register products on go (1 cycle before GCD starts)
+    if go
+      ab_r <= (A.zext<W2>() * B.zext<W2>()).trunc<W2>();
+      bc_r <= (B.zext<W2>() * C.zext<W2>()).trunc<W2>();
+      ca_r <= (C.zext<W2>() * A.zext<W2>()).trunc<W2>();
+      abc_r <= (A.zext<W3>() * B.zext<W3>() * C.zext<W3>()).trunc<W3>();
+      go_d <= true;
+    end if
+
+    // When GCD is done, compute LCM = ABC / GCD (output in same cycle)
+    if gcd_done
+      out_r <= abc_r / gcd_out.zext<W3>();
+      done_r <= true;
+    end if
+  end seq
+end module lcm_3_ip

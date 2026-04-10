@@ -318,6 +318,10 @@ def extract_and_run(name_substr, sv_file=None):
     run_env['TOPLEVEL_LANG'] = toplevel_lang
     run_env['WAVES'] = run_env.get('WAVES', '0')
     run_env['COCOTB_RESULTS_FILE'] = os.path.join(workdir, 'results.xml')
+    # Pass through RANDOM_SEED from harness .env if present (cocotb uses it to
+    # seed Python's random module, ensuring reproducible random stimulus).
+    if 'RANDOM_SEED' in env_vars and 'RANDOM_SEED' not in run_env:
+        run_env['RANDOM_SEED'] = env_vars['RANDOM_SEED']
     # Build VERILOG_SOURCES: include all SV files listed in the harness env
     raw_sources = env_vars.get('VERILOG_SOURCES', f'/code/rtl/{module_name}.sv')
     sv_sources = []
@@ -351,6 +355,10 @@ def extract_and_run(name_substr, sv_file=None):
     # Deduplicate: some harness .env files list the same source twice
     sv_sources = list(dict.fromkeys(sv_sources))
     sv_sources = _expand_local_sv_dependencies(sv_sources, rtl_dir)
+    # Ensure toplevel module's SV file is in the sources (may differ from harness list)
+    top_sv = os.path.join(rtl_dir, f"{toplevel}.sv")
+    if os.path.exists(top_sv) and top_sv not in sv_sources:
+        sv_sources.append(top_sv)
     sv_sources = _dedupe_redeclared_modules(sv_sources, preferred_stem=module_name)
     run_env['VERILOG_SOURCES'] = ' '.join(sv_sources) if sv_sources else os.path.join(rtl_dir, f"{module_name}.sv")
 
@@ -644,6 +652,15 @@ def extract_and_run(name_substr, sv_file=None):
                 pycontent
             )
             changed = True
+        # Fix cocotb 2.0: array indexed by signal handle (dut.arr[dut.idx])
+        # Replace with dut.arr[int(dut.idx.value)]
+        if _re2.search(r'dut\.(\w+)\[dut\.(\w+)\]', pycontent):
+            pycontent = _re2.sub(
+                r'dut\.(\w+)\[dut\.(\w+)\]',
+                r'dut.\1[int(dut.\2.value)]',
+                pycontent
+            )
+            changed = True
         if changed:
             open(pyfile, 'w').write(pycontent)
 
@@ -692,6 +709,18 @@ def extract_and_run(name_substr, sv_file=None):
     if result.stderr:
         print("STDERR:", result.stderr[-5000:] if len(result.stderr) > 5000 else result.stderr)
     print(f"Return code: {result.returncode}")
+
+    # Debug: print results.xml on failure
+    results_xml = os.path.join(workdir, 'results.xml')
+    if os.path.exists(results_xml):
+        import re as _re_dbg
+        content_xml = open(results_xml).read()
+        failures = _re_dbg.findall(r'<failure[^>]*>(.*?)</failure>', content_xml, _re_dbg.DOTALL)
+        if failures:
+            print("FAILURE DETAILS:")
+            for i, f in enumerate(failures[:5]):
+                print(f"  [{i}] {f[:500]}")
+
 
     passed = result.returncode == 0 and ('FAIL=0' in result.stdout or ('passed' in result.stdout and 'failed' not in result.stdout.lower()))
     print(f"{'PASS' if passed else 'FAIL'}: {module_name}")

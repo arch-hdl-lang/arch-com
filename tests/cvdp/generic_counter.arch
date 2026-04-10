@@ -1,0 +1,45 @@
+module generic_counter
+  param N: const = 8;
+  port clk_in:     in Clock<SysDomain>;
+  port rst_in:     in Reset<Async>;
+  port enable_in:  in Bool;
+  port mode_in:    in UInt<3>;
+  port ref_modulo: in UInt<N>;
+  port o_count:    out UInt<N>;
+
+  reg cnt: UInt<N> reset rst_in => 0;
+
+  seq on clk_in rising
+    if enable_in
+      if mode_in == 3'd0
+        cnt <= (cnt + 1'b1).trunc<N>();
+      elsif mode_in == 3'd1
+        cnt <= (cnt - 1'b1).trunc<N>();
+      elsif mode_in == 3'd2
+        if cnt >= ref_modulo
+          cnt <= 0;
+        else
+          cnt <= (cnt + 1'b1).trunc<N>();
+        end if
+      elsif mode_in == 3'd3
+        cnt <= {~cnt[0], cnt[N-1:1]};
+      elsif mode_in == 3'd4
+        cnt <= (cnt + 1'b1).trunc<N>();
+      elsif mode_in == 3'd5
+        if cnt == 0
+          cnt <= 1;
+        else
+          cnt <= {cnt[N-2:0], cnt[N-1]};
+        end if
+      end if
+    end if
+  end seq
+
+  comb
+    if mode_in == 3'd4
+      o_count = cnt ^ (cnt >> 1);
+    else
+      o_count = cnt;
+    end if
+  end comb
+end module generic_counter

@@ -18,92 +18,120 @@ module apb_controller (
   output logic [32-1:0] apb_pwdata_o
 );
 
-  // FSM states: 0=IDLE, 1=SETUP, 2=ACCESS
-  logic [2-1:0] state;
+  typedef enum logic [1:0] {
+    IDLE = 2'd0,
+    SETUP = 2'd1,
+    ACCESS = 2'd2
+  } apb_controller_state_t;
+  
+  apb_controller_state_t state_r, state_next;
+  
   logic r_psel;
   logic r_penable;
   logic r_pwrite;
   logic [32-1:0] r_paddr;
   logic [32-1:0] r_pwdata;
   logic [4-1:0] timeout_cnt;
+  
   always_ff @(posedge clk or negedge reset_n) begin
     if ((!reset_n)) begin
-      r_paddr <= 0;
-      r_penable <= 1'b0;
+      state_r <= IDLE;
       r_psel <= 1'b0;
-      r_pwdata <= 0;
+      r_penable <= 1'b0;
       r_pwrite <= 1'b0;
-      state <= 0;
+      r_paddr <= 0;
+      r_pwdata <= 0;
       timeout_cnt <= 0;
     end else begin
-      if (state == 0) begin
-        // IDLE: check for events with priority A > B > C
-        if (select_a_i) begin
-          r_psel <= 1'b1;
-          r_pwrite <= 1'b1;
-          r_paddr <= addr_a_i;
-          r_pwdata <= data_a_i;
-          r_penable <= 1'b0;
-          state <= 1;
-        end else if (select_b_i) begin
-          r_psel <= 1'b1;
-          r_pwrite <= 1'b1;
-          r_paddr <= addr_b_i;
-          r_pwdata <= data_b_i;
-          r_penable <= 1'b0;
-          state <= 1;
-        end else if (select_c_i) begin
-          r_psel <= 1'b1;
-          r_pwrite <= 1'b1;
-          r_paddr <= addr_c_i;
-          r_pwdata <= data_c_i;
-          r_penable <= 1'b0;
-          state <= 1;
-        end else begin
-          r_psel <= 1'b0;
-          r_penable <= 1'b0;
-          r_pwrite <= 1'b0;
-          r_paddr <= 0;
-          r_pwdata <= 0;
-        end
-        timeout_cnt <= 0;
-      end else if (state == 1) begin
-        // SETUP: assert penable, move to ACCESS
-        r_penable <= 1'b1;
-        state <= 2;
-      end else if (state == 2) begin
-        // ACCESS: wait for pready or timeout
-        if (apb_pready_i) begin
-          // Transaction complete, return to IDLE
-          r_psel <= 1'b0;
-          r_penable <= 1'b0;
-          r_pwrite <= 1'b0;
-          r_paddr <= 0;
-          r_pwdata <= 0;
+      state_r <= state_next;
+      case (state_r)
+        IDLE: begin
+          if (select_a_i) begin
+            r_psel <= 1'b1;
+            r_pwrite <= 1'b1;
+            r_paddr <= addr_a_i;
+            r_pwdata <= data_a_i;
+            r_penable <= 1'b0;
+          end else if (select_b_i) begin
+            r_psel <= 1'b1;
+            r_pwrite <= 1'b1;
+            r_paddr <= addr_b_i;
+            r_pwdata <= data_b_i;
+            r_penable <= 1'b0;
+          end else if (select_c_i) begin
+            r_psel <= 1'b1;
+            r_pwrite <= 1'b1;
+            r_paddr <= addr_c_i;
+            r_pwdata <= data_c_i;
+            r_penable <= 1'b0;
+          end else begin
+            r_psel <= 1'b0;
+            r_penable <= 1'b0;
+            r_pwrite <= 1'b0;
+            r_paddr <= 0;
+            r_pwdata <= 0;
+          end
           timeout_cnt <= 0;
-          state <= 0;
-        end else if (timeout_cnt == 15) begin
-          // Timeout: abort, return to IDLE
-          r_psel <= 1'b0;
-          r_penable <= 1'b0;
-          r_pwrite <= 1'b0;
-          r_paddr <= 0;
-          r_pwdata <= 0;
-          timeout_cnt <= 0;
-          state <= 0;
-        end else begin
-          timeout_cnt <= 4'(timeout_cnt + 1);
         end
-      end else begin
-        state <= 0;
-      end
+        SETUP: begin
+          r_penable <= 1'b1;
+        end
+        ACCESS: begin
+          if (apb_pready_i) begin
+            r_psel <= 1'b0;
+            r_penable <= 1'b0;
+            r_pwrite <= 1'b0;
+            r_paddr <= 0;
+            r_pwdata <= 0;
+            timeout_cnt <= 0;
+          end else if (timeout_cnt == 15) begin
+            r_psel <= 1'b0;
+            r_penable <= 1'b0;
+            r_pwrite <= 1'b0;
+            r_paddr <= 0;
+            r_pwdata <= 0;
+            timeout_cnt <= 0;
+          end else begin
+            timeout_cnt <= 4'(timeout_cnt + 1);
+          end
+        end
+        default: ;
+      endcase
     end
   end
-  assign apb_psel_o = r_psel;
-  assign apb_penable_o = r_penable;
-  assign apb_pwrite_o = r_pwrite;
-  assign apb_paddr_o = r_paddr;
-  assign apb_pwdata_o = r_pwdata;
+  
+  always_comb begin
+    state_next = state_r; // hold by default
+    case (state_r)
+      IDLE: begin
+        if (select_a_i | select_b_i | select_c_i) state_next = SETUP;
+      end
+      SETUP: begin
+        state_next = ACCESS;
+      end
+      ACCESS: begin
+        if (apb_pready_i | timeout_cnt == 15) state_next = IDLE;
+      end
+      default: state_next = state_r;
+    endcase
+  end
+  
+  always_comb begin
+    apb_psel_o = r_psel;
+    apb_penable_o = r_penable;
+    apb_pwrite_o = r_pwrite;
+    apb_paddr_o = r_paddr;
+    apb_pwdata_o = r_pwdata;
+    case (state_r)
+      IDLE: begin
+      end
+      SETUP: begin
+      end
+      ACCESS: begin
+      end
+      default: ;
+    endcase
+  end
 
 endmodule
 

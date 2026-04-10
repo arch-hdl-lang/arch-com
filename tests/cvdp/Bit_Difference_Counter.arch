@@ -1,0 +1,22 @@
+module Bit_Difference_Counter
+  param BIT_WIDTH: const = 3;
+  local param COUNT_WIDTH: const = $clog2(BIT_WIDTH) + 1;
+
+  port input_A: in UInt<BIT_WIDTH>;
+  port input_B: in UInt<BIT_WIDTH>;
+  port bit_difference_count: out UInt<COUNT_WIDTH>;
+
+  // XOR to find differing bits
+  let xor_bits: UInt<BIT_WIDTH> = input_A ^ input_B;
+
+  // Popcount: sum individual bits
+  wire sum: UInt<COUNT_WIDTH>;
+
+  comb
+    sum = 0.zext<COUNT_WIDTH>();
+    for i in 0..BIT_WIDTH-1
+      sum = (sum + xor_bits[i:i].zext<COUNT_WIDTH>()).trunc<COUNT_WIDTH>();
+    end for
+    bit_difference_count = sum;
+  end comb
+end module Bit_Difference_Counter

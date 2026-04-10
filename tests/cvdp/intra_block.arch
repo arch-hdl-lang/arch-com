@@ -1,0 +1,28 @@
+module intra_block
+  param ROW_COL_WIDTH: const = 16;
+  param DATA_WIDTH:    const = ROW_COL_WIDTH * ROW_COL_WIDTH;
+
+  port in_data:  in  UInt<DATA_WIDTH>;
+  port out_data: out UInt<DATA_WIDTH>;
+
+  // Pure combinational bit permutation.
+  // For each output bit j, compute the source input bit index:
+  //   row = j / ROW_COL_WIDTH
+  //   if j < DATA_WIDTH/2:
+  //     r_prime = (j - 2*row) % ROW_COL_WIDTH
+  //     c_prime = (j - row)   % ROW_COL_WIDTH
+  //   else:
+  //     r_prime = (j - 2*row - 1) % ROW_COL_WIDTH
+  //     c_prime = (j - row - 1)   % ROW_COL_WIDTH
+  //   src = r_prime * ROW_COL_WIDTH + c_prime
+
+  comb
+    for j in 0..DATA_WIDTH-1
+      if j < DATA_WIDTH / 2
+        out_data[j] = in_data[((j - 2 * (j / ROW_COL_WIDTH)) % ROW_COL_WIDTH) * ROW_COL_WIDTH + (j - j / ROW_COL_WIDTH) % ROW_COL_WIDTH];
+      else
+        out_data[j] = in_data[((j - 2 * (j / ROW_COL_WIDTH) - 1) % ROW_COL_WIDTH) * ROW_COL_WIDTH + (j - j / ROW_COL_WIDTH - 1) % ROW_COL_WIDTH];
+      end if
+    end for
+  end comb
+end module intra_block

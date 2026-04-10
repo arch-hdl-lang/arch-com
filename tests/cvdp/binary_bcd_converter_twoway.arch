@@ -1,0 +1,53 @@
+module binary_bcd_converter_twoway
+  param BCD_DIGITS: const = 3;
+  param INPUT_WIDTH: const = 9;
+  local param BCD_WIDTH: const = BCD_DIGITS * 4;
+  local param TOTAL_WIDTH: const = INPUT_WIDTH + BCD_WIDTH;
+
+  port switch:     in UInt<1>;
+  port bcd_in:     in UInt<BCD_WIDTH>;
+  port binary_in:  in UInt<INPUT_WIDTH>;
+  port binary_out: out UInt<INPUT_WIDTH>;
+  port bcd_out:    out UInt<BCD_WIDTH>;
+
+  // Double-dabble shift register for binary-to-BCD
+  wire dd: UInt<TOTAL_WIDTH>;
+
+  // Accumulator for BCD-to-binary
+  wire bin_acc: UInt<INPUT_WIDTH>;
+
+  // Temporary digit for BCD-to-binary
+  wire digit: UInt<4>;
+
+  comb
+    // === Binary-to-BCD (Double Dabble) ===
+    dd = binary_in.zext<TOTAL_WIDTH>();
+    for i in 0..INPUT_WIDTH-1
+      // Check each BCD digit; if >= 5, add 3
+      for j in 0..BCD_DIGITS-1
+        if dd[INPUT_WIDTH + j*4 + 3 : INPUT_WIDTH + j*4] >= 5
+          dd[INPUT_WIDTH + j*4 + 3 : INPUT_WIDTH + j*4] = (dd[INPUT_WIDTH + j*4 + 3 : INPUT_WIDTH + j*4] + 3).trunc<4>();
+        end if
+      end for
+      // Shift left
+      dd = dd << 1;
+    end for
+
+    // === BCD-to-Binary ===
+    bin_acc = 0;
+    digit = 0;
+    for k in 0..BCD_DIGITS-1
+      digit = bcd_in[(BCD_DIGITS - 1 - k)*4 + 3 : (BCD_DIGITS - 1 - k)*4];
+      bin_acc = (bin_acc * 10 + digit.zext<INPUT_WIDTH>()).trunc<INPUT_WIDTH>();
+    end for
+
+    // Output selection based on switch
+    if switch == 1
+      bcd_out = dd[TOTAL_WIDTH-1 : INPUT_WIDTH];
+      binary_out = 0;
+    else
+      binary_out = bin_acc;
+      bcd_out = 0;
+    end if
+  end comb
+end module binary_bcd_converter_twoway

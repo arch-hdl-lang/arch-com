@@ -1,0 +1,88 @@
+module signedadder
+  param DATA_WIDTH: const = 8;
+
+  port i_clk:           in Clock<SysDomain>;
+  port i_rst_n:         in Reset<Async, Low>;
+  port i_start:         in Bool;
+  port i_enable:        in Bool;
+  port i_mode:          in Bool;
+  port i_clear:         in Bool;
+  port i_operand_a:     in SInt<DATA_WIDTH>;
+  port i_operand_b:     in SInt<DATA_WIDTH>;
+  port o_resultant_sum: out SInt<DATA_WIDTH>;
+  port o_overflow:      out Bool;
+  port o_ready:         out Bool;
+  port o_status:        out UInt<2>;
+
+  // FSM states
+  let ST_IDLE:    UInt<2> = 0;
+  let ST_LOAD:    UInt<2> = 1;
+  let ST_COMPUTE: UInt<2> = 2;
+  let ST_OUTPUT:  UInt<2> = 3;
+
+  reg state_r: UInt<2> reset i_rst_n => 0;
+
+  // Internal registers
+  reg op_a_r:   SInt<DATA_WIDTH> reset i_rst_n => 0;
+  reg op_b_r:   SInt<DATA_WIDTH> reset i_rst_n => 0;
+  reg mode_r:   Bool reset i_rst_n => false;
+  reg sum_r:    SInt<DATA_WIDTH> reset i_rst_n => 0;
+  reg ovf_r:    Bool reset i_rst_n => false;
+  reg ready_r:  Bool reset i_rst_n => false;
+
+  default seq on i_clk rising;
+
+  // Compute the result and overflow in comb logic
+  let sum_add: SInt<DATA_WIDTH> = (op_a_r + op_b_r).trunc<DATA_WIDTH>();
+  let sum_sub: SInt<DATA_WIDTH> = (op_a_r - op_b_r).trunc<DATA_WIDTH>();
+
+  wire result_val: SInt<DATA_WIDTH>;
+  wire ovf_val: Bool;
+
+  comb
+    if mode_r
+      result_val = sum_sub;
+      // Overflow: positive - negative = negative, or negative - positive = positive
+      ovf_val = (op_a_r[DATA_WIDTH - 1] != op_b_r[DATA_WIDTH - 1]) and (sum_sub[DATA_WIDTH - 1] != op_a_r[DATA_WIDTH - 1]);
+    else
+      result_val = sum_add;
+      // Overflow: both same sign, result different sign
+      ovf_val = (op_a_r[DATA_WIDTH - 1] == op_b_r[DATA_WIDTH - 1]) and (sum_add[DATA_WIDTH - 1] != op_a_r[DATA_WIDTH - 1]);
+    end if
+  end comb
+
+  seq
+    if i_clear
+      state_r <= ST_IDLE;
+      sum_r <= 0;
+      ovf_r <= false;
+      ready_r <= false;
+    else
+      if state_r == ST_IDLE
+        ready_r <= false;
+        if i_enable and i_start
+          state_r <= ST_LOAD;
+        end if
+      elsif state_r == ST_LOAD
+        op_a_r <= i_operand_a;
+        op_b_r <= i_operand_b;
+        mode_r <= i_mode;
+        state_r <= ST_COMPUTE;
+      elsif state_r == ST_COMPUTE
+        sum_r <= result_val;
+        ovf_r <= ovf_val;
+        state_r <= ST_OUTPUT;
+      elsif state_r == ST_OUTPUT
+        ready_r <= true;
+        state_r <= ST_IDLE;
+      end if
+    end if
+  end seq
+
+  comb
+    o_resultant_sum = sum_r;
+    o_overflow = ovf_r;
+    o_ready = ready_r;
+    o_status = state_r;
+  end comb
+end module signedadder

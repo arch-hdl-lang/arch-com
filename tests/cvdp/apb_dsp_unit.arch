@@ -1,4 +1,4 @@
-module apb_dsp_unit
+fsm apb_dsp_unit
   port pclk:    in Clock<SysDomain>;
   port presetn: in Reset<Async, Low>;
   port paddr:   in UInt<10>;
@@ -7,49 +7,48 @@ module apb_dsp_unit
   port pwrite:  in Bool;
   port pwdata:  in UInt<8>;
   port sram_valid: in Clock<SysDomain>;
-  port reg pready:  out Bool reset presetn=>false;
-  port reg prdata:  out UInt<8> reset presetn=>0;
-  port reg pslverr: out Bool reset presetn=>false;
+  port reg pready:  out Bool reset presetn => false;
+  port reg prdata:  out UInt<8> reset presetn => 0;
+  port reg pslverr: out Bool reset presetn => false;
 
-  default seq on pclk rising;
-
-  // FSM state: 0=IDLE, 1=WRITE_ACCESS, 2=READ_ACCESS
-  reg state: UInt<2> reset presetn=>0;
+  state [Idle, WriteAccess, ReadAccess]
+  default state Idle;
 
   // Config registers
-  reg r_operand_1: UInt<10> reset presetn=>0;
-  reg r_operand_2: UInt<10> reset presetn=>0;
-  reg r_Enable: UInt<8> reset presetn=>0;
-  reg r_write_address: UInt<10> reset presetn=>0;
-  reg r_write_data: UInt<8> reset presetn=>0;
+  reg r_operand_1: UInt<10> reset presetn => 0;
+  reg r_operand_2: UInt<10> reset presetn => 0;
+  reg r_Enable: UInt<8> reset presetn => 0;
+  reg r_write_address: UInt<10> reset presetn => 0;
+  reg r_write_data: UInt<8> reset presetn => 0;
 
   // SRAM 1KB - init only
   reg mem: Vec<UInt<8>, 1024> init 0;
 
   // Result register at address 0x5
-  reg r_result: UInt<8> reset presetn=>0;
+  reg r_result: UInt<8> reset presetn => 0;
 
-  // SRAM write on posedge sram_valid
-  seq on sram_valid rising
-    mem[r_write_address] <= r_write_data;
-  end seq
+  default
+    // SRAM write on posedge sram_valid
+    seq on sram_valid rising
+      mem[r_write_address] <= r_write_data;
+    end seq
 
-  // Main APB FSM
-  seq
-    if r_Enable == 1
-      r_result <= (mem[r_operand_1] + mem[r_operand_2]).trunc<8>();
-    elsif r_Enable == 2
-      r_result <= (mem[r_operand_1] * mem[r_operand_2]).trunc<8>();
-    end if
+    // DSP computation runs every cycle
+    seq on pclk rising
+      if r_Enable == 1
+        r_result <= (mem[r_operand_1] + mem[r_operand_2]).trunc<8>();
+      elsif r_Enable == 2
+        r_result <= (mem[r_operand_1] * mem[r_operand_2]).trunc<8>();
+      end if
+    end seq
+  end default
 
-    if state == 0
+  state Idle
+    seq on pclk rising
       pready <= false;
       pslverr <= false;
       if pselx & ~penable
-        if pwrite
-          state <= 1;
-        else
-          state <= 2;
+        if ~pwrite
           if paddr == 0
             prdata <= r_operand_1.trunc<8>();
           elsif paddr == 1
@@ -67,7 +66,13 @@ module apb_dsp_unit
           end if
         end if
       end if
-    elsif state == 1
+    end seq
+    -> WriteAccess when pselx & ~penable & pwrite;
+    -> ReadAccess  when pselx & ~penable & ~pwrite;
+  end state Idle
+
+  state WriteAccess
+    seq on pclk rising
       pready <= true;
       if paddr == 0
         r_operand_1 <= pwdata.zext<10>();
@@ -82,10 +87,14 @@ module apb_dsp_unit
       else
         pslverr <= true;
       end if
-      state <= 0;
-    elsif state == 2
+    end seq
+    -> Idle;
+  end state WriteAccess
+
+  state ReadAccess
+    seq on pclk rising
       pready <= true;
-      state <= 0;
-    end if
-  end seq
-end module apb_dsp_unit
+    end seq
+    -> Idle;
+  end state ReadAccess
+end fsm apb_dsp_unit

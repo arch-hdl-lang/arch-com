@@ -1,0 +1,72 @@
+module parallel_run_length
+  param DATA_WIDTH: const = 8;
+  param NUM_STREAMS: const = 4;
+  local param RV_W: const = $clog2(DATA_WIDTH) + 1;
+  local param DW_VAL: const = DATA_WIDTH;
+
+  port clk: in Clock<SysDomain>;
+  port reset_n: in Reset<Async, Low>;
+  port data_in: in UInt<NUM_STREAMS>;
+  port stream_enable: in UInt<NUM_STREAMS>;
+  port data_out: out UInt<NUM_STREAMS>;
+  port run_value: out UInt<NUM_STREAMS * RV_W>;
+  port valid: out UInt<NUM_STREAMS>;
+
+  reg default: reset reset_n => 0;
+
+  reg prev_data: Vec<Bit, NUM_STREAMS>;
+  reg run_cnt: Vec<UInt<RV_W>, NUM_STREAMS>;
+  reg valid_r: UInt<NUM_STREAMS>;
+  reg data_out_r: UInt<NUM_STREAMS>;
+  reg run_val_r: Vec<UInt<RV_W>, NUM_STREAMS>;
+
+  default seq on clk rising;
+
+  seq
+    for i in 0..NUM_STREAMS-1
+      if ~stream_enable[i:i]
+        // Disabled: reset everything
+        prev_data[i] <= 0;
+        run_cnt[i] <= 0;
+        valid_r[i] <= 0;
+        data_out_r[i] <= 0;
+        run_val_r[i] <= 0;
+      else
+        // Always update prev_data when stream is enabled
+        prev_data[i] <= data_in[i:i];
+        if data_in[i:i] != prev_data[i]
+          // Data changed: output the old run
+          valid_r[i] <= 1;
+          data_out_r[i] <= prev_data[i];
+          run_val_r[i] <= run_cnt[i];
+          run_cnt[i] <= 1.zext<RV_W>();
+        elsif run_cnt[i] == DW_VAL[RV_W-1:0]
+          // Max run length reached: output and reset
+          valid_r[i] <= 1;
+          data_out_r[i] <= prev_data[i];
+          run_val_r[i] <= run_cnt[i];
+          run_cnt[i] <= 1.zext<RV_W>();
+        else
+          // Continue run
+          valid_r[i] <= 0;
+          data_out_r[i] <= 0;
+          run_val_r[i] <= 0;
+          run_cnt[i] <= (run_cnt[i] + 1).trunc<RV_W>();
+        end if
+      end if
+    end for
+  end seq
+
+  // Pack run_val_r into run_value output
+  wire pack_acc: Vec<UInt<NUM_STREAMS * RV_W>, NUM_STREAMS + 1>;
+  comb
+    pack_acc[0] = 0;
+    for i in 0..NUM_STREAMS-1
+      pack_acc[i+1] = pack_acc[i] | (run_val_r[i].zext<NUM_STREAMS * RV_W>() << (i * RV_W));
+    end for
+    run_value = pack_acc[NUM_STREAMS];
+  end comb
+
+  let valid = valid_r;
+  let data_out = data_out_r;
+end module parallel_run_length

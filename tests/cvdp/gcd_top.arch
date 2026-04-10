@@ -8,11 +8,12 @@ module gcd_top
   port OUT:  out UInt<WIDTH>;
   port done: out Bool;
 
-  reg a_r: UInt<WIDTH> reset rst=>0;
-  reg b_r: UInt<WIDTH> reset rst=>0;
-  reg out_r: UInt<WIDTH> reset rst=>0;
-  reg busy_r: Bool reset rst=>false;
-  reg done_r: Bool reset rst=>false;
+  reg a_r: UInt<WIDTH> reset rst => 0;
+  reg b_r: UInt<WIDTH> reset rst => 0;
+  reg out_r: UInt<WIDTH> reset rst => 0;
+  reg busy_r: Bool reset rst => false;
+  reg done_r: Bool reset rst => false;
+  reg finish_r: Bool reset rst => false;
 
   let OUT = out_r;
   let done = done_r;
@@ -21,19 +22,28 @@ module gcd_top
 
   seq
     done_r <= false;
+    finish_r <= false;
 
-    if ~busy_r
+    if finish_r
+      // Output result and signal done one cycle after match
+      out_r <= a_r;
+      done_r <= true;
+    elsif ~busy_r
       if go
         a_r <= A;
         b_r <= B;
-        out_r <= 0;
-        busy_r <= true;
+        if A == B
+          // Equal at load time: skip to finish next cycle
+          finish_r <= true;
+        else
+          busy_r <= true;
+        end if
       end if
     else
       if a_r == b_r
-        out_r <= a_r;
+        // Match detected: finish next cycle
+        finish_r <= true;
         busy_r <= false;
-        done_r <= true;
       elsif a_r > b_r
         a_r <= (a_r - b_r).trunc<WIDTH>();
       else

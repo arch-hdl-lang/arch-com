@@ -1,0 +1,41 @@
+module serial_in_parallel_out_8bit
+  param WIDTH: const = 64;
+  param SHIFT_DIRECTION: const = 1;
+
+  port clk:          in  Clock<SysDomain>;
+  port rst:          in  Reset<Sync, Low>;
+  port sin:          in  Bool;
+  port shift_en:     in  Bool;
+  port done:         out Bool;
+  port parallel_out: out UInt<WIDTH>;
+
+  reg default: reset rst => 0;
+
+  reg shift_reg: UInt<WIDTH>;
+  reg cnt: UInt<$clog2(WIDTH + 1)>;
+  reg done_r: Bool;
+
+  default seq on clk rising;
+
+  seq
+    if shift_en
+      if SHIFT_DIRECTION == 1
+        shift_reg <= {shift_reg[WIDTH-2:0], sin};
+      else
+        shift_reg <= {sin, shift_reg[WIDTH-1:1]};
+      end if
+      if cnt == WIDTH - 1
+        cnt <= 0;
+        done_r <= 1;
+      else
+        cnt <= (cnt + 1).trunc<$clog2(WIDTH + 1)>();
+        done_r <= 0;
+      end if
+    else
+      done_r <= 0;
+    end if
+  end seq
+
+  let parallel_out = shift_reg;
+  let done = done_r;
+end module serial_in_parallel_out_8bit

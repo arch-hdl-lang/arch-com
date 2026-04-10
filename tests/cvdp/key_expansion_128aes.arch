@@ -1,0 +1,151 @@
+// AES-128 Key Expansion Module (area-optimized)
+// Expands 128-bit key into 11 round keys (1408-bit output).
+// Uses 4 sbox instances, processes 1 round per cycle (10 cycles).
+
+module key_expansion_128aes
+  port clk: in Clock<SysDomain>;
+  port rst_async_n: in Reset<Async, Low>;
+  port i_start: in Bool;
+  port i_key: in UInt<128>;
+  port o_done: out Bool;
+  port o_expanded_key: out UInt<1408>;
+
+  reg default: reset rst_async_n => 0;
+
+  // Current working words
+  reg w0: UInt<32>;
+  reg w1: UInt<32>;
+  reg w2: UInt<32>;
+  reg w3: UInt<32>;
+
+  // Round counter (0 = idle/done, 1..10 = expanding)
+  reg round_cnt: UInt<4>;
+
+  // Expanded key storage: 11 round keys x 128 bits
+  reg rk0: UInt<128>;
+  reg rk1: UInt<128>;
+  reg rk2: UInt<128>;
+  reg rk3: UInt<128>;
+  reg rk4: UInt<128>;
+  reg rk5: UInt<128>;
+  reg rk6: UInt<128>;
+  reg rk7: UInt<128>;
+  reg rk8: UInt<128>;
+  reg rk9: UInt<128>;
+  reg rk10: UInt<128>;
+
+  default seq on clk rising;
+
+  // S-box instances for SubWord(RotWord(w3))
+  // RotWord([b0,b1,b2,b3]) = [b1,b2,b3,b0]
+  // w3 = [w3[31:24], w3[23:16], w3[15:8], w3[7:0]]
+  // After RotWord: [w3[23:16], w3[15:8], w3[7:0], w3[31:24]]
+  inst sb0: sbox
+    i_addr <- w3[23:16];
+    o_data -> sb_out0;
+  end inst sb0
+
+  inst sb1: sbox
+    i_addr <- w3[15:8];
+    o_data -> sb_out1;
+  end inst sb1
+
+  inst sb2: sbox
+    i_addr <- w3[7:0];
+    o_data -> sb_out2;
+  end inst sb2
+
+  inst sb3: sbox
+    i_addr <- w3[31:24];
+    o_data -> sb_out3;
+  end inst sb3
+
+  // Rcon lookup based on round counter
+  wire rcon_val: UInt<32>;
+  comb
+    rcon_val = match round_cnt
+      1  => 32'h01000000,
+      2  => 32'h02000000,
+      3  => 32'h04000000,
+      4  => 32'h08000000,
+      5  => 32'h10000000,
+      6  => 32'h20000000,
+      7  => 32'h40000000,
+      8  => 32'h80000000,
+      9  => 32'h1b000000,
+      10 => 32'h36000000,
+      _  => 32'h00000000,
+    end match;
+  end comb
+
+  // SubWord(RotWord(w3)) ^ Rcon
+  let t_val: UInt<32> = { sb_out0, sb_out1, sb_out2, sb_out3 } ^ rcon_val;
+
+  // Next round key words
+  let nw0: UInt<32> = w0 ^ t_val;
+  let nw1: UInt<32> = w0 ^ t_val ^ w1;
+  let nw2: UInt<32> = w0 ^ t_val ^ w1 ^ w2;
+  let nw3: UInt<32> = w0 ^ t_val ^ w1 ^ w2 ^ w3;
+
+  let new_rk: UInt<128> = { nw0, nw1, nw2, nw3 };
+
+  // Working flag
+  let working: Bool = (round_cnt != 0);
+
+  // Done output
+  comb
+    o_done = not working;
+  end comb
+
+  // Output: concatenate all 11 round keys
+  comb
+    o_expanded_key = { rk0, rk1, rk2, rk3, rk4, rk5, rk6, rk7, rk8, rk9, rk10 };
+  end comb
+
+  // Sequential logic
+  seq
+    if i_start and not working
+      // Load initial key
+      w0 <= i_key[127:96];
+      w1 <= i_key[95:64];
+      w2 <= i_key[63:32];
+      w3 <= i_key[31:0];
+      rk0 <= i_key;
+      round_cnt <= 1;
+    elsif working
+      // Compute next round key
+      w0 <= nw0;
+      w1 <= nw1;
+      w2 <= nw2;
+      w3 <= nw3;
+
+      if round_cnt == 1
+        rk1 <= new_rk;
+      elsif round_cnt == 2
+        rk2 <= new_rk;
+      elsif round_cnt == 3
+        rk3 <= new_rk;
+      elsif round_cnt == 4
+        rk4 <= new_rk;
+      elsif round_cnt == 5
+        rk5 <= new_rk;
+      elsif round_cnt == 6
+        rk6 <= new_rk;
+      elsif round_cnt == 7
+        rk7 <= new_rk;
+      elsif round_cnt == 8
+        rk8 <= new_rk;
+      elsif round_cnt == 9
+        rk9 <= new_rk;
+      elsif round_cnt == 10
+        rk10 <= new_rk;
+      end if
+
+      if round_cnt == 10
+        round_cnt <= 0;
+      else
+        round_cnt <= (round_cnt + 1).trunc<4>();
+      end if
+    end if
+  end seq
+end module key_expansion_128aes

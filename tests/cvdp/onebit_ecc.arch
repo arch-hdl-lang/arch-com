@@ -1,0 +1,102 @@
+module onebit_ecc
+  param DATA_WIDTH: const = 16;
+  param CODE_WIDTH: const = DATA_WIDTH + $clog2(DATA_WIDTH + 1);
+
+  port data_in:         in  UInt<DATA_WIDTH>;
+  port received:        in  UInt<CODE_WIDTH>;
+  port data_out:        out UInt<DATA_WIDTH>;
+  port encoded:         out UInt<CODE_WIDTH>;
+  port error_detected:  out Bool;
+  port error_corrected: out Bool;
+
+  wire parity_enc: Vec<UInt<1>, $clog2(CODE_WIDTH + 1)>;
+  wire data_idx_enc: UInt<$clog2(DATA_WIDTH + 1)>;
+  wire parity_idx_enc: UInt<$clog2($clog2(CODE_WIDTH + 1) + 1)>;
+
+  wire parity_dec: Vec<UInt<1>, $clog2(CODE_WIDTH + 1)>;
+  wire syndrome_val: UInt<$clog2(CODE_WIDTH + 1)>;
+  wire corrected: UInt<CODE_WIDTH>;
+  wire data_idx_dec: UInt<$clog2(DATA_WIDTH + 1)>;
+
+  comb
+    // ---- Encoder: place data bits, compute parity ----
+    // Use 1-indexed positions: bit i corresponds to position (i+1).
+    // Parity positions are where (i+1) is a power of 2, i.e. ((i+1) & i) == 0.
+    encoded = 0;
+    data_idx_enc = 0;
+
+    // Place data bits in non-parity positions
+    for i in 0..CODE_WIDTH-1
+      if ((i + 1) & i) == 0
+        // Parity position (1-indexed power of 2): leave as 0 for now
+        encoded[i:i] = 0;
+      else
+        encoded[i:i] = data_in[data_idx_enc:data_idx_enc];
+        if data_idx_enc == DATA_WIDTH - 1
+          data_idx_enc = 0;
+        else
+          data_idx_enc = (data_idx_enc + 1).trunc<$clog2(DATA_WIDTH + 1)>();
+        end if
+      end if
+    end for
+
+    // Calculate parity bits using 1-indexed positions
+    for j in 0..$clog2(CODE_WIDTH + 1)-1
+      parity_enc[j] = 0;
+      for k in 0..CODE_WIDTH-1
+        if (((k + 1) >> j) & 1) == 1
+          parity_enc[j] = parity_enc[j] ^ encoded[k:k];
+        end if
+      end for
+    end for
+
+    // Write parity bits into parity positions
+    parity_idx_enc = 0;
+    for l in 0..CODE_WIDTH-1
+      if ((l + 1) & l) == 0
+        encoded[l:l] = parity_enc[parity_idx_enc];
+        parity_idx_enc = (parity_idx_enc + 1).trunc<$clog2($clog2(CODE_WIDTH + 1) + 1)>();
+      end if
+    end for
+
+    // ---- Decoder: compute syndrome, correct, extract ----
+    for j in 0..$clog2(CODE_WIDTH + 1)-1
+      parity_dec[j] = 0;
+      for k in 0..CODE_WIDTH-1
+        if (((k + 1) >> j) & 1) == 1
+          parity_dec[j] = parity_dec[j] ^ received[k:k];
+        end if
+      end for
+    end for
+
+    syndrome_val = 0;
+    for j in 0..$clog2(CODE_WIDTH + 1)-1
+      syndrome_val[j:j] = parity_dec[j];
+    end for
+
+    // Correct single-bit error: syndrome is 1-indexed position, convert to 0-indexed
+    for i in 0..CODE_WIDTH-1
+      corrected[i:i] = received[i:i];
+      if (syndrome_val != 0) & (syndrome_val == i + 1)
+        corrected[i:i] = ~received[i:i];
+      end if
+    end for
+
+    error_detected = syndrome_val != 0;
+    error_corrected = syndrome_val != 0;
+
+    // Extract data bits from corrected codeword (non-parity positions)
+    data_out = 0;
+    data_idx_dec = 0;
+    for i in 0..CODE_WIDTH-1
+      if ((i + 1) & i) != 0
+        data_out[data_idx_dec:data_idx_dec] = corrected[i:i];
+        if data_idx_dec == DATA_WIDTH - 1
+          data_idx_dec = 0;
+        else
+          data_idx_dec = (data_idx_dec + 1).trunc<$clog2(DATA_WIDTH + 1)>();
+        end if
+      end if
+    end for
+  end comb
+end module onebit_ecc

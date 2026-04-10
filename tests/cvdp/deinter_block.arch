@@ -1,0 +1,93 @@
+module deinter_block
+  param ROW_COL_WIDTH:  const = 16;
+  param SUB_BLOCKS:     const = 4;
+  param DATA_WIDTH:     const = ROW_COL_WIDTH * ROW_COL_WIDTH;
+  param OUT_DATA_WIDTH: const = 16;
+  param WAIT_CYCLES:    const = 4;
+
+  local param CHUNK: const = 8;
+  local param NBW_CNT: const = $clog2(SUB_BLOCKS) + 1;
+  local param OUT_CYCLES: const = 32;
+  local param N_CYCLES: const = SUB_BLOCKS * DATA_WIDTH / OUT_DATA_WIDTH;
+  local param NBW_CNT_OUT: const = $clog2(N_CYCLES);
+  local param DELAY_LEN: const = WAIT_CYCLES + 1;
+
+  port clk:      in  Clock<SysDomain>;
+  port rst_n:    in  Reset<Async, Low>;
+  port i_valid:  in  Bool;
+  port in_data:  in  UInt<DATA_WIDTH>;
+  port reg out_data: out UInt<OUT_DATA_WIDTH> reset rst_n => 0;
+
+  default seq on clk rising;
+
+  // --- Input registration ---
+  reg cnt_sub_blocks: UInt<NBW_CNT> reset rst_n => 0;
+  reg start_intra: Bool reset rst_n => 0;
+  reg in_data_reg: Vec<UInt<DATA_WIDTH>, SUB_BLOCKS> reset rst_n => 0;
+
+  seq
+    if i_valid
+      in_data_reg[cnt_sub_blocks.trunc<$clog2(SUB_BLOCKS)>()] <= in_data;
+      if cnt_sub_blocks == (SUB_BLOCKS - 1)
+        cnt_sub_blocks <= 0;
+        start_intra <= 1;
+      else
+        cnt_sub_blocks <= (cnt_sub_blocks + 1).trunc<NBW_CNT>();
+        start_intra <= 0;
+      end if
+    end if
+  end seq
+
+  // --- Register intra-block data (identity transform) ---
+  reg out_data_intra_block_reg: Vec<UInt<DATA_WIDTH>, SUB_BLOCKS> reset rst_n => 0;
+
+  seq
+    if start_intra
+      for i in 0..SUB_BLOCKS-1
+        out_data_intra_block_reg[i] <= in_data_reg[i];
+      end for
+    end if
+  end seq
+
+  // --- Delay chain ---
+  reg start_intra_ff: UInt<DELAY_LEN> reset rst_n => 0;
+  reg enable_output: Bool reset rst_n => 0;
+
+  seq
+    enable_output <= start_intra_ff[DELAY_LEN - 1];
+    start_intra_ff <= {start_intra_ff[DELAY_LEN - 2 : 0], start_intra};
+  end seq
+
+  // --- Rearrange data into out_data_aux ---
+  reg out_data_aux: Vec<UInt<DATA_WIDTH>, SUB_BLOCKS> reset rst_n => 0;
+
+  seq
+    if start_intra
+      for i in 0..OUT_CYCLES-1
+        out_data_aux[0][i * CHUNK + CHUNK - 1 : i * CHUNK] <= out_data_intra_block_reg[i % 4][i * CHUNK + CHUNK - 1 : i * CHUNK];
+        out_data_aux[1][i * CHUNK + CHUNK - 1 : i * CHUNK] <= out_data_intra_block_reg[i % 4][((i + 1) % OUT_CYCLES) * CHUNK + CHUNK - 1 : ((i + 1) % OUT_CYCLES) * CHUNK];
+        out_data_aux[2][i * CHUNK + CHUNK - 1 : i * CHUNK] <= out_data_intra_block_reg[i % 4][((i + 2) % OUT_CYCLES) * CHUNK + CHUNK - 1 : ((i + 2) % OUT_CYCLES) * CHUNK];
+        out_data_aux[3][i * CHUNK + CHUNK - 1 : i * CHUNK] <= out_data_intra_block_reg[i % 4][((i + 3) % OUT_CYCLES) * CHUNK + CHUNK - 1 : ((i + 3) % OUT_CYCLES) * CHUNK];
+      end for
+    end if
+  end seq
+
+  // --- Output logic ---
+  reg cnt_sub_out: UInt<2> reset rst_n => 0;
+  reg cnt_output: UInt<NBW_CNT_OUT> reset rst_n => 0;
+
+  // Combinational: select the right chunk from out_data_aux
+  wire selected_aux: UInt<DATA_WIDTH>;
+
+  comb
+    selected_aux = out_data_aux[cnt_sub_out];
+  end comb
+
+  seq
+    if enable_output or cnt_output > 0
+      cnt_sub_out <= (cnt_sub_out + 1).trunc<2>();
+      cnt_output <= (cnt_output + 1).trunc<NBW_CNT_OUT>();
+      out_data <= selected_aux[(cnt_output % (DATA_WIDTH / OUT_DATA_WIDTH)) * OUT_DATA_WIDTH + OUT_DATA_WIDTH - 1 : (cnt_output % (DATA_WIDTH / OUT_DATA_WIDTH)) * OUT_DATA_WIDTH];
+    end if
+  end seq
+end module deinter_block

@@ -1,3 +1,11 @@
+clkgate ApbGhrIcg
+  kind latch;
+  port clk_in:  in Clock<SysDomain>;
+  port enable:  in Bool;
+  port test_en: in Bool;
+  port clk_out: out Clock<SysDomain>;
+end clkgate ApbGhrIcg
+
 module APBGlobalHistoryRegister
   port pclk:    in Clock<SysDomain>;
   port presetn: in Reset<Async, Low>;
@@ -6,9 +14,9 @@ module APBGlobalHistoryRegister
   port penable: in Bool;
   port pwrite:  in Bool;
   port pwdata:  in UInt<8>;
-  port reg pready:  out Bool reset presetn=>false;
-  port reg prdata:  out UInt<8> reset presetn=>0;
-  port reg pslverr: out Bool reset presetn=>false;
+  port reg pready:  out Bool reset presetn => false;
+  port reg prdata:  out UInt<8> reset presetn => 0;
+  port reg pslverr: out Bool reset presetn => false;
   port history_shift_valid: in Bool;
   port clk_gate_en: in Bool;
   port history_full:    out Bool;
@@ -17,61 +25,51 @@ module APBGlobalHistoryRegister
   port interrupt_full:  out Bool;
   port interrupt_error: out Bool;
 
-  // Internal clock gating latch
-  reg clk_gate_latch: Bool init false;
-  wire pclk_gated_en: Bool;
-
-  seq on pclk falling
-    clk_gate_latch <= clk_gate_en;
-  end seq
-
-  let pclk_gated_en = ~clk_gate_latch;
+  // Clock gate: enable is active-low (clk_gate_en=0 means clock active)
+  wire pclk_gated: Clock<SysDomain>;
+  inst icg: ApbGhrIcg
+    clk_in  <- pclk;
+    enable  <- ~clk_gate_en;
+    test_en <- false;
+    clk_out -> pclk_gated;
+  end inst icg
 
   // CSR registers
-  reg control_reg: UInt<8> reset presetn=>0;
-  reg train_hist:  UInt<8> reset presetn=>0;
-  reg predict_hist: UInt<8> reset presetn=>0;
+  reg control_reg: UInt<8> reset presetn => 0;
+  reg train_hist:  UInt<8> reset presetn => 0;
+  reg predict_hist: UInt<8> reset presetn => 0;
 
-  // APB interface - pready always high (no wait states)
-  seq on pclk rising
-    if pclk_gated_en
-      pready <= true;
-      if pselx & penable
-        if paddr == 0
-          if pwrite
-            control_reg <= pwdata;
-          end if
-          prdata <= control_reg;
-          pslverr <= false;
-        elsif paddr == 1
-          if pwrite
-            train_hist <= {1'b0, pwdata[6:0]};
-          end if
-          prdata <= train_hist;
-          pslverr <= false;
-        elsif paddr == 2
-          prdata <= predict_hist;
-          pslverr <= false;
-        else
-          pslverr <= true;
-          prdata <= 0;
+  // APB interface on gated clock
+  seq on pclk_gated rising
+    pready <= true;
+    if pselx & penable
+      if paddr == 0
+        if pwrite
+          control_reg <= pwdata;
         end if
+        prdata <= control_reg;
+        pslverr <= false;
+      elsif paddr == 1
+        if pwrite
+          train_hist <= {1'b0, pwdata[6:0]};
+        end if
+        prdata <= train_hist;
+        pslverr <= false;
+      elsif paddr == 2
+        prdata <= predict_hist;
+        pslverr <= false;
+      else
+        pslverr <= true;
+        prdata <= 0;
       end if
     end if
   end seq
 
   // Decode control register fields
-  wire ctrl_predict_valid: Bool;
-  wire ctrl_predict_taken: Bool;
-  wire ctrl_train_mispredicted: Bool;
-  wire ctrl_train_taken: Bool;
-
-  comb
-    ctrl_predict_valid = (control_reg[0:0] == 1);
-    ctrl_predict_taken = (control_reg[1:1] == 1);
-    ctrl_train_mispredicted = (control_reg[2:2] == 1);
-    ctrl_train_taken = (control_reg[3:3] == 1);
-  end comb
+  let ctrl_predict_valid: Bool = (control_reg[0:0] == 1);
+  let ctrl_predict_taken: Bool = (control_reg[1:1] == 1);
+  let ctrl_train_mispredicted: Bool = (control_reg[2:2] == 1);
+  let ctrl_train_taken: Bool = (control_reg[3:3] == 1);
 
   // Predict history update on rising edge of history_shift_valid
   seq on history_shift_valid rising

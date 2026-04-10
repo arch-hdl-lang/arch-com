@@ -1,0 +1,329 @@
+module axi_alu
+  port axi_clk_in: in Clock<SysDomain>;
+  port fast_clk_in: in Clock<SysDomain>;
+  port reset_in: in Reset<Sync>;
+
+  // AXI Write Address Channel
+  port axi_awaddr_i: in UInt<32>;
+  port axi_awlen_i: in UInt<8>;
+  port axi_awsize_i: in UInt<3>;
+  port axi_awburst_i: in UInt<2>;
+  port axi_awvalid_i: in Bool;
+  port axi_awready_o: out Bool;
+
+  // AXI Write Data Channel
+  port axi_wdata_i: in UInt<32>;
+  port axi_wstrb_i: in UInt<4>;
+  port axi_wlast_i: in Bool;
+  port axi_wvalid_i: in Bool;
+  port axi_wready_o: out Bool;
+
+  // AXI Write Response Channel
+  port axi_bvalid_o: out Bool;
+  port axi_bresp_o: out UInt<2>;
+  port axi_bready_i: in Bool;
+
+  // AXI Read Address Channel
+  port axi_araddr_i: in UInt<32>;
+  port axi_arlen_i: in UInt<8>;
+  port axi_arsize_i: in UInt<3>;
+  port axi_arburst_i: in UInt<2>;
+  port axi_arvalid_i: in Bool;
+  port axi_arready_o: out Bool;
+
+  // AXI Read Data Channel
+  port axi_rdata_o: out UInt<32>;
+  port axi_rvalid_o: out Bool;
+  port axi_rresp_o: out UInt<2>;
+  port axi_rlast_o: out Bool;
+  port axi_rready_i: in Bool;
+
+  // DSP result output
+  port result_o: out UInt<64>;
+
+  default seq on axi_clk_in rising;
+
+  // CSR registers
+  reg operand_a_addr: UInt<32> reset reset_in => 0;
+  reg operand_b_addr: UInt<32> reset reset_in => 0;
+  reg operand_c_addr: UInt<32> reset reset_in => 0;
+  reg op_select_reg: UInt<2> reset reset_in => 0;
+  reg start_reg: Bool reset reset_in => false;
+  reg clock_control: Bool reset reset_in => false;
+
+  // AXI Write state
+  reg aw_addr: UInt<32> reset reset_in => 0;
+  reg aw_len: UInt<8> reset reset_in => 0;
+  reg aw_size: UInt<3> reset reset_in => 0;
+  reg aw_burst: UInt<2> reset reset_in => 0;
+  reg awready_r: Bool reset reset_in => true;
+  reg wready_r: Bool reset reset_in => false;
+  reg bvalid_r: Bool reset reset_in => false;
+  reg wr_beat_cnt: UInt<8> reset reset_in => 0;
+  reg wr_active: Bool reset reset_in => false;
+
+  // AXI Read state
+  reg ar_addr: UInt<32> reset reset_in => 0;
+  reg ar_len: UInt<8> reset reset_in => 0;
+  reg ar_size: UInt<3> reset reset_in => 0;
+  reg ar_burst: UInt<2> reset reset_in => 0;
+  reg arready_r: Bool reset reset_in => true;
+  reg rvalid_r: Bool reset reset_in => false;
+  reg rdata_r: UInt<32> reset reset_in => 0;
+  reg rlast_r: Bool reset reset_in => false;
+  reg rd_beat_cnt: UInt<8> reset reset_in => 0;
+  reg rd_active: Bool reset reset_in => false;
+
+  // Memory interface signals
+  reg mem_we: Bool reset reset_in => false;
+  reg mem_waddr: UInt<4> reset reset_in => 0;
+  reg mem_wdata: UInt<32> reset reset_in => 0;
+
+  // CDC synchronizers (double-flop for CSR -> DSP domain)
+  reg cdc_op_a_addr_s1: UInt<32> reset reset_in => 0;
+  reg cdc_op_a_addr_s2: UInt<32> reset reset_in => 0;
+  reg cdc_op_b_addr_s1: UInt<32> reset reset_in => 0;
+  reg cdc_op_b_addr_s2: UInt<32> reset reset_in => 0;
+  reg cdc_op_c_addr_s1: UInt<32> reset reset_in => 0;
+  reg cdc_op_c_addr_s2: UInt<32> reset reset_in => 0;
+  reg cdc_op_sel_s1: UInt<2> reset reset_in => 0;
+  reg cdc_op_sel_s2: UInt<2> reset reset_in => 0;
+  reg cdc_start_s1: Bool reset reset_in => false;
+  reg cdc_start_s2: Bool reset reset_in => false;
+
+  // CDC synchronizers (DSP result -> AXI domain)
+  reg cdc_result_s1: UInt<64> reset reset_in => 0;
+  reg cdc_result_s2: UInt<64> reset reset_in => 0;
+
+  // DSP block registers (fast_clk domain)
+  reg dsp_result_r: UInt<64> reset reset_in => 0;
+
+  // Memory block output wires
+  wire mem_data_a: UInt<32>;
+  wire mem_data_b: UInt<32>;
+  wire mem_data_c: UInt<32>;
+  wire mem_result_addr: UInt<32>;
+
+  // Wires for address calculations
+  wire wr_addr_word: UInt<32>;
+  wire rd_addr_word: UInt<32>;
+  wire wr_addr_next: UInt<32>;
+  wire rd_addr_next: UInt<32>;
+
+  // DSP input wires (after CDC mux)
+  wire dsp_op_a_addr: UInt<4>;
+  wire dsp_op_b_addr: UInt<4>;
+  wire dsp_op_c_addr: UInt<4>;
+  wire dsp_op_sel: UInt<2>;
+  wire dsp_start: Bool;
+
+  // DSP result wire
+  wire dsp_result_val: UInt<64>;
+
+  // Write in-memory-range flag
+  wire wr_in_mem: Bool;
+
+  // Combinational logic
+  comb
+    wr_addr_word = aw_addr >> 2;
+    rd_addr_word = ar_addr >> 2;
+
+    wr_addr_next = (aw_addr + (1.zext<32>() << aw_size.zext<32>())).trunc<32>();
+    rd_addr_next = (ar_addr + (1.zext<32>() << ar_size.zext<32>())).trunc<32>();
+
+    wr_in_mem = wr_addr_word >= 8;
+
+    axi_awready_o = awready_r;
+    axi_wready_o = wready_r;
+    axi_bvalid_o = bvalid_r;
+    axi_bresp_o = 0;
+    axi_arready_o = arready_r;
+    axi_rdata_o = rdata_r;
+    axi_rvalid_o = rvalid_r;
+    axi_rresp_o = 0;
+    axi_rlast_o = rlast_r;
+
+    dsp_op_a_addr = clock_control ? cdc_op_a_addr_s2[3:0] : operand_a_addr[3:0];
+    dsp_op_b_addr = clock_control ? cdc_op_b_addr_s2[3:0] : operand_b_addr[3:0];
+    dsp_op_c_addr = clock_control ? cdc_op_c_addr_s2[3:0] : operand_c_addr[3:0];
+    dsp_op_sel = clock_control ? cdc_op_sel_s2 : op_select_reg;
+    dsp_start = clock_control ? cdc_start_s2 : start_reg;
+
+    dsp_result_val = clock_control ? cdc_result_s2 : dsp_result_r;
+
+    result_o = dsp_result_val;
+  end comb
+
+  // Memory block instance
+  inst u_memory_block: memory_block
+    axi_clk <- axi_clk_in;
+    ctrld_clk <- fast_clk_in;
+    reset_in <- reset_in;
+    we <- mem_we;
+    write_address <- mem_waddr;
+    write_data <- mem_wdata;
+    address_a <- dsp_op_a_addr;
+    address_b <- dsp_op_b_addr;
+    address_c <- dsp_op_c_addr;
+    data_a -> mem_data_a;
+    data_b -> mem_data_b;
+    data_c -> mem_data_c;
+    result_address -> mem_result_addr;
+  end inst u_memory_block
+
+  // AXI Write Channel (unified seq block)
+  seq
+    mem_we <= false;
+
+    // Write address handshake
+    if axi_awvalid_i & awready_r
+      aw_addr <= axi_awaddr_i;
+      aw_len <= axi_awlen_i;
+      aw_size <= axi_awsize_i;
+      aw_burst <= axi_awburst_i;
+      awready_r <= false;
+      wr_active <= true;
+      wr_beat_cnt <= 0;
+    end if
+
+    // Assert wready when write active and not already processing
+    if wr_active & ~wready_r & ~bvalid_r
+      wready_r <= true;
+    end if
+
+    // Write data handling
+    if axi_wvalid_i & wready_r
+      if wr_addr_word < 8
+        if wr_addr_word == 0
+          operand_a_addr <= axi_wdata_i;
+        elsif wr_addr_word == 1
+          operand_b_addr <= axi_wdata_i;
+        elsif wr_addr_word == 2
+          operand_c_addr <= axi_wdata_i;
+        elsif wr_addr_word == 3
+          op_select_reg <= axi_wdata_i[1:0];
+          start_reg <= axi_wdata_i[2];
+        elsif wr_addr_word == 4
+          clock_control <= axi_wdata_i[0];
+        end if
+      elsif wr_in_mem
+        mem_we <= true;
+        mem_waddr <= (wr_addr_word - 8).trunc<4>();
+        mem_wdata <= axi_wdata_i;
+      end if
+
+      // Burst address increment
+      if aw_burst == 1
+        aw_addr <= wr_addr_next;
+      end if
+
+      if axi_wlast_i | (wr_beat_cnt == aw_len)
+        wready_r <= false;
+        bvalid_r <= true;
+        wr_active <= false;
+        wr_beat_cnt <= 0;
+      else
+        wr_beat_cnt <= (wr_beat_cnt + 1).trunc<8>();
+      end if
+    end if
+
+    // Write response handshake
+    if bvalid_r & axi_bready_i
+      bvalid_r <= false;
+      awready_r <= true;
+    end if
+  end seq
+
+  // AXI Read Channel (unified seq block)
+  seq
+    if axi_arvalid_i & arready_r
+      ar_addr <= axi_araddr_i;
+      ar_len <= axi_arlen_i;
+      ar_size <= axi_arsize_i;
+      ar_burst <= axi_arburst_i;
+      arready_r <= false;
+      rd_active <= true;
+      rd_beat_cnt <= 0;
+    end if
+
+    if rd_active & ~rvalid_r
+      if rd_addr_word == 0
+        rdata_r <= operand_a_addr;
+      elsif rd_addr_word == 1
+        rdata_r <= operand_b_addr;
+      elsif rd_addr_word == 2
+        rdata_r <= operand_c_addr;
+      elsif rd_addr_word == 3
+        rdata_r <= {29'd0, start_reg, op_select_reg};
+      elsif rd_addr_word == 4
+        rdata_r <= {31'd0, clock_control};
+      elsif rd_addr_word == 5
+        rdata_r <= dsp_result_val.trunc<32>();
+      elsif rd_addr_word == 6
+        rdata_r <= (dsp_result_val >> 32).trunc<32>();
+      else
+        rdata_r <= 0;
+      end if
+
+      rvalid_r <= true;
+      if rd_beat_cnt == ar_len
+        rlast_r <= true;
+      else
+        rlast_r <= false;
+      end if
+    end if
+
+    if rvalid_r & axi_rready_i
+      rvalid_r <= false;
+      if rlast_r
+        rlast_r <= false;
+        rd_active <= false;
+        arready_r <= true;
+      else
+        rd_beat_cnt <= (rd_beat_cnt + 1).trunc<8>();
+        if ar_burst == 1
+          ar_addr <= rd_addr_next;
+        end if
+      end if
+    end if
+  end seq
+
+  // CDC: AXI clock -> Fast clock (double-flop synchronizer, always running)
+  seq on fast_clk_in rising
+    cdc_op_a_addr_s1 <= operand_a_addr;
+    cdc_op_a_addr_s2 <= cdc_op_a_addr_s1;
+    cdc_op_b_addr_s1 <= operand_b_addr;
+    cdc_op_b_addr_s2 <= cdc_op_b_addr_s1;
+    cdc_op_c_addr_s1 <= operand_c_addr;
+    cdc_op_c_addr_s2 <= cdc_op_c_addr_s1;
+    cdc_op_sel_s1 <= op_select_reg;
+    cdc_op_sel_s2 <= cdc_op_sel_s1;
+    cdc_start_s1 <= start_reg;
+    cdc_start_s2 <= cdc_start_s1;
+  end seq
+
+  // DSP Block: compute result on fast_clk with CDC-muxed inputs
+  seq on fast_clk_in rising
+    if dsp_start
+      if dsp_op_sel == 0
+        dsp_result_r <= ((mem_data_a.zext<64>() + mem_data_b.zext<64>()) * mem_data_c.zext<64>()).trunc<64>();
+      elsif dsp_op_sel == 1
+        dsp_result_r <= (mem_data_a.zext<64>() * mem_data_b.zext<64>()).trunc<64>();
+      elsif dsp_op_sel == 2
+        dsp_result_r <= mem_data_a.zext<64>() >> (mem_data_b[4:0]).zext<64>();
+      elsif dsp_op_sel == 3
+        if mem_data_b != 0
+          dsp_result_r <= mem_data_a.zext<64>() / mem_data_b.zext<64>();
+        else
+          dsp_result_r <= 64'hDEADDEAD;
+        end if
+      end if
+    end if
+  end seq
+
+  // CDC: Fast clock -> AXI clock (double-flop synchronizer, always running)
+  seq
+    cdc_result_s1 <= dsp_result_r;
+    cdc_result_s2 <= cdc_result_s1;
+  end seq
+end module axi_alu
