@@ -1,4 +1,4 @@
-fsm signed_sequential_booth_multiplier
+module signed_sequential_booth_multiplier
   param WIDTH: const = 8;
 
   port clk:    in Clock<SysDomain>;
@@ -6,88 +6,81 @@ fsm signed_sequential_booth_multiplier
   port start:  in Bool;
   port A:      in SInt<WIDTH>;
   port B:      in SInt<WIDTH>;
-  port result: out SInt<2*WIDTH> default 0;
-  port done:   out Bool default false;
+  port result: out SInt<2*WIDTH>;
+  port done:   out Bool;
 
   default seq on clk rising;
+  reg default: reset rst => 0;
 
-  param HALF: const = WIDTH / 2;
+  local param HALF: const = WIDTH / 2;
+  local param DW: const = 2 * WIDTH;
 
-  reg accum:   SInt<2*WIDTH> reset rst=>0;
-  reg mcand:   SInt<WIDTH>   reset rst=>0;
-  reg mplier:  SInt<WIDTH>   reset rst=>0;
-  reg step:    UInt<4>       reset rst=>0;
+  // State encoding: 0=IDLE, 1=COMPUTE, 2=DONE
+  reg st: UInt<2>;
 
-  // Extended multiplier with appended 0 at bit -1: {mplier, 1'b0}
-  let mplier_ext: UInt<9>  = {mplier, 1'b0};
-  let shift_amt:  UInt<4>  = step * 2;
+  // Datapath registers
+  reg accum_r:  SInt<DW>;
+  reg mcand_r:  SInt<DW>;
+  reg mplier_r: UInt<WIDTH+1>;
+  reg step_r:   UInt<8>;
+  reg done_r:   Bool;
 
-  // Shift mplier_ext right then take bottom 3 bits
-  let shifted9: UInt<9> = mplier_ext >> shift_amt;
-  let grp3:     UInt<3> = shifted9[2:0];
+  // Current 3-bit Booth group from bottom of mplier_r
+  let grp: UInt<3> = mplier_r[2:0];
 
-  // Booth encoding partial products
-  let m_ext:  SInt<2*WIDTH> = mcand.sext<2*WIDTH>();
-  let m2_pos: SInt<2*WIDTH> = m_ext << 1;
-  let zero16: SInt<2*WIDTH> = accum ^ accum;
+  // Booth partial product selection
+  let m_pos:  SInt<DW+1> = mcand_r.sext<DW+1>();
+  let m2_pos: SInt<DW+1> = mcand_r.sext<DW+1>() << 1;
+  let m_neg:  SInt<DW+1> = (0 - mcand_r.sext<DW+1>()).trunc<DW+1>();
+  let m2_neg: SInt<DW+1> = (0 - m2_pos).trunc<DW+1>();
 
-  let m_neg:  SInt<2*WIDTH+1> = zero16.sext<2*WIDTH+1>() - m_ext.sext<2*WIDTH+1>();
-  let m2_neg: SInt<2*WIDTH+1> = zero16.sext<2*WIDTH+1>() - m2_pos.sext<2*WIDTH+1>();
+  wire pp_val: SInt<DW+1>;
 
-  let is_zero: Bool = (grp3 == 0) | (grp3 == 7);
-  let is_pos1: Bool = (grp3 == 1) | (grp3 == 2);
-  let is_pos2: Bool = grp3 == 3;
-  let is_neg2: Bool = grp3 == 4;
+  let accum_ext: SInt<DW+1> = accum_r.sext<DW+1>();
+  let sum: SInt<DW+1> = (accum_ext + pp_val).trunc<DW+1>();
 
-  let pp_sel: SInt<2*WIDTH+1> =
-    is_zero  ? zero16.sext<2*WIDTH+1>() :
-    is_pos1  ? m_ext.sext<2*WIDTH+1>() :
-    is_pos2  ? m2_pos.sext<2*WIDTH+1>() :
-    is_neg2  ? m2_neg :
-               m_neg;
+  // Step thresholds
+  let last_step_v: UInt<8> = (HALF + 2).zext<8>();
+  let half_val_v:  UInt<8> = HALF.zext<8>();
 
-  let pp_shifted: SInt<2*WIDTH+1> = pp_sel << shift_amt;
-  let accum_next: SInt<2*WIDTH+2> = accum.sext<2*WIDTH+2>() + pp_shifted.sext<2*WIDTH+2>();
+  comb
+    result = accum_r;
+    done   = done_r;
+    pp_val =
+      (grp == 1) | (grp == 2) ? m_pos  :
+      (grp == 3)              ? m2_pos :
+      (grp == 4)              ? m2_neg :
+      (grp == 5) | (grp == 6) ? m_neg  :
+                                 m_pos ^ m_pos;
+  end comb
 
-  // Last step index as UInt<4>
-  let last_step: UInt<4> = 3;
-
-  state [IDLE, COMPUTE, DONE]
-  default state IDLE;
-
-  state IDLE
-    comb
-      result = accum;
-      done   = false;
-    end comb
-    -> COMPUTE when start;
-    seq
+  seq
+    if st == 0
+      // IDLE
+      done_r <= false;
       if start
-        accum  <= zero16;
-        mcand  <= A;
-        mplier <= B;
-        step   <= 0;
+        accum_r  <= 0;
+        mcand_r  <= A.sext<DW>();
+        mplier_r <= {unsigned(B), 1'b0};
+        step_r   <= 0;
+        st       <= 1;
       end if
-    end seq
-  end state IDLE
-
-  state COMPUTE
-    comb
-      result = accum;
-      done   = false;
-    end comb
-    -> DONE when step == last_step;
-    seq
-      accum <= accum_next.trunc<2*WIDTH>();
-      step  <= step + 1;
-    end seq
-  end state COMPUTE
-
-  state DONE
-    comb
-      result = accum;
-      done   = true;
-    end comb
-    -> IDLE when start == false;
-  end state DONE
-end fsm signed_sequential_booth_multiplier
+    elsif st == 1
+      // COMPUTE
+      if step_r < half_val_v
+        accum_r  <= sum.trunc<DW>();
+        mplier_r <= mplier_r >> 2;
+        mcand_r  <= mcand_r << 2;
+      end if
+      step_r <= (step_r + 1).trunc<8>();
+      if step_r == last_step_v
+        st     <= 2;
+        done_r <= true;
+      end if
+    else
+      // DONE
+      done_r <= false;
+      st     <= 0;
+    end if
+  end seq
+end module signed_sequential_booth_multiplier

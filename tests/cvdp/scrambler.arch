@@ -1,5 +1,6 @@
 module scrambler
   param DATA_WIDTH: const = 128;
+  local param NUM_CHUNKS: const = DATA_WIDTH / 16;
 
   port clk:      in Clock<SysDomain>;
   port rst_n:    in Reset<Async, Low>;
@@ -11,13 +12,12 @@ module scrambler
   default seq on clk rising;
 
   // 16-bit LFSR initialized to 0x4000 (bit 14 set)
-  reg lfsr:       UInt<16>          reset rst_n=>16384;
-  reg data_out_r: UInt<DATA_WIDTH>  reset rst_n=>0;
+  reg lfsr:       UInt<16>          reset rst_n => 16384;
 
   wire feedback_w: Bool;
   wire lfsr_next:  UInt<16>;
 
-  // Polynomial selection: right-shift LFSR (feedback inserted at MSB=bit15)
+  // Polynomial selection
   comb
     if mode == 0
       feedback_w = lfsr[15] ^ lfsr[14];
@@ -43,18 +43,18 @@ module scrambler
 
   let feedback = feedback_w;
 
-  // Replicate 16-bit lfsr_next to fill DATA_WIDTH bits (cyclic: bit i → lfsr_next[i%16])
+  // Replicate 16-bit lfsr (registered value) to fill DATA_WIDTH bits
   wire lfsr_mask: UInt<DATA_WIDTH>;
   comb
-    for i in 0..DATA_WIDTH-1
-      lfsr_mask[i:i] = lfsr_next[i & 15 : i & 15];
+    for i in 0..NUM_CHUNKS-1
+      lfsr_mask[i*16+15 : i*16] = lfsr;
     end for
   end comb
 
   seq
-    lfsr       <= lfsr_next;
-    data_out_r <= data_in ^ lfsr_mask;
+    lfsr <= lfsr_next;
   end seq
 
-  let data_out = data_out_r;
+  // Combinational output: XOR data_in with current lfsr mask
+  let data_out = data_in ^ lfsr_mask;
 end module scrambler

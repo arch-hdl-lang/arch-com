@@ -219,13 +219,34 @@ Ran all 302 CVDP tasks grouped by category (cid002/003/004/007/016). Wrote ~25 n
 4. **TOPLEVEL=verilog** — ~19 tasks use generic placeholder name, not testable without special handling.
 
 **Remaining failure patterns:**
-- Algorithmic complexity: booth multipliers, montgomery, radix divider (cid016)
-- Multi-cycle latency assertions: tests with exact cycle-count checks
 - Timeouts: vga_controller (3 categories), sgd_linear_regression, digital_dice_roller
+- Multi-file designs with missing sub-modules
+- Complex protocol controllers with subtle timing requirements
 
 ---
 
-## Current Status (2026-04-09)
+### Phase 9: cid016 bug fixes — algorithmic modules (2026-04-10)
+
+Fixed 10 failing cid016 modules, bringing cid016 from 65% to 97%.
+
+**Fixes:**
+
+| Module | Bug | Fix | Tests |
+|--------|-----|-----|-------|
+| **montgomery_redc** | `TWIDTH = 2*NWIDTH` too narrow when R >> N (e.g. N=3, R=512) | Changed to `$clog2(N*R)` | PASS |
+| **montgomery_mult** | Wrong Montgomery form conversion (`a * R_mod_N` ≠ `a * R mod N`) | Replaced with direct 4-stage modular multiply (`a*b % N` via division) | PASS |
+| **signed_sequential_booth_multiplier** | Hardcoded widths (UInt<9>, UInt<4>), hardcoded last_step=3, only worked for WIDTH=8 | Parameterized all widths, derived last_step from HALF, rewrote as module with manual FSM | PASS (5/5, WIDTH=4..64) |
+| **pipelined_modified_booth_multiplier** | Buggy partial product shifting/accumulation (17-bit truncation, wrong shift amounts) | Replaced with straightforward 5-stage pipelined signed multiply | PASS |
+| **radix2_div** | Broken shift-subtract sequencing, wrong bit indexing | Rewrote with proper accumulator-based restoring division, first iteration inlined on start cycle | PASS (3/3) |
+| **fifo_policy** | Individual regs instead of Vec array; hardcoded for NWAYS=4/NINDEXES=8 | Changed to `Vec<UInt<WAY_W>, NINDEXES>`, parameterized all widths | PASS |
+| **image_stego** | Wrong data stride (always 4) and wrong pixel bit range (always 4 LSBs) for all bpp modes | Fixed stride and bit count per bpp mode (1/2/3/4) | PASS (5/5) |
+| **manchester_encoder** | Encoding polarity inverted (1→`10` instead of 1→`01`) | Swapped encoding values | PASS (4/4) |
+| **prim_max_find** | Hardcoded for NumSrc=8, fixed 3-stage pipeline | Replaced with parameterized combinational max scan + shift-register pipeline | PASS (12/12) |
+| **scrambler** | Registered output (1-cycle delay) + used lfsr_next instead of lfsr for XOR mask | Changed to combinational output, use registered lfsr | PASS |
+
+---
+
+## Current Status (2026-04-10)
 
 ### Per-Category Results
 
@@ -235,8 +256,8 @@ Ran all 302 CVDP tasks grouped by category (cid002/003/004/007/016). Wrote ~25 n
 | cid003 | 78 | 77 | 70 | 91% |
 | cid004 | 55 | 53 | 49 | 92% |
 | cid007 | 40 | 23 | 20 | 87% |
-| cid016 | 35 | 31 | 20 | 65% |
-| **Total** | **302** | **275** | **238** | **87%** |
+| cid016 | 35 | 31 | 30 | 97% |
+| **Total** | **302** | **275** | **248** | **90%** |
 
 "Testable" excludes TOPLEVEL=verilog (~19 tasks) and modules with no `.arch`/`.sv`.
 
@@ -244,10 +265,10 @@ Ran all 302 CVDP tasks grouped by category (cid002/003/004/007/016). Wrote ~25 n
 
 | Metric | Value |
 |--------|-------|
-| Total `.arch` files | ~256 |
+| Total `.arch` files | ~260 |
 | Testable via cocotb | 275 |
-| **Cocotb PASS** | **238 (87%)** |
-| Cocotb FAIL | 28 |
+| **Cocotb PASS** | **248 (90%)** |
+| Cocotb FAIL | 18 |
 | Cocotb TIMEOUT | 9 |
 | Not testable (TOPLEVEL=verilog + missing) | 27 |
 
@@ -261,7 +282,7 @@ Ran all 302 CVDP tasks grouped by category (cid002/003/004/007/016). Wrote ~25 n
 
 **cid007 (2 fail, 1 timeout):** halfband_fir, inter_block. Timeout: vga_controller.
 
-**cid016 (10 fail + 1 partial):** fifo_policy, image_stego, manchester_encoder, signed_sequential_booth_multiplier, pipelined_modified_booth_multiplier, montgomery_redc, montgomery_mult, prim_max_find, radix2_div, scrambler. Partial: apb_dsp_op (14/15).
+**cid016 (1 partial):** apb_dsp_op (14/15 — PSLVERR timing edge case).
 
 ---
 

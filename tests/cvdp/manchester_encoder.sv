@@ -12,13 +12,13 @@ module manchester_encoder #(
   logic [2 * N-1:0] data_reg;
   logic valid_reg;
   logic [2 * N-1:0] encoded;
-  // Combinational Manchester encoding: '1' -> "10", '0' -> "01"
+  // Combinational Manchester encoding: '1' -> "01", '0' -> "10"
   always_comb begin
     for (int i = 0; i <= N - 1; i++) begin
       if (enc_data_in[i +: 1] == 1) begin
-        encoded[2 * i +: 2] = 2;
-      end else begin
         encoded[2 * i +: 2] = 1;
+      end else begin
+        encoded[2 * i +: 2] = 2;
       end
     end
   end

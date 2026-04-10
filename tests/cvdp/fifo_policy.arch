@@ -1,71 +1,38 @@
 module fifo_policy
   param NWAYS: const = 4;
-  param NINDEXES: const = 8;
+  param NINDEXES: const = 32;
+  param WAY_W: const = $clog2(NWAYS);
+
   port clock: in Clock<SysDomain>;
   port reset: in Reset<Async, High>;
-  port index: in UInt<3>;
-  port way_select: in UInt<2>;
+  port index: in UInt<$clog2(NINDEXES)>;
+  port way_select: in UInt<WAY_W>;
   port access: in Bool;
   port hit: in Bool;
-  port way_replace: out UInt<2>;
+  port way_replace: out UInt<WAY_W>;
 
-  reg fifo_array_0: UInt<2> reset reset=>0;
-  reg fifo_array_1: UInt<2> reset reset=>0;
-  reg fifo_array_2: UInt<2> reset reset=>0;
-  reg fifo_array_3: UInt<2> reset reset=>0;
-  reg fifo_array_4: UInt<2> reset reset=>0;
-  reg fifo_array_5: UInt<2> reset reset=>0;
-  reg fifo_array_6: UInt<2> reset reset=>0;
-  reg fifo_array_7: UInt<2> reset reset=>0;
+  default seq on clock rising;
 
-  wire cur_val: UInt<2>;
-  wire next_val: UInt<2>;
+  reg fifo_array: Vec<UInt<WAY_W>, NINDEXES> reset reset => 0;
+
+  wire cur_val: UInt<WAY_W>;
+  wire next_val: UInt<WAY_W>;
+
+  let idx: UInt<$clog2(NINDEXES)> = index;
 
   comb
-    if index == 0
-      cur_val = fifo_array_0;
-    elsif index == 1
-      cur_val = fifo_array_1;
-    elsif index == 2
-      cur_val = fifo_array_2;
-    elsif index == 3
-      cur_val = fifo_array_3;
-    elsif index == 4
-      cur_val = fifo_array_4;
-    elsif index == 5
-      cur_val = fifo_array_5;
-    elsif index == 6
-      cur_val = fifo_array_6;
-    else
-      cur_val = fifo_array_7;
-    end if
+    cur_val = fifo_array[idx];
     way_replace = cur_val;
-    if cur_val == 3
+    if cur_val == (NWAYS - 1).trunc<WAY_W>()
       next_val = 0;
     else
-      next_val = (cur_val + 1).trunc<2>();
+      next_val = (cur_val + 1).trunc<WAY_W>();
     end if
   end comb
 
-  seq on clock rising
+  seq
     if access & ~hit
-      if index == 0
-        fifo_array_0 <= next_val;
-      elsif index == 1
-        fifo_array_1 <= next_val;
-      elsif index == 2
-        fifo_array_2 <= next_val;
-      elsif index == 3
-        fifo_array_3 <= next_val;
-      elsif index == 4
-        fifo_array_4 <= next_val;
-      elsif index == 5
-        fifo_array_5 <= next_val;
-      elsif index == 6
-        fifo_array_6 <= next_val;
-      else
-        fifo_array_7 <= next_val;
-      end if
+      fifo_array[idx] <= next_val;
     end if
   end seq
 end module fifo_policy

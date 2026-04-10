@@ -1,38 +1,31 @@
 // Montgomery reduction: result = T * R^{-1} mod N
 // Combinational implementation
-// N, R, R_INVERSE are parameters; NWIDTH and TWIDTH are derived widths
-// Algorithm: REDC using the formula (T + m*N) >> log2(R)
-// where m = (T mod R) * N' mod R, N' = -N^{-1} mod R
 module montgomery_redc
   param N:        const = 7;
   param R:        const = 8;
   param R_INVERSE: const = 1;
-  param NWIDTH:   const = 3;
-  param TWIDTH:   const = 6;
+  local param NWIDTH: const = $clog2(N + 1);
+  local param TWIDTH: const = $clog2(N * R);
 
   port T:      in  UInt<TWIDTH>;
   port result: out UInt<NWIDTH>;
 
-  // Derived constants (computed combinationally from params)
   // N_PRIME = (R * R_INVERSE - 1) / N
-  // Use 16-bit intermediates to handle a wide range of N,R values
-  let n_prime_wide: UInt<16> = ((R.zext<16>() * R_INVERSE.zext<16>()) - 1.zext<16>()).trunc<16>() / N.zext<16>();
+  let n_prime_wide: UInt<32> = ((R.zext<32>() * R_INVERSE.zext<32>()) - 1.zext<32>()).trunc<32>() / N.zext<32>();
 
   // T_mod_R = T & (R-1) since R is a power of 2
-  // We use up to 16 bits for R-1
-  let r_mask:     UInt<16> = (R.zext<16>() - 1.zext<16>()).trunc<16>();
-  let t_mod_r:    UInt<16> = T.zext<16>() & r_mask;
+  let r_mask:     UInt<32> = (R.zext<32>() - 1.zext<32>()).trunc<32>();
+  let t_mod_r:    UInt<32> = T.zext<32>() & r_mask;
 
   // m = (T_mod_R * N_PRIME) mod R
-  let t_x_np:     UInt<32> = (t_mod_r.zext<32>() * n_prime_wide.zext<32>()).trunc<32>();
-  let m_wide:     UInt<16> = t_x_np.trunc<16>() & r_mask;
+  let t_x_np:     UInt<32> = (t_mod_r * n_prime_wide).trunc<32>();
+  let m_wide:     UInt<32> = t_x_np & r_mask;
 
   // t_redc = (T + m * N) / R
-  let m_x_n:      UInt<32> = (m_wide.zext<32>() * N.zext<32>()).trunc<32>();
+  let m_x_n:      UInt<32> = (m_wide * N.zext<32>()).trunc<32>();
   let t_plus_mn:  UInt<32> = (T.zext<32>() + m_x_n).trunc<32>();
 
   // Divide by R (right shift by log2(R))
-  // Use a fixed 5-bit shift amount based on R
   let r_log2: UInt<5> =
     R == 4    ? 2 :
     R == 8    ? 3 :
@@ -42,18 +35,17 @@ module montgomery_redc
     R == 128  ? 7 :
     R == 256  ? 8 :
     R == 512  ? 9 :
-                10;
+    R == 1024 ? 10 :
+              3;
 
   let t_redc_wide: UInt<32> = t_plus_mn >> r_log2;
 
   // Final reduction: if t_redc >= N, subtract N
-  let t_redc_n: UInt<16> = t_redc_wide.trunc<16>();
-
   comb
-    if t_redc_n >= N.zext<16>()
-      result = (t_redc_n - N.zext<16>()).trunc<NWIDTH>();
+    if t_redc_wide >= N.zext<32>()
+      result = (t_redc_wide - N.zext<32>()).trunc<NWIDTH>();
     else
-      result = t_redc_n.trunc<NWIDTH>();
+      result = t_redc_wide.trunc<NWIDTH>();
     end if
   end comb
 end module montgomery_redc

@@ -1,11 +1,11 @@
-// Find maximum value and its index among NumSrc inputs.
-// Uses a registered binary tree: level 1 (leaf) registers latch inputs,
-// then bubble up through tree levels, one register stage per level.
-// For NumSrc=8, Width=8: SrcWidth=3, NumLevels=2, result latency = NumLevels+1 = 3 cycles.
+// Find maximum value and its index among NumSrc valid inputs.
+// Combinational priority scan with shift-register pipeline to match
+// the expected latency of $clog2(NumSrc)+1 cycles.
 module prim_max_find
   param NumSrc:   const = 8;
   param Width:    const = 8;
-  param SrcWidth: const = 3;
+  local param SrcWidth: const = $clog2(NumSrc);
+  local param LATENCY: const = $clog2(NumSrc) + 1;
 
   port clk_i:      in  Clock<SysDomain>;
   port rst_ni:     in  Reset<Async, Low>;
@@ -15,242 +15,48 @@ module prim_max_find
   port max_idx_o:  out UInt<SrcWidth>;
   port max_valid_o: out Bool;
 
+  reg default: reset rst_ni => 0;
   default seq on clk_i rising;
 
-  // Extract individual values from the flattened input
-  let v0: UInt<Width> = values_i[1*Width-1:0*Width];
-  let v1: UInt<Width> = values_i[2*Width-1:1*Width];
-  let v2: UInt<Width> = values_i[3*Width-1:2*Width];
-  let v3: UInt<Width> = values_i[4*Width-1:3*Width];
-  let v4: UInt<Width> = values_i[5*Width-1:4*Width];
-  let v5: UInt<Width> = values_i[6*Width-1:5*Width];
-  let v6: UInt<Width> = values_i[7*Width-1:6*Width];
-  let v7: UInt<Width> = values_i[8*Width-1:7*Width];
-
-  let vld0: Bool = valid_i[0:0] != 0;
-  let vld1: Bool = valid_i[1:1] != 0;
-  let vld2: Bool = valid_i[2:2] != 0;
-  let vld3: Bool = valid_i[3:3] != 0;
-  let vld4: Bool = valid_i[4:4] != 0;
-  let vld5: Bool = valid_i[5:5] != 0;
-  let vld6: Bool = valid_i[6:6] != 0;
-  let vld7: Bool = valid_i[7:7] != 0;
-
-  // Level 2 (leaf): register all 8 inputs
-  reg l2_val0: UInt<Width>    reset rst_ni=>0;
-  reg l2_val1: UInt<Width>    reset rst_ni=>0;
-  reg l2_val2: UInt<Width>    reset rst_ni=>0;
-  reg l2_val3: UInt<Width>    reset rst_ni=>0;
-  reg l2_val4: UInt<Width>    reset rst_ni=>0;
-  reg l2_val5: UInt<Width>    reset rst_ni=>0;
-  reg l2_val6: UInt<Width>    reset rst_ni=>0;
-  reg l2_val7: UInt<Width>    reset rst_ni=>0;
-  reg l2_idx0: UInt<SrcWidth> reset rst_ni=>0;
-  reg l2_idx1: UInt<SrcWidth> reset rst_ni=>0;
-  reg l2_idx2: UInt<SrcWidth> reset rst_ni=>0;
-  reg l2_idx3: UInt<SrcWidth> reset rst_ni=>0;
-  reg l2_idx4: UInt<SrcWidth> reset rst_ni=>0;
-  reg l2_idx5: UInt<SrcWidth> reset rst_ni=>0;
-  reg l2_idx6: UInt<SrcWidth> reset rst_ni=>0;
-  reg l2_idx7: UInt<SrcWidth> reset rst_ni=>0;
-  reg l2_vld0: Bool           reset rst_ni=>false;
-  reg l2_vld1: Bool           reset rst_ni=>false;
-  reg l2_vld2: Bool           reset rst_ni=>false;
-  reg l2_vld3: Bool           reset rst_ni=>false;
-  reg l2_vld4: Bool           reset rst_ni=>false;
-  reg l2_vld5: Bool           reset rst_ni=>false;
-  reg l2_vld6: Bool           reset rst_ni=>false;
-  reg l2_vld7: Bool           reset rst_ni=>false;
-
-  seq
-    l2_val0 <= v0; l2_idx0 <= 0; l2_vld0 <= vld0;
-    l2_val1 <= v1; l2_idx1 <= 1; l2_vld1 <= vld1;
-    l2_val2 <= v2; l2_idx2 <= 2; l2_vld2 <= vld2;
-    l2_val3 <= v3; l2_idx3 <= 3; l2_vld3 <= vld3;
-    l2_val4 <= v4; l2_idx4 <= 4; l2_vld4 <= vld4;
-    l2_val5 <= v5; l2_idx5 <= 5; l2_vld5 <= vld5;
-    l2_val6 <= v6; l2_idx6 <= 6; l2_vld6 <= vld6;
-    l2_val7 <= v7; l2_idx7 <= 7; l2_vld7 <= vld7;
-  end seq
-
-  // Helper wires for Level 1 comparisons (pairs from Level 2)
-  wire m01_val: UInt<Width>;
-  wire m01_idx: UInt<SrcWidth>;
-  wire m01_vld: Bool;
-  wire m23_val: UInt<Width>;
-  wire m23_idx: UInt<SrcWidth>;
-  wire m23_vld: Bool;
-  wire m45_val: UInt<Width>;
-  wire m45_idx: UInt<SrcWidth>;
-  wire m45_vld: Bool;
-  wire m67_val: UInt<Width>;
-  wire m67_idx: UInt<SrcWidth>;
-  wire m67_vld: Bool;
+  // Combinational max-find: priority scan from index 0
+  wire comb_max_val: UInt<Width>;
+  wire comb_max_idx: UInt<SrcWidth>;
+  wire comb_max_vld: Bool;
 
   comb
-    // Compare pair (0,1)
-    if (l2_vld0 == false) & l2_vld1
-      m01_val = l2_val1; m01_idx = l2_idx1; m01_vld = true;
-    elsif l2_vld0 & (l2_vld1 == false)
-      m01_val = l2_val0; m01_idx = l2_idx0; m01_vld = true;
-    elsif l2_vld0 & l2_vld1
-      if l2_val0 >= l2_val1
-        m01_val = l2_val0; m01_idx = l2_idx0;
-      else
-        m01_val = l2_val1; m01_idx = l2_idx1;
+    comb_max_val = 0;
+    comb_max_idx = 0;
+    comb_max_vld = false;
+    for i in 0..NumSrc-1
+      if valid_i[i:i]
+        if (comb_max_vld == false) | ((values_i >> (i * Width)).trunc<Width>() > comb_max_val)
+          comb_max_val = (values_i >> (i * Width)).trunc<Width>();
+          comb_max_idx = i.trunc<SrcWidth>();
+          comb_max_vld = true;
+        end if
       end if
-      m01_vld = true;
-    else
-      m01_val = 0; m01_idx = 0; m01_vld = false;
-    end if
-
-    // Compare pair (2,3)
-    if (l2_vld2 == false) & l2_vld3
-      m23_val = l2_val3; m23_idx = l2_idx3; m23_vld = true;
-    elsif l2_vld2 & (l2_vld3 == false)
-      m23_val = l2_val2; m23_idx = l2_idx2; m23_vld = true;
-    elsif l2_vld2 & l2_vld3
-      if l2_val2 >= l2_val3
-        m23_val = l2_val2; m23_idx = l2_idx2;
-      else
-        m23_val = l2_val3; m23_idx = l2_idx3;
-      end if
-      m23_vld = true;
-    else
-      m23_val = 0; m23_idx = 0; m23_vld = false;
-    end if
-
-    // Compare pair (4,5)
-    if (l2_vld4 == false) & l2_vld5
-      m45_val = l2_val5; m45_idx = l2_idx5; m45_vld = true;
-    elsif l2_vld4 & (l2_vld5 == false)
-      m45_val = l2_val4; m45_idx = l2_idx4; m45_vld = true;
-    elsif l2_vld4 & l2_vld5
-      if l2_val4 >= l2_val5
-        m45_val = l2_val4; m45_idx = l2_idx4;
-      else
-        m45_val = l2_val5; m45_idx = l2_idx5;
-      end if
-      m45_vld = true;
-    else
-      m45_val = 0; m45_idx = 0; m45_vld = false;
-    end if
-
-    // Compare pair (6,7)
-    if (l2_vld6 == false) & l2_vld7
-      m67_val = l2_val7; m67_idx = l2_idx7; m67_vld = true;
-    elsif l2_vld6 & (l2_vld7 == false)
-      m67_val = l2_val6; m67_idx = l2_idx6; m67_vld = true;
-    elsif l2_vld6 & l2_vld7
-      if l2_val6 >= l2_val7
-        m67_val = l2_val6; m67_idx = l2_idx6;
-      else
-        m67_val = l2_val7; m67_idx = l2_idx7;
-      end if
-      m67_vld = true;
-    else
-      m67_val = 0; m67_idx = 0; m67_vld = false;
-    end if
+    end for
   end comb
 
-  // Level 1 registers
-  reg l1_val01: UInt<Width>    reset rst_ni=>0;
-  reg l1_idx01: UInt<SrcWidth> reset rst_ni=>0;
-  reg l1_vld01: Bool           reset rst_ni=>false;
-  reg l1_val23: UInt<Width>    reset rst_ni=>0;
-  reg l1_idx23: UInt<SrcWidth> reset rst_ni=>0;
-  reg l1_vld23: Bool           reset rst_ni=>false;
-  reg l1_val45: UInt<Width>    reset rst_ni=>0;
-  reg l1_idx45: UInt<SrcWidth> reset rst_ni=>0;
-  reg l1_vld45: Bool           reset rst_ni=>false;
-  reg l1_val67: UInt<Width>    reset rst_ni=>0;
-  reg l1_idx67: UInt<SrcWidth> reset rst_ni=>0;
-  reg l1_vld67: Bool           reset rst_ni=>false;
+  // Shift-register pipeline for latency matching
+  reg sr_val: Vec<UInt<Width>, LATENCY>;
+  reg sr_idx: Vec<UInt<SrcWidth>, LATENCY>;
+  reg sr_vld: Vec<Bool, LATENCY>;
 
   seq
-    l1_val01 <= m01_val; l1_idx01 <= m01_idx; l1_vld01 <= m01_vld;
-    l1_val23 <= m23_val; l1_idx23 <= m23_idx; l1_vld23 <= m23_vld;
-    l1_val45 <= m45_val; l1_idx45 <= m45_idx; l1_vld45 <= m45_vld;
-    l1_val67 <= m67_val; l1_idx67 <= m67_idx; l1_vld67 <= m67_vld;
-  end seq
-
-  // Level 0 comparisons
-  wire m0123_val: UInt<Width>;
-  wire m0123_idx: UInt<SrcWidth>;
-  wire m0123_vld: Bool;
-  wire m4567_val: UInt<Width>;
-  wire m4567_idx: UInt<SrcWidth>;
-  wire m4567_vld: Bool;
-
-  comb
-    // Compare (01, 23)
-    if (l1_vld01 == false) & l1_vld23
-      m0123_val = l1_val23; m0123_idx = l1_idx23; m0123_vld = true;
-    elsif l1_vld01 & (l1_vld23 == false)
-      m0123_val = l1_val01; m0123_idx = l1_idx01; m0123_vld = true;
-    elsif l1_vld01 & l1_vld23
-      if l1_val01 >= l1_val23
-        m0123_val = l1_val01; m0123_idx = l1_idx01;
-      else
-        m0123_val = l1_val23; m0123_idx = l1_idx23;
-      end if
-      m0123_vld = true;
-    else
-      m0123_val = 0; m0123_idx = 0; m0123_vld = false;
-    end if
-
-    // Compare (45, 67)
-    if (l1_vld45 == false) & l1_vld67
-      m4567_val = l1_val67; m4567_idx = l1_idx67; m4567_vld = true;
-    elsif l1_vld45 & (l1_vld67 == false)
-      m4567_val = l1_val45; m4567_idx = l1_idx45; m4567_vld = true;
-    elsif l1_vld45 & l1_vld67
-      if l1_val45 >= l1_val67
-        m4567_val = l1_val45; m4567_idx = l1_idx45;
-      else
-        m4567_val = l1_val67; m4567_idx = l1_idx67;
-      end if
-      m4567_vld = true;
-    else
-      m4567_val = 0; m4567_idx = 0; m4567_vld = false;
-    end if
-  end comb
-
-  // Root (level 0) registers
-  reg l0_val: UInt<Width>    reset rst_ni=>0;
-  reg l0_idx: UInt<SrcWidth> reset rst_ni=>0;
-  reg l0_vld: Bool           reset rst_ni=>false;
-
-  wire root_val: UInt<Width>;
-  wire root_idx: UInt<SrcWidth>;
-  wire root_vld: Bool;
-
-  comb
-    if (m0123_vld == false) & m4567_vld
-      root_val = m4567_val; root_idx = m4567_idx; root_vld = true;
-    elsif m0123_vld & (m4567_vld == false)
-      root_val = m0123_val; root_idx = m0123_idx; root_vld = true;
-    elsif m0123_vld & m4567_vld
-      if m0123_val >= m4567_val
-        root_val = m0123_val; root_idx = m0123_idx;
-      else
-        root_val = m4567_val; root_idx = m4567_idx;
-      end if
-      root_vld = true;
-    else
-      root_val = 0; root_idx = 0; root_vld = false;
-    end if
-  end comb
-
-  seq
-    l0_val <= root_val;
-    l0_idx <= root_idx;
-    l0_vld <= root_vld;
+    sr_val[0] <= comb_max_val;
+    sr_idx[0] <= comb_max_idx;
+    sr_vld[0] <= comb_max_vld;
+    for i in 1..LATENCY-1
+      sr_val[i] <= sr_val[i-1];
+      sr_idx[i] <= sr_idx[i-1];
+      sr_vld[i] <= sr_vld[i-1];
+    end for
   end seq
 
   comb
-    max_value_o = l0_val;
-    max_idx_o   = l0_idx;
-    max_valid_o = l0_vld;
+    max_value_o = sr_val[LATENCY-1];
+    max_idx_o   = sr_idx[LATENCY-1];
+    max_valid_o = sr_vld[LATENCY-1];
   end comb
 end module prim_max_find

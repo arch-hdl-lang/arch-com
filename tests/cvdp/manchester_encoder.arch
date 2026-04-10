@@ -15,13 +15,13 @@ module manchester_encoder
 
   wire encoded: UInt<2*N>;
 
-  // Combinational Manchester encoding: '1' -> "10", '0' -> "01"
+  // Combinational Manchester encoding: '1' -> "01", '0' -> "10"
   comb
     for i in 0..N-1
       if enc_data_in[i:i] == 1
-        encoded[2*i+1:2*i] = 2;
-      else
         encoded[2*i+1:2*i] = 1;
+      else
+        encoded[2*i+1:2*i] = 2;
       end if
     end for
   end comb

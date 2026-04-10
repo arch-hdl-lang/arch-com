@@ -9,48 +9,69 @@ module radix2_div
   port done:      out Bool;
 
   default seq on clk rising;
+  reg default: reset rst_n => 0;
 
-  reg dvd:      UInt<8>  reset rst_n=>0;
-  reg dvs:      UInt<8>  reset rst_n=>0;
-  reg quot:     UInt<8>  reset rst_n=>0;
-  reg partial:  UInt<9>  reset rst_n=>0;
-  reg bit_idx:  UInt<4>  reset rst_n=>0;
-  reg active:   Bool     reset rst_n=>false;
-  reg done_reg: Bool     reset rst_n=>false;
+  reg dvd:      UInt<8>;
+  reg dvs:      UInt<8>;
+  reg quot:     UInt<8>;
+  reg acc:      UInt<8>;
+  reg count:    UInt<4>;
+  reg active:   Bool;
+  reg done_r:   Bool;
 
-  // Combinational helpers for the shift/subtract step
-  // Shift partial left 1, bring in next dividend MSB
-  wire shifted:  UInt<9>;
-  wire p_upper:  UInt<8>;
-  wire p_ge_dvs: Bool;
+  // trial: shift acc left 1, bring in MSB of dvd
+  wire trial: UInt<9>;
+  let trial = {acc, dvd[7:7]};
 
-  let shifted = {partial[7:0], dvd[7:7]};  let p_upper = shifted[8:1];  let p_ge_dvs = p_upper.zext<9>() >= dvs.zext<9>();
+  wire sub_result: UInt<9>;
+  let sub_result = (trial - dvs.zext<9>()).trunc<9>();
 
-  let quotient = quot;  let remainder = partial[7:0];
-  let done = done_reg;
+  wire fits: Bool;
+  let fits = ~sub_result[8:8];
+
+  let quotient  = quot;
+  let remainder = acc;
+  let done      = done_r;
+
   seq
-    done_reg <= false;
+    done_r <= false;
     if start
-      dvd     <= dividend;
-      dvs     <= divisor;
-      quot    <= 0.zext<8>();
-      partial <= dividend[7:7].zext<9>();
-      bit_idx <= 0.zext<4>();
-      active  <= true;
-    elsif active
-      if p_ge_dvs
-        partial <= (p_upper.zext<9>() - dvs.zext<9>()).trunc<9>();
-        quot    <= {quot[6:0], 1'b1};
+      if divisor == 0
+        quot     <= 8'hFF;
+        acc      <= 8'hFF;
+        active   <= false;
+        done_r   <= true;
+        dvd      <= 0.zext<8>();
+        dvs      <= 0.zext<8>();
+        count    <= 0.zext<4>();
       else
-        partial <= p_upper.zext<9>();
-        quot    <= {quot[6:0], 1'b0};
+        dvd      <= {dividend[6:0], 1'b0};
+        dvs      <= divisor;
+        count    <= 1.zext<4>();
+        active   <= true;
+        // first iteration: trial = {0, dividend[7]}
+        if dividend[7:7].zext<9>() >= divisor.zext<9>()
+          acc  <= (dividend[7:7].zext<9>() - divisor.zext<9>()).trunc<8>();
+          quot <= 8'h01;
+        else
+          acc  <= dividend[7:7].zext<8>();
+          quot <= 0.zext<8>();
+        end if
+      end if
+    elsif active
+      if fits
+        acc  <= sub_result.trunc<8>();
+        quot <= {quot[6:0], 1'b1};
+      else
+        acc  <= trial.trunc<8>();
+        quot <= {quot[6:0], 1'b0};
       end if
       dvd <= {dvd[6:0], 1'b0};
-      if bit_idx == 7
-        active   <= false;
-        done_reg <= true;
+      if count == 7
+        active <= false;
+        done_r <= true;
       else
-        bit_idx <= (bit_idx + 1).trunc<4>();
+        count <= (count + 1).trunc<4>();
       end if
     end if
   end seq
