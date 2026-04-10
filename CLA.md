@@ -1,8 +1,8 @@
-# Contributor License Agreement
+# Contributor License Agreement ("Agreement")
 
-Thank you for your interest in contributing to the ARCH HDL Compiler ("the Project"). To clarify the intellectual property rights granted with Contributions from any person or entity, the Project requires that a Contributor License Agreement (CLA) be on file that has been agreed to by each Contributor, indicating agreement to the license terms below.
+Thank you for your interest in the ARCH HDL Compiler open source project at https://github.com/arch-hdl-lang/arch (the "Project"), stewarded by Shuqing Zhao ("Maintainer"). This document clarifies the terms under which You may contribute software code, documentation, or other materials (the "Contribution") to the Project. We appreciate your participation and your help in improving our products, so we want you to understand what will be done with the Contributions. This license is for your protection as well as the protection of the Maintainer and its licensees; it does not change your rights to use your own Contributions for any other purpose.
 
-By submitting a pull request or otherwise contributing to this Project, you agree to the following terms:
+By agreeing to this Agreement via the CLA Assistant on GitHub, You hereby agree:
 
 ## 1. Definitions
 
@@ -12,18 +12,28 @@ By submitting a pull request or otherwise contributing to this Project, you agre
 
 ## 2. Grant of Copyright License
 
-You hereby grant to the Project maintainers and to recipients of software distributed by the Project a perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable copyright license to reproduce, prepare derivative works of, publicly display, publicly perform, sublicense, and distribute Your Contributions and such derivative works.
+You grant us the ability to use the Contributions in any way. You hereby grant to the Maintainer a non-exclusive, irrevocable, worldwide, royalty-free, sublicenseable, transferable license under all of Your relevant intellectual property rights (including copyright, patent, and any other rights), to use, copy, prepare derivative works of, distribute and publicly perform and display the Contributions on any licensing terms, including without limitation: (a) open source licenses like the GNU General Public License (GPL), the GNU Lesser General Public License (LGPL), the Common Public License, or the Berkeley Software Distribution license (BSD); and (b) binary, proprietary, or commercial licenses.
 
 ## 3. Grant of Patent License
 
-You hereby grant to the Project maintainers and to recipients of software distributed by the Project a perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable patent license to make, have made, use, offer to sell, sell, import, and otherwise transfer the Work, where such license applies only to those patent claims licensable by You that are necessarily infringed by Your Contribution(s) alone or by combination of Your Contribution(s) with the Work to which such Contribution(s) was submitted.
+You hereby grant to the Maintainer a worldwide, non-exclusive, royalty-free, irrevocable license, under any rights you may have, now or in the future, in any patents or patent applications, to make, have made, use, offer to sell, sell, and import products containing the Contribution or portions of the Contribution. This license extends to patent claims that are infringed by the Contribution alone or by combination of the Contribution with other inventions.
 
-## 4. Representations
+## 4. Limitations on Licenses
 
-You represent that You are legally entitled to grant the above license. If Your employer(s) has rights to intellectual property that You create that includes Your Contributions, You represent that You have received permission to make Contributions on behalf of that employer, or that Your employer has waived such rights for Your Contributions to the Project.
+The licenses granted in this Agreement will continue for the duration of the applicable patent or intellectual property right under which such license is granted. The licenses granted in this Agreement will include the right to grant and authorize sublicenses, so long as the sublicenses are within the scope of the licenses granted in this Agreement. Except for the licenses granted herein, You reserve all right, title, and interest in and to the Contribution.
 
-You represent that each of Your Contributions is Your original creation. You represent that Your Contribution submissions include complete details of any third-party license or other restriction (including, but not limited to, related patents and trademarks) of which You are personally aware and which are associated with any part of Your Contributions.
+## 5. You Are Able to Grant These Rights
 
-## 5. Agreement
+You represent that You are legally entitled to grant the above licenses. If Your employer has rights to intellectual property that You create, You represent that You are authorized to make the Contributions on behalf of that employer, or that Your employer has waived such rights for the Contributions.
 
-By submitting a Contribution to this Project, You indicate that You agree to the terms of this Contributor License Agreement.
+## 6. The Contributions Are Your Original Work
+
+You represent that the Contributions are Your original works of authorship, and to Your knowledge, no other person claims, or has the right to claim, any right in any invention or patent related to the Contributions. You also represent that You are not legally obligated, whether by entering into an agreement or otherwise, in any way that conflicts with the terms of this license. For example, if you have signed an agreement requiring you to assign the intellectual property rights in the Contributions to an employer or customer, that would conflict with the terms of this license.
+
+## 7. Inclusion in Products
+
+You understand that the decision to include the Contribution in any product or source repository is entirely that of the Maintainer, and this Agreement does not guarantee that the Contributions will be included in any product.
+
+## 8. No Implied Warranties
+
+The Maintainer acknowledges that, except as explicitly described in this Agreement, the Contribution is provided on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED, INCLUDING, WITHOUT LIMITATION, ANY WARRANTIES OR CONDITIONS OF TITLE, NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
