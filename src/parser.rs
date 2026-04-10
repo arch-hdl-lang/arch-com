@@ -186,6 +186,7 @@ impl Parser {
             default: None,
             reg_info: None,
             bus_info: None,
+            shared: None,
             span: parent_span.merge(end_span),
         })
     }
@@ -346,13 +347,19 @@ impl Parser {
                 Some(TokenKind::Hook) => {
                     hooks.push(self.parse_module_hook_decl()?);
                 }
+                Some(TokenKind::Thread) => {
+                    body.push(ModuleBodyItem::Thread(self.parse_thread_block()?));
+                }
+                Some(TokenKind::Ident(ref s)) if s == "resource" => {
+                    body.push(ModuleBodyItem::Resource(self.parse_resource_decl()?));
+                }
                 Some(TokenKind::Default) => {
                     // `default seq on <clk> rising|falling;`
                     self.parse_seq_default_decl()?;
                 }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "param, port, reg, seq, comb, let, inst, pipe_reg, generate_for, generate_if, default, or hook",
+                        "param, port, reg, seq, comb, let, inst, pipe_reg, generate_for, generate_if, thread, default, or hook",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -478,6 +485,7 @@ impl Parser {
                 default: None,
                 reg_info: None,
                 bus_info: Some(BusPortInfo { bus_name, perspective, params }),
+                shared: None,
                 span: start.merge(end_span),
             });
         }
@@ -529,6 +537,28 @@ impl Parser {
         } else {
             None
         };
+        // Parse optional `shared(or|and)` annotation
+        let shared = if self.check_ident("shared") {
+            self.advance();
+            self.expect(TokenKind::LParen)?;
+            let reduction = if self.check(TokenKind::Or) {
+                self.advance();
+                SharedReduction::Or
+            } else if self.check(TokenKind::And) {
+                self.advance();
+                SharedReduction::And
+            } else {
+                return Err(CompileError::unexpected_token(
+                    "or or and",
+                    &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                    self.peek_span(),
+                ));
+            };
+            self.expect(TokenKind::RParen)?;
+            Some(reduction)
+        } else {
+            None
+        };
         self.expect(TokenKind::Semi)?;
         let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
         Ok(PortDecl {
@@ -538,6 +568,7 @@ impl Parser {
             default,
             reg_info,
             bus_info: None,
+            shared,
             span: start.merge(end_span),
         })
     }
@@ -733,6 +764,311 @@ impl Parser {
         self.pos + 1 < self.tokens.len()
             && self.tokens[self.pos].kind == TokenKind::End
             && self.tokens[self.pos + 1].kind == TokenKind::Seq
+    }
+
+    // --- Thread ---
+
+    /// Parse `thread [once] [Name] on CLK rising|falling, RST high|low ... end thread [Name]`
+    fn parse_thread_block(&mut self) -> Result<ThreadBlock, CompileError> {
+        let start = self.expect(TokenKind::Thread)?.span;
+
+        // Optional `once`
+        let once = self.check_ident("once");
+        if once { self.advance(); }
+
+        // Optional name — peek: if we see Ident followed by `on`, it's a name.
+        // If we see `on` directly, no name.
+        let name = if self.check(TokenKind::On) {
+            None
+        } else {
+            Some(self.expect_ident()?)
+        };
+
+        // Clock clause: `on CLK rising|falling`
+        self.expect(TokenKind::On)?;
+        let clock = self.expect_ident()?;
+        let clock_edge = if self.eat(TokenKind::Rising) {
+            ClockEdge::Rising
+        } else if self.eat(TokenKind::Falling) {
+            ClockEdge::Falling
+        } else {
+            return Err(CompileError::unexpected_token(
+                "rising or falling",
+                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                self.peek_span(),
+            ));
+        };
+
+        // Reset clause: `, RST high|low`
+        self.expect(TokenKind::Comma)?;
+        let reset = self.expect_ident()?;
+        let reset_level = if self.eat(TokenKind::High) {
+            ResetLevel::High
+        } else if self.eat(TokenKind::Low) {
+            ResetLevel::Low
+        } else {
+            return Err(CompileError::unexpected_token(
+                "high or low",
+                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                self.peek_span(),
+            ));
+        };
+
+        // Body
+        let mut body = Vec::new();
+        while !self.check_end_thread() {
+            body.push(self.parse_thread_stmt()?);
+        }
+
+        // `end thread [Name]`
+        self.expect(TokenKind::End)?;
+        let end_kw_span = self.expect(TokenKind::Thread)?.span;
+
+        // If named, consume and verify closing name; if `once`, also consume closing `once`
+        let end_span;
+        if let Some(ref n) = name {
+            let closing_name = self.expect_ident()?;
+            if closing_name.name != n.name {
+                return Err(CompileError::mismatched_closing(
+                    &n.name, &closing_name.name, closing_name.span,
+                ));
+            }
+            end_span = closing_name.span;
+        } else if once {
+            // `end thread once`
+            self.expect_contextual("once")?;
+            end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(end_kw_span);
+        } else {
+            end_span = end_kw_span;
+        }
+
+        Ok(ThreadBlock {
+            name,
+            clock,
+            clock_edge,
+            reset,
+            reset_level,
+            once,
+            body,
+            span: start.merge(end_span),
+        })
+    }
+
+    fn check_end_thread(&self) -> bool {
+        self.pos + 1 < self.tokens.len()
+            && self.tokens[self.pos].kind == TokenKind::End
+            && self.tokens[self.pos + 1].kind == TokenKind::Thread
+    }
+
+    /// Parse a single statement inside a thread block.
+    fn parse_thread_stmt(&mut self) -> Result<ThreadStmt, CompileError> {
+        // `if` → thread if/else
+        if self.check(TokenKind::If) {
+            return self.parse_thread_if();
+        }
+
+        // `fork ... and ... join`
+        if self.check_ident("fork") {
+            return self.parse_thread_fork_join();
+        }
+
+        // `for var in start..end ... end for`
+        if self.check(TokenKind::For) {
+            return self.parse_thread_for();
+        }
+
+        // `lock resource_name ... end lock resource_name`
+        if self.check_ident("lock") {
+            return self.parse_thread_lock();
+        }
+
+        // `wait` (contextual keyword)
+        if self.check_ident("wait") {
+            let wait_start = self.advance().span;
+            // `wait until expr;`
+            if self.check_ident("until") {
+                self.advance();
+                let cond = self.parse_expr()?;
+                let semi_span = self.expect(TokenKind::Semi)?.span;
+                return Ok(ThreadStmt::WaitUntil(cond, wait_start.merge(semi_span)));
+            }
+            // `wait N cycle;`
+            let count = self.parse_expr()?;
+            self.expect_contextual("cycle")?;
+            let semi_span = self.expect(TokenKind::Semi)?.span;
+            return Ok(ThreadStmt::WaitCycles(count, wait_start.merge(semi_span)));
+        }
+
+        // Assignment: `target = expr;` (comb) or `target <= expr;` (seq)
+        let target = self.parse_expr()?;
+        if self.eat(TokenKind::Eq) {
+            let value = self.parse_expr()?;
+            let semi_span = self.expect(TokenKind::Semi)?.span;
+            let span = target.span.merge(semi_span);
+            Ok(ThreadStmt::CombAssign(CombAssign { target, value, span }))
+        } else if self.eat(TokenKind::LtEq) {
+            let value = self.parse_expr()?;
+            let semi_span = self.expect(TokenKind::Semi)?.span;
+            let span = target.span.merge(semi_span);
+            Ok(ThreadStmt::SeqAssign(RegAssign { target, value, span }))
+        } else {
+            Err(CompileError::unexpected_token(
+                "= or <=",
+                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                self.peek_span(),
+            ))
+        }
+    }
+
+    /// Parse `if ... elsif ... else ... end if` inside a thread block.
+    fn parse_thread_if(&mut self) -> Result<ThreadStmt, CompileError> {
+        let start = self.expect(TokenKind::If)?.span;
+        let cond = self.parse_expr()?;
+
+        let mut then_stmts = Vec::new();
+        while !self.check_end_if() && !self.check(TokenKind::Else) && !self.check(TokenKind::ElsIf) {
+            then_stmts.push(self.parse_thread_stmt()?);
+        }
+
+        let mut else_stmts = Vec::new();
+        if self.check(TokenKind::ElsIf) {
+            self.tokens[self.pos].kind = TokenKind::If;
+            let nested = self.parse_thread_if()?;
+            else_stmts.push(nested);
+        } else if self.check(TokenKind::Else) {
+            self.advance();
+            while !self.check_end_if() {
+                else_stmts.push(self.parse_thread_stmt()?);
+            }
+            self.expect(TokenKind::End)?;
+            self.expect(TokenKind::If)?;
+        } else {
+            self.expect(TokenKind::End)?;
+            self.expect(TokenKind::If)?;
+        }
+
+        let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        Ok(ThreadStmt::IfElse(ThreadIfElse {
+            cond,
+            then_stmts,
+            else_stmts,
+            span: start.merge(end_span),
+        }))
+    }
+
+    /// Parse `fork ... and ... join` inside a thread block.
+    fn parse_thread_fork_join(&mut self) -> Result<ThreadStmt, CompileError> {
+        let start = self.expect_contextual("fork")?.span;
+        let mut branches: Vec<Vec<ThreadStmt>> = Vec::new();
+
+        // Parse first branch
+        let mut branch = Vec::new();
+        loop {
+            // Check for `and` (branch separator) or `join` (end)
+            if self.check(TokenKind::And) {
+                self.advance();
+                branches.push(std::mem::take(&mut branch));
+                continue;
+            }
+            if self.check_ident("join") {
+                let end_span = self.advance().span;
+                branches.push(std::mem::take(&mut branch));
+                return Ok(ThreadStmt::ForkJoin(branches, start.merge(end_span)));
+            }
+            branch.push(self.parse_thread_stmt()?);
+        }
+    }
+
+    /// Parse `for var in start..end ... end for` inside a thread block.
+    fn parse_thread_for(&mut self) -> Result<ThreadStmt, CompileError> {
+        let start = self.expect(TokenKind::For)?.span;
+        let var = self.expect_ident()?;
+        self.expect_contextual("in")?;
+        let range_start = self.parse_expr()?;
+        self.expect(TokenKind::DotDot)?;
+        let range_end = self.parse_expr()?;
+
+        let mut body = Vec::new();
+        while !self.check_end_for() {
+            body.push(self.parse_thread_stmt()?);
+        }
+        self.expect(TokenKind::End)?;
+        let end_span = self.expect(TokenKind::For)?.span;
+
+        Ok(ThreadStmt::For {
+            var,
+            start: range_start,
+            end: range_end,
+            body,
+            span: start.merge(end_span),
+        })
+    }
+
+    fn check_end_for(&self) -> bool {
+        self.pos + 1 < self.tokens.len()
+            && self.tokens[self.pos].kind == TokenKind::End
+            && self.tokens[self.pos + 1].kind == TokenKind::For
+    }
+
+    /// Check for `end lock` (contextual — `lock` is an Ident)
+    fn check_end_lock(&self) -> bool {
+        self.pos + 1 < self.tokens.len()
+            && self.tokens[self.pos].kind == TokenKind::End
+            && matches!(&self.tokens[self.pos + 1].kind, TokenKind::Ident(s) if s == "lock")
+    }
+
+    /// Parse `lock resource_name ... end lock resource_name`
+    fn parse_thread_lock(&mut self) -> Result<ThreadStmt, CompileError> {
+        let start = self.expect_contextual("lock")?.span;
+        let resource = self.expect_ident()?;
+
+        let mut body = Vec::new();
+        while !self.check_end_lock() {
+            body.push(self.parse_thread_stmt()?);
+        }
+        self.expect(TokenKind::End)?;
+        self.expect_contextual("lock")?;
+        let closing = self.expect_ident()?;
+        if closing.name != resource.name {
+            return Err(CompileError::mismatched_closing(
+                &resource.name, &closing.name, closing.span,
+            ));
+        }
+
+        Ok(ThreadStmt::Lock {
+            resource,
+            body,
+            span: start.merge(closing.span),
+        })
+    }
+
+    /// Parse `resource name : mutex<policy>;`
+    fn parse_resource_decl(&mut self) -> Result<ResourceDecl, CompileError> {
+        let start = self.expect_contextual("resource")?.span;
+        let name = self.expect_ident()?;
+        self.expect(TokenKind::Colon)?;
+
+        // Parse `mutex<policy>`
+        self.expect_contextual("mutex")?;
+        self.expect(TokenKind::Lt)?;
+        let policy_ident = self.expect_ident()?;
+        let policy = match policy_ident.name.as_str() {
+            "round_robin" => ArbiterPolicy::RoundRobin,
+            "priority"    => ArbiterPolicy::Priority,
+            "lru"         => ArbiterPolicy::Lru,
+            other => return Err(CompileError::general(
+                &format!("unknown mutex policy `{}`; expected round_robin, priority, or lru", other),
+                policy_ident.span,
+            )),
+        };
+        self.expect(TokenKind::Gt)?;
+        let end_span = self.expect(TokenKind::Semi)?.span;
+
+        Ok(ResourceDecl {
+            name,
+            policy,
+            span: start.merge(end_span),
+        })
     }
 
     fn parse_latch_block(&mut self) -> Result<LatchBlock, CompileError> {
@@ -1403,9 +1739,10 @@ impl Parser {
             match self.peek_kind() {
                 Some(TokenKind::Port) => items.push(GenItem::Port(self.parse_port_decl()?)),
                 Some(TokenKind::Inst) => items.push(GenItem::Inst(self.parse_inst()?)),
+                Some(TokenKind::Thread) => items.push(GenItem::Thread(self.parse_thread_block()?)),
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "port or inst",
+                        "port, inst, or thread",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -1422,9 +1759,10 @@ impl Parser {
             match self.peek_kind() {
                 Some(TokenKind::Port) => items.push(GenItem::Port(self.parse_port_decl()?)),
                 Some(TokenKind::Inst) => items.push(GenItem::Inst(self.parse_inst()?)),
+                Some(TokenKind::Thread) => items.push(GenItem::Thread(self.parse_thread_block()?)),
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "port or inst",
+                        "port, inst, or thread",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -2871,7 +3209,7 @@ impl Parser {
         let ty = self.parse_type_expr()?;
         self.expect(TokenKind::Semi)?;
         let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
-        Ok(PortDecl { name, direction, ty, default: None, reg_info: None, bus_info: None, span: start.merge(end_span) })
+        Ok(PortDecl { name, direction, ty, default: None, reg_info: None, bus_info: None, shared: None, span: start.merge(end_span) })
     }
 
     fn parse_ram_init(&mut self) -> Result<RamInit, CompileError> {

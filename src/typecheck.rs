@@ -514,6 +514,9 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
+                ModuleBodyItem::Thread(_) | ModuleBodyItem::Resource(_) => {
+                    // Threads and resources are lowered before typecheck.
+                }
             }
         }
 

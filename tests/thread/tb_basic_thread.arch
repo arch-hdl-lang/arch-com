@@ -1,0 +1,52 @@
+testbench TbBasicThread
+  port clk:      in Clock<SysDomain>;
+  port rst_n:    in Reset<Async, Low>;
+
+  wire ar_valid: Bool;
+  wire ar_addr:  UInt<32>;
+  wire r_ready:  Bool;
+  wire data_out: UInt<32>;
+
+  reg ar_ready: Bool reset rst_n => 0;
+  reg r_valid:  Bool reset rst_n => 0;
+  reg r_data:   UInt<32> reset rst_n => 0;
+
+  inst dut: BasicThread
+    clk      <- clk
+    rst_n    <- rst_n
+    ar_valid -> ar_valid
+    ar_addr  -> ar_addr
+    ar_ready <- ar_ready
+    r_ready  -> r_ready
+    r_valid  <- r_valid
+    r_data   <- r_data
+    data_out -> data_out
+
+  initial
+    // Wait a few cycles after reset
+    repeat 3
+
+    // Expect ar_valid = 1 in S0
+    assert ar_valid == 1;
+    assert ar_addr == 32'd100;
+
+    // Provide ar_ready handshake
+    ar_ready <= 1;
+    repeat 1
+    ar_ready <= 0;
+    repeat 1
+
+    // Now should be in S1: r_ready = 1
+    assert r_ready == 1;
+
+    // Provide r_valid handshake
+    r_valid <= 1;
+    r_data  <= 32'hDEAD_BEEF;
+    repeat 1
+    r_valid <= 0;
+    repeat 1
+
+    // Should have captured data
+    assert data_out == 32'hDEAD_BEEF;
+  end initial
+end testbench TbBasicThread

@@ -146,7 +146,17 @@ pub struct PortDecl {
     /// When present, this port is a bus bundle (initiator or target perspective).
     /// Syntax: `port name: initiator BusName<PARAM=val>;`
     pub bus_info: Option<BusPortInfo>,
+    /// Shared reduction annotation: `shared(or)` or `shared(and)`.
+    /// Allows multiple drivers with compiler-synthesized reduction logic.
+    pub shared: Option<SharedReduction>,
     pub span: Span,
+}
+
+/// Reduction operator for `shared(or|and)` signal annotations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SharedReduction {
+    Or,
+    And,
 }
 
 /// Register metadata for a `port reg` declaration.
@@ -182,6 +192,8 @@ pub enum ModuleBodyItem {
     Generate(GenerateDecl),
     PipeRegDecl(PipeRegDecl),
     WireDecl(WireDecl),
+    Thread(ThreadBlock),
+    Resource(ResourceDecl),
 }
 
 impl ModuleBodyItem {
@@ -199,6 +211,8 @@ impl ModuleBodyItem {
             },
             ModuleBodyItem::PipeRegDecl(p) => p.span,
             ModuleBodyItem::WireDecl(w) => w.span,
+            ModuleBodyItem::Thread(t) => t.span,
+            ModuleBodyItem::Resource(r) => r.span,
         }
     }
 }
@@ -213,11 +227,12 @@ pub struct PipeRegDecl {
 
 // ── Generate ──────────────────────────────────────────────────────────────────
 
-/// An item inside a generate block: either a port declaration or an instance.
+/// An item inside a generate block: port, instance, or thread.
 #[derive(Debug, Clone)]
 pub enum GenItem {
     Port(PortDecl),
     Inst(InstDecl),
+    Thread(ThreadBlock),
 }
 
 /// `generate for VAR in START..END ... end generate for VAR`
@@ -291,6 +306,60 @@ pub enum ClockEdge {
 pub enum ResetLevel {
     High,
     Low,
+}
+
+// ── Thread ───────────────────────────────────────────────────────────────────
+
+/// A `thread` block inside a module.  Lowered to an FSM + inst by elaboration.
+#[derive(Debug, Clone)]
+pub struct ThreadBlock {
+    /// Optional name (e.g. `thread WriteHandler ...`).  None = anonymous.
+    pub name: Option<Ident>,
+    pub clock: Ident,
+    pub clock_edge: ClockEdge,
+    pub reset: Ident,
+    pub reset_level: ResetLevel,
+    /// `thread once` — one-shot, terminal state after completion.
+    pub once: bool,
+    pub body: Vec<ThreadStmt>,
+    pub span: Span,
+}
+
+/// A statement inside a thread block.
+#[derive(Debug, Clone)]
+pub enum ThreadStmt {
+    /// Combinational assign: `target = expr;`
+    CombAssign(CombAssign),
+    /// Sequential assign: `target <= expr;`
+    SeqAssign(RegAssign),
+    /// `wait until cond;`
+    WaitUntil(Expr, Span),
+    /// `wait N cycle;`
+    WaitCycles(Expr, Span),
+    /// `if cond ... elsif ... else ... end if`
+    IfElse(ThreadIfElse),
+    /// `fork ... and ... join` — parallel branches
+    ForkJoin(Vec<Vec<ThreadStmt>>, Span),
+    /// `for var in start..end ... end for` — counted loop with waits
+    For { var: Ident, start: Expr, end: Expr, body: Vec<ThreadStmt>, span: Span },
+    /// `lock resource_name ... end lock resource_name` — exclusive bus access
+    Lock { resource: Ident, body: Vec<ThreadStmt>, span: Span },
+}
+
+#[derive(Debug, Clone)]
+pub struct ThreadIfElse {
+    pub cond: Expr,
+    pub then_stmts: Vec<ThreadStmt>,
+    pub else_stmts: Vec<ThreadStmt>,
+    pub span: Span,
+}
+
+/// `resource name : mutex<policy>;` — shared bus arbitration declaration
+#[derive(Debug, Clone)]
+pub struct ResourceDecl {
+    pub name: Ident,
+    pub policy: ArbiterPolicy,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

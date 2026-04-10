@@ -1,0 +1,29 @@
+module AxiWrite
+  port clk:       in Clock<SysDomain>;
+  port rst_n:     in Reset<Async, Low>;
+  port aw_valid:  out Bool;
+  port aw_addr:   out UInt<32>;
+  port aw_ready:  in Bool;
+  port w_valid:   out Bool;
+  port w_data:    out UInt<32>;
+  port w_ready:   in Bool;
+  port b_ready:   out Bool;
+  port b_valid:   in Bool;
+
+  thread on clk rising, rst_n low
+    fork
+      aw_valid = 1;
+      aw_addr  = 32'hA000;
+      wait until aw_ready;
+      aw_valid = 0;
+    and
+      w_valid = 1;
+      w_data  = 32'hDEAD;
+      wait until w_ready;
+      w_valid = 0;
+    join
+
+    b_ready = 1;
+    wait until b_valid;
+  end thread
+end module AxiWrite

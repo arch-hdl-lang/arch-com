@@ -1,0 +1,18 @@
+module ThreadIfElse
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+  port mode:  in Bool;
+  port addr:  out UInt<32>;
+  port valid: out Bool;
+  port ready: in Bool;
+
+  thread on clk rising, rst_n low
+    valid = 1;
+    if mode
+      addr = 32'd1000;
+    else
+      addr = 32'd2000;
+    end if
+    wait until ready;
+  end thread
+end module ThreadIfElse

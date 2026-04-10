@@ -1,0 +1,18 @@
+module CalibOnce
+  port clk:       in Clock<SysDomain>;
+  port rst_n:     in Reset<Async, Low>;
+  port cal_start: out Bool;
+  port cal_done:  in Bool;
+  port cal_valid: out Bool;
+
+  reg cal_valid_r: Bool reset rst_n => 0;
+
+  let cal_valid = cal_valid_r;
+
+  thread once on clk rising, rst_n low
+    cal_start = 1;
+    wait until cal_done;
+    cal_start = 0;
+    cal_valid_r <= 1;
+  end thread once
+end module CalibOnce

@@ -502,6 +502,10 @@ impl<'a> Codegen<'a> {
                 ModuleBodyItem::Generate(ref gen) => {
                     self.emit_generate(gen);
                 }
+                ModuleBodyItem::Thread(_) | ModuleBodyItem::Resource(_) => {
+                    // Threads and resources are lowered before codegen
+                    unreachable!("thread/resource should have been lowered before codegen");
+                }
             }
         }
 
@@ -1860,7 +1864,8 @@ impl<'a> Codegen<'a> {
                 for item in &gf.items {
                     match item {
                         GenItem::Inst(inst) => self.emit_inst(inst),
-                        GenItem::Port(_) => unreachable!("port GenItems should have been lifted to module ports by elaboration"),
+                        GenItem::Port(_) => unreachable!("port GenItems should have been lifted by elaboration"),
+                        GenItem::Thread(_) => unreachable!("thread GenItems should have been lowered by elaboration"),
                     }
                 }
                 self.indent -= 1;
@@ -1873,7 +1878,8 @@ impl<'a> Codegen<'a> {
                 for item in &gi.then_items {
                     match item {
                         GenItem::Inst(inst) => self.emit_inst(inst),
-                        GenItem::Port(_) => unreachable!("port GenItems should have been lifted to module ports by elaboration"),
+                        GenItem::Port(_) => unreachable!("port GenItems should have been lifted by elaboration"),
+                        GenItem::Thread(_) => unreachable!("thread GenItems should have been lowered by elaboration"),
                     }
                 }
                 self.indent -= 1;
@@ -1883,7 +1889,8 @@ impl<'a> Codegen<'a> {
                     for item in &gi.else_items {
                         match item {
                             GenItem::Inst(inst) => self.emit_inst(inst),
-                            GenItem::Port(_) => unreachable!("port GenItems should have been lifted to module ports by elaboration"),
+                            GenItem::Port(_) => unreachable!("port GenItems should have been lifted by elaboration"),
+                        GenItem::Thread(_) => unreachable!("thread GenItems should have been lowered by elaboration"),
                         }
                     }
                     self.indent -= 1;
@@ -2092,6 +2099,17 @@ impl<'a> Codegen<'a> {
                     self.line("end");
                 } else {
                     self.line(&format!("{} <= {init_str};", reg.name.name));
+                }
+            }
+        }
+        // Reset port-reg outputs (ports with reg_info)
+        for p in &f.ports {
+            if let Some(ri) = &p.reg_info {
+                let reset_expr = Self::reset_value_expr(&ri.reset)
+                    .or(ri.init.as_ref());
+                if let Some(val_expr) = reset_expr {
+                    let init_str = self.emit_expr_str(val_expr);
+                    self.line(&format!("{} <= {init_str};", p.name.name));
                 }
             }
         }

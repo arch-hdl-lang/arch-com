@@ -1,0 +1,13 @@
+module DelayPulse
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+  port start: in Bool;
+  port pulse: out Bool;
+
+  thread on clk rising, rst_n low
+    wait until start;
+    wait 5 cycle;
+    pulse = 1;
+    wait 1 cycle;
+  end thread
+end module DelayPulse

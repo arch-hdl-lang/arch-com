@@ -1,0 +1,20 @@
+module MultiReady
+  port clk:     in Clock<SysDomain>;
+  port rst_n:   in Reset<Async, Low>;
+  port r_ready: out Bool shared(or);
+  port r_valid: in Bool;
+  port r_id:    in UInt<2>;
+
+  reg buf_0: UInt<32> reset rst_n => 0;
+  reg buf_1: UInt<32> reset rst_n => 0;
+
+  thread Req_0 on clk rising, rst_n low
+    r_ready = 1;
+    wait until r_valid and r_id == 2'd0;
+  end thread Req_0
+
+  thread Req_1 on clk rising, rst_n low
+    r_ready = 1;
+    wait until r_valid and r_id == 2'd1;
+  end thread Req_1
+end module MultiReady

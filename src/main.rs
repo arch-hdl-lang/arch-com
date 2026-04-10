@@ -368,6 +368,12 @@ fn run_check_multi(
         ms.report_error(err)
     })?;
 
+    // Lower thread blocks to FSM + inst
+    let ast = elaborate::lower_threads(ast).map_err(|errs| {
+        let err = errs.into_iter().next().unwrap();
+        ms.report_error(err)
+    })?;
+
     // Resolve
     let symbols = resolve::resolve(&ast).map_err(|errs| {
         let err = errs.into_iter().next().unwrap();

@@ -1,0 +1,34 @@
+module SharedBus
+  param NUM_CH: const = 2;
+  port clk:      in Clock<SysDomain>;
+  port rst_n:    in Reset<Async, Low>;
+  port bus_valid: out Bool;
+  port bus_addr:  out UInt<32>;
+  port bus_ready: in Bool;
+  port done_0:   out Bool;
+  port done_1:   out Bool;
+
+  resource shared_bus : mutex<priority>;
+
+  thread Writer_0 on clk rising, rst_n low
+    lock shared_bus
+      bus_valid = 1;
+      bus_addr  = 32'h1000;
+      wait until bus_ready;
+      bus_valid = 0;
+    end lock shared_bus
+    done_0 = 1;
+    wait until bus_ready;
+  end thread Writer_0
+
+  thread Writer_1 on clk rising, rst_n low
+    lock shared_bus
+      bus_valid = 1;
+      bus_addr  = 32'h2000;
+      wait until bus_ready;
+      bus_valid = 0;
+    end lock shared_bus
+    done_1 = 1;
+    wait until bus_ready;
+  end thread Writer_1
+end module SharedBus

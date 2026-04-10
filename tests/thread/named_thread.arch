@@ -1,0 +1,18 @@
+module NamedThreadDemo
+  port clk:    in Clock<SysDomain>;
+  port rst_n:  in Reset<Async, Low>;
+  port wr_en:  out Bool;
+  port rd_en:  out Bool;
+  port wr_ack: in Bool;
+  port rd_ack: in Bool;
+
+  thread Writer on clk rising, rst_n low
+    wr_en = 1;
+    wait until wr_ack;
+  end thread Writer
+
+  thread Reader on clk rising, rst_n low
+    rd_en = 1;
+    wait until rd_ack;
+  end thread Reader
+end module NamedThreadDemo

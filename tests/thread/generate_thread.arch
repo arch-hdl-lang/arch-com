@@ -1,0 +1,20 @@
+module MultiChannel
+  param NUM_CH: const = 4;
+  port clk:   in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+  port valid_0: out Bool;
+  port valid_1: out Bool;
+  port valid_2: out Bool;
+  port valid_3: out Bool;
+  port ready_0: in Bool;
+  port ready_1: in Bool;
+  port ready_2: in Bool;
+  port ready_3: in Bool;
+
+  generate_for i in 0..NUM_CH-1
+    thread Channel_i on clk rising, rst_n low
+      valid_i = 1;
+      wait until ready_i;
+    end thread Channel_i
+  end generate_for
+end module MultiChannel

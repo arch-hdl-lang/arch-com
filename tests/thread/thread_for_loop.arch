@@ -1,0 +1,24 @@
+module BurstRead
+  port clk:     in Clock<SysDomain>;
+  port rst_n:   in Reset<Async, Low>;
+  port ar_valid: out Bool;
+  port ar_ready: in Bool;
+  port r_ready:  out Bool;
+  port r_valid:  in Bool;
+  port r_data:   in UInt<32>;
+
+  reg buf_0: UInt<32> reset rst_n => 0;
+  reg buf_1: UInt<32> reset rst_n => 0;
+  reg buf_2: UInt<32> reset rst_n => 0;
+  reg buf_3: UInt<32> reset rst_n => 0;
+
+  thread on clk rising, rst_n low
+    ar_valid = 1;
+    wait until ar_ready;
+
+    for i in 0..3
+      r_ready = 1;
+      wait until r_valid;
+    end for
+  end thread
+end module BurstRead
