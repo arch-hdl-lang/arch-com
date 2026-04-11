@@ -43,31 +43,35 @@ module ThreadMm2s
   // Per-thread done flags (Vec indexed by thread)
   reg done_flags: Vec<Bool, 4> reset rst => 0;
 
+  // Combinational done/status
+  let all_done: Bool = active_r and total_xfers_r != 0
+     and (done_flags[0] or (total_xfers_r < 1))
+     and (done_flags[1] or (total_xfers_r < 2))
+     and (done_flags[2] or (total_xfers_r < 3))
+     and (done_flags[3] or (total_xfers_r < 4));
+
   comb
     halted   = false;
     idle_out = not active_r;
-    done = active_r and total_xfers_r != 0
-       and (done_flags[0] or (total_xfers_r < 1))
-       and (done_flags[1] or (total_xfers_r < 2))
-       and (done_flags[2] or (total_xfers_r < 3))
-       and (done_flags[3] or (total_xfers_r < 4));
+    done = all_done;
   end comb
 
-  resource ar_ch : mutex<round_robin>;
+  // Controller: plain seq block, no thread needed
+  seq on clk rising
+    if start and not active_r
+      total_xfers_r <= total_xfers;
+      base_addr_r   <= base_addr;
+      burst_len_r   <= burst_len;
+      active_r      <= true;
+      done_flags[0] <= false; done_flags[1] <= false;
+      done_flags[2] <= false; done_flags[3] <= false;
+    end if
+    if all_done
+      active_r <= false;
+    end if
+  end seq
 
-  // Controller: latches start, waits for completion
-  thread Controller on clk rising, rst high
-    wait until start;
-    total_xfers_r <= total_xfers;
-    base_addr_r   <= base_addr;
-    burst_len_r   <= burst_len;
-    active_r      <= true;
-    done_flags[0] <= false; done_flags[1] <= false;
-    done_flags[2] <= false; done_flags[3] <= false;
-    wait until done;
-    active_r <= false;
-    wait 1 cycle;
-  end thread Controller
+  resource ar_ch : mutex<round_robin>;
 
   // Read threads — one per outstanding transaction
   generate_for i in 0..3
