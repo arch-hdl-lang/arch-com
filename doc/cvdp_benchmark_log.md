@@ -261,7 +261,7 @@ Fixed 8 failing cid002 tasks (6 unique modules), bringing cid002 from 87% to 96%
 | **interrupt_controller_apb** | Priority encoder didn't see same-cycle requests; preemption caused tracking desync | Use `pending | requests` for winner selection; removed preemption; added delayed dispatch guard | PASS |
 | **copilot_rs_232** | `run_cvdp.py` clock period rounding changed 5ns→6ns, causing 20% baud rate mismatch | Use cocotb 2.0 `period_high` for asymmetric phases; also fixed baud_rate_generator to exact counter | PASS (6/6) |
 
-**Still failing:** interrupt_controller (×2 tasks) — no `.arch` file exists, only a copied `.sv` from filename mismatch resolution.
+**Also fixed:** interrupt_controller — wrote full ARCH implementation from spec (priority map, vector table, masking). 7/7 parametrizations pass.
 
 ---
 
@@ -271,12 +271,12 @@ Fixed 8 failing cid002 tasks (6 unique modules), bringing cid002 from 87% to 96%
 
 | Category | Tasks | Testable | PASS | Rate |
 |----------|-------|----------|------|------|
-| cid002 | 94 | 91 | 87 | 96% |
+| cid002 | 94 | 91 | 89 | 98% |
 | cid003 | 78 | 77 | 70 | 91% |
 | cid004 | 55 | 53 | 49 | 92% |
 | cid007 | 40 | 23 | 20 | 87% |
 | cid016 | 35 | 31 | 30 | 97% |
-| **Total** | **302** | **275** | **256** | **93%** |
+| **Total** | **302** | **275** | **258** | **94%** |
 
 "Testable" excludes TOPLEVEL=verilog (~19 tasks) and modules with no `.arch`/`.sv`.
 
@@ -284,16 +284,16 @@ Fixed 8 failing cid002 tasks (6 unique modules), bringing cid002 from 87% to 96%
 
 | Metric | Value |
 |--------|-------|
-| Total `.arch` files | ~260 |
+| Total `.arch` files | ~262 |
 | Testable via cocotb | 275 |
-| **Cocotb PASS** | **256 (93%)** |
-| Cocotb FAIL | 10 |
+| **Cocotb PASS** | **258 (94%)** |
+| Cocotb FAIL | 8 |
 | Cocotb TIMEOUT | 9 |
 | Not testable (TOPLEVEL=verilog + missing) | 27 |
 
 ### Remaining Failures
 
-**cid002 (2 fail, 3 timeout):** interrupt_controller(2, no .arch). Timeouts: sgd_linear_regression, vga_controller, Data_Reduction.
+**cid002 (3 timeout):** Timeouts: sgd_linear_regression, vga_controller, Data_Reduction.
 
 **cid003 (3 fail, 3 timeout, 1 missing):** load_store_unit, microcode_sequencer, secure_read_write_register_bank. Timeouts: digital_dice_roller, low_pass_filter, vga_controller. Missing: field_extract.
 
