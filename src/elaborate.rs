@@ -2057,14 +2057,46 @@ fn partition_thread_body(
     // Remaining statements after last wait become the final state.
     // For repeating threads, this state transitions back to S0.
     // For `thread once`, it becomes a terminal hold state.
+    //
+    // Optimization: if the last state has multi_transitions (e.g. for-loop
+    // exit) and the remaining stmts are just seq assigns, merge them into
+    // the exit transition's seq (guarded by exit condition) to avoid a
+    // dead cycle.
     if !cur_comb.is_empty() || !cur_seq.is_empty() {
-        states.push(ThreadFsmState {
-            comb_stmts: std::mem::take(&mut cur_comb),
-            seq_stmts: std::mem::take(&mut cur_seq),
-            transition_cond: None,
-            wait_cycles: None,
-            multi_transitions: Vec::new(),
-        });
+        let merged_into_exit = if cur_comb.is_empty() && !cur_seq.is_empty() {
+            if let Some(last) = states.last_mut() {
+                if last.multi_transitions.len() == 2 {
+                    // Find the exit transition (the one targeting past the for group)
+                    // and add the trailing seq assigns guarded by exit condition
+                    let exit_cond = last.multi_transitions[1].0.clone();
+                    for s in cur_seq.drain(..) {
+                        last.seq_stmts.push(Stmt::IfElse(IfElse {
+                            cond: exit_cond.clone(),
+                            then_stmts: vec![s],
+                            else_stmts: Vec::new(),
+                            unique: false,
+                            span,
+                        }));
+                    }
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if !merged_into_exit {
+            states.push(ThreadFsmState {
+                comb_stmts: std::mem::take(&mut cur_comb),
+                seq_stmts: std::mem::take(&mut cur_seq),
+                transition_cond: None,
+                wait_cycles: None,
+                multi_transitions: Vec::new(),
+            });
+        }
     }
 
     if states.is_empty() {
