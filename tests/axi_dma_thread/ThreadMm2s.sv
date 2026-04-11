@@ -3,7 +3,7 @@
 module _ThreadMm2s_threads (
   input logic clk,
   input logic rst,
-  input logic active_r,
+  input logic active,
   input logic ar_ready,
   input logic [32-1:0] base_addr_r,
   input logic [8-1:0] burst_len_r,
@@ -11,7 +11,7 @@ module _ThreadMm2s_threads (
   input logic [32-1:0] r_data,
   input logic [2-1:0] r_id,
   input logic r_valid,
-  input logic [16-1:0] total_xfers_r,
+  input logic [16-1:0] total_xfers,
   output logic [32-1:0] ar_addr,
   output logic [2-1:0] ar_burst,
   output logic [2-1:0] ar_id,
@@ -42,6 +42,7 @@ module _ThreadMm2s_threads (
       // Control latches
       // Per-thread done flags (Vec indexed by thread)
       // Combinational done/status
+      // Combinational active includes start pulse — zero startup latency
       // Controller: plain seq block, no thread needed
       // Read threads — one per outstanding transaction
       _ar_ch_req_0 = 1;
@@ -135,7 +136,7 @@ module _ThreadMm2s_threads (
       end
     end else begin
       if (_t0_state == 0) begin
-        if (active_r && !done_flags[0] && total_xfers_r > 0) begin
+        if (active && !done_flags[0] && total_xfers > 0) begin
           _t0_state <= 1;
         end
       end
@@ -160,7 +161,7 @@ module _ThreadMm2s_threads (
         end
       end
       if (_t1_state == 0) begin
-        if (active_r && !done_flags[1] && total_xfers_r > 1) begin
+        if (active && !done_flags[1] && total_xfers > 1) begin
           _t1_state <= 1;
         end
       end
@@ -185,7 +186,7 @@ module _ThreadMm2s_threads (
         end
       end
       if (_t2_state == 0) begin
-        if (active_r && !done_flags[2] && total_xfers_r > 2) begin
+        if (active && !done_flags[2] && total_xfers > 2) begin
           _t2_state <= 1;
         end
       end
@@ -210,7 +211,7 @@ module _ThreadMm2s_threads (
         end
       end
       if (_t3_state == 0) begin
-        if (active_r && !done_flags[3] && total_xfers_r > 3) begin
+        if (active && !done_flags[3] && total_xfers > 3) begin
           _t3_state <= 1;
         end
       end
@@ -278,8 +279,10 @@ module ThreadMm2s #(
   logic active_r;
   logic all_done;
   assign all_done = active_r && total_xfers_r != 0 && (done_flags[0] || total_xfers_r < 1) && (done_flags[1] || total_xfers_r < 2) && (done_flags[2] || total_xfers_r < 3) && (done_flags[3] || total_xfers_r < 4);
+  logic active;
+  assign active = active_r || start && !active_r;
   assign halted = 1'b0;
-  assign idle_out = !active_r;
+  assign idle_out = !active;
   assign done = all_done;
   always_ff @(posedge clk) begin
     if (rst) begin
@@ -307,7 +310,7 @@ module ThreadMm2s #(
   _ThreadMm2s_threads _threads (
     .clk(clk),
     .rst(rst),
-    .active_r(active_r),
+    .active(active),
     .ar_ready(ar_ready),
     .base_addr_r(base_addr_r),
     .burst_len_r(burst_len_r),
@@ -315,7 +318,7 @@ module ThreadMm2s #(
     .r_data(r_data),
     .r_id(r_id),
     .r_valid(r_valid),
-    .total_xfers_r(total_xfers_r),
+    .total_xfers(total_xfers),
     .ar_addr(ar_addr),
     .ar_burst(ar_burst),
     .ar_id(ar_id),

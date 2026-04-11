@@ -50,9 +50,12 @@ module ThreadMm2s
      and (done_flags[2] or (total_xfers_r < 3))
      and (done_flags[3] or (total_xfers_r < 4));
 
+  // Combinational active includes start pulse — zero startup latency
+  let active: Bool = active_r or (start and not active_r);
+
   comb
     halted   = false;
-    idle_out = not active_r;
+    idle_out = not active;
     done = all_done;
   end comb
 
@@ -76,7 +79,7 @@ module ThreadMm2s
   // Read threads — one per outstanding transaction
   generate_for i in 0..3
     thread ReadReq_i on clk rising, rst high
-      wait until active_r and (not done_flags[i]) and (total_xfers_r > i);
+      wait until active and (not done_flags[i]) and (total_xfers > i);
       lock ar_ch
         do
           ar_valid = 1;
