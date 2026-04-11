@@ -1,6 +1,5 @@
 // Thread-based multi-outstanding MM2S read engine.
-// Each thread index = AXI ID. Thread i issues burst i.
-// No shared counters — thread index determines address and ID.
+// Uses generate_for to unroll N identical read threads.
 module _ThreadMm2s_threads (
   input logic clk,
   input logic rst,
@@ -26,10 +25,7 @@ module _ThreadMm2s_threads (
   output logic active_r,
   output logic [32-1:0] base_addr_r,
   output logic [8-1:0] burst_len_r,
-  output logic done_0,
-  output logic done_1,
-  output logic done_2,
-  output logic done_3,
+  output logic done_flags [4-1:0],
   output logic [16-1:0] total_xfers_r
 );
 
@@ -48,67 +44,94 @@ module _ThreadMm2s_threads (
     _ar_ch_req_2 = 1'b0;
     _ar_ch_req_3 = 1'b0;
     _ar_ch_req_4 = 1'b0;
-    if (_t1_state == 1) begin
-      // Control latches (Controller-only)
-      // Per-thread done flags (shared: Controller clears, threads set)
+    if (_t1_state == 0 && active_r && !done_flags[0] && total_xfers_r > 0) begin
+      // Control latches
+      // Per-thread done flags (Vec indexed by thread)
       // Controller: latches start, waits for completion
-      // Read thread 0
+      // Read threads — one per outstanding transaction
       _ar_ch_req_1 = 1;
     end
-    if (_t1_state == 2) begin
+    if (_t1_state == 1) begin
+      _ar_ch_req_1 = 1;
+    end
+    if (_t1_state == 1 && _ar_ch_grant_1) begin
       _ar_ch_req_1 = 1;
       ar_valid = 1;
-      ar_addr = base_addr_r;
+      ar_addr = 32'(base_addr_r + 0 * (32'($unsigned(burst_len_r)) << 2));
       ar_id = 0;
       ar_len = 8'(burst_len_r - 1);
       ar_size = 3'd2;
       ar_burst = 2'd1;
     end
-    if (_t1_state == 3) begin
+    if (_t1_state == 2) begin
       _ar_ch_req_1 = 1;
-      ar_valid = 0;
+      ar_valid = 1;
+      ar_addr = 32'(base_addr_r + 0 * (32'($unsigned(burst_len_r)) << 2));
+      ar_id = 0;
+      ar_len = 8'(burst_len_r - 1);
+      ar_size = 3'd2;
+      ar_burst = 2'd1;
     end
-    if (_t1_state == 5) begin
-      r_ready = r_id == 0;
+    if (_t1_state == 4) begin
+      r_ready = r_ready | r_id == 0;
     end
-    if (_t1_state == 6) begin
-      // Push to FIFO — hold until accepted
-      push_valid = 1;
+    if (_t1_state == 4 && r_valid && r_id == 0) begin
+      push_valid = push_valid | 1;
       push_data = r_data;
     end
-    if (_t1_state == 8) begin
-      r_ready = 0;
+    if (_t1_state == 5) begin
+      push_valid = push_valid | 1;
+      push_data = r_data;
+    end
+    if (_t2_state == 0 && active_r && !done_flags[1] && total_xfers_r > 1) begin
+      _ar_ch_req_2 = 1;
     end
     if (_t2_state == 1) begin
-      // Read thread 1
       _ar_ch_req_2 = 1;
     end
-    if (_t2_state == 2) begin
+    if (_t2_state == 1 && _ar_ch_grant_2) begin
       _ar_ch_req_2 = 1;
       ar_valid = 1;
-      ar_addr = 32'(base_addr_r + (32'($unsigned(burst_len_r)) << 2));
+      ar_addr = 32'(base_addr_r + 1 * (32'($unsigned(burst_len_r)) << 2));
       ar_id = 1;
       ar_len = 8'(burst_len_r - 1);
       ar_size = 3'd2;
       ar_burst = 2'd1;
     end
-    if (_t2_state == 3) begin
+    if (_t2_state == 2) begin
       _ar_ch_req_2 = 1;
-      ar_valid = 0;
+      ar_valid = 1;
+      ar_addr = 32'(base_addr_r + 1 * (32'($unsigned(burst_len_r)) << 2));
+      ar_id = 1;
+      ar_len = 8'(burst_len_r - 1);
+      ar_size = 3'd2;
+      ar_burst = 2'd1;
     end
-    if (_t2_state == 5) begin
-      r_ready = r_id == 1;
+    if (_t2_state == 4) begin
+      r_ready = r_ready | r_id == 1;
     end
-    if (_t2_state == 6) begin
-      push_valid = 1;
+    if (_t2_state == 4 && r_valid && r_id == 1) begin
+      push_valid = push_valid | 1;
       push_data = r_data;
     end
-    if (_t2_state == 8) begin
-      r_ready = 0;
+    if (_t2_state == 5) begin
+      push_valid = push_valid | 1;
+      push_data = r_data;
+    end
+    if (_t3_state == 0 && active_r && !done_flags[2] && total_xfers_r > 2) begin
+      _ar_ch_req_3 = 1;
     end
     if (_t3_state == 1) begin
-      // Read thread 2
       _ar_ch_req_3 = 1;
+    end
+    if (_t3_state == 1 && _ar_ch_grant_3) begin
+      _ar_ch_req_3 = 1;
+      ar_valid = 1;
+      ar_addr = 32'(base_addr_r + 2 * (32'($unsigned(burst_len_r)) << 2));
+      ar_id = 2;
+      ar_len = 8'(burst_len_r - 1);
+      ar_size = 3'd2;
+      ar_burst = 2'd1;
     end
     if (_t3_state == 2) begin
       _ar_ch_req_3 = 1;
@@ -119,23 +142,31 @@ module _ThreadMm2s_threads (
       ar_size = 3'd2;
       ar_burst = 2'd1;
     end
-    if (_t3_state == 3) begin
-      _ar_ch_req_3 = 1;
-      ar_valid = 0;
+    if (_t3_state == 4) begin
+      r_ready = r_ready | r_id == 2;
     end
-    if (_t3_state == 5) begin
-      r_ready = r_id == 2;
-    end
-    if (_t3_state == 6) begin
-      push_valid = 1;
+    if (_t3_state == 4 && r_valid && r_id == 2) begin
+      push_valid = push_valid | 1;
       push_data = r_data;
     end
-    if (_t3_state == 8) begin
-      r_ready = 0;
+    if (_t3_state == 5) begin
+      push_valid = push_valid | 1;
+      push_data = r_data;
+    end
+    if (_t4_state == 0 && active_r && !done_flags[3] && total_xfers_r > 3) begin
+      _ar_ch_req_4 = 1;
     end
     if (_t4_state == 1) begin
-      // Read thread 3
       _ar_ch_req_4 = 1;
+    end
+    if (_t4_state == 1 && _ar_ch_grant_4) begin
+      _ar_ch_req_4 = 1;
+      ar_valid = 1;
+      ar_addr = 32'(base_addr_r + 3 * (32'($unsigned(burst_len_r)) << 2));
+      ar_id = 3;
+      ar_len = 8'(burst_len_r - 1);
+      ar_size = 3'd2;
+      ar_burst = 2'd1;
     end
     if (_t4_state == 2) begin
       _ar_ch_req_4 = 1;
@@ -146,19 +177,16 @@ module _ThreadMm2s_threads (
       ar_size = 3'd2;
       ar_burst = 2'd1;
     end
-    if (_t4_state == 3) begin
-      _ar_ch_req_4 = 1;
-      ar_valid = 0;
+    if (_t4_state == 4) begin
+      r_ready = r_ready | r_id == 3;
     end
-    if (_t4_state == 5) begin
-      r_ready = r_id == 3;
-    end
-    if (_t4_state == 6) begin
-      push_valid = 1;
+    if (_t4_state == 4 && r_valid && r_id == 3) begin
+      push_valid = push_valid | 1;
       push_data = r_data;
     end
-    if (_t4_state == 8) begin
-      r_ready = 0;
+    if (_t4_state == 5) begin
+      push_valid = push_valid | 1;
+      push_data = r_data;
     end
   end
   logic _ar_ch_req_0;
@@ -176,17 +204,24 @@ module _ThreadMm2s_threads (
   assign _ar_ch_grant_2 = _ar_ch_req_2 && !_ar_ch_grant_0 && !_ar_ch_grant_1;
   assign _ar_ch_grant_3 = _ar_ch_req_3 && !_ar_ch_grant_0 && !_ar_ch_grant_1 && !_ar_ch_grant_2;
   assign _ar_ch_grant_4 = _ar_ch_req_4 && !_ar_ch_grant_0 && !_ar_ch_grant_1 && !_ar_ch_grant_2 && !_ar_ch_grant_3;
-  logic [2-1:0] _t0_state = 0;
+  logic [3-1:0] _t0_state = 0;
+  logic [3-1:0] _t1_state = 0;
+  logic [3-1:0] _t2_state = 0;
+  logic [3-1:0] _t3_state = 0;
+  logic [3-1:0] _t4_state = 0;
   always_ff @(posedge clk) begin
     if (rst) begin
       _t0_state <= 0;
+      _t1_state <= 0;
+      _t2_state <= 0;
+      _t3_state <= 0;
+      _t4_state <= 0;
       active_r <= 1'b0;
       base_addr_r <= 0;
       burst_len_r <= 0;
-      done_0 <= 1'b0;
-      done_1 <= 1'b0;
-      done_2 <= 1'b0;
-      done_3 <= 1'b0;
+      for (int __ri0 = 0; __ri0 < 4; __ri0++) begin
+        done_flags[__ri0] <= 0;
+      end
       total_xfers_r <= 0;
     end else begin
       if (_t0_state == 0) begin
@@ -199,34 +234,30 @@ module _ThreadMm2s_threads (
         base_addr_r <= base_addr;
         burst_len_r <= burst_len;
         active_r <= 1'b1;
-        done_0 <= 1'b0;
-        done_1 <= 1'b0;
-        done_2 <= 1'b0;
-        done_3 <= 1'b0;
-        if (done) begin
-          _t0_cnt <= 32'(1 - 32'd1);
-        end
-        if (done) begin
-          _t0_state <= 2;
-        end
+        done_flags[0] <= 1'b0;
+        done_flags[1] <= 1'b0;
+        done_flags[2] <= 1'b0;
+        done_flags[3] <= 1'b0;
+        _t0_state <= 2;
       end
       if (_t0_state == 2) begin
+        if (done) begin
+          _t0_state <= 3;
+        end
+      end
+      if (_t0_state == 3) begin
         active_r <= 1'b0;
+        _t0_cnt <= 32'(1 - 32'd1);
+        _t0_state <= 4;
+      end
+      if (_t0_state == 4) begin
         _t0_cnt <= 32'(_t0_cnt - 32'd1);
         if (_t0_cnt == 0) begin
           _t0_state <= 0;
         end
       end
-    end
-  end
-  logic [4-1:0] _t1_state = 0;
-  always_ff @(posedge clk) begin
-    if (rst) begin
-      _t1_state <= 0;
-      done_0 <= 1'b0;
-    end else begin
       if (_t1_state == 0) begin
-        if (active_r && !done_0 && total_xfers_r > 0) begin
+        if (active_r && !done_flags[0] && total_xfers_r > 0) begin
           _t1_state <= 1;
         end
       end
@@ -241,49 +272,34 @@ module _ThreadMm2s_threads (
         end
       end
       if (_t1_state == 3) begin
+        _t1_loop_cnt <= 0;
         _t1_state <= 4;
       end
       if (_t1_state == 4) begin
-        _t1_loop_cnt <= 0;
-        _t1_state <= 5;
+        if (r_valid && r_id == 0) begin
+          _t1_state <= 5;
+        end
       end
       if (_t1_state == 5) begin
-        if (r_valid && r_id == 0) begin
+        if (push_ready) begin
           _t1_state <= 6;
         end
       end
       if (_t1_state == 6) begin
-        if (push_ready) begin
+        _t1_loop_cnt <= 32'(_t1_loop_cnt + 32'd1);
+        if (_t1_loop_cnt < burst_len_r - 1) begin
+          _t1_state <= 4;
+        end
+        if (_t1_loop_cnt >= burst_len_r - 1) begin
           _t1_state <= 7;
         end
       end
       if (_t1_state == 7) begin
-        _t1_loop_cnt <= 32'(_t1_loop_cnt + 32'd1);
-        _t1_cnt <= 32'(1 - 32'd1);
-        if (_t1_loop_cnt < burst_len_r - 1) begin
-          _t1_state <= 5;
-        end
-        if (_t1_loop_cnt >= burst_len_r - 1) begin
-          _t1_state <= 8;
-        end
+        done_flags[0] <= 1'b1;
+        _t1_state <= 0;
       end
-      if (_t1_state == 8) begin
-        done_0 <= 1'b1;
-        _t1_cnt <= 32'(_t1_cnt - 32'd1);
-        if (_t1_cnt == 0) begin
-          _t1_state <= 0;
-        end
-      end
-    end
-  end
-  logic [4-1:0] _t2_state = 0;
-  always_ff @(posedge clk) begin
-    if (rst) begin
-      _t2_state <= 0;
-      done_1 <= 1'b0;
-    end else begin
       if (_t2_state == 0) begin
-        if (active_r && !done_1 && total_xfers_r > 1) begin
+        if (active_r && !done_flags[1] && total_xfers_r > 1) begin
           _t2_state <= 1;
         end
       end
@@ -298,49 +314,34 @@ module _ThreadMm2s_threads (
         end
       end
       if (_t2_state == 3) begin
+        _t2_loop_cnt <= 0;
         _t2_state <= 4;
       end
       if (_t2_state == 4) begin
-        _t2_loop_cnt <= 0;
-        _t2_state <= 5;
+        if (r_valid && r_id == 1) begin
+          _t2_state <= 5;
+        end
       end
       if (_t2_state == 5) begin
-        if (r_valid && r_id == 1) begin
+        if (push_ready) begin
           _t2_state <= 6;
         end
       end
       if (_t2_state == 6) begin
-        if (push_ready) begin
+        _t2_loop_cnt <= 32'(_t2_loop_cnt + 32'd1);
+        if (_t2_loop_cnt < burst_len_r - 1) begin
+          _t2_state <= 4;
+        end
+        if (_t2_loop_cnt >= burst_len_r - 1) begin
           _t2_state <= 7;
         end
       end
       if (_t2_state == 7) begin
-        _t2_loop_cnt <= 32'(_t2_loop_cnt + 32'd1);
-        _t2_cnt <= 32'(1 - 32'd1);
-        if (_t2_loop_cnt < burst_len_r - 1) begin
-          _t2_state <= 5;
-        end
-        if (_t2_loop_cnt >= burst_len_r - 1) begin
-          _t2_state <= 8;
-        end
+        done_flags[1] <= 1'b1;
+        _t2_state <= 0;
       end
-      if (_t2_state == 8) begin
-        done_1 <= 1'b1;
-        _t2_cnt <= 32'(_t2_cnt - 32'd1);
-        if (_t2_cnt == 0) begin
-          _t2_state <= 0;
-        end
-      end
-    end
-  end
-  logic [4-1:0] _t3_state = 0;
-  always_ff @(posedge clk) begin
-    if (rst) begin
-      _t3_state <= 0;
-      done_2 <= 1'b0;
-    end else begin
       if (_t3_state == 0) begin
-        if (active_r && !done_2 && total_xfers_r > 2) begin
+        if (active_r && !done_flags[2] && total_xfers_r > 2) begin
           _t3_state <= 1;
         end
       end
@@ -355,49 +356,34 @@ module _ThreadMm2s_threads (
         end
       end
       if (_t3_state == 3) begin
+        _t3_loop_cnt <= 0;
         _t3_state <= 4;
       end
       if (_t3_state == 4) begin
-        _t3_loop_cnt <= 0;
-        _t3_state <= 5;
+        if (r_valid && r_id == 2) begin
+          _t3_state <= 5;
+        end
       end
       if (_t3_state == 5) begin
-        if (r_valid && r_id == 2) begin
+        if (push_ready) begin
           _t3_state <= 6;
         end
       end
       if (_t3_state == 6) begin
-        if (push_ready) begin
+        _t3_loop_cnt <= 32'(_t3_loop_cnt + 32'd1);
+        if (_t3_loop_cnt < burst_len_r - 1) begin
+          _t3_state <= 4;
+        end
+        if (_t3_loop_cnt >= burst_len_r - 1) begin
           _t3_state <= 7;
         end
       end
       if (_t3_state == 7) begin
-        _t3_loop_cnt <= 32'(_t3_loop_cnt + 32'd1);
-        _t3_cnt <= 32'(1 - 32'd1);
-        if (_t3_loop_cnt < burst_len_r - 1) begin
-          _t3_state <= 5;
-        end
-        if (_t3_loop_cnt >= burst_len_r - 1) begin
-          _t3_state <= 8;
-        end
+        done_flags[2] <= 1'b1;
+        _t3_state <= 0;
       end
-      if (_t3_state == 8) begin
-        done_2 <= 1'b1;
-        _t3_cnt <= 32'(_t3_cnt - 32'd1);
-        if (_t3_cnt == 0) begin
-          _t3_state <= 0;
-        end
-      end
-    end
-  end
-  logic [4-1:0] _t4_state = 0;
-  always_ff @(posedge clk) begin
-    if (rst) begin
-      _t4_state <= 0;
-      done_3 <= 1'b0;
-    end else begin
       if (_t4_state == 0) begin
-        if (active_r && !done_3 && total_xfers_r > 3) begin
+        if (active_r && !done_flags[3] && total_xfers_r > 3) begin
           _t4_state <= 1;
         end
       end
@@ -412,49 +398,38 @@ module _ThreadMm2s_threads (
         end
       end
       if (_t4_state == 3) begin
+        _t4_loop_cnt <= 0;
         _t4_state <= 4;
       end
       if (_t4_state == 4) begin
-        _t4_loop_cnt <= 0;
-        _t4_state <= 5;
+        if (r_valid && r_id == 3) begin
+          _t4_state <= 5;
+        end
       end
       if (_t4_state == 5) begin
-        if (r_valid && r_id == 3) begin
+        if (push_ready) begin
           _t4_state <= 6;
         end
       end
       if (_t4_state == 6) begin
-        if (push_ready) begin
+        _t4_loop_cnt <= 32'(_t4_loop_cnt + 32'd1);
+        if (_t4_loop_cnt < burst_len_r - 1) begin
+          _t4_state <= 4;
+        end
+        if (_t4_loop_cnt >= burst_len_r - 1) begin
           _t4_state <= 7;
         end
       end
       if (_t4_state == 7) begin
-        _t4_loop_cnt <= 32'(_t4_loop_cnt + 32'd1);
-        _t4_cnt <= 32'(1 - 32'd1);
-        if (_t4_loop_cnt < burst_len_r - 1) begin
-          _t4_state <= 5;
-        end
-        if (_t4_loop_cnt >= burst_len_r - 1) begin
-          _t4_state <= 8;
-        end
-      end
-      if (_t4_state == 8) begin
-        done_3 <= 1'b1;
-        _t4_cnt <= 32'(_t4_cnt - 32'd1);
-        if (_t4_cnt == 0) begin
-          _t4_state <= 0;
-        end
+        done_flags[3] <= 1'b1;
+        _t4_state <= 0;
       end
     end
   end
   logic [32-1:0] _t0_cnt = 0;
-  logic [32-1:0] _t1_cnt = 0;
   logic [32-1:0] _t1_loop_cnt = 0;
-  logic [32-1:0] _t2_cnt = 0;
   logic [32-1:0] _t2_loop_cnt = 0;
-  logic [32-1:0] _t3_cnt = 0;
   logic [32-1:0] _t3_loop_cnt = 0;
-  logic [32-1:0] _t4_cnt = 0;
   logic [32-1:0] _t4_loop_cnt = 0;
 
 endmodule
@@ -490,14 +465,11 @@ module ThreadMm2s #(
 
   assign halted = 1'b0;
   assign idle_out = !active_r;
-  assign done = active_r && total_xfers_r != 0 && (done_0 || total_xfers_r < 1) && (done_1 || total_xfers_r < 2) && (done_2 || total_xfers_r < 3) && (done_3 || total_xfers_r < 4);
+  assign done = active_r && total_xfers_r != 0 && (done_flags[0] || total_xfers_r < 1) && (done_flags[1] || total_xfers_r < 2) && (done_flags[2] || total_xfers_r < 3) && (done_flags[3] || total_xfers_r < 4);
   logic active_r;
   logic [32-1:0] base_addr_r;
   logic [8-1:0] burst_len_r;
-  logic done_0;
-  logic done_1;
-  logic done_2;
-  logic done_3;
+  logic done_flags [4-1:0];
   logic [16-1:0] total_xfers_r;
   _ThreadMm2s_threads _threads (
     .clk(clk),
@@ -524,10 +496,7 @@ module ThreadMm2s #(
     .active_r(active_r),
     .base_addr_r(base_addr_r),
     .burst_len_r(burst_len_r),
-    .done_0(done_0),
-    .done_1(done_1),
-    .done_2(done_2),
-    .done_3(done_3),
+    .done_flags(done_flags),
     .total_xfers_r(total_xfers_r)
   );
 

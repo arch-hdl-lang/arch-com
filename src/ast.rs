@@ -344,6 +344,8 @@ pub enum ThreadStmt {
     For { var: Ident, start: Expr, end: Expr, body: Vec<ThreadStmt>, span: Span },
     /// `lock resource_name ... end lock resource_name` — exclusive bus access
     Lock { resource: Ident, body: Vec<ThreadStmt>, span: Span },
+    /// `do ... until cond;` — hold comb outputs while waiting for condition
+    DoUntil { body: Vec<ThreadStmt>, cond: Expr, span: Span },
 }
 
 #[derive(Debug, Clone)]

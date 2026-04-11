@@ -611,6 +611,11 @@ fn subst_thread_stmt(stmt: &ThreadStmt, var: &str, val: i64) -> ThreadStmt {
             body: body.iter().map(|s| subst_thread_stmt(s, var, val)).collect(),
             span: *span,
         },
+        ThreadStmt::DoUntil { body, cond, span } => ThreadStmt::DoUntil {
+            body: body.iter().map(|s| subst_thread_stmt(s, var, val)).collect(),
+            cond: subst_expr_names(cond.clone(), var, val),
+            span: *span,
+        },
     }
 }
 
@@ -1076,7 +1081,7 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
                 name: Ident::new(name.clone(), sp), direction: Direction::Out,
                 ty: info.ty.clone(),
                 default: Some(make_zero_expr(sp)),
-                reg_info: None, bus_info: None, shared: None, span: sp,
+                reg_info: None, bus_info: None, shared: info.shared, span: sp,
             });
         }
     }
@@ -1133,8 +1138,15 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
         merged_body.push(ModuleBodyItem::CombBlock(CombBlock { stmts: arb_stmts, span: sp }));
     }
 
+    // ── Collect shared(or) signal names for OR-accumulation ────────────
+    let shared_or_signals: HashSet<String> = type_map.iter()
+        .filter(|(_, info)| matches!(info.shared, Some(SharedReduction::Or)))
+        .map(|(name, _)| name.clone())
+        .collect();
+
     // ── Per-thread state machines ──────────────────────────────────────
     let mut all_thread_comb: Vec<CombStmt> = Vec::new();
+    let mut all_thread_seq: Vec<Stmt> = Vec::new();
 
     for (ti, (_tname, t)) in threads.iter().enumerate() {
         let mut raw_states = match partition_thread_body(&t.body, sp) {
@@ -1208,7 +1220,15 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
             let next = if si + 1 < raw_states.len() { si + 1 } else { 0 };
             if next < raw_states.len() {
                 if let Some(ref count_expr) = raw_states[next].wait_cycles {
-                    let cond = raw_states[si].transition_cond.clone();
+                    // Find the guard: either transition_cond or multi_transition that targets `next`
+                    let cond = if let Some(ref c) = raw_states[si].transition_cond {
+                        Some(c.clone())
+                    } else {
+                        // Check multi_transitions for one targeting `next`
+                        raw_states[si].multi_transitions.iter()
+                            .find(|(_, tgt)| *tgt == next || (*tgt >= raw_states.len() && next == si + 1))
+                            .map(|(c, _)| c.clone())
+                    };
                     counter_loads.push((si, count_expr.clone(), cond));
                 }
             }
@@ -1344,28 +1364,61 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
             }));
         }
 
-        merged_body.push(ModuleBodyItem::RegBlock(RegBlock {
-            clock: Ident::new(clk_name.clone(), sp),
-            clock_edge: ClockEdge::Rising,
-            stmts: seq_stmts,
-            span: sp,
-        }));
+        all_thread_seq.extend(seq_stmts);
 
         // Collect comb outputs for this thread (merged into one block later)
+        // For shared(or) signals, transform `sig = val` → `sig = sig | val`
         for (si, raw) in raw_states.iter().enumerate() {
-            if raw.comb_stmts.is_empty() { continue; }
             let state_cond = Expr::new(ExprKind::Binary(
                 BinOp::Eq,
                 Box::new(Expr::new(ExprKind::Ident(state_reg.clone()), sp)),
                 Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(si as u64)), sp)),
             ), sp);
-            all_thread_comb.push(CombStmt::IfElse(CombIfElse {
-                cond: state_cond,
-                then_stmts: raw.comb_stmts.clone(),
-                else_stmts: Vec::new(),
-                unique: false, span: sp,
-            }));
+
+            // This state's own comb outputs
+            if !raw.comb_stmts.is_empty() {
+                let transformed_stmts = transform_shared_or_assigns(&raw.comb_stmts, &shared_or_signals, sp);
+                all_thread_comb.push(CombStmt::IfElse(CombIfElse {
+                    cond: state_cond.clone(),
+                    then_stmts: transformed_stmts,
+                    else_stmts: Vec::new(),
+                    unique: false, span: sp,
+                }));
+            }
+
+            // Comb overlap: when this state's transition fires, also drive
+            // the next state's comb outputs in the same cycle.  This allows
+            // back-to-back do..until blocks to pipeline without a dead cycle.
+            if let Some(ref trans_cond) = raw.transition_cond {
+                let next_si = if si + 1 < n_states { si + 1 }
+                              else if t.once { si } else { 0 };
+                if next_si < raw_states.len() && !raw_states[next_si].comb_stmts.is_empty() {
+                    let next_comb = transform_shared_or_assigns(
+                        &raw_states[next_si].comb_stmts, &shared_or_signals, sp);
+                    let overlap_cond = Expr::new(ExprKind::Binary(
+                        BinOp::And,
+                        Box::new(state_cond),
+                        Box::new(trans_cond.clone()),
+                    ), sp);
+                    all_thread_comb.push(CombStmt::IfElse(CombIfElse {
+                        cond: overlap_cond,
+                        then_stmts: next_comb,
+                        else_stmts: Vec::new(),
+                        unique: false, span: sp,
+                    }));
+                }
+            }
         }
+    }
+
+    // Single merged always_ff for all threads (avoids multi-driver on shared regs)
+    if !all_thread_seq.is_empty() {
+        merged_body.push(ModuleBodyItem::RegBlock(RegBlock {
+            clock: Ident::new(clk_name.clone(), sp),
+            clock_edge: ClockEdge::Rising,
+            stmts: all_thread_seq,
+            span: sp,
+        }));
     }
 
     if !errors.is_empty() {
@@ -1479,6 +1532,7 @@ struct SignalInfo {
     is_reg: bool,
     reg_reset: RegReset,
     reg_init: Option<Expr>,
+    shared: Option<SharedReduction>,
 }
 
 fn build_module_type_map(m: &ModuleDecl) -> HashMap<String, SignalInfo> {
@@ -1489,6 +1543,7 @@ fn build_module_type_map(m: &ModuleDecl) -> HashMap<String, SignalInfo> {
             is_reg: p.reg_info.is_some(),
             reg_reset: p.reg_info.as_ref().map(|ri| ri.reset.clone()).unwrap_or(RegReset::None),
             reg_init: p.reg_info.as_ref().and_then(|ri| ri.init.clone()),
+            shared: p.shared,
         });
     }
     for item in &m.body {
@@ -1499,6 +1554,7 @@ fn build_module_type_map(m: &ModuleDecl) -> HashMap<String, SignalInfo> {
                     is_reg: true,
                     reg_reset: r.reset.clone(),
                     reg_init: r.init.clone(),
+                    shared: None,
                 });
             }
             ModuleBodyItem::WireDecl(w) => {
@@ -1507,6 +1563,7 @@ fn build_module_type_map(m: &ModuleDecl) -> HashMap<String, SignalInfo> {
                     is_reg: false,
                     reg_reset: RegReset::None,
                     reg_init: None,
+                    shared: None,
                 });
             }
             ModuleBodyItem::LetBinding(l) => {
@@ -1516,6 +1573,7 @@ fn build_module_type_map(m: &ModuleDecl) -> HashMap<String, SignalInfo> {
                         is_reg: false,
                         reg_reset: RegReset::None,
                         reg_init: None,
+                        shared: None,
                     });
                 }
             }
@@ -1586,6 +1644,10 @@ fn collect_thread_signals(body: &[ThreadStmt]) -> (HashSet<String>, HashSet<Stri
                 }
                 ThreadStmt::Lock { body, .. } => {
                     walk_stmts(body, comb_driven, seq_driven, all_read);
+                }
+                ThreadStmt::DoUntil { body, cond, .. } => {
+                    walk_stmts(body, comb_driven, seq_driven, all_read);
+                    collect_expr_reads(cond, all_read);
                 }
             }
         }
@@ -1716,14 +1778,14 @@ fn thread_has_for(stmts: &[ThreadStmt]) -> bool {
         ThreadStmt::For { .. } => true,
         ThreadStmt::IfElse(ie) => thread_has_for(&ie.then_stmts) || thread_has_for(&ie.else_stmts),
         ThreadStmt::ForkJoin(branches, _) => branches.iter().any(|br| thread_has_for(br)),
-        ThreadStmt::Lock { body, .. } => thread_has_for(body),
+        ThreadStmt::Lock { body, .. } | ThreadStmt::DoUntil { body, .. } => thread_has_for(body),
         _ => false,
     })
 }
 
 fn contains_wait(stmts: &[ThreadStmt]) -> bool {
     stmts.iter().any(|s| match s {
-        ThreadStmt::WaitUntil(..) | ThreadStmt::WaitCycles(..) => true,
+        ThreadStmt::WaitUntil(..) | ThreadStmt::WaitCycles(..) | ThreadStmt::DoUntil { .. } => true,
         ThreadStmt::IfElse(ie) => contains_wait(&ie.then_stmts) || contains_wait(&ie.else_stmts),
         ThreadStmt::ForkJoin(branches, _) => branches.iter().any(|br| contains_wait(br)),
         ThreadStmt::For { body, .. } => contains_wait(body),
@@ -1750,19 +1812,41 @@ fn partition_thread_body(
                 cur_seq.push(Stmt::Assign(ra.clone()));
             }
             ThreadStmt::WaitUntil(cond, _) => {
-                // Finalize current state: transition on cond
+                // `wait until` is a pure state boundary.
+                // ALL pending assigns (comb + seq) go into a prior state
+                // that fires once and advances unconditionally.
+                // Use `do..until` instead when comb outputs must be held while waiting.
+                if !cur_comb.is_empty() || !cur_seq.is_empty() {
+                    states.push(ThreadFsmState {
+                        comb_stmts: std::mem::take(&mut cur_comb),
+                        seq_stmts: std::mem::take(&mut cur_seq),
+                        transition_cond: None,
+                        wait_cycles: None,
+                        multi_transitions: Vec::new(),
+                    });
+                }
                 states.push(ThreadFsmState {
-                    comb_stmts: std::mem::take(&mut cur_comb),
-                    seq_stmts: std::mem::take(&mut cur_seq),
+                    comb_stmts: Vec::new(),
+                    seq_stmts: Vec::new(),
                     transition_cond: Some(cond.clone()),
                     wait_cycles: None,
                     multi_transitions: Vec::new(),
                 });
             }
             ThreadStmt::WaitCycles(count, _) => {
+                // Same: pure boundary, flush all pending assigns
+                if !cur_comb.is_empty() || !cur_seq.is_empty() {
+                    states.push(ThreadFsmState {
+                        comb_stmts: std::mem::take(&mut cur_comb),
+                        seq_stmts: std::mem::take(&mut cur_seq),
+                        transition_cond: None,
+                        wait_cycles: None,
+                        multi_transitions: Vec::new(),
+                    });
+                }
                 states.push(ThreadFsmState {
-                    comb_stmts: std::mem::take(&mut cur_comb),
-                    seq_stmts: std::mem::take(&mut cur_seq),
+                    comb_stmts: Vec::new(),
+                    seq_stmts: Vec::new(),
                     transition_cond: None,
                     wait_cycles: Some(count.clone()),
                     multi_transitions: Vec::new(),
@@ -1843,6 +1927,47 @@ fn partition_thread_body(
                 }
                 let lock_states = lower_thread_lock(&resource.name, body, *span)?;
                 states.extend(lock_states);
+            }
+            ThreadStmt::DoUntil { body, cond, span: _ } => {
+                // Flush pending assigns into a prior state
+                if !cur_comb.is_empty() || !cur_seq.is_empty() {
+                    states.push(ThreadFsmState {
+                        comb_stmts: std::mem::take(&mut cur_comb),
+                        seq_stmts: std::mem::take(&mut cur_seq),
+                        transition_cond: None,
+                        wait_cycles: None,
+                        multi_transitions: Vec::new(),
+                    });
+                }
+                // Collect the do-body's assigns: comb stays in-state, seq stays in-state
+                let mut do_comb: Vec<CombStmt> = Vec::new();
+                let mut do_seq: Vec<Stmt> = Vec::new();
+                for s in body {
+                    match s {
+                        ThreadStmt::CombAssign(ca) => {
+                            do_comb.push(CombStmt::Assign(ca.clone()));
+                        }
+                        ThreadStmt::SeqAssign(ra) => {
+                            do_seq.push(Stmt::Assign(ra.clone()));
+                        }
+                        ThreadStmt::IfElse(ie) => {
+                            let (comb_if, seq_if) = thread_if_to_fsm_stmts(ie);
+                            if let Some(c) = comb_if { do_comb.push(c); }
+                            if let Some(s) = seq_if { do_seq.push(s); }
+                        }
+                        _ => {
+                            // do..until body should only contain simple assigns
+                            // (no waits, forks, loops — those go in the outer thread)
+                        }
+                    }
+                }
+                states.push(ThreadFsmState {
+                    comb_stmts: do_comb,
+                    seq_stmts: do_seq,
+                    transition_cond: Some(cond.clone()),
+                    wait_cycles: None,
+                    multi_transitions: Vec::new(),
+                });
             }
         }
     }
@@ -2152,7 +2277,7 @@ fn collect_locked_resources(stmts: &[ThreadStmt]) -> HashSet<String> {
             ThreadStmt::ForkJoin(branches, _) => {
                 for br in branches { resources.extend(collect_locked_resources(br)); }
             }
-            ThreadStmt::For { body, .. } => {
+            ThreadStmt::For { body, .. } | ThreadStmt::DoUntil { body, .. } => {
                 resources.extend(collect_locked_resources(body));
             }
             _ => {}
@@ -2200,6 +2325,11 @@ fn rewrite_loop_var(stmt: &ThreadStmt, var: &str, replacement: &str) -> ThreadSt
         ThreadStmt::Lock { resource, body, span } => ThreadStmt::Lock {
             resource: resource.clone(),
             body: body.iter().map(|s| rewrite_loop_var(s, var, replacement)).collect(),
+            span: *span,
+        },
+        ThreadStmt::DoUntil { body, cond, span } => ThreadStmt::DoUntil {
+            body: body.iter().map(|s| rewrite_loop_var(s, var, replacement)).collect(),
+            cond: rewrite_var_expr(cond.clone(), var, replacement),
             span: *span,
         },
     }
@@ -2758,6 +2888,50 @@ fn lower_single_thread(
     };
 
     Ok((fsm, inst))
+}
+
+/// Transform comb assigns for shared(or) signals: `sig = val` → `sig = sig | val`.
+/// This ensures multiple threads OR-accumulate rather than last-writer-wins.
+fn transform_shared_or_assigns(
+    stmts: &[CombStmt],
+    shared_or: &HashSet<String>,
+    sp: Span,
+) -> Vec<CombStmt> {
+    stmts.iter().map(|stmt| {
+        match stmt {
+            CombStmt::Assign(a) => {
+                let target_name = match &a.target.kind {
+                    ExprKind::Ident(n) => Some(n.clone()),
+                    _ => None,
+                };
+                if let Some(ref name) = target_name {
+                    if shared_or.contains(name) {
+                        // sig = sig | val
+                        return CombStmt::Assign(CombAssign {
+                            target: a.target.clone(),
+                            value: Expr::new(ExprKind::Binary(
+                                BinOp::BitOr,
+                                Box::new(Expr::new(ExprKind::Ident(name.clone()), sp)),
+                                Box::new(a.value.clone()),
+                            ), sp),
+                            span: a.span,
+                        });
+                    }
+                }
+                stmt.clone()
+            }
+            CombStmt::IfElse(ie) => {
+                CombStmt::IfElse(CombIfElse {
+                    cond: ie.cond.clone(),
+                    then_stmts: transform_shared_or_assigns(&ie.then_stmts, shared_or, sp),
+                    else_stmts: transform_shared_or_assigns(&ie.else_stmts, shared_or, sp),
+                    unique: ie.unique,
+                    span: ie.span,
+                })
+            }
+            _ => stmt.clone(),
+        }
+    }).collect()
 }
 
 /// If a seq stmt assigns to a shared reg, return equivalent comb stmts.

@@ -882,6 +882,11 @@ impl Parser {
             return self.parse_thread_lock();
         }
 
+        // `do ... until cond;` — hold comb outputs while waiting
+        if self.check_ident("do") {
+            return self.parse_thread_do_until();
+        }
+
         // `wait` (contextual keyword)
         if self.check_ident("wait") {
             let wait_start = self.advance().span;
@@ -1039,6 +1044,26 @@ impl Parser {
             resource,
             body,
             span: start.merge(closing.span),
+        })
+    }
+
+    /// Parse `do ... until cond;` inside a thread block.
+    /// Body contains comb/seq assigns held while waiting for the condition.
+    fn parse_thread_do_until(&mut self) -> Result<ThreadStmt, CompileError> {
+        let start = self.expect_contextual("do")?.span;
+
+        let mut body = Vec::new();
+        while !self.check_ident("until") {
+            body.push(self.parse_thread_stmt()?);
+        }
+        self.expect_contextual("until")?;
+        let cond = self.parse_expr()?;
+        let semi_span = self.expect(TokenKind::Semi)?.span;
+
+        Ok(ThreadStmt::DoUntil {
+            body,
+            cond,
+            span: start.merge(semi_span),
         })
     }
 

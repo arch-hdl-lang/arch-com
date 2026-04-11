@@ -1,4 +1,4 @@
-// Testbench for ThreadMm2s — same test as tb_mm2s_multi but with thread module.
+// Testbench for ThreadMm2s — same test as tb_verilator but with proper handshake timing.
 // Issues 4 burst reads of 4 beats each (total_xfers=4, burst_len=4).
 
 #include "VThreadMm2s.h"
@@ -51,34 +51,39 @@ int main() {
     for (int c = 0; c < 200; c++) {
         // AR slave: always accept
         dut.ar_ready = 1;
-        if (dut.ar_valid) {
-            printf("[cycle %3d] AR: id=%d addr=0x%x len=%d idle=%d done=%d\n",
-                   cycle_count, dut.ar_id, dut.ar_addr, dut.ar_len + 1,
-                   dut.idle_out, dut.done);
-            ar_accepted++;
-        }
 
-        // R slave: send beats for accepted ARs
-        if (ar_accepted > 0 && r_beats_sent < ar_accepted * 4 && dut.r_ready) {
+        // R slave: present next beat
+        if (r_beats_sent < ar_accepted * 4) {
             int burst = r_beats_sent / 4;
             int beat = r_beats_sent % 4;
             dut.r_valid = 1;
             dut.r_data = (burst << 24) | (0x1000 + r_beats_sent * 4);
             dut.r_id = burst % 4;
             dut.r_last = (beat == 3) ? 1 : 0;
-            r_beats_sent++;
         } else {
             dut.r_valid = 0;
+        }
+
+        // Eval combinational logic with current inputs
+        dut.eval();
+
+        // Check AR handshake
+        if (dut.ar_valid && dut.ar_ready) {
+            printf("[cycle %3d] AR: id=%d addr=0x%x len=%d idle=%d done=%d\n",
+                   cycle_count, dut.ar_id, dut.ar_addr, dut.ar_len + 1,
+                   dut.idle_out, dut.done);
+            ar_accepted++;
+        }
+
+        // Check R handshake
+        if (dut.r_valid && dut.r_ready) {
+            r_beats_sent++;
         }
 
         // Count FIFO pushes
         if (dut.push_valid && dut.push_ready) push_count++;
 
         tick();
-
-        if (cycle_count >= 20 && cycle_count <= 30)
-            printf("[cycle %3d] idle=%d done=%d ar_v=%d push_v=%d\n",
-                   cycle_count, dut.idle_out, dut.done, dut.ar_valid, dut.push_valid);
 
         if (dut.done) {
             printf("[cycle %3d] DONE! AR=%d R=%d push=%d\n",

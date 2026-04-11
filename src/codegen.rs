@@ -1048,28 +1048,31 @@ impl<'a> Codegen<'a> {
             self.line(&format!("if ({rst_cond_str}) begin"));
             self.indent += 1;
             for (name, init) in &resets {
-                let vec_depth = reg_decls.iter()
+                // Look up Vec depth from reg decls OR port-reg declarations
+                let reg_ty = reg_decls.iter()
                     .find(|r| r.name.name == *name)
-                    .map(|r| {
-                        let mut depth = 0u32;
-                        let mut ty = &r.ty;
-                        while let TypeExpr::Vec(inner, _) = ty {
-                            depth += 1;
-                            ty = inner;
-                        }
-                        depth
-                    })
-                    .unwrap_or(0);
+                    .map(|r| &r.ty)
+                    .or_else(|| m.ports.iter()
+                        .find(|p| p.name.name == *name && p.reg_info.is_some())
+                        .map(|p| &p.ty));
+                let vec_depth = reg_ty.map(|ty| {
+                    let mut depth = 0u32;
+                    let mut t = ty;
+                    while let TypeExpr::Vec(inner, _) = t {
+                        depth += 1;
+                        t = inner;
+                    }
+                    depth
+                }).unwrap_or(0);
                 if vec_depth > 0 {
                     // Emit for-loop reset for unpacked arrays (icarus-compatible)
-                    let reg_decl = reg_decls.iter().find(|r| r.name.name == *name);
-                    if let Some(rd) = reg_decl {
+                    if let Some(ty) = reg_ty {
                         // Collect Vec dimensions
                         let mut dims = Vec::new();
-                        let mut ty = &rd.ty;
-                        while let TypeExpr::Vec(inner, size) = ty {
+                        let mut t = ty;
+                        while let TypeExpr::Vec(inner, size) = t {
                             dims.push(self.emit_expr_str(size));
-                            ty = inner;
+                            t = inner;
                         }
                         // Generate nested for-loops
                         let idx_vars: Vec<String> = (0..dims.len()).map(|d| format!("__ri{d}")).collect();

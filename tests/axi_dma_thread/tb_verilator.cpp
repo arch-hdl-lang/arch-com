@@ -1,4 +1,5 @@
-// Verilator testbench for ThreadMm2s (uses actual RTL sim, not arch sim)
+// Verilator testbench for ThreadMm2s
+// Tests 4 burst reads of 4 beats each (total_xfers=4, burst_len=4).
 #include "VThreadMm2s.h"
 #include "verilated.h"
 #include <cstdio>
@@ -15,7 +16,6 @@ void tick() {
 
 int main(int argc, char **argv) {
     Verilated::commandArgs(argc, argv);
-    Verilated::traceEverOn(true);
     dut = new VThreadMm2s;
 
     // Reset
@@ -37,30 +37,33 @@ int main(int argc, char **argv) {
     dut->ar_ready = 1;
 
     for (int c = 0; c < 300; c++) {
-        // AR accept
-        if (dut->ar_valid) {
+        // R slave: present beat, check handshake after eval
+        if (r_sent < ar_count * 4) {
+            dut->r_valid = 1;
+            dut->r_data = 0xDA7A0000 + r_sent;
+            dut->r_id = (r_sent / 4) % 4;
+            dut->r_last = ((r_sent % 4) == 3) ? 1 : 0;
+        } else {
+            dut->r_valid = 0;
+        }
+
+        // Eval combinational logic
+        dut->eval();
+
+        // AR handshake
+        if (dut->ar_valid && dut->ar_ready) {
             printf("[%d] AR: id=%d addr=0x%x len=%d\n",
                    cycle, dut->ar_id, dut->ar_addr, dut->ar_len + 1);
             ar_count++;
         }
 
-        // R slave
-        if (ar_count > 0 && r_sent < ar_count * 4 && dut->r_ready) {
-            dut->r_valid = 1;
-            dut->r_data = 0xDA7A0000 + r_sent;
-            dut->r_id = (r_sent / 4) % 4;
-            dut->r_last = ((r_sent % 4) == 3) ? 1 : 0;
+        // R handshake
+        if (dut->r_valid && dut->r_ready) {
             r_sent++;
-        } else {
-            dut->r_valid = 0;
         }
 
+        // Push handshake
         if (dut->push_valid && dut->push_ready) push_count++;
-
-        if (cycle >= 7 && cycle <= 25)
-            printf("  [%d] ar_v=%d r_rdy=%d r_v=%d push_v=%d idle=%d done=%d\n",
-                   cycle, dut->ar_valid, dut->r_ready, dut->r_valid, dut->push_valid,
-                   dut->idle_out, dut->done);
 
         tick();
 
