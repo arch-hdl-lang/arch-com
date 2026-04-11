@@ -1,9 +1,9 @@
 // Thread-based multi-outstanding MM2S read engine.
-// Compare with FsmMm2sMulti.arch (165 lines, 3 states, manual tracking).
+// Each thread index = AXI ID. Thread i issues burst i.
+// No seq blocks — all state managed by threads.
 
 module ThreadMm2s
   param NUM_OUTSTANDING: const = 4;
-  param ID_W: const = 2;
 
   port clk:  in Clock<SysDomain>;
   port rst:  in Reset<Sync>;
@@ -31,65 +31,106 @@ module ThreadMm2s
   port r_id:     in UInt<2>;
   port r_last:   in Bool;
 
-  port push_valid: out Bool;
+  port push_valid: out Bool shared(or);
   port push_ready: in Bool;
   port push_data:  out UInt<32>;
 
-  // Shared state — all written only inside locks (mutual exclusion)
-  reg xfers_issued_r:   UInt<16> reset rst => 0;
-  reg xfers_complete_r: UInt<16> reset rst => 0;
-  reg next_addr_r:      UInt<32> reset rst => 0;
+  // All state driven by threads only
+  reg active_r:      Bool     reset rst => false;
+  reg total_xfers_r: UInt<16> reset rst => 0;
+  reg base_addr_r:   UInt<32> reset rst => 0;
+  reg burst_len_r:   UInt<8>  reset rst => 0;
+  reg done_0: Bool reset rst => true;
+  reg done_1: Bool reset rst => true;
+  reg done_2: Bool reset rst => true;
+  reg done_3: Bool reset rst => true;
 
-  // done/idle are combinational from shared counters
-  let halted   = false;
-  let idle_out = (xfers_issued_r == 0) and (xfers_complete_r == 0);
-  let done     = (xfers_complete_r == total_xfers) and (xfers_complete_r != 0);
+  comb
+    halted   = false;
+    idle_out = not active_r;
+    done     = active_r and done_0 and done_1 and done_2 and done_3;
+  end comb
 
-  resource ar_ch   : mutex<round_robin>;
-  resource push_ch : mutex<round_robin>;
-  resource done_ch : mutex<priority>;
+  resource ar_ch : mutex<round_robin>;
 
-  generate_for i in 0..NUM_OUTSTANDING-1
-    thread ReadReq_i on clk rising, rst high
-      // Wait for start pulse — first thread to see it initializes counters
-      wait until start;
+  // Controller thread: latches start, clears done flags
+  thread Controller on clk rising, rst high
+    wait until start;
+    total_xfers_r <= total_xfers;
+    base_addr_r   <= base_addr;
+    burst_len_r   <= burst_len;
+    active_r      <= true;
+    done_0 <= (total_xfers == 0);
+    done_1 <= (total_xfers < 2);
+    done_2 <= (total_xfers < 3);
+    done_3 <= (total_xfers < 4);
+    // Wait for all threads to complete
+    wait until done_0 and done_1 and done_2 and done_3;
+    active_r <= false;
+    wait 1 cycle;
+  end thread Controller
 
-      lock ar_ch
-        // First thread resets counters (xfers_issued == 0 means fresh start)
-        if xfers_issued_r == 0
-          next_addr_r <= base_addr;
-        end if
-        // Claim next xfer
-        ar_valid = 1;
-        ar_addr  = next_addr_r;
-        ar_id    = i;
-        ar_len   = (burst_len - 1).trunc<8>();
-        ar_size  = 3'd2;
-        ar_burst = 2'd1;
-        xfers_issued_r <= xfers_issued_r + 1;
-        next_addr_r    <= next_addr_r + (burst_len.zext<32>() << 2);
-        wait until ar_ready;
-        ar_valid = 0;
-      end lock ar_ch
+  // Read thread 0
+  thread ReadReq_0 on clk rising, rst high
+    wait until active_r and (not done_0);
+    lock ar_ch
+      ar_valid = 1; ar_addr = base_addr_r; ar_id = 0;
+      ar_len = (burst_len_r - 1).trunc<8>(); ar_size = 3'd2; ar_burst = 2'd1;
+      wait until ar_ready; ar_valid = 0;
+    end lock ar_ch
+    for b in 0..burst_len_r-1
+      r_ready = 1; push_valid = r_valid and (r_id == 0); push_data = r_data;
+      wait until r_valid and r_id == 0;
+    end for
+    r_ready = 0;
+    done_0 <= true; wait 1 cycle;
+  end thread ReadReq_0
 
-      // Collect R beats
-      for b in 0..burst_len-1
-        r_ready = 1;
-        wait until r_valid and r_id == i;
-        lock push_ch
-          push_valid = 1;
-          push_data  = r_data;
-          wait until push_ready;
-          push_valid = 0;
-        end lock push_ch
-      end for
-      r_ready = 0;
+  // Read thread 1
+  thread ReadReq_1 on clk rising, rst high
+    wait until active_r and (not done_1);
+    lock ar_ch
+      ar_valid = 1; ar_addr = base_addr_r + (burst_len_r.zext<32>() << 2); ar_id = 1;
+      ar_len = (burst_len_r - 1).trunc<8>(); ar_size = 3'd2; ar_burst = 2'd1;
+      wait until ar_ready; ar_valid = 0;
+    end lock ar_ch
+    for b in 0..burst_len_r-1
+      r_ready = 1; push_valid = r_valid and (r_id == 1); push_data = r_data;
+      wait until r_valid and r_id == 1;
+    end for
+    r_ready = 0;
+    done_1 <= true; wait 1 cycle;
+  end thread ReadReq_1
 
-      // Mark complete
-      lock done_ch
-        xfers_complete_r <= xfers_complete_r + 1;
-        wait 1 cycle;
-      end lock done_ch
-    end thread ReadReq_i
-  end generate_for
+  // Read thread 2
+  thread ReadReq_2 on clk rising, rst high
+    wait until active_r and (not done_2);
+    lock ar_ch
+      ar_valid = 1; ar_addr = base_addr_r + (2 * (burst_len_r.zext<32>() << 2)); ar_id = 2;
+      ar_len = (burst_len_r - 1).trunc<8>(); ar_size = 3'd2; ar_burst = 2'd1;
+      wait until ar_ready; ar_valid = 0;
+    end lock ar_ch
+    for b in 0..burst_len_r-1
+      r_ready = 1; push_valid = r_valid and (r_id == 2); push_data = r_data;
+      wait until r_valid and r_id == 2;
+    end for
+    r_ready = 0;
+    done_2 <= true; wait 1 cycle;
+  end thread ReadReq_2
+
+  // Read thread 3
+  thread ReadReq_3 on clk rising, rst high
+    wait until active_r and (not done_3);
+    lock ar_ch
+      ar_valid = 1; ar_addr = base_addr_r + (3 * (burst_len_r.zext<32>() << 2)); ar_id = 3;
+      ar_len = (burst_len_r - 1).trunc<8>(); ar_size = 3'd2; ar_burst = 2'd1;
+      wait until ar_ready; ar_valid = 0;
+    end lock ar_ch
+    for b in 0..burst_len_r-1
+      r_ready = 1; push_valid = r_valid and (r_id == 3); push_data = r_data;
+      wait until r_valid and r_id == 3;
+    end for
+    r_ready = 0;
+    done_3 <= true; wait 1 cycle;
+  end thread ReadReq_3
 end module ThreadMm2s
