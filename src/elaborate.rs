@@ -1049,6 +1049,7 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
     let read_only: HashSet<String> = all_read.iter()
         .filter(|n| !all_comb_driven.contains(*n) && !all_seq_driven.contains(*n)
                 && **n != clk_name && **n != rst_name
+                && !n.starts_with("_t") // per-thread counters (_t0_cnt, _t0_loop_cnt, etc.)
                 && **n != "_cnt" && **n != "_loop_cnt"
                 && !lock_internal.contains(*n))
         .cloned().collect();
@@ -1141,7 +1142,25 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
             Err(e) => { errors.push(e); continue; }
         };
 
-        // Rename lock signals per-thread: _res_req → _res_req_ti, _res_grant → _res_grant_ti
+        // Rename per-thread: lock signals, counter regs
+        // Counters: _cnt → _t{ti}_cnt, _loop_cnt → _t{ti}_loop_cnt
+        let cnt_renames = vec![
+            ("_cnt".to_string(), format!("_t{}_cnt", ti)),
+            ("_loop_cnt".to_string(), format!("_t{}_loop_cnt", ti)),
+        ];
+        for (old, new) in &cnt_renames {
+            for state in &mut raw_states {
+                rename_ident_in_comb_stmts(&mut state.comb_stmts, old, new);
+                rename_ident_in_stmts(&mut state.seq_stmts, old, new);
+                if let Some(ref mut cond) = state.transition_cond {
+                    rename_ident_in_expr(cond, old, new);
+                }
+                for (ref mut cond, _) in &mut state.multi_transitions {
+                    rename_ident_in_expr(cond, old, new);
+                }
+            }
+        }
+        // Lock signals
         for res_name in &all_resources {
             let req_old = format!("_{}_req", res_name);
             let req_new = format!("_{}_req_{}", res_name, ti);
@@ -1181,6 +1200,43 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
             span: sp,
         }));
 
+        // Pre-process: add counter loads to states preceding wait_cycles states
+        let cnt_name = format!("_t{}_cnt", ti);
+        // Collect (state_idx, count_expr, transition_cond) tuples first to avoid borrow conflicts
+        let mut counter_loads: Vec<(usize, Expr, Option<Expr>)> = Vec::new();
+        for si in 0..raw_states.len() {
+            let next = if si + 1 < raw_states.len() { si + 1 } else { 0 };
+            if next < raw_states.len() {
+                if let Some(ref count_expr) = raw_states[next].wait_cycles {
+                    let cond = raw_states[si].transition_cond.clone();
+                    counter_loads.push((si, count_expr.clone(), cond));
+                }
+            }
+        }
+        for (si, count_expr, cond) in counter_loads {
+            let sub = Expr::new(ExprKind::Binary(
+                BinOp::Sub, Box::new(count_expr.clone()),
+                Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(1)), sp)),
+            ), sp);
+            let load = Stmt::Assign(RegAssign {
+                target: Expr::new(ExprKind::Ident(cnt_name.clone()), sp),
+                value: Expr::new(ExprKind::BitSlice(
+                    Box::new(sub),
+                    Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(31)), sp)),
+                    Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(0)), sp)),
+                ), sp),
+                span: sp,
+            });
+            if let Some(guard) = cond {
+                raw_states[si].seq_stmts.push(Stmt::IfElse(IfElse {
+                    cond: guard, then_stmts: vec![load],
+                    else_stmts: Vec::new(), unique: false, span: sp,
+                }));
+            } else {
+                raw_states[si].seq_stmts.push(load);
+            }
+        }
+
         // State transition always_ff
         let mut seq_stmts: Vec<Stmt> = Vec::new();
         for (si, raw) in raw_states.iter().enumerate() {
@@ -1202,10 +1258,19 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
             body.extend(raw.seq_stmts.clone());
 
             // State transitions
-            let next_state = if si + 1 < n_states { si + 1 } else { 0 };
+            // For thread_once: last state stays (terminal), otherwise wrap to 0
+            let next_state = if si + 1 < n_states {
+                si + 1
+            } else if t.once {
+                si // terminal: stay in last state
+            } else {
+                0 // repeating: wrap to first state
+            };
             if !raw.multi_transitions.is_empty() {
                 for (cond, target) in &raw.multi_transitions {
-                    let tgt = if *target >= n_states { 0 } else { *target };
+                    let tgt = if *target >= n_states {
+                        if t.once { n_states - 1 } else { 0 }
+                    } else { *target };
                     body.push(Stmt::IfElse(IfElse {
                         cond: cond.clone(),
                         then_stmts: vec![Stmt::Assign(RegAssign {
@@ -1226,8 +1291,39 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
                     })],
                     else_stmts: Vec::new(), unique: false, span: sp,
                 }));
-            } else if raw.wait_cycles.is_some() {
-                // Counter-based — handled below
+            } else if let Some(ref _count_expr) = raw.wait_cycles {
+                // Counter-based wait: decrement counter, transition when 0
+                let cnt_name = format!("_t{}_cnt", ti);
+                let cnt_id = Expr::new(ExprKind::Ident(cnt_name.clone()), sp);
+                let cnt_zero = Expr::new(ExprKind::Binary(
+                    BinOp::Eq, Box::new(cnt_id.clone()),
+                    Box::new(make_zero_expr(sp)),
+                ), sp);
+                // Decrement
+                // cnt <= (cnt - 1)[31:0]  — explicit bit-slice to match UInt<32>
+                let sub_expr = Expr::new(ExprKind::Binary(
+                    BinOp::Sub, Box::new(cnt_id),
+                    Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(1)), sp)),
+                ), sp);
+                body.push(Stmt::Assign(RegAssign {
+                    target: Expr::new(ExprKind::Ident(cnt_name.clone()), sp),
+                    value: Expr::new(ExprKind::BitSlice(
+                        Box::new(sub_expr),
+                        Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(31)), sp)),
+                        Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(0)), sp)),
+                    ), sp),
+                    span: sp,
+                }));
+                // Transition when counter hits 0
+                body.push(Stmt::IfElse(IfElse {
+                    cond: cnt_zero,
+                    then_stmts: vec![Stmt::Assign(RegAssign {
+                        target: Expr::new(ExprKind::Ident(state_reg.clone()), sp),
+                        value: Expr::new(ExprKind::Literal(LitKind::Dec(next_state as u64)), sp),
+                        span: sp,
+                    })],
+                    else_stmts: Vec::new(), unique: false, span: sp,
+                }));
             } else {
                 // Unconditional transition
                 body.push(Stmt::Assign(RegAssign {
@@ -1272,26 +1368,26 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
         return Err(errors);
     }
 
-    // ── Counter registers (for wait N cycle / for loops) ───────────────
-    let has_counter = threads.iter().any(|(_, t)| {
-        t.body.iter().any(|s| matches!(s, ThreadStmt::WaitCycles(..)))
-    });
-    if has_counter {
-        merged_body.push(ModuleBodyItem::RegDecl(RegDecl {
-            name: Ident::new("_cnt".to_string(), sp),
-            ty: TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(32)), sp))),
-            init: Some(make_zero_expr(sp)),
-            reset: RegReset::None, span: sp,
-        }));
-    }
-    let has_for_loop = threads.iter().any(|(_, t)| thread_has_for(&t.body));
-    if has_for_loop {
-        merged_body.push(ModuleBodyItem::RegDecl(RegDecl {
-            name: Ident::new("_loop_cnt".to_string(), sp),
-            ty: TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(32)), sp))),
-            init: Some(make_zero_expr(sp)),
-            reset: RegReset::None, span: sp,
-        }));
+    // ── Per-thread counter registers ─────────────────────────────────────
+    for (ti, (_, t)) in threads.iter().enumerate() {
+        let has_counter = t.body.iter().any(|s| matches!(s, ThreadStmt::WaitCycles(..)));
+        if has_counter {
+            merged_body.push(ModuleBodyItem::RegDecl(RegDecl {
+                name: Ident::new(format!("_t{}_cnt", ti), sp),
+                ty: TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(32)), sp))),
+                init: Some(make_zero_expr(sp)),
+                reset: RegReset::None, span: sp,
+            }));
+        }
+        let has_for = thread_has_for(&t.body);
+        if has_for {
+            merged_body.push(ModuleBodyItem::RegDecl(RegDecl {
+                name: Ident::new(format!("_t{}_loop_cnt", ti), sp),
+                ty: TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(32)), sp))),
+                init: Some(make_zero_expr(sp)),
+                reset: RegReset::None, span: sp,
+            }));
+        }
     }
 
     // ── Merged comb block: defaults + all per-thread comb stmts ──────
@@ -1969,10 +2065,10 @@ fn lower_thread_for(
         seq_stmts: vec![Stmt::Assign(RegAssign {
             target: cnt_ident.clone(),
             value: Expr::new(
-                ExprKind::MethodCall(
+                ExprKind::BitSlice(
                     Box::new(Expr::new(ExprKind::Binary(BinOp::Add, Box::new(cnt_ident), Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(1)), span))), span)),
-                    Ident::new("trunc".to_string(), span),
-                    vec![Expr::new(ExprKind::Literal(LitKind::Dec(32)), span)],
+                    Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(31)), span)),
+                    Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(0)), span)),
                 ),
                 span,
             ),
@@ -2699,8 +2795,14 @@ fn rename_ident_in_expr(expr: &mut Expr, old: &str, new: &str) {
         ExprKind::Binary(_, l, r) => { rename_ident_in_expr(l, old, new); rename_ident_in_expr(r, old, new); }
         ExprKind::Unary(_, e) => rename_ident_in_expr(e, old, new),
         ExprKind::Index(b, i) => { rename_ident_in_expr(b, old, new); rename_ident_in_expr(i, old, new); }
+        ExprKind::BitSlice(b, h, l) => { rename_ident_in_expr(b, old, new); rename_ident_in_expr(h, old, new); rename_ident_in_expr(l, old, new); }
         ExprKind::FieldAccess(b, _) => rename_ident_in_expr(b, old, new),
+        ExprKind::MethodCall(recv, _, args) => {
+            rename_ident_in_expr(recv, old, new);
+            for a in args { rename_ident_in_expr(a, old, new); }
+        }
         ExprKind::Ternary(c, t, f) => { rename_ident_in_expr(c, old, new); rename_ident_in_expr(t, old, new); rename_ident_in_expr(f, old, new); }
+        ExprKind::Cast(e, _) => rename_ident_in_expr(e, old, new),
         _ => {}
     }
 }

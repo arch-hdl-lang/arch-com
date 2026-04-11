@@ -49,15 +49,13 @@ int main() {
     int push_count = 0;
 
     for (int c = 0; c < 200; c++) {
-        // AR slave: accept
+        // AR slave: always accept
+        dut.ar_ready = 1;
         if (dut.ar_valid) {
-            dut.ar_ready = 1;
             printf("[cycle %3d] AR: id=%d addr=0x%x len=%d idle=%d done=%d\n",
                    cycle_count, dut.ar_id, dut.ar_addr, dut.ar_len + 1,
                    dut.idle_out, dut.done);
             ar_accepted++;
-        } else {
-            dut.ar_ready = 0;
         }
 
         // R slave: send beats for accepted ARs
