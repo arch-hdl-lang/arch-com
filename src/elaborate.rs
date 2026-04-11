@@ -2303,18 +2303,11 @@ fn lower_single_thread(
             });
         }
 
-        // Build seq_stmts: guard with transition condition
+        // Build seq_stmts: fire unconditionally on state entry.
+        // (Previously guarded by transition condition, but this prevented
+        // state-entry assignments like `active_r <= true` from firing.)
         let seq_stmts = if !raw.seq_stmts.is_empty() {
-            if let Some(ref cond) = raw.transition_cond {
-                // Wrap seq assigns in if-guard so they fire on transition only
-                vec![Stmt::IfElse(IfElse {
-                    cond: cond.clone(),
-                    then_stmts: raw.seq_stmts.clone(),
-                    else_stmts: Vec::new(),
-                    unique: false,
-                    span: sp,
-                })]
-            } else if raw.wait_cycles.is_some() {
+            if raw.wait_cycles.is_some() {
                 // Guard by counter == 0
                 let cnt_zero = Expr::new(
                     ExprKind::Binary(

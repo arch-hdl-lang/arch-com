@@ -40,15 +40,21 @@ module ThreadMm2s
   reg total_xfers_r: UInt<16> reset rst => 0;
   reg base_addr_r:   UInt<32> reset rst => 0;
   reg burst_len_r:   UInt<8>  reset rst => 0;
-  reg done_0: Bool reset rst => true;
-  reg done_1: Bool reset rst => true;
-  reg done_2: Bool reset rst => true;
-  reg done_3: Bool reset rst => true;
+  reg done_0: Bool reset rst => false;
+  reg done_1: Bool reset rst => false;
+  reg done_2: Bool reset rst => false;
+  reg done_3: Bool reset rst => false;
 
   comb
     halted   = false;
     idle_out = not active_r;
-    done     = active_r and done_0 and done_1 and done_2 and done_3;
+    // done when all participating threads complete
+    // (unused threads have done=false but are gated by total_xfers check)
+    done = active_r and total_xfers_r != 0
+       and (done_0 or (total_xfers_r < 1))
+       and (done_1 or (total_xfers_r < 2))
+       and (done_2 or (total_xfers_r < 3))
+       and (done_3 or (total_xfers_r < 4));
   end comb
 
   resource ar_ch : mutex<round_robin>;
@@ -60,12 +66,10 @@ module ThreadMm2s
     base_addr_r   <= base_addr;
     burst_len_r   <= burst_len;
     active_r      <= true;
-    done_0 <= (total_xfers == 0);
-    done_1 <= (total_xfers < 2);
-    done_2 <= (total_xfers < 3);
-    done_3 <= (total_xfers < 4);
-    // Wait for all threads to complete
-    wait until done_0 and done_1 and done_2 and done_3;
+    // Clear done flags for all threads
+    done_0 <= false; done_1 <= false; done_2 <= false; done_3 <= false;
+    // Wait for completion (done is combinational from done_0..3 + total_xfers)
+    wait until done;
     active_r <= false;
     wait 1 cycle;
   end thread Controller
