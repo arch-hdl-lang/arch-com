@@ -78,6 +78,10 @@ int main() {
 
         tick();
 
+        if (cycle_count >= 20 && cycle_count <= 30)
+            printf("[cycle %3d] idle=%d done=%d ar_v=%d push_v=%d\n",
+                   cycle_count, dut.idle_out, dut.done, dut.ar_valid, dut.push_valid);
+
         if (dut.done) {
             printf("[cycle %3d] DONE! AR=%d R=%d push=%d\n",
                    cycle_count, ar_accepted, r_beats_sent, push_count);
