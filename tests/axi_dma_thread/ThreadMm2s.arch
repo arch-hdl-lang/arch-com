@@ -25,7 +25,7 @@ module ThreadMm2s
   port ar_burst: out UInt<2>;
 
   port r_valid:  in Bool;
-  port reg r_ready:  out Bool reset rst => false shared(or);
+  port r_ready:  out Bool shared(or);
   port r_data:   in UInt<32>;
   port r_id:     in UInt<2>;
   port r_last:   in Bool;
@@ -81,12 +81,10 @@ module ThreadMm2s
           ar_len = (burst_len_r - 1).trunc<8>(); ar_size = 3'd2; ar_burst = 2'd1;
         until ar_ready;
       end lock ar_ch
-      r_ready <= true;
       for b in 0..burst_len_r-1
-        wait until r_valid and r_id == i;
+        do r_ready = (r_id == i); until r_valid and r_id == i;
         do push_valid = 1; push_data = r_data; until push_ready;
       end for
-      r_ready <= false;
       done_flags[i] <= true;
     end thread ReadReq_i
   end generate_for

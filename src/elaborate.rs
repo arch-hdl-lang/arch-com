@@ -1440,28 +1440,10 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
                 }));
             }
 
-            // Comb overlap: when this state's transition fires, also drive
-            // the next state's comb outputs in the same cycle.  This allows
-            // back-to-back do..until blocks to pipeline without a dead cycle.
-            if let Some(ref trans_cond) = raw.transition_cond {
-                let next_si = if si + 1 < n_states { si + 1 }
-                              else if t.once { si } else { 0 };
-                if next_si < raw_states.len() && !raw_states[next_si].comb_stmts.is_empty() {
-                    let next_comb = transform_shared_or_assigns(
-                        &raw_states[next_si].comb_stmts, &shared_or_signals, sp);
-                    let overlap_cond = Expr::new(ExprKind::Binary(
-                        BinOp::And,
-                        Box::new(state_cond),
-                        Box::new(trans_cond.clone()),
-                    ), sp);
-                    all_thread_comb.push(CombStmt::IfElse(CombIfElse {
-                        cond: overlap_cond,
-                        then_stmts: next_comb,
-                        else_stmts: Vec::new(),
-                        unique: false, span: sp,
-                    }));
-                }
-            }
+            // TODO: Comb overlap optimization (drive next state's outputs on
+            // transition cycle) — disabled pending proper lock-state awareness.
+            // Re-enable when lock body states are tagged to prevent overlap
+            // from leaking lock-guarded outputs into preceding states.
         }
     }
 
@@ -2290,8 +2272,9 @@ fn lower_thread_for(
 
 /// Lower a `lock` block into FSM states.
 ///
-/// Generates: LOCK_REQ state (assert req, wait for grant), body states, implicit release
-/// on transition out. The thread FSM gets req/grant ports for this resource.
+/// Zero-cycle lock: if grant is free, the first body state executes immediately.
+/// The req signal is asserted in all lock states; grant is ANDed into the
+/// first body state's transition condition so it blocks only if contended.
 fn lower_thread_lock(
     resource_name: &str,
     body: &[ThreadStmt],
@@ -2300,38 +2283,79 @@ fn lower_thread_lock(
     let req_signal = format!("_{}_req", resource_name);
     let grant_signal = format!("_{}_grant", resource_name);
 
-    let mut result: Vec<ThreadFsmState> = Vec::new();
-
-    // LOCK_REQ state: assert req, wait for grant
-    let grant_cond = Expr::new(ExprKind::Ident(grant_signal.clone()), span);
-    result.push(ThreadFsmState {
-        comb_stmts: vec![CombStmt::Assign(CombAssign {
-            target: Expr::new(ExprKind::Ident(req_signal.clone()), span),
-            value: Expr::new(ExprKind::Literal(LitKind::Dec(1)), span),
-            span,
-        })],
-        seq_stmts: Vec::new(),
-        transition_cond: Some(grant_cond),
-        wait_cycles: None,
-        multi_transitions: Vec::new(),
+    let make_grant = || Expr::new(ExprKind::Ident(grant_signal.clone()), span);
+    let req_assign = CombStmt::Assign(CombAssign {
+        target: Expr::new(ExprKind::Ident(req_signal.clone()), span),
+        value: Expr::new(ExprKind::Literal(LitKind::Dec(1)), span),
+        span,
     });
 
-    // Body states: partition normally, but keep req asserted
-    let body_states = partition_thread_body(body, span)?;
-    for mut bs in body_states {
-        // Keep req=1 during the entire locked region
-        bs.comb_stmts.insert(0, CombStmt::Assign(CombAssign {
-            target: Expr::new(ExprKind::Ident(req_signal.clone()), span),
-            value: Expr::new(ExprKind::Literal(LitKind::Dec(1)), span),
-            span,
-        }));
-        result.push(bs);
+    let mut body_states = partition_thread_body(body, span)?;
+
+    // Add req=1 to all body states
+    for bs in &mut body_states {
+        bs.comb_stmts.insert(0, req_assign.clone());
     }
 
-    // No explicit LOCK_RELEASE state needed — the req signal defaults to 0
-    // (via the FSM's default_comb) when not in the lock states.
+    // First body state: gate comb outputs AND transition on grant.
+    // Without grant gating, all contending threads would drive outputs simultaneously.
+    if let Some(first) = body_states.first_mut() {
+        // Wrap ALL comb outputs (except req) in `if (grant) { ... }`
+        let non_req_comb: Vec<CombStmt> = first.comb_stmts.iter()
+            .filter(|s| {
+                if let CombStmt::Assign(a) = s {
+                    if let ExprKind::Ident(ref n) = a.target.kind {
+                        return *n != req_signal;
+                    }
+                }
+                true
+            })
+            .cloned()
+            .collect();
+        // Keep only req assign at top level
+        first.comb_stmts.retain(|s| {
+            if let CombStmt::Assign(a) = s {
+                if let ExprKind::Ident(ref n) = a.target.kind {
+                    return *n == req_signal;
+                }
+            }
+            false
+        });
+        // Add grant-gated outputs
+        if !non_req_comb.is_empty() {
+            first.comb_stmts.push(CombStmt::IfElse(CombIfElse {
+                cond: make_grant(),
+                then_stmts: non_req_comb,
+                else_stmts: Vec::new(),
+                unique: false,
+                span,
+            }));
+        }
 
-    Ok(result)
+        // AND grant into transition condition
+        if let Some(ref existing_cond) = first.transition_cond {
+            first.transition_cond = Some(Expr::new(ExprKind::Binary(
+                BinOp::And,
+                Box::new(make_grant()),
+                Box::new(existing_cond.clone()),
+            ), span));
+        } else if first.wait_cycles.is_none() && first.multi_transitions.is_empty() {
+            first.transition_cond = Some(make_grant());
+        }
+    }
+
+    // If body is empty (shouldn't happen), add a grant-wait state
+    if body_states.is_empty() {
+        body_states.push(ThreadFsmState {
+            comb_stmts: vec![req_assign],
+            seq_stmts: Vec::new(),
+            transition_cond: Some(make_grant()),
+            wait_cycles: None,
+            multi_transitions: Vec::new(),
+        });
+    }
+
+    Ok(body_states)
 }
 
 /// Collect resource names used in `lock` blocks within a thread body.
