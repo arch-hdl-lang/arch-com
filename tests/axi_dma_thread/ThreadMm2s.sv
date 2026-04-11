@@ -1,5 +1,124 @@
 // Thread-based multi-outstanding MM2S read engine.
 // Each thread index = AXI ID. Thread i issues burst i.
+// No seq blocks — all state managed by threads.
+// All state driven by threads only
+// Controller thread: latches start, clears done flags
+module _ThreadMm2s_Controller (
+  input logic clk,
+  input logic rst,
+  input logic [32-1:0] base_addr,
+  input logic [8-1:0] burst_len,
+  input logic start,
+  input logic [16-1:0] total_xfers,
+  output logic active_r,
+  output logic [32-1:0] base_addr_r,
+  output logic [8-1:0] burst_len_r,
+  input logic done_0,
+  output logic done_0_wr,
+  output logic done_0_we,
+  input logic done_1,
+  output logic done_1_wr,
+  output logic done_1_we,
+  input logic done_2,
+  output logic done_2_wr,
+  output logic done_2_we,
+  input logic done_3,
+  output logic done_3_wr,
+  output logic done_3_we,
+  output logic [16-1:0] total_xfers_r
+);
+
+  typedef enum logic [1:0] {
+    S0 = 2'd0,
+    S1 = 2'd1,
+    S2 = 2'd2
+  } _ThreadMm2s_Controller_state_t;
+  
+  _ThreadMm2s_Controller_state_t state_r, state_next;
+  
+  logic [32-1:0] _cnt;
+  
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      state_r <= S0;
+      _cnt <= 0;
+      active_r <= 1'b0;
+      base_addr_r <= 0;
+      burst_len_r <= 0;
+      done_0_wr <= 0;
+      done_1_wr <= 0;
+      done_2_wr <= 0;
+      done_3_wr <= 0;
+      total_xfers_r <= 0;
+    end else begin
+      state_r <= state_next;
+      case (state_r)
+        S1: begin
+          if (done_0 && done_1 && done_2 && done_3) begin
+            total_xfers_r <= total_xfers;
+            base_addr_r <= base_addr;
+            burst_len_r <= burst_len;
+            active_r <= 1'b1;
+            done_0_wr <= total_xfers == 0;
+            done_1_wr <= total_xfers < 2;
+            done_2_wr <= total_xfers < 3;
+            done_3_wr <= total_xfers < 4;
+          end
+          if (done_0 && done_1 && done_2 && done_3) begin
+            _cnt <= 1 - 1;
+          end
+        end
+        S2: begin
+          if (_cnt == 0) begin
+            // Wait for all threads to complete
+            active_r <= 1'b0;
+          end
+          _cnt <= _cnt - 1;
+        end
+        default: ;
+      endcase
+    end
+  end
+  
+  always_comb begin
+    state_next = state_r; // hold by default
+    case (state_r)
+      S0: begin
+        if (start) state_next = S1;
+      end
+      S1: begin
+        if (done_0 && done_1 && done_2 && done_3) state_next = S2;
+      end
+      S2: begin
+        if (_cnt == 0) state_next = S0;
+      end
+      default: state_next = state_r;
+    endcase
+  end
+  
+  always_comb begin
+    done_0_we = 1'b0;
+    done_1_we = 1'b0;
+    done_2_we = 1'b0;
+    done_3_we = 1'b0;
+    case (state_r)
+      S0: begin
+      end
+      S1: begin
+        done_0_we = 1'b1;
+        done_1_we = 1'b1;
+        done_2_we = 1'b1;
+        done_3_we = 1'b1;
+      end
+      S2: begin
+      end
+      default: ;
+    endcase
+  end
+
+endmodule
+
+// Read thread 0
 module _ThreadMm2s_ReadReq_0 (
   input logic clk,
   input logic rst,
@@ -10,7 +129,6 @@ module _ThreadMm2s_ReadReq_0 (
   input logic [32-1:0] r_data,
   input logic [2-1:0] r_id,
   input logic r_valid,
-  input logic [16-1:0] total_xfers_r,
   output logic [32-1:0] ar_addr,
   output logic [2-1:0] ar_burst,
   output logic [2-1:0] ar_id,
@@ -20,7 +138,9 @@ module _ThreadMm2s_ReadReq_0 (
   output logic [32-1:0] push_data,
   output logic push_valid,
   output logic r_ready,
-  output logic [4-1:0] complete_r,
+  input logic done_0,
+  output logic done_0_wr,
+  output logic done_0_we,
   output logic _ar_ch_req,
   input logic _ar_ch_grant
 );
@@ -46,7 +166,7 @@ module _ThreadMm2s_ReadReq_0 (
       state_r <= S0;
       _cnt <= 0;
       _loop_cnt <= 0;
-      complete_r <= 0;
+      done_0_wr <= 0;
     end else begin
       state_r <= state_next;
       case (state_r)
@@ -59,7 +179,7 @@ module _ThreadMm2s_ReadReq_0 (
         end
         S7: begin
           if (_cnt == 0) begin
-            complete_r <= complete_r + 1;
+            done_0_wr <= 1'b1;
           end
           _cnt <= _cnt - 1;
         end
@@ -72,7 +192,7 @@ module _ThreadMm2s_ReadReq_0 (
     state_next = state_r; // hold by default
     case (state_r)
       S0: begin
-        if (active_r && total_xfers_r > 0) state_next = S1;
+        if (active_r && !done_0) state_next = S1;
       end
       S1: begin
         if (_ar_ch_grant) state_next = S2;
@@ -110,6 +230,7 @@ module _ThreadMm2s_ReadReq_0 (
     push_data = 0;
     push_valid = 0;
     r_ready = 0;
+    done_0_we = 1'b0;
     _ar_ch_req = 0;
     case (state_r)
       S0: begin
@@ -141,6 +262,7 @@ module _ThreadMm2s_ReadReq_0 (
       end
       S7: begin
         r_ready = 0;
+        done_0_we = 1'b1;
       end
       default: ;
     endcase
@@ -148,6 +270,7 @@ module _ThreadMm2s_ReadReq_0 (
 
 endmodule
 
+// Read thread 1
 module _ThreadMm2s_ReadReq_1 (
   input logic clk,
   input logic rst,
@@ -158,7 +281,6 @@ module _ThreadMm2s_ReadReq_1 (
   input logic [32-1:0] r_data,
   input logic [2-1:0] r_id,
   input logic r_valid,
-  input logic [16-1:0] total_xfers_r,
   output logic [32-1:0] ar_addr,
   output logic [2-1:0] ar_burst,
   output logic [2-1:0] ar_id,
@@ -168,7 +290,9 @@ module _ThreadMm2s_ReadReq_1 (
   output logic [32-1:0] push_data,
   output logic push_valid,
   output logic r_ready,
-  output logic [4-1:0] complete_r,
+  input logic done_1,
+  output logic done_1_wr,
+  output logic done_1_we,
   output logic _ar_ch_req,
   input logic _ar_ch_grant
 );
@@ -194,7 +318,7 @@ module _ThreadMm2s_ReadReq_1 (
       state_r <= S0;
       _cnt <= 0;
       _loop_cnt <= 0;
-      complete_r <= 0;
+      done_1_wr <= 0;
     end else begin
       state_r <= state_next;
       case (state_r)
@@ -207,7 +331,7 @@ module _ThreadMm2s_ReadReq_1 (
         end
         S7: begin
           if (_cnt == 0) begin
-            complete_r <= complete_r + 1;
+            done_1_wr <= 1'b1;
           end
           _cnt <= _cnt - 1;
         end
@@ -220,7 +344,7 @@ module _ThreadMm2s_ReadReq_1 (
     state_next = state_r; // hold by default
     case (state_r)
       S0: begin
-        if (active_r && total_xfers_r > 1) state_next = S1;
+        if (active_r && !done_1) state_next = S1;
       end
       S1: begin
         if (_ar_ch_grant) state_next = S2;
@@ -258,6 +382,7 @@ module _ThreadMm2s_ReadReq_1 (
     push_data = 0;
     push_valid = 0;
     r_ready = 0;
+    done_1_we = 1'b0;
     _ar_ch_req = 0;
     case (state_r)
       S0: begin
@@ -289,6 +414,7 @@ module _ThreadMm2s_ReadReq_1 (
       end
       S7: begin
         r_ready = 0;
+        done_1_we = 1'b1;
       end
       default: ;
     endcase
@@ -296,6 +422,7 @@ module _ThreadMm2s_ReadReq_1 (
 
 endmodule
 
+// Read thread 2
 module _ThreadMm2s_ReadReq_2 (
   input logic clk,
   input logic rst,
@@ -306,7 +433,6 @@ module _ThreadMm2s_ReadReq_2 (
   input logic [32-1:0] r_data,
   input logic [2-1:0] r_id,
   input logic r_valid,
-  input logic [16-1:0] total_xfers_r,
   output logic [32-1:0] ar_addr,
   output logic [2-1:0] ar_burst,
   output logic [2-1:0] ar_id,
@@ -316,7 +442,9 @@ module _ThreadMm2s_ReadReq_2 (
   output logic [32-1:0] push_data,
   output logic push_valid,
   output logic r_ready,
-  output logic [4-1:0] complete_r,
+  input logic done_2,
+  output logic done_2_wr,
+  output logic done_2_we,
   output logic _ar_ch_req,
   input logic _ar_ch_grant
 );
@@ -342,7 +470,7 @@ module _ThreadMm2s_ReadReq_2 (
       state_r <= S0;
       _cnt <= 0;
       _loop_cnt <= 0;
-      complete_r <= 0;
+      done_2_wr <= 0;
     end else begin
       state_r <= state_next;
       case (state_r)
@@ -355,7 +483,7 @@ module _ThreadMm2s_ReadReq_2 (
         end
         S7: begin
           if (_cnt == 0) begin
-            complete_r <= complete_r + 1;
+            done_2_wr <= 1'b1;
           end
           _cnt <= _cnt - 1;
         end
@@ -368,7 +496,7 @@ module _ThreadMm2s_ReadReq_2 (
     state_next = state_r; // hold by default
     case (state_r)
       S0: begin
-        if (active_r && total_xfers_r > 2) state_next = S1;
+        if (active_r && !done_2) state_next = S1;
       end
       S1: begin
         if (_ar_ch_grant) state_next = S2;
@@ -406,6 +534,7 @@ module _ThreadMm2s_ReadReq_2 (
     push_data = 0;
     push_valid = 0;
     r_ready = 0;
+    done_2_we = 1'b0;
     _ar_ch_req = 0;
     case (state_r)
       S0: begin
@@ -437,6 +566,7 @@ module _ThreadMm2s_ReadReq_2 (
       end
       S7: begin
         r_ready = 0;
+        done_2_we = 1'b1;
       end
       default: ;
     endcase
@@ -444,6 +574,7 @@ module _ThreadMm2s_ReadReq_2 (
 
 endmodule
 
+// Read thread 3
 module _ThreadMm2s_ReadReq_3 (
   input logic clk,
   input logic rst,
@@ -454,7 +585,6 @@ module _ThreadMm2s_ReadReq_3 (
   input logic [32-1:0] r_data,
   input logic [2-1:0] r_id,
   input logic r_valid,
-  input logic [16-1:0] total_xfers_r,
   output logic [32-1:0] ar_addr,
   output logic [2-1:0] ar_burst,
   output logic [2-1:0] ar_id,
@@ -464,7 +594,9 @@ module _ThreadMm2s_ReadReq_3 (
   output logic [32-1:0] push_data,
   output logic push_valid,
   output logic r_ready,
-  output logic [4-1:0] complete_r,
+  input logic done_3,
+  output logic done_3_wr,
+  output logic done_3_we,
   output logic _ar_ch_req,
   input logic _ar_ch_grant
 );
@@ -490,7 +622,7 @@ module _ThreadMm2s_ReadReq_3 (
       state_r <= S0;
       _cnt <= 0;
       _loop_cnt <= 0;
-      complete_r <= 0;
+      done_3_wr <= 0;
     end else begin
       state_r <= state_next;
       case (state_r)
@@ -503,7 +635,7 @@ module _ThreadMm2s_ReadReq_3 (
         end
         S7: begin
           if (_cnt == 0) begin
-            complete_r <= complete_r + 1;
+            done_3_wr <= 1'b1;
           end
           _cnt <= _cnt - 1;
         end
@@ -516,7 +648,7 @@ module _ThreadMm2s_ReadReq_3 (
     state_next = state_r; // hold by default
     case (state_r)
       S0: begin
-        if (active_r && total_xfers_r > 3) state_next = S1;
+        if (active_r && !done_3) state_next = S1;
       end
       S1: begin
         if (_ar_ch_grant) state_next = S2;
@@ -554,6 +686,7 @@ module _ThreadMm2s_ReadReq_3 (
     push_data = 0;
     push_valid = 0;
     r_ready = 0;
+    done_3_we = 1'b0;
     _ar_ch_req = 0;
     case (state_r)
       S0: begin
@@ -585,6 +718,7 @@ module _ThreadMm2s_ReadReq_3 (
       end
       S7: begin
         r_ready = 0;
+        done_3_we = 1'b1;
       end
       default: ;
     endcase
@@ -621,38 +755,50 @@ module ThreadMm2s #(
   output logic [32-1:0] push_data
 );
 
-  logic [8-1:0] ar_len__t3;
-  logic [8-1:0] ar_len__t2;
-  logic [8-1:0] ar_len__t1;
-  logic [8-1:0] ar_len__t0;
-  logic [2-1:0] ar_id__t3;
-  logic [2-1:0] ar_id__t2;
-  logic [2-1:0] ar_id__t1;
-  logic [2-1:0] ar_id__t0;
-  logic [32-1:0] push_data__t3;
-  logic [32-1:0] push_data__t2;
-  logic [32-1:0] push_data__t1;
-  logic [32-1:0] push_data__t0;
+  logic done_2_wr__t1;
+  logic done_2_we__t1;
+  logic done_2_wr__t0;
+  logic done_2_we__t0;
+  logic done_0_wr__t1;
+  logic done_0_we__t1;
+  logic done_0_wr__t0;
+  logic done_0_we__t0;
+  logic done_3_wr__t1;
+  logic done_3_we__t1;
+  logic done_3_wr__t0;
+  logic done_3_we__t0;
+  logic done_1_wr__t1;
+  logic done_1_we__t1;
+  logic done_1_wr__t0;
+  logic done_1_we__t0;
   logic [2-1:0] ar_burst__t3;
   logic [2-1:0] ar_burst__t2;
   logic [2-1:0] ar_burst__t1;
   logic [2-1:0] ar_burst__t0;
+  logic [2-1:0] ar_id__t3;
+  logic [2-1:0] ar_id__t2;
+  logic [2-1:0] ar_id__t1;
+  logic [2-1:0] ar_id__t0;
   logic [32-1:0] ar_addr__t3;
   logic [32-1:0] ar_addr__t2;
   logic [32-1:0] ar_addr__t1;
   logic [32-1:0] ar_addr__t0;
-  logic ar_valid__t3;
-  logic ar_valid__t2;
-  logic ar_valid__t1;
-  logic ar_valid__t0;
+  logic [8-1:0] ar_len__t3;
+  logic [8-1:0] ar_len__t2;
+  logic [8-1:0] ar_len__t1;
+  logic [8-1:0] ar_len__t0;
   logic [3-1:0] ar_size__t3;
   logic [3-1:0] ar_size__t2;
   logic [3-1:0] ar_size__t1;
   logic [3-1:0] ar_size__t0;
-  logic [4-1:0] complete_r__t3;
-  logic [4-1:0] complete_r__t2;
-  logic [4-1:0] complete_r__t1;
-  logic [4-1:0] complete_r__t0;
+  logic ar_valid__t3;
+  logic ar_valid__t2;
+  logic ar_valid__t1;
+  logic ar_valid__t0;
+  logic [32-1:0] push_data__t3;
+  logic [32-1:0] push_data__t2;
+  logic [32-1:0] push_data__t1;
+  logic [32-1:0] push_data__t0;
   logic push_valid__t3;
   logic push_valid__t2;
   logic push_valid__t1;
@@ -665,32 +811,41 @@ module ThreadMm2s #(
   logic _ar_ch_req_2;
   logic _ar_ch_req_1;
   logic _ar_ch_req_0;
+  logic active_r;
   logic [16-1:0] total_xfers_r;
   logic [32-1:0] base_addr_r;
   logic [8-1:0] burst_len_r;
-  logic active_r;
-  logic [4-1:0] complete_r;
+  logic done_0;
+  logic done_1;
+  logic done_2;
+  logic done_3;
   assign halted = 1'b0;
   assign idle_out = !active_r;
-  assign done = active_r && complete_r == 4'(total_xfers_r);
-  always_ff @(posedge clk) begin
-    if (rst) begin
-      active_r <= 1'b0;
-      base_addr_r <= 0;
-      burst_len_r <= 0;
-      total_xfers_r <= 0;
-    end else begin
-      if (start) begin
-        total_xfers_r <= total_xfers;
-        base_addr_r <= base_addr;
-        burst_len_r <= burst_len;
-        active_r <= 1'b1;
-      end
-      if (done) begin
-        active_r <= 1'b0;
-      end
-    end
-  end
+  assign done = active_r && done_0 && done_1 && done_2 && done_3;
+  _ThreadMm2s_Controller _Controller (
+    .clk(clk),
+    .rst(rst),
+    .base_addr(base_addr),
+    .burst_len(burst_len),
+    .start(start),
+    .total_xfers(total_xfers),
+    .active_r(active_r),
+    .base_addr_r(base_addr_r),
+    .burst_len_r(burst_len_r),
+    .done_0(done_0),
+    .done_0_wr(done_0_wr__t0),
+    .done_0_we(done_0_we__t0),
+    .done_1(done_1),
+    .done_1_wr(done_1_wr__t0),
+    .done_1_we(done_1_we__t0),
+    .done_2(done_2),
+    .done_2_wr(done_2_wr__t0),
+    .done_2_we(done_2_we__t0),
+    .done_3(done_3),
+    .done_3_wr(done_3_wr__t0),
+    .done_3_we(done_3_we__t0),
+    .total_xfers_r(total_xfers_r)
+  );
   _ThreadMm2s_ReadReq_0 _ReadReq_0 (
     .clk(clk),
     .rst(rst),
@@ -701,7 +856,6 @@ module ThreadMm2s #(
     .r_data(r_data),
     .r_id(r_id),
     .r_valid(r_valid),
-    .total_xfers_r(total_xfers_r),
     .ar_addr(ar_addr__t0),
     .ar_burst(ar_burst__t0),
     .ar_id(ar_id__t0),
@@ -711,7 +865,9 @@ module ThreadMm2s #(
     .push_data(push_data__t0),
     .push_valid(push_valid__t0),
     .r_ready(r_ready__t0),
-    .complete_r(complete_r__t0),
+    .done_0(done_0),
+    .done_0_wr(done_0_wr__t1),
+    .done_0_we(done_0_we__t1),
     ._ar_ch_req(_ar_ch_req_0),
     ._ar_ch_grant(_ar_ch_grant_0)
   );
@@ -725,7 +881,6 @@ module ThreadMm2s #(
     .r_data(r_data),
     .r_id(r_id),
     .r_valid(r_valid),
-    .total_xfers_r(total_xfers_r),
     .ar_addr(ar_addr__t1),
     .ar_burst(ar_burst__t1),
     .ar_id(ar_id__t1),
@@ -735,7 +890,9 @@ module ThreadMm2s #(
     .push_data(push_data__t1),
     .push_valid(push_valid__t1),
     .r_ready(r_ready__t1),
-    .complete_r(complete_r__t1),
+    .done_1(done_1),
+    .done_1_wr(done_1_wr__t1),
+    .done_1_we(done_1_we__t1),
     ._ar_ch_req(_ar_ch_req_1),
     ._ar_ch_grant(_ar_ch_grant_1)
   );
@@ -749,7 +906,6 @@ module ThreadMm2s #(
     .r_data(r_data),
     .r_id(r_id),
     .r_valid(r_valid),
-    .total_xfers_r(total_xfers_r),
     .ar_addr(ar_addr__t2),
     .ar_burst(ar_burst__t2),
     .ar_id(ar_id__t2),
@@ -759,7 +915,9 @@ module ThreadMm2s #(
     .push_data(push_data__t2),
     .push_valid(push_valid__t2),
     .r_ready(r_ready__t2),
-    .complete_r(complete_r__t2),
+    .done_2(done_2),
+    .done_2_wr(done_2_wr__t1),
+    .done_2_we(done_2_we__t1),
     ._ar_ch_req(_ar_ch_req_2),
     ._ar_ch_grant(_ar_ch_grant_2)
   );
@@ -773,7 +931,6 @@ module ThreadMm2s #(
     .r_data(r_data),
     .r_id(r_id),
     .r_valid(r_valid),
-    .total_xfers_r(total_xfers_r),
     .ar_addr(ar_addr__t3),
     .ar_burst(ar_burst__t3),
     .ar_id(ar_id__t3),
@@ -783,7 +940,9 @@ module ThreadMm2s #(
     .push_data(push_data__t3),
     .push_valid(push_valid__t3),
     .r_ready(r_ready__t3),
-    .complete_r(complete_r__t3),
+    .done_3(done_3),
+    .done_3_wr(done_3_wr__t1),
+    .done_3_we(done_3_we__t1),
     ._ar_ch_req(_ar_ch_req_3),
     ._ar_ch_grant(_ar_ch_grant_3)
   );
@@ -812,14 +971,57 @@ module ThreadMm2s #(
   end
   assign r_ready = r_ready__t0 | r_ready__t1 | r_ready__t2 | r_ready__t3;
   assign push_valid = push_valid__t0 | push_valid__t1 | push_valid__t2 | push_valid__t3;
-  assign complete_r = complete_r__t0 | complete_r__t1 | complete_r__t2 | complete_r__t3;
-  assign ar_size = ar_size__t0 | ar_size__t1 | ar_size__t2 | ar_size__t3;
-  assign ar_valid = ar_valid__t0 | ar_valid__t1 | ar_valid__t2 | ar_valid__t3;
-  assign ar_addr = ar_addr__t0 | ar_addr__t1 | ar_addr__t2 | ar_addr__t3;
-  assign ar_burst = ar_burst__t0 | ar_burst__t1 | ar_burst__t2 | ar_burst__t3;
   assign push_data = push_data__t0 | push_data__t1 | push_data__t2 | push_data__t3;
-  assign ar_id = ar_id__t0 | ar_id__t1 | ar_id__t2 | ar_id__t3;
+  assign ar_valid = ar_valid__t0 | ar_valid__t1 | ar_valid__t2 | ar_valid__t3;
+  assign ar_size = ar_size__t0 | ar_size__t1 | ar_size__t2 | ar_size__t3;
   assign ar_len = ar_len__t0 | ar_len__t1 | ar_len__t2 | ar_len__t3;
+  assign ar_addr = ar_addr__t0 | ar_addr__t1 | ar_addr__t2 | ar_addr__t3;
+  assign ar_id = ar_id__t0 | ar_id__t1 | ar_id__t2 | ar_id__t3;
+  assign ar_burst = ar_burst__t0 | ar_burst__t1 | ar_burst__t2 | ar_burst__t3;
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      done_1 <= 1'b1;
+    end else begin
+      if (done_1_we__t0) begin
+        done_1 <= done_1_wr__t0;
+      end else if (done_1_we__t1) begin
+        done_1 <= done_1_wr__t1;
+      end
+    end
+  end
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      done_3 <= 1'b1;
+    end else begin
+      if (done_3_we__t0) begin
+        done_3 <= done_3_wr__t0;
+      end else if (done_3_we__t1) begin
+        done_3 <= done_3_wr__t1;
+      end
+    end
+  end
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      done_0 <= 1'b1;
+    end else begin
+      if (done_0_we__t0) begin
+        done_0 <= done_0_wr__t0;
+      end else if (done_0_we__t1) begin
+        done_0 <= done_0_wr__t1;
+      end
+    end
+  end
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      done_2 <= 1'b1;
+    end else begin
+      if (done_2_we__t0) begin
+        done_2 <= done_2_wr__t0;
+      end else if (done_2_we__t1) begin
+        done_2 <= done_2_wr__t1;
+      end
+    end
+  end
 
 endmodule
 

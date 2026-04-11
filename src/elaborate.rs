@@ -977,14 +977,24 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
         .filter_map(|item| if let ModuleBodyItem::Resource(r) = item { Some(r.clone()) } else { None })
         .collect();
 
-    // Collect all seq-driven signals across threads (regs that move into FSMs)
+    // Collect per-thread seq-driven signals and identify shared regs
+    // (written by multiple threads — need special lowering)
     let mut thread_seq_driven: HashSet<String> = HashSet::new();
+    let mut seq_driver_count: HashMap<String, usize> = HashMap::new();
     for item in &m.body {
         if let ModuleBodyItem::Thread(t) = item {
             let (_, seq_driven, _) = collect_thread_signals(&t.body);
+            for sig in &seq_driven {
+                *seq_driver_count.entry(sig.clone()).or_insert(0) += 1;
+            }
             thread_seq_driven.extend(seq_driven);
         }
     }
+    // Regs written by >1 thread: shared registers
+    let shared_regs: HashSet<String> = seq_driver_count.iter()
+        .filter(|(_, &count)| count > 1)
+        .map(|(name, _)| name.clone())
+        .collect();
 
     // Track which threads use which resources, and their inst names
     let mut resource_users: HashMap<String, Vec<String>> = HashMap::new(); // resource → [inst_name]
@@ -1008,7 +1018,7 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
                     resource_users.entry(res.clone()).or_default().push(inst_name.clone());
                 }
 
-                match lower_single_thread(&m.name.name, &thread_name, &t, &type_map, &reg_map) {
+                match lower_single_thread(&m.name.name, &thread_name, &t, &type_map, &reg_map, &shared_regs) {
                     Ok((fsm, inst)) => {
                         generated_fsms.push(Item::Fsm(fsm));
                         new_body.push(ModuleBodyItem::Inst(inst));
@@ -1019,14 +1029,19 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
             ModuleBodyItem::Resource(_) => {
                 // Resource declarations are consumed here; arbiter logic generated below
             }
-            // Convert RegDecl to WireDecl for regs that are seq-driven by threads
-            // (the register itself moves into the FSM; the module just needs a wire)
+            // Seq-driven by threads: shared regs stay as RegDecl, others become WireDecl
             ModuleBodyItem::RegDecl(ref r) if thread_seq_driven.contains(&r.name.name) => {
-                new_body.push(ModuleBodyItem::WireDecl(WireDecl {
-                    name: r.name.clone(),
-                    ty: r.ty.clone(),
-                    span: r.span,
-                }));
+                if shared_regs.contains(&r.name.name) {
+                    // Shared reg: keep as module-level register (muxed write from threads)
+                    new_body.push(ModuleBodyItem::RegDecl(r.clone()));
+                } else {
+                    // Non-shared: register moves into FSM, module just needs a wire
+                    new_body.push(ModuleBodyItem::WireDecl(WireDecl {
+                        name: r.name.clone(),
+                        ty: r.ty.clone(),
+                        span: r.span,
+                    }));
+                }
             }
             other => new_body.push(other),
         }
@@ -1225,8 +1240,14 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
         .filter_map(|p| p.shared.map(|sr| (p.name.name.clone(), sr, p.ty.clone())))
         .collect();
     // Add implicit shared(or) for lock-driven signals
+    // Exclude shared-reg _wr/_we signals (handled by muxed seq block)
+    let shared_reg_suffixes: HashSet<String> = shared_regs.iter()
+        .flat_map(|r| vec![format!("{}_wr", r), format!("{}_we", r)])
+        .collect();
     for sig in &lock_driven_signals {
-        if !shared_ports.iter().any(|(n, _, _)| n == sig) {
+        if !shared_ports.iter().any(|(n, _, _)| n == sig)
+            && !shared_reg_suffixes.contains(sig)
+        {
             let ty = type_map.get(sig).map(|si| si.ty.clone()).unwrap_or(TypeExpr::Bool);
             shared_ports.push((sig.clone(), SharedReduction::Or, ty));
         }
@@ -1285,6 +1306,87 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
                     value: reduced,
                     span: sp,
                 }));
+            }
+        }
+    }
+
+    // Generate muxed seq block for shared registers
+    // First: rename _wr/_we inst connections per-thread, then build mux
+    if !shared_regs.is_empty() {
+        let clk_port = m.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)));
+        if let Some(clk) = clk_port {
+            for reg_name in &shared_regs {
+                // Rename _wr/_we connections per-thread
+                let we_port = format!("{}_we", reg_name);
+                let wr_port = format!("{}_wr", reg_name);
+                let mut thread_idx = 0;
+                let mut wr_signals: Vec<(String, String)> = Vec::new();
+                for item in &mut new_body {
+                    if let ModuleBodyItem::Inst(inst) = item {
+                        let has_we = inst.connections.iter().any(|c| c.port_name.name == we_port);
+                        if has_we {
+                            let we_wire = format!("{}_we__t{}", reg_name, thread_idx);
+                            let wr_wire = format!("{}_wr__t{}", reg_name, thread_idx);
+                            for conn in &mut inst.connections {
+                                if conn.port_name.name == we_port {
+                                    conn.signal = Expr::new(ExprKind::Ident(we_wire.clone()), sp);
+                                }
+                                if conn.port_name.name == wr_port {
+                                    conn.signal = Expr::new(ExprKind::Ident(wr_wire.clone()), sp);
+                                }
+                            }
+                            wr_signals.push((we_wire, wr_wire));
+                            thread_idx += 1;
+                        }
+                    }
+                }
+
+                if !wr_signals.is_empty() {
+                    // Build if-elsif chain: if we_0 then reg <= wr_0; elsif we_1 ...
+                    let mut stmts: Vec<Stmt> = Vec::new();
+                    let reg_target = Expr::new(ExprKind::Ident(reg_name.clone()), sp);
+
+                    // Build nested if-elsif from last to first
+                    let mut current: Option<Stmt> = None;
+                    for (we_name, wr_name) in wr_signals.iter().rev() {
+                        let cond = Expr::new(ExprKind::Ident(we_name.clone()), sp);
+                        let assign = Stmt::Assign(RegAssign {
+                            target: reg_target.clone(),
+                            value: Expr::new(ExprKind::Ident(wr_name.clone()), sp),
+                            span: sp,
+                        });
+                        let else_stmts = if let Some(prev) = current { vec![prev] } else { Vec::new() };
+                        current = Some(Stmt::IfElse(IfElse {
+                            cond, then_stmts: vec![assign], else_stmts, unique: false, span: sp,
+                        }));
+                    }
+                    if let Some(mux_stmt) = current {
+                        stmts.push(mux_stmt);
+                    }
+
+                    // Declare per-thread wr/we wires
+                    for (we_name, wr_name) in &wr_signals {
+                        new_body.insert(0, ModuleBodyItem::WireDecl(WireDecl {
+                            name: Ident::new(we_name.clone(), sp),
+                            ty: TypeExpr::Bool,
+                            span: sp,
+                        }));
+                        let reg_ty = type_map.get(reg_name).map(|si| si.ty.clone())
+                            .unwrap_or(TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(32)), sp))));
+                        new_body.insert(0, ModuleBodyItem::WireDecl(WireDecl {
+                            name: Ident::new(wr_name.clone(), sp),
+                            ty: reg_ty,
+                            span: sp,
+                        }));
+                    }
+
+                    new_body.push(ModuleBodyItem::RegBlock(RegBlock {
+                        clock: clk.name.clone(),
+                        clock_edge: ClockEdge::Rising,
+                        stmts,
+                        span: sp,
+                    }));
+                }
             }
         }
     }
@@ -2104,6 +2206,7 @@ fn lower_single_thread(
     t: &ThreadBlock,
     type_map: &HashMap<String, SignalInfo>,
     _reg_map: &HashMap<String, RegDecl>,
+    shared_regs: &HashSet<String>,
 ) -> Result<(FsmDecl, InstDecl), CompileError> {
     let sp = t.span;
 
@@ -2405,25 +2508,53 @@ fn lower_single_thread(
         }
     }
 
-    // Output ports (seq-driven signals) — port reg with reset info
+    // Output ports (seq-driven signals)
     let mut fsm_regs: Vec<RegDecl> = Vec::new();
     let mut sorted_seq: Vec<&String> = seq_driven.iter().collect();
     sorted_seq.sort();
     for name in &sorted_seq {
         if let Some(info) = type_map.get(name.as_str()) {
-            fsm_ports.push(PortDecl {
-                name: Ident::new((*name).clone(), sp),
-                direction: Direction::Out,
-                ty: info.ty.clone(),
-                default: None,
-                reg_info: Some(PortRegInfo {
-                    init: info.reg_init.clone(),
-                    reset: info.reg_reset.clone(),
-                }),
-                bus_info: None,
-                shared: None,
-                span: sp,
-            });
+            if shared_regs.contains(name.as_str()) {
+                // Shared register: input (read current value) + output (write data+enable)
+                // The register stays at the module level; FSM reads and writes via ports.
+                fsm_ports.push(PortDecl {
+                    name: Ident::new((*name).clone(), sp),
+                    direction: Direction::In,
+                    ty: info.ty.clone(),
+                    default: None, reg_info: None, bus_info: None, shared: None, span: sp,
+                });
+                fsm_ports.push(PortDecl {
+                    name: Ident::new(format!("{}_wr", name), sp),
+                    direction: Direction::Out,
+                    ty: info.ty.clone(),
+                    default: None,
+                    reg_info: Some(PortRegInfo {
+                        init: Some(make_zero_expr(sp)),
+                        reset: RegReset::None,
+                    }),
+                    bus_info: None, shared: None, span: sp,
+                });
+                fsm_ports.push(PortDecl {
+                    name: Ident::new(format!("{}_we", name), sp),
+                    direction: Direction::Out,
+                    ty: TypeExpr::Bool,
+                    default: Some(Expr::new(ExprKind::Bool(false), sp)),
+                    reg_info: None, bus_info: None, shared: None, span: sp,
+                });
+            } else {
+                // Non-shared: standard port-reg output
+                fsm_ports.push(PortDecl {
+                    name: Ident::new((*name).clone(), sp),
+                    direction: Direction::Out,
+                    ty: info.ty.clone(),
+                    default: None,
+                    reg_info: Some(PortRegInfo {
+                        init: info.reg_init.clone(),
+                        reset: info.reg_reset.clone(),
+                    }),
+                    bus_info: None, shared: None, span: sp,
+                });
+            }
         }
     }
 
@@ -2491,6 +2622,18 @@ fn lower_single_thread(
         }
     }
 
+    // Step 6b: Rewrite shared reg seq assigns in state bodies
+    // Replace `name <= expr` with `name_wr <= expr` + `name_we = true` (comb)
+    if !shared_regs.is_empty() {
+        for sb in &mut state_bodies {
+            let mut extra_comb = Vec::new();
+            for stmt in &mut sb.seq_stmts {
+                rewrite_shared_reg_stmt(stmt, shared_regs, sp, &mut extra_comb);
+            }
+            sb.comb_stmts.extend(extra_comb);
+        }
+    }
+
     // Step 7: Build the FsmDecl
     let fsm_name = format!("_{module_name}_{thread_name}");
     let fsm = FsmDecl {
@@ -2534,6 +2677,53 @@ fn lower_single_thread(
     };
 
     Ok((fsm, inst))
+}
+
+/// Rewrite seq assigns to shared registers: `name <= expr` → `name_wr <= expr`
+/// and add `name_we = true` to extra_comb.
+fn rewrite_shared_reg_stmt(
+    stmt: &mut Stmt,
+    shared_regs: &HashSet<String>,
+    sp: Span,
+    extra_comb: &mut Vec<CombStmt>,
+) {
+    match stmt {
+        Stmt::Assign(ref mut ra) => {
+            if let Some(name) = expr_root_name(&ra.target) {
+                if shared_regs.contains(&name) {
+                    // Rewrite target: name → name_wr
+                    ra.target = Expr::new(ExprKind::Ident(format!("{}_wr", name)), sp);
+                    // Add write-enable comb assign
+                    extra_comb.push(CombStmt::Assign(CombAssign {
+                        target: Expr::new(ExprKind::Ident(format!("{}_we", name)), sp),
+                        value: Expr::new(ExprKind::Bool(true), sp),
+                        span: sp,
+                    }));
+                }
+            }
+        }
+        Stmt::IfElse(ref mut ie) => {
+            for s in &mut ie.then_stmts {
+                rewrite_shared_reg_stmt(s, shared_regs, sp, extra_comb);
+            }
+            for s in &mut ie.else_stmts {
+                rewrite_shared_reg_stmt(s, shared_regs, sp, extra_comb);
+            }
+        }
+        Stmt::Match(ref mut ms) => {
+            for arm in &mut ms.arms {
+                for s in &mut arm.body {
+                    rewrite_shared_reg_stmt(s, shared_regs, sp, extra_comb);
+                }
+            }
+        }
+        Stmt::For(ref mut fl) => {
+            for s in &mut fl.body {
+                rewrite_shared_reg_stmt(s, shared_regs, sp, extra_comb);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn make_zero_expr(sp: Span) -> Expr {
