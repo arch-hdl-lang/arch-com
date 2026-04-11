@@ -41,12 +41,8 @@ int main() {
     dut.total_xfers = 4;
     dut.base_addr = 0x1000;
     dut.burst_len = 4;
-    for (int i = 0; i < 10; i++) {
-        tick();
-        printf("[cycle %3d] idle=%d done=%d ar_valid=%d\n",
-               cycle_count, dut.idle_out, dut.done, dut.ar_valid);
-        if (i == 1) dut.start = 0;  // hold start for 2 cycles
-    }
+    tick();
+    dut.start = 0;
 
     int ar_accepted = 0;
     int r_beats_sent = 0;
