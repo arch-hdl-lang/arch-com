@@ -1943,15 +1943,42 @@ fn partition_thread_body(
                 states.extend(fork_states);
             }
             ThreadStmt::For { var, start, end, body, span } => {
-                // Flush pending statements
-                if !cur_comb.is_empty() || !cur_seq.is_empty() {
-                    states.push(ThreadFsmState {
-                        comb_stmts: std::mem::take(&mut cur_comb),
-                        seq_stmts: std::mem::take(&mut cur_seq),
-                        transition_cond: None,
-                        wait_cycles: None,
-                        multi_transitions: Vec::new(),
-                    });
+                // Counter init: merge into the last existing state (if it has
+                // unconditional advance) to avoid a dead cycle. Otherwise flush.
+                let cnt_name = "_loop_cnt";
+                let cnt_init = Stmt::Assign(RegAssign {
+                    target: Expr::new(ExprKind::Ident(cnt_name.to_string()), *span),
+                    value: start.clone(),
+                    span: *span,
+                });
+                let merged = if cur_comb.is_empty() && cur_seq.is_empty() {
+                    // No pending assigns — merge counter init into last state.
+                    // The init fires on the same edge as the state's transition,
+                    // so the counter is ready when the for-body starts.
+                    if let Some(last) = states.last_mut() {
+                        if last.multi_transitions.is_empty() {
+                            last.seq_stmts.push(cnt_init.clone());
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                if !merged {
+                    cur_seq.push(cnt_init.clone());
+                    if !cur_comb.is_empty() || !cur_seq.is_empty() {
+                        states.push(ThreadFsmState {
+                            comb_stmts: std::mem::take(&mut cur_comb),
+                            seq_stmts: std::mem::take(&mut cur_seq),
+                            transition_cond: None,
+                            wait_cycles: None,
+                            multi_transitions: Vec::new(),
+                        });
+                    }
                 }
                 let mut for_states = lower_thread_for(var, start, end, body, *span)?;
                 // Adjust multi_transitions targets (relative → absolute)
@@ -2213,18 +2240,8 @@ fn lower_thread_for(
 
     let mut result: Vec<ThreadFsmState> = Vec::new();
 
-    // INIT state: set counter = start, unconditional transition to first body state
-    result.push(ThreadFsmState {
-        comb_stmts: Vec::new(),
-        seq_stmts: vec![Stmt::Assign(RegAssign {
-            target: Expr::new(ExprKind::Ident(cnt.to_string()), span),
-            value: start.clone(),
-            span,
-        })],
-        transition_cond: None,
-        wait_cycles: None,
-        multi_transitions: Vec::new(),
-    });
+    // Counter init (loop_cnt <= start) — merged into preceding state by caller,
+    // or into a flush state if pending assigns exist.  No separate INIT state.
 
     // Body states (copied from partition)
     result.extend(body_states);
@@ -2241,8 +2258,8 @@ fn lower_thread_for(
         span,
     );
 
-    // Index 1 = first body state (after INIT at index 0); adjusted to absolute later
-    let loop_back_target = 1;
+    // Index 0 = first body state (no separate INIT state); adjusted to absolute later
+    let loop_back_target = 0;
 
     result.push(ThreadFsmState {
         comb_stmts: Vec::new(),

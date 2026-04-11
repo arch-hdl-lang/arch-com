@@ -59,7 +59,7 @@ module _ThreadMm2s_threads (
         ar_burst = 2'd1;
       end
     end
-    if (_t1_state == 3) begin
+    if (_t1_state == 2) begin
       r_ready = r_ready | r_id == 0;
       push_valid = push_valid | (r_valid && r_id == 0);
       push_data = r_data;
@@ -75,7 +75,7 @@ module _ThreadMm2s_threads (
         ar_burst = 2'd1;
       end
     end
-    if (_t2_state == 3) begin
+    if (_t2_state == 2) begin
       r_ready = r_ready | r_id == 1;
       push_valid = push_valid | (r_valid && r_id == 1);
       push_data = r_data;
@@ -91,7 +91,7 @@ module _ThreadMm2s_threads (
         ar_burst = 2'd1;
       end
     end
-    if (_t3_state == 3) begin
+    if (_t3_state == 2) begin
       r_ready = r_ready | r_id == 2;
       push_valid = push_valid | (r_valid && r_id == 2);
       push_data = r_data;
@@ -107,7 +107,7 @@ module _ThreadMm2s_threads (
         ar_burst = 2'd1;
       end
     end
-    if (_t4_state == 3) begin
+    if (_t4_state == 2) begin
       r_ready = r_ready | r_id == 3;
       push_valid = push_valid | (r_valid && r_id == 3);
       push_data = r_data;
@@ -186,29 +186,26 @@ module _ThreadMm2s_threads (
         end
       end
       if (_t1_state == 1) begin
+        _t1_loop_cnt <= 0;
         if (_ar_ch_grant_1 && ar_ready) begin
           _t1_state <= 2;
         end
       end
       if (_t1_state == 2) begin
-        _t1_loop_cnt <= 0;
-        _t1_state <= 3;
+        if (r_valid && r_id == 0 && push_ready) begin
+          _t1_state <= 3;
+        end
       end
       if (_t1_state == 3) begin
-        if (r_valid && r_id == 0 && push_ready) begin
+        _t1_loop_cnt <= 32'(_t1_loop_cnt + 32'd1);
+        if (_t1_loop_cnt < burst_len_r - 1) begin
+          _t1_state <= 2;
+        end
+        if (_t1_loop_cnt >= burst_len_r - 1) begin
           _t1_state <= 4;
         end
       end
       if (_t1_state == 4) begin
-        _t1_loop_cnt <= 32'(_t1_loop_cnt + 32'd1);
-        if (_t1_loop_cnt < burst_len_r - 1) begin
-          _t1_state <= 3;
-        end
-        if (_t1_loop_cnt >= burst_len_r - 1) begin
-          _t1_state <= 5;
-        end
-      end
-      if (_t1_state == 5) begin
         done_flags[0] <= 1'b1;
         _t1_state <= 0;
       end
@@ -218,29 +215,26 @@ module _ThreadMm2s_threads (
         end
       end
       if (_t2_state == 1) begin
+        _t2_loop_cnt <= 0;
         if (_ar_ch_grant_2 && ar_ready) begin
           _t2_state <= 2;
         end
       end
       if (_t2_state == 2) begin
-        _t2_loop_cnt <= 0;
-        _t2_state <= 3;
+        if (r_valid && r_id == 1 && push_ready) begin
+          _t2_state <= 3;
+        end
       end
       if (_t2_state == 3) begin
-        if (r_valid && r_id == 1 && push_ready) begin
+        _t2_loop_cnt <= 32'(_t2_loop_cnt + 32'd1);
+        if (_t2_loop_cnt < burst_len_r - 1) begin
+          _t2_state <= 2;
+        end
+        if (_t2_loop_cnt >= burst_len_r - 1) begin
           _t2_state <= 4;
         end
       end
       if (_t2_state == 4) begin
-        _t2_loop_cnt <= 32'(_t2_loop_cnt + 32'd1);
-        if (_t2_loop_cnt < burst_len_r - 1) begin
-          _t2_state <= 3;
-        end
-        if (_t2_loop_cnt >= burst_len_r - 1) begin
-          _t2_state <= 5;
-        end
-      end
-      if (_t2_state == 5) begin
         done_flags[1] <= 1'b1;
         _t2_state <= 0;
       end
@@ -250,29 +244,26 @@ module _ThreadMm2s_threads (
         end
       end
       if (_t3_state == 1) begin
+        _t3_loop_cnt <= 0;
         if (_ar_ch_grant_3 && ar_ready) begin
           _t3_state <= 2;
         end
       end
       if (_t3_state == 2) begin
-        _t3_loop_cnt <= 0;
-        _t3_state <= 3;
+        if (r_valid && r_id == 2 && push_ready) begin
+          _t3_state <= 3;
+        end
       end
       if (_t3_state == 3) begin
-        if (r_valid && r_id == 2 && push_ready) begin
+        _t3_loop_cnt <= 32'(_t3_loop_cnt + 32'd1);
+        if (_t3_loop_cnt < burst_len_r - 1) begin
+          _t3_state <= 2;
+        end
+        if (_t3_loop_cnt >= burst_len_r - 1) begin
           _t3_state <= 4;
         end
       end
       if (_t3_state == 4) begin
-        _t3_loop_cnt <= 32'(_t3_loop_cnt + 32'd1);
-        if (_t3_loop_cnt < burst_len_r - 1) begin
-          _t3_state <= 3;
-        end
-        if (_t3_loop_cnt >= burst_len_r - 1) begin
-          _t3_state <= 5;
-        end
-      end
-      if (_t3_state == 5) begin
         done_flags[2] <= 1'b1;
         _t3_state <= 0;
       end
@@ -282,29 +273,26 @@ module _ThreadMm2s_threads (
         end
       end
       if (_t4_state == 1) begin
+        _t4_loop_cnt <= 0;
         if (_ar_ch_grant_4 && ar_ready) begin
           _t4_state <= 2;
         end
       end
       if (_t4_state == 2) begin
-        _t4_loop_cnt <= 0;
-        _t4_state <= 3;
+        if (r_valid && r_id == 3 && push_ready) begin
+          _t4_state <= 3;
+        end
       end
       if (_t4_state == 3) begin
-        if (r_valid && r_id == 3 && push_ready) begin
+        _t4_loop_cnt <= 32'(_t4_loop_cnt + 32'd1);
+        if (_t4_loop_cnt < burst_len_r - 1) begin
+          _t4_state <= 2;
+        end
+        if (_t4_loop_cnt >= burst_len_r - 1) begin
           _t4_state <= 4;
         end
       end
       if (_t4_state == 4) begin
-        _t4_loop_cnt <= 32'(_t4_loop_cnt + 32'd1);
-        if (_t4_loop_cnt < burst_len_r - 1) begin
-          _t4_state <= 3;
-        end
-        if (_t4_loop_cnt >= burst_len_r - 1) begin
-          _t4_state <= 5;
-        end
-      end
-      if (_t4_state == 5) begin
         done_flags[3] <= 1'b1;
         _t4_state <= 0;
       end
