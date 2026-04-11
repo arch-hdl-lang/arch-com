@@ -82,8 +82,11 @@ module ThreadMm2s
         until ar_ready;
       end lock ar_ch
       for b in 0..burst_len_r-1
-        do r_ready = (r_id == i); until r_valid and r_id == i;
-        do push_valid = 1; push_data = r_data; until push_ready;
+        do
+          r_ready = (r_id == i);
+          push_valid = r_valid and (r_id == i);
+          push_data = r_data;
+        until r_valid and r_id == i and push_ready;
       end for
       done_flags[i] <= true;
     end thread ReadReq_i
