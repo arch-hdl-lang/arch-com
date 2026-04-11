@@ -1144,6 +1144,48 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
         .map(|(name, _)| name.clone())
         .collect();
 
+    // shared(or) signals that are seq-driven need per-thread shadow wires + OR reduction
+    let shared_or_seq: HashSet<String> = shared_or_signals.iter()
+        .filter(|n| all_seq_driven.contains(*n))
+        .cloned().collect();
+    // shared(or) signals that are comb-driven use inline OR-accumulation (existing behavior)
+    let shared_or_comb: HashSet<String> = shared_or_signals.iter()
+        .filter(|n| all_comb_driven.contains(*n))
+        .cloned().collect();
+
+    // For seq shared(or) signals, create per-thread input wires and OR reduction
+    let n_threads = threads.len();
+    for sig_name in &shared_or_seq {
+        if let Some(info) = type_map.get(sig_name.as_str()) {
+            // Per-thread input wires: _sig_in_0, _sig_in_1, ...
+            for ti in 0..n_threads {
+                let wire_name = format!("_{}_in_{}", sig_name, ti);
+                merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
+                    name: Ident::new(wire_name, sp),
+                    ty: info.ty.clone(),
+                    span: sp,
+                }));
+            }
+            // OR reduction in comb block: sig_next = _sig_in_0 | _sig_in_1 | ...
+            let mut or_expr = Expr::new(ExprKind::Ident(format!("_{}_in_0", sig_name)), sp);
+            for ti in 1..n_threads {
+                or_expr = Expr::new(ExprKind::Binary(
+                    BinOp::BitOr,
+                    Box::new(or_expr),
+                    Box::new(Expr::new(ExprKind::Ident(format!("_{}_in_{}", sig_name, ti)), sp)),
+                ), sp);
+            }
+            // Wire for OR reduction result
+            let next_name = format!("_{}_next", sig_name);
+            merged_body.push(ModuleBodyItem::LetBinding(LetBinding {
+                name: Ident::new(next_name.clone(), sp),
+                ty: Some(info.ty.clone()),
+                value: or_expr,
+                span: sp,
+            }));
+        }
+    }
+
     // ── Per-thread state machines ──────────────────────────────────────
     let mut all_thread_comb: Vec<CombStmt> = Vec::new();
     let mut all_thread_seq: Vec<Stmt> = Vec::new();
@@ -1191,6 +1233,18 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
                 }
             }
         }
+        // Rewrite seq assigns to shared(or) signals → comb assigns to per-thread shadow wires
+        // e.g. `r_ready <= 1` in thread 2 → `_r_ready_in_2 = 1` (comb)
+        if !shared_or_seq.is_empty() {
+            for state in &mut raw_states {
+                let mut moved_comb = Vec::new();
+                let new_seq = rewrite_shared_or_seq_stmts(
+                    &state.seq_stmts, &shared_or_seq, ti, sp, &mut moved_comb);
+                state.seq_stmts = new_seq;
+                state.comb_stmts.extend(moved_comb);
+            }
+        }
+
         if raw_states.is_empty() {
             errors.push(CompileError::general("thread must have at least one wait", sp));
             continue;
@@ -1411,6 +1465,15 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
         }
     }
 
+    // Add shared(or) seq reduction: sig <= _sig_next
+    for sig_name in &shared_or_seq {
+        all_thread_seq.push(Stmt::Assign(RegAssign {
+            target: Expr::new(ExprKind::Ident(sig_name.clone()), sp),
+            value: Expr::new(ExprKind::Ident(format!("_{}_next", sig_name)), sp),
+            span: sp,
+        }));
+    }
+
     // Single merged always_ff for all threads (avoids multi-driver on shared regs)
     if !all_thread_seq.is_empty() {
         merged_body.push(ModuleBodyItem::RegBlock(RegBlock {
@@ -1465,6 +1528,16 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
             merged_comb.push(CombStmt::Assign(CombAssign {
                 target: Expr::new(ExprKind::Ident(format!("_{}_req_{}", res_name, ti)), sp),
                 value: Expr::new(ExprKind::Bool(false), sp),
+                span: sp,
+            }));
+        }
+    }
+    // Default shared(or) seq per-thread input wires = 0
+    for sig_name in &shared_or_seq {
+        for ti in 0..n_threads {
+            merged_comb.push(CombStmt::Assign(CombAssign {
+                target: Expr::new(ExprKind::Ident(format!("_{}_in_{}", sig_name, ti)), sp),
+                value: make_zero_expr(sp),
                 span: sp,
             }));
         }
@@ -2888,6 +2961,66 @@ fn lower_single_thread(
     };
 
     Ok((fsm, inst))
+}
+
+/// Rewrite seq stmts: if a seq assign targets a shared(or) signal, convert it
+/// to a comb assign targeting the per-thread shadow wire `_sig_in_ti`.
+/// Returns the remaining (non-shared) seq stmts; appends converted comb stmts to `out_comb`.
+fn rewrite_shared_or_seq_stmts(
+    stmts: &[Stmt],
+    shared_or_seq: &HashSet<String>,
+    thread_idx: usize,
+    sp: Span,
+    out_comb: &mut Vec<CombStmt>,
+) -> Vec<Stmt> {
+    let mut kept = Vec::new();
+    for stmt in stmts {
+        match stmt {
+            Stmt::Assign(ra) => {
+                if let Some(name) = expr_root_name(&ra.target) {
+                    if shared_or_seq.contains(&name) {
+                        let shadow = format!("_{}_in_{}", name, thread_idx);
+                        out_comb.push(CombStmt::Assign(CombAssign {
+                            target: Expr::new(ExprKind::Ident(shadow), sp),
+                            value: ra.value.clone(),
+                            span: ra.span,
+                        }));
+                        continue;
+                    }
+                }
+                kept.push(stmt.clone());
+            }
+            Stmt::IfElse(ie) => {
+                let mut then_comb = Vec::new();
+                let mut else_comb = Vec::new();
+                let then_seq = rewrite_shared_or_seq_stmts(
+                    &ie.then_stmts, shared_or_seq, thread_idx, sp, &mut then_comb);
+                let else_seq = rewrite_shared_or_seq_stmts(
+                    &ie.else_stmts, shared_or_seq, thread_idx, sp, &mut else_comb);
+                // Push rewritten comb assigns under the same if guard
+                if !then_comb.is_empty() || !else_comb.is_empty() {
+                    out_comb.push(CombStmt::IfElse(CombIfElse {
+                        cond: ie.cond.clone(),
+                        then_stmts: then_comb,
+                        else_stmts: else_comb,
+                        unique: ie.unique,
+                        span: ie.span,
+                    }));
+                }
+                if !then_seq.is_empty() || !else_seq.is_empty() {
+                    kept.push(Stmt::IfElse(IfElse {
+                        cond: ie.cond.clone(),
+                        then_stmts: then_seq,
+                        else_stmts: else_seq,
+                        unique: ie.unique,
+                        span: ie.span,
+                    }));
+                }
+            }
+            _ => kept.push(stmt.clone()),
+        }
+    }
+    kept
 }
 
 /// Transform comb assigns for shared(or) signals: `sig = val` → `sig = sig | val`.
