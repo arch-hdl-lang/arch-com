@@ -204,7 +204,7 @@ module _ThreadMm2s_threads (
         done_2 <= 1'b0;
         done_3 <= 1'b0;
         if (done) begin
-          _t0_cnt <= 1 - 1[31:0];
+          _t0_cnt <= 32'(1 - 32'd1);
         end
         if (done) begin
           _t0_state <= 2;
@@ -212,7 +212,7 @@ module _ThreadMm2s_threads (
       end
       if (_t0_state == 2) begin
         active_r <= 1'b0;
-        _t0_cnt <= _t0_cnt - 1[31:0];
+        _t0_cnt <= 32'(_t0_cnt - 32'd1);
         if (_t0_cnt == 0) begin
           _t0_state <= 0;
         end
@@ -240,6 +240,9 @@ module _ThreadMm2s_threads (
           _t1_state <= 3;
         end
       end
+      if (_t1_state == 3) begin
+        _t1_state <= 4;
+      end
       if (_t1_state == 4) begin
         _t1_loop_cnt <= 0;
         _t1_state <= 5;
@@ -255,8 +258,8 @@ module _ThreadMm2s_threads (
         end
       end
       if (_t1_state == 7) begin
-        _t1_loop_cnt <= _t1_loop_cnt + 1[31:0];
-        _t1_cnt <= 1 - 1[31:0];
+        _t1_loop_cnt <= 32'(_t1_loop_cnt + 32'd1);
+        _t1_cnt <= 32'(1 - 32'd1);
         if (_t1_loop_cnt < burst_len_r - 1) begin
           _t1_state <= 5;
         end
@@ -266,7 +269,7 @@ module _ThreadMm2s_threads (
       end
       if (_t1_state == 8) begin
         done_0 <= 1'b1;
-        _t1_cnt <= _t1_cnt - 1[31:0];
+        _t1_cnt <= 32'(_t1_cnt - 32'd1);
         if (_t1_cnt == 0) begin
           _t1_state <= 0;
         end
@@ -294,6 +297,9 @@ module _ThreadMm2s_threads (
           _t2_state <= 3;
         end
       end
+      if (_t2_state == 3) begin
+        _t2_state <= 4;
+      end
       if (_t2_state == 4) begin
         _t2_loop_cnt <= 0;
         _t2_state <= 5;
@@ -309,8 +315,8 @@ module _ThreadMm2s_threads (
         end
       end
       if (_t2_state == 7) begin
-        _t2_loop_cnt <= _t2_loop_cnt + 1[31:0];
-        _t2_cnt <= 1 - 1[31:0];
+        _t2_loop_cnt <= 32'(_t2_loop_cnt + 32'd1);
+        _t2_cnt <= 32'(1 - 32'd1);
         if (_t2_loop_cnt < burst_len_r - 1) begin
           _t2_state <= 5;
         end
@@ -320,7 +326,7 @@ module _ThreadMm2s_threads (
       end
       if (_t2_state == 8) begin
         done_1 <= 1'b1;
-        _t2_cnt <= _t2_cnt - 1[31:0];
+        _t2_cnt <= 32'(_t2_cnt - 32'd1);
         if (_t2_cnt == 0) begin
           _t2_state <= 0;
         end
@@ -348,6 +354,9 @@ module _ThreadMm2s_threads (
           _t3_state <= 3;
         end
       end
+      if (_t3_state == 3) begin
+        _t3_state <= 4;
+      end
       if (_t3_state == 4) begin
         _t3_loop_cnt <= 0;
         _t3_state <= 5;
@@ -363,8 +372,8 @@ module _ThreadMm2s_threads (
         end
       end
       if (_t3_state == 7) begin
-        _t3_loop_cnt <= _t3_loop_cnt + 1[31:0];
-        _t3_cnt <= 1 - 1[31:0];
+        _t3_loop_cnt <= 32'(_t3_loop_cnt + 32'd1);
+        _t3_cnt <= 32'(1 - 32'd1);
         if (_t3_loop_cnt < burst_len_r - 1) begin
           _t3_state <= 5;
         end
@@ -374,7 +383,7 @@ module _ThreadMm2s_threads (
       end
       if (_t3_state == 8) begin
         done_2 <= 1'b1;
-        _t3_cnt <= _t3_cnt - 1[31:0];
+        _t3_cnt <= 32'(_t3_cnt - 32'd1);
         if (_t3_cnt == 0) begin
           _t3_state <= 0;
         end
@@ -402,6 +411,9 @@ module _ThreadMm2s_threads (
           _t4_state <= 3;
         end
       end
+      if (_t4_state == 3) begin
+        _t4_state <= 4;
+      end
       if (_t4_state == 4) begin
         _t4_loop_cnt <= 0;
         _t4_state <= 5;
@@ -417,8 +429,8 @@ module _ThreadMm2s_threads (
         end
       end
       if (_t4_state == 7) begin
-        _t4_loop_cnt <= _t4_loop_cnt + 1[31:0];
-        _t4_cnt <= 1 - 1[31:0];
+        _t4_loop_cnt <= 32'(_t4_loop_cnt + 32'd1);
+        _t4_cnt <= 32'(1 - 32'd1);
         if (_t4_loop_cnt < burst_len_r - 1) begin
           _t4_state <= 5;
         end
@@ -428,7 +440,7 @@ module _ThreadMm2s_threads (
       end
       if (_t4_state == 8) begin
         done_3 <= 1'b1;
-        _t4_cnt <= _t4_cnt - 1[31:0];
+        _t4_cnt <= 32'(_t4_cnt - 32'd1);
         if (_t4_cnt == 0) begin
           _t4_state <= 0;
         end

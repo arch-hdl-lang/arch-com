@@ -3774,8 +3774,11 @@ impl<'a> Codegen<'a> {
             }
             ExprKind::BitSlice(base, hi, lo) => {
                 let b = self.emit_expr_str(base);
+                // Parenthesize complex base expressions to avoid precedence issues
+                let b = if matches!(base.kind, ExprKind::Ident(_) | ExprKind::Literal(_)
+                    | ExprKind::Index(_, _) | ExprKind::FieldAccess(_, _)) { b }
+                    else { format!("({})", b) };
                 // Try to emit indexed part-select: base[lo +: width]
-                // Detects pattern hi = lo + (width - 1)
                 if let Some(width) = Self::try_indexed_part_select(hi, lo) {
                     let l = self.emit_expr_str(lo);
                     format!("{b}[{l} +: {width}]")

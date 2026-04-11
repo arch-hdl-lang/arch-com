@@ -1214,16 +1214,18 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
             }
         }
         for (si, count_expr, cond) in counter_loads {
+            // cnt <= (count - 32'd1).trunc<32>()
             let sub = Expr::new(ExprKind::Binary(
-                BinOp::Sub, Box::new(count_expr.clone()),
-                Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(1)), sp)),
+                BinOp::Sub,
+                Box::new(count_expr.clone()),
+                Box::new(Expr::new(ExprKind::Literal(LitKind::Sized(32, 1)), sp)),
             ), sp);
             let load = Stmt::Assign(RegAssign {
                 target: Expr::new(ExprKind::Ident(cnt_name.clone()), sp),
-                value: Expr::new(ExprKind::BitSlice(
+                value: Expr::new(ExprKind::MethodCall(
                     Box::new(sub),
-                    Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(31)), sp)),
-                    Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(0)), sp)),
+                    Ident::new("trunc".to_string(), sp),
+                    vec![Expr::new(ExprKind::Literal(LitKind::Dec(32)), sp)],
                 ), sp),
                 span: sp,
             });
@@ -1240,8 +1242,11 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
         // State transition always_ff
         let mut seq_stmts: Vec<Stmt> = Vec::new();
         for (si, raw) in raw_states.iter().enumerate() {
+            // Only skip truly empty states that don't need state advancement
+            let needs_transition = si + 1 < n_states || !t.once; // non-terminal states always need advancement
             if raw.seq_stmts.is_empty() && raw.transition_cond.is_none()
-                && raw.wait_cycles.is_none() && raw.multi_transitions.is_empty() {
+                && raw.wait_cycles.is_none() && raw.multi_transitions.is_empty()
+                && !needs_transition {
                 continue;
             }
 
@@ -1299,18 +1304,17 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
                     BinOp::Eq, Box::new(cnt_id.clone()),
                     Box::new(make_zero_expr(sp)),
                 ), sp);
-                // Decrement
-                // cnt <= (cnt - 1)[31:0]  — explicit bit-slice to match UInt<32>
-                let sub_expr = Expr::new(ExprKind::Binary(
+                // cnt <= (cnt - 32'd1).trunc<32>()
+                let sub = Expr::new(ExprKind::Binary(
                     BinOp::Sub, Box::new(cnt_id),
-                    Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(1)), sp)),
+                    Box::new(Expr::new(ExprKind::Literal(LitKind::Sized(32, 1)), sp)),
                 ), sp);
                 body.push(Stmt::Assign(RegAssign {
                     target: Expr::new(ExprKind::Ident(cnt_name.clone()), sp),
-                    value: Expr::new(ExprKind::BitSlice(
-                        Box::new(sub_expr),
-                        Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(31)), sp)),
-                        Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(0)), sp)),
+                    value: Expr::new(ExprKind::MethodCall(
+                        Box::new(sub),
+                        Ident::new("trunc".to_string(), sp),
+                        vec![Expr::new(ExprKind::Literal(LitKind::Dec(32)), sp)],
                     ), sp),
                     span: sp,
                 }));
@@ -2065,10 +2069,11 @@ fn lower_thread_for(
         seq_stmts: vec![Stmt::Assign(RegAssign {
             target: cnt_ident.clone(),
             value: Expr::new(
-                ExprKind::BitSlice(
-                    Box::new(Expr::new(ExprKind::Binary(BinOp::Add, Box::new(cnt_ident), Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(1)), span))), span)),
-                    Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(31)), span)),
-                    Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(0)), span)),
+                ExprKind::MethodCall(
+                    Box::new(Expr::new(ExprKind::Binary(BinOp::Add, Box::new(cnt_ident),
+                        Box::new(Expr::new(ExprKind::Literal(LitKind::Sized(32, 1)), span))), span)),
+                    Ident::new("trunc".to_string(), span),
+                    vec![Expr::new(ExprKind::Literal(LitKind::Dec(32)), span)],
                 ),
                 span,
             ),
