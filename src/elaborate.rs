@@ -2246,43 +2246,82 @@ fn lower_thread_for(
     // Body states (copied from partition)
     result.extend(body_states);
 
-    // LOOP_CHECK state: increment counter, check loop condition
-    // Two transitions: loop-back (counter < end) and exit (counter >= end)
+    // Merge loop counter logic into the LAST body state.
+    // Instead of a separate LOOP_CHECK state, the last body state gets:
+    //   - counter increment (seq, guarded by transition condition)
+    //   - multi_transitions: (body_cond && cnt < end → loop back),
+    //                        (body_cond && cnt >= end → exit)
     let cnt_ident = Expr::new(ExprKind::Ident(cnt.to_string()), span);
-    let loop_cond = Expr::new(
-        ExprKind::Binary(BinOp::Lt, Box::new(cnt_ident.clone()), Box::new(end.clone())),
-        span,
-    );
-    let exit_cond = Expr::new(
-        ExprKind::Binary(BinOp::Gte, Box::new(cnt_ident.clone()), Box::new(end.clone())),
-        span,
-    );
-
-    // Index 0 = first body state (no separate INIT state); adjusted to absolute later
-    let loop_back_target = 0;
-
-    result.push(ThreadFsmState {
-        comb_stmts: Vec::new(),
-        seq_stmts: vec![Stmt::Assign(RegAssign {
-            target: cnt_ident.clone(),
-            value: Expr::new(
-                ExprKind::MethodCall(
-                    Box::new(Expr::new(ExprKind::Binary(BinOp::Add, Box::new(cnt_ident),
-                        Box::new(Expr::new(ExprKind::Literal(LitKind::Sized(32, 1)), span))), span)),
-                    Ident::new("trunc".to_string(), span),
-                    vec![Expr::new(ExprKind::Literal(LitKind::Dec(32)), span)],
-                ),
-                span,
+    let cnt_inc = Stmt::Assign(RegAssign {
+        target: cnt_ident.clone(),
+        value: Expr::new(
+            ExprKind::MethodCall(
+                Box::new(Expr::new(ExprKind::Binary(BinOp::Add,
+                    Box::new(cnt_ident.clone()),
+                    Box::new(Expr::new(ExprKind::Literal(LitKind::Sized(32, 1)), span))), span)),
+                Ident::new("trunc".to_string(), span),
+                vec![Expr::new(ExprKind::Literal(LitKind::Dec(32)), span)],
             ),
             span,
-        })],
-        transition_cond: None,
-        wait_cycles: None,
-        multi_transitions: vec![
-            (loop_cond, loop_back_target),
-            (exit_cond, usize::MAX), // sentinel: next state after this for group
-        ],
+        ),
+        span,
     });
+
+    let loop_back_target = 0;
+
+    if let Some(last) = result.last_mut() {
+        if let Some(body_cond) = last.transition_cond.take() {
+            // Last body state had a transition_cond (e.g. do..until).
+            // Replace with multi_transitions: loop-back and exit, both
+            // guarded by the original body condition AND counter check.
+            let body_cond_clone = body_cond.clone();
+            let loop_cond = Expr::new(ExprKind::Binary(
+                BinOp::And,
+                Box::new(body_cond.clone()),
+                Box::new(Expr::new(ExprKind::Binary(
+                    BinOp::Lt, Box::new(cnt_ident.clone()), Box::new(end.clone()),
+                ), span)),
+            ), span);
+            let exit_cond = Expr::new(ExprKind::Binary(
+                BinOp::And,
+                Box::new(body_cond),
+                Box::new(Expr::new(ExprKind::Binary(
+                    BinOp::Gte, Box::new(cnt_ident.clone()), Box::new(end.clone()),
+                ), span)),
+            ), span);
+
+            // Counter increment guarded by the body condition —
+            // only increment when a beat is actually accepted
+            last.seq_stmts.push(Stmt::IfElse(IfElse {
+                cond: body_cond_clone,
+                then_stmts: vec![cnt_inc],
+                else_stmts: Vec::new(),
+                unique: false,
+                span,
+            }));
+
+            last.multi_transitions = vec![
+                (loop_cond, loop_back_target),
+                (exit_cond, usize::MAX), // sentinel: next state after for group
+            ];
+        } else {
+            // Last body state has no condition (unconditional advance) —
+            // just add counter check as multi_transitions.
+            let loop_cond = Expr::new(
+                ExprKind::Binary(BinOp::Lt, Box::new(cnt_ident.clone()), Box::new(end.clone())),
+                span,
+            );
+            let exit_cond = Expr::new(
+                ExprKind::Binary(BinOp::Gte, Box::new(cnt_ident.clone()), Box::new(end.clone())),
+                span,
+            );
+            last.seq_stmts.push(cnt_inc);
+            last.multi_transitions = vec![
+                (loop_cond, loop_back_target),
+                (exit_cond, usize::MAX),
+            ];
+        }
+    }
 
     Ok(result)
 }

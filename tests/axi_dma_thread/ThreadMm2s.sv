@@ -129,10 +129,10 @@ module _ThreadMm2s_threads (
   assign _ar_ch_grant_3 = _ar_ch_req_3 && !_ar_ch_grant_0 && !_ar_ch_grant_1 && !_ar_ch_grant_2;
   assign _ar_ch_grant_4 = _ar_ch_req_4 && !_ar_ch_grant_0 && !_ar_ch_grant_1 && !_ar_ch_grant_2 && !_ar_ch_grant_3;
   logic [3-1:0] _t0_state = 0;
-  logic [3-1:0] _t1_state = 0;
-  logic [3-1:0] _t2_state = 0;
-  logic [3-1:0] _t3_state = 0;
-  logic [3-1:0] _t4_state = 0;
+  logic [2-1:0] _t1_state = 0;
+  logic [2-1:0] _t2_state = 0;
+  logic [2-1:0] _t3_state = 0;
+  logic [2-1:0] _t4_state = 0;
   always_ff @(posedge clk) begin
     if (rst) begin
       _t0_state <= 0;
@@ -193,19 +193,16 @@ module _ThreadMm2s_threads (
       end
       if (_t1_state == 2) begin
         if (r_valid && r_id == 0 && push_ready) begin
+          _t1_loop_cnt <= 32'(_t1_loop_cnt + 32'd1);
+        end
+        if (r_valid && r_id == 0 && push_ready && _t1_loop_cnt < burst_len_r - 1) begin
+          _t1_state <= 2;
+        end
+        if (r_valid && r_id == 0 && push_ready && _t1_loop_cnt >= burst_len_r - 1) begin
           _t1_state <= 3;
         end
       end
       if (_t1_state == 3) begin
-        _t1_loop_cnt <= 32'(_t1_loop_cnt + 32'd1);
-        if (_t1_loop_cnt < burst_len_r - 1) begin
-          _t1_state <= 2;
-        end
-        if (_t1_loop_cnt >= burst_len_r - 1) begin
-          _t1_state <= 4;
-        end
-      end
-      if (_t1_state == 4) begin
         done_flags[0] <= 1'b1;
         _t1_state <= 0;
       end
@@ -222,19 +219,16 @@ module _ThreadMm2s_threads (
       end
       if (_t2_state == 2) begin
         if (r_valid && r_id == 1 && push_ready) begin
+          _t2_loop_cnt <= 32'(_t2_loop_cnt + 32'd1);
+        end
+        if (r_valid && r_id == 1 && push_ready && _t2_loop_cnt < burst_len_r - 1) begin
+          _t2_state <= 2;
+        end
+        if (r_valid && r_id == 1 && push_ready && _t2_loop_cnt >= burst_len_r - 1) begin
           _t2_state <= 3;
         end
       end
       if (_t2_state == 3) begin
-        _t2_loop_cnt <= 32'(_t2_loop_cnt + 32'd1);
-        if (_t2_loop_cnt < burst_len_r - 1) begin
-          _t2_state <= 2;
-        end
-        if (_t2_loop_cnt >= burst_len_r - 1) begin
-          _t2_state <= 4;
-        end
-      end
-      if (_t2_state == 4) begin
         done_flags[1] <= 1'b1;
         _t2_state <= 0;
       end
@@ -251,19 +245,16 @@ module _ThreadMm2s_threads (
       end
       if (_t3_state == 2) begin
         if (r_valid && r_id == 2 && push_ready) begin
+          _t3_loop_cnt <= 32'(_t3_loop_cnt + 32'd1);
+        end
+        if (r_valid && r_id == 2 && push_ready && _t3_loop_cnt < burst_len_r - 1) begin
+          _t3_state <= 2;
+        end
+        if (r_valid && r_id == 2 && push_ready && _t3_loop_cnt >= burst_len_r - 1) begin
           _t3_state <= 3;
         end
       end
       if (_t3_state == 3) begin
-        _t3_loop_cnt <= 32'(_t3_loop_cnt + 32'd1);
-        if (_t3_loop_cnt < burst_len_r - 1) begin
-          _t3_state <= 2;
-        end
-        if (_t3_loop_cnt >= burst_len_r - 1) begin
-          _t3_state <= 4;
-        end
-      end
-      if (_t3_state == 4) begin
         done_flags[2] <= 1'b1;
         _t3_state <= 0;
       end
@@ -280,19 +271,16 @@ module _ThreadMm2s_threads (
       end
       if (_t4_state == 2) begin
         if (r_valid && r_id == 3 && push_ready) begin
+          _t4_loop_cnt <= 32'(_t4_loop_cnt + 32'd1);
+        end
+        if (r_valid && r_id == 3 && push_ready && _t4_loop_cnt < burst_len_r - 1) begin
+          _t4_state <= 2;
+        end
+        if (r_valid && r_id == 3 && push_ready && _t4_loop_cnt >= burst_len_r - 1) begin
           _t4_state <= 3;
         end
       end
       if (_t4_state == 3) begin
-        _t4_loop_cnt <= 32'(_t4_loop_cnt + 32'd1);
-        if (_t4_loop_cnt < burst_len_r - 1) begin
-          _t4_state <= 2;
-        end
-        if (_t4_loop_cnt >= burst_len_r - 1) begin
-          _t4_state <= 4;
-        end
-      end
-      if (_t4_state == 4) begin
         done_flags[3] <= 1'b1;
         _t4_state <= 0;
       end
