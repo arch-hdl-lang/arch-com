@@ -3982,49 +3982,58 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Convert a width expression to a Verilog range string `[N:0]`.
+    /// For literal widths, folds the arithmetic: `Dec(8)` → `"7:0"`.
+    /// For expressions (params, binaries), keeps the expression: `"N-1:0"`.
+    fn emit_width_range(&self, w: &Expr) -> String {
+        match &w.kind {
+            ExprKind::Literal(LitKind::Dec(n)) => {
+                format!("{}:0", n.saturating_sub(1))
+            }
+            _ => {
+                let ws = self.emit_expr_str(w);
+                format!("{ws}-1:0")
+            }
+        }
+    }
+
+    /// Fold a width string (output of emit_expr_str) to a range.
+    /// If `s` parses as a decimal integer, emits `"N-1:0"` pre-computed.
+    /// Otherwise keeps `"s-1:0"`.
+    fn fold_width_str(s: &str) -> String {
+        if let Ok(n) = s.parse::<u64>() {
+            format!("{}:0", n.saturating_sub(1))
+        } else {
+            format!("{s}-1:0")
+        }
+    }
+
     fn emit_type_str(&self, ty: &TypeExpr) -> String {
         match ty {
             TypeExpr::UInt(w) => {
-                let ws = self.emit_expr_str(w);
-                format!("logic [{ws}-1:0]")
+                let range = self.emit_width_range(w);
+                format!("logic [{range}]")
             }
             TypeExpr::SInt(w) => {
-                let ws = self.emit_expr_str(w);
-                format!("logic signed [{ws}-1:0]")
+                let range = self.emit_width_range(w);
+                format!("logic signed [{range}]")
             }
             TypeExpr::Bool => "logic".to_string(),
             TypeExpr::Bit => "logic".to_string(),
             TypeExpr::Clock(_) => "logic".to_string(),
             TypeExpr::Reset(_, _) => "logic".to_string(),
             TypeExpr::Vec(_, _) => {
-                // Peel all Vec layers; emit base type + unpacked dims inline
-                let (base, suffix) = self.emit_type_and_array_suffix(ty);
-                format!("{base}{suffix}")
+                // Packed multi-dimensional: all dims are in the type string, no suffix.
+                let (type_str, _suffix) = self.emit_type_and_array_suffix(ty);
+                type_str
             }
             TypeExpr::Named(ident) => ident.name.clone(),
         }
     }
 
     fn emit_port_type_str(&self, ty: &TypeExpr) -> String {
-        match ty {
-            TypeExpr::UInt(w) => {
-                let ws = self.emit_expr_str(w);
-                format!("logic [{ws}-1:0]")
-            }
-            TypeExpr::SInt(w) => {
-                let ws = self.emit_expr_str(w);
-                format!("logic signed [{ws}-1:0]")
-            }
-            TypeExpr::Bool => "logic".to_string(),
-            TypeExpr::Bit => "logic".to_string(),
-            TypeExpr::Clock(_) => "logic".to_string(),
-            TypeExpr::Reset(_, _) => "logic".to_string(),
-            TypeExpr::Vec(_, _) => {
-                let (base, suffix) = self.emit_type_and_array_suffix(ty);
-                format!("{base}{suffix}")
-            }
-            TypeExpr::Named(ident) => ident.name.clone(),
-        }
+        // Port types use the same emission as internal types.
+        self.emit_type_str(ty)
     }
 
     /// Substitute bus parameter names in a TypeExpr with actual value expressions.
@@ -4057,23 +4066,35 @@ impl<'a> Codegen<'a> {
         self.emit_type_str(ty)
     }
 
-    /// For Vec types (including nested), returns (base_type_str, " [0:M-1][0:N-1]...")
-    /// so unpacked dimensions can be placed after the signal name in declarations.
-    /// Outermost Vec dimension comes first (leftmost in SV).
+    /// For Vec types (including nested), returns (packed_type_str, "").
+    /// The array dimensions are folded into the type as SV packed multi-dimensional
+    /// ranges, e.g. `Vec<UInt<16>, 4>` → `("logic [3:0][15:0]", "")`.
+    /// Packed arrays are portable across Verilator, Yosys, and iverilog; unpacked
+    /// array dimensions after the signal name are rejected by Yosys during synthesis.
     /// For non-Vec types, returns (type_str, "").
     fn emit_type_and_array_suffix(&self, ty: &TypeExpr) -> (String, String) {
         let mut dims = Vec::new();
         let mut cur = ty;
         while let TypeExpr::Vec(inner, size) = cur {
-            let size_str = self.emit_expr_str(size);
-            dims.push(format!(" [{size_str}-1:0]"));
+            let range = self.emit_width_range(size);
+            dims.push(format!("[{range}]"));
             cur = inner;
         }
         if dims.is_empty() {
-            (self.emit_type_str(ty), String::new())
-        } else {
-            (self.emit_type_str(cur), dims.join(""))
+            return (self.emit_type_str(ty), String::new());
         }
+        // Build packed multi-dim type: "logic [outerDim][innerDim][baseRange]"
+        // emit_type_str(cur) returns e.g. "logic [15:0]" for UInt<16>.
+        // We insert the packed dims immediately after the "logic" keyword.
+        let inner_type = self.emit_type_str(cur);
+        let packed_dims: String = dims.join("");
+        let type_str = if let Some(rest) = inner_type.strip_prefix("logic") {
+            // rest is e.g. " [15:0]" or " signed [15:0]" or "" for Bool
+            format!("logic {packed_dims}{rest}")
+        } else {
+            format!("{inner_type} {packed_dims}")
+        };
+        (type_str, String::new())
     }
 
     // ── Synchronizer ─────────────────────────────────────────────────────────
@@ -4648,7 +4669,7 @@ impl<'a> Codegen<'a> {
             .unwrap_or_else(|| "'0".to_string());
 
         // ── Internal register ─────────────────────────────────────────────────
-        self.line(&format!("logic [{count_width}-1:0] count_r;"));
+        self.line(&format!("logic [{}:0] count_r;", Self::fold_width_str(&count_width)));
 
         // ── Determine FF sensitivity list ─────────────────────────────────────
         let ff_sens = Self::ff_sensitivity(&clk, &rst, is_async, is_low);
@@ -4895,8 +4916,8 @@ impl<'a> Codegen<'a> {
                     })
             );
             self.line(&format!("logic grant_valid_comb;"));
-            self.line(&format!("logic [{req_width}-1:0] grant_requester_comb;"));
-            self.line(&format!("logic [{num_req_str}-1:0] {req_ready_sig}_comb;"));
+            self.line(&format!("logic [{}:0] grant_requester_comb;", req_width - 1));
+            self.line(&format!("logic [{}:0] {req_ready_sig}_comb;", Self::fold_width_str(&num_req_str)));
             self.line("");
             ("grant_valid_comb".to_string(), "grant_requester_comb".to_string(), format!("{req_ready_sig}_comb"))
         } else {
@@ -4948,8 +4969,8 @@ impl<'a> Codegen<'a> {
                 // Declare intermediate regs (not needed for last stage which drives output ports)
                 if !dst_suffix.is_empty() {
                     self.line(&format!("logic {dst_gv};"));
-                    self.line(&format!("logic [{req_width}-1:0] {dst_gr};"));
-                    self.line(&format!("logic [{num_req_str}-1:0] {dst_rr};"));
+                    self.line(&format!("logic [{}:0] {dst_gr};", req_width - 1));
+                    self.line(&format!("logic [{}:0] {dst_rr};", Self::fold_width_str(&num_req_str)));
                 }
 
                 self.line(&format!("always_ff @({ff_sens}) begin"));
@@ -4993,7 +5014,7 @@ impl<'a> Codegen<'a> {
                 if is_scalar {
                     format!("{dir} logic {name}")
                 } else {
-                    format!("{dir} logic [{count_str}-1:0] {name}")
+                    format!("{dir} logic [{}:0] {name}", Self::fold_width_str(&count_str))
                 }
             }
             _ => {
@@ -5021,7 +5042,7 @@ impl<'a> Codegen<'a> {
         grant_valid_sig: &str,
         grant_requester_sig: &str,
     ) {
-        self.line(&format!("logic [{req_width}-1:0] rr_ptr_r;"));
+        self.line(&format!("logic [{}:0] rr_ptr_r;", req_width - 1));
         self.line("integer arb_i;");
         self.line("logic arb_found;");
         self.line("");
@@ -5105,7 +5126,7 @@ impl<'a> Codegen<'a> {
         let fn_name = &fn_ident.name;
 
         // last_grant_r register for fairness state
-        self.line(&format!("logic [{num_req}-1:0] last_grant_r;"));
+        self.line(&format!("logic [{}:0] last_grant_r;", num_req - 1));
         self.line("");
 
         let ff_sens = Self::ff_sensitivity(clk, rst, is_async, is_low);
@@ -5140,7 +5161,7 @@ impl<'a> Codegen<'a> {
         let args_str = args.join(", ");
 
         // Call the function to get one-hot grant mask
-        self.line(&format!("logic [{num_req}-1:0] grant_onehot;"));
+        self.line(&format!("logic [{}:0] grant_onehot;", num_req - 1));
         self.line("");
         self.line("always_comb begin");
         self.indent += 1;
@@ -5282,7 +5303,7 @@ impl<'a> Codegen<'a> {
         self.indent += 1;
 
         // ── Register array ────────────────────────────────────────────────────
-        self.line(&format!("logic [{data_width_num}-1:0] rf_data [0:NREGS-1];"));
+        self.line(&format!("logic [{}:0] rf_data [0:NREGS-1];", Self::fold_width_str(&data_width_num)));
         self.line("");
 
         // ── Determine read/write port signal names (flat) ─────────────────────
@@ -5403,14 +5424,14 @@ impl<'a> Codegen<'a> {
         let phy_ty = match ty {
             TypeExpr::Bool => "logic".to_string(),
             TypeExpr::Named(id) if id.name == "WIDTH" || id.name == "DATA_WIDTH" => {
-                format!("logic [{data_width}-1:0]")
+                format!("logic [{}:0]", Self::fold_width_str(data_width))
             }
             TypeExpr::Named(id) if id.name == "ADDR_WIDTH" || id.name.to_lowercase().contains("addr") => {
-                format!("logic [{addr_width}-1:0]")
+                format!("logic [{}:0]", addr_width - 1)
             }
             TypeExpr::UInt(w) => {
                 let ws = self.emit_expr_str(w);
-                format!("logic [{ws}-1:0]")
+                format!("logic [{}:0]", Self::fold_width_str(&ws))
             }
             _ => self.emit_port_type_str(ty),
         };

@@ -10,23 +10,23 @@ module _ThreadMm2s_threads (
   input logic rst,
   input logic active,
   input logic ar_ready,
-  input logic [32-1:0] base_addr_r,
-  input logic [8-1:0] burst_len_r,
+  input logic [31:0] base_addr_r,
+  input logic [7:0] burst_len_r,
   input logic push_ready,
-  input logic [32-1:0] r_data,
-  input logic [2-1:0] r_id,
+  input logic [31:0] r_data,
+  input logic [1:0] r_id,
   input logic r_valid,
-  input logic [16-1:0] total_xfers_r,
-  output logic [32-1:0] ar_addr,
-  output logic [2-1:0] ar_burst,
-  output logic [2-1:0] ar_id,
-  output logic [8-1:0] ar_len,
-  output logic [3-1:0] ar_size,
+  input logic [15:0] total_xfers_r,
+  output logic [31:0] ar_addr,
+  output logic [1:0] ar_burst,
+  output logic [1:0] ar_id,
+  output logic [7:0] ar_len,
+  output logic [2:0] ar_size,
   output logic ar_valid,
-  output logic [32-1:0] push_data,
+  output logic [31:0] push_data,
   output logic push_valid,
   output logic r_ready,
-  output logic [16-1:0] thread_complete [4-1:0]
+  output logic [3:0] [15:0] thread_complete
 );
 
   always_comb begin
@@ -134,10 +134,10 @@ module _ThreadMm2s_threads (
   assign _ar_ch_grant_1 = _ar_ch_req_1 && !_ar_ch_grant_0;
   assign _ar_ch_grant_2 = _ar_ch_req_2 && !_ar_ch_grant_0 && !_ar_ch_grant_1;
   assign _ar_ch_grant_3 = _ar_ch_req_3 && !_ar_ch_grant_0 && !_ar_ch_grant_1 && !_ar_ch_grant_2;
-  logic [2-1:0] _t0_state = 0;
-  logic [2-1:0] _t1_state = 0;
-  logic [2-1:0] _t2_state = 0;
-  logic [2-1:0] _t3_state = 0;
+  logic [1:0] _t0_state = 0;
+  logic [1:0] _t1_state = 0;
+  logic [1:0] _t2_state = 0;
+  logic [1:0] _t3_state = 0;
   always_ff @(posedge clk) begin
     if (rst) begin
       _t0_state <= 0;
@@ -250,10 +250,10 @@ module _ThreadMm2s_threads (
       end
     end
   end
-  logic [8-1:0] _t0_loop_cnt = 0;
-  logic [8-1:0] _t1_loop_cnt = 0;
-  logic [8-1:0] _t2_loop_cnt = 0;
-  logic [8-1:0] _t3_loop_cnt = 0;
+  logic [7:0] _t0_loop_cnt = 0;
+  logic [7:0] _t1_loop_cnt = 0;
+  logic [7:0] _t2_loop_cnt = 0;
+  logic [7:0] _t3_loop_cnt = 0;
 
 endmodule
 
@@ -263,38 +263,38 @@ module ThreadMm2s #(
   input logic clk,
   input logic rst,
   input logic start,
-  input logic [16-1:0] total_xfers,
-  input logic [32-1:0] base_addr,
-  input logic [8-1:0] burst_len,
+  input logic [15:0] total_xfers,
+  input logic [31:0] base_addr,
+  input logic [7:0] burst_len,
   output logic done,
   output logic halted,
   output logic idle_out,
   output logic ar_valid,
   input logic ar_ready,
-  output logic [32-1:0] ar_addr,
-  output logic [2-1:0] ar_id,
-  output logic [8-1:0] ar_len,
-  output logic [3-1:0] ar_size,
-  output logic [2-1:0] ar_burst,
+  output logic [31:0] ar_addr,
+  output logic [1:0] ar_id,
+  output logic [7:0] ar_len,
+  output logic [2:0] ar_size,
+  output logic [1:0] ar_burst,
   input logic r_valid,
   output logic r_ready,
-  input logic [32-1:0] r_data,
-  input logic [2-1:0] r_id,
+  input logic [31:0] r_data,
+  input logic [1:0] r_id,
   input logic r_last,
   output logic push_valid,
   input logic push_ready,
-  output logic [32-1:0] push_data
+  output logic [31:0] push_data
 );
 
-  logic [16-1:0] total_xfers_r;
-  logic [32-1:0] base_addr_r;
-  logic [8-1:0] burst_len_r;
+  logic [15:0] total_xfers_r;
+  logic [31:0] base_addr_r;
+  logic [7:0] burst_len_r;
   logic active_r;
-  logic [17-1:0] tc01;
+  logic [16:0] tc01;
   assign tc01 = thread_complete[0] + thread_complete[1];
-  logic [17-1:0] tc23;
+  logic [16:0] tc23;
   assign tc23 = thread_complete[2] + thread_complete[3];
-  logic [18-1:0] total_complete;
+  logic [17:0] total_complete;
   assign total_complete = tc01 + tc23;
   logic all_done;
   assign all_done = active_r && total_xfers_r != 0 && total_complete == 18'($unsigned(total_xfers_r));
@@ -325,7 +325,7 @@ module ThreadMm2s #(
       end
     end
   end
-  logic [16-1:0] thread_complete [4-1:0];
+  logic [3:0] [15:0] thread_complete;
   _ThreadMm2s_threads _threads (
     .clk(clk),
     .rst(rst),

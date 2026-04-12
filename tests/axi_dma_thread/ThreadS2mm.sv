@@ -5,28 +5,28 @@ module _ThreadS2mm_threads (
   input logic clk,
   input logic rst,
   input logic aw_ready,
-  input logic [2-1:0] b_id,
+  input logic [1:0] b_id,
   input logic b_valid,
-  input logic [8-1:0] burst_len,
-  input logic [32-1:0] pop_data,
+  input logic [7:0] burst_len,
+  input logic [31:0] pop_data,
   input logic pop_valid,
   input logic start,
   input logic w_ready,
-  output logic [32-1:0] aw_addr,
-  output logic [2-1:0] aw_burst,
-  output logic [2-1:0] aw_id,
-  output logic [8-1:0] aw_len,
-  output logic [3-1:0] aw_size,
+  output logic [31:0] aw_addr,
+  output logic [1:0] aw_burst,
+  output logic [1:0] aw_id,
+  output logic [7:0] aw_len,
+  output logic [2:0] aw_size,
   output logic aw_valid,
   output logic b_ready,
   output logic pop_ready,
-  output logic [32-1:0] w_data,
+  output logic [31:0] w_data,
   output logic w_last,
-  output logic [4-1:0] w_strb,
+  output logic [3:0] w_strb,
   output logic w_valid,
-  output logic [16-1:0] aw_issued_r,
-  output logic [16-1:0] b_received_r,
-  output logic [32-1:0] next_addr_r
+  output logic [15:0] aw_issued_r,
+  output logic [15:0] b_received_r,
+  output logic [31:0] next_addr_r
 );
 
   always_comb begin
@@ -42,14 +42,14 @@ module _ThreadS2mm_threads (
     w_last = 0;
     w_strb = 0;
     w_valid = 0;
-    _done_ch_req_0 = 1'b0;
-    _done_ch_req_1 = 1'b0;
-    _done_ch_req_2 = 1'b0;
-    _done_ch_req_3 = 1'b0;
     _aw_ch_req_0 = 1'b0;
     _aw_ch_req_1 = 1'b0;
     _aw_ch_req_2 = 1'b0;
     _aw_ch_req_3 = 1'b0;
+    _done_ch_req_0 = 1'b0;
+    _done_ch_req_1 = 1'b0;
+    _done_ch_req_2 = 1'b0;
+    _done_ch_req_3 = 1'b0;
     _w_ch_req_0 = 1'b0;
     _w_ch_req_1 = 1'b0;
     _w_ch_req_2 = 1'b0;
@@ -677,18 +677,6 @@ module _ThreadS2mm_threads (
       _done_ch_req_3 = 1;
     end
   end
-  logic _done_ch_req_0;
-  logic _done_ch_grant_0;
-  logic _done_ch_req_1;
-  logic _done_ch_grant_1;
-  logic _done_ch_req_2;
-  logic _done_ch_grant_2;
-  logic _done_ch_req_3;
-  logic _done_ch_grant_3;
-  assign _done_ch_grant_0 = _done_ch_req_0;
-  assign _done_ch_grant_1 = _done_ch_req_1 && !_done_ch_grant_0;
-  assign _done_ch_grant_2 = _done_ch_req_2 && !_done_ch_grant_0 && !_done_ch_grant_1;
-  assign _done_ch_grant_3 = _done_ch_req_3 && !_done_ch_grant_0 && !_done_ch_grant_1 && !_done_ch_grant_2;
   logic _aw_ch_req_0;
   logic _aw_ch_grant_0;
   logic _aw_ch_req_1;
@@ -701,6 +689,18 @@ module _ThreadS2mm_threads (
   assign _aw_ch_grant_1 = _aw_ch_req_1 && !_aw_ch_grant_0;
   assign _aw_ch_grant_2 = _aw_ch_req_2 && !_aw_ch_grant_0 && !_aw_ch_grant_1;
   assign _aw_ch_grant_3 = _aw_ch_req_3 && !_aw_ch_grant_0 && !_aw_ch_grant_1 && !_aw_ch_grant_2;
+  logic _done_ch_req_0;
+  logic _done_ch_grant_0;
+  logic _done_ch_req_1;
+  logic _done_ch_grant_1;
+  logic _done_ch_req_2;
+  logic _done_ch_grant_2;
+  logic _done_ch_req_3;
+  logic _done_ch_grant_3;
+  assign _done_ch_grant_0 = _done_ch_req_0;
+  assign _done_ch_grant_1 = _done_ch_req_1 && !_done_ch_grant_0;
+  assign _done_ch_grant_2 = _done_ch_req_2 && !_done_ch_grant_0 && !_done_ch_grant_1;
+  assign _done_ch_grant_3 = _done_ch_req_3 && !_done_ch_grant_0 && !_done_ch_grant_1 && !_done_ch_grant_2;
   logic _w_ch_req_0;
   logic _w_ch_grant_0;
   logic _w_ch_req_1;
@@ -713,10 +713,10 @@ module _ThreadS2mm_threads (
   assign _w_ch_grant_1 = _w_ch_req_1 && !_w_ch_grant_0;
   assign _w_ch_grant_2 = _w_ch_req_2 && !_w_ch_grant_0 && !_w_ch_grant_1;
   assign _w_ch_grant_3 = _w_ch_req_3 && !_w_ch_grant_0 && !_w_ch_grant_1 && !_w_ch_grant_2;
-  logic [5-1:0] _t0_state = 0;
-  logic [5-1:0] _t1_state = 0;
-  logic [5-1:0] _t2_state = 0;
-  logic [5-1:0] _t3_state = 0;
+  logic [4:0] _t0_state = 0;
+  logic [4:0] _t1_state = 0;
+  logic [4:0] _t2_state = 0;
+  logic [4:0] _t3_state = 0;
   always_ff @(posedge clk) begin
     if ((!rst)) begin
       _t0_state <= 0;
@@ -1633,14 +1633,14 @@ module _ThreadS2mm_threads (
       end
     end
   end
-  logic [32-1:0] _t0_cnt = 0;
-  logic [8-1:0] _t0_loop_cnt = 0;
-  logic [32-1:0] _t1_cnt = 0;
-  logic [8-1:0] _t1_loop_cnt = 0;
-  logic [32-1:0] _t2_cnt = 0;
-  logic [8-1:0] _t2_loop_cnt = 0;
-  logic [32-1:0] _t3_cnt = 0;
-  logic [8-1:0] _t3_loop_cnt = 0;
+  logic [31:0] _t0_cnt = 0;
+  logic [7:0] _t0_loop_cnt = 0;
+  logic [31:0] _t1_cnt = 0;
+  logic [7:0] _t1_loop_cnt = 0;
+  logic [31:0] _t2_cnt = 0;
+  logic [7:0] _t2_loop_cnt = 0;
+  logic [31:0] _t3_cnt = 0;
+  logic [7:0] _t3_loop_cnt = 0;
 
 endmodule
 
@@ -1651,38 +1651,38 @@ module ThreadS2mm #(
   input logic clk,
   input logic rst,
   input logic start,
-  input logic [16-1:0] total_xfers,
-  input logic [32-1:0] base_addr,
-  input logic [8-1:0] burst_len,
+  input logic [15:0] total_xfers,
+  input logic [31:0] base_addr,
+  input logic [7:0] burst_len,
   output logic done,
   output logic halted,
   output logic idle_out,
   output logic aw_valid,
   input logic aw_ready,
-  output logic [32-1:0] aw_addr,
-  output logic [2-1:0] aw_id,
-  output logic [8-1:0] aw_len,
-  output logic [3-1:0] aw_size,
-  output logic [2-1:0] aw_burst,
+  output logic [31:0] aw_addr,
+  output logic [1:0] aw_id,
+  output logic [7:0] aw_len,
+  output logic [2:0] aw_size,
+  output logic [1:0] aw_burst,
   output logic w_valid,
   input logic w_ready,
-  output logic [32-1:0] w_data,
-  output logic [4-1:0] w_strb,
+  output logic [31:0] w_data,
+  output logic [3:0] w_strb,
   output logic w_last,
   input logic b_valid,
   output logic b_ready,
-  input logic [2-1:0] b_id,
+  input logic [1:0] b_id,
   input logic pop_valid,
   output logic pop_ready,
-  input logic [32-1:0] pop_data
+  input logic [31:0] pop_data
 );
 
   assign halted = 1'b0;
   assign idle_out = aw_issued_r == 0 && b_received_r == 0;
   assign done = b_received_r == total_xfers && b_received_r != 0;
-  logic [16-1:0] aw_issued_r;
-  logic [16-1:0] b_received_r;
-  logic [32-1:0] next_addr_r;
+  logic [15:0] aw_issued_r;
+  logic [15:0] b_received_r;
+  logic [31:0] next_addr_r;
   _ThreadS2mm_threads _threads (
     .clk(clk),
     .rst(rst),
