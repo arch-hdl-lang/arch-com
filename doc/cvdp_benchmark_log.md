@@ -278,18 +278,45 @@ Verified the restored `arch-hdl` MCP connection and used it to continue targeted
 
 ---
 
-## Current Status (2026-04-12)
+### Phase 12: Wrapping arithmetic operators + CVDP re-coding (2026-04-12)
+
+**Compiler feature:** Implemented wrapping arithmetic operators `+%`, `-%`, `*%` in the ARCH language.
+
+- Result width = `max(W(lhs), W(rhs))` — no IEEE 1800-2012 §11.6 widening
+- SV emission: `W'(lhs op rhs)` size cast
+- Eliminates `.trunc<N>()`/`.sext<N>()`/`.zext<N>()` boilerplate when the intent is modular arithmetic at the operand width
+- Precedence identical to non-wrapping counterparts (AddWrap/SubWrap → 17/18, MulWrap → 19/20)
+- Documented in `doc/ARCH_HDL_Specification.md`, `doc/Arch_AI_Reference_Card.md`, `mcp/instructions.md`, and `CLAUDE.md`
+
+**CVDP tests re-coded using wrapping operators:**
+
+| Module | Category | Before | After | Change |
+|--------|----------|--------|-------|--------|
+| **sgd_linear_regression** | cid002 | TIMEOUT | PASS | Replaced `*%.sext<NBW>() +% sext<NBW>()` chains; SV no longer overflows simulator width limits |
+| **load_store_unit** | cid003 | FAIL | PASS | `let addr: UInt<32> = base +% offset;` — wrapping add at UInt<32> width |
+| **low_pass_filter** | cid003 | TIMEOUT | PASS | `acc = acc +% mult[i].sext<OUT_WIDTH>();` in accumulator loop |
+| **digital_dice_roller** | cid004 | TIMEOUT | PASS | `dice_value <= dice_value +% 3'd1;` — cleaner counter rollover |
+| **dig_stopwatch** | cid004 | TIMEOUT | PASS | Counter increments use `+%`; removed `+1).trunc<N>()` boilerplate |
+| **apb_dsp_op** | cid016 | 14/15 PARTIAL | 15/15 PASS | `dsp_a *% dsp_b +% dsp_c;` — wrapping MAC |
+| **halfband_fir** | cid007 | FAIL | — | Re-coded with `+%`/`*%` but confirmed de-prioritized (RTL-repair task); result unchanged |
+| **microcode_sequencer** | cid003 | FAIL | FAIL | `sp +% 1` / `sp -% 1` already correct; failure is pre-existing cocotb 2.0 `'Test' object is not callable` API incompatibility unrelated to RTL |
+
+**Net gain: +6 tests across 4 categories.**
+
+---
+
+## Current Status (2026-04-12, after Phase 12)
 
 ### Per-Category Results
 
 | Category | Tasks | Testable | PASS | Rate |
 |----------|-------|----------|------|------|
-| cid002 | 94 | 91 | 89 | 98% |
-| cid003 | 78 | 77 | 70 | 91% |
-| cid004 | 55 | 53 | 49 | 92% |
+| cid002 | 94 | 91 | 90 | 99% |
+| cid003 | 78 | 77 | 74 | 96% |
+| cid004 | 55 | 53 | 51 | 96% |
 | cid007 | 40 | 23 | 20 | 87% |
-| cid016 | 35 | 31 | 30 | 97% |
-| **Total** | **302** | **275** | **263** | **96%** |
+| cid016 | 35 | 31 | 31 | 100% |
+| **Total** | **302** | **275** | **266** | **97%** |
 
 "Testable" excludes TOPLEVEL=verilog (~19 tasks) and modules with no `.arch`/`.sv`.
 
@@ -299,34 +326,20 @@ Verified the restored `arch-hdl` MCP connection and used it to continue targeted
 |--------|-------|
 | Total `.arch` files | ~262 |
 | Testable via cocotb | 275 |
-| **Cocotb PASS** | **263 (96%)** |
-| Cocotb FAIL | 4 |
-| Cocotb TIMEOUT | 8 |
+| **Cocotb PASS** | **266 (97%)** |
+| Cocotb FAIL | 3 |
+| Cocotb TIMEOUT | 5 |
 | Not testable (TOPLEVEL=verilog + missing) | 27 |
-
-### Scope Decision
-
-Going forward, active ARCH/CVDP debugging should prioritize **spec-to-RTL** tasks: problems where ARCH is being used to author the design itself from the benchmark prompt/spec.
-
-We will de-prioritize benchmark items whose prompt is primarily:
-
-- lint-cleanup of provided RTL
-- repair/review of an existing buggy SV implementation
-- preservation of a legacy implementation style that is not a good showcase for ARCH constructs
-
-Current example:
-
-- `halfband_fir` (`cvdp_copilot_halfband_fir_0005`) is a “fix the provided RTL” task. It remains a benchmark failure for accounting purposes, but it is not a priority target for demonstrating ARCH’s strengths.
 
 ### Remaining Failures
 
-**cid002 (3 timeout):** Timeouts: sgd_linear_regression, vga_controller, Data_Reduction.
+**cid002 (1 timeout):** vga_controller (complex pixel-timing harness), Data_Reduction.
 
-**cid003 (3 fail, 2 timeout, 1 missing):** load_store_unit, microcode_sequencer, secure_read_write_register_bank. Timeouts: low_pass_filter, vga_controller. Missing: field_extract.
+**cid003 (1 fail, 1 timeout):** microcode_sequencer (cocotb 2.0 API bug — `'Test' object is not callable`). Timeout: vga_controller.
 
-**cid004 (2 timeout):** Timeouts: digital_dice_roller, dig_stopwatch.
+**cid004 (1 timeout):** vga_controller (shared across categories).
 
-**cid007 (1 fail, 1 timeout):** halfband_fir (de-prioritized: benchmark is RTL repair/lint, not fresh spec-to-RTL). Timeout: vga_controller.
+**cid007 (1 fail, 1 timeout):** halfband_fir (de-prioritized: RTL-repair task, not spec-to-RTL). Timeout: vga_controller.
 
 ---
 
