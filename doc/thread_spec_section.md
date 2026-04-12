@@ -307,3 +307,87 @@ The single-driver rule applies per signal: a register may be driven by exactly o
 
 - `thread` lives inside a `module` and operates on the module's signals
 - `implement ... rtl` lives at file scope and defines how a bus method maps to signals
+
+## 20.12  Multi-Round Threads: Static Round-Robin Assignment
+
+When a thread must process more work items than there are threads (e.g. `total_xfers > NUM_OUTSTANDING`), the natural pattern is **static round-robin assignment**: thread `i` owns work items `i, i+N, i+2N, ...`.  No shared counter is needed — each thread tracks only its own completion count.
+
+### Pattern
+
+```arch
+// Per-thread completion counter (module-level reg)
+reg thread_complete: Vec<UInt<16>, NUM_OUTSTANDING> reset rst => 0;
+
+generate_for i in 0..NUM_OUTSTANDING-1
+  thread Worker_i on clk rising, rst high
+    // Wait condition: thread i's next item must be in range.
+    // Item index = i + thread_complete[i] * NUM_OUTSTANDING
+    wait until active and ((thread_complete[i] << $clog2(NUM_OUTSTANDING)) + i < total_work_r);
+
+    // ... do work for item index (thread_complete[i] * NUM_OUTSTANDING + i) ...
+
+    // Advance this thread's counter — no race, only thread i writes thread_complete[i]
+    thread_complete[i] <= (thread_complete[i] + 1).trunc<16>();
+  end thread Worker_i
+end generate_for
+```
+
+### Done detection
+
+```arch
+// Sum completions across all threads
+let tc01: UInt<17> = thread_complete[0] + thread_complete[1];
+let tc23: UInt<17> = thread_complete[2] + thread_complete[3];
+let total_complete: UInt<18> = tc01 + tc23;
+let all_done: Bool = active_r and (total_work_r != 0)
+    and (total_complete == total_work_r.zext<18>());
+```
+
+### Why not a shared counter?
+
+A shared counter (`xfers_issued_r`) appears simpler but has a race condition: all threads see `issued < total` simultaneously and all advance to the lock-request state in the same cycle.  By the time later threads acquire the lock, the counter may already be at `total`, but they are committed to issuing work — causing over-issuance and `done` never firing.
+
+Static round-robin avoids this entirely: thread `i` can only issue its own subset of items, and its local completion counter is only incremented by thread `i`.
+
+### Performance
+
+Static round-robin achieves the same throughput as a shared counter in the common case (work items ≥ NUM_OUTSTANDING), with zero arbitration overhead.  For unbalanced workloads where some items complete faster than others, threads with a higher assigned load finish last, but there is no work-stealing.  If load balancing is required, a shared counter with a larger lock scope (locking while reading AND incrementing the counter) is correct but limits parallelism.
+
+## 20.13  `do..until` Inside `lock` — No Dead Cycle
+
+The `do..until` loop inside a `lock` block has a subtle but important timing property: the first iteration fires **the same cycle the lock is granted**.
+
+```arch
+lock ar_ch
+  do
+    ar_valid = 1;
+    ar_addr  = addr_r;
+    ar_id    = i;
+  until ar_ready;    // exits when ar_ready is asserted
+end lock ar_ch
+```
+
+The compiler generates:
+- **Comb outputs** (`ar_valid`, `ar_addr`, `ar_id`) are gated by `grant_i` — they appear the cycle the grant is asserted
+- **State transition** fires when `grant_i && ar_ready` — same edge
+- If `ar_ready` is already high when the grant fires, the lock is acquired and released in a single cycle (zero lock latency for trivially ready slaves)
+
+Contrast with `wait until` after the lock header: `wait until` always adds a one-cycle pause between arriving at the state and observing the condition.  Use `do..until` when the loop body should drive combinationally while waiting.
+
+## 20.14  Trailing Seq Assigns After State Boundaries
+
+Seq assigns (`<=`) that appear immediately after a `do..until` or `wait until` statement are **automatically merged** into the preceding state's exit condition by the compiler.  This eliminates a dead cycle:
+
+```arch
+// Without merge: seq assign would fire a cycle AFTER the do..until exits
+do
+  ar_valid = 1;
+until ar_ready;
+ar_done_r <= 1;   // ← compiler merges this into the do..until exit guard
+```
+
+The merge fires `ar_done_r <= 1` on the same clock edge as the `ar_ready` handshake — no extra cycle.  This is only applied when:
+- The seq assign follows immediately after the `do..until` / `wait until` (no intervening comb assigns or control flow)
+- The state has a single, unconditional-except-for-condition transition
+
+If the seq assign appears after a multi-transition state (e.g. inside a `for` loop), the compiler uses the loop exit condition as the guard instead of every iteration.

@@ -2066,12 +2066,27 @@ fn partition_thread_body(
         let merged_into_exit = if cur_comb.is_empty() && !cur_seq.is_empty() {
             if let Some(last) = states.last_mut() {
                 if last.multi_transitions.len() == 2 {
-                    // Find the exit transition (the one targeting past the for group)
-                    // and add the trailing seq assigns guarded by exit condition
+                    // For-loop exit: guard trailing seq assigns by exit condition.
+                    // Fires on the same clock edge as the for-loop's exit transition.
                     let exit_cond = last.multi_transitions[1].0.clone();
                     for s in cur_seq.drain(..) {
                         last.seq_stmts.push(Stmt::IfElse(IfElse {
                             cond: exit_cond.clone(),
+                            then_stmts: vec![s],
+                            else_stmts: Vec::new(),
+                            unique: false,
+                            span,
+                        }));
+                    }
+                    true
+                } else if last.transition_cond.is_some() && last.multi_transitions.is_empty() {
+                    // State with a conditional transition (e.g. do..until, wait until):
+                    // guard trailing seq assigns by transition_cond so they fire on the
+                    // same clock edge as the state exit — not every cycle while waiting.
+                    let guard = last.transition_cond.clone().unwrap();
+                    for s in cur_seq.drain(..) {
+                        last.seq_stmts.push(Stmt::IfElse(IfElse {
+                            cond: guard.clone(),
                             then_stmts: vec![s],
                             else_stmts: Vec::new(),
                             unique: false,
@@ -2301,6 +2316,16 @@ fn lower_thread_for(
 
     let loop_back_target = 0;
 
+    // Widen the end expression to 32 bits to match the 32-bit loop counter.
+    // Without this, the generated SV emits `cnt >= end_expr` where cnt is
+    // 32-bit and end_expr may be narrower (e.g. UInt<8> from burst_len_r),
+    // causing Verilator WIDTHEXPAND warnings.
+    let end_32 = Expr::new(ExprKind::MethodCall(
+        Box::new(end.clone()),
+        Ident::new("zext".to_string(), span),
+        vec![Expr::new(ExprKind::Literal(LitKind::Dec(32)), span)],
+    ), span);
+
     if let Some(last) = result.last_mut() {
         if let Some(body_cond) = last.transition_cond.take() {
             // Last body state had a transition_cond (e.g. do..until).
@@ -2311,14 +2336,14 @@ fn lower_thread_for(
                 BinOp::And,
                 Box::new(body_cond.clone()),
                 Box::new(Expr::new(ExprKind::Binary(
-                    BinOp::Lt, Box::new(cnt_ident.clone()), Box::new(end.clone()),
+                    BinOp::Lt, Box::new(cnt_ident.clone()), Box::new(end_32.clone()),
                 ), span)),
             ), span);
             let exit_cond = Expr::new(ExprKind::Binary(
                 BinOp::And,
                 Box::new(body_cond),
                 Box::new(Expr::new(ExprKind::Binary(
-                    BinOp::Gte, Box::new(cnt_ident.clone()), Box::new(end.clone()),
+                    BinOp::Gte, Box::new(cnt_ident.clone()), Box::new(end_32.clone()),
                 ), span)),
             ), span);
 
@@ -2340,11 +2365,11 @@ fn lower_thread_for(
             // Last body state has no condition (unconditional advance) —
             // just add counter check as multi_transitions.
             let loop_cond = Expr::new(
-                ExprKind::Binary(BinOp::Lt, Box::new(cnt_ident.clone()), Box::new(end.clone())),
+                ExprKind::Binary(BinOp::Lt, Box::new(cnt_ident.clone()), Box::new(end_32.clone())),
                 span,
             );
             let exit_cond = Expr::new(
-                ExprKind::Binary(BinOp::Gte, Box::new(cnt_ident.clone()), Box::new(end.clone())),
+                ExprKind::Binary(BinOp::Gte, Box::new(cnt_ident.clone()), Box::new(end_32.clone())),
                 span,
             );
             last.seq_stmts.push(cnt_inc);
@@ -2429,6 +2454,22 @@ fn lower_thread_lock(
             ), span));
         } else if first.wait_cycles.is_none() && first.multi_transitions.is_empty() {
             first.transition_cond = Some(make_grant());
+        }
+
+        // Gate seq assigns in first state by grant.
+        // Seq assigns merged from trailing statements (e.g. xfers_issued_r++) use
+        // the pre-grant transition_cond as their guard, but without grant gating
+        // they would fire even when this thread hasn't won the arbitration.
+        // Wrap all first-state seq stmts in `if (grant) { ... }`.
+        let first_seq = std::mem::take(&mut first.seq_stmts);
+        if !first_seq.is_empty() {
+            first.seq_stmts.push(Stmt::IfElse(IfElse {
+                cond: make_grant(),
+                then_stmts: first_seq,
+                else_stmts: Vec::new(),
+                unique: false,
+                span,
+            }));
         }
     }
 
