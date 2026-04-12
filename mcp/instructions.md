@@ -36,6 +36,7 @@ Common mistakes to avoid:
 - One-line seq requires 'default seq' — without it, 'seq' must have 'on clk rising/falling'
 - Use 'package PkgName ... end package PkgName' to group shared enums/structs/functions/domains; import with 'use PkgName;' at file scope
 - Domains declared in a package are shared across files via 'use PkgName;'
+- Functions are legal at top level and inside packages; they are NOT legal inside modules
 - 'inside' operator: expr inside {val1, val2, lo..hi} — returns Bool, set membership
 - 'for i in {a, b, c}' — compile-time unrolled value-list iteration (inside comb/seq blocks)
 - 'unique if' and 'unique match' assert mutual exclusivity to synthesis (parallel mux): use 'unique if sel == 0 ... end if' or 'unique match opcode ... end match'; emits SV 'unique if' / 'unique case'
