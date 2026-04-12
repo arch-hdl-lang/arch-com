@@ -354,18 +354,26 @@ Two latch-based ICG instances (ClkGateDma) gate each channel clock when halted:
 
 The `tests/axi_dma_thread/` directory contains a thread-based rewrite of the MM2S and S2MM engines for direct comparison. Synthesized with Yosys `synth -flatten` to generic gates:
 
-| Module | Style | Total Cells | FFs | Logic cells | Notes |
-|--------|-------|-------------|-----|-------------|-------|
-| `FsmMm2sMulti` | FSM | 805 | 109 | 696 | Single state machine |
-| `ThreadMm2s` | Thread | 1431 | 97 | 1334 | 4 parallel state machines |
-| `FsmS2mmMulti` | FSM | 1002 | 119 | 883 | Single state machine |
-| `ThreadS2mm` | Thread | 4051 | 616 | 3435 | 4 parallel state machines |
+| Module | Style | Total Cells | FFs | MUX cells | Notes |
+|--------|-------|-------------|-----|-----------|-------|
+| `FsmMm2sMulti` | FSM | 805 | 109 | 33 | Single state machine |
+| `ThreadMm2s` (v1) | Thread | 1431 | 97 | 429 | 4 parallel threads, all drive AR+data outputs |
+| `ThreadMm2s` (v2) | Thread | **680** | 92 | **68** | Split: 1 ArIssuer + 4 RCollect threads |
+| `FsmS2mmMulti` | FSM | 1002 | 119 | — | Single state machine |
+| `ThreadS2mm` | Thread | 4051 | 616 | — | 4 parallel threads with fork/join |
 
-**MM2S analysis**: Thread version is 1.8× the cell count of the FSM version. This is reasonable: 4 parallel state machines (one per outstanding transaction) vs. one FSM. FFs are actually *lower* (97 vs 109) because the thread compiler infers 8-bit loop counters from `burst_len_r: UInt<8>` rather than defaulting to 32-bit.
+**MM2S v1 analysis**: 1.8× cell overhead. Root cause: 4 threads each drive `ar_addr` (32-bit) and `push_data` (32-bit), creating 4-way mux chains (429 MUX cells vs 33 in FSM). Plus a variable×variable multiply in the comb path to compute burst addresses from `thread_complete[i] * burst_len_r`.
 
-**S2MM analysis**: Thread version is 4× larger. The S2MM design uses `fork/join` for AW+W parallelism inside each thread, plus a dedicated B-channel lock — this multiplies state significantly across 4 threads.
+**MM2S v2 analysis (split ArIssuer)**: Thread version is now **16% smaller** than the FSM. Three architectural changes drove this:
+1. **Single ArIssuer thread** — one state machine drives all AR outputs; no 4-way mux on the 48-bit AR channel (ar_addr + ar_id + ar_len + ar_size + ar_burst).
+2. **`push_data = r_data` unconditional** — all threads push from the same source; hoisted to a module-level comb wire, eliminating the 4-way 32-bit mux.
+3. **Incremental address register** — `next_ar_addr_r` increments by `burst_len << 2` on each issue; no variable×variable multiply in the comb path.
 
-**Key compiler optimization (loop counter width inference)**: The thread compiler walks the for-loop end expression type map to infer the minimum counter width. `for i in 0..burst_len_r-1` where `burst_len_r: UInt<8>` generates an 8-bit counter (`logic [7:0] _loop_cnt`) instead of the naive 32-bit default. This cut ThreadMm2s from 2660 → 1431 cells (46% reduction).
+The 4 RCollect threads only drive 1-bit signals (`r_ready`, `push_valid`), so their combined mux overhead is negligible.
+
+**S2MM analysis**: Thread version is 4× larger. The S2MM design uses `fork/join` for AW+W parallelism inside each thread, plus a dedicated B-channel lock — this multiplies state significantly across 4 threads. Same split-issuer optimization applies but not yet implemented.
+
+**Key compiler optimization (loop counter width inference)**: The thread compiler walks the for-loop end expression type map to infer the minimum counter width. `for i in 0..burst_len_r-1` where `burst_len_r: UInt<8>` generates an 8-bit counter (`logic [7:0] _loop_cnt`) instead of the naive 32-bit default. This cut ThreadMm2s from 2660 → 1431 cells (46% reduction) before the architectural split reduced it further to 680.
 
 ---
 

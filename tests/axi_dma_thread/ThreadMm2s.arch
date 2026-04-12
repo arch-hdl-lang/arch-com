@@ -1,10 +1,14 @@
 // Thread-based multi-outstanding MM2S read engine.
-// Uses generate_for to unroll N identical read threads.
 //
-// Work assignment: thread i owns xfer indices i, i+4, i+8, ...
-//   (static round-robin — no shared counter, no race)
-// Each thread loops, driven by thread_complete[i] (its own completion count).
-// Done when sum of all thread_complete[i] == total_xfers.
+// Architecture: single ArIssuer thread + 4 RCollect threads.
+//   - ArIssuer: single state machine drives all AR outputs — no 4-way mux needed.
+//     Address maintained in next_ar_addr_r (increment-only, no multiply).
+//   - RCollect_i: each thread collects R beats for its assigned ID.
+//     Only drives 1-bit r_ready/push_valid — narrow mux overhead.
+//   - push_data = r_data unconditionally (all threads push same source).
+//
+// Work assignment: xfer k → AR ID k%4, handled by RCollect_{k%4}.
+// Done when sum of thread_complete[i] == total_xfers.
 
 module ThreadMm2s
   param NUM_OUTSTANDING: const = 4;
@@ -41,39 +45,43 @@ module ThreadMm2s
 
   // Control latches
   reg total_xfers_r: UInt<16> reset rst => 0;
-  reg base_addr_r:   UInt<32> reset rst => 0;
   reg burst_len_r:   UInt<8>  reset rst => 0;
   reg active_r:      Bool     reset rst => false;
 
-  // Per-thread completion counts: thread_complete[i] = rounds completed by thread i
-  // Written only by thread i → no multi-driver conflict
+  // AR issuer state: xfer_ctr_r counts issued ARs; next_ar_addr_r is current address.
+  // Incremental update — no multiply in comb path.
+  reg xfer_ctr_r:     UInt<16> reset rst => 0;
+  reg next_ar_addr_r: UInt<32> reset rst => 0;
+
+  // Per-thread completion counts (one per R collector thread)
   reg thread_complete: Vec<UInt<16>, 4> reset rst => 0;
 
-  // Total completions across all threads
+  // Done when all responses received
   let tc01: UInt<17> = thread_complete[0] + thread_complete[1];
   let tc23: UInt<17> = thread_complete[2] + thread_complete[3];
   let total_complete: UInt<18> = tc01 + tc23;
-
-  // Done when all xfers have completed
   let all_done: Bool = active_r and (total_xfers_r != 0)
       and (total_complete == total_xfers_r.zext<18>());
 
-  // Combinational active includes start pulse — zero startup latency
+  // Zero-latency active signal
   let active: Bool = active_r or (start and not active_r);
 
   comb
-    halted   = false;
-    idle_out = not active;
-    done = all_done;
+    halted    = false;
+    idle_out  = not active;
+    done      = all_done;
+    // push_data is always r_data — single driver, no per-thread mux needed
+    push_data = r_data;
   end comb
 
-  // Controller: latch config on start, clear on completion
+  // Controller: latch config on start, clear on done
   seq on clk rising
     if start and not active_r
-      total_xfers_r <= total_xfers;
-      base_addr_r   <= base_addr;
-      burst_len_r   <= burst_len;
-      active_r      <= true;
+      total_xfers_r  <= total_xfers;
+      burst_len_r    <= burst_len;
+      active_r       <= true;
+      xfer_ctr_r     <= 0;
+      next_ar_addr_r <= base_addr;
       thread_complete[0] <= 0; thread_complete[1] <= 0;
       thread_complete[2] <= 0; thread_complete[3] <= 0;
     end if
@@ -82,34 +90,39 @@ module ThreadMm2s
     end if
   end seq
 
-  resource ar_ch : mutex<round_robin>;
+  // ── AR issuer ─────────────────────────────────────────────────────────────
+  // Single thread drives all AR outputs — no resource lock, no 4-way mux.
+  // Issues one AR per beat, round-robin IDs 0..3.
+  thread ArIssuer on clk rising, rst high
+    wait until active and xfer_ctr_r < total_xfers_r;
+    do
+      ar_valid = 1;
+      ar_addr  = next_ar_addr_r;
+      ar_id    = xfer_ctr_r[1:0];
+      ar_len   = (burst_len_r - 1).trunc<8>();
+      ar_size  = 3'd2;
+      ar_burst = 2'd1;
+    until ar_ready;
+    xfer_ctr_r     <= (xfer_ctr_r + 1).trunc<16>();
+    next_ar_addr_r <= (next_ar_addr_r + (burst_len_r.zext<32>() << 2)).trunc<32>();
+  end thread ArIssuer
 
-  // Read threads — each handles xfer indices i, i+4, i+8, ...
-  // Thread i waits until its next xfer index < total_xfers_r, then issues AR.
+  // ── R collectors ─────────────────────────────────────────────────────────
+  // Each thread handles R beats for one ID. Wakes when AR has been issued for
+  // that ID (xfer_ctr_r > completed*4 + i). Only drives 1-bit signals —
+  // narrow mux overhead compared to driving 32-bit ar_addr.
   generate_for i in 0..3
-    thread ReadReq_i on clk rising, rst high
-      // Next xfer for this thread: i + thread_complete[i] * 4
-      // Wait condition: this xfer index must be within range
-      wait until active and ((thread_complete[i] << 2) + i < total_xfers_r);
-      // Serialise AR channel access
-      lock ar_ch
-        do
-          ar_valid = 1;
-          ar_addr = (base_addr_r + ((thread_complete[i].zext<32>() << 2) + i) * (burst_len_r.zext<32>() << 2)).trunc<32>();
-          ar_id = i;
-          ar_len = (burst_len_r - 1).trunc<8>(); ar_size = 3'd2; ar_burst = 2'd1;
-        until ar_ready;
-      end lock ar_ch
-      // Collect R beats for this thread's ID
+    thread RCollect_i on clk rising, rst high
+      // Wait until an AR with this ID has been issued but not yet responded
+      wait until active and ((thread_complete[i] << 2) + i < xfer_ctr_r);
+      // Collect burst beats for this ID
       for b in 0..burst_len_r-1
         do
-          r_ready = (r_id == i);
+          r_ready    = 1;
           push_valid = r_valid and (r_id == i);
-          push_data = r_data;
         until r_valid and r_id == i and push_ready;
       end for
-      // Increment per-thread counter (merged into for-loop exit — no dead cycle)
       thread_complete[i] <= (thread_complete[i] + 1).trunc<16>();
-    end thread ReadReq_i
+    end thread RCollect_i
   end generate_for
 end module ThreadMm2s
