@@ -350,6 +350,25 @@ Two latch-based ICG instances (ClkGateDma) gate each channel clock when halted:
 
 ---
 
+## Thread vs FSM Synthesis Comparison
+
+The `tests/axi_dma_thread/` directory contains a thread-based rewrite of the MM2S and S2MM engines for direct comparison. Synthesized with Yosys `synth -flatten` to generic gates:
+
+| Module | Style | Total Cells | FFs | Logic cells | Notes |
+|--------|-------|-------------|-----|-------------|-------|
+| `FsmMm2sMulti` | FSM | 805 | 109 | 696 | Single state machine |
+| `ThreadMm2s` | Thread | 1431 | 97 | 1334 | 4 parallel state machines |
+| `FsmS2mmMulti` | FSM | 1002 | 119 | 883 | Single state machine |
+| `ThreadS2mm` | Thread | 4051 | 616 | 3435 | 4 parallel state machines |
+
+**MM2S analysis**: Thread version is 1.8× the cell count of the FSM version. This is reasonable: 4 parallel state machines (one per outstanding transaction) vs. one FSM. FFs are actually *lower* (97 vs 109) because the thread compiler infers 8-bit loop counters from `burst_len_r: UInt<8>` rather than defaulting to 32-bit.
+
+**S2MM analysis**: Thread version is 4× larger. The S2MM design uses `fork/join` for AW+W parallelism inside each thread, plus a dedicated B-channel lock — this multiplies state significantly across 4 threads.
+
+**Key compiler optimization (loop counter width inference)**: The thread compiler walks the for-loop end expression type map to infer the minimum counter width. `for i in 0..burst_len_r-1` where `burst_len_r: UInt<8>` generates an 8-bit counter (`logic [7:0] _loop_cnt`) instead of the naive 32-bit default. This cut ThreadMm2s from 2660 → 1431 cells (46% reduction).
+
+---
+
 ## Status
 
 **Complete.** Simple DMA + Scatter-Gather modes working, all unit and integration tests passing. Synthesized through Yosys (Xilinx + Sky130) with OpenSTA timing/power analysis. The widest construct coverage of any ARCH case study.

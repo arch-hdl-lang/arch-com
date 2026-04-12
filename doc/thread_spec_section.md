@@ -113,7 +113,7 @@ thread on clk rising, rst_n low
 end thread
 ```
 
-The `for` loop with `wait` generates a counter register and a loop-body state.
+The `for` loop with `wait` generates a counter register (`_loop_cnt`) and a loop-body state. The compiler infers the minimum counter width from the end expression's type: if the end expression references a `UInt<N>` port or register, the counter is `UInt<N>` rather than the default `UInt<16>`. For example, `for i in 0..burst_len_r-1` where `burst_len_r: UInt<8>` generates an 8-bit counter instead of 16-bit, saving FFs in synthesized designs.
 
 ## 20.5  One-Shot Thread
 
