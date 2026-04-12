@@ -1,81 +1,67 @@
-use SecureRegBankPkg;
-
 fsm secure_read_write_register_bank
-  param P_ADDRESS_WIDTH: const = 8;
-  param P_DATA_WIDTH: const = 8;
-  param P_UNLOCK_CODE_0: const = 171;
-  param P_UNLOCK_CODE_1: const = 205;
+  param p_address_width: const = 8;
+  param p_data_width:    const = 8;
+  param p_unlock_code_0: const = 0xAB;
+  param p_unlock_code_1: const = 0xCD;
+  param MEM_DEPTH:       const = 1 << p_address_width;
 
-  port i_capture_pulse: in Clock<SysDomain>;
-  port i_rst_n: in Reset<Async, Low>;
-  port i_addr: in UInt<P_ADDRESS_WIDTH>;
-  port i_data_in: in UInt<P_DATA_WIDTH>;
-  port i_read_write_enable: in Bit;
-  port reg o_data_out: out UInt<P_DATA_WIDTH> reset i_rst_n=>0;
+  port i_capture_pulse:    in Clock<SysDomain>;
+  port i_rst_n:            in Reset<Async, Low>;
+  port i_addr:             in UInt<p_address_width>;
+  port i_data_in:          in UInt<p_data_width>;
+  port i_read_write_enable: in Bool;
+  port o_data_out:         out UInt<p_data_width>;
 
-  reg mem: Vec<UInt<P_DATA_WIDTH>, 256> reset i_rst_n=>0;
+  state [Locked, Code0Written, Unlocked]
+  default state Locked;
 
-  let is_write: Bool = i_read_write_enable == 0;
-  let code0_match: Bool = i_data_in == P_UNLOCK_CODE_0.trunc<P_DATA_WIDTH>();
-  let code1_match: Bool = i_data_in == P_UNLOCK_CODE_1.trunc<P_DATA_WIDTH>();
+  reg mem:       Vec<UInt<p_data_width>, MEM_DEPTH> reset i_rst_n => 0;
+  reg data_out_r: UInt<p_data_width> reset i_rst_n => 0;
 
-  state [LOCKED, GOT_CODE0, UNLOCKED]
-  default state LOCKED;
-  default seq on i_capture_pulse rising;
+  let is_write:     Bool = ~i_read_write_enable;
+  let addr_is_0:    Bool = i_addr == 0;
+  let addr_is_1:    Bool = i_addr == 1;
+  let addr_is_other: Bool = ~addr_is_0 & ~addr_is_1;
+  let match_code0:  Bool = i_data_in == p_unlock_code_0.trunc<p_data_width>();
+  let match_code1:  Bool = i_data_in == p_unlock_code_1.trunc<p_data_width>();
 
-  state LOCKED
-    seq
-      o_data_out <= 0;
-      if is_write
-        if i_addr == 0
-          mem[0] <= i_data_in;
-        elsif i_addr == 1
-          mem[1] <= i_data_in;
-        end if
-      end if
+  default
+    comb
+      o_data_out = data_out_r;
+    end comb
+  end default
+
+  state Locked
+    seq on i_capture_pulse rising
+      data_out_r <= 0;
     end seq
-    -> GOT_CODE0 when is_write & (i_addr == 0) & code0_match;
-  end state LOCKED
+    -> Code0Written when is_write & addr_is_0 & match_code0;
+  end state Locked
 
-  state GOT_CODE0
-    seq
-      o_data_out <= 0;
-      if is_write
-        if i_addr == 0
-          mem[0] <= i_data_in;
-        elsif i_addr == 1
-          mem[1] <= i_data_in;
-        end if
-      end if
+  state Code0Written
+    seq on i_capture_pulse rising
+      data_out_r <= 0;
     end seq
-    -> UNLOCKED when is_write & (i_addr == 1) & code1_match;
-    -> LOCKED when is_write & (i_addr == 1) & ~code1_match;
-    -> LOCKED when is_write & (i_addr != 0) & (i_addr != 1);
-    -> LOCKED when ~is_write;
-  end state GOT_CODE0
+    -> Unlocked when is_write & addr_is_1 & match_code1;
+    -> Locked   when ~(is_write & addr_is_1 & match_code1);
+  end state Code0Written
 
-  state UNLOCKED
-    seq
+  state Unlocked
+    seq on i_capture_pulse rising
       if is_write
-        if i_addr == 0
-          mem[0] <= i_data_in;
-          o_data_out <= 0;
-        elsif i_addr == 1
-          mem[1] <= i_data_in;
-          o_data_out <= 0;
-        else
+        if addr_is_other
           mem[i_addr] <= i_data_in;
-          o_data_out <= 0;
         end if
+        data_out_r <= 0;
+      elsif addr_is_other
+        data_out_r <= mem[i_addr];
       else
-        if (i_addr == 0) | (i_addr == 1)
-          o_data_out <= 0;
-        else
-          o_data_out <= mem[i_addr];
-        end if
+        data_out_r <= 0;
       end if
     end seq
-    -> UNLOCKED;
-  end state UNLOCKED
+    -> Code0Written when is_write & addr_is_0 & match_code0;
+    -> Locked       when is_write & addr_is_0 & ~match_code0;
+    -> Locked       when is_write & addr_is_1;
+  end state Unlocked
 
 end fsm secure_read_write_register_bank

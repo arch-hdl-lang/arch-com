@@ -52,7 +52,7 @@ module low_pass_filter
   comb
     acc = 0;
     for i in 0..NUM_TAPS-1
-      acc = (acc + mult[i].sext<OUT_WIDTH>()).trunc<OUT_WIDTH>();
+      acc = acc +% mult[i].sext<OUT_WIDTH>();
     end for
   end comb
 

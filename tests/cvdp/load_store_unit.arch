@@ -32,7 +32,7 @@ module load_store_unit
   reg is_store: Bool reset rst_n=>false;
 
   // Combinational address calculation
-  let addr: UInt<32> = (ex_if_addr_base_i + ex_if_addr_offset_i).trunc<32>();
+  let addr: UInt<32> = ex_if_addr_base_i +% ex_if_addr_offset_i;
   let addr_lsb: UInt<2> = addr[1:0];
 
   // Combinational byte enable and misaligned detection

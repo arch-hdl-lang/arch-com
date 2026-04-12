@@ -11,7 +11,7 @@ module digital_dice_roller
       if dice_value >= DICE_MAX
         dice_value <= 3'd1;
       else
-        dice_value <= (dice_value + 3'd1).trunc<3>();
+        dice_value <= dice_value +% 3'd1;
       end if
     end if
   end seq

@@ -62,7 +62,7 @@ module inter_block
     if counter_sub_out_reg == (SUB_BLOCKS - 1)
       next_counter_sub_out = 0;
     else
-      next_counter_sub_out = (counter_sub_out_reg + 1).trunc<NBW_SUB>();
+      next_counter_sub_out = counter_sub_out_reg +% 1;
     end if
 
     for b in 0..SUB_BLOCKS-1
@@ -111,7 +111,7 @@ module inter_block
         cnt_sub_blocks <= 0;
         start_latched <= 1;
       else
-        cnt_sub_blocks <= (cnt_sub_blocks + 1).trunc<NBW_SUB>();
+        cnt_sub_blocks <= cnt_sub_blocks +% 1;
       end if
     end if
 

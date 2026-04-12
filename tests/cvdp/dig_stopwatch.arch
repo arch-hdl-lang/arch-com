@@ -25,7 +25,7 @@ module dig_stopwatch
         clk_cnt <= 0;
         one_sec_pulse <= true;
       else
-        clk_cnt <= (clk_cnt + 1).trunc<32>();
+        clk_cnt <= clk_cnt +% 1;
       end if
     end if
 
@@ -38,10 +38,10 @@ module dig_stopwatch
           r_minutes <= 0;
           r_hour <= 1;
         else
-          r_minutes <= (r_minutes + 1).trunc<6>();
+          r_minutes <= r_minutes +% 1;
         end if
       else
-        r_seconds <= (r_seconds + 1).trunc<6>();
+        r_seconds <= r_seconds +% 1;
       end if
     end if
   end seq
@@ -56,11 +56,11 @@ module dig_stopwatch
           minutes = 0;
           hour    = 1;
         else
-          minutes = (r_minutes + 1).trunc<6>();
+          minutes = r_minutes +% 1;
           hour    = r_hour;
         end if
       else
-        seconds = (r_seconds + 1).trunc<6>();
+        seconds = r_seconds +% 1;
         minutes = r_minutes;
         hour    = r_hour;
       end if

@@ -125,9 +125,9 @@ module microcode_sequencer
     if dec_rst
       sp <= 0;
     elsif dec_push & ~sp_full
-      sp <= (sp + 1).trunc<5>();
+      sp <= sp +% 1;
     elsif dec_pop & ~sp_empty
-      sp <= (sp - 1).trunc<5>();
+      sp <= sp -% 1;
     end if
   end seq
 

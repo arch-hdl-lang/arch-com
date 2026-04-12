@@ -22,19 +22,19 @@ module sgd_linear_regression
   wire delta_b: SInt<NBW_DELTA>;
 
   comb
-    y_pred = ((w_out.sext<NBW_PRED>() * x_in.sext<NBW_PRED>()).trunc<NBW_PRED>() + b_out.sext<NBW_PRED>()).trunc<NBW_PRED>();
+    y_pred = w_out.sext<NBW_PRED>() *% x_in.sext<NBW_PRED>() +% b_out.sext<NBW_PRED>();
   end comb
 
   comb
-    error = (y_true.sext<NBW_ERROR>() - y_pred.sext<NBW_ERROR>()).trunc<NBW_ERROR>();
+    error = y_true.sext<NBW_ERROR>() -% y_pred.sext<NBW_ERROR>();
   end comb
 
   comb
-    delta_w = ((lr * error.sext<NBW_DELTA>()).trunc<NBW_DELTA>() * x_in.sext<NBW_DELTA>()).trunc<NBW_DELTA>();
+    delta_w = lr *% error.sext<NBW_DELTA>() *% x_in.sext<NBW_DELTA>();
   end comb
 
   comb
-    delta_b = (lr * error.sext<NBW_DELTA>()).trunc<NBW_DELTA>();
+    delta_b = lr *% error.sext<NBW_DELTA>();
   end comb
 
   seq

@@ -155,7 +155,7 @@ module apb_dsp_op
     // DSP write operand O: when control = 6
     if reg_ctrl == 6
       if reg_operand_o[DATA_WIDTH-1:6] == 0
-        sram_mem[reg_operand_o[5:0]] <= (dsp_a * dsp_b + dsp_c).trunc<DATA_WIDTH>();
+        sram_mem[reg_operand_o[5:0]] <= dsp_a *% dsp_b +% dsp_c;
       end if
     end if
   end seq

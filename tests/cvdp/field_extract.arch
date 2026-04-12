@@ -1,0 +1,64 @@
+fsm field_extract
+  port clk:       in Clock<SysDomain>;
+  port rst:       in Reset<Async, High>;
+  port vld:       in Bool;
+  port sof:       in Bool;
+  port eof:       in Bool;
+  port data:      in UInt<32>;
+  port ack:       out Bool;
+  port field:     out UInt<16>;
+  port field_vld: out Bool;
+
+  state [Idle, Extracting, Done, FailFinal]
+  default state Idle;
+
+  reg beat_cnt:    UInt<4>  reset rst => 0;
+  reg temp_field:  UInt<16> reset rst => 0;
+  reg field_r:     UInt<16> reset rst => 0;
+  reg field_vld_r: Bool     reset rst => false;
+
+  default
+    comb
+      ack       = true;
+      field     = field_r;
+      field_vld = field_vld_r;
+    end comb
+  end default
+
+  state Idle
+    seq on clk rising
+      beat_cnt <= 0;
+    end seq
+    -> Extracting when vld & sof;
+  end state Idle
+
+  state Extracting
+    seq on clk rising
+      if vld
+        if beat_cnt == 1
+          temp_field <= data[31:16];
+        else
+          beat_cnt <= (beat_cnt + 1).trunc<4>();
+        end if
+      end if
+    end seq
+    -> Done when vld & (beat_cnt == 1);
+  end state Extracting
+
+  state Done
+    seq on clk rising
+      field_r <= temp_field;
+      if eof
+        field_vld_r <= false;
+      else
+        field_vld_r <= true;
+      end if
+    end seq
+    -> FailFinal when eof;
+  end state Done
+
+  state FailFinal
+    -> Idle;
+  end state FailFinal
+
+end fsm field_extract
