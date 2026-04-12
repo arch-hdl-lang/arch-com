@@ -44,6 +44,30 @@ Add to `.claude/settings.json`:
 }
 ```
 
+## Usage with Codex CLI / VSCode
+
+Codex uses its own MCP registry in `~/.codex/config.toml`. The repo-local
+`.mcp.json` file is not sufficient on its own for Codex sessions.
+
+Register the server once with:
+
+```bash
+codex mcp add arch-hdl \
+  --env ARCH_BIN=/path/to/arch-com/target/release/arch \
+  -- /path/to/arch-com/mcp/.venv/bin/python3 \
+     /path/to/arch-com/mcp/arch_mcp_server.py
+```
+
+Verify it is registered:
+
+```bash
+codex mcp list
+codex mcp get arch-hdl
+```
+
+After registering, restart the Codex session / VSCode extension so the new
+session loads the server and exposes the MCP resources and tools.
+
 ## Available Resources
 
 | Resource | Description |
