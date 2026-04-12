@@ -37,7 +37,7 @@ module halfband_fir
   reg result_r: SInt<32> reset i_reset=>0;
   reg ce_r:     Bool     reset i_reset=>false;
 
-  // Extend both operands to 32 bits before multiply → 64-bit product, trunc to 32
+  // Extend both operands to 32 bits before multiply -> 64-bit product, trunc to 32
   let p0: SInt<32> = (tap0.sext<32>() * sr0.sext<32>()).trunc<32>();
   let p1: SInt<32> = (tap1.sext<32>() * sr1.sext<32>()).trunc<32>();
   let p2: SInt<32> = (tap2.sext<32>() * sr2.sext<32>()).trunc<32>();

@@ -304,6 +304,20 @@ Verified the restored `arch-hdl` MCP connection and used it to continue targeted
 | Cocotb TIMEOUT | 8 |
 | Not testable (TOPLEVEL=verilog + missing) | 27 |
 
+### Scope Decision
+
+Going forward, active ARCH/CVDP debugging should prioritize **spec-to-RTL** tasks: problems where ARCH is being used to author the design itself from the benchmark prompt/spec.
+
+We will de-prioritize benchmark items whose prompt is primarily:
+
+- lint-cleanup of provided RTL
+- repair/review of an existing buggy SV implementation
+- preservation of a legacy implementation style that is not a good showcase for ARCH constructs
+
+Current example:
+
+- `halfband_fir` (`cvdp_copilot_halfband_fir_0005`) is a “fix the provided RTL” task. It remains a benchmark failure for accounting purposes, but it is not a priority target for demonstrating ARCH’s strengths.
+
 ### Remaining Failures
 
 **cid002 (3 timeout):** Timeouts: sgd_linear_regression, vga_controller, Data_Reduction.
@@ -312,7 +326,7 @@ Verified the restored `arch-hdl` MCP connection and used it to continue targeted
 
 **cid004 (2 timeout):** Timeouts: digital_dice_roller, dig_stopwatch.
 
-**cid007 (1 fail, 1 timeout):** halfband_fir. Timeout: vga_controller.
+**cid007 (1 fail, 1 timeout):** halfband_fir (de-prioritized: benchmark is RTL repair/lint, not fresh spec-to-RTL). Timeout: vga_controller.
 
 ---
 
