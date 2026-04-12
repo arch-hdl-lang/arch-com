@@ -1,40 +1,40 @@
-// Data reduction: reduces DATA_COUNT elements of DATA_WIDTH bits each
-// into a single DATA_WIDTH-bit output using Bitwise_Reduction
 module Data_Reduction #(
   parameter int REDUCTION_OP = 0,
   parameter int DATA_WIDTH = 4,
-  parameter int DATA_COUNT = 4
+  parameter int DATA_COUNT = 4,
+  parameter int TOTAL_INPUT_WIDTH = DATA_WIDTH * DATA_COUNT
 ) (
-  input logic [DATA_WIDTH * DATA_COUNT-1:0] data_in,
+  input logic [TOTAL_INPUT_WIDTH-1:0] data_in,
   output logic [DATA_WIDTH-1:0] reduced_data_out
 );
 
-  // Perform reduction directly: for each output bit position,
-  // gather that bit from all elements and reduce
+  // One word per input element, extracted from flat data_in
+  logic [DATA_COUNT-1:0] [DATA_WIDTH-1:0] words;
+  // Running reductions across all DATA_COUNT words
   logic [DATA_WIDTH-1:0] and_result;
   logic [DATA_WIDTH-1:0] or_result;
   logic [DATA_WIDTH-1:0] xor_result;
+  // Unpack flat input into word array
   always_comb begin
-    // Initialize from first element
-    for (int b = 0; b <= DATA_WIDTH - 1; b++) begin
-      and_result[b +: 1] = data_in[b +: 1];
-      or_result[b +: 1] = data_in[b +: 1];
-      xor_result[b +: 1] = data_in[b +: 1];
-    end
-    // Reduce across remaining elements
-    for (int e = 1; e <= DATA_COUNT - 1; e++) begin
-      for (int b = 0; b <= DATA_WIDTH - 1; b++) begin
-        and_result[b +: 1] = and_result[b +: 1] & data_in[e * DATA_WIDTH + b +: 1];
-        or_result[b +: 1] = or_result[b +: 1] | data_in[e * DATA_WIDTH + b +: 1];
-        xor_result[b +: 1] = xor_result[b +: 1] ^ data_in[e * DATA_WIDTH + b +: 1];
-      end
+    for (int i = 0; i <= DATA_COUNT - 1; i++) begin
+      words[i] = data_in[i * DATA_WIDTH +: DATA_WIDTH];
     end
   end
-  // Select operation: 0=AND, 1=OR, 2=XOR, 3=NAND, 4=NOR, 5=XNOR, default=AND
+  // Fold words[0..DATA_COUNT-1] with AND, OR, and XOR simultaneously
   always_comb begin
-    if (REDUCTION_OP == 0) begin
-      reduced_data_out = and_result;
-    end else if (REDUCTION_OP == 1) begin
+    and_result = words[0];
+    or_result = words[0];
+    xor_result = words[0];
+    for (int i = 1; i <= DATA_COUNT - 1; i++) begin
+      and_result = and_result & words[i];
+      or_result = or_result | words[i];
+      xor_result = xor_result ^ words[i];
+    end
+  end
+  // Select output based on REDUCTION_OP parameter
+  //   0=AND  1=OR  2=XOR  3=NAND  4=NOR  5=XNOR  6/7=AND (default)
+  always_comb begin
+    if (REDUCTION_OP == 1) begin
       reduced_data_out = or_result;
     end else if (REDUCTION_OP == 2) begin
       reduced_data_out = xor_result;
