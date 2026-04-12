@@ -700,6 +700,18 @@ def extract_and_run(name_substr, sv_file=None):
                 pycontent
             )
             changed = True
+        # Fix cocotb 2.0: direct comparisons like `received_x == 1` fail when
+        # the harness first stores a raw DUT handle (`received_x = dut.sig`).
+        # Coerce common scalar capture variables to their integer value.
+        pycontent_scalar = _re2.sub(
+            r'^(\s*(?:received|actual)_[A-Za-z_]\w*\s*=\s*)dut\.([A-Za-z_]\w*)\s*$',
+            r'\1int(dut.\2.value)',
+            pycontent,
+            flags=_re2.MULTILINE,
+        )
+        if pycontent_scalar != pycontent:
+            pycontent = pycontent_scalar
+            changed = True
         if changed:
             open(pyfile, 'w').write(pycontent)
 

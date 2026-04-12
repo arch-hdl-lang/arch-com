@@ -1,68 +1,50 @@
 module gf_mac #(
-  parameter int WIDTH = 8
+  parameter int WIDTH = 8,
+  localparam int SEGMENTS = WIDTH / 8,
+  localparam int WIDTH_VALID = WIDTH > 0 && WIDTH % 8 == 0
 ) (
   input logic [WIDTH-1:0] a,
   input logic [WIDTH-1:0] b,
-  output logic [8-1:0] result
+  output logic [8-1:0] result,
+  output logic error_flag,
+  output logic valid_result
 );
 
-  // GF(2^8) multiply-accumulate: XOR of all segment-wise GF products
-  // Each segment is 8 bits. This implementation supports WIDTH=8 (1 segment).
-  // Irreducible polynomial: x^8 + x^4 + x^3 + x + 1 (0x11B), reduction byte 0x1B
-  // Segment 0: compute gf_mul(a[7:0], b[7:0]) using Russian peasant algorithm
-  logic [9-1:0] sh0s0;
-  logic [9-1:0] sh1s0;
-  logic [9-1:0] sh2s0;
-  logic [9-1:0] sh3s0;
-  logic [9-1:0] sh4s0;
-  logic [9-1:0] sh5s0;
-  logic [9-1:0] sh6s0;
-  logic [8-1:0] a0s0;
-  logic [8-1:0] a1s0;
-  logic [8-1:0] a2s0;
-  logic [8-1:0] a3s0;
-  logic [8-1:0] a4s0;
-  logic [8-1:0] a5s0;
-  logic [8-1:0] a6s0;
-  logic [8-1:0] p0s0;
-  logic [8-1:0] p1s0;
-  logic [8-1:0] p2s0;
-  logic [8-1:0] p3s0;
-  logic [8-1:0] p4s0;
-  logic [8-1:0] p5s0;
-  logic [8-1:0] p6s0;
-  logic [8-1:0] gfp0;
-  assign p0s0 = b[0:0] == 1 ? a[7:0] : 8'($unsigned(0));
-  assign sh0s0 = 9'($unsigned(a[7:0])) << 1;
-  assign a0s0 = sh0s0[8:8] == 1 ? sh0s0[7:0] ^ 8'($unsigned('h1B)) : sh0s0[7:0];
-  assign p1s0 = b[1:1] == 1 ? p0s0 ^ a0s0 : p0s0;
-  assign sh1s0 = 9'($unsigned(a0s0)) << 1;
-  assign a1s0 = sh1s0[8:8] == 1 ? sh1s0[7:0] ^ 8'($unsigned('h1B)) : sh1s0[7:0];
-  assign p2s0 = b[2:2] == 1 ? p1s0 ^ a1s0 : p1s0;
-  assign sh2s0 = 9'($unsigned(a1s0)) << 1;
-  assign a2s0 = sh2s0[8:8] == 1 ? sh2s0[7:0] ^ 8'($unsigned('h1B)) : sh2s0[7:0];
-  assign p3s0 = b[3:3] == 1 ? p2s0 ^ a2s0 : p2s0;
-  assign sh3s0 = 9'($unsigned(a2s0)) << 1;
-  assign a3s0 = sh3s0[8:8] == 1 ? sh3s0[7:0] ^ 8'($unsigned('h1B)) : sh3s0[7:0];
-  assign p4s0 = b[4:4] == 1 ? p3s0 ^ a3s0 : p3s0;
-  assign sh4s0 = 9'($unsigned(a3s0)) << 1;
-  assign a4s0 = sh4s0[8:8] == 1 ? sh4s0[7:0] ^ 8'($unsigned('h1B)) : sh4s0[7:0];
-  assign p5s0 = b[5:5] == 1 ? p4s0 ^ a4s0 : p4s0;
-  assign sh5s0 = 9'($unsigned(a4s0)) << 1;
-  assign a5s0 = sh5s0[8:8] == 1 ? sh5s0[7:0] ^ 8'($unsigned('h1B)) : sh5s0[7:0];
-  assign p6s0 = b[6:6] == 1 ? p5s0 ^ a5s0 : p5s0;
-  assign sh6s0 = 9'($unsigned(a5s0)) << 1;
-  assign a6s0 = sh6s0[8:8] == 1 ? sh6s0[7:0] ^ 8'($unsigned('h1B)) : sh6s0[7:0];
-  assign gfp0 = b[7:7] == 1 ? p6s0 ^ a6s0 : p6s0;
-  assign result = gfp0;
+  function automatic logic [8-1:0] xtime(input logic [8-1:0] a);
+    logic [8-1:0] shifted = a << 1;
+    return a[7:7] == 1 ? shifted ^ 8'd27 : shifted;
+  endfunction
+  
+  function automatic logic [8-1:0] gf_mul8(input logic [8-1:0] x, input logic [8-1:0] y);
+    logic [8-1:0] mut_a0 = x;
+    logic [8-1:0] mut_a1 = xtime(mut_a0);
+    logic [8-1:0] mut_a2 = xtime(mut_a1);
+    logic [8-1:0] mut_a3 = xtime(mut_a2);
+    logic [8-1:0] mut_a4 = xtime(mut_a3);
+    logic [8-1:0] mut_a5 = xtime(mut_a4);
+    logic [8-1:0] mut_a6 = xtime(mut_a5);
+    logic [8-1:0] mut_a7 = xtime(mut_a6);
+    logic [8-1:0] part0 = y[0:0] == 1 ? mut_a0 : 0;
+    logic [8-1:0] part1 = y[1:1] == 1 ? mut_a1 : 0;
+    logic [8-1:0] part2 = y[2:2] == 1 ? mut_a2 : 0;
+    logic [8-1:0] part3 = y[3:3] == 1 ? mut_a3 : 0;
+    logic [8-1:0] part4 = y[4:4] == 1 ? mut_a4 : 0;
+    logic [8-1:0] part5 = y[5:5] == 1 ? mut_a5 : 0;
+    logic [8-1:0] part6 = y[6:6] == 1 ? mut_a6 : 0;
+    logic [8-1:0] part7 = y[7:7] == 1 ? mut_a7 : 0;
+    return part0 ^ part1 ^ part2 ^ part3 ^ part4 ^ part5 ^ part6 ^ part7;
+  endfunction
+  
+  always_comb begin
+    result = 0;
+    error_flag = ~WIDTH_VALID;
+    valid_result = WIDTH_VALID;
+    if (WIDTH_VALID) begin
+      for (int i = 0; i <= SEGMENTS - 1; i++) begin
+        result = result ^ gf_mul8(a[i * 8 +: 8], b[i * 8 +: 8]);
+      end
+    end
+  end
 
 endmodule
 
-// iteration 0: accumulate a if b[0]=1
-// iteration 1
-// iteration 2
-// iteration 3
-// iteration 4
-// iteration 5
-// iteration 6
-// iteration 7

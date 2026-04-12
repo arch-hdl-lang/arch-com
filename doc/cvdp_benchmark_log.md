@@ -263,9 +263,22 @@ Fixed 8 failing cid002 tasks (6 unique modules), bringing cid002 from 87% to 96%
 
 **Also fixed:** interrupt_controller — wrote full ARCH implementation from spec (priority map, vector table, masking). 7/7 parametrizations pass.
 
+### Phase 11: MCP restart follow-up fixes (2026-04-12)
+
+Verified the restored `arch-hdl` MCP connection and used it to continue targeted CVDP debugging.
+
+**Fixes:**
+
+| Module | Bug | Fix | Tests |
+|--------|-----|-----|-------|
+| **apb_dsp_op** | cocotb 2.0 harness compared raw DUT handles (`dut.PREADY`, `dut.PSLVERR`) against integers, causing a false failure on the invalid-address case | Updated `run_cvdp.py` to coerce common `received_*` / `actual_*` scalar captures to `int(dut.sig.value)` before comparison | PASS (15/15) |
+| **gf_mac** | Placeholder implementation only handled one 8-bit lane and lacked status outputs required by the second benchmark variant | Rewrote as a parameterized byte-lane XOR reduction over `WIDTH`, added `error_flag`/`valid_result`, and gated invalid non-multiple-of-8 widths | PASS (`cvdp_copilot_gf_multiplier_0013`, `cvdp_copilot_gf_multiplier_0021`) |
+| **digital_dice_roller** | Historical timeout was runner-throughput related, not functional RTL breakage | Re-ran under the repaired cocotb environment; benchmark `cvdp_copilot_digital_dice_roller_0001` passes but takes ~552s wall-clock because the harness simulates a 10ms button hold | PASS (`cvdp_copilot_digital_dice_roller_0001`) |
+| **inter_block** | Placeholder RTL exposed the wrong interface and unrelated behavior | Replaced with a 4-sub-block pipeline matching the harness model: `intra_block` instances, sticky start delay chain, exposed `out_data_aux` / `start_intra` / `counter_sub_out`, and corrected the first output-enable cycle | PASS |
+
 ---
 
-## Current Status (2026-04-10)
+## Current Status (2026-04-12)
 
 ### Per-Category Results
 
@@ -276,7 +289,7 @@ Fixed 8 failing cid002 tasks (6 unique modules), bringing cid002 from 87% to 96%
 | cid004 | 55 | 53 | 49 | 92% |
 | cid007 | 40 | 23 | 20 | 87% |
 | cid016 | 35 | 31 | 30 | 97% |
-| **Total** | **302** | **275** | **258** | **94%** |
+| **Total** | **302** | **275** | **263** | **96%** |
 
 "Testable" excludes TOPLEVEL=verilog (~19 tasks) and modules with no `.arch`/`.sv`.
 
@@ -286,22 +299,20 @@ Fixed 8 failing cid002 tasks (6 unique modules), bringing cid002 from 87% to 96%
 |--------|-------|
 | Total `.arch` files | ~262 |
 | Testable via cocotb | 275 |
-| **Cocotb PASS** | **258 (94%)** |
-| Cocotb FAIL | 8 |
-| Cocotb TIMEOUT | 9 |
+| **Cocotb PASS** | **263 (96%)** |
+| Cocotb FAIL | 4 |
+| Cocotb TIMEOUT | 8 |
 | Not testable (TOPLEVEL=verilog + missing) | 27 |
 
 ### Remaining Failures
 
 **cid002 (3 timeout):** Timeouts: sgd_linear_regression, vga_controller, Data_Reduction.
 
-**cid003 (3 fail, 3 timeout, 1 missing):** load_store_unit, microcode_sequencer, secure_read_write_register_bank. Timeouts: digital_dice_roller, low_pass_filter, vga_controller. Missing: field_extract.
+**cid003 (3 fail, 2 timeout, 1 missing):** load_store_unit, microcode_sequencer, secure_read_write_register_bank. Timeouts: low_pass_filter, vga_controller. Missing: field_extract.
 
-**cid004 (2 fail, 2 timeout):** gf_mac(2). Timeouts: digital_dice_roller, dig_stopwatch.
+**cid004 (2 timeout):** Timeouts: digital_dice_roller, dig_stopwatch.
 
-**cid007 (2 fail, 1 timeout):** halfband_fir, inter_block. Timeout: vga_controller.
-
-**cid016 (1 partial):** apb_dsp_op (14/15 — PSLVERR timing edge case).
+**cid007 (1 fail, 1 timeout):** halfband_fir. Timeout: vga_controller.
 
 ---
 

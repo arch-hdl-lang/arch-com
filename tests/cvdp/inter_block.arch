@@ -3,35 +3,131 @@ module inter_block
   param SUB_BLOCKS:    const = 4;
   param DATA_WIDTH:    const = ROW_COL_WIDTH * ROW_COL_WIDTH;
 
-  port clk:       in  Clock<SysDomain>;
-  port rst_n:     in  Reset<Async, Low>;
-  port i_valid:   in  Bool;
-  port in_data:   in  UInt<DATA_WIDTH>;
-  port out_data:  out UInt<DATA_WIDTH>;
+  local param CHUNK: const = 8;
+  local param OUT_CYCLES: const = DATA_WIDTH / CHUNK;
+  local param NBW_SUB: const = $clog2(SUB_BLOCKS);
+
+  port clk:             in  Clock<SysDomain>;
+  port rst_n:           in  Reset<Async, Low>;
+  port i_valid:         in  Bool;
+  port in_data:         in  UInt<DATA_WIDTH>;
+  port out_data:        out UInt<DATA_WIDTH>;
+  port out_data_aux:    out Vec<UInt<DATA_WIDTH>, SUB_BLOCKS>;
+  port start_intra:     out Bool;
+  port counter_sub_out: out UInt<NBW_SUB>;
 
   default seq on clk rising;
 
-  reg data_reg: UInt<DATA_WIDTH> reset rst_n=>0;
-  reg blk_cnt:  UInt<8>          reset rst_n=>0;
+  reg cnt_sub_blocks: UInt<NBW_SUB> reset rst_n => 0;
+  reg start_latched: Bool reset rst_n => 0;
+  reg start_pipe: UInt<6> reset rst_n => 0;
+  reg in_data_reg: Vec<UInt<DATA_WIDTH>, SUB_BLOCKS> reset rst_n => 0;
+  reg out_data_aux_reg: Vec<UInt<DATA_WIDTH>, SUB_BLOCKS> reset rst_n => 0;
+  reg out_data_reg: UInt<DATA_WIDTH> reset rst_n => 0;
+  reg counter_sub_out_reg: UInt<NBW_SUB> reset rst_n => 0;
 
-  wire xor_pattern: UInt<DATA_WIDTH>;
+  wire intra_out: Vec<UInt<DATA_WIDTH>, SUB_BLOCKS>;
+  wire next_out_data_aux: Vec<UInt<DATA_WIDTH>, SUB_BLOCKS>;
+  wire next_counter_sub_out: UInt<NBW_SUB>;
+  wire next_start_head: Bool;
+  wire next_out_data_selected: UInt<DATA_WIDTH>;
+
+  inst ib0: intra_block
+    param ROW_COL_WIDTH = ROW_COL_WIDTH;
+    in_data <- in_data_reg[0];
+    out_data -> intra_out[0];
+  end inst ib0
+
+  inst ib1: intra_block
+    param ROW_COL_WIDTH = ROW_COL_WIDTH;
+    in_data <- in_data_reg[1];
+    out_data -> intra_out[1];
+  end inst ib1
+
+  inst ib2: intra_block
+    param ROW_COL_WIDTH = ROW_COL_WIDTH;
+    in_data <- in_data_reg[2];
+    out_data -> intra_out[2];
+  end inst ib2
+
+  inst ib3: intra_block
+    param ROW_COL_WIDTH = ROW_COL_WIDTH;
+    in_data <- in_data_reg[3];
+    out_data -> intra_out[3];
+  end inst ib3
 
   comb
-    for i in 0..DATA_WIDTH/8-1
-      xor_pattern[8*i+7:8*i] = blk_cnt;
+    next_start_head = start_latched or (i_valid and (cnt_sub_blocks == (SUB_BLOCKS - 1)));
+
+    if counter_sub_out_reg == (SUB_BLOCKS - 1)
+      next_counter_sub_out = 0;
+    else
+      next_counter_sub_out = (counter_sub_out_reg + 1).trunc<NBW_SUB>();
+    end if
+
+    for b in 0..SUB_BLOCKS-1
+      next_out_data_aux[b] = out_data_aux_reg[b];
+    end for
+
+    if start_pipe[4]
+      for b in 0..SUB_BLOCKS-1
+        next_out_data_aux[b] = 0;
+      end for
+
+      for i in 0..OUT_CYCLES-1
+        next_out_data_aux[0][i * CHUNK + CHUNK - 1 : i * CHUNK] =
+          intra_out[i % SUB_BLOCKS][i * CHUNK + CHUNK - 1 : i * CHUNK];
+        next_out_data_aux[1][i * CHUNK + CHUNK - 1 : i * CHUNK] =
+          intra_out[i % SUB_BLOCKS][((i + 1) % OUT_CYCLES) * CHUNK + CHUNK - 1 : ((i + 1) % OUT_CYCLES) * CHUNK];
+        next_out_data_aux[2][i * CHUNK + CHUNK - 1 : i * CHUNK] =
+          intra_out[i % SUB_BLOCKS][((i + 2) % OUT_CYCLES) * CHUNK + CHUNK - 1 : ((i + 2) % OUT_CYCLES) * CHUNK];
+        next_out_data_aux[3][i * CHUNK + CHUNK - 1 : i * CHUNK] =
+          intra_out[i % SUB_BLOCKS][((i + 3) % OUT_CYCLES) * CHUNK + CHUNK - 1 : ((i + 3) % OUT_CYCLES) * CHUNK];
+      end for
+    end if
+
+    if next_counter_sub_out == 0
+      next_out_data_selected = next_out_data_aux[0];
+    elsif next_counter_sub_out == 1
+      next_out_data_selected = next_out_data_aux[1];
+    elsif next_counter_sub_out == 2
+      next_out_data_selected = next_out_data_aux[2];
+    else
+      next_out_data_selected = next_out_data_aux[3];
+    end if
+
+    out_data = out_data_reg;
+    start_intra = start_pipe[4];
+    counter_sub_out = counter_sub_out_reg;
+    for b in 0..SUB_BLOCKS-1
+      out_data_aux[b] = out_data_aux_reg[b];
     end for
   end comb
 
-  let out_data = data_reg;
-
   seq
     if i_valid
-      data_reg <= in_data ^ xor_pattern;
-      if blk_cnt == (SUB_BLOCKS - 1).zext<8>()
-        blk_cnt <= 0;
+      in_data_reg[cnt_sub_blocks] <= in_data;
+      if cnt_sub_blocks == (SUB_BLOCKS - 1)
+        cnt_sub_blocks <= 0;
+        start_latched <= 1;
       else
-        blk_cnt <= (blk_cnt + 1).trunc<8>();
+        cnt_sub_blocks <= (cnt_sub_blocks + 1).trunc<NBW_SUB>();
       end if
+    end if
+
+    start_pipe[5] <= start_pipe[4];
+    start_pipe[4] <= start_pipe[3];
+    start_pipe[3] <= start_pipe[2];
+    start_pipe[2] <= start_pipe[1];
+    start_pipe[1] <= next_start_head;
+    start_pipe[0] <= next_start_head;
+
+    if start_pipe[4]
+      for b in 0..SUB_BLOCKS-1
+        out_data_aux_reg[b] <= next_out_data_aux[b];
+      end for
+      counter_sub_out_reg <= next_counter_sub_out;
+      out_data_reg <= next_out_data_selected;
     end if
   end seq
 end module inter_block
