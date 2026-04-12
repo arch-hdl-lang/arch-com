@@ -2946,14 +2946,19 @@ impl<'a> Codegen<'a> {
                 let l = self.emit_pipeline_stage_expr_str(lhs, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
                 let r = self.emit_pipeline_stage_expr_str(rhs, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
                 let op_str = match op {
-                    BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
+                    BinOp::Add | BinOp::AddWrap => "+", BinOp::Sub | BinOp::SubWrap => "-",
+                    BinOp::Mul | BinOp::MulWrap => "*",
                     BinOp::Div => "/", BinOp::Mod => "%", BinOp::Eq => "==",
                     BinOp::Neq => "!=", BinOp::Lt => "<", BinOp::Gt => ">",
                     BinOp::Lte => "<=", BinOp::Gte => ">=", BinOp::And => "&&",
                     BinOp::Or => "||", BinOp::BitAnd => "&", BinOp::BitOr => "|",
                     BinOp::BitXor => "^", BinOp::Shl => "<<", BinOp::Shr => ">>",
                 };
-                format!("({l} {op_str} {r})")
+                if matches!(op, BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap) {
+                    format!("($bits({l}) > $bits({r}) ? $bits({l}) : $bits({r}))'({l} {op_str} {r})")
+                } else {
+                    format!("({l} {op_str} {r})")
+                }
             }
             ExprKind::Unary(op, operand) => {
                 let o = self.emit_pipeline_stage_expr_str(operand, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
@@ -3100,14 +3105,19 @@ impl<'a> Codegen<'a> {
                 let l = self.emit_pipeline_expr_str(lhs, stage_names, stage_regs, port_names);
                 let r = self.emit_pipeline_expr_str(rhs, stage_names, stage_regs, port_names);
                 let op_str = match op {
-                    BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
+                    BinOp::Add | BinOp::AddWrap => "+", BinOp::Sub | BinOp::SubWrap => "-",
+                    BinOp::Mul | BinOp::MulWrap => "*",
                     BinOp::Div => "/", BinOp::Mod => "%", BinOp::Eq => "==",
                     BinOp::Neq => "!=", BinOp::Lt => "<", BinOp::Gt => ">",
                     BinOp::Lte => "<=", BinOp::Gte => ">=", BinOp::And => "&&",
                     BinOp::Or => "||", BinOp::BitAnd => "&", BinOp::BitOr => "|",
                     BinOp::BitXor => "^", BinOp::Shl => "<<", BinOp::Shr => ">>",
                 };
-                format!("({l} {op_str} {r})")
+                if matches!(op, BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap) {
+                    format!("($bits({l}) > $bits({r}) ? $bits({l}) : $bits({r}))'({l} {op_str} {r})")
+                } else {
+                    format!("({l} {op_str} {r})")
+                }
             }
             ExprKind::Unary(op, operand) => {
                 let o = self.emit_pipeline_expr_str(operand, stage_names, stage_regs, port_names);
@@ -3561,8 +3571,8 @@ impl<'a> Codegen<'a> {
     /// Values follow IEEE 1800-2017 Table 11-2, simplified to relevant tiers.
     fn sv_binop_prec(op: &BinOp) -> u8 {
         match op {
-            BinOp::Mul | BinOp::Div | BinOp::Mod => 12,
-            BinOp::Add | BinOp::Sub => 11,
+            BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::MulWrap => 12,
+            BinOp::Add | BinOp::Sub | BinOp::AddWrap | BinOp::SubWrap => 11,
             BinOp::Shl | BinOp::Shr => 10,
             BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => 9,
             BinOp::Eq | BinOp::Neq => 8,
@@ -3586,6 +3596,66 @@ impl<'a> Codegen<'a> {
 
     fn emit_expr_str(&self, expr: &Expr) -> String {
         self.emit_expr_prec(expr, 0)
+    }
+
+    /// Infer the SV bit-width of an expression as a string constant expression.
+    /// Used to emit the width cast for wrapping arithmetic operators (+%, -%, *%).
+    fn infer_sv_width_str(&self, expr: &Expr) -> String {
+        match &expr.kind {
+            ExprKind::Ident(name) => {
+                if let Some(scope) = self.symbols.module_scopes.get(&self.current_construct) {
+                    if let Some((sym, _)) = scope.get(name.as_str()) {
+                        let te_opt: Option<&TypeExpr> = match sym {
+                            Symbol::Port(p) => Some(&p.ty),
+                            Symbol::Reg(r) => Some(&r.ty),
+                            _ => None,
+                        };
+                        if let Some(te) = te_opt {
+                            match te {
+                                TypeExpr::UInt(w) | TypeExpr::SInt(w) => return self.emit_expr_str(w),
+                                TypeExpr::Bool | TypeExpr::Bit => return "1".to_string(),
+                                _ => {}
+                            }
+                        }
+                        // For Let bindings, look up in AST
+                        if matches!(sym, Symbol::Let(_)) {
+                            for item in &self.source.items {
+                                if let Item::Module(m) = item {
+                                    if m.name.name == self.current_construct {
+                                        for bi in &m.body {
+                                            if let ModuleBodyItem::LetBinding(lb) = bi {
+                                                if lb.name.name == *name {
+                                                    if let Some(ty) = &lb.ty {
+                                                        match ty {
+                                                            TypeExpr::UInt(w) | TypeExpr::SInt(w) => return self.emit_expr_str(w),
+                                                            TypeExpr::Bool | TypeExpr::Bit => return "1".to_string(),
+                                                            _ => {}
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                format!("$bits({})", self.emit_expr_str(expr))
+            }
+            ExprKind::Literal(LitKind::Sized(w, _)) => w.to_string(),
+            ExprKind::MethodCall(_, method, args)
+                if matches!(method.name.as_str(), "trunc" | "zext" | "sext") =>
+            {
+                args.first()
+                    .map(|w| self.emit_expr_str(w))
+                    .unwrap_or_else(|| format!("$bits({})", self.emit_expr_str(expr)))
+            }
+            ExprKind::Cast(_, ty) => self
+                .type_expr_data_width(ty)
+                .unwrap_or_else(|| format!("$bits({})", self.emit_expr_str(expr))),
+            _ => format!("$bits({})", self.emit_expr_str(expr)),
+        }
     }
 
     /// Wrap a width expression in parens if it contains operators,
@@ -3645,9 +3715,9 @@ impl<'a> Codegen<'a> {
                     ">>"
                 };
                 let op_str = match op {
-                    BinOp::Add => "+",
-                    BinOp::Sub => "-",
-                    BinOp::Mul => "*",
+                    BinOp::Add | BinOp::AddWrap => "+",
+                    BinOp::Sub | BinOp::SubWrap => "-",
+                    BinOp::Mul | BinOp::MulWrap => "*",
                     BinOp::Div => "/",
                     BinOp::Mod => "%",
                     BinOp::Eq => "==",
@@ -3664,7 +3734,15 @@ impl<'a> Codegen<'a> {
                     BinOp::Shl => "<<",
                     BinOp::Shr => shr_str,
                 };
-                format!("{l} {op_str} {r}")
+                if matches!(op, BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap) {
+                    let lw = self.infer_sv_width_str(lhs);
+                    let rw = self.infer_sv_width_str(rhs);
+                    let w = if lw == rw { lw } else { format!("({lw} > {rw} ? {lw} : {rw})") };
+                    let wp = Self::paren_width(&w);
+                    format!("{wp}'({l} {op_str} {r})")
+                } else {
+                    format!("{l} {op_str} {r}")
+                }
             }
             ExprKind::Unary(op, operand) => {
                 // Unary has prec 14 — wrap child only if it's a binary/ternary

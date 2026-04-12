@@ -67,8 +67,8 @@ module ThreadS2mm
           aw_len   = (burst_len - 1).trunc<8>();
           aw_size  = 3'd2;
           aw_burst = 2'd1;
-          aw_issued_r <= aw_issued_r + 1;
-          next_addr_r <= next_addr_r + (burst_len.zext<32>() << 2);
+          aw_issued_r <= (aw_issued_r + 1).trunc<16>();
+          next_addr_r <= (next_addr_r + (burst_len.zext<32>() << 2)).trunc<32>();
           wait until aw_ready;
           aw_valid = 0;
         end lock aw_ch
@@ -95,7 +95,7 @@ module ThreadS2mm
 
       // Mark complete
       lock done_ch
-        b_received_r <= b_received_r + 1;
+        b_received_r <= (b_received_r + 1).trunc<16>();
         wait 1 cycle;
       end lock done_ch
     end thread WriteReq_i

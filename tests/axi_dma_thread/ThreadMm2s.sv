@@ -161,15 +161,15 @@ module _ThreadMm2s_threads (
       end
       if (_t0_state == 2) begin
         if (r_valid && r_id == 0 && push_ready) begin
-          _t0_loop_cnt <= 32'(_t0_loop_cnt + 32'd1);
+          _t0_loop_cnt <= 8'(_t0_loop_cnt + 8'd1);
         end
-        if (r_valid && r_id == 0 && push_ready && _t0_loop_cnt >= 32'($unsigned(burst_len_r - 1))) begin
+        if (r_valid && r_id == 0 && push_ready && _t0_loop_cnt >= 8'(burst_len_r - 1)) begin
           thread_complete[0] <= 16'(thread_complete[0] + 1);
         end
-        if (r_valid && r_id == 0 && push_ready && _t0_loop_cnt < 32'($unsigned(burst_len_r - 1))) begin
+        if (r_valid && r_id == 0 && push_ready && _t0_loop_cnt < 8'(burst_len_r - 1)) begin
           _t0_state <= 2;
         end
-        if (r_valid && r_id == 0 && push_ready && _t0_loop_cnt >= 32'($unsigned(burst_len_r - 1))) begin
+        if (r_valid && r_id == 0 && push_ready && _t0_loop_cnt >= 8'(burst_len_r - 1)) begin
           _t0_state <= 0;
         end
       end
@@ -186,15 +186,15 @@ module _ThreadMm2s_threads (
       end
       if (_t1_state == 2) begin
         if (r_valid && r_id == 1 && push_ready) begin
-          _t1_loop_cnt <= 32'(_t1_loop_cnt + 32'd1);
+          _t1_loop_cnt <= 8'(_t1_loop_cnt + 8'd1);
         end
-        if (r_valid && r_id == 1 && push_ready && _t1_loop_cnt >= 32'($unsigned(burst_len_r - 1))) begin
+        if (r_valid && r_id == 1 && push_ready && _t1_loop_cnt >= 8'(burst_len_r - 1)) begin
           thread_complete[1] <= 16'(thread_complete[1] + 1);
         end
-        if (r_valid && r_id == 1 && push_ready && _t1_loop_cnt < 32'($unsigned(burst_len_r - 1))) begin
+        if (r_valid && r_id == 1 && push_ready && _t1_loop_cnt < 8'(burst_len_r - 1)) begin
           _t1_state <= 2;
         end
-        if (r_valid && r_id == 1 && push_ready && _t1_loop_cnt >= 32'($unsigned(burst_len_r - 1))) begin
+        if (r_valid && r_id == 1 && push_ready && _t1_loop_cnt >= 8'(burst_len_r - 1)) begin
           _t1_state <= 0;
         end
       end
@@ -211,15 +211,15 @@ module _ThreadMm2s_threads (
       end
       if (_t2_state == 2) begin
         if (r_valid && r_id == 2 && push_ready) begin
-          _t2_loop_cnt <= 32'(_t2_loop_cnt + 32'd1);
+          _t2_loop_cnt <= 8'(_t2_loop_cnt + 8'd1);
         end
-        if (r_valid && r_id == 2 && push_ready && _t2_loop_cnt >= 32'($unsigned(burst_len_r - 1))) begin
+        if (r_valid && r_id == 2 && push_ready && _t2_loop_cnt >= 8'(burst_len_r - 1)) begin
           thread_complete[2] <= 16'(thread_complete[2] + 1);
         end
-        if (r_valid && r_id == 2 && push_ready && _t2_loop_cnt < 32'($unsigned(burst_len_r - 1))) begin
+        if (r_valid && r_id == 2 && push_ready && _t2_loop_cnt < 8'(burst_len_r - 1)) begin
           _t2_state <= 2;
         end
-        if (r_valid && r_id == 2 && push_ready && _t2_loop_cnt >= 32'($unsigned(burst_len_r - 1))) begin
+        if (r_valid && r_id == 2 && push_ready && _t2_loop_cnt >= 8'(burst_len_r - 1)) begin
           _t2_state <= 0;
         end
       end
@@ -236,24 +236,24 @@ module _ThreadMm2s_threads (
       end
       if (_t3_state == 2) begin
         if (r_valid && r_id == 3 && push_ready) begin
-          _t3_loop_cnt <= 32'(_t3_loop_cnt + 32'd1);
+          _t3_loop_cnt <= 8'(_t3_loop_cnt + 8'd1);
         end
-        if (r_valid && r_id == 3 && push_ready && _t3_loop_cnt >= 32'($unsigned(burst_len_r - 1))) begin
+        if (r_valid && r_id == 3 && push_ready && _t3_loop_cnt >= 8'(burst_len_r - 1)) begin
           thread_complete[3] <= 16'(thread_complete[3] + 1);
         end
-        if (r_valid && r_id == 3 && push_ready && _t3_loop_cnt < 32'($unsigned(burst_len_r - 1))) begin
+        if (r_valid && r_id == 3 && push_ready && _t3_loop_cnt < 8'(burst_len_r - 1)) begin
           _t3_state <= 2;
         end
-        if (r_valid && r_id == 3 && push_ready && _t3_loop_cnt >= 32'($unsigned(burst_len_r - 1))) begin
+        if (r_valid && r_id == 3 && push_ready && _t3_loop_cnt >= 8'(burst_len_r - 1)) begin
           _t3_state <= 0;
         end
       end
     end
   end
-  logic [32-1:0] _t0_loop_cnt = 0;
-  logic [32-1:0] _t1_loop_cnt = 0;
-  logic [32-1:0] _t2_loop_cnt = 0;
-  logic [32-1:0] _t3_loop_cnt = 0;
+  logic [8-1:0] _t0_loop_cnt = 0;
+  logic [8-1:0] _t1_loop_cnt = 0;
+  logic [8-1:0] _t2_loop_cnt = 0;
+  logic [8-1:0] _t3_loop_cnt = 0;
 
 endmodule
 

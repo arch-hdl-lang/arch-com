@@ -1191,7 +1191,8 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
     let mut all_thread_seq: Vec<Stmt> = Vec::new();
 
     for (ti, (_tname, t)) in threads.iter().enumerate() {
-        let mut raw_states = match partition_thread_body(&t.body, sp) {
+        let cnt_width = infer_for_cnt_width(&t.body, &type_map);
+        let mut raw_states = match partition_thread_body(&t.body, sp, cnt_width) {
             Ok(s) => s,
             Err(e) => { errors.push(e); continue; }
         };
@@ -1472,7 +1473,7 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
 
     // ── Per-thread counter registers ─────────────────────────────────────
     for (ti, (_, t)) in threads.iter().enumerate() {
-        let has_counter = t.body.iter().any(|s| matches!(s, ThreadStmt::WaitCycles(..)));
+        let has_counter = thread_has_wait_cycles(&t.body);
         if has_counter {
             merged_body.push(ModuleBodyItem::RegDecl(RegDecl {
                 name: Ident::new(format!("_t{}_cnt", ti), sp),
@@ -1483,9 +1484,10 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
         }
         let has_for = thread_has_for(&t.body);
         if has_for {
+            let for_cnt_width = infer_for_cnt_width(&t.body, &type_map);
             merged_body.push(ModuleBodyItem::RegDecl(RegDecl {
                 name: Ident::new(format!("_t{}_loop_cnt", ti), sp),
-                ty: TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(32)), sp))),
+                ty: TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(for_cnt_width as u64)), sp))),
                 init: Some(make_zero_expr(sp)),
                 reset: RegReset::None, span: sp,
             }));
@@ -1827,7 +1829,107 @@ struct ThreadFsmState {
     multi_transitions: Vec<(Expr, usize)>,
 }
 
+/// Extract the bit width of a UInt literal type expression (e.g. `UInt<8>` → 8).
+fn type_expr_uint_width_literal(ty: &TypeExpr) -> Option<u32> {
+    match ty {
+        TypeExpr::UInt(w) | TypeExpr::SInt(w) => {
+            if let ExprKind::Literal(LitKind::Dec(n)) = &w.kind {
+                Some(*n as u32)
+            } else {
+                None
+            }
+        }
+        TypeExpr::Bool | TypeExpr::Bit => Some(1),
+        _ => None,
+    }
+}
+
+/// Infer the minimum UInt bit width needed for a `for` loop end expression.
+/// Walks the expression tree with a simple heuristic:
+///   - Ident → look up in type_map, extract UInt width
+///   - Binary(Sub|Add, a, _) → width of a (subtract/add by small literals doesn't change range)
+///   - MethodCall(inner, "trunc"|"zext"|"sext", [width_lit]) → use width literal
+///   - Literal(Dec|Hex) → ceil(log2(v+1))
+///   - Default → 16 (covers burst lengths up to 65535)
+fn infer_expr_uint_width(expr: &Expr, type_map: &HashMap<String, SignalInfo>) -> u32 {
+    match &expr.kind {
+        ExprKind::Ident(name) => {
+            type_map.get(name)
+                .and_then(|si| type_expr_uint_width_literal(&si.ty))
+                .unwrap_or(16)
+        }
+        ExprKind::Binary(BinOp::Sub | BinOp::Add | BinOp::BitAnd | BinOp::BitOr, a, _) => {
+            infer_expr_uint_width(a, type_map)
+        }
+        ExprKind::MethodCall(inner, method, args) => {
+            let method_name = method.name.as_str();
+            if matches!(method_name, "trunc" | "zext" | "sext") {
+                // First arg is the width literal
+                if let Some(w_expr) = args.first() {
+                    if let ExprKind::Literal(LitKind::Dec(n)) = &w_expr.kind {
+                        return *n as u32;
+                    }
+                }
+            }
+            infer_expr_uint_width(inner, type_map)
+        }
+        ExprKind::Literal(LitKind::Dec(v)) => {
+            if *v == 0 { 1 } else { (u64::BITS - v.leading_zeros()) as u32 }
+        }
+        _ => 16,
+    }
+}
+
+/// Find the minimum counter width across all `for` loops in a thread body.
+/// Returns 16 if no for loops are found or width cannot be determined.
+fn infer_for_cnt_width(stmts: &[ThreadStmt], type_map: &HashMap<String, SignalInfo>) -> u32 {
+    let w = infer_for_cnt_width_inner(stmts, type_map);
+    if w == 0 { 16 } else { w }
+}
+
+/// Inner helper: returns 0 when no for loops found (avoids poisoning max() with the default).
+fn infer_for_cnt_width_inner(stmts: &[ThreadStmt], type_map: &HashMap<String, SignalInfo>) -> u32 {
+    let mut max_width: u32 = 0;
+    for stmt in stmts {
+        match stmt {
+            ThreadStmt::For { end, .. } => {
+                // Only the end expression determines the counter width.
+                // Do NOT recurse into the for-loop body — no nested for loops,
+                // and recursing would find zero for-loops there, returning 0.
+                let w = infer_expr_uint_width(end, type_map);
+
+                max_width = max_width.max(w);
+            }
+            ThreadStmt::Lock { body, .. } | ThreadStmt::DoUntil { body, .. } => {
+                max_width = max_width.max(infer_for_cnt_width_inner(body, type_map));
+            }
+            ThreadStmt::ForkJoin(branches, _) => {
+                for br in branches {
+                    max_width = max_width.max(infer_for_cnt_width_inner(br, type_map));
+                }
+            }
+            ThreadStmt::IfElse(ie) => {
+                max_width = max_width.max(infer_for_cnt_width_inner(&ie.then_stmts, type_map));
+                max_width = max_width.max(infer_for_cnt_width_inner(&ie.else_stmts, type_map));
+            }
+            _ => {}
+        }
+    }
+    max_width
+}
+
 /// Check if any ThreadStmt in a slice contains a wait (recursing into if/else).
+fn thread_has_wait_cycles(stmts: &[ThreadStmt]) -> bool {
+    stmts.iter().any(|s| match s {
+        ThreadStmt::WaitCycles(..) => true,
+        ThreadStmt::IfElse(ie) => thread_has_wait_cycles(&ie.then_stmts) || thread_has_wait_cycles(&ie.else_stmts),
+        ThreadStmt::ForkJoin(branches, _) => branches.iter().any(|br| thread_has_wait_cycles(br)),
+        ThreadStmt::Lock { body, .. } | ThreadStmt::DoUntil { body, .. } => thread_has_wait_cycles(body),
+        ThreadStmt::For { body, .. } => thread_has_wait_cycles(body),
+        _ => false,
+    })
+}
+
 fn thread_has_for(stmts: &[ThreadStmt]) -> bool {
     stmts.iter().any(|s| match s {
         ThreadStmt::For { .. } => true,
@@ -1853,6 +1955,7 @@ fn contains_wait(stmts: &[ThreadStmt]) -> bool {
 fn partition_thread_body(
     body: &[ThreadStmt],
     span: Span,
+    cnt_width: u32,
 ) -> Result<Vec<ThreadFsmState>, CompileError> {
     let mut states: Vec<ThreadFsmState> = Vec::new();
     let mut cur_comb: Vec<CombStmt> = Vec::new();
@@ -1932,7 +2035,7 @@ fn partition_thread_body(
                     });
                 }
                 // Lower fork/join via product-state expansion
-                let mut fork_states = lower_fork_join(branches, *sp)?;
+                let mut fork_states = lower_fork_join(branches, *sp, cnt_width)?;
                 // Adjust multi_transitions targets: product indices → global state indices
                 let fork_base = states.len();
                 for fs in &mut fork_states {
@@ -1980,7 +2083,7 @@ fn partition_thread_body(
                         });
                     }
                 }
-                let mut for_states = lower_thread_for(var, start, end, body, *span)?;
+                let mut for_states = lower_thread_for(var, start, end, body, *span, cnt_width)?;
                 // Adjust multi_transitions targets (relative → absolute)
                 let for_base = states.len();
                 let for_len = for_states.len();
@@ -2007,7 +2110,7 @@ fn partition_thread_body(
                         multi_transitions: Vec::new(),
                     });
                 }
-                let lock_states = lower_thread_lock(&resource.name, body, *span)?;
+                let lock_states = lower_thread_lock(&resource.name, body, *span, cnt_width)?;
                 states.extend(lock_states);
             }
             ThreadStmt::DoUntil { body, cond, span: _ } => {
@@ -2132,6 +2235,7 @@ fn partition_thread_body(
 fn lower_fork_join(
     branches: &[Vec<ThreadStmt>],
     span: Span,
+    cnt_width: u32,
 ) -> Result<Vec<ThreadFsmState>, CompileError> {
     if branches.len() < 2 {
         return Err(CompileError::general("fork/join requires at least 2 branches", span));
@@ -2140,7 +2244,7 @@ fn lower_fork_join(
     // Partition each branch, append a "done" hold state to each
     let mut branch_states: Vec<Vec<ThreadFsmState>> = Vec::new();
     for (i, br) in branches.iter().enumerate() {
-        let mut states = partition_thread_body(br, span).map_err(|e| {
+        let mut states = partition_thread_body(br, span, cnt_width).map_err(|e| {
             CompileError::general(&format!("in fork branch {}: {}", i, e), span)
         })?;
         if states.is_empty() {
@@ -2269,7 +2373,9 @@ fn lower_thread_for(
     end: &Expr,
     body: &[ThreadStmt],
     span: Span,
+    cnt_width: u32,
 ) -> Result<Vec<ThreadFsmState>, CompileError> {
+
     // Replace loop variable with `_loop_cnt` in the body
     let cnt = "_loop_cnt";
     let rewritten_body: Vec<ThreadStmt> = body.iter()
@@ -2277,7 +2383,7 @@ fn lower_thread_for(
         .collect();
 
     // Partition the rewritten body into states
-    let body_states = partition_thread_body(&rewritten_body, span)?;
+    let body_states = partition_thread_body(&rewritten_body, span, cnt_width)?;
     if body_states.is_empty() {
         return Err(CompileError::general(
             "for loop body must contain at least one wait statement",
@@ -2305,9 +2411,9 @@ fn lower_thread_for(
             ExprKind::MethodCall(
                 Box::new(Expr::new(ExprKind::Binary(BinOp::Add,
                     Box::new(cnt_ident.clone()),
-                    Box::new(Expr::new(ExprKind::Literal(LitKind::Sized(32, 1)), span))), span)),
+                    Box::new(Expr::new(ExprKind::Literal(LitKind::Sized(cnt_width, 1)), span))), span)),
                 Ident::new("trunc".to_string(), span),
-                vec![Expr::new(ExprKind::Literal(LitKind::Dec(32)), span)],
+                vec![Expr::new(ExprKind::Literal(LitKind::Dec(cnt_width as u64)), span)],
             ),
             span,
         ),
@@ -2316,14 +2422,14 @@ fn lower_thread_for(
 
     let loop_back_target = 0;
 
-    // Widen the end expression to 32 bits to match the 32-bit loop counter.
-    // Without this, the generated SV emits `cnt >= end_expr` where cnt is
-    // 32-bit and end_expr may be narrower (e.g. UInt<8> from burst_len_r),
-    // causing Verilator WIDTHEXPAND warnings.
-    let end_32 = Expr::new(ExprKind::MethodCall(
+    // Match the end expression to cnt_width bits for the loop counter comparison.
+    // Use trunc (not zext) because for-loop end expressions often come from
+    // `burst_len_r - 1` where subtraction widens UInt<8> → UInt<9>.
+    // trunc<cnt_width> is safe: the semantically meaningful range fits in cnt_width bits.
+    let end_w = Expr::new(ExprKind::MethodCall(
         Box::new(end.clone()),
-        Ident::new("zext".to_string(), span),
-        vec![Expr::new(ExprKind::Literal(LitKind::Dec(32)), span)],
+        Ident::new("trunc".to_string(), span),
+        vec![Expr::new(ExprKind::Literal(LitKind::Dec(cnt_width as u64)), span)],
     ), span);
 
     if let Some(last) = result.last_mut() {
@@ -2336,14 +2442,14 @@ fn lower_thread_for(
                 BinOp::And,
                 Box::new(body_cond.clone()),
                 Box::new(Expr::new(ExprKind::Binary(
-                    BinOp::Lt, Box::new(cnt_ident.clone()), Box::new(end_32.clone()),
+                    BinOp::Lt, Box::new(cnt_ident.clone()), Box::new(end_w.clone()),
                 ), span)),
             ), span);
             let exit_cond = Expr::new(ExprKind::Binary(
                 BinOp::And,
                 Box::new(body_cond),
                 Box::new(Expr::new(ExprKind::Binary(
-                    BinOp::Gte, Box::new(cnt_ident.clone()), Box::new(end_32.clone()),
+                    BinOp::Gte, Box::new(cnt_ident.clone()), Box::new(end_w.clone()),
                 ), span)),
             ), span);
 
@@ -2365,11 +2471,11 @@ fn lower_thread_for(
             // Last body state has no condition (unconditional advance) —
             // just add counter check as multi_transitions.
             let loop_cond = Expr::new(
-                ExprKind::Binary(BinOp::Lt, Box::new(cnt_ident.clone()), Box::new(end_32.clone())),
+                ExprKind::Binary(BinOp::Lt, Box::new(cnt_ident.clone()), Box::new(end_w.clone())),
                 span,
             );
             let exit_cond = Expr::new(
-                ExprKind::Binary(BinOp::Gte, Box::new(cnt_ident.clone()), Box::new(end_32.clone())),
+                ExprKind::Binary(BinOp::Gte, Box::new(cnt_ident.clone()), Box::new(end_w.clone())),
                 span,
             );
             last.seq_stmts.push(cnt_inc);
@@ -2392,6 +2498,7 @@ fn lower_thread_lock(
     resource_name: &str,
     body: &[ThreadStmt],
     span: Span,
+    cnt_width: u32,
 ) -> Result<Vec<ThreadFsmState>, CompileError> {
     let req_signal = format!("_{}_req", resource_name);
     let grant_signal = format!("_{}_grant", resource_name);
@@ -2403,7 +2510,7 @@ fn lower_thread_lock(
         span,
     });
 
-    let mut body_states = partition_thread_body(body, span)?;
+    let mut body_states = partition_thread_body(body, span, cnt_width)?;
 
     // Add req=1 to all body states
     for bs in &mut body_states {
@@ -2646,7 +2753,8 @@ fn lower_single_thread(
     let sp = t.span;
 
     // Step 1: Partition body into states
-    let raw_states = partition_thread_body(&t.body, sp)?;
+    let cnt_width = infer_for_cnt_width(&t.body, type_map);
+    let raw_states = partition_thread_body(&t.body, sp, cnt_width)?;
 
     // Step 2: Analyze signals
     let (comb_driven, seq_driven, all_read) = collect_thread_signals(&t.body);
@@ -2994,12 +3102,13 @@ fn lower_single_thread(
         });
     }
 
-    // Loop counter register (if any for-loop with wait is used)
+    // Loop counter register (if any for-loop with wait is used).
+    // Width is inferred from the for-loop end expression to avoid over-wide counters.
     let has_for_loop = thread_has_for(&t.body);
     if has_for_loop {
         fsm_regs.push(RegDecl {
             name: Ident::new("_loop_cnt".to_string(), sp),
-            ty: TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(32)), sp))),
+            ty: TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(cnt_width as u64)), sp))),
             init: Some(Expr::new(ExprKind::Literal(LitKind::Dec(0)), sp)),
             reset: RegReset::None,
             span: sp,
