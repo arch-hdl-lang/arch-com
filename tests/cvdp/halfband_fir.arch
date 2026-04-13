@@ -1,90 +1,174 @@
 module halfband_fir
-  param IW:    const = 16;
-  param OW:    const = 32;
-  param TW:    const = 12;
-  param NTAPS: const = 7;
+  param LGNTAPS:     const = 7;
+  param IW:          const = 16;
+  param TW:          const = 12;
+  param OW:          const = IW + TW + LGNTAPS;
+  param NTAPS:       const = 107;
+  param OPT_HILBERT: const = 0;
+
+  param LGNMEM:     const = LGNTAPS - 1;
+  param LGNCOEF:    const = LGNMEM - 1;
+  param HALFTAPS:   const = NTAPS / 2;
+  param QTRTAPS:    const = HALFTAPS / 2 + 1;
+  param DMEMSZ:     const = 1 << LGNMEM;
+  param CMEMSZ:     const = 1 << LGNCOEF;
+  // Pre-folded constants to avoid SV width mismatches
+  param HALFTAPS_M1: const = HALFTAPS - 1;        // = 52, fits in LGNMEM bits
+  param QTRTAPS_M1:  const = QTRTAPS - 1;          // = 26, for last_tap_warn
+  param QTRTAPS_M2:  const = QTRTAPS - 2;          // = 25, for last_data_warn
 
   port i_clk:    in Clock<SysDomain>;
   port i_reset:  in Reset<Sync, High>;
   port i_tap_wr: in Bool;
-  port i_tap:    in UInt<12>;
+  port i_tap:    in UInt<TW>;
   port i_ce:     in Bool;
-  port i_sample: in SInt<16>;
+  port i_sample: in SInt<IW>;
   port o_ce:     out Bool;
-  port o_result: out SInt<32>;
+  port o_result: out SInt<OW>;
 
   default seq on i_clk rising;
 
-  // Tap storage — write pointer increments on i_tap_wr
-  reg tap0: SInt<12> reset i_reset=>0;
-  reg tap1: SInt<12> reset i_reset=>0;
-  reg tap2: SInt<12> reset i_reset=>0;
-  reg tap3: SInt<12> reset i_reset=>0;
-  reg tap4: SInt<12> reset i_reset=>0;
-  reg tap5: SInt<12> reset i_reset=>0;
-  reg tap6: SInt<12> reset i_reset=>0;
-  reg tap_ptr: UInt<3> reset i_reset=>0;
+  // Coefficient memory
+  reg coef_mem:   Vec<UInt<TW>, CMEMSZ>;
+  reg tap_wr_idx: UInt<LGNCOEF> reset i_reset => 0;
 
-  // Sample shift register
-  reg sr0: SInt<16> reset i_reset=>0;
-  reg sr1: SInt<16> reset i_reset=>0;
-  reg sr2: SInt<16> reset i_reset=>0;
-  reg sr3: SInt<16> reset i_reset=>0;
-  reg sr4: SInt<16> reset i_reset=>0;
-  reg sr5: SInt<16> reset i_reset=>0;
-  reg sr6: SInt<16> reset i_reset=>0;
+  // Sample memories stored as UInt to avoid signed-vec codegen issue
+  reg dmem1: Vec<UInt<IW>, DMEMSZ>;
+  reg dmem2: Vec<UInt<IW>, DMEMSZ>;
+  reg write_idx: UInt<LGNMEM> reset i_reset => 0;
 
-  reg result_r: SInt<32> reset i_reset=>0;
-  reg ce_r:     Bool     reset i_reset=>false;
+  // Pointer state
+  reg left_idx:  UInt<LGNMEM>  reset i_reset => 0;
+  reg right_idx: UInt<LGNMEM>  reset i_reset => 0;
+  reg tap_idx:   UInt<LGNCOEF> reset i_reset => 0;
 
-  // Wrapping multiply: result stays 32 bits (low bits of tap*sample product)
-  let p0: SInt<32> = tap0.sext<32>() *% sr0.sext<32>();
-  let p1: SInt<32> = tap1.sext<32>() *% sr1.sext<32>();
-  let p2: SInt<32> = tap2.sext<32>() *% sr2.sext<32>();
-  let p3: SInt<32> = tap3.sext<32>() *% sr3.sext<32>();
-  let p4: SInt<32> = tap4.sext<32>() *% sr4.sext<32>();
-  let p5: SInt<32> = tap5.sext<32>() *% sr5.sext<32>();
-  let p6: SInt<32> = tap6.sext<32>() *% sr6.sext<32>();
+  // Sample pipeline
+  reg mid_sample:   SInt<IW>    reset i_reset => 0;
+  reg sample_left:  SInt<IW>    reset i_reset => 0;
+  reg sample_right: SInt<IW>    reset i_reset => 0;
+  reg sum_data:     SInt<IW+1>  reset i_reset => 0;
+  reg current_coef: UInt<TW>    reset i_reset => 0;
 
-  let sum01: SInt<32> = p0 +% p1;
-  let sum23: SInt<32> = p2 +% p3;
-  let sum45: SInt<32> = p4 +% p5;
-  let acc:   SInt<32> = (sum01 +% sum23) +% (sum45 +% p6);
+  // Control pipeline
+  reg clk_en:  Bool reset i_reset => false;
+  reg data_en: Bool reset i_reset => false;
+  reg sum_en:  Bool reset i_reset => false;
+
+  // messy_flag: 4-bit pipeline with feedback
+  reg mf0: Bool reset i_reset => false;
+  reg mf1: Bool reset i_reset => false;
+  reg mf2: Bool reset i_reset => false;
+  reg mf3: Bool reset i_reset => false;
+
+  // Computation
+  reg mult_result: SInt<IW+TW> reset i_reset => 0;
+  reg acc_result:  SInt<OW>    reset i_reset => 0;
+  reg mid_prod_r:  SInt<OW>    reset i_reset => 0;
+
+  reg o_result_r: SInt<OW> reset i_reset => 0;
+  reg o_ce_r:     Bool     reset i_reset => false;
+
+  // last_tap when remaining < 2 ↔ tap_idx > QTRTAPS - 2
+  // Use pre-folded consts truncated to LGNCOEF bits to avoid SV width mismatch
+  let last_tap_warn:  Bool = tap_idx > QTRTAPS_M1.trunc<LGNCOEF>();
+  let last_data_warn: Bool = tap_idx > QTRTAPS_M2.trunc<LGNCOEF>();
+  let mf_chain_bit:   Bool = clk_en | (mf0 & ~last_tap_warn);
 
   comb
-    o_result = result_r;
-    o_ce     = ce_r;
+    o_result = o_result_r;
+    o_ce     = o_ce_r;
   end comb
 
   seq
-    ce_r <= i_ce;
+    // --- Coefficient write ---
     if i_tap_wr
-      if tap_ptr == 0
-        tap0 <= i_tap as SInt<12>;
-      elsif tap_ptr == 1
-        tap1 <= i_tap as SInt<12>;
-      elsif tap_ptr == 2
-        tap2 <= i_tap as SInt<12>;
-      elsif tap_ptr == 3
-        tap3 <= i_tap as SInt<12>;
-      elsif tap_ptr == 4
-        tap4 <= i_tap as SInt<12>;
-      elsif tap_ptr == 5
-        tap5 <= i_tap as SInt<12>;
-      else
-        tap6 <= i_tap as SInt<12>;
-      end if
-      tap_ptr <= tap_ptr +% 1;
+      coef_mem[tap_wr_idx] <= i_tap;
+      tap_wr_idx <= (tap_wr_idx + 1).trunc<LGNCOEF>();
     end if
+
+    // --- Sample write ---
     if i_ce
-      sr0 <= i_sample;
-      sr1 <= sr0;
-      sr2 <= sr1;
-      sr3 <= sr2;
-      sr4 <= sr3;
-      sr5 <= sr4;
-      sr6 <= sr5;
-      result_r <= acc;
+      dmem1[write_idx] <= unsigned(i_sample);
+      dmem2[write_idx] <= unsigned(mid_sample);
+      write_idx <= (write_idx + 1).trunc<LGNMEM>();
     end if
+
+    // --- Mid sample: captured from sample_left on each i_ce ---
+    if i_ce
+      mid_sample <= sample_left;
+    end if
+
+    // --- Clock enable ---
+    clk_en <= i_ce;
+
+    // --- Index management ---
+    // right_idx = write_idx - HALFTAPS + 1 = write_idx - (HALFTAPS - 1)
+    if i_ce
+      left_idx  <= write_idx;
+      right_idx <= (write_idx - HALFTAPS_M1.trunc<LGNMEM>()).trunc<LGNMEM>();
+    elsif clk_en | ~last_data_warn
+      left_idx  <= (left_idx  - 2).trunc<LGNMEM>();
+      right_idx <= (right_idx + 2).trunc<LGNMEM>();
+    end if
+
+    // --- Tap index ---
+    if clk_en
+      tap_idx <= 0;
+    elsif ~last_tap_warn
+      tap_idx <= (tap_idx + 1).trunc<LGNCOEF>();
+    end if
+
+    // --- messy_flag ---
+    if i_ce
+      mf0 <= true;
+    elsif mf0 & ~last_tap_warn
+      mf0 <= true;
+    elsif ~clk_en
+      mf0 <= false;
+    end if
+    mf1 <= mf_chain_bit;
+    mf2 <= mf1;
+    mf3 <= mf2;
+
+    // --- Sample reads (registered, 1 cycle latency) ---
+    sample_left  <= signed(dmem1[left_idx]);
+    sample_right <= signed(dmem2[right_idx]);
+
+    // --- Data enable ---
+    data_en <= clk_en;
+
+    // --- Coefficient read ---
+    current_coef <= coef_mem[tap_idx];
+
+    // --- Sum computation ---
+    if OPT_HILBERT == 1
+      sum_data <= sample_left - sample_right;
+    else
+      sum_data <= sample_left.sext<IW+1>() +% sample_right.sext<IW+1>();
+    end if
+
+    // --- Sum enable ---
+    sum_en <= data_en;
+
+    // --- Multiply: sign-extend both operands to IW+TW ---
+    mult_result <= current_coef.zext<IW+TW>() *% sum_data.sext<IW+TW>();
+
+    // --- Mid product: mid_sample * (2^(TW-1) - 1) ---
+    if clk_en
+      mid_prod_r <= ((mid_sample.sext<OW>() << (TW - 1)) -% mid_sample.sext<OW>());
+    end if
+
+    // --- Accumulate ---
+    if sum_en
+      acc_result <= mid_prod_r;
+    elsif mf3
+      acc_result <= acc_result +% mult_result.sext<OW>();
+    end if
+
+    // --- Output capture ---
+    if sum_en
+      o_result_r <= acc_result;
+    end if
+    o_ce_r <= sum_en;
   end seq
 end module halfband_fir
