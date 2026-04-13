@@ -7,23 +7,25 @@ module SR_flipflop (
   output logic o_Q_b
 );
 
+  logic q;
+  logic q_b;
+  assign o_Q = q;
+  assign o_Q_b = q_b;
   always_ff @(posedge i_clk or negedge i_rst_b) begin
     if ((!i_rst_b)) begin
-      o_Q <= 1'b0;
-      o_Q_b <= 1'b1;
+      q <= 0;
+      q_b <= 1;
     end else begin
       if (i_S & i_R) begin
-        // Invalid state: both outputs low
-        o_Q <= 1'b0;
-        o_Q_b <= 1'b0;
+        q <= 0;
+        q_b <= 0;
       end else if (i_S) begin
-        o_Q <= 1'b1;
-        o_Q_b <= 1'b0;
+        q <= 1;
+        q_b <= 0;
       end else if (i_R) begin
-        o_Q <= 1'b0;
-        o_Q_b <= 1'b1;
+        q <= 0;
+        q_b <= 1;
       end
-      // else: hold
     end
   end
 

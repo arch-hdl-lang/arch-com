@@ -3,23 +3,25 @@ module SR_flipflop
   port i_rst_b: in Reset<Async, Low>;
   port i_S: in Bool;
   port i_R: in Bool;
-  port reg o_Q: out Bool reset i_rst_b=>false;
-  port reg o_Q_b: out Bool reset i_rst_b=>true;
+  port o_Q: out Bool;
+  port o_Q_b: out Bool;
 
-  default seq on i_clk rising;
+  reg q: Bool reset i_rst_b => 0;
+  reg q_b: Bool reset i_rst_b => 1;
 
-  seq
+  let o_Q = q;
+  let o_Q_b = q_b;
+
+  seq on i_clk rising
     if i_S & i_R
-      // Invalid state: both outputs low
-      o_Q <= false;
-      o_Q_b <= false;
+      q <= 0;
+      q_b <= 0;
     elsif i_S
-      o_Q <= true;
-      o_Q_b <= false;
+      q <= 1;
+      q_b <= 0;
     elsif i_R
-      o_Q <= false;
-      o_Q_b <= true;
+      q <= 0;
+      q_b <= 1;
     end if
-    // else: hold
   end seq
 end module SR_flipflop

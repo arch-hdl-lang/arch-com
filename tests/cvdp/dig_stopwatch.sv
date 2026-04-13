@@ -4,76 +4,56 @@ module dig_stopwatch #(
   input logic clk,
   input logic reset,
   input logic start_stop,
-  output logic [6-1:0] seconds,
-  output logic [6-1:0] minutes,
-  output logic [1-1:0] hour
+  output logic [5:0] seconds,
+  output logic [5:0] minutes,
+  output logic [7:0] hour,
+  output logic one_sec_pulse
 );
 
-  logic [32-1:0] clk_cnt;
-  logic one_sec_pulse;
-  logic prev_start;
-  logic [6-1:0] r_seconds;
-  logic [6-1:0] r_minutes;
-  logic [1-1:0] r_hour;
+  logic [31:0] clk_cnt;
+  logic [5:0] secs;
+  logic [5:0] mins;
+  logic [7:0] hrs;
+  logic pulse;
+  // cnt_wrap: combinational — fires when counter is at max and running
+  logic cnt_wrap;
+  assign cnt_wrap = start_stop & clk_cnt == 32'($unsigned(CLK_FREQ - 1));
+  assign seconds = secs;
+  assign minutes = mins;
+  assign hour = hrs;
+  assign one_sec_pulse = pulse;
   always_ff @(posedge clk or posedge reset) begin
     if (reset) begin
       clk_cnt <= 0;
-      one_sec_pulse <= 1'b0;
-      prev_start <= 1'b0;
-      r_hour <= 0;
-      r_minutes <= 0;
-      r_seconds <= 0;
+      hrs <= 0;
+      mins <= 0;
+      pulse <= 0;
+      secs <= 0;
     end else begin
-      one_sec_pulse <= 1'b0;
-      prev_start <= start_stop;
-      // Clock divider: advance counter while running.
+      // pulse is registered copy of cnt_wrap; one_sec_pulse goes high cycle AFTER wrap
+      pulse <= cnt_wrap;
       if (start_stop) begin
-        if (clk_cnt == 32'($unsigned(CLK_FREQ - 1))) begin
+        if (cnt_wrap) begin
           clk_cnt <= 0;
-          one_sec_pulse <= 1'b1;
         end else begin
           clk_cnt <= 32'(clk_cnt + 1);
         end
       end
-      // Counter updates: use (start_stop | prev_start) so that a pending
-      // pulse from the clock when start_stop dropped still counts.
-      if (one_sec_pulse & (start_stop | prev_start) & ~r_hour) begin
-        if (r_seconds == 59) begin
-          r_seconds <= 0;
-          if (r_minutes == 59) begin
-            r_minutes <= 0;
-            r_hour <= 1;
+      // Increment counters cycle AFTER pulse fires.
+      // Gate with start_stop so a pending pulse is discarded if stopped.
+      if (pulse & start_stop) begin
+        if (secs == 59) begin
+          secs <= 0;
+          if (mins == 59) begin
+            mins <= 0;
+            hrs <= 8'(hrs + 1);
           end else begin
-            r_minutes <= 6'(r_minutes + 1);
+            mins <= 6'(mins + 1);
           end
         end else begin
-          r_seconds <= 6'(r_seconds + 1);
+          secs <= 6'(secs + 1);
         end
       end
-    end
-  end
-  // Combinational outputs: lookahead when pulse is active and running
-  // (or was running one cycle ago via prev_start).
-  always_comb begin
-    if (one_sec_pulse & (start_stop | prev_start) & ~r_hour) begin
-      if (r_seconds == 59) begin
-        seconds = 0;
-        if (r_minutes == 59) begin
-          minutes = 0;
-          hour = 1;
-        end else begin
-          minutes = 6'(r_minutes + 1);
-          hour = r_hour;
-        end
-      end else begin
-        seconds = 6'(r_seconds + 1);
-        minutes = r_minutes;
-        hour = r_hour;
-      end
-    end else begin
-      seconds = r_seconds;
-      minutes = r_minutes;
-      hour = r_hour;
     end
   end
 

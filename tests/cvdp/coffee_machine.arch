@@ -1,0 +1,188 @@
+module coffee_machine
+  param NBW_DLY:   const = 5;
+  param NBW_BEANS: const = 2;
+  param NS_BEANS:  const = 4;
+
+  local param BEAN_SEL_DELAY: const = 3;
+  local param POWDER_DELAY:   const = 2;
+
+  port clk:             in  Clock<SysDomain>;
+  port rst_async_n:     in  Reset<Async, Low>;
+  port i_operation_sel: in  UInt<3>;
+  port i_start:         in  Bool;
+  port i_sensor:        in  UInt<4>;
+  port i_grind_delay:   in  UInt<NBW_DLY>;
+  port i_heat_delay:    in  UInt<NBW_DLY>;
+  port i_pour_delay:    in  UInt<NBW_DLY>;
+  port i_bean_sel:      in  UInt<NBW_BEANS>;
+
+  port reg o_bean_sel:    out UInt<NS_BEANS>  reset rst_async_n => 0;
+  port reg o_grind_beans: out Bool reset rst_async_n => false;
+  port reg o_use_powder:  out Bool reset rst_async_n => false;
+  port reg o_heat_water:  out Bool reset rst_async_n => false;
+  port reg o_pour_coffee: out Bool reset rst_async_n => false;
+  port     o_error:       out Bool;
+
+  // State register: 0=IDLE, 1=BEAN_SEL, 2=GRIND, 3=HEAT, 4=POWDER, 5=POUR
+  reg state_ff:     UInt<3>    reset rst_async_n => 0;
+  // state_prev_r: captures state_ff one cycle before (for 2-cycle output lag)
+  reg state_prev_r: UInt<3>    reset rst_async_n => 0;
+  // latched bean index (for one-hot generation)
+  reg bean_r:       UInt<NS_BEANS> reset rst_async_n => 0;
+  reg op_r:         UInt<3>    reset rst_async_n => 0;
+  reg cnt_r:        UInt<NBW_DLY>  reset rst_async_n => 0;
+  reg grind_dly_r:  UInt<NBW_DLY>  reset rst_async_n => 0;
+  reg heat_dly_r:   UInt<NBW_DLY>  reset rst_async_n => 0;
+  reg pour_dly_r:   UInt<NBW_DLY>  reset rst_async_n => 0;
+
+  // Sensor error decode (combinational)
+  let generic_err:   Bool = i_sensor[3];
+  let no_water_err:  Bool = i_sensor[0];
+  let no_beans_err:  Bool = i_sensor[1] & ((i_operation_sel == 2) | (i_operation_sel == 3));
+  let no_powder_err: Bool = i_sensor[2] & ((i_operation_sel == 1) | (i_operation_sel == 4));
+  let bad_op_err:    Bool = (i_operation_sel == 6) | (i_operation_sel == 7);
+
+  // o_error: combinational
+  wire o_error_w: Bool;
+  comb
+    if state_ff == 0  // IDLE
+      o_error_w = generic_err | no_water_err | no_beans_err | no_powder_err | bad_op_err;
+    elsif generic_err
+      o_error_w = true;
+    else
+      o_error_w = false;
+    end if
+  end comb
+
+  let o_error = o_error_w;
+
+  seq on clk rising
+    // Track previous state for 2-cycle output lag
+    state_prev_r <= state_ff;
+
+    // Update registered outputs based on state_prev_r (2-cycle lag from state_ff)
+    if state_prev_r == 0  // IDLE
+      o_bean_sel    <= 0;
+      o_grind_beans <= false;
+      o_use_powder  <= false;
+      o_heat_water  <= false;
+      o_pour_coffee <= false;
+    elsif state_prev_r == 1  // BEAN_SEL
+      o_bean_sel    <= bean_r;
+      o_grind_beans <= false;
+      o_use_powder  <= false;
+      o_heat_water  <= false;
+      o_pour_coffee <= false;
+    elsif state_prev_r == 2  // GRIND
+      o_bean_sel    <= bean_r;
+      o_grind_beans <= true;
+      o_use_powder  <= false;
+      o_heat_water  <= false;
+      o_pour_coffee <= false;
+    elsif state_prev_r == 3  // HEAT
+      o_bean_sel    <= 0;
+      o_grind_beans <= false;
+      o_use_powder  <= false;
+      o_heat_water  <= true;
+      o_pour_coffee <= false;
+    elsif state_prev_r == 4  // POWDER
+      o_bean_sel    <= 0;
+      o_grind_beans <= false;
+      o_use_powder  <= true;
+      o_heat_water  <= false;
+      o_pour_coffee <= false;
+    elsif state_prev_r == 5  // POUR
+      o_bean_sel    <= 0;
+      o_grind_beans <= false;
+      o_use_powder  <= false;
+      o_heat_water  <= false;
+      o_pour_coffee <= true;
+    end if
+
+    // State machine transitions
+    if state_ff == 0  // IDLE
+      if i_start & ~o_error_w
+        op_r          <= i_operation_sel;
+        bean_r        <= i_bean_sel == 0 ? 1 :
+                         i_bean_sel == 1 ? 2 :
+                         i_bean_sel == 2 ? 4 : 8;
+        grind_dly_r   <= i_grind_delay;
+        heat_dly_r    <= i_heat_delay;
+        pour_dly_r    <= i_pour_delay;
+        cnt_r         <= 0;
+        if i_operation_sel == 0
+          state_ff    <= 3;  // HEAT
+        elsif i_operation_sel == 1
+          state_ff    <= 3;  // HEAT
+        elsif i_operation_sel == 2
+          state_ff    <= 1;  // BEAN_SEL
+        elsif i_operation_sel == 3
+          state_ff    <= 1;  // BEAN_SEL
+        elsif i_operation_sel == 4
+          state_ff    <= 4;  // POWDER
+        elsif i_operation_sel == 5
+          state_ff    <= 5;  // POUR
+        end if
+      end if
+    elsif state_ff == 1  // BEAN_SEL
+      if generic_err
+        state_ff      <= 0;
+        cnt_r         <= 0;
+      elsif cnt_r.zext<32>() < (BEAN_SEL_DELAY - 1)
+        cnt_r         <= (cnt_r + 1).trunc<NBW_DLY>();
+      else
+        cnt_r         <= 0;
+        state_ff      <= 2;  // -> GRIND
+      end if
+    elsif state_ff == 2  // GRIND
+      if generic_err
+        state_ff      <= 0;
+        cnt_r         <= 0;
+      elsif cnt_r < (grind_dly_r - 1)
+        cnt_r         <= (cnt_r + 1).trunc<NBW_DLY>();
+      else
+        cnt_r         <= 0;
+        if op_r == 2
+          state_ff    <= 3;  // -> HEAT
+        else  // op_r == 3
+          state_ff    <= 4;  // -> POWDER
+        end if
+      end if
+    elsif state_ff == 3  // HEAT
+      if generic_err
+        state_ff      <= 0;
+        cnt_r         <= 0;
+      elsif cnt_r < (heat_dly_r - 1)
+        cnt_r         <= (cnt_r + 1).trunc<NBW_DLY>();
+      else
+        cnt_r         <= 0;
+        if op_r == 0
+          state_ff    <= 5;  // -> POUR
+        else  // op_r in {1,2}: heat -> powder
+          state_ff    <= 4;
+        end if
+      end if
+    elsif state_ff == 4  // POWDER
+      if generic_err
+        state_ff      <= 0;
+        cnt_r         <= 0;
+      elsif cnt_r.zext<32>() < (POWDER_DELAY - 1)
+        cnt_r         <= (cnt_r + 1).trunc<NBW_DLY>();
+      else
+        cnt_r         <= 0;
+        state_ff      <= 5;  // -> POUR
+      end if
+    elsif state_ff == 5  // POUR
+      if generic_err
+        state_ff      <= 0;
+        cnt_r         <= 0;
+      elsif cnt_r < (pour_dly_r - 1)
+        cnt_r         <= (cnt_r + 1).trunc<NBW_DLY>();
+      else
+        cnt_r         <= 0;
+        state_ff      <= 0;  // -> IDLE
+      end if
+    end if
+  end seq
+
+end module coffee_machine

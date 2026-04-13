@@ -1,18 +1,25 @@
 module piso_8bit
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Async, Low>;
-  port reg serial_out: out Bool reset rst=>0;
+  port serial_out: out Bool;
 
-  reg tmp: UInt<8> reset rst=>1;
-  reg bit_cnt: UInt<3> reset rst=>0;
+  reg bit_cnt: UInt<3> reset rst => 0;
+  reg current_byte: UInt<8> reset rst => 1;
+  reg serial_out_r: Bool reset rst => 0;
+
+  wire shifted: UInt<11>;
+
+  comb
+    shifted = current_byte.zext<11>() << bit_cnt;
+  end comb
+
+  let serial_out = serial_out_r;
 
   seq on clk rising
-    // Output MSB-first: bit (7 - bit_cnt)
-    serial_out <= tmp[7 - bit_cnt];
-
-    if bit_cnt == 3'd7
-      bit_cnt <= 3'd0;
-      tmp <= (tmp + 8'd1).trunc<8>();
+    serial_out_r <= shifted[7:7];
+    if bit_cnt == 7
+      bit_cnt <= 0;
+      current_byte <= (current_byte + 8'd1).trunc<8>();
     else
       bit_cnt <= (bit_cnt + 3'd1).trunc<3>();
     end if

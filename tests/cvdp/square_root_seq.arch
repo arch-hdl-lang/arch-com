@@ -39,7 +39,7 @@ module square_root_seq
       root_r    <= 0;
       remainder <= 0;
       // Start bit: highest even power of 4 not exceeding num (use 1<<(WIDTH-2) as initial)
-      bit_r     <= 1 << (WIDTH - 2);
+      bit_r     <= (1).zext<WIDTH>() << (WIDTH - 2);
       result_r  <= 0;
     elsif running
       if bit_r == 0

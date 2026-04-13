@@ -11,27 +11,27 @@ module qam16_demapper_interpolated #(
   input logic [TOTAL_I_WIDTH-1:0] I,
   input logic [TOTAL_I_WIDTH-1:0] Q,
   output logic [TOTAL_OUT_WIDTH-1:0] bits,
-  output logic [1-1:0] error_flag
+  output logic [0:0] error_flag
 );
 
   // Extract all samples
-  logic signed [IN_WIDTH-1:0] si_val [TOTAL_SAMPLES-1:0];
-  logic signed [IN_WIDTH-1:0] sq_val [TOTAL_SAMPLES-1:0];
+  logic signed [TOTAL_SAMPLES-1:0] [IN_WIDTH-1:0] si_val;
+  logic signed [TOTAL_SAMPLES-1:0] [IN_WIDTH-1:0] sq_val;
   // Mapped values per output symbol
-  logic signed [IN_WIDTH-1:0] mi [N-1:0];
-  logic signed [IN_WIDTH-1:0] mq [N-1:0];
+  logic signed [N-1:0] [IN_WIDTH-1:0] mi;
+  logic signed [N-1:0] [IN_WIDTH-1:0] mq;
   // Error detection: use 2x scale to avoid division
   // 2*interp - (m0 + m1) vs 2*threshold
-  logic signed [IN_WIDTH + 2-1:0] twice_interp_i [NUM_GROUPS-1:0];
-  logic signed [IN_WIDTH + 1-1:0] sum_mapped_i [NUM_GROUPS-1:0];
-  logic signed [IN_WIDTH + 2-1:0] diff2_i [NUM_GROUPS-1:0];
-  logic signed [IN_WIDTH + 2-1:0] twice_interp_q [NUM_GROUPS-1:0];
-  logic signed [IN_WIDTH + 1-1:0] sum_mapped_q [NUM_GROUPS-1:0];
-  logic signed [IN_WIDTH + 2-1:0] diff2_q [NUM_GROUPS-1:0];
-  logic [1-1:0] err_acc [NUM_GROUPS + 1-1:0];
-  logic [2-1:0] i_bits [N-1:0];
-  logic [2-1:0] q_bits [N-1:0];
-  logic [TOTAL_OUT_WIDTH-1:0] bits_acc [N + 1-1:0];
+  logic signed [NUM_GROUPS-1:0] [IN_WIDTH + 2-1:0] twice_interp_i;
+  logic signed [NUM_GROUPS-1:0] [IN_WIDTH + 1-1:0] sum_mapped_i;
+  logic signed [NUM_GROUPS-1:0] [IN_WIDTH + 2-1:0] diff2_i;
+  logic signed [NUM_GROUPS-1:0] [IN_WIDTH + 2-1:0] twice_interp_q;
+  logic signed [NUM_GROUPS-1:0] [IN_WIDTH + 1-1:0] sum_mapped_q;
+  logic signed [NUM_GROUPS-1:0] [IN_WIDTH + 2-1:0] diff2_q;
+  logic [NUM_GROUPS + 1-1:0] [0:0] err_acc;
+  logic [N-1:0] [1:0] i_bits;
+  logic [N-1:0] [1:0] q_bits;
+  logic [N + 1-1:0] [TOTAL_OUT_WIDTH-1:0] bits_acc;
   // Extract samples using shift+trunc (MSB-first packing)
   always_comb begin
     for (int k = 0; k <= TOTAL_SAMPLES - 1; k++) begin

@@ -1,0 +1,76 @@
+module advanced_decimator_with_adaptive_peak_detection
+  param N: const = 8;
+  param DATA_WIDTH: const = 16;
+  param DEC_FACTOR: const = 4;
+  local param NUM_OUT: const = N / DEC_FACTOR;
+
+  port clk: in Clock<SysDomain>;
+  port reset: in Reset<Async, High>;
+  port valid_in: in UInt<1>;
+  port data_in: in UInt<N * DATA_WIDTH>;
+  port valid_out: out UInt<1>;
+  port data_out: out UInt<NUM_OUT * DATA_WIDTH>;
+  port peak_value: out SInt<DATA_WIDTH>;
+
+  // Registered inputs
+  reg data_in_reg: UInt<N * DATA_WIDTH> reset reset => 0;
+  reg valid_in_reg: UInt<1> reset reset => 0;
+
+  // Unpacked registered input as Vec for easy indexing (also exposed for debug)
+  wire data_vec_in: Vec<SInt<DATA_WIDTH>, N>;
+
+  // Decimated samples
+  wire dec_vec: Vec<SInt<DATA_WIDTH>, NUM_OUT>;
+
+  // Peak accumulator: peak_acc[i] = max of dec_vec[0..i]
+  wire peak_acc: Vec<SInt<DATA_WIDTH>, NUM_OUT>;
+
+  // Output packing accumulator (MSB-first: element 0 at MSB)
+  wire out_acc: Vec<UInt<NUM_OUT * DATA_WIDTH>, NUM_OUT + 1>;
+
+  default seq on clk rising;
+
+  seq on clk rising
+    data_in_reg <= data_in;
+    valid_in_reg <= valid_in;
+  end seq
+
+  // Unpack registered data (LSB-first: element 0 at low bits)
+  comb
+    for i in 0..N-1
+      data_vec_in[i] = (data_in_reg >> (i * DATA_WIDTH)).trunc<DATA_WIDTH>() as SInt<DATA_WIDTH>;
+    end for
+  end comb
+
+  // Decimate: keep elements at indices DEC_FACTOR-1, 2*DEC_FACTOR-1, ...
+  comb
+    for j in 0..NUM_OUT-1
+      dec_vec[j] = data_vec_in[DEC_FACTOR - 1 + j * DEC_FACTOR];
+    end for
+  end comb
+
+  // Peak detection (signed max of decimated samples)
+  // peak_acc[0] = dec_vec[0], peak_acc[j] = max(peak_acc[j-1], dec_vec[j])
+  comb
+    peak_acc[0] = dec_vec[0];
+    for j in 1..NUM_OUT-1
+      if dec_vec[j] > peak_acc[j - 1]
+        peak_acc[j] = dec_vec[j];
+      else
+        peak_acc[j] = peak_acc[j - 1];
+      end if
+    end for
+  end comb
+
+  // Pack output MSB-first: dec_vec[0] at highest bits
+  comb
+    out_acc[0] = 0;
+    for j in 0..NUM_OUT-1
+      out_acc[j + 1] = out_acc[j] | ((dec_vec[j] as UInt<DATA_WIDTH>).zext<NUM_OUT * DATA_WIDTH>() << ((NUM_OUT - 1 - j) * DATA_WIDTH));
+    end for
+  end comb
+
+  let valid_out = valid_in_reg;
+  let data_out = out_acc[NUM_OUT];
+  let peak_value = peak_acc[NUM_OUT - 1];
+end module advanced_decimator_with_adaptive_peak_detection

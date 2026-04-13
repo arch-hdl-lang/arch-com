@@ -10,24 +10,20 @@ module signed_unsigned_comparator #(
   output logic o_equal
 );
 
-  logic gt;
-  logic lt;
-  logic eq;
   always_comb begin
-    if (i_mode) begin
-      // Signed mode
-      gt = $signed(i_A) > $signed(i_B) ? 1'd1 : 1'd0;
-      lt = $signed(i_A) < $signed(i_B) ? 1'd1 : 1'd0;
-      eq = i_A == i_B ? 1'd1 : 1'd0;
+    if (!i_enable) begin
+      o_greater = 1'b0;
+      o_less = 1'b0;
+      o_equal = 1'b0;
+    end else if (!i_mode) begin
+      o_greater = i_A > i_B;
+      o_less = i_A < i_B;
+      o_equal = i_A == i_B;
     end else begin
-      // Magnitude (unsigned) mode
-      gt = i_A > i_B ? 1'd1 : 1'd0;
-      lt = i_A < i_B ? 1'd1 : 1'd0;
-      eq = i_A == i_B ? 1'd1 : 1'd0;
+      o_greater = $signed(i_A) > $signed(i_B);
+      o_less = $signed(i_A) < $signed(i_B);
+      o_equal = $signed(i_A) == $signed(i_B);
     end
-    o_greater = i_enable & gt;
-    o_less = i_enable & lt;
-    o_equal = i_enable & eq;
   end
 
 endmodule

@@ -7,9 +7,13 @@ module GP (
   output logic o_Cout
 );
 
-  assign o_generate = i_A & i_B;
-  assign o_propagate = i_A | i_B;
-  assign o_Cout = i_A & i_B | (i_A | i_B) & i_Cin;
+  logic gen;
+  logic prop;
+  assign gen = i_A & i_B;
+  assign prop = i_A | i_B;
+  assign o_generate = gen;
+  assign o_propagate = prop;
+  assign o_Cout = gen | prop & i_Cin;
 
 endmodule
 

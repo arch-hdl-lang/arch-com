@@ -1,13 +1,16 @@
 module binary_to_one_hot_decoder_sequential
-  param BINARY_WIDTH: const = 5;
-  param OUTPUT_WIDTH: const = 32;
-
+  param BINARY_WIDTH: const = 4;
+  param OUTPUT_WIDTH: const = 16;
   port i_clk: in Clock<SysDomain>;
   port i_rstb: in Reset<Async, Low>;
   port i_binary_in: in UInt<BINARY_WIDTH>;
-  port reg o_one_hot_out: out UInt<OUTPUT_WIDTH> reset i_rstb=>0;
+  port o_one_hot_out: out UInt<OUTPUT_WIDTH>;
+
+  reg one_hot: UInt<OUTPUT_WIDTH> reset i_rstb => 0;
+
+  let o_one_hot_out = one_hot;
 
   seq on i_clk rising
-    o_one_hot_out <= 32'd1 << i_binary_in.zext<32>();
+    one_hot <= (1).zext<OUTPUT_WIDTH>() << i_binary_in;
   end seq
 end module binary_to_one_hot_decoder_sequential

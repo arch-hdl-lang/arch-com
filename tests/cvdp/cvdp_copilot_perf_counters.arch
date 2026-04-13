@@ -1,37 +1,29 @@
 module cvdp_copilot_perf_counters
-  param CNT_W: const = 10;
-  port clk:        in Clock<SysDomain>;
-  port reset:      in Reset<Async, High>;
-  port sw_req_i:   in Bool;
+  port clk: in Clock<SysDomain>;
+  port reset: in Reset<Sync, High>;
   port cpu_trig_i: in Bool;
-  port p_count_o:  out UInt<CNT_W>;
+  port sw_req_i: in Bool;
+  port p_count_o: out UInt<8>;
 
-  wire count_next: UInt<CNT_W>;
-  reg count_q: UInt<CNT_W> reset reset=>0;
+  reg cnt: UInt<8> reset reset => 0;
+
+  seq on clk rising
+    if sw_req_i
+      cnt <= cpu_trig_i.zext<8>();
+    elsif cpu_trig_i
+      cnt <= (cnt + 8'd1).trunc<8>();
+    end if
+  end seq
+
+  wire p_count_comb: UInt<8>;
 
   comb
     if sw_req_i
-      if cpu_trig_i
-        count_next = 1;
-      else
-        count_next = 0;
-      end if
+      p_count_comb = cnt;
     else
-      if cpu_trig_i
-        count_next = (count_q + 1).trunc<CNT_W>();
-      else
-        count_next = count_q;
-      end if
-    end if
-
-    if sw_req_i
-      p_count_o = count_next;
-    else
-      p_count_o = 0;
+      p_count_comb = 0;
     end if
   end comb
 
-  seq on clk rising
-    count_q <= count_next;
-  end seq
+  let p_count_o = p_count_comb;
 end module cvdp_copilot_perf_counters

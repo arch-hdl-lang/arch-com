@@ -6,9 +6,14 @@ module GP
   port o_propagate: out Bool;
   port o_Cout: out Bool;
 
+  wire gen: Bool;
+  wire prop: Bool;
+
   comb
-    o_generate = i_A & i_B;
-    o_propagate = i_A | i_B;
-    o_Cout = (i_A & i_B) | ((i_A | i_B) & i_Cin);
+    gen  = i_A & i_B;
+    prop = i_A | i_B;
+    o_generate  = gen;
+    o_propagate = prop;
+    o_Cout      = gen | (prop & i_Cin);
   end comb
 end module GP

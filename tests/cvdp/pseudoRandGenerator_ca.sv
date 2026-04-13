@@ -1,53 +1,38 @@
 module pseudoRandGenerator_ca (
   input logic clock,
   input logic reset,
-  input logic [16-1:0] CA_seed,
-  output logic [16-1:0] CA_out
+  input logic [15:0] CA_seed,
+  output logic [15:0] CA_out
 );
 
-  // Rule pattern: R90-R90-R150-R90-R150-R90-R150-R90-R150-R90-R150-R90-R150-R90-R150-R90
-  // Bit 15: R90, Bit 14: R90, Bit 13: R150, Bit 12: R90, ...
-  // R90:  next[i] = left ^ right
-  // R150: next[i] = left ^ self ^ right
-  // Boundary: neighbors outside 0..15 treated as 0
-  logic [16-1:0] next_ca;
-  assign next_ca[15:15] = CA_out[14:14];
-  assign next_ca[14:14] = CA_out[15:15] ^ CA_out[13:13];
-  assign next_ca[13:13] = CA_out[14:14] ^ CA_out[13:13] ^ CA_out[12:12];
-  assign next_ca[12:12] = CA_out[13:13] ^ CA_out[11:11];
-  assign next_ca[11:11] = CA_out[12:12] ^ CA_out[11:11] ^ CA_out[10:10];
-  assign next_ca[10:10] = CA_out[11:11] ^ CA_out[9:9];
-  assign next_ca[9:9] = CA_out[10:10] ^ CA_out[9:9] ^ CA_out[8:8];
-  assign next_ca[8:8] = CA_out[9:9] ^ CA_out[7:7];
-  assign next_ca[7:7] = CA_out[8:8] ^ CA_out[7:7] ^ CA_out[6:6];
-  assign next_ca[6:6] = CA_out[7:7] ^ CA_out[5:5];
-  assign next_ca[5:5] = CA_out[6:6] ^ CA_out[5:5] ^ CA_out[4:4];
-  assign next_ca[4:4] = CA_out[5:5] ^ CA_out[3:3];
-  assign next_ca[3:3] = CA_out[4:4] ^ CA_out[3:3] ^ CA_out[2:2];
-  assign next_ca[2:2] = CA_out[3:3] ^ CA_out[1:1];
-  assign next_ca[1:1] = CA_out[2:2] ^ CA_out[1:1] ^ CA_out[0:0];
-  assign next_ca[0:0] = CA_out[1:1];
-  // Bit 15 (R90): left=0, right=CA_out[14]
-  // Bit 14 (R90): left=CA_out[15], right=CA_out[13]
-  // Bit 13 (R150): left=CA_out[14], self=CA_out[13], right=CA_out[12]
-  // Bit 12 (R90)
-  // Bit 11 (R150)
-  // Bit 10 (R90)
-  // Bit 9 (R150)
-  // Bit 8 (R90)
-  // Bit 7 (R150)
-  // Bit 6 (R90)
-  // Bit 5 (R150)
-  // Bit 4 (R90)
-  // Bit 3 (R150)
-  // Bit 2 (R90)
-  // Bit 1 (R150)
-  // Bit 0 (R90): left=CA_out[1], right=0
+  // state has no auto-reset; we handle reset manually in seq
+  logic [15:0] state;
+  // Rule 90: next[i] = state[i-1] ^ state[i+1]
+  // Rule 150: next[i] = state[i-1] ^ state[i] ^ state[i+1]
+  // rule_mask bit i=1 means Rule 150, bit i=0 means Rule 90
+  // Using alternating pattern for good randomness
+  logic [15:0] rule_mask;
+  assign rule_mask = 'hAAAA;
+  logic [15:0] next_state;
+  logic [15:0] left_shifted;
+  logic [15:0] right_shifted;
+  logic [15:0] r90;
+  logic [16:0] state_shifted_left;
+  assign left_shifted = state >> 1 | 16'($unsigned(state[15:15])) << 15;
+  assign state_shifted_left = 17'($unsigned(state)) << 1;
+  assign right_shifted = state_shifted_left[15:0] | 16'($unsigned(state[0:0]));
+  assign r90 = left_shifted ^ right_shifted;
+  assign next_state = r90 ^ state & rule_mask;
+  assign CA_out = state;
+  // left_shifted[i] = state[i-1], with wrap: state[-1] = state[15]
+  // right_shifted[i] = state[i+1], with wrap: state[16] = state[0]
+  // Rule 90 base: left XOR right
+  // Apply Rule 150 where rule_mask bit is 1: XOR in current state bit
   always_ff @(posedge clock) begin
     if (reset) begin
-      CA_out <= 0;
+      state <= CA_seed;
     end else begin
-      CA_out <= next_ca;
+      state <= next_state;
     end
   end
 

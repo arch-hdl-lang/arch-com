@@ -4,7 +4,7 @@ module digital_dice_roller #(
   input logic clk,
   input logic reset,
   input logic button,
-  output logic [3-1:0] dice_value
+  output logic [2:0] dice_value
 );
 
   always_ff @(posedge clk or negedge reset) begin

@@ -1,10 +1,19 @@
 module serial_in_parallel_out_8bit
   port clock: in Clock<SysDomain>;
-  port reset: in Reset<Async, High>;
   port serial_in: in Bool;
-  port reg parallel_out: out UInt<8> reset reset=>0;
+  port parallel_out: out UInt<8>;
 
-  seq on clock rising
-    parallel_out <= {parallel_out[6:0], serial_in};
+  reg data: UInt<8> init 0;
+
+  wire shifted: UInt<8>;
+
+  comb
+    shifted = (data << 1) | serial_in.zext<8>();
+  end comb
+
+  let parallel_out = shifted;
+
+  seq on clock falling
+    data <= shifted;
   end seq
 end module serial_in_parallel_out_8bit

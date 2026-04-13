@@ -26,7 +26,7 @@ module sipo_top
     param SHIFT_DIRECTION = SHIFT_DIRECTION;
     clk          <- clk;
     rst          <- reset_n;
-    sin          <- serial_in;
+    serial_in    <- serial_in;
     shift_en     <- shift_en;
     done         -> sipo_done;
     parallel_out -> sipo_pout;

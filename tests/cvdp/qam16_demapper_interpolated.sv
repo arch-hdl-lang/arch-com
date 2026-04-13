@@ -11,28 +11,36 @@ module qam16_demapper_interpolated #(
   input logic [TOTAL_I_WIDTH-1:0] I,
   input logic [TOTAL_I_WIDTH-1:0] Q,
   output logic [TOTAL_OUT_WIDTH-1:0] bits,
-  output logic [1-1:0] error_flag
+  output logic [0:0] error_flag
 );
 
-  // Extract all samples
-  logic signed [IN_WIDTH-1:0] si_val [TOTAL_SAMPLES-1:0];
-  logic signed [IN_WIDTH-1:0] sq_val [TOTAL_SAMPLES-1:0];
+  // All sample slots (mapped + interp interleaved)
+  logic signed [TOTAL_SAMPLES-1:0] [IN_WIDTH-1:0] si_val;
+  logic signed [TOTAL_SAMPLES-1:0] [IN_WIDTH-1:0] sq_val;
   // Mapped values per output symbol
-  logic signed [IN_WIDTH-1:0] mi [N-1:0];
-  logic signed [IN_WIDTH-1:0] mq [N-1:0];
-  // Error detection: use 2x scale to avoid division
-  // 2*interp - (m0 + m1) vs 2*threshold
-  logic signed [IN_WIDTH + 2-1:0] twice_interp_i [NUM_GROUPS-1:0];
-  logic signed [IN_WIDTH + 1-1:0] sum_mapped_i [NUM_GROUPS-1:0];
-  logic signed [IN_WIDTH + 2-1:0] diff2_i [NUM_GROUPS-1:0];
-  logic signed [IN_WIDTH + 2-1:0] twice_interp_q [NUM_GROUPS-1:0];
-  logic signed [IN_WIDTH + 1-1:0] sum_mapped_q [NUM_GROUPS-1:0];
-  logic signed [IN_WIDTH + 2-1:0] diff2_q [NUM_GROUPS-1:0];
-  logic [1-1:0] err_acc [NUM_GROUPS + 1-1:0];
-  logic [2-1:0] i_bits [N-1:0];
-  logic [2-1:0] q_bits [N-1:0];
-  logic [TOTAL_OUT_WIDTH-1:0] bits_acc [N + 1-1:0];
-  // Extract samples using shift+trunc (MSB-first packing)
+  logic signed [N-1:0] [IN_WIDTH-1:0] mi;
+  logic signed [N-1:0] [IN_WIDTH-1:0] mq;
+  // Per-group values extracted to individual wires (avoids $bits on variable-indexed Vec)
+  logic signed [NUM_GROUPS-1:0] [IN_WIDTH-1:0] g_interp_i;
+  logic signed [NUM_GROUPS-1:0] [IN_WIDTH-1:0] g_map0_i;
+  logic signed [NUM_GROUPS-1:0] [IN_WIDTH-1:0] g_map1_i;
+  logic signed [NUM_GROUPS-1:0] [IN_WIDTH-1:0] g_interp_q;
+  logic signed [NUM_GROUPS-1:0] [IN_WIDTH-1:0] g_map0_q;
+  logic signed [NUM_GROUPS-1:0] [IN_WIDTH-1:0] g_map1_q;
+  // Wider intermediates for error detection
+  // two_interp = interp + interp: SInt<IN_WIDTH+1>
+  // sum_maps = m0 + m1: SInt<IN_WIDTH+1> (SInt<IN_WIDTH> + SInt<IN_WIDTH>)
+  logic signed [NUM_GROUPS-1:0] [IN_WIDTH + 1-1:0] two_interp_i;
+  logic signed [NUM_GROUPS-1:0] [IN_WIDTH + 1-1:0] sum_maps_i;
+  logic signed [NUM_GROUPS-1:0] [IN_WIDTH + 1-1:0] two_interp_q;
+  logic signed [NUM_GROUPS-1:0] [IN_WIDTH + 1-1:0] sum_maps_q;
+  // Error per group and accumulator
+  logic [NUM_GROUPS-1:0] [0:0] grp_err;
+  logic [NUM_GROUPS + 1-1:0] [0:0] err_acc;
+  logic [N-1:0] [1:0] i_bits;
+  logic [N-1:0] [1:0] q_bits;
+  logic [N + 1-1:0] [TOTAL_OUT_WIDTH-1:0] bits_acc;
+  // Extract samples (pack_signal puts I_values[0] at MSB: index k at (TOTAL_SAMPLES-1-k)*IN_WIDTH)
   always_comb begin
     for (int k = 0; k <= TOTAL_SAMPLES - 1; k++) begin
       si_val[k] = $signed(IN_WIDTH'(I >> (TOTAL_SAMPLES - 1 - k) * IN_WIDTH));
@@ -51,34 +59,55 @@ module qam16_demapper_interpolated #(
       end
     end
   end
-  // Error detection using 2x scale
+  // Extract per-group values into individual wires
+  always_comb begin
+    for (int gi = 0; gi <= NUM_GROUPS - 1; gi++) begin
+      g_interp_i[gi] = si_val[3 * gi + 1];
+      g_map0_i[gi] = si_val[3 * gi];
+      g_map1_i[gi] = si_val[3 * gi + 2];
+      g_interp_q[gi] = sq_val[3 * gi + 1];
+      g_map0_q[gi] = sq_val[3 * gi];
+      g_map1_q[gi] = sq_val[3 * gi + 2];
+    end
+  end
+  // Compute wider intermediates for error detection (no .sext on Vec elements)
+  // two_interp = interp + interp -> SInt<IN_WIDTH+1> (auto-widen: SInt<N>+SInt<N>=SInt<N+1>)
+  // sum_maps = m0 + m1 -> SInt<IN_WIDTH+1> (same rule)
+  always_comb begin
+    for (int gi = 0; gi <= NUM_GROUPS - 1; gi++) begin
+      two_interp_i[gi] = g_interp_i[gi] + g_interp_i[gi];
+      sum_maps_i[gi] = g_map0_i[gi] + g_map1_i[gi];
+      two_interp_q[gi] = g_interp_q[gi] + g_interp_q[gi];
+      sum_maps_q[gi] = g_map0_q[gi] + g_map1_q[gi];
+    end
+  end
+  // Compute per-group error: |2*interp - sum| > 2*threshold
+  // two_interp: SInt<IN_WIDTH+1>, sum_maps: SInt<IN_WIDTH+2>
+  // Direct comparison without sext (avoids $bits on variable-indexed Vec)
+  always_comb begin
+    for (int gi = 0; gi <= NUM_GROUPS - 1; gi++) begin
+      if (two_interp_i[gi] - sum_maps_i[gi] > 2 * ERROR_THRESHOLD) begin
+        grp_err[gi] = 1;
+      end else if (two_interp_i[gi] - sum_maps_i[gi] < -(2 * ERROR_THRESHOLD)) begin
+        grp_err[gi] = 1;
+      end else if (two_interp_q[gi] - sum_maps_q[gi] > 2 * ERROR_THRESHOLD) begin
+        grp_err[gi] = 1;
+      end else if (two_interp_q[gi] - sum_maps_q[gi] < -(2 * ERROR_THRESHOLD)) begin
+        grp_err[gi] = 1;
+      end else begin
+        grp_err[gi] = 0;
+      end
+    end
+  end
+  // Accumulate error flag
   always_comb begin
     err_acc[0] = 0;
     for (int gi = 0; gi <= NUM_GROUPS - 1; gi++) begin
-      twice_interp_i[gi] = {{(IN_WIDTH + 2-$bits(si_val[3 * gi + 1])){si_val[3 * gi + 1][$bits(si_val[3 * gi + 1])-1]}}, si_val[3 * gi + 1]} + {{(IN_WIDTH + 2-$bits(si_val[3 * gi + 1])){si_val[3 * gi + 1][$bits(si_val[3 * gi + 1])-1]}}, si_val[3 * gi + 1]};
-      twice_interp_q[gi] = {{(IN_WIDTH + 2-$bits(sq_val[3 * gi + 1])){sq_val[3 * gi + 1][$bits(sq_val[3 * gi + 1])-1]}}, sq_val[3 * gi + 1]} + {{(IN_WIDTH + 2-$bits(sq_val[3 * gi + 1])){sq_val[3 * gi + 1][$bits(sq_val[3 * gi + 1])-1]}}, sq_val[3 * gi + 1]};
-      sum_mapped_i[gi] = {{(IN_WIDTH + 1-$bits(si_val[3 * gi])){si_val[3 * gi][$bits(si_val[3 * gi])-1]}}, si_val[3 * gi]} + {{(IN_WIDTH + 1-$bits(si_val[3 * gi + 2])){si_val[3 * gi + 2][$bits(si_val[3 * gi + 2])-1]}}, si_val[3 * gi + 2]};
-      sum_mapped_q[gi] = {{(IN_WIDTH + 1-$bits(sq_val[3 * gi])){sq_val[3 * gi][$bits(sq_val[3 * gi])-1]}}, sq_val[3 * gi]} + {{(IN_WIDTH + 1-$bits(sq_val[3 * gi + 2])){sq_val[3 * gi + 2][$bits(sq_val[3 * gi + 2])-1]}}, sq_val[3 * gi + 2]};
-      diff2_i[gi] = twice_interp_i[gi] - {{(IN_WIDTH + 2-$bits(sum_mapped_i[gi])){sum_mapped_i[gi][$bits(sum_mapped_i[gi])-1]}}, sum_mapped_i[gi]};
-      diff2_q[gi] = twice_interp_q[gi] - {{(IN_WIDTH + 2-$bits(sum_mapped_q[gi])){sum_mapped_q[gi][$bits(sum_mapped_q[gi])-1]}}, sum_mapped_q[gi]};
-      if (diff2_i[gi] > 2 * ERROR_THRESHOLD) begin
-        err_acc[gi + 1] = 1;
-      end else if (diff2_i[gi] < -(2 * ERROR_THRESHOLD)) begin
-        err_acc[gi + 1] = 1;
-      end else if (diff2_q[gi] > 2 * ERROR_THRESHOLD) begin
-        err_acc[gi + 1] = 1;
-      end else if (diff2_q[gi] < -(2 * ERROR_THRESHOLD)) begin
-        err_acc[gi + 1] = 1;
-      end else begin
-        err_acc[gi + 1] = err_acc[gi];
-      end
+      err_acc[gi + 1] = err_acc[gi] | grp_err[gi];
     end
-    // 2 * interp (shift left 1 of sign-extended value)
-    // sum of two mapped values
-    // diff2 = 2*interp - sum
-    // |diff2| > 2*threshold
   end
   // Bit mapping: -3->00, -1->01, 1->10, 3->11
+  // Output packing: symbol 0 at MSB
   always_comb begin
     bits_acc[0] = 0;
     for (int si = 0; si <= N - 1; si++) begin

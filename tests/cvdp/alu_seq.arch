@@ -6,31 +6,39 @@ module alu_seq
   port i_operand_b: in UInt<4>;
   port i_opcode: in UInt<3>;
   port i_key_in: in UInt<8>;
-  port reg o_result: out UInt<8> reset i_rst_b=>0;
+  port o_result: out UInt<8>;
 
-  default seq on i_clk rising;
+  reg default: reset i_rst_b => 0;
 
-  seq
-    if i_key_in != p_key
-      o_result <= 0;
-    else
+  reg result: UInt<8>;
+
+  wire key_match: Bool;
+  comb
+    key_match = i_key_in == p_key;
+    o_result = result;
+  end comb
+
+  seq on i_clk rising
+    if key_match
       if i_opcode == 0
-        o_result <= (i_operand_a.zext<8>() + i_operand_b.zext<8>()).trunc<8>();
+        result <= (i_operand_a.zext<9>() + i_operand_b.zext<9>()).trunc<8>();
       elsif i_opcode == 1
-        o_result <= (i_operand_a.zext<8>() - i_operand_b.zext<8>()).trunc<8>();
+        result <= (i_operand_a.zext<9>() - i_operand_b.zext<9>()).trunc<8>();
       elsif i_opcode == 2
-        o_result <= (i_operand_a.zext<8>() * i_operand_b.zext<8>()).trunc<8>();
+        result <= (i_operand_a.zext<8>() * i_operand_b.zext<8>()).trunc<8>();
       elsif i_opcode == 3
-        o_result <= (i_operand_a & i_operand_b).zext<8>();
+        result <= i_operand_a.zext<8>() & i_operand_b.zext<8>();
       elsif i_opcode == 4
-        o_result <= (i_operand_a | i_operand_b).zext<8>();
+        result <= i_operand_a.zext<8>() | i_operand_b.zext<8>();
       elsif i_opcode == 5
-        o_result <= (~i_operand_a).zext<8>();
+        result <= (~i_operand_a).zext<8>();
       elsif i_opcode == 6
-        o_result <= (i_operand_a ^ i_operand_b).zext<8>();
+        result <= i_operand_a.zext<8>() ^ i_operand_b.zext<8>();
       else
-        o_result <= (~(i_operand_a ^ i_operand_b)).zext<8>();
+        result <= (~(i_operand_a ^ i_operand_b)).zext<8>();
       end if
+    else
+      result <= 0;
     end if
   end seq
 end module alu_seq

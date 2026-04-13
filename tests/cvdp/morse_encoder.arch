@@ -1,120 +1,125 @@
 module morse_encoder
-  port ascii_in:     in UInt<8>;
-  port morse_out:    out UInt<10>;
+  port ascii_in: in UInt<8>;
+  port morse_out: out UInt<10>;
   port morse_length: out UInt<4>;
 
+  wire code: UInt<10>;
+  wire len: UInt<4>;
+
   comb
-    if ascii_in == 8'h41
-      morse_out = 10'd1;
-      morse_length = 4'd2;
-    elsif ascii_in == 8'h42
-      morse_out = 10'd8;
-      morse_length = 4'd4;
-    elsif ascii_in == 8'h43
-      morse_out = 10'd10;
-      morse_length = 4'd4;
-    elsif ascii_in == 8'h44
-      morse_out = 10'd4;
-      morse_length = 4'd3;
-    elsif ascii_in == 8'h45
-      morse_out = 10'd0;
-      morse_length = 4'd1;
-    elsif ascii_in == 8'h46
-      morse_out = 10'd2;
-      morse_length = 4'd4;
-    elsif ascii_in == 8'h47
-      morse_out = 10'd6;
-      morse_length = 4'd3;
-    elsif ascii_in == 8'h48
-      morse_out = 10'd0;
-      morse_length = 4'd4;
-    elsif ascii_in == 8'h49
-      morse_out = 10'd0;
-      morse_length = 4'd2;
-    elsif ascii_in == 8'h4A
-      morse_out = 10'd7;
-      morse_length = 4'd4;
-    elsif ascii_in == 8'h4B
-      morse_out = 10'd5;
-      morse_length = 4'd3;
-    elsif ascii_in == 8'h4C
-      morse_out = 10'd4;
-      morse_length = 4'd4;
-    elsif ascii_in == 8'h4D
-      morse_out = 10'd3;
-      morse_length = 4'd2;
-    elsif ascii_in == 8'h4E
-      morse_out = 10'd2;
-      morse_length = 4'd2;
-    elsif ascii_in == 8'h4F
-      morse_out = 10'd7;
-      morse_length = 4'd3;
-    elsif ascii_in == 8'h50
-      morse_out = 10'd6;
-      morse_length = 4'd4;
-    elsif ascii_in == 8'h51
-      morse_out = 10'd13;
-      morse_length = 4'd4;
-    elsif ascii_in == 8'h52
-      morse_out = 10'd2;
-      morse_length = 4'd3;
-    elsif ascii_in == 8'h53
-      morse_out = 10'd0;
-      morse_length = 4'd3;
-    elsif ascii_in == 8'h54
-      morse_out = 10'd1;
-      morse_length = 4'd1;
-    elsif ascii_in == 8'h55
-      morse_out = 10'd1;
-      morse_length = 4'd3;
-    elsif ascii_in == 8'h56
-      morse_out = 10'd1;
-      morse_length = 4'd4;
-    elsif ascii_in == 8'h57
-      morse_out = 10'd3;
-      morse_length = 4'd3;
-    elsif ascii_in == 8'h58
-      morse_out = 10'd9;
-      morse_length = 4'd4;
-    elsif ascii_in == 8'h59
-      morse_out = 10'd11;
-      morse_length = 4'd4;
-    elsif ascii_in == 8'h5A
-      morse_out = 10'd12;
-      morse_length = 4'd4;
-    elsif ascii_in == 8'h30
-      morse_out = 10'd31;
-      morse_length = 4'd5;
-    elsif ascii_in == 8'h31
-      morse_out = 10'd15;
-      morse_length = 4'd5;
-    elsif ascii_in == 8'h32
-      morse_out = 10'd7;
-      morse_length = 4'd5;
-    elsif ascii_in == 8'h33
-      morse_out = 10'd3;
-      morse_length = 4'd5;
-    elsif ascii_in == 8'h34
-      morse_out = 10'd1;
-      morse_length = 4'd5;
-    elsif ascii_in == 8'h35
-      morse_out = 10'd0;
-      morse_length = 4'd5;
-    elsif ascii_in == 8'h36
-      morse_out = 10'd16;
-      morse_length = 4'd5;
-    elsif ascii_in == 8'h37
-      morse_out = 10'd24;
-      morse_length = 4'd5;
-    elsif ascii_in == 8'h38
-      morse_out = 10'd28;
-      morse_length = 4'd5;
-    elsif ascii_in == 8'h39
-      morse_out = 10'd30;
-      morse_length = 4'd5;
+    if ascii_in == 65
+      code = 0b01;
+      len = 2;
+    elsif ascii_in == 66
+      code = 0b1000;
+      len = 4;
+    elsif ascii_in == 67
+      code = 0b1010;
+      len = 4;
+    elsif ascii_in == 68
+      code = 0b100;
+      len = 3;
+    elsif ascii_in == 69
+      code = 0b0;
+      len = 1;
+    elsif ascii_in == 70
+      code = 0b0010;
+      len = 4;
+    elsif ascii_in == 71
+      code = 0b110;
+      len = 3;
+    elsif ascii_in == 72
+      code = 0b0000;
+      len = 4;
+    elsif ascii_in == 73
+      code = 0b00;
+      len = 2;
+    elsif ascii_in == 74
+      code = 0b0111;
+      len = 4;
+    elsif ascii_in == 75
+      code = 0b101;
+      len = 3;
+    elsif ascii_in == 76
+      code = 0b0100;
+      len = 4;
+    elsif ascii_in == 77
+      code = 0b11;
+      len = 2;
+    elsif ascii_in == 78
+      code = 0b10;
+      len = 2;
+    elsif ascii_in == 79
+      code = 0b111;
+      len = 3;
+    elsif ascii_in == 80
+      code = 0b0110;
+      len = 4;
+    elsif ascii_in == 81
+      code = 0b1101;
+      len = 4;
+    elsif ascii_in == 82
+      code = 0b010;
+      len = 3;
+    elsif ascii_in == 83
+      code = 0b000;
+      len = 3;
+    elsif ascii_in == 84
+      code = 0b1;
+      len = 1;
+    elsif ascii_in == 85
+      code = 0b001;
+      len = 3;
+    elsif ascii_in == 86
+      code = 0b0001;
+      len = 4;
+    elsif ascii_in == 87
+      code = 0b011;
+      len = 3;
+    elsif ascii_in == 88
+      code = 0b1001;
+      len = 4;
+    elsif ascii_in == 89
+      code = 0b1011;
+      len = 4;
+    elsif ascii_in == 90
+      code = 0b1100;
+      len = 4;
+    elsif ascii_in == 48
+      code = 0b11111;
+      len = 5;
+    elsif ascii_in == 49
+      code = 0b01111;
+      len = 5;
+    elsif ascii_in == 50
+      code = 0b00111;
+      len = 5;
+    elsif ascii_in == 51
+      code = 0b00011;
+      len = 5;
+    elsif ascii_in == 52
+      code = 0b00001;
+      len = 5;
+    elsif ascii_in == 53
+      code = 0b00000;
+      len = 5;
+    elsif ascii_in == 54
+      code = 0b10000;
+      len = 5;
+    elsif ascii_in == 55
+      code = 0b11000;
+      len = 5;
+    elsif ascii_in == 56
+      code = 0b11100;
+      len = 5;
+    elsif ascii_in == 57
+      code = 0b11110;
+      len = 5;
     else
-      morse_out = 10'd0;
-      morse_length = 4'd0;
+      code = 0;
+      len = 0;
     end if
+    morse_out = code;
+    morse_length = len;
   end comb
 end module morse_encoder

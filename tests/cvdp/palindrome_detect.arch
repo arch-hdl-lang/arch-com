@@ -1,22 +1,21 @@
 module palindrome_detect
   param N: const = 3;
-
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync, High>;
   port bit_stream: in Bool;
   port palindrome_detected: out Bool;
 
-  reg sr0: Bool reset reset=>0;
-  reg sr1: Bool reset reset=>0;
-  reg sr2: Bool reset reset=>0;
+  reg sr: UInt<3> reset reset => 0;
 
-  seq on clk rising
-    sr0 <= bit_stream;
-    sr1 <= sr0;
-    sr2 <= sr1;
-  end seq
+  wire sr_next: UInt<3>;
 
   comb
-    palindrome_detected = (sr0 == sr2);
+    sr_next = (sr[1:0] << 1) | bit_stream.zext<3>();
   end comb
+
+  seq on clk rising
+    sr <= sr_next;
+  end seq
+
+  let palindrome_detected = sr[2:2] == sr[0:0];
 end module palindrome_detect

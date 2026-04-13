@@ -1,0 +1,68 @@
+module restoring_division
+  param WIDTH: const = 8;
+
+  port clk:       in Clock<SysDomain>;
+  port rst:       in Reset<Async, Low>;
+  port start:     in Bool;
+  port dividend:  in UInt<WIDTH>;
+  port divisor:   in UInt<WIDTH>;
+  port reg quotient:  out UInt<WIDTH> reset rst => 0;
+  port reg remainder: out UInt<WIDTH> reset rst => 0;
+  port reg valid:     out Bool reset rst => false;
+
+  default seq on clk rising;
+
+  reg running:   Bool reset rst => false;
+  reg count:     UInt<WIDTH> reset rst => 0;
+  reg dvd:       UInt<WIDTH> reset rst => 0;
+  reg dvs:       UInt<WIDTH> reset rst => 0;
+  reg q_reg:     UInt<WIDTH> reset rst => 0;
+  reg rem_reg:   UInt<WIDTH+1> reset rst => 0;
+
+  // Combinational: shifted partial remainder and subtraction
+  wire shifted_rem: UInt<WIDTH+1>;
+  wire sub_result:  UInt<WIDTH+1>;
+  wire next_q_bit:  UInt<1>;
+
+  comb
+    shifted_rem = {rem_reg[WIDTH-1:0], dvd[WIDTH-1:WIDTH-1]};
+    sub_result  = (shifted_rem - dvs.zext<WIDTH+1>()).trunc<WIDTH+1>();
+    if ~sub_result[WIDTH]
+      next_q_bit = 1;
+    else
+      next_q_bit = 0;
+    end if
+  end comb
+
+  seq
+    valid <= false;
+    if start & ~running
+      running   <= true;
+      count     <= 0;
+      dvd       <= dividend;
+      dvs       <= divisor;
+      q_reg     <= 0;
+      rem_reg   <= 0;
+    elsif running
+      if ~sub_result[WIDTH]
+        rem_reg <= sub_result;
+      else
+        rem_reg <= shifted_rem;
+      end if
+      q_reg <= {q_reg[WIDTH-2:0], next_q_bit};
+      dvd   <= dvd << 1;
+      count <= (count + 1).trunc<WIDTH>();
+      if count == (WIDTH - 1).zext<WIDTH>()
+        running   <= false;
+        valid     <= true;
+        quotient  <= {q_reg[WIDTH-2:0], next_q_bit};
+        if ~sub_result[WIDTH]
+          remainder <= sub_result[WIDTH-1:0];
+        else
+          remainder <= shifted_rem[WIDTH-1:0];
+        end if
+      end if
+    end if
+  end seq
+
+end module restoring_division

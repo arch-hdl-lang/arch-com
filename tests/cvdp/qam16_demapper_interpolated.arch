@@ -1,0 +1,151 @@
+module qam16_demapper_interpolated
+  param N: const = 4;
+  param OUT_WIDTH: const = 4;
+  param IN_WIDTH: const = 3;
+  param ERROR_THRESHOLD: const = 1;
+  param TOTAL_SAMPLES: const = N + N / 2;
+  param TOTAL_I_WIDTH: const = TOTAL_SAMPLES * IN_WIDTH;
+  param TOTAL_OUT_WIDTH: const = N * OUT_WIDTH;
+  param NUM_GROUPS: const = N / 2;
+
+  port I: in UInt<TOTAL_I_WIDTH>;
+  port Q: in UInt<TOTAL_I_WIDTH>;
+  port bits: out UInt<TOTAL_OUT_WIDTH>;
+  port error_flag: out UInt<1>;
+
+  // All sample slots (mapped + interp interleaved)
+  wire si_val: Vec<SInt<IN_WIDTH>, TOTAL_SAMPLES>;
+  wire sq_val: Vec<SInt<IN_WIDTH>, TOTAL_SAMPLES>;
+
+  // Mapped values per output symbol
+  wire mi: Vec<SInt<IN_WIDTH>, N>;
+  wire mq: Vec<SInt<IN_WIDTH>, N>;
+
+  // Per-group values extracted to individual wires (avoids $bits on variable-indexed Vec)
+  wire g_interp_i: Vec<SInt<IN_WIDTH>, NUM_GROUPS>;
+  wire g_map0_i:   Vec<SInt<IN_WIDTH>, NUM_GROUPS>;
+  wire g_map1_i:   Vec<SInt<IN_WIDTH>, NUM_GROUPS>;
+  wire g_interp_q: Vec<SInt<IN_WIDTH>, NUM_GROUPS>;
+  wire g_map0_q:   Vec<SInt<IN_WIDTH>, NUM_GROUPS>;
+  wire g_map1_q:   Vec<SInt<IN_WIDTH>, NUM_GROUPS>;
+
+  // Wider intermediates for error detection
+  // two_interp = interp + interp: SInt<IN_WIDTH+1>
+  // sum_maps = m0 + m1: SInt<IN_WIDTH+1> (SInt<IN_WIDTH> + SInt<IN_WIDTH>)
+  wire two_interp_i: Vec<SInt<IN_WIDTH+1>, NUM_GROUPS>;
+  wire sum_maps_i:   Vec<SInt<IN_WIDTH+1>, NUM_GROUPS>;
+  wire two_interp_q: Vec<SInt<IN_WIDTH+1>, NUM_GROUPS>;
+  wire sum_maps_q:   Vec<SInt<IN_WIDTH+1>, NUM_GROUPS>;
+
+  // Error per group and accumulator
+  wire grp_err: Vec<UInt<1>, NUM_GROUPS>;
+  wire err_acc: Vec<UInt<1>, NUM_GROUPS + 1>;
+
+  wire i_bits: Vec<UInt<2>, N>;
+  wire q_bits: Vec<UInt<2>, N>;
+  wire bits_acc: Vec<UInt<TOTAL_OUT_WIDTH>, N + 1>;
+
+  // Extract samples (pack_signal puts I_values[0] at MSB: index k at (TOTAL_SAMPLES-1-k)*IN_WIDTH)
+  comb
+    for k in 0..TOTAL_SAMPLES-1
+      si_val[k] = (I >> ((TOTAL_SAMPLES - 1 - k) * IN_WIDTH)).trunc<IN_WIDTH>() as SInt<IN_WIDTH>;
+      sq_val[k] = (Q >> ((TOTAL_SAMPLES - 1 - k) * IN_WIDTH)).trunc<IN_WIDTH>() as SInt<IN_WIDTH>;
+    end for
+  end comb
+
+  // Extract mapped values
+  comb
+    for si in 0..N-1
+      if si % 2 == 0
+        mi[si] = si_val[3 * (si / 2)];
+        mq[si] = sq_val[3 * (si / 2)];
+      else
+        mi[si] = si_val[3 * (si / 2) + 2];
+        mq[si] = sq_val[3 * (si / 2) + 2];
+      end if
+    end for
+  end comb
+
+  // Extract per-group values into individual wires
+  comb
+    for gi in 0..NUM_GROUPS-1
+      g_interp_i[gi] = si_val[3 * gi + 1];
+      g_map0_i[gi]   = si_val[3 * gi];
+      g_map1_i[gi]   = si_val[3 * gi + 2];
+      g_interp_q[gi] = sq_val[3 * gi + 1];
+      g_map0_q[gi]   = sq_val[3 * gi];
+      g_map1_q[gi]   = sq_val[3 * gi + 2];
+    end for
+  end comb
+
+  // Compute wider intermediates for error detection (no .sext on Vec elements)
+  // two_interp = interp + interp -> SInt<IN_WIDTH+1> (auto-widen: SInt<N>+SInt<N>=SInt<N+1>)
+  // sum_maps = m0 + m1 -> SInt<IN_WIDTH+1> (same rule)
+  comb
+    for gi in 0..NUM_GROUPS-1
+      two_interp_i[gi] = g_interp_i[gi] + g_interp_i[gi];
+      sum_maps_i[gi]   = g_map0_i[gi] + g_map1_i[gi];
+      two_interp_q[gi] = g_interp_q[gi] + g_interp_q[gi];
+      sum_maps_q[gi]   = g_map0_q[gi] + g_map1_q[gi];
+    end for
+  end comb
+
+  // Compute per-group error: |2*interp - sum| > 2*threshold
+  // two_interp: SInt<IN_WIDTH+1>, sum_maps: SInt<IN_WIDTH+2>
+  // Direct comparison without sext (avoids $bits on variable-indexed Vec)
+  comb
+    for gi in 0..NUM_GROUPS-1
+      if (two_interp_i[gi] - sum_maps_i[gi]) > (2 * ERROR_THRESHOLD)
+        grp_err[gi] = 1;
+      elsif (two_interp_i[gi] - sum_maps_i[gi]) < (-(2 * ERROR_THRESHOLD))
+        grp_err[gi] = 1;
+      elsif (two_interp_q[gi] - sum_maps_q[gi]) > (2 * ERROR_THRESHOLD)
+        grp_err[gi] = 1;
+      elsif (two_interp_q[gi] - sum_maps_q[gi]) < (-(2 * ERROR_THRESHOLD))
+        grp_err[gi] = 1;
+      else
+        grp_err[gi] = 0;
+      end if
+    end for
+  end comb
+
+  // Accumulate error flag
+  comb
+    err_acc[0] = 0;
+    for gi in 0..NUM_GROUPS-1
+      err_acc[gi + 1] = err_acc[gi] | grp_err[gi];
+    end for
+  end comb
+
+  // Bit mapping: -3->00, -1->01, 1->10, 3->11
+  // Output packing: symbol 0 at MSB
+  comb
+    bits_acc[0] = 0;
+    for si in 0..N-1
+      if mi[si] < (-2)
+        i_bits[si] = 0;
+      elsif mi[si] < 0
+        i_bits[si] = 1;
+      elsif mi[si] < 2
+        i_bits[si] = 2;
+      else
+        i_bits[si] = 3;
+      end if
+
+      if mq[si] < (-2)
+        q_bits[si] = 0;
+      elsif mq[si] < 0
+        q_bits[si] = 1;
+      elsif mq[si] < 2
+        q_bits[si] = 2;
+      else
+        q_bits[si] = 3;
+      end if
+
+      bits_acc[si + 1] = bits_acc[si] | ({i_bits[si], q_bits[si]}.zext<TOTAL_OUT_WIDTH>() << ((N - 1 - si) * OUT_WIDTH));
+    end for
+  end comb
+
+  let bits = bits_acc[N];
+  let error_flag = err_acc[NUM_GROUPS];
+end module qam16_demapper_interpolated

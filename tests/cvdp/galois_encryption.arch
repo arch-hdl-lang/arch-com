@@ -1,0 +1,164 @@
+// GF(2^8) multiply-by-2 (AES polynomial 0x11B)
+function xTimes02(b: UInt<8>) -> UInt<8>
+  let shifted: UInt<9> = b.zext<9>() << 1;
+  let lo8: UInt<8> = shifted[7:0];
+  return b[7] ? (lo8 ^ 8'h1B) : lo8;
+end function xTimes02
+
+// GF(2^8) multiply-by-3
+function xTimes03(b: UInt<8>) -> UInt<8>
+  return xTimes02(b) ^ b;
+end function xTimes03
+
+// GF(2^8) multiply-by-9
+function xTimes09(b: UInt<8>) -> UInt<8>
+  return xTimes02(xTimes02(xTimes02(b))) ^ b;
+end function xTimes09
+
+// GF(2^8) multiply-by-0B
+function xTimes0B(b: UInt<8>) -> UInt<8>
+  return xTimes02(xTimes02(xTimes02(b))) ^ xTimes03(b);
+end function xTimes0B
+
+// GF(2^8) multiply-by-0D
+function xTimes0D(b: UInt<8>) -> UInt<8>
+  return xTimes02(xTimes02(xTimes02(b))) ^ xTimes02(xTimes02(b)) ^ b;
+end function xTimes0D
+
+// GF(2^8) multiply-by-0E
+function xTimes0E(b: UInt<8>) -> UInt<8>
+  return xTimes02(xTimes02(xTimes02(b))) ^ xTimes02(xTimes02(b)) ^ xTimes02(b);
+end function xTimes0E
+
+// Encrypt one column: 4 row bytes + 4 key bytes → 32-bit result {e0,e1,e2,e3}
+function encryptColumn(b0: UInt<8>, b1: UInt<8>, b2: UInt<8>, b3: UInt<8>,
+                       k0: UInt<8>, k1: UInt<8>, k2: UInt<8>, k3: UInt<8>) -> UInt<32>
+  let e0: UInt<8> = xTimes02(b0) ^ xTimes03(b1) ^ b2           ^ b3           ^ k0;
+  let e1: UInt<8> = b0           ^ xTimes02(b1) ^ xTimes03(b2) ^ b3           ^ k1;
+  let e2: UInt<8> = b0           ^ b1           ^ xTimes02(b2) ^ xTimes03(b3) ^ k2;
+  let e3: UInt<8> = xTimes03(b0) ^ b1           ^ b2           ^ xTimes02(b3) ^ k3;
+  return {e0, e1, e2, e3};
+end function encryptColumn
+
+// Decrypt one column
+function decryptColumn(b0: UInt<8>, b1: UInt<8>, b2: UInt<8>, b3: UInt<8>,
+                       k0: UInt<8>, k1: UInt<8>, k2: UInt<8>, k3: UInt<8>) -> UInt<32>
+  let x0: UInt<8> = b0 ^ k0;
+  let x1: UInt<8> = b1 ^ k1;
+  let x2: UInt<8> = b2 ^ k2;
+  let x3: UInt<8> = b3 ^ k3;
+  let d0: UInt<8> = xTimes0E(x0) ^ xTimes0B(x1) ^ xTimes0D(x2) ^ xTimes09(x3);
+  let d1: UInt<8> = xTimes0E(x1) ^ xTimes0B(x2) ^ xTimes0D(x3) ^ xTimes09(x0);
+  let d2: UInt<8> = xTimes0E(x2) ^ xTimes0B(x3) ^ xTimes0D(x0) ^ xTimes09(x1);
+  let d3: UInt<8> = xTimes0E(x3) ^ xTimes0B(x0) ^ xTimes0D(x1) ^ xTimes09(x2);
+  return {d0, d1, d2, d3};
+end function decryptColumn
+
+module galois_encryption
+  param NBW_DATA: const = 128;
+  param NBW_KEY: const = 32;
+
+  port clk: in Clock<SysDomain>;
+  port rst_async_n: in Reset<Async, Low>;
+
+  port i_update_key: in Bool;
+  port i_key: in UInt<NBW_KEY>;
+  port i_valid: in Bool;
+  port i_data: in UInt<NBW_DATA>;
+  port i_encrypt: in Bool;
+  port reg o_data: out UInt<NBW_DATA> reset rst_async_n => 0;
+  port reg o_valid: out Bool reset rst_async_n => 0;
+
+  reg default: reset rst_async_n => 0;
+
+  // Key register
+  reg key_reg: UInt<NBW_KEY>;
+
+  // Pipeline stage 1: latch inputs
+  reg s1_valid:   Bool;
+  reg s1_data:    UInt<NBW_DATA>;
+  reg s1_encrypt: Bool;
+
+  // Pipeline stage 2: hold computed result
+  reg s2_valid: Bool;
+  reg s2_data:  UInt<NBW_DATA>;
+
+  // Key bytes
+  let k0: UInt<8> = key_reg[31:24];
+  let k1: UInt<8> = key_reg[23:16];
+  let k2: UInt<8> = key_reg[15:8];
+  let k3: UInt<8> = key_reg[7:0];
+
+  // Stage-1 data bytes: big-endian 4x4 matrix
+  // layout: [row][col] at bit (120 - 8*row - 32*col) +: 8
+  let d00: UInt<8> = s1_data[127:120];
+  let d10: UInt<8> = s1_data[119:112];
+  let d20: UInt<8> = s1_data[111:104];
+  let d30: UInt<8> = s1_data[103:96];
+  let d01: UInt<8> = s1_data[95:88];
+  let d11: UInt<8> = s1_data[87:80];
+  let d21: UInt<8> = s1_data[79:72];
+  let d31: UInt<8> = s1_data[71:64];
+  let d02: UInt<8> = s1_data[63:56];
+  let d12: UInt<8> = s1_data[55:48];
+  let d22: UInt<8> = s1_data[47:40];
+  let d32: UInt<8> = s1_data[39:32];
+  let d03: UInt<8> = s1_data[31:24];
+  let d13: UInt<8> = s1_data[23:16];
+  let d23: UInt<8> = s1_data[15:8];
+  let d33: UInt<8> = s1_data[7:0];
+
+  // Process each column
+  let enc_col0: UInt<32> = encryptColumn(d00, d10, d20, d30, k0, k1, k2, k3);
+  let enc_col1: UInt<32> = encryptColumn(d01, d11, d21, d31, k0, k1, k2, k3);
+  let enc_col2: UInt<32> = encryptColumn(d02, d12, d22, d32, k0, k1, k2, k3);
+  let enc_col3: UInt<32> = encryptColumn(d03, d13, d23, d33, k0, k1, k2, k3);
+
+  let dec_col0: UInt<32> = decryptColumn(d00, d10, d20, d30, k0, k1, k2, k3);
+  let dec_col1: UInt<32> = decryptColumn(d01, d11, d21, d31, k0, k1, k2, k3);
+  let dec_col2: UInt<32> = decryptColumn(d02, d12, d22, d32, k0, k1, k2, k3);
+  let dec_col3: UInt<32> = decryptColumn(d03, d13, d23, d33, k0, k1, k2, k3);
+
+  // Assemble results: column-major layout
+  // colN = {row0, row1, row2, row3} of column N
+  // Output: col0 in [127:96], col1 in [95:64], col2 in [63:32], col3 in [31:0]
+  let enc_result: UInt<128> = {enc_col0[31:24], enc_col0[23:16], enc_col0[15:8], enc_col0[7:0],
+                                enc_col1[31:24], enc_col1[23:16], enc_col1[15:8], enc_col1[7:0],
+                                enc_col2[31:24], enc_col2[23:16], enc_col2[15:8], enc_col2[7:0],
+                                enc_col3[31:24], enc_col3[23:16], enc_col3[15:8], enc_col3[7:0]};
+
+  let dec_result: UInt<128> = {dec_col0[31:24], dec_col0[23:16], dec_col0[15:8], dec_col0[7:0],
+                                dec_col1[31:24], dec_col1[23:16], dec_col1[15:8], dec_col1[7:0],
+                                dec_col2[31:24], dec_col2[23:16], dec_col2[15:8], dec_col2[7:0],
+                                dec_col3[31:24], dec_col3[23:16], dec_col3[15:8], dec_col3[7:0]};
+
+  let computed: UInt<128> = s1_encrypt ? enc_result : dec_result;
+
+  default seq on clk rising;
+
+  seq
+    // Key update
+    if i_update_key
+      key_reg <= i_key;
+    end if
+
+    // Stage 1: latch inputs
+    s1_valid   <= i_valid;
+    s1_data    <= i_data;
+    s1_encrypt <= i_encrypt;
+
+    // Stage 2: compute result, only update data when s1 is valid
+    s2_valid <= s1_valid;
+    if s1_valid
+      s2_data <= computed;
+    end if
+
+    // Output: pass through s2; clear o_data to 0 when s2 is not valid
+    o_valid <= s2_valid;
+    if s2_valid
+      o_data <= s2_data;
+    else
+      o_data <= 0;
+    end if
+  end seq
+end module galois_encryption
