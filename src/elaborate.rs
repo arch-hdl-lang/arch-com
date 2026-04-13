@@ -483,6 +483,7 @@ fn expand_generate_for(
                 GenItem::Port(p) => ports.push(subst_port(p, var, i)),
                 GenItem::Inst(inst) => body.push(ModuleBodyItem::Inst(subst_inst(inst, var, i))),
                 GenItem::Thread(t) => body.push(ModuleBodyItem::Thread(subst_thread(t, var, i))),
+                GenItem::Assert(a) => body.push(ModuleBodyItem::Assert(subst_assert(a, var, i))),
             }
         }
     }
@@ -511,6 +512,7 @@ fn expand_generate_if(
             GenItem::Port(p) => ports.push(p),
             GenItem::Inst(inst) => body.push(ModuleBodyItem::Inst(inst)),
             GenItem::Thread(t) => body.push(ModuleBodyItem::Thread(t)),
+            GenItem::Assert(a) => body.push(ModuleBodyItem::Assert(a)),
         }
     }
     Ok((ports, body))
@@ -620,6 +622,7 @@ fn subst_thread_stmt(stmt: &ThreadStmt, var: &str, val: i64) -> ThreadStmt {
             cond: subst_expr_names(cond.clone(), var, val),
             span: *span,
         },
+        ThreadStmt::Log(l) => ThreadStmt::Log(l.clone()),
     }
 }
 
@@ -684,6 +687,15 @@ fn subst_expr_names(expr: Expr, var: &str, val: i64) -> Expr {
 
 fn subst_ident(ident: &Ident, var: &str, val: i64) -> Ident {
     Ident { name: subst_name(&ident.name, var, val), span: ident.span }
+}
+
+fn subst_assert(a: &AssertDecl, var: &str, val: i64) -> AssertDecl {
+    AssertDecl {
+        kind: a.kind.clone(),
+        name: a.name.as_ref().map(|n| subst_ident(n, var, val)),
+        expr: subst_expr(a.expr.clone(), var, val),
+        span: a.span,
+    }
 }
 
 fn subst_name(name: &str, var: &str, val: i64) -> String {
@@ -1746,6 +1758,7 @@ fn collect_thread_signals(body: &[ThreadStmt]) -> (HashSet<String>, HashSet<Stri
                     walk_stmts(body, comb_driven, seq_driven, all_read);
                     collect_expr_reads(cond, all_read);
                 }
+                ThreadStmt::Log(_) => {}
             }
         }
     }
@@ -2009,6 +2022,9 @@ fn partition_thread_body(
             ThreadStmt::SeqAssign(ra) => {
                 cur_seq.push(Stmt::Assign(ra.clone()));
             }
+            ThreadStmt::Log(l) => {
+                cur_seq.push(Stmt::Log(l.clone()));
+            }
             ThreadStmt::WaitUntil(cond, _) => {
                 // `wait until` is a pure state boundary.
                 // ALL pending assigns (comb + seq) go into a prior state
@@ -2195,6 +2211,9 @@ fn partition_thread_body(
                             let (comb_if, seq_if) = thread_if_to_fsm_stmts(ie);
                             if let Some(c) = comb_if { do_comb.push(c); }
                             if let Some(s) = seq_if { do_seq.push(s); }
+                        }
+                        ThreadStmt::Log(l) => {
+                            do_seq.push(Stmt::Log(l.clone()));
                         }
                         _ => {
                             // do..until body should only contain simple assigns
@@ -2721,6 +2740,7 @@ fn rewrite_loop_var(stmt: &ThreadStmt, var: &str, replacement: &str) -> ThreadSt
             cond: rewrite_var_expr(cond.clone(), var, replacement),
             span: *span,
         },
+        ThreadStmt::Log(l) => ThreadStmt::Log(l.clone()),
     }
 }
 
@@ -2760,6 +2780,7 @@ fn thread_if_to_fsm_stmts(ie: &ThreadIfElse) -> (Option<CombStmt>, Option<Stmt>)
             match s {
                 ThreadStmt::CombAssign(ca) => comb.push(CombStmt::Assign(ca.clone())),
                 ThreadStmt::SeqAssign(ra) => seq.push(Stmt::Assign(ra.clone())),
+                ThreadStmt::Log(l) => seq.push(Stmt::Log(l.clone())),
                 ThreadStmt::IfElse(nested) => {
                     let (c, s) = thread_if_to_fsm_stmts(nested);
                     if let Some(c) = c { comb.push(c); }
@@ -3239,9 +3260,13 @@ fn lower_single_thread(
     // Step 7: Build the FsmDecl
     let fsm_name = format!("_{module_name}_{thread_name}");
     let fsm = FsmDecl {
-        name: Ident::new(fsm_name.clone(), sp),
-        params: Vec::new(),
-        ports: fsm_ports.clone(),
+        common: ConstructCommon {
+            name: Ident::new(fsm_name.clone(), sp),
+            params: Vec::new(),
+            ports: fsm_ports.clone(),
+            asserts: Vec::new(),
+            span: sp,
+        },
         regs: fsm_regs,
         lets: Vec::new(),
         wires: Vec::new(),
@@ -3250,7 +3275,6 @@ fn lower_single_thread(
         default_comb,
         default_seq: Vec::new(),
         states: state_bodies,
-        span: sp,
     };
 
     // Step 8: Build the InstDecl

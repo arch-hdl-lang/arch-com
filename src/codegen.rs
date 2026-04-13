@@ -506,6 +506,13 @@ impl<'a> Codegen<'a> {
                     // Threads and resources are lowered before codegen
                     unreachable!("thread/resource should have been lowered before codegen");
                 }
+                ModuleBodyItem::Assert(a) => {
+                    let clk_name = m_clone.ports.iter()
+                        .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+                        .map(|p| p.name.name.clone())
+                        .unwrap_or_else(|| "clk".to_string());
+                    self.emit_assert_sva(a, &m_clone.name.name, &clk_name);
+                }
             }
         }
 
@@ -1869,6 +1876,9 @@ impl<'a> Codegen<'a> {
                         GenItem::Inst(inst) => self.emit_inst(inst),
                         GenItem::Port(_) => unreachable!("port GenItems should have been lifted by elaboration"),
                         GenItem::Thread(_) => unreachable!("thread GenItems should have been lowered by elaboration"),
+                        GenItem::Assert(_) => {
+                            // SVA inside generate for: not yet supported in SV codegen (SVA needs static clock ref)
+                        }
                     }
                 }
                 self.indent -= 1;
@@ -1883,6 +1893,7 @@ impl<'a> Codegen<'a> {
                         GenItem::Inst(inst) => self.emit_inst(inst),
                         GenItem::Port(_) => unreachable!("port GenItems should have been lifted by elaboration"),
                         GenItem::Thread(_) => unreachable!("thread GenItems should have been lowered by elaboration"),
+                        GenItem::Assert(_) => {}
                     }
                 }
                 self.indent -= 1;
@@ -1893,13 +1904,45 @@ impl<'a> Codegen<'a> {
                         match item {
                             GenItem::Inst(inst) => self.emit_inst(inst),
                             GenItem::Port(_) => unreachable!("port GenItems should have been lifted by elaboration"),
-                        GenItem::Thread(_) => unreachable!("thread GenItems should have been lowered by elaboration"),
+                            GenItem::Thread(_) => unreachable!("thread GenItems should have been lowered by elaboration"),
+                            GenItem::Assert(_) => {}
                         }
                     }
                     self.indent -= 1;
                 }
                 self.line("end");
             }
+        }
+    }
+
+    fn emit_assert_sva(&mut self, a: &AssertDecl, construct_name: &str, clk: &str) {
+        let expr_str = self.emit_expr_str(&a.expr);
+        let label = a.name.as_ref().map(|n| n.name.as_str().to_string())
+            .unwrap_or_else(|| match a.kind {
+                AssertKind::Assert => "_assert_anon".to_string(),
+                AssertKind::Cover  => "_cover_anon".to_string(),
+            });
+        match a.kind {
+            AssertKind::Assert => {
+                self.line(&format!(
+                    "{label}: assert property (@(posedge {clk}) {expr_str})"
+                ));
+                self.line(&format!(
+                    "  else $fatal(1, \"ASSERTION FAILED: {construct_name}.{label}\");"
+                ));
+            }
+            AssertKind::Cover => {
+                self.line(&format!(
+                    "{label}: cover property (@(posedge {clk}) {expr_str});"
+                ));
+            }
+        }
+    }
+
+    /// Emit assert/cover SVA for construct-level assert declarations (FSM, FIFO, etc.)
+    fn emit_asserts_for_construct(&mut self, asserts: &[AssertDecl], name: &str, clk: &str) {
+        for a in asserts {
+            self.emit_assert_sva(a, name, clk);
         }
     }
 
@@ -2224,6 +2267,16 @@ impl<'a> Codegen<'a> {
             self.line("endcase");
             self.indent -= 1;
             self.line("end");
+        }
+
+        // ── Assert / cover SVA ───────────────────────────────────────────────
+        if !f.asserts.is_empty() {
+            let clk_port = f.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)));
+            let clk = clk_port.map(|p| p.name.name.clone()).unwrap_or_else(|| "clk".to_string());
+            self.line("");
+            let asserts = f.asserts.clone();
+            let fname = f.name.name.clone();
+            self.emit_asserts_for_construct(&asserts, &fname, &clk);
         }
 
         self.indent -= 1;
@@ -2597,6 +2650,16 @@ impl<'a> Codegen<'a> {
             }
         }
 
+        // ── Assert / cover SVA ───────────────────────────────────────────────
+        if !p.asserts.is_empty() {
+            let clk = p.ports.iter().find(|pt| matches!(&pt.ty, TypeExpr::Clock(_)))
+                .map(|pt| pt.name.name.clone()).unwrap_or_else(|| "clk".to_string());
+            self.line("");
+            let asserts = p.asserts.clone();
+            let pname = p.name.name.clone();
+            self.emit_asserts_for_construct(&asserts, &pname, &clk);
+        }
+
         self.indent -= 1;
         self.line("");
         self.line("endmodule");
@@ -2945,6 +3008,9 @@ impl<'a> Codegen<'a> {
             ExprKind::Binary(op, lhs, rhs) => {
                 let l = self.emit_pipeline_stage_expr_str(lhs, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
                 let r = self.emit_pipeline_stage_expr_str(rhs, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                if *op == BinOp::Implies {
+                    return format!("(!{l} || {r})");
+                }
                 let op_str = match op {
                     BinOp::Add | BinOp::AddWrap => "+", BinOp::Sub | BinOp::SubWrap => "-",
                     BinOp::Mul | BinOp::MulWrap => "*",
@@ -2953,9 +3019,14 @@ impl<'a> Codegen<'a> {
                     BinOp::Lte => "<=", BinOp::Gte => ">=", BinOp::And => "&&",
                     BinOp::Or => "||", BinOp::BitAnd => "&", BinOp::BitOr => "|",
                     BinOp::BitXor => "^", BinOp::Shl => "<<", BinOp::Shr => ">>",
+                    BinOp::Implies => unreachable!(),
                 };
                 if matches!(op, BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap) {
-                    format!("($bits({l}) > $bits({r}) ? $bits({l}) : $bits({r}))'({l} {op_str} {r})")
+                    let lw = self.infer_sv_width_str(lhs);
+                    let rw = self.infer_sv_width_str(rhs);
+                    let w = if lw == rw { lw } else { format!("({lw} > {rw} ? {lw} : {rw})") };
+                    let wp = Self::paren_width(&w);
+                    format!("{wp}'({l} {op_str} {r})")
                 } else {
                     format!("({l} {op_str} {r})")
                 }
@@ -3117,6 +3188,9 @@ impl<'a> Codegen<'a> {
             ExprKind::Binary(op, lhs, rhs) => {
                 let l = self.emit_pipeline_expr_str(lhs, stage_names, stage_regs, port_names);
                 let r = self.emit_pipeline_expr_str(rhs, stage_names, stage_regs, port_names);
+                if *op == BinOp::Implies {
+                    return format!("(!{l} || {r})");
+                }
                 let op_str = match op {
                     BinOp::Add | BinOp::AddWrap => "+", BinOp::Sub | BinOp::SubWrap => "-",
                     BinOp::Mul | BinOp::MulWrap => "*",
@@ -3125,9 +3199,14 @@ impl<'a> Codegen<'a> {
                     BinOp::Lte => "<=", BinOp::Gte => ">=", BinOp::And => "&&",
                     BinOp::Or => "||", BinOp::BitAnd => "&", BinOp::BitOr => "|",
                     BinOp::BitXor => "^", BinOp::Shl => "<<", BinOp::Shr => ">>",
+                    BinOp::Implies => unreachable!(),
                 };
                 if matches!(op, BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap) {
-                    format!("($bits({l}) > $bits({r}) ? $bits({l}) : $bits({r}))'({l} {op_str} {r})")
+                    let lw = self.infer_sv_width_str(lhs);
+                    let rw = self.infer_sv_width_str(rhs);
+                    let w = if lw == rw { lw } else { format!("({lw} > {rw} ? {lw} : {rw})") };
+                    let wp = Self::paren_width(&w);
+                    format!("{wp}'({l} {op_str} {r})")
                 } else {
                     format!("({l} {op_str} {r})")
                 }
@@ -3284,6 +3363,15 @@ impl<'a> Codegen<'a> {
             self.emit_fifo_lifo_body(f, &port_names);
         } else {
             self.emit_fifo_sync_body(f, &port_names, has_overflow_param);
+        }
+
+        if !f.asserts.is_empty() {
+            let clk = f.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+                .map(|p| p.name.name.clone()).unwrap_or_else(|| "clk".to_string());
+            self.line("");
+            let asserts = f.asserts.clone();
+            let fname = f.name.name.clone();
+            self.emit_asserts_for_construct(&asserts, &fname, &clk);
         }
 
         self.indent -= 1;
@@ -3607,6 +3695,7 @@ impl<'a> Codegen<'a> {
             BinOp::BitOr => 5,
             BinOp::And => 4,
             BinOp::Or => 3,
+            BinOp::Implies => 2,
         }
     }
 
@@ -3668,6 +3757,11 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 format!("$bits({})", self.emit_expr_str(expr))
+            }
+            // Unsized literals: compute minimum bit width from value (never 0 bits)
+            ExprKind::Literal(LitKind::Dec(v) | LitKind::Hex(v) | LitKind::Bin(v)) => {
+                let bits = if *v == 0 { 1 } else { (64 - v.leading_zeros()) as u32 };
+                bits.to_string()
             }
             ExprKind::Literal(LitKind::Sized(w, _)) => w.to_string(),
             ExprKind::MethodCall(_, method, args)
@@ -3756,6 +3850,12 @@ impl<'a> Codegen<'a> {
                 name.clone()
             }
             ExprKind::Binary(op, lhs, rhs) => {
+                // `implies` lowers to (!lhs || rhs)
+                if *op == BinOp::Implies {
+                    let l = self.emit_expr_prec(lhs, 14); // unary prec for !
+                    let r = self.emit_expr_prec(rhs, 4);  // || prec
+                    return format!("!{l} || {r}");
+                }
                 let prec = Self::sv_binop_prec(op);
                 // LHS: wrap if strictly lower precedence (same-prec is left-assoc, OK)
                 let l = self.emit_expr_prec(lhs, prec);
@@ -3794,6 +3894,7 @@ impl<'a> Codegen<'a> {
                     BinOp::BitXor => "^",
                     BinOp::Shl => "<<",
                     BinOp::Shr => shr_str,
+                    BinOp::Implies => unreachable!("implies handled above"),
                 };
                 if matches!(op, BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap) {
                     let lw = self.infer_sv_width_str(lhs);
@@ -4677,6 +4778,15 @@ impl<'a> Codegen<'a> {
             }
         }
 
+        if !r.asserts.is_empty() {
+            let clk = r.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+                .map(|p| p.name.name.clone()).unwrap_or_else(|| "clk".to_string());
+            self.line("");
+            let asserts = r.asserts.clone();
+            let rname = r.name.name.clone();
+            self.emit_asserts_for_construct(&asserts, &rname, &clk);
+        }
+
         self.indent -= 1;
         self.line("");
         self.line("endmodule");
@@ -4888,6 +4998,15 @@ impl<'a> Codegen<'a> {
             self.line("assign at_min = (count_r == '0);");
         }
 
+        if !c.asserts.is_empty() {
+            let clk = c.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+                .map(|p| p.name.name.clone()).unwrap_or_else(|| "clk".to_string());
+            self.line("");
+            let asserts = c.asserts.clone();
+            let cname = c.name.name.clone();
+            self.emit_asserts_for_construct(&asserts, &cname, &clk);
+        }
+
         self.indent -= 1;
         self.line("");
         self.line("endmodule");
@@ -5083,6 +5202,15 @@ impl<'a> Codegen<'a> {
                 self.indent -= 1;
                 self.line("end");
             }
+        }
+
+        if !a.asserts.is_empty() {
+            let clk = a.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+                .map(|p| p.name.name.clone()).unwrap_or_else(|| "clk".to_string());
+            self.line("");
+            let asserts = a.asserts.clone();
+            let aname = a.name.name.clone();
+            self.emit_asserts_for_construct(&asserts, &aname, &clk);
         }
 
         self.indent -= 1;
@@ -5497,6 +5625,15 @@ impl<'a> Codegen<'a> {
         }
         self.indent -= 1;
         self.line("end");
+
+        if !r.asserts.is_empty() {
+            let clk = r.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+                .map(|p| p.name.name.clone()).unwrap_or_else(|| "clk".to_string());
+            self.line("");
+            let asserts = r.asserts.clone();
+            let rname = r.name.name.clone();
+            self.emit_asserts_for_construct(&asserts, &rname, &clk);
+        }
 
         self.indent -= 1;
         self.line("");
@@ -6024,6 +6161,15 @@ impl<'a> Codegen<'a> {
         self.indent -= 1;
         self.line("end"); // always_ff
         self.line("");
+
+        if !l.asserts.is_empty() {
+            let clk = l.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+                .map(|p| p.name.name.clone()).unwrap_or_else(|| "clk".to_string());
+            self.line("");
+            let asserts = l.asserts.clone();
+            let lname = l.name.name.clone();
+            self.emit_asserts_for_construct(&asserts, &lname, &clk);
+        }
 
         self.indent -= 1;
         self.line("endmodule");

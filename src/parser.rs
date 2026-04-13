@@ -357,9 +357,12 @@ impl Parser {
                     // `default seq on <clk> rising|falling;`
                     self.parse_seq_default_decl()?;
                 }
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                    body.push(ModuleBodyItem::Assert(self.parse_assert_decl()?));
+                }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "param, port, reg, seq, comb, let, inst, pipe_reg, generate_for, generate_if, thread, default, or hook",
+                        "param, port, reg, seq, comb, let, inst, pipe_reg, generate_for, generate_if, thread, default, assert, cover, or hook",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -905,6 +908,11 @@ impl Parser {
         // `do ... until cond;` — hold comb outputs while waiting
         if self.check_ident("do") {
             return self.parse_thread_do_until();
+        }
+
+        // `log(...)` — debug output statement
+        if self.check(TokenKind::Log) {
+            return Ok(ThreadStmt::Log(self.parse_log_stmt()?));
         }
 
         // `wait` (contextual keyword)
@@ -1621,6 +1629,38 @@ impl Parser {
         Ok(PipeRegDecl { name, source, stages, span: start.merge(end_span) })
     }
 
+    // ── Assert / Cover ────────────────────────────────────────────────────────
+
+    /// Parse `assert [name:] expr;` or `cover [name:] expr;`
+    ///
+    /// Name disambiguation: if the next token is an Ident followed by `:` (and
+    /// the token after `:` is NOT `:`, ruling out `::` paths), treat it as the
+    /// label. Otherwise the expression starts immediately.
+    fn parse_assert_decl(&mut self) -> Result<AssertDecl, CompileError> {
+        let start = self.peek_span();
+        let kind = match self.peek_kind() {
+            Some(TokenKind::Assert) => { self.advance(); AssertKind::Assert }
+            Some(TokenKind::Cover)  => { self.advance(); AssertKind::Cover  }
+            _ => return Err(CompileError::general("expected assert or cover", self.peek_span())),
+        };
+
+        // Optional label: `name :` where `:` is not followed by another `:`
+        let name = if matches!(self.peek_kind(), Some(TokenKind::Ident(_)))
+            && self.peek_kind_at(self.pos + 1) == Some(TokenKind::Colon)
+            && self.peek_kind_at(self.pos + 2) != Some(TokenKind::Colon)
+        {
+            let n = self.expect_ident()?;
+            self.expect(TokenKind::Colon)?;
+            Some(n)
+        } else {
+            None
+        };
+
+        let expr = self.parse_expr()?;
+        let end = self.expect(TokenKind::Semi)?.span;
+        Ok(AssertDecl { kind, name, expr, span: start.merge(end) })
+    }
+
     fn parse_inst(&mut self) -> Result<InstDecl, CompileError> {
         let start = self.expect(TokenKind::Inst)?.span;
         let name = self.expect_ident()?;
@@ -1785,9 +1825,12 @@ impl Parser {
                 Some(TokenKind::Port) => items.push(GenItem::Port(self.parse_port_decl()?)),
                 Some(TokenKind::Inst) => items.push(GenItem::Inst(self.parse_inst()?)),
                 Some(TokenKind::Thread) => items.push(GenItem::Thread(self.parse_thread_block()?)),
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                    items.push(GenItem::Assert(self.parse_assert_decl()?));
+                }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "port, inst, or thread",
+                        "port, inst, thread, assert, or cover",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -1805,9 +1848,12 @@ impl Parser {
                 Some(TokenKind::Port) => items.push(GenItem::Port(self.parse_port_decl()?)),
                 Some(TokenKind::Inst) => items.push(GenItem::Inst(self.parse_inst()?)),
                 Some(TokenKind::Thread) => items.push(GenItem::Thread(self.parse_thread_block()?)),
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                    items.push(GenItem::Assert(self.parse_assert_decl()?));
+                }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "port, inst, or thread",
+                        "port, inst, thread, assert, or cover",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -2413,6 +2459,7 @@ impl Parser {
             TokenKind::GtEq if !self.no_angle => Some(BinOp::Gte),
             TokenKind::And => Some(BinOp::And),
             TokenKind::Or => Some(BinOp::Or),
+            TokenKind::Implies => Some(BinOp::Implies),
             TokenKind::Amp => Some(BinOp::BitAnd),
             TokenKind::Pipe => Some(BinOp::BitOr),
             TokenKind::Caret => Some(BinOp::BitXor),
@@ -2439,6 +2486,7 @@ impl Parser {
         let mut default_comb: Vec<CombStmt> = Vec::new();
         let mut default_seq: Vec<Stmt> = Vec::new();
         let mut states: Vec<StateBody> = Vec::new();
+        let mut asserts: Vec<AssertDecl> = Vec::new();
 
         while !self.check_end_fsm() {
             match self.peek_kind() {
@@ -2518,11 +2566,7 @@ impl Parser {
                     states.push(self.parse_state_body()?);
                 }
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
-                    // Skip assert/cover for MVP
-                    while !self.check(TokenKind::Semi) && !self.at_end() {
-                        self.advance();
-                    }
-                    self.eat(TokenKind::Semi);
+                    asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
@@ -2547,10 +2591,7 @@ impl Parser {
         })?;
 
         Ok(FsmDecl {
-            span: start.merge(closing.span),
-            name,
-            params,
-            ports,
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span) },
             regs,
             lets,
             wires,
@@ -2662,6 +2703,7 @@ impl Parser {
         let mut stall_conds = Vec::new();
         let mut flush_directives = Vec::new();
         let mut forward_directives = Vec::new();
+        let mut asserts: Vec<AssertDecl> = Vec::new();
 
         while !self.check_end_pipeline() {
             match self.peek_kind() {
@@ -2672,10 +2714,7 @@ impl Parser {
                 Some(TokenKind::Flush) => flush_directives.push(self.parse_flush_decl()?),
                 Some(TokenKind::Forward) => forward_directives.push(self.parse_forward_decl()?),
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
-                    while !self.check(TokenKind::Semi) && !self.at_end() {
-                        self.advance();
-                    }
-                    self.eat(TokenKind::Semi);
+                    asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
@@ -2696,10 +2735,7 @@ impl Parser {
         }
 
         Ok(PipelineDecl {
-            span: start.merge(closing.span),
-            name,
-            params,
-            ports,
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span) },
             stages,
             stall_conds,
             flush_directives,
@@ -2842,6 +2878,7 @@ impl Parser {
         let mut kind: Option<FifoKind> = None;
         let mut params = Vec::new();
         let mut ports = Vec::new();
+        let mut asserts: Vec<AssertDecl> = Vec::new();
 
         while !self.check_end_fifo() {
             match self.peek_kind() {
@@ -2861,10 +2898,7 @@ impl Parser {
                 _ if self.check_param() => params.push(self.parse_param_decl()?),
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
-                    while !self.check(TokenKind::Semi) && !self.at_end() {
-                        self.advance();
-                    }
-                    self.eat(TokenKind::Semi);
+                    asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
@@ -2885,11 +2919,8 @@ impl Parser {
         }
 
         Ok(FifoDecl {
-            span: start.merge(closing.span),
-            name,
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span) },
             kind: kind.unwrap_or(FifoKind::Fifo),
-            params,
-            ports,
         })
     }
 
@@ -3050,6 +3081,7 @@ impl Parser {
         let mut store_vars = Vec::new();
         let mut port_groups = Vec::new();
         let mut init: Option<RamInit> = None;
+        let mut asserts: Vec<AssertDecl> = Vec::new();
 
         // Phase 1: attributes (kind, read, write, collision, init)
         while !self.check_end_ram() {
@@ -3148,10 +3180,7 @@ impl Parser {
                     init = Some(self.parse_ram_init()?);
                 }
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
-                    while !self.check(TokenKind::Semi) && !self.at_end() {
-                        self.advance();
-                    }
-                    self.eat(TokenKind::Semi);
+                    asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => return Err(CompileError::unexpected_token(
                     "port, store, init, assert, or cover",
@@ -3179,10 +3208,7 @@ impl Parser {
         }
 
         Ok(RamDecl {
-            span: start.merge(closing.span),
-            name,
-            params,
-            ports,
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span) },
             kind: k,
             latency: lat,
             write_mode,
@@ -3422,12 +3448,12 @@ impl Parser {
         }
 
         // Phase 3: ports (and assert/cover)
+        let mut asserts: Vec<AssertDecl> = Vec::new();
         while !self.check_end_of(TokenKind::Counter) {
             match self.peek_kind() {
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
-                    while !self.check(TokenKind::Semi) && !self.at_end() { self.advance(); }
-                    self.eat(TokenKind::Semi);
+                    asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => return Err(CompileError::unexpected_token(
                     "port, assert, or cover",
@@ -3447,8 +3473,10 @@ impl Parser {
 
         let mode = mode.unwrap_or(CounterMode::Wrap);
         let direction = direction.unwrap_or(CounterDirection::Up);
-        let span = start.merge(closing.span);
-        Ok(CounterDecl { span, name, params, ports, mode, direction, init })
+        Ok(CounterDecl {
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span) },
+            mode, direction, init,
+        })
     }
 
     fn check_end_of(&self, kw: TokenKind) -> bool {
@@ -3524,6 +3552,7 @@ impl Parser {
         }
 
         // Phase 3: ports, port arrays, hook, assert/cover
+        let mut asserts: Vec<AssertDecl> = Vec::new();
         while !self.check_end_of(TokenKind::Arbiter) {
             match self.peek_kind() {
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
@@ -3532,8 +3561,7 @@ impl Parser {
                     hook = Some(self.parse_arbiter_hook()?);
                 }
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
-                    while !self.check(TokenKind::Semi) && !self.at_end() { self.advance(); }
-                    self.eat(TokenKind::Semi);
+                    asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => return Err(CompileError::unexpected_token(
                     "port, ports, hook, assert, or cover",
@@ -3551,8 +3579,13 @@ impl Parser {
             return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
         }
 
-        let span = start.merge(closing.span);
-        Ok(ArbiterDecl { span, name, params, ports, port_arrays, policy: policy.unwrap_or(ArbiterPolicy::RoundRobin), hook, latency })
+        Ok(ArbiterDecl {
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span) },
+            port_arrays,
+            policy: policy.unwrap_or(ArbiterPolicy::RoundRobin),
+            hook,
+            latency,
+        })
     }
 
     /// Parse `hook grant_select(req_mask: UInt<N>, ...) -> UInt<N> = FnName(arg1, ...);`
@@ -3750,6 +3783,7 @@ impl Parser {
         let mut write_ports: Option<PortArrayDecl> = None;
         let mut inits: Vec<RegfileInit> = Vec::new();
         let mut forward_write_before_read = false;
+        let mut asserts: Vec<AssertDecl> = Vec::new();
 
         while !self.check_end_of(TokenKind::Regfile) {
             match self.peek_kind() {
@@ -3793,11 +3827,10 @@ impl Parser {
                     self.eat(TokenKind::Semi);
                 }
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
-                    while !self.check(TokenKind::Semi) && !self.at_end() { self.advance(); }
-                    self.eat(TokenKind::Semi);
+                    asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => return Err(CompileError::unexpected_token(
-                    "param, port, ports, init, or forward",
+                    "param, port, ports, init, forward, assert, or cover",
                     &other.to_string(),
                     self.peek_span(),
                 )),
@@ -3813,10 +3846,7 @@ impl Parser {
         }
 
         Ok(RegfileDecl {
-            span: start.merge(closing.span),
-            name,
-            params,
-            ports,
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span) },
             read_ports,
             write_ports,
             inits,
@@ -3962,6 +3992,7 @@ impl Parser {
         let mut track_tail = false;
         let mut track_length = false;
         let mut ops = Vec::new();
+        let mut asserts: Vec<AssertDecl> = Vec::new();
 
         while !self.check_end_linklist() {
             match self.peek_kind() {
@@ -4008,11 +4039,10 @@ impl Parser {
                 }
                 Some(TokenKind::Op) => ops.push(self.parse_op_decl()?),
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
-                    while !self.check(TokenKind::Semi) && !self.at_end() { self.advance(); }
-                    self.eat(TokenKind::Semi);
+                    asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => return Err(CompileError::unexpected_token(
-                    "param, port, kind, track, or op", &other.to_string(), self.peek_span(),
+                    "param, port, kind, track, op, assert, or cover", &other.to_string(), self.peek_span(),
                 )),
                 None => return Err(CompileError::UnexpectedEof),
             }
@@ -4026,10 +4056,7 @@ impl Parser {
         }
 
         Ok(LinklistDecl {
-            span: start.merge(closing.span),
-            name,
-            params,
-            ports,
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span) },
             kind: kind.unwrap_or(LinklistKind::Singly),
             track_tail,
             track_length,
@@ -4044,6 +4071,7 @@ impl Parser {
         let mut latency: u32 = 1;
         let mut pipelined = false;
         let mut ports = Vec::new();
+        let mut asserts: Vec<AssertDecl> = Vec::new();
 
         while !self.check_end_op() {
             match self.peek_kind() {
@@ -4080,11 +4108,10 @@ impl Parser {
                 }
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
-                    while !self.check(TokenKind::Semi) && !self.at_end() { self.advance(); }
-                    self.eat(TokenKind::Semi);
+                    asserts.push(self.parse_assert_decl()?);
                 }
                 Some(other) => return Err(CompileError::unexpected_token(
-                    "latency, pipelined, or port", &other.to_string(), self.peek_span(),
+                    "latency, pipelined, port, assert, or cover", &other.to_string(), self.peek_span(),
                 )),
                 None => return Err(CompileError::UnexpectedEof),
             }
@@ -4098,11 +4125,9 @@ impl Parser {
         }
 
         Ok(OpDecl {
-            span: start.merge(closing.span),
-            name,
+            common: ConstructCommon { name, params: Vec::new(), ports, asserts, span: start.merge(closing.span) },
             latency,
             pipelined,
-            ports,
         })
     }
 
@@ -4130,11 +4155,14 @@ fn prefix_bp() -> u8 {
 
 fn infix_binding_power(op: BinOp) -> (u8, u8) {
     match op {
-        BinOp::Or => (1, 2),
+        // `implies` has the lowest precedence; right-associative so (0,0) makes
+        // `a implies b implies c` parse as `a implies (b implies c)`.
+        BinOp::Implies => (0, 0),
+        BinOp::Or  => (1, 2),
         BinOp::And => (3, 4),
         BinOp::Eq | BinOp::Neq => (5, 6),
         BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => (7, 8),
-        BinOp::BitOr => (9, 10),
+        BinOp::BitOr  => (9, 10),
         BinOp::BitXor => (11, 12),
         BinOp::BitAnd => (13, 14),
         BinOp::Shl | BinOp::Shr => (15, 16),

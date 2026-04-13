@@ -194,6 +194,7 @@ pub enum ModuleBodyItem {
     WireDecl(WireDecl),
     Thread(ThreadBlock),
     Resource(ResourceDecl),
+    Assert(AssertDecl),
 }
 
 impl ModuleBodyItem {
@@ -213,6 +214,7 @@ impl ModuleBodyItem {
             ModuleBodyItem::WireDecl(w) => w.span,
             ModuleBodyItem::Thread(t) => t.span,
             ModuleBodyItem::Resource(r) => r.span,
+            ModuleBodyItem::Assert(a) => a.span,
         }
     }
 }
@@ -225,6 +227,19 @@ pub struct PipeRegDecl {
     pub span: Span,
 }
 
+// ── Assert / Cover ────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AssertKind { Assert, Cover }
+
+#[derive(Debug, Clone)]
+pub struct AssertDecl {
+    pub kind: AssertKind,
+    pub name: Option<Ident>,   // optional label (e.g. `assert no_overflow: expr;`)
+    pub expr: Expr,
+    pub span: Span,
+}
+
 // ── Generate ──────────────────────────────────────────────────────────────────
 
 /// An item inside a generate block: port, instance, or thread.
@@ -233,6 +248,7 @@ pub enum GenItem {
     Port(PortDecl),
     Inst(InstDecl),
     Thread(ThreadBlock),
+    Assert(AssertDecl),
 }
 
 /// `generate for VAR in START..END ... end generate for VAR`
@@ -350,6 +366,8 @@ pub enum ThreadStmt {
     Lock { resource: Ident, body: Vec<ThreadStmt>, span: Span },
     /// `do ... until cond;` — hold comb outputs while waiting for condition
     DoUntil { body: Vec<ThreadStmt>, cond: Expr, span: Span },
+    /// `log(Level, "TAG", "fmt", args...);` — debug output
+    Log(LogStmt),
 }
 
 #[derive(Debug, Clone)]
@@ -688,6 +706,7 @@ pub enum BinOp {
     AddWrap,
     SubWrap,
     MulWrap,
+    Implies,
 }
 
 impl std::fmt::Display for BinOp {
@@ -714,6 +733,7 @@ impl std::fmt::Display for BinOp {
             BinOp::AddWrap => write!(f, "+%"),
             BinOp::SubWrap => write!(f, "-%"),
             BinOp::MulWrap => write!(f, "*%"),
+            BinOp::Implies => write!(f, "implies"),
         }
     }
 }
@@ -789,13 +809,28 @@ pub enum FunctionBodyItem {
     Return(Expr),
 }
 
+// ── ConstructCommon — shared header for all first-class constructs ────────────
+
+/// Fields present on every first-class construct (fsm, pipeline, fifo, ram,
+/// counter, arbiter, regfile, linklist, op).  Extracted so that new shared
+/// fields (e.g. `asserts`) require a single change here instead of one per
+/// construct.  Each construct embeds this as `pub common: ConstructCommon` and
+/// implements `Deref<Target = ConstructCommon>` so that existing code such as
+/// `fsm.name`, `fsm.ports`, `fsm.asserts` continues to compile unchanged.
+#[derive(Debug, Clone)]
+pub struct ConstructCommon {
+    pub name:    Ident,
+    pub params:  Vec<ParamDecl>,
+    pub ports:   Vec<PortDecl>,
+    pub asserts: Vec<AssertDecl>,
+    pub span:    Span,
+}
+
 // ── FSM ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct FsmDecl {
-    pub name: Ident,
-    pub params: Vec<ParamDecl>,
-    pub ports: Vec<PortDecl>,
+    pub common: ConstructCommon,
     /// Register declarations (datapath registers alongside FSM state)
     pub regs: Vec<RegDecl>,
     /// Combinational let bindings at FSM scope
@@ -811,7 +846,13 @@ pub struct FsmDecl {
     pub default_seq: Vec<Stmt>,
     /// State bodies (`state Foo ... end state Foo`)
     pub states: Vec<StateBody>,
-    pub span: Span,
+}
+impl std::ops::Deref for FsmDecl {
+    type Target = ConstructCommon;
+    fn deref(&self) -> &ConstructCommon { &self.common }
+}
+impl std::ops::DerefMut for FsmDecl {
+    fn deref_mut(&mut self) -> &mut ConstructCommon { &mut self.common }
 }
 
 #[derive(Debug, Clone)]
@@ -842,11 +883,15 @@ pub enum FifoKind {
 
 #[derive(Debug, Clone)]
 pub struct FifoDecl {
-    pub name: Ident,
-    pub params: Vec<ParamDecl>,
-    pub ports: Vec<PortDecl>,
+    pub common: ConstructCommon,
     pub kind: FifoKind,
-    pub span: Span,
+}
+impl std::ops::Deref for FifoDecl {
+    type Target = ConstructCommon;
+    fn deref(&self) -> &ConstructCommon { &self.common }
+}
+impl std::ops::DerefMut for FifoDecl {
+    fn deref_mut(&mut self) -> &mut ConstructCommon { &mut self.common }
 }
 
 // ── Synchronizer (CDC) ──────────────────────────────────────────────────────
@@ -895,10 +940,7 @@ pub struct ClkGateDecl {
 
 #[derive(Debug, Clone)]
 pub struct RamDecl {
-    pub name: Ident,
-    pub params: Vec<ParamDecl>,
-    /// Top-level ports: clk, optional rst
-    pub ports: Vec<PortDecl>,
+    pub common: ConstructCommon,
     pub kind: RamKind,
     pub latency: u32,
     pub write_mode: Option<RamWriteMode>,
@@ -906,7 +948,13 @@ pub struct RamDecl {
     pub store_vars: Vec<RamStoreVar>,
     pub port_groups: Vec<RamPortGroup>,
     pub init: Option<RamInit>,
-    pub span: Span,
+}
+impl std::ops::Deref for RamDecl {
+    type Target = ConstructCommon;
+    fn deref(&self) -> &ConstructCommon { &self.common }
+}
+impl std::ops::DerefMut for RamDecl {
+    fn deref_mut(&mut self) -> &mut ConstructCommon { &mut self.common }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -965,13 +1013,17 @@ pub enum RamInit {
 
 #[derive(Debug, Clone)]
 pub struct CounterDecl {
-    pub name: Ident,
-    pub params: Vec<ParamDecl>,
-    pub ports: Vec<PortDecl>,
+    pub common: ConstructCommon,
     pub mode: CounterMode,
     pub direction: CounterDirection,
     pub init: Option<Expr>,
-    pub span: Span,
+}
+impl std::ops::Deref for CounterDecl {
+    type Target = ConstructCommon;
+    fn deref(&self) -> &ConstructCommon { &self.common }
+}
+impl std::ops::DerefMut for CounterDecl {
+    fn deref_mut(&mut self) -> &mut ConstructCommon { &mut self.common }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -994,14 +1046,18 @@ pub enum CounterDirection {
 
 #[derive(Debug, Clone)]
 pub struct ArbiterDecl {
-    pub name: Ident,
-    pub params: Vec<ParamDecl>,
-    pub ports: Vec<PortDecl>,
+    pub common: ConstructCommon,
     pub port_arrays: Vec<PortArrayDecl>,
     pub policy: ArbiterPolicy,
     pub hook: Option<ArbiterHookDecl>,
     pub latency: u32,
-    pub span: Span,
+}
+impl std::ops::Deref for ArbiterDecl {
+    type Target = ConstructCommon;
+    fn deref(&self) -> &ConstructCommon { &self.common }
+}
+impl std::ops::DerefMut for ArbiterDecl {
+    fn deref_mut(&mut self) -> &mut ConstructCommon { &mut self.common }
 }
 
 #[derive(Debug, Clone)]
@@ -1037,14 +1093,18 @@ pub struct PortArrayDecl {
 
 #[derive(Debug, Clone)]
 pub struct RegfileDecl {
-    pub name: Ident,
-    pub params: Vec<ParamDecl>,
-    pub ports: Vec<PortDecl>,
+    pub common: ConstructCommon,
     pub read_ports: Option<PortArrayDecl>,
     pub write_ports: Option<PortArrayDecl>,
     pub inits: Vec<RegfileInit>,
     pub forward_write_before_read: bool,
-    pub span: Span,
+}
+impl std::ops::Deref for RegfileDecl {
+    type Target = ConstructCommon;
+    fn deref(&self) -> &ConstructCommon { &self.common }
+}
+impl std::ops::DerefMut for RegfileDecl {
+    fn deref_mut(&mut self) -> &mut ConstructCommon { &mut self.common }
 }
 
 #[derive(Debug, Clone)]
@@ -1058,14 +1118,18 @@ pub struct RegfileInit {
 
 #[derive(Debug, Clone)]
 pub struct PipelineDecl {
-    pub name: Ident,
-    pub params: Vec<ParamDecl>,
-    pub ports: Vec<PortDecl>,
+    pub common: ConstructCommon,
     pub stages: Vec<StageDecl>,
     pub stall_conds: Vec<StallDecl>,
     pub flush_directives: Vec<FlushDecl>,
     pub forward_directives: Vec<ForwardDecl>,
-    pub span: Span,
+}
+impl std::ops::Deref for PipelineDecl {
+    type Target = ConstructCommon;
+    fn deref(&self) -> &ConstructCommon { &self.common }
+}
+impl std::ops::DerefMut for PipelineDecl {
+    fn deref_mut(&mut self) -> &mut ConstructCommon { &mut self.common }
 }
 
 #[derive(Debug, Clone)]
@@ -1109,24 +1173,32 @@ pub enum LinklistKind {
 
 #[derive(Debug, Clone)]
 pub struct LinklistDecl {
-    pub name: Ident,
-    pub params: Vec<ParamDecl>,
-    /// User-declared status ports (empty, full, length)
-    pub ports: Vec<PortDecl>,
+    pub common: ConstructCommon,
     pub kind: LinklistKind,
     pub track_tail: bool,
     pub track_length: bool,
     pub ops: Vec<OpDecl>,
-    pub span: Span,
+}
+impl std::ops::Deref for LinklistDecl {
+    type Target = ConstructCommon;
+    fn deref(&self) -> &ConstructCommon { &self.common }
+}
+impl std::ops::DerefMut for LinklistDecl {
+    fn deref_mut(&mut self) -> &mut ConstructCommon { &mut self.common }
 }
 
 #[derive(Debug, Clone)]
 pub struct OpDecl {
-    pub name: Ident,
+    pub common: ConstructCommon,
     pub latency: u32,
     pub pipelined: bool,
-    pub ports: Vec<PortDecl>,
-    pub span: Span,
+}
+impl std::ops::Deref for OpDecl {
+    type Target = ConstructCommon;
+    fn deref(&self) -> &ConstructCommon { &self.common }
+}
+impl std::ops::DerefMut for OpDecl {
+    fn deref_mut(&mut self) -> &mut ConstructCommon { &mut self.common }
 }
 
 // ── Template ─────────────────────────────────────────────────────────────────
