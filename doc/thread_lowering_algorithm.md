@@ -484,6 +484,136 @@ guarantee.
 
 ---
 
+## Worked Sequence Example
+
+This section traces a complete execution of two threads from the `ThreadMm2s`
+module to show exactly how ARCH thread source maps to FSM state transitions.
+
+**Parameters**: `total_xfers = 1`, `burst_len = 2`, `base_addr = 0x1000`
+
+Only two threads are active:  ArIssuer (`t0`) and RCollect_0 (`t1`).
+Threads `t2`/`t3`/`t4` remain in state 0 throughout (no xfers with ID 1/2/3).
+
+---
+
+### Step 1 — State partition
+
+```
+ArIssuer thread source               │  States produced
+─────────────────────────────────────┼─────────────────────────────────────────
+  wait until active                  │  S0  transition_cond:
+        and xfer_ctr_r               │        active && xfer_ctr_r < total_xfers_r
+            < total_xfers_r;  ───────┤
+  do                                 │  S1  comb: ar_valid=1, ar_addr=next_ar_addr_r
+    ar_valid = 1;              ──────┤        ar_id=xfer_ctr_r[1:0], ar_len=burst_len_r-1
+    ar_addr  = next_ar_addr_r;       │        ar_size=2, ar_burst=1
+    ar_id    = xfer_ctr_r[1:0];      │      transition_cond: ar_ready
+    ar_len   = burst_len_r - 1;      │      seq (trailing, merged under ar_ready):
+    ar_size  = 3'd2;                 │        xfer_ctr_r <= xfer_ctr_r + 1
+    ar_burst = 2'd1;                 │        next_ar_addr_r <= next_ar_addr_r + stride
+  until ar_ready;  ─────────────────┘
+
+RCollect_0 thread source             │  States produced
+─────────────────────────────────────┼─────────────────────────────────────────
+  wait until active and              │  S0  seq (every cycle in S0):
+    (tc[0]<<2)+0 < xfer_ctr_r; ─────┤        _t1_loop_cnt <= 0     ← counter init
+                                     │      transition_cond:
+                                     │        active && tc[0]<<2 < xfer_ctr_r
+  for b in 0..burst_len_r-1          │  S1  comb: r_ready=1
+    do                        ───────┤        push_valid = r_valid && r_id==0
+      r_ready    = 1;                │      multi_transitions (merged from for+do..until):
+      push_valid = r_valid           │        cond && loop_cnt <  end → S1  (loop back)
+                 and r_id==0;        │        cond && loop_cnt >= end → S0  (exit)
+    until r_valid and r_id==0        │      seq (guarded by cond):
+          and push_ready;     ───────┤        loop_cnt <= loop_cnt + 1
+  end for                            │        if loop_cnt >= end: tc[0] <= tc[0] + 1
+  tc[0] <= tc[0] + 1;  ─────────────┘   (trailing seq merged under exit condition)
+```
+
+`cond` = `r_valid && r_id==0 && push_ready`,  `end` = `burst_len_r - 1` = 1
+
+---
+
+### Step 2 — Timing diagram
+
+Columns show registered state at the **start** of each cycle (after the previous
+posedge).  Combinational signals show their value **during** the cycle.
+Arrows (←) mark the register update that fires at the cycle's posedge.
+
+```
+        ┌──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┐
+Cycle   │  1   │  2   │  3   │  4   │  5   │  6   │  7   │  8   │  9   │
+        ├──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┤
+ INPUTS │      │      │      │      │      │      │      │      │      │
+  start │  1   │  0   │  0   │  0   │  0   │  0   │  0   │  0   │  0   │
+ar_ready│  0   │  0   │  0   │  1   │  0   │  0   │  0   │  0   │  0   │
+r_valid │  0   │  0   │  0   │  0   │  0   │  0   │  1   │  1   │  0   │
+p_ready │  -   │  -   │  -   │  -   │  -   │  1   │  1   │  1   │  -   │
+        ├──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┤
+ REGS (value at start of cycle)                                         │
+active_r│  0   │  1←  │  1   │  1   │  1   │  1   │  1   │  1   │  0←  │
+xfer_ctr│  0   │  0   │  0   │  0   │  1←  │  1   │  1   │  1   │  1   │
+        ├──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┤
+ THREAD ArIssuer (_t0_state)                                            │
+ _t0_st │  0   │  0   │  1←  │  1   │  0←  │  0   │  0   │  0   │  0   │
+        │defwhn│ S0:  │ S1:  │ S1:  │ S1:  │ S0:  │ S0:  │ S0:  │ S0:  │
+        │fires │→S1   │wait  │→S0   │1<1=N │stay  │stay  │stay  │stay  │
+        │      │      │      │ar_rdy│      │      │      │      │      │
+        ├──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┤
+ COMB t0│      │      │      │      │      │      │      │      │      │
+ar_valid│  0   │  0   │  1   │  1   │  0   │  0   │  0   │  0   │  0   │
+ ar_addr│  -   │  -   │1000h │1000h │  -   │  -   │  -   │  -   │  -   │
+   ar_id│  -   │  -   │  0   │  0   │  -   │  -   │  -   │  -   │  -   │
+  ar_len│  -   │  -   │  1   │  1   │  -   │  -   │  -   │  -   │  -   │
+        ├──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┤
+ THREAD RCollect_0 (_t1_state)                                          │
+ _t1_st │  0   │  0   │  0   │  0   │  0   │  1←  │  1   │  1   │  0←  │
+loop_cnt│  0   │  0←  │  0←  │  0←  │  0←  │  0   │  0   │  1←  │  2←  │
+  tc[0] │  0   │  0   │  0   │  0   │  0   │  0   │  0   │  0   │  1←  │
+        │defwhn│ S0:  │ S0:  │ S0:  │ S0:  │ S0:  │ S1:  │ S1:  │ S1:  │
+        │fires │0<0=N │0<0=N │0<0=N │0<1=Y │→S1   │wait  │beat0 │beat1 │
+        │      │      │      │      │      │      │      │→S1   │→S0   │
+        ├──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┼──────┤
+ COMB t1│      │      │      │      │      │      │      │      │      │
+ r_ready│  0   │  0   │  0   │  0   │  0   │  0   │  1   │  1   │  1   │
+p_valid │  0   │  0   │  0   │  0   │  0   │  0   │  0   │  1   │  1   │
+        └──────┴──────┴──────┴──────┴──────┴──────┴──────┴──────┴──────┘
+         ↑defwh  ↑t0:S0  ↑t0:S1  ↑t0:S1    ↑t1:S0  ↑t1:S1  beat0   beat1
+                  →S1    stalls  →S0+xfer   →S1             loop    exit
+                         no rdy   accepted   unlocks
+                                             RCollect
+```
+
+Legend: `←` = register update happens at this posedge.  `defwhn` = `default when` fires.
+`p_ready` = push_ready.  `p_valid` = push_valid.
+
+---
+
+### Step 3 — Key observations
+
+**ArIssuer and RCollect_0 are structurally decoupled.**
+ArIssuer advances `xfer_ctr_r` (cycles 2→3→4→5); RCollect_0 checks `xfer_ctr_r`
+to know when an AR has been issued for its ID (cycle 5: `0 < 1` becomes true).
+There is no direct signal between the two threads — the counter is the implicit handoff.
+
+**RCollect_0 cannot start until ArIssuer has issued xfer 0** (cycle 5 unlock).
+But once it starts, the two threads are fully independent: ArIssuer is idle in S0
+(no more xfers to issue) while RCollect_0 runs through cycles 6→7→8.
+
+**The for-loop body collapses to one state (S1)** with `multi_transitions` encoding
+the loop-back vs exit decision.  No separate LOOP_CHECK state exists — the counter
+comparison is merged into the last body state's transition logic.
+
+**`_t1_loop_cnt` is reset every cycle while in S0** (line `_t1_loop_cnt <= 0` fires
+unconditionally when `_t1_state == 0`).  This is a deliberate simplification: the
+counter is cheap and the always-reset ensures a clean start when S0 re-enters S1.
+
+**all_done fires at cycle 9 posedge**: after cycle 8 sets `tc[0]=1`, the
+combinational `total_complete == total_xfers_r` becomes true → the parent module's
+`seq on clk` block sets `active_r <= 0`.
+
+---
+
 ## Simulation Pipeline Note
 
 The `lower_threads` pass currently runs for **both** `arch build` (SV codegen)
