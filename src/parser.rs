@@ -4120,7 +4120,7 @@ impl Parser {
 }
 
 fn is_method_name(name: &str) -> bool {
-    matches!(name, "trunc" | "zext" | "sext" | "reverse")
+    matches!(name, "trunc" | "zext" | "sext" | "resize" | "reverse")
 }
 
 

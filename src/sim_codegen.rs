@@ -918,7 +918,7 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
         ExprKind::MethodCall(base, method, _) if method.name == "reverse" => {
             infer_expr_width(base, ctx)
         }
-        ExprKind::MethodCall(_, method, args) if method.name == "trunc" || method.name == "zext" || method.name == "sext" => {
+        ExprKind::MethodCall(_, method, args) if method.name == "trunc" || method.name == "zext" || method.name == "sext" || method.name == "resize" => {
             if let Some(w) = args.first() {
                 eval_width(w)
             } else {
@@ -1172,6 +1172,22 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                             let dst_t = cpp_uint(dst_bits);
                             format!("(({b} >> {}) & 1 ? ({dst_t})({b}) | ({dst_t})(~(({dst_t})0) << {src_bits}) : ({dst_t})({b}))",
                                 src_bits - 1)
+                        }
+                    } else {
+                        b
+                    }
+                }
+                "resize" => {
+                    // Direction-agnostic: sign-extend if narrowing to signed, zero-pad if widening unsigned
+                    if let Some(w_expr) = args.first() {
+                        let dst_bits = eval_width(w_expr);
+                        let src_bits = infer_expr_width(base, ctx);
+                        if src_bits >= dst_bits || src_bits == 0 {
+                            // Narrowing or equal: just cast (C++ truncates)
+                            cast_to_bits(&b, dst_bits)
+                        } else {
+                            // Widening: zero-extend (same as zext for sim purposes)
+                            format!("({})({})", cpp_uint(dst_bits), b)
                         }
                     } else {
                         b
@@ -5580,7 +5596,7 @@ impl<'a> SimCodegen<'a> {
             ExprKind::FieldAccess(base, field) => {
                 if let ExprKind::Ident(bn) = &base.kind { *w.get(&format!("{}_{}", bn.to_lowercase(), field.name)).unwrap_or(&8) } else { 8 }
             }
-            ExprKind::MethodCall(_, method, args) => match method.name.as_str() { "trunc"|"zext"|"sext" => args.first().map(|a| eval_const_expr(a) as u32).unwrap_or(8), _ => 8 },
+            ExprKind::MethodCall(_, method, args) => match method.name.as_str() { "trunc"|"zext"|"sext"|"resize" => args.first().map(|a| eval_const_expr(a) as u32).unwrap_or(8), _ => 8 },
             ExprKind::BitSlice(_, hi, lo) => { let h = eval_const_expr(hi); let l = eval_const_expr(lo); (h - l + 1) as u32 }
             ExprKind::Literal(LitKind::Sized(ww, _)) => *ww,
             _ => 8,

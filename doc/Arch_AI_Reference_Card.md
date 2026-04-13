@@ -147,9 +147,21 @@ enum E   { A, B, }
 x.trunc<N>()   // lowest N bits (SV: N'(x)); N must be < source width
 x.zext<N>()    // zero-extend; N must be > source width
 x.sext<N>()    // sign-extend; N must be > source width
+x.resize<N>()  // direction-agnostic: widens or narrows; no direction check
+               // UInt/Bool → N'($unsigned(x)); SInt → N'($signed(x))
+               // use when N is a param or direction varies by instantiation
 x[hi:lo]       // bit-slice (SV: x[hi:lo])
 x[i]           // single bit extract
 ```
+
+**Cast direction rules** (compiler-enforced when source width is known):
+
+| Method | Error if N == src | Error if N < src | Error if N > src |
+|--------|------------------|-----------------|-----------------|
+| `.trunc<N>()` | yes (no-op) | — | yes (widens) |
+| `.zext<N>()` | yes (no-op) | yes (narrows) | — |
+| `.sext<N>()` | yes (no-op) | yes (narrows) | — |
+| `.resize<N>()` | — | — | — |
 
 **Signedness reinterpret** (same width, no N needed):
 

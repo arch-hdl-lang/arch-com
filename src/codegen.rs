@@ -1324,7 +1324,7 @@ impl<'a> Codegen<'a> {
                 // sext always produces signed; trunc preserves signedness
                 match method.name.as_str() {
                     "sext" => true,
-                    "trunc" => self.expr_is_signed(recv),
+                    "trunc" | "resize" => self.expr_is_signed(recv),
                     _ => false,
                 }
             }
@@ -2991,6 +2991,19 @@ impl<'a> Codegen<'a> {
                             b
                         }
                     }
+                    "resize" => {
+                        if let Some(width) = args.first() {
+                            let w = self.emit_expr_str(width);
+                            let wp = Self::paren_width(&w);
+                            if self.expr_is_signed(base) {
+                                format!("{wp}'($signed({b}))")
+                            } else {
+                                format!("{wp}'($unsigned({b}))")
+                            }
+                        } else {
+                            b
+                        }
+                    }
                     "reverse" => {
                         if let Some(chunk) = args.first() {
                             let c = self.emit_expr_str(chunk);
@@ -3146,6 +3159,19 @@ impl<'a> Codegen<'a> {
                         if let Some(width) = args.first() {
                             let w = self.emit_expr_str(width);
                             format!("{{{{({w}-$bits({b})){{{b}[$bits({b})-1]}}}}, {b}}}")
+                        } else {
+                            b
+                        }
+                    }
+                    "resize" => {
+                        if let Some(width) = args.first() {
+                            let w = self.emit_expr_str(width);
+                            let wp = Self::paren_width(&w);
+                            if self.expr_is_signed(base) {
+                                format!("{wp}'($signed({b}))")
+                            } else {
+                                format!("{wp}'($unsigned({b}))")
+                            }
                         } else {
                             b
                         }
@@ -3645,7 +3671,7 @@ impl<'a> Codegen<'a> {
             }
             ExprKind::Literal(LitKind::Sized(w, _)) => w.to_string(),
             ExprKind::MethodCall(_, method, args)
-                if matches!(method.name.as_str(), "trunc" | "zext" | "sext") =>
+                if matches!(method.name.as_str(), "trunc" | "zext" | "sext" | "resize") =>
             {
                 args.first()
                     .map(|w| self.emit_expr_str(w))
@@ -3851,6 +3877,22 @@ impl<'a> Codegen<'a> {
                             let w = self.emit_expr_str(width);
                             // Sign-extension: replicate the MSB into the upper bits.
                             format!("{{{{({w}-$bits({b})){{{b}[$bits({b})-1]}}}}, {b}}}")
+                        } else {
+                            b
+                        }
+                    }
+                    "resize" => {
+                        if let Some(width) = args.first() {
+                            let w = self.emit_expr_str(width);
+                            // Direction-agnostic resize: pads or truncates, preserving signedness.
+                            // e.g. x.resize<16>() on UInt<8> → 16'($unsigned(x))
+                            // e.g. x.resize<4>()  on SInt<8> → 4'($signed(x))
+                            let wp = Self::paren_width(&w);
+                            if self.expr_is_signed(base) {
+                                format!("{wp}'($signed({b}))")
+                            } else {
+                                format!("{wp}'($unsigned({b}))")
+                            }
                         } else {
                             b
                         }

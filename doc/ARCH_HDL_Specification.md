@@ -272,13 +272,17 @@ Every assignment, port connection, and arithmetic result is width-checked at com
 |                                                                             |
 | // ✓ Explicit operations --- intent is always visible                       |
 |                                                                             |
-| **let** lo: UInt\<8\> = b.trunc\<8\>();                                     |
+| **let** lo: UInt\<8\> = b.trunc\<8\>();           // narrow: error if N ≥ src width  |
 |                                                                             |
 | **let** rd: UInt\<5\> = instr[11:7];            // bit-slice [11:7]         |
 |                                                                             |
-| **let** ext: UInt\<16\> = a.zext\<16\>();                                   |
+| **let** ext: UInt\<16\> = a.zext\<16\>();         // widen unsigned: error if N ≤ src width |
 |                                                                             |
-| **let** sx: SInt\<16\> = (a **as** SInt\<8\>).sext\<16\>();                 |
+| **let** sx: SInt\<16\> = (a **as** SInt\<8\>).sext\<16\>();  // widen signed: error if N ≤ src width |
+|                                                                             |
+| **let** any: UInt\<16\> = a.resize\<16\>();       // direction-agnostic: widen or narrow |
+|                                                                             |
+| **let** sm: UInt\<4\> = b.resize\<4\>();          // same: narrows when N < src width  |
 |                                                                             |
 | // Same-width signed/unsigned reinterpret (no width argument needed)       |
 |                                                                             |
@@ -327,7 +331,7 @@ let wide: UInt<9> = a.zext<9>() << 1;    // UInt<9>, MSB preserved — explicit 
 
 > *⚑ The compiler emits a **compile error** when a shift result is assigned to a wider target (e.g. `let wide: UInt<9> = a << 1;`), because the extra bit will always be zero --- the shift did not capture the overflow. The fix is to widen the operand first: `a.zext<9>() << 1`. Same-width shifts (e.g. `let x: UInt<8> = a << 1;`) are silent --- MSB loss is the normal, intended behavior of a fixed-width shift.*
 
-> *⚑ Width inference follows IEEE 1800-2012 §11.6. Arch promotes all mismatches to hard errors --- never warnings. The arithmetic widening trap (`r <= r + 1`) is caught at the register-assignment level: the compiler diagnoses it and suggests `.trunc<N>()`. The `.trunc<N>()` method emits a SystemVerilog size cast `N'(expr)`, which is valid on any expression including compound ones. Bit-slice syntax `expr[hi:lo]` extracts a bit range: `instr[11:7]` emits `instr[11:7]` with result width hi−lo+1. This is essential for instruction field decoding.*
+> *⚑ Width inference follows IEEE 1800-2012 §11.6. Arch promotes all mismatches to hard errors --- never warnings. The arithmetic widening trap (`r <= r + 1`) is caught at the register-assignment level: the compiler diagnoses it and suggests `.trunc<N>()`. The `.trunc<N>()` method emits a SystemVerilog size cast `N'(expr)`, which is valid on any expression including compound ones. Bit-slice syntax `expr[hi:lo]` extracts a bit range: `instr[11:7]` emits `instr[11:7]` with result width hi−lo+1. This is essential for instruction field decoding. The compiler enforces cast direction: `.trunc<N>()` requires N < source width, `.zext<N>()`/`.sext<N>()` require N > source width — use `.resize<N>()` when the direction is parameter-dependent or intentionally flexible.*
 
 > *⚑ **Wrapping operators** (`+%`, `-%`, `*%`) are the ergonomic alternative to the `.trunc<N>()` boilerplate: `let x: UInt<8> = a +% b;` is equivalent to `let x: UInt<8> = (a + b).trunc<8>();`. The result width is `max(W(a), W(b))` for all three. The SV backend emits a size cast `W'(a op b)`. Use wrapping ops when the intent is deliberate modular arithmetic, not overflow capture.*
 
@@ -866,7 +870,7 @@ The compiler validates that the default value fits within the declared range. Co
 >
 > ◈ **Port connection completeness.** Every input port of an instantiated construct must appear in the connection list --- a missing input port is a compile error. Unconnected output ports produce a warning (discarding an output is sometimes intentional). Clock and Reset ports are exempt from this check.
 >
-> ◈ **SV codegen notes.** The SystemVerilog backend applies the following transformations for correctness across simulators and lint tools: (1) signed casts emit `$signed(x)` (not `logic signed [N-1:0]'(x)`) for Verilator compatibility; (2) right-shift `>>` on an `SInt` operand emits arithmetic shift `>>>` (correct SRA behavior); (3) `.zext<N>()` emits `N'($unsigned(x))` to prevent context-dependent width expansion.
+> ◈ **SV codegen notes.** The SystemVerilog backend applies the following transformations for correctness across simulators and lint tools: (1) signed casts emit `$signed(x)` (not `logic signed [N-1:0]'(x)`) for Verilator compatibility; (2) right-shift `>>` on an `SInt` operand emits arithmetic shift `>>>` (correct SRA behavior); (3) `.zext<N>()` emits `N'($unsigned(x))` to prevent context-dependent width expansion; (4) `.resize<N>()` emits `N'($unsigned(x))` for unsigned/Bool base types and `N'($signed(x))` for signed base types — SV handles both widening (padding) and narrowing (truncation) via the size cast.
 
 > ◈ **Sim codegen notes.** The C++ simulation backend applies the following fixes for correctness: (1) `.sext<N>()` properly replicates the MSB of the source value into all upper bits of the result — previously it was treated identically to `.zext<N>()` (plain C++ cast, no sign extension); the correct formula is `((val & ((1<<src)-1)) ^ (1<<(src-1))) - (1<<(src-1))` where `src` is the source width; (2) bit-slice `expr[Hi:Lo]` correctly computes the inferred width as `Hi-Lo+1` for subsequent operations.
 

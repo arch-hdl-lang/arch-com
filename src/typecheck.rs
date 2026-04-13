@@ -1523,25 +1523,40 @@ impl<'a> TypeChecker<'a> {
             ExprKind::MethodCall(base, method, args) => {
                 let base_ty = self.resolve_expr_type(base, module_name, local_types);
                 match method.name.as_str() {
-                    "trunc" | "zext" | "sext" => {
+                    "trunc" | "zext" | "sext" | "resize" => {
                         if let Some(width_expr) = args.first() {
                             if let Some(w) = self.eval_const_expr(width_expr, local_types) {
                                 let target_w = w as u32;
                                 let source_w = match &base_ty {
                                     Ty::UInt(sw) | Ty::SInt(sw) => Some(*sw),
-                                    _ => None,
+                                    Ty::Bool => Some(1),
+                                    _ => None, // param-dependent width — can't verify statically
                                 };
                                 if let Some(sw) = source_w {
-                                    if method.name == "trunc" && target_w >= sw {
+                                    if method.name == "trunc" && target_w == sw {
                                         self.errors.push(CompileError::general(
-                                            &format!(".trunc<{}>() on a {}-bit value does not truncate — use .zext<{}>() to extend", target_w, sw, target_w),
+                                            &format!(".trunc<{}>() on a {}-bit value is a no-op — remove the cast", target_w, sw),
                                             method.span,
                                         ));
                                         return Ty::Error;
                                     }
-                                    if (method.name == "zext" || method.name == "sext") && target_w <= sw {
+                                    if method.name == "trunc" && target_w > sw {
                                         self.errors.push(CompileError::general(
-                                            &format!(".{}<{}>() on a {}-bit value does not extend — use .trunc<{}>() to narrow", method.name, target_w, sw, target_w),
+                                            &format!(".trunc<{}>() on a {}-bit value widens rather than truncates — use .zext<{}>() or .sext<{}>() to extend", target_w, sw, target_w, target_w),
+                                            method.span,
+                                        ));
+                                        return Ty::Error;
+                                    }
+                                    if (method.name == "zext" || method.name == "sext") && target_w == sw {
+                                        self.errors.push(CompileError::general(
+                                            &format!(".{}<{}>() on a {}-bit value is a no-op — remove the cast", method.name, target_w, sw),
+                                            method.span,
+                                        ));
+                                        return Ty::Error;
+                                    }
+                                    if (method.name == "zext" || method.name == "sext") && target_w < sw {
+                                        self.errors.push(CompileError::general(
+                                            &format!(".{}<{}>() on a {}-bit value narrows rather than extends — use .trunc<{}>() to narrow", method.name, target_w, sw, target_w),
                                             method.span,
                                         ));
                                         return Ty::Error;
