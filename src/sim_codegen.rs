@@ -34,6 +34,8 @@ pub struct SimCodegen<'a> {
     overload_map: HashMap<usize, usize>,
     check_uninit: bool,
     cdc_random: bool,
+    debug: bool,
+    debug_depth: u32,
 }
 
 impl<'a> SimCodegen<'a> {
@@ -42,7 +44,7 @@ impl<'a> SimCodegen<'a> {
         source: &'a SourceFile,
         overload_map: HashMap<usize, usize>,
     ) -> Self {
-        Self { symbols, source, overload_map, check_uninit: false, cdc_random: false }
+        Self { symbols, source, overload_map, check_uninit: false, cdc_random: false, debug: false, debug_depth: 1 }
     }
 
     pub fn check_uninit(mut self, enabled: bool) -> Self {
@@ -52,6 +54,12 @@ impl<'a> SimCodegen<'a> {
 
     pub fn cdc_random(mut self, enabled: bool) -> Self {
         self.cdc_random = enabled;
+        self
+    }
+
+    pub fn debug(mut self, enabled: bool, depth: u32) -> Self {
+        self.debug = enabled;
+        self.debug_depth = depth;
         self
     }
 
@@ -75,9 +83,58 @@ impl<'a> SimCodegen<'a> {
         // Always emit VStructs.h/cpp (contains enum typedefs + struct definitions)
         models.push(self.gen_structs_file());
 
+        // Compute which modules to instrument when --debug is active.
+        // BFS from root module(s) up to debug_depth levels.
+        let debug_module_set: std::collections::HashSet<String> = if self.debug {
+            // Build inst-children map: module_name → [child_module_names it instantiates]
+            let mut children_map: HashMap<String, Vec<String>> = HashMap::new();
+            let mut all_module_names: Vec<String> = Vec::new();
+            for item in &self.source.items {
+                if let Item::Module(m) = item {
+                    all_module_names.push(m.name.name.clone());
+                    let children: Vec<String> = m.body.iter()
+                        .filter_map(|b| if let ModuleBodyItem::Inst(inst) = b {
+                            Some(inst.module_name.name.clone())
+                        } else { None })
+                        .collect();
+                    children_map.insert(m.name.name.clone(), children);
+                }
+            }
+            // Root = modules not instantiated by any other module
+            let instantiated: std::collections::HashSet<String> = children_map.values()
+                .flat_map(|v| v.iter().cloned())
+                .collect();
+            let roots: Vec<String> = all_module_names.into_iter()
+                .filter(|n| !instantiated.contains(n))
+                .collect();
+            // BFS up to debug_depth levels
+            let mut result: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut queue: std::collections::VecDeque<(String, u32)> = roots.into_iter()
+                .map(|n| (n, 1u32))
+                .collect();
+            while let Some((mod_name, depth)) = queue.pop_front() {
+                if depth > self.debug_depth { continue; }
+                result.insert(mod_name.clone());
+                if depth < self.debug_depth {
+                    if let Some(children) = children_map.get(&mod_name) {
+                        for child in children {
+                            queue.push_back((child.clone(), depth + 1));
+                        }
+                    }
+                }
+            }
+            result
+        } else {
+            std::collections::HashSet::new()
+        };
+
         for item in &self.source.items {
             match item {
-                Item::Module(m)      => models.push(self.gen_module(m)),
+                Item::Module(m)      => models.push(self.gen_module(
+                    m,
+                    debug_module_set.contains(m.name.name.as_str()),
+                    &debug_module_set,
+                )),
                 Item::Counter(c)     => models.push(self.gen_counter(c)),
                 Item::Fsm(f)         => models.push(self.gen_fsm(f)),
                 Item::Regfile(r)     => models.push(self.gen_regfile(r)),
@@ -740,6 +797,15 @@ fn cpp_uint(bits: u32) -> &'static str {
     else if bits <= 16 { "uint16_t" }
     else if bits <= 32 { "uint32_t" }
     else               { "uint64_t" }
+}
+
+/// Return the bit-width of a TypeExpr, or 0 if indeterminate (e.g. Vec with param size).
+fn type_width_of(ty: &TypeExpr) -> u32 {
+    match ty {
+        TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval_width(w),
+        TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(..) => 1,
+        TypeExpr::Vec(..) | TypeExpr::Named(_) => 0,
+    }
 }
 
 /// Smallest C++ signed integer type that fits `bits` (up to 64).
@@ -2141,7 +2207,7 @@ fn collect_stmt_assigns(stmts: &[Stmt], out: &mut std::collections::BTreeSet<Str
 }
 
 impl<'a> SimCodegen<'a> {
-    fn gen_module(&self, m: &ModuleDecl) -> SimModel {
+    fn gen_module(&self, m: &ModuleDecl, emit_debug: bool, debug_module_set: &std::collections::HashSet<String>) -> SimModel {
         let name = &m.name.name;
         let class = format!("V{name}");
         let enum_map = build_enum_map(self.symbols);
@@ -2494,6 +2560,9 @@ impl<'a> SimCodegen<'a> {
         h.push_str("  void eval();\n");
         h.push_str("  void eval_comb();\n");
         h.push_str("  void eval_posedge();\n");
+        if emit_debug {
+            h.push_str("  void _debug_log_ports();  // --debug: print I/O port changes\n");
+        }
         h.push_str(&trace_h_decls);
         // Generate tick() for multi-clock modules with known frequencies
         let all_freqs_known = clk_freqs.len() >= 2 && clk_freqs.iter().all(|(_, f)| f.is_some());
@@ -2635,6 +2704,21 @@ impl<'a> SimCodegen<'a> {
         // VCD trace state
         h.push_str("  FILE* _trace_fp = nullptr;\n");
         h.push_str("  uint64_t _trace_time = 0;\n");
+
+        // --debug port shadow copies (previous values for change detection)
+        if emit_debug {
+            h.push_str("  // --debug port shadow copies\n");
+            for p in &m.ports {
+                if p.bus_info.is_some() { continue; }
+                if matches!(&p.ty, TypeExpr::Clock(_) | TypeExpr::Reset(..)) { continue; }
+                if matches!(&p.ty, TypeExpr::Vec(..)) { continue; }
+                let bits = type_width_of(&p.ty);
+                if bits > 64 { continue; }
+                let shadow_ty = cpp_uint(bits.max(8));
+                h.push_str(&format!("  {shadow_ty} _dbg_prev_{} = 0;\n", p.name.name));
+            }
+            h.push_str("  uint64_t _dbg_cycle = 0;\n");
+        }
 
         h.push_str("};\n");
 
@@ -2828,6 +2912,17 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str("  } // settle\n");
             } // end if has_clk
         } // end else (has insts)
+
+        // --debug: log I/O port changes after settle is complete
+        if emit_debug {
+            cpp.push_str("  _debug_log_ports();\n");
+            // Also call for sub-instances that are instrumented (depth > 1)
+            for inst in &insts {
+                if debug_module_set.contains(&inst.module_name.name) {
+                    cpp.push_str(&format!("  _inst_{}._debug_log_ports();\n", inst.name.name));
+                }
+            }
+        }
 
         // Auto-dump VCD trace after each eval()
         cpp.push_str("  if (_trace_fp) trace_dump(_trace_time++);\n");
@@ -3300,6 +3395,52 @@ impl<'a> SimCodegen<'a> {
 
         // Trace method implementations
         cpp.push_str(&trace_cpp_impl);
+
+        // --debug: _debug_log_ports() method
+        if emit_debug {
+            cpp.push_str(&format!("void {class}::_debug_log_ports() {{\n"));
+            for p in &m.ports {
+                if p.bus_info.is_some() { continue; }
+                let pname = &p.name.name;
+                let dir_str = match p.direction { Direction::In => "in", Direction::Out => "out" };
+                match &p.ty {
+                    TypeExpr::Clock(_) | TypeExpr::Reset(..) => {
+                        cpp.push_str(&format!("  // {pname}: clock/reset — skipped\n"));
+                        continue;
+                    }
+                    TypeExpr::Vec(..) => {
+                        cpp.push_str(&format!("  // {pname}: Vec — skipped\n"));
+                        continue;
+                    }
+                    _ => {}
+                }
+                let bits = type_width_of(&p.ty);
+                if bits > 64 {
+                    cpp.push_str(&format!("  // {pname}: >{bits}b wide — skipped\n"));
+                    continue;
+                }
+                cpp.push_str(&format!(
+                    "  if ({pname} != _dbg_prev_{pname}) {{\n"
+                ));
+                cpp.push_str(&format!(
+                    "    printf(\"[%llu][{name}.{pname}]({dir}) 0x%llx -> 0x%llx\\n\",\n",
+                    dir = dir_str
+                ));
+                cpp.push_str(
+                    "           (unsigned long long)_dbg_cycle,\n"
+                );
+                cpp.push_str(&format!(
+                    "           (unsigned long long)_dbg_prev_{pname},\n"
+                ));
+                cpp.push_str(&format!(
+                    "           (unsigned long long){pname});\n"
+                ));
+                cpp.push_str(&format!("    _dbg_prev_{pname} = {pname};\n"));
+                cpp.push_str("  }\n");
+            }
+            cpp.push_str("  _dbg_cycle++;\n");
+            cpp.push_str("}\n\n");
+        }
 
         SimModel { class_name: class.clone(), header: h, impl_: cpp }
     }

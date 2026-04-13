@@ -60,6 +60,12 @@ enum Command {
         /// Emit VCD waveform to file (e.g. --wave out.vcd)
         #[arg(long)]
         wave: Option<PathBuf>,
+        /// Auto-instrument I/O port value changes for debugging (prints each change to stdout)
+        #[arg(long)]
+        debug: bool,
+        /// How many module levels to instrument with --debug (default 1 = top module only)
+        #[arg(long = "depth", default_value_t = 1)]
+        debug_depth: u32,
     },
 }
 
@@ -125,8 +131,8 @@ fn main() -> miette::Result<()> {
             eprintln!("OK: no errors");
             Ok(())
         }
-        Command::Sim { arch_files, tb_files, outdir, check_uninit, cdc_random, wave } => {
-            run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, cdc_random, wave.as_deref())
+        Command::Sim { arch_files, tb_files, outdir, check_uninit, cdc_random, wave, debug, debug_depth } => {
+            run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, cdc_random, wave.as_deref(), debug, debug_depth)
         }
         Command::Build { files, o } => {
             let all_files = resolve_use_imports(&files)?;
@@ -184,6 +190,8 @@ fn run_sim(
     check_uninit: bool,
     cdc_random: bool,
     wave: Option<&std::path::Path>,
+    debug: bool,
+    debug_depth: u32,
 ) -> miette::Result<()> {
     // 1. Parse + type-check
     let all_files = resolve_use_imports(arch_files)?;
@@ -197,7 +205,7 @@ fn run_sim(
     fs::create_dir_all(&build_dir).into_diagnostic()?;
 
     // 3. Generate C++ models
-    let sim = SimCodegen::new(&symbols, &ast, overload_map).check_uninit(check_uninit).cdc_random(cdc_random);
+    let sim = SimCodegen::new(&symbols, &ast, overload_map).check_uninit(check_uninit).cdc_random(cdc_random).debug(debug, debug_depth);
     let models = sim.generate();
 
     if models.is_empty() {
@@ -254,6 +262,9 @@ fn run_sim(
     // 6. Run the simulation binary, forwarding remaining args
     eprintln!("Running simulation...");
     let mut run_cmd = std::process::Command::new(&sim_bin);
+    if debug {
+        run_cmd.arg("+arch_verbosity=5");
+    }
     if let Some(wave_path) = wave {
         run_cmd.arg(format!("+trace+{}", wave_path.display()));
         eprintln!("VCD waveform will be written to {}", wave_path.display());
