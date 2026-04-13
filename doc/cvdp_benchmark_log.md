@@ -312,11 +312,11 @@ Verified the restored `arch-hdl` MCP connection and used it to continue targeted
 | Category | Tasks | Testable | PASS | Rate |
 |----------|-------|----------|------|------|
 | cid002 | 94 | 91 | 91 | 100% |
-| cid003 | 78 | 77 | 74 | 96% |
+| cid003 | 78 | 77 | 75 | 97% |
 | cid004 | 55 | 53 | 51 | 96% |
 | cid007 | 40 | 23 | 20 | 87% |
 | cid016 | 35 | 31 | 31 | 100% |
-| **Total** | **302** | **275** | **267** | **97%** |
+| **Total** | **302** | **275** | **268** | **97%** |
 
 "Testable" excludes TOPLEVEL=verilog (~19 tasks) and modules with no `.arch`/`.sv`.
 
@@ -326,7 +326,7 @@ Verified the restored `arch-hdl` MCP connection and used it to continue targeted
 |--------|-------|
 | Total `.arch` files | ~262 |
 | Testable via cocotb | 275 |
-| **Cocotb PASS** | **267 (97%)** |
+| **Cocotb PASS** | **268 (97%)** |
 | Cocotb FAIL | 3 |
 | Cocotb TIMEOUT | 5 |
 | Not testable (TOPLEVEL=verilog + missing) | 27 |
@@ -335,7 +335,7 @@ Verified the restored `arch-hdl` MCP connection and used it to continue targeted
 
 **cid002 (1 timeout):** vga_controller (complex pixel-timing harness).
 
-**cid003 (1 fail, 1 timeout):** microcode_sequencer (cocotb 2.0 API bug — `'Test' object is not callable`). Timeout: vga_controller.
+**cid003 (1 timeout):** vga_controller.
 
 **cid004 (1 timeout):** vga_controller (shared across categories).
 
