@@ -484,6 +484,35 @@ guarantee.
 
 ---
 
+## Simulation Pipeline Note
+
+The `lower_threads` pass currently runs for **both** `arch build` (SV codegen)
+and `arch sim`.  This means SimCodegen never sees `ThreadBlock` AST nodes — it
+only sees the generated `_ModuleName_threads` modules with plain state registers.
+
+**Consequence**: the natural per-thread parallelism expressed in the source is
+invisible to the simulator.  Each `thread once`/`thread` block could in principle
+execute on its own OS thread or coroutine, synchronized at the clock edge barrier.
+With `lower_threads` applied first, all threads are merged into a single
+`eval_seq()` body and cannot be distributed to multiple cores.
+
+**Desired architecture**: fork the pipeline so `lower_threads` is only applied
+for `arch build`.  SimCodegen receives the pre-lowered AST and has two paths:
+
+```
+arch build:  parse → elaborate → lower_threads → Codegen (SV)
+arch sim:    parse → elaborate ─────────────────→ SimCodegen
+                                                   ├── single-core: lower inline
+                                                   └── --parallel: threads as coroutines
+```
+
+This document — specifically the state partitioning rules and the lock/fork/for
+sub-lowerers — defines the **semantic contract** that both paths must satisfy: at
+every clock edge, both must produce identical values for every signal.  The
+lowering algorithm is the ground truth for verifying that equivalence.
+
+---
+
 ## Invariants (correctness properties)
 
 1. **Single driver**: every register / comb signal is written by exactly one
