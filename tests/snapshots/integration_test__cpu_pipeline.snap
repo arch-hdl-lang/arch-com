@@ -44,7 +44,7 @@ module CpuPipe #(
   // ── Stage data registers ──
   logic [XLEN-1:0] fetch_pc = 0;
   logic [XLEN-1:0] fetch_instr = 0;
-  logic [7-1:0] decode_opcode = 0;
+  logic [6:0] decode_opcode = 0;
   logic [REG_ADDR_W-1:0] decode_rd = 0;
   logic [XLEN-1:0] decode_rs1_val = 0;
   logic [XLEN-1:0] decode_rs2_val = 0;

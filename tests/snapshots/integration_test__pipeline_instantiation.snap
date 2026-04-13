@@ -45,8 +45,8 @@ endmodule
 module Top (
   input logic clk,
   input logic rst,
-  input logic [32-1:0] din,
-  output logic [32-1:0] dout
+  input logic [31:0] din,
+  output logic [31:0] dout
 );
 
   SimplePipe pipe0 (

@@ -11,14 +11,14 @@ module BitExtract #(
   input logic clk,
   input logic rst,
   input logic [XLEN-1:0] instr,
-  output logic [7-1:0] opcode,
-  output logic [5-1:0] rd,
-  output logic [3-1:0] funct3
+  output logic [6:0] opcode,
+  output logic [4:0] rd,
+  output logic [2:0] funct3
 );
 
-  logic [7-1:0] opcode_r = 0;
-  logic [5-1:0] rd_r = 0;
-  logic [3-1:0] funct3_r = 0;
+  logic [6:0] opcode_r = 0;
+  logic [4:0] rd_r = 0;
+  logic [2:0] funct3_r = 0;
   always_ff @(posedge clk) begin
     if (rst) begin
       funct3_r <= 0;

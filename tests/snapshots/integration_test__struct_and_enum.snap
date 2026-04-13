@@ -4,7 +4,7 @@ expression: sv
 ---
 typedef struct packed { // fields: LSB→MSB (reverse of declaration order)
   logic valid;
-  logic [32-1:0] data;
+  logic [31:0] data;
 } Packet;
 
 typedef enum logic [1:0] {
@@ -16,9 +16,9 @@ typedef enum logic [1:0] {
 
 module SimpleAlu (
   input AluOp op,
-  input logic [32-1:0] a,
-  input logic [32-1:0] b,
-  output logic [32-1:0] result
+  input logic [31:0] a,
+  input logic [31:0] b,
+  output logic [31:0] result
 );
 
   assign result = 32'(a + b);

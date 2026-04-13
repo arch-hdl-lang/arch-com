@@ -7,7 +7,7 @@ expression: sv
 
 module DebugModule (
   input logic clk,
-  output logic [8-1:0] debug_out
+  output logic [7:0] debug_out
 );
 
   assign debug_out = 0;

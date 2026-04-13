@@ -4,24 +4,24 @@ expression: sv
 ---
 module TaskQueue #(
   parameter int  DEPTH = 8,
-  parameter type DATA  = logic [32-1:0]
+  parameter type DATA  = logic [31:0]
 ) (
   input  logic clk,
   input  logic rst,
   input  logic alloc_req_valid,
   output logic alloc_req_ready,
   output logic alloc_resp_valid,
-  output logic [3-1:0] alloc_resp_handle,
+  output logic [2:0] alloc_resp_handle,
   input  logic free_req_valid,
   output logic free_req_ready,
-  input  logic [3-1:0] free_req_handle,
+  input  logic [2:0] free_req_handle,
   input  logic delete_head_req_valid,
   output logic delete_head_req_ready,
   output logic delete_head_resp_valid,
   output DATA delete_head_resp_data,
   output logic empty,
   output logic full,
-  output logic [4-1:0] length
+  output logic [3:0] length
 );
 
   localparam int HANDLE_W = $clog2(DEPTH);
@@ -43,7 +43,7 @@ module TaskQueue #(
   
   // alloc controller registers
   logic _ctrl_alloc_resp_v;
-  logic [3-1:0] _ctrl_alloc_resp_handle;
+  logic [2:0] _ctrl_alloc_resp_handle;
   
   // free controller registers
   

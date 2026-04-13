@@ -8,16 +8,16 @@ module LatencyArbiter #(
   input logic clk,
   input logic rst,
   output logic grant_valid,
-  output logic [2-1:0] grant_requester,
+  output logic [1:0] grant_requester,
   input logic [NUM_REQ-1:0] request_valid,
   output logic [NUM_REQ-1:0] request_ready
 );
 
   logic grant_valid_comb;
-  logic [2-1:0] grant_requester_comb;
-  logic [4-1:0] request_ready_comb;
+  logic [1:0] grant_requester_comb;
+  logic [3:0] request_ready_comb;
   
-  logic [2-1:0] rr_ptr_r;
+  logic [1:0] rr_ptr_r;
   integer arb_i;
   logic arb_found;
   

@@ -7,7 +7,7 @@ expression: sv
 
 module TaskQueue #(
   parameter int  DEPTH = 8,
-  parameter type DATA  = logic [32-1:0]
+  parameter type DATA  = logic [31:0]
 ) (
   input  logic clk,
   input  logic rst,
@@ -15,14 +15,14 @@ module TaskQueue #(
   output logic insert_tail_req_ready,
   input  DATA insert_tail_req_data,
   output logic insert_tail_resp_valid,
-  output logic [3-1:0] insert_tail_resp_handle,
+  output logic [2:0] insert_tail_resp_handle,
   input  logic delete_head_req_valid,
   output logic delete_head_req_ready,
   output logic delete_head_resp_valid,
   output DATA delete_head_resp_data,
   output logic empty,
   output logic full,
-  output logic [4-1:0] length
+  output logic [3:0] length
 );
 
   localparam int HANDLE_W = $clog2(DEPTH);
@@ -45,7 +45,7 @@ module TaskQueue #(
   // insert_tail controller registers
   logic _ctrl_insert_tail_busy;
   logic _ctrl_insert_tail_resp_v;
-  logic [3-1:0] _ctrl_insert_tail_resp_handle;
+  logic [2:0] _ctrl_insert_tail_resp_handle;
   logic _ctrl_insert_tail_was_empty;
   
   // delete_head controller registers
@@ -127,15 +127,15 @@ module PacketQueue #(
   input logic rst,
   input logic push_valid,
   output logic push_ready,
-  input logic [32-1:0] push_data,
+  input logic [31:0] push_data,
   output logic push_resp_valid,
   input logic pop_valid,
   output logic pop_ready,
   output logic pop_resp_valid,
-  output logic [32-1:0] pop_data,
+  output logic [31:0] pop_data,
   output logic empty,
   output logic full,
-  output logic [4-1:0] length
+  output logic [3:0] length
 );
 
   TaskQueue #(.DEPTH(8)) q (

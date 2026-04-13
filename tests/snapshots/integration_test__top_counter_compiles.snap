@@ -32,7 +32,7 @@ module Top (
   input logic clk,
   input logic rst,
   input logic en,
-  output logic [8-1:0] count_out
+  output logic [7:0] count_out
 );
 
   Counter #(.WIDTH(8)) ctr (

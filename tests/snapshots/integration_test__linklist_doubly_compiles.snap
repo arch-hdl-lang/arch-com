@@ -4,22 +4,22 @@ expression: sv
 ---
 module SchedList #(
   parameter int  DEPTH = 4,
-  parameter type DATA  = logic [8-1:0]
+  parameter type DATA  = logic [7:0]
 ) (
   input  logic clk,
   input  logic rst,
   input  logic alloc_req_valid,
   output logic alloc_req_ready,
   output logic alloc_resp_valid,
-  output logic [2-1:0] alloc_resp_handle,
+  output logic [1:0] alloc_resp_handle,
   input  logic next_req_valid,
-  input  logic [2-1:0] next_req_handle,
+  input  logic [1:0] next_req_handle,
   output logic next_resp_valid,
-  output logic [2-1:0] next_resp_handle,
+  output logic [1:0] next_resp_handle,
   input  logic prev_req_valid,
-  input  logic [2-1:0] prev_req_handle,
+  input  logic [1:0] prev_req_handle,
   output logic prev_resp_valid,
-  output logic [2-1:0] prev_resp_handle,
+  output logic [1:0] prev_resp_handle,
   output logic empty,
   output logic full
 );
@@ -44,15 +44,15 @@ module SchedList #(
   
   // alloc controller registers
   logic _ctrl_alloc_resp_v;
-  logic [2-1:0] _ctrl_alloc_resp_handle;
+  logic [1:0] _ctrl_alloc_resp_handle;
   
   // next controller registers
   logic _ctrl_next_resp_v;
-  logic [2-1:0] _ctrl_next_resp_handle;
+  logic [1:0] _ctrl_next_resp_handle;
   
   // prev controller registers
   logic _ctrl_prev_resp_v;
-  logic [2-1:0] _ctrl_prev_resp_handle;
+  logic [1:0] _ctrl_prev_resp_handle;
   
   // Status outputs
   assign empty  = (_fl_cnt == CNT_W'(DEPTH));

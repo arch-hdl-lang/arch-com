@@ -87,7 +87,7 @@ fn test_let_bindings() {
     let source = include_str!("../examples/let_bindings.arch");
     let sv = compile_to_sv(source);
     // Typed let: emits declared type then a separate assign
-    assert!(sv.contains("logic [8-1:0] mask;"), "expected typed let decl, got:\n{sv}");
+    assert!(sv.contains("logic [7:0] mask;"), "expected typed let decl, got:\n{sv}");
     assert!(sv.contains("assign mask = a & b;"), "expected typed let assign, got:\n{sv}");
     // Untyped let: emits logic declaration + assign (same pattern as typed let)
     assert!(sv.contains("logic same;"), "expected untyped let decl, got:\n{sv}");
@@ -326,7 +326,7 @@ fn test_wrap_counter() {
     let sv = compile_to_sv(source);
     assert!(sv.contains("module WrapCounter"));
     assert!(sv.contains("parameter int MAX = 15"));
-    assert!(sv.contains("logic [4-1:0] count_r"));
+    assert!(sv.contains("logic [3:0] count_r"));
     assert!(sv.contains("always_ff @(posedge clk)"));
     assert!(sv.contains("assign value = count_r"));
     assert!(sv.contains("assign at_max"));
@@ -341,7 +341,7 @@ fn test_bus_arbiter() {
     let sv = compile_to_sv(source);
     assert!(sv.contains("module BusArbiter"));
     assert!(sv.contains("parameter int NUM_REQ = 4"));
-    assert!(sv.contains("logic [NUM_REQ-1:0] request_valid"));
+    assert!(sv.contains("input logic [NUM_REQ-1:0] request_valid"));
     assert!(sv.contains("logic [NUM_REQ-1:0] request_ready"));
     assert!(sv.contains("rr_ptr_r"));
     assert!(sv.contains("always_ff @(posedge clk)"));

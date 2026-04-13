@@ -8,7 +8,7 @@ expression: sv
 module Placeholder (
   input logic clk,
   input logic rst,
-  output logic [8-1:0] out_val
+  output logic [7:0] out_val
 );
 
   assign out_val = '0 /* TODO: todo! placeholder */;

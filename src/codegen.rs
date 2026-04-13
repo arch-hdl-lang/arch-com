@@ -4569,7 +4569,15 @@ impl<'a> Codegen<'a> {
                 _ => None,
             })
             .unwrap_or_else(|| "logic [7:0]".to_string());
-        let data_width_num = self.width_of_type_str(&data_width_ty);
+        // Compute the bit-width number directly from the TypeExpr to avoid
+        // fragile string parsing of the emitted type (e.g. "logic [7:0]").
+        let data_width_num = r.params.iter()
+            .find(|p| p.name.name == "WIDTH")
+            .and_then(|p| match &p.kind {
+                crate::ast::ParamKind::Type(ty) => self.type_expr_data_width(ty),
+                _ => None,
+            })
+            .unwrap_or_else(|| "8".to_string());
 
         // Resolve DEPTH from param default
         let depth_expr = r.params.iter()
@@ -4753,7 +4761,7 @@ impl<'a> Codegen<'a> {
             .unwrap_or_else(|| "'0".to_string());
 
         // ── Internal register ─────────────────────────────────────────────────
-        self.line(&format!("logic [{}:0] count_r;", Self::fold_width_str(&count_width)));
+        self.line(&format!("logic [{}] count_r;", Self::fold_width_str(&count_width)));
 
         // ── Determine FF sensitivity list ─────────────────────────────────────
         let ff_sens = Self::ff_sensitivity(&clk, &rst, is_async, is_low);
@@ -5001,7 +5009,7 @@ impl<'a> Codegen<'a> {
             );
             self.line(&format!("logic grant_valid_comb;"));
             self.line(&format!("logic [{}:0] grant_requester_comb;", req_width - 1));
-            self.line(&format!("logic [{}:0] {req_ready_sig}_comb;", Self::fold_width_str(&num_req_str)));
+            self.line(&format!("logic [{}] {req_ready_sig}_comb;", Self::fold_width_str(&num_req_str)));
             self.line("");
             ("grant_valid_comb".to_string(), "grant_requester_comb".to_string(), format!("{req_ready_sig}_comb"))
         } else {
@@ -5054,7 +5062,7 @@ impl<'a> Codegen<'a> {
                 if !dst_suffix.is_empty() {
                     self.line(&format!("logic {dst_gv};"));
                     self.line(&format!("logic [{}:0] {dst_gr};", req_width - 1));
-                    self.line(&format!("logic [{}:0] {dst_rr};", Self::fold_width_str(&num_req_str)));
+                    self.line(&format!("logic [{}] {dst_rr};", Self::fold_width_str(&num_req_str)));
                 }
 
                 self.line(&format!("always_ff @({ff_sens}) begin"));
@@ -5098,7 +5106,7 @@ impl<'a> Codegen<'a> {
                 if is_scalar {
                     format!("{dir} logic {name}")
                 } else {
-                    format!("{dir} logic [{}:0] {name}", Self::fold_width_str(&count_str))
+                    format!("{dir} logic [{}] {name}", Self::fold_width_str(&count_str))
                 }
             }
             _ => {
@@ -5387,7 +5395,7 @@ impl<'a> Codegen<'a> {
         self.indent += 1;
 
         // ── Register array ────────────────────────────────────────────────────
-        self.line(&format!("logic [{}:0] rf_data [0:NREGS-1];", Self::fold_width_str(&data_width_num)));
+        self.line(&format!("logic [{}] rf_data [0:NREGS-1];", Self::fold_width_str(&data_width_num)));
         self.line("");
 
         // ── Determine read/write port signal names (flat) ─────────────────────
@@ -5508,14 +5516,14 @@ impl<'a> Codegen<'a> {
         let phy_ty = match ty {
             TypeExpr::Bool => "logic".to_string(),
             TypeExpr::Named(id) if id.name == "WIDTH" || id.name == "DATA_WIDTH" => {
-                format!("logic [{}:0]", Self::fold_width_str(data_width))
+                format!("logic [{}]", Self::fold_width_str(data_width))
             }
             TypeExpr::Named(id) if id.name == "ADDR_WIDTH" || id.name.to_lowercase().contains("addr") => {
                 format!("logic [{}:0]", addr_width - 1)
             }
             TypeExpr::UInt(w) => {
                 let ws = self.emit_expr_str(w);
-                format!("logic [{}:0]", Self::fold_width_str(&ws))
+                format!("logic [{}]", Self::fold_width_str(&ws))
             }
             _ => self.emit_port_type_str(ty),
         };
