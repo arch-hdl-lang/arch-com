@@ -2140,6 +2140,22 @@ fn partition_thread_body(
                 states.extend(for_states);
             }
             ThreadStmt::Lock { resource, body, span } => {
+                // Nested lock blocks would violate mutual exclusion:
+                // once a thread is past the first body state (grant-gated), subsequent
+                // states do not re-check grant, so a higher-priority thread can enter
+                // the same critical section simultaneously.  Reject at compile time.
+                let inner_resources = collect_locked_resources(body);
+                if !inner_resources.is_empty() {
+                    let names: Vec<&str> = inner_resources.iter().map(|s| s.as_str()).collect();
+                    return Err(CompileError::general(
+                        &format!(
+                            "nested lock blocks are not supported (inner lock(s): {}); \
+                             use sequential lock blocks instead",
+                            names.join(", ")
+                        ),
+                        *span,
+                    ));
+                }
                 // Flush pending statements
                 if !cur_comb.is_empty() || !cur_seq.is_empty() {
                     states.push(ThreadFsmState {
