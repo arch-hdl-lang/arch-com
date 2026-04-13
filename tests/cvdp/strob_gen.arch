@@ -11,7 +11,7 @@ module strob_gen
   // DELAY = (CLOCK_HZ * PERIOD_US / 1_000_000) - 1
   param DELAY: const = (CLOCK_HZ * PERIOD_US / 1000000) - 1;
 
-  reg cnt: UInt<32> reset nrst=>DELAY;
+  reg cnt: UInt<40> reset nrst=>DELAY.zext<40>();
 
   seq
     if cnt == 0
@@ -20,13 +20,13 @@ module strob_gen
       else
         strobe_o <= false;
       end if
-      cnt <= DELAY;
+      cnt <= DELAY.zext<40>();
     else
       strobe_o <= false;
       if enable == true
-        cnt <= (cnt - 1).trunc<32>();
+        cnt <= (cnt - 1).trunc<40>();
       else
-        cnt <= DELAY;
+        cnt <= DELAY.zext<40>();
       end if
     end if
   end seq

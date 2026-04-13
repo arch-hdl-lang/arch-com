@@ -1,6 +1,6 @@
 # ARCH Compiler — Status & Roadmap
 
-> Last updated: 2026-04-03
+> Last updated: 2026-04-13
 > Compiler version: 0.40.0 (built-in SysDomain, default seq, one-line seq, bus construct, VerilogEval simplifications)
 
 ---
@@ -43,7 +43,7 @@
 | `regfile` | ✅ | Multi-read-port / multi-write-port; `forward write_before_read`; `init [i] = v` |
 | `bus` | ✅ | Reusable port bundles with `initiator`/`target` perspectives; parameterized; signals have explicit `in`/`out` from initiator's perspective, `target` flips all directions; late flattening at codegen: `axi.aw_valid` → `axi_aw_valid` in SV; inst connections via `axi.signal <- wire` (initiator) and `axi.signal -> wire` (target); per-signal driven-port check in type checker (each bus signal treated as an individual port for drive coverage); sim codegen emits flattened C++ struct fields (`uint32_t axi_aw_valid`) and auto-traces all bus signals in VCD waveform output; clean Verilator lint |
 | `package` / `use` | ✅ | `package PkgName ... end package PkgName` groups enums, structs, functions, params; `use PkgName;` imports all names; emits SV `package`/`endpackage` + `import PkgName::*;` before module; file resolution: `PkgName.arch` in same directory; cycle detection; each file parsed once |
-| `assert` / `cover` | ❌ | Lexed but skipped at parse time |
+| `assert` / `cover` | ✅ | Concurrent SVA: `assert property (@(posedge clk) expr)` / `cover property (...)`; `implies` binary operator lowers to `(!a \|\| b)`; optional label; requires Clock port (formal tools need a clock); typecheck verifies expr is Bool; emitted inside module, FSM, pipeline, FIFO, RAM, counter, arbiter, regfile, linklist; generate-for/if bodies supported |
 | `pipeline` | ✅ | Stages with reg/comb/let/inst body; per-stage `stall when`; `flush` directives; explicit forwarding mux via comb if/else; `valid_r` per-stage signal; cross-stage refs (`Stage.signal`); `inst` inside stages with auto-declared output wires |
 | `function` | ✅ | Pure combinational; `return expr;`; `let` bindings as temporaries; **overloading** (same name, different arg types — mangled as `Name_8`, `Name_16`, etc.); emitted as SV `function automatic` inside each module that uses it |
 | `log` | ✅ | Simulation logging: `log(Level, "TAG", "fmt %0d", arg)` in `seq` and `comb` blocks; levels `Always`/`Low`/`Medium`/`High`/`Full`/`Debug`; per-module `_arch_verbosity` integer; runtime control via `+arch_verbosity=N`; emits `$display` with `[%0t][LEVEL][TAG]` prefix; **file logging**: `log file("path") (Level, ...)` — auto `$fopen`/`$fclose` in `initial`/`final` |
@@ -70,7 +70,7 @@
 | `Bool`, `Bit` | ✅ | `Bool` and `UInt<1>` are treated as identical types throughout — freely assignable to each other, bitwise ops on 1-bit operands return `Bool` |
 | `Clock<Domain>` | ✅ | Domain tracked for CDC detection |
 | `Reset<Sync\|Async, High\|Low>` | ✅ | Optional polarity (defaults High); Async → `posedge rst` sensitivity |
-| `Vec<T, N>` | ✅ | Emits as SV unpacked array `logic [W-1:0] name [0:N-1]`; init/reset uses `'{default: val}`; **multi-dimensional**: nested `Vec<Vec<T,N>,M>` supported — emits `logic [W-1:0] name [0:M-1][0:N-1]` with nested `'{default: '{default: val}}` reset; arbitrary nesting depth; multi-level indexing `arr[i][j]` |
+| `Vec<T, N>` | ✅ | Emits as SV unpacked array `logic [W-1:0] name [0:N-1]`; init/reset uses `'{default: val}`; **multi-dimensional**: nested `Vec<Vec<T,N>,M>` supported — emits `logic [W-1:0] name [0:M-1][0:N-1]` with nested `'{default: '{default: val}}` reset; arbitrary nesting depth; multi-level indexing `arr[i][j]`; **indexed `seq` assignment type check**: `vec[i] <= expr` correctly checks against the element type (e.g. `UInt<32>`) — width mismatch like `vec[i] <= vec[i] + 1` (UInt<33> into UInt<32>) is now caught as an error |
 | Named types (struct/enum refs) | ✅ | |
 | `Token<T, id_width>` | ❌ | TLM only |
 | `Future<T>` | ❌ | TLM only |
@@ -129,7 +129,7 @@
 | `{a, b, c}` bit concatenation | ✅ MSB-first; emits SV `{a, b, c}`; sim codegen shift-OR with 128-bit support |
 | `{N{expr}}` bit replication | ✅ Emits SV `{N{expr}}`; nestable inside concat `{{8{sign}}, data}`; sim codegen `_arch_repeat` helper |
 | `for i in {list}` value-list iteration | ✅ `for i in {10, 20, 30} ... end for` — compile-time unrolled; each value gets its own block; works in `comb` and `seq` blocks |
-| `assert` / `cover` | ❌ |
+| `assert` / `cover` | ✅ | Concurrent SVA; `implies` operator; optional label; requires Clock port |
 
 ---
 

@@ -517,6 +517,26 @@ impl<'a> TypeChecker<'a> {
                 ModuleBodyItem::Thread(_) | ModuleBodyItem::Resource(_) => {
                     // Threads and resources are lowered before typecheck.
                 }
+                ModuleBodyItem::Assert(a) => {
+                    // Verify expr is Bool; require a Clock port
+                    let ty = self.resolve_expr_type(&a.expr, &m.name.name, &local_types);
+                    if ty != Ty::Bool && ty != Ty::Error && ty != Ty::Todo {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "assert/cover expression must be Bool, found {}",
+                                ty.display()
+                            ),
+                            a.expr.span,
+                        ));
+                    }
+                    let has_clock = m.ports.iter().any(|p| matches!(&p.ty, TypeExpr::Clock(_)));
+                    if !has_clock {
+                        self.errors.push(CompileError::general(
+                            "assert/cover requires a Clock port (needed for concurrent SVA)",
+                            a.span,
+                        ));
+                    }
+                }
             }
         }
 
@@ -1060,7 +1080,9 @@ impl<'a> TypeChecker<'a> {
                     let flat = Self::expr_flat_name_tc(&a.target);
                     if flat != name { driven.insert(flat); }
                     let rhs_ty = self.resolve_expr_type(&a.value, module_name, local_types);
-                    if let Some(lhs_ty) = local_types.get(&name).cloned() {
+                    // Use the target expression's actual type (handles Index/BitSlice correctly)
+                    let lhs_ty = self.resolve_expr_type(&a.target, module_name, local_types);
+                    if lhs_ty != Ty::Error && local_types.contains_key(&name) {
                         self.check_width_compatible(&lhs_ty, &rhs_ty, &name, a.span);
                         // Shift width check (IEEE §11.6.1: shifts are non-widening)
                         if let (Some(lw), Some(rw)) = (lhs_ty.width(), rhs_ty.width()) {
@@ -1664,6 +1686,8 @@ impl<'a> TypeChecker<'a> {
                     // Bit-select of a UInt/SInt produces a single bit; treat as Bool
                     // so it can be used directly in boolean expressions.
                     Ty::UInt(_) | Ty::SInt(_) => Ty::Bool,
+                    // Propagate errors — don't silently produce UInt<1> for unresolved base types.
+                    Ty::Error | Ty::Todo => Ty::Error,
                     _ => Ty::UInt(1),
                 }
             }
@@ -1915,7 +1939,7 @@ impl<'a> TypeChecker<'a> {
             BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => {
                 Ty::Bool
             }
-            BinOp::And | BinOp::Or => Ty::Bool,
+            BinOp::And | BinOp::Or | BinOp::Implies => Ty::Bool,
             BinOp::Add | BinOp::Sub => {
                 let lw = lt.width().unwrap_or(1);
                 let rw = rt.width().unwrap_or(1);

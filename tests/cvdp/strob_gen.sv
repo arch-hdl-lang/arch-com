@@ -10,10 +10,10 @@ module strob_gen #(
 );
 
   // DELAY = (CLOCK_HZ * PERIOD_US / 1_000_000) - 1
-  logic [32-1:0] cnt;
+  logic [39:0] cnt;
   always_ff @(posedge clk or negedge nrst) begin
     if ((!nrst)) begin
-      cnt <= DELAY;
+      cnt <= 40'($unsigned(DELAY));
       strobe_o <= 1'b0;
     end else begin
       if (cnt == 0) begin
@@ -22,13 +22,13 @@ module strob_gen #(
         end else begin
           strobe_o <= 1'b0;
         end
-        cnt <= DELAY;
+        cnt <= 40'($unsigned(DELAY));
       end else begin
         strobe_o <= 1'b0;
         if (enable == 1'b1) begin
-          cnt <= 32'(cnt - 1);
+          cnt <= 40'(cnt - 1);
         end else begin
-          cnt <= DELAY;
+          cnt <= 40'($unsigned(DELAY));
         end
       end
     end

@@ -11,7 +11,7 @@ module round_robin_arbiter #(
 );
 
   // Per-channel timeout counters (Vec of 32-bit)
-  logic [32-1:0] tout_cnt [N-1:0];
+  logic [N-1:0] [31:0] tout_cnt;
   // Round-robin pointer: last granted channel (one-hot)
   logic [N-1:0] last_grant_idx;
   // Timeout flags: channel timed out if counter >= TIMEOUT
@@ -76,7 +76,7 @@ module round_robin_arbiter #(
         if (grant[i]) begin
           tout_cnt[i] <= 0;
         end else if (req[i]) begin
-          tout_cnt[i] <= tout_cnt[i] + 1;
+          tout_cnt[i] <= 32'(tout_cnt[i] + 1);
         end else begin
           tout_cnt[i] <= 0;
         end

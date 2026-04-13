@@ -78,7 +78,7 @@ module round_robin_arbiter
       if grant[i]
         tout_cnt[i] <= 0;
       elsif req[i]
-        tout_cnt[i] <= tout_cnt[i] + 1;
+        tout_cnt[i] <= (tout_cnt[i] + 1).trunc<32>();
       else
         tout_cnt[i] <= 0;
       end if
