@@ -7,11 +7,11 @@ module WrapCounter #(
   input logic clk,
   input logic rst,
   input logic inc,
-  output logic [4-1:0] value,
+  output logic [3:0] value,
   output logic at_max
 );
 
-  logic [4-1:0] count_r;
+  logic [3:0] count_r;
   always_ff @(posedge clk) begin
     if (rst) count_r <= 0;
     else if (inc) begin

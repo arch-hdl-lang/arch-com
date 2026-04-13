@@ -10,7 +10,8 @@ The CVDP benchmark tests whether ARCH-generated SystemVerilog is functionally co
 
 **Dataset:** CVDP v1.0.4 (non-agentic, non-commercial) — JSONL at `~/github/cvdp_benchmark/full_dataset/`  
 **Test runner:** `tests/cvdp/run_cvdp.py`  
-**Files:** 231 `.arch` + 235 `.sv` in `tests/cvdp/`, 37 spec files in `tests/cvdp/medium_specs/`
+**Files:** 259 `.arch` + 269 `.sv` in `tests/cvdp/`, 37 spec files in `tests/cvdp/medium_specs/`  
+Note: 10 `.sv` files have no `.arch` counterpart (reference-only SVs from the CVDP dataset or hand-written debug testbenches).
 
 ---
 
