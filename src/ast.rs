@@ -321,6 +321,10 @@ pub struct ThreadBlock {
     pub reset_level: ResetLevel,
     /// `thread once` — one-shot, terminal state after completion.
     pub once: bool,
+    /// `default when <cond> ... end default` — soft-reset clause.
+    /// When `cond` is true in any state, the listed seq assigns fire and the
+    /// thread returns to state 0, taking priority over normal transitions.
+    pub default_when: Option<(Expr, Vec<ThreadStmt>)>,
     pub body: Vec<ThreadStmt>,
     pub span: Span,
 }
@@ -681,6 +685,9 @@ pub enum BinOp {
     BitXor,
     Shl,
     Shr,
+    AddWrap,
+    SubWrap,
+    MulWrap,
 }
 
 impl std::fmt::Display for BinOp {
@@ -704,6 +711,9 @@ impl std::fmt::Display for BinOp {
             BinOp::BitXor => write!(f, "^"),
             BinOp::Shl => write!(f, "<<"),
             BinOp::Shr => write!(f, ">>"),
+            BinOp::AddWrap => write!(f, "+%"),
+            BinOp::SubWrap => write!(f, "-%"),
+            BinOp::MulWrap => write!(f, "*%"),
         }
     }
 }

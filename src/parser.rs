@@ -814,6 +814,25 @@ impl Parser {
             ));
         };
 
+        // Optional `default when <cond> ... end default` — must come first in the body.
+        let default_when = if self.check(TokenKind::Default) {
+            let _kw = self.advance(); // consume `default`
+            self.expect(TokenKind::When)?;
+            let cond = self.parse_expr()?;
+            let mut dw_stmts = Vec::new();
+            while !(self.pos + 1 < self.tokens.len()
+                && self.tokens[self.pos].kind == TokenKind::End
+                && self.tokens[self.pos + 1].kind == TokenKind::Default)
+            {
+                dw_stmts.push(self.parse_thread_stmt()?);
+            }
+            self.expect(TokenKind::End)?;
+            self.expect(TokenKind::Default)?;
+            Some((cond, dw_stmts))
+        } else {
+            None
+        };
+
         // Body
         let mut body = Vec::new();
         while !self.check_end_thread() {
@@ -849,6 +868,7 @@ impl Parser {
             reset,
             reset_level,
             once,
+            default_when,
             body,
             span: start.merge(end_span),
         })
@@ -2092,7 +2112,11 @@ impl Parser {
             if l_bp < min_bp {
                 break;
             }
-            self.advance(); // consume operator
+            self.advance(); // consume operator (first token)
+            // Wrapping operators are two tokens (+%, -%, *%); consume the trailing %
+            if matches!(op, BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap) {
+                self.advance(); // consume %
+            }
             let rhs = self.parse_expr_bp(r_bp)?;
             let span = lhs.span.merge(rhs.span);
             lhs = Expr {
@@ -2374,6 +2398,9 @@ impl Parser {
             // Don't treat `+ :` or `- :` as binary ops — they are part-select separators
             TokenKind::Plus if self.peek_kind_at(self.pos + 1) == Some(TokenKind::Colon) => None,
             TokenKind::Minus if self.peek_kind_at(self.pos + 1) == Some(TokenKind::Colon) => None,
+            TokenKind::Plus if self.peek_kind_at(self.pos + 1) == Some(TokenKind::Percent) => Some(BinOp::AddWrap),
+            TokenKind::Minus if self.peek_kind_at(self.pos + 1) == Some(TokenKind::Percent) => Some(BinOp::SubWrap),
+            TokenKind::Star if self.peek_kind_at(self.pos + 1) == Some(TokenKind::Percent) => Some(BinOp::MulWrap),
             TokenKind::Plus => Some(BinOp::Add),
             TokenKind::Minus => Some(BinOp::Sub),
             TokenKind::Star => Some(BinOp::Mul),
@@ -4111,8 +4138,8 @@ fn infix_binding_power(op: BinOp) -> (u8, u8) {
         BinOp::BitXor => (11, 12),
         BinOp::BitAnd => (13, 14),
         BinOp::Shl | BinOp::Shr => (15, 16),
-        BinOp::Add | BinOp::Sub => (17, 18),
-        BinOp::Mul | BinOp::Div | BinOp::Mod => (19, 20),
+        BinOp::Add | BinOp::Sub | BinOp::AddWrap | BinOp::SubWrap => (17, 18),
+        BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::MulWrap => (19, 20),
     }
 }
 

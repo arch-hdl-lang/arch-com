@@ -566,6 +566,10 @@ fn subst_thread(t: &ThreadBlock, var: &str, val: i64) -> ThreadBlock {
         reset: t.reset.clone(),
         reset_level: t.reset_level,
         once: t.once,
+        default_when: t.default_when.as_ref().map(|(cond, stmts)| (
+            subst_expr_names(cond.clone(), var, val),
+            stmts.iter().map(|s| subst_thread_stmt(s, var, val)).collect(),
+        )),
         body: t.body.iter().map(|s| subst_thread_stmt(s, var, val)).collect(),
         span: t.span,
     }
@@ -1019,6 +1023,14 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
         all_comb_driven.extend(cd);
         all_seq_driven.extend(sd);
         all_read.extend(ar);
+        // Also collect signals referenced in the `default when` clause
+        if let Some((dw_cond, dw_stmts)) = &t.default_when {
+            let (dw_cd, dw_sd, dw_ar) = collect_thread_signals(dw_stmts);
+            all_comb_driven.extend(dw_cd);
+            all_seq_driven.extend(dw_sd);
+            all_read.extend(dw_ar);
+            collect_expr_reads(dw_cond, &mut all_read);
+        }
     }
 
     // Clock and reset ports (from first thread)
@@ -1419,7 +1431,35 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
             }));
         }
 
-        all_thread_seq.extend(seq_stmts);
+        // Wrap with `default when` if present: priority soft-reset
+        // if (cond) { <assigns>; state <= 0; } else { <normal FSM states> }
+        if let Some((dw_cond, dw_thread_stmts)) = &t.default_when {
+            // Convert ThreadStmt::SeqAssign items to Stmt::Assign
+            let mut dw_then: Vec<Stmt> = dw_thread_stmts.iter()
+                .filter_map(|ts| {
+                    if let ThreadStmt::SeqAssign(ra) = ts {
+                        Some(Stmt::Assign(ra.clone()))
+                    } else {
+                        None // non-seq assigns in default when are silently ignored
+                    }
+                })
+                .collect();
+            // Reset state to 0
+            dw_then.push(Stmt::Assign(RegAssign {
+                target: Expr::new(ExprKind::Ident(state_reg.clone()), sp),
+                value: make_zero_expr(sp),
+                span: sp,
+            }));
+            all_thread_seq.push(Stmt::IfElse(IfElse {
+                cond: dw_cond.clone(),
+                then_stmts: dw_then,
+                else_stmts: seq_stmts,
+                unique: false,
+                span: sp,
+            }));
+        } else {
+            all_thread_seq.extend(seq_stmts);
+        }
 
         // Collect comb outputs for this thread (merged into one block later)
         // For shared(or) signals, transform `sig = val` → `sig = sig | val`

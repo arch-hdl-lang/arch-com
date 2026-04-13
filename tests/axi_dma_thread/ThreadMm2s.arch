@@ -43,48 +43,34 @@ module ThreadMm2s
   port push_ready: in Bool;
   port push_data:  out UInt<32>;
 
-  // Control latches
+  // Control latches — owned by ArIssuer (reset via default when)
   reg total_xfers_r: UInt<16> reset rst => 0;
   reg burst_len_r:   UInt<8>  reset rst => 0;
   reg active_r:      Bool     reset rst => false;
 
   // AR issuer state: xfer_ctr_r counts issued ARs; next_ar_addr_r is current address.
-  // Incremental update — no multiply in comb path.
   reg xfer_ctr_r:     UInt<16> reset rst => 0;
   reg next_ar_addr_r: UInt<32> reset rst => 0;
 
-  // Per-thread completion counts (one per R collector thread)
+  // Per-thread completion counts — each owned exclusively by RCollect_i
   reg thread_complete: Vec<UInt<16>, 4> reset rst => 0;
 
-  // Done when all responses received
   let tc01: UInt<17> = thread_complete[0] + thread_complete[1];
   let tc23: UInt<17> = thread_complete[2] + thread_complete[3];
   let total_complete: UInt<18> = tc01 + tc23;
   let all_done: Bool = active_r and (total_xfers_r != 0)
       and (total_complete == total_xfers_r.zext<18>());
-
-  // Zero-latency active signal
   let active: Bool = active_r or (start and not active_r);
 
   comb
     halted    = false;
     idle_out  = not active;
     done      = all_done;
-    // push_data is always r_data — single driver, no per-thread mux needed
     push_data = r_data;
   end comb
 
-  // Controller: latch config on start, clear on done
+  // Completion handler — clears active when all responses received
   seq on clk rising
-    if start and not active_r
-      total_xfers_r  <= total_xfers;
-      burst_len_r    <= burst_len;
-      active_r       <= true;
-      xfer_ctr_r     <= 0;
-      next_ar_addr_r <= base_addr;
-      thread_complete[0] <= 0; thread_complete[1] <= 0;
-      thread_complete[2] <= 0; thread_complete[3] <= 0;
-    end if
     if all_done
       active_r <= false;
     end if
@@ -92,8 +78,14 @@ module ThreadMm2s
 
   // ── AR issuer ─────────────────────────────────────────────────────────────
   // Single thread drives all AR outputs — no resource lock, no 4-way mux.
-  // Issues one AR per beat, round-robin IDs 0..3.
   thread ArIssuer on clk rising, rst high
+    default when start and not active_r
+      total_xfers_r  <= total_xfers;
+      burst_len_r    <= burst_len;
+      active_r       <= true;
+      xfer_ctr_r     <= 0;
+      next_ar_addr_r <= base_addr;
+    end default
     wait until active and xfer_ctr_r < total_xfers_r;
     do
       ar_valid = 1;
@@ -108,14 +100,12 @@ module ThreadMm2s
   end thread ArIssuer
 
   // ── R collectors ─────────────────────────────────────────────────────────
-  // Each thread handles R beats for one ID. Wakes when AR has been issued for
-  // that ID (xfer_ctr_r > completed*4 + i). Only drives 1-bit signals —
-  // narrow mux overhead compared to driving 32-bit ar_addr.
   generate_for i in 0..3
     thread RCollect_i on clk rising, rst high
-      // Wait until an AR with this ID has been issued but not yet responded
+      default when start and not active_r
+        thread_complete[i] <= 0;
+      end default
       wait until active and ((thread_complete[i] << 2) + i < xfer_ctr_r);
-      // Collect burst beats for this ID
       for b in 0..burst_len_r-1
         do
           r_ready    = 1;
