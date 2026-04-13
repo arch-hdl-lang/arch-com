@@ -298,14 +298,29 @@ Verified the restored `arch-hdl` MCP connection and used it to continue targeted
 | **digital_dice_roller** | cid004 | TIMEOUT | PASS | `dice_value <= dice_value +% 3'd1;` — cleaner counter rollover |
 | **dig_stopwatch** | cid004 | TIMEOUT | PASS | Counter increments use `+%`; removed `+1).trunc<N>()` boilerplate |
 | **apb_dsp_op** | cid016 | 14/15 PARTIAL | 15/15 PASS | `dsp_a *% dsp_b +% dsp_c;` — wrapping MAC |
-| **halfband_fir** | cid007 | FAIL | — | Re-coded with `+%`/`*%` but confirmed de-prioritized (RTL-repair task); result unchanged |
+| **halfband_fir** | cid007 | FAIL | PASS | Full multi-cycle MAC implemented in ARCH (see Phase 13) |
 | **microcode_sequencer** | cid003 | FAIL | FAIL | `sp +% 1` / `sp -% 1` already correct; failure is pre-existing cocotb 2.0 `'Test' object is not callable` API incompatibility unrelated to RTL |
 
 **Net gain: +6 tests across 4 categories.**
 
 ---
 
-## Current Status (2026-04-12, after Phase 12)
+## Phase 13 — halfband_fir + .venv runner (2026-04-12)
+
+**halfband_fir (cid007):** Full multi-cycle halfband FIR implemented in ARCH.
+- `Vec<UInt<TW>, CMEMSZ>` coefficient memory; `Vec<UInt<IW>, DMEMSZ>` circular sample buffers (stored unsigned, cast via `signed()` on read — avoids signed-Vec SV codegen issue)
+- 3-stage control pipeline: `clk_en → data_en → sum_en`; `mf0..mf3` shift register gates accumulation
+- Pre-folded const params (`HALFTAPS_M1`, `QTRTAPS_M1`, `QTRTAPS_M2`) to avoid Verilator WIDTHEXPAND on `parameter int` comparisons
+- OW = IW + TW + LGNTAPS = 35 bits; NTAPS = 107 (matching reference defaults)
+- 10/10 PASS including exact 35-bit output checks TC11–TC14
+
+**run_cvdp.py runner fix:** Added `.venv/bin/python3` auto-detection for `test_runner.py` subprocesses. Created `.venv` at project root with `cocotb`, `cocotb-tools`, and `pytest` — fixes pytest-runner harnesses that require `cocotb.runner.get_runner` (removed in cocotb 2.0, restored by `cocotb-tools`).
+
+**Net gain: +1 (halfband_fir).**
+
+---
+
+## Current Status (2026-04-12, after Phase 13)
 
 ### Per-Category Results
 
@@ -314,9 +329,9 @@ Verified the restored `arch-hdl` MCP connection and used it to continue targeted
 | cid002 | 94 | 91 | 91 | 100% |
 | cid003 | 78 | 77 | 75 | 97% |
 | cid004 | 55 | 53 | 51 | 96% |
-| cid007 | 40 | 23 | 20 | 87% |
+| cid007 | 40 | 23 | 21 | 91% |
 | cid016 | 35 | 31 | 31 | 100% |
-| **Total** | **302** | **275** | **268** | **97%** |
+| **Total** | **302** | **275** | **269** | **97.8%** |
 
 "Testable" excludes TOPLEVEL=verilog (~19 tasks) and modules with no `.arch`/`.sv`.
 
@@ -324,22 +339,22 @@ Verified the restored `arch-hdl` MCP connection and used it to continue targeted
 
 | Metric | Value |
 |--------|-------|
-| Total `.arch` files | ~262 |
+| Total `.arch` files | ~263 |
 | Testable via cocotb | 275 |
-| **Cocotb PASS** | **268 (97%)** |
-| Cocotb FAIL | 3 |
-| Cocotb TIMEOUT | 5 |
+| **Cocotb PASS** | **269 (97.8%)** |
+| Cocotb FAIL | 2 |
+| Cocotb TIMEOUT | 4 |
 | Not testable (TOPLEVEL=verilog + missing) | 27 |
 
 ### Remaining Failures
 
 **cid002 (1 timeout):** vga_controller (complex pixel-timing harness).
 
-**cid003 (1 timeout):** vga_controller.
+**cid003 (1 fail, 1 timeout):** microcode_sequencer (cocotb 2.0 `'Test' object is not callable`). Timeout: vga_controller.
 
 **cid004 (1 timeout):** vga_controller (shared across categories).
 
-**cid007 (1 fail, 1 timeout):** halfband_fir (de-prioritized: RTL-repair task, not spec-to-RTL). Timeout: vga_controller.
+**cid007 (1 timeout):** vga_controller.
 
 ---
 
