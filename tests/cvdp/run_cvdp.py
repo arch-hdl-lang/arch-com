@@ -6,6 +6,22 @@ import re
 JSONL = os.path.expanduser("~/github/cvdp_benchmark/full_dataset/cvdp_v1.0.4_nonagentic_code_generation_no_commercial.jsonl")
 CVDP_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# Prefer a project-root .venv Python that has cocotb + cocotb-tools installed.
+# Fall back to the PYTHON env var, then the interpreter running this script.
+def _cocotb_python():
+    _repo_root = os.path.dirname(os.path.dirname(CVDP_DIR))
+    for candidate in (
+        os.path.join(_repo_root, '.venv', 'bin', 'python3'),
+        os.path.join(_repo_root, '.venv', 'bin', 'python'),
+        os.environ.get('PYTHON', ''),
+        sys.executable,
+    ):
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    return sys.executable
+
+_PYTHON = _cocotb_python()
+
 
 def _parse_env_text(env_text: str):
     env_vars = {}
@@ -755,7 +771,7 @@ def extract_and_run(name_substr, sv_file=None):
         open(test_runner, 'w').write(content)
 
         result = subprocess.run(
-            [sys.executable, test_runner],
+            [_PYTHON, test_runner],
             cwd=os.path.join(workdir, 'src'),
             env=run_env,
             capture_output=True, text=True, timeout=600
