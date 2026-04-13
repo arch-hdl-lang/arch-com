@@ -12,10 +12,10 @@ module halfband_fir
   param QTRTAPS:    const = HALFTAPS / 2 + 1;
   param DMEMSZ:     const = 1 << LGNMEM;
   param CMEMSZ:     const = 1 << LGNCOEF;
-  // Pre-folded constants to avoid SV width mismatches
-  param HALFTAPS_M1: const = HALFTAPS - 1;        // = 52, fits in LGNMEM bits
-  param QTRTAPS_M1:  const = QTRTAPS - 1;          // = 26, for last_tap_warn
-  param QTRTAPS_M2:  const = QTRTAPS - 2;          // = 25, for last_data_warn
+  // Pre-folded constants to avoid SV width mismatches in comparisons
+  param HALFTAPS_M1: const = HALFTAPS - 1;
+  param QTRTAPS_M1:  const = QTRTAPS - 1;
+  param QTRTAPS_M2:  const = QTRTAPS - 2;
 
   port i_clk:    in Clock<SysDomain>;
   port i_reset:  in Reset<Sync, High>;
@@ -32,9 +32,9 @@ module halfband_fir
   reg coef_mem:   Vec<UInt<TW>, CMEMSZ>;
   reg tap_wr_idx: UInt<LGNCOEF> reset i_reset => 0;
 
-  // Sample memories stored as UInt to avoid signed-vec codegen issue
-  reg dmem1: Vec<UInt<IW>, DMEMSZ>;
-  reg dmem2: Vec<UInt<IW>, DMEMSZ>;
+  // Circular sample memories (signed elements — now valid with fixed codegen)
+  reg dmem1: Vec<SInt<IW>, DMEMSZ>;
+  reg dmem2: Vec<SInt<IW>, DMEMSZ>;
   reg write_idx: UInt<LGNMEM> reset i_reset => 0;
 
   // Pointer state
@@ -68,8 +68,7 @@ module halfband_fir
   reg o_result_r: SInt<OW> reset i_reset => 0;
   reg o_ce_r:     Bool     reset i_reset => false;
 
-  // last_tap when remaining < 2 ↔ tap_idx > QTRTAPS - 2
-  // Use pre-folded consts truncated to LGNCOEF bits to avoid SV width mismatch
+  // last_tap when (QTRTAPS - tap_idx) < 2 ↔ tap_idx > QTRTAPS - 2
   let last_tap_warn:  Bool = tap_idx > QTRTAPS_M1.trunc<LGNCOEF>();
   let last_data_warn: Bool = tap_idx > QTRTAPS_M2.trunc<LGNCOEF>();
   let mf_chain_bit:   Bool = clk_en | (mf0 & ~last_tap_warn);
@@ -88,8 +87,8 @@ module halfband_fir
 
     // --- Sample write ---
     if i_ce
-      dmem1[write_idx] <= unsigned(i_sample);
-      dmem2[write_idx] <= unsigned(mid_sample);
+      dmem1[write_idx] <= i_sample;
+      dmem2[write_idx] <= mid_sample;
       write_idx <= (write_idx + 1).trunc<LGNMEM>();
     end if
 
@@ -131,8 +130,8 @@ module halfband_fir
     mf3 <= mf2;
 
     // --- Sample reads (registered, 1 cycle latency) ---
-    sample_left  <= signed(dmem1[left_idx]);
-    sample_right <= signed(dmem2[right_idx]);
+    sample_left  <= dmem1[left_idx];
+    sample_right <= dmem2[right_idx];
 
     // --- Data enable ---
     data_en <= clk_en;

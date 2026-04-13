@@ -4124,8 +4124,15 @@ impl<'a> Codegen<'a> {
         let inner_type = self.emit_type_str(cur);
         let packed_dims: String = dims.join("");
         let type_str = if let Some(rest) = inner_type.strip_prefix("logic") {
-            // rest is e.g. " [15:0]" or " signed [15:0]" or "" for Bool
-            format!("logic {packed_dims}{rest}")
+            // rest is e.g. " [15:0]", " signed [15:0]", or "" for Bool.
+            // For signed inner types hoist "signed" before the packed dims so the
+            // result is valid SV: "logic signed [M-1:0][N-1:0]" not the illegal
+            // "logic [M-1:0] signed [N-1:0]".
+            if let Some(after_signed) = rest.strip_prefix(" signed") {
+                format!("logic signed {packed_dims}{after_signed}")
+            } else {
+                format!("logic {packed_dims}{rest}")
+            }
         } else {
             format!("{inner_type} {packed_dims}")
         };

@@ -25,16 +25,13 @@ module halfband_fir #(
   output logic signed [OW-1:0] o_result
 );
 
-  // Pre-folded constants to avoid SV width mismatches
-  // = 52, fits in LGNMEM bits
-  // = 26, for last_tap_warn
-  // = 25, for last_data_warn
+  // Pre-folded constants to avoid SV width mismatches in comparisons
   // Coefficient memory
   logic [CMEMSZ-1:0] [TW-1:0] coef_mem;
   logic [LGNCOEF-1:0] tap_wr_idx;
-  // Sample memories stored as UInt to avoid signed-vec codegen issue
-  logic [DMEMSZ-1:0] [IW-1:0] dmem1;
-  logic [DMEMSZ-1:0] [IW-1:0] dmem2;
+  // Circular sample memories (signed elements — now valid with fixed codegen)
+  logic signed [DMEMSZ-1:0] [IW-1:0] dmem1;
+  logic signed [DMEMSZ-1:0] [IW-1:0] dmem2;
   logic [LGNMEM-1:0] write_idx;
   // Pointer state
   logic [LGNMEM-1:0] left_idx;
@@ -61,8 +58,7 @@ module halfband_fir #(
   logic signed [OW-1:0] mid_prod_r;
   logic signed [OW-1:0] o_result_r;
   logic o_ce_r;
-  // last_tap when remaining < 2 ↔ tap_idx > QTRTAPS - 2
-  // Use pre-folded consts truncated to LGNCOEF bits to avoid SV width mismatch
+  // last_tap when (QTRTAPS - tap_idx) < 2 ↔ tap_idx > QTRTAPS - 2
   logic last_tap_warn;
   assign last_tap_warn = tap_idx > LGNCOEF'(QTRTAPS_M1);
   logic last_data_warn;
@@ -103,8 +99,8 @@ module halfband_fir #(
       end
       // --- Sample write ---
       if (i_ce) begin
-        dmem1[write_idx] <= $unsigned(i_sample);
-        dmem2[write_idx] <= $unsigned(mid_sample);
+        dmem1[write_idx] <= i_sample;
+        dmem2[write_idx] <= mid_sample;
         write_idx <= LGNMEM'(write_idx + 1);
       end
       // --- Mid sample: captured from sample_left on each i_ce ---
@@ -140,8 +136,8 @@ module halfband_fir #(
       mf2 <= mf1;
       mf3 <= mf2;
       // --- Sample reads (registered, 1 cycle latency) ---
-      sample_left <= $signed(dmem1[left_idx]);
-      sample_right <= $signed(dmem2[right_idx]);
+      sample_left <= dmem1[left_idx];
+      sample_right <= dmem2[right_idx];
       // --- Data enable ---
       data_en <= clk_en;
       // --- Coefficient read ---
