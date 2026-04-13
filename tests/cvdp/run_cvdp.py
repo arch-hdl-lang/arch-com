@@ -587,6 +587,19 @@ def extract_and_run(name_substr, sv_file=None):
                 if _re3.search(pattern, pycontent):
                     pycontent = _re3.sub(pattern, f'def run_{ct_name}(', pycontent)
                     changed = True
+        # Fix cocotb 2.0: @cocotb.test() decorators used INSIDE another test function
+        # return a Test object (not callable) in cocotb 2.0.  The inner functions are
+        # meant to be called as sub-tests via `await inner(dut)` — strip the decorator
+        # so they remain plain async coroutines.
+        import re as _re_inner
+        if _re_inner.search(r'^[ \t]+@cocotb\.test\(\)', pycontent, flags=_re_inner.MULTILINE):
+            pycontent = _re_inner.sub(
+                r'^[ \t]+@cocotb\.test\(\)\n',
+                '',
+                pycontent,
+                flags=_re_inner.MULTILINE,
+            )
+            changed = True
         # Fix Logic vs LogicArray: .integer on single-bit Logic (cocotb 2.0)
         if '.value.integer' in pycontent:
             fix = "\n# Monkey-patch cocotb Logic to support .integer\ntry:\n    from cocotb.types import Logic\n    if not hasattr(Logic, 'integer'):\n        Logic.integer = property(lambda self: int(self))\nexcept Exception:\n    pass\n"
