@@ -55,11 +55,9 @@ module ThreadMm2s
   // Per-thread completion counts — each owned exclusively by RCollect_i
   reg thread_complete: Vec<UInt<16>, 4> reset rst => 0;
 
-  let tc01: UInt<17> = thread_complete[0] + thread_complete[1];
-  let tc23: UInt<17> = thread_complete[2] + thread_complete[3];
-  let total_complete: UInt<18> = tc01 + tc23;
+  let total_complete: UInt<16> = thread_complete[0] +% thread_complete[1] +% thread_complete[2] +% thread_complete[3];
   let all_done: Bool = active_r and (total_xfers_r != 0)
-      and (total_complete == total_xfers_r.zext<18>());
+      and (total_complete == total_xfers_r);
   let active: Bool = active_r or (start and not active_r);
 
   comb

@@ -3654,6 +3654,41 @@ impl<'a> Codegen<'a> {
             ExprKind::Cast(_, ty) => self
                 .type_expr_data_width(ty)
                 .unwrap_or_else(|| format!("$bits({})", self.emit_expr_str(expr))),
+            // Vec element access: width comes from the inner element type
+            ExprKind::Index(base, _) => {
+                if let ExprKind::Ident(name) = &base.kind {
+                    // Search current scope, then fallback to thread submodule scope
+                    // (thread-driven regs are moved to _ModuleName_threads after lowering)
+                    let fallback = format!("_{}_threads", self.current_construct);
+                    let scopes = [self.current_construct.as_str(), fallback.as_str()];
+                    'outer: for scope_key in &scopes {
+                        if let Some(scope) = self.symbols.module_scopes.get(*scope_key) {
+                            if let Some((sym, _)) = scope.get(name.as_str()) {
+                                let te_opt: Option<&TypeExpr> = match sym {
+                                    Symbol::Port(p) => Some(&p.ty),
+                                    Symbol::Reg(r) => Some(&r.ty),
+                                    _ => None,
+                                };
+                                if let Some(TypeExpr::Vec(inner, _)) = te_opt {
+                                    match inner.as_ref() {
+                                        TypeExpr::UInt(w) | TypeExpr::SInt(w) => return self.emit_expr_str(w),
+                                        TypeExpr::Bool | TypeExpr::Bit => return "1".to_string(),
+                                        _ => {}
+                                    }
+                                }
+                                break 'outer;
+                            }
+                        }
+                    }
+                }
+                format!("$bits({})", self.emit_expr_str(expr))
+            }
+            // Chained wrapping ops: result width = max(lhs width, rhs width)
+            ExprKind::Binary(BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap, lhs, rhs) => {
+                let lw = self.infer_sv_width_str(lhs);
+                let rw = self.infer_sv_width_str(rhs);
+                if lw == rw { lw } else { format!("({lw} > {rw} ? {lw} : {rw})") }
+            }
             _ => format!("$bits({})", self.emit_expr_str(expr)),
         }
     }

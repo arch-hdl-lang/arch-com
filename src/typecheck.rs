@@ -1911,6 +1911,16 @@ impl<'a> TypeChecker<'a> {
                     Ty::UInt(w)
                 }
             }
+            BinOp::AddWrap | BinOp::SubWrap => {
+                let lw = lt.width().unwrap_or(1);
+                let rw = rt.width().unwrap_or(1);
+                let w = lw.max(rw);
+                if matches!(lt, Ty::SInt(_)) || matches!(rt, Ty::SInt(_)) {
+                    Ty::SInt(w)
+                } else {
+                    Ty::UInt(w)
+                }
+            }
             BinOp::Mul => {
                 let lw = lt.width().unwrap_or(1);
                 let rw = rt.width().unwrap_or(1);
@@ -1918,6 +1928,16 @@ impl<'a> TypeChecker<'a> {
                     Ty::SInt(lw + rw)
                 } else {
                     Ty::UInt(lw + rw)
+                }
+            }
+            BinOp::MulWrap => {
+                let lw = lt.width().unwrap_or(1);
+                let rw = rt.width().unwrap_or(1);
+                let w = lw.max(rw);
+                if matches!(lt, Ty::SInt(_)) || matches!(rt, Ty::SInt(_)) {
+                    Ty::SInt(w)
+                } else {
+                    Ty::UInt(w)
                 }
             }
             BinOp::Div | BinOp::Mod => lt.clone(),

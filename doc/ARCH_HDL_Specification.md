@@ -319,12 +319,17 @@ let wide: UInt<9> = a.zext<9>() << 1;    // UInt<9>, MSB preserved — explicit 
 |-----------|-------------|-----------------|
 | `a + b` | `max(W(a), W(b)) + 1` | Arithmetic widening |
 | `a * b` | `W(a) + W(b)` | Multiplication widening |
+| `a +% b` | `max(W(a), W(b))` | **Wrapping add** — no widening; SV: `max(W(a),W(b))'(a + b)` |
+| `a -% b` | `max(W(a), W(b))` | **Wrapping sub** — no widening; SV: `max(W(a),W(b))'(a - b)` |
+| `a *% b` | `max(W(a), W(b))` | **Wrapping mul** — no widening; SV: `max(W(a),W(b))'(a * b)` |
 | `a << n` | `W(a)` | **Non-widening** — shift amount does not affect result width |
 | `a >> n` | `W(a)` | **Non-widening** |
 
 > *⚑ The compiler emits a **compile error** when a shift result is assigned to a wider target (e.g. `let wide: UInt<9> = a << 1;`), because the extra bit will always be zero --- the shift did not capture the overflow. The fix is to widen the operand first: `a.zext<9>() << 1`. Same-width shifts (e.g. `let x: UInt<8> = a << 1;`) are silent --- MSB loss is the normal, intended behavior of a fixed-width shift.*
 
 > *⚑ Width inference follows IEEE 1800-2012 §11.6. Arch promotes all mismatches to hard errors --- never warnings. The arithmetic widening trap (`r <= r + 1`) is caught at the register-assignment level: the compiler diagnoses it and suggests `.trunc<N>()`. The `.trunc<N>()` method emits a SystemVerilog size cast `N'(expr)`, which is valid on any expression including compound ones. Bit-slice syntax `expr[hi:lo]` extracts a bit range: `instr[11:7]` emits `instr[11:7]` with result width hi−lo+1. This is essential for instruction field decoding.*
+
+> *⚑ **Wrapping operators** (`+%`, `-%`, `*%`) are the ergonomic alternative to the `.trunc<N>()` boilerplate: `let x: UInt<8> = a +% b;` is equivalent to `let x: UInt<8> = (a + b).trunc<8>();`. The result width is `max(W(a), W(b))` for all three. The SV backend emits a size cast `W'(a op b)`. Use wrapping ops when the intent is deliberate modular arithmetic, not overflow capture.*
 
 **3.3 Struct and Enum Types**
 

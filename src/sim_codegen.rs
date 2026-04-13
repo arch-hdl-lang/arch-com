@@ -1018,8 +1018,8 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             let l = cpp_expr(lhs, ctx);
             let r = cpp_expr(rhs, ctx);
             let op_str = match op {
-                BinOp::Add    => "+",  BinOp::Sub   => "-",
-                BinOp::Mul    => "*",  BinOp::Div   => "/",
+                BinOp::Add | BinOp::AddWrap => "+",  BinOp::Sub | BinOp::SubWrap => "-",
+                BinOp::Mul | BinOp::MulWrap => "*",  BinOp::Div   => "/",
                 BinOp::Mod    => "%",
                 BinOp::Eq     => "==", BinOp::Neq  => "!=",
                 BinOp::Lt     => "<",  BinOp::Gt   => ">",
@@ -5522,7 +5522,8 @@ impl<'a> SimCodegen<'a> {
                 let l = self.pipeline_sim_expr(lhs, prefix, si, sn, sp, srn, pn, rn, ln, w, em);
                 let r = self.pipeline_sim_expr(rhs, prefix, si, sn, sp, srn, pn, rn, ln, w, em);
                 let os = match op {
-                    BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*", BinOp::Div => "/", BinOp::Mod => "%",
+                    BinOp::Add | BinOp::AddWrap => "+", BinOp::Sub | BinOp::SubWrap => "-",
+                    BinOp::Mul | BinOp::MulWrap => "*", BinOp::Div => "/", BinOp::Mod => "%",
                     BinOp::Eq => "==", BinOp::Neq => "!=", BinOp::Lt => "<", BinOp::Gt => ">",
                     BinOp::Lte => "<=", BinOp::Gte => ">=", BinOp::And => "&&", BinOp::Or => "||",
                     BinOp::BitAnd => "&", BinOp::BitOr => "|", BinOp::BitXor => "^", BinOp::Shl => "<<", BinOp::Shr => ">>",

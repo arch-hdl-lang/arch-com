@@ -262,14 +262,10 @@ module ThreadMm2s #(
   output logic [31:0] push_data
 );
 
-  logic [16:0] tc01;
-  assign tc01 = thread_complete[0] + thread_complete[1];
-  logic [16:0] tc23;
-  assign tc23 = thread_complete[2] + thread_complete[3];
-  logic [17:0] total_complete;
-  assign total_complete = tc01 + tc23;
+  logic [15:0] total_complete;
+  assign total_complete = 16'(16'(16'(thread_complete[0] + thread_complete[1]) + thread_complete[2]) + thread_complete[3]);
   logic all_done;
-  assign all_done = active_r && total_xfers_r != 0 && total_complete == 18'($unsigned(total_xfers_r));
+  assign all_done = active_r && total_xfers_r != 0 && total_complete == total_xfers_r;
   logic active;
   assign active = active_r || start && !active_r;
   assign halted = 1'b0;

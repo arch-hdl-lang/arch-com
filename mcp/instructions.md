@@ -42,3 +42,4 @@ Common mistakes to avoid:
 - 'unique if' and 'unique match' assert mutual exclusivity to synthesis (parallel mux): use 'unique if sel == 0 ... end if' or 'unique match opcode ... end match'; emits SV 'unique if' / 'unique case'
 - .trunc<N>() errors if N >= source width (not truncating); .zext<N>()/.sext<N>() error if N <= source width (not extending)
 - signed(x) / unsigned(x): same-width reinterpret cast (no width arg needed); prefer signed(x) over x.sext<N>() when entering signed arithmetic chains
+- Wrapping arithmetic operators +%, -%, *% give result width = max(W(a),W(b)) with no widening — prefer these over .trunc<N>() when the intent is modular arithmetic: 'let x: UInt<8> = a +% b;' instead of 'let x: UInt<8> = (a + b).trunc<8>();'

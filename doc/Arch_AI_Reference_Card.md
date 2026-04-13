@@ -162,6 +162,17 @@ Use `signed()` for signed arithmetic chains: `signed(a) + signed(b)` → `SInt<9
 
 **Arithmetic:** `UInt<8> + UInt<8>` → `UInt<9>` (auto-widen); must `.trunc<8>()` to assign back.
 
+**Wrapping arithmetic** (no auto-widen; result = `max(W(a),W(b))`):
+
+```
+a +% b    // wrapping add   → SV: W'(a + b)
+a -% b    // wrapping sub   → SV: W'(a - b)
+a *% b    // wrapping mul   → SV: W'(a * b)
+```
+
+Prefer wrapping ops over `.trunc<N>()` when the intent is deliberate modular arithmetic:
+`let x: UInt<8> = a +% b;`  is equivalent to  `let x: UInt<8> = (a + b).trunc<8>();`
+
 `$clog2(expr)` supported in type args: `UInt<$clog2(DEPTH)>`
 
 **Bit ops:**
@@ -177,7 +188,8 @@ Use `signed()` for signed arithmetic chains: `signed(a) + signed(b)` → `SInt<9
 ## 3. Expressions & Operators
 
 ```
-Arithmetic:  + - * / %
+Arithmetic:  + - * / %   (auto-widen)
+Wrapping:    +% -% *%    (no-widen; result width = max(W(a),W(b)))
 Comparison:  == != < > <= >=
 Logical:     and or not
 Bitwise:     & | ^ ~ << >>
