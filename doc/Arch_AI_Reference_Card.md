@@ -388,6 +388,95 @@ Co-locates control and datapath — emits separate `always_ff` and `always_comb`
 
 ---
 
+### thread
+
+Sequential multi-cycle block — compiler lowers to a synthesizable FSM. Use instead of
+`fsm` for straight-line protocol logic with explicit `wait` points.
+
+```
+module M
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  // Ports driven by threads must declare sharing policy when multiple
+  // threads drive the same port.
+  port r_ready:   out Bool shared(or);  // OR-merged across threads
+  port push_valid: out Bool shared(or);
+
+  resource ar_ch;                       // mutex resource for lock blocks
+
+  thread MyThread on clk rising, rst high
+    // Optional soft-reset clause — fires from ANY state, resets to S0.
+    // Only seq assigns allowed inside default when.
+    default when start and not active_r
+      active_r  <= true;
+      xfer_ctr  <= 0;
+    end default
+
+    // ── Sequential body ─────────────────────────────────────────────
+    wait until active_r;                // S0: block until condition true
+
+    do                                  // S1: drive comb outputs while waiting
+      ar_valid = 1;
+      ar_addr  = addr_r;
+    until ar_ready;                     // advance when ar_ready
+
+    xfer_ctr <= xfer_ctr + 1;          // seq assign fires on exit edge of S1
+
+    wait 4 cycle;                       // S2: stall for exactly 4 cycles
+
+    for b in 0..burst_len_r - 1        // S3–S4: loop with runtime bound
+      do
+        r_ready    = 1;
+        push_valid = r_valid;
+      until r_valid and push_ready;
+    end for
+
+    lock ar_ch                          // S5: acquire mutex; zero-cycle if free
+      ar_valid = 1;
+      ar_id    = id_r;
+    until ar_ready;                     // release on exit
+    end lock ar_ch
+
+    fork                                // S6–S7: AW and W channel in parallel
+      do aw_valid = 1; until aw_ready;
+    and
+      do  w_valid = 1; until  w_ready;
+    join
+
+  end thread MyThread
+end module M
+```
+
+**Statement summary:**
+
+| Statement | Meaning | State boundary? |
+|-----------|---------|-----------------|
+| `x = expr` | Comb assign (drives output while in this state) | No |
+| `x <= expr` | Seq assign (fires when state exits) | No |
+| `wait until cond` | Block until condition true | Yes — new state |
+| `wait N cycle` | Stall exactly N clock cycles | Yes — new state |
+| `do … until cond` | Drive comb + seq while condition false | Yes — hold state |
+| `for i in s..e { … }` | Loop body; `i` replaced by `_loop_cnt` reg | Yes — per-body |
+| `lock res { … } end lock res` | Acquire mutex, execute body, release | Yes — per-body |
+| `fork … and … join` | Execute branches in parallel (product-state FSM) | Yes — product |
+| `if/else` (no waits) | Same-state conditional comb/seq | No |
+
+**Rules:**
+- `thread Name on clk rising, rst high` — clock edge and reset polarity required
+- `default when cond … end default` must appear **before** the thread body; only seq assigns inside
+- `lock` blocks must **not** be nested — compile error (mutual exclusion guarantee)
+- `thread once` — FSM holds in terminal state instead of looping back to S0
+- `generate_for i in 0..N-1 / thread T_i … end thread T_i / end generate_for` — N identical threads
+- Multiple threads in one module share one `always_ff` — no multi-driver conflicts
+- Thread-driven `reg` declarations are **automatically** lifted to the `_ModuleName_threads` submodule
+
+**Lock deadlock freedom:** the fixed-priority arbiter (`grant[i] = req[i] && !grant[j<i]`)
+makes the waits-for graph acyclic — thread 0 always wins, thread N waits only for threads
+with lower index. See `doc/thread_lowering_algorithm.md` for proof.
+
+---
+
 ### fifo
 
 Sync or dual-clock async FIFO (gray-code auto-generated). `kind: fifo` (default) | `lifo`.

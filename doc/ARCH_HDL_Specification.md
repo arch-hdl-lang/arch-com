@@ -1284,6 +1284,128 @@ always_comb begin
 end
 ```
 
+**7a. First-Class Construct: thread**
+
+A `thread` block declares a sequential multi-cycle process inside a module. The compiler lowers each thread to a per-thread integer state register and associated `always_ff`/`always_comb` logic inside an auto-generated `_ModuleName_threads` submodule. The parent module retains non-thread items and wires the submodule outputs back by name.
+
+Use `thread` instead of `fsm` when the behaviour is best expressed as straight-line sequential code with explicit wait points, rather than as a named-state machine with explicit transitions.
+
+**7a.1 Declaration**
+
+```
+thread Name on clk rising, rst high
+  [default when cond
+    <seq assigns>
+  end default]
+  <body statements>
+end thread Name
+```
+
+- `Name` — optional; auto-named `thread`, `thread1`, … if omitted
+- `on clk rising` — clock port name and edge (`rising` or `falling`)
+- `, rst high` — reset port name and active level (`high` or `low`)
+- `default when cond … end default` — optional soft-reset clause (see §7a.4)
+- Body is a sequence of statements (see §7a.2)
+
+**Repeating vs once**: by default a thread loops — after the last body statement it returns to state 0. Write `thread once Name on …` to stop in the terminal state instead.
+
+**Multiple threads** in one module are declared independently; they all compile into the same `_ModuleName_threads` submodule and share one `always_ff` block to avoid multi-driver conflicts.
+
+**`generate_for` over threads:**
+
+```
+generate_for i in 0..NUM-1
+  thread Worker_i on clk rising, rst high
+    wait until active and queue[i].valid;
+    // ... body referencing i
+  end thread Worker_i
+end generate_for
+```
+
+Expands to `NUM` independent threads, each with its own state register `_t{N}_state`.
+
+**7a.2 Body Statements**
+
+| Statement | Creates state boundary? | Notes |
+|-----------|------------------------|-------|
+| `x = expr` | No | Comb assign — drives output while FSM is in this state |
+| `x <= expr` | No | Seq assign — register update fires when state exits |
+| `if/else (no wait inside)` | No | Same-state conditional |
+| `wait until cond;` | Yes | Advance when condition true |
+| `wait N cycle;` | Yes | Stall exactly N clock cycles (counter-based) |
+| `do { … } until cond;` | Yes | Hold state: drive comb outputs until condition fires |
+| `for i in s..e { … } end for` | Yes (per iteration) | Runtime bound; `i` becomes `_loop_cnt` register |
+| `lock res { … } end lock res` | Yes (per body state) | Acquire mutex; zero-cycle if uncontended |
+| `fork … and … join` | Yes (product expansion) | Parallel branches; compiler generates product-state FSM |
+
+**Trailing seq assigns** after the last `wait` in the body are merged into the preceding state's exit logic (guarded by its transition condition) to avoid a dead cycle.
+
+**`if/else` with wait inside** is not supported — use separate threads or flatten the control flow.
+
+**7a.3 Resource Locks**
+
+```
+resource chan_name;           // declared in the enclosing module
+
+thread T on clk rising, rst high
+  lock chan_name
+    x = 1;
+    y = 2;
+  until accept;
+  end lock chan_name
+end thread T
+```
+
+For each `resource`, the compiler generates a fixed-priority combinational arbiter:
+
+```
+grant[0] = req[0]
+grant[i] = req[i] && !grant[0] && … && !grant[i-1]
+```
+
+**Deadlock freedom** is a compile-time guarantee: with fixed priority the waits-for graph is acyclic — no circular wait can form. Thread 0 always makes progress and starvation is impossible as long as lock bodies terminate.
+
+**Nested lock blocks are a compile error.** Nesting would allow a higher-priority thread to enter a critical section that a lower-priority thread is already executing (mutual exclusion violation). Sequential (non-nested) lock usage is safe.
+
+Ports driven inside `lock` blocks that are also driven by other threads must be declared `shared(or)`.
+
+**7a.4 `default when` (Soft Reset)**
+
+```
+thread T on clk rising, rst high
+  default when start and not active_r
+    active_r <= true;
+    xfer_ctr <= 0;
+  end default
+  wait until active_r;
+  // ...
+end thread T
+```
+
+When `cond` is true, the thread executes the seq assigns and resets `_state` to 0, regardless of its current state. Equivalent to a synchronous soft reset that takes priority over all normal FSM transitions. Only seq assigns are permitted inside `default when`; comb assigns are silently ignored.
+
+**7a.5 Shared Output Ports**
+
+When multiple threads drive the same output port, the port must be declared `shared(or)`:
+
+```
+port r_ready: out Bool shared(or);
+```
+
+Each thread's contribution is OR-merged with the others. The default for all threads is 0; any thread asserting the port drives it high. For data signals where exactly one thread drives the port at a time (ensured by the lock arbiter), `shared(or)` still applies and the OR reduction is equivalent to a mux.
+
+**7a.6 Generated Hardware**
+
+Each thread `ti` with `n` states produces:
+
+- `_t{i}_state`: `UInt<⌈log₂(n)⌉>` state register (reset to 0)
+- `always_comb`: per-state `if (_t{i}_state == k)` blocks enabling comb outputs
+- `always_ff`: per-state transition and seq-assign logic, merged with all other threads into one block
+- `_t{i}_loop_cnt`: `UInt<W>` counter register (only when thread contains a `for` loop)
+- `_t{i}_cnt`: `UInt<32>` counter register (only when thread uses `wait N cycle`)
+
+The detailed lowering algorithm — including state partitioning rules, fork/join product expansion, lock state generation, and correctness invariants — is documented in `doc/thread_lowering_algorithm.md`.
+
 **8. First-Class Construct: fifo**
 
 A fifo is a first-class construct with compile-time-verified flow control. The designer specifies depth, width, and domain. The compiler generates the full implementation --- counters, full/empty flags, and gray-code pointer CDC for dual-clock FIFOs.
