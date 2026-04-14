@@ -3205,6 +3205,332 @@ fn expr_is_shift(e: &Expr) -> bool {
     matches!(&e.kind, ExprKind::Binary(BinOp::Shl | BinOp::Shr, _, _))
 }
 
+// ── Operator precedence ambiguity pass ──────────────────────────────────────
+//
+// Enforces explicit parens for common precedence footguns. A child is a "naked
+// binary" if it's a Binary expr without explicit parens.
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum OpClass {
+    Bitwise,    // & | ^
+    Comparison, // == != < > <= >=
+    Logical,    // and or
+    Shift,      // << >>
+    Arith,      // + - +% -% * *% / %
+    Other,
+}
+
+fn classify(op: BinOp) -> OpClass {
+    match op {
+        BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => OpClass::Bitwise,
+        BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => OpClass::Comparison,
+        BinOp::And | BinOp::Or | BinOp::Implies => OpClass::Logical,
+        BinOp::Shl | BinOp::Shr => OpClass::Shift,
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
+            | BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap => OpClass::Arith,
+    }
+}
+
+/// If `child` is a naked Binary expression, return its operator class + span.
+fn naked_binary_class(child: &Expr) -> Option<(OpClass, BinOp, Span)> {
+    if child.parenthesized { return None; }
+    if let ExprKind::Binary(op, _, _) = &child.kind {
+        Some((classify(*op), *op, child.span))
+    } else {
+        None
+    }
+}
+
+fn check_precedence_expr(e: &Expr, errors: &mut Vec<CompileError>) {
+    match &e.kind {
+        ExprKind::Binary(op, lhs, rhs) => {
+            let parent = classify(*op);
+            for child in [lhs.as_ref(), rhs.as_ref()] {
+                if let Some((cclass, cop, cspan)) = naked_binary_class(child) {
+                    // Helper: name for an OpClass
+                    let class_name = |c: OpClass| match c {
+                        OpClass::Bitwise => "bitwise",
+                        OpClass::Comparison => "comparison",
+                        OpClass::Logical => "logical",
+                        OpClass::Shift => "shift",
+                        OpClass::Arith => "arithmetic",
+                        OpClass::Other => "other",
+                    };
+                    let pair_check = |a: OpClass, b: OpClass| -> bool {
+                        (parent == a && cclass == b) || (parent == b && cclass == a)
+                    };
+
+                    // Rule 1: bitwise vs comparison
+                    // e.g. `a & mask == 0` → parses as `a & (mask == 0)`
+                    if pair_check(OpClass::Bitwise, OpClass::Comparison) {
+                        errors.push(CompileError::general(
+                            &format!(
+                                "ambiguous precedence: mixing {p_name} (`{op}`) with {c_name} (`{cop}`) — wrap one side in parens",
+                                p_name = class_name(parent),
+                                c_name = class_name(cclass),
+                            ),
+                            cspan,
+                        ));
+                    }
+                    // Rule 2: bitwise vs logical (and/or)
+                    else if pair_check(OpClass::Bitwise, OpClass::Logical) {
+                        errors.push(CompileError::general(
+                            &format!(
+                                "ambiguous precedence: mixing {p_name} (`{op}`) with {c_name} (`{cop}`) — wrap one side in parens",
+                                p_name = class_name(parent),
+                                c_name = class_name(cclass),
+                            ),
+                            cspan,
+                        ));
+                    }
+                    // Rule 4: shift vs arithmetic
+                    // e.g. `1 << bit + 1` → `1 << (bit + 1)`
+                    else if pair_check(OpClass::Shift, OpClass::Arith) {
+                        errors.push(CompileError::general(
+                            &format!(
+                                "ambiguous precedence: mixing {p_name} (`{op}`) with {c_name} (`{cop}`) — wrap one side in parens",
+                                p_name = class_name(parent),
+                                c_name = class_name(cclass),
+                            ),
+                            cspan,
+                        ));
+                    }
+                }
+            }
+            check_precedence_expr(lhs, errors);
+            check_precedence_expr(rhs, errors);
+        }
+        ExprKind::Ternary(cond, then_e, else_e) => {
+            // Rule 5 (part A): `en ? a : b + 1` parses as `en ? a : (b + 1)`.
+            // If either branch is a naked binary, require parens — the user
+            // likely meant `(en ? a : b) + 1` or intended the wider expression.
+            for branch in [then_e.as_ref(), else_e.as_ref()] {
+                if !branch.parenthesized {
+                    if let ExprKind::Binary(bop, _, _) = &branch.kind {
+                        // Only warn when the binary is arithmetic/bitwise/shift/comparison
+                        // (logical is usually intended as the boolean result).
+                        let bc = classify(*bop);
+                        if matches!(bc, OpClass::Arith | OpClass::Bitwise | OpClass::Shift | OpClass::Comparison) {
+                            errors.push(CompileError::general(
+                                &format!(
+                                    "ambiguous precedence: ternary branch contains a `{bop}` expression — wrap branch in parens: `... ? ... : (expr)` or wrap the whole ternary"
+                                ),
+                                branch.span,
+                            ));
+                        }
+                    }
+                }
+            }
+            check_precedence_expr(cond, errors);
+            check_precedence_expr(then_e, errors);
+            check_precedence_expr(else_e, errors);
+        }
+        ExprKind::Unary(_, inner) => check_precedence_expr(inner, errors),
+        ExprKind::Index(base, idx) => {
+            check_precedence_expr(base, errors);
+            check_precedence_expr(idx, errors);
+        }
+        ExprKind::BitSlice(base, hi, lo) => {
+            check_precedence_expr(base, errors);
+            check_precedence_expr(hi, errors);
+            check_precedence_expr(lo, errors);
+        }
+        ExprKind::PartSelect(base, start, width, _) => {
+            check_precedence_expr(base, errors);
+            check_precedence_expr(start, errors);
+            check_precedence_expr(width, errors);
+        }
+        ExprKind::FunctionCall(_, args) => {
+            for a in args { check_precedence_expr(a, errors); }
+        }
+        ExprKind::Concat(parts) => {
+            for p in parts { check_precedence_expr(p, errors); }
+        }
+        ExprKind::Repeat(n, expr) => {
+            check_precedence_expr(n, errors);
+            check_precedence_expr(expr, errors);
+        }
+        ExprKind::FieldAccess(base, _) => check_precedence_expr(base, errors),
+        ExprKind::Cast(inner, _) => check_precedence_expr(inner, errors),
+        ExprKind::MethodCall(base, _, args) => {
+            check_precedence_expr(base, errors);
+            for a in args { check_precedence_expr(a, errors); }
+        }
+        ExprKind::Clog2(inner) => check_precedence_expr(inner, errors),
+        ExprKind::Signed(inner) | ExprKind::Unsigned(inner) => check_precedence_expr(inner, errors),
+        _ => {}
+    }
+
+    // Rule 5: ternary inside a binary expression without parens is ambiguous.
+    // e.g. `en ? a : b + 1` means `en ? a : (b + 1)` — surprising.
+    if let ExprKind::Binary(_, lhs, rhs) = &e.kind {
+        for child in [lhs.as_ref(), rhs.as_ref()] {
+            if !child.parenthesized && matches!(child.kind, ExprKind::Ternary(..)) {
+                errors.push(CompileError::general(
+                    "ambiguous precedence: ternary `? :` inside arithmetic/bitwise/comparison — wrap the ternary in parens: `(cond ? a : b)`",
+                    child.span,
+                ));
+            }
+        }
+    }
+}
+
+/// Run the precedence-ambiguity check on a parsed SourceFile (pre-elaboration).
+/// Returns any ambiguity errors found.
+pub fn check_precedence(source: &SourceFile) -> Vec<CompileError> {
+    let mut errors = Vec::new();
+    for item in &source.items {
+        check_precedence_in_item(item, &mut errors);
+    }
+    errors
+}
+
+/// Walk all items and check every expression for ambiguous precedence.
+fn check_precedence_in_item(item: &Item, errors: &mut Vec<CompileError>) {
+    // Simple helper: invoke the walker on every expression we find in any
+    // construct body. We approach this via a best-effort walker on common
+    // body item kinds — for statements, comb blocks, reg blocks, let bindings,
+    // asserts, etc.
+
+    fn walk_stmt(s: &Stmt, errors: &mut Vec<CompileError>) {
+        match s {
+            Stmt::Assign(a) => {
+                check_precedence_expr(&a.target, errors);
+                check_precedence_expr(&a.value, errors);
+            }
+            Stmt::IfElse(ie) => {
+                check_precedence_expr(&ie.cond, errors);
+                for s in &ie.then_stmts { walk_stmt(s, errors); }
+                for s in &ie.else_stmts { walk_stmt(s, errors); }
+            }
+            Stmt::Match(m) => {
+                check_precedence_expr(&m.scrutinee, errors);
+                for arm in &m.arms {
+                    for s in &arm.body { walk_stmt(s, errors); }
+                }
+            }
+            Stmt::Log(l) => {
+                for a in &l.args { check_precedence_expr(a, errors); }
+            }
+            Stmt::For(fl) => {
+                match &fl.range {
+                    ForRange::Range(s, e) => {
+                        check_precedence_expr(s, errors);
+                        check_precedence_expr(e, errors);
+                    }
+                    ForRange::ValueList(vs) => {
+                        for v in vs { check_precedence_expr(v, errors); }
+                    }
+                }
+                for s in &fl.body { walk_stmt(s, errors); }
+            }
+            Stmt::Init(ib) => {
+                for s in &ib.body { walk_stmt(s, errors); }
+            }
+        }
+    }
+
+    fn walk_comb(cs: &CombStmt, errors: &mut Vec<CompileError>) {
+        match cs {
+            CombStmt::Assign(a) => {
+                check_precedence_expr(&a.target, errors);
+                check_precedence_expr(&a.value, errors);
+            }
+            CombStmt::IfElse(ie) => {
+                check_precedence_expr(&ie.cond, errors);
+                for s in &ie.then_stmts { walk_comb(s, errors); }
+                for s in &ie.else_stmts { walk_comb(s, errors); }
+            }
+            CombStmt::MatchExpr(m) => {
+                check_precedence_expr(&m.scrutinee, errors);
+                for arm in &m.arms {
+                    for s in &arm.body {
+                        match s {
+                            Stmt::Assign(a) => {
+                                check_precedence_expr(&a.target, errors);
+                                check_precedence_expr(&a.value, errors);
+                            }
+                            _ => walk_stmt(s, errors),
+                        }
+                    }
+                }
+            }
+            CombStmt::Log(l) => {
+                for a in &l.args { check_precedence_expr(a, errors); }
+            }
+            CombStmt::For(fl) => {
+                match &fl.range {
+                    ForRange::Range(s, e) => {
+                        check_precedence_expr(s, errors);
+                        check_precedence_expr(e, errors);
+                    }
+                    ForRange::ValueList(vs) => {
+                        for v in vs { check_precedence_expr(v, errors); }
+                    }
+                }
+                // CombStmt::For's body is Vec<Stmt>, not Vec<CombStmt>
+                for s in &fl.body { walk_stmt(s, errors); }
+            }
+        }
+    }
+
+    fn walk_body(body: &[ModuleBodyItem], errors: &mut Vec<CompileError>) {
+        for it in body {
+            match it {
+                ModuleBodyItem::RegDecl(r) => {
+                    if let Some(ref e) = r.init { check_precedence_expr(e, errors); }
+                }
+                ModuleBodyItem::LetBinding(l) => {
+                    check_precedence_expr(&l.value, errors);
+                }
+                ModuleBodyItem::CombBlock(cb) => {
+                    for s in &cb.stmts { walk_comb(s, errors); }
+                }
+                ModuleBodyItem::RegBlock(rb) => {
+                    for s in &rb.stmts { walk_stmt(s, errors); }
+                }
+                ModuleBodyItem::LatchBlock(lb) => {
+                    for s in &lb.stmts { walk_stmt(s, errors); }
+                }
+                ModuleBodyItem::Inst(inst) => {
+                    for c in &inst.connections { check_precedence_expr(&c.signal, errors); }
+                }
+                ModuleBodyItem::Assert(a) => {
+                    check_precedence_expr(&a.expr, errors);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    match item {
+        Item::Module(m) => walk_body(&m.body, errors),
+        Item::Fsm(f) => {
+            for l in &f.lets { check_precedence_expr(&l.value, errors); }
+            for r in &f.regs {
+                if let Some(ref e) = r.init { check_precedence_expr(e, errors); }
+            }
+            for sb in &f.states {
+                for s in &sb.seq_stmts { walk_stmt(s, errors); }
+                for s in &sb.comb_stmts { walk_comb(s, errors); }
+                for tr in &sb.transitions { check_precedence_expr(&tr.condition, errors); }
+            }
+            for s in &f.default_seq { walk_stmt(s, errors); }
+            for s in &f.default_comb { walk_comb(s, errors); }
+            for a in &f.asserts { check_precedence_expr(&a.expr, errors); }
+        }
+        Item::Function(f) => {
+            for it in &f.body {
+                match it {
+                    FunctionBodyItem::Let(l) => check_precedence_expr(&l.value, errors),
+                    FunctionBodyItem::Return(e) => check_precedence_expr(e, errors),
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Evaluate a simple literal type-width expression (e.g. the `8` in `UInt<8>`).
 /// Returns `None` for non-literal expressions (params, arithmetic, etc.).
 fn eval_type_width_expr(e: &Expr) -> Option<u32> {

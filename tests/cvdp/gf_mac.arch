@@ -1,6 +1,6 @@
 function xtime(a: UInt<8>) -> UInt<8>
   let shifted: UInt<8> = a << 1;
-  return (a[7:7] == 1) ? shifted ^ 8'h1B : shifted;
+  return (a[7:7] == 1) ? (shifted ^ 8'h1B) : shifted;
 end function xtime
 
 function gf_mul8(x: UInt<8>, y: UInt<8>) -> UInt<8>

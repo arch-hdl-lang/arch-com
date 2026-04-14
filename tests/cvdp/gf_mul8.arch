@@ -34,33 +34,33 @@ module gf_mul8
     // iteration 0
     p0  = (b_in[0:0] == 1) ? a_in : 0.zext<8>();
     sh0 = a_in.zext<9>() << 1;
-    a0  = (sh0[8:8] == 1) ? sh0[7:0] ^ 0x1B.zext<8>() : sh0[7:0];
+    a0  = (sh0[8:8] == 1) ? (sh0[7:0] ^ 0x1B.zext<8>()) : sh0[7:0];
     // iteration 1
-    p1  = (b_in[1:1] == 1) ? p0 ^ a0 : p0;
+    p1  = (b_in[1:1] == 1) ? ((p0 ^ a0)) : p0;
     sh1 = a0.zext<9>() << 1;
-    a1  = (sh1[8:8] == 1) ? sh1[7:0] ^ 0x1B.zext<8>() : sh1[7:0];
+    a1  = (sh1[8:8] == 1) ? (sh1[7:0] ^ 0x1B.zext<8>()) : sh1[7:0];
     // iteration 2
-    p2  = (b_in[2:2] == 1) ? p1 ^ a1 : p1;
+    p2  = (b_in[2:2] == 1) ? ((p1 ^ a1)) : p1;
     sh2 = a1.zext<9>() << 1;
-    a2  = (sh2[8:8] == 1) ? sh2[7:0] ^ 0x1B.zext<8>() : sh2[7:0];
+    a2  = (sh2[8:8] == 1) ? (sh2[7:0] ^ 0x1B.zext<8>()) : sh2[7:0];
     // iteration 3
-    p3  = (b_in[3:3] == 1) ? p2 ^ a2 : p2;
+    p3  = (b_in[3:3] == 1) ? ((p2 ^ a2)) : p2;
     sh3 = a2.zext<9>() << 1;
-    a3  = (sh3[8:8] == 1) ? sh3[7:0] ^ 0x1B.zext<8>() : sh3[7:0];
+    a3  = (sh3[8:8] == 1) ? (sh3[7:0] ^ 0x1B.zext<8>()) : sh3[7:0];
     // iteration 4
-    p4  = (b_in[4:4] == 1) ? p3 ^ a3 : p3;
+    p4  = (b_in[4:4] == 1) ? ((p3 ^ a3)) : p3;
     sh4 = a3.zext<9>() << 1;
-    a4  = (sh4[8:8] == 1) ? sh4[7:0] ^ 0x1B.zext<8>() : sh4[7:0];
+    a4  = (sh4[8:8] == 1) ? (sh4[7:0] ^ 0x1B.zext<8>()) : sh4[7:0];
     // iteration 5
-    p5  = (b_in[5:5] == 1) ? p4 ^ a4 : p4;
+    p5  = (b_in[5:5] == 1) ? ((p4 ^ a4)) : p4;
     sh5 = a4.zext<9>() << 1;
-    a5  = (sh5[8:8] == 1) ? sh5[7:0] ^ 0x1B.zext<8>() : sh5[7:0];
+    a5  = (sh5[8:8] == 1) ? (sh5[7:0] ^ 0x1B.zext<8>()) : sh5[7:0];
     // iteration 6
-    p6  = (b_in[6:6] == 1) ? p5 ^ a5 : p5;
+    p6  = (b_in[6:6] == 1) ? ((p5 ^ a5)) : p5;
     sh6 = a5.zext<9>() << 1;
-    a6  = (sh6[8:8] == 1) ? sh6[7:0] ^ 0x1B.zext<8>() : sh6[7:0];
+    a6  = (sh6[8:8] == 1) ? (sh6[7:0] ^ 0x1B.zext<8>()) : sh6[7:0];
     // iteration 7
-    p7  = (b_in[7:7] == 1) ? p6 ^ a6 : p6;
+    p7  = (b_in[7:7] == 1) ? ((p6 ^ a6)) : p6;
     p_out = p7;
   end comb
 end module gf_mul8

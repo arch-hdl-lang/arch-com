@@ -556,6 +556,14 @@ fn run_check_multi(
         ms.report_error(err)
     })?;
 
+    // Precedence ambiguity check on user source (pre-elaboration, so generated
+    // reductions from thread lowering etc. don't trigger spurious warnings)
+    let prec_errors = arch::typecheck::check_precedence(&parsed_ast);
+    if !prec_errors.is_empty() {
+        let err = prec_errors.into_iter().next().unwrap();
+        return Err(ms.report_error(err));
+    }
+
     // Elaborate (expand generate blocks)
     let ast = elaborate::elaborate(parsed_ast).map_err(|errs| {
         let err = errs.into_iter().next().unwrap();

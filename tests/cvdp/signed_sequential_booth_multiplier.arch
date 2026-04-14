@@ -50,8 +50,7 @@ module signed_sequential_booth_multiplier
       (grp == 1) | (grp == 2) ? m_pos  :
       (grp == 3)              ? m2_pos :
       (grp == 4)              ? m2_neg :
-      (grp == 5) | (grp == 6) ? m_neg  :
-                                 m_pos ^ m_pos;
+      (grp == 5) | (grp == 6) ? m_neg  : (m_pos ^ m_pos);
   end comb
 
   seq
