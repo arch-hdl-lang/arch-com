@@ -2291,16 +2291,18 @@ impl<'a> Codegen<'a> {
             self.line("end");
         }
 
-        // Auto-generated safety assertion: no illegal FSM state
+        // Auto-generated safety assertion: no illegal FSM state (reset-guarded)
         {
             let clk_port = f.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)));
             let clk = clk_port.map(|p| p.name.name.clone()).unwrap_or_else(|| "clk".to_string());
+            let (rst_name, _, is_low) = Self::extract_reset_info(&f.ports);
+            let rst_inactive = if is_low { &rst_name } else { &format!("!{rst_name}") };
             let n = &f.name.name;
             let n_states = f.state_names.len();
             self.line("");
             self.line("// synopsys translate_off");
             self.line(&format!(
-                "_auto_legal_state: assert property (@(posedge {clk}) state_r < {n_states})"
+                "_auto_legal_state: assert property (@(posedge {clk}) {rst_inactive} |-> state_r < {n_states})"
             ));
             self.line(&format!(
                 "  else $fatal(1, \"FSM ILLEGAL STATE: {n}.state_r = %0d\", state_r);"
