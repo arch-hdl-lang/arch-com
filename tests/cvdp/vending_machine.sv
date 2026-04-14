@@ -196,6 +196,26 @@ module vending_machine (
   // synopsys translate_off
   _auto_legal_state: assert property (@(posedge clk) !rst |-> state_r < 7)
     else $fatal(1, "FSM ILLEGAL STATE: vending_machine.state_r = %0d", state_r);
+  _auto_reach_IDLE: cover property (@(posedge clk) state_r == IDLE);
+  _auto_reach_ITEM_SELECTION: cover property (@(posedge clk) state_r == ITEM_SELECTION);
+  _auto_reach_COIN_ACCEPT: cover property (@(posedge clk) state_r == COIN_ACCEPT);
+  _auto_reach_DISPENSE: cover property (@(posedge clk) state_r == DISPENSE);
+  _auto_reach_CHANGE_CHECK: cover property (@(posedge clk) state_r == CHANGE_CHECK);
+  _auto_reach_RETURN_CHANGE: cover property (@(posedge clk) state_r == RETURN_CHANGE);
+  _auto_reach_ERROR: cover property (@(posedge clk) state_r == ERROR);
+  _auto_tr_IDLE_to_ITEM_SELECTION: cover property (@(posedge clk) state_r == IDLE && state_next == ITEM_SELECTION);
+  _auto_tr_IDLE_to_ERROR: cover property (@(posedge clk) state_r == IDLE && state_next == ERROR);
+  _auto_tr_ITEM_SELECTION_to_ERROR: cover property (@(posedge clk) state_r == ITEM_SELECTION && state_next == ERROR);
+  _auto_tr_ITEM_SELECTION_to_COIN_ACCEPT: cover property (@(posedge clk) state_r == ITEM_SELECTION && state_next == COIN_ACCEPT);
+  _auto_tr_ITEM_SELECTION_to_ERROR_1: cover property (@(posedge clk) state_r == ITEM_SELECTION && state_next == ERROR);
+  _auto_tr_COIN_ACCEPT_to_ERROR: cover property (@(posedge clk) state_r == COIN_ACCEPT && state_next == ERROR);
+  _auto_tr_COIN_ACCEPT_to_IDLE: cover property (@(posedge clk) state_r == COIN_ACCEPT && state_next == IDLE);
+  _auto_tr_COIN_ACCEPT_to_DISPENSE: cover property (@(posedge clk) state_r == COIN_ACCEPT && state_next == DISPENSE);
+  _auto_tr_DISPENSE_to_CHANGE_CHECK: cover property (@(posedge clk) state_r == DISPENSE && state_next == CHANGE_CHECK);
+  _auto_tr_CHANGE_CHECK_to_RETURN_CHANGE: cover property (@(posedge clk) state_r == CHANGE_CHECK && state_next == RETURN_CHANGE);
+  _auto_tr_CHANGE_CHECK_to_IDLE: cover property (@(posedge clk) state_r == CHANGE_CHECK && state_next == IDLE);
+  _auto_tr_RETURN_CHANGE_to_IDLE: cover property (@(posedge clk) state_r == RETURN_CHANGE && state_next == IDLE);
+  _auto_tr_ERROR_to_IDLE: cover property (@(posedge clk) state_r == ERROR && state_next == IDLE);
   // synopsys translate_on
 
 endmodule

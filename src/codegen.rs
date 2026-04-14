@@ -2291,22 +2291,53 @@ impl<'a> Codegen<'a> {
             self.line("end");
         }
 
-        // Auto-generated safety assertion: no illegal FSM state (reset-guarded)
+        // Auto-generated FSM safety assertions and coverage
         {
             let clk_port = f.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)));
             let clk = clk_port.map(|p| p.name.name.clone()).unwrap_or_else(|| "clk".to_string());
             let (rst_name, _, is_low) = Self::extract_reset_info(&f.ports);
-            let rst_inactive = if is_low { &rst_name } else { &format!("!{rst_name}") };
+            let rst_inactive = if is_low { rst_name.clone() } else { format!("!{rst_name}") };
             let n = &f.name.name;
             let n_states = f.state_names.len();
             self.line("");
             self.line("// synopsys translate_off");
+
+            // Assert: no illegal state (reset-guarded)
             self.line(&format!(
                 "_auto_legal_state: assert property (@(posedge {clk}) {rst_inactive} |-> state_r < {n_states})"
             ));
             self.line(&format!(
                 "  else $fatal(1, \"FSM ILLEGAL STATE: {n}.state_r = %0d\", state_r);"
             ));
+
+            // Cover: each state is reachable
+            for sn in &f.state_names {
+                let su = sn.name.to_uppercase();
+                self.line(&format!(
+                    "_auto_reach_{}: cover property (@(posedge {clk}) state_r == {su});",
+                    sn.name
+                ));
+            }
+
+            // Cover: each declared transition can fire
+            // Use a counter to disambiguate duplicate src→tgt transitions
+            {
+                let mut tr_counts: std::collections::HashMap<(String, String), usize> = std::collections::HashMap::new();
+                for sb in &f.states {
+                    let src = sb.name.name.to_uppercase();
+                    for tr in &sb.transitions {
+                        let tgt = tr.target.name.to_uppercase();
+                        let key = (src.clone(), tgt.clone());
+                        let count = tr_counts.entry(key).or_insert(0);
+                        let suffix = if *count > 0 { format!("_{count}") } else { String::new() };
+                        *count += 1;
+                        self.line(&format!(
+                            "_auto_tr_{src}_to_{tgt}{suffix}: cover property (@(posedge {clk}) state_r == {src} && state_next == {tgt});",
+                        ));
+                    }
+                }
+            }
+
             self.line("// synopsys translate_on");
         }
 

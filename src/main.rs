@@ -70,6 +70,12 @@ enum Command {
         /// How many module levels to instrument with --debug (default 1 = top module only)
         #[arg(long = "depth", default_value_t = 1)]
         debug_depth: u32,
+        /// Generate pybind11 Python module for cocotb-compatible testing
+        #[arg(long)]
+        pybind: bool,
+        /// Python test file to run with arch_cocotb adapter (requires --pybind)
+        #[arg(long)]
+        test: Option<PathBuf>,
     },
 }
 
@@ -135,9 +141,9 @@ fn main() -> miette::Result<()> {
             eprintln!("OK: no errors");
             Ok(())
         }
-        Command::Sim { arch_files, tb_files, outdir, check_uninit, cdc_random, wave, debug, debug_depth, debug_fsm } => {
+        Command::Sim { arch_files, tb_files, outdir, check_uninit, cdc_random, wave, debug, debug_depth, debug_fsm, pybind, test } => {
             let dbg_ports = debug || debug_fsm;  // any debug option implies port logging
-            run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm)
+            run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, pybind, test.as_deref())
         }
         Command::Build { files, o } => {
             let all_files = resolve_use_imports(&files)?;
@@ -198,6 +204,8 @@ fn run_sim(
     debug: bool,
     debug_depth: u32,
     debug_fsm: bool,
+    pybind: bool,
+    test_file: Option<&std::path::Path>,
 ) -> miette::Result<()> {
     // 1. Parse + type-check
     let all_files = resolve_use_imports(arch_files)?;
@@ -236,6 +244,104 @@ fn run_sim(
     fs::write(&verilated_cpp, SimCodegen::verilated_cpp()).into_diagnostic()?;
     generated_cpps.push(verilated_cpp);
 
+    // ── Pybind11 mode ────────────────────────────────────────────────────
+    if pybind {
+        let pybind_wrappers = sim.generate_pybind();
+        if pybind_wrappers.is_empty() {
+            eprintln!("warning: no pybind11 wrappers generated");
+            return Ok(());
+        }
+
+        let mut pybind_cpps: Vec<PathBuf> = Vec::new();
+        let mut pybind_module_name = String::new();
+        for wrapper in &pybind_wrappers {
+            let cpp_path = build_dir.join(format!("{}.cpp", wrapper.class_name));
+            fs::write(&cpp_path, &wrapper.impl_).into_diagnostic()?;
+            eprintln!("Generated pybind11 wrapper: {}", cpp_path.display());
+            pybind_cpps.push(cpp_path);
+            if pybind_module_name.is_empty() {
+                pybind_module_name = wrapper.class_name.clone();
+            }
+        }
+
+        // Get pybind11 includes
+        let py_includes = std::process::Command::new("python3")
+            .args(["-m", "pybind11", "--includes"])
+            .output();
+        let py_includes = match py_includes {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+            _ => {
+                eprintln!("error: pybind11 not found. Install with: pip install pybind11");
+                std::process::exit(1);
+            }
+        };
+
+        // Get Python extension suffix
+        let ext_suffix = std::process::Command::new("python3-config")
+            .arg("--extension-suffix")
+            .output();
+        let ext_suffix = match ext_suffix {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+            _ => ".so".to_string(),
+        };
+
+        // Compile shared library
+        let so_path = build_dir.join(format!("{pybind_module_name}{ext_suffix}"));
+        let mut cmd = std::process::Command::new("g++");
+        cmd.arg("-std=c++17")
+           .arg("-O2")
+           .arg("-shared")
+           .arg("-fPIC")
+           .arg("-I").arg(&build_dir);
+
+        for flag in py_includes.split_whitespace() {
+            cmd.arg(flag);
+        }
+        for cpp in &generated_cpps {
+            cmd.arg(cpp);
+        }
+        for cpp in &pybind_cpps {
+            cmd.arg(cpp);
+        }
+        cmd.arg("-o").arg(&so_path);
+
+        // macOS: suppress undefined symbol errors (Python symbols resolved at import time)
+        #[cfg(target_os = "macos")]
+        cmd.arg("-undefined").arg("dynamic_lookup");
+
+        eprintln!("Compiling pybind11 module...");
+        let status = cmd.status().into_diagnostic()?;
+        if !status.success() {
+            eprintln!("Pybind11 compilation failed");
+            std::process::exit(1);
+        }
+        eprintln!("Built: {}", so_path.display());
+
+        // If --test is given, run the test file
+        if let Some(test_path) = test_file {
+            eprintln!("Running test: {}", test_path.display());
+            let project_root = std::env::current_dir().into_diagnostic()?;
+            let python_dir = project_root.join("python");
+            let shim_dir = python_dir.join("cocotb_shim");
+            let cocotb_dir = python_dir.to_str().unwrap_or(".");
+            let shim_str = shim_dir.to_str().unwrap_or(".");
+            let build_str = build_dir.to_str().unwrap_or(".");
+
+            let pythonpath = format!("{shim_str}:{cocotb_dir}:{build_str}");
+
+            let status = std::process::Command::new("python3")
+                .arg(test_path)
+                .env("PYTHONPATH", &pythonpath)
+                .status()
+                .into_diagnostic()?;
+
+            std::process::exit(status.code().unwrap_or(1));
+        }
+
+        return Ok(());
+    }
+
+    // ── Normal sim mode (C++ testbench) ──────────────────────────────────
     if tb_files.is_empty() {
         eprintln!("No testbench files supplied — generated models are in {}/", build_dir.display());
         eprintln!("Compile with: g++ {}/verilated.cpp {}/V*.cpp <your_tb.cpp> -I{} -o sim_out",
