@@ -1,0 +1,22 @@
+module CounterCheck
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port count: out UInt<8>;
+
+  reg cnt: UInt<8> reset rst => 0;
+
+  seq on clk rising
+    if en
+      cnt <= (cnt + 1).trunc<8>();
+    end if
+  end seq
+
+  comb
+    count = cnt;
+  end comb
+
+  assert no_overflow: cnt != 0 implies en;
+  cover saw_max: cnt == 255;
+  cover saw_zero: cnt == 0;
+end module CounterCheck
