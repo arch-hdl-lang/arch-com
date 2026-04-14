@@ -894,6 +894,38 @@ fn subst_expr_sim(expr: &Expr, params: &HashMap<String, &Expr>) -> Expr {
     }
 }
 
+/// Return flattened bus port signals with direction: Vec<(flat_name, Direction, TypeExpr)>.
+/// Direction is from the module's perspective (target flips initiator directions).
+fn flatten_bus_port_with_dir(
+    port_name: &str,
+    bi: &BusPortInfo,
+    symbols: &crate::resolve::SymbolTable,
+) -> Vec<(String, Direction, TypeExpr)> {
+    let bus_name = &bi.bus_name.name;
+    if let Some((crate::resolve::Symbol::Bus(info), _)) = symbols.globals.get(bus_name) {
+        let mut param_map: HashMap<String, &Expr> = info.params.iter()
+            .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
+            .collect();
+        for pa in &bi.params {
+            param_map.insert(pa.name.name.clone(), &pa.value);
+        }
+        let eff = info.effective_signals(&param_map);
+        let is_target = bi.perspective == BusPerspective::Target;
+        eff.iter().map(|(sname, sdir, sty)| {
+            let subst_ty = subst_type_expr_sim(sty, &param_map);
+            // Target perspective flips all signal directions
+            let dir = if is_target {
+                match sdir { Direction::In => Direction::Out, Direction::Out => Direction::In }
+            } else {
+                *sdir
+            };
+            (format!("{}_{}", port_name, sname), dir, subst_ty)
+        }).collect()
+    } else {
+        Vec::new()
+    }
+}
+
 /// Return flattened bus port signals: Vec<(flat_name, TypeExpr)>.
 /// E.g. port itcm: initiator ItcmIcb → [(itcm_cmd_valid, Bool), (itcm_cmd_addr, UInt<14>), ...]
 fn flatten_bus_port(
@@ -2488,13 +2520,18 @@ impl<'a> SimCodegen<'a> {
         let class = format!("V{name}");
         let enum_map = build_enum_map(self.symbols);
 
-        // Collect bus port names and flattened signals
+        // Collect bus port names and flattened signals (with direction for debug)
         let mut bus_port_names: HashSet<String> = HashSet::new();
         let mut bus_flat: Vec<(String, TypeExpr)> = Vec::new();
+        let mut bus_flat_dirs: HashMap<String, Direction> = HashMap::new();
         for p in &m.ports {
             if let Some(ref bi) = p.bus_info {
                 bus_port_names.insert(p.name.name.clone());
-                bus_flat.extend(flatten_bus_port(&p.name.name, bi, self.symbols));
+                let with_dir = flatten_bus_port_with_dir(&p.name.name, bi, self.symbols);
+                for (fname, fdir, fty) in with_dir {
+                    bus_flat_dirs.insert(fname.clone(), fdir);
+                    bus_flat.push((fname, fty));
+                }
             }
         }
 
@@ -3870,8 +3907,13 @@ impl<'a> SimCodegen<'a> {
                     }
                 }
             }
-            // Bus flat signals: log each flattened bus signal
+            // Bus flat signals: log each flattened bus signal with direction
             for (flat_name, flat_ty) in &bus_flat {
+                let dir_str = match bus_flat_dirs.get(flat_name) {
+                    Some(Direction::In) => "in",
+                    Some(Direction::Out) => "out",
+                    None => "bus",
+                };
                 let bits = type_width_of(flat_ty);
                 if bits > 64 {
                     let words = wide_words(bits);
@@ -3879,7 +3921,7 @@ impl<'a> SimCodegen<'a> {
                         "  if (memcmp(&{flat_name}, &_dbg_prev_{flat_name}, sizeof({flat_name})) != 0) {{\n"
                     ));
                     cpp.push_str(&format!(
-                        "    printf(\"[%llu][{name}.{flat_name}](bus) 0x\",\n           (unsigned long long)_dbg_cycle);\n"
+                        "    printf(\"[%llu][{name}.{flat_name}]({dir_str}) 0x\",\n           (unsigned long long)_dbg_cycle);\n"
                     ));
                     cpp.push_str(&format!(
                         "    for (int _w = {words} - 1; _w >= 0; _w--) printf(\"%08x\", _dbg_prev_{flat_name}.data()[_w]);\n"
@@ -3896,7 +3938,7 @@ impl<'a> SimCodegen<'a> {
                         "  if ({flat_name} != _dbg_prev_{flat_name}) {{\n"
                     ));
                     cpp.push_str(&format!(
-                        "    printf(\"[%llu][{name}.{flat_name}](bus) 0x%llx -> 0x%llx\\n\",\n"
+                        "    printf(\"[%llu][{name}.{flat_name}]({dir_str}) 0x%llx -> 0x%llx\\n\",\n"
                     ));
                     cpp.push_str(
                         "           (unsigned long long)_dbg_cycle,\n"
