@@ -416,9 +416,10 @@ fn collect_trace_signals(
 ) -> Vec<TraceSignal> {
     let mut sigs = Vec::new();
 
-    // Ports (skip bus ports — flattened signals added below)
+    // Ports (skip bus ports and Vec ports — flattened signals added separately)
     for p in ports {
         if p.bus_info.is_some() { continue; }
+        if matches!(p.ty, TypeExpr::Vec(..)) { continue; }
         let name = &p.name.name;
         let width = type_width(&p.ty);
         let is_wide = wide_names.contains(name.as_str());
@@ -2207,6 +2208,29 @@ fn collect_stmt_assigns(stmts: &[Stmt], out: &mut std::collections::BTreeSet<Str
 }
 
 impl<'a> SimCodegen<'a> {
+    /// Look up the port declarations for a sub-instance's module/construct type.
+    fn lookup_inst_ports(&self, module_name: &str) -> Vec<PortDecl> {
+        use crate::resolve::Symbol;
+        if let Some((sym, _)) = self.symbols.globals.get(module_name) {
+            match sym {
+                Symbol::Module(info) => info.ports.clone(),
+                Symbol::Fsm(info) => info.ports.clone(),
+                Symbol::Pipeline(info) => info.ports.clone(),
+                _ => Vec::new(),
+            }
+        } else {
+            // Fallback: search source AST items directly
+            for item in &self.source.items {
+                match item {
+                    Item::Module(m) if m.name.name == module_name => return m.ports.clone(),
+                    Item::Fsm(f) if f.name.name == module_name => return f.ports.clone(),
+                    _ => {}
+                }
+            }
+            Vec::new()
+        }
+    }
+
     fn gen_module(&self, m: &ModuleDecl, emit_debug: bool, debug_module_set: &std::collections::HashSet<String>) -> SimModel {
         let name = &m.name.name;
         let class = format!("V{name}");
@@ -2268,14 +2292,22 @@ impl<'a> SimCodegen<'a> {
             .collect();
         vec_reg_names.extend(vec_wire_names.iter().cloned());
 
-        // Vec wire name → element count (for expanding inst port connections)
-        let vec_wire_counts: HashMap<String, u64> = m.body.iter()
+        // Vec wire/reg name → element count (for expanding inst port connections)
+        let mut vec_wire_counts: HashMap<String, u64> = m.body.iter()
             .filter_map(|i| if let ModuleBodyItem::WireDecl(w) = i {
                 if let TypeExpr::Vec(_, count_expr) = &w.ty {
                     Some((w.name.name.clone(), eval_const_expr(count_expr)))
                 } else { None }
             } else { None })
             .collect();
+        // Also include Vec regs (for inst port connections like Vec reg → inst Vec output)
+        for item in &m.body {
+            if let ModuleBodyItem::RegDecl(r) = item {
+                if let TypeExpr::Vec(_, count_expr) = &r.ty {
+                    vec_wire_counts.insert(r.name.name.clone(), eval_const_expr(count_expr));
+                }
+            }
+        }
 
         // Collect Vec port info early (needed for header, constructor, and eval_comb).
         struct VecPortInfo {
@@ -2334,6 +2366,45 @@ impl<'a> SimCodegen<'a> {
         let expanded_conns: Vec<Vec<Connection>> = insts.iter()
             .map(|inst| expand_bus_connections(inst, self.source, self.symbols))
             .collect();
+
+        // Build map: parent_signal_name → Vec element count for inst-output Vec ports.
+        // When a sub-instance has a Vec output port and the parent connects it to a scalar
+        // wire (e.g. thread lowering creates `thread_complete -> thread_complete`), we need
+        // to emit flat fields and element-by-element copies instead of scalar assignments.
+        let mut inst_vec_out: HashMap<String, (String, u64)> = HashMap::new();  // sig → (elem_ty, count)
+        for (inst_idx, inst) in insts.iter().enumerate() {
+            let sub_ports = self.lookup_inst_ports(&inst.module_name.name);
+            let conns = &expanded_conns[inst_idx];
+            for conn in conns {
+                if conn.direction == ConnectDir::Output {
+                    if let ExprKind::Ident(sig_name) = &conn.signal.kind {
+                        // Check if the port on the sub-instance is a Vec type
+                        if let Some(port) = sub_ports.iter().find(|p| p.name.name == conn.port_name.name) {
+                            if let Some((elem_ty, count_str)) = vec_array_info(&port.ty) {
+                                let count: u64 = count_str.parse().unwrap_or(0);
+                                if count > 0 {
+                                    inst_vec_out.insert(sig_name.clone(), (elem_ty, count));
+                                    // Also add to vec_wire_counts so output reads expand correctly
+                                    vec_wire_counts.insert(sig_name.clone(), count);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Add inst-output Vec names to vec_reg_names so Index uses [i] syntax,
+        // and add their element widths to the width map for expression codegen.
+        for (name, (elem_ty, count)) in &inst_vec_out {
+            vec_reg_names.insert(name.clone());
+            // Infer element width from C++ type
+            let elem_bits = match elem_ty.as_str() {
+                "uint8_t" => 8, "uint16_t" => 16, "uint32_t" => 32, "uint64_t" => 64,
+                "int8_t" => 8, "int16_t" => 16, "int32_t" => 32, "int64_t" => 64,
+                _ => 32,
+            };
+            widths.insert(name.clone(), elem_bits * (*count as u32));
+        }
 
         // Analyze combinational instance dependency graph.
         // Detects feedback cycles (compile error) and computes topological
@@ -2465,10 +2536,12 @@ impl<'a> SimCodegen<'a> {
                 }
             } else { None })
             .collect();
-        // port reg shadow inits
+        // port reg shadow inits (skip Vec port-regs — they use memset in ctor body)
         let port_reg_inits: Vec<String> = m.ports.iter()
             .filter_map(|p| {
                 let ri = p.reg_info.as_ref()?;
+                // Vec port-regs are C arrays — can't use (0) in init list
+                if vec_array_info(&p.ty).is_some() { return None; }
                 let init_val = if let Some(ref init_expr) = ri.init {
                     match &init_expr.kind {
                         ExprKind::Literal(LitKind::Dec(v)) => v.to_string(),
@@ -2677,7 +2750,12 @@ impl<'a> SimCodegen<'a> {
         // Private fields for sub-instance output wires
         for sig_name in &inst_out {
             if !port_names.contains(sig_name) && !reg_names.contains(sig_name) {
-                h.push_str(&format!("  uint32_t {sig_name};\n"));
+                // Vec output ports need a C array, not a scalar
+                if let Some((elem_ty, count)) = inst_vec_out.get(sig_name) {
+                    h.push_str(&format!("  {elem_ty} {sig_name}[{count}];\n"));
+                } else {
+                    h.push_str(&format!("  uint32_t {sig_name};\n"));
+                }
             }
         }
 
@@ -2805,11 +2883,15 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str(&format!("    _inst_{}.eval_comb();\n", inst.name.name));
                 for conn in conns {
                     if conn.direction == ConnectDir::Output {
-                        // inst Vec port → Vec wire: expand element-by-element
+                        // inst Vec port → Vec wire/reg: expand element-by-element
                         if let ExprKind::Ident(sig_name) = &conn.signal.kind {
                             if let Some(&n) = vec_wire_counts.get(sig_name.as_str()) {
+                                // Determine prefix: regs use `_`, wires use `_let_`, inst-outputs use bare name
+                                let prefix = if reg_names.contains(sig_name.as_str()) { "_" }
+                                    else if inst_out.contains(sig_name.as_str()) { "" }
+                                    else { "_let_" };
                                 for i in 0..n {
-                                    cpp.push_str(&format!("    _let_{sig_name}[{i}] = _inst_{}.{}_{i};\n",
+                                    cpp.push_str(&format!("    {prefix}{sig_name}[{i}] = _inst_{}.{}_{i};\n",
                                         inst.name.name, conn.port_name.name));
                                 }
                                 continue;
@@ -2877,11 +2959,14 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str(&format!("    _inst_{}.eval_comb();\n", inst.name.name));
                 for conn in conns {
                     if conn.direction == ConnectDir::Output {
-                        // inst Vec port → Vec wire: expand element-by-element
+                        // inst Vec port → Vec wire/reg: expand element-by-element
                         if let ExprKind::Ident(sig_name) = &conn.signal.kind {
                             if let Some(&n) = vec_wire_counts.get(sig_name.as_str()) {
+                                let prefix = if reg_names.contains(sig_name.as_str()) { "_" }
+                                    else if inst_out.contains(sig_name.as_str()) { "" }
+                                    else { "_let_" };
                                 for i in 0..n {
-                                    cpp.push_str(&format!("    _let_{sig_name}[{i}] = _inst_{}.{}_{i};\n",
+                                    cpp.push_str(&format!("    {prefix}{sig_name}[{i}] = _inst_{}.{}_{i};\n",
                                         inst.name.name, conn.port_name.name));
                                 }
                                 continue;
@@ -3271,11 +3356,14 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str(&format!("  _inst_{}.eval_comb();\n", inst.name.name));
                 for conn in conns {
                     if conn.direction == ConnectDir::Output {
-                        // inst Vec port → Vec wire: expand element-by-element
+                        // inst Vec port → Vec wire/reg: expand element-by-element
                         if let ExprKind::Ident(sig_name) = &conn.signal.kind {
                             if let Some(&n) = vec_wire_counts.get(sig_name.as_str()) {
+                                let prefix = if reg_names.contains(sig_name.as_str()) { "_" }
+                                    else if inst_out.contains(sig_name.as_str()) { "" }
+                                    else { "_let_" };
                                 for i in 0..n {
-                                    cpp.push_str(&format!("  _let_{sig_name}[{i}] = _inst_{}.{}_{i};\n",
+                                    cpp.push_str(&format!("  {prefix}{sig_name}[{i}] = _inst_{}.{}_{i};\n",
                                         inst.name.name, conn.port_name.name));
                                 }
                                 continue;
