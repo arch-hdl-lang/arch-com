@@ -12,8 +12,8 @@ module FILO_RTL #(
   output logic empty
 );
 
-  logic [32-1:0] top;
-  logic [DATA_WIDTH-1:0] buffer [FILO_DEPTH-1:0];
+  logic [31:0] top;
+  logic [FILO_DEPTH-1:0] [DATA_WIDTH-1:0] buffer;
   always_ff @(posedge clk or posedge reset) begin
     if (reset) begin
       for (int __ri0 = 0; __ri0 < FILO_DEPTH; __ri0++) begin

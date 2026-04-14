@@ -9,10 +9,8 @@ module line_buffer
   param NBW_COL:   const = 3;
   param NBW_MODE:  const = 3;
 
-  local param NS_BUF:      const = NS_ROW * NS_COLUMN;
-  local param WIN_PIXELS:  const = NS_R_OUT * NS_C_OUT;
-  local param OUT_BITS:    const = WIN_PIXELS * NBW_DATA;
-  local param PAD_VAL:     const = CONSTANT;
+  local param WIN_PIXELS: const = NS_R_OUT * NS_C_OUT;
+  local param OUT_BITS:   const = WIN_PIXELS * NBW_DATA;
 
   port clk:               in Clock<SysDomain>;
   port rst_async_n:       in Reset<Async, Low>;
@@ -26,68 +24,78 @@ module line_buffer
 
   default seq on clk rising;
 
-  // Flat pixel buffer: pixel[r][c] at Vec index r*NS_COLUMN+c; row 0 is newest
-  reg pix_buf: Vec<UInt<NBW_DATA>, NS_BUF> reset rst_async_n => 0;
+  // Line buffer: pix_rows[0] = newest row, pix_rows[NS_ROW-1] = oldest
+  reg pix_rows: Vec<UInt<NS_COLUMN * NBW_DATA>, NS_ROW> reset rst_async_n => 0;
 
-  // Window storage: o_win[r*NS_C_OUT+c] = output pixel at position (r,c)
-  reg o_win: Vec<UInt<NBW_DATA>, WIN_PIXELS> reset rst_async_n => 0;
+  // Last registered window pixels (updated when i_update_window=1)
+  reg last_win: Vec<UInt<NBW_DATA>, WIN_PIXELS> reset rst_async_n => 0;
 
-  // Assemble flat output from o_win (for loop unrolled in comb → constant bit indices in SV)
-  wire win_flat: UInt<OUT_BITS>;
+  // Compute current window combinatorially from current inputs + pix_rows
+  wire comb_win: UInt<OUT_BITS>;
+
   comb
-    win_flat = 0;
-    for r in 0..NS_R_OUT-1
-      for c in 0..NS_C_OUT-1
-        win_flat[(r * NS_C_OUT + c) * NBW_DATA + NBW_DATA - 1 : (r * NS_C_OUT + c) * NBW_DATA] = o_win[r * NS_C_OUT + c];
+    for wr in 0..NS_R_OUT-1
+      for wc in 0..NS_C_OUT-1
+        if i_mode == 0
+          if ((i_image_row_start.zext<8>() + wr.zext<8>()) < NS_ROW.zext<8>()) & ((i_image_col_start.zext<8>() + wc.zext<8>()) < NS_COLUMN.zext<8>())
+            comb_win[(wr * NS_C_OUT + wc) * NBW_DATA + NBW_DATA - 1 : (wr * NS_C_OUT + wc) * NBW_DATA] =
+              (pix_rows[(i_image_row_start.zext<8>() + wr.zext<8>()).trunc<4>()] >>
+               ((NS_COLUMN.zext<8>() - 1 - (i_image_col_start.zext<8>() + wc.zext<8>())) * NBW_DATA.zext<8>())).trunc<NBW_DATA>();
+          else
+            comb_win[(wr * NS_C_OUT + wc) * NBW_DATA + NBW_DATA - 1 : (wr * NS_C_OUT + wc) * NBW_DATA] = 0.zext<NBW_DATA>();
+          end if
+        elsif i_mode == 1
+          if ((i_image_row_start.zext<8>() + wr.zext<8>()) < NS_ROW.zext<8>()) & ((i_image_col_start.zext<8>() + wc.zext<8>()) < NS_COLUMN.zext<8>())
+            comb_win[(wr * NS_C_OUT + wc) * NBW_DATA + NBW_DATA - 1 : (wr * NS_C_OUT + wc) * NBW_DATA] =
+              (pix_rows[(i_image_row_start.zext<8>() + wr.zext<8>()).trunc<4>()] >>
+               ((NS_COLUMN.zext<8>() - 1 - (i_image_col_start.zext<8>() + wc.zext<8>())) * NBW_DATA.zext<8>())).trunc<NBW_DATA>();
+          else
+            comb_win[(wr * NS_C_OUT + wc) * NBW_DATA + NBW_DATA - 1 : (wr * NS_C_OUT + wc) * NBW_DATA] = CONSTANT.zext<NBW_DATA+1>().trunc<NBW_DATA>();
+          end if
+        elsif i_mode == 2
+          comb_win[(wr * NS_C_OUT + wc) * NBW_DATA + NBW_DATA - 1 : (wr * NS_C_OUT + wc) * NBW_DATA] =
+            (pix_rows[((i_image_row_start.zext<8>() + wr.zext<8>()) < NS_ROW.zext<8>() ? (i_image_row_start.zext<8>() + wr.zext<8>()) : (NS_ROW - 1).zext<8>()).trunc<4>()] >>
+             ((NS_COLUMN.zext<8>() - 1 - ((i_image_col_start.zext<8>() + wc.zext<8>()) < NS_COLUMN.zext<8>() ? (i_image_col_start.zext<8>() + wc.zext<8>()) : (NS_COLUMN - 1).zext<8>())) * NBW_DATA.zext<8>())).trunc<NBW_DATA>();
+        elsif i_mode == 3
+          comb_win[(wr * NS_C_OUT + wc) * NBW_DATA + NBW_DATA - 1 : (wr * NS_C_OUT + wc) * NBW_DATA] =
+            (pix_rows[((i_image_row_start.zext<8>() + wr.zext<8>()) < NS_ROW.zext<8>() ? (i_image_row_start.zext<8>() + wr.zext<8>()) : ((2 * NS_ROW - 1).zext<8>() - (i_image_row_start.zext<8>() + wr.zext<8>()))).trunc<4>()] >>
+             ((NS_COLUMN.zext<8>() - 1 - ((i_image_col_start.zext<8>() + wc.zext<8>()) < NS_COLUMN.zext<8>() ? (i_image_col_start.zext<8>() + wc.zext<8>()) : ((2 * NS_COLUMN - 1).zext<8>() - (i_image_col_start.zext<8>() + wc.zext<8>())))) * NBW_DATA.zext<8>())).trunc<NBW_DATA>();
+        elsif i_mode == 4
+          comb_win[(wr * NS_C_OUT + wc) * NBW_DATA + NBW_DATA - 1 : (wr * NS_C_OUT + wc) * NBW_DATA] =
+            (pix_rows[((i_image_row_start.zext<8>() + wr.zext<8>()) % NS_ROW.zext<8>()).trunc<4>()] >>
+             ((NS_COLUMN.zext<8>() - 1 - ((i_image_col_start.zext<8>() + wc.zext<8>()) % NS_COLUMN.zext<8>())) * NBW_DATA.zext<8>())).trunc<NBW_DATA>();
+        else
+          comb_win[(wr * NS_C_OUT + wc) * NBW_DATA + NBW_DATA - 1 : (wr * NS_C_OUT + wc) * NBW_DATA] = 0.zext<NBW_DATA>();
+        end if
       end for
     end for
-    o_image_window = win_flat;
+  end comb
+
+  // Output: if update_window, show comb result; else show last registered window
+  comb
+    for wr in 0..NS_R_OUT-1
+      for wc in 0..NS_C_OUT-1
+        o_image_window[(wr * NS_C_OUT + wc) * NBW_DATA + NBW_DATA - 1 : (wr * NS_C_OUT + wc) * NBW_DATA] =
+          i_update_window ? comb_win[(wr * NS_C_OUT + wc) * NBW_DATA + NBW_DATA - 1 : (wr * NS_C_OUT + wc) * NBW_DATA] : last_win[wr * NS_C_OUT + wc];
+      end for
+    end for
   end comb
 
   seq
-    if i_update_window
-      for r in 0..NS_R_OUT-1
-        for c in 0..NS_C_OUT-1
-          if i_mode == 0
-            // NO_BOUND_PROCESS: out of bounds → 0
-            if ((i_image_row_start.zext<32>() + r.zext<32>()) < NS_ROW.zext<32>()) & ((i_image_col_start.zext<32>() + c.zext<32>()) < NS_COLUMN.zext<32>())
-              o_win[r * NS_C_OUT + c] <= pix_buf[((i_image_row_start.zext<32>() + r.zext<32>()) * NS_COLUMN.zext<32>() + i_image_col_start.zext<32>() + c.zext<32>()).trunc<$clog2(NS_BUF)+1>()];
-            else
-              o_win[r * NS_C_OUT + c] <= 0;
-            end if
-          elsif i_mode == 1
-            // PAD_CONSTANT: out of bounds → CONSTANT
-            if ((i_image_row_start.zext<32>() + r.zext<32>()) < NS_ROW.zext<32>()) & ((i_image_col_start.zext<32>() + c.zext<32>()) < NS_COLUMN.zext<32>())
-              o_win[r * NS_C_OUT + c] <= pix_buf[((i_image_row_start.zext<32>() + r.zext<32>()) * NS_COLUMN.zext<32>() + i_image_col_start.zext<32>() + c.zext<32>()).trunc<$clog2(NS_BUF)+1>()];
-            else
-              o_win[r * NS_C_OUT + c] <= PAD_VAL.zext<NBW_DATA+1>().trunc<NBW_DATA>();
-            end if
-          elsif i_mode == 2
-            // EXTEND_NEAR: clamp row and col to [0, NS_ROW-1] / [0, NS_COLUMN-1]
-            o_win[r * NS_C_OUT + c] <= pix_buf[((((i_image_row_start.zext<32>() + r.zext<32>()) < NS_ROW.zext<32>()) ? (i_image_row_start.zext<32>() + r.zext<32>()) : (NS_ROW-1).zext<32>()) * NS_COLUMN.zext<32>() + (((i_image_col_start.zext<32>() + c.zext<32>()) < NS_COLUMN.zext<32>()) ? (i_image_col_start.zext<32>() + c.zext<32>()) : (NS_COLUMN-1).zext<32>())).trunc<$clog2(NS_BUF)+1>()];
-          elsif i_mode == 3
-            // MIRROR_BOUND: reflect at boundaries
-            o_win[r * NS_C_OUT + c] <= pix_buf[((((i_image_row_start.zext<32>() + r.zext<32>()) < NS_ROW.zext<32>()) ? (i_image_row_start.zext<32>() + r.zext<32>()) : ((2*NS_ROW-1).zext<32>() - (i_image_row_start.zext<32>() + r.zext<32>())) ) * NS_COLUMN.zext<32>() + (((i_image_col_start.zext<32>() + c.zext<32>()) < NS_COLUMN.zext<32>()) ? (i_image_col_start.zext<32>() + c.zext<32>()) : ((2*NS_COLUMN-1).zext<32>() - (i_image_col_start.zext<32>() + c.zext<32>())) )).trunc<$clog2(NS_BUF)+1>()];
-          elsif i_mode == 4
-            // WRAP_AROUND: modulo
-            o_win[r * NS_C_OUT + c] <= pix_buf[(((i_image_row_start.zext<32>() + r.zext<32>()) % NS_ROW.zext<32>()) * NS_COLUMN.zext<32>() + ((i_image_col_start.zext<32>() + c.zext<32>()) % NS_COLUMN.zext<32>())).trunc<$clog2(NS_BUF)+1>()];
-          else
-            o_win[r * NS_C_OUT + c] <= 0;
-          end if
-        end for
-      end for
-    end if
-
+    // Shift buffer: insert new row at index 0 on valid
     if i_valid
-      // Shift buffer: row k <- row k-1 for k = NS_ROW-1 downto 1
-      for r in 1..NS_ROW-1
-        for c in 0..NS_COLUMN-1
-          pix_buf[r * NS_COLUMN + c] <= pix_buf[(r - 1) * NS_COLUMN + c];
-        end for
+      for sr in 1..NS_ROW-1
+        pix_rows[sr] <= pix_rows[sr - 1];
       end for
-      // Insert new row at index 0: pixel[c] = i_row_image[(NS_COLUMN-1-c)*NBW_DATA +: NBW_DATA]
-      for c in 0..NS_COLUMN-1
-        pix_buf[c] <= i_row_image[(NS_COLUMN - 1 - c) * NBW_DATA + NBW_DATA - 1 : (NS_COLUMN - 1 - c) * NBW_DATA];
+      pix_rows[0] <= i_row_image;
+    end if
+    // Register window when update_window=1
+    if i_update_window
+      for wr in 0..NS_R_OUT-1
+        for wc in 0..NS_C_OUT-1
+          last_win[wr * NS_C_OUT + wc] <=
+            comb_win[(wr * NS_C_OUT + wc) * NBW_DATA + NBW_DATA - 1 : (wr * NS_C_OUT + wc) * NBW_DATA];
+        end for
       end for
     end if
   end seq

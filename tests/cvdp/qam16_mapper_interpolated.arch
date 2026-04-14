@@ -9,7 +9,7 @@ module qam16_mapper_interpolated
   port I: out UInt<OUTW>;
   port Q: out UInt<OUTW>;
 
-  // Per-symbol mapped values
+  // Per-symbol mapped values (unsigned 3-bit encoding of signed {-3,-1,1,3})
   wire mi: Vec<UInt<OUT_WIDTH>, N>;
   wire mq: Vec<UInt<OUT_WIDTH>, N>;
 
@@ -34,11 +34,14 @@ module qam16_mapper_interpolated
     end for
   end comb
 
-  // Compute interpolated values per pair using signed arithmetic (avoids $bits chain-index)
+  // Interpolate: avg(2*k1-3, 2*k2-3) = k1+k2-3 = (k1+k2+5) mod 8 in 3-bit unsigned
+  // Directly use the 2-bit input codes to avoid sext (no signed arithmetic needed)
   comb
     for j in 0..NPAIRS-1
-      itp_i[j] = unsigned((signed(mi[2*j]) + signed(mi[2*j+1])) >> 1).trunc<OUT_WIDTH>();
-      itp_q[j] = unsigned((signed(mq[2*j]) + signed(mq[2*j+1])) >> 1).trunc<OUT_WIDTH>();
+      itp_i[j] = (bits[(2*j)*IN_WIDTH + IN_WIDTH - 1 : (2*j)*IN_WIDTH + IN_WIDTH - 2] +
+                  bits[(2*j+1)*IN_WIDTH + IN_WIDTH - 1 : (2*j+1)*IN_WIDTH + IN_WIDTH - 2] + 5).trunc<OUT_WIDTH>();
+      itp_q[j] = (bits[(2*j)*IN_WIDTH + 1 : (2*j)*IN_WIDTH] +
+                  bits[(2*j+1)*IN_WIDTH + 1 : (2*j+1)*IN_WIDTH] + 5).trunc<OUT_WIDTH>();
     end for
   end comb
 

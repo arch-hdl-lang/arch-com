@@ -14,126 +14,82 @@ module qam16_demapper_interpolated #(
   output logic [0:0] error_flag
 );
 
-  // All sample slots (mapped + interp interleaved)
-  logic signed [TOTAL_SAMPLES-1:0] [IN_WIDTH-1:0] si_val;
-  logic signed [TOTAL_SAMPLES-1:0] [IN_WIDTH-1:0] sq_val;
-  // Mapped values per output symbol
-  logic signed [N-1:0] [IN_WIDTH-1:0] mi;
-  logic signed [N-1:0] [IN_WIDTH-1:0] mq;
-  // Per-group values extracted to individual wires (avoids $bits on variable-indexed Vec)
-  logic signed [NUM_GROUPS-1:0] [IN_WIDTH-1:0] g_interp_i;
-  logic signed [NUM_GROUPS-1:0] [IN_WIDTH-1:0] g_map0_i;
-  logic signed [NUM_GROUPS-1:0] [IN_WIDTH-1:0] g_map1_i;
-  logic signed [NUM_GROUPS-1:0] [IN_WIDTH-1:0] g_interp_q;
-  logic signed [NUM_GROUPS-1:0] [IN_WIDTH-1:0] g_map0_q;
-  logic signed [NUM_GROUPS-1:0] [IN_WIDTH-1:0] g_map1_q;
-  // Wider intermediates for error detection
-  // two_interp = interp + interp: SInt<IN_WIDTH+1>
-  // sum_maps = m0 + m1: SInt<IN_WIDTH+1> (SInt<IN_WIDTH> + SInt<IN_WIDTH>)
-  logic signed [NUM_GROUPS-1:0] [IN_WIDTH + 1-1:0] two_interp_i;
-  logic signed [NUM_GROUPS-1:0] [IN_WIDTH + 1-1:0] sum_maps_i;
-  logic signed [NUM_GROUPS-1:0] [IN_WIDTH + 1-1:0] two_interp_q;
-  logic signed [NUM_GROUPS-1:0] [IN_WIDTH + 1-1:0] sum_maps_q;
-  // Error per group and accumulator
-  logic [NUM_GROUPS-1:0] [0:0] grp_err;
-  logic [NUM_GROUPS + 1-1:0] [0:0] err_acc;
-  logic [N-1:0] [1:0] i_bits;
-  logic [N-1:0] [1:0] q_bits;
-  logic [N + 1-1:0] [TOTAL_OUT_WIDTH-1:0] bits_acc;
-  // Extract samples (pack_signal puts I_values[0] at MSB: index k at (TOTAL_SAMPLES-1-k)*IN_WIDTH)
+  // Scalar wires avoid packed-2D-array issues with iverilog loop indexing
+  logic [TOTAL_OUT_WIDTH-1:0] bits_out;
+  logic [0:0] err_out;
+  // Per-symbol encode temporaries (scalar, not Vec)
+  logic [1:0] i_enc;
+  logic [1:0] q_enc;
+  // Bit encoding and output packing in one comb block
+  // pack_signal: values[0] at MSB → sample k at shift=(TOTAL_SAMPLES-1-k)*IN_WIDTH
+  // Even symbol si uses sample 3*(si/2), odd uses 3*(si/2)+2
   always_comb begin
-    for (int k = 0; k <= TOTAL_SAMPLES - 1; k++) begin
-      si_val[k] = $signed(IN_WIDTH'(I >> (TOTAL_SAMPLES - 1 - k) * IN_WIDTH));
-      sq_val[k] = $signed(IN_WIDTH'(Q >> (TOTAL_SAMPLES - 1 - k) * IN_WIDTH));
-    end
-  end
-  // Extract mapped values
-  always_comb begin
+    bits_out = 0;
+    i_enc = 0;
+    q_enc = 0;
     for (int si = 0; si <= N - 1; si++) begin
       if (si % 2 == 0) begin
-        mi[si] = si_val[3 * (si / 2)];
-        mq[si] = sq_val[3 * (si / 2)];
+        if ($signed(IN_WIDTH'(I >> (TOTAL_SAMPLES - 1 - 3 * (si / 2)) * IN_WIDTH)) < -2) begin
+          i_enc = 0;
+        end else if ($signed(IN_WIDTH'(I >> (TOTAL_SAMPLES - 1 - 3 * (si / 2)) * IN_WIDTH)) < 0) begin
+          i_enc = 1;
+        end else if ($signed(IN_WIDTH'(I >> (TOTAL_SAMPLES - 1 - 3 * (si / 2)) * IN_WIDTH)) < 2) begin
+          i_enc = 2;
+        end else begin
+          i_enc = 3;
+        end
+        if ($signed(IN_WIDTH'(Q >> (TOTAL_SAMPLES - 1 - 3 * (si / 2)) * IN_WIDTH)) < -2) begin
+          q_enc = 0;
+        end else if ($signed(IN_WIDTH'(Q >> (TOTAL_SAMPLES - 1 - 3 * (si / 2)) * IN_WIDTH)) < 0) begin
+          q_enc = 1;
+        end else if ($signed(IN_WIDTH'(Q >> (TOTAL_SAMPLES - 1 - 3 * (si / 2)) * IN_WIDTH)) < 2) begin
+          q_enc = 2;
+        end else begin
+          q_enc = 3;
+        end
       end else begin
-        mi[si] = si_val[3 * (si / 2) + 2];
-        mq[si] = sq_val[3 * (si / 2) + 2];
+        if ($signed(IN_WIDTH'(I >> (TOTAL_SAMPLES - 3 - 3 * (si / 2)) * IN_WIDTH)) < -2) begin
+          i_enc = 0;
+        end else if ($signed(IN_WIDTH'(I >> (TOTAL_SAMPLES - 3 - 3 * (si / 2)) * IN_WIDTH)) < 0) begin
+          i_enc = 1;
+        end else if ($signed(IN_WIDTH'(I >> (TOTAL_SAMPLES - 3 - 3 * (si / 2)) * IN_WIDTH)) < 2) begin
+          i_enc = 2;
+        end else begin
+          i_enc = 3;
+        end
+        if ($signed(IN_WIDTH'(Q >> (TOTAL_SAMPLES - 3 - 3 * (si / 2)) * IN_WIDTH)) < -2) begin
+          q_enc = 0;
+        end else if ($signed(IN_WIDTH'(Q >> (TOTAL_SAMPLES - 3 - 3 * (si / 2)) * IN_WIDTH)) < 0) begin
+          q_enc = 1;
+        end else if ($signed(IN_WIDTH'(Q >> (TOTAL_SAMPLES - 3 - 3 * (si / 2)) * IN_WIDTH)) < 2) begin
+          q_enc = 2;
+        end else begin
+          q_enc = 3;
+        end
+      end
+      bits_out = bits_out | TOTAL_OUT_WIDTH'($unsigned({i_enc, q_enc})) << (N - 1 - si) * OUT_WIDTH;
+    end
+  end
+  // Error detection: group gi, samples at 3*gi (map0), 3*gi+1 (interp), 3*gi+2 (map1)
+  // Auto-widening: SInt<IN_WIDTH>+SInt<IN_WIDTH> = SInt<IN_WIDTH+1>
+  // (two_interp) - (sum_maps) = SInt<IN_WIDTH+2>
+  // Compare with 2*ERROR_THRESHOLD (no sext needed - comparison auto-promotes)
+  always_comb begin
+    err_out = 0;
+    for (int gi = 0; gi <= NUM_GROUPS - 1; gi++) begin
+      if ($signed(IN_WIDTH'(I >> (TOTAL_SAMPLES - 2 - 3 * gi) * IN_WIDTH)) + $signed(IN_WIDTH'(I >> (TOTAL_SAMPLES - 2 - 3 * gi) * IN_WIDTH)) - ($signed(IN_WIDTH'(I >> (TOTAL_SAMPLES - 1 - 3 * gi) * IN_WIDTH)) + $signed(IN_WIDTH'(I >> (TOTAL_SAMPLES - 3 - 3 * gi) * IN_WIDTH))) > 2 * ERROR_THRESHOLD) begin
+        err_out = 1;
+      end else if ($signed(IN_WIDTH'(I >> (TOTAL_SAMPLES - 2 - 3 * gi) * IN_WIDTH)) + $signed(IN_WIDTH'(I >> (TOTAL_SAMPLES - 2 - 3 * gi) * IN_WIDTH)) - ($signed(IN_WIDTH'(I >> (TOTAL_SAMPLES - 1 - 3 * gi) * IN_WIDTH)) + $signed(IN_WIDTH'(I >> (TOTAL_SAMPLES - 3 - 3 * gi) * IN_WIDTH))) < -(2 * ERROR_THRESHOLD)) begin
+        err_out = 1;
+      end else if ($signed(IN_WIDTH'(Q >> (TOTAL_SAMPLES - 2 - 3 * gi) * IN_WIDTH)) + $signed(IN_WIDTH'(Q >> (TOTAL_SAMPLES - 2 - 3 * gi) * IN_WIDTH)) - ($signed(IN_WIDTH'(Q >> (TOTAL_SAMPLES - 1 - 3 * gi) * IN_WIDTH)) + $signed(IN_WIDTH'(Q >> (TOTAL_SAMPLES - 3 - 3 * gi) * IN_WIDTH))) > 2 * ERROR_THRESHOLD) begin
+        err_out = 1;
+      end else if ($signed(IN_WIDTH'(Q >> (TOTAL_SAMPLES - 2 - 3 * gi) * IN_WIDTH)) + $signed(IN_WIDTH'(Q >> (TOTAL_SAMPLES - 2 - 3 * gi) * IN_WIDTH)) - ($signed(IN_WIDTH'(Q >> (TOTAL_SAMPLES - 1 - 3 * gi) * IN_WIDTH)) + $signed(IN_WIDTH'(Q >> (TOTAL_SAMPLES - 3 - 3 * gi) * IN_WIDTH))) < -(2 * ERROR_THRESHOLD)) begin
+        err_out = 1;
       end
     end
   end
-  // Extract per-group values into individual wires
-  always_comb begin
-    for (int gi = 0; gi <= NUM_GROUPS - 1; gi++) begin
-      g_interp_i[gi] = si_val[3 * gi + 1];
-      g_map0_i[gi] = si_val[3 * gi];
-      g_map1_i[gi] = si_val[3 * gi + 2];
-      g_interp_q[gi] = sq_val[3 * gi + 1];
-      g_map0_q[gi] = sq_val[3 * gi];
-      g_map1_q[gi] = sq_val[3 * gi + 2];
-    end
-  end
-  // Compute wider intermediates for error detection (no .sext on Vec elements)
-  // two_interp = interp + interp -> SInt<IN_WIDTH+1> (auto-widen: SInt<N>+SInt<N>=SInt<N+1>)
-  // sum_maps = m0 + m1 -> SInt<IN_WIDTH+1> (same rule)
-  always_comb begin
-    for (int gi = 0; gi <= NUM_GROUPS - 1; gi++) begin
-      two_interp_i[gi] = g_interp_i[gi] + g_interp_i[gi];
-      sum_maps_i[gi] = g_map0_i[gi] + g_map1_i[gi];
-      two_interp_q[gi] = g_interp_q[gi] + g_interp_q[gi];
-      sum_maps_q[gi] = g_map0_q[gi] + g_map1_q[gi];
-    end
-  end
-  // Compute per-group error: |2*interp - sum| > 2*threshold
-  // two_interp: SInt<IN_WIDTH+1>, sum_maps: SInt<IN_WIDTH+2>
-  // Direct comparison without sext (avoids $bits on variable-indexed Vec)
-  always_comb begin
-    for (int gi = 0; gi <= NUM_GROUPS - 1; gi++) begin
-      if (two_interp_i[gi] - sum_maps_i[gi] > 2 * ERROR_THRESHOLD) begin
-        grp_err[gi] = 1;
-      end else if (two_interp_i[gi] - sum_maps_i[gi] < -(2 * ERROR_THRESHOLD)) begin
-        grp_err[gi] = 1;
-      end else if (two_interp_q[gi] - sum_maps_q[gi] > 2 * ERROR_THRESHOLD) begin
-        grp_err[gi] = 1;
-      end else if (two_interp_q[gi] - sum_maps_q[gi] < -(2 * ERROR_THRESHOLD)) begin
-        grp_err[gi] = 1;
-      end else begin
-        grp_err[gi] = 0;
-      end
-    end
-  end
-  // Accumulate error flag
-  always_comb begin
-    err_acc[0] = 0;
-    for (int gi = 0; gi <= NUM_GROUPS - 1; gi++) begin
-      err_acc[gi + 1] = err_acc[gi] | grp_err[gi];
-    end
-  end
-  // Bit mapping: -3->00, -1->01, 1->10, 3->11
-  // Output packing: symbol 0 at MSB
-  always_comb begin
-    bits_acc[0] = 0;
-    for (int si = 0; si <= N - 1; si++) begin
-      if (mi[si] < -2) begin
-        i_bits[si] = 0;
-      end else if (mi[si] < 0) begin
-        i_bits[si] = 1;
-      end else if (mi[si] < 2) begin
-        i_bits[si] = 2;
-      end else begin
-        i_bits[si] = 3;
-      end
-      if (mq[si] < -2) begin
-        q_bits[si] = 0;
-      end else if (mq[si] < 0) begin
-        q_bits[si] = 1;
-      end else if (mq[si] < 2) begin
-        q_bits[si] = 2;
-      end else begin
-        q_bits[si] = 3;
-      end
-      bits_acc[si + 1] = bits_acc[si] | TOTAL_OUT_WIDTH'($unsigned({i_bits[si], q_bits[si]})) << (N - 1 - si) * OUT_WIDTH;
-    end
-  end
-  assign bits = bits_acc[N];
-  assign error_flag = err_acc[NUM_GROUPS];
+  assign bits = bits_out;
+  assign error_flag = err_out;
 
 endmodule
 

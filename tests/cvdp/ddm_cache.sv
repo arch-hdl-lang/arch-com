@@ -1,31 +1,31 @@
 module ddm_cache (
   input logic clk,
   input logic rst_n,
-  input logic [32-1:0] cpu_addr,
-  input logic [32-1:0] cpu_dout,
+  input logic [31:0] cpu_addr,
+  input logic [31:0] cpu_dout,
   input logic cpu_strobe,
   input logic cpu_rw,
   input logic uncached,
-  input logic [32-1:0] mem_dout,
+  input logic [31:0] mem_dout,
   input logic mem_ready,
-  output logic [32-1:0] cpu_din,
-  output logic [32-1:0] mem_din,
+  output logic [31:0] cpu_din,
+  output logic [31:0] mem_din,
   output logic cpu_ready,
   output logic mem_strobe,
   output logic mem_rw,
-  output logic [32-1:0] mem_addr,
+  output logic [31:0] mem_addr,
   output logic cache_hit,
   output logic cache_miss,
-  output logic [32-1:0] d_data_dout
+  output logic [31:0] d_data_dout
 );
 
   // 64-entry direct-mapped cache
   // index = cpu_addr[7:2] (6 bits), tag = cpu_addr[31:8] (24 bits)
-  logic d_valid [64-1:0];
-  logic [24-1:0] d_tags [64-1:0];
-  logic [32-1:0] d_data [64-1:0];
-  logic [6-1:0] idx;
-  logic [24-1:0] tag;
+  logic [63:0] d_valid;
+  logic [63:0] [23:0] d_tags;
+  logic [63:0] [31:0] d_data;
+  logic [5:0] idx;
+  logic [23:0] tag;
   logic cache_hit_w;
   logic cache_miss_w;
   logic cache_write;

@@ -24,16 +24,16 @@ module coffee_machine
   port     o_error:       out Bool;
 
   // State register: 0=IDLE, 1=BEAN_SEL, 2=GRIND, 3=HEAT, 4=POWDER, 5=POUR
-  reg state_ff:     UInt<3>    reset rst_async_n => 0;
-  // state_prev_r: captures state_ff one cycle before (for 2-cycle output lag)
-  reg state_prev_r: UInt<3>    reset rst_async_n => 0;
+  reg state_ff:    UInt<3>       reset rst_async_n => 0;
+  // Registered i_start: delays transition by one cycle so outputs align with model
+  reg i_start_r:   Bool          reset rst_async_n => false;
   // latched bean index (for one-hot generation)
-  reg bean_r:       UInt<NS_BEANS> reset rst_async_n => 0;
-  reg op_r:         UInt<3>    reset rst_async_n => 0;
-  reg cnt_r:        UInt<NBW_DLY>  reset rst_async_n => 0;
-  reg grind_dly_r:  UInt<NBW_DLY>  reset rst_async_n => 0;
-  reg heat_dly_r:   UInt<NBW_DLY>  reset rst_async_n => 0;
-  reg pour_dly_r:   UInt<NBW_DLY>  reset rst_async_n => 0;
+  reg bean_r:      UInt<NS_BEANS> reset rst_async_n => 0;
+  reg op_r:        UInt<3>        reset rst_async_n => 0;
+  reg cnt_r:       UInt<NBW_DLY>  reset rst_async_n => 0;
+  reg grind_dly_r: UInt<NBW_DLY>  reset rst_async_n => 0;
+  reg heat_dly_r:  UInt<NBW_DLY>  reset rst_async_n => 0;
+  reg pour_dly_r:  UInt<NBW_DLY>  reset rst_async_n => 0;
 
   // Sensor error decode (combinational)
   let generic_err:   Bool = i_sensor[3];
@@ -57,41 +57,41 @@ module coffee_machine
   let o_error = o_error_w;
 
   seq on clk rising
-    // Track previous state for 2-cycle output lag
-    state_prev_r <= state_ff;
+    // Register i_start (delays IDLE->state transition by 1 cycle for correct output timing)
+    i_start_r <= i_start;
 
-    // Update registered outputs based on state_prev_r (2-cycle lag from state_ff)
-    if state_prev_r == 0  // IDLE
+    // Registered outputs based on current state_ff (natural 1-cycle non-blocking lag)
+    if state_ff == 0  // IDLE
       o_bean_sel    <= 0;
       o_grind_beans <= false;
       o_use_powder  <= false;
       o_heat_water  <= false;
       o_pour_coffee <= false;
-    elsif state_prev_r == 1  // BEAN_SEL
+    elsif state_ff == 1  // BEAN_SEL
       o_bean_sel    <= bean_r;
       o_grind_beans <= false;
       o_use_powder  <= false;
       o_heat_water  <= false;
       o_pour_coffee <= false;
-    elsif state_prev_r == 2  // GRIND
+    elsif state_ff == 2  // GRIND
       o_bean_sel    <= bean_r;
       o_grind_beans <= true;
       o_use_powder  <= false;
       o_heat_water  <= false;
       o_pour_coffee <= false;
-    elsif state_prev_r == 3  // HEAT
+    elsif state_ff == 3  // HEAT
       o_bean_sel    <= 0;
       o_grind_beans <= false;
       o_use_powder  <= false;
       o_heat_water  <= true;
       o_pour_coffee <= false;
-    elsif state_prev_r == 4  // POWDER
+    elsif state_ff == 4  // POWDER
       o_bean_sel    <= 0;
       o_grind_beans <= false;
       o_use_powder  <= true;
       o_heat_water  <= false;
       o_pour_coffee <= false;
-    elsif state_prev_r == 5  // POUR
+    elsif state_ff == 5  // POUR
       o_bean_sel    <= 0;
       o_grind_beans <= false;
       o_use_powder  <= false;
@@ -101,7 +101,7 @@ module coffee_machine
 
     // State machine transitions
     if state_ff == 0  // IDLE
-      if i_start & ~o_error_w
+      if i_start_r & ~o_error_w
         op_r          <= i_operation_sel;
         bean_r        <= i_bean_sel == 0 ? 1 :
                          i_bean_sel == 1 ? 2 :

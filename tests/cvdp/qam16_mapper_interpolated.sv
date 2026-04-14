@@ -10,7 +10,7 @@ module qam16_mapper_interpolated #(
   output logic [OUTW-1:0] Q
 );
 
-  // Per-symbol mapped values
+  // Per-symbol mapped values (unsigned 3-bit encoding of signed {-3,-1,1,3})
   logic [N-1:0] [OUT_WIDTH-1:0] mi;
   logic [N-1:0] [OUT_WIDTH-1:0] mq;
   // Interpolated values per pair
@@ -30,11 +30,12 @@ module qam16_mapper_interpolated #(
       mq[i] = OUT_WIDTH'(bits[i * IN_WIDTH +: 2] * 2 + 5);
     end
   end
-  // Compute interpolated values per pair using signed arithmetic (avoids $bits chain-index)
+  // Interpolate: avg(2*k1-3, 2*k2-3) = k1+k2-3 = (k1+k2+5) mod 8 in 3-bit unsigned
+  // Directly use the 2-bit input codes to avoid sext (no signed arithmetic needed)
   always_comb begin
     for (int j = 0; j <= NPAIRS - 1; j++) begin
-      itp_i[j] = OUT_WIDTH'($unsigned($signed(mi[2 * j]) + $signed(mi[2 * j + 1]) >>> 1));
-      itp_q[j] = OUT_WIDTH'($unsigned($signed(mq[2 * j]) + $signed(mq[2 * j + 1]) >>> 1));
+      itp_i[j] = OUT_WIDTH'(bits[2 * j * IN_WIDTH + IN_WIDTH - 2 +: 2] + bits[(2 * j + 1) * IN_WIDTH + IN_WIDTH - 2 +: 2] + 5);
+      itp_q[j] = OUT_WIDTH'(bits[2 * j * IN_WIDTH +: 2] + bits[(2 * j + 1) * IN_WIDTH +: 2] + 5);
     end
   end
   // Build output slots: for each pair j, three slots at 3*j, 3*j+1, 3*j+2
