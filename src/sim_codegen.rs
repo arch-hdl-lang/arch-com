@@ -767,7 +767,17 @@ fn collect_trace_signals(
     sigs
 }
 
-/// Get the bit-width of a TypeExpr.
+/// Get the bit-width of a TypeExpr — packed total (Vec recurses and multiplies).
+/// Use this when you need the *total* number of bits to fit in storage
+/// (e.g. for VCD trace width, packed signal width).
+/// Returns 32 for unhandled types (Named structs).
+///
+/// Distinguishing the three width helpers in this file:
+/// - `type_width(ty)`: packed total, recurses into Vec, defaults to 32
+/// - `type_width_of(ty)`: same but returns 0 (not 32) for Vec/Named — used by `--debug`
+///   shadow generation where 0 signals "skip this port"
+/// - `type_bits_te(ty)`: scalar-only width (does NOT recurse into Vec), defaults to 32 —
+///   used for inst port width tracking where Vec is handled separately via flat fields
 fn type_width(ty: &TypeExpr) -> u32 {
     match ty {
         TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval_width(w),
@@ -2256,18 +2266,7 @@ fn collect_comb_targets(body: &[ModuleBodyItem]) -> HashSet<String> {
     targets
 }
 
-fn extract_reset_info(ports: &[PortDecl]) -> (String, bool, bool) {
-    for p in ports {
-        if let TypeExpr::Reset(kind, level) = &p.ty {
-            return (
-                p.name.name.clone(),
-                *kind == ResetKind::Async,
-                *level == ResetLevel::Low,
-            );
-        }
-    }
-    ("rst".to_string(), false, false)
-}
+use crate::ast::extract_reset_info;
 
 fn resolve_reg_reset_info(reset: &RegReset, ports: &[PortDecl]) -> Option<(String, bool, bool)> {
     match reset {

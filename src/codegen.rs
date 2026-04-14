@@ -1647,16 +1647,7 @@ impl<'a> Codegen<'a> {
     /// Extract reset info from a port list: (name, is_async, is_low).
     /// Returns ("rst", false, false) as defaults if no Reset port found.
     fn extract_reset_info(ports: &[PortDecl]) -> (String, bool, bool) {
-        let rst_port = ports.iter().find(|p| matches!(&p.ty, TypeExpr::Reset(_, _)));
-        let rst_name = rst_port.map(|p| p.name.name.clone()).unwrap_or_else(|| "rst".to_string());
-        let (is_async, is_low) = rst_port.map(|p| {
-            if let TypeExpr::Reset(kind, level) = &p.ty {
-                (*kind == ResetKind::Async, *level == ResetLevel::Low)
-            } else {
-                (false, false)
-            }
-        }).unwrap_or((false, false));
-        (rst_name, is_async, is_low)
+        crate::ast::extract_reset_info(ports)
     }
 
     /// Build the sensitivity list string for an always_ff block.
@@ -3654,23 +3645,6 @@ impl<'a> Codegen<'a> {
                 }
             }
         }
-    }
-
-    fn width_of_type_str(&self, ty_str: &str) -> String {
-        // Extract bit width from "logic [N-1:0]" → "N"
-        // or "logic" → "1"
-        if let Some(bracket) = ty_str.find('[') {
-            let inner = &ty_str[bracket+1..];
-            if let Some(colon) = inner.find(':') {
-                let upper = inner[..colon].trim();
-                // upper is "N-1", we want N
-                if upper.ends_with("-1") {
-                    return upper[..upper.len()-2].to_string();
-                }
-                return upper.to_string();
-            }
-        }
-        "1".to_string()
     }
 
     fn emit_fifo_port_type(&self, ty: &TypeExpr, type_param_name: &Option<String>) -> String {

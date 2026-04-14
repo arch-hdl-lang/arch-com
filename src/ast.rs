@@ -1284,3 +1284,20 @@ pub struct ModuleHookDecl {
     pub fn_args: Vec<Ident>,
     pub span: Span,
 }
+
+// ── Shared port utilities (used by both codegen.rs and sim_codegen.rs) ────
+
+/// Find the reset port and return (name, is_async, is_low).
+/// Defaults to ("rst", false, false) if no reset port is present (sync, active-high).
+pub fn extract_reset_info(ports: &[PortDecl]) -> (String, bool, bool) {
+    for p in ports {
+        if let TypeExpr::Reset(kind, level) = &p.ty {
+            return (
+                p.name.name.clone(),
+                *kind == ResetKind::Async,
+                *level == ResetLevel::Low,
+            );
+        }
+    }
+    ("rst".to_string(), false, false)
+}

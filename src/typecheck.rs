@@ -3274,10 +3274,9 @@ fn expr_is_shift(e: &Expr) -> bool {
 enum OpClass {
     Bitwise,    // & | ^
     Comparison, // == != < > <= >=
-    Logical,    // and or
+    Logical,    // and or implies
     Shift,      // << >>
     Arith,      // + - +% -% * *% / %
-    Other,
 }
 
 fn classify(op: BinOp) -> OpClass {
@@ -3314,7 +3313,6 @@ fn check_precedence_expr(e: &Expr, errors: &mut Vec<CompileError>) {
                         OpClass::Logical => "logical",
                         OpClass::Shift => "shift",
                         OpClass::Arith => "arithmetic",
-                        OpClass::Other => "other",
                     };
                     let pair_check = |a: OpClass, b: OpClass| -> bool {
                         (parent == a && cclass == b) || (parent == b && cclass == a)
