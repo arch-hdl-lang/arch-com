@@ -331,6 +331,26 @@ let wide: UInt<9> = a.zext<9>() << 1;    // UInt<9>, MSB preserved — explicit 
 
 > *⚑ The compiler emits a **compile error** when a shift result is assigned to a wider target (e.g. `let wide: UInt<9> = a << 1;`), because the extra bit will always be zero --- the shift did not capture the overflow. The fix is to widen the operand first: `a.zext<9>() << 1`. Same-width shifts (e.g. `let x: UInt<8> = a << 1;`) are silent --- MSB loss is the normal, intended behavior of a fixed-width shift.*
 
+**Built-in functions:**
+
+| Function | Result | SV codegen |
+|----------|--------|------------|
+| `onehot(index)` | One-hot decode: `1 << index`. Width inferred from assignment target. | `(1 << index)` |
+| `$clog2(expr)` | Ceiling log2 (compile-time constant). | `$clog2(expr)` |
+| `signed(expr)` | Same-width reinterpret to `SInt`. | `$signed(expr)` |
+| `unsigned(expr)` | Same-width reinterpret to `UInt`. | `$unsigned(expr)` |
+
+Example: one-hot decode for bean selection (parameterized width):
+
+```
+port i_bean_sel: in UInt<NBW_BEANS>;
+reg bean_r: UInt<NS_BEANS> reset rst => 0;
+
+seq on clk rising
+  bean_r <= onehot(i_bean_sel);    // SV: (1 << i_bean_sel)
+end seq
+```
+
 > *⚑ Width inference follows IEEE 1800-2012 §11.6. Arch promotes all mismatches to hard errors --- never warnings. The arithmetic widening trap (`r <= r + 1`) is caught at the register-assignment level: the compiler diagnoses it and suggests `.trunc<N>()`. The `.trunc<N>()` method emits a SystemVerilog size cast `N'(expr)`, which is valid on any expression including compound ones. Bit-slice syntax `expr[hi:lo]` extracts a bit range: `instr[11:7]` emits `instr[11:7]` with result width hi−lo+1. This is essential for instruction field decoding. The compiler enforces cast direction: `.trunc<N>()` requires N < source width, `.zext<N>()`/`.sext<N>()` require N > source width — use `.resize<N>()` when the direction is parameter-dependent or intentionally flexible.*
 
 > *⚑ **Wrapping operators** (`+%`, `-%`, `*%`) are the ergonomic alternative to the `.trunc<N>()` boilerplate: `let x: UInt<8> = a +% b;` is equivalent to `let x: UInt<8> = (a + b).trunc<8>();`. The result width is `max(W(a), W(b))` for all three. The SV backend emits a size cast `W'(a op b)`. Use wrapping ops when the intent is deliberate modular arithmetic, not overflow capture.*
@@ -9019,6 +9039,89 @@ endmodule
 ```
 
 Each `use PkgName;` in Arch emits one `import PkgName::*;` in SV, placed immediately before the consuming module.
+
+**29.6 Module-Local Functions**
+
+Functions can also be declared inside a module body for one-off helpers that don't warrant a full package:
+
+```
+module MyModule
+  param WIDTH: const = 8;
+  port a: in UInt<WIDTH>;
+  port b: in UInt<WIDTH>;
+  port sum: out UInt<WIDTH>;
+
+  function add_wrap(x: UInt<WIDTH>, y: UInt<WIDTH>) -> UInt<WIDTH>
+    return (x + y).trunc<WIDTH>();
+  end function add_wrap
+
+  let sum = add_wrap(a, b);
+end module MyModule
+```
+
+The compiler emits module-local functions as SV `function automatic` inside the module block:
+
+```sv
+module MyModule #(parameter int WIDTH = 8) (input logic [WIDTH-1:0] a, ...);
+  function automatic logic [WIDTH-1:0] add_wrap(input logic [WIDTH-1:0] x, input logic [WIDTH-1:0] y);
+    return WIDTH'(x + y);
+  endfunction
+  assign sum = add_wrap(a, b);
+endmodule
+```
+
+Module-local functions have access to the module's parameters. They are pure combinational (no state, no side effects).
+
+---
+
+## 30. Separate Compilation
+
+**30.1 Interface Files (`.archi`)**
+
+`arch build` automatically emits a `.archi` interface file alongside each `.sv` file. The `.archi` contains only the module signature — params and ports, no body:
+
+```
+// SubModule.archi (auto-generated)
+module SubModule
+  param WIDTH: const = 32;
+  port clk: in Clock<SysDomain>;
+  port data_in: in UInt<WIDTH>;
+  port data_out: out UInt<WIDTH>;
+end module SubModule
+```
+
+The `.archi` file is valid ARCH syntax and can be parsed by the compiler directly. It is named by **module name** (not source filename), so `fifo_async_r2w_sync.arch` (which defines `synchronizer r2w_sync`) generates `r2w_sync.archi`.
+
+**30.2 Dependency Discovery**
+
+When the compiler encounters `inst sub: SubModule` and `SubModule` is not defined in the input files, it automatically searches for:
+
+1. `SubModule.arch` in the input file's directory
+2. `SubModule.archi` in the input file's directory
+3. `SubModule.arch` or `SubModule.archi` in directories listed in `ARCH_LIB_PATH` (colon-separated)
+
+This enables separate compilation workflows:
+
+```bash
+# Step 1: build sub-module (generates .sv + .archi)
+arch build SubModule.arch
+
+# Step 2: build top module (auto-discovers SubModule.archi for type-checking)
+arch build TopModule.arch
+
+# Or build everything at once
+arch build *.arch
+```
+
+**30.3 Error Diagnostics**
+
+When a module reference cannot be resolved, the compiler provides an actionable hint:
+
+```
+× undefined module: `SubModule`
+  help: build the sub-module first: `arch build SubModule.arch`
+        (generates SubModule.archi), then re-compile this module
+```
 
 ---
 

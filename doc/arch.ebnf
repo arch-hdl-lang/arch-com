@@ -99,6 +99,7 @@ module_item = pragma_decl
             | pipe_reg_decl
             | generate_block
             | hook_binding_decl
+            | function_decl          (* module-local helper function *)
             ;
 
 pragma_decl = "pragma" ident ";" ;
@@ -685,6 +686,7 @@ atom_expr = literal
           | "false"
           | "todo!"
           | "$clog2" "(" expr ")"
+          | "onehot" "(" expr ")"        (* one-hot decode: 1 << index *)
           | "{" expr "{" expr "}" "}"    (* bit replication: {N{value}} *)
           | "{" [ expr { "," expr } ] "}" (* bit concatenation: {a, b, c} *)
           | "(" expr ")"
