@@ -2710,7 +2710,7 @@ impl<'a> SimCodegen<'a> {
             h.push_str("  // --debug port shadow copies\n");
             for p in &m.ports {
                 if p.bus_info.is_some() { continue; }
-                if matches!(&p.ty, TypeExpr::Clock(_) | TypeExpr::Reset(..)) { continue; }
+                if matches!(&p.ty, TypeExpr::Clock(_)) { continue; }
                 if matches!(&p.ty, TypeExpr::Vec(..)) { continue; }
                 let bits = type_width_of(&p.ty);
                 if bits > 64 { continue; }
@@ -3404,8 +3404,8 @@ impl<'a> SimCodegen<'a> {
                 let pname = &p.name.name;
                 let dir_str = match p.direction { Direction::In => "in", Direction::Out => "out" };
                 match &p.ty {
-                    TypeExpr::Clock(_) | TypeExpr::Reset(..) => {
-                        cpp.push_str(&format!("  // {pname}: clock/reset — skipped\n"));
+                    TypeExpr::Clock(_) => {
+                        cpp.push_str(&format!("  // {pname}: clock — skipped\n"));
                         continue;
                     }
                     TypeExpr::Vec(..) => {
