@@ -506,13 +506,24 @@ impl<'a> Codegen<'a> {
                     // Threads and resources are lowered before codegen
                     unreachable!("thread/resource should have been lowered before codegen");
                 }
-                ModuleBodyItem::Assert(a) => {
-                    let clk_name = m_clone.ports.iter()
-                        .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
-                        .map(|p| p.name.name.clone())
-                        .unwrap_or_else(|| "clk".to_string());
-                    self.emit_assert_sva(a, &m_clone.name.name, &clk_name);
+                ModuleBodyItem::Assert(_) => {
+                    // Collected and emitted as a group below (with translate_off/on)
                 }
+            }
+        }
+
+        // Emit module-level assert/cover declarations (grouped with translate_off/on)
+        {
+            let module_asserts: Vec<&AssertDecl> = body_items.iter()
+                .filter_map(|i| if let ModuleBodyItem::Assert(a) = i { Some(a) } else { None })
+                .collect();
+            if !module_asserts.is_empty() {
+                let clk_name = m_clone.ports.iter()
+                    .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+                    .map(|p| p.name.name.clone())
+                    .unwrap_or_else(|| "clk".to_string());
+                let owned: Vec<AssertDecl> = module_asserts.into_iter().cloned().collect();
+                self.emit_asserts_for_construct(&owned, &m_clone.name.name, &clk_name);
             }
         }
 
@@ -1940,10 +1951,14 @@ impl<'a> Codegen<'a> {
     }
 
     /// Emit assert/cover SVA for construct-level assert declarations (FSM, FIFO, etc.)
+    /// Wrapped in translate_off/on so synthesis tools and Yosys ignore the SVA.
     fn emit_asserts_for_construct(&mut self, asserts: &[AssertDecl], name: &str, clk: &str) {
+        if asserts.is_empty() { return; }
+        self.line("// synopsys translate_off");
         for a in asserts {
             self.emit_assert_sva(a, name, clk);
         }
+        self.line("// synopsys translate_on");
     }
 
     fn emit_pipeline_inst(

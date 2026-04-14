@@ -16,10 +16,12 @@ module CounterCheck (
     end
   end
   assign count = cnt;
+  // synopsys translate_off
   no_overflow: assert property (@(posedge clk) !(cnt != 0) || en)
     else $fatal(1, "ASSERTION FAILED: CounterCheck.no_overflow");
   saw_max: cover property (@(posedge clk) cnt == 255);
   saw_zero: cover property (@(posedge clk) cnt == 0);
+  // synopsys translate_on
 
 endmodule
 
