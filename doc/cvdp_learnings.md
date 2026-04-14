@@ -1,10 +1,10 @@
 # Learnings from CVDP Benchmark Exercise
 
-> 273/275 testable modules passing (99.3%) — completed 2026-04-13
+> 274/275 testable modules passing (99.6%) — completed 2026-04-13
 
 ## ARCH Language — What Worked
 
-- **99.3% pass rate** across 275 testable modules — the language is expressive enough for the full RTL spectrum (combinational, FSM, pipelined, parameterized)
+- **99.6% pass rate** (274/275) across testable modules — the language is expressive enough for the full RTL spectrum (combinational, FSM, pipelined, parameterized)
 - **Explicit width discipline** caught real bugs early — `.trunc<N>()`, `.zext<N>()` prevented silent truncation errors that plague SV
 - **Wrapping operators** (`+%`, `-%`, `*%`) eliminated ~50% of `.trunc<N>()` boilerplate once added
 - **First-class constructs** (fsm, fifo, counter, arbiter) produced cleaner code than manual module equivalents
@@ -22,8 +22,8 @@
 
 - **Root cause of the hardest debug**: `port reg` adds 1-cycle output latency that wasn't documented
 - Cocotb models update state+outputs simultaneously; `port reg` outputs lag by 1 cycle
-- The reference SV from the dataset also fails the same test — it's a test/DUT timing contract issue, not an ARCH bug
-- **Fix**: documented the timing distinction; for same-cycle FSM outputs, use plain `port` + `comb`
+- The reference SV from the dataset also fails the same test with `port reg` — it's a timing contract issue
+- **Fix**: changed to `port` + `comb` (combinational outputs); also fixed one-hot encoding from hardcoded 4-way mux to `(1).zext<NS_BEANS>() << i_bean_sel`. Result: 16/16 PASS
 
 ### `port reg` vs `port` Output Timing
 
@@ -52,11 +52,20 @@
 |---|---|
 | Total CVDP tasks | 302 |
 | Testable via cocotb | 275 |
-| **PASS** | **273 (99.3%)** |
-| FAIL | 2 (coffee_machine timing, microcode_sequencer now fixed) |
+| **PASS** | **274 (99.6%)** |
+| FAIL | 0 (coffee_machine + microcode_sequencer both fixed) |
 | Timeout | 4 (all vga_controller) |
 | Compiler bugs found/fixed | 6+ |
 | Doc improvements triggered | 4 files |
+
+## arch_cocotb Framework (Built During This Exercise)
+
+To solve the VPI timing ambiguity, we built `arch sim --pybind` which generates a Python-importable `.so` from `.arch` files via pybind11. The `arch_cocotb` adapter provides a cocotb-compatible API (`RisingEdge`, `Clock`, `Timer`, `dut.signal.value`) with **deterministic timing** — `eval()` is atomic (comb→posedge→comb), no VPI callback races.
+
+```bash
+arch sim --pybind design.arch           # generates .so
+arch sim --pybind --test test.py design.arch  # generates + runs
+```
 
 ## Bottom Line
 
