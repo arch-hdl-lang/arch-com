@@ -3526,7 +3526,13 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str(&format!("    _dbg_prev_{pname} = {pname};\n"));
                 cpp.push_str("  }\n");
             }
-            cpp.push_str("  _dbg_cycle++;\n");
+            // Only increment cycle counter on rising clock edge (matches testbench tick count).
+            // For pure-combinational modules (no clock), always increment.
+            if let Some(first_clk) = clk_ports.first() {
+                cpp.push_str(&format!("  if (_rising_{}) _dbg_cycle++;\n", first_clk));
+            } else {
+                cpp.push_str("  _dbg_cycle++;\n");
+            }
             cpp.push_str("}\n\n");
         }
 
