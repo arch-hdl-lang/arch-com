@@ -119,6 +119,19 @@ Arch has three kinds of module-scope signal declarations:
 - **Wrapping operators** `+%`, `-%`, `*%` give result width = `max(W(a), W(b))` (no widening); prefer over `.trunc<N>()` for modular arithmetic: `let x: UInt<8> = a +% b;`
 - Clock domain mismatches are **compile errors**, not warnings
 
+### Operator Precedence (compiler-enforced parens)
+
+`arch check` rejects four common precedence foot-guns. Always parenthesize when mixing these operator classes:
+
+| Mixing | Bad | Good |
+|---|---|---|
+| Bitwise + comparison | `a & mask == 0` | `(a & mask) == 0` |
+| Bitwise + logical | `a and b & c` | `a and (b & c)` |
+| Shift + arithmetic | `1 << bit + 1` | `1 << (bit + 1)` |
+| Ternary branch with binary | `en ? a : b + 1` | `en ? a : (b + 1)` or `(en ? a : b) + 1` |
+
+The parse in the "Bad" column is what Verilog/ARCH produces, but rarely what the user means. Use parens even when the parse happens to be correct — it makes intent explicit.
+
 ### Naming Conventions (recommended, not compiler-enforced)
 | Category | Convention | Example |
 |---|---|---|

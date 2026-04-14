@@ -11,7 +11,7 @@
 
 | Command | Status |
 |---------|--------|
-| `arch check <file.arch>` | ✅ Parse + type-check; exits 0 on success |
+| `arch check <file.arch>` | ✅ Parse + type-check; exits 0 on success; **operator precedence ambiguity check** rejects four common foot-guns where the parse is surprising: (1) bitwise `& \| ^` mixed with comparison `== != < > <= >=` e.g. `a & mask == 0`; (2) bitwise mixed with logical `and or` e.g. `a and b & c`; (3) shift `<< >>` mixed with arithmetic `+ - *` e.g. `1 << bit + 1`; (4) ternary `? :` with a naked binary branch e.g. `en ? a : b + 1`. Users must explicitly parenthesize one side to disambiguate. Check runs pre-elaboration so thread-lowering-generated reductions don't trigger false positives. |
 | `arch build <file.arch> [-o out.sv]` | ✅ Emits deterministic SystemVerilog; **SV codegen fixes**: (1) signed cast emits `$signed(x)` instead of `logic signed [N-1:0]'(x)` for Verilator compatibility; (2) `>>` on SInt operands emits `>>>` (arithmetic shift right); (3) `.zext<N>()` emits `N'($unsigned(x))` to prevent context-dependent width expansion |
 | `arch build a.arch b.arch` | ✅ Multi-file: concatenates + cross-resolves; one `.sv` per input (or single combined file with `-o`) |
 | `arch sim <file.arch> --tb <tb.cpp>` | ✅ Generates Verilator-compatible C++ models (`VName.h` + `VName.cpp` + `verilated.h`), compiles with `g++`, and runs; supports `module`, `counter`, `fsm`, `linklist`, `ram`; `fifo`/`arbiter`/`regfile` pending |
