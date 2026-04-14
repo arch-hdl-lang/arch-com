@@ -3108,6 +3108,9 @@ impl<'a> SimCodegen<'a> {
                 }
             }
             h.push_str("  uint64_t _dbg_cycle = 0;\n");
+            if clk_ports.len() > 1 {
+                h.push_str("  const char* _dbg_last_clk = \"?\";\n");
+            }
         }
 
         h.push_str("};\n");
@@ -3824,8 +3827,17 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&trace_cpp_impl);
 
         // --debug: _debug_log_ports() method
+        let multi_clk = clk_ports.len() > 1;
+        // Printf format for cycle prefix: single-clock uses "[%llu]", multi-clock uses "%s" with _dbg_hdr
+        let cyc_fmt = if multi_clk { "%s" } else { "[%llu]" };
+        let cyc_arg = if multi_clk { "_dbg_hdr" } else { "(unsigned long long)_dbg_cycle" };
         if emit_debug {
             cpp.push_str(&format!("void {class}::_debug_log_ports() {{\n"));
+            if multi_clk {
+                // For multi-clock modules, build a header string like "[42@wr_clk]"
+                cpp.push_str("  char _dbg_hdr[80];\n");
+                cpp.push_str("  snprintf(_dbg_hdr, sizeof(_dbg_hdr), \"[%llu@%s]\", (unsigned long long)_dbg_cycle, _dbg_last_clk);\n");
+            }
             for p in &m.ports {
                 if p.bus_info.is_some() { continue; }
                 let pname = &p.name.name;
@@ -3845,12 +3857,12 @@ impl<'a> SimCodegen<'a> {
                             "  if ({pname}_{i} != _dbg_prev_{pname}_{i}) {{\n"
                         ));
                         cpp.push_str(&format!(
-                            "    printf(\"[%llu][{name}.{pname}[{i}]]({dir}) 0x%llx -> 0x%llx\\n\",\n",
+                            "    printf(\"{cyc_fmt}[{name}.{pname}[{i}]]({dir}) 0x%llx -> 0x%llx\\n\",\n",
                             dir = dir_str
                         ));
-                        cpp.push_str(
-                            "           (unsigned long long)_dbg_cycle,\n"
-                        );
+                        cpp.push_str(&format!(
+                            "           {cyc_arg},\n"
+                        ));
                         cpp.push_str(&format!(
                             "           (unsigned long long)_dbg_prev_{pname}_{i},\n"
                         ));
@@ -3869,7 +3881,7 @@ impl<'a> SimCodegen<'a> {
                             "  if (memcmp(&{pname}, &_dbg_prev_{pname}, sizeof({pname})) != 0) {{\n"
                         ));
                         cpp.push_str(&format!(
-                            "    printf(\"[%llu][{name}.{pname}]({dir}) 0x\",\n           (unsigned long long)_dbg_cycle);\n",
+                            "    printf(\"{cyc_fmt}[{name}.{pname}]({dir}) 0x\",\n           {cyc_arg});\n",
                             dir = dir_str
                         ));
                         // Print old value (MSB first)
@@ -3890,12 +3902,12 @@ impl<'a> SimCodegen<'a> {
                             "  if ({pname} != _dbg_prev_{pname}) {{\n"
                         ));
                         cpp.push_str(&format!(
-                            "    printf(\"[%llu][{name}.{pname}]({dir}) 0x%llx -> 0x%llx\\n\",\n",
+                            "    printf(\"{cyc_fmt}[{name}.{pname}]({dir}) 0x%llx -> 0x%llx\\n\",\n",
                             dir = dir_str
                         ));
-                        cpp.push_str(
-                            "           (unsigned long long)_dbg_cycle,\n"
-                        );
+                        cpp.push_str(&format!(
+                            "           {cyc_arg},\n"
+                        ));
                         cpp.push_str(&format!(
                             "           (unsigned long long)_dbg_prev_{pname},\n"
                         ));
@@ -3921,7 +3933,7 @@ impl<'a> SimCodegen<'a> {
                         "  if (memcmp(&{flat_name}, &_dbg_prev_{flat_name}, sizeof({flat_name})) != 0) {{\n"
                     ));
                     cpp.push_str(&format!(
-                        "    printf(\"[%llu][{name}.{flat_name}]({dir_str}) 0x\",\n           (unsigned long long)_dbg_cycle);\n"
+                        "    printf(\"{cyc_fmt}[{name}.{flat_name}]({dir_str}) 0x\",\n           {cyc_arg});\n"
                     ));
                     cpp.push_str(&format!(
                         "    for (int _w = {words} - 1; _w >= 0; _w--) printf(\"%08x\", _dbg_prev_{flat_name}.data()[_w]);\n"
@@ -3938,11 +3950,11 @@ impl<'a> SimCodegen<'a> {
                         "  if ({flat_name} != _dbg_prev_{flat_name}) {{\n"
                     ));
                     cpp.push_str(&format!(
-                        "    printf(\"[%llu][{name}.{flat_name}]({dir_str}) 0x%llx -> 0x%llx\\n\",\n"
+                        "    printf(\"{cyc_fmt}[{name}.{flat_name}]({dir_str}) 0x%llx -> 0x%llx\\n\",\n"
                     ));
-                    cpp.push_str(
-                        "           (unsigned long long)_dbg_cycle,\n"
-                    );
+                    cpp.push_str(&format!(
+                        "           {cyc_arg},\n"
+                    ));
                     cpp.push_str(&format!(
                         "           (unsigned long long)_dbg_prev_{flat_name},\n"
                     ));
@@ -3954,12 +3966,20 @@ impl<'a> SimCodegen<'a> {
                 }
             }
 
-            // Only increment cycle counter on rising clock edge (matches testbench tick count).
-            // For pure-combinational modules (no clock), always increment.
-            if let Some(first_clk) = clk_ports.first() {
-                cpp.push_str(&format!("  if (_rising_{}) _dbg_cycle++;\n", first_clk));
-            } else {
+            // Increment cycle counter on any rising clock edge.
+            // Multi-clock: also track which clock fired last for the label.
+            if clk_ports.is_empty() {
                 cpp.push_str("  _dbg_cycle++;\n");
+            } else if clk_ports.len() == 1 {
+                cpp.push_str(&format!("  if (_rising_{}) _dbg_cycle++;\n", clk_ports[0]));
+            } else {
+                // Multi-clock: increment on any posedge, record which clock
+                cpp.push_str("  ");
+                for (i, c) in clk_ports.iter().enumerate() {
+                    if i > 0 { cpp.push_str(" else "); }
+                    cpp.push_str(&format!("if (_rising_{c}) {{ _dbg_cycle++; _dbg_last_clk = \"{c}\"; }}"));
+                }
+                cpp.push_str("\n");
             }
             cpp.push_str("}\n\n");
         }
