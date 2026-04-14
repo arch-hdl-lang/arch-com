@@ -60,15 +60,16 @@ enum Command {
         /// Emit VCD waveform to file (e.g. --wave out.vcd)
         #[arg(long)]
         wave: Option<PathBuf>,
-        /// Auto-instrument I/O port value changes for debugging (prints each change to stdout)
+        /// Auto-instrument I/O port value changes for debugging
         #[arg(long)]
         debug: bool,
+        /// Additional debug options: fsm (print FSM state transitions). Implies --debug.
+        /// Example: --debug+fsm or standalone --debug-opts fsm
+        #[arg(long = "debug+fsm")]
+        debug_fsm: bool,
         /// How many module levels to instrument with --debug (default 1 = top module only)
         #[arg(long = "depth", default_value_t = 1)]
         debug_depth: u32,
-        /// Print FSM state transitions with the triggering condition
-        #[arg(long = "debug-fsm")]
-        debug_fsm: bool,
     },
 }
 
@@ -135,7 +136,8 @@ fn main() -> miette::Result<()> {
             Ok(())
         }
         Command::Sim { arch_files, tb_files, outdir, check_uninit, cdc_random, wave, debug, debug_depth, debug_fsm } => {
-            run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, cdc_random, wave.as_deref(), debug, debug_depth, debug_fsm)
+            let dbg_ports = debug || debug_fsm;  // any debug option implies port logging
+            run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm)
         }
         Command::Build { files, o } => {
             let all_files = resolve_use_imports(&files)?;
