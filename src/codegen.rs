@@ -2291,6 +2291,23 @@ impl<'a> Codegen<'a> {
             self.line("end");
         }
 
+        // Auto-generated safety assertion: no illegal FSM state
+        {
+            let clk_port = f.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)));
+            let clk = clk_port.map(|p| p.name.name.clone()).unwrap_or_else(|| "clk".to_string());
+            let n = &f.name.name;
+            let n_states = f.state_names.len();
+            self.line("");
+            self.line("// synopsys translate_off");
+            self.line(&format!(
+                "_auto_legal_state: assert property (@(posedge {clk}) state_r < {n_states})"
+            ));
+            self.line(&format!(
+                "  else $fatal(1, \"FSM ILLEGAL STATE: {n}.state_r = %0d\", state_r);"
+            ));
+            self.line("// synopsys translate_on");
+        }
+
         // ── Assert / cover SVA ───────────────────────────────────────────────
         if !f.asserts.is_empty() {
             let clk_port = f.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)));
@@ -3385,6 +3402,72 @@ impl<'a> Codegen<'a> {
             self.emit_fifo_lifo_body(f, &port_names);
         } else {
             self.emit_fifo_sync_body(f, &port_names, has_overflow_param);
+        }
+
+        // Auto-generated safety assertions for FIFO invariants
+        {
+            let clk_names: Vec<String> = f.ports.iter()
+                .filter(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+                .map(|p| p.name.name.clone())
+                .collect();
+            let clk = clk_names.first().cloned().unwrap_or_else(|| "clk".to_string());
+            let n = &f.name.name;
+
+            self.line("");
+            self.line("// synopsys translate_off");
+            if is_async {
+                // Async FIFO: assertions in write domain (wr_clk) and read domain (rd_clk)
+                let wr_clk = clk_names.first().map(|s| s.as_str()).unwrap_or("wr_clk");
+                let rd_clk = clk_names.get(1).map(|s| s.as_str()).unwrap_or("rd_clk");
+                self.line(&format!(
+                    "_auto_no_overflow: assert property (@(posedge {wr_clk}) !(push_valid && push_ready && full_r))"
+                ));
+                self.line(&format!(
+                    "  else $fatal(1, \"FIFO OVERFLOW: {n}.push while full\");"
+                ));
+                self.line(&format!(
+                    "_auto_no_underflow: assert property (@(posedge {rd_clk}) !(pop_valid && pop_ready && empty_r))"
+                ));
+                self.line(&format!(
+                    "  else $fatal(1, \"FIFO UNDERFLOW: {n}.pop while empty\");"
+                ));
+            } else if f.kind == FifoKind::Lifo {
+                // LIFO: sp-based full/empty
+                self.line(&format!(
+                    "_auto_no_overflow: assert property (@(posedge {clk}) !(push_valid && push_ready && full))"
+                ));
+                self.line(&format!(
+                    "  else $fatal(1, \"FIFO OVERFLOW: {n}.push while full\");"
+                ));
+                self.line(&format!(
+                    "_auto_no_underflow: assert property (@(posedge {clk}) !(pop_valid && pop_ready && empty))"
+                ));
+                self.line(&format!(
+                    "  else $fatal(1, \"FIFO UNDERFLOW: {n}.pop while empty\");"
+                ));
+            } else {
+                // Sync FIFO: pointer-based full/empty
+                if has_overflow_param {
+                    // Only assert overflow when OVERFLOW mode is disabled
+                    self.line(&format!(
+                        "_auto_no_overflow: assert property (@(posedge {clk}) OVERFLOW || !(push_valid && push_ready && full))"
+                    ));
+                } else {
+                    self.line(&format!(
+                        "_auto_no_overflow: assert property (@(posedge {clk}) !(push_valid && push_ready && full))"
+                    ));
+                }
+                self.line(&format!(
+                    "  else $fatal(1, \"FIFO OVERFLOW: {n}.push while full\");"
+                ));
+                self.line(&format!(
+                    "_auto_no_underflow: assert property (@(posedge {clk}) !(pop_valid && pop_ready && empty))"
+                ));
+                self.line(&format!(
+                    "  else $fatal(1, \"FIFO UNDERFLOW: {n}.pop while empty\");"
+                ));
+            }
+            self.line("// synopsys translate_on");
         }
 
         if !f.asserts.is_empty() {
@@ -5018,6 +5101,21 @@ impl<'a> Codegen<'a> {
         // at_min
         if c.ports.iter().any(|p| p.name.name == "at_min") {
             self.line("assign at_min = (count_r == '0);");
+        }
+
+        // Auto-generated safety assertions for counter invariants
+        {
+            self.line("");
+            self.line("// synopsys translate_off");
+            if let Some(ref max_str) = max_param {
+                self.line(&format!(
+                    "_auto_count_range: assert property (@(posedge {clk}) count_r <= {count_width}'({max_str}))"
+                ));
+                self.line(&format!(
+                    "  else $fatal(1, \"COUNTER OVERFLOW: {n}.count_r > MAX\");"
+                ));
+            }
+            self.line("// synopsys translate_on");
         }
 
         if !c.asserts.is_empty() {
