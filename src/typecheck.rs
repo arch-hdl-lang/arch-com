@@ -537,9 +537,8 @@ impl<'a> TypeChecker<'a> {
                         ));
                     }
                 }
-                ModuleBodyItem::Function(_) => {
-                    // Module-local functions are validated by the existing function
-                    // type-checking in resolve/codegen. No additional checks needed here.
+                ModuleBodyItem::Function(f) => {
+                    self.check_function(f);
                 }
             }
         }
@@ -3215,6 +3214,49 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+
+        // Verify all code paths return a value (no latches).
+        if !Self::fn_body_always_returns(&f.body) {
+            self.errors.push(CompileError::general(
+                &format!(
+                    "function `{}`: not all code paths return a value — \
+                     add an `else` branch or a final `return` to prevent latch inference",
+                    f.name.name
+                ),
+                f.span,
+            ));
+        }
+    }
+
+    /// Check whether a function body always reaches a `return` on every code path.
+    fn fn_body_always_returns(body: &[FunctionBodyItem]) -> bool {
+        // Walk backwards: if the last statement guarantees a return, we're good.
+        for item in body.iter().rev() {
+            match item {
+                FunctionBodyItem::Return(_) => return true,
+                FunctionBodyItem::IfElse(ie) => {
+                    // Both branches must return, AND else must exist
+                    if !ie.else_body.is_empty()
+                        && Self::fn_body_always_returns(&ie.then_body)
+                        && Self::fn_body_always_returns(&ie.else_body)
+                    {
+                        return true;
+                    }
+                    // If the if/else doesn't fully return, keep scanning backwards
+                    // (there might be a return after the if)
+                    continue;
+                }
+                FunctionBodyItem::For(_) => {
+                    // For loops may execute 0 times — can't guarantee return
+                    continue;
+                }
+                FunctionBodyItem::Let(_) | FunctionBodyItem::Assign(_) => {
+                    // Not a return — keep scanning
+                    continue;
+                }
+            }
+        }
+        false
     }
 }
 
