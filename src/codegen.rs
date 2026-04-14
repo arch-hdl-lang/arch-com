@@ -427,8 +427,10 @@ impl<'a> Codegen<'a> {
         // If any log() statements exist in this module, emit the per-module verbosity variable.
         // Override at simulation: +arch_verbosity=N on the simulator command line.
         if Self::module_has_log(&m.body) {
+            self.line("// synopsys translate_off");
             self.line("integer _arch_verbosity = 1; // 0=Always 1=Low 2=Medium 3=High 4=Full 5=Debug");
             self.line("initial void'($value$plusargs(\"arch_verbosity=%0d\", _arch_verbosity));");
+            self.line("// synopsys translate_on");
             self.line("");
         }
 
@@ -531,6 +533,7 @@ impl<'a> Codegen<'a> {
         let log_files = Self::collect_log_files(&m_clone.body);
         if !log_files.is_empty() {
             self.line("");
+            self.line("// synopsys translate_off");
             for path in &log_files {
                 let fd = Self::log_fd_name(path);
                 self.line(&format!("integer {fd};"));
@@ -551,6 +554,7 @@ impl<'a> Codegen<'a> {
             }
             self.indent -= 1;
             self.line("end");
+            self.line("// synopsys translate_on");
         }
 
         self.indent -= 1;
@@ -787,6 +791,7 @@ impl<'a> Codegen<'a> {
     }
 
     /// Emit a `log(...)` statement as an `if`-guarded `$display` or `$fwrite`.
+    /// Wrapped in translate_off/on so synthesis tools ignore it.
     fn emit_log_stmt(&mut self, l: &LogStmt) {
         let args_str: String = l.args.iter()
             .map(|a| format!(", {}", self.emit_expr_str(a)))
@@ -803,11 +808,13 @@ impl<'a> Codegen<'a> {
                 l.level.name(), l.tag, l.fmt, args_str
             )
         };
+        self.line("// synopsys translate_off");
         if l.level == LogLevel::Always {
             self.line(&stmt);
         } else {
             self.line(&format!("if (_arch_verbosity >= {}) {}", l.level.value(), stmt));
         }
+        self.line("// synopsys translate_on");
     }
 
     /// Generate a deterministic SV file descriptor name from a log file path.
