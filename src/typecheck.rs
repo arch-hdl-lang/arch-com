@@ -672,6 +672,12 @@ impl<'a> TypeChecker<'a> {
         if let Some(ref tmpl_name) = m.implements {
             self.check_implements(m, tmpl_name);
         }
+
+        // Warn about port reg outputs assigned inside state-dependent if/elsif chains.
+        // port reg adds 1-cycle output latency — if the output is driven by FSM state,
+        // the value appears 1 cycle after the state transition, which is a common
+        // source of timing mismatch with testbench models.
+        self.check_port_reg_timing(m);
     }
 
     fn check_implements(&mut self, m: &ModuleDecl, tmpl_name: &Ident) {
@@ -739,6 +745,133 @@ impl<'a> TypeChecker<'a> {
                     m.name.span,
                 ));
             }
+        }
+    }
+
+    /// Warn when `port reg` outputs are assigned inside state-dependent if/elsif
+    /// chains in seq blocks. This indicates the output has 1-cycle latency relative
+    /// to the state that drives it — a common timing mismatch with testbench models.
+    fn check_port_reg_timing(&mut self, m: &ModuleDecl) {
+        // Collect port reg output names
+        let port_reg_names: HashSet<String> = m.ports.iter()
+            .filter(|p| p.reg_info.is_some() && p.direction == Direction::Out)
+            .map(|p| p.name.name.clone())
+            .collect();
+        if port_reg_names.is_empty() {
+            return;
+        }
+
+        // Collect internal register names (potential state variables)
+        let internal_reg_names: HashSet<String> = m.body.iter()
+            .filter_map(|item| if let ModuleBodyItem::RegDecl(r) = item {
+                Some(r.name.name.clone())
+            } else {
+                None
+            })
+            .collect();
+
+        // Collect port reg spans for warning locations
+        let port_reg_spans: HashMap<String, Span> = m.ports.iter()
+            .filter(|p| p.reg_info.is_some() && p.direction == Direction::Out)
+            .map(|p| (p.name.name.clone(), p.span))
+            .collect();
+
+        // Scan seq blocks for state-dependent port reg assignments
+        let mut warned: HashSet<String> = HashSet::new();
+        for item in &m.body {
+            if let ModuleBodyItem::RegBlock(rb) = item {
+                for stmt in &rb.stmts {
+                    self.find_state_dependent_port_reg_assigns(
+                        stmt, &port_reg_names, &internal_reg_names,
+                        &port_reg_spans, &mut warned, false,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Recursively scan a seq statement for port reg assignments inside
+    /// state-dependent if/elsif chains.
+    fn find_state_dependent_port_reg_assigns(
+        &mut self,
+        stmt: &Stmt,
+        port_reg_names: &HashSet<String>,
+        reg_names: &HashSet<String>,
+        port_reg_spans: &HashMap<String, Span>,
+        warned: &mut HashSet<String>,
+        inside_state_if: bool,
+    ) {
+        match stmt {
+            Stmt::IfElse(ie) => {
+                // Check if this condition tests a register (state variable)
+                let cond_tests_reg = Self::expr_references_any(&ie.cond, reg_names);
+                let in_state = inside_state_if || cond_tests_reg;
+
+                // Check assignments in then/else branches
+                for s in &ie.then_stmts {
+                    if in_state {
+                        if let Stmt::Assign(ra) = s {
+                            let target = Self::expr_root_name_tc(&ra.target);
+                            if port_reg_names.contains(&target) && !warned.contains(&target) {
+                                warned.insert(target.clone());
+                                if let Some(&span) = port_reg_spans.get(&target) {
+                                    self.warnings.push(CompileWarning {
+                                        message: format!(
+                                            "`{target}` is a `port reg` output assigned inside a state-dependent \
+                                             branch — output value appears 1 cycle after the state transition. \
+                                             Use `port` + `comb` for same-cycle outputs"
+                                        ),
+                                        span,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    self.find_state_dependent_port_reg_assigns(
+                        s, port_reg_names, reg_names, port_reg_spans, warned, in_state,
+                    );
+                }
+                for s in &ie.else_stmts {
+                    self.find_state_dependent_port_reg_assigns(
+                        s, port_reg_names, reg_names, port_reg_spans, warned, in_state,
+                    );
+                }
+            }
+            Stmt::Match(ms) => {
+                let cond_tests_reg = Self::expr_references_any(&ms.scrutinee, reg_names);
+                let in_state = inside_state_if || cond_tests_reg;
+                for arm in &ms.arms {
+                    for s in &arm.body {
+                        self.find_state_dependent_port_reg_assigns(
+                            s, port_reg_names, reg_names, port_reg_spans, warned, in_state,
+                        );
+                    }
+                }
+            }
+            Stmt::For(fl) => {
+                for s in &fl.body {
+                    self.find_state_dependent_port_reg_assigns(
+                        s, port_reg_names, reg_names, port_reg_spans, warned, inside_state_if,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Check if an expression references any name in the given set.
+    fn expr_references_any(expr: &Expr, names: &HashSet<String>) -> bool {
+        match &expr.kind {
+            ExprKind::Ident(name) => names.contains(name.as_str()),
+            ExprKind::Binary(_, l, r) => {
+                Self::expr_references_any(l, names) || Self::expr_references_any(r, names)
+            }
+            ExprKind::Unary(_, inner) => Self::expr_references_any(inner, names),
+            ExprKind::Index(base, idx) => {
+                Self::expr_references_any(base, names) || Self::expr_references_any(idx, names)
+            }
+            ExprKind::MethodCall(base, _, _) => Self::expr_references_any(base, names),
+            _ => false,
         }
     }
 
