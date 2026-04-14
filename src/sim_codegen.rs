@@ -157,6 +157,252 @@ impl<'a> SimCodegen<'a> {
         models
     }
 
+    /// Generate pybind11 wrapper `.cpp` files for each model.
+    /// Each wrapper exposes ports, internal registers, parameters, and eval methods
+    /// as a Python module for use with the `arch_cocotb` test adapter.
+    pub fn generate_pybind(&self) -> Vec<SimModel> {
+        let mut wrappers = Vec::new();
+        for item in &self.source.items {
+            match item {
+                Item::Module(m) => {
+                    if let Some(w) = self.emit_pybind_module(m) {
+                        wrappers.push(w);
+                    }
+                }
+                Item::Fsm(f) => {
+                    if let Some(w) = self.emit_pybind_fsm(f) {
+                        wrappers.push(w);
+                    }
+                }
+                Item::Counter(c) => {
+                    if let Some(w) = self.emit_pybind_counter(c) {
+                        wrappers.push(w);
+                    }
+                }
+                _ => {}
+            }
+        }
+        wrappers
+    }
+
+    /// Emit pybind11 wrapper for a module.
+    fn emit_pybind_module(&self, m: &ModuleDecl) -> Option<SimModel> {
+        let name = &m.name.name;
+        let class = format!("V{name}");
+        let pybind_module = format!("{class}_pybind");
+
+        // Collect port metadata: (field_name, width, is_signed, is_input, is_param, is_internal)
+        let mut port_info: Vec<(String, u32, bool, bool, bool, bool)> = Vec::new();
+        let mut bindings = Vec::new();
+
+        // Bus port flattening
+        let mut bus_port_names: HashSet<String> = HashSet::new();
+        let mut bus_flat: Vec<(String, TypeExpr)> = Vec::new();
+        for p in &m.ports {
+            if let Some(ref bi) = p.bus_info {
+                bus_port_names.insert(p.name.name.clone());
+                bus_flat.extend(flatten_bus_port(&p.name.name, bi, self.symbols));
+            }
+        }
+
+        // Vec port info
+        let vec_port_infos: Vec<(String, String, u64, bool)> = m.ports.iter()
+            .filter(|p| p.bus_info.is_none())
+            .filter_map(|p| {
+                if let Some((elem_ty, count_str)) = vec_array_info(&p.ty) {
+                    let count: u64 = count_str.parse().unwrap_or(0);
+                    Some((p.name.name.clone(), elem_ty, count, p.direction == Direction::In))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let vec_port_names: HashSet<String> = vec_port_infos.iter().map(|v| v.0.clone()).collect();
+
+        // Wide signal names
+        let wide_names = collect_wide_names(&m.ports, &m.body);
+
+        // Regular scalar ports
+        for p in &m.ports {
+            if p.bus_info.is_some() { continue; }
+            if vec_port_names.contains(&p.name.name) { continue; }
+            let field = &p.name.name;
+            let width = self.port_width(&p.ty);
+            let is_signed = matches!(p.ty, TypeExpr::SInt(_));
+            let is_input = p.direction == Direction::In;
+
+            if wide_names.contains(field) {
+                // VlWide — generate lambda-based get/set
+                bindings.push(self.emit_wide_binding(&class, field, width));
+            } else {
+                bindings.push(format!("        .def_readwrite(\"{field}\", &{class}::{field})"));
+            }
+            port_info.push((field.clone(), width, is_signed, is_input, false, false));
+        }
+
+        // Vec port flattened fields
+        for (base_name, _elem_ty, count, is_input) in &vec_port_infos {
+            let width = self.vec_elem_width(&m.ports, base_name);
+            for i in 0..*count {
+                let field = format!("{base_name}_{i}");
+                bindings.push(format!("        .def_readwrite(\"{field}\", &{class}::{field})"));
+                port_info.push((field, width, false, *is_input, false, false));
+            }
+        }
+
+        // Bus port flattened fields
+        for (flat_name, flat_ty) in &bus_flat {
+            let width = type_bits_te(flat_ty);
+            let is_signed = matches!(flat_ty, TypeExpr::SInt(_));
+            if wide_names.contains(flat_name) {
+                bindings.push(self.emit_wide_binding(&class, flat_name, width));
+            } else {
+                bindings.push(format!("        .def_readwrite(\"{flat_name}\", &{class}::{flat_name})"));
+            }
+            port_info.push((flat_name.clone(), width, is_signed, true, false, false));
+        }
+
+        // Internal registers (exposed as readonly for testbench inspection)
+        for item in &m.body {
+            if let ModuleBodyItem::RegDecl(r) = item {
+                let rname = &r.name.name;
+                // Skip if it's also a port name (port regs already handled)
+                if m.ports.iter().any(|p| p.name.name == *rname) { continue; }
+                let width = self.reg_width(&r.ty);
+                let is_signed = matches!(r.ty, TypeExpr::SInt(_));
+                let cpp_field = format!("_{rname}");
+                if wide_names.contains(rname) {
+                    // Wide internal reg — emit lambda getter
+                    bindings.push(format!(
+                        "        .def_property_readonly(\"{rname}\", [](const {class}& self) {{ return self.{cpp_field}; }})"
+                    ));
+                } else if vec_array_info(&r.ty).is_some() {
+                    // Vec reg — skip for now (complex)
+                    continue;
+                } else {
+                    bindings.push(format!("        .def_readonly(\"{rname}\", &{class}::{cpp_field})"));
+                }
+                port_info.push((rname.clone(), width, is_signed, false, false, true));
+            }
+        }
+
+        // Parameters
+        for p in &m.params {
+            if matches!(p.kind, ParamKind::Const | ParamKind::WidthConst(..)) {
+                if let Some(ref def) = p.default {
+                    let val = eval_const_expr(def);
+                    let pname = &p.name.name;
+                    bindings.push(format!(
+                        "        .def_property_readonly_static(\"{pname}\", [](py::object) {{ return {val}ULL; }})"
+                    ));
+                    port_info.push((pname.clone(), 32, false, false, true, false));
+                }
+            }
+        }
+
+        // Methods
+        bindings.push(format!("        .def(\"eval\", &{class}::eval)"));
+        bindings.push(format!("        .def(\"eval_comb\", &{class}::eval_comb)"));
+        bindings.push(format!("        .def(\"eval_posedge\", &{class}::eval_posedge)"));
+
+        // _port_info static method
+        let port_info_entries: Vec<String> = port_info.iter()
+            .map(|(n, w, s, inp, par, int)| {
+                format!(
+                    "            py::make_tuple(\"{n}\", {w}, {}, {}, {}, {})",
+                    if *s { "true" } else { "false" },
+                    if *inp { "true" } else { "false" },
+                    if *par { "true" } else { "false" },
+                    if *int { "true" } else { "false" },
+                )
+            })
+            .collect();
+        let port_info_str = port_info_entries.join(",\n");
+
+        let cpp = format!(
+r#"// Auto-generated pybind11 wrapper for {class}
+#include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
+#include "{class}.h"
+namespace py = pybind11;
+
+PYBIND11_MODULE({pybind_module}, m) {{
+    py::class_<{class}>(m, "{class}")
+        .def(py::init<>())
+{bindings}
+        .def_static("_port_info", []() {{
+            return std::vector<py::tuple>{{
+{port_info_str}
+            }};
+        }});
+}}
+"#,
+            bindings = bindings.join("\n"),
+        );
+
+        Some(SimModel {
+            class_name: pybind_module,
+            header: String::new(),
+            impl_: cpp,
+        })
+    }
+
+    /// Emit pybind11 wrapper for an FSM construct.
+    fn emit_pybind_fsm(&self, _f: &crate::ast::FsmDecl) -> Option<SimModel> {
+        // FSM constructs generate a VFsmName class with similar port structure.
+        // For now, FSM pybind11 support is deferred — most CVDP tests use modules.
+        None
+    }
+
+    /// Emit pybind11 wrapper for a counter construct.
+    fn emit_pybind_counter(&self, _c: &crate::ast::CounterDecl) -> Option<SimModel> {
+        None
+    }
+
+    /// Get the width in bits of a port type.
+    fn port_width(&self, ty: &TypeExpr) -> u32 {
+        match ty {
+            TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval_width(w),
+            TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(..) => 1,
+            TypeExpr::Named(_) => 32,
+            TypeExpr::Vec(_, _) => 32,
+        }
+    }
+
+    /// Get the width in bits of a register type.
+    fn reg_width(&self, ty: &TypeExpr) -> u32 {
+        self.port_width(ty)
+    }
+
+    /// Get the element width of a Vec port.
+    fn vec_elem_width(&self, ports: &[PortDecl], name: &str) -> u32 {
+        for p in ports {
+            if p.name.name == name {
+                if let TypeExpr::Vec(elem, _) = &p.ty {
+                    return self.port_width(elem);
+                }
+            }
+        }
+        32
+    }
+
+    /// Emit a lambda-based pybind11 binding for a VlWide field.
+    fn emit_wide_binding(&self, class: &str, field: &str, width: u32) -> String {
+        let words = (width + 31) / 32;
+        format!(
+r#"        .def_property("{field}",
+            []({class}& self) -> uint64_t {{
+                uint64_t v = 0;
+                for (int i = std::min({words}u, 2u) - 1; i >= 0; i--)
+                    v = (v << 32) | self.{field}.data()[i];
+                return v;
+            }},
+            []({class}& self, uint64_t v) {{
+                self.{field} = VlWide<{words}>(v);
+            }})"#,
+        )
+    }
+
     /// Return the contents of the `verilated.h` stub.
     pub fn verilated_h() -> String {
         r#"#pragma once
@@ -2656,7 +2902,8 @@ impl<'a> SimCodegen<'a> {
             h.push_str(&format!("    if ({fd}) fclose({fd});\n", fd = log_fd_name(path)));
         }
         h.push_str("  }\n\n");
-        h.push_str("private:\n");
+        // All members public for pybind11/testbench signal inspection
+        h.push_str("public:\n");
         for c in &all_clks {
             h.push_str(&format!("  uint8_t _clk_prev_{c};\n"));
         }

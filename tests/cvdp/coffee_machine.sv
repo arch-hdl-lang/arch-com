@@ -22,6 +22,7 @@ module coffee_machine #(
   output logic o_error
 );
 
+  // Combinational outputs — reflect current state same cycle (no port reg lag)
   // State register: 0=IDLE, 1=BEAN_SEL, 2=GRIND, 3=HEAT, 4=POWDER, 5=POUR
   logic [2:0] state_ff;
   // Registered i_start: delays transition by one cycle so outputs align with model
@@ -57,6 +58,58 @@ module coffee_machine #(
     end
   end
   assign o_error = o_error_w;
+  // Combinational outputs based on current state_ff (0-cycle, no lag)
+  always_comb begin
+    if (state_ff == 0) begin
+      // IDLE
+      o_bean_sel = 0;
+      o_grind_beans = 1'b0;
+      o_use_powder = 1'b0;
+      o_heat_water = 1'b0;
+      o_pour_coffee = 1'b0;
+    end else if (state_ff == 1) begin
+      // BEAN_SEL
+      o_bean_sel = bean_r;
+      o_grind_beans = 1'b0;
+      o_use_powder = 1'b0;
+      o_heat_water = 1'b0;
+      o_pour_coffee = 1'b0;
+    end else if (state_ff == 2) begin
+      // GRIND
+      o_bean_sel = bean_r;
+      o_grind_beans = 1'b1;
+      o_use_powder = 1'b0;
+      o_heat_water = 1'b0;
+      o_pour_coffee = 1'b0;
+    end else if (state_ff == 3) begin
+      // HEAT
+      o_bean_sel = 0;
+      o_grind_beans = 1'b0;
+      o_use_powder = 1'b0;
+      o_heat_water = 1'b1;
+      o_pour_coffee = 1'b0;
+    end else if (state_ff == 4) begin
+      // POWDER
+      o_bean_sel = 0;
+      o_grind_beans = 1'b0;
+      o_use_powder = 1'b1;
+      o_heat_water = 1'b0;
+      o_pour_coffee = 1'b0;
+    end else if (state_ff == 5) begin
+      // POUR
+      o_bean_sel = 0;
+      o_grind_beans = 1'b0;
+      o_use_powder = 1'b0;
+      o_heat_water = 1'b0;
+      o_pour_coffee = 1'b1;
+    end else begin
+      o_bean_sel = 0;
+      o_grind_beans = 1'b0;
+      o_use_powder = 1'b0;
+      o_heat_water = 1'b0;
+      o_pour_coffee = 1'b0;
+    end
+  end
   always_ff @(posedge clk or negedge rst_async_n) begin
     if ((!rst_async_n)) begin
       bean_r <= 0;
@@ -64,67 +117,18 @@ module coffee_machine #(
       grind_dly_r <= 0;
       heat_dly_r <= 0;
       i_start_r <= 1'b0;
-      o_bean_sel <= 0;
-      o_grind_beans <= 1'b0;
-      o_heat_water <= 1'b0;
-      o_pour_coffee <= 1'b0;
-      o_use_powder <= 1'b0;
       op_r <= 0;
       pour_dly_r <= 0;
       state_ff <= 0;
     end else begin
       // Register i_start (delays IDLE->state transition by 1 cycle for correct output timing)
       i_start_r <= i_start;
-      // Registered outputs based on current state_ff (natural 1-cycle non-blocking lag)
-      if (state_ff == 0) begin
-        // IDLE
-        o_bean_sel <= 0;
-        o_grind_beans <= 1'b0;
-        o_use_powder <= 1'b0;
-        o_heat_water <= 1'b0;
-        o_pour_coffee <= 1'b0;
-      end else if (state_ff == 1) begin
-        // BEAN_SEL
-        o_bean_sel <= bean_r;
-        o_grind_beans <= 1'b0;
-        o_use_powder <= 1'b0;
-        o_heat_water <= 1'b0;
-        o_pour_coffee <= 1'b0;
-      end else if (state_ff == 2) begin
-        // GRIND
-        o_bean_sel <= bean_r;
-        o_grind_beans <= 1'b1;
-        o_use_powder <= 1'b0;
-        o_heat_water <= 1'b0;
-        o_pour_coffee <= 1'b0;
-      end else if (state_ff == 3) begin
-        // HEAT
-        o_bean_sel <= 0;
-        o_grind_beans <= 1'b0;
-        o_use_powder <= 1'b0;
-        o_heat_water <= 1'b1;
-        o_pour_coffee <= 1'b0;
-      end else if (state_ff == 4) begin
-        // POWDER
-        o_bean_sel <= 0;
-        o_grind_beans <= 1'b0;
-        o_use_powder <= 1'b1;
-        o_heat_water <= 1'b0;
-        o_pour_coffee <= 1'b0;
-      end else if (state_ff == 5) begin
-        // POUR
-        o_bean_sel <= 0;
-        o_grind_beans <= 1'b0;
-        o_use_powder <= 1'b0;
-        o_heat_water <= 1'b0;
-        o_pour_coffee <= 1'b1;
-      end
       // State machine transitions
       if (state_ff == 0) begin
         // IDLE
         if (i_start_r & ~o_error_w) begin
           op_r <= i_operation_sel;
-          bean_r <= i_bean_sel == 0 ? 1 : i_bean_sel == 1 ? 2 : i_bean_sel == 2 ? 4 : 8;
+          bean_r <= NS_BEANS'($unsigned(1)) << i_bean_sel;
           grind_dly_r <= i_grind_delay;
           heat_dly_r <= i_heat_delay;
           pour_dly_r <= i_pour_delay;

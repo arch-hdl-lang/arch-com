@@ -366,8 +366,8 @@ Reworked several existing `.arch` files for correctness. Confirmed passing:
 | cid003 | 78 | 77 | 76 | 99% |
 | cid004 | 55 | 53 | 53 | 100% |
 | cid007 | 40 | 23 | 23 | 100% |
-| cid016 | 35 | 31 | 30 | 97% |
-| **Total** | **302** | **275** | **273** | **99.3%** |
+| cid016 | 35 | 31 | 31 | 100% |
+| **Total** | **302** | **275** | **274** | **99.6%** |
 
 "Testable" excludes TOPLEVEL=verilog (~19 tasks) and modules with no `.arch`/`.sv`.
 
@@ -377,8 +377,8 @@ Reworked several existing `.arch` files for correctness. Confirmed passing:
 |--------|-------|
 | Total `.arch` files | ~285 |
 | Testable via cocotb | 275 |
-| **Cocotb PASS** | **273 (99.3%)** |
-| Cocotb FAIL | 2 |
+| **Cocotb PASS** | **274 (99.6%)** |
+| Cocotb FAIL | 1 |
 | Cocotb TIMEOUT | 4 |
 | Not testable (TOPLEVEL=verilog + missing) | 27 |
 
@@ -392,7 +392,7 @@ Reworked several existing `.arch` files for correctness. Confirmed passing:
 
 **cid007 (1 timeout):** vga_controller.
 
-**cid016 (1 fail):** coffee_machine (cocotb VPI timing mismatch, both reference and ARCH SV fail).
+**cid016:** coffee_machine now PASS — changed from `port reg` (1-cycle output lag) to `port` + `comb` (combinational, same-cycle); also fixed one-hot encoding to use `(1).zext<NS_BEANS>() << i_bean_sel` instead of hardcoded 4-way mux.
 
 ---
 
