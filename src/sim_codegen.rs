@@ -3042,11 +3042,23 @@ impl<'a> SimCodegen<'a> {
             for p in &m.ports {
                 if p.bus_info.is_some() { continue; }
                 if matches!(&p.ty, TypeExpr::Clock(_)) { continue; }
-                if matches!(&p.ty, TypeExpr::Vec(..)) { continue; }
-                let bits = type_width_of(&p.ty);
-                if bits > 64 { continue; }
-                let shadow_ty = cpp_uint(bits.max(8));
-                h.push_str(&format!("  {shadow_ty} _dbg_prev_{} = 0;\n", p.name.name));
+                let pname = &p.name.name;
+                if let Some(vi) = vec_port_infos.iter().find(|v| v.name == *pname) {
+                    // Vec port: one shadow per flat element
+                    for i in 0..vi.count {
+                        h.push_str(&format!("  {} _dbg_prev_{pname}_{i} = 0;\n", vi.elem_ty));
+                    }
+                } else {
+                    let bits = type_width_of(&p.ty);
+                    if bits > 64 {
+                        // Wide port: use VlWide shadow
+                        let words = wide_words(bits);
+                        h.push_str(&format!("  VlWide<{words}> _dbg_prev_{pname};\n"));
+                    } else {
+                        let shadow_ty = cpp_uint(bits.max(8));
+                        h.push_str(&format!("  {shadow_ty} _dbg_prev_{pname} = 0;\n"));
+                    }
+                }
             }
             h.push_str("  uint64_t _dbg_cycle = 0;\n");
         }
@@ -3776,35 +3788,77 @@ impl<'a> SimCodegen<'a> {
                         cpp.push_str(&format!("  // {pname}: clock — skipped\n"));
                         continue;
                     }
-                    TypeExpr::Vec(..) => {
-                        cpp.push_str(&format!("  // {pname}: Vec — skipped\n"));
-                        continue;
-                    }
                     _ => {}
                 }
-                let bits = type_width_of(&p.ty);
-                if bits > 64 {
-                    cpp.push_str(&format!("  // {pname}: >{bits}b wide — skipped\n"));
-                    continue;
+
+                if let Some(vi) = vec_port_infos.iter().find(|v| v.name == *pname) {
+                    // Vec port: compare each flat element
+                    for i in 0..vi.count {
+                        cpp.push_str(&format!(
+                            "  if ({pname}_{i} != _dbg_prev_{pname}_{i}) {{\n"
+                        ));
+                        cpp.push_str(&format!(
+                            "    printf(\"[%llu][{name}.{pname}[{i}]]({dir}) 0x%llx -> 0x%llx\\n\",\n",
+                            dir = dir_str
+                        ));
+                        cpp.push_str(
+                            "           (unsigned long long)_dbg_cycle,\n"
+                        );
+                        cpp.push_str(&format!(
+                            "           (unsigned long long)_dbg_prev_{pname}_{i},\n"
+                        ));
+                        cpp.push_str(&format!(
+                            "           (unsigned long long){pname}_{i});\n"
+                        ));
+                        cpp.push_str(&format!("    _dbg_prev_{pname}_{i} = {pname}_{i};\n"));
+                        cpp.push_str("  }\n");
+                    }
+                } else {
+                    let bits = type_width_of(&p.ty);
+                    if bits > 64 {
+                        // Wide port: use memcmp + print all 32-bit words as hex
+                        let words = wide_words(bits);
+                        cpp.push_str(&format!(
+                            "  if (memcmp(&{pname}, &_dbg_prev_{pname}, sizeof({pname})) != 0) {{\n"
+                        ));
+                        cpp.push_str(&format!(
+                            "    printf(\"[%llu][{name}.{pname}]({dir}) 0x\",\n           (unsigned long long)_dbg_cycle);\n",
+                            dir = dir_str
+                        ));
+                        // Print old value (MSB first)
+                        cpp.push_str(&format!(
+                            "    for (int _w = {words} - 1; _w >= 0; _w--) printf(\"%08x\", _dbg_prev_{pname}.data()[_w]);\n"
+                        ));
+                        cpp.push_str("    printf(\" -> 0x\");\n");
+                        // Print new value
+                        cpp.push_str(&format!(
+                            "    for (int _w = {words} - 1; _w >= 0; _w--) printf(\"%08x\", {pname}.data()[_w]);\n"
+                        ));
+                        cpp.push_str("    printf(\"\\n\");\n");
+                        cpp.push_str(&format!("    _dbg_prev_{pname} = {pname};\n"));
+                        cpp.push_str("  }\n");
+                    } else {
+                        // Scalar port (≤64 bits)
+                        cpp.push_str(&format!(
+                            "  if ({pname} != _dbg_prev_{pname}) {{\n"
+                        ));
+                        cpp.push_str(&format!(
+                            "    printf(\"[%llu][{name}.{pname}]({dir}) 0x%llx -> 0x%llx\\n\",\n",
+                            dir = dir_str
+                        ));
+                        cpp.push_str(
+                            "           (unsigned long long)_dbg_cycle,\n"
+                        );
+                        cpp.push_str(&format!(
+                            "           (unsigned long long)_dbg_prev_{pname},\n"
+                        ));
+                        cpp.push_str(&format!(
+                            "           (unsigned long long){pname});\n"
+                        ));
+                        cpp.push_str(&format!("    _dbg_prev_{pname} = {pname};\n"));
+                        cpp.push_str("  }\n");
+                    }
                 }
-                cpp.push_str(&format!(
-                    "  if ({pname} != _dbg_prev_{pname}) {{\n"
-                ));
-                cpp.push_str(&format!(
-                    "    printf(\"[%llu][{name}.{pname}]({dir}) 0x%llx -> 0x%llx\\n\",\n",
-                    dir = dir_str
-                ));
-                cpp.push_str(
-                    "           (unsigned long long)_dbg_cycle,\n"
-                );
-                cpp.push_str(&format!(
-                    "           (unsigned long long)_dbg_prev_{pname},\n"
-                ));
-                cpp.push_str(&format!(
-                    "           (unsigned long long){pname});\n"
-                ));
-                cpp.push_str(&format!("    _dbg_prev_{pname} = {pname};\n"));
-                cpp.push_str("  }\n");
             }
             // Only increment cycle counter on rising clock edge (matches testbench tick count).
             // For pure-combinational modules (no clock), always increment.
