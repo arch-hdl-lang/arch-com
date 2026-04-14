@@ -29,6 +29,38 @@ arch formal F.arch         # emit SMT-LIB2
 
 ---
 
+## Debugging Simulation Failures
+
+**IMPORTANT: Use `--debug` instead of manually adding printf/`$display` to testbenches.**
+
+When a simulation test fails or produces unexpected results, use the built-in debug instrumentation:
+
+```bash
+# Print all I/O port changes (top module only)
+arch sim --debug Module.arch --tb tb.cpp
+
+# Also print sub-module port changes (2 levels deep)
+arch sim --debug --depth 2 Module.arch Sub.arch --tb tb.cpp
+
+# Also print FSM state transitions with triggering conditions
+arch sim --debug+fsm Module.arch --tb tb.cpp
+
+# Combine: ports + FSM + 2 levels
+arch sim --debug+fsm --depth 2 Module.arch Sub.arch --tb tb.cpp
+```
+
+The debug output covers:
+- **Scalar ports**: `[cycle][Mod.port](in/out) 0x0 -> 0x1`
+- **Vec ports**: `[cycle][Mod.data[2]](out) 0x0 -> 0xff` (per-element)
+- **Bus ports**: `[cycle][Mod.s_axil_aw_valid](in) 0x0 -> 0x1` (with correct direction)
+- **Wide ports (>64b)**: hex dump of all 32-bit words
+- **FSM transitions**: `[FSM][Mod] IDLE -> RUN (start && ready)` (with condition)
+- **Reset events**: `[cycle][Mod.rst](in) 0x0 -> 0x1`
+
+Do NOT add `printf` or `$display` to C++ testbenches for debugging — `--debug` provides the same information automatically with zero code changes. Only add manual prints for test-specific protocol checking (e.g., verifying handshake sequences).
+
+---
+
 ## ARCH Language — Key Constructs
 
 ### Universal Block Grammar
