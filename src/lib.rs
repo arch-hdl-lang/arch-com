@@ -3,6 +3,7 @@ pub mod codegen;
 pub mod comb_graph;
 pub mod diagnostics;
 pub mod elaborate;
+pub mod interface;
 pub mod lexer;
 pub mod parser;
 pub mod resolve;

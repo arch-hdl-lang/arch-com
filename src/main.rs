@@ -3,6 +3,7 @@ use miette::{IntoDiagnostic, NamedSource, Report};
 use std::fs;
 use std::path::PathBuf;
 
+use arch::ast::Item;
 use arch::codegen::Codegen;
 use arch::diagnostics::CompileError;
 use arch::elaborate;
@@ -189,6 +190,37 @@ fn main() -> miette::Result<()> {
                     eprintln!("Wrote {}", out_path.display());
                 }
             }
+
+            // Emit .archi interface files alongside .sv (for separate compilation)
+            for item in &ast.items {
+                if let Some(content) = arch::interface::emit_interface(item) {
+                    let name = match item {
+                        Item::Module(m) => &m.name.name,
+                        Item::Fsm(f) => &f.name.name,
+                        Item::Counter(c) => &c.name.name,
+                        Item::Pipeline(p) => &p.name.name,
+                        Item::Bus(b) => &b.name.name,
+                        Item::Struct(s) => &s.name.name,
+                        Item::Enum(e) => &e.name.name,
+                        Item::Package(p) => &p.name.name,
+                        Item::Synchronizer(s) => &s.name.name,
+                        Item::Fifo(f) => &f.name.name,
+                        Item::Ram(r) => &r.name.name,
+                        Item::Arbiter(a) => &a.name.name,
+                        Item::Regfile(r) => &r.name.name,
+                        Item::Clkgate(c) => &c.name.name,
+                        Item::Linklist(l) => &l.name.name,
+                        _ => continue,
+                    };
+                    // Write .archi next to the .sv output
+                    let archi_dir = files[0].parent()
+                        .unwrap_or(std::path::Path::new(".")).to_path_buf();
+                    let archi_path = archi_dir.join(format!("{name}.archi"));
+                    fs::write(&archi_path, &content).into_diagnostic()?;
+                    eprintln!("Wrote {}", archi_path.display());
+                }
+            }
+
             Ok(())
         }
     }
@@ -427,7 +459,46 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
                 if dep_path.exists() {
                     deps.push(dep_path);
                 }
-                // If the file doesn't exist, resolve/typecheck will catch the missing symbols
+            }
+        }
+
+        // Find inst references and look for .archi interface files
+        let defined_modules: HashSet<String> = parsed.items.iter()
+            .filter_map(|item| match item {
+                Item::Module(m) => Some(m.name.name.clone()),
+                Item::Fsm(f) => Some(f.name.name.clone()),
+                Item::Counter(c) => Some(c.name.name.clone()),
+                Item::Pipeline(p) => Some(p.name.name.clone()),
+                _ => None,
+            })
+            .collect();
+
+        for item in &parsed.items {
+            let insts = match item {
+                Item::Module(m) => m.body.iter()
+                    .filter_map(|b| if let arch::ast::ModuleBodyItem::Inst(i) = b { Some(&i.module_name.name) } else { None })
+                    .collect::<Vec<_>>(),
+                _ => vec![],
+            };
+            for inst_name in insts {
+                if defined_modules.contains(inst_name.as_str()) { continue; }
+                // Look for .arch first, then .archi
+                let arch_path = base_dir.join(format!("{inst_name}.arch"));
+                let archi_path = base_dir.join(format!("{inst_name}.archi"));
+                if arch_path.exists() {
+                    deps.push(arch_path);
+                } else if archi_path.exists() {
+                    deps.push(archi_path);
+                }
+                // Also check ARCH_LIB_PATH
+                if let Ok(lib_path) = std::env::var("ARCH_LIB_PATH") {
+                    for dir in lib_path.split(':') {
+                        let p = std::path::Path::new(dir).join(format!("{inst_name}.archi"));
+                        if p.exists() { deps.push(p); break; }
+                        let p = std::path::Path::new(dir).join(format!("{inst_name}.arch"));
+                        if p.exists() { deps.push(p); break; }
+                    }
+                }
             }
         }
 
