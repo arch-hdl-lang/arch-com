@@ -43,6 +43,13 @@ module Mm2sFifo #(
       end
     end
   end
+  
+  // synopsys translate_off
+  _auto_no_overflow: assert property (@(posedge clk) !(push_valid && push_ready && full))
+    else $fatal(1, "FIFO OVERFLOW: Mm2sFifo.push while full");
+  _auto_no_underflow: assert property (@(posedge clk) !(pop_valid && pop_ready && empty))
+    else $fatal(1, "FIFO UNDERFLOW: Mm2sFifo.pop while empty");
+  // synopsys translate_on
 
 endmodule
 

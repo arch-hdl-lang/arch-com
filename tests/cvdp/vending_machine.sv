@@ -2,14 +2,14 @@ module vending_machine (
   input logic clk,
   input logic rst,
   input logic item_button,
-  input logic [3-1:0] item_selected,
-  input logic [4-1:0] coin_input,
+  input logic [2:0] item_selected,
+  input logic [3:0] coin_input,
   input logic cancel,
   output logic dispense_item,
   output logic return_change,
-  output logic [5-1:0] item_price,
-  output logic [5-1:0] change_amount,
-  output logic [3-1:0] dispense_item_id,
+  output logic [4:0] item_price,
+  output logic [4:0] change_amount,
+  output logic [2:0] dispense_item_id,
   output logic error,
   output logic return_money
 );
@@ -26,9 +26,9 @@ module vending_machine (
   
   vending_machine_state_t state_r, state_next;
   
-  logic [5-1:0] coins_accumulated;
-  logic [3-1:0] selected_item;
-  logic [5-1:0] selected_price;
+  logic [4:0] coins_accumulated;
+  logic [2:0] selected_item;
+  logic [4:0] selected_price;
   logic item_button_prev;
   logic cancel_prev;
   
@@ -40,13 +40,13 @@ module vending_machine (
   assign valid_coin = coin_input == 1 | coin_input == 2 | coin_input == 5 | coin_input == 10;
   logic valid_item;
   assign valid_item = item_selected == 1 | item_selected == 2 | item_selected == 3 | item_selected == 4;
-  logic [6-1:0] new_total;
+  logic [5:0] new_total;
   assign new_total = 6'(6'($unsigned(coins_accumulated)) + 6'($unsigned(coin_input)));
-  logic [5-1:0] change_val;
+  logic [4:0] change_val;
   assign change_val = 5'(coins_accumulated - selected_price);
   logic enough;
   assign enough = new_total >= 6'($unsigned(selected_price));
-  logic [5-1:0] lookup_price;
+  logic [4:0] lookup_price;
   assign lookup_price = item_selected == 1 ? 5 : item_selected == 2 ? 10 : item_selected == 3 ? 15 : item_selected == 4 ? 20 : 0;
   
   always_ff @(posedge clk or posedge rst) begin
@@ -57,6 +57,13 @@ module vending_machine (
       selected_price <= 0;
       item_button_prev <= 1'b0;
       cancel_prev <= 1'b0;
+      dispense_item <= 1'b0;
+      return_change <= 1'b0;
+      item_price <= 0;
+      change_amount <= 0;
+      dispense_item_id <= 0;
+      error <= 1'b0;
+      return_money <= 1'b0;
     end else begin
       state_r <= state_next;
       item_button_prev <= item_button;
@@ -185,6 +192,11 @@ module vending_machine (
       default: ;
     endcase
   end
+  
+  // synopsys translate_off
+  _auto_legal_state: assert property (@(posedge clk) !rst |-> state_r < 7)
+    else $fatal(1, "FSM ILLEGAL STATE: vending_machine.state_r = %0d", state_r);
+  // synopsys translate_on
 
 endmodule
 
