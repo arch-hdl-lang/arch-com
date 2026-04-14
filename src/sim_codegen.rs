@@ -36,6 +36,7 @@ pub struct SimCodegen<'a> {
     cdc_random: bool,
     debug: bool,
     debug_depth: u32,
+    debug_fsm: bool,
 }
 
 impl<'a> SimCodegen<'a> {
@@ -44,7 +45,7 @@ impl<'a> SimCodegen<'a> {
         source: &'a SourceFile,
         overload_map: HashMap<usize, usize>,
     ) -> Self {
-        Self { symbols, source, overload_map, check_uninit: false, cdc_random: false, debug: false, debug_depth: 1 }
+        Self { symbols, source, overload_map, check_uninit: false, cdc_random: false, debug: false, debug_depth: 1, debug_fsm: false }
     }
 
     pub fn check_uninit(mut self, enabled: bool) -> Self {
@@ -60,6 +61,11 @@ impl<'a> SimCodegen<'a> {
     pub fn debug(mut self, enabled: bool, depth: u32) -> Self {
         self.debug = enabled;
         self.debug_depth = depth;
+        self
+    }
+
+    pub fn with_debug_fsm(mut self, enabled: bool) -> Self {
+        self.debug_fsm = enabled;
         self
     }
 
@@ -3198,6 +3204,17 @@ impl<'a> SimCodegen<'a> {
                 }
             }
 
+            // --debug-fsm: save old state values before commit
+            if self.debug_fsm {
+                for rd in &reg_decls {
+                    let n = &rd.name.name;
+                    if n.contains("_state") {
+                        let ty = cpp_internal_type(&rd.ty);
+                        cpp.push_str(&format!("  {ty} _dbg_old_{n} = _{n};\n"));
+                    }
+                }
+            }
+
             // Commit all _n_ temporaries (regs + pipe_regs)
             cpp.push('\n');
             for rd in &reg_decls {
@@ -3232,6 +3249,22 @@ impl<'a> SimCodegen<'a> {
                     } else {
                         cpp.push_str(&format!("  _{n} = _n_{n};\n"));
                         cpp.push_str(&format!("  {n} = _{n};\n"));
+                    }
+                }
+            }
+
+            // --debug-fsm: print state transitions for thread-lowered FSM regs
+            if self.debug_fsm {
+                for rd in &reg_decls {
+                    let n = &rd.name.name;
+                    if n.contains("_state") {
+                        let label = n.trim_start_matches('_');
+                        cpp.push_str(&format!(
+                            "  if (_{n} != _dbg_old_{n}) \
+                             printf(\"[FSM][{module_name}.{label}] S%u -> S%u\\n\", \
+                             (unsigned)_dbg_old_{n}, (unsigned)_{n});\n",
+                            module_name = name, label = label, n = n,
+                        ));
                     }
                 }
             }
@@ -4003,7 +4036,19 @@ impl<'a> SimCodegen<'a> {
             for tr in &sb.transitions {
                 let cond = cpp_expr(&tr.condition, &ctx_fsm);
                 let target_idx = state_idx.get(&tr.target.name).copied().unwrap_or(0);
-                cpp.push_str(&format!("        if ({cond}) {{ _n_state = {target_idx}; break; }}\n"));
+                if self.debug_fsm {
+                    // Escape the condition for printf literal
+                    let cond_escaped = cond.replace('\\', "\\\\").replace('"', "\\\"").replace('%', "%%");
+                    cpp.push_str(&format!(
+                        "        if ({cond}) {{ _n_state = {target_idx}; \
+                         printf(\"[FSM][{name}] {src} -> {tgt} ({cond_lit})\\n\"); break; }}\n",
+                        src = sb.name.name,
+                        tgt = tr.target.name,
+                        cond_lit = cond_escaped,
+                    ));
+                } else {
+                    cpp.push_str(&format!("        if ({cond}) {{ _n_state = {target_idx}; break; }}\n"));
+                }
             }
             cpp.push_str("        break;\n");
         }

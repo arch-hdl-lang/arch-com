@@ -1,0 +1,19 @@
+module Accumulator
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port din: in UInt<8>;
+  port en: in Bool;
+  port total: out UInt<16>;
+
+  reg acc: UInt<16> reset rst => 0;
+
+  seq on clk rising
+    if en
+      acc <= (acc + din.zext<16>()).trunc<16>();
+    end if
+  end seq
+
+  comb
+    total = acc;
+  end comb
+end module Accumulator

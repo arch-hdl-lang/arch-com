@@ -66,6 +66,9 @@ enum Command {
         /// How many module levels to instrument with --debug (default 1 = top module only)
         #[arg(long = "depth", default_value_t = 1)]
         debug_depth: u32,
+        /// Print FSM state transitions with the triggering condition
+        #[arg(long = "debug-fsm")]
+        debug_fsm: bool,
     },
 }
 
@@ -131,8 +134,8 @@ fn main() -> miette::Result<()> {
             eprintln!("OK: no errors");
             Ok(())
         }
-        Command::Sim { arch_files, tb_files, outdir, check_uninit, cdc_random, wave, debug, debug_depth } => {
-            run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, cdc_random, wave.as_deref(), debug, debug_depth)
+        Command::Sim { arch_files, tb_files, outdir, check_uninit, cdc_random, wave, debug, debug_depth, debug_fsm } => {
+            run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, cdc_random, wave.as_deref(), debug, debug_depth, debug_fsm)
         }
         Command::Build { files, o } => {
             let all_files = resolve_use_imports(&files)?;
@@ -192,6 +195,7 @@ fn run_sim(
     wave: Option<&std::path::Path>,
     debug: bool,
     debug_depth: u32,
+    debug_fsm: bool,
 ) -> miette::Result<()> {
     // 1. Parse + type-check
     let all_files = resolve_use_imports(arch_files)?;
@@ -205,7 +209,7 @@ fn run_sim(
     fs::create_dir_all(&build_dir).into_diagnostic()?;
 
     // 3. Generate C++ models
-    let sim = SimCodegen::new(&symbols, &ast, overload_map).check_uninit(check_uninit).cdc_random(cdc_random).debug(debug, debug_depth);
+    let sim = SimCodegen::new(&symbols, &ast, overload_map).check_uninit(check_uninit).cdc_random(cdc_random).debug(debug, debug_depth).with_debug_fsm(debug_fsm);
     let models = sim.generate();
 
     if models.is_empty() {

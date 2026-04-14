@@ -1,0 +1,41 @@
+module DmaEngine
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port start: in Bool;
+  port src_data: in UInt<8>;
+  port result: out UInt<16>;
+  port done: out Bool;
+
+  reg cnt: UInt<4> reset rst => 0;
+  reg running: Bool reset rst => false;
+  reg done_r: Bool reset rst => false;
+  wire acc_en: Bool;
+
+  inst acc: Accumulator
+    clk <- clk;
+    rst <- rst;
+    din <- src_data;
+    en <- acc_en;
+    total -> result;
+  end inst acc
+
+  seq on clk rising
+    if start and not running
+      running <= true;
+      cnt <= 8;
+      done_r <= false;
+    elsif running
+      if cnt == 0
+        running <= false;
+        done_r <= true;
+      else
+        cnt <= (cnt - 1).trunc<4>();
+      end if
+    end if
+  end seq
+
+  comb
+    acc_en = running and cnt != 0;
+    done = done_r;
+  end comb
+end module DmaEngine
