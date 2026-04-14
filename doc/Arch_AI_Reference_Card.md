@@ -887,6 +887,10 @@ end module MyModule
 
 SV output: `function automatic` inside the module block. Use for one-off helpers that don't warrant a package.
 
+Function bodies support: `let`, `return`, `if/elsif/else`, `for` loops, assignment (`=`).
+
+**No-latch rule:** every code path must reach a `return`. An `if` without `else` containing `return` is a compile error. Fix with `else` branch or final `return` after the `if`.
+
 ---
 
 ### Separate compilation (.archi interface files)

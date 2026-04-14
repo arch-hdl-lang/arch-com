@@ -586,7 +586,18 @@ function_arg = ident ":" type_expr ;
 
 function_body_item = let_binding
                    | "return" expr ";"
+                   | function_if
+                   | function_for
+                   | expr "=" expr ";"            (* local variable assignment *)
                    ;
+
+(* All code paths must reach a return — missing else is a compile error *)
+function_if = "if" expr { function_body_item }
+              { "elsif" expr { function_body_item } }
+              [ "else" { function_body_item } ]
+              "end" "if" ;
+
+function_for = "for" ident "in" for_range { function_body_item } "end" "for" ;
 
 
 (* ─── Package ────────────────────────────────────────────────────────────── *)

@@ -9072,6 +9072,49 @@ endmodule
 
 Module-local functions have access to the module's parameters. They are pure combinational (no state, no side effects).
 
+Function bodies support `let`, `return`, `if/elsif/else`, `for` loops, and local variable assignment (`=`):
+
+```
+function popcount(x: UInt<8>) -> UInt<4>
+  let result: UInt<4> = 0;
+  for i in 0..7
+    if x[i]
+      result = result + 1;
+    end if
+  end for
+  return result;
+end function popcount
+```
+
+> *⚑ **No-latch rule:** every code path in a function must reach a `return` statement. An `if` without an `else` that contains a `return` is a compile error — the missing branch would infer a latch on the return value. Fix by adding an `else` branch or a final `return` after the `if`:*
+>
+> ```
+> // ✗ ERROR: not all code paths return a value
+> function bad(x: UInt<8>) -> UInt<8>
+>   if x[0]
+>     return 42;
+>   end if                     // ← missing else
+> end function bad
+>
+> // ✓ OK: all paths return
+> function good(x: UInt<8>) -> UInt<8>
+>   if x[0]
+>     return 42;
+>   else
+>     return 0;
+>   end if
+> end function good
+>
+> // ✓ OK: return after if (fallthrough)
+> function also_good(x: UInt<8>) -> UInt<8>
+>   let r: UInt<8> = 0;
+>   if x[0]
+>     r = 42;
+>   end if
+>   return r;
+> end function also_good
+> ```
+
 ---
 
 ## 30. Separate Compilation
