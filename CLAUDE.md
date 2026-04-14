@@ -78,6 +78,7 @@ Arch has three kinds of module-scope signal declarations:
 - `reg r: T reset rst => 0;` + `seq on clk rising ... end seq` — registered, uses `<=`. Reset value is specified after `=>` in the reset clause. `init` is optional (SV declaration initializer only). Reset is declared per register; compiler auto-generates reset guards.
 - `for i in 0..N ... end for` — loop in `comb` or `seq` blocks; range is inclusive; emits SV `for` loop.
 - No implicit latches (error). Single driver per signal (error). All ports must be connected.
+- **Output timing:** `port reg o: out T` (driven in `seq` with `<=`) adds 1-cycle latency — output reflects state from the previous clock edge. `port o: out T` (driven in `comb` with `=` or via `let`) is combinational — output reflects current state same cycle. For FSM outputs where testbenches expect immediate (same-cycle) response to state changes, use plain `port` + `comb`, not `port reg`.
 
 ### Type System
 - **Primitive types:** `UInt<N>`, `SInt<N>`, `Bool`, `Bit`, `Clock<Domain>`, `Reset<Sync|Async, High|Low>` (polarity defaults High), `Vec<T,N>`, `struct`, `enum`, `Token`, `Future<T>`, `Token<T, id_width: N>`

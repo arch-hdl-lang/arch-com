@@ -26,6 +26,7 @@ Common mistakes to avoid:
 - Bit/byte reverse: expr.reverse(1) for bit-reverse, expr.reverse(8) for byte-reverse (width must be divisible by N)
 - Prefer concat {a, b} over bit-by-bit for loops; prefer direct boolean (z = (A == B);) over if/else
 - Use 'port reg name: out T reset rst => 0;' when an output port is directly driven by a register — this avoids declaring a separate reg + assigning it to the port. Only use a separate 'reg' + 'let port = reg;' when the register also feeds internal logic.
+- OUTPUT TIMING: 'port reg' outputs have 1-cycle latency (output reflects state from the PREVIOUS clock edge). For FSM outputs that must respond in the SAME cycle as a state transition (e.g. cocotb tests that update model state+outputs simultaneously), use plain 'port o: out T' driven by 'comb' or 'let', NOT 'port reg'.
 - Prefer putting next-value logic directly in seq (if/elsif) instead of splitting into separate comb + seq blocks. Use 'let x: T = expr;' for pure combinational expressions that feed into seq. Use 'let x = expr;' to drive an existing output port or wire. Only use 'wire' + 'comb ... end comb' when the value is conditionally assigned (if/elsif/else).
 - In fsm states, do NOT write '-> X when true;' — omit the transition to stay in the current state (implicit hold), or restructure so the last branch uses a real condition
 - Do NOT declare 'domain ... end domain' in pure combinational modules — domains are only needed when Clock/Reset ports are used

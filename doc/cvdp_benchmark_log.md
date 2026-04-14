@@ -363,11 +363,11 @@ Reworked several existing `.arch` files for correctness. Confirmed passing:
 | Category | Tasks | Testable | PASS | Rate |
 |----------|-------|----------|------|------|
 | cid002 | 94 | 91 | 91 | 100% |
-| cid003 | 78 | 77 | 75 | 97% |
+| cid003 | 78 | 77 | 76 | 99% |
 | cid004 | 55 | 53 | 53 | 100% |
 | cid007 | 40 | 23 | 23 | 100% |
 | cid016 | 35 | 31 | 30 | 97% |
-| **Total** | **302** | **275** | **272** | **98.9%** |
+| **Total** | **302** | **275** | **273** | **99.3%** |
 
 "Testable" excludes TOPLEVEL=verilog (~19 tasks) and modules with no `.arch`/`.sv`.
 
@@ -377,8 +377,8 @@ Reworked several existing `.arch` files for correctness. Confirmed passing:
 |--------|-------|
 | Total `.arch` files | ~285 |
 | Testable via cocotb | 275 |
-| **Cocotb PASS** | **272 (98.9%)** |
-| Cocotb FAIL | 3 |
+| **Cocotb PASS** | **273 (99.3%)** |
+| Cocotb FAIL | 2 |
 | Cocotb TIMEOUT | 4 |
 | Not testable (TOPLEVEL=verilog + missing) | 27 |
 
@@ -386,7 +386,7 @@ Reworked several existing `.arch` files for correctness. Confirmed passing:
 
 **cid002 (1 timeout):** vga_controller (complex pixel-timing harness).
 
-**cid003 (1 fail, 1 timeout):** microcode_sequencer (cocotb 2.0 `'Test' object is not callable`). Timeout: vga_controller.
+**cid003 (1 timeout):** vga_controller. (microcode_sequencer now PASS — nested `@cocotb.test()` decorator stripping fix in `run_cvdp.py`.)
 
 **cid004 (1 timeout):** vga_controller (shared across categories).
 

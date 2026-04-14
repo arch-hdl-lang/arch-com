@@ -809,6 +809,35 @@ end module Counter
 
 > *⚑ `port reg` eliminates the intermediate `reg count_r` and the `comb count = count_r; end comb` wiring block. The port is directly assigned in the `seq` block. This is the preferred style when the output port is a straightforward registered value.*
 
+**Timing implication of `port reg` vs `port` outputs:**
+
+| Output style | Declaration | Driven in | SV codegen | Output latency |
+|---|---|---|---|---|
+| **Registered** | `port reg o: out T reset ...` | `seq` block (`<=`) | `always_ff: o <= f(state)` | 1-cycle lag — output reflects state from the **previous** clock edge |
+| **Combinational** | `port o: out T` | `comb` block (`=`) or `let o = expr;` | `assign o = f(state)` or `always_comb` | 0-cycle — output reflects **current** state immediately |
+
+For FSM outputs that must change in the **same cycle** as a state transition (e.g., when a testbench model updates state and outputs simultaneously), use a plain `port` with `comb` assignment:
+
+```
+port o_active: out Bool;
+
+comb
+  o_active = (state_ff == 3);  // combinational: changes same cycle as state_ff
+end comb
+```
+
+For FSM outputs that should be **registered** (glitch-free, timing-clean, but 1-cycle delayed):
+
+```
+port reg o_active: out Bool reset rst => false;
+
+seq on clk rising
+  o_active <= (state_ff == 3);  // registered: reflects state_ff from previous edge
+end seq
+```
+
+> *⚑ Choose carefully: `port reg` adds a pipeline stage to the output path. If a testbench or downstream module expects zero-latency output response to state changes, use combinational `port` + `comb` instead.*
+
 **`multicycle` reg annotation (planned)** — `reg result: UInt<32> multicycle 3 reset rst => 0;` declares that the combinational path feeding this register has a multi-cycle timing budget. Unlike `pipe_reg` (which inserts N physical flip-flop stages), a `multicycle` register remains a single flop — no extra area or power. The compiler auto-detects all input signals feeding the register by walking the assignment expression tree. Three modes of enforcement: (1) **Simulation** (`--check-uninit`): hidden valid tracking with input change detection and latency counter; reads before the counter expires return poison/X. (2) **Synthesis**: SDC constraint generation (`set_multicycle_path N -to result`). (3) **Formal**: optional `assert property` to verify the multicycle timing assumption holds.
 
 **4.2.4 Width-Qualified Parameters**

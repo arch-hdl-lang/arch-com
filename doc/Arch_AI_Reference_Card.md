@@ -55,9 +55,15 @@ reg r: T init 0 reset rst => 0;    // init sets SV declaration initializer
 reg r: T reset none;                 // register without reset
 reg default: reset rst => 0;         // wildcard default for all regs in scope
 reg r: UInt<8>;                      // inherits reset from reg default
-port reg q: out UInt<8> reset rst => 0;  // output port + register combined
+port reg q: out UInt<8> reset rst => 0;  // output port + register combined (1-cycle output latency)
 port reg q: out UInt<8>;             // inherits reset from reg default
 pipe_reg delayed: source stages 3;  // N-stage delay chain, type inferred
+
+// OUTPUT TIMING: port reg vs port (critical for FSM outputs)
+//   port reg o: out T  → driven in seq (<=), output lags state by 1 cycle
+//   port     o: out T  → driven in comb (=) or let, output reflects state same cycle
+// Use plain port + comb for zero-latency FSM outputs (e.g. cocotb expects same-cycle response)
+// Use port reg for glitch-free registered outputs (adds 1-cycle pipeline delay)
 
 default seq on clk rising;           // set default clock for all seq blocks
 
