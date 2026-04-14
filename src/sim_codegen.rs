@@ -3040,7 +3040,7 @@ impl<'a> SimCodegen<'a> {
         if emit_debug {
             h.push_str("  // --debug port shadow copies\n");
             for p in &m.ports {
-                if p.bus_info.is_some() { continue; }
+                if p.bus_info.is_some() { continue; }  // bus flat signals handled below
                 if matches!(&p.ty, TypeExpr::Clock(_)) { continue; }
                 let pname = &p.name.name;
                 if let Some(vi) = vec_port_infos.iter().find(|v| v.name == *pname) {
@@ -3051,13 +3051,23 @@ impl<'a> SimCodegen<'a> {
                 } else {
                     let bits = type_width_of(&p.ty);
                     if bits > 64 {
-                        // Wide port: use VlWide shadow
                         let words = wide_words(bits);
                         h.push_str(&format!("  VlWide<{words}> _dbg_prev_{pname};\n"));
                     } else {
                         let shadow_ty = cpp_uint(bits.max(8));
                         h.push_str(&format!("  {shadow_ty} _dbg_prev_{pname} = 0;\n"));
                     }
+                }
+            }
+            // Bus flat signal shadows
+            for (flat_name, flat_ty) in &bus_flat {
+                let bits = type_width_of(flat_ty);
+                if bits > 64 {
+                    let words = wide_words(bits);
+                    h.push_str(&format!("  VlWide<{words}> _dbg_prev_{flat_name};\n"));
+                } else {
+                    let shadow_ty = cpp_uint(bits.max(8));
+                    h.push_str(&format!("  {shadow_ty} _dbg_prev_{flat_name} = 0;\n"));
                 }
             }
             h.push_str("  uint64_t _dbg_cycle = 0;\n");
@@ -3860,6 +3870,48 @@ impl<'a> SimCodegen<'a> {
                     }
                 }
             }
+            // Bus flat signals: log each flattened bus signal
+            for (flat_name, flat_ty) in &bus_flat {
+                let bits = type_width_of(flat_ty);
+                if bits > 64 {
+                    let words = wide_words(bits);
+                    cpp.push_str(&format!(
+                        "  if (memcmp(&{flat_name}, &_dbg_prev_{flat_name}, sizeof({flat_name})) != 0) {{\n"
+                    ));
+                    cpp.push_str(&format!(
+                        "    printf(\"[%llu][{name}.{flat_name}](bus) 0x\",\n           (unsigned long long)_dbg_cycle);\n"
+                    ));
+                    cpp.push_str(&format!(
+                        "    for (int _w = {words} - 1; _w >= 0; _w--) printf(\"%08x\", _dbg_prev_{flat_name}.data()[_w]);\n"
+                    ));
+                    cpp.push_str("    printf(\" -> 0x\");\n");
+                    cpp.push_str(&format!(
+                        "    for (int _w = {words} - 1; _w >= 0; _w--) printf(\"%08x\", {flat_name}.data()[_w]);\n"
+                    ));
+                    cpp.push_str("    printf(\"\\n\");\n");
+                    cpp.push_str(&format!("    _dbg_prev_{flat_name} = {flat_name};\n"));
+                    cpp.push_str("  }\n");
+                } else {
+                    cpp.push_str(&format!(
+                        "  if ({flat_name} != _dbg_prev_{flat_name}) {{\n"
+                    ));
+                    cpp.push_str(&format!(
+                        "    printf(\"[%llu][{name}.{flat_name}](bus) 0x%llx -> 0x%llx\\n\",\n"
+                    ));
+                    cpp.push_str(
+                        "           (unsigned long long)_dbg_cycle,\n"
+                    );
+                    cpp.push_str(&format!(
+                        "           (unsigned long long)_dbg_prev_{flat_name},\n"
+                    ));
+                    cpp.push_str(&format!(
+                        "           (unsigned long long){flat_name});\n"
+                    ));
+                    cpp.push_str(&format!("    _dbg_prev_{flat_name} = {flat_name};\n"));
+                    cpp.push_str("  }\n");
+                }
+            }
+
             // Only increment cycle counter on rising clock edge (matches testbench tick count).
             // For pure-combinational modules (no clock), always increment.
             if let Some(first_clk) = clk_ports.first() {
