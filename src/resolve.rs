@@ -625,8 +625,13 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                         } else {
                             // Verify the instantiated module exists
                             if !table.globals.contains_key(&i.module_name.name) {
-                                errors.push(CompileError::undefined(
-                                    &i.module_name.name,
+                                let mname = &i.module_name.name;
+                                errors.push(CompileError::undefined_module(
+                                    mname,
+                                    &format!(
+                                        "build the sub-module first: `arch build {mname}.arch` \
+                                         (generates {mname}.archi), then re-compile this module"
+                                    ),
                                     i.module_name.span,
                                 ));
                             }
@@ -640,6 +645,20 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                                     i.name.span,
                                 ),
                             );
+                        }
+                    }
+                    ModuleBodyItem::Function(f) => {
+                        // Register module-local functions in globals so they're
+                        // callable from expressions within this module.
+                        let info = FunctionInfo {
+                            name: f.name.name.clone(),
+                            arg_types: f.args.iter().map(|a| a.ty.clone()).collect(),
+                            ret_ty: f.ret_ty.clone(),
+                        };
+                        if let Some((Symbol::Function(overloads), _)) = table.globals.get_mut(&f.name.name) {
+                            overloads.push(info);
+                        } else if !table.globals.contains_key(&f.name.name) {
+                            table.globals.insert(f.name.name.clone(), (Symbol::Function(vec![info]), f.name.span));
                         }
                     }
                     _ => {}

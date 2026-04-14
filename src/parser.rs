@@ -360,9 +360,12 @@ impl Parser {
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
                     body.push(ModuleBodyItem::Assert(self.parse_assert_decl()?));
                 }
+                Some(TokenKind::Function) => {
+                    body.push(ModuleBodyItem::Function(self.parse_function()?));
+                }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "param, port, reg, seq, comb, let, inst, pipe_reg, generate_for, generate_if, thread, default, assert, cover, or hook",
+                        "param, port, reg, seq, comb, let, inst, pipe_reg, generate_for, generate_if, thread, default, assert, cover, function, or hook",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -2248,6 +2251,16 @@ impl Parser {
                 let end = self.expect(TokenKind::RParen)?;
                 Ok(Expr {
                     kind: ExprKind::Signed(Box::new(arg)),
+                    span: start.merge(end.span), parenthesized: false })
+            }
+            // onehot(index) — one-hot decode: 1 << index
+            Some(TokenKind::Onehot) => {
+                let start = self.advance().span;
+                self.expect(TokenKind::LParen)?;
+                let arg = self.parse_expr()?;
+                let end = self.expect(TokenKind::RParen)?;
+                Ok(Expr {
+                    kind: ExprKind::Onehot(Box::new(arg)),
                     span: start.merge(end.span), parenthesized: false })
             }
             // unsigned(expr) — same-width reinterpret to UInt

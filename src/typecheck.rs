@@ -537,6 +537,10 @@ impl<'a> TypeChecker<'a> {
                         ));
                     }
                 }
+                ModuleBodyItem::Function(_) => {
+                    // Module-local functions are validated by the existing function
+                    // type-checking in resolve/codegen. No additional checks needed here.
+                }
             }
         }
 
@@ -1897,6 +1901,16 @@ impl<'a> TypeChecker<'a> {
                     Ty::UInt(bits as u32)
                 } else {
                     Ty::UInt(32) // fallback: treat as generic integer
+                }
+            }
+            ExprKind::Onehot(index) => {
+                // onehot(index) returns a one-hot value; width = 2^index_width
+                // but we can't easily compute that, so infer from context (assignment target).
+                // Return a generic UInt that will be width-checked at assignment.
+                let idx_ty = self.resolve_expr_type(index, module_name, local_types);
+                match idx_ty {
+                    Ty::UInt(w) => Ty::UInt(1 << w),
+                    _ => Ty::UInt(32),
                 }
             }
             ExprKind::Signed(inner) => {

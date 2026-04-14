@@ -30,6 +30,15 @@ pub enum CompileError {
         span: SourceSpan,
     },
 
+    #[error("undefined module: `{name}`")]
+    #[diagnostic(help("{hint}"))]
+    UndefinedModule {
+        name: String,
+        hint: String,
+        #[label("not found")]
+        span: SourceSpan,
+    },
+
     #[error("duplicate definition: `{name}`")]
     DuplicateDefinition {
         name: String,
@@ -122,6 +131,14 @@ impl CompileError {
         }
     }
 
+    pub fn undefined_module(name: &str, hint: &str, span: Span) -> Self {
+        CompileError::UndefinedModule {
+            name: name.to_string(),
+            hint: hint.to_string(),
+            span: span_to_source_span(span),
+        }
+    }
+
     pub fn duplicate(name: &str, span: Span) -> Self {
         CompileError::DuplicateDefinition {
             name: name.to_string(),
@@ -150,6 +167,7 @@ impl CompileError {
             CompileError::UnexpectedToken { span, .. }
             | CompileError::MismatchedClosingName { span, .. }
             | CompileError::UndefinedName { span, .. }
+            | CompileError::UndefinedModule { span, .. }
             | CompileError::DuplicateDefinition { span, .. }
             | CompileError::TypeMismatch { span, .. }
             | CompileError::WidthMismatch { span, .. }
@@ -174,6 +192,8 @@ impl CompileError {
                 CompileError::MismatchedClosingName { expected, found, span: respan(span, new_offset) },
             CompileError::UndefinedName { name, span } =>
                 CompileError::UndefinedName { name, span: respan(span, new_offset) },
+            CompileError::UndefinedModule { name, hint, span } =>
+                CompileError::UndefinedModule { name, hint, span: respan(span, new_offset) },
             CompileError::DuplicateDefinition { name, span } =>
                 CompileError::DuplicateDefinition { name, span: respan(span, new_offset) },
             CompileError::TypeMismatch { expected, found, span } =>

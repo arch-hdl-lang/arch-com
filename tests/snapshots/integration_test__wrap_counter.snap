@@ -25,5 +25,10 @@ module WrapCounter #(
   end
   assign value = count_r;
   assign at_max = (count_r == 4'(MAX));
+  
+  // synopsys translate_off
+  _auto_count_range: assert property (@(posedge clk) count_r <= 4'(15))
+    else $fatal(1, "COUNTER OVERFLOW: WrapCounter.count_r > MAX");
+  // synopsys translate_on
 
 endmodule

@@ -1720,6 +1720,10 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             let a = cpp_expr(arg, ctx);
             format!("_arch_clog2({a})")
         }
+        ExprKind::Onehot(index) => {
+            let idx = cpp_expr(index, ctx);
+            format!("(1ULL << {idx})")
+        }
         ExprKind::Signed(inner) | ExprKind::Unsigned(inner) => {
             // Same-width reinterpret — C++ sim model is bitwise, no-op
             cpp_expr(inner, ctx)

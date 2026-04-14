@@ -195,6 +195,7 @@ pub enum ModuleBodyItem {
     Thread(ThreadBlock),
     Resource(ResourceDecl),
     Assert(AssertDecl),
+    Function(FunctionDecl),
 }
 
 impl ModuleBodyItem {
@@ -215,6 +216,7 @@ impl ModuleBodyItem {
             ModuleBodyItem::Thread(t) => t.span,
             ModuleBodyItem::Resource(r) => r.span,
             ModuleBodyItem::Assert(a) => a.span,
+            ModuleBodyItem::Function(f) => f.span,
         }
     }
 }
@@ -645,6 +647,8 @@ pub enum ExprKind {
     Repeat(Box<Expr>, Box<Expr>),
     /// $clog2(expr) — ceiling log2, used in type width expressions.
     Clog2(Box<Expr>),
+    /// onehot(index) — one-hot decode: 1 << index. Width inferred from context.
+    Onehot(Box<Expr>),
     /// signed(expr) — same-width reinterpret cast to SInt.
     Signed(Box<Expr>),
     /// unsigned(expr) — same-width reinterpret cast to UInt.

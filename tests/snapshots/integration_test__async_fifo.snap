@@ -83,5 +83,12 @@ module AsyncBridge #(
     if (rst) rd_ptr_bin <= '0;
     else if (pop_valid && pop_ready) rd_ptr_bin <= rd_ptr_bin + 1;
   end
+  
+  // synopsys translate_off
+  _auto_no_overflow: assert property (@(posedge wr_clk) !(push_valid && push_ready && full_r))
+    else $fatal(1, "FIFO OVERFLOW: AsyncBridge.push while full");
+  _auto_no_underflow: assert property (@(posedge rd_clk) !(pop_valid && pop_ready && empty_r))
+    else $fatal(1, "FIFO UNDERFLOW: AsyncBridge.pop while empty");
+  // synopsys translate_on
 
 endmodule

@@ -311,6 +311,8 @@ pub enum TokenKind {
     // System functions
     #[token("$clog2")]
     Clog2,
+    #[token("onehot")]
+    Onehot,
 
     // Signed/unsigned reinterpret casts
     #[token("signed")]
@@ -467,6 +469,7 @@ impl fmt::Display for TokenKind {
             TokenKind::SizedLiteral(s) => write!(f, "{s}"),
             TokenKind::DecLiteral(s) => write!(f, "{s}"),
             TokenKind::Clog2 => write!(f, "$clog2"),
+            TokenKind::Onehot => write!(f, "onehot"),
             TokenKind::Signed => write!(f, "signed"),
             TokenKind::KwUnsigned => write!(f, "unsigned"),
             TokenKind::Log => write!(f, "log"),

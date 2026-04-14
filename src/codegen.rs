@@ -511,6 +511,9 @@ impl<'a> Codegen<'a> {
                 ModuleBodyItem::Assert(_) => {
                     // Collected and emitted as a group below (with translate_off/on)
                 }
+                ModuleBodyItem::Function(f) => {
+                    self.emit_function(f);
+                }
             }
         }
 
@@ -4215,6 +4218,10 @@ impl<'a> Codegen<'a> {
             ExprKind::Clog2(arg) => {
                 let a = self.emit_expr_str(arg);
                 format!("$clog2({a})")
+            }
+            ExprKind::Onehot(index) => {
+                let idx = self.emit_expr_str(index);
+                format!("(1 << {idx})")
             }
             ExprKind::Signed(inner) => {
                 let e = self.emit_expr_str(inner);
