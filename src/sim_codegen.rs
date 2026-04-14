@@ -2426,6 +2426,10 @@ impl<'a> SimCodegen<'a> {
                         let val = cpp_expr(&l.value, &ctx);
                         h.push_str(&format!("  const {ty} {} = {};\n", l.name.name, val));
                     }
+                    FunctionBodyItem::IfElse(_) | FunctionBodyItem::For(_) | FunctionBodyItem::Assign(_) => {
+                        // TODO: emit C++ for if/for/assign in sim functions
+                        // For now, these are only used in SV codegen
+                    }
                     FunctionBodyItem::Return(e) => {
                         // If it's a match expression, emit as switch for efficiency
                         if let ExprKind::ExprMatch(scrut, arms) = &e.kind {

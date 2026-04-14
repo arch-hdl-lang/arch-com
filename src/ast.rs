@@ -811,6 +811,35 @@ pub struct FunctionArg {
 pub enum FunctionBodyItem {
     Let(LetBinding),
     Return(Expr),
+    IfElse(FunctionIfElse),
+    For(FunctionFor),
+    Assign(FunctionAssign),
+}
+
+/// If/elsif/else inside a function body.
+#[derive(Debug, Clone)]
+pub struct FunctionIfElse {
+    pub cond: Expr,
+    pub then_body: Vec<FunctionBodyItem>,
+    pub else_body: Vec<FunctionBodyItem>,
+    pub span: Span,
+}
+
+/// For loop inside a function body.
+#[derive(Debug, Clone)]
+pub struct FunctionFor {
+    pub var: Ident,
+    pub range: ForRange,
+    pub body: Vec<FunctionBodyItem>,
+    pub span: Span,
+}
+
+/// Assignment to a local variable inside a function (blocking =).
+#[derive(Debug, Clone)]
+pub struct FunctionAssign {
+    pub target: Expr,
+    pub value: Expr,
+    pub span: Span,
 }
 
 // ── ConstructCommon — shared header for all first-class constructs ────────────

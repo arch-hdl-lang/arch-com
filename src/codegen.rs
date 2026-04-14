@@ -235,11 +235,109 @@ impl<'a> Codegen<'a> {
                     let val = self.emit_expr_str(expr);
                     self.line(&format!("return {};", val));
                 }
+                FunctionBodyItem::IfElse(ie) => {
+                    self.emit_function_if(ie);
+                }
+                FunctionBodyItem::For(fl) => {
+                    self.emit_function_for(fl);
+                }
+                FunctionBodyItem::Assign(a) => {
+                    let target = self.emit_expr_str(&a.target);
+                    let val = self.emit_expr_str(&a.value);
+                    self.line(&format!("{target} = {val};"));
+                }
             }
         }
         self.indent -= 1;
         self.line("endfunction");
         self.line("");
+    }
+
+    fn emit_function_body_items(&mut self, items: &[FunctionBodyItem]) {
+        for item in items {
+            match item {
+                FunctionBodyItem::Let(l) => {
+                    let ty_str = if let Some(ann) = &l.ty {
+                        self.emit_type_str(ann)
+                    } else {
+                        "logic".to_string()
+                    };
+                    let val = self.emit_expr_str(&l.value);
+                    self.line(&format!("{} {} = {};", ty_str, l.name.name, val));
+                }
+                FunctionBodyItem::Return(expr) => {
+                    let val = self.emit_expr_str(expr);
+                    self.line(&format!("return {};", val));
+                }
+                FunctionBodyItem::IfElse(ie) => self.emit_function_if(ie),
+                FunctionBodyItem::For(fl) => self.emit_function_for(fl),
+                FunctionBodyItem::Assign(a) => {
+                    let target = self.emit_expr_str(&a.target);
+                    let val = self.emit_expr_str(&a.value);
+                    self.line(&format!("{target} = {val};"));
+                }
+            }
+        }
+    }
+
+    fn emit_function_if(&mut self, ie: &FunctionIfElse) {
+        let cond = self.emit_expr_str(&ie.cond);
+        self.line(&format!("if ({cond}) begin"));
+        self.indent += 1;
+        self.emit_function_body_items(&ie.then_body);
+        self.indent -= 1;
+        if !ie.else_body.is_empty() {
+            // Check if else body is a single elsif (nested IfElse)
+            if ie.else_body.len() == 1 {
+                if let FunctionBodyItem::IfElse(nested) = &ie.else_body[0] {
+                    let ncond = self.emit_expr_str(&nested.cond);
+                    self.line(&format!("end else if ({ncond}) begin"));
+                    self.indent += 1;
+                    self.emit_function_body_items(&nested.then_body);
+                    self.indent -= 1;
+                    if !nested.else_body.is_empty() {
+                        self.line("end else begin");
+                        self.indent += 1;
+                        self.emit_function_body_items(&nested.else_body);
+                        self.indent -= 1;
+                    }
+                    self.line("end");
+                    return;
+                }
+            }
+            self.line("end else begin");
+            self.indent += 1;
+            self.emit_function_body_items(&ie.else_body);
+            self.indent -= 1;
+        }
+        self.line("end");
+    }
+
+    fn emit_function_for(&mut self, fl: &FunctionFor) {
+        let var = &fl.var.name;
+        match &fl.range {
+            ForRange::Range(lo, hi) => {
+                let lo_s = self.emit_expr_str(lo);
+                let hi_s = self.emit_expr_str(hi);
+                self.line(&format!("for (int {var} = {lo_s}; {var} <= {hi_s}; {var}++) begin"));
+            }
+            ForRange::ValueList(_vals) => {
+                // Value-list for loops are compile-time unrolled — emit sequentially
+                // For simplicity in functions, just emit as sequential statements
+                if let ForRange::ValueList(vals) = &fl.range {
+                    for val in vals {
+                        let v = self.emit_expr_str(val);
+                        self.line(&format!("// {var} = {v}"));
+                        // TODO: proper unrolling with variable substitution
+                    }
+                }
+                return;
+            }
+        }
+        self.indent += 1;
+        self.emit_function_body_items(&fl.body);
+        self.indent -= 1;
+        self.line("end");
     }
 
     fn emit_package(&mut self, pkg: &PackageDecl) {

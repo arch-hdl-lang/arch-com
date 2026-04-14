@@ -4209,24 +4209,8 @@ impl Parser {
         self.expect(TokenKind::RArrow)?;
         let ret_ty = self.parse_type_expr()?;
 
-        // Body: let* return
-        let mut body = Vec::new();
-        while !self.check_end_keyword() {
-            if self.check(TokenKind::Let) {
-                body.push(FunctionBodyItem::Let(self.parse_let_binding()?));
-            } else if self.check(TokenKind::Return) {
-                self.advance();
-                let expr = self.parse_expr()?;
-                self.expect(TokenKind::Semi)?;
-                body.push(FunctionBodyItem::Return(expr));
-            } else {
-                return Err(CompileError::unexpected_token(
-                    "let or return",
-                    &self.peek_kind().map(|k| k.to_string()).unwrap_or_else(|| "EOF".to_string()),
-                    self.peek_span(),
-                ));
-            }
-        }
+        // Body: let, return, if/elsif/else, for, or assignment
+        let body = self.parse_function_body()?;
 
         self.expect(TokenKind::End)?;
         self.expect(TokenKind::Function)?;
@@ -4256,6 +4240,123 @@ impl Parser {
         Ok(UseDecl {
             span: start.merge(end),
             name,
+        })
+    }
+
+    /// Parse a function body: a sequence of let, return, if/elsif/else, for, or assignment statements.
+    fn parse_function_body(&mut self) -> Result<Vec<FunctionBodyItem>, CompileError> {
+        let mut body = Vec::new();
+        while !self.check_end_keyword() && !self.check(TokenKind::Else) && !self.check(TokenKind::ElsIf) {
+            if self.check(TokenKind::Let) {
+                body.push(FunctionBodyItem::Let(self.parse_let_binding()?));
+            } else if self.check(TokenKind::Return) {
+                self.advance();
+                let expr = self.parse_expr()?;
+                self.expect(TokenKind::Semi)?;
+                body.push(FunctionBodyItem::Return(expr));
+            } else if self.check(TokenKind::If) {
+                body.push(FunctionBodyItem::IfElse(self.parse_function_if()?));
+            } else if self.check(TokenKind::For) {
+                body.push(FunctionBodyItem::For(self.parse_function_for()?));
+            } else {
+                // Try parsing as assignment: expr = expr;
+                let start_span = self.peek_span();
+                let target = self.parse_expr()?;
+                self.expect(TokenKind::Eq)?;
+                let value = self.parse_expr()?;
+                let end = self.expect(TokenKind::Semi)?;
+                body.push(FunctionBodyItem::Assign(FunctionAssign {
+                    target,
+                    value,
+                    span: start_span.merge(end.span),
+                }));
+            }
+        }
+        Ok(body)
+    }
+
+    /// Parse if/elsif/else inside a function body.
+    fn parse_function_if(&mut self) -> Result<FunctionIfElse, CompileError> {
+        let start = self.expect(TokenKind::If)?.span;
+        let cond = self.parse_expr()?;
+        let then_body = self.parse_function_body()?;
+
+        let else_body = if self.check(TokenKind::ElsIf) {
+            // elsif → parse as nested if
+            vec![FunctionBodyItem::IfElse(self.parse_function_elsif()?)]
+        } else if self.check(TokenKind::Else) {
+            self.advance();
+            self.parse_function_body()?
+        } else {
+            Vec::new()
+        };
+
+        let end = self.expect(TokenKind::End)?;
+        self.expect(TokenKind::If)?;
+
+        Ok(FunctionIfElse {
+            cond,
+            then_body,
+            else_body,
+            span: start.merge(end.span),
+        })
+    }
+
+    /// Parse elsif branch (reuses function_if logic without consuming `if` keyword).
+    fn parse_function_elsif(&mut self) -> Result<FunctionIfElse, CompileError> {
+        let start = self.expect(TokenKind::ElsIf)?.span;
+        let cond = self.parse_expr()?;
+        let then_body = self.parse_function_body()?;
+
+        let else_body = if self.check(TokenKind::ElsIf) {
+            vec![FunctionBodyItem::IfElse(self.parse_function_elsif()?)]
+        } else if self.check(TokenKind::Else) {
+            self.advance();
+            self.parse_function_body()?
+        } else {
+            Vec::new()
+        };
+
+        // elsif doesn't have its own `end if` — the outer `end if` closes the whole chain
+        Ok(FunctionIfElse {
+            cond,
+            then_body,
+            else_body,
+            span: start,
+        })
+    }
+
+    /// Parse for loop inside a function body.
+    fn parse_function_for(&mut self) -> Result<FunctionFor, CompileError> {
+        let start = self.expect(TokenKind::For)?.span;
+        let var = self.expect_ident()?;
+        self.expect_contextual("in")?;
+
+        let range = if self.check(TokenKind::LBrace) {
+            self.advance();
+            let mut values = Vec::new();
+            loop {
+                values.push(self.parse_expr()?);
+                if !self.eat(TokenKind::Comma) { break; }
+            }
+            self.expect(TokenKind::RBrace)?;
+            ForRange::ValueList(values)
+        } else {
+            let range_start = self.parse_expr()?;
+            self.expect(TokenKind::DotDot)?;
+            let range_end = self.parse_expr()?;
+            ForRange::Range(range_start, range_end)
+        };
+
+        let body = self.parse_function_body()?;
+        let end = self.expect(TokenKind::End)?;
+        self.expect(TokenKind::For)?;
+
+        Ok(FunctionFor {
+            var,
+            range,
+            body,
+            span: start.merge(end.span),
         })
     }
 

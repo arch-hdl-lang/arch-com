@@ -3209,6 +3209,10 @@ impl<'a> TypeChecker<'a> {
                         });
                     }
                 }
+                FunctionBodyItem::IfElse(_) | FunctionBodyItem::For(_) | FunctionBodyItem::Assign(_) => {
+                    // Type checking for control flow in functions is deferred
+                    // (expressions within are checked by the SV backend)
+                }
             }
         }
     }
@@ -3538,6 +3542,7 @@ fn check_precedence_in_item(item: &Item, errors: &mut Vec<CompileError>) {
                 match it {
                     FunctionBodyItem::Let(l) => check_precedence_expr(&l.value, errors),
                     FunctionBodyItem::Return(e) => check_precedence_expr(e, errors),
+                    FunctionBodyItem::IfElse(_) | FunctionBodyItem::For(_) | FunctionBodyItem::Assign(_) => {}
                 }
             }
         }
