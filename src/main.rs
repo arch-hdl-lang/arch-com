@@ -432,6 +432,7 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
 
     let mut all_files: Vec<PathBuf> = Vec::new();
     let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut all_defined_modules: HashSet<String> = HashSet::new();
     let mut queue: Vec<PathBuf> = files.to_vec();
 
     // Process files, discovering new dependencies via `use`
@@ -462,17 +463,22 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
             }
         }
 
-        // Find inst references and look for .archi interface files
-        let defined_modules: HashSet<String> = parsed.items.iter()
-            .filter_map(|item| match item {
-                Item::Module(m) => Some(m.name.name.clone()),
-                Item::Fsm(f) => Some(f.name.name.clone()),
-                Item::Counter(c) => Some(c.name.name.clone()),
-                Item::Pipeline(p) => Some(p.name.name.clone()),
-                _ => None,
-            })
-            .collect();
+        // Track all module names defined across all input files
+        for item in &parsed.items {
+            match item {
+                Item::Module(m) => { all_defined_modules.insert(m.name.name.clone()); }
+                Item::Fsm(f) => { all_defined_modules.insert(f.name.name.clone()); }
+                Item::Counter(c) => { all_defined_modules.insert(c.name.name.clone()); }
+                Item::Pipeline(p) => { all_defined_modules.insert(p.name.name.clone()); }
+                Item::Synchronizer(s) => { all_defined_modules.insert(s.name.name.clone()); }
+                Item::Fifo(f) => { all_defined_modules.insert(f.name.name.clone()); }
+                Item::Ram(r) => { all_defined_modules.insert(r.name.name.clone()); }
+                Item::Arbiter(a) => { all_defined_modules.insert(a.name.name.clone()); }
+                _ => {}
+            }
+        }
 
+        // Find inst references and look for .archi interface files
         for item in &parsed.items {
             let insts = match item {
                 Item::Module(m) => m.body.iter()
@@ -481,7 +487,7 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
                 _ => vec![],
             };
             for inst_name in insts {
-                if defined_modules.contains(inst_name.as_str()) { continue; }
+                if all_defined_modules.contains(inst_name.as_str()) { continue; }
                 // Look for .arch first, then .archi
                 let arch_path = base_dir.join(format!("{inst_name}.arch"));
                 let archi_path = base_dir.join(format!("{inst_name}.archi"));
