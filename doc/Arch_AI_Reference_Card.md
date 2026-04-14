@@ -169,6 +169,15 @@ x[i]           // single bit extract
 | `.sext<N>()` | yes (no-op) | yes (narrows) | — |
 | `.resize<N>()` | — | — | — |
 
+**Built-in functions:**
+
+```
+onehot(index)  // one-hot decode: 1 << index; width inferred from context
+$clog2(expr)   // ceiling log2 (SV: $clog2(expr))
+signed(expr)   // same-width reinterpret to SInt (SV: $signed(expr))
+unsigned(expr) // same-width reinterpret to UInt (SV: $unsigned(expr))
+```
+
 **Signedness reinterpret** (same width, no N needed):
 
 ```
@@ -859,6 +868,38 @@ SV output: `package BusPkg; ... endpackage` + `import BusPkg::*;`
 - Contains: `enum`, `struct`, `function`, `param`, `domain` — no modules/pipelines/FSMs
 - Domains in a package are shared across files via `use`
 - Resolved from same directory or multi-file command line
+
+**Module-local functions** — functions can also be declared inside a module body:
+
+```
+module MyModule
+  port a: in UInt<8>;
+  port b: in UInt<8>;
+  port sum: out UInt<8>;
+
+  function add_wrap(x: UInt<8>, y: UInt<8>) -> UInt<8>
+    return (x + y).trunc<8>();
+  end function add_wrap
+
+  let sum = add_wrap(a, b);
+end module MyModule
+```
+
+SV output: `function automatic` inside the module block. Use for one-off helpers that don't warrant a package.
+
+---
+
+### Separate compilation (.archi interface files)
+
+`arch build` emits `.archi` interface files alongside `.sv` by default. These contain only the module signature (params + ports, no body).
+
+```bash
+arch build SubModule.arch         # → SubModule.sv + SubModule.archi
+arch check TopModule.arch         # auto-discovers SubModule.archi for type-checking
+arch build *.arch                 # builds all, respects deps via .archi discovery
+```
+
+When `inst sub: SubModule` references an undefined module, the compiler searches for `SubModule.archi` or `SubModule.arch` in the input directory and `ARCH_LIB_PATH`.
 
 ---
 

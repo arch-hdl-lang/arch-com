@@ -111,6 +111,9 @@ Arch has three kinds of module-scope signal declarations:
 - `for i in 0..N ... end for` — loop in `comb` or `seq` blocks; range is inclusive; emits SV `for` loop.
 - No implicit latches (error). Single driver per signal (error). All ports must be connected.
 - **Output timing:** `port reg o: out T` (driven in `seq` with `<=`) adds 1-cycle latency — output reflects state from the previous clock edge. `port o: out T` (driven in `comb` with `=` or via `let`) is combinational — output reflects current state same cycle. For FSM outputs where testbenches expect immediate (same-cycle) response to state changes, use plain `port` + `comb`, not `port reg`.
+- **Built-in functions:** `onehot(index)` → one-hot decode (`1 << index`), width inferred from context. `$clog2(expr)` → ceiling log2. `signed(expr)` / `unsigned(expr)` → same-width reinterpret.
+- **Module-local functions:** `function name(args) -> RetType ... end function name` can be declared inside a module body. Emits SV `function automatic` inside the module block. Use for one-off helpers.
+- **Separate compilation:** `arch build` emits `.archi` interface files alongside `.sv`. When `inst sub: SubModule` references an undefined module, the compiler auto-discovers `SubModule.archi` in the input directory or `ARCH_LIB_PATH`.
 
 ### Type System
 - **Primitive types:** `UInt<N>`, `SInt<N>`, `Bool`, `Bit`, `Clock<Domain>`, `Reset<Sync|Async, High|Low>` (polarity defaults High), `Vec<T,N>`, `struct`, `enum`, `Token`, `Future<T>`, `Token<T, id_width: N>`
