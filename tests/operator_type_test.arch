@@ -1,0 +1,99 @@
+// Comprehensive operator x data-type correctness test.
+// Verifies the compiler correctly handles width widening, signedness,
+// type checking, and explicit casts for all operator/type combinations.
+//
+// IEEE 1800-2012 section 11.6 governs arithmetic result widths.
+// ARCH enforces explicit casts for all conversions.
+
+module OperatorTypeTest
+  port a8: in UInt<8>;
+  port b8: in UInt<8>;
+  port c4: in UInt<4>;
+  port d3: in UInt<3>;
+  port sa: in SInt<8>;
+  port sb: in SInt<8>;
+  port bool_a: in Bool;
+  port bool_b: in Bool;
+
+  // ── 1. Arithmetic widening (IEEE 1800-2012 section 11.6) ──
+
+  // Addition: max(W(a),W(b)) + 1
+  let arith_add_same: UInt<9> = a8 + b8;               // 8+8 -> 9
+  let arith_add_mixed: UInt<9> = a8 + c4;              // max(8,4)+1 = 9
+  let arith_sub_same: UInt<9> = a8 - b8;               // 8-8 -> 9
+
+  // Multiplication: W(a) + W(b)
+  let arith_mul_same: UInt<16> = a8 * b8;              // 8*8 -> 16
+  let arith_mul_mixed: UInt<12> = a8 * c4;             // 8+4 = 12
+
+  // ── 2. Wrapping operators ──
+
+  // Same width: result = max(W(a),W(b))
+  let wrap_add_same: UInt<8> = a8 +% b8;               // max(8,8) = 8
+  let wrap_sub_same: UInt<8> = a8 -% b8;               // max(8,8) = 8
+  let wrap_mul_same: UInt<8> = a8 *% b8;               // max(8,8) = 8
+
+  // Mixed width: result = max(W(a),W(b))
+  let wrap_add_mixed: UInt<8> = a8 +% c4;              // max(8,4) = 8
+  let wrap_add_comm: UInt<8> = c4 +% a8;               // max(4,8) = 8 (commutative)
+  let wrap_sub_mixed: UInt<8> = a8 -% c4;              // max(8,4) = 8
+  let wrap_mul_mixed: UInt<8> = a8 *% c4;              // max(8,4) = 8
+
+  // ── 3. Signed arithmetic ──
+
+  let sint_add: SInt<9> = sa + sb;                     // SInt<8>+SInt<8> -> SInt<9>
+  let sint_mul: SInt<16> = sa * sb;                    // SInt<8>*SInt<8> -> SInt<16>
+  let sint_cast_add: SInt<9> = signed(a8) + signed(b8); // cast then add
+
+  // ── 4. Comparison results (always Bool) ──
+
+  let cmp_eq: Bool = a8 == b8;
+  let cmp_lt: Bool = a8 < b8;
+  let cmp_ne: Bool = a8 != b8;
+  let cmp_ge: Bool = a8 >= b8;
+  let cmp_gt: Bool = a8 > b8;
+
+  // ── 5. Bitwise operators (same-width, no widening) ──
+
+  let bit_and: UInt<8> = a8 & b8;
+  let bit_or: UInt<8> = a8 | b8;
+  let bit_xor: UInt<8> = a8 ^ b8;
+  let bit_not: UInt<8> = ~a8;
+
+  // ── 6. Shift operators (non-widening) ──
+
+  let shift_left_var: UInt<8> = a8 << d3;              // result width = LHS width
+  let shift_right_var: UInt<8> = a8 >> d3;
+  let shift_left_lit: UInt<8> = a8 << 4;               // literal shift amount
+
+  // ── 7. Bool operations ──
+
+  let bool_and: Bool = bool_a & bool_b;
+  let bool_or: Bool = bool_a | bool_b;
+  let bool_not: Bool = ~bool_a;
+  let bool_xor: Bool = bool_a ^ bool_b;
+
+  // ── 8. Reduction operators ──
+
+  let red_and: Bool = &a8;                             // reduction AND
+  let red_or: Bool = |a8;                              // reduction OR
+  let red_xor: Bool = ^a8;                             // reduction XOR
+
+  // ── 9. Width casts in expressions ──
+
+  let trunc_add: UInt<8> = (a8 + b8).trunc<8>();       // 9->8
+  let zext_small: UInt<8> = c4.zext<8>();              // 4->8
+  let zext_add: UInt<17> = a8.zext<16>() + b8.zext<16>(); // 16+16->17
+  let sext_test: SInt<16> = sa.sext<16>();             // SInt<8>->SInt<16>
+
+  // ── 10. Concatenation ──
+
+  let concat_same: UInt<16> = {a8, b8};                // 8+8 = 16
+  let concat_diff: UInt<8> = {c4, c4};                 // 4+4 = 8
+  let concat_bool: UInt<8> = {bool_a, a8[6:0]};       // 1+7 = 8
+
+  // ── 11. onehot ──
+
+  let onehot_test: UInt<8> = onehot(d3);              // 1 << d3
+
+end module OperatorTypeTest
