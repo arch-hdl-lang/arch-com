@@ -16,7 +16,7 @@ module fifo_async #(
 );
 
   // Memory array
-  logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];
+  logic [DEPTH-1:0] [DATA_WIDTH-1:0] mem;
   // Write pointer binary
   logic [ADDR_WIDTH + 1-1:0] w_bin;
   // Read pointer binary
