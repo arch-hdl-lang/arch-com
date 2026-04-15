@@ -18,13 +18,13 @@ pub fn emit_interface(item: &Item) -> Option<String> {
         Item::Struct(s) => Some(emit_struct(s)),
         Item::Enum(e) => Some(emit_enum(e)),
         Item::Package(p) => Some(emit_package_interface(p)),
-        Item::Synchronizer(s) => Some(emit_generic("synchronizer", &s.name.name, &s.params, &s.ports)),
-        Item::Fifo(f) => Some(emit_generic("fifo", &f.name.name, &f.params, &f.ports)),
-        Item::Ram(r) => Some(emit_generic("ram", &r.name.name, &r.params, &r.ports)),
-        Item::Arbiter(a) => Some(emit_generic("arbiter", &a.name.name, &a.params, &a.ports)),
+        Item::Synchronizer(s) => Some(emit_synchronizer_interface(s)),
+        Item::Fifo(f) => Some(emit_fifo_interface(f)),
+        Item::Ram(r) => Some(emit_ram_interface(r)),
+        Item::Arbiter(a) => Some(emit_arbiter_interface(a)),
         Item::Regfile(r) => Some(emit_generic("regfile", &r.name.name, &r.params, &r.ports)),
-        Item::Clkgate(c) => Some(emit_generic("clkgate", &c.name.name, &c.params, &c.ports)),
-        Item::Linklist(l) => Some(emit_generic("linklist", &l.name.name, &l.params, &l.ports)),
+        Item::Clkgate(c) => Some(emit_clkgate_interface(c)),
+        Item::Linklist(l) => Some(emit_linklist_interface(l)),
         _ => None,
     }
 }
@@ -74,12 +74,117 @@ fn emit_bus_interface(b: &BusDecl) -> String {
     s
 }
 
-/// Generic emitter for constructs with name + params + ports (synchronizer, fifo, ram, etc.)
+/// Generic emitter for constructs with name + params + ports (regfile, etc.)
+/// Constructs with additional semantic fields (kind, policy, latency) use
+/// their own per-type emitter instead — see emit_synchronizer_interface etc.
 fn emit_generic(keyword: &str, name: &str, params: &[ParamDecl], ports: &[PortDecl]) -> String {
     let mut s = format!("{keyword} {name}\n");
     emit_params(&mut s, params);
     emit_ports(&mut s, ports);
     s.push_str(&format!("end {keyword} {name}\n"));
+    s
+}
+
+fn emit_synchronizer_interface(sync: &SynchronizerDecl) -> String {
+    let name = &sync.name.name;
+    let kind = match sync.kind {
+        SyncKind::Ff => "ff",
+        SyncKind::Gray => "gray",
+        SyncKind::Handshake => "handshake",
+        SyncKind::Reset => "reset",
+        SyncKind::Pulse => "pulse",
+    };
+    let mut s = format!("synchronizer {name}\n");
+    s.push_str(&format!("  kind {kind};\n"));
+    emit_params(&mut s, &sync.params);
+    emit_ports(&mut s, &sync.ports);
+    s.push_str(&format!("end synchronizer {name}\n"));
+    s
+}
+
+fn emit_fifo_interface(f: &FifoDecl) -> String {
+    let name = &f.name.name;
+    let mut s = format!("fifo {name}\n");
+    // FifoKind::Fifo is the default (sync/async detected from clock ports); only emit `kind lifo`
+    if f.kind == FifoKind::Lifo {
+        s.push_str("  kind lifo;\n");
+    }
+    emit_params(&mut s, &f.params);
+    emit_ports(&mut s, &f.ports);
+    s.push_str(&format!("end fifo {name}\n"));
+    s
+}
+
+fn emit_ram_interface(r: &RamDecl) -> String {
+    let name = &r.name.name;
+    let kind = match r.kind {
+        RamKind::Single => "single",
+        RamKind::SimpleDual => "simple_dual",
+        RamKind::TrueDual => "true_dual",
+        RamKind::Rom => "rom",
+    };
+    let mut s = format!("ram {name}\n");
+    s.push_str(&format!("  kind {kind};\n"));
+    s.push_str(&format!("  latency {};\n", r.latency));
+    emit_params(&mut s, &r.params);
+    emit_ports(&mut s, &r.ports);
+    s.push_str(&format!("end ram {name}\n"));
+    s
+}
+
+fn emit_arbiter_interface(a: &ArbiterDecl) -> String {
+    let name = &a.name.name;
+    let policy = match &a.policy {
+        ArbiterPolicy::RoundRobin => "round_robin".to_string(),
+        ArbiterPolicy::Priority => "priority".to_string(),
+        ArbiterPolicy::Lru => "lru".to_string(),
+        ArbiterPolicy::Weighted(w) => format!("weighted<{}>", expr_str(w)),
+        ArbiterPolicy::Custom(fn_name) => format!("custom {}", fn_name.name),
+    };
+    let mut s = format!("arbiter {name}\n");
+    s.push_str(&format!("  policy {policy};\n"));
+    if a.latency > 0 {
+        s.push_str(&format!("  latency {};\n", a.latency));
+    }
+    emit_params(&mut s, &a.params);
+    emit_ports(&mut s, &a.ports);
+    s.push_str(&format!("end arbiter {name}\n"));
+    s
+}
+
+fn emit_clkgate_interface(c: &ClkGateDecl) -> String {
+    let name = &c.name.name;
+    let kind = match c.kind {
+        ClkGateKind::Latch => "latch",
+        ClkGateKind::And => "and",
+    };
+    let mut s = format!("clkgate {name}\n");
+    s.push_str(&format!("  kind {kind};\n"));
+    emit_params(&mut s, &c.params);
+    emit_ports(&mut s, &c.ports);
+    s.push_str(&format!("end clkgate {name}\n"));
+    s
+}
+
+fn emit_linklist_interface(l: &LinklistDecl) -> String {
+    let name = &l.name.name;
+    let kind = match l.kind {
+        LinklistKind::Singly => "singly",
+        LinklistKind::Doubly => "doubly",
+        LinklistKind::CircularSingly => "circular_singly",
+        LinklistKind::CircularDoubly => "circular_doubly",
+    };
+    let mut s = format!("linklist {name}\n");
+    s.push_str(&format!("  kind {kind};\n"));
+    if l.track_tail {
+        s.push_str("  track_tail;\n");
+    }
+    if l.track_length {
+        s.push_str("  track_length;\n");
+    }
+    emit_params(&mut s, &l.params);
+    emit_ports(&mut s, &l.ports);
+    s.push_str(&format!("end linklist {name}\n"));
     s
 }
 
