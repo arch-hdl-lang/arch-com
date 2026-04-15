@@ -22,7 +22,7 @@ module SetupCounter #(
   assign at_max = (count_r == 14'(MAX));
   
   // synopsys translate_off
-  _auto_count_range: assert property (@(posedge clk) count_r <= 14'(16383))
+  _auto_count_range: assert property (@(posedge clk) count_r <= 14'(MAX))
     else $fatal(1, "COUNTER OVERFLOW: SetupCounter.count_r > MAX");
   // synopsys translate_on
 

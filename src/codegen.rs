@@ -5394,9 +5394,10 @@ impl<'a> Codegen<'a> {
         {
             self.line("");
             self.line("// synopsys translate_off");
-            if let Some(ref max_str) = max_param {
+            if max_param.is_some() {
+                // Use the SV parameter name `MAX` so instantiation overrides are honored.
                 self.line(&format!(
-                    "_auto_count_range: assert property (@(posedge {clk}) count_r <= {count_width}'({max_str}))"
+                    "_auto_count_range: assert property (@(posedge {clk}) count_r <= {count_width}'(MAX))"
                 ));
                 self.line(&format!(
                     "  else $fatal(1, \"COUNTER OVERFLOW: {n}.count_r > MAX\");"
