@@ -573,6 +573,34 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 ModuleBodyItem::LetBinding(l) => {
+                    // Special case: `let x: T = match scrut ... end match;` emits as
+                    // `always_comb` with `case` instead of a deeply-nested ternary.
+                    // Threshold: 3+ arms makes the ternary chain unreadable.
+                    if let ExprKind::ExprMatch(scrut, arms) = &l.value.kind {
+                        if arms.len() >= 3 {
+                            if let Some(ty) = &l.ty {
+                                let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(ty);
+                                self.line(&format!("{} {}{};", ty_str, l.name.name, arr_suffix));
+                            }
+                            let scrut_str = self.emit_expr_str(scrut);
+                            self.line("always_comb begin");
+                            self.indent += 1;
+                            // Default to '0 (covers the unmatched-pattern case explicitly)
+                            self.line(&format!("{} = '0;", l.name.name));
+                            self.line(&format!("case ({})", scrut_str));
+                            self.indent += 1;
+                            for arm in arms {
+                                let pat = self.emit_pattern(&arm.pattern);
+                                let val_str = self.emit_expr_str(&arm.value);
+                                self.line(&format!("{}: {} = {};", pat, l.name.name, val_str));
+                            }
+                            self.indent -= 1;
+                            self.line("endcase");
+                            self.indent -= 1;
+                            self.line("end");
+                            continue;
+                        }
+                    }
                     let val_str = self.emit_expr_str(&l.value);
                     if let Some(ty) = &l.ty {
                         let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(ty);

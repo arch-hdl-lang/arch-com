@@ -1,0 +1,19 @@
+module MatchTest
+  port sel: in UInt<3>;
+  port out: out UInt<8>;
+
+  let val: UInt<8> = match sel
+    0b000 => 1,
+    0b001 => 2,
+    0b010 => 4,
+    0b011 => 8,
+    0b100 => 16,
+    0b101 => 32,
+    0b110 => 64,
+    0b111 => 128,
+  end match;
+
+  comb
+    out = val;
+  end comb
+end module MatchTest
