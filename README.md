@@ -2,6 +2,8 @@
 
 A compiler for the **ARCH** hardware description language — ingests `.arch` source files and emits deterministic, readable SystemVerilog.
 
+**Paper**: [arXiv:2604.05983](https://arxiv.org/abs/2604.05983)
+
 ## Quick start
 
 ```sh

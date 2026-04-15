@@ -42,6 +42,69 @@ Arch makes a hard design commitment: a large language model that has read this s
 
 - **Required explicitness:** widths, domains, directions, and policies are always written out. There is no implicit default the AI must remember.
 
+**1.2 Why First-Class Constructs vs Library Modules**
+
+A natural question is: why bake FIFO, FSM, pipeline, arbiter, RAM, counter, regfile, and synchronizer into the language instead of shipping them as a standard library of SystemVerilog modules? There are six reasons Arch's approach wins for micro-architecture work.
+
+**1.2.1 They are families of designs, not single modules**
+
+A library FIFO typically ships as one or two parameterized modules. A real FIFO has a combinatorial explosion of variants:
+
+- Synchronous vs dual-clock asynchronous (needs gray-code CDC — completely different RTL)
+- `kind fifo` (block-when-full) vs `OVERFLOW=1` (overwrite oldest)
+- `kind lifo` (stack semantics)
+- Show-ahead vs registered output
+- Bypass (zero-cycle) variant for depth=1
+
+A library approach either ships N differently-named modules (`sync_fifo`, `async_fifo`, `lifo`, `fifo_overflow`, ...) — which users pick wrong — or one mega-module with a dozen parameters that mostly conflict. Arch's first-class `fifo` with a `kind` selector and auto-detected CDC (from distinct `Clock<D>` ports) picks the right RTL at codegen time. Illegal combinations become compile errors.
+
+**1.2.2 Correctness gates a library cannot enforce**
+
+First-class constructs let the type-checker use construct-specific knowledge:
+
+- **FIFO async detection**: two `Clock<D1>` and `Clock<D2>` ports on a `fifo` auto-insert gray-code pointer synchronization. A library `fifo.sv` sees only wires — it cannot know whether the two clocks are in the same domain.
+- **Arbiter fairness**: `policy: round_robin | priority | lru | weighted<W>` is a compile-time enumerated choice. The `policy custom <Fn>` path requires a user-defined function that is type-checked to return a one-hot grant mask of the correct width.
+- **Clock-domain crossings**: `synchronizer` with `kind ff | gray | handshake | reset | pulse` emits the right RTL for the signal type (1-bit, multi-bit counter, arbitrary data, reset, pulse) and rejects unsafe combinations (e.g. `kind ff` on multi-bit data emits a warning).
+- **Counter bounds**: the counter's `MAX` parameter is used both at runtime and in an auto-generated `count_r <= MAX` SVA assertion. Override-safe.
+
+**1.2.3 Interface contracts are part of the construct**
+
+A FIFO is not just storage — it is a push/pop handshake contract:
+
+```
+port push_valid: in Bool; port push_ready: out Bool; port push_data: in DATA_T;
+port pop_valid:  out Bool; port pop_ready:  in Bool; port pop_data:  out DATA_T;
+```
+
+As a first-class construct, the compiler verifies both sides exist, enforces data-type consistency via a type parameter (`param WIDTH: type = UInt<32>`), and emits well-known signal names so downstream code doesn't guess. A library module makes the handshake convention implicit; every user either gets it right or introduces a subtle deadlock.
+
+**1.2.4 Auto-generated assertions and coverage**
+
+Because the compiler knows what a FIFO / counter / FSM is, it emits safety properties automatically:
+
+- `_auto_no_overflow` / `_auto_no_underflow` on every FIFO
+- `_auto_count_range` (`count_r <= MAX`) on every counter
+- `_auto_legal_state` (`state_r < N`) plus per-state reachability covers and per-transition covers on every FSM
+- Per-module and per-construct user `assert` / `cover` properties
+
+All wrapped in `translate_off`/`on` for synthesis portability, and consumable by Verilator `--assert` and EBMC formal verification. A library `fifo.sv` would require every user to remember to add these — and each would write them slightly differently.
+
+**1.2.5 Multi-backend code generation**
+
+Arch targets multiple backends (SystemVerilog today, C++ simulation in `arch sim`, SMT-LIB2 formal in the roadmap). First-class constructs let the compiler emit the *right* representation per backend:
+
+- A sim FIFO uses a C++ `std::deque` with protocol-level push/pop checking
+- A formal FIFO uses symbolic state with cover/assert properties
+- An RTL FIFO uses flops with gray-code CDC when asynchronous
+
+A library FIFO is one SystemVerilog blob that doesn't port to non-RTL backends.
+
+**1.2.6 Template fallback for non-pattern reuse**
+
+For genuinely library-style reuse that doesn't fit a built-in pattern — custom protocols, domain-specific engines, third-party IP wrappers — Arch provides `template Name ... end template Name` and `module X implements Name`. The built-in constructs cover the common hardware patterns with strong safety; templates cover everything else.
+
+**In summary**: first-class constructs for the dozen common micro-architecture patterns let the compiler enforce correctness (CDC, handshake, bounds), auto-emit assertions and coverage, generate backend-appropriate code, and give actionable error messages — things a black-box library module cannot provide. Templates exist for everything else.
+
 **2. Lexical Conventions**
 
 **2.1 Naming Rules (recommended, not compiler-enforced)**
