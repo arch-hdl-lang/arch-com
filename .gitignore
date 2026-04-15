@@ -12,6 +12,9 @@ verilated.cpp
 *.o
 a.out
 
+# arch build generated files
+*.archi
+
 # Waveform dumps
 *.vcd
 *.fst
