@@ -58,3 +58,4 @@ tests/realbench/debug/
 
 # Claude session data
 .claude/
+critique2.txt
