@@ -36,7 +36,7 @@ module Adder
 end module Adder
 ```
 
-Arch arithmetic follows IEEE 1800-2012 §11.6 (`a + b` on two `UInt<32>` yields `UInt<33>`), so mixing widths requires explicit `.trunc<N>()`, `.zext<N>()`, or `.sext<N>()`. The wrapping operators `+%`, `-%`, `*%` are the common shortcut for "same-width modular arithmetic" and replace the verbose `(a.zext<33>() + b.zext<33>()).trunc<32>()` pattern.
+Arch arithmetic follows IEEE 1800-2012 §11.6 (`a + b` on two `UInt<32>` yields `UInt<33>`), so the classic same-width-result spelling is `(a + b).trunc<32>()`. The wrapping operators `+%`, `-%`, `*%` are the shortcut for "same-width modular arithmetic" — `a +% b` drops the overflow bit directly. Mixing widths still requires explicit `.trunc<N>()`, `.zext<N>()`, or `.sext<N>()`.
 
 ### Finite state machine with `fsm`
 
