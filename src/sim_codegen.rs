@@ -938,27 +938,17 @@ fn flatten_bus_port_with_dir(
 
 /// Return flattened bus port signals: Vec<(flat_name, TypeExpr)>.
 /// E.g. port itcm: initiator ItcmIcb → [(itcm_cmd_valid, Bool), (itcm_cmd_addr, UInt<14>), ...]
+/// Direction-discarding wrapper around `flatten_bus_port_with_dir` for callers
+/// that don't need direction info (e.g. header field generation).
 fn flatten_bus_port(
     port_name: &str,
     bi: &BusPortInfo,
     symbols: &crate::resolve::SymbolTable,
 ) -> Vec<(String, TypeExpr)> {
-    let bus_name = &bi.bus_name.name;
-    if let Some((crate::resolve::Symbol::Bus(info), _)) = symbols.globals.get(bus_name) {
-        let mut param_map: HashMap<String, &Expr> = info.params.iter()
-            .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
-            .collect();
-        for pa in &bi.params {
-            param_map.insert(pa.name.name.clone(), &pa.value);
-        }
-        let eff = info.effective_signals(&param_map);
-        eff.iter().map(|(sname, _sdir, sty)| {
-            let subst_ty = subst_type_expr_sim(sty, &param_map);
-            (format!("{}_{}", port_name, sname), subst_ty)
-        }).collect()
-    } else {
-        Vec::new()
-    }
+    flatten_bus_port_with_dir(port_name, bi, symbols)
+        .into_iter()
+        .map(|(n, _d, t)| (n, t))
+        .collect()
 }
 
 /// Expand whole-bus connections in an inst block into per-signal connections.
@@ -1087,6 +1077,21 @@ fn eval_const_expr(expr: &Expr) -> u64 {
 }
 
 /// Smallest C++ unsigned integer type that fits `bits` (up to 64).
+/// Returns true if `name` looks like a thread-lowered FSM state register.
+/// Thread lowering in elaborate.rs (line ~1280) names state regs `_t{N}_state`
+/// where N is the thread index. This helper is used by --debug-fsm and
+/// auto-generated legal-state assertions to identify FSM state regs without
+/// mis-matching user regs like `prev_state` or `state_counter`.
+fn is_thread_fsm_state_reg(name: &str) -> bool {
+    // Strip leading underscores (the shadow field is _t0_state, public is t0_state)
+    let trimmed = name.trim_start_matches('_');
+    if !trimmed.starts_with('t') { return false; }
+    if !trimmed.ends_with("_state") { return false; }
+    // Middle must be digits
+    let mid = &trimmed[1..trimmed.len() - "_state".len()];
+    !mid.is_empty() && mid.chars().all(|c| c.is_ascii_digit())
+}
+
 fn cpp_uint(bits: u32) -> &'static str {
     if bits <= 8  { "uint8_t" }
     else if bits <= 16 { "uint16_t" }
@@ -2500,26 +2505,33 @@ fn collect_stmt_assigns(stmts: &[Stmt], out: &mut std::collections::BTreeSet<Str
 
 impl<'a> SimCodegen<'a> {
     /// Look up the port declarations for a sub-instance's module/construct type.
+    /// Look up ports for a sub-instance's construct type by walking the source AST.
+    /// Every first-class construct (Module, Fsm, Fifo, Ram, Counter, Arbiter,
+    /// Regfile, Pipeline, Linklist, Synchronizer, Clkgate) has a `ports` field
+    /// via `ConstructCommon` and we return it directly from the AST rather than
+    /// going through the resolve::Symbol summary (which not all construct kinds
+    /// expose `ports` through).
     fn lookup_inst_ports(&self, module_name: &str) -> Vec<PortDecl> {
-        use crate::resolve::Symbol;
-        if let Some((sym, _)) = self.symbols.globals.get(module_name) {
-            match sym {
-                Symbol::Module(info) => info.ports.clone(),
-                Symbol::Fsm(info) => info.ports.clone(),
-                Symbol::Pipeline(info) => info.ports.clone(),
-                _ => Vec::new(),
+        for item in &self.source.items {
+            let ports = match item {
+                Item::Module(m)       if m.name.name == module_name => Some(&m.ports),
+                Item::Fsm(f)          if f.name.name == module_name => Some(&f.ports),
+                Item::Fifo(f)         if f.name.name == module_name => Some(&f.ports),
+                Item::Ram(r)          if r.name.name == module_name => Some(&r.ports),
+                Item::Counter(c)      if c.name.name == module_name => Some(&c.ports),
+                Item::Arbiter(a)      if a.name.name == module_name => Some(&a.ports),
+                Item::Regfile(r)      if r.name.name == module_name => Some(&r.ports),
+                Item::Pipeline(p)     if p.name.name == module_name => Some(&p.ports),
+                Item::Linklist(l)     if l.name.name == module_name => Some(&l.ports),
+                Item::Synchronizer(s) if s.name.name == module_name => Some(&s.ports),
+                Item::Clkgate(c)      if c.name.name == module_name => Some(&c.ports),
+                _ => None,
+            };
+            if let Some(p) = ports {
+                return p.clone();
             }
-        } else {
-            // Fallback: search source AST items directly
-            for item in &self.source.items {
-                match item {
-                    Item::Module(m) if m.name.name == module_name => return m.ports.clone(),
-                    Item::Fsm(f) if f.name.name == module_name => return f.ports.clone(),
-                    _ => {}
-                }
-            }
-            Vec::new()
         }
+        Vec::new()
     }
 
     fn gen_module(&self, m: &ModuleDecl, emit_debug: bool, debug_module_set: &std::collections::HashSet<String>) -> SimModel {
@@ -3524,7 +3536,7 @@ impl<'a> SimCodegen<'a> {
             if self.debug_fsm {
                 for rd in &reg_decls {
                     let n = &rd.name.name;
-                    if n.contains("_state") {
+                    if is_thread_fsm_state_reg(n) {
                         let ty = cpp_internal_type(&rd.ty);
                         cpp.push_str(&format!("  {ty} _dbg_old_{n} = _{n};\n"));
                     }
@@ -3573,7 +3585,7 @@ impl<'a> SimCodegen<'a> {
             if self.debug_fsm {
                 for rd in &reg_decls {
                     let n = &rd.name.name;
-                    if n.contains("_state") {
+                    if is_thread_fsm_state_reg(n) {
                         let label = n.trim_start_matches('_');
                         cpp.push_str(&format!(
                             "  if (_{n} != _dbg_old_{n}) \
