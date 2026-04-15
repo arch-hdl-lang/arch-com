@@ -66,13 +66,9 @@ async def test_reset(dut):
 
     await RisingEdge(dut.clk)  # Edge B: state transitions to HEAT(3)
     assert dut.state_ff.value == 3, f"Expected HEAT(3), got {dut.state_ff.value}"
-    # Outputs still reflect old state (0) due to port reg 1-cycle lag
-    assert dut.o_heat_water.value == 0, f"port reg lag: expected 0, got {dut.o_heat_water.value}"
-    print(f"  Edge B: state_ff={int(dut.state_ff.value)}, hw={int(dut.o_heat_water.value)} (port reg lag OK)")
-
-    await RisingEdge(dut.clk)  # Edge C: outputs now reflect HEAT
-    assert dut.o_heat_water.value == 1, f"Expected hw=1, got {dut.o_heat_water.value}"
-    print(f"  Edge C: state_ff={int(dut.state_ff.value)}, hw={int(dut.o_heat_water.value)} (HEAT output OK)")
+    # Combinational outputs reflect new state immediately (no port reg lag)
+    assert dut.o_heat_water.value == 1, f"Expected hw=1 (comb output), got {dut.o_heat_water.value}"
+    print(f"  Edge B: state_ff={int(dut.state_ff.value)}, hw={int(dut.o_heat_water.value)} (comb output OK)")
 
     # Wait for operation to complete
     for _ in range(20):
