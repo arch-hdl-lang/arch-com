@@ -38,54 +38,63 @@ end module Adder
 
 Arch arithmetic follows IEEE 1800-2012 §11.6 (`a + b` on two `UInt<32>` yields `UInt<33>`), so mixing widths requires explicit `.trunc<N>()`, `.zext<N>()`, or `.sext<N>()`. The wrapping operators `+%`, `-%`, `*%` are the common shortcut for "same-width modular arithmetic" and replace the verbose `(a.zext<33>() + b.zext<33>()).trunc<32>()` pattern.
 
-### Sequential protocols with `thread`
+### Finite state machine with `fsm`
 
-Thread blocks describe multi-cycle protocols as straight-line code. The compiler lowers each thread to a synthesizable FSM.
+Named states, exhaustive transition checking, automatic reset, auto-generated legal-state assertion and per-state / per-transition cover properties.
 
 ```arch
-module AxiWrite
-  port clk:      in Clock<SysDomain>;
-  port rst_n:    in Reset<Async, Low>;
-  port aw_valid: out Bool;
-  port aw_addr:  out UInt<32>;
-  port aw_ready: in Bool;
-  port w_valid:  out Bool;
-  port w_data:   out UInt<32>;
-  port w_ready:  in Bool;
-  port b_ready:  out Bool;
-  port b_valid:  in Bool;
+fsm TrafficLight
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, High>;
+  port tick: in Bool;
+  port reg light: out UInt<2> reset rst => 0;   // 0=Red, 1=Yellow, 2=Green
 
-  thread on clk rising, rst_n low
-    // AW and W channels handshake in parallel
-    fork
-      aw_valid = 1;
-      aw_addr  = 32'hA000;
-      wait until aw_ready;
-      aw_valid = 0;
-    and
-      w_valid = 1;
-      w_data  = 32'hDEAD;
-      wait until w_ready;
-      w_valid = 0;
-    join
+  state [Red, Green, Yellow]
+  default state Red;
+  default seq on clk rising;
 
-    // Wait for write response
-    b_ready = 1;
-    wait until b_valid;
-  end thread
-end module AxiWrite
+  state Red
+    seq  light <= 0; end seq
+    if tick => Green;
+  end state Red
+
+  state Green
+    seq  light <= 2; end seq
+    if tick => Yellow;
+  end state Green
+
+  state Yellow
+    seq  light <= 1; end seq
+    if tick => Red;
+  end state Yellow
+end fsm TrafficLight
 ```
 
-Thread features:
-- `wait until cond` / `wait N cycle` — state boundaries
-- `fork ... and ... join` — parallel branches (product-state expansion)
-- `for i in 0..N ... end for` — counted loops with waits
-- `thread once` — one-shot initialization sequences
-- `resource` / `lock` — shared bus arbitration with priority arbiter
-- `shared(or|and)` — multi-driver signals with compiler-synthesized reduction
-- `generate_for` / `generate_if` with threads — N independent FSMs
+### FIFO with `fifo`
 
-See `doc/thread_spec_section.md` and `doc/thread_multi_outstanding_spec.md` for the full thread specification.
+One keyword covers sync / async / LIFO / overflow variants. Dual-clock async is auto-detected from two distinct `Clock<D>` ports and inserts gray-code pointer CDC automatically. Overflow/underflow SVA is auto-generated.
+
+```arch
+fifo SyncFifo
+  param DEPTH: const = 16;
+  param T: type = UInt<32>;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  port push_valid: in Bool;    port push_ready: out Bool;    port push_data: in T;
+  port pop_valid:  out Bool;   port pop_ready:  in Bool;     port pop_data:  out T;
+
+  port full:  out Bool;
+  port empty: out Bool;
+end fifo SyncFifo
+```
+
+Swap `Clock<SysDomain>` + a second `Clock<OtherDomain>` for a gray-code CDC async FIFO — no other code changes needed.
+
+### Multi-cycle protocols with `thread`
+
+Thread blocks describe multi-cycle protocols as straight-line code. The compiler lowers each thread to a synthesizable FSM with `wait until`, `fork/join`, counted `for` loops, and `resource`/`lock` arbitration. See `doc/thread_spec_section.md`.
 
 ## First-class constructs
 
