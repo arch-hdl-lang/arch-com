@@ -1046,7 +1046,7 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
     }
 
     // Clock and reset ports (from first thread)
-    let (clk_name, rst_name, rst_level) = {
+    let (clk_name, rst_name, _rst_level) = {
         let t = &threads[0].1;
         let rk = type_map.get(&t.reset.name).and_then(|si| {
             if let TypeExpr::Reset(k, _) = &si.ty { Some(*k) } else { None }
@@ -1173,7 +1173,7 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
         .filter(|n| all_seq_driven.contains(*n))
         .cloned().collect();
     // shared(or) signals that are comb-driven use inline OR-accumulation (existing behavior)
-    let shared_or_comb: HashSet<String> = shared_or_signals.iter()
+    let _shared_or_comb: HashSet<String> = shared_or_signals.iter()
         .filter(|n| all_comb_driven.contains(*n))
         .cloned().collect();
 
@@ -1638,7 +1638,6 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
 #[derive(Clone, Debug)]
 struct SignalInfo {
     ty: TypeExpr,
-    is_reg: bool,
     reg_reset: RegReset,
     reg_init: Option<Expr>,
     shared: Option<SharedReduction>,
@@ -1649,7 +1648,6 @@ fn build_module_type_map(m: &ModuleDecl) -> HashMap<String, SignalInfo> {
     for p in &m.ports {
         map.insert(p.name.name.clone(), SignalInfo {
             ty: p.ty.clone(),
-            is_reg: p.reg_info.is_some(),
             reg_reset: p.reg_info.as_ref().map(|ri| ri.reset.clone()).unwrap_or(RegReset::None),
             reg_init: p.reg_info.as_ref().and_then(|ri| ri.init.clone()),
             shared: p.shared,
@@ -1660,7 +1658,6 @@ fn build_module_type_map(m: &ModuleDecl) -> HashMap<String, SignalInfo> {
             ModuleBodyItem::RegDecl(r) => {
                 map.insert(r.name.name.clone(), SignalInfo {
                     ty: r.ty.clone(),
-                    is_reg: true,
                     reg_reset: r.reset.clone(),
                     reg_init: r.init.clone(),
                     shared: None,
@@ -1669,7 +1666,6 @@ fn build_module_type_map(m: &ModuleDecl) -> HashMap<String, SignalInfo> {
             ModuleBodyItem::WireDecl(w) => {
                 map.insert(w.name.name.clone(), SignalInfo {
                     ty: w.ty.clone(),
-                    is_reg: false,
                     reg_reset: RegReset::None,
                     reg_init: None,
                     shared: None,
@@ -1679,7 +1675,6 @@ fn build_module_type_map(m: &ModuleDecl) -> HashMap<String, SignalInfo> {
                 if let Some(ty) = &l.ty {
                     map.insert(l.name.name.clone(), SignalInfo {
                         ty: ty.clone(),
-                        is_reg: false,
                         reg_reset: RegReset::None,
                         reg_init: None,
                         shared: None,
@@ -2444,7 +2439,7 @@ fn lower_fork_join(
 /// convention: any state that references `_loop_cnt` triggers the reg creation).
 fn lower_thread_for(
     var: &Ident,
-    start: &Expr,
+    _start: &Expr,
     end: &Expr,
     body: &[ThreadStmt],
     span: Span,
@@ -2817,493 +2812,6 @@ fn thread_if_to_fsm_stmts(ie: &ThreadIfElse) -> (Option<CombStmt>, Option<Stmt>)
     (comb_if, seq_if)
 }
 
-// ── FSM construction ────────────────────────────────────────────────────────
-
-fn lower_single_thread(
-    module_name: &str,
-    thread_name: &str,
-    t: &ThreadBlock,
-    type_map: &HashMap<String, SignalInfo>,
-    _reg_map: &HashMap<String, RegDecl>,
-    shared_regs: &HashSet<String>,
-) -> Result<(FsmDecl, InstDecl), CompileError> {
-    let sp = t.span;
-
-    // Step 1: Partition body into states
-    let cnt_width = infer_for_cnt_width(&t.body, type_map);
-    let raw_states = partition_thread_body(&t.body, sp, cnt_width)?;
-
-    // Step 2: Analyze signals
-    let (comb_driven, seq_driven, all_read) = collect_thread_signals(&t.body);
-
-    // Signals that are only read (inputs to the FSM)
-    let mut read_only: HashSet<String> = HashSet::new();
-    for name in &all_read {
-        if !comb_driven.contains(name) && !seq_driven.contains(name)
-            && name != &t.clock.name && name != &t.reset.name
-            && name != "_cnt" && name != "_loop_cnt"
-        {
-            read_only.insert(name.clone());
-        }
-    }
-
-    // Step 3: Build FSM state names and state bodies
-    let n_states = raw_states.len();
-    let has_done = t.once; // need terminal DONE state
-    // Check if any state uses wait_cycles — need a counter register
-    let has_counter = raw_states.iter().any(|s| s.wait_cycles.is_some());
-
-    let mut state_names: Vec<Ident> = Vec::new();
-    let mut state_bodies: Vec<StateBody> = Vec::new();
-
-    for (i, raw) in raw_states.iter().enumerate() {
-        let sname = format!("S{}", i);
-        state_names.push(Ident::new(sname.clone(), sp));
-
-        let next_state_idx = if i + 1 < n_states {
-            i + 1
-        } else if has_done {
-            n_states // DONE state
-        } else {
-            0 // wrap around
-        };
-        let next_state_name = if next_state_idx == n_states && has_done {
-            "DONE".to_string()
-        } else {
-            format!("S{}", next_state_idx)
-        };
-
-        // Build transitions
-        let mut transitions = Vec::new();
-
-        // Fork/join and for-loop: multi_transitions targets are absolute state indices
-        if !raw.multi_transitions.is_empty() {
-            for (cond, target_idx) in &raw.multi_transitions {
-                let tgt_name = if *target_idx >= n_states {
-                    // Past the end: wrap to S0 (repeating) or DONE (once)
-                    if has_done { "DONE".to_string() } else { "S0".to_string() }
-                } else {
-                    format!("S{}", target_idx)
-                };
-                transitions.push(Transition {
-                    target: Ident::new(tgt_name, sp),
-                    condition: cond.clone(),
-                    span: sp,
-                });
-            }
-        } else if let Some(ref _wait_count) = raw.wait_cycles {
-            // Counter-based wait: transition when counter hits 0
-            // The counter is managed as a reg in the FSM.
-            // Transition condition: _cnt == 0
-            let cnt_zero_cond = Expr::new(
-                ExprKind::Binary(
-                    BinOp::Eq,
-                    Box::new(Expr::new(ExprKind::Ident("_cnt".to_string()), sp)),
-                    Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(0)), sp)),
-                ),
-                sp,
-            );
-            transitions.push(Transition {
-                target: Ident::new(next_state_name, sp),
-                condition: cnt_zero_cond,
-                span: sp,
-            });
-        } else if let Some(ref cond) = raw.transition_cond {
-            transitions.push(Transition {
-                target: Ident::new(next_state_name, sp),
-                condition: cond.clone(),
-                span: sp,
-            });
-        } else {
-            // Unconditional transition (last state, no wait after it)
-            transitions.push(Transition {
-                target: Ident::new(next_state_name, sp),
-                condition: Expr::new(ExprKind::Bool(true), sp),
-                span: sp,
-            });
-        }
-
-        // Build seq_stmts: fire unconditionally on state entry.
-        // (Previously guarded by transition condition, but this prevented
-        // state-entry assignments like `active_r <= true` from firing.)
-        let seq_stmts = if !raw.seq_stmts.is_empty() {
-            if raw.wait_cycles.is_some() {
-                // Guard by counter == 0
-                let cnt_zero = Expr::new(
-                    ExprKind::Binary(
-                        BinOp::Eq,
-                        Box::new(Expr::new(ExprKind::Ident("_cnt".to_string()), sp)),
-                        Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(0)), sp)),
-                    ),
-                    sp,
-                );
-                vec![Stmt::IfElse(IfElse {
-                    cond: cnt_zero,
-                    then_stmts: raw.seq_stmts.clone(),
-                    else_stmts: Vec::new(),
-                    unique: false,
-                    span: sp,
-                })]
-            } else {
-                raw.seq_stmts.clone()
-            }
-        } else {
-            Vec::new()
-        };
-
-        // Counter decrement logic in seq_stmts
-        let mut final_seq = seq_stmts;
-        if raw.wait_cycles.is_some() {
-            // _cnt <= _cnt - 1 (only when _cnt != 0, to avoid underflow)
-            // But the FSM will transition when _cnt == 0, so decrementing
-            // is safe in all other cycles.  Actually for the FSM codegen to
-            // work, we need the counter decrement to happen every cycle in
-            // this state. The transition guards the state change.
-            let cnt_dec = Stmt::Assign(RegAssign {
-                target: Expr::new(ExprKind::Ident("_cnt".to_string()), sp),
-                value: Expr::new(
-                    ExprKind::Binary(
-                        BinOp::Sub,
-                        Box::new(Expr::new(ExprKind::Ident("_cnt".to_string()), sp)),
-                        Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(1)), sp)),
-                    ),
-                    sp,
-                ),
-                span: sp,
-            });
-            final_seq.push(cnt_dec);
-        }
-
-        state_bodies.push(StateBody {
-            name: Ident::new(sname, sp),
-            comb_stmts: raw.comb_stmts.clone(),
-            seq_stmts: final_seq,
-            transitions,
-            span: sp,
-        });
-    }
-
-    // Add DONE state for `thread once` — self-loop to satisfy FSM typecheck
-    if has_done {
-        let done_name = "DONE".to_string();
-        state_names.push(Ident::new(done_name.clone(), sp));
-        state_bodies.push(StateBody {
-            name: Ident::new(done_name.clone(), sp),
-            comb_stmts: Vec::new(),
-            seq_stmts: Vec::new(),
-            transitions: vec![Transition {
-                target: Ident::new(done_name, sp),
-                condition: Expr::new(ExprKind::Bool(true), sp),
-                span: sp,
-            }],
-            span: sp,
-        });
-    }
-
-    // Step 4: Build counter load logic in the state *before* a counter state
-    // The previous state's seq_stmts need `_cnt <= N - 1` on transition
-    for i in 0..raw_states.len() {
-        if let Some(ref count_expr) = raw_states[i].wait_cycles {
-            // Find the state that transitions INTO state i.
-            // For the first state with a counter, the previous state loads the counter.
-            if i > 0 {
-                let load_stmt = Stmt::Assign(RegAssign {
-                    target: Expr::new(ExprKind::Ident("_cnt".to_string()), sp),
-                    value: Expr::new(
-                        ExprKind::Binary(
-                            BinOp::Sub,
-                            Box::new(count_expr.clone()),
-                            Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(1)), sp)),
-                        ),
-                        sp,
-                    ),
-                    span: sp,
-                });
-                // Determine the guard for the previous state's transition
-                let prev_guard = if let Some(ref prev_cond) = raw_states[i-1].transition_cond {
-                    Some(prev_cond.clone())
-                } else if raw_states[i-1].wait_cycles.is_some() {
-                    // Previous state is also a counter — guard by counter == 0
-                    Some(Expr::new(
-                        ExprKind::Binary(
-                            BinOp::Eq,
-                            Box::new(Expr::new(ExprKind::Ident("_cnt".to_string()), sp)),
-                            Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(0)), sp)),
-                        ),
-                        sp,
-                    ))
-                } else {
-                    None
-                };
-                if let Some(guard) = prev_guard {
-                    state_bodies[i-1].seq_stmts.push(Stmt::IfElse(IfElse {
-                        cond: guard,
-                        then_stmts: vec![load_stmt],
-                        else_stmts: Vec::new(),
-                        unique: false,
-                        span: sp,
-                    }));
-                } else {
-                    state_bodies[i-1].seq_stmts.push(load_stmt);
-                }
-            }
-            // If i == 0 and it's a counter state, we need to load the counter
-            // in the reset block (init value). This is handled by the reg init.
-        }
-    }
-
-    // Step 5: Build FSM ports
-    let mut fsm_ports: Vec<PortDecl> = Vec::new();
-
-    // Clock port
-    fsm_ports.push(PortDecl {
-        name: t.clock.clone(),
-        direction: Direction::In,
-        ty: type_map.get(&t.clock.name)
-            .map(|si| si.ty.clone())
-            .unwrap_or_else(|| TypeExpr::Clock(Ident::new("SysDomain".to_string(), sp))),
-        default: None,
-        reg_info: None,
-        bus_info: None,
-        shared: None,
-        span: sp,
-    });
-
-    // Reset port
-    let reset_kind = type_map.get(&t.reset.name).and_then(|si| {
-        if let TypeExpr::Reset(k, _) = &si.ty { Some(*k) } else { None }
-    }).unwrap_or(ResetKind::Async);
-    fsm_ports.push(PortDecl {
-        name: t.reset.clone(),
-        direction: Direction::In,
-        ty: TypeExpr::Reset(reset_kind, t.reset_level),
-        default: None,
-        reg_info: None,
-        bus_info: None,
-        shared: None,
-        span: sp,
-    });
-
-    // Input ports (read-only signals)
-    let mut sorted_reads: Vec<&String> = read_only.iter().collect();
-    sorted_reads.sort();
-    for name in sorted_reads {
-        if let Some(info) = type_map.get(name.as_str()) {
-            fsm_ports.push(PortDecl {
-                name: Ident::new(name.clone(), sp),
-                direction: Direction::In,
-                ty: info.ty.clone(),
-                default: None,
-                reg_info: None,
-                bus_info: None,
-                shared: None,
-                span: sp,
-            });
-        }
-    }
-
-    // Output ports (comb-driven signals)
-    let mut sorted_comb: Vec<&String> = comb_driven.iter().collect();
-    sorted_comb.sort();
-    for name in sorted_comb {
-        if let Some(info) = type_map.get(name.as_str()) {
-            let zero = make_zero_expr(sp);
-            fsm_ports.push(PortDecl {
-                name: Ident::new(name.clone(), sp),
-                direction: Direction::Out,
-                ty: info.ty.clone(),
-                default: Some(zero),
-                reg_info: None,
-                bus_info: None,
-                shared: None,
-                span: sp,
-            });
-        }
-    }
-
-    // Output ports (seq-driven signals)
-    let mut fsm_regs: Vec<RegDecl> = Vec::new();
-    let mut sorted_seq: Vec<&String> = seq_driven.iter().collect();
-    sorted_seq.sort();
-    for name in &sorted_seq {
-        if let Some(info) = type_map.get(name.as_str()) {
-            if shared_regs.contains(name.as_str()) {
-                // Shared register: input (read current value) + output (write data+enable)
-                // The register stays at the module level; FSM reads and writes via ports.
-                fsm_ports.push(PortDecl {
-                    name: Ident::new((*name).clone(), sp),
-                    direction: Direction::In,
-                    ty: info.ty.clone(),
-                    default: None, reg_info: None, bus_info: None, shared: None, span: sp,
-                });
-                fsm_ports.push(PortDecl {
-                    name: Ident::new(format!("{}_wr", name), sp),
-                    direction: Direction::Out,
-                    ty: info.ty.clone(),
-                    default: Some(make_zero_expr(sp)),
-                    reg_info: None,
-                    bus_info: None, shared: None, span: sp,
-                });
-                fsm_ports.push(PortDecl {
-                    name: Ident::new(format!("{}_we", name), sp),
-                    direction: Direction::Out,
-                    ty: TypeExpr::Bool,
-                    default: Some(Expr::new(ExprKind::Bool(false), sp)),
-                    reg_info: None, bus_info: None, shared: None, span: sp,
-                });
-            } else {
-                // Non-shared: standard port-reg output
-                fsm_ports.push(PortDecl {
-                    name: Ident::new((*name).clone(), sp),
-                    direction: Direction::Out,
-                    ty: info.ty.clone(),
-                    default: None,
-                    reg_info: Some(PortRegInfo {
-                        init: info.reg_init.clone(),
-                        reset: info.reg_reset.clone(),
-                    }),
-                    bus_info: None, shared: None, span: sp,
-                });
-            }
-        }
-    }
-
-    // Counter register (if needed)
-    if has_counter {
-        fsm_regs.push(RegDecl {
-            name: Ident::new("_cnt".to_string(), sp),
-            ty: TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(32)), sp))),
-            init: Some(Expr::new(ExprKind::Literal(LitKind::Dec(0)), sp)),
-            reset: RegReset::None,
-            span: sp,
-        });
-    }
-
-    // Loop counter register (if any for-loop with wait is used).
-    // Width is inferred from the for-loop end expression to avoid over-wide counters.
-    let has_for_loop = thread_has_for(&t.body);
-    if has_for_loop {
-        fsm_regs.push(RegDecl {
-            name: Ident::new("_loop_cnt".to_string(), sp),
-            ty: TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(cnt_width as u64)), sp))),
-            init: Some(Expr::new(ExprKind::Literal(LitKind::Dec(0)), sp)),
-            reset: RegReset::None,
-            span: sp,
-        });
-    }
-
-    // Resource lock req/grant ports
-    let locked_resources = collect_locked_resources(&t.body);
-    for res_name in &locked_resources {
-        let req_name = format!("_{}_req", res_name);
-        let grant_name = format!("_{}_grant", res_name);
-        // req is an output (driven by the FSM), with default 0
-        fsm_ports.push(PortDecl {
-            name: Ident::new(req_name.clone(), sp),
-            direction: Direction::Out,
-            ty: TypeExpr::Bool,
-            default: Some(make_zero_expr(sp)),
-            reg_info: None,
-            bus_info: None,
-            shared: None,
-            span: sp,
-        });
-        // grant is an input (provided by the arbiter)
-        fsm_ports.push(PortDecl {
-            name: Ident::new(grant_name, sp),
-            direction: Direction::In,
-            ty: TypeExpr::Bool,
-            default: None,
-            reg_info: None,
-            bus_info: None,
-            shared: None,
-            span: sp,
-        });
-    }
-
-    // Step 6: Build default_comb — set comb outputs to their default (0)
-    let mut default_comb: Vec<CombStmt> = Vec::new();
-    for p in &fsm_ports {
-        if p.direction == Direction::Out && p.default.is_some() {
-            default_comb.push(CombStmt::Assign(CombAssign {
-                target: Expr::new(ExprKind::Ident(p.name.name.clone()), sp),
-                value: p.default.as_ref().unwrap().clone(),
-                span: sp,
-            }));
-        }
-    }
-
-    // Step 6b: Rewrite shared reg seq assigns in state bodies
-    // Move `name <= expr` from seq to comb as `name_wr = expr; name_we = true;`
-    if !shared_regs.is_empty() {
-        let mut total_moved = 0;
-        for sb in &mut state_bodies {
-            let mut extra_comb = Vec::new();
-            let mut new_seq = Vec::new();
-            for stmt in std::mem::take(&mut sb.seq_stmts) {
-                if let Some(comb_stmts) = extract_shared_reg_comb(&stmt, shared_regs, sp) {
-                    total_moved += comb_stmts.len();
-                    extra_comb.extend(comb_stmts);
-                } else {
-                    if let Stmt::Assign(ref ra) = stmt {
-                        if let Some(name) = expr_root_name(&ra.target) {
-                        }
-                    }
-                    new_seq.push(stmt);
-                }
-            }
-            sb.seq_stmts = new_seq;
-            sb.comb_stmts.extend(extra_comb);
-        }
-    }
-
-    // Step 7: Build the FsmDecl
-    let fsm_name = format!("_{module_name}_{thread_name}");
-    let fsm = FsmDecl {
-        common: ConstructCommon {
-            name: Ident::new(fsm_name.clone(), sp),
-            params: Vec::new(),
-            ports: fsm_ports.clone(),
-            asserts: Vec::new(),
-            span: sp,
-        },
-        regs: fsm_regs,
-        lets: Vec::new(),
-        wires: Vec::new(),
-        state_names: state_names.clone(),
-        default_state: state_names[0].clone(),
-        default_comb,
-        default_seq: Vec::new(),
-        states: state_bodies,
-    };
-
-    // Step 8: Build the InstDecl
-    let inst_name = format!("_{thread_name}");
-    let mut connections: Vec<Connection> = Vec::new();
-    for p in &fsm_ports {
-        let dir = match p.direction {
-            Direction::In => ConnectDir::Input,
-            Direction::Out => ConnectDir::Output,
-        };
-        connections.push(Connection {
-            port_name: p.name.clone(),
-            direction: dir,
-            signal: Expr::new(ExprKind::Ident(p.name.name.clone()), sp),
-            reset_override: None,
-            span: sp,
-        });
-    }
-
-    let inst = InstDecl {
-        name: Ident::new(inst_name, sp),
-        module_name: Ident::new(fsm_name, sp),
-        param_assigns: Vec::new(),
-        connections,
-        span: sp,
-    };
-
-    Ok((fsm, inst))
-}
 
 /// Rewrite seq stmts: if a seq assign targets a shared(or) signal, convert it
 /// to a comb assign targeting the per-thread shadow wire `_sig_in_ti`.
@@ -3407,39 +2915,6 @@ fn transform_shared_or_assigns(
             _ => stmt.clone(),
         }
     }).collect()
-}
-
-/// If a seq stmt assigns to a shared reg, return equivalent comb stmts.
-/// Returns None if not a shared-reg assign (keep as seq).
-fn extract_shared_reg_comb(
-    stmt: &Stmt,
-    shared_regs: &HashSet<String>,
-    sp: Span,
-) -> Option<Vec<CombStmt>> {
-    match stmt {
-        Stmt::Assign(ra) => {
-            if let Some(name) = expr_root_name(&ra.target) {
-                if shared_regs.contains(&name) {
-                    return Some(vec![
-                        CombStmt::Assign(CombAssign {
-                            target: Expr::new(ExprKind::Ident(format!("{}_wr", name)), sp),
-                            value: ra.value.clone(),
-                            span: sp,
-                        }),
-                        CombStmt::Assign(CombAssign {
-                            target: Expr::new(ExprKind::Ident(format!("{}_we", name)), sp),
-                            value: Expr::new(ExprKind::Bool(true), sp),
-                            span: sp,
-                        }),
-                    ]);
-                }
-            }
-            None
-        }
-        // For if/else containing shared-reg assigns, we'd need deeper analysis.
-        // For now, only handle top-level assigns (most common pattern).
-        _ => None,
-    }
 }
 
 /// Rename an identifier in an expression tree.
