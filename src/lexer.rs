@@ -172,6 +172,8 @@ pub enum TokenKind {
     Cover,
     #[token("implies")]
     Implies,
+    #[token("guard")]
+    Guard,
     #[token("generate")]
     Generate,
     #[token("generate_for")]
@@ -374,6 +376,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Assert => write!(f, "assert"),
             TokenKind::Cover => write!(f, "cover"),
             TokenKind::Implies => write!(f, "implies"),
+            TokenKind::Guard => write!(f, "guard"),
             TokenKind::Generate => write!(f, "generate"),
             TokenKind::GenerateFor => write!(f, "generate_for"),
             TokenKind::GenerateIf => write!(f, "generate_if"),

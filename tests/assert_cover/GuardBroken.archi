@@ -1,0 +1,7 @@
+module GuardBroken
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port dout: out UInt<32>;
+  port dout_valid: out Bool;
+end module GuardBroken

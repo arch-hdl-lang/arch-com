@@ -515,8 +515,15 @@ impl Parser {
         }
         let ty = self.parse_type_expr()?;
 
-        // For `port reg`, parse optional init/reset (same syntax as `reg` decl).
+        // For `port reg`, parse optional guard/init/reset (same syntax as `reg` decl).
         let reg_info = if is_reg {
+            // `guard <sig>` — valid-signal guard (structural qualifier, comes first).
+            let guard = if self.check(TokenKind::Guard) {
+                self.advance();
+                Some(self.expect_ident()?)
+            } else {
+                None
+            };
             let init = if self.check(TokenKind::Init) {
                 self.advance();
                 Some(self.parse_expr()?)
@@ -533,7 +540,7 @@ impl Parser {
             } else {
                 RegReset::None
             };
-            Some(PortRegInfo { init, reset })
+            Some(PortRegInfo { init, reset, guard })
         } else {
             None
         };
@@ -665,6 +672,15 @@ impl Parser {
         self.expect(TokenKind::Colon)?;
         let ty = self.parse_type_expr()?;
 
+        // Optional `guard <sig>` — valid-signal guard annotation. Comes right after
+        // TYPE, before init/reset, because it's a structural qualifier about the reg.
+        let guard = if self.check(TokenKind::Guard) {
+            self.advance();
+            Some(self.expect_ident()?)
+        } else {
+            None
+        };
+
         // `init` clause is optional — provides SV declaration initializer only.
         let init = if self.check(TokenKind::Init) {
             self.advance();
@@ -693,6 +709,7 @@ impl Parser {
             ty,
             init,
             reset,
+            guard,
             span: start.merge(end_span),
         })
     }

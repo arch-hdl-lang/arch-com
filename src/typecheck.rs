@@ -141,6 +141,9 @@ impl<'a> TypeChecker<'a> {
             if p.reg_info.is_some() { Some(p.name.name.clone()) } else { None }
         })).collect();
 
+        // Validate `guard <sig>` annotations: signal must exist in scope and be Bool.
+        self.check_guards(m);
+
         // Check params
         for p in &m.params {
             self.check_upper_snake(&p.name);
@@ -875,6 +878,84 @@ impl<'a> TypeChecker<'a> {
             }
             ExprKind::MethodCall(base, _, _) => Self::expr_references_any(base, names),
             _ => false,
+        }
+    }
+
+    /// Validate that every `reg ... guard <sig>` and `port reg ... guard <sig>`
+    /// annotation references a signal that:
+    ///  (a) exists in scope (module ports, regs, wires, or let bindings), and
+    ///  (b) resolves to a Bool type.
+    /// Reports `CompileError::general` with the offending identifier's span.
+    fn check_guards(&mut self, m: &ModuleDecl) {
+        // Build name → TypeExpr map for all in-scope signals
+        let mut sig_types: HashMap<String, TypeExpr> = HashMap::new();
+        for p in &m.ports {
+            if p.bus_info.is_some() { continue; }
+            sig_types.insert(p.name.name.clone(), p.ty.clone());
+        }
+        for item in &m.body {
+            match item {
+                ModuleBodyItem::RegDecl(r) => {
+                    sig_types.insert(r.name.name.clone(), r.ty.clone());
+                }
+                ModuleBodyItem::WireDecl(w) => {
+                    sig_types.insert(w.name.name.clone(), w.ty.clone());
+                }
+                ModuleBodyItem::LetBinding(l) => {
+                    if let Some(ty) = &l.ty {
+                        sig_types.insert(l.name.name.clone(), ty.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Helper: validate a single guard annotation
+        let check_one = |errors: &mut Vec<CompileError>, guard: &Ident, owner: &str| {
+            match sig_types.get(&guard.name) {
+                Some(TypeExpr::Bool) => {} // OK
+                Some(other) => {
+                    let ty_str = match other {
+                        TypeExpr::UInt(_) => "UInt",
+                        TypeExpr::SInt(_) => "SInt",
+                        TypeExpr::Bit => "Bit",
+                        TypeExpr::Clock(_) => "Clock",
+                        TypeExpr::Reset(..) => "Reset",
+                        TypeExpr::Vec(..) => "Vec",
+                        TypeExpr::Named(n) => &n.name,
+                        _ => "<other>",
+                    };
+                    errors.push(CompileError::general(
+                        &format!(
+                            "guard signal `{}` for `{}` must be Bool, found {}",
+                            guard.name, owner, ty_str
+                        ),
+                        guard.span,
+                    ));
+                }
+                None => errors.push(CompileError::general(
+                    &format!(
+                        "guard signal `{}` for `{}` not found in module scope",
+                        guard.name, owner
+                    ),
+                    guard.span,
+                )),
+            }
+        };
+
+        for p in &m.ports {
+            if let Some(ri) = &p.reg_info {
+                if let Some(ref g) = ri.guard {
+                    check_one(&mut self.errors, g, &p.name.name);
+                }
+            }
+        }
+        for item in &m.body {
+            if let ModuleBodyItem::RegDecl(r) = item {
+                if let Some(ref g) = r.guard {
+                    check_one(&mut self.errors, g, &r.name.name);
+                }
+            }
         }
     }
 

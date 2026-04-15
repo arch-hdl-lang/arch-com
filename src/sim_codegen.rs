@@ -2646,21 +2646,39 @@ impl<'a> SimCodegen<'a> {
         // Vec ports also use C array subscript `[i]` internally
         vec_reg_names.extend(vec_port_names.iter().cloned());
 
-        // Collect reset-none reg names for --check-uninit
+        // Collect reset-none reg names for --check-uninit + any guarded reg (regardless
+        // of reset) so Check A can use _<name>_vinit to detect producer bugs.
         let uninit_regs: HashSet<String> = if self.check_uninit {
             m.body.iter()
                 .filter_map(|i| if let ModuleBodyItem::RegDecl(r) = i {
-                    if matches!(r.reset, RegReset::None) { Some(r.name.name.clone()) } else { None }
+                    if matches!(r.reset, RegReset::None) || r.guard.is_some() {
+                        Some(r.name.name.clone())
+                    } else { None }
                 } else { None })
                 .chain(m.ports.iter().filter_map(|p| {
                     if let Some(ri) = &p.reg_info {
-                        if matches!(ri.reset, RegReset::None) { Some(p.name.name.clone()) } else { None }
+                        if matches!(ri.reset, RegReset::None) || ri.guard.is_some() {
+                            Some(p.name.name.clone())
+                        } else { None }
                     } else { None }
                 }))
                 .collect()
         } else {
             HashSet::new()
         };
+
+        // Collect guard-annotated regs: reg_name → guard_signal_name.
+        // Used for Check A (producer bug: "guard asserts but reg never written").
+        let guarded_regs: HashMap<String, String> = m.body.iter()
+            .filter_map(|i| if let ModuleBodyItem::RegDecl(r) = i {
+                r.guard.as_ref().map(|g| (r.name.name.clone(), g.name.clone()))
+            } else { None })
+            .chain(m.ports.iter().filter_map(|p| {
+                p.reg_info.as_ref().and_then(|ri| {
+                    ri.guard.as_ref().map(|g| (p.name.name.clone(), g.name.clone()))
+                })
+            }))
+            .collect();
 
         // Also include inst_out in "known" names for the wide set and widths
         // (they come from sub-inst ports — we'll default them to uint32_t for now)
@@ -3623,6 +3641,22 @@ impl<'a> SimCodegen<'a> {
                         cpp.push_str(&format!("  _{}_vinit = {};\n", chain[i], prev_vinit));
                     }
                 }
+            }
+
+            // Guard Check A: for each `reg ... guard <sig>`, warn if guard asserts
+            // but the reg has never been written. Fires once per module per signal.
+            for (reg_name, guard_sig) in &guarded_regs {
+                cpp.push_str(&format!(
+                    "  if ({guard_sig} && !_{reg_name}_vinit) {{\n\
+                     \x20   static bool _w_{reg_name}_guard = false;\n\
+                     \x20   if (!_w_{reg_name}_guard) {{\n\
+                     \x20     _w_{reg_name}_guard = true;\n\
+                     \x20     fprintf(stderr, \"GUARD VIOLATION: {name}.{reg_name} — \"\n\
+                     \x20             \"{guard_sig}=1 but {reg_name} was never written\\n\");\n\
+                     \x20   }}\n\
+                     \x20 }}\n",
+                    guard_sig = guard_sig, reg_name = reg_name, name = name,
+                ));
             }
         }
 

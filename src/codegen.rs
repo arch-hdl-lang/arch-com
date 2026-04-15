@@ -630,6 +630,11 @@ impl<'a> Codegen<'a> {
             }
         }
 
+        // Emit guard-contract SVA: for each `reg ... guard <sig>`, prove that
+        // whenever `<sig>` is high, the reg has been written at least once.
+        // Uses a shadow `_<reg>_written` set on any seq-block commit (over-approx).
+        self.emit_guard_contracts(&m_clone);
+
         // Emit log file descriptors: initial $fopen / final $fclose
         let log_files = Self::collect_log_files(&m_clone.body);
         if !log_files.is_empty() {
@@ -2058,6 +2063,157 @@ impl<'a> Codegen<'a> {
             self.emit_assert_sva(a, name, clk);
         }
         self.line("// synopsys translate_on");
+    }
+
+    /// For each `reg ... guard <sig>` in the module, emit:
+    ///   1. A shadow `_<reg>_written` flag, set on any seq-block commit for the reg.
+    ///   2. An SVA contract `<sig> |-> _<reg>_written` (in translate_off).
+    /// This catches the producer-bug pattern: `valid` asserts but data was never
+    /// written. Verilator `--assert` and EBMC formal both consume this.
+    ///
+    /// v1 uses a coarse "written at least once after reset" approximation:
+    /// the shadow flag is set whenever the ff block's reset branch is NOT taken
+    /// (i.e. any non-reset cycle). This may over-approximate (flag goes high
+    /// before the actual `<reg> <= ...` assignment), which is safe — it only
+    /// misses some bug detections, never false-alarms.
+    fn emit_guard_contracts(&mut self, m: &ModuleDecl) {
+        let mut guarded: Vec<(String, String, crate::ast::RegReset)> = Vec::new();
+        for item in &m.body {
+            if let ModuleBodyItem::RegDecl(r) = item {
+                if let Some(ref g) = r.guard {
+                    guarded.push((r.name.name.clone(), g.name.clone(), r.reset.clone()));
+                }
+            }
+        }
+        for p in &m.ports {
+            if let Some(ri) = &p.reg_info {
+                if let Some(ref g) = ri.guard {
+                    guarded.push((p.name.name.clone(), g.name.clone(), ri.reset.clone()));
+                }
+            }
+        }
+        if guarded.is_empty() { return; }
+
+        let clk = m.ports.iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            .map(|p| p.name.name.clone())
+            .unwrap_or_else(|| "clk".to_string());
+        let (rst_name, _, is_low) = Self::extract_reset_info(&m.ports);
+        let rst_active = if is_low { format!("!{rst_name}") } else { rst_name.clone() };
+
+        self.line("");
+        self.line("// synopsys translate_off");
+        self.line("// Guard-contract shadow regs + SVA (one per `reg ... guard <sig>`)");
+        for (reg_name, guard_sig, _) in &guarded {
+            // Collect the disjunction of conditions under which `reg_name` is written.
+            // If reg_name is never assigned anywhere, condition is just `false`.
+            let write_conds = self.collect_write_conds(m, reg_name);
+            let write_cond_expr = if write_conds.is_empty() {
+                "1'b0".to_string()
+            } else {
+                // OR-reduce
+                write_conds.iter().map(|s| format!("({s})")).collect::<Vec<_>>().join(" || ")
+            };
+
+            // Shadow "written at least once" flag; goes high only when reg is actually assigned
+            self.line(&format!("logic _{reg_name}_written;"));
+            self.line(&format!("always_ff @(posedge {clk}) begin"));
+            self.indent += 1;
+            self.line(&format!("if ({rst_active}) _{reg_name}_written <= 1'b0;"));
+            self.line(&format!("else if ({write_cond_expr}) _{reg_name}_written <= 1'b1;"));
+            self.indent -= 1;
+            self.line("end");
+            // SVA contract (disable iff rst to exclude reset states from evaluation)
+            self.line(&format!(
+                "_{reg_name}_guard_contract: assert property \
+                 (@(posedge {clk}) disable iff ({rst_active}) {guard_sig} |-> _{reg_name}_written)"
+            ));
+            self.line(&format!(
+                "  else $fatal(1, \"GUARD VIOLATION: {mod}.{reg_name} — \
+                 {guard_sig} asserted but {reg_name} never written\");",
+                mod = m.name.name,
+            ));
+        }
+        self.line("// synopsys translate_on");
+    }
+
+    /// Walk all seq blocks in the module and return a list of SV-string path
+    /// conditions under which `reg_name` is written. For `if cond data <= ...`,
+    /// returns `["cond"]`. For `if A data <= 1; else if B data <= 2;`, returns
+    /// `["(A)", "(!(A) && (B))"]`. Conditions are AND-ed down the nesting; the
+    /// caller OR-reduces them to get the full write condition.
+    ///
+    /// Used by the guard-contract SVA emitter to tightly track when a guarded
+    /// reg has been written at least once.
+    fn collect_write_conds(&self, m: &ModuleDecl, reg_name: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for item in &m.body {
+            if let ModuleBodyItem::RegBlock(rb) = item {
+                for s in &rb.stmts {
+                    self.walk_stmt_for_writes(s, reg_name, &[], &mut out);
+                }
+            }
+        }
+        out
+    }
+
+    /// Recursively walk a Stmt, appending the path-condition (stringified) to
+    /// `out` whenever an assignment to `reg_name` is found.
+    /// `path` is the stack of conditions (each already stringified) leading here.
+    fn walk_stmt_for_writes(
+        &self,
+        s: &Stmt,
+        reg_name: &str,
+        path: &[String],
+        out: &mut Vec<String>,
+    ) {
+        match s {
+            Stmt::Assign(a) => {
+                // Check if target root is reg_name
+                let targets_reg = match &a.target.kind {
+                    ExprKind::Ident(n) => n == reg_name,
+                    ExprKind::Index(base, _) | ExprKind::FieldAccess(base, _)
+                    | ExprKind::BitSlice(base, _, _) | ExprKind::PartSelect(base, _, _, _) => {
+                        matches!(&base.kind, ExprKind::Ident(n) if n == reg_name)
+                    }
+                    _ => false,
+                };
+                if targets_reg {
+                    // Path is the AND of all conditions leading here
+                    let cond = if path.is_empty() {
+                        "1'b1".to_string()
+                    } else {
+                        path.join(" && ")
+                    };
+                    out.push(cond);
+                }
+            }
+            Stmt::IfElse(ie) => {
+                let c_str = format!("({})", self.emit_expr_str(&ie.cond));
+                let mut then_path: Vec<String> = path.to_vec();
+                then_path.push(c_str.clone());
+                for child in &ie.then_stmts {
+                    self.walk_stmt_for_writes(child, reg_name, &then_path, out);
+                }
+                let mut else_path: Vec<String> = path.to_vec();
+                else_path.push(format!("!{}", c_str));
+                for child in &ie.else_stmts {
+                    self.walk_stmt_for_writes(child, reg_name, &else_path, out);
+                }
+            }
+            Stmt::Init(ib) => {
+                for child in &ib.body {
+                    self.walk_stmt_for_writes(child, reg_name, path, out);
+                }
+            }
+            Stmt::For(fl) => {
+                for child in &fl.body {
+                    self.walk_stmt_for_writes(child, reg_name, path, out);
+                }
+            }
+            // Match and Log: skip for v1 (match with pattern conditions is more complex)
+            _ => {}
+        }
     }
 
     fn emit_pipeline_inst(
@@ -3894,18 +4050,29 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    /// Return SystemVerilog operator precedence (higher = tighter binding).
-    /// Values follow IEEE 1800-2017 Table 11-2, simplified to relevant tiers.
+    /// Return operator precedence for SV emission (higher = tighter binding).
+    ///
+    /// ARCH and SV disagree on the relative precedence of comparison operators
+    /// (`==`, `!=`, `<`, `>`, `<=`, `>=`) vs bitwise operators (`&`, `^`, `|`):
+    ///   - SV (IEEE 1800-2017):  `==`/relational bind TIGHTER than `&`/`^`/`|`
+    ///   - ARCH:                 `&`/`^`/`|` bind TIGHTER than `==`/relational
+    ///
+    /// To guarantee correct SV regardless of which precedence the reader assumes,
+    /// we collapse comparison and bitwise ops into a single precedence tier.
+    /// This forces parentheses whenever they are mixed (e.g. `(a == b) & (c == d)`),
+    /// which is always safe and improves readability.
     fn sv_binop_prec(op: &BinOp) -> u8 {
         match op {
             BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::MulWrap => 12,
             BinOp::Add | BinOp::Sub | BinOp::AddWrap | BinOp::SubWrap => 11,
             BinOp::Shl | BinOp::Shr => 10,
-            BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => 9,
-            BinOp::Eq | BinOp::Neq => 8,
+            // Collapsed tier: comparison and bitwise ops share the same level
+            // so any mixing produces parentheses.
+            BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => 7,
+            BinOp::Eq | BinOp::Neq => 7,
             BinOp::BitAnd => 7,
-            BinOp::BitXor => 6,
-            BinOp::BitOr => 5,
+            BinOp::BitXor => 7,
+            BinOp::BitOr => 7,
             BinOp::And => 4,
             BinOp::Or => 3,
             BinOp::Implies => 2,
@@ -4070,8 +4237,16 @@ impl<'a> Codegen<'a> {
                     return format!("!{l} || {r}");
                 }
                 let prec = Self::sv_binop_prec(op);
-                // LHS: wrap if strictly lower precedence (same-prec is left-assoc, OK)
-                let l = self.emit_expr_prec(lhs, prec);
+                // LHS: same-prec left-assoc chain of the SAME associative op → no wrap;
+                // otherwise wrap if same-or-lower precedence.
+                let lhs_prec = if matches!(&lhs.kind, ExprKind::Binary(lop, _, _) if lop == op
+                    && matches!(op, BinOp::Add | BinOp::Mul | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::And | BinOp::Or))
+                {
+                    prec // same assoc op — don't wrap
+                } else {
+                    prec + 1 // different op at same level — wrap
+                };
+                let l = self.emit_expr_prec(lhs, lhs_prec);
                 // RHS: wrap if same-or-lower precedence to respect left-associativity,
                 // EXCEPT for the same commutative/associative op (chain without parens).
                 let rhs_prec = if matches!(&rhs.kind, ExprKind::Binary(rop, _, _) if rop == op

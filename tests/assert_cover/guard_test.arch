@@ -1,0 +1,23 @@
+module GuardTest
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en:  in Bool;
+  port din: in UInt<32>;
+  port dout:  out UInt<32>;
+  port dout_valid: out Bool;
+
+  reg data:    UInt<32> guard valid_r;
+  reg valid_r: Bool reset rst => false;
+
+  seq on clk rising
+    if en
+      data    <= din;
+      valid_r <= true;
+    end if
+  end seq
+
+  comb
+    dout       = data;
+    dout_valid = valid_r;
+  end comb
+end module GuardTest

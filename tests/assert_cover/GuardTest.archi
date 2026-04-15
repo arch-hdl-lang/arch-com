@@ -1,0 +1,8 @@
+module GuardTest
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en: in Bool;
+  port din: in UInt<32>;
+  port dout: out UInt<32>;
+  port dout_valid: out Bool;
+end module GuardTest

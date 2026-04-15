@@ -1120,7 +1120,7 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
                 name: Ident::new(name.clone(), sp), direction: Direction::Out,
                 ty: info.ty.clone(), default: None,
                 reg_info: Some(PortRegInfo {
-                    init: info.reg_init.clone(), reset: info.reg_reset.clone(),
+                    init: info.reg_init.clone(), reset: info.reg_reset.clone(), guard: None,
                 }),
                 bus_info: None, shared: None, span: sp,
             });
@@ -1289,6 +1289,7 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
                 Ident::new(rst_name.clone(), sp),
                 make_zero_expr(sp),
             ),
+            guard: None,
             span: sp,
         }));
 
@@ -1532,7 +1533,7 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
                 name: Ident::new(format!("_t{}_cnt", ti), sp),
                 ty: TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(32)), sp))),
                 init: Some(make_zero_expr(sp)),
-                reset: RegReset::None, span: sp,
+                reset: RegReset::None, guard: None, span: sp,
             }));
         }
         let has_for = thread_has_for(&t.body);
@@ -1542,7 +1543,7 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
                 name: Ident::new(format!("_t{}_loop_cnt", ti), sp),
                 ty: TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(for_cnt_width as u64)), sp))),
                 init: Some(make_zero_expr(sp)),
-                reset: RegReset::None, span: sp,
+                reset: RegReset::None, guard: None, span: sp,
             }));
         }
     }

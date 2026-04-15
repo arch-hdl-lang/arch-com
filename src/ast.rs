@@ -164,6 +164,10 @@ pub enum SharedReduction {
 pub struct PortRegInfo {
     pub init: Option<Expr>,
     pub reset: RegReset,
+    /// Optional valid-signal guard — tells tools this reg is intentionally
+    /// uninitialized as long as the guard signal is low. See
+    /// `doc/plan_reg_guard_syntax.md` for semantics.
+    pub guard: Option<Ident>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -285,6 +289,9 @@ pub struct RegDecl {
     /// Optional SV declaration initializer (`logic [W-1:0] x = VALUE;`)
     pub init: Option<Expr>,
     pub reset: RegReset,
+    /// Optional valid-signal guard — documents that this reg is intentionally
+    /// uninitialized as long as the guard signal is low.
+    pub guard: Option<Ident>,
     pub span: Span,
 }
 
