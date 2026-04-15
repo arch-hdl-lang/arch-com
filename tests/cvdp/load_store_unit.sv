@@ -2,21 +2,21 @@ module load_store_unit (
   input logic clk,
   input logic rst_n,
   output logic dmem_req_o,
-  output logic [32-1:0] dmem_req_addr_o,
+  output logic [31:0] dmem_req_addr_o,
   output logic dmem_req_we_o,
-  output logic [4-1:0] dmem_req_be_o,
-  output logic [32-1:0] dmem_req_wdata_o,
+  output logic [3:0] dmem_req_be_o,
+  output logic [31:0] dmem_req_wdata_o,
   input logic dmem_gnt_i,
   input logic dmem_rvalid_i,
-  input logic [32-1:0] dmem_rsp_rdata_i,
+  input logic [31:0] dmem_rsp_rdata_i,
   input logic ex_if_req_i,
   input logic ex_if_we_i,
-  input logic [2-1:0] ex_if_type_i,
-  input logic [32-1:0] ex_if_wdata_i,
-  input logic [32-1:0] ex_if_addr_base_i,
-  input logic [32-1:0] ex_if_addr_offset_i,
+  input logic [1:0] ex_if_type_i,
+  input logic [31:0] ex_if_wdata_i,
+  input logic [31:0] ex_if_addr_base_i,
+  input logic [31:0] ex_if_addr_offset_i,
   output logic ex_if_ready_o,
-  output logic [32-1:0] wb_if_rdata_o,
+  output logic [31:0] wb_if_rdata_o,
   output logic wb_if_rvalid_o
 );
 
@@ -24,19 +24,19 @@ module load_store_unit (
   // Execute stage interface
   // Writeback interface
   // FSM states: 0=IDLE, 1=WAIT_GNT, 2=WAIT_RVALID
-  logic [2-1:0] state;
+  logic [1:0] state;
   logic is_store;
   // Combinational address calculation
-  logic [32-1:0] addr;
+  logic [31:0] addr;
   assign addr = 32'(ex_if_addr_base_i + ex_if_addr_offset_i);
-  logic [2-1:0] addr_lsb;
+  logic [1:0] addr_lsb;
   assign addr_lsb = addr[1:0];
   // Combinational byte enable and misaligned detection
-  logic [4-1:0] be;
+  logic [3:0] be;
   logic misaligned;
-  // Accept condition: combine into single wire to avoid && codegen issue
+  // Accept condition
   logic accept;
-  assign accept = ex_if_req_i & ex_if_ready_o & misaligned == 1'b0;
+  assign accept = ex_if_req_i & ex_if_ready_o & (misaligned == 1'b0);
   always_comb begin
     if (ex_if_type_i == 0) begin
       misaligned = 1'b0;

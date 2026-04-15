@@ -1,29 +1,29 @@
 module perceptron_gates (
   input logic clk,
   input logic rst_n,
-  input logic signed [4-1:0] x1,
-  input logic signed [4-1:0] x2,
-  input logic [1-1:0] learning_rate,
-  input logic signed [4-1:0] threshold,
-  input logic [2-1:0] gate_select,
-  output logic signed [4-1:0] percep_w1,
-  output logic signed [4-1:0] percep_w2,
-  output logic signed [4-1:0] percep_bias,
-  output logic [4-1:0] present_addr,
+  input logic signed [3:0] x1,
+  input logic signed [3:0] x2,
+  input logic [0:0] learning_rate,
+  input logic signed [3:0] threshold,
+  input logic [1:0] gate_select,
+  output logic signed [3:0] percep_w1,
+  output logic signed [3:0] percep_w2,
+  output logic signed [3:0] percep_bias,
+  output logic [3:0] present_addr,
   output logic stop,
-  output logic [3-1:0] input_index,
-  output logic signed [4-1:0] y_in,
-  output logic signed [4-1:0] y,
-  output logic signed [4-1:0] prev_percep_wt_1,
-  output logic signed [4-1:0] prev_percep_wt_2,
-  output logic signed [4-1:0] prev_percep_bias
+  output logic [2:0] input_index,
+  output logic signed [3:0] y_in,
+  output logic signed [3:0] y,
+  output logic signed [3:0] prev_percep_wt_1,
+  output logic signed [3:0] prev_percep_wt_2,
+  output logic signed [3:0] prev_percep_bias
 );
 
   // Gate target outputs (combinational)
-  logic signed [4-1:0] t1;
-  logic signed [4-1:0] t2;
-  logic signed [4-1:0] t3;
-  logic signed [4-1:0] t4;
+  logic signed [3:0] t1;
+  logic signed [3:0] t2;
+  logic signed [3:0] t3;
+  logic signed [3:0] t4;
   always_comb begin
     if (gate_select == 0) begin
       t1 = 1;
@@ -48,7 +48,7 @@ module perceptron_gates (
     end
   end
   // Target selection based on input_index
-  logic signed [4-1:0] target_val;
+  logic signed [3:0] target_val;
   always_comb begin
     if (input_index == 0) begin
       target_val = t1;
@@ -61,10 +61,10 @@ module perceptron_gates (
     end
   end
   // Compute weight/bias updates
-  logic signed [4-1:0] wt1_update;
-  logic signed [4-1:0] wt2_update;
-  logic signed [4-1:0] bias_update;
-  logic signed [4-1:0] lr_s;
+  logic signed [3:0] wt1_update;
+  logic signed [3:0] wt2_update;
+  logic signed [3:0] bias_update;
+  logic signed [3:0] lr_s;
   always_comb begin
     lr_s = $signed(4'($unsigned(learning_rate)));
     if (y != target_val) begin
@@ -77,28 +77,14 @@ module perceptron_gates (
       bias_update = 0;
     end
   end
-  // Convergence check (avoid && codegen bug by using intermediate wire)
+  // Convergence check
   logic converged;
-  always_comb begin
-    if (wt1_update == prev_percep_wt_1) begin
-      if (wt2_update == prev_percep_wt_2) begin
-        if (bias_update == prev_percep_bias) begin
-          converged = 1'b1;
-        end else begin
-          converged = 1'b0;
-        end
-      end else begin
-        converged = 1'b0;
-      end
-    end else begin
-      converged = 1'b0;
-    end
-  end
+  assign converged = (wt1_update == prev_percep_wt_1) & (wt2_update == prev_percep_wt_2) & (bias_update == prev_percep_bias);
   // Microcode ROM sequencer
-  logic [4-1:0] mc;
+  logic [3:0] mc;
   // Compute y_in combinationally for use in seq
-  logic signed [4-1:0] yin_calc;
-  logic signed [4-1:0] neg_thresh;
+  logic signed [3:0] yin_calc;
+  logic signed [3:0] neg_thresh;
   assign yin_calc = 4'(percep_bias + 4'(x1 * percep_w1) + 4'(x2 * percep_w2));
   assign neg_thresh = 4'(0 - threshold);
   always_ff @(posedge clk or negedge rst_n) begin

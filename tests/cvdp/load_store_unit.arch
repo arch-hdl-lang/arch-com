@@ -39,9 +39,8 @@ module load_store_unit
   wire be: UInt<4>;
   wire misaligned: Bool;
 
-  // Accept condition: combine into single wire to avoid && codegen issue
-  wire accept: Bool;
-  let accept = ex_if_req_i & ex_if_ready_o & (misaligned == false);
+  // Accept condition
+  let accept: Bool = ex_if_req_i & ex_if_ready_o & (misaligned == false);
 
   comb
     if ex_if_type_i == 0

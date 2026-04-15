@@ -72,23 +72,8 @@ module perceptron_gates
     end if
   end comb
 
-  // Convergence check (avoid && codegen bug by using intermediate wire)
-  wire converged: Bool;
-  comb
-    if wt1_update == prev_percep_wt_1
-      if wt2_update == prev_percep_wt_2
-        if bias_update == prev_percep_bias
-          converged = true;
-        else
-          converged = false;
-        end if
-      else
-        converged = false;
-      end if
-    else
-      converged = false;
-    end if
-  end comb
+  // Convergence check
+  let converged: Bool = (wt1_update == prev_percep_wt_1) & (wt2_update == prev_percep_wt_2) & (bias_update == prev_percep_bias);
 
   // Microcode ROM sequencer
   reg mc: UInt<4> reset rst_n=>0;
