@@ -403,12 +403,22 @@ pub enum CombStmt {
     For(ForLoop),
 }
 
+/// Assignment statement: `target = expr;` (combinational, in `comb` blocks)
+/// or `target <= expr;` (sequential, in `seq` blocks / thread seq-assigns).
+/// The assignment kind (blocking vs non-blocking) is determined by which
+/// enum wraps it: `CombStmt::Assign` is blocking, `Stmt::Assign` and
+/// `ThreadStmt::SeqAssign` are non-blocking.
 #[derive(Debug, Clone)]
-pub struct CombAssign {
+pub struct Assign {
     pub target: Expr,
     pub value: Expr,
     pub span: Span,
 }
+
+// CombAssign and RegAssign are aliases for Assign — previously three
+// identical structs; now unified. Both names kept for readability at
+// call sites (CombAssign for blocking `=`, RegAssign for non-blocking `<=`).
+pub type CombAssign = Assign;
 
 #[derive(Debug, Clone)]
 pub struct CombIfElse {
@@ -546,12 +556,7 @@ pub struct LogStmt {
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
-pub struct RegAssign {
-    pub target: Expr,
-    pub value: Expr,
-    pub span: Span,
-}
+pub type RegAssign = Assign;
 
 #[derive(Debug, Clone)]
 pub struct IfElse {
