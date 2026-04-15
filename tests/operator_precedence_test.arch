@@ -1,0 +1,99 @@
+// Comprehensive operator precedence test.
+// Verifies the compiler emits correct SV parenthesization for all operator combinations.
+//
+// Key concern: ARCH treats bitwise ops as tighter than comparisons,
+// but SV treats comparisons as tighter than bitwise.  The compiler
+// collapses them to the same precedence tier and adds parens when mixed.
+//
+// Note: ARCH reserves `<=` for seq assignment; use `>=` with swapped
+// operands or `!(a > b)` for less-than-or-equal comparisons.
+
+module OperatorPrecedenceTest
+  param W: const = 8;
+
+  port a: in UInt<W>;
+  port b: in UInt<W>;
+  port c: in UInt<W>;
+  port d: in UInt<W>;
+  port e: in UInt<W>;
+  port f: in UInt<W>;
+
+  port sel: in Bool;
+
+  // ── 1. Same-operator chains (no parens needed) ──
+  let chain_and: UInt<W> = a & b & c;
+  let chain_or:  UInt<W> = a | b | c;
+  let chain_xor: UInt<W> = a ^ b ^ c;
+  let chain_add: UInt<W> = a +% b +% c;
+
+  // ── 2. Mixed comparison + bitwise (parens required) ──
+  //    ARCH: bitwise tighter than comparison
+  //    SV:   comparison tighter than bitwise
+  //    Compiler must emit parens around comparisons when mixed with bitwise.
+  let cmp_and_eq:  Bool = (a == b) & (c == d);
+  let cmp_or_neq:  Bool = (a != b) | (c != d);
+  let cmp_and_lt_gt: Bool = (a < b) & (c > d);
+  let cmp_or_gte: Bool = (a >= b) | (d >= c);
+
+  // Multiple comparisons with same bitwise op
+  let cmp_and_three: Bool = (a == b) & (c == d) & (e == f);
+
+  // ── 3. Mixed bitwise operators (parens for different ops) ──
+  let mix_and_or:  UInt<W> = (a & b) | (c & d);
+  let mix_or_xor:  UInt<W> = (a | b) ^ (c | d);
+  let mix_xor_and: UInt<W> = (a ^ b) & (c ^ d);
+  let mix_or_and:  UInt<W> = (a | b) & (c | d);
+  let mix_xor_or:  UInt<W> = (a ^ b) | (c ^ d);
+  let mix_and_xor: UInt<W> = (a & b) ^ (c & d);
+
+  // ── 4. Arithmetic vs comparison (standard precedence) ──
+  let arith_cmp_add: Bool = a.zext<W+1>() + b.zext<W+1>() == c.zext<W+1>();
+  let arith_cmp_mul: Bool = a.zext<2*W>() * b.zext<2*W>() < c.zext<2*W>() + d.zext<2*W>();
+
+  // ── 5. Shift operators ──
+  let shift_left:  UInt<W> = a << b;
+  let shift_right: UInt<W> = a >> b;
+  let shift_plus:  UInt<W> = (a << b) +% c;
+
+  // ── 6. Logical operators (and, or) ──
+  let logic_and_or: Bool = (a == b) and (c == d) or (e == f);
+  let logic_or_and: Bool = (a == b) or (c == d) and (e == f);
+
+  // ── 7. Unary operators ──
+  let unary_not_and: UInt<W> = ~a & b;
+  let unary_not_group: UInt<W> = ~(a & b);
+  let unary_reduct_and: Bool = &a;
+  let unary_reduct_or:  Bool = |a;
+  let unary_reduct_xor: Bool = ^a;
+
+  // ── 8. Ternary in expressions ──
+  let tern_simple: UInt<W> = sel ? a : b;
+  let tern_in_add: UInt<W> = (sel ? a : b) +% c;
+  let tern_cmp_cond: UInt<W> = (a == b) ? c : d;
+
+  // ── 9. Method calls with operators ──
+  let meth_trunc_eq: Bool = (a.zext<W+1>() + b.zext<W+1>()).trunc<W>() == c;
+  let meth_zext_add: UInt<W> = a +% b;
+
+  // ── 10. Wrapping operators mixed with regular ──
+  let wrap_add_eq: Bool = (a +% b) == c;
+  let wrap_chain:  UInt<W> = a +% b +% c;
+  let wrap_sub_eq: Bool = (a -% b) == (c -% d);
+
+  // ── 11. Complex nested expressions ──
+  let nested_cmp_bitwise: Bool = ((a == b) & (c == d)) | ((e == f) & (a != c));
+  let nested_arith_shift: UInt<W> = (a.zext<W+1>() + b.zext<W+1>()).trunc<W>() << 2;
+  let nested_multi_level: UInt<W> = ((a & b) | (c & d)) ^ ((e & f) | (a & c));
+
+  // ── 12. Comparison chains with bitwise ──
+  let cmp_neq_and: Bool = (a != b) & (c != d);
+  let cmp_lt_or:   Bool = (a < b) | (c < d);
+  let cmp_gt_xor:  Bool = (a > b) ^ (c > d);
+
+  // ── 13. Arithmetic in shift amount ──
+  let shift_arith_amt: UInt<W> = a << (b + c).trunc<W>();
+
+  // ── 14. Mixed everything ──
+  let kitchen_sink: Bool = ((a + b).trunc<W>() == c) & ((d > e) | (f != a));
+
+end module OperatorPrecedenceTest
