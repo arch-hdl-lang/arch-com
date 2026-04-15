@@ -1,0 +1,31 @@
+fsm TrafficLight
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, High>;
+  port tick: in Bool;
+  port reg light: out UInt<2> reset rst=>0;
+
+  state [Red, Green, Yellow]
+  default state Red;
+  default seq on clk rising;
+
+  state Red
+    seq
+      light <= 0;
+    end seq
+    -> Green when tick;
+  end state Red
+
+  state Green
+    seq
+      light <= 2;
+    end seq
+    -> Yellow when tick;
+  end state Green
+
+  state Yellow
+    seq
+      light <= 1;
+    end seq
+    -> Red when tick;
+  end state Yellow
+end fsm TrafficLight

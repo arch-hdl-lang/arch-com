@@ -1,0 +1,13 @@
+fifo SyncFifo
+  param DEPTH: const = 16;
+  param T: type = UInt<32>;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  port push_valid: in Bool;    port push_ready: out Bool;    port push_data: in T;
+  port pop_valid:  out Bool;   port pop_ready:  in Bool;     port pop_data:  out T;
+
+  port full:  out Bool;
+  port empty: out Bool;
+end fifo SyncFifo

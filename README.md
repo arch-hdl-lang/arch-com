@@ -44,28 +44,28 @@ Named states, exhaustive transition checking, automatic reset, auto-generated le
 
 ```arch
 fsm TrafficLight
-  port clk: in Clock<SysDomain>;
-  port rst: in Reset<Async, High>;
+  port clk:  in Clock<SysDomain>;
+  port rst:  in Reset<Async, High>;
   port tick: in Bool;
-  port reg light: out UInt<2> reset rst => 0;   // 0=Red, 1=Yellow, 2=Green
+  port reg light: out UInt<2> reset rst=>0;   // 0=Red, 1=Yellow, 2=Green
 
   state [Red, Green, Yellow]
   default state Red;
   default seq on clk rising;
 
   state Red
-    seq  light <= 0; end seq
-    if tick => Green;
+    seq light <= 0; end seq
+    -> Green when tick;
   end state Red
 
   state Green
-    seq  light <= 2; end seq
-    if tick => Yellow;
+    seq light <= 2; end seq
+    -> Yellow when tick;
   end state Green
 
   state Yellow
-    seq  light <= 1; end seq
-    if tick => Red;
+    seq light <= 1; end seq
+    -> Red when tick;
   end state Yellow
 end fsm TrafficLight
 ```
