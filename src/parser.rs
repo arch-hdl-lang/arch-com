@@ -988,6 +988,7 @@ impl Parser {
             cond,
             then_stmts,
             else_stmts,
+            unique: false,
             span: start.merge(end_span),
         }))
     }

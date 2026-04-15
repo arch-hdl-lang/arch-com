@@ -372,13 +372,21 @@ pub enum ThreadStmt {
     Log(LogStmt),
 }
 
+/// Generic if/else statement, parameterized by statement body type `S`.
+/// Used as `IfElse = IfElseOf<Stmt>` (seq blocks), `CombIfElse = IfElseOf<CombStmt>`
+/// (comb blocks), and `ThreadIfElse = IfElseOf<ThreadStmt>` (thread bodies).
+/// `unique` is only meaningful in CombIfElse/IfElse (from `unique if` syntax);
+/// it's always false for ThreadIfElse.
 #[derive(Debug, Clone)]
-pub struct ThreadIfElse {
+pub struct IfElseOf<S> {
     pub cond: Expr,
-    pub then_stmts: Vec<ThreadStmt>,
-    pub else_stmts: Vec<ThreadStmt>,
+    pub then_stmts: Vec<S>,
+    pub else_stmts: Vec<S>,
+    pub unique: bool,
     pub span: Span,
 }
+
+pub type ThreadIfElse = IfElseOf<ThreadStmt>;
 
 /// `resource name : mutex<policy>;` — shared bus arbitration declaration
 #[derive(Debug, Clone)]
@@ -420,14 +428,7 @@ pub struct Assign {
 // call sites (CombAssign for blocking `=`, RegAssign for non-blocking `<=`).
 pub type CombAssign = Assign;
 
-#[derive(Debug, Clone)]
-pub struct CombIfElse {
-    pub cond: Expr,
-    pub then_stmts: Vec<CombStmt>,
-    pub else_stmts: Vec<CombStmt>,
-    pub unique: bool,
-    pub span: Span,
-}
+pub type CombIfElse = IfElseOf<CombStmt>;
 
 #[derive(Debug, Clone)]
 pub struct CombMatch {
@@ -558,14 +559,7 @@ pub struct LogStmt {
 
 pub type RegAssign = Assign;
 
-#[derive(Debug, Clone)]
-pub struct IfElse {
-    pub cond: Expr,
-    pub then_stmts: Vec<Stmt>,
-    pub else_stmts: Vec<Stmt>,
-    pub unique: bool,
-    pub span: Span,
-}
+pub type IfElse = IfElseOf<Stmt>;
 
 #[derive(Debug, Clone)]
 pub struct MatchStmt {

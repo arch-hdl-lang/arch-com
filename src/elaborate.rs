@@ -599,6 +599,7 @@ fn subst_thread_stmt(stmt: &ThreadStmt, var: &str, val: i64) -> ThreadStmt {
             cond: subst_expr_names(ie.cond.clone(), var, val),
             then_stmts: ie.then_stmts.iter().map(|s| subst_thread_stmt(s, var, val)).collect(),
             else_stmts: ie.else_stmts.iter().map(|s| subst_thread_stmt(s, var, val)).collect(),
+            unique: ie.unique,
             span: ie.span,
         }),
         ThreadStmt::ForkJoin(branches, sp) => ThreadStmt::ForkJoin(
@@ -2712,6 +2713,7 @@ fn rewrite_loop_var(stmt: &ThreadStmt, var: &str, replacement: &str) -> ThreadSt
             cond: rewrite_var_expr(ie.cond.clone(), var, replacement),
             then_stmts: ie.then_stmts.iter().map(|s| rewrite_loop_var(s, var, replacement)).collect(),
             else_stmts: ie.else_stmts.iter().map(|s| rewrite_loop_var(s, var, replacement)).collect(),
+            unique: ie.unique,
             span: ie.span,
         }),
         ThreadStmt::ForkJoin(branches, sp) => ThreadStmt::ForkJoin(
