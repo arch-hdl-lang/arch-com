@@ -4,18 +4,18 @@ module apb_controller (
   input logic select_a_i,
   input logic select_b_i,
   input logic select_c_i,
-  input logic [32-1:0] addr_a_i,
-  input logic [32-1:0] data_a_i,
-  input logic [32-1:0] addr_b_i,
-  input logic [32-1:0] data_b_i,
-  input logic [32-1:0] addr_c_i,
-  input logic [32-1:0] data_c_i,
+  input logic [31:0] addr_a_i,
+  input logic [31:0] data_a_i,
+  input logic [31:0] addr_b_i,
+  input logic [31:0] data_b_i,
+  input logic [31:0] addr_c_i,
+  input logic [31:0] data_c_i,
   input logic apb_pready_i,
   output logic apb_psel_o,
   output logic apb_penable_o,
   output logic apb_pwrite_o,
-  output logic [32-1:0] apb_paddr_o,
-  output logic [32-1:0] apb_pwdata_o
+  output logic [31:0] apb_paddr_o,
+  output logic [31:0] apb_pwdata_o
 );
 
   typedef enum logic [1:0] {
@@ -29,9 +29,9 @@ module apb_controller (
   logic r_psel;
   logic r_penable;
   logic r_pwrite;
-  logic [32-1:0] r_paddr;
-  logic [32-1:0] r_pwdata;
-  logic [4-1:0] timeout_cnt;
+  logic [31:0] r_paddr;
+  logic [31:0] r_pwdata;
+  logic [3:0] timeout_cnt;
   
   always_ff @(posedge clk or negedge reset_n) begin
     if ((!reset_n)) begin
@@ -110,7 +110,7 @@ module apb_controller (
         state_next = ACCESS;
       end
       ACCESS: begin
-        if (apb_pready_i | timeout_cnt == 15) state_next = IDLE;
+        if (apb_pready_i | (timeout_cnt == 15)) state_next = IDLE;
       end
       default: state_next = state_r;
     endcase
@@ -132,6 +132,17 @@ module apb_controller (
       default: ;
     endcase
   end
+  
+  // synopsys translate_off
+  _auto_legal_state: assert property (@(posedge clk) reset_n |-> state_r < 3)
+    else $fatal(1, "FSM ILLEGAL STATE: apb_controller.state_r = %0d", state_r);
+  _auto_reach_Idle: cover property (@(posedge clk) state_r == IDLE);
+  _auto_reach_Setup: cover property (@(posedge clk) state_r == SETUP);
+  _auto_reach_Access: cover property (@(posedge clk) state_r == ACCESS);
+  _auto_tr_IDLE_to_SETUP: cover property (@(posedge clk) state_r == IDLE && state_next == SETUP);
+  _auto_tr_SETUP_to_ACCESS: cover property (@(posedge clk) state_r == SETUP && state_next == ACCESS);
+  _auto_tr_ACCESS_to_IDLE: cover property (@(posedge clk) state_r == ACCESS && state_next == IDLE);
+  // synopsys translate_on
 
 endmodule
 

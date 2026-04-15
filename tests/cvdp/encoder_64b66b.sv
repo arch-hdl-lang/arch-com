@@ -1,9 +1,9 @@
 module encoder_64b66b (
   input logic clk_in,
   input logic rst_in,
-  input logic [64-1:0] encoder_data_in,
-  input logic [8-1:0] encoder_control_in,
-  output logic [66-1:0] encoder_data_out
+  input logic [63:0] encoder_data_in,
+  input logic [7:0] encoder_control_in,
+  output logic [65:0] encoder_data_out
 );
 
   always_ff @(posedge clk_in or posedge rst_in) begin

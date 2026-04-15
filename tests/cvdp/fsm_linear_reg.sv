@@ -12,7 +12,7 @@ module fsm_linear_reg #(
   output logic done
 );
 
-  logic [2-1:0] state;
+  logic [1:0] state;
   logic signed [DATA_WIDTH * 2-1:0] buf_result1;
   logic signed [DATA_WIDTH + 1-1:0] buf_result2;
   logic buf_done;

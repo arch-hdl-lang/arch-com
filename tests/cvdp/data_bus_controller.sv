@@ -5,13 +5,13 @@ module data_bus_controller #(
   input logic rst_n,
   output logic m0_ready,
   input logic m0_valid,
-  input logic [32-1:0] m0_data,
+  input logic [31:0] m0_data,
   output logic m1_ready,
   input logic m1_valid,
-  input logic [32-1:0] m1_data,
+  input logic [31:0] m1_data,
   input logic s_ready,
   output logic s_valid,
-  output logic [32-1:0] s_data
+  output logic [31:0] s_data
 );
 
   assign m0_ready = s_ready;

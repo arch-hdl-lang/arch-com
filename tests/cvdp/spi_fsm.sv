@@ -3,20 +3,20 @@
 module spi_fsm (
   input logic i_clk,
   input logic i_rst_b,
-  input logic [16-1:0] i_data_in,
+  input logic [15:0] i_data_in,
   input logic i_enable,
   input logic i_fault,
   input logic i_clear,
   output logic o_spi_cs_b,
   output logic o_spi_clk,
   output logic o_spi_data,
-  output logic [5-1:0] o_bits_left,
+  output logic [4:0] o_bits_left,
   output logic o_done,
-  output logic [2-1:0] o_fsm_state
+  output logic [1:0] o_fsm_state
 );
 
-  logic [16-1:0] shift_r;
-  logic [2-1:0] state_r;
+  logic [15:0] shift_r;
+  logic [1:0] state_r;
   always_ff @(posedge i_clk or negedge i_rst_b) begin
     if ((!i_rst_b)) begin
       o_bits_left <= 5'd16;
@@ -36,14 +36,14 @@ module spi_fsm (
         o_spi_data <= 1'b0;
         o_bits_left <= 5'd16;
         o_fsm_state <= 0;
-      end else if (i_fault & state_r != 2'd3) begin
+      end else if (i_fault & (state_r != 2'd3)) begin
         state_r <= 2'd3;
         o_spi_cs_b <= 1'b1;
         o_spi_clk <= 1'b0;
         o_spi_data <= 1'b0;
         o_bits_left <= 5'd16;
         o_fsm_state <= 2'd3;
-      end else if (~i_enable & state_r != 2'd3) begin
+      end else if (~i_enable & (state_r != 2'd3)) begin
         state_r <= 0;
         o_spi_cs_b <= 1'b1;
         o_spi_clk <= 1'b0;

@@ -1,14 +1,14 @@
 module dbi_dec (
   input logic clk,
   input logic rst_n,
-  input logic [40-1:0] data_in,
-  input logic [2-1:0] dbi_cntrl,
-  output logic [40-1:0] data_out
+  input logic [39:0] data_in,
+  input logic [1:0] dbi_cntrl,
+  output logic [39:0] data_out
 );
 
   // Group-0 = data_in[19:0], Group-1 = data_in[39:20]
   // If dbi_cntrl[0]=1, invert Group-0; if dbi_cntrl[1]=1, invert Group-1
-  logic [40-1:0] decoded;
+  logic [39:0] decoded;
   always_comb begin
     decoded[19:0] = data_in[19:0];
     decoded[39:20] = data_in[39:20];

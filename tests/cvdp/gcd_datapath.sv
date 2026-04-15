@@ -5,7 +5,7 @@ module gcd_datapath #(
   input logic rst,
   input logic [WIDTH-1:0] A,
   input logic [WIDTH-1:0] B,
-  input logic [2-1:0] controlpath_state,
+  input logic [1:0] controlpath_state,
   output logic [WIDTH-1:0] OUT,
   output logic equal,
   output logic greater_than
@@ -40,8 +40,10 @@ module gcd_datapath #(
       end else if (controlpath_state == 2'd1) begin
         out_r <= a_ff;
       end else if (controlpath_state == 2'd2) begin
-        a_ff <= WIDTH'(a_ff - b_ff);
-      end else begin
+        if (greater_than) begin
+          a_ff <= WIDTH'(a_ff - b_ff);
+        end
+      end else if (~equal & ~greater_than) begin
         b_ff <= WIDTH'(b_ff - a_ff);
       end
     end

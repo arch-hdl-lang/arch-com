@@ -17,8 +17,8 @@ module interrupt_controller_apb #(
   input logic penable,
   input logic pwrite,
   input logic [ADDR_WIDTH-1:0] paddr,
-  input logic [32-1:0] pwdata,
-  output logic [32-1:0] prdata,
+  input logic [31:0] pwdata,
+  output logic [31:0] prdata,
   output logic pready
 );
 
@@ -29,15 +29,15 @@ module interrupt_controller_apb #(
   logic [IDX_WIDTH-1:0] current_idx;
   logic has_pending_r;
   // APB-configured registers (pclk domain)
-  logic [24-1:0] priority_map [NUM_INTERRUPTS-1:0];
-  logic [24-1:0] vector_table [NUM_INTERRUPTS-1:0];
+  logic [NUM_INTERRUPTS-1:0] [23:0] priority_map;
+  logic [NUM_INTERRUPTS-1:0] [23:0] vector_table;
   logic [NUM_INTERRUPTS-1:0] interrupt_mask;
   // Combinational wires for priority arbitration
   logic [NUM_INTERRUPTS-1:0] effective_pending;
   logic [NUM_INTERRUPTS-1:0] masked_pending;
   logic [NUM_INTERRUPTS-1:0] winner_int;
-  logic [32-1:0] winner_idx32;
-  logic [24-1:0] highest_pri_val;
+  logic [31:0] winner_idx32;
+  logic [23:0] highest_pri_val;
   logic has_pending;
   logic current_still_unmasked;
   // Priority-based arbitration (combinational).
@@ -76,7 +76,7 @@ module interrupt_controller_apb #(
       pending_interrupts <= pending_interrupts | interrupt_requests;
       if (cpu_ack & servicing) begin
         // Clear the serviced interrupt's pending bit
-        pending_interrupts <= pending_interrupts & ~current_int | interrupt_requests;
+        pending_interrupts <= (pending_interrupts & ~current_int) | interrupt_requests;
         servicing <= 1'b0;
         current_int <= 0;
         current_idx <= 0;
@@ -98,7 +98,7 @@ module interrupt_controller_apb #(
   assign interrupt_idx = current_idx;
   assign interrupt_vector = ADDR_WIDTH'(vector_table[current_idx]);
   // APB combinational read data
-  logic [32-1:0] apb_rdata;
+  logic [31:0] apb_rdata;
   always_comb begin
     apb_rdata = 0;
     pready = psel & penable;

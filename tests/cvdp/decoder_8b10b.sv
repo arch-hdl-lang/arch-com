@@ -1,12 +1,12 @@
 module decoder_8b10b (
   input logic clk_in,
   input logic reset_in,
-  input logic [10-1:0] decoder_in,
-  output logic [8-1:0] decoder_out,
+  input logic [9:0] decoder_in,
+  output logic [7:0] decoder_out,
   output logic control_out
 );
 
-  logic [8-1:0] dec_val;
+  logic [7:0] dec_val;
   logic ctrl_val;
   always_comb begin
     if (decoder_in == 10'd244 || decoder_in == 10'd779) begin

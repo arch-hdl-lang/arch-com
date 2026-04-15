@@ -11,14 +11,14 @@ module precision_counter_axi #(
   input logic [C_S_AXI_DATA_WIDTH / 8-1:0] axi_wstrb,
   input logic axi_wvalid,
   output logic axi_wready,
-  output logic [2-1:0] axi_bresp,
+  output logic [1:0] axi_bresp,
   output logic axi_bvalid,
   input logic axi_bready,
   input logic [C_S_AXI_ADDR_WIDTH-1:0] axi_araddr,
   input logic axi_arvalid,
   output logic axi_arready,
   output logic [C_S_AXI_DATA_WIDTH-1:0] axi_rdata,
-  output logic [2-1:0] axi_rresp,
+  output logic [1:0] axi_rresp,
   output logic axi_rvalid,
   input logic axi_rready,
   output logic axi_ap_done,
@@ -119,7 +119,7 @@ module precision_counter_axi #(
         axi_ap_done <= 1'b0;
       end
       // === IRQ ===
-      if (slv_reg_irq_mask[0:0] == 1 & slv_reg_ctl[0:0] == 1 & slv_reg_v == slv_reg_irq_thresh) begin
+      if ((slv_reg_irq_mask[0:0] == 1) & (slv_reg_ctl[0:0] == 1) & (slv_reg_v == slv_reg_irq_thresh)) begin
         irq <= 1'b1;
       end else begin
         irq <= 1'b0;

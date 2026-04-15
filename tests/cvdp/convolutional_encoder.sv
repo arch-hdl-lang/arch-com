@@ -7,7 +7,7 @@ module convolutional_encoder (
 );
 
   // shift_reg[0] = most recent, shift_reg[1] = oldest
-  logic [2-1:0] shift_reg;
+  logic [1:0] shift_reg;
   always_ff @(posedge clk or posedge rst) begin
     if (rst) begin
       encoded_bit1 <= 0;

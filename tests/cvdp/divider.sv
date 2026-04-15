@@ -14,13 +14,13 @@ module divider #(
 );
 
   // FSM states as constants
-  logic [2-1:0] ST_IDLE;
+  logic [1:0] ST_IDLE;
   assign ST_IDLE = 0;
-  logic [2-1:0] ST_BUSY;
+  logic [1:0] ST_BUSY;
   assign ST_BUSY = 1;
-  logic [2-1:0] ST_DONE;
+  logic [1:0] ST_DONE;
   assign ST_DONE = 2;
-  logic [2-1:0] state_r;
+  logic [1:0] state_r;
   // AQ combined register: A is top AW bits, Q is bottom WIDTH bits
   logic [AQW-1:0] aq_r;
   logic [AW-1:0] m_r;
@@ -43,7 +43,7 @@ module divider #(
   assign a_minus_m = AW'(a_shifted - m_r);
   // New A after operation based on current A sign
   logic [AW-1:0] a_new;
-  logic [1-1:0] q_new_lsb;
+  logic [0:0] q_new_lsb;
   always_comb begin
     if (a_current[WIDTH]) begin
       a_new = a_plus_m;

@@ -7,13 +7,13 @@ module secure_read_write_bus_interface #(
   input logic i_reset_bar,
   input logic [P_ADDR_WIDTH-1:0] i_addr,
   input logic [P_DATA_WIDTH-1:0] i_data_in,
-  input logic [8-1:0] i_key_in,
+  input logic [7:0] i_key_in,
   input logic i_read_write_enable,
   output logic [P_DATA_WIDTH-1:0] o_data_out,
   output logic o_error
 );
 
-  logic [P_DATA_WIDTH-1:0] mem [256-1:0];
+  logic [255:0] [P_DATA_WIDTH-1:0] mem;
   always_ff @(posedge i_capture_pulse or negedge i_reset_bar) begin
     if ((!i_reset_bar)) begin
       for (int __ri0 = 0; __ri0 < 256; __ri0++) begin

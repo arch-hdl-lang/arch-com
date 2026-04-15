@@ -10,10 +10,10 @@ module onebit_ecc #(
   output logic error_corrected
 );
 
-  logic [1-1:0] parity_enc [$clog2(CODE_WIDTH + 1)-1:0];
+  logic [$clog2(CODE_WIDTH + 1)-1:0] [0:0] parity_enc;
   logic [$clog2(DATA_WIDTH + 1)-1:0] data_idx_enc;
   logic [$clog2($clog2(CODE_WIDTH + 1) + 1)-1:0] parity_idx_enc;
-  logic [1-1:0] parity_dec [$clog2(CODE_WIDTH + 1)-1:0];
+  logic [$clog2(CODE_WIDTH + 1)-1:0] [0:0] parity_dec;
   logic [$clog2(CODE_WIDTH + 1)-1:0] syndrome_val;
   logic [CODE_WIDTH-1:0] corrected;
   logic [$clog2(DATA_WIDTH + 1)-1:0] data_idx_dec;
@@ -70,7 +70,7 @@ module onebit_ecc #(
     // Correct single-bit error: syndrome is 1-indexed position, convert to 0-indexed
     for (int i = 0; i <= CODE_WIDTH - 1; i++) begin
       corrected[i +: 1] = received[i +: 1];
-      if (syndrome_val != 0 & syndrome_val == i + 1) begin
+      if ((syndrome_val != 0) & (syndrome_val == i + 1)) begin
         corrected[i +: 1] = ~received[i +: 1];
       end
     end

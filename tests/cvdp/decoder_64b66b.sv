@@ -1,14 +1,14 @@
 module decoder_64b66b (
   input logic clk_in,
   input logic rst_in,
-  input logic [66-1:0] decoder_data_in,
-  output logic [64-1:0] decoder_data_out,
+  input logic [65:0] decoder_data_in,
+  output logic [63:0] decoder_data_out,
   output logic sync_error
 );
 
-  logic [2-1:0] sync_header;
+  logic [1:0] sync_header;
   assign sync_header = decoder_data_in[65:64];
-  logic [64-1:0] data_in;
+  logic [63:0] data_in;
   assign data_in = decoder_data_in[63:0];
   always_ff @(posedge clk_in or posedge rst_in) begin
     if (rst_in) begin

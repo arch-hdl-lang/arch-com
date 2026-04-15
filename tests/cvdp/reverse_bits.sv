@@ -1,6 +1,6 @@
 module reverse_bits (
-  input logic [32-1:0] num_in,
-  output logic [32-1:0] num_out
+  input logic [31:0] num_in,
+  output logic [31:0] num_out
 );
 
   always_comb begin

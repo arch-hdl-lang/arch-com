@@ -1,9 +1,9 @@
 module sdram_controller (
   input logic clk,
   input logic reset,
-  input logic [24-1:0] addr,
-  input logic [16-1:0] data_in,
-  output logic [16-1:0] data_out,
+  input logic [23:0] addr,
+  input logic [15:0] data_in,
+  output logic [15:0] data_out,
   input logic read,
   input logic write,
   output logic sdram_clk,
@@ -12,23 +12,23 @@ module sdram_controller (
   output logic sdram_ras,
   output logic sdram_cas,
   output logic sdram_we,
-  output logic [13-1:0] sdram_addr,
-  output logic [2-1:0] sdram_ba,
-  input logic [16-1:0] sdram_dq,
-  output logic [16-1:0] dq_out
+  output logic [12:0] sdram_addr,
+  output logic [1:0] sdram_ba,
+  input logic [15:0] sdram_dq,
+  output logic [15:0] dq_out
 );
 
-  logic [3-1:0] state;
-  logic [4-1:0] init_cnt;
-  logic [11-1:0] refresh_cnt;
-  logic [16-1:0] data_out_r;
-  logic [16-1:0] dq_out_r;
+  logic [2:0] state;
+  logic [3:0] init_cnt;
+  logic [10:0] refresh_cnt;
+  logic [15:0] data_out_r;
+  logic [15:0] dq_out_r;
   logic sdram_cs_r;
   logic sdram_ras_r;
   logic sdram_cas_r;
   logic sdram_we_r;
-  logic [13-1:0] sdram_addr_r;
-  logic [2-1:0] sdram_ba_r;
+  logic [12:0] sdram_addr_r;
+  logic [1:0] sdram_ba_r;
   logic read_pending;
   assign sdram_clk = clk;
   assign sdram_cke = 1'b1;

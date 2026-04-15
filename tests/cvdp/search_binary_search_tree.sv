@@ -17,7 +17,7 @@ module search_binary_search_tree #(
 );
 
   // FSM: 0=S_IDLE,1=S_INIT,2=S_SEARCH_LEFT,3=S_SEARCH_LEFT_RIGHT,4=S_COMPLETE_SEARCH
-  logic [3-1:0] search_state;
+  logic [2:0] search_state;
   // S_INIT takes 2 cycles: one warmup register then process on second
   logic init_r1;
   // found: key was found at root (need to count left subtree for position)

@@ -1,86 +1,149 @@
+module single_port_ram__DATA_WIDTH_7 #(
+  parameter int DATA_WIDTH = 7,
+  parameter int ADDR_WIDTH = 4
+) (
+  input logic clk,
+  input logic we,
+  input logic [ADDR_WIDTH-1:0] addr,
+  input logic [DATA_WIDTH-1:0] din,
+  output logic [DATA_WIDTH-1:0] dout
+);
+
+  logic [15:0] [DATA_WIDTH-1:0] mem;
+  always_ff @(posedge clk) begin
+    if (we) begin
+      mem[4'(addr)] <= din;
+    end
+    dout <= mem[4'(addr)];
+  end
+
+endmodule
+
+module single_port_ram__DATA_WIDTH_3 #(
+  parameter int DATA_WIDTH = 3,
+  parameter int ADDR_WIDTH = 4
+) (
+  input logic clk,
+  input logic we,
+  input logic [ADDR_WIDTH-1:0] addr,
+  input logic [DATA_WIDTH-1:0] din,
+  output logic [DATA_WIDTH-1:0] dout
+);
+
+  logic [15:0] [DATA_WIDTH-1:0] mem;
+  always_ff @(posedge clk) begin
+    if (we) begin
+      mem[4'(addr)] <= din;
+    end
+    dout <= mem[4'(addr)];
+  end
+
+endmodule
+
+module single_port_ram__DATA_WIDTH_4 #(
+  parameter int DATA_WIDTH = 4,
+  parameter int ADDR_WIDTH = 4
+) (
+  input logic clk,
+  input logic we,
+  input logic [ADDR_WIDTH-1:0] addr,
+  input logic [DATA_WIDTH-1:0] din,
+  output logic [DATA_WIDTH-1:0] dout
+);
+
+  logic [15:0] [DATA_WIDTH-1:0] mem;
+  always_ff @(posedge clk) begin
+    if (we) begin
+      mem[4'(addr)] <= din;
+    end
+    dout <= mem[4'(addr)];
+  end
+
+endmodule
+
 module huffman_encoder (
   input logic clk,
   input logic reset,
   input logic data_valid,
-  input logic [4-1:0] data_in,
-  input logic [2-1:0] data_priority,
+  input logic [3:0] data_in,
+  input logic [1:0] data_priority,
   input logic update_enable,
-  input logic [4-1:0] config_symbol,
-  input logic [7-1:0] config_code,
-  input logic [3-1:0] config_length,
-  output logic [7-1:0] huffman_code_out,
+  input logic [3:0] config_symbol,
+  input logic [6:0] config_code,
+  input logic [2:0] config_length,
+  output logic [6:0] huffman_code_out,
   output logic code_valid,
   output logic error_flag
 );
 
   // FSM states: 0=IDLE,1=PREPARE,2=CHECK_UPDATE,3=ENCODE,4=OUTPUT,5=HANDLE_ERROR,6=UPDATE_TABLE
-  logic [3-1:0] state;
+  logic [2:0] state;
   // RAM interface wires
   logic ht_we;
-  logic [4-1:0] ht_addr;
-  logic [7-1:0] ht_din;
-  logic [7-1:0] ht_dout;
+  logic [3:0] ht_addr;
+  logic [6:0] ht_din;
+  logic [6:0] ht_dout;
   logic cl_we;
-  logic [4-1:0] cl_addr;
-  logic [3-1:0] cl_din;
-  logic [3-1:0] cl_dout;
+  logic [3:0] cl_addr;
+  logic [2:0] cl_din;
+  logic [2:0] cl_dout;
   logic qh_we;
-  logic [4-1:0] qh_addr;
-  logic [4-1:0] qh_din;
-  logic [4-1:0] qh_dout;
+  logic [3:0] qh_addr;
+  logic [3:0] qh_din;
+  logic [3:0] qh_dout;
   logic qm_we;
-  logic [4-1:0] qm_addr;
-  logic [4-1:0] qm_din;
-  logic [4-1:0] qm_dout;
+  logic [3:0] qm_addr;
+  logic [3:0] qm_din;
+  logic [3:0] qm_dout;
   logic ql_we;
-  logic [4-1:0] ql_addr;
-  logic [4-1:0] ql_din;
-  logic [4-1:0] ql_dout;
+  logic [3:0] ql_addr;
+  logic [3:0] ql_din;
+  logic [3:0] ql_dout;
   // Queue write pointers
-  logic [4-1:0] qh_wptr;
-  logic [4-1:0] qm_wptr;
-  logic [4-1:0] ql_wptr;
+  logic [3:0] qh_wptr;
+  logic [3:0] qm_wptr;
+  logic [3:0] ql_wptr;
   // Queue read pointers
-  logic [4-1:0] qh_rptr;
-  logic [4-1:0] qm_rptr;
-  logic [4-1:0] ql_rptr;
+  logic [3:0] qh_rptr;
+  logic [3:0] qm_rptr;
+  logic [3:0] ql_rptr;
   // Saved symbol for encoding
-  logic [4-1:0] cur_symbol;
+  logic [3:0] cur_symbol;
   // Saved update params
-  logic [4-1:0] upd_symbol;
-  logic [7-1:0] upd_code;
-  logic [3-1:0] upd_length;
+  logic [3:0] upd_symbol;
+  logic [6:0] upd_code;
+  logic [2:0] upd_length;
   logic upd_pending;
   // RAM instances
-  single_port_ram #(.DATA_WIDTH(7), .ADDR_WIDTH(4)) ht_ram (
+  single_port_ram__DATA_WIDTH_7 #(.DATA_WIDTH(7), .ADDR_WIDTH(4)) ht_ram (
     .clk(clk),
     .we(ht_we),
     .addr(ht_addr),
     .din(ht_din),
     .dout(ht_dout)
   );
-  single_port_ram #(.DATA_WIDTH(3), .ADDR_WIDTH(4)) cl_ram (
+  single_port_ram__DATA_WIDTH_3 #(.DATA_WIDTH(3), .ADDR_WIDTH(4)) cl_ram (
     .clk(clk),
     .we(cl_we),
     .addr(cl_addr),
     .din(cl_din),
     .dout(cl_dout)
   );
-  single_port_ram #(.DATA_WIDTH(4), .ADDR_WIDTH(4)) qh_ram (
+  single_port_ram__DATA_WIDTH_4 #(.DATA_WIDTH(4), .ADDR_WIDTH(4)) qh_ram (
     .clk(clk),
     .we(qh_we),
     .addr(qh_addr),
     .din(qh_din),
     .dout(qh_dout)
   );
-  single_port_ram #(.DATA_WIDTH(4), .ADDR_WIDTH(4)) qm_ram (
+  single_port_ram__DATA_WIDTH_4 #(.DATA_WIDTH(4), .ADDR_WIDTH(4)) qm_ram (
     .clk(clk),
     .we(qm_we),
     .addr(qm_addr),
     .din(qm_din),
     .dout(qm_dout)
   );
-  single_port_ram #(.DATA_WIDTH(4), .ADDR_WIDTH(4)) ql_ram (
+  single_port_ram__DATA_WIDTH_4 #(.DATA_WIDTH(4), .ADDR_WIDTH(4)) ql_ram (
     .clk(clk),
     .we(ql_we),
     .addr(ql_addr),
@@ -233,23 +296,3 @@ module huffman_encoder (
 
 endmodule
 
-module single_port_ram #(
-  parameter int DATA_WIDTH = 8,
-  parameter int ADDR_WIDTH = 4
-) (
-  input  logic                    clk,
-  input  logic                    we,
-  input  logic [ADDR_WIDTH-1:0]   addr,
-  input  logic [DATA_WIDTH-1:0]   din,
-  output logic [DATA_WIDTH-1:0]   dout
-);
-
-  logic [DATA_WIDTH-1:0] mem [0:(1<<ADDR_WIDTH)-1];
-
-  always_ff @(posedge clk) begin
-    if (we)
-      mem[addr] <= din;
-    dout <= mem[addr];
-  end
-
-endmodule

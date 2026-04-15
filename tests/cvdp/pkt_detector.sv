@@ -3,10 +3,10 @@ module pkt_detector #(
 ) (
   input logic clk,
   input logic reset,
-  input logic [8-1:0] data_in,
+  input logic [7:0] data_in,
   input logic data_k_flag,
   output logic [PKT_CNT_WIDTH-1:0] pkt_count,
-  output logic [160-1:0] pkt_data,
+  output logic [159:0] pkt_data,
   output logic mem_read_detected,
   output logic mem_write_detected,
   output logic io_read_detected,
@@ -20,18 +20,18 @@ module pkt_detector #(
   output logic error_detected
 );
 
-  logic [8-1:0] START_SYMBOL;
+  logic [7:0] START_SYMBOL;
   assign START_SYMBOL = 8'd251;
-  logic [8-1:0] END_SYMBOL;
+  logic [7:0] END_SYMBOL;
   assign END_SYMBOL = 8'd253;
-  logic [8-1:0] PKT_BYTES;
+  logic [7:0] PKT_BYTES;
   assign PKT_BYTES = 20;
-  logic [2-1:0] curr_state;
-  logic [2-1:0] nxt_state;
-  logic [8-1:0] byte_cnt;
-  logic [160-1:0] pkt_reg;
+  logic [1:0] curr_state;
+  logic [1:0] nxt_state;
+  logic [7:0] byte_cnt;
+  logic [159:0] pkt_reg;
   logic [PKT_CNT_WIDTH-1:0] pkt_count_r;
-  logic [160-1:0] pkt_data_r;
+  logic [159:0] pkt_data_r;
   logic mem_read_detected_r;
   logic mem_write_detected_r;
   logic io_read_detected_r;
@@ -47,9 +47,9 @@ module pkt_detector #(
   assign data_is_start = data_in == START_SYMBOL;
   logic is_start;
   assign is_start = data_is_start & data_k_flag;
-  logic [8-1:0] header;
+  logic [7:0] header;
   assign header = pkt_reg[31:24];
-  logic [8-1:0] end_byte;
+  logic [7:0] end_byte;
   assign end_byte = pkt_reg[159:152];
   logic end_valid;
   assign end_valid = end_byte == END_SYMBOL;

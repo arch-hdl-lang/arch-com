@@ -1,50 +1,3 @@
-module ControlUnit (
-  input logic clk,
-  input logic rst,
-  input logic hit,
-  input logic miss,
-  input logic ready,
-  output logic tlb_write_enable,
-  output logic flsh
-);
-
-  assign tlb_write_enable = miss;
-  assign flsh = 1'b0;
-
-endmodule
-
-module PageTableHandler #(
-  parameter int ADDR_WIDTH = 8,
-  parameter int PAGE_WIDTH = 8,
-  parameter int PAGE_TABLE_SIZE = 16
-) (
-  input logic clk,
-  input logic rst,
-  input logic miss,
-  input logic [ADDR_WIDTH-1:0] virtual_page,
-  output logic [PAGE_WIDTH-1:0] page_table_entry,
-  output logic ready
-);
-
-  logic rdy;
-  assign page_table_entry = virtual_page[PAGE_WIDTH - 1:0];
-  assign ready = rdy;
-  always_ff @(posedge clk) begin
-    if (rst) begin
-      rdy <= 1'b0;
-    end else begin
-      if (rst) begin
-        rdy <= 1'b0;
-      end else if (miss) begin
-        rdy <= 1'b1;
-      end else begin
-        rdy <= 1'b0;
-      end
-    end
-  end
-
-endmodule
-
 module TLB #(
   parameter int TLB_SIZE = 4,
   parameter int ADDR_WIDTH = 8,
@@ -70,7 +23,7 @@ module TLB #(
   logic [PAGE_WIDTH-1:0] physical_pages_2;
   logic [PAGE_WIDTH-1:0] physical_pages_3;
   logic [TLB_SIZE-1:0] valid_bits;
-  logic [2-1:0] replacement_idx;
+  logic [1:0] replacement_idx;
   logic v0;
   assign v0 = virtual_tags_0 == virtual_address;
   logic v1;
@@ -123,18 +76,7 @@ module TLB #(
       virtual_tags_2 <= 0;
       virtual_tags_3 <= 0;
     end else begin
-      if (rst) begin
-        valid_bits <= 0;
-        replacement_idx <= 0;
-        virtual_tags_0 <= 0;
-        virtual_tags_1 <= 0;
-        virtual_tags_2 <= 0;
-        virtual_tags_3 <= 0;
-        physical_pages_0 <= 0;
-        physical_pages_1 <= 0;
-        physical_pages_2 <= 0;
-        physical_pages_3 <= 0;
-      end else if (flsh) begin
+      if (flsh) begin
         valid_bits <= 0;
       end else if (tlb_write_enable) begin
         if (replacement_idx == 0) begin
@@ -161,6 +103,51 @@ module TLB #(
       end
     end
   end
+
+endmodule
+
+module PageTableHandler #(
+  parameter int ADDR_WIDTH = 8,
+  parameter int PAGE_WIDTH = 8,
+  parameter int PAGE_TABLE_SIZE = 16
+) (
+  input logic clk,
+  input logic rst,
+  input logic miss,
+  input logic [ADDR_WIDTH-1:0] virtual_page,
+  output logic [PAGE_WIDTH-1:0] page_table_entry,
+  output logic ready
+);
+
+  logic rdy;
+  assign page_table_entry = virtual_page[PAGE_WIDTH - 1:0];
+  assign ready = rdy;
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      rdy <= 1'b0;
+    end else begin
+      if (miss) begin
+        rdy <= 1'b1;
+      end else begin
+        rdy <= 1'b0;
+      end
+    end
+  end
+
+endmodule
+
+module ControlUnit (
+  input logic clk,
+  input logic rst,
+  input logic hit,
+  input logic miss,
+  input logic ready,
+  output logic tlb_write_enable,
+  output logic flsh
+);
+
+  assign tlb_write_enable = miss;
+  assign flsh = 1'b0;
 
 endmodule
 

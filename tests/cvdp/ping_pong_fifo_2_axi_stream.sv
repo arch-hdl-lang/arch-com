@@ -7,12 +7,12 @@ module ping_pong_fifo_2_axi_stream #(
   input logic rst,
   input logic i_block_fifo_rdy,
   output logic o_block_fifo_act = 0,
-  input logic [24-1:0] i_block_fifo_size,
+  input logic [23:0] i_block_fifo_size,
   input logic [DATA_WIDTH + 1-1:0] i_block_fifo_data,
   output logic o_block_fifo_stb = 0,
-  input logic [4-1:0] i_axi_user,
+  input logic [3:0] i_axi_user,
   input logic i_axi_clk,
-  output logic [4-1:0] o_axi_user = 0,
+  output logic [3:0] o_axi_user = 0,
   input logic i_axi_ready,
   output logic [DATA_WIDTH-1:0] o_axi_data = 0,
   output logic o_axi_last = 0,
@@ -22,8 +22,8 @@ module ping_pong_fifo_2_axi_stream #(
   logic [DATA_WIDTH-1:0] fifo_data_buffer = 0;
   logic fifo_valid_buffer = 0;
   logic fifo_last_buffer = 0;
-  logic [24-1:0] read_count = 0;
-  logic [24-1:0] block_size = 0;
+  logic [23:0] read_count = 0;
+  logic [23:0] block_size = 0;
   logic stb_prev = 0;
   logic act_prev = 0;
   always_ff @(posedge i_axi_clk or posedge rst) begin

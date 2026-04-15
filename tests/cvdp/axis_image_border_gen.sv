@@ -19,12 +19,12 @@ module axis_image_border_gen #(
 );
 
   // Output image is (IMG_WIDTH+2) wide, (IMG_HEIGHT+2) tall
-  logic [16-1:0] LAST_COL;
+  logic [15:0] LAST_COL;
   assign LAST_COL = 16'($unsigned(IMG_WIDTH + 1));
-  logic [16-1:0] LAST_ROW;
+  logic [15:0] LAST_ROW;
   assign LAST_ROW = 16'($unsigned(IMG_HEIGHT + 1));
-  logic [16-1:0] x_count;
-  logic [16-1:0] y_count;
+  logic [15:0] x_count;
+  logic [15:0] y_count;
   logic active;
   logic is_border;
   logic out_valid;
@@ -32,9 +32,9 @@ module axis_image_border_gen #(
   logic at_row_end;
   logic m_handshake;
   logic [DATA_WIDTH-1:0] border_pixel;
-  assign is_border = x_count == 16'($unsigned(0)) | x_count == LAST_COL | y_count == 16'($unsigned(0)) | y_count == LAST_ROW;
+  assign is_border = (x_count == 16'($unsigned(0))) | (x_count == LAST_COL) | (y_count == 16'($unsigned(0))) | (y_count == LAST_ROW);
   assign at_col_end = x_count == LAST_COL;
-  assign at_row_end = at_col_end & y_count == LAST_ROW;
+  assign at_row_end = at_col_end & (y_count == LAST_ROW);
   assign border_pixel = BORDER_COLOR[DATA_WIDTH - 1:0];
   assign out_valid = active & (is_border | s_axis_tvalid);
   assign m_handshake = out_valid & m_axis_tready;
@@ -45,7 +45,7 @@ module axis_image_border_gen #(
   assign m_axis_tdata = is_border ? border_pixel : s_axis_tdata;
   assign m_axis_tvalid = out_valid;
   assign m_axis_tlast = active & at_col_end;
-  assign m_axis_tuser = active & x_count == 16'($unsigned(0)) & y_count == 16'($unsigned(0));
+  assign m_axis_tuser = active & (x_count == 16'($unsigned(0))) & (y_count == 16'($unsigned(0)));
   always_ff @(posedge clk or negedge resetn) begin
     if ((!resetn)) begin
       active <= 1'b0;

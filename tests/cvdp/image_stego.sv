@@ -2,7 +2,7 @@ module image_stego #(
   parameter int row = 2,
   parameter int col = 2
 ) (
-  input logic [2-1:0] bpp,
+  input logic [1:0] bpp,
   input logic [row * col * 8-1:0] img_in,
   input logic [row * col * 4-1:0] data_in,
   output logic [row * col * 8-1:0] img_out

@@ -8,7 +8,7 @@ module hamming_rx #(
   output logic [DATA_WIDTH-1:0] data_out
 );
 
-  logic [1-1:0] parity [ENCODED_DATA_BIT-1:0];
+  logic [ENCODED_DATA_BIT-1:0] [0:0] parity;
   logic [ENCODED_DATA_BIT-1:0] syndrome;
   logic [ENCODED_DATA-1:0] corrected;
   logic [$clog2(DATA_WIDTH)-1:0] data_idx;
@@ -30,7 +30,7 @@ module hamming_rx #(
     // Correct single-bit error at syndrome index.
     for (int i = 0; i <= ENCODED_DATA - 1; i++) begin
       corrected[i +: 1] = data_in[i +: 1];
-      if (syndrome != 0 & syndrome == i) begin
+      if ((syndrome != 0) & (syndrome == i)) begin
         corrected[i +: 1] = ~data_in[i +: 1];
       end
     end
@@ -38,7 +38,7 @@ module hamming_rx #(
     data_out = 0;
     data_idx = 0;
     for (int i = 0; i <= ENCODED_DATA - 1; i++) begin
-      if (i != 0 & (i & i - 1) != 0) begin
+      if ((i != 0) & ((i & i - 1) != 0)) begin
         data_out[data_idx +: 1] = corrected[i +: 1];
         if (data_idx == DATA_WIDTH - 1) begin
           data_idx = 0;

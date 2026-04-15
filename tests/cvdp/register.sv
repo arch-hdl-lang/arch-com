@@ -1,15 +1,15 @@
 module register (
   input logic clk,
   input logic rst,
-  input logic [4-1:0] data_in,
+  input logic [3:0] data_in,
   input logic valid_in,
   input logic ready_in,
-  output logic [4-1:0] data_out,
+  output logic [3:0] data_out,
   output logic valid_out,
   output logic ready_out
 );
 
-  logic [4-1:0] mem;
+  logic [3:0] mem;
   logic data_present;
   assign ready_out = ~data_present | ready_in;
   assign valid_out = data_present;

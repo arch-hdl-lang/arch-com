@@ -2,20 +2,20 @@ module secure_variable_timer (
   input logic i_clk,
   input logic i_rst_n,
   input logic i_data_in,
-  output logic [4-1:0] o_time_left,
+  output logic [3:0] o_time_left,
   output logic o_processing,
   output logic o_completed,
   input logic i_ack
 );
 
   // State encoding: 0=IDLE, 1=CONFIG, 2=COUNT, 3=DONE
-  logic [2-1:0] st;
-  logic [4-1:0] shift_reg;
-  logic [3-1:0] bit_cnt;
-  logic [4-1:0] delay_val;
-  logic [10-1:0] cycle_cnt;
+  logic [1:0] st;
+  logic [3:0] shift_reg;
+  logic [2:0] bit_cnt;
+  logic [3:0] delay_val;
+  logic [9:0] cycle_cnt;
   // Pattern detection: track last 4 bits for 1101
-  logic [4-1:0] pat;
+  logic [3:0] pat;
   always_ff @(posedge i_clk) begin
     if ((!i_rst_n)) begin
       bit_cnt <= 0;

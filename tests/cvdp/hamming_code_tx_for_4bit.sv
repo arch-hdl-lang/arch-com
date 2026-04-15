@@ -1,6 +1,6 @@
 module hamming_code_tx_for_4bit (
-  input logic [4-1:0] data_in,
-  output logic [8-1:0] data_out
+  input logic [3:0] data_in,
+  output logic [7:0] data_out
 );
 
   // data_in[3]=d3, data_in[2]=d2, data_in[1]=d1, data_in[0]=d0

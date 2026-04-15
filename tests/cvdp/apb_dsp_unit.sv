@@ -1,14 +1,14 @@
 module apb_dsp_unit (
   input logic pclk,
   input logic presetn,
-  input logic [10-1:0] paddr,
+  input logic [9:0] paddr,
   input logic pselx,
   input logic penable,
   input logic pwrite,
-  input logic [8-1:0] pwdata,
+  input logic [7:0] pwdata,
   input logic sram_valid,
   output logic pready,
-  output logic [8-1:0] prdata,
+  output logic [7:0] prdata,
   output logic pslverr
 );
 
@@ -20,13 +20,13 @@ module apb_dsp_unit (
   
   apb_dsp_unit_state_t state_r, state_next;
   
-  logic [10-1:0] r_operand_1;
-  logic [10-1:0] r_operand_2;
-  logic [8-1:0] r_Enable;
-  logic [10-1:0] r_write_address;
-  logic [8-1:0] r_write_data;
-  logic [8-1:0] mem [1024-1:0];
-  logic [8-1:0] r_result;
+  logic [9:0] r_operand_1;
+  logic [9:0] r_operand_2;
+  logic [7:0] r_Enable;
+  logic [9:0] r_write_address;
+  logic [7:0] r_write_data;
+  logic [1023:0] [7:0] mem;
+  logic [7:0] r_result;
   
   always_ff @(posedge pclk or negedge presetn) begin
     if ((!presetn)) begin
@@ -40,6 +40,9 @@ module apb_dsp_unit (
         mem[__ri_mem] <= 0;
       end
       r_result <= 0;
+      pready <= 1'b0;
+      prdata <= 0;
+      pslverr <= 1'b0;
     end else begin
       state_r <= state_next;
       // Config registers
@@ -129,6 +132,18 @@ module apb_dsp_unit (
       default: ;
     endcase
   end
+  
+  // synopsys translate_off
+  _auto_legal_state: assert property (@(posedge pclk) presetn |-> state_r < 3)
+    else $fatal(1, "FSM ILLEGAL STATE: apb_dsp_unit.state_r = %0d", state_r);
+  _auto_reach_Idle: cover property (@(posedge pclk) state_r == IDLE);
+  _auto_reach_WriteAccess: cover property (@(posedge pclk) state_r == WRITEACCESS);
+  _auto_reach_ReadAccess: cover property (@(posedge pclk) state_r == READACCESS);
+  _auto_tr_IDLE_to_WRITEACCESS: cover property (@(posedge pclk) state_r == IDLE && state_next == WRITEACCESS);
+  _auto_tr_IDLE_to_READACCESS: cover property (@(posedge pclk) state_r == IDLE && state_next == READACCESS);
+  _auto_tr_WRITEACCESS_to_IDLE: cover property (@(posedge pclk) state_r == WRITEACCESS && state_next == IDLE);
+  _auto_tr_READACCESS_to_IDLE: cover property (@(posedge pclk) state_r == READACCESS && state_next == IDLE);
+  // synopsys translate_on
 
 endmodule
 

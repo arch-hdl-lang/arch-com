@@ -8,20 +8,20 @@ module elevator_control_system #(
   input logic reset,
   input logic [N-1:0] call_requests,
   input logic emergency_stop,
-  output logic [4-1:0] current_floor,
+  output logic [3:0] current_floor,
   output logic door_open,
-  output logic [7-1:0] seven_seg_out,
-  output logic [2-1:0] system_status
+  output logic [6:0] seven_seg_out,
+  output logic [1:0] system_status
 );
 
   // State encoding: 0=IDLE, 1=MOVING_UP, 2=MOVING_DOWN, 3=DOOR_OPEN, 4=EMERGENCY
-  logic [3-1:0] state_r;
-  logic [4-1:0] floor_r;
-  logic [8-1:0] door_cnt;
+  logic [2:0] state_r;
+  logic [3:0] floor_r;
+  logic [7:0] door_cnt;
   // Latch one-cycle call pulses so requests are not lost between cycles.
   logic [N-1:0] pending_r;
   // Seven-segment decode for current floor
-  logic [7-1:0] seg;
+  logic [6:0] seg;
   always_comb begin
     if (floor_r == 0) begin
       seg = 7'd126;
@@ -54,13 +54,13 @@ module elevator_control_system #(
     req_below = 1'b0;
     req_here = 1'b0;
     for (int i = 0; i <= N - 1; i++) begin
-      if (4'($unsigned(i)) > floor_r & pending_r[i +: 1]) begin
+      if ((4'($unsigned(i)) > floor_r) & pending_r[i +: 1]) begin
         req_above = 1'b1;
       end
-      if (4'($unsigned(i)) < floor_r & pending_r[i +: 1]) begin
+      if ((4'($unsigned(i)) < floor_r) & pending_r[i +: 1]) begin
         req_below = 1'b1;
       end
-      if (4'($unsigned(i)) == floor_r & pending_r[i +: 1]) begin
+      if ((4'($unsigned(i)) == floor_r) & pending_r[i +: 1]) begin
         req_here = 1'b1;
       end
     end

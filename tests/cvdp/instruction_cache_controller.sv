@@ -1,3 +1,43 @@
+module tag_controller (
+  input logic clk,
+  input logic rst,
+  input logic write_enable,
+  input logic [8:0] write_addr,
+  input logic [7:0] read_addr_0,
+  input logic [7:0] read_addr_1,
+  input logic [7:0] data_in_0,
+  input logic [7:0] data_in_1,
+  output logic [8:0] data_out_0,
+  output logic [8:0] data_out_1,
+  output logic write_enable_0,
+  output logic write_enable_1,
+  output logic [7:0] addr_out_0,
+  output logic [7:0] addr_out_1
+);
+
+  logic [255:0] ram_store;
+  logic [7:0] tag_addr_0;
+  assign tag_addr_0 = write_enable ? write_addr[7:0] : read_addr_0;
+  logic [7:0] tag_addr_1;
+  assign tag_addr_1 = write_enable ? write_addr[7:0] : read_addr_1;
+  always_ff @(posedge clk or posedge rst) begin
+    if (rst) begin
+      ram_store <= 0;
+    end else begin
+      if (write_enable) begin
+        ram_store[write_addr[7:0]] <= 1;
+      end
+    end
+  end
+  assign addr_out_0 = tag_addr_0;
+  assign addr_out_1 = tag_addr_1;
+  assign write_enable_0 = write_enable;
+  assign write_enable_1 = write_enable;
+  assign data_out_0 = {ram_store[read_addr_0], data_in_0};
+  assign data_out_1 = {ram_store[read_addr_1], data_in_1};
+
+endmodule
+
 module instruction_cache_controller #(
   parameter int TAG_BITS = 8,
   parameter int ADR_BITS = 9
@@ -6,27 +46,27 @@ module instruction_cache_controller #(
   input logic rst,
   output logic io_mem_valid,
   input logic io_mem_ready,
-  output logic [17-1:0] io_mem_addr,
+  output logic [16:0] io_mem_addr,
   output logic l1b_wait,
-  output logic [32-1:0] l1b_data,
-  input logic [18-1:0] l1b_addr,
+  output logic [31:0] l1b_data,
+  input logic [17:0] l1b_addr,
   output logic ram256_t0_we,
-  output logic [8-1:0] ram256_t0_addr,
-  input logic [8-1:0] ram256_t0_data,
+  output logic [7:0] ram256_t0_addr,
+  input logic [7:0] ram256_t0_data,
   output logic ram256_t1_we,
-  output logic [8-1:0] ram256_t1_addr,
-  input logic [8-1:0] ram256_t1_data,
+  output logic [7:0] ram256_t1_addr,
+  input logic [7:0] ram256_t1_data,
   output logic ram512_d0_we,
-  output logic [9-1:0] ram512_d0_addr,
-  input logic [16-1:0] ram512_d0_data,
+  output logic [8:0] ram512_d0_addr,
+  input logic [15:0] ram512_d0_data,
   output logic ram512_d1_we,
-  output logic [9-1:0] ram512_d1_addr,
-  input logic [16-1:0] ram512_d1_data
+  output logic [8:0] ram512_d1_addr,
+  input logic [15:0] ram512_d1_data
 );
 
   // Unaligned data handling
-  logic [16-1:0] data_0;
-  logic [16-1:0] data_1;
+  logic [15:0] data_0;
+  logic [15:0] data_1;
   always_comb begin
     if (l1b_addr[0]) begin
       data_0 = ram512_d1_data;
@@ -38,33 +78,33 @@ module instruction_cache_controller #(
     l1b_data = {data_1, data_0};
   end
   // FSM states: IDLE=0, READMEM0=1, READMEM1=2, READCACHE=3
-  logic [3-1:0] state_r;
-  logic [9-1:0] addr_0_r;
-  logic [9-1:0] addr_1_r;
+  logic [2:0] state_r;
+  logic [8:0] addr_0_r;
+  logic [8:0] addr_1_r;
   logic write_en_r;
-  logic [9-1:0] data_addr_0;
+  logic [8:0] data_addr_0;
   assign data_addr_0 = 9'(l1b_addr[17:9] + {8'd0, l1b_addr[0]});
-  logic [9-1:0] data_addr_1;
+  logic [8:0] data_addr_1;
   assign data_addr_1 = l1b_addr[17:9];
   // Tag controller outputs
   logic valid_0;
-  logic [8-1:0] tag_0;
+  logic [7:0] tag_0;
   logic valid_1;
-  logic [8-1:0] tag_1;
-  logic [9-1:0] tc_data_out_0;
-  logic [9-1:0] tc_data_out_1;
+  logic [7:0] tag_1;
+  logic [8:0] tc_data_out_0;
+  logic [8:0] tc_data_out_1;
   assign valid_0 = tc_data_out_0[8];
   assign tag_0 = tc_data_out_0[7:0];
   assign valid_1 = tc_data_out_1[8];
   assign tag_1 = tc_data_out_1[7:0];
   logic data_0_ready;
-  assign data_0_ready = l1b_addr[17:9] == 9'($unsigned(tag_0)) & valid_0;
+  assign data_0_ready = (l1b_addr[17:9] == 9'($unsigned(tag_0))) & valid_0;
   logic data_1_ready;
-  assign data_1_ready = l1b_addr[17:9] == 9'($unsigned(tag_1)) & valid_1;
+  assign data_1_ready = (l1b_addr[17:9] == 9'($unsigned(tag_1))) & valid_1;
   // Next state + output logic (all wires)
-  logic [3-1:0] next_state;
+  logic [2:0] next_state;
   logic mem_valid_w;
-  logic [17-1:0] mem_addr_w;
+  logic [16:0] mem_addr_w;
   logic wait_w;
   logic d0_we_w;
   logic d1_we_w;
@@ -131,7 +171,7 @@ module instruction_cache_controller #(
       state_r <= 0;
       write_en_r <= 1'b0;
     end else begin
-      if (state_r == 1 | state_r == 2) begin
+      if ((state_r == 1) | (state_r == 2)) begin
         if (io_mem_ready) begin
           write_en_r <= 1'b1;
         end else begin

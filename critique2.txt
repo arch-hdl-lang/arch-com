@@ -1,0 +1,488 @@
+▗ ▗   ▖ ▖  Claude Code v2.1.76
+           Sonnet 4.6 · Claude Pro
+  ▘▘ ▝▝    ~/github/arch-com
+
+✻ Conversation compacted (ctrl+o for history)
+
+  ⎿  Referenced file tests/integration_test.rs
+  ⎿  Referenced file src/typecheck.rs
+  ⎿  Referenced file src/elaborate.rs
+  ⎿  Read doc/COMPILER_STATUS.md (165 lines)
+  ⎿  Read tests/generate_if.arch (19 lines)
+  ⎿  Plan file referenced (~/.claude/plans/humble-knitting-falcon.md)
+
+⏺ Read 3 files (ctrl+o to expand)
+
+⏺ Now I have everything I need. Let me write the updated critique plan based on
+  direct comparison of dma_engine.arch (426 lines) vs dma_engine.sv (531 lines).
+
+⏺ Updated plan
+  ⎿  /plan to preview
+
+⏺ User approved Claude's plan
+  ⎿  Plan saved to: ~/.claude/plans/humble-knitting-falcon.md · /plan to edit
+     ARCH Language Critique — DMA Engine Comparison
+
+     Context
+
+     Direct comparison of tests/dma_engine.arch (426 lines) against the
+     compiler-generated tests/dma_engine.sv (531 lines), evaluated against what
+     a hand-written SV engineer would produce for the same DMA design. Findings
+     are grouped into three tiers: correctness bugs (must fix), generated SV 
+     quality (readability/portability), and language design gaps (architectural
+     limitations).
+
+     ---
+     Where ARCH Wins vs Hand-Written SV
+
+     The DMA example demonstrates ARCH's core value proposition clearly:
+
+     ┌────────────────────┬────────────────────────────────────────┬──────────┐
+     │   ARCH construct   │       Hand-written SV equivalent       │  Lines   │
+     │                    │                                        │  saved   │
+     ├────────────────────┼────────────────────────────────────────┼──────────┤
+     │ fsm TransferFsm    │ typedef enum, always_ff state reg,     │ ~60      │
+     │ (15 lines)         │ always_comb next-state + output        │ lines    │
+     ├────────────────────┼────────────────────────────────────────┼──────────┤
+     │ fifo WriteBuffer   │ Extra-bit ptr arithmetic, full/empty,  │ ~35      │
+     │ (12 lines)         │ push_ready/pop_valid                   │ lines    │
+     ├────────────────────┼────────────────────────────────────────┼──────────┤
+     │ counter            │                                        │ ~20      │
+     │ BeatCounter (12    │ count_r, wrap logic, at_max comparator │ lines    │
+     │ lines)             │                                        │          │
+     ├────────────────────┼────────────────────────────────────────┼──────────┤
+     │ arbiter MemArbiter │ round-robin ptr, for-loop grant scan   │ ~30      │
+     │  (10 lines)        │                                        │ lines    │
+     ├────────────────────┼────────────────────────────────────────┼──────────┤
+     │ regfile DmaRegs    │ rf_data array, always_ff write,        │ ~25      │
+     │ (18 lines)         │ always_comb forward mux                │ lines    │
+     ├────────────────────┼────────────────────────────────────────┼──────────┤
+     │ ram DescTable (18  │ mem array, sync/async read, no-change  │ ~20      │
+     │ lines)             │ write                                  │ lines    │
+     ├────────────────────┼────────────────────────────────────────┼──────────┤
+     │ let bindings with  │ anonymous assign with no semantic      │ clarity  │
+     │ types              │ label                                  │ only     │
+     ├────────────────────┼────────────────────────────────────────┼──────────┤
+     │ inst ... connect   │ .port(signal) — no direction,          │ safety   │
+     │ with <-/->         │ port-driven vs signal-driven ambiguous │          │
+     └────────────────────┴────────────────────────────────────────┴──────────┘
+
+     ARCH produces 426 lines to describe a design that requires ~650 lines of
+     hand-written SV to implement. More importantly, the hard parts (FSM
+     encoding, FIFO ptr arithmetic, arbiter for-loop) are generated correctly
+     and uniformly.
+
+     ---
+     Tier 2 — Generated SV Quality
+
+     2.1 Comments Emitted at End of File, Not Inline
+
+     File: src/codegen.rs — comment emission order
+     Evidence: All // comments from module DmaEngine (port group comments, let
+     binding explanations, inst section headers, reg block descriptions) appear
+     as a block at the very end of the SV file (lines 472–531), after endmodule.
+      This makes the generated SV unreadable — a human reviewer cannot associate
+      comments with the constructs they document.
+     Root cause: Comment nodes are collected separately and flushed at the end
+     rather than emitted inline when the item is emitted.
+     Fix: Emit each item's leading comment immediately before emitting the item.
+      The comment should precede the logic declaration, always_ff, or
+     instantiation line it documents.
+     File to change: src/codegen.rs — emit_module(), wherever reg, let, and inst
+      items are emitted.
+
+     2.2 Struct Fields Emitted in Reverse Order
+
+     File: src/codegen.rs — emit_struct()
+     Evidence: DmaDescriptor is declared src_addr, dst_addr, length, flags but
+     emits:
+     typedef struct packed {
+       logic [8-1:0] flags;
+       logic [16-1:0] length;
+       logic [32-1:0] dst_addr;
+       logic [32-1:0] src_addr;
+     } DmaDescriptor;
+     Field order is reversed because SV packed struct is big-endian: the first
+     field is the MSB. Reversing matches the bit layout but surprises users who
+     expect field order to match declaration order. A hand-written SV engineer
+     would add a comment // packed: MSB..LSB or explicitly call this out.
+     Fix (documentation): Add // Note: fields listed MSB-first per SV packed 
+     struct semantics in codegen, OR reverse the ARCH declaration convention to
+     match SV (i.e., first field = MSB) and document it.
+
+     2.4 FSM Output Block: Redundant Explicit Assignments in Every State
+
+     File: src/codegen.rs — emit_fsm() output always_comb
+     Evidence: The FSM always_comb block emits defaults (active = '0; fire_irq =
+      '0;) AND then explicitly re-assigns them in every state case arm —
+     including Idle which has no user-defined comb block. A hand-written
+     engineer relies on the defaults:
+     always_comb begin
+       active   = 1'b0; // default
+       fire_irq = 1'b0; // default
+       case (state_r)
+         RUNNING: active   = 1'b1;  // only overrides
+         DONE:    fire_irq = 1'b1;
+       endcase
+     end
+     Fix: Do not emit state-specific assignments for ports that have no user
+     comb block in that state. The default at the top of the always_comb covers
+     them.
+     File: src/codegen.rs — emit_fsm(), the per-state output emission loop.
+
+     2.5 unique if in FSM Next-State Logic
+
+     File: src/codegen.rs — emit_fsm() next-state always_comb
+     Evidence: Generated code uses unique if (start) ... else if ((!start)) ....
+      The unique qualifier causes simulation warnings if no branch is taken —
+     but start and !start are exhaustive, so it never fires. However, unique 
+     if/else if is non-idiomatic; a hand-written engineer uses if/else:
+     if (start) state_next = RUNNING;
+     else       state_next = IDLE;
+     Fix: Emit if ... else if ... else without unique qualifier for FSM
+     transitions. Keep the final default: state_next = state_r; in the case
+     statement (that's good practice).
+
+     ---
+     Tier 3 — Language Design Gaps
+
+     3.3 let Bindings Cannot Reference inst Outputs
+
+     Evidence: The bus_cmd, read_granted, write_granted, etc. let bindings
+     reference arb_req_ready which is updated by inst arb -> arb_req_ready. But
+     arb_req_ready is declared as reg ... init 0, not as a let. If a user
+     declares it as let arb_req_ready: UInt<2> = arb.request_ready; (the natural
+      way), the compiler has no mechanism to resolve arb.request_ready — only
+     direct port connections via connect ... -> exist.
+     Gap: let bindings cannot access instance outputs by dotted name
+     (inst_name.port_name). Users must create a reg ... init intermediate and
+     use connect port -> reg pattern, which is verbose.
+     Fix (language, medium effort): Allow let x = inst_name.port_name; as sugar
+     for the reg + connect -> pattern. Or, extend connect to target let-bound
+     names directly.
+
+     3.5 FSM default Output Values Feature
+
+     Evidence: Without default on output ports, every FSM state needs a full
+     comb block even to repeat the default. The DMA TransferFsm already uses
+     default false syntax, which the compiler accepts — but codegen still emits
+     explicit assignments in every state.
+     Fix: (Covered in 2.4 above) When port p: out Bool default false is
+     declared, relying on the top-of-always_comb default is sufficient;
+     per-state explicit assignments are redundant.
+
+     3.7 domain Declarations Are Purely Documentary
+
+     Current: domain SysDomain freq_mhz:100 emits only a SV comment. No .sdc
+     constraints, no CDC checking.
+     Future direction: arch constraints command → emit .sdc; typecheck CDC
+     crossing errors.
+
+     ---
+     Implementation Priority
+
+     ┌──────────┬──────────────────────────────────────┬───────────────────────┐
+     │ Priority │                Issue                 │        File(s)        │
+     ├──────────┼──────────────────────────────────────┼───────────────────────┤
+     │ P1       │ Comment placement bug (at end of     │ src/codegen.rs        │
+     │          │ file, not inline)                    │                       │
+     ├──────────┼──────────────────────────────────────┼───────────────────────┤
+     │ P1       │ FSM: suppress redundant per-state    │ src/codegen.rs        │
+     │          │ default assignments                  │                       │
+     ├──────────┼──────────────────────────────────────┼───────────────────────┤
+     │ P3       │ unique if → plain if/else in FSM     │ src/codegen.rs        │
+     │          │ next-state                           │                       │
+     ├──────────┼──────────────────────────────────────┼───────────────────────┤
+     │ P3       │ ~~DMA example — instantiate          │ tests/dma_engine.arch │
+     │          │ constructs~~ DONE                    │                       │
+     ├──────────┼──────────────────────────────────────┼───────────────────────┤
+     │ P3       │ ~~DMA example — use or remove        │ tests/dma_engine.arch │
+     │          │ struct/enum~~ DONE                   │                       │
+     ├──────────┼──────────────────────────────────────┼───────────────────────┤
+     │ P3       │ ~~Match expr in comb → case block~~  │ src/codegen.rs        │
+     │          │ DONE                                 │                       │
+     ├──────────┼──────────────────────────────────────┼───────────────────────┤
+     │ P4       │ let x = inst.port dotted-name syntax │ src/parser.rs,        │
+     │          │                                      │ codegen               │
+     ├──────────┼──────────────────────────────────────┼───────────────────────┤
+     │ P4       │ Domain → .sdc                        │ future                │
+     └──────────┴──────────────────────────────────────┴───────────────────────┘
+
+     ---
+     Verification
+
+     For each change:
+     1. cargo test — all existing tests pass
+     2. cargo run -- build tests/dma_engine.arch -o tests/dma_engine.sv —
+     regenerate
+     3. verilator --lint-only --top-module DmaEngine tests/dma_engine.sv — no
+     warnings
+     4. Verify comments appear inline in generated SV (not at EOF)
+     5. Verify FSM output block has no redundant per-state = '0 assignments for
+     default-value outputs
+
+     ---
+     ARCH HDL MVP Compiler Plan (original)
+
+     Context
+
+     Build a greenfield Rust compiler for the ARCH hardware description language
+      that can compile a simple .arch program into SystemVerilog suitable for
+     simulation in Verilator. The ARCH spec (7759 lines in
+     doc/ARCH_HDL_Specification.md) defines ~18 first-class constructs; this MVP
+      supports only the core subset: modules, structs, enums, domains.
+
+     MVP Scope
+
+     In scope: domain, struct, enum, module (params, ports, comb blocks, reg
+     blocks, let bindings, inst/connect), basic types (UInt<N>, SInt<N>, Bool,
+     Bit, Clock<D>, Reset<Sync|Async>, Vec<T,N>), expressions (arithmetic,
+     comparison, logical, bitwise, field access, .trunc<N>(), .zext<N>(),
+     .sext<N>(), as cast), if/else, match, todo!, arch check and arch build CLI
+     commands.
+
+     Out of scope: pipeline, fsm, fifo, arbiter, regfile, ram, linklist, cam,
+     crossbar, scoreboard, reorder_buf, counter, pqueue, TLM, simulation,
+     formal, generate, interface, testbench, CDC checking, multi-file
+     compilation.
+
+     Tech Stack
+
+     - Language: Rust
+     - Crates: logos (lexer), miette (diagnostics), clap (CLI), insta (snapshot
+     tests)
+     - Parser: Hand-written recursive descent + Pratt parser for expressions
+     - Verification: Verilator (verilator --lint-only and verilator --binary)
+
+     Project Structure
+
+     arch-com/
+       Cargo.toml
+       src/
+         main.rs              # CLI (clap): arch check, arch build
+         lib.rs               # Library root
+         lexer.rs             # Token enum (logos), Lexer
+         ast.rs               # AST node definitions
+         parser.rs            # Recursive descent parser
+         parser_expr.rs       # Pratt expression parser
+         resolve.rs           # Name resolution + symbol table
+         typecheck.rs         # Type checking (width safety, single-driver,
+     naming)
+         codegen.rs           # SystemVerilog emission
+         diagnostics.rs       # Error/warning types
+       tests/
+         counter.arch         # Test: Counter module
+         top_counter.arch     # Test: Top module instantiating Counter
+         snapshots/           # insta snapshot files
+
+     Implementation Phases
+
+     Phase 1: Project Setup + Lexer
+
+     Create Cargo.toml with dependencies. Implement lexer using logos:
+
+     Keywords: module, end, param, port, in, out, comb, reg, on, rising,
+     falling, high, low, init, if, else, match, let, inst, connect, struct,
+     enum, domain, todo, const, type, as, and, or, not, true, false, assert,
+     cover
+
+     Type keywords: UInt, SInt, Bool, Bit, Clock, Reset, Sync, Async, Vec
+
+     Literals: decimal, hex (0x), binary (0b), sized (4'b1010, 16'hDEAD),
+     identifiers
+
+     Operators: +, -, *, ==, !=, <, >, <=, >=, =, <-, ->, =>, &, |, ^, ~, ::, .,
+      :, ;, ,, (, ), [, ], !, ?
+
+     Each token carries a byte-offset span for error reporting.
+
+     Phase 2: AST Definitions
+
+     Define AST types in ast.rs:
+
+     - SourceFile { items: Vec<Item> }
+     - Item: Domain, Struct, Enum, Module
+     - ModuleDecl: name, params, ports, body: Vec<ModuleBodyItem>
+     - ModuleBodyItem: RegDecl, RegBlock, CombBlock, LetBinding, Inst
+     - TypeExpr: UInt(Expr), SInt(Expr), Bool, Bit, Clock(Ident),
+     Reset(ResetKind), Vec(TypeExpr, Expr), Named(Ident)
+     - Expr: Literal, Ident, Binary, Unary, FieldAccess, MethodCall, Cast,
+     Match, Index, StructLiteral, EnumVariant, Todo
+
+     Phase 3: Parser
+
+     Recursive descent parser. Key grammar rules:
+
+     - source_file := item*
+     - module_decl := 'module' IDENT param* port* body_item* 'end' 'module' 
+     IDENT (validate closing name matches opening)
+     - comb_block := 'comb' assignment* 'end' 'comb'
+     - reg_block := 'reg' 'on' IDENT edge ',' IDENT level stmt* 'end' 'reg'
+     - inst := 'inst' IDENT ':' IDENT param_assign* connect* 'end' 'inst' IDENT
+
+     Expression precedence (Pratt parser, lowest to highest):
+     1. or 2. and 3. ==/!= 4. </>/<=/>= 5. | 6. ^ 7. & 8. <</>> 9. +/- 10. *///%
+      11. unary (not/~/-) 12. postfix (.field, .method<N>(), [i], as T)
+
+     Disambiguation: < after type keywords = type parameter; otherwise
+     comparison. <= inside reg on blocks = assignment; otherwise comparison.
+
+     Phase 4: Name Resolution
+
+     Build symbol table mapping names to declarations:
+     - Global scope: domains, structs, enums, modules
+     - Module scope: params, ports, regs, lets, instances
+     - Verify all referenced types/modules/signals exist
+     - Track which signals are driven by which blocks
+
+     Phase 5: Type Checking
+
+     Width arithmetic (IEEE 1800-2012 §11.6):
+     - UInt<A> + UInt<B> → UInt<max(A,B)+1>
+     - UInt<A> * UInt<B> → UInt<A+B>
+     - UInt<A> & UInt<B> → UInt<max(A,B)>
+     - Comparisons → Bool
+
+     Checks:
+     1. Width match on all assignments (no implicit truncation/extension)
+     2. No implicit type conversions (Bool ≠ UInt<1> ≠ Bit)
+     3. Single-driver rule: each signal has exactly one driver
+     4. All output ports driven, all input ports connected
+     5. Naming conventions: PascalCase (types), snake_case (signals),
+     UPPER_SNAKE (params)
+     6. Clock/Reset types cannot appear in arithmetic
+     7. Match exhaustiveness (all enum variants or _ wildcard)
+
+     Phase 6: SystemVerilog Codegen
+
+     Tree-walk emitter. Key mappings:
+
+     ┌───────────────────────────────┬─────────────────────────────────────────┐
+     │             ARCH              │              SystemVerilog              │
+     ├───────────────────────────────┼─────────────────────────────────────────┤
+     │ module M ... end module M     │ module M #(...) (...); ... endmodule    │
+     ├───────────────────────────────┼─────────────────────────────────────────┤
+     │ param W: const = 8            │ parameter int W = 8                     │
+     ├───────────────────────────────┼─────────────────────────────────────────┤
+     │ port x: in UInt<N>            │ input logic [N-1:0] x                   │
+     ├───────────────────────────────┼─────────────────────────────────────────┤
+     │ port x: out Bool              │ output logic x                          │
+     ├───────────────────────────────┼─────────────────────────────────────────┤
+     │ struct S ... end struct S     │ typedef struct packed { ... } S;        │
+     ├───────────────────────────────┼─────────────────────────────────────────┤
+     │ enum E ... end enum E         │ typedef enum logic [W-1:0] { ... } E;   │
+     │                               │ (W = ceil(log2(variants)))              │
+     ├───────────────────────────────┼─────────────────────────────────────────┤
+     │ comb x = expr; end comb       │ assign x = expr;                        │
+     │ (single assign)               │                                         │
+     ├───────────────────────────────┼─────────────────────────────────────────┤
+     │ comb with if/else             │ always_comb begin ... end               │
+     ├───────────────────────────────┼─────────────────────────────────────────┤
+     │ reg r: T init V + reg on clk  │ always_ff @(posedge clk) begin ... end  │
+     │ rising, rst high              │                                         │
+     ├───────────────────────────────┼─────────────────────────────────────────┤
+     │ reg on clk rising, rst high   │ always_ff @(posedge clk or posedge rst) │
+     │ (Reset<Async>)                │                                         │
+     ├───────────────────────────────┼─────────────────────────────────────────┤
+     │ inst u: M connect p <- s      │ M #(..) u (.p(s), ...);                 │
+     ├───────────────────────────────┼─────────────────────────────────────────┤
+     │ x.trunc<N>()                  │ x[N-1:0]                                │
+     ├───────────────────────────────┼─────────────────────────────────────────┤
+     │ x.zext<N>()                   │ N'(x) (SystemVerilog cast)              │
+     ├───────────────────────────────┼─────────────────────────────────────────┤
+     │ x.sext<N>()                   │ N'($signed(x))                          │
+     ├───────────────────────────────┼─────────────────────────────────────────┤
+     │ a and b / a or b              │ a && b / a || b                         │
+     ├───────────────────────────────┼─────────────────────────────────────────┤
+     │ not a                         │ !a                                      │
+     ├───────────────────────────────┼─────────────────────────────────────────┤
+     │ EnumName::Variant             │ VARIANT                                 │
+     ├───────────────────────────────┼─────────────────────────────────────────┤
+     │ match x ... end match         │ ternary chain or case in always_comb    │
+     ├───────────────────────────────┼─────────────────────────────────────────┤
+     │ todo!                         │ '0 with // TODO comment + compiler      │
+     │                               │ warning                                 │
+     ├───────────────────────────────┼─────────────────────────────────────────┤
+     │ domain                        │ comment only (compile-time concept)     │
+     ├───────────────────────────────┼─────────────────────────────────────────┤
+     │ let x: T = expr               │ logic [W-1:0] x; assign x = expr;       │
+     └───────────────────────────────┴─────────────────────────────────────────┘
+
+     Phase 7: CLI Driver
+
+     arch check <file.arch>                # parse + typecheck → errors/warnings
+     arch build <file.arch> [-o out.sv]    # parse + typecheck + emit SV
+
+     Single-file compilation for MVP. The driver reads one .arch file containing
+      all constructs.
+
+     Phase 8: Testing
+
+     Unit tests: lexer tokens, parser AST, type error detection
+
+     Snapshot tests (insta): .arch input → .sv output comparison
+
+     End-to-end validation program (tests/top_counter.arch):
+     domain SysDomain
+       freq_mhz: 100,
+     end domain SysDomain
+
+     module Counter
+       param WIDTH: const = 8;
+       port clk: in Clock<SysDomain>;
+       port rst: in Reset<Sync>;
+       port en: in Bool;
+       port count: out UInt<WIDTH>;
+       reg count_r: UInt<WIDTH> init 0;
+       reg on clk rising, rst high
+         if rst
+           count_r <= 0;
+         end if
+         else
+           if en
+             count_r <= count_r + 1;
+           end if
+         end else
+       end reg
+       comb
+         count = count_r;
+       end comb
+     end module Counter
+
+     module Top
+       port clk: in Clock<SysDomain>;
+       port rst: in Reset<Sync>;
+       port en: in Bool;
+       port count_out: out UInt<8>;
+       inst ctr: Counter
+         param WIDTH = 8;
+         connect clk <- clk;
+         connect rst <- rst;
+         connect en <- en;
+         connect count -> count_out;
+       end inst ctr
+     end module Top
+
+     Verilator verification:
+     cargo run -- build tests/top_counter.arch -o tests/top_counter.sv
+     verilator --lint-only --top-module Top tests/top_counter.sv
+     # If lint passes, the generated SV is structurally valid
+
+     Simulation test (manual, with a C++ testbench for Verilator):
+     verilator --binary --top-module Top tests/top_counter.sv
+     tests/top_counter_tb.cpp
+     ./obj_dir/VTop
+
+     Verification Checklist
+
+     1. cargo test — all unit + snapshot tests pass
+     2. cargo run -- check tests/top_counter.arch — exits 0 with no errors
+     3. cargo run -- build tests/top_counter.arch -o out.sv — produces valid SV
+     4. verilator --lint-only --top-module Top out.sv — no lint errors
+     5. Counter increments correctly in Verilator simulation
+
+⏺ Let me start implementing the P1 fixes. I'll read the relevant source files
+  first.
+
+⏺ Read 1 file (ctrl+o to expand)
+  ⎿  Interrupted · What should Claude do instead?

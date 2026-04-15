@@ -31,22 +31,22 @@ module montgomery_mult #(
   logic v_s4;
   // Montgomery REDC of product: redc(T) = (T + m*N) / R, where m = (T mod R) * N' mod R
   // N' = (R * R_INVERSE - 1) / N
-  logic [32-1:0] n_prime;
+  logic [31:0] n_prime;
   assign n_prime = 32'(32'($unsigned(R)) * 32'($unsigned(R_INVERSE)) - 32'($unsigned(1))) / 32'($unsigned(N));
-  logic [32-1:0] r_mask;
+  logic [31:0] r_mask;
   assign r_mask = 32'(32'($unsigned(R)) - 32'($unsigned(1)));
-  logic [32-1:0] t_val;
+  logic [31:0] t_val;
   assign t_val = 32'($unsigned(prod_s2));
-  logic [32-1:0] t_mod_r;
+  logic [31:0] t_mod_r;
   assign t_mod_r = t_val & r_mask;
-  logic [32-1:0] m_val;
+  logic [31:0] m_val;
   assign m_val = 32'(t_mod_r * n_prime) & r_mask;
-  logic [32-1:0] t_plus_mn;
+  logic [31:0] t_plus_mn;
   assign t_plus_mn = 32'(t_val + 32'(m_val * 32'($unsigned(N))));
   // Divide by R (right shift by log2(R))
-  logic [5-1:0] r_log2;
+  logic [4:0] r_log2;
   assign r_log2 = R == 4 ? 2 : R == 8 ? 3 : R == 16 ? 4 : R == 32 ? 5 : R == 64 ? 6 : R == 128 ? 7 : R == 256 ? 8 : R == 512 ? 9 : R == 1024 ? 10 : 3;
-  logic [32-1:0] t_redc;
+  logic [31:0] t_redc;
   assign t_redc = t_plus_mn >> r_log2;
   // Final conditional subtraction
   logic [NWIDTH-1:0] redc_result;

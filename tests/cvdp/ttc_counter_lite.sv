@@ -1,23 +1,23 @@
 module ttc_counter_lite (
   input logic clk,
   input logic reset,
-  input logic [4-1:0] axi_addr,
-  input logic [32-1:0] axi_wdata,
+  input logic [3:0] axi_addr,
+  input logic [31:0] axi_wdata,
   input logic axi_write_en,
   input logic axi_read_en,
-  output logic [32-1:0] axi_rdata,
+  output logic [31:0] axi_rdata,
   output logic interrupt
 );
 
-  logic [32-1:0] count;
-  logic [32-1:0] match_value;
-  logic [32-1:0] reload_value;
+  logic [31:0] count;
+  logic [31:0] match_value;
+  logic [31:0] reload_value;
   logic enable;
   logic interval_mode;
   logic interrupt_enable;
   logic match_flag;
   logic status_clear;
-  assign status_clear = axi_write_en & axi_addr == 4;
+  assign status_clear = axi_write_en & (axi_addr == 4);
   // Main sequential logic
   always_ff @(posedge clk) begin
     if (reset) begin
@@ -58,7 +58,7 @@ module ttc_counter_lite (
         end
       end
       // match_flag clear on status write (when counter not at match)
-      if (status_clear & ~(enable & count == match_value)) begin
+      if (status_clear & ~(enable & (count == match_value))) begin
         match_flag <= 1'b0;
       end
       // Interrupt generation

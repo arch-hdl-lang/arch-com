@@ -21,7 +21,7 @@ module reed_solomon_encoder #(
   logic [DATA_WIDTH-1:0] feedback;
   assign feedback = data_in ^ parity_1;
   // feedback * gp product truncated to DATA_WIDTH
-  logic [16-1:0] fb_prod;
+  logic [15:0] fb_prod;
   assign fb_prod = feedback * gp;
   logic [DATA_WIDTH-1:0] fb_mult;
   assign fb_mult = fb_prod[DATA_WIDTH - 1:0];

@@ -3,10 +3,10 @@
 module Attenuator (
   input logic clk,
   input logic reset,
-  input logic [5-1:0] data,
-  output logic [1-1:0] ATTN_CLK,
-  output logic [1-1:0] ATTN_DATA,
-  output logic [1-1:0] ATTN_LE
+  input logic [4:0] data,
+  output logic [0:0] ATTN_CLK,
+  output logic [0:0] ATTN_DATA,
+  output logic [0:0] ATTN_LE
 );
 
   typedef enum logic [1:0] {
@@ -18,15 +18,15 @@ module Attenuator (
   
   Attenuator_state_t state_r, state_next;
   
-  logic [1-1:0] clk_div2;
-  logic [5-1:0] shift_reg;
-  logic [3-1:0] bit_cnt;
-  logic [5-1:0] old_data;
-  logic [1-1:0] attn_clk_r;
-  logic [1-1:0] attn_data_r;
-  logic [1-1:0] attn_le_r;
+  logic [0:0] clk_div2;
+  logic [4:0] shift_reg;
+  logic [2:0] bit_cnt;
+  logic [4:0] old_data;
+  logic [0:0] attn_clk_r;
+  logic [0:0] attn_data_r;
+  logic [0:0] attn_le_r;
   
-  logic [1-1:0] zero1;
+  logic [0:0] zero1;
   assign zero1 = 0;
   
   always_ff @(posedge clk or posedge reset) begin
@@ -117,6 +117,19 @@ module Attenuator (
       default: ;
     endcase
   end
+  
+  // synopsys translate_off
+  _auto_legal_state: assert property (@(posedge clk) !reset |-> state_r < 4)
+    else $fatal(1, "FSM ILLEGAL STATE: Attenuator.state_r = %0d", state_r);
+  _auto_reach_Idle: cover property (@(posedge clk) state_r == IDLE);
+  _auto_reach_Load: cover property (@(posedge clk) state_r == LOAD);
+  _auto_reach_Shift: cover property (@(posedge clk) state_r == SHIFT);
+  _auto_reach_Latch: cover property (@(posedge clk) state_r == LATCH);
+  _auto_tr_IDLE_to_LOAD: cover property (@(posedge clk) state_r == IDLE && state_next == LOAD);
+  _auto_tr_LOAD_to_SHIFT: cover property (@(posedge clk) state_r == LOAD && state_next == SHIFT);
+  _auto_tr_SHIFT_to_LATCH: cover property (@(posedge clk) state_r == SHIFT && state_next == LATCH);
+  _auto_tr_LATCH_to_IDLE: cover property (@(posedge clk) state_r == LATCH && state_next == IDLE);
+  // synopsys translate_on
 
 endmodule
 

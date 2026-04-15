@@ -25,7 +25,7 @@ module apb_dsp_op #(
   logic [DATA_WIDTH-1:0] reg_wdata_sram;
   logic [DATA_WIDTH-1:0] reg_addr_sram;
   // SRAM: 64 entries of DATA_WIDTH bits
-  logic [DATA_WIDTH-1:0] sram_mem [64-1:0];
+  logic [63:0] [DATA_WIDTH-1:0] sram_mem;
   // SRAM read data register
   logic [DATA_WIDTH-1:0] sram_rdata;
   // DSP operand value registers
@@ -43,8 +43,8 @@ module apb_dsp_op #(
   logic addr_error;
   logic sram_op_active;
   always_comb begin
-    addr_valid = PADDR == 0 | PADDR == 4 | PADDR == 8 | PADDR == 12 | PADDR == 16 | PADDR == 20 | PADDR == 24;
-    sram_op_active = reg_ctrl == 1 | reg_ctrl == 2 | reg_ctrl == 3 | reg_ctrl == 4 | reg_ctrl == 5 | reg_ctrl == 6;
+    addr_valid = (PADDR == 0) | (PADDR == 4) | (PADDR == 8) | (PADDR == 12) | (PADDR == 16) | (PADDR == 20) | (PADDR == 24);
+    sram_op_active = (reg_ctrl == 1) | (reg_ctrl == 2) | (reg_ctrl == 3) | (reg_ctrl == 4) | (reg_ctrl == 5) | (reg_ctrl == 6);
     if (apb_access & ~addr_valid) begin
       addr_error = 1'b1;
     end else if (apb_access & sram_op_active & ~sram_addr_valid) begin
@@ -149,7 +149,7 @@ module apb_dsp_op #(
       // DSP write operand O: when control = 6
       if (reg_ctrl == 6) begin
         if (reg_operand_o[DATA_WIDTH - 1:6] == 0) begin
-          sram_mem[reg_operand_o[5:0]] <= DATA_WIDTH'(dsp_a * dsp_b + dsp_c);
+          sram_mem[reg_operand_o[5:0]] <= DATA_WIDTH'(DATA_WIDTH'(dsp_a * dsp_b) + dsp_c);
         end
       end
     end

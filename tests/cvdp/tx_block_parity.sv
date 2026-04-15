@@ -4,7 +4,7 @@ module tx_block_parity #(
   input logic clk,
   input logic rst_n,
   input logic [DATA_WIDTH-1:0] data_in,
-  input logic [3-1:0] sel,
+  input logic [2:0] sel,
   input logic load,
   output logic serial_out,
   output logic parity
@@ -21,7 +21,7 @@ module tx_block_parity #(
     par_comb = 1'b0;
     for (int i = 0; i <= DATA_WIDTH - 1; i++) begin
       if (3'($unsigned(i)) < sel) begin
-        par_comb = par_comb ^ data_in[i +: 1] == 1;
+        par_comb = par_comb ^ (data_in[i +: 1] == 1);
       end
     end
   end

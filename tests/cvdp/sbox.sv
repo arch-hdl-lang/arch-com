@@ -1,6 +1,6 @@
 module sbox (
-  input logic [8-1:0] i_addr,
-  output logic [8-1:0] o_data
+  input logic [7:0] i_addr,
+  output logic [7:0] o_data
 );
 
   always_comb begin

@@ -1,33 +1,33 @@
 module gf_mul8 (
-  input logic [8-1:0] a_in,
-  input logic [8-1:0] b_in,
-  output logic [8-1:0] p_out
+  input logic [7:0] a_in,
+  input logic [7:0] b_in,
+  output logic [7:0] p_out
 );
 
   // Russian peasant GF(2^8) multiply, irreducible poly 0x11B
   // Unrolled 8 iterations. Shift left: extend to 9 bits, shift, XOR upper bit check.
-  logic [9-1:0] sh0;
-  logic [9-1:0] sh1;
-  logic [9-1:0] sh2;
-  logic [9-1:0] sh3;
-  logic [9-1:0] sh4;
-  logic [9-1:0] sh5;
-  logic [9-1:0] sh6;
-  logic [8-1:0] p0;
-  logic [8-1:0] a0;
-  logic [8-1:0] p1;
-  logic [8-1:0] a1;
-  logic [8-1:0] p2;
-  logic [8-1:0] a2;
-  logic [8-1:0] p3;
-  logic [8-1:0] a3;
-  logic [8-1:0] p4;
-  logic [8-1:0] a4;
-  logic [8-1:0] p5;
-  logic [8-1:0] a5;
-  logic [8-1:0] p6;
-  logic [8-1:0] a6;
-  logic [8-1:0] p7;
+  logic [8:0] sh0;
+  logic [8:0] sh1;
+  logic [8:0] sh2;
+  logic [8:0] sh3;
+  logic [8:0] sh4;
+  logic [8:0] sh5;
+  logic [8:0] sh6;
+  logic [7:0] p0;
+  logic [7:0] a0;
+  logic [7:0] p1;
+  logic [7:0] a1;
+  logic [7:0] p2;
+  logic [7:0] a2;
+  logic [7:0] p3;
+  logic [7:0] a3;
+  logic [7:0] p4;
+  logic [7:0] a4;
+  logic [7:0] p5;
+  logic [7:0] a5;
+  logic [7:0] p6;
+  logic [7:0] a6;
+  logic [7:0] p7;
   assign p0 = b_in[0:0] == 1 ? a_in : 8'($unsigned(0));
   assign sh0 = 9'($unsigned(a_in)) << 1;
   assign a0 = sh0[8:8] == 1 ? sh0[7:0] ^ 8'($unsigned('h1B)) : sh0[7:0];

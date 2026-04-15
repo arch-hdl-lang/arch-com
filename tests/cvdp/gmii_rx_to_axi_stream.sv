@@ -1,15 +1,15 @@
 module gmii_rx_to_axi_stream (
   input logic gmii_rx_clk,
-  input logic [8-1:0] gmii_rxd,
+  input logic [7:0] gmii_rxd,
   input logic gmii_rx_dv,
-  output logic [8-1:0] m_axis_tdata,
+  output logic [7:0] m_axis_tdata,
   output logic m_axis_tvalid,
   input logic m_axis_tready,
   output logic m_axis_tlast
 );
 
-  logic [2-1:0] state_r = 0;
-  logic [8-1:0] data_r = 0;
+  logic [1:0] state_r = 0;
+  logic [7:0] data_r = 0;
   logic valid_r = 1'b0;
   logic last_r = 1'b0;
   logic dv_prev = 1'b0;

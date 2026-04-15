@@ -2,13 +2,13 @@ module String_to_ASCII_Converter (
   input logic clk,
   input logic reset,
   input logic start,
-  input logic [8-1:0] char_in [8-1:0],
-  output logic [8-1:0] ascii_out [8-1:0],
+  input logic [7:0] [7:0] char_in,
+  output logic [7:0] [7:0] ascii_out,
   output logic valid,
   output logic ready
 );
 
-  logic [8-1:0] ascii_reg [8-1:0];
+  logic [7:0] [7:0] ascii_reg;
   logic valid_reg;
   logic ready_reg;
   assign ascii_out = ascii_reg;
@@ -19,14 +19,14 @@ module String_to_ASCII_Converter (
   // 10..35 -> 65..90
   // 36..61 -> 97..122
   // 62..95 -> 33..66
-  logic [8-1:0] conv0;
-  logic [8-1:0] conv1;
-  logic [8-1:0] conv2;
-  logic [8-1:0] conv3;
-  logic [8-1:0] conv4;
-  logic [8-1:0] conv5;
-  logic [8-1:0] conv6;
-  logic [8-1:0] conv7;
+  logic [7:0] conv0;
+  logic [7:0] conv1;
+  logic [7:0] conv2;
+  logic [7:0] conv3;
+  logic [7:0] conv4;
+  logic [7:0] conv5;
+  logic [7:0] conv6;
+  logic [7:0] conv7;
   assign conv0 = char_in[0] < 10 ? 8'(char_in[0] + 48) : char_in[0] < 36 ? 8'(char_in[0] + 55) : char_in[0] < 62 ? 8'(char_in[0] + 61) : 8'(char_in[0] - 29);
   assign conv1 = char_in[1] < 10 ? 8'(char_in[1] + 48) : char_in[1] < 36 ? 8'(char_in[1] + 55) : char_in[1] < 62 ? 8'(char_in[1] + 61) : 8'(char_in[1] - 29);
   assign conv2 = char_in[2] < 10 ? 8'(char_in[2] + 48) : char_in[2] < 36 ? 8'(char_in[2] + 55) : char_in[2] < 62 ? 8'(char_in[2] + 61) : 8'(char_in[2] - 29);

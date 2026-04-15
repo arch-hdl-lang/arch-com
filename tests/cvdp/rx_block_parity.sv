@@ -5,14 +5,14 @@ module rx_block_parity #(
   input logic rst_n,
   input logic serial_in,
   input logic parity_in,
-  input logic [3-1:0] sel,
+  input logic [2:0] sel,
   output logic [DATA_WIDTH-1:0] data_out,
   output logic parity_err,
   output logic valid
 );
 
   logic [DATA_WIDTH-1:0] shift_reg;
-  logic [8-1:0] bit_cnt;
+  logic [7:0] bit_cnt;
   logic valid_reg;
   logic par_err_reg;
   logic par_acc;

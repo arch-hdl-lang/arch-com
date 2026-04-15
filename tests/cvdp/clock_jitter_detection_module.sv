@@ -7,12 +7,12 @@ module clock_jitter_detection_module #(
   output logic jitter_detected
 );
 
-  logic [32-1:0] edge_count;
-  logic [32-1:0] edge_count_r;
+  logic [31:0] edge_count;
+  logic [31:0] edge_count_r;
   logic prev_system_clk;
   logic edge_detected;
   logic start_counter;
-  logic [32-1:0] cycle_count;
+  logic [31:0] cycle_count;
   logic cnt_ne_thresh;
   assign cnt_ne_thresh = edge_count != JITTER_THRESHOLD;
   logic cnt_ne_zero;

@@ -2,22 +2,22 @@ module dot_product (
   input logic clk_in,
   input logic reset_in,
   input logic start_in,
-  input logic [7-1:0] dot_length_in,
-  input logic [8-1:0] vector_a_in,
+  input logic [6:0] dot_length_in,
+  input logic [7:0] vector_a_in,
   input logic vector_a_valid_in,
-  input logic [16-1:0] vector_b_in,
+  input logic [15:0] vector_b_in,
   input logic vector_b_valid_in,
-  output logic [32-1:0] dot_product_out,
+  output logic [31:0] dot_product_out,
   output logic dot_product_valid_out
 );
 
-  logic [2-1:0] state;
-  logic [32-1:0] accumulator;
-  logic [7-1:0] cnt;
-  logic [7-1:0] length_reg;
-  logic [32-1:0] result_reg;
+  logic [1:0] state;
+  logic [31:0] accumulator;
+  logic [6:0] cnt;
+  logic [6:0] length_reg;
+  logic [31:0] result_reg;
   logic valid_reg;
-  logic [24-1:0] product;
+  logic [23:0] product;
   assign product = vector_a_in * vector_b_in;
   always_ff @(posedge clk_in or posedge reset_in) begin
     if (reset_in) begin

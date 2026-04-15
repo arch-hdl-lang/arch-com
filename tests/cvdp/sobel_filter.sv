@@ -3,32 +3,32 @@ module sobel_filter #(
 ) (
   input logic clk,
   input logic rst_n,
-  input logic [8-1:0] pixel_in,
+  input logic [7:0] pixel_in,
   input logic valid_in,
-  output logic [8-1:0] edge_out,
+  output logic [7:0] edge_out,
   output logic valid_out
 );
 
   // 9-pixel shift register (p0=newest, p8=oldest)
-  logic [8-1:0] p0;
-  logic [8-1:0] p1;
-  logic [8-1:0] p2;
-  logic [8-1:0] p3;
-  logic [8-1:0] p4;
-  logic [8-1:0] p5;
-  logic [8-1:0] p6;
-  logic [8-1:0] p7;
-  logic [8-1:0] p8;
+  logic [7:0] p0;
+  logic [7:0] p1;
+  logic [7:0] p2;
+  logic [7:0] p3;
+  logic [7:0] p4;
+  logic [7:0] p5;
+  logic [7:0] p6;
+  logic [7:0] p7;
+  logic [7:0] p8;
   // Gradient registers (computed from current buffer, used next cycle for output)
-  logic signed [11-1:0] gx_r;
-  logic signed [11-1:0] gy_r;
-  logic [8-1:0] edge_out_r;
+  logic signed [10:0] gx_r;
+  logic signed [10:0] gy_r;
+  logic [7:0] edge_out_r;
   logic valid_out_r;
   // Count valid_in pulses; only assert valid_out after 9 pixels loaded
-  logic [4-1:0] pixel_cnt;
-  logic [11-1:0] abs_gx;
-  logic [11-1:0] abs_gy;
-  logic [13-1:0] magnitude;
+  logic [3:0] pixel_cnt;
+  logic [10:0] abs_gx;
+  logic [10:0] abs_gy;
+  logic [12:0] magnitude;
   assign abs_gx = gx_r[10] ? 11'($unsigned(~gx_r + 1)) : 11'($unsigned(gx_r));
   assign abs_gy = gy_r[10] ? 11'($unsigned(~gy_r + 1)) : 11'($unsigned(gy_r));
   assign magnitude = 13'(13'($unsigned(abs_gx)) + 13'($unsigned(abs_gy)));
@@ -65,9 +65,9 @@ module sobel_filter #(
         p0 <= pixel_in;
         // Sobel Gx: img[0][0] - img[0][2] + 2*img[1][0] - 2*img[1][2] + img[2][0] - img[2][2]
         // With p8=img[0][0]...p0=img[2][2]:
-        gx_r <= 11'($signed(p8) - $signed(p6) + ($signed(p5) << 1) - ($signed(p3) << 1) + $signed(p2) - $signed(p0));
+        gx_r <= 11'((((($signed(p8) - $signed(p6)) + ($signed(p5) << 1)) - ($signed(p3) << 1)) + $signed(p2)) - $signed(p0));
         // Sobel Gy: img[0][0] + 2*img[0][1] + img[0][2] - img[2][0] - 2*img[2][1] - img[2][2]
-        gy_r <= 11'($signed(p8) + ($signed(p7) << 1) + $signed(p6) - $signed(p2) - ($signed(p1) << 1) - $signed(p0));
+        gy_r <= 11'(((($signed(p8) + ($signed(p7) << 1) + $signed(p6)) - $signed(p2)) - ($signed(p1) << 1)) - $signed(p0));
         // Threshold from PREVIOUS gx_r/gy_r (pipeline delay)
         edge_out_r <= magnitude > 13'($unsigned(THRESHOLD)) ? 8'd255 : 8'd0;
         // Count pixels; valid_out asserts after 9th pixel (and on every subsequent pixel)

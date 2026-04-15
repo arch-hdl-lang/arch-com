@@ -11,9 +11,9 @@ module baud_rate_generator #(
 );
 
   // Exact baud timing via up-counter
-  logic [32-1:0] cnt;
+  logic [31:0] cnt;
   logic pulse_w;
-  assign pulse_w = enable & cnt == 32'($unsigned(BAUD_TICKS - 1));
+  assign pulse_w = enable & (cnt == 32'($unsigned(BAUD_TICKS - 1)));
   always_ff @(posedge clock or negedge reset_neg) begin
     if ((!reset_neg)) begin
       cnt <= 0;

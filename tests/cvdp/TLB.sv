@@ -23,7 +23,7 @@ module TLB #(
   logic [PAGE_WIDTH-1:0] physical_pages_2;
   logic [PAGE_WIDTH-1:0] physical_pages_3;
   logic [TLB_SIZE-1:0] valid_bits;
-  logic [2-1:0] replacement_idx;
+  logic [1:0] replacement_idx;
   logic v0;
   assign v0 = virtual_tags_0 == virtual_address;
   logic v1;

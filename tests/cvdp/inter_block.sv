@@ -19,9 +19,9 @@ module intra_block #(
   always_comb begin
     for (int j = 0; j <= DATA_WIDTH - 1; j++) begin
       if (j < DATA_WIDTH / 2) begin
-        out_data[j] = in_data[(j - 2 * (j / ROW_COL_WIDTH)) % ROW_COL_WIDTH * ROW_COL_WIDTH + (j - j / ROW_COL_WIDTH) % ROW_COL_WIDTH];
+        out_data[j] = in_data[((j - 2 * (j / ROW_COL_WIDTH)) % ROW_COL_WIDTH) * ROW_COL_WIDTH + (j - j / ROW_COL_WIDTH) % ROW_COL_WIDTH];
       end else begin
-        out_data[j] = in_data[(j - 2 * (j / ROW_COL_WIDTH) - 1) % ROW_COL_WIDTH * ROW_COL_WIDTH + (j - j / ROW_COL_WIDTH - 1) % ROW_COL_WIDTH];
+        out_data[j] = in_data[(((j - 2 * (j / ROW_COL_WIDTH)) - 1) % ROW_COL_WIDTH) * ROW_COL_WIDTH + ((j - j / ROW_COL_WIDTH) - 1) % ROW_COL_WIDTH];
       end
     end
   end
@@ -41,20 +41,20 @@ module inter_block #(
   input logic i_valid,
   input logic [DATA_WIDTH-1:0] in_data,
   output logic [DATA_WIDTH-1:0] out_data,
-  output logic [DATA_WIDTH-1:0] out_data_aux [SUB_BLOCKS-1:0],
+  output logic [SUB_BLOCKS-1:0] [DATA_WIDTH-1:0] out_data_aux,
   output logic start_intra,
   output logic [NBW_SUB-1:0] counter_sub_out
 );
 
   logic [NBW_SUB-1:0] cnt_sub_blocks;
   logic start_latched;
-  logic [6-1:0] start_pipe;
-  logic [DATA_WIDTH-1:0] in_data_reg [SUB_BLOCKS-1:0];
-  logic [DATA_WIDTH-1:0] out_data_aux_reg [SUB_BLOCKS-1:0];
+  logic [5:0] start_pipe;
+  logic [SUB_BLOCKS-1:0] [DATA_WIDTH-1:0] in_data_reg;
+  logic [SUB_BLOCKS-1:0] [DATA_WIDTH-1:0] out_data_aux_reg;
   logic [DATA_WIDTH-1:0] out_data_reg;
   logic [NBW_SUB-1:0] counter_sub_out_reg;
-  logic [DATA_WIDTH-1:0] intra_out [SUB_BLOCKS-1:0];
-  logic [DATA_WIDTH-1:0] next_out_data_aux [SUB_BLOCKS-1:0];
+  logic [SUB_BLOCKS-1:0] [DATA_WIDTH-1:0] intra_out;
+  logic [SUB_BLOCKS-1:0] [DATA_WIDTH-1:0] next_out_data_aux;
   logic [NBW_SUB-1:0] next_counter_sub_out;
   logic next_start_head;
   logic [DATA_WIDTH-1:0] next_out_data_selected;
@@ -79,7 +79,7 @@ module inter_block #(
     if (counter_sub_out_reg == SUB_BLOCKS - 1) begin
       next_counter_sub_out = 0;
     end else begin
-      next_counter_sub_out = NBW_SUB'(counter_sub_out_reg + 1);
+      next_counter_sub_out = (NBW_SUB > 1 ? NBW_SUB : 1)'(counter_sub_out_reg + 1);
     end
     for (int b = 0; b <= SUB_BLOCKS - 1; b++) begin
       next_out_data_aux[b] = out_data_aux_reg[b];
@@ -90,9 +90,9 @@ module inter_block #(
       end
       for (int i = 0; i <= OUT_CYCLES - 1; i++) begin
         next_out_data_aux[0][i * CHUNK +: CHUNK] = intra_out[i % SUB_BLOCKS][i * CHUNK +: CHUNK];
-        next_out_data_aux[1][i * CHUNK +: CHUNK] = intra_out[i % SUB_BLOCKS][(i + 1) % OUT_CYCLES * CHUNK +: CHUNK];
-        next_out_data_aux[2][i * CHUNK +: CHUNK] = intra_out[i % SUB_BLOCKS][(i + 2) % OUT_CYCLES * CHUNK +: CHUNK];
-        next_out_data_aux[3][i * CHUNK +: CHUNK] = intra_out[i % SUB_BLOCKS][(i + 3) % OUT_CYCLES * CHUNK +: CHUNK];
+        next_out_data_aux[1][i * CHUNK +: CHUNK] = intra_out[i % SUB_BLOCKS][((i + 1) % OUT_CYCLES) * CHUNK +: CHUNK];
+        next_out_data_aux[2][i * CHUNK +: CHUNK] = intra_out[i % SUB_BLOCKS][((i + 2) % OUT_CYCLES) * CHUNK +: CHUNK];
+        next_out_data_aux[3][i * CHUNK +: CHUNK] = intra_out[i % SUB_BLOCKS][((i + 3) % OUT_CYCLES) * CHUNK +: CHUNK];
       end
     end
     if (next_counter_sub_out == 0) begin
@@ -131,7 +131,7 @@ module inter_block #(
           cnt_sub_blocks <= 0;
           start_latched <= 1;
         end else begin
-          cnt_sub_blocks <= NBW_SUB'(cnt_sub_blocks + 1);
+          cnt_sub_blocks <= (NBW_SUB > 1 ? NBW_SUB : 1)'(cnt_sub_blocks + 1);
         end
       end
       start_pipe[5] <= start_pipe[4];

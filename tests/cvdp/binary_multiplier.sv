@@ -14,8 +14,8 @@ module binary_multiplier #(
   logic [WIDTH-1:0] b_reg;
   logic [2 * WIDTH-1:0] acc;
   // Support WIDTH up to 32 in CVDP tests.
-  logic [6-1:0] bit_idx;
-  logic [2-1:0] phase;
+  logic [5:0] bit_idx;
+  logic [1:0] phase;
   logic running;
   logic [2 * WIDTH-1:0] prod_reg;
   logic vout;

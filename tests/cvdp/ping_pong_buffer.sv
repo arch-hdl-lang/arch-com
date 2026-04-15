@@ -3,19 +3,19 @@ module ping_pong_buffer (
   input logic rst_n,
   input logic write_enable,
   input logic read_enable,
-  input logic [8-1:0] data_in,
-  output logic [8-1:0] data_out,
+  input logic [7:0] data_in,
+  output logic [7:0] data_out,
   output logic buffer_full,
   output logic buffer_empty,
   output logic buffer_select
 );
 
   // Memory arrays - two banks of 255 x 8-bit  
-  logic [8-1:0] mem0 [256-1:0];
-  logic [8-1:0] mem1 [256-1:0];
+  logic [255:0] [7:0] mem0;
+  logic [255:0] [7:0] mem1;
   // Pointers
-  logic [8-1:0] write_ptr;
-  logic [8-1:0] read_ptr;
+  logic [7:0] write_ptr;
+  logic [7:0] read_ptr;
   // Reset pipeline: high for 2 cycles after reset deassert
   // Prevents stale write_enable from corrupting state
   logic rst_pipe0;

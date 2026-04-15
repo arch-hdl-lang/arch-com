@@ -12,19 +12,19 @@ module signedadder #(
   output logic signed [DATA_WIDTH-1:0] o_resultant_sum,
   output logic o_overflow,
   output logic o_ready,
-  output logic [2-1:0] o_status
+  output logic [1:0] o_status
 );
 
   // FSM states
-  logic [2-1:0] ST_IDLE;
+  logic [1:0] ST_IDLE;
   assign ST_IDLE = 0;
-  logic [2-1:0] ST_LOAD;
+  logic [1:0] ST_LOAD;
   assign ST_LOAD = 1;
-  logic [2-1:0] ST_COMPUTE;
+  logic [1:0] ST_COMPUTE;
   assign ST_COMPUTE = 2;
-  logic [2-1:0] ST_OUTPUT;
+  logic [1:0] ST_OUTPUT;
   assign ST_OUTPUT = 3;
-  logic [2-1:0] state_r;
+  logic [1:0] state_r;
   // Internal registers
   logic signed [DATA_WIDTH-1:0] op_a_r;
   logic signed [DATA_WIDTH-1:0] op_b_r;

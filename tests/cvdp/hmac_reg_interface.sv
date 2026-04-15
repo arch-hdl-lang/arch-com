@@ -15,24 +15,24 @@ module hmac_reg_interface #(
 );
 
   // FSM state encoding
-  logic [3-1:0] ST_IDLE;
+  logic [2:0] ST_IDLE;
   assign ST_IDLE = 0;
-  logic [3-1:0] ST_ANALYZE;
+  logic [2:0] ST_ANALYZE;
   assign ST_ANALYZE = 1;
-  logic [3-1:0] ST_XOR_DATA;
+  logic [2:0] ST_XOR_DATA;
   assign ST_XOR_DATA = 2;
-  logic [3-1:0] ST_WRITE;
+  logic [2:0] ST_WRITE;
   assign ST_WRITE = 3;
-  logic [3-1:0] ST_LOST;
+  logic [2:0] ST_LOST;
   assign ST_LOST = 4;
-  logic [3-1:0] ST_CHECK_KEY;
+  logic [2:0] ST_CHECK_KEY;
   assign ST_CHECK_KEY = 5;
-  logic [3-1:0] ST_TRIG_WAIT;
+  logic [2:0] ST_TRIG_WAIT;
   assign ST_TRIG_WAIT = 6;
-  logic [3-1:0] current_state;
+  logic [2:0] current_state;
   logic [DATA_WIDTH-1:0] hmac_key;
   logic [DATA_WIDTH-1:0] hmac_data;
-  logic [DATA_WIDTH-1:0] registers [256-1:0];
+  logic [255:0] [DATA_WIDTH-1:0] registers;
   // xor_data: current wdata XOR'd with '01010101...' mask — exposed for testbench visibility.
   // The Python model sets processed_data = wdata (plain) for all states except PROCESS/XOR_DATA,
   // and in WRITE state it immediately uses that overwritten value. This means the WRITE state
@@ -48,21 +48,21 @@ module hmac_reg_interface #(
   assign xor_data = wdata ^ xor_mask;
   // Key validation: 2 MSB and 2 LSB of hmac_key must be zero for key to be valid
   logic key_valid;
-  assign key_valid = hmac_key[DATA_WIDTH - 2 +: 2] == 0 & hmac_key[1:0] == 0;
+  assign key_valid = (hmac_key[DATA_WIDTH - 2 +: 2] == 0) & (hmac_key[1:0] == 0);
   // Next-cycle hmac_key (what hmac_key will be after the next clock edge)
   // Used so hmac_key_error is updated in same cycle as hmac_key write
   logic [DATA_WIDTH-1:0] next_hmac_key;
   always_comb begin
-    if (current_state == ST_WRITE & addr == 0) begin
+    if ((current_state == ST_WRITE) & (addr == 0)) begin
       next_hmac_key = wdata;
     end else begin
       next_hmac_key = hmac_key;
     end
   end
   logic next_key_valid;
-  assign next_key_valid = next_hmac_key[DATA_WIDTH - 2 +: 2] == 0 & next_hmac_key[1:0] == 0;
+  assign next_key_valid = (next_hmac_key[DATA_WIDTH - 2 +: 2] == 0) & (next_hmac_key[1:0] == 0);
   // Next state combinational logic
-  logic [3-1:0] next_state;
+  logic [2:0] next_state;
   always_comb begin
     if (current_state == ST_IDLE) begin
       if (write_en) begin
@@ -99,7 +99,7 @@ module hmac_reg_interface #(
     end else if (current_state == ST_TRIG_WAIT) begin
       if (i_wait_en) begin
         next_state = ST_TRIG_WAIT;
-      end else if (hmac_data != 0 & hmac_key != 0) begin
+      end else if ((hmac_data != 0) & (hmac_key != 0)) begin
         next_state = ST_IDLE;
       end else begin
         next_state = ST_WRITE;
@@ -154,7 +154,7 @@ module hmac_reg_interface #(
     if ((!rst_n)) begin
       rdata <= 0;
     end else begin
-      if (read_en & current_state != ST_WRITE) begin
+      if (read_en & (current_state != ST_WRITE)) begin
         if (addr == 0) begin
           rdata <= hmac_key;
         end else if (addr == 1) begin

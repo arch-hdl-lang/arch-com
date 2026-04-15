@@ -5,10 +5,10 @@ module microcode_sequencer (
   input logic r_en,
   input logic cc,
   input logic ien,
-  input logic [4-1:0] d_in,
-  input logic [5-1:0] instr_in,
+  input logic [3:0] d_in,
+  input logic [4:0] instr_in,
   input logic oen,
-  output logic [4-1:0] d_out,
+  output logic [3:0] d_out,
   output logic c_n_out,
   output logic c_inc_out,
   output logic full,
@@ -23,8 +23,8 @@ module microcode_sequencer (
   logic dec_rsel;
   logic dec_rce;
   logic dec_pc_mux_sel;
-  logic [2-1:0] dec_a_mux_sel;
-  logic [2-1:0] dec_b_mux_sel;
+  logic [1:0] dec_a_mux_sel;
+  logic [1:0] dec_b_mux_sel;
   logic dec_push;
   logic dec_pop;
   logic dec_src_sel;
@@ -108,7 +108,7 @@ module microcode_sequencer (
     end
   end
   // ---- Stack Pointer (5-bit register) ----
-  logic [5-1:0] sp = 0;
+  logic [4:0] sp = 0;
   logic sp_full;
   assign sp_full = sp == 16;
   logic sp_empty;
@@ -119,16 +119,16 @@ module microcode_sequencer (
     if (dec_rst) begin
       sp <= 0;
     end else if (dec_push & ~sp_full) begin
-      sp <= 5'(sp + 1);
+      sp <= (5 > 1 ? 5 : 1)'(sp + 1);
     end else if (dec_pop & ~sp_empty) begin
-      sp <= 5'(sp - 1);
+      sp <= (5 > 1 ? 5 : 1)'(sp - 1);
     end
   end
   // ---- Stack RAM (16 x 4-bit) ----
-  logic [4-1:0] stack_mem [16-1:0];
-  logic [4-1:0] stack_data_rd = 0;
-  logic [4-1:0] pc_out_w;
-  logic [4-1:0] stack_write_data;
+  logic [15:0] [3:0] stack_mem;
+  logic [3:0] stack_data_rd = 0;
+  logic [3:0] pc_out_w;
+  logic [3:0] stack_write_data;
   always_comb begin
     if (dec_src_sel) begin
       stack_write_data = d_in;
@@ -147,9 +147,9 @@ module microcode_sequencer (
   // ---- aux_reg_mux and aux_reg ----
   logic aux_reg_mux_sel_v;
   assign aux_reg_mux_sel_v = dec_rsel & ~r_en;
-  logic [4-1:0] fa_sum;
-  logic [4-1:0] aux_reg_mux_out;
-  logic [4-1:0] aux_reg_r = 0;
+  logic [3:0] fa_sum;
+  logic [3:0] aux_reg_mux_out;
+  logic [3:0] aux_reg_r = 0;
   always_comb begin
     if (aux_reg_mux_sel_v) begin
       aux_reg_mux_out = fa_sum;
@@ -165,7 +165,7 @@ module microcode_sequencer (
     end
   end
   // ---- a_mux ----
-  logic [4-1:0] a_mux_out;
+  logic [3:0] a_mux_out;
   always_comb begin
     if (dec_a_mux_sel == 0) begin
       a_mux_out = d_in;
@@ -176,7 +176,7 @@ module microcode_sequencer (
     end
   end
   // ---- b_mux ----
-  logic [4-1:0] b_mux_out;
+  logic [3:0] b_mux_out;
   always_comb begin
     if (dec_b_mux_sel == 0) begin
       b_mux_out = pc_out_w;
@@ -198,21 +198,21 @@ module microcode_sequencer (
     end
   end
   // Extend to 5 bits via concat, then add
-  logic [5-1:0] a_ext;
+  logic [4:0] a_ext;
   assign a_ext = {1'b0, a_mux_out};
-  logic [5-1:0] b_ext;
+  logic [4:0] b_ext;
   assign b_ext = {1'b0, b_mux_out};
-  logic [5-1:0] cin_ext;
+  logic [4:0] cin_ext;
   assign cin_ext = {1'b0, 1'b0, 1'b0, 1'b0, fa_cin};
-  logic [6-1:0] fa_ab;
+  logic [5:0] fa_ab;
   assign fa_ab = a_ext + b_ext;
-  logic [7-1:0] fa_full_v;
+  logic [6:0] fa_full_v;
   assign fa_full_v = fa_ab + 6'($unsigned(cin_ext));
   assign fa_sum = fa_full_v[3:0];
   logic fa_cout;
   assign fa_cout = fa_full_v[4:4] == 1;
   // ---- output enable ----
-  logic [4-1:0] arith_d_out;
+  logic [3:0] arith_d_out;
   always_comb begin
     if (dec_oen & ~oen) begin
       arith_d_out = fa_sum;
@@ -221,7 +221,7 @@ module microcode_sequencer (
     end
   end
   // ---- PC mux, incrementer, reg ----
-  logic [4-1:0] pc_mux_out;
+  logic [3:0] pc_mux_out;
   always_comb begin
     if (dec_pc_mux_sel) begin
       pc_mux_out = fa_sum;
@@ -237,23 +237,23 @@ module microcode_sequencer (
       pc_inc_cin = 1'b0;
     end
   end
-  logic [5-1:0] pc_ext;
+  logic [4:0] pc_ext;
   assign pc_ext = {1'b0, pc_mux_out};
-  logic [5-1:0] pci_ext;
+  logic [4:0] pci_ext;
   assign pci_ext = {1'b0, 1'b0, 1'b0, 1'b0, pc_inc_cin};
-  logic [6-1:0] pc_inc_result;
+  logic [5:0] pc_inc_result;
   assign pc_inc_result = pc_ext + pci_ext;
-  logic [4-1:0] pc_inc_out;
+  logic [3:0] pc_inc_out;
   assign pc_inc_out = pc_inc_result[3:0];
   logic pc_inc_cout;
   assign pc_inc_cout = pc_inc_result[4:4] == 1;
-  logic [4-1:0] pc_reg_r = 0;
+  logic [3:0] pc_reg_r = 0;
   always_ff @(posedge clk) begin
     pc_reg_r <= pc_inc_out;
   end
   assign pc_out_w = pc_reg_r;
   // ---- Result Register ----
-  logic [4-1:0] result_reg = 0;
+  logic [3:0] result_reg = 0;
   always_ff @(posedge clk) begin
     if (dec_out_ce) begin
       result_reg <= arith_d_out;

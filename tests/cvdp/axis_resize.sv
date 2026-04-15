@@ -5,17 +5,17 @@ module axis_resize (
   input logic resetn,
   input logic s_valid,
   output logic s_ready,
-  input logic [16-1:0] s_data,
+  input logic [15:0] s_data,
   output logic m_valid,
   input logic m_ready,
-  output logic [8-1:0] m_data
+  output logic [7:0] m_data
 );
 
   // phase 0: idle/accept, phase 1: sending low byte
-  logic [1-1:0] phase;
-  logic [8-1:0] data_buf;
+  logic [0:0] phase;
+  logic [7:0] data_buf;
   logic m_valid_r;
-  logic [8-1:0] m_data_r;
+  logic [7:0] m_data_r;
   always_ff @(posedge clk) begin
     if ((!resetn)) begin
       data_buf <= 0;

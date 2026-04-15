@@ -3,14 +3,14 @@ module neuromorphic_array #(
   parameter int INPUTS = 8,
   parameter int OUTPUTS = 8
 ) (
-  input logic [8-1:0] ui_in,
-  input logic [8-1:0] uio_in,
-  output logic [8-1:0] uo_out,
+  input logic [7:0] ui_in,
+  input logic [7:0] uio_in,
+  output logic [7:0] uo_out,
   input logic clk,
   input logic rst_n
 );
 
-  logic [8-1:0] neuron_outputs [NEURONS-1:0];
+  logic [NEURONS-1:0] [7:0] neuron_outputs;
   genvar i;
   for (i = 0; i <= NEURONS - 1; i = i + 1) begin : gen_i
     single_neuron_dut neuron_i (

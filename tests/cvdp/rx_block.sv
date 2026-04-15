@@ -2,16 +2,16 @@ module rx_block (
   input logic clk,
   input logic reset_n,
   input logic serial_clk,
-  input logic [3-1:0] sel,
+  input logic [2:0] sel,
   input logic data_in,
-  output logic [64-1:0] data_out,
+  output logic [63:0] data_out,
   output logic done
 );
 
-  logic [64-1:0] shift_reg;
-  logic [7-1:0] bit_cnt;
+  logic [63:0] shift_reg;
+  logic [6:0] bit_cnt;
   logic active;
-  logic [64-1:0] data_out_r;
+  logic [63:0] data_out_r;
   logic done_r;
   assign data_out = data_out_r;
   assign done = done_r;

@@ -1,45 +1,45 @@
 module conv3x3 (
   input logic clk,
   input logic rst_n,
-  input logic [8-1:0] image_data0,
-  input logic [8-1:0] image_data1,
-  input logic [8-1:0] image_data2,
-  input logic [8-1:0] image_data3,
-  input logic [8-1:0] image_data4,
-  input logic [8-1:0] image_data5,
-  input logic [8-1:0] image_data6,
-  input logic [8-1:0] image_data7,
-  input logic [8-1:0] image_data8,
-  input logic [8-1:0] kernel0,
-  input logic [8-1:0] kernel1,
-  input logic [8-1:0] kernel2,
-  input logic [8-1:0] kernel3,
-  input logic [8-1:0] kernel4,
-  input logic [8-1:0] kernel5,
-  input logic [8-1:0] kernel6,
-  input logic [8-1:0] kernel7,
-  input logic [8-1:0] kernel8,
-  output logic [16-1:0] convolved_data
+  input logic [7:0] image_data0,
+  input logic [7:0] image_data1,
+  input logic [7:0] image_data2,
+  input logic [7:0] image_data3,
+  input logic [7:0] image_data4,
+  input logic [7:0] image_data5,
+  input logic [7:0] image_data6,
+  input logic [7:0] image_data7,
+  input logic [7:0] image_data8,
+  input logic [7:0] kernel0,
+  input logic [7:0] kernel1,
+  input logic [7:0] kernel2,
+  input logic [7:0] kernel3,
+  input logic [7:0] kernel4,
+  input logic [7:0] kernel5,
+  input logic [7:0] kernel6,
+  input logic [7:0] kernel7,
+  input logic [7:0] kernel8,
+  output logic [15:0] convolved_data
 );
 
   // Stage 1: element-wise unsigned multiply (8x8 -> 16 bits)
-  logic [16-1:0] mult0;
-  logic [16-1:0] mult1;
-  logic [16-1:0] mult2;
-  logic [16-1:0] mult3;
-  logic [16-1:0] mult4;
-  logic [16-1:0] mult5;
-  logic [16-1:0] mult6;
-  logic [16-1:0] mult7;
-  logic [16-1:0] mult8;
+  logic [15:0] mult0;
+  logic [15:0] mult1;
+  logic [15:0] mult2;
+  logic [15:0] mult3;
+  logic [15:0] mult4;
+  logic [15:0] mult5;
+  logic [15:0] mult6;
+  logic [15:0] mult7;
+  logic [15:0] mult8;
   // Stage 2: row-wise sums
-  logic [20-1:0] row0;
-  logic [20-1:0] row1;
-  logic [20-1:0] row2;
+  logic [19:0] row0;
+  logic [19:0] row1;
+  logic [19:0] row2;
   // Stage 3: total sum
-  logic [20-1:0] total;
+  logic [19:0] total;
   // Stage 4: normalized result (divide by 9)
-  logic [16-1:0] result_reg;
+  logic [15:0] result_reg;
   assign convolved_data = result_reg;
   always_ff @(posedge clk or negedge rst_n) begin
     if ((!rst_n)) begin

@@ -23,13 +23,13 @@ module crossbar_switch #(
   output logic valid_out3
 );
 
-  logic [2-1:0] dest0;
+  logic [1:0] dest0;
   assign dest0 = in0[DATA_WIDTH_IN - 2 +: 2];
-  logic [2-1:0] dest1;
+  logic [1:0] dest1;
   assign dest1 = in1[DATA_WIDTH_IN - 2 +: 2];
-  logic [2-1:0] dest2;
+  logic [1:0] dest2;
   assign dest2 = in2[DATA_WIDTH_IN - 2 +: 2];
-  logic [2-1:0] dest3;
+  logic [1:0] dest3;
   assign dest3 = in3[DATA_WIDTH_IN - 2 +: 2];
   logic [DATA_WIDTH-1:0] data0;
   assign data0 = in0[DATA_WIDTH - 1:0];

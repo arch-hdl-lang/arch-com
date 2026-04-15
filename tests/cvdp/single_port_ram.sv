@@ -9,7 +9,7 @@ module single_port_ram #(
   output logic [DATA_WIDTH-1:0] dout
 );
 
-  logic [DATA_WIDTH-1:0] mem [16-1:0];
+  logic [15:0] [DATA_WIDTH-1:0] mem;
   always_ff @(posedge clk) begin
     if (we) begin
       mem[4'(addr)] <= din;

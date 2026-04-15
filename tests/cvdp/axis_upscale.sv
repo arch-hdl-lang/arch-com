@@ -5,19 +5,19 @@ module axis_upscale (
   input logic dfmt_type,
   input logic dfmt_se,
   input logic s_axis_valid,
-  input logic [24-1:0] s_axis_data,
+  input logic [23:0] s_axis_data,
   input logic m_axis_ready,
   output logic s_axis_ready,
   output logic m_axis_valid,
-  output logic [32-1:0] m_axis_data
+  output logic [31:0] m_axis_data
 );
 
   logic r_valid;
-  logic [32-1:0] r_data;
+  logic [31:0] r_data;
   logic r_ready;
-  logic [32-1:0] fmt_data;
-  logic [1-1:0] bit23;
-  logic [8-1:0] ext_bits;
+  logic [31:0] fmt_data;
+  logic [0:0] bit23;
+  logic [7:0] ext_bits;
   always_comb begin
     // Determine bit[23]: dfmt_type=1 inverts MSB, dfmt_type=0 passes through
     if (dfmt_type) begin

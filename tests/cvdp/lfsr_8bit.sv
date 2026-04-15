@@ -1,11 +1,11 @@
 module lfsr_8bit (
   input logic clock,
   input logic reset,
-  input logic [8-1:0] lfsr_seed,
-  output logic [8-1:0] lfsr_out
+  input logic [7:0] lfsr_seed,
+  output logic [7:0] lfsr_out
 );
 
-  logic [8-1:0] state;
+  logic [7:0] state;
   logic feedback;
   // Fibonacci LFSR: taps at bits 6,5,1,0 (0-indexed); right-shift
   assign feedback = state[6] ^ state[5] ^ state[1] ^ state[0];

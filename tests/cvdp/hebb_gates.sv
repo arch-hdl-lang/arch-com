@@ -2,39 +2,39 @@ module hebb_gates (
   input logic clk,
   input logic rst,
   input logic start,
-  input logic signed [4-1:0] a,
-  input logic signed [4-1:0] b,
-  input logic [2-1:0] gate_select,
-  output logic signed [4-1:0] w1,
-  output logic signed [4-1:0] w2,
-  output logic signed [4-1:0] bias,
-  output logic [4-1:0] present_state,
-  output logic [4-1:0] next_state,
-  output logic signed [4-1:0] test_x1,
-  output logic signed [4-1:0] test_x2,
-  output logic signed [4-1:0] expected_output,
-  output logic signed [4-1:0] test_output,
-  output logic signed [4-1:0] test_result,
-  output logic [1-1:0] test_done,
-  output logic [4-1:0] test_present_state,
-  output logic [4-1:0] test_index
+  input logic signed [3:0] a,
+  input logic signed [3:0] b,
+  input logic [1:0] gate_select,
+  output logic signed [3:0] w1,
+  output logic signed [3:0] w2,
+  output logic signed [3:0] bias,
+  output logic [3:0] present_state,
+  output logic [3:0] next_state,
+  output logic signed [3:0] test_x1,
+  output logic signed [3:0] test_x2,
+  output logic signed [3:0] expected_output,
+  output logic signed [3:0] test_output,
+  output logic signed [3:0] test_result,
+  output logic [0:0] test_done,
+  output logic [3:0] test_present_state,
+  output logic [3:0] test_index
 );
 
-  logic signed [4-1:0] x1;
-  logic signed [4-1:0] x2;
-  logic signed [4-1:0] target_r;
-  logic signed [8-1:0] delta_w1;
-  logic signed [8-1:0] delta_w2;
-  logic signed [4-1:0] delta_b;
-  logic [4-1:0] iter;
-  logic [4-1:0] wait_cnt;
-  logic [2-1:0] gs_r;
-  logic [4-1:0] ns;
-  logic signed [4-1:0] pos_one;
+  logic signed [3:0] x1;
+  logic signed [3:0] x2;
+  logic signed [3:0] target_r;
+  logic signed [7:0] delta_w1;
+  logic signed [7:0] delta_w2;
+  logic signed [3:0] delta_b;
+  logic [3:0] iter;
+  logic [3:0] wait_cnt;
+  logic [1:0] gs_r;
+  logic [3:0] ns;
+  logic signed [3:0] pos_one;
   assign pos_one = $signed({1'b0, 1'b0, 1'b0, 1'b1});
-  logic signed [4-1:0] neg_one;
+  logic signed [3:0] neg_one;
   assign neg_one = $signed({1'b1, 1'b1, 1'b1, 1'b1});
-  logic signed [4-1:0] zero4;
+  logic signed [3:0] zero4;
   assign zero4 = $signed({1'b0, 1'b0, 1'b0, 1'b0});
   // Determine if a and b are positive (bipolar: +1 or -1)
   logic a_pos;
@@ -54,7 +54,7 @@ module hebb_gates (
       gate_result = ~(a_pos | b_pos);
     end
   end
-  logic signed [4-1:0] tgt_val;
+  logic signed [3:0] tgt_val;
   always_comb begin
     if (gate_result) begin
       tgt_val = pos_one;
@@ -79,7 +79,7 @@ module hebb_gates (
       test_gate_result = ~(tx1_pos | tx2_pos);
     end
   end
-  logic signed [4-1:0] test_tgt_val;
+  logic signed [3:0] test_tgt_val;
   always_comb begin
     if (test_gate_result) begin
       test_tgt_val = pos_one;
@@ -88,10 +88,10 @@ module hebb_gates (
     end
   end
   // Compute net for testing: w1*test_x1 + w2*test_x2 + bias
-  logic signed [8-1:0] prod1;
-  logic signed [8-1:0] prod2;
-  logic signed [8-1:0] bias_ext;
-  logic signed [8-1:0] net_sum;
+  logic signed [7:0] prod1;
+  logic signed [7:0] prod2;
+  logic signed [7:0] bias_ext;
+  logic signed [7:0] net_sum;
   assign prod1 = $signed(w1 * test_x1);
   assign prod2 = $signed(w2 * test_x2);
   assign bias_ext = $signed({{(8-$bits(bias)){bias[$bits(bias)-1]}}, bias});
@@ -101,8 +101,8 @@ module hebb_gates (
   // OR(1):  (1,1),(-1,1),(1,-1),(-1,-1)
   // NAND(2): (-1,-1),(-1,1),(1,-1),(1,1)
   // NOR(3):  (-1,-1),(-1,1),(1,-1),(1,1)
-  logic signed [4-1:0] tv_x1;
-  logic signed [4-1:0] tv_x2;
+  logic signed [3:0] tv_x1;
+  logic signed [3:0] tv_x2;
   always_comb begin
     if (gs_r == 0) begin
       if (test_index == 0) begin

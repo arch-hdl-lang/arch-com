@@ -5,7 +5,7 @@ module rounding #(
   input logic sign,
   input logic roundin,
   input logic stickyin,
-  input logic [3-1:0] rm,
+  input logic [2:0] rm,
   output logic [WIDTH-1:0] out_data,
   output logic inexact,
   output logic cout,

@@ -5,15 +5,15 @@ module scrambler #(
   input logic clk,
   input logic rst_n,
   input logic [DATA_WIDTH-1:0] data_in,
-  input logic [4-1:0] mode,
+  input logic [3:0] mode,
   output logic [DATA_WIDTH-1:0] data_out,
   output logic feedback
 );
 
   // 16-bit LFSR initialized to 0x4000 (bit 14 set)
-  logic [16-1:0] lfsr;
+  logic [15:0] lfsr;
   logic feedback_w;
-  logic [16-1:0] lfsr_next;
+  logic [15:0] lfsr_next;
   // Polynomial selection
   always_comb begin
     if (mode == 0) begin

@@ -1,12 +1,12 @@
 module bcd_counter (
   input logic clk,
   input logic rst,
-  output logic [4-1:0] ms_hr,
-  output logic [4-1:0] ls_hr,
-  output logic [4-1:0] ms_min,
-  output logic [4-1:0] ls_min,
-  output logic [4-1:0] ms_sec,
-  output logic [4-1:0] ls_sec
+  output logic [3:0] ms_hr,
+  output logic [3:0] ls_hr,
+  output logic [3:0] ms_min,
+  output logic [3:0] ls_min,
+  output logic [3:0] ms_sec,
+  output logic [3:0] ls_sec
 );
 
   always_ff @(posedge clk) begin

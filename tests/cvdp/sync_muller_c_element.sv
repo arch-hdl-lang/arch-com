@@ -4,14 +4,14 @@ module sync_muller_c_element #(
 ) (
   input logic clk,
   input logic srst,
-  input logic [1-1:0] clr,
-  input logic [1-1:0] clk_en,
+  input logic [0:0] clr,
+  input logic [0:0] clk_en,
   input logic [NUM_INPUT-1:0] inp,
-  output logic [1-1:0] out
+  output logic [0:0] out
 );
 
-  logic [NUM_INPUT-1:0] pipe [PIPE_DEPTH-1:0];
-  logic [1-1:0] out_r;
+  logic [PIPE_DEPTH-1:0] [NUM_INPUT-1:0] pipe;
+  logic [0:0] out_r;
   logic all_ones;
   logic all_zeros;
   assign all_ones = &pipe[PIPE_DEPTH - 1];

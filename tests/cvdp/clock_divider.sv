@@ -1,11 +1,11 @@
 module clock_divider (
   input logic clk,
   input logic rst_n,
-  input logic [2-1:0] sel,
+  input logic [1:0] sel,
   output logic clk_out
 );
 
-  logic [3-1:0] cnt;
+  logic [2:0] cnt;
   always_ff @(posedge clk or negedge rst_n) begin
     if ((!rst_n)) begin
       clk_out <= 0;

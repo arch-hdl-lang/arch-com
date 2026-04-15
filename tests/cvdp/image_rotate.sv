@@ -5,7 +5,7 @@ module image_rotate #(
   parameter int OUT_COL = IN_ROW > IN_COL ? IN_ROW : IN_COL,
   parameter int DATA_WIDTH = 8
 ) (
-  input logic [2-1:0] rotation_angle,
+  input logic [1:0] rotation_angle,
   input logic [IN_ROW * IN_COL * DATA_WIDTH-1:0] image_in,
   output logic [OUT_ROW * OUT_COL * DATA_WIDTH-1:0] image_out
 );
@@ -41,7 +41,7 @@ module image_rotate #(
   always_comb begin
     for (int r = 0; r <= OUT_ROW - 1; r++) begin
       for (int c = 0; c <= OUT_COL - 1; c++) begin
-        rot90[(r * OUT_COL + c) * DATA_WIDTH +: DATA_WIDTH] = transposed_image[(r * OUT_COL + (OUT_COL - 1 - c)) * DATA_WIDTH +: DATA_WIDTH];
+        rot90[(r * OUT_COL + c) * DATA_WIDTH +: DATA_WIDTH] = transposed_image[(r * OUT_COL + ((OUT_COL - 1) - c)) * DATA_WIDTH +: DATA_WIDTH];
       end
     end
   end
@@ -50,7 +50,7 @@ module image_rotate #(
   always_comb begin
     for (int r = 0; r <= OUT_ROW - 1; r++) begin
       for (int c = 0; c <= OUT_COL - 1; c++) begin
-        rot180[(r * OUT_COL + c) * DATA_WIDTH +: DATA_WIDTH] = padded_image[((OUT_ROW - 1 - r) * OUT_COL + (OUT_COL - 1 - c)) * DATA_WIDTH +: DATA_WIDTH];
+        rot180[(r * OUT_COL + c) * DATA_WIDTH +: DATA_WIDTH] = padded_image[(((OUT_ROW - 1) - r) * OUT_COL + ((OUT_COL - 1) - c)) * DATA_WIDTH +: DATA_WIDTH];
       end
     end
   end
@@ -59,7 +59,7 @@ module image_rotate #(
   always_comb begin
     for (int r = 0; r <= OUT_ROW - 1; r++) begin
       for (int c = 0; c <= OUT_COL - 1; c++) begin
-        rot270[(r * OUT_COL + c) * DATA_WIDTH +: DATA_WIDTH] = transposed_image[((OUT_ROW - 1 - r) * OUT_COL + c) * DATA_WIDTH +: DATA_WIDTH];
+        rot270[(r * OUT_COL + c) * DATA_WIDTH +: DATA_WIDTH] = transposed_image[(((OUT_ROW - 1) - r) * OUT_COL + c) * DATA_WIDTH +: DATA_WIDTH];
       end
     end
   end

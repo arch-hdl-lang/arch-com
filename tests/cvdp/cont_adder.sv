@@ -11,7 +11,7 @@ module cont_adder #(
   input logic rst_n,
   input logic signed [DATA_WIDTH-1:0] data_in,
   input logic data_valid,
-  input logic [8-1:0] window_size,
+  input logic [7:0] window_size,
   output logic signed [ACCUM_WIDTH-1:0] sum_out,
   output logic signed [DATA_WIDTH-1:0] avg_out,
   output logic threshold_1,
@@ -25,7 +25,7 @@ module cont_adder #(
 
   // Backward-compatible aliases used by some older harnesses.
   logic signed [ACCUM_WIDTH-1:0] accum;
-  logic [8-1:0] sample_cnt;
+  logic [7:0] sample_cnt;
   logic use_valid;
   logic signed [ACCUM_WIDTH-1:0] data_ext;
   logic signed [ACCUM_WIDTH-1:0] weight_ext;
@@ -33,7 +33,7 @@ module cont_adder #(
   logic signed [ACCUM_WIDTH-1:0] next_accum;
   logic thresh1_hit;
   logic thresh2_hit;
-  logic [8-1:0] win_eff;
+  logic [7:0] win_eff;
   logic win_done;
   logic cnt_nonzero;
   assign use_valid = data_valid | valid_in;

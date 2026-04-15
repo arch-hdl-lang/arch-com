@@ -11,13 +11,13 @@ module sorting_engine #(
 );
 
   // FSM states: 0=IDLE, 1=SORTING, 2=DONE
-  logic [2-1:0] state;
+  logic [1:0] state;
   logic r_done;
   // Sort array stored as flat register
   logic [N * WIDTH-1:0] arr = 0;
   // Iteration counters
-  logic [32-1:0] pass_cnt;
-  logic [32-1:0] idx;
+  logic [31:0] pass_cnt;
+  logic [31:0] idx;
   // Extract elements at idx and idx+1 for comparison
   logic [WIDTH-1:0] elem_a;
   logic [WIDTH-1:0] elem_b;

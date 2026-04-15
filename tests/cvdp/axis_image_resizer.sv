@@ -20,17 +20,17 @@ module axis_image_resizer #(
 );
 
   // Downsampling factors (compile-time constants)
-  logic [16-1:0] X_SCALE;
+  logic [15:0] X_SCALE;
   assign X_SCALE = 16'($unsigned(IMG_WIDTH_IN / IMG_WIDTH_OUT));
-  logic [16-1:0] Y_SCALE;
+  logic [15:0] Y_SCALE;
   assign Y_SCALE = 16'($unsigned(IMG_HEIGHT_IN / IMG_HEIGHT_OUT));
-  logic [16-1:0] WIDTH_IN;
+  logic [15:0] WIDTH_IN;
   assign WIDTH_IN = 16'($unsigned(IMG_WIDTH_IN));
-  logic [16-1:0] HEIGHT_IN;
+  logic [15:0] HEIGHT_IN;
   assign HEIGHT_IN = 16'($unsigned(IMG_HEIGHT_IN));
   // Input pixel counters
-  logic [16-1:0] x_count_in;
-  logic [16-1:0] y_count_in;
+  logic [15:0] x_count_in;
+  logic [15:0] y_count_in;
   // Output buffer
   logic [DATA_WIDTH-1:0] m_axis_tdata_r;
   logic m_axis_tvalid_r;
@@ -43,7 +43,7 @@ module axis_image_resizer #(
   assign out_free = ~m_axis_tvalid_r | m_axis_tready;
   assign handshake = s_axis_tvalid & s_axis_tready;
   assign at_row_end = x_count_in == WIDTH_IN - 1;
-  assign pixel_sel = x_count_in % X_SCALE == 16'($unsigned(0)) & y_count_in % Y_SCALE == 16'($unsigned(0));
+  assign pixel_sel = (x_count_in % X_SCALE == 16'($unsigned(0))) & (y_count_in % Y_SCALE == 16'($unsigned(0)));
   assign s_axis_tready = out_free;
   // Output handshake: downstream consuming current output
   // Accept input when output buffer is free

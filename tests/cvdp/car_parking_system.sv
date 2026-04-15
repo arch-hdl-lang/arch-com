@@ -5,24 +5,24 @@ module car_parking_system #(
   input logic reset,
   input logic vehicle_entry_sensor,
   input logic vehicle_exit_sensor,
-  output logic [4-1:0] available_spaces,
-  output logic [4-1:0] count_car,
+  output logic [3:0] available_spaces,
+  output logic [3:0] count_car,
   output logic led_status,
-  output logic [7-1:0] seven_seg_display_available_tens,
-  output logic [7-1:0] seven_seg_display_available_units,
-  output logic [7-1:0] seven_seg_display_count_tens,
-  output logic [7-1:0] seven_seg_display_count_units
+  output logic [6:0] seven_seg_display_available_tens,
+  output logic [6:0] seven_seg_display_available_units,
+  output logic [6:0] seven_seg_display_count_tens,
+  output logic [6:0] seven_seg_display_count_units
 );
 
-  logic [2-1:0] state;
-  logic [4-1:0] avail_tens_digit;
-  logic [4-1:0] avail_units_digit;
-  logic [4-1:0] count_tens_digit;
-  logic [4-1:0] count_units_digit;
-  logic [7-1:0] seg_avail_tens;
-  logic [7-1:0] seg_avail_units;
-  logic [7-1:0] seg_count_tens;
-  logic [7-1:0] seg_count_units;
+  logic [1:0] state;
+  logic [3:0] avail_tens_digit;
+  logic [3:0] avail_units_digit;
+  logic [3:0] count_tens_digit;
+  logic [3:0] count_units_digit;
+  logic [6:0] seg_avail_tens;
+  logic [6:0] seg_avail_units;
+  logic [6:0] seg_count_tens;
+  logic [6:0] seg_count_units;
   always_comb begin
     if (available_spaces >= 10) begin
       avail_tens_digit = 1;
@@ -30,7 +30,7 @@ module car_parking_system #(
       avail_tens_digit = 0;
     end
   end
-  logic [4-1:0] avail_tens_x10;
+  logic [3:0] avail_tens_x10;
   assign avail_tens_x10 = 4'(avail_tens_digit * 10);
   assign avail_units_digit = 4'(available_spaces - avail_tens_x10);
   always_comb begin
@@ -40,7 +40,7 @@ module car_parking_system #(
       count_tens_digit = 0;
     end
   end
-  logic [4-1:0] count_tens_x10;
+  logic [3:0] count_tens_x10;
   assign count_tens_x10 = 4'(count_tens_digit * 10);
   assign count_units_digit = 4'(count_car - count_tens_x10);
   always_comb begin
@@ -124,13 +124,13 @@ module car_parking_system #(
       state <= 0;
     end else begin
       if (state == 0) begin
-        if (vehicle_entry_sensor & available_spaces > 0) begin
+        if (vehicle_entry_sensor & (available_spaces > 0)) begin
           available_spaces <= 4'(available_spaces - 1);
           count_car <= 4'(count_car + 1);
           state <= 1;
-        end else if (vehicle_entry_sensor & available_spaces == 0) begin
+        end else if (vehicle_entry_sensor & (available_spaces == 0)) begin
           state <= 3;
-        end else if (vehicle_exit_sensor & count_car > 0) begin
+        end else if (vehicle_exit_sensor & (count_car > 0)) begin
           available_spaces <= 4'(available_spaces + 1);
           count_car <= 4'(count_car - 1);
           state <= 2;
@@ -144,7 +144,7 @@ module car_parking_system #(
           state <= 0;
         end
       end else if (state == 3) begin
-        if (vehicle_exit_sensor & count_car > 0) begin
+        if (vehicle_exit_sensor & (count_car > 0)) begin
           available_spaces <= 4'(available_spaces + 1);
           count_car <= 4'(count_car - 1);
           state <= 2;

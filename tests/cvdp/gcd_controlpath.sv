@@ -6,13 +6,13 @@ module gcd_controlpath #(
   input logic go,
   input logic equal,
   input logic greater_than,
-  output logic [2-1:0] controlpath_state,
+  output logic [1:0] controlpath_state,
   output logic done
 );
 
-  logic [2-1:0] state_r = 0;
+  logic [1:0] state_r = 0;
   logic done_r = 1'b0;
-  logic [2-1:0] next_state;
+  logic [1:0] next_state;
   always_comb begin
     if (state_r == 2'd0) begin
       if (go) begin

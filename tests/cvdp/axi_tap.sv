@@ -9,34 +9,34 @@ module axi_tap #(
   output logic inport_awready_o,
   input logic inport_wvalid_i,
   input logic [DATA_WIDTH-1:0] inport_wdata_i,
-  input logic [4-1:0] inport_wstrb_i,
+  input logic [3:0] inport_wstrb_i,
   output logic inport_wready_o,
   input logic inport_bready_i,
   output logic inport_bvalid_o,
-  output logic [2-1:0] inport_bresp_o,
+  output logic [1:0] inport_bresp_o,
   input logic inport_arvalid_i,
   input logic [ADDR_WIDTH-1:0] inport_araddr_i,
   output logic inport_arready_o,
   input logic inport_rready_i,
   output logic inport_rvalid_o,
   output logic [DATA_WIDTH-1:0] inport_rdata_o,
-  output logic [2-1:0] inport_rresp_o,
+  output logic [1:0] inport_rresp_o,
   input logic outport_awready_i,
   output logic outport_awvalid_o,
   output logic [ADDR_WIDTH-1:0] outport_awaddr_o,
   input logic outport_wready_i,
   output logic outport_wvalid_o,
   output logic [DATA_WIDTH-1:0] outport_wdata_o,
-  output logic [4-1:0] outport_wstrb_o,
+  output logic [3:0] outport_wstrb_o,
   input logic outport_bvalid_i,
-  input logic [2-1:0] outport_bresp_i,
+  input logic [1:0] outport_bresp_i,
   output logic outport_bready_o,
   input logic outport_arready_i,
   output logic outport_arvalid_o,
   output logic [ADDR_WIDTH-1:0] outport_araddr_o,
   input logic outport_rvalid_i,
   input logic [DATA_WIDTH-1:0] outport_rdata_i,
-  input logic [2-1:0] outport_rresp_i,
+  input logic [1:0] outport_rresp_i,
   output logic outport_rready_o,
   input logic outport_peripheral0_awready_i,
   output logic outport_peripheral0_awvalid_o,
@@ -44,14 +44,14 @@ module axi_tap #(
   input logic outport_peripheral0_wready_i,
   output logic outport_peripheral0_wvalid_o,
   output logic [DATA_WIDTH-1:0] outport_peripheral0_wdata_o,
-  output logic [4-1:0] outport_peripheral0_wstrb_o,
-  input logic [2-1:0] outport_peripheral0_bresp_i,
+  output logic [3:0] outport_peripheral0_wstrb_o,
+  input logic [1:0] outport_peripheral0_bresp_i,
   input logic outport_peripheral0_bvalid_i,
   output logic outport_peripheral0_bready_o,
   input logic outport_peripheral0_arready_i,
   output logic outport_peripheral0_arvalid_o,
   output logic [ADDR_WIDTH-1:0] outport_peripheral0_araddr_o,
-  input logic [2-1:0] outport_peripheral0_rresp_i,
+  input logic [1:0] outport_peripheral0_rresp_i,
   input logic outport_peripheral0_rvalid_i,
   input logic [DATA_WIDTH-1:0] outport_peripheral0_rdata_i,
   output logic outport_peripheral0_rready_o
@@ -74,27 +74,27 @@ module axi_tap #(
   // Peripheral0 outport - Read Address Channel (AR)
   // Peripheral0 outport - Read Data Channel (R)
   // Read tracking registers
-  logic [4-1:0] read_pending_q;
-  logic [1-1:0] read_port_q;
+  logic [3:0] read_pending_q;
+  logic [0:0] read_port_q;
   // Write tracking registers
-  logic [4-1:0] write_pending_q;
-  logic [1-1:0] write_port_q;
+  logic [3:0] write_pending_q;
+  logic [0:0] write_port_q;
   logic awvalid_q;
   logic wvalid_q;
   // Combinational wires
-  logic [1-1:0] read_port_r;
-  logic [4-1:0] read_pending_r;
-  logic [1-1:0] write_port_r;
-  logic [4-1:0] write_pending_r;
+  logic [0:0] read_port_r;
+  logic [3:0] read_pending_r;
+  logic [0:0] write_port_r;
+  logic [3:0] write_pending_r;
   logic read_accept_w;
   logic write_accept_w;
   logic wr_cmd_accepted_w;
   logic wr_data_accepted_w;
   logic outport_rvalid_r;
   logic [DATA_WIDTH-1:0] outport_rdata_r;
-  logic [2-1:0] outport_rresp_r;
+  logic [1:0] outport_rresp_r;
   logic outport_bvalid_r;
-  logic [2-1:0] outport_bresp_r;
+  logic [1:0] outport_bresp_r;
   logic inport_arready_r;
   logic inport_awready_r;
   logic inport_wready_r;
@@ -136,17 +136,17 @@ module axi_tap #(
   //---------------------------------------------------------------
   // Read accept
   //---------------------------------------------------------------
-  assign read_accept_w = read_port_q == read_port_r & read_pending_q != 4'd15 | read_pending_q == 0;
+  assign read_accept_w = ((read_port_q == read_port_r) & (read_pending_q != 4'd15)) | (read_pending_q == 0);
   //---------------------------------------------------------------
   // Read channel: outport default
   //---------------------------------------------------------------
-  assign outport_arvalid_o = inport_arvalid_i & read_accept_w & read_port_r == 0;
+  assign outport_arvalid_o = inport_arvalid_i & read_accept_w & (read_port_r == 0);
   assign outport_araddr_o = inport_araddr_i;
   assign outport_rready_o = inport_rready_i;
   //---------------------------------------------------------------
   // Read channel: peripheral0
   //---------------------------------------------------------------
-  assign outport_peripheral0_arvalid_o = inport_arvalid_i & read_accept_w & read_port_r == 1;
+  assign outport_peripheral0_arvalid_o = inport_arvalid_i & read_accept_w & (read_port_r == 1);
   assign outport_peripheral0_araddr_o = inport_araddr_i;
   assign outport_peripheral0_rready_o = inport_rready_i;
   //---------------------------------------------------------------
@@ -180,8 +180,8 @@ module axi_tap #(
   //---------------------------------------------------------------
   // Write command/data tracking
   //---------------------------------------------------------------
-  assign wr_cmd_accepted_w = inport_awvalid_i & inport_awready_o | awvalid_q;
-  assign wr_data_accepted_w = inport_wvalid_i & inport_wready_o | wvalid_q;
+  assign wr_cmd_accepted_w = (inport_awvalid_i & inport_awready_o) | awvalid_q;
+  assign wr_data_accepted_w = (inport_wvalid_i & inport_wready_o) | wvalid_q;
   always_ff @(posedge clk_i) begin
     if (rst_i) begin
       awvalid_q <= 1'b0;
@@ -242,22 +242,22 @@ module axi_tap #(
   //---------------------------------------------------------------
   // Write accept
   //---------------------------------------------------------------
-  assign write_accept_w = write_port_q == write_port_r & write_pending_q != 4'd15 | write_pending_q == 0;
+  assign write_accept_w = ((write_port_q == write_port_r) & (write_pending_q != 4'd15)) | (write_pending_q == 0);
   //---------------------------------------------------------------
   // Write channel: outport default
   //---------------------------------------------------------------
-  assign outport_awvalid_o = inport_awvalid_i & ~awvalid_q & write_accept_w & write_port_r == 0;
+  assign outport_awvalid_o = inport_awvalid_i & ~awvalid_q & write_accept_w & (write_port_r == 0);
   assign outport_awaddr_o = inport_awaddr_i;
-  assign outport_wvalid_o = inport_wvalid_i & ~wvalid_q & (inport_awvalid_i | awvalid_q) & write_port_r == 0;
+  assign outport_wvalid_o = inport_wvalid_i & ~wvalid_q & (inport_awvalid_i | awvalid_q) & (write_port_r == 0);
   assign outport_wdata_o = inport_wdata_i;
   assign outport_wstrb_o = inport_wstrb_i;
   assign outport_bready_o = inport_bready_i;
   //---------------------------------------------------------------
   // Write channel: peripheral0
   //---------------------------------------------------------------
-  assign outport_peripheral0_awvalid_o = inport_awvalid_i & ~awvalid_q & write_accept_w & write_port_r == 1;
+  assign outport_peripheral0_awvalid_o = inport_awvalid_i & ~awvalid_q & write_accept_w & (write_port_r == 1);
   assign outport_peripheral0_awaddr_o = inport_awaddr_i;
-  assign outport_peripheral0_wvalid_o = inport_wvalid_i & ~wvalid_q & (inport_awvalid_i & write_accept_w | awvalid_q) & write_port_r == 1;
+  assign outport_peripheral0_wvalid_o = inport_wvalid_i & ~wvalid_q & ((inport_awvalid_i & write_accept_w) | awvalid_q) & (write_port_r == 1);
   assign outport_peripheral0_wdata_o = inport_wdata_i;
   assign outport_peripheral0_wstrb_o = inport_wstrb_i;
   assign outport_peripheral0_bready_o = inport_bready_i;

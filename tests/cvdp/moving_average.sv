@@ -1,12 +1,12 @@
 module moving_average (
   input logic clk,
   input logic reset,
-  input logic [12-1:0] data_in,
-  output logic [12-1:0] data_out
+  input logic [11:0] data_in,
+  output logic [11:0] data_out
 );
 
-  logic [12-1:0] mem [8-1:0];
-  logic [15-1:0] sum_reg = 0;
+  logic [7:0] [11:0] mem = 0;
+  logic [14:0] sum_reg = 0;
   always_ff @(posedge clk) begin
     if (reset) begin
       for (int __ri0 = 0; __ri0 < 8; __ri0++) begin
@@ -14,7 +14,7 @@ module moving_average (
       end
       sum_reg <= 0;
     end else begin
-      sum_reg <= 15'(sum_reg - 15'($unsigned(mem[7])) + 15'($unsigned(data_in)));
+      sum_reg <= 15'((sum_reg - 15'($unsigned(mem[7]))) + 15'($unsigned(data_in)));
       for (int i = 1; i <= 7; i++) begin
         mem[i] <= mem[i - 1];
       end

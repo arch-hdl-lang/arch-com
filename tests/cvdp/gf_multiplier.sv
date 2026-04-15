@@ -1,24 +1,24 @@
 module gf_multiplier (
-  input logic [4-1:0] A,
-  input logic [4-1:0] B,
-  output logic [4-1:0] result
+  input logic [3:0] A,
+  input logic [3:0] B,
+  output logic [3:0] result
 );
 
   // Unrolled GF(2^4) multiplication with irreducible polynomial x^4+x+1
   // Step 0: start with A, check B[0]
-  logic [4-1:0] p0;
-  logic [5-1:0] a1;
-  logic [5-1:0] a1r;
+  logic [3:0] p0;
+  logic [4:0] a1;
+  logic [4:0] a1r;
   // Step 1: check B[1]
-  logic [4-1:0] p1;
-  logic [5-1:0] a2;
-  logic [5-1:0] a2r;
+  logic [3:0] p1;
+  logic [4:0] a2;
+  logic [4:0] a2r;
   // Step 2: check B[2]
-  logic [4-1:0] p2;
-  logic [5-1:0] a3;
-  logic [5-1:0] a3r;
+  logic [3:0] p2;
+  logic [4:0] a3;
+  logic [4:0] a3r;
   // Step 3: check B[3]
-  logic [4-1:0] p3;
+  logic [3:0] p3;
   always_comb begin
     // Step 0: if B[0], XOR A into partial product
     if (B[0] == 1'd1) begin

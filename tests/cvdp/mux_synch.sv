@@ -24,12 +24,12 @@ module nff (
 endmodule
 
 module mux_synch (
-  input logic [8-1:0] data_in,
+  input logic [7:0] data_in,
   input logic req,
   input logic dst_clk,
   input logic src_clk,
   input logic nrst,
-  output logic [8-1:0] data_out
+  output logic [7:0] data_out
 );
 
   // Synchronize req to dst_clk domain using 2-flop synchronizer
@@ -41,7 +41,7 @@ module mux_synch (
     .syncd(req_syncd)
   );
   // Mux: select data_in when req_syncd is high, else feed back data_out
-  logic [8-1:0] mux_out;
+  logic [7:0] mux_out;
   always_comb begin
     if (req_syncd) begin
       mux_out = data_in;

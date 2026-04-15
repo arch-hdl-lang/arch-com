@@ -1,33 +1,75 @@
+module memory_block (
+  input logic axi_clk,
+  input logic ctrld_clk,
+  input logic reset_in,
+  input logic we,
+  input logic [3:0] write_address,
+  input logic [31:0] write_data,
+  input logic [3:0] address_a,
+  input logic [3:0] address_b,
+  input logic [3:0] address_c,
+  output logic [31:0] data_a,
+  output logic [31:0] data_b,
+  output logic [31:0] data_c,
+  output logic [31:0] result_address
+);
+
+  logic [15:0] [31:0] mem;
+  logic [31:0] result_address_r;
+  // Synchronous write on axi_clk
+  always_ff @(posedge axi_clk) begin
+    if (reset_in) begin
+      for (int __ri0 = 0; __ri0 < 16; __ri0++) begin
+        mem[__ri0] <= 0;
+      end
+      result_address_r <= 0;
+    end else begin
+      if (we) begin
+        mem[write_address] <= write_data;
+        if (write_address == 0) begin
+          result_address_r <= write_data;
+        end
+      end
+    end
+  end
+  // Asynchronous read (combinational)
+  assign data_a = mem[address_a];
+  assign data_b = mem[address_b];
+  assign data_c = mem[address_c];
+  assign result_address = result_address_r;
+
+endmodule
+
 module axi_alu (
   input logic axi_clk_in,
   input logic fast_clk_in,
   input logic reset_in,
-  input logic [32-1:0] axi_awaddr_i,
-  input logic [8-1:0] axi_awlen_i,
-  input logic [3-1:0] axi_awsize_i,
-  input logic [2-1:0] axi_awburst_i,
+  input logic [31:0] axi_awaddr_i,
+  input logic [7:0] axi_awlen_i,
+  input logic [2:0] axi_awsize_i,
+  input logic [1:0] axi_awburst_i,
   input logic axi_awvalid_i,
   output logic axi_awready_o,
-  input logic [32-1:0] axi_wdata_i,
-  input logic [4-1:0] axi_wstrb_i,
+  input logic [31:0] axi_wdata_i,
+  input logic [3:0] axi_wstrb_i,
   input logic axi_wlast_i,
   input logic axi_wvalid_i,
   output logic axi_wready_o,
   output logic axi_bvalid_o,
-  output logic [2-1:0] axi_bresp_o,
+  output logic [1:0] axi_bresp_o,
   input logic axi_bready_i,
-  input logic [32-1:0] axi_araddr_i,
-  input logic [8-1:0] axi_arlen_i,
-  input logic [3-1:0] axi_arsize_i,
-  input logic [2-1:0] axi_arburst_i,
+  input logic [31:0] axi_araddr_i,
+  input logic [7:0] axi_arlen_i,
+  input logic [2:0] axi_arsize_i,
+  input logic [1:0] axi_arburst_i,
   input logic axi_arvalid_i,
   output logic axi_arready_o,
-  output logic [32-1:0] axi_rdata_o,
+  output logic [31:0] axi_rdata_o,
   output logic axi_rvalid_o,
-  output logic [2-1:0] axi_rresp_o,
+  output logic [1:0] axi_rresp_o,
   output logic axi_rlast_o,
   input logic axi_rready_i,
-  output logic [64-1:0] result_o
+  output logic [63:0] result_o
 );
 
   // AXI Write Address Channel
@@ -37,71 +79,71 @@ module axi_alu (
   // AXI Read Data Channel
   // DSP result output
   // CSR registers
-  logic [32-1:0] operand_a_addr;
-  logic [32-1:0] operand_b_addr;
-  logic [32-1:0] operand_c_addr;
-  logic [2-1:0] op_select_reg;
+  logic [31:0] operand_a_addr;
+  logic [31:0] operand_b_addr;
+  logic [31:0] operand_c_addr;
+  logic [1:0] op_select_reg;
   logic start_reg;
   logic clock_control;
   // AXI Write state
-  logic [32-1:0] aw_addr;
-  logic [8-1:0] aw_len;
-  logic [3-1:0] aw_size;
-  logic [2-1:0] aw_burst;
+  logic [31:0] aw_addr;
+  logic [7:0] aw_len;
+  logic [2:0] aw_size;
+  logic [1:0] aw_burst;
   logic awready_r;
   logic wready_r;
   logic bvalid_r;
-  logic [8-1:0] wr_beat_cnt;
+  logic [7:0] wr_beat_cnt;
   logic wr_active;
   // AXI Read state
-  logic [32-1:0] ar_addr;
-  logic [8-1:0] ar_len;
-  logic [3-1:0] ar_size;
-  logic [2-1:0] ar_burst;
+  logic [31:0] ar_addr;
+  logic [7:0] ar_len;
+  logic [2:0] ar_size;
+  logic [1:0] ar_burst;
   logic arready_r;
   logic rvalid_r;
-  logic [32-1:0] rdata_r;
+  logic [31:0] rdata_r;
   logic rlast_r;
-  logic [8-1:0] rd_beat_cnt;
+  logic [7:0] rd_beat_cnt;
   logic rd_active;
   // Memory interface signals
   logic mem_we;
-  logic [4-1:0] mem_waddr;
-  logic [32-1:0] mem_wdata;
+  logic [3:0] mem_waddr;
+  logic [31:0] mem_wdata;
   // CDC synchronizers (double-flop for CSR -> DSP domain)
-  logic [32-1:0] cdc_op_a_addr_s1;
-  logic [32-1:0] cdc_op_a_addr_s2;
-  logic [32-1:0] cdc_op_b_addr_s1;
-  logic [32-1:0] cdc_op_b_addr_s2;
-  logic [32-1:0] cdc_op_c_addr_s1;
-  logic [32-1:0] cdc_op_c_addr_s2;
-  logic [2-1:0] cdc_op_sel_s1;
-  logic [2-1:0] cdc_op_sel_s2;
+  logic [31:0] cdc_op_a_addr_s1;
+  logic [31:0] cdc_op_a_addr_s2;
+  logic [31:0] cdc_op_b_addr_s1;
+  logic [31:0] cdc_op_b_addr_s2;
+  logic [31:0] cdc_op_c_addr_s1;
+  logic [31:0] cdc_op_c_addr_s2;
+  logic [1:0] cdc_op_sel_s1;
+  logic [1:0] cdc_op_sel_s2;
   logic cdc_start_s1;
   logic cdc_start_s2;
   // CDC synchronizers (DSP result -> AXI domain)
-  logic [64-1:0] cdc_result_s1;
-  logic [64-1:0] cdc_result_s2;
+  logic [63:0] cdc_result_s1;
+  logic [63:0] cdc_result_s2;
   // DSP block registers (fast_clk domain)
-  logic [64-1:0] dsp_result_r;
+  logic [63:0] dsp_result_r;
   // Memory block output wires
-  logic [32-1:0] mem_data_a;
-  logic [32-1:0] mem_data_b;
-  logic [32-1:0] mem_data_c;
-  logic [32-1:0] mem_result_addr;
+  logic [31:0] mem_data_a;
+  logic [31:0] mem_data_b;
+  logic [31:0] mem_data_c;
+  logic [31:0] mem_result_addr;
   // Wires for address calculations
-  logic [32-1:0] wr_addr_word;
-  logic [32-1:0] rd_addr_word;
-  logic [32-1:0] wr_addr_next;
-  logic [32-1:0] rd_addr_next;
+  logic [31:0] wr_addr_word;
+  logic [31:0] rd_addr_word;
+  logic [31:0] wr_addr_next;
+  logic [31:0] rd_addr_next;
   // DSP input wires (after CDC mux)
-  logic [4-1:0] dsp_op_a_addr;
-  logic [4-1:0] dsp_op_b_addr;
-  logic [4-1:0] dsp_op_c_addr;
-  logic [2-1:0] dsp_op_sel;
+  logic [3:0] dsp_op_a_addr;
+  logic [3:0] dsp_op_b_addr;
+  logic [3:0] dsp_op_c_addr;
+  logic [1:0] dsp_op_sel;
   logic dsp_start;
   // DSP result wire
-  logic [64-1:0] dsp_result_val;
+  logic [63:0] dsp_result_val;
   // Write in-memory-range flag
   logic wr_in_mem;
   // Combinational logic
@@ -203,7 +245,7 @@ module axi_alu (
         if (aw_burst == 1) begin
           aw_addr <= wr_addr_next;
         end
-        if (axi_wlast_i | wr_beat_cnt == aw_len) begin
+        if (axi_wlast_i | (wr_beat_cnt == aw_len)) begin
           wready_r <= 1'b0;
           bvalid_r <= 1'b1;
           wr_active <= 1'b0;

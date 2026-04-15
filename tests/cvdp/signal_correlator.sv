@@ -1,14 +1,14 @@
 module signal_correlator (
   input logic clk,
   input logic reset,
-  input logic [8-1:0] input_signal,
-  input logic [8-1:0] reference_signal,
-  output logic [4-1:0] correlation_output
+  input logic [7:0] input_signal,
+  input logic [7:0] reference_signal,
+  output logic [3:0] correlation_output
 );
 
-  logic [4-1:0] corr_r;
+  logic [3:0] corr_r;
   // Each matching 1-bit AND pair adds 2; clamp at 15
-  logic [5-1:0] match_sum;
+  logic [4:0] match_sum;
   always_comb begin
     match_sum = 0;
     for (int i = 0; i <= 7; i++) begin

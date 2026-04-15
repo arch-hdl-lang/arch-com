@@ -6,22 +6,22 @@
 // delete_head: dequeue oldest task — 2-cycle latency, resp_valid + resp_data
 module hw_task_queue #(
   parameter int  DEPTH = 8,
-  parameter type DATA  = logic [32-1:0]
+  parameter type DATA  = logic [31:0]
 ) (
   input  logic clk,
   input  logic rst,
   input  logic insert_tail_req_valid,
   output logic insert_tail_req_ready,
-  input  logic [32-1:0] insert_tail_req_data,
+  input  logic [31:0] insert_tail_req_data,
   output logic insert_tail_resp_valid,
-  output logic [3-1:0] insert_tail_resp_handle,
+  output logic [2:0] insert_tail_resp_handle,
   input  logic delete_head_req_valid,
   output logic delete_head_req_ready,
   output logic delete_head_resp_valid,
-  output logic [32-1:0] delete_head_resp_data,
+  output logic [31:0] delete_head_resp_data,
   output logic empty,
   output logic full,
-  output logic [4-1:0] length
+  output logic [3:0] length
 );
 
   localparam int HANDLE_W = $clog2(DEPTH);
@@ -44,13 +44,13 @@ module hw_task_queue #(
   // insert_tail controller registers
   logic _ctrl_insert_tail_busy;
   logic _ctrl_insert_tail_resp_v;
-  logic [3-1:0] _ctrl_insert_tail_resp_handle;
+  logic [2:0] _ctrl_insert_tail_resp_handle;
   logic _ctrl_insert_tail_was_empty;
   
   // delete_head controller registers
   logic _ctrl_delete_head_busy;
   logic _ctrl_delete_head_resp_v;
-  logic [32-1:0] _ctrl_delete_head_resp_data;
+  logic [31:0] _ctrl_delete_head_resp_data;
   logic [HANDLE_W-1:0] _ctrl_delete_head_slot;
   
   // Status outputs

@@ -4,7 +4,7 @@ module generic_counter #(
   input logic clk_in,
   input logic rst_in,
   input logic enable_in,
-  input logic [3-1:0] mode_in,
+  input logic [2:0] mode_in,
   input logic [N-1:0] ref_modulo,
   output logic [N-1:0] o_count
 );

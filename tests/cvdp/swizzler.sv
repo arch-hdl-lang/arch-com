@@ -8,7 +8,7 @@ module swizzler #(
   input logic [N-1:0] data_in,
   input logic [N * M-1:0] mapping_in,
   input logic config_in,
-  input logic [3-1:0] operation_mode,
+  input logic [2:0] operation_mode,
   output logic [N-1:0] data_out,
   output logic error_flag
 );
@@ -43,7 +43,7 @@ module swizzler #(
       processed_swizzle_data = temp_swizzled_data;
     end else begin
       for (int i = 0; i <= N - 1; i++) begin
-        processed_swizzle_data[i] = temp_swizzled_data[N - 1 - i];
+        processed_swizzle_data[i] = temp_swizzled_data[(N - 1) - i];
       end
     end
   end
@@ -67,7 +67,7 @@ module swizzler #(
       // Reverse bits
       op_result = 0;
       for (int i = 0; i <= N - 1; i++) begin
-        op_result[i] = swizzle_reg[N - 1 - i];
+        op_result[i] = swizzle_reg[(N - 1) - i];
       end
     end else if (operation_mode == 3'd3) begin
       // Swap halves
@@ -100,7 +100,7 @@ module swizzler #(
       error_flag <= 0;
     end else begin
       for (int i = 0; i <= N - 1; i++) begin
-        data_out[i] <= operation_reg[N - 1 - i];
+        data_out[i] <= operation_reg[(N - 1) - i];
       end
       error_flag <= error_reg;
     end

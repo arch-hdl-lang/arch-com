@@ -1,7 +1,7 @@
 module thermostat (
   input logic i_clk,
   input logic i_rst,
-  input logic [6-1:0] i_temp_feedback,
+  input logic [5:0] i_temp_feedback,
   input logic i_fan_on,
   input logic i_enable,
   input logic i_fault,
@@ -13,11 +13,11 @@ module thermostat (
   output logic o_aircon_medium,
   output logic o_aircon_low,
   output logic o_fan,
-  output logic [3-1:0] o_state
+  output logic [2:0] o_state
 );
 
   logic fault_latch;
-  logic [3-1:0] next_state;
+  logic [2:0] next_state;
   logic any_active;
   always_comb begin
     if (i_temp_feedback[5]) begin

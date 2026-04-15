@@ -4,10 +4,10 @@
 module pipelined_adder_32bit (
   input logic clk,
   input logic reset,
-  input logic [32-1:0] A,
-  input logic [32-1:0] B,
+  input logic [31:0] A,
+  input logic [31:0] B,
   input logic start,
-  output logic [32-1:0] S,
+  output logic [31:0] S,
   output logic Co,
   output logic done
 );
@@ -19,36 +19,36 @@ module pipelined_adder_32bit (
   logic add3_valid_r;
   
   // ── Stage data registers ──
-  logic [8-1:0] add0_s0 = 0;
+  logic [7:0] add0_s0 = 0;
   logic add0_c0 = 1'b0;
-  logic [8-1:0] add0_a1 = 0;
-  logic [8-1:0] add0_b1 = 0;
-  logic [8-1:0] add0_a2 = 0;
-  logic [8-1:0] add0_b2 = 0;
-  logic [8-1:0] add0_a3 = 0;
-  logic [8-1:0] add0_b3 = 0;
-  logic [9-1:0] add0_sum0;
-  logic [8-1:0] add1_s1 = 0;
+  logic [7:0] add0_a1 = 0;
+  logic [7:0] add0_b1 = 0;
+  logic [7:0] add0_a2 = 0;
+  logic [7:0] add0_b2 = 0;
+  logic [7:0] add0_a3 = 0;
+  logic [7:0] add0_b3 = 0;
+  logic [8:0] add0_sum0;
+  logic [7:0] add1_s1 = 0;
   logic add1_c1 = 1'b0;
-  logic [8-1:0] add1_s0_d = 0;
-  logic [8-1:0] add1_a2_d = 0;
-  logic [8-1:0] add1_b2_d = 0;
-  logic [8-1:0] add1_a3_d = 0;
-  logic [8-1:0] add1_b3_d = 0;
-  logic [9-1:0] add1_sum1;
-  logic [8-1:0] add2_s2 = 0;
+  logic [7:0] add1_s0_d = 0;
+  logic [7:0] add1_a2_d = 0;
+  logic [7:0] add1_b2_d = 0;
+  logic [7:0] add1_a3_d = 0;
+  logic [7:0] add1_b3_d = 0;
+  logic [8:0] add1_sum1;
+  logic [7:0] add2_s2 = 0;
   logic add2_c2 = 1'b0;
-  logic [8-1:0] add2_s0_dd = 0;
-  logic [8-1:0] add2_s1_d = 0;
-  logic [8-1:0] add2_a3_dd = 0;
-  logic [8-1:0] add2_b3_dd = 0;
-  logic [9-1:0] add2_sum2;
-  logic [8-1:0] add3_s3 = 0;
+  logic [7:0] add2_s0_dd = 0;
+  logic [7:0] add2_s1_d = 0;
+  logic [7:0] add2_a3_dd = 0;
+  logic [7:0] add2_b3_dd = 0;
+  logic [8:0] add2_sum2;
+  logic [7:0] add3_s3 = 0;
   logic add3_c3 = 1'b0;
-  logic [8-1:0] add3_s0_ddd = 0;
-  logic [8-1:0] add3_s1_dd = 0;
-  logic [8-1:0] add3_s2_d = 0;
-  logic [9-1:0] add3_sum3;
+  logic [7:0] add3_s0_ddd = 0;
+  logic [7:0] add3_s1_dd = 0;
+  logic [7:0] add3_s2_d = 0;
+  logic [8:0] add3_sum3;
   
   // ── Stage register updates ──
   always_ff @(posedge clk) begin

@@ -1,8 +1,8 @@
 // Simple floor number to 7-segment display decoder
 // Maps floor number 0-9 to 7-segment patterns
 module floor_to_seven_segment (
-  input logic [4-1:0] floor_in,
-  output logic [7-1:0] seven_seg
+  input logic [3:0] floor_in,
+  output logic [6:0] seven_seg
 );
 
   always_comb begin

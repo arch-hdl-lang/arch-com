@@ -2,24 +2,24 @@ module radix2_div (
   input logic clk,
   input logic rst_n,
   input logic start,
-  input logic [8-1:0] dividend,
-  input logic [8-1:0] divisor,
-  output logic [8-1:0] quotient,
-  output logic [8-1:0] remainder,
+  input logic [7:0] dividend,
+  input logic [7:0] divisor,
+  output logic [7:0] quotient,
+  output logic [7:0] remainder,
   output logic done
 );
 
-  logic [8-1:0] dvd;
-  logic [8-1:0] dvs;
-  logic [8-1:0] quot;
-  logic [8-1:0] acc;
-  logic [4-1:0] count;
+  logic [7:0] dvd;
+  logic [7:0] dvs;
+  logic [7:0] quot;
+  logic [7:0] acc;
+  logic [3:0] count;
   logic active;
   logic done_r;
   // trial: shift acc left 1, bring in MSB of dvd
-  logic [9-1:0] trial;
+  logic [8:0] trial;
   assign trial = {acc, dvd[7:7]};
-  logic [9-1:0] sub_result;
+  logic [8:0] sub_result;
   assign sub_result = 9'(trial - 9'($unsigned(dvs)));
   logic fits;
   assign fits = ~sub_result[8:8];

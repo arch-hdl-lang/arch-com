@@ -6,7 +6,7 @@ module convolutional_encoder (
   output logic encoded_bit2
 );
 
-  logic [2-1:0] sr;
+  logic [1:0] sr;
   always_ff @(posedge clk) begin
     if (rst) begin
       encoded_bit1 <= 0;

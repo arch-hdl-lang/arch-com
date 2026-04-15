@@ -1,15 +1,15 @@
 module tx_block (
   input logic clk,
   input logic reset_n,
-  input logic [64-1:0] data_in,
-  input logic [3-1:0] sel,
+  input logic [63:0] data_in,
+  input logic [2:0] sel,
   output logic serial_out,
   output logic done,
   output logic serial_clk
 );
 
-  logic [64-1:0] shift_reg;
-  logic [7-1:0] bit_cnt;
+  logic [63:0] shift_reg;
+  logic [6:0] bit_cnt;
   logic active;
   logic done_r;
   assign serial_clk = active;

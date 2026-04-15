@@ -7,8 +7,8 @@ module cvdp_copilot_bus_arbiter (
   output logic grant2 = 1'b0
 );
 
-  logic [3-1:0] state_r = 0;
-  logic [3-1:0] next_state;
+  logic [2:0] state_r = 0;
+  logic [2:0] next_state;
   always_comb begin
     if (state_r == 0) begin
       // IDLE

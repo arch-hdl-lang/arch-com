@@ -2,53 +2,53 @@ module packet_controller (
   input logic clk,
   input logic rst,
   input logic rx_valid_i,
-  input logic [8-1:0] rx_data_8_i,
+  input logic [7:0] rx_data_8_i,
   input logic tx_done_tick_i,
   output logic tx_start_o,
-  output logic [8-1:0] tx_data_8_o
+  output logic [7:0] tx_data_8_o
 );
 
-  logic [8-1:0] buf0;
-  logic [8-1:0] buf1;
-  logic [8-1:0] buf2;
-  logic [8-1:0] buf3;
-  logic [8-1:0] buf4;
-  logic [8-1:0] buf5;
-  logic [8-1:0] buf6;
-  logic [8-1:0] buf7;
-  logic [4-1:0] byte_cnt;
-  logic [8-1:0] resp0;
-  logic [8-1:0] resp1;
-  logic [8-1:0] resp2;
-  logic [8-1:0] resp3;
-  logic [8-1:0] resp4;
-  logic [3-1:0] tx_idx;
-  logic [3-1:0] st;
-  logic [3-1:0] ST_IDLE;
+  logic [7:0] buf0;
+  logic [7:0] buf1;
+  logic [7:0] buf2;
+  logic [7:0] buf3;
+  logic [7:0] buf4;
+  logic [7:0] buf5;
+  logic [7:0] buf6;
+  logic [7:0] buf7;
+  logic [3:0] byte_cnt;
+  logic [7:0] resp0;
+  logic [7:0] resp1;
+  logic [7:0] resp2;
+  logic [7:0] resp3;
+  logic [7:0] resp4;
+  logic [2:0] tx_idx;
+  logic [2:0] st;
+  logic [2:0] ST_IDLE;
   assign ST_IDLE = 3'd0;
-  logic [3-1:0] ST_GOT_8;
+  logic [2:0] ST_GOT_8;
   assign ST_GOT_8 = 3'd1;
-  logic [3-1:0] ST_BUILD;
+  logic [2:0] ST_BUILD;
   assign ST_BUILD = 3'd2;
-  logic [3-1:0] ST_SEND;
+  logic [2:0] ST_SEND;
   assign ST_SEND = 3'd3;
-  logic [8-1:0] cksum;
+  logic [7:0] cksum;
   assign cksum = 8'(buf0 + buf1 + buf2 + buf3 + buf4 + buf5 + buf6 + buf7);
   logic header_ok;
-  assign header_ok = buf0 == 8'd186 & buf1 == 8'd205;
+  assign header_ok = (buf0 == 8'd186) & (buf1 == 8'd205);
   logic cksum_ok;
   assign cksum_ok = cksum == 8'd0;
-  logic [16-1:0] num1_val;
+  logic [15:0] num1_val;
   assign num1_val = {buf2, buf3};
-  logic [16-1:0] num2_val;
+  logic [15:0] num2_val;
   assign num2_val = {buf4, buf5};
-  logic [8-1:0] opcode_val;
+  logic [7:0] opcode_val;
   assign opcode_val = buf6;
-  logic [16-1:0] result_add;
+  logic [15:0] result_add;
   assign result_add = 16'(num1_val + num2_val);
-  logic [16-1:0] result_sub;
+  logic [15:0] result_sub;
   assign result_sub = 16'(num1_val - num2_val);
-  logic [16-1:0] result_val;
+  logic [15:0] result_val;
   always_comb begin
     if (opcode_val == 8'd0) begin
       result_val = result_add;
@@ -58,9 +58,9 @@ module packet_controller (
       result_val = 16'd0;
     end
   end
-  logic [8-1:0] partial_sum;
+  logic [7:0] partial_sum;
   assign partial_sum = 8'(8'd171 + 8'd205 + result_val[15:8] + result_val[7:0]);
-  logic [8-1:0] resp_cksum;
+  logic [7:0] resp_cksum;
   assign resp_cksum = 8'(8'd0 - partial_sum);
   always_ff @(posedge clk or posedge rst) begin
     if (rst) begin

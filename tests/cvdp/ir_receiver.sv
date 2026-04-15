@@ -2,14 +2,14 @@ module ir_receiver (
   input logic clk_in,
   input logic reset_in,
   input logic ir_signal_in,
-  output logic [12-1:0] ir_frame_out,
+  output logic [11:0] ir_frame_out,
   output logic ir_frame_valid
 );
 
-  logic [3-1:0] present_state;
-  logic [16-1:0] cycle_cnt;
-  logic [4-1:0] bit_cnt;
-  logic [12-1:0] ir_frame_reg;
+  logic [2:0] present_state;
+  logic [15:0] cycle_cnt;
+  logic [3:0] bit_cnt;
+  logic [11:0] ir_frame_reg;
   always_ff @(posedge clk_in or posedge reset_in) begin
     if (reset_in) begin
       bit_cnt <= 0;
@@ -32,7 +32,7 @@ module ir_receiver (
         ir_frame_valid <= 1'b0;
         if (ir_signal_in) begin
           cycle_cnt <= 16'(cycle_cnt + 1);
-        end else if (cycle_cnt >= 1800 & cycle_cnt < 3001) begin
+        end else if ((cycle_cnt >= 1800) & (cycle_cnt < 3001)) begin
           cycle_cnt <= 0;
           present_state <= 2;
         end else begin
@@ -43,7 +43,7 @@ module ir_receiver (
         // DECODE_LOW: count LOW pulse (~600 cycles at 1MHz = 0.6ms)
         ir_frame_valid <= 1'b0;
         if (ir_signal_in) begin
-          if (cycle_cnt >= 300 & cycle_cnt < 901) begin
+          if ((cycle_cnt >= 300) & (cycle_cnt < 901)) begin
             cycle_cnt <= 0;
             present_state <= 3;
           end else begin
@@ -58,7 +58,7 @@ module ir_receiver (
         ir_frame_valid <= 1'b0;
         if (ir_signal_in) begin
           cycle_cnt <= 16'(cycle_cnt + 1);
-        end else if (cycle_cnt >= 901 & cycle_cnt < 1501) begin
+        end else if ((cycle_cnt >= 901) & (cycle_cnt < 1501)) begin
           // bit is 1
           ir_frame_reg <= ir_frame_reg | 12'($unsigned(1)) << bit_cnt;
           bit_cnt <= 4'(bit_cnt + 1);
@@ -68,7 +68,7 @@ module ir_receiver (
           end else begin
             present_state <= 2;
           end
-        end else if (cycle_cnt >= 300 & cycle_cnt < 901) begin
+        end else if ((cycle_cnt >= 300) & (cycle_cnt < 901)) begin
           // bit is 0
           bit_cnt <= 4'(bit_cnt + 1);
           cycle_cnt <= 0;

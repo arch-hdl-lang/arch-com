@@ -1,21 +1,21 @@
 module Binary2BCD (
-  input logic [8-1:0] num,
-  output logic [4-1:0] thousand,
-  output logic [4-1:0] hundred,
-  output logic [4-1:0] ten,
-  output logic [4-1:0] one
+  input logic [7:0] num,
+  output logic [3:0] thousand,
+  output logic [3:0] hundred,
+  output logic [3:0] ten,
+  output logic [3:0] one
 );
 
   // Double-dabble: 20-bit shift register [19:16]=thousand [15:12]=hundred [11:8]=ten [7:0]=input
-  logic [20-1:0] sh0;
-  logic [20-1:0] sh1;
-  logic [20-1:0] sh2;
-  logic [20-1:0] sh3;
-  logic [20-1:0] sh4;
-  logic [20-1:0] sh5;
-  logic [20-1:0] sh6;
-  logic [20-1:0] sh7;
-  logic [20-1:0] sh8;
+  logic [19:0] sh0;
+  logic [19:0] sh1;
+  logic [19:0] sh2;
+  logic [19:0] sh3;
+  logic [19:0] sh4;
+  logic [19:0] sh5;
+  logic [19:0] sh6;
+  logic [19:0] sh7;
+  logic [19:0] sh8;
   always_comb begin
     sh0 = 20'($unsigned(num));
     // Iteration 1: just shift (no BCD digits populated yet)

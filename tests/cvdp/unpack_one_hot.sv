@@ -1,9 +1,9 @@
 module unpack_one_hot (
   input logic sign,
   input logic size,
-  input logic [3-1:0] one_hot_selector,
-  input logic [256-1:0] source_reg,
-  output logic [512-1:0] destination_reg
+  input logic [2:0] one_hot_selector,
+  input logic [255:0] source_reg,
+  output logic [511:0] destination_reg
 );
 
   always_comb begin

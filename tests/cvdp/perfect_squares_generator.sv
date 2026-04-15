@@ -1,15 +1,15 @@
 module perfect_squares_generator (
   input logic clk,
   input logic reset,
-  output logic [32-1:0] sqr_o
+  output logic [31:0] sqr_o
 );
 
   // Incremental: (n+1)^2 = n^2 + 2n + 1 = sqr + odd, odd += 2
   // Start: sqr=1, odd=3 → 4, 9, 16, ...
-  logic [33-1:0] odd_num;
+  logic [32:0] odd_num;
   logic saturated;
   // UInt<32> + UInt<33> → UInt<34>, need trunc
-  logic [34-1:0] next_sqr;
+  logic [33:0] next_sqr;
   assign next_sqr = sqr_o + odd_num;
   always_ff @(posedge clk or posedge reset) begin
     if (reset) begin

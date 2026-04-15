@@ -2,24 +2,24 @@
 module fir_filter (
   input logic clk,
   input logic reset,
-  input logic signed [16-1:0] input_sample,
-  output logic signed [16-1:0] output_sample,
-  input logic signed [16-1:0] coeff0,
-  input logic signed [16-1:0] coeff1,
-  input logic signed [16-1:0] coeff2,
-  input logic signed [16-1:0] coeff3
+  input logic signed [15:0] input_sample,
+  output logic signed [15:0] output_sample,
+  input logic signed [15:0] coeff0,
+  input logic signed [15:0] coeff1,
+  input logic signed [15:0] coeff2,
+  input logic signed [15:0] coeff3
 );
 
-  logic signed [16-1:0] sample_delay1;
-  logic signed [16-1:0] sample_delay2;
-  logic signed [16-1:0] sample_delay3;
-  logic signed [32-1:0] accumulator;
-  logic signed [16-1:0] out_reg;
-  logic signed [32-1:0] prod0;
-  logic signed [32-1:0] prod1;
-  logic signed [32-1:0] prod2;
-  logic signed [32-1:0] prod3;
-  logic signed [32-1:0] acc_sum;
+  logic signed [15:0] sample_delay1;
+  logic signed [15:0] sample_delay2;
+  logic signed [15:0] sample_delay3;
+  logic signed [31:0] accumulator;
+  logic signed [15:0] out_reg;
+  logic signed [31:0] prod0;
+  logic signed [31:0] prod1;
+  logic signed [31:0] prod2;
+  logic signed [31:0] prod3;
+  logic signed [31:0] acc_sum;
   assign prod0 = input_sample * coeff0;
   assign prod1 = sample_delay1 * coeff1;
   assign prod2 = sample_delay2 * coeff2;

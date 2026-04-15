@@ -1,15 +1,15 @@
 module skid_buffer (
   input logic clk,
   input logic rst,
-  input logic [4-1:0] i_data,
+  input logic [3:0] i_data,
   input logic i_valid,
   input logic i_ready,
-  output logic [4-1:0] o_data,
+  output logic [3:0] o_data,
   output logic o_valid,
   output logic o_ready
 );
 
-  logic [4-1:0] data_reg;
+  logic [3:0] data_reg;
   logic buf_flag;
   // o_ready: we can accept data when buffer is empty
   assign o_ready = ~buf_flag;

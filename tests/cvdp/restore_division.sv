@@ -19,7 +19,7 @@ module restoring_division #(
   logic [WIDTH + 1-1:0] rem_reg;
   logic [WIDTH + 1-1:0] shifted_rem;
   logic [WIDTH + 1-1:0] sub_result;
-  logic [1-1:0] next_q_bit;
+  logic [0:0] next_q_bit;
   always_comb begin
     shifted_rem = {rem_reg[WIDTH - 1:0], dvd[WIDTH - 1 +: 1]};
     sub_result = (WIDTH + 1)'(shifted_rem - (WIDTH + 1)'($unsigned(dvs)));

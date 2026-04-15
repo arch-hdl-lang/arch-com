@@ -11,27 +11,27 @@ module bus_arbiter_rr #(
   input logic clk,
   input logic rst,
   output logic grant_valid,
-  output logic [1-1:0] grant_requester,
+  output logic [0:0] grant_requester,
   input logic [NUM_REQ-1:0] request_valid,
   output logic [NUM_REQ-1:0] request_ready
 );
 
-  function automatic logic [2-1:0] BusArbRRGrant(input logic [2-1:0] req_mask, input logic [2-1:0] last_grant);
+  function automatic logic [1:0] BusArbRRGrant(input logic [1:0] req_mask, input logic [1:0] last_grant);
     logic both = req_mask == 3;
-    logic [2-1:0] masked = req_mask & (last_grant ^ 3);
-    logic [2-1:0] pick = both ? masked : req_mask;
-    logic [3-1:0] pick_neg = 3'($unsigned(pick ^ 3)) + 1;
+    logic [1:0] masked = req_mask & (last_grant ^ 3);
+    logic [1:0] pick = both ? masked : req_mask;
+    logic [2:0] pick_neg = 3'($unsigned(pick ^ 3)) + 1;
     return pick & 2'(pick_neg);
   endfunction
   
-  logic [2-1:0] last_grant_r;
+  logic [1:0] last_grant_r;
   
   always_ff @(posedge clk or posedge rst) begin
     if (rst) last_grant_r <= '0;
     else if (grant_valid) last_grant_r <= grant_onehot;
   end
   
-  logic [2-1:0] grant_onehot;
+  logic [1:0] grant_onehot;
   
   always_comb begin
     grant_onehot = BusArbRRGrant(request_valid, last_grant_r);

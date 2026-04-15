@@ -1,13 +1,13 @@
 module hamming_code_receiver (
-  input logic [8-1:0] data_in,
-  output logic [4-1:0] data_out
+  input logic [7:0] data_in,
+  output logic [3:0] data_out
 );
 
   logic c1;
   logic c2;
   logic c3;
-  logic [3-1:0] syndrome;
-  logic [8-1:0] corrected;
+  logic [2:0] syndrome;
+  logic [7:0] corrected;
   always_comb begin
     c1 = data_in[1] ^ data_in[3] ^ data_in[5] ^ data_in[7];
     c2 = data_in[2] ^ data_in[3] ^ data_in[6] ^ data_in[7];

@@ -4,11 +4,11 @@ module serial_line_code_converter #(
   input logic clk,
   input logic reset_n,
   input logic serial_in,
-  input logic [3-1:0] mode,
+  input logic [2:0] mode,
   output logic serial_out
 );
 
-  logic [4-1:0] clk_counter;
+  logic [3:0] clk_counter;
   logic clk_pulse;
   logic prev_value;
   logic prev_serial_in;
@@ -59,7 +59,7 @@ module serial_line_code_converter #(
     if ((!reset_n)) begin
       rz_out <= 0;
     end else begin
-      if (serial_in == 1'd1 & &(clk_pulse == 1'd1)) begin
+      if ((serial_in == 1'd1) & &(clk_pulse == 1'd1)) begin
         rz_out <= 1'd1;
       end else begin
         rz_out <= 1'd0;

@@ -5,12 +5,12 @@ module Bitwise_Reduction #(
   parameter int BIT_COUNT = 4
 ) (
   input logic [BIT_COUNT-1:0] input_bits,
-  output logic [1-1:0] reduced_bit
+  output logic [0:0] reduced_bit
 );
 
-  logic [1-1:0] and_r;
-  logic [1-1:0] or_r;
-  logic [1-1:0] xor_r;
+  logic [0:0] and_r;
+  logic [0:0] or_r;
+  logic [0:0] xor_r;
   always_comb begin
     and_r = input_bits[0:0];
     or_r = input_bits[0:0];

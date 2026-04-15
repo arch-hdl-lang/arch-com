@@ -1,44 +1,44 @@
 module axis_joiner (
   input logic clk,
   input logic rst,
-  input logic [8-1:0] s_axis_tdata_1,
+  input logic [7:0] s_axis_tdata_1,
   input logic s_axis_tvalid_1,
   output logic s_axis_tready_1,
   input logic s_axis_tlast_1,
-  input logic [8-1:0] s_axis_tdata_2,
+  input logic [7:0] s_axis_tdata_2,
   input logic s_axis_tvalid_2,
   output logic s_axis_tready_2,
   input logic s_axis_tlast_2,
-  input logic [8-1:0] s_axis_tdata_3,
+  input logic [7:0] s_axis_tdata_3,
   input logic s_axis_tvalid_3,
   output logic s_axis_tready_3,
   input logic s_axis_tlast_3,
-  output logic [8-1:0] m_axis_tdata,
+  output logic [7:0] m_axis_tdata,
   output logic m_axis_tvalid,
   input logic m_axis_tready,
   output logic m_axis_tlast,
-  output logic [2-1:0] m_axis_tuser,
+  output logic [1:0] m_axis_tuser,
   output logic busy
 );
 
-  logic [2-1:0] ST_IDLE;
+  logic [1:0] ST_IDLE;
   assign ST_IDLE = 0;
-  logic [2-1:0] ST_S1;
+  logic [1:0] ST_S1;
   assign ST_S1 = 1;
-  logic [2-1:0] ST_S2;
+  logic [1:0] ST_S2;
   assign ST_S2 = 2;
-  logic [2-1:0] ST_S3;
+  logic [1:0] ST_S3;
   assign ST_S3 = 3;
-  logic [2-1:0] state;
-  logic [8-1:0] temp_data;
+  logic [1:0] state;
+  logic [7:0] temp_data;
   logic temp_valid;
   logic temp_last;
-  logic [2-1:0] temp_user;
+  logic [1:0] temp_user;
   logic temp_flag;
-  logic [8-1:0] sel_data;
+  logic [7:0] sel_data;
   logic sel_valid;
   logic sel_last;
-  logic [2-1:0] sel_user;
+  logic [1:0] sel_user;
   always_comb begin
     sel_data = 0;
     sel_valid = 1'b0;

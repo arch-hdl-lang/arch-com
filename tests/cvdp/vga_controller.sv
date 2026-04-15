@@ -21,21 +21,21 @@ module vga_controller #(
 ) (
   input logic clock,
   input logic reset,
-  input logic [8-1:0] color_in,
+  input logic [7:0] color_in,
   output logic hsync,
   output logic vsync,
-  output logic [8-1:0] red,
-  output logic [8-1:0] green,
-  output logic [8-1:0] blue,
-  output logic [10-1:0] next_x,
-  output logic [10-1:0] next_y,
+  output logic [7:0] red,
+  output logic [7:0] green,
+  output logic [7:0] blue,
+  output logic [9:0] next_x,
+  output logic [9:0] next_y,
   output logic sync,
   output logic clk_out,
   output logic blank
 );
 
-  logic [10-1:0] h_counter;
-  logic [10-1:0] v_counter;
+  logic [9:0] h_counter;
+  logic [9:0] v_counter;
   VgaPhase h_state;
   VgaPhase v_state;
   logic line_done;

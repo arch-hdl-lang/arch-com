@@ -1,14 +1,14 @@
 module fibonacci_series (
   input logic clk,
   input logic rst,
-  output logic [32-1:0] fib_out,
+  output logic [31:0] fib_out,
   output logic overflow_flag
 );
 
-  logic [32-1:0] RegA;
-  logic [32-1:0] RegB;
+  logic [31:0] RegA;
+  logic [31:0] RegB;
   logic overflow_detected;
-  logic [33-1:0] next_fib;
+  logic [32:0] next_fib;
   assign next_fib = RegA + RegB;
   always_ff @(posedge clk or posedge rst) begin
     if (rst) begin

@@ -1,11 +1,11 @@
 module factorial (
   input logic clk,
   input logic arst_n,
-  input logic [5-1:0] num_in,
+  input logic [4:0] num_in,
   input logic start,
   output logic busy,
   output logic done,
-  output logic [64-1:0] fact
+  output logic [63:0] fact
 );
 
   typedef enum logic [1:0] {
@@ -16,14 +16,17 @@ module factorial (
   
   factorial_state_t state_r, state_next;
   
-  logic [5-1:0] cnt;
-  logic [64-1:0] acc;
+  logic [4:0] cnt;
+  logic [63:0] acc;
   
   always_ff @(posedge clk or negedge arst_n) begin
     if ((!arst_n)) begin
       state_r <= IDLE;
       cnt <= 0;
       acc <= 1;
+      busy <= 1'b0;
+      done <= 1'b0;
+      fact <= 0;
     end else begin
       state_r <= state_next;
       case (state_r)
@@ -82,6 +85,17 @@ module factorial (
       default: ;
     endcase
   end
+  
+  // synopsys translate_off
+  _auto_legal_state: assert property (@(posedge clk) arst_n |-> state_r < 3)
+    else $fatal(1, "FSM ILLEGAL STATE: factorial.state_r = %0d", state_r);
+  _auto_reach_Idle: cover property (@(posedge clk) state_r == IDLE);
+  _auto_reach_Busy: cover property (@(posedge clk) state_r == BUSY);
+  _auto_reach_Done: cover property (@(posedge clk) state_r == DONE);
+  _auto_tr_IDLE_to_BUSY: cover property (@(posedge clk) state_r == IDLE && state_next == BUSY);
+  _auto_tr_BUSY_to_DONE: cover property (@(posedge clk) state_r == BUSY && state_next == DONE);
+  _auto_tr_DONE_to_IDLE: cover property (@(posedge clk) state_r == DONE && state_next == IDLE);
+  // synopsys translate_on
 
 endmodule
 

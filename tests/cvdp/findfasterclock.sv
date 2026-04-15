@@ -7,25 +7,25 @@ module findfasterclock (
 );
 
   // State encoding
-  logic [2-1:0] ST_IDLE;
+  logic [1:0] ST_IDLE;
   assign ST_IDLE = 0;
-  logic [2-1:0] ST_COUNT;
+  logic [1:0] ST_COUNT;
   assign ST_COUNT = 1;
-  logic [2-1:0] ST_DONE;
+  logic [1:0] ST_DONE;
   assign ST_DONE = 2;
   // A-domain FSM registers
-  logic [2-1:0] stateA;
+  logic [1:0] stateA;
   logic measure_B;
-  logic [32-1:0] periodA;
+  logic [31:0] periodA;
   logic done_A;
   // B-domain FSM registers
-  logic [2-1:0] stateB;
+  logic [1:0] stateB;
   logic measure_A;
-  logic [32-1:0] periodB;
+  logic [31:0] periodB;
   logic done_B;
   // Cross-domain counters
-  logic [32-1:0] b_count;
-  logic [32-1:0] a_count;
+  logic [31:0] b_count;
+  logic [31:0] a_count;
   // A-domain FSM: measures periodA by counting B pulses during one A cycle
   always_ff @(posedge clk_A or negedge rst_n) begin
     if ((!rst_n)) begin

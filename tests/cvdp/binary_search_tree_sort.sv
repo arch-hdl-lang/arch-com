@@ -12,12 +12,12 @@ module binary_search_tree_sort #(
 );
 
   // Top-level FSM states: 0=IDLE, 1=BUILD_TREE, 2=SORT_TREE
-  logic [2-1:0] top_state;
+  logic [1:0] top_state;
   // Build FSM states: 0=INIT, 1=CHECK_ROOT, 2=TRAVERSE, 4=COMPLETE
-  logic [3-1:0] build_state;
+  logic [2:0] build_state;
   // Sort FSM states:
   // 0=S_INIT, 1=TRAVERSE_LEFT, 2=POP_PROCESS, 3=ASSIGN_RIGHT, 4=CHECK_RIGHT, 5=S_COMPLETE
-  logic [3-1:0] sort_state;
+  logic [2:0] sort_state;
   // BST representation
   logic [ARRAY_SIZE * DATA_WIDTH-1:0] keys;
   logic [ARRAY_SIZE * PTR_W-1:0] left_child;

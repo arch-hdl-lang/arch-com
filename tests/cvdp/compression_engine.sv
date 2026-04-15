@@ -1,13 +1,13 @@
 module compression_engine (
   input logic clk,
   input logic reset,
-  input logic [24-1:0] num_i,
-  output logic [12-1:0] mantissa_o,
-  output logic [4-1:0] exponent_o
+  input logic [23:0] num_i,
+  output logic [11:0] mantissa_o,
+  output logic [3:0] exponent_o
 );
 
   // One-hot encoding of MSB position in bits [23:12]
-  logic [12-1:0] exp_oh;
+  logic [11:0] exp_oh;
   assign exp_oh[11] = num_i[23];
   assign exp_oh[10] = num_i[22] & ~num_i[23];
   assign exp_oh[9] = num_i[21] & ~(num_i[23] | num_i[22]);
@@ -21,7 +21,7 @@ module compression_engine (
   assign exp_oh[1] = num_i[13] & ~(num_i[23] | num_i[22] | num_i[21] | num_i[20] | num_i[19] | num_i[18] | num_i[17] | num_i[16] | num_i[15] | num_i[14]);
   assign exp_oh[0] = num_i[12] & ~(num_i[23] | num_i[22] | num_i[21] | num_i[20] | num_i[19] | num_i[18] | num_i[17] | num_i[16] | num_i[15] | num_i[14] | num_i[13]);
   // One-hot to binary conversion
-  logic [4-1:0] exp_bin;
+  logic [3:0] exp_bin;
   always_comb begin
     exp_bin = 0;
     for (int i = 0; i <= 11; i++) begin
@@ -33,7 +33,7 @@ module compression_engine (
   // Adjusted exponent: exp_bin+1 if any bit set, else 0
   logic any_oh;
   assign any_oh = exp_oh != 0;
-  logic [4-1:0] exponent_w;
+  logic [3:0] exponent_w;
   always_comb begin
     if (any_oh) begin
       exponent_w = 4'(exp_bin + 1);
@@ -46,7 +46,7 @@ module compression_engine (
   // exponent=1: num_i[11:0]  (shift by 0)
   // exponent=2: num_i[12:1]
   // exponent=N (N>=1): num_i[N+10:N-1]
-  logic [12-1:0] mantissa_w;
+  logic [11:0] mantissa_w;
   always_comb begin
     if (exponent_w == 0) begin
       mantissa_w = num_i[11:0];
@@ -77,8 +77,8 @@ module compression_engine (
     end
   end
   // Registered outputs
-  logic [12-1:0] mantissa_r;
-  logic [4-1:0] exponent_r;
+  logic [11:0] mantissa_r;
+  logic [3:0] exponent_r;
   always_ff @(posedge clk or posedge reset) begin
     if (reset) begin
       exponent_r <= 0;

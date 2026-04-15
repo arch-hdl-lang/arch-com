@@ -1,7 +1,7 @@
 module strob_gen__PERIOD_US_1000 #(
   parameter int CLOCK_HZ = 10000000,
-  parameter int PERIOD_US = 100,
-  parameter int DELAY = CLOCK_HZ * PERIOD_US / 1000000 - 1
+  parameter int PERIOD_US = 1000,
+  parameter int DELAY = (CLOCK_HZ * PERIOD_US) / 1000000 - 1
 ) (
   input logic clk,
   input logic nrst,
@@ -10,10 +10,10 @@ module strob_gen__PERIOD_US_1000 #(
 );
 
   // DELAY = (CLOCK_HZ * PERIOD_US / 1_000_000) - 1
-  logic [32-1:0] cnt;
+  logic [39:0] cnt;
   always_ff @(posedge clk or negedge nrst) begin
     if ((!nrst)) begin
-      cnt <= DELAY;
+      cnt <= 40'($unsigned(DELAY));
       strobe_o <= 1'b0;
     end else begin
       if (cnt == 0) begin
@@ -22,13 +22,13 @@ module strob_gen__PERIOD_US_1000 #(
         end else begin
           strobe_o <= 1'b0;
         end
-        cnt <= DELAY;
+        cnt <= 40'($unsigned(DELAY));
       end else begin
         strobe_o <= 1'b0;
         if (enable == 1'b1) begin
-          cnt <= 32'(cnt - 1);
+          cnt <= 40'(cnt - 1);
         end else begin
-          cnt <= DELAY;
+          cnt <= 40'($unsigned(DELAY));
         end
       end
     end
@@ -38,8 +38,8 @@ endmodule
 
 module strob_gen__PERIOD_US_1 #(
   parameter int CLOCK_HZ = 10000000,
-  parameter int PERIOD_US = 100,
-  parameter int DELAY = CLOCK_HZ * PERIOD_US / 1000000 - 1
+  parameter int PERIOD_US = 1,
+  parameter int DELAY = (CLOCK_HZ * PERIOD_US) / 1000000 - 1
 ) (
   input logic clk,
   input logic nrst,
@@ -47,10 +47,10 @@ module strob_gen__PERIOD_US_1 #(
   output logic strobe_o
 );
 
-  logic [32-1:0] cnt;
+  logic [39:0] cnt;
   always_ff @(posedge clk or negedge nrst) begin
     if ((!nrst)) begin
-      cnt <= DELAY;
+      cnt <= 40'($unsigned(DELAY));
       strobe_o <= 1'b0;
     end else begin
       if (cnt == 0) begin
@@ -59,13 +59,13 @@ module strob_gen__PERIOD_US_1 #(
         end else begin
           strobe_o <= 1'b0;
         end
-        cnt <= DELAY;
+        cnt <= 40'($unsigned(DELAY));
       end else begin
         strobe_o <= 1'b0;
         if (enable == 1'b1) begin
-          cnt <= 32'(cnt - 1);
+          cnt <= 40'(cnt - 1);
         end else begin
-          cnt <= DELAY;
+          cnt <= 40'($unsigned(DELAY));
         end
       end
     end
@@ -80,16 +80,16 @@ module soundgenerator #(
   input logic nrst,
   input logic start,
   input logic finish,
-  input logic [16-1:0] sond_dur_ms_i,
-  input logic [16-1:0] half_period_us_i,
+  input logic [15:0] sond_dur_ms_i,
+  input logic [15:0] half_period_us_i,
   output logic soundwave_o,
   output logic busy,
   output logic done
 );
 
   // Internal registers
-  logic [16-1:0] duration_cnt;
-  logic [16-1:0] halfperiodtimer;
+  logic [15:0] duration_cnt;
+  logic [15:0] halfperiodtimer;
   logic signal_r;
   logic busy_d;
   // Wires for strobe outputs

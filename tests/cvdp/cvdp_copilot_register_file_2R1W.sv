@@ -2,9 +2,9 @@ module cvdp_copilot_register_file_2R1W #(
   parameter int DATA_WIDTH = 32
 ) (
   input logic [DATA_WIDTH-1:0] din,
-  input logic [5-1:0] wad1,
-  input logic [5-1:0] rad1,
-  input logic [5-1:0] rad2,
+  input logic [4:0] wad1,
+  input logic [4:0] rad1,
+  input logic [4:0] rad2,
   input logic wen1,
   input logic ren1,
   input logic ren2,
@@ -23,8 +23,8 @@ module cvdp_copilot_register_file_2R1W #(
   end
   assign gated_clk_w = en_latch_r & clk;
   // Register file memory
-  logic [DATA_WIDTH-1:0] rf_mem [32-1:0];
-  logic [32-1:0] rf_valid;
+  logic [31:0] [DATA_WIDTH-1:0] rf_mem;
+  logic [31:0] rf_valid;
   // Write logic on gated clock
   always_ff @(posedge gated_clk_w or negedge resetn) begin
     if ((!resetn)) begin
@@ -76,7 +76,7 @@ module cvdp_copilot_register_file_2R1W #(
     if ((!resetn)) begin
       collision <= 1'b0;
     end else begin
-      if (ren1 & ren2 & rad1 == rad2 | wen1 & ren1 & wad1 == rad1 | wen1 & ren2 & wad1 == rad2) begin
+      if ((ren1 & ren2 & (rad1 == rad2)) | (wen1 & ren1 & (wad1 == rad1)) | (wen1 & ren2 & (wad1 == rad2))) begin
         collision <= 1'b1;
       end else begin
         collision <= 1'b0;

@@ -8,7 +8,7 @@ module hamming_tx #(
   output logic [ENCODED_DATA-1:0] data_out
 );
 
-  logic [1-1:0] parity [ENCODED_DATA_BIT-1:0];
+  logic [ENCODED_DATA_BIT-1:0] [0:0] parity;
   logic [$clog2(DATA_WIDTH)-1:0] data_idx;
   logic [$clog2(ENCODED_DATA_BIT + 1)-1:0] parity_idx;
   always_comb begin
@@ -41,7 +41,7 @@ module hamming_tx #(
     // Write parity bits into power-of-two positions (1,2,4,8,...).
     parity_idx = 0;
     for (int l = 0; l <= ENCODED_DATA - 1; l++) begin
-      if (l != 0 & (l & l - 1) == 0) begin
+      if ((l != 0) & ((l & l - 1) == 0)) begin
         data_out[l +: 1] = parity[parity_idx];
         parity_idx = ($clog2(ENCODED_DATA_BIT + 1))'(parity_idx + 1);
       end

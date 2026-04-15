@@ -4,27 +4,27 @@ module fan_controller (
   input logic psel,
   input logic penable,
   input logic pwrite,
-  input logic [8-1:0] paddr,
-  input logic [8-1:0] pwdata,
+  input logic [7:0] paddr,
+  input logic [7:0] pwdata,
   output logic fan_pwm_out,
-  output logic [8-1:0] prdata,
+  output logic [7:0] prdata,
   output logic pready,
   output logic pslverr
 );
 
   // Internal registers for temperature thresholds and ADC reading
-  logic [8-1:0] temp_low;
-  logic [8-1:0] temp_med;
-  logic [8-1:0] temp_high;
-  logic [8-1:0] temp_adc_in;
+  logic [7:0] temp_low;
+  logic [7:0] temp_med;
+  logic [7:0] temp_high;
+  logic [7:0] temp_adc_in;
   // PWM registers
-  logic [8-1:0] pwm_duty_cycle;
-  logic [8-1:0] pwm_counter;
+  logic [7:0] pwm_duty_cycle;
+  logic [7:0] pwm_counter;
   // APB helper signals
   logic apb_access;
   assign apb_access = psel & penable;
   // APB read/write logic
-  logic [8-1:0] w_prdata;
+  logic [7:0] w_prdata;
   logic w_pslverr;
   always_comb begin
     w_prdata = 0;
@@ -65,7 +65,7 @@ module fan_controller (
     end
   end
   // Duty cycle computation based on temperature
-  logic [8-1:0] w_duty;
+  logic [7:0] w_duty;
   always_comb begin
     if (temp_adc_in < temp_low) begin
       w_duty = 64;
@@ -100,7 +100,7 @@ module fan_controller (
   logic cnt_nonzero;
   assign cnt_nonzero = pwm_counter != 0;
   logic cnt_in_duty;
-  assign cnt_in_duty = pwm_duty_cycle > pwm_counter | pwm_duty_cycle == pwm_counter;
+  assign cnt_in_duty = (pwm_duty_cycle > pwm_counter) | (pwm_duty_cycle == pwm_counter);
   // Output assignments
   assign fan_pwm_out = cnt_nonzero & cnt_in_duty;
   assign prdata = w_prdata;

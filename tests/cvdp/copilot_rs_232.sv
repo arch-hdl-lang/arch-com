@@ -1,3 +1,38 @@
+module baud_rate_generator #(
+  parameter int CLOCK_FREQ = 100000000,
+  parameter int BAUD_RATE = 115200,
+  parameter int BAUD_ACC_WIDTH = 16,
+  parameter int BAUD_TICKS = CLOCK_FREQ / BAUD_RATE
+) (
+  input logic clock,
+  input logic reset_neg,
+  input logic enable,
+  output logic baud_pulse
+);
+
+  // Exact baud timing via up-counter
+  logic [31:0] cnt;
+  logic pulse_w;
+  assign pulse_w = enable & (cnt == 32'($unsigned(BAUD_TICKS - 1)));
+  always_ff @(posedge clock or negedge reset_neg) begin
+    if ((!reset_neg)) begin
+      cnt <= 0;
+    end else begin
+      if (~reset_neg) begin
+        cnt <= 0;
+      end else if (~enable) begin
+        cnt <= 0;
+      end else if (cnt == 32'($unsigned(BAUD_TICKS - 1))) begin
+        cnt <= 0;
+      end else begin
+        cnt <= 32'(cnt + 1);
+      end
+    end
+  end
+  assign baud_pulse = pulse_w;
+
+endmodule
+
 module copilot_rs_232 #(
   parameter int CLOCK_FREQ = 100000000,
   parameter int BAUD_RATE = 115200,
@@ -8,14 +43,14 @@ module copilot_rs_232 #(
   input logic reset_neg,
   input logic tx_datain_ready,
   input logic Present_Processing_Completed,
-  input logic [8-1:0] tx_datain,
+  input logic [7:0] tx_datain,
   output logic tx_transmitter,
   output logic tx_transmitter_valid
 );
 
   // Shift register: {stop, data[7:0], start} = {1, D7..D0, 0}
-  logic [10-1:0] tx_shift;
-  logic [4-1:0] bit_cnt;
+  logic [9:0] tx_shift;
+  logic [3:0] bit_cnt;
   logic baud_pulse_w;
   logic active;
   assign active = bit_cnt != 0;
@@ -47,10 +82,10 @@ module copilot_rs_232 #(
       end else if (Present_Processing_Completed) begin
         tx_shift <= 'b1111111111;
         bit_cnt <= 0;
-      end else if (bit_cnt == 0 & tx_datain_ready) begin
+      end else if ((bit_cnt == 0) & tx_datain_ready) begin
         tx_shift <= {1'b1, tx_datain, 1'b0};
         bit_cnt <= 10;
-      end else if (baud_pulse_w & bit_cnt != 0) begin
+      end else if (baud_pulse_w & (bit_cnt != 0)) begin
         tx_shift <= {1'b1, tx_shift[9:1]};
         bit_cnt <= 4'(bit_cnt - 1);
       end

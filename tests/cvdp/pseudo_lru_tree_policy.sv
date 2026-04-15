@@ -10,7 +10,7 @@ module slot_select_pseudo_lru_tree #(
   always_comb begin
     idx = 0;
     for (int depth = 0; depth <= MAX_DEPTH - 1; depth++) begin
-      if (array[(1 << depth) - 1 + (NWAYS - 1)'($unsigned(idx))] == 0) begin
+      if (array[((1 << depth) - 1) + (NWAYS - 1)'($unsigned(idx))] == 0) begin
         idx = $clog2(NWAYS)'(32'($unsigned(idx)) << 1 | 1);
       end else begin
         idx = $clog2(NWAYS)'(32'($unsigned(idx)) << 1);
@@ -38,7 +38,7 @@ module pseudo_lru_tree_policy #(
   output logic [$clog2(NWAYS)-1:0] way_replace
 );
 
-  logic [NBITS_TREE-1:0] recency [0:NINDEXES-1];
+  logic [NINDEXES-1:0] [NBITS_TREE-1:0] recency;
   logic [NBITS_TREE-1:0] recency_updated;
   logic [$clog2(NWAYS)-1:0] pseudo_lru_slot;
   logic [$clog2(NINDEXES)-1:0] idx;
@@ -52,7 +52,7 @@ module pseudo_lru_tree_policy #(
   // Compute recency_updated: mark the target way as MRU
   // On hit: target is way_select. On miss: target is pseudo_lru_slot.
   logic [$clog2(NWAYS)-1:0] target_way;
-  logic [32-1:0] step;
+  logic [31:0] step;
   logic way_bit;
   always_comb begin
     if (hit) begin
@@ -65,8 +65,8 @@ module pseudo_lru_tree_policy #(
     step = 0;
     way_bit = 1'b0;
     for (int depth = 0; depth <= MAX_DEPTH - 1; depth++) begin
-      way_bit = target_way[MAX_DEPTH - 1 - depth];
-      recency_updated[(1 << depth) - 1 + NBITS_TREE'(step)] = way_bit;
+      way_bit = target_way[(MAX_DEPTH - 1) - depth];
+      recency_updated[((1 << depth) - 1) + NBITS_TREE'(step)] = way_bit;
       step = step << 1 | 32'($unsigned(way_bit));
     end
     // Set the bit along the path to mark target_way as MRU

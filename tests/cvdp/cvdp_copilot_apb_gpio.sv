@@ -4,12 +4,12 @@ module cvdp_copilot_apb_gpio #(
   input logic pclk,
   input logic preset_n,
   input logic psel,
-  input logic [6-1:0] paddr,
+  input logic [5:0] paddr,
   input logic penable,
   input logic pwrite,
-  input logic [32-1:0] pwdata,
+  input logic [31:0] pwdata,
   input logic [GPIO_WIDTH-1:0] gpio_in,
-  output logic [32-1:0] prdata,
+  output logic [31:0] prdata,
   output logic pready,
   output logic pslverr,
   output logic [GPIO_WIDTH-1:0] gpio_out,
@@ -48,9 +48,9 @@ module cvdp_copilot_apb_gpio #(
   logic [GPIO_WIDTH-1:0] int_combined;
   assign rising_edge = sync2 & ~sync_prev;
   assign falling_edge = ~sync2 & sync_prev;
-  assign edge_detect = ~reg_int_pol & rising_edge | reg_int_pol & falling_edge;
+  assign edge_detect = (~reg_int_pol & rising_edge) | (reg_int_pol & falling_edge);
   assign level_detect = sync2 ^ reg_int_pol;
-  assign int_combined = reg_int_type & reg_int_state | ~reg_int_type & level_detect & reg_int_en;
+  assign int_combined = (reg_int_type & reg_int_state) | (~reg_int_type & level_detect & reg_int_en);
   // Combinational outputs
   assign gpio_out = reg_dout;
   assign gpio_enable = reg_dout_en;
@@ -74,7 +74,7 @@ module cvdp_copilot_apb_gpio #(
       reg_int_type <= 0;
     end else begin
       // Edge interrupt accumulation: accumulate edges, keep only edge-type bits
-      reg_int_state <= (reg_int_state | edge_detect & reg_int_en) & reg_int_type;
+      reg_int_state <= (reg_int_state | (edge_detect & reg_int_en)) & reg_int_type;
       if (apb_write_en) begin
         if (paddr == 1) begin
           reg_dout <= pwdata[GPIO_WIDTH - 1:0];
@@ -88,7 +88,7 @@ module cvdp_copilot_apb_gpio #(
           reg_int_pol <= pwdata[GPIO_WIDTH - 1:0];
         end else if (paddr == 6) begin
           // Write-1-to-clear for edge interrupts
-          reg_int_state <= (reg_int_state | edge_detect & reg_int_en) & reg_int_type & ~(pwdata[GPIO_WIDTH - 1:0] & reg_int_type);
+          reg_int_state <= (reg_int_state | (edge_detect & reg_int_en)) & reg_int_type & ~(pwdata[GPIO_WIDTH - 1:0] & reg_int_type);
         end
       end
     end

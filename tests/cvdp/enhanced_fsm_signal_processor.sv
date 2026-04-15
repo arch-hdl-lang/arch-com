@@ -5,26 +5,26 @@ module enhanced_fsm_signal_processor (
   input logic i_clear,
   input logic i_ack,
   input logic i_fault,
-  input logic [5-1:0] i_vector_1,
-  input logic [5-1:0] i_vector_2,
-  input logic [5-1:0] i_vector_3,
-  input logic [5-1:0] i_vector_4,
-  input logic [5-1:0] i_vector_5,
-  input logic [5-1:0] i_vector_6,
+  input logic [4:0] i_vector_1,
+  input logic [4:0] i_vector_2,
+  input logic [4:0] i_vector_3,
+  input logic [4:0] i_vector_4,
+  input logic [4:0] i_vector_5,
+  input logic [4:0] i_vector_6,
   output logic o_ready,
   output logic o_error,
-  output logic [2-1:0] o_fsm_status,
-  output logic [8-1:0] o_vector_1,
-  output logic [8-1:0] o_vector_2,
-  output logic [8-1:0] o_vector_3,
-  output logic [8-1:0] o_vector_4
+  output logic [1:0] o_fsm_status,
+  output logic [7:0] o_vector_1,
+  output logic [7:0] o_vector_2,
+  output logic [7:0] o_vector_3,
+  output logic [7:0] o_vector_4
 );
 
   // 1-cycle "just entered" flag: suppress action on the cycle a state is entered
   logic entered;
-  logic [2-1:0] two_ones;
+  logic [1:0] two_ones;
   assign two_ones = 3;
-  logic [32-1:0] concat_bus;
+  logic [31:0] concat_bus;
   assign concat_bus = {i_vector_1, i_vector_2, i_vector_3, i_vector_4, i_vector_5, i_vector_6, two_ones};
   always_ff @(posedge i_clk) begin
     if ((!i_rst_n)) begin
