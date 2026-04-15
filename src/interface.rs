@@ -160,9 +160,6 @@ fn emit_params(s: &mut String, params: &[ParamDecl]) {
                 ));
             }
             ParamKind::Type(ty) => {
-                let default_str = p.default.as_ref()
-                    .map(|d| format!(" = {}", expr_str(d)))
-                    .unwrap_or_default();
                 s.push_str(&format!(
                     "  {local}param {name}: type = {};\n",
                     type_str(ty)
@@ -187,7 +184,6 @@ fn emit_ports(s: &mut String, ports: &[PortDecl]) {
             Direction::Out => "out",
         };
         let name = &p.name.name;
-        let reg_str = if p.reg_info.is_some() { "reg " } else { "" };
 
         if let Some(ref bi) = p.bus_info {
             let persp = match bi.perspective {
