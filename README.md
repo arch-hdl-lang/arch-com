@@ -31,10 +31,12 @@ module Adder
   port sum: out UInt<WIDTH>;
 
   comb
-    sum = (a.zext<33>() + b.zext<33>()).trunc<32>();
+    sum = a +% b;   // wrapping add — result width = max(W(a), W(b)) = 32, no overflow widening
   end comb
 end module Adder
 ```
+
+Arch arithmetic follows IEEE 1800-2012 §11.6 (`a + b` on two `UInt<32>` yields `UInt<33>`), so mixing widths requires explicit `.trunc<N>()`, `.zext<N>()`, or `.sext<N>()`. The wrapping operators `+%`, `-%`, `*%` are the common shortcut for "same-width modular arithmetic" and replace the verbose `(a.zext<33>() + b.zext<33>()).trunc<32>()` pattern.
 
 ### Sequential protocols with `thread`
 
