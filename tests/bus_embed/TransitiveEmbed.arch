@@ -1,0 +1,35 @@
+package PkgTrans
+  domain SysDomain
+    freq_mhz: 100
+  end domain SysDomain
+end package PkgTrans
+
+// Level 0: leaf bus
+bus BusLeaf
+  data: out UInt<8>;
+end bus BusLeaf
+
+// Level 1: embeds leaf
+bus BusMid
+  embed leaf: BusLeaf;
+  ctrl: out Bool;
+end bus BusMid
+
+// Level 2: embeds mid (transitive — should include leaf_data)
+bus BusTop
+  embed mid: BusMid;
+  top_flag: out Bool;
+end bus BusTop
+
+// Module using the transitively-composed bus
+module TransTest
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port top_port: initiator BusTop;
+
+  comb
+    top_port.top_flag      = true;
+    top_port.mid_ctrl      = true;
+    top_port.mid_leaf_data = 42;
+  end comb
+end module TransTest

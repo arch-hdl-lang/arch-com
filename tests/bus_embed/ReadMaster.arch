@@ -1,0 +1,52 @@
+package PkgTest
+  domain SysDomain
+    freq_mhz: 100
+  end domain SysDomain
+end package PkgTest
+
+// A simple read master using the composed BusAxi4Read
+module ReadMaster
+  param ADDR_W: const = 32;
+  param DATA_W: const = 32;
+  param ID_W:   const = 4;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  // Read-only AXI master — uses the embed-composed bus
+  port axi_rd: initiator BusAxi4Read<ADDR_W=ADDR_W, DATA_W=DATA_W, ID_W=ID_W>;
+
+  // Control
+  port start_i:    in Bool;
+  port addr_i:     in UInt<ADDR_W>;
+  port data_o:     out UInt<DATA_W>;
+  port data_vld_o: out Bool;
+
+  reg active_q: Bool reset rst => false;
+
+  default seq on clk rising;
+
+  // Drive AR channel using the prefixed signal names (ar_valid, ar_addr, etc.)
+  comb
+    axi_rd.ar_valid = start_i and not active_q;
+    axi_rd.ar_addr  = addr_i;
+    axi_rd.ar_id    = 0;
+    axi_rd.ar_len   = 0;
+  end comb
+
+  // Accept R channel
+  comb
+    axi_rd.r_ready = true;
+    data_o     = axi_rd.r_data;
+    data_vld_o = axi_rd.r_valid;
+  end comb
+
+  seq
+    if start_i and not active_q
+      active_q <= true;
+    elsif axi_rd.r_valid and axi_rd.r_last
+      active_q <= false;
+    end if
+  end seq
+
+end module ReadMaster

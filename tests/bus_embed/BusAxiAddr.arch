@@ -1,0 +1,63 @@
+// Minimal AXI address channel bus
+bus BusAxiAddr
+  param ADDR_W: const = 32;
+  param ID_W:   const = 4;
+  valid: out Bool;
+  ready: in  Bool;
+  addr:  out UInt<ADDR_W>;
+  id:    out UInt<ID_W>;
+  len:   out UInt<8>;
+end bus BusAxiAddr
+
+// AXI R data channel bus
+bus BusAxiRData
+  param DATA_W: const = 32;
+  param ID_W:   const = 4;
+  valid: in  Bool;
+  ready: out Bool;
+  data:  in  UInt<DATA_W>;
+  id:    in  UInt<ID_W>;
+  last:  in  Bool;
+end bus BusAxiRData
+
+// AXI W data channel bus
+bus BusAxiWData
+  param DATA_W: const = 32;
+  param STRB_W: const = 4;
+  valid: out Bool;
+  ready: in  Bool;
+  data:  out UInt<DATA_W>;
+  strb:  out UInt<STRB_W>;
+  last:  out Bool;
+end bus BusAxiWData
+
+// Composed read-only AXI bus using embed
+bus BusAxi4Read
+  param ADDR_W: const = 32;
+  param DATA_W: const = 32;
+  param ID_W:   const = 4;
+  embed ar: BusAxiAddr<ADDR_W=ADDR_W, ID_W=ID_W>;
+  embed r:  BusAxiRData<DATA_W=DATA_W, ID_W=ID_W>;
+end bus BusAxi4Read
+
+// Composed write-only AXI bus using embed
+bus BusAxi4Write
+  param ADDR_W: const = 32;
+  param DATA_W: const = 32;
+  param STRB_W: const = 4;
+  param ID_W:   const = 4;
+  embed aw: BusAxiAddr<ADDR_W=ADDR_W, ID_W=ID_W>;
+  embed w:  BusAxiWData<DATA_W=DATA_W, STRB_W=STRB_W>;
+end bus BusAxi4Write
+
+// Composed full AXI bus: re-embeds the same primitives
+bus BusAxi4Full
+  param ADDR_W: const = 32;
+  param DATA_W: const = 32;
+  param STRB_W: const = 4;
+  param ID_W:   const = 4;
+  embed ar: BusAxiAddr<ADDR_W=ADDR_W, ID_W=ID_W>;
+  embed r:  BusAxiRData<DATA_W=DATA_W, ID_W=ID_W>;
+  embed aw: BusAxiAddr<ADDR_W=ADDR_W, ID_W=ID_W>;
+  embed w:  BusAxiWData<DATA_W=DATA_W, STRB_W=STRB_W>;
+end bus BusAxi4Full
