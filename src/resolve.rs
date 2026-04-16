@@ -147,6 +147,82 @@ impl BusInfo {
     }
 }
 
+/// Substitute param references in a type expression with their mapped values.
+/// Used during embed expansion to translate the embedded bus's param names
+/// into the parent bus's param namespace.
+fn subst_type_expr(ty: &TypeExpr, params: &HashMap<String, &Expr>) -> TypeExpr {
+    match ty {
+        TypeExpr::UInt(w) => TypeExpr::UInt(Box::new(subst_expr(w, params))),
+        TypeExpr::SInt(w) => TypeExpr::SInt(Box::new(subst_expr(w, params))),
+        TypeExpr::Vec(inner, len) => TypeExpr::Vec(
+            Box::new(subst_type_expr(inner, params)),
+            Box::new(subst_expr(len, params)),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn subst_expr(expr: &Expr, params: &HashMap<String, &Expr>) -> Expr {
+    match &expr.kind {
+        ExprKind::Ident(name) => {
+            if let Some(replacement) = params.get(name.as_str()) {
+                (*replacement).clone()
+            } else {
+                expr.clone()
+            }
+        }
+        ExprKind::Binary(op, l, r) => Expr::new(
+            ExprKind::Binary(*op, Box::new(subst_expr(l, params)), Box::new(subst_expr(r, params))),
+            expr.span,
+        ),
+        ExprKind::Unary(op, e) => Expr::new(
+            ExprKind::Unary(*op, Box::new(subst_expr(e, params))),
+            expr.span,
+        ),
+        ExprKind::Clog2(e) => Expr::new(
+            ExprKind::Clog2(Box::new(subst_expr(e, params))),
+            expr.span,
+        ),
+        _ => expr.clone(),
+    }
+}
+
+/// Expand a single embed directive into a list of prefixed PortDecls.
+/// Returns None if the referenced bus is unknown (error is pushed).
+fn expand_embed(
+    emb: &BusEmbed,
+    table: &SymbolTable,
+    errors: &mut Vec<CompileError>,
+) -> Option<Vec<PortDecl>> {
+    if let Some((Symbol::Bus(ref_info), _)) = table.globals.get(&emb.bus_name.name) {
+        let mut param_map = ref_info.default_param_map();
+        for pa in &emb.params {
+            param_map.insert(pa.name.name.clone(), &pa.value);
+        }
+        let ref_signals = ref_info.effective_signals(&param_map);
+        let ports = ref_signals.into_iter().map(|(sname, sdir, sty)| {
+            let subst_ty = subst_type_expr(&sty, &param_map);
+            PortDecl {
+                name: Ident { name: format!("{}_{}", emb.prefix.name, sname), span: emb.span },
+                direction: sdir,
+                ty: subst_ty,
+                default: None,
+                reg_info: None,
+                bus_info: None,
+                shared: None,
+                span: emb.span,
+            }
+        }).collect();
+        Some(ports)
+    } else {
+        errors.push(CompileError::general(
+            &format!("embed: unknown bus `{}`", emb.bus_name.name),
+            emb.bus_name.span,
+        ));
+        None
+    }
+}
+
 /// Evaluate a generate_if condition in a bus context.
 /// Supports simple param references (truthy if nonzero) and literal integers.
 fn eval_bus_cond(expr: &Expr, param_map: &HashMap<String, &Expr>) -> bool {
@@ -442,6 +518,8 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                 if table.globals.contains_key(&b.name.name) {
                     errors.push(CompileError::duplicate(&b.name.name, b.name.span));
                 } else {
+                    // Phase 1: register with direct signals only (no embed expansion yet).
+                    // Embeds are expanded in a second pass after all buses are registered.
                     let info = BusInfo {
                         name: b.name.name.clone(),
                         params: b.params.clone(),
@@ -561,7 +639,56 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
         }
     }
 
-    // Second pass: resolve module-level symbols
+    // Phase 2: expand bus embeds now that all buses are registered.
+    // Handles both top-level embeds and embeds inside generate_if branches.
+    // Processes buses in source order for correct transitive expansion.
+    for item in &source_file.items {
+        if let Item::Bus(b) = item {
+            let has_embeds = !b.embeds.is_empty()
+                || b.generates.iter().any(|g| !g.then_embeds.is_empty() || !g.else_embeds.is_empty());
+            if !has_embeds { continue; }
+
+            let mut extra_signals: Vec<PortDecl> = Vec::new();
+            let mut gen_extra: Vec<(usize, Vec<PortDecl>, Vec<PortDecl>)> = Vec::new();
+
+            // Expand top-level embeds → append to signals
+            for emb in &b.embeds {
+                match expand_embed(emb, &table, &mut errors) {
+                    Some(ports) => extra_signals.extend(ports),
+                    None => {}
+                }
+            }
+
+            // Expand embeds inside generate_if branches
+            for (gi, gen) in b.generates.iter().enumerate() {
+                let then_ports: Vec<PortDecl> = gen.then_embeds.iter()
+                    .filter_map(|emb| expand_embed(emb, &table, &mut errors))
+                    .flatten()
+                    .collect();
+                let else_ports: Vec<PortDecl> = gen.else_embeds.iter()
+                    .filter_map(|emb| expand_embed(emb, &table, &mut errors))
+                    .flatten()
+                    .collect();
+                if !then_ports.is_empty() || !else_ports.is_empty() {
+                    gen_extra.push((gi, then_ports, else_ports));
+                }
+            }
+
+            if let Some((Symbol::Bus(ref mut info), _)) = table.globals.get_mut(&b.name.name) {
+                // Append top-level embed expansions as (name, dir, ty) tuples
+                for port in extra_signals {
+                    info.signals.push((port.name.name, port.direction, port.ty));
+                }
+                // Append generate_if branch embed expansions to the branch signal lists
+                for (gi, then_ports, else_ports) in gen_extra {
+                    info.generates[gi].then_signals.extend(then_ports);
+                    info.generates[gi].else_signals.extend(else_ports);
+                }
+            }
+        }
+    }
+
+    // Third pass: resolve module-level symbols
     for item in &source_file.items {
         if let Item::Module(m) = item {
             let mut scope = HashMap::new();

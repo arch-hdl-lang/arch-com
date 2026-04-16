@@ -134,11 +134,14 @@ impl Parser {
         let mut params = Vec::new();
         let mut signals = Vec::new();
         let mut generates = Vec::new();
+        let mut embeds = Vec::new();
         while !self.check_end_keyword() {
             if self.check_param() {
                 params.push(self.parse_param_decl()?);
             } else if self.check(TokenKind::GenerateIf) {
                 generates.push(self.parse_bus_generate_if(start)?);
+            } else if self.check(TokenKind::Embed) {
+                embeds.push(self.parse_bus_embed()?);
             } else {
                 signals.push(self.parse_bus_signal(start)?);
             }
@@ -159,6 +162,40 @@ impl Parser {
             params,
             signals,
             generates,
+            embeds,
+        })
+    }
+
+    /// Parse `embed prefix: BusName<PARAM=val, ...>;`
+    fn parse_bus_embed(&mut self) -> Result<BusEmbed, CompileError> {
+        let start = self.expect(TokenKind::Embed)?.span;
+        let prefix = self.expect_ident()?;
+        self.expect(TokenKind::Colon)?;
+        let bus_name = self.expect_ident()?;
+        let params = if self.check(TokenKind::Lt) {
+            self.advance();
+            let old_no_angle = self.no_angle;
+            self.no_angle = true;
+            let mut pa = Vec::new();
+            loop {
+                let pname = self.expect_ident()?;
+                self.expect(TokenKind::Eq)?;
+                let pvalue = self.parse_expr()?;
+                pa.push(ParamAssign { name: pname, value: pvalue });
+                if !self.eat(TokenKind::Comma) { break; }
+            }
+            self.no_angle = old_no_angle;
+            self.expect(TokenKind::Gt)?;
+            pa
+        } else {
+            Vec::new()
+        };
+        let end_span = self.expect(TokenKind::Semi)?.span;
+        Ok(BusEmbed {
+            prefix,
+            bus_name,
+            params,
+            span: start.merge(end_span),
         })
     }
 
@@ -195,30 +232,40 @@ impl Parser {
         let start = self.expect(TokenKind::GenerateIf)?.span;
         let cond = self.parse_expr()?;
         let mut then_signals = Vec::new();
-        // Parse then-branch signals until end generate_if or generate_else
+        let mut then_embeds = Vec::new();
         while !self.check_bus_gen_end() {
-            then_signals.push(self.parse_bus_signal(parent_span)?);
+            if self.check(TokenKind::Embed) {
+                then_embeds.push(self.parse_bus_embed()?);
+            } else {
+                then_signals.push(self.parse_bus_signal(parent_span)?);
+            }
         }
-        // Optional generate_else
-        let else_signals = if self.check(TokenKind::GenerateElse) {
+        let (else_signals, else_embeds) = if self.check(TokenKind::GenerateElse) {
             self.advance();
             let mut sigs = Vec::new();
+            let mut embs = Vec::new();
             while !(self.pos + 1 < self.tokens.len()
                 && self.tokens[self.pos].kind == TokenKind::End
                 && self.tokens[self.pos + 1].kind == TokenKind::GenerateIf)
             {
-                sigs.push(self.parse_bus_signal(parent_span)?);
+                if self.check(TokenKind::Embed) {
+                    embs.push(self.parse_bus_embed()?);
+                } else {
+                    sigs.push(self.parse_bus_signal(parent_span)?);
+                }
             }
-            sigs
+            (sigs, embs)
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
         self.expect(TokenKind::End)?;
         let end_span = self.expect(TokenKind::GenerateIf)?.span;
         Ok(BusGenerateIf {
             cond,
             then_signals,
+            then_embeds,
             else_signals,
+            else_embeds,
             span: start.merge(end_span),
         })
     }

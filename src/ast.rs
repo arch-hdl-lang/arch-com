@@ -62,6 +62,18 @@ pub struct BusDecl {
     pub params: Vec<ParamDecl>,
     pub signals: Vec<PortDecl>,  // direction = from initiator's perspective
     pub generates: Vec<BusGenerateIf>,  // conditional signal groups
+    pub embeds: Vec<BusEmbed>,  // embedded sub-buses
+    pub span: Span,
+}
+
+/// Embedded sub-bus inside a bus definition.
+/// `embed prefix: BusName<PARAM=val, ...>;`
+/// Flattens to `prefix_signal` for each signal in the referenced bus.
+#[derive(Debug, Clone)]
+pub struct BusEmbed {
+    pub prefix: Ident,
+    pub bus_name: Ident,
+    pub params: Vec<ParamAssign>,
     pub span: Span,
 }
 
@@ -71,7 +83,9 @@ pub struct BusDecl {
 pub struct BusGenerateIf {
     pub cond: Expr,
     pub then_signals: Vec<PortDecl>,
+    pub then_embeds: Vec<BusEmbed>,
     pub else_signals: Vec<PortDecl>,
+    pub else_embeds: Vec<BusEmbed>,
     pub span: Span,
 }
 

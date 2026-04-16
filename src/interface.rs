@@ -69,7 +69,18 @@ fn emit_bus_interface(b: &BusDecl) -> String {
     let name = &b.name.name;
     let mut s = format!("bus {name}\n");
     emit_params(&mut s, &b.params);
-    emit_ports(&mut s, &b.signals);
+    emit_bus_signals(&mut s, &b.signals);
+    for emb in &b.embeds {
+        let pa_str = if emb.params.is_empty() {
+            String::new()
+        } else {
+            let parts: Vec<String> = emb.params.iter()
+                .map(|p| format!("{}={}", p.name.name, expr_str(&p.value)))
+                .collect();
+            format!("<{}>", parts.join(", "))
+        };
+        s.push_str(&format!("  embed {}: {}{pa_str};\n", emb.prefix.name, emb.bus_name.name));
+    }
     s.push_str(&format!("end bus {name}\n"));
     s
 }
@@ -279,6 +290,20 @@ fn emit_params(s: &mut String, params: &[ParamDecl]) {
                 ));
             }
         }
+    }
+}
+
+/// Emit bus signals without the `port` keyword.
+/// Bus bodies use `name: dir Type;` syntax, not `port name: ...`.
+fn emit_bus_signals(s: &mut String, signals: &[PortDecl]) {
+    for sig in signals {
+        let dir = match sig.direction {
+            Direction::In => "in",
+            Direction::Out => "out",
+        };
+        let name = &sig.name.name;
+        let ty = type_str(&sig.ty);
+        s.push_str(&format!("  {name}: {dir} {ty};\n"));
     }
 }
 
