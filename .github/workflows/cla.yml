@@ -25,11 +25,11 @@ jobs:
           PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
         with:
           path-to-signatures: 'signatures/cla.json'
-          path-to-document: 'https://github.com/arch-hdl-lang/arch/blob/main/CLA.md'
+          path-to-document: 'https://github.com/arch-hdl-lang/arch-com/blob/main/CLA.md'
           branch: 'main'
           allowlist: dependabot[bot],github-actions[bot]
           custom-notsigned-prcomment: |
-            Thank you for your contribution! Before we can merge this PR, we need you to agree to our [Contributor License Agreement](https://github.com/arch-hdl-lang/arch/blob/main/CLA.md).
+            Thank you for your contribution! Before we can merge this PR, we need you to agree to our [Contributor License Agreement](https://github.com/arch-hdl-lang/arch-com/blob/main/CLA.md).
 
             To sign the CLA, please comment on this PR with:
 
