@@ -455,8 +455,8 @@ impl<'a> TypeChecker<'a> {
                         if let Some((_, bus_name)) = target_bus_ports.iter().find(|(pn, _)| *pn == conn.port_name.name) {
                             if let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
                                 if let ExprKind::Ident(sig_base) = &conn.signal.kind {
-                                    // Find the inst's bus port perspective
-                                    let inst_perspective = self.source.items.iter()
+                                    // Find the inst's bus port perspective and params
+                                    let inst_bus_info = self.source.items.iter()
                                         .find_map(|item| match item {
                                             Item::Module(m2) if m2.name.name == inst.module_name.name => Some(m2.ports.as_slice()),
                                             Item::Fsm(f2) if f2.name.name == inst.module_name.name => Some(f2.ports.as_slice()),
@@ -464,10 +464,15 @@ impl<'a> TypeChecker<'a> {
                                         })
                                         .and_then(|ports| ports.iter()
                                             .find(|p| p.name.name == conn.port_name.name)
-                                            .and_then(|p| p.bus_info.as_ref())
-                                            .map(|bi| bi.perspective));
+                                            .and_then(|p| p.bus_info.as_ref()));
+                                    let inst_perspective = inst_bus_info.map(|bi| bi.perspective);
 
-                                    let _eff = info.effective_signals(&info.default_param_map()); for (sname, sdir, _) in &_eff {
+                                    let mut pm = info.default_param_map();
+                                    if let Some(bi) = inst_bus_info {
+                                        for pa in &bi.params { pm.insert(pa.name.name.clone(), &pa.value); }
+                                    }
+                                    let eff = info.effective_signals(&pm);
+                                    for (sname, sdir, _) in &eff {
                                         // Determine actual direction from inst's perspective
                                         let inst_dir = match inst_perspective {
                                             Some(BusPerspective::Initiator) => *sdir,
@@ -554,7 +559,10 @@ impl<'a> TypeChecker<'a> {
                 // Bus port: check each output signal is driven (flattened name: port_signal)
                 let bus_name = &bi.bus_name.name;
                 if let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
-                    let _eff = info.effective_signals(&info.default_param_map()); for (sname, sdir, _) in &_eff {
+                    let mut pm = info.default_param_map();
+                    for pa in &bi.params { pm.insert(pa.name.name.clone(), &pa.value); }
+                    let eff = info.effective_signals(&pm);
+                    for (sname, sdir, _) in &eff {
                         let actual_dir = match bi.perspective {
                             BusPerspective::Initiator => *sdir,
                             BusPerspective::Target => (*sdir).flip(),
