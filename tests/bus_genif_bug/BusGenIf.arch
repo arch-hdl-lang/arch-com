@@ -1,0 +1,80 @@
+package PkgTest
+  domain SysDomain
+    freq_mhz: 100
+  end domain SysDomain
+end package PkgTest
+
+bus BusAxi4
+  param ADDR_W: const = 64;
+  param DATA_W: const = 64;
+  param ID_W:   const = 4;
+  param USER_W: const = 1;
+  param READ:   const = 1;
+  param WRITE:  const = 1;
+
+  generate_if READ
+    ar_valid:  out Bool;
+    ar_ready:  in  Bool;
+    ar_addr:   out UInt<ADDR_W>;
+    r_valid:   in  Bool;
+    r_ready:   out Bool;
+    r_data:    in  UInt<DATA_W>;
+  end generate_if
+
+  generate_if WRITE
+    aw_valid:  out Bool;
+    aw_ready:  in  Bool;
+    aw_addr:   out UInt<ADDR_W>;
+    w_valid:   out Bool;
+    w_ready:   in  Bool;
+    w_data:    out UInt<DATA_W>;
+    b_valid:   in  Bool;
+    b_ready:   out Bool;
+  end generate_if
+end bus BusAxi4
+
+// Read-only transport: should only have AR+R ports, no AW/W/B
+module ReadTransport
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port axi: initiator BusAxi4<READ=1, WRITE=0>;
+
+  comb
+    axi.ar_valid = true;
+    axi.ar_addr  = 0;
+    axi.r_ready  = true;
+  end comb
+end module ReadTransport
+
+// Write-only transport: should only have AW/W/B ports, no AR/R
+module WriteTransport
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port axi: initiator BusAxi4<READ=0, WRITE=1>;
+
+  comb
+    axi.aw_valid = true;
+    axi.aw_addr  = 0;
+    axi.w_valid  = true;
+    axi.w_data   = 0;
+    axi.b_ready  = true;
+  end comb
+end module WriteTransport
+
+// Full transport: all channels
+module FullTransport
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port axi: initiator BusAxi4<READ=1, WRITE=1>;
+
+  comb
+    axi.ar_valid = true;
+    axi.ar_addr  = 0;
+    axi.r_ready  = true;
+    axi.aw_valid = true;
+    axi.aw_addr  = 0;
+    axi.w_valid  = true;
+    axi.w_data   = 0;
+    axi.b_ready  = true;
+  end comb
+end module FullTransport

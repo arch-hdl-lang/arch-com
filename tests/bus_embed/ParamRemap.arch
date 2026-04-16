@@ -1,0 +1,32 @@
+package PkgRemap
+  domain SysDomain
+    freq_mhz: 100
+  end domain SysDomain
+end package PkgRemap
+
+// Parent bus uses DIFFERENT param names than the embedded bus.
+// This tests that param substitution maps correctly.
+bus BusWide
+  param MY_WIDTH: const = 16;
+  param MY_ID_W: const = 2;
+  embed ch: BusAxiAddr<ADDR_W=MY_WIDTH, ID_W=MY_ID_W>;
+end bus BusWide
+
+// Module that uses BusWide with non-default params.
+// This verifies the full chain: parent param override → embed param subst → SV type.
+module ParamRemapTest
+  param W: const = 64;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  port bus_port: initiator BusWide<MY_WIDTH=W, MY_ID_W=8>;
+
+  comb
+    bus_port.ch_valid = true;
+    bus_port.ch_addr  = 0;
+    bus_port.ch_id    = 0;
+    bus_port.ch_len   = 0;
+  end comb
+
+end module ParamRemapTest
