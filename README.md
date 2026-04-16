@@ -92,6 +92,38 @@ end fifo SyncFifo
 
 Swap `Clock<SysDomain>` + a second `Clock<OtherDomain>` for a gray-code CDC async FIFO — no other code changes needed.
 
+### Reusable port bundles with `bus`
+
+Define a bus once, instantiate as `initiator` (keeps directions) or `target` (flips all directions). Codegen flattens `m_axi.aw_valid` → `m_axi_aw_valid` in the SV port list.
+
+```arch
+bus SimpleAxi
+  param DATA_W: const = 32;
+
+  // Signals from the initiator's perspective
+  aw_valid: out Bool;
+  aw_ready: in  Bool;
+  aw_addr:  out UInt<32>;
+  w_valid:  out Bool;
+  w_ready:  in  Bool;
+  w_data:   out UInt<DATA_W>;
+  b_valid:  in  Bool;
+  b_ready:  out Bool;
+end bus SimpleAxi
+```
+
+Usage in a module:
+
+```arch
+module DmaTop
+  port clk:     in Clock<SysDomain>;
+  port rst:     in Reset<Sync>;
+  port m_axi:   initiator SimpleAxi;     // drives aw_valid, reads aw_ready, etc.
+  port s_ctrl:  target SimpleAxi;        // flipped — reads aw_valid, drives aw_ready
+  // ...
+end module DmaTop
+```
+
 ### Multi-cycle protocols with `thread`
 
 Thread blocks describe multi-cycle protocols as straight-line code. The compiler lowers each thread to a synthesizable FSM with `wait until`, `fork/join`, counted `for` loops, and `resource`/`lock` arbitration. See `doc/thread_spec_section.md`.

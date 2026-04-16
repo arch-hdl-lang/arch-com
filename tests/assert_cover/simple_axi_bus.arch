@@ -1,0 +1,13 @@
+bus SimpleAxi
+  param DATA_W: const = 32;
+
+  // Write channel (from initiator's perspective)
+  aw_valid: out Bool;
+  aw_ready: in  Bool;
+  aw_addr:  out UInt<32>;
+  w_valid:  out Bool;
+  w_ready:  in  Bool;
+  w_data:   out UInt<DATA_W>;
+  b_valid:  in  Bool;
+  b_ready:  out Bool;
+end bus SimpleAxi
