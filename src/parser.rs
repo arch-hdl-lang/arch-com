@@ -1276,6 +1276,32 @@ impl Parser {
         if self.check(TokenKind::Init) {
             return self.parse_init_block();
         }
+        // `wait until cond;` — pipeline stage multi-cycle boundary
+        if self.check_ident("wait") {
+            let wait_start = self.advance().span;
+            if self.check_ident("until") {
+                self.advance();
+                let cond = self.parse_expr()?;
+                let semi_span = self.expect(TokenKind::Semi)?.span;
+                return Ok(Stmt::WaitUntil(cond, wait_start.merge(semi_span)));
+            }
+            return Err(CompileError::general(
+                "expected 'until' after 'wait' in seq block",
+                self.peek_span(),
+            ));
+        }
+        // `do ... until cond;` — hold outputs while waiting for condition
+        if self.check_ident("do") {
+            let do_start = self.advance().span;
+            let mut body = Vec::new();
+            while !self.check_ident("until") {
+                body.push(self.parse_reg_stmt()?);
+            }
+            self.advance(); // consume 'until'
+            let cond = self.parse_expr()?;
+            let semi_span = self.expect(TokenKind::Semi)?.span;
+            return Ok(Stmt::DoUntil { body, cond, span: do_start.merge(semi_span) });
+        }
         // Assignment: target <= value;
         let target = self.parse_expr()?;
         self.expect(TokenKind::LtEq)?;

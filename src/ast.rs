@@ -530,6 +530,12 @@ pub enum Stmt {
     /// Reset initialization block: body runs when reset is asserted.
     /// Determines async sensitivity when the reset port is Reset<Async, ...>.
     Init(InitBlock),
+    /// `wait until cond;` — pipeline stage multi-cycle stall boundary.
+    /// Only valid inside a pipeline stage `seq` block.
+    WaitUntil(Expr, Span),
+    /// `do ... until cond;` — hold comb/seq outputs while waiting for condition.
+    /// Only valid inside a pipeline stage `seq` block.
+    DoUntil { body: Vec<Stmt>, cond: Expr, span: Span },
 }
 
 #[derive(Debug, Clone)]
