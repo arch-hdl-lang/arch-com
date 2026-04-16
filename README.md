@@ -33,7 +33,47 @@ cargo run -- build mymodule.arch [-o mymodule.sv]
 
 # Simulate with C++ testbench
 cargo run -- sim mymodule.arch --tb mymodule_tb.cpp
+
+# Simulate with Python testbench (cocotb-style)
+cargo run -- sim mymodule.arch --pybind --test test_mymodule.py
 ```
+
+## Simulation
+
+`arch sim` generates Verilator-compatible C++ models from `.arch` sources, compiles them with `g++`, and runs the simulation binary — all in one command.
+
+**C++ testbenches** use the same API as Verilator's generated models (`VModuleName` class with public port fields, `eval()`, `final()`). Existing Verilator C++ testbenches work with minimal changes — just replace the `#include "VModuleName.h"` header:
+
+```cpp
+#include "VMyModule.h"
+#include "verilated.h"
+
+int main(int argc, char** argv) {
+    Verilated::commandArgs(argc, argv);
+    VMyModule dut;
+    dut.clk = 0; dut.rst = 1;
+    for (int i = 0; i < 5; i++) { dut.clk = 0; dut.eval(); dut.clk = 1; dut.eval(); }
+    dut.rst = 0;
+    // ... drive inputs, check outputs ...
+    dut.final();
+    return 0;
+}
+```
+
+**Python testbenches** use `--pybind` to generate a pybind11 wrapper, enabling cocotb-style testing without Verilator or a VPI shim:
+
+```sh
+arch sim --pybind --test test_mymodule.py MyModule.arch
+```
+
+**Built-in debug instrumentation** replaces manual `printf`/`$display` for diagnosing simulation failures:
+
+```sh
+arch sim --debug MyModule.arch --tb tb.cpp              # print I/O port changes
+arch sim --debug+fsm --depth 2 MyModule.arch --tb tb.cpp # + FSM transitions, 2 levels deep
+```
+
+Additional flags: `--wave out.vcd` (VCD waveform), `--check-uninit` (uninitialized register detection), `--cdc-random` (CDC metastability modeling).
 
 ## Language snapshot
 
