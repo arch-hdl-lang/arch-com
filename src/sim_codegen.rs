@@ -1894,6 +1894,9 @@ fn emit_reg_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize) {
             emit_reg_stmts(&ib.body, ctx, out, indent + 1);
             out.push_str(&format!("{}}}\n", ind(indent)));
         }
+        Stmt::WaitUntil(_, _) | Stmt::DoUntil { .. } => {
+            panic!("pipeline wait-stages not yet supported in sim")
+        }
     }
 }
 
@@ -2498,6 +2501,10 @@ fn collect_stmt_assigns(stmts: &[Stmt], out: &mut std::collections::BTreeSet<Str
             }
             Stmt::Init(ib) => {
                 collect_stmt_assigns(&ib.body, out);
+            }
+            Stmt::WaitUntil(_, _) => {}
+            Stmt::DoUntil { body, .. } => {
+                collect_stmt_assigns(body, out);
             }
         }
     }

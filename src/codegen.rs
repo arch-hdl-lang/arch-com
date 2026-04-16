@@ -12,6 +12,8 @@ fn stmt_span_start(stmt: &Stmt) -> usize {
         Stmt::Log(l) => l.span.start,
         Stmt::For(f) => f.span.start,
         Stmt::Init(ib) => ib.span.start,
+        Stmt::WaitUntil(_, sp) => sp.start,
+        Stmt::DoUntil { span, .. } => span.start,
     }
 }
 
@@ -883,6 +885,8 @@ impl<'a> Codegen<'a> {
             Stmt::Assign(_) => false,
             Stmt::For(f) => f.body.iter().any(Self::stmt_has_log),
             Stmt::Init(ib) => ib.body.iter().any(Self::stmt_has_log),
+            Stmt::WaitUntil(_, _) => false,
+            Stmt::DoUntil { body, .. } => body.iter().any(Self::stmt_has_log),
         }
     }
 
@@ -1085,6 +1089,9 @@ impl<'a> Codegen<'a> {
                 self.emit_for_loop_sv(f, |s, stmt| s.emit_reg_stmt_as_comb(stmt));
             }
             Stmt::Init(_ib) => unreachable!("Stmt::Init should not appear in latch/comb context"),
+            Stmt::WaitUntil(_, _) | Stmt::DoUntil { .. } => {
+                unreachable!("WaitUntil/DoUntil only valid in pipeline stage seq blocks")
+            }
         }
     }
 
@@ -1470,6 +1477,10 @@ impl<'a> Codegen<'a> {
                 Stmt::Init(ib) => {
                     Self::collect_assigned_roots(&ib.body, out);
                 }
+                Stmt::WaitUntil(_, _) => {}
+                Stmt::DoUntil { body, .. } => {
+                    Self::collect_assigned_roots(body, out);
+                }
             }
         }
     }
@@ -1738,6 +1749,9 @@ impl<'a> Codegen<'a> {
             Stmt::Init(_ib) => {
                 // init blocks are extracted and emitted by emit_reg_block before this point
                 unreachable!("Stmt::Init should be handled by emit_reg_block, not emit_reg_stmt")
+            }
+            Stmt::WaitUntil(_, _) | Stmt::DoUntil { .. } => {
+                unreachable!("WaitUntil/DoUntil only valid in pipeline stage seq blocks")
             }
         }
     }
@@ -2789,11 +2803,29 @@ impl<'a> Codegen<'a> {
         }
         self.line("");
 
+        // ── Detect wait-stages (variable-latency with wait until / do..until) ─
+        let wait_stage_flags: Vec<bool> = p.stages.iter().map(|s| Self::stage_has_wait(s)).collect();
+        let has_any_wait_stage = wait_stage_flags.iter().any(|f| *f);
+
+        // Declare FSM state registers for wait-stages
+        if has_any_wait_stage {
+            self.line("// ── Wait-stage FSM registers ──");
+            for (si, stage) in p.stages.iter().enumerate() {
+                if !wait_stage_flags[si] { continue; }
+                let prefix = stage.name.name.to_lowercase();
+                let n_states = Self::count_wait_fsm_states(stage);
+                let bits = if n_states <= 2 { 1 } else { ((n_states as f64).log2().ceil()) as usize };
+                self.line(&format!("logic [{}:0] {prefix}_fsm_state;", bits - 1));
+                self.line(&format!("logic {prefix}_fsm_busy;"));
+            }
+            self.line("");
+        }
+
         // ── Per-stage stall signals ──────────────────────────────────────────
         // Determine whether any stage or the pipeline has stall conditions.
         let has_per_stage_stall = p.stages.iter().any(|s| s.stall_cond.is_some());
         let has_global_stall = !p.stall_conds.is_empty();
-        let has_any_stall = has_per_stage_stall || has_global_stall;
+        let has_any_stall = has_per_stage_stall || has_global_stall || has_any_wait_stage;
 
         if has_any_stall {
             self.line("// ── Stall signals ──");
@@ -2826,6 +2858,12 @@ impl<'a> Codegen<'a> {
                     parts.push(self.emit_pipeline_expr_str(cond, &stage_names, &stage_regs, &port_names));
                 }
 
+                // Wait-stage FSM busy signal
+                if wait_stage_flags[si] {
+                    let pfx = stage_names[si].to_lowercase();
+                    parts.push(format!("{pfx}_fsm_busy"));
+                }
+
                 // Global stall contributes to every stage
                 if has_global_stall {
                     parts.push("pipeline_stall".to_string());
@@ -2842,6 +2880,17 @@ impl<'a> Codegen<'a> {
                 } else {
                     self.line(&format!("assign {prefix}_stall = {};", parts.join(" || ")));
                 }
+            }
+            self.line("");
+        }
+
+        // ── Wait-stage FSM busy assignments ─────────────────────────────────
+        if has_any_wait_stage {
+            for (si, stage) in p.stages.iter().enumerate() {
+                if !wait_stage_flags[si] { continue; }
+                let prefix = stage.name.name.to_lowercase();
+                // FSM is busy when not in idle state (state 0)
+                self.line(&format!("assign {prefix}_fsm_busy = ({prefix}_fsm_state != '0);"));
             }
             self.line("");
         }
@@ -2877,6 +2926,9 @@ impl<'a> Codegen<'a> {
         for (si, stage) in p.stages.iter().enumerate() {
             let prefix = stage.name.name.to_lowercase();
             self.line(&format!("{}_valid_r <= 1'b0;", prefix));
+            if wait_stage_flags[si] {
+                self.line(&format!("{prefix}_fsm_state <= '0;"));
+            }
             for (sig_name, _ty_str, init_str) in &stage_regs[si] {
                 if !init_str.is_empty() {
                     self.line(&format!("{}_{} <= {};", prefix, sig_name, init_str));
@@ -2891,7 +2943,12 @@ impl<'a> Codegen<'a> {
         for (si, stage) in p.stages.iter().enumerate() {
             let prefix = stage.name.name.to_lowercase();
 
-            if has_any_stall {
+            if wait_stage_flags[si] {
+                // ── Wait-stage: generate FSM transition logic ────────────
+                self.emit_pipeline_wait_stage_ff(
+                    stage, &prefix, si, &stage_names, &stage_regs, &port_names,
+                );
+            } else if has_any_stall {
                 // When this stage is not stalled, it accepts new data
                 self.line(&format!("if (!{prefix}_stall) begin"));
                 self.indent += 1;
@@ -2943,6 +3000,13 @@ impl<'a> Codegen<'a> {
             self.line(&format!("if ({}) begin", cond_str));
             self.indent += 1;
             self.line(&format!("{}_valid_r <= 1'b0;", target_prefix));
+            // Reset FSM state on flush for wait-stages
+            let flush_si = stage_names.iter().position(|n| n.to_lowercase() == target_prefix);
+            if let Some(si) = flush_si {
+                if wait_stage_flags[si] {
+                    self.line(&format!("{target_prefix}_fsm_state <= '0;"));
+                }
+            }
             self.indent -= 1;
             self.line("end");
         }
@@ -3021,6 +3085,215 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    // ── Pipeline wait-stage helpers ─────────────────────────────────────────
+
+    /// Check if a pipeline stage contains `wait until` or `do..until` in its seq block.
+    fn stage_has_wait(stage: &StageDecl) -> bool {
+        stage.body.iter().any(|item| {
+            if let ModuleBodyItem::RegBlock(rb) = item {
+                Self::stmts_contain_wait(&rb.stmts)
+            } else {
+                false
+            }
+        })
+    }
+
+    fn stmts_contain_wait(stmts: &[Stmt]) -> bool {
+        stmts.iter().any(|s| match s {
+            Stmt::WaitUntil(_, _) | Stmt::DoUntil { .. } => true,
+            Stmt::IfElse(ie) => Self::stmts_contain_wait(&ie.then_stmts) || Self::stmts_contain_wait(&ie.else_stmts),
+            Stmt::For(f) => Self::stmts_contain_wait(&f.body),
+            _ => false,
+        })
+    }
+
+    /// Count FSM states needed for a wait-stage.
+    /// State 0 = idle. Each `wait until` / `do..until` adds one wait state.
+    /// Pre-wait assigns and trailing assigns are merged into adjacent states.
+    fn count_wait_fsm_states(stage: &StageDecl) -> usize {
+        let mut wait_count = 0;
+        for item in &stage.body {
+            if let ModuleBodyItem::RegBlock(rb) = item {
+                for s in &rb.stmts {
+                    match s {
+                        Stmt::WaitUntil(_, _) | Stmt::DoUntil { .. } => { wait_count += 1; }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        wait_count + 1 // +1 for idle state 0
+    }
+
+    /// Emit the always_ff logic for a wait-stage: FSM transitions + register updates.
+    ///
+    /// State 0 is idle: checks upstream valid, fast-paths if wait condition already met.
+    /// Wait states loop until their condition is satisfied, then advance.
+    /// Trailing assigns execute when the last wait condition fires, returning to idle.
+    fn emit_pipeline_wait_stage_ff(
+        &mut self,
+        stage: &StageDecl,
+        prefix: &str,
+        si: usize,
+        stage_names: &[&str],
+        stage_regs: &[Vec<(String, String, String)>],
+        port_names: &std::collections::HashSet<String>,
+    ) {
+        // Collect seq stmts from the stage's RegBlock
+        let mut seq_stmts: &[Stmt] = &[];
+        for item in &stage.body {
+            if let ModuleBodyItem::RegBlock(rb) = item {
+                seq_stmts = &rb.stmts;
+                break;
+            }
+        }
+
+        // Partition into groups: [pre-wait assigns, wait, post-wait assigns, wait, ...]
+        // Each wait creates a wait-state. Pre-wait assigns execute on entry.
+        // Trailing assigns execute when the last wait completes.
+        struct WaitGroup<'a> {
+            pre_assigns: Vec<&'a Stmt>,   // assigns before the wait
+            cond: &'a Expr,               // wait condition
+            hold_assigns: Vec<&'a Stmt>,  // do..until body (empty for wait until)
+        }
+
+        let mut groups: Vec<WaitGroup> = Vec::new();
+        let mut cur_assigns: Vec<&Stmt> = Vec::new();
+
+        for stmt in seq_stmts {
+            match stmt {
+                Stmt::WaitUntil(cond, _) => {
+                    groups.push(WaitGroup {
+                        pre_assigns: std::mem::take(&mut cur_assigns),
+                        cond,
+                        hold_assigns: Vec::new(),
+                    });
+                }
+                Stmt::DoUntil { body, cond, .. } => {
+                    groups.push(WaitGroup {
+                        pre_assigns: std::mem::take(&mut cur_assigns),
+                        cond,
+                        hold_assigns: body.iter().collect(),
+                    });
+                }
+                other => {
+                    cur_assigns.push(other);
+                }
+            }
+        }
+        let trailing = std::mem::take(&mut cur_assigns);
+
+        let upstream_valid = if si > 0 {
+            format!("{}_valid_r", stage_names[si - 1].to_lowercase())
+        } else {
+            "1'b1".to_string()
+        };
+
+        // For each wait group, we generate:
+        //   - State N (wait): loops checking condition; on true, runs trailing/next pre-assigns
+        // State 0 is special: checks upstream valid, fast-paths.
+        // Total states = 1 (idle) + number of wait groups
+        let n_states = 1 + groups.len();
+        let bits = if n_states <= 2 { 1 } else { ((n_states as f64).log2().ceil()) as usize };
+
+        self.line(&format!("// Wait-stage FSM: {prefix}"));
+        self.line(&format!("case ({prefix}_fsm_state)"));
+        self.indent += 1;
+
+        // State 0: idle — check upstream valid, optionally fast-path first wait
+        self.line(&format!("{bits}'d0: begin"));
+        self.indent += 1;
+        if let Some(g) = groups.first() {
+            let cond = self.emit_pipeline_expr_str(g.cond, stage_names, stage_regs, port_names);
+
+            // Run pre-assigns (fire once on entry to the wait)
+            // For state 0 these only fire when upstream has valid data
+            self.line(&format!("if ({upstream_valid}) begin"));
+            self.indent += 1;
+            for a in &g.pre_assigns {
+                self.emit_pipeline_reg_stmt(a, prefix, si, stage_names, stage_regs, port_names);
+            }
+            // Fast path: condition already met
+            self.line(&format!("if ({cond}) begin"));
+            self.indent += 1;
+            if groups.len() == 1 {
+                // Only one wait group: run trailing assigns and stay idle
+                for a in &trailing {
+                    self.emit_pipeline_reg_stmt(a, prefix, si, stage_names, stage_regs, port_names);
+                }
+                // Propagate valid
+                self.line(&format!("{prefix}_valid_r <= {upstream_valid};"));
+            } else {
+                // Advance to next wait state
+                self.line(&format!("{prefix}_fsm_state <= {bits}'d2;"));
+            }
+            self.indent -= 1;
+            self.line("end else begin");
+            self.indent += 1;
+            // Slow path: enter wait state 1
+            self.line(&format!("{prefix}_fsm_state <= {bits}'d1;"));
+            for a in &g.hold_assigns {
+                self.emit_pipeline_reg_stmt(a, prefix, si, stage_names, stage_regs, port_names);
+            }
+            self.indent -= 1;
+            self.line("end");
+            self.indent -= 1;
+            self.line("end");
+        }
+        self.indent -= 1;
+        self.line("end");
+
+        // States 1..N: wait states (one per wait group)
+        for (gi, g) in groups.iter().enumerate() {
+            let state_num = gi + 1;
+            self.line(&format!("{bits}'d{state_num}: begin"));
+            self.indent += 1;
+
+            let cond = self.emit_pipeline_expr_str(g.cond, stage_names, stage_regs, port_names);
+
+            // Emit hold assigns (for do..until, every cycle)
+            for a in &g.hold_assigns {
+                self.emit_pipeline_reg_stmt(a, prefix, si, stage_names, stage_regs, port_names);
+            }
+
+            self.line(&format!("if ({cond}) begin"));
+            self.indent += 1;
+
+            let is_last = gi + 1 >= groups.len();
+            if is_last {
+                // Last wait: run trailing assigns, return to idle
+                for a in &trailing {
+                    self.emit_pipeline_reg_stmt(a, prefix, si, stage_names, stage_regs, port_names);
+                }
+                self.line(&format!("{prefix}_fsm_state <= '0;"));
+                self.line(&format!("{prefix}_valid_r <= 1'b1;"));
+            } else {
+                // Not last: run next group's pre-assigns, advance to next wait state
+                let next_g = &groups[gi + 1];
+                for a in &next_g.pre_assigns {
+                    self.emit_pipeline_reg_stmt(a, prefix, si, stage_names, stage_regs, port_names);
+                }
+                self.line(&format!("{prefix}_fsm_state <= {bits}'d{};", state_num + 1));
+            }
+
+            self.indent -= 1;
+            self.line("end");
+
+            self.indent -= 1;
+            self.line("end");
+        }
+
+        // Default case
+        self.line("default: begin");
+        self.indent += 1;
+        self.line(&format!("{prefix}_fsm_state <= '0;"));
+        self.indent -= 1;
+        self.line("end");
+
+        self.indent -= 1;
+        self.line("endcase");
+    }
+
     /// Emit a register statement with pipeline name rewriting.
     fn emit_pipeline_reg_stmt(
         &mut self,
@@ -3069,6 +3342,10 @@ impl<'a> Codegen<'a> {
                 }
             }
             Stmt::Init(_) => unreachable!("Stmt::Init should not appear in pipeline reg stmt context"),
+            Stmt::WaitUntil(_, _) | Stmt::DoUntil { .. } => {
+                // Pipeline wait-stages handled separately by pipeline codegen
+                unreachable!("WaitUntil/DoUntil handled by pipeline stage codegen, not emit_pipeline_reg_stmt")
+            }
         }
     }
 

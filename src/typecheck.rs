@@ -220,6 +220,8 @@ impl<'a> TypeChecker<'a> {
                     for stmt in &rb.stmts {
                         self.check_reg_stmt(stmt, &m.name.name, &local_types, &mut driven);
                     }
+                    // Reject wait until / do..until in module seq blocks (only valid in pipeline stages)
+                    Self::reject_wait_in_stmts(&rb.stmts, &mut self.errors);
                     // Validate reset consistency: all registers with reset in the
                     // same seq block must agree on signal name, sync/async, and polarity.
                     self.check_always_block_reset_consistency(rb, m);
@@ -1073,6 +1075,10 @@ impl<'a> TypeChecker<'a> {
                 Stmt::Init(ib) => {
                     Self::collect_assigned_roots_tc(&ib.body, out);
                 }
+                Stmt::WaitUntil(_, _) => {}
+                Stmt::DoUntil { body, .. } => {
+                    Self::collect_assigned_roots_tc(body, out);
+                }
             }
         }
     }
@@ -1370,6 +1376,55 @@ impl<'a> TypeChecker<'a> {
                 for s in &ib.body {
                     self.check_reg_stmt(s, module_name, local_types, driven);
                 }
+            }
+            Stmt::WaitUntil(expr, span) => {
+                let ty = self.resolve_expr_type(expr, module_name, local_types);
+                if ty != Ty::Bool && ty != Ty::Error {
+                    self.errors.push(CompileError::general(
+                        &format!("wait until condition must be Bool, found {:?}", ty),
+                        *span,
+                    ));
+                }
+            }
+            Stmt::DoUntil { body, cond, span } => {
+                for s in body {
+                    self.check_reg_stmt(s, module_name, local_types, driven);
+                }
+                let ty = self.resolve_expr_type(cond, module_name, local_types);
+                if ty != Ty::Bool && ty != Ty::Error {
+                    self.errors.push(CompileError::general(
+                        &format!("do-until condition must be Bool, found {:?}", ty),
+                        *span,
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Reject `wait until` / `do..until` in non-pipeline seq blocks.
+    fn reject_wait_in_stmts(stmts: &[Stmt], errors: &mut Vec<CompileError>) {
+        for stmt in stmts {
+            match stmt {
+                Stmt::WaitUntil(_, span) => {
+                    errors.push(CompileError::general(
+                        "`wait until` is only valid inside pipeline stage `seq` blocks",
+                        *span,
+                    ));
+                }
+                Stmt::DoUntil { span, .. } => {
+                    errors.push(CompileError::general(
+                        "`do..until` is only valid inside pipeline stage `seq` blocks",
+                        *span,
+                    ));
+                }
+                Stmt::IfElse(ie) => {
+                    Self::reject_wait_in_stmts(&ie.then_stmts, errors);
+                    Self::reject_wait_in_stmts(&ie.else_stmts, errors);
+                }
+                Stmt::For(f) => {
+                    Self::reject_wait_in_stmts(&f.body, errors);
+                }
+                _ => {}
             }
         }
     }
@@ -2469,6 +2524,10 @@ impl<'a> TypeChecker<'a> {
                 Stmt::Init(ib) => {
                     Self::collect_stmt_targets(&ib.body, out);
                 }
+                Stmt::WaitUntil(_, _) => {}
+                Stmt::DoUntil { body, .. } => {
+                    Self::collect_stmt_targets(body, out);
+                }
             }
         }
     }
@@ -2499,6 +2558,13 @@ impl<'a> TypeChecker<'a> {
                 }
                 Stmt::Init(ib) => {
                     Self::collect_stmt_reads(&ib.body, out);
+                }
+                Stmt::WaitUntil(expr, _) => {
+                    Self::collect_expr_reads(expr, out);
+                }
+                Stmt::DoUntil { body, cond, .. } => {
+                    Self::collect_stmt_reads(body, out);
+                    Self::collect_expr_reads(cond, out);
                 }
             }
         }
@@ -3565,6 +3631,13 @@ fn check_precedence_in_item(item: &Item, errors: &mut Vec<CompileError>) {
             }
             Stmt::Init(ib) => {
                 for s in &ib.body { walk_stmt(s, errors); }
+            }
+            Stmt::WaitUntil(expr, _) => {
+                check_precedence_expr(expr, errors);
+            }
+            Stmt::DoUntil { body, cond, .. } => {
+                for s in body { walk_stmt(s, errors); }
+                check_precedence_expr(cond, errors);
             }
         }
     }
