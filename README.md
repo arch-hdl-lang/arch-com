@@ -4,6 +4,22 @@ A compiler for the **ARCH** hardware description language — ingests `.arch` so
 
 **Paper**: [arXiv:2604.05983](https://arxiv.org/abs/2604.05983)
 
+## Why a new HDL?
+
+SystemVerilog is the industry standard, but it was designed for human experts writing RTL by hand — not for AI agents generating hardware from natural-language specs. The result is a language where silent bugs are easy to write and hard to catch:
+
+- **Implicit width conversions**: `assign out = a + b;` silently truncates or zero-extends depending on context. Width mismatches are the #1 source of hardware bugs, and SV makes them invisible. ARCH requires every width cast to be explicit (`.trunc<N>()`, `.zext<N>()`, `.sext<N>()`), or use wrapping operators (`+%`, `-%`, `*%`) when you genuinely want modular arithmetic.
+
+- **No clock domain safety**: crossing clock domains in SV is a convention (use a synchronizer module, hope you picked the right one). ARCH tracks `Clock<Domain>` in the type system — a signal in `Clock<SysDomain>` cannot be assigned to a `Clock<MemDomain>` register without an explicit `synchronizer` construct. The compiler auto-inserts gray-code CDC for async FIFOs and rejects unsafe crossings at compile time.
+
+- **Boilerplate-heavy patterns**: an FSM in SV requires a typedef enum, an always_ff for state_r, an always_comb for state_next, and a separate output block — ~60 lines of mechanical code that every engineer writes slightly differently. ARCH's `fsm` keyword is 15 lines with compiler-verified exhaustive transitions and auto-generated SVA assertions.
+
+- **AI agents produce structurally broken SV**: LLMs frequently generate unbalanced `begin/end`, drive the same signal from multiple `always` blocks, or forget sensitivity lists. ARCH's brace-free `keyword Name ... end keyword Name` grammar, mandatory named block endings, single-driver rule, and all-ports-connected check make it structurally impossible for an AI to produce invalid RTL. The `todo!` escape hatch lets an LLM emit a compilable skeleton for parts it's unsure about.
+
+- **No built-in verification**: SV requires users to manually add assertions, coverage, and simulation infrastructure. ARCH auto-generates overflow/underflow assertions for FIFOs, legal-state + state-reachability + transition coverage for FSMs, counter-range bounds, and `guard` contract assertions — all provable with EBMC formal and checkable with Verilator simulation, with zero user effort.
+
+ARCH compiles to clean, readable SystemVerilog that works with any existing EDA tool (Verilator, VCS, QuestaSim, Vivado, Yosys). It's not a replacement for SV — it's a safer, AI-friendly front-end that generates the SV you'd write by hand, but with compile-time guarantees that the SV spec doesn't provide.
+
 ## Quick start
 
 ```sh
