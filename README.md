@@ -79,6 +79,8 @@ arch sim --debug+fsm --depth 2 MyModule.arch --tb tb.cpp # + FSM transitions, 2 
 
 Additional flags: `--wave out.vcd` (VCD waveform), `--check-uninit` (uninitialized `reset none` reg / `pipe_reg` reads), `--inputs-start-uninit` (warn when the TB forgets to drive an input), `--check-uninit-ram` (warn on reads of RAM cells never written), `--cdc-random` (CDC metastability modeling).
 
+Always-on runtime checks: out-of-range `Vec<T,N>` indexing, bit-selects `val[i]` on `UInt<W>`/`SInt<W>`, and variable part-selects `val[start +: W]` / `val[start -: W]` are a hard abort with `ARCH-ERROR: <sig>: index N out of bounds [0..L)`. Compile-time constant indices are verified by the type checker, so only runtime indices carry the check.
+
 ## Language snapshot
 
 ### Combinational logic
