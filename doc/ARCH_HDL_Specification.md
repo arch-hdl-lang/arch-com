@@ -4895,6 +4895,7 @@ Arch's 2-state simulation eliminates X/Z propagation by construction, but severa
 |-------------------------------|---------------|------------|
 | Read of `reset none` register before first write | `--check-uninit` runtime warning | ✅ Implemented |
 | Read of `pipe_reg` before pipeline fills | `--check-uninit` runtime warning (propagates through chain) | ✅ Implemented |
+| Read of primary input that TB never drove | `--inputs-start-uninit` runtime warning (per-port setter `dut.set_<port>()` marks init) | ✅ Implemented |
 | Read of RAM cell before first write | Undetected — returns 0 or `init` value silently | ❌ Planned |
 | Out-of-bounds `Vec` index at runtime | Undetected — silently wraps | ❌ Planned |
 | Division by zero | Undetected — undefined C++ behavior | ❌ Planned |

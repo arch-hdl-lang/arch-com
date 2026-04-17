@@ -59,6 +59,29 @@ The debug output covers:
 
 Do NOT add `printf` or `$display` to C++ testbenches for debugging — `--debug` provides the same information automatically with zero code changes. Only add manual prints for test-specific protocol checking (e.g., verifying handshake sequences).
 
+### Catching X-propagation from undriven inputs (`--inputs-start-uninit`)
+
+When porting an SV design to ARCH, it's easy for a testbench to forget to drive a port. Under 4-state sim (Verilator/iverilog) this shows up as X-propagation; ARCH's native sim is 2-state so the bug is invisible unless you opt in:
+
+```bash
+arch sim --inputs-start-uninit Module.arch --tb tb.cpp
+```
+
+This implies `--check-uninit`. Every scalar input port starts in an "uninitialized" state; a TB opts each port in by calling the generated setter:
+
+```cpp
+dut.set_port_name(value);   // marks the port as driven
+dut.port_name = value;      // does NOT mark it — will warn on read
+```
+
+If the design reads an input that the TB never drove (in a comb block, let binding, seq block, or latch), you get:
+
+```
+WARNING: read of uninitialized input 'port_name' — TB never called set_port_name()
+```
+
+Clock and Reset input ports are excluded (they're driven by the test harness lifecycle, not by the setter API). Bus ports and Vec ports are also excluded in v1.
+
 ---
 
 ## ARCH Language — Key Constructs

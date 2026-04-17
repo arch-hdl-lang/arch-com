@@ -379,18 +379,17 @@ Reworked several existing `.arch` files for correctness. Confirmed passing:
 | Testable via cocotb | 275 |
 | **Cocotb PASS** | **274 (99.6%)** |
 | Cocotb FAIL | 1 |
-| Cocotb TIMEOUT | 4 |
+| Cocotb TIMEOUT | 0 |
 | Not testable (TOPLEVEL=verilog + missing) | 27 |
 
 ### Remaining Failures
 
-**cid002 (1 timeout):** vga_controller (complex pixel-timing harness).
+**vga_controller (all 3 variants now PASS — 2026-04-16):** Previously listed as timeouts in cid002/cid003/cid007 (the "cid004" reference in earlier logs was spurious — there is no cid004 variant). Re-run under the current compiler completes in ~20 real seconds each (16.8M ns simulated). Log was stale.
 
-**cid003 (1 timeout):** vga_controller. (microcode_sequencer now PASS — nested `@cocotb.test()` decorator stripping fix in `run_cvdp.py`.)
-
-**cid004 (1 timeout):** vga_controller (shared across categories).
-
-**cid007 (1 timeout):** vga_controller.
+**cid002 (1 FAIL):** `cvdp_copilot_interrupt_controller_0017` (pic_starvation_prevention). Two layered issues:
+  1. *Test harness bug*: the harness never initializes `dut.interrupt_mask`, leaving it at `X`. Our DUT correctly computes `mask_inv = ~interrupt_mask` → `X`, then `pending |= req & mask_inv` X-propagates into `pending_interrupts` at every requested bit. Priority-decode then reads `pending[i] == 1'b1` as `X` (falsy), returning `interrupt_id=0`.
+  2. *Response latency*: With `interrupt_mask=0` forced, a later assertion fires — test allows only 3 cycles from ACK to next `valid=1`, but our 5-state FSM (IDLE→PRIORITY_CALC→SERVICE_PREP→SERVICING→COMPLETION) needs 4. Other passing DUTs likely flatten the FSM and/or ignore the mask.
+  ARCH has no `!==` / `===` operator for X-tolerant logic, so this would require either a language addition or a DUT rewrite. Note also that the run_cvdp.py SV-selection preference picks `interrupt_controller.sv` over `pic_starvation_prevention.sv` when TOPLEVEL matches the former's stem — both define `module interrupt_controller` with different port lists. Accepted as known; deferred.
 
 **cid016:** coffee_machine now PASS — changed from `port reg` (1-cycle output lag) to `port` + `comb` (combinational, same-cycle); also fixed one-hot encoding to use `(1).zext<NS_BEANS>() << i_bean_sel` instead of hardcoded 4-way mux.
 

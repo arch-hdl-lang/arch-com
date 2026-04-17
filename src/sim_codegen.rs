@@ -33,6 +33,7 @@ pub struct SimCodegen<'a> {
     #[allow(dead_code)]
     overload_map: HashMap<usize, usize>,
     check_uninit: bool,
+    inputs_start_uninit: bool,
     cdc_random: bool,
     debug: bool,
     debug_depth: u32,
@@ -45,11 +46,16 @@ impl<'a> SimCodegen<'a> {
         source: &'a SourceFile,
         overload_map: HashMap<usize, usize>,
     ) -> Self {
-        Self { symbols, source, overload_map, check_uninit: false, cdc_random: false, debug: false, debug_depth: 1, debug_fsm: false }
+        Self { symbols, source, overload_map, check_uninit: false, inputs_start_uninit: false, cdc_random: false, debug: false, debug_depth: 1, debug_fsm: false }
     }
 
     pub fn check_uninit(mut self, enabled: bool) -> Self {
         self.check_uninit = enabled;
+        self
+    }
+
+    pub fn inputs_start_uninit(mut self, enabled: bool) -> Self {
+        self.inputs_start_uninit = enabled;
         self
     }
 
@@ -2165,6 +2171,43 @@ fn collect_comb_reads(stmt: &CombStmt, out: &mut std::collections::BTreeSet<Stri
     }
 }
 
+/// Collect all identifiers read in a seq (or init) statement — RHS of assignments,
+/// branch conditions, loop bounds, wait predicates. Used by `--inputs-start-uninit`.
+fn collect_stmt_idents(stmt: &Stmt, out: &mut std::collections::BTreeSet<String>) {
+    match stmt {
+        Stmt::Assign(a) => collect_expr_idents(&a.value, out),
+        Stmt::IfElse(ie) => {
+            collect_expr_idents(&ie.cond, out);
+            for s in &ie.then_stmts { collect_stmt_idents(s, out); }
+            for s in &ie.else_stmts { collect_stmt_idents(s, out); }
+        }
+        Stmt::Match(m) => {
+            collect_expr_idents(&m.scrutinee, out);
+            for arm in &m.arms {
+                for s in &arm.body { collect_stmt_idents(s, out); }
+            }
+        }
+        Stmt::For(f) => {
+            if let ForRange::Range(lo, hi) = &f.range {
+                collect_expr_idents(lo, out);
+                collect_expr_idents(hi, out);
+            } else if let ForRange::ValueList(vs) = &f.range {
+                for v in vs { collect_expr_idents(v, out); }
+            }
+            for s in &f.body { collect_stmt_idents(s, out); }
+        }
+        Stmt::Init(ib) => {
+            for s in &ib.body { collect_stmt_idents(s, out); }
+        }
+        Stmt::WaitUntil(e, _) => collect_expr_idents(e, out),
+        Stmt::DoUntil { body, cond, .. } => {
+            for s in body { collect_stmt_idents(s, out); }
+            collect_expr_idents(cond, out);
+        }
+        Stmt::Log(_) => {}
+    }
+}
+
 fn collect_expr_idents(expr: &Expr, out: &mut std::collections::BTreeSet<String>) {
     match &expr.kind {
         ExprKind::Ident(name) => { out.insert(name.clone()); }
@@ -2655,7 +2698,7 @@ impl<'a> SimCodegen<'a> {
 
         // Collect reset-none reg names for --check-uninit + any guarded reg (regardless
         // of reset) so Check A can use _<name>_vinit to detect producer bugs.
-        let uninit_regs: HashSet<String> = if self.check_uninit {
+        let mut uninit_regs: HashSet<String> = if self.check_uninit {
             m.body.iter()
                 .filter_map(|i| if let ModuleBodyItem::RegDecl(r) = i {
                     if matches!(r.reset, RegReset::None) || r.guard.is_some() {
@@ -2673,6 +2716,24 @@ impl<'a> SimCodegen<'a> {
         } else {
             HashSet::new()
         };
+
+        // --inputs-start-uninit: treat every primary input port as uninitialized.
+        // TB must call the generated `set_<port>()` setter to mark an input initialized.
+        // Reads of uninit inputs anywhere in the design emit a warning.
+        // v1 scope: scalar non-clock/reset/bus inputs only.
+        let uninit_inputs: HashSet<String> = if self.inputs_start_uninit {
+            m.ports.iter()
+                .filter(|p| matches!(p.direction, Direction::In))
+                .filter(|p| p.bus_info.is_none())
+                .filter(|p| !matches!(&p.ty, TypeExpr::Clock(_) | TypeExpr::Reset(_, _)))
+                .map(|p| p.name.name.clone())
+                .collect()
+        } else {
+            HashSet::new()
+        };
+        // Fold inputs into the shared uninit_regs set so existing warning plumbing
+        // (shadow-bit decl + read-site warning) picks them up uniformly.
+        uninit_regs.extend(uninit_inputs.iter().cloned());
 
         // Collect guard-annotated regs: reg_name → guard_signal_name.
         // Used for Check A (producer bug: "guard asserts but reg never written").
@@ -3040,6 +3101,19 @@ impl<'a> SimCodegen<'a> {
                         h.push_str(&format!("  bool _{sname}_vinit = false;\n"));
                     }
                 }
+            }
+        }
+
+        // --inputs-start-uninit: inline setters mark an input as initialized when TB drives it.
+        if !uninit_inputs.is_empty() {
+            h.push_str("  // --inputs-start-uninit setters (mark TB-driven inputs as initialized)\n");
+            for p in &m.ports {
+                if !uninit_inputs.contains(&p.name.name) { continue; }
+                let pname = &p.name.name;
+                let ty = cpp_port_type(&p.ty);
+                h.push_str(&format!(
+                    "  void set_{pname}({ty} v) {{ {pname} = v; _{pname}_vinit = true; }}\n"
+                ));
             }
         }
 
@@ -3789,22 +3863,55 @@ impl<'a> SimCodegen<'a> {
 
         // --check-uninit: warn if any uninit reg/pipe_reg output is read in comb
         if !uninit_regs.is_empty() {
-            // Collect all signal names read in comb blocks
+            // Collect all signal names read in comb blocks AND in let bindings
+            // (let values are lowered into eval_comb too).
             let mut comb_reads: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
             for item in &m.body {
-                if let ModuleBodyItem::CombBlock(cb) = item {
-                    for stmt in &cb.stmts {
-                        collect_comb_reads(stmt, &mut comb_reads);
+                match item {
+                    ModuleBodyItem::CombBlock(cb) => {
+                        for stmt in &cb.stmts {
+                            collect_comb_reads(stmt, &mut comb_reads);
+                        }
                     }
+                    ModuleBodyItem::LetBinding(l) => {
+                        collect_expr_idents(&l.value, &mut comb_reads);
+                    }
+                    _ => {}
                 }
             }
             // Check uninit regs that are read in comb (warn once per signal)
             for name in &comb_reads {
-                if uninit_regs.contains(name) {
+                if uninit_regs.contains(name) && !uninit_inputs.contains(name) {
                     cpp.push_str(&format!(
                         "  {{ static bool _w_{name} = false; if (!_{name}_vinit && !_w_{name}) {{ fprintf(stderr, \"WARNING: read of uninitialized reg '{name}' in {n}\\n\"); _w_{name} = true; }} }}\n",
                         name = name, n = name
                     ));
+                }
+            }
+            // --inputs-start-uninit: warn on reads of uninit inputs anywhere in the design
+            // (comb blocks, let bindings, and seq blocks). Seq reads only happen when the
+            // corresponding clock edge fires, so we collect them too.
+            if !uninit_inputs.is_empty() {
+                let mut all_reads: std::collections::BTreeSet<String> = comb_reads.clone();
+                for item in &m.body {
+                    if let ModuleBodyItem::RegBlock(sb) = item {
+                        for stmt in &sb.stmts {
+                            collect_stmt_idents(stmt, &mut all_reads);
+                        }
+                    }
+                    if let ModuleBodyItem::LatchBlock(lb) = item {
+                        for stmt in &lb.stmts {
+                            collect_stmt_idents(stmt, &mut all_reads);
+                        }
+                    }
+                }
+                for name in &all_reads {
+                    if uninit_inputs.contains(name) {
+                        cpp.push_str(&format!(
+                            "  {{ static bool _w_{name} = false; if (!_{name}_vinit && !_w_{name}) {{ fprintf(stderr, \"WARNING: read of uninitialized input '{name}' — TB never called set_{name}()\\n\"); _w_{name} = true; }} }}\n",
+                            name = name
+                        ));
+                    }
                 }
             }
             // Check pipe_reg outputs whose source chain includes uninit regs

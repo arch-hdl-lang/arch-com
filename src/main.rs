@@ -55,6 +55,11 @@ enum Command {
         /// Enable uninitialized register read detection (reset-none regs + pipe_reg propagation)
         #[arg(long)]
         check_uninit: bool,
+        /// Also warn when primary inputs are read before the TB explicitly initializes them.
+        /// Implies --check-uninit. The TB must call `dut.set_<port>(v)` (generated setters) to mark an input as initialized;
+        /// a plain `dut.<port> = v;` does not mark init.
+        #[arg(long)]
+        inputs_start_uninit: bool,
         /// Randomize synchronizer latency to model CDC metastability
         #[arg(long)]
         cdc_random: bool,
@@ -142,9 +147,11 @@ fn main() -> miette::Result<()> {
             eprintln!("OK: no errors");
             Ok(())
         }
-        Command::Sim { arch_files, tb_files, outdir, check_uninit, cdc_random, wave, debug, debug_depth, debug_fsm, pybind, test } => {
+        Command::Sim { arch_files, tb_files, outdir, check_uninit, inputs_start_uninit, cdc_random, wave, debug, debug_depth, debug_fsm, pybind, test } => {
             let dbg_ports = debug || debug_fsm;  // any debug option implies port logging
-            run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, pybind, test.as_deref())
+            // --inputs-start-uninit implies --check-uninit
+            let check_uninit = check_uninit || inputs_start_uninit;
+            run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, inputs_start_uninit, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, pybind, test.as_deref())
         }
         Command::Build { files, o } => {
             let all_files = resolve_use_imports(&files)?;
@@ -231,6 +238,7 @@ fn run_sim(
     tb_files: &[PathBuf],
     outdir: Option<&std::path::Path>,
     check_uninit: bool,
+    inputs_start_uninit: bool,
     cdc_random: bool,
     wave: Option<&std::path::Path>,
     debug: bool,
@@ -251,7 +259,7 @@ fn run_sim(
     fs::create_dir_all(&build_dir).into_diagnostic()?;
 
     // 3. Generate C++ models
-    let sim = SimCodegen::new(&symbols, &ast, overload_map).check_uninit(check_uninit).cdc_random(cdc_random).debug(debug, debug_depth).with_debug_fsm(debug_fsm);
+    let sim = SimCodegen::new(&symbols, &ast, overload_map).check_uninit(check_uninit).inputs_start_uninit(inputs_start_uninit).cdc_random(cdc_random).debug(debug, debug_depth).with_debug_fsm(debug_fsm);
     let models = sim.generate();
 
     if models.is_empty() {
