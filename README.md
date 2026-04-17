@@ -77,7 +77,7 @@ arch sim --debug MyModule.arch --tb tb.cpp              # print I/O port changes
 arch sim --debug+fsm --depth 2 MyModule.arch --tb tb.cpp # + FSM transitions, 2 levels deep
 ```
 
-Additional flags: `--wave out.vcd` (VCD waveform), `--check-uninit` (uninitialized register detection), `--cdc-random` (CDC metastability modeling).
+Additional flags: `--wave out.vcd` (VCD waveform), `--check-uninit` (uninitialized `reset none` reg / `pipe_reg` reads), `--inputs-start-uninit` (warn when the TB forgets to drive an input), `--check-uninit-ram` (warn on reads of RAM cells never written), `--cdc-random` (CDC metastability modeling).
 
 ## Language snapshot
 
