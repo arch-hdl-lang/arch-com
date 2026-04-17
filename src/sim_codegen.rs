@@ -567,6 +567,20 @@ static inline uint64_t _arch_repeat(uint64_t val, uint32_t n, uint32_t val_width
     }
     return result;
 }
+
+/// Runtime bounds check — hard abort on out-of-range index.
+/// Used for Vec<T,N> indexing, single-bit selects on UInt<W>/SInt<W>,
+/// and variable part-selects [+:]/[-:].
+[[noreturn]] static inline void _arch_bounds_abort(unsigned long long idx,
+                                                   unsigned long long limit,
+                                                   const char* loc) {
+    fprintf(stderr, "ARCH-ERROR: %s: index %llu out of bounds [0..%llu)\n",
+            loc, idx, limit);
+    abort();
+}
+#define _ARCH_BCHK(idx, limit, loc) \
+    ((unsigned long long)(idx) < (unsigned long long)(limit) \
+        ? (void)0 : _arch_bounds_abort((unsigned long long)(idx), (unsigned long long)(limit), (loc)))
 "#.to_string()
     }
 
@@ -1088,6 +1102,12 @@ fn eval_const_expr(expr: &Expr) -> u64 {
     }
 }
 
+/// If `expr` is a bare identifier, return its name — used for diagnostic
+/// location strings in runtime bounds-check codegen.
+fn base_ident_name(expr: &Expr) -> Option<&str> {
+    if let ExprKind::Ident(n) = &expr.kind { Some(n.as_str()) } else { None }
+}
+
 /// Smallest C++ unsigned integer type that fits `bits` (up to 64).
 /// Returns true if `name` looks like a thread-lowered FSM state register.
 /// Thread lowering in elaborate.rs (line ~1280) names state regs `_t{N}_state`
@@ -1197,6 +1217,8 @@ struct Ctx<'a> {
     /// Reg/wire names whose type is Vec<T,N> — these use C array subscript `[i]`.
     /// All other subscripts on scalar UInt/SInt use bit extraction `(x >> i) & 1`.
     vec_names:   Option<&'a HashSet<String>>,
+    /// Vec<T,N> sizes by name (element count). Used for runtime bounds-check codegen.
+    vec_sizes:   Option<&'a HashMap<String, u64>>,
     /// FSM Vec port-regs: always resolve to `_name` (internal C array), regardless of fsm_mode.
     /// These ports have flat public fields (name_0..name_N-1) but internal storage `_name[N]`.
     fsm_vec_port_regs: Option<&'a HashSet<String>>,
@@ -1218,7 +1240,12 @@ impl<'a> Ctx<'a> {
         let reset_levels = EMPTY_RESET_LEVELS.get_or_init(HashMap::new);
         Ctx { reg_names, port_names, let_names, inst_names, wide_names,
               widths, posedge_lhs: false, fsm_mode: false, enum_map, bus_ports,
-              reset_levels, vec_names: None, fsm_vec_port_regs: None }
+              reset_levels, vec_names: None, vec_sizes: None, fsm_vec_port_regs: None }
+    }
+
+    fn with_vec_sizes(mut self, vec_sizes: &'a HashMap<String, u64>) -> Self {
+        self.vec_sizes = Some(vec_sizes);
+        self
     }
 
     fn with_reset_levels(mut self, reset_levels: &'a HashMap<String, ResetLevel>) -> Self {
@@ -1620,10 +1647,27 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             } else {
                 false
             };
+            // Runtime bounds check (hard abort) — skip when index is a compile-time literal
+            // since the type checker handles constant-bounds at compile time.
+            let idx_is_const = matches!(&idx.kind, ExprKind::Literal(_));
             if is_vec {
-                format!("{b}[{i}]")
+                let limit = base_ident_name(base)
+                    .and_then(|n| ctx.vec_sizes.and_then(|m| m.get(n)).copied())
+                    .unwrap_or(0);
+                if limit > 0 && !idx_is_const {
+                    let loc = base_ident_name(base).unwrap_or("<vec>");
+                    format!("(_ARCH_BCHK(({i}), {limit}, \"{loc}\"), {b}[{i}])")
+                } else {
+                    format!("{b}[{i}]")
+                }
             } else {
-                format!("((({b}) >> ({i})) & 1)")
+                let base_w = infer_expr_width(base, ctx);
+                if base_w > 0 && !idx_is_const {
+                    let loc = base_ident_name(base).unwrap_or("<bitsel>");
+                    format!("(_ARCH_BCHK(({i}), {base_w}, \"{loc}[i]\"), ((({b}) >> ({i})) & 1))")
+                } else {
+                    format!("((({b}) >> ({i})) & 1)")
+                }
             }
         }
 
@@ -1632,6 +1676,7 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             let h = eval_width(hi);
             let l = eval_width(lo);
             let base_w = infer_expr_width(base, ctx);
+            // Static slice: hi/lo are compile-time. Bounds checked by typecheck.
             if base_w > 128 {
                 // VlWide<N>: use word-array bit extractor
                 let result_w = h - l + 1;
@@ -1650,7 +1695,24 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             let w = eval_width(width);
             let base_w = infer_expr_width(base, ctx);
             let result_ty = cpp_uint(w);
-            if base_w > 128 {
+            // Runtime bounds check for variable part-selects:
+            //   [+:]: bits [start .. start+W-1] must fit, so (start + W - 1) < base_W
+            //   [-:]: bits [start-W+1 .. start], so start < base_W and start >= W-1
+            // Skip when start is a constant.
+            let start_is_const = matches!(&start.kind, ExprKind::Literal(_));
+            let bchk = if base_w > 0 && !start_is_const {
+                let loc = base_ident_name(base).unwrap_or("<partsel>");
+                if *up {
+                    format!("_ARCH_BCHK((({s}) + {w} - 1), {base_w}, \"{loc}[+:{w}]\"), ")
+                } else {
+                    // [-:W]: need start < base_W AND start >= W-1.
+                    // Check (start + 1 - W) as signed → unsigned wrap makes this >= base_W if invalid.
+                    format!("_ARCH_BCHK(({s}), {base_w}, \"{loc}[-:{w}] start\"), _ARCH_BCHK(({w} - 1), (({s}) + 1), \"{loc}[-:{w}] underflow\"), ")
+                }
+            } else {
+                String::new()
+            };
+            let core = if base_w > 128 {
                 // VlWide<N>: use _arch_vw_bits with runtime start
                 let hi_expr = if *up {
                     format!("(({s}) + {w} - 1)")
@@ -1664,7 +1726,6 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                 };
                 format!("({result_ty})_arch_vw_bits({b}.data(), {hi_expr}, {lo_expr})")
             } else if base_w > 64 {
-                // _arch_u128: shift right then mask
                 let mask = (1u128 << w).wrapping_sub(1);
                 let mask_str = format!("0x{:x}ULL", mask as u64);
                 if *up {
@@ -1680,7 +1741,8 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                 } else {
                     format!("({result_ty})((uint64_t)({b}) >> (({s}) - {} + 1) & {mask_str})", w)
                 }
-            }
+            };
+            if bchk.is_empty() { core } else { format!("({bchk}{core})") }
         }
 
         ExprKind::EnumVariant(enum_name, variant) => {
@@ -2701,6 +2763,11 @@ impl<'a> SimCodegen<'a> {
         let vec_port_names: HashSet<String> = vec_port_infos.iter().map(|v| v.name.clone()).collect();
         // Vec ports also use C array subscript `[i]` internally
         vec_reg_names.extend(vec_port_names.iter().cloned());
+        // Unified Vec<T,N> size map: wires + regs + ports. Used by bounds-check codegen.
+        let mut vec_sizes: HashMap<String, u64> = vec_wire_counts.clone();
+        for vi in &vec_port_infos {
+            vec_sizes.insert(vi.name.clone(), vi.count);
+        }
 
         // Collect reset-none reg names for --check-uninit + any guarded reg (regardless
         // of reset) so Check A can use _<name>_vinit to detect producer bugs.
@@ -3258,7 +3325,7 @@ impl<'a> SimCodegen<'a> {
         let ctx = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                            &wide_names, &widths, &enum_map, &bus_port_names)
                       .with_reset_levels(&reset_levels)
-                      .with_vec_names(&vec_reg_names);
+                      .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes);
 
         if insts.is_empty() {
             // No sub-instances: simple path
@@ -3517,7 +3584,7 @@ impl<'a> SimCodegen<'a> {
 
             let ctx = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                &wide_names, &widths, &enum_map, &bus_port_names)
-                          .with_vec_names(&vec_reg_names).posedge();
+                          .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes).posedge();
 
             for rb in &reg_blocks {
                 let mut assigned = std::collections::BTreeSet::new();
@@ -3608,7 +3675,7 @@ impl<'a> SimCodegen<'a> {
                     }
                     let ctx_pe = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                            &wide_names, &widths, &enum_map, &bus_port_names)
-                                       .with_vec_names(&vec_reg_names);
+                                       .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes);
                     let src = ctx_pe.resolve_name(&p.source.name, false);
                     if let Some((ref rst_name, is_low)) = rst_info {
                         let cond = if is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
@@ -3766,7 +3833,7 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
         let ctx_comb = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                 &wide_names, &widths, &enum_map, &bus_port_names)
-                           .with_vec_names(&vec_reg_names);
+                           .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes);
 
         // Flat → internal bridge for input Vec ports (non-reg)
         for vi in &vec_port_infos {
@@ -6412,7 +6479,7 @@ impl<'a> SimCodegen<'a> {
     ) -> String {
         let empty = HashSet::new();
         let empty_rl: HashMap<String, ResetLevel> = HashMap::new();
-        let ctx = Ctx { reg_names: rn, port_names: pn, let_names: ln, inst_names: &empty, wide_names: &empty, widths: w, posedge_lhs: false, fsm_mode: false, enum_map: em, bus_ports: &empty, reset_levels: &empty_rl, vec_names: None, fsm_vec_port_regs: None };
+        let ctx = Ctx { reg_names: rn, port_names: pn, let_names: ln, inst_names: &empty, wide_names: &empty, widths: w, posedge_lhs: false, fsm_mode: false, enum_map: em, bus_ports: &empty, reset_levels: &empty_rl, vec_names: None, vec_sizes: None, fsm_vec_port_regs: None };
         match &expr.kind {
             ExprKind::FieldAccess(base, field) => {
                 if let ExprKind::Ident(bn) = &base.kind {

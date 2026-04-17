@@ -90,6 +90,16 @@ Clock and Reset input ports are excluded (they're driven by the test harness lif
 
 A sibling flag `--check-uninit-ram` does the same for RAM cells — per-cell valid bitmap, `init:` cells pre-marked, warns once per RAM on the first read of an address that was never written. ROMs are exempt (they require `init:` at compile time). Both `--inputs-start-uninit` and `--check-uninit-ram` imply `--check-uninit`.
 
+### Runtime bounds checking (always on)
+
+Out-of-range access is a hard-abort in arch sim, no flag needed. Three cases:
+
+- `Vec<T, N>` indexing: `vec[i]` with `i >= N` → `ARCH-ERROR: <vec>: index N out of bounds [0..N)` + `abort()`.
+- Bit-select on scalar: `val[i]` on `UInt<W>`/`SInt<W>` with `i >= W` → same pattern.
+- Variable part-select: `val[start +: W]` with `start + W > W_base`, or `val[start -: W]` with `start < W-1` or `start >= W_base` → same.
+
+Compile-time constant indices are verified by the type checker, so only runtime indices carry the check. The abort is unconditional (not flag-gated) because out-of-bounds is an error, not a lint.
+
 ---
 
 ## ARCH Language — Key Constructs

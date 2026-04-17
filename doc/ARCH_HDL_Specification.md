@@ -4911,7 +4911,9 @@ Arch's 2-state simulation eliminates X/Z propagation by construction, but severa
 | Read of `pipe_reg` before pipeline fills | `--check-uninit` runtime warning (propagates through chain) | ✅ Implemented |
 | Read of primary input that TB never drove | `--inputs-start-uninit` runtime warning (per-port setter `dut.set_<port>()` marks init) | ✅ Implemented |
 | Read of RAM cell before first write | `--check-uninit-ram` runtime warning (per-cell valid bitmap; `init:` cells marked valid at construction; ROMs exempt because they require `init:`) | ✅ Implemented |
-| Out-of-bounds `Vec` index at runtime | Undetected — silently wraps | ❌ Planned |
+| Out-of-bounds `Vec<T,N>` index at runtime | Runtime hard-abort with `ARCH-ERROR: <sig>: index N out of bounds [0..L)` (always on — no flag; compile-time constant indices are checked statically) | ✅ Implemented |
+| Out-of-range bit-select `val[i]` on `UInt<W>`/`SInt<W>` at runtime | Runtime hard-abort (always on; constant indices checked statically) | ✅ Implemented |
+| Out-of-range variable part-select `val[start +:W]` / `val[start -:W]` | Runtime hard-abort on over/underflow (always on; constant starts checked statically) | ✅ Implemented |
 | Division by zero | Undetected — undefined C++ behavior | ❌ Planned |
 | Undriven output port | Compile-time error (single-driver rule) | ✅ Static |
 | Implicit latch (incomplete `comb`) | Compile-time error | ✅ Static |
@@ -4922,8 +4924,7 @@ The first column lists sources of undefined values. The second column indicates 
 
 **Planned extensions to `--check-uninit`:**
 
-1. **Dynamic `Vec` index bounds checking** --- insert runtime bounds check before indexed access. On out-of-range index, emit a warning and clamp to the valid range.
-2. **Division-by-zero trap** --- insert a zero-check before every `/` and `%` operation. On division by zero, emit a warning and return zero (matching SV `x` semantics collapsed to 0).
+1. **Division-by-zero trap** --- insert a zero-check before every `/` and `%` operation. On division by zero, emit a warning and return zero (matching SV `x` semantics collapsed to 0).
 
 > ◈ These runtime checks are simulation-only; they have no effect on generated SystemVerilog. The goal is to detect, at simulation time, the undefined behaviors that a 4-state simulator would expose via X propagation, without the overhead of a full 4-state simulation kernel.
 
