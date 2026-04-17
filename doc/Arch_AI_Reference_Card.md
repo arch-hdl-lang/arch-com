@@ -956,6 +956,8 @@ arch sim F.arch --tb F_tb.cpp --outdir build/
 arch sim F.arch --tb F_tb.cpp --check-uninit  // warn on uninitialized reset-none regs
 arch sim F.arch --tb F_tb.cpp --inputs-start-uninit  // warn on reads of TB-undriven inputs (TB calls dut.set_<port>() to mark init)
 arch sim F.arch --tb F_tb.cpp --cdc-random    // randomize synchronizer latency
+arch sim --pybind --test test_F.py F.arch     // run Python cocotb-style TB through pybind11
+                                               //   see doc/arch_sim_cocotb.md for API + portability deltas
 arch sim F.arch                                // generate models only (no testbench)
 arch formal F.arch                             // emit SMT-LIB2 (planned)
 ```

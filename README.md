@@ -68,6 +68,8 @@ int main(int argc, char** argv) {
 arch sim --pybind --test test_mymodule.py MyModule.arch
 ```
 
+A drop-in `cocotb_shim/cocotb/` package is placed on `PYTHONPATH`, so plain `import cocotb` works unchanged. The supported surface (decorators, triggers, `Clock`, signal handles) plus the behavioral deltas from real cocotb (tick-sampled scheduler, 2-state values, immediate writes) are documented in **[`doc/arch_sim_cocotb.md`](doc/arch_sim_cocotb.md)**.
+
 **Built-in debug instrumentation** replaces manual `printf`/`$display` for diagnosing simulation failures:
 
 ```sh

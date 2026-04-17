@@ -59,6 +59,12 @@ The debug output covers:
 
 Do NOT add `printf` or `$display` to C++ testbenches for debugging — `--debug` provides the same information automatically with zero code changes. Only add manual prints for test-specific protocol checking (e.g., verifying handshake sequences).
 
+### Running Python/cocotb-style testbenches (`--pybind --test`)
+
+`arch sim --pybind --test test_foo.py Foo.arch` compiles the ARCH design through pybind11 and runs a cocotb-compatible Python TB against it, with no Verilator/iverilog/VPI in the loop. A `cocotb_shim/cocotb/` package is on `PYTHONPATH` so plain `import cocotb` works. Supported surface: `@cocotb.test()`, `cocotb.start_soon`, `cocotb.start`, `cocotb.utils.get_sim_time`, and triggers `RisingEdge` / `FallingEdge` / `Timer` / `ClockCycles` / `Clock`. Signals expose `.value` that read/write as integers via `ArchSignalValue`.
+
+Key behavioral deltas from real cocotb — scheduler is 1-tick-at-a-time (default 1 ns/tick), writes take effect immediately on the next `eval()` (no NBA region), logic is 2-state (no `X`/`Z`), edge detection is sampled per tick. See **[`doc/arch_sim_cocotb.md`](doc/arch_sim_cocotb.md)** for the complete API, portability rules, and a troubleshooting guide.
+
 ### Catching X-propagation from undriven inputs (`--inputs-start-uninit`)
 
 When porting an SV design to ARCH, it's easy for a testbench to forget to drive a port. Under 4-state sim (Verilator/iverilog) this shows up as X-propagation; ARCH's native sim is 2-state so the bug is invisible unless you opt in:
