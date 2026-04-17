@@ -4911,9 +4911,9 @@ Arch's 2-state simulation eliminates X/Z propagation by construction, but severa
 | Read of `pipe_reg` before pipeline fills | `--check-uninit` runtime warning (propagates through chain) | ✅ Implemented |
 | Read of primary input that TB never drove | `--inputs-start-uninit` runtime warning (per-port setter `dut.set_<port>()` marks init) | ✅ Implemented |
 | Read of RAM cell before first write | `--check-uninit-ram` runtime warning (per-cell valid bitmap; `init:` cells marked valid at construction; ROMs exempt because they require `init:`) | ✅ Implemented |
-| Out-of-bounds `Vec<T,N>` index at runtime | Runtime hard-abort with `ARCH-ERROR: <sig>: index N out of bounds [0..L)` (always on — no flag; compile-time constant indices are checked statically) | ✅ Implemented |
-| Out-of-range bit-select `val[i]` on `UInt<W>`/`SInt<W>` at runtime | Runtime hard-abort (always on; constant indices checked statically) | ✅ Implemented |
-| Out-of-range variable part-select `val[start +:W]` / `val[start -:W]` | Runtime hard-abort on over/underflow (always on; constant starts checked statically) | ✅ Implemented |
+| Out-of-bounds `Vec<T,N>` index at runtime | `arch sim`: hard abort (`_ARCH_BCHK`). Generated SV: auto-emitted `assert property (@(posedge clk) disable iff (rst) idx < N)` inside `translate_off/on`. Seq/latch contexts only (comb is deferred). Always on, no flag; constant indices verified statically. | ✅ Implemented |
+| Out-of-range bit-select `val[i]` on `UInt<W>`/`SInt<W>` at runtime | `arch sim`: hard abort. Generated SV: auto-emitted `assert property (idx < W)`. Same scope/flag story as Vec. | ✅ Implemented |
+| Out-of-range variable part-select `val[start +:W]` / `val[start -:W]` | `arch sim`: hard abort on over/underflow. Generated SV: `assert property (start + W <= W_base)` for `+:`, and `start < W_base && start >= W - 1` for `-:`. | ✅ Implemented |
 | Division by zero | Undetected — undefined C++ behavior | ❌ Planned |
 | Undriven output port | Compile-time error (single-driver rule) | ✅ Static |
 | Implicit latch (incomplete `comb`) | Compile-time error | ✅ Static |

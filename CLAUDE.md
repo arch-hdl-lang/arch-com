@@ -100,6 +100,15 @@ Out-of-range access is a hard-abort in arch sim, no flag needed. Three cases:
 
 Compile-time constant indices are verified by the type checker, so only runtime indices carry the check. The abort is unconditional (not flag-gated) because out-of-bounds is an error, not a lint.
 
+**SV-level mirror.** `arch build` also auto-emits concurrent SVA bounds assertions for the same access sites (inside `synopsys translate_off/on`), labeled `_auto_bound_<kind>_<n>`. Format:
+
+```sv
+_auto_bound_vec_0: assert property (@(posedge clk) disable iff (rst) (idx) < (4))
+  else $fatal(1, "BOUNDS VIOLATION: Mod._auto_bound_vec_0");
+```
+
+Consumed by Verilator (`--assert`), iverilog (`-gsupported-assertions`), and formal tools (EBMC, SymbiYosys). **Scope**: seq and latch contexts only. Accesses in `comb` blocks or `let` bindings are not mirrored to SV in v1 — concurrent assertions can't catch sub-cycle glitches, and wrapping `always_comb` with immediate assertions is deferred. The arch-sim runtime check still fires for those paths. Reset polarity is inferred from the module's `Reset<Kind,Polarity>` port. Modules with no clock emit no SV assertion (assertion would have no evaluation context).
+
 ---
 
 ## ARCH Language — Key Constructs

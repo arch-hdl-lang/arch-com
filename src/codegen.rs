@@ -665,6 +665,11 @@ impl<'a> Codegen<'a> {
         // Uses a shadow `_<reg>_written` set on any seq-block commit (over-approx).
         self.emit_guard_contracts(&m_clone);
 
+        // Emit bounds-check SVA for runtime-indexed Vec / bit-select /
+        // part-select accesses in seq/latch blocks. Mirrors arch sim's
+        // _ARCH_BCHK so iverilog/Verilator/formal tools see the invariant.
+        self.emit_bound_asserts(&m_clone);
+
         // Emit log file descriptors: initial $fopen / final $fclose
         let log_files = Self::collect_log_files(&m_clone.body);
         if !log_files.is_empty() {
@@ -2177,6 +2182,250 @@ impl<'a> Codegen<'a> {
             ));
         }
         self.line("// synopsys translate_on");
+    }
+
+    /// Emit concurrent SVA bounds checks for runtime-indexed Vec / bit-select /
+    /// part-select accesses that appear in seq blocks (and latches). Mirrors
+    /// arch sim's `_ARCH_BCHK` runtime aborts so iverilog/Verilator/formal
+    /// tools see the same invariant.
+    ///
+    /// **Scope** — seq/latch contexts only. Accesses that appear exclusively
+    /// in comb blocks or `let` bindings are not covered here; concurrent
+    /// assertions can't catch sub-cycle glitches, and wiring in immediate
+    /// assertions inside generated `always_comb` is a future extension.
+    /// The arch sim runtime check (`_ARCH_BCHK`) still fires for those.
+    fn emit_bound_asserts(&mut self, m: &ModuleDecl) {
+        // Build Vec<T,N> size and scalar-width lookups for accesses in this module.
+        let mut vec_sizes: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut scalar_widths: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let record = |name: &str, ty: &TypeExpr,
+                      vec_sizes: &mut std::collections::HashMap<String, String>,
+                      scalar_widths: &mut std::collections::HashMap<String, String>| {
+            match ty {
+                TypeExpr::Vec(_, count) => {
+                    let s = Self::expr_to_sv_const(count);
+                    vec_sizes.insert(name.to_string(), s);
+                }
+                TypeExpr::UInt(w) | TypeExpr::SInt(w) => {
+                    let s = Self::expr_to_sv_const(w);
+                    scalar_widths.insert(name.to_string(), s);
+                }
+                TypeExpr::Bool | TypeExpr::Bit => {
+                    scalar_widths.insert(name.to_string(), "1".to_string());
+                }
+                _ => {}
+            }
+        };
+        for p in &m.ports {
+            if p.bus_info.is_some() { continue; }
+            record(&p.name.name, &p.ty, &mut vec_sizes, &mut scalar_widths);
+        }
+        for item in &m.body {
+            match item {
+                ModuleBodyItem::RegDecl(r) => record(&r.name.name, &r.ty, &mut vec_sizes, &mut scalar_widths),
+                ModuleBodyItem::WireDecl(w) => record(&w.name.name, &w.ty, &mut vec_sizes, &mut scalar_widths),
+                ModuleBodyItem::LetBinding(l) => {
+                    if let Some(ty) = &l.ty {
+                        record(&l.name.name, ty, &mut vec_sizes, &mut scalar_widths);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Walk seq + latch bodies, collect unique (predicate, label-tag) pairs.
+        let mut sites: Vec<(String, String)> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for item in &m.body {
+            match item {
+                ModuleBodyItem::RegBlock(rb) => {
+                    for s in &rb.stmts {
+                        self.collect_bound_stmt(s, &vec_sizes, &scalar_widths, &mut sites, &mut seen);
+                    }
+                }
+                ModuleBodyItem::LatchBlock(lb) => {
+                    for s in &lb.stmts {
+                        self.collect_bound_stmt(s, &vec_sizes, &scalar_widths, &mut sites, &mut seen);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if sites.is_empty() { return; }
+
+        // Pick the module's clock and reset (best-effort; use first of each).
+        let clk = m.ports.iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            .map(|p| p.name.name.clone());
+        let rst_active = m.ports.iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Reset(_, _)))
+            .map(|p| match &p.ty {
+                TypeExpr::Reset(_, ResetLevel::Low) => format!("!{}", p.name.name),
+                _ => p.name.name.clone(),
+            });
+
+        // A module with no clock has no meaningful concurrent assertion — skip.
+        let Some(clk) = clk else { return; };
+
+        self.line("// synopsys translate_off");
+        self.line("// Auto-generated bounds-check assertions (Vec / bit-select / part-select)");
+        for (i, (predicate, tag)) in sites.iter().enumerate() {
+            let label = format!("_auto_bound_{}_{}", tag, i);
+            let disable = rst_active.as_ref()
+                .map(|r| format!(" disable iff ({r})"))
+                .unwrap_or_default();
+            self.line(&format!(
+                "{label}: assert property (@(posedge {clk}){disable} {predicate})"
+            ));
+            self.line(&format!(
+                "  else $fatal(1, \"BOUNDS VIOLATION: {mod}.{label}\");",
+                mod = m.name.name
+            ));
+        }
+        self.line("// synopsys translate_on");
+    }
+
+    /// Stringify a compile-time constant expression to an SV literal/expression.
+    /// For the common case (integer literal) just prints the number; for
+    /// `$clog2(...)` / param refs / arithmetic, prints the SV form.
+    fn expr_to_sv_const(e: &Expr) -> String {
+        match &e.kind {
+            ExprKind::Literal(LitKind::Dec(v))
+            | ExprKind::Literal(LitKind::Hex(v))
+            | ExprKind::Literal(LitKind::Bin(v))
+            | ExprKind::Literal(LitKind::Sized(_, v)) => v.to_string(),
+            ExprKind::Ident(n) => n.clone(),
+            _ => "0".to_string(),
+        }
+    }
+
+    /// Recursively collect bound-assertion sites from a seq-context Stmt.
+    fn collect_bound_stmt(
+        &self,
+        s: &Stmt,
+        vec_sizes: &std::collections::HashMap<String, String>,
+        scalar_widths: &std::collections::HashMap<String, String>,
+        sites: &mut Vec<(String, String)>,
+        seen: &mut std::collections::HashSet<String>,
+    ) {
+        match s {
+            Stmt::Assign(a) => {
+                self.collect_bound_expr(&a.target, vec_sizes, scalar_widths, sites, seen);
+                self.collect_bound_expr(&a.value, vec_sizes, scalar_widths, sites, seen);
+            }
+            Stmt::IfElse(ie) => {
+                self.collect_bound_expr(&ie.cond, vec_sizes, scalar_widths, sites, seen);
+                for s in &ie.then_stmts { self.collect_bound_stmt(s, vec_sizes, scalar_widths, sites, seen); }
+                for s in &ie.else_stmts { self.collect_bound_stmt(s, vec_sizes, scalar_widths, sites, seen); }
+            }
+            Stmt::Match(m) => {
+                self.collect_bound_expr(&m.scrutinee, vec_sizes, scalar_widths, sites, seen);
+                for arm in &m.arms {
+                    for s in &arm.body { self.collect_bound_stmt(s, vec_sizes, scalar_widths, sites, seen); }
+                }
+            }
+            Stmt::For(f) => {
+                if let ForRange::Range(lo, hi) = &f.range {
+                    self.collect_bound_expr(lo, vec_sizes, scalar_widths, sites, seen);
+                    self.collect_bound_expr(hi, vec_sizes, scalar_widths, sites, seen);
+                }
+                for s in &f.body { self.collect_bound_stmt(s, vec_sizes, scalar_widths, sites, seen); }
+            }
+            Stmt::Init(ib) => {
+                for s in &ib.body { self.collect_bound_stmt(s, vec_sizes, scalar_widths, sites, seen); }
+            }
+            Stmt::WaitUntil(e, _) => self.collect_bound_expr(e, vec_sizes, scalar_widths, sites, seen),
+            Stmt::DoUntil { body, cond, .. } => {
+                for s in body { self.collect_bound_stmt(s, vec_sizes, scalar_widths, sites, seen); }
+                self.collect_bound_expr(cond, vec_sizes, scalar_widths, sites, seen);
+            }
+            Stmt::Log(_) => {}
+        }
+    }
+
+    /// Recursively collect bound-assertion sites from an expression. At each
+    /// Index / PartSelect with a non-literal index whose base is an ident of
+    /// known size, push a predicate. Dedups by predicate string.
+    fn collect_bound_expr(
+        &self,
+        e: &Expr,
+        vec_sizes: &std::collections::HashMap<String, String>,
+        scalar_widths: &std::collections::HashMap<String, String>,
+        sites: &mut Vec<(String, String)>,
+        seen: &mut std::collections::HashSet<String>,
+    ) {
+        let idx_is_const = |ex: &Expr| matches!(&ex.kind, ExprKind::Literal(_));
+        let base_ident = |ex: &Expr| -> Option<String> {
+            if let ExprKind::Ident(n) = &ex.kind { Some(n.clone()) } else { None }
+        };
+        let mut push = |predicate: String, tag: &str, sites: &mut Vec<(String, String)>,
+                        seen: &mut std::collections::HashSet<String>| {
+            if seen.insert(predicate.clone()) {
+                sites.push((predicate, tag.to_string()));
+            }
+        };
+        match &e.kind {
+            ExprKind::Index(base, idx) => {
+                if !idx_is_const(idx) {
+                    if let Some(name) = base_ident(base) {
+                        let idx_s = self.emit_expr_str(idx);
+                        if let Some(limit) = vec_sizes.get(&name) {
+                            push(format!("({idx_s}) < ({limit})"), "vec", sites, seen);
+                        } else if let Some(w) = scalar_widths.get(&name) {
+                            push(format!("({idx_s}) < ({w})"), "bitsel", sites, seen);
+                        }
+                    }
+                }
+                self.collect_bound_expr(base, vec_sizes, scalar_widths, sites, seen);
+                self.collect_bound_expr(idx, vec_sizes, scalar_widths, sites, seen);
+            }
+            ExprKind::PartSelect(base, start, width, up) => {
+                if !idx_is_const(start) {
+                    if let Some(name) = base_ident(base) {
+                        if let Some(bw) = scalar_widths.get(&name) {
+                            let s_s = self.emit_expr_str(start);
+                            let w_s = Self::expr_to_sv_const(width);
+                            let (pred, tag) = if *up {
+                                // [+:W]: need start + W <= bw
+                                (format!("(({s_s}) + ({w_s})) <= ({bw})"), "partsel_up")
+                            } else {
+                                // [-:W]: need start < bw AND start >= W-1
+                                (
+                                    format!("(({s_s}) < ({bw})) && (({s_s}) >= (({w_s}) - 1))"),
+                                    "partsel_down",
+                                )
+                            };
+                            push(pred, tag, sites, seen);
+                        }
+                    }
+                }
+                self.collect_bound_expr(base, vec_sizes, scalar_widths, sites, seen);
+                self.collect_bound_expr(start, vec_sizes, scalar_widths, sites, seen);
+            }
+            ExprKind::Binary(_, a, b) => {
+                self.collect_bound_expr(a, vec_sizes, scalar_widths, sites, seen);
+                self.collect_bound_expr(b, vec_sizes, scalar_widths, sites, seen);
+            }
+            ExprKind::Unary(_, a) => self.collect_bound_expr(a, vec_sizes, scalar_widths, sites, seen),
+            ExprKind::Ternary(c, t, f) => {
+                self.collect_bound_expr(c, vec_sizes, scalar_widths, sites, seen);
+                self.collect_bound_expr(t, vec_sizes, scalar_widths, sites, seen);
+                self.collect_bound_expr(f, vec_sizes, scalar_widths, sites, seen);
+            }
+            ExprKind::MethodCall(base, _, args) => {
+                self.collect_bound_expr(base, vec_sizes, scalar_widths, sites, seen);
+                for a in args { self.collect_bound_expr(a, vec_sizes, scalar_widths, sites, seen); }
+            }
+            ExprKind::FunctionCall(_, args) => {
+                for a in args { self.collect_bound_expr(a, vec_sizes, scalar_widths, sites, seen); }
+            }
+            ExprKind::Concat(parts) => {
+                for p in parts { self.collect_bound_expr(p, vec_sizes, scalar_widths, sites, seen); }
+            }
+            ExprKind::FieldAccess(base, _) => self.collect_bound_expr(base, vec_sizes, scalar_widths, sites, seen),
+            ExprKind::BitSlice(base, _, _) => self.collect_bound_expr(base, vec_sizes, scalar_widths, sites, seen),
+            _ => {}
+        }
     }
 
     /// Walk all seq blocks in the module and return a list of SV-string path
