@@ -960,6 +960,10 @@ arch sim F.arch --tb F_tb.cpp --check-uninit-ram  // warn on reads of RAM cells 
 //   arch sim: out-of-range → ARCH-ERROR to stderr + abort()
 //   arch build: also auto-emits concurrent SVA `_auto_bound_<kind>_<n>: assert property` (seq/latch contexts only;
 //               comb/let deferred); wrapped in synopsys translate_off/on — free for Verilator/iverilog/formal
+// Runtime divide-by-zero (`/` / `%`, non-const divisor only; const divisors elided):
+//   arch check: compile error if a param/const let folds to `A / 0` / `A % 0`
+//   arch sim: ARCH-ERROR + abort() via _ARCH_DCHK
+//   arch build: auto-emits `_auto_div0_<op>_<n>: assert property ((divisor) != 0)` in seq/latch
 arch sim F.arch --tb F_tb.cpp --cdc-random    // randomize synchronizer latency
 arch sim --pybind --test test_F.py F.arch     // run Python cocotb-style TB through pybind11
                                                //   see doc/arch_sim_cocotb.md for API + portability deltas

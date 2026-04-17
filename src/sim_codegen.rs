@@ -581,6 +581,17 @@ static inline uint64_t _arch_repeat(uint64_t val, uint32_t n, uint32_t val_width
 #define _ARCH_BCHK(idx, limit, loc) \
     ((unsigned long long)(idx) < (unsigned long long)(limit) \
         ? (void)0 : _arch_bounds_abort((unsigned long long)(idx), (unsigned long long)(limit), (loc)))
+
+/// Runtime divide-by-zero check — hard abort when a `/` or `%` runtime
+/// divisor is zero. Constant divisors are verified at compile time, so
+/// this only wraps truly-runtime operands.
+[[noreturn]] static inline void _arch_div0_abort(const char* loc) {
+    fprintf(stderr, "ARCH-ERROR: %s: division by zero\n", loc);
+    abort();
+}
+#define _ARCH_DCHK(divisor, loc) \
+    ((unsigned long long)(divisor) != 0 \
+        ? (void)0 : _arch_div0_abort((loc)))
 "#.to_string()
     }
 
@@ -1108,6 +1119,22 @@ fn base_ident_name(expr: &Expr) -> Option<&str> {
     if let ExprKind::Ident(n) = &expr.kind { Some(n.as_str()) } else { None }
 }
 
+/// Local "is this expression a compile-time constant we can fold?" test.
+/// Conservative: handles literals, `$clog2(const)`, and arithmetic over
+/// already-reducible subtrees. Does NOT try to resolve param identifiers —
+/// those are handled by the typecheck div-zero gate; here we return false
+/// so the runtime `_ARCH_DCHK` still fires, which is safe (a non-zero param
+/// just means the check succeeds silently).
+fn is_const_reducible(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Literal(_) => true,
+        ExprKind::Clog2(a) => is_const_reducible(a),
+        ExprKind::Binary(_, a, b) => is_const_reducible(a) && is_const_reducible(b),
+        ExprKind::Unary(_, a) => is_const_reducible(a),
+        _ => false,
+    }
+}
+
 /// Smallest C++ unsigned integer type that fits `bits` (up to 64).
 /// Returns true if `name` looks like a thread-lowered FSM state register.
 /// Thread lowering in elaborate.rs (line ~1280) names state regs `_t{N}_state`
@@ -1438,6 +1465,15 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                 BinOp::Shl    => "<<", BinOp::Shr  => ">>",
                 BinOp::Implies => unreachable!(),
             };
+            // Runtime divide-by-zero check for / and % when the divisor is
+            // not a compile-time-reducible constant. Literal zero is already
+            // rejected at typecheck; non-zero literals / param-folded consts
+            // need no runtime check. Only truly-runtime divisors are wrapped.
+            if matches!(op, BinOp::Div | BinOp::Mod) && !is_const_reducible(rhs) {
+                let loc = base_ident_name(rhs).unwrap_or("<div>");
+                let op_name = if *op == BinOp::Div { "/" } else { "%" };
+                return format!("(_ARCH_DCHK(({r}), \"{loc} {op_name}\"), ({l} {op_str} {r}))");
+            }
             format!("({l} {op_str} {r})")
         }
 

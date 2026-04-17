@@ -4914,7 +4914,8 @@ Arch's 2-state simulation eliminates X/Z propagation by construction, but severa
 | Out-of-bounds `Vec<T,N>` index at runtime | `arch sim`: hard abort (`_ARCH_BCHK`). Generated SV: auto-emitted `assert property (@(posedge clk) disable iff (rst) idx < N)` inside `translate_off/on`. Seq/latch contexts only (comb is deferred). Always on, no flag; constant indices verified statically. Verified with Verilator 5.034 (`--assert` trips `$fatal` on OOB) and EBMC 5.11 (PROVED when the index type structurally fits; REFUTED on unconstrained wider inputs — caller must constrain). | ✅ Implemented |
 | Out-of-range bit-select `val[i]` on `UInt<W>`/`SInt<W>` at runtime | `arch sim`: hard abort. Generated SV: auto-emitted `assert property (idx < W)`. Same scope/flag story as Vec. EBMC-verified. | ✅ Implemented |
 | Out-of-range variable part-select `val[start +:W]` / `val[start -:W]` | `arch sim`: hard abort on over/underflow. Generated SV: `assert property (start + W <= W_base)` for `+:`, and `start < W_base && start >= W - 1` for `-:`. | ✅ Implemented |
-| Division by zero | Undetected — undefined C++ behavior | ❌ Planned |
+| Division by zero in a `const` expression (param default, const let initializer) | `arch check`: compile-time error `divide by zero in constant expression: divisor evaluates to 0` — catches `param X: const = A / 0;` and transitive cases where a param folds to zero. | ✅ Implemented |
+| Division by zero at runtime (`/` or `%` with a non-const divisor) | `arch sim`: hard abort via `_ARCH_DCHK` (always on). Generated SV: auto-emitted `_auto_div0_div0_<n>: assert property ((divisor) != 0)` in `translate_off/on`. Seq/latch contexts only. Const divisors (literals, const-param refs, folded arithmetic) are exempt from both runtime check and SVA. Verified with EBMC 5.11: PROVED when the divisor is structurally non-zero (e.g., `den \| 1`); REFUTED for unconstrained inputs. | ✅ Implemented |
 | Undriven output port | Compile-time error (single-driver rule) | ✅ Static |
 | Implicit latch (incomplete `comb`) | Compile-time error | ✅ Static |
 | Multiple drivers | Compile-time error | ✅ Static |
@@ -4924,7 +4925,7 @@ The first column lists sources of undefined values. The second column indicates 
 
 **Planned extensions to `--check-uninit`:**
 
-1. **Division-by-zero trap** --- insert a zero-check before every `/` and `%` operation. On division by zero, emit a warning and return zero (matching SV `x` semantics collapsed to 0).
+(All items from earlier plans have been implemented. This list is retained for historical reference; see the table above for current coverage.)
 
 > ◈ These runtime checks are simulation-only; they have no effect on generated SystemVerilog. The goal is to detect, at simulation time, the undefined behaviors that a 4-state simulator would expose via X propagation, without the overhead of a full 4-state simulation kernel.
 

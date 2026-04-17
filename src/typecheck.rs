@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
-use crate::diagnostics::{CompileError, CompileWarning};
+use crate::diagnostics::{span_to_source_span, CompileError, CompileWarning};
 use crate::lexer::Span;
 use crate::resolve::{Symbol, SymbolTable};
 
@@ -76,6 +76,10 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn check(mut self) -> Result<(Vec<CompileWarning>, HashMap<usize, usize>), Vec<CompileError>> {
+        // Global pre-pass: scan every compile-time expression for divide-by-zero
+        // whose divisor is a reducible constant. Catches bad param defaults, etc.
+        // Runs before per-item checks so reported errors sort naturally.
+        self.check_const_div_zero();
         for item in &self.source.items {
             match item {
                 Item::Domain(d) => self.check_domain(d),
@@ -107,6 +111,101 @@ impl<'a> TypeChecker<'a> {
             Ok((self.warnings, self.overload_map))
         } else {
             Err(self.errors)
+        }
+    }
+
+    /// Walk every compile-time expression in the source (param defaults +
+    /// const-typed `let` bindings) and emit an error when a `/` or `%`
+    /// subexpression's divisor folds to 0. We rely on `eval_const_expr`
+    /// already returning `None` on /0, so this pass is the only place
+    /// that *rejects* such cases — elsewhere they're just "not reducible".
+    fn check_const_div_zero(&mut self) {
+        fn params_of(item: &Item) -> &[ParamDecl] {
+            match item {
+                Item::Module(m)       => &m.params,
+                Item::Fsm(f)          => &f.params,
+                Item::Fifo(f)         => &f.params,
+                Item::Ram(r)          => &r.params,
+                Item::Counter(c)      => &c.params,
+                Item::Arbiter(a)      => &a.params,
+                Item::Regfile(r)      => &r.params,
+                Item::Pipeline(p)     => &p.params,
+                Item::Synchronizer(s) => &s.params,
+                _ => &[],
+            }
+        }
+
+        // Collect param defaults + const lets from the whole source tree.
+        // Use an empty local_types map; any name that can't resolve as a
+        // const-propagating identifier just returns None (ignored).
+        let empty_types: HashMap<String, Ty> = HashMap::new();
+        let mut report_sites: Vec<Span> = Vec::new();
+        for item in &self.source.items {
+            for p in params_of(item) {
+                if let Some(def) = &p.default {
+                    self.scan_expr_for_div_zero(def, &empty_types, &mut report_sites);
+                }
+            }
+            // Module-body const lets (and const regs) — divisor in their
+            // initializer is also compile-time and worth catching.
+            if let Item::Module(m) = item {
+                for it in &m.body {
+                    if let ModuleBodyItem::LetBinding(l) = it {
+                        self.scan_expr_for_div_zero(&l.value, &empty_types, &mut report_sites);
+                    }
+                }
+            }
+        }
+        for sp in report_sites {
+            self.errors.push(CompileError::General {
+                message: "divide by zero in constant expression: divisor evaluates to 0".to_string(),
+                span: span_to_source_span(sp),
+            });
+        }
+    }
+
+    fn scan_expr_for_div_zero(&self, e: &Expr, local_types: &HashMap<String, Ty>, out: &mut Vec<Span>) {
+        match &e.kind {
+            ExprKind::Binary(op, lhs, rhs) => {
+                self.scan_expr_for_div_zero(lhs, local_types, out);
+                self.scan_expr_for_div_zero(rhs, local_types, out);
+                if matches!(op, BinOp::Div | BinOp::Mod) {
+                    if let Some(0) = self.eval_const_expr(rhs, local_types) {
+                        out.push(rhs.span);
+                    }
+                }
+            }
+            ExprKind::Unary(_, inner) => self.scan_expr_for_div_zero(inner, local_types, out),
+            ExprKind::Index(base, idx) => {
+                self.scan_expr_for_div_zero(base, local_types, out);
+                self.scan_expr_for_div_zero(idx, local_types, out);
+            }
+            ExprKind::BitSlice(base, _, _) => {
+                self.scan_expr_for_div_zero(base, local_types, out);
+            }
+            ExprKind::PartSelect(a, start, width, _) => {
+                self.scan_expr_for_div_zero(a, local_types, out);
+                self.scan_expr_for_div_zero(start, local_types, out);
+                self.scan_expr_for_div_zero(width, local_types, out);
+            }
+            ExprKind::Ternary(c, t, f) => {
+                self.scan_expr_for_div_zero(c, local_types, out);
+                self.scan_expr_for_div_zero(t, local_types, out);
+                self.scan_expr_for_div_zero(f, local_types, out);
+            }
+            ExprKind::MethodCall(base, _, args) => {
+                self.scan_expr_for_div_zero(base, local_types, out);
+                for a in args { self.scan_expr_for_div_zero(a, local_types, out); }
+            }
+            ExprKind::FunctionCall(_, args) => {
+                for a in args { self.scan_expr_for_div_zero(a, local_types, out); }
+            }
+            ExprKind::Clog2(a) => self.scan_expr_for_div_zero(a, local_types, out),
+            ExprKind::Concat(parts) => {
+                for p in parts { self.scan_expr_for_div_zero(p, local_types, out); }
+            }
+            ExprKind::FieldAccess(base, _) => self.scan_expr_for_div_zero(base, local_types, out),
+            _ => {}
         }
     }
 
@@ -2316,6 +2415,16 @@ impl<'a> TypeChecker<'a> {
                 let l = self.eval_const_expr(lhs, local_types)?;
                 let r = self.eval_const_expr(rhs, local_types)?;
                 Some(l * r)
+            }
+            ExprKind::Binary(BinOp::Div, lhs, rhs) => {
+                let l = self.eval_const_expr(lhs, local_types)?;
+                let r = self.eval_const_expr(rhs, local_types)?;
+                if r == 0 { None } else { Some(l / r) }
+            }
+            ExprKind::Binary(BinOp::Mod, lhs, rhs) => {
+                let l = self.eval_const_expr(lhs, local_types)?;
+                let r = self.eval_const_expr(rhs, local_types)?;
+                if r == 0 { None } else { Some(l % r) }
             }
             ExprKind::Clog2(arg) => {
                 let v = self.eval_const_expr(arg, local_types)?;

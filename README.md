@@ -79,7 +79,7 @@ arch sim --debug+fsm --depth 2 MyModule.arch --tb tb.cpp # + FSM transitions, 2 
 
 Additional flags: `--wave out.vcd` (VCD waveform), `--check-uninit` (uninitialized `reset none` reg / `pipe_reg` reads), `--inputs-start-uninit` (warn when the TB forgets to drive an input), `--check-uninit-ram` (warn on reads of RAM cells never written), `--cdc-random` (CDC metastability modeling).
 
-Always-on runtime checks: out-of-range `Vec<T,N>` indexing, bit-selects `val[i]` on `UInt<W>`/`SInt<W>`, and variable part-selects `val[start +: W]` / `val[start -: W]` are a hard abort with `ARCH-ERROR: <sig>: index N out of bounds [0..L)`. Compile-time constant indices are verified by the type checker, so only runtime indices carry the check.
+Always-on runtime checks: out-of-range `Vec<T,N>` indexing, bit-selects `val[i]` on `UInt<W>`/`SInt<W>`, variable part-selects `val[start +: W]` / `val[start -: W]`, and divide-by-zero on `/` / `%` are a hard abort (`ARCH-ERROR: ...`). Compile-time constant indices/divisors are verified by the type checker; only runtime values carry the check. `arch build` also auto-emits matching SVA (concurrent `assert property`, wrapped in `translate_off/on`) so Verilator, iverilog, and formal tools (EBMC, SymbiYosys) see the same invariants.
 
 ## Language snapshot
 

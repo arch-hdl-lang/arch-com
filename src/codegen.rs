@@ -2184,17 +2184,28 @@ impl<'a> Codegen<'a> {
         self.line("// synopsys translate_on");
     }
 
-    /// Emit concurrent SVA bounds checks for runtime-indexed Vec / bit-select /
-    /// part-select accesses that appear in seq blocks (and latches). Mirrors
-    /// arch sim's `_ARCH_BCHK` runtime aborts so iverilog/Verilator/formal
-    /// tools see the same invariant.
+    /// Emit concurrent SVA safety checks for runtime-risky expressions in
+    /// seq/latch blocks. Covers two classes:
+    ///   * Bounds: Vec indexing, bit-select, variable part-select — mirrors
+    ///     arch sim's `_ARCH_BCHK` runtime aborts.
+    ///   * Divide-by-zero: `/` and `%` with non-const divisor — mirrors
+    ///     arch sim's `_ARCH_DCHK`.
     ///
     /// **Scope** — seq/latch contexts only. Accesses that appear exclusively
     /// in comb blocks or `let` bindings are not covered here; concurrent
     /// assertions can't catch sub-cycle glitches, and wiring in immediate
     /// assertions inside generated `always_comb` is a future extension.
-    /// The arch sim runtime check (`_ARCH_BCHK`) still fires for those.
+    /// The arch sim runtime checks (`_ARCH_BCHK`, `_ARCH_DCHK`) still fire
+    /// for those paths.
     fn emit_bound_asserts(&mut self, m: &ModuleDecl) {
+        // Collect const-param names — identifiers bound to compile-time constants.
+        // `is_const_reducible_with` treats these as foldable so divisors named by
+        // them do not produce spurious assertions.
+        let const_params: std::collections::HashSet<String> = m.params.iter()
+            .filter(|p| matches!(&p.kind, ParamKind::Const | ParamKind::WidthConst(..) | ParamKind::EnumConst(_)))
+            .map(|p| p.name.name.clone())
+            .collect();
+
         // Build Vec<T,N> size and scalar-width lookups for accesses in this module.
         let mut vec_sizes: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         let mut scalar_widths: std::collections::HashMap<String, String> = std::collections::HashMap::new();
@@ -2240,12 +2251,12 @@ impl<'a> Codegen<'a> {
             match item {
                 ModuleBodyItem::RegBlock(rb) => {
                     for s in &rb.stmts {
-                        self.collect_bound_stmt(s, &vec_sizes, &scalar_widths, &mut sites, &mut seen);
+                        self.collect_bound_stmt(s, &vec_sizes, &scalar_widths, &const_params, &mut sites, &mut seen);
                     }
                 }
                 ModuleBodyItem::LatchBlock(lb) => {
                     for s in &lb.stmts {
-                        self.collect_bound_stmt(s, &vec_sizes, &scalar_widths, &mut sites, &mut seen);
+                        self.collect_bound_stmt(s, &vec_sizes, &scalar_widths, &const_params, &mut sites, &mut seen);
                     }
                 }
                 _ => {}
@@ -2268,9 +2279,12 @@ impl<'a> Codegen<'a> {
         let Some(clk) = clk else { return; };
 
         self.line("// synopsys translate_off");
-        self.line("// Auto-generated bounds-check assertions (Vec / bit-select / part-select)");
+        self.line("// Auto-generated safety assertions (bounds / divide-by-zero)");
         for (i, (predicate, tag)) in sites.iter().enumerate() {
-            let label = format!("_auto_bound_{}_{}", tag, i);
+            let is_div0 = tag == "div0" || tag == "mod0";
+            let label_prefix = if is_div0 { "_auto_div0" } else { "_auto_bound" };
+            let label = format!("{label_prefix}_{}_{}", tag, i);
+            let violation_kind = if is_div0 { "DIV-BY-ZERO" } else { "BOUNDS" };
             let disable = rst_active.as_ref()
                 .map(|r| format!(" disable iff ({r})"))
                 .unwrap_or_default();
@@ -2278,11 +2292,34 @@ impl<'a> Codegen<'a> {
                 "{label}: assert property (@(posedge {clk}){disable} {predicate})"
             ));
             self.line(&format!(
-                "  else $fatal(1, \"BOUNDS VIOLATION: {mod}.{label}\");",
+                "  else $fatal(1, \"{violation_kind} VIOLATION: {mod}.{label}\");",
                 mod = m.name.name
             ));
         }
         self.line("// synopsys translate_on");
+    }
+
+    /// "Is this a compile-time reducible constant?" test. Matches the sim-
+    /// codegen rule so runtime vs compile-time treatment of divisors stays
+    /// consistent. Literals, `$clog2(const)`, arithmetic over reducibles, and
+    /// identifier references to const params declared in the current module.
+    /// Runs during `emit_bound_asserts`, which already has the module's
+    /// const-param set in scope.
+    fn is_const_reducible_with(
+        e: &Expr,
+        const_params: &std::collections::HashSet<String>,
+    ) -> bool {
+        match &e.kind {
+            ExprKind::Literal(_) => true,
+            ExprKind::Ident(n) => const_params.contains(n),
+            ExprKind::Clog2(a) => Self::is_const_reducible_with(a, const_params),
+            ExprKind::Binary(_, a, b) => {
+                Self::is_const_reducible_with(a, const_params)
+                    && Self::is_const_reducible_with(b, const_params)
+            }
+            ExprKind::Unary(_, a) => Self::is_const_reducible_with(a, const_params),
+            _ => false,
+        }
     }
 
     /// Stringify a compile-time constant expression to an SV literal/expression.
@@ -2305,39 +2342,40 @@ impl<'a> Codegen<'a> {
         s: &Stmt,
         vec_sizes: &std::collections::HashMap<String, String>,
         scalar_widths: &std::collections::HashMap<String, String>,
+        const_params: &std::collections::HashSet<String>,
         sites: &mut Vec<(String, String)>,
         seen: &mut std::collections::HashSet<String>,
     ) {
         match s {
             Stmt::Assign(a) => {
-                self.collect_bound_expr(&a.target, vec_sizes, scalar_widths, sites, seen);
-                self.collect_bound_expr(&a.value, vec_sizes, scalar_widths, sites, seen);
+                self.collect_bound_expr(&a.target, vec_sizes, scalar_widths, const_params, sites, seen);
+                self.collect_bound_expr(&a.value, vec_sizes, scalar_widths, const_params, sites, seen);
             }
             Stmt::IfElse(ie) => {
-                self.collect_bound_expr(&ie.cond, vec_sizes, scalar_widths, sites, seen);
-                for s in &ie.then_stmts { self.collect_bound_stmt(s, vec_sizes, scalar_widths, sites, seen); }
-                for s in &ie.else_stmts { self.collect_bound_stmt(s, vec_sizes, scalar_widths, sites, seen); }
+                self.collect_bound_expr(&ie.cond, vec_sizes, scalar_widths, const_params, sites, seen);
+                for s in &ie.then_stmts { self.collect_bound_stmt(s, vec_sizes, scalar_widths, const_params, sites, seen); }
+                for s in &ie.else_stmts { self.collect_bound_stmt(s, vec_sizes, scalar_widths, const_params, sites, seen); }
             }
             Stmt::Match(m) => {
-                self.collect_bound_expr(&m.scrutinee, vec_sizes, scalar_widths, sites, seen);
+                self.collect_bound_expr(&m.scrutinee, vec_sizes, scalar_widths, const_params, sites, seen);
                 for arm in &m.arms {
-                    for s in &arm.body { self.collect_bound_stmt(s, vec_sizes, scalar_widths, sites, seen); }
+                    for s in &arm.body { self.collect_bound_stmt(s, vec_sizes, scalar_widths, const_params, sites, seen); }
                 }
             }
             Stmt::For(f) => {
                 if let ForRange::Range(lo, hi) = &f.range {
-                    self.collect_bound_expr(lo, vec_sizes, scalar_widths, sites, seen);
-                    self.collect_bound_expr(hi, vec_sizes, scalar_widths, sites, seen);
+                    self.collect_bound_expr(lo, vec_sizes, scalar_widths, const_params, sites, seen);
+                    self.collect_bound_expr(hi, vec_sizes, scalar_widths, const_params, sites, seen);
                 }
-                for s in &f.body { self.collect_bound_stmt(s, vec_sizes, scalar_widths, sites, seen); }
+                for s in &f.body { self.collect_bound_stmt(s, vec_sizes, scalar_widths, const_params, sites, seen); }
             }
             Stmt::Init(ib) => {
-                for s in &ib.body { self.collect_bound_stmt(s, vec_sizes, scalar_widths, sites, seen); }
+                for s in &ib.body { self.collect_bound_stmt(s, vec_sizes, scalar_widths, const_params, sites, seen); }
             }
-            Stmt::WaitUntil(e, _) => self.collect_bound_expr(e, vec_sizes, scalar_widths, sites, seen),
+            Stmt::WaitUntil(e, _) => self.collect_bound_expr(e, vec_sizes, scalar_widths, const_params, sites, seen),
             Stmt::DoUntil { body, cond, .. } => {
-                for s in body { self.collect_bound_stmt(s, vec_sizes, scalar_widths, sites, seen); }
-                self.collect_bound_expr(cond, vec_sizes, scalar_widths, sites, seen);
+                for s in body { self.collect_bound_stmt(s, vec_sizes, scalar_widths, const_params, sites, seen); }
+                self.collect_bound_expr(cond, vec_sizes, scalar_widths, const_params, sites, seen);
             }
             Stmt::Log(_) => {}
         }
@@ -2345,12 +2383,14 @@ impl<'a> Codegen<'a> {
 
     /// Recursively collect bound-assertion sites from an expression. At each
     /// Index / PartSelect with a non-literal index whose base is an ident of
-    /// known size, push a predicate. Dedups by predicate string.
+    /// known size, push a predicate. Also catches `/` and `%` with non-const
+    /// divisor. Dedups by predicate string.
     fn collect_bound_expr(
         &self,
         e: &Expr,
         vec_sizes: &std::collections::HashMap<String, String>,
         scalar_widths: &std::collections::HashMap<String, String>,
+        const_params: &std::collections::HashSet<String>,
         sites: &mut Vec<(String, String)>,
         seen: &mut std::collections::HashSet<String>,
     ) {
@@ -2376,8 +2416,8 @@ impl<'a> Codegen<'a> {
                         }
                     }
                 }
-                self.collect_bound_expr(base, vec_sizes, scalar_widths, sites, seen);
-                self.collect_bound_expr(idx, vec_sizes, scalar_widths, sites, seen);
+                self.collect_bound_expr(base, vec_sizes, scalar_widths, const_params, sites, seen);
+                self.collect_bound_expr(idx, vec_sizes, scalar_widths, const_params, sites, seen);
             }
             ExprKind::PartSelect(base, start, width, up) => {
                 if !idx_is_const(start) {
@@ -2399,31 +2439,45 @@ impl<'a> Codegen<'a> {
                         }
                     }
                 }
-                self.collect_bound_expr(base, vec_sizes, scalar_widths, sites, seen);
-                self.collect_bound_expr(start, vec_sizes, scalar_widths, sites, seen);
+                self.collect_bound_expr(base, vec_sizes, scalar_widths, const_params, sites, seen);
+                self.collect_bound_expr(start, vec_sizes, scalar_widths, const_params, sites, seen);
             }
-            ExprKind::Binary(_, a, b) => {
-                self.collect_bound_expr(a, vec_sizes, scalar_widths, sites, seen);
-                self.collect_bound_expr(b, vec_sizes, scalar_widths, sites, seen);
+            ExprKind::Binary(op, a, b) => {
+                // Divide-by-zero assertion: divisor must be non-zero at every
+                // clock edge this access is live. Skip if divisor is a
+                // compile-time reducible constant (typecheck already rejected
+                // literal zero; non-zero folded constants need no check).
+                if matches!(op, BinOp::Div | BinOp::Mod)
+                    && !Self::is_const_reducible_with(b, const_params)
+                {
+                    let rhs_s = self.emit_expr_str(b);
+                    let tag = if *op == BinOp::Div { "div0" } else { "mod0" };
+                    let pred = format!("({rhs_s}) != 0");
+                    if seen.insert(pred.clone()) {
+                        sites.push((pred, tag.to_string()));
+                    }
+                }
+                self.collect_bound_expr(a, vec_sizes, scalar_widths, const_params, sites, seen);
+                self.collect_bound_expr(b, vec_sizes, scalar_widths, const_params, sites, seen);
             }
-            ExprKind::Unary(_, a) => self.collect_bound_expr(a, vec_sizes, scalar_widths, sites, seen),
+            ExprKind::Unary(_, a) => self.collect_bound_expr(a, vec_sizes, scalar_widths, const_params, sites, seen),
             ExprKind::Ternary(c, t, f) => {
-                self.collect_bound_expr(c, vec_sizes, scalar_widths, sites, seen);
-                self.collect_bound_expr(t, vec_sizes, scalar_widths, sites, seen);
-                self.collect_bound_expr(f, vec_sizes, scalar_widths, sites, seen);
+                self.collect_bound_expr(c, vec_sizes, scalar_widths, const_params, sites, seen);
+                self.collect_bound_expr(t, vec_sizes, scalar_widths, const_params, sites, seen);
+                self.collect_bound_expr(f, vec_sizes, scalar_widths, const_params, sites, seen);
             }
             ExprKind::MethodCall(base, _, args) => {
-                self.collect_bound_expr(base, vec_sizes, scalar_widths, sites, seen);
-                for a in args { self.collect_bound_expr(a, vec_sizes, scalar_widths, sites, seen); }
+                self.collect_bound_expr(base, vec_sizes, scalar_widths, const_params, sites, seen);
+                for a in args { self.collect_bound_expr(a, vec_sizes, scalar_widths, const_params, sites, seen); }
             }
             ExprKind::FunctionCall(_, args) => {
-                for a in args { self.collect_bound_expr(a, vec_sizes, scalar_widths, sites, seen); }
+                for a in args { self.collect_bound_expr(a, vec_sizes, scalar_widths, const_params, sites, seen); }
             }
             ExprKind::Concat(parts) => {
-                for p in parts { self.collect_bound_expr(p, vec_sizes, scalar_widths, sites, seen); }
+                for p in parts { self.collect_bound_expr(p, vec_sizes, scalar_widths, const_params, sites, seen); }
             }
-            ExprKind::FieldAccess(base, _) => self.collect_bound_expr(base, vec_sizes, scalar_widths, sites, seen),
-            ExprKind::BitSlice(base, _, _) => self.collect_bound_expr(base, vec_sizes, scalar_widths, sites, seen),
+            ExprKind::FieldAccess(base, _) => self.collect_bound_expr(base, vec_sizes, scalar_widths, const_params, sites, seen),
+            ExprKind::BitSlice(base, _, _) => self.collect_bound_expr(base, vec_sizes, scalar_widths, const_params, sites, seen),
             _ => {}
         }
     }

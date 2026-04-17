@@ -113,6 +113,20 @@ Consumed by Verilator (`--assert`), iverilog (`-gsupported-assertions`), and for
 - *Verilator 5.034 + `--assert`*: in-bounds runs silently; OOB trips `$fatal(1, "BOUNDS VIOLATION: ...")`.
 - *EBMC 5.11*: `UInt<4> wr_idx` into `Vec<_,4>` ⇒ **REFUTED** at the leaf module (unconstrained input can reach 15; caller must constrain). Same access with `UInt<2> wr_idx` ⇒ **PROVED up to bound 10** (structurally safe by type width). Confirms the SVA is syntactically correct, solver-reducible, and actionable.
 
+### Runtime divide-by-zero checking
+
+`/` and `%` are runtime-checked whenever the divisor is **not** a compile-time-reducible constant (literals, const-param references, folded arithmetic are treated as constants).
+
+- **Compile-time gate** (`arch check`): if any constant expression — param default, const let initializer — reduces to `A / 0` or `A % 0`, the compiler refuses with `divide by zero in constant expression: divisor evaluates to 0`, pointing at the offending divisor.
+- **Runtime abort in arch sim**: non-const divisor ⇒ wrap in `_ARCH_DCHK(divisor, "loc")`. On zero, `ARCH-ERROR: <loc>: division by zero` + `abort()`.
+- **SV assertion mirror**: seq/latch contexts emit `_auto_div0_div0_<n>: assert property (@(posedge clk) disable iff (rst) (divisor) != 0) else $fatal(1, "DIV-BY-ZERO VIOLATION: ...")`, wrapped in `translate_off/on`. Comb/let contexts are not mirrored in v1 — arch sim's runtime check still fires for those.
+- **Constant-divisor elision**: `num / N` where `N: const = 4` produces zero runtime check and zero SVA — the type checker already proved it safe.
+
+**Verified end-to-end (2026-04-17):**
+- *arch sim*: `num=100, den=4` prints `25`; `den=0` aborts with `ARCH-ERROR: den /: division by zero`.
+- *Verilator 5.034 `--assert`*: in-bounds runs; `den=0` trips `$fatal(1, "DIV-BY-ZERO VIOLATION: DivRt._auto_div0_div0_0")`.
+- *EBMC 5.11*: unconstrained `den: UInt<8>` ⇒ **REFUTED** (caller must gate). With `den_safe = den_raw | 1` ⇒ **PROVED up to bound 5** (divisor is structurally odd, hence non-zero).
+
 ---
 
 ## ARCH Language — Key Constructs
