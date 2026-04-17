@@ -88,6 +88,8 @@ WARNING: read of uninitialized input 'port_name' — TB never called set_port_na
 
 Clock and Reset input ports are excluded (they're driven by the test harness lifecycle, not by the setter API). Bus ports and Vec ports are also excluded in v1.
 
+A sibling flag `--check-uninit-ram` does the same for RAM cells — per-cell valid bitmap, `init:` cells pre-marked, warns once per RAM on the first read of an address that was never written. ROMs are exempt (they require `init:` at compile time). Both `--inputs-start-uninit` and `--check-uninit-ram` imply `--check-uninit`.
+
 ---
 
 ## ARCH Language — Key Constructs

@@ -34,6 +34,7 @@ pub struct SimCodegen<'a> {
     overload_map: HashMap<usize, usize>,
     check_uninit: bool,
     inputs_start_uninit: bool,
+    check_uninit_ram: bool,
     cdc_random: bool,
     debug: bool,
     debug_depth: u32,
@@ -46,7 +47,7 @@ impl<'a> SimCodegen<'a> {
         source: &'a SourceFile,
         overload_map: HashMap<usize, usize>,
     ) -> Self {
-        Self { symbols, source, overload_map, check_uninit: false, inputs_start_uninit: false, cdc_random: false, debug: false, debug_depth: 1, debug_fsm: false }
+        Self { symbols, source, overload_map, check_uninit: false, inputs_start_uninit: false, check_uninit_ram: false, cdc_random: false, debug: false, debug_depth: 1, debug_fsm: false }
     }
 
     pub fn check_uninit(mut self, enabled: bool) -> Self {
@@ -56,6 +57,11 @@ impl<'a> SimCodegen<'a> {
 
     pub fn inputs_start_uninit(mut self, enabled: bool) -> Self {
         self.inputs_start_uninit = enabled;
+        self
+    }
+
+    pub fn check_uninit_ram(mut self, enabled: bool) -> Self {
+        self.check_uninit_ram = enabled;
         self
     }
 
@@ -5241,17 +5247,28 @@ impl<'a> SimCodegen<'a> {
             }
         }
         h.push_str(", _clk_prev(0) {\n");
+        // --check-uninit-ram: track per-cell valid bits for non-ROM RAMs
+        let uninit_ram_check = self.check_uninit_ram && !matches!(r.kind, RamKind::Rom);
         // Initialize memory
         match &r.init {
             Some(RamInit::Array(values)) => {
                 h.push_str("    memset(_mem, 0, sizeof(_mem));\n");
+                if uninit_ram_check {
+                    h.push_str("    memset(_mem_valid, 0, sizeof(_mem_valid));\n");
+                }
                 for (i, v) in values.iter().enumerate() {
                     h.push_str(&format!("    _mem[{i}] = 0x{v:X}ULL;\n"));
+                    if uninit_ram_check {
+                        h.push_str(&format!("    _mem_valid[{i}] = true;\n"));
+                    }
                 }
             }
             Some(RamInit::File(path, format)) => {
                 // Load hex or bin file at construction
                 h.push_str("    memset(_mem, 0, sizeof(_mem));\n");
+                if uninit_ram_check {
+                    h.push_str("    memset(_mem_valid, 0, sizeof(_mem_valid));\n");
+                }
                 h.push_str("    { FILE* _f = fopen(\"");
                 h.push_str(path);
                 h.push_str("\", \"r\");\n");
@@ -5261,9 +5278,13 @@ impl<'a> SimCodegen<'a> {
                 h.push_str(&format!("{depth}"));
                 h.push_str(") {\n");
                 match format {
-                    FileFormat::Hex => h.push_str("          _mem[_i++] = strtoull(_line, NULL, 16);\n"),
-                    FileFormat::Bin => h.push_str("          _mem[_i++] = strtoull(_line, NULL, 2);\n"),
+                    FileFormat::Hex => h.push_str("          _mem[_i] = strtoull(_line, NULL, 16);\n"),
+                    FileFormat::Bin => h.push_str("          _mem[_i] = strtoull(_line, NULL, 2);\n"),
                 }
+                if uninit_ram_check {
+                    h.push_str("          _mem_valid[_i] = true;\n");
+                }
+                h.push_str("          _i++;\n");
                 h.push_str("        }\n");
                 h.push_str("        fclose(_f);\n");
                 h.push_str("      }\n");
@@ -5271,6 +5292,9 @@ impl<'a> SimCodegen<'a> {
             }
             _ => {
                 h.push_str("    memset(_mem, 0, sizeof(_mem));\n");
+                if uninit_ram_check {
+                    h.push_str("    memset(_mem_valid, 0, sizeof(_mem_valid));\n");
+                }
             }
         }
         for fs in &out_sigs {
@@ -5284,6 +5308,9 @@ impl<'a> SimCodegen<'a> {
         h.push_str("private:\n");
         h.push_str("  uint8_t _clk_prev;\n");
         h.push_str(&format!("  {} _mem[{}];\n", elem_ty, depth));
+        if uninit_ram_check {
+            h.push_str(&format!("  bool _mem_valid[{}];\n", depth));
+        }
         for fs in &out_sigs {
             h.push_str(&format!("  {} _r_{};\n", elem_ty, fs.full_name));
             if r.latency == 2 {
@@ -5294,6 +5321,18 @@ impl<'a> SimCodegen<'a> {
         // ── Implementation ──
         let mut cpp = String::new();
         cpp.push_str(&format!("#include \"{class}.h\"\n\n"));
+
+        // --check-uninit-ram: helpers to mark writes valid and warn on uninit reads.
+        // Read check uses a static guard so each RAM warns at most once per run.
+        let write_mark = |addr: &str| -> String {
+            if uninit_ram_check { format!("    _mem_valid[{addr}] = true;\n") } else { String::new() }
+        };
+        let read_check = |addr: &str, indent: &str| -> String {
+            if !uninit_ram_check { return String::new(); }
+            format!(
+                "{indent}if (!_mem_valid[{addr}]) {{ static bool _w = false; if (!_w) {{ fprintf(stderr, \"WARNING: read of uninitialized RAM cell '{name}[%d]' (no prior write, no init)\\n\", (int)({addr})); _w = true; }} }}\n"
+            )
+        };
 
         cpp.push_str(&format!("void {class}::eval() {{\n"));
         cpp.push_str("  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n");
@@ -5317,18 +5356,24 @@ impl<'a> SimCodegen<'a> {
                     .map(|s| format!("{pfx}_{}", s.name.name))
                     .unwrap_or_else(|| format!("{pfx}_wdata"));
                 let out_name = out_sigs.first().map(|s| s.full_name.as_str()).unwrap_or("rdata");
+                let addr_expr = format!("{pfx}_addr");
 
                 cpp.push_str(&format!("  if ({pfx}_en) {{\n"));
                 if has_wen {
-                    cpp.push_str(&format!("    if ({pfx}_wen) _mem[{pfx}_addr] = {wdata_name};\n"));
+                    cpp.push_str(&format!("    if ({pfx}_wen) {{ _mem[{pfx}_addr] = {wdata_name};{mark} }}\n",
+                        mark = if uninit_ram_check { format!(" _mem_valid[{pfx}_addr] = true;") } else { String::new() }));
                     match r.latency {
                         1 | 2 => {
-                            cpp.push_str(&format!("    if (!{pfx}_wen) _r_{out_name} = _mem[{pfx}_addr];\n"));
+                            cpp.push_str(&format!("    if (!{pfx}_wen) {{\n"));
+                            cpp.push_str(&read_check(&addr_expr, "      "));
+                            cpp.push_str(&format!("      _r_{out_name} = _mem[{pfx}_addr];\n"));
+                            cpp.push_str("    }\n");
                         }
                         0 | _ => {}
                     }
                 } else {
                     cpp.push_str(&format!("    _mem[{pfx}_addr] = {wdata_name};\n"));
+                    cpp.push_str(&write_mark(&addr_expr));
                 }
                 cpp.push_str("  }\n");
                 if r.latency == 2 {
@@ -5350,19 +5395,29 @@ impl<'a> SimCodegen<'a> {
                     .map(|s| format!("{wpfx}_{}", s.name.name))
                     .unwrap_or_else(|| format!("{wpfx}_data"));
                 let out_name = out_sigs.first().map(|s| s.full_name.as_str()).unwrap_or("rd_port_data");
+                let wr_addr = format!("{wpfx}_addr");
+                let rd_addr = format!("{rpfx}_addr");
 
+                // Write path
+                cpp.push_str(&format!("  if ({wpfx}_en) {{\n"));
                 if is_wide {
-                    cpp.push_str(&format!("  if ({wpfx}_en) memcpy(&_mem[{wpfx}_addr], &{w_data_name}, sizeof({elem_ty}));\n"));
+                    cpp.push_str(&format!("    memcpy(&_mem[{wpfx}_addr], &{w_data_name}, sizeof({elem_ty}));\n"));
                 } else {
-                    cpp.push_str(&format!("  if ({wpfx}_en) _mem[{wpfx}_addr] = {w_data_name};\n"));
+                    cpp.push_str(&format!("    _mem[{wpfx}_addr] = {w_data_name};\n"));
                 }
+                cpp.push_str(&write_mark(&wr_addr));
+                cpp.push_str("  }\n");
+                // Read path
                 match r.latency {
                     1 | 2 => {
+                        cpp.push_str(&format!("  if ({rpfx}_en) {{\n"));
+                        cpp.push_str(&read_check(&rd_addr, "    "));
                         if is_wide {
-                            cpp.push_str(&format!("  if ({rpfx}_en) memcpy(&_r_{out_name}, &_mem[{rpfx}_addr], sizeof({elem_ty}));\n"));
+                            cpp.push_str(&format!("    memcpy(&_r_{out_name}, &_mem[{rpfx}_addr], sizeof({elem_ty}));\n"));
                         } else {
-                            cpp.push_str(&format!("  if ({rpfx}_en) _r_{out_name} = _mem[{rpfx}_addr];\n"));
+                            cpp.push_str(&format!("    _r_{out_name} = _mem[{rpfx}_addr];\n"));
                         }
+                        cpp.push_str("  }\n");
                     }
                     0 | _ => {}
                 }
@@ -5406,6 +5461,8 @@ impl<'a> SimCodegen<'a> {
                         .find(|pg| pg.signals.iter().any(|s| s.direction == Direction::Out))
                         .map(|pg| pg.name.name.as_str())
                         .unwrap_or("access");
+                    let rd_addr = format!("{rpfx}_addr");
+                    cpp.push_str(&read_check(&rd_addr, "  "));
                     if is_wide {
                         cpp.push_str(&format!("  memcpy(&{}, &_mem[{rpfx}_addr], sizeof({}));\n", fs.full_name, fs.full_name));
                     } else {
