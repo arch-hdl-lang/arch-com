@@ -13,6 +13,17 @@
    Every top-level construct uses the symmetric bracketing convention:
      keyword Name ... end keyword Name
    The closing name MUST match the opening name exactly.
+
+   LL(1) property (updated 2026-04-17):
+     Every production alternative is distinguishable by a single token of
+     lookahead. Contextual keywords (lexed as ident, reserved by position —
+     see the list at the bottom of this file) count as distinct tokens for
+     the purpose of this guarantee. No production requires backtracking;
+     no production has FIRST-sets that overlap across alternatives at a
+     given decision point. Additions since the last LL(1) audit (reg/port
+     guard clause; thread/resource/assert_cover in module_item; thread
+     statements) preserve the property — each new alternative starts with
+     a unique keyword or contextual-keyword ident.
    ========================================================================== *)
 
 
@@ -99,6 +110,9 @@ module_item = pragma_decl
             | pipe_reg_decl
             | generate_block
             | hook_binding_decl
+            | thread_block           (* multi-cycle sequential block, §7a *)
+            | resource_decl          (* shared mutex resource for thread `lock` *)
+            | assert_cover           (* module-scope SVA `assert`/`cover` *)
             | function_decl          (* module-local helper function *)
             ;
 
@@ -136,8 +150,11 @@ port_kind = "initiator" ident [ "<" param_assign { "," param_assign } ">" ]
           | ( "in" | "out" ) type_expr [ port_reg_suffix ] [ "default" expr ]
           ;
 
-(* Additional clauses on `port reg` outputs — provides init value and reset behaviour *)
-port_reg_suffix = [ "init" expr ] [ "reset" reset_clause ] ;
+(* Additional clauses on `port reg` outputs — provides guard/init/reset behaviour.
+   Clause order matches `reg_decl`: guard (valid-gated), init, reset — each optional. *)
+port_reg_suffix = [ "guard" ident ]
+                  [ "init" expr ]
+                  [ "reset" reset_clause ] ;
 
 (* Indexed port array declaration: ports[N] name ... end ports name *)
 ports_array_decl = "ports" "[" expr "]" ident
@@ -152,6 +169,7 @@ param_assign = ident "=" expr ;
 (* ─── Register / Wire / Let ─────────────────────────────────────────────── *)
 
 reg_decl = "reg" ident ":" type_expr
+             [ "guard" ident ]       (* valid-signal guard: reg data: T guard valid_r; *)
              [ "init" expr ]
              [ "reset" reset_clause ]
            ";" ;
@@ -232,6 +250,65 @@ lvalue = ident
 latch_block = "latch" "on" ident
                 { seq_stmt }
               "end" "latch" ;
+
+
+(* ─── Thread blocks ─────────────────────────────────────────────────────── *)
+(* Multi-cycle sequential block — compiler lowers to synthesizable FSM.
+   See spec §7a. `once` runs the body once then halts; default re-runs. *)
+
+thread_block = "thread" [ "once" ] [ ident ]
+                 "on" ident ( "rising" | "falling" )
+                 "," ident ( "high" | "low" )
+                 [ "default" "when" expr
+                     { thread_stmt }
+                   "end" "default" ]
+                 { thread_stmt }
+               "end" "thread" [ ident | "once" ] ;
+
+thread_stmt = thread_if
+            | thread_fork_join
+            | thread_for
+            | thread_lock
+            | thread_do_until
+            | log_stmt
+            | "wait" "until" expr ";"
+            | "wait" expr "cycle" ";"
+            | thread_assign
+            ;
+
+thread_if   = "if" expr { thread_stmt }
+              { "elsif" expr { thread_stmt } }
+              [ "else" { thread_stmt } ]
+              "end" "if" ;
+
+thread_for  = "for" ident "in" for_range
+                { thread_stmt }
+              "end" "for" ;
+
+(* N-way parallel split: all branches run concurrently, each as an FSM sub-lane;
+   `join` point synchronises them. *)
+thread_fork_join = "fork" { thread_stmt }
+                   { "and" { thread_stmt } }
+                   "join" ;
+
+(* Exclusive access to a shared resource declared by `resource_decl`. *)
+thread_lock = "lock" ident
+                { thread_stmt }
+              "end" "lock" ident ;
+
+(* `do ... until cond;` — hold all comb outputs constant while waiting
+   for cond. Only valid inside a thread body. *)
+thread_do_until = "do"
+                    { thread_stmt }
+                  "until" expr ";" ;
+
+thread_assign = lvalue ( "=" | "<=" ) expr ";" ;
+
+(* Resource for mutual exclusion across threads (used by thread_lock).
+   Only three policies accepted by the mutex arbiter — a subset of arbiter_policy. *)
+resource_decl = "resource" ident ":" "mutex" "<" mutex_policy ">" ";" ;
+
+mutex_policy = "round_robin" | "priority" | "lru" ;
 
 
 (* ─── Combinational blocks ───────────────────────────────────────────────── *)
@@ -754,14 +831,18 @@ comment = "//" { any_char_except_newline } newline ;
 (* The following identifiers are reserved as hard keywords and cannot be used
    as user-defined names:
 
-   and, arbiter, as, assert, async, bus, clkgate, comb, const, counter,
-   cover, default, domain, else, end, enum, false, fifo, flush, for, forward,
-   from, fsm, function, generate, high, hook, if, implements, in, init, inside,
-   latch, latency, let, linklist, low, match, module, none, on, op, or, out,
-   package, param, pipeline, port, ports, ram, reg, regfile, reset, return,
-   seq, stage, stall, store, struct, synchronizer, template, todo!, to,
-   track, transition, true, type, use, when, wire
+   and, arbiter, as, assert, bus, clkgate, comb, const, counter, cover,
+   default, domain, else, elsif, end, enum, falling, false, fifo, flush, for,
+   forward, from, fsm, function, generate, generate_else, generate_for,
+   generate_if, guard, high, hook, if, implements, implies, in, init, initial,
+   inside, inst, kind, latch, latency, let, linklist, log, low, match, module,
+   none, not, on, onehot, op, or, out, package, param, pipe_reg, pipeline,
+   pipelined, port, ports, ram, reg, regfile, repeat, reset, return, rising,
+   seq, signed, stage, stall, store, struct, synchronizer, template,
+   testbench, thread, todo!, track, true, type, unique, unsigned, use, when,
+   wire
 
    Contextual keywords (lexed as identifiers, given meaning by position):
-   direction, file, fifo, in, kind, latency, lifo, op, out, pipelined,
-   policy, pragma, read_first, state, track, write, write_before_read *)
+   async, cycle, direction, do, file, fifo, fork, in, join, lifo, lock, mutex,
+   once, out, policy, pragma, priority, read_first, resource, round_robin,
+   state, transition, until, wait, write, write_before_read *)
