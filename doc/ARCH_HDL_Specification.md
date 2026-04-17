@@ -848,6 +848,20 @@ Arch has three kinds of module-scope signal declarations. Each has a distinct sy
 
 **`port reg`** declares an output port that is also a register, eliminating the common `reg r` + `comb out = r; end comb` boilerplate. The syntax is `port reg name: out T [init V] [reset R=>V];`. It can only be used on output ports (`in` direction is a compile error). The port is assigned with `<=` inside a `seq` block, just like a regular `reg`. If `reg default:` is in scope, it inherits the default init and reset. In generated SV, the port is declared as `output logic [W-1:0] name` and driven directly in the `always_ff` block.
 
+**`guard` clause** — `reg NAME: T guard VALID_SIG [init V] [reset R=>V];` declares that the register is intentionally uninitialized as long as `VALID_SIG` is low. This is the canonical valid-data pattern: a wide data register stays reset-free (saving area and power) while a companion valid flag gates consumers. The `guard` clause goes right after the type, before any `init` or `reset` clause. `VALID_SIG` must be a single identifier — for multi-signal predicates, combine them via a `let` binding first. `port reg` supports the same clause.
+
+```
+reg  axi_rdata: UInt<512> guard axi_rvalid;        // no reset — intentional
+reg  axi_rvalid: Bool reset rst => false;
+port reg dout:  out UInt<32> guard dout_valid;     // port form
+```
+
+The clause has three observable effects:
+
+1. **Documents intent** in the source — the reader sees immediately that `axi_rdata` is valid-gated.
+2. **Silences spurious `--check-uninit` warnings** at the consumer read site — a plain `reset none` reg reads as "WARNING: read of uninitialized reg 'axi_rdata'", but a guarded reg does not, since consumers are expected to qualify the read with `if axi_rvalid`.
+3. **Catches the producer bug** at simulation runtime — if the guard asserts (`axi_rvalid == true`) but the data reg was never written, `--check-uninit` emits a warning. This is the bug the annotation is specifically designed to find: the valid flag goes live but the data bus still carries an uninitialized value.
+
 ```
 module Mux2
   port sel: in Bool;

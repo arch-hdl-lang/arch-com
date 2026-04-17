@@ -55,8 +55,12 @@ reg r: T init 0 reset rst => 0;    // init sets SV declaration initializer
 reg r: T reset none;                 // register without reset
 reg default: reset rst => 0;         // wildcard default for all regs in scope
 reg r: UInt<8>;                      // inherits reset from reg default
+reg data: UInt<32> guard valid_r;    // guarded (no reset) — valid_r tells consumers when data is live;
+                                     //   --check-uninit silences spurious read warnings AND catches the
+                                     //   producer bug (valid_r=true but data never written)
 port reg q: out UInt<8> reset rst => 0;  // output port + register combined (1-cycle output latency)
 port reg q: out UInt<8>;             // inherits reset from reg default
+port reg dout: out UInt<32> guard dout_valid;  // port form of guarded reg
 pipe_reg delayed: source stages 3;  // N-stage delay chain, type inferred
 
 // OUTPUT TIMING: port reg vs port (critical for FSM outputs)
