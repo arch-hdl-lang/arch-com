@@ -109,6 +109,10 @@ _auto_bound_vec_0: assert property (@(posedge clk) disable iff (rst) (idx) < (4)
 
 Consumed by Verilator (`--assert`), iverilog (`-gsupported-assertions`), and formal tools (EBMC, SymbiYosys). **Scope**: seq and latch contexts only. Accesses in `comb` blocks or `let` bindings are not mirrored to SV in v1 — concurrent assertions can't catch sub-cycle glitches, and wrapping `always_comb` with immediate assertions is deferred. The arch-sim runtime check still fires for those paths. Reset polarity is inferred from the module's `Reset<Kind,Polarity>` port. Modules with no clock emit no SV assertion (assertion would have no evaluation context).
 
+**Verified end-to-end (2026-04-17):**
+- *Verilator 5.034 + `--assert`*: in-bounds runs silently; OOB trips `$fatal(1, "BOUNDS VIOLATION: ...")`.
+- *EBMC 5.11*: `UInt<4> wr_idx` into `Vec<_,4>` ⇒ **REFUTED** at the leaf module (unconstrained input can reach 15; caller must constrain). Same access with `UInt<2> wr_idx` ⇒ **PROVED up to bound 10** (structurally safe by type width). Confirms the SVA is syntactically correct, solver-reducible, and actionable.
+
 ---
 
 ## ARCH Language — Key Constructs
