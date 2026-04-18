@@ -331,6 +331,36 @@ impl<'a> SimCodegen<'a> {
             .collect();
         let port_info_str = port_info_entries.join(",\n");
 
+        // Collect all struct types declared in the compilation unit (file-scope
+        // and inside packages). Register each with pybind so that struct-typed
+        // ports like `hwif_in: MyIpHwifIn` are reachable from Python as
+        // `dut.hwif_in.field`.
+        let mut all_structs: Vec<&StructDecl> = Vec::new();
+        for item in &self.source.items {
+            match item {
+                Item::Struct(s) => all_structs.push(s),
+                Item::Package(p) => { for s in &p.structs { all_structs.push(s); } }
+                _ => {}
+            }
+        }
+        let mut struct_bindings = String::new();
+        for s in &all_structs {
+            let sname = &s.name.name;
+            // `py::module_local()` scopes the struct type to this extension
+            // module so multiple pybind builds sharing struct names (e.g. two
+            // cpuif variants of the same design) can coexist in one process.
+            struct_bindings.push_str(&format!(
+                "    py::class_<{sname}>(m, \"{sname}\", py::module_local())\n        .def(py::init<>())\n"
+            ));
+            for f in &s.fields {
+                let fname = &f.name.name;
+                struct_bindings.push_str(&format!(
+                    "        .def_readwrite(\"{fname}\", &{sname}::{fname})\n"
+                ));
+            }
+            struct_bindings.push_str("        ;\n");
+        }
+
         let cpp = format!(
 r#"// Auto-generated pybind11 wrapper for {class}
 #include <pybind11/pybind11.h>
@@ -339,7 +369,7 @@ r#"// Auto-generated pybind11 wrapper for {class}
 namespace py = pybind11;
 
 PYBIND11_MODULE({pybind_module}, m) {{
-    py::class_<{class}>(m, "{class}")
+{struct_bindings}    py::class_<{class}>(m, "{class}")
         .def(py::init<>())
 {bindings}
         .def_static("_port_info", []() {{
@@ -705,10 +735,11 @@ fn collect_trace_signals(
 ) -> Vec<TraceSignal> {
     let mut sigs = Vec::new();
 
-    // Ports (skip bus ports and Vec ports — flattened signals added separately)
+    // Ports (skip bus ports and Vec ports — flattened signals added separately;
+    // also skip struct/enum-typed ports, which can't be bit-shifted scalar-style)
     for p in ports {
         if p.bus_info.is_some() { continue; }
-        if matches!(p.ty, TypeExpr::Vec(..)) { continue; }
+        if matches!(p.ty, TypeExpr::Vec(..) | TypeExpr::Named(_)) { continue; }
         let name = &p.name.name;
         let width = type_width(&p.ty);
         let is_wide = wide_names.contains(name.as_str());
@@ -1407,10 +1438,18 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
         ExprKind::Signed(inner) | ExprKind::Unsigned(inner) => {
             infer_expr_width(inner, ctx)
         }
-        ExprKind::FieldAccess(_, _) => {
-            // Bus field or struct field — check widths map via flattened name
+        ExprKind::FieldAccess(base, field) => {
+            // Struct field access: look up by "<base>.<field>" key the caller
+            // populated from the struct decl (so e.g. ctrl_r.mode resolves to
+            // the declared bit width, not the C++ storage width).
+            if let ExprKind::Ident(name) = &base.kind {
+                let key = format!("{}.{}", name, field.name);
+                if let Some(&w) = ctx.widths.get(key.as_str()) {
+                    return w;
+                }
+            }
+            // Bus field — falls through to the flattened C++ name lookup.
             let flat = cpp_expr_inner(expr, ctx, false);
-            // Try to look up the width; default to 8 if unknown
             ctx.widths.get(flat.as_str()).copied().unwrap_or(8)
         }
         _ => 8,
@@ -1790,7 +1829,20 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             }
         }
 
-        ExprKind::StructLiteral(_, _) => "0 /* struct literal */".to_string(),
+        ExprKind::StructLiteral(name, fields) => {
+            // Lower to an immediately-invoked lambda so the result is a proper
+            // value of the struct type. Works regardless of whether the struct
+            // has a user-declared default constructor.
+            let sname = &name.name;
+            let mut body = String::new();
+            body.push_str(&format!("[&](){{ {sname} _t; "));
+            for f in fields {
+                let v = cpp_expr(&f.value, ctx);
+                body.push_str(&format!("_t.{} = {v}; ", f.name.name));
+            }
+            body.push_str("return _t; }()");
+            body
+        }
 
         ExprKind::Todo => "0 /* todo! */".to_string(),
 
@@ -2634,6 +2686,10 @@ fn collect_stmt_assigns(stmts: &[Stmt], out: &mut std::collections::BTreeSet<Str
         match stmt {
             Stmt::Assign(a) => {
                 if let ExprKind::Ident(n) = &a.target.kind { out.insert(n.clone()); }
+                // Struct-field LHS (`reg.field <= ...`): collect the base reg name.
+                if let ExprKind::FieldAccess(base, _) = &a.target.kind {
+                    if let ExprKind::Ident(n) = &base.kind { out.insert(n.clone()); }
+                }
             }
             Stmt::IfElse(ie) => {
                 collect_stmt_assigns(&ie.then_stmts, out);
@@ -2737,6 +2793,47 @@ impl<'a> SimCodegen<'a> {
             let bits = type_bits_te(flat_ty);
             widths.insert(flat_name.clone(), bits);
             if bits > 64 { wide_names.insert(flat_name.clone()); }
+        }
+
+        // Populate widths with per-struct-field keys: "ctrl_r.mode" → 4, etc.
+        // Required for concat-width inference when struct fields appear inside
+        // a concat expression (the default `unwrap_or(8)` silently corrupts
+        // readback shifts otherwise).
+        let struct_decls: HashMap<&str, &StructDecl> = {
+            let mut map: HashMap<&str, &StructDecl> = HashMap::new();
+            for item in &self.source.items {
+                match item {
+                    Item::Struct(s) => { map.insert(s.name.name.as_str(), s); }
+                    Item::Package(p) => {
+                        for s in &p.structs { map.insert(s.name.name.as_str(), s); }
+                    }
+                    _ => {}
+                }
+            }
+            map
+        };
+        let mut struct_typed_names: Vec<(String, &str)> = Vec::new();
+        for p in &m.ports {
+            if let TypeExpr::Named(n) = &p.ty {
+                struct_typed_names.push((p.name.name.clone(), n.name.as_str()));
+            }
+        }
+        for item in &m.body {
+            if let ModuleBodyItem::RegDecl(r) = item {
+                if let TypeExpr::Named(n) = &r.ty {
+                    struct_typed_names.push((r.name.name.clone(), n.name.as_str()));
+                }
+            }
+        }
+        for (instance_name, struct_name) in &struct_typed_names {
+            if let Some(sd) = struct_decls.get(struct_name) {
+                for f in &sd.fields {
+                    widths.insert(
+                        format!("{instance_name}.{}", f.name.name),
+                        type_bits_te(&f.ty),
+                    );
+                }
+            }
         }
 
         // Vec-typed reg names (use C array subscript `[i]` instead of bit extraction)
@@ -2979,11 +3076,18 @@ impl<'a> SimCodegen<'a> {
         }
         h.push('\n');
 
-        // Constructor — build init list
+        // Constructor — build init list. Struct-typed ports get the default
+        // ctor (`name()`); scalar ports get `name(0)`.
         let mut port_inits: Vec<String> = m.ports.iter()
             .filter(|p| p.bus_info.is_none() && !wide_names.contains(&p.name.name)
                         && !vec_port_names.contains(&p.name.name))
-            .map(|p| format!("{}(0)", p.name.name))
+            .map(|p| {
+                if matches!(p.ty, TypeExpr::Named(_)) {
+                    format!("{}()", p.name.name)
+                } else {
+                    format!("{}(0)", p.name.name)
+                }
+            })
             .collect();
         // Add flat Vec port field inits (name_0(0), name_1(0), ...)
         for vi in &vec_port_infos {
@@ -3648,6 +3752,14 @@ impl<'a> SimCodegen<'a> {
                                     ExprKind::Literal(LitKind::Bin(v)) => v.to_string(),
                                     ExprKind::Literal(LitKind::Sized(_, v)) => v.to_string(),
                                     ExprKind::Bool(b) => if *b { "1".to_string() } else { "0".to_string() },
+                                    // Struct-literal reset values — lower via the
+                                    // general expression path so every field is set.
+                                    ExprKind::StructLiteral(_, _) => {
+                                        let tmp_ctx = Ctx::new(&reg_names, &port_names,
+                                            &let_names, &inst_names, &wide_names, &widths,
+                                            &enum_map, &bus_port_names);
+                                        cpp_expr(expr, &tmp_ctx)
+                                    }
                                     _ => "0".to_string(),
                                 }
                             } else {
@@ -5886,38 +5998,50 @@ impl<'a> SimCodegen<'a> {
     // ── Structs + Enums file ─────────────────────────────────────────────────
 
     /// Generate VStructs.h containing C++ type definitions for all ARCH structs and enums.
+    /// Collects from both file-scope and inside `package` declarations.
     fn gen_structs_file(&self) -> SimModel {
         let mut h = String::new();
         h.push_str("#pragma once\n#include <cstdint>\n#include <cstring>\n\n");
 
+        // Gather all enums and structs, whether declared at file scope or inside packages.
+        let mut enums: Vec<&EnumDecl> = Vec::new();
+        let mut structs: Vec<&StructDecl> = Vec::new();
         for item in &self.source.items {
             match item {
-                Item::Enum(e) => {
-                    // Enums are uint32_t aliases — variants are used as integer indices
-                    h.push_str(&format!("typedef uint32_t {};\n", e.name.name));
-                    for (i, v) in e.variants.iter().enumerate() {
-                        h.push_str(&format!("static const uint32_t {}_{} = {}u;\n", e.name.name, v.name, i));
-                    }
-                    h.push('\n');
-                }
-                Item::Struct(s) => {
-                    h.push_str(&format!("struct {} {{\n", s.name.name));
-                    let mut field_inits = Vec::new();
-                    for f in &s.fields {
-                        let ty = cpp_internal_type(&f.ty);
-                        h.push_str(&format!("  {} {};\n", ty, f.name.name));
-                        // Struct fields use default init for non-trivial types
-                        if matches!(f.ty, TypeExpr::Named(_)) {
-                            field_inits.push(format!("{}()", f.name.name));
-                        } else {
-                            field_inits.push(format!("{}(0)", f.name.name));
-                        }
-                    }
-                    h.push_str(&format!("  {}() : {} {{}}\n", s.name.name, field_inits.join(", ")));
-                    h.push_str("};\n\n");
+                Item::Enum(e) => enums.push(e),
+                Item::Struct(s) => structs.push(s),
+                Item::Package(p) => {
+                    for e in &p.enums { enums.push(e); }
+                    for s in &p.structs { structs.push(s); }
                 }
                 _ => {}
             }
+        }
+
+        for e in &enums {
+            // Enums are uint32_t aliases — variants are used as integer indices
+            h.push_str(&format!("typedef uint32_t {};\n", e.name.name));
+            for (i, v) in e.variants.iter().enumerate() {
+                h.push_str(&format!("static const uint32_t {}_{} = {}u;\n", e.name.name, v.name, i));
+            }
+            h.push('\n');
+        }
+
+        for s in &structs {
+            h.push_str(&format!("struct {} {{\n", s.name.name));
+            let mut field_inits = Vec::new();
+            for f in &s.fields {
+                let ty = cpp_internal_type(&f.ty);
+                h.push_str(&format!("  {} {};\n", ty, f.name.name));
+                // Struct fields use default init for non-trivial types
+                if matches!(f.ty, TypeExpr::Named(_)) {
+                    field_inits.push(format!("{}()", f.name.name));
+                } else {
+                    field_inits.push(format!("{}(0)", f.name.name));
+                }
+            }
+            h.push_str(&format!("  {}() : {} {{}}\n", s.name.name, field_inits.join(", ")));
+            h.push_str("};\n\n");
         }
 
         SimModel {
