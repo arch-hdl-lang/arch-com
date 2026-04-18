@@ -91,7 +91,7 @@ All wrapped in `translate_off`/`on` for synthesis portability, and consumable by
 
 **1.2.5 Multi-backend code generation**
 
-Arch targets multiple backends (SystemVerilog today, C++ simulation in `arch sim`, SMT-LIB2 formal in the roadmap). First-class constructs let the compiler emit the *right* representation per backend:
+Arch targets multiple backends — SystemVerilog (`arch build`), C++ simulation (`arch sim`), and direct SMT-LIB2 bounded model checking (`arch formal`, running under Z3 / Boolector / Bitwuzla). First-class constructs let the compiler emit the *right* representation per backend:
 
 - A sim FIFO uses a C++ `std::deque` with protocol-level push/pop checking
 - A formal FIFO uses symbolic state with cover/assert properties
@@ -5000,7 +5000,7 @@ From FIR, the three backends diverge:
 
   **Synthesis**           arch build         FIR nodes → SystemVerilog always_ff / always_comb / assign            Synthesisable SV for FPGA/ASIC tools
 
-  **Formal**              arch formal        FIR nodes → SMT-LIB2 transition relation                              Constraint file for Z3 / Bitwuzla / JaspserGold
+  **Formal**              arch formal        FIR nodes → SMT-LIB2 bit-vector transition relation                  Self-contained SMT-LIB2 + invocation of Z3 / Boolector / Bitwuzla
   ------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 **20.3 The Simulation Execution Model**
@@ -8550,7 +8550,7 @@ The compiler emits warnings (non-fatal, printed before "OK: no errors") for the 
 
   **SystemVerilog (FPGA Intel)**    arch build \--target fpga \--vendor intel    Inserts Intel BRAM/DSP primitives
 
-  **Formal verification**           arch build \--target formal                  SVA + SymbiYosys script
+  **Formal verification**           arch formal \[\--bound N\] \[\--solver z3\|boolector\|bitwuzla\]   Direct SMT-LIB2 BMC; the SV-SVA path (arch build + EBMC/Verilator \--assert) still ships as an alternative
 
   **Simulation**                    arch sim \--tb MyTb                          Compiles with Verilator or ModelSim/Questa
 
