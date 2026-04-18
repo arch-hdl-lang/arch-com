@@ -9,6 +9,10 @@ pub struct Parser {
     source: String,
     /// When true, `>` and `>=` are not treated as binary operators (inside type angle brackets)
     no_angle: bool,
+    /// When true, `<=` is not treated as the less-than-or-equal binary operator.
+    /// Set while parsing the *target* of a seq-block assignment so that `<=` remains
+    /// available as the non-blocking assignment token at the statement level.
+    no_lteq: bool,
     /// Default init/reset applied to reg declarations that omit those clauses.
     /// Set by `reg default: init <expr> reset <...>;` within a module/pipeline body.
     reg_defaults: Option<(Option<Expr>, RegReset)>,
@@ -18,7 +22,7 @@ pub struct Parser {
 
 impl Parser {
     pub fn new(tokens: Vec<Token>, source: &str) -> Self {
-        Self { tokens, pos: 0, source: source.to_string(), no_angle: false, reg_defaults: None, seq_default: None }
+        Self { tokens, pos: 0, source: source.to_string(), no_angle: false, no_lteq: false, reg_defaults: None, seq_default: None }
     }
 
     /// Check if there's a newline in the source between two byte offsets.
@@ -953,7 +957,12 @@ impl Parser {
         }
 
         // Assignment: `target = expr;` (comb) or `target <= expr;` (seq)
+        // While parsing the target, disable `<=` as an infix op so it stays
+        // available as the statement-level non-blocking-assignment token.
+        let old_no_lteq = self.no_lteq;
+        self.no_lteq = true;
         let target = self.parse_expr()?;
+        self.no_lteq = old_no_lteq;
         if self.eat(TokenKind::Eq) {
             let value = self.parse_expr()?;
             let semi_span = self.expect(TokenKind::Semi)?.span;
@@ -1303,7 +1312,12 @@ impl Parser {
             return Ok(Stmt::DoUntil { body, cond, span: do_start.merge(semi_span) });
         }
         // Assignment: target <= value;
+        // Suppress `<=` as an infix op while parsing the target so it stays
+        // available as the non-blocking-assignment token.
+        let old_no_lteq = self.no_lteq;
+        self.no_lteq = true;
         let target = self.parse_expr()?;
+        self.no_lteq = old_no_lteq;
         self.expect(TokenKind::LtEq)?;
         let value = self.parse_expr()?;
         self.expect(TokenKind::Semi)?;
@@ -2512,6 +2526,7 @@ impl Parser {
             TokenKind::EqEq => Some(BinOp::Eq),
             TokenKind::BangEq => Some(BinOp::Neq),
             TokenKind::Lt if !self.no_angle => Some(BinOp::Lt),
+            TokenKind::LtEq if !self.no_lteq => Some(BinOp::Lte),
             TokenKind::Gt if !self.no_angle => Some(BinOp::Gt),
             TokenKind::GtEq if !self.no_angle => Some(BinOp::Gte),
             TokenKind::And => Some(BinOp::And),

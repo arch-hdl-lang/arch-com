@@ -81,6 +81,23 @@ Additional flags: `--wave out.vcd` (VCD waveform), `--check-uninit` (uninitializ
 
 Always-on runtime checks: out-of-range `Vec<T,N>` indexing, bit-selects `val[i]` on `UInt<W>`/`SInt<W>`, variable part-selects `val[start +: W]` / `val[start -: W]`, and divide-by-zero on `/` / `%` are a hard abort (`ARCH-ERROR: ...`). Compile-time constant indices/divisors are verified by the type checker; only runtime values carry the check. `arch build` also auto-emits matching SVA (concurrent `assert property`, wrapped in `translate_off/on`) so Verilator, iverilog, and formal tools (EBMC, SymbiYosys) see the same invariants.
 
+## Formal verification
+
+Two paths, both driven by the same `assert` / `cover` clauses in the source:
+
+1. **SV-SVA path** — `arch build` emits SystemVerilog with concurrent assertions consumable by EBMC, Verilator `--assert`, and SymbiYosys. Nothing extra to configure.
+2. **Direct SMT-LIB2 path** — `arch formal` lowers a module straight to SMT-LIB2 and shells out to a bit-vector solver. No Yosys in the loop; ARCH semantics (wrapping arithmetic, width casts) are encoded precisely.
+
+```sh
+arch formal MyModule.arch                            # defaults: z3, bound=20, 60s timeout
+arch formal MyModule.arch --bound 64                 # deeper unroll
+arch formal MyModule.arch --solver boolector         # or bitwuzla
+arch formal MyModule.arch --emit-smt model.smt2      # dump the SMT-LIB2 for inspection
+arch formal multi.arch --top MyTop                   # pick a top when the file has >1 module
+```
+
+Output is one line per property — `PROVED up to bound N`, `REFUTED at cycle C` (with a per-cycle signal counterexample), `HIT at cycle C` for covers, `NOT REACHED within bound N`, or `INCONCLUSIVE` on solver timeout. Exit codes: `0` all-good, `1` any failure, `2` inconclusive, `3` compile error. Scope in v1 is flat modules with scalar signals (`UInt<N>` / `SInt<N>` / `Bool` / `Bit`), single clock, no sub-`inst`; anything out of scope errors out with a pointer at the offending construct.
+
 ## Language snapshot
 
 ### Combinational logic

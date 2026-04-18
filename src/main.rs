@@ -7,6 +7,7 @@ use arch::ast::Item;
 use arch::codegen::Codegen;
 use arch::diagnostics::CompileError;
 use arch::elaborate;
+use arch::formal;
 use arch::lexer;
 use arch::parser;
 use arch::resolve;
@@ -87,6 +88,30 @@ enum Command {
         /// Python test file to run with arch_cocotb adapter (requires --pybind)
         #[arg(long)]
         test: Option<PathBuf>,
+    },
+    /// Formal verification: emit SMT-LIB2 and invoke a bit-vector SMT solver.
+    ///
+    /// Bounded model-checks asserts and covers in the selected module by
+    /// translating ARCH AST directly to SMT-LIB2 (no Yosys in the loop).
+    Formal {
+        /// Input .arch file(s)
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+        /// Top module name (required if the file declares multiple modules)
+        #[arg(long)]
+        top: Option<String>,
+        /// BMC unroll depth (cycles)
+        #[arg(short, long, default_value_t = 20)]
+        bound: u32,
+        /// SMT solver binary: z3, boolector, or bitwuzla
+        #[arg(short, long, default_value = "z3")]
+        solver: String,
+        /// Dump the generated SMT-LIB2 to this file (for inspection / debugging)
+        #[arg(long)]
+        emit_smt: Option<PathBuf>,
+        /// Per-property solver timeout in seconds
+        #[arg(long, default_value_t = 60)]
+        timeout: u32,
     },
 }
 
@@ -234,6 +259,23 @@ fn main() -> miette::Result<()> {
             }
 
             Ok(())
+        }
+        Command::Formal { files, top, bound, solver, emit_smt, timeout } => {
+            let all_files = resolve_use_imports(&files)?;
+            let ms = MultiSource::from_files(&all_files)?;
+            let (ast, symbols, _overload_map) = run_check_multi(&ms)?;
+
+            let args = formal::FormalArgs {
+                top: top.clone(),
+                bound,
+                solver: solver.clone(),
+                emit_smt: emit_smt.clone(),
+                timeout,
+            };
+            let report = formal::run(&ast, &symbols, &args).map_err(|err| {
+                ms.report_error(err)
+            })?;
+            std::process::exit(report.exit_code());
         }
     }
 }

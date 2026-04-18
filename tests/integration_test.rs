@@ -1523,3 +1523,37 @@ end module RfUser
     assert!(sv.contains(".write_data"), "expected .write_data port connection, got:\n{sv}");
     insta::assert_snapshot!(sv);
 }
+
+/// Regression: `<=` must be accepted as less-than-or-equal in expression context
+/// (assert/cover RHS, comb RHS, let RHS, if conditions, ternary branches), while
+/// still working as the non-blocking-assignment token at the statement level.
+/// Before the fix, `peek_binop` only listed `>=`, so `cnt <= 200` in an assert
+/// would fail to parse with "expected ;, found <=".
+#[test]
+fn test_lte_in_expression_contexts() {
+    let source = r#"
+module LteExpr
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en:  in Bool;
+
+  reg cnt: UInt<8> reset rst => 0;
+
+  seq on clk rising
+    if en
+      cnt <= (cnt +% 1);
+    end if
+  end seq
+
+  assert bounded: cnt <= 200;
+end module LteExpr
+"#;
+    let sv = compile_to_sv(source);
+    // Statement-level `<=` still produces a non-blocking assignment.
+    assert!(sv.contains("cnt <="), "expected seq `cnt <= ...` in SV, got:\n{sv}");
+    // Expression-level `<=` appears in the assertion body.
+    assert!(
+        sv.contains("bounded") && sv.contains("<= 200"),
+        "expected assert `cnt <= 200` in SV, got:\n{sv}"
+    );
+}

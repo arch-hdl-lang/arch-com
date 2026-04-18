@@ -1,0 +1,19 @@
+module CounterBounded
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en:  in Bool;
+
+  reg cnt: UInt<8> reset rst => 0;
+
+  seq on clk rising
+    if en
+      if cnt == 200
+        cnt <= 0;
+      else
+        cnt <= (cnt +% 1);
+      end if
+    end if
+  end seq
+
+  assert always_bounded: cnt <= 200;
+end module CounterBounded

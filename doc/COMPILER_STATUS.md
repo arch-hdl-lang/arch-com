@@ -1,7 +1,7 @@
 # ARCH Compiler — Status & Roadmap
 
-> Last updated: 2026-04-13
-> Compiler version: 0.40.0 (built-in SysDomain, default seq, one-line seq, bus construct, VerilogEval simplifications)
+> Last updated: 2026-04-17
+> Compiler version: 0.41.0 (`arch formal` direct SMT-LIB2 bounded model checking; `<=` now parses as less-than-or-equal in expression contexts)
 
 ---
 
@@ -272,6 +272,6 @@
 |---|---------|-------|
 | ~~1~~ | ~~**Multi-file compilation**~~ | **DONE** — `arch build a.arch b.arch` concatenates and cross-resolves; `arch build a.arch b.arch` without `-o` emits one `.sv` per input |
 | ~~2~~ | ~~**`arch sim`**~~ | **DONE** — `arch sim Foo.arch --tb Foo_tb.cpp`; generates Verilator-compatible C++ models for `module`, `counter`, `fsm`; compiles with `g++`; runs binary; verified with counter, FSM, and top-level module testbenches |
-| 3 | **`arch formal`** | Emit SMT-LIB2 directly (targeting Z3 / Bitwuzla / Yices via SymbiYosys's `smtbmc` engine, or standalone); complements the existing SV-with-SVA path that EBMC and Verilator `--assert` already consume |
+| ~~3~~ | ~~**`arch formal`**~~ | **DONE (2026-04-17)** — direct AST→SMT-LIB2 bounded model checking, no Yosys/sby in the loop. `arch formal F.arch [--top Name] [--bound N] [--solver z3\|boolector\|bitwuzla] [--emit-smt out.smt2] [--timeout S]`. Encodes registers as per-cycle BV variables, next-state as an `ite` chain, and asserts/covers as per-cycle disjunctions; one `check-sat` per property. Exit codes: 0 all PROVED/HIT, 1 any REFUTED/NOT-REACHED, 2 any INCONCLUSIVE. Scope v1: flat module, scalar types, single clock, no sub-`inst`, no Vec/struct/enum; errors clearly on unsupported constructs. **Verified end-to-end**: counter (`cnt < 201` → PROVED), 4-bit overflow (`cnt != 15` → REFUTED with cex), cover (`cnt == 8` → HIT at witness cycle, NOT REACHED at low bound), guard contract (`valid implies written` → PROVED; missing write → REFUTED). Solver parity on z3 + boolector + bitwuzla (10 integration tests). Complements the SV-SVA path consumed by EBMC and Verilator `--assert` — both paths ship. |
 | 4 | **`bus` TLM methods** | `methods ... end methods` inside `bus`; `implement BusName.method rtl` with `wait until`/`fork`-`join` → synthesizable FSM; all four modes (`blocking`/`pipelined`/`out_of_order`/`burst`) synthesizable with declared bounds; spec in `doc/bus_spec_section.md` §19.2.2 |
 | ~~5~~ | ~~**Waveform output**~~ | **DONE** — `arch sim ... --wave out.vcd` emits VCD auto-tracing all top-level ports/regs + flattened bus signals; opens in GTKWave/Surfer; testbenches can also call `trace_open/trace_dump/trace_close` explicitly |

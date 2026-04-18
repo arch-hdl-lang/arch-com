@@ -2,7 +2,7 @@
 
 Hardware Description Language
 
-Language Specification · v0.40.0 · April 2026
+Language Specification · v0.41.0 · April 2026
 
 *A purpose-built micro-architecture HDL --- clean RTL semantics, strong types, and first-class pipelines, FSMs, FIFOs, and arbiters. Incorrect design patterns --- multiple drivers, undriven ports, clock-domain crossings, width mismatches --- are compile-time errors, never runtime surprises. Designed to be generated correctly by AI without prior training.*
 

@@ -1,0 +1,20 @@
+module CounterSimple
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en:  in Bool;
+  port count: out UInt<8>;
+
+  reg cnt: UInt<8> reset rst => 0;
+
+  seq on clk rising
+    if en
+      cnt <= (cnt +% 1);
+    end if
+  end seq
+
+  comb
+    count = cnt;
+  end comb
+
+  assert count_equals_cnt: count == cnt;
+end module CounterSimple

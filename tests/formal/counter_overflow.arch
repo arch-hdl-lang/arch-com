@@ -1,0 +1,15 @@
+module CounterOverflow
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en:  in Bool;
+
+  reg cnt: UInt<4> reset rst => 0;
+
+  seq on clk rising
+    if en
+      cnt <= (cnt +% 1);
+    end if
+  end seq
+
+  assert never_15: cnt != 15;
+end module CounterOverflow

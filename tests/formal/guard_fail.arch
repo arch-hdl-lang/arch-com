@@ -1,0 +1,16 @@
+module GuardFail
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en:  in Bool;
+
+  reg valid_r: Bool reset rst => false;
+  reg written: Bool reset rst => false;
+
+  seq on clk rising
+    if en
+      valid_r <= true;
+    end if
+  end seq
+
+  assert valid_implies_written: valid_r implies written;
+end module GuardFail

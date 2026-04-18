@@ -1,0 +1,15 @@
+module CoverHit
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en:  in Bool;
+
+  reg cnt: UInt<4> reset rst => 0;
+
+  seq on clk rising
+    if en
+      cnt <= (cnt +% 1);
+    end if
+  end seq
+
+  cover saw_eight: cnt == 8;
+end module CoverHit
