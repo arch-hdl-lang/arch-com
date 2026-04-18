@@ -477,6 +477,21 @@ fn expand_generate_for(
     let mut ports = Vec::new();
     let mut body = Vec::new();
 
+    // Before unrolling, enforce Reading B on seq / comb bodies: every LHS
+    // must be indexed by the loop variable. Writing to a scalar from inside
+    // generate_for would produce N conflicting drivers after unrolling.
+    let mut errors: Vec<CompileError> = Vec::new();
+    for item in &gf.items {
+        match item {
+            GenItem::Seq(rb)  => check_gen_for_reg_stmts(&rb.stmts, var, &mut errors),
+            GenItem::Comb(cb) => check_gen_for_comb_stmts(&cb.stmts, var, &mut errors),
+            _ => {}
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
     for i in start..=end {
         for item in &gf.items {
             match item {
@@ -484,11 +499,187 @@ fn expand_generate_for(
                 GenItem::Inst(inst) => body.push(ModuleBodyItem::Inst(subst_inst(inst, var, i))),
                 GenItem::Thread(t) => body.push(ModuleBodyItem::Thread(subst_thread(t, var, i))),
                 GenItem::Assert(a) => body.push(ModuleBodyItem::Assert(subst_assert(a, var, i))),
+                GenItem::Seq(rb)  => body.push(ModuleBodyItem::RegBlock(subst_reg_block(rb, var, i))),
+                GenItem::Comb(cb) => body.push(ModuleBodyItem::CombBlock(subst_comb_block(cb, var, i))),
             }
         }
     }
 
     Ok((ports, body))
+}
+
+// ── generate_for seq/comb write-target check (Reading B) ──────────────────────
+//
+// Inside a generate_for's seq/comb body, every assignment LHS must be of the
+// form `<ident>[<expr-using-loop-var>]` (with optional nested struct-field or
+// bit-slice access). Reads on RHS are unrestricted.
+
+fn expr_mentions_ident(expr: &Expr, name: &str) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(n) => n == name,
+        ExprKind::Binary(_, l, r) =>
+            expr_mentions_ident(l, name) || expr_mentions_ident(r, name),
+        ExprKind::Unary(_, x) => expr_mentions_ident(x, name),
+        ExprKind::FieldAccess(b, _) => expr_mentions_ident(b, name),
+        ExprKind::Index(b, i) =>
+            expr_mentions_ident(b, name) || expr_mentions_ident(i, name),
+        ExprKind::BitSlice(b, h, l) =>
+            expr_mentions_ident(b, name) || expr_mentions_ident(h, name)
+            || expr_mentions_ident(l, name),
+        ExprKind::Cast(e, _) => expr_mentions_ident(e, name),
+        ExprKind::Ternary(c, t, f) =>
+            expr_mentions_ident(c, name) || expr_mentions_ident(t, name)
+            || expr_mentions_ident(f, name),
+        ExprKind::Concat(xs) => xs.iter().any(|x| expr_mentions_ident(x, name)),
+        ExprKind::MethodCall(r, _, args) =>
+            expr_mentions_ident(r, name)
+            || args.iter().any(|a| expr_mentions_ident(a, name)),
+        _ => false,
+    }
+}
+
+/// Every unrolled iteration of a generate_for must write a *distinct* target,
+/// otherwise N copies of the loop body all drive the same signal. There are
+/// two legitimate ways an LHS can be distinct per iteration:
+///
+///   1. Indexed by the loop var: `vec_reg[i]` (or nested through a field /
+///      bit-slice, e.g. `vec_reg[i].field`, `vec_reg[i][7:0]`).
+///   2. The base identifier contains the loop var as a suffix (or IS the loop
+///      var), which gets suffix-substituted during port / inst expansion.
+///      E.g. writing to `rdata_i` inside `generate_for i in 0..3` yields
+///      three distinct scalars `rdata_0 / rdata_1 / rdata_2`.
+fn lhs_is_distinct_per_iteration(lhs: &Expr, var: &str) -> bool {
+    match &lhs.kind {
+        ExprKind::Index(_, idx) => expr_mentions_ident(idx, var),
+        ExprKind::FieldAccess(base, _) => lhs_is_distinct_per_iteration(base, var),
+        ExprKind::BitSlice(base, _, _) => lhs_is_distinct_per_iteration(base, var),
+        ExprKind::Ident(name) => {
+            // name ends with `_<var>` or is exactly `<var>` — suffix-substituted
+            // into a unique identifier per iteration.
+            name == var || name.ends_with(&format!("_{}", var))
+        }
+        _ => false,
+    }
+}
+
+fn reject_bad_lhs(lhs: &Expr, var: &str, errors: &mut Vec<CompileError>) {
+    if !lhs_is_distinct_per_iteration(lhs, var) {
+        errors.push(CompileError::general(
+            &format!(
+                "write target inside generate_for must be distinct per iteration \
+                 — either `vec_name[{var}]` (indexed by the loop var) or a name \
+                 with an `_{var}` suffix (suffix-substituted per iteration). \
+                 Writing to anything else would produce multiple drivers after \
+                 the loop unrolls."
+            ),
+            lhs.span,
+        ));
+    }
+}
+
+fn check_gen_for_reg_stmts(stmts: &[Stmt], var: &str, errors: &mut Vec<CompileError>) {
+    for s in stmts {
+        match s {
+            Stmt::Assign(a) => reject_bad_lhs(&a.target, var, errors),
+            Stmt::IfElse(ie) => {
+                check_gen_for_reg_stmts(&ie.then_stmts, var, errors);
+                check_gen_for_reg_stmts(&ie.else_stmts, var, errors);
+            }
+            Stmt::Match(m) => for arm in &m.arms {
+                check_gen_for_reg_stmts(&arm.body, var, errors);
+            },
+            Stmt::For(f)  => check_gen_for_reg_stmts(&f.body, var, errors),
+            Stmt::Init(ib) => check_gen_for_reg_stmts(&ib.body, var, errors),
+            Stmt::Log(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => {}
+        }
+    }
+}
+
+fn check_gen_for_comb_stmts(stmts: &[CombStmt], var: &str, errors: &mut Vec<CompileError>) {
+    for s in stmts {
+        match s {
+            CombStmt::Assign(a) => reject_bad_lhs(&a.target, var, errors),
+            CombStmt::IfElse(ie) => {
+                check_gen_for_comb_stmts(&ie.then_stmts, var, errors);
+                check_gen_for_comb_stmts(&ie.else_stmts, var, errors);
+            }
+            // MatchExpr arms are value-producing (no further LHS to check).
+            CombStmt::MatchExpr(_) => {}
+            CombStmt::For(f) => check_gen_for_reg_stmts(&f.body, var, errors),
+            CombStmt::Log(_) => {}
+        }
+    }
+}
+
+// ── Substitution helpers for generate_for's seq / comb bodies ─────────────────
+
+fn subst_reg_block(rb: &RegBlock, var: &str, val: i64) -> RegBlock {
+    RegBlock {
+        clock: rb.clock.clone(),
+        clock_edge: rb.clock_edge,
+        stmts: rb.stmts.iter().map(|s| subst_reg_stmt(s, var, val)).collect(),
+        span: rb.span,
+    }
+}
+
+fn subst_reg_stmt(s: &Stmt, var: &str, val: i64) -> Stmt {
+    // Use subst_expr_names (suffix-rewriting variant) consistent with how
+    // thread bodies and generate_for ports/insts are substituted. That
+    // correctly rewrites `rdata_i` → `rdata_0` and also substitutes bare `i`
+    // uses in indices like `store[i]` → `store[0]`.
+    match s {
+        Stmt::Assign(a) => Stmt::Assign(Assign {
+            target: subst_expr_names(a.target.clone(), var, val),
+            value:  subst_expr_names(a.value.clone(),  var, val),
+            span:   a.span,
+        }),
+        Stmt::IfElse(ie) => Stmt::IfElse(IfElseOf {
+            cond:       subst_expr_names(ie.cond.clone(), var, val),
+            then_stmts: ie.then_stmts.iter().map(|x| subst_reg_stmt(x, var, val)).collect(),
+            else_stmts: ie.else_stmts.iter().map(|x| subst_reg_stmt(x, var, val)).collect(),
+            unique:     ie.unique,
+            span:       ie.span,
+        }),
+        Stmt::Match(m) => Stmt::Match(MatchStmt {
+            scrutinee: subst_expr_names(m.scrutinee.clone(), var, val),
+            arms: m.arms.iter().map(|arm| MatchArm {
+                pattern: arm.pattern.clone(),
+                body: arm.body.iter().map(|s| subst_reg_stmt(s, var, val)).collect(),
+            }).collect(),
+            unique: m.unique,
+            span: m.span,
+        }),
+        // Log/For/Init/WaitUntil/DoUntil: pass through. If we ever want to
+        // support loop-var substitution in these nested contexts we can
+        // extend this match — for now they're unusual inside generate_for
+        // and the LHS check above already guards correctness.
+        other => other.clone(),
+    }
+}
+
+fn subst_comb_block(cb: &CombBlock, var: &str, val: i64) -> CombBlock {
+    CombBlock {
+        stmts: cb.stmts.iter().map(|s| subst_comb_stmt(s, var, val)).collect(),
+        span: cb.span,
+    }
+}
+
+fn subst_comb_stmt(s: &CombStmt, var: &str, val: i64) -> CombStmt {
+    match s {
+        CombStmt::Assign(a) => CombStmt::Assign(Assign {
+            target: subst_expr_names(a.target.clone(), var, val),
+            value:  subst_expr_names(a.value.clone(),  var, val),
+            span:   a.span,
+        }),
+        CombStmt::IfElse(ie) => CombStmt::IfElse(IfElseOf {
+            cond:       subst_expr_names(ie.cond.clone(), var, val),
+            then_stmts: ie.then_stmts.iter().map(|x| subst_comb_stmt(x, var, val)).collect(),
+            else_stmts: ie.else_stmts.iter().map(|x| subst_comb_stmt(x, var, val)).collect(),
+            unique:     ie.unique,
+            span:       ie.span,
+        }),
+        other => other.clone(),
+    }
 }
 
 fn expand_generate_if(
@@ -513,6 +704,10 @@ fn expand_generate_if(
             GenItem::Inst(inst) => body.push(ModuleBodyItem::Inst(inst)),
             GenItem::Thread(t) => body.push(ModuleBodyItem::Thread(t)),
             GenItem::Assert(a) => body.push(ModuleBodyItem::Assert(a)),
+            // No loop var in generate_if, so seq/comb pass through verbatim.
+            // Reading B's write-target rule only applies to generate_for.
+            GenItem::Seq(rb)  => body.push(ModuleBodyItem::RegBlock(rb)),
+            GenItem::Comb(cb) => body.push(ModuleBodyItem::CombBlock(cb)),
         }
     }
     Ok((ports, body))

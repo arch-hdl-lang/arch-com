@@ -248,13 +248,23 @@ pub struct AssertDecl {
 
 // ── Generate ──────────────────────────────────────────────────────────────────
 
-/// An item inside a generate block: port, instance, or thread.
+/// An item inside a generate block: port, instance, thread, or a
+/// restricted-form seq / comb block.
+///
+/// Inside `generate_for`, `seq` / `comb` blocks may only drive targets of the
+/// form `<ident>[<expr-referencing-loop-var>]` — writing to a scalar reg from
+/// the loop body would produce N conflicting drivers after unrolling. This
+/// constraint is enforced in `elaborate::expand_generate_for` before the
+/// block is substituted and emitted. Module-scope Vec regs are the intended
+/// write target; scalar-reg reads in RHS expressions remain unrestricted.
 #[derive(Debug, Clone)]
 pub enum GenItem {
     Port(PortDecl),
     Inst(InstDecl),
     Thread(ThreadBlock),
     Assert(AssertDecl),
+    Seq(RegBlock),
+    Comb(CombBlock),
 }
 
 /// `generate for VAR in START..END ... end generate for VAR`
