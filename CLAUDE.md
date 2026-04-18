@@ -2,6 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Commit conventions
+
+**Do not add `Co-Authored-By:` trailers for AI agents** (Claude, Copilot, etc.)
+when creating commits. The human author of record takes full ownership of the
+change, and AI co-author trailers break the CLA Assistant (which requires every
+listed author to individually sign the CLA — `noreply@anthropic.com` can't).
+Just write a normal commit message with no AI attribution trailer.
+
 ## Project Overview
 
 `arch-com` is a compiler for **ARCH**, a purpose-built hardware description language (HDL) for micro-architecture work. The compiler ingests `.arch` source files and emits deterministic, readable SystemVerilog. The language is explicitly designed to be generated correctly by LLMs from natural-language hardware descriptions.
