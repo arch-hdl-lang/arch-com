@@ -8326,6 +8326,42 @@ Arch includes three verification constructs built directly into the language. Th
   **assume name: expr**   Ignored          Input constraint     Restricts the input space for formal analysis
   -------------------------------------------------------------------------------------------------------------
 
+**12.4 Scope --- Same-Cycle Safety Today, Temporal Sugar on the Roadmap**
+
+In the current compiler, `assert` and `cover` bodies are *combinational expressions* evaluated at every clock edge under the construct's `posedge clk` with `disable iff (rst)`. This covers all same-cycle safety properties, including implication via the built-in `implies` operator (`a implies b` ≡ SVA's overlapping implication `a |-> b`, lowered to `(!a || b)` at each cycle). For multi-cycle properties, users currently bind the temporal state into explicit shadow registers and assert on them:
+
++--------------------------------------------------------------------+
+| *shadow_reg_idiom.arch*                                            |
+|                                                                    |
+| // SVA intent: req \|=\> ack (ack one cycle after req)             |
+|                                                                    |
+| **reg** req_d1: Bool **reset** rst =\> false;                      |
+|                                                                    |
+| **seq on** clk rising                                              |
+|                                                                    |
+| req_d1 \<= req;                                                    |
+|                                                                    |
+| **end seq**                                                        |
+|                                                                    |
+| **assert** next_cycle_ack: req_d1 **implies** ack;                 |
++--------------------------------------------------------------------+
+
+Planned (post-v0.41 roadmap) — lightweight temporal sugar that desugars to the same shadow-register idiom for `arch build` and to direct cycle-shifted term references for `arch formal`:
+
+  -----------------------------------------------------------------------------------------------------------------
+  **Sugar**                    **Desugar target**                                                  **Status**
+  ---------------------------- ------------------------------------------------------------------- --------------------
+  `a |=> b`                    `a_d1 implies b` with auto-generated `reg a_d1`                     Roadmap
+
+  `##N a`                      N-stage shift register, reference the tail                          Roadmap
+
+  `past(expr, N)`              Read of auto-generated N-deep shift register on `expr`              Roadmap
+
+  `$rose(a)` / `$fell(a)`      `a && !past(a, 1)` / `!a && past(a, 1)`                             Roadmap
+  -----------------------------------------------------------------------------------------------------------------
+
+Out of scope (intentionally): sequence composition (`##[a:b]`, `[*n]`, `throughout`, `within`, `first_match`) and unbounded-liveness (`s_eventually`, strong/weak property operators). Those are left to a dedicated SVA sidecar or model-checking tool — ARCH's philosophy keeps the verification surface small enough that an LLM can generate correct usage without prior training.
+
 **26. AI-Generatability Design Rationale**
 
 This section documents the explicit language decisions made so that any LLM --- without hardware-specific fine-tuning --- can produce correct Arch from a plain-English description.
