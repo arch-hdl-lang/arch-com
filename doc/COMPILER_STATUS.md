@@ -272,6 +272,6 @@
 |---|---------|-------|
 | ~~1~~ | ~~**Multi-file compilation**~~ | **DONE** — `arch build a.arch b.arch` concatenates and cross-resolves; `arch build a.arch b.arch` without `-o` emits one `.sv` per input |
 | ~~2~~ | ~~**`arch sim`**~~ | **DONE** — `arch sim Foo.arch --tb Foo_tb.cpp`; generates Verilator-compatible C++ models for `module`, `counter`, `fsm`; compiles with `g++`; runs binary; verified with counter, FSM, and top-level module testbenches |
-| 3 | **`arch formal`** | Emit SMT-LIB2 for bounded model checking |
+| 3 | **`arch formal`** | Emit SMT-LIB2 directly (targeting Z3 / Bitwuzla / Yices via SymbiYosys's `smtbmc` engine, or standalone); complements the existing SV-with-SVA path that EBMC and Verilator `--assert` already consume |
 | 4 | **`bus` TLM methods** | `methods ... end methods` inside `bus`; `implement BusName.method rtl` with `wait until`/`fork`-`join` → synthesizable FSM; all four modes (`blocking`/`pipelined`/`out_of_order`/`burst`) synthesizable with declared bounds; spec in `doc/bus_spec_section.md` §19.2.2 |
 | ~~5~~ | ~~**Waveform output**~~ | **DONE** — `arch sim ... --wave out.vcd` emits VCD auto-tracing all top-level ports/regs + flattened bus signals; opens in GTKWave/Surfer; testbenches can also call `trace_open/trace_dump/trace_close` explicitly |
