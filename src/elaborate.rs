@@ -539,38 +539,38 @@ fn expr_mentions_ident(expr: &Expr, name: &str) -> bool {
 }
 
 /// Every unrolled iteration of a generate_for must write a *distinct* target,
-/// otherwise N copies of the loop body all drive the same signal. There are
-/// two legitimate ways an LHS can be distinct per iteration:
+/// otherwise N copies of the loop body all drive the same signal. The only
+/// accepted LHS shape is an index by the loop variable:
 ///
-///   1. Indexed by the loop var: `vec_reg[i]` (or nested through a field /
-///      bit-slice, e.g. `vec_reg[i].field`, `vec_reg[i][7:0]`).
-///   2. The base identifier contains the loop var as a suffix (or IS the loop
-///      var), which gets suffix-substituted during port / inst expansion.
-///      E.g. writing to `rdata_i` inside `generate_for i in 0..3` yields
-///      three distinct scalars `rdata_0 / rdata_1 / rdata_2`.
-fn lhs_is_distinct_per_iteration(lhs: &Expr, var: &str) -> bool {
+///   `vec_reg[i] <= ...`, or nested through a field / bit-slice, e.g.
+///   `vec_reg[i].field <= ...`, `vec_reg[i][7:0] = ...`.
+///
+/// A bare-identifier LHS — even one with an `_i` suffix — is rejected. The
+/// earlier revision accepted suffix names on the reasoning that ports / insts
+/// declared inside generate_for get substituted into distinct `_0 / _1 / ...`
+/// names. But that only holds when the target IS a generate_for-substituted
+/// declaration; a scalar reg at module scope happening to end with `_i` was
+/// silently accepted, then substituted to non-existent names like `cnt_0`,
+/// leaving `arch check` / `arch build` happy while emitting SV that Verilator
+/// rejects. The Vec-at-module-scope pattern (`reg store: Vec<T, N>` + `store[i]
+/// <= ...`) supersedes the suffix shape cleanly.
+fn lhs_is_loop_indexed(lhs: &Expr, var: &str) -> bool {
     match &lhs.kind {
         ExprKind::Index(_, idx) => expr_mentions_ident(idx, var),
-        ExprKind::FieldAccess(base, _) => lhs_is_distinct_per_iteration(base, var),
-        ExprKind::BitSlice(base, _, _) => lhs_is_distinct_per_iteration(base, var),
-        ExprKind::Ident(name) => {
-            // name ends with `_<var>` or is exactly `<var>` — suffix-substituted
-            // into a unique identifier per iteration.
-            name == var || name.ends_with(&format!("_{}", var))
-        }
+        ExprKind::FieldAccess(base, _) => lhs_is_loop_indexed(base, var),
+        ExprKind::BitSlice(base, _, _) => lhs_is_loop_indexed(base, var),
         _ => false,
     }
 }
 
 fn reject_bad_lhs(lhs: &Expr, var: &str, errors: &mut Vec<CompileError>) {
-    if !lhs_is_distinct_per_iteration(lhs, var) {
+    if !lhs_is_loop_indexed(lhs, var) {
         errors.push(CompileError::general(
             &format!(
-                "write target inside generate_for must be distinct per iteration \
-                 — either `vec_name[{var}]` (indexed by the loop var) or a name \
-                 with an `_{var}` suffix (suffix-substituted per iteration). \
-                 Writing to anything else would produce multiple drivers after \
-                 the loop unrolls."
+                "write target inside generate_for must be indexed by the loop \
+                 variable `{var}`, e.g. `vec_reg[{var}] <= ...`. Declare the \
+                 Vec-typed reg or port at module scope and index it here — \
+                 scalar writes would produce multiple drivers after unrolling."
             ),
             lhs.span,
         ));
