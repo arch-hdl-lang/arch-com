@@ -88,6 +88,11 @@ enum Command {
         /// Python test file to run with arch_cocotb adapter (requires --pybind)
         #[arg(long)]
         test: Option<PathBuf>,
+        /// Override the pybind11 module name (default: V<Module>_pybind).
+        /// Useful when multiple variants of one design need to coexist in a
+        /// single Python process — each can have a distinct PyInit_* symbol.
+        #[arg(long)]
+        pybind_module_name: Option<String>,
     },
     /// Formal verification: emit SMT-LIB2 and invoke a bit-vector SMT solver.
     ///
@@ -177,11 +182,11 @@ fn main() -> miette::Result<()> {
             eprintln!("OK: no errors");
             Ok(())
         }
-        Command::Sim { arch_files, tb_files, outdir, check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave, debug, debug_depth, debug_fsm, pybind, test } => {
+        Command::Sim { arch_files, tb_files, outdir, check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave, debug, debug_depth, debug_fsm, pybind, test, pybind_module_name } => {
             let dbg_ports = debug || debug_fsm;  // any debug option implies port logging
             // --inputs-start-uninit and --check-uninit-ram both imply --check-uninit
             let check_uninit = check_uninit || inputs_start_uninit || check_uninit_ram;
-            run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, pybind, test.as_deref())
+            run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, pybind, test.as_deref(), pybind_module_name.as_deref())
         }
         Command::Build { files, o } => {
             let all_files = resolve_use_imports(&files)?;
@@ -280,6 +285,7 @@ fn main() -> miette::Result<()> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_sim(
     arch_files: &[PathBuf],
     tb_files: &[PathBuf],
@@ -294,6 +300,7 @@ fn run_sim(
     debug_fsm: bool,
     pybind: bool,
     test_file: Option<&std::path::Path>,
+    pybind_module_name_override: Option<&str>,
 ) -> miette::Result<()> {
     // 1. Parse + type-check
     let all_files = resolve_use_imports(arch_files)?;
@@ -340,15 +347,34 @@ fn run_sim(
             return Ok(());
         }
 
+        // Apply --pybind-module-name if provided. Retarget only the first
+        // wrapper (the user's top module); subsequent wrappers (nested
+        // modules) keep their auto-derived names. The override is a
+        // string-replace on the generated .cpp so the PYBIND11_MODULE macro
+        // matches the new class_name.
+        let default_first_name = pybind_wrappers[0].class_name.clone();
+        let effective_first_name = pybind_module_name_override
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| default_first_name.clone());
+
         let mut pybind_cpps: Vec<PathBuf> = Vec::new();
         let mut pybind_module_name = String::new();
-        for wrapper in &pybind_wrappers {
-            let cpp_path = build_dir.join(format!("{}.cpp", wrapper.class_name));
-            fs::write(&cpp_path, &wrapper.impl_).into_diagnostic()?;
+        for (i, wrapper) in pybind_wrappers.iter().enumerate() {
+            let (class_name, impl_src) = if i == 0 && pybind_module_name_override.is_some() {
+                let new_name = &effective_first_name;
+                let retargeted = wrapper.impl_
+                    .replace(&format!("PYBIND11_MODULE({}, m)", default_first_name),
+                             &format!("PYBIND11_MODULE({}, m)", new_name));
+                (new_name.clone(), retargeted)
+            } else {
+                (wrapper.class_name.clone(), wrapper.impl_.clone())
+            };
+            let cpp_path = build_dir.join(format!("{}.cpp", class_name));
+            fs::write(&cpp_path, &impl_src).into_diagnostic()?;
             eprintln!("Generated pybind11 wrapper: {}", cpp_path.display());
             pybind_cpps.push(cpp_path);
             if pybind_module_name.is_empty() {
-                pybind_module_name = wrapper.class_name.clone();
+                pybind_module_name = class_name;
             }
         }
 
@@ -405,11 +431,33 @@ fn run_sim(
         }
         eprintln!("Built: {}", so_path.display());
 
-        // If --test is given, run the test file
+        // If --test is given, run the test file. The launcher:
+        //   1. Executes the test file as `__main__` via `runpy.run_path` so
+        //      existing scripts with `if __name__ == "__main__": main()`
+        //      blocks fire (backward-compat).
+        //   2. After __main__ returns, if any `@cocotb.test()` functions are
+        //      in `arch_cocotb.decorators._test_registry`, runs them through
+        //      `arch_cocotb.runner.run_tests`. Previously the decorator only
+        //      registered the test and the launcher never iterated the
+        //      registry, so `@cocotb.test` functions were silent no-ops.
         if let Some(test_path) = test_file {
             eprintln!("Running test: {}", test_path.display());
-            let project_root = std::env::current_dir().into_diagnostic()?;
-            let python_dir = project_root.join("python");
+
+            // Resolve arch-com's python/ directory relative to the arch
+            // binary, not cwd. The binary lives at
+            // `<arch-com>/target/{debug,release}/arch`, so go up twice and
+            // look for a sibling `python/` directory. Fall back to
+            // `$ARCH_PYTHON_DIR` or the current cwd for development layouts.
+            let python_dir = std::env::current_exe().ok()
+                .and_then(|exe| exe.parent()
+                    .and_then(|p| p.parent())
+                    .and_then(|p| p.parent())
+                    .map(|p| p.join("python")))
+                .filter(|p| p.is_dir())
+                .or_else(|| std::env::var("ARCH_PYTHON_DIR").ok().map(PathBuf::from))
+                .or_else(|| std::env::current_dir().ok().map(|cwd| cwd.join("python")))
+                .unwrap_or_else(|| PathBuf::from("python"));
+
             let shim_dir = python_dir.join("cocotb_shim");
             let cocotb_dir = python_dir.to_str().unwrap_or(".");
             let shim_str = shim_dir.to_str().unwrap_or(".");
@@ -417,8 +465,69 @@ fn run_sim(
 
             let pythonpath = format!("{shim_str}:{cocotb_dir}:{build_str}");
 
+            let test_path_abs = test_path.canonicalize().unwrap_or_else(|_| test_path.to_path_buf());
+            let test_dir = test_path_abs.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+            let test_module_name = test_path_abs.file_stem()
+                .unwrap_or_default().to_string_lossy().into_owned();
+
+            // Derive the model class name. The class is the pybind module
+            // name minus the `_pybind` suffix (matches emit_pybind_module).
+            let model_class = pybind_module_name.strip_suffix("_pybind")
+                .unwrap_or(&pybind_module_name).to_string();
+
+            // Generated runner: runs user __main__, then dispatches any
+            // registered @cocotb.test() functions.
+            let runner_py = build_dir.join("_arch_cocotb_runner.py");
+            let runner_src = format!(r#"import sys
+import runpy
+import importlib
+from pathlib import Path
+
+TEST_PATH     = r"{test_path}"
+TEST_DIR      = r"{test_dir}"
+TEST_MODULE   = "{test_module}"
+PYBIND_MODULE = "{pybind_module}"
+MODEL_CLASS   = "{model_class}"
+
+if TEST_DIR and TEST_DIR not in sys.path:
+    sys.path.insert(0, TEST_DIR)
+
+# 1. Backward-compat: execute the test file as __main__ so any existing
+#    `if __name__ == "__main__": main()` block fires.
+runpy.run_path(TEST_PATH, run_name="__main__")
+
+# 2. Auto-invoke any `@cocotb.test()` functions the user left in the
+#    registry. Silent no-op if arch_cocotb isn't importable or the
+#    registry is empty.
+try:
+    from arch_cocotb.decorators import _test_registry
+except Exception:
+    sys.exit(0)
+
+if not _test_registry:
+    sys.exit(0)
+
+pybind_mod = importlib.import_module(PYBIND_MODULE)
+model_class = getattr(pybind_mod, MODEL_CLASS, None)
+if model_class is None:
+    print(f"arch sim: pybind module {{PYBIND_MODULE!r}} has no class {{MODEL_CLASS!r}}; "
+          f"cannot auto-run @cocotb.test functions", file=sys.stderr)
+    sys.exit(1)
+
+from arch_cocotb.runner import run_tests
+ok = run_tests(model_class, TEST_MODULE)
+sys.exit(0 if ok else 1)
+"#,
+                test_path   = test_path_abs.display(),
+                test_dir    = test_dir.display(),
+                test_module = test_module_name,
+                pybind_module = pybind_module_name,
+                model_class = model_class,
+            );
+            fs::write(&runner_py, runner_src).into_diagnostic()?;
+
             let status = std::process::Command::new("python3")
-                .arg(test_path)
+                .arg(&runner_py)
                 .env("PYTHONPATH", &pythonpath)
                 .status()
                 .into_diagnostic()?;
