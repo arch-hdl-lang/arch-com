@@ -248,13 +248,17 @@ pub struct AssertDecl {
 
 // ── Generate ──────────────────────────────────────────────────────────────────
 
-/// An item inside a generate block: port, instance, or thread.
+/// An item inside a generate block: port, instance, thread, reg, or let.
+/// Reg and let are always expanded at elaboration time (there's no SV `generate
+/// for reg r: ...`), so using them forces the range to be compile-time known.
 #[derive(Debug, Clone)]
 pub enum GenItem {
     Port(PortDecl),
     Inst(InstDecl),
     Thread(ThreadBlock),
     Assert(AssertDecl),
+    Reg(RegDecl),
+    Let(LetBinding),
 }
 
 /// `generate for VAR in START..END ... end generate for VAR`

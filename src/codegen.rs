@@ -2040,6 +2040,8 @@ impl<'a> Codegen<'a> {
                         GenItem::Inst(inst) => self.emit_inst(inst),
                         GenItem::Port(_) => unreachable!("port GenItems should have been lifted by elaboration"),
                         GenItem::Thread(_) => unreachable!("thread GenItems should have been lowered by elaboration"),
+                        GenItem::Reg(_) | GenItem::Let(_) => unreachable!(
+                            "reg/let GenItems should have been unrolled by elaboration"),
                         GenItem::Assert(_) => {
                             // SVA inside generate for: not yet supported in SV codegen (SVA needs static clock ref)
                         }
@@ -2057,6 +2059,8 @@ impl<'a> Codegen<'a> {
                         GenItem::Inst(inst) => self.emit_inst(inst),
                         GenItem::Port(_) => unreachable!("port GenItems should have been lifted by elaboration"),
                         GenItem::Thread(_) => unreachable!("thread GenItems should have been lowered by elaboration"),
+                        GenItem::Reg(_) | GenItem::Let(_) => unreachable!(
+                            "reg/let GenItems should have been unrolled by elaboration"),
                         GenItem::Assert(_) => {}
                     }
                 }
@@ -2069,6 +2073,8 @@ impl<'a> Codegen<'a> {
                             GenItem::Inst(inst) => self.emit_inst(inst),
                             GenItem::Port(_) => unreachable!("port GenItems should have been lifted by elaboration"),
                             GenItem::Thread(_) => unreachable!("thread GenItems should have been lowered by elaboration"),
+                            GenItem::Reg(_) | GenItem::Let(_) => unreachable!(
+                                "reg/let GenItems should have been unrolled by elaboration"),
                             GenItem::Assert(_) => {}
                         }
                     }

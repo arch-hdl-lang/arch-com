@@ -1889,9 +1889,11 @@ impl Parser {
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
                     items.push(GenItem::Assert(self.parse_assert_decl()?));
                 }
+                Some(TokenKind::Reg) => items.push(GenItem::Reg(self.parse_reg_decl()?)),
+                Some(TokenKind::Let) => items.push(GenItem::Let(self.parse_let_binding()?)),
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "port, inst, thread, assert, or cover",
+                        "port, inst, thread, assert, cover, reg, or let",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -1912,9 +1914,11 @@ impl Parser {
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
                     items.push(GenItem::Assert(self.parse_assert_decl()?));
                 }
+                Some(TokenKind::Reg) => items.push(GenItem::Reg(self.parse_reg_decl()?)),
+                Some(TokenKind::Let) => items.push(GenItem::Let(self.parse_let_binding()?)),
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "port, inst, thread, assert, or cover",
+                        "port, inst, thread, assert, cover, reg, or let",
                         &other.to_string(),
                         self.peek_span(),
                     ));

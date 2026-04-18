@@ -438,6 +438,14 @@ fn expand_generate_for(
 
     let has_port_items = gf.items.iter().any(|item| matches!(item, GenItem::Port(_)));
     let has_thread_items = gf.items.iter().any(|item| matches!(item, GenItem::Thread(_)));
+    // Reg / let items also force elaboration-time expansion: SV's native
+    // `generate for` can host reg/wire, but ARCH's reg-reset and let-with-
+    // optional-type-annotation forms don't round-trip cleanly through the
+    // preserve-as-SV path without additional codegen work. Always unrolling
+    // covers the common "N identical registers" pattern and keeps the range
+    // constraint simple (must be compile-time known).
+    let has_reg_or_let = gf.items.iter().any(|item|
+        matches!(item, GenItem::Reg(_) | GenItem::Let(_)));
     let range_depends_on_param = expr_references_param(&gf.start, &param_names)
         || expr_references_param(&gf.end, &param_names);
 
@@ -449,7 +457,7 @@ fn expand_generate_for(
     // preserve the generate block as-is so codegen emits SV generate for.
     // This allows the SV to be parameterized (e.g. NUM_MODULES can be overridden).
     // Threads must always be expanded (they need concrete lowering to FSMs).
-    if range_depends_on_param && !has_port_items && !has_thread_items {
+    if range_depends_on_param && !has_port_items && !has_thread_items && !has_reg_or_let {
         return Ok((
             Vec::new(),
             vec![ModuleBodyItem::Generate(GenerateDecl::For(gf))],
@@ -484,6 +492,8 @@ fn expand_generate_for(
                 GenItem::Inst(inst) => body.push(ModuleBodyItem::Inst(subst_inst(inst, var, i))),
                 GenItem::Thread(t) => body.push(ModuleBodyItem::Thread(subst_thread(t, var, i))),
                 GenItem::Assert(a) => body.push(ModuleBodyItem::Assert(subst_assert(a, var, i))),
+                GenItem::Reg(r) => body.push(ModuleBodyItem::RegDecl(subst_reg_decl(r, var, i))),
+                GenItem::Let(l) => body.push(ModuleBodyItem::LetBinding(subst_let_binding(l, var, i))),
             }
         }
     }
@@ -513,6 +523,10 @@ fn expand_generate_if(
             GenItem::Inst(inst) => body.push(ModuleBodyItem::Inst(inst)),
             GenItem::Thread(t) => body.push(ModuleBodyItem::Thread(t)),
             GenItem::Assert(a) => body.push(ModuleBodyItem::Assert(a)),
+            // No substitution needed in generate_if — the loop var doesn't
+            // exist here, so regs/lets pass through verbatim.
+            GenItem::Reg(r) => body.push(ModuleBodyItem::RegDecl(r)),
+            GenItem::Let(l) => body.push(ModuleBodyItem::LetBinding(l)),
         }
     }
     Ok((ports, body))
@@ -699,6 +713,42 @@ fn subst_assert(a: &AssertDecl, var: &str, val: i64) -> AssertDecl {
     }
 }
 
+fn subst_reg_reset(reset: &RegReset, var: &str, val: i64) -> RegReset {
+    match reset {
+        RegReset::None => RegReset::None,
+        RegReset::Inherit(sig, v) => RegReset::Inherit(
+            subst_ident(sig, var, val),
+            subst_expr(v.clone(), var, val),
+        ),
+        RegReset::Explicit(sig, kind, level, v) => RegReset::Explicit(
+            subst_ident(sig, var, val),
+            *kind,
+            *level,
+            subst_expr(v.clone(), var, val),
+        ),
+    }
+}
+
+fn subst_reg_decl(r: &RegDecl, var: &str, val: i64) -> RegDecl {
+    RegDecl {
+        name: subst_ident(&r.name, var, val),
+        ty: subst_type_expr(&r.ty, var, val),
+        init: r.init.as_ref().map(|e| subst_expr(e.clone(), var, val)),
+        reset: subst_reg_reset(&r.reset, var, val),
+        guard: r.guard.as_ref().map(|n| subst_ident(n, var, val)),
+        span: r.span,
+    }
+}
+
+fn subst_let_binding(l: &LetBinding, var: &str, val: i64) -> LetBinding {
+    LetBinding {
+        name: subst_ident(&l.name, var, val),
+        ty: l.ty.as_ref().map(|t| subst_type_expr(t, var, val)),
+        value: subst_expr(l.value.clone(), var, val),
+        span: l.span,
+    }
+}
+
 fn subst_name(name: &str, var: &str, val: i64) -> String {
     let suffix = format!("_{}", var);
     if name.ends_with(&suffix) {
@@ -726,6 +776,13 @@ fn subst_type_expr(ty: &TypeExpr, var: &str, val: i64) -> TypeExpr {
 fn subst_expr(expr: Expr, var: &str, val: i64) -> Expr {
     let new_kind = match expr.kind {
         ExprKind::Ident(ref name) if name == var => ExprKind::Literal(LitKind::Dec(val as u64)),
+        // Rewrite identifier suffixes the same way declared names get renamed
+        // (e.g. `r_i` → `r_0`), so an expression inside a generate_for body
+        // that references a peer unrolled declaration by its loop-var-suffixed
+        // name resolves to the right unrolled instance.
+        ExprKind::Ident(ref name) if name.ends_with(&format!("_{}", var)) => {
+            ExprKind::Ident(subst_name(name, var, val))
+        }
         ExprKind::Binary(op, l, r) => ExprKind::Binary(
             op,
             Box::new(subst_expr(*l, var, val)),
