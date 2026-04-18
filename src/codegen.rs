@@ -375,11 +375,13 @@ impl<'a> Codegen<'a> {
     }
 
     fn emit_struct(&mut self, s: &StructDecl) {
-        // SV packed structs are MSB-first: first field listed = most significant bits.
-        // Fields are reversed so the first ARCH field occupies the LSBs (C-style layout).
-        self.line(&format!("typedef struct packed {{ // fields: LSB→MSB (reverse of declaration order)"));
+        // Canonical ARCH packed-struct bit layout: first-declared field = MSB,
+        // last-declared field = LSB — matching SV's `struct packed` convention
+        // (fields listed top-to-bottom inside `struct packed { ... }` are emitted
+        // MSB-first by the SV standard). Emit fields in declaration order.
+        self.line("typedef struct packed {");
         self.indent += 1;
-        for field in s.fields.iter().rev() {
+        for field in s.fields.iter() {
             let ty_str = self.emit_type_str(&field.ty);
             self.line(&format!("{} {};", ty_str, field.name.name));
         }

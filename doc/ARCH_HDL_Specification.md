@@ -311,7 +311,7 @@ The Arch type system enforces four independent safety dimensions simultaneously.
 
   **Vec\<T,N\>**       N × \|T\|            Fixed-size array of any hardware type T.
 
-  **struct S**         Σ fields             Named aggregate. Width = sum of field widths (packed).
+  **struct S**         Σ fields             Named aggregate. Width = sum of field widths (packed). **Bit layout: declaration-first = MSB, last-declared = LSB — matching SV `struct packed` convention.** A testbench that reads a struct-typed signal as an integer finds the first-declared field in the top bits. The C++ simulation model lays out fields in declaration order in memory (natural C++); per-field access through pybind is by name, so the memory layout is not observable to testbenches.
 
   **enum E**           ⌈log₂n⌉ bits         Discriminated union. Compiler picks minimum encoding width.
 

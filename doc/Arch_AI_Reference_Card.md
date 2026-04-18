@@ -150,6 +150,7 @@ enum E   { A, B, }
 - `Bit` is an alias for `UInt<1>`
 - `Token`, `Future<T>`, `Token<T, id_width: N>` (planned — TLM only)
 - `Clock<Domain>` may be `out` — use for passthrough (`comb clk_out = clk_in;`), gating (`comb clk_out = clk_in & en;`), or division. For integrated latch-based gating use the `clkgate` construct.
+- **`struct` packed bit layout: declaration-first = MSB** (SV convention). A TB reading a struct-typed signal as an integer finds the first-declared field in the top bits, last-declared at the LSBs.
 
 **Width conversions** (always explicit):
 

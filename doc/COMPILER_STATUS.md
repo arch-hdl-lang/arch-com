@@ -1,7 +1,7 @@
 # ARCH Compiler — Status & Roadmap
 
 > Last updated: 2026-04-17
-> Compiler version: 0.41.0 (`arch formal` direct SMT-LIB2 bounded model checking; `<=` now parses as less-than-or-equal in expression contexts)
+> Compiler version: 0.41.1 (`arch formal` direct SMT-LIB2 bounded model checking; `<=` parses as less-than-or-equal in expression contexts; packed-struct bit layout flipped to SV convention — declaration-first = MSB)
 
 ---
 
@@ -35,7 +35,7 @@
 | Construct | Status | Notes |
 |-----------|--------|-------|
 | `domain` | ✅ | Emitted as SV comments; **`SysDomain` is built-in** — no explicit `domain SysDomain end domain SysDomain` declaration needed; can be overridden by user |
-| `struct` | ✅ | `typedef struct packed` |
+| `struct` | ✅ | `typedef struct packed`; **packed bit layout: declaration-first = MSB** (SV convention, v0.41.1+). Earlier versions packed declaration-first = LSB — regenerate any pre-v0.41.1 `.sv` before mixing with new output |
 | `enum` | ✅ | `typedef enum logic`; auto width ⌈log₂(N)⌉ |
 | `module` | ✅ | Params, ports, reg/comb/let/wire/inst body; `seq on` clocked blocks with per-reg reset; **`default seq on clk rising\|falling;`** sets module-level default clock — enables multi-line `seq ... end seq` without explicit clock; **register syntax**: `reg x: UInt<8> [init VALUE] [reset SIGNAL=VALUE [sync\|async high\|low]];` — `init` (optional) sets SV declaration initializer, `reset SIGNAL=VALUE` (optional) sets async/sync reset with explicit reset value (value is **required** after `=`); `reset none` for no reset; `reg default:` applies defaults; compiler auto-generates reset guards; mixed reset/no-reset partitioning; **`let` two forms**: `let x: T = expr;` declares a new combinational wire (type required); `let x = expr;` (no type) assigns to an already-declared output port or wire — replaces the former `comb x = expr;` one-liner; `wire name: T;` declares a combinational net driven by `let x = expr;` or inside a `comb ... end comb` block (type checker enforces: only `wire` and output ports are valid comb targets; assigning a `reg` in `comb` is a compile error); **`comb` one-liner removed**: `comb x = expr;` is no longer valid — use `let x = expr;` instead; `comb ... end comb` block form still required for conditional assignments; **for loops**: `for VAR in START..END ... end for` in both `comb` and `seq` blocks — emits SV `for (int VAR = START; VAR <= END; VAR++)`; **indexed comb targets**: `port[i] = expr` in `comb` blocks is correctly detected as driving the port for driven-port and multiple-driver checks; **comb same-block reassignment**: multiple assignments to the same signal within a single `comb` block are allowed (default + override in if/elsif/else branches — standard latch-free combinational pattern) |
 | `latch` block | ✅ | `latch on ENABLE ... end latch` — level-sensitive storage; enable signal must be `Bool` or `Clock`; body uses `<=` assignments to `reg` targets; emits SV `always_latch begin if (enable) ... end` |

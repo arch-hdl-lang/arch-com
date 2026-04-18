@@ -6027,6 +6027,24 @@ impl<'a> SimCodegen<'a> {
             h.push('\n');
         }
 
+        // C++ struct emission for ARCH packed structs.
+        //
+        // Canonical ARCH bit layout is first-declared-field = MSB, last-declared = LSB
+        // (SV convention, see codegen.rs::emit_struct and the Language Specification
+        // §"Packed bit layout"). The C++ struct below lays fields out in declaration
+        // order in memory — this is the natural C++ idiom and what pybind11 expects
+        // when we expose per-field handles via `.def_readwrite`. Per-field access is
+        // bit-order-agnostic, so the C++ memory layout and the SV bit layout don't
+        // need to agree structurally.
+        //
+        // ⚠ Future maintainers: on a little-endian host (x86_64, ARM64 in default
+        // mode) a `memcpy`/`reinterpret_cast` of this C++ struct into a wide integer
+        // puts the FIRST field at the LSBs — the OPPOSITE of ARCH's canonical bit
+        // layout. If you add a code path that serializes a whole struct to a single
+        // integer (a `struct as UInt<N>` codegen, a pybind11 `__int__` / `.value`
+        // shim, a VCD compound-signal trace, etc.), you MUST explicitly concatenate
+        // `first_field → MSB, last_field → LSB` — do NOT rely on `memcpy` or
+        // `reinterpret_cast`.
         for s in &structs {
             h.push_str(&format!("struct {} {{\n", s.name.name));
             let mut field_inits = Vec::new();

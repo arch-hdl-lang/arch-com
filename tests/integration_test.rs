@@ -1524,6 +1524,33 @@ end module RfUser
     insta::assert_snapshot!(sv);
 }
 
+/// Regression: ARCH packed-struct bit layout is *declaration-first = MSB*,
+/// matching SV's `struct packed` convention. The first-declared ARCH field
+/// must appear *first* inside the emitted `typedef struct packed { ... }`,
+/// so it lands in the MSBs of the packed bit vector.
+/// Pre-v0.41.1 the compiler reversed field order (first = LSB); this test
+/// prevents that from silently returning.
+#[test]
+fn test_struct_packed_declaration_first_is_msb() {
+    let source = r#"
+struct Foo
+  a: UInt<8>;
+  b: UInt<4>;
+end struct Foo
+"#;
+    let sv = compile_to_sv(source);
+    let td = sv.find("typedef struct packed").expect("expected typedef struct packed in SV");
+    let end = sv[td..].find("} Foo;").expect("expected `} Foo;` closing") + td;
+    let body = &sv[td..end];
+    let pos_a = body.find("a;").expect("expected field `a`");
+    let pos_b = body.find("b;").expect("expected field `b`");
+    assert!(
+        pos_a < pos_b,
+        "field `a` (declared first) must appear before `b` in the packed typedef \
+         (SV convention: first listed = MSB). Got:\n{body}"
+    );
+}
+
 /// Regression: `<=` must be accepted as less-than-or-equal in expression context
 /// (assert/cover RHS, comb RHS, let RHS, if conditions, ternary branches), while
 /// still working as the non-blocking-assignment token at the statement level.
