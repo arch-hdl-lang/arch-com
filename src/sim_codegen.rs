@@ -1374,7 +1374,19 @@ impl<'a> Ctx<'a> {
 
 fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
     match &expr.kind {
-        ExprKind::Ident(name) => ctx.widths.get(name.as_str()).copied().unwrap_or(8),
+        ExprKind::Ident(name) => {
+            if let Some(&w) = ctx.widths.get(name.as_str()) {
+                w
+            } else {
+                eprintln!(
+                    "warning: sim codegen: width of identifier '{}' unknown; \
+                     defaulting to 8 — concat / shift positions derived from \
+                     this may be incorrect",
+                    name
+                );
+                8
+            }
+        }
         ExprKind::Literal(LitKind::Sized(w, _)) => *w,
         ExprKind::Literal(_) => 32,
         ExprKind::Bool(_) => 1,
@@ -1450,7 +1462,17 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
             }
             // Bus field — falls through to the flattened C++ name lookup.
             let flat = cpp_expr_inner(expr, ctx, false);
-            ctx.widths.get(flat.as_str()).copied().unwrap_or(8)
+            if let Some(&w) = ctx.widths.get(flat.as_str()) {
+                w
+            } else {
+                eprintln!(
+                    "warning: sim codegen: width of field access '{}' unknown; \
+                     defaulting to 8 — concat / shift positions derived from \
+                     this may be incorrect",
+                    flat
+                );
+                8
+            }
         }
         _ => 8,
     }
@@ -1825,7 +1847,18 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                 let idx = variants.iter().find(|(n, _)| *n == variant.name).map(|(_, v)| *v).unwrap_or(0);
                 format!("{idx}")
             } else {
-                format!("/* {}::{} */ 0", enum_name.name, variant.name)
+                // Previously this silently emitted `0` with a C++ comment,
+                // which masked genuine bugs (e.g. missing enum in enum_map).
+                // Emit an undeclared identifier so the C++ compiler surfaces
+                // the problem with a clear symbol to grep for, and warn at
+                // codegen time so it isn't missed in the noise.
+                eprintln!(
+                    "warning: sim codegen: enum {}::{} not found in enum map; \
+                     emitting compile-error token",
+                    enum_name.name, variant.name
+                );
+                format!("_ARCH_CODEGEN_ERROR_unknown_enum_{}_{}",
+                        enum_name.name, variant.name)
             }
         }
 
@@ -1844,7 +1877,16 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             body
         }
 
-        ExprKind::Todo => "0 /* todo! */".to_string(),
+        ExprKind::Todo => {
+            // Per the spec, `todo!` compiles but aborts at sim runtime. The
+            // old lowering (`"0 /* todo! */"`) compiled AND silently ran,
+            // turning a placeholder into real zero behavior. Now a
+            // comma-expression that prints a diagnostic and calls abort()
+            // before yielding 0, so any `todo!` reached in simulation fails
+            // loudly. abort() is available via verilated.h (includes
+            // <cstdlib>).
+            "(fprintf(stderr, \"ARCH: todo! reached at sim runtime\\n\"), abort(), 0)".to_string()
+        }
 
         ExprKind::Concat(parts) => {
             if parts.is_empty() { return "0".to_string(); }
@@ -3747,20 +3789,26 @@ impl<'a> SimCodegen<'a> {
                             let reset_expr = reset_value_from_reg_reset(reg_reset);
                             let init_val = if let Some(expr) = reset_expr {
                                 match &expr.kind {
+                                    // Literal/bool shortcuts keep the emitted
+                                    // reset branch readable (`_n_foo = 5;`
+                                    // rather than a pointlessly wrapped expr).
                                     ExprKind::Literal(LitKind::Dec(v)) => v.to_string(),
                                     ExprKind::Literal(LitKind::Hex(v)) => format!("0x{:X}", v),
                                     ExprKind::Literal(LitKind::Bin(v)) => v.to_string(),
                                     ExprKind::Literal(LitKind::Sized(_, v)) => v.to_string(),
                                     ExprKind::Bool(b) => if *b { "1".to_string() } else { "0".to_string() },
-                                    // Struct-literal reset values — lower via the
-                                    // general expression path so every field is set.
-                                    ExprKind::StructLiteral(_, _) => {
+                                    // Everything else — struct literals, enum
+                                    // variants, idents, calls, casts — lowers
+                                    // via the normal expression path. Previously
+                                    // this default silently emitted "0", which
+                                    // could corrupt non-literal reset values
+                                    // (see #6 struct-literal reset bug).
+                                    _ => {
                                         let tmp_ctx = Ctx::new(&reg_names, &port_names,
                                             &let_names, &inst_names, &wide_names, &widths,
                                             &enum_map, &bus_port_names);
                                         cpp_expr(expr, &tmp_ctx)
                                     }
-                                    _ => "0".to_string(),
                                 }
                             } else {
                                 "0".to_string()
