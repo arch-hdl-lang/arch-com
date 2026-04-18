@@ -1889,9 +1889,36 @@ impl Parser {
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
                     items.push(GenItem::Assert(self.parse_assert_decl()?));
                 }
+                Some(TokenKind::Seq) => {
+                    items.push(GenItem::Seq(self.parse_always_block()?));
+                }
+                Some(TokenKind::Comb) => {
+                    items.push(GenItem::Comb(self.parse_comb_block()?));
+                }
+                Some(TokenKind::Reg) | Some(TokenKind::Let) => {
+                    // Reject with a targeted hint — reg/let decls inside
+                    // generate_for would force per-iteration unrolling that
+                    // produces ugly suffix-mangled SV names, or (for reg)
+                    // implies multi-driver conflicts. The approved shape is
+                    // "declare Vec regs at module scope; index them by the
+                    // loop var in a seq/comb inside generate_for".
+                    let kw = match self.peek_kind() {
+                        Some(TokenKind::Reg) => "reg",
+                        _ => "let",
+                    };
+                    return Err(CompileError::general(
+                        &format!(
+                            "'{kw}' declarations are not allowed inside generate_for. \
+                             Declare Vec-typed regs at module scope and index them in a \
+                             seq/comb block here: e.g. `reg store: Vec<UInt<8>, {{N}}> ...;` \
+                             outside, then `store[i] <= ...;` inside generate_for."
+                        ),
+                        self.peek_span(),
+                    ));
+                }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "port, inst, thread, assert, or cover",
+                        "port, inst, thread, seq, comb, assert, or cover",
                         &other.to_string(),
                         self.peek_span(),
                     ));
