@@ -1345,6 +1345,14 @@ impl<'a> Ctx<'a> {
             }
         } else if self.inst_names.contains(name) {
             format!("_inst_{name}")
+        } else if self.port_names.contains(name)
+                  && self.vec_names.map_or(false, |s| s.contains(name)) {
+            // Vec-typed port: header exposes flattened `name_0..name_N-1`
+            // scalars for external access, but the body indexes into the
+            // internal `_name[N]` array. Without this branch, a body that
+            // reads / writes `port_name[i]` lowered to `port_name[0]` —
+            // referencing a name that doesn't exist in the C++ class.
+            format!("_{name}")
         } else {
             name.to_string()
         }
