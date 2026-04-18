@@ -4071,9 +4071,35 @@ impl Parser {
                 let tok = self.advance();
                 Ok(Ident::new(name, tok.span))
             }
-            other => Err(CompileError::unexpected_token(
+            Some(other) => {
+                let found = other.to_string();
+                // If `found` looks like a keyword (starts with a lowercase
+                // letter and is all alphanumeric/underscore), upgrade the
+                // error message to name the reserved word and suggest a
+                // quick workaround. Otherwise fall back to the generic
+                // "expected identifier" form.
+                let is_reserved_keyword = found.starts_with(|c: char| c.is_ascii_lowercase())
+                    && found.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+                if is_reserved_keyword {
+                    Err(CompileError::general(
+                        &format!(
+                            "'{found}' is a reserved ARCH keyword and cannot be used as an \
+                             identifier here. Rename it (e.g. '{found}_', 's_{found}', or \
+                             'my_{found}')."
+                        ),
+                        self.peek_span(),
+                    ))
+                } else {
+                    Err(CompileError::unexpected_token(
+                        "identifier",
+                        &found,
+                        self.peek_span(),
+                    ))
+                }
+            }
+            None => Err(CompileError::unexpected_token(
                 "identifier",
-                &other.map(|k| k.to_string()).unwrap_or("EOF".into()),
+                "EOF",
                 self.peek_span(),
             )),
         }
