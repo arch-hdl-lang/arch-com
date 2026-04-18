@@ -3073,8 +3073,21 @@ impl<'a> SimCodegen<'a> {
         let has_functions = self.source.items.iter().any(|i| matches!(i, Item::Function(_)));
 
         // ── Header ───────────────────────────────────────────────────────────
-        let has_structs = m.body.iter().any(|i| matches!(i, ModuleBodyItem::RegDecl(r) if matches!(r.ty, TypeExpr::Named(_))))
-            || m.ports.iter().any(|p| matches!(p.ty, TypeExpr::Named(_)));
+        // Recurse into Vec<> so `reg foo: Vec<Entry, N>` and port types like
+        // `Vec<SomeStruct, N>` trigger the VStructs.h include. Previously
+        // `has_structs` only matched bare `TypeExpr::Named(_)`, so a design
+        // whose only struct use was inside a Vec produced headers that
+        // referenced the struct without declaring it — both the reg storage
+        // line (`Entry _ent[N];`) and the pybind wrapper failed to compile.
+        fn ty_references_named(ty: &TypeExpr) -> bool {
+            match ty {
+                TypeExpr::Named(_) => true,
+                TypeExpr::Vec(inner, _) => ty_references_named(inner),
+                _ => false,
+            }
+        }
+        let has_structs = m.body.iter().any(|i| matches!(i, ModuleBodyItem::RegDecl(r) if ty_references_named(&r.ty)))
+            || m.ports.iter().any(|p| ty_references_named(&p.ty));
         let mut h = String::new();
         h.push_str(&format!("#pragma once\n#include <cstdint>\n#include <cstdio>\n#include \"verilated.h\"\n"));
         if has_structs {
