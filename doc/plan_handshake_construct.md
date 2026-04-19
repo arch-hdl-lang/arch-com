@@ -107,6 +107,140 @@ aw_addr:  out UInt<32>;
 aw_id:    out UInt<1>;
 ```
 
+## Variant semantics (timing diagrams)
+
+Legend: `H` = high, `.` = low, `X` = don't-care, `^` = transfer (fire) on
+this cycle's rising edge. One column per clock cycle.
+
+### 1. `valid_ready` — bidirectional backpressure
+
+Transfer occurs on cycles where `valid && ready` both hold at the rising
+clock edge. Either side may stall. Payload must stay stable while `valid`
+is high until `ready` is observed.
+
+```
+cycle:    0 1 2 3 4 5 6 7 8 9
+valid:    . H H H H . . H H .
+ready:    . . H . H . . H . .
+payload:  X A A A A X X B X X
+fire:         ^   ^     ^
+```
+
+Canonical handshake used by AMBA AXI4/ACE, AXI4-Stream, and most on-chip
+streaming pipelines. Reference: **ARM IHI 0022**, *AMBA AXI and ACE
+Protocol Specification*, §A3 "Single Interface Requirements".
+
+### 2. `valid_only` — fire-and-forget
+
+Every cycle with `valid == H` is an unconditional transfer. The consumer
+cannot stall the producer; it must be ready to sample whenever `valid`
+asserts.
+
+```
+cycle:    0 1 2 3 4 5 6 7
+valid:    . H . H H . H .
+payload:  X A X B C X D X
+fire:       ^   ^ ^   ^
+```
+
+Used for strobes, interrupts, and data paths fronted by a FIFO that
+absorbs burstiness. Reference: AXI4-Stream simplified-mode; Intel Avalon
+Streaming `valid-only` variant.
+
+### 3. `ready_only` — pull model
+
+Producer drives payload continuously; consumer pulses `ready` on the
+cycle it consumes a sample. Every cycle with `ready == H` is a transfer.
+
+```
+cycle:    0 1 2 3 4 5 6 7
+ready:    . H . . H H . .
+payload:  A B C D E F G H
+fire:       ^     ^ ^
+consumed:   B     E F
+```
+
+Rare on-chip; shows up in register files read by a consumer that knows
+values are always valid. Reference: Intel Avalon MM pull-read mode;
+classical combinational register file.
+
+### 4. `valid_stall` — inverted backpressure
+
+Same as `valid_ready` with the polarity of the back-signal inverted:
+transfer occurs when `valid && !stall`. Stall, when asserted, freezes the
+payload. Common in custom pipeline designs where the stall network is
+derived from downstream full-flags.
+
+```
+cycle:    0 1 2 3 4 5 6 7 8
+valid:    . H H H H H . . .
+stall:    . . H H . . . . .
+payload:  X A A A A B X X X
+fire:         -   ^ ^
+               (stalled)
+```
+
+Equivalent information content to `valid_ready`; offered because real
+pipelines sometimes have a natural "stall" signal and inverting it at
+every channel boundary is noise. Reference: Cortex-A pipeline interlock
+conventions; Chisel3 `Decoupled` with `stall` wrapper.
+
+### 5. `req_ack_4phase` — return-to-zero handshake
+
+One transfer per `req/ack` pair. Sequence: producer raises `req` with
+payload, consumer raises `ack`, producer drops `req`, consumer drops
+`ack`. All four transitions happen before the next transfer can start.
+
+```
+cycle:    0 1 2 3 4 5 6 7 8 9
+req:      . H H H . . H H H .
+ack:      . . H H . . . H H .
+payload:  X A A A X X B B B X
+fire:         ^         ^
+```
+
+Classical asynchronous handshake (also usable synchronously for
+GALS bridges). Reference: **Sparsø & Furber**, *Principles of
+Asynchronous Circuit Design*, ch. 2, "Handshake Protocols — Four-Phase
+Bundled-Data."
+
+### 6. `req_ack_2phase` — non-return-to-zero (NRZ) handshake
+
+Each *toggle* of `req` (regardless of direction) signals a new transfer;
+a matching toggle of `ack` confirms it. Half the transitions per
+transfer compared to 4-phase — faster on links where transitions are
+expensive.
+
+```
+cycle:    0 1 2 3 4 5 6 7 8 9
+req:      . H H H H . . . . .     (toggle ↑ at cycle 1)
+ack:      . . H H H H H H H H     (toggle ↑ at cycle 2)
+payload:  X A A A A A A A A A
+fire:         ^
+
+req:      H H H H H . . . . .     (toggle ↓ at cycle 4 — new transfer)
+ack:      H H H H H H H . . .     (toggle ↓ at cycle 7)
+payload:  A A A A B B B B B B
+fire:             ^
+```
+
+Used in high-speed async links and off-chip serdes where transition
+count dominates power. Subtle to verify — the compiler's auto-emitted
+`X_req_toggle_exactly_once` assertion (Tier 2) catches the usual
+implementation bugs. Reference: same Sparsø & Furber, ch. 2,
+"Two-Phase (NRZ) Handshake."
+
+### Quick-pick guidance
+
+| Need | Pick |
+|---|---|
+| AMBA-family interfaces, most on-chip streaming | `valid_ready` |
+| Strobes, interrupts, anything a FIFO fronts | `valid_only` |
+| Pipeline interlock where "stall" is the natural signal | `valid_stall` |
+| Async / GALS bridge, low complexity | `req_ack_4phase` |
+| Async / GALS bridge, low power per transfer | `req_ack_2phase` |
+| Read port of a combinational register file | `ready_only` |
+
 ## Tier 1.5 — auto-guard on payload
 
 Because the compiler now *owns* the knowledge that `X_valid` (or `X_req`)
