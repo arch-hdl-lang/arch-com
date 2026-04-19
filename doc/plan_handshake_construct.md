@@ -273,7 +273,19 @@ interpreted as "producer drives continuously, consumer decides when to
 consume." No auto-guard applies; `--check-uninit` behaves as if the user
 wrote no guard at all.
 
-## Tier 2 — auto-emitted protocol assertions
+## Tier 2 — auto-emitted protocol assertions (SHIPPED — initial set)
+
+**v1 coverage**:
+- `valid_ready`: `_auto_hs_<port>_<ch>_valid_stable` — once valid is asserted it stays asserted until ready is observed.
+- `valid_stall`: `_auto_hs_<port>_<ch>_valid_stable_while_stall` — valid must not change while stall is asserted.
+- `req_ack_4phase`: `_auto_hs_<port>_<ch>_req_holds_until_ack` — req stays asserted until ack is observed.
+- `valid_only`, `ready_only`, `req_ack_2phase`: parsed + ports expand correctly, but no Tier-2 assertion emitted yet (valid_only has no back-signal; ready_only has no valid; 2-phase req-toggle needs `$past` tracking — deferred).
+
+All properties are concurrent SVA wrapped in `synopsys translate_off/on`, using the module's first Clock port and `disable iff (<reset>)` on the first Reset port — same convention as `_auto_bound_*` / `_auto_div0_*`. Modules with no clock skip assertion emission (the ports still expand).
+
+Remaining work documented below for future extensions:
+
+
 
 When `arch build` emits SV, each handshake additionally emits a small
 block of concurrent SVA (inside `synopsys translate_off/on`, same

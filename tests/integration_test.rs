@@ -1682,3 +1682,89 @@ fn test_handshake_all_variants_parse() {
     assert!(sv.contains("output logic p_e_req") && sv.contains("input logic p_e_ack"));
     assert!(sv.contains("output logic p_f_req") && sv.contains("input logic p_f_ack"));
 }
+
+#[test]
+fn test_handshake_tier2_valid_ready_assertion() {
+    // Tier 2: a valid_ready handshake should emit a `valid_stable` SVA
+    // property referencing the flattened valid/ready signals, wrapped in
+    // synopsys translate_off/on, with disable iff (rst).
+    let source = "
+        bus BusLite
+          handshake aw: send kind: valid_ready
+            addr: UInt<32>;
+          end handshake aw
+        end bus BusLite
+
+        module Producer
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port bus_p: initiator BusLite;
+          comb
+            bus_p.aw_valid = 1'b0;
+            bus_p.aw_addr  = 32'h0;
+          end comb
+        end module Producer
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("// Auto-generated handshake protocol assertions"));
+    assert!(sv.contains("_auto_hs_bus_p_aw_valid_stable"));
+    assert!(sv.contains("(bus_p_aw_valid && !bus_p_aw_ready) |=> bus_p_aw_valid"));
+    assert!(sv.contains("disable iff (rst)"));
+    assert!(sv.contains("synopsys translate_off"));
+    assert!(sv.contains("synopsys translate_on"));
+}
+
+#[test]
+fn test_handshake_tier2_multiple_variants() {
+    // Tier 2: a bus with mixed variants should emit exactly the
+    // properties covered by v1 — valid_stable, valid_stable_while_stall,
+    // and req_holds_until_ack. Other variants are silently skipped.
+    let source = "
+        bus BusMix
+          handshake a: send kind: valid_ready  end handshake a
+          handshake b: send kind: valid_only   end handshake b
+          handshake c: send kind: valid_stall  end handshake c
+          handshake d: send kind: req_ack_4phase end handshake d
+        end bus BusMix
+
+        module Top
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port p: initiator BusMix;
+          comb
+            p.a_valid = 1'b0;
+            p.b_valid = 1'b0;
+            p.c_valid = 1'b0;
+            p.d_req   = 1'b0;
+          end comb
+        end module Top
+    ";
+    let sv = compile_to_sv(source);
+    // Covered variants:
+    assert!(sv.contains("_auto_hs_p_a_valid_stable"));
+    assert!(sv.contains("_auto_hs_p_c_valid_stable_while_stall"));
+    assert!(sv.contains("_auto_hs_p_d_req_holds_until_ack"));
+    // valid_only has no back-signal, so no property is emitted for `b`:
+    assert!(!sv.contains("_auto_hs_p_b_"));
+}
+
+#[test]
+fn test_handshake_tier2_no_clock_no_assertions() {
+    // A module without a Clock port can't host concurrent assertions.
+    // Bus ports are still emitted; the assertion block is simply skipped.
+    let source = "
+        bus BusLite
+          handshake aw: send kind: valid_ready end handshake aw
+        end bus BusLite
+
+        module Combo
+          port bus_p: initiator BusLite;
+          comb
+            bus_p.aw_valid = 1'b0;
+          end comb
+        end module Combo
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("output logic bus_p_aw_valid"));
+    assert!(!sv.contains("_auto_hs_"));
+}
