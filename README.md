@@ -98,6 +98,23 @@ arch formal multi.arch --top MyTop                   # pick a top when the file 
 
 Output is one line per property — `PROVED up to bound N`, `REFUTED at cycle C` (with a per-cycle signal counterexample), `HIT at cycle C` for covers, `NOT REACHED within bound N`, or `INCONCLUSIVE` on solver timeout. Exit codes: `0` all-good, `1` any failure, `2` inconclusive, `3` compile error. Scope in v1 is flat modules with scalar signals (`UInt<N>` / `SInt<N>` / `Bool` / `Bit`), single clock, no sub-`inst`; anything out of scope errors out with a pointer at the offending construct.
 
+## Learning from your own mistakes
+
+Every `arch check`/`build`/`sim`/`formal` invocation quietly records an error→fix pair whenever a failed compile is followed by a successful one on the same file. Data lives locally under `~/.arch/learn/`, never leaves the machine, and is queryable by LLM agents (or you) through `arch advise`:
+
+```sh
+arch check MyModule.arch            # fails → pending entry stashed
+# …edit the file to fix the error…
+arch check MyModule.arch            # succeeds → prints: 📚 Learned: [width_mismatch] <diff>
+
+arch learn-index                    # rebuild BM25 retrieval index
+arch advise "width mismatch"        # top-K past fixes matching the query
+arch learn-stats                    # counts by error_code
+arch learn-clear                    # wipe the store
+```
+
+Design goals: **local-first** (no telemetry, no network); **capped** (100 MB default via `ARCH_LEARN_MAX_MB`, warns at 90% full); **opt-out** (`ARCH_NO_LEARN=1` disables capture entirely). The long-term roadmap — idiom capture, contributor sharing, promoting stable patterns to compiler lints — lives in [`doc/plan_arch_learning_system.md`](doc/plan_arch_learning_system.md).
+
 ## Language snapshot
 
 ### Combinational logic
