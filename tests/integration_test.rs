@@ -2024,3 +2024,156 @@ fn test_handshake_tier15_req_ack_4phase_uses_req_as_guard() {
     assert!(cpp.contains("!_b_ch_payload_vinit && b_ch_req"),
             "req_ack_4phase payload should gate on b_ch_req:\n{cpp}");
 }
+
+fn warnings_from(source: &str) -> Vec<String> {
+    let tokens = arch::lexer::tokenize(source).expect("lexer error");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve error");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let (warnings, _) = checker.check().expect("type check error");
+    warnings.into_iter().map(|w| w.message).collect()
+}
+
+#[test]
+fn test_handshake_tier15_unguarded_payload_warns() {
+    let source = "
+        bus BusHS
+          handshake ch: send kind: valid_ready
+            data: UInt<8>;
+          end handshake ch
+        end bus BusHS
+
+        use BusHS;
+
+        module Consumer
+          port b: target BusHS;
+          port o: out UInt<8>;
+          comb
+            o = b.ch_data;
+            b.ch_ready = 1'b1;
+          end comb
+        end module Consumer
+    ";
+    let ws = warnings_from(source);
+    assert!(ws.iter().any(|m| m.contains("b.ch_data") && m.contains("if b.ch_valid")),
+            "expected unguarded-payload warning; got: {:?}", ws);
+}
+
+#[test]
+fn test_handshake_tier15_guarded_payload_silent() {
+    let source = "
+        bus BusHS
+          handshake ch: send kind: valid_ready
+            data: UInt<8>;
+          end handshake ch
+        end bus BusHS
+
+        use BusHS;
+
+        module Consumer
+          port b: target BusHS;
+          port o: out UInt<8>;
+          comb
+            if b.ch_valid
+              o = b.ch_data;
+            else
+              o = 8'h0;
+            end if
+            b.ch_ready = 1'b1;
+          end comb
+        end module Consumer
+    ";
+    let ws = warnings_from(source);
+    assert!(!ws.iter().any(|m| m.contains("handshake payload") && m.contains("ch_data")),
+            "did not expect handshake warning; got: {:?}", ws);
+}
+
+#[test]
+fn test_handshake_tier15_guard_via_compound_and_silent() {
+    let source = "
+        bus BusHS
+          handshake ch: send kind: valid_ready
+            data: UInt<8>;
+          end handshake ch
+        end bus BusHS
+
+        use BusHS;
+
+        module Consumer
+          port b:      target BusHS;
+          port enable: in Bool;
+          port o:      out UInt<8>;
+          comb
+            if b.ch_valid and enable
+              o = b.ch_data;
+            else
+              o = 8'h0;
+            end if
+            b.ch_ready = 1'b1;
+          end comb
+        end module Consumer
+    ";
+    let ws = warnings_from(source);
+    assert!(!ws.iter().any(|m| m.contains("handshake payload") && m.contains("ch_data")),
+            "AND-conjunct guard should silence the lint; got: {:?}", ws);
+}
+
+#[test]
+fn test_handshake_tier15_else_branch_warns() {
+    let source = "
+        bus BusHS
+          handshake ch: send kind: valid_ready
+            data: UInt<8>;
+          end handshake ch
+        end bus BusHS
+
+        use BusHS;
+
+        module Consumer
+          port b: target BusHS;
+          port o: out UInt<8>;
+          comb
+            if b.ch_valid
+              o = 8'h0;
+            else
+              o = b.ch_data;
+            end if
+            b.ch_ready = 1'b1;
+          end comb
+        end module Consumer
+    ";
+    let ws = warnings_from(source);
+    assert!(ws.iter().any(|m| m.contains("b.ch_data")),
+            "read in else-branch of `if valid` is NOT guarded; should warn. got: {:?}", ws);
+}
+
+#[test]
+fn test_handshake_tier15_req_ack_uses_req_as_guard() {
+    let source = "
+        bus BusRA
+          handshake ch: send kind: req_ack_4phase
+            payload: UInt<16>;
+          end handshake ch
+        end bus BusRA
+
+        use BusRA;
+
+        module C
+          port b: target BusRA;
+          port o: out UInt<16>;
+          comb
+            if b.ch_req
+              o = b.ch_payload;
+            else
+              o = 16'h0;
+            end if
+            b.ch_ack = 1'b1;
+          end comb
+        end module C
+    ";
+    let ws = warnings_from(source);
+    assert!(!ws.iter().any(|m| m.contains("handshake payload")),
+            "if b.ch_req should guard req_ack payload; got: {:?}", ws);
+}

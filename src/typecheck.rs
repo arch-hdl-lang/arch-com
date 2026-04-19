@@ -793,6 +793,251 @@ impl<'a> TypeChecker<'a> {
         // the value appears 1 cycle after the state transition, which is a common
         // source of timing mismatch with testbench models.
         self.check_port_reg_timing(m);
+
+        // Tier 1.5 (Option A): warn on handshake payload reads that are not
+        // enclosed in an `if <port>.<valid>` scope. Catches consumer-side
+        // contract violations (reading stale/undefined payload when the
+        // producer hasn't asserted valid). See doc/plan_handshake_construct.md.
+        self.check_handshake_reads(m);
+    }
+
+    /// Compile-time lint: if a module has a bus port whose bus declares one or
+    /// more `handshake` channels, every read of a payload signal inside
+    /// comb/seq/latch blocks should sit under an `if <port>.<valid>` (or the
+    /// variant's `<port>.<req>`) conditional.
+    ///
+    /// v1 scope:
+    /// - Recognized guards: the exact valid/req field access (`port.ch_valid`),
+    ///   either directly as the if-condition or as an AND-conjunct of it.
+    /// - Does NOT trace let-bindings: `let g = port.ch_valid; if g ...` is a
+    ///   known false-positive and documented in the plan. If this becomes
+    ///   noisy, extend by resolving single-ident let RHS before matching.
+    /// - Variants with no valid signal (`ready_only`) are skipped entirely;
+    ///   `req_ack_2phase` skipped pending the stateful toggle guard design.
+    fn check_handshake_reads(&mut self, m: &ModuleDecl) {
+        use std::collections::HashMap as Map;
+        // port_name -> Vec<(channel_name, guard_field_name, payload_field_names)>
+        let mut info: Map<String, Vec<(String, String, Vec<String>)>> = Map::new();
+        for p in &m.ports {
+            let Some(ref bi) = p.bus_info else { continue; };
+            let Some(crate::resolve::Symbol::Bus(binfo)) =
+                self.symbols.globals.get(&bi.bus_name.name).map(|(s, _)| s)
+                else { continue; };
+            for hs in &binfo.handshakes {
+                let guard = match hs.variant.name.as_str() {
+                    "valid_ready" | "valid_only" | "valid_stall" => "valid",
+                    "req_ack_4phase" => "req",
+                    _ => continue,
+                };
+                let payloads: Vec<String> = hs.payload_names.iter()
+                    .map(|i| i.name.clone())
+                    .collect();
+                info.entry(p.name.name.clone()).or_default().push((
+                    hs.name.name.clone(),
+                    format!("{}_{}", hs.name.name, guard),
+                    payloads.into_iter().map(|n| format!("{}_{}", hs.name.name, n)).collect(),
+                ));
+            }
+        }
+        if info.is_empty() { return; }
+
+        for item in &m.body {
+            match item {
+                ModuleBodyItem::CombBlock(cb) => {
+                    for s in &cb.stmts {
+                        self.walk_comb_for_hs_reads(s, &[], &info);
+                    }
+                }
+                ModuleBodyItem::RegBlock(rb) => {
+                    for s in &rb.stmts {
+                        self.walk_seq_for_hs_reads(s, &[], &info);
+                    }
+                }
+                ModuleBodyItem::LatchBlock(lb) => {
+                    for s in &lb.stmts {
+                        self.walk_seq_for_hs_reads(s, &[], &info);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn walk_comb_for_hs_reads(
+        &mut self,
+        stmt: &CombStmt,
+        enclosing: &[&Expr],
+        info: &std::collections::HashMap<String, Vec<(String, String, Vec<String>)>>,
+    ) {
+        match stmt {
+            CombStmt::Assign(a) => {
+                self.check_expr_for_unguarded_payload(&a.value, enclosing, info, a.span);
+            }
+            CombStmt::IfElse(ie) => {
+                // Expressions inside the condition itself don't get the
+                // condition as a guard — they're evaluated before the branch.
+                self.check_expr_for_unguarded_payload(&ie.cond, enclosing, info, ie.span);
+                let mut then_stack: Vec<&Expr> = enclosing.to_vec();
+                then_stack.push(&ie.cond);
+                for s in &ie.then_stmts {
+                    self.walk_comb_for_hs_reads(s, &then_stack, info);
+                }
+                // Else branch does NOT add the condition (would need negation logic).
+                for s in &ie.else_stmts {
+                    self.walk_comb_for_hs_reads(s, enclosing, info);
+                }
+            }
+            CombStmt::MatchExpr(mm) => {
+                self.check_expr_for_unguarded_payload(&mm.scrutinee, enclosing, info, mm.span);
+                for arm in &mm.arms {
+                    for s in &arm.body {
+                        self.walk_seq_for_hs_reads(s, enclosing, info);
+                    }
+                }
+            }
+            CombStmt::For(fl) => {
+                // ForLoop.body is Vec<Stmt>, reused from seq semantics.
+                for s in &fl.body {
+                    self.walk_seq_for_hs_reads(s, enclosing, info);
+                }
+            }
+            CombStmt::Log(_) => {}
+        }
+    }
+
+    fn walk_seq_for_hs_reads(
+        &mut self,
+        stmt: &Stmt,
+        enclosing: &[&Expr],
+        info: &std::collections::HashMap<String, Vec<(String, String, Vec<String>)>>,
+    ) {
+        match stmt {
+            Stmt::Assign(a) => {
+                self.check_expr_for_unguarded_payload(&a.value, enclosing, info, a.span);
+            }
+            Stmt::IfElse(ie) => {
+                self.check_expr_for_unguarded_payload(&ie.cond, enclosing, info, ie.span);
+                let mut then_stack: Vec<&Expr> = enclosing.to_vec();
+                then_stack.push(&ie.cond);
+                for s in &ie.then_stmts {
+                    self.walk_seq_for_hs_reads(s, &then_stack, info);
+                }
+                for s in &ie.else_stmts {
+                    self.walk_seq_for_hs_reads(s, enclosing, info);
+                }
+            }
+            Stmt::Match(mm) => {
+                self.check_expr_for_unguarded_payload(&mm.scrutinee, enclosing, info, mm.span);
+                for arm in &mm.arms {
+                    for s in &arm.body {
+                        self.walk_seq_for_hs_reads(s, enclosing, info);
+                    }
+                }
+            }
+            Stmt::For(fl) => {
+                for s in &fl.body {
+                    self.walk_seq_for_hs_reads(s, enclosing, info);
+                }
+            }
+            Stmt::Init(ib) => {
+                for s in &ib.body {
+                    self.walk_seq_for_hs_reads(s, enclosing, info);
+                }
+            }
+            Stmt::DoUntil { body, cond, span } => {
+                self.check_expr_for_unguarded_payload(cond, enclosing, info, *span);
+                for s in body {
+                    self.walk_seq_for_hs_reads(s, enclosing, info);
+                }
+            }
+            Stmt::WaitUntil(e, sp) => {
+                self.check_expr_for_unguarded_payload(e, enclosing, info, *sp);
+            }
+            Stmt::Log(_) => {}
+        }
+    }
+
+    /// Scan `expr` for reads of `<port>.<payload_field>` where the (port,field)
+    /// pair is known to be a handshake payload. If no enclosing condition
+    /// guards the access, emit a warning.
+    fn check_expr_for_unguarded_payload(
+        &mut self,
+        expr: &Expr,
+        enclosing: &[&Expr],
+        info: &std::collections::HashMap<String, Vec<(String, String, Vec<String>)>>,
+        default_span: Span,
+    ) {
+        match &expr.kind {
+            ExprKind::FieldAccess(base, field) => {
+                if let ExprKind::Ident(port) = &base.kind {
+                    if let Some(channels) = info.get(port) {
+                        for (ch_name, guard_field, payload_fields) in channels {
+                            if payload_fields.iter().any(|pf| pf == &field.name) {
+                                let needs_guard = format!("{}.{}", port, guard_field);
+                                if !enclosing.iter().any(|c| cond_contains_access(c, port, guard_field)) {
+                                    let span = if expr.span.start == 0 && expr.span.end == 0 {
+                                        default_span
+                                    } else {
+                                        expr.span
+                                    };
+                                    self.warnings.push(CompileWarning {
+                                        message: format!(
+                                            "handshake payload `{}.{}` (channel `{}`) is read outside an `if {}` guard — consumer may observe stale/undefined data. Guard the read: `if {} ...`",
+                                            port, field.name, ch_name, needs_guard, needs_guard
+                                        ),
+                                        span,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                self.check_expr_for_unguarded_payload(base, enclosing, info, default_span);
+            }
+            ExprKind::Binary(_, l, r) => {
+                self.check_expr_for_unguarded_payload(l, enclosing, info, default_span);
+                self.check_expr_for_unguarded_payload(r, enclosing, info, default_span);
+            }
+            ExprKind::Unary(_, e) => {
+                self.check_expr_for_unguarded_payload(e, enclosing, info, default_span);
+            }
+            ExprKind::Index(b, i) => {
+                self.check_expr_for_unguarded_payload(b, enclosing, info, default_span);
+                self.check_expr_for_unguarded_payload(i, enclosing, info, default_span);
+            }
+            ExprKind::BitSlice(b, hi, lo) => {
+                self.check_expr_for_unguarded_payload(b, enclosing, info, default_span);
+                self.check_expr_for_unguarded_payload(hi, enclosing, info, default_span);
+                self.check_expr_for_unguarded_payload(lo, enclosing, info, default_span);
+            }
+            ExprKind::PartSelect(b, s, w, _) => {
+                self.check_expr_for_unguarded_payload(b, enclosing, info, default_span);
+                self.check_expr_for_unguarded_payload(s, enclosing, info, default_span);
+                self.check_expr_for_unguarded_payload(w, enclosing, info, default_span);
+            }
+            ExprKind::MethodCall(b, _, args) => {
+                self.check_expr_for_unguarded_payload(b, enclosing, info, default_span);
+                for a in args { self.check_expr_for_unguarded_payload(a, enclosing, info, default_span); }
+            }
+            ExprKind::FunctionCall(_, args) => {
+                for a in args { self.check_expr_for_unguarded_payload(a, enclosing, info, default_span); }
+            }
+            ExprKind::Ternary(c, t, e) => {
+                self.check_expr_for_unguarded_payload(c, enclosing, info, default_span);
+                // Then/else branches of a ternary could also be tracked with
+                // `c`/`!c` as guards; v1 keeps this simple and only accepts
+                // if-statement guards. Extend later if a real case arises.
+                self.check_expr_for_unguarded_payload(t, enclosing, info, default_span);
+                self.check_expr_for_unguarded_payload(e, enclosing, info, default_span);
+            }
+            ExprKind::ExprMatch(s, arms) => {
+                self.check_expr_for_unguarded_payload(s, enclosing, info, default_span);
+                for arm in arms {
+                    self.check_expr_for_unguarded_payload(&arm.value, enclosing, info, default_span);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn check_implements(&mut self, m: &ModuleDecl, tmpl_name: &Ident) {
@@ -3525,6 +3770,31 @@ impl<'a> TypeChecker<'a> {
 }
 
 /// Returns true if the expression's top-level operation is a shift (`<<` or `>>`).
+/// Does `cond` contain a top-level AND-conjunct that is the field access
+/// `<port>.<guard_field>`? Used by the handshake-read lint to decide
+/// whether an enclosing `if` condition properly guards a payload read.
+///
+/// Accepted patterns:
+///   - `port.valid`                              (exact match)
+///   - `port.valid && X`                         (AND conjunct, either side)
+///   - `(port.valid) && X`                       (parens are transparent in AST)
+/// Not accepted:
+///   - `port.valid || X`                         (not guaranteed)
+///   - `let g = port.valid; if g ...`            (v1 does not trace lets)
+///   - `!port.valid` / else branch               (negation not modeled)
+fn cond_contains_access(cond: &Expr, port: &str, guard_field: &str) -> bool {
+    match &cond.kind {
+        ExprKind::FieldAccess(base, field) => {
+            matches!(&base.kind, ExprKind::Ident(p) if p == port) && field.name == guard_field
+        }
+        ExprKind::Binary(BinOp::And, lhs, rhs) | ExprKind::Binary(BinOp::BitAnd, lhs, rhs) => {
+            cond_contains_access(lhs, port, guard_field)
+                || cond_contains_access(rhs, port, guard_field)
+        }
+        _ => false,
+    }
+}
+
 fn expr_is_shift(e: &Expr) -> bool {
     matches!(&e.kind, ExprKind::Binary(BinOp::Shl | BinOp::Shr, _, _))
 }
