@@ -303,10 +303,86 @@ pub fn build_index() -> std::io::Result<usize> {
 pub struct Match {
     pub score: f64,
     pub event: Event,
+    pub retrieved_count: u32,
+}
+
+/// Stable, order-independent fingerprint for an event — used as the key in
+/// `retrieval_counts.json`. Hash ts + error_code + diff_summary so the id
+/// survives any future field additions without breaking existing counts.
+pub fn event_id(e: &Event) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for chunk in [e.ts.as_bytes(), e.error_code.as_bytes(), e.diff_summary.as_bytes()] {
+        for b in chunk {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h ^= b'|' as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{h:016x}")
+}
+
+fn counts_path() -> std::io::Result<PathBuf> {
+    Ok(learn_dir()?.join("retrieval_counts.json"))
+}
+
+fn load_counts() -> std::io::Result<std::collections::HashMap<String, u32>> {
+    let path = counts_path()?;
+    if !path.exists() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let raw = fs::read_to_string(&path)?;
+    let mut out = std::collections::HashMap::new();
+    // Tiny parser: `{"id":N,"id":N,...}`
+    let trimmed = raw.trim().trim_start_matches('{').trim_end_matches('}');
+    for entry in trimmed.split(',') {
+        let entry = entry.trim();
+        if entry.is_empty() { continue; }
+        if let Some((k, v)) = entry.split_once(':') {
+            let k = k.trim().trim_matches('"').to_string();
+            if let Ok(n) = v.trim().parse::<u32>() {
+                out.insert(k, n);
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn save_counts(counts: &std::collections::HashMap<String, u32>) -> std::io::Result<()> {
+    let path = counts_path()?;
+    let mut s = String::from("{");
+    let mut first = true;
+    for (k, v) in counts {
+        if !first { s.push(','); }
+        first = false;
+        s.push_str(&format!("\"{}\":{}", k, v));
+    }
+    s.push('}');
+    fs::write(&path, s)
+}
+
+fn bump_counts(ids: &[String]) -> std::io::Result<()> {
+    if ids.is_empty() { return Ok(()); }
+    let mut counts = load_counts()?;
+    for id in ids {
+        *counts.entry(id.clone()).or_insert(0) += 1;
+    }
+    save_counts(&counts)
+}
+
+/// Quick advise that does not bump retrieval counts — used by the inline
+/// compile-failure hint in `arch check` to avoid inflating counts on
+/// suggestions the user never actually looked at.
+pub fn peek(query: &str, k: usize) -> std::io::Result<Vec<Match>> {
+    advise_impl(query, k, false)
 }
 
 /// Load events, tokenize the query, score each event via BM25, return top-K.
 pub fn advise(query: &str, k: usize) -> std::io::Result<Vec<Match>> {
+    advise_impl(query, k, true)
+}
+
+fn advise_impl(query: &str, k: usize, bump: bool) -> std::io::Result<Vec<Match>> {
     let dir = learn_dir()?;
     let events_path = dir.join("events.jsonl");
     if !events_path.exists() {
@@ -356,7 +432,20 @@ pub fn advise(query: &str, k: usize) -> std::io::Result<Vec<Match>> {
     }
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(k);
-    Ok(scored.into_iter().map(|(s, e)| Match { score: s, event: e }).collect())
+
+    let counts = load_counts().unwrap_or_default();
+    let top: Vec<Match> = scored.into_iter().map(|(s, e)| {
+        let id = event_id(&e);
+        let c = *counts.get(&id).unwrap_or(&0);
+        Match { score: s, event: e, retrieved_count: c }
+    }).collect();
+
+    if bump {
+        let ids: Vec<String> = top.iter().map(|m| event_id(&m.event)).collect();
+        let _ = bump_counts(&ids);
+    }
+
+    Ok(top)
 }
 
 /// Print stored stats.
@@ -389,6 +478,89 @@ pub fn print_stats() -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Prune events from the store. Returns (kept, removed).
+/// An event is removed if it matches *any* of the filters:
+/// - `code == Some(c)`: event's error_code equals `c`
+/// - `substr == Some(s)`: `s` appears in diff_summary, error_message, or file_path
+/// - `older_than_days == Some(d)`: event timestamp is older than `d` days ago
+/// If `dry_run` is true, nothing is written; just counts.
+pub fn prune(
+    code: Option<&str>,
+    substr: Option<&str>,
+    older_than_days: Option<u64>,
+    dry_run: bool,
+) -> std::io::Result<(usize, usize)> {
+    let dir = learn_dir()?;
+    let events_path = dir.join("events.jsonl");
+    if !events_path.exists() {
+        return Ok((0, 0));
+    }
+    let raw = fs::read_to_string(&events_path)?;
+    let cutoff_ts: Option<String> = older_than_days.map(|d| {
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|x| x.as_secs())
+            .unwrap_or(0);
+        let cutoff = now_secs.saturating_sub(d * 86400);
+        let (y, mo, da, hh, mm, ss) = epoch_to_utc(cutoff);
+        format!("{y:04}-{mo:02}-{da:02}T{hh:02}:{mm:02}:{ss:02}Z")
+    });
+
+    let mut kept_lines: Vec<String> = Vec::new();
+    let mut removed = 0usize;
+    for line in raw.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let ev = match json_to_event(line) {
+            Some(e) => e,
+            None => {
+                kept_lines.push(line.to_string());
+                continue;
+            }
+        };
+        let mut drop = false;
+        if let Some(c) = code {
+            if ev.error_code == c {
+                drop = true;
+            }
+        }
+        if !drop {
+            if let Some(s) = substr {
+                if ev.diff_summary.contains(s)
+                    || ev.error_message.contains(s)
+                    || ev.file_path.contains(s)
+                {
+                    drop = true;
+                }
+            }
+        }
+        if !drop {
+            if let Some(cutoff) = &cutoff_ts {
+                if ev.ts.as_str() < cutoff.as_str() {
+                    drop = true;
+                }
+            }
+        }
+        if drop {
+            removed += 1;
+        } else {
+            kept_lines.push(line.to_string());
+        }
+    }
+    let kept = kept_lines.len();
+    if !dry_run && removed > 0 {
+        let mut out = kept_lines.join("\n");
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        fs::write(&events_path, out)?;
+        // Index is now stale; remove so `advise` rebuilds / warns.
+        let _ = fs::remove_file(dir.join("index.json"));
+    }
+    Ok((kept, removed))
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────

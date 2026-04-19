@@ -59,3 +59,6 @@ tests/realbench/debug/
 # Claude session data
 .claude/
 critique2.txt
+
+# Private draft — crowd-sourced data co-op proposal (not for publication)
+doc/plan_arch_data_coop.md

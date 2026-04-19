@@ -96,45 +96,66 @@ Rule of thumb: start with RAG (low commitment, high value), and **promote stable
 
 ## Roadmap
 
-### v1 (this commit scope) — the minimum useful local loop
+### v1 — minimum useful local loop (SHIPPED in v0.42.0)
 
-New subcommands and flags:
+Delivered in commits on branch `learn` (PR #17).
 
-- **`arch check --learn <file.arch>`** — run check as normal. Additionally:
-  - If check *fails*: record pending state `(file_path, src_hash, error_code, error_span, error_message, timestamp)` in `~/.arch/learn/pending/<file_hash>.json`.
-  - If check *succeeds* and there's a pending entry for this file: compute the diff between pending `src_before` and current `src_after`, append an event to `~/.arch/learn/events.jsonl`:
+- **Always-on capture.** Every `arch check`/`build`/`sim`/`formal` invocation records error→fix pairs into `~/.arch/learn/events.jsonl`. No flag required; `ARCH_NO_LEARN=1` opts out.
+  - On failure: stash `(file_path, src, error_code, error_message, timestamp)` into `~/.arch/learn/pending/<file_hash>.json`.
+  - On success with a pending entry: pair into an `error_fix` event, append to `events.jsonl`, print `📚 Learned: [<code>] <diff>`.
+  - Event schema:
     ```json
     {
       "ts": "2026-04-18T20:00:00Z",
       "kind": "error_fix",
       "error_code": "width_mismatch",
       "error_message": "RHS is UInt<9> but LHS is UInt<8>",
+      "file_path": "MyMod.arch",
       "src_before": "<full file text before fix>",
       "src_after": "<full file text after fix>",
       "diff_summary": "cnt <= cnt + 1;  →  cnt <= (cnt + 1).trunc<8>();"
     }
     ```
-  - Delete the pending entry.
+- **Size cap.** 100 MB default (override `ARCH_LEARN_MAX_MB`). Warns once at ≥90% full; hard-skips writes at 100%.
+- **`arch learn-index`** — BM25 lexical index over error_code + error_message + diff_summary. Pure Rust; no new deps.
+- **`arch advise <query> [-k N]`** — top-K retrieval with score, code, message, file, diff.
+- **`arch learn-stats`** — event count + breakdown by error_code.
+- **`arch learn-clear`** — wipe the whole store.
+- **`arch learn-prune --code|--contains|--older-than-days [--dry-run]`** — remove events by filter; auto-invalidates the index.
+- **MCP tools**: `arch_advise`, `arch_learn_index`, `arch_learn_stats`, `arch_learn_prune` exposed to agents. Server instructions tell agents to call `arch_advise` on every compile error before attempting a fix.
+- **Retroactive backfill**: a one-off Python miner (`/tmp/mine_learn.py`, not in repo) parses Claude Code session logs and extracts fail→edit→success triples into the store. Used to seed ~44 events across 9 historical sessions.
 
-- **`arch learn-index`** — read `events.jsonl`, compute a simple BM25/TF-IDF inverted index over error messages and diff content, write to `~/.arch/learn/index.json`. No external embedding model in v1; pure lexical retrieval is adequate for the volume (<1000 events/user typically).
+JSONL is the source of truth; BM25 `index.json` is disposable and rebuilt on demand. No external embedding model, no network, no telemetry, single static compiler binary.
 
-- **`arch advise <query>`** — load `events.jsonl` + `index.json`, score entries against the query string (combine error_message, error_code, diff_summary fields), print top-K (default K=3) with full before/after diff.
+### v1.1 — quality-of-life (SHIPPED)
 
-Data formats are plain JSONL — easy to inspect, diff, and script against. No new dependencies beyond what's in the tree today.
+- [SHIPPED] `arch learn-stats`, `arch learn-clear`, `arch learn-prune`
+- [SHIPPED] `arch advise --from-stderr` — reads the query from stdin, so `arch check ... 2>&1 | arch advise --from-stderr` works without copying.
+- [SHIPPED] Compile-failure hint: on every failed `arch check/build/sim/formal`, if the local store has similar past fixes, print `💡 arch advise found N similar past fixes — run 'arch advise "<code>"' to see them.` Uses a zero-side-effect `peek` that does not bump retrieval counts.
+- [SHIPPED] **`retrieved_count`** — each time `arch advise` returns an event in its top-K, that event's counter is incremented. Stored in `~/.arch/learn/retrieval_counts.json` keyed by a stable event id (fnv hash of `ts + error_code + diff_summary`), so `events.jsonl` stays append-only. Exposed in `advise` output as `retrieved N×`.
+- [TODO — deferred to v2 alongside richer capture] **`helped_count`** — bump when a compile-clean follows an advise within the same session. Needs per-session correlation (nonce written into pending state, cleared on successful pair). Harder because attribution is fuzzy; deferring until we have a story for v2 capture (idioms, prompts) so the tracking hooks land once.
 
-### v1.1 — quality-of-life
+### v2 — richer capture + semantic retrieval
 
-- `arch advise --from-stderr` — pipe the latest compiler error directly into advise without copying.
-- `arch learn stats` — show counts by error_code, most-frequent fixes.
-- `arch learn clear` — reset local store.
-- Auto-suggestion hook: `arch check` prints "💡 `arch advise` found 2 similar past errors; run `arch advise` to see" when the store has relevant entries.
-
-### v2 — richer capture
-
+**Capture expansions** (orthogonal to retrieval backend):
 - Record **successful compiles** of multi-construct designs → idiom corpus.
 - Record **verification failures** (EBMC, SVA) → root-cause corpus.
 - Record **prompt → code** pairs (requires editor/agent integration; new `arch learn-prompt` API).
-- Swap BM25 index for local embeddings (sentence-transformers via Python subprocess, or a Rust ONNX runtime with a small code-aware model).
+
+**Retrieval upgrade: SQLite + sqlite-vec + local ONNX embeddings.** Deferred until the lexical BM25 v1 shows concrete limits — volume or semantic-miss symptoms. Design when we pick it up:
+
+| Decision | Choice | Rationale |
+|---|---|---|
+| Vector DB | `sqlite-vec` via `rusqlite` | One file under `~/.arch/learn/store.db`; preserves "nothing leaves the machine" story |
+| Embedding backend | Pure-Rust ONNX (`ort` + `tokenizers`) | No Python dep; no bundled 1 GB venv; runs offline after first-use download |
+| Model | `all-MiniLM-L6-v2` (384-dim, ~90 MB) as default; offer `bge-code-v1.5` (1024-dim, code-specialized, ~340 MB) as opt-in | MiniLM is fast enough for real-time `advise`; code-specialized is a later tuning knob |
+| Model storage | `~/.arch/learn/model/` — auto-download on first `arch learn-index` | Compiler binary stays small; one-time cost |
+| API-based embeddings | **Rejected** | Would send source off-device; violates always-local privacy rule |
+| Migration | Rebuild `store.db` from `events.jsonl`; keep JSONL as source of truth | `events.jsonl` stays human-inspectable; prune/clear stay trivial |
+| Reranking | Embed query → top-50 cosine candidates → BM25 rerank | Fuses semantic recall with exact-term precision |
+| Scale test | New `arch learn-bench` synthesizes N events and reports query latency at N = 100/1K/10K/100K | Concrete evidence for when the v2 investment pays off |
+
+**Exit criteria for triggering v2 work**: either (a) single-user store passes ~1,000 events and `advise` top-3 starts feeling stale, or (b) queries with no lexical overlap (e.g. "too-wide assignment" vs. a stored "width mismatch") consistently miss good matches. Until then, BM25 is adequate and cheaper on every axis.
 
 ### v3 — contributor sharing
 

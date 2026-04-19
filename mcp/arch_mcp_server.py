@@ -181,9 +181,74 @@ def get_construct_syntax(construct: str) -> str:
 
 @mcp.tool()
 def arch_check(files: list[str]) -> str:
-    """Type-check one or more .arch files. Returns diagnostics."""
+    """Type-check one or more .arch files. Returns diagnostics.
+
+    Note: every invocation records error→fix pairs into ~/.arch/learn/ for
+    retrieval via `arch_advise`. Disable with env ARCH_NO_LEARN=1.
+    """
     paths = [str(_resolve_safe(f)) for f in files]
     return _run([ARCH_BIN, "check"] + paths)
+
+
+@mcp.tool()
+def arch_advise(query: str, top: int = 3) -> str:
+    """Retrieve past error→fix pairs from the local learning store that
+    match `query`. Useful when an agent hits a compiler error and wants to
+    see how the same user fixed a similar error before. Returns the top-K
+    matches (default 3) with error code, error message, file, and diff.
+
+    The store is built passively by every `arch check/build/sim/formal`
+    invocation and lives at ~/.arch/learn/. Run `arch_learn_index` once
+    after new events accumulate to refresh the BM25 retrieval index.
+
+    Example queries:
+      - "width mismatch trunc"
+      - "duplicate definition"
+      - "undeclared identifier"
+    """
+    return _run([ARCH_BIN, "advise", "-k", str(top), query])
+
+
+@mcp.tool()
+def arch_learn_index() -> str:
+    """Rebuild the BM25 retrieval index over the local learning store.
+    Call after many new events have been recorded; `arch_advise` works
+    without this but may miss recent entries until the index is refreshed.
+    """
+    return _run([ARCH_BIN, "learn-index"])
+
+
+@mcp.tool()
+def arch_learn_prune(
+    code: str | None = None,
+    contains: str | None = None,
+    older_than_days: int | None = None,
+    dry_run: bool = True,
+) -> str:
+    """Remove events from the local learning store. At least one filter is
+    required. An event is removed if ANY filter matches.
+
+    - code: exact error_code (e.g. "parse_error", "other", "width_mismatch")
+    - contains: substring match against diff, message, or file path
+    - older_than_days: remove entries older than N days
+
+    Defaults to dry_run=True — always preview before deleting. Pass
+    dry_run=False to actually prune.
+    """
+    cmd = [ARCH_BIN, "learn-prune"]
+    if code: cmd += ["--code", code]
+    if contains: cmd += ["--contains", contains]
+    if older_than_days is not None: cmd += ["--older-than-days", str(older_than_days)]
+    if dry_run: cmd += ["--dry-run"]
+    return _run(cmd)
+
+
+@mcp.tool()
+def arch_learn_stats() -> str:
+    """Summarize the local learning store: total events and counts by
+    error_code. Useful to see what kinds of mistakes the user has been
+    making, or to decide whether the store is worth querying."""
+    return _run([ARCH_BIN, "learn-stats"])
 
 
 @mcp.tool()

@@ -110,6 +110,7 @@ arch check MyModule.arch            # succeeds → prints: 📚 Learned: [width_
 arch learn-index                    # rebuild BM25 retrieval index
 arch advise "width mismatch"        # top-K past fixes matching the query
 arch learn-stats                    # counts by error_code
+arch learn-prune --code other --dry-run    # preview removal by error code, substring, or age
 arch learn-clear                    # wipe the store
 ```
 
