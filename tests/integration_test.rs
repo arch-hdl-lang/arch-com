@@ -1927,3 +1927,100 @@ fn test_inputs_start_uninit_without_flag_emits_nothing() {
     assert!(!h.contains("_b_data_vinit"),
             "no --inputs-start-uninit → no bus vinit tracking:\n{h}");
 }
+
+#[test]
+fn test_handshake_tier15_payload_warning_gated_on_valid() {
+    // Tier 1.5 (Option D): when a handshake payload is also a --check-uninit-
+    // tracked input, its read-site warning should be gated on the channel's
+    // valid signal so legitimate "valid low so payload doesn't matter" usage
+    // is silent — but producer bug "valid asserted, payload never set" still
+    // warns.
+    use arch::sim_codegen::SimCodegen;
+    let source = "
+        bus BusHS
+          handshake ch: send kind: valid_ready
+            data: UInt<8>;
+          end handshake ch
+        end bus BusHS
+
+        use BusHS;
+
+        module Consumer
+          port b: target BusHS;
+          port o: out UInt<8>;
+          comb
+            if b.ch_valid
+              o = b.ch_data;
+            else
+              o = 8'h0;
+            end if
+            b.ch_ready = 1'b1;
+          end comb
+        end module Consumer
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer error");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve error");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let (_warnings, overload_map) = checker.check().expect("type check error");
+    let sim = SimCodegen::new(&symbols, &ast, overload_map)
+        .check_uninit(true)
+        .inputs_start_uninit(true);
+    let models = sim.generate();
+    let cpp = models.iter().find(|m| m.class_name == "VConsumer").unwrap().impl_.clone();
+
+    // Payload-signal read warning must be AND'd with the handshake's valid.
+    assert!(cpp.contains("!_b_ch_data_vinit && b_ch_valid"),
+            "expected payload warning gated on valid signal:\n{cpp}");
+
+    // Valid-signal itself is tracked but NOT a payload, so its warning is
+    // unconditional (no extra gate).
+    let valid_check_line = cpp.lines()
+        .find(|l| l.contains("!_b_ch_valid_vinit"))
+        .expect("expected warning for b_ch_valid signal");
+    assert!(!valid_check_line.contains("&& b_ch_valid"),
+            "valid signal's own warning should not self-gate:\n{valid_check_line}");
+}
+
+#[test]
+fn test_handshake_tier15_req_ack_4phase_uses_req_as_guard() {
+    use arch::sim_codegen::SimCodegen;
+    let source = "
+        bus BusRA
+          handshake ch: send kind: req_ack_4phase
+            payload: UInt<16>;
+          end handshake ch
+        end bus BusRA
+
+        use BusRA;
+
+        module C
+          port b: target BusRA;
+          port o: out UInt<16>;
+          comb
+            if b.ch_req
+              o = b.ch_payload;
+            else
+              o = 16'h0;
+            end if
+            b.ch_ack = 1'b1;
+          end comb
+        end module C
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer error");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve error");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let (_warnings, overload_map) = checker.check().expect("type check error");
+    let sim = SimCodegen::new(&symbols, &ast, overload_map)
+        .check_uninit(true)
+        .inputs_start_uninit(true);
+    let models = sim.generate();
+    let cpp = models.iter().find(|m| m.class_name == "VC").unwrap().impl_.clone();
+    assert!(cpp.contains("!_b_ch_payload_vinit && b_ch_req"),
+            "req_ack_4phase payload should gate on b_ch_req:\n{cpp}");
+}

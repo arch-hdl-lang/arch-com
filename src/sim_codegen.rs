@@ -3061,6 +3061,40 @@ impl<'a> SimCodegen<'a> {
         // (shadow-bit decl + read-site warning) picks them up uniformly.
         uninit_regs.extend(uninit_inputs.iter().cloned());
 
+        // Tier 1.5 (Option D): for every bus input that is a handshake payload,
+        // compute the channel's valid/req guard signal name. The --inputs-
+        // start-uninit read-site warning will gate on this guard so it only
+        // fires when the channel is actively asserting data — silencing the
+        // legitimate "TB hasn't driven valid yet" case without weakening
+        // detection of the producer bug "valid asserted, payload never set."
+        //
+        // Variant guard map:
+        //   valid_ready | valid_only | valid_stall  -> "valid"
+        //   req_ack_4phase                          -> "req"
+        //   ready_only                              -> no guard (silent on all reads)
+        //   req_ack_2phase                          -> deferred (stateful toggle)
+        let mut payload_guards: HashMap<String, String> = HashMap::new();
+        if self.inputs_start_uninit {
+            for p in m.ports.iter() {
+                let Some(ref bi) = p.bus_info else { continue; };
+                let Some(crate::resolve::Symbol::Bus(info)) =
+                    self.symbols.globals.get(&bi.bus_name.name).map(|(s, _)| s)
+                    else { continue; };
+                for hs in &info.handshakes {
+                    let guard_sig = match hs.variant.name.as_str() {
+                        "valid_ready" | "valid_only" | "valid_stall" => "valid",
+                        "req_ack_4phase" => "req",
+                        _ => continue, // ready_only / req_ack_2phase: no guard
+                    };
+                    let guard_flat = format!("{}_{}_{}", p.name.name, hs.name.name, guard_sig);
+                    for payload in &hs.payload_names {
+                        let payload_flat = format!("{}_{}_{}", p.name.name, hs.name.name, payload.name);
+                        payload_guards.insert(payload_flat, guard_flat.clone());
+                    }
+                }
+            }
+        }
+
         // Collect guard-annotated regs: reg_name → guard_signal_name.
         // Used for Check A (producer bug: "guard asserts but reg never written").
         let guarded_regs: HashMap<String, String> = m.body.iter()
@@ -4299,9 +4333,17 @@ impl<'a> SimCodegen<'a> {
                 }
                 for name in &all_reads {
                     if uninit_inputs.contains(name) {
+                        // Tier 1.5 (Option D): if this input is a handshake
+                        // payload, gate the warning on the channel's valid/req
+                        // signal — only the producer bug (valid asserted but
+                        // payload never set) should fire. Non-payload inputs
+                        // fall through to the unconditional check.
+                        let gate = payload_guards.get(name)
+                            .map(|g| format!(" && {g}"))
+                            .unwrap_or_default();
                         cpp.push_str(&format!(
-                            "  {{ static bool _w_{name} = false; if (!_{name}_vinit && !_w_{name}) {{ fprintf(stderr, \"WARNING: read of uninitialized input '{name}' — TB never called set_{name}()\\n\"); _w_{name} = true; }} }}\n",
-                            name = name
+                            "  {{ static bool _w_{name} = false; if (!_{name}_vinit{gate} && !_w_{name}) {{ fprintf(stderr, \"WARNING: read of uninitialized input '{name}' — TB never called set_{name}()\\n\"); _w_{name} = true; }} }}\n",
+                            name = name, gate = gate
                         ));
                     }
                 }
