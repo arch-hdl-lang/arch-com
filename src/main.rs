@@ -29,6 +29,21 @@ enum Command {
         #[arg(required = true)]
         files: Vec<PathBuf>,
     },
+    /// Rebuild the learning retrieval index over ~/.arch/learn/events.jsonl
+    LearnIndex,
+    /// Delete the entire local learning store at ~/.arch/learn/
+    LearnClear,
+    /// Retrieve past error→fix pairs matching the query
+    Advise {
+        /// Query string (free text; matched against error codes, messages, diffs)
+        #[arg(required = true)]
+        query: Vec<String>,
+        /// Number of top results to print
+        #[arg(short = 'k', long, default_value_t = 3)]
+        top: usize,
+    },
+    /// Show stats about the local learning store
+    LearnStats,
     /// Compile ARCH to SystemVerilog
     Build {
         /// Input .arch file(s)
@@ -171,24 +186,100 @@ impl MultiSource {
 
 }
 
+/// Run a compiler-command body and record its success/failure into the
+/// local learning store. Respects `ARCH_NO_LEARN=1` opt-out.
+fn learn_wrap<F>(files: &[PathBuf], f: F) -> miette::Result<()>
+where
+    F: FnOnce() -> miette::Result<()>,
+{
+    let enabled = arch::learn::is_enabled();
+    if enabled {
+        let _ = arch::learn::maybe_print_first_run_notice();
+    }
+    let result = f();
+    if !enabled {
+        return result;
+    }
+    match &result {
+        Ok(()) => {
+            for file in files {
+                let path_str = file.display().to_string();
+                if let Ok(src) = fs::read_to_string(file) {
+                    if let Ok(Some(ev)) = arch::learn::record_success_if_pending(&path_str, &src) {
+                        eprintln!("📚 Learned: [{}] {}", ev.error_code, ev.diff_summary);
+                    }
+                }
+            }
+        }
+        Err(report) => {
+            let msg = format!("{:?}", report);
+            let code = arch::learn::classify_error(&msg);
+            for file in files {
+                let path_str = file.display().to_string();
+                if let Ok(src) = fs::read_to_string(file) {
+                    let _ = arch::learn::record_failure(&path_str, &code, &msg, &src);
+                }
+            }
+        }
+    }
+    result
+}
+
 fn main() -> miette::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
         Command::Check { files } => {
-            let all_files = resolve_use_imports(&files)?;
-            let ms = MultiSource::from_files(&all_files)?;
-            let _ = run_check_multi(&ms)?;
-            eprintln!("OK: no errors");
+            learn_wrap(&files, || {
+                let all_files = resolve_use_imports(&files)?;
+                let ms = MultiSource::from_files(&all_files)?;
+                run_check_multi(&ms)?;
+                eprintln!("OK: no errors");
+                Ok(())
+            })
+        }
+        Command::LearnIndex => {
+            let n = arch::learn::build_index().into_diagnostic()?;
+            eprintln!("Indexed {} events.", n);
+            Ok(())
+        }
+        Command::Advise { query, top } => {
+            let q = query.join(" ");
+            let matches = arch::learn::advise(&q, top).into_diagnostic()?;
+            if matches.is_empty() {
+                eprintln!("No matches.");
+                return Ok(());
+            }
+            for (i, m) in matches.iter().enumerate() {
+                println!("── match #{} (score {:.3}) ──────────────────────", i + 1, m.score);
+                println!("  code:    {}", m.event.error_code);
+                println!("  message: {}", m.event.error_message);
+                println!("  file:    {}", m.event.file_path);
+                println!("  diff:    {}", m.event.diff_summary);
+                println!();
+            }
+            Ok(())
+        }
+        Command::LearnStats => {
+            arch::learn::print_stats().into_diagnostic()?;
+            Ok(())
+        }
+        Command::LearnClear => {
+            arch::learn::clear_store().into_diagnostic()?;
+            eprintln!("Cleared ~/.arch/learn/");
             Ok(())
         }
         Command::Sim { arch_files, tb_files, outdir, check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave, debug, debug_depth, debug_fsm, pybind, test, pybind_module_name } => {
             let dbg_ports = debug || debug_fsm;  // any debug option implies port logging
             // --inputs-start-uninit and --check-uninit-ram both imply --check-uninit
             let check_uninit = check_uninit || inputs_start_uninit || check_uninit_ram;
-            run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, pybind, test.as_deref(), pybind_module_name.as_deref())
+            learn_wrap(&arch_files, || {
+                run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, pybind, test.as_deref(), pybind_module_name.as_deref())
+            })
         }
         Command::Build { files, o } => {
+            let files_for_learn = files.clone();
+            learn_wrap(&files_for_learn, move || {
             let all_files = resolve_use_imports(&files)?;
             let ms = MultiSource::from_files(&all_files)?;
             let (ast, symbols, overload_map) = run_check_multi(&ms)?;
@@ -264,23 +355,27 @@ fn main() -> miette::Result<()> {
             }
 
             Ok(())
+            })
         }
         Command::Formal { files, top, bound, solver, emit_smt, timeout } => {
-            let all_files = resolve_use_imports(&files)?;
-            let ms = MultiSource::from_files(&all_files)?;
-            let (ast, symbols, _overload_map) = run_check_multi(&ms)?;
+            let files_for_learn = files.clone();
+            learn_wrap(&files_for_learn, move || {
+                let all_files = resolve_use_imports(&files)?;
+                let ms = MultiSource::from_files(&all_files)?;
+                let (ast, symbols, _overload_map) = run_check_multi(&ms)?;
 
-            let args = formal::FormalArgs {
-                top: top.clone(),
-                bound,
-                solver: solver.clone(),
-                emit_smt: emit_smt.clone(),
-                timeout,
-            };
-            let report = formal::run(&ast, &symbols, &args).map_err(|err| {
-                ms.report_error(err)
-            })?;
-            std::process::exit(report.exit_code());
+                let args = formal::FormalArgs {
+                    top: top.clone(),
+                    bound,
+                    solver: solver.clone(),
+                    emit_smt: emit_smt.clone(),
+                    timeout,
+                };
+                let report = formal::run(&ast, &symbols, &args).map_err(|err| {
+                    ms.report_error(err)
+                })?;
+                std::process::exit(report.exit_code());
+            })
         }
     }
 }

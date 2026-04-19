@@ -5,6 +5,7 @@ pub mod diagnostics;
 pub mod elaborate;
 pub mod formal;
 pub mod interface;
+pub mod learn;
 pub mod lexer;
 pub mod parser;
 pub mod resolve;

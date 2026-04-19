@@ -2406,7 +2406,7 @@ impl<'a> Codegen<'a> {
         let base_ident = |ex: &Expr| -> Option<String> {
             if let ExprKind::Ident(n) = &ex.kind { Some(n.clone()) } else { None }
         };
-        let mut push = |predicate: String, tag: &str, sites: &mut Vec<(String, String)>,
+        let push = |predicate: String, tag: &str, sites: &mut Vec<(String, String)>,
                         seen: &mut std::collections::HashSet<String>| {
             if seen.insert(predicate.clone()) {
                 sites.push((predicate, tag.to_string()));
