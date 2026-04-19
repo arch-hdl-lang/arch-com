@@ -243,10 +243,23 @@ implementation bugs. Reference: same Sparsø & Furber, ch. 2,
 | Async / GALS bridge, low power per transfer | `req_ack_2phase` |
 | Read port of a combinational register file | `ready_only` |
 
-## Tier 1.5 — auto-guard on payload (DESIGN)
+## Tier 1.5 — auto-guard on payload (SHIPPED)
 
-*Status: design accepted; implementation pending. Bus-input `--check-uninit`
-tracking landed in #23 (2026-04-18), which was the prerequisite.*
+*Status: both PRs merged. Prerequisite (bus-input `--check-uninit` tracking)
+landed in #23; Option D producer-side runtime guard in #25; Option A
+consumer-side compile-time lint in #26.*
+
+**End-to-end handshake correctness coverage** as of v0.43.0:
+
+| Axis | Mechanism | Stage | PR |
+|---|---|---|---|
+| Port shape | Compile-time expansion into flat `PortDecl`s | `arch check` | #21 (Tier 1) |
+| Protocol wire-timing | Auto-emitted concurrent SVA | `arch build` → Verilator / EBMC | #21 (Tier 2) |
+| Producer payload bug | `--inputs-start-uninit` warning gated on valid/req | `arch sim` | #25 (Option D) |
+| Consumer payload bug | `arch check` lint for unguarded payload reads | `arch check` | #26 (Option A) |
+
+The rest of this section documents the design as it stood pre-merge; kept
+for historical context.
 
 Tier 1.5 splits into two logically independent detection paths. Each targets
 a different bug class and runs at a different stage. Shipping both covers the
