@@ -545,11 +545,12 @@ end module BadCounter
 fn test_generate_for() {
     let source = include_str!("../examples/generate_for.arch");
     let sv = compile_to_sv(source);
-    // After elaboration, generate_for 0..1 should expand to 2 ports each
-    assert!(sv.contains("req_0"), "expected req_0 port, got:\n{sv}");
-    assert!(sv.contains("req_1"), "expected req_1 port, got:\n{sv}");
-    assert!(sv.contains("gnt_0"), "expected gnt_0 port, got:\n{sv}");
-    assert!(sv.contains("gnt_1"), "expected gnt_1 port, got:\n{sv}");
+    // Ports are declared as Vec<Bool, N> at module scope — the SV boundary is
+    // a single packed vector per direction, not N separately-named scalars.
+    assert!(sv.contains("input logic [N-1:0] req"), "expected Vec req port, got:\n{sv}");
+    assert!(sv.contains("output logic [N-1:0] gnt"), "expected Vec gnt port, got:\n{sv}");
+    // generate_for unrolls the insts into gen_i blocks.
+    assert!(sv.contains("gen_i"), "expected gen_i block, got:\n{sv}");
     insta::assert_snapshot!(sv);
 }
 

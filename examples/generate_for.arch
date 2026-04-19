@@ -1,22 +1,36 @@
-// Test: generate_for loop expanding ports
-// `generate_for i in 0..1` creates two copies of req_i and gnt_i.
+// Test: generate_for + Vec-typed ports + inst.
+//
+// A Vec-typed port declared at module scope is indexed by the loop variable
+// on inst connections inside the generate_for body. This replaces the older
+// `port req_i:` form whose expansion produced ugly `_0 / _1 / ...` scalar
+// port names at the SV boundary. The Vec form scales cleanly to large N
+// and keeps the module's external interface a single indexed signal.
 
 domain SysDomain
   freq_mhz: 100
 end domain SysDomain
 
-module GenDemo
-  port clk: in Clock<SysDomain>;
-  port rst: in Reset<Sync>;
-
-  generate_for i in 0..1
-    port req_i: in Bool;
-    port gnt_i: out Bool;
-  end generate_for
+module PassThrough
+  port a: in  Bool;
+  port b: out Bool;
 
   comb
-    gnt_0 = req_0;
-    gnt_1 = req_1;
+    b = a;
   end comb
+end module PassThrough
+
+module GenDemo
+  param N: const = 2;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port req: in  Vec<Bool, N>;
+  port gnt: out Vec<Bool, N>;
+
+  generate_for i in 0..N-1
+    inst pt_i: PassThrough
+      a <- req[i];
+      b -> gnt[i];
+    end inst pt_i
+  end generate_for
 
 end module GenDemo
