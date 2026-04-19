@@ -51,12 +51,15 @@ enum Command {
     },
     /// Retrieve past error→fix pairs matching the query
     Advise {
-        /// Query string (free text; matched against error codes, messages, diffs)
-        #[arg(required = true)]
+        /// Query string (free text; matched against error codes, messages, diffs).
+        /// May be omitted when --from-stderr is set.
         query: Vec<String>,
         /// Number of top results to print
         #[arg(short = 'k', long, default_value_t = 3)]
         top: usize,
+        /// Read the query from stdin (e.g. `arch check foo.arch 2>&1 | arch advise --from-stderr`)
+        #[arg(long)]
+        from_stderr: bool,
     },
     /// Show stats about the local learning store
     LearnStats,
@@ -236,6 +239,20 @@ where
                     let _ = arch::learn::record_failure(&path_str, &code, &msg, &src);
                 }
             }
+            // Inline suggestion: if the local store has similar past fixes,
+            // tell the user. `peek` does not bump retrieval counters.
+            let query = format!("{} {}", code, msg);
+            if let Ok(hits) = arch::learn::peek(&query, 3) {
+                if !hits.is_empty() {
+                    let suggest = hits[0].event.error_code.clone();
+                    eprintln!(
+                        "💡 arch advise found {} similar past fix{} — run `arch advise \"{}\"` to see them.",
+                        hits.len(),
+                        if hits.len() == 1 { "" } else { "es" },
+                        suggest,
+                    );
+                }
+            }
         }
     }
     result
@@ -259,15 +276,29 @@ fn main() -> miette::Result<()> {
             eprintln!("Indexed {} events.", n);
             Ok(())
         }
-        Command::Advise { query, top } => {
-            let q = query.join(" ");
+        Command::Advise { query, top, from_stderr } => {
+            let mut q = query.join(" ");
+            if from_stderr {
+                use std::io::Read;
+                let mut buf = String::new();
+                std::io::stdin().read_to_string(&mut buf).into_diagnostic()?;
+                if !buf.trim().is_empty() {
+                    if !q.is_empty() { q.push(' '); }
+                    q.push_str(buf.trim());
+                }
+            }
+            if q.trim().is_empty() {
+                eprintln!("error: empty query (pass a query string or pipe via --from-stderr)");
+                std::process::exit(2);
+            }
             let matches = arch::learn::advise(&q, top).into_diagnostic()?;
             if matches.is_empty() {
                 eprintln!("No matches.");
                 return Ok(());
             }
             for (i, m) in matches.iter().enumerate() {
-                println!("── match #{} (score {:.3}) ──────────────────────", i + 1, m.score);
+                println!("── match #{} (score {:.3}, retrieved {}×) ──────────────────────",
+                         i + 1, m.score, m.retrieved_count);
                 println!("  code:    {}", m.event.error_code);
                 println!("  message: {}", m.event.error_message);
                 println!("  file:    {}", m.event.file_path);

@@ -127,12 +127,13 @@ Delivered in commits on branch `learn` (PR #17).
 
 JSONL is the source of truth; BM25 `index.json` is disposable and rebuilt on demand. No external embedding model, no network, no telemetry, single static compiler binary.
 
-### v1.1 — quality-of-life (partial)
+### v1.1 — quality-of-life (SHIPPED)
 
 - [SHIPPED] `arch learn-stats`, `arch learn-clear`, `arch learn-prune`
-- [TODO] `arch advise --from-stderr` — pipe the latest compiler error into advise without copying.
-- [TODO] Auto-suggestion hook: `arch check` prints "💡 `arch advise` found 2 similar past errors" when the store has relevant entries for the current failure.
-- [TODO] **Usage counters.** Add `retrieved_count` (bumped on every `advise` top-K hit) and `helped_count` (bumped when a compile-clean follows an advise within the same session). These become the downstream-utility signal for the data-coop ranker (see `plan_arch_data_coop.md`, §3.2). Step 1 (retrieved_count) is cheap; step 2 needs a per-session nonce written to pending state.
+- [SHIPPED] `arch advise --from-stderr` — reads the query from stdin, so `arch check ... 2>&1 | arch advise --from-stderr` works without copying.
+- [SHIPPED] Compile-failure hint: on every failed `arch check/build/sim/formal`, if the local store has similar past fixes, print `💡 arch advise found N similar past fixes — run 'arch advise "<code>"' to see them.` Uses a zero-side-effect `peek` that does not bump retrieval counts.
+- [SHIPPED] **`retrieved_count`** — each time `arch advise` returns an event in its top-K, that event's counter is incremented. Stored in `~/.arch/learn/retrieval_counts.json` keyed by a stable event id (fnv hash of `ts + error_code + diff_summary`), so `events.jsonl` stays append-only. Exposed in `advise` output as `retrieved N×`.
+- [TODO — deferred to v2 alongside richer capture] **`helped_count`** — bump when a compile-clean follows an advise within the same session. Needs per-session correlation (nonce written into pending state, cleared on successful pair). Harder because attribution is fuzzy; deferring until we have a story for v2 capture (idioms, prompts) so the tracking hooks land once.
 
 ### v2 — richer capture + semantic retrieval
 

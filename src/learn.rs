@@ -303,10 +303,86 @@ pub fn build_index() -> std::io::Result<usize> {
 pub struct Match {
     pub score: f64,
     pub event: Event,
+    pub retrieved_count: u32,
+}
+
+/// Stable, order-independent fingerprint for an event — used as the key in
+/// `retrieval_counts.json`. Hash ts + error_code + diff_summary so the id
+/// survives any future field additions without breaking existing counts.
+pub fn event_id(e: &Event) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for chunk in [e.ts.as_bytes(), e.error_code.as_bytes(), e.diff_summary.as_bytes()] {
+        for b in chunk {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h ^= b'|' as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{h:016x}")
+}
+
+fn counts_path() -> std::io::Result<PathBuf> {
+    Ok(learn_dir()?.join("retrieval_counts.json"))
+}
+
+fn load_counts() -> std::io::Result<std::collections::HashMap<String, u32>> {
+    let path = counts_path()?;
+    if !path.exists() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let raw = fs::read_to_string(&path)?;
+    let mut out = std::collections::HashMap::new();
+    // Tiny parser: `{"id":N,"id":N,...}`
+    let trimmed = raw.trim().trim_start_matches('{').trim_end_matches('}');
+    for entry in trimmed.split(',') {
+        let entry = entry.trim();
+        if entry.is_empty() { continue; }
+        if let Some((k, v)) = entry.split_once(':') {
+            let k = k.trim().trim_matches('"').to_string();
+            if let Ok(n) = v.trim().parse::<u32>() {
+                out.insert(k, n);
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn save_counts(counts: &std::collections::HashMap<String, u32>) -> std::io::Result<()> {
+    let path = counts_path()?;
+    let mut s = String::from("{");
+    let mut first = true;
+    for (k, v) in counts {
+        if !first { s.push(','); }
+        first = false;
+        s.push_str(&format!("\"{}\":{}", k, v));
+    }
+    s.push('}');
+    fs::write(&path, s)
+}
+
+fn bump_counts(ids: &[String]) -> std::io::Result<()> {
+    if ids.is_empty() { return Ok(()); }
+    let mut counts = load_counts()?;
+    for id in ids {
+        *counts.entry(id.clone()).or_insert(0) += 1;
+    }
+    save_counts(&counts)
+}
+
+/// Quick advise that does not bump retrieval counts — used by the inline
+/// compile-failure hint in `arch check` to avoid inflating counts on
+/// suggestions the user never actually looked at.
+pub fn peek(query: &str, k: usize) -> std::io::Result<Vec<Match>> {
+    advise_impl(query, k, false)
 }
 
 /// Load events, tokenize the query, score each event via BM25, return top-K.
 pub fn advise(query: &str, k: usize) -> std::io::Result<Vec<Match>> {
+    advise_impl(query, k, true)
+}
+
+fn advise_impl(query: &str, k: usize, bump: bool) -> std::io::Result<Vec<Match>> {
     let dir = learn_dir()?;
     let events_path = dir.join("events.jsonl");
     if !events_path.exists() {
@@ -356,7 +432,20 @@ pub fn advise(query: &str, k: usize) -> std::io::Result<Vec<Match>> {
     }
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(k);
-    Ok(scored.into_iter().map(|(s, e)| Match { score: s, event: e }).collect())
+
+    let counts = load_counts().unwrap_or_default();
+    let top: Vec<Match> = scored.into_iter().map(|(s, e)| {
+        let id = event_id(&e);
+        let c = *counts.get(&id).unwrap_or(&0);
+        Match { score: s, event: e, retrieved_count: c }
+    }).collect();
+
+    if bump {
+        let ids: Vec<String> = top.iter().map(|m| event_id(&m.event)).collect();
+        let _ = bump_counts(&ids);
+    }
+
+    Ok(top)
 }
 
 /// Print stored stats.
