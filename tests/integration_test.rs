@@ -1585,3 +1585,100 @@ end module LteExpr
         "expected assert `cnt <= 200` in SV, got:\n{sv}"
     );
 }
+
+#[test]
+fn test_handshake_valid_ready_expansion() {
+    // Tier 1: a bus with three valid_ready handshake channels should
+    // expand into flat valid/ready/payload ports with correct directions.
+    let source = "
+        bus BusLite
+          handshake aw: send kind: valid_ready
+            addr: UInt<32>;
+            prot: UInt<3>;
+          end handshake aw
+
+          handshake b: receive kind: valid_ready
+            resp: UInt<2>;
+          end handshake b
+        end bus BusLite
+
+        module Producer
+          port bus_p: initiator BusLite;
+          comb
+            bus_p.aw_valid = 1'b0;
+            bus_p.aw_addr  = 32'h0;
+            bus_p.aw_prot  = 3'h0;
+            bus_p.b_ready  = 1'b1;
+          end comb
+        end module Producer
+    ";
+    let sv = compile_to_sv(source);
+    // Send-side valid is OUTPUT, ready is INPUT.
+    assert!(sv.contains("output logic bus_p_aw_valid"), "aw_valid should be output on initiator");
+    assert!(sv.contains("input logic bus_p_aw_ready"), "aw_ready should be input on initiator");
+    assert!(sv.contains("output logic [31:0] bus_p_aw_addr"), "aw payload out");
+    // Receive-side b: valid becomes INPUT for the initiator.
+    assert!(sv.contains("input logic bus_p_b_valid"), "b_valid should be input on initiator");
+    assert!(sv.contains("output logic bus_p_b_ready"), "b_ready should be output on initiator");
+    assert!(sv.contains("input logic [1:0] bus_p_b_resp"), "b payload in");
+}
+
+#[test]
+fn test_handshake_target_flip() {
+    // When a handshake-using bus is attached at a `target` port, every
+    // signal (valid, ready, payload) must flip — same mechanism the bus
+    // perspective flip uses today.
+    let source = "
+        bus BusLite
+          handshake aw: send kind: valid_ready
+            addr: UInt<32>;
+          end handshake aw
+        end bus BusLite
+
+        module Consumer
+          port bus_c: target BusLite;
+          comb
+            bus_c.aw_ready = 1'b1;
+          end comb
+        end module Consumer
+    ";
+    let sv = compile_to_sv(source);
+    // Target flips: producer-side 'out' becomes 'in' at the consumer.
+    assert!(sv.contains("input logic bus_c_aw_valid"), "target flip: aw_valid becomes input");
+    assert!(sv.contains("output logic bus_c_aw_ready"), "target flip: aw_ready becomes output");
+    assert!(sv.contains("input logic [31:0] bus_c_aw_addr"), "target flip: payload becomes input");
+}
+
+#[test]
+fn test_handshake_all_variants_parse() {
+    // All six variants must parse + type-check and produce the expected
+    // control signals with correct directions.
+    let source = "
+        bus BusAll
+          handshake a: send kind: valid_ready  end handshake a
+          handshake b: send kind: valid_only   end handshake b
+          handshake c: send kind: ready_only   end handshake c
+          handshake d: send kind: valid_stall  end handshake d
+          handshake e: send kind: req_ack_4phase end handshake e
+          handshake f: send kind: req_ack_2phase end handshake f
+        end bus BusAll
+
+        module Top
+          port p: initiator BusAll;
+          comb
+            p.a_valid = 1'b0;
+            p.b_valid = 1'b0;
+            p.d_valid = 1'b0;
+            p.e_req   = 1'b0;
+            p.f_req   = 1'b0;
+          end comb
+        end module Top
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("output logic p_a_valid") && sv.contains("input logic p_a_ready"));
+    assert!(sv.contains("output logic p_b_valid") && !sv.contains("p_b_ready"));
+    assert!(sv.contains("input logic p_c_ready") && !sv.contains("p_c_valid"));
+    assert!(sv.contains("output logic p_d_valid") && sv.contains("input logic p_d_stall"));
+    assert!(sv.contains("output logic p_e_req") && sv.contains("input logic p_e_ack"));
+    assert!(sv.contains("output logic p_f_req") && sv.contains("input logic p_f_ack"));
+}
