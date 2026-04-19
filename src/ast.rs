@@ -62,6 +62,29 @@ pub struct BusDecl {
     pub params: Vec<ParamDecl>,
     pub signals: Vec<PortDecl>,  // direction = from initiator's perspective
     pub generates: Vec<BusGenerateIf>,  // conditional signal groups
+    /// Handshake sub-constructs declared in this bus. The synthesized
+    /// PortDecls already live in `signals` (or inside `generates`); this
+    /// list preserves the grouping so codegen can emit per-variant SVA
+    /// protocol assertions.
+    pub handshakes: Vec<HandshakeMeta>,
+    pub span: Span,
+}
+
+/// Metadata for one `handshake` channel inside a bus. Flattened PortDecls
+/// for the control and payload signals already live in BusDecl::signals
+/// (or inside a BusGenerateIf branch); this carries the grouping.
+#[derive(Debug, Clone)]
+pub struct HandshakeMeta {
+    /// Channel name (e.g. `aw`).
+    pub name: Ident,
+    /// Variant keyword (e.g. `valid_ready`, `req_ack_4phase`).
+    pub variant: Ident,
+    /// Role on the initiator side: `Out` = send, `In` = receive.
+    pub role_dir: Direction,
+    /// Field names of the payload (without the channel prefix). Used only
+    /// for documentation in generated SV comments — directions/types are
+    /// already materialized as PortDecls in BusDecl::signals.
+    pub payload_names: Vec<Ident>,
     pub span: Span,
 }
 

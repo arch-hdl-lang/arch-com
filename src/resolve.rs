@@ -122,6 +122,8 @@ pub struct BusInfo {
     pub params: Vec<ParamDecl>,
     pub signals: Vec<(String, Direction, TypeExpr)>,
     pub generates: Vec<BusGenerateIf>,
+    /// Handshake channels declared in this bus (Tier 2 SVA emission).
+    pub handshakes: Vec<crate::ast::HandshakeMeta>,
 }
 
 impl BusInfo {
@@ -449,6 +451,7 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                             .map(|s| (s.name.name.clone(), s.direction, s.ty.clone()))
                             .collect(),
                         generates: b.generates.clone(),
+                        handshakes: b.handshakes.clone(),
                     };
                     table.globals.insert(b.name.name.clone(), (Symbol::Bus(info), b.name.span));
                 }

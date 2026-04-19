@@ -138,11 +138,16 @@ impl Parser {
         let mut params = Vec::new();
         let mut signals = Vec::new();
         let mut generates = Vec::new();
+        let mut handshakes = Vec::new();
         while !self.check_end_keyword() {
             if self.check_param() {
                 params.push(self.parse_param_decl()?);
             } else if self.check(TokenKind::GenerateIf) {
                 generates.push(self.parse_bus_generate_if(start)?);
+            } else if self.check(TokenKind::Handshake) {
+                let (ports, meta) = self.parse_handshake_block(start)?;
+                signals.extend(ports);
+                handshakes.push(meta);
             } else {
                 signals.push(self.parse_bus_signal(start)?);
             }
@@ -163,6 +168,7 @@ impl Parser {
             params,
             signals,
             generates,
+            handshakes,
         })
     }
 
@@ -201,7 +207,12 @@ impl Parser {
         let mut then_signals = Vec::new();
         // Parse then-branch signals until end generate_if or generate_else
         while !self.check_bus_gen_end() {
-            then_signals.push(self.parse_bus_signal(parent_span)?);
+            if self.check(TokenKind::Handshake) {
+                let (ports, _meta) = self.parse_handshake_block(parent_span)?;
+                then_signals.extend(ports);
+            } else {
+                then_signals.push(self.parse_bus_signal(parent_span)?);
+            }
         }
         // Optional generate_else
         let else_signals = if self.check(TokenKind::GenerateElse) {
@@ -211,7 +222,12 @@ impl Parser {
                 && self.tokens[self.pos].kind == TokenKind::End
                 && self.tokens[self.pos + 1].kind == TokenKind::GenerateIf)
             {
-                sigs.push(self.parse_bus_signal(parent_span)?);
+                if self.check(TokenKind::Handshake) {
+                    let (ports, _meta) = self.parse_handshake_block(parent_span)?;
+                    sigs.extend(ports);
+                } else {
+                    sigs.push(self.parse_bus_signal(parent_span)?);
+                }
             }
             sigs
         } else {
@@ -233,6 +249,132 @@ impl Parser {
         self.pos + 1 < self.tokens.len()
             && self.tokens[self.pos].kind == TokenKind::End
             && self.tokens[self.pos + 1].kind == TokenKind::GenerateIf
+    }
+
+    /// Parse a `handshake` block inside a bus body and return the fully
+    /// expanded list of `PortDecl`s (control signals + payload signals).
+    ///
+    /// Grammar:
+    ///   'handshake' Ident ':' ('send'|'receive') 'kind' ':' VariantName
+    ///     (Ident ':' TypeExpr ';')*
+    ///   'end' 'handshake' Ident
+    ///
+    /// Variants: valid_ready, valid_only, ready_only, valid_stall,
+    /// req_ack_4phase, req_ack_2phase. See doc/plan_handshake_construct.md.
+    ///
+    /// `send`/`receive` name the payload-flow role (NOT wire direction):
+    /// `send` = this side produces the payload (drives valid/req/payload,
+    /// receives ready/ack); `receive` = consumer side.
+    fn parse_handshake_block(&mut self, parent_span: Span) -> Result<(Vec<PortDecl>, HandshakeMeta), CompileError> {
+        let start = self.expect(TokenKind::Handshake)?.span;
+        let ch_name = self.expect_ident()?;
+        self.expect(TokenKind::Colon)?;
+        let dir = if self.eat_contextual("send") {
+            Direction::Out
+        } else if self.eat_contextual("receive") {
+            Direction::In
+        } else {
+            return Err(CompileError::unexpected_token(
+                "send or receive",
+                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                self.peek_span(),
+            ));
+        };
+        self.expect(TokenKind::Kind)?;
+        self.expect(TokenKind::Colon)?;
+        let variant_ident = self.expect_ident()?;
+        let variant = variant_ident.name.as_str();
+        let known = matches!(
+            variant,
+            "valid_ready" | "valid_only" | "ready_only" | "valid_stall"
+              | "req_ack_4phase" | "req_ack_2phase"
+        );
+        if !known {
+            return Err(CompileError::unexpected_token(
+                "one of valid_ready, valid_only, ready_only, valid_stall, req_ack_4phase, req_ack_2phase",
+                &variant_ident.name,
+                variant_ident.span,
+            ));
+        }
+
+        // Parse payload fields until `end handshake`.
+        let mut payload: Vec<(Ident, TypeExpr, Span)> = Vec::new();
+        let mut payload_names: Vec<Ident> = Vec::new();
+        loop {
+            if self.check(TokenKind::End) {
+                break;
+            }
+            let f_name = self.expect_ident()?;
+            self.expect(TokenKind::Colon)?;
+            let ty = self.parse_type_expr()?;
+            self.expect(TokenKind::Semi)?;
+            let f_span_end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(parent_span);
+            let f_span = f_name.span.merge(f_span_end);
+            payload_names.push(f_name.clone());
+            payload.push((f_name, ty, f_span));
+        }
+        self.expect(TokenKind::End)?;
+        self.expect(TokenKind::Handshake)?;
+        let closing = self.expect_ident()?;
+        if closing.name != ch_name.name {
+            return Err(CompileError::mismatched_closing(
+                &ch_name.name,
+                &closing.name,
+                closing.span,
+            ));
+        }
+        let block_span = start.merge(closing.span);
+
+        // Synthesize flat PortDecls based on the variant. Directions are
+        // relative to the channel's declared direction: `out` = producer
+        // (this side drives valid/req and payload, receives ready/ack).
+        let opposite = match dir { Direction::In => Direction::Out, Direction::Out => Direction::In };
+        let mut out: Vec<PortDecl> = Vec::new();
+        let mk_port = |n: String, d: Direction, ty: TypeExpr, sp: Span| PortDecl {
+            name: Ident { name: n, span: sp },
+            direction: d,
+            ty,
+            default: None,
+            reg_info: None,
+            bus_info: None,
+            shared: None,
+            span: sp,
+        };
+        // Control signals (payload-direction = `dir`, back-signal = `opposite`).
+        match variant {
+            "valid_ready" => {
+                out.push(mk_port(format!("{}_valid", ch_name.name), dir, TypeExpr::Bool, block_span));
+                out.push(mk_port(format!("{}_ready", ch_name.name), opposite, TypeExpr::Bool, block_span));
+            }
+            "valid_only" => {
+                out.push(mk_port(format!("{}_valid", ch_name.name), dir, TypeExpr::Bool, block_span));
+            }
+            "ready_only" => {
+                out.push(mk_port(format!("{}_ready", ch_name.name), opposite, TypeExpr::Bool, block_span));
+            }
+            "valid_stall" => {
+                out.push(mk_port(format!("{}_valid", ch_name.name), dir, TypeExpr::Bool, block_span));
+                out.push(mk_port(format!("{}_stall", ch_name.name), opposite, TypeExpr::Bool, block_span));
+            }
+            "req_ack_4phase" | "req_ack_2phase" => {
+                out.push(mk_port(format!("{}_req", ch_name.name), dir, TypeExpr::Bool, block_span));
+                out.push(mk_port(format!("{}_ack", ch_name.name), opposite, TypeExpr::Bool, block_span));
+            }
+            _ => unreachable!(),
+        }
+        // Payload signals flow in the channel's declared direction.
+        for (f_name, ty, f_span) in payload {
+            let port_name = format!("{}_{}", ch_name.name, f_name.name);
+            out.push(mk_port(port_name, dir, ty, f_span));
+        }
+        let meta = HandshakeMeta {
+            name: ch_name,
+            variant: variant_ident,
+            role_dir: dir,
+            payload_names,
+            span: block_span,
+        };
+        Ok((out, meta))
     }
 
     // --- Enum ---

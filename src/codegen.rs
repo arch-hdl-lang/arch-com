@@ -672,6 +672,10 @@ impl<'a> Codegen<'a> {
         // _ARCH_BCHK so iverilog/Verilator/formal tools see the invariant.
         self.emit_bound_asserts(&m_clone);
 
+        // Emit per-variant handshake protocol SVA for each bus port whose
+        // bus definition contains one or more `handshake` channels.
+        self.emit_handshake_asserts(&m_clone);
+
         // Emit log file descriptors: initial $fopen / final $fclose
         let log_files = Self::collect_log_files(&m_clone.body);
         if !log_files.is_empty() {
@@ -2303,6 +2307,96 @@ impl<'a> Codegen<'a> {
                 "  else $fatal(1, \"{violation_kind} VIOLATION: {mod}.{label}\");",
                 mod = m.name.name
             ));
+        }
+        self.line("// synopsys translate_on");
+    }
+
+    /// Tier 2 of the handshake primitive: for every bus port on this module
+    /// whose bus definition declares `handshake` channels, emit per-variant
+    /// concurrent SVA protocol assertions, wrapped in `translate_off/on`.
+    ///
+    /// Labels follow `_auto_hs_<port>_<channel>_<rule>`, mirroring
+    /// `_auto_bound_*` / `_auto_div0_*` for consistency with formal tools
+    /// (EBMC, SymbiYosys) and simulator lint (`--assert`).
+    ///
+    /// The protocol rules are symmetric — they bind regardless of whether
+    /// this module is the sender (initiator) or receiver (target), so
+    /// perspective-flip on the bus port doesn't change which signals
+    /// participate in the property.
+    ///
+    /// Current coverage (v1): valid_ready → valid-stable-until-ready,
+    /// valid_stall → valid-stable-while-stalled, req_ack_4phase →
+    /// req-holds-until-ack. Other variants are parsed and their ports
+    /// expand correctly, but no auto-SVA is emitted for them yet
+    /// (valid_only has no back-signal; ready_only has no valid;
+    /// req_ack_2phase requires $past tracking that's deferred).
+    fn emit_handshake_asserts(&mut self, m: &ModuleDecl) {
+        // Gather (port_name, HandshakeMeta) for each bus-typed port whose
+        // bus declares one or more handshake channels.
+        let mut emissions: Vec<(String, crate::ast::HandshakeMeta)> = Vec::new();
+        for p in &m.ports {
+            let Some(ref bi) = p.bus_info else { continue; };
+            let Some((crate::resolve::Symbol::Bus(info), _)) =
+                self.symbols.globals.get(&bi.bus_name.name) else { continue; };
+            for hs in &info.handshakes {
+                emissions.push((p.name.name.clone(), hs.clone()));
+            }
+        }
+        if emissions.is_empty() { return; }
+
+        // Reuse the same clock/reset picking convention as emit_bound_asserts.
+        let clk = m.ports.iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            .map(|p| p.name.name.clone());
+        let Some(clk) = clk else { return; };
+        let rst_active = m.ports.iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Reset(_, _)))
+            .map(|p| match &p.ty {
+                TypeExpr::Reset(_, ResetLevel::Low) => format!("!{}", p.name.name),
+                _ => p.name.name.clone(),
+            });
+        let disable = rst_active.as_ref()
+            .map(|r| format!(" disable iff ({r})"))
+            .unwrap_or_default();
+
+        self.line("// synopsys translate_off");
+        self.line("// Auto-generated handshake protocol assertions (Tier 2)");
+        for (port_name, hs) in &emissions {
+            let ch = &hs.name.name;
+            let variant = hs.variant.name.as_str();
+            let sig = |s: &str| format!("{}_{}_{}", port_name, ch, s);
+            let mod_name = &m.name.name;
+            let emit_property = |cg: &mut Codegen, rule: &str, predicate: String, message: &str| {
+                let label = format!("_auto_hs_{}_{}_{}", port_name, ch, rule);
+                cg.line(&format!(
+                    "{label}: assert property (@(posedge {clk}){disable} {predicate})"
+                ));
+                cg.line(&format!(
+                    "  else $fatal(1, \"HANDSHAKE VIOLATION ({message}): {mod_name}.{label}\");"
+                ));
+            };
+            match variant {
+                "valid_ready" => {
+                    let v = sig("valid"); let r = sig("ready");
+                    emit_property(self, "valid_stable",
+                        format!("({v} && !{r}) |=> {v}"),
+                        "valid must stay asserted until ready");
+                }
+                "valid_stall" => {
+                    let v = sig("valid"); let s = sig("stall");
+                    emit_property(self, "valid_stable_while_stall",
+                        format!("({v} && {s}) |=> {v}"),
+                        "valid must not change while stalled");
+                }
+                "req_ack_4phase" => {
+                    let rq = sig("req"); let ak = sig("ack");
+                    emit_property(self, "req_holds_until_ack",
+                        format!("({rq} && !{ak}) |=> {rq}"),
+                        "req must stay asserted until ack");
+                }
+                // Variants with no Tier-2 v1 property are silently skipped.
+                _ => {}
+            }
         }
         self.line("// synopsys translate_on");
     }

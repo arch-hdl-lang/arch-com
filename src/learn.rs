@@ -11,7 +11,7 @@
 //! - No embeddings, no network, no sharing mechanism
 //!
 //! Data layout:
-//! ```
+//! ```text
 //! ~/.arch/learn/
 //!   ├── events.jsonl            append-only capture stream
 //!   ├── index.json              BM25 index built by `arch learn-index`

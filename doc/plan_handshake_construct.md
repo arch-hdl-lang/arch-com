@@ -37,7 +37,7 @@ bus BusAxi4
   param DATA_W: const = 32;
   param ID_W:   const = 1;
 
-  handshake aw: out kind: valid_ready
+  handshake aw: send kind: valid_ready
     addr: UInt<ADDR_W>;
     id:   UInt<ID_W>;
     len:  UInt<8>;
@@ -45,13 +45,13 @@ bus BusAxi4
     burst: UInt<2>;
   end handshake aw
 
-  handshake w: out kind: valid_ready
+  handshake w: send kind: valid_ready
     data: UInt<DATA_W>;
     strb: UInt<DATA_W/8>;
     last: Bool;
   end handshake w
 
-  handshake b: in kind: valid_ready
+  handshake b: receive kind: valid_ready
     id:   UInt<ID_W>;
     resp: UInt<2>;
   end handshake b
@@ -65,19 +65,21 @@ HandshakePort := 'handshake' Ident ':' Direction 'kind' ':' Variant NEWLINE
                   PayloadField* 
                 'end' 'handshake' Ident
 PayloadField  := Ident ':' TypeExpr ';'
-Direction     := 'in' | 'out'
+Direction     := 'send' | 'receive'
 Variant       := 'valid_ready' | 'valid_only' | 'ready_only'
                | 'valid_stall' | 'req_ack_4phase' | 'req_ack_2phase'
 ```
 
-`Direction` names the direction of the **payload flow**, not the individual
-control signals:
-- `out`: this side is the *producer* (drives valid / req, receives ready / ack)
-- `in`:  this side is the *consumer* (receives valid / req, drives ready / ack)
+`Direction` names the channel's **payload role**, NOT any individual
+wire's direction. Using role keywords (not `in`/`out`) avoids the
+ambiguity of naming a single wire direction in a construct that
+produces signals in both directions:
+- `send`:    this side is the *producer* (drives valid/req and payload, receives ready/ack)
+- `receive`: this side is the *consumer* (receives valid/req and payload, drives ready/ack)
 
-This is the one rule the user has to remember; all sub-port directions are
-derived by the compiler, eliminating the "I flipped valid and ready" bug
-class.
+This is the one rule the user has to remember; all individual wire
+directions are derived by the compiler, eliminating the "I flipped valid
+and ready" bug class.
 
 ## Variant catalog (Tier 1 — port expansion)
 
@@ -85,7 +87,7 @@ Given `handshake X: <dir> kind: <V>` with payload fields `f1, f2, …`, the
 following flat ports are synthesized. All appear with `X_` prefix at the
 SV level, matching today's `bus` flattening convention.
 
-| Variant | Producer side (`out`) | Consumer side (`in`) | Payload direction |
+| Variant | Producer side (`send`) | Consumer side (`receive`) | Payload direction |
 |---|---|---|---|
 | `valid_ready`   | `X_valid: out Bool; X_ready: in Bool;`  | `X_valid: in Bool; X_ready: out Bool;`  | same as channel dir |
 | `valid_only`    | `X_valid: out Bool;`                    | `X_valid: in Bool;`                      | same |
@@ -98,7 +100,7 @@ Payload fields emit as individual flat ports with the same direction as the
 handshake (`<X>_<field>: <dir> <type>;`). The `target` keyword on the bus
 port still flips everything — including valid/ready — as today.
 
-Example expansion of `handshake aw: out kind: valid_ready { addr: UInt<32>; id: UInt<1>; }`:
+Example expansion of `handshake aw: send kind: valid_ready { addr: UInt<32>; id: UInt<1>; }`:
 
 ```
 aw_valid: out Bool;
@@ -252,10 +254,10 @@ reg/port X_field: T guard X_valid;
 ```
 
 Effects:
-- **Consumer side** (`handshake X: in`): `--check-uninit` stays silent at the
+- **Consumer side** (`handshake X: receive`): `--check-uninit` stays silent at the
   use site when the consumer qualifies its reads with `if X_valid` (or
   conditions derived from it) — no manual `guard` annotation needed.
-- **Producer side** (`handshake X: out`): the compiler requires that every
+- **Producer side** (`handshake X: send`): the compiler requires that every
   payload field reg has *some* driver whose activity window covers the
   cycles where `X_valid` is asserted. If a producer asserts `X_valid` while
   a payload reg was never written in a path that reaches `X_valid=1`,
@@ -271,7 +273,19 @@ interpreted as "producer drives continuously, consumer decides when to
 consume." No auto-guard applies; `--check-uninit` behaves as if the user
 wrote no guard at all.
 
-## Tier 2 — auto-emitted protocol assertions
+## Tier 2 — auto-emitted protocol assertions (SHIPPED — initial set)
+
+**v1 coverage**:
+- `valid_ready`: `_auto_hs_<port>_<ch>_valid_stable` — once valid is asserted it stays asserted until ready is observed.
+- `valid_stall`: `_auto_hs_<port>_<ch>_valid_stable_while_stall` — valid must not change while stall is asserted.
+- `req_ack_4phase`: `_auto_hs_<port>_<ch>_req_holds_until_ack` — req stays asserted until ack is observed.
+- `valid_only`, `ready_only`, `req_ack_2phase`: parsed + ports expand correctly, but no Tier-2 assertion emitted yet (valid_only has no back-signal; ready_only has no valid; 2-phase req-toggle needs `$past` tracking — deferred).
+
+All properties are concurrent SVA wrapped in `synopsys translate_off/on`, using the module's first Clock port and `disable iff (<reset>)` on the first Reset port — same convention as `_auto_bound_*` / `_auto_div0_*`. Modules with no clock skip assertion emission (the ports still expand).
+
+Remaining work documented below for future extensions:
+
+
 
 When `arch build` emits SV, each handshake additionally emits a small
 block of concurrent SVA (inside `synopsys translate_off/on`, same
@@ -335,8 +349,8 @@ Each assertion inherits the module's reset polarity and clock, same as
 ## Open questions
 
 1. **Single-line shorthand?** Channels with zero payload (e.g. a pure
-   interrupt wire `handshake irq: out kind: valid_ready end`) look noisy.
-   Could allow `handshake irq: out kind: valid_ready;` (no body) as a
+   interrupt wire `handshake irq: send kind: valid_ready end`) look noisy.
+   Could allow `handshake irq: send kind: valid_ready;` (no body) as a
    one-liner when the payload is empty.
 2. **Payload sub-ports in SV output**: keep flattened (`aw_addr`, `aw_id`)
    to match the existing convention, or introduce optional `struct packed`
@@ -421,6 +435,6 @@ variant provides — e.g. a protocol that's like `valid_ready` but allows
 `valid` to deassert mid-transaction. The mitigation: all six variants
 are port-shape-only at Tier 1, so a user whose protocol doesn't fit can
 fall back to hand-rolled `bus` declarations with zero loss. Tier 2
-assertions are opt-out via a `no_assert` modifier (`handshake X: out
+assertions are opt-out via a `no_assert` modifier (`handshake X: send
 kind: valid_ready no_assert`) for when the user knows the protocol
 diverges from the canonical rules.
