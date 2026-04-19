@@ -1460,9 +1460,20 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
         }
         ExprKind::FieldAccess(base, field) => {
             // Struct field access: look up by "<base>.<field>" key the caller
-            // populated from the struct decl (so e.g. ctrl_r.mode resolves to
-            // the declared bit width, not the C++ storage width).
-            if let ExprKind::Ident(name) = &base.kind {
+            // populated from the struct decl. Covers two shapes:
+            //   - `ctrl_r.mode`             — base is Ident
+            //   - `ch_r[0].threshold`       — base is Index of Ident (Vec elem)
+            // Both resolve to the same struct-field width regardless of which
+            // element index is being accessed.
+            let base_name = match &base.kind {
+                ExprKind::Ident(name) => Some(name.as_str()),
+                ExprKind::Index(b, _) => match &b.kind {
+                    ExprKind::Ident(name) => Some(name.as_str()),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(name) = base_name {
                 let key = format!("{}.{}", name, field.name);
                 if let Some(&w) = ctx.widths.get(key.as_str()) {
                     return w;
@@ -2863,14 +2874,28 @@ impl<'a> SimCodegen<'a> {
             map
         };
         let mut struct_typed_names: Vec<(String, &str)> = Vec::new();
+        // Helper: peel `Vec<T, N>` once so a Vec-of-named-struct reg/port
+        // also contributes per-field widths (the body indexes into it as
+        // `<reg>[i].<field>`, and infer_expr_width's FieldAccess handler
+        // looks up `<reg>.<field>` for that case).
+        fn named_or_vec_named(ty: &TypeExpr) -> Option<&Ident> {
+            match ty {
+                TypeExpr::Named(n) => Some(n),
+                TypeExpr::Vec(inner, _) => match inner.as_ref() {
+                    TypeExpr::Named(n) => Some(n),
+                    _ => None,
+                },
+                _ => None,
+            }
+        }
         for p in &m.ports {
-            if let TypeExpr::Named(n) = &p.ty {
+            if let Some(n) = named_or_vec_named(&p.ty) {
                 struct_typed_names.push((p.name.name.clone(), n.name.as_str()));
             }
         }
         for item in &m.body {
             if let ModuleBodyItem::RegDecl(r) = item {
-                if let TypeExpr::Named(n) = &r.ty {
+                if let Some(n) = named_or_vec_named(&r.ty) {
                     struct_typed_names.push((r.name.name.clone(), n.name.as_str()));
                 }
             }
