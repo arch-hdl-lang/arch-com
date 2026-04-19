@@ -740,13 +740,20 @@ fn subst_inst(inst: &InstDecl, var: &str, val: i64) -> InstDecl {
                 value: subst_expr(pa.value.clone(), var, val),
             })
             .collect(),
+        // Connection signals may reference suffix-substituted names from the
+        // enclosing generate_for (e.g. `done -> done_i` becomes `done -> done_0`
+        // for i=0). `subst_expr` only rewrites bare loop-var idents; using the
+        // suffix-aware `subst_expr_names` matches how thread-stmt / seq-stmt
+        // substitution already handles this, and fixes a bug where inst
+        // outputs connecting to per-iteration output ports didn't propagate
+        // the drive through unroll.
         connections: inst
             .connections
             .iter()
             .map(|c| Connection {
                 port_name: subst_ident(&c.port_name, var, val),
                 direction: c.direction,
-                signal: subst_expr(c.signal.clone(), var, val),
+                signal: subst_expr_names(c.signal.clone(), var, val),
                 reset_override: c.reset_override,
                 span: c.span,
             })
