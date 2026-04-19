@@ -28,7 +28,23 @@ enum Command {
         /// Input .arch file(s)
         #[arg(required = true)]
         files: Vec<PathBuf>,
+        /// Record error→fix pairs into ~/.arch/learn/ for future `arch advise` retrieval.
+        #[arg(long)]
+        learn: bool,
     },
+    /// Rebuild the learning retrieval index over ~/.arch/learn/events.jsonl
+    LearnIndex,
+    /// Retrieve past error→fix pairs matching the query
+    Advise {
+        /// Query string (free text; matched against error codes, messages, diffs)
+        #[arg(required = true)]
+        query: Vec<String>,
+        /// Number of top results to print
+        #[arg(short = 'k', long, default_value_t = 3)]
+        top: usize,
+    },
+    /// Show stats about the local learning store
+    LearnStats,
     /// Compile ARCH to SystemVerilog
     Build {
         /// Input .arch file(s)
@@ -175,11 +191,77 @@ fn main() -> miette::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Check { files } => {
-            let all_files = resolve_use_imports(&files)?;
-            let ms = MultiSource::from_files(&all_files)?;
-            let _ = run_check_multi(&ms)?;
-            eprintln!("OK: no errors");
+        Command::Check { files, learn } => {
+            if learn {
+                let _ = arch::learn::maybe_print_first_run_notice();
+            }
+            let result = (|| -> miette::Result<()> {
+                let all_files = resolve_use_imports(&files)?;
+                let ms = MultiSource::from_files(&all_files)?;
+                run_check_multi(&ms)?;
+                Ok(())
+            })();
+            match result {
+                Ok(()) => {
+                    if learn {
+                        // Check each user-supplied file for a pending failure that
+                        // the current successful compile may have cleared.
+                        for f in &files {
+                            let path_str = f.display().to_string();
+                            if let Ok(src) = fs::read_to_string(f) {
+                                if let Ok(Some(ev)) = arch::learn::record_success_if_pending(&path_str, &src) {
+                                    eprintln!("📚 Learned: [{}] {}", ev.error_code, ev.diff_summary);
+                                }
+                            }
+                        }
+                    }
+                    eprintln!("OK: no errors");
+                    Ok(())
+                }
+                Err(report) => {
+                    if learn {
+                        // Best-effort: record a pending failure for each input
+                        // file so a subsequent successful check can pair them.
+                        // We don't have per-file error attribution here, so we
+                        // attach the rendered report to every input file. A
+                        // future refinement could locate the offending file.
+                        let msg = format!("{:?}", report);
+                        let code = arch::learn::classify_error(&msg);
+                        for f in &files {
+                            let path_str = f.display().to_string();
+                            if let Ok(src) = fs::read_to_string(f) {
+                                let _ = arch::learn::record_failure(&path_str, &code, &msg, &src);
+                            }
+                        }
+                    }
+                    Err(report)
+                }
+            }
+        }
+        Command::LearnIndex => {
+            let n = arch::learn::build_index().into_diagnostic()?;
+            eprintln!("Indexed {} events.", n);
+            Ok(())
+        }
+        Command::Advise { query, top } => {
+            let q = query.join(" ");
+            let matches = arch::learn::advise(&q, top).into_diagnostic()?;
+            if matches.is_empty() {
+                eprintln!("No matches.");
+                return Ok(());
+            }
+            for (i, m) in matches.iter().enumerate() {
+                println!("── match #{} (score {:.3}) ──────────────────────", i + 1, m.score);
+                println!("  code:    {}", m.event.error_code);
+                println!("  message: {}", m.event.error_message);
+                println!("  file:    {}", m.event.file_path);
+                println!("  diff:    {}", m.event.diff_summary);
+                println!();
+            }
+            Ok(())
+        }
+        Command::LearnStats => {
+            arch::learn::print_stats().into_diagnostic()?;
             Ok(())
         }
         Command::Sim { arch_files, tb_files, outdir, check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave, debug, debug_depth, debug_fsm, pybind, test, pybind_module_name } => {
