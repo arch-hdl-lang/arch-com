@@ -56,7 +56,44 @@ pub fn learn_dir() -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
-/// Print a one-time privacy notice the first time learning mode is enabled.
+/// Is learning capture enabled? Honors `ARCH_NO_LEARN=1` as an opt-out.
+pub fn is_enabled() -> bool {
+    match std::env::var("ARCH_NO_LEARN") {
+        Ok(v) => !(v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")),
+        Err(_) => true,
+    }
+}
+
+/// Maximum store size in bytes. Default 100 MB; override with
+/// `ARCH_LEARN_MAX_MB=<n>` (non-negative integer).
+pub fn max_bytes() -> u64 {
+    let mb = std::env::var("ARCH_LEARN_MAX_MB")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(100);
+    mb.saturating_mul(1024 * 1024)
+}
+
+fn store_size_bytes(dir: &std::path::Path) -> u64 {
+    fn walk(p: &std::path::Path) -> u64 {
+        let mut total = 0u64;
+        if let Ok(md) = fs::symlink_metadata(p) {
+            if md.file_type().is_dir() {
+                if let Ok(rd) = fs::read_dir(p) {
+                    for entry in rd.flatten() {
+                        total = total.saturating_add(walk(&entry.path()));
+                    }
+                }
+            } else if md.file_type().is_file() {
+                total = md.len();
+            }
+        }
+        total
+    }
+    walk(dir)
+}
+
+/// Print a one-time privacy notice the first time learning capture runs.
 pub fn maybe_print_first_run_notice() -> std::io::Result<()> {
     let dir = learn_dir()?;
     let marker = dir.join(".first_run_notice");
@@ -64,12 +101,61 @@ pub fn maybe_print_first_run_notice() -> std::io::Result<()> {
         return Ok(());
     }
     eprintln!();
-    eprintln!("📚 ARCH learning mode is ON for this invocation.");
+    eprintln!("📚 ARCH learning capture is ON (always-on; errors recorded locally).");
     eprintln!("   Data stored locally at: {}", dir.display());
     eprintln!("   Nothing is transmitted off-device.");
+    eprintln!("   Opt out: set ARCH_NO_LEARN=1.  Cap: ARCH_LEARN_MAX_MB (default 100).");
     eprintln!("   `arch advise <query>` retrieves similar past errors.");
     eprintln!();
     fs::write(&marker, "")?;
+    Ok(())
+}
+
+/// Check the store size. Warns at ≥90% of cap; returns `false` if at/over
+/// cap (caller should skip writes). Prints at most one warning per process.
+pub fn check_capacity() -> bool {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    let dir = match learn_dir() {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+    let size = store_size_bytes(&dir);
+    let cap = max_bytes();
+    if cap == 0 {
+        return false;
+    }
+    if size >= cap {
+        if !WARNED.swap(true, Ordering::Relaxed) {
+            eprintln!(
+                "⚠️  ARCH learn store is full ({} / {} MB). New events skipped. \
+                 Raise cap via ARCH_LEARN_MAX_MB or run `arch learn-clear`.",
+                size / (1024 * 1024),
+                cap / (1024 * 1024),
+            );
+        }
+        return false;
+    }
+    if size * 10 >= cap * 9 && !WARNED.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "⚠️  ARCH learn store is {}% full ({} / {} MB). \
+             Raise cap via ARCH_LEARN_MAX_MB or run `arch learn-clear`.",
+            (size * 100 / cap),
+            size / (1024 * 1024),
+            cap / (1024 * 1024),
+        );
+    }
+    true
+}
+
+/// Delete the entire local learning store.
+pub fn clear_store() -> std::io::Result<()> {
+    let home = std::env::var("HOME")
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::NotFound, "$HOME not set"))?;
+    let dir = PathBuf::from(home).join(".arch").join("learn");
+    if dir.exists() {
+        fs::remove_dir_all(&dir)?;
+    }
     Ok(())
 }
 
@@ -93,6 +179,9 @@ pub fn record_failure(
     error_message: &str,
     src: &str,
 ) -> std::io::Result<()> {
+    if !check_capacity() {
+        return Ok(());
+    }
     let dir = learn_dir()?;
     let pending_file = dir.join("pending").join(format!("{}.json", path_hash(file_path)));
     let ts = iso8601_now();
