@@ -4352,6 +4352,139 @@ Real schedulers rarely use a single integer key. Arch allows struct types as pri
   **Occupancy counter**      counter\<wrap\>                            Tracks current size; drives full/empty
   ----------------------------------------------------------------------------------------------------------------------------------------
 
+**18a. First-Class Sub-Construct: handshake (inside bus)**
+
+`handshake` collapses the valid/ready/payload vocabulary that dominates every on-chip interface — AXI/APB/AHB/Avalon, streaming pipelines, async GALS bridges — into one declaration per channel. It is a **compile-time sum type**: a single keyword names the *payload role*, a variant name selects the flow-control shape, and the compiler synthesizes the flat individual-wire port declarations with their directions derived mechanically. The user never flips individual wires by hand, so the dominant "I flipped valid and ready" bug class is eliminated by construction.
+
+`handshake` is only valid inside a `bus` body. To expose a single-channel handshake-shaped interface from a module, define a one-handshake bus and attach it as an ordinary bus port.
+
+**18a.1 Syntax**
+
+```
+bus BusAxiLite
+  param ADDR_W: const = 32;
+  param DATA_W: const = 32;
+
+  handshake aw: send kind: valid_ready
+    addr: UInt<ADDR_W>;
+    prot: UInt<3>;
+  end handshake aw
+
+  handshake w: send kind: valid_ready
+    data: UInt<DATA_W>;
+    strb: UInt<DATA_W/8>;
+  end handshake w
+
+  handshake b: receive kind: valid_ready
+    resp: UInt<2>;
+  end handshake b
+end bus BusAxiLite
+```
+
+Grammar:
+```
+HandshakeBlock := 'handshake' Ident ':' Role 'kind' ':' Variant NEWLINE
+                    (Ident ':' TypeExpr ';')*
+                  'end' 'handshake' Ident
+Role           := 'send' | 'receive'
+Variant        := 'valid_ready' | 'valid_only' | 'ready_only'
+                | 'valid_stall' | 'req_ack_4phase' | 'req_ack_2phase'
+```
+
+**Role keywords are `send` / `receive`, not `in` / `out`.** The keyword names the *payload role*; individual control signals flow in both directions regardless. `send` means "this side produces the payload (drives valid/req and payload, receives ready/ack)." Using wire-direction keywords here would force the reader to remember a disambiguation that doesn't exist for scalar port declarations.
+
+When the containing bus is attached as `target` at a module port, every control and payload signal flips — a `send` channel on the initiator becomes a `receive` channel on the target. No extra machinery; this uses the existing bus perspective flip.
+
+**18a.2 Variant Catalog**
+
+Each variant produces a different set of flattened ports. Below, `X_` prefix is the channel name and payload direction follows the role:
+
+  -----------------------------------------------------------------------------------------------
+  **Variant**          **Control signals (send side)**                  **Used for**
+  -------------------- ------------------------------------------------ -------------------------
+  `valid_ready`        `X_valid: out`, `X_ready: in`                    AMBA AXI/ACE; general
+                                                                        on-chip streaming with
+                                                                        bidirectional backpressure
+
+  `valid_only`         `X_valid: out`                                   Strobes, interrupts,
+                                                                        FIFO-fronted datapaths
+
+  `ready_only`         `X_ready: in`                                    Pull-model; combinational
+                                                                        register file read port
+
+  `valid_stall`        `X_valid: out`, `X_stall: in`                    Pipeline interlock where
+                                                                        "stall" is the natural
+                                                                        signal
+
+  `req_ack_4phase`     `X_req: out`, `X_ack: in`                        Async / GALS bridge;
+                                                                        return-to-zero handshake
+
+  `req_ack_2phase`     `X_req: out`, `X_ack: in`                        Async / GALS; low-
+                                                                        transition-count NRZ
+  -----------------------------------------------------------------------------------------------
+
+Payload fields emit as `X_<field>: <role-dir> <type>;` — same direction as the channel's payload flow.
+
+**18a.3 Timing Semantics**
+
+Per-variant cycle-grid reference (`H` = high, `.` = low, `^` = transfer on rising edge):
+
+```
+valid_ready — transfer when (valid && ready):
+  cycle:    0 1 2 3 4 5
+  valid:    . H H H H .
+  ready:    . . H . H .
+  payload:  X A A A A X
+  fire:         ^   ^
+
+valid_only — every cycle with valid=H is a transfer:
+  cycle:    0 1 2 3 4
+  valid:    . H . H .
+  payload:  X A X B X
+  fire:       ^   ^
+
+req_ack_4phase — one transfer per req/ack rise-fall round trip:
+  cycle:    0 1 2 3 4 5
+  req:      . H H H . .
+  ack:      . . H H . .
+  payload:  X A A A X X
+  fire:         ^
+```
+
+Canonical references: ARM IHI 0022 (AMBA AXI/ACE) for `valid_ready`; Sparsø & Furber, *Principles of Asynchronous Circuit Design* ch. 2 for the req/ack variants; Intel Avalon streaming simplified mode for `valid_only`.
+
+**18a.4 Auto-Emitted Protocol Assertions (Tier 2)**
+
+Every module that has a bus port whose bus contains one or more handshakes gets per-variant concurrent SVA assertions emitted at the bottom of the generated SV, wrapped in `synopsys translate_off/on`:
+
+  --------------------------------------------------------------------------------------------------
+  **Variant**          **Label**                                      **Property**
+  -------------------- ---------------------------------------------- ------------------------------
+  `valid_ready`        `_auto_hs_<port>_<ch>_valid_stable`            `(valid && !ready) \|=> valid`
+
+  `valid_stall`        `_auto_hs_<port>_<ch>_valid_stable_while_stall` `(valid && stall) \|=> valid`
+
+  `req_ack_4phase`     `_auto_hs_<port>_<ch>_req_holds_until_ack`     `(req && !ack) \|=> req`
+  --------------------------------------------------------------------------------------------------
+
+`valid_only`, `ready_only`, and `req_ack_2phase` parse + expand ports correctly but emit no Tier-2 assertion (no back-signal / no valid / stateful toggle guard deferred). Modules without a Clock port skip assertion emission.
+
+Verified end-to-end against Verilator 5.034 `--assert` (violating TB trips, clean TB silent) and EBMC 5.11 (unconstrained input → REFUTED; constrained wrapper → PROVED up to the chosen bound).
+
+**18a.5 Payload Correctness (Tier 1.5)**
+
+Two stages catch the two bug classes adjacent to protocol timing:
+
+- **Producer bug — valid asserted, payload never driven.** At `arch sim` with `--inputs-start-uninit`, every flattened bus input has an uninit shadow bit (#23). For handshake payload signals, the shadow-bit warning is gated on the channel's valid/req — so the legitimate "TB hasn't driven valid yet, payload doesn't matter" case stays silent while the real bug ("valid high, payload never `set_`'d") fires.
+
+- **Consumer bug — payload read without checking valid.** At `arch check`, a compile-time lint warns when any read of `<port>.<payload_field>` is not inside an `if <port>.<valid_field>` scope. The guard is recognized as a direct field access or as an AND-conjunct of the if-condition; let-binding indirection is not yet traced (known false-positive source). `ready_only` is exempt from the lint (no valid signal exists).
+
+**18a.6 Not Covered**
+
+- **Stateful protocols** (credit-based flow control, PCIe credit accounting). These are not variants of `handshake`; they belong in a future `credit_channel` construct (not yet designed) because they imply the compiler owns counter + credit-return logic, not just port shape.
+- **Handshake at the module port level directly.** Valid only inside a `bus` body. A single-channel interface is expressed by a one-handshake bus declaration plus an ordinary bus port.
+- **`req_ack_2phase` Tier-2 assertions** — requires `$past` tracking; deferred.
+
 **19. Compile-Time Generation: generate**
 
 The generate system allows any structural element of an Arch construct --- ports, instances, connections, registers, and assertions --- to be created by compile-time iteration or conditional evaluation. This is a fundamental capability that SystemVerilog generate lacks: in SystemVerilog, the port list of a module is always a fixed declaration; generate can add internal logic but cannot add or remove ports. In Arch, generate operates before elaboration, so generated ports are indistinguishable from hand-written ports from the perspective of the type system, safety checks, and callers.
