@@ -1883,7 +1883,6 @@ impl Parser {
         let mut items = Vec::new();
         while !self.check_end_generate_for() {
             match self.peek_kind() {
-                Some(TokenKind::Port) => items.push(GenItem::Port(self.parse_port_decl()?)),
                 Some(TokenKind::Inst) => items.push(GenItem::Inst(self.parse_inst()?)),
                 Some(TokenKind::Thread) => items.push(GenItem::Thread(self.parse_thread_block()?)),
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
@@ -1895,30 +1894,37 @@ impl Parser {
                 Some(TokenKind::Comb) => {
                     items.push(GenItem::Comb(self.parse_comb_block()?));
                 }
-                Some(TokenKind::Reg) | Some(TokenKind::Let) => {
-                    // Reject with a targeted hint — reg/let decls inside
-                    // generate_for would force per-iteration unrolling that
-                    // produces ugly suffix-mangled SV names, or (for reg)
-                    // implies multi-driver conflicts. The approved shape is
-                    // "declare Vec regs at module scope; index them by the
-                    // loop var in a seq/comb inside generate_for".
-                    let kw = match self.peek_kind() {
-                        Some(TokenKind::Reg) => "reg",
-                        _ => "let",
+                // Module-scope declarations (port / reg / let) are not allowed
+                // inside generate_for — the body is for per-iteration members
+                // (insts, seq / comb, threads, asserts). Declarations go at
+                // module scope; use Vec types for per-element access. This
+                // keeps the SV boundary from sprouting `_0 / _1 / ... / _N-1`
+                // scalar port names for what is naturally a single indexed
+                // signal.
+                Some(tok @ (TokenKind::Port | TokenKind::Reg | TokenKind::Let)) => {
+                    let (kw, hint) = match tok {
+                        TokenKind::Port => ("port",
+                            "Declare ports at module scope using Vec types for \
+                             per-iteration elements, e.g. `port done: out Vec<Bool, N>;` \
+                             outside, then `done -> done[i];` inside an inst here."),
+                        TokenKind::Reg => ("reg",
+                            "Declare Vec-typed regs at module scope and index them in a \
+                             seq / comb block here, e.g. `reg store: Vec<UInt<8>, N> ...;` \
+                             outside, then `store[i] <= ...;` inside generate_for."),
+                        _ => ("let",
+                            "Move the let binding to module scope; reference it freely \
+                             from seq / comb inside generate_for."),
                     };
                     return Err(CompileError::general(
                         &format!(
-                            "'{kw}' declarations are not allowed inside generate_for. \
-                             Declare Vec-typed regs at module scope and index them in a \
-                             seq/comb block here: e.g. `reg store: Vec<UInt<8>, {{N}}> ...;` \
-                             outside, then `store[i] <= ...;` inside generate_for."
+                            "'{kw}' declarations are not allowed inside generate_for. {hint}"
                         ),
                         self.peek_span(),
                     ));
                 }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "port, inst, thread, seq, comb, assert, or cover",
+                        "inst, thread, seq, comb, assert, or cover",
                         &other.to_string(),
                         self.peek_span(),
                     ));

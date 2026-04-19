@@ -5,16 +5,30 @@ expression: sv
 // domain SysDomain
 //   freq_mhz: 100
 
-module GenDemo (
-  input logic clk,
-  input logic rst,
-  input logic req_0,
-  output logic gnt_0,
-  input logic req_1,
-  output logic gnt_1
+module PassThrough (
+  input logic a,
+  output logic b
 );
 
-  assign gnt_0 = req_0;
-  assign gnt_1 = req_1;
+  assign b = a;
+
+endmodule
+
+module GenDemo #(
+  parameter int N = 2
+) (
+  input logic clk,
+  input logic rst,
+  input logic [N-1:0] req,
+  output logic [N-1:0] gnt
+);
+
+  genvar i;
+  for (i = 0; i <= N - 1; i = i + 1) begin : gen_i
+    PassThrough pt_i (
+      .a(req[i]),
+      .b(gnt[i])
+    );
+  end
 
 endmodule
