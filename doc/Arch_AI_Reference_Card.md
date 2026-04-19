@@ -799,6 +799,40 @@ end module Slave
 
 SV output: flattened to individual ports (`axi_aw_valid`, `axi_aw_addr`, etc.).
 
+### handshake (inside bus)
+
+Valid/ready/payload channels as a compile-time sum type. Six variants; compiler derives every individual wire direction from the role keyword.
+
+```
+bus BusAxiLite
+  handshake aw: send kind: valid_ready     // this side drives valid + payload, reads ready
+    addr: UInt<32>;
+    prot: UInt<3>;
+  end handshake aw
+
+  handshake b: receive kind: valid_ready   // flipped: reads valid + payload, drives ready
+    resp: UInt<2>;
+  end handshake b
+end bus BusAxiLite
+```
+
+**Role keywords**: `send` / `receive` (NOT `in`/`out`). Names payload role; all individual wire directions derived. `target` bus perspective flips everything — a `send` becomes a `receive` on the target.
+
+**Variants**:
+- `valid_ready` — full backpressure; AMBA AXI / general streaming
+- `valid_only` — fire-and-forget; strobes, interrupts
+- `ready_only` — pull model; rare
+- `valid_stall` — inverted backpressure; pipeline interlocks
+- `req_ack_4phase` — async return-to-zero handshake
+- `req_ack_2phase` — async NRZ handshake (Tier-2 SVA deferred)
+
+**Free correctness layers**:
+- **Tier 2 SVA**: `arch build` auto-emits protocol assertions (`_auto_hs_<port>_<ch>_<rule>`) for `valid_ready` / `valid_stall` / `req_ack_4phase`. Consumed by Verilator `--assert` and EBMC.
+- **Tier 1.5 producer bug**: `arch sim --inputs-start-uninit` warns only when valid is asserted and payload was never `set_`'d.
+- **Tier 1.5 consumer bug**: `arch check` warns when a payload is read outside `if <port>.<valid>` (or AND-conjunct of that).
+
+Full spec: `doc/ARCH_HDL_Specification.md` §18a.
+
 ---
 
 ### template
