@@ -33,6 +33,22 @@ enum Command {
     LearnIndex,
     /// Delete the entire local learning store at ~/.arch/learn/
     LearnClear,
+    /// Remove individual events from the learning store by filter.
+    /// Combine filters freely; an event is removed if ANY filter matches.
+    LearnPrune {
+        /// Remove events with this error_code (e.g. "parse_error", "other")
+        #[arg(long)]
+        code: Option<String>,
+        /// Remove events whose diff/message/file_path contains this substring
+        #[arg(long)]
+        contains: Option<String>,
+        /// Remove events older than this many days
+        #[arg(long)]
+        older_than_days: Option<u64>,
+        /// Report what would be removed without modifying the store
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Retrieve past error→fix pairs matching the query
     Advise {
         /// Query string (free text; matched against error codes, messages, diffs)
@@ -267,6 +283,24 @@ fn main() -> miette::Result<()> {
         Command::LearnClear => {
             arch::learn::clear_store().into_diagnostic()?;
             eprintln!("Cleared ~/.arch/learn/");
+            Ok(())
+        }
+        Command::LearnPrune { code, contains, older_than_days, dry_run } => {
+            if code.is_none() && contains.is_none() && older_than_days.is_none() {
+                eprintln!("error: specify at least one of --code / --contains / --older-than-days");
+                std::process::exit(2);
+            }
+            let (kept, removed) = arch::learn::prune(
+                code.as_deref(),
+                contains.as_deref(),
+                older_than_days,
+                dry_run,
+            ).into_diagnostic()?;
+            if dry_run {
+                eprintln!("Would remove {} events; {} would remain.", removed, kept);
+            } else {
+                eprintln!("Removed {} events; {} remain. Run `arch learn-index` to refresh the index.", removed, kept);
+            }
             Ok(())
         }
         Command::Sim { arch_files, tb_files, outdir, check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave, debug, debug_depth, debug_fsm, pybind, test, pybind_module_name } => {

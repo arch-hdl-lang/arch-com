@@ -391,6 +391,89 @@ pub fn print_stats() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Prune events from the store. Returns (kept, removed).
+/// An event is removed if it matches *any* of the filters:
+/// - `code == Some(c)`: event's error_code equals `c`
+/// - `substr == Some(s)`: `s` appears in diff_summary, error_message, or file_path
+/// - `older_than_days == Some(d)`: event timestamp is older than `d` days ago
+/// If `dry_run` is true, nothing is written; just counts.
+pub fn prune(
+    code: Option<&str>,
+    substr: Option<&str>,
+    older_than_days: Option<u64>,
+    dry_run: bool,
+) -> std::io::Result<(usize, usize)> {
+    let dir = learn_dir()?;
+    let events_path = dir.join("events.jsonl");
+    if !events_path.exists() {
+        return Ok((0, 0));
+    }
+    let raw = fs::read_to_string(&events_path)?;
+    let cutoff_ts: Option<String> = older_than_days.map(|d| {
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|x| x.as_secs())
+            .unwrap_or(0);
+        let cutoff = now_secs.saturating_sub(d * 86400);
+        let (y, mo, da, hh, mm, ss) = epoch_to_utc(cutoff);
+        format!("{y:04}-{mo:02}-{da:02}T{hh:02}:{mm:02}:{ss:02}Z")
+    });
+
+    let mut kept_lines: Vec<String> = Vec::new();
+    let mut removed = 0usize;
+    for line in raw.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let ev = match json_to_event(line) {
+            Some(e) => e,
+            None => {
+                kept_lines.push(line.to_string());
+                continue;
+            }
+        };
+        let mut drop = false;
+        if let Some(c) = code {
+            if ev.error_code == c {
+                drop = true;
+            }
+        }
+        if !drop {
+            if let Some(s) = substr {
+                if ev.diff_summary.contains(s)
+                    || ev.error_message.contains(s)
+                    || ev.file_path.contains(s)
+                {
+                    drop = true;
+                }
+            }
+        }
+        if !drop {
+            if let Some(cutoff) = &cutoff_ts {
+                if ev.ts.as_str() < cutoff.as_str() {
+                    drop = true;
+                }
+            }
+        }
+        if drop {
+            removed += 1;
+        } else {
+            kept_lines.push(line.to_string());
+        }
+    }
+    let kept = kept_lines.len();
+    if !dry_run && removed > 0 {
+        let mut out = kept_lines.join("\n");
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        fs::write(&events_path, out)?;
+        // Index is now stale; remove so `advise` rebuilds / warns.
+        let _ = fs::remove_file(dir.join("index.json"));
+    }
+    Ok((kept, removed))
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────
 
 fn iso8601_now() -> String {

@@ -219,6 +219,31 @@ def arch_learn_index() -> str:
 
 
 @mcp.tool()
+def arch_learn_prune(
+    code: str | None = None,
+    contains: str | None = None,
+    older_than_days: int | None = None,
+    dry_run: bool = True,
+) -> str:
+    """Remove events from the local learning store. At least one filter is
+    required. An event is removed if ANY filter matches.
+
+    - code: exact error_code (e.g. "parse_error", "other", "width_mismatch")
+    - contains: substring match against diff, message, or file path
+    - older_than_days: remove entries older than N days
+
+    Defaults to dry_run=True — always preview before deleting. Pass
+    dry_run=False to actually prune.
+    """
+    cmd = [ARCH_BIN, "learn-prune"]
+    if code: cmd += ["--code", code]
+    if contains: cmd += ["--contains", contains]
+    if older_than_days is not None: cmd += ["--older-than-days", str(older_than_days)]
+    if dry_run: cmd += ["--dry-run"]
+    return _run(cmd)
+
+
+@mcp.tool()
 def arch_learn_stats() -> str:
     """Summarize the local learning store: total events and counts by
     error_code. Useful to see what kinds of mistakes the user has been
