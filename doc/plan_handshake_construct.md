@@ -243,7 +243,123 @@ implementation bugs. Reference: same Sparsø & Furber, ch. 2,
 | Async / GALS bridge, low power per transfer | `req_ack_2phase` |
 | Read port of a combinational register file | `ready_only` |
 
-## Tier 1.5 — auto-guard on payload
+## Tier 1.5 — auto-guard on payload (DESIGN)
+
+*Status: design accepted; implementation pending. Bus-input `--check-uninit`
+tracking landed in #23 (2026-04-18), which was the prerequisite.*
+
+Tier 1.5 splits into two logically independent detection paths. Each targets
+a different bug class and runs at a different stage. Shipping both covers the
+full "handshake payload correctness" story without silencing legitimate
+patterns.
+
+### Bug classes to catch
+
+1. **Producer bug — "valid asserted, payload never driven"**
+   The producer module or its testbench sets `X_valid` (or `X_req`) high on
+   cycle N without ever writing the payload reg that feeds `X_data`. At
+   simulation time, the consumer reads garbage. In 4-state simulators this
+   shows up as X-propagation; in ARCH's 2-state sim today it's silent.
+
+2. **Consumer bug — "payload read without checking valid"**
+   The consumer module reads `port.X_data` unconditionally — or in a branch
+   whose condition isn't derived from `port.X_valid`. Even when the producer
+   behaves perfectly, the consumer's logic now depends on stale/undefined
+   payload contents during cycles when valid is low. This is the contract
+   violation Tier 2 SVA cannot catch (it's a consumer-side semantic bug,
+   not a protocol-level wire-timing bug).
+
+### Detection options considered
+
+| Option | Class caught | Where it runs | Cost | False-positive risk |
+|---|---|---|---|---|
+| **A. Compile-time lint** on payload reads outside an `if <port>.<valid>` scope | Consumer | `arch check` | Small — AST walk | Low — miss only when guard is carried through a wire (`let g = b.valid; if g ...`) |
+| **B. Runtime shadow bit** "valid has been high since reset"; warn on payload read while bit is false | Consumer | `arch sim` (stateful) | Medium — per-handshake counter + read-site instrumentation | Medium — false positive when consumer reads unconditionally then gates downstream (legal but flagged) |
+| **C. Formal SVA** "consumer's state change depending on payload implies valid was high at the source cycle" | Consumer | `arch formal` / EBMC | High — property hard to formulate generically | High — easy to write a property that's either trivially true or trivially false |
+| **D. Guarded `--check-uninit` warning** (reuse existing machinery): uninit warning on payload input fires only when the channel's valid is asserted | **Producer** | `arch sim --inputs-start-uninit` | Small — reuses #23 shadow-bit infra | Very low — only silences the exact "valid low so payload doesn't matter" case |
+
+### Decision
+
+- **Ship D first (producer-side, runtime).** Smallest diff, zero risk, directly
+  reuses the machinery from #23. Catches the producer-bug class when TB is
+  driving the inputs. Implementation: for every bus-flattened In signal that
+  belongs to a handshake payload, gate the existing warning emission on the
+  channel's valid signal — warn only when `valid && !_vinit`. Silences the
+  legitimate case (TB didn't drive payload but also isn't asserting valid)
+  without weakening the producer-bug detection.
+
+- **Ship A next (consumer-side, compile-time).** Catches the consumer-bug
+  class at `arch check` time with zero runtime overhead. Simple AST walk:
+  for each comb/seq block inside a module with a handshake-using bus port,
+  flag any read of `<port>.<payload_field>` whose enclosing conditional
+  context does not include `<port>.<valid_field>` (directly, or via a
+  single-let indirection). Emits a warning, not an error — a user who
+  reads payload unconditionally and gates downstream can suppress via
+  an explicit comment or we extend to track let-bindings.
+
+- **Skip B.** Its false-positive profile is worse than A's false-negative
+  profile. A covers the same bug class earlier (compile-time) and more
+  precisely. B would only earn its keep if A's tracking-through-lets became
+  unmaintainable, which is unlikely at this scale.
+
+- **Skip C.** Too expensive to design a generic property; Tier 2 already
+  covers the protocol-level wire-timing properties formally; payload-use
+  correctness is structural, not temporal, and belongs in the compile-time
+  lint.
+
+### Variants covered
+
+D (runtime guard on uninit warning):
+- `valid_ready`, `valid_only`, `valid_stall` → guard on `<port>_<ch>_valid`
+- `req_ack_4phase` → guard on `<port>_<ch>_req`
+- `ready_only` → no guard (no valid/req signal); warning fires unconditionally
+- `req_ack_2phase` → skipped; stateful toggle guard (`req ^ req_d`) deferred
+
+A (compile-time lint):
+- All variants that have a valid/req signal use it as the expected guard.
+- `ready_only` is semantically "producer drives continuously" — reads are
+  always legitimate, lint skips the variant.
+- `req_ack_2phase` skipped for the same stateful-guard reason.
+
+### Implementation roadmap
+
+**PR #1 — Option D (producer-side runtime guard)**
+1. In `sim_codegen.rs`, when emitting the --check-uninit warning for a
+   flattened bus input signal, look up whether the signal is part of a
+   handshake payload via the bus's `HandshakeMeta` list.
+2. If so, and the variant has a valid/req signal, wrap the warning
+   condition: `(!_{name}_vinit && {port}_{ch}_valid && !_w_{name})`.
+3. Tests: bad TB that asserts valid without setting payload → warns;
+   bad TB that leaves valid low and never sets payload → silent (no
+   spurious warning).
+
+**PR #2 — Option A (consumer-side compile-time lint)**
+1. New pass in `typecheck.rs` or a sibling lint module: walks comb/seq
+   bodies in every module that has bus ports with handshake channels.
+2. For each read of `<port>.<payload_field>`, check the enclosing
+   conditional chain for a condition that is (a) `<port>.<valid>`
+   directly, (b) a negation of `!<port>.<valid>`, or (c) a reference
+   to a `let` binding whose RHS is `<port>.<valid>`.
+3. If no guard is in scope, emit a warning (not an error — users can
+   always intentionally read unconditionally).
+4. Tests: unguarded read → warn; `if port.valid` guard → silent;
+   let-indirection guard → silent; unrelated branch → warn.
+
+### Out of scope (both PRs)
+
+- Producer-side compile-time check of "reg feeding payload port has a
+  written-value reaching valid=1". Requires tracing comb/let chains
+  from port back to reg; genuinely harder. Tier 2 SVA + EBMC already
+  catch this class formally.
+- `req_ack_2phase` guard semantics. The guard is `req ^ req_d`, which
+  is a one-cycle-history expression. Doable but deferred.
+- Auto-fix suggestions in the consumer-side lint. The lint message
+  will include a pointer at the channel name; users manually add the
+  `if` guard.
+
+---
+
+## Tier 1.5 — auto-guard on payload (original sketch)
 
 Because the compiler now *owns* the knowledge that `X_valid` (or `X_req`)
 gates `X_<field>`, every payload port receives an **implicit `guard`
