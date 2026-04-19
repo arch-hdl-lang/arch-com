@@ -1768,3 +1768,60 @@ fn test_handshake_tier2_no_clock_no_assertions() {
     assert!(sv.contains("output logic bus_p_aw_valid"));
     assert!(!sv.contains("_auto_hs_"));
 }
+
+#[test]
+fn test_use_bus_does_not_emit_sv_import() {
+    // Regression: `use BusName;` referencing a bus (not a package) must
+    // NOT emit `import BusName::*;` in the generated SV. Bus ports are
+    // fully flattened at the port boundary, and no SV package is
+    // synthesized — emitting the import breaks Verilator/iverilog.
+    let source = "
+        bus BusS
+          handshake ch: send kind: valid_ready
+            data: UInt<8>;
+          end handshake ch
+        end bus BusS
+
+        use BusS;
+
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port p: initiator BusS;
+          comb
+            p.ch_valid = 1'b0;
+            p.ch_data  = 8'h0;
+          end comb
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    assert!(!sv.contains("import BusS"),
+            "spurious SV import emitted for a bus-typed use:\n{sv}");
+}
+
+#[test]
+fn test_use_package_still_emits_sv_import() {
+    // The positive case: `use Foo;` of an actual `package Foo ... end`
+    // still emits `import Foo::*;` because package contents become an
+    // SV package whose typedefs need importing.
+    let source = "
+        package PkgA
+          enum Op
+            ADD,
+            SUB,
+          end enum Op
+        end package PkgA
+
+        use PkgA;
+
+        module M
+          port o: out Op;
+          comb
+            o = Op::ADD;
+          end comb
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("import PkgA::*;"),
+            "expected SV import for a package-typed use:\n{sv}");
+}

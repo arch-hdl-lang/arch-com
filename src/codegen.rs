@@ -427,10 +427,20 @@ impl<'a> Codegen<'a> {
 
     fn emit_module(&mut self, m: &ModuleDecl) {
         self.current_construct = m.name.name.clone();
-        // Emit import statements for any packages referenced via `use` before the module
+        // Emit SV `import NAME::*;` only for `use NAME;` whose target is an
+        // actual `package` — package contents become an SV package and need
+        // the import for typedef/enum/struct visibility. Other `use` targets
+        // (bus, module, fsm, ...) are pure compile-time references that the
+        // ARCH compiler resolves before codegen; emitting `import` for them
+        // breaks Verilator/iverilog since no corresponding SV package exists.
         for item in &self.source.items {
             if let Item::Use(u) = item {
-                self.out.push_str(&format!("import {}::*;\n", u.name.name));
+                let is_package = self.source.items.iter().any(|i| {
+                    matches!(i, Item::Package(p) if p.name.name == u.name.name)
+                });
+                if is_package {
+                    self.out.push_str(&format!("import {}::*;\n", u.name.name));
+                }
             }
         }
 
