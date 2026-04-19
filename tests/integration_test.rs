@@ -1825,3 +1825,105 @@ fn test_use_package_still_emits_sv_import() {
     assert!(sv.contains("import PkgA::*;"),
             "expected SV import for a package-typed use:\n{sv}");
 }
+
+fn compile_to_sim_h(source: &str, inputs_start_uninit: bool) -> String {
+    use arch::sim_codegen::SimCodegen;
+    let tokens = arch::lexer::tokenize(source).expect("lexer error");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve error");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let (_warnings, overload_map) = checker.check().expect("type check error");
+    let sim = SimCodegen::new(&symbols, &ast, overload_map)
+        .check_uninit(inputs_start_uninit)
+        .inputs_start_uninit(inputs_start_uninit);
+    let models = sim.generate();
+    // Concatenate all model headers — tests can grep across them.
+    models.iter().map(|m| m.header.clone()).collect::<Vec<_>>().join("\n// ---\n")
+}
+
+#[test]
+fn test_inputs_start_uninit_bus_flattened() {
+    // --inputs-start-uninit should now emit shadow vinit bits and setters
+    // for each flattened INPUT signal of a bus-typed port.
+    let source = "
+        bus BusSimple
+          data:  in UInt<8>;
+          valid: in Bool;
+        end bus BusSimple
+
+        use BusSimple;
+
+        module Reader
+          port b:     initiator BusSimple;
+          port out_r: out UInt<8>;
+          comb
+            if b.valid
+              out_r = b.data;
+            else
+              out_r = 8'h0;
+            end if
+          end comb
+        end module Reader
+    ";
+    let h = compile_to_sim_h(source, true);
+    assert!(h.contains("bool _b_data_vinit = false;"),
+            "expected shadow bit for flattened bus input 'b_data':\n{h}");
+    assert!(h.contains("bool _b_valid_vinit = false;"),
+            "expected shadow bit for flattened bus input 'b_valid':\n{h}");
+    assert!(h.contains("void set_b_data("),
+            "expected setter for flattened bus input 'b_data':\n{h}");
+    assert!(h.contains("void set_b_valid("),
+            "expected setter for flattened bus input 'b_valid':\n{h}");
+}
+
+#[test]
+fn test_inputs_start_uninit_bus_skips_output_direction() {
+    // Target perspective flips direction: 'in' signals on the bus
+    // become 'out' from the module's side — those MUST NOT get
+    // uninit tracking (they're driven by this module).
+    let source = "
+        bus BusSimple
+          data:  in UInt<8>;
+          valid: in Bool;
+        end bus BusSimple
+
+        use BusSimple;
+
+        module Driver
+          port b: target BusSimple;
+          comb
+            b.data  = 8'hAA;
+            b.valid = 1'b1;
+          end comb
+        end module Driver
+    ";
+    let h = compile_to_sim_h(source, true);
+    assert!(!h.contains("_b_data_vinit"),
+            "did not expect vinit for output-side bus signal 'b_data':\n{h}");
+    assert!(!h.contains("set_b_data("),
+            "did not expect setter for output-side bus signal 'b_data':\n{h}");
+}
+
+#[test]
+fn test_inputs_start_uninit_without_flag_emits_nothing() {
+    let source = "
+        bus BusSimple
+          data: in UInt<8>;
+        end bus BusSimple
+
+        use BusSimple;
+
+        module Reader
+          port b:     initiator BusSimple;
+          port out_r: out UInt<8>;
+          comb
+            out_r = b.data;
+          end comb
+        end module Reader
+    ";
+    let h = compile_to_sim_h(source, false);
+    assert!(!h.contains("_b_data_vinit"),
+            "no --inputs-start-uninit → no bus vinit tracking:\n{h}");
+}

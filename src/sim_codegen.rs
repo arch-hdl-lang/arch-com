@@ -2447,7 +2447,19 @@ fn collect_expr_idents(expr: &Expr, out: &mut std::collections::BTreeSet<String>
             collect_expr_idents(start, out);
             collect_expr_idents(width, out);
         }
-        ExprKind::FieldAccess(base, _) => collect_expr_idents(base, out),
+        ExprKind::FieldAccess(base, field) => {
+            collect_expr_idents(base, out);
+            // For bus-style access `port.signal`, the emitted C++ reads
+            // the flat name `port_signal` (matching SV bus flattening).
+            // Emit that flat name as a candidate so --check-uninit and any
+            // other name-indexed downstream analysis catches bus-port reads.
+            // Non-bus field access (e.g. struct.field) is also a valid
+            // candidate here; the downstream filter (e.g. uninit_inputs
+            // membership) decides whether the name warrants action.
+            if let ExprKind::Ident(b) = &base.kind {
+                out.insert(format!("{}_{}", b, field.name));
+            }
+        }
         ExprKind::MethodCall(base, _, args) => {
             collect_expr_idents(base, out);
             for a in args { collect_expr_idents(a, out); }
@@ -3001,17 +3013,50 @@ impl<'a> SimCodegen<'a> {
         // --inputs-start-uninit: treat every primary input port as uninitialized.
         // TB must call the generated `set_<port>()` setter to mark an input initialized.
         // Reads of uninit inputs anywhere in the design emit a warning.
-        // v1 scope: scalar non-clock/reset/bus inputs only.
-        let uninit_inputs: HashSet<String> = if self.inputs_start_uninit {
-            m.ports.iter()
-                .filter(|p| matches!(p.direction, Direction::In))
-                .filter(|p| p.bus_info.is_none())
-                .filter(|p| !matches!(&p.ty, TypeExpr::Clock(_) | TypeExpr::Reset(_, _)))
-                .map(|p| p.name.name.clone())
-                .collect()
-        } else {
-            HashSet::new()
-        };
+        // v2 scope: scalar non-clock/reset inputs PLUS bus-flattened In signals
+        // (per-signal perspective flip respected; Clock/Reset sub-signals skipped).
+        let mut uninit_inputs: HashSet<String> = HashSet::new();
+        if self.inputs_start_uninit {
+            for p in m.ports.iter() {
+                // Scalar non-bus input ports.
+                if p.bus_info.is_none() {
+                    if matches!(p.direction, Direction::In)
+                        && !matches!(&p.ty, TypeExpr::Clock(_) | TypeExpr::Reset(_, _))
+                    {
+                        uninit_inputs.insert(p.name.name.clone());
+                    }
+                    continue;
+                }
+                // Bus-typed port: expand flattened signals via the symbol table,
+                // apply per-signal perspective flip, track the ones that are
+                // inputs from THIS module's side.
+                let Some(ref bi) = p.bus_info else { continue; };
+                let Some(crate::resolve::Symbol::Bus(info)) =
+                    self.symbols.globals.get(&bi.bus_name.name).map(|(s, _)| s)
+                    else { continue; };
+                // Build param map: bus defaults, overridden by port-site params.
+                let mut param_map: std::collections::HashMap<String, &Expr> =
+                    info.params.iter()
+                        .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
+                        .collect();
+                for pa in &bi.params {
+                    param_map.insert(pa.name.name.clone(), &pa.value);
+                }
+                for (sname, sdir, sty) in info.effective_signals(&param_map) {
+                    // Apply perspective flip (target flips every signal).
+                    let actual_dir = match bi.perspective {
+                        crate::ast::BusPerspective::Initiator => sdir,
+                        crate::ast::BusPerspective::Target => sdir.flip(),
+                    };
+                    if !matches!(actual_dir, Direction::In) { continue; }
+                    // Clock/Reset sub-signals follow the scalar-path exclusion.
+                    if matches!(&sty, TypeExpr::Clock(_) | TypeExpr::Reset(_, _)) {
+                        continue;
+                    }
+                    uninit_inputs.insert(format!("{}_{}", p.name.name, sname));
+                }
+            }
+        }
         // Fold inputs into the shared uninit_regs set so existing warning plumbing
         // (shadow-bit decl + read-site warning) picks them up uniformly.
         uninit_regs.extend(uninit_inputs.iter().cloned());
@@ -3409,12 +3454,44 @@ impl<'a> SimCodegen<'a> {
         if !uninit_inputs.is_empty() {
             h.push_str("  // --inputs-start-uninit setters (mark TB-driven inputs as initialized)\n");
             for p in &m.ports {
-                if !uninit_inputs.contains(&p.name.name) { continue; }
-                let pname = &p.name.name;
-                let ty = cpp_port_type(&p.ty);
-                h.push_str(&format!(
-                    "  void set_{pname}({ty} v) {{ {pname} = v; _{pname}_vinit = true; }}\n"
-                ));
+                // Scalar non-bus input.
+                if p.bus_info.is_none() {
+                    if !uninit_inputs.contains(&p.name.name) { continue; }
+                    let pname = &p.name.name;
+                    let ty = cpp_port_type(&p.ty);
+                    h.push_str(&format!(
+                        "  void set_{pname}({ty} v) {{ {pname} = v; _{pname}_vinit = true; }}\n"
+                    ));
+                    continue;
+                }
+                // Bus port: emit one setter per flattened In signal.
+                let Some(ref bi) = p.bus_info else { continue; };
+                let Some(crate::resolve::Symbol::Bus(info)) =
+                    self.symbols.globals.get(&bi.bus_name.name).map(|(s, _)| s)
+                    else { continue; };
+                let mut param_map: std::collections::HashMap<String, &Expr> =
+                    info.params.iter()
+                        .filter_map(|pd| pd.default.as_ref().map(|d| (pd.name.name.clone(), d)))
+                        .collect();
+                for pa in &bi.params {
+                    param_map.insert(pa.name.name.clone(), &pa.value);
+                }
+                for (sname, sdir, sty) in info.effective_signals(&param_map) {
+                    let actual_dir = match bi.perspective {
+                        crate::ast::BusPerspective::Initiator => sdir,
+                        crate::ast::BusPerspective::Target => sdir.flip(),
+                    };
+                    if !matches!(actual_dir, Direction::In) { continue; }
+                    if matches!(&sty, TypeExpr::Clock(_) | TypeExpr::Reset(_, _)) {
+                        continue;
+                    }
+                    let flat = format!("{}_{}", p.name.name, sname);
+                    if !uninit_inputs.contains(&flat) { continue; }
+                    let ty = cpp_port_type(&sty);
+                    h.push_str(&format!(
+                        "  void set_{flat}({ty} v) {{ {flat} = v; _{flat}_vinit = true; }}\n"
+                    ));
+                }
             }
         }
 
