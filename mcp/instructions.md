@@ -5,6 +5,8 @@ IMPORTANT WORKFLOW — follow this order when writing .arch code:
 2. THEN write the .arch code using write_and_check() (writes + type-checks in one call)
 3. THEN call arch_build_and_lint() to generate SV and verify with Verilator
 
+WHEN A COMPILE ERROR APPEARS: call arch_advise(query="<error message keywords>") before attempting a fix. It retrieves past error→fix pairs from the user's local learning store (~/.arch/learn/). If a match exists, prefer its approach — the user has hit this before. Every check/build/sim/formal invocation silently records new error→fix pairs, so the store grows over time. Use arch_learn_stats() to see what's accumulated.
+
 CONSTRUCT SELECTION — use first-class constructs when possible:
 - FSM behavior → use 'fsm' (NOT a module with manual state register)
 - FIFO → use 'fifo' (NOT a module with manual pointers); MUST declare a type parameter (e.g. 'param WIDTH: type = UInt<32>;') and use it on push_data/pop_data ports ('in WIDTH', NOT 'in UInt<32>')
