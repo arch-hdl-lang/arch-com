@@ -6637,36 +6637,45 @@ impl<'a> SimCodegen<'a> {
         // module's assignment reaches it. Field directions only matter at
         // port boundaries, where the perspective (initiator/target) chooses
         // which side drives which field.
+        // Collect buses from both file scope AND packages. `bus` in a package
+        // is equivalent to file-scope `bus` — just grouped with the types
+        // that define the same package's interface.
+        let mut buses: Vec<&BusDecl> = Vec::new();
         for item in &self.source.items {
-            if let Item::Bus(b) = item {
-                let param_map: HashMap<String, &Expr> = HashMap::new();
-                let effective = crate::resolve::BusInfo {
-                    name: b.name.name.clone(),
-                    params: b.params.clone(),
-                    signals: b.signals.iter()
-                        .map(|p| (p.name.name.clone(), p.direction, p.ty.clone()))
-                        .collect(),
-                    generates: b.generates.clone(),
-                    handshakes: b.handshakes.clone(),
-                }.effective_signals(&param_map);
-                h.push_str(&format!("struct {} {{\n", b.name.name));
-                let mut field_inits = Vec::new();
-                for (sname, _dir, sty) in &effective {
-                    let ty = cpp_internal_type(sty);
-                    h.push_str(&format!("  {} {};\n", ty, sname));
-                    if matches!(sty, TypeExpr::Named(_)) {
-                        field_inits.push(format!("{}()", sname));
-                    } else {
-                        field_inits.push(format!("{}(0)", sname));
-                    }
-                }
-                if field_inits.is_empty() {
-                    h.push_str(&format!("  {}() {{}}\n", b.name.name));
-                } else {
-                    h.push_str(&format!("  {}() : {} {{}}\n", b.name.name, field_inits.join(", ")));
-                }
-                h.push_str("};\n\n");
+            match item {
+                Item::Bus(b) => buses.push(b),
+                Item::Package(p) => { for b in &p.buses { buses.push(b); } }
+                _ => {}
             }
+        }
+        for b in &buses {
+            let param_map: HashMap<String, &Expr> = HashMap::new();
+            let effective = crate::resolve::BusInfo {
+                name: b.name.name.clone(),
+                params: b.params.clone(),
+                signals: b.signals.iter()
+                    .map(|p| (p.name.name.clone(), p.direction, p.ty.clone()))
+                    .collect(),
+                generates: b.generates.clone(),
+                handshakes: b.handshakes.clone(),
+            }.effective_signals(&param_map);
+            h.push_str(&format!("struct {} {{\n", b.name.name));
+            let mut field_inits = Vec::new();
+            for (sname, _dir, sty) in &effective {
+                let ty = cpp_internal_type(sty);
+                h.push_str(&format!("  {} {};\n", ty, sname));
+                if matches!(sty, TypeExpr::Named(_)) {
+                    field_inits.push(format!("{}()", sname));
+                } else {
+                    field_inits.push(format!("{}(0)", sname));
+                }
+            }
+            if field_inits.is_empty() {
+                h.push_str(&format!("  {}() {{}}\n", b.name.name));
+            } else {
+                h.push_str(&format!("  {}() : {} {{}}\n", b.name.name, field_inits.join(", ")));
+            }
+            h.push_str("};\n\n");
         }
 
         SimModel {

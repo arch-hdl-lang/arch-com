@@ -2489,6 +2489,99 @@ fn test_bus_wire_sv_flattens_to_individual_signals() {
             "expected inst binding to flat wires:\n{sv}");
 }
 
+#[test]
+fn test_bus_declaration_inside_package_parses() {
+    // `bus` is now accepted alongside `struct`, `enum`, etc. inside a
+    // `package` block. Previously the parser rejected this with
+    // "unexpected token: expected param, domain, enum, struct, or function".
+    let source = "
+        package MyPkg
+          struct Header
+            tag: UInt<4>;
+          end struct Header
+
+          bus MyBus
+            cmd_valid: out Bool;
+            cmd_data:  out UInt<8>;
+            rsp_data:  in  UInt<8>;
+          end bus MyBus
+        end package MyPkg
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let sf = parser.parse_source_file().expect("parse");
+    let pkg = sf.items.iter().find_map(|i|
+        if let arch::ast::Item::Package(p) = i { Some(p) } else { None }
+    ).expect("parsed package");
+    assert_eq!(pkg.structs.len(), 1, "struct should still parse alongside bus");
+    assert_eq!(pkg.buses.len(), 1, "bus should be collected into package.buses");
+    assert_eq!(pkg.buses[0].name.name, "MyBus");
+}
+
+#[test]
+fn test_package_nested_bus_used_as_wire_and_port() {
+    // End-to-end: a bus declared inside a package is (a) registered in the
+    // global symbol table, (b) usable as a wire type in a consumer module,
+    // (c) flattened at port sites on a target submodule, and (d) emitted as
+    // a C++ struct by sim codegen + flat SV wires by SV codegen.
+    let source = "
+        package MyPkg
+          bus MyBus
+            cmd_valid: out Bool;
+            cmd_data:  out UInt<8>;
+            rsp_data:  in  UInt<8>;
+          end bus MyBus
+        end package MyPkg
+
+        use MyPkg;
+
+        module Top
+          port x_in:  in  UInt<8>;
+          port x_out: out UInt<8>;
+          wire b: MyBus;
+          comb
+            b.cmd_valid = true;
+            b.cmd_data = x_in;
+            x_out = b.rsp_data;
+          end comb
+          inst e: Echo
+            p -> b;
+          end inst e
+        end module Top
+
+        module Echo
+          port p: target MyBus;
+          comb
+            p.rsp_data = p.cmd_valid ? (p.cmd_data + 8'h1).trunc<8>() : 8'h0;
+          end comb
+        end module Echo
+    ";
+    // Sim codegen: struct MyBus lands in VStructs header.
+    let sim_h = compile_to_sim_h(source, false);
+    assert!(sim_h.contains("struct MyBus {"),
+            "expected `struct MyBus` in sim structs header:\n{sim_h}");
+    assert!(sim_h.contains("uint8_t cmd_valid;") && sim_h.contains("uint8_t cmd_data;"),
+            "expected bus fields as struct members:\n{sim_h}");
+
+    // SV codegen: package emits no bus type; wires flatten to per-signal.
+    use arch::codegen::Codegen;
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = arch::elaborate::elaborate(ast).expect("elaborate");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let (_w, overload_map) = checker.check().expect("type check");
+    let cg = Codegen::new(&symbols, &ast, overload_map);
+    let sv = cg.generate();
+    assert!(sv.contains("logic b_cmd_valid;"),
+            "bus wire should flatten to b_cmd_valid:\n{sv}");
+    assert!(sv.contains("logic [7:0] b_cmd_data;"),
+            "bus wire should flatten to b_cmd_data:\n{sv}");
+    assert!(sv.contains(".p_cmd_data(b_cmd_data)"),
+            "inst binding should use flat wire names:\n{sv}");
+}
+
 fn compile_to_pybind_cpps(source: &str) -> Vec<(String, String)> {
     use arch::sim_codegen::SimCodegen;
     let tokens = arch::lexer::tokenize(source).expect("lexer");

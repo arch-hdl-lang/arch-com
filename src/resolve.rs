@@ -513,6 +513,22 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                             table.globals.insert(s.name.name.clone(), (Symbol::Struct(info), s.name.span));
                         }
                     }
+                    for b in &pkg.buses {
+                        if table.globals.contains_key(&b.name.name) {
+                            errors.push(CompileError::duplicate(&b.name.name, b.name.span));
+                        } else {
+                            let info = BusInfo {
+                                name: b.name.name.clone(),
+                                params: b.params.clone(),
+                                signals: b.signals.iter()
+                                    .map(|s| (s.name.name.clone(), s.direction, s.ty.clone()))
+                                    .collect(),
+                                generates: b.generates.clone(),
+                                handshakes: b.handshakes.clone(),
+                            };
+                            table.globals.insert(b.name.name.clone(), (Symbol::Bus(info), b.name.span));
+                        }
+                    }
                     for f in &pkg.functions {
                         let info = FunctionInfo {
                             name: f.name.name.clone(),
