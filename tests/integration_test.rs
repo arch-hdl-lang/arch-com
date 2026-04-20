@@ -2380,3 +2380,136 @@ fn test_let_destructure_unknown_field_errors() {
     assert!(msg.contains("has no field named `z`"),
             "expected unknown-field message, got: {msg}");
 }
+
+fn compile_to_pybind_cpps(source: &str) -> Vec<(String, String)> {
+    use arch::sim_codegen::SimCodegen;
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse");
+    let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let (_warnings, overload_map) = checker.check().expect("type check");
+    let sim = SimCodegen::new(&symbols, &ast, overload_map);
+    sim.generate_pybind().into_iter().map(|m| (m.class_name, m.impl_)).collect()
+}
+
+#[test]
+fn test_pybind_struct_bindings_are_scoped_to_module() {
+    // When a shared package declares structs used by only one of several
+    // sibling modules, each module's pybind wrapper must bind ONLY the
+    // structs that module actually references. Binding unused structs
+    // fails to compile because the module's own `V{Name}.h` doesn't
+    // declare them.
+    let source = "
+        package SharedPkg
+          struct Reg1
+            a: UInt<4>;
+            b: UInt<4>;
+          end struct Reg1
+          struct Reg2
+            x: UInt<8>;
+          end struct Reg2
+          struct PipeBus
+            data: UInt<8>;
+          end struct PipeBus
+        end package SharedPkg
+
+        use SharedPkg;
+
+        // Consumes Reg1 + Reg2 as internal regs.
+        module UsesStructs
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port out: out UInt<12>;
+          reg r1: Reg1 reset rst => Reg1 { a: 4'h0, b: 4'h0 };
+          reg r2: Reg2 reset rst => Reg2 { x: 8'h0 };
+          default seq on clk rising;
+          seq
+            r1.a <= 4'h1;
+            r2.x <= 8'h2;
+          end seq
+          comb
+            out = {r1.a, r1.b, r2.x[3:0]};
+          end comb
+        end module UsesStructs
+
+        // No struct-typed ports, no struct-typed regs — must NOT bind Reg1/Reg2.
+        module PrimitivesOnly
+          port a: in UInt<8>;
+          port b: out UInt<8>;
+          comb
+            b = a;
+          end comb
+        end module PrimitivesOnly
+
+        // Uses only PipeBus. Must bind PipeBus, but not Reg1/Reg2.
+        module UsesOneStruct
+          port bus_in:  in  PipeBus;
+          port bus_out: out PipeBus;
+          comb
+            bus_out = bus_in;
+          end comb
+        end module UsesOneStruct
+    ";
+
+    let pybinds = compile_to_pybind_cpps(source);
+    let prim = pybinds.iter().find(|(n, _)| n.contains("PrimitivesOnly"))
+        .expect("PrimitivesOnly pybind wrapper").1.clone();
+    let one = pybinds.iter().find(|(n, _)| n.contains("UsesOneStruct"))
+        .expect("UsesOneStruct pybind wrapper").1.clone();
+    let uses = pybinds.iter().find(|(n, _)| n.contains("UsesStructs"))
+        .expect("UsesStructs pybind wrapper").1.clone();
+
+    // PrimitivesOnly: no struct bindings at all.
+    assert!(!prim.contains("py::class_<Reg1>"),
+            "PrimitivesOnly must not bind Reg1:\n{prim}");
+    assert!(!prim.contains("py::class_<Reg2>"),
+            "PrimitivesOnly must not bind Reg2:\n{prim}");
+    assert!(!prim.contains("py::class_<PipeBus>"),
+            "PrimitivesOnly must not bind PipeBus:\n{prim}");
+
+    // UsesOneStruct: binds PipeBus, nothing else.
+    assert!(one.contains("py::class_<PipeBus>"),
+            "UsesOneStruct must bind PipeBus:\n{one}");
+    assert!(!one.contains("py::class_<Reg1>"),
+            "UsesOneStruct must not bind Reg1:\n{one}");
+    assert!(!one.contains("py::class_<Reg2>"),
+            "UsesOneStruct must not bind Reg2:\n{one}");
+
+    // UsesStructs: binds Reg1 and Reg2 (internal reg types).
+    assert!(uses.contains("py::class_<Reg1>"),
+            "UsesStructs must bind Reg1:\n{uses}");
+    assert!(uses.contains("py::class_<Reg2>"),
+            "UsesStructs must bind Reg2:\n{uses}");
+}
+
+#[test]
+fn test_pybind_struct_bindings_transitive_closure() {
+    // If a port-level struct has a field whose type is another struct,
+    // the nested struct must also be bound.
+    let source = "
+        struct Inner
+          v: UInt<8>;
+        end struct Inner
+
+        struct Outer
+          a: UInt<4>;
+          inner: Inner;
+        end struct Outer
+
+        module M
+          port o: in Outer;
+          port x: out UInt<8>;
+          comb
+            x = o.inner.v;
+          end comb
+        end module M
+    ";
+    let pybinds = compile_to_pybind_cpps(source);
+    let m = pybinds.iter().find(|(n, _)| n.contains("VM_pybind"))
+        .expect("M pybind wrapper").1.clone();
+    assert!(m.contains("py::class_<Outer>"), "must bind Outer:\n{m}");
+    assert!(m.contains("py::class_<Inner>"),
+            "must bind Inner (transitive via Outer.inner):\n{m}");
+}
