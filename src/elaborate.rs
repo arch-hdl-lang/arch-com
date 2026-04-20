@@ -1409,6 +1409,7 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
                 ty: Some(info.ty.clone()),
                 value: or_expr,
                 span: sp,
+                destructure_fields: Vec::new(),
             }));
         }
     }

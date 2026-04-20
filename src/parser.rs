@@ -1790,6 +1790,36 @@ impl Parser {
 
     fn parse_let_binding(&mut self) -> Result<LetBinding, CompileError> {
         let start = self.expect(TokenKind::Let)?.span;
+        // Struct destructuring: `let {field1, field2, ...} = expr;`
+        // Lives alongside the single-ident `let x [: T] = expr;` form.
+        // Types are inferred from the RHS's struct definition; no type
+        // annotation allowed.
+        if self.check(TokenKind::LBrace) {
+            self.advance(); // {
+            let mut fields: Vec<Ident> = Vec::new();
+            if !self.check(TokenKind::RBrace) {
+                fields.push(self.expect_ident()?);
+                while self.eat(TokenKind::Comma) {
+                    if self.check(TokenKind::RBrace) { break; }
+                    fields.push(self.expect_ident()?);
+                }
+            }
+            self.expect(TokenKind::RBrace)?;
+            self.expect(TokenKind::Eq)?;
+            let value = self.parse_expr()?;
+            self.expect(TokenKind::Semi)?;
+            let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+            // Placeholder name — unused in destructuring mode. Carry the
+            // span so diagnostics still have a location.
+            let placeholder = Ident { name: String::from("_destructure"), span: start };
+            return Ok(LetBinding {
+                name: placeholder,
+                ty: None,
+                value,
+                span: start.merge(end_span),
+                destructure_fields: fields,
+            });
+        }
         let name = self.expect_ident()?;
         let ty = if self.eat(TokenKind::Colon) {
             Some(self.parse_type_expr()?)
@@ -1805,6 +1835,7 @@ impl Parser {
             ty,
             value,
             span: start.merge(end_span),
+            destructure_fields: Vec::new(),
         })
     }
 
