@@ -2515,6 +2515,40 @@ fn test_pybind_struct_bindings_transitive_closure() {
 }
 
 #[test]
+fn test_trace_skips_struct_typed_let_and_wire() {
+    // Struct-typed `let` and `wire` decls must NOT appear in the VCD trace
+    // emission — they can't be bit-shifted scalar-style, and previously
+    // produced invalid C++ (`(hwif_w >> i) & 1` against a struct type) that
+    // failed to compile. Ports and regs with struct types were already
+    // filtered; this extends the same filter to let/wire.
+    let source = "
+        struct Payload
+          a: UInt<8>;
+          b: UInt<8>;
+        end struct Payload
+
+        module M
+          port clk:   in Clock<SysDomain>;
+          port rst:   in Reset<Sync>;
+          port p_in:  in  Payload;
+          port out_a: out UInt<8>;
+          wire scratch: Payload;
+          let  view:    Payload = p_in;
+          comb
+            scratch.a = p_in.a;
+            scratch.b = p_in.b;
+            out_a = view.a | scratch.b;
+          end comb
+        end module M
+    ";
+    let h = compile_to_sim_h(source, false);
+    assert!(!h.contains("(_let_scratch >> _i)"),
+            "scratch (struct wire) leaked into trace:\n{h}");
+    assert!(!h.contains("(_let_view >> _i)"),
+            "view (struct let) leaked into trace:\n{h}");
+}
+
+#[test]
 fn test_find_first_destructure_basic() {
     let source = "
         module M
