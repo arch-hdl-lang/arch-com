@@ -56,6 +56,11 @@ pub struct Codegen<'a> {
     /// Populated per-module at emit time so Vec method lowerings
     /// (`any`/`all`/`count`/etc.) can unroll over N iterations.
     vec_sizes: std::collections::HashMap<String, u32>,
+    /// Set of index widths used by `.find_first(...)` calls in this file.
+    /// Drives emission of one `typedef struct packed ... __ArchFindResult_<W>;`
+    /// per unique W at the top of the generated SV. Interior-mutability
+    /// so the `&self` emission path can record widths as it goes.
+    find_first_widths: std::cell::RefCell<std::collections::BTreeSet<u32>>,
 }
 
 impl<'a> Codegen<'a> {
@@ -79,6 +84,7 @@ impl<'a> Codegen<'a> {
             current_construct: String::new(),
             ident_subst: std::collections::HashMap::new(),
             vec_sizes: std::collections::HashMap::new(),
+            find_first_widths: std::cell::RefCell::new(std::collections::BTreeSet::new()),
         }
     }
 
@@ -143,6 +149,24 @@ impl<'a> Codegen<'a> {
         // Flush any trailing comments after the last item.
         let end = usize::MAX;
         self.emit_comments_before(end);
+
+        // Prepend typedefs for any synthesized find_first result structs.
+        // One packed struct per unique index width used in the source.
+        let widths = self.find_first_widths.borrow();
+        if !widths.is_empty() {
+            let mut prefix = String::new();
+            prefix.push_str("// Auto-generated result struct(s) for Vec.find_first\n");
+            for w in widths.iter() {
+                prefix.push_str(&format!(
+                    "typedef struct packed {{ logic found; logic [{}:0] index; }} __ArchFindResult_{};\n",
+                    w.saturating_sub(1),
+                    w
+                ));
+            }
+            prefix.push('\n');
+            prefix.push_str(&self.out);
+            self.out = prefix;
+        }
         std::mem::take(&mut self.out)
     }
 
@@ -637,6 +661,62 @@ impl<'a> Codegen<'a> {
                     // per binding; structurally-identical expressions are
                     // fine at this stage (synth CSE handles it).
                     if !l.destructure_fields.is_empty() {
+                        // Special case: RHS is `vec.find_first(pred)`.
+                        // Emit the raw OR + priority encoder directly so we
+                        // don't pay for the bulky struct-literal-then-field
+                        // access shape. Widths come from the synthesized
+                        // __ArchFindResult_<W> name.
+                        if let ExprKind::MethodCall(recv, mname, margs) = &l.value.kind {
+                            if mname.name == "find_first" {
+                                let recv_str = self.emit_expr_str(recv);
+                                let n = match &recv.kind {
+                                    ExprKind::Ident(nm) => self.vec_sizes.get(nm).copied(),
+                                    _ => None,
+                                };
+                                if let Some(n) = n {
+                                    let idx_w = std::cmp::max(1, (n as f64).log2().ceil() as u32);
+                                    // Record width so the typedef still emits
+                                    // (field access paths may still reference
+                                    // the struct type).
+                                    self.find_first_widths.borrow_mut().insert(idx_w);
+                                    // Emit per-iteration predicate strings.
+                                    let emit_at_i = |cg: &Codegen, i: u32| -> String {
+                                        let this = cg as *const Codegen as *mut Codegen;
+                                        unsafe {
+                                            (*this).ident_subst.insert("item".to_string(), format!("{recv_str}[{i}]"));
+                                            (*this).ident_subst.insert("index".to_string(), format!("{idx_w}'d{i}"));
+                                        }
+                                        let s = cg.emit_expr_str(&margs[0]);
+                                        unsafe {
+                                            (*this).ident_subst.remove("item");
+                                            (*this).ident_subst.remove("index");
+                                        }
+                                        s
+                                    };
+                                    let hits: Vec<String> = (0..n).map(|i| emit_at_i(self, i)).collect();
+                                    let found_expr = hits.join(" || ");
+                                    let mut idx_expr = format!("{idx_w}'d0");
+                                    for i in (0..n).rev() {
+                                        let hit = &hits[i as usize];
+                                        idx_expr = format!("({hit}) ? {idx_w}'d{i} : {idx_expr}");
+                                    }
+                                    for bind in &l.destructure_fields {
+                                        match bind.name.as_str() {
+                                            "found" => {
+                                                self.line("logic found;");
+                                                self.line(&format!("assign found = {found_expr};"));
+                                            }
+                                            "index" => {
+                                                self.line(&format!("logic [{}:0] index;", idx_w.saturating_sub(1)));
+                                                self.line(&format!("assign index = {idx_expr};"));
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
                         let rhs_ty = self.infer_expr_struct_name(&l.value);
                         let val_str = self.emit_expr_str(&l.value);
                         for bind in &l.destructure_fields {
@@ -4191,7 +4271,8 @@ impl<'a> Codegen<'a> {
                         }
                     }
                     "any" | "all" | "count" | "contains"
-                    | "reduce_or" | "reduce_and" | "reduce_xor" => {
+                    | "reduce_or" | "reduce_and" | "reduce_xor"
+                    | "find_first" => {
                         self.emit_vec_method(&b, base, method, args)
                     }
                     _ => format!("{b}.{}()", method.name),
@@ -4375,7 +4456,8 @@ impl<'a> Codegen<'a> {
                         }
                     }
                     "any" | "all" | "count" | "contains"
-                    | "reduce_or" | "reduce_and" | "reduce_xor" => {
+                    | "reduce_or" | "reduce_and" | "reduce_xor"
+                    | "find_first" => {
                         self.emit_vec_method(&b, base, method, args)
                     }
                     _ => format!("{b}.{}()", method.name),
@@ -5067,6 +5149,26 @@ impl<'a> Codegen<'a> {
                       .collect::<Vec<_>>()
                       .join(" ^ ")
             }
+            "find_first" => {
+                // Record the index width so a matching typedef is emitted
+                // at the top of the generated SV file.
+                self.find_first_widths.borrow_mut().insert(idx_w);
+                if n_usize == 0 {
+                    return format!("'{{found: 1'b0, index: {idx_w}'d0}}");
+                }
+                // Per-iteration hit expression: <pred with item=recv[i], index=i'd>.
+                let hits: Vec<String> = (0..n).map(emit_at).collect();
+                // found: OR of all hits.
+                let found = hits.join(" || ");
+                // index: priority-encoded first hit via nested ternary,
+                // lowest-index-wins. Falls through to 0 when no hit.
+                let mut index = format!("{idx_w}'d0");
+                for i in (0..n).rev() {
+                    let hit = &hits[i as usize];
+                    index = format!("({hit}) ? {idx_w}'d{i} : {index}");
+                }
+                format!("'{{found: ({found}), index: ({index})}}")
+            }
             _ => format!("{recv_b}.{}()", method.name),
         }
     }
@@ -5413,7 +5515,8 @@ impl<'a> Codegen<'a> {
                         }
                     }
                     "any" | "all" | "count" | "contains"
-                    | "reduce_or" | "reduce_and" | "reduce_xor" => {
+                    | "reduce_or" | "reduce_and" | "reduce_xor"
+                    | "find_first" => {
                         self.emit_vec_method(&b, base, method, args)
                     }
                     _ => format!("{b}.{}()", method.name),

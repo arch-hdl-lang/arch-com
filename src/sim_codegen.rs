@@ -4454,6 +4454,59 @@ impl<'a> SimCodegen<'a> {
             if let ModuleBodyItem::LetBinding(l) = item {
                 // Destructuring: emit one assignment per bound field.
                 if !l.destructure_fields.is_empty() {
+                    // Special case: RHS is `vec.find_first(pred)`. Emit the
+                    // raw OR + priority encoder directly; avoids the
+                    // non-existent `.find_first()` member access on C++
+                    // vector fields.
+                    if let ExprKind::MethodCall(recv, mname, margs) = &l.value.kind {
+                        if mname.name == "find_first" {
+                            let recv_cpp = cpp_expr(recv, &ctx_comb);
+                            let n = match &recv.kind {
+                                ExprKind::Ident(nm) => ctx_comb.vec_sizes
+                                    .and_then(|s| s.get(nm)).copied(),
+                                _ => None,
+                            };
+                            if let Some(n) = n {
+                                // Build per-iteration predicate strings.
+                                let mut hits: Vec<String> = Vec::with_capacity(n as usize);
+                                for i in 0..n {
+                                    let mut sub: HashMap<String, String> = HashMap::new();
+                                    sub.insert("item".to_string(), format!("{recv_cpp}[{i}]"));
+                                    sub.insert("index".to_string(), format!("{i}"));
+                                    let sub_ctx = Ctx {
+                                        reg_names: ctx_comb.reg_names, port_names: ctx_comb.port_names,
+                                        let_names: ctx_comb.let_names, inst_names: ctx_comb.inst_names,
+                                        wide_names: ctx_comb.wide_names, widths: ctx_comb.widths,
+                                        posedge_lhs: ctx_comb.posedge_lhs, fsm_mode: ctx_comb.fsm_mode,
+                                        enum_map: ctx_comb.enum_map, bus_ports: ctx_comb.bus_ports,
+                                        reset_levels: ctx_comb.reset_levels, vec_names: ctx_comb.vec_names,
+                                        vec_sizes: ctx_comb.vec_sizes, fsm_vec_port_regs: ctx_comb.fsm_vec_port_regs,
+                                        ident_subst: Some(&sub),
+                                    };
+                                    hits.push(cpp_expr(&margs[0], &sub_ctx));
+                                }
+                                let found_expr: String = hits.iter()
+                                    .map(|h| format!("({h})"))
+                                    .collect::<Vec<_>>().join(" || ");
+                                let mut idx_expr = "0u".to_string();
+                                for i in (0..n as u64).rev() {
+                                    let hit = &hits[i as usize];
+                                    idx_expr = format!("(({hit}) ? (uint32_t){i} : {idx_expr})");
+                                }
+                                for bind in &l.destructure_fields {
+                                    let rhs = match bind.name.as_str() {
+                                        "found" => format!("({found_expr})"),
+                                        "index" => idx_expr.clone(),
+                                        _ => continue,
+                                    };
+                                    cpp.push_str(&format!(
+                                        "  _let_{fn} = {rhs};\n", fn = bind.name
+                                    ));
+                                }
+                                continue;
+                            }
+                        }
+                    }
                     let val = cpp_expr(&l.value, &ctx_comb);
                     for bind in &l.destructure_fields {
                         cpp.push_str(&format!(
