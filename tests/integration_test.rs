@@ -2381,6 +2381,114 @@ fn test_let_destructure_unknown_field_errors() {
             "expected unknown-field message, got: {msg}");
 }
 
+#[test]
+fn test_bus_wire_typechecks_and_codegens() {
+    // Buses as wire types: direction info on each field is ignored in wire
+    // context (each signal has one driver, determined by the assignment
+    // reaching it). The C++ struct is emitted at file scope so the
+    // generated `FooBus _let_w;` field is a valid type, and bus-port →
+    // bus-wire connections flow through struct field access.
+    let source = "
+        bus FooBus
+          cmd:  out UInt<8>;
+          resp: in  UInt<8>;
+        end bus FooBus
+
+        module Child
+          port p: target FooBus;
+          comb
+            p.resp = (p.cmd + 8'h1).trunc<8>();
+          end comb
+        end module Child
+
+        module Parent
+          port x_in:  in  UInt<8>;
+          port x_out: out UInt<8>;
+          wire w: FooBus;
+          comb
+            w.cmd = x_in;
+            x_out = w.resp;
+          end comb
+          inst c: Child
+            p -> w;
+          end inst c
+        end module Parent
+    ";
+    let h = compile_to_sim_h(source, false);
+    // VStructs.h should emit a plain C++ struct for the bus.
+    assert!(h.contains("struct FooBus {"),
+            "expected `struct FooBus {{` in generated structs header:\n{h}");
+    assert!(h.contains("uint8_t cmd;") && h.contains("uint8_t resp;"),
+            "expected bus fields as struct members:\n{h}");
+
+    // VParent.h should declare the wire as a struct-typed member and must
+    // NOT emit a shadow `uint32_t w;` scalar.
+    let parent = h.split("// ---\n").find(|p| p.contains("class VParent"))
+        .expect("no VParent header section");
+    assert!(parent.contains("FooBus _let_w;"),
+            "expected `FooBus _let_w;` in VParent header:\n{parent}");
+    assert!(!parent.contains("uint32_t w;"),
+            "unexpected shadow `uint32_t w;` in VParent header:\n{parent}");
+}
+
+#[test]
+fn test_bus_wire_sv_flattens_to_individual_signals() {
+    // SV codegen has no bus interface/struct: a bus-typed wire becomes N
+    // individual SV wires named `<wire>_<field>`. Field access on the
+    // wire rewrites to the flat name, same as for bus ports.
+    use arch::codegen::Codegen;
+    let source = "
+        bus FooBus
+          cmd:  out UInt<8>;
+          resp: in  UInt<8>;
+        end bus FooBus
+
+        module Child
+          port p: target FooBus;
+          comb
+            p.resp = (p.cmd + 8'h1).trunc<8>();
+          end comb
+        end module Child
+
+        module Parent
+          port x_in:  in  UInt<8>;
+          port x_out: out UInt<8>;
+          wire w: FooBus;
+          comb
+            w.cmd = x_in;
+            x_out = w.resp;
+          end comb
+          inst c: Child
+            p -> w;
+          end inst c
+        end module Parent
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse");
+    let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let (_w, overload_map) = checker.check().expect("type check");
+    let cg = Codegen::new(&symbols, &ast, overload_map);
+    let sv = cg.generate();
+
+    // Bus wire must decompose into flat signals.
+    assert!(sv.contains("logic [7:0] w_cmd;") && sv.contains("logic [7:0] w_resp;"),
+            "expected flat `w_cmd` / `w_resp` wires:\n{sv}");
+    // No `FooBus w;` placeholder left behind.
+    assert!(!sv.contains("FooBus w"),
+            "unexpected `FooBus w` decl (should be flattened):\n{sv}");
+    // Field access on bus wire rewrites to flat name.
+    assert!(sv.contains("assign w_cmd = x_in") || sv.contains("w_cmd = x_in"),
+            "expected `w_cmd = x_in` assignment:\n{sv}");
+    assert!(sv.contains("x_out = w_resp"),
+            "expected `x_out = w_resp` assignment:\n{sv}");
+    // Inst binding connects to the flat wires.
+    assert!(sv.contains(".p_cmd(w_cmd)") && sv.contains(".p_resp(w_resp)"),
+            "expected inst binding to flat wires:\n{sv}");
+}
+
 fn compile_to_pybind_cpps(source: &str) -> Vec<(String, String)> {
     use arch::sim_codegen::SimCodegen;
     let tokens = arch::lexer::tokenize(source).expect("lexer");

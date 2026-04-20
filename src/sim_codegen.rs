@@ -1078,6 +1078,7 @@ fn expand_bus_connections(
     inst: &InstDecl,
     source: &SourceFile,
     symbols: &crate::resolve::SymbolTable,
+    bus_wire_names: &HashSet<String>,
 ) -> Vec<Connection> {
     // Find the target construct's bus ports (with perspective info)
     let target_ports: Option<&[PortDecl]> = source.items.iter()
@@ -1097,12 +1098,21 @@ fn expand_bus_connections(
         if let Some((_, bus_name, perspective, bus_params)) = target_bus_ports.iter().find(|(pn, _, _, _)| *pn == c.port_name.name) {
             // Bus connection — expand to individual signal connections
             if let Some((crate::resolve::Symbol::Bus(info), _)) = symbols.globals.get(*bus_name) {
-                let sig_name = match &c.signal.kind {
-                    ExprKind::Ident(name) => name.clone(),
+                // Two shapes for the parent-side signal on a whole-bus binding:
+                //   * `p -> ident` where `ident` is a bus port or a bus wire
+                //   * `p -> base.field` where `base.field` is a bus port on the parent
+                // For bus WIRES we keep the bus-wire name as the struct base and
+                // emit FieldAccess exprs per signal so cpp_expr resolves them
+                // to `_let_<wire>.<field>`. For bus PORTS we emit flat idents
+                // (the port has been flattened elsewhere into `<port>_<field>`).
+                let (sig_base, wire_bound) = match &c.signal.kind {
+                    ExprKind::Ident(name) => {
+                        let is_wire = bus_wire_names.contains(name.as_str());
+                        (name.clone(), is_wire)
+                    }
                     ExprKind::FieldAccess(base, field) => {
-                        // axi_rd -> parent.bus_port — just use the field access text
                         if let ExprKind::Ident(base_name) = &base.kind {
-                            format!("{}_{}", base_name, field.name)
+                            (format!("{}_{}", base_name, field.name), false)
                         } else {
                             continue;
                         }
@@ -1113,7 +1123,6 @@ fn expand_bus_connections(
                 for pa in *bus_params { _pm.insert(pa.name.name.clone(), &pa.value); }
                 let _eff = info.effective_signals(&_pm); for (sname, sdir, _) in &_eff {
                     let inst_flat = format!("{}_{}", c.port_name.name, sname);
-                    let parent_flat = format!("{}_{}", sig_name, sname);
                     // Determine actual direction from the inst's bus perspective.
                     // For initiator: bus out → inst Output, bus in → inst Input.
                     // For target: bus out → inst Input (flipped), bus in → inst Output (flipped).
@@ -1125,18 +1134,26 @@ fn expand_bus_connections(
                         Direction::Out => ConnectDir::Output,
                         Direction::In => ConnectDir::Input,
                     };
-                    // If the ORIGINAL connection direction is Input (parent → inst),
-                    // we need to flip: the user wrote `axi_rd <- parent_bus` meaning
-                    // all signals flow from parent to inst. But for a bus, the actual
-                    // direction per signal comes from the bus definition.
-                    // Actually, for bus connections we should use the bus signal direction
-                    // (from initiator perspective) regardless of the `<-` or `->` in the
-                    // connection. The user writes `axi_rd -> parent_bus` to mean "connect
-                    // the whole bus", and each signal's direction comes from the bus def.
+                    // Bus WIRE target → struct-field access on the wire.
+                    // Bus PORT target → flat `<port>_<field>` ident.
+                    let parent_signal = if wire_bound {
+                        Expr::new(
+                            ExprKind::FieldAccess(
+                                Box::new(Expr::new(ExprKind::Ident(sig_base.clone()), c.signal.span)),
+                                Ident::new(sname.clone(), c.signal.span),
+                            ),
+                            c.signal.span,
+                        )
+                    } else {
+                        Expr::new(
+                            ExprKind::Ident(format!("{}_{}", sig_base, sname)),
+                            c.signal.span,
+                        )
+                    };
                     expanded.push(Connection {
                         port_name: Ident::new(inst_flat, c.port_name.span),
                         direction: dir,
-                        signal: Expr::new(ExprKind::Ident(parent_flat), c.signal.span),
+                        signal: parent_signal,
                         reset_override: None,
                         span: c.span,
                     });
@@ -3356,10 +3373,26 @@ impl<'a> SimCodegen<'a> {
             .filter_map(|i| if let ModuleBodyItem::Inst(inst) = i { Some(inst) } else { None })
             .collect();
 
+        // Bus-typed wires in this module — needed by expand_bus_connections so
+        // that `child_port -> bus_wire` emits struct-field-access exprs instead
+        // of flat `<wire>_<field>` idents (which would dangle; bus wires are
+        // declared as a C++ struct field, not as N flat fields).
+        let bus_wire_names: HashSet<String> = m.body.iter()
+            .filter_map(|i| if let ModuleBodyItem::WireDecl(w) = i {
+                if let TypeExpr::Named(id) = &w.ty {
+                    if matches!(self.symbols.globals.get(&id.name),
+                                Some((crate::resolve::Symbol::Bus(_), _))) {
+                        return Some(w.name.name.clone());
+                    }
+                }
+                None
+            } else { None })
+            .collect();
+
         // Pre-expand bus connections: whole-bus connections like `axi_rd -> m_axi_mm2s`
         // are expanded to per-signal connections using the bus definition.
         let expanded_conns: Vec<Vec<Connection>> = insts.iter()
-            .map(|inst| expand_bus_connections(inst, self.source, self.symbols))
+            .map(|inst| expand_bus_connections(inst, self.source, self.symbols, &bus_wire_names))
             .collect();
 
         // Build map: parent_signal_name → Vec element count for inst-output Vec ports.
@@ -3823,7 +3856,12 @@ impl<'a> SimCodegen<'a> {
 
         // Private fields for sub-instance output wires
         for sig_name in &inst_out {
-            if !port_names.contains(sig_name) && !reg_names.contains(sig_name) {
+            if !port_names.contains(sig_name) && !reg_names.contains(sig_name)
+                // Bus wires are handled via the struct-typed `_let_<name>`
+                // field emitted above; a fallback `uint32_t <name>;` here
+                // would shadow the bus wire with a scalar.
+                && !bus_wire_names.contains(sig_name)
+            {
                 // Vec output ports need a C array, not a scalar
                 if let Some((elem_ty, count)) = inst_vec_out.get(sig_name) {
                     h.push_str(&format!("  {elem_ty} {sig_name}[{count}];\n"));
@@ -6590,6 +6628,45 @@ impl<'a> SimCodegen<'a> {
             }
             h.push_str(&format!("  {}() : {} {{}}\n", s.name.name, field_inits.join(", ")));
             h.push_str("};\n\n");
+        }
+
+        // Bus-as-wire support: emit a plain C++ struct for every `bus`, with
+        // one field per effective (flattened) signal. Direction information is
+        // intentionally dropped — when a bus appears as a `wire` (not a port),
+        // each signal is just a named piece of data driven by whichever
+        // module's assignment reaches it. Field directions only matter at
+        // port boundaries, where the perspective (initiator/target) chooses
+        // which side drives which field.
+        for item in &self.source.items {
+            if let Item::Bus(b) = item {
+                let param_map: HashMap<String, &Expr> = HashMap::new();
+                let effective = crate::resolve::BusInfo {
+                    name: b.name.name.clone(),
+                    params: b.params.clone(),
+                    signals: b.signals.iter()
+                        .map(|p| (p.name.name.clone(), p.direction, p.ty.clone()))
+                        .collect(),
+                    generates: b.generates.clone(),
+                    handshakes: b.handshakes.clone(),
+                }.effective_signals(&param_map);
+                h.push_str(&format!("struct {} {{\n", b.name.name));
+                let mut field_inits = Vec::new();
+                for (sname, _dir, sty) in &effective {
+                    let ty = cpp_internal_type(sty);
+                    h.push_str(&format!("  {} {};\n", ty, sname));
+                    if matches!(sty, TypeExpr::Named(_)) {
+                        field_inits.push(format!("{}()", sname));
+                    } else {
+                        field_inits.push(format!("{}(0)", sname));
+                    }
+                }
+                if field_inits.is_empty() {
+                    h.push_str(&format!("  {}() {{}}\n", b.name.name));
+                } else {
+                    h.push_str(&format!("  {}() : {} {{}}\n", b.name.name, field_inits.join(", ")));
+                }
+                h.push_str("};\n\n");
+            }
         }
 
         SimModel {
