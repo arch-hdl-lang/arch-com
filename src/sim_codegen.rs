@@ -827,14 +827,17 @@ fn collect_trace_signals(
         }
     }
 
-    // Let bindings and wire decls (skip Vec types — they're C arrays, not scalar)
+    // Let bindings and wire decls — skip Vec (C arrays) and struct/enum-typed
+    // (Named), which can't be bit-shifted scalar-style. Matches the filter
+    // already applied to ports and regs above.
     for item in body {
         match item {
             ModuleBodyItem::LetBinding(l) => {
                 // ty=None means assignment to existing port/wire — already traced, skip
                 if l.ty.is_none() { continue; }
                 let name = &l.name.name;
-                if l.ty.as_ref().map_or(false, |t| matches!(t, TypeExpr::Vec(..))) { continue; }
+                if l.ty.as_ref().map_or(false,
+                    |t| matches!(t, TypeExpr::Vec(..) | TypeExpr::Named(_))) { continue; }
                 let width = l.ty.as_ref().map(|t| type_width(t)).unwrap_or(
                     widths.get(name.as_str()).copied().unwrap_or(32)
                 );
@@ -846,7 +849,7 @@ fn collect_trace_signals(
                 });
             }
             ModuleBodyItem::WireDecl(w) => {
-                if matches!(w.ty, TypeExpr::Vec(..)) { continue; }
+                if matches!(w.ty, TypeExpr::Vec(..) | TypeExpr::Named(_)) { continue; }
                 let name = &w.name.name;
                 let width = type_width(&w.ty);
                 sigs.push(TraceSignal {
