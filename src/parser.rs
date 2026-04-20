@@ -4669,6 +4669,7 @@ impl Parser {
         let mut domains = Vec::new();
         let mut enums = Vec::new();
         let mut structs = Vec::new();
+        let mut buses = Vec::new();
         let mut functions = Vec::new();
 
         while !self.check_end_keyword() {
@@ -4677,10 +4678,11 @@ impl Parser {
                 Some(TokenKind::Domain) => domains.push(self.parse_domain()?),
                 Some(TokenKind::Enum) => enums.push(self.parse_enum()?),
                 Some(TokenKind::Struct) => structs.push(self.parse_struct()?),
+                Some(TokenKind::Bus) => buses.push(self.parse_bus()?),
                 Some(TokenKind::Function) => functions.push(self.parse_function()?),
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "param, domain, enum, struct, or function",
+                        "param, domain, enum, struct, bus, or function",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -4707,6 +4709,7 @@ impl Parser {
             domains,
             enums,
             structs,
+            buses,
             functions,
         })
     }

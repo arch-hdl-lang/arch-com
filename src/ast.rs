@@ -1316,6 +1316,7 @@ pub struct PackageDecl {
     pub domains: Vec<DomainDecl>,
     pub enums: Vec<EnumDecl>,
     pub structs: Vec<StructDecl>,
+    pub buses: Vec<BusDecl>,
     pub functions: Vec<FunctionDecl>,
     pub span: Span,
 }
