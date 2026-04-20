@@ -2126,6 +2126,11 @@ impl<'a> TypeChecker<'a> {
                             let bits = enum_width(info.variants.len());
                             Ty::Enum(ident.name.clone(), bits)
                         }
+                        // Bus types are permitted as wire/reg types — direction
+                        // metadata is only meaningful on ports; in a wire
+                        // context the bus is just a named bundle of fields.
+                        // Each field becomes a flat signal at codegen.
+                        crate::resolve::Symbol::Bus(_) => Ty::Bus(ident.name.clone()),
                         _ => {
                             self.errors.push(CompileError::type_mismatch(
                                 "type",

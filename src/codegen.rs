@@ -43,6 +43,12 @@ pub struct Codegen<'a> {
     overload_map: std::collections::HashMap<usize, usize>,
     /// Bus port names in the current module → bus name (for FieldAccess rewriting).
     bus_ports: std::collections::HashMap<String, String>,
+    /// Bus-typed wire names in the current module → bus name. Bus wires are
+    /// flattened into individual SV signals `<wire>_<field>` at emission
+    /// time (no SV interfaces or structs are generated for buses), so
+    /// FieldAccess on a bus wire rewrites to the flat name just like a bus
+    /// port does.
+    bus_wires: std::collections::HashMap<String, String>,
     /// Reset port names in the current module → (kind, level), for `.asserted` emission.
     reset_ports: std::collections::HashMap<String, (ResetKind, ResetLevel)>,
     /// Name of the construct currently being emitted (for symbol lookups).
@@ -80,6 +86,7 @@ impl<'a> Codegen<'a> {
             pending_functions: Vec::new(),
             overload_map,
             bus_ports: std::collections::HashMap::new(),
+            bus_wires: std::collections::HashMap::new(),
             reset_ports: std::collections::HashMap::new(),
             current_construct: String::new(),
             ident_subst: std::collections::HashMap::new(),
@@ -495,6 +502,7 @@ impl<'a> Codegen<'a> {
 
         // Ports — bus ports are flattened to individual signals
         self.bus_ports.clear();
+        self.bus_wires.clear();
         self.reset_ports.clear();
         self.vec_sizes.clear();
         for p in m.ports.iter() {
@@ -784,6 +792,35 @@ impl<'a> Codegen<'a> {
                     self.emit_pipe_reg(p, &m_clone);
                 }
                 ModuleBodyItem::WireDecl(w) => {
+                    // Bus-typed wires: flatten into individual SV signals
+                    // `<wire>_<field>`. No SV interface/struct is generated
+                    // for the bus; the bus exists purely as a compile-time
+                    // abstraction. Record the wire in `bus_wires` so field
+                    // access rewrites (see emit_expr_str) produce the flat
+                    // name.
+                    if let TypeExpr::Named(id) = &w.ty {
+                        if let Some((crate::resolve::Symbol::Bus(info), _)) =
+                            self.symbols.globals.get(&id.name)
+                        {
+                            self.bus_wires.insert(w.name.name.clone(), id.name.clone());
+                            let param_map: std::collections::HashMap<String, &Expr> =
+                                info.params.iter()
+                                    .filter_map(|pd| pd.default.as_ref()
+                                        .map(|d| (pd.name.name.clone(), d)))
+                                    .collect();
+                            for (sname, _sdir, sty) in info.effective_signals(&param_map) {
+                                let (ty_str, arr_suffix) =
+                                    self.emit_type_and_array_suffix(&sty);
+                                self.line(&format!(
+                                    "{} {}_{}{};",
+                                    ty_str, w.name.name, sname, arr_suffix
+                                ));
+                                declared_names.insert(format!("{}_{}", w.name.name, sname));
+                            }
+                            declared_names.insert(w.name.name.clone());
+                            continue;
+                        }
+                    }
                     let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(&w.ty);
                     self.line(&format!("{} {}{};", ty_str, w.name.name, arr_suffix));
                     declared_names.insert(w.name.name.clone());
@@ -5438,9 +5475,12 @@ impl<'a> Codegen<'a> {
                         }
                     }
                 }
-                // Bus port: axi.aw_valid → axi_aw_valid (underscore, not dot)
+                // Bus port / bus wire: axi.aw_valid → axi_aw_valid (flat).
+                // Bus wires flatten to individual SV signals, same naming.
                 if let ExprKind::Ident(base_name) = &base.kind {
-                    if self.bus_ports.contains_key(base_name) {
+                    if self.bus_ports.contains_key(base_name)
+                        || self.bus_wires.contains_key(base_name)
+                    {
                         return format!("{}_{}", base_name, field.name);
                     }
                 }
