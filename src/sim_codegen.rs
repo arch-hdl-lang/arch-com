@@ -2446,13 +2446,24 @@ fn collect_reg_names(body: &[ModuleBodyItem], ports: &[PortDecl]) -> HashSet<Str
 }
 
 fn collect_let_names(body: &[ModuleBodyItem]) -> HashSet<String> {
-    body.iter()
-        .filter_map(|i| match i {
-            ModuleBodyItem::LetBinding(l) => Some(l.name.name.clone()),
-            ModuleBodyItem::WireDecl(w) => Some(w.name.name.clone()),
-            _ => None,
-        })
-        .collect()
+    let mut out = HashSet::new();
+    for i in body {
+        match i {
+            ModuleBodyItem::LetBinding(l) => {
+                // Destructuring: each bound field becomes a _let_ field.
+                if !l.destructure_fields.is_empty() {
+                    for bind in &l.destructure_fields {
+                        out.insert(bind.name.clone());
+                    }
+                } else {
+                    out.insert(l.name.name.clone());
+                }
+            }
+            ModuleBodyItem::WireDecl(w) => { out.insert(w.name.name.clone()); }
+            _ => {}
+        }
+    }
+    out
 }
 
 fn collect_pipe_reg_names(body: &[ModuleBodyItem]) -> HashSet<String> {
@@ -2704,6 +2715,12 @@ fn build_widths(ports: &[PortDecl], body: &[ModuleBodyItem]) -> HashMap<String, 
         match item {
             ModuleBodyItem::RegDecl(r) => { m.insert(r.name.name.clone(), type_bits_te(&r.ty)); }
             ModuleBodyItem::LetBinding(l) => {
+                // Destructuring: widths come from struct field types; these
+                // are best-effort looked up at emission time. Leave them
+                // out here; widths map defaults kick in if needed.
+                if !l.destructure_fields.is_empty() {
+                    continue;
+                }
                 if let Some(ty) = &l.ty {
                     m.insert(l.name.name.clone(), type_bits_te(ty));
                 }
@@ -2890,6 +2907,76 @@ fn collect_stmt_assigns(stmts: &[Stmt], out: &mut std::collections::BTreeSet<Str
 }
 
 impl<'a> SimCodegen<'a> {
+    /// For a destructuring-let RHS, best-effort infer the struct name
+    /// so we can look up individual field types. Returns None if not
+    /// determinable at sim-codegen time.
+    fn infer_rhs_struct_name(
+        &self,
+        e: &Expr,
+        ports: &[PortDecl],
+        body: &[ModuleBodyItem],
+    ) -> Option<String> {
+        if let ExprKind::StructLiteral(name, _) = &e.kind {
+            return Some(name.name.clone());
+        }
+        if let ExprKind::Ident(n) = &e.kind {
+            for p in ports {
+                if p.name.name == *n {
+                    if let TypeExpr::Named(sn) = &p.ty {
+                        return Some(sn.name.clone());
+                    }
+                }
+            }
+            for bi in body {
+                match bi {
+                    ModuleBodyItem::RegDecl(r) if r.name.name == *n => {
+                        if let TypeExpr::Named(sn) = &r.ty {
+                            return Some(sn.name.clone());
+                        }
+                    }
+                    ModuleBodyItem::WireDecl(w) if w.name.name == *n => {
+                        if let TypeExpr::Named(sn) = &w.ty {
+                            return Some(sn.name.clone());
+                        }
+                    }
+                    ModuleBodyItem::LetBinding(lb) if lb.name.name == *n => {
+                        if let Some(TypeExpr::Named(sn)) = &lb.ty {
+                            return Some(sn.name.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        None
+    }
+
+    fn lookup_struct_field_ty(&self, struct_name: &str, field_name: &str) -> Option<TypeExpr> {
+        for item in &self.source.items {
+            if let Item::Struct(s) = item {
+                if s.name.name == struct_name {
+                    for f in &s.fields {
+                        if f.name.name == field_name {
+                            return Some(f.ty.clone());
+                        }
+                    }
+                }
+            }
+            if let Item::Package(pkg) = item {
+                for s in &pkg.structs {
+                    if s.name.name == struct_name {
+                        for f in &s.fields {
+                            if f.name.name == field_name {
+                                return Some(f.ty.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Look up the port declarations for a sub-instance's module/construct type.
     /// Look up ports for a sub-instance's construct type by walking the source AST.
     /// Every first-class construct (Module, Fsm, Fifo, Ram, Counter, Arbiter,
@@ -3636,6 +3723,19 @@ impl<'a> SimCodegen<'a> {
         for item in &m.body {
             match item {
                 ModuleBodyItem::LetBinding(l) => {
+                    // Destructuring: emit a field per bound name with the
+                    // corresponding struct field's width.
+                    if !l.destructure_fields.is_empty() {
+                        let sname = self.infer_rhs_struct_name(&l.value, &m.ports, &m.body);
+                        for bind in &l.destructure_fields {
+                            let ty = sname.as_ref()
+                                .and_then(|n| self.lookup_struct_field_ty(n, &bind.name))
+                                .map(|t| cpp_internal_type(&t))
+                                .unwrap_or_else(|| "uint32_t".to_string());
+                            h.push_str(&format!("  {ty} _let_{};\n", bind.name));
+                        }
+                        continue;
+                    }
                     // ty=None: assignment to existing port/wire — no new field needed
                     if l.ty.is_none() { continue; }
                     let ty = l.ty.as_ref().map(|t| cpp_internal_type(t))
@@ -4304,6 +4404,16 @@ impl<'a> SimCodegen<'a> {
         // Let bindings → private fields (assign before inst eval so instances see current values)
         for item in &m.body {
             if let ModuleBodyItem::LetBinding(l) = item {
+                // Destructuring: emit one assignment per bound field.
+                if !l.destructure_fields.is_empty() {
+                    let val = cpp_expr(&l.value, &ctx_comb);
+                    for bind in &l.destructure_fields {
+                        cpp.push_str(&format!(
+                            "  _let_{fn} = {val}.{fn};\n", fn = bind.name
+                        ));
+                    }
+                    continue;
+                }
                 let val = cpp_expr(&l.value, &ctx_comb);
                 if l.ty.is_none() {
                     // ty=None: assignment to existing port or wire

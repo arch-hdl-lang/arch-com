@@ -631,6 +631,29 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 ModuleBodyItem::LetBinding(l) => {
+                    // Destructuring: `let {a, b} = expr;` — emit one
+                    // wire + assignment per bound field, using struct-field
+                    // access on the original RHS. The RHS is re-emitted
+                    // per binding; structurally-identical expressions are
+                    // fine at this stage (synth CSE handles it).
+                    if !l.destructure_fields.is_empty() {
+                        let rhs_ty = self.infer_expr_struct_name(&l.value);
+                        let val_str = self.emit_expr_str(&l.value);
+                        for bind in &l.destructure_fields {
+                            if let Some(field_ty) = rhs_ty.as_ref()
+                                .and_then(|sname| self.struct_field_type(sname, &bind.name))
+                            {
+                                let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(&field_ty);
+                                self.line(&format!("{} {}{};", ty_str, bind.name, arr_suffix));
+                                self.line(&format!("assign {} = {}.{};", bind.name, val_str, bind.name));
+                            } else {
+                                // Fallback: struct type unknown at codegen — emit as logic.
+                                self.line(&format!("logic {};", bind.name));
+                                self.line(&format!("assign {} = {}.{};", bind.name, val_str, bind.name));
+                            }
+                        }
+                        continue;
+                    }
                     // Special case: `let x: T = match scrut ... end match;` emits as
                     // `always_comb` with `case` instead of a deeply-nested ternary.
                     // Threshold: 3+ arms makes the ternary chain unreadable.
@@ -4863,6 +4886,75 @@ impl<'a> Codegen<'a> {
 
     fn emit_expr_str(&self, expr: &Expr) -> String {
         self.emit_expr_prec(expr, 0)
+    }
+
+    /// Best-effort struct name for an expression. Walks a small set of
+    /// expression shapes that typically produce a struct value in ARCH
+    /// today (method calls returning structs, function calls, struct
+    /// literals, struct-typed ports/regs/wires/lets). Returns None if
+    /// the type isn't determinable at codegen time — caller falls back
+    /// to emitting a `logic` wire.
+    fn infer_expr_struct_name(&self, e: &Expr) -> Option<String> {
+        // Struct literal: `'{field: value, ...}` carries the struct name.
+        if let ExprKind::StructLiteral(name, _) = &e.kind {
+            return Some(name.name.clone());
+        }
+        // Plain identifier: look up in the current module's symbol scope.
+        if let ExprKind::Ident(n) = &e.kind {
+            let scope = self.symbols.module_scopes.get(&self.current_construct)?;
+            let (sym, _) = scope.get(n.as_str())?;
+            let te_opt: Option<&TypeExpr> = match sym {
+                Symbol::Port(p) => Some(&p.ty),
+                Symbol::Reg(r)  => Some(&r.ty),
+                _ => None,
+            };
+            if let Some(TypeExpr::Named(struct_name)) = te_opt {
+                return Some(struct_name.name.clone());
+            }
+            // Let bindings: scan the module body for the declared type.
+            for item in &self.source.items {
+                if let Item::Module(m) = item {
+                    if m.name.name == self.current_construct {
+                        for bi in &m.body {
+                            if let ModuleBodyItem::LetBinding(lb) = bi {
+                                if lb.name.name == *n {
+                                    if let Some(TypeExpr::Named(sn)) = &lb.ty {
+                                        return Some(sn.name.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn struct_field_type(&self, struct_name: &str, field_name: &str) -> Option<TypeExpr> {
+        for item in &self.source.items {
+            if let Item::Struct(s) = item {
+                if s.name.name == struct_name {
+                    for f in &s.fields {
+                        if f.name.name == field_name {
+                            return Some(f.ty.clone());
+                        }
+                    }
+                }
+            }
+            if let Item::Package(pkg) = item {
+                for s in &pkg.structs {
+                    if s.name.name == struct_name {
+                        for f in &s.fields {
+                            if f.name.name == field_name {
+                                return Some(f.ty.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Lower a Vec method call (any/all/count/contains/reduce_*) to a

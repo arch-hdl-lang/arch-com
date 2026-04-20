@@ -484,6 +484,13 @@ pub struct LetBinding {
     pub ty: Option<TypeExpr>,
     pub value: Expr,
     pub span: Span,
+    /// When non-empty, this is a struct-destructuring let binding:
+    /// `let {a, b, c} = expr;` binds each listed field name to the
+    /// corresponding field of the (struct-typed) RHS. The `name` field
+    /// above is unused in this mode (set to a synthesized placeholder
+    /// by the parser) and `ty` is always None because types are inferred
+    /// from the RHS's struct definition.
+    pub destructure_fields: Vec<Ident>,
 }
 
 #[derive(Debug, Clone)]

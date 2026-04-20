@@ -2268,3 +2268,115 @@ fn test_vec_methods_reduce_or_and_xor() {
     assert!(sv.contains("flags[0] ^ flags[1] ^ flags[2] ^ flags[3]"),
             "reduce_xor expected: {sv}");
 }
+
+#[test]
+fn test_let_destructure_basic() {
+    let source = "
+        struct Point
+          x: UInt<8>;
+          y: UInt<8>;
+        end struct Point
+
+        module M
+          port p_in: in Point;
+          port ox:   out UInt<8>;
+          port oy:   out UInt<8>;
+          let {x, y} = p_in;
+          comb
+            ox = x;
+            oy = y;
+          end comb
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("assign x = p_in.x;"),
+            "expected field assign for x:\n{sv}");
+    assert!(sv.contains("assign y = p_in.y;"),
+            "expected field assign for y:\n{sv}");
+    // Per-field width comes from the struct definition.
+    assert!(sv.contains("logic [7:0] x;") && sv.contains("logic [7:0] y;"),
+            "expected 8-bit wire declarations:\n{sv}");
+}
+
+#[test]
+fn test_let_destructure_partial() {
+    // Only bind a subset of fields; the rest are ignored.
+    let source = "
+        struct Trio
+          a: UInt<4>;
+          b: UInt<4>;
+          c: UInt<4>;
+        end struct Trio
+
+        module M
+          port t:  in Trio;
+          port oa: out UInt<4>;
+          let {a} = t;
+          comb
+            oa = a;
+          end comb
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("assign a = t.a;"),
+            "expected partial destructure:\n{sv}");
+    assert!(!sv.contains("assign b = t.b;") && !sv.contains("assign c = t.c;"),
+            "did not expect unbound fields:\n{sv}");
+}
+
+#[test]
+fn test_let_destructure_non_struct_errors() {
+    let source = "
+        module M
+          port x:  in UInt<8>;
+          port ox: out UInt<8>;
+          let {a, b} = x;
+          comb
+            ox = 8'h0;
+          end comb
+        end module M
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse");
+    let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err(),
+            "expected type-check error for destructure on non-struct");
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(msg.contains("requires a struct-typed RHS"),
+            "expected specific error message, got: {msg}");
+}
+
+#[test]
+fn test_let_destructure_unknown_field_errors() {
+    let source = "
+        struct Pair
+          a: UInt<4>;
+          b: UInt<4>;
+        end struct Pair
+
+        module M
+          port p:  in Pair;
+          port ox: out UInt<4>;
+          let {a, z} = p;
+          comb
+            ox = a;
+          end comb
+        end module M
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse");
+    let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err(),
+            "expected type-check error for unknown field");
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(msg.contains("has no field named `z`"),
+            "expected unknown-field message, got: {msg}");
+}

@@ -288,7 +288,27 @@ impl<'a> TypeChecker<'a> {
                     local_types.insert(r.name.name.clone(), ty);
                 }
                 ModuleBodyItem::LetBinding(l) => {
-                    if let Some(ty) = &l.ty {
+                    if !l.destructure_fields.is_empty() {
+                        // Destructuring: infer each bound name's type from the
+                        // RHS struct. If we can't resolve the struct yet
+                        // (forward reference), leave names unbound — the
+                        // main pass re-checks.
+                        let rhs_ty = self.resolve_expr_type(&l.value, &m.name.name, &local_types);
+                        if let Ty::Struct(sname) = &rhs_ty {
+                            if let Some((crate::resolve::Symbol::Struct(info), _)) =
+                                self.symbols.globals.get(sname)
+                            {
+                                for bind in &l.destructure_fields {
+                                    if let Some((_, fty)) = info.fields.iter()
+                                        .find(|(fname, _)| fname == &bind.name)
+                                    {
+                                        let bty = self.resolve_type_expr(fty, &m.name.name, &local_types);
+                                        local_types.insert(bind.name.clone(), bty);
+                                    }
+                                }
+                            }
+                        }
+                    } else if let Some(ty) = &l.ty {
                         let resolved = self.resolve_type_expr(ty, &m.name.name, &local_types);
                         local_types.insert(l.name.name.clone(), resolved);
                     }
@@ -353,6 +373,53 @@ impl<'a> TypeChecker<'a> {
                     self.check_comb_latch(&cb.stmts, cb.span);
                 }
                 ModuleBodyItem::LetBinding(l) => {
+                    // Destructuring form: `let {f1, f2} = expr;`
+                    if !l.destructure_fields.is_empty() {
+                        let rhs_ty = self.resolve_expr_type(&l.value, &m.name.name, &local_types);
+                        if l.ty.is_some() {
+                            self.errors.push(CompileError::general(
+                                "destructuring `let` does not accept a type annotation — types are inferred from the RHS struct",
+                                l.span,
+                            ));
+                        }
+                        let Ty::Struct(sname) = &rhs_ty else {
+                            if rhs_ty != Ty::Error {
+                                self.errors.push(CompileError::general(
+                                    &format!("destructuring `let` requires a struct-typed RHS, got `{}`", rhs_ty.display()),
+                                    l.value.span,
+                                ));
+                            }
+                            continue;
+                        };
+                        let Some((crate::resolve::Symbol::Struct(info), _)) =
+                            self.symbols.globals.get(sname).cloned()
+                        else {
+                            continue;
+                        };
+                        for bind in &l.destructure_fields {
+                            self.check_snake_case(bind);
+                            let field = info.fields.iter().find(|(fname, _)| fname == &bind.name);
+                            if field.is_none() {
+                                self.errors.push(CompileError::general(
+                                    &format!("struct `{}` has no field named `{}`", sname, bind.name),
+                                    bind.span,
+                                ));
+                                continue;
+                            }
+                            // local_types already contains these names — the
+                            // pre-pass inserted them for forward-reference
+                            // resolution. Only real name collisions (existing
+                            // driven signals, port names) are problems.
+                            let is_port = m.ports.iter().any(|p| p.name.name == bind.name);
+                            if is_port {
+                                self.errors.push(CompileError::general(
+                                    &format!("`{}` is already declared as a port", bind.name),
+                                    bind.span,
+                                ));
+                            }
+                        }
+                        continue;
+                    }
                     self.check_snake_case(&l.name);
                     if l.ty.is_none() {
                         // `let x = expr;` without type annotation — assign to existing port/wire
