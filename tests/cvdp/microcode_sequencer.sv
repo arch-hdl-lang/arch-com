@@ -270,6 +270,11 @@ module microcode_sequencer (
     c_n_out = fa_cout;
     c_inc_out = pc_inc_cout;
   end
+  // synopsys translate_off
+  // Auto-generated safety assertions (bounds / divide-by-zero)
+  _auto_bound_vec_0: assert property (@(posedge clk) (sp[3:0]) < (16))
+    else $fatal(1, "BOUNDS VIOLATION: microcode_sequencer._auto_bound_vec_0");
+  // synopsys translate_on
 
 endmodule
 

@@ -17,7 +17,7 @@ module interrupt_controller
   port starvation_detected:  out Bool;
 
   // FSM states
-  // 0=IDLE, 1=PRIORITY_CALC, 2=SERVICE_PREP, 3=SERVICING, 4=COMPLETION, 7=ERROR
+  // 0=IDLE, 1=PRIORITY_CALC, 2=SERVICE_PREP, 3=SERVICING, 5=ERROR
   reg current_state: UInt<3> reset rst_n=>0;
 
   reg pending_interrupts: UInt<10> reset rst_n=>0;
@@ -74,9 +74,24 @@ module interrupt_controller
   wire w_max_id: UInt<4>;
   wire mask_inv: UInt<10>;
   wire any_starvation: Bool;
+  wire w_pending_visible: UInt<10>;
+  wire w_pending_after_ack: UInt<10>;
 
   // Inverted mask
   let mask_inv = ~interrupt_mask;
+
+  // Pending set visible to the selector, including same-cycle unmasked triggers.
+  comb
+    if interrupt_trig
+      w_pending_visible = pending_interrupts | (interrupt_requests & mask_inv);
+    else
+      w_pending_visible = pending_interrupts;
+    end if
+  end comb
+
+  comb
+    w_pending_after_ack = w_pending_visible & ~(1.zext<10>() << r_interrupt_id);
+  end comb
 
   // Compute effective priorities combinationally
   comb
@@ -137,63 +152,63 @@ module interrupt_controller
   comb
     w_max_pri = 0;
     w_max_id = 0;
-    if pending_interrupts[0:0] == 1
-      if eff_pri_0 >= w_max_pri
-        w_max_pri = eff_pri_0;
+    if w_pending_visible[0:0] == 1
+      if w_eff_pri_0 >= w_max_pri
+        w_max_pri = w_eff_pri_0;
         w_max_id = 0;
       end if
     end if
-    if pending_interrupts[1:1] == 1
-      if eff_pri_1 >= w_max_pri
-        w_max_pri = eff_pri_1;
+    if w_pending_visible[1:1] == 1
+      if w_eff_pri_1 >= w_max_pri
+        w_max_pri = w_eff_pri_1;
         w_max_id = 1;
       end if
     end if
-    if pending_interrupts[2:2] == 1
-      if eff_pri_2 >= w_max_pri
-        w_max_pri = eff_pri_2;
+    if w_pending_visible[2:2] == 1
+      if w_eff_pri_2 >= w_max_pri
+        w_max_pri = w_eff_pri_2;
         w_max_id = 2;
       end if
     end if
-    if pending_interrupts[3:3] == 1
-      if eff_pri_3 >= w_max_pri
-        w_max_pri = eff_pri_3;
+    if w_pending_visible[3:3] == 1
+      if w_eff_pri_3 >= w_max_pri
+        w_max_pri = w_eff_pri_3;
         w_max_id = 3;
       end if
     end if
-    if pending_interrupts[4:4] == 1
-      if eff_pri_4 >= w_max_pri
-        w_max_pri = eff_pri_4;
+    if w_pending_visible[4:4] == 1
+      if w_eff_pri_4 >= w_max_pri
+        w_max_pri = w_eff_pri_4;
         w_max_id = 4;
       end if
     end if
-    if pending_interrupts[5:5] == 1
-      if eff_pri_5 >= w_max_pri
-        w_max_pri = eff_pri_5;
+    if w_pending_visible[5:5] == 1
+      if w_eff_pri_5 >= w_max_pri
+        w_max_pri = w_eff_pri_5;
         w_max_id = 5;
       end if
     end if
-    if pending_interrupts[6:6] == 1
-      if eff_pri_6 >= w_max_pri
-        w_max_pri = eff_pri_6;
+    if w_pending_visible[6:6] == 1
+      if w_eff_pri_6 >= w_max_pri
+        w_max_pri = w_eff_pri_6;
         w_max_id = 6;
       end if
     end if
-    if pending_interrupts[7:7] == 1
-      if eff_pri_7 >= w_max_pri
-        w_max_pri = eff_pri_7;
+    if w_pending_visible[7:7] == 1
+      if w_eff_pri_7 >= w_max_pri
+        w_max_pri = w_eff_pri_7;
         w_max_id = 7;
       end if
     end if
-    if pending_interrupts[8:8] == 1
-      if eff_pri_8 >= w_max_pri
-        w_max_pri = eff_pri_8;
+    if w_pending_visible[8:8] == 1
+      if w_eff_pri_8 >= w_max_pri
+        w_max_pri = w_eff_pri_8;
         w_max_id = 8;
       end if
     end if
-    if pending_interrupts[9:9] == 1
-      if eff_pri_9 >= w_max_pri
-        w_max_pri = eff_pri_9;
+    if w_pending_visible[9:9] == 1
+      if w_eff_pri_9 >= w_max_pri
+        w_max_pri = w_eff_pri_9;
         w_max_id = 9;
       end if
     end if
@@ -241,7 +256,7 @@ module interrupt_controller
         r_interrupt_valid <= false;
         service_timer <= 0;
         timeout_error <= false;
-        if (pending_interrupts != 0) | interrupt_trig
+        if w_pending_visible != 0
           current_state <= 1;
           // Compute effective priorities with starvation boost
           eff_pri_0 <= w_eff_pri_0; eff_pri_1 <= w_eff_pri_1;
@@ -251,86 +266,88 @@ module interrupt_controller
           eff_pri_8 <= w_eff_pri_8; eff_pri_9 <= w_eff_pri_9;
 
           // Update wait counters for pending interrupts
-          if (pending_interrupts[0:0] == 1) | (interrupt_trig & (interrupt_requests[0:0] == 1))
+          if w_pending_visible[0:0] == 1
             wait_cnt_0 <= (wait_cnt_0 + 1).trunc<4>();
           else
             wait_cnt_0 <= 0;
           end if
-          if (pending_interrupts[1:1] == 1) | (interrupt_trig & (interrupt_requests[1:1] == 1))
+          if w_pending_visible[1:1] == 1
             wait_cnt_1 <= (wait_cnt_1 + 1).trunc<4>();
           else
             wait_cnt_1 <= 0;
           end if
-          if (pending_interrupts[2:2] == 1) | (interrupt_trig & (interrupt_requests[2:2] == 1))
+          if w_pending_visible[2:2] == 1
             wait_cnt_2 <= (wait_cnt_2 + 1).trunc<4>();
           else
             wait_cnt_2 <= 0;
           end if
-          if (pending_interrupts[3:3] == 1) | (interrupt_trig & (interrupt_requests[3:3] == 1))
+          if w_pending_visible[3:3] == 1
             wait_cnt_3 <= (wait_cnt_3 + 1).trunc<4>();
           else
             wait_cnt_3 <= 0;
           end if
-          if (pending_interrupts[4:4] == 1) | (interrupt_trig & (interrupt_requests[4:4] == 1))
+          if w_pending_visible[4:4] == 1
             wait_cnt_4 <= (wait_cnt_4 + 1).trunc<4>();
           else
             wait_cnt_4 <= 0;
           end if
-          if (pending_interrupts[5:5] == 1) | (interrupt_trig & (interrupt_requests[5:5] == 1))
+          if w_pending_visible[5:5] == 1
             wait_cnt_5 <= (wait_cnt_5 + 1).trunc<4>();
           else
             wait_cnt_5 <= 0;
           end if
-          if (pending_interrupts[6:6] == 1) | (interrupt_trig & (interrupt_requests[6:6] == 1))
+          if w_pending_visible[6:6] == 1
             wait_cnt_6 <= (wait_cnt_6 + 1).trunc<4>();
           else
             wait_cnt_6 <= 0;
           end if
-          if (pending_interrupts[7:7] == 1) | (interrupt_trig & (interrupt_requests[7:7] == 1))
+          if w_pending_visible[7:7] == 1
             wait_cnt_7 <= (wait_cnt_7 + 1).trunc<4>();
           else
             wait_cnt_7 <= 0;
           end if
-          if (pending_interrupts[8:8] == 1) | (interrupt_trig & (interrupt_requests[8:8] == 1))
+          if w_pending_visible[8:8] == 1
             wait_cnt_8 <= (wait_cnt_8 + 1).trunc<4>();
           else
             wait_cnt_8 <= 0;
           end if
-          if (pending_interrupts[9:9] == 1) | (interrupt_trig & (interrupt_requests[9:9] == 1))
+          if w_pending_visible[9:9] == 1
             wait_cnt_9 <= (wait_cnt_9 + 1).trunc<4>();
           else
             wait_cnt_9 <= 0;
           end if
         end if
       elsif current_state == 1
-        // PRIORITY_CALC - compute next interrupt id
+        // PRIORITY_CALC
         next_interrupt_id <= w_max_id;
         max_priority <= w_max_pri;
         current_state <= 2;
       elsif current_state == 2
         // SERVICE_PREP
         r_interrupt_id <= next_interrupt_id;
-        r_interrupt_valid <= true;
         r_interrupt_status <= pending_interrupts;
         r_starvation_detected <= any_starvation;
+        r_interrupt_valid <= false;
         current_state <= 3;
         service_timer <= 0;
       elsif current_state == 3
         // SERVICING
+        r_interrupt_valid <= true;
         if interrupt_ack
-          current_state <= 4;
+          pending_interrupts <= w_pending_after_ack;
+          r_interrupt_valid <= false;
+          r_interrupt_status <= 0;
+          if w_pending_after_ack != 0
+            current_state <= 1;
+          else
+            current_state <= 0;
+          end if
         elsif service_timer == 15
           timeout_error <= true;
           current_state <= 5;
         else
           service_timer <= (service_timer + 1).trunc<4>();
         end if
-      elsif current_state == 4
-        // COMPLETION
-        pending_interrupts <= pending_interrupts & ~(1.zext<10>() << r_interrupt_id);
-        r_interrupt_valid <= false;
-        r_interrupt_status <= 0;
-        current_state <= 0;
       else
         // ERROR (state 5/7)
         r_interrupt_valid <= false;
