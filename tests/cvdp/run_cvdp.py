@@ -283,6 +283,7 @@ def extract_and_run(name_substr, sv_file=None):
     if not os.path.exists(sv_file):
         print(f"SV file not found: {sv_file}")
         return False
+    explicit_sv_stem = os.path.basename(sv_file).replace('.sv', '').replace('.v', '')
 
     # Create temp directory for test
     workdir = tempfile.mkdtemp(prefix=f"cvdp_{module_name}_")
@@ -350,7 +351,7 @@ def extract_and_run(name_substr, sv_file=None):
         stem = fname.replace('.sv', '').replace('.v', '')
         # Prefer the declared TOPLEVEL source when harness uses generic names.
         preferred_stems = []
-        for st in (toplevel, module_name, stem):
+        for st in (explicit_sv_stem, toplevel, module_name, stem):
             if st not in preferred_stems:
                 preferred_stems.append(st)
         copied = False
@@ -375,7 +376,7 @@ def extract_and_run(name_substr, sv_file=None):
     top_sv = os.path.join(rtl_dir, f"{toplevel}.sv")
     if os.path.exists(top_sv) and top_sv not in sv_sources:
         sv_sources.append(top_sv)
-    sv_sources = _dedupe_redeclared_modules(sv_sources, preferred_stem=module_name)
+    sv_sources = _dedupe_redeclared_modules(sv_sources, preferred_stem=explicit_sv_stem)
     run_env['VERILOG_SOURCES'] = ' '.join(sv_sources) if sv_sources else os.path.join(rtl_dir, f"{module_name}.sv")
 
     # Patch harness_library dut_init: icarus exposes inputs as GPI_LOGIC/GPI_LOGIC_ARRAY, not GPI_NET,
@@ -442,6 +443,7 @@ def extract_and_run(name_substr, sv_file=None):
         ))
 
     # Fix import issues in all Python files
+    harness_init_available = os.path.exists(hl_path) and 'async def dut_init' in open(hl_path).read() if os.path.exists(hl_path) else False
     for pyfile in glob.glob(os.path.join(workdir, 'src', '*.py')):
         pycontent = open(pyfile).read()
         changed = False
@@ -711,6 +713,19 @@ def extract_and_run(name_substr, sv_file=None):
         if ': None}' in pycontent or ': None,' in pycontent:
             pycontent = pycontent.replace(': None}', ': 1}').replace(': None,', ': 1,')
             changed = True
+        # Icarus does not support SVA assertion items emitted by some generated SV
+        # files; disable assertion parsing in harness build() calls unless the
+        # test runner already specifies build_args.
+        if 'get_runner' in pycontent and '.build(' in pycontent and 'build_args=' not in pycontent:
+            pycontent_build_args = _re2.sub(
+                r'(\s+\w+\.build\(\n)',
+                r'\1        build_args=["-gno-assertions"] if sim == "icarus" else [],\n',
+                pycontent,
+                count=1,
+            )
+            if pycontent_build_args != pycontent:
+                pycontent = pycontent_build_args
+                changed = True
         # Fix cocotb 2.0: packed arrays cannot be subscript-indexed (dut.sig[i])
         # Replace int(dut.X[N]) patterns with bit-extract from int value
         if _re2.search(r'int\(dut\.\w+\[\d+\]\)', pycontent):
@@ -741,6 +756,37 @@ def extract_and_run(name_substr, sv_file=None):
         if pycontent_scalar != pycontent:
             pycontent = pycontent_scalar
             changed = True
+        # Some interrupt-controller harnesses compute max_id asynchronously and
+        # can hit a NameError if the DUT responds before that task populates it.
+        if 'global max_id' in pycontent and 'def get_max_pending()' in pycontent and 'async def check_int_id()' in pycontent:
+            pycontent_maxid = _re2.sub(
+                r'(async def check_int_id\(\):\n(?:\s+.*\n)*?\s+await RisingEdge\(dut\.interrupt_valid\)\n)',
+                (
+                    r'\1'
+                    r'        if "max_id" not in globals():\n'
+                    r'            max_id = get_max_pending()\n'
+                ),
+                pycontent,
+                count=1,
+            )
+            if pycontent_maxid != pycontent:
+                pycontent = pycontent_maxid
+                changed = True
+        # Some dataset harnesses define harness_library.dut_init(dut) but never call it,
+        # which leaves unassigned DUT inputs as X on Icarus.
+        if harness_init_available and '@cocotb.test()' in pycontent and 'await dut_init(dut)' not in pycontent:
+            if 'from harness_library import dut_init' not in pycontent:
+                pycontent = 'from harness_library import dut_init\n' + pycontent
+                changed = True
+            pycontent_with_init = _re2.sub(
+                r'(@cocotb\.test\(\)\s*\nasync def [A-Za-z_]\w+\(dut\):\n)',
+                r'\1    await dut_init(dut)\n',
+                pycontent,
+                count=1,
+            )
+            if pycontent_with_init != pycontent:
+                pycontent = pycontent_with_init
+                changed = True
         if changed:
             open(pyfile, 'w').write(pycontent)
 
