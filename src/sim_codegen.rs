@@ -197,6 +197,39 @@ impl<'a> SimCodegen<'a> {
         wrappers
     }
 
+    /// Structs the module actually depends on (port types, internal reg
+    /// types, plus the transitive closure of their field types). Only these
+    /// get `py::class_<...>` bindings — the module's own `V{Name}.h` won't
+    /// declare unrelated package structs.
+    fn collect_used_structs(
+        m: &ModuleDecl,
+        all_structs: &HashMap<String, &StructDecl>,
+    ) -> HashSet<String> {
+        fn push_named(ty: &TypeExpr, stack: &mut Vec<String>) {
+            match ty {
+                TypeExpr::Named(id) => stack.push(id.name.clone()),
+                TypeExpr::Vec(inner, _) => push_named(inner, stack),
+                _ => {}
+            }
+        }
+        let mut stack: Vec<String> = Vec::new();
+        for p in &m.ports { push_named(&p.ty, &mut stack); }
+        for item in &m.body {
+            if let ModuleBodyItem::RegDecl(r) = item {
+                push_named(&r.ty, &mut stack);
+            }
+        }
+        let mut used: HashSet<String> = HashSet::new();
+        while let Some(name) = stack.pop() {
+            if used.insert(name.clone()) {
+                if let Some(sd) = all_structs.get(&name) {
+                    for f in &sd.fields { push_named(&f.ty, &mut stack); }
+                }
+            }
+        }
+        used
+    }
+
     /// Emit pybind11 wrapper for a module.
     fn emit_pybind_module(&self, m: &ModuleDecl) -> Option<SimModel> {
         let name = &m.name.name;
@@ -332,20 +365,35 @@ impl<'a> SimCodegen<'a> {
         let port_info_str = port_info_entries.join(",\n");
 
         // Collect all struct types declared in the compilation unit (file-scope
-        // and inside packages). Register each with pybind so that struct-typed
-        // ports like `hwif_in: MyIpHwifIn` are reachable from Python as
-        // `dut.hwif_in.field`.
-        let mut all_structs: Vec<&StructDecl> = Vec::new();
+        // and inside packages), then bind ONLY the ones this module actually
+        // references through its ports or internal regs (plus any nested
+        // structs they transitively contain). Binding every unit-level struct
+        // regardless of use produced `undeclared identifier` errors when a
+        // shared package was built with a module whose own `V{Name}.h` didn't
+        // include those structs — a sibling module's header did instead.
+        let mut all_structs: HashMap<String, &StructDecl> = HashMap::new();
         for item in &self.source.items {
             match item {
-                Item::Struct(s) => all_structs.push(s),
-                Item::Package(p) => { for s in &p.structs { all_structs.push(s); } }
+                Item::Struct(s) => { all_structs.insert(s.name.name.clone(), s); }
+                Item::Package(p) => {
+                    for s in &p.structs { all_structs.insert(s.name.name.clone(), s); }
+                }
                 _ => {}
             }
         }
+        let used_structs = Self::collect_used_structs(m, &all_structs);
         let mut struct_bindings = String::new();
-        for s in &all_structs {
+        // Iterate in source order (not HashMap order) for stable output.
+        let ordered: Vec<&StructDecl> = self.source.items.iter().flat_map(|item| -> Vec<&StructDecl> {
+            match item {
+                Item::Struct(s) => vec![s],
+                Item::Package(p) => p.structs.iter().collect(),
+                _ => vec![],
+            }
+        }).collect();
+        for s in ordered {
             let sname = &s.name.name;
+            if !used_structs.contains(sname) { continue; }
             // `py::module_local()` scopes the struct type to this extension
             // module so multiple pybind builds sharing struct names (e.g. two
             // cpuif variants of the same design) can coexist in one process.
