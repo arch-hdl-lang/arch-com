@@ -207,6 +207,51 @@ Prefer wrapping ops over `.trunc<N>()` when the intent is deliberate modular ari
 
 `$clog2(expr)` supported in type args: `UInt<$clog2(DEPTH)>`
 
+**Vec methods** (parallel-reduction; fully unrolled; no runtime iteration):
+
+```
+vec.any(pred)        → Bool              // OR-reduce of per-element compares
+vec.all(pred)        → Bool              // AND-reduce
+vec.count(pred)      → UInt<clog2(N+1)>  // popcount of hits
+vec.contains(x)      → Bool              // shorthand for vec.any(item == x)
+vec.find_first(pred) → struct {found: Bool, index: UInt<clog2(N)>}
+vec.reduce_or()      → T                 // no predicate; elementwise OR
+vec.reduce_and()     → T                 // no predicate; elementwise AND
+vec.reduce_xor()     → T                 // no predicate; elementwise XOR
+```
+
+Predicates reference `item` (element, type T) and `index` (position, UInt<clog2(N)>) — context-sensitive binders, only in scope inside the argument expression. No lambda syntax; follows SystemVerilog's `with (item)` convention.
+
+```arch
+// Canonical search — destructure the result:
+let {found, index} = haystack.find_first(item == needle);
+if found
+  result = haystack[index];
+end if
+
+// Index-aware predicate:
+let {found, index} = vec.find_first(item == needle and index >= start);
+
+// Simple reductions:
+let any_set:  Bool = flags.any(item);
+let count:    UInt<3> = bits.count(item == 1'b1);
+let has_it:   Bool = haystack.contains(needle);
+let parity:   Bool = data.reduce_xor();
+```
+
+v1 scope; `map`, `fold`, `zip`, `find_last`, `take_while` are deferred.
+
+**Struct destructuring in `let`:**
+
+```arch
+let {field1, field2} = struct_expr;   // binds two locals to the struct's named fields
+```
+
+- Any struct-typed RHS (user struct, find_first result, module output struct, etc.)
+- Partial destructure is fine — listed fields must exist, rest are ignored
+- No type annotation; types are inferred from the struct definition
+- No rename form in v1 — use `let alias = s.field;` if you need a different local name
+
 **Bit ops:**
 
 ```

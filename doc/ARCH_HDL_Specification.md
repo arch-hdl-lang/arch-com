@@ -520,6 +520,90 @@ Every signal in Arch has exactly one driver --- the block (comb or reg) that ass
 >
 > ◈ **Comb match uses `=` syntax.** In `comb` blocks, `match` arms use `=` (combinational assign). In `seq` blocks, arms use `<=` (register assign). Enum exhaustiveness is checked in both contexts.
 
+**3.5 Vec Methods**
+
+`Vec<T, N>` exposes a small family of parallel-reduction methods that lower to combinational hardware — fully unrolled at elaboration time because N is a compile-time constant. They cover the common patterns that would otherwise be hand-written as parallel compares + reductions + priority encoders.
+
+All predicate-taking methods introduce two implicit identifiers into the argument expression's scope:
+
+- **`item`** — per-iteration element (type `T`)
+- **`index`** — position (type `UInt<clog2(N)>`)
+
+These names are only bound inside the argument expression of a Vec method call. They shadow an identically-named enclosing signal for the duration of the predicate with a warning (rename the outer signal to clear the warning).
+
+Choice of identifier names follows SystemVerilog's `with (item)` convention. Predicate lambdas (Rust `|e|`, Scala `e =>`) would clash with ARCH grammar (`|` is bitwise OR; `=>` is reserved for reset clauses); implicit binders avoid the conflict without sacrificing readability.
+
+  -------------------------------------------------------------------------------------------------------------------------
+  **Method**               **Returns**                   **Hardware**
+  ------------------------ ----------------------------- ----------------------------------------------------------------
+  `vec.any(pred)`          `Bool`                        N parallel compares + OR reduction
+
+  `vec.all(pred)`          `Bool`                        N parallel compares + AND reduction
+
+  `vec.count(pred)`        `UInt<clog2(N+1)>`            N parallel compares + popcount tree
+
+  `vec.contains(x)`        `Bool`                        Shorthand for `vec.any(item == x)`; no predicate needed
+
+  `vec.find_first(pred)`   Synthesized struct\           N parallel compares + OR (for `found`) + priority encoder\
+                           `{found: Bool, index: UInt<clog2(N)>}`  (for `index`; lowest-index wins, defaults to 0 when none)
+
+  `vec.reduce_or()`        same width as `T`             Per-element bitwise OR reduction (no predicate)
+
+  `vec.reduce_and()`       same width as `T`             Per-element bitwise AND reduction
+
+  `vec.reduce_xor()`       same width as `T`             Per-element bitwise XOR reduction
+  -------------------------------------------------------------------------------------------------------------------------
+
+Examples:
+
+```
+let first_digit: (found: Bool, index: UInt<2>) = todo!;      // type-only illustration
+let {found, index} = chars.find_first(item >= 48 and item <= 57);
+
+let any_high:   Bool             = flags.any(item);
+let all_valid:  Bool             = valid_vec.all(item);
+let n_ones:     UInt<3>          = bits.count(item == 1'b1);      // N=4 → clog2(5)=3
+let has_match:  Bool             = haystack.contains(needle);
+let parity:     Bool             = packed_bits.reduce_xor();
+```
+
+`find_first` returns a struct that is normally destructured with the `let { ... }` form (see §3.6). The synthesized struct type is named `__ArchFindResult_<W>` internally; users should not reference it by name. Binding any name other than `found` or `index` is a compile error.
+
+**Limitations in v1**. `map`, `fold`, `zip`, `find_last`, `take_while`, and other higher-order method families are not yet available; they are blocked on tuple types and multi-binder predicates. See `doc/plan_vec_methods.md` for the deferred roadmap.
+
+**3.6 Struct Destructuring in `let` Bindings**
+
+Any struct-typed expression can be destructured into per-field locals in a single `let` binding:
+
+```
+struct Point
+  x: UInt<8>;
+  y: UInt<8>;
+end struct Point
+
+module Mover
+  port p: in Point;
+  let {x, y} = p;                        // binds `x` to p.x, `y` to p.y
+  ...
+end module Mover
+```
+
+Rules:
+- Listed field names must exist on the struct. Unknown fields are a compile error.
+- Partial destructure is allowed — binding a subset of fields ignores the rest.
+- No type annotation is allowed; types are inferred from the struct definition.
+- No rename form in v1 (`{field: alias}`); if the bound name must differ from the field name, write `let alias = s.field;` separately.
+- Grammar: the `{` immediately after `let` is otherwise unused in ARCH (struct literals use `'{...}`), so the form is unambiguous.
+
+Destructuring composes with the `find_first` Vec method for its canonical call site:
+
+```
+let {found, index} = haystack.find_first(item == needle);
+if found
+  result = haystack[index];
+end if
+```
+
 **4. Modules**
 
 A module is the fundamental unit of design in Arch. Every module follows the same four-section schema --- params, ports, body, optional verification. This regularity is intentional: an AI encountering any Arch construct can immediately orient itself using the same mental model.
