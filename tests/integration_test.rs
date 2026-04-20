@@ -2177,3 +2177,94 @@ fn test_handshake_tier15_req_ack_uses_req_as_guard() {
     assert!(!ws.iter().any(|m| m.contains("handshake payload")),
             "if b.ch_req should guard req_ack payload; got: {:?}", ws);
 }
+
+#[test]
+fn test_vec_methods_any_all_expand_to_reduction() {
+    // vec.any(pred) → OR of per-element substitutions
+    // vec.all(pred) → AND of per-element substitutions
+    let source = "
+        module M
+          port vec: in Vec<UInt<8>, 4>;
+          port needle: in UInt<8>;
+          port any_eq: out Bool;
+          port all_nz:  out Bool;
+          comb
+            any_eq = vec.any(item == needle);
+            all_nz = vec.all(item != 0);
+          end comb
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    // Fully unrolled, item → vec[i]:
+    assert!(sv.contains("vec[0] == needle || vec[1] == needle"),
+            "expected any to expand to OR of 4 compares: {sv}");
+    assert!(sv.contains("vec[0] != 0 && vec[1] != 0"),
+            "expected all to expand to AND of 4 compares: {sv}");
+}
+
+#[test]
+fn test_vec_methods_index_binder() {
+    // `index` is bound to the iteration position (sized literal).
+    let source = "
+        module M
+          port vec: in Vec<UInt<8>, 4>;
+          port needle: in UInt<8>;
+          port start: in UInt<2>;
+          port found: out Bool;
+          comb
+            found = vec.any(item == needle and index >= start);
+          end comb
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    // index should expand to 2-bit literals 2'd0..2'd3 (clog2(4)=2).
+    assert!(sv.contains("2'd0") && sv.contains("2'd3"),
+            "expected index binder to emit sized literals: {sv}");
+}
+
+#[test]
+fn test_vec_methods_count_and_contains() {
+    let source = "
+        module M
+          port vec: in Vec<UInt<8>, 4>;
+          port x: in UInt<8>;
+          port n: out UInt<3>;
+          port has: out Bool;
+          comb
+            n   = vec.count(item == x);
+            has = vec.contains(x);
+          end comb
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    // count emits 3-bit population-count expression (clog2(N+1)=3 for N=4).
+    assert!(sv.contains("3'(vec[0] == x ? 1 : 0)"),
+            "expected count to emit width-3 bool-to-bit casts: {sv}");
+    // contains lowers identically to any(item == x).
+    assert!(sv.contains("(vec[0] == x) || (vec[1] == x)"),
+            "expected contains to OR per-element equality: {sv}");
+}
+
+#[test]
+fn test_vec_methods_reduce_or_and_xor() {
+    let source = "
+        module M
+          port flags: in Vec<Bool, 4>;
+          port any_flag: out Bool;
+          port all_flag: out Bool;
+          port parity:   out Bool;
+          comb
+            any_flag = flags.reduce_or();
+            all_flag = flags.reduce_and();
+            parity   = flags.reduce_xor();
+          end comb
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("flags[0] | flags[1] | flags[2] | flags[3]"),
+            "reduce_or expected: {sv}");
+    assert!(sv.contains("flags[0] & flags[1] & flags[2] & flags[3]"),
+            "reduce_and expected: {sv}");
+    assert!(sv.contains("flags[0] ^ flags[1] ^ flags[2] ^ flags[3]"),
+            "reduce_xor expected: {sv}");
+}
