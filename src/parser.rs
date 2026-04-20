@@ -2277,13 +2277,22 @@ impl Parser {
             if self.check(TokenKind::Dot) {
                 self.advance();
                 let field = self.expect_ident()?;
-                // Check for method call: .trunc<N>(), .zext<N>(), .sext<N>(), .reverse(N)
-                if self.check(TokenKind::LParen) && field.name == "reverse" {
+                // Method call with paren args: .reverse(N), plus the
+                // Vec reduction/predicate family (any/all/count/contains/
+                // reduce_or/reduce_and/reduce_xor).
+                let paren_method = self.check(TokenKind::LParen)
+                    && matches!(field.name.as_str(),
+                        "reverse" | "any" | "all" | "count" | "contains"
+                        | "reduce_or" | "reduce_and" | "reduce_xor");
+                if paren_method {
                     self.advance(); // (
-                    let mut args = vec![self.parse_expr()?];
-                    while self.check(TokenKind::Comma) {
-                        self.advance();
+                    let mut args = Vec::new();
+                    if !self.check(TokenKind::RParen) {
                         args.push(self.parse_expr()?);
+                        while self.check(TokenKind::Comma) {
+                            self.advance();
+                            args.push(self.parse_expr()?);
+                        }
                     }
                     self.expect(TokenKind::RParen)?;
                     let span = lhs.span.merge(self.tokens[self.pos.saturating_sub(1)].span);

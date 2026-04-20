@@ -1280,6 +1280,10 @@ struct Ctx<'a> {
     /// FSM Vec port-regs: always resolve to `_name` (internal C array), regardless of fsm_mode.
     /// These ports have flat public fields (name_0..name_N-1) but internal storage `_name[N]`.
     fsm_vec_port_regs: Option<&'a HashSet<String>>,
+    /// Identifier substitutions active while emitting a Vec method predicate
+    /// (e.g. "item" → "vec[3]", "index" → "3"). Checked first in the Ident
+    /// branch of `cpp_expr`; None or missing key means normal resolution.
+    ident_subst: Option<&'a HashMap<String, String>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -1298,7 +1302,8 @@ impl<'a> Ctx<'a> {
         let reset_levels = EMPTY_RESET_LEVELS.get_or_init(HashMap::new);
         Ctx { reg_names, port_names, let_names, inst_names, wide_names,
               widths, posedge_lhs: false, fsm_mode: false, enum_map, bus_ports,
-              reset_levels, vec_names: None, vec_sizes: None, fsm_vec_port_regs: None }
+              reset_levels, vec_names: None, vec_sizes: None, fsm_vec_port_regs: None,
+              ident_subst: None }
     }
 
     fn with_vec_sizes(mut self, vec_sizes: &'a HashMap<String, u64>) -> Self {
@@ -1499,6 +1504,95 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
 
 // ── Expression emitter ────────────────────────────────────────────────────────
 
+/// Lower a Vec method call (any/all/count/contains/reduce_*) to an
+/// unrolled C++ expression. Predicate identifier substitution for
+/// `item`/`index` is done by building a fresh `Ctx` with `ident_subst`
+/// pointing at the per-iteration map.
+fn lower_vec_method_cpp(
+    recv_b: &str,
+    recv: &Expr,
+    method: &Ident,
+    args: &[Expr],
+    ctx: &Ctx,
+) -> String {
+    let n = match &recv.kind {
+        ExprKind::Ident(n) => ctx.vec_sizes.and_then(|m| m.get(n)).copied(),
+        _ => None,
+    };
+    let Some(n) = n else {
+        return format!("{recv_b}.{}()", method.name);
+    };
+    let n_usize = n as usize;
+
+    let emit_at = |i: u64| -> String {
+        let mut sub: HashMap<String, String> = HashMap::new();
+        sub.insert("item".to_string(), format!("{recv_b}[{i}]"));
+        sub.insert("index".to_string(), format!("{i}"));
+        let sub_ctx = Ctx {
+            reg_names: ctx.reg_names, port_names: ctx.port_names,
+            let_names: ctx.let_names, inst_names: ctx.inst_names,
+            wide_names: ctx.wide_names, widths: ctx.widths,
+            posedge_lhs: ctx.posedge_lhs, fsm_mode: ctx.fsm_mode,
+            enum_map: ctx.enum_map, bus_ports: ctx.bus_ports,
+            reset_levels: ctx.reset_levels, vec_names: ctx.vec_names,
+            vec_sizes: ctx.vec_sizes, fsm_vec_port_regs: ctx.fsm_vec_port_regs,
+            ident_subst: None, // replaced below via a temporary binding
+        };
+        // The sub map must outlive the cpp_expr call. We keep `sub` as a
+        // stack-local binding whose lifetime covers the call.
+        let ctx_with_sub = Ctx { ident_subst: Some(&sub), ..sub_ctx };
+        if let Some(pred) = args.first() {
+            cpp_expr(pred, &ctx_with_sub)
+        } else {
+            String::new()
+        }
+    };
+
+    match method.name.as_str() {
+        "any" => {
+            if n_usize == 0 { return "false".to_string(); }
+            let terms: Vec<String> = (0..n as u64).map(emit_at).collect();
+            format!("({})", terms.join(" || "))
+        }
+        "all" => {
+            if n_usize == 0 { return "true".to_string(); }
+            let terms: Vec<String> = (0..n as u64).map(emit_at).collect();
+            format!("({})", terms.join(" && "))
+        }
+        "count" => {
+            if n_usize == 0 { return "0".to_string(); }
+            let terms: Vec<String> = (0..n as u64)
+                .map(|i| format!("({} ? 1u : 0u)", emit_at(i)))
+                .collect();
+            format!("({})", terms.join(" + "))
+        }
+        "contains" => {
+            let Some(x_expr) = args.first() else { return "false".to_string(); };
+            let x = cpp_expr(x_expr, ctx);
+            if n_usize == 0 { return "false".to_string(); }
+            let terms: Vec<String> = (0..n as u64)
+                .map(|i| format!("({recv_b}[{i}] == {x})")).collect();
+            format!("({})", terms.join(" || "))
+        }
+        "reduce_or" => {
+            if n_usize == 0 { return "0".to_string(); }
+            let terms: Vec<String> = (0..n as u64).map(|i| format!("{recv_b}[{i}]")).collect();
+            format!("({})", terms.join(" | "))
+        }
+        "reduce_and" => {
+            if n_usize == 0 { return "0".to_string(); }
+            let terms: Vec<String> = (0..n as u64).map(|i| format!("{recv_b}[{i}]")).collect();
+            format!("({})", terms.join(" & "))
+        }
+        "reduce_xor" => {
+            if n_usize == 0 { return "0".to_string(); }
+            let terms: Vec<String> = (0..n as u64).map(|i| format!("{recv_b}[{i}]")).collect();
+            format!("({})", terms.join(" ^ "))
+        }
+        _ => format!("{recv_b}.{}()", method.name),
+    }
+}
+
 fn cpp_expr(expr: &Expr, ctx: &Ctx) -> String {
     cpp_expr_inner(expr, ctx, false)
 }
@@ -1519,6 +1613,11 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
         ExprKind::Bool(false) => "0".to_string(),
 
         ExprKind::Ident(name) => {
+            // Vec method predicate binder: `item` / `index` are rebound per
+            // iteration by the enclosing `cpp_expr` Vec-method handler.
+            if let Some(sub) = ctx.ident_subst.and_then(|m| m.get(name)) {
+                return sub.clone();
+            }
             if is_lhs {
                 ctx.resolve_name(name, true)
             } else {
@@ -1743,6 +1842,10 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                                 ty = cpp_uint(base_w), nc = n_chunks, c = chunk)
                         }
                     }
+                }
+                "any" | "all" | "count" | "contains"
+                | "reduce_or" | "reduce_and" | "reduce_xor" => {
+                    lower_vec_method_cpp(&b, base, method, args, ctx)
                 }
                 _ => format!("{b}.{}()", method.name),
             }
@@ -6870,7 +6973,7 @@ impl<'a> SimCodegen<'a> {
     ) -> String {
         let empty = HashSet::new();
         let empty_rl: HashMap<String, ResetLevel> = HashMap::new();
-        let ctx = Ctx { reg_names: rn, port_names: pn, let_names: ln, inst_names: &empty, wide_names: &empty, widths: w, posedge_lhs: false, fsm_mode: false, enum_map: em, bus_ports: &empty, reset_levels: &empty_rl, vec_names: None, vec_sizes: None, fsm_vec_port_regs: None };
+        let ctx = Ctx { reg_names: rn, port_names: pn, let_names: ln, inst_names: &empty, wide_names: &empty, widths: w, posedge_lhs: false, fsm_mode: false, enum_map: em, bus_ports: &empty, reset_levels: &empty_rl, vec_names: None, vec_sizes: None, fsm_vec_port_regs: None, ident_subst: None };
         match &expr.kind {
             ExprKind::FieldAccess(base, field) => {
                 if let ExprKind::Ident(bn) = &base.kind {

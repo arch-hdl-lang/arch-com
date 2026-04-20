@@ -2265,6 +2265,127 @@ impl<'a> TypeChecker<'a> {
                             Ty::Error
                         }
                     }
+                    // Vec reduction + predicate methods (plan_vec_methods.md v1, PR #1 subset).
+                    // `item` is the per-iteration element, `index` is the position (UInt<clog2(N)>).
+                    // Both are injected into the predicate's local scope during checking.
+                    "any" | "all" | "count" | "contains"
+                    | "reduce_or" | "reduce_and" | "reduce_xor" => {
+                        let (elem_ty, n) = match &base_ty {
+                            Ty::Vec(inner, count) => ((**inner).clone(), *count),
+                            _ => {
+                                self.errors.push(CompileError::general(
+                                    &format!("`.{}(...)` requires a Vec<T,N> receiver, got {}",
+                                        method.name, base_ty.display()),
+                                    method.span,
+                                ));
+                                return Ty::Error;
+                            }
+                        };
+                        if n == 0 {
+                            self.errors.push(CompileError::general(
+                                &format!("`.{}(...)` on a zero-length Vec has no meaningful result", method.name),
+                                method.span,
+                            ));
+                            return Ty::Error;
+                        }
+                        let idx_w = std::cmp::max(1, (n as f64).log2().ceil() as u32);
+                        let pred_needed = !matches!(method.name.as_str(),
+                            "reduce_or" | "reduce_and" | "reduce_xor" | "contains");
+
+                        if pred_needed {
+                            if args.len() != 1 {
+                                self.errors.push(CompileError::general(
+                                    &format!("`.{}(pred)` takes exactly 1 argument (the predicate)", method.name),
+                                    method.span,
+                                ));
+                                return Ty::Error;
+                            }
+                            // Inject item/index into the predicate's scope.
+                            let mut pred_scope = local_types.clone();
+                            // Shadow warnings: user-declared signals with these names.
+                            for n in ["item", "index"] {
+                                if local_types.contains_key(n) {
+                                    self.warnings.push(CompileWarning {
+                                        message: format!(
+                                            "Vec method predicate binder `{}` shadows an enclosing signal with the same name — rename the outer signal to avoid confusion",
+                                            n),
+                                        span: method.span,
+                                    });
+                                }
+                            }
+                            pred_scope.insert("item".to_string(), elem_ty.clone());
+                            pred_scope.insert("index".to_string(), Ty::UInt(idx_w));
+                            let pred_ty = self.resolve_expr_type(&args[0], module_name, &pred_scope);
+                            if !matches!(pred_ty, Ty::Bool | Ty::UInt(1)) && pred_ty != Ty::Error {
+                                self.errors.push(CompileError::general(
+                                    &format!(
+                                        "`.{}` predicate must be Bool, got {}",
+                                        method.name, pred_ty.display()),
+                                    args[0].span,
+                                ));
+                                return Ty::Error;
+                            }
+                        } else if matches!(method.name.as_str(), "contains") {
+                            if args.len() != 1 {
+                                self.errors.push(CompileError::general(
+                                    "`.contains(x)` takes exactly 1 argument",
+                                    method.span,
+                                ));
+                                return Ty::Error;
+                            }
+                            let arg_ty = self.resolve_expr_type(&args[0], module_name, local_types);
+                            // Basic element-type compatibility (same kind + width).
+                            let compatible = match (&elem_ty, &arg_ty) {
+                                (Ty::UInt(a), Ty::UInt(b))
+                                | (Ty::SInt(a), Ty::SInt(b)) => a == b,
+                                (Ty::Bool, Ty::Bool) => true,
+                                _ => elem_ty == arg_ty,
+                            };
+                            if !compatible && arg_ty != Ty::Error && elem_ty != Ty::Error {
+                                self.errors.push(CompileError::general(
+                                    &format!("`.contains(x)` argument type `{}` doesn't match Vec element type `{}`",
+                                        arg_ty.display(), elem_ty.display()),
+                                    args[0].span,
+                                ));
+                                return Ty::Error;
+                            }
+                        } else {
+                            // reduce_or/and/xor: no argument
+                            if !args.is_empty() {
+                                self.errors.push(CompileError::general(
+                                    &format!("`.{}()` takes no arguments", method.name),
+                                    method.span,
+                                ));
+                                return Ty::Error;
+                            }
+                        }
+
+                        match method.name.as_str() {
+                            "any" | "all" | "contains" => Ty::Bool,
+                            "count" => {
+                                // clog2(N+1) for popcount result width.
+                                let w = std::cmp::max(1, ((n + 1) as f64).log2().ceil() as u32);
+                                Ty::UInt(w)
+                            }
+                            "reduce_or" | "reduce_and" | "reduce_xor" => {
+                                // Returns a value of the element's width (or Bool if element is Bool).
+                                match &elem_ty {
+                                    Ty::Bool => Ty::Bool,
+                                    Ty::UInt(w) => Ty::UInt(*w),
+                                    Ty::SInt(w) => Ty::SInt(*w),
+                                    _ => {
+                                        self.errors.push(CompileError::general(
+                                            &format!("`.{}()` requires UInt/SInt/Bool element type, got `{}`",
+                                                method.name, elem_ty.display()),
+                                            method.span,
+                                        ));
+                                        return Ty::Error;
+                                    }
+                                }
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
                     _ => Ty::Error,
                 }
             }

@@ -47,6 +47,15 @@ pub struct Codegen<'a> {
     reset_ports: std::collections::HashMap<String, (ResetKind, ResetLevel)>,
     /// Name of the construct currently being emitted (for symbol lookups).
     current_construct: String,
+    /// Context-sensitive identifier substitutions.
+    /// Used during Vec method predicate emission to rebind `item` and
+    /// `index` to per-iteration expressions (e.g. `vec[3]`, `2'd3`).
+    /// Checked first in `emit_expr_str`'s Ident branch; empty otherwise.
+    ident_subst: std::collections::HashMap<String, String>,
+    /// Map of Vec-typed signal name → element count N.
+    /// Populated per-module at emit time so Vec method lowerings
+    /// (`any`/`all`/`count`/etc.) can unroll over N iterations.
+    vec_sizes: std::collections::HashMap<String, u32>,
 }
 
 impl<'a> Codegen<'a> {
@@ -68,6 +77,8 @@ impl<'a> Codegen<'a> {
             bus_ports: std::collections::HashMap::new(),
             reset_ports: std::collections::HashMap::new(),
             current_construct: String::new(),
+            ident_subst: std::collections::HashMap::new(),
+            vec_sizes: std::collections::HashMap::new(),
         }
     }
 
@@ -461,9 +472,42 @@ impl<'a> Codegen<'a> {
         // Ports — bus ports are flattened to individual signals
         self.bus_ports.clear();
         self.reset_ports.clear();
+        self.vec_sizes.clear();
         for p in m.ports.iter() {
             if let TypeExpr::Reset(kind, level) = &p.ty {
                 self.reset_ports.insert(p.name.name.clone(), (*kind, *level));
+            }
+            if let TypeExpr::Vec(_, size_expr) = &p.ty {
+                if let Some(n) = self.eval_const_u32(size_expr, &m.params) {
+                    self.vec_sizes.insert(p.name.name.clone(), n);
+                }
+            }
+        }
+        // Vec-typed regs, wires, and let bindings are also eligible receivers.
+        for item in &m.body {
+            match item {
+                ModuleBodyItem::RegDecl(r) => {
+                    if let TypeExpr::Vec(_, size_expr) = &r.ty {
+                        if let Some(n) = self.eval_const_u32(size_expr, &m.params) {
+                            self.vec_sizes.insert(r.name.name.clone(), n);
+                        }
+                    }
+                }
+                ModuleBodyItem::WireDecl(w) => {
+                    if let TypeExpr::Vec(_, size_expr) = &w.ty {
+                        if let Some(n) = self.eval_const_u32(size_expr, &m.params) {
+                            self.vec_sizes.insert(w.name.name.clone(), n);
+                        }
+                    }
+                }
+                ModuleBodyItem::LetBinding(lb) => {
+                    if let Some(TypeExpr::Vec(_, size_expr)) = &lb.ty {
+                        if let Some(n) = self.eval_const_u32(size_expr, &m.params) {
+                            self.vec_sizes.insert(lb.name.name.clone(), n);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         // Collect all flattened port lines first so we can add commas correctly
@@ -4123,6 +4167,10 @@ impl<'a> Codegen<'a> {
                             b
                         }
                     }
+                    "any" | "all" | "count" | "contains"
+                    | "reduce_or" | "reduce_and" | "reduce_xor" => {
+                        self.emit_vec_method(&b, base, method, args)
+                    }
                     _ => format!("{b}.{}()", method.name),
                 }
             }
@@ -4302,6 +4350,10 @@ impl<'a> Codegen<'a> {
                         } else {
                             b
                         }
+                    }
+                    "any" | "all" | "count" | "contains"
+                    | "reduce_or" | "reduce_and" | "reduce_xor" => {
+                        self.emit_vec_method(&b, base, method, args)
                     }
                     _ => format!("{b}.{}()", method.name),
                 }
@@ -4813,6 +4865,154 @@ impl<'a> Codegen<'a> {
         self.emit_expr_prec(expr, 0)
     }
 
+    /// Lower a Vec method call (any/all/count/contains/reduce_*) to a
+    /// parallel-compare + reduction expression. Fully unrolled at codegen
+    /// time because N is known.
+    ///
+    /// Predicate identifier substitution for `item` / `index` is applied
+    /// via `self.ident_subst`, which is a reentrant context we push before
+    /// emitting each iteration's expression and pop after.
+    ///
+    /// Safety: this is `&self`, but we need to temporarily mutate
+    /// `ident_subst`. We cast away immutability in a narrowly-scoped
+    /// block that restores the previous state before returning. The
+    /// alternative (threading a mutable binding map through every
+    /// `emit_expr_str` caller) would touch ~30 sites; this is localized.
+    #[allow(clippy::ptr_arg)]
+    fn emit_vec_method(
+        &self,
+        recv_b: &str,
+        recv: &Expr,
+        method: &Ident,
+        args: &[Expr],
+    ) -> String {
+        // Resolve N. The receiver is an Ident in v1; more complex
+        // expressions are not lowered (falls through to placeholder).
+        let n = match &recv.kind {
+            ExprKind::Ident(n) => self.vec_sizes.get(n).copied(),
+            _ => None,
+        };
+        let Some(n) = n else {
+            // Size unknown → bail to the fallback shape; SV tools will
+            // reject it, telling the user we couldn't unroll.
+            return format!("{recv_b}.{}()", method.name);
+        };
+        let n_usize = n as usize;
+        let idx_w = std::cmp::max(1, (n as f64).log2().ceil() as u32);
+
+        // Helper: emit an expression with `item` bound to recv[i] and
+        // `index` bound to a sized literal. `ident_subst` is a field of
+        // Codegen; we use interior-mutability-via-unsafe here because
+        // emit_expr_str is `&self`. The Codegen type is `!Sync` and
+        // emission is single-threaded, so this is safe.
+        let emit_at = |i: u32| -> String {
+            let this = self as *const Codegen as *mut Codegen;
+            // SAFETY: single-threaded emission; no aliasing.
+            unsafe {
+                (*this).ident_subst.insert("item".to_string(), format!("{recv_b}[{i}]"));
+                (*this).ident_subst.insert("index".to_string(), format!("{idx_w}'d{i}"));
+            }
+            let result = if let Some(pred) = args.first() {
+                self.emit_expr_str(pred)
+            } else {
+                // contains / reduce_*: see caller below; we won't be called
+                // without args from those paths.
+                String::new()
+            };
+            unsafe {
+                (*this).ident_subst.remove("item");
+                (*this).ident_subst.remove("index");
+            }
+            result
+        };
+
+        match method.name.as_str() {
+            "any" => {
+                if n_usize == 0 { return "1'b0".to_string(); }
+                (0..n).map(emit_at).collect::<Vec<_>>().join(" || ")
+            }
+            "all" => {
+                if n_usize == 0 { return "1'b1".to_string(); }
+                (0..n).map(emit_at).collect::<Vec<_>>().join(" && ")
+            }
+            "count" => {
+                if n_usize == 0 { return "0".to_string(); }
+                let w = std::cmp::max(1, ((n + 1) as f64).log2().ceil() as u32);
+                // Sum of bool conversions. SV auto-widens `+` per 1800-2012 §11.6.
+                let terms: Vec<String> = (0..n)
+                    .map(|i| format!("{w}'({} ? 1 : 0)", emit_at(i)))
+                    .collect();
+                format!("({})", terms.join(" + "))
+            }
+            "contains" => {
+                // `contains(x)` is `any(item == x)` — but the user supplies x,
+                // not a predicate. Emit n equality comparisons against the
+                // argument, OR'd.
+                let Some(x_expr) = args.first() else {
+                    return "1'b0".to_string();
+                };
+                let x = self.emit_expr_str(x_expr);
+                if n_usize == 0 { return "1'b0".to_string(); }
+                (0..n).map(|i| format!("({recv_b}[{i}] == {x})"))
+                      .collect::<Vec<_>>()
+                      .join(" || ")
+            }
+            "reduce_or" => {
+                if n_usize == 0 { return "0".to_string(); }
+                (0..n).map(|i| format!("{recv_b}[{i}]"))
+                      .collect::<Vec<_>>()
+                      .join(" | ")
+            }
+            "reduce_and" => {
+                if n_usize == 0 { return "0".to_string(); }
+                (0..n).map(|i| format!("{recv_b}[{i}]"))
+                      .collect::<Vec<_>>()
+                      .join(" & ")
+            }
+            "reduce_xor" => {
+                if n_usize == 0 { return "0".to_string(); }
+                (0..n).map(|i| format!("{recv_b}[{i}]"))
+                      .collect::<Vec<_>>()
+                      .join(" ^ ")
+            }
+            _ => format!("{recv_b}.{}()", method.name),
+        }
+    }
+
+    /// Evaluate a compile-time constant expression (Vec size, etc.) to a u32.
+    /// Handles literals, const-param references, and simple binary ops.
+    /// Returns None if the expression can't be reduced — caller then treats
+    /// the receiver as size-unknown and skips Vec method lowering.
+    fn eval_const_u32(&self, e: &Expr, params: &[ParamDecl]) -> Option<u32> {
+        match &e.kind {
+            ExprKind::Literal(LitKind::Dec(v)) => Some(*v as u32),
+            ExprKind::Literal(LitKind::Hex(v))
+            | ExprKind::Literal(LitKind::Bin(v))
+            | ExprKind::Literal(LitKind::Sized(_, v)) => Some(*v as u32),
+            ExprKind::Ident(n) => {
+                let p = params.iter().find(|p| p.name.name == *n)?;
+                match &p.kind {
+                    ParamKind::Const | ParamKind::WidthConst(..) => {}
+                    _ => return None,
+                }
+                let d = p.default.as_ref()?;
+                self.eval_const_u32(d, params)
+            }
+            ExprKind::Binary(op, l, r) => {
+                let lv = self.eval_const_u32(l, params)?;
+                let rv = self.eval_const_u32(r, params)?;
+                Some(match op {
+                    BinOp::Add => lv + rv,
+                    BinOp::Sub => lv.saturating_sub(rv),
+                    BinOp::Mul => lv * rv,
+                    BinOp::Div if rv != 0 => lv / rv,
+                    _ => return None,
+                })
+            }
+            _ => None,
+        }
+    }
+
     /// Infer the SV bit-width of an expression as a string constant expression.
     /// Used to emit the width cast for wrapping arithmetic operators (+%, -%, *%).
     fn infer_sv_width_str(&self, expr: &Expr) -> String {
@@ -4947,6 +5147,11 @@ impl<'a> Codegen<'a> {
             ExprKind::Bool(true) => "1'b1".to_string(),
             ExprKind::Bool(false) => "1'b0".to_string(),
             ExprKind::Ident(name) => {
+                // Context-sensitive substitution: used by Vec method predicate
+                // lowering to rebind `item` → `recv[i]`, `index` → `W'd<i>`.
+                if let Some(sub) = self.ident_subst.get(name) {
+                    return sub.clone();
+                }
                 name.clone()
             }
             ExprKind::Binary(op, lhs, rhs) => {
@@ -5114,6 +5319,10 @@ impl<'a> Codegen<'a> {
                         } else {
                             b
                         }
+                    }
+                    "any" | "all" | "count" | "contains"
+                    | "reduce_or" | "reduce_and" | "reduce_xor" => {
+                        self.emit_vec_method(&b, base, method, args)
                     }
                     _ => format!("{b}.{}()", method.name),
                 }
