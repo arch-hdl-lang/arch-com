@@ -2513,3 +2513,85 @@ fn test_pybind_struct_bindings_transitive_closure() {
     assert!(m.contains("py::class_<Inner>"),
             "must bind Inner (transitive via Outer.inner):\n{m}");
 }
+
+#[test]
+fn test_find_first_destructure_basic() {
+    let source = "
+        module M
+          port vec: in Vec<UInt<8>, 4>;
+          port needle: in UInt<8>;
+          port ok:  out Bool;
+          port pos: out UInt<2>;
+          let {found, index} = vec.find_first(item == needle);
+          comb
+            ok  = found;
+            pos = index;
+          end comb
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    // Typedef emitted for the synthesized result struct.
+    assert!(sv.contains("typedef struct packed { logic found; logic [1:0] index; } __ArchFindResult_2;"),
+            "expected ArchFindResult typedef: {sv}");
+    // Raw OR reduction for `found`, no spurious struct literal:
+    assert!(sv.contains("assign found = vec[0] == needle || vec[1] == needle"),
+            "expected OR reduction: {sv}");
+    // Priority encoder for `index`, nested ternary:
+    assert!(sv.contains("assign index = (vec[0] == needle) ? 2'd0 : (vec[1] == needle) ? 2'd1"),
+            "expected priority encoder: {sv}");
+    // Correct width on `index`:
+    assert!(sv.contains("logic [1:0] index;"),
+            "expected 2-bit index wire: {sv}");
+}
+
+#[test]
+fn test_find_first_partial_destructure() {
+    // Bind only `found` (don't care about where).
+    let source = "
+        module M
+          port vec: in Vec<UInt<8>, 4>;
+          port needle: in UInt<8>;
+          port ok:  out Bool;
+          let {found} = vec.find_first(item == needle);
+          comb
+            ok = found;
+          end comb
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("logic found;") && sv.contains("assign found ="),
+            "expected `found` wire + assign: {sv}");
+    // No `index` wire should be emitted since the user didn't bind it.
+    // (It can still appear as a module port in the future; for now, assert
+    // no `logic index` declaration at module scope.)
+    assert!(!sv.lines().any(|l| l.trim_start().starts_with("logic ") && l.contains(" index;")),
+            "did not expect unbound `index`: {sv}");
+}
+
+#[test]
+fn test_find_first_unknown_binding_errors() {
+    // Binding a name that isn't `found` or `index` must error.
+    let source = "
+        module M
+          port vec: in Vec<UInt<8>, 4>;
+          port needle: in UInt<8>;
+          port ok: out Bool;
+          let {found, wrong_name} = vec.find_first(item == needle);
+          comb
+            ok = found;
+          end comb
+        end module M
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = arch::elaborate::elaborate(ast).expect("elaborate");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err(),
+            "expected type-check error for bad destructure binding");
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(msg.contains("find_first result has no field named `wrong_name`"),
+            "expected specific error message, got: {msg}");
+}

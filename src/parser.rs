@@ -2314,7 +2314,8 @@ impl Parser {
                 let paren_method = self.check(TokenKind::LParen)
                     && matches!(field.name.as_str(),
                         "reverse" | "any" | "all" | "count" | "contains"
-                        | "reduce_or" | "reduce_and" | "reduce_xor");
+                        | "reduce_or" | "reduce_and" | "reduce_xor"
+                        | "find_first");
                 if paren_method {
                     self.advance(); // (
                     let mut args = Vec::new();

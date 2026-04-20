@@ -295,6 +295,21 @@ impl<'a> TypeChecker<'a> {
                         // main pass re-checks.
                         let rhs_ty = self.resolve_expr_type(&l.value, &m.name.name, &local_types);
                         if let Ty::Struct(sname) = &rhs_ty {
+                            // Synthesized find_first result: derive fields
+                            // directly from the width-suffixed name.
+                            if let Some(w_str) = sname.strip_prefix("__ArchFindResult_") {
+                                if let Ok(w) = w_str.parse::<u32>() {
+                                    for bind in &l.destructure_fields {
+                                        let bty = match bind.name.as_str() {
+                                            "found" => Ty::Bool,
+                                            "index" => Ty::UInt(w),
+                                            _ => Ty::Error,
+                                        };
+                                        local_types.insert(bind.name.clone(), bty);
+                                    }
+                                    continue;
+                                }
+                            }
                             if let Some((crate::resolve::Symbol::Struct(info), _)) =
                                 self.symbols.globals.get(sname)
                             {
@@ -391,6 +406,30 @@ impl<'a> TypeChecker<'a> {
                             }
                             continue;
                         };
+                        // Synthesized find_first result: fields are derived
+                        // from the struct name's width suffix, no StructInfo
+                        // is registered in globals.
+                        if sname.starts_with("__ArchFindResult_") {
+                            for bind in &l.destructure_fields {
+                                self.check_snake_case(bind);
+                                if !matches!(bind.name.as_str(), "found" | "index") {
+                                    self.errors.push(CompileError::general(
+                                        &format!(
+                                            "find_first result has no field named `{}`; valid fields are `found` and `index`",
+                                            bind.name),
+                                        bind.span,
+                                    ));
+                                }
+                                let is_port = m.ports.iter().any(|p| p.name.name == bind.name);
+                                if is_port {
+                                    self.errors.push(CompileError::general(
+                                        &format!("`{}` is already declared as a port", bind.name),
+                                        bind.span,
+                                    ));
+                                }
+                            }
+                            continue;
+                        }
                         let Some((crate::resolve::Symbol::Struct(info), _)) =
                             self.symbols.globals.get(sname).cloned()
                         else {
@@ -2179,6 +2218,18 @@ impl<'a> TypeChecker<'a> {
                     return Ty::Error;
                 }
                 if let Ty::Struct(name) = &base_ty {
+                    // Synthesized find_first result struct: no entry lives in
+                    // symbols.globals; fields are computed from the name's
+                    // width suffix.
+                    if let Some(w_str) = name.strip_prefix("__ArchFindResult_") {
+                        if let Ok(w) = w_str.parse::<u32>() {
+                            return match field.name.as_str() {
+                                "found" => Ty::Bool,
+                                "index" => Ty::UInt(w),
+                                _ => Ty::Error,
+                            };
+                        }
+                    }
                     if let Some((sym, _)) = self.symbols.globals.get(name) {
                         if let crate::resolve::Symbol::Struct(info) = sym {
                             for (fname, fty) in &info.fields {
@@ -2336,7 +2387,7 @@ impl<'a> TypeChecker<'a> {
                     // `item` is the per-iteration element, `index` is the position (UInt<clog2(N)>).
                     // Both are injected into the predicate's local scope during checking.
                     "any" | "all" | "count" | "contains"
-                    | "reduce_or" | "reduce_and" | "reduce_xor" => {
+                    | "reduce_or" | "reduce_and" | "reduce_xor" | "find_first" => {
                         let (elem_ty, n) = match &base_ty {
                             Ty::Vec(inner, count) => ((**inner).clone(), *count),
                             _ => {
@@ -2429,6 +2480,13 @@ impl<'a> TypeChecker<'a> {
 
                         match method.name.as_str() {
                             "any" | "all" | "contains" => Ty::Bool,
+                            "find_first" => {
+                                // Synthesized struct { found: Bool; index: UInt<idx_w> }.
+                                // Name is unique per idx_w; the typechecker's struct-field
+                                // lookup has a targeted fallback for this prefix, so no
+                                // entry needs to live in symbols.globals.
+                                Ty::Struct(format!("__ArchFindResult_{}", idx_w))
+                            }
                             "count" => {
                                 // clog2(N+1) for popcount result width.
                                 let w = std::cmp::max(1, ((n + 1) as f64).log2().ceil() as u32);
