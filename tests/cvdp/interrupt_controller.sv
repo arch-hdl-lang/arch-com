@@ -11,9 +11,9 @@ module interrupt_controller #(
   input logic cpu_ack,
   output logic [IDX_W-1:0] interrupt_idx,
   output logic [ADDR_WIDTH-1:0] interrupt_vector,
-  input logic [NUM_INTERRUPTS-1:0] priority_map_value [NUM_INTERRUPTS-1:0],
+  input logic [NUM_INTERRUPTS-1:0] [NUM_INTERRUPTS-1:0] priority_map_value,
   input logic priority_map_update,
-  input logic [ADDR_WIDTH-1:0] vector_table_value [NUM_INTERRUPTS-1:0],
+  input logic [NUM_INTERRUPTS-1:0] [ADDR_WIDTH-1:0] vector_table_value,
   input logic vector_table_update,
   input logic [NUM_INTERRUPTS-1:0] interrupt_mask_value,
   input logic interrupt_mask_update
@@ -23,8 +23,8 @@ module interrupt_controller #(
   assign all_ones_n = ~NUM_INTERRUPTS'($unsigned(0));
   logic [NUM_INTERRUPTS-1:0] one_wide;
   assign one_wide = NUM_INTERRUPTS'($unsigned(1));
-  logic [NUM_INTERRUPTS-1:0] priority_map [NUM_INTERRUPTS-1:0];
-  logic [ADDR_WIDTH-1:0] vector_table [NUM_INTERRUPTS-1:0];
+  logic [NUM_INTERRUPTS-1:0] [NUM_INTERRUPTS-1:0] priority_map;
+  logic [NUM_INTERRUPTS-1:0] [ADDR_WIDTH-1:0] vector_table;
   logic [NUM_INTERRUPTS-1:0] interrupt_mask;
   logic [NUM_INTERRUPTS-1:0] pending_interrupts;
   logic [NUM_INTERRUPTS-1:0] r_interrupt_service;
@@ -53,7 +53,7 @@ module interrupt_controller #(
     highest_pri_val = all_ones_n;
     for (int i = 0; i <= NUM_INTERRUPTS - 1; i++) begin
       if (effective_pending[i]) begin
-        if (highest_pri_val == all_ones_n | priority_map[i] < highest_pri_val) begin
+        if ((highest_pri_val == all_ones_n) | (priority_map[i] < highest_pri_val)) begin
           highest_pri_idx = IDX_W'(i);
           highest_pri_val = priority_map[i];
         end
@@ -97,7 +97,7 @@ module interrupt_controller #(
       if (cpu_ack | current_masked) begin
         r_cpu_interrupt <= 1'b0;
         r_interrupt_service <= 0;
-        pending_interrupts <= pending_interrupts & ~r_interrupt_service | interrupt_requests;
+        pending_interrupts <= (pending_interrupts & ~r_interrupt_service) | interrupt_requests;
         servicing <= 1'b0;
       end else if (has_pending & ~servicing & had_pending) begin
         r_cpu_interrupt <= 1'b1;
@@ -107,6 +107,11 @@ module interrupt_controller #(
       end
     end
   end
+  // synopsys translate_off
+  // Auto-generated safety assertions (bounds / divide-by-zero)
+  _auto_bound_vec_0: assert property (@(posedge clk) disable iff (!rst_n) (i) < (NUM_INTERRUPTS))
+    else $fatal(1, "BOUNDS VIOLATION: interrupt_controller._auto_bound_vec_0");
+  // synopsys translate_on
 
 endmodule
 

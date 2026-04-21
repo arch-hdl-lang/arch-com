@@ -4,6 +4,9 @@ module ir_receiver
   port ir_signal_in: in Bool;
   port reg ir_frame_out: out UInt<12> reset reset_in=>0;
   port reg ir_frame_valid: out Bool reset reset_in=>false;
+  port ir_device_address_out: out UInt<5>;
+  port ir_function_code_out: out UInt<7>;
+  port ir_output_valid: out Bool;
 
   default seq on clk_in rising;
 
@@ -11,6 +14,40 @@ module ir_receiver
   reg cycle_cnt: UInt<16> reset reset_in=>0;
   reg bit_cnt: UInt<4> reset reset_in=>0;
   reg ir_frame_reg: UInt<12> reset reset_in=>0;
+
+  let raw_address: UInt<5> = ir_frame_out[11:7];
+  let raw_function: UInt<7> = ir_frame_out[6:0];
+  wire decoded_address: UInt<5>;
+  wire decoded_function: UInt<7>;
+
+  comb
+    if raw_function < 10
+      decoded_address = (1.zext<5>() << raw_address);
+      if raw_function == 9
+        decoded_function = 0;
+      else
+        decoded_function = (raw_function + 1).trunc<7>();
+      end if
+    elsif (raw_function >= 16) & (raw_function < 23)
+      decoded_address = (1.zext<5>() << raw_address);
+      decoded_function = (((raw_function - 15).trunc<3>() << 4) | 7'h0F);
+    else
+      decoded_address = 0;
+      decoded_function = 0;
+    end if
+  end comb
+
+  comb
+    if reset_in
+      ir_device_address_out = 0;
+      ir_function_code_out = 0;
+      ir_output_valid = false;
+    else
+      ir_device_address_out = decoded_address;
+      ir_function_code_out = decoded_function;
+      ir_output_valid = ir_frame_valid;
+    end if
+  end comb
 
   seq
     if present_state == 0
@@ -23,12 +60,11 @@ module ir_receiver
       end if
 
     elsif present_state == 1
-      // START: count HIGH pulse for start bit (~2400 cycles at 1MHz = 2.4ms)
       ir_frame_valid <= false;
       if ir_signal_in
         cycle_cnt <= (cycle_cnt + 1).trunc<16>();
       else
-        if (cycle_cnt >= 1800) & (cycle_cnt < 3001)
+        if (cycle_cnt >= 18) & (cycle_cnt < 31)
           cycle_cnt <= 0;
           present_state <= 2;
         else
@@ -38,10 +74,9 @@ module ir_receiver
       end if
 
     elsif present_state == 2
-      // DECODE_LOW: count LOW pulse (~600 cycles at 1MHz = 0.6ms)
       ir_frame_valid <= false;
       if ir_signal_in
-        if (cycle_cnt >= 300) & (cycle_cnt < 901)
+        if (cycle_cnt >= 3) & (cycle_cnt < 10)
           cycle_cnt <= 0;
           present_state <= 3;
         else
@@ -53,13 +88,11 @@ module ir_receiver
       end if
 
     elsif present_state == 3
-      // DECODE_HIGH: 0=~600cyc, 1=~1200cyc
       ir_frame_valid <= false;
       if ir_signal_in
         cycle_cnt <= (cycle_cnt + 1).trunc<16>();
       else
-        if (cycle_cnt >= 901) & (cycle_cnt < 1501)
-          // bit is 1
+        if (cycle_cnt >= 9) & (cycle_cnt < 16)
           ir_frame_reg <= ir_frame_reg | (1.zext<12>() << bit_cnt);
           bit_cnt <= (bit_cnt + 1).trunc<4>();
           cycle_cnt <= 0;
@@ -68,8 +101,7 @@ module ir_receiver
           else
             present_state <= 2;
           end if
-        elsif (cycle_cnt >= 300) & (cycle_cnt < 901)
-          // bit is 0
+        elsif (cycle_cnt >= 3) & (cycle_cnt < 10)
           bit_cnt <= (bit_cnt + 1).trunc<4>();
           cycle_cnt <= 0;
           if bit_cnt == 11
@@ -84,7 +116,6 @@ module ir_receiver
       end if
 
     elsif present_state == 4
-      // DONE: output decoded frame for one cycle
       ir_frame_out <= ir_frame_reg;
       ir_frame_valid <= true;
       present_state <= 0;

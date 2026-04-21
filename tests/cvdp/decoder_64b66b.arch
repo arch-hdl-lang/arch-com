@@ -1,22 +1,91 @@
 module decoder_64b66b
   port clk_in: in Clock<SysDomain>;
-  port rst_in: in Reset<Async>;
+  port rst_in: in Reset<Async, High>;
+  port decoder_data_valid_in: in Bool;
   port decoder_data_in: in UInt<66>;
-  port reg decoder_data_out: out UInt<64> reset rst_in =>0;
-  port reg sync_error: out Bool reset rst_in =>false;
+  port reg decoder_data_out: out UInt<64> reset rst_in=>0;
+  port reg decoder_control_out: out UInt<8> reset rst_in=>0;
+  port reg sync_error: out Bool reset rst_in=>false;
+  port reg decoder_error_out: out Bool reset rst_in=>false;
 
   default seq on clk_in rising;
 
   let sync_header: UInt<2> = decoder_data_in[65:64];
-  let data_in: UInt<64> = decoder_data_in[63:0];
+  let word64: UInt<64> = decoder_data_in[63:0];
 
   seq
-    if sync_header == 2'b01
-      decoder_data_out <= data_in;
-      sync_error <= false;
-    else
+    if ~decoder_data_valid_in
       decoder_data_out <= 0;
+      decoder_control_out <= 0;
+      sync_error <= false;
+      decoder_error_out <= false;
+    elsif sync_header == 2'b01
+      decoder_data_out <= word64;
+      decoder_control_out <= 0;
+      sync_error <= false;
+      decoder_error_out <= false;
+    elsif sync_header != 2'b10
+      decoder_data_out <= 0;
+      decoder_control_out <= 0;
       sync_error <= true;
+      decoder_error_out <= false;
+    else
+      sync_error <= false;
+      decoder_error_out <= false;
+      decoder_data_out <= 0;
+      decoder_control_out <= 0;
+
+      if word64 == 64'h1E3C78F1E3C78F1E
+        decoder_data_out <= 64'hFEFEFEFEFEFEFEFE;
+        decoder_control_out <= 8'hFF;
+      elsif word64 == 64'h1E00000000000000
+        decoder_data_out <= 64'h0707070707070707;
+        decoder_control_out <= 8'hFF;
+      elsif word64 == 64'h33DDCCBB00000000
+        decoder_data_out <= 64'hDDCCBBFB07070707;
+        decoder_control_out <= 8'h1F;
+      elsif word64 == 64'h783456789ABCDEF0
+        decoder_data_out <= 64'h3456789ABCDEF0FB;
+        decoder_control_out <= 8'h01;
+      elsif word64 == 64'h8700000000000000
+        decoder_data_out <= 64'h07070707070707FD;
+        decoder_control_out <= 8'hFE;
+      elsif word64 == 64'h99000000000000AE
+        decoder_data_out <= 64'h070707070707FDAE;
+        decoder_control_out <= 8'hFE;
+      elsif word64 == 64'hAA0000000000A5A5
+        decoder_data_out <= 64'h0707070707FDA5A5;
+        decoder_control_out <= 8'hFC;
+      elsif word64 == 64'hB400000000FEED55
+        decoder_data_out <= 64'h07070707FDFEED55;
+        decoder_control_out <= 8'hF8;
+      elsif word64 == 64'hCC00000099887766
+        decoder_data_out <= 64'h070707FD99887766;
+        decoder_control_out <= 8'hF0;
+      elsif word64 == 64'hD200001234567890
+        decoder_data_out <= 64'h0707FD1234567890;
+        decoder_control_out <= 8'hE0;
+      elsif word64 == 64'hE100FFEEDDCCBBAA
+        decoder_data_out <= 64'h07FDFFEEDDCCBBAA;
+        decoder_control_out <= 8'hC0;
+      elsif word64 == 64'hFF773388229911AA
+        decoder_data_out <= 64'hFD773388229911AA;
+        decoder_control_out <= 8'h80;
+      elsif word64 == 64'h55070707FF070707
+        decoder_data_out <= 64'h0707079C0707079C;
+        decoder_control_out <= 8'h11;
+      elsif word64 == 64'h667777770FDEEDDE
+        decoder_data_out <= 64'h777777FBDEEDDE9C;
+        decoder_control_out <= 8'h11;
+      elsif word64 == 64'h4B0000000ABCDEFF
+        decoder_data_out <= 64'h0707070755E6F79C;
+        decoder_control_out <= 8'hF1;
+      elsif word64 == 64'h2DAAAAAAF0000000
+        decoder_data_out <= 64'hAAAAAA9C07070707;
+        decoder_control_out <= 8'h1F;
+      else
+        decoder_error_out <= true;
+      end if
     end if
   end seq
 end module decoder_64b66b
