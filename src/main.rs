@@ -559,7 +559,14 @@ fn run_sim(
             _ => ".so".to_string(),
         };
 
-        // Compile shared library
+        // Compile shared library. All wrappers' .cpp files are linked into
+        // ONE shared object — each wrapper has its own `PYBIND11_MODULE` and
+        // therefore its own `PyInit_V<name>_pybind` symbol. Python's import
+        // system looks up `PyInit_<modname>` by the filename you load, so to
+        // expose each wrapper as its own importable module we name the .so
+        // after the first wrapper and then symlink every other wrapper's
+        // name to the same file. All symlinks share one physical .so but
+        // resolve distinct PyInit entry points.
         let so_path = build_dir.join(format!("{pybind_module_name}{ext_suffix}"));
         let mut cmd = std::process::Command::new("g++");
         cmd.arg("-std=c++17")
@@ -590,6 +597,42 @@ fn run_sim(
             std::process::exit(1);
         }
         eprintln!("Built: {}", so_path.display());
+
+        // Expose every remaining pybind wrapper by symlinking `<name>.so`
+        // onto the combined shared object. Python import resolves each
+        // symlink independently and finds the matching `PyInit_<name>`
+        // inside the shared library. Skip the first wrapper (already
+        // named correctly) and skip anything whose symlink would collide
+        // with the primary path.
+        let primary = so_path.file_name().and_then(|n| n.to_str()).map(|s| s.to_string());
+        for wrapper in pybind_wrappers.iter().skip(1) {
+            let alias = format!("{}{ext_suffix}", wrapper.class_name);
+            if primary.as_deref() == Some(alias.as_str()) { continue; }
+            let alias_path = build_dir.join(&alias);
+            // Remove any stale symlink / file so repeated builds don't fail
+            // on `already exists`.
+            if alias_path.exists() || fs::symlink_metadata(&alias_path).is_ok() {
+                let _ = fs::remove_file(&alias_path);
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::symlink;
+                if let Err(e) = symlink(&so_path.file_name().unwrap(), &alias_path) {
+                    eprintln!("warning: failed to symlink {alias}: {e}");
+                    continue;
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                // Non-Unix: fall back to copying the shared object. Each
+                // module then occupies full disk space but stays importable.
+                if let Err(e) = fs::copy(&so_path, &alias_path) {
+                    eprintln!("warning: failed to copy {alias}: {e}");
+                    continue;
+                }
+            }
+            eprintln!("Built: {}", alias_path.display());
+        }
 
         // If --test is given, run the test file. The launcher:
         //   1. Executes the test file as `__main__` via `runpy.run_path` so
