@@ -559,79 +559,72 @@ fn run_sim(
             _ => ".so".to_string(),
         };
 
-        // Compile shared library. All wrappers' .cpp files are linked into
-        // ONE shared object — each wrapper has its own `PYBIND11_MODULE` and
-        // therefore its own `PyInit_V<name>_pybind` symbol. Python's import
-        // system looks up `PyInit_<modname>` by the filename you load, so to
-        // expose each wrapper as its own importable module we name the .so
-        // after the first wrapper and then symlink every other wrapper's
-        // name to the same file. All symlinks share one physical .so but
-        // resolve distinct PyInit entry points.
-        let so_path = build_dir.join(format!("{pybind_module_name}{ext_suffix}"));
-        let mut cmd = std::process::Command::new("g++");
-        cmd.arg("-std=c++17")
-           .arg("-O2")
-           .arg("-shared")
-           .arg("-fPIC")
-           .arg("-I").arg(&build_dir);
-
-        for flag in py_includes.split_whitespace() {
-            cmd.arg(flag);
-        }
-        for cpp in &generated_cpps {
-            cmd.arg(cpp);
-        }
-        for cpp in &pybind_cpps {
-            cmd.arg(cpp);
-        }
-        cmd.arg("-o").arg(&so_path);
-
-        // macOS: suppress undefined symbol errors (Python symbols resolved at import time)
-        #[cfg(target_os = "macos")]
-        cmd.arg("-undefined").arg("dynamic_lookup");
-
+        // Each pybind wrapper becomes its OWN `.so`. A previous iteration
+        // emitted one combined .so and symlinked each module name to it
+        // (arch-com PR #40), but that collided on pybind11's per-DSO type
+        // registry when two modules registered the same struct — even with
+        // `py::module_local()`, which only grants cross-module independence,
+        // not cross-registration independence inside the same physical DSO.
+        //
+        // To keep build time bounded we precompile the shared pieces —
+        // verilated runtime plus every generated module model — into .o
+        // files once, then link each pybind wrapper's tiny .cpp against
+        // those same .o files to produce a module-specific .so.
         eprintln!("Compiling pybind11 module...");
-        let status = cmd.status().into_diagnostic()?;
-        if !status.success() {
-            eprintln!("Pybind11 compilation failed");
-            std::process::exit(1);
-        }
-        eprintln!("Built: {}", so_path.display());
 
-        // Expose every remaining pybind wrapper by symlinking `<name>.so`
-        // onto the combined shared object. Python import resolves each
-        // symlink independently and finds the matching `PyInit_<name>`
-        // inside the shared library. Skip the first wrapper (already
-        // named correctly) and skip anything whose symlink would collide
-        // with the primary path.
-        let primary = so_path.file_name().and_then(|n| n.to_str()).map(|s| s.to_string());
-        for wrapper in pybind_wrappers.iter().skip(1) {
-            let alias = format!("{}{ext_suffix}", wrapper.class_name);
-            if primary.as_deref() == Some(alias.as_str()) { continue; }
-            let alias_path = build_dir.join(&alias);
-            // Remove any stale symlink / file so repeated builds don't fail
-            // on `already exists`.
-            if alias_path.exists() || fs::symlink_metadata(&alias_path).is_ok() {
-                let _ = fs::remove_file(&alias_path);
+        // Precompile shared C++ into .o.
+        let mut shared_objs: Vec<PathBuf> = Vec::new();
+        for cpp in &generated_cpps {
+            let obj = build_dir.join(
+                cpp.file_stem().unwrap().to_string_lossy().into_owned() + ".o",
+            );
+            let mut cmd = std::process::Command::new("g++");
+            cmd.arg("-std=c++17")
+               .arg("-O2")
+               .arg("-fPIC")
+               .arg("-c")
+               .arg("-I").arg(&build_dir);
+            for flag in py_includes.split_whitespace() { cmd.arg(flag); }
+            cmd.arg(cpp).arg("-o").arg(&obj);
+            let status = cmd.status().into_diagnostic()?;
+            if !status.success() {
+                eprintln!("Pybind11 compilation failed (shared .o for {})", cpp.display());
+                std::process::exit(1);
             }
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::symlink;
-                if let Err(e) = symlink(&so_path.file_name().unwrap(), &alias_path) {
-                    eprintln!("warning: failed to symlink {alias}: {e}");
-                    continue;
-                }
+            shared_objs.push(obj);
+        }
+
+        // Link each wrapper into its own .so, reusing the precompiled shared objs.
+        // Track whether the first (or `--pybind-module-name`) output has been
+        // built so legacy consumers that only check for one .so keep working.
+        let _ = pybind_module_name; // retained for callers referencing the variable
+        for (i, (wrapper, cpp_path)) in pybind_wrappers.iter().zip(pybind_cpps.iter()).enumerate() {
+            // The first wrapper honors --pybind-module-name; later wrappers
+            // keep their auto-derived names.
+            let class_name = if i == 0 {
+                effective_first_name.clone()
+            } else {
+                wrapper.class_name.clone()
+            };
+            let so_path = build_dir.join(format!("{class_name}{ext_suffix}"));
+            let mut cmd = std::process::Command::new("g++");
+            cmd.arg("-std=c++17")
+               .arg("-O2")
+               .arg("-shared")
+               .arg("-fPIC")
+               .arg("-I").arg(&build_dir);
+            for flag in py_includes.split_whitespace() { cmd.arg(flag); }
+            cmd.arg(cpp_path);
+            for obj in &shared_objs { cmd.arg(obj); }
+            cmd.arg("-o").arg(&so_path);
+            #[cfg(target_os = "macos")]
+            cmd.arg("-undefined").arg("dynamic_lookup");
+            let status = cmd.status().into_diagnostic()?;
+            if !status.success() {
+                eprintln!("Pybind11 link failed for {class_name}");
+                std::process::exit(1);
             }
-            #[cfg(not(unix))]
-            {
-                // Non-Unix: fall back to copying the shared object. Each
-                // module then occupies full disk space but stays importable.
-                if let Err(e) = fs::copy(&so_path, &alias_path) {
-                    eprintln!("warning: failed to copy {alias}: {e}");
-                    continue;
-                }
-            }
-            eprintln!("Built: {}", alias_path.display());
+            eprintln!("Built: {}", so_path.display());
         }
 
         // If --test is given, run the test file. The launcher:
