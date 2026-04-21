@@ -2582,6 +2582,150 @@ fn test_package_nested_bus_used_as_wire_and_port() {
             "inst binding should use flat wire names:\n{sv}");
 }
 
+#[test]
+fn test_bus_port_connected_via_per_field_bindings_no_warning() {
+    // Per-field bus port bindings at inst time — `p.cmd_valid <- ...;
+    // p.cmd_addr <- ...` — should count as the bus port being connected.
+    // Prior to this fix, the connectivity check only recognized whole-bus
+    // bindings and emitted a false-positive "output port `p` not connected"
+    // warning even when every field was wired explicitly.
+    let source = "
+        bus TestBus
+          cmd:  out UInt<8>;
+          resp: in  UInt<8>;
+        end bus TestBus
+
+        module Child
+          port p: target TestBus;
+          comb
+            p.resp = (p.cmd + 8'h1).trunc<8>();
+          end comb
+        end module Child
+
+        module Parent
+          port x_in:  in  UInt<8>;
+          port x_out: out UInt<8>;
+          inst c: Child
+            p.cmd  <- x_in;
+            p.resp -> x_out;
+          end inst c
+        end module Parent
+    ";
+    let ws = warnings_from(source);
+    assert!(!ws.iter().any(|m| m.contains("output port `p`")
+                               && m.contains("not connected")),
+            "per-field bus binding should not trigger 'not connected': {:?}", ws);
+}
+
+#[test]
+fn test_bus_port_unconnected_still_warns() {
+    // Confirm the gap-6 fix doesn't regress the real case: an inst that
+    // never mentions its bus port at all should still warn.
+    let source = "
+        bus TestBus
+          cmd:  out UInt<8>;
+          resp: in  UInt<8>;
+        end bus TestBus
+
+        module Child
+          port p: target TestBus;
+          comb
+            p.resp = p.cmd;
+          end comb
+        end module Child
+
+        module Parent
+          port x: in UInt<8>;
+          inst c: Child
+          end inst c
+        end module Parent
+    ";
+    let ws = warnings_from(source);
+    assert!(ws.iter().any(|m| m.contains("output port `p`")
+                              && m.contains("not connected")),
+            "completely-unbound bus port should still warn: {:?}", ws);
+}
+
+#[test]
+fn test_handshake_payload_guard_via_short_circuit_and() {
+    // `p.cmd_valid and (p.cmd_op != 0)` — the right-hand side of a
+    // short-circuit `and` is only evaluated when the left-hand side is
+    // true, so the checker must treat `p.cmd_valid` as an enclosing
+    // guard when descending into the right side.
+    let source = "
+        bus BusHS
+          handshake cmd: send kind: valid_ready
+            op: UInt<2>;
+          end handshake cmd
+        end bus BusHS
+
+        module Consumer
+          port b: target BusHS;
+          port o: out Bool;
+          comb
+            o = b.cmd_valid and (b.cmd_op != 2'b00);
+            b.cmd_ready = 1'b1;
+          end comb
+        end module Consumer
+    ";
+    let ws = warnings_from(source);
+    assert!(!ws.iter().any(|m| m.contains("cmd_op") && m.contains("unguarded")
+                               || (m.contains("cmd_op") && m.contains("outside"))),
+            "short-circuit `and` should guard cmd_op read; got: {:?}", ws);
+}
+
+#[test]
+fn test_handshake_payload_guard_via_ternary_condition() {
+    // Ternary: `cond ? then : else` — the then-branch only evaluates
+    // when cond is true, so the checker must treat cond as an enclosing
+    // guard when descending into the then-branch. Here the payload read
+    // `b.cmd_op` sits inside the then-branch with a cmd_valid guard.
+    let source = "
+        bus BusHS
+          handshake cmd: send kind: valid_ready
+            op: UInt<2>;
+          end handshake cmd
+        end bus BusHS
+
+        module Consumer
+          port b: target BusHS;
+          port o: out UInt<2>;
+          comb
+            o = b.cmd_valid ? b.cmd_op : 2'b00;
+            b.cmd_ready = 1'b1;
+          end comb
+        end module Consumer
+    ";
+    let ws = warnings_from(source);
+    assert!(!ws.iter().any(|m| m.contains("cmd_op") && m.contains("outside")),
+            "ternary condition should guard cmd_op read; got: {:?}", ws);
+}
+
+#[test]
+fn test_handshake_payload_truly_unguarded_still_warns() {
+    // Confirm the gap-7 fix doesn't weaken the real case: reading a
+    // payload with no valid guard anywhere must still warn.
+    let source = "
+        bus BusHS
+          handshake cmd: send kind: valid_ready
+            op: UInt<2>;
+          end handshake cmd
+        end bus BusHS
+
+        module Consumer
+          port b: target BusHS;
+          port o: out UInt<2>;
+          comb
+            o = b.cmd_op;
+            b.cmd_ready = 1'b1;
+          end comb
+        end module Consumer
+    ";
+    let ws = warnings_from(source);
+    assert!(ws.iter().any(|m| m.contains("cmd_op") && m.contains("outside")),
+            "genuinely unguarded cmd_op read should still warn: {:?}", ws);
+}
+
 fn compile_to_pybind_cpps(source: &str) -> Vec<(String, String)> {
     use arch::sim_codegen::SimCodegen;
     let tokens = arch::lexer::tokenize(source).expect("lexer");

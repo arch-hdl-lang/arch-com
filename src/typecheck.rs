@@ -602,7 +602,15 @@ impl<'a> TypeChecker<'a> {
                             .collect())
                         .unwrap_or_default();
 
-                    // Check for unconnected ports on the instantiated construct
+                    // Check for unconnected ports on the instantiated construct.
+                    //
+                    // Bus ports can be connected in one of two shapes:
+                    //   (a) whole-bus: `p -> tb;` — connection.port_name == "p"
+                    //   (b) per-field: `p.cmd_valid <- x; p.cmd_addr <- y;` —
+                    //       the parser concatenates base.field, producing
+                    //       port_name == "p_cmd_valid", "p_cmd_addr", ...
+                    // For the per-field shape we consider the bus port connected
+                    // if any connection's port_name starts with `<bus_port>_`.
                     {
                         let child_ports: Option<&[PortDecl]> = self.source.items.iter()
                             .find_map(|item| match item {
@@ -619,12 +627,21 @@ impl<'a> TypeChecker<'a> {
                                 // Skip Clock and Reset ports — they may be handled via domain defaults
                                 let is_infra = matches!(&port.ty, TypeExpr::Clock(_) | TypeExpr::Reset(_, _));
                                 if is_infra { continue; }
-                                if !connected.contains(port.name.name.as_str()) {
+                                let name = port.name.name.as_str();
+                                let is_connected = if port.bus_info.is_some() {
+                                    // Accept whole-bus OR per-field bindings.
+                                    let prefix = format!("{}_", name);
+                                    connected.contains(name)
+                                        || connected.iter().any(|c| c.starts_with(&prefix))
+                                } else {
+                                    connected.contains(name)
+                                };
+                                if !is_connected {
                                     if port.direction == Direction::In {
                                         self.errors.push(CompileError::general(
                                             &format!(
                                                 "input port `{}` of `{}` is not connected in inst `{}`",
-                                                port.name.name, inst.module_name.name, inst.name.name
+                                                name, inst.module_name.name, inst.name.name
                                             ),
                                             inst.span,
                                         ));
@@ -632,7 +649,7 @@ impl<'a> TypeChecker<'a> {
                                         self.warnings.push(CompileWarning {
                                             message: format!(
                                                 "output port `{}` of `{}` is not connected in inst `{}`",
-                                                port.name.name, inst.module_name.name, inst.name.name
+                                                name, inst.module_name.name, inst.name.name
                                             ),
                                             span: inst.span,
                                         });
@@ -1100,9 +1117,21 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.check_expr_for_unguarded_payload(base, enclosing, info, default_span);
             }
-            ExprKind::Binary(_, l, r) => {
+            ExprKind::Binary(op, l, r) => {
                 self.check_expr_for_unguarded_payload(l, enclosing, info, default_span);
-                self.check_expr_for_unguarded_payload(r, enclosing, info, default_span);
+                // Short-circuit `and` / `&`: the right-hand side only evaluates
+                // when the left-hand side is true, so `l` acts as an enclosing
+                // guard while we check `r`. Matches the recursive walk in
+                // `cond_contains_access` which also treats And/BitAnd as
+                // conjunction. `Or` does not short-circuit this way (either
+                // side can be the deciding operand), so leave it alone.
+                if matches!(op, BinOp::And | BinOp::BitAnd) {
+                    let mut extended: Vec<&Expr> = enclosing.to_vec();
+                    extended.push(l);
+                    self.check_expr_for_unguarded_payload(r, &extended, info, default_span);
+                } else {
+                    self.check_expr_for_unguarded_payload(r, enclosing, info, default_span);
+                }
             }
             ExprKind::Unary(_, e) => {
                 self.check_expr_for_unguarded_payload(e, enclosing, info, default_span);
@@ -1130,10 +1159,14 @@ impl<'a> TypeChecker<'a> {
             }
             ExprKind::Ternary(c, t, e) => {
                 self.check_expr_for_unguarded_payload(c, enclosing, info, default_span);
-                // Then/else branches of a ternary could also be tracked with
-                // `c`/`!c` as guards; v1 keeps this simple and only accepts
-                // if-statement guards. Extend later if a real case arises.
-                self.check_expr_for_unguarded_payload(t, enclosing, info, default_span);
+                // Then-branch only evaluates when `c` is true → treat `c` as
+                // an enclosing guard. Else-branch stays un-augmented because
+                // we can't easily synthesize `!c` as a condition the existing
+                // `cond_contains_access` walker understands (it only accepts
+                // positive AND-conjunctions of guard fields).
+                let mut then_encl: Vec<&Expr> = enclosing.to_vec();
+                then_encl.push(c);
+                self.check_expr_for_unguarded_payload(t, &then_encl, info, default_span);
                 self.check_expr_for_unguarded_payload(e, enclosing, info, default_span);
             }
             ExprKind::ExprMatch(s, arms) => {
