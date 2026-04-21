@@ -4,9 +4,15 @@ module car_parking_system
   port reset: in Reset<Async, High>;
   port vehicle_entry_sensor: in Bool;
   port vehicle_exit_sensor: in Bool;
+  port current_slot: in UInt<4>;
+  port current_time: in UInt<32>;
+  port hour_of_day: in UInt<5>;
   port reg available_spaces: out UInt<4> reset reset=>TOTAL_SPACES;
   port reg count_car: out UInt<4> reset reset=>0;
   port reg led_status: out Bool reset reset=>true;
+  port reg parking_fee: out UInt<16> reset reset=>0;
+  port reg fee_ready: out Bool reset reset=>false;
+  port reg qr_code: out UInt<128> reset reset=>0;
   port reg seven_seg_display_available_tens: out UInt<7> reset reset=>0;
   port reg seven_seg_display_available_units: out UInt<7> reset reset=>0;
   port reg seven_seg_display_count_tens: out UInt<7> reset reset=>0;
@@ -14,17 +20,22 @@ module car_parking_system
 
   default seq on clk rising;
 
-  reg state: UInt<2> reset reset=>0;
+  reg entry_time_slot0: UInt<32> reset reset=>0;
+  reg entry_time_slot1: UInt<32> reset reset=>0;
+  reg entry_time_slot2: UInt<32> reset reset=>0;
+  reg entry_seen_r: Bool reset reset=>false;
+  reg exit_seen_r: Bool reset reset=>false;
 
   wire avail_tens_digit: UInt<4>;
-  wire avail_units_digit: UInt<4>;
   wire count_tens_digit: UInt<4>;
-  wire count_units_digit: UInt<4>;
-
   wire seg_avail_tens: UInt<7>;
   wire seg_avail_units: UInt<7>;
   wire seg_count_tens: UInt<7>;
   wire seg_count_units: UInt<7>;
+
+  wire selected_entry_time: UInt<32>;
+  wire rate_per_hour: UInt<16>;
+  wire final_fee: UInt<16>;
 
   comb
     if available_spaces >= 10
@@ -34,9 +45,8 @@ module car_parking_system
     end if
   end comb
 
-  wire avail_tens_x10: UInt<4>;
-  let avail_tens_x10 = (avail_tens_digit * 10).trunc<4>();
-  let avail_units_digit = (available_spaces - avail_tens_x10).trunc<4>();
+  let avail_tens_x10: UInt<4> = (avail_tens_digit * 10).trunc<4>();
+  let avail_units_digit: UInt<4> = (available_spaces - avail_tens_x10).trunc<4>();
 
   comb
     if count_car >= 10
@@ -46,9 +56,42 @@ module car_parking_system
     end if
   end comb
 
-  wire count_tens_x10: UInt<4>;
-  let count_tens_x10 = (count_tens_digit * 10).trunc<4>();
-  let count_units_digit = (count_car - count_tens_x10).trunc<4>();
+  let count_tens_x10: UInt<4> = (count_tens_digit * 10).trunc<4>();
+  let count_units_digit: UInt<4> = (count_car - count_tens_x10).trunc<4>();
+
+  comb
+    if current_slot == 0
+      selected_entry_time = entry_time_slot0;
+    elsif current_slot == 1
+      selected_entry_time = entry_time_slot1;
+    elsif current_slot == 2
+      selected_entry_time = entry_time_slot2;
+    else
+      selected_entry_time = 0;
+    end if
+  end comb
+
+  let time_spent: UInt<32> = (current_time - selected_entry_time).trunc<32>();
+  let rounded_hours: UInt<16> = ((time_spent + 3599) / 3600).trunc<16>();
+
+  comb
+    if (hour_of_day >= 8) & (hour_of_day <= 10)
+      rate_per_hour = 100;
+    else
+      rate_per_hour = 50;
+    end if
+  end comb
+
+  let uncapped_fee: UInt<16> = (rounded_hours * rate_per_hour).trunc<16>();
+  let qr_time_field: UInt<16> = time_spent[15:0];
+
+  comb
+    if uncapped_fee > 500
+      final_fee = 500;
+    else
+      final_fee = uncapped_fee;
+    end if
+  end comb
 
   comb
     if avail_tens_digit == 0
@@ -122,40 +165,28 @@ module car_parking_system
     end if
   end comb
 
-  // FSM: 0=Idle, 1=Entry, 2=Exit, 3=Full
   seq
-    if state == 0
-      if vehicle_entry_sensor & (available_spaces > 0)
-        available_spaces <= (available_spaces - 1).trunc<4>();
-        count_car <= (count_car + 1).trunc<4>();
-        state <= 1;
-      elsif vehicle_entry_sensor & (available_spaces == 0)
-        state <= 3;
-      elsif vehicle_exit_sensor & (count_car > 0)
-        available_spaces <= (available_spaces + 1).trunc<4>();
-        count_car <= (count_car - 1).trunc<4>();
-        state <= 2;
+    if (vehicle_entry_sensor | entry_seen_r) & (available_spaces > 0)
+      fee_ready <= false;
+      available_spaces <= (available_spaces - 1).trunc<4>();
+      count_car <= (count_car + 1).trunc<4>();
+      if current_slot == 0
+        entry_time_slot0 <= current_time;
+      elsif current_slot == 1
+        entry_time_slot1 <= current_time;
+      elsif current_slot == 2
+        entry_time_slot2 <= current_time;
       end if
-
-    elsif state == 1
-      if ~vehicle_entry_sensor
-        state <= 0;
-      end if
-
-    elsif state == 2
-      if ~vehicle_exit_sensor
-        state <= 0;
-      end if
-
-    elsif state == 3
-      if vehicle_exit_sensor & (count_car > 0)
-        available_spaces <= (available_spaces + 1).trunc<4>();
-        count_car <= (count_car - 1).trunc<4>();
-        state <= 2;
-      elsif ~vehicle_entry_sensor
-        state <= 0;
-      end if
+    elsif (vehicle_exit_sensor | exit_seen_r) & (count_car > 0)
+      available_spaces <= (available_spaces + 1).trunc<4>();
+      count_car <= (count_car - 1).trunc<4>();
+      parking_fee <= final_fee;
+      fee_ready <= true;
+      qr_code <= ((current_slot.zext<128>() << 112) | (final_fee.zext<128>() << 96) | (qr_time_field.zext<128>() << 80));
     end if
+
+    entry_seen_r <= vehicle_entry_sensor;
+    exit_seen_r <= vehicle_exit_sensor;
 
     led_status <= (available_spaces > 0);
     seven_seg_display_available_tens <= seg_avail_tens;

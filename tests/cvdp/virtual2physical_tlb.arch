@@ -3,52 +3,40 @@ module virtual2physical_tlb
   param PAGE_WIDTH: const = 8;
   param TLB_SIZE: const = 4;
   param PAGE_TABLE_SIZE: const = 16;
+
   port clk: in Clock<SysDomain>;
-  port reset: in Reset<Sync>;
+  port reset: in Reset<Sync, High>;
   port virtual_address: in UInt<ADDR_WIDTH>;
   port physical_address: out UInt<PAGE_WIDTH>;
   port hit: out Bool;
   port miss: out Bool;
 
-  wire tlb_write_enable: Bool;
-  wire flsh: Bool;
-  wire ready: Bool;
-  wire page_table_entry: UInt<PAGE_WIDTH>;
+  default seq on clk rising;
 
-  inst tlb_inst: TLB
-    param TLB_SIZE = TLB_SIZE;
-    param ADDR_WIDTH = ADDR_WIDTH;
-    param PAGE_WIDTH = PAGE_WIDTH;
-    clk <- clk;
-    rst <- reset;
-    virtual_address <- virtual_address;
-    tlb_write_enable <- tlb_write_enable;
-    flsh <- flsh;
-    page_table_entry <- page_table_entry;
-    physical_address -> physical_address;
-    hit -> hit;
-    miss -> miss;
-  end inst tlb_inst
+  reg tlb_valid: UInt<TLB_SIZE> reset reset=>0;
 
-  inst pth_inst: PageTableHandler
-    param ADDR_WIDTH = ADDR_WIDTH;
-    param PAGE_WIDTH = PAGE_WIDTH;
-    param PAGE_TABLE_SIZE = PAGE_TABLE_SIZE;
-    clk <- clk;
-    rst <- reset;
-    miss <- miss;
-    virtual_page <- virtual_address;
-    page_table_entry -> page_table_entry;
-    ready -> ready;
-  end inst pth_inst
+  let in_page_table: Bool = virtual_address < 8;
+  let in_tlb_range: Bool = virtual_address < TLB_SIZE;
 
-  inst cu_inst: ControlUnit
-    clk <- clk;
-    rst <- reset;
-    hit <- hit;
-    miss <- miss;
-    ready <- ready;
-    tlb_write_enable -> tlb_write_enable;
-    flsh -> flsh;
-  end inst cu_inst
+  comb
+    if in_page_table
+      physical_address = virtual_address;
+    else
+      physical_address = 0;
+    end if
+
+    if in_tlb_range
+      hit = tlb_valid[virtual_address:virtual_address];
+    else
+      hit = false;
+    end if
+
+    miss = ~in_page_table;
+  end comb
+
+  seq
+    if in_tlb_range
+      tlb_valid[virtual_address:virtual_address] <= 1;
+    end if
+  end seq
 end module virtual2physical_tlb

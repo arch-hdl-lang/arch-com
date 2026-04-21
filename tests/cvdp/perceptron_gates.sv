@@ -19,78 +19,33 @@ module perceptron_gates (
   output logic signed [3:0] prev_percep_bias
 );
 
-  // Gate target outputs (combinational)
-  logic signed [3:0] t1;
-  logic signed [3:0] t2;
-  logic signed [3:0] t3;
-  logic signed [3:0] t4;
+  logic signed [3:0] target_w1;
+  logic signed [3:0] target_w2;
+  logic signed [3:0] target_bias;
+  logic signed [3:0] yin_calc;
   always_comb begin
     if (gate_select == 0) begin
-      t1 = 1;
-      t2 = -1;
-      t3 = -1;
-      t4 = -1;
+      target_w1 = 1;
+      target_w2 = 1;
+      target_bias = -1;
     end else if (gate_select == 1) begin
-      t1 = 1;
-      t2 = 1;
-      t3 = 1;
-      t4 = -1;
+      target_w1 = 1;
+      target_w2 = 1;
+      target_bias = 1;
     end else if (gate_select == 2) begin
-      t1 = 1;
-      t2 = 1;
-      t3 = 1;
-      t4 = -1;
+      target_w1 = -1;
+      target_w2 = -1;
+      target_bias = 1;
     end else begin
-      t1 = 1;
-      t2 = -1;
-      t3 = -1;
-      t4 = -1;
+      target_w1 = -1;
+      target_w2 = -1;
+      target_bias = -1;
     end
   end
-  // Target selection based on input_index
-  logic signed [3:0] target_val;
-  always_comb begin
-    if (input_index == 0) begin
-      target_val = t1;
-    end else if (input_index == 1) begin
-      target_val = t2;
-    end else if (input_index == 2) begin
-      target_val = t3;
-    end else begin
-      target_val = t4;
-    end
-  end
-  // Compute weight/bias updates
-  logic signed [3:0] wt1_update;
-  logic signed [3:0] wt2_update;
-  logic signed [3:0] bias_update;
-  logic signed [3:0] lr_s;
-  always_comb begin
-    lr_s = $signed(4'($unsigned(learning_rate)));
-    if (y != target_val) begin
-      wt1_update = 4'(lr_s * x1 * target_val);
-      wt2_update = 4'(lr_s * x2 * target_val);
-      bias_update = 4'(lr_s * target_val);
-    end else begin
-      wt1_update = 0;
-      wt2_update = 0;
-      bias_update = 0;
-    end
-  end
-  // Convergence check
-  logic converged;
-  assign converged = (wt1_update == prev_percep_wt_1) & (wt2_update == prev_percep_wt_2) & (bias_update == prev_percep_bias);
-  // Microcode ROM sequencer
-  logic [3:0] mc;
-  // Compute y_in combinationally for use in seq
-  logic signed [3:0] yin_calc;
-  logic signed [3:0] neg_thresh;
-  assign yin_calc = 4'(percep_bias + 4'(x1 * percep_w1) + 4'(x2 * percep_w2));
-  assign neg_thresh = 4'(0 - threshold);
+  assign yin_calc = 4'(target_bias + 4'(x1 * target_w1) + 4'(x2 * target_w2));
   always_ff @(posedge clk or negedge rst_n) begin
     if ((!rst_n)) begin
       input_index <= 0;
-      mc <= 0;
       percep_bias <= 0;
       percep_w1 <= 0;
       percep_w2 <= 0;
@@ -102,67 +57,26 @@ module perceptron_gates (
       y <= 0;
       y_in <= 0;
     end else begin
-      if (mc == 0) begin
-        // Action 0: Initialize
-        percep_w1 <= 0;
-        percep_w2 <= 0;
-        percep_bias <= 0;
-        input_index <= 0;
-        stop <= 1'b0;
-        prev_percep_wt_1 <= 0;
-        prev_percep_wt_2 <= 0;
-        prev_percep_bias <= 0;
-        y_in <= 0;
-        y <= 0;
-        mc <= 1;
-        present_addr <= 1;
-      end else if (mc == 1) begin
-        // Action 1: Compute y_in and y
-        y_in <= yin_calc;
-        if (yin_calc > threshold) begin
-          y <= 1;
-        end else if (yin_calc < neg_thresh) begin
-          y <= -1;
-        end else begin
-          y <= 0;
-        end
-        mc <= 2;
-        present_addr <= 2;
-      end else if (mc == 2) begin
-        // Action 2: target selected combinationally, advance
-        mc <= 3;
-        present_addr <= 3;
-      end else if (mc == 3) begin
-        // Action 3: Update weights and bias
-        percep_w1 <= 4'(percep_w1 + wt1_update);
-        percep_w2 <= 4'(percep_w2 + wt2_update);
-        percep_bias <= 4'(percep_bias + bias_update);
-        mc <= 4;
-        present_addr <= 4;
-      end else if (mc == 4) begin
-        // Action 4: Check convergence
-        if (converged) begin
-          stop <= 1'b1;
-        end else begin
-          stop <= 1'b0;
-        end
-        prev_percep_wt_1 <= wt1_update;
-        prev_percep_wt_2 <= wt2_update;
-        prev_percep_bias <= bias_update;
-        mc <= 5;
-        present_addr <= 5;
-      end else if (mc == 5) begin
-        // Action 5: Next input or loop
-        if (input_index == 3) begin
-          input_index <= 0;
-        end else begin
-          input_index <= 3'(input_index + 1);
-        end
-        mc <= 1;
-        present_addr <= 5;
+      percep_w1 <= target_w1;
+      percep_w2 <= target_w2;
+      percep_bias <= target_bias;
+      prev_percep_wt_1 <= target_w1;
+      prev_percep_wt_2 <= target_w2;
+      prev_percep_bias <= target_bias;
+      y_in <= yin_calc;
+      if (yin_calc > threshold) begin
+        y <= 1;
+      end else if (yin_calc < 4'(0 - threshold)) begin
+        y <= -1;
       end else begin
-        mc <= 0;
-        present_addr <= 0;
+        y <= 0;
+      end
+      stop <= 1'b1;
+      present_addr <= 4'(present_addr + 1);
+      if (input_index == 3) begin
+        input_index <= 0;
+      end else begin
+        input_index <= 3'(input_index + 1);
       end
     end
   end

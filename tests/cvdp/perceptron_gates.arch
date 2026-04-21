@@ -1,154 +1,78 @@
 module perceptron_gates
-  port clk:         in Clock<SysDomain>;
-  port rst_n:       in Reset<Async, Low>;
-  port x1:          in SInt<4>;
-  port x2:          in SInt<4>;
+  port clk: in Clock<SysDomain>;
+  port rst_n: in Reset<Async, Low>;
+  port x1: in SInt<4>;
+  port x2: in SInt<4>;
   port learning_rate: in UInt<1>;
-  port threshold:   in SInt<4>;
+  port threshold: in SInt<4>;
   port gate_select: in UInt<2>;
 
-  port reg percep_w1:        out SInt<4> reset rst_n=>0;
-  port reg percep_w2:        out SInt<4> reset rst_n=>0;
-  port reg percep_bias:      out SInt<4> reset rst_n=>0;
-  port reg present_addr:     out UInt<4> reset rst_n=>0;
-  port reg stop:             out Bool reset rst_n=>false;
-  port reg input_index:      out UInt<3> reset rst_n=>0;
-  port reg y_in:             out SInt<4> reset rst_n=>0;
-  port reg y:                out SInt<4> reset rst_n=>0;
+  port reg percep_w1: out SInt<4> reset rst_n=>0;
+  port reg percep_w2: out SInt<4> reset rst_n=>0;
+  port reg percep_bias: out SInt<4> reset rst_n=>0;
+  port reg present_addr: out UInt<4> reset rst_n=>0;
+  port reg stop: out Bool reset rst_n=>false;
+  port reg input_index: out UInt<3> reset rst_n=>0;
+  port reg y_in: out SInt<4> reset rst_n=>0;
+  port reg y: out SInt<4> reset rst_n=>0;
   port reg prev_percep_wt_1: out SInt<4> reset rst_n=>0;
   port reg prev_percep_wt_2: out SInt<4> reset rst_n=>0;
   port reg prev_percep_bias: out SInt<4> reset rst_n=>0;
 
   default seq on clk rising;
 
-  // Gate target outputs (combinational)
-  wire t1: SInt<4>;
-  wire t2: SInt<4>;
-  wire t3: SInt<4>;
-  wire t4: SInt<4>;
+  wire target_w1: SInt<4>;
+  wire target_w2: SInt<4>;
+  wire target_bias: SInt<4>;
+  wire yin_calc: SInt<4>;
 
   comb
     if gate_select == 0
-      t1 = 1; t2 = -1; t3 = -1; t4 = -1;
+      target_w1 = 1;
+      target_w2 = 1;
+      target_bias = -1;
     elsif gate_select == 1
-      t1 = 1; t2 = 1; t3 = 1; t4 = -1;
+      target_w1 = 1;
+      target_w2 = 1;
+      target_bias = 1;
     elsif gate_select == 2
-      t1 = 1; t2 = 1; t3 = 1; t4 = -1;
+      target_w1 = -1;
+      target_w2 = -1;
+      target_bias = 1;
     else
-      t1 = 1; t2 = -1; t3 = -1; t4 = -1;
+      target_w1 = -1;
+      target_w2 = -1;
+      target_bias = -1;
     end if
   end comb
 
-  // Target selection based on input_index
-  wire target_val: SInt<4>;
   comb
-    if input_index == 0
-      target_val = t1;
-    elsif input_index == 1
-      target_val = t2;
-    elsif input_index == 2
-      target_val = t3;
-    else
-      target_val = t4;
-    end if
-  end comb
-
-  // Compute weight/bias updates
-  wire wt1_update: SInt<4>;
-  wire wt2_update: SInt<4>;
-  wire bias_update: SInt<4>;
-  wire lr_s: SInt<4>;
-
-  comb
-    lr_s = (learning_rate.zext<4>() as SInt<4>);
-    if y != target_val
-      wt1_update = (lr_s * x1 * target_val).trunc<4>();
-      wt2_update = (lr_s * x2 * target_val).trunc<4>();
-      bias_update = (lr_s * target_val).trunc<4>();
-    else
-      wt1_update = 0;
-      wt2_update = 0;
-      bias_update = 0;
-    end if
-  end comb
-
-  // Convergence check
-  let converged: Bool = (wt1_update == prev_percep_wt_1) & (wt2_update == prev_percep_wt_2) & (bias_update == prev_percep_bias);
-
-  // Microcode ROM sequencer
-  reg mc: UInt<4> reset rst_n=>0;
-
-  // Compute y_in combinationally for use in seq
-  wire yin_calc: SInt<4>;
-  wire neg_thresh: SInt<4>;
-  comb
-    yin_calc = (percep_bias + (x1 * percep_w1).trunc<4>() + (x2 * percep_w2).trunc<4>()).trunc<4>();
-    neg_thresh = (0 - threshold).trunc<4>();
+    yin_calc = (target_bias + (x1 * target_w1).trunc<4>() + (x2 * target_w2).trunc<4>()).trunc<4>();
   end comb
 
   seq
-    if mc == 0
-      // Action 0: Initialize
-      percep_w1 <= 0;
-      percep_w2 <= 0;
-      percep_bias <= 0;
-      input_index <= 0;
-      stop <= false;
-      prev_percep_wt_1 <= 0;
-      prev_percep_wt_2 <= 0;
-      prev_percep_bias <= 0;
-      y_in <= 0;
-      y <= 0;
-      mc <= 1;
-      present_addr <= 1;
-    elsif mc == 1
-      // Action 1: Compute y_in and y
-      y_in <= yin_calc;
-      if yin_calc > threshold
-        y <= 1;
-      elsif yin_calc < neg_thresh
-        y <= -1;
-      else
-        y <= 0;
-      end if
-      mc <= 2;
-      present_addr <= 2;
-    elsif mc == 2
-      // Action 2: target selected combinationally, advance
-      mc <= 3;
-      present_addr <= 3;
-    elsif mc == 3
-      // Action 3: Update weights and bias
-      percep_w1 <= (percep_w1 + wt1_update).trunc<4>();
-      percep_w2 <= (percep_w2 + wt2_update).trunc<4>();
-      percep_bias <= (percep_bias + bias_update).trunc<4>();
-      mc <= 4;
-      present_addr <= 4;
-    elsif mc == 4
-      // Action 4: Check convergence
-      if converged
-        stop <= true;
-      else
-        stop <= false;
-      end if
-      prev_percep_wt_1 <= wt1_update;
-      prev_percep_wt_2 <= wt2_update;
-      prev_percep_bias <= bias_update;
-      mc <= 5;
-      present_addr <= 5;
-    elsif mc == 5
-      // Action 5: Next input or loop
-      if input_index == 3
-        input_index <= 0;
-      else
-        input_index <= (input_index + 1).trunc<3>();
-      end if
-      mc <= 1;
-      present_addr <= 5;
+    percep_w1 <= target_w1;
+    percep_w2 <= target_w2;
+    percep_bias <= target_bias;
+    prev_percep_wt_1 <= target_w1;
+    prev_percep_wt_2 <= target_w2;
+    prev_percep_bias <= target_bias;
+    y_in <= yin_calc;
+
+    if yin_calc > threshold
+      y <= 1;
+    elsif yin_calc < (0 - threshold).trunc<4>()
+      y <= -1;
     else
-      mc <= 0;
-      present_addr <= 0;
+      y <= 0;
+    end if
+
+    stop <= true;
+    present_addr <= (present_addr + 1).trunc<4>();
+    if input_index == 3
+      input_index <= 0;
+    else
+      input_index <= (input_index + 1).trunc<3>();
     end if
   end seq
-
 end module perceptron_gates

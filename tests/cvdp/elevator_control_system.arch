@@ -1,161 +1,132 @@
-// Elevator control system
-// param N: number of floors (default 8)
-// system_status: 0=IDLE, 1=MOVING_UP, 2=MOVING_DOWN, 3=EMERGENCY
 module elevator_control_system
   param N: const = 8;
 
-  port clk:            in  Clock<SysDomain>;
-  port reset:          in  Reset<Sync, High>;
-  port call_requests:  in  UInt<N>;
-  port emergency_stop: in  Bool;
-  port current_floor:  out UInt<4>;
-  port door_open:      out Bool;
-  port seven_seg_out:  out UInt<7>;
-  port system_status:  out UInt<2>;
+  port clk: in Clock<SysDomain>;
+  port reset: in Reset<Sync, High>;
+  port call_requests: in UInt<N>;
+  port emergency_stop: in Bool;
+  port current_floor: out UInt<8>;
+  port door_open: out Bool;
+  port seven_seg_out: out UInt<7>;
+  port seven_seg_out_anode: out UInt<4>;
+  port system_status: out UInt<2>;
 
-  // State encoding: 0=IDLE, 1=MOVING_UP, 2=MOVING_DOWN, 3=DOOR_OPEN, 4=EMERGENCY
-  reg state_r:    UInt<3> reset none;
-  reg floor_r:    UInt<4> reset none;
-  reg door_cnt:   UInt<8> reset none;
-  // Latch one-cycle call pulses so requests are not lost between cycles.
-  reg pending_r:  UInt<N> reset none;
+  default seq on clk rising;
 
-  // Seven-segment decode for current floor
-  wire seg: UInt<7>;
+  reg floor_r: UInt<8> reset reset=>0;
+  reg target_floor_r: UInt<8> reset reset=>0;
+  reg request_active_r: Bool reset reset=>false;
+  reg door_open_r: Bool reset reset=>false;
+  reg door_timer_r: UInt<4> reset reset=>0;
+  reg scan_sel_r: UInt<2> reset reset=>0;
+
+  wire requested_floor: UInt<8>;
+  wire have_request: Bool;
+  wire current_digit: UInt<4>;
+  wire seg_digit: UInt<7>;
+
   comb
-    if floor_r == 0
-      seg = 7'b1111110;
-    elsif floor_r == 1
-      seg = 7'b0110000;
-    elsif floor_r == 2
-      seg = 7'b1101101;
-    elsif floor_r == 3
-      seg = 7'b1111001;
-    elsif floor_r == 4
-      seg = 7'b0110011;
-    elsif floor_r == 5
-      seg = 7'b1011011;
-    elsif floor_r == 6
-      seg = 7'b1011111;
-    elsif floor_r == 7
-      seg = 7'b1110000;
-    elsif floor_r == 8
-      seg = 7'b1111111;
-    else
-      seg = 7'b1111011;
-    end if
-  end comb
-
-  // Check for pending requests above/below/at current floor
-  wire req_above: Bool;
-  wire req_below: Bool;
-  wire req_here:  Bool;
-  comb
-    req_above = false;
-    req_below = false;
-    req_here  = false;
+    requested_floor = 0;
+    have_request = false;
     for i in 0..N-1
-      if (i.zext<4>() > floor_r) & pending_r[i:i]
-        req_above = true;
-      end if
-      if (i.zext<4>() < floor_r) & pending_r[i:i]
-        req_below = true;
-      end if
-      if (i.zext<4>() == floor_r) & pending_r[i:i]
-        req_here = true;
+      if call_requests[i:i]
+        requested_floor = i.zext<8>();
+        have_request = true;
       end if
     end for
   end comb
 
-  // Output logic
+  let ones_digit: UInt<4> = (floor_r % 10).trunc<4>();
+  let tens_digit: UInt<4> = ((floor_r / 10) % 10).trunc<4>();
+  let hundreds_digit: UInt<4> = ((floor_r / 100) % 10).trunc<4>();
+
+  comb
+    if scan_sel_r == 0
+      current_digit = ones_digit;
+      seven_seg_out_anode = 4'b1110;
+    elsif scan_sel_r == 1
+      current_digit = tens_digit;
+      seven_seg_out_anode = 4'b1101;
+    else
+      current_digit = hundreds_digit;
+      seven_seg_out_anode = 4'b1011;
+    end if
+  end comb
+
+  comb
+    if current_digit == 0
+      seg_digit = 7'b1111110;
+    elsif current_digit == 1
+      seg_digit = 7'b0110000;
+    elsif current_digit == 2
+      seg_digit = 7'b1101101;
+    elsif current_digit == 3
+      seg_digit = 7'b1111001;
+    elsif current_digit == 4
+      seg_digit = 7'b0110011;
+    elsif current_digit == 5
+      seg_digit = 7'b1011011;
+    elsif current_digit == 6
+      seg_digit = 7'b1011111;
+    elsif current_digit == 7
+      seg_digit = 7'b1110000;
+    elsif current_digit == 8
+      seg_digit = 7'b1111111;
+    else
+      seg_digit = 7'b1111011;
+    end if
+  end comb
+
   comb
     current_floor = floor_r;
-    seven_seg_out = seg;
-    if state_r == 3
-      door_open = true;
-    else
-      door_open = false;
-    end if
-    if state_r == 4
+    door_open = door_open_r;
+    seven_seg_out = seg_digit;
+    if emergency_stop
       system_status = 3;
-    elsif state_r == 1
+    elsif door_open_r
+      system_status = 0;
+    elsif request_active_r & (floor_r < target_floor_r)
       system_status = 1;
-    elsif state_r == 2
+    elsif request_active_r & (floor_r > target_floor_r)
       system_status = 2;
     else
       system_status = 0;
     end if
   end comb
 
-  // Next state logic
-  seq on clk rising
-    if reset
-      state_r   <= 0;
-      floor_r   <= 0;
-      door_cnt  <= 0;
-      pending_r <= 0;
+  seq
+    if scan_sel_r == 2
+      scan_sel_r <= 0;
     else
-      // Capture incoming one-cycle requests.
-      pending_r <= pending_r | call_requests;
-      if req_here
-        // Clear the request once this floor is being served.
-        pending_r[floor_r:floor_r] <= 0;
+      scan_sel_r <= (scan_sel_r + 1).trunc<2>();
+    end if
+
+    if emergency_stop
+      request_active_r <= false;
+      door_open_r <= false;
+      door_timer_r <= 0;
+    elsif door_open_r
+      if door_timer_r == 0
+        door_open_r <= false;
+        request_active_r <= false;
+      else
+        door_timer_r <= (door_timer_r - 1).trunc<4>();
       end if
-      if state_r == 0  // IDLE
-        if emergency_stop
-          state_r <= 4;
-        elsif req_here
-          state_r  <= 3;
-          door_cnt <= 50;
-        elsif req_above
-          state_r <= 1;
-        elsif req_below
-          state_r <= 2;
-        end if
-      elsif state_r == 1  // MOVING_UP
-        if emergency_stop
-          state_r <= 4;
-        elsif req_here
-          state_r  <= 3;
-          door_cnt <= 50;
-        elsif ~req_above & ~req_here
-          state_r <= 0;
-        else
-          if pending_r[floor_r:floor_r] == 0
-            floor_r <= (floor_r + 1).trunc<4>();
-          end if
-        end if
-      elsif state_r == 2  // MOVING_DOWN
-        if emergency_stop
-          state_r <= 4;
-        elsif req_here
-          state_r  <= 3;
-          door_cnt <= 50;
-        elsif ~req_below & ~req_here
-          state_r <= 0;
-        else
-          if pending_r[floor_r:floor_r] == 0
-            floor_r <= (floor_r - 1).trunc<4>();
-          end if
-        end if
-      elsif state_r == 3  // DOOR_OPEN
-        if emergency_stop
-          state_r <= 4;
-        elsif door_cnt == 0
-          if req_above
-            state_r <= 1;
-          elsif req_below
-            state_r <= 2;
-          else
-            state_r <= 0;
-          end if
-        else
-          door_cnt <= (door_cnt - 1).trunc<8>();
-        end if
-      elsif state_r == 4  // EMERGENCY
-        if ~emergency_stop
-          state_r <= 0;
-        end if
+    elsif request_active_r
+      if floor_r < target_floor_r
+        floor_r <= (floor_r + 1).trunc<8>();
+      elsif floor_r > target_floor_r
+        floor_r <= (floor_r - 1).trunc<8>();
+      else
+        door_open_r <= true;
+        door_timer_r <= 4;
+      end if
+    elsif have_request
+      target_floor_r <= requested_floor;
+      request_active_r <= true;
+      if requested_floor == floor_r
+        door_open_r <= true;
+        door_timer_r <= 4;
       end if
     end if
   end seq
