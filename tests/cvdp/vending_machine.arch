@@ -5,13 +5,13 @@ fsm vending_machine
   port item_selected: in UInt<3>;
   port coin_input: in UInt<4>;
   port cancel: in Bool;
-  port reg dispense_item: out Bool reset rst=>false;
-  port reg return_change: out Bool reset rst=>false;
-  port reg item_price: out UInt<5> reset rst=>0;
-  port reg change_amount: out UInt<5> reset rst=>0;
-  port reg dispense_item_id: out UInt<3> reset rst=>0;
-  port reg error: out Bool reset rst=>false;
-  port reg return_money: out Bool reset rst=>false;
+  port dispense_item: out pipe_reg<Bool, 1> reset rst=>false;
+  port return_change: out pipe_reg<Bool, 1> reset rst=>false;
+  port item_price: out pipe_reg<UInt<5>, 1> reset rst=>0;
+  port change_amount: out pipe_reg<UInt<5>, 1> reset rst=>0;
+  port dispense_item_id: out pipe_reg<UInt<3>, 1> reset rst=>0;
+  port error: out pipe_reg<Bool, 1> reset rst=>false;
+  port return_money: out pipe_reg<Bool, 1> reset rst=>false;
 
   reg coins_accumulated: UInt<5> reset rst=>0;
   reg selected_item: UInt<3> reset rst=>0;

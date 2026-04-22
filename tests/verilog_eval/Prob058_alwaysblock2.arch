@@ -4,7 +4,7 @@ module TopModule
   port b: in Bool;
   port out_assign: out Bool;
   port out_always_comb: out Bool;
-  port reg out_always_ff: out Bool;
+  port out_always_ff: out pipe_reg<Bool, 1>;
 
   default seq on clk rising;
 

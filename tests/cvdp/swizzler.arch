@@ -14,8 +14,8 @@ module swizzler
   reg swizzle_reg: UInt<N>;
   reg error_reg: Bit;
   reg operation_reg: UInt<N>;
-  port reg data_out: out UInt<N>;
-  port reg error_flag: out Bit;
+  port data_out: out pipe_reg<UInt<N>, 1>;
+  port error_flag: out pipe_reg<Bit, 1>;
 
   // Combinational wires
   wire temp_error_flag: Bit;

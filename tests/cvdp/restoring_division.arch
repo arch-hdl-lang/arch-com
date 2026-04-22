@@ -6,9 +6,9 @@ module restoring_division
   port start:     in Bool;
   port dividend:  in UInt<WIDTH>;
   port divisor:   in UInt<WIDTH>;
-  port reg quotient:  out UInt<WIDTH> reset rst => 0;
-  port reg remainder: out UInt<WIDTH> reset rst => 0;
-  port reg valid:     out Bool reset rst => false;
+  port quotient: out pipe_reg<UInt<WIDTH>, 1> reset rst => 0;
+  port remainder: out pipe_reg<UInt<WIDTH>, 1> reset rst => 0;
+  port valid: out pipe_reg<Bool, 1> reset rst => false;
 
   default seq on clk rising;
 

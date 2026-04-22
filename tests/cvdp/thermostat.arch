@@ -6,14 +6,14 @@ module thermostat
   port i_enable:        in Bool;
   port i_fault:         in Bool;
   port i_clr:           in Bool;
-  port reg o_heater_full:   out Bool reset i_rst=>false;
-  port reg o_heater_medium: out Bool reset i_rst=>false;
-  port reg o_heater_low:    out Bool reset i_rst=>false;
-  port reg o_aircon_full:   out Bool reset i_rst=>false;
-  port reg o_aircon_medium: out Bool reset i_rst=>false;
-  port reg o_aircon_low:    out Bool reset i_rst=>false;
-  port reg o_fan:           out Bool reset i_rst=>false;
-  port reg o_state:         out UInt<3> reset i_rst=>3;
+  port o_heater_full: out pipe_reg<Bool, 1> reset i_rst=>false;
+  port o_heater_medium: out pipe_reg<Bool, 1> reset i_rst=>false;
+  port o_heater_low: out pipe_reg<Bool, 1> reset i_rst=>false;
+  port o_aircon_full: out pipe_reg<Bool, 1> reset i_rst=>false;
+  port o_aircon_medium: out pipe_reg<Bool, 1> reset i_rst=>false;
+  port o_aircon_low: out pipe_reg<Bool, 1> reset i_rst=>false;
+  port o_fan: out pipe_reg<Bool, 1> reset i_rst=>false;
+  port o_state: out pipe_reg<UInt<3>, 1> reset i_rst=>3;
 
   reg fault_latch: Bool reset i_rst=>false;
 

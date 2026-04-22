@@ -2,8 +2,8 @@ module ir_receiver
   port clk_in: in Clock<SysDomain>;
   port reset_in: in Reset<Async, High>;
   port ir_signal_in: in Bool;
-  port reg ir_frame_out: out UInt<12> reset reset_in=>0;
-  port reg ir_frame_valid: out Bool reset reset_in=>false;
+  port ir_frame_out: out pipe_reg<UInt<12>, 1> reset reset_in=>0;
+  port ir_frame_valid: out pipe_reg<Bool, 1> reset reset_in=>false;
   port ir_device_address_out: out UInt<5>;
   port ir_function_code_out: out UInt<7>;
   port ir_output_valid: out Bool;

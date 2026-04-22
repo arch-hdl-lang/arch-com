@@ -3,8 +3,8 @@ module cvdp_copilot_bus_arbiter
   port reset: in Reset<Async, High>;
   port req1: in Bool;
   port req2: in Bool;
-  port reg grant1: out Bool init false reset reset=>false;
-  port reg grant2: out Bool init false reset reset=>false;
+  port grant1: out pipe_reg<Bool, 1> init false reset reset=>false;
+  port grant2: out pipe_reg<Bool, 1> init false reset reset=>false;
 
   default seq on clk rising;
 

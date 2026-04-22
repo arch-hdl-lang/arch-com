@@ -2,8 +2,8 @@ module decoder_8b10b
   port clk_in:      in Clock<SysDomain>;
   port reset_in:    in Reset<Async>;
   port decoder_in:  in UInt<10>;
-  port reg decoder_out: out UInt<8> reset reset_in=>0;
-  port reg control_out: out Bool reset reset_in=>0;
+  port decoder_out: out pipe_reg<UInt<8>, 1> reset reset_in=>0;
+  port control_out: out pipe_reg<Bool, 1> reset reset_in=>0;
 
   default seq on clk_in rising;
 

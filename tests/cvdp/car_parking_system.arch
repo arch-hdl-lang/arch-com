@@ -7,16 +7,16 @@ module car_parking_system
   port current_slot: in UInt<4>;
   port current_time: in UInt<32>;
   port hour_of_day: in UInt<5>;
-  port reg available_spaces: out UInt<4> reset reset=>TOTAL_SPACES;
-  port reg count_car: out UInt<4> reset reset=>0;
-  port reg led_status: out Bool reset reset=>true;
-  port reg parking_fee: out UInt<16> reset reset=>0;
-  port reg fee_ready: out Bool reset reset=>false;
-  port reg qr_code: out UInt<128> reset reset=>0;
-  port reg seven_seg_display_available_tens: out UInt<7> reset reset=>0;
-  port reg seven_seg_display_available_units: out UInt<7> reset reset=>0;
-  port reg seven_seg_display_count_tens: out UInt<7> reset reset=>0;
-  port reg seven_seg_display_count_units: out UInt<7> reset reset=>0;
+  port available_spaces: out pipe_reg<UInt<4>, 1> reset reset=>TOTAL_SPACES;
+  port count_car: out pipe_reg<UInt<4>, 1> reset reset=>0;
+  port led_status: out pipe_reg<Bool, 1> reset reset=>true;
+  port parking_fee: out pipe_reg<UInt<16>, 1> reset reset=>0;
+  port fee_ready: out pipe_reg<Bool, 1> reset reset=>false;
+  port qr_code: out pipe_reg<UInt<128>, 1> reset reset=>0;
+  port seven_seg_display_available_tens: out pipe_reg<UInt<7>, 1> reset reset=>0;
+  port seven_seg_display_available_units: out pipe_reg<UInt<7>, 1> reset reset=>0;
+  port seven_seg_display_count_tens: out pipe_reg<UInt<7>, 1> reset reset=>0;
+  port seven_seg_display_count_units: out pipe_reg<UInt<7>, 1> reset reset=>0;
 
   default seq on clk rising;
 

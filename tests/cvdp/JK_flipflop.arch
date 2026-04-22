@@ -3,8 +3,8 @@ module JK_flipflop
   port i_rst_b: in Reset<Async, Low>;
   port i_J: in Bool;
   port i_K: in Bool;
-  port reg o_Q: out Bool reset i_rst_b=>false;
-  port reg o_Q_b: out Bool reset i_rst_b=>true;
+  port o_Q: out pipe_reg<Bool, 1> reset i_rst_b=>false;
+  port o_Q_b: out pipe_reg<Bool, 1> reset i_rst_b=>true;
 
   default seq on i_clk rising;
 

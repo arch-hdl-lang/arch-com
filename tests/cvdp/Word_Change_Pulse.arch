@@ -7,9 +7,9 @@ module Word_Change_Pulse
   port match_pattern:       in UInt<DATA_WIDTH>;
   port enable:              in Bool;
   port latch_pattern:       in Bool;
-  port reg word_change_pulse:   out Bool reset reset=>false;
-  port reg pattern_match_pulse: out Bool reset reset=>false;
-  port reg latched_pattern:     out UInt<DATA_WIDTH> reset reset=>0;
+  port word_change_pulse: out pipe_reg<Bool, 1> reset reset=>false;
+  port pattern_match_pulse: out pipe_reg<Bool, 1> reset reset=>false;
+  port latched_pattern: out pipe_reg<UInt<DATA_WIDTH>, 1> reset reset=>0;
 
   wire change_pulses: UInt<DATA_WIDTH>;
 

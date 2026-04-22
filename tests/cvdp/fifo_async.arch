@@ -12,8 +12,8 @@ module fifo_async
   port r_rst:  in Reset<Sync>;
   port r_inc:  in Bool;
 
-  port reg w_full:  out Bool reset w_rst =>false;
-  port reg r_empty: out Bool reset r_rst =>true;
+  port w_full: out pipe_reg<Bool, 1> reset w_rst =>false;
+  port r_empty: out pipe_reg<Bool, 1> reset r_rst =>true;
   port r_data: out UInt<DATA_WIDTH>;
 
   // Memory array

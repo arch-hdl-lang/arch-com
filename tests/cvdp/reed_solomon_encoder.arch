@@ -8,10 +8,10 @@ module reed_solomon_encoder
   port enable:        in Bool;
   port data_in:       in UInt<DATA_WIDTH>;
   port valid_in:      in Bool;
-  port reg codeword_out:  out UInt<DATA_WIDTH> reset reset=>0;
-  port reg valid_out:     out Bool reset reset=>false;
-  port reg parity_0:      out UInt<DATA_WIDTH> reset reset=>0;
-  port reg parity_1:      out UInt<DATA_WIDTH> reset reset=>0;
+  port codeword_out: out pipe_reg<UInt<DATA_WIDTH>, 1> reset reset=>0;
+  port valid_out: out pipe_reg<Bool, 1> reset reset=>false;
+  port parity_0: out pipe_reg<UInt<DATA_WIDTH>, 1> reset reset=>0;
+  port parity_1: out pipe_reg<UInt<DATA_WIDTH>, 1> reset reset=>0;
 
   // Generator polynomial coefficient
   let gp: UInt<DATA_WIDTH> = 8'h33;

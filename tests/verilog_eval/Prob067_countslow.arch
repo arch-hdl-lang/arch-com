@@ -2,7 +2,7 @@ module TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
   port slowena: in Bool;
-  port reg q: out UInt<4> reset reset=>0;
+  port q: out pipe_reg<UInt<4>, 1> reset reset=>0;
 
   default seq on clk rising;
 

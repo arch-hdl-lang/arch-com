@@ -13,8 +13,8 @@ module data_bus_controller
   port m1_data:  in UInt<32>;
 
   port s_ready:  in Bool;
-  port reg s_valid: out Bool reset rst_n=>false;
-  port reg s_data:  out UInt<32> reset rst_n=>0;
+  port s_valid: out pipe_reg<Bool, 1> reset rst_n=>false;
+  port s_data: out pipe_reg<UInt<32>, 1> reset rst_n=>0;
 
   default seq on clk rising;
 

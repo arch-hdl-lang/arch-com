@@ -7,34 +7,34 @@ module axi_register
   // Write address channel
   port awaddr_i:   in UInt<ADDR_WIDTH>;
   port awvalid_i:  in Bool;
-  port reg awready_o: out Bool reset rst_n_i=>false;
+  port awready_o: out pipe_reg<Bool, 1> reset rst_n_i=>false;
 
   // Write data channel
   port wdata_i:    in UInt<DATA_WIDTH>;
   port wstrb_i:    in UInt<DATA_WIDTH/8>;
   port wvalid_i:   in Bool;
-  port reg wready_o: out Bool reset rst_n_i=>false;
+  port wready_o: out pipe_reg<Bool, 1> reset rst_n_i=>false;
 
   // Write response channel
-  port reg bresp_o:  out UInt<2> reset rst_n_i=>0;
-  port reg bvalid_o: out Bool reset rst_n_i=>false;
+  port bresp_o: out pipe_reg<UInt<2>, 1> reset rst_n_i=>0;
+  port bvalid_o: out pipe_reg<Bool, 1> reset rst_n_i=>false;
   port bready_i:     in Bool;
 
   // Read address channel
   port araddr_i:   in UInt<ADDR_WIDTH>;
   port arvalid_i:  in Bool;
-  port reg arready_o: out Bool reset rst_n_i=>false;
+  port arready_o: out pipe_reg<Bool, 1> reset rst_n_i=>false;
 
   // Read data channel
-  port reg rdata_o:  out UInt<DATA_WIDTH> reset rst_n_i=>0;
-  port reg rvalid_o: out Bool reset rst_n_i=>false;
-  port reg rresp_o:  out UInt<2> reset rst_n_i=>0;
+  port rdata_o: out pipe_reg<UInt<DATA_WIDTH>, 1> reset rst_n_i=>0;
+  port rvalid_o: out pipe_reg<Bool, 1> reset rst_n_i=>false;
+  port rresp_o: out pipe_reg<UInt<2>, 1> reset rst_n_i=>0;
   port rready_i:     in Bool;
 
   // Control outputs
-  port reg beat_o:      out UInt<20> reset rst_n_i=>0;
-  port reg start_o:     out Bool reset rst_n_i=>false;
-  port reg writeback_o: out Bool reset rst_n_i=>false;
+  port beat_o: out pipe_reg<UInt<20>, 1> reset rst_n_i=>0;
+  port start_o: out pipe_reg<Bool, 1> reset rst_n_i=>false;
+  port writeback_o: out pipe_reg<Bool, 1> reset rst_n_i=>false;
   port done_i:          in Bool;
 
   // Internal registers

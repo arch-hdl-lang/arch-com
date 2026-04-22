@@ -6,7 +6,7 @@ module ttc_counter_lite
   port axi_write_en: in Bool;
   port axi_read_en:  in Bool;
   port axi_rdata:    out UInt<32>;
-  port reg interrupt:     out Bool reset reset=>0;
+  port interrupt: out pipe_reg<Bool, 1> reset reset=>0;
 
   default seq on clk rising;
 

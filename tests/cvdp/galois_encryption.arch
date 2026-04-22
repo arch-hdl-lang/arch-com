@@ -66,8 +66,8 @@ module galois_encryption
   port i_valid: in Bool;
   port i_data: in UInt<NBW_DATA>;
   port i_encrypt: in Bool;
-  port reg o_data: out UInt<NBW_DATA> reset rst_async_n => 0;
-  port reg o_valid: out Bool reset rst_async_n => 0;
+  port o_data: out pipe_reg<UInt<NBW_DATA>, 1> reset rst_async_n => 0;
+  port o_valid: out pipe_reg<Bool, 1> reset rst_async_n => 0;
 
   reg default: reset rst_async_n => 0;
 

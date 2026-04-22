@@ -4,7 +4,7 @@ module strob_gen
   port clk:      in Clock<SysDomain>;
   port nrst:     in Reset<Async, Low>;
   port enable:   in Bool;
-  port reg strobe_o: out Bool reset nrst=>false;
+  port strobe_o: out pipe_reg<Bool, 1> reset nrst=>false;
 
   default seq on clk rising;
 

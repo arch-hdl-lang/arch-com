@@ -6,7 +6,7 @@ module single_port_ram
   port we:   in Bool;
   port addr: in UInt<ADDR_WIDTH>;
   port din:  in UInt<DATA_WIDTH>;
-  port reg dout: out UInt<DATA_WIDTH>;
+  port dout: out pipe_reg<UInt<DATA_WIDTH>, 1>;
 
   default seq on clk rising;
 

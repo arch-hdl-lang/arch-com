@@ -1,7 +1,7 @@
 module TopModule
   port clk: in Clock<SysDomain>;
   port a: in Bool;
-  port reg q: out UInt<3>;
+  port q: out pipe_reg<UInt<3>, 1>;
 
   default seq on clk rising;
 

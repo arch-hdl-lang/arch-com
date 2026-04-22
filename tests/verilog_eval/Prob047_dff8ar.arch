@@ -2,7 +2,7 @@ module TopModule
   port clk: in Clock<SysDomain>;
   port areset: in Reset<Async>;
   port d: in UInt<8>;
-  port reg q: out UInt<8> reset areset=>0;
+  port q: out pipe_reg<UInt<8>, 1> reset areset=>0;
 
   default seq on clk rising;
 

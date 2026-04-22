@@ -7,28 +7,28 @@ module precision_counter_axi
 
   port axi_awaddr:  in UInt<C_S_AXI_ADDR_WIDTH>;
   port axi_awvalid: in Bool;
-  port reg axi_awready: out Bool reset axi_aresetn=>false;
+  port axi_awready: out pipe_reg<Bool, 1> reset axi_aresetn=>false;
 
   port axi_wdata:   in UInt<C_S_AXI_DATA_WIDTH>;
   port axi_wstrb:   in UInt<C_S_AXI_DATA_WIDTH/8>;
   port axi_wvalid:  in Bool;
-  port reg axi_wready: out Bool reset axi_aresetn=>false;
+  port axi_wready: out pipe_reg<Bool, 1> reset axi_aresetn=>false;
 
-  port reg axi_bresp:  out UInt<2> reset axi_aresetn=>0;
-  port reg axi_bvalid: out Bool reset axi_aresetn=>false;
+  port axi_bresp: out pipe_reg<UInt<2>, 1> reset axi_aresetn=>0;
+  port axi_bvalid: out pipe_reg<Bool, 1> reset axi_aresetn=>false;
   port axi_bready: in Bool;
 
   port axi_araddr:  in UInt<C_S_AXI_ADDR_WIDTH>;
   port axi_arvalid: in Bool;
-  port reg axi_arready: out Bool reset axi_aresetn=>false;
+  port axi_arready: out pipe_reg<Bool, 1> reset axi_aresetn=>false;
 
-  port reg axi_rdata:  out UInt<C_S_AXI_DATA_WIDTH> reset axi_aresetn=>0;
-  port reg axi_rresp:  out UInt<2> reset axi_aresetn=>0;
-  port reg axi_rvalid: out Bool reset axi_aresetn=>false;
+  port axi_rdata: out pipe_reg<UInt<C_S_AXI_DATA_WIDTH>, 1> reset axi_aresetn=>0;
+  port axi_rresp: out pipe_reg<UInt<2>, 1> reset axi_aresetn=>0;
+  port axi_rvalid: out pipe_reg<Bool, 1> reset axi_aresetn=>false;
   port axi_rready: in Bool;
 
-  port reg axi_ap_done: out Bool reset axi_aresetn=>false;
-  port reg irq: out Bool reset axi_aresetn=>false;
+  port axi_ap_done: out pipe_reg<Bool, 1> reset axi_aresetn=>false;
+  port irq: out pipe_reg<Bool, 1> reset axi_aresetn=>false;
 
   default seq on axi_aclk rising;
 

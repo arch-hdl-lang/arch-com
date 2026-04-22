@@ -9,8 +9,8 @@ module secure_read_write_bus_interface
   port i_data_in: in UInt<P_DATA_WIDTH>;
   port i_key_in: in UInt<8>;
   port i_read_write_enable: in Bit;
-  port reg o_data_out: out UInt<P_DATA_WIDTH> reset i_reset_bar=>0;
-  port reg o_error: out Bit reset i_reset_bar=>0;
+  port o_data_out: out pipe_reg<UInt<P_DATA_WIDTH>, 1> reset i_reset_bar=>0;
+  port o_error: out pipe_reg<Bit, 1> reset i_reset_bar=>0;
 
   default seq on i_capture_pulse rising;
 

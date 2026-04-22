@@ -11,13 +11,13 @@ module enhanced_fsm_signal_processor
   port i_vector_4: in UInt<5>;
   port i_vector_5: in UInt<5>;
   port i_vector_6: in UInt<5>;
-  port reg o_ready:      out Bit       reset i_rst_n=>0;
-  port reg o_error:      out Bit       reset i_rst_n=>0;
-  port reg o_fsm_status: out UInt<2>   reset i_rst_n=>0;
-  port reg o_vector_1:   out UInt<8>   reset i_rst_n=>0;
-  port reg o_vector_2:   out UInt<8>   reset i_rst_n=>0;
-  port reg o_vector_3:   out UInt<8>   reset i_rst_n=>0;
-  port reg o_vector_4:   out UInt<8>   reset i_rst_n=>0;
+  port o_ready: out pipe_reg<Bit, 1>       reset i_rst_n=>0;
+  port o_error: out pipe_reg<Bit, 1>       reset i_rst_n=>0;
+  port o_fsm_status: out pipe_reg<UInt<2>, 1>   reset i_rst_n=>0;
+  port o_vector_1: out pipe_reg<UInt<8>, 1>   reset i_rst_n=>0;
+  port o_vector_2: out pipe_reg<UInt<8>, 1>   reset i_rst_n=>0;
+  port o_vector_3: out pipe_reg<UInt<8>, 1>   reset i_rst_n=>0;
+  port o_vector_4: out pipe_reg<UInt<8>, 1>   reset i_rst_n=>0;
 
   default seq on i_clk rising;
 

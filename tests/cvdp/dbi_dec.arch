@@ -3,7 +3,7 @@ module dbi_dec
   port rst_n: in Reset<Async, Low>;
   port data_in: in UInt<40>;
   port dbi_cntrl: in UInt<2>;
-  port reg data_out: out UInt<40> reset rst_n=>0;
+  port data_out: out pipe_reg<UInt<40>, 1> reset rst_n=>0;
 
   default seq on clk rising;
 

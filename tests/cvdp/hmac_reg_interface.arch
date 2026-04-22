@@ -9,9 +9,9 @@ module hmac_reg_interface
   port addr:      in UInt<ADDR_WIDTH>;
   port wdata:     in UInt<DATA_WIDTH>;
   port i_wait_en: in Bool;
-  port reg rdata:          out UInt<DATA_WIDTH> reset rst_n=>0;
-  port reg hmac_valid:     out Bool reset rst_n=>false;
-  port reg hmac_key_error: out Bool reset rst_n=>false;
+  port rdata: out pipe_reg<UInt<DATA_WIDTH>, 1> reset rst_n=>0;
+  port hmac_valid: out pipe_reg<Bool, 1> reset rst_n=>false;
+  port hmac_key_error: out pipe_reg<Bool, 1> reset rst_n=>false;
 
   default seq on clk rising;
 

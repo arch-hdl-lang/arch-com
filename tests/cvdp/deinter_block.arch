@@ -16,7 +16,7 @@ module deinter_block
   port rst_n:    in  Reset<Async, Low>;
   port i_valid:  in  Bool;
   port in_data:  in  UInt<DATA_WIDTH>;
-  port reg out_data: out UInt<OUT_DATA_WIDTH> reset rst_n => 0;
+  port out_data: out pipe_reg<UInt<OUT_DATA_WIDTH>, 1> reset rst_n => 0;
 
   default seq on clk rising;
 

@@ -2,7 +2,7 @@ module nff
   port d_in:    in Bit;
   port dst_clk: in Clock<SysDomain>;
   port rst:     in Reset<Async, Low>;
-  port reg syncd: out Bit reset rst=>0;
+  port syncd: out pipe_reg<Bit, 1> reset rst=>0;
 
   reg ff1: Bit reset rst=>0;
 

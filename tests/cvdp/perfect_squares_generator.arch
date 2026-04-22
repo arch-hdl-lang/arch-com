@@ -1,7 +1,7 @@
 module perfect_squares_generator
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Async, High>;
-  port reg sqr_o: out UInt<32> reset reset=>1;
+  port sqr_o: out pipe_reg<UInt<32>, 1> reset reset=>1;
 
   // Incremental: (n+1)^2 = n^2 + 2n + 1 = sqr + odd, odd += 2
   // Start: sqr=1, odd=3 → 4, 9, 16, ...

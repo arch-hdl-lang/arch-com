@@ -3,9 +3,9 @@ fsm factorial
   port arst_n: in Reset<Async, Low>;
   port num_in: in UInt<5>;
   port start: in Bool;
-  port reg busy: out Bool reset arst_n=>false;
-  port reg done: out Bool reset arst_n=>false;
-  port reg fact: out UInt<64> reset arst_n=>0;
+  port busy: out pipe_reg<Bool, 1> reset arst_n=>false;
+  port done: out pipe_reg<Bool, 1> reset arst_n=>false;
+  port fact: out pipe_reg<UInt<64>, 1> reset arst_n=>0;
 
   reg cnt: UInt<5> reset arst_n=>0;
   reg acc: UInt<64> reset arst_n=>1;

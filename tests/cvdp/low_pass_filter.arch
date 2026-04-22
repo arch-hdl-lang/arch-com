@@ -11,7 +11,7 @@ module low_pass_filter
   port valid_in: in Bool;
   port coeffs: in UInt<COEFF_WIDTH * NUM_TAPS>;
   port data_out: out SInt<OUT_WIDTH>;
-  port reg valid_out: out Bool reset reset=>false;
+  port valid_out: out pipe_reg<Bool, 1> reset reset=>false;
 
   default seq on clk rising;
 
