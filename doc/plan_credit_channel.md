@@ -382,11 +382,213 @@ Four focused PRs:
   four properties; an intentionally buggy sender (e.g., removes the
   `can_send` gate) should REFUTE.
 
-### PR #4 — docs + stdlib example
+### PR #4 — docs + NoC flit credit test + stdlib sample
 - Spec §N `credit_channel` section covering semantics, lowering, SVA.
 - Reference card entry.
-- `stdlib/` sample: `CcAxiCmd.arch` — a credit-channel definition
-  shaped like an AXI-Full command channel, as a worked example.
+- End-to-end test shape: see §Validation plan below. Two modules
+  (NocProducer + NocConsumer) connected through a `credit_channel`
+  carrying a 67-bit flit struct, with a cocotb-style TB that hammers
+  random production / consumption rates and verifies all four Tier-2
+  invariants hold.
+
+## Validation plan — NoC flit credit
+
+The canonical real-world use of credit-based flow control is per-VC
+(virtual channel) flit-level backpressure in an on-chip network. Scale
+down to its simplest form — one producer, one consumer, one shared
+credit channel — and we get the textbook test for `credit_channel`.
+
+Why NoC flit credit is the right validation target:
+- Smallest real protocol that exercises every credit_channel feature
+- Point-to-point semantics (what v1 supports); no multi-initiator issues
+- Depth = receiver buffer matches credit pool exactly — tests the
+  core invariant
+- Backpressure recovery under asymmetric rates is the defining
+  correctness property that random simulation stresses hard
+- Existing academic and production reference implementations to
+  cross-check against (Intel mesh, AMD Infinity Fabric, OpenPiton)
+
+### Flit type
+
+```
+struct NocFlit
+  vc:   UInt<2>;       // virtual channel tag (unused in v1 single-VC test)
+  data: UInt<64>;      // payload
+  last: Bool;          // marks end-of-packet (packet boundary)
+end struct NocFlit
+```
+
+67 bits packed. Wide enough to catch struct-field-ordering bugs at the
+wire level, narrow enough that the buffer isn't absurd.
+
+### Channel
+
+```
+credit_channel NocChannel
+  param T:     type  = NocFlit;
+  param DEPTH: const = 8;            // 8-flit receiver buffer
+end credit_channel NocChannel
+```
+
+### Producer
+
+```
+module NocProducer
+  port clk:  in Clock<SysDomain>;
+  port rst:  in Reset<Sync>;
+  port gen_pressure: in UInt<8>;     // TB-controlled send rate (0..255)
+  port out:  initiator NocChannel<T=NocFlit, DEPTH=8>;
+
+  reg seq_no: UInt<64> init 0 reset rst => 0;
+  reg lfsr:   UInt<8>  init 8'h5A reset rst => 8'h5A;
+
+  seq on clk rising
+    // Pseudo-random throttling: send iff lfsr < gen_pressure AND we have credit.
+    lfsr <= '{ (lfsr >> 1) ^ ((lfsr[0]) ? 8'hB8 : 8'h00) };
+    if out.can_send and lfsr < gen_pressure
+      out.send('{
+        vc:   2'b00,
+        data: seq_no,
+        last: (seq_no[3:0] == 4'hF)    // mark end-of-packet every 16 flits
+      });
+      seq_no <= seq_no + 1;
+    end if
+  end seq
+end module NocProducer
+```
+
+### Consumer
+
+```
+module NocConsumer
+  port clk:  in Clock<SysDomain>;
+  port rst:  in Reset<Sync>;
+  port pop_pressure: in UInt<8>;     // TB-controlled consume rate (0..255)
+  port in:   target NocChannel<T=NocFlit, DEPTH=8>;
+
+  // Observable outputs for TB self-check:
+  port reg popped_count: out UInt<64> reset rst => 0;
+  port reg last_seq:     out UInt<64> reset rst => 0;
+  port reg packet_count: out UInt<32> reset rst => 0;
+
+  reg lfsr: UInt<8> init 8'hC3 reset rst => 8'hC3;
+
+  seq on clk rising
+    lfsr <= '{ (lfsr >> 1) ^ ((lfsr[0]) ? 8'hB8 : 8'h00) };
+    if in.valid and lfsr < pop_pressure
+      popped_count <= popped_count + 1;
+      last_seq     <= in.data.data;
+      if in.data.last
+        packet_count <= packet_count + 1;
+      end if
+      in.pop();
+    end if
+  end seq
+end module NocConsumer
+```
+
+### Top-level
+
+```
+module NocCreditTop
+  port clk:  in Clock<SysDomain>;
+  port rst:  in Reset<Sync>;
+  port gen_pressure: in UInt<8>;
+  port pop_pressure: in UInt<8>;
+  port popped_count: out UInt<64>;
+  port last_seq:     out UInt<64>;
+  port packet_count: out UInt<32>;
+
+  inst prod: NocProducer
+    clk <- clk;  rst <- rst;
+    gen_pressure <- gen_pressure;
+  end inst
+
+  inst cons: NocConsumer
+    clk <- clk;  rst <- rst;
+    pop_pressure <- pop_pressure;
+    popped_count -> popped_count;
+    last_seq     -> last_seq;
+    packet_count -> packet_count;
+  end inst
+
+  // The credit_channel wire bundle connects prod.out to cons.in.
+  // Exact connection syntax depends on the implementation choice in
+  // PR #1: either `prod.out <-> cons.in;` (bidirectional shorthand)
+  // or explicit wire declarations covering send_valid / send_data /
+  // credit_return. Determined during PR #1 grammar lockdown.
+end module NocCreditTop
+```
+
+### Testbench
+
+Python/cocotb-style TB driving the model through pybind11
+(`arch sim --pybind --test tb.py`). Structure:
+
+```python
+@cocotb.test()
+async def test_noc_credit_random(dut):
+    # Reset
+    dut.set_rst(1); dut.set_gen_pressure(0); dut.set_pop_pressure(0)
+    await ClockCycles(dut.clk, 5)
+    dut.set_rst(0)
+
+    # Scenario 1: balanced rates — producer and consumer at 50%.
+    # Should observe steady throughput with bounded credit usage.
+    dut.set_gen_pressure(128); dut.set_pop_pressure(128)
+    await ClockCycles(dut.clk, 1000)
+    assert dut.popped_count.value > 100, "balanced: no progress"
+
+    # Scenario 2: producer-fast, consumer-slow — tests backpressure.
+    # Credits should drain and producer's can_send should fall.
+    dut.set_gen_pressure(255); dut.set_pop_pressure(32)
+    await ClockCycles(dut.clk, 2000)
+    # Consumer-rate-bounded throughput, no drops.
+
+    # Scenario 3: recovery — speed up consumer, producer throughput
+    # should rise back to its cap.
+    dut.set_pop_pressure(255)
+    await ClockCycles(dut.clk, 1000)
+
+    # Final self-check: every seq_no was popped exactly once, in
+    # order. TB maintains its own shadow counter.
+```
+
+### Assertions the TB self-checks
+
+1. **No data loss**: `popped_count` at end equals the number of sends
+   the TB observed from the producer's `can_send && lfsr < pressure`
+   condition. (TB mirrors the producer's LFSR to predict send events.)
+2. **In-order delivery**: each popped `data` field is strictly greater
+   than the previous one (`seq_no` monotonicity).
+3. **Packet boundary preservation**: `packet_count * 16 == popped_count`
+   at steady state.
+4. **Backpressure recovery**: after the consumer-slow scenario, the
+   next balanced-pressure window reaches the same throughput as
+   Scenario 1 within 100 cycles.
+
+### Auto-emitted SVA (compiler-provided, separately verified)
+
+The Tier-2 assertions introduced in §Lowering (credit bounds, send-
+requires-credit, buffer occupancy matches counter, credit_return
+implies pop) should be checked by two tool paths during the test:
+
+- **Verilator `--assert`**: compile with `arch build` → Verilator runs
+  the same C++ TB and trips on any violation.
+- **EBMC bounded model check**: `arch formal` proves the four SVA
+  properties at a small bound (e.g. 20 cycles) on the NocCreditTop
+  module. Intentionally-buggy variants (e.g. remove `can_send` gate)
+  REFUTE at the expected depth.
+
+### Stretch: 4×4 mesh
+
+Once the 2-module test lands, a 4×4 mesh NoC (16 routers, ~40
+credit_channel instances between them) becomes a natural "real design"
+demo. Each router has 5 input + 5 output flit queues (N/S/E/W/local),
+each with its own credit channel. Validates the primitive scales without
+surprises. Target: ship as `examples/mesh_noc_4x4/` after v1 merges.
+
+
 
 ## Open questions
 
