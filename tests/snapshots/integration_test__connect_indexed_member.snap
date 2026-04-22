@@ -7,7 +7,7 @@ expression: sv
 
 module SmallRf #(
   parameter int NREGS = 4,
-  parameter int WIDTH = 0
+  parameter int T = 0
 ) (
   input logic clk,
   input logic rst,

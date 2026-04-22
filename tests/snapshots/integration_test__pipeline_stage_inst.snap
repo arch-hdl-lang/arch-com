@@ -6,14 +6,14 @@ expression: sv
 //   freq_mhz: 100
 
 module Alu #(
-  parameter int WIDTH = 32
+  parameter int T = 32
 ) (
-  input logic [WIDTH-1:0] a,
-  input logic [WIDTH-1:0] b,
-  output logic [WIDTH-1:0] result
+  input logic [T-1:0] a,
+  input logic [T-1:0] b,
+  output logic [T-1:0] result
 );
 
-  assign result = WIDTH'(a + b);
+  assign result = T'(a + b);
 
 endmodule
 

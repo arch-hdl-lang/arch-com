@@ -7,7 +7,7 @@ expression: sv
 
 module IntRegs #(
   parameter int NREGS = 32,
-  parameter int WIDTH = 0
+  parameter int T = 0
 ) (
   input logic clk,
   input logic rst,

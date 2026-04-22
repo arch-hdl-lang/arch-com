@@ -4,19 +4,19 @@ ram DataMem
   kind simple_dual;
   latency 2;
   param DEPTH: const = 16384;
-  param WIDTH: type = UInt<128>;
+  param T: type = UInt<128>;
   port clk: in Clock<SysDomain>;
   store
-    data: Vec<WIDTH, DEPTH>;
+    data: Vec<T, DEPTH>;
   end store
   ports rd_port
     en:   in Bool;
     addr: in UInt<14>;
-    data: out WIDTH;
+    data: out T;
   end ports rd_port
   ports wr_port
     en:   in Bool;
     addr: in UInt<14>;
-    data: in WIDTH;
+    data: in T;
   end ports wr_port
 end ram DataMem

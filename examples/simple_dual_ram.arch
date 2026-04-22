@@ -6,19 +6,19 @@ ram DualMem
   kind simple_dual;
   latency 1;
   param DEPTH: const = 128;
-  param WIDTH: type = UInt<8>;
+  param T: type = UInt<8>;
   port clk: in Clock<SysDomain>;
   store
-    buf: Vec<WIDTH, DEPTH>;
+    buf: Vec<T, DEPTH>;
   end store
   ports rd_port
     en: in Bool;
     addr: in UInt<7>;
-    data: out WIDTH;
+    data: out T;
   end ports rd_port
   ports wr_port
     en: in Bool;
     addr: in UInt<7>;
-    data: in WIDTH;
+    data: in T;
   end ports wr_port
 end ram DualMem

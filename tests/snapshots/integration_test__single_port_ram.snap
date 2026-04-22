@@ -13,8 +13,8 @@ module SimpleMem #(
   input logic access_en,
   input logic access_wen,
   input logic [7:0] access_addr,
-  input logic [DATA_WIDTH-1:0] access_wdata,
-  output logic [DATA_WIDTH-1:0] access_rdata
+  input T access_wdata,
+  output T access_rdata
 );
 
   logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];
