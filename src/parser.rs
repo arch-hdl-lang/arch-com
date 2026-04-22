@@ -144,7 +144,7 @@ impl Parser {
                 params.push(self.parse_param_decl()?);
             } else if self.check(TokenKind::GenerateIf) {
                 generates.push(self.parse_bus_generate_if(start)?);
-            } else if self.check(TokenKind::Handshake) {
+            } else if self.check(TokenKind::Handshake) || self.check(TokenKind::HandshakeChannel) {
                 let (ports, gen_ifs, meta) = self.parse_handshake_block(start)?;
                 signals.extend(ports);
                 generates.extend(gen_ifs);
@@ -208,7 +208,7 @@ impl Parser {
         let mut then_signals = Vec::new();
         // Parse then-branch signals until end generate_if or generate_else
         while !self.check_bus_gen_end() {
-            if self.check(TokenKind::Handshake) {
+            if self.check(TokenKind::Handshake) || self.check(TokenKind::HandshakeChannel) {
                 let (ports, gen_ifs, _meta) = self.parse_handshake_block(parent_span)?;
                 if !gen_ifs.is_empty() {
                     return Err(CompileError::general(
@@ -229,7 +229,7 @@ impl Parser {
                 && self.tokens[self.pos].kind == TokenKind::End
                 && self.tokens[self.pos + 1].kind == TokenKind::GenerateIf)
             {
-                if self.check(TokenKind::Handshake) {
+                if self.check(TokenKind::Handshake) || self.check(TokenKind::HandshakeChannel) {
                     let (ports, gen_ifs, _meta) = self.parse_handshake_block(parent_span)?;
                     if !gen_ifs.is_empty() {
                         return Err(CompileError::general(
@@ -279,7 +279,11 @@ impl Parser {
     /// `send` = this side produces the payload (drives valid/req/payload,
     /// receives ready/ack); `receive` = consumer side.
     fn parse_handshake_block(&mut self, parent_span: Span) -> Result<(Vec<PortDecl>, Vec<BusGenerateIf>, HandshakeMeta), CompileError> {
-        let start = self.expect(TokenKind::Handshake)?.span;
+        // Accept both `handshake` (legacy) and `handshake_channel` (new).
+        // See plan_bus_unification.md for the rename rationale.
+        let is_legacy = self.check(TokenKind::Handshake);
+        let opening_tok = if is_legacy { TokenKind::Handshake } else { TokenKind::HandshakeChannel };
+        let start = self.expect(opening_tok)?.span;
         let ch_name = self.expect_ident()?;
         self.expect(TokenKind::Colon)?;
         let dir = if self.eat_contextual("send") {
@@ -364,7 +368,14 @@ impl Parser {
             payload.push((f_name, ty, f_span));
         }
         self.expect(TokenKind::End)?;
-        self.expect(TokenKind::Handshake)?;
+        // Closing keyword must match the opening one (`handshake` or
+        // `handshake_channel`). Mismatch is a parse error with a clear
+        // message pointing the user at the fix.
+        if is_legacy {
+            self.expect(TokenKind::Handshake)?;
+        } else {
+            self.expect(TokenKind::HandshakeChannel)?;
+        }
         let closing = self.expect_ident()?;
         if closing.name != ch_name.name {
             return Err(CompileError::mismatched_closing(
@@ -442,6 +453,7 @@ impl Parser {
             role_dir: dir,
             payload_names,
             span: block_span,
+            legacy_handshake_kw: is_legacy,
         };
         Ok((out, generates, meta))
     }

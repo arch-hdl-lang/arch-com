@@ -4465,9 +4465,11 @@ Real schedulers rarely use a single integer key. Arch allows struct types as pri
   **Occupancy counter**      counter\<wrap\>                            Tracks current size; drives full/empty
   ----------------------------------------------------------------------------------------------------------------------------------------
 
-**18a. First-Class Sub-Construct: handshake (inside bus)**
+**18a. First-Class Sub-Construct: handshake_channel (inside bus)**
 
-`handshake` collapses the valid/ready/payload vocabulary that dominates every on-chip interface — AXI/APB/AHB/Avalon, streaming pipelines, async GALS bridges — into one declaration per channel. It is a **compile-time sum type**: a single keyword names the *payload role*, a variant name selects the flow-control shape, and the compiler synthesizes the flat individual-wire port declarations with their directions derived mechanically. The user never flips individual wires by hand, so the dominant "I flipped valid and ready" bug class is eliminated by construction.
+> **Keyword rename (v0.44.0):** the opening/closing keyword is `handshake_channel`. The legacy `handshake` keyword still parses and emits a deprecation warning (silence with `ARCH_NO_DEPRECATIONS=1`); it will be removed in v0.45.0. The rename aligns this sub-construct with its siblings `credit_channel` and `tlm_method` under the unified `bus` umbrella (see `doc/plan_bus_unification.md`). Semantics are unchanged.
+
+`handshake_channel` collapses the valid/ready/payload vocabulary that dominates every on-chip interface — AXI/APB/AHB/Avalon, streaming pipelines, async GALS bridges — into one declaration per channel. It is a **compile-time sum type**: a single keyword names the *payload role*, a variant name selects the flow-control shape, and the compiler synthesizes the flat individual-wire port declarations with their directions derived mechanically. The user never flips individual wires by hand, so the dominant "I flipped valid and ready" bug class is eliminated by construction.
 
 `handshake` is only valid inside a `bus` body. To expose a single-channel handshake-shaped interface from a module, define a one-handshake bus and attach it as an ordinary bus port.
 
@@ -4478,27 +4480,27 @@ bus BusAxiLite
   param ADDR_W: const = 32;
   param DATA_W: const = 32;
 
-  handshake aw: send kind: valid_ready
+  handshake_channel aw: send kind: valid_ready
     addr: UInt<ADDR_W>;
     prot: UInt<3>;
-  end handshake aw
+  end handshake_channel aw
 
-  handshake w: send kind: valid_ready
+  handshake_channel w: send kind: valid_ready
     data: UInt<DATA_W>;
     strb: UInt<DATA_W/8>;
-  end handshake w
+  end handshake_channel w
 
-  handshake b: receive kind: valid_ready
+  handshake_channel b: receive kind: valid_ready
     resp: UInt<2>;
-  end handshake b
+  end handshake_channel b
 end bus BusAxiLite
 ```
 
 Grammar:
 ```
-HandshakeBlock := 'handshake' Ident ':' Role 'kind' ':' Variant NEWLINE
+HandshakeBlock := 'handshake_channel' Ident ':' Role 'kind' ':' Variant NEWLINE
                     (Ident ':' TypeExpr ';')*
-                  'end' 'handshake' Ident
+                  'end' 'handshake_channel' Ident
 Role           := 'send' | 'receive'
 Variant        := 'valid_ready' | 'valid_only' | 'ready_only'
                 | 'valid_stall' | 'req_ack_4phase' | 'req_ack_2phase'
