@@ -3181,3 +3181,59 @@ fn test_pipe_reg_depth_zero_errors() {
     let result = parser.parse_source_file();
     assert!(result.is_err(), "expected depth=0 error");
 }
+
+#[test]
+fn test_stdlib_bus_axi_stream_discovery() {
+    // A module that `use BusAxiStream;` should pick the stdlib definition
+    // up automatically — no ARCH_LIB_PATH setup required. Verified here
+    // by running the real compiler binary against a stub test case.
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = td.path().join("Prod.arch");
+    std::fs::write(&src, "\
+        use BusAxiStream;\n\
+        module Prod\n\
+          port clk: in Clock<SysDomain>;\n\
+          port rst: in Reset<Sync>;\n\
+          port m_axis: initiator BusAxiStream<DATA_W=32>;\n\
+          comb\n\
+            m_axis.t_valid = 1'b0;\n\
+            m_axis.t_data  = 32'h0;\n\
+            m_axis.t_last  = 1'b0;\n\
+            m_axis.t_keep  = 4'h0;\n\
+          end comb\n\
+        end module Prod\n\
+    ").unwrap();
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("check")
+        .arg(&src)
+        .output()
+        .expect("run arch check");
+    assert!(out.status.success(),
+        "arch check should succeed with stdlib discovery; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn test_stdlib_disabled_via_env() {
+    // ARCH_NO_STDLIB=1 should skip the stdlib search entirely — a module
+    // that depends on stdlib should then fail to resolve.
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = td.path().join("Prod.arch");
+    std::fs::write(&src, "\
+        use BusAxiStream;\n\
+        module Prod\n\
+          port m_axis: initiator BusAxiStream<DATA_W=32>;\n\
+          comb m_axis.t_valid = 1'b0; m_axis.t_data = 32'h0; m_axis.t_last = 1'b0; m_axis.t_keep = 4'h0; end comb\n\
+        end module Prod\n\
+    ").unwrap();
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("check")
+        .arg(&src)
+        .env("ARCH_NO_STDLIB", "1")
+        .output()
+        .expect("run arch check");
+    assert!(!out.status.success(),
+        "expected failure when ARCH_NO_STDLIB=1 disables stdlib resolution");
+}

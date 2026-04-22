@@ -784,6 +784,37 @@ sys.exit(0 if ok else 1)
 /// Resolve `use PkgName;` imports: find PkgName.arch files relative to the
 /// first input file's directory. Returns an extended MultiSource with
 /// dependency files prepended.
+/// Locate the shipped standard library directory containing curated bus
+/// definitions (BusAxiStream, BusAxiLite, BusApb, etc.). Resolution:
+///   1. `ARCH_STDLIB_PATH` env override (absolute path to stdlib/)
+///   2. Disabled entirely if `ARCH_NO_STDLIB=1`
+///   3. `<exe>/../stdlib/` — matches `cargo run` layout (target/debug/arch → ../../stdlib)
+///   4. `<exe>/../../stdlib/` — matches cargo workspace runs
+///   5. `<exe>/../share/arch/stdlib/` — matches Unix `<prefix>/bin/arch` installs
+/// Returns None if none of these resolve to an existing directory.
+fn resolve_stdlib_dir() -> Option<PathBuf> {
+    if std::env::var("ARCH_NO_STDLIB").is_ok() { return None; }
+    if let Ok(p) = std::env::var("ARCH_STDLIB_PATH") {
+        let p = PathBuf::from(p);
+        if p.is_dir() { return Some(p); }
+    }
+    let exe = std::env::current_exe().ok()?;
+    for up in 1..=4 {
+        let mut candidate = exe.clone();
+        for _ in 0..up {
+            candidate = candidate.parent()?.to_path_buf();
+        }
+        let stdlib = candidate.join("stdlib");
+        if stdlib.is_dir() { return Some(stdlib); }
+    }
+    // Unix prefix install: /usr/local/bin/arch → /usr/local/share/arch/stdlib
+    let exe_parent = exe.parent()?;
+    let prefix = exe_parent.parent()?;
+    let share = prefix.join("share").join("arch").join("stdlib");
+    if share.is_dir() { return Some(share); }
+    None
+}
+
 fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
     use std::collections::HashSet;
 
@@ -817,9 +848,29 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
         let mut deps = Vec::new();
         for item in &parsed.items {
             if let arch::ast::Item::Use(u) = item {
-                let dep_path = base_dir.join(format!("{}.arch", u.name.name));
-                if dep_path.exists() {
-                    deps.push(dep_path);
+                // Resolution order:
+                //   1. Same-directory relative path
+                //   2. ARCH_LIB_PATH entries (colon-separated)
+                //   3. <install>/stdlib/ (unless ARCH_NO_STDLIB=1)
+                let file_name = format!("{}.arch", u.name.name);
+                let same_dir = base_dir.join(&file_name);
+                if same_dir.exists() {
+                    deps.push(same_dir);
+                    continue;
+                }
+                let mut found = false;
+                if let Ok(lib_path) = std::env::var("ARCH_LIB_PATH") {
+                    for dir in lib_path.split(':') {
+                        let p = std::path::Path::new(dir).join(&file_name);
+                        if p.exists() { deps.push(p); found = true; break; }
+                    }
+                }
+                if found { continue; }
+                if let Some(stdlib) = resolve_stdlib_dir() {
+                    let p = stdlib.join(&file_name);
+                    if p.exists() {
+                        deps.push(p);
+                    }
                 }
             }
         }
@@ -865,6 +916,13 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
                         let p = std::path::Path::new(dir).join(format!("{inst_name}.arch"));
                         if p.exists() { deps.push(p); break; }
                     }
+                }
+                // Fall back to the shipped standard library.
+                if let Some(stdlib) = resolve_stdlib_dir() {
+                    let p = stdlib.join(format!("{inst_name}.arch"));
+                    if p.exists() { deps.push(p); continue; }
+                    let p = stdlib.join(format!("{inst_name}.archi"));
+                    if p.exists() { deps.push(p); }
                 }
             }
         }

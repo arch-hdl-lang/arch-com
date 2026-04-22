@@ -1,0 +1,25 @@
+// AXI4-Stream simple flow-control bundle.
+//
+// Canonical streaming bus with valid/ready handshake + data + tlast + tkeep.
+// Matches the ARM AMBA AXI4-Stream spec for the simple variant.
+//
+// v1 ships with a fixed payload (data + last + keep). If you need id/dest/user
+// or a leaner variant without last/keep, either compose a custom bus or wait
+// for BusAxiStreamLite / BusAxiStreamFull.
+//
+// Example:
+//   use BusAxiStream;
+//   module Producer
+//     port m_axis: initiator BusAxiStream<DATA_W=32>;
+//     ...
+//   end module Producer
+
+bus BusAxiStream
+  param DATA_W: const = 32;
+
+  handshake t: send kind: valid_ready
+    data: UInt<DATA_W>;
+    last: Bool;
+    keep: UInt<DATA_W / 8>;
+  end handshake t
+end bus BusAxiStream
