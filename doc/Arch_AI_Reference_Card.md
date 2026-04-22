@@ -58,16 +58,23 @@ reg r: UInt<8>;                      // inherits reset from reg default
 reg data: UInt<32> guard valid_r;    // guarded (no reset) — valid_r tells consumers when data is live;
                                      //   --check-uninit silences spurious read warnings AND catches the
                                      //   producer bug (valid_r=true but data never written)
-port reg q: out UInt<8> reset rst => 0;  // output port + register combined (1-cycle output latency)
-port reg q: out UInt<8>;             // inherits reset from reg default
-port reg dout: out UInt<32> guard dout_valid;  // port form of guarded reg
-pipe_reg delayed: source stages 3;  // N-stage delay chain, type inferred
+// Registered output port — latency is visible in the port signature.
+// Assign with `@N <= Y` in seq; reads as "Y will be in q N cycles from now".
+port q: out pipe_reg<UInt<8>, 1> reset rst => 0;    // 1-cycle registered output
+port q: out pipe_reg<UInt<8>, 3> reset rst => 0;    // 3-cycle output pipe
+                                                     // q@N <= Y in seq; bare q <= Y is an error for N>1
 
-// OUTPUT TIMING: port reg vs port (critical for FSM outputs)
-//   port reg o: out T  → driven in seq (<=), output lags state by 1 cycle
-//   port     o: out T  → driven in comb (=) or let, output reflects state same cycle
-// Use plain port + comb for zero-latency FSM outputs (e.g. cocotb expects same-cycle response)
-// Use port reg for glitch-free registered outputs (adds 1-cycle pipeline delay)
+// Legacy `port reg` still accepted (equivalent to pipe_reg<T, 1>).
+port reg q: out UInt<8> reset rst => 0;              // 1-cycle registered output
+port reg dout: out UInt<32> guard dout_valid;        // port form of guarded reg
+pipe_reg delayed: source stages 3;                   // N-stage internal delay chain
+
+// OUTPUT TIMING (critical for FSM outputs):
+//   port q: out T                   → comb (=), output reflects state same cycle
+//   port q: out pipe_reg<T, 1> ...  → seq q@1 <= ...; 1-cycle latency
+//   port q: out pipe_reg<T, N> ...  → seq q@N <= ...; N-cycle latency (cascade)
+// Use plain port + comb for zero-latency FSM outputs (e.g. cocotb expects same-cycle response).
+// Use pipe_reg<T, N> for glitch-free registered outputs; N visible to LLMs in the signature.
 
 default seq on clk rising;           // set default clock for all seq blocks
 
