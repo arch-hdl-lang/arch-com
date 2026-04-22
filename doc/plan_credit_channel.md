@@ -2,6 +2,14 @@
 
 *Author: session of 2026-04-22. Status: design draft; not yet implemented.*
 
+**Update (2026-04-22)**: `credit_channel` nests inside `bus` as a
+sub-construct, mirroring `handshake_channel` — see
+[`plan_bus_unification.md`](plan_bus_unification.md) for the broader
+story. The nested-in-bus form is the **primary** spelling; the
+standalone `credit_channel X ... end` form kept below remains valid
+as parse-time sugar that desugars to a one-channel anonymous bus.
+Semantics, lowering, and SVA are identical between the two forms.
+
 ## Motivation
 
 Credit-based flow control is the dominant backpressure pattern anywhere

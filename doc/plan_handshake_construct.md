@@ -1,6 +1,14 @@
 # Plan: `handshake` primitive (Tier 1 + Tier 2)
 
-*Author: session of 2026-04-18. Status: design draft; not yet implemented.*
+*Author: session of 2026-04-18. Status: Tier 1 + Tier 2 shipped as of
+v0.43.0 (PRs #21, #23, #25, #26, #27).*
+
+**Update (2026-04-22)**: `handshake` will be renamed to
+`handshake_channel` for consistency with its sibling sub-constructs
+(`credit_channel`, future `tlm_method`) — see
+[`plan_bus_unification.md`](plan_bus_unification.md). Both names will
+be accepted during the deprecation window; `handshake` will emit a
+deprecation warning and be removed in a future minor release.
 
 ## Motivation
 
