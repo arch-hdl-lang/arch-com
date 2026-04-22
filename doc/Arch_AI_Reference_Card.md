@@ -854,20 +854,22 @@ end module Slave
 
 SV output: flattened to individual ports (`axi_aw_valid`, `axi_aw_addr`, etc.).
 
-### handshake (inside bus)
+### handshake_channel (inside bus)
 
 Valid/ready/payload channels as a compile-time sum type. Six variants; compiler derives every individual wire direction from the role keyword.
 
+> **Rename note (v0.44.0):** `handshake_channel` is the current keyword. Legacy `handshake` still parses and emits a deprecation warning; removal scheduled for v0.45.0. Silence with `ARCH_NO_DEPRECATIONS=1`.
+
 ```
 bus BusAxiLite
-  handshake aw: send kind: valid_ready     // this side drives valid + payload, reads ready
+  handshake_channel aw: send kind: valid_ready     // this side drives valid + payload, reads ready
     addr: UInt<32>;
     prot: UInt<3>;
-  end handshake aw
+  end handshake_channel aw
 
-  handshake b: receive kind: valid_ready   // flipped: reads valid + payload, drives ready
+  handshake_channel b: receive kind: valid_ready   // flipped: reads valid + payload, drives ready
     resp: UInt<2>;
-  end handshake b
+  end handshake_channel b
 end bus BusAxiLite
 ```
 
