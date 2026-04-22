@@ -5952,15 +5952,42 @@ impl<'a> Codegen<'a> {
     }
 
     fn subst_expr(expr: &Expr, params: &std::collections::HashMap<String, &Expr>) -> Expr {
-        match &expr.kind {
+        let kind = match &expr.kind {
             ExprKind::Ident(name) => {
                 if let Some(replacement) = params.get(name) {
-                    (*replacement).clone()
-                } else {
-                    expr.clone()
+                    return (*replacement).clone();
                 }
+                ExprKind::Ident(name.clone())
             }
-            _ => expr.clone(),
+            // Recurse into expression trees so arithmetic width expressions
+            // (e.g. `UInt<DATA_W / 8>`, `UInt<DATA_W * 2>`) get the param
+            // substituted in every operand. Without this, the ident shows
+            // up verbatim in the emitted SV and downstream tools fail.
+            ExprKind::Binary(op, l, r) => ExprKind::Binary(
+                *op,
+                Box::new(Self::subst_expr(l, params)),
+                Box::new(Self::subst_expr(r, params)),
+            ),
+            ExprKind::Unary(op, e) => ExprKind::Unary(
+                *op,
+                Box::new(Self::subst_expr(e, params)),
+            ),
+            ExprKind::Ternary(c, t, e) => ExprKind::Ternary(
+                Box::new(Self::subst_expr(c, params)),
+                Box::new(Self::subst_expr(t, params)),
+                Box::new(Self::subst_expr(e, params)),
+            ),
+            ExprKind::Clog2(e) => ExprKind::Clog2(Box::new(Self::subst_expr(e, params))),
+            ExprKind::Index(b, i) => ExprKind::Index(
+                Box::new(Self::subst_expr(b, params)),
+                Box::new(Self::subst_expr(i, params)),
+            ),
+            _ => return expr.clone(),
+        };
+        Expr {
+            kind,
+            span: expr.span,
+            parenthesized: expr.parenthesized,
         }
     }
 
