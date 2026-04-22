@@ -4626,11 +4626,44 @@ v1 scope: nested `generate_if` inside a payload branch is a compile error. A han
 
 **18a.7 Not Covered**
 
-- **Stateful protocols** (credit-based flow control, PCIe credit accounting). These are not variants of `handshake`; they belong in a future `credit_channel` construct (not yet designed) because they imply the compiler owns counter + credit-return logic, not just port shape.
+- **Stateful protocols** (credit-based flow control, PCIe credit accounting). These are not variants of `handshake_channel`; they belong in the sibling `credit_channel` sub-construct (see §18c) because they imply the compiler owns counter + credit-return logic, not just port shape.
 - **Handshake at the module port level directly.** Valid only inside a `bus` body. A single-channel interface is expressed by a one-handshake bus declaration plus an ordinary bus port.
 - **`req_ack_2phase` Tier-2 assertions** — requires `$past` tracking; deferred.
 
-**18b. Standard Bus Library**
+**18c. First-Class Sub-Construct: credit_channel (inside bus)** — *parser scaffolding, v0.44.1*
+
+> **Status (v0.44.1):** the grammar is recognized and parsed into
+> `BusDecl::credit_channels`, but elaboration — per-port-site counter
+> register + FIFO instantiation, `ch.send()` / `ch.pop()` / `ch.can_send`
+> method dispatch, and Tier-2 SVA invariants — is **not yet implemented**.
+> Declaring a `credit_channel` in a bus today produces a compile error:
+> *"credit_channel is parser scaffolding only"*. The follow-up PRs in
+> `doc/plan_credit_channel.md` land the elaboration, codegen, SVA, and
+> the NoC flit validation test.
+
+`credit_channel` carries stateful credit-based flow control as a bus sub-construct, sibling to `handshake_channel`. Syntax nests inside a bus body:
+
+```
+bus DmaCh
+  credit_channel data: send
+    param T:     type  = UInt<64>;
+    param DEPTH: const = 8;
+  end credit_channel data
+end bus DmaCh
+```
+
+Grammar (parser-accepted in v0.44.1; not yet usable):
+
+```
+CreditChannelBlock := 'credit_channel' Ident ':' Role NEWLINE
+                        ParamDecl*
+                      'end' 'credit_channel' Ident
+Role               := 'send' | 'receive'
+```
+
+Knobs: payload type `T` (use a struct for multi-field payloads) and credit depth `DEPTH`. No protocol variants — credit is one protocol. Full semantics, lowering, auto-SVA, and the NoC-flit validation test are specified in `doc/plan_credit_channel.md`.
+
+**18d. Standard Bus Library**
 
 The ARCH compiler ships with a standard library of curated `bus` definitions under `<install>/stdlib/`. These are ordinary `.arch` files built on `bus` + `handshake` + `generate_if` — no new compiler machinery — that users import with zero setup:
 

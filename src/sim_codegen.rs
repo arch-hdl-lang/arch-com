@@ -6662,6 +6662,7 @@ impl<'a> SimCodegen<'a> {
                     .collect(),
                 generates: b.generates.clone(),
                 handshakes: b.handshakes.clone(),
+                credit_channels: b.credit_channels.clone(),
             }.effective_signals(&param_map);
             h.push_str(&format!("struct {} {{\n", b.name.name));
             let mut field_inits = Vec::new();

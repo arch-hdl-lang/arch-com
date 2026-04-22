@@ -119,6 +119,8 @@ pub enum TokenKind {
     Handshake,
     #[token("handshake_channel")]
     HandshakeChannel,
+    #[token("credit_channel")]
+    CreditChannel,
     #[token("implements")]
     Implements,
     #[token("return")]
@@ -412,6 +414,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Bus => write!(f, "bus"),
             TokenKind::Handshake => write!(f, "handshake"),
             TokenKind::HandshakeChannel => write!(f, "handshake_channel"),
+            TokenKind::CreditChannel => write!(f, "credit_channel"),
             TokenKind::Implements => write!(f, "implements"),
             TokenKind::Return => write!(f, "return"),
             TokenKind::Stage => write!(f, "stage"),
