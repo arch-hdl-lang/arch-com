@@ -145,8 +145,9 @@ impl Parser {
             } else if self.check(TokenKind::GenerateIf) {
                 generates.push(self.parse_bus_generate_if(start)?);
             } else if self.check(TokenKind::Handshake) {
-                let (ports, meta) = self.parse_handshake_block(start)?;
+                let (ports, gen_ifs, meta) = self.parse_handshake_block(start)?;
                 signals.extend(ports);
+                generates.extend(gen_ifs);
                 handshakes.push(meta);
             } else {
                 signals.push(self.parse_bus_signal(start)?);
@@ -208,7 +209,13 @@ impl Parser {
         // Parse then-branch signals until end generate_if or generate_else
         while !self.check_bus_gen_end() {
             if self.check(TokenKind::Handshake) {
-                let (ports, _meta) = self.parse_handshake_block(parent_span)?;
+                let (ports, gen_ifs, _meta) = self.parse_handshake_block(parent_span)?;
+                if !gen_ifs.is_empty() {
+                    return Err(CompileError::general(
+                        "`generate_if` inside a handshake payload is not supported when the handshake itself is nested inside a bus-level `generate_if`",
+                        parent_span,
+                    ));
+                }
                 then_signals.extend(ports);
             } else {
                 then_signals.push(self.parse_bus_signal(parent_span)?);
@@ -223,7 +230,13 @@ impl Parser {
                 && self.tokens[self.pos + 1].kind == TokenKind::GenerateIf)
             {
                 if self.check(TokenKind::Handshake) {
-                    let (ports, _meta) = self.parse_handshake_block(parent_span)?;
+                    let (ports, gen_ifs, _meta) = self.parse_handshake_block(parent_span)?;
+                    if !gen_ifs.is_empty() {
+                        return Err(CompileError::general(
+                            "`generate_if` inside a handshake payload is not supported when the handshake itself is nested inside a bus-level `generate_if`",
+                            parent_span,
+                        ));
+                    }
                     sigs.extend(ports);
                 } else {
                     sigs.push(self.parse_bus_signal(parent_span)?);
@@ -265,7 +278,7 @@ impl Parser {
     /// `send`/`receive` name the payload-flow role (NOT wire direction):
     /// `send` = this side produces the payload (drives valid/req/payload,
     /// receives ready/ack); `receive` = consumer side.
-    fn parse_handshake_block(&mut self, parent_span: Span) -> Result<(Vec<PortDecl>, HandshakeMeta), CompileError> {
+    fn parse_handshake_block(&mut self, parent_span: Span) -> Result<(Vec<PortDecl>, Vec<BusGenerateIf>, HandshakeMeta), CompileError> {
         let start = self.expect(TokenKind::Handshake)?.span;
         let ch_name = self.expect_ident()?;
         self.expect(TokenKind::Colon)?;
@@ -297,12 +310,49 @@ impl Parser {
             ));
         }
 
-        // Parse payload fields until `end handshake`.
+        // Parse payload fields until `end handshake`. Each field is either
+        // an unconditional `name: type;` line or a `generate_if COND ...
+        // end generate_if` block whose body is a list of unconditional
+        // fields (nested generate_if inside a handshake payload is not
+        // supported in v1).
         let mut payload: Vec<(Ident, TypeExpr, Span)> = Vec::new();
         let mut payload_names: Vec<Ident> = Vec::new();
+        let mut conditional_branches: Vec<(Expr, Vec<(Ident, TypeExpr, Span)>, Span)> = Vec::new();
         loop {
             if self.check(TokenKind::End) {
                 break;
+            }
+            if self.check(TokenKind::GenerateIf) {
+                let gi_start = self.expect(TokenKind::GenerateIf)?.span;
+                let cond = self.parse_expr()?;
+                let mut branch_fields: Vec<(Ident, TypeExpr, Span)> = Vec::new();
+                loop {
+                    // End-of-branch: `end generate_if`
+                    if self.pos + 1 < self.tokens.len()
+                        && self.tokens[self.pos].kind == TokenKind::End
+                        && self.tokens[self.pos + 1].kind == TokenKind::GenerateIf
+                    {
+                        break;
+                    }
+                    if self.check(TokenKind::GenerateIf) {
+                        return Err(CompileError::general(
+                            "nested `generate_if` inside a handshake payload is not supported in v1",
+                            self.peek_span(),
+                        ));
+                    }
+                    let f_name = self.expect_ident()?;
+                    self.expect(TokenKind::Colon)?;
+                    let ty = self.parse_type_expr()?;
+                    self.expect(TokenKind::Semi)?;
+                    let f_span_end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(parent_span);
+                    let f_span = f_name.span.merge(f_span_end);
+                    payload_names.push(f_name.clone());
+                    branch_fields.push((f_name, ty, f_span));
+                }
+                self.expect(TokenKind::End)?;
+                let gi_end = self.expect(TokenKind::GenerateIf)?.span;
+                conditional_branches.push((cond, branch_fields, gi_start.merge(gi_end)));
+                continue;
             }
             let f_name = self.expect_ident()?;
             self.expect(TokenKind::Colon)?;
@@ -362,10 +412,29 @@ impl Parser {
             }
             _ => unreachable!(),
         }
-        // Payload signals flow in the channel's declared direction.
+        // Unconditional payload signals flow in the channel's declared
+        // direction.
         for (f_name, ty, f_span) in payload {
             let port_name = format!("{}_{}", ch_name.name, f_name.name);
             out.push(mk_port(port_name, dir, ty, f_span));
+        }
+        // Conditional payload branches: each becomes a BusGenerateIf at the
+        // bus level. The existing codegen + elaboration machinery for
+        // bus-level generate_if (eval_bus_cond + effective_signals) handles
+        // the per-port-site param substitution uniformly.
+        let mut generates: Vec<BusGenerateIf> = Vec::new();
+        for (cond, branch_fields, gi_span) in conditional_branches {
+            let mut branch_signals: Vec<PortDecl> = Vec::new();
+            for (f_name, ty, f_span) in branch_fields {
+                let port_name = format!("{}_{}", ch_name.name, f_name.name);
+                branch_signals.push(mk_port(port_name, dir, ty, f_span));
+            }
+            generates.push(BusGenerateIf {
+                cond,
+                then_signals: branch_signals,
+                else_signals: Vec::new(),
+                span: gi_span,
+            });
         }
         let meta = HandshakeMeta {
             name: ch_name,
@@ -374,7 +443,7 @@ impl Parser {
             payload_names,
             span: block_span,
         };
-        Ok((out, meta))
+        Ok((out, generates, meta))
     }
 
     // --- Enum ---
