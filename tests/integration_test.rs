@@ -10,6 +10,8 @@ fn compile_to_sv(source: &str) -> String {
     let mut parser = Parser::new(tokens, source);
     let parsed_ast = parser.parse_source_file().expect("parse error");
     let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let ast = elaborate::lower_threads(ast).expect("lower_threads error");
+    let ast = elaborate::lower_pipe_reg_ports(ast).expect("lower_pipe_reg_ports error");
     let symbols = resolve::resolve(&ast).expect("resolve error");
     let checker = TypeChecker::new(&symbols, &ast);
     let (_warnings, overload_map) = checker.check().expect("type check error");
@@ -3056,4 +3058,126 @@ fn test_find_first_unknown_binding_errors() {
     let msg = format!("{:?}", result.unwrap_err());
     assert!(msg.contains("find_first result has no field named `wrong_name`"),
             "expected specific error message, got: {msg}");
+}
+
+#[test]
+fn test_pipe_reg_port_n1_equivalent_to_port_reg() {
+    // port q: out pipe_reg<T, 1> ... emits the same SV as port reg q: out T
+    let src_new = "
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port a: in UInt<8>;
+          port q: out pipe_reg<UInt<8>, 1> reset rst => 0;
+          default seq on clk rising;
+          seq
+            q@1 <= a;
+          end seq
+        end module M
+    ";
+    let src_old = "
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port a: in UInt<8>;
+          port reg q: out UInt<8> reset rst => 0;
+          default seq on clk rising;
+          seq
+            q <= a;
+          end seq
+        end module M
+    ";
+    assert_eq!(compile_to_sv(src_new), compile_to_sv(src_old),
+        "pipe_reg<T, 1> + @1 should be byte-identical to port reg");
+}
+
+#[test]
+fn test_pipe_reg_port_n3_emits_cascade() {
+    let source = "
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port a: in UInt<8>;
+          port q: out pipe_reg<UInt<8>, 3> reset rst => 0;
+          default seq on clk rising;
+          seq
+            q@3 <= a;
+          end seq
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    // Two intermediate stage regs should be declared + cascade assigns.
+    assert!(sv.contains("q_stg1") && sv.contains("q_stg2"),
+        "expected 2 intermediate stages for depth=3:\n{sv}");
+    assert!(sv.contains("q_stg1 <= a;"), "stage 0 write missing:\n{sv}");
+    assert!(sv.contains("q_stg2 <= q_stg1;"), "stage 1 shift missing:\n{sv}");
+    assert!(sv.contains("q <= q_stg2;"), "final output write missing:\n{sv}");
+    // Uniform reset across all stages:
+    assert!(sv.contains("q_stg1 <= 0") && sv.contains("q_stg2 <= 0") && sv.contains("q <= 0"),
+        "expected uniform reset across all stages:\n{sv}");
+}
+
+#[test]
+fn test_pipe_reg_port_depth_mismatch_errors() {
+    let source = "
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port a: in UInt<8>;
+          port q: out pipe_reg<UInt<8>, 3> reset rst => 0;
+          default seq on clk rising;
+          seq
+            q@5 <= a;
+          end seq
+        end module M
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = arch::elaborate::elaborate(ast).expect("elaborate base");
+    let ast = arch::elaborate::lower_threads(ast).expect("lower threads");
+    let result = arch::elaborate::lower_pipe_reg_ports(ast);
+    assert!(result.is_err(), "expected depth-mismatch error");
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(msg.contains("exceeds declared latency 3"),
+        "expected specific error message, got: {msg}");
+}
+
+#[test]
+fn test_pipe_reg_port_bare_assign_ambiguous_errors() {
+    let source = "
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port a: in UInt<8>;
+          port q: out pipe_reg<UInt<8>, 3> reset rst => 0;
+          default seq on clk rising;
+          seq
+            q <= a;
+          end seq
+        end module M
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = arch::elaborate::elaborate(ast).expect("elaborate base");
+    let ast = arch::elaborate::lower_threads(ast).expect("lower threads");
+    let result = arch::elaborate::lower_pipe_reg_ports(ast);
+    assert!(result.is_err(), "expected ambiguous-assignment error");
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(msg.contains("is ambiguous"),
+        "expected specific error message, got: {msg}");
+}
+
+#[test]
+fn test_pipe_reg_depth_zero_errors() {
+    let source = "
+        module M
+          port q: out pipe_reg<UInt<8>, 0>;
+        end module M
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let result = parser.parse_source_file();
+    assert!(result.is_err(), "expected depth=0 error");
 }

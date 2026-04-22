@@ -943,6 +943,12 @@ fn run_check_multi(
         ms.report_error(err)
     })?;
 
+    // Lower `pipe_reg<T, N>` ports with N > 1 into an N-stage cascade.
+    let ast = elaborate::lower_pipe_reg_ports(ast).map_err(|errs| {
+        let err = errs.into_iter().next().unwrap();
+        ms.report_error(err)
+    })?;
+
     // Resolve
     let symbols = resolve::resolve(&ast).map_err(|errs| {
         let err = errs.into_iter().next().unwrap();

@@ -1323,6 +1323,7 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
                 ty: info.ty.clone(), default: None,
                 reg_info: Some(PortRegInfo {
                     init: info.reg_init.clone(), reset: info.reg_reset.clone(), guard: None,
+                    latency: 1,
                 }),
                 bus_info: None, shared: None, span: sp,
             });
@@ -3173,3 +3174,369 @@ fn rename_ident_in_comb_stmts(stmts: &mut [CombStmt], old: &str, new: &str) {
 fn make_zero_expr(sp: Span) -> Expr {
     Expr::new(ExprKind::Literal(LitKind::Dec(0)), sp)
 }
+
+// ── pipe_reg<T, N> port lowering ─────────────────────────────────────────
+//
+// Expand every `port q: out pipe_reg<T, N>` with N > 1 into:
+//   - The original port keeps `latency = 1` (emits as today's `port reg`)
+//   - N-1 synthesized regs `q_stg1` .. `q_stg{N-1}` of type T
+//   - Every `q@N <= expr` is rewritten to the cascade:
+//         q_stg1 <= expr;
+//         q_stg2 <= q_stg1;
+//         ...
+//         q      <= q_stg{N-1};
+//
+// Reset/init propagate from the original port's reg_info to every
+// intermediate reg (uniform behavior — all stages reset to the same value,
+// matching today's pipe_reg semantics).
+//
+// Called from main.rs after `lower_threads` so every other elaboration
+// pass sees the original unexpanded form.
+
+pub fn lower_pipe_reg_ports(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
+    let mut new_items: Vec<Item> = Vec::with_capacity(ast.items.len());
+    let mut errors: Vec<CompileError> = Vec::new();
+    for item in ast.items {
+        match item {
+            Item::Module(m) => match lower_pipe_reg_module(m) {
+                Ok(new_m) => new_items.push(Item::Module(new_m)),
+                Err(mut errs) => errors.append(&mut errs),
+            },
+            other => new_items.push(other),
+        }
+    }
+    if !errors.is_empty() { return Err(errors); }
+    Ok(SourceFile { items: new_items })
+}
+
+struct PipePortInfoLocal {
+    name: String,
+    latency: u32,
+    ty: TypeExpr,
+    reset: RegReset,
+    init: Option<Expr>,
+    span: Span,
+}
+
+fn lower_pipe_reg_module(mut m: ModuleDecl) -> Result<ModuleDecl, Vec<CompileError>> {
+    // Collect metadata for every pipe_reg port (latency >= 1).
+    // Ports with latency == 1 still participate in the @N validation —
+    // legacy `port reg` is equivalent to `pipe_reg<T, 1>`.
+    let mut all_pipe_ports: Vec<PipePortInfoLocal> = Vec::new();
+    for p in &m.ports {
+        if let Some(ri) = &p.reg_info {
+            all_pipe_ports.push(PipePortInfoLocal {
+                name: p.name.name.clone(),
+                latency: ri.latency,
+                ty: p.ty.clone(),
+                reset: ri.reset.clone(),
+                init: ri.init.clone(),
+                span: p.span,
+            });
+        }
+    }
+    // Validation: walk every seq assignment. Errors for
+    //   - q@N <= Y when N != declared depth
+    //   - bare q <= Y on pipe_reg with depth > 1 (ambiguous)
+    //   - q@K on RHS for K > 0 (intermediate stage reads not supported v1)
+    //   - q@0 = Y on combinational port (not a pipe_reg)
+    let mut errors: Vec<CompileError> = Vec::new();
+    for bi in &m.body {
+        if let ModuleBodyItem::RegBlock(rb) = bi {
+            validate_pipe_assignments(&rb.stmts, &all_pipe_ports, &mut errors);
+        }
+        if let ModuleBodyItem::CombBlock(cb) = bi {
+            validate_comb_pipe_refs(&cb.stmts, &all_pipe_ports, &m.ports, &mut errors);
+        }
+    }
+    if !errors.is_empty() { return Err(errors); }
+
+    // Filter to ports that actually need the cascade expansion (latency > 1).
+    let pipes: Vec<PipePortInfoLocal> = all_pipe_ports.into_iter()
+        .filter(|pp| pp.latency > 1)
+        .collect();
+    if pipes.is_empty() {
+        return Ok(m);
+    }
+    // Collapse each pipe port to latency=1 (so it emits as a regular port-reg).
+    for p in &mut m.ports {
+        if let Some(ri) = &mut p.reg_info {
+            if ri.latency > 1 {
+                ri.latency = 1;
+            }
+        }
+    }
+
+    // For each pipe port, insert N-1 RegDecls for the intermediate stages.
+    let mut extra_body: Vec<ModuleBodyItem> = Vec::new();
+    for pp in &pipes {
+        for stage in 1..pp.latency {
+            let stg_name = format!("{}_stg{}", pp.name, stage);
+            extra_body.push(ModuleBodyItem::RegDecl(RegDecl {
+                name: Ident::new(stg_name, pp.span),
+                ty: pp.ty.clone(),
+                init: pp.init.clone(),
+                reset: pp.reset.clone(),
+                guard: None,
+                span: pp.span,
+            }));
+        }
+    }
+
+    // Rewrite every `q@N <= expr` assignment inside seq/reg blocks into the
+    // cascade. The rewrite happens recursively through if/match/for bodies.
+    for bi in &mut m.body {
+        if let ModuleBodyItem::RegBlock(rb) = bi {
+            rb.stmts = rewrite_seq_stmts(std::mem::take(&mut rb.stmts), &pipes);
+        }
+    }
+
+    // Prepend the synthesized regs just before the first RegBlock, so
+    // module-body ordering stays sane (regs before seq blocks by
+    // convention).
+    let mut new_body: Vec<ModuleBodyItem> = Vec::with_capacity(m.body.len() + extra_body.len());
+    let mut inserted = false;
+    for bi in m.body {
+        if !inserted && matches!(bi, ModuleBodyItem::RegBlock(_)) {
+            new_body.extend(extra_body.drain(..));
+            inserted = true;
+        }
+        new_body.push(bi);
+    }
+    if !inserted {
+        new_body.extend(extra_body.drain(..));
+    }
+    m.body = new_body;
+    Ok(m)
+}
+
+// Validation helpers for @N placement / depth consistency.
+
+fn validate_pipe_assignments(
+    stmts: &[Stmt],
+    ports: &[PipePortInfoLocal],
+    errors: &mut Vec<CompileError>,
+) {
+    for s in stmts {
+        validate_pipe_assign_stmt(s, ports, errors);
+    }
+}
+
+fn validate_pipe_assign_stmt(
+    stmt: &Stmt,
+    ports: &[PipePortInfoLocal],
+    errors: &mut Vec<CompileError>,
+) {
+    match stmt {
+        Stmt::Assign(a) => {
+            // Inspect the target: LatencyAt(Ident, N) or bare Ident into a
+            // pipe_reg port. Validate per the error matrix.
+            let (target_name, latency_opt) = match &a.target.kind {
+                ExprKind::LatencyAt(inner, n) => match &inner.kind {
+                    ExprKind::Ident(name) => (name.clone(), Some(*n)),
+                    _ => return,
+                },
+                ExprKind::Ident(name) => (name.clone(), None),
+                _ => return,
+            };
+            let Some(pp) = ports.iter().find(|p| p.name == target_name) else { return; };
+            match latency_opt {
+                Some(n) if n != pp.latency => {
+                    errors.push(CompileError::general(
+                        &format!(
+                            "`{name}@{n}` exceeds declared latency {depth} — write `{name}@{depth} <= ...` for this port",
+                            name = pp.name, n = n, depth = pp.latency
+                        ),
+                        a.span,
+                    ));
+                }
+                None if pp.latency > 1 => {
+                    errors.push(CompileError::general(
+                        &format!(
+                            "assignment to pipe_reg port `{name}` is ambiguous — write `{name}@{depth} <= ...` to state the latency",
+                            name = pp.name, depth = pp.latency
+                        ),
+                        a.span,
+                    ));
+                }
+                _ => {}
+            }
+            // Validate RHS too — no @K for K > 0 in v1.
+            validate_rhs_latency(&a.value, errors);
+        }
+        Stmt::IfElse(ie) => {
+            validate_pipe_assignments(&ie.then_stmts, ports, errors);
+            validate_pipe_assignments(&ie.else_stmts, ports, errors);
+        }
+        Stmt::Match(m) => {
+            for arm in &m.arms {
+                validate_pipe_assignments(&arm.body, ports, errors);
+            }
+        }
+        Stmt::For(f) => validate_pipe_assignments(&f.body, ports, errors),
+        Stmt::Init(ib) => validate_pipe_assignments(&ib.body, ports, errors),
+        _ => {}
+    }
+}
+
+fn validate_rhs_latency(e: &Expr, errors: &mut Vec<CompileError>) {
+    match &e.kind {
+        ExprKind::LatencyAt(inner, n) => {
+            if *n != 0 {
+                let root = pipe_reg_expr_root_name(inner);
+                errors.push(CompileError::general(
+                    &format!("reading intermediate stage `@{n}` is not yet supported — read `{root}` or `{root}@0` for the current value"),
+                    e.span,
+                ));
+            }
+            validate_rhs_latency(inner, errors);
+        }
+        ExprKind::Binary(_, l, r) => { validate_rhs_latency(l, errors); validate_rhs_latency(r, errors); }
+        ExprKind::Unary(_, x) => validate_rhs_latency(x, errors),
+        ExprKind::Ternary(c, t, e2) => {
+            validate_rhs_latency(c, errors);
+            validate_rhs_latency(t, errors);
+            validate_rhs_latency(e2, errors);
+        }
+        ExprKind::FieldAccess(b, _) => validate_rhs_latency(b, errors),
+        ExprKind::Index(b, i) => { validate_rhs_latency(b, errors); validate_rhs_latency(i, errors); }
+        ExprKind::BitSlice(b, h, l) => {
+            validate_rhs_latency(b, errors);
+            validate_rhs_latency(h, errors);
+            validate_rhs_latency(l, errors);
+        }
+        ExprKind::MethodCall(b, _, args) => {
+            validate_rhs_latency(b, errors);
+            for a in args { validate_rhs_latency(a, errors); }
+        }
+        ExprKind::FunctionCall(_, args) => {
+            for a in args { validate_rhs_latency(a, errors); }
+        }
+        _ => {}
+    }
+}
+
+fn pipe_reg_expr_root_name(e: &Expr) -> String {
+    match &e.kind {
+        ExprKind::Ident(n) => n.clone(),
+        ExprKind::LatencyAt(inner, _) => pipe_reg_expr_root_name(inner),
+        ExprKind::FieldAccess(b, _) => pipe_reg_expr_root_name(b),
+        _ => "<expr>".to_string(),
+    }
+}
+
+fn validate_comb_pipe_refs(
+    stmts: &[CombStmt],
+    pipe_ports: &[PipePortInfoLocal],
+    all_ports: &[PortDecl],
+    errors: &mut Vec<CompileError>,
+) {
+    for s in stmts {
+        match s {
+            CombStmt::Assign(a) => {
+                // LHS @0 on a plain (non-pipe_reg) port is an error.
+                if let ExprKind::LatencyAt(inner, n) = &a.target.kind {
+                    if let ExprKind::Ident(name) = &inner.kind {
+                        let is_pipe = pipe_ports.iter().any(|p| &p.name == name);
+                        if !is_pipe && all_ports.iter().any(|p| p.name.name == *name) {
+                            errors.push(CompileError::general(
+                                &format!("`{name}@{n}` is only valid on pipe_reg<T, N> ports; drop the `@{n}` or change the port type"),
+                                a.target.span,
+                            ));
+                        }
+                    }
+                }
+                validate_rhs_latency(&a.value, errors);
+            }
+            CombStmt::IfElse(ie) => {
+                validate_comb_pipe_refs(&ie.then_stmts, pipe_ports, all_ports, errors);
+                validate_comb_pipe_refs(&ie.else_stmts, pipe_ports, all_ports, errors);
+            }
+            CombStmt::MatchExpr(_) | CombStmt::For(_) | CombStmt::Log(_) => {}
+        }
+    }
+}
+
+fn rewrite_seq_stmts(stmts: Vec<Stmt>, pipes: &[PipePortInfoLocal]) -> Vec<Stmt> {
+    let mut out: Vec<Stmt> = Vec::with_capacity(stmts.len());
+    for s in stmts {
+        out.extend(rewrite_seq_stmt(s, pipes));
+    }
+    out
+}
+
+fn rewrite_seq_stmt(stmt: Stmt, pipes: &[PipePortInfoLocal]) -> Vec<Stmt> {
+    match stmt {
+        Stmt::Assign(a) => {
+            let (root, latency, span) = match &a.target.kind {
+                ExprKind::LatencyAt(inner, n) => match &inner.kind {
+                    ExprKind::Ident(name) => (name.clone(), *n, a.span),
+                    _ => return vec![Stmt::Assign(a)],
+                },
+                _ => return vec![Stmt::Assign(a)],
+            };
+            let Some(pp) = pipes.iter().find(|p| p.name == root) else {
+                return vec![Stmt::Assign(a)];
+            };
+            if latency != pp.latency {
+                // Typecheck should have rejected this; leave it and let
+                // downstream errors surface.
+                return vec![Stmt::Assign(a)];
+            }
+            // Build the cascade: stg1 <= expr; stg2 <= stg1; ...; q <= stg{N-1};
+            let value = a.value;
+            let n = pp.latency;
+            let mut out: Vec<Stmt> = Vec::with_capacity(n as usize);
+            // stg1 <= value
+            out.push(Stmt::Assign(Assign {
+                target: Expr::new(ExprKind::Ident(format!("{}_stg1", pp.name)), span),
+                value,
+                span,
+            }));
+            // stg{k} <= stg{k-1} for k = 2..N-1
+            for k in 2..n {
+                out.push(Stmt::Assign(Assign {
+                    target: Expr::new(ExprKind::Ident(format!("{}_stg{}", pp.name, k)), span),
+                    value: Expr::new(ExprKind::Ident(format!("{}_stg{}", pp.name, k - 1)), span),
+                    span,
+                }));
+            }
+            // q <= stg{N-1}
+            out.push(Stmt::Assign(Assign {
+                target: Expr::new(ExprKind::Ident(pp.name.clone()), span),
+                value: Expr::new(ExprKind::Ident(format!("{}_stg{}", pp.name, n - 1)), span),
+                span,
+            }));
+            out
+        }
+        Stmt::IfElse(mut ie) => {
+            ie.then_stmts = rewrite_seq_stmts_pp(std::mem::take(&mut ie.then_stmts), pipes);
+            ie.else_stmts = rewrite_seq_stmts_pp(std::mem::take(&mut ie.else_stmts), pipes);
+            vec![Stmt::IfElse(ie)]
+        }
+        Stmt::Match(mut m) => {
+            for arm in &mut m.arms {
+                arm.body = rewrite_seq_stmts_pp(std::mem::take(&mut arm.body), pipes);
+            }
+            vec![Stmt::Match(m)]
+        }
+        Stmt::For(mut f) => {
+            f.body = rewrite_seq_stmts_pp(std::mem::take(&mut f.body), pipes);
+            vec![Stmt::For(f)]
+        }
+        Stmt::Init(mut ib) => {
+            ib.body = rewrite_seq_stmts_pp(std::mem::take(&mut ib.body), pipes);
+            vec![Stmt::Init(ib)]
+        }
+        other => vec![other],
+    }
+}
+
+fn rewrite_seq_stmts_pp(stmts: Vec<Stmt>, pipes: &[PipePortInfoLocal]) -> Vec<Stmt> {
+    let mut out: Vec<Stmt> = Vec::with_capacity(stmts.len());
+    for s in stmts {
+        out.extend(rewrite_seq_stmt(s, pipes));
+    }
+    out
+}
+

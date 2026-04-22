@@ -659,7 +659,52 @@ impl Parser {
                 start.merge(self.peek_span()),
             ));
         }
-        let ty = self.parse_type_expr()?;
+
+        // `port X: out pipe_reg<T, N> [modifiers];` — same semantics as
+        // `port reg X: out T ...` for N=1, N-stage output pipe for N>=2.
+        // The pipe_reg type is detected *before* normal type parsing.
+        let (ty, pipe_reg_latency) = if self.check(TokenKind::PipeReg) {
+            if direction == Direction::In {
+                return Err(CompileError::general(
+                    "pipe_reg<T, N> port must be an output",
+                    self.peek_span(),
+                ));
+            }
+            self.advance();
+            self.expect(TokenKind::Lt)?;
+            let old_no_angle = self.no_angle;
+            self.no_angle = true;
+            let inner_ty = self.parse_type_expr()?;
+            self.expect(TokenKind::Comma)?;
+            let depth_expr = self.parse_expr()?;
+            self.no_angle = old_no_angle;
+            self.expect(TokenKind::Gt)?;
+            // Evaluate depth. Only constant literal is supported in v1.
+            let depth = match &depth_expr.kind {
+                ExprKind::Literal(LitKind::Dec(n))
+                | ExprKind::Literal(LitKind::Hex(n))
+                | ExprKind::Literal(LitKind::Bin(n))
+                | ExprKind::Literal(LitKind::Sized(_, n)) => *n as u32,
+                _ => {
+                    return Err(CompileError::general(
+                        "pipe_reg<T, N> depth must be a compile-time integer literal",
+                        depth_expr.span,
+                    ));
+                }
+            };
+            if depth == 0 {
+                return Err(CompileError::general(
+                    "pipe_reg depth must be >= 1; use plain `out T` for a combinational port",
+                    depth_expr.span,
+                ));
+            }
+            (inner_ty, Some(depth))
+        } else {
+            (self.parse_type_expr()?, None)
+        };
+        // A pipe_reg port is semantically identical to a legacy `port reg`
+        // with the given latency, so drive the existing reg_info parsing path.
+        let is_reg = is_reg || pipe_reg_latency.is_some();
 
         // For `port reg`, parse optional guard/init/reset (same syntax as `reg` decl).
         let reg_info = if is_reg {
@@ -686,7 +731,7 @@ impl Parser {
             } else {
                 RegReset::None
             };
-            Some(PortRegInfo { init, reset, guard })
+            Some(PortRegInfo { init, reset, guard, latency: pipe_reg_latency.unwrap_or(1) })
         } else {
             None
         };
@@ -2304,6 +2349,32 @@ impl Parser {
         let mut lhs = self.parse_prefix()?;
 
         loop {
+            // Postfix `@N` — latency annotation on pipe_reg references.
+            // Valid on LHS (sink side, N = declared depth) and on RHS (source
+            // side, only N = 0 in v1 per doc/plan_pipe_reg_at_syntax.md).
+            // Parser is permissive here; typecheck enforces the placement
+            // and value constraints.
+            if self.check(TokenKind::At) {
+                self.advance(); // @
+                let n_expr = self.parse_prefix()?;
+                let n = match &n_expr.kind {
+                    ExprKind::Literal(LitKind::Dec(v))
+                    | ExprKind::Literal(LitKind::Hex(v))
+                    | ExprKind::Literal(LitKind::Bin(v))
+                    | ExprKind::Literal(LitKind::Sized(_, v)) => *v as u32,
+                    _ => return Err(CompileError::general(
+                        "`@N` latency must be an integer literal",
+                        n_expr.span,
+                    )),
+                };
+                let span = lhs.span.merge(n_expr.span);
+                lhs = Expr {
+                    kind: ExprKind::LatencyAt(Box::new(lhs), n),
+                    span,
+                    parenthesized: false,
+                };
+                continue;
+            }
             // Postfix: `.field`, `.method<N>()`, `[i]`, `as T`
             if self.check(TokenKind::Dot) {
                 self.advance();

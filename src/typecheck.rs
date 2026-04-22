@@ -1579,6 +1579,7 @@ impl<'a> TypeChecker<'a> {
             ExprKind::Ident(n) => n.clone(),
             ExprKind::FieldAccess(base, _) => Self::expr_root_name_tc(base),
             ExprKind::Index(base, _) | ExprKind::BitSlice(base, _, _) | ExprKind::PartSelect(base, _, _, _) => Self::expr_root_name_tc(base),
+            ExprKind::LatencyAt(inner, _) => Self::expr_root_name_tc(inner),
             _ => String::new(),
         }
     }
@@ -1587,6 +1588,7 @@ impl<'a> TypeChecker<'a> {
     /// (e.g. `itcm.cmd_valid` → `"itcm_cmd_valid"`). Used for bus port driven tracking.
     fn expr_flat_name_tc(expr: &Expr) -> String {
         match &expr.kind {
+            ExprKind::LatencyAt(inner, _) => Self::expr_flat_name_tc(inner),
             ExprKind::Ident(n) => n.clone(),
             ExprKind::FieldAccess(base, field) => {
                 if let ExprKind::Ident(base_name) = &base.kind {
@@ -2188,6 +2190,13 @@ impl<'a> TypeChecker<'a> {
         local_types: &HashMap<String, Ty>,
     ) -> Ty {
         match &expr.kind {
+            ExprKind::LatencyAt(inner, _) => {
+                // Latency annotation is a typing no-op — the value's type
+                // matches the underlying signal. Placement/value validation
+                // happens in check_reg_stmt / check_comb_stmt where the
+                // target context is known.
+                self.resolve_expr_type(inner, module_name, local_types)
+            }
             ExprKind::Todo => {
                 self.warnings.push(CompileWarning {
                     message: "todo! placeholder will abort at runtime".to_string(),

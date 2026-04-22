@@ -2050,6 +2050,7 @@ impl<'a> Codegen<'a> {
             ExprKind::Ident(n) => n.clone(),
             ExprKind::FieldAccess(base, _) => Self::expr_root_name(base),
             ExprKind::Index(base, _) | ExprKind::BitSlice(base, _, _) | ExprKind::PartSelect(base, _, _, _) => Self::expr_root_name(base),
+            ExprKind::LatencyAt(inner, _) => Self::expr_root_name(inner),
             _ => String::new(),
         }
     }
@@ -5530,6 +5531,12 @@ impl<'a> Codegen<'a> {
     /// Core expression emitter — never adds outer parens itself.
     fn emit_expr_inner(&self, expr: &Expr) -> String {
         match &expr.kind {
+            // Latency annotation is purely documentary on emission.
+            // On RHS, `q@0` reads as the current value of `q` (the pipe's
+            // final output). On LHS inside an assignment, the enclosing
+            // assignment emitter strips the annotation before routing the
+            // value to the appropriate stage 0 of the pipe chain.
+            ExprKind::LatencyAt(inner, _) => self.emit_expr_inner(inner),
             ExprKind::Literal(lit) => match lit {
                 LitKind::Dec(v) => format!("{v}"),
                 LitKind::Hex(v) => format!("'h{v:X}"),
