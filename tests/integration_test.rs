@@ -3583,6 +3583,77 @@ fn test_credit_channel_wires_flip_on_target_perspective() {
 }
 
 #[test]
+fn test_credit_channel_emits_sender_counter_state() {
+    // PR #3b-ii: on the initiator side of a `send`-role credit_channel,
+    // the SV output includes the credit register, can_send wire, and
+    // counter-update always_ff block. Target-side fifo + method dispatch
+    // are still TBD (PR #3b-iii / #3b-iv).
+    let source = "
+        bus DmaCh
+          credit_channel data: send
+            param T:     type  = UInt<8>;
+            param DEPTH: const = 4;
+          end credit_channel data
+        end bus DmaCh
+
+        use DmaCh;
+
+        module Prod
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port p:   initiator DmaCh;
+          comb
+            p.data_send_valid = 1'b0;
+            p.data_send_data  = 8'h0;
+          end comb
+        end module Prod
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("__p_data_credit"),
+        "credit register should be declared:\n{sv}");
+    assert!(sv.contains("__p_data_can_send"),
+        "can_send wire should be declared:\n{sv}");
+    assert!(sv.contains("__p_data_can_send = __p_data_credit != 0"),
+        "can_send wire should read the credit reg:\n{sv}");
+    assert!(sv.contains("p_data_send_valid && !p_data_credit_return"),
+        "counter-update should decrement on pure send:\n{sv}");
+    assert!(sv.contains("p_data_credit_return && !p_data_send_valid"),
+        "counter-update should increment on pure credit_return:\n{sv}");
+    assert!(sv.contains("always_ff"),
+        "counter should update in an always_ff block:\n{sv}");
+}
+
+#[test]
+fn test_credit_channel_no_counter_on_receive_role() {
+    // A `send`-role channel where this module is the target should NOT
+    // emit a sender counter — this module is the receiver. (The target
+    // fifo lands in PR #3b-iii; for now no helper state at all on the
+    // target side.)
+    let source = "
+        bus DmaCh
+          credit_channel data: send
+            param T:     type  = UInt<8>;
+            param DEPTH: const = 4;
+          end credit_channel data
+        end bus DmaCh
+
+        use DmaCh;
+
+        module Cons
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port p:   target DmaCh;
+          comb
+            p.data_credit_return = 1'b0;
+          end comb
+        end module Cons
+    ";
+    let sv = compile_to_sv(source);
+    assert!(!sv.contains("__p_data_credit"),
+        "target-role module should not emit sender counter:\n{sv}");
+}
+
+#[test]
 fn test_credit_channel_mismatched_closing_keyword_errors() {
     let source = "
         bus B

@@ -879,6 +879,10 @@ impl<'a> Codegen<'a> {
         // bus definition contains one or more `handshake` channels.
         self.emit_handshake_asserts(&m_clone);
 
+        // Emit the synthesized credit counter + can_send wire for each
+        // `send`-role credit_channel bus port on the module (PR #3b-ii).
+        self.emit_credit_channel_state(&m_clone);
+
         // Emit log file descriptors: initial $fopen / final $fclose
         let log_files = Self::collect_log_files(&m_clone.body);
         if !log_files.is_empty() {
@@ -2755,6 +2759,126 @@ impl<'a> Codegen<'a> {
             }
         }
         self.line("// synopsys translate_on");
+    }
+
+    /// Emit the synthesized credit-counter state for each `send`-role
+    /// `credit_channel` sub-construct on a bus port of this module.
+    ///
+    /// Per port+channel pair, emits three things:
+    ///
+    /// 1. `logic [W-1:0] __<port>_<ch>_credit;` — the credit register,
+    ///    width = clog2(DEPTH+1).
+    /// 2. An `always_ff` block that resets the counter to DEPTH on reset
+    ///    and updates it each cycle:
+    ///       -1 when send_valid && !credit_return
+    ///       +1 when credit_return && !send_valid
+    ///       no change when both fire in the same cycle (plan §Lowering).
+    /// 3. `wire __<port>_<ch>_can_send = __<port>_<ch>_credit != 0;` —
+    ///    combinational current-cycle availability. Users whose design
+    ///    needs a timing-relief flop will opt in via the upcoming
+    ///    `CAN_SEND_REGISTERED` channel param (next-state flop semantics,
+    ///    option (b) — see doc/plan_credit_channel.md).
+    ///
+    /// PR #3b-ii emits only the sender-side state — target-side FIFO +
+    /// credit_return-pulse wiring lands in PR #3b-iii; `ch.send()` /
+    /// `ch.can_send` method dispatch desugars to `__<port>_<ch>_*` in a
+    /// follow-up. Users today can read `__<port>_<ch>_can_send` directly
+    /// and drive `<port>_<ch>_send_valid` from their own comb to build
+    /// a compliant sender without the sugar.
+    fn emit_credit_channel_state(&mut self, m: &ModuleDecl) {
+        let mut emissions: Vec<(String, crate::ast::CreditChannelMeta)> = Vec::new();
+        for p in &m.ports {
+            let Some(ref bi) = p.bus_info else { continue; };
+            let Some((crate::resolve::Symbol::Bus(info), _)) =
+                self.symbols.globals.get(&bi.bus_name.name) else { continue; };
+            for cc in &info.credit_channels {
+                // Initiator perspective drives send; on the target perspective
+                // the same bus flip inverts the data direction, but the sender
+                // state belongs on whichever side actually issues sends.
+                let is_sender = match (cc.role_dir, bi.perspective) {
+                    (Direction::Out, crate::ast::BusPerspective::Initiator) => true,
+                    (Direction::In,  crate::ast::BusPerspective::Target)    => true,
+                    _ => false,
+                };
+                if is_sender {
+                    emissions.push((p.name.name.clone(), cc.clone()));
+                }
+            }
+        }
+        if emissions.is_empty() { return; }
+
+        let clk = m.ports.iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            .map(|p| p.name.name.clone());
+        let Some(clk) = clk else { return; };
+        let rst_port = m.ports.iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Reset(_, _)));
+        let (rst_edge, rst_active) = match rst_port {
+            Some(p) => {
+                let active = match &p.ty {
+                    TypeExpr::Reset(_, ResetLevel::Low) => format!("!{}", p.name.name),
+                    _ => p.name.name.clone(),
+                };
+                let edge = match &p.ty {
+                    TypeExpr::Reset(ResetKind::Async, ResetLevel::Low) => format!(" or negedge {}", p.name.name),
+                    TypeExpr::Reset(ResetKind::Async, ResetLevel::High) => format!(" or posedge {}", p.name.name),
+                    _ => String::new(),
+                };
+                (edge, Some(active))
+            }
+            None => (String::new(), None),
+        };
+
+        self.line("");
+        self.line("// Auto-generated credit_channel state (PR #3b-ii, sender side)");
+        for (port_name, cc) in &emissions {
+            let ch = &cc.name.name;
+            let depth_expr = cc.params.iter()
+                .find(|p| p.name.name == "DEPTH")
+                .and_then(|p| p.default.as_ref());
+            let Some(depth_expr) = depth_expr else { continue; };
+            let depth_str = self.emit_expr_str(depth_expr);
+            let credit_reg = format!("__{port_name}_{ch}_credit");
+            let cs_wire    = format!("__{port_name}_{ch}_can_send");
+            let send_valid = format!("{port_name}_{ch}_send_valid");
+            let credit_ret = format!("{port_name}_{ch}_credit_return");
+            // Width = $clog2(DEPTH + 1). Emit as-is; SV reduces at elab.
+            self.line(&format!(
+                "logic [$clog2(({depth_str}) + 1) - 1:0] {credit_reg};"
+            ));
+            self.line(&format!(
+                "wire  {cs_wire} = {credit_reg} != 0;"
+            ));
+            match &rst_active {
+                Some(r) => {
+                    self.line(&format!(
+                        "always_ff @(posedge {clk}{rst_edge}) begin"
+                    ));
+                    self.indent += 1;
+                    self.line(&format!("if ({r}) {credit_reg} <= {depth_str};"));
+                    self.line(&format!(
+                        "else if ({send_valid} && !{credit_ret}) {credit_reg} <= {credit_reg} - 1;"
+                    ));
+                    self.line(&format!(
+                        "else if ({credit_ret} && !{send_valid}) {credit_reg} <= {credit_reg} + 1;"
+                    ));
+                    self.indent -= 1;
+                    self.line("end");
+                }
+                None => {
+                    self.line(&format!("always_ff @(posedge {clk}) begin"));
+                    self.indent += 1;
+                    self.line(&format!(
+                        "if ({send_valid} && !{credit_ret}) {credit_reg} <= {credit_reg} - 1;"
+                    ));
+                    self.line(&format!(
+                        "else if ({credit_ret} && !{send_valid}) {credit_reg} <= {credit_reg} + 1;"
+                    ));
+                    self.indent -= 1;
+                    self.line("end");
+                }
+            }
+        }
     }
 
     /// "Is this a compile-time reducible constant?" test. Matches the sim-
