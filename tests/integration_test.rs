@@ -3522,27 +3522,64 @@ fn test_credit_channel_parses_as_bus_sub_construct() {
 }
 
 #[test]
-fn test_credit_channel_rejected_in_typecheck_as_unimplemented() {
+fn test_credit_channel_wires_flatten_at_bus_port() {
+    // PR #3b-i: a bus with a credit_channel sub-construct flattens to three
+    // wires (send_valid, send_data, credit_return) at the port use site.
+    // Method dispatch (ch.send/ch.pop/ch.can_send) is still unimplemented;
+    // users who drive the flattened wires directly compile cleanly.
     let source = "
         bus DmaCh
           credit_channel data: send
-            param T:     type  = UInt<64>;
-            param DEPTH: const = 8;
+            param T:     type  = UInt<16>;
+            param DEPTH: const = 4;
           end credit_channel data
         end bus DmaCh
+
+        use DmaCh;
+
+        module Prod
+          port p: initiator DmaCh;
+          comb
+            p.data_send_valid = 1'b0;
+            p.data_send_data  = 16'h0;
+          end comb
+        end module Prod
     ";
-    let tokens = arch::lexer::tokenize(source).expect("lexer");
-    let mut parser = arch::parser::Parser::new(tokens, source);
-    let ast = parser.parse_source_file().expect("parse");
-    let ast = arch::elaborate::elaborate(ast).expect("elaborate");
-    let ast = arch::elaborate::lower_threads(ast).expect("lower threads");
-    let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg");
-    let symbols = arch::resolve::resolve(&ast).expect("resolve");
-    let result = arch::typecheck::TypeChecker::new(&symbols, &ast).check();
-    assert!(result.is_err(), "typecheck should reject credit_channel until elaboration ships");
-    let err_str = format!("{:?}", result.unwrap_err());
-    assert!(err_str.contains("credit_channel") && err_str.contains("scaffolding"),
-        "expected scaffolding error, got: {err_str}");
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("output logic p_data_send_valid"),
+        "credit_channel should emit send_valid as an initiator output:\n{sv}");
+    assert!(sv.contains("output logic [15:0] p_data_send_data"),
+        "credit_channel should emit send_data with the payload type:\n{sv}");
+    assert!(sv.contains("input logic p_data_credit_return"),
+        "credit_channel should emit credit_return as an initiator input:\n{sv}");
+}
+
+#[test]
+fn test_credit_channel_wires_flip_on_target_perspective() {
+    let source = "
+        bus DmaCh
+          credit_channel data: send
+            param T:     type  = UInt<16>;
+            param DEPTH: const = 4;
+          end credit_channel data
+        end bus DmaCh
+
+        use DmaCh;
+
+        module Cons
+          port p: target DmaCh;
+          comb
+            p.data_credit_return = 1'b0;
+          end comb
+        end module Cons
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("input logic p_data_send_valid"),
+        "on target perspective, send_valid should be an input:\n{sv}");
+    assert!(sv.contains("input logic [15:0] p_data_send_data"),
+        "on target perspective, send_data should be an input:\n{sv}");
+    assert!(sv.contains("output logic p_data_credit_return"),
+        "on target perspective, credit_return should be an output:\n{sv}");
 }
 
 #[test]

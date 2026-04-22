@@ -118,21 +118,15 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                     }
-                    // Parser-scaffolding guard: the grammar accepts
-                    // `credit_channel` as a bus sub-construct, but elaboration
-                    // (counter reg + fifo synthesis, ch.send/ch.pop/ch.can_send
-                    // method dispatch) is not yet wired up. Reject here so no
-                    // one starts depending on an unimplemented feature. See
-                    // doc/plan_credit_channel.md §Implementation roadmap.
-                    for cc in &b.credit_channels {
-                        self.errors.push(CompileError::general(
-                            &format!(
-                                "`credit_channel {name}` is parser scaffolding only — elaboration (counter + fifo synthesis, method dispatch) is not yet implemented. Tracked in doc/plan_credit_channel.md.",
-                                name = cc.name.name
-                            ),
-                            cc.span,
-                        ));
-                    }
+                    // Wire flattening (send_valid, send_data, credit_return)
+                    // is live as of PR #3b-i. The remaining
+                    // not-yet-implemented layers — counter reg on the
+                    // initiator, fifo + credit-return pulse on the target,
+                    // and method dispatch for `ch.send` / `ch.pop` /
+                    // `ch.can_send` / `ch.valid` / `ch.data` — land in a
+                    // follow-up PR. Users who drive the flattened wires
+                    // directly today compile cleanly; method-dispatch use
+                    // sites are rejected at the access resolution site.
                 }
                 Item::Package(pkg) => {
                     for e in &pkg.enums { self.check_enum(e); }
