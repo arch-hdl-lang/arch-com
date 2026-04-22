@@ -23,31 +23,31 @@ bus BusAxiLite
   param DATA_W: const = 32;
 
   // Write address channel.
-  handshake aw: send kind: valid_ready
+  handshake_channel aw: send kind: valid_ready
     addr: UInt<ADDR_W>;
     prot: UInt<3>;
-  end handshake aw
+  end handshake_channel aw
 
   // Write data channel.
-  handshake w: send kind: valid_ready
+  handshake_channel w: send kind: valid_ready
     data: UInt<DATA_W>;
     strb: UInt<DATA_W / 8>;
-  end handshake w
+  end handshake_channel w
 
   // Write response channel (target → initiator).
-  handshake b: receive kind: valid_ready
+  handshake_channel b: receive kind: valid_ready
     resp: UInt<2>;
-  end handshake b
+  end handshake_channel b
 
   // Read address channel.
-  handshake ar: send kind: valid_ready
+  handshake_channel ar: send kind: valid_ready
     addr: UInt<ADDR_W>;
     prot: UInt<3>;
-  end handshake ar
+  end handshake_channel ar
 
   // Read data channel (target → initiator).
-  handshake r: receive kind: valid_ready
+  handshake_channel r: receive kind: valid_ready
     data: UInt<DATA_W>;
     resp: UInt<2>;
-  end handshake r
+  end handshake_channel r
 end bus BusAxiLite
