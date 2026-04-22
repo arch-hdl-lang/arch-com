@@ -885,6 +885,32 @@ end bus BusAxiLite
 
 Full spec: `doc/ARCH_HDL_Specification.md` §18a.
 
+### Standard bus library (zero-setup `use`)
+
+The ARCH compiler ships curated bus definitions under `<install>/stdlib/`. Use any of them from any file with no path setup:
+
+```
+use BusAxiStream;
+port m_axis: initiator BusAxiStream<DATA_W=32, USE_LAST=1, USE_KEEP=1>;
+
+use BusAxiLite;
+port s_axi:  target BusAxiLite<ADDR_W=12, DATA_W=32>;
+
+use BusApb;
+port s_apb:  target BusApb<ADDR_W=16, DATA_W=32, USE_PPROT=1, USE_PSTRB=1>;
+```
+
+**v1 stdlib buses**:
+- `BusAxiStream` — AXI4-Stream. Params: `DATA_W`, `USE_LAST`, `USE_KEEP`, `USE_STRB`, `ID_W`, `DEST_W`, `USER_W`.
+- `BusAxiLite` — AXI4-Lite memory-mapped. Params: `ADDR_W`, `DATA_W`. Full 5-channel aw/w/b/ar/r bundle.
+- `BusApb` — APB3 / APB4. Params: `ADDR_W`, `DATA_W`, `USE_PPROT`, `USE_PSTRB`.
+
+**Discovery order**: same-dir → `$ARCH_LIB_PATH` → `<install>/stdlib/` (disable with `ARCH_NO_STDLIB=1`; override the install path with `$ARCH_STDLIB_PATH`).
+
+Third-party packages ship the same way — drop `BusMyProto.arch` into `$ARCH_LIB_PATH` and `use BusMyProto;` works identically to the stdlib.
+
+Full spec: `doc/ARCH_HDL_Specification.md` §18b.
+
 ---
 
 ### template
