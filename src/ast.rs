@@ -197,6 +197,11 @@ pub struct PortRegInfo {
     /// external observation). Legacy `port reg` syntax: 1.
     /// New `port X: out pipe_reg<T, N>` syntax: N (≥ 1).
     pub latency: u32,
+    /// True if this port was declared with the legacy `port reg` keyword
+    /// rather than the recommended `port X: out pipe_reg<T, N>` form.
+    /// Used by the typecheck pass to emit a deprecation warning pointing
+    /// users at the new spelling. Semantics are identical for N=1.
+    pub legacy_port_reg: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

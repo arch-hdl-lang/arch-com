@@ -1324,6 +1324,9 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
                 reg_info: Some(PortRegInfo {
                     init: info.reg_init.clone(), reset: info.reg_reset.clone(), guard: None,
                     latency: 1,
+                    // Synthesized by thread lowering, not user-written;
+                    // don't deprecate internal artifacts.
+                    legacy_port_reg: false,
                 }),
                 bus_info: None, shared: None, span: sp,
             });
