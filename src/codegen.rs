@@ -883,6 +883,10 @@ impl<'a> Codegen<'a> {
         // `send`-role credit_channel bus port on the module (PR #3b-ii).
         self.emit_credit_channel_state(&m_clone);
 
+        // Emit the target-side FIFO for each credit_channel bus port on
+        // the module where this side is the receiver (PR #3b-iii).
+        self.emit_credit_channel_receiver_state(&m_clone);
+
         // Emit log file descriptors: initial $fopen / final $fclose
         let log_files = Self::collect_log_files(&m_clone.body);
         if !log_files.is_empty() {
@@ -2874,6 +2878,155 @@ impl<'a> Codegen<'a> {
                     self.line(&format!(
                         "else if ({credit_ret} && !{send_valid}) {credit_reg} <= {credit_reg} + 1;"
                     ));
+                    self.indent -= 1;
+                    self.line("end");
+                }
+            }
+        }
+    }
+
+    /// Emit the receiver-side FIFO + pop wiring for each credit_channel
+    /// where this module is the consumer (target on a `send`-role channel,
+    /// or initiator on a `receive`-role channel). Pops when the user-driven
+    /// `<port>_<ch>_credit_return` is asserted and the FIFO is non-empty.
+    ///
+    /// Emits the following per (port, credit_channel):
+    ///   logic [W-1:0]      __<port>_<ch>_buf [DEPTH];
+    ///   logic [AW-1:0]     __<port>_<ch>_head;
+    ///   logic [AW-1:0]     __<port>_<ch>_tail;
+    ///   logic [OW-1:0]     __<port>_<ch>_occ;     // 0..DEPTH
+    ///   wire              __<port>_<ch>_valid = __<port>_<ch>_occ != 0;
+    ///   wire [W-1:0]      __<port>_<ch>_data  = __<port>_<ch>_buf[head];
+    ///   always_ff          // push on send_valid, pop on credit_return && valid
+    ///
+    /// Where W = type width of the payload T, AW = $clog2(DEPTH),
+    /// OW = $clog2(DEPTH+1).
+    ///
+    /// Scope note (PR #3b-iii): these wires are SV-level only. ARCH-level
+    /// method dispatch (`port.ch.valid`, `port.ch.data`) is not yet wired
+    /// up — that lands once the AST-level synthesized-wire story is
+    /// locked down. In the interim, the FIFO is observable by reading
+    /// the SV names directly (e.g. from a cocotb TB) or by writing raw
+    /// send/credit_return drives and trusting the invariants hold.
+    fn emit_credit_channel_receiver_state(&mut self, m: &ModuleDecl) {
+        let mut emissions: Vec<(String, crate::ast::CreditChannelMeta)> = Vec::new();
+        for p in &m.ports {
+            let Some(ref bi) = p.bus_info else { continue; };
+            let Some((crate::resolve::Symbol::Bus(info), _)) =
+                self.symbols.globals.get(&bi.bus_name.name) else { continue; };
+            for cc in &info.credit_channels {
+                // Receiver side mirrors the sender-state selector:
+                //   send role + target perspective → this module is the receiver
+                //   receive role + initiator perspective → this module is the receiver
+                let is_receiver = match (cc.role_dir, bi.perspective) {
+                    (Direction::Out, crate::ast::BusPerspective::Target)    => true,
+                    (Direction::In,  crate::ast::BusPerspective::Initiator) => true,
+                    _ => false,
+                };
+                if is_receiver {
+                    emissions.push((p.name.name.clone(), cc.clone()));
+                }
+            }
+        }
+        if emissions.is_empty() { return; }
+
+        let clk = m.ports.iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            .map(|p| p.name.name.clone());
+        let Some(clk) = clk else { return; };
+        let rst_port = m.ports.iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Reset(_, _)));
+        let (rst_edge, rst_active) = match rst_port {
+            Some(p) => {
+                let active = match &p.ty {
+                    TypeExpr::Reset(_, ResetLevel::Low) => format!("!{}", p.name.name),
+                    _ => p.name.name.clone(),
+                };
+                let edge = match &p.ty {
+                    TypeExpr::Reset(ResetKind::Async, ResetLevel::Low) => format!(" or negedge {}", p.name.name),
+                    TypeExpr::Reset(ResetKind::Async, ResetLevel::High) => format!(" or posedge {}", p.name.name),
+                    _ => String::new(),
+                };
+                (edge, Some(active))
+            }
+            None => (String::new(), None),
+        };
+
+        self.line("");
+        self.line("// Auto-generated credit_channel target-side FIFO (PR #3b-iii)");
+        for (port_name, cc) in &emissions {
+            let ch = &cc.name.name;
+            let depth_expr = cc.params.iter()
+                .find(|p| p.name.name == "DEPTH")
+                .and_then(|p| p.default.as_ref());
+            let Some(depth_expr) = depth_expr else { continue; };
+            let depth_str = self.emit_expr_str(depth_expr);
+            // Payload type width — resolve via the ParamKind::Type default.
+            let payload_ty_opt = cc.params.iter()
+                .find(|p| p.name.name == "T")
+                .and_then(|p| match &p.kind {
+                    crate::ast::ParamKind::Type(te) => Some(te.clone()),
+                    _ => None,
+                });
+            let Some(payload_ty) = payload_ty_opt else { continue; };
+            let Some(width_str) = self.type_expr_data_width(&payload_ty) else { continue; };
+            let buf = format!("__{port_name}_{ch}_buf");
+            let head = format!("__{port_name}_{ch}_head");
+            let tail = format!("__{port_name}_{ch}_tail");
+            let occ  = format!("__{port_name}_{ch}_occ");
+            let valid_w = format!("__{port_name}_{ch}_valid");
+            let data_w  = format!("__{port_name}_{ch}_data");
+            let push = format!("{port_name}_{ch}_send_valid");
+            let pushd= format!("{port_name}_{ch}_send_data");
+            let pop_drv = format!("{port_name}_{ch}_credit_return");
+
+            self.line(&format!("logic [({width_str}) - 1:0] {buf} [({depth_str})];"));
+            self.line(&format!("logic [$clog2({depth_str}) == 0 ? 0 : $clog2({depth_str}) - 1:0] {head};"));
+            self.line(&format!("logic [$clog2({depth_str}) == 0 ? 0 : $clog2({depth_str}) - 1:0] {tail};"));
+            self.line(&format!("logic [$clog2(({depth_str}) + 1) - 1:0] {occ};"));
+            self.line(&format!("wire  {valid_w} = {occ} != 0;"));
+            self.line(&format!("wire [({width_str}) - 1:0] {data_w} = {buf}[{head}];"));
+
+            // Update block: push on send_valid, pop on user-driven credit_return.
+            let pop_fire = format!("({pop_drv} && {valid_w})");
+            match &rst_active {
+                Some(r) => {
+                    self.line(&format!("always_ff @(posedge {clk}{rst_edge}) begin"));
+                    self.indent += 1;
+                    self.line(&format!("if ({r}) begin"));
+                    self.indent += 1;
+                    self.line(&format!("{head} <= 0;"));
+                    self.line(&format!("{tail} <= 0;"));
+                    self.line(&format!("{occ}  <= 0;"));
+                    self.indent -= 1;
+                    self.line("end else begin");
+                    self.indent += 1;
+                    self.line(&format!("if ({push}) begin"));
+                    self.indent += 1;
+                    self.line(&format!("{buf}[{tail}] <= {pushd};"));
+                    self.line(&format!("{tail} <= ({tail} + 1) % ({depth_str});"));
+                    self.indent -= 1;
+                    self.line("end");
+                    self.line(&format!("if ({pop_fire}) {head} <= ({head} + 1) % ({depth_str});"));
+                    self.line(&format!("if ({push} && !{pop_fire}) {occ} <= {occ} + 1;"));
+                    self.line(&format!("else if (!{push} &&  {pop_fire}) {occ} <= {occ} - 1;"));
+                    self.indent -= 1;
+                    self.line("end");
+                    self.indent -= 1;
+                    self.line("end");
+                }
+                None => {
+                    self.line(&format!("always_ff @(posedge {clk}) begin"));
+                    self.indent += 1;
+                    self.line(&format!("if ({push}) begin"));
+                    self.indent += 1;
+                    self.line(&format!("{buf}[{tail}] <= {pushd};"));
+                    self.line(&format!("{tail} <= ({tail} + 1) % ({depth_str});"));
+                    self.indent -= 1;
+                    self.line("end");
+                    self.line(&format!("if ({pop_fire}) {head} <= ({head} + 1) % ({depth_str});"));
+                    self.line(&format!("if ({push} && !{pop_fire}) {occ} <= {occ} + 1;"));
+                    self.line(&format!("else if (!{push} &&  {pop_fire}) {occ} <= {occ} - 1;"));
                     self.indent -= 1;
                     self.line("end");
                 }
