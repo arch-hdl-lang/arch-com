@@ -1,0 +1,33 @@
+---
+source: tests/integration_test.rs
+expression: sv
+---
+// domain SysDomain
+//   freq_mhz: 100
+
+module MixedOrphan (
+  input logic clk,
+  input logic rst,
+  input logic [7:0] data_in,
+  output logic [7:0] ticker_out,
+  output logic [31:0] const_out
+);
+
+  logic [7:0] ticker_r = 0;
+  logic [31:0] constant_r;
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      ticker_r <= 0;
+    end else begin
+      ticker_r <= data_in;
+    end
+  end
+  assign ticker_out = ticker_r;
+  assign const_out = constant_r;
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      constant_r <= 32'd42;
+    end
+  end
+
+endmodule

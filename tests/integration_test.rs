@@ -891,6 +891,89 @@ end module MixedReset
 }
 
 #[test]
+fn test_reset_only_reg_is_driven() {
+    // A `reg` declared with a reset clause but never assigned in any seq
+    // block should still get its reset value emitted into an always_ff.
+    // Without this, Verilator lints the reg as undriven and the flop sits
+    // at X after reset — which silently breaks spec-common RO-constant
+    // CSRs (xdebugver, mvendorid, mhpmevent*, etc. — the pattern
+    // `field { sw = r; hw = r; reset = <const>; }` compiles to a reg
+    // whose reset value is the only thing that ever writes it).
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module RoConst
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port out_val: out UInt<32>;
+
+  reg roconst_r: UInt<32> reset rst=>32'h4;
+
+  comb
+    out_val = roconst_r;
+  end comb
+end module RoConst
+"#;
+    let sv = compile_to_sv(source);
+    // The reset value must be driven somewhere in an always_ff.
+    assert!(sv.contains("always_ff @(posedge clk)"),
+        "expected an always_ff for the reset-only reg, got:\n{sv}");
+    assert!(sv.contains("if (rst)"),
+        "expected reset guard, got:\n{sv}");
+    // arch-com emits the literal as decimal; accept either form since
+    // what matters is that the RHS is the reset value (4).
+    assert!(sv.contains("roconst_r <= 32'd4;") || sv.contains("roconst_r <= 32'h4;"),
+        "expected roconst_r reset-init assignment, got:\n{sv}");
+    insta::assert_snapshot!(sv);
+}
+
+#[test]
+fn test_reset_only_reg_alongside_seq_block() {
+    // Module has an active seq block driving one reg AND an orphan
+    // reset-only reg. The orphan needs its own always_ff without
+    // disturbing the existing seq-block-generated one.
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module MixedOrphan
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port data_in: in UInt<8>;
+  port ticker_out: out UInt<8>;
+  port const_out: out UInt<32>;
+
+  reg ticker_r: UInt<8> init 0 reset rst=>0;
+  reg constant_r: UInt<32> reset rst=>32'd42;
+
+  seq on clk rising
+    ticker_r <= data_in;
+  end seq
+
+  comb
+    ticker_out = ticker_r;
+    const_out  = constant_r;
+  end comb
+end module MixedOrphan
+"#;
+    let sv = compile_to_sv(source);
+    // Original seq-block always_ff resets ticker_r.
+    assert!(sv.contains("ticker_r <= 0;"),
+        "expected ticker_r reset in seq-block always_ff, got:\n{sv}");
+    // Orphan reset always_ff fires for constant_r.
+    assert!(sv.contains("constant_r <= 32'd42;"),
+        "expected constant_r orphan reset assignment, got:\n{sv}");
+    // Two distinct always_ff blocks — one for each.
+    let always_count = sv.matches("always_ff @").count();
+    assert!(always_count >= 2,
+        "expected >=2 always_ff blocks (seq + orphan), got {always_count}:\n{sv}");
+    insta::assert_snapshot!(sv);
+}
+
+#[test]
 fn test_reset_consistency_error_mixed_signals() {
     let source = r#"
 domain SysDomain

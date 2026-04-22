@@ -1,0 +1,22 @@
+---
+source: tests/integration_test.rs
+expression: sv
+---
+// domain SysDomain
+//   freq_mhz: 100
+
+module RoConst (
+  input logic clk,
+  input logic rst,
+  output logic [31:0] out_val
+);
+
+  logic [31:0] roconst_r;
+  assign out_val = roconst_r;
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      roconst_r <= 32'd4;
+    end
+  end
+
+endmodule
