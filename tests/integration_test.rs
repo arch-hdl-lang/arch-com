@@ -3624,6 +3624,78 @@ fn test_credit_channel_emits_sender_counter_state() {
 }
 
 #[test]
+fn test_credit_channel_emits_target_fifo() {
+    // PR #3b-iii: target-side module gets a synthesized FIFO with push on
+    // send_valid and pop on user-driven credit_return.
+    let source = "
+        bus DmaCh
+          credit_channel data: send
+            param T:     type  = UInt<8>;
+            param DEPTH: const = 4;
+          end credit_channel data
+        end bus DmaCh
+
+        use DmaCh;
+
+        module Cons
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port p:   target DmaCh;
+          comb
+            p.data_credit_return = 1'b0;
+          end comb
+        end module Cons
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("__p_data_buf"),
+        "target FIFO buffer array should be declared:\n{sv}");
+    assert!(sv.contains("__p_data_head"),
+        "FIFO head pointer should be declared:\n{sv}");
+    assert!(sv.contains("__p_data_tail"),
+        "FIFO tail pointer should be declared:\n{sv}");
+    assert!(sv.contains("__p_data_occ"),
+        "FIFO occupancy should be declared:\n{sv}");
+    assert!(sv.contains("__p_data_valid = __p_data_occ != 0"),
+        "valid wire should report non-empty:\n{sv}");
+    assert!(sv.contains("__p_data_data = __p_data_buf[__p_data_head]"),
+        "data wire should read the head slot:\n{sv}");
+    assert!(sv.contains("if (p_data_send_valid)"),
+        "push path should be gated on send_valid:\n{sv}");
+    assert!(sv.contains("p_data_credit_return && __p_data_valid"),
+        "pop should fire on user-driven credit_return when FIFO non-empty:\n{sv}");
+}
+
+#[test]
+fn test_credit_channel_no_target_fifo_on_send_role() {
+    // Sender-side module on a `send` channel is the producer — it gets the
+    // credit counter (PR #3b-ii), NOT the target FIFO. Guard against cross-
+    // contamination.
+    let source = "
+        bus DmaCh
+          credit_channel data: send
+            param T:     type  = UInt<8>;
+            param DEPTH: const = 4;
+          end credit_channel data
+        end bus DmaCh
+
+        use DmaCh;
+
+        module Prod
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port p:   initiator DmaCh;
+          comb
+            p.data_send_valid = 1'b0;
+            p.data_send_data  = 8'h0;
+          end comb
+        end module Prod
+    ";
+    let sv = compile_to_sv(source);
+    assert!(!sv.contains("__p_data_buf"),
+        "sender-role module must not emit target FIFO buffer:\n{sv}");
+}
+
+#[test]
 fn test_credit_channel_no_counter_on_receive_role() {
     // A `send`-role channel where this module is the target should NOT
     // emit a sender counter — this module is the receiver. (The target
