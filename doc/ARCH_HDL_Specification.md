@@ -4632,18 +4632,19 @@ v1 scope: nested `generate_if` inside a payload branch is a compile error. A han
 
 **18c. First-Class Sub-Construct: credit_channel (inside bus)** — *wire layer live, elaboration pending*
 
-> **Status (v0.44.2):** the grammar is parsed, and the wire protocol
-> flattens at the bus port: a `credit_channel <ch>: send` declaration
-> materializes three signals — `<ch>_send_valid`, `<ch>_send_data`, and
-> `<ch>_credit_return` — with directions derived from the role and flipped
-> on the `target` perspective (same mechanism as `handshake_channel`). Not
-> yet implemented: per-port-site **counter register** on the initiator,
-> **FIFO** on the target, the **`CAN_SEND_REGISTERED` timing-relief knob**
-> (next-state flop), and **method dispatch** for `ch.send()` / `ch.pop()` /
-> `ch.can_send` / `ch.valid` / `ch.data`. Users can drive the flattened
-> wires directly today; attempts to invoke the method abstraction fail at
-> member resolution. Tier-2 SVA invariants land with the elaboration PR.
-> Full design in `doc/plan_credit_channel.md`.
+> **Status (v0.44.3):** the grammar is parsed, the wire protocol flattens at
+> the bus port (`<ch>_send_valid`, `<ch>_send_data`, `<ch>_credit_return`),
+> and the **sender-side credit counter** is now auto-synthesized on any
+> module with a `send`-role credit_channel bus port: `__<port>_<ch>_credit`
+> tracks available credit (reset to `DEPTH`, decrements on `send_valid &&
+> !credit_return`, increments on `credit_return && !send_valid`), and
+> `__<port>_<ch>_can_send` exposes current-cycle availability. Users can
+> read `__<port>_<ch>_can_send` and drive `<port>_<ch>_send_valid` from comb
+> to build a compliant sender today. Not yet implemented: **target-side
+> FIFO** + credit-return pulse wiring, the **`CAN_SEND_REGISTERED`
+> timing-relief knob** (next-state flop, option (b)), **method dispatch**
+> for `ch.send()` / `ch.pop()` / `ch.can_send` / `ch.valid` / `ch.data`,
+> and **Tier-2 SVA invariants**. Full design in `doc/plan_credit_channel.md`.
 
 `credit_channel` carries stateful credit-based flow control as a bus sub-construct, sibling to `handshake_channel`. Syntax nests inside a bus body:
 
