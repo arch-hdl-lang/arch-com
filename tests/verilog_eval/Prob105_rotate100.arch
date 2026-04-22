@@ -3,7 +3,7 @@ module TopModule
   port load: in Bool;
   port ena: in UInt<2>;
   port data: in UInt<100>;
-  port reg q: out UInt<100>;
+  port q: out pipe_reg<UInt<100>, 1>;
 
   default seq on clk rising;
 

@@ -5,8 +5,8 @@ module adc_data_rotate
   port i_adc_data_in: in UInt<DATA_WIDTH>;
   port i_shift_count: in UInt<4>;
   port i_shift_direction: in Bool;
-  port reg o_processed_data: out UInt<DATA_WIDTH> reset i_rst_n=>0;
-  port reg o_operation_status: out Bool reset i_rst_n=>false;
+  port o_processed_data: out pipe_reg<UInt<DATA_WIDTH>, 1> reset i_rst_n=>0;
+  port o_operation_status: out pipe_reg<Bool, 1> reset i_rst_n=>false;
 
   default seq on i_clk rising;
 

@@ -6,8 +6,8 @@ module one_hot_gen
   port rst_async_n:       in  Reset<Async, Low>;
   port i_config:          in  UInt<2>;
   port i_start:           in  Bool;
-  port reg o_ready:       out Bool reset rst_async_n=>true;
-  port reg o_address_one_hot: out UInt<NS_A+NS_B> reset rst_async_n=>0;
+  port o_ready: out pipe_reg<Bool, 1> reset rst_async_n=>true;
+  port o_address_one_hot: out pipe_reg<UInt<NS_A+NS_B>, 1> reset rst_async_n=>0;
 
   default seq on clk rising;
 

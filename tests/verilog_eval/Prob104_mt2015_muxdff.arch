@@ -3,7 +3,7 @@ module TopModule
   port L: in Bool;
   port q_in: in Bool;
   port r_in: in Bool;
-  port reg Q: out Bool;
+  port Q: out pipe_reg<Bool, 1>;
 
   default seq on clk rising;
 

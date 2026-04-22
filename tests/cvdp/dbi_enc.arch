@@ -2,8 +2,8 @@ module dbi_enc
   port clk:      in Clock<SysDomain>;
   port rst_n:    in Reset<Async, Low>;
   port data_in:  in UInt<40>;
-  port reg data_out:  out UInt<40> reset rst_n=>0;
-  port reg dbi_cntrl: out UInt<2> reset rst_n=>0;
+  port data_out: out pipe_reg<UInt<40>, 1> reset rst_n=>0;
+  port dbi_cntrl: out pipe_reg<UInt<2>, 1> reset rst_n=>0;
 
   default seq on clk rising;
 

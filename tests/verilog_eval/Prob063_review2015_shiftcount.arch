@@ -5,7 +5,7 @@ module TopModule
   port shift_ena: in Bool;
   port count_ena: in Bool;
   port data: in Bool;
-  port reg q: out UInt<4>;
+  port q: out pipe_reg<UInt<4>, 1>;
 
   default seq on clk rising;
 

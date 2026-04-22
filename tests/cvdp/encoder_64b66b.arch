@@ -3,7 +3,7 @@ module encoder_64b66b
   port rst_in:  in Reset<Async, High>;
   port encoder_data_in:    in UInt<64>;
   port encoder_control_in: in UInt<8>;
-  port reg encoder_data_out: out UInt<66> reset rst_in=>0;
+  port encoder_data_out: out pipe_reg<UInt<66>, 1> reset rst_in=>0;
 
   seq on clk_in rising
     if encoder_control_in == 8'd0

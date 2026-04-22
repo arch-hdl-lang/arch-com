@@ -1,7 +1,7 @@
 module TopModule
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Sync>;
-  port reg q: out UInt<10> reset reset=>0;
+  port q: out pipe_reg<UInt<10>, 1> reset reset=>0;
 
   default seq on clk rising;
 

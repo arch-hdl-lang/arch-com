@@ -9,8 +9,8 @@ module sgd_linear_regression
   port reset: in Reset<Async, High>;
   port x_in: in SInt<DATA_WIDTH>;
   port y_true: in SInt<DATA_WIDTH>;
-  port reg w_out: out SInt<DATA_WIDTH> reset reset=>0;
-  port reg b_out: out SInt<DATA_WIDTH> reset reset=>0;
+  port w_out: out pipe_reg<SInt<DATA_WIDTH>, 1> reset reset=>0;
+  port b_out: out pipe_reg<SInt<DATA_WIDTH>, 1> reset reset=>0;
 
   default seq on clk rising;
 

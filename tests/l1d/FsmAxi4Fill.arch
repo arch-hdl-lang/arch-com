@@ -11,7 +11,7 @@ fsm FsmAxi4Fill
   port fill_done:  out Bool;
 
   // Filled line words — registered Vec, retain value after Done
-  port reg fill_word: out Vec<UInt<64>, 8> reset rst=>0;
+  port fill_word: out pipe_reg<Vec<UInt<64>, 8>, 1> reset rst=>0;
 
   // AXI4 read address channel
   port ar_valid: out Bool;

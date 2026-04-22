@@ -2,7 +2,7 @@ fsm TrafficLight
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Async, High>;
   port tick: in Bool;
-  port reg light: out UInt<2> reset rst=>0;
+  port light: out pipe_reg<UInt<2>, 1> reset rst=>0;
 
   state [Red, Green, Yellow]
   default state Red;

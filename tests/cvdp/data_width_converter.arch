@@ -3,8 +3,8 @@ module data_width_converter
   port reset:            in Reset<Async, High>;
   port data_in:          in UInt<32>;
   port data_valid:       in Bool;
-  port reg o_data_out:       out UInt<128> init 0 reset reset=>0;
-  port reg o_data_out_valid: out Bool init 0 reset reset=>0;
+  port o_data_out: out pipe_reg<UInt<128>, 1> init 0 reset reset=>0;
+  port o_data_out_valid: out pipe_reg<Bool, 1> init 0 reset reset=>0;
 
   reg cnt: UInt<2> init 0 reset reset=>0;
   reg buf0: UInt<32> init 0 reset reset=>0;

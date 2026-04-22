@@ -4,7 +4,7 @@ module digital_dice_roller
   port clk: in Clock<SysDomain>;
   port reset: in Reset<Async, Low>;
   port button: in Bool;
-  port reg dice_value: out UInt<3> reset reset=>1;
+  port dice_value: out pipe_reg<UInt<3>, 1> reset reset=>1;
 
   seq on clk rising
     if button

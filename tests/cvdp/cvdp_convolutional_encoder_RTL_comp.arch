@@ -2,8 +2,8 @@ module convolutional_encoder
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
   port data_in: in Bit;
-  port reg encoded_bit1: out Bit reset rst =>0;
-  port reg encoded_bit2: out Bit reset rst =>0;
+  port encoded_bit1: out pipe_reg<Bit, 1> reset rst =>0;
+  port encoded_bit2: out pipe_reg<Bit, 1> reset rst =>0;
 
   default seq on clk rising;
 

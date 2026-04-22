@@ -2,7 +2,7 @@
 module TopModule
   port clk: in Clock<SysDomain>;
   port in: in UInt<8>;
-  port reg anyedge: out UInt<8> init 0 reset none;
+  port anyedge: out pipe_reg<UInt<8>, 1> init 0 reset none;
 
   default seq on clk rising;
 

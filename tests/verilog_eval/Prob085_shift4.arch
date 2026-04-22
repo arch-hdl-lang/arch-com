@@ -4,7 +4,7 @@ module TopModule
   port load: in Bool;
   port ena: in Bool;
   port data: in UInt<4>;
-  port reg q: out UInt<4> reset areset=>0;
+  port q: out pipe_reg<UInt<4>, 1> reset areset=>0;
 
   default seq on clk rising;
 

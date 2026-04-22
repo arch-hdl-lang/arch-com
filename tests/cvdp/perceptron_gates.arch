@@ -7,17 +7,17 @@ module perceptron_gates
   port threshold: in SInt<4>;
   port gate_select: in UInt<2>;
 
-  port reg percep_w1: out SInt<4> reset rst_n=>0;
-  port reg percep_w2: out SInt<4> reset rst_n=>0;
-  port reg percep_bias: out SInt<4> reset rst_n=>0;
-  port reg present_addr: out UInt<4> reset rst_n=>0;
-  port reg stop: out Bool reset rst_n=>false;
-  port reg input_index: out UInt<3> reset rst_n=>0;
-  port reg y_in: out SInt<4> reset rst_n=>0;
-  port reg y: out SInt<4> reset rst_n=>0;
-  port reg prev_percep_wt_1: out SInt<4> reset rst_n=>0;
-  port reg prev_percep_wt_2: out SInt<4> reset rst_n=>0;
-  port reg prev_percep_bias: out SInt<4> reset rst_n=>0;
+  port percep_w1: out pipe_reg<SInt<4>, 1> reset rst_n=>0;
+  port percep_w2: out pipe_reg<SInt<4>, 1> reset rst_n=>0;
+  port percep_bias: out pipe_reg<SInt<4>, 1> reset rst_n=>0;
+  port present_addr: out pipe_reg<UInt<4>, 1> reset rst_n=>0;
+  port stop: out pipe_reg<Bool, 1> reset rst_n=>false;
+  port input_index: out pipe_reg<UInt<3>, 1> reset rst_n=>0;
+  port y_in: out pipe_reg<SInt<4>, 1> reset rst_n=>0;
+  port y: out pipe_reg<SInt<4>, 1> reset rst_n=>0;
+  port prev_percep_wt_1: out pipe_reg<SInt<4>, 1> reset rst_n=>0;
+  port prev_percep_wt_2: out pipe_reg<SInt<4>, 1> reset rst_n=>0;
+  port prev_percep_bias: out pipe_reg<SInt<4>, 1> reset rst_n=>0;
 
   default seq on clk rising;
 

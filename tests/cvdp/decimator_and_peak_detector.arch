@@ -8,9 +8,9 @@ module advanced_decimator_with_adaptive_peak_detection
   port reset: in Reset<Async>;
   port valid_in: in Bool;
   port data_in: in UInt<DATA_WIDTH * N>;
-  port reg valid_out: out Bool reset reset=>false;
-  port reg data_out: out UInt<DATA_WIDTH * NUM_DEC> reset reset=>0;
-  port reg peak_value: out SInt<DATA_WIDTH> reset reset=>0;
+  port valid_out: out pipe_reg<Bool, 1> reset reset=>false;
+  port data_out: out pipe_reg<UInt<DATA_WIDTH * NUM_DEC>, 1> reset reset=>0;
+  port peak_value: out pipe_reg<SInt<DATA_WIDTH>, 1> reset reset=>0;
 
   default seq on clk rising;
 

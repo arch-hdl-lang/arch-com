@@ -5,7 +5,7 @@ module TopModule
   port R: in Bool;
   port E: in Bool;
   port L: in Bool;
-  port reg Q: out Bool;
+  port Q: out pipe_reg<Bool, 1>;
 
   default seq on clk rising;
 

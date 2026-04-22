@@ -3,11 +3,11 @@ module load_store_unit
   port rst_n:  in Reset<Async, Low>;
 
   // Data-cache interface
-  port reg dmem_req_o:       out Bool reset rst_n=>false;
-  port reg dmem_req_addr_o:  out UInt<32> reset rst_n=>0;
-  port reg dmem_req_we_o:    out Bool reset rst_n=>false;
-  port reg dmem_req_be_o:    out UInt<4> reset rst_n=>0;
-  port reg dmem_req_wdata_o: out UInt<32> reset rst_n=>0;
+  port dmem_req_o: out pipe_reg<Bool, 1> reset rst_n=>false;
+  port dmem_req_addr_o: out pipe_reg<UInt<32>, 1> reset rst_n=>0;
+  port dmem_req_we_o: out pipe_reg<Bool, 1> reset rst_n=>false;
+  port dmem_req_be_o: out pipe_reg<UInt<4>, 1> reset rst_n=>0;
+  port dmem_req_wdata_o: out pipe_reg<UInt<32>, 1> reset rst_n=>0;
   port dmem_gnt_i:           in Bool;
   port dmem_rvalid_i:        in Bool;
   port dmem_rsp_rdata_i:     in UInt<32>;
@@ -19,11 +19,11 @@ module load_store_unit
   port ex_if_wdata_i:        in UInt<32>;
   port ex_if_addr_base_i:    in UInt<32>;
   port ex_if_addr_offset_i:  in UInt<32>;
-  port reg ex_if_ready_o:    out Bool reset rst_n=>true;
+  port ex_if_ready_o: out pipe_reg<Bool, 1> reset rst_n=>true;
 
   // Writeback interface
-  port reg wb_if_rdata_o:    out UInt<32> reset rst_n=>0;
-  port reg wb_if_rvalid_o:   out Bool reset rst_n=>false;
+  port wb_if_rdata_o: out pipe_reg<UInt<32>, 1> reset rst_n=>0;
+  port wb_if_rvalid_o: out pipe_reg<Bool, 1> reset rst_n=>false;
 
   default seq on clk rising;
 

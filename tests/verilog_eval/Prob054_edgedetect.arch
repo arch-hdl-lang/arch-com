@@ -2,7 +2,7 @@
 module TopModule
   port clk: in Clock<SysDomain>;
   port in: in UInt<8>;
-  port reg pedge: out UInt<8>;
+  port pedge: out pipe_reg<UInt<8>, 1>;
 
   default seq on clk rising;
 

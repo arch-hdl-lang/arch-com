@@ -4,9 +4,9 @@ module run_length
   port clk:      in Clock<SysDomain>;
   port reset_n:  in Reset<Async, Low>;
   port data_in:  in Bit;
-  port reg data_out:  out Bit reset reset_n=>0;
-  port reg run_value: out UInt<$clog2(DATA_WIDTH) + 1> reset reset_n=>0;
-  port reg valid:     out Bit reset reset_n=>0;
+  port data_out: out pipe_reg<Bit, 1> reset reset_n=>0;
+  port run_value: out pipe_reg<UInt<$clog2(DATA_WIDTH) + 1>, 1> reset reset_n=>0;
+  port valid: out pipe_reg<Bit, 1> reset reset_n=>0;
 
   default seq on clk rising;
 

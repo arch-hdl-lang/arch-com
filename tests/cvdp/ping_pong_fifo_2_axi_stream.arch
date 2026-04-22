@@ -6,17 +6,17 @@ module ping_pong_fifo_2_axi_stream
 
   port rst:                in Reset<Async, High>;
   port i_block_fifo_rdy:   in Bool;
-  port reg o_block_fifo_act: out Bool init 0 reset rst=>0;
+  port o_block_fifo_act: out pipe_reg<Bool, 1> init 0 reset rst=>0;
   port i_block_fifo_size:  in UInt<24>;
   port i_block_fifo_data:  in UInt<DATA_WIDTH + 1>;
-  port reg o_block_fifo_stb: out Bool init 0 reset rst=>0;
+  port o_block_fifo_stb: out pipe_reg<Bool, 1> init 0 reset rst=>0;
   port i_axi_user:         in UInt<4>;
   port i_axi_clk:          in Clock<SysDomain>;
-  port reg o_axi_user:     out UInt<4> init 0 reset rst=>0;
+  port o_axi_user: out pipe_reg<UInt<4>, 1> init 0 reset rst=>0;
   port i_axi_ready:        in Bool;
-  port reg o_axi_data:     out UInt<DATA_WIDTH> init 0 reset rst=>0;
-  port reg o_axi_last:     out Bool init 0 reset rst=>0;
-  port reg o_axi_valid:    out Bool init 0 reset rst=>0;
+  port o_axi_data: out pipe_reg<UInt<DATA_WIDTH>, 1> init 0 reset rst=>0;
+  port o_axi_last: out pipe_reg<Bool, 1> init 0 reset rst=>0;
+  port o_axi_valid: out pipe_reg<Bool, 1> init 0 reset rst=>0;
 
   reg fifo_data_buffer: UInt<DATA_WIDTH> init 0 reset rst=>0;
   reg fifo_valid_buffer: Bool init 0 reset rst=>0;

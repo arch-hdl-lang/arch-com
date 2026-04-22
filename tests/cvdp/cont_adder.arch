@@ -13,11 +13,11 @@ module cont_adder
   port data_valid: in Bool;
   port window_size: in UInt<8>;
 
-  port reg sum_out:      out SInt<ACCUM_WIDTH> reset rst_n=>0;
-  port reg avg_out:      out SInt<DATA_WIDTH> reset rst_n=>0;
-  port reg threshold_1:  out Bool reset rst_n=>false;
-  port reg threshold_2:  out Bool reset rst_n=>false;
-  port reg sum_ready:    out Bool reset rst_n=>false;
+  port sum_out: out pipe_reg<SInt<ACCUM_WIDTH>, 1> reset rst_n=>0;
+  port avg_out: out pipe_reg<SInt<DATA_WIDTH>, 1> reset rst_n=>0;
+  port threshold_1: out pipe_reg<Bool, 1> reset rst_n=>false;
+  port threshold_2: out pipe_reg<Bool, 1> reset rst_n=>false;
+  port sum_ready: out pipe_reg<Bool, 1> reset rst_n=>false;
 
   // Backward-compatible aliases used by some older harnesses.
   port accum_out:      out UInt<ACCUM_WIDTH>;

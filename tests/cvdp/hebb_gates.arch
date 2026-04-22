@@ -5,19 +5,19 @@ module hebb_gates
   port a: in SInt<4>;
   port b: in SInt<4>;
   port gate_select: in UInt<2>;
-  port reg w1: out SInt<4> reset rst=>0;
-  port reg w2: out SInt<4> reset rst=>0;
-  port reg bias: out SInt<4> reset rst=>0;
-  port reg present_state: out UInt<4> reset rst=>0;
-  port reg next_state: out UInt<4> reset rst=>0;
-  port reg test_x1: out SInt<4> reset rst=>0;
-  port reg test_x2: out SInt<4> reset rst=>0;
-  port reg expected_output: out SInt<4> reset rst=>0;
-  port reg test_output: out SInt<4> reset rst=>0;
-  port reg test_result: out SInt<4> reset rst=>0;
-  port reg test_done: out UInt<1> reset rst=>0;
-  port reg test_present_state: out UInt<4> reset rst=>0;
-  port reg test_index: out UInt<4> reset rst=>0;
+  port w1: out pipe_reg<SInt<4>, 1> reset rst=>0;
+  port w2: out pipe_reg<SInt<4>, 1> reset rst=>0;
+  port bias: out pipe_reg<SInt<4>, 1> reset rst=>0;
+  port present_state: out pipe_reg<UInt<4>, 1> reset rst=>0;
+  port next_state: out pipe_reg<UInt<4>, 1> reset rst=>0;
+  port test_x1: out pipe_reg<SInt<4>, 1> reset rst=>0;
+  port test_x2: out pipe_reg<SInt<4>, 1> reset rst=>0;
+  port expected_output: out pipe_reg<SInt<4>, 1> reset rst=>0;
+  port test_output: out pipe_reg<SInt<4>, 1> reset rst=>0;
+  port test_result: out pipe_reg<SInt<4>, 1> reset rst=>0;
+  port test_done: out pipe_reg<UInt<1>, 1> reset rst=>0;
+  port test_present_state: out pipe_reg<UInt<4>, 1> reset rst=>0;
+  port test_index: out pipe_reg<UInt<4>, 1> reset rst=>0;
 
   default seq on clk rising;
 

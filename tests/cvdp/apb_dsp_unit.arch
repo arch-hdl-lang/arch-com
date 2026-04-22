@@ -7,9 +7,9 @@ fsm apb_dsp_unit
   port pwrite:  in Bool;
   port pwdata:  in UInt<8>;
   port sram_valid: in Clock<SysDomain>;
-  port reg pready:  out Bool reset presetn => false;
-  port reg prdata:  out UInt<8> reset presetn => 0;
-  port reg pslverr: out Bool reset presetn => false;
+  port pready: out pipe_reg<Bool, 1> reset presetn => false;
+  port prdata: out pipe_reg<UInt<8>, 1> reset presetn => 0;
+  port pslverr: out pipe_reg<Bool, 1> reset presetn => false;
 
   state [Idle, WriteAccess, ReadAccess]
   default state Idle;

@@ -16,15 +16,15 @@ module crossbar_switch
   port valid_in2: in Bit;
   port valid_in3: in Bit;
 
-  port reg out0: out UInt<DATA_WIDTH> reset reset=>0;
-  port reg out1: out UInt<DATA_WIDTH> reset reset=>0;
-  port reg out2: out UInt<DATA_WIDTH> reset reset=>0;
-  port reg out3: out UInt<DATA_WIDTH> reset reset=>0;
+  port out0: out pipe_reg<UInt<DATA_WIDTH>, 1> reset reset=>0;
+  port out1: out pipe_reg<UInt<DATA_WIDTH>, 1> reset reset=>0;
+  port out2: out pipe_reg<UInt<DATA_WIDTH>, 1> reset reset=>0;
+  port out3: out pipe_reg<UInt<DATA_WIDTH>, 1> reset reset=>0;
 
-  port reg valid_out0: out Bit reset reset=>0;
-  port reg valid_out1: out Bit reset reset=>0;
-  port reg valid_out2: out Bit reset reset=>0;
-  port reg valid_out3: out Bit reset reset=>0;
+  port valid_out0: out pipe_reg<Bit, 1> reset reset=>0;
+  port valid_out1: out pipe_reg<Bit, 1> reset reset=>0;
+  port valid_out2: out pipe_reg<Bit, 1> reset reset=>0;
+  port valid_out3: out pipe_reg<Bit, 1> reset reset=>0;
 
   default seq on clk rising;
 

@@ -2,7 +2,7 @@ module TopModule
   port clk: in Clock<SysDomain>;
   port ar: in Reset<Async>;
   port d: in Bool;
-  port reg q: out Bool reset ar=>0;
+  port q: out pipe_reg<Bool, 1> reset ar=>0;
 
   default seq on clk rising;
 

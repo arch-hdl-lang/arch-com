@@ -14,16 +14,16 @@ module vga_controller
   port reset: in Reset<Async, High>;
   port color_in: in UInt<8>;
 
-  port reg hsync: out Bool reset reset=>true;
-  port reg vsync: out Bool reset reset=>true;
-  port reg red: out UInt<8> reset reset=>0;
-  port reg green: out UInt<8> reset reset=>0;
-  port reg blue: out UInt<8> reset reset=>0;
-  port reg next_x: out UInt<10> reset reset=>0;
-  port reg next_y: out UInt<10> reset reset=>0;
+  port hsync: out pipe_reg<Bool, 1> reset reset=>true;
+  port vsync: out pipe_reg<Bool, 1> reset reset=>true;
+  port red: out pipe_reg<UInt<8>, 1> reset reset=>0;
+  port green: out pipe_reg<UInt<8>, 1> reset reset=>0;
+  port blue: out pipe_reg<UInt<8>, 1> reset reset=>0;
+  port next_x: out pipe_reg<UInt<10>, 1> reset reset=>0;
+  port next_y: out pipe_reg<UInt<10>, 1> reset reset=>0;
   port sync: out Bool;
   port clk_out: out Clock<SysDomain>;
-  port reg blank: out Bool reset reset=>0;
+  port blank: out pipe_reg<Bool, 1> reset reset=>0;
 
   reg h_counter: UInt<10> reset reset=>0;
   reg v_counter: UInt<10> reset reset=>0;

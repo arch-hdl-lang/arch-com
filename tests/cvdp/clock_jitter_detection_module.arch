@@ -3,7 +3,7 @@ module clock_jitter_detection_module
   port clk: in Clock<SysDomain>;
   port system_clk: in Bool;
   port rst: in Reset<Sync>;
-  port reg jitter_detected: out Bool reset rst=>false;
+  port jitter_detected: out pipe_reg<Bool, 1> reset rst=>false;
 
   default seq on clk rising;
 
