@@ -818,6 +818,10 @@ impl<'a> FormalCtx<'a> {
     fn encode_raw(&self, expr: &Expr, t: u32) -> Result<SmtTerm, CompileError> {
         use ExprKind::*;
         match &expr.kind {
+            // Latency annotation is transparent to SMT: at timepoint t,
+            // `q@0` is the same as `q` at t. Non-@0 reads are rejected by
+            // typecheck before reaching formal emission.
+            LatencyAt(inner, _) => self.encode_raw(inner, t),
             Literal(l) => Ok(lit_to_term(l)),
             Bool(b) => Ok(SmtTerm {
                 s: if *b { "#b1".to_string() } else { "#b0".to_string() },

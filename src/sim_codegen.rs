@@ -1671,6 +1671,10 @@ fn cpp_expr_lhs(expr: &Expr, ctx: &Ctx) -> String {
 
 fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
     match &expr.kind {
+        // Latency annotation: transparent to sim emission. The assignment
+        // site handles directing the write to stage 0 of the pipe chain;
+        // reads of `q@0` collapse to the final-output field of the pipe.
+        ExprKind::LatencyAt(inner, _) => cpp_expr_inner(inner, ctx, is_lhs),
         ExprKind::Literal(lit) => match lit {
             LitKind::Dec(v) => format!("{v}"),
             LitKind::Hex(v) => format!("0x{v:X}"),

@@ -182,7 +182,9 @@ pub enum SharedReduction {
     And,
 }
 
-/// Register metadata for a `port reg` declaration.
+/// Register metadata for a `port reg` declaration OR a
+/// `port X: out pipe_reg<T, N>` declaration (the latter carries
+/// `latency = N`; legacy `port reg` implies `latency = 1`).
 #[derive(Debug, Clone)]
 pub struct PortRegInfo {
     pub init: Option<Expr>,
@@ -191,6 +193,10 @@ pub struct PortRegInfo {
     /// uninitialized as long as the guard signal is low. See
     /// `doc/plan_reg_guard_syntax.md` for semantics.
     pub guard: Option<Ident>,
+    /// Pipeline depth (number of clock edges between internal write and
+    /// external observation). Legacy `port reg` syntax: 1.
+    /// New `port X: out pipe_reg<T, N>` syntax: N (≥ 1).
+    pub latency: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -701,6 +707,12 @@ pub enum ExprKind {
     Clog2(Box<Expr>),
     /// onehot(index) — one-hot decode: 1 << index. Width inferred from context.
     Onehot(Box<Expr>),
+    /// `expr @ N` — latency annotation. On LHS of a seq assignment, marks
+    /// the cycle offset at which the write materializes (e.g. `q@3 <= Y`
+    /// reads as "Y arrives at q's output in 3 cycles"). On RHS, names the
+    /// stage (v1: only `@0` as explicit "current value"). Typecheck enforces
+    /// placement and N validity based on the signal's declared pipe depth.
+    LatencyAt(Box<Expr>, u32),
     /// signed(expr) — same-width reinterpret cast to SInt.
     Signed(Box<Expr>),
     /// unsigned(expr) — same-width reinterpret cast to UInt.

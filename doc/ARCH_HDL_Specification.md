@@ -932,6 +932,35 @@ Arch has three kinds of module-scope signal declarations. Each has a distinct sy
 
 **`port reg`** declares an output port that is also a register, eliminating the common `reg r` + `comb out = r; end comb` boilerplate. The syntax is `port reg name: out T [init V] [reset R=>V];`. It can only be used on output ports (`in` direction is a compile error). The port is assigned with `<=` inside a `seq` block, just like a regular `reg`. If `reg default:` is in scope, it inherits the default init and reset. In generated SV, the port is declared as `output logic [W-1:0] name` and driven directly in the `always_ff` block.
 
+**`pipe_reg<T, N>` port type** — the preferred spelling for a registered output port, with latency `N` visible in the port signature. This is the recommended replacement for `port reg`; `port reg` remains accepted and is exactly equivalent to `port q: out pipe_reg<T, 1>`.
+
+```
+port q: out pipe_reg<UInt<8>, 1> reset rst => 0;    // 1-cycle registered output (same as `port reg q: out UInt<8>`)
+port q: out pipe_reg<UInt<8>, 3> reset rst => 0;    // 3-cycle output pipe (cascade of 3 flops)
+port q: out pipe_reg<UInt<8>, 2> init 0;            // 2-cycle pipe with init (no reset)
+```
+
+The `N` parameter is a compile-time integer literal (≥ 1). `pipe_reg<T, 0>` is a compile error — use the plain `port q: out T;` form for a combinational output.
+
+**Assignment uses the `@N` operator** to make latency visible at every write site. The assignment `q@N <= Y` reads as "Y will appear at q's output N cycles from now," and `N` must equal the port's declared depth:
+
+```
+port q: out pipe_reg<UInt<8>, 3> reset rst => 0;
+seq on clk rising
+  q@3 <= next_q;      // next_q reaches q in 3 cycles
+end seq
+```
+
+For N = 1, the bare assignment form `q <= Y` is also accepted (same flop count as `port reg`). For N > 1, only `q@N <= Y` is valid — bare `q <= Y` is a compile error (*"assignment to pipe_reg port `q` is ambiguous — write `q@N <= ...` to state the latency"*).
+
+**Reading** a `pipe_reg` port on the RHS returns the final-output stage. The explicit form `q@0` reads as "current value" and is equivalent to bare `q`. Reading intermediate stages (`q@K` for K > 0 on the RHS) is a compile error in v1 — *"reading intermediate stage `@K` is not yet supported"*.
+
+**Uniform reset / init across stages.** A single `reset R => V` or `init V` clause applies to every flop in the chain. When `rst` asserts, all N stages simultaneously drop to the reset value; one cycle after deassert, a new write to `q@N` begins propagating. This matches today's module-scope `pipe_reg` semantics.
+
+**Lowering**. For N = 1, the SV output is byte-identical to `port reg`: a single `always_ff` with one assignment. For N > 1, the compiler synthesizes `N - 1` intermediate registers named `q_stg1` ... `q_stg{N-1}` and emits a cascade inside one `always_ff` block, with the reset branch covering every stage.
+
+*Why `pipe_reg<T, N>`* — registered outputs have tripped LLM agents because the keyword `port reg` places the latency information *outside* the signature. With `pipe_reg<T, N>`, every reader of the port list sees the depth in the type; every writer sees it in the `@N` at the assignment. This eliminates a common off-by-one class of testbench bugs.
+
 **`guard` clause** — `reg NAME: T guard VALID_SIG [init V] [reset R=>V];` declares that the register is intentionally uninitialized as long as `VALID_SIG` is low. This is the canonical valid-data pattern: a wide data register stays reset-free (saving area and power) while a companion valid flag gates consumers. The `guard` clause goes right after the type, before any `init` or `reset` clause. `VALID_SIG` must be a single identifier — for multi-signal predicates, combine them via a `let` binding first. `port reg` supports the same clause.
 
 ```
