@@ -260,8 +260,110 @@ Land TLM as a bus sub-construct from day one. Separate plan required.
   binding mechanism; the `bus` carries the `tlm_method` declarations.
   No standalone `socket` construct.
 - **Not touching module-internal constructs.** `fifo` / `ram` /
-  `arbiter` / `thread` stay where they are; they're implementations,
+  `arbiter` stay where they are; they're implementations,
   not interfaces.
+- **Not deprecating `thread`.** But its role sharpens — see next
+  section. `thread` is the implementation vocabulary for the
+  target side of `tlm_method`, AND it remains the form for
+  genuinely autonomous internal sequencers (heartbeat timers,
+  housekeeping state machines) that don't cross an interface.
+
+## `thread` and `tlm_method`: the relationship
+
+`thread` and the planned `tlm_method` overlap substantially — both
+express multi-cycle sequential behavior, both lower to an FSM, and
+both are compiler-owned state. The cleanest framing, and the one
+this plan commits to:
+
+> `tlm_method` is the **interface-level abstraction**; `thread` is
+> the **implementation vocabulary** that the compiler uses to lower
+> `tlm_method` targets — and that remains available for autonomous
+> internal sequencers that don't cross an interface.
+
+|  | `thread` | `tlm_method` |
+|---|---|---|
+| Scope | Module-internal, no required interface | Crosses a bus boundary (method call) |
+| User writes | Explicit FSM scripting (`wait until`, `wait N cycle`, `fork`/`join`) | Function signature + concurrency mode |
+| Initiator side | N/A | Compiler auto-generates thread-like FSM for each call site |
+| Target side | (This IS the implementation) | Implemented as a `thread` body bound to the method |
+| Example use | Timer that ticks every 1000 cycles | `axi.read(addr) -> data: blocking` |
+
+Concrete shape under this plan (when TLM lands):
+
+```
+bus Mem
+  tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+  tlm_method write(addr: UInt<32>, data: UInt<64>): pipelined;
+end bus Mem
+
+module Initiator
+  port m: initiator Mem;
+  thread driver
+    let val = m.read(0x1000);       // compiler generates the wait-state FSM
+    m.write(0x2000, val + 1);       // pipelined — returns a future
+  end thread driver
+end module Initiator
+
+module Target
+  port s: target Mem;
+  // thread bodies ARE the method implementations.
+  thread s.read(addr)
+    wait until internal_ready;
+    return mem[addr];               // compiler wires to the response channel
+  end thread s.read
+end module Target
+
+module InternalTimer               // no interface — plain autonomous thread, unchanged
+  thread heartbeat
+    wait 1000 cycle;
+    tick <= tick + 1;
+  end thread heartbeat
+end module InternalTimer
+```
+
+### Migration target for validating TLM
+
+Existing DMA test corpus contains `ThreadMm2s` and `ThreadS2mm` —
+multi-cycle sequencers that shepherd AXI signaling across cycles.
+These are exactly the "thread crossing an interface" pattern that
+`tlm_method` is designed for. When TLM ships, those tests migrate
+from hand-written AXI shepherding threads to:
+
+```
+bus Axi4
+  tlm_method read(addr: UInt<32>, len: UInt<8>) -> Future<Vec<UInt<64>, len>>: burst;
+  tlm_method write(addr: UInt<32>, data: Vec<UInt<64>>): pipelined;
+end bus Axi4
+
+module Mm2s
+  port m_axi:  initiator Axi4;
+  port m_axis: initiator BusAxiStream;
+  thread dma
+    let data = m_axi.read(src_addr, beats);   // was: manual ar-channel FSM
+    for beat in data
+      m_axis.t.send('{data: beat, last: ...});
+    end for
+  end thread dma
+end module Mm2s
+```
+
+Side-by-side comparing the hand-rolled thread against the TLM-backed
+thread is the concrete evaluation of whether TLM earns its keep. If
+the migrated form is shorter, clearer, and generates equivalent SV,
+TLM is validated. If the hand-rolled form is still preferable (e.g.
+user needs fine control over signal timing that TLM abstracts away),
+TLM needs a lower-level escape hatch.
+
+### Consequence for the plan
+
+- **PR #6 (future TLM)** design starts from this framing: `tlm_method`
+  lives as a `bus` sub-construct; target implementations use `thread`;
+  initiator call sites auto-generate thread-like FSMs.
+- The existing DMA tests (`tests/axi_dma_thread/`) are the canonical
+  TLM validation workload.
+- No breaking change to `thread` — the existing explicit form stays
+  valid for autonomous sequencers and for users who need
+  lower-than-TLM control.
 
 ## Open questions
 
