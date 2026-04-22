@@ -29,7 +29,7 @@ end enum BusCmd
 
 regfile DmaRegs
   param NREGS: const = 8;
-  param WIDTH: type = UInt<32>;
+  param T: type = UInt<32>;
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
   ports[2] read
@@ -52,18 +52,18 @@ ram DescTable
   write: no_change;
   init: zero;
   param DEPTH: const = 16;
-  param WIDTH: type = UInt<32>;
+  param T: type = UInt<32>;
   port clk: in Clock<SysDomain>;
   ports rd_port
     addr:  in UInt<4>;
     en:    in Bool;
-    rdata: out WIDTH;
+    rdata: out T;
   end ports rd_port
   ports wr_port
     addr:  in UInt<4>;
     en:    in Bool;
     wen:   in Bool;
-    wdata: in WIDTH;
+    wdata: in T;
   end ports wr_port
 end ram DescTable
 

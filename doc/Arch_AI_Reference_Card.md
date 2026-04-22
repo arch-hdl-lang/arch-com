@@ -572,20 +572,20 @@ Sync or dual-clock async FIFO (gray-code auto-generated). `kind: fifo` (default)
 fifo Name
   kind lifo;                          // optional, default fifo
   param DEPTH: const = 64;
-  param WIDTH: type = UInt<32>;       // REQUIRED — sets memory element type
+  param T: type = UInt<32>;       // REQUIRED — sets memory element type
 
   port clk: in Clock<D>;             // or wr_clk + rd_clk for async
   port rst: in Reset<Sync>;
   port push_valid: in Bool;
   port push_ready: out Bool;
-  port push_data:  in WIDTH;          // must use the type param, NOT UInt<N>
+  port push_data:  in T;          // must use the type param, NOT UInt<N>
   port pop_valid:  out Bool;
   port pop_ready:  in Bool;
-  port pop_data:   out WIDTH;         // must use the type param, NOT UInt<N>
+  port pop_data:   out T;         // must use the type param, NOT UInt<N>
 end fifo Name
 ```
 
-- A `type` parameter (e.g. `param WIDTH: type = UInt<32>`) is **required** — it sets the internal memory element width. Using `in UInt<32>` directly on push_data/pop_data without a type parameter is a compile error.
+- A `type` parameter (e.g. `param T: type = UInt<32>`) is **required** — it sets the internal memory element width. Using `in UInt<32>` directly on push_data/pop_data without a type parameter is a compile error.
 - `param OVERFLOW: const = 1;` — optional. When set, `push_ready` is always high and writing to a full FIFO overwrites the oldest entry (circular buffer / drop-oldest mode). Default 0 = block when full.
 - Dual-clock: replace `clk` with `wr_clk: in Clock<WrD>` + `rd_clk: in Clock<RdD>`; compiler adds gray-code CDC
 - `kind lifo` restricted to single-clock only
@@ -663,11 +663,11 @@ Configurable counter. `kind: wrap | saturate | gray | one_hot | johnson`.
 
 ```
 counter Name
-  param WIDTH: const = 8;
+  param T: const = 8;
   port clk:   in Clock<D>;
   port rst:   in Reset<Sync>;
   port en:    in Bool;
-  port count: out UInt<WIDTH>;
+  port count: out UInt<T>;
   port at_max: out Bool;
   port at_min: out Bool;
   kind wrap;
@@ -735,19 +735,19 @@ Multi-port register file.
 ```
 regfile Name
   param DEPTH: const = 32;
-  param WIDTH: const = 32;
+  param T: const = 32;
   port clk: in Clock<D>;
   port rst: in Reset<Sync>;
 
   port rd0
     addr: in UInt<5>;
-    data: out UInt<WIDTH>;
+    data: out UInt<T>;
   end port rd0
 
   port wr0
     en:   in Bool;
     addr: in UInt<5>;
-    data: in UInt<WIDTH>;
+    data: in UInt<T>;
   end port wr0
 
   forward write_before_read: false;  // true = enable bypass forwarding

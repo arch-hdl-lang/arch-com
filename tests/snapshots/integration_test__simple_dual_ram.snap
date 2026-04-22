@@ -12,10 +12,10 @@ module DualMem #(
   input logic clk,
   input logic rd_port_en,
   input logic [6:0] rd_port_addr,
-  output logic [DATA_WIDTH-1:0] rd_port_data,
+  output T rd_port_data,
   input logic wr_port_en,
   input logic [6:0] wr_port_addr,
-  input logic [DATA_WIDTH-1:0] wr_port_data
+  input T wr_port_data
 );
 
   logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];

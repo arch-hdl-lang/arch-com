@@ -10,17 +10,17 @@ ram SramBank
   kind single;
   latency 1;
   param DEPTH: const = 4096;
-  param WIDTH: type = UInt<32>;
+  param T: type = UInt<32>;
   port clk: in Clock<SysDomain>;
   store
-    buf: Vec<WIDTH, DEPTH>;
+    buf: Vec<T, DEPTH>;
   end store
   ports rw
     en:    in Bool;
     wen:   in Bool;
     addr:  in UInt<12>;
-    wdata: in WIDTH;
-    rdata: out WIDTH;
+    wdata: in T;
+    rdata: out T;
   end ports rw
 end ram SramBank
 

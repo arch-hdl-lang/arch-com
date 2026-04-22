@@ -76,7 +76,7 @@ port push_valid: in Bool; port push_ready: out Bool; port push_data: in DATA_T;
 port pop_valid:  out Bool; port pop_ready:  in Bool; port pop_data:  out DATA_T;
 ```
 
-As a first-class construct, the compiler verifies both sides exist, enforces data-type consistency via a type parameter (`param WIDTH: type = UInt<32>`), and emits well-known signal names so downstream code doesn't guess. A library module makes the handshake convention implicit; every user either gets it right or introduces a subtle deadlock.
+As a first-class construct, the compiler verifies both sides exist, enforces data-type consistency via a type parameter (`param T: type = UInt<32>`), and emits well-known signal names so downstream code doesn't guess. A library module makes the handshake convention implicit; every user either gets it right or introduces a subtle deadlock.
 
 **1.2.4 Auto-generated assertions and coverage**
 
@@ -263,15 +263,15 @@ Any expression or block body may be replaced with todo! to produce a compilable 
 |                                                                    |
 | **module** Multiplier                                              |
 |                                                                    |
-| **param** WIDTH: **const** = 32;                                   |
+| **param** T: **const** = 32;                                   |
 |                                                                    |
 | **port** clk: **in** Clock\<SysDomain\>;                           |
 |                                                                    |
-| **port** a: **in** UInt\<WIDTH\>;                                  |
+| **port** a: **in** UInt\<T\>;                                  |
 |                                                                    |
-| **port** b: **in** UInt\<WIDTH\>;                                  |
+| **port** b: **in** UInt\<T\>;                                  |
 |                                                                    |
-| **port** result: **out** UInt\<WIDTH\>;                            |
+| **port** result: **out** UInt\<T\>;                            |
 |                                                                    |
 | **comb**                                                           |
 |                                                                    |
@@ -647,21 +647,21 @@ A module is the fundamental unit of design in Arch. Every module follows the sam
 |                                                                                |
 | **module** Adder                                                               |
 |                                                                                |
-| **param** WIDTH: **const** = 8;                                                |
+| **param** T: **const** = 8;                                                |
 |                                                                                |
 | **port** clk: **in** Clock\<SysDomain\>;                                       |
 |                                                                                |
 | **port** rst: **in** Reset\<Sync\>;                                            |
 |                                                                                |
-| **port** a: **in** UInt\<WIDTH\>;                                              |
+| **port** a: **in** UInt\<T\>;                                              |
 |                                                                                |
-| **port** b: **in** UInt\<WIDTH\>;                                              |
+| **port** b: **in** UInt\<T\>;                                              |
 |                                                                                |
-| **port** sum: **out** UInt\<WIDTH+1\>;                                         |
+| **port** sum: **out** UInt\<T+1\>;                                         |
 |                                                                                |
 | **comb**                                                                       |
 |                                                                                |
-| sum = a.zext\<WIDTH+1\>() + b.zext\<WIDTH+1\>();                               |
+| sum = a.zext\<T+1\>() + b.zext\<T+1\>();                               |
 |                                                                                |
 | **end** **comb**                                                               |
 |                                                                                |
@@ -685,7 +685,7 @@ Arch has exactly two assignment forms. Mixing operators between them is a compil
 |                                                                    |
 | **module** Counter                                                 |
 |                                                                    |
-| **param** WIDTH: **const** = 8;                                    |
+| **param** T: **const** = 8;                                    |
 |                                                                    |
 | **port** clk: **in** Clock\<SysDomain\>;                           |
 |                                                                    |
@@ -693,9 +693,9 @@ Arch has exactly two assignment forms. Mixing operators between them is a compil
 |                                                                    |
 | **port** en: **in** Bool;                                          |
 |                                                                    |
-| **port** count: **out** UInt\<WIDTH\>;                             |
+| **port** count: **out** UInt\<T\>;                             |
 |                                                                    |
-| **reg** count_r: UInt\<WIDTH\> **reset** rst=\>0;                  |
+| **reg** count_r: UInt\<T\> **reset** rst=\>0;                  |
 |                                                                    |
 | **always** **on** clk rising                                       |
 |                                                                    |
@@ -1003,15 +1003,15 @@ The Counter example from §4.2 can be simplified using `port reg`:
 
 ```
 module Counter
-  param WIDTH: const = 8;
+  param T: const = 8;
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
   port en: in Bool;
-  port reg count: out UInt<WIDTH> reset rst => 0;
+  port reg count: out UInt<T> reset rst => 0;
 
   seq on clk rising
     if en
-      count <= (count + 1).trunc<WIDTH>();
+      count <= (count + 1).trunc<T>();
     end if
   end seq
 end module Counter
@@ -1080,7 +1080,7 @@ The compiler validates that the default value fits within the declared range. Co
 |                                                                    |
 | **inst** add: Adder                                                |
 |                                                                    |
-| **param** WIDTH = 8;                                               |
+| **param** T = 8;                                               |
 |                                                                    |
 | **clk \<- clk;                                           |
 |                                                                    |
@@ -1653,7 +1653,7 @@ The detailed lowering algorithm — including state partitioning rules, fork/joi
 
 A fifo is a first-class construct with compile-time-verified flow control. The designer specifies depth, width, and domain. The compiler generates the full implementation --- counters, full/empty flags, and gray-code pointer CDC for dual-clock FIFOs.
 
-A **type parameter** is required to set the memory element width. The `push_data` and `pop_data` ports must reference this type parameter (e.g. `in WIDTH`), not a concrete type like `UInt<32>`. Omitting the type parameter is a compile error.
+A **type parameter** is required to set the memory element width. The `push_data` and `pop_data` ports must reference this type parameter (e.g. `in T`), not a concrete type like `UInt<32>`. Omitting the type parameter is a compile error.
 
 The optional `kind` keyword selects the buffering discipline (same syntax as `ram`). If omitted, the default is `fifo`.
 
@@ -1673,7 +1673,7 @@ The optional `kind` keyword selects the buffering discipline (same syntax as `ra
 |                                                                    |
 | **param** DEPTH: **const** = 16;                                   |
 |                                                                    |
-| **param** WIDTH: **type** = UInt\<32\>;                            |
+| **param** T: **type** = UInt\<32\>;                            |
 |                                                                    |
 | **port** clk: **in** Clock\<SysDomain\>;                           |
 |                                                                    |
@@ -1683,13 +1683,13 @@ The optional `kind` keyword selects the buffering discipline (same syntax as `ra
 |                                                                    |
 | **port** push_ready: **out** Bool;                                 |
 |                                                                    |
-| **port** push_data: **in** WIDTH;                                  |
+| **port** push_data: **in** T;                                  |
 |                                                                    |
 | **port** pop_valid: **out** Bool;                                  |
 |                                                                    |
 | **port** pop_ready: **in** Bool;                                   |
 |                                                                    |
-| **port** pop_data: **out** WIDTH;                                  |
+| **port** pop_data: **out** T;                                  |
 |                                                                    |
 | **port** **full**: **out** Bool;                                   |
 |                                                                    |
@@ -1707,7 +1707,7 @@ The optional `kind` keyword selects the buffering discipline (same syntax as `ra
 |                                                                    |
 | **param** DEPTH: **const** = 32;                                   |
 |                                                                    |
-| **param** WIDTH: **type** = UInt\<8\>;                             |
+| **param** T: **type** = UInt\<8\>;                             |
 |                                                                    |
 | **port** wr_clk: **in** Clock\<FastDomain\>;                       |
 |                                                                    |
@@ -1719,13 +1719,13 @@ The optional `kind` keyword selects the buffering discipline (same syntax as `ra
 |                                                                    |
 | **port** push_ready: **out** Bool;                                 |
 |                                                                    |
-| **port** push_data: **in** WIDTH;                                  |
+| **port** push_data: **in** T;                                  |
 |                                                                    |
 | **port** pop_valid: **out** Bool;                                  |
 |                                                                    |
 | **port** pop_ready: **in** Bool;                                   |
 |                                                                    |
-| **port** pop_data: **out** WIDTH;                                  |
+| **port** pop_data: **out** T;                                  |
 |                                                                    |
 | **end** **fifo** AsyncBridge                                       |
 +--------------------------------------------------------------------+
@@ -2250,7 +2250,7 @@ ROM requires an `init` clause. No write-enable or write-data signals are permitt
 |                                                                                 |
 | **param** DEPTH: **const** = 512;                                               |
 |                                                                                 |
-| **param** WIDTH: **type** = UInt\<64\>;                                         |
+| **param** T: **type** = UInt\<64\>;                                         |
 |                                                                                 |
 | **port** clk_a: **in** Clock\<CoreADomain\>;                                    |
 |                                                                                 |
@@ -2262,7 +2262,7 @@ ROM requires an `init` clause. No write-enable or write-data signals are permitt
 |                                                                                 |
 | store                                                                           |
 |                                                                                 |
-| data: Vec\<WIDTH, DEPTH\>;                                                      |
+| data: Vec\<T, DEPTH\>;                                                      |
 |                                                                                 |
 | **end** store                                                                   |
 |                                                                                 |
@@ -2276,9 +2276,9 @@ ROM requires an `init` clause. No write-enable or write-data signals are permitt
 |                                                                                 |
 | addr: **in** UInt\<\$clog2(DEPTH)\>;                                            |
 |                                                                                 |
-| wdata: **in** WIDTH;                                                            |
+| wdata: **in** T;                                                            |
 |                                                                                 |
-| rdata: **out** WIDTH;                                                           |
+| rdata: **out** T;                                                           |
 |                                                                                 |
 | **end** **port** a                                                              |
 |                                                                                 |
@@ -2292,9 +2292,9 @@ ROM requires an `init` clause. No write-enable or write-data signals are permitt
 |                                                                                 |
 | addr: **in** UInt\<\$clog2(DEPTH)\>;                                            |
 |                                                                                 |
-| wdata: **in** WIDTH;                                                            |
+| wdata: **in** T;                                                            |
 |                                                                                 |
-| rdata: **out** WIDTH;                                                           |
+| rdata: **out** T;                                                           |
 |                                                                                 |
 | **end** **port** b                                                              |
 |                                                                                 |
@@ -4836,7 +4836,7 @@ A generate match selects one of several structural bodies based on the value of 
 |                                                                                              |
 | **param** DEPTH: **const** = 64;                                                             |
 |                                                                                              |
-| **param** WIDTH: **type** = UInt\<32\>;                                                      |
+| **param** T: **type** = UInt\<32\>;                                                      |
 |                                                                                              |
 | **port** clk_wr: **in** Clock\<WriteDomain\>;                                                |
 |                                                                                              |
@@ -4852,7 +4852,7 @@ A generate match selects one of several structural bodies based on the value of 
 |                                                                                              |
 | **fifo** DataFifo                                                                            |
 |                                                                                              |
-| **param** DEPTH = DEPTH; **param** WIDTH = WIDTH;                                            |
+| **param** DEPTH = DEPTH; **param** T = T;                                            |
 |                                                                                              |
 | **port** clk \<- clk_wr;                                                                     |
 |                                                                                              |
@@ -4868,7 +4868,7 @@ A generate match selects one of several structural bodies based on the value of 
 |                                                                                              |
 | **fifo** DataFifo                                                                            |
 |                                                                                              |
-| **param** DEPTH = DEPTH; **param** WIDTH = WIDTH;                                            |
+| **param** DEPTH = DEPTH; **param** T = T;                                            |
 |                                                                                              |
 | **port** wr_clk \<- clk_wr; **port** rd_clk \<- clk_rd;                                      |
 |                                                                                              |
@@ -4884,7 +4884,7 @@ A generate match selects one of several structural bodies based on the value of 
 |                                                                                              |
 | **fifo** DataFifo                                                                            |
 |                                                                                              |
-| **param** DEPTH = DEPTH; **param** WIDTH = WIDTH;                                            |
+| **param** DEPTH = DEPTH; **param** T = T;                                            |
 |                                                                                              |
 | **port** clk \<- clk_wr;                                                                     |
 |                                                                                              |
@@ -8822,7 +8822,7 @@ A practical AI workflow: generate a correct skeleton with todo! for all logic, t
 
   **Clock inferred from sensitivity list**         Explicit: seq on clk rising; reset on reg decl: reset rst => 0 sync high
 
-  **Module port width from implicit param math**   Explicit: port sum: out UInt\<WIDTH+1\>;
+  **Module port width from implicit param math**   Explicit: port sum: out UInt\<T+1\>;
 
   **CDC implicitly allowed across assignments**    Compile error --- crossing block required
   --------------------------------------------------------------------------------------------------------------
@@ -9073,7 +9073,7 @@ Design: a 3-stage in-order RISC-V integer pipeline with a unified register + CSR
 |                                                                    |
 | **param** DEPTH: **const** = 4;                                    |
 |                                                                    |
-| **param** WIDTH: **type** = UInt\<32\>;                            |
+| **param** T: **type** = UInt\<32\>;                            |
 |                                                                    |
 | **port** clk: **in** Clock\<SysDomain\>;                           |
 |                                                                    |
@@ -9261,7 +9261,7 @@ Design: a 3-stage in-order RISC-V integer pipeline with a unified register + CSR
 |                                                                        |
 | **param** DEPTH = 4;                                                   |
 |                                                                        |
-| **param** WIDTH = UInt\<32\>;                                          |
+| **param** T = UInt\<32\>;                                          |
 |                                                                        |
 | **clk \<- clk;                                               |
 |                                                                        |
@@ -9476,13 +9476,13 @@ Functions can also be declared inside a module body for one-off helpers that don
 
 ```
 module MyModule
-  param WIDTH: const = 8;
-  port a: in UInt<WIDTH>;
-  port b: in UInt<WIDTH>;
-  port sum: out UInt<WIDTH>;
+  param T: const = 8;
+  port a: in UInt<T>;
+  port b: in UInt<T>;
+  port sum: out UInt<T>;
 
-  function add_wrap(x: UInt<WIDTH>, y: UInt<WIDTH>) -> UInt<WIDTH>
-    return (x + y).trunc<WIDTH>();
+  function add_wrap(x: UInt<T>, y: UInt<T>) -> UInt<T>
+    return (x + y).trunc<T>();
   end function add_wrap
 
   let sum = add_wrap(a, b);
@@ -9492,9 +9492,9 @@ end module MyModule
 The compiler emits module-local functions as SV `function automatic` inside the module block:
 
 ```sv
-module MyModule #(parameter int WIDTH = 8) (input logic [WIDTH-1:0] a, ...);
-  function automatic logic [WIDTH-1:0] add_wrap(input logic [WIDTH-1:0] x, input logic [WIDTH-1:0] y);
-    return WIDTH'(x + y);
+module MyModule #(parameter int T = 8) (input logic [T-1:0] a, ...);
+  function automatic logic [T-1:0] add_wrap(input logic [T-1:0] x, input logic [T-1:0] y);
+    return T'(x + y);
   endfunction
   assign sum = add_wrap(a, b);
 endmodule
@@ -9556,10 +9556,10 @@ end function popcount
 ```
 // SubModule.archi (auto-generated)
 module SubModule
-  param WIDTH: const = 32;
+  param T: const = 32;
   port clk: in Clock<SysDomain>;
-  port data_in: in UInt<WIDTH>;
-  port data_out: out UInt<WIDTH>;
+  port data_in: in UInt<T>;
+  port data_out: out UInt<T>;
 end module SubModule
 ```
 

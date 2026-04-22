@@ -488,10 +488,10 @@ ram BadRam
   kind single;
   latency 1;
   param DEPTH: const = 64;
-  param WIDTH: type = UInt<8>;
+  param T: type = UInt<8>;
   port clk: in Clock<SysDomain>;
   store
-    data: Vec<WIDTH, DEPTH>;
+    data: Vec<T, DEPTH>;
   end store
   // Missing port group
 end ram BadRam
@@ -1284,13 +1284,13 @@ domain SysDomain
 end domain SysDomain
 
 module Alu
-  param WIDTH: const = 32;
-  port a: in UInt<WIDTH>;
-  port b: in UInt<WIDTH>;
-  port result: out UInt<WIDTH>;
+  param T: const = 32;
+  port a: in UInt<T>;
+  port b: in UInt<T>;
+  port result: out UInt<T>;
 
   comb
-    result = (a + b).trunc<WIDTH>();
+    result = (a + b).trunc<T>();
   end comb
 end module Alu
 
@@ -1563,7 +1563,7 @@ end domain SysDomain
 
 regfile SmallRf
   param NREGS: const = 4;
-  param WIDTH: type = UInt<8>;
+  param T: type = UInt<8>;
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
   ports[2] read

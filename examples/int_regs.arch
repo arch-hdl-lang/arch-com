@@ -4,7 +4,7 @@ end domain SysDomain
 
 regfile IntRegs
   param NREGS: const = 32;
-  param WIDTH: type = UInt<8>;
+  param T: type = UInt<8>;
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
   ports[2] read

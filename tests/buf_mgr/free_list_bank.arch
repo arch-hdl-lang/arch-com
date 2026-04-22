@@ -5,19 +5,19 @@ ram FreeListBank
   kind simple_dual;
   latency 2;
   param DEPTH: const = 8192;
-  param WIDTH: type = UInt<14>;
+  param T: type = UInt<14>;
   port clk: in Clock<SysDomain>;
   store
-    slots: Vec<WIDTH, DEPTH>;
+    slots: Vec<T, DEPTH>;
   end store
   ports rd_port
     en:   in Bool;
     addr: in UInt<13>;
-    data: out WIDTH;
+    data: out T;
   end ports rd_port
   ports wr_port
     en:   in Bool;
     addr: in UInt<13>;
-    data: in WIDTH;
+    data: in T;
   end ports wr_port
 end ram FreeListBank

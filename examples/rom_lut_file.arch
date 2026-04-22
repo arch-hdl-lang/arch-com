@@ -5,7 +5,7 @@ ram RomLutFile
   init: file("examples/rom_lut_sine.hex", hex);
 
   param DEPTH: const = 8;
-  param WIDTH: type = UInt<8>;
+  param T: type = UInt<8>;
 
   port clk: in Clock<CoreDomain>;
 

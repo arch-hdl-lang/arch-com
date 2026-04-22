@@ -5954,7 +5954,7 @@ impl<'a> SimCodegen<'a> {
             .unwrap_or(256);
 
         // Build type-param map: param name → resolved TypeExpr
-        // e.g. `param WIDTH: type = UInt<54>` → "WIDTH" → UInt<54>
+        // e.g. `param T: type = UInt<54>` → "T" → UInt<54>
         let type_params: HashMap<String, &TypeExpr> = r.params.iter()
             .filter_map(|p| {
                 if let ParamKind::Type(ty) = &p.kind {

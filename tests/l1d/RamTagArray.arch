@@ -5,19 +5,19 @@ ram RamTagArray
   kind simple_dual;
   latency 1;
   param DEPTH: const = 64;
-  param WIDTH: type  = UInt<54>;
+  param T: type  = UInt<54>;
   port clk: in Clock<SysDomain>;
   store
-    buf: Vec<WIDTH, DEPTH>;
+    buf: Vec<T, DEPTH>;
   end store
   ports rd_port
     en:    in  Bool;
     addr:  in  UInt<6>;
-    rdata: out WIDTH;
+    rdata: out T;
   end ports rd_port
   ports wr_port
     en:    in  Bool;
     addr:  in  UInt<6>;
-    wdata: in  WIDTH;
+    wdata: in  T;
   end ports wr_port
 end ram RamTagArray

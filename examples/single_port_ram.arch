@@ -8,16 +8,16 @@ ram SimpleMem
   write: no_change;
   init: zero;
   param DEPTH: const = 256;
-  param WIDTH: type = UInt<8>;
+  param T: type = UInt<8>;
   port clk: in Clock<SysDomain>;
   store
-    data: Vec<WIDTH, DEPTH>;
+    data: Vec<T, DEPTH>;
   end store
   ports access
     en: in Bool;
     wen: in Bool;
     addr: in UInt<8>;
-    wdata: in WIDTH;
-    rdata: out WIDTH;
+    wdata: in T;
+    rdata: out T;
   end ports access
 end ram SimpleMem
