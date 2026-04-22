@@ -98,7 +98,27 @@ impl<'a> TypeChecker<'a> {
                 Item::Template(t) => self.check_template(t),
                 Item::Synchronizer(s) => self.check_synchronizer(s),
                 Item::Clkgate(c) => self.check_clkgate(c),
-                Item::Bus(_) => {} // validated at port usage sites
+                Item::Bus(b) => {
+                    // Deprecation: legacy `handshake` keyword inside a bus
+                    // is being renamed to `handshake_channel` for
+                    // consistency with its sibling sub-constructs
+                    // (`credit_channel`, future `tlm_method`). Same soft
+                    // nudge pattern as `port reg`; silenceable via
+                    // ARCH_NO_DEPRECATIONS=1.
+                    if std::env::var("ARCH_NO_DEPRECATIONS").is_err() {
+                        for hs in &b.handshakes {
+                            if hs.legacy_handshake_kw {
+                                self.warnings.push(CompileWarning {
+                                    message: format!(
+                                        "`handshake {name}: ...` is deprecated — use `handshake_channel {name}: ...` instead (identical semantics; matches the new `credit_channel` / `tlm_method` sibling sub-construct naming).",
+                                        name = hs.name.name
+                                    ),
+                                    span: hs.span,
+                                });
+                            }
+                        }
+                    }
+                }
                 Item::Package(pkg) => {
                     for e in &pkg.enums { self.check_enum(e); }
                     for s in &pkg.structs { self.check_struct(s); }

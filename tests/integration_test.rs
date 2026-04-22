@@ -3395,3 +3395,116 @@ fn test_pipe_reg_port_no_deprecation_warning() {
         "did not expect deprecation warning for pipe_reg<T,1>, got: {:?}",
         warnings.iter().map(|w| &w.message).collect::<Vec<_>>());
 }
+
+#[test]
+fn test_handshake_channel_parses_new_keyword() {
+    let source = "
+        bus BusNew
+          handshake_channel cmd: send kind: valid_ready
+            addr: UInt<32>;
+          end handshake_channel cmd
+        end bus BusNew
+
+        use BusNew;
+
+        module M
+          port p: initiator BusNew;
+          comb
+            p.cmd_valid = 1'b0;
+            p.cmd_addr  = 32'h0;
+          end comb
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("output logic p_cmd_valid"),
+        "handshake_channel should expand to the same ports as legacy `handshake`:\n{sv}");
+    assert!(sv.contains("input logic p_cmd_ready"),
+        "handshake_channel should emit the ready signal:\n{sv}");
+    assert!(sv.contains("output logic [31:0] p_cmd_addr"),
+        "handshake_channel should emit the payload:\n{sv}");
+}
+
+#[test]
+fn test_handshake_legacy_keyword_emits_deprecation_warning() {
+    let source = "
+        bus BusLegacy
+          handshake cmd: send kind: valid_ready
+            addr: UInt<32>;
+          end handshake cmd
+        end bus BusLegacy
+
+        use BusLegacy;
+
+        module M
+          port p: initiator BusLegacy;
+          comb
+            p.cmd_valid = 1'b0;
+            p.cmd_addr  = 32'h0;
+          end comb
+        end module M
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = arch::elaborate::elaborate(ast).expect("elaborate");
+    let ast = arch::elaborate::lower_threads(ast).expect("lower threads");
+    let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve");
+    let (warnings, _) = arch::typecheck::TypeChecker::new(&symbols, &ast).check().expect("typecheck");
+    assert!(warnings.iter().any(|w|
+        w.message.contains("`handshake cmd")
+        && w.message.contains("deprecated")
+        && w.message.contains("handshake_channel")),
+        "expected deprecation warning, got: {:?}",
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>());
+}
+
+#[test]
+fn test_handshake_channel_no_deprecation_warning() {
+    let source = "
+        bus BusNew
+          handshake_channel cmd: send kind: valid_ready
+            addr: UInt<32>;
+          end handshake_channel cmd
+        end bus BusNew
+
+        use BusNew;
+
+        module M
+          port p: initiator BusNew;
+          comb
+            p.cmd_valid = 1'b0;
+            p.cmd_addr  = 32'h0;
+          end comb
+        end module M
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = arch::elaborate::elaborate(ast).expect("elaborate");
+    let ast = arch::elaborate::lower_threads(ast).expect("lower threads");
+    let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve");
+    let (warnings, _) = arch::typecheck::TypeChecker::new(&symbols, &ast).check().expect("typecheck");
+    assert!(!warnings.iter().any(|w| w.message.contains("handshake_channel")
+                                    && w.message.contains("deprecated")),
+        "did not expect deprecation warning for handshake_channel form, got: {:?}",
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>());
+}
+
+#[test]
+fn test_handshake_mismatched_closing_keyword_errors() {
+    // Opening with `handshake_channel` but closing with `end handshake`
+    // (or vice versa) should be a parse error.
+    let source = "
+        bus B
+          handshake_channel cmd: send kind: valid_ready
+            addr: UInt<32>;
+          end handshake cmd
+        end bus B
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let result = parser.parse_source_file();
+    assert!(result.is_err(), "expected parse error for mismatched opening/closing keyword");
+}

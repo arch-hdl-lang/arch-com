@@ -79,6 +79,10 @@ pub struct HandshakeMeta {
     pub name: Ident,
     /// Variant keyword (e.g. `valid_ready`, `req_ack_4phase`).
     pub variant: Ident,
+    /// True if the declaration used the legacy `handshake` keyword rather
+    /// than `handshake_channel`. Typecheck emits a deprecation warning for
+    /// the legacy form — semantics are identical. See plan_bus_unification.md.
+    pub legacy_handshake_kw: bool,
     /// Role on the initiator side: `Out` = send, `In` = receive.
     pub role_dir: Direction,
     /// Field names of the payload (without the channel prefix). Used only
