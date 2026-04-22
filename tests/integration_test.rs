@@ -3493,6 +3493,75 @@ fn test_handshake_channel_no_deprecation_warning() {
 }
 
 #[test]
+fn test_credit_channel_parses_as_bus_sub_construct() {
+    // PR #3 scaffolding: credit_channel inside a bus parses into
+    // BusDecl::credit_channels. Typecheck rejects it (not yet implemented),
+    // but parser + resolve should succeed.
+    let source = "
+        bus DmaCh
+          credit_channel data: send
+            param T:     type  = UInt<64>;
+            param DEPTH: const = 8;
+          end credit_channel data
+        end bus DmaCh
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let bus = ast.items.iter().find_map(|it| match it {
+        arch::ast::Item::Bus(b) if b.name.name == "DmaCh" => Some(b),
+        _ => None,
+    }).expect("DmaCh bus should be in AST");
+    assert_eq!(bus.credit_channels.len(), 1);
+    let cc = &bus.credit_channels[0];
+    assert_eq!(cc.name.name, "data");
+    assert_eq!(cc.role_dir, arch::ast::Direction::Out);
+    assert_eq!(cc.params.len(), 2);
+    assert_eq!(cc.params[0].name.name, "T");
+    assert_eq!(cc.params[1].name.name, "DEPTH");
+}
+
+#[test]
+fn test_credit_channel_rejected_in_typecheck_as_unimplemented() {
+    let source = "
+        bus DmaCh
+          credit_channel data: send
+            param T:     type  = UInt<64>;
+            param DEPTH: const = 8;
+          end credit_channel data
+        end bus DmaCh
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = arch::elaborate::elaborate(ast).expect("elaborate");
+    let ast = arch::elaborate::lower_threads(ast).expect("lower threads");
+    let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve");
+    let result = arch::typecheck::TypeChecker::new(&symbols, &ast).check();
+    assert!(result.is_err(), "typecheck should reject credit_channel until elaboration ships");
+    let err_str = format!("{:?}", result.unwrap_err());
+    assert!(err_str.contains("credit_channel") && err_str.contains("scaffolding"),
+        "expected scaffolding error, got: {err_str}");
+}
+
+#[test]
+fn test_credit_channel_mismatched_closing_keyword_errors() {
+    let source = "
+        bus B
+          credit_channel data: send
+            param T:     type  = UInt<64>;
+            param DEPTH: const = 8;
+          end credit_channel wrong_name
+        end bus B
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    assert!(parser.parse_source_file().is_err(),
+        "mismatched credit_channel close should be a parse error");
+}
+
+#[test]
 fn test_handshake_mismatched_closing_keyword_errors() {
     // Opening with `handshake_channel` but closing with `end handshake`
     // (or vice versa) should be a parse error.

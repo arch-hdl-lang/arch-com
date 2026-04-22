@@ -67,6 +67,12 @@ pub struct BusDecl {
     /// list preserves the grouping so codegen can emit per-variant SVA
     /// protocol assertions.
     pub handshakes: Vec<HandshakeMeta>,
+    /// Credit channel sub-constructs declared in this bus. PR #3 scaffolding:
+    /// parser populates this, but elaboration (counter reg + fifo synthesis,
+    /// method dispatch for `ch.send()`/`ch.pop()`/`ch.can_send`) is not yet
+    /// implemented. Typecheck rejects any bus port whose bus carries a
+    /// credit_channel until the elaboration PR lands.
+    pub credit_channels: Vec<CreditChannelMeta>,
     pub span: Span,
 }
 
@@ -89,6 +95,23 @@ pub struct HandshakeMeta {
     /// for documentation in generated SV comments — directions/types are
     /// already materialized as PortDecls in BusDecl::signals.
     pub payload_names: Vec<Ident>,
+    pub span: Span,
+}
+
+/// Metadata for one `credit_channel` sub-construct inside a bus. PR #3
+/// scaffolding: parser stores shape + params, but no PortDecls are
+/// materialized yet — the wire protocol (send_valid / send_data /
+/// credit_return) and the per-port-site counter + fifo synthesis land in a
+/// follow-up PR. See doc/plan_credit_channel.md.
+#[derive(Debug, Clone)]
+pub struct CreditChannelMeta {
+    /// Channel name (e.g. `data`).
+    pub name: Ident,
+    /// Role on the initiator side: `Out` = send, `In` = receive.
+    pub role_dir: Direction,
+    /// Params local to this credit_channel (`T`, `DEPTH`). Same ParamDecl
+    /// shape as bus-level params; scope is limited to this channel.
+    pub params: Vec<ParamDecl>,
     pub span: Span,
 }
 

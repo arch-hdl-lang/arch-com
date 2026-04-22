@@ -124,6 +124,11 @@ pub struct BusInfo {
     pub generates: Vec<BusGenerateIf>,
     /// Handshake channels declared in this bus (Tier 2 SVA emission).
     pub handshakes: Vec<crate::ast::HandshakeMeta>,
+    /// Credit channels declared in this bus. PR #3 scaffolding: elaboration
+    /// rejects modules that instantiate a bus with non-empty credit_channels
+    /// because counter + fifo synthesis is not wired up yet. See
+    /// doc/plan_credit_channel.md.
+    pub credit_channels: Vec<crate::ast::CreditChannelMeta>,
 }
 
 impl BusInfo {
@@ -511,6 +516,7 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                             .collect(),
                         generates: b.generates.clone(),
                         handshakes: b.handshakes.clone(),
+                        credit_channels: b.credit_channels.clone(),
                     };
                     table.globals.insert(b.name.name.clone(), (Symbol::Bus(info), b.name.span));
                 }
@@ -584,6 +590,7 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                                     .collect(),
                                 generates: b.generates.clone(),
                                 handshakes: b.handshakes.clone(),
+                                credit_channels: b.credit_channels.clone(),
                             };
                             table.globals.insert(b.name.name.clone(), (Symbol::Bus(info), b.name.span));
                         }

@@ -890,6 +890,21 @@ end bus BusAxiLite
 
 Full spec: `doc/ARCH_HDL_Specification.md` §18a.
 
+### credit_channel (inside bus) — scaffolding only in v0.44.1
+
+Stateful credit-based flow control as a bus sub-construct. Grammar is accepted; **elaboration is not yet implemented** — any bus declaring a `credit_channel` currently fails typecheck with *"parser scaffolding only"*.
+
+```
+bus DmaCh
+  credit_channel data: send
+    param T:     type  = UInt<64>;
+    param DEPTH: const = 8;
+  end credit_channel data
+end bus DmaCh
+```
+
+When elaboration lands: `ch.can_send` / `ch.send(x)` on the initiator; `ch.valid` / `ch.data` / `ch.pop()` on the target. Compiler owns counter + FIFO. See `doc/plan_credit_channel.md` for the full design and `doc/plan_bus_unification.md` for the sibling-channel framing.
+
 ### Standard bus library (zero-setup `use`)
 
 The ARCH compiler ships curated bus definitions under `<install>/stdlib/`. Use any of them from any file with no path setup:

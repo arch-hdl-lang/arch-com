@@ -139,6 +139,7 @@ impl Parser {
         let mut signals = Vec::new();
         let mut generates = Vec::new();
         let mut handshakes = Vec::new();
+        let mut credit_channels = Vec::new();
         while !self.check_end_keyword() {
             if self.check_param() {
                 params.push(self.parse_param_decl()?);
@@ -149,6 +150,8 @@ impl Parser {
                 signals.extend(ports);
                 generates.extend(gen_ifs);
                 handshakes.push(meta);
+            } else if self.check(TokenKind::CreditChannel) {
+                credit_channels.push(self.parse_credit_channel_block(start)?);
             } else {
                 signals.push(self.parse_bus_signal(start)?);
             }
@@ -170,6 +173,53 @@ impl Parser {
             signals,
             generates,
             handshakes,
+            credit_channels,
+        })
+    }
+
+    /// Parse a `credit_channel` block inside a bus body. PR #3 scaffolding:
+    /// captures the channel name, role, and params (`T`, `DEPTH`). No
+    /// PortDecls are materialized — the wire protocol + per-port-site counter
+    /// + fifo synthesis land in a follow-up PR. See doc/plan_credit_channel.md.
+    ///
+    /// Grammar:
+    ///   'credit_channel' Ident ':' ('send'|'receive') NEWLINE
+    ///     ParamDecl*
+    ///   'end' 'credit_channel' Ident
+    fn parse_credit_channel_block(&mut self, _parent_span: Span) -> Result<CreditChannelMeta, CompileError> {
+        let start = self.expect(TokenKind::CreditChannel)?.span;
+        let ch_name = self.expect_ident()?;
+        self.expect(TokenKind::Colon)?;
+        let role_dir = if self.eat_contextual("send") {
+            Direction::Out
+        } else if self.eat_contextual("receive") {
+            Direction::In
+        } else {
+            return Err(CompileError::unexpected_token(
+                "send or receive",
+                &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                self.peek_span(),
+            ));
+        };
+        let mut params = Vec::new();
+        while self.check_param() {
+            params.push(self.parse_param_decl()?);
+        }
+        self.expect(TokenKind::End)?;
+        self.expect(TokenKind::CreditChannel)?;
+        let closing_name = self.expect_ident()?;
+        if closing_name.name != ch_name.name {
+            return Err(CompileError::mismatched_closing(
+                &ch_name.name,
+                &closing_name.name,
+                closing_name.span,
+            ));
+        }
+        Ok(CreditChannelMeta {
+            name: ch_name,
+            role_dir,
+            params,
+            span: start.merge(closing_name.span),
         })
     }
 
