@@ -150,6 +150,41 @@ impl BusInfo {
                 result.push((s.name.name.clone(), s.direction, s.ty.clone()));
             }
         }
+        // Expand credit_channel sub-constructs into their wire protocol:
+        //   <ch>_send_valid     : Bool (initiator→target)
+        //   <ch>_send_data      : T    (initiator→target)
+        //   <ch>_credit_return  : Bool (target→initiator)
+        // Directions below are from the INITIATOR perspective; the existing
+        // `target` bus-port perspective flip inverts them uniformly.
+        // Per PR #3b-i scope: method dispatch (`ch.send`/`ch.pop`/...), the
+        // counter reg on the initiator side, and the fifo on the target side
+        // are NOT yet synthesized — that lands in the elaboration PR. Users
+        // who touch these wires directly today (e.g. to drive send_valid from
+        // a comb block) compile cleanly; users who invoke the method
+        // abstraction get a typecheck error pointing at the scaffolding gap.
+        for cc in &self.credit_channels {
+            let (vd_dir, ret_dir) = match cc.role_dir {
+                Direction::Out => (Direction::Out, Direction::In),   // send role
+                Direction::In  => (Direction::In,  Direction::Out),  // receive role
+            };
+            // Payload type: take the default of the channel's `T` param.
+            // Channel-level param overrides at the bus-port-instance site
+            // are a future extension.
+            let payload_ty = cc.params.iter()
+                .find(|p| p.name.name == "T")
+                .and_then(|p| match &p.kind {
+                    crate::ast::ParamKind::Type(te) => Some(te.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| TypeExpr::UInt(Box::new(Expr::new(
+                    ExprKind::Literal(LitKind::Dec(64)),
+                    cc.span,
+                ))));
+            let bool_ty = TypeExpr::Bool;
+            result.push((format!("{}_send_valid", cc.name.name), vd_dir, bool_ty.clone()));
+            result.push((format!("{}_send_data",  cc.name.name), vd_dir, payload_ty));
+            result.push((format!("{}_credit_return", cc.name.name), ret_dir, bool_ty));
+        }
         result
     }
 }
