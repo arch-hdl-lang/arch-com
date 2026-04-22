@@ -1,25 +1,56 @@
 // AXI4-Stream simple flow-control bundle.
 //
-// Canonical streaming bus with valid/ready handshake + data + tlast + tkeep.
-// Matches the ARM AMBA AXI4-Stream spec for the simple variant.
+// Canonical streaming bus with valid/ready handshake. Optional payload
+// signals are guarded by toggle params; set them at the port site to
+// include or omit the signal for that instance.
 //
-// v1 ships with a fixed payload (data + last + keep). If you need id/dest/user
-// or a leaner variant without last/keep, either compose a custom bus or wait
-// for BusAxiStreamLite / BusAxiStreamFull.
+// Toggles (nonzero = include, zero = omit):
+//   USE_LAST — tlast (frame boundary marker)
+//   USE_KEEP — tkeep (byte enables on the beat)
+//   USE_STRB — tstrb (per-byte position/data distinction, rarely used)
+//
+// Width params (> 0 = include, 0 = omit):
+//   ID_W    — tid
+//   DEST_W  — tdest
+//   USER_W  — tuser
+//
+// Matches the ARM AMBA AXI4-Stream spec (IHI 0051).
 //
 // Example:
 //   use BusAxiStream;
 //   module Producer
-//     port m_axis: initiator BusAxiStream<DATA_W=32>;
+//     port m_axis: initiator BusAxiStream<DATA_W=32, USE_LAST=1, USE_KEEP=1>;
 //     ...
 //   end module Producer
 
 bus BusAxiStream
-  param DATA_W: const = 32;
+  param DATA_W:   const = 32;
+  param USE_LAST: const = 1;
+  param USE_KEEP: const = 1;
+  param USE_STRB: const = 0;
+  param ID_W:     const = 0;
+  param DEST_W:   const = 0;
+  param USER_W:   const = 0;
 
   handshake t: send kind: valid_ready
     data: UInt<DATA_W>;
-    last: Bool;
-    keep: UInt<DATA_W / 8>;
+    generate_if USE_LAST
+      last: Bool;
+    end generate_if
+    generate_if USE_KEEP
+      keep: UInt<DATA_W / 8>;
+    end generate_if
+    generate_if USE_STRB
+      strb: UInt<DATA_W / 8>;
+    end generate_if
+    generate_if ID_W > 0
+      id: UInt<ID_W>;
+    end generate_if
+    generate_if DEST_W > 0
+      dest: UInt<DEST_W>;
+    end generate_if
+    generate_if USER_W > 0
+      user: UInt<USER_W>;
+    end generate_if
   end handshake t
 end bus BusAxiStream

@@ -3237,3 +3237,84 @@ fn test_stdlib_disabled_via_env() {
     assert!(!out.status.success(),
         "expected failure when ARCH_NO_STDLIB=1 disables stdlib resolution");
 }
+
+#[test]
+fn test_handshake_generate_if_payload_toggle() {
+    // `generate_if` inside a handshake payload should conditionally
+    // include fields based on port-site param overrides.
+    let source = "
+        bus BusFlex
+          param DATA_W: const = 8;
+          param USE_LAST: const = 1;
+          param ID_W: const = 0;
+
+          handshake t: send kind: valid_ready
+            data: UInt<DATA_W>;
+            generate_if USE_LAST
+              last: Bool;
+            end generate_if
+            generate_if ID_W > 0
+              id: UInt<ID_W>;
+            end generate_if
+          end handshake t
+        end bus BusFlex
+
+        module Full
+          port p: initiator BusFlex<DATA_W=16, USE_LAST=1, ID_W=4>;
+          comb
+            p.t_valid = 1'b0;
+            p.t_data  = 16'h0;
+            p.t_last  = 1'b0;
+            p.t_id    = 4'h0;
+          end comb
+        end module Full
+
+        module Bare
+          port p: initiator BusFlex<DATA_W=8, USE_LAST=0>;
+          comb
+            p.t_valid = 1'b0;
+            p.t_data  = 8'h0;
+          end comb
+        end module Bare
+    ";
+    let sv = compile_to_sv(source);
+    // Full config emits all four optional ports.
+    assert!(sv.contains("output logic [15:0] p_t_data"), "Full: data 16-bit expected:\n{sv}");
+    assert!(sv.contains("output logic p_t_last"), "Full: t_last present:\n{sv}");
+    assert!(sv.contains("output logic [3:0] p_t_id"), "Full: t_id [3:0]:\n{sv}");
+    // Bare config omits t_last (USE_LAST=0) AND t_id (ID_W=0).
+    // Both Full and Bare emit into the same SV string; check Bare's
+    // module block specifically for the absence of those fields.
+    let bare = sv.split("module Bare").nth(1).expect("Bare module present");
+    let bare_until_end = bare.split("endmodule").next().unwrap_or("");
+    assert!(!bare_until_end.contains("t_last"),
+        "Bare config should omit t_last: {bare_until_end}");
+    assert!(!bare_until_end.contains("t_id"),
+        "Bare config should omit t_id: {bare_until_end}");
+}
+
+#[test]
+fn test_handshake_generate_if_nested_in_bus_genif_errors() {
+    // A handshake with payload generate_if placed INSIDE a bus-level
+    // generate_if is not supported in v1 — must error with a clear message.
+    let source = "
+        bus BusBad
+          param ENABLE: const = 1;
+          generate_if ENABLE
+            handshake t: send kind: valid_ready
+              data: UInt<8>;
+              generate_if ENABLE
+                extra: Bool;
+              end generate_if
+            end handshake t
+          end generate_if
+        end bus BusBad
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let result = parser.parse_source_file();
+    assert!(result.is_err(), "expected parser error");
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(msg.contains("not supported when the handshake itself is nested"),
+        "expected specific nesting-error message, got: {msg}");
+}

@@ -152,6 +152,7 @@ impl BusInfo {
 /// Evaluate a generate_if condition in a bus context.
 /// Supports simple param references (truthy if nonzero) and literal integers.
 fn eval_bus_cond(expr: &Expr, param_map: &HashMap<String, &Expr>) -> bool {
+    // Truthy-if-nonzero rule for Ident / Literal expressions.
     match &expr.kind {
         ExprKind::Ident(name) => {
             if let Some(val_expr) = param_map.get(name.as_str()) {
@@ -167,7 +168,65 @@ fn eval_bus_cond(expr: &Expr, param_map: &HashMap<String, &Expr>) -> bool {
             }
         }
         ExprKind::Bool(b) => *b,
+        // Binary comparison / logical ops — evaluate both operands as
+        // integers (when possible) and apply the op. Supports the common
+        // stdlib-bus patterns `ID_W > 0`, `MODE == 2`, `A && B`.
+        ExprKind::Binary(op, l, r) => {
+            use crate::ast::BinOp;
+            match op {
+                BinOp::And => eval_bus_cond(l, param_map) && eval_bus_cond(r, param_map),
+                BinOp::Or  => eval_bus_cond(l, param_map) || eval_bus_cond(r, param_map),
+                _ => match (eval_bus_int(l, param_map), eval_bus_int(r, param_map)) {
+                    (Some(lv), Some(rv)) => match op {
+                        BinOp::Eq  => lv == rv,
+                        BinOp::Neq => lv != rv,
+                        BinOp::Lt  => lv < rv,
+                        BinOp::Gt  => lv > rv,
+                        BinOp::Lte => lv <= rv,
+                        BinOp::Gte => lv >= rv,
+                        _ => true, // conservative
+                    },
+                    _ => true, // conservative
+                }
+            }
+        }
+        ExprKind::Unary(op, e) => {
+            use crate::ast::UnaryOp;
+            match op {
+                UnaryOp::Not => !eval_bus_cond(e, param_map),
+                _ => true,
+            }
+        }
         _ => true, // conservative: include signals if condition can't be evaluated
+    }
+}
+
+/// Evaluate a bus-condition expression as an integer when possible.
+/// Returns None if the expression can't be reduced (e.g. runtime signals).
+fn eval_bus_int(expr: &Expr, param_map: &HashMap<String, &Expr>) -> Option<i64> {
+    match &expr.kind {
+        ExprKind::Literal(lit) => match lit {
+            LitKind::Dec(n) | LitKind::Hex(n) | LitKind::Bin(n) | LitKind::Sized(_, n) => Some(*n as i64),
+        },
+        ExprKind::Ident(name) => {
+            let val_expr = param_map.get(name.as_str())?;
+            eval_bus_int(val_expr, param_map)
+        }
+        ExprKind::Bool(b) => Some(if *b { 1 } else { 0 }),
+        ExprKind::Binary(op, l, r) => {
+            use crate::ast::BinOp;
+            let lv = eval_bus_int(l, param_map)?;
+            let rv = eval_bus_int(r, param_map)?;
+            Some(match op {
+                BinOp::Add => lv + rv,
+                BinOp::Sub => lv - rv,
+                BinOp::Mul => lv * rv,
+                BinOp::Div if rv != 0 => lv / rv,
+                BinOp::Mod if rv != 0 => lv % rv,
+                _ => return None,
+            })
+        }
+        _ => None,
     }
 }
 
