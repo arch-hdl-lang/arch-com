@@ -32,7 +32,7 @@ bus BusAxiStream
   param DEST_W:   const = 0;
   param USER_W:   const = 0;
 
-  handshake t: send kind: valid_ready
+  handshake_channel t: send kind: valid_ready
     data: UInt<DATA_W>;
     generate_if USE_LAST
       last: Bool;
@@ -52,5 +52,5 @@ bus BusAxiStream
     generate_if USER_W > 0
       user: UInt<USER_W>;
     end generate_if
-  end handshake t
+  end handshake_channel t
 end bus BusAxiStream
