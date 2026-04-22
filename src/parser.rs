@@ -800,7 +800,13 @@ impl Parser {
             } else {
                 RegReset::None
             };
-            Some(PortRegInfo { init, reset, guard, latency: pipe_reg_latency.unwrap_or(1) })
+            Some(PortRegInfo {
+                init, reset, guard,
+                latency: pipe_reg_latency.unwrap_or(1),
+                // Only the legacy `port reg` keyword sets is_reg without
+                // going through the pipe_reg<T,N> branch.
+                legacy_port_reg: pipe_reg_latency.is_none(),
+            })
         } else {
             None
         };

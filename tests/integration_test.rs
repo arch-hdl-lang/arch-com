@@ -3339,3 +3339,59 @@ fn test_stdlib_bus_apb_discovery_apb3_minimal() {
         "APB3 minimal should compile; stderr:\n{}",
         String::from_utf8_lossy(&out.stderr));
 }
+
+#[test]
+fn test_port_reg_deprecation_warning_fires() {
+    // Legacy `port reg` should produce a deprecation warning pointing
+    // users at `port q: out pipe_reg<T, 1>`.
+    let source = "
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port in_data: in UInt<8>;
+          port reg q: out UInt<8> reset rst => 0;
+          seq on clk rising
+            q <= in_data;
+          end seq
+        end module M
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = arch::elaborate::elaborate(ast).expect("elaborate");
+    let ast = arch::elaborate::lower_threads(ast).expect("lower threads");
+    let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve");
+    let (warnings, _) = arch::typecheck::TypeChecker::new(&symbols, &ast).check().expect("typecheck");
+    assert!(warnings.iter().any(|w| w.message.contains("`port reg q")
+            && w.message.contains("deprecated")
+            && w.message.contains("pipe_reg<T, 1>")),
+        "expected deprecation warning, got: {:?}",
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>());
+}
+
+#[test]
+fn test_pipe_reg_port_no_deprecation_warning() {
+    let source = "
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port in_data: in UInt<8>;
+          port q: out pipe_reg<UInt<8>, 1> reset rst => 0;
+          seq on clk rising
+            q@1 <= in_data;
+          end seq
+        end module M
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = arch::elaborate::elaborate(ast).expect("elaborate");
+    let ast = arch::elaborate::lower_threads(ast).expect("lower threads");
+    let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve");
+    let (warnings, _) = arch::typecheck::TypeChecker::new(&symbols, &ast).check().expect("typecheck");
+    assert!(!warnings.iter().any(|w| w.message.contains("deprecated")),
+        "did not expect deprecation warning for pipe_reg<T,1>, got: {:?}",
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>());
+}

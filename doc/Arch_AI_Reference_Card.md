@@ -64,7 +64,10 @@ port q: out pipe_reg<UInt<8>, 1> reset rst => 0;    // 1-cycle registered output
 port q: out pipe_reg<UInt<8>, 3> reset rst => 0;    // 3-cycle output pipe
                                                      // q@N <= Y in seq; bare q <= Y is an error for N>1
 
-// Legacy `port reg` still accepted (equivalent to pipe_reg<T, 1>).
+// Legacy `port reg` — DEPRECATED (identical SV as pipe_reg<T, 1>, but
+// hides the latency in a keyword instead of the port signature).
+// Still accepted; triggers a compile-time warning. Silence with
+// ARCH_NO_DEPRECATIONS=1 during migration.
 port reg q: out UInt<8> reset rst => 0;              // 1-cycle registered output
 port reg dout: out UInt<32> guard dout_valid;        // port form of guarded reg
 pipe_reg delayed: source stages 3;                   // N-stage internal delay chain

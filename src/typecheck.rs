@@ -917,6 +917,26 @@ impl<'a> TypeChecker<'a> {
         // source of timing mismatch with testbench models.
         self.check_port_reg_timing(m);
 
+        // Deprecation: legacy `port reg NAME: out T` → suggest
+        // `port NAME: out pipe_reg<T, 1>`. Both spellings emit identical
+        // SV, so this is a pure soft nudge. Suppressed when ARCH_NO_DEPRECATIONS
+        // is set (useful for large legacy codebases migrating incrementally).
+        if std::env::var("ARCH_NO_DEPRECATIONS").is_err() {
+            for p in &m.ports {
+                if let Some(ri) = &p.reg_info {
+                    if ri.legacy_port_reg {
+                        self.warnings.push(CompileWarning {
+                            message: format!(
+                                "`port reg {name}: ...` is deprecated — use `port {name}: out pipe_reg<T, 1> ...` instead (identical SV; latency is visible in the port signature).",
+                                name = p.name.name
+                            ),
+                            span: p.span,
+                        });
+                    }
+                }
+            }
+        }
+
         // Tier 1.5 (Option A): warn on handshake payload reads that are not
         // enclosed in an `if <port>.<valid>` scope. Catches consumer-side
         // contract violations (reading stale/undefined payload when the
