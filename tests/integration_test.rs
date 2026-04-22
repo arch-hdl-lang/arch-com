@@ -3318,3 +3318,24 @@ fn test_handshake_generate_if_nested_in_bus_genif_errors() {
     assert!(msg.contains("not supported when the handshake itself is nested"),
         "expected specific nesting-error message, got: {msg}");
 }
+
+#[test]
+fn test_stdlib_bus_apb_discovery_apb3_minimal() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let src = td.path().join("Csr.arch");
+    std::fs::write(&src, "\
+        use BusApb;\n\
+        module Csr\n\
+          port clk: in Clock<SysDomain>;\n\
+          port rst: in Reset<Sync>;\n\
+          port s_apb: target BusApb<ADDR_W=12, DATA_W=32>;\n\
+          comb s_apb.pready = 1'b1; s_apb.prdata = 32'h0; end comb\n\
+        end module Csr\n\
+    ").unwrap();
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("check").arg(&src).output().expect("run arch check");
+    assert!(out.status.success(),
+        "APB3 minimal should compile; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr));
+}

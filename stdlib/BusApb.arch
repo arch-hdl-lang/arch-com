@@ -1,0 +1,54 @@
+// APB3 / APB4 peripheral bus — ARM AMBA Advanced Peripheral Bus.
+//
+// Classic low-bandwidth control/status bus used to access peripheral
+// registers. A transfer takes 2–3 cycles:
+//   - SETUP (psel high, penable low)
+//   - ACCESS (psel high, penable high) — completer asserts pready when done
+//
+// This bus is modeled as a single bidirectional transaction channel plus
+// the APB4 sideband signals (pprot, pstrb, pslverr) gated by toggle
+// parameters. APB3 users leave USE_PPROT / USE_PSTRB at 0.
+//
+// Toggles (nonzero = include, zero = omit):
+//   USE_PPROT — 3-bit protection attribute (APB4)
+//   USE_PSTRB — DATA_W/8-bit byte enables on writes (APB4)
+//
+// Non-conditional signals follow the direction convention: everything
+// from initiator → completer except prdata + pready + pslverr.
+//
+// Reference: ARM IHI 0024 "AMBA APB Protocol Specification".
+//
+// Example:
+//   use BusApb;
+//   module CsrBank
+//     port s_apb: target BusApb<ADDR_W=12, DATA_W=32>;
+//     ...
+//   end module CsrBank
+
+bus BusApb
+  param ADDR_W:    const = 32;
+  param DATA_W:    const = 32;
+  param USE_PPROT: const = 0;
+  param USE_PSTRB: const = 0;
+
+  // Initiator → completer
+  psel:    out Bool;
+  penable: out Bool;
+  pwrite:  out Bool;
+  paddr:   out UInt<ADDR_W>;
+  pwdata:  out UInt<DATA_W>;
+
+  // Completer → initiator
+  pready:  in  Bool;
+  prdata:  in  UInt<DATA_W>;
+
+  generate_if USE_PPROT
+    pprot:   out UInt<3>;
+  end generate_if
+  generate_if USE_PSTRB
+    pstrb:   out UInt<DATA_W / 8>;
+  end generate_if
+  generate_if USE_PPROT
+    pslverr: in Bool;
+  end generate_if
+end bus BusApb

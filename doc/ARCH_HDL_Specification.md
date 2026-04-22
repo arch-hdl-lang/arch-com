@@ -4592,7 +4592,76 @@ Two stages catch the two bug classes adjacent to protocol timing:
 
 - **Consumer bug — payload read without checking valid.** At `arch check`, a compile-time lint warns when any read of `<port>.<payload_field>` is not inside an `if <port>.<valid_field>` scope. The guard is recognized as a direct field access or as an AND-conjunct of the if-condition; let-binding indirection is not yet traced (known false-positive source). `ready_only` is exempt from the lint (no valid signal exists).
 
-**18a.6 Not Covered**
+**18a.6 Conditional Payload Fields**
+
+Inside a `handshake` payload block, `generate_if COND ... end generate_if` branches conditionally include payload fields based on the port-site param map. Same evaluator as bus-level `generate_if` (truthy-if-nonzero for bare idents / literals; comparison and `and`/`or` supported). This lets one bus definition parameterize optional signals:
+
+```
+bus BusAxiStream
+  param DATA_W:   const = 32;
+  param USE_LAST: const = 1;
+  param ID_W:     const = 0;
+
+  handshake t: send kind: valid_ready
+    data: UInt<DATA_W>;
+    generate_if USE_LAST
+      last: Bool;
+    end generate_if
+    generate_if ID_W > 0
+      id: UInt<ID_W>;
+    end generate_if
+  end handshake t
+end bus BusAxiStream
+```
+
+Users pick toggles at the port site:
+```
+port m_axis: initiator BusAxiStream<DATA_W=32, USE_LAST=1, ID_W=4>;   // t_last + t_id present
+port slim:   initiator BusAxiStream<DATA_W=8, USE_LAST=0>;            // t_last absent
+```
+
+v1 scope: nested `generate_if` inside a payload branch is a compile error. A handshake with payload `generate_if` also cannot itself live inside a bus-level `generate_if` (same error class).
+
+**18a.7 Not Covered**
+
+- **Stateful protocols** (credit-based flow control, PCIe credit accounting). These are not variants of `handshake`; they belong in a future `credit_channel` construct (not yet designed) because they imply the compiler owns counter + credit-return logic, not just port shape.
+- **Handshake at the module port level directly.** Valid only inside a `bus` body. A single-channel interface is expressed by a one-handshake bus declaration plus an ordinary bus port.
+- **`req_ack_2phase` Tier-2 assertions** — requires `$past` tracking; deferred.
+
+**18b. Standard Bus Library**
+
+The ARCH compiler ships with a standard library of curated `bus` definitions under `<install>/stdlib/`. These are ordinary `.arch` files built on `bus` + `handshake` + `generate_if` — no new compiler machinery — that users import with zero setup:
+
+```
+use BusAxiStream;
+module Producer
+  port m_axis: initiator BusAxiStream<DATA_W=32, USE_LAST=1, USE_KEEP=1>;
+  ...
+end module Producer
+```
+
+**v1 contents:**
+
+  -------------------------------------------------------------------------------------------------------------------------
+  **Bus**          **Protocol**                              **Key parameters**
+  ---------------- ----------------------------------------- --------------------------------------------------------------
+  `BusAxiStream`   AXI4-Stream (ARM IHI 0051)                `DATA_W`, `USE_LAST`, `USE_KEEP`, `USE_STRB`, `ID_W`, `DEST_W`, `USER_W`
+
+  `BusAxiLite`     AXI4-Lite memory-mapped                   `ADDR_W`, `DATA_W`
+
+  `BusApb`         APB3 / APB4 peripheral bus (ARM IHI 0024) `ADDR_W`, `DATA_W`, `USE_PPROT`, `USE_PSTRB`
+  -------------------------------------------------------------------------------------------------------------------------
+
+**Discovery**: `use BusX;` resolves in this order:
+1. Same-directory relative path (`./BusX.arch`)
+2. Colon-separated paths in `$ARCH_LIB_PATH` (if set)
+3. `<install>/stdlib/` (unless `ARCH_NO_STDLIB=1` is set)
+
+The `$ARCH_STDLIB_PATH` env var overrides the compiler's install-relative search, useful for point-testing modified stdlib files.
+
+**Third-party packages**: any user or team can ship their own `BusMyCompanyProto.arch` package the same way, either bundled with their ARCH project or shipped via a separate repo on `$ARCH_LIB_PATH`. The compiler treats stdlib and user buses identically — no privileged path, no special syntax.
+
+**Not covered in v1**: `BusAxi4` full memory-mapped (ID/burst/cache/prot/qos/region/lock/resp), `BusAvalonSt`, `BusAvalonMM`, `BusWishbone`. Each is one additional `.arch` file in `stdlib/` when demand materializes.
 
 - **Stateful protocols** (credit-based flow control, PCIe credit accounting). These are not variants of `handshake`; they belong in a future `credit_channel` construct (not yet designed) because they imply the compiler owns counter + credit-return logic, not just port shape.
 - **Handshake at the module port level directly.** Valid only inside a `bus` body. A single-channel interface is expressed by a one-handshake bus declaration plus an ordinary bus port.
