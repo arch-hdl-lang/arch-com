@@ -4051,15 +4051,26 @@ pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<Comp
                     .filter_map(|p| p.bus_info.as_ref().map(|bi|
                         (p.name.name.clone(), bi.bus_name.name.clone())))
                     .collect();
-                for bi in &mut m.body {
-                    if let ModuleBodyItem::Thread(t) = bi {
-                        if t.tlm_target.is_some() { continue; } // target-side, already handled
-                        let body = std::mem::take(&mut t.body);
-                        t.body = body.into_iter()
-                            .flat_map(|s| rewrite_thread_stmt_for_init_calls(s, &port_buses, &bus_methods, &mut errors))
-                            .collect();
+                // Identify threads that contain TLM calls and inline them.
+                let mut new_body: Vec<ModuleBodyItem> = Vec::new();
+                for item in std::mem::take(&mut m.body) {
+                    if let ModuleBodyItem::Thread(t) = &item {
+                        if t.tlm_target.is_some() {
+                            new_body.push(item);
+                            continue;
+                        }
+                        if thread_body_has_tlm_call(&t.body, &port_buses, &bus_methods) {
+                            let t_moved = if let ModuleBodyItem::Thread(t) = item { t } else { unreachable!() };
+                            match inline_lower_tlm_initiator(t_moved, &port_buses, &bus_methods) {
+                                Ok(items) => new_body.extend(items),
+                                Err(e) => errors.push(e),
+                            }
+                            continue;
+                        }
                     }
+                    new_body.push(item);
                 }
+                m.body = new_body;
                 out_items.push(Item::Module(m));
             }
             other => out_items.push(other),
@@ -4067,6 +4078,332 @@ pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<Comp
     }
     if !errors.is_empty() { return Err(errors); }
     Ok(SourceFile { items: out_items })
+}
+
+fn thread_body_has_tlm_call(
+    stmts: &[ThreadStmt],
+    port_buses: &std::collections::HashMap<String, String>,
+    bus_methods: &std::collections::HashMap<String, Vec<TlmMethodMeta>>,
+) -> bool {
+    stmts.iter().any(|s| match s {
+        ThreadStmt::SeqAssign(ra) =>
+            contains_tlm_call(&ra.value, port_buses, bus_methods)
+            || contains_tlm_call(&ra.target, port_buses, bus_methods),
+        ThreadStmt::CombAssign(ca) =>
+            contains_tlm_call(&ca.value, port_buses, bus_methods)
+            || contains_tlm_call(&ca.target, port_buses, bus_methods),
+        ThreadStmt::WaitUntil(e, _) =>
+            contains_tlm_call(e, port_buses, bus_methods),
+        _ => false,
+    })
+}
+
+/// In-place lowering of a thread containing TLM initiator calls. Emits
+/// RegDecl + RegBlock + CombBlock items directly into the parent module
+/// body. v1 accepts a linear body of SeqAssigns only; any other stmt kind
+/// produces a targeted error.
+fn inline_lower_tlm_initiator(
+    t: ThreadBlock,
+    port_buses: &std::collections::HashMap<String, String>,
+    bus_methods: &std::collections::HashMap<String, Vec<TlmMethodMeta>>,
+) -> Result<Vec<ModuleBodyItem>, CompileError> {
+    let span = t.span;
+    let mk_ident = |name: String| Ident { name, span };
+
+    // Thread name for state-reg naming; anonymous threads get a counter
+    // elsewhere, but at this point it should have a name from the parser.
+    let tag = t.name.as_ref().map(|n| n.name.clone()).unwrap_or_else(|| "tlm_init".to_string());
+
+    // Each state is either ComputeOnly (fire seq then advance) or
+    // IssueThenWait (drive req / wait for req_ready; drive rsp_ready /
+    // capture on rsp_valid). We build a flat list of state kinds.
+    enum StateKind {
+        Compute {
+            seq_on_exit: Vec<Stmt>,
+        },
+        TlmIssue {
+            port: String,
+            method: String,
+            args: Vec<Expr>,
+            method_meta: TlmMethodMeta,
+        },
+        TlmWait {
+            port: String,
+            method: String,
+            dest: Option<Expr>,
+        },
+    }
+    let mut states: Vec<StateKind> = Vec::new();
+    let mut pending_seq: Vec<Stmt> = Vec::new();
+
+    for stmt in t.body {
+        match stmt {
+            ThreadStmt::SeqAssign(ra) => {
+                // Reject nested TLM calls in either side (composed RHS
+                // like `d <= m.read(a) + 1;` or LHS ref).
+                if match_tlm_call(&ra.value, port_buses, bus_methods).is_none()
+                    && contains_tlm_call(&ra.value, port_buses, bus_methods)
+                {
+                    return Err(CompileError::general(
+                        "TLM method call must be the direct right-hand side of `<=` in a thread body — nested or composed uses are not supported in v1",
+                        ra.span,
+                    ));
+                }
+                if contains_tlm_call(&ra.target, port_buses, bus_methods) {
+                    return Err(CompileError::general(
+                        "TLM method calls cannot appear on the LHS of an assignment",
+                        ra.span,
+                    ));
+                }
+                if let Some(call) = match_tlm_call(&ra.value, port_buses, bus_methods) {
+                    // Flush any pending non-TLM seq assigns as a Compute state.
+                    if !pending_seq.is_empty() {
+                        states.push(StateKind::Compute {
+                            seq_on_exit: std::mem::take(&mut pending_seq),
+                        });
+                    }
+                    let has_ret = call.method_meta.ret.is_some();
+                    states.push(StateKind::TlmIssue {
+                        port: call.port.clone(),
+                        method: call.method.clone(),
+                        args: call.args.clone(),
+                        method_meta: call.method_meta.clone(),
+                    });
+                    states.push(StateKind::TlmWait {
+                        port: call.port,
+                        method: call.method,
+                        dest: if has_ret { Some(ra.target) } else { None },
+                    });
+                } else {
+                    pending_seq.push(Stmt::Assign(ra));
+                }
+            }
+            other => {
+                return Err(CompileError::general(
+                    &format!(
+                        "v1 TLM initiator thread body only supports SeqAssign statements (found {:?}). Refactor more complex control flow into a `thread` without TLM calls.",
+                        std::mem::discriminant(&other),
+                    ),
+                    span,
+                ));
+            }
+        }
+    }
+    // Trailing pending seq becomes a Compute state too.
+    if !pending_seq.is_empty() {
+        states.push(StateKind::Compute { seq_on_exit: std::mem::take(&mut pending_seq) });
+    }
+    // Empty body is fine — nothing to lower.
+    if states.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let total_states = states.len();
+    let state_width = clog2_width(total_states as u64);
+    let state_reg_name = format!("_tlm_init_{}_state", tag);
+    let state_expr = Expr::new(ExprKind::Ident(state_reg_name.clone()), span);
+    let mk_state_lit = |v: u64| Expr::new(ExprKind::Literal(LitKind::Sized(state_width, v)), span);
+    let state_eq = |v: u64| Expr::new(
+        ExprKind::Binary(BinOp::Eq, Box::new(state_expr.clone()), Box::new(mk_state_lit(v))),
+        span,
+    );
+    let state_reg_decl = RegDecl {
+        name: mk_ident(state_reg_name.clone()),
+        ty: TypeExpr::UInt(Box::new(Expr::new(
+            ExprKind::Literal(LitKind::Dec(state_width as u64)), span,
+        ))),
+        init: None,
+        reset: RegReset::Inherit(t.reset.clone(), Expr::new(ExprKind::Literal(LitKind::Dec(0)), span)),
+        guard: None,
+        span,
+    };
+
+    let mk_port_member = |port: &str, member: String| Expr::new(
+        ExprKind::FieldAccess(
+            Box::new(Expr::new(ExprKind::Ident(port.to_string()), span)),
+            mk_ident(member),
+        ),
+        span,
+    );
+
+    let mut seq_body: Vec<Stmt> = Vec::new();
+    // Per-method aggregators for unconditional drives — keyed by
+    // "<port>.<method>". Each entry collects issue-state indices
+    // (for req_valid + arg muxes) and wait-state indices (for
+    // rsp_ready). Emitting the drives as unconditional CombAssigns
+    // whose RHS is a state-OR/mux avoids the comb-block no-latch
+    // check tripping over state-guarded drives.
+    struct MethodAgg {
+        port: String,
+        method: String,
+        ret_ty: Option<TypeExpr>,
+        arg_decls: Vec<(Ident, TypeExpr)>,
+        issues: Vec<(u64, Vec<Expr>)>,  // (state_idx, args at that call site)
+        waits: Vec<u64>,                 // state_idx
+    }
+    let mut aggs: std::collections::BTreeMap<String, MethodAgg> = std::collections::BTreeMap::new();
+
+    for (i, sk) in states.iter().enumerate() {
+        let next_idx = ((i + 1) % total_states) as u64;
+        let cur_idx = i as u64;
+        match sk {
+            StateKind::Compute { seq_on_exit } => {
+                let mut then_stmts = seq_on_exit.clone();
+                then_stmts.push(Stmt::Assign(RegAssign {
+                    target: state_expr.clone(),
+                    value: mk_state_lit(next_idx),
+                    span,
+                }));
+                seq_body.push(Stmt::IfElse(IfElseOf {
+                    cond: state_eq(cur_idx),
+                    then_stmts,
+                    else_stmts: Vec::new(),
+                    unique: false,
+                    span,
+                }));
+            }
+            StateKind::TlmIssue { port, method, args, method_meta } => {
+                let key = format!("{port}.{method}");
+                aggs.entry(key).or_insert_with(|| MethodAgg {
+                    port: port.clone(),
+                    method: method.clone(),
+                    ret_ty: method_meta.ret.clone(),
+                    arg_decls: method_meta.args.clone(),
+                    issues: Vec::new(),
+                    waits: Vec::new(),
+                }).issues.push((cur_idx, args.clone()));
+                // Seq: advance on req_ready.
+                let advance_cond = Expr::new(
+                    ExprKind::Binary(BinOp::And,
+                        Box::new(state_eq(cur_idx)),
+                        Box::new(mk_port_member(port, format!("{method}_req_ready"))),
+                    ),
+                    span,
+                );
+                seq_body.push(Stmt::IfElse(IfElseOf {
+                    cond: advance_cond,
+                    then_stmts: vec![Stmt::Assign(RegAssign {
+                        target: state_expr.clone(),
+                        value: mk_state_lit(next_idx),
+                        span,
+                    })],
+                    else_stmts: Vec::new(),
+                    unique: false,
+                    span,
+                }));
+            }
+            StateKind::TlmWait { port, method, dest } => {
+                let key = format!("{port}.{method}");
+                aggs.entry(key).or_insert_with(|| MethodAgg {
+                    port: port.clone(),
+                    method: method.clone(),
+                    ret_ty: None,
+                    arg_decls: Vec::new(),
+                    issues: Vec::new(),
+                    waits: Vec::new(),
+                }).waits.push(cur_idx);
+                let mut then_stmts: Vec<Stmt> = Vec::new();
+                if let Some(dest_expr) = dest {
+                    then_stmts.push(Stmt::Assign(RegAssign {
+                        target: dest_expr.clone(),
+                        value: mk_port_member(port, format!("{method}_rsp_data")),
+                        span,
+                    }));
+                }
+                then_stmts.push(Stmt::Assign(RegAssign {
+                    target: state_expr.clone(),
+                    value: mk_state_lit(next_idx),
+                    span,
+                }));
+                let advance_cond = Expr::new(
+                    ExprKind::Binary(BinOp::And,
+                        Box::new(state_eq(cur_idx)),
+                        Box::new(mk_port_member(port, format!("{method}_rsp_valid"))),
+                    ),
+                    span,
+                );
+                seq_body.push(Stmt::IfElse(IfElseOf {
+                    cond: advance_cond,
+                    then_stmts,
+                    else_stmts: Vec::new(),
+                    unique: false,
+                    span,
+                }));
+            }
+        }
+    }
+
+    // Build comb drives: one unconditional CombAssign per wire, with
+    // state-dependent RHS. OR-of-state-eq for booleans; ternary-mux for
+    // argument values (default 0 when not in an issue state).
+    let mut comb_stmts: Vec<CombStmt> = Vec::new();
+    let or_of_states = |indices: &[u64]| -> Expr {
+        if indices.is_empty() {
+            return Expr::new(ExprKind::Literal(LitKind::Sized(1, 0)), span);
+        }
+        let mut acc = state_eq(indices[0]);
+        for idx in &indices[1..] {
+            acc = Expr::new(
+                ExprKind::Binary(BinOp::Or, Box::new(acc), Box::new(state_eq(*idx))),
+                span,
+            );
+        }
+        acc
+    };
+    for (_, agg) in &aggs {
+        // req_valid = OR of issue states
+        let issue_idxs: Vec<u64> = agg.issues.iter().map(|(i, _)| *i).collect();
+        comb_stmts.push(CombStmt::Assign(CombAssign {
+            target: mk_port_member(&agg.port, format!("{}_req_valid", agg.method)),
+            value: or_of_states(&issue_idxs),
+            span,
+        }));
+        // Each arg: ternary chain over issue states; default 0.
+        for (arg_i, (arg_ident, _arg_ty)) in agg.arg_decls.iter().enumerate() {
+            let mut value_expr = Expr::new(ExprKind::Literal(LitKind::Dec(0)), span);
+            for (state_idx, args) in agg.issues.iter().rev() {
+                if let Some(a) = args.get(arg_i) {
+                    value_expr = Expr::new(
+                        ExprKind::Ternary(
+                            Box::new(state_eq(*state_idx)),
+                            Box::new(a.clone()),
+                            Box::new(value_expr),
+                        ),
+                        span,
+                    );
+                }
+            }
+            comb_stmts.push(CombStmt::Assign(CombAssign {
+                target: mk_port_member(&agg.port, format!("{}_{}", agg.method, arg_ident.name)),
+                value: value_expr,
+                span,
+            }));
+            let _ = agg.ret_ty;
+        }
+        // rsp_ready = OR of wait states
+        comb_stmts.push(CombStmt::Assign(CombAssign {
+            target: mk_port_member(&agg.port, format!("{}_rsp_ready", agg.method)),
+            value: or_of_states(&agg.waits),
+            span,
+        }));
+    }
+
+    let reg_block = RegBlock {
+        clock: t.clock.clone(),
+        clock_edge: t.clock_edge,
+        stmts: seq_body,
+        span,
+    };
+    let comb_block = CombBlock {
+        stmts: comb_stmts,
+        span,
+    };
+
+    Ok(vec![
+        ModuleBodyItem::RegDecl(state_reg_decl),
+        ModuleBodyItem::RegBlock(reg_block),
+        ModuleBodyItem::CombBlock(comb_block),
+    ])
 }
 
 fn rewrite_thread_stmt_for_init_calls(
