@@ -931,7 +931,7 @@ end comb
 
 **Auto-emitted SVA (Tier 2)**: `_auto_cc_<port>_<ch>_{credit_bounds,send_requires_credit,credit_return_requires_buffered}` under `translate_off/on`.
 
-Simulation caveat: `arch sim --pybind --test` does not yet mirror the counter/FIFO in C++ — use `arch build` + Verilator for now.
+`arch sim --pybind --test` mirrors both the sender counter and the receiver FIFO in C++ (module construct). Pipeline / thread / arbiter with credit_channel ports are not yet wired.
 
 Full spec: `doc/ARCH_HDL_Specification.md` §18c.
 

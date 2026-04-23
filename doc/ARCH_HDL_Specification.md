@@ -4758,7 +4758,7 @@ The cross-module occupancy invariant (`occupancy == DEPTH - credit`) is deferred
 - Credit-return batching (v1 is 1-pop = 1-return).
 - Multi-initiator (point-to-point only; many-to-one composes via `arbiter`).
 - Runtime-parameterizable depth (DEPTH is compile-time const).
-- `arch sim --pybind --test` simulation (C++ counter + FIFO mirror not yet emitted by `sim_codegen` — use `arch build` + Verilator / iverilog for now).
+- `arch sim --pybind --test` simulation on `pipeline` / `thread` / `arbiter` constructs carrying credit_channel ports — the C++ mirror currently lives in the `module` emitter path. `module`-based designs simulate correctly; the other construct emitters will inherit the same hook when a concrete need surfaces.
 
 Full design history and the broader roadmap are in `doc/plan_credit_channel.md` and `doc/plan_bus_unification.md`.
 
