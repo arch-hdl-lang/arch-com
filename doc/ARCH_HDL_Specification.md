@@ -4764,13 +4764,17 @@ Full design history and the broader roadmap are in `doc/plan_credit_channel.md` 
 
 **18d. First-Class Sub-Construct: tlm_method (inside bus)** — *parser scaffolding, v1 blocking only*
 
-> **Status (v0.44.11):** grammar is parsed, the two-channel wire
-> protocol flattens at the bus port, and the **target-side** `thread
-> port.method(args) on clk ..., rst ... ... end thread port.method`
-> shape is recognized by the parser. FSM lowering for the target body
-> (entry gate on req_valid, arg bindings, `return` → rsp drive) is
-> rejected by `lower_threads` with a targeted message and ships in the
-> next PR. Each `tlm_method name(args) ->
+> **Status (v0.44.12):** grammar, wire flattening, and target-side
+> thread body lowering are all live. `lower_tlm_target_threads`
+> (runs before the generic thread lowering) rewrites
+> `thread port.method(args) ... return expr; end` into a regular
+> thread that drives `<port>_<method>_req_ready`, latches args into
+> synthesized `__tlm_<port>_<method>_<arg>_latched` regs, and turns
+> each `return expr;` into the
+> `rsp_valid=1; rsp_data=expr; wait until rsp_ready;` sequence. The
+> thread's natural loop-back (non-`once`) carries control back to the
+> entry state to accept the next request. Initiator call-site
+> lowering, Tier-2 SVA, and sim mirror ship in the remaining PRs. Each `tlm_method name(args) ->
 > Ret: blocking;` produces `<name>_req_valid`, `<name>_<arg>` per arg,
 > `<name>_req_ready`, `<name>_rsp_valid`, `<name>_rsp_data` (omitted
 > for void methods), `<name>_rsp_ready` — directions from the

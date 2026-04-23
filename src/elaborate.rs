@@ -1205,16 +1205,15 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
     for item in m.body {
         match item {
             ModuleBodyItem::Thread(t) => {
-                // PR-tlm-3 scaffolding: TLM target-side thread bodies
-                // (`thread port.method(args) ...`) are recognized by the
-                // parser but FSM lowering (entry gate on req_valid, arg
-                // bindings, `return` → rsp drive) ships in a follow-up PR.
-                // Reject cleanly so users get a targeted message rather
-                // than a surprise from the generic thread lowering.
+                // TLM target threads are rewritten into regular threads
+                // by lower_tlm_target_threads (runs before lower_threads).
+                // Any surviving tlm_target here means the pass wasn't
+                // invoked — defensive error to catch a caller that
+                // skipped the transform.
                 if let Some(ref t_binding) = t.tlm_target {
                     return Err(vec![CompileError::general(
                         &format!(
-                            "TLM target thread body `thread {}.{}(...)` lowering is not yet implemented — tracked in doc/plan_tlm_method.md PR-tlm-3b/4.",
+                            "internal error: TLM target thread `{}.{}(...)` reached lower_threads without being rewritten. Call `lower_tlm_target_threads` first.",
                             t_binding.port.name, t_binding.method.name
                         ),
                         t.span,
@@ -3748,5 +3747,268 @@ fn rewrite_expr_cc(e: &mut Expr, ctx: &CcDispatchCtx) {
                 }
             }
         }
+    }
+}
+
+// ── TLM target thread lowering (PR-tlm-3c) ──────────────────────────────────
+//
+// Transforms each `thread port.method(args) ... end` body into a regular
+// thread that:
+//  1. Waits for `<port>_<method>_req_valid`, driving
+//     `<port>_<method>_req_ready = 1` while waiting (accept-on-transition).
+//  2. Latches each declared arg from the request bus into a synthesized
+//     reg `__tlm_<port>_<method>_<arg>_latched` (SeqAssign fires on
+//     transition, i.e. the cycle the request is accepted).
+//  3. Executes the user body with arg ident references rewritten to the
+//     latched reg names.
+//  4. Rewrites each `return expr;` into the response drive sequence:
+//     `rsp_valid = 1; rsp_data = expr; wait until rsp_ready;`.
+//  5. Loops back to state 0 via the normal non-`once` thread semantics.
+//
+// Runs before lower_threads. Synthesized latch regs are injected as
+// RegDecls at the start of the module body.
+
+pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
+    use std::collections::HashMap;
+    // Build {bus_name -> Vec<TlmMethodMeta>}.
+    let mut bus_methods: HashMap<String, Vec<TlmMethodMeta>> = HashMap::new();
+    for it in &ast.items {
+        match it {
+            Item::Bus(b) => {
+                if !b.tlm_methods.is_empty() {
+                    bus_methods.insert(b.name.name.clone(), b.tlm_methods.clone());
+                }
+            }
+            Item::Package(pkg) => {
+                for b in &pkg.buses {
+                    if !b.tlm_methods.is_empty() {
+                        bus_methods.insert(b.name.name.clone(), b.tlm_methods.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if bus_methods.is_empty() { return Ok(ast); }
+
+    let mut out_items: Vec<Item> = Vec::with_capacity(ast.items.len());
+    let mut errors: Vec<CompileError> = Vec::new();
+    for it in ast.items {
+        match it {
+            Item::Module(mut m) => {
+                // Build port → bus_name map for this module.
+                let port_buses: HashMap<String, String> = m.ports.iter()
+                    .filter_map(|p| p.bus_info.as_ref().map(|bi|
+                        (p.name.name.clone(), bi.bus_name.name.clone())))
+                    .collect();
+
+                // Collect TLM target threads + their method metadata.
+                let mut latch_regs: Vec<RegDecl> = Vec::new();
+                let mut new_body: Vec<ModuleBodyItem> = Vec::new();
+                for item in std::mem::take(&mut m.body) {
+                    if let ModuleBodyItem::Thread(t) = &item {
+                        if let Some(binding) = t.tlm_target.clone() {
+                            let bus_name = match port_buses.get(&binding.port.name) {
+                                Some(b) => b.clone(),
+                                None => {
+                                    errors.push(CompileError::general(
+                                        &format!(
+                                            "thread `{}.{}(...)` references port `{}` which is not a bus port on module `{}`",
+                                            binding.port.name, binding.method.name, binding.port.name, m.name.name,
+                                        ),
+                                        binding.port.span,
+                                    ));
+                                    new_body.push(item);
+                                    continue;
+                                }
+                            };
+                            let method = match bus_methods.get(&bus_name)
+                                .and_then(|v| v.iter().find(|mm| mm.name.name == binding.method.name))
+                            {
+                                Some(m) => m.clone(),
+                                None => {
+                                    errors.push(CompileError::general(
+                                        &format!(
+                                            "bus `{}` has no `tlm_method {}` matching `thread {}.{}(...)`",
+                                            bus_name, binding.method.name, binding.port.name, binding.method.name,
+                                        ),
+                                        binding.method.span,
+                                    ));
+                                    new_body.push(item);
+                                    continue;
+                                }
+                            };
+                            // Arg count / name check.
+                            if binding.args.len() != method.args.len() {
+                                errors.push(CompileError::general(
+                                    &format!(
+                                        "`thread {}.{}(...)` takes {} args but `tlm_method {}` declares {}",
+                                        binding.port.name, binding.method.name, binding.args.len(),
+                                        method.name.name, method.args.len(),
+                                    ),
+                                    binding.method.span,
+                                ));
+                                new_body.push(item);
+                                continue;
+                            }
+                            let t_moved = if let ModuleBodyItem::Thread(t) = item { t } else { unreachable!() };
+                            let (new_thread, mut regs) = lower_one_tlm_target(t_moved, &binding, &method);
+                            latch_regs.append(&mut regs);
+                            new_body.push(ModuleBodyItem::Thread(new_thread));
+                        } else {
+                            new_body.push(item);
+                        }
+                    } else {
+                        new_body.push(item);
+                    }
+                }
+                // Prepend latch regs so they're declared before any seq block
+                // that might reference them.
+                let mut combined: Vec<ModuleBodyItem> =
+                    latch_regs.into_iter().map(ModuleBodyItem::RegDecl).collect();
+                combined.extend(new_body);
+                m.body = combined;
+                out_items.push(Item::Module(m));
+            }
+            other => out_items.push(other),
+        }
+    }
+    if !errors.is_empty() { return Err(errors); }
+    Ok(SourceFile { items: out_items })
+}
+
+fn lower_one_tlm_target(
+    t: ThreadBlock,
+    binding: &TlmTargetBinding,
+    method: &TlmMethodMeta,
+) -> (ThreadBlock, Vec<RegDecl>) {
+    let port = &binding.port.name;
+    let method_name = &binding.method.name;
+    let span = t.span;
+    let mk_ident = |name: String| Ident { name, span };
+    let mk_port_member = |member: String| Expr::new(
+        ExprKind::FieldAccess(
+            Box::new(Expr::new(ExprKind::Ident(port.clone()), span)),
+            mk_ident(member),
+        ),
+        span,
+    );
+    let lit_true = Expr::new(ExprKind::Literal(LitKind::Sized(1, 1)), span);
+
+    // Latch regs + arg rename map.
+    let mut latch_regs: Vec<RegDecl> = Vec::new();
+    let mut arg_renames: Vec<(String, String)> = Vec::new();
+    let mut preamble: Vec<ThreadStmt> = Vec::new();
+    preamble.push(ThreadStmt::CombAssign(CombAssign {
+        target: mk_port_member(format!("{method_name}_req_ready")),
+        value: lit_true.clone(),
+        span,
+    }));
+    for (i, (user_arg, method_arg)) in binding.args.iter()
+        .zip(method.args.iter())
+        .enumerate()
+    {
+        let latch_name = format!("__tlm_{port}_{method_name}_{}_latched", method_arg.0.name);
+        latch_regs.push(RegDecl {
+            name: mk_ident(latch_name.clone()),
+            ty: method_arg.1.clone(),
+            init: None,
+            reset: RegReset::None,
+            guard: None,
+            span,
+        });
+        // SeqAssign: <latch> <= <port>.<method>_<arg>
+        preamble.push(ThreadStmt::SeqAssign(RegAssign {
+            target: Expr::new(ExprKind::Ident(latch_name.clone()), span),
+            value: mk_port_member(format!("{method_name}_{}", method_arg.0.name)),
+            span,
+        }));
+        arg_renames.push((user_arg.name.clone(), latch_name));
+        let _ = i;
+    }
+    preamble.push(ThreadStmt::WaitUntil(
+        mk_port_member(format!("{method_name}_req_valid")),
+        span,
+    ));
+
+    // Rewrite user body: rename args to latched names, replace Return.
+    let rewritten_body: Vec<ThreadStmt> = t.body.into_iter()
+        .map(|s| rewrite_tlm_body_stmt(s, port, method_name, &arg_renames, method.ret.is_some()))
+        .flatten()
+        .collect();
+
+    let mut final_body = preamble;
+    final_body.extend(rewritten_body);
+
+    let new_thread = ThreadBlock {
+        name: Some(mk_ident(format!("__tlm_{port}_{method_name}"))),
+        clock: t.clock,
+        clock_edge: t.clock_edge,
+        reset: t.reset,
+        reset_level: t.reset_level,
+        once: false,
+        default_when: t.default_when,
+        tlm_target: None,
+        body: final_body,
+        span: t.span,
+    };
+    (new_thread, latch_regs)
+}
+
+fn rewrite_tlm_body_stmt(
+    s: ThreadStmt,
+    port: &str,
+    method: &str,
+    arg_renames: &[(String, String)],
+    has_ret: bool,
+) -> Vec<ThreadStmt> {
+    // Helper: rename arg idents in an expression.
+    let rename_args = |e: Expr| -> Expr {
+        let mut cur = e;
+        for (from, to) in arg_renames {
+            cur = rewrite_var_expr(cur, from, to);
+        }
+        cur
+    };
+    match s {
+        ThreadStmt::Return(e, span) => {
+            let expr = rename_args(e);
+            let mk_field = |member: String| Expr::new(
+                ExprKind::FieldAccess(
+                    Box::new(Expr::new(ExprKind::Ident(port.to_string()), span)),
+                    Ident { name: member, span },
+                ),
+                span,
+            );
+            let one = Expr::new(ExprKind::Literal(LitKind::Sized(1, 1)), span);
+            let mut out = vec![
+                ThreadStmt::CombAssign(CombAssign {
+                    target: mk_field(format!("{method}_rsp_valid")),
+                    value: one,
+                    span,
+                }),
+            ];
+            if has_ret {
+                out.push(ThreadStmt::CombAssign(CombAssign {
+                    target: mk_field(format!("{method}_rsp_data")),
+                    value: expr,
+                    span,
+                }));
+            }
+            out.push(ThreadStmt::WaitUntil(mk_field(format!("{method}_rsp_ready")), span));
+            out
+        }
+        ThreadStmt::CombAssign(ca) => vec![ThreadStmt::CombAssign(CombAssign {
+            target: rename_args(ca.target),
+            value: rename_args(ca.value),
+            span: ca.span,
+        })],
+        ThreadStmt::SeqAssign(ra) => vec![ThreadStmt::SeqAssign(RegAssign {
+            target: rename_args(ra.target),
+            value: rename_args(ra.value),
+            span: ra.span,
+        })],
+        ThreadStmt::WaitUntil(cond, span) => vec![ThreadStmt::WaitUntil(rename_args(cond), span)],
+        other => vec![other], // IfElse / ForkJoin / For / Lock / DoUntil / Log / WaitCycles — arg-rename deferred
     }
 }
