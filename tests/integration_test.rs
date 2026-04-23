@@ -3986,6 +3986,107 @@ fn test_credit_channel_pop_sugar() {
 }
 
 #[test]
+fn test_credit_channel_end_to_end_noc_producer_consumer() {
+    // PR #5: canonical credit_channel validation — one producer, one
+    // consumer, one shared credit_channel. Exercises the full stack:
+    //  * Wire flattening at both port perspectives.
+    //  * Sender-side credit counter + can_send dispatch.
+    //  * Target-side FIFO + pop/credit_return wiring.
+    //  * Read-side dispatch (can_send / valid / data).
+    //  * Write-side sugar (.send(x) / .pop()).
+    //  * Tier-2 SVA on both sides.
+    let source = "
+        bus NocChannel
+          credit_channel flits: send
+            param T:     type  = UInt<64>;
+            param DEPTH: const = 8;
+          end credit_channel flits
+        end bus NocChannel
+
+        use NocChannel;
+
+        module NocProducer
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port out: initiator NocChannel;
+          port gen_pressure: in UInt<8>;
+          reg seq_no: UInt<64> init 0 reset rst => 0;
+          reg lfsr:   UInt<8>  init 8'h5A reset rst => 8'h5A;
+          comb
+            out.flits_send_valid = 1'b0;
+            out.flits_send_data  = 64'h0;
+            if out.flits.can_send
+              out.flits.send(seq_no);
+            end if
+          end comb
+          seq on clk rising
+            if (lfsr[0] == 1'b1)
+              lfsr <= (lfsr >> 1) ^ 8'hB8;
+            else
+              lfsr <= lfsr >> 1;
+            end if
+            if out.flits.can_send and (lfsr < gen_pressure)
+              seq_no <= (seq_no + 1).trunc<64>();
+            end if
+          end seq
+        end module NocProducer
+
+        module NocConsumer
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port incoming: target NocChannel;
+          port pop_pressure:      in  UInt<8>;
+          port reg popped_count:  out UInt<64> reset rst => 0;
+          port reg last_seq:      out UInt<64> reset rst => 0;
+          reg lfsr: UInt<8> init 8'hC3 reset rst => 8'hC3;
+          comb
+            incoming.flits_credit_return = 1'b0;
+            if incoming.flits.valid and (lfsr < pop_pressure)
+              incoming.flits.pop();
+            end if
+          end comb
+          seq on clk rising
+            if (lfsr[0] == 1'b1)
+              lfsr <= (lfsr >> 1) ^ 8'hB8;
+            else
+              lfsr <= lfsr >> 1;
+            end if
+            if incoming.flits.valid and (lfsr < pop_pressure)
+              popped_count <= (popped_count + 1).trunc<64>();
+              last_seq     <= incoming.flits.data;
+            end if
+          end seq
+        end module NocConsumer
+    ";
+    let sv = compile_to_sv(source);
+
+    // Sender-side checks
+    assert!(sv.contains("__out_flits_credit"), "sender credit reg:\n{sv}");
+    assert!(sv.contains("__out_flits_can_send"), "sender can_send:\n{sv}");
+    assert!(sv.contains("_auto_cc_out_flits_credit_bounds"), "sender SVA:\n{sv}");
+    assert!(sv.contains("_auto_cc_out_flits_send_requires_credit"), "sender SVA:\n{sv}");
+
+    // .send(x) sugar must materialize both signals
+    assert!(sv.contains("out_flits_send_valid = 1'd1"), "send sugar valid:\n{sv}");
+    assert!(sv.contains("out_flits_send_data = seq_no"), "send sugar data:\n{sv}");
+
+    // Receiver-side checks
+    assert!(sv.contains("__incoming_flits_buf"), "receiver buffer:\n{sv}");
+    assert!(sv.contains("__incoming_flits_valid"), "receiver valid wire:\n{sv}");
+    assert!(sv.contains("__incoming_flits_data"), "receiver data wire:\n{sv}");
+    assert!(sv.contains("_auto_cc_incoming_flits_credit_return_requires_buffered"),
+        "receiver SVA:\n{sv}");
+
+    // .pop() sugar
+    assert!(sv.contains("incoming_flits_credit_return = 1'd1"),
+        "pop sugar credit_return:\n{sv}");
+
+    // Read-side dispatch in seq and comb contexts
+    assert!(sv.contains("last_seq <= __incoming_flits_data"),
+        "read-side dispatch in seq:\n{sv}");
+}
+
+#[test]
 fn test_credit_channel_mismatched_closing_keyword_errors() {
     let source = "
         bus B
