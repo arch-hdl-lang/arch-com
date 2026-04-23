@@ -1245,6 +1245,20 @@ impl Parser {
             ));
         };
 
+        // Optional `reentrant [max <expr>]` clause — PR-tlm-p1 scaffolding.
+        // Stored on ThreadBlock.reentrant; lowering ships in PR-tlm-p2/p3.
+        let reentrant = if self.check_ident("reentrant") {
+            self.advance();
+            if self.check_ident("max") {
+                self.advance();
+                Some(Some(self.parse_expr()?))
+            } else {
+                Some(None)
+            }
+        } else {
+            None
+        };
+
         // Optional `default when <cond> ... end default` — must come first in the body.
         let default_when = if self.check(TokenKind::Default) {
             let _kw = self.advance(); // consume `default`
@@ -1314,6 +1328,7 @@ impl Parser {
             once,
             default_when,
             tlm_target,
+            reentrant,
             body,
             span: start.merge(end_span),
         })

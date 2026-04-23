@@ -449,6 +449,15 @@ pub struct ThreadBlock {
     /// Captured at parse time (PR-tlm-3); lowering to an FSM (entry gate
     /// on req_valid, arg bindings, `return` → rsp drive) ships next.
     pub tlm_target: Option<TlmTargetBinding>,
+    /// Reentrant threads allow a fresh invocation to start before the
+    /// previous one completes. Captured at parse time by the optional
+    /// `reentrant [max N]` clause on the thread header (see
+    /// `doc/plan_tlm_pipelined.md`). Encoding:
+    ///   - `None`                  — v1 semantics; exactly one instance.
+    ///   - `Some(None)`            — `reentrant` alone (unbounded — v1
+    ///     lowering rejects; reserved for future use).
+    ///   - `Some(Some(Expr))`      — `reentrant max <expr>` (const-reducible).
+    pub reentrant: Option<Option<Expr>>,
     pub body: Vec<ThreadStmt>,
     pub span: Span,
 }
