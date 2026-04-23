@@ -245,7 +245,7 @@ The compiler pipeline should follow a classical structure:
 3. **IR / elaboration** — expand `generate` constructs, resolve params, instantiate modules.
 4. **Backend: SystemVerilog emitter** (`arch build`) — one Arch construct → one deterministic SV structure.
 5. **Backend: SMT-LIB2 emitter** (`arch formal`) — for formal verification.
-6. **Simulator** (`arch sim`) — TLM modes: `--tlm-lt`, `--tlm-at`, `--tlm-rtl`; waveform output via `--wave`.
+6. **Simulator** (`arch sim`) — TLM modes: `--tlm-lt`, `--tlm-at`, `--tlm-rtl`; waveform output via `--wave`. Sim emitter lives under `src/sim_codegen/` — `mod.rs` holds shared helpers + `gen_module`; per-construct emitters (`gen_fsm`, `gen_pipeline`, …) live in sibling submodule files and extend `impl SimCodegen` via `pub(super) fn`.
 
 Special compiler responsibilities:
 - Auto-detect dual-clock FIFOs and insert gray-code pointer synchronization.
