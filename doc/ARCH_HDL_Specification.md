@@ -4632,12 +4632,16 @@ v1 scope: nested `generate_if` inside a payload branch is a compile error. A han
 
 **18c. First-Class Sub-Construct: credit_channel (inside bus)** — *wire layer live, elaboration pending*
 
-> **Status (v0.44.5):** grammar, wire flattening, sender-side credit counter,
-> target-side FIFO, and **read-side method dispatch** (`port.ch.can_send` on
-> the sender, `port.ch.valid` / `port.ch.data` on the receiver) are all in
-> place. Method dispatch is implemented as an elaborate pass that rewrites
-> the dotted access into `ExprKind::SynthIdent` pointing at the
-> codegen-emitted SV wires. On the receiver module
+> **Status (v0.44.6):** grammar, wire flattening, sender-side credit counter,
+> target-side FIFO, **read-side method dispatch** (`port.ch.can_send` on the
+> sender, `port.ch.valid` / `port.ch.data` on the receiver), and the
+> **`CAN_SEND_REGISTERED` timing-relief knob** are all in place. The knob is
+> a channel-level param — `param CAN_SEND_REGISTERED: const = 1;` inside the
+> `credit_channel` block flops `can_send` off the next-state counter
+> (option b: full throughput preserved, fan-out comes from a register so the
+> combinational critical path ends at the flop input). Default is 0
+> (combinational). Method dispatch rewrites `port.ch.can_send` to the
+> synthesized wire/reg regardless of the choice. On the receiver module
 > (`target` perspective on a `send`-role channel) the codegen synthesizes a
 > depth-DEPTH packet buffer (`__<port>_<ch>_buf`) with head/tail/occupancy
 > pointers, pushed on `<port>_<ch>_send_valid` and popped when the user
