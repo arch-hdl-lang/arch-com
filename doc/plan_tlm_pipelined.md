@@ -1,4 +1,28 @@
-# Plan: `tlm_method` pipelined via multi-thread arbitration (v2a)
+# Plan: `tlm_method` pipelined — **SHELVED** (2026-04-23)
+
+> **Shelved per design review (2026-04-23).** The concurrency-mode
+> label `pipelined` doesn't buy capability beyond what users already
+> express with `generate for threads` + `lock RESOURCE` (for request
+> serialization) + ID-tagged responses (for routing). See
+> `tests/axi_dma_thread/ThreadMm2s.arch` for the canonical
+> multi-outstanding AXI pattern — it uses these building blocks
+> without any dedicated TLM "pipelined" support.
+>
+> The genuinely new capability is **`out_of_order`** mode (auto-route
+> responses by ID tag); that's the next real v2 target. Tracking in
+> a future `plan_tlm_out_of_order.md`.
+>
+> `reentrant` grammar on ThreadBlock (merged in PR #86) stays as
+> dead-but-parsed code; removal or repurposing is a future cleanup.
+> A targeted diagnostic (PR-tlm-p3) points users at the
+> `lock RESOURCE` idiom for multi-thread TLM sharing today.
+>
+> Historical design below kept for context — the reentrant thread
+> and Future<T>/await sketches led to the current framing.
+
+---
+
+# (Historical) Plan: `tlm_method` pipelined via multi-thread arbitration (v2a)
 
 *Author: session of 2026-04-22. Supersedes the earlier `Future<T>`/
 `await` sketch and the `reentrant thread` sketch. Builds on
