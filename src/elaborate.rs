@@ -4012,3 +4012,221 @@ fn rewrite_tlm_body_stmt(
         other => vec![other], // IfElse / ForkJoin / For / Lock / DoUntil / Log / WaitCycles — arg-rename deferred
     }
 }
+
+// ── TLM initiator call-site lowering (PR-tlm-4) ─────────────────────────────
+//
+// Recognizes `target_reg <= port.method(args);` as a TLM call site inside a
+// thread body and expands it into the two-state issue + wait-response
+// sequence described in doc/plan_tlm_method.md §Lowering. Call sites
+// outside this shape are rejected with a targeted message.
+
+pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
+    use std::collections::HashMap;
+    let mut bus_methods: HashMap<String, Vec<TlmMethodMeta>> = HashMap::new();
+    for it in &ast.items {
+        match it {
+            Item::Bus(b) => {
+                if !b.tlm_methods.is_empty() {
+                    bus_methods.insert(b.name.name.clone(), b.tlm_methods.clone());
+                }
+            }
+            Item::Package(pkg) => {
+                for b in &pkg.buses {
+                    if !b.tlm_methods.is_empty() {
+                        bus_methods.insert(b.name.name.clone(), b.tlm_methods.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if bus_methods.is_empty() { return Ok(ast); }
+
+    let mut errors: Vec<CompileError> = Vec::new();
+    let mut out_items: Vec<Item> = Vec::with_capacity(ast.items.len());
+    for it in ast.items {
+        match it {
+            Item::Module(mut m) => {
+                let port_buses: HashMap<String, String> = m.ports.iter()
+                    .filter_map(|p| p.bus_info.as_ref().map(|bi|
+                        (p.name.name.clone(), bi.bus_name.name.clone())))
+                    .collect();
+                for bi in &mut m.body {
+                    if let ModuleBodyItem::Thread(t) = bi {
+                        if t.tlm_target.is_some() { continue; } // target-side, already handled
+                        let body = std::mem::take(&mut t.body);
+                        t.body = body.into_iter()
+                            .flat_map(|s| rewrite_thread_stmt_for_init_calls(s, &port_buses, &bus_methods, &mut errors))
+                            .collect();
+                    }
+                }
+                out_items.push(Item::Module(m));
+            }
+            other => out_items.push(other),
+        }
+    }
+    if !errors.is_empty() { return Err(errors); }
+    Ok(SourceFile { items: out_items })
+}
+
+fn rewrite_thread_stmt_for_init_calls(
+    s: ThreadStmt,
+    port_buses: &std::collections::HashMap<String, String>,
+    bus_methods: &std::collections::HashMap<String, Vec<TlmMethodMeta>>,
+    errors: &mut Vec<CompileError>,
+) -> Vec<ThreadStmt> {
+    match s {
+        ThreadStmt::SeqAssign(ra) => {
+            if let Some(call) = match_tlm_call(&ra.value, port_buses, bus_methods) {
+                // Check no TLM calls nested in the LHS (shouldn't be any).
+                if contains_tlm_call(&ra.target, port_buses, bus_methods) {
+                    errors.push(CompileError::general(
+                        "TLM method calls cannot appear on the LHS of an assignment",
+                        ra.span,
+                    ));
+                    return vec![ThreadStmt::SeqAssign(ra)];
+                }
+                return expand_tlm_call_site(ra.target, call, ra.span);
+            }
+            // Defensive: reject nested TLM calls in a non-TLM-RHS expression.
+            if contains_tlm_call(&ra.value, port_buses, bus_methods) {
+                errors.push(CompileError::general(
+                    "TLM method call must be the direct right-hand side of `<=` in a thread body — nested or composed uses are not supported in v1",
+                    ra.span,
+                ));
+            }
+            vec![ThreadStmt::SeqAssign(ra)]
+        }
+        ThreadStmt::CombAssign(ca) => {
+            if contains_tlm_call(&ca.value, port_buses, bus_methods)
+                || contains_tlm_call(&ca.target, port_buses, bus_methods)
+            {
+                errors.push(CompileError::general(
+                    "TLM method calls must live on the right-hand side of a non-blocking assign (`<=`) in a thread body; combinational assignment rejected",
+                    ca.span,
+                ));
+            }
+            vec![ThreadStmt::CombAssign(ca)]
+        }
+        ThreadStmt::IfElse(ie) => {
+            let mut new_then = Vec::new();
+            for s in ie.then_stmts {
+                new_then.extend(rewrite_thread_stmt_for_init_calls(s, port_buses, bus_methods, errors));
+            }
+            let mut new_else = Vec::new();
+            for s in ie.else_stmts {
+                new_else.extend(rewrite_thread_stmt_for_init_calls(s, port_buses, bus_methods, errors));
+            }
+            vec![ThreadStmt::IfElse(IfElseOf {
+                cond: ie.cond,
+                then_stmts: new_then,
+                else_stmts: new_else,
+                unique: ie.unique,
+                span: ie.span,
+            })]
+        }
+        other => vec![other],
+    }
+}
+
+struct TlmCall {
+    port: String,
+    method: String,
+    args: Vec<Expr>,
+    method_meta: TlmMethodMeta,
+}
+
+fn match_tlm_call(
+    e: &Expr,
+    port_buses: &std::collections::HashMap<String, String>,
+    bus_methods: &std::collections::HashMap<String, Vec<TlmMethodMeta>>,
+) -> Option<TlmCall> {
+    if let ExprKind::MethodCall(recv, method, args) = &e.kind {
+        if let ExprKind::Ident(port_name) = &recv.kind {
+            let bus = port_buses.get(port_name)?;
+            let methods = bus_methods.get(bus)?;
+            let meta = methods.iter().find(|m| m.name.name == method.name)?;
+            return Some(TlmCall {
+                port: port_name.clone(),
+                method: method.name.clone(),
+                args: args.clone(),
+                method_meta: meta.clone(),
+            });
+        }
+    }
+    None
+}
+
+fn contains_tlm_call(
+    e: &Expr,
+    port_buses: &std::collections::HashMap<String, String>,
+    bus_methods: &std::collections::HashMap<String, Vec<TlmMethodMeta>>,
+) -> bool {
+    if match_tlm_call(e, port_buses, bus_methods).is_some() { return true; }
+    match &e.kind {
+        ExprKind::Binary(_, l, r) => contains_tlm_call(l, port_buses, bus_methods) || contains_tlm_call(r, port_buses, bus_methods),
+        ExprKind::Unary(_, x) | ExprKind::Cast(x, _) | ExprKind::Clog2(x)
+        | ExprKind::Onehot(x) | ExprKind::Signed(x) | ExprKind::Unsigned(x)
+        | ExprKind::LatencyAt(x, _) => contains_tlm_call(x, port_buses, bus_methods),
+        ExprKind::Index(b, i) => contains_tlm_call(b, port_buses, bus_methods) || contains_tlm_call(i, port_buses, bus_methods),
+        ExprKind::FieldAccess(b, _) => contains_tlm_call(b, port_buses, bus_methods),
+        ExprKind::MethodCall(recv, _, args) => {
+            contains_tlm_call(recv, port_buses, bus_methods)
+                || args.iter().any(|a| contains_tlm_call(a, port_buses, bus_methods))
+        }
+        ExprKind::Ternary(c, t, el) => contains_tlm_call(c, port_buses, bus_methods) || contains_tlm_call(t, port_buses, bus_methods) || contains_tlm_call(el, port_buses, bus_methods),
+        ExprKind::Concat(xs) | ExprKind::FunctionCall(_, xs) => xs.iter().any(|x| contains_tlm_call(x, port_buses, bus_methods)),
+        ExprKind::Repeat(n, x) => contains_tlm_call(n, port_buses, bus_methods) || contains_tlm_call(x, port_buses, bus_methods),
+        _ => false,
+    }
+}
+
+fn expand_tlm_call_site(dest: Expr, call: TlmCall, span: Span) -> Vec<ThreadStmt> {
+    let port = &call.port;
+    let method = &call.method;
+    let mk_ident = |name: String| Ident { name, span };
+    let mk_field = |member: String| Expr::new(
+        ExprKind::FieldAccess(
+            Box::new(Expr::new(ExprKind::Ident(port.clone()), span)),
+            mk_ident(member),
+        ),
+        span,
+    );
+    let one = Expr::new(ExprKind::Literal(LitKind::Sized(1, 1)), span);
+
+    let mut out: Vec<ThreadStmt> = Vec::new();
+    // Issue state comb drives
+    out.push(ThreadStmt::CombAssign(CombAssign {
+        target: mk_field(format!("{method}_req_valid")),
+        value: one.clone(),
+        span,
+    }));
+    for (i, (arg_name, _arg_ty)) in call.method_meta.args.iter().enumerate() {
+        if let Some(arg_expr) = call.args.get(i) {
+            out.push(ThreadStmt::CombAssign(CombAssign {
+                target: mk_field(format!("{method}_{}", arg_name.name)),
+                value: arg_expr.clone(),
+                span,
+            }));
+        }
+    }
+    // Transition: wait for req_ready. This closes the issue state.
+    out.push(ThreadStmt::WaitUntil(mk_field(format!("{method}_req_ready")), span));
+
+    // Wait-response state: drive rsp_ready; capture rsp_data on transition;
+    // transition on rsp_valid.
+    out.push(ThreadStmt::CombAssign(CombAssign {
+        target: mk_field(format!("{method}_rsp_ready")),
+        value: one,
+        span,
+    }));
+    if call.method_meta.ret.is_some() {
+        out.push(ThreadStmt::SeqAssign(RegAssign {
+            target: dest,
+            value: mk_field(format!("{method}_rsp_data")),
+            span,
+        }));
+    }
+    out.push(ThreadStmt::WaitUntil(mk_field(format!("{method}_rsp_valid")), span));
+    out
+}

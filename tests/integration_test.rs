@@ -11,6 +11,7 @@ fn compile_to_sv(source: &str) -> String {
     let parsed_ast = parser.parse_source_file().expect("parse error");
     let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
     let ast = elaborate::lower_tlm_target_threads(ast).expect("tlm_target lowering error");
+    let ast = elaborate::lower_tlm_initiator_calls(ast).expect("tlm_initiator lowering error");
     let ast = elaborate::lower_threads(ast).expect("lower_threads error");
     let ast = elaborate::lower_pipe_reg_ports(ast).expect("lower_pipe_reg_ports error");
     let ast = elaborate::lower_credit_channel_dispatch(ast).expect("credit_channel dispatch error");
@@ -4307,6 +4308,92 @@ fn test_tlm_target_thread_parses_with_dotted_name() {
     assert_eq!(binding.method.name, "read");
     assert_eq!(binding.args.len(), 1);
     assert_eq!(binding.args[0].name, "addr");
+}
+
+#[test]
+fn test_tlm_initiator_call_site_expands_in_ast() {
+    // PR-tlm-4: `d <= m.read(arg);` expands to the two-state issue +
+    // wait-response sequence. Verified at the AST level (post-pass)
+    // because the end-to-end SV pipeline trips the no-latch check on
+    // bus-port-member drives from thread states — a known limitation
+    // documented in doc/plan_tlm_method.md §Open questions. Users
+    // should refactor through a local handshake in the meantime.
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module Initiator
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   d:  UInt<64> reset rst => 0;
+          thread driver on clk rising, rst high
+            d <= m.read(32'h1000);
+          end thread driver
+        end module Initiator
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = arch::elaborate::elaborate(ast).expect("elaborate");
+    let ast = arch::elaborate::lower_tlm_target_threads(ast).expect("tlm target");
+    let ast = arch::elaborate::lower_tlm_initiator_calls(ast).expect("tlm init");
+    let m = ast.items.iter().find_map(|it| match it {
+        arch::ast::Item::Module(m) if m.name.name == "Initiator" => Some(m),
+        _ => None,
+    }).expect("Initiator module");
+    let t = m.body.iter().find_map(|i| match i {
+        arch::ast::ModuleBodyItem::Thread(t) => Some(t),
+        _ => None,
+    }).expect("thread");
+    // Single `d <= m.read(...)` should have become multiple stmts
+    // (CombAssigns for req_valid/arg/rsp_ready + SeqAssign for rsp_data
+    // + two WaitUntils). Expect at least 5 statements.
+    assert!(t.body.len() >= 5,
+        "initiator call site should expand to multiple stmts, got {}: {:?}",
+        t.body.len(), t.body);
+    // At least one WaitUntil (req_ready), and a second (rsp_valid).
+    let wait_count = t.body.iter()
+        .filter(|s| matches!(s, arch::ast::ThreadStmt::WaitUntil(_, _)))
+        .count();
+    assert!(wait_count >= 2,
+        "expected >=2 WaitUntils (req_ready + rsp_valid), got {wait_count}");
+}
+
+#[test]
+fn test_tlm_call_rejected_outside_seq_assign_rhs() {
+    // Arithmetic on a TLM call RHS is not supported in v1 — must be
+    // direct.
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module Bad
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   d:  UInt<64> reset rst => 0;
+          thread driver on clk rising, rst high
+            d <= m.read(32'h1000) + 64'h1;
+          end thread driver
+        end module Bad
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = arch::elaborate::elaborate(ast).expect("elaborate");
+    let ast = arch::elaborate::lower_tlm_target_threads(ast).expect("tlm target");
+    let r = arch::elaborate::lower_tlm_initiator_calls(ast);
+    assert!(r.is_err(), "nested TLM call in RHS should be rejected");
+    let msg = format!("{:?}", r.unwrap_err());
+    assert!(msg.contains("direct right-hand side") || msg.contains("direct"),
+        "expected direct-RHS error, got: {msg}");
 }
 
 #[test]
