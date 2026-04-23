@@ -9,6 +9,16 @@
 > remains a permanent error until that mode ships. The AXI multi-
 > outstanding idiom (one issuer + N RCollect threads filtering by
 > ID, per ThreadMm2s) stays as the hand-rolled pattern for now.
+>
+> **Target-side model**: N `implement target` threads form a
+> **server pool**. Dispatch is internal — a module-level round-robin
+> dispatcher picks an idle thread per incoming request and grants it
+> the work. The bus wire protocol stays as v1 single-implementer (no
+> ID tags on the wire); concurrency is entirely inside the target
+> module. Up to N concurrent in-flight requests are served (one per
+> thread instance). `req_ready = any-thread-idle`; `rsp_valid = OR
+> of per-thread respond states`; `rsp_data = mux over which thread
+> is responding`.
 
 
 *Author: session of 2026-04-23. Supersedes the shelved pipelined plan
