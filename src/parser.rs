@@ -2636,13 +2636,13 @@ impl Parser {
                 // Method call with paren args: .reverse(N), plus the
                 // Vec reduction/predicate family (any/all/count/contains/
                 // reduce_or/reduce_and/reduce_xor).
-                let paren_method = self.check(TokenKind::LParen)
-                    && matches!(field.name.as_str(),
-                        "reverse" | "any" | "all" | "count" | "contains"
-                        | "reduce_or" | "reduce_and" | "reduce_xor"
-                        | "find_first"
-                        // credit_channel write-side sugar (PR #3b-vi).
-                        | "send" | "pop");
+                // Any `ident . ident (` shape parses as a method call —
+                // there is no syntactic ambiguity at this point (function
+                // calls in ARCH are `Name(args)`, never `recv.name(args)`).
+                // Historically this was an allowlist (`reverse`, `any`,
+                // `send`, `pop`, etc.) but that prevented user-defined
+                // TLM method names from parsing cleanly.
+                let paren_method = self.check(TokenKind::LParen);
                 if paren_method {
                     self.advance(); // (
                     let mut args = Vec::new();

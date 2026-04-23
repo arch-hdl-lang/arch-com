@@ -4764,8 +4764,15 @@ Full design history and the broader roadmap are in `doc/plan_credit_channel.md` 
 
 **18d. First-Class Sub-Construct: tlm_method (inside bus)** — *parser scaffolding, v1 blocking only*
 
-> **Status (v0.44.12):** grammar, wire flattening, and target-side
-> thread body lowering are all live. `lower_tlm_target_threads`
+> **Status (v0.44.13):** grammar, wire flattening, target-side thread
+> body lowering, and **initiator call-site expansion**
+> (`d <= m.method(args);` inside a thread body) are all live at the AST
+> level. Known limitation for v1: the thread-state drives of flattened
+> bus-port members (`m.method_req_valid`, etc.) trip the comb-block
+> no-latch check at typecheck — works around by refactoring through a
+> local reg. Tracked in `doc/plan_tlm_method.md`; proper fix extends
+> `lower_threads` to treat FieldAccess-on-bus-port targets as flat
+> signals for default emission. `lower_tlm_target_threads`
 > (runs before the generic thread lowering) rewrites
 > `thread port.method(args) ... return expr; end` into a regular
 > thread that drives `<port>_<method>_req_ready`, latches args into
