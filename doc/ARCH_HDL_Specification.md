@@ -4632,10 +4632,18 @@ v1 scope: nested `generate_if` inside a payload branch is a compile error. A han
 
 **18c. First-Class Sub-Construct: credit_channel (inside bus)** — *wire layer live, elaboration pending*
 
-> **Status (v0.44.6):** grammar, wire flattening, sender-side credit counter,
+> **Status (v0.44.7):** grammar, wire flattening, sender-side credit counter,
 > target-side FIFO, **read-side method dispatch** (`port.ch.can_send` on the
-> sender, `port.ch.valid` / `port.ch.data` on the receiver), and the
-> **`CAN_SEND_REGISTERED` timing-relief knob** are all in place. The knob is
+> sender, `port.ch.valid` / `port.ch.data` on the receiver), the
+> **`CAN_SEND_REGISTERED` timing-relief knob**, and the **Tier-2 protocol
+> SVA** are all in place. Auto-emitted assertions (labels follow
+> `_auto_cc_<port>_<ch>_<rule>`, wrapped in `translate_off/on`):
+> (1) `credit <= DEPTH` on the sender; (2) `send_valid |-> credit > 0`
+> on the sender; (3) `credit_return |-> buffer_valid` on the receiver.
+> Consumed by Verilator `--assert`, EBMC, and SymbiYosys like the existing
+> handshake / bounds / divide-by-zero labels. The cross-module occupancy
+> invariant (`occupancy == DEPTH - credit`) is deferred to the hierarchical
+> formal story. The knob is
 > a channel-level param — `param CAN_SEND_REGISTERED: const = 1;` inside the
 > `credit_channel` block flops `can_send` off the next-state counter
 > (option b: full throughput preserved, fan-out comes from a register so the

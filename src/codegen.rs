@@ -887,6 +887,9 @@ impl<'a> Codegen<'a> {
         // the module where this side is the receiver (PR #3b-iii).
         self.emit_credit_channel_receiver_state(&m_clone);
 
+        // Emit the Tier-2 credit_channel protocol assertions (PR #4).
+        self.emit_credit_channel_asserts(&m_clone);
+
         // Emit log file descriptors: initial $fopen / final $fclose
         let log_files = Self::collect_log_files(&m_clone.body);
         if !log_files.is_empty() {
@@ -3087,6 +3090,106 @@ impl<'a> Codegen<'a> {
             ExprKind::Unary(_, a) => Self::is_const_reducible_with(a, const_params),
             _ => false,
         }
+    }
+
+    /// Emit Tier-2 SVA protocol assertions for each credit_channel on this
+    /// module. Labels follow `_auto_cc_<port>_<ch>_<rule>`, mirroring the
+    /// handshake / bounds / divide-by-zero naming so EBMC and Verilator
+    /// `--assert` consumers can target them uniformly.
+    ///
+    /// Invariants emitted:
+    /// - **credit_bounds** (sender): `__<port>_<ch>_credit <= DEPTH`. Holds
+    ///   because the counter update is strictly ±1 and the reset value is
+    ///   DEPTH — but provable properties catch any future regression that
+    ///   double-decrements or misses reset.
+    /// - **send_requires_credit** (sender): `send_valid |-> credit > 0`.
+    ///   The user is responsible for gating send_valid on can_send; if they
+    ///   fail to, this trips.
+    /// - **credit_return_requires_buffered** (receiver): `credit_return |->
+    ///   __<port>_<ch>_valid`. The receiver must only pulse credit_return
+    ///   when the FIFO actually has something to pop; otherwise the sender
+    ///   sees a spurious credit and can overflow the buffer.
+    ///
+    /// Deferred: occupancy = DEPTH - credit (cross-module property; lands
+    /// with a hierarchical-formal story).
+    fn emit_credit_channel_asserts(&mut self, m: &ModuleDecl) {
+        let mut sender_emissions:   Vec<(String, crate::ast::CreditChannelMeta)> = Vec::new();
+        let mut receiver_emissions: Vec<(String, crate::ast::CreditChannelMeta)> = Vec::new();
+        for p in &m.ports {
+            let Some(ref bi) = p.bus_info else { continue; };
+            let Some((crate::resolve::Symbol::Bus(info), _)) =
+                self.symbols.globals.get(&bi.bus_name.name) else { continue; };
+            for cc in &info.credit_channels {
+                let is_sender = matches!(
+                    (cc.role_dir, bi.perspective),
+                    (Direction::Out, crate::ast::BusPerspective::Initiator)
+                  | (Direction::In,  crate::ast::BusPerspective::Target)
+                );
+                if is_sender { sender_emissions.push((p.name.name.clone(), cc.clone())); }
+                else         { receiver_emissions.push((p.name.name.clone(), cc.clone())); }
+            }
+        }
+        if sender_emissions.is_empty() && receiver_emissions.is_empty() { return; }
+
+        let clk = m.ports.iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            .map(|p| p.name.name.clone());
+        let Some(clk) = clk else { return; };
+        let rst_active = m.ports.iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Reset(_, _)))
+            .map(|p| match &p.ty {
+                TypeExpr::Reset(_, ResetLevel::Low) => format!("!{}", p.name.name),
+                _ => p.name.name.clone(),
+            });
+        let disable = rst_active.as_ref()
+            .map(|r| format!(" disable iff ({r})"))
+            .unwrap_or_default();
+        let mod_name = m.name.name.clone();
+
+        self.line("");
+        self.line("// synopsys translate_off");
+        self.line("// Auto-generated credit_channel protocol assertions (Tier 2)");
+
+        for (port_name, cc) in &sender_emissions {
+            let ch = &cc.name.name;
+            let Some(depth_expr) = cc.params.iter()
+                .find(|p| p.name.name == "DEPTH")
+                .and_then(|p| p.default.as_ref()) else { continue; };
+            let depth_str  = self.emit_expr_str(depth_expr);
+            let credit_reg = format!("__{port_name}_{ch}_credit");
+            let send_valid = format!("{port_name}_{ch}_send_valid");
+
+            let label = format!("_auto_cc_{port_name}_{ch}_credit_bounds");
+            self.line(&format!(
+                "{label}: assert property (@(posedge {clk}){disable} {credit_reg} <= ({depth_str}))"
+            ));
+            self.line(&format!(
+                "  else $fatal(1, \"CREDIT-CHANNEL VIOLATION (credit exceeds DEPTH): {mod_name}.{label}\");"
+            ));
+
+            let label = format!("_auto_cc_{port_name}_{ch}_send_requires_credit");
+            self.line(&format!(
+                "{label}: assert property (@(posedge {clk}){disable} {send_valid} |-> {credit_reg} > 0)"
+            ));
+            self.line(&format!(
+                "  else $fatal(1, \"CREDIT-CHANNEL VIOLATION (send without credit): {mod_name}.{label}\");"
+            ));
+        }
+
+        for (port_name, cc) in &receiver_emissions {
+            let ch = &cc.name.name;
+            let credit_ret = format!("{port_name}_{ch}_credit_return");
+            let buf_valid  = format!("__{port_name}_{ch}_valid");
+            let label = format!("_auto_cc_{port_name}_{ch}_credit_return_requires_buffered");
+            self.line(&format!(
+                "{label}: assert property (@(posedge {clk}){disable} {credit_ret} |-> {buf_valid})"
+            ));
+            self.line(&format!(
+                "  else $fatal(1, \"CREDIT-CHANNEL VIOLATION (credit_return without buffered data): {mod_name}.{label}\");"
+            ));
+        }
+
+        self.line("// synopsys translate_on");
     }
 
     /// Stringify a compile-time constant expression to an SV literal/expression.
