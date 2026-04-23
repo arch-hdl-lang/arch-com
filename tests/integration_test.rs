@@ -12,6 +12,7 @@ fn compile_to_sv(source: &str) -> String {
     let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
     let ast = elaborate::lower_threads(ast).expect("lower_threads error");
     let ast = elaborate::lower_pipe_reg_ports(ast).expect("lower_pipe_reg_ports error");
+    let ast = elaborate::lower_credit_channel_dispatch(ast).expect("credit_channel dispatch error");
     let symbols = resolve::resolve(&ast).expect("resolve error");
     let checker = TypeChecker::new(&symbols, &ast);
     let (_warnings, overload_map) = checker.check().expect("type check error");
@@ -3723,6 +3724,70 @@ fn test_credit_channel_no_counter_on_receive_role() {
     let sv = compile_to_sv(source);
     assert!(!sv.contains("__p_data_credit"),
         "target-role module should not emit sender counter:\n{sv}");
+}
+
+#[test]
+fn test_credit_channel_can_send_method_dispatch() {
+    // PR #3b-v-β: sender reads port.ch.can_send; dispatch rewrites it to
+    // the synthesized SV wire __<port>_<ch>_can_send.
+    let source = "
+        bus DmaCh
+          credit_channel data: send
+            param T:     type  = UInt<8>;
+            param DEPTH: const = 4;
+          end credit_channel data
+        end bus DmaCh
+
+        use DmaCh;
+
+        module Prod
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port p:   initiator DmaCh;
+          port have_data: in Bool;
+          port payload:   in UInt<8>;
+          comb
+            p.data_send_valid = p.data.can_send and have_data;
+            p.data_send_data  = payload;
+          end comb
+        end module Prod
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("__p_data_can_send"),
+        "dispatch should rewrite p.data.can_send → __p_data_can_send:\n{sv}");
+    assert!(sv.contains("p_data_send_valid = __p_data_can_send"),
+        "valid assignment should reference the rewritten name:\n{sv}");
+}
+
+#[test]
+fn test_credit_channel_valid_and_data_method_dispatch_on_receiver() {
+    let source = "
+        bus DmaCh
+          credit_channel data: send
+            param T:     type  = UInt<8>;
+            param DEPTH: const = 4;
+          end credit_channel data
+        end bus DmaCh
+
+        use DmaCh;
+
+        module Cons
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port p:   target DmaCh;
+          port want_pop: in Bool;
+          port latest:   out UInt<8>;
+          comb
+            latest = p.data.data;
+            p.data_credit_return = p.data.valid and want_pop;
+          end comb
+        end module Cons
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("latest = __p_data_data"),
+        "receiver read of p.data.data should rewrite to __p_data_data:\n{sv}");
+    assert!(sv.contains("__p_data_valid"),
+        "p.data.valid should rewrite to __p_data_valid:\n{sv}");
 }
 
 #[test]

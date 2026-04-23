@@ -4632,8 +4632,12 @@ v1 scope: nested `generate_if` inside a payload branch is a compile error. A han
 
 **18c. First-Class Sub-Construct: credit_channel (inside bus)** — *wire layer live, elaboration pending*
 
-> **Status (v0.44.4):** grammar, wire flattening, sender-side credit counter,
-> and **target-side FIFO** are all in place. On the receiver module
+> **Status (v0.44.5):** grammar, wire flattening, sender-side credit counter,
+> target-side FIFO, and **read-side method dispatch** (`port.ch.can_send` on
+> the sender, `port.ch.valid` / `port.ch.data` on the receiver) are all in
+> place. Method dispatch is implemented as an elaborate pass that rewrites
+> the dotted access into `ExprKind::SynthIdent` pointing at the
+> codegen-emitted SV wires. On the receiver module
 > (`target` perspective on a `send`-role channel) the codegen synthesizes a
 > depth-DEPTH packet buffer (`__<port>_<ch>_buf`) with head/tail/occupancy
 > pointers, pushed on `<port>_<ch>_send_valid` and popped when the user

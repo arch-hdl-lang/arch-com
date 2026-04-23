@@ -3543,3 +3543,177 @@ fn rewrite_seq_stmts_pp(stmts: Vec<Stmt>, pipes: &[PipePortInfoLocal]) -> Vec<St
     out
 }
 
+
+// ── credit_channel method-dispatch (PR #3b-v-β) ─────────────────────────────
+//
+// Rewrites `port.ch.valid` / `port.ch.data` / `port.ch.can_send` expressions,
+// where `port` is a bus port declaring `credit_channel ch`, into
+// `ExprKind::SynthIdent(__<port>_<ch>_<member>, ty)` pointing at the SV wires
+// emitted by codegen boilerplate in PR #3b-ii / #3b-iii.
+//
+// Role-gated: `can_send` is valid only on the sender side (initiator of a
+// `send` channel, target of a `receive` channel); `valid` and `data` are
+// valid only on the receiver side. Mismatches are left as untransformed
+// nested FieldAccess and fall through to normal bus-member resolution.
+
+pub fn lower_credit_channel_dispatch(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
+    use std::collections::HashMap;
+    let mut bus_ccs: HashMap<String, Vec<CreditChannelMeta>> = HashMap::new();
+    for item in &ast.items {
+        match item {
+            Item::Bus(b) => {
+                if !b.credit_channels.is_empty() {
+                    bus_ccs.insert(b.name.name.clone(), b.credit_channels.clone());
+                }
+            }
+            Item::Package(pkg) => {
+                for b in &pkg.buses {
+                    if !b.credit_channels.is_empty() {
+                        bus_ccs.insert(b.name.name.clone(), b.credit_channels.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if bus_ccs.is_empty() { return Ok(ast); }
+    let mut items: Vec<Item> = Vec::with_capacity(ast.items.len());
+    for item in ast.items {
+        match item {
+            Item::Module(mut m) => {
+                let port_buses: HashMap<String, (String, BusPerspective)> = m.ports.iter()
+                    .filter_map(|p| p.bus_info.as_ref().map(|bi|
+                        (p.name.name.clone(), (bi.bus_name.name.clone(), bi.perspective))
+                    ))
+                    .collect();
+                if port_buses.values().any(|(b, _)| bus_ccs.contains_key(b)) {
+                    let ctx = CcDispatchCtx { bus_ccs: &bus_ccs, port_buses: &port_buses };
+                    for bi in &mut m.body {
+                        rewrite_body_item_cc(bi, &ctx);
+                    }
+                }
+                items.push(Item::Module(m));
+            }
+            other => items.push(other),
+        }
+    }
+    Ok(SourceFile { items })
+}
+
+struct CcDispatchCtx<'a> {
+    bus_ccs: &'a std::collections::HashMap<String, Vec<CreditChannelMeta>>,
+    port_buses: &'a std::collections::HashMap<String, (String, BusPerspective)>,
+}
+
+fn rewrite_body_item_cc(bi: &mut ModuleBodyItem, ctx: &CcDispatchCtx) {
+    match bi {
+        ModuleBodyItem::CombBlock(cb) => {
+            for s in &mut cb.stmts { rewrite_comb_stmt_cc(s, ctx); }
+        }
+        ModuleBodyItem::RegBlock(rb) => {
+            for s in &mut rb.stmts { rewrite_reg_stmt_cc(s, ctx); }
+        }
+        ModuleBodyItem::LetBinding(l) => { rewrite_expr_cc(&mut l.value, ctx); }
+        _ => {}
+    }
+}
+
+fn rewrite_comb_stmt_cc(s: &mut CombStmt, ctx: &CcDispatchCtx) {
+    match s {
+        CombStmt::Assign(a) => { rewrite_expr_cc(&mut a.value, ctx); }
+        CombStmt::IfElse(ie) => {
+            rewrite_expr_cc(&mut ie.cond, ctx);
+            for s in &mut ie.then_stmts { rewrite_comb_stmt_cc(s, ctx); }
+            for s in &mut ie.else_stmts { rewrite_comb_stmt_cc(s, ctx); }
+        }
+        CombStmt::For(fl) => {
+            for s in &mut fl.body { rewrite_reg_stmt_cc(s, ctx); }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_reg_stmt_cc(s: &mut Stmt, ctx: &CcDispatchCtx) {
+    match s {
+        Stmt::Assign(a) => { rewrite_expr_cc(&mut a.value, ctx); }
+        Stmt::IfElse(ie) => {
+            rewrite_expr_cc(&mut ie.cond, ctx);
+            for s in &mut ie.then_stmts { rewrite_reg_stmt_cc(s, ctx); }
+            for s in &mut ie.else_stmts { rewrite_reg_stmt_cc(s, ctx); }
+        }
+        Stmt::For(fl) => { for s in &mut fl.body { rewrite_reg_stmt_cc(s, ctx); } }
+        Stmt::Match(m) => {
+            for arm in &mut m.arms {
+                for s in &mut arm.body { rewrite_reg_stmt_cc(s, ctx); }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_expr_cc(e: &mut Expr, ctx: &CcDispatchCtx) {
+    match &mut e.kind {
+        ExprKind::Binary(_, l, r) => { rewrite_expr_cc(l, ctx); rewrite_expr_cc(r, ctx); }
+        ExprKind::Unary(_, x) | ExprKind::Cast(x, _) | ExprKind::Clog2(x)
+        | ExprKind::Onehot(x) | ExprKind::Signed(x) | ExprKind::Unsigned(x)
+        | ExprKind::LatencyAt(x, _) => { rewrite_expr_cc(x, ctx); }
+        ExprKind::Index(b, i) => { rewrite_expr_cc(b, ctx); rewrite_expr_cc(i, ctx); }
+        ExprKind::BitSlice(b, hi, lo) => {
+            rewrite_expr_cc(b, ctx); rewrite_expr_cc(hi, ctx); rewrite_expr_cc(lo, ctx);
+        }
+        ExprKind::PartSelect(b, s, w, _) => {
+            rewrite_expr_cc(b, ctx); rewrite_expr_cc(s, ctx); rewrite_expr_cc(w, ctx);
+        }
+        ExprKind::Ternary(c, t, el) => {
+            rewrite_expr_cc(c, ctx); rewrite_expr_cc(t, ctx); rewrite_expr_cc(el, ctx);
+        }
+        ExprKind::Concat(xs) | ExprKind::FunctionCall(_, xs) => {
+            for x in xs { rewrite_expr_cc(x, ctx); }
+        }
+        ExprKind::Repeat(n, x) => { rewrite_expr_cc(n, ctx); rewrite_expr_cc(x, ctx); }
+        ExprKind::MethodCall(recv, _, args) => {
+            rewrite_expr_cc(recv, ctx);
+            for a in args { rewrite_expr_cc(a, ctx); }
+        }
+        ExprKind::FieldAccess(base, _) => { rewrite_expr_cc(base, ctx); }
+        ExprKind::StructLiteral(_, fields) => {
+            for fi in fields { rewrite_expr_cc(&mut fi.value, ctx); }
+        }
+        _ => {}
+    }
+    if let ExprKind::FieldAccess(base, member) = &e.kind {
+        if let ExprKind::FieldAccess(inner, ch) = &base.kind {
+            if let ExprKind::Ident(port) = &inner.kind {
+                if let Some((bus_name, perspective)) = ctx.port_buses.get(port) {
+                    if let Some(ccs) = ctx.bus_ccs.get(bus_name) {
+                        if let Some(cc) = ccs.iter().find(|c| c.name.name == ch.name) {
+                            let is_sender = matches!(
+                                (cc.role_dir, perspective),
+                                (Direction::Out, BusPerspective::Initiator)
+                              | (Direction::In,  BusPerspective::Target)
+                            );
+                            let synth = match member.name.as_str() {
+                                "can_send" if is_sender => Some((TypeExpr::Bool, "can_send")),
+                                "valid"    if !is_sender => Some((TypeExpr::Bool, "valid")),
+                                "data"     if !is_sender => {
+                                    cc.params.iter()
+                                        .find(|p| p.name.name == "T")
+                                        .and_then(|p| match &p.kind {
+                                            ParamKind::Type(te) => Some(te.clone()),
+                                            _ => None,
+                                        })
+                                        .map(|ty| (ty, "data"))
+                                }
+                                _ => None,
+                            };
+                            if let Some((ty, suffix)) = synth {
+                                let name = format!("__{port}_{}_{suffix}", ch.name);
+                                e.kind = ExprKind::SynthIdent(name, ty);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

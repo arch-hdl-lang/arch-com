@@ -1007,6 +1007,13 @@ fn run_check_multi(
         ms.report_error(err)
     })?;
 
+    // Rewrite `port.ch.valid` / `.data` / `.can_send` to SynthIdent so they
+    // reference the codegen-emitted SV wires (credit_channel method dispatch).
+    let ast = elaborate::lower_credit_channel_dispatch(ast).map_err(|errs| {
+        let err = errs.into_iter().next().unwrap();
+        ms.report_error(err)
+    })?;
+
     // Resolve
     let symbols = resolve::resolve(&ast).map_err(|errs| {
         let err = errs.into_iter().next().unwrap();
