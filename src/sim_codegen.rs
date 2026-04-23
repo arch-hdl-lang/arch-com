@@ -3675,9 +3675,15 @@ impl<'a> SimCodegen<'a> {
 
         // Collect log file paths early so constructor can open them
         let log_files_for_ctor = collect_log_files(&m.body);
+        // Credit-channel sites are used by the constructor (zero-init), the
+        // field-decl section, the eval_posedge update, and eval_comb — so
+        // collect once up front.
+        let cc_sites = crate::sim_credit_channel::collect_credit_channels(m, self.symbols);
         // Constructor always has a body (for auto-trace open)
         h.push_str(&format!("  {class}() : {} {{\n", all_inits.join(", ")));
         for line in &vec_reg_inits { h.push_str(&format!("{line}\n")); }
+        // Zero-init credit_channel synthesized fields (DEPTH for the counter).
+        crate::sim_credit_channel::emit_constructor_inits(&cc_sites, &mut h);
         for path in &log_files_for_ctor {
             h.push_str(&format!("    {} = fopen(\"{}\", \"w\");\n", log_fd_name(path), path));
         }
@@ -3881,6 +3887,10 @@ impl<'a> SimCodegen<'a> {
                 }
             }
         }
+
+        // Credit-channel synthesized fields (sim mirror of SV codegen's
+        // emit_credit_channel_state / _receiver_state).
+        crate::sim_credit_channel::emit_header_fields(&cc_sites, &mut h);
 
         // Private fields for comb-block intermediate signals (not ports/regs/inst_out)
         let comb_targets = collect_comb_targets(&m.body);
@@ -4481,6 +4491,28 @@ impl<'a> SimCodegen<'a> {
             }
         }
 
+        // Credit-channel counter update (sender side). Gated on the
+        // primary clock's rising edge and the module's first reset port
+        // (active-high / active-low derived from the port's polarity).
+        if !cc_sites.is_empty() {
+            let primary_clk = all_clks.first().cloned();
+            let rst_expr = m.ports.iter()
+                .find(|p| matches!(&p.ty, TypeExpr::Reset(_, _)))
+                .map(|p| match &p.ty {
+                    TypeExpr::Reset(_, ResetLevel::Low) => format!("!{}", p.name.name),
+                    _ => p.name.name.clone(),
+                });
+            if let Some(clk) = primary_clk {
+                cpp.push_str(&format!("  if (_rising_{clk}) {{\n"));
+                crate::sim_credit_channel::emit_posedge_updates(
+                    &cc_sites,
+                    rst_expr.as_deref(),
+                    &mut cpp,
+                );
+                cpp.push_str("  }\n");
+            }
+        }
+
         cpp.push_str("}\n\n");
 
         // eval_comb()
@@ -4490,6 +4522,11 @@ impl<'a> SimCodegen<'a> {
         let ctx_comb = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                 &wide_names, &widths, &enum_map, &bus_port_names)
                            .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes);
+
+        // Credit-channel combinational wires (sender can_send; receiver
+        // valid/data once PR-sim-2 lands). Emit early so user comb code
+        // can read them.
+        crate::sim_credit_channel::emit_comb_updates(&cc_sites, &mut cpp);
 
         // Flat → internal bridge for input Vec ports (non-reg)
         for vi in &vec_port_infos {

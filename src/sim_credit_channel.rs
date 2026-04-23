@@ -69,27 +69,132 @@ pub fn collect_credit_channels(m: &ModuleDecl, symbols: &SymbolTable) -> Vec<Cre
 // `todo!`-style no-ops would silently drop behavior; instead the callers
 // simply won't invoke them until we wire each up.
 
-/// Append C++ private field declarations for each site to the header
-/// buffer. Matches the SV names emitted by codegen so `SynthIdent`
-/// references resolve to real symbols.
-pub fn emit_header_fields(_sites: &[CreditChannelSite], _h: &mut String) {
-    // PR-sim-1 (sender) / PR-sim-2 (receiver) land here.
+/// Append C++ private field declarations for each site.
+///
+/// Sender emits:
+///   uint32_t __<port>_<ch>_credit;
+///   uint8_t  __<port>_<ch>_can_send;
+///
+/// Receiver FIFO fields land in the receiver-side slice (PR-sim-2).
+pub fn emit_header_fields(sites: &[CreditChannelSite], h: &mut String) {
+    for s in sites {
+        match s.role {
+            CreditChannelRole::Sender => {
+                let port = &s.port_name;
+                let ch = &s.channel.name.name;
+                h.push_str(&format!("  uint32_t __{port}_{ch}_credit;\n"));
+                h.push_str(&format!("  uint8_t  __{port}_{ch}_can_send;\n"));
+            }
+            CreditChannelRole::Receiver => {
+                // PR-sim-2 — FIFO buffer, head/tail/occupancy, valid/data.
+            }
+        }
+    }
 }
 
-/// Append C++ constructor zero-initializers for each site to the buffer.
-pub fn emit_constructor_inits(_sites: &[CreditChannelSite], _cpp: &mut String) {
-    // PR-sim-1 / PR-sim-2 land here.
+/// Append C++ constructor zero-initializers for each site. Runs as a
+/// constructor-body fragment (not an init list) — each line is a plain
+/// `field = 0;` statement.
+pub fn emit_constructor_inits(sites: &[CreditChannelSite], cpp: &mut String) {
+    for s in sites {
+        match s.role {
+            CreditChannelRole::Sender => {
+                let port = &s.port_name;
+                let ch = &s.channel.name.name;
+                // Initial values match the SV reset semantics:
+                //   credit = DEPTH, can_send = (DEPTH != 0).
+                // DEPTH is a const param; we resolve its literal value
+                // below when we have one, else fall through to 0.
+                let depth = depth_literal(&s.channel).unwrap_or(0);
+                cpp.push_str(&format!("  __{port}_{ch}_credit = {depth};\n"));
+                cpp.push_str(&format!("  __{port}_{ch}_can_send = {};\n",
+                    if depth != 0 { 1 } else { 0 }));
+            }
+            CreditChannelRole::Receiver => {}
+        }
+    }
 }
 
-/// Append C++ `eval_posedge` update logic for each site to the buffer.
-/// `rst_active` is the C++ expression that evaluates to 1 when the
-/// module's reset is active (or `None` if the module has no reset port).
+/// Append C++ `eval_posedge` update logic for each site. Mirrors the SV
+/// `always_ff` emitted by codegen:
+///
+///   if (rst_active) { credit = DEPTH; can_send = (DEPTH != 0); }
+///   else if ( send_valid && !credit_return) credit--;
+///   else if (!send_valid &&  credit_return) credit++;
+///   (and can_send is re-derived in eval_comb — see emit_comb_updates)
+///
+/// `rst_active` is a C++ boolean expression that is true while reset is
+/// asserted. `None` means the module has no reset port; the reset branch
+/// is suppressed.
 pub fn emit_posedge_updates(
-    _sites: &[CreditChannelSite],
-    _rst_active: Option<&str>,
-    _cpp: &mut String,
+    sites: &[CreditChannelSite],
+    rst_active: Option<&str>,
+    cpp: &mut String,
 ) {
-    // PR-sim-1 / PR-sim-2 land here.
+    for s in sites {
+        match s.role {
+            CreditChannelRole::Sender => {
+                let port = &s.port_name;
+                let ch = &s.channel.name.name;
+                let credit = format!("__{port}_{ch}_credit");
+                let send_valid = format!("{port}_{ch}_send_valid");
+                let credit_ret = format!("{port}_{ch}_credit_return");
+                let depth = depth_literal(&s.channel).unwrap_or(0);
+                cpp.push_str("  {\n");
+                if let Some(r) = rst_active {
+                    cpp.push_str(&format!("    if ({r}) {{ {credit} = {depth}; }}\n"));
+                    cpp.push_str(&format!("    else if ({send_valid} && !{credit_ret}) {credit}--;\n"));
+                    cpp.push_str(&format!("    else if (!{send_valid} &&  {credit_ret}) {credit}++;\n"));
+                } else {
+                    cpp.push_str(&format!("    if ({send_valid} && !{credit_ret}) {credit}--;\n"));
+                    cpp.push_str(&format!("    else if (!{send_valid} &&  {credit_ret}) {credit}++;\n"));
+                }
+                cpp.push_str("  }\n");
+            }
+            CreditChannelRole::Receiver => {}
+        }
+    }
+}
+
+/// Append C++ `eval_comb` updates for each site. Handles the
+/// combinational `can_send` wire (and, for receivers, the `valid` /
+/// `data` wires — PR-sim-2).
+pub fn emit_comb_updates(sites: &[CreditChannelSite], cpp: &mut String) {
+    for s in sites {
+        match s.role {
+            CreditChannelRole::Sender => {
+                let port = &s.port_name;
+                let ch = &s.channel.name.name;
+                // Combinational can_send. If CAN_SEND_REGISTERED=1, this
+                // assignment is overridden at eval_posedge time (register
+                // holds its value between edges); keeping the comb
+                // assignment is still safe — it just recomputes what the
+                // flop already holds.
+                cpp.push_str(&format!(
+                    "  __{port}_{ch}_can_send = (__{port}_{ch}_credit != 0) ? 1 : 0;\n"
+                ));
+            }
+            CreditChannelRole::Receiver => {}
+        }
+    }
+}
+
+/// Resolve the channel's DEPTH param to an integer literal if possible.
+/// Returns None for non-literal expressions (param references etc.); the
+/// caller falls back to 0 (zero-init), matching the SV behavior of
+/// leaving the counter at DEPTH evaluated from the port-site param map.
+fn depth_literal(cc: &CreditChannelMeta) -> Option<u64> {
+    use crate::ast::{ExprKind, LitKind};
+    cc.params.iter()
+        .find(|p| p.name.name == "DEPTH")
+        .and_then(|p| p.default.as_ref())
+        .and_then(|e| match &e.kind {
+            ExprKind::Literal(LitKind::Dec(v))
+            | ExprKind::Literal(LitKind::Hex(v))
+            | ExprKind::Literal(LitKind::Bin(v))
+            | ExprKind::Literal(LitKind::Sized(_, v)) => Some(*v),
+            _ => None,
+        })
 }
 
 /// Convenience: C++ type for the payload type of a credit_channel.
