@@ -4764,12 +4764,15 @@ Full design history and the broader roadmap are in `doc/plan_credit_channel.md` 
 
 **18d. First-Class Sub-Construct: tlm_method (inside bus)** — *parser scaffolding, v1 blocking only*
 
-> **Status (v0.44.9):** grammar is parsed into `BusDecl::tlm_methods`;
-> typecheck currently rejects any bus carrying a `tlm_method` with a
-> targeted "parser scaffolding only" error. Wire flattening (req/rsp
-> handshake channels), target-side `thread port.method(args)` syntax,
-> initiator call-site lowering, Tier-2 SVA, and sim_codegen mirror all
-> follow in staged PRs — see `doc/plan_tlm_method.md`.
+> **Status (v0.44.10):** grammar is parsed, and the two-channel wire
+> protocol flattens at the bus port. Each `tlm_method name(args) ->
+> Ret: blocking;` produces `<name>_req_valid`, `<name>_<arg>` per arg,
+> `<name>_req_ready`, `<name>_rsp_valid`, `<name>_rsp_data` (omitted
+> for void methods), `<name>_rsp_ready` — directions from the
+> initiator perspective, flipped on `target`. Target-side `thread
+> port.method(args)` body lowering, initiator call-site lowering,
+> Tier-2 SVA, and sim_codegen mirror all follow in staged PRs — see
+> `doc/plan_tlm_method.md`.
 >
 > v1 ships blocking mode only. Pipelined / out_of_order / burst are v2;
 > the parser rejects those mode keywords early with a targeted message

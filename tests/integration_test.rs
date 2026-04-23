@@ -4205,25 +4205,98 @@ fn test_tlm_method_parses_as_bus_sub_construct() {
 }
 
 #[test]
-fn test_tlm_method_rejected_in_typecheck_as_unimplemented() {
+fn test_tlm_method_wires_flatten_at_bus_port() {
+    // PR-tlm-2: tlm_method declarations flatten to a request channel
+    // (valid/args/ready) plus response channel (valid/data/ready) at
+    // the bus port use site. Method dispatch / FSM lowering are still
+    // unimplemented; users who drive the flattened wires directly
+    // compile cleanly.
     let source = "
         bus Mem
           tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
         end bus Mem
+
+        use Mem;
+
+        module Initiator
+          port m: initiator Mem;
+          comb
+            m.read_req_valid = 1'b0;
+            m.read_addr      = 32'h0;
+            m.read_rsp_ready = 1'b0;
+          end comb
+        end module Initiator
     ";
-    let tokens = arch::lexer::tokenize(source).expect("lexer");
-    let mut parser = arch::parser::Parser::new(tokens, source);
-    let ast = parser.parse_source_file().expect("parse");
-    let ast = arch::elaborate::elaborate(ast).expect("elaborate");
-    let ast = arch::elaborate::lower_threads(ast).expect("lower threads");
-    let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg");
-    let ast = arch::elaborate::lower_credit_channel_dispatch(ast).expect("cc dispatch");
-    let symbols = arch::resolve::resolve(&ast).expect("resolve");
-    let result = arch::typecheck::TypeChecker::new(&symbols, &ast).check();
-    assert!(result.is_err(), "typecheck should reject tlm_method until lowering ships");
-    let err_str = format!("{:?}", result.unwrap_err());
-    assert!(err_str.contains("tlm_method") && err_str.contains("scaffolding"),
-        "expected scaffolding error, got: {err_str}");
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("output logic m_read_req_valid"),
+        "req_valid should be an initiator output:\n{sv}");
+    assert!(sv.contains("output logic [31:0] m_read_addr"),
+        "arg should appear as initiator output with its declared type:\n{sv}");
+    assert!(sv.contains("input logic m_read_req_ready"),
+        "req_ready should flow back to initiator:\n{sv}");
+    assert!(sv.contains("input logic m_read_rsp_valid"),
+        "rsp_valid should be an initiator input:\n{sv}");
+    assert!(sv.contains("input logic [63:0] m_read_rsp_data"),
+        "rsp_data should appear with declared ret type:\n{sv}");
+    assert!(sv.contains("output logic m_read_rsp_ready"),
+        "rsp_ready flows back from initiator to target:\n{sv}");
+}
+
+#[test]
+fn test_tlm_method_void_omits_rsp_data() {
+    // Void methods (no -> RetType) should NOT materialize rsp_data.
+    let source = "
+        bus Mem
+          tlm_method poke(addr: UInt<32>): blocking;
+        end bus Mem
+
+        use Mem;
+
+        module I
+          port m: initiator Mem;
+          comb
+            m.poke_req_valid = 1'b0;
+            m.poke_addr = 32'h0;
+            m.poke_rsp_ready = 1'b0;
+          end comb
+        end module I
+    ";
+    let sv = compile_to_sv(source);
+    assert!(!sv.contains("poke_rsp_data"),
+        "void methods must not emit rsp_data:\n{sv}");
+    assert!(sv.contains("poke_rsp_valid"),
+        "void methods still need rsp_valid/ready for back-pressure:\n{sv}");
+}
+
+#[test]
+fn test_tlm_method_target_perspective_flips() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module Target
+          port s: target Mem;
+          comb
+            s.read_req_ready = 1'b0;
+            s.read_rsp_valid = 1'b0;
+            s.read_rsp_data  = 64'h0;
+          end comb
+        end module Target
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("input logic s_read_req_valid"),
+        "target perspective: req_valid should be an input:\n{sv}");
+    assert!(sv.contains("output logic s_read_req_ready"),
+        "target perspective: req_ready flows back as output:\n{sv}");
+    assert!(sv.contains("output logic s_read_rsp_valid"),
+        "target perspective: rsp_valid is output:\n{sv}");
+    assert!(sv.contains("output logic [63:0] s_read_rsp_data"),
+        "target perspective: rsp_data is output:\n{sv}");
+    assert!(sv.contains("input logic s_read_rsp_ready"),
+        "target perspective: rsp_ready flows back as input:\n{sv}");
 }
 
 #[test]
