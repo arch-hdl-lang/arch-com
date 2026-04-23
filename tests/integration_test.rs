@@ -4557,6 +4557,139 @@ fn test_reentrant_thread_rejected_in_lower_threads() {
 }
 
 #[test]
+fn test_implement_initiator_parses() {
+    // PR-tlm-i1: `implement m.read()` clause populates
+    // ThreadBlock.implement with kind = Initiator and empty args.
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   d:  UInt<64> reset rst => 0;
+          thread driver implement m.read() on clk rising, rst high
+            d <= m.read(32'h1000);
+          end thread driver
+        end module M
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let m = ast.items.iter().find_map(|it| match it {
+        arch::ast::Item::Module(m) if m.name.name == "M" => Some(m),
+        _ => None,
+    }).expect("module M");
+    let t = m.body.iter().find_map(|i| match i {
+        arch::ast::ModuleBodyItem::Thread(t) => Some(t),
+        _ => None,
+    }).expect("thread");
+    let b = t.implement.as_ref().expect("implement should be populated");
+    assert_eq!(b.kind, arch::ast::TlmImplementKind::Initiator);
+    assert_eq!(b.port.name, "m");
+    assert_eq!(b.method.name, "read");
+    assert!(b.args.is_empty(), "initiator form requires empty args");
+}
+
+#[test]
+fn test_implement_target_parses() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module T
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port s:   target Mem;
+          port ready: in Bool;
+          thread server implement target s.read(addr) on clk rising, rst high
+            wait until ready;
+            return 64'h42;
+          end thread server
+        end module T
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let m = ast.items.iter().find_map(|it| match it {
+        arch::ast::Item::Module(m) if m.name.name == "T" => Some(m),
+        _ => None,
+    }).expect("module T");
+    let t = m.body.iter().find_map(|i| match i {
+        arch::ast::ModuleBodyItem::Thread(t) => Some(t),
+        _ => None,
+    }).expect("thread");
+    let b = t.implement.as_ref().expect("implement should be populated");
+    assert_eq!(b.kind, arch::ast::TlmImplementKind::Target);
+    assert_eq!(b.args.len(), 1);
+    assert_eq!(b.args[0].name, "addr");
+}
+
+#[test]
+fn test_implement_rejected_at_lower_threads() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   d:  UInt<64> reset rst => 0;
+          thread driver implement m.read() on clk rising, rst high
+            d <= m.read(32'h1000);
+          end thread driver
+        end module M
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = arch::elaborate::elaborate(ast).expect("elaborate");
+    let ast = arch::elaborate::lower_tlm_target_threads(ast).expect("tlm target");
+    let ast = arch::elaborate::lower_tlm_initiator_calls(ast).expect("tlm init");
+    let r = arch::elaborate::lower_threads(ast);
+    assert!(r.is_err(), "implement thread should be rejected until i2/i3/i4 ship");
+    let msg = format!("{:?}", r.unwrap_err());
+    assert!(msg.contains("implement") && msg.contains("not yet implemented"),
+        "expected scaffolding error, got: {msg}");
+}
+
+#[test]
+fn test_implement_initiator_with_args_in_parens_errors() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   d:  UInt<64> reset rst => 0;
+          thread driver implement m.read(addr) on clk rising, rst high
+            d <= m.read(32'h1000);
+          end thread driver
+        end module M
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let r = parser.parse_source_file();
+    assert!(r.is_err(), "initiator implement with args should be a parse error");
+}
+
+#[test]
 fn test_tlm_multi_thread_sharing_without_lock_errors() {
     // Multi-thread sharing of a TLM method outside any lock block →
     // targeted diagnostic pointing at the lock/resource idiom.

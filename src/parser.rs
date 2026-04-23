@@ -1215,6 +1215,43 @@ impl Parser {
             }
         };
 
+        // Optional `implement [target] <port>.<method>(args...)` clause —
+        // glues the thread to a TLM method (see
+        // doc/plan_tlm_implement_thread.md). Must come BEFORE the `on`
+        // clock clause. Initiator form has empty parens (method calls
+        // inside the body supply args at each site); target form binds
+        // the declared args as thread-local names.
+        let implement = if self.check_ident("implement") {
+            self.advance();
+            let kind = if self.check_ident("target") {
+                self.advance();
+                TlmImplementKind::Target
+            } else {
+                TlmImplementKind::Initiator
+            };
+            let port_i = self.expect_ident()?;
+            self.expect(TokenKind::Dot)?;
+            let method_i = self.expect_ident()?;
+            self.expect(TokenKind::LParen)?;
+            let mut args = Vec::new();
+            if !self.check(TokenKind::RParen) {
+                loop {
+                    args.push(self.expect_ident()?);
+                    if self.check(TokenKind::Comma) { self.advance(); } else { break; }
+                }
+            }
+            self.expect(TokenKind::RParen)?;
+            if kind == TlmImplementKind::Initiator && !args.is_empty() {
+                return Err(CompileError::general(
+                    "initiator-side `implement <port>.<method>()` must have empty parens — method args are supplied at each call site inside the thread body",
+                    port_i.span,
+                ));
+            }
+            Some(TlmImplementBinding { kind, port: port_i, method: method_i, args })
+        } else {
+            None
+        };
+
         // Clock clause: `on CLK rising|falling`
         self.expect(TokenKind::On)?;
         let clock = self.expect_ident()?;
@@ -1329,6 +1366,7 @@ impl Parser {
             default_when,
             tlm_target,
             reentrant,
+            implement,
             body,
             span: start.merge(end_span),
         })

@@ -449,6 +449,14 @@ pub struct ThreadBlock {
     /// Captured at parse time (PR-tlm-3); lowering to an FSM (entry gate
     /// on req_valid, arg bindings, `return` → rsp drive) ships next.
     pub tlm_target: Option<TlmTargetBinding>,
+    /// `implement <port>.<method>()` (initiator) or `implement target
+    /// <port>.<method>(args)` (target) clause on the thread header.
+    /// Opts the thread into the compiler's id allocation + arbitration
+    /// machinery across N co-implementers (see doc/plan_tlm_implement_thread.md).
+    /// Initiator form is NEW in v2; target form is a generalization of
+    /// the v1 dotted-name binding (both populate `tlm_target` for
+    /// downstream lowering compat).
+    pub implement: Option<TlmImplementBinding>,
     /// Reentrant threads allow a fresh invocation to start before the
     /// previous one completes. Captured at parse time by the optional
     /// `reentrant [max N]` clause on the thread header (see
@@ -473,6 +481,27 @@ pub struct TlmTargetBinding {
     /// Argument names bound as thread-local values for the body.
     /// Types come from the bus's `TlmMethodMeta.args` at lowering time.
     pub args: Vec<Ident>,
+}
+
+/// `implement` clause on a thread header — glues the thread to a TLM
+/// method declaration. Initiator form binds the thread as one of
+/// potentially N id-tagged issue agents; target form generalizes the
+/// v1 dotted-name target syntax. See `doc/plan_tlm_implement_thread.md`.
+#[derive(Debug, Clone)]
+pub struct TlmImplementBinding {
+    pub kind: TlmImplementKind,
+    pub port: Ident,
+    pub method: Ident,
+    /// Target form binds the declared method args as thread-local names
+    /// (same semantics as v1 `thread s.read(addr) ...`). Initiator form
+    /// has empty args — the thread body supplies args at each call site.
+    pub args: Vec<Ident>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TlmImplementKind {
+    Initiator,
+    Target,
 }
 
 /// A statement inside a thread block.
