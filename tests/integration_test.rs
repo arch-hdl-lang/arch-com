@@ -4134,6 +4134,41 @@ fn test_credit_channel_sim_emits_sender_state() {
 }
 
 #[test]
+fn test_credit_channel_sim_emits_receiver_state() {
+    let source = "
+        bus DmaCh
+          credit_channel data: send
+            param T:     type  = UInt<8>;
+            param DEPTH: const = 4;
+          end credit_channel data
+        end bus DmaCh
+
+        use DmaCh;
+
+        module Cons
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port p:   target DmaCh;
+          comb
+            p.data_credit_return = 1'b0;
+          end comb
+        end module Cons
+    ";
+    let out = compile_to_sim_h(source, false);
+    assert!(out.contains("uint8_t __p_data_buf[4];"),
+        "receiver buffer array should be declared with correct width + depth:\n{out}");
+    assert!(out.contains("__p_data_head;") && out.contains("__p_data_tail;")
+         && out.contains("__p_data_occ;"),
+        "head/tail/occ pointers should be declared:\n{out}");
+    assert!(out.contains("__p_data_valid = (__p_data_occ != 0)"),
+        "valid should be computed in eval_comb:\n{out}");
+    assert!(out.contains("__p_data_data  = __p_data_buf[__p_data_head]"),
+        "data should read front of buffer in eval_comb:\n{out}");
+    assert!(out.contains("p_data_credit_return && __p_data_valid"),
+        "pop should fire on user-driven credit_return when valid:\n{out}");
+}
+
+#[test]
 fn test_credit_channel_mismatched_closing_keyword_errors() {
     let source = "
         bus B

@@ -86,7 +86,15 @@ pub fn emit_header_fields(sites: &[CreditChannelSite], h: &mut String) {
                 h.push_str(&format!("  uint8_t  __{port}_{ch}_can_send;\n"));
             }
             CreditChannelRole::Receiver => {
-                // PR-sim-2 — FIFO buffer, head/tail/occupancy, valid/data.
+                let port = &s.port_name;
+                let ch = &s.channel.name.name;
+                let (data_ty, depth) = receiver_field_types(&s.channel);
+                h.push_str(&format!("  {data_ty} __{port}_{ch}_buf[{depth}];\n"));
+                h.push_str(&format!("  uint32_t __{port}_{ch}_head;\n"));
+                h.push_str(&format!("  uint32_t __{port}_{ch}_tail;\n"));
+                h.push_str(&format!("  uint32_t __{port}_{ch}_occ;\n"));
+                h.push_str(&format!("  uint8_t  __{port}_{ch}_valid;\n"));
+                h.push_str(&format!("  {data_ty} __{port}_{ch}_data;\n"));
             }
         }
     }
@@ -110,7 +118,17 @@ pub fn emit_constructor_inits(sites: &[CreditChannelSite], cpp: &mut String) {
                 cpp.push_str(&format!("  __{port}_{ch}_can_send = {};\n",
                     if depth != 0 { 1 } else { 0 }));
             }
-            CreditChannelRole::Receiver => {}
+            CreditChannelRole::Receiver => {
+                let port = &s.port_name;
+                let ch = &s.channel.name.name;
+                let (_data_ty, depth) = receiver_field_types(&s.channel);
+                cpp.push_str(&format!("  __{port}_{ch}_head = 0;\n"));
+                cpp.push_str(&format!("  __{port}_{ch}_tail = 0;\n"));
+                cpp.push_str(&format!("  __{port}_{ch}_occ  = 0;\n"));
+                cpp.push_str(&format!("  __{port}_{ch}_valid = 0;\n"));
+                cpp.push_str(&format!("  __{port}_{ch}_data  = 0;\n"));
+                cpp.push_str(&format!("  for (uint32_t _i = 0; _i < {depth}; _i++) __{port}_{ch}_buf[_i] = 0;\n"));
+            }
         }
     }
 }
@@ -151,7 +169,33 @@ pub fn emit_posedge_updates(
                 }
                 cpp.push_str("  }\n");
             }
-            CreditChannelRole::Receiver => {}
+            CreditChannelRole::Receiver => {
+                let port = &s.port_name;
+                let ch = &s.channel.name.name;
+                let head = format!("__{port}_{ch}_head");
+                let tail = format!("__{port}_{ch}_tail");
+                let occ  = format!("__{port}_{ch}_occ");
+                let valid = format!("__{port}_{ch}_valid");
+                let buf = format!("__{port}_{ch}_buf");
+                let push = format!("{port}_{ch}_send_valid");
+                let pushd= format!("{port}_{ch}_send_data");
+                let pop_drv = format!("{port}_{ch}_credit_return");
+                let (_data_ty, depth) = receiver_field_types(&s.channel);
+                cpp.push_str("  {\n");
+                if let Some(r) = rst_active {
+                    cpp.push_str(&format!("    if ({r}) {{ {head} = 0; {tail} = 0; {occ} = 0; }}\n"));
+                    cpp.push_str("    else {\n");
+                } else {
+                    cpp.push_str("    {\n");
+                }
+                cpp.push_str(&format!("      uint8_t _pop_fire = ({pop_drv} && {valid}) ? 1 : 0;\n"));
+                cpp.push_str(&format!("      if ({push}) {{ {buf}[{tail}] = {pushd}; {tail} = ({tail} + 1) % {depth}; }}\n"));
+                cpp.push_str(&format!("      if (_pop_fire) {head} = ({head} + 1) % {depth};\n"));
+                cpp.push_str(&format!("      if ({push} && !_pop_fire) {occ}++;\n"));
+                cpp.push_str(&format!("      else if (!{push} && _pop_fire) {occ}--;\n"));
+                cpp.push_str("    }\n");
+                cpp.push_str("  }\n");
+            }
         }
     }
 }
@@ -174,9 +218,50 @@ pub fn emit_comb_updates(sites: &[CreditChannelSite], cpp: &mut String) {
                     "  __{port}_{ch}_can_send = (__{port}_{ch}_credit != 0) ? 1 : 0;\n"
                 ));
             }
-            CreditChannelRole::Receiver => {}
+            CreditChannelRole::Receiver => {
+                let port = &s.port_name;
+                let ch = &s.channel.name.name;
+                cpp.push_str(&format!(
+                    "  __{port}_{ch}_valid = (__{port}_{ch}_occ != 0) ? 1 : 0;\n"
+                ));
+                cpp.push_str(&format!(
+                    "  __{port}_{ch}_data  = __{port}_{ch}_buf[__{port}_{ch}_head];\n"
+                ));
+            }
         }
     }
+}
+
+/// Pick a C++ unsigned integer type + resolved DEPTH for a receiver
+/// FIFO. Falls back to uint64_t / depth=0 when either is non-literal;
+/// depth=0 keeps the array declaration syntactically valid but
+/// immediately visibly wrong — a caller check could drop the emission
+/// entirely, but keeping it lets tests surface the gap quickly.
+fn receiver_field_types(cc: &CreditChannelMeta) -> (&'static str, u64) {
+    use crate::ast::{ExprKind, LitKind, ParamKind};
+    // Pick cpp type based on T's declared bit width.
+    let t_ty = cc.params.iter()
+        .find(|p| p.name.name == "T")
+        .and_then(|p| match &p.kind { ParamKind::Type(te) => Some(te), _ => None });
+    let w = t_ty.and_then(|te| match te {
+        TypeExpr::UInt(w) | TypeExpr::SInt(w) => match &w.kind {
+            ExprKind::Literal(LitKind::Dec(v))
+            | ExprKind::Literal(LitKind::Hex(v))
+            | ExprKind::Literal(LitKind::Bin(v))
+            | ExprKind::Literal(LitKind::Sized(_, v)) => Some(*v),
+            _ => None,
+        },
+        TypeExpr::Bool | TypeExpr::Bit => Some(1),
+        _ => None,
+    });
+    let cpp_ty = match w {
+        Some(n) if n <= 8  => "uint8_t",
+        Some(n) if n <= 16 => "uint16_t",
+        Some(n) if n <= 32 => "uint32_t",
+        _ => "uint64_t",
+    };
+    let depth = depth_literal(cc).unwrap_or(0);
+    (cpp_ty, depth)
 }
 
 /// Resolve the channel's DEPTH param to an integer literal if possible.
