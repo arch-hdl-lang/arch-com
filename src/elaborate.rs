@@ -774,6 +774,7 @@ fn subst_thread(t: &ThreadBlock, var: &str, val: i64) -> ThreadBlock {
             subst_expr_names(cond.clone(), var, val),
             stmts.iter().map(|s| subst_thread_stmt(s, var, val)).collect(),
         )),
+        tlm_target: t.tlm_target.clone(),
         body: t.body.iter().map(|s| subst_thread_stmt(s, var, val)).collect(),
         span: t.span,
     }
@@ -1203,6 +1204,21 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
     for item in m.body {
         match item {
             ModuleBodyItem::Thread(t) => {
+                // PR-tlm-3 scaffolding: TLM target-side thread bodies
+                // (`thread port.method(args) ...`) are recognized by the
+                // parser but FSM lowering (entry gate on req_valid, arg
+                // bindings, `return` → rsp drive) ships in a follow-up PR.
+                // Reject cleanly so users get a targeted message rather
+                // than a surprise from the generic thread lowering.
+                if let Some(ref t_binding) = t.tlm_target {
+                    return Err(vec![CompileError::general(
+                        &format!(
+                            "TLM target thread body `thread {}.{}(...)` lowering is not yet implemented — tracked in doc/plan_tlm_method.md PR-tlm-3b/4.",
+                            t_binding.port.name, t_binding.method.name
+                        ),
+                        t.span,
+                    )]);
+                }
                 let name = t.name.as_ref()
                     .map(|n| n.name.clone())
                     .unwrap_or_else(|| {

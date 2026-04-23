@@ -4764,8 +4764,13 @@ Full design history and the broader roadmap are in `doc/plan_credit_channel.md` 
 
 **18d. First-Class Sub-Construct: tlm_method (inside bus)** — *parser scaffolding, v1 blocking only*
 
-> **Status (v0.44.10):** grammar is parsed, and the two-channel wire
-> protocol flattens at the bus port. Each `tlm_method name(args) ->
+> **Status (v0.44.11):** grammar is parsed, the two-channel wire
+> protocol flattens at the bus port, and the **target-side** `thread
+> port.method(args) on clk ..., rst ... ... end thread port.method`
+> shape is recognized by the parser. FSM lowering for the target body
+> (entry gate on req_valid, arg bindings, `return` → rsp drive) is
+> rejected by `lower_threads` with a targeted message and ships in the
+> next PR. Each `tlm_method name(args) ->
 > Ret: blocking;` produces `<name>_req_valid`, `<name>_<arg>` per arg,
 > `<name>_req_ready`, `<name>_rsp_valid`, `<name>_rsp_data` (omitted
 > for void methods), `<name>_rsp_ready` — directions from the

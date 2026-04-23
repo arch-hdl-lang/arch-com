@@ -444,8 +444,26 @@ pub struct ThreadBlock {
     /// When `cond` is true in any state, the listed seq assigns fire and the
     /// thread returns to state 0, taking priority over normal transitions.
     pub default_when: Option<(Expr, Vec<ThreadStmt>)>,
+    /// Set when the thread is a TLM method target body:
+    ///   `thread PORT.METHOD(ARG1, ARG2, ...) on clk rising, rst high`.
+    /// Captured at parse time (PR-tlm-3); lowering to an FSM (entry gate
+    /// on req_valid, arg bindings, `return` → rsp drive) ships next.
+    pub tlm_target: Option<TlmTargetBinding>,
     pub body: Vec<ThreadStmt>,
     pub span: Span,
+}
+
+/// Binding of a `thread` body to a TLM method declaration on a bus port.
+/// See `doc/plan_tlm_method.md` for the lowering semantics.
+#[derive(Debug, Clone)]
+pub struct TlmTargetBinding {
+    /// Bus port name that carries the method (e.g. `s`).
+    pub port: Ident,
+    /// Method name (e.g. `read`).
+    pub method: Ident,
+    /// Argument names bound as thread-local values for the body.
+    /// Types come from the bus's `TlmMethodMeta.args` at lowering time.
+    pub args: Vec<Ident>,
 }
 
 /// A statement inside a thread block.
