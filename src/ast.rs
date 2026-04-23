@@ -73,6 +73,29 @@ pub struct BusDecl {
     /// implemented. Typecheck rejects any bus port whose bus carries a
     /// credit_channel until the elaboration PR lands.
     pub credit_channels: Vec<CreditChannelMeta>,
+    /// TLM method sub-constructs declared in this bus. PR-tlm-1 scaffolding:
+    /// parser populates this, but wire flattening + call-site / thread-body
+    /// lowering land in follow-up PRs. See doc/plan_tlm_method.md.
+    pub tlm_methods: Vec<TlmMethodMeta>,
+    pub span: Span,
+}
+
+/// Metadata for one `tlm_method` sub-construct inside a bus. PR-tlm-1
+/// scaffolding: parser captures the declaration shape; subsequent PRs
+/// materialize the req/rsp wires and the FSM lowering. See
+/// doc/plan_tlm_method.md.
+#[derive(Debug, Clone)]
+pub struct TlmMethodMeta {
+    /// Method name (e.g. `read`).
+    pub name: Ident,
+    /// Declared args — each is `(name, type)`, flowing initiator → target
+    /// on the request channel. No per-arg direction keyword in v1.
+    pub args: Vec<(Ident, TypeExpr)>,
+    /// Return type, `None` for void methods (response channel carries
+    /// only valid/ready, no payload).
+    pub ret: Option<TypeExpr>,
+    /// Concurrency mode — v1 only accepts `blocking`.
+    pub mode: Ident,
     pub span: Span,
 }
 

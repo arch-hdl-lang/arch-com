@@ -4762,7 +4762,41 @@ The cross-module occupancy invariant (`occupancy == DEPTH - credit`) is deferred
 
 Full design history and the broader roadmap are in `doc/plan_credit_channel.md` and `doc/plan_bus_unification.md`.
 
-**18d. Standard Bus Library**
+**18d. First-Class Sub-Construct: tlm_method (inside bus)** — *parser scaffolding, v1 blocking only*
+
+> **Status (v0.44.9):** grammar is parsed into `BusDecl::tlm_methods`;
+> typecheck currently rejects any bus carrying a `tlm_method` with a
+> targeted "parser scaffolding only" error. Wire flattening (req/rsp
+> handshake channels), target-side `thread port.method(args)` syntax,
+> initiator call-site lowering, Tier-2 SVA, and sim_codegen mirror all
+> follow in staged PRs — see `doc/plan_tlm_method.md`.
+>
+> v1 ships blocking mode only. Pipelined / out_of_order / burst are v2;
+> the parser rejects those mode keywords early with a targeted message
+> so users aren't surprised when a `pipelined` declaration silently
+> parses today.
+
+Syntax:
+
+```
+bus Mem
+  tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+  tlm_method write(addr: UInt<32>, data: UInt<64>) -> Bool: blocking;
+  tlm_method poke(addr: UInt<32>): blocking;     // void — no ret clause
+end bus Mem
+```
+
+Grammar (parser-accepted in v0.44.9; not yet usable):
+```
+TlmMethod      := 'tlm_method' Ident '(' ArgList ')' ('->' TypeExpr)? ':' Mode ';'
+ArgList        := (Ident ':' TypeExpr (',' Ident ':' TypeExpr)*)?
+Mode           := 'blocking'                                    // v1
+                | 'pipelined' | 'out_of_order' | 'burst'        // v2, rejected v1
+```
+
+v1 rules: args flow initiator → target only (no per-arg `out` keyword; pack multi-value returns into a struct). Call sites live inside a `thread`. See `doc/plan_tlm_method.md` for the full design.
+
+**18e. Standard Bus Library**
 
 The ARCH compiler ships with a standard library of curated `bus` definitions under `<install>/stdlib/`. These are ordinary `.arch` files built on `bus` + `handshake` + `generate_if` — no new compiler machinery — that users import with zero setup:
 

@@ -4169,6 +4169,80 @@ fn test_credit_channel_sim_emits_receiver_state() {
 }
 
 #[test]
+fn test_tlm_method_parses_as_bus_sub_construct() {
+    // PR-tlm-1 scaffolding: parser recognizes `tlm_method` inside a bus,
+    // captures name, args, ret type, and `blocking` mode.
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+          tlm_method write(addr: UInt<32>, data: UInt<64>) -> Bool: blocking;
+          tlm_method poke(addr: UInt<32>): blocking;
+        end bus Mem
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let bus = ast.items.iter().find_map(|it| match it {
+        arch::ast::Item::Bus(b) if b.name.name == "Mem" => Some(b),
+        _ => None,
+    }).expect("Mem bus in AST");
+    assert_eq!(bus.tlm_methods.len(), 3);
+
+    let r = &bus.tlm_methods[0];
+    assert_eq!(r.name.name, "read");
+    assert_eq!(r.args.len(), 1);
+    assert_eq!(r.args[0].0.name, "addr");
+    assert!(r.ret.is_some());
+    assert_eq!(r.mode.name, "blocking");
+
+    let w = &bus.tlm_methods[1];
+    assert_eq!(w.name.name, "write");
+    assert_eq!(w.args.len(), 2);
+
+    let p = &bus.tlm_methods[2];
+    assert_eq!(p.name.name, "poke");
+    assert!(p.ret.is_none(), "void methods should have ret=None");
+}
+
+#[test]
+fn test_tlm_method_rejected_in_typecheck_as_unimplemented() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = arch::elaborate::elaborate(ast).expect("elaborate");
+    let ast = arch::elaborate::lower_threads(ast).expect("lower threads");
+    let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg");
+    let ast = arch::elaborate::lower_credit_channel_dispatch(ast).expect("cc dispatch");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve");
+    let result = arch::typecheck::TypeChecker::new(&symbols, &ast).check();
+    assert!(result.is_err(), "typecheck should reject tlm_method until lowering ships");
+    let err_str = format!("{:?}", result.unwrap_err());
+    assert!(err_str.contains("tlm_method") && err_str.contains("scaffolding"),
+        "expected scaffolding error, got: {err_str}");
+}
+
+#[test]
+fn test_tlm_method_v2_modes_rejected_in_v1() {
+    for mode in ["pipelined", "out_of_order", "burst"] {
+        let source = format!(
+            "bus Mem
+              tlm_method read(addr: UInt<32>) -> UInt<64>: {mode};
+            end bus Mem"
+        );
+        let tokens = arch::lexer::tokenize(&source).expect("lexer");
+        let mut parser = arch::parser::Parser::new(tokens, &source);
+        let result = parser.parse_source_file();
+        assert!(result.is_err(),
+            "mode `{mode}` should be rejected in v1: source={source}");
+    }
+}
+
+#[test]
 fn test_credit_channel_mismatched_closing_keyword_errors() {
     let source = "
         bus B
