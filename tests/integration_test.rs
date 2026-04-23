@@ -10,6 +10,7 @@ fn compile_to_sv(source: &str) -> String {
     let mut parser = Parser::new(tokens, source);
     let parsed_ast = parser.parse_source_file().expect("parse error");
     let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let ast = elaborate::lower_tlm_target_threads(ast).expect("tlm_target lowering error");
     let ast = elaborate::lower_threads(ast).expect("lower_threads error");
     let ast = elaborate::lower_pipe_reg_ports(ast).expect("lower_pipe_reg_ports error");
     let ast = elaborate::lower_credit_channel_dispatch(ast).expect("credit_channel dispatch error");
@@ -4309,7 +4310,10 @@ fn test_tlm_target_thread_parses_with_dotted_name() {
 }
 
 #[test]
-fn test_tlm_target_thread_rejected_in_lower_threads() {
+fn test_tlm_target_thread_lowers_to_regular_thread() {
+    // PR-tlm-3c: lower_tlm_target_threads rewrites a TLM target thread
+    // into a regular thread + synthesized latch regs. The tlm_target
+    // field is cleared after the pass.
     let source = "
         bus Mem
           tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
@@ -4324,6 +4328,7 @@ fn test_tlm_target_thread_rejected_in_lower_threads() {
           port ready: in Bool;
           thread s.read(addr) on clk rising, rst high
             wait until ready;
+            return 64'h42;
           end thread s.read
         end module MemTarget
     ";
@@ -4331,12 +4336,22 @@ fn test_tlm_target_thread_rejected_in_lower_threads() {
     let mut parser = arch::parser::Parser::new(tokens, source);
     let ast = parser.parse_source_file().expect("parse");
     let ast = arch::elaborate::elaborate(ast).expect("elaborate");
-    let result = arch::elaborate::lower_threads(ast);
-    assert!(result.is_err(), "lower_threads should reject TLM target threads until PR-tlm-3b lands");
-    let errs = result.unwrap_err();
-    let msg = format!("{:?}", errs);
-    assert!(msg.contains("TLM target") && msg.contains("not yet implemented"),
-        "expected scaffolding error, got: {msg}");
+    let ast = arch::elaborate::lower_tlm_target_threads(ast).expect("tlm lowering");
+    let m = ast.items.iter().find_map(|it| match it {
+        arch::ast::Item::Module(m) if m.name.name == "MemTarget" => Some(m),
+        _ => None,
+    }).expect("MemTarget");
+    // After lowering, thread.tlm_target is cleared.
+    let t = m.body.iter().find_map(|i| match i {
+        arch::ast::ModuleBodyItem::Thread(t) => Some(t),
+        _ => None,
+    }).expect("thread");
+    assert!(t.tlm_target.is_none(), "tlm_target should be cleared after lowering");
+    // Synthesized latch reg injected.
+    let has_latch = m.body.iter().any(|i| matches!(
+        i, arch::ast::ModuleBodyItem::RegDecl(r) if r.name.name == "__tlm_s_read_addr_latched"
+    ));
+    assert!(has_latch, "latch reg should be injected");
 }
 
 #[test]
