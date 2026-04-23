@@ -4311,10 +4311,9 @@ fn test_tlm_target_thread_parses_with_dotted_name() {
 }
 
 #[test]
-fn test_tlm_initiator_call_site_expands_in_ast() {
-    // PR-tlm-4: verified at the AST level. End-to-end SV still blocked
-    // on thread lowering bridging bus-port-member drives into the
-    // extracted sub-module's output ports — see plan_tlm_method.md.
+fn test_tlm_initiator_call_site_end_to_end_sv() {
+    // PR-tlm-4c: initiator call site now inlines to parent-module state
+    // machine; end-to-end SV compiles cleanly.
     let source = "
         bus Mem
           tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
@@ -4332,28 +4331,15 @@ fn test_tlm_initiator_call_site_expands_in_ast() {
           end thread driver
         end module Initiator
     ";
-    let tokens = arch::lexer::tokenize(source).expect("lexer");
-    let mut parser = arch::parser::Parser::new(tokens, source);
-    let ast = parser.parse_source_file().expect("parse");
-    let ast = arch::elaborate::elaborate(ast).expect("elaborate");
-    let ast = arch::elaborate::lower_tlm_target_threads(ast).expect("tlm target");
-    let ast = arch::elaborate::lower_tlm_initiator_calls(ast).expect("tlm init");
-    let m = ast.items.iter().find_map(|it| match it {
-        arch::ast::Item::Module(m) if m.name.name == "Initiator" => Some(m),
-        _ => None,
-    }).expect("Initiator module");
-    let t = m.body.iter().find_map(|i| match i {
-        arch::ast::ModuleBodyItem::Thread(t) => Some(t),
-        _ => None,
-    }).expect("thread");
-    assert!(t.body.len() >= 5,
-        "initiator call site should expand to >=5 stmts, got {}: {:?}",
-        t.body.len(), t.body);
-    let wait_count = t.body.iter()
-        .filter(|s| matches!(s, arch::ast::ThreadStmt::WaitUntil(_, _)))
-        .count();
-    assert!(wait_count >= 2,
-        "expected >=2 WaitUntils (req_ready + rsp_valid), got {wait_count}");
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("_tlm_init_driver_state"),
+        "state reg should be emitted:\n{sv}");
+    assert!(sv.contains("m_read_req_valid"),
+        "SV should drive req_valid:\n{sv}");
+    assert!(sv.contains("m_read_addr"),
+        "SV should drive the arg:\n{sv}");
+    assert!(sv.contains("m_read_rsp_ready"),
+        "SV should drive rsp_ready:\n{sv}");
 }
 
 #[test]

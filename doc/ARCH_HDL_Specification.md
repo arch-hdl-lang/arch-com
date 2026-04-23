@@ -4764,17 +4764,20 @@ Full design history and the broader roadmap are in `doc/plan_credit_channel.md` 
 
 **18d. First-Class Sub-Construct: tlm_method (inside bus)** — *parser scaffolding, v1 blocking only*
 
-> **Status (v0.44.14):** grammar, wire flattening, and **target-side
-> inline lowering** compile end-to-end to SV. The TLM target pass now
-> emits RegDecl + RegBlock + CombBlock items directly into the parent
-> module body — bypassing `lower_threads` entirely — so bus-port-member
+> **Status (v0.44.15):** grammar, wire flattening, and **inline lowering
+> for both target and initiator sides** compile end-to-end to SV. Both
+> passes emit RegDecl + RegBlock + CombBlock items directly into the
+> parent module body — bypassing `lower_threads` — so bus-port-member
 > drives resolve naturally and the no-latch check is satisfied.
-> Canonical shape `<SeqAssign|CombAssign|WaitUntil>*  return expr;`
-> lowers to a clean state machine: entry state waits for req_valid +
-> latches args, one state per user `wait until`, respond state drives
-> rsp_valid + rsp_data and loops back. Initiator call-site compilation
-> still lives at the AST level and awaits the same inline-rewrite
-> treatment (PR-tlm-4c). `lower_tlm_target_threads`
+> Target-side: canonical shape `<SeqAssign|CombAssign|WaitUntil>*
+> return expr;` lowers to entry → user-wait states → respond → loop.
+> Initiator-side: any thread containing `x <= m.method(args);` call
+> sites gets fully inlined — each call becomes an issue state + wait
+> state; other `x <= expr;` stmts become compute states; per-method
+> req_valid/req_args/rsp_ready drives are unconditional state-OR /
+> state-mux forms to satisfy the no-latch check. v1 rejects nested or
+> composed TLM calls and any non-SeqAssign stmt inside a TLM-using
+> thread. `lower_tlm_target_threads`
 > (runs before the generic thread lowering) rewrites
 > `thread port.method(args) ... return expr; end` into a regular
 > thread that drives `<port>_<method>_req_ready`, latches args into
