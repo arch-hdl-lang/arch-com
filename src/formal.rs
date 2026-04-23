@@ -822,6 +822,19 @@ impl<'a> FormalCtx<'a> {
             // `q@0` is the same as `q` at t. Non-@0 reads are rejected by
             // typecheck before reaching formal emission.
             LatencyAt(inner, _) => self.encode_raw(inner, t),
+            // SynthIdent is not yet handled by formal encoding — it points
+            // at codegen-emitted SV state (credit_channel synthesized
+            // wires) that `arch formal` has no SMT mirror for. Reject
+            // clearly; the credit_channel formal story lands with the
+            // Tier-2 SVA PR.
+            SynthIdent(name, _) => {
+                return Err(CompileError::general(
+                    &format!(
+                        "formal encoding of synthesized identifier `{name}` is not yet supported — credit_channel formal invariants land in a follow-up PR",
+                    ),
+                    expr.span,
+                ));
+            }
             Literal(l) => Ok(lit_to_term(l)),
             Bool(b) => Ok(SmtTerm {
                 s: if *b { "#b1".to_string() } else { "#b0".to_string() },

@@ -2246,6 +2246,26 @@ impl<'a> TypeChecker<'a> {
                 // target context is known.
                 self.resolve_expr_type(inner, module_name, local_types)
             }
+            ExprKind::SynthIdent(_, ty) => {
+                // SynthIdent carries its own type — used by the
+                // credit_channel dispatch pass (PR #3b-v). No symbol-table
+                // lookup needed; the declaration lives in codegen.
+                match ty {
+                    TypeExpr::UInt(w) => eval_type_width_expr(w).map(Ty::UInt).unwrap_or(Ty::Error),
+                    TypeExpr::SInt(w) => eval_type_width_expr(w).map(Ty::SInt).unwrap_or(Ty::Error),
+                    TypeExpr::Bool | TypeExpr::Bit => Ty::Bool,
+                    TypeExpr::Named(ident) => {
+                        if let Some((crate::resolve::Symbol::Struct(_), _)) = self.symbols.globals.get(&ident.name) {
+                            Ty::Struct(ident.name.clone())
+                        } else if let Some((crate::resolve::Symbol::Enum(info), _)) = self.symbols.globals.get(&ident.name) {
+                            Ty::Enum(ident.name.clone(), enum_width(info.variants.len()))
+                        } else {
+                            Ty::Error
+                        }
+                    }
+                    _ => Ty::Error,
+                }
+            }
             ExprKind::Todo => {
                 self.warnings.push(CompileWarning {
                     message: "todo! placeholder will abort at runtime".to_string(),

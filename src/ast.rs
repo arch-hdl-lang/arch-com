@@ -716,6 +716,14 @@ impl Expr {
 pub enum ExprKind {
     Literal(LitKind),
     Ident(String),
+    /// Compiler-synthesized identifier — behaves exactly like `Ident(name)`
+    /// for codegen / sim / formal purposes, but carries its own known type
+    /// so typecheck doesn't need to resolve it via the symbol table. Used
+    /// by the credit_channel method-dispatch elaborate pass (PR #3b-v) to
+    /// point expressions at codegen-emitted SV wires (`__<port>_<ch>_valid`,
+    /// `_data`, `_can_send`) whose declaration lives in the emitted SV
+    /// boilerplate rather than in the ARCH module body.
+    SynthIdent(String, TypeExpr),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Unary(UnaryOp, Box<Expr>),
     FieldAccess(Box<Expr>, Ident),
