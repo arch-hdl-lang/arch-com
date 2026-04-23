@@ -4062,6 +4062,46 @@ pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<Comp
                     .filter_map(|p| p.bus_info.as_ref().map(|bi|
                         (p.name.name.clone(), bi.bus_name.name.clone())))
                     .collect();
+
+                // Detect unlocked multi-thread sharing of a (port, method)
+                // pair. ARCH's existing `lock RESOURCE` construct serializes
+                // bus-channel drives across threads; wrapping each TLM call
+                // in a lock makes the resource mutex handle request-side
+                // arbitration uniformly with other shared-channel idioms
+                // (AXI AR/AW in ThreadMm2s, etc.). Without lock, multiple
+                // threads drive `<port>_<method>_req_valid` simultaneously
+                // and the later single-driver check fires a confusing
+                // multi-driver error. Emit a targeted diagnostic here
+                // pointing at the lock/resource idiom.
+                {
+                    let mut bare_uses: HashMap<(String, String), Vec<Span>> = HashMap::new();
+                    for item in &m.body {
+                        if let ModuleBodyItem::Thread(t) = item {
+                            if t.tlm_target.is_some() { continue; }
+                            collect_bare_tlm_calls(&t.body, t.span, &port_buses, &bus_methods, &mut bare_uses);
+                        }
+                    }
+                    for ((port, method), spans) in &bare_uses {
+                        let mut sorted_offsets: Vec<(usize, usize)> = spans.iter()
+                            .map(|s| (s.start, s.end)).collect();
+                        sorted_offsets.sort();
+                        sorted_offsets.dedup();
+                        if sorted_offsets.len() > 1 {
+                            errors.push(CompileError::general(
+                                &format!(
+                                    "multi-thread sharing of `{port}.{method}` without a `lock` — {n} threads issue calls on this method outside any lock block. Wrap each call in `lock <res> ... end lock <res>` and declare `resource <res>: mutex<round_robin>;` at module scope. Lock serializes request-side drive across threads (same idiom as AXI AR/AW sharing). Concurrent-in-flight pipelining ships with `out_of_order` mode (v2b).",
+                                    n = sorted_offsets.len(),
+                                ),
+                                *spans.first().unwrap(),
+                            ));
+                        }
+                    }
+                }
+                if !errors.is_empty() {
+                    out_items.push(Item::Module(m));
+                    continue;
+                }
+
                 // Identify threads that contain TLM calls and inline them.
                 let mut new_body: Vec<ModuleBodyItem> = Vec::new();
                 for item in std::mem::take(&mut m.body) {
@@ -4089,6 +4129,46 @@ pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<Comp
     }
     if !errors.is_empty() { return Err(errors); }
     Ok(SourceFile { items: out_items })
+}
+
+/// Walk a thread body and record spans of any TLM call that is NOT
+/// inside a `lock RESOURCE ... end lock` block. Used by the multi-
+/// thread sharing diagnostic in `lower_tlm_initiator_calls` — calls
+/// wrapped in a lock are considered safely serialized by the existing
+/// resource-mutex machinery, so we skip them.
+fn collect_bare_tlm_calls(
+    stmts: &[ThreadStmt],
+    thread_span: Span,
+    port_buses: &std::collections::HashMap<String, String>,
+    bus_methods: &std::collections::HashMap<String, Vec<TlmMethodMeta>>,
+    out: &mut std::collections::HashMap<(String, String), Vec<Span>>,
+) {
+    for s in stmts {
+        match s {
+            ThreadStmt::SeqAssign(ra) => {
+                if let Some(call) = match_tlm_call(&ra.value, port_buses, bus_methods) {
+                    out.entry((call.port.clone(), call.method.clone()))
+                        .or_default()
+                        .push(thread_span);
+                }
+            }
+            ThreadStmt::Lock { .. } => {
+                // TLM calls inside a lock are serialized by the resource
+                // mutex — not a multi-driver hazard. Skip.
+            }
+            ThreadStmt::IfElse(ie) => {
+                collect_bare_tlm_calls(&ie.then_stmts, thread_span, port_buses, bus_methods, out);
+                collect_bare_tlm_calls(&ie.else_stmts, thread_span, port_buses, bus_methods, out);
+            }
+            ThreadStmt::For { body, .. } => {
+                collect_bare_tlm_calls(body, thread_span, port_buses, bus_methods, out);
+            }
+            ThreadStmt::DoUntil { body, .. } => {
+                collect_bare_tlm_calls(body, thread_span, port_buses, bus_methods, out);
+            }
+            _ => {}
+        }
+    }
 }
 
 fn thread_body_has_tlm_call(

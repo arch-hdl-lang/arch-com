@@ -4557,6 +4557,43 @@ fn test_reentrant_thread_rejected_in_lower_threads() {
 }
 
 #[test]
+fn test_tlm_multi_thread_sharing_without_lock_errors() {
+    // Multi-thread sharing of a TLM method outside any lock block →
+    // targeted diagnostic pointing at the lock/resource idiom.
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module Shared
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   d0: UInt<64> reset rst => 0;
+          reg   d1: UInt<64> reset rst => 0;
+          thread w0 on clk rising, rst high
+            d0 <= m.read(32'h1000);
+          end thread w0
+          thread w1 on clk rising, rst high
+            d1 <= m.read(32'h1004);
+          end thread w1
+        end module Shared
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = arch::elaborate::elaborate(ast).expect("elaborate");
+    let ast = arch::elaborate::lower_tlm_target_threads(ast).expect("tlm target");
+    let r = arch::elaborate::lower_tlm_initiator_calls(ast);
+    assert!(r.is_err(), "bare multi-thread TLM should error");
+    let msg = format!("{:?}", r.unwrap_err());
+    assert!(msg.contains("multi-thread sharing") && msg.contains("lock"),
+        "expected lock/resource diagnostic, got: {msg}");
+}
+
+#[test]
 fn test_tlm_call_rejected_outside_seq_assign_rhs() {
     // Arithmetic on a TLM call RHS is not supported in v1 — must be
     // direct.
