@@ -10,4 +10,5 @@ pub mod lexer;
 pub mod parser;
 pub mod resolve;
 pub mod sim_codegen;
+pub mod sim_credit_channel;
 pub mod typecheck;
