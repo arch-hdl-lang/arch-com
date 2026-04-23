@@ -1357,6 +1357,16 @@ impl Parser {
             return Ok(ThreadStmt::Log(self.parse_log_stmt()?));
         }
 
+        // `return expr;` — valid only inside TLM method target threads.
+        // Parser is scope-blind so we accept it here; lower_threads
+        // produces a targeted error if used in a non-TLM-target thread.
+        if self.check(TokenKind::Return) {
+            let start = self.advance().span;
+            let value = self.parse_expr()?;
+            let semi_span = self.expect(TokenKind::Semi)?.span;
+            return Ok(ThreadStmt::Return(value, start.merge(semi_span)));
+        }
+
         // `wait` (contextual keyword)
         if self.check_ident("wait") {
             let wait_start = self.advance().span;

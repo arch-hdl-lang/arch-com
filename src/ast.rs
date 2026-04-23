@@ -489,6 +489,11 @@ pub enum ThreadStmt {
     DoUntil { body: Vec<ThreadStmt>, cond: Expr, span: Span },
     /// `log(Level, "TAG", "fmt", args...);` — debug output
     Log(LogStmt),
+    /// `return expr;` — valid only inside a TLM target thread body
+    /// (`thread port.method(args) ...`). The `lower_tlm_target_threads`
+    /// pass rewrites this into the rsp_valid / rsp_data / wait_for_ready
+    /// sequence before regular thread lowering runs.
+    Return(Expr, Span),
 }
 
 /// Generic if/else statement, parameterized by statement body type `S`.
