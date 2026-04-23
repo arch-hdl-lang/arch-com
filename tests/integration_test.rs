@@ -3919,6 +3919,73 @@ fn test_credit_channel_tier2_receiver_assertion() {
 }
 
 #[test]
+fn test_credit_channel_send_sugar() {
+    // PR #3b-vi: `p.data.send(x);` desugars to two assignments that set
+    // send_valid and send_data.
+    let source = "
+        bus DmaCh
+          credit_channel data: send
+            param T:     type  = UInt<8>;
+            param DEPTH: const = 4;
+          end credit_channel data
+        end bus DmaCh
+
+        use DmaCh;
+
+        module Prod
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port p:   initiator DmaCh;
+          port payload: in UInt<8>;
+          comb
+            p.data_send_valid = 1'b0;       // default — overridden below
+            p.data_send_data  = 8'h0;
+            if p.data.can_send
+              p.data.send(payload);
+            end if
+          end comb
+        end module Prod
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("p_data_send_valid = 1'd1")
+          || sv.contains("p_data_send_valid = 1'b1"),
+        ".send() should set send_valid to 1:\n{sv}");
+    assert!(sv.contains("p_data_send_data = payload"),
+        ".send(payload) should set send_data to payload:\n{sv}");
+}
+
+#[test]
+fn test_credit_channel_pop_sugar() {
+    let source = "
+        bus DmaCh
+          credit_channel data: send
+            param T:     type  = UInt<8>;
+            param DEPTH: const = 4;
+          end credit_channel data
+        end bus DmaCh
+
+        use DmaCh;
+
+        module Cons
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port p:   target DmaCh;
+          port want_pop: in Bool;
+          comb
+            p.data_credit_return = 1'b0;
+            if p.data.valid and want_pop
+              p.data.pop();
+            end if
+          end comb
+        end module Cons
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("p_data_credit_return = 1'd1")
+          || sv.contains("p_data_credit_return = 1'b1"),
+        ".pop() should assert credit_return:\n{sv}");
+}
+
+#[test]
 fn test_credit_channel_mismatched_closing_keyword_errors() {
     let source = "
         bus B

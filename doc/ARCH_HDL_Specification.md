@@ -4632,11 +4632,17 @@ v1 scope: nested `generate_if` inside a payload branch is a compile error. A han
 
 **18c. First-Class Sub-Construct: credit_channel (inside bus)** — *wire layer live, elaboration pending*
 
-> **Status (v0.44.7):** grammar, wire flattening, sender-side credit counter,
+> **Status (v0.44.8):** grammar, wire flattening, sender-side credit counter,
 > target-side FIFO, **read-side method dispatch** (`port.ch.can_send` on the
 > sender, `port.ch.valid` / `port.ch.data` on the receiver), the
-> **`CAN_SEND_REGISTERED` timing-relief knob**, and the **Tier-2 protocol
-> SVA** are all in place. Auto-emitted assertions (labels follow
+> **`CAN_SEND_REGISTERED` timing-relief knob**, **Tier-2 protocol SVA**, and
+> **write-side statement sugar** (`port.ch.send(x);` / `port.ch.pop();` as
+> bare statements) are all in place. Sugar desugars in the parser: `.send(x)`
+> becomes two assigns (`send_valid=1; send_data=x;`) wrapped in a
+> compile-time-true `if` block (SV flattens it away); `.pop()` becomes a
+> single `credit_return=1` assign. Method names `send` / `pop` are narrowly
+> gated in the parser — any other port shape falls through to a normal
+> unknown-field error. Auto-emitted assertions (labels follow
 > `_auto_cc_<port>_<ch>_<rule>`, wrapped in `translate_off/on`):
 > (1) `credit <= DEPTH` on the sender; (2) `send_valid |-> credit > 0`
 > on the sender; (3) `credit_return |-> buffer_valid` on the receiver.
