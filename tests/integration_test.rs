@@ -4633,6 +4633,75 @@ fn test_implement_target_parses() {
 }
 
 #[test]
+fn test_implement_target_single_compiles_end_to_end() {
+    // PR-tlm-i2: `thread NAME implement target s.read(addr) ... return;`
+    // is sugar for the v1 dotted-name target form. Single-implementer
+    // case compiles through to SV via existing target lowering.
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module MemTarget
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port s:   target Mem;
+          port ready: in Bool;
+          thread server implement target s.read(addr) on clk rising, rst high
+            wait until ready;
+            return 64'h42;
+          end thread server
+        end module MemTarget
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("_tlm_s_read_state"),
+        "state reg should appear in SV:\n{sv}");
+    assert!(sv.contains("_tlm_s_read_addr_latched"),
+        "arg latch reg should appear in SV:\n{sv}");
+    assert!(sv.contains("s_read_req_ready"),
+        "req_ready driver should appear:\n{sv}");
+}
+
+#[test]
+fn test_implement_target_multi_implementer_rejected() {
+    // PR-tlm-i2: multi-implementer target case produces a targeted
+    // error pointing at PR-tlm-i4.
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module MemTarget
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port s:   target Mem;
+          port ready: in Bool;
+          thread server0 implement target s.read(addr) on clk rising, rst high
+            wait until ready;
+            return 64'h42;
+          end thread server0
+          thread server1 implement target s.read(addr) on clk rising, rst high
+            wait until ready;
+            return 64'h43;
+          end thread server1
+        end module MemTarget
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = arch::elaborate::elaborate(ast).expect("elaborate");
+    let r = arch::elaborate::lower_tlm_target_threads(ast);
+    assert!(r.is_err(), "multi-implementer target should error until PR-tlm-i4");
+    let msg = format!("{:?}", r.unwrap_err());
+    assert!(msg.contains("multi-implementer target") && msg.contains("s.read"),
+        "expected targeted error, got: {msg}");
+}
+
+#[test]
 fn test_implement_rejected_at_lower_threads() {
     let source = "
         bus Mem

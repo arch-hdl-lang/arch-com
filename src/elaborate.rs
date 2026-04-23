@@ -1230,13 +1230,24 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
                         t.span,
                     )]);
                 }
-                // PR-tlm-i1 scaffolding: `implement` clause parses but
-                // lowering ships in PR-tlm-i2 (target sugar), PR-tlm-i3
-                // (initiator single), PR-tlm-i4 (multi-thread id routing).
+                // `implement target` threads should have been consumed by
+                // lower_tlm_target_threads (which now treats them like
+                // v1 tlm_target). If one reaches here, it's an internal
+                // error. `implement` (initiator) threads still need
+                // lowering (PR-tlm-i3/i4).
                 if let Some(ref b) = t.implement {
+                    if b.kind == TlmImplementKind::Target {
+                        return Err(vec![CompileError::general(
+                            &format!(
+                                "internal error: `implement target {}.{}(...)` reached lower_threads without being consumed by lower_tlm_target_threads.",
+                                b.port.name, b.method.name
+                            ),
+                            t.span,
+                        )]);
+                    }
                     return Err(vec![CompileError::general(
                         &format!(
-                            "`implement {}.{}(...)` thread lowering is not yet implemented — tracked in doc/plan_tlm_implement_thread.md PR-tlm-i2/i3/i4.",
+                            "initiator-side `implement {}.{}()` thread lowering is not yet implemented — tracked in doc/plan_tlm_implement_thread.md PR-tlm-i3/i4.",
                             b.port.name, b.method.name
                         ),
                         t.span,
@@ -3825,12 +3836,57 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
                         (p.name.name.clone(), bi.bus_name.name.clone())))
                     .collect();
 
+                // Detect multi-implementer target case (2+ threads
+                // implementing the same (port, method)). PR-tlm-i4
+                // will add id-routing; for now reject with a targeted
+                // message so users don't hit the confusing multi-driver
+                // error on rsp_valid / rsp_data / req_ready.
+                {
+                    let mut counts: HashMap<(String, String), (usize, Span)> = HashMap::new();
+                    for item in &m.body {
+                        if let ModuleBodyItem::Thread(t) = item {
+                            let key = if let Some(tb) = &t.tlm_target {
+                                Some((tb.port.name.clone(), tb.method.name.clone()))
+                            } else if let Some(ib) = &t.implement {
+                                if ib.kind == TlmImplementKind::Target {
+                                    Some((ib.port.name.clone(), ib.method.name.clone()))
+                                } else { None }
+                            } else { None };
+                            if let Some(k) = key {
+                                let e = counts.entry(k).or_insert((0, t.span));
+                                e.0 += 1;
+                            }
+                        }
+                    }
+                    for ((port, method), (n, span)) in &counts {
+                        if *n > 1 {
+                            errors.push(CompileError::general(
+                                &format!(
+                                    "multi-implementer target for `{port}.{method}` is not yet implemented — {n} threads in this module bind to this method as target. id-tagged routing ships in PR-tlm-i4 (see doc/plan_tlm_implement_thread.md).",
+                                ),
+                                *span,
+                            ));
+                        }
+                    }
+                }
+
                 // Collect TLM target threads + their method metadata.
                 let mut latch_regs: Vec<RegDecl> = Vec::new();
                 let mut new_body: Vec<ModuleBodyItem> = Vec::new();
                 for item in std::mem::take(&mut m.body) {
                     if let ModuleBodyItem::Thread(t) = &item {
-                        if let Some(binding) = t.tlm_target.clone() {
+                        // v1 dotted-name form populates `tlm_target`; v2
+                        // `implement target port.method(args)` populates
+                        // `implement`. Normalize to a single TlmTargetBinding.
+                        let effective_target: Option<TlmTargetBinding> = t.tlm_target.clone()
+                            .or_else(|| t.implement.as_ref()
+                                .filter(|b| b.kind == TlmImplementKind::Target)
+                                .map(|b| TlmTargetBinding {
+                                    port: b.port.clone(),
+                                    method: b.method.clone(),
+                                    args: b.args.clone(),
+                                }));
+                        if let Some(binding) = effective_target {
                             let bus_name = match port_buses.get(&binding.port.name) {
                                 Some(b) => b.clone(),
                                 None => {
