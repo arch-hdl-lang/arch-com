@@ -190,6 +190,30 @@ impl BusInfo {
             result.push((format!("{}_send_data",  cc.name.name), vd_dir, payload_ty));
             result.push((format!("{}_credit_return", cc.name.name), ret_dir, bool_ty));
         }
+        // Expand tlm_method sub-constructs into their two-channel wire
+        // protocol (PR-tlm-2). From the initiator perspective:
+        //   <m>_req_valid   : Out Bool
+        //   <m>_<arg>       : Out T  (per declared arg)
+        //   <m>_req_ready   : In  Bool
+        //   <m>_rsp_valid   : In  Bool
+        //   <m>_rsp_data    : In  RetType  (omitted for void methods)
+        //   <m>_rsp_ready   : Out Bool
+        // The target bus-port flip inverts these uniformly. FSM lowering
+        // on both sides lands in PR-tlm-3 / PR-tlm-4.
+        for m in &self.tlm_methods {
+            let name = &m.name.name;
+            let bool_ty = TypeExpr::Bool;
+            result.push((format!("{name}_req_valid"), Direction::Out, bool_ty.clone()));
+            for (arg_name, arg_ty) in &m.args {
+                result.push((format!("{name}_{}", arg_name.name), Direction::Out, arg_ty.clone()));
+            }
+            result.push((format!("{name}_req_ready"), Direction::In,  bool_ty.clone()));
+            result.push((format!("{name}_rsp_valid"), Direction::In,  bool_ty.clone()));
+            if let Some(ret_ty) = &m.ret {
+                result.push((format!("{name}_rsp_data"), Direction::In, ret_ty.clone()));
+            }
+            result.push((format!("{name}_rsp_ready"), Direction::Out, bool_ty));
+        }
         result
     }
 }
