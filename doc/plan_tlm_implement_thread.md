@@ -1,5 +1,16 @@
 # Plan: `implement` — glue TLM methods to threads (v2)
 
+> **Scope refinement (2026-04-23)**: with `blocking` mode only,
+> initiator-side multi-thread is not meaningful — each call is an
+> atomic issue+wait so N threads can't split the work. Multi-thread
+> is a **target-side-only** feature in v2. `implement` on the
+> initiator side is accepted for forward-compat with future
+> out_of_order mode, but N>1 implementers on the initiator side
+> remains a permanent error until that mode ships. The AXI multi-
+> outstanding idiom (one issuer + N RCollect threads filtering by
+> ID, per ThreadMm2s) stays as the hand-rolled pattern for now.
+
+
 *Author: session of 2026-04-23. Supersedes the shelved pipelined plan
 (`plan_tlm_pipelined.md`) and the prior Future<T>/reentrant sketches.*
 
