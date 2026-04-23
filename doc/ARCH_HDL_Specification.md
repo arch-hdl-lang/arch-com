@@ -4764,8 +4764,12 @@ Full design history and the broader roadmap are in `doc/plan_credit_channel.md` 
 
 **18d. First-Class Sub-Construct: tlm_method (inside bus)** — *parser scaffolding, v1 blocking only*
 
-> **Status (v0.44.15):** grammar, wire flattening, and **inline lowering
-> for both target and initiator sides** compile end-to-end to SV. Both
+> **Status (v0.44.16):** grammar, wire flattening, **inline lowering
+> for both target and initiator sides**, and **sim mirror** all work
+> end-to-end. Because the TLM passes emit ordinary RegDecl + RegBlock
+> + CombBlock into the parent module, `arch sim --pybind --test`
+> handles the state machines via its existing reg/seq/comb C++ mirror
+> — no TLM-specific sim emitter needed. Both
 > passes emit RegDecl + RegBlock + CombBlock items directly into the
 > parent module body — bypassing `lower_threads` — so bus-port-member
 > drives resolve naturally and the no-latch check is satisfied.

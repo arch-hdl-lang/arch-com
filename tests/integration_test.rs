@@ -1920,6 +1920,8 @@ fn compile_to_sim_h(source: &str, inputs_start_uninit: bool) -> String {
     let mut parser = arch::parser::Parser::new(tokens, source);
     let parsed_ast = parser.parse_source_file().expect("parse error");
     let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let ast = arch::elaborate::lower_tlm_target_threads(ast).expect("tlm target lowering");
+    let ast = arch::elaborate::lower_tlm_initiator_calls(ast).expect("tlm initiator lowering");
     let ast = arch::elaborate::lower_threads(ast).expect("lower threads error");
     let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg error");
     let ast = arch::elaborate::lower_credit_channel_dispatch(ast).expect("cc dispatch error");
@@ -4340,6 +4342,61 @@ fn test_tlm_initiator_call_site_end_to_end_sv() {
         "SV should drive the arg:\n{sv}");
     assert!(sv.contains("m_read_rsp_ready"),
         "SV should drive rsp_ready:\n{sv}");
+}
+
+#[test]
+fn test_tlm_target_sim_mirror_works_via_inlined_state_machine() {
+    // PR-tlm-6: because the target lowering emits ordinary RegDecl +
+    // RegBlock + CombBlock into the parent module body, sim_codegen
+    // handles it via its existing reg / seq / comb mirror machinery —
+    // no TLM-specific C++ emission needed.
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module MemTarget
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port s:   target Mem;
+          port ready: in Bool;
+          thread s.read(addr) on clk rising, rst high
+            wait until ready;
+            return 64'h42;
+          end thread s.read
+        end module MemTarget
+    ";
+    let out = compile_to_sim_h(source, false);
+    assert!(out.contains("_tlm_s_read_state"),
+        "state reg should appear in sim C++:\n{out}");
+    assert!(out.contains("_tlm_s_read_addr_latched"),
+        "arg latch reg should appear in sim C++:\n{out}");
+}
+
+#[test]
+fn test_tlm_initiator_sim_mirror_works() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module Initiator
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   d:  UInt<64> reset rst => 0;
+          thread driver on clk rising, rst high
+            d <= m.read(32'h1000);
+          end thread driver
+        end module Initiator
+    ";
+    let out = compile_to_sim_h(source, false);
+    assert!(out.contains("_tlm_init_driver_state"),
+        "initiator state reg should appear in sim C++:\n{out}");
 }
 
 #[test]
