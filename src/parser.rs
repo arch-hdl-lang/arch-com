@@ -1186,11 +1186,33 @@ impl Parser {
         if once { self.advance(); }
 
         // Optional name — peek: if we see Ident followed by `on`, it's a name.
-        // If we see `on` directly, no name.
-        let name = if self.check(TokenKind::On) {
-            None
+        // If we see `on` directly, no name. If we see `Ident . Ident (`, this
+        // is a TLM target binding: `thread port.method(args) on clk ...`.
+        let (name, tlm_target) = if self.check(TokenKind::On) {
+            (None, None)
         } else {
-            Some(self.expect_ident()?)
+            let first = self.expect_ident()?;
+            if self.check(TokenKind::Dot) {
+                self.advance(); // consume `.`
+                let method = self.expect_ident()?;
+                self.expect(TokenKind::LParen)?;
+                let mut args = Vec::new();
+                if !self.check(TokenKind::RParen) {
+                    loop {
+                        args.push(self.expect_ident()?);
+                        if self.check(TokenKind::Comma) { self.advance(); } else { break; }
+                    }
+                }
+                self.expect(TokenKind::RParen)?;
+                // The thread's display name for `end thread X.Y` matching
+                // stays as the `port` ident; closing match accepts either
+                // form (`end thread port` or `end thread port.method`).
+                (Some(first.clone()), Some(TlmTargetBinding {
+                    port: first, method, args,
+                }))
+            } else {
+                (Some(first), None)
+            }
         };
 
         // Clock clause: `on CLK rising|falling`
@@ -1261,6 +1283,19 @@ impl Parser {
                     &n.name, &closing_name.name, closing_name.span,
                 ));
             }
+            // TLM target: `end thread port.method` is allowed (and
+            // recommended for readability) but `end thread port` is
+            // also accepted.
+            if tlm_target.is_some() && self.check(TokenKind::Dot) {
+                self.advance();
+                let method_close = self.expect_ident()?;
+                let declared = tlm_target.as_ref().unwrap().method.name.clone();
+                if method_close.name != declared {
+                    return Err(CompileError::mismatched_closing(
+                        &declared, &method_close.name, method_close.span,
+                    ));
+                }
+            }
             end_span = closing_name.span;
         } else if once {
             // `end thread once`
@@ -1278,6 +1313,7 @@ impl Parser {
             reset_level,
             once,
             default_when,
+            tlm_target,
             body,
             span: start.merge(end_span),
         })

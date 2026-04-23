@@ -4269,6 +4269,103 @@ fn test_tlm_method_void_omits_rsp_data() {
 }
 
 #[test]
+fn test_tlm_target_thread_parses_with_dotted_name() {
+    // PR-tlm-3 scaffolding: parser recognizes
+    //   `thread port.method(arg1, arg2, ...) on clk rising, rst high`
+    // and stores the TLM target binding on the ThreadBlock.
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module MemTarget
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port s:   target Mem;
+          port ready: in Bool;
+          thread s.read(addr) on clk rising, rst high
+            wait until ready;
+          end thread s.read
+        end module MemTarget
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let m = ast.items.iter().find_map(|it| match it {
+        arch::ast::Item::Module(m) if m.name.name == "MemTarget" => Some(m),
+        _ => None,
+    }).expect("MemTarget in AST");
+    let t = m.body.iter().find_map(|i| match i {
+        arch::ast::ModuleBodyItem::Thread(t) => Some(t),
+        _ => None,
+    }).expect("thread in MemTarget body");
+    let binding = t.tlm_target.as_ref().expect("tlm_target should be populated");
+    assert_eq!(binding.port.name, "s");
+    assert_eq!(binding.method.name, "read");
+    assert_eq!(binding.args.len(), 1);
+    assert_eq!(binding.args[0].name, "addr");
+}
+
+#[test]
+fn test_tlm_target_thread_rejected_in_lower_threads() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module MemTarget
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port s:   target Mem;
+          port ready: in Bool;
+          thread s.read(addr) on clk rising, rst high
+            wait until ready;
+          end thread s.read
+        end module MemTarget
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = arch::elaborate::elaborate(ast).expect("elaborate");
+    let result = arch::elaborate::lower_threads(ast);
+    assert!(result.is_err(), "lower_threads should reject TLM target threads until PR-tlm-3b lands");
+    let errs = result.unwrap_err();
+    let msg = format!("{:?}", errs);
+    assert!(msg.contains("TLM target") && msg.contains("not yet implemented"),
+        "expected scaffolding error, got: {msg}");
+}
+
+#[test]
+fn test_tlm_target_thread_accepts_matched_closing_method_name() {
+    // Closing `end thread port.method` should match the opening.
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module MemTarget
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port s:   target Mem;
+          port ready: in Bool;
+          thread s.read(addr) on clk rising, rst high
+            wait until ready;
+          end thread s.wrong_method
+        end module MemTarget
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    assert!(parser.parse_source_file().is_err(),
+        "mismatched closing method name should be a parse error");
+}
+
+#[test]
 fn test_tlm_method_target_perspective_flips() {
     let source = "
         bus Mem
