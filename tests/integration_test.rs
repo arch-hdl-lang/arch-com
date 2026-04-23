@@ -1918,6 +1918,9 @@ fn compile_to_sim_h(source: &str, inputs_start_uninit: bool) -> String {
     let mut parser = arch::parser::Parser::new(tokens, source);
     let parsed_ast = parser.parse_source_file().expect("parse error");
     let ast = arch::elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let ast = arch::elaborate::lower_threads(ast).expect("lower threads error");
+    let ast = arch::elaborate::lower_pipe_reg_ports(ast).expect("lower pipe_reg error");
+    let ast = arch::elaborate::lower_credit_channel_dispatch(ast).expect("cc dispatch error");
     let symbols = arch::resolve::resolve(&ast).expect("resolve error");
     let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
     let (_warnings, overload_map) = checker.check().expect("type check error");
@@ -1925,8 +1928,11 @@ fn compile_to_sim_h(source: &str, inputs_start_uninit: bool) -> String {
         .check_uninit(inputs_start_uninit)
         .inputs_start_uninit(inputs_start_uninit);
     let models = sim.generate();
-    // Concatenate all model headers — tests can grep across them.
-    models.iter().map(|m| m.header.clone()).collect::<Vec<_>>().join("\n// ---\n")
+    // Concatenate all model headers + impl files — tests can grep across them.
+    models.iter()
+        .map(|m| format!("{}\n// ---\n{}", m.header, m.impl_))
+        .collect::<Vec<_>>()
+        .join("\n// ---\n")
 }
 
 #[test]
@@ -4084,6 +4090,47 @@ fn test_credit_channel_end_to_end_noc_producer_consumer() {
     // Read-side dispatch in seq and comb contexts
     assert!(sv.contains("last_seq <= __incoming_flits_data"),
         "read-side dispatch in seq:\n{sv}");
+}
+
+#[test]
+fn test_credit_channel_sim_emits_sender_state() {
+    // PR-sim-1: arch sim --pybind --test path now mirrors the sender-side
+    // credit counter. Verifies the C++ model contains the field, the
+    // constructor init, eval_comb's can_send assignment, and the
+    // eval_posedge counter update.
+    let source = "
+        bus DmaCh
+          credit_channel data: send
+            param T:     type  = UInt<8>;
+            param DEPTH: const = 4;
+          end credit_channel data
+        end bus DmaCh
+
+        use DmaCh;
+
+        module Prod
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port p:   initiator DmaCh;
+          comb
+            p.data_send_valid = 1'b0;
+            p.data_send_data  = 8'h0;
+          end comb
+        end module Prod
+    ";
+    let out = compile_to_sim_h(source, false);
+    assert!(out.contains("uint32_t __p_data_credit;"),
+        "sender credit field should be declared:\n{out}");
+    assert!(out.contains("uint8_t  __p_data_can_send;"),
+        "sender can_send field should be declared:\n{out}");
+    assert!(out.contains("__p_data_credit = 4;"),
+        "constructor should initialize credit to DEPTH:\n{out}");
+    assert!(out.contains("__p_data_can_send = (__p_data_credit != 0)"),
+        "eval_comb should assign can_send combinationally:\n{out}");
+    assert!(out.contains("__p_data_credit--"),
+        "eval_posedge should decrement on pure send:\n{out}");
+    assert!(out.contains("__p_data_credit++"),
+        "eval_posedge should increment on pure credit_return:\n{out}");
 }
 
 #[test]
