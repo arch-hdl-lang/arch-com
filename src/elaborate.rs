@@ -776,6 +776,7 @@ fn subst_thread(t: &ThreadBlock, var: &str, val: i64) -> ThreadBlock {
         )),
         tlm_target: t.tlm_target.clone(),
         reentrant: t.reentrant.clone(),
+        implement: t.implement.clone(),
         body: t.body.iter().map(|s| subst_thread_stmt(s, var, val)).collect(),
         span: t.span,
     }
@@ -1226,6 +1227,18 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
                 if t.reentrant.is_some() {
                     return Err(vec![CompileError::general(
                         "`reentrant` thread lowering is not yet implemented — tracked in doc/plan_tlm_pipelined.md PR-tlm-p2/p3.",
+                        t.span,
+                    )]);
+                }
+                // PR-tlm-i1 scaffolding: `implement` clause parses but
+                // lowering ships in PR-tlm-i2 (target sugar), PR-tlm-i3
+                // (initiator single), PR-tlm-i4 (multi-thread id routing).
+                if let Some(ref b) = t.implement {
+                    return Err(vec![CompileError::general(
+                        &format!(
+                            "`implement {}.{}(...)` thread lowering is not yet implemented — tracked in doc/plan_tlm_implement_thread.md PR-tlm-i2/i3/i4.",
+                            b.port.name, b.method.name
+                        ),
                         t.span,
                     )]);
                 }
@@ -3960,6 +3973,7 @@ fn lower_one_tlm_target(
         default_when: t.default_when,
         tlm_target: None,
         reentrant: None,
+        implement: None,
         body: final_body,
         span: t.span,
     };
@@ -4107,6 +4121,13 @@ pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<Comp
                 for item in std::mem::take(&mut m.body) {
                     if let ModuleBodyItem::Thread(t) = &item {
                         if t.tlm_target.is_some() {
+                            new_body.push(item);
+                            continue;
+                        }
+                        // `implement`-bound threads skip this pass — lower_threads
+                        // will hit the PR-tlm-i1 scaffolding reject. (Future i3/i4
+                        // lowering replaces this pass-through with proper handling.)
+                        if t.implement.is_some() {
                             new_body.push(item);
                             continue;
                         }
