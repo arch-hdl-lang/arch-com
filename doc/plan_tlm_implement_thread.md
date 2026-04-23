@@ -1,6 +1,83 @@
-# Plan: `implement` — glue TLM methods to threads (v2)
+# Plan: `implement` — glue TLM methods to threads — **SHELVED** (2026-04-23)
 
-*Author: session of 2026-04-23. Supersedes the shelved pipelined plan
+> **TLM's positioning in the language (lesson from this design review,
+> 2026-04-23):**
+>
+> `tlm_method` is a **fast-prototyping** abstraction. The call-site
+> form `d <= m.read(addr)` lets a user express "read a word from
+> this interface" in one line, accept blocking semantics, and iterate
+> quickly. It is *not* a high-performance design primitive.
+>
+> Multi-outstanding AXI, pipelined memory interfaces, and other
+> throughput-critical patterns intrinsically exploit protocol
+> structure (separate channels, ID-tagged responses, burst beats)
+> that the TLM atomic-call abstraction collapses. Optimizing those
+> patterns belongs to either:
+>
+> 1. **Hand-rolled threads** — the current path. The user writes
+>    explicit issuer + collector threads with `shared(or)` and
+>    `lock`, as `tests/axi_dma_thread/ThreadMm2s.arch` demonstrates.
+> 2. **A future HLS pass** — takes TLM-flavored source and generates
+>    the equivalent multi-outstanding implementation. That's a
+>    separate compiler project, not a TLM extension.
+>
+> With this framing, TLM v1 (blocking, single-thread per method) is
+> feature-complete for its role. The `implement` pool, `reentrant`,
+> `Future<T>/await`, and the `pipelined`/`out_of_order`/`burst`
+> modes all tried to blur TLM into the high-performance role — none
+> of them succeeded cleanly, and all were shelved.
+
+> **Shelved per AXI DMA side-by-side analysis (2026-04-23).** We wrote
+> a TLM-Model-B version of `tests/axi_dma_thread/ThreadMm2s.arch` (kept
+> for reference at `doc/examples/TlmMm2s_shelved.arch`) and compared
+> against the shipped hand-rolled thread version.
+>
+> **Findings**:
+>
+> | Dimension | Hand-rolled thread | TLM Model B |
+> |---|---|---|
+> | Lines                     | 116   | 111  |
+> | Threads                   | 5 (1 ArIssuer + 4 RCollect) | 8 (4 workers + 4 callers) |
+> | AR/R channel split exploit| yes   | no — atomic `m.read()` collapses both |
+> | AXI burst efficiency      | 1 AR per N beats | 1 AR per beat (without v2c burst) |
+> | `xfer_ctr` ownership      | single-writer | N-way race on callers |
+>
+> The TLM call-site abstraction **collapses separate AR/R channels
+> into one atomic unit**, which is a structural mismatch for
+> AXI-style multi-channel protocols. The hand-rolled version is
+> *clearer* and *more efficient* because it exploits the protocol's
+> intrinsic parallelism.
+>
+> **Decision**: ship nothing further on `implement` pools. TLM stays
+> at v1 (single-thread blocking). Advanced patterns compose via
+> existing `thread` + `generate for` + `lock` + `shared(or)` — as
+> `ThreadMm2s` already demonstrates. This is option (B) from the
+> design review — "TLM v1 blocking + single thread is the sweet
+> spot; complex patterns deserve the explicit thread-level treatment
+> the corpus already uses well."
+>
+> **What stays shipped** (from PR-tlm-i1 through i3):
+>
+> - `implement` grammar + AST on `ThreadBlock`. Harmless dead code
+>   parallel to `reentrant`. Future-compat only; no plans to extend.
+> - `implement target` as sugar for v1 dotted-name target syntax
+>   (single implementer only; multi-implementer target is a permanent
+>   compile error).
+> - Single-thread `implement m.method()` on the initiator side (equivalent
+>   to v1; the annotation is allowed but does nothing extra).
+>
+> **What is permanently closed** (no follow-up PRs planned):
+>
+> - Multi-thread `implement` arbitration + dispatch (original PR-tlm-i4).
+> - `Future<T>` / `await` (earlier pivot).
+> - `reentrant [max N]` on threads (prior pivot; dead grammar remains).
+> - TLM `pipelined` / `out_of_order` / `burst` concurrency modes.
+>
+> Historical design below retained for context.
+>
+> ---
+
+*Original v2 plan (2026-04-23). Supersedes the shelved pipelined plan
 (`plan_tlm_pipelined.md`) and the prior Future<T>/reentrant sketches.*
 
 ## The idea in one paragraph
