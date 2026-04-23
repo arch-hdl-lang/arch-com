@@ -1642,6 +1642,12 @@ impl Parser {
         self.no_lteq = true;
         let target = self.parse_expr()?;
         self.no_lteq = old_no_lteq;
+        if self.check(TokenKind::Semi) {
+            if let Some(stmt) = desugar_cc_method_call_reg_stmt(&target) {
+                self.expect(TokenKind::Semi)?;
+                return Ok(stmt);
+            }
+        }
         self.expect(TokenKind::LtEq)?;
         let value = self.parse_expr()?;
         self.expect(TokenKind::Semi)?;
@@ -1897,8 +1903,15 @@ impl Parser {
             }
             unreachable!();
         }
-        // target = expr;
+        // target = expr;   OR   bare method-call statement (credit_channel sugar).
         let target = self.parse_expr()?;
+        if self.check(TokenKind::Semi) {
+            // Candidate for `port.ch.send(x);` or `port.ch.pop();` sugar.
+            if let Some(stmt) = desugar_cc_method_call_comb_stmt(&target) {
+                self.expect(TokenKind::Semi)?;
+                return Ok(stmt);
+            }
+        }
         self.expect(TokenKind::Eq)?;
         let value = self.parse_expr()?;
         self.expect(TokenKind::Semi)?;
@@ -2523,7 +2536,9 @@ impl Parser {
                     && matches!(field.name.as_str(),
                         "reverse" | "any" | "all" | "count" | "contains"
                         | "reduce_or" | "reduce_and" | "reduce_xor"
-                        | "find_first");
+                        | "find_first"
+                        // credit_channel write-side sugar (PR #3b-vi).
+                        | "send" | "pop");
                 if paren_method {
                     self.advance(); // (
                     let mut args = Vec::new();
@@ -4667,7 +4682,89 @@ impl Parser {
 }
 
 fn is_method_name(name: &str) -> bool {
-    matches!(name, "trunc" | "zext" | "sext" | "resize" | "reverse")
+    matches!(
+        name,
+        "trunc" | "zext" | "sext" | "resize" | "reverse"
+        // credit_channel write-side sugar (PR #3b-vi). These are only
+        // meaningful as bare statements; the parser's `parse_comb_stmt`
+        // and `parse_reg_stmt` desugar `port.ch.send(x);` / `.pop();` to
+        // the underlying wire assignments. Accepting them here as method
+        // names makes parse_expr succeed; in any other context the type
+        // checker flags them as unsupported.
+        | "send" | "pop"
+    )
+}
+
+/// Recognize a bare `port.ch.send(x);` / `port.ch.pop();` method-call
+/// statement and return the underlying wire assignments.
+///
+/// `.send(x)` produces two assigns (valid + data); `.pop()` produces one
+/// (credit_return). Runs at parse time without access to the symbol
+/// table, so the rewrite is narrowly gated on the exact method names
+/// `send` and `pop`. Any mismatch (unknown channel, wrong port, etc.) is
+/// caught later at typecheck as a normal unknown-field error.
+fn desugar_cc_method_call_assigns(expr: &Expr) -> Option<Vec<CombAssign>> {
+    let ExprKind::MethodCall(recv, method, args) = &expr.kind else { return None; };
+    let ExprKind::FieldAccess(port_expr, ch_ident) = &recv.kind else { return None; };
+    if !matches!(&port_expr.kind, ExprKind::Ident(_)) { return None; }
+    let ch = &ch_ident.name;
+    let span = expr.span;
+    let mk_field = |name: String| -> Expr {
+        Expr::new(
+            ExprKind::FieldAccess((*port_expr).clone(), Ident::new(name, span)),
+            span,
+        )
+    };
+    let one = Expr::new(ExprKind::Literal(LitKind::Sized(1, 1)), span);
+    match method.name.as_str() {
+        "send" if args.len() == 1 => Some(vec![
+            CombAssign { target: mk_field(format!("{ch}_send_valid")), value: one.clone(), span },
+            CombAssign { target: mk_field(format!("{ch}_send_data")),  value: args[0].clone(), span },
+        ]),
+        "pop" if args.is_empty() => Some(vec![
+            CombAssign { target: mk_field(format!("{ch}_credit_return")), value: one, span },
+        ]),
+        _ => None,
+    }
+}
+
+/// Desugar a credit_channel method-call statement into a single CombStmt.
+/// Multi-assign cases (`.send(x)`) wrap the two assigns in an `if (1'b1)`
+/// block so the caller always gets exactly one statement — avoids
+/// threading a mutation-buffer through every stmt-list-collection loop.
+/// SV synthesis trivially flattens the always-true guard.
+fn desugar_cc_method_call_comb_stmt(expr: &Expr) -> Option<CombStmt> {
+    let assigns = desugar_cc_method_call_assigns(expr)?;
+    if assigns.len() == 1 {
+        return Some(CombStmt::Assign(assigns.into_iter().next().unwrap()));
+    }
+    let span = expr.span;
+    Some(CombStmt::IfElse(CombIfElse {
+        cond: Expr::new(ExprKind::Literal(LitKind::Sized(1, 1)), span),
+        then_stmts: assigns.into_iter().map(CombStmt::Assign).collect(),
+        else_stmts: Vec::new(),
+        unique: false,
+        span,
+    }))
+}
+
+/// Same idea, seq-block (non-blocking) variant.
+fn desugar_cc_method_call_reg_stmt(expr: &Expr) -> Option<Stmt> {
+    let assigns = desugar_cc_method_call_assigns(expr)?;
+    let reg_assigns: Vec<Stmt> = assigns.into_iter()
+        .map(|a| Stmt::Assign(RegAssign { target: a.target, value: a.value, span: a.span }))
+        .collect();
+    if reg_assigns.len() == 1 {
+        return Some(reg_assigns.into_iter().next().unwrap());
+    }
+    let span = expr.span;
+    Some(Stmt::IfElse(IfElseOf {
+        cond: Expr::new(ExprKind::Literal(LitKind::Sized(1, 1)), span),
+        then_stmts: reg_assigns,
+        else_stmts: Vec::new(),
+        unique: false,
+        span,
+    }))
 }
 
 
