@@ -140,6 +140,7 @@ impl Parser {
         let mut generates = Vec::new();
         let mut handshakes = Vec::new();
         let mut credit_channels = Vec::new();
+        let mut tlm_methods = Vec::new();
         while !self.check_end_keyword() {
             if self.check_param() {
                 params.push(self.parse_param_decl()?);
@@ -152,6 +153,8 @@ impl Parser {
                 handshakes.push(meta);
             } else if self.check(TokenKind::CreditChannel) {
                 credit_channels.push(self.parse_credit_channel_block(start)?);
+            } else if self.check(TokenKind::TlmMethod) {
+                tlm_methods.push(self.parse_tlm_method_decl()?);
             } else {
                 signals.push(self.parse_bus_signal(start)?);
             }
@@ -174,6 +177,61 @@ impl Parser {
             generates,
             handshakes,
             credit_channels,
+            tlm_methods,
+        })
+    }
+
+    /// Parse a `tlm_method` declaration inside a bus body. PR-tlm-1
+    /// scaffolding: captures name, args, ret type, and concurrency mode;
+    /// no wires materialized yet. See doc/plan_tlm_method.md.
+    ///
+    /// Grammar:
+    ///   'tlm_method' Ident '(' (Ident ':' TypeExpr (',' Ident ':' TypeExpr)*)? ')'
+    ///     ('->' TypeExpr)? ':' Mode ';'
+    ///   Mode := 'blocking'                        // v1
+    ///         | 'pipelined' | 'out_of_order' | 'burst'   // v2 (rejected v1)
+    fn parse_tlm_method_decl(&mut self) -> Result<TlmMethodMeta, CompileError> {
+        let start = self.expect(TokenKind::TlmMethod)?.span;
+        let name = self.expect_ident()?;
+        self.expect(TokenKind::LParen)?;
+        let mut args: Vec<(Ident, TypeExpr)> = Vec::new();
+        if !self.check(TokenKind::RParen) {
+            loop {
+                let an = self.expect_ident()?;
+                self.expect(TokenKind::Colon)?;
+                let at = self.parse_type_expr()?;
+                args.push((an, at));
+                if self.check(TokenKind::Comma) { self.advance(); } else { break; }
+            }
+        }
+        self.expect(TokenKind::RParen)?;
+        let ret = if self.check(TokenKind::RArrow) {
+            self.advance();
+            Some(self.parse_type_expr()?)
+        } else {
+            None
+        };
+        self.expect(TokenKind::Colon)?;
+        let mode = self.expect_ident()?;
+        let end_span = self.expect(TokenKind::Semi)?.span;
+        // v1 accepts only `blocking`. Other modes land in v2 — reject
+        // early with a targeted message so users aren't surprised when
+        // their `pipelined` method silently parses.
+        if mode.name != "blocking" {
+            return Err(CompileError::general(
+                &format!(
+                    "tlm_method concurrency mode `{}` is not implemented in v1 — only `blocking` is supported. Pipelined / out_of_order / burst are tracked in doc/plan_tlm_method.md.",
+                    mode.name
+                ),
+                mode.span,
+            ));
+        }
+        Ok(TlmMethodMeta {
+            name,
+            args,
+            ret,
+            mode,
+            span: start.merge(end_span),
         })
     }
 

@@ -121,6 +121,8 @@ pub enum TokenKind {
     HandshakeChannel,
     #[token("credit_channel")]
     CreditChannel,
+    #[token("tlm_method")]
+    TlmMethod,
     #[token("implements")]
     Implements,
     #[token("return")]
@@ -415,6 +417,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Handshake => write!(f, "handshake"),
             TokenKind::HandshakeChannel => write!(f, "handshake_channel"),
             TokenKind::CreditChannel => write!(f, "credit_channel"),
+            TokenKind::TlmMethod => write!(f, "tlm_method"),
             TokenKind::Implements => write!(f, "implements"),
             TokenKind::Return => write!(f, "return"),
             TokenKind::Stage => write!(f, "stage"),

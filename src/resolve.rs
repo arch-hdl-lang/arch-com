@@ -129,6 +129,11 @@ pub struct BusInfo {
     /// because counter + fifo synthesis is not wired up yet. See
     /// doc/plan_credit_channel.md.
     pub credit_channels: Vec<crate::ast::CreditChannelMeta>,
+    /// TLM method sub-constructs declared in this bus. PR-tlm-1
+    /// scaffolding: populated by the parser; typecheck currently rejects
+    /// any bus carrying a tlm_method with a targeted scaffolding-only
+    /// error. Wire flattening + FSM lowering land in follow-up PRs.
+    pub tlm_methods: Vec<crate::ast::TlmMethodMeta>,
 }
 
 impl BusInfo {
@@ -552,6 +557,7 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                         generates: b.generates.clone(),
                         handshakes: b.handshakes.clone(),
                         credit_channels: b.credit_channels.clone(),
+                                tlm_methods: b.tlm_methods.clone(),
                     };
                     table.globals.insert(b.name.name.clone(), (Symbol::Bus(info), b.name.span));
                 }
@@ -626,6 +632,7 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                                 generates: b.generates.clone(),
                                 handshakes: b.handshakes.clone(),
                                 credit_channels: b.credit_channels.clone(),
+                                tlm_methods: b.tlm_methods.clone(),
                             };
                             table.globals.insert(b.name.name.clone(), (Symbol::Bus(info), b.name.span));
                         }

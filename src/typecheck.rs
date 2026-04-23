@@ -127,6 +127,21 @@ impl<'a> TypeChecker<'a> {
                     // follow-up PR. Users who drive the flattened wires
                     // directly today compile cleanly; method-dispatch use
                     // sites are rejected at the access resolution site.
+
+                    // tlm_method scaffolding guard (PR-tlm-1). Grammar is
+                    // accepted but wire flattening + FSM lowering ship in
+                    // PR-tlm-2 / 3 / 4. Reject any bus that declares a
+                    // tlm_method until those land, matching the pattern
+                    // used for credit_channel PR #59.
+                    for m in &b.tlm_methods {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "`tlm_method {name}` is parser scaffolding only — wire flattening and FSM lowering are not yet implemented. Tracked in doc/plan_tlm_method.md.",
+                                name = m.name.name
+                            ),
+                            m.span,
+                        ));
+                    }
                 }
                 Item::Package(pkg) => {
                     for e in &pkg.enums { self.check_enum(e); }
