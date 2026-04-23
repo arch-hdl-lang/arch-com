@@ -2843,41 +2843,73 @@ impl<'a> Codegen<'a> {
             let Some(depth_expr) = depth_expr else { continue; };
             let depth_str = self.emit_expr_str(depth_expr);
             let credit_reg = format!("__{port_name}_{ch}_credit");
-            let cs_wire    = format!("__{port_name}_{ch}_can_send");
+            let cs_name    = format!("__{port_name}_{ch}_can_send");
             let send_valid = format!("{port_name}_{ch}_send_valid");
             let credit_ret = format!("{port_name}_{ch}_credit_return");
+            // Look up CAN_SEND_REGISTERED (option b — next-state flop, agreed
+            // semantics). Non-zero = register the can_send signal so its
+            // fan-out comes off a flop; the combinational critical path then
+            // ends at the flop input. Full throughput is preserved because the
+            // flopped signal reflects counter_next (current counter ± same-
+            // cycle send/return), so send_valid |-> counter > 0 still holds.
+            let registered = cc.params.iter()
+                .find(|p| p.name.name == "CAN_SEND_REGISTERED")
+                .and_then(|p| p.default.as_ref())
+                .map(|e| self.emit_expr_str(e))
+                .map(|s| s.trim() != "0")
+                .unwrap_or(false);
             // Width = $clog2(DEPTH + 1). Emit as-is; SV reduces at elab.
             self.line(&format!(
                 "logic [$clog2(({depth_str}) + 1) - 1:0] {credit_reg};"
             ));
-            self.line(&format!(
-                "wire  {cs_wire} = {credit_reg} != 0;"
-            ));
+            if registered {
+                self.line(&format!("logic {cs_name};"));
+            } else {
+                self.line(&format!("wire  {cs_name} = {credit_reg} != 0;"));
+            }
+            // Emit the counter update (always_ff). If registered, also flop
+            // can_send: `__..._can_send <= counter_next > 0`. The counter_next
+            // is not an SV-visible signal; we inline the next-state expression
+            // to preserve semantics without introducing an extra wire.
+            //
+            // counter_next =  credit + 1   when (credit_return && !send_valid)
+            //               | credit - 1   when (send_valid && !credit_return)
+            //               | credit       otherwise
+            //
+            // So counter_next > 0 reduces to:
+            //   (credit_return && !send_valid) ? 1
+            //   : (send_valid && !credit_return) ? (credit > 1)
+            //   : (credit > 0)
+            let cs_next = format!(
+                "({credit_ret} && !{send_valid}) ? 1'b1 : \
+                 ({send_valid} && !{credit_ret}) ? ({credit_reg} > 1) : \
+                 ({credit_reg} != 0)"
+            );
             match &rst_active {
                 Some(r) => {
-                    self.line(&format!(
-                        "always_ff @(posedge {clk}{rst_edge}) begin"
-                    ));
+                    self.line(&format!("always_ff @(posedge {clk}{rst_edge}) begin"));
                     self.indent += 1;
-                    self.line(&format!("if ({r}) {credit_reg} <= {depth_str};"));
-                    self.line(&format!(
-                        "else if ({send_valid} && !{credit_ret}) {credit_reg} <= {credit_reg} - 1;"
-                    ));
-                    self.line(&format!(
-                        "else if ({credit_ret} && !{send_valid}) {credit_reg} <= {credit_reg} + 1;"
-                    ));
+                    self.line(&format!("if ({r}) begin"));
+                    self.indent += 1;
+                    self.line(&format!("{credit_reg} <= {depth_str};"));
+                    if registered { self.line(&format!("{cs_name} <= ({depth_str}) != 0;")); }
+                    self.indent -= 1;
+                    self.line("end else begin");
+                    self.indent += 1;
+                    self.line(&format!("if ({send_valid} && !{credit_ret}) {credit_reg} <= {credit_reg} - 1;"));
+                    self.line(&format!("else if ({credit_ret} && !{send_valid}) {credit_reg} <= {credit_reg} + 1;"));
+                    if registered { self.line(&format!("{cs_name} <= {cs_next};")); }
+                    self.indent -= 1;
+                    self.line("end");
                     self.indent -= 1;
                     self.line("end");
                 }
                 None => {
                     self.line(&format!("always_ff @(posedge {clk}) begin"));
                     self.indent += 1;
-                    self.line(&format!(
-                        "if ({send_valid} && !{credit_ret}) {credit_reg} <= {credit_reg} - 1;"
-                    ));
-                    self.line(&format!(
-                        "else if ({credit_ret} && !{send_valid}) {credit_reg} <= {credit_reg} + 1;"
-                    ));
+                    self.line(&format!("if ({send_valid} && !{credit_ret}) {credit_reg} <= {credit_reg} - 1;"));
+                    self.line(&format!("else if ({credit_ret} && !{send_valid}) {credit_reg} <= {credit_reg} + 1;"));
+                    if registered { self.line(&format!("{cs_name} <= {cs_next};")); }
                     self.indent -= 1;
                     self.line("end");
                 }

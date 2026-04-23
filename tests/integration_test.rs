@@ -3791,6 +3791,73 @@ fn test_credit_channel_valid_and_data_method_dispatch_on_receiver() {
 }
 
 #[test]
+fn test_credit_channel_can_send_registered_emits_flop() {
+    // PR #3b-iv: CAN_SEND_REGISTERED=1 flops can_send off the next-state
+    // counter (option b — full throughput preserved; fan-out comes off a
+    // register).
+    let source = "
+        bus DmaCh
+          credit_channel data: send
+            param T:                   type  = UInt<8>;
+            param DEPTH:               const = 4;
+            param CAN_SEND_REGISTERED: const = 1;
+          end credit_channel data
+        end bus DmaCh
+
+        use DmaCh;
+
+        module Prod
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port p:   initiator DmaCh;
+          comb
+            p.data_send_valid = 1'b0;
+            p.data_send_data  = 8'h0;
+          end comb
+        end module Prod
+    ";
+    let sv = compile_to_sv(source);
+    // Registered form declares can_send as `logic` (register), not `wire`.
+    assert!(sv.contains("logic __p_data_can_send;"),
+        "CAN_SEND_REGISTERED=1 should declare can_send as a register:\n{sv}");
+    // And assigns it inside the always_ff block.
+    assert!(sv.contains("__p_data_can_send <="),
+        "registered can_send should be updated via non-blocking assign:\n{sv}");
+    // No `wire` form for can_send.
+    assert!(!sv.contains("wire  __p_data_can_send"),
+        "CAN_SEND_REGISTERED=1 must not emit the combinational wire form:\n{sv}");
+}
+
+#[test]
+fn test_credit_channel_can_send_default_is_combinational() {
+    // Default (CAN_SEND_REGISTERED omitted / 0) keeps the existing
+    // combinational wire — unchanged from PR #3b-ii.
+    let source = "
+        bus DmaCh
+          credit_channel data: send
+            param T:     type  = UInt<8>;
+            param DEPTH: const = 4;
+          end credit_channel data
+        end bus DmaCh
+
+        use DmaCh;
+
+        module Prod
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port p:   initiator DmaCh;
+          comb
+            p.data_send_valid = 1'b0;
+            p.data_send_data  = 8'h0;
+          end comb
+        end module Prod
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("wire  __p_data_can_send = __p_data_credit != 0"),
+        "default (unregistered) can_send should stay combinational:\n{sv}");
+}
+
+#[test]
 fn test_credit_channel_mismatched_closing_keyword_errors() {
     let source = "
         bus B
