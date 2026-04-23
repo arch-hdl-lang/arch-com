@@ -4630,59 +4630,23 @@ v1 scope: nested `generate_if` inside a payload branch is a compile error. A han
 - **Handshake at the module port level directly.** Valid only inside a `bus` body. A single-channel interface is expressed by a one-handshake bus declaration plus an ordinary bus port.
 - **`req_ack_2phase` Tier-2 assertions** — requires `$past` tracking; deferred.
 
-**18c. First-Class Sub-Construct: credit_channel (inside bus)** — *wire layer live, elaboration pending*
+**18c. First-Class Sub-Construct: credit_channel (inside bus)**
 
-> **Status (v0.44.8):** grammar, wire flattening, sender-side credit counter,
-> target-side FIFO, **read-side method dispatch** (`port.ch.can_send` on the
-> sender, `port.ch.valid` / `port.ch.data` on the receiver), the
-> **`CAN_SEND_REGISTERED` timing-relief knob**, **Tier-2 protocol SVA**, and
-> **write-side statement sugar** (`port.ch.send(x);` / `port.ch.pop();` as
-> bare statements) are all in place. Sugar desugars in the parser: `.send(x)`
-> becomes two assigns (`send_valid=1; send_data=x;`) wrapped in a
-> compile-time-true `if` block (SV flattens it away); `.pop()` becomes a
-> single `credit_return=1` assign. Method names `send` / `pop` are narrowly
-> gated in the parser — any other port shape falls through to a normal
-> unknown-field error. Auto-emitted assertions (labels follow
-> `_auto_cc_<port>_<ch>_<rule>`, wrapped in `translate_off/on`):
-> (1) `credit <= DEPTH` on the sender; (2) `send_valid |-> credit > 0`
-> on the sender; (3) `credit_return |-> buffer_valid` on the receiver.
-> Consumed by Verilator `--assert`, EBMC, and SymbiYosys like the existing
-> handshake / bounds / divide-by-zero labels. The cross-module occupancy
-> invariant (`occupancy == DEPTH - credit`) is deferred to the hierarchical
-> formal story. The knob is
-> a channel-level param — `param CAN_SEND_REGISTERED: const = 1;` inside the
-> `credit_channel` block flops `can_send` off the next-state counter
-> (option b: full throughput preserved, fan-out comes from a register so the
-> combinational critical path ends at the flop input). Default is 0
-> (combinational). Method dispatch rewrites `port.ch.can_send` to the
-> synthesized wire/reg regardless of the choice. On the receiver module
-> (`target` perspective on a `send`-role channel) the codegen synthesizes a
-> depth-DEPTH packet buffer (`__<port>_<ch>_buf`) with head/tail/occupancy
-> pointers, pushed on `<port>_<ch>_send_valid` and popped when the user
-> drives `<port>_<ch>_credit_return` high while the FIFO is non-empty. The
-> user-driven `credit_return` is therefore both the pop trigger and the
-> credit-return pulse to the sender — a clean single-signal contract. Still
-> not implemented (in order): **ARCH-level method dispatch** for
-> `port.ch.valid` / `port.ch.data` / `port.ch.can_send` / `ch.send()` /
-> `ch.pop()`, the **`CAN_SEND_REGISTERED` timing-relief knob** (next-state
-> flop, option (b)), and **Tier-2 SVA invariants**. The FIFO internals are
-> visible in SV only for now — cocotb TBs and raw SV drivers can use them
-> today; method dispatch is blocked on an AST design decision for
-> typecheck-visible synthesized wires.
+`credit_channel` carries stateful credit-based flow control as a bus sub-construct, sibling to `handshake_channel`. The compiler owns three pieces of hardware per channel: the sender-side credit counter, the receiver-side FIFO, and the protocol wires between them — so users get a one-line declaration for what is otherwise 150+ lines of hand-rolled valid/data/credit plumbing and the attendant off-by-one bugs. Arch build emits the counter, the FIFO, and the Tier-2 protocol SVA automatically; there is no standalone form, credit channels always nest inside a `bus`.
 
-`credit_channel` carries stateful credit-based flow control as a bus sub-construct, sibling to `handshake_channel`. Syntax nests inside a bus body:
+**18c.1 Declaration**
 
 ```
 bus DmaCh
   credit_channel data: send
-    param T:     type  = UInt<64>;
-    param DEPTH: const = 8;
+    param T:                   type  = UInt<64>;
+    param DEPTH:               const = 8;
+    param CAN_SEND_REGISTERED: const = 0;   // optional timing-relief flop
   end credit_channel data
 end bus DmaCh
 ```
 
-Grammar (parser-accepted in v0.44.1; not yet usable):
-
+Grammar:
 ```
 CreditChannelBlock := 'credit_channel' Ident ':' Role NEWLINE
                         ParamDecl*
@@ -4690,7 +4654,113 @@ CreditChannelBlock := 'credit_channel' Ident ':' Role NEWLINE
 Role               := 'send' | 'receive'
 ```
 
-Knobs: payload type `T` (use a struct for multi-field payloads) and credit depth `DEPTH`. No protocol variants — credit is one protocol. Full semantics, lowering, auto-SVA, and the NoC-flit validation test are specified in `doc/plan_credit_channel.md`.
+Knobs:
+- `T` — payload type. Use a struct for multi-field payloads (same pattern as `fifo`).
+- `DEPTH` — buffer depth and initial credit pool. Must be ≥ 1.
+- `CAN_SEND_REGISTERED` — `0` (default) makes `can_send` combinational off the counter. `1` flops it off the *next-state* counter (option b — full throughput preserved; fan-out comes off a register so the combinational critical path of downstream logic ends at the flop input). Use when the can_send fan-out is timing-critical.
+
+**18c.2 Wire protocol**
+
+Each credit_channel flattens at the bus port into three signals. Directions below are from the initiator perspective; the `target` bus-port flip inverts them.
+
+| Signal | Direction | Driver |
+|---|---|---|
+| `<ch>_send_valid` | initiator → target | user's comb (sender) |
+| `<ch>_send_data` | initiator → target | user's comb (sender) |
+| `<ch>_credit_return` | target → initiator | user's comb (receiver) |
+
+The user-driven `credit_return` signal has a dual role: it tells the sender to increment its counter *and* tells the receiver's FIFO to dequeue. One signal, one decision point, no double-bookkeeping.
+
+**18c.3 Method dispatch (read side)**
+
+Inside a module that owns a credit_channel port, these expressions resolve to the compiler-synthesized state:
+
+| Expression | Available on | Resolves to |
+|---|---|---|
+| `port.ch.can_send` | sender | `__<port>_<ch>_can_send` (combinational or flopped per `CAN_SEND_REGISTERED`) |
+| `port.ch.valid` | receiver | FIFO occupancy ≠ 0 |
+| `port.ch.data` | receiver | FIFO front |
+
+Attempts to access the wrong side produce a normal unknown-field error at typecheck.
+
+**18c.4 Statement sugar (write side)**
+
+Inside a comb or seq block, two method-call statements desugar to wire drives:
+
+| Sugar | Desugars to |
+|---|---|
+| `port.ch.send(x);` | `port.<ch>_send_valid = 1; port.<ch>_send_data = x;` |
+| `port.ch.pop();` | `port.<ch>_credit_return = 1;` |
+
+`.pop()` and manually writing `credit_return = 1` are exactly equivalent — `.pop()` just names the receiver-side verb.
+
+**18c.5 Canonical pattern**
+
+```
+bus NocChannel
+  credit_channel flits: send
+    param T:     type  = UInt<64>;
+    param DEPTH: const = 8;
+  end credit_channel flits
+end bus NocChannel
+
+module NocProducer
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port out: initiator NocChannel;
+  reg seq_no: UInt<64> reset rst => 0;
+  comb
+    out.flits_send_valid = 1'b0;
+    out.flits_send_data  = 64'h0;
+    if out.flits.can_send
+      out.flits.send(seq_no);
+    end if
+  end comb
+  seq on clk rising
+    if out.flits.can_send
+      seq_no <= (seq_no + 1).trunc<64>();
+    end if
+  end seq
+end module NocProducer
+
+module NocConsumer
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port incoming: target NocChannel;
+  port reg last_seq: out UInt<64> reset rst => 0;
+  comb
+    incoming.flits_credit_return = 1'b0;
+    if incoming.flits.valid
+      incoming.flits.pop();
+    end if
+  end comb
+  seq on clk rising
+    if incoming.flits.valid
+      last_seq <= incoming.flits.data;
+    end if
+  end seq
+end module NocConsumer
+```
+
+**18c.6 Auto-emitted SVA (Tier 2)**
+
+Labels follow `_auto_cc_<port>_<ch>_<rule>`, wrapped in `synopsys translate_off/on`. Consumed by Verilator `--assert`, EBMC, and SymbiYosys just like the existing handshake and bounds labels.
+
+- Sender: `credit_bounds` — `__<port>_<ch>_credit <= DEPTH`.
+- Sender: `send_requires_credit` — `send_valid |-> credit > 0`.
+- Receiver: `credit_return_requires_buffered` — `credit_return |-> __<port>_<ch>_valid`.
+
+The cross-module occupancy invariant (`occupancy == DEPTH - credit`) is deferred — it needs a hierarchical-formal harness. Available in the same validation path once that lands.
+
+**18c.7 Not covered in v1**
+
+- Cross-clock-domain credit channels (v2 — needs gray-coded counters).
+- Credit-return batching (v1 is 1-pop = 1-return).
+- Multi-initiator (point-to-point only; many-to-one composes via `arbiter`).
+- Runtime-parameterizable depth (DEPTH is compile-time const).
+- `arch sim --pybind --test` simulation (C++ counter + FIFO mirror not yet emitted by `sim_codegen` — use `arch build` + Verilator / iverilog for now).
+
+Full design history and the broader roadmap are in `doc/plan_credit_channel.md` and `doc/plan_bus_unification.md`.
 
 **18d. Standard Bus Library**
 

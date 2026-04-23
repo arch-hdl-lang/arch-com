@@ -890,20 +890,50 @@ end bus BusAxiLite
 
 Full spec: `doc/ARCH_HDL_Specification.md` §18a.
 
-### credit_channel (inside bus) — scaffolding only in v0.44.1
+### credit_channel (inside bus)
 
-Stateful credit-based flow control as a bus sub-construct. Grammar is accepted; **elaboration is not yet implemented** — any bus declaring a `credit_channel` currently fails typecheck with *"parser scaffolding only"*.
+Stateful credit-based flow control. The compiler owns the sender counter, the receiver FIFO, and the Tier-2 protocol SVA. Nests inside a `bus`; no standalone form.
 
 ```
 bus DmaCh
   credit_channel data: send
-    param T:     type  = UInt<64>;
-    param DEPTH: const = 8;
+    param T:                   type  = UInt<64>;
+    param DEPTH:               const = 8;
+    param CAN_SEND_REGISTERED: const = 0;   // 1 = flop can_send off counter_next
   end credit_channel data
 end bus DmaCh
 ```
 
-When elaboration lands: `ch.can_send` / `ch.send(x)` on the initiator; `ch.valid` / `ch.data` / `ch.pop()` on the target. Compiler owns counter + FIFO. See `doc/plan_credit_channel.md` for the full design and `doc/plan_bus_unification.md` for the sibling-channel framing.
+**API** (read-side methods + write-side sugar):
+- Sender: `port.ch.can_send` (read); `port.ch.send(x);` (statement — desugars to `send_valid=1; send_data=x;`).
+- Receiver: `port.ch.valid`, `port.ch.data` (read); `port.ch.pop();` (statement — drives `credit_return=1`).
+- Credit return and pop are the same signal (`<port>_<ch>_credit_return`), by design.
+
+**Canonical pattern**:
+```
+// Sender
+comb
+  out.flits_send_valid = 1'b0;
+  out.flits_send_data  = 64'h0;
+  if out.flits.can_send
+    out.flits.send(seq_no);
+  end if
+end comb
+
+// Receiver
+comb
+  incoming.flits_credit_return = 1'b0;
+  if incoming.flits.valid
+    incoming.flits.pop();
+  end if
+end comb
+```
+
+**Auto-emitted SVA (Tier 2)**: `_auto_cc_<port>_<ch>_{credit_bounds,send_requires_credit,credit_return_requires_buffered}` under `translate_off/on`.
+
+Simulation caveat: `arch sim --pybind --test` does not yet mirror the counter/FIFO in C++ — use `arch build` + Verilator for now.
+
+Full spec: `doc/ARCH_HDL_Specification.md` §18c.
 
 ### Standard bus library (zero-setup `use`)
 
