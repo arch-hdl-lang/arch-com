@@ -310,48 +310,25 @@ Three auto-emitted properties labeled
   to use `tlm_method` and compare SV/behavior against the hand-rolled
   baseline (§`plan_bus_unification.md`).
 
-## Open questions
+## Resolved design decisions (locked 2026-04-22)
 
-1. **`return` syntax in TLM thread bodies.** Today threads don't use
-   `return`. Option A: reuse the `return` keyword (reads naturally,
-   matches the function-call contract at the call site). Option B:
-   introduce `respond expr;` to keep `return` exclusive to functions.
-   Leaning **A** — the value shipped by `return` in a TLM thread is
-   conceptually the function's return, and the same keyword avoids
-   inventing vocabulary.
-
-2. **Void methods (no return).** Blocking-with-no-ret is a common
-   shape (fire-and-forget with back-pressure). Two options:
-   (a) require a dummy `-> Bool` return, (b) allow the `-> RetType`
-   clause to be omitted and emit response channel as a bare handshake
-   (valid/ready, no data). Leaning **(b)**.
-
-3. **Arg direction on bus perspective flip.** All args are `in` on the
-   target side, `out` on the initiator side — mirrors request semantics.
-   No user-facing direction keyword needed per arg. Confirm no arg-
-   out-to-initiator cases in v1 (they belong in pipelined+Token land).
-
-4. **Multiple simultaneous call sites on the same method.** In v1
-   (blocking, one outstanding), the initiator's call-site FSM
-   serializes them naturally — the thread can't issue call N+1 until
-   call N responds. This should make arbitration unnecessary even when
-   multiple `thread` bodies in the same module touch the same method —
-   but the two threads still race on who gets to drive `req_valid`.
-   v1 rule: compile error if two threads in the same module touch the
-   same `tlm_method` call site. Users who need concurrency graduate to
-   pipelined/OoO modes.
-
-5. **Call site outside a thread.** A naive user might write
-   `let x = m.read(addr);` inside `comb`. That's a compile error —
-   TLM calls require the cycle-by-cycle scheduling that only threads
-   provide. Error message: "`tlm_method` calls are only valid inside
-   a `thread` body; use `thread X ... m.read(...) ... end thread X`."
-
-6. **Shared method body across multiple initiator ports on the target.**
-   Out of scope for v1. A target module with two bus ports each
-   carrying a `Mem` just declares two separate `thread s1.read` and
-   `thread s2.read` bodies (or refactors the shared logic into a
-   `function`).
+1. **Return keyword in TLM thread bodies**: reuse `return expr;`.
+2. **Void methods**: allow `-> RetType` clause to be omitted; response
+   channel becomes a bare valid/ready handshake with no data payload.
+3. **Arg direction**: all args flow initiator → target on the request
+   channel; the response flows via the separate `-> RetType` channel.
+   No per-arg `out` keyword in v1 — multi-value returns pack into a
+   struct as the ret type (composes with existing ARCH features,
+   avoids committing to arg-direction grammar before we know we
+   need it).
+4. **Multiple threads touching the same method** in the same module:
+   compile error in v1. Pipelined / OoO modes in v2 are the answer
+   for genuine concurrency.
+5. **Call site outside a thread**: compile error with a targeted
+   message pointing the user at `thread X ... end thread X`.
+6. **Shared method body across multiple ports on target**: out of v1.
+   Declare separate `thread s1.read` / `thread s2.read`, or refactor
+   shared logic into a `function`.
 
 ## Non-goals
 
