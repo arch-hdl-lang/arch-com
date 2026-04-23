@@ -1,5 +1,32 @@
 # Plan: `implement` — glue TLM methods to threads — **SHELVED** (2026-04-23)
 
+> **TLM's positioning in the language (lesson from this design review,
+> 2026-04-23):**
+>
+> `tlm_method` is a **fast-prototyping** abstraction. The call-site
+> form `d <= m.read(addr)` lets a user express "read a word from
+> this interface" in one line, accept blocking semantics, and iterate
+> quickly. It is *not* a high-performance design primitive.
+>
+> Multi-outstanding AXI, pipelined memory interfaces, and other
+> throughput-critical patterns intrinsically exploit protocol
+> structure (separate channels, ID-tagged responses, burst beats)
+> that the TLM atomic-call abstraction collapses. Optimizing those
+> patterns belongs to either:
+>
+> 1. **Hand-rolled threads** — the current path. The user writes
+>    explicit issuer + collector threads with `shared(or)` and
+>    `lock`, as `tests/axi_dma_thread/ThreadMm2s.arch` demonstrates.
+> 2. **A future HLS pass** — takes TLM-flavored source and generates
+>    the equivalent multi-outstanding implementation. That's a
+>    separate compiler project, not a TLM extension.
+>
+> With this framing, TLM v1 (blocking, single-thread per method) is
+> feature-complete for its role. The `implement` pool, `reentrant`,
+> `Future<T>/await`, and the `pipelined`/`out_of_order`/`burst`
+> modes all tried to blur TLM into the high-performance role — none
+> of them succeeded cleanly, and all were shelved.
+
 > **Shelved per AXI DMA side-by-side analysis (2026-04-23).** We wrote
 > a TLM-Model-B version of `tests/axi_dma_thread/ThreadMm2s.arch` (kept
 > for reference at `doc/examples/TlmMm2s_shelved.arch`) and compared
