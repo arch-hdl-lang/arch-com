@@ -4702,7 +4702,9 @@ fn test_implement_target_multi_implementer_rejected() {
 }
 
 #[test]
-fn test_implement_rejected_at_lower_threads() {
+fn test_implement_initiator_single_compiles_end_to_end() {
+    // PR-tlm-i3: single-implementer initiator routes through the
+    // existing v1 inline lowering. End-to-end SV compiles.
     let source = "
         bus Mem
           tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
@@ -4720,17 +4722,48 @@ fn test_implement_rejected_at_lower_threads() {
           end thread driver
         end module M
     ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("_tlm_init_driver_state"),
+        "single-implementer initiator should use v1 inline lowering:\n{sv}");
+    assert!(sv.contains("m_read_req_valid") && sv.contains("m_read_rsp_ready"),
+        "bus signals should be driven:\n{sv}");
+}
+
+#[test]
+fn test_implement_initiator_multi_implementer_rejected() {
+    // PR-tlm-i3: multi-implementer initiator → targeted error pointing
+    // at PR-tlm-i4.
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   d0: UInt<64> reset rst => 0;
+          reg   d1: UInt<64> reset rst => 0;
+          thread w0 implement m.read() on clk rising, rst high
+            d0 <= m.read(32'h1000);
+          end thread w0
+          thread w1 implement m.read() on clk rising, rst high
+            d1 <= m.read(32'h1004);
+          end thread w1
+        end module M
+    ";
     let tokens = arch::lexer::tokenize(source).expect("lexer");
     let mut parser = arch::parser::Parser::new(tokens, source);
     let ast = parser.parse_source_file().expect("parse");
     let ast = arch::elaborate::elaborate(ast).expect("elaborate");
     let ast = arch::elaborate::lower_tlm_target_threads(ast).expect("tlm target");
-    let ast = arch::elaborate::lower_tlm_initiator_calls(ast).expect("tlm init");
-    let r = arch::elaborate::lower_threads(ast);
-    assert!(r.is_err(), "implement thread should be rejected until i2/i3/i4 ship");
+    let r = arch::elaborate::lower_tlm_initiator_calls(ast);
+    assert!(r.is_err(), "multi-implementer initiator should error until PR-tlm-i4");
     let msg = format!("{:?}", r.unwrap_err());
-    assert!(msg.contains("implement") && msg.contains("not yet implemented"),
-        "expected scaffolding error, got: {msg}");
+    assert!(msg.contains("multi-implementer initiator") && msg.contains("m.read"),
+        "expected targeted error, got: {msg}");
 }
 
 #[test]

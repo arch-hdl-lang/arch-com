@@ -4148,6 +4148,13 @@ pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<Comp
                     for item in &m.body {
                         if let ModuleBodyItem::Thread(t) = item {
                             if t.tlm_target.is_some() { continue; }
+                            // Threads carrying `implement` are the opt-in
+                            // mechanism for multi-thread TLM — skip the
+                            // lock-idiom diagnostic on them. Multi-
+                            // implementer rejection is handled below by
+                            // PR-tlm-i3 (initiator) with its own targeted
+                            // message.
+                            if t.implement.is_some() { continue; }
                             collect_bare_tlm_calls(&t.body, t.span, &port_buses, &bus_methods, &mut bare_uses);
                         }
                     }
@@ -4173,6 +4180,22 @@ pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<Comp
                 }
 
                 // Identify threads that contain TLM calls and inline them.
+                // PR-tlm-i3: count initiator-side `implement m.method()`
+                // threads per (port, method). Single-implementer routes
+                // through existing inline lowering (equivalent to v1
+                // single-thread); multi-implementer is PR-tlm-i4.
+                let mut init_impl_counts: HashMap<(String, String), usize> = HashMap::new();
+                for item in &m.body {
+                    if let ModuleBodyItem::Thread(t) = item {
+                        if let Some(ib) = &t.implement {
+                            if ib.kind == TlmImplementKind::Initiator {
+                                *init_impl_counts.entry((ib.port.name.clone(), ib.method.name.clone()))
+                                    .or_insert(0) += 1;
+                            }
+                        }
+                    }
+                }
+
                 let mut new_body: Vec<ModuleBodyItem> = Vec::new();
                 for item in std::mem::take(&mut m.body) {
                     if let ModuleBodyItem::Thread(t) = &item {
@@ -4180,12 +4203,35 @@ pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<Comp
                             new_body.push(item);
                             continue;
                         }
-                        // `implement`-bound threads skip this pass — lower_threads
-                        // will hit the PR-tlm-i1 scaffolding reject. (Future i3/i4
-                        // lowering replaces this pass-through with proper handling.)
-                        if t.implement.is_some() {
-                            new_body.push(item);
-                            continue;
+                        // Target-side `implement` is handled by
+                        // lower_tlm_target_threads before this pass runs,
+                        // so anything reaching here is initiator (if set).
+                        if let Some(ib) = &t.implement {
+                            if ib.kind == TlmImplementKind::Initiator {
+                                let count = init_impl_counts
+                                    .get(&(ib.port.name.clone(), ib.method.name.clone()))
+                                    .copied().unwrap_or(0);
+                                if count > 1 {
+                                    // Multi-implementer — PR-tlm-i4.
+                                    errors.push(CompileError::general(
+                                        &format!(
+                                            "multi-implementer initiator for `{}.{}()` is not yet implemented — {count} threads carry `implement` on this method. id-tagged request arbitration ships in PR-tlm-i4 (see doc/plan_tlm_implement_thread.md).",
+                                            ib.port.name, ib.method.name,
+                                        ),
+                                        t.span,
+                                    ));
+                                    new_body.push(item);
+                                    continue;
+                                }
+                                // Single-implementer initiator — fall through
+                                // to the inline lowering (v1 equivalent).
+                            } else {
+                                // Target kind here is unexpected (should've
+                                // been consumed earlier). Leave for the
+                                // lower_threads defensive error.
+                                new_body.push(item);
+                                continue;
+                            }
                         }
                         if thread_body_has_tlm_call(&t.body, &port_buses, &bus_methods) {
                             let t_moved = if let ModuleBodyItem::Thread(t) = item { t } else { unreachable!() };
