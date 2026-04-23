@@ -4762,49 +4762,11 @@ The cross-module occupancy invariant (`occupancy == DEPTH - credit`) is deferred
 
 Full design history and the broader roadmap are in `doc/plan_credit_channel.md` and `doc/plan_bus_unification.md`.
 
-**18d. First-Class Sub-Construct: tlm_method (inside bus)** — *parser scaffolding, v1 blocking only*
+**18d. First-Class Sub-Construct: tlm_method (inside bus)**
 
-> **Status (v0.44.16):** grammar, wire flattening, **inline lowering
-> for both target and initiator sides**, and **sim mirror** all work
-> end-to-end. Because the TLM passes emit ordinary RegDecl + RegBlock
-> + CombBlock into the parent module, `arch sim --pybind --test`
-> handles the state machines via its existing reg/seq/comb C++ mirror
-> — no TLM-specific sim emitter needed. Both
-> passes emit RegDecl + RegBlock + CombBlock items directly into the
-> parent module body — bypassing `lower_threads` — so bus-port-member
-> drives resolve naturally and the no-latch check is satisfied.
-> Target-side: canonical shape `<SeqAssign|CombAssign|WaitUntil>*
-> return expr;` lowers to entry → user-wait states → respond → loop.
-> Initiator-side: any thread containing `x <= m.method(args);` call
-> sites gets fully inlined — each call becomes an issue state + wait
-> state; other `x <= expr;` stmts become compute states; per-method
-> req_valid/req_args/rsp_ready drives are unconditional state-OR /
-> state-mux forms to satisfy the no-latch check. v1 rejects nested or
-> composed TLM calls and any non-SeqAssign stmt inside a TLM-using
-> thread. `lower_tlm_target_threads`
-> (runs before the generic thread lowering) rewrites
-> `thread port.method(args) ... return expr; end` into a regular
-> thread that drives `<port>_<method>_req_ready`, latches args into
-> synthesized `__tlm_<port>_<method>_<arg>_latched` regs, and turns
-> each `return expr;` into the
-> `rsp_valid=1; rsp_data=expr; wait until rsp_ready;` sequence. The
-> thread's natural loop-back (non-`once`) carries control back to the
-> entry state to accept the next request. Initiator call-site
-> lowering, Tier-2 SVA, and sim mirror ship in the remaining PRs. Each `tlm_method name(args) ->
-> Ret: blocking;` produces `<name>_req_valid`, `<name>_<arg>` per arg,
-> `<name>_req_ready`, `<name>_rsp_valid`, `<name>_rsp_data` (omitted
-> for void methods), `<name>_rsp_ready` — directions from the
-> initiator perspective, flipped on `target`. Target-side `thread
-> port.method(args)` body lowering, initiator call-site lowering,
-> Tier-2 SVA, and sim_codegen mirror all follow in staged PRs — see
-> `doc/plan_tlm_method.md`.
->
-> v1 ships blocking mode only. Pipelined / out_of_order / burst are v2;
-> the parser rejects those mode keywords early with a targeted message
-> so users aren't surprised when a `pipelined` declaration silently
-> parses today.
+`tlm_method` nests inside a `bus` body and declares a transaction-level method that initiator modules *call* and target modules *implement*. v1 ships `blocking` mode only — the caller suspends until the response arrives. Pipelined / out_of_order / burst modes are v2.
 
-Syntax:
+**18d.1 Declaration**
 
 ```
 bus Mem
@@ -4814,15 +4776,88 @@ bus Mem
 end bus Mem
 ```
 
-Grammar (parser-accepted in v0.44.9; not yet usable):
+Grammar:
 ```
-TlmMethod      := 'tlm_method' Ident '(' ArgList ')' ('->' TypeExpr)? ':' Mode ';'
-ArgList        := (Ident ':' TypeExpr (',' Ident ':' TypeExpr)*)?
-Mode           := 'blocking'                                    // v1
-                | 'pipelined' | 'out_of_order' | 'burst'        // v2, rejected v1
+TlmMethod := 'tlm_method' Ident '(' ArgList ')' ('->' TypeExpr)? ':' Mode ';'
+ArgList   := (Ident ':' TypeExpr (',' Ident ':' TypeExpr)*)?
+Mode      := 'blocking'                                 // v1
+           | 'pipelined' | 'out_of_order' | 'burst'    // v2 — rejected at parse
 ```
 
-v1 rules: args flow initiator → target only (no per-arg `out` keyword; pack multi-value returns into a struct). Call sites live inside a `thread`. See `doc/plan_tlm_method.md` for the full design.
+v1 rules: args flow initiator → target only (no per-arg `out` keyword; multi-value returns pack into a struct as the ret type). Call sites and method bodies live inside a `thread` block.
+
+**18d.2 Wire protocol**
+
+Each method flattens to two handshake-shaped channels. Directions below are from the initiator perspective; the `target` bus-port flip inverts them uniformly.
+
+| Signal | Direction | Driver |
+|---|---|---|
+| `<name>_req_valid` | initiator → target | initiator |
+| `<name>_<arg>` (per arg) | initiator → target | initiator |
+| `<name>_req_ready` | target → initiator | target |
+| `<name>_rsp_valid` | target → initiator | target |
+| `<name>_rsp_data` | target → initiator | target *(omitted for void)* |
+| `<name>_rsp_ready` | initiator → target | initiator |
+
+**18d.3 Target-side implementation**
+
+The target implements each method as a `thread` whose name is the dotted `port.method` path. The body runs once per received request; arg names are bound as thread-local references to the incoming request payload.
+
+```
+module MemTarget
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port s:   target Mem;
+  port ready: in Bool;
+  thread s.read(addr) on clk rising, rst high
+    wait until ready;
+    return (addr +% 64'h0).trunc<64>();   // example ret computation
+  end thread s.read
+end module MemTarget
+```
+
+Lowering: entry state waits for `req_valid` and latches args; each user `wait until` introduces a new state; a single terminal `return expr;` drives `rsp_valid + rsp_data` and waits for `rsp_ready` before looping back to entry.
+
+**18d.4 Initiator-side call**
+
+Call sites appear as the direct right-hand side of a non-blocking assign inside a thread body:
+
+```
+module Initiator
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port m:   initiator Mem;
+  reg   d0: UInt<64> reset rst => 0;
+  reg   d1: UInt<64> reset rst => 0;
+  thread driver on clk rising, rst high
+    d0 <= m.read(32'h1000);
+    d1 <= m.read(32'h1004);
+  end thread driver
+end module Initiator
+```
+
+Each call lowers to a two-state issue + wait-response sequence. `d <= m.read(...) + 1;` (composed RHS) is rejected with a targeted error — v1 requires the call to be the direct RHS.
+
+**18d.5 Lowering**
+
+Both target and initiator passes emit ordinary `RegDecl` + `RegBlock` + `CombBlock` items into the parent module body (bypassing generic thread lowering). This means:
+
+- Bus-port-member drives resolve naturally in the parent's scope.
+- `arch sim --pybind --test` handles the state machines via its existing reg/seq/comb C++ mirror — no TLM-specific sim emitter.
+- The parent-module state reg is `_tlm_<port>_<method>_state` (target side) or `_tlm_init_<thread>_state` (initiator side).
+- Comb drives are unconditional state-OR / state-mux forms to satisfy the no-latch check.
+
+**18d.6 Not covered in v1**
+
+- `pipelined` / `out_of_order` / `burst` modes + `Future<T>` / `Token<T, id:N>` / `Future<Vec<T,L>>` return types.
+- TLM calls outside a thread body (comb / module-level `let` — compile error).
+- Nested TLM calls in expressions (compile error — must be direct RHS of `<=`).
+- Control flow inside a TLM-using initiator thread beyond a linear SeqAssign sequence (if/else/fork/for rejected in v1).
+- Target method bodies with nested control flow beyond linear `wait until` + seq assigns terminated by a single `return`.
+- Tier-2 protocol SVA assertions (design-complete but not yet emitted).
+- Multi-initiator on a single method (point-to-point only).
+
+Full design and evolution in `doc/plan_tlm_method.md`.
 
 **18e. Standard Bus Library**
 

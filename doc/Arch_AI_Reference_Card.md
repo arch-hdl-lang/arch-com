@@ -935,6 +935,51 @@ end comb
 
 Full spec: `doc/ARCH_HDL_Specification.md` §18c.
 
+### tlm_method (inside bus)
+
+Transaction-level method sub-construct. Initiator modules *call*; target modules *implement* via a dotted-name thread. v1 ships `blocking` only.
+
+```
+bus Mem
+  tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+  tlm_method write(addr: UInt<32>, data: UInt<64>) -> Bool: blocking;
+  tlm_method poke(addr: UInt<32>): blocking;       // void
+end bus Mem
+```
+
+**Target side** — thread name is `port.method(args)`:
+
+```
+module MemTarget
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port s:   target Mem;
+  port ready: in Bool;
+  thread s.read(addr) on clk rising, rst high
+    wait until ready;
+    return 64'h42;
+  end thread s.read
+end module MemTarget
+```
+
+**Initiator side** — call as RHS of `<=` inside a thread:
+
+```
+module Initiator
+  port m: initiator Mem;
+  reg   d: UInt<64> reset rst => 0;
+  thread driver on clk rising, rst high
+    d <= m.read(32'h1000);
+  end thread driver
+end module Initiator
+```
+
+Both sides lower to a parent-module state machine (state reg + RegBlock + CombBlock). `arch sim --pybind --test` works through the existing reg/seq/comb mirror — no TLM-specific sim code.
+
+v1 restrictions: blocking only; linear SeqAssign-only initiator bodies; no nested or composed TLM calls; no control flow (if/fork/for) inside a TLM-using thread.
+
+Full spec: `doc/ARCH_HDL_Specification.md` §18d. Design + v2 roadmap: `doc/plan_tlm_method.md`.
+
 ### Standard bus library (zero-setup `use`)
 
 The ARCH compiler ships curated bus definitions under `<install>/stdlib/`. Use any of them from any file with no path setup:

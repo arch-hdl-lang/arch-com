@@ -4400,6 +4400,79 @@ fn test_tlm_initiator_sim_mirror_works() {
 }
 
 #[test]
+fn test_tlm_canonical_end_to_end_initiator_plus_target() {
+    // PR-tlm-7: canonical validation — a minimal Mem bus with `read`
+    // and `write` methods, plus initiator + target pair exercising
+    // both sides of the wire protocol.
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+          tlm_method write(addr: UInt<32>, data: UInt<64>) -> Bool: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module MemTarget
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port s:   target Mem;
+          port ready: in Bool;
+          thread s.read(addr) on clk rising, rst high
+            wait until ready;
+            return 64'h42;
+          end thread s.read
+          thread s.write(addr, data) on clk rising, rst high
+            wait until ready;
+            return 1'b1;
+          end thread s.write
+        end module MemTarget
+
+        module Initiator
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   d0: UInt<64> reset rst => 0;
+          reg   d1: UInt<64> reset rst => 0;
+          reg   ack: Bool    reset rst => false;
+          thread driver on clk rising, rst high
+            d0  <= m.read(32'h1000);
+            d1  <= m.read(32'h1004);
+            ack <= m.write(32'h2000, d0);
+          end thread driver
+        end module Initiator
+    ";
+    let sv = compile_to_sv(source);
+
+    // Target-side state machines.
+    assert!(sv.contains("_tlm_s_read_state"),
+        "target: read state reg should appear:\n{sv}");
+    assert!(sv.contains("_tlm_s_write_state"),
+        "target: write state reg should appear:\n{sv}");
+    assert!(sv.contains("_tlm_s_read_addr_latched"),
+        "target: read arg latch reg should appear:\n{sv}");
+    assert!(sv.contains("_tlm_s_write_addr_latched")
+         && sv.contains("_tlm_s_write_data_latched"),
+        "target: write arg latch regs should appear:\n{sv}");
+
+    // Initiator state machine + wire drives.
+    assert!(sv.contains("_tlm_init_driver_state"),
+        "initiator: driver state reg should appear:\n{sv}");
+    assert!(sv.contains("m_read_req_valid")
+         && sv.contains("m_write_req_valid"),
+        "initiator: both methods should drive req_valid:\n{sv}");
+    assert!(sv.contains("m_read_addr")
+         && sv.contains("m_write_addr")
+         && sv.contains("m_write_data"),
+        "initiator: arg signals should appear:\n{sv}");
+
+    // Compile to sim C++ too — same path should flow through the existing
+    // reg/seq/comb sim mirror without issues.
+    let sim = compile_to_sim_h(source, false);
+    assert!(sim.contains("_tlm_s_read_state") && sim.contains("_tlm_init_driver_state"),
+        "sim C++ should mirror the state regs for both sides");
+}
+
+#[test]
 fn test_tlm_call_rejected_outside_seq_assign_rhs() {
     // Arithmetic on a TLM call RHS is not supported in v1 — must be
     // direct.
