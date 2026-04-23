@@ -1,310 +1,285 @@
-# Plan: `tlm_method` pipelined mode (v2a)
+# Plan: `tlm_method` pipelined via reentrant `thread` (v2a)
 
-*Author: session of 2026-04-22. Builds on `doc/plan_tlm_method.md` v1 which
-shipped blocking mode only (PRs #74–#84).*
+*Author: session of 2026-04-22. Supersedes the earlier Future<T>/await
+sketch. Builds on `doc/plan_tlm_method.md` v1 (PRs #74–#84).*
 
-## Motivation
+## The core idea
 
-v1 `blocking` mode makes every call a round-trip stall: issue, wait for
-response, advance. Any back-to-back calls are serialized end-to-end even
-when the target could happily overlap multiple in-flight transactions.
-`pipelined` mode unblocks this: the caller gets a `Future<T>` handle
-*immediately* on issue, keeps issuing, and retrieves the actual value
-later by awaiting the Future. The target can also overlap its work —
-pop a request, start servicing, pop another, service that, push the
-first response, etc. Responses arrive **in issue order** (the "FIFO
-semantics" that make pipelined simpler than out-of-order).
+v1 blocking mode runs one TLM call at a time per thread. To pipeline,
+**don't invent new types or keywords** — make the existing `thread`
+construct **reentrant**. A reentrant thread is a single body
+definition whose invocations can overlap: a new invocation starts as
+soon as the previous one hits its first `wait` (or blocking TLM call),
+even if the previous invocation hasn't finished.
 
-This matches AXI in-order reads, in-order write responses, and the
-general "issue N, collect N" pattern that's pervasive in memory and
-interconnect interfaces.
-
-## Scope
-
-Pipelined mode only. Out-of-order (`Token<T, id_width: N>` — responses
-tagged by ID, any arrival order) and burst (single AR, N data beats)
-remain deferred to v2b/v2c.
-
-## Semantics
-
-### Initiator view
+The user writes ordinary blocking call code. The compiler synthesizes
+up to N concurrent instances of the FSM, sharing the thread body but
+each with its own per-instance state (args, locals, program counter).
+Pipelining emerges naturally: instance 0 issues → instance 1 issues →
+... → responses come back in order and the compiler routes each to
+the instance that issued it.
 
 ```
-thread driver on clk rising, rst high
-  let f0 = m.read(0x1000);      // non-blocking issue; returns Future<UInt<64>>
-  let f1 = m.read(0x1004);      // overlaps with f0 in flight
-  let f2 = m.read(0x1008);
-  d0 <= await f0;               // blocks until f0's response arrives
-  d1 <= await f1;               // already arrived? returns immediately. Else blocks.
-  d2 <= await f2;
+thread driver on clk rising, rst high reentrant max 8
+  let addr = next_addr;
+  next_addr <= (next_addr + 4).trunc<32>();    // allow next instance to proceed
+  d <= m.read(addr);                            // blocks THIS instance
 end thread driver
 ```
 
-- `m.read(args)` on a `pipelined` method returns `Future<RetType>` immediately.
-- `Future<T>` is an opaque handle — user can only pass it around, store it,
-  or `await` it.
-- `await f` inside a thread body: suspends the thread until `f` has a
-  value, then yields the value.
-- Issue is gated on `req_ready` (target slot available).
-- Up to `MAX_OUTSTANDING` (channel-level const param) requests may be
-  in flight concurrently; beyond that, issue stalls.
-- Responses arrive in issue order — internal response FIFO dispatches
-  them to the correct Future slot.
+This is the same code the user would have written for a single-threaded
+blocking driver — just with `reentrant max 8` added. Up to 8
+invocations are in flight concurrently, each blocked on its own
+`m.read(...)` return.
 
-### Target view
+## Why this is the right model
 
-Unchanged from v1: `thread port.method(args) ... return expr; end`
-with the lowering's natural loop-back reaccepting the next request once
-the current response is drained. Pipelined is strictly a *caller-side*
-property — the target doesn't know or care whether the caller is
-issuing serially or pipelined. The only target-side change is allowing
-the next request to be accepted on the same cycle a response drains
-(compositional throughput), which falls out of the existing target
-FSM by construction.
-
-### `Future<T>` is a handle, not a type a user names
-
-`Future<T>` is inferred by the compiler from the `pipelined` method's
-return type. The user never writes `let f: Future<UInt<64>> = ...` — the
-`let` binding takes the inferred type. Parsing `await f` requires the
-binding to be a Future handle (checked at typecheck).
-
-Under the hood: a `Future<T>` handle is two signals — a small tag
-(slot index into the initiator's outstanding-response FIFO) plus the
-static T type for expression typing. The slot's payload is read when
-the Future is `await`'d.
-
-### Concurrency mode declaration
-
-Grammar already parses `pipelined` (v1 rejects it at parse). The v1
-`blocking` keyword gate becomes two-armed:
-
-```
-Mode := 'blocking' | 'pipelined'
-```
-
-Each keyword drives a separate elaboration path. `out_of_order` and
-`burst` stay rejected at parse until v2b / v2c.
-
-## Wire protocol
-
-Same flattened signals as v1 blocking — the wire-level handshake is
-identical. What changes is *who can have how many in flight*:
-
-| Signal | v1 blocking | v2a pipelined |
+| Concern | Future<T>/await version | Reentrant thread version |
 |---|---|---|
-| `<name>_req_valid`       | 1-outstanding | up to MAX_OUTSTANDING |
-| `<name>_req_ready`       | high when target can accept | same |
-| `<name>_<arg>`           | held valid until req_ready | same |
-| `<name>_rsp_valid`       | target drives when response ready | same |
-| `<name>_rsp_data`        | target drives with response value | same |
-| `<name>_rsp_ready`       | initiator drives when able to accept | same |
+| User-visible new syntax | `Future<T>` + `await` keyword | `reentrant max N` on the thread |
+| New AST types | Yes (`TypeExpr::Future`) | No |
+| User code reads as | Explicit issue + defer + await | Straight-line blocking — what the user means |
+| Multiple methods per thread | Needs multiplexed Future handling | Trivially works (thread body blocks on each) |
+| Cross-thread coordination | `await_all` / `await_any` primitives | `lock` for resource conflicts (already exists) |
+| Non-TLM pipelining (e.g. RAM read latency) | N/A — TLM-specific | Works uniformly for any multi-cycle op |
 
-No new physical signals. The "pipelining" is entirely in the initiator
-(and, implicitly, the target) internal state.
+The reentrant model also **generalizes past TLM**: any thread that
+waits on any multi-cycle operation (RAM read, FIFO drain, handshake)
+gets the same "let the next instance start while I wait" semantics
+for free.
 
-## Knobs
+## Semantics
 
-Channel-level const param:
-
-```
-bus Mem
-  tlm_method read(addr: UInt<32>) -> UInt<64>: pipelined
-    param MAX_OUTSTANDING: const = 8;
-end bus Mem
-```
-
-Grammar addition: optional trailing params after the mode keyword.
-
-`MAX_OUTSTANDING` sizes the initiator's response FIFO. Default 4.
-Target-side buffering is the target's own concern (e.g., the target
-may have its own internal FIFO or pipeline; not related to this param).
-
-## Initiator-side lowering (where the real work is)
-
-`tlm_method read(addr: UInt<32>) -> UInt<64>: pipelined` + three calls
-in a thread body lowers roughly to:
+### Reentrancy clause
 
 ```
-// Response FIFO (depth MAX_OUTSTANDING):
-reg  _tlm_init_driver_rsp_fifo: Vec<UInt<64>, MAX_OUTSTANDING> reset rst => 0;
-reg  _tlm_init_driver_rsp_head: UInt<clog2(MAX_OUTSTANDING)> reset rst => 0;
-reg  _tlm_init_driver_rsp_tail: UInt<clog2(MAX_OUTSTANDING)> reset rst => 0;
-reg  _tlm_init_driver_rsp_occ:  UInt<clog2(MAX_OUTSTANDING+1)> reset rst => 0;
-
-// Per-Future metadata: which FIFO slot, resolved-yet bit.
-// Since responses are in-order, slot_idx === issue_seq_no mod MAX_OUTSTANDING.
-// Resolved means: rsp_tail has advanced past the Future's slot.
-
-// Issue FSM state — walks user stmts, stalling on max-outstanding.
-// await FSM state — stalls until the awaited Future's slot is resolved.
+ThreadDecl := 'thread' ('once')? Ident?
+              ('.' Ident '(' ArgList ')')?                // TLM target binding (v1)
+              'on' Ident (rising|falling) ',' Ident (high|low)
+              ('reentrant' ('max' IntLit)?)?              // new
+              ('default' 'when' Expr body 'end' 'default')?
+              body
+              'end' 'thread' Ident?
 ```
 
-Concretely:
+- `reentrant` alone: unbounded concurrent instances (synthesizes as
+  many as there are live yield points in the body).
+- `reentrant max N`: at most N concurrent instances. Issuing a new
+  instance stalls when N are already live.
+- Absence (default): current v1 semantics — exactly one instance, new
+  invocations wait for the previous to complete.
 
-- **Issue**: on `let f_k = m.method(args);`, enter an ISSUE state that
-  drives `req_valid` + args, waits for `req_ready && (rsp_occ < MAX_OUTSTANDING)`,
-  then advances. Stores `rsp_tail` at the issue cycle as the Future's
-  slot index.
-- **Response collection**: a background state or comb block observes
-  `rsp_valid`, writes `rsp_data` into `_rsp_fifo[rsp_tail]`, bumps
-  `rsp_tail`, bumps `rsp_occ`. Drives `rsp_ready = 1` whenever the
-  FIFO has space.
-- **Await**: `<dest> <= await f_k;` enters a WAIT state that stalls until
-  `f_k.slot_idx < rsp_tail`, then reads `_rsp_fifo[f_k.slot_idx]` and
-  pops (increments rsp_head, decrements rsp_occ).
+### What an "instance" is
 
-Because responses are in-order, awaits on Futures *must also* be done
-in-order (if the user awaits f1 before f0, the response data for f0
-is consumed when f1's await fires, which is wrong). Two handling
-choices:
+Each instance has:
+- **Its own program counter** — current FSM state index.
+- **Its own args** if the thread is a TLM target (already latched per-call in v1).
+- **Its own locals** — `let` bindings inside the body are per-instance.
 
-1. **Strict in-order await**: typecheck rejects out-of-order await.
-2. **Buffered await**: compiler tracks per-Future "consumed" bits and
-   pops only when earlier Futures are consumed. More expensive.
+Each instance **shares**:
+- **Module regs** declared outside the thread — readable and writable
+  by any instance.
+- **Thread-scoped regs** declared inside the thread but NOT per-`let`
+  — readable and writable by any instance (race-safe via seq semantics;
+  two instances writing the same cycle = last-writer-wins per-port
+  arbitration, same as cross-thread races today).
 
-v2a choice: **strict in-order await**. Users who need reordered
-awaits graduate to out_of_order mode (v2b).
+### Yield points
 
-### Typecheck rule
+An "instance yields" and frees up for the next instance to start at:
+- Any `wait until` / `wait N cycle`.
+- Any blocking TLM call (v1 blocking methods).
+- `do ... until` waiting for its condition.
 
-Futures bound by `let f_i = m.read(...)` in a thread body must be
-awaited in the same lexical order they were issued. The compiler
-tracks issue order per-channel and rejects `await f_earlier` after
-`await f_later`.
+Ordering of invocations:
+- **In-flight instances advance independently** — each on its own
+  FSM state index, each served by the next clock edge.
+- **New invocations** start when the entry state has capacity
+  (instance count < max).
 
-### Multiple threads sharing a method
+### Response routing (for TLM)
 
-v1 rejected multiple threads in the same module touching the same
-method (implicit serialization via single-thread issue). v2a extends
-this: one thread per method call site. Within that thread, up to
-MAX_OUTSTANDING pipelined calls. Two threads still can't share.
+When a reentrant thread contains `x <= m.method(...);` and multiple
+instances are in-flight, they share the one bus port. The compiler:
+1. Arbitrates issue: at most one instance drives `req_valid` per
+   cycle. Round-robin priority among ready-to-issue instances.
+2. Records a routing FIFO: "slot k on the bus was issued by instance
+   I." In-order responses fill in-order slots.
+3. Routes each response back to its issuing instance — the instance
+   resumes from its WAIT state with `rsp_data` captured into its
+   per-instance destination reg.
 
-Cross-thread sharing with arbitration is a future extension; the
-thread-per-method constraint keeps the initiator FSM deterministic
-in v2a.
+This is *exactly* the v2a pipelined machinery but driven by the
+thread model instead of a separate Future abstraction.
 
-## Target-side lowering
+### Interaction with `lock`
 
-Unchanged from v1. The target FSM already:
-1. Accepts req_valid → latches args → advances.
-2. Runs user body.
-3. `return expr;` → drives rsp_valid + rsp_data → waits for rsp_ready
-   → loops back to entry.
+`lock RESOURCE ... end lock RESOURCE` inside a thread body already
+serializes access to a shared resource across threads. With reentrancy,
+the same rule applies across **instances**: only one instance holds a
+given lock at a time. A reentrant thread doing lock-heavy work will
+serialize internally — that's the user's choice.
 
-Pipelined mode works through this FSM without any modification.
-Multiple in-flight is a function of: how fast the target can
-re-complete its body loop vs the initiator's issue rate.
+## Grammar and AST
 
-> **Stretch**: targets could additionally declare `pipelined` on their
-> implementation to say "I can have up to N concurrent user-body
-> instances, each serving a separate request". That requires a
-> fundamentally different target-side FSM (per-request state table).
-> Deferred past v2a.
+### Keyword additions
 
-## v2a roadmap
+- `reentrant` — contextual keyword parsed after the clock/reset clause.
+- `max N` — optional bound, defaults to a compile-time const (say 4)
+  when omitted. `max <ident>` allows const-param references.
 
-Mirror the v1 PR split:
+### AST additions
 
-### PR-tlm-p0: this plan doc (no code)
+```rust
+pub struct ThreadBlock {
+    // ... existing fields
+    /// None = not reentrant (v1 semantics).
+    /// Some(None) = reentrant with default max instances.
+    /// Some(Some(Expr)) = reentrant max N (Expr must reduce to const).
+    pub reentrant: Option<Option<Expr>>,
+}
+```
 
-Lock design decisions before coding.
+Parser reads the optional clause after reset clause; typecheck
+validates the max expression is const-reducible.
 
-### PR-tlm-p1: grammar extension
+## Lowering
 
-- Parser: `pipelined` mode keyword accepted (not just `blocking`).
-- AST: optional trailing `param` block after the mode keyword.
-- Typecheck: reject any initiator call site on a pipelined method
-  until PR-tlm-p3/p4 land (scaffolding pattern).
+### Internal model: N parallel state FSMs
 
-### PR-tlm-p2: `Future<T>` type + `await` grammar
+A reentrant thread with `max N` lowers to:
+1. **N state regs**: `_thread_X_state_0 ... _thread_X_state_{N-1}`.
+2. **N per-instance reg banks**: each `let` binding and arg latch
+   replicated N times with `_inst_<i>` suffix.
+3. **Shared reg banks**: module-scope regs and thread-scope regs NOT
+   introduced by `let` stay single-copy.
+4. **Instance scheduler**: round-robin pointer picking the next
+   free-slot to start a new invocation.
+5. **Issue arbiter** (for TLM calls): round-robin over instances
+   ready to drive `req_valid`; response-routing FIFO records
+   (slot, instance) pairs.
 
-- AST: `TypeExpr::Future(Box<TypeExpr>)` variant.
-- AST: `ThreadStmt::Let(Ident, Expr)` or reuse the existing `let`
-  shape inside threads (decision: check whether threads already
-  support `let` bindings — if not, add it).
-- Parser: `let f = m.method(args);` inside a thread body.
-- Parser: `await <expr>` as an Expr / ThreadStmt.
-- Typecheck: Future<T> propagation; `await f` only valid in thread
-  body; in-order-await check.
-- Not wired to any lowering yet — rejected as "pipelined lowering
-  not yet implemented" with a targeted message.
+Each instance's FSM is a copy of the v1 lowered FSM — entry state,
+wait states, respond states — with state references rewritten to the
+per-instance state reg.
 
-### PR-tlm-p3: initiator-side pipelined lowering
+### v2a scope
 
-- Replace blocking-only initiator pass with one that handles both
-  modes. For pipelined calls:
-  - Emit response FIFO (head/tail/occ/buf).
-  - Walk user body: each `let f = m.method(args);` becomes an ISSUE
-    state (with max-outstanding gate). Each `await f` becomes a WAIT
-    state.
-  - Ambient background state / comb collects responses.
-- Lift the PR-tlm-p1 scaffolding reject.
+- Support `reentrant` on any thread, including TLM target and
+  initiator-using threads.
+- Implement the issue arbiter + response routing for the initiator
+  case.
+- Single-bus sharing: multiple instances on one method go through the
+  arbiter.
+- Defer: multiple reentrant threads sharing the same method (thread-
+  thread arbitration); `reentrant` on TLM target threads with
+  multiple concurrent request services (needs per-request body state
+  replication on the target side — bigger refactor).
 
-### PR-tlm-p4: docs pass + canonical pipelined test
+## v2a PR roadmap
 
-Spec §18d addition with pipelined semantics. Reference card entry.
-End-to-end test with a pipelined initiator issuing 3 calls and
-awaiting in order.
+### PR-tlm-p1: `reentrant` grammar + AST
 
-### Skipped (for v2a, like v1 skipped Tier-2 SVA)
+- Lexer: `reentrant`, `max` as contextual keywords.
+- AST: `ThreadBlock.reentrant: Option<Option<Expr>>`.
+- Parser: accept `... rst high reentrant`, `... rst high reentrant max 8`.
+- Typecheck: const-reducibility of the max expression.
+- Scaffolding reject: any `reentrant` thread fails typecheck with
+  "reentrant lowering not yet implemented" until PR-tlm-p2/p3 land.
 
-- Tier-2 SVA for pipelined invariants (`req_valid |-> rsp_occ <
-  MAX_OUTSTANDING`, response ordering, etc.).
-- Cross-thread method sharing.
-- Out-of-order / burst modes (v2b / v2c).
+### PR-tlm-p2: reentrant lowering for NON-TLM threads
 
-## Open questions (need user sign-off before PR-tlm-p1)
+- Start with the simpler case: reentrant thread without TLM calls
+  (e.g. a thread that `wait N cycle;`s between operations, or issues
+  to a RAM with latency). Validates the N-instance FSM cloning +
+  per-instance locals without the TLM-routing complexity.
+- Module-body regs still single-copy; per-instance locals get the
+  `_inst_<i>` rewrite.
+- No issue arbiter yet (none needed without TLM calls).
 
-1. **Future type naming**: `Future<T>` as in the bus_spec_section
-   notes, or something more ARCH-flavored like `Pending<T>`? Leaning
-   **Future<T>** for consistency with the existing spec draft + SystemC
-   precedent.
+### PR-tlm-p3: reentrant lowering with TLM initiator calls
 
-2. **`await` syntax: expression or statement?**
-   - Expression form: `d <= await f;` — await inside RHS.
-   - Statement form: `await f -> d;` — dedicated statement syntax.
+- Build on PR-tlm-p2. Add the issue arbiter + response-routing FIFO.
+- Each instance's TLM call lowers to an issue state (gated by arbiter
+  grant) + wait state (gated by its slot's response arriving).
+- Response FIFO stores (slot_idx, instance_idx) on issue; on response,
+  dispatches `rsp_data` to the instance's destination reg.
+
+### PR-tlm-p4: docs + canonical pipelined test
+
+- Spec §7 (thread) gets a `reentrant` subsection.
+- `tlm_method` spec gets a note: "for pipelining, mark the issuing
+  thread `reentrant`."
+- Reference card entry.
+- Canonical test: Mem initiator with a reentrant driver thread
+  issuing N reads in sequence; verify SV has the N-state FSMs +
+  response routing.
+
+### Deferred to later
+
+- Reentrant TLM target threads (multiple concurrent request services).
+- Cross-thread arbitration on a single method.
+- Tier-2 SVA for reentrant invariants.
+- `reentrant` on a `thread` that contains `fork`/`join` or complex
+  control flow.
+
+## Open questions
+
+1. **Default max count** when `reentrant` is unbounded. Options:
+   - (a) Reject unbounded reentrant in v2a — user must specify `max N`.
+   - (b) Default to 4 and emit a warning.
+   - (c) Unbounded = up to the outstanding count the bus can support
+     (inferred from connected method's MAX_OUTSTANDING param).
    
-   Expression form is more natural. Typecheck enforces await only
-   appears as top-level RHS of a SeqAssign inside a thread (not
-   composed in expressions). **Leaning expression form.**
+   **Leaning (a)** — explicit is better for hardware resource sizing.
 
-3. **In-order-await enforcement**: strict compile-time check, OR
-   buffered runtime handling?
-   - Strict: simpler compiler, clearer user contract, zero runtime cost.
-   - Buffered: more flexible, costs per-slot consumed-bits + logic.
+2. **Per-instance state of thread-scope regs.** When a user writes
+   `reg counter: UInt<8> reset rst => 0;` *inside* a reentrant thread,
+   is `counter` per-instance or shared?
+   - Per-instance: more like "procedure locals."
+   - Shared: more like "thread-owned regs, instance access is racy."
    
-   **Leaning strict** — the out_of_order mode exists for users who
-   need reordered awaits. Pipelined stays cheap and deterministic.
+   **Leaning shared** — matches existing `reg` semantics in threads.
+   Users who want per-instance locals use `let` (which binds only for
+   the current instance's cycle-path). Could revisit if this trips
+   users up.
 
-4. **MAX_OUTSTANDING default**: 4 or 8? Plan draft says 4. AXI in-order
-   lanes commonly handle 8–16. **Leaning 4** as the conservative
-   default; users explicitly bump for higher concurrency.
-
-5. **`let f` lifetime**: does the Future handle need to be awaited
-   exactly once, or can it be dropped (issue a request you never read)?
-   - Exactly-once: straightforward invariant, catches silent deadlocks.
-   - Drop-allowed: user can intentionally issue side-effecting ops
-     whose response doesn't matter.
+3. **`let` inside a reentrant thread body.** Today `let` inside a
+   thread is block-scoped. For reentrant, `let x = expr;` needs a
+   per-instance shadow reg if `x` is referenced across a wait point.
+   Single-cycle `let` needs no shadow.
    
-   Side-effecting pipelined issue is rare. **Leaning exactly-once**
-   in v2a; users who want fire-and-forget issue a blocking method
-   whose ret they ignore.
+   Proposal: compiler lifts `let`-bindings crossing wait points into
+   auto-generated per-instance regs. Transparent to the user.
 
-6. **Channel param syntax**: `tlm_method read(args) -> T: pipelined
-   param MAX_OUTSTANDING = 8;` (trailing `param` clause), OR a block
-   form `tlm_method read ... end tlm_method read`? Single-line form
-   is terser but feels cramped. Block form is verbose but composes
-   with multiple params if we add more later. **Leaning trailing
-   single-line `param` clause** — grammar: `Mode Params? ';'` where
-   `Params := 'param' Ident '=' Expr (',' 'param' Ident '=' Expr)*`.
+4. **Ordering guarantees on issue.** If instance 0 and instance 1
+   both want to issue on the same cycle, which wins? Proposal:
+   **round-robin priority** — deterministic, fair. Instance-id
+   allocated in spawn order.
 
-7. **Multiple methods in the same thread**: user issues
-   `let a = m.read(x);` and `let b = m.write(y, z);` in the same
-   thread. These share the same thread's issue FSM but target
-   different methods → different response FIFOs. v2a: allow,
-   each method gets its own FIFO + per-method issue state. Rejection
-   semantics: no typecheck restriction beyond single-thread-per-method.
+5. **Max concurrency vs bus MAX_OUTSTANDING.** The thread's `max N`
+   and the method's implicit outstanding budget may mismatch. If the
+   thread declares `max 8` but the bus wire protocol only tracks
+   which response is in flight implicitly... actually since responses
+   are in-order and the arbiter sizes its routing FIFO per-instance
+   count, `max N` of the thread dictates everything. No separate
+   MAX_OUTSTANDING channel param needed; drop that from the original
+   plan.
 
-All answers default-leaning. Confirm "all defaults" to proceed with
-PR-tlm-p1, or redirect on any specific question.
+6. **Reset semantics.** On reset, all instances drop to their entry
+   state simultaneously. The in-flight bus transactions are
+   abandoned (req_valid goes low, rsp_ready goes low). This matches
+   existing thread reset behavior — no new rules.
+
+7. **Observability.** `arch sim --debug-fsm` should print transitions
+   per instance: `[cycle][Mod._thread_driver_inst_3] S1 -> S2 (rsp_valid)`.
+   Nice to have in v2a, not blocking.
+
+All default-leaning. Confirm and I'll start PR-tlm-p1 (grammar).
+
+## Migration path
+
+Since `reentrant` is a new opt-in keyword, zero existing code changes.
+Users get pipelining by adding `reentrant max N` to any thread that
+currently does blocking calls in a loop. Fold the earlier `Future<T>`
+plan into this doc — Future/await is no longer pursued.
