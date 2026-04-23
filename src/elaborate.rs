@@ -827,6 +827,7 @@ fn subst_thread_stmt(stmt: &ThreadStmt, var: &str, val: i64) -> ThreadStmt {
             span: *span,
         },
         ThreadStmt::Log(l) => ThreadStmt::Log(l.clone()),
+        ThreadStmt::Return(e, span) => ThreadStmt::Return(subst_expr_names(e.clone(), var, val), *span),
     }
 }
 
@@ -1979,6 +1980,9 @@ fn collect_thread_signals(body: &[ThreadStmt]) -> (HashSet<String>, HashSet<Stri
                     collect_expr_reads(cond, all_read);
                 }
                 ThreadStmt::Log(_) => {}
+                ThreadStmt::Return(e, _) => {
+                    collect_expr_reads(e, all_read);
+                }
             }
         }
     }
@@ -2448,6 +2452,18 @@ fn partition_thread_body(
                     wait_cycles: None,
                     multi_transitions: Vec::new(),
                 });
+            }
+            ThreadStmt::Return(_, span) => {
+                // `return expr;` is only valid inside a TLM method target
+                // thread body, which has its own dedicated lowering pass
+                // that rewrites Return into the rsp_valid/rsp_data drive
+                // sequence before this pass runs. Reaching this arm means
+                // a regular thread contained `return`, which is a user
+                // error.
+                return Err(CompileError::general(
+                    "`return` is only valid inside a TLM method target thread (`thread port.method(args) ...`). Remove the return or wrap the body in a TLM target binding.",
+                    *span,
+                ));
             }
         }
     }
@@ -2962,6 +2978,7 @@ fn rewrite_loop_var(stmt: &ThreadStmt, var: &str, replacement: &str) -> ThreadSt
             span: *span,
         },
         ThreadStmt::Log(l) => ThreadStmt::Log(l.clone()),
+        ThreadStmt::Return(e, span) => ThreadStmt::Return(rewrite_var_expr(e.clone(), var, replacement), *span),
     }
 }
 

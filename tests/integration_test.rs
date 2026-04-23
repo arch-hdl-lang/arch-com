@@ -4340,6 +4340,70 @@ fn test_tlm_target_thread_rejected_in_lower_threads() {
 }
 
 #[test]
+fn test_tlm_target_thread_parses_return_stmt() {
+    // PR-tlm-3b: `return expr;` inside a thread body is now a valid
+    // ThreadStmt::Return variant. (lower_threads still rejects TLM
+    // target threads; FSM rewrite lands in PR-tlm-3c.)
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module MemTarget
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port s:   target Mem;
+          port ready: in Bool;
+          thread s.read(addr) on clk rising, rst high
+            wait until ready;
+            return 64'h42;
+          end thread s.read
+        end module MemTarget
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let m = ast.items.iter().find_map(|it| match it {
+        arch::ast::Item::Module(m) if m.name.name == "MemTarget" => Some(m),
+        _ => None,
+    }).expect("MemTarget in AST");
+    let t = m.body.iter().find_map(|i| match i {
+        arch::ast::ModuleBodyItem::Thread(t) => Some(t),
+        _ => None,
+    }).expect("thread in body");
+    let has_return = t.body.iter().any(|s| matches!(s, arch::ast::ThreadStmt::Return(_, _)));
+    assert!(has_return, "body should contain a Return stmt");
+}
+
+#[test]
+fn test_return_in_regular_thread_errors_in_lower_threads() {
+    // `return` outside a TLM target thread is a user error — hit by
+    // lower_threads with a targeted message.
+    let source = "
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port reg out_r: out UInt<8> reset rst => 0;
+          thread stray on clk rising, rst high
+            out_r <= 8'h1;
+            return 8'h2;
+          end thread stray
+        end module M
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = arch::elaborate::elaborate(ast).expect("elaborate");
+    let result = arch::elaborate::lower_threads(ast);
+    assert!(result.is_err(), "regular thread with return should error");
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(msg.contains("return") && msg.contains("TLM method target thread"),
+        "expected targeted error, got: {msg}");
+}
+
+#[test]
 fn test_tlm_target_thread_accepts_matched_closing_method_name() {
     // Closing `end thread port.method` should match the opening.
     let source = "
