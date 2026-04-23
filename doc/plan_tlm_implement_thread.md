@@ -19,6 +19,32 @@
 > thread instance). `req_ready = any-thread-idle`; `rsp_valid = OR
 > of per-thread respond states`; `rsp_data = mux over which thread
 > is responding`.
+>
+> **Initiator-side model** (Model B, per 2026-04-23 design review):
+> N `implement m.method()` threads form a **worker pool**, decoupled
+> from the call site. Call sites (in another thread body or a seq
+> block) issue `d <= m.read(addr);`; the compiler dispatches to an
+> idle worker which drives the bus transaction and routes the
+> response back to the caller's destination reg.
+>
+> v2a (PR-tlm-i4) initiator scope:
+>   - Caller must be in a thread body (seq-block async semantics TBD;
+>     initial impl rejects seq callers).
+>   - Worker threads with EMPTY user bodies: compiler synthesizes the
+>     full issue → wait-response FSM and populates the dispatch
+>     interface. User-body workers are a v2b extension (user runs
+>     custom logic before driving the bus, e.g. address translation).
+>   - Dispatcher: round-robin across idle workers, stalls the caller
+>     when none available.
+>   - Per-worker capture reg for rsp_data; router copies to caller's
+>     destination on completion + marks worker idle.
+>   - Per-call FIFO entry (caller_site_id, worker_id) so the router
+>     knows where to send the response. Depth = N (one per worker).
+>
+> Multi-thread initiator WITHOUT `implement` pool stays an error —
+> plain threads calling `m.read()` serialize via the lock-wrap
+> diagnostic (PR #89). `implement m.method()` is the explicit opt-in
+> for compiler-managed dispatch.
 
 
 *Author: session of 2026-04-23. Supersedes the shelved pipelined plan
