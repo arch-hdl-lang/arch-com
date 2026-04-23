@@ -4764,15 +4764,17 @@ Full design history and the broader roadmap are in `doc/plan_credit_channel.md` 
 
 **18d. First-Class Sub-Construct: tlm_method (inside bus)** — *parser scaffolding, v1 blocking only*
 
-> **Status (v0.44.13):** grammar, wire flattening, target-side thread
-> body lowering, and **initiator call-site expansion**
-> (`d <= m.method(args);` inside a thread body) are all live at the AST
-> level. Known limitation for v1: the thread-state drives of flattened
-> bus-port members (`m.method_req_valid`, etc.) trip the comb-block
-> no-latch check at typecheck — works around by refactoring through a
-> local reg. Tracked in `doc/plan_tlm_method.md`; proper fix extends
-> `lower_threads` to treat FieldAccess-on-bus-port targets as flat
-> signals for default emission. `lower_tlm_target_threads`
+> **Status (v0.44.14):** grammar, wire flattening, and **target-side
+> inline lowering** compile end-to-end to SV. The TLM target pass now
+> emits RegDecl + RegBlock + CombBlock items directly into the parent
+> module body — bypassing `lower_threads` entirely — so bus-port-member
+> drives resolve naturally and the no-latch check is satisfied.
+> Canonical shape `<SeqAssign|CombAssign|WaitUntil>*  return expr;`
+> lowers to a clean state machine: entry state waits for req_valid +
+> latches args, one state per user `wait until`, respond state drives
+> rsp_valid + rsp_data and loops back. Initiator call-site compilation
+> still lives at the AST level and awaits the same inline-rewrite
+> treatment (PR-tlm-4c). `lower_tlm_target_threads`
 > (runs before the generic thread lowering) rewrites
 > `thread port.method(args) ... return expr; end` into a regular
 > thread that drives `<port>_<method>_req_ready`, latches args into

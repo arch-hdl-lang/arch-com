@@ -4312,12 +4312,9 @@ fn test_tlm_target_thread_parses_with_dotted_name() {
 
 #[test]
 fn test_tlm_initiator_call_site_expands_in_ast() {
-    // PR-tlm-4: `d <= m.read(arg);` expands to the two-state issue +
-    // wait-response sequence. Verified at the AST level (post-pass)
-    // because the end-to-end SV pipeline trips the no-latch check on
-    // bus-port-member drives from thread states — a known limitation
-    // documented in doc/plan_tlm_method.md §Open questions. Users
-    // should refactor through a local handshake in the meantime.
+    // PR-tlm-4: verified at the AST level. End-to-end SV still blocked
+    // on thread lowering bridging bus-port-member drives into the
+    // extracted sub-module's output ports — see plan_tlm_method.md.
     let source = "
         bus Mem
           tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
@@ -4349,13 +4346,9 @@ fn test_tlm_initiator_call_site_expands_in_ast() {
         arch::ast::ModuleBodyItem::Thread(t) => Some(t),
         _ => None,
     }).expect("thread");
-    // Single `d <= m.read(...)` should have become multiple stmts
-    // (CombAssigns for req_valid/arg/rsp_ready + SeqAssign for rsp_data
-    // + two WaitUntils). Expect at least 5 statements.
     assert!(t.body.len() >= 5,
-        "initiator call site should expand to multiple stmts, got {}: {:?}",
+        "initiator call site should expand to >=5 stmts, got {}: {:?}",
         t.body.len(), t.body);
-    // At least one WaitUntil (req_ready), and a second (rsp_valid).
     let wait_count = t.body.iter()
         .filter(|s| matches!(s, arch::ast::ThreadStmt::WaitUntil(_, _)))
         .count();
@@ -4397,10 +4390,10 @@ fn test_tlm_call_rejected_outside_seq_assign_rhs() {
 }
 
 #[test]
-fn test_tlm_target_thread_lowers_to_regular_thread() {
-    // PR-tlm-3c: lower_tlm_target_threads rewrites a TLM target thread
-    // into a regular thread + synthesized latch regs. The tlm_target
-    // field is cleared after the pass.
+fn test_tlm_target_thread_lowers_inline_to_state_machine() {
+    // PR-tlm-4b: TLM target thread lowers in-place to a state-reg +
+    // RegBlock + CombBlock in the parent module body (no sub-module
+    // extraction). End-to-end SV compiles cleanly.
     let source = "
         bus Mem
           tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
@@ -4419,26 +4412,15 @@ fn test_tlm_target_thread_lowers_to_regular_thread() {
           end thread s.read
         end module MemTarget
     ";
-    let tokens = arch::lexer::tokenize(source).expect("lexer");
-    let mut parser = arch::parser::Parser::new(tokens, source);
-    let ast = parser.parse_source_file().expect("parse");
-    let ast = arch::elaborate::elaborate(ast).expect("elaborate");
-    let ast = arch::elaborate::lower_tlm_target_threads(ast).expect("tlm lowering");
-    let m = ast.items.iter().find_map(|it| match it {
-        arch::ast::Item::Module(m) if m.name.name == "MemTarget" => Some(m),
-        _ => None,
-    }).expect("MemTarget");
-    // After lowering, thread.tlm_target is cleared.
-    let t = m.body.iter().find_map(|i| match i {
-        arch::ast::ModuleBodyItem::Thread(t) => Some(t),
-        _ => None,
-    }).expect("thread");
-    assert!(t.tlm_target.is_none(), "tlm_target should be cleared after lowering");
-    // Synthesized latch reg injected.
-    let has_latch = m.body.iter().any(|i| matches!(
-        i, arch::ast::ModuleBodyItem::RegDecl(r) if r.name.name == "__tlm_s_read_addr_latched"
-    ));
-    assert!(has_latch, "latch reg should be injected");
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("_tlm_s_read_state"),
+        "state register should appear in SV:\n{sv}");
+    assert!(sv.contains("_tlm_s_read_addr_latched"),
+        "arg latch reg should appear in SV:\n{sv}");
+    assert!(sv.contains("s_read_req_ready"),
+        "req_ready driver should appear in SV:\n{sv}");
+    assert!(sv.contains("s_read_rsp_valid"),
+        "rsp_valid driver should appear in SV:\n{sv}");
 }
 
 #[test]

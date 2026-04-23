@@ -3852,9 +3852,10 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
                                 continue;
                             }
                             let t_moved = if let ModuleBodyItem::Thread(t) = item { t } else { unreachable!() };
-                            let (new_thread, mut regs) = lower_one_tlm_target(t_moved, &binding, &method);
-                            latch_regs.append(&mut regs);
-                            new_body.push(ModuleBodyItem::Thread(new_thread));
+                            match inline_lower_tlm_target(t_moved, &binding, &method) {
+                                Ok(items) => new_body.extend(items),
+                                Err(e) => errors.push(e),
+                            }
                         } else {
                             new_body.push(item);
                         }
@@ -3862,12 +3863,11 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
                         new_body.push(item);
                     }
                 }
-                // Prepend latch regs so they're declared before any seq block
-                // that might reference them.
-                let mut combined: Vec<ModuleBodyItem> =
-                    latch_regs.into_iter().map(ModuleBodyItem::RegDecl).collect();
-                combined.extend(new_body);
-                m.body = combined;
+                // Inline lowering emits its own RegDecl / RegBlock /
+                // CombBlock items directly into new_body; no additional
+                // accumulation needed.
+                let _ = latch_regs;
+                m.body = new_body;
                 out_items.push(Item::Module(m));
             }
             other => out_items.push(other),
@@ -4229,4 +4229,330 @@ fn expand_tlm_call_site(dest: Expr, call: TlmCall, span: Span) -> Vec<ThreadStmt
     }
     out.push(ThreadStmt::WaitUntil(mk_field(format!("{method}_rsp_valid")), span));
     out
+}
+
+// ── TLM target in-place lowering (PR-tlm-4b) ────────────────────────────────
+//
+// Replaces the previous "transform into regular thread" approach with
+// direct emission of RegDecl + RegBlock + CombBlock items into the
+// parent module body. This bypasses lower_threads entirely for TLM
+// target threads and avoids the sub-module bus-flattening bridging that
+// the thread-extraction path doesn't handle for FieldAccess(bus_port,
+// member) drives.
+//
+// Supported user-body shape (v1):
+//   <SeqAssign | CombAssign | WaitUntil>*
+//   return <expr>;
+//
+// Any other statement in the body (nested IfElse / ForkJoin / For /
+// Lock / DoUntil / Log) is rejected with a targeted error.
+
+fn inline_lower_tlm_target(
+    t: ThreadBlock,
+    binding: &TlmTargetBinding,
+    method: &TlmMethodMeta,
+) -> Result<Vec<ModuleBodyItem>, CompileError> {
+    let port = &binding.port.name;
+    let method_name = &binding.method.name;
+    let span = t.span;
+    let mk_ident = |name: String| Ident { name, span };
+    let mk_port_member = |member: String| Expr::new(
+        ExprKind::FieldAccess(
+            Box::new(Expr::new(ExprKind::Ident(port.clone()), span)),
+            mk_ident(member),
+        ),
+        span,
+    );
+    let lit_one = Expr::new(ExprKind::Literal(LitKind::Sized(1, 1)), span);
+    let lit_zero = Expr::new(ExprKind::Literal(LitKind::Sized(1, 0)), span);
+
+    // Walk user body into a list of "user states". Each state is a
+    // vector of seq assigns fired on entry to the next state + a
+    // transition condition (the WaitUntil). A Return terminates the
+    // walk and becomes the respond state.
+    struct UserState {
+        seq_on_exit: Vec<Stmt>,       // fires on transition out of this state
+        comb_in_state: Vec<CombStmt>, // active during this state
+        transition_cond: Expr,
+    }
+    let mut user_states: Vec<UserState> = Vec::new();
+    let mut cur_seq: Vec<Stmt> = Vec::new();
+    let mut cur_comb: Vec<CombStmt> = Vec::new();
+    let mut return_expr: Option<Expr> = None;
+
+    // Arg renames: user-bound arg name → latched reg name.
+    let mut arg_renames: Vec<(String, String)> = Vec::new();
+    let mut latch_regs: Vec<RegDecl> = Vec::new();
+    for (user_arg, method_arg) in binding.args.iter().zip(method.args.iter()) {
+        let latch_name = format!("_tlm_{port}_{method_name}_{}_latched", method_arg.0.name);
+        latch_regs.push(RegDecl {
+            name: mk_ident(latch_name.clone()),
+            ty: method_arg.1.clone(),
+            init: None,
+            reset: RegReset::Inherit(t.reset.clone(), Expr::new(ExprKind::Literal(LitKind::Dec(0)), span)),
+            guard: None,
+            span,
+        });
+        arg_renames.push((user_arg.name.clone(), latch_name));
+    }
+
+    // Helper: apply arg renames to an expression.
+    let rename_args = |e: Expr, renames: &[(String, String)]| -> Expr {
+        let mut cur = e;
+        for (from, to) in renames {
+            cur = rewrite_var_expr(cur, from, to);
+        }
+        cur
+    };
+
+    for stmt in t.body {
+        match stmt {
+            ThreadStmt::SeqAssign(ra) => {
+                cur_seq.push(Stmt::Assign(RegAssign {
+                    target: rename_args(ra.target, &arg_renames),
+                    value: rename_args(ra.value, &arg_renames),
+                    span: ra.span,
+                }));
+            }
+            ThreadStmt::CombAssign(ca) => {
+                cur_comb.push(CombStmt::Assign(CombAssign {
+                    target: rename_args(ca.target, &arg_renames),
+                    value: rename_args(ca.value, &arg_renames),
+                    span: ca.span,
+                }));
+            }
+            ThreadStmt::WaitUntil(cond, _) => {
+                user_states.push(UserState {
+                    seq_on_exit: std::mem::take(&mut cur_seq),
+                    comb_in_state: std::mem::take(&mut cur_comb),
+                    transition_cond: rename_args(cond, &arg_renames),
+                });
+            }
+            ThreadStmt::Return(e, _) => {
+                return_expr = Some(rename_args(e, &arg_renames));
+                break;
+            }
+            other => {
+                return Err(CompileError::general(
+                    &format!("TLM target thread body statement not supported in v1 (only SeqAssign / CombAssign / WaitUntil / Return allowed inline). Offender: {:?}", std::mem::discriminant(&other)),
+                    span,
+                ));
+            }
+        }
+    }
+    if return_expr.is_none() && method.ret.is_some() {
+        return Err(CompileError::general(
+            &format!(
+                "`thread {}.{}(...)` must end with `return <expr>;` (method declares return type {:?})",
+                port, method_name, method.ret,
+            ),
+            span,
+        ));
+    }
+
+    // Final pending seq/comb from body (between last wait and return).
+    let final_seq_on_exit = cur_seq;
+    let final_comb_in_state = cur_comb;
+
+    // Total states: ENTRY (0) + user_states + RESPOND (last).
+    let total_states = 2 + user_states.len();
+    let state_width = clog2_width(total_states as u64);
+    let entry_idx = 0u64;
+    let respond_idx = (total_states - 1) as u64;
+
+    let state_reg_name = format!("_tlm_{port}_{method_name}_state");
+    let state_ident = Expr::new(ExprKind::Ident(state_reg_name.clone()), span);
+    let mk_state_lit = |v: u64| Expr::new(ExprKind::Literal(LitKind::Sized(state_width, v)), span);
+    let state_eq = |v: u64| Expr::new(
+        ExprKind::Binary(BinOp::Eq, Box::new(state_ident.clone()), Box::new(mk_state_lit(v))),
+        span,
+    );
+
+    // ── State register declaration ───────────────────────────────────────
+    let state_reg = RegDecl {
+        name: mk_ident(state_reg_name.clone()),
+        ty: TypeExpr::UInt(Box::new(Expr::new(
+            ExprKind::Literal(LitKind::Dec(state_width as u64)), span,
+        ))),
+        init: None,
+        reset: RegReset::Inherit(t.reset.clone(), Expr::new(ExprKind::Literal(LitKind::Dec(0)), span)),
+        guard: None,
+        span,
+    };
+
+    // ── Seq block: state transitions + arg latches + user seq assigns ──
+    // Build nested if/elsif over state_reg.
+    let mut seq_body: Vec<Stmt> = Vec::new();
+    // State 0: ENTRY — if req_valid, latch args and advance to 1.
+    let mut entry_then: Vec<Stmt> = Vec::new();
+    for (user_arg, method_arg) in binding.args.iter().zip(method.args.iter()) {
+        let latch_name = format!("_tlm_{port}_{method_name}_{}_latched", method_arg.0.name);
+        entry_then.push(Stmt::Assign(RegAssign {
+            target: Expr::new(ExprKind::Ident(latch_name), span),
+            value: mk_port_member(format!("{method_name}_{}", method_arg.0.name)),
+            span,
+        }));
+        let _ = user_arg;
+    }
+    entry_then.push(Stmt::Assign(RegAssign {
+        target: state_ident.clone(),
+        value: mk_state_lit(1),
+        span,
+    }));
+    let entry_branch_cond = Expr::new(
+        ExprKind::Binary(BinOp::And,
+            Box::new(state_eq(entry_idx)),
+            Box::new(mk_port_member(format!("{method_name}_req_valid"))),
+        ),
+        span,
+    );
+    seq_body.push(Stmt::IfElse(IfElseOf {
+        cond: entry_branch_cond,
+        then_stmts: entry_then,
+        else_stmts: Vec::new(),
+        unique: false,
+        span,
+    }));
+    // User states 1..N
+    for (i, us) in user_states.iter().enumerate() {
+        let state_idx = (i + 1) as u64;
+        let next_idx = (i + 2) as u64;
+        let mut then_stmts: Vec<Stmt> = us.seq_on_exit.clone();
+        then_stmts.push(Stmt::Assign(RegAssign {
+            target: state_ident.clone(),
+            value: mk_state_lit(next_idx),
+            span,
+        }));
+        let branch_cond = Expr::new(
+            ExprKind::Binary(BinOp::And,
+                Box::new(state_eq(state_idx)),
+                Box::new(us.transition_cond.clone()),
+            ),
+            span,
+        );
+        seq_body.push(Stmt::IfElse(IfElseOf {
+            cond: branch_cond,
+            then_stmts,
+            else_stmts: Vec::new(),
+            unique: false,
+            span,
+        }));
+    }
+    // Last-user-state → respond state. Falls through from the body walk:
+    // the state immediately before respond fires `final_seq_on_exit` on
+    // the natural transition.
+    let pre_respond_idx = (user_states.len() + 1) as u64;
+    if pre_respond_idx != entry_idx {
+        // Only if there are user states — otherwise the entry → respond
+        // transition is needed. Handle both:
+        let mut then_stmts: Vec<Stmt> = final_seq_on_exit.clone();
+        if !user_states.is_empty() {
+            then_stmts.push(Stmt::Assign(RegAssign {
+                target: state_ident.clone(),
+                value: mk_state_lit(respond_idx),
+                span,
+            }));
+            seq_body.push(Stmt::IfElse(IfElseOf {
+                cond: state_eq(pre_respond_idx),
+                then_stmts,
+                else_stmts: Vec::new(),
+                unique: false,
+                span,
+            }));
+        }
+    }
+    // Respond state → entry (loop back) when rsp_ready.
+    let mut respond_then: Vec<Stmt> = Vec::new();
+    respond_then.push(Stmt::Assign(RegAssign {
+        target: state_ident.clone(),
+        value: mk_state_lit(entry_idx),
+        span,
+    }));
+    let respond_branch_cond = Expr::new(
+        ExprKind::Binary(BinOp::And,
+            Box::new(state_eq(respond_idx)),
+            Box::new(mk_port_member(format!("{method_name}_rsp_ready"))),
+        ),
+        span,
+    );
+    seq_body.push(Stmt::IfElse(IfElseOf {
+        cond: respond_branch_cond,
+        then_stmts: respond_then,
+        else_stmts: Vec::new(),
+        unique: false,
+        span,
+    }));
+
+    let reg_block = RegBlock {
+        clock: t.clock.clone(),
+        clock_edge: t.clock_edge,
+        stmts: seq_body,
+        span,
+    };
+
+    // ── Comb block: drive req_ready / rsp_valid / rsp_data ──────────────
+    let mut comb_stmts: Vec<CombStmt> = Vec::new();
+    // req_ready = (state == 0)
+    comb_stmts.push(CombStmt::Assign(CombAssign {
+        target: mk_port_member(format!("{method_name}_req_ready")),
+        value: state_eq(entry_idx),
+        span,
+    }));
+    // rsp_valid = (state == respond)
+    comb_stmts.push(CombStmt::Assign(CombAssign {
+        target: mk_port_member(format!("{method_name}_rsp_valid")),
+        value: state_eq(respond_idx),
+        span,
+    }));
+    // rsp_data = <return expr> (always driven; only observed when rsp_valid).
+    if let Some(expr) = return_expr {
+        if method.ret.is_some() {
+            comb_stmts.push(CombStmt::Assign(CombAssign {
+                target: mk_port_member(format!("{method_name}_rsp_data")),
+                value: expr,
+                span,
+            }));
+        }
+    }
+    // User-written CombAssigns from the body — per-state guarded.
+    for (i, us) in user_states.iter().enumerate() {
+        let state_idx = (i + 1) as u64;
+        if !us.comb_in_state.is_empty() {
+            comb_stmts.push(CombStmt::IfElse(CombIfElse {
+                cond: state_eq(state_idx),
+                then_stmts: us.comb_in_state.clone(),
+                else_stmts: Vec::new(),
+                unique: false,
+                span,
+            }));
+        }
+    }
+    if !final_comb_in_state.is_empty() {
+        comb_stmts.push(CombStmt::IfElse(CombIfElse {
+            cond: state_eq(pre_respond_idx),
+            then_stmts: final_comb_in_state,
+            else_stmts: Vec::new(),
+            unique: false,
+            span,
+        }));
+    }
+
+    let comb_block = CombBlock {
+        stmts: comb_stmts,
+        span,
+    };
+
+    // ── Assemble output items ────────────────────────────────────────────
+    let mut items: Vec<ModuleBodyItem> = Vec::new();
+    items.push(ModuleBodyItem::RegDecl(state_reg));
+    for r in latch_regs { items.push(ModuleBodyItem::RegDecl(r)); }
+    items.push(ModuleBodyItem::RegBlock(reg_block));
+    items.push(ModuleBodyItem::CombBlock(comb_block));
+    let _ = lit_one; let _ = lit_zero;
+    Ok(items)
+}
+
+/// Ceiling log2 helper for state width.
+fn clog2_width(n: u64) -> u32 {
+    if n <= 1 { 1 } else { (n - 1).ilog2() + 1 }
 }
