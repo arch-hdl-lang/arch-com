@@ -1552,6 +1552,8 @@ end thread Name
 
 **Repeating vs once**: by default a thread loops — after the last body statement it returns to state 0. Write `thread once Name on …` to stop in the terminal state instead.
 
+**Reentrant (parser-accepted in v0.44.17+, lowering pending)**: a thread may be declared `reentrant [max N]` after the reset clause. A reentrant thread allows a fresh invocation to start as soon as the previous one hits a `wait` or blocking call, up to `max N` concurrent instances. Use case: pipelining TLM method calls inside a single thread body without inventing new `Future<T>`/`await` syntax. Grammar is parsed today; FSM-cloning lowering ships in a follow-up PR (tracked in `doc/plan_tlm_pipelined.md`). Until then, a reentrant thread is a compile error with a targeted scaffolding-only message.
+
 **Multiple threads** in one module are declared independently; they all compile into the same `_ModuleName_threads` submodule and share one `always_ff` block to avoid multi-driver conflicts.
 
 **`generate_for` over threads:**
