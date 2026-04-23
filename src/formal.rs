@@ -259,17 +259,33 @@ impl<'a> FormalCtx<'a> {
         let (rn, is_async, is_low) = crate::ast::extract_reset_info(&self.module.ports);
         self.reset = ResetInfo { name: rn, is_async, is_low };
 
-        // Forbid sub-instances
+        // Sub-instances: hierarchical encoding is PR-hf1b (tracked in
+        // doc/plan_hierarchical_formal.md). For now, produce a more
+        // actionable error listing the detected inst sites + the
+        // workaround paths (target the sub-module in isolation via
+        // --top, or use `arch build` + EBMC/SymbiYosys for hierarchy).
+        let mut inst_names: Vec<String> = Vec::new();
         for b in &self.module.body {
             if let ModuleBodyItem::Inst(inst) = b {
-                return Err(CompileError::general(
-                    &format!(
-                        "sub-module instance `{}` is not supported by `arch formal` v1 — flatten the design or use `arch build` + EBMC for hierarchy",
-                        inst.name.name
-                    ),
-                    inst.span,
-                ));
+                inst_names.push(format!("{} (module {})", inst.name.name, inst.module_name.name));
             }
+        }
+        if !inst_names.is_empty() {
+            let first_inst = self.module.body.iter().find_map(|b| match b {
+                ModuleBodyItem::Inst(i) => Some(i.span),
+                _ => None,
+            }).unwrap();
+            return Err(CompileError::general(
+                &format!(
+                    "hierarchical `arch formal` is not yet implemented — module `{}` contains {} sub-instance(s): {}. Workarounds: (a) run `arch formal --top <sub_module>` to verify each sub-module in isolation; (b) use `arch build` + EBMC / SymbiYosys on the composed SV for whole-design BMC. Tracked in doc/plan_hierarchical_formal.md.",
+                    self.module.name.name,
+                    inst_names.len(),
+                    inst_names.join(", ")
+                ),
+                first_inst,
+            ));
+        }
+        for b in &self.module.body {
             if let ModuleBodyItem::Thread(t) = b {
                 return Err(CompileError::general(
                     "`thread` blocks must be lowered before `arch formal` — run via the normal compile pipeline (they're lowered automatically); if you see this error you're likely targeting an unlowered AST",
