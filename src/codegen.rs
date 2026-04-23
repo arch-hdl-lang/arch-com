@@ -5814,6 +5814,11 @@ impl<'a> Codegen<'a> {
             // assignment emitter strips the annotation before routing the
             // value to the appropriate stage 0 of the pipe chain.
             ExprKind::LatencyAt(inner, _) => self.emit_expr_inner(inner),
+            // SynthIdent: compiler-synthesized name pointing at codegen-
+            // emitted SV wires (credit_channel dispatch targets). Emits as
+            // a plain identifier — the declaration + driver live elsewhere
+            // in the emitted SV.
+            ExprKind::SynthIdent(name, _) => name.clone(),
             ExprKind::Literal(lit) => match lit {
                 LitKind::Dec(v) => format!("{v}"),
                 LitKind::Hex(v) => format!("'h{v:X}"),
