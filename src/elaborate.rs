@@ -4062,6 +4062,52 @@ pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<Comp
                     .filter_map(|p| p.bus_info.as_ref().map(|bi|
                         (p.name.name.clone(), bi.bus_name.name.clone())))
                     .collect();
+
+                // Detect multi-thread sharing of a (port, method) pair. v2a
+                // plan (doc/plan_tlm_pipelined.md) routes these through an
+                // arbiter + response-routing FIFO synthesized at module
+                // scope. The actual arbiter machinery is tracked as
+                // PR-tlm-p3b; for now emit a targeted diagnostic so users
+                // don't hit the confusing 'multi-driver on req_valid' that
+                // the naive existing inline lowering produces.
+                let mut method_uses: HashMap<(String, String), Vec<Span>> = HashMap::new();
+                for item in &m.body {
+                    if let ModuleBodyItem::Thread(t) = item {
+                        if t.tlm_target.is_some() { continue; }
+                        if !thread_body_has_tlm_call(&t.body, &port_buses, &bus_methods) { continue; }
+                        for stmt in &t.body {
+                            if let ThreadStmt::SeqAssign(ra) = stmt {
+                                if let Some(call) = match_tlm_call(&ra.value, &port_buses, &bus_methods) {
+                                    method_uses.entry((call.port.clone(), call.method.clone()))
+                                        .or_default()
+                                        .push(t.span);
+                                }
+                            }
+                        }
+                    }
+                }
+                for ((port, method), spans) in &method_uses {
+                    // Count distinct threads — spans may repeat if one
+                    // thread calls the same method multiple times.
+                    let mut sorted_offsets: Vec<(usize, usize)> = spans.iter()
+                        .map(|s| (s.start, s.end)).collect();
+                    sorted_offsets.sort();
+                    sorted_offsets.dedup();
+                    if sorted_offsets.len() > 1 {
+                        errors.push(CompileError::general(
+                            &format!(
+                                "multi-thread sharing of `{port}.{method}` is not yet implemented — {n} threads in the current module issue calls on this method. The compiler arbiter + response-routing that enables this (the `generate for` pipelining pattern) is tracked as PR-tlm-p3b in doc/plan_tlm_pipelined.md. Single-thread access works today.",
+                                n = sorted_offsets.len(),
+                            ),
+                            *spans.first().unwrap(),
+                        ));
+                    }
+                }
+                if !errors.is_empty() {
+                    out_items.push(Item::Module(m));
+                    continue;
+                }
+
                 // Identify threads that contain TLM calls and inline them.
                 let mut new_body: Vec<ModuleBodyItem> = Vec::new();
                 for item in std::mem::take(&mut m.body) {
