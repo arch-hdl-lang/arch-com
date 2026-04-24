@@ -3,11 +3,25 @@
 > **Status (2026-04-24)**: PR-hf1b (#100) + PR-hf2 (#101) shipped. Sub-modules
 > with `let` + `comb` + `reg` + `seq` flatten end-to-end; PROVED/REFUTED
 > verified on Adder, SubCounter, and multi-inst SubCounter designs.
-> Deferred: PR-hf3 (connect-by-name syntax sugar) — not blocking. PR-hf4
-> (credit_channel occupancy invariant) is architecturally blocked on
-> credit_channel's synthesized state not being AST-visible; needs either
-> an elaborate pass to lift those regs into the AST (cleanest) or
-> formal-specific synthesis (backend-specific). Separate design work.
+>
+> **PR-hf3** (connect-by-name sugar) — DEFERRED. Attempted 2026-04-24 as a
+> formal-only feature but the typecheck driven-port check fires before
+> formal flattening, rejecting unconnected ports in source. Making
+> connect-by-name work end-to-end requires a whole-compiler change
+> (typecheck + inst resolution + all backends), which is a separate
+> design project. Not blocking — users write explicit connections today.
+>
+> **PR-hf4** (credit_channel occupancy invariant) — BLOCKED on
+> credit_channel's synthesized state (sender counter + receiver FIFO)
+> being generated at codegen time rather than materialized as AST-level
+> regs. Unblocking requires either:
+>   (a) an elaborate pass lifting credit_channel state into AST regs
+>       (~200 LoC, cleanest — makes state uniformly visible to all
+>       backends; also simplifies codegen's emit_credit_channel_* functions).
+>   (b) formal-specific synthesis duplicating codegen logic (simpler
+>       scope but risks divergence).
+> Separate focused session. (a) is the preferred path.
+>
 > PR-hf5 is this status update.
 
 
