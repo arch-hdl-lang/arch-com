@@ -1,0 +1,151 @@
+// 3-stage credit_channel forwarding chain — see doc/plan_credit_channel.md
+// §"Stretch: 4×4 mesh" for the broader vision. This is the minimal multi-
+// hop demo: a Producer feeds Router0 → Router1 → Router2 → Consumer,
+// each link a separate credit_channel. Validates that credit-based
+// backpressure composes correctly through multiple stages — when the
+// consumer slows, each router's buffer fills and the producer
+// back-pressures naturally. A mesh is just this pattern in 2D plus
+// XY routing.
+
+bus FlitBus
+  credit_channel flits: send
+    param T:     type  = UInt<32>;
+    param DEPTH: const = 4;
+  end credit_channel flits
+end bus FlitBus
+
+module FlitProducer
+  port clk:          in Clock<SysDomain>;
+  port rst:          in Reset<Sync>;
+  port gen_pressure: in UInt<8>;
+  port out:          initiator FlitBus;
+
+  reg seq_no: UInt<32> reset rst => 32'h0;
+  reg lfsr:   UInt<8>  reset rst => 8'h5A;
+
+  comb
+    out.flits_send_valid = 1'b0;
+    out.flits_send_data  = 32'h0;
+    if out.flits.can_send and (lfsr < gen_pressure)
+      out.flits.send(seq_no);
+    end if
+  end comb
+
+  seq on clk rising
+    if lfsr[0]
+      lfsr <= (lfsr >> 1) ^ 8'hB8;
+    else
+      lfsr <= lfsr >> 1;
+    end if
+    if out.flits.can_send and (lfsr < gen_pressure)
+      seq_no <= seq_no +% 32'h1;
+    end if
+  end seq
+end module FlitProducer
+
+// Forwarding router: pop a flit from the input as soon as it's
+// valid AND the output has credit. Single-cycle forwarding — no
+// internal buffering beyond what the credit_channel already provides.
+module FlitRouter
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port up:   target    FlitBus;     // upstream  (incoming)
+  port down: initiator FlitBus;     // downstream (outgoing)
+
+  comb
+    down.flits_send_valid = 1'b0;
+    down.flits_send_data  = 32'h0;
+    up.flits_credit_return = 1'b0;
+    if up.flits.valid and down.flits.can_send
+      down.flits.send(up.flits.data);
+      up.flits.pop();
+    end if
+  end comb
+end module FlitRouter
+
+module FlitConsumer
+  port clk:          in Clock<SysDomain>;
+  port rst:          in Reset<Sync>;
+  port pop_pressure: in UInt<8>;
+  port incoming:     target FlitBus;
+
+  port reg popped_count: out UInt<32> reset rst => 32'h0;
+  port reg last_seq:     out UInt<32> reset rst => 32'h0;
+  port reg in_order:     out Bool     reset rst => 1'b1;
+  port reg saw_any:      out Bool     reset rst => 1'b0;
+
+  reg lfsr: UInt<8> reset rst => 8'hC3;
+
+  comb
+    incoming.flits_credit_return = 1'b0;
+    if incoming.flits.valid and (lfsr < pop_pressure)
+      incoming.flits.pop();
+    end if
+  end comb
+
+  seq on clk rising
+    if lfsr[0]
+      lfsr <= (lfsr >> 1) ^ 8'hB8;
+    else
+      lfsr <= lfsr >> 1;
+    end if
+    if incoming.flits.valid and (lfsr < pop_pressure)
+      popped_count <= popped_count +% 32'h1;
+      last_seq     <= incoming.flits.data;
+      if saw_any and incoming.flits.data != (last_seq +% 32'h1)
+        in_order <= 1'b0;
+      end if
+      saw_any <= 1'b1;
+    end if
+  end seq
+end module FlitConsumer
+
+module NocChainTop
+  port clk:          in Clock<SysDomain>;
+  port rst:          in Reset<Sync>;
+  port gen_pressure: in UInt<8>;
+  port pop_pressure: in UInt<8>;
+  port popped_count: out UInt<32>;
+  port last_seq:     out UInt<32>;
+  port in_order:     out Bool;
+  port saw_any:      out Bool;
+
+  inst prod: FlitProducer
+    clk          <- clk;
+    rst          <- rst;
+    gen_pressure <- gen_pressure;
+    out          <- link_p_r0;
+  end inst prod
+
+  inst r0: FlitRouter
+    clk  <- clk;
+    rst  <- rst;
+    up   <- link_p_r0;
+    down <- link_r0_r1;
+  end inst r0
+
+  inst r1: FlitRouter
+    clk  <- clk;
+    rst  <- rst;
+    up   <- link_r0_r1;
+    down <- link_r1_r2;
+  end inst r1
+
+  inst r2: FlitRouter
+    clk  <- clk;
+    rst  <- rst;
+    up   <- link_r1_r2;
+    down <- link_r2_c;
+  end inst r2
+
+  inst cons: FlitConsumer
+    clk           <- clk;
+    rst           <- rst;
+    pop_pressure  <- pop_pressure;
+    incoming      <- link_r2_c;
+    popped_count  -> popped_count;
+    last_seq      -> last_seq;
+    in_order      -> in_order;
+    saw_any       -> saw_any;
+  end inst cons
+end module NocChainTop
