@@ -3499,11 +3499,16 @@ impl Parser {
         let target_stage = self.expect_ident()?;
         self.expect(TokenKind::When)?;
         let condition = self.parse_expr()?;
+        // Optional `clear` modifier: also reset stage data registers,
+        // not just `valid_r`. Useful for security / speculation
+        // scenarios where stale data in flushed regs is a hazard.
+        let clear = self.eat_contextual("clear");
         self.expect(TokenKind::Semi)?;
         let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
         Ok(FlushDecl {
             target_stage,
             condition,
+            clear,
             span: start.merge(end_span),
         })
     }

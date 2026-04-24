@@ -1371,6 +1371,12 @@ pub struct StallDecl {
 pub struct FlushDecl {
     pub target_stage: Ident,
     pub condition: Expr,
+    /// When true, `flush <Stage> when <cond> clear;` also resets every
+    /// data register in the target stage to its declared reset value
+    /// in addition to the default `valid_r <= 0` bubble. Use for
+    /// security / speculative-data-leakage scenarios where stale data
+    /// in flushed registers is a hazard. Default false (bubble-only).
+    pub clear: bool,
     pub span: Span,
 }
 

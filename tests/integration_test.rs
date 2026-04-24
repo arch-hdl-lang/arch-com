@@ -1223,6 +1223,75 @@ end module BitExtract
 }
 
 #[test]
+fn test_pipeline_flush_clear_emits_data_reset() {
+    // Pipeline critique #6: `flush <Stage> when <cond> clear;` resets
+    // every data register in the target stage, not just `valid_r`.
+    // Default (no `clear`) is bubble-only.
+    let bubble_src = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+pipeline FlushBubble
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port d: in UInt<8>;
+  port abort: in Bool;
+  port o: out UInt<8>;
+  stage Fetch
+    reg captured: UInt<8> reset rst => 8'h0;
+    seq on clk rising
+      captured <= d;
+    end seq
+    comb
+      o = captured;
+    end comb
+  end stage Fetch
+  flush Fetch when abort;
+end pipeline FlushBubble
+"#;
+    let clear_src = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+pipeline FlushClear
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port d: in UInt<8>;
+  port abort: in Bool;
+  port o: out UInt<8>;
+  stage Fetch
+    reg captured: UInt<8> reset rst => 8'h0;
+    seq on clk rising
+      captured <= d;
+    end seq
+    comb
+      o = captured;
+    end comb
+  end stage Fetch
+  flush Fetch when abort clear;
+end pipeline FlushClear
+"#;
+    let bubble_sv = compile_to_sv(bubble_src);
+    let clear_sv = compile_to_sv(clear_src);
+
+    // Both must reset valid_r on flush.
+    assert!(bubble_sv.contains("fetch_valid_r <= 1'b0"));
+    assert!(clear_sv.contains("fetch_valid_r <= 1'b0"));
+
+    // Only the `clear` form resets the data reg in the flush branch.
+    // Both forms include the always_ff reset-branch assignment (= 1
+    // occurrence in bubble); clear adds a second in the abort branch.
+    let bubble_count = bubble_sv.matches("fetch_captured <= 8'd0").count();
+    let clear_count = clear_sv.matches("fetch_captured <= 8'd0").count();
+    assert_eq!(bubble_count, 1,
+        "bubble form should have 1 reset of fetch_captured (the always_ff reset branch only); got {bubble_count}\n{bubble_sv}");
+    assert_eq!(clear_count, 2,
+        "clear form should have 2 resets of fetch_captured (always_ff reset + flush clear); got {clear_count}\n{clear_sv}");
+}
+
+#[test]
 fn test_pipeline_cross_stage_skip_rejected() {
     // Regression for #4 (pipeline_critique): a stage that reads from
     // a stage more than one hop back must error at typecheck. The
