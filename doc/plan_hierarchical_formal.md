@@ -196,3 +196,73 @@ compiles with PR-hf1's hierarchy support and PROVES this invariant.
    the AST; full elaboration reuse is a v2 refactor.
 
 Confirm all defaults and I start PR-hf1.
+
+---
+
+## PR-hf4 design note (2026-04-23)
+
+Revising the earlier plan. The blocker isn't "synthesized state lives
+in codegen" — it's that `arch formal` has no path to *reach* that
+state from SMT. Two implementation tracks:
+
+- **(a) AST lift**: a pass that materializes credit_channel state as
+  real RegDecls / WireDecls in the module body, then all backends
+  consume the same lifted regs. Cleanest but touches `codegen.rs`,
+  `sim_credit_channel.rs`, `sim_codegen/mod.rs`, and `formal.rs` —
+  multi-session refactor.
+- **(b) Formal-local synthesis** (chosen for Phase 1): formal walks
+  the same bus-ports + credit_channels metadata that codegen walks
+  and emits matching BV state in the SMT encoding. Duplicates the
+  state shape in one more place; unblocks hf4 without touching other
+  backends.
+
+(a) is still the long-term goal. (b) ships the invariant proof now.
+
+### Phase 1 work breakdown (track b)
+
+Scope: prove `sender.credit + receiver.__buf_occ == DEPTH` on a 2-module
+design connected by an explicit bus with one credit_channel.
+
+1. **Collect credit_channel sites** (~50 LoC). In `FormalCtx::preprocess()`,
+   walk each module port's `bus_info` and collect `(port_name, ch_meta,
+   role_dir)` tuples for every credit_channel field. Stash on the ctx.
+2. **Register BV state per site** (~100 LoC). For each collected site,
+   synthesize BV entries matching codegen's exact names:
+   - Sender role: `__<port>_<ch>_credit` (width `ceil_log2(DEPTH+1)`,
+     reset `DEPTH`), optional `__<port>_<ch>_can_send` wire.
+   - Receiver role: `__<port>_<ch>_occ` (width `ceil_log2(DEPTH+1)`,
+     reset 0), `__<port>_<ch>_head` / `__<port>_<ch>_tail` (width
+     `ceil_log2(DEPTH)`, reset 0). **Storage `__buf[DEPTH]` is
+     skipped**: the occupancy invariant doesn't need payload state, and
+     modelling Vec storage trips formal v1's scalar-only restriction.
+     A follow-up PR can extend formal to model one Vec when a
+     data-path property needs it.
+3. **Emit reset + transitions** (~80 LoC). For each state reg, add
+   to `declarations`, `reset_constraints`, and `transitions` following
+   the codegen logic at `codegen.rs:2795–3070`. Handshake signals
+   (`<port>_<ch>_send_valid`, `<port>_<ch>_credit_return`) are module
+   ports in post-elaborate AST and encode as ordinary port BVs.
+4. **Resolve SynthIdent** (~20 LoC). Replace the hard-error at
+   `formal.rs:1340` with a lookup into the lifted-state table; if the
+   synthetic name was registered in step 2, encode as that BV.
+5. **Hierarchical carry** (~100 LoC). `flatten_for_formal` currently
+   inlines sub-module body items but doesn't propagate credit_channel
+   metadata across the inst boundary. Extend the flatten pass to
+   preserve each sub-module's bus-port credit_channels (renamed under
+   the inst prefix) so step 1's collector sees both sender and receiver
+   sides of the channel in the flat module.
+6. **Test** (~30 LoC .arch + harness). Two-module design: `Sender`
+   with the initiator side, `Receiver` with the target side, parent
+   wires them through a bus. Assert `inst_s.credit + inst_r.occ == DEPTH`
+   always (with reset in flight). Verify PROVED at bound ≥ DEPTH+2.
+
+Total: ~400 LoC + test. Land as a chain of small commits (collection →
+state registration → transitions → SynthIdent → hierarchical → test)
+so each piece reviews cleanly.
+
+### What this does not solve
+
+- Data-path properties spanning the channel (payload correctness) —
+  blocked on formal Vec state.
+- Full path (a) consolidation — still the v2 refactor to do when
+  sim_credit_channel, codegen, and formal start drifting.
