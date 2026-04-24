@@ -1136,12 +1136,40 @@ impl<'a> FormalCtx<'a> {
             // FIFO doesn't need a pointer reg).
             let ptr_width = clog2(depth);
             let send_valid = format!("{port}_{ch}_send_valid");
+            let send_data = format!("{port}_{ch}_send_data");
             let credit_ret = format!("{port}_{ch}_credit_return");
             let merged = both_sides.contains(&(port.clone(), ch.clone()));
+            // Resolve payload type T → BV width if it's a scalar. The
+            // payload signal `<port>_<ch>_send_data` is a real bus
+            // signal that user comb writes to (`s.data_send_data = X`),
+            // so we must register it even though the occupancy invariant
+            // doesn't read it. Non-scalar T (Vec / struct) means we
+            // can't model the data signal in formal v1; skip with a
+            // note (any user write will fail to flatten cleanly).
+            let data_width: Option<u32> = cc_payload_width(&site.meta);
             // Helper: register a 1-bit handshake signal. For merged
             // channels, register once as a Wire (idempotent on the
             // second site). For unmerged channels, register as the
             // requested I/O direction.
+            let register_payload = |this: &mut Self, name: String, kind_if_unmerged: SignalKind, w: u32| {
+                if merged {
+                    if !this.sigs.contains_key(&name) {
+                        this.sigs.insert(name.clone(), SignalInfo {
+                            width: w, signed: false, kind: SignalKind::Wire,
+                        });
+                        this.wires.push(name);
+                    }
+                } else {
+                    this.sigs.insert(name.clone(), SignalInfo {
+                        width: w, signed: false, kind: kind_if_unmerged.clone(),
+                    });
+                    match kind_if_unmerged {
+                        SignalKind::Input => this.inputs.push(name),
+                        SignalKind::Output => this.outputs.push(name),
+                        _ => {}
+                    }
+                }
+            };
             let register_handshake = |this: &mut Self, name: String, kind_if_unmerged: SignalKind| {
                 if merged {
                     if !this.sigs.contains_key(&name) {
@@ -1171,6 +1199,9 @@ impl<'a> FormalCtx<'a> {
                 self.reg_reset.insert(credit, mk_sized_lit(cnt_width, depth, site.meta.span));
                 register_handshake(self, send_valid, SignalKind::Output);
                 register_handshake(self, credit_ret, SignalKind::Input);
+                if let Some(w) = data_width {
+                    register_payload(self, send_data.clone(), SignalKind::Output, w);
+                }
             } else {
                 // Receiver side: occupancy reg, reset to 0.
                 let occ = format!("__{port}_{ch}_occ");
@@ -1195,6 +1226,9 @@ impl<'a> FormalCtx<'a> {
                 }
                 register_handshake(self, send_valid, SignalKind::Input);
                 register_handshake(self, credit_ret, SignalKind::Output);
+                if let Some(w) = data_width {
+                    register_payload(self, send_data.clone(), SignalKind::Input, w);
+                }
             }
         }
         Ok(())
@@ -2045,10 +2079,27 @@ impl<'a> FormalCtx<'a> {
                     ))
                 }
             }
-            FieldAccess(_, _) | StructLiteral(_, _) | Cast(_, _) | Index(_, _)
+            FieldAccess(base, field) => {
+                // Bus-port field access — `s.data_send_valid` resolves
+                // to the codegen-flat name `s_data_send_valid`. The
+                // formal lifted-state pass registered these flat names
+                // (for credit_channel signals) as BV in `sigs`, so we
+                // can route through the normal Ident path.
+                if let ExprKind::Ident(port) = &base.kind {
+                    let flat = format!("{port}_{}", field.name);
+                    if self.sigs.contains_key(&flat) {
+                        return self.encode_ident(&flat, t, expr.span);
+                    }
+                }
+                Err(CompileError::general(
+                    "expression kind not supported by arch formal v1 (struct field access on a non-bus port — only `<bus_port>.<channel_signal>` is supported)",
+                    expr.span,
+                ))
+            }
+            StructLiteral(_, _) | Cast(_, _) | Index(_, _)
             | FunctionCall(_, _) | Inside(_, _) | Match(_, _) | ExprMatch(_, _) | Todo => {
                 Err(CompileError::general(
-                    "expression kind not supported by arch formal v1 (struct field / cast / index / function call / match / inside / todo)",
+                    "expression kind not supported by arch formal v1 (struct literal / cast / index / function call / match / inside / todo)",
                     expr.span,
                 ))
             }
@@ -2486,6 +2537,29 @@ fn mk_sized_lit(width: u32, value: u64, span: Span) -> Expr {
     Expr::new(ExprKind::Literal(LitKind::Sized(width, value)), span)
 }
 
+/// Resolve the BV width of a credit_channel's payload type T, when T is
+/// a scalar UInt/SInt/Bool/Bit. Returns None for non-scalar payloads
+/// (Vec / struct / named) — those can't be modelled in formal v1.
+fn cc_payload_width(meta: &CreditChannelMeta) -> Option<u32> {
+    let t = meta.params.iter()
+        .find(|p| p.name.name == "T")
+        .and_then(|p| match &p.kind {
+            ParamKind::Type(te) => Some(te.clone()),
+            _ => None,
+        })?;
+    match t {
+        TypeExpr::UInt(w) | TypeExpr::SInt(w) => {
+            // Width must fold to a constant — try with empty params,
+            // good enough for literal widths like UInt<8>. Param-driven
+            // widths inside credit_channel T aren't common in v1.
+            let params = std::collections::HashMap::new();
+            fold_const_expr(&w, &params).map(|v| v as u32)
+        }
+        TypeExpr::Bool | TypeExpr::Bit => Some(1),
+        _ => None,
+    }
+}
+
 fn mk_ident(name: &str, span: Span) -> Expr {
     Expr::new(ExprKind::Ident(name.to_string()), span)
 }
@@ -2551,6 +2625,18 @@ fn as_bool(t: &SmtTerm) -> String {
 fn target_root_ident(expr: &Expr) -> Option<String> {
     match &expr.kind {
         ExprKind::Ident(n) => Some(n.clone()),
+        // Bus-port field access on the LHS — `s.data_send_valid = X`
+        // becomes a write to the codegen-flat name `s_data_send_valid`.
+        // Formal accepts the flattened identifier so user code that
+        // drives bus signals via the conventional dotted form works
+        // unchanged in the encoding.
+        ExprKind::FieldAccess(base, field) => {
+            if let ExprKind::Ident(port) = &base.kind {
+                Some(format!("{port}_{}", field.name))
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
