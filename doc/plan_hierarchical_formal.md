@@ -1,5 +1,16 @@
 # Plan: hierarchical `arch formal` (sub-instances + cross-module properties)
 
+> **Status (2026-04-24)**: PR-hf1b (#100) + PR-hf2 (#101) shipped. Sub-modules
+> with `let` + `comb` + `reg` + `seq` flatten end-to-end; PROVED/REFUTED
+> verified on Adder, SubCounter, and multi-inst SubCounter designs.
+> Deferred: PR-hf3 (connect-by-name syntax sugar) — not blocking. PR-hf4
+> (credit_channel occupancy invariant) is architecturally blocked on
+> credit_channel's synthesized state not being AST-visible; needs either
+> an elaborate pass to lift those regs into the AST (cleanest) or
+> formal-specific synthesis (backend-specific). Separate design work.
+> PR-hf5 is this status update.
+
+
 *Author: session of 2026-04-23. Expands the direct-SMT formal
 encoding (`doc/COMPILER_STATUS.md` arch formal row — v1 shipped
 2026-04-17) from flat-module BMC to composable hierarchy.*
