@@ -810,6 +810,110 @@ impl<'a> FormalCtx<'a> {
         }
     }
 
+    /// For each collected credit_channel site, register the synthesized BV
+    /// state that codegen would emit in SV: sender-side `__<port>_<ch>_credit`
+    /// counter, or receiver-side `__occ`/`__head`/`__tail` regs. Also
+    /// registers the handshake signals (`<port>_<ch>_send_valid` and
+    /// `<port>_<ch>_credit_return`) as module-level inputs/outputs based
+    /// on the port's role. Payload `send_data` is deferred — the occupancy
+    /// invariant doesn't reference it and modelling it requires Vec state.
+    ///
+    /// Reset values are registered in `reg_reset` as Expr literals so the
+    /// existing reset emission picks them up. Next-state rhs (item 3) is
+    /// not populated here — consumers that read these regs before item 3
+    /// lands will see them hold their reset value throughout.
+    fn register_credit_channel_state(&mut self) -> Result<(), CompileError> {
+        // Clone into a local vec so we don't hold an immutable borrow of
+        // self while mutating sigs/regs/inputs/outputs below.
+        let sites = self.credit_sites.clone();
+        for site in &sites {
+            let Some(depth) = site.depth else {
+                return Err(CompileError::general(
+                    &format!(
+                        "credit_channel `{}` on port `{}`: DEPTH could not be folded to a constant — formal encoding requires a concrete DEPTH",
+                        site.meta.name.name, site.port_name,
+                    ),
+                    site.meta.span,
+                ));
+            };
+            if depth == 0 {
+                return Err(CompileError::general(
+                    &format!(
+                        "credit_channel `{}` on port `{}`: DEPTH must be > 0",
+                        site.meta.name.name, site.port_name,
+                    ),
+                    site.meta.span,
+                ));
+            }
+            let ch = &site.meta.name.name;
+            let port = &site.port_name;
+            // ceil_log2(n) with n >= 1. For n=1 returns 0; callers width-
+            // guard per-reg.
+            let clog2 = |n: u64| -> u32 {
+                if n <= 1 { 0 } else { (n - 1).ilog2() + 1 }
+            };
+            // Counter width = ceil_log2(DEPTH+1), always >= 1 for DEPTH>=1.
+            let cnt_width = clog2(depth + 1).max(1);
+            // Pointer width = ceil_log2(DEPTH); 0 if DEPTH==1 (single-slot
+            // FIFO doesn't need a pointer reg).
+            let ptr_width = clog2(depth);
+            let send_valid = format!("{port}_{ch}_send_valid");
+            let credit_ret = format!("{port}_{ch}_credit_return");
+            if site.is_sender {
+                // Sender side: credit counter, reset to DEPTH.
+                let credit = format!("__{port}_{ch}_credit");
+                self.sigs.insert(credit.clone(), SignalInfo {
+                    width: cnt_width, signed: false, kind: SignalKind::Reg,
+                });
+                self.regs.push(credit.clone());
+                self.reg_reset.insert(credit, mk_sized_lit(cnt_width, depth, site.meta.span));
+                // send_valid is driven by sender-side logic — treated as
+                // output. credit_return is received — input.
+                self.sigs.insert(send_valid.clone(), SignalInfo {
+                    width: 1, signed: false, kind: SignalKind::Output,
+                });
+                self.outputs.push(send_valid);
+                self.sigs.insert(credit_ret.clone(), SignalInfo {
+                    width: 1, signed: false, kind: SignalKind::Input,
+                });
+                self.inputs.push(credit_ret);
+            } else {
+                // Receiver side: occupancy reg, reset to 0.
+                let occ = format!("__{port}_{ch}_occ");
+                self.sigs.insert(occ.clone(), SignalInfo {
+                    width: cnt_width, signed: false, kind: SignalKind::Reg,
+                });
+                self.regs.push(occ.clone());
+                self.reg_reset.insert(occ, mk_sized_lit(cnt_width, 0, site.meta.span));
+                if ptr_width > 0 {
+                    let head = format!("__{port}_{ch}_head");
+                    let tail = format!("__{port}_{ch}_tail");
+                    self.sigs.insert(head.clone(), SignalInfo {
+                        width: ptr_width, signed: false, kind: SignalKind::Reg,
+                    });
+                    self.regs.push(head.clone());
+                    self.reg_reset.insert(head, mk_sized_lit(ptr_width, 0, site.meta.span));
+                    self.sigs.insert(tail.clone(), SignalInfo {
+                        width: ptr_width, signed: false, kind: SignalKind::Reg,
+                    });
+                    self.regs.push(tail.clone());
+                    self.reg_reset.insert(tail, mk_sized_lit(ptr_width, 0, site.meta.span));
+                }
+                // send_valid is received on receiver side — input.
+                // credit_return is driven back — output.
+                self.sigs.insert(send_valid.clone(), SignalInfo {
+                    width: 1, signed: false, kind: SignalKind::Input,
+                });
+                self.inputs.push(send_valid);
+                self.sigs.insert(credit_ret.clone(), SignalInfo {
+                    width: 1, signed: false, kind: SignalKind::Output,
+                });
+                self.outputs.push(credit_ret);
+            }
+        }
+        Ok(())
+    }
+
     fn preprocess(&mut self) -> Result<(), CompileError> {
         // Collect param constants
         for p in &self.module.params {
@@ -831,10 +935,12 @@ impl<'a> FormalCtx<'a> {
         self.reset = ResetInfo { name: rn, is_async, is_low };
 
         // PR-hf4 item 1: collect credit_channel sites for later state
-        // registration. The result is unused in this commit; follow-ups
-        // consume `self.credit_sites` to register BV state and resolve
-        // SynthIdent references.
+        // registration and SynthIdent resolution.
         self.collect_credit_channel_sites();
+        // PR-hf4 item 2: register BV state + handshake signals per site.
+        // Transitions (counter ±1, occ ±1) come in item 3; SynthIdent
+        // resolution in item 4.
+        self.register_credit_channel_state()?;
 
         // Defensive: any Inst items here mean the flattener didn't run.
         // `run()` invokes `flatten_for_formal` before preprocess() for
@@ -862,6 +968,14 @@ impl<'a> FormalCtx<'a> {
 
         // Ports (declare inputs/outputs + widths)
         for port in &self.module.ports {
+            // Bus ports: the bus's individual signals aren't in the AST as
+            // scalar ports; we register them per-credit_channel below in
+            // `register_credit_channel_state()`. Skip generic scalar-only
+            // handling. (Non-credit_channel bus usage is still unsupported
+            // in formal v1 — the encoder will fail later on any reference.)
+            if port.bus_info.is_some() {
+                continue;
+            }
             // Reject bus / vec / struct / enum types
             self.check_scalar_type(&port.ty, port.span)?;
             let (w, signed) = self.type_width_signed(&port.ty, port.span)?;
@@ -1987,6 +2101,13 @@ fn bv_all_ones(width: u32) -> String {
     } else {
         format!("(bvnot {})", bv_zero(width))
     }
+}
+
+/// Build an `Expr` for a sized literal with the given bit width + value.
+/// Used by credit_channel state registration to synthesize reset
+/// expressions for the lifted regs.
+fn mk_sized_lit(width: u32, value: u64, span: Span) -> Expr {
+    Expr::new(ExprKind::Literal(LitKind::Sized(width, value)), span)
 }
 
 fn lit_to_term(l: &LitKind) -> SmtTerm {
