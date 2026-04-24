@@ -3423,13 +3423,19 @@ impl<'a> SimCodegen<'a> {
         // as private members on the parent. Without this, two insts
         // sharing an undeclared bus name (the implicit-bus-wire case)
         // generate code that references undeclared identifiers.
+        //
+        // We also include INPUT-direction signals here, not just outputs:
+        // when a bus wire is one-side-connected (the self-loop tie-off
+        // pattern in mesh tops, where only the receiving inst references
+        // the wire's send_valid path), the unconnected side has no
+        // assignment but the read site still references the name. The
+        // member then default-initializes to 0, giving the desired idle
+        // tie-off behaviour.
         let mut inst_out = inst_out;
         for conns in &expanded_conns {
             for conn in conns {
-                if conn.direction == ConnectDir::Output {
-                    if let ExprKind::Ident(name) = &conn.signal.kind {
-                        inst_out.insert(name.clone());
-                    }
+                if let ExprKind::Ident(name) = &conn.signal.kind {
+                    inst_out.insert(name.clone());
                 }
             }
         }

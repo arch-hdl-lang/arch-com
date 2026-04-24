@@ -1,0 +1,577 @@
+// 4×4 mesh NoC router. Single VC, single-flit packets, XY routing,
+// priority arbitration per output.
+//
+// Flit format (UInt<32>):
+//   bits[1:0] = dest_x (4-router mesh: 0..3)
+//   bits[3:2] = dest_y
+//   bits[31:4] = 28-bit payload (we stuff seq_no there)
+//
+// XY routing: route X first (E or W until x-aligned), then Y (N or S),
+// then deliver locally. A flit therefore turns at most once on its path,
+// guaranteeing no deadlock.
+//
+// Per-output arbitration: priority order local > N > S > E > W.
+
+bus FlitBus
+  credit_channel flits: send
+    param T:     type  = UInt<32>;
+    param DEPTH: const = 4;
+  end credit_channel flits
+end bus FlitBus
+
+module Router
+  param X: const = 0;
+  param Y: const = 0;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  port in_local: target FlitBus;
+  port in_n:     target FlitBus;
+  port in_s:     target FlitBus;
+  port in_e:     target FlitBus;
+  port in_w:     target FlitBus;
+
+  port out_local: initiator FlitBus;
+  port out_n:     initiator FlitBus;
+  port out_s:     initiator FlitBus;
+  port out_e:     initiator FlitBus;
+  port out_w:     initiator FlitBus;
+
+  // ── Decode dest from each input's flit and pick the routed output.
+  //   Output codes: 0=local, 1=N, 2=S, 3=E, 4=W.
+  //   When no flit is valid we don't care; comb defaults to 0 below.
+  let lx_data: UInt<32> = in_local.flits.data;
+  let nx_data: UInt<32> = in_n.flits.data;
+  let sx_data: UInt<32> = in_s.flits.data;
+  let ex_data: UInt<32> = in_e.flits.data;
+  let wx_data: UInt<32> = in_w.flits.data;
+
+  let lx_dx: UInt<2> = lx_data[1:0];
+  let lx_dy: UInt<2> = lx_data[3:2];
+  let nx_dx: UInt<2> = nx_data[1:0];
+  let nx_dy: UInt<2> = nx_data[3:2];
+  let sx_dx: UInt<2> = sx_data[1:0];
+  let sx_dy: UInt<2> = sx_data[3:2];
+  let ex_dx: UInt<2> = ex_data[1:0];
+  let ex_dy: UInt<2> = ex_data[3:2];
+  let wx_dx: UInt<2> = wx_data[1:0];
+  let wx_dy: UInt<2> = wx_data[3:2];
+
+  // Compile-time params as UInt<2> for comparison.
+  let mx: UInt<2> = X;
+  let my: UInt<2> = Y;
+
+  // For each input: which output do we want? (XY routing)
+  let route_local: UInt<3> =
+    (lx_dx > mx) ? 3'd3 :
+    (lx_dx < mx) ? 3'd4 :
+    (lx_dy > my) ? 3'd1 :
+    (lx_dy < my) ? 3'd2 : 3'd0;
+  let route_n: UInt<3> =
+    (nx_dx > mx) ? 3'd3 :
+    (nx_dx < mx) ? 3'd4 :
+    (nx_dy > my) ? 3'd1 :
+    (nx_dy < my) ? 3'd2 : 3'd0;
+  let route_s: UInt<3> =
+    (sx_dx > mx) ? 3'd3 :
+    (sx_dx < mx) ? 3'd4 :
+    (sx_dy > my) ? 3'd1 :
+    (sx_dy < my) ? 3'd2 : 3'd0;
+  let route_e: UInt<3> =
+    (ex_dx > mx) ? 3'd3 :
+    (ex_dx < mx) ? 3'd4 :
+    (ex_dy > my) ? 3'd1 :
+    (ex_dy < my) ? 3'd2 : 3'd0;
+  let route_w: UInt<3> =
+    (wx_dx > mx) ? 3'd3 :
+    (wx_dx < mx) ? 3'd4 :
+    (wx_dy > my) ? 3'd1 :
+    (wx_dy < my) ? 3'd2 : 3'd0;
+
+  // Want-bits: input I has valid AND wants output O.
+  let want_local_local: Bool = in_local.flits.valid and (route_local == 3'd0);
+  let want_n_local: Bool     = in_n.flits.valid     and (route_n     == 3'd0);
+  let want_s_local: Bool     = in_s.flits.valid     and (route_s     == 3'd0);
+  let want_e_local: Bool     = in_e.flits.valid     and (route_e     == 3'd0);
+  let want_w_local: Bool     = in_w.flits.valid     and (route_w     == 3'd0);
+
+  let want_local_n: Bool = in_local.flits.valid and (route_local == 3'd1);
+  let want_n_n: Bool     = in_n.flits.valid     and (route_n     == 3'd1);
+  let want_s_n: Bool     = in_s.flits.valid     and (route_s     == 3'd1);
+  let want_e_n: Bool     = in_e.flits.valid     and (route_e     == 3'd1);
+  let want_w_n: Bool     = in_w.flits.valid     and (route_w     == 3'd1);
+
+  let want_local_s: Bool = in_local.flits.valid and (route_local == 3'd2);
+  let want_n_s: Bool     = in_n.flits.valid     and (route_n     == 3'd2);
+  let want_s_s: Bool     = in_s.flits.valid     and (route_s     == 3'd2);
+  let want_e_s: Bool     = in_e.flits.valid     and (route_e     == 3'd2);
+  let want_w_s: Bool     = in_w.flits.valid     and (route_w     == 3'd2);
+
+  let want_local_e: Bool = in_local.flits.valid and (route_local == 3'd3);
+  let want_n_e: Bool     = in_n.flits.valid     and (route_n     == 3'd3);
+  let want_s_e: Bool     = in_s.flits.valid     and (route_s     == 3'd3);
+  let want_e_e: Bool     = in_e.flits.valid     and (route_e     == 3'd3);
+  let want_w_e: Bool     = in_w.flits.valid     and (route_w     == 3'd3);
+
+  let want_local_w: Bool = in_local.flits.valid and (route_local == 3'd4);
+  let want_n_w: Bool     = in_n.flits.valid     and (route_n     == 3'd4);
+  let want_s_w: Bool     = in_s.flits.valid     and (route_s     == 3'd4);
+  let want_e_w: Bool     = in_e.flits.valid     and (route_e     == 3'd4);
+  let want_w_w: Bool     = in_w.flits.valid     and (route_w     == 3'd4);
+
+  // Per-output: pick winning input (priority local > N > S > E > W) AND
+  // require can_send on that output. Pick code: 0=none, 1=local, 2=N,
+  // 3=S, 4=E, 5=W.
+  let pick_local: UInt<3> =
+    (out_local.flits.can_send and want_local_local) ? 3'd1 :
+    (out_local.flits.can_send and want_n_local)     ? 3'd2 :
+    (out_local.flits.can_send and want_s_local)     ? 3'd3 :
+    (out_local.flits.can_send and want_e_local)     ? 3'd4 :
+    (out_local.flits.can_send and want_w_local)     ? 3'd5 : 3'd0;
+  let pick_n: UInt<3> =
+    (out_n.flits.can_send and want_local_n) ? 3'd1 :
+    (out_n.flits.can_send and want_n_n)     ? 3'd2 :
+    (out_n.flits.can_send and want_s_n)     ? 3'd3 :
+    (out_n.flits.can_send and want_e_n)     ? 3'd4 :
+    (out_n.flits.can_send and want_w_n)     ? 3'd5 : 3'd0;
+  let pick_s: UInt<3> =
+    (out_s.flits.can_send and want_local_s) ? 3'd1 :
+    (out_s.flits.can_send and want_n_s)     ? 3'd2 :
+    (out_s.flits.can_send and want_s_s)     ? 3'd3 :
+    (out_s.flits.can_send and want_e_s)     ? 3'd4 :
+    (out_s.flits.can_send and want_w_s)     ? 3'd5 : 3'd0;
+  let pick_e: UInt<3> =
+    (out_e.flits.can_send and want_local_e) ? 3'd1 :
+    (out_e.flits.can_send and want_n_e)     ? 3'd2 :
+    (out_e.flits.can_send and want_s_e)     ? 3'd3 :
+    (out_e.flits.can_send and want_e_e)     ? 3'd4 :
+    (out_e.flits.can_send and want_w_e)     ? 3'd5 : 3'd0;
+  let pick_w: UInt<3> =
+    (out_w.flits.can_send and want_local_w) ? 3'd1 :
+    (out_w.flits.can_send and want_n_w)     ? 3'd2 :
+    (out_w.flits.can_send and want_s_w)     ? 3'd3 :
+    (out_w.flits.can_send and want_e_w)     ? 3'd4 :
+    (out_w.flits.can_send and want_w_w)     ? 3'd5 : 3'd0;
+
+  // An input is "served" iff some output picked it.
+  let served_local: Bool = (pick_local == 3'd1) or (pick_n == 3'd1) or (pick_s == 3'd1) or (pick_e == 3'd1) or (pick_w == 3'd1);
+  let served_n: Bool     = (pick_local == 3'd2) or (pick_n == 3'd2) or (pick_s == 3'd2) or (pick_e == 3'd2) or (pick_w == 3'd2);
+  let served_s: Bool     = (pick_local == 3'd3) or (pick_n == 3'd3) or (pick_s == 3'd3) or (pick_e == 3'd3) or (pick_w == 3'd3);
+  let served_e: Bool     = (pick_local == 3'd4) or (pick_n == 3'd4) or (pick_s == 3'd4) or (pick_e == 3'd4) or (pick_w == 3'd4);
+  let served_w: Bool     = (pick_local == 3'd5) or (pick_n == 3'd5) or (pick_s == 3'd5) or (pick_e == 3'd5) or (pick_w == 3'd5);
+
+  comb
+    // Per-output drives: pick the winner's data; otherwise idle.
+    out_local.flits_send_valid = (pick_local != 3'd0);
+    out_local.flits_send_data  =
+      (pick_local == 3'd1) ? lx_data :
+      (pick_local == 3'd2) ? nx_data :
+      (pick_local == 3'd3) ? sx_data :
+      (pick_local == 3'd4) ? ex_data : wx_data;
+
+    out_n.flits_send_valid = (pick_n != 3'd0);
+    out_n.flits_send_data  =
+      (pick_n == 3'd1) ? lx_data :
+      (pick_n == 3'd2) ? nx_data :
+      (pick_n == 3'd3) ? sx_data :
+      (pick_n == 3'd4) ? ex_data : wx_data;
+
+    out_s.flits_send_valid = (pick_s != 3'd0);
+    out_s.flits_send_data  =
+      (pick_s == 3'd1) ? lx_data :
+      (pick_s == 3'd2) ? nx_data :
+      (pick_s == 3'd3) ? sx_data :
+      (pick_s == 3'd4) ? ex_data : wx_data;
+
+    out_e.flits_send_valid = (pick_e != 3'd0);
+    out_e.flits_send_data  =
+      (pick_e == 3'd1) ? lx_data :
+      (pick_e == 3'd2) ? nx_data :
+      (pick_e == 3'd3) ? sx_data :
+      (pick_e == 3'd4) ? ex_data : wx_data;
+
+    out_w.flits_send_valid = (pick_w != 3'd0);
+    out_w.flits_send_data  =
+      (pick_w == 3'd1) ? lx_data :
+      (pick_w == 3'd2) ? nx_data :
+      (pick_w == 3'd3) ? sx_data :
+      (pick_w == 3'd4) ? ex_data : wx_data;
+
+    // Pop each input that was served somewhere.
+    in_local.flits_credit_return = served_local;
+    in_n.flits_credit_return     = served_n;
+    in_s.flits_credit_return     = served_s;
+    in_e.flits_credit_return     = served_e;
+    in_w.flits_credit_return     = served_w;
+  end comb
+end module Router
+// 4×4 mesh NoC top — instantiates 16 Router(X, Y) instances and
+// wires them with internal credit_channel links + self-loop tie-offs
+// for edge directions (router routes are bounded to in-grid dests so
+// the tied-off output never sees a send and its credit stays full).
+
+module FlitProducer
+  port clk:          in Clock<SysDomain>;
+  port rst:          in Reset<Sync>;
+  port gen_pressure: in UInt<8>;
+  port dst_x:        in UInt<2>;
+  port dst_y:        in UInt<2>;
+  port out:          initiator FlitBus;
+
+  reg seq_no: UInt<28> reset rst => 28'h0;
+  reg lfsr:   UInt<8>  reset rst => 8'h5A;
+
+  comb
+    out.flits_send_valid = 1'b0;
+    out.flits_send_data  = 32'h0;
+    if out.flits.can_send and (lfsr < gen_pressure)
+      out.flits.send({seq_no, dst_y, dst_x});
+    end if
+  end comb
+
+  seq on clk rising
+    if lfsr[0]
+      lfsr <= (lfsr >> 1) ^ 8'hB8;
+    else
+      lfsr <= lfsr >> 1;
+    end if
+    if out.flits.can_send and (lfsr < gen_pressure)
+      seq_no <= seq_no +% 28'h1;
+    end if
+  end seq
+end module FlitProducer
+
+module FlitConsumer
+  port clk:          in Clock<SysDomain>;
+  port rst:          in Reset<Sync>;
+  port pop_pressure: in UInt<8>;
+  port incoming:     target FlitBus;
+
+  port reg popped_count: out UInt<32> reset rst => 32'h0;
+  port reg last_payload: out UInt<28> reset rst => 28'h0;
+
+  reg lfsr: UInt<8> reset rst => 8'hC3;
+
+  comb
+    incoming.flits_credit_return = 1'b0;
+    if incoming.flits.valid and (lfsr < pop_pressure)
+      incoming.flits.pop();
+    end if
+  end comb
+
+  seq on clk rising
+    if lfsr[0]
+      lfsr <= (lfsr >> 1) ^ 8'hB8;
+    else
+      lfsr <= lfsr >> 1;
+    end if
+    if incoming.flits.valid and (lfsr < pop_pressure)
+      popped_count <= popped_count +% 32'h1;
+      last_payload <= incoming.flits.data[31:4];
+    end if
+  end seq
+end module FlitConsumer
+
+module Mesh4x4
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port gen_pressure: in UInt<8>;
+  port pop_pressure: in UInt<8>;
+  port dst_x:        in UInt<2>;
+  port dst_y:        in UInt<2>;
+  port popped_count: out UInt<32>;
+  port last_payload: out UInt<28>;
+
+  // Producer at (0,0) local, consumer at (3,3) local.
+  inst prod: FlitProducer
+    clk          <- clk;
+    rst          <- rst;
+    gen_pressure <- gen_pressure;
+    dst_x        <- dst_x;
+    dst_y        <- dst_y;
+    out          <- inj_link;
+  end inst prod
+
+  inst cons: FlitConsumer
+    clk           <- clk;
+    rst           <- rst;
+    pop_pressure  <- pop_pressure;
+    incoming      <- snk_link;
+    popped_count  -> popped_count;
+    last_payload  -> last_payload;
+  end inst cons
+
+  inst r_0_0: Router
+    param X = 0;
+    param Y = 0;
+    clk <- clk;
+    rst <- rst;
+    in_local  <- inj_link;
+    out_local <- tie_l_0_0;
+    in_n  <- n2s_0_0;
+    out_n <- s2n_0_0;
+    in_s  <- tie_s_0_0;
+    out_s <- tie_s_0_0;
+    in_e  <- e2w_0_0;
+    out_e <- w2e_0_0;
+    in_w  <- tie_w_0_0;
+    out_w <- tie_w_0_0;
+  end inst r_0_0
+
+  inst r_1_0: Router
+    param X = 1;
+    param Y = 0;
+    clk <- clk;
+    rst <- rst;
+    in_local  <- tie_l_1_0;
+    out_local <- tie_l_1_0;
+    in_n  <- n2s_1_0;
+    out_n <- s2n_1_0;
+    in_s  <- tie_s_1_0;
+    out_s <- tie_s_1_0;
+    in_e  <- e2w_1_0;
+    out_e <- w2e_1_0;
+    in_w  <- w2e_0_0;
+    out_w <- e2w_0_0;
+  end inst r_1_0
+
+  inst r_2_0: Router
+    param X = 2;
+    param Y = 0;
+    clk <- clk;
+    rst <- rst;
+    in_local  <- tie_l_2_0;
+    out_local <- tie_l_2_0;
+    in_n  <- n2s_2_0;
+    out_n <- s2n_2_0;
+    in_s  <- tie_s_2_0;
+    out_s <- tie_s_2_0;
+    in_e  <- e2w_2_0;
+    out_e <- w2e_2_0;
+    in_w  <- w2e_1_0;
+    out_w <- e2w_1_0;
+  end inst r_2_0
+
+  inst r_3_0: Router
+    param X = 3;
+    param Y = 0;
+    clk <- clk;
+    rst <- rst;
+    in_local  <- tie_l_3_0;
+    out_local <- tie_l_3_0;
+    in_n  <- n2s_3_0;
+    out_n <- s2n_3_0;
+    in_s  <- tie_s_3_0;
+    out_s <- tie_s_3_0;
+    in_e  <- tie_e_3_0;
+    out_e <- tie_e_3_0;
+    in_w  <- w2e_2_0;
+    out_w <- e2w_2_0;
+  end inst r_3_0
+
+  inst r_0_1: Router
+    param X = 0;
+    param Y = 1;
+    clk <- clk;
+    rst <- rst;
+    in_local  <- tie_l_0_1;
+    out_local <- tie_l_0_1;
+    in_n  <- n2s_0_1;
+    out_n <- s2n_0_1;
+    in_s  <- s2n_0_0;
+    out_s <- n2s_0_0;
+    in_e  <- e2w_0_1;
+    out_e <- w2e_0_1;
+    in_w  <- tie_w_0_1;
+    out_w <- tie_w_0_1;
+  end inst r_0_1
+
+  inst r_1_1: Router
+    param X = 1;
+    param Y = 1;
+    clk <- clk;
+    rst <- rst;
+    in_local  <- tie_l_1_1;
+    out_local <- tie_l_1_1;
+    in_n  <- n2s_1_1;
+    out_n <- s2n_1_1;
+    in_s  <- s2n_1_0;
+    out_s <- n2s_1_0;
+    in_e  <- e2w_1_1;
+    out_e <- w2e_1_1;
+    in_w  <- w2e_0_1;
+    out_w <- e2w_0_1;
+  end inst r_1_1
+
+  inst r_2_1: Router
+    param X = 2;
+    param Y = 1;
+    clk <- clk;
+    rst <- rst;
+    in_local  <- tie_l_2_1;
+    out_local <- tie_l_2_1;
+    in_n  <- n2s_2_1;
+    out_n <- s2n_2_1;
+    in_s  <- s2n_2_0;
+    out_s <- n2s_2_0;
+    in_e  <- e2w_2_1;
+    out_e <- w2e_2_1;
+    in_w  <- w2e_1_1;
+    out_w <- e2w_1_1;
+  end inst r_2_1
+
+  inst r_3_1: Router
+    param X = 3;
+    param Y = 1;
+    clk <- clk;
+    rst <- rst;
+    in_local  <- tie_l_3_1;
+    out_local <- tie_l_3_1;
+    in_n  <- n2s_3_1;
+    out_n <- s2n_3_1;
+    in_s  <- s2n_3_0;
+    out_s <- n2s_3_0;
+    in_e  <- tie_e_3_1;
+    out_e <- tie_e_3_1;
+    in_w  <- w2e_2_1;
+    out_w <- e2w_2_1;
+  end inst r_3_1
+
+  inst r_0_2: Router
+    param X = 0;
+    param Y = 2;
+    clk <- clk;
+    rst <- rst;
+    in_local  <- tie_l_0_2;
+    out_local <- tie_l_0_2;
+    in_n  <- n2s_0_2;
+    out_n <- s2n_0_2;
+    in_s  <- s2n_0_1;
+    out_s <- n2s_0_1;
+    in_e  <- e2w_0_2;
+    out_e <- w2e_0_2;
+    in_w  <- tie_w_0_2;
+    out_w <- tie_w_0_2;
+  end inst r_0_2
+
+  inst r_1_2: Router
+    param X = 1;
+    param Y = 2;
+    clk <- clk;
+    rst <- rst;
+    in_local  <- tie_l_1_2;
+    out_local <- tie_l_1_2;
+    in_n  <- n2s_1_2;
+    out_n <- s2n_1_2;
+    in_s  <- s2n_1_1;
+    out_s <- n2s_1_1;
+    in_e  <- e2w_1_2;
+    out_e <- w2e_1_2;
+    in_w  <- w2e_0_2;
+    out_w <- e2w_0_2;
+  end inst r_1_2
+
+  inst r_2_2: Router
+    param X = 2;
+    param Y = 2;
+    clk <- clk;
+    rst <- rst;
+    in_local  <- tie_l_2_2;
+    out_local <- tie_l_2_2;
+    in_n  <- n2s_2_2;
+    out_n <- s2n_2_2;
+    in_s  <- s2n_2_1;
+    out_s <- n2s_2_1;
+    in_e  <- e2w_2_2;
+    out_e <- w2e_2_2;
+    in_w  <- w2e_1_2;
+    out_w <- e2w_1_2;
+  end inst r_2_2
+
+  inst r_3_2: Router
+    param X = 3;
+    param Y = 2;
+    clk <- clk;
+    rst <- rst;
+    in_local  <- tie_l_3_2;
+    out_local <- tie_l_3_2;
+    in_n  <- n2s_3_2;
+    out_n <- s2n_3_2;
+    in_s  <- s2n_3_1;
+    out_s <- n2s_3_1;
+    in_e  <- tie_e_3_2;
+    out_e <- tie_e_3_2;
+    in_w  <- w2e_2_2;
+    out_w <- e2w_2_2;
+  end inst r_3_2
+
+  inst r_0_3: Router
+    param X = 0;
+    param Y = 3;
+    clk <- clk;
+    rst <- rst;
+    in_local  <- tie_l_0_3;
+    out_local <- tie_l_0_3;
+    in_n  <- tie_n_0_3;
+    out_n <- tie_n_0_3;
+    in_s  <- s2n_0_2;
+    out_s <- n2s_0_2;
+    in_e  <- e2w_0_3;
+    out_e <- w2e_0_3;
+    in_w  <- tie_w_0_3;
+    out_w <- tie_w_0_3;
+  end inst r_0_3
+
+  inst r_1_3: Router
+    param X = 1;
+    param Y = 3;
+    clk <- clk;
+    rst <- rst;
+    in_local  <- tie_l_1_3;
+    out_local <- tie_l_1_3;
+    in_n  <- tie_n_1_3;
+    out_n <- tie_n_1_3;
+    in_s  <- s2n_1_2;
+    out_s <- n2s_1_2;
+    in_e  <- e2w_1_3;
+    out_e <- w2e_1_3;
+    in_w  <- w2e_0_3;
+    out_w <- e2w_0_3;
+  end inst r_1_3
+
+  inst r_2_3: Router
+    param X = 2;
+    param Y = 3;
+    clk <- clk;
+    rst <- rst;
+    in_local  <- tie_l_2_3;
+    out_local <- tie_l_2_3;
+    in_n  <- tie_n_2_3;
+    out_n <- tie_n_2_3;
+    in_s  <- s2n_2_2;
+    out_s <- n2s_2_2;
+    in_e  <- e2w_2_3;
+    out_e <- w2e_2_3;
+    in_w  <- w2e_1_3;
+    out_w <- e2w_1_3;
+  end inst r_2_3
+
+  inst r_3_3: Router
+    param X = 3;
+    param Y = 3;
+    clk <- clk;
+    rst <- rst;
+    in_local  <- tie_l_3_3;
+    out_local <- snk_link;
+    in_n  <- tie_n_3_3;
+    out_n <- tie_n_3_3;
+    in_s  <- s2n_3_2;
+    out_s <- n2s_3_2;
+    in_e  <- tie_e_3_3;
+    out_e <- tie_e_3_3;
+    in_w  <- w2e_2_3;
+    out_w <- e2w_2_3;
+  end inst r_3_3
+
+end module Mesh4x4
