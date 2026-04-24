@@ -395,7 +395,8 @@ pipeline Name
     end inst alu0
   end stage Exec
 
-  flush Fetch when mispredict;
+  flush Fetch when mispredict;        // bubble-only (default)
+  flush Fetch when secret_path clear; // also reset stage data regs
 end pipeline Name
 ```
 
@@ -405,6 +406,18 @@ Compiler generates:
 - Flush masks, comb wire declarations
 
 Cross-stage refs rewritten: `Fetch.pc` → `fetch_pc` in SV.
+
+**Cross-stage rule:** in a stage's data-flow code (comb/seq), `<Stage>.<field>`
+references are allowed only for self and the immediately preceding stage.
+Backward references that skip ≥1 stage emit a direct combinational path
+through intermediate registers — rejected at typecheck. Forward reads
+(Decode → Execute for hazard checks) and references inside `stall when` /
+`flush when` / `forward` clauses are allowed.
+
+`flush <Stage> when <cond>` clears `valid_r` only (bubble). Add the
+`clear` modifier to also reset every data register in `<Stage>` to its
+declared reset value — useful for security / speculation scenarios where
+stale data in flushed regs is a hazard.
 
 `valid_r` per-stage for output gating:
 - `valid_r <= start;` in first-stage `seq` overrides default (=1)

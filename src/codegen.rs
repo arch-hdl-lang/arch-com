@@ -4228,6 +4228,15 @@ impl<'a> Codegen<'a> {
                 if wait_stage_flags[si] {
                     self.line(&format!("{target_prefix}_fsm_state <= '0;"));
                 }
+                // `flush ... clear`: also reset every data reg in the
+                // target stage to its declared reset value. Comb wires
+                // (init_str empty) are skipped — they're not registers.
+                if flush.clear {
+                    for (sig_name, _ty, init_str) in &stage_regs[si] {
+                        if init_str.is_empty() { continue; }
+                        self.line(&format!("{target_prefix}_{sig_name} <= {init_str};"));
+                    }
+                }
             }
             self.indent -= 1;
             self.line("end");

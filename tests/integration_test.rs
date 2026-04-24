@@ -1169,7 +1169,9 @@ fn test_cpu_pipeline() {
     assert!(sv.contains("execute_alu_result"), "missing rewritten execute ref");
     // Outputs
     assert!(sv.contains("assign wb_data = writeback_result"), "missing wb output");
-    assert!(sv.contains("assign pc_out = fetch_pc"), "missing pc output");
+    // pc is now passed forward through registered stages instead of
+    // being read directly from Fetch (which would be a 3-hop bypass).
+    assert!(sv.contains("assign pc_out = writeback_pc"), "missing pc output");
     // Explicit forwarding mux
     assert!(sv.contains("decode_rs1_fwd"), "missing forwarding mux wire");
     assert!(sv.contains("always_comb"), "missing always_comb for forwarding mux");
@@ -1218,6 +1220,178 @@ end module BitExtract
     // trunc<14,12>() → instr[14:12]
     assert!(sv.contains("instr[14:12]"), "expected trunc<14,12> → instr[14:12], got:\n{sv}");
     insta::assert_snapshot!(sv);
+}
+
+#[test]
+fn test_pipeline_flush_clear_emits_data_reset() {
+    // Pipeline critique #6: `flush <Stage> when <cond> clear;` resets
+    // every data register in the target stage, not just `valid_r`.
+    // Default (no `clear`) is bubble-only.
+    let bubble_src = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+pipeline FlushBubble
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port d: in UInt<8>;
+  port abort: in Bool;
+  port o: out UInt<8>;
+  stage Fetch
+    reg captured: UInt<8> reset rst => 8'h0;
+    seq on clk rising
+      captured <= d;
+    end seq
+    comb
+      o = captured;
+    end comb
+  end stage Fetch
+  flush Fetch when abort;
+end pipeline FlushBubble
+"#;
+    let clear_src = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+pipeline FlushClear
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port d: in UInt<8>;
+  port abort: in Bool;
+  port o: out UInt<8>;
+  stage Fetch
+    reg captured: UInt<8> reset rst => 8'h0;
+    seq on clk rising
+      captured <= d;
+    end seq
+    comb
+      o = captured;
+    end comb
+  end stage Fetch
+  flush Fetch when abort clear;
+end pipeline FlushClear
+"#;
+    let bubble_sv = compile_to_sv(bubble_src);
+    let clear_sv = compile_to_sv(clear_src);
+
+    // Both must reset valid_r on flush.
+    assert!(bubble_sv.contains("fetch_valid_r <= 1'b0"));
+    assert!(clear_sv.contains("fetch_valid_r <= 1'b0"));
+
+    // Only the `clear` form resets the data reg in the flush branch.
+    // Both forms include the always_ff reset-branch assignment (= 1
+    // occurrence in bubble); clear adds a second in the abort branch.
+    let bubble_count = bubble_sv.matches("fetch_captured <= 8'd0").count();
+    let clear_count = clear_sv.matches("fetch_captured <= 8'd0").count();
+    assert_eq!(bubble_count, 1,
+        "bubble form should have 1 reset of fetch_captured (the always_ff reset branch only); got {bubble_count}\n{bubble_sv}");
+    assert_eq!(clear_count, 2,
+        "clear form should have 2 resets of fetch_captured (always_ff reset + flush clear); got {clear_count}\n{clear_sv}");
+}
+
+#[test]
+fn test_pipeline_cross_stage_skip_rejected() {
+    // Regression for #4 (pipeline_critique): a stage that reads from
+    // a stage more than one hop back must error at typecheck. The
+    // reference would emit a direct combinational path bypassing the
+    // intermediate stages' registers.
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+pipeline SkipBypass
+  param XLEN: const = 32;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port data_in: in UInt<XLEN>;
+  port out: out UInt<XLEN>;
+
+  stage Fetch
+    reg captured: UInt<XLEN> reset rst => 0;
+    seq on clk rising
+      captured <= data_in;
+    end seq
+  end stage Fetch
+
+  stage Decode
+    reg copy: UInt<XLEN> reset rst => 0;
+    seq on clk rising
+      copy <= Fetch.captured;
+    end seq
+  end stage Decode
+
+  stage Writeback
+    reg result: UInt<XLEN> reset rst => 0;
+    seq on clk rising
+      result <= Decode.copy;
+    end seq
+    comb
+      // BAD: reaches back two stages — bypasses Decode's register.
+      out = Fetch.captured;
+    end comb
+  end stage Writeback
+end pipeline SkipBypass
+"#;
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    let errs = result.expect_err("expected typecheck to flag the 2-hop bypass");
+    let msg = errs.iter().map(|e| format!("{e:?}")).collect::<String>();
+    assert!(msg.contains("bypassing the intermediate"),
+            "expected bypass message, got: {msg}");
+}
+
+#[test]
+fn test_pipeline_forward_reference_allowed() {
+    // Forward references (Decode reading Execute) are hazard reads and
+    // must NOT be flagged by the cross-stage span check — they're the
+    // canonical pattern for forwarding muxes and load-use stall checks.
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+pipeline ForwardRead
+  param XLEN: const = 32;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port data_in: in UInt<XLEN>;
+  port out: out UInt<XLEN>;
+
+  stage Decode
+    reg val: UInt<XLEN> reset rst => 0;
+    seq on clk rising
+      val <= data_in;
+    end seq
+    comb
+      // Forward read into Execute is allowed (hazard).
+      forwarded = Execute.result;
+    end comb
+  end stage Decode
+
+  stage Execute
+    reg result: UInt<XLEN> reset rst => 0;
+    seq on clk rising
+      result <= Decode.val;
+    end seq
+    comb
+      out = result;
+    end comb
+  end stage Execute
+end pipeline ForwardRead
+"#;
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    checker.check().expect("forward-reference pattern should typecheck");
 }
 
 #[test]
