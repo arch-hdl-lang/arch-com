@@ -8184,6 +8184,18 @@ impl<'a> Codegen<'a> {
         let is_doubly = matches!(l.kind, LinklistKind::Doubly | LinklistKind::CircularDoubly);
         let is_circular = matches!(l.kind, LinklistKind::CircularSingly | LinklistKind::CircularDoubly);
 
+        // Multi-head linklist support. NUM_HEADS defaults to 1; when set
+        // to N > 1, the head / tail / length registers become arrays
+        // indexed by a per-op `req_head_idx` port (validated at typecheck).
+        // The node pool and free list stay shared across all heads.
+        let num_heads = crate::typecheck::linklist_num_heads(l);
+        let multi_head = num_heads > 1;
+        let num_heads_expr = l.params.iter()
+            .find(|p| p.name.name == "NUM_HEADS")
+            .and_then(|p| p.default.as_ref())
+            .map(|e| self.emit_expr_str(e))
+            .unwrap_or_else(|| "1".to_string());
+
         // Resolve DEPTH default expression and DATA SV type
         let depth_expr = l.params.iter()
             .find(|p| p.name.name == "DEPTH")
@@ -8199,6 +8211,14 @@ impl<'a> Codegen<'a> {
             })
             .unwrap_or_else(|| "logic [7:0]".to_string());
 
+        // Operations that touch a specific head (need `req_head_idx` when
+        // multi-head). Shared-pool ops (alloc, free) and slot-addressed
+        // ops (read_data, write_data, next, prev) don't.
+        let head_addressed_op = |name: &str| matches!(
+            name,
+            "insert_head" | "insert_tail" | "insert_after" | "delete_head" | "delete"
+        );
+
         // Find clk/rst port names
         let clk_name = l.ports.iter()
             .find(|p| matches!(&p.ty, crate::ast::TypeExpr::Clock(_)))
@@ -8212,6 +8232,9 @@ impl<'a> Codegen<'a> {
         // ── Module header ─────────────────────────────────────────────────────
         self.line(&format!("module {n} #("));
         self.indent += 1;
+        if multi_head {
+            self.line(&format!("parameter int  NUM_HEADS = {num_heads_expr},"));
+        }
         self.line(&format!("parameter int  DEPTH = {depth_expr},"));
         self.line(&format!("parameter type DATA  = {data_default_sv}"));
         self.indent -= 1;
@@ -8254,6 +8277,9 @@ impl<'a> Codegen<'a> {
         // ── Internal constants ────────────────────────────────────────────────
         self.line("localparam int HANDLE_W = $clog2(DEPTH);");
         self.line("localparam int CNT_W    = $clog2(DEPTH + 1);");
+        if multi_head {
+            self.line("localparam int HEAD_IDX_W = $clog2(NUM_HEADS);");
+        }
         self.line("");
 
         // ── Free list: circular FIFO of slot indices ──────────────────────────
@@ -8275,9 +8301,21 @@ impl<'a> Codegen<'a> {
 
         // ── Head / tail / length registers ───────────────────────────────────
         self.line("// Head / tail registers");
-        self.line("logic [HANDLE_W-1:0] _head_r;");
-        if l.track_tail {
-            self.line("logic [HANDLE_W-1:0] _tail_r;");
+        if multi_head {
+            self.line("logic [HANDLE_W-1:0] _head_r [NUM_HEADS];");
+            if l.track_tail {
+                self.line("logic [HANDLE_W-1:0] _tail_r [NUM_HEADS];");
+            }
+            // Internal per-head occupancy counter — used for "this head
+            // is empty" detection (insert vs. append branch, delete
+            // req_ready gating). Always emitted in multi-head mode;
+            // not user-visible.
+            self.line("logic [CNT_W-1:0]    _length_r [NUM_HEADS];");
+        } else {
+            self.line("logic [HANDLE_W-1:0] _head_r;");
+            if l.track_tail {
+                self.line("logic [HANDLE_W-1:0] _tail_r;");
+            }
         }
         self.line("");
 
@@ -8312,6 +8350,11 @@ impl<'a> Codegen<'a> {
                 }
                 _ => {}
             }
+            // Multi-head: latch the requested head idx at accept cycle so
+            // the busy cycle can reuse it without re-reading the live port.
+            if multi_head && head_addressed_op(on) && op.latency > 1 {
+                self.line(&format!("logic [HEAD_IDX_W-1:0] _ctrl_{on}_head_idx;"));
+            }
             self.line("");
         }
 
@@ -8335,17 +8378,27 @@ impl<'a> Codegen<'a> {
         self.line("// req_ready: combinational");
         for op in all_ops {
             let on = &op.name.name;
+            let is_head_addr = head_addressed_op(on);
             if op.ports.iter().any(|p| p.name.name == "req_ready") {
                 let guard = if op.latency > 1 {
                     format!("!_ctrl_{on}_busy && ")
                 } else {
                     String::new()
                 };
+                // Multi-head delete: gate on "this head has entries"
+                // rather than "pool has any entries". Insert ops still
+                // gate on the shared free list (full pool = stall).
                 let cond = match on.as_str() {
                     "alloc" | "insert_head" | "insert_tail" | "insert_after" => {
                         format!("{guard}!(_fl_cnt == '0)")
                     }
-                    "free" | "delete_head" | "delete" => {
+                    "free" => {
+                        format!("{guard}!(_fl_cnt == CNT_W'(DEPTH))")
+                    }
+                    "delete_head" | "delete" if multi_head && is_head_addr => {
+                        format!("{guard}(_length_r[{on}_req_head_idx] != '0)")
+                    }
+                    "delete_head" | "delete" => {
                         format!("{guard}!(_fl_cnt == CNT_W'(DEPTH))")
                     }
                     _ => format!("{guard}1'b1"),
@@ -8376,8 +8429,18 @@ impl<'a> Codegen<'a> {
         self.line("_fl_rdp <= '0;");
         self.line("_fl_wrp <= '0;");
         self.line("_fl_cnt <= CNT_W'(DEPTH);");
-        self.line("_head_r <= '0;");
-        if l.track_tail { self.line("_tail_r <= '0;"); }
+        if multi_head {
+            self.line("for (_ll_i = 0; _ll_i < NUM_HEADS; _ll_i++) begin");
+            self.indent += 1;
+            self.line("_head_r[_ll_i] <= '0;");
+            if l.track_tail { self.line("_tail_r[_ll_i] <= '0;"); }
+            self.line("_length_r[_ll_i] <= '0;");
+            self.indent -= 1;
+            self.line("end");
+        } else {
+            self.line("_head_r <= '0;");
+            if l.track_tail { self.line("_tail_r <= '0;"); }
+        }
         for op in all_ops {
             let on = &op.name.name;
             if op.latency > 1 { self.line(&format!("_ctrl_{on}_busy <= 1'b0;")); }
@@ -8399,7 +8462,7 @@ impl<'a> Codegen<'a> {
 
         // Per-op logic
         for op in all_ops {
-            self.emit_ll_op_controller(op, l.track_tail, is_doubly, is_circular);
+            self.emit_ll_op_controller(op, l.track_tail, is_doubly, is_circular, num_heads);
         }
 
         self.indent -= 1;
@@ -8438,14 +8501,55 @@ impl<'a> Codegen<'a> {
         track_tail: bool,
         is_doubly: bool,
         _is_circular: bool,
+        num_heads: u32,
     ) {
         let on = &op.name.name;
         let has_req_valid   = op.ports.iter().any(|p| p.name.name == "req_valid");
         let has_resp_valid  = op.ports.iter().any(|p| p.name.name == "resp_valid");
         let has_req_handle  = op.ports.iter().any(|p| p.name.name == "req_handle");
         let has_req_data    = op.ports.iter().any(|p| p.name.name == "req_data");
+        let multi_head = num_heads > 1;
+        let is_head_addr = matches!(
+            on.as_str(),
+            "insert_head" | "insert_tail" | "insert_after" | "delete_head" | "delete"
+        );
+        // Head-register access expressions.
+        // - `_accept` variant is used in the accept cycle (latency==1 or
+        //   the first branch of a latency>1 op). Reads the live
+        //   `req_head_idx` port directly.
+        // - `_busy` variant is used in subsequent busy cycles. Reads the
+        //   latched `_ctrl_<op>_head_idx`.
+        // For single-head lists both resolve to bare `_head_r` / `_tail_r`
+        // so the emitted SV stays byte-identical with the pre-multi-head
+        // compiler.
+        let head_r_accept = if multi_head && is_head_addr {
+            format!("_head_r[{on}_req_head_idx]")
+        } else { "_head_r".to_string() };
+        let head_r_busy = if multi_head && is_head_addr {
+            format!("_head_r[_ctrl_{on}_head_idx]")
+        } else { "_head_r".to_string() };
+        // _tail_r is only read at the busy cycle (post-accept). The
+        // accept-cycle variant would be `_tail_r[<op>_req_head_idx]`
+        // if an op ever needed it.
+        let tail_r_busy = if multi_head && is_head_addr {
+            format!("_tail_r[_ctrl_{on}_head_idx]")
+        } else { "_tail_r".to_string() };
 
         self.line(&format!("// ── {on} ─────────────────────────────────────────"));
+
+        // Phase-B scope: multi-head supports insert_tail + delete_head
+        // only. Other head-addressed ops need wiring the latched head_idx
+        // into their branching / pointer-patch paths; deferred to a
+        // follow-up phase.
+        if multi_head && matches!(on.as_str(), "insert_head" | "insert_after" | "delete") {
+            self.line(&format!(
+                "// NOTE: op `{on}` is not yet supported for multi-head linklist (Phase B)."
+            ));
+            self.line(&format!(
+                "initial $fatal(1, \"linklist: op `{on}` not yet implemented for multi-head (NUM_HEADS > 1)\");"
+            ));
+            return;
+        }
 
         match on.as_str() {
             "alloc" => {
@@ -8531,22 +8635,33 @@ impl<'a> Codegen<'a> {
                 if has_req_data { self.line(&format!("_data_mem[{slot}] <= {on}_req_data;")); }
                 self.line("_fl_rdp <= _fl_rdp + 1'b1;");
                 self.line("_fl_cnt <= _fl_cnt - 1'b1;");
-                self.line(&format!("_ctrl_{on}_was_empty <= (_fl_cnt == CNT_W'(DEPTH));"));
+                // Empty check: single-head uses pool occupancy; multi-head
+                // uses the per-head length counter so chains from other
+                // heads don't mask this head's emptiness.
+                if multi_head {
+                    self.line(&format!("_ctrl_{on}_was_empty <= (_length_r[{on}_req_head_idx] == '0);"));
+                    self.line(&format!("_ctrl_{on}_head_idx  <= {on}_req_head_idx;"));
+                } else {
+                    self.line(&format!("_ctrl_{on}_was_empty <= (_fl_cnt == CNT_W'(DEPTH));"));
+                }
                 self.line(&format!("_ctrl_{on}_busy <= 1'b1;"));
                 self.indent -= 1;
                 self.line(&format!("end else if (_ctrl_{on}_busy) begin"));
                 self.indent += 1;
                 if track_tail {
-                    self.line(&format!("if (!_ctrl_{on}_was_empty) _next_mem[_tail_r] <= _ctrl_{on}_resp_handle;"));
+                    self.line(&format!("if (!_ctrl_{on}_was_empty) _next_mem[{tail_r_busy}] <= _ctrl_{on}_resp_handle;"));
                     if is_doubly {
                         // new node.prev = old tail
-                        self.line(&format!("_prev_mem[_ctrl_{on}_resp_handle] <= _tail_r;"));
+                        self.line(&format!("_prev_mem[_ctrl_{on}_resp_handle] <= {tail_r_busy};"));
                     }
-                    self.line(&format!("_tail_r <= _ctrl_{on}_resp_handle;"));
-                    self.line(&format!("if (_ctrl_{on}_was_empty) _head_r <= _ctrl_{on}_resp_handle;"));
+                    self.line(&format!("{tail_r_busy} <= _ctrl_{on}_resp_handle;"));
+                    self.line(&format!("if (_ctrl_{on}_was_empty) {head_r_busy} <= _ctrl_{on}_resp_handle;"));
                 } else {
-                    self.line(&format!("if (!_ctrl_{on}_was_empty) _next_mem[_head_r] <= _ctrl_{on}_resp_handle;"));
-                    self.line(&format!("if (_ctrl_{on}_was_empty) _head_r <= _ctrl_{on}_resp_handle;"));
+                    self.line(&format!("if (!_ctrl_{on}_was_empty) _next_mem[{head_r_busy}] <= _ctrl_{on}_resp_handle;"));
+                    self.line(&format!("if (_ctrl_{on}_was_empty) {head_r_busy} <= _ctrl_{on}_resp_handle;"));
+                }
+                if multi_head {
+                    self.line(&format!("_length_r[_ctrl_{on}_head_idx] <= _length_r[_ctrl_{on}_head_idx] + 1'b1;"));
                 }
                 if has_resp_valid { self.line(&format!("_ctrl_{on}_resp_v <= 1'b1;")); }
                 self.line(&format!("_ctrl_{on}_busy <= 1'b0;"));
@@ -8555,11 +8670,19 @@ impl<'a> Codegen<'a> {
             }
             "delete_head" => {
                 // Latency-2: read head data, advance head, free old head slot
-                let guard = format!("!_ctrl_{on}_busy && {on}_req_valid && !(_fl_cnt == CNT_W'(DEPTH))");
+                let pool_gate = if multi_head {
+                    format!("(_length_r[{on}_req_head_idx] != '0)")
+                } else {
+                    "!(_fl_cnt == CNT_W'(DEPTH))".to_string()
+                };
+                let guard = format!("!_ctrl_{on}_busy && {on}_req_valid && {pool_gate}");
                 self.line(&format!("if ({guard}) begin"));
                 self.indent += 1;
-                self.line("_ctrl_delete_head_resp_data <= _data_mem[_head_r];");
-                self.line("_ctrl_delete_head_slot      <= _head_r;");
+                self.line(&format!("_ctrl_delete_head_resp_data <= _data_mem[{head_r_accept}];"));
+                self.line(&format!("_ctrl_delete_head_slot      <= {head_r_accept};"));
+                if multi_head {
+                    self.line(&format!("_ctrl_{on}_head_idx          <= {on}_req_head_idx;"));
+                }
                 self.line(&format!("_ctrl_{on}_busy <= 1'b1;"));
                 self.indent -= 1;
                 self.line(&format!("end else if (_ctrl_{on}_busy) begin"));
@@ -8569,7 +8692,10 @@ impl<'a> Codegen<'a> {
                 self.line("_fl_wrp <= _fl_wrp + 1'b1;");
                 self.line("_fl_cnt <= _fl_cnt + 1'b1;");
                 // Advance head
-                self.line("_head_r <= _next_mem[_ctrl_delete_head_slot];");
+                self.line(&format!("{head_r_busy} <= _next_mem[_ctrl_delete_head_slot];"));
+                if multi_head {
+                    self.line(&format!("_length_r[_ctrl_{on}_head_idx] <= _length_r[_ctrl_{on}_head_idx] - 1'b1;"));
+                }
                 if has_resp_valid { self.line(&format!("_ctrl_{on}_resp_v <= 1'b1;")); }
                 self.line(&format!("_ctrl_{on}_busy <= 1'b0;"));
                 self.indent -= 1;

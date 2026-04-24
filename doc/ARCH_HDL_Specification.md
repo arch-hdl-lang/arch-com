@@ -2549,6 +2549,48 @@ Every linklist declaration compiles to the following hardware components, genera
   **circular_doubly**   next + prev (circular)   O(1)                                         High-performance scheduling, deques
   -------------------------------------------------------------------------------------------------------------------------------------------
 
+**12.2a Multi-Head (homogeneous chains, shared pool)**
+
+`linklist` accepts an optional `param NUM_HEADS: const = N;` that turns a single list into *K* homogeneous linked chains sharing one node pool and one free list. Every chain has the same DATA type and the same topology kind; they differ only in which entries belong to which chain. The canonical use case is a **miss status holding register (MSHR)**, **per-flow queue array**, or any "one logical list per index, total capacity N across all indices" pattern.
+
+- Default is `NUM_HEADS = 1` → single-head behaviour, byte-identical SV emission.
+- `NUM_HEADS > 1` → every head-addressed op (`insert_head`, `insert_tail`, `insert_after`, `delete_head`, `delete`) **must** declare an input port `req_head_idx: in UInt<$clog2(NUM_HEADS)>`. The compiler latches the index at the accept cycle and indexes the per-head head / tail / length registers on subsequent busy cycles. Head-independent ops (`alloc`, `free`, `read_data`, `write_data`, `next`, `prev`) take no `req_head_idx`.
+
+```
+linklist MshrChains
+  param DEPTH: const = 32;           // total slots in the shared pool
+  param NUM_HEADS: const = 16;       // 16 chains share those 32 slots
+  param DATA: type = UInt<64>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  kind singly;
+  track tail: true;
+
+  op insert_tail
+    latency: 2;
+    port req_valid:    in Bool;
+    port req_ready:    out Bool;
+    port req_head_idx: in UInt<4>;   // 0..NUM_HEADS-1
+    port req_data:     in UInt<64>;
+    port resp_valid:   out Bool;
+    port resp_handle:  out UInt<5>;
+  end op insert_tail
+
+  op delete_head
+    latency: 2;
+    port req_valid:    in Bool;
+    port req_ready:    out Bool;
+    port req_head_idx: in UInt<4>;
+    port resp_valid:   out Bool;
+    port resp_data:    out UInt<64>;
+  end op delete_head
+end linklist MshrChains
+```
+
+Distinction from §12.6 `linklist_pool`: `linklist_pool` declares *heterogeneous* named lists (different depths / types) sharing a pool; `NUM_HEADS` declares an *array of identical chains* inside a single `linklist`. Use `linklist_pool` when lists differ; use `NUM_HEADS` when they're uniform and indexed.
+
+Current implementation supports `insert_tail` and `delete_head` with `NUM_HEADS > 1`; the other head-addressed ops are staged in a follow-up.
+
 **12.3 Operation Latency**
 
 Every operation on a linklist has a latency declaration --- the number of clock cycles from request assertion to result valid. The compiler uses this budget to choose an implementation: lower latency requires simpler (potentially slower-clocking) logic; higher latency allows pipelining for higher Fmax.
