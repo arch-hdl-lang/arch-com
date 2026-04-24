@@ -713,6 +713,11 @@ struct FormalCtx<'a> {
     properties: Vec<PropertyDecl>,
     /// Comb-topological ordering of wire / output names.
     comb_order: Vec<String>,
+    /// credit_channel sites attached to bus ports on this module.
+    /// Populated by `collect_credit_channel_sites()`; consumed by
+    /// follow-up items in PR-hf4 (state registration, transitions,
+    /// SynthIdent resolution).
+    credit_sites: Vec<CreditChannelSite>,
 }
 
 #[derive(Debug, Clone)]
@@ -720,6 +725,29 @@ struct CombAssignFlat {
     target: String,          // flat name (e.g. "y" or "out[2]"); v1 supports ident targets only
     guard: Vec<Expr>,        // stack of conditions (ANDed)
     value: Expr,
+}
+
+/// One credit_channel instance, attached to a specific bus port on the
+/// current (post-flattening) module. PR-hf4 Phase 1 item 1: collection
+/// only — later items use the sites to register BV state, emit
+/// transitions, and resolve `SynthIdent` references in the encoder.
+///
+/// `is_sender` records which side of the channel this port binds —
+/// codegen emits the counter reg on the sender side and the FIFO
+/// occupancy regs on the receiver side, and we mirror that split.
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // fields consumed by PR-hf4 items 2+ (state / transitions / SynthIdent)
+struct CreditChannelSite {
+    /// Owning port name (e.g. `s` for `port s: initiator MyBus`).
+    port_name: String,
+    /// Channel meta as declared on the bus.
+    meta: CreditChannelMeta,
+    /// True if this port is the sender side (initiator/Out or target/In).
+    is_sender: bool,
+    /// DEPTH folded to a constant. `None` means the default wasn't
+    /// foldable with current params — the site is recorded but later
+    /// items will skip it with an error.
+    depth: Option<u64>,
 }
 
 impl<'a> FormalCtx<'a> {
@@ -741,6 +769,230 @@ impl<'a> FormalCtx<'a> {
             enum_variants: HashMap::new(),
             properties: Vec::new(),
             comb_order: Vec::new(),
+            credit_sites: Vec::new(),
+        }
+    }
+
+    /// Walk module bus ports and record every credit_channel sub-construct
+    /// carried by their bus. Mirrors `codegen::emit_credit_channel_state`'s
+    /// sender/receiver role derivation so the BV state we register later
+    /// will use the same naming convention (`__<port>_<ch>_credit` etc.).
+    ///
+    /// Called from `preprocess()`. PR-hf4 Phase 1 item 1: collection only —
+    /// the populated `credit_sites` vector is unused by the encoder in this
+    /// commit; subsequent items wire it into BV declarations, reset /
+    /// transitions, and SynthIdent resolution.
+    fn collect_credit_channel_sites(&mut self) {
+        for p in &self.module.ports {
+            let Some(bi) = &p.bus_info else { continue; };
+            let Some((crate::resolve::Symbol::Bus(info), _)) =
+                self.symbols.globals.get(&bi.bus_name.name) else { continue; };
+            for cc in &info.credit_channels {
+                // Role flipping: on the target perspective the bus
+                // reverses directions, so an `Out` channel role on the
+                // initiator becomes the receiver on the target side.
+                let is_sender = matches!(
+                    (cc.role_dir, bi.perspective),
+                    (Direction::Out, crate::ast::BusPerspective::Initiator)
+                        | (Direction::In, crate::ast::BusPerspective::Target)
+                );
+                let depth = cc.params.iter()
+                    .find(|pp| pp.name.name == "DEPTH")
+                    .and_then(|pp| pp.default.as_ref())
+                    .and_then(|e| fold_const_expr(e, &self.params));
+                self.credit_sites.push(CreditChannelSite {
+                    port_name: p.name.name.clone(),
+                    meta: cc.clone(),
+                    is_sender,
+                    depth,
+                });
+            }
+        }
+    }
+
+    /// For each collected credit_channel site, register the synthesized BV
+    /// state that codegen would emit in SV: sender-side `__<port>_<ch>_credit`
+    /// counter, or receiver-side `__occ`/`__head`/`__tail` regs. Also
+    /// registers the handshake signals (`<port>_<ch>_send_valid` and
+    /// `<port>_<ch>_credit_return`) as module-level inputs/outputs based
+    /// on the port's role. Payload `send_data` is deferred — the occupancy
+    /// invariant doesn't reference it and modelling it requires Vec state.
+    ///
+    /// Reset values are registered in `reg_reset` as Expr literals so the
+    /// existing reset emission picks them up. Next-state rhs (item 3) is
+    /// not populated here — consumers that read these regs before item 3
+    /// lands will see them hold their reset value throughout.
+    fn register_credit_channel_state(&mut self) -> Result<(), CompileError> {
+        // Clone into a local vec so we don't hold an immutable borrow of
+        // self while mutating sigs/regs/inputs/outputs below.
+        let sites = self.credit_sites.clone();
+        for site in &sites {
+            let Some(depth) = site.depth else {
+                return Err(CompileError::general(
+                    &format!(
+                        "credit_channel `{}` on port `{}`: DEPTH could not be folded to a constant — formal encoding requires a concrete DEPTH",
+                        site.meta.name.name, site.port_name,
+                    ),
+                    site.meta.span,
+                ));
+            };
+            if depth == 0 {
+                return Err(CompileError::general(
+                    &format!(
+                        "credit_channel `{}` on port `{}`: DEPTH must be > 0",
+                        site.meta.name.name, site.port_name,
+                    ),
+                    site.meta.span,
+                ));
+            }
+            let ch = &site.meta.name.name;
+            let port = &site.port_name;
+            // ceil_log2(n) with n >= 1. For n=1 returns 0; callers width-
+            // guard per-reg.
+            let clog2 = |n: u64| -> u32 {
+                if n <= 1 { 0 } else { (n - 1).ilog2() + 1 }
+            };
+            // Counter width = ceil_log2(DEPTH+1), always >= 1 for DEPTH>=1.
+            let cnt_width = clog2(depth + 1).max(1);
+            // Pointer width = ceil_log2(DEPTH); 0 if DEPTH==1 (single-slot
+            // FIFO doesn't need a pointer reg).
+            let ptr_width = clog2(depth);
+            let send_valid = format!("{port}_{ch}_send_valid");
+            let credit_ret = format!("{port}_{ch}_credit_return");
+            if site.is_sender {
+                // Sender side: credit counter, reset to DEPTH.
+                let credit = format!("__{port}_{ch}_credit");
+                self.sigs.insert(credit.clone(), SignalInfo {
+                    width: cnt_width, signed: false, kind: SignalKind::Reg,
+                });
+                self.regs.push(credit.clone());
+                self.reg_reset.insert(credit, mk_sized_lit(cnt_width, depth, site.meta.span));
+                // send_valid is driven by sender-side logic — treated as
+                // output. credit_return is received — input.
+                self.sigs.insert(send_valid.clone(), SignalInfo {
+                    width: 1, signed: false, kind: SignalKind::Output,
+                });
+                self.outputs.push(send_valid);
+                self.sigs.insert(credit_ret.clone(), SignalInfo {
+                    width: 1, signed: false, kind: SignalKind::Input,
+                });
+                self.inputs.push(credit_ret);
+            } else {
+                // Receiver side: occupancy reg, reset to 0.
+                let occ = format!("__{port}_{ch}_occ");
+                self.sigs.insert(occ.clone(), SignalInfo {
+                    width: cnt_width, signed: false, kind: SignalKind::Reg,
+                });
+                self.regs.push(occ.clone());
+                self.reg_reset.insert(occ, mk_sized_lit(cnt_width, 0, site.meta.span));
+                if ptr_width > 0 {
+                    let head = format!("__{port}_{ch}_head");
+                    let tail = format!("__{port}_{ch}_tail");
+                    self.sigs.insert(head.clone(), SignalInfo {
+                        width: ptr_width, signed: false, kind: SignalKind::Reg,
+                    });
+                    self.regs.push(head.clone());
+                    self.reg_reset.insert(head, mk_sized_lit(ptr_width, 0, site.meta.span));
+                    self.sigs.insert(tail.clone(), SignalInfo {
+                        width: ptr_width, signed: false, kind: SignalKind::Reg,
+                    });
+                    self.regs.push(tail.clone());
+                    self.reg_reset.insert(tail, mk_sized_lit(ptr_width, 0, site.meta.span));
+                }
+                // send_valid is received on receiver side — input.
+                // credit_return is driven back — output.
+                self.sigs.insert(send_valid.clone(), SignalInfo {
+                    width: 1, signed: false, kind: SignalKind::Input,
+                });
+                self.inputs.push(send_valid);
+                self.sigs.insert(credit_ret.clone(), SignalInfo {
+                    width: 1, signed: false, kind: SignalKind::Output,
+                });
+                self.outputs.push(credit_ret);
+            }
+        }
+        Ok(())
+    }
+
+    /// Emit next-state (reg_writes) for every credit_channel state reg
+    /// that was registered in item 2.
+    ///
+    /// Sender credit reg:
+    ///   send_valid && !credit_return ⇒ credit - 1
+    ///   !send_valid && credit_return ⇒ credit + 1
+    ///   else ⇒ hold
+    ///
+    /// Receiver occ reg:
+    ///   send_valid && !credit_return ⇒ occ + 1     (push, no credit return)
+    ///   !send_valid && credit_return ⇒ occ - 1     (credit return = pop_fire)
+    ///   else ⇒ hold
+    ///
+    /// Notes:
+    /// - Under normal hierarchical composition the sender's `credit_return`
+    ///   input is bound to the receiver's `credit_return` output by bus
+    ///   flattening (item 5), so both sides see the same value and the
+    ///   transitions stay consistent.
+    /// - Underflow/overflow protection (send_valid ⇒ credit > 0 and
+    ///   pop_fire ⇒ occ > 0) is a protocol invariant enforced by codegen
+    ///   in user-driven designs; in a formal harness where send_valid
+    ///   and pop are environment inputs, the harness is expected to add
+    ///   those assumptions alongside the occupancy invariant.
+    /// - Head / tail pointer rotation uses `(ptr + 1) % DEPTH`. When
+    ///   DEPTH isn't a power of two the `%` encoding is emitted as the
+    ///   current Mod op (covered by `encode_binary`).
+    fn emit_credit_channel_transitions(&mut self) {
+        let sites = self.credit_sites.clone();
+        for site in &sites {
+            let Some(depth) = site.depth else { continue };
+            let ch = &site.meta.name.name;
+            let port = &site.port_name;
+            let span = site.meta.span;
+            let send_valid = mk_ident(&format!("{port}_{ch}_send_valid"), span);
+            let credit_return = mk_ident(&format!("{port}_{ch}_credit_return"), span);
+            let not_send = mk_not(send_valid.clone(), span);
+            let not_ret = mk_not(credit_return.clone(), span);
+            let dec_cond = mk_bin(BinOp::And, send_valid.clone(), not_ret.clone(), span);
+            let inc_cond = mk_bin(BinOp::And, not_send.clone(), credit_return.clone(), span);
+
+            if site.is_sender {
+                let credit = mk_ident(&format!("__{port}_{ch}_credit"), span);
+                let one_cnt = mk_sized_lit(1, 1, span);
+                let dec_rhs = mk_bin(BinOp::Sub, credit.clone(), one_cnt.clone(), span);
+                let inc_rhs = mk_bin(BinOp::Add, credit, one_cnt, span);
+                let writes = self.reg_writes.entry(format!("__{port}_{ch}_credit")).or_default();
+                writes.push((dec_cond.clone(), dec_rhs));
+                writes.push((inc_cond.clone(), inc_rhs));
+            } else {
+                let occ = mk_ident(&format!("__{port}_{ch}_occ"), span);
+                let one_cnt = mk_sized_lit(1, 1, span);
+                let inc_rhs = mk_bin(BinOp::Add, occ.clone(), one_cnt.clone(), span);
+                let dec_rhs = mk_bin(BinOp::Sub, occ, one_cnt, span);
+                let writes = self.reg_writes.entry(format!("__{port}_{ch}_occ")).or_default();
+                // Priority: push first (inc), pop second (dec).
+                writes.push((dec_cond.clone(), inc_rhs));
+                writes.push((inc_cond.clone(), dec_rhs));
+
+                // Head / tail pointer rotation (skip when DEPTH==1).
+                let ptr_width = if depth <= 1 { 0 } else { (depth - 1).ilog2() + 1 };
+                if ptr_width > 0 {
+                    let head_name = format!("__{port}_{ch}_head");
+                    let tail_name = format!("__{port}_{ch}_tail");
+                    let one_ptr = mk_sized_lit(1, 1, span);
+                    let depth_lit = mk_sized_lit(ptr_width + 1, depth, span);
+                    // head advances on pop_fire (= credit_return on receiver).
+                    let head = mk_ident(&head_name, span);
+                    let head_plus = mk_bin(BinOp::Add, head, one_ptr.clone(), span);
+                    let head_next = mk_bin(BinOp::Mod, head_plus, depth_lit.clone(), span);
+                    self.reg_writes.entry(head_name).or_default()
+                        .push((credit_return.clone(), head_next));
+                    // tail advances on push (= send_valid on receiver).
+                    let tail = mk_ident(&tail_name, span);
+                    let tail_plus = mk_bin(BinOp::Add, tail, one_ptr, span);
+                    let tail_next = mk_bin(BinOp::Mod, tail_plus, depth_lit, span);
+                    self.reg_writes.entry(tail_name).or_default()
+                        .push((send_valid.clone(), tail_next));
+                }
+            }
         }
     }
 
@@ -763,6 +1015,16 @@ impl<'a> FormalCtx<'a> {
         // Reset info
         let (rn, is_async, is_low) = crate::ast::extract_reset_info(&self.module.ports);
         self.reset = ResetInfo { name: rn, is_async, is_low };
+
+        // PR-hf4 item 1: collect credit_channel sites for later state
+        // registration and SynthIdent resolution.
+        self.collect_credit_channel_sites();
+        // PR-hf4 item 2: register BV state + handshake signals per site.
+        self.register_credit_channel_state()?;
+        // PR-hf4 item 3: emit next-state (reg_writes) for the lifted
+        // regs. SynthIdent resolution in item 4; hierarchical carry in
+        // item 5.
+        self.emit_credit_channel_transitions();
 
         // Defensive: any Inst items here mean the flattener didn't run.
         // `run()` invokes `flatten_for_formal` before preprocess() for
@@ -790,6 +1052,14 @@ impl<'a> FormalCtx<'a> {
 
         // Ports (declare inputs/outputs + widths)
         for port in &self.module.ports {
+            // Bus ports: the bus's individual signals aren't in the AST as
+            // scalar ports; we register them per-credit_channel below in
+            // `register_credit_channel_state()`. Skip generic scalar-only
+            // handling. (Non-credit_channel bus usage is still unsupported
+            // in formal v1 — the encoder will fail later on any reference.)
+            if port.bus_info.is_some() {
+                continue;
+            }
             // Reject bus / vec / struct / enum types
             self.check_scalar_type(&port.ty, port.span)?;
             let (w, signed) = self.type_width_signed(&port.ty, port.span)?;
@@ -1332,18 +1602,24 @@ impl<'a> FormalCtx<'a> {
             // `q@0` is the same as `q` at t. Non-@0 reads are rejected by
             // typecheck before reaching formal emission.
             LatencyAt(inner, _) => self.encode_raw(inner, t),
-            // SynthIdent is not yet handled by formal encoding — it points
-            // at codegen-emitted SV state (credit_channel synthesized
-            // wires) that `arch formal` has no SMT mirror for. Reject
-            // clearly; the credit_channel formal story lands with the
-            // Tier-2 SVA PR.
+            // SynthIdent points at codegen-emitted state (credit_channel
+            // counter / occ / valid / data wires). PR-hf4 item 2 registered
+            // the scalar ones (credit, occ, head, tail, send_valid,
+            // credit_return) as real BV signals; resolve those through
+            // the normal Ident path. Anything else (payload `_data`,
+            // `_can_send` when the bus parameter enables the registered
+            // variant) is still unsupported.
             SynthIdent(name, _) => {
-                return Err(CompileError::general(
-                    &format!(
-                        "formal encoding of synthesized identifier `{name}` is not yet supported — credit_channel formal invariants land in a follow-up PR",
-                    ),
-                    expr.span,
-                ));
+                if self.sigs.contains_key(name) {
+                    self.encode_ident(name, t, expr.span)
+                } else {
+                    Err(CompileError::general(
+                        &format!(
+                            "formal encoding of synthesized identifier `{name}` is not yet supported — only credit_channel scalar state is modelled today (see doc/plan_hierarchical_formal.md PR-hf4)",
+                        ),
+                        expr.span,
+                    ))
+                }
             }
             Literal(l) => Ok(lit_to_term(l)),
             Bool(b) => Ok(SmtTerm {
@@ -1915,6 +2191,25 @@ fn bv_all_ones(width: u32) -> String {
     } else {
         format!("(bvnot {})", bv_zero(width))
     }
+}
+
+/// Build an `Expr` for a sized literal with the given bit width + value.
+/// Used by credit_channel state registration to synthesize reset
+/// expressions for the lifted regs.
+fn mk_sized_lit(width: u32, value: u64, span: Span) -> Expr {
+    Expr::new(ExprKind::Literal(LitKind::Sized(width, value)), span)
+}
+
+fn mk_ident(name: &str, span: Span) -> Expr {
+    Expr::new(ExprKind::Ident(name.to_string()), span)
+}
+
+fn mk_bin(op: BinOp, a: Expr, b: Expr, span: Span) -> Expr {
+    Expr::new(ExprKind::Binary(op, Box::new(a), Box::new(b)), span)
+}
+
+fn mk_not(a: Expr, span: Span) -> Expr {
+    Expr::new(ExprKind::Unary(UnaryOp::Not, Box::new(a)), span)
 }
 
 fn lit_to_term(l: &LitKind) -> SmtTerm {

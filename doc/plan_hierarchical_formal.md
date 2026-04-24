@@ -196,3 +196,96 @@ compiles with PR-hf1's hierarchy support and PROVES this invariant.
    the AST; full elaboration reuse is a v2 refactor.
 
 Confirm all defaults and I start PR-hf1.
+
+---
+
+## PR-hf4 design note (2026-04-23)
+
+Revising the earlier plan. The blocker isn't "synthesized state lives
+in codegen" — it's that `arch formal` has no path to *reach* that
+state from SMT. Two implementation tracks:
+
+- **(a) AST lift**: a pass that materializes credit_channel state as
+  real RegDecls / WireDecls in the module body, then all backends
+  consume the same lifted regs. Cleanest but touches `codegen.rs`,
+  `sim_credit_channel.rs`, `sim_codegen/mod.rs`, and `formal.rs` —
+  multi-session refactor.
+- **(b) Formal-local synthesis** (chosen for Phase 1): formal walks
+  the same bus-ports + credit_channels metadata that codegen walks
+  and emits matching BV state in the SMT encoding. Duplicates the
+  state shape in one more place; unblocks hf4 without touching other
+  backends.
+
+(a) is still the long-term goal. (b) ships the invariant proof now.
+
+### Phase 1 work breakdown (track b)
+
+Scope: prove `sender.credit + receiver.__buf_occ == DEPTH` on a 2-module
+design connected by an explicit bus with one credit_channel.
+
+1. **Collect credit_channel sites** (~50 LoC). In `FormalCtx::preprocess()`,
+   walk each module port's `bus_info` and collect `(port_name, ch_meta,
+   role_dir)` tuples for every credit_channel field. Stash on the ctx.
+2. **Register BV state per site** (~100 LoC). For each collected site,
+   synthesize BV entries matching codegen's exact names:
+   - Sender role: `__<port>_<ch>_credit` (width `ceil_log2(DEPTH+1)`,
+     reset `DEPTH`), optional `__<port>_<ch>_can_send` wire.
+   - Receiver role: `__<port>_<ch>_occ` (width `ceil_log2(DEPTH+1)`,
+     reset 0), `__<port>_<ch>_head` / `__<port>_<ch>_tail` (width
+     `ceil_log2(DEPTH)`, reset 0). **Storage `__buf[DEPTH]` is
+     skipped**: the occupancy invariant doesn't need payload state, and
+     modelling Vec storage trips formal v1's scalar-only restriction.
+     A follow-up PR can extend formal to model one Vec when a
+     data-path property needs it.
+3. **Emit reset + transitions** (~80 LoC). For each state reg, add
+   to `declarations`, `reset_constraints`, and `transitions` following
+   the codegen logic at `codegen.rs:2795–3070`. Handshake signals
+   (`<port>_<ch>_send_valid`, `<port>_<ch>_credit_return`) are module
+   ports in post-elaborate AST and encode as ordinary port BVs.
+4. **Resolve SynthIdent** (~20 LoC). Replace the hard-error at
+   `formal.rs:1340` with a lookup into the lifted-state table; if the
+   synthetic name was registered in step 2, encode as that BV.
+5. **Hierarchical carry** (~150–250 LoC, larger than initial estimate).
+   `flatten_for_formal` currently rejects sub-modules with bus ports
+   via `validate_sub_for_formal`'s scalar-only check. Extending the
+   flatten pass to preserve credit_channel sites across inst boundaries
+   requires:
+   - Relax `validate_sub_for_formal` to accept bus ports carrying
+     credit_channels (reject bus ports with handshake / tlm_method or
+     any non-credit_channel payload signals — those need their own
+     formal modelling).
+   - Introduce a `CarriedCreditSite` output alongside `ModuleDecl` from
+     `flatten_for_formal` (change the return type to a struct) so each
+     sub's credit_channel site can be registered against the flat
+     module using the PARENT-SIDE connection name (`chwire` from
+     `s <- chwire`) as the port_name prefix, not the sub's port name.
+     Two sites keyed on the same prefix (sender from one inst + receiver
+     from another) compose into the occupancy invariant.
+   - `FormalCtx::preprocess()` gains a `register_carried_credit_sites()`
+     pre-step that runs before the port walk. The existing walk stays
+     for designs where the top module itself has the bus port.
+   - Handshake signals (`<prefix>_<ch>_send_valid`, `_credit_return`):
+     when registered from two sites that share a prefix (cross-module
+     channel), collapse the input/output registration into a single
+     internal SignalKind::Wire so both sides see the same value. When
+     only one site is registered (top-level bus port), keep the
+     input/output shape from item 2.
+   - Parent connections like `s <- chwire` don't introduce a parent-
+     side declaration for `chwire`. Flatten synthesizes the handshake
+     signals directly as wires on the flat module body; step 2's
+     registration continues to work unchanged.
+6. **Test** (~30 LoC .arch + harness). Two-module design: `Sender`
+   with the initiator side, `Receiver` with the target side, parent
+   wires them through a bus. Assert `inst_s.credit + inst_r.occ == DEPTH`
+   always (with reset in flight). Verify PROVED at bound ≥ DEPTH+2.
+
+Total: ~400 LoC + test. Land as a chain of small commits (collection →
+state registration → transitions → SynthIdent → hierarchical → test)
+so each piece reviews cleanly.
+
+### What this does not solve
+
+- Data-path properties spanning the channel (payload correctness) —
+  blocked on formal Vec state.
+- Full path (a) consolidation — still the v2 refactor to do when
+  sim_credit_channel, codegen, and formal start drifting.
