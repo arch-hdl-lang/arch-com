@@ -48,14 +48,17 @@ module CpuPipe #(
   logic [REG_ADDR_W-1:0] decode_rd = 0;
   logic [XLEN-1:0] decode_rs1_val = 0;
   logic [XLEN-1:0] decode_rs2_val = 0;
+  logic [XLEN-1:0] decode_pc = 0;
   logic [XLEN-1:0] decode_rs1_fwd;
   logic [XLEN-1:0] execute_alu_result = 0;
   logic [REG_ADDR_W-1:0] execute_rd = 0;
   logic execute_we = 1'b0;
+  logic [XLEN-1:0] execute_pc = 0;
   logic [XLEN-1:0] execute_alu_out;
   logic [XLEN-1:0] writeback_result = 0;
   logic [REG_ADDR_W-1:0] writeback_rd = 0;
   logic writeback_valid = 1'b0;
+  logic [XLEN-1:0] writeback_pc = 0;
   
   // ── Stall signals ──
   logic fetch_stall;
@@ -78,14 +81,17 @@ module CpuPipe #(
       decode_rd <= 0;
       decode_rs1_val <= 0;
       decode_rs2_val <= 0;
+      decode_pc <= 0;
       execute_valid_r <= 1'b0;
       execute_alu_result <= 0;
       execute_rd <= 0;
       execute_we <= 1'b0;
+      execute_pc <= 0;
       writeback_valid_r <= 1'b0;
       writeback_result <= 0;
       writeback_rd <= 0;
       writeback_valid <= 1'b0;
+      writeback_pc <= 0;
     end else begin
       if (!fetch_stall) begin
         fetch_valid_r <= 1'b1;
@@ -98,18 +104,21 @@ module CpuPipe #(
         decode_rd <= fetch_instr[11:7];
         decode_rs1_val <= rs1_data;
         decode_rs2_val <= rs2_data;
+        decode_pc <= fetch_pc;
       end
       if (!execute_stall) begin
         execute_valid_r <= decode_stall ? 1'b0 : decode_valid_r;
         execute_alu_result <= execute_alu_out;
         execute_rd <= decode_rd;
         execute_we <= (decode_opcode != 0);
+        execute_pc <= decode_pc;
       end
       if (!writeback_stall) begin
         writeback_valid_r <= execute_stall ? 1'b0 : execute_valid_r;
         writeback_result <= execute_alu_result;
         writeback_rd <= execute_rd;
         writeback_valid <= execute_we;
+        writeback_pc <= execute_pc;
       end
       if (branch_taken) begin
         fetch_valid_r <= 1'b0;
@@ -136,6 +145,6 @@ module CpuPipe #(
   assign wb_data = writeback_result;
   assign wb_rd = writeback_rd;
   assign wb_we = (writeback_valid && writeback_valid_r);
-  assign pc_out = fetch_pc;
+  assign pc_out = writeback_pc;
 
 endmodule

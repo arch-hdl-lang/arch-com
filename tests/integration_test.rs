@@ -1169,7 +1169,9 @@ fn test_cpu_pipeline() {
     assert!(sv.contains("execute_alu_result"), "missing rewritten execute ref");
     // Outputs
     assert!(sv.contains("assign wb_data = writeback_result"), "missing wb output");
-    assert!(sv.contains("assign pc_out = fetch_pc"), "missing pc output");
+    // pc is now passed forward through registered stages instead of
+    // being read directly from Fetch (which would be a 3-hop bypass).
+    assert!(sv.contains("assign pc_out = writeback_pc"), "missing pc output");
     // Explicit forwarding mux
     assert!(sv.contains("decode_rs1_fwd"), "missing forwarding mux wire");
     assert!(sv.contains("always_comb"), "missing always_comb for forwarding mux");
@@ -1218,6 +1220,109 @@ end module BitExtract
     // trunc<14,12>() → instr[14:12]
     assert!(sv.contains("instr[14:12]"), "expected trunc<14,12> → instr[14:12], got:\n{sv}");
     insta::assert_snapshot!(sv);
+}
+
+#[test]
+fn test_pipeline_cross_stage_skip_rejected() {
+    // Regression for #4 (pipeline_critique): a stage that reads from
+    // a stage more than one hop back must error at typecheck. The
+    // reference would emit a direct combinational path bypassing the
+    // intermediate stages' registers.
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+pipeline SkipBypass
+  param XLEN: const = 32;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port data_in: in UInt<XLEN>;
+  port out: out UInt<XLEN>;
+
+  stage Fetch
+    reg captured: UInt<XLEN> reset rst => 0;
+    seq on clk rising
+      captured <= data_in;
+    end seq
+  end stage Fetch
+
+  stage Decode
+    reg copy: UInt<XLEN> reset rst => 0;
+    seq on clk rising
+      copy <= Fetch.captured;
+    end seq
+  end stage Decode
+
+  stage Writeback
+    reg result: UInt<XLEN> reset rst => 0;
+    seq on clk rising
+      result <= Decode.copy;
+    end seq
+    comb
+      // BAD: reaches back two stages — bypasses Decode's register.
+      out = Fetch.captured;
+    end comb
+  end stage Writeback
+end pipeline SkipBypass
+"#;
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    let errs = result.expect_err("expected typecheck to flag the 2-hop bypass");
+    let msg = errs.iter().map(|e| format!("{e:?}")).collect::<String>();
+    assert!(msg.contains("bypassing the intermediate"),
+            "expected bypass message, got: {msg}");
+}
+
+#[test]
+fn test_pipeline_forward_reference_allowed() {
+    // Forward references (Decode reading Execute) are hazard reads and
+    // must NOT be flagged by the cross-stage span check — they're the
+    // canonical pattern for forwarding muxes and load-use stall checks.
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+pipeline ForwardRead
+  param XLEN: const = 32;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port data_in: in UInt<XLEN>;
+  port out: out UInt<XLEN>;
+
+  stage Decode
+    reg val: UInt<XLEN> reset rst => 0;
+    seq on clk rising
+      val <= data_in;
+    end seq
+    comb
+      // Forward read into Execute is allowed (hazard).
+      forwarded = Execute.result;
+    end comb
+  end stage Decode
+
+  stage Execute
+    reg result: UInt<XLEN> reset rst => 0;
+    seq on clk rising
+      result <= Decode.val;
+    end seq
+    comb
+      out = result;
+    end comb
+  end stage Execute
+end pipeline ForwardRead
+"#;
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve");
+    let checker = arch::typecheck::TypeChecker::new(&symbols, &ast);
+    checker.check().expect("forward-reference pattern should typecheck");
 }
 
 #[test]

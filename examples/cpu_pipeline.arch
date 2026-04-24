@@ -64,11 +64,16 @@ pipeline CpuPipe
     reg rd: UInt<REG_ADDR_W> reset rst => 0;
     reg rs1_val: UInt<XLEN> reset rst => 0;
     reg rs2_val: UInt<XLEN> reset rst => 0;
+    // Pass PC forward stage-by-stage (registered) instead of doing
+    // `pc_out = Fetch.pc` in Writeback, which would emit a 3-hop
+    // combinational path through the pipeline.
+    reg pc: UInt<XLEN> reset rst => 0;
     seq on clk rising
       opcode  <= Fetch.instr[6:0];
       rd      <= Fetch.instr[11:7];
       rs1_val <= rs1_data;
       rs2_val <= rs2_data;
+      pc      <= Fetch.pc;
     end seq
     // Explicit forwarding mux: bypass ALU result on RAW hazard
     comb
@@ -85,10 +90,12 @@ pipeline CpuPipe
     reg alu_result: UInt<XLEN> reset rst => 0;
     reg rd: UInt<REG_ADDR_W> reset rst => 0;
     reg we: Bool reset rst => false;
+    reg pc: UInt<XLEN> reset rst => 0;
     seq on clk rising
       alu_result <= alu_out;
       rd <= Decode.rd;
       we <= Decode.opcode != 0;
+      pc <= Decode.pc;
     end seq
     // Combinational ALU instance
     inst alu0: Alu
@@ -104,16 +111,18 @@ pipeline CpuPipe
     reg result: UInt<XLEN> reset rst => 0;
     reg rd: UInt<REG_ADDR_W> reset rst => 0;
     reg valid: Bool reset rst => false;
+    reg pc: UInt<XLEN> reset rst => 0;
     seq on clk rising
       result <= Execute.alu_result;
       rd <= Execute.rd;
       valid <= Execute.we;
+      pc <= Execute.pc;
     end seq
     comb
       wb_data = result;
       wb_rd = rd;
       wb_we = valid and valid_r;
-      pc_out = Fetch.pc;
+      pc_out = pc;
     end comb
   end stage Writeback
 

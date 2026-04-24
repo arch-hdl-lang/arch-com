@@ -3842,6 +3842,147 @@ impl<'a> TypeChecker<'a> {
     }
     // ── Pipeline ──────────────────────────────────────────────────────────────
 
+    /// Walk a body item and report any `<Stage>.<field>` reference
+    /// whose target stage is more than one hop from the owning stage.
+    /// Stall conditions, flush directives, and forward directives are
+    /// hazard signals and live outside the body — they're intentionally
+    /// exempt from this check.
+    fn collect_pipeline_cross_stage_refs(
+        &mut self,
+        item: &ModuleBodyItem,
+        cur_idx: usize,
+        stage_idx: &HashMap<&str, usize>,
+        cur_name: &str,
+    ) {
+        match item {
+            ModuleBodyItem::CombBlock(cb) => {
+                for s in &cb.stmts { self.walk_pipeline_comb_stmt(s, cur_idx, stage_idx, cur_name); }
+            }
+            ModuleBodyItem::RegBlock(rb) => {
+                for s in &rb.stmts { self.walk_pipeline_stmt(s, cur_idx, stage_idx, cur_name); }
+            }
+            ModuleBodyItem::LetBinding(lb) => {
+                self.check_pipeline_cross_stage_expr(&lb.value, cur_idx, stage_idx, cur_name);
+            }
+            ModuleBodyItem::RegDecl(rd) => {
+                if let Some(init) = &rd.init {
+                    self.check_pipeline_cross_stage_expr(init, cur_idx, stage_idx, cur_name);
+                }
+                if let RegReset::Inherit(_, val) | RegReset::Explicit(_, _, _, val) = &rd.reset {
+                    self.check_pipeline_cross_stage_expr(val, cur_idx, stage_idx, cur_name);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn walk_pipeline_comb_stmt(
+        &mut self, s: &CombStmt, cur_idx: usize,
+        stage_idx: &HashMap<&str, usize>, cur_name: &str,
+    ) {
+        match s {
+            CombStmt::Assign(a) => {
+                self.check_pipeline_cross_stage_expr(&a.value, cur_idx, stage_idx, cur_name);
+            }
+            CombStmt::IfElse(ie) => {
+                self.check_pipeline_cross_stage_expr(&ie.cond, cur_idx, stage_idx, cur_name);
+                for s in &ie.then_stmts { self.walk_pipeline_comb_stmt(s, cur_idx, stage_idx, cur_name); }
+                for s in &ie.else_stmts { self.walk_pipeline_comb_stmt(s, cur_idx, stage_idx, cur_name); }
+            }
+            _ => {}
+        }
+    }
+
+    fn walk_pipeline_stmt(
+        &mut self, s: &Stmt, cur_idx: usize,
+        stage_idx: &HashMap<&str, usize>, cur_name: &str,
+    ) {
+        match s {
+            Stmt::Assign(a) => {
+                self.check_pipeline_cross_stage_expr(&a.value, cur_idx, stage_idx, cur_name);
+            }
+            Stmt::IfElse(ie) => {
+                self.check_pipeline_cross_stage_expr(&ie.cond, cur_idx, stage_idx, cur_name);
+                for s in &ie.then_stmts { self.walk_pipeline_stmt(s, cur_idx, stage_idx, cur_name); }
+                for s in &ie.else_stmts { self.walk_pipeline_stmt(s, cur_idx, stage_idx, cur_name); }
+            }
+            _ => {}
+        }
+    }
+
+    fn check_pipeline_cross_stage_expr(
+        &mut self, expr: &Expr, cur_idx: usize,
+        stage_idx: &HashMap<&str, usize>, cur_name: &str,
+    ) {
+        match &expr.kind {
+            ExprKind::FieldAccess(base, _field) => {
+                if let ExprKind::Ident(name) = &base.kind {
+                    if let Some(&j) = stage_idx.get(name.as_str()) {
+                        // Only flag backward references that *skip* a stage,
+                        // i.e. j < cur_idx - 1. These bypass the intermediate
+                        // stages' registers and emit a direct combinational
+                        // path. Self (j == cur_idx) and previous-stage
+                        // (j + 1 == cur_idx) reads are the canonical data-flow
+                        // patterns. Forward references (j > cur_idx) are
+                        // hazard reads — Decode reading Execute for forwarding
+                        // / load-use stall — and are intentional.
+                        if j + 1 < cur_idx {
+                            let hops = cur_idx - j;
+                            self.errors.push(CompileError::general(
+                                &format!(
+                                    "pipeline stage `{cur_name}` references stage `{name}` ({hops} stages back), bypassing the intermediate stages' registers. This emits a direct combinational path that silently breaks timing. Pass the value forward through stage registers (one register per intermediate stage). Forward references (Decode reading Execute, etc.) are allowed because they're hazard reads, but backward references must go through registered pipeline state.",
+                                ),
+                                expr.span,
+                            ));
+                        }
+                    }
+                }
+                // Recurse to catch nested cases like `Stage.field.bit`.
+                self.check_pipeline_cross_stage_expr(base, cur_idx, stage_idx, cur_name);
+            }
+            ExprKind::Binary(_, l, r) => {
+                self.check_pipeline_cross_stage_expr(l, cur_idx, stage_idx, cur_name);
+                self.check_pipeline_cross_stage_expr(r, cur_idx, stage_idx, cur_name);
+            }
+            ExprKind::Unary(_, e) | ExprKind::Cast(e, _) | ExprKind::Clog2(e)
+            | ExprKind::Onehot(e) | ExprKind::Signed(e) | ExprKind::Unsigned(e)
+            | ExprKind::LatencyAt(e, _) => {
+                self.check_pipeline_cross_stage_expr(e, cur_idx, stage_idx, cur_name);
+            }
+            ExprKind::Index(b, i) => {
+                self.check_pipeline_cross_stage_expr(b, cur_idx, stage_idx, cur_name);
+                self.check_pipeline_cross_stage_expr(i, cur_idx, stage_idx, cur_name);
+            }
+            ExprKind::BitSlice(b, hi, lo) => {
+                self.check_pipeline_cross_stage_expr(b, cur_idx, stage_idx, cur_name);
+                self.check_pipeline_cross_stage_expr(hi, cur_idx, stage_idx, cur_name);
+                self.check_pipeline_cross_stage_expr(lo, cur_idx, stage_idx, cur_name);
+            }
+            ExprKind::PartSelect(b, s, w, _) => {
+                self.check_pipeline_cross_stage_expr(b, cur_idx, stage_idx, cur_name);
+                self.check_pipeline_cross_stage_expr(s, cur_idx, stage_idx, cur_name);
+                self.check_pipeline_cross_stage_expr(w, cur_idx, stage_idx, cur_name);
+            }
+            ExprKind::Ternary(c, t, e) => {
+                self.check_pipeline_cross_stage_expr(c, cur_idx, stage_idx, cur_name);
+                self.check_pipeline_cross_stage_expr(t, cur_idx, stage_idx, cur_name);
+                self.check_pipeline_cross_stage_expr(e, cur_idx, stage_idx, cur_name);
+            }
+            ExprKind::Concat(xs) | ExprKind::FunctionCall(_, xs) => {
+                for x in xs { self.check_pipeline_cross_stage_expr(x, cur_idx, stage_idx, cur_name); }
+            }
+            ExprKind::Repeat(n, x) => {
+                self.check_pipeline_cross_stage_expr(n, cur_idx, stage_idx, cur_name);
+                self.check_pipeline_cross_stage_expr(x, cur_idx, stage_idx, cur_name);
+            }
+            ExprKind::MethodCall(recv, _, args) => {
+                self.check_pipeline_cross_stage_expr(recv, cur_idx, stage_idx, cur_name);
+                for a in args { self.check_pipeline_cross_stage_expr(a, cur_idx, stage_idx, cur_name); }
+            }
+            _ => {}
+        }
+    }
+
     fn check_pipeline(&mut self, p: &PipelineDecl) {
         self.check_pascal_case(&p.name);
 
@@ -3880,6 +4021,25 @@ impl<'a> TypeChecker<'a> {
                     ModuleBodyItem::Inst(inst) => self.check_snake_case(&inst.name),
                     _ => {}
                 }
+            }
+        }
+
+        // Cross-stage span check: in a stage's body (data path),
+        // `<Stage>.<field>` references are allowed only for self
+        // (`<Stage_i>.<field>`) and the immediately preceding stage
+        // (`<Stage_{i-1}>.<field>`). References that span more than one
+        // hop emit a direct combinational path through the pipeline,
+        // bypassing the intermediate stages' registers — silently
+        // breaks timing. Hazard expressions (stall_cond / flush /
+        // forward) live outside `stage.body` and are intentionally
+        // exempt.
+        let stage_idx: HashMap<&str, usize> = stage_names.iter()
+            .enumerate()
+            .map(|(i, n)| (*n, i))
+            .collect();
+        for (i, stage) in p.stages.iter().enumerate() {
+            for item in &stage.body {
+                self.collect_pipeline_cross_stage_refs(item, i, &stage_idx, &stage.name.name);
             }
         }
 
