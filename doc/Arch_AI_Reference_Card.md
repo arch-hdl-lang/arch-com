@@ -809,6 +809,8 @@ end linklist Name
 
 Operations (via `op` port): `insert_head`, `insert_tail`, `insert_after`, `delete_head`, `delete`, `next`, `prev` (doubly), `alloc`, `free`, `read_data`, `write_data`. 2-cycle latency per operation.
 
+**Multi-head (NUM_HEADS > 1)**: add `param NUM_HEADS: const = N;` to turn the linklist into K homogeneous chains sharing one node pool + free list. Each head-addressed op (`insert_*`, `delete_*`) must then declare `port req_head_idx: in UInt<$clog2(NUM_HEADS)>`. Typical use: MSHR, per-flow queues, per-address pending tables. `NUM_HEADS == 1` (default) emits byte-identical SV to before. Today `insert_tail` + `delete_head` are fully supported in multi-head; other head-addressed ops stage in a follow-up. For *heterogeneous* named lists with different depths/types sharing a pool, use `linklist_pool` (spec §12.6).
+
 ---
 
 ### generate
