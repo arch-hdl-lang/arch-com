@@ -1,0 +1,109 @@
+// Layer 1 NoC validation for credit_channel — see doc/plan_credit_channel.md
+// §"Validation plan — NoC flit credit". A producer + consumer connected
+// through a single credit_channel(DEPTH=8) carrying UInt<64> flits, with
+// LFSR-throttled rates so the C++ TB can stress balanced / asymmetric
+// scenarios and verify backpressure correctness end-to-end.
+
+bus NocBus
+  credit_channel flits: send
+    param T:     type  = UInt<64>;
+    param DEPTH: const = 8;
+  end credit_channel flits
+end bus NocBus
+
+module NocProducer
+  port clk:          in Clock<SysDomain>;
+  port rst:          in Reset<Sync>;
+  port gen_pressure: in UInt<8>;     // TB-controlled send rate (0 = idle, 255 = max)
+  port out:          initiator NocBus;
+
+  reg seq_no: UInt<64> reset rst => 64'h0;
+  reg lfsr:   UInt<8>  reset rst => 8'h5A;
+
+  comb
+    out.flits_send_valid = 1'b0;
+    out.flits_send_data  = 64'h0;
+    if out.flits.can_send and (lfsr < gen_pressure)
+      out.flits.send(seq_no);
+    end if
+  end comb
+
+  seq on clk rising
+    // Galois LFSR: shift right; XOR taps when LSB pops out.
+    if lfsr[0]
+      lfsr <= (lfsr >> 1) ^ 8'hB8;
+    else
+      lfsr <= (lfsr >> 1);
+    end if
+    if out.flits.can_send and (lfsr < gen_pressure)
+      seq_no <= (seq_no + 64'h1).trunc<64>();
+    end if
+  end seq
+end module NocProducer
+
+module NocConsumer
+  port clk:          in Clock<SysDomain>;
+  port rst:          in Reset<Sync>;
+  port pop_pressure: in UInt<8>;     // TB-controlled pop rate
+  port incoming:     target NocBus;
+
+  port reg popped_count: out UInt<64> reset rst => 64'h0;
+  port reg last_seq:     out UInt<64> reset rst => 64'h0;
+  port reg in_order:     out Bool     reset rst => 1'b1;
+  port reg saw_any:      out Bool     reset rst => 1'b0;
+
+  reg lfsr: UInt<8> reset rst => 8'hC3;
+
+  comb
+    incoming.flits_credit_return = 1'b0;
+    if incoming.flits.valid and (lfsr < pop_pressure)
+      incoming.flits.pop();
+    end if
+  end comb
+
+  seq on clk rising
+    if lfsr[0]
+      lfsr <= (lfsr >> 1) ^ 8'hB8;
+    else
+      lfsr <= (lfsr >> 1);
+    end if
+    if incoming.flits.valid and (lfsr < pop_pressure)
+      popped_count <= (popped_count + 64'h1).trunc<64>();
+      last_seq     <= incoming.flits.data;
+      // Each popped seq_no should be exactly previous + 1 (or 0 on first).
+      if saw_any and incoming.flits.data != (last_seq + 64'h1).trunc<64>()
+        in_order <= 1'b0;
+      end if
+      saw_any <= 1'b1;
+    end if
+  end seq
+end module NocConsumer
+
+module NocCreditTop
+  port clk:          in Clock<SysDomain>;
+  port rst:          in Reset<Sync>;
+  port gen_pressure: in UInt<8>;
+  port pop_pressure: in UInt<8>;
+  port popped_count: out UInt<64>;
+  port last_seq:     out UInt<64>;
+  port in_order:     out Bool;
+  port saw_any:      out Bool;
+
+  inst prod: NocProducer
+    clk          <- clk;
+    rst          <- rst;
+    gen_pressure <- gen_pressure;
+    out          <- noc_link;
+  end inst prod
+
+  inst cons: NocConsumer
+    clk           <- clk;
+    rst           <- rst;
+    pop_pressure  <- pop_pressure;
+    incoming      <- noc_link;
+    popped_count  -> popped_count;
+    last_seq      -> last_seq;
+    in_order      -> in_order;
+    saw_any       -> saw_any;
+  end inst cons
+end module NocCreditTop
