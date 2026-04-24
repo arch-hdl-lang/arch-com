@@ -1,0 +1,60 @@
+// PR-hf4 item 6: credit_channel occupancy invariant.
+//
+// Two sub-modules — sender + receiver — connected through a bus
+// carrying a single credit_channel. The parent asserts the protocol
+// invariant `credit + occ == DEPTH` on every cycle.
+//
+// To keep the proof self-contained, both sub-modules drive their bus
+// outputs to constant 0 (no traffic). Credit + occ are conserved under
+// all transitions, so this is the simplest configuration where the
+// invariant holds; the lifted state plumbing (items 1–5) is exercised
+// end-to-end.
+
+bus CreditBus
+  credit_channel data: send
+    param T:     type  = UInt<8>;
+    param DEPTH: const = 4;
+  end credit_channel data
+end bus CreditBus
+
+module CreditSender
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port s:   initiator CreditBus;
+
+  comb
+    s.data_send_valid = 1'b0;
+    s.data_send_data  = 8'h0;
+  end comb
+end module CreditSender
+
+module CreditReceiver
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port r:   target CreditBus;
+
+  comb
+    r.data_credit_return = 1'b0;
+  end comb
+end module CreditReceiver
+
+module CreditPair
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  inst snd: CreditSender
+    clk <- clk;
+    rst <- rst;
+    s   <- chwire;
+  end inst snd
+
+  inst rcv: CreditReceiver
+    clk <- clk;
+    rst <- rst;
+    r   <- chwire;
+  end inst rcv
+
+  // The invariant. Names are the lifted state hf4 produces under
+  // the parent-side connection prefix `chwire`.
+  assert credit_balance: __chwire_data_credit + __chwire_data_occ == 3'd4;
+end module CreditPair

@@ -169,3 +169,19 @@ fn formal_hier_multi_inst_proves() {
     // Both properties should PROVE.
     assert!(out.matches("PROVED").count() >= 2, "expected 2 PROVEDs:\n{out}");
 }
+
+#[test]
+fn formal_credit_channel_invariant_proves() {
+    if !z3_available() { eprintln!("skipping: z3 not in PATH"); return; }
+    // PR-hf4 Phase 1 end-to-end: the credit_channel occupancy invariant
+    // (`credit + occ == DEPTH`) proves on a 2-module hierarchical design
+    // where flatten_for_formal carries the channel state across the
+    // inst boundary and merges the handshake signals.
+    let (code, out) = run_formal(
+        "tests/formal/credit_channel_invariant.arch",
+        &["--top", "CreditPair", "--bound", "8"],
+    );
+    assert_eq!(code, 0, "expected exit 0 (PROVED); got {code}\n{out}");
+    assert!(out.contains("credit_balance"), "expected credit_balance label:\n{out}");
+    assert!(out.contains("PROVED"), "expected PROVED in output:\n{out}");
+}
