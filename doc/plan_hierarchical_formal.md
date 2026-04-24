@@ -245,12 +245,35 @@ design connected by an explicit bus with one credit_channel.
 4. **Resolve SynthIdent** (~20 LoC). Replace the hard-error at
    `formal.rs:1340` with a lookup into the lifted-state table; if the
    synthetic name was registered in step 2, encode as that BV.
-5. **Hierarchical carry** (~100 LoC). `flatten_for_formal` currently
-   inlines sub-module body items but doesn't propagate credit_channel
-   metadata across the inst boundary. Extend the flatten pass to
-   preserve each sub-module's bus-port credit_channels (renamed under
-   the inst prefix) so step 1's collector sees both sender and receiver
-   sides of the channel in the flat module.
+5. **Hierarchical carry** (~150–250 LoC, larger than initial estimate).
+   `flatten_for_formal` currently rejects sub-modules with bus ports
+   via `validate_sub_for_formal`'s scalar-only check. Extending the
+   flatten pass to preserve credit_channel sites across inst boundaries
+   requires:
+   - Relax `validate_sub_for_formal` to accept bus ports carrying
+     credit_channels (reject bus ports with handshake / tlm_method or
+     any non-credit_channel payload signals — those need their own
+     formal modelling).
+   - Introduce a `CarriedCreditSite` output alongside `ModuleDecl` from
+     `flatten_for_formal` (change the return type to a struct) so each
+     sub's credit_channel site can be registered against the flat
+     module using the PARENT-SIDE connection name (`chwire` from
+     `s <- chwire`) as the port_name prefix, not the sub's port name.
+     Two sites keyed on the same prefix (sender from one inst + receiver
+     from another) compose into the occupancy invariant.
+   - `FormalCtx::preprocess()` gains a `register_carried_credit_sites()`
+     pre-step that runs before the port walk. The existing walk stays
+     for designs where the top module itself has the bus port.
+   - Handshake signals (`<prefix>_<ch>_send_valid`, `_credit_return`):
+     when registered from two sites that share a prefix (cross-module
+     channel), collapse the input/output registration into a single
+     internal SignalKind::Wire so both sides see the same value. When
+     only one site is registered (top-level bus port), keep the
+     input/output shape from item 2.
+   - Parent connections like `s <- chwire` don't introduce a parent-
+     side declaration for `chwire`. Flatten synthesizes the handshake
+     signals directly as wires on the flat module body; step 2's
+     registration continues to work unchanged.
 6. **Test** (~30 LoC .arch + harness). Two-module design: `Sender`
    with the initiator side, `Receiver` with the target side, parent
    wires them through a bus. Assert `inst_s.credit + inst_r.occ == DEPTH`
