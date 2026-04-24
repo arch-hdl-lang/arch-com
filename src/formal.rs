@@ -713,6 +713,11 @@ struct FormalCtx<'a> {
     properties: Vec<PropertyDecl>,
     /// Comb-topological ordering of wire / output names.
     comb_order: Vec<String>,
+    /// credit_channel sites attached to bus ports on this module.
+    /// Populated by `collect_credit_channel_sites()`; consumed by
+    /// follow-up items in PR-hf4 (state registration, transitions,
+    /// SynthIdent resolution).
+    credit_sites: Vec<CreditChannelSite>,
 }
 
 #[derive(Debug, Clone)]
@@ -720,6 +725,29 @@ struct CombAssignFlat {
     target: String,          // flat name (e.g. "y" or "out[2]"); v1 supports ident targets only
     guard: Vec<Expr>,        // stack of conditions (ANDed)
     value: Expr,
+}
+
+/// One credit_channel instance, attached to a specific bus port on the
+/// current (post-flattening) module. PR-hf4 Phase 1 item 1: collection
+/// only — later items use the sites to register BV state, emit
+/// transitions, and resolve `SynthIdent` references in the encoder.
+///
+/// `is_sender` records which side of the channel this port binds —
+/// codegen emits the counter reg on the sender side and the FIFO
+/// occupancy regs on the receiver side, and we mirror that split.
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // fields consumed by PR-hf4 items 2+ (state / transitions / SynthIdent)
+struct CreditChannelSite {
+    /// Owning port name (e.g. `s` for `port s: initiator MyBus`).
+    port_name: String,
+    /// Channel meta as declared on the bus.
+    meta: CreditChannelMeta,
+    /// True if this port is the sender side (initiator/Out or target/In).
+    is_sender: bool,
+    /// DEPTH folded to a constant. `None` means the default wasn't
+    /// foldable with current params — the site is recorded but later
+    /// items will skip it with an error.
+    depth: Option<u64>,
 }
 
 impl<'a> FormalCtx<'a> {
@@ -741,6 +769,44 @@ impl<'a> FormalCtx<'a> {
             enum_variants: HashMap::new(),
             properties: Vec::new(),
             comb_order: Vec::new(),
+            credit_sites: Vec::new(),
+        }
+    }
+
+    /// Walk module bus ports and record every credit_channel sub-construct
+    /// carried by their bus. Mirrors `codegen::emit_credit_channel_state`'s
+    /// sender/receiver role derivation so the BV state we register later
+    /// will use the same naming convention (`__<port>_<ch>_credit` etc.).
+    ///
+    /// Called from `preprocess()`. PR-hf4 Phase 1 item 1: collection only —
+    /// the populated `credit_sites` vector is unused by the encoder in this
+    /// commit; subsequent items wire it into BV declarations, reset /
+    /// transitions, and SynthIdent resolution.
+    fn collect_credit_channel_sites(&mut self) {
+        for p in &self.module.ports {
+            let Some(bi) = &p.bus_info else { continue; };
+            let Some((crate::resolve::Symbol::Bus(info), _)) =
+                self.symbols.globals.get(&bi.bus_name.name) else { continue; };
+            for cc in &info.credit_channels {
+                // Role flipping: on the target perspective the bus
+                // reverses directions, so an `Out` channel role on the
+                // initiator becomes the receiver on the target side.
+                let is_sender = matches!(
+                    (cc.role_dir, bi.perspective),
+                    (Direction::Out, crate::ast::BusPerspective::Initiator)
+                        | (Direction::In, crate::ast::BusPerspective::Target)
+                );
+                let depth = cc.params.iter()
+                    .find(|pp| pp.name.name == "DEPTH")
+                    .and_then(|pp| pp.default.as_ref())
+                    .and_then(|e| fold_const_expr(e, &self.params));
+                self.credit_sites.push(CreditChannelSite {
+                    port_name: p.name.name.clone(),
+                    meta: cc.clone(),
+                    is_sender,
+                    depth,
+                });
+            }
         }
     }
 
@@ -763,6 +829,12 @@ impl<'a> FormalCtx<'a> {
         // Reset info
         let (rn, is_async, is_low) = crate::ast::extract_reset_info(&self.module.ports);
         self.reset = ResetInfo { name: rn, is_async, is_low };
+
+        // PR-hf4 item 1: collect credit_channel sites for later state
+        // registration. The result is unused in this commit; follow-ups
+        // consume `self.credit_sites` to register BV state and resolve
+        // SynthIdent references.
+        self.collect_credit_channel_sites();
 
         // Defensive: any Inst items here mean the flattener didn't run.
         // `run()` invokes `flatten_for_formal` before preprocess() for
