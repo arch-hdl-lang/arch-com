@@ -1731,6 +1731,128 @@ end linklist SchedList
 }
 
 #[test]
+fn test_linklist_multi_head_compiles() {
+    // Phase B: multi-head linklist with NUM_HEADS > 1 emits per-head
+    // head/tail/length arrays and latches req_head_idx per op.
+    let source = r#"
+linklist MhQ
+  param DEPTH: const = 16;
+  param NUM_HEADS: const = 4;
+  param DATA: type = UInt<8>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  kind singly;
+  track tail: true;
+  op insert_tail
+    latency: 2;
+    port req_valid:    in Bool;
+    port req_ready:    out Bool;
+    port req_head_idx: in UInt<2>;
+    port req_data:     in UInt<8>;
+    port resp_valid:   out Bool;
+    port resp_handle:  out UInt<4>;
+  end op insert_tail
+  op delete_head
+    latency: 2;
+    port req_valid:    in Bool;
+    port req_ready:    out Bool;
+    port req_head_idx: in UInt<2>;
+    port resp_valid:   out Bool;
+    port resp_data:    out UInt<8>;
+  end op delete_head
+end linklist MhQ
+"#;
+    let sv = compile_to_sv(source);
+    // Module header carries NUM_HEADS param
+    assert!(sv.contains("parameter int  NUM_HEADS = 4"), "missing NUM_HEADS param:\n{sv}");
+    // Head/tail/length become arrays indexed by NUM_HEADS
+    assert!(sv.contains("_head_r [NUM_HEADS]"), "missing head array");
+    assert!(sv.contains("_tail_r [NUM_HEADS]"), "missing tail array");
+    assert!(sv.contains("_length_r [NUM_HEADS]"), "missing internal length array");
+    // Per-op latched head_idx register
+    assert!(sv.contains("_ctrl_insert_tail_head_idx"), "missing insert_tail head_idx latch");
+    assert!(sv.contains("_ctrl_delete_head_head_idx"), "missing delete_head head_idx latch");
+    // Accept cycle reads head/tail by request idx directly; busy cycle
+    // by the latched idx.
+    assert!(sv.contains("_head_r[delete_head_req_head_idx]"), "missing accept-cycle head ref");
+    assert!(sv.contains("_tail_r[_ctrl_insert_tail_head_idx]"), "missing busy-cycle tail ref");
+    // req_ready for delete gated by per-head length
+    assert!(sv.contains("_length_r[delete_head_req_head_idx] != '0"),
+            "missing per-head delete ready gate");
+    // Reset loops through NUM_HEADS
+    assert!(sv.contains("for (_ll_i = 0; _ll_i < NUM_HEADS; _ll_i++)"),
+            "missing NUM_HEADS reset loop");
+}
+
+#[test]
+fn test_linklist_multi_head_rejects_missing_head_idx() {
+    // NUM_HEADS > 1 but per-head op omits req_head_idx → typecheck error
+    let source = r#"
+linklist BadMh
+  param DEPTH: const = 8;
+  param NUM_HEADS: const = 2;
+  param DATA: type = UInt<8>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  kind singly;
+  track tail: true;
+  op insert_tail
+    latency: 2;
+    port req_valid:    in Bool;
+    port req_ready:    out Bool;
+    port req_data:     in UInt<8>;
+    port resp_valid:   out Bool;
+    port resp_handle:  out UInt<3>;
+  end op insert_tail
+end linklist BadMh
+"#;
+    let tokens = lexer::tokenize(source).expect("lexer");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(parsed).expect("elaborate");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let result = TypeChecker::new(&symbols, &ast).check();
+    assert!(result.is_err(), "expected typecheck to reject per-head op without req_head_idx");
+    let msg = result.unwrap_err().iter().map(|e| format!("{e:?}")).collect::<String>();
+    assert!(msg.contains("req_head_idx") && msg.contains("multi-head") == false && msg.contains("NUM_HEADS"),
+            "expected NUM_HEADS-specific error, got: {msg}");
+}
+
+#[test]
+fn test_linklist_single_head_rejects_stray_head_idx() {
+    // NUM_HEADS default=1 but op declares req_head_idx → reject
+    let source = r#"
+linklist BadSh
+  param DEPTH: const = 4;
+  param DATA: type = UInt<8>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  kind singly;
+  track tail: true;
+  op insert_tail
+    latency: 2;
+    port req_valid:    in Bool;
+    port req_ready:    out Bool;
+    port req_head_idx: in UInt<0>;
+    port req_data:     in UInt<8>;
+    port resp_valid:   out Bool;
+    port resp_handle:  out UInt<2>;
+  end op insert_tail
+end linklist BadSh
+"#;
+    let tokens = lexer::tokenize(source).expect("lexer");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(parsed).expect("elaborate");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let result = TypeChecker::new(&symbols, &ast).check();
+    assert!(result.is_err(), "expected typecheck to reject req_head_idx on single-head list");
+    let msg = result.unwrap_err().iter().map(|e| format!("{e:?}")).collect::<String>();
+    assert!(msg.contains("req_head_idx") && msg.contains("single-head"),
+            "expected single-head-specific error, got: {msg}");
+}
+
+#[test]
 fn test_linklist_prev_on_singly_is_error() {
     let source = r#"
 linklist BadList

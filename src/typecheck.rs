@@ -4263,6 +4263,70 @@ impl<'a> TypeChecker<'a> {
                 span: l.name.span,
             });
         }
+
+        // ── Multi-head linklist (NUM_HEADS param) ──────────────────────────
+        //
+        // When NUM_HEADS > 1, ops that touch a specific chain (insert_*,
+        // delete_*) must take a `req_head_idx` port of the right width so
+        // the controller knows which head to index. When NUM_HEADS == 1,
+        // the port must NOT appear (back-compat + avoids confusion).
+        let num_heads = linklist_num_heads(l);
+        let head_idx_w = if num_heads <= 1 { 0 } else { clog2_u32(num_heads) };
+        let head_addressed = [
+            "insert_head", "insert_tail", "insert_after", "delete_head", "delete",
+        ];
+        for op in &l.ops {
+            let has_head_idx = op.ports.iter().any(|p| p.name.name == "req_head_idx");
+            let is_head_addressed = head_addressed.contains(&op.name.name.as_str());
+            if num_heads <= 1 && has_head_idx {
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "linklist `{}`: op `{}` declares `req_head_idx` but the linklist is single-head (no `param NUM_HEADS: const = N;` with N > 1). Remove the port, or set NUM_HEADS > 1 to opt into multi-head mode.",
+                        l.name.name, op.name.name,
+                    ),
+                    op.name.span,
+                ));
+            }
+            if num_heads > 1 && is_head_addressed && !has_head_idx {
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "linklist `{}`: op `{}` is a per-head op but the linklist has NUM_HEADS = {num_heads} and the op does not declare `req_head_idx: in UInt<{head_idx_w}>`. Add the port so the controller can route the op to the requested chain.",
+                        l.name.name, op.name.name,
+                    ),
+                    op.name.span,
+                ));
+            }
+            // Check req_head_idx width when it exists and the linklist is
+            // multi-head. Expected width is ceil_log2(NUM_HEADS).
+            if num_heads > 1 && has_head_idx {
+                if let Some(p) = op.ports.iter().find(|p| p.name.name == "req_head_idx") {
+                    if p.direction != crate::ast::Direction::In {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "linklist `{}`: `req_head_idx` must be an input port (`in UInt<{head_idx_w}>`)",
+                                l.name.name,
+                            ),
+                            p.span,
+                        ));
+                    }
+                    let width_ok = match &p.ty {
+                        crate::ast::TypeExpr::UInt(w) => {
+                            matches!(self.eval_const_expr(w, &HashMap::new()), Some(v) if v as u32 == head_idx_w)
+                        }
+                        _ => false,
+                    };
+                    if !width_ok {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "linklist `{}`: op `{}` declares `req_head_idx` with the wrong type. Expected `in UInt<{head_idx_w}>` for NUM_HEADS = {num_heads}.",
+                                l.name.name, op.name.name,
+                            ),
+                            p.span,
+                        ));
+                    }
+                }
+            }
+        }
     }
 
     fn check_function(&mut self, f: &FunctionDecl) {
@@ -4751,4 +4815,26 @@ pub fn enum_width(num_variants: usize) -> u32 {
     } else {
         (num_variants as f64).log2().ceil() as u32
     }
+}
+
+/// Fold a linklist's `NUM_HEADS` param to a u32. Returns 1 when the param
+/// is absent (back-compat default) or the default doesn't reduce to a
+/// plain integer literal — typecheck only allows literal defaults for
+/// this param (matches DEPTH).
+pub fn linklist_num_heads(l: &crate::ast::LinklistDecl) -> u32 {
+    use crate::ast::{ExprKind, LitKind};
+    let Some(p) = l.params.iter().find(|p| p.name.name == "NUM_HEADS") else { return 1; };
+    let Some(def) = &p.default else { return 1; };
+    match &def.kind {
+        ExprKind::Literal(LitKind::Dec(v))
+        | ExprKind::Literal(LitKind::Hex(v))
+        | ExprKind::Literal(LitKind::Bin(v)) => *v as u32,
+        ExprKind::Literal(LitKind::Sized(_, v)) => *v as u32,
+        _ => 1,
+    }
+}
+
+/// ceil_log2 for u32. `clog2_u32(1) = 0`, `clog2_u32(2) = 1`, `clog2_u32(16) = 4`.
+pub fn clog2_u32(n: u32) -> u32 {
+    if n <= 1 { 0 } else { (n - 1).ilog2() + 1 }
 }
