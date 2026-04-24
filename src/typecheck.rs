@@ -393,6 +393,14 @@ impl<'a> TypeChecker<'a> {
                     }
                     // Reject wait until / do..until in module seq blocks (only valid in pipeline stages)
                     Self::reject_wait_in_stmts(&rb.stmts, &mut self.errors);
+                    // Reject `target <= expr;` (bare-ident target) inside a
+                    // `for` loop in seq — last-iteration's NBA write wins,
+                    // so the loop never has the cumulative effect users
+                    // expect. Indexed targets (`vec[i] <= ...`) write a
+                    // distinct element each iteration and stay allowed.
+                    for stmt in &rb.stmts {
+                        Self::reject_bare_assign_in_for(stmt, false, &mut self.errors);
+                    }
                     // Validate reset consistency: all registers with reset in the
                     // same seq block must agree on signal name, sync/async, and polarity.
                     self.check_always_block_reset_consistency(rb, m);
@@ -1952,6 +1960,53 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Reject `wait until` / `do..until` in non-pipeline seq blocks.
+    /// Reject `target <= expr;` (bare-ident LHS) inside a `for` loop in
+    /// a seq block. Each iteration evaluates the RHS using the same
+    /// pre-block value of every signal, then the last iteration's
+    /// non-blocking schedule wins — so the loop never has the
+    /// cumulative effect users expect (see also the SV antipattern
+    /// `sum <= sum + data[i];` inside `for`).
+    ///
+    /// Indexed targets (`vec[i] <= ...`) write a different element
+    /// each iteration and stay allowed — that's the canonical shift
+    /// register pattern. Same for field-access targets like
+    /// `bus.data <= ...` where the LHS varies per iteration.
+    ///
+    /// Recurses into nested `if/elsif/else`, `match`, and nested `for`
+    /// (where the rule still applies). The `in_for` flag activates the
+    /// rejection only when we're inside at least one for-loop.
+    fn reject_bare_assign_in_for(stmt: &Stmt, in_for: bool, errors: &mut Vec<CompileError>) {
+        match stmt {
+            Stmt::Assign(a) => {
+                if in_for && matches!(&a.target.kind, ExprKind::Ident(_)) {
+                    errors.push(CompileError::general(
+                        "non-blocking assignment `<=` to a bare identifier inside a `for` loop in seq has no cumulative effect — every iteration reads the same pre-block value of the target and only the last iteration's update commits. Compute the value combinationally in a `comb` block (which uses blocking `=` and accumulates correctly), then register it once with `<=` in seq. Indexed targets like `vec[i] <= ...` are fine because each iteration writes a different element.",
+                        a.span,
+                    ));
+                }
+            }
+            Stmt::IfElse(ie) => {
+                for s in &ie.then_stmts { Self::reject_bare_assign_in_for(s, in_for, errors); }
+                for s in &ie.else_stmts { Self::reject_bare_assign_in_for(s, in_for, errors); }
+            }
+            Stmt::For(f) => {
+                for s in &f.body { Self::reject_bare_assign_in_for(s, true, errors); }
+            }
+            Stmt::Match(m) => {
+                for arm in &m.arms {
+                    for s in &arm.body { Self::reject_bare_assign_in_for(s, in_for, errors); }
+                }
+            }
+            Stmt::Init(ib) => {
+                for s in &ib.body { Self::reject_bare_assign_in_for(s, in_for, errors); }
+            }
+            Stmt::DoUntil { body, .. } => {
+                for s in body { Self::reject_bare_assign_in_for(s, in_for, errors); }
+            }
+            _ => {}
+        }
+    }
+
     fn reject_wait_in_stmts(stmts: &[Stmt], errors: &mut Vec<CompileError>) {
         for stmt in stmts {
             match stmt {
@@ -4020,6 +4075,12 @@ impl<'a> TypeChecker<'a> {
                     ModuleBodyItem::PipeRegDecl(p) => self.check_snake_case(&p.name),
                     ModuleBodyItem::Inst(inst) => self.check_snake_case(&inst.name),
                     _ => {}
+                }
+                // Reject bare-ident `<=` inside `for` loops in stage seq blocks.
+                if let ModuleBodyItem::RegBlock(rb) = item {
+                    for s in &rb.stmts {
+                        Self::reject_bare_assign_in_for(s, false, &mut self.errors);
+                    }
                 }
             }
         }
