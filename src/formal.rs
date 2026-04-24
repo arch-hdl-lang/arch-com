@@ -1602,18 +1602,24 @@ impl<'a> FormalCtx<'a> {
             // `q@0` is the same as `q` at t. Non-@0 reads are rejected by
             // typecheck before reaching formal emission.
             LatencyAt(inner, _) => self.encode_raw(inner, t),
-            // SynthIdent is not yet handled by formal encoding — it points
-            // at codegen-emitted SV state (credit_channel synthesized
-            // wires) that `arch formal` has no SMT mirror for. Reject
-            // clearly; the credit_channel formal story lands with the
-            // Tier-2 SVA PR.
+            // SynthIdent points at codegen-emitted state (credit_channel
+            // counter / occ / valid / data wires). PR-hf4 item 2 registered
+            // the scalar ones (credit, occ, head, tail, send_valid,
+            // credit_return) as real BV signals; resolve those through
+            // the normal Ident path. Anything else (payload `_data`,
+            // `_can_send` when the bus parameter enables the registered
+            // variant) is still unsupported.
             SynthIdent(name, _) => {
-                return Err(CompileError::general(
-                    &format!(
-                        "formal encoding of synthesized identifier `{name}` is not yet supported — credit_channel formal invariants land in a follow-up PR",
-                    ),
-                    expr.span,
-                ));
+                if self.sigs.contains_key(name) {
+                    self.encode_ident(name, t, expr.span)
+                } else {
+                    Err(CompileError::general(
+                        &format!(
+                            "formal encoding of synthesized identifier `{name}` is not yet supported — only credit_channel scalar state is modelled today (see doc/plan_hierarchical_formal.md PR-hf4)",
+                        ),
+                        expr.span,
+                    ))
+                }
             }
             Literal(l) => Ok(lit_to_term(l)),
             Bool(b) => Ok(SmtTerm {
