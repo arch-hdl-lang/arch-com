@@ -914,6 +914,88 @@ impl<'a> FormalCtx<'a> {
         Ok(())
     }
 
+    /// Emit next-state (reg_writes) for every credit_channel state reg
+    /// that was registered in item 2.
+    ///
+    /// Sender credit reg:
+    ///   send_valid && !credit_return ⇒ credit - 1
+    ///   !send_valid && credit_return ⇒ credit + 1
+    ///   else ⇒ hold
+    ///
+    /// Receiver occ reg:
+    ///   send_valid && !credit_return ⇒ occ + 1     (push, no credit return)
+    ///   !send_valid && credit_return ⇒ occ - 1     (credit return = pop_fire)
+    ///   else ⇒ hold
+    ///
+    /// Notes:
+    /// - Under normal hierarchical composition the sender's `credit_return`
+    ///   input is bound to the receiver's `credit_return` output by bus
+    ///   flattening (item 5), so both sides see the same value and the
+    ///   transitions stay consistent.
+    /// - Underflow/overflow protection (send_valid ⇒ credit > 0 and
+    ///   pop_fire ⇒ occ > 0) is a protocol invariant enforced by codegen
+    ///   in user-driven designs; in a formal harness where send_valid
+    ///   and pop are environment inputs, the harness is expected to add
+    ///   those assumptions alongside the occupancy invariant.
+    /// - Head / tail pointer rotation uses `(ptr + 1) % DEPTH`. When
+    ///   DEPTH isn't a power of two the `%` encoding is emitted as the
+    ///   current Mod op (covered by `encode_binary`).
+    fn emit_credit_channel_transitions(&mut self) {
+        let sites = self.credit_sites.clone();
+        for site in &sites {
+            let Some(depth) = site.depth else { continue };
+            let ch = &site.meta.name.name;
+            let port = &site.port_name;
+            let span = site.meta.span;
+            let send_valid = mk_ident(&format!("{port}_{ch}_send_valid"), span);
+            let credit_return = mk_ident(&format!("{port}_{ch}_credit_return"), span);
+            let not_send = mk_not(send_valid.clone(), span);
+            let not_ret = mk_not(credit_return.clone(), span);
+            let dec_cond = mk_bin(BinOp::And, send_valid.clone(), not_ret.clone(), span);
+            let inc_cond = mk_bin(BinOp::And, not_send.clone(), credit_return.clone(), span);
+
+            if site.is_sender {
+                let credit = mk_ident(&format!("__{port}_{ch}_credit"), span);
+                let one_cnt = mk_sized_lit(1, 1, span);
+                let dec_rhs = mk_bin(BinOp::Sub, credit.clone(), one_cnt.clone(), span);
+                let inc_rhs = mk_bin(BinOp::Add, credit, one_cnt, span);
+                let writes = self.reg_writes.entry(format!("__{port}_{ch}_credit")).or_default();
+                writes.push((dec_cond.clone(), dec_rhs));
+                writes.push((inc_cond.clone(), inc_rhs));
+            } else {
+                let occ = mk_ident(&format!("__{port}_{ch}_occ"), span);
+                let one_cnt = mk_sized_lit(1, 1, span);
+                let inc_rhs = mk_bin(BinOp::Add, occ.clone(), one_cnt.clone(), span);
+                let dec_rhs = mk_bin(BinOp::Sub, occ, one_cnt, span);
+                let writes = self.reg_writes.entry(format!("__{port}_{ch}_occ")).or_default();
+                // Priority: push first (inc), pop second (dec).
+                writes.push((dec_cond.clone(), inc_rhs));
+                writes.push((inc_cond.clone(), dec_rhs));
+
+                // Head / tail pointer rotation (skip when DEPTH==1).
+                let ptr_width = if depth <= 1 { 0 } else { (depth - 1).ilog2() + 1 };
+                if ptr_width > 0 {
+                    let head_name = format!("__{port}_{ch}_head");
+                    let tail_name = format!("__{port}_{ch}_tail");
+                    let one_ptr = mk_sized_lit(1, 1, span);
+                    let depth_lit = mk_sized_lit(ptr_width + 1, depth, span);
+                    // head advances on pop_fire (= credit_return on receiver).
+                    let head = mk_ident(&head_name, span);
+                    let head_plus = mk_bin(BinOp::Add, head, one_ptr.clone(), span);
+                    let head_next = mk_bin(BinOp::Mod, head_plus, depth_lit.clone(), span);
+                    self.reg_writes.entry(head_name).or_default()
+                        .push((credit_return.clone(), head_next));
+                    // tail advances on push (= send_valid on receiver).
+                    let tail = mk_ident(&tail_name, span);
+                    let tail_plus = mk_bin(BinOp::Add, tail, one_ptr, span);
+                    let tail_next = mk_bin(BinOp::Mod, tail_plus, depth_lit, span);
+                    self.reg_writes.entry(tail_name).or_default()
+                        .push((send_valid.clone(), tail_next));
+                }
+            }
+        }
+    }
+
     fn preprocess(&mut self) -> Result<(), CompileError> {
         // Collect param constants
         for p in &self.module.params {
@@ -938,9 +1020,11 @@ impl<'a> FormalCtx<'a> {
         // registration and SynthIdent resolution.
         self.collect_credit_channel_sites();
         // PR-hf4 item 2: register BV state + handshake signals per site.
-        // Transitions (counter ±1, occ ±1) come in item 3; SynthIdent
-        // resolution in item 4.
         self.register_credit_channel_state()?;
+        // PR-hf4 item 3: emit next-state (reg_writes) for the lifted
+        // regs. SynthIdent resolution in item 4; hierarchical carry in
+        // item 5.
+        self.emit_credit_channel_transitions();
 
         // Defensive: any Inst items here mean the flattener didn't run.
         // `run()` invokes `flatten_for_formal` before preprocess() for
@@ -2108,6 +2192,18 @@ fn bv_all_ones(width: u32) -> String {
 /// expressions for the lifted regs.
 fn mk_sized_lit(width: u32, value: u64, span: Span) -> Expr {
     Expr::new(ExprKind::Literal(LitKind::Sized(width, value)), span)
+}
+
+fn mk_ident(name: &str, span: Span) -> Expr {
+    Expr::new(ExprKind::Ident(name.to_string()), span)
+}
+
+fn mk_bin(op: BinOp, a: Expr, b: Expr, span: Span) -> Expr {
+    Expr::new(ExprKind::Binary(op, Box::new(a), Box::new(b)), span)
+}
+
+fn mk_not(a: Expr, span: Span) -> Expr {
+    Expr::new(ExprKind::Unary(UnaryOp::Not, Box::new(a)), span)
 }
 
 fn lit_to_term(l: &LitKind) -> SmtTerm {
