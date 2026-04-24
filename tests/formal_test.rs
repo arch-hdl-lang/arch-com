@@ -146,3 +146,26 @@ fn formal_hier_adder_refutes() {
     assert!(out.contains("REFUTED"));
     assert!(out.contains("Counterexample"));
 }
+
+#[test]
+fn formal_hier_counter_proves() {
+    if !z3_available() { eprintln!("skipping: z3 not in PATH"); return; }
+    let (code, out) = run_formal(
+        "tests/formal/hier_counter_proves.arch",
+        &["--top", "HierCounterTop", "--bound", "25"],
+    );
+    assert_eq!(code, 0, "expected exit 0; got {code}\n{out}");
+    assert!(out.contains("PROVED"));
+}
+
+#[test]
+fn formal_hier_multi_inst_proves() {
+    if !z3_available() { eprintln!("skipping: z3 not in PATH"); return; }
+    let (code, out) = run_formal(
+        "tests/formal/hier_multi_inst_proves.arch",
+        &["--top", "HierMultiTop", "--bound", "25"],
+    );
+    assert_eq!(code, 0, "expected exit 0; got {code}\n{out}");
+    // Both properties should PROVE.
+    assert!(out.matches("PROVED").count() >= 2, "expected 2 PROVEDs:\n{out}");
+}
