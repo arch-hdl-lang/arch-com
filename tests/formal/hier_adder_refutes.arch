@@ -1,0 +1,30 @@
+// Hierarchical formal: same adder, but the parent asserts a BAD
+// property (total == a_in + b_in + 1 — off by one). Should REFUTE.
+
+module Adder
+  port a: in  UInt<8>;
+  port b: in  UInt<8>;
+  port y: out UInt<9>;
+  let sum: UInt<9> = a.zext<9>() +% b.zext<9>();
+  comb
+    y = sum;
+  end comb
+end module Adder
+
+module HierTopBad
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a_in: in UInt<8>;
+  port b_in: in UInt<8>;
+  port total: out UInt<9>;
+
+  inst u0: Adder
+    a <- a_in;
+    b <- b_in;
+    y -> total;
+  end inst u0
+
+  let _check: Bool = total == (a_in.zext<9>() +% b_in.zext<9>() +% 9'd1);
+
+  assert hier_add_bad: _check;
+end module HierTopBad
