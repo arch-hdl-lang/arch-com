@@ -3871,7 +3871,7 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
                 }
 
                 // Collect TLM target threads + their method metadata.
-                let mut latch_regs: Vec<RegDecl> = Vec::new();
+                let latch_regs: Vec<RegDecl> = Vec::new();
                 let mut new_body: Vec<ModuleBodyItem> = Vec::new();
                 for item in std::mem::take(&mut m.body) {
                     if let ModuleBodyItem::Thread(t) = &item {
@@ -3956,143 +3956,7 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
     Ok(SourceFile { items: out_items })
 }
 
-fn lower_one_tlm_target(
-    t: ThreadBlock,
-    binding: &TlmTargetBinding,
-    method: &TlmMethodMeta,
-) -> (ThreadBlock, Vec<RegDecl>) {
-    let port = &binding.port.name;
-    let method_name = &binding.method.name;
-    let span = t.span;
-    let mk_ident = |name: String| Ident { name, span };
-    let mk_port_member = |member: String| Expr::new(
-        ExprKind::FieldAccess(
-            Box::new(Expr::new(ExprKind::Ident(port.clone()), span)),
-            mk_ident(member),
-        ),
-        span,
-    );
-    let lit_true = Expr::new(ExprKind::Literal(LitKind::Sized(1, 1)), span);
 
-    // Latch regs + arg rename map.
-    let mut latch_regs: Vec<RegDecl> = Vec::new();
-    let mut arg_renames: Vec<(String, String)> = Vec::new();
-    let mut preamble: Vec<ThreadStmt> = Vec::new();
-    preamble.push(ThreadStmt::CombAssign(CombAssign {
-        target: mk_port_member(format!("{method_name}_req_ready")),
-        value: lit_true.clone(),
-        span,
-    }));
-    for (i, (user_arg, method_arg)) in binding.args.iter()
-        .zip(method.args.iter())
-        .enumerate()
-    {
-        let latch_name = format!("__tlm_{port}_{method_name}_{}_latched", method_arg.0.name);
-        latch_regs.push(RegDecl {
-            name: mk_ident(latch_name.clone()),
-            ty: method_arg.1.clone(),
-            init: None,
-            reset: RegReset::None,
-            guard: None,
-            span,
-        });
-        // SeqAssign: <latch> <= <port>.<method>_<arg>
-        preamble.push(ThreadStmt::SeqAssign(RegAssign {
-            target: Expr::new(ExprKind::Ident(latch_name.clone()), span),
-            value: mk_port_member(format!("{method_name}_{}", method_arg.0.name)),
-            span,
-        }));
-        arg_renames.push((user_arg.name.clone(), latch_name));
-        let _ = i;
-    }
-    preamble.push(ThreadStmt::WaitUntil(
-        mk_port_member(format!("{method_name}_req_valid")),
-        span,
-    ));
-
-    // Rewrite user body: rename args to latched names, replace Return.
-    let rewritten_body: Vec<ThreadStmt> = t.body.into_iter()
-        .map(|s| rewrite_tlm_body_stmt(s, port, method_name, &arg_renames, method.ret.is_some()))
-        .flatten()
-        .collect();
-
-    let mut final_body = preamble;
-    final_body.extend(rewritten_body);
-
-    let new_thread = ThreadBlock {
-        name: Some(mk_ident(format!("__tlm_{port}_{method_name}"))),
-        clock: t.clock,
-        clock_edge: t.clock_edge,
-        reset: t.reset,
-        reset_level: t.reset_level,
-        once: false,
-        default_when: t.default_when,
-        tlm_target: None,
-        reentrant: None,
-        implement: None,
-        body: final_body,
-        span: t.span,
-    };
-    (new_thread, latch_regs)
-}
-
-fn rewrite_tlm_body_stmt(
-    s: ThreadStmt,
-    port: &str,
-    method: &str,
-    arg_renames: &[(String, String)],
-    has_ret: bool,
-) -> Vec<ThreadStmt> {
-    // Helper: rename arg idents in an expression.
-    let rename_args = |e: Expr| -> Expr {
-        let mut cur = e;
-        for (from, to) in arg_renames {
-            cur = rewrite_var_expr(cur, from, to);
-        }
-        cur
-    };
-    match s {
-        ThreadStmt::Return(e, span) => {
-            let expr = rename_args(e);
-            let mk_field = |member: String| Expr::new(
-                ExprKind::FieldAccess(
-                    Box::new(Expr::new(ExprKind::Ident(port.to_string()), span)),
-                    Ident { name: member, span },
-                ),
-                span,
-            );
-            let one = Expr::new(ExprKind::Literal(LitKind::Sized(1, 1)), span);
-            let mut out = vec![
-                ThreadStmt::CombAssign(CombAssign {
-                    target: mk_field(format!("{method}_rsp_valid")),
-                    value: one,
-                    span,
-                }),
-            ];
-            if has_ret {
-                out.push(ThreadStmt::CombAssign(CombAssign {
-                    target: mk_field(format!("{method}_rsp_data")),
-                    value: expr,
-                    span,
-                }));
-            }
-            out.push(ThreadStmt::WaitUntil(mk_field(format!("{method}_rsp_ready")), span));
-            out
-        }
-        ThreadStmt::CombAssign(ca) => vec![ThreadStmt::CombAssign(CombAssign {
-            target: rename_args(ca.target),
-            value: rename_args(ca.value),
-            span: ca.span,
-        })],
-        ThreadStmt::SeqAssign(ra) => vec![ThreadStmt::SeqAssign(RegAssign {
-            target: rename_args(ra.target),
-            value: rename_args(ra.value),
-            span: ra.span,
-        })],
-        ThreadStmt::WaitUntil(cond, span) => vec![ThreadStmt::WaitUntil(rename_args(cond), span)],
-        other => vec![other], // IfElse / ForkJoin / For / Lock / DoUntil / Log / WaitCycles — arg-rename deferred
-    }
-}
 
 // ── TLM initiator call-site lowering (PR-tlm-4) ─────────────────────────────
 //
@@ -4620,65 +4484,6 @@ fn inline_lower_tlm_initiator(
     ])
 }
 
-fn rewrite_thread_stmt_for_init_calls(
-    s: ThreadStmt,
-    port_buses: &std::collections::HashMap<String, String>,
-    bus_methods: &std::collections::HashMap<String, Vec<TlmMethodMeta>>,
-    errors: &mut Vec<CompileError>,
-) -> Vec<ThreadStmt> {
-    match s {
-        ThreadStmt::SeqAssign(ra) => {
-            if let Some(call) = match_tlm_call(&ra.value, port_buses, bus_methods) {
-                // Check no TLM calls nested in the LHS (shouldn't be any).
-                if contains_tlm_call(&ra.target, port_buses, bus_methods) {
-                    errors.push(CompileError::general(
-                        "TLM method calls cannot appear on the LHS of an assignment",
-                        ra.span,
-                    ));
-                    return vec![ThreadStmt::SeqAssign(ra)];
-                }
-                return expand_tlm_call_site(ra.target, call, ra.span);
-            }
-            // Defensive: reject nested TLM calls in a non-TLM-RHS expression.
-            if contains_tlm_call(&ra.value, port_buses, bus_methods) {
-                errors.push(CompileError::general(
-                    "TLM method call must be the direct right-hand side of `<=` in a thread body — nested or composed uses are not supported in v1",
-                    ra.span,
-                ));
-            }
-            vec![ThreadStmt::SeqAssign(ra)]
-        }
-        ThreadStmt::CombAssign(ca) => {
-            if contains_tlm_call(&ca.value, port_buses, bus_methods)
-                || contains_tlm_call(&ca.target, port_buses, bus_methods)
-            {
-                errors.push(CompileError::general(
-                    "TLM method calls must live on the right-hand side of a non-blocking assign (`<=`) in a thread body; combinational assignment rejected",
-                    ca.span,
-                ));
-            }
-            vec![ThreadStmt::CombAssign(ca)]
-        }
-        ThreadStmt::IfElse(ie) => {
-            let mut new_then = Vec::new();
-            for s in ie.then_stmts {
-                new_then.extend(rewrite_thread_stmt_for_init_calls(s, port_buses, bus_methods, errors));
-            }
-            let mut new_else = Vec::new();
-            for s in ie.else_stmts {
-                new_else.extend(rewrite_thread_stmt_for_init_calls(s, port_buses, bus_methods, errors));
-            }
-            vec![ThreadStmt::IfElse(IfElseOf {
-                cond: ie.cond,
-                then_stmts: new_then,
-                else_stmts: new_else,
-                unique: ie.unique,
-                span: ie.span,
-            })]
-        }
-        other => vec![other],
-    }
-}
 
 struct TlmCall {
     port: String,
@@ -4732,55 +4537,6 @@ fn contains_tlm_call(
     }
 }
 
-fn expand_tlm_call_site(dest: Expr, call: TlmCall, span: Span) -> Vec<ThreadStmt> {
-    let port = &call.port;
-    let method = &call.method;
-    let mk_ident = |name: String| Ident { name, span };
-    let mk_field = |member: String| Expr::new(
-        ExprKind::FieldAccess(
-            Box::new(Expr::new(ExprKind::Ident(port.clone()), span)),
-            mk_ident(member),
-        ),
-        span,
-    );
-    let one = Expr::new(ExprKind::Literal(LitKind::Sized(1, 1)), span);
-
-    let mut out: Vec<ThreadStmt> = Vec::new();
-    // Issue state comb drives
-    out.push(ThreadStmt::CombAssign(CombAssign {
-        target: mk_field(format!("{method}_req_valid")),
-        value: one.clone(),
-        span,
-    }));
-    for (i, (arg_name, _arg_ty)) in call.method_meta.args.iter().enumerate() {
-        if let Some(arg_expr) = call.args.get(i) {
-            out.push(ThreadStmt::CombAssign(CombAssign {
-                target: mk_field(format!("{method}_{}", arg_name.name)),
-                value: arg_expr.clone(),
-                span,
-            }));
-        }
-    }
-    // Transition: wait for req_ready. This closes the issue state.
-    out.push(ThreadStmt::WaitUntil(mk_field(format!("{method}_req_ready")), span));
-
-    // Wait-response state: drive rsp_ready; capture rsp_data on transition;
-    // transition on rsp_valid.
-    out.push(ThreadStmt::CombAssign(CombAssign {
-        target: mk_field(format!("{method}_rsp_ready")),
-        value: one,
-        span,
-    }));
-    if call.method_meta.ret.is_some() {
-        out.push(ThreadStmt::SeqAssign(RegAssign {
-            target: dest,
-            value: mk_field(format!("{method}_rsp_data")),
-            span,
-        }));
-    }
-    out.push(ThreadStmt::WaitUntil(mk_field(format!("{method}_rsp_valid")), span));
-    out
-}
 
 // ── TLM target in-place lowering (PR-tlm-4b) ────────────────────────────────
 //
