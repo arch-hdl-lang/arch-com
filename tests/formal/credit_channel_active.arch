@@ -1,0 +1,78 @@
+// Active-traffic credit_channel occupancy invariant. Builds on
+// tests/formal/credit_channel_invariant.arch (vacuous proof — both
+// sides idle) by adding the codegen-canonical can_send / valid gating:
+//
+//   sender:   send_valid = can_send AND go      (go is a free input)
+//   receiver: credit_return = valid AND pop     (pop is a free input)
+//
+// `go` and `pop` are free environment inputs, so the solver explores
+// every send/pop pattern. The invariant `credit + occ == DEPTH` should
+// PROVE — the codegen-style gating prevents underflow on either side.
+
+bus CreditBus
+  credit_channel data: send
+    param T:     type  = UInt<8>;
+    param DEPTH: const = 4;
+  end credit_channel data
+end bus CreditBus
+
+module ActiveSender
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port s:   initiator CreditBus;
+  port go:  in Bool;
+
+  comb
+    s.data_send_valid = 1'b0;
+    s.data_send_data  = 8'h0;
+    if go and s.data.can_send
+      s.data.send(8'h42);
+    end if
+  end comb
+end module ActiveSender
+
+module ActiveReceiver
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port r:   target CreditBus;
+  port pop: in Bool;
+
+  comb
+    r.data_credit_return = 1'b0;
+    if pop and r.data.valid
+      r.data.pop();
+    end if
+  end comb
+end module ActiveReceiver
+
+module CreditPairActive
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port go:  in Bool;
+  port pop: in Bool;
+
+  inst snd: ActiveSender
+    clk <- clk;
+    rst <- rst;
+    s   <- chwire;
+    go  <- go;
+  end inst snd
+
+  inst rcv: ActiveReceiver
+    clk <- clk;
+    rst <- rst;
+    r   <- chwire;
+    pop <- pop;
+  end inst rcv
+
+  // The conservation invariant. With can_send / valid gating, this
+  // should PROVE for any input sequence.
+  assert credit_balance: __chwire_data_credit + __chwire_data_occ == 3'd4;
+  // Derived-signal sanity: can_send should be the disjunction of
+  // "credit is non-zero". The active-traffic encoding makes the SynthIdent
+  // resolvable, so we can phrase this directly.
+  assert can_send_iff_credit:
+    __chwire_data_can_send == (__chwire_data_credit != 3'd0);
+  assert valid_iff_occ:
+    __chwire_data_valid == (__chwire_data_occ != 3'd0);
+end module CreditPairActive

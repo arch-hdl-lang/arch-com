@@ -171,6 +171,23 @@ fn formal_hier_multi_inst_proves() {
 }
 
 #[test]
+fn formal_credit_channel_active_proves() {
+    if !z3_available() { eprintln!("skipping: z3 not in PATH"); return; }
+    // Active-traffic version of the occupancy invariant: sender drives
+    // send_valid via can_send gating, receiver drives credit_return via
+    // valid gating. Also asserts the derived-signal equivalences
+    // (`can_send ⇔ credit != 0`, `valid ⇔ occ != 0`) which use the
+    // newly-resolvable SynthIdents added on top of PR-hf4 Phase 1.
+    let (code, out) = run_formal(
+        "tests/formal/credit_channel_active.arch",
+        &["--top", "CreditPairActive", "--bound", "8"],
+    );
+    assert_eq!(code, 0, "expected exit 0 (PROVED); got {code}\n{out}");
+    assert_eq!(out.matches("PROVED").count(), 3,
+               "expected 3 PROVEDs (credit_balance, can_send_iff_credit, valid_iff_occ):\n{out}");
+}
+
+#[test]
 fn formal_credit_channel_invariant_proves() {
     if !z3_available() { eprintln!("skipping: z3 not in PATH"); return; }
     // PR-hf4 Phase 1 end-to-end: the credit_channel occupancy invariant
