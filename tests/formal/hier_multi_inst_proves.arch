@@ -1,0 +1,50 @@
+// Hierarchical formal: two independent insts of SubCounter, each with
+// its own state. Prefix mangling must keep them separate.
+
+module SubCounter
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en:  in Bool;
+  port cnt_out: out UInt<8>;
+
+  reg cnt: UInt<8> reset rst => 0;
+
+  seq on clk rising
+    if en
+      if cnt < 8'd16
+        cnt <= (cnt +% 1);
+      end if
+    end if
+  end seq
+
+  comb
+    cnt_out = cnt;
+  end comb
+end module SubCounter
+
+module HierMultiTop
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en_a: in Bool;
+  port en_b: in Bool;
+  port a_count: out UInt<8>;
+  port b_count: out UInt<8>;
+
+  inst a: SubCounter
+    clk <- clk;
+    rst <- rst;
+    en  <- en_a;
+    cnt_out -> a_count;
+  end inst a
+
+  inst b: SubCounter
+    clk <- clk;
+    rst <- rst;
+    en  <- en_b;
+    cnt_out -> b_count;
+  end inst b
+
+  // Each counter stays bounded independently.
+  assert a_bounded: a_count <= 8'd16;
+  assert b_bounded: b_count <= 8'd16;
+end module HierMultiTop

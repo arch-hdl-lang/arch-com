@@ -180,16 +180,24 @@ fn flatten_for_formal(
                 }
 
                 // Collect local (non-port) names in the sub that need
-                // prefixing. For the let-only slice, this is every
-                // `let`-bound identifier whose name is not also a port.
+                // prefixing. Locals = let-bound names + RegDecl names
+                // whose name isn't also a port.
                 let port_names: std::collections::HashSet<String> =
                     sub.ports.iter().map(|p| p.name.name.clone()).collect();
                 let mut locals: std::collections::HashSet<String> = std::collections::HashSet::new();
                 for bi in &sub.body {
-                    if let ModuleBodyItem::LetBinding(lb) = bi {
-                        if !port_names.contains(&lb.name.name) {
-                            locals.insert(lb.name.name.clone());
+                    match bi {
+                        ModuleBodyItem::LetBinding(lb) => {
+                            if !port_names.contains(&lb.name.name) {
+                                locals.insert(lb.name.name.clone());
+                            }
                         }
+                        ModuleBodyItem::RegDecl(rd) => {
+                            if !port_names.contains(&rd.name.name) {
+                                locals.insert(rd.name.name.clone());
+                            }
+                        }
+                        _ => {}
                     }
                 }
 
@@ -245,10 +253,6 @@ fn flatten_for_formal(
                             }
                         }
                         ModuleBodyItem::CombBlock(cb) => {
-                            // Substitute comb block statements. Target
-                            // names (LHS) bound to sub-output ports rewrite
-                            // to the parent signal; internal comb targets
-                            // prefix.
                             let new_stmts: Vec<CombStmt> = cb.stmts.iter()
                                 .map(|s| subst_comb_stmt_for_formal(
                                     s, &port_map, &locals, &prefix,
@@ -257,6 +261,43 @@ fn flatten_for_formal(
                             new_body.push(ModuleBodyItem::CombBlock(CombBlock {
                                 stmts: new_stmts,
                                 span: cb.span,
+                            }));
+                        }
+                        ModuleBodyItem::RegDecl(rd) => {
+                            // Prefix the reg name (regs don't share names
+                            // with ports — that'd be a driver conflict in
+                            // the sub-module itself).
+                            let new_init = rd.init.as_ref()
+                                .map(|e| subst_expr_for_formal(e, &port_map, &locals, &prefix));
+                            let new_reset = subst_reg_reset_for_formal(
+                                &rd.reset, &port_map, &locals, &prefix,
+                            );
+                            new_body.push(ModuleBodyItem::RegDecl(RegDecl {
+                                name: Ident::new(format!("{prefix}{}", rd.name.name), rd.name.span),
+                                ty: rd.ty.clone(),
+                                init: new_init,
+                                reset: new_reset,
+                                guard: rd.guard.clone(),
+                                span: rd.span,
+                            }));
+                        }
+                        ModuleBodyItem::RegBlock(rb) => {
+                            // Clock ident: substitute via port_map (sub's
+                            // `clk` port binds to parent's clock via the
+                            // inst connection).
+                            let clock = resolve_port_ident_for_formal(
+                                &rb.clock, &port_map, &inst.name.name,
+                            )?;
+                            let new_stmts: Vec<Stmt> = rb.stmts.iter()
+                                .map(|s| subst_stmt_for_formal(
+                                    s, &port_map, &locals, &prefix,
+                                ))
+                                .collect::<Result<_, _>>()?;
+                            new_body.push(ModuleBodyItem::RegBlock(RegBlock {
+                                clock,
+                                clock_edge: rb.clock_edge,
+                                stmts: new_stmts,
+                                span: rb.span,
                             }));
                         }
                         _ => unreachable!("validate_sub_for_formal rejects other items"),
@@ -345,9 +386,10 @@ fn validate_sub_for_formal(sub: &ModuleDecl) -> Result<(), CompileError> {
         match bi {
             ModuleBodyItem::LetBinding(_) => {}
             ModuleBodyItem::CombBlock(_) => {}
+            ModuleBodyItem::RegDecl(_) => {}
+            ModuleBodyItem::RegBlock(_) => {}
             other => {
                 let kind = match other {
-                    ModuleBodyItem::RegDecl(_) | ModuleBodyItem::RegBlock(_) => "register",
                     ModuleBodyItem::LatchBlock(_) => "latch block",
                     ModuleBodyItem::Inst(_) => "nested instance",
                     ModuleBodyItem::Generate(_) => "generate",
@@ -361,7 +403,7 @@ fn validate_sub_for_formal(sub: &ModuleDecl) -> Result<(), CompileError> {
                 };
                 return Err(CompileError::general(
                     &format!(
-                        "hierarchical formal v1: sub-module `{}` contains a {} — only `let` bindings + a single `comb` block are supported in this slice (PR-hf2 extends to regs + seq)",
+                        "hierarchical formal v1: sub-module `{}` contains a {} — supported: `let` bindings, `comb` blocks, `reg` decls, `seq` blocks. Other constructs land in follow-up PRs.",
                         sub.name.name, kind
                     ),
                     bi.span(),
@@ -370,6 +412,123 @@ fn validate_sub_for_formal(sub: &ModuleDecl) -> Result<(), CompileError> {
         }
     }
     Ok(())
+}
+
+/// Substitute the reset clause on a RegDecl. The signal ident in
+/// `reset <sig> => <val>` is a sub port → resolve via port_map.
+fn subst_reg_reset_for_formal(
+    reset: &RegReset,
+    port_map: &std::collections::HashMap<String, Expr>,
+    locals: &std::collections::HashSet<String>,
+    prefix: &str,
+) -> RegReset {
+    match reset {
+        RegReset::None => RegReset::None,
+        RegReset::Inherit(sig, val) => {
+            let new_sig = resolve_port_or_prefix(sig, port_map, locals, prefix);
+            let new_val = subst_expr_for_formal(val, port_map, locals, prefix);
+            RegReset::Inherit(new_sig, new_val)
+        }
+        RegReset::Explicit(sig, kind, lvl, val) => {
+            let new_sig = resolve_port_or_prefix(sig, port_map, locals, prefix);
+            let new_val = subst_expr_for_formal(val, port_map, locals, prefix);
+            RegReset::Explicit(new_sig, *kind, *lvl, new_val)
+        }
+    }
+}
+
+/// Resolve an Ident that names a sub signal (port or local). If it's a
+/// port, pull the parent-side expression from port_map and require it
+/// to be a simple Ident (v1 constraint — same as port-driving lets).
+/// If it's a local, prefix.
+fn resolve_port_or_prefix(
+    id: &Ident,
+    port_map: &std::collections::HashMap<String, Expr>,
+    locals: &std::collections::HashSet<String>,
+    prefix: &str,
+) -> Ident {
+    if let Some(expr) = port_map.get(&id.name) {
+        if let ExprKind::Ident(parent_name) = &expr.kind {
+            return Ident::new(parent_name.clone(), id.span);
+        }
+    }
+    if locals.contains(&id.name) {
+        return Ident::new(format!("{prefix}{}", id.name), id.span);
+    }
+    id.clone()
+}
+
+fn resolve_port_ident_for_formal(
+    id: &Ident,
+    port_map: &std::collections::HashMap<String, Expr>,
+    inst_name: &str,
+) -> Result<Ident, CompileError> {
+    if let Some(expr) = port_map.get(&id.name) {
+        if let ExprKind::Ident(parent_name) = &expr.kind {
+            return Ok(Ident::new(parent_name.clone(), id.span));
+        }
+        return Err(CompileError::general(
+            &format!(
+                "hierarchical formal v1: inst `{}` port `{}` used as clock/reset must bind to a simple parent identifier",
+                inst_name, id.name
+            ),
+            id.span,
+        ));
+    }
+    // Not a port — leave as-is (could be a parent-scope clock reference
+    // if the sub-module body uses a name that coincidentally matches).
+    Ok(id.clone())
+}
+
+/// Substitute a seq-block Stmt. Mirrors the CombStmt substituter but
+/// over the Stmt variants.
+fn subst_stmt_for_formal(
+    s: &Stmt,
+    port_map: &std::collections::HashMap<String, Expr>,
+    locals: &std::collections::HashSet<String>,
+    prefix: &str,
+) -> Result<Stmt, CompileError> {
+    match s {
+        Stmt::Assign(a) => {
+            let target = subst_expr_for_formal(&a.target, port_map, locals, prefix);
+            let value = subst_expr_for_formal(&a.value, port_map, locals, prefix);
+            Ok(Stmt::Assign(Assign { target, value, span: a.span }))
+        }
+        Stmt::IfElse(ie) => {
+            let cond = subst_expr_for_formal(&ie.cond, port_map, locals, prefix);
+            let then_stmts: Vec<Stmt> = ie.then_stmts.iter()
+                .map(|s| subst_stmt_for_formal(s, port_map, locals, prefix))
+                .collect::<Result<_, _>>()?;
+            let else_stmts: Vec<Stmt> = ie.else_stmts.iter()
+                .map(|s| subst_stmt_for_formal(s, port_map, locals, prefix))
+                .collect::<Result<_, _>>()?;
+            Ok(Stmt::IfElse(IfElseOf {
+                cond,
+                then_stmts,
+                else_stmts,
+                unique: ie.unique,
+                span: ie.span,
+            }))
+        }
+        other => {
+            let sp = match other {
+                Stmt::Match(m) => m.span,
+                Stmt::Log(l) => l.span,
+                Stmt::For(f) => f.span,
+                Stmt::Init(i) => i.span,
+                Stmt::WaitUntil(_, sp) => *sp,
+                Stmt::DoUntil { span, .. } => *span,
+                _ => Span { start: 0, end: 0 },
+            };
+            Err(CompileError::general(
+                &format!(
+                    "hierarchical formal v1: unsupported seq stmt in sub-module ({:?}); only Assign and IfElse allowed in this slice",
+                    std::mem::discriminant(other),
+                ),
+                sp,
+            ))
+        }
+    }
 }
 
 /// Walk `expr` and substitute per the rules:

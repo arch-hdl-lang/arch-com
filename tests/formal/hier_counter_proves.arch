@@ -1,0 +1,41 @@
+// Hierarchical formal: top with a stateful sub-module (counter).
+// The flattening inlines the counter's reg + seq + comb into the
+// parent body with connections bound. The invariant `cnt_out <= 16`
+// should PROVE at a high enough bound.
+
+module SubCounter
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en:  in Bool;
+  port cnt_out: out UInt<8>;
+
+  reg cnt: UInt<8> reset rst => 0;
+
+  seq on clk rising
+    if en
+      if cnt < 8'd16
+        cnt <= (cnt +% 1);
+      end if
+    end if
+  end seq
+
+  comb
+    cnt_out = cnt;
+  end comb
+end module SubCounter
+
+module HierCounterTop
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port en:  in Bool;
+  port count: out UInt<8>;
+
+  inst u0: SubCounter
+    clk <- clk;
+    rst <- rst;
+    en  <- en;
+    cnt_out -> count;
+  end inst u0
+
+  assert count_bounded: count <= 8'd16;
+end module HierCounterTop
