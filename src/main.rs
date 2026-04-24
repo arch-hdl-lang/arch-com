@@ -1029,6 +1029,14 @@ fn run_check_multi(
         ms.report_error(err)
     })?;
 
+    // Optionally lift credit_channel state into AST RegDecls / LetBindings.
+    // Gated behind ARCH_LIFT_CC=1 (default off). Phase A scaffolding —
+    // see doc/plan_credit_channel_ast_lift.md.
+    let ast = elaborate::lift_credit_channel_state(ast).map_err(|errs| {
+        let err = errs.into_iter().next().unwrap();
+        ms.report_error(err)
+    })?;
+
     // Resolve
     let symbols = resolve::resolve(&ast).map_err(|errs| {
         let err = errs.into_iter().next().unwrap();

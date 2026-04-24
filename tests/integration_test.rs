@@ -3504,6 +3504,77 @@ fn test_handshake_channel_no_deprecation_warning() {
 }
 
 #[test]
+fn test_credit_channel_lift_phase_a() {
+    // PR-cc-lift Phase A scaffolding: lift pass injects RegDecl + LetBinding
+    // items per credit_channel site. Names match codegen's existing
+    // `__<port>_<ch>_credit` / `_occ` / `_head` / `_tail` / `_can_send` /
+    // `_valid` so the SynthIdent dispatch keeps working when later phases
+    // remove the codegen synthesis path.
+    let source = "
+        bus Ch
+          credit_channel data: send
+            param T:     type  = UInt<8>;
+            param DEPTH: const = 4;
+          end credit_channel data
+        end bus Ch
+
+        module Sender
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port s:   initiator Ch;
+        end module Sender
+
+        module Receiver
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port r:   target Ch;
+        end module Receiver
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = arch::elaborate::lift_credit_channel_state_force(ast)
+        .expect("lift");
+
+    // Sender side: __s_data_credit reg + __s_data_can_send let.
+    let sender = ast.items.iter().find_map(|it| match it {
+        arch::ast::Item::Module(m) if m.name.name == "Sender" => Some(m),
+        _ => None,
+    }).expect("Sender module");
+    let credit_reg = sender.body.iter().any(|b| matches!(b,
+        arch::ast::ModuleBodyItem::RegDecl(r) if r.name.name == "__s_data_credit"));
+    let can_send_let = sender.body.iter().any(|b| matches!(b,
+        arch::ast::ModuleBodyItem::LetBinding(l) if l.name.name == "__s_data_can_send"));
+    assert!(credit_reg, "expected __s_data_credit reg in Sender body, got: {:?}",
+            sender.body.iter().map(|b| body_item_name(b)).collect::<Vec<_>>());
+    assert!(can_send_let, "expected __s_data_can_send let in Sender body");
+
+    // Receiver side: __r_data_occ + __r_data_head + __r_data_tail regs +
+    // __r_data_valid let.
+    let receiver = ast.items.iter().find_map(|it| match it {
+        arch::ast::Item::Module(m) if m.name.name == "Receiver" => Some(m),
+        _ => None,
+    }).expect("Receiver module");
+    for expected in &["__r_data_occ", "__r_data_head", "__r_data_tail"] {
+        assert!(receiver.body.iter().any(|b| matches!(b,
+            arch::ast::ModuleBodyItem::RegDecl(r) if r.name.name == *expected)),
+            "expected {expected} reg in Receiver body");
+    }
+    assert!(receiver.body.iter().any(|b| matches!(b,
+        arch::ast::ModuleBodyItem::LetBinding(l) if l.name.name == "__r_data_valid")),
+        "expected __r_data_valid let in Receiver body");
+}
+
+fn body_item_name(b: &arch::ast::ModuleBodyItem) -> String {
+    match b {
+        arch::ast::ModuleBodyItem::RegDecl(r) => format!("RegDecl({})", r.name.name),
+        arch::ast::ModuleBodyItem::LetBinding(l) => format!("Let({})", l.name.name),
+        arch::ast::ModuleBodyItem::WireDecl(w) => format!("WireDecl({})", w.name.name),
+        _ => "<other>".to_string(),
+    }
+}
+
+#[test]
 fn test_credit_channel_parses_as_bus_sub_construct() {
     // PR #3 scaffolding: credit_channel inside a bus parses into
     // BusDecl::credit_channels. Typecheck rejects it (not yet implemented),

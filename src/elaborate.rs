@@ -4863,3 +4863,212 @@ fn inline_lower_tlm_target(
 fn clog2_width(n: u64) -> u32 {
     if n <= 1 { 1 } else { (n - 1).ilog2() + 1 }
 }
+
+// ── credit_channel state lift (PR-cc-lift Phase A) ────────────────────────────
+//
+// See doc/plan_credit_channel_ast_lift.md for the full design + phasing.
+//
+// **Phase A only** — this pass identifies credit_channel sites and
+// constructs the would-be lifted AST items, but is gated behind the
+// `ARCH_LIFT_CC=1` env var (default off). The injected items are
+// *visible* to backends only when the flag is on; with the flag off,
+// the AST is returned unchanged and existing 3-way synthesis stands.
+//
+// Phase B / C / D move codegen / sim_codegen / formal to *consume* the
+// lifted regs and skip their own synthesis. Phase E flips the default.
+//
+// What gets emitted per credit_channel site (matching codegen's exact
+// names so the SynthIdent dispatch keeps working unchanged):
+//   sender:    reg  __<port>_<ch>_credit : UInt<ceil_log2(DEPTH+1)>; reset DEPTH
+//   sender:    wire __<port>_<ch>_can_send : Bool                  (= credit != 0)
+//   receiver:  reg  __<port>_<ch>_occ    : UInt<ceil_log2(DEPTH+1)>; reset 0
+//   receiver:  reg  __<port>_<ch>_head   : UInt<ceil_log2(DEPTH)>; reset 0  [DEPTH>1]
+//   receiver:  reg  __<port>_<ch>_tail   : UInt<ceil_log2(DEPTH)>; reset 0  [DEPTH>1]
+//   receiver:  wire __<port>_<ch>_valid  : Bool                    (= occ != 0)
+//
+// Transitions / FIFO buffer / credit-return wiring come in Phase B
+// alongside the codegen update — touching either in isolation would
+// either double-emit or leave unconnected drivers.
+
+pub fn lift_credit_channel_state(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
+    if std::env::var("ARCH_LIFT_CC").ok().as_deref() != Some("1") {
+        return Ok(ast);
+    }
+    lift_credit_channel_state_impl(ast)
+}
+
+/// Internal entry point for unit tests — runs the lift unconditionally,
+/// bypassing the `ARCH_LIFT_CC` env-var gate.
+pub fn lift_credit_channel_state_force(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
+    lift_credit_channel_state_impl(ast)
+}
+
+fn lift_credit_channel_state_impl(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
+    use std::collections::HashMap;
+    let mut bus_ccs: HashMap<String, Vec<CreditChannelMeta>> = HashMap::new();
+    for item in &ast.items {
+        match item {
+            Item::Bus(b) => {
+                if !b.credit_channels.is_empty() {
+                    bus_ccs.insert(b.name.name.clone(), b.credit_channels.clone());
+                }
+            }
+            Item::Package(pkg) => {
+                for b in &pkg.buses {
+                    if !b.credit_channels.is_empty() {
+                        bus_ccs.insert(b.name.name.clone(), b.credit_channels.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if bus_ccs.is_empty() { return Ok(ast); }
+
+    let mut items: Vec<Item> = Vec::with_capacity(ast.items.len());
+    for item in ast.items {
+        match item {
+            Item::Module(mut m) => {
+                let mut lifted: Vec<ModuleBodyItem> = Vec::new();
+                let rst_name = m.ports.iter()
+                    .find(|p| matches!(&p.ty, TypeExpr::Reset(_, _)))
+                    .map(|p| p.name.clone());
+                for port in &m.ports {
+                    let Some(bi) = &port.bus_info else { continue; };
+                    let Some(ccs) = bus_ccs.get(&bi.bus_name.name) else { continue; };
+                    for cc in ccs {
+                        emit_lifted_cc_state(
+                            &port.name, cc, bi.perspective, rst_name.as_ref(),
+                            &mut lifted,
+                        );
+                    }
+                }
+                if !lifted.is_empty() {
+                    // Prepend so they're declared before any user code that
+                    // references them (e.g. SynthIdent in user comb blocks).
+                    let mut new_body = lifted;
+                    new_body.append(&mut m.body);
+                    m.body = new_body;
+                }
+                items.push(Item::Module(m));
+            }
+            other => items.push(other),
+        }
+    }
+    Ok(SourceFile { items })
+}
+
+fn emit_lifted_cc_state(
+    port_name: &Ident,
+    cc: &CreditChannelMeta,
+    perspective: BusPerspective,
+    rst: Option<&Ident>,
+    out: &mut Vec<ModuleBodyItem>,
+) {
+    // Resolve DEPTH (must fold to a constant — channels with parametric
+    // depth not yet supported in lift; backend will keep handling them
+    // until we extend this helper).
+    let depth = cc.params.iter()
+        .find(|p| p.name.name == "DEPTH")
+        .and_then(|p| p.default.as_ref())
+        .and_then(|e| match &e.kind {
+            ExprKind::Literal(LitKind::Dec(v))
+            | ExprKind::Literal(LitKind::Hex(v))
+            | ExprKind::Literal(LitKind::Bin(v)) => Some(*v),
+            ExprKind::Literal(LitKind::Sized(_, v)) => Some(*v),
+            _ => None,
+        });
+    let Some(depth) = depth else { return; };
+    if depth == 0 { return; }
+    let is_sender = matches!(
+        (cc.role_dir, perspective),
+        (Direction::Out, BusPerspective::Initiator)
+            | (Direction::In, BusPerspective::Target)
+    );
+    let port = &port_name.name;
+    let ch = &cc.name.name;
+    let span = cc.span;
+
+    let cnt_w = clog2_width_n(depth + 1).max(1);
+    let ptr_w = clog2_width_n(depth);
+
+    let mk_uint = |w: u32| TypeExpr::UInt(Box::new(
+        Expr::new(ExprKind::Literal(LitKind::Dec(w as u64)), span)
+    ));
+    let mk_lit = |w: u32, v: u64| Expr::new(ExprKind::Literal(LitKind::Sized(w, v)), span);
+
+    let reset_clause = |val: Expr| -> RegReset {
+        match rst {
+            Some(r) => RegReset::Inherit(r.clone(), val),
+            None => RegReset::None,
+        }
+    };
+
+    if is_sender {
+        let credit = format!("__{port}_{ch}_credit");
+        out.push(ModuleBodyItem::RegDecl(RegDecl {
+            name: Ident::new(credit.clone(), span),
+            ty: mk_uint(cnt_w),
+            init: None,
+            reset: reset_clause(mk_lit(cnt_w, depth)),
+            guard: None,
+            span,
+        }));
+        // can_send = (credit != 0). We emit as a let-binding (combinational)
+        // so backends that already track let-bindings for SynthIdent dispatch
+        // pick it up uniformly.
+        let credit_ref = Expr::new(ExprKind::Ident(credit.clone()), span);
+        let zero = mk_lit(cnt_w, 0);
+        let can_send_val = Expr::new(
+            ExprKind::Binary(BinOp::Neq, Box::new(credit_ref), Box::new(zero)),
+            span,
+        );
+        out.push(ModuleBodyItem::LetBinding(LetBinding {
+            name: Ident::new(format!("__{port}_{ch}_can_send"), span),
+            ty: Some(TypeExpr::Bool),
+            value: can_send_val,
+            span,
+            destructure_fields: Vec::new(),
+        }));
+    } else {
+        let occ = format!("__{port}_{ch}_occ");
+        out.push(ModuleBodyItem::RegDecl(RegDecl {
+            name: Ident::new(occ.clone(), span),
+            ty: mk_uint(cnt_w),
+            init: None,
+            reset: reset_clause(mk_lit(cnt_w, 0)),
+            guard: None,
+            span,
+        }));
+        if ptr_w > 0 {
+            for which in ["head", "tail"] {
+                out.push(ModuleBodyItem::RegDecl(RegDecl {
+                    name: Ident::new(format!("__{port}_{ch}_{which}"), span),
+                    ty: mk_uint(ptr_w),
+                    init: None,
+                    reset: reset_clause(mk_lit(ptr_w, 0)),
+                    guard: None,
+                    span,
+                }));
+            }
+        }
+        // valid = (occ != 0)
+        let occ_ref = Expr::new(ExprKind::Ident(occ.clone()), span);
+        let zero = mk_lit(cnt_w, 0);
+        let valid_val = Expr::new(
+            ExprKind::Binary(BinOp::Neq, Box::new(occ_ref), Box::new(zero)),
+            span,
+        );
+        out.push(ModuleBodyItem::LetBinding(LetBinding {
+            name: Ident::new(format!("__{port}_{ch}_valid"), span),
+            ty: Some(TypeExpr::Bool),
+            value: valid_val,
+            span,
+            destructure_fields: Vec::new(),
+        }));
+    }
+}
+
+fn clog2_width_n(n: u64) -> u32 {
+    if n <= 1 { 0 } else { (n - 1).ilog2() + 1 }
+}
