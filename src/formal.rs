@@ -77,8 +77,11 @@ pub fn run(
     //    without any sub-inst, this is a no-op clone. See
     //    doc/plan_hierarchical_formal.md for the design.
     let flat_module: ModuleDecl;
+    let mut carried_credit_sites: Vec<CarriedCreditSite> = Vec::new();
     let encode_module: &ModuleDecl = if module.body.iter().any(|b| matches!(b, ModuleBodyItem::Inst(_))) {
-        flat_module = flatten_for_formal(ast, module)?;
+        let out = flatten_for_formal(ast, module, symbols)?;
+        flat_module = out.module;
+        carried_credit_sites = out.carried_sites;
         &flat_module
     } else {
         module
@@ -86,6 +89,7 @@ pub fn run(
 
     // 3. Build encoder state
     let mut ctx = FormalCtx::new(encode_module, symbols);
+    ctx.carried_credit_sites = carried_credit_sites;
     ctx.preprocess()?;
 
     // 4. Emit SMT-LIB2 (header + declarations + transitions + comb)
@@ -132,14 +136,39 @@ pub fn run(
 //   - Sub's ports themselves are NOT carried into the flat module (they
 //     dissolve into connection bindings).
 
+/// One credit_channel site that flatten_for_formal carried across an
+/// inst boundary into the flat module. The `port_name` is the parent-
+/// side connection identifier (e.g. `chwire` from `s <- chwire`); it
+/// becomes the prefix in lifted-state names like `__chwire_<ch>_credit`.
+/// FormalCtx consumes these alongside its own bus-port walk.
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // consumed in next item-5 sub-step (registration)
+struct CarriedCreditSite {
+    port_name: String,
+    meta: CreditChannelMeta,
+    is_sender: bool,
+}
+
+/// Return type of `flatten_for_formal`: the flattened module plus
+/// credit_channel sites carried in from sub-instances. Sites whose
+/// `port_name` collides (one sender + one receiver from two insts
+/// sharing the same parent connection name) compose into the
+/// occupancy invariant.
+struct FlattenOutput {
+    module: ModuleDecl,
+    carried_sites: Vec<CarriedCreditSite>,
+}
+
 fn flatten_for_formal(
     ast: &SourceFile,
     top: &ModuleDecl,
-) -> Result<ModuleDecl, CompileError> {
+    symbols: &SymbolTable,
+) -> Result<FlattenOutput, CompileError> {
     use std::collections::HashMap;
 
     let mut flat = top.clone();
     let mut new_body: Vec<ModuleBodyItem> = Vec::with_capacity(flat.body.len());
+    let mut carried_sites: Vec<CarriedCreditSite> = Vec::new();
 
     for item in std::mem::take(&mut flat.body) {
         match item {
@@ -164,6 +193,54 @@ fn flatten_for_formal(
                 let mut port_map: HashMap<String, Expr> = HashMap::new();
                 for c in &inst.connections {
                     port_map.insert(c.port_name.name.clone(), c.signal.clone());
+                }
+
+                // PR-hf4 item 5: collect credit_channel sites carried in
+                // through bus ports + build a sub-port → parent-name remap
+                // for SynthIdent rewriting. Bus port connections must use
+                // a simple Ident as the parent-side name in v1; complex
+                // expressions are rejected because the synthesized state
+                // names need a single string prefix.
+                let mut bus_remap: HashMap<String, String> = HashMap::new();
+                for sp in &sub.ports {
+                    let Some(bi) = &sp.bus_info else { continue; };
+                    let Some(parent_expr) = port_map.get(&sp.name.name) else { continue; };
+                    let parent_name = match &parent_expr.kind {
+                        ExprKind::Ident(n) => n.clone(),
+                        _ => {
+                            return Err(CompileError::general(
+                                &format!(
+                                    "hierarchical formal v1: inst `{}.{}` bus-port connection must be a simple identifier (got a complex expression); refactor the parent connection to a named wire",
+                                    inst.name.name, sp.name.name,
+                                ),
+                                inst.span,
+                            ));
+                        }
+                    };
+                    bus_remap.insert(sp.name.name.clone(), parent_name.clone());
+                    let Some((crate::resolve::Symbol::Bus(bus_info), _)) =
+                        symbols.globals.get(&bi.bus_name.name)
+                    else {
+                        return Err(CompileError::general(
+                            &format!(
+                                "hierarchical formal: bus `{}` referenced by inst `{}.{}` not found in symbol table",
+                                bi.bus_name.name, inst.name.name, sp.name.name,
+                            ),
+                            sp.span,
+                        ));
+                    };
+                    for cc in &bus_info.credit_channels {
+                        let is_sender = matches!(
+                            (cc.role_dir, bi.perspective),
+                            (Direction::Out, crate::ast::BusPerspective::Initiator)
+                                | (Direction::In, crate::ast::BusPerspective::Target)
+                        );
+                        carried_sites.push(CarriedCreditSite {
+                            port_name: parent_name.clone(),
+                            meta: cc.clone(),
+                            is_sender,
+                        });
+                    }
                 }
 
                 // Enforce: every sub port must have a connection.
@@ -202,6 +279,7 @@ fn flatten_for_formal(
                 }
 
                 let prefix = format!("{}_", inst.name.name);
+                let new_body_start = new_body.len();
                 for bi in &sub.body {
                     match bi {
                         ModuleBodyItem::LetBinding(lb) => {
@@ -303,13 +381,169 @@ fn flatten_for_formal(
                         _ => unreachable!("validate_sub_for_formal rejects other items"),
                     }
                 }
+
+                // Rewrite SynthIdent strings in items appended for this
+                // inst, replacing each sub-bus-port-name prefix with the
+                // parent-side connection name. This carries credit_channel
+                // synthesized references (e.g. `s_data_send_valid`,
+                // `__s_data_credit`) across the inst boundary so the
+                // flat module's lifted state and SynthIdent lookups all
+                // key on the parent name (`chwire_data_*`).
+                if !bus_remap.is_empty() {
+                    for item in &mut new_body[new_body_start..] {
+                        rewrite_synth_idents_in_body_item(item, &bus_remap);
+                    }
+                }
             }
             other => new_body.push(other),
         }
     }
 
     flat.body = new_body;
-    Ok(flat)
+    Ok(FlattenOutput { module: flat, carried_sites })
+}
+
+/// Walk a ModuleBodyItem and rewrite SynthIdent prefixes per `remap`
+/// (sub-bus-port-name → parent-side-connection-name). Used by
+/// `flatten_for_formal` to carry credit_channel synthesized references
+/// across inst boundaries — e.g. `s_data_send_valid` (from sub-port `s`)
+/// becomes `chwire_data_send_valid` (parent connection `chwire`).
+fn rewrite_synth_idents_in_body_item(
+    item: &mut ModuleBodyItem,
+    remap: &std::collections::HashMap<String, String>,
+) {
+    match item {
+        ModuleBodyItem::LetBinding(lb) => rewrite_synth_idents_in_expr(&mut lb.value, remap),
+        ModuleBodyItem::CombBlock(cb) => {
+            for s in &mut cb.stmts { rewrite_synth_idents_in_comb_stmt(s, remap); }
+        }
+        ModuleBodyItem::RegDecl(rd) => {
+            if let Some(init) = &mut rd.init { rewrite_synth_idents_in_expr(init, remap); }
+            match &mut rd.reset {
+                RegReset::Inherit(_, val) | RegReset::Explicit(_, _, _, val) => {
+                    rewrite_synth_idents_in_expr(val, remap);
+                }
+                RegReset::None => {}
+            }
+        }
+        ModuleBodyItem::RegBlock(rb) => {
+            for s in &mut rb.stmts { rewrite_synth_idents_in_stmt(s, remap); }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_synth_idents_in_comb_stmt(
+    s: &mut CombStmt,
+    remap: &std::collections::HashMap<String, String>,
+) {
+    match s {
+        CombStmt::Assign(a) => {
+            rewrite_synth_idents_in_expr(&mut a.target, remap);
+            rewrite_synth_idents_in_expr(&mut a.value, remap);
+        }
+        CombStmt::IfElse(ie) => {
+            rewrite_synth_idents_in_expr(&mut ie.cond, remap);
+            for st in &mut ie.then_stmts { rewrite_synth_idents_in_comb_stmt(st, remap); }
+            for st in &mut ie.else_stmts { rewrite_synth_idents_in_comb_stmt(st, remap); }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_synth_idents_in_stmt(
+    s: &mut Stmt,
+    remap: &std::collections::HashMap<String, String>,
+) {
+    match s {
+        Stmt::Assign(a) => {
+            rewrite_synth_idents_in_expr(&mut a.target, remap);
+            rewrite_synth_idents_in_expr(&mut a.value, remap);
+        }
+        Stmt::IfElse(ie) => {
+            rewrite_synth_idents_in_expr(&mut ie.cond, remap);
+            for st in &mut ie.then_stmts { rewrite_synth_idents_in_stmt(st, remap); }
+            for st in &mut ie.else_stmts { rewrite_synth_idents_in_stmt(st, remap); }
+        }
+        _ => {}
+    }
+}
+
+/// Try-rewrite the prefix of a SynthIdent's name string. Matches both
+/// `<old>_<rest>` and `__<old>_<rest>` (the latter is the codegen-style
+/// double-underscore-prefixed state names like `__s_data_credit`).
+fn try_remap_synth_name(
+    name: &str,
+    remap: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let (under, rest) = if let Some(r) = name.strip_prefix("__") {
+        ("__", r)
+    } else {
+        ("", name)
+    };
+    for (old, new) in remap {
+        let prefix = format!("{old}_");
+        if let Some(suffix) = rest.strip_prefix(&prefix) {
+            return Some(format!("{under}{new}_{suffix}"));
+        }
+    }
+    None
+}
+
+fn rewrite_synth_idents_in_expr(
+    expr: &mut Expr,
+    remap: &std::collections::HashMap<String, String>,
+) {
+    use ExprKind::*;
+    match &mut expr.kind {
+        SynthIdent(name, _) => {
+            if let Some(new_name) = try_remap_synth_name(name, remap) {
+                *name = new_name;
+            }
+        }
+        Binary(_, l, r) => {
+            rewrite_synth_idents_in_expr(l, remap);
+            rewrite_synth_idents_in_expr(r, remap);
+        }
+        Unary(_, e) | Cast(e, _) | Clog2(e) | Onehot(e) | Signed(e) | Unsigned(e) => {
+            rewrite_synth_idents_in_expr(e, remap);
+        }
+        Index(b, i) => {
+            rewrite_synth_idents_in_expr(b, remap);
+            rewrite_synth_idents_in_expr(i, remap);
+        }
+        BitSlice(b, hi, lo) => {
+            rewrite_synth_idents_in_expr(b, remap);
+            rewrite_synth_idents_in_expr(hi, remap);
+            rewrite_synth_idents_in_expr(lo, remap);
+        }
+        PartSelect(b, s, w, _) => {
+            rewrite_synth_idents_in_expr(b, remap);
+            rewrite_synth_idents_in_expr(s, remap);
+            rewrite_synth_idents_in_expr(w, remap);
+        }
+        Ternary(c, t, f) => {
+            rewrite_synth_idents_in_expr(c, remap);
+            rewrite_synth_idents_in_expr(t, remap);
+            rewrite_synth_idents_in_expr(f, remap);
+        }
+        Concat(xs) => {
+            for x in xs { rewrite_synth_idents_in_expr(x, remap); }
+        }
+        Repeat(n, x) => {
+            rewrite_synth_idents_in_expr(n, remap);
+            rewrite_synth_idents_in_expr(x, remap);
+        }
+        FieldAccess(b, _) => rewrite_synth_idents_in_expr(b, remap),
+        MethodCall(recv, _, args) => {
+            rewrite_synth_idents_in_expr(recv, remap);
+            for a in args { rewrite_synth_idents_in_expr(a, remap); }
+        }
+        FunctionCall(_, xs) => {
+            for x in xs { rewrite_synth_idents_in_expr(x, remap); }
+        }
+        _ => {}
+    }
 }
 
 fn subst_comb_stmt_for_formal(
@@ -367,6 +601,12 @@ fn lookup_module<'a>(ast: &'a SourceFile, name: &str) -> Option<&'a ModuleDecl> 
 
 fn validate_sub_for_formal(sub: &ModuleDecl) -> Result<(), CompileError> {
     for p in &sub.ports {
+        // Bus ports are accepted when carrying credit_channels (PR-hf4
+        // item 5). Other bus contents (handshake / tlm_method / plain
+        // signals) still need their own modelling and aren't supported
+        // in this slice — `flatten_for_formal` checks the bus's content
+        // when it processes the inst.
+        if p.bus_info.is_some() { continue; }
         // Scalar ports only.
         match &p.ty {
             TypeExpr::UInt(_) | TypeExpr::SInt(_) | TypeExpr::Bool
@@ -718,6 +958,11 @@ struct FormalCtx<'a> {
     /// follow-up items in PR-hf4 (state registration, transitions,
     /// SynthIdent resolution).
     credit_sites: Vec<CreditChannelSite>,
+    /// Sites carried in by `flatten_for_formal` from sub-instances'
+    /// bus ports (PR-hf4 item 5). Pre-loaded by `run()` before
+    /// `preprocess()` runs; merged into `credit_sites` and registered
+    /// against the parent-side connection name.
+    carried_credit_sites: Vec<CarriedCreditSite>,
 }
 
 #[derive(Debug, Clone)]
@@ -770,6 +1015,7 @@ impl<'a> FormalCtx<'a> {
             properties: Vec::new(),
             comb_order: Vec::new(),
             credit_sites: Vec::new(),
+            carried_credit_sites: Vec::new(),
         }
     }
 
@@ -783,6 +1029,22 @@ impl<'a> FormalCtx<'a> {
     /// commit; subsequent items wire it into BV declarations, reset /
     /// transitions, and SynthIdent resolution.
     fn collect_credit_channel_sites(&mut self) {
+        // Carried sites first — flatten_for_formal already keyed them on
+        // the parent-side connection name, which is what the lifted
+        // state should use as the prefix.
+        let carried = std::mem::take(&mut self.carried_credit_sites);
+        for cs in carried {
+            let depth = cs.meta.params.iter()
+                .find(|pp| pp.name.name == "DEPTH")
+                .and_then(|pp| pp.default.as_ref())
+                .and_then(|e| fold_const_expr(e, &self.params));
+            self.credit_sites.push(CreditChannelSite {
+                port_name: cs.port_name,
+                meta: cs.meta,
+                is_sender: cs.is_sender,
+                depth,
+            });
+        }
         for p in &self.module.ports {
             let Some(bi) = &p.bus_info else { continue; };
             let Some((crate::resolve::Symbol::Bus(info), _)) =
@@ -826,6 +1088,22 @@ impl<'a> FormalCtx<'a> {
         // Clone into a local vec so we don't hold an immutable borrow of
         // self while mutating sigs/regs/inputs/outputs below.
         let sites = self.credit_sites.clone();
+        // Detect cross-module channels: both sender and receiver sites
+        // share the same (port_name, channel_name). For those, the
+        // handshake signals (send_valid, credit_return) become internal
+        // wires shared between the two sides instead of separate
+        // input/output ports on the flat module.
+        let mut both_sides: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+        let mut have_sender: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+        let mut have_receiver: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+        for s in &sites {
+            let key = (s.port_name.clone(), s.meta.name.name.clone());
+            if s.is_sender { have_sender.insert(key); }
+            else { have_receiver.insert(key); }
+        }
+        for k in have_sender.intersection(&have_receiver) {
+            both_sides.insert(k.clone());
+        }
         for site in &sites {
             let Some(depth) = site.depth else {
                 return Err(CompileError::general(
@@ -859,6 +1137,30 @@ impl<'a> FormalCtx<'a> {
             let ptr_width = clog2(depth);
             let send_valid = format!("{port}_{ch}_send_valid");
             let credit_ret = format!("{port}_{ch}_credit_return");
+            let merged = both_sides.contains(&(port.clone(), ch.clone()));
+            // Helper: register a 1-bit handshake signal. For merged
+            // channels, register once as a Wire (idempotent on the
+            // second site). For unmerged channels, register as the
+            // requested I/O direction.
+            let register_handshake = |this: &mut Self, name: String, kind_if_unmerged: SignalKind| {
+                if merged {
+                    if !this.sigs.contains_key(&name) {
+                        this.sigs.insert(name.clone(), SignalInfo {
+                            width: 1, signed: false, kind: SignalKind::Wire,
+                        });
+                        this.wires.push(name);
+                    }
+                } else {
+                    this.sigs.insert(name.clone(), SignalInfo {
+                        width: 1, signed: false, kind: kind_if_unmerged.clone(),
+                    });
+                    match kind_if_unmerged {
+                        SignalKind::Input => this.inputs.push(name),
+                        SignalKind::Output => this.outputs.push(name),
+                        _ => {}
+                    }
+                }
+            };
             if site.is_sender {
                 // Sender side: credit counter, reset to DEPTH.
                 let credit = format!("__{port}_{ch}_credit");
@@ -867,16 +1169,8 @@ impl<'a> FormalCtx<'a> {
                 });
                 self.regs.push(credit.clone());
                 self.reg_reset.insert(credit, mk_sized_lit(cnt_width, depth, site.meta.span));
-                // send_valid is driven by sender-side logic — treated as
-                // output. credit_return is received — input.
-                self.sigs.insert(send_valid.clone(), SignalInfo {
-                    width: 1, signed: false, kind: SignalKind::Output,
-                });
-                self.outputs.push(send_valid);
-                self.sigs.insert(credit_ret.clone(), SignalInfo {
-                    width: 1, signed: false, kind: SignalKind::Input,
-                });
-                self.inputs.push(credit_ret);
+                register_handshake(self, send_valid, SignalKind::Output);
+                register_handshake(self, credit_ret, SignalKind::Input);
             } else {
                 // Receiver side: occupancy reg, reset to 0.
                 let occ = format!("__{port}_{ch}_occ");
@@ -899,16 +1193,8 @@ impl<'a> FormalCtx<'a> {
                     self.regs.push(tail.clone());
                     self.reg_reset.insert(tail, mk_sized_lit(ptr_width, 0, site.meta.span));
                 }
-                // send_valid is received on receiver side — input.
-                // credit_return is driven back — output.
-                self.sigs.insert(send_valid.clone(), SignalInfo {
-                    width: 1, signed: false, kind: SignalKind::Input,
-                });
-                self.inputs.push(send_valid);
-                self.sigs.insert(credit_ret.clone(), SignalInfo {
-                    width: 1, signed: false, kind: SignalKind::Output,
-                });
-                self.outputs.push(credit_ret);
+                register_handshake(self, send_valid, SignalKind::Input);
+                register_handshake(self, credit_ret, SignalKind::Output);
             }
         }
         Ok(())
