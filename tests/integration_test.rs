@@ -1731,6 +1731,62 @@ end linklist SchedList
 }
 
 #[test]
+fn test_linklist_multi_head_sim_shape() {
+    // Phase C: sim_codegen mirror of multi-head linklist. Head/tail
+    // become per-head arrays; per-head length counter drives empty
+    // detection; `_ctrl_<op>_head_idx` latches req_head_idx at accept.
+    let source = r#"
+linklist MhQ
+  param DEPTH: const = 8;
+  param NUM_HEADS: const = 2;
+  param DATA: type = UInt<8>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  kind singly;
+  track tail: true;
+  op insert_tail
+    latency: 2;
+    port req_valid:    in Bool;
+    port req_ready:    out Bool;
+    port req_head_idx: in UInt<1>;
+    port req_data:     in UInt<8>;
+    port resp_valid:   out Bool;
+    port resp_handle:  out UInt<3>;
+  end op insert_tail
+  op delete_head
+    latency: 2;
+    port req_valid:    in Bool;
+    port req_ready:    out Bool;
+    port req_head_idx: in UInt<1>;
+    port resp_valid:   out Bool;
+    port resp_data:    out UInt<8>;
+  end op delete_head
+end linklist MhQ
+"#;
+    let sim = compile_to_sim_h(source, false);
+    assert!(sim.contains("uint8_t _head_r[2]"), "missing _head_r[2]:\n{sim}");
+    assert!(sim.contains("uint8_t _tail_r[2]"), "missing _tail_r[2]");
+    assert!(sim.contains("uint8_t _length_r[2]"), "missing _length_r[2]");
+    assert!(sim.contains("_ctrl_insert_tail_head_idx"),
+            "missing insert_tail head_idx latch");
+    assert!(sim.contains("_ctrl_delete_head_head_idx"),
+            "missing delete_head head_idx latch");
+    // Delete ready gated by per-head length
+    assert!(sim.contains("_length_r[delete_head_req_head_idx] != 0"),
+            "missing per-head delete ready gate");
+    // Busy-cycle head/tail access uses the latched idx
+    assert!(sim.contains("_head_r[_ctrl_delete_head_head_idx]"),
+            "missing busy-cycle head ref");
+    assert!(sim.contains("_tail_r[_ctrl_insert_tail_head_idx]"),
+            "missing busy-cycle tail ref");
+    // Per-head length updates
+    assert!(sim.contains("_length_r[_ctrl_insert_tail_head_idx]++"),
+            "missing length inc in insert");
+    assert!(sim.contains("_length_r[_ctrl_delete_head_head_idx]--"),
+            "missing length dec in delete");
+}
+
+#[test]
 fn test_linklist_multi_head_compiles() {
     // Phase B: multi-head linklist with NUM_HEADS > 1 emits per-head
     // head/tail/length arrays and latches req_head_idx per op.

@@ -22,6 +22,28 @@ impl<'a> SimCodegen<'a> {
         let handle_mask = (1u64 << ((depth as f64).log2().ceil() as u32)) - 1;
         let cnt_mask    = (1u64 << (((depth + 1) as f64).log2().ceil() as u32)) - 1;
 
+        // Multi-head linklist support — mirror of the SV codegen in
+        // src/codegen.rs::emit_linklist. When NUM_HEADS > 1, head/tail
+        // registers become per-head arrays, delete/insert ops gate on
+        // per-head length, and each op latches `req_head_idx` at accept
+        // for re-use at the busy cycle. Shared node pool + free list
+        // stay exactly as today.
+        let num_heads = crate::typecheck::linklist_num_heads(l) as usize;
+        let multi_head = num_heads > 1;
+        // Head-addressed ops need per-head indexing + latch.
+        let is_head_addr = |on: &str| matches!(
+            on,
+            "insert_head" | "insert_tail" | "insert_after" | "delete_head" | "delete"
+        );
+        // C++ expressions for head_r / tail_r access given either the
+        // live port (`<op>_req_head_idx`) or the latched reg.
+        let head_r_at = |idx_expr: &str| -> String {
+            if multi_head { format!("_head_r[{idx_expr}]") } else { "_head_r".to_string() }
+        };
+        let tail_r_at = |idx_expr: &str| -> String {
+            if multi_head { format!("_tail_r[{idx_expr}]") } else { "_tail_r".to_string() }
+        };
+
         let data_cpp: String = l.params.iter()
             .find(|p| p.name.name == "DATA")
             .map(|p| match &p.kind {
@@ -70,8 +92,14 @@ impl<'a> SimCodegen<'a> {
         }
         ctor_inits.extend([
             "_clk_prev(0)".into(), "_fl_rdp(0)".into(), "_fl_wrp(0)".into(),
-            format!("_fl_cnt({depth})"), "_head_r(0)".into(), "_tail_r(0)".into(),
+            format!("_fl_cnt({depth})"),
         ]);
+        // Scalar head/tail in single-head mode; arrays are zeroed in the
+        // constructor body for multi-head mode.
+        if !multi_head {
+            ctor_inits.push("_head_r(0)".into());
+            ctor_inits.push("_tail_r(0)".into());
+        }
         for op in &l.ops {
             let on = &op.name.name;
             if op.latency > 1 { ctor_inits.push(format!("_ctrl_{on}_busy(0)")); }
@@ -90,12 +118,20 @@ impl<'a> SimCodegen<'a> {
             if on == "insert_after" {
                 ctor_inits.push(format!("_ctrl_{on}_after_handle(0)"));
             }
+            if multi_head && is_head_addr(on) && op.latency > 1 {
+                ctor_inits.push(format!("_ctrl_{on}_head_idx(0)"));
+            }
         }
         h.push_str(&format!("  {class}() : {} {{\n", ctor_inits.join(", ")));
         h.push_str(&format!("    for (int _i = 0; _i < {depth}; _i++) _fl_mem[_i] = (uint8_t)_i;\n"));
         h.push_str("    memset(_data_mem, 0, sizeof(_data_mem));\n");
         h.push_str("    memset(_next_mem, 0, sizeof(_next_mem));\n");
         if has_doubly { h.push_str("    memset(_prev_mem, 0, sizeof(_prev_mem));\n"); }
+        if multi_head {
+            h.push_str("    memset(_head_r, 0, sizeof(_head_r));\n");
+            h.push_str("    memset(_tail_r, 0, sizeof(_tail_r));\n");
+            h.push_str("    memset(_length_r, 0, sizeof(_length_r));\n");
+        }
         h.push_str("  }\n");
         h.push_str("  void eval();\n  void eval_comb();\n  void eval_posedge();\n  void final() { trace_close(); }\n\nprivate:\n");
         h.push_str("  uint8_t _clk_prev;\n");
@@ -103,7 +139,16 @@ impl<'a> SimCodegen<'a> {
         h.push_str(&format!("  {data_cpp} _data_mem[{depth}];\n"));
         h.push_str(&format!("  uint8_t _next_mem[{depth}];\n"));
         if has_doubly { h.push_str(&format!("  uint8_t _prev_mem[{depth}];\n")); }
-        h.push_str("  uint8_t _fl_rdp, _fl_wrp;\n  uint8_t _fl_cnt;\n  uint8_t _head_r, _tail_r;\n");
+        h.push_str("  uint8_t _fl_rdp, _fl_wrp;\n  uint8_t _fl_cnt;\n");
+        if multi_head {
+            h.push_str(&format!("  uint8_t _head_r[{num_heads}];\n"));
+            h.push_str(&format!("  uint8_t _tail_r[{num_heads}];\n"));
+            // Internal per-head occupancy for emptiness detection (same
+            // semantics as the SV `_length_r [NUM_HEADS]` in codegen.rs).
+            h.push_str(&format!("  uint8_t _length_r[{num_heads}];\n"));
+        } else {
+            h.push_str("  uint8_t _head_r, _tail_r;\n");
+        }
         for op in &l.ops {
             let on = &op.name.name;
             if op.latency > 1 { h.push_str(&format!("  uint8_t _ctrl_{on}_busy;\n")); }
@@ -122,6 +167,9 @@ impl<'a> SimCodegen<'a> {
             if on == "insert_after" {
                 h.push_str(&format!("  uint8_t _ctrl_{on}_after_handle;\n"));
             }
+            if multi_head && is_head_addr(on) && op.latency > 1 {
+                h.push_str(&format!("  uint8_t _ctrl_{on}_head_idx;\n"));
+            }
         }
 
         // ── Implementation ────────────────────────────────────────────────────
@@ -139,9 +187,20 @@ impl<'a> SimCodegen<'a> {
         ));
 
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
-        cpp.push_str(&format!("  empty  = (_fl_cnt == {depth});\n"));
-        cpp.push_str("  full   = (_fl_cnt == 0);\n");
-        cpp.push_str(&format!("  length = (uint8_t)(({depth} - _fl_cnt) & {cnt_mask:#x});\n"));
+        // Only emit status assigns for status ports the linklist actually
+        // declares. Previously the emitter always wrote `empty = ...;
+        // full = ...; length = ...;` and relied on the linklist to have
+        // those ports — fragile. Gate per-port.
+        let has_status = |n: &str| l.ports.iter().any(|p| p.name.name == n);
+        if has_status("empty") {
+            cpp.push_str(&format!("  empty  = (_fl_cnt == {depth});\n"));
+        }
+        if has_status("full") {
+            cpp.push_str("  full   = (_fl_cnt == 0);\n");
+        }
+        if has_status("length") {
+            cpp.push_str(&format!("  length = (uint8_t)(({depth} - _fl_cnt) & {cnt_mask:#x});\n"));
+        }
         for op in &l.ops {
             let on = &op.name.name;
             // req_ready — only if the op declares it
@@ -151,6 +210,8 @@ impl<'a> SimCodegen<'a> {
                     "free"   => format!("(_fl_cnt != {depth})"),
                     "insert_tail" | "insert_head" | "insert_after" =>
                         format!("(!_ctrl_{on}_busy && _fl_cnt != 0)"),
+                    "delete_head" | "delete" if multi_head =>
+                        format!("(!_ctrl_{on}_busy && _length_r[{on}_req_head_idx] != 0)"),
                     "delete_head" | "delete" =>
                         format!("(!_ctrl_{on}_busy && _fl_cnt != {depth})"),
                     _ => "1".into(),
@@ -172,7 +233,11 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("    for (int _i = 0; _i < {depth}; _i++) _fl_mem[_i] = (uint8_t)_i;\n"));
         cpp.push_str("    _fl_rdp = 0; _fl_wrp = 0;\n");
         cpp.push_str(&format!("    _fl_cnt = {depth};\n"));
-        cpp.push_str("    _head_r = 0; _tail_r = 0;\n");
+        if multi_head {
+            cpp.push_str(&format!("    for (int _i = 0; _i < {num_heads}; _i++) {{ _head_r[_i] = 0; _tail_r[_i] = 0; _length_r[_i] = 0; }}\n"));
+        } else {
+            cpp.push_str("    _head_r = 0; _tail_r = 0;\n");
+        }
         for op in &l.ops {
             let on = &op.name.name;
             if op.latency > 1 { cpp.push_str(&format!("    _ctrl_{on}_busy = 0;\n")); }
@@ -190,6 +255,16 @@ impl<'a> SimCodegen<'a> {
         for op in &l.ops {
             let on = &op.name.name;
             cpp.push_str(&format!("    // ── {on}\n"));
+            // Phase-B / Phase-C scope: multi-head supports insert_tail +
+            // delete_head only. Other head-addressed ops need the same
+            // per-head plumbing wired through their pointer-patch paths;
+            // stage for a follow-up.
+            if multi_head && matches!(on.as_str(), "insert_head" | "insert_after" | "delete") {
+                cpp.push_str(&format!(
+                    "    if ({on}_req_valid) {{ fprintf(stderr, \"ARCH-SIM: linklist op `{on}` is not yet implemented for multi-head (NUM_HEADS > 1)\\n\"); abort(); }}\n"
+                ));
+                continue;
+            }
             match on.as_str() {
                 "alloc" => cpp.push_str(&format!(
                     "    if ({on}_req_valid && _fl_cnt != 0) {{\n\
@@ -202,22 +277,35 @@ impl<'a> SimCodegen<'a> {
                      \n      _fl_mem[_fl_wrp & {handle_mask:#x}] = {on}_req_handle;\n\
                      \n      _fl_wrp = (uint8_t)((_fl_wrp + 1) & {cnt_mask:#x}); _fl_cnt++;\n    }}\n"
                 )),
-                "insert_tail" => cpp.push_str(&format!(
-                    "    if (!_ctrl_{on}_busy && {on}_req_valid && _fl_cnt != 0) {{\n\
-                     \n      uint8_t _slot = _fl_mem[_fl_rdp & {handle_mask:#x}];\n\
-                     \n      _ctrl_{on}_resp_handle = _slot; _data_mem[_slot] = {on}_req_data;\n\
-                     \n      _ctrl_{on}_was_empty = (_fl_cnt == {depth});\n\
-                     \n      _fl_rdp = (uint8_t)((_fl_rdp + 1) & {cnt_mask:#x}); _fl_cnt--; _ctrl_{on}_busy = 1;\n\
-                     \n    }} else if (_ctrl_{on}_busy) {{\n\
-                     \n      if (!_ctrl_{on}_was_empty) _next_mem[_tail_r] = _ctrl_{on}_resp_handle;\n\
-                     \n      {doubly_insert_tail}\
-                     \n      _tail_r = _ctrl_{on}_resp_handle;\n\
-                     \n      if (_ctrl_{on}_was_empty) _head_r = _ctrl_{on}_resp_handle;\n\
-                     \n      _ctrl_{on}_resp_v = 1; _ctrl_{on}_busy = 0;\n    }}\n",
-                    doubly_insert_tail = if has_doubly {
-                        format!("_prev_mem[_ctrl_{on}_resp_handle] = _tail_r;\n      ")
-                    } else { String::new() }
-                )),
+                "insert_tail" => {
+                    let head_busy = head_r_at(&format!("_ctrl_{on}_head_idx"));
+                    let tail_busy = tail_r_at(&format!("_ctrl_{on}_head_idx"));
+                    let empty_accept = if multi_head {
+                        format!("(_length_r[{on}_req_head_idx] == 0)")
+                    } else { format!("(_fl_cnt == {depth})") };
+                    let latch_idx = if multi_head {
+                        format!(" _ctrl_{on}_head_idx = {on}_req_head_idx;")
+                    } else { String::new() };
+                    let inc_len = if multi_head {
+                        format!("_length_r[_ctrl_{on}_head_idx]++; ")
+                    } else { String::new() };
+                    let doubly = if has_doubly {
+                        format!("_prev_mem[_ctrl_{on}_resp_handle] = {tail_busy};\n      ")
+                    } else { String::new() };
+                    cpp.push_str(&format!(
+                        "    if (!_ctrl_{on}_busy && {on}_req_valid && _fl_cnt != 0) {{\n\
+                         \n      uint8_t _slot = _fl_mem[_fl_rdp & {handle_mask:#x}];\n\
+                         \n      _ctrl_{on}_resp_handle = _slot; _data_mem[_slot] = {on}_req_data;\n\
+                         \n      _ctrl_{on}_was_empty = {empty_accept};{latch_idx}\n\
+                         \n      _fl_rdp = (uint8_t)((_fl_rdp + 1) & {cnt_mask:#x}); _fl_cnt--; _ctrl_{on}_busy = 1;\n\
+                         \n    }} else if (_ctrl_{on}_busy) {{\n\
+                         \n      if (!_ctrl_{on}_was_empty) _next_mem[{tail_busy}] = _ctrl_{on}_resp_handle;\n\
+                         \n      {doubly}\
+                         \n      {tail_busy} = _ctrl_{on}_resp_handle;\n\
+                         \n      if (_ctrl_{on}_was_empty) {head_busy} = _ctrl_{on}_resp_handle;\n\
+                         \n      {inc_len}_ctrl_{on}_resp_v = 1; _ctrl_{on}_busy = 0;\n    }}\n"
+                    ));
+                }
                 "insert_head" => cpp.push_str(&format!(
                     "    if (!_ctrl_{on}_busy && {on}_req_valid && _fl_cnt != 0) {{\n\
                      \n      uint8_t _slot = _fl_mem[_fl_rdp & {handle_mask:#x}];\n\
@@ -253,15 +341,35 @@ impl<'a> SimCodegen<'a> {
                         )
                     } else { String::new() }
                 )),
-                "delete_head" => cpp.push_str(&format!(
-                    "    if (!_ctrl_{on}_busy && {on}_req_valid && _fl_cnt != {depth}) {{\n\
-                     \n      _ctrl_{on}_resp_data = _data_mem[_head_r]; _ctrl_{on}_slot = _head_r; _ctrl_{on}_busy = 1;\n\
-                     \n    }} else if (_ctrl_{on}_busy) {{\n\
-                     \n      _fl_mem[_fl_wrp & {handle_mask:#x}] = _ctrl_{on}_slot;\n\
-                     \n      _fl_wrp = (uint8_t)((_fl_wrp + 1) & {cnt_mask:#x}); _fl_cnt++;\n\
-                     \n      _head_r = _next_mem[_ctrl_{on}_slot];\n\
-                     \n      _ctrl_{on}_resp_v = 1; _ctrl_{on}_busy = 0;\n    }}\n"
-                )),
+                "delete_head" => {
+                    let head_acc = head_r_at(&format!("{on}_req_head_idx"));
+                    let head_busy = head_r_at(&format!("_ctrl_{on}_head_idx"));
+                    let guard = if multi_head {
+                        format!("_length_r[{on}_req_head_idx] != 0")
+                    } else {
+                        format!("_fl_cnt != {depth}")
+                    };
+                    let latch_idx = if multi_head {
+                        format!("_ctrl_{on}_head_idx = {on}_req_head_idx; ")
+                    } else { String::new() };
+                    let dec_len = if multi_head {
+                        format!("_length_r[_ctrl_{on}_head_idx]--; ")
+                    } else { String::new() };
+                    let accept_suffix = if multi_head {
+                        format!("; {latch_idx}_ctrl_{on}_busy = 1")
+                    } else {
+                        format!("; _ctrl_{on}_busy = 1")
+                    };
+                    cpp.push_str(&format!(
+                        "    if (!_ctrl_{on}_busy && {on}_req_valid && {guard}) {{\n\
+                         \n      _ctrl_{on}_resp_data = _data_mem[{head_acc}]; _ctrl_{on}_slot = {head_acc}{accept_suffix};\n\
+                         \n    }} else if (_ctrl_{on}_busy) {{\n\
+                         \n      _fl_mem[_fl_wrp & {handle_mask:#x}] = _ctrl_{on}_slot;\n\
+                         \n      _fl_wrp = (uint8_t)((_fl_wrp + 1) & {cnt_mask:#x}); _fl_cnt++;\n\
+                         \n      {head_busy} = _next_mem[_ctrl_{on}_slot];\n\
+                         \n      {dec_len}_ctrl_{on}_resp_v = 1; _ctrl_{on}_busy = 0;\n    }}\n"
+                    ));
+                }
                 "read_data" => cpp.push_str(&format!(
                     "    if ({on}_req_valid) {{\n\
                      \n      _ctrl_{on}_resp_data = _data_mem[{on}_req_handle]; _ctrl_{on}_resp_v = 1;\n    }}\n"
