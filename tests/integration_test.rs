@@ -1223,6 +1223,74 @@ end module BitExtract
 }
 
 #[test]
+fn test_seq_for_loop_bare_assign_rejected() {
+    // SV antipattern: `target <= expr;` inside a `for` loop in seq has
+    // no cumulative effect — every iteration reads the same pre-block
+    // value of the target and only the last write commits. Reject at
+    // typecheck.
+    let bad = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module BadAccum
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port d: in UInt<8>;
+  port o: out UInt<10>;
+  reg sum: UInt<10> reset rst => 10'h0;
+  comb o = sum; end comb
+  seq on clk rising
+    for i in 0..3
+      sum <= sum + d.zext<10>();   // bug: never accumulates
+    end for
+  end seq
+end module BadAccum
+"#;
+    let tokens = arch::lexer::tokenize(bad).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, bad);
+    let ast = parser.parse_source_file().expect("parse");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve");
+    let result = arch::typecheck::TypeChecker::new(&symbols, &ast).check();
+    let errs = result.expect_err("expected typecheck to reject bare-ident <= in seq for-loop");
+    let msg = errs.iter().map(|e| format!("{e:?}")).collect::<String>();
+    assert!(msg.contains("non-blocking assignment") && msg.contains("for"),
+            "expected for-loop NBA error, got: {msg}");
+}
+
+#[test]
+fn test_seq_for_loop_indexed_assign_allowed() {
+    // Indexed targets (`vec[i] <= ...`) write a different element per
+    // iteration and stay allowed — canonical shift-register / fill-Vec
+    // patterns. Verify the rule doesn't false-positive on these.
+    let ok = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module ShiftFill
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port d: in UInt<8>;
+  port o: out Vec<UInt<8>, 4>;
+  reg shifty: Vec<UInt<8>, 4> reset rst => 0;
+  comb o = shifty; end comb
+  seq on clk rising
+    for i in 0..3
+      shifty[i] <= d;     // indexed: each iter writes a different slot — OK
+    end for
+  end seq
+end module ShiftFill
+"#;
+    let tokens = arch::lexer::tokenize(ok).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, ok);
+    let ast = parser.parse_source_file().expect("parse");
+    let symbols = arch::resolve::resolve(&ast).expect("resolve");
+    arch::typecheck::TypeChecker::new(&symbols, &ast).check()
+        .expect("indexed-target NBA in for-loop should typecheck");
+}
+
+#[test]
 fn test_pipeline_flush_clear_emits_data_reset() {
     // Pipeline critique #6: `flush <Stage> when <cond> clear;` resets
     // every data register in the target stage, not just `valid_r`.
