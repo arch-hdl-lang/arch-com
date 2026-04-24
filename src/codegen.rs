@@ -784,8 +784,33 @@ impl<'a> Codegen<'a> {
                 ModuleBodyItem::RegBlock(rb) => self.emit_reg_block(rb, &m_clone),
                 ModuleBodyItem::LatchBlock(lb) => self.emit_latch_block(lb),
                 ModuleBodyItem::Inst(inst) => {
-                    // Auto-declare output wires that aren't already declared
+                    // Auto-declare output wires that aren't already declared.
+                    // Track newly-emitted names so a later inst that connects
+                    // to the same parent-side bus wire skips re-declaration.
+                    let mut just_added: Vec<String> = Vec::new();
                     self.emit_inst_output_wire_decls(inst, &declared_names);
+                    // Collect names we added so subsequent insts know.
+                    if let Some((Symbol::Module(info), _)) =
+                        self.symbols.globals.get(&inst.module_name.name)
+                    {
+                        let module_ports = info.ports.clone();
+                        for conn in &inst.connections {
+                            let Some(port) = module_ports.iter().find(|p| p.name.name == conn.port_name.name) else { continue; };
+                            let Some(bi) = &port.bus_info else { continue; };
+                            let ExprKind::Ident(parent_name) = &conn.signal.kind else { continue; };
+                            let Some((Symbol::Bus(bus_info), _)) =
+                                self.symbols.globals.get(&bi.bus_name.name) else { continue; };
+                            let mut pm = bus_info.default_param_map();
+                            for pa in &bi.params { pm.insert(pa.name.name.clone(), &pa.value); }
+                            for (sname, _sdir, _ty) in bus_info.effective_signals(&pm) {
+                                just_added.push(format!("{parent_name}_{sname}"));
+                            }
+                            // Also mark the whole-bus parent name as "claimed"
+                            // so later code doesn't re-emit a scalar for it.
+                            just_added.push(parent_name.clone());
+                        }
+                    }
+                    for n in just_added { declared_names.insert(n); }
                     self.emit_inst(inst);
                 }
                 ModuleBodyItem::PipeRegDecl(p) => {
@@ -2282,6 +2307,29 @@ impl<'a> Codegen<'a> {
             Vec::new()
         };
 
+        // Implicit bus wires: for any inst connection on a bus port
+        // whose parent-side signal is an undeclared Ident, declare each
+        // flattened bus signal as a wire on the parent. Mirrors the
+        // sim_codegen fix from PRs #110+#112. Without this, Verilator
+        // creates 1-bit IMPLICIT wires that silently truncate wider
+        // signals like `_flits_send_data` and the design appears dead.
+        let mut bus_emitted: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for conn in &inst.connections {
+            let Some(port) = module_ports.iter().find(|p| p.name.name == conn.port_name.name) else { continue; };
+            let Some(bi) = &port.bus_info else { continue; };
+            let ExprKind::Ident(parent_name) = &conn.signal.kind else { continue; };
+            let Some((Symbol::Bus(bus_info), _)) =
+                self.symbols.globals.get(&bi.bus_name.name) else { continue; };
+            let mut pm = bus_info.default_param_map();
+            for pa in &bi.params { pm.insert(pa.name.name.clone(), &pa.value); }
+            for (sname, _sdir, ty) in bus_info.effective_signals(&pm) {
+                let flat = format!("{parent_name}_{sname}");
+                if declared.contains(&flat) || !bus_emitted.insert(flat.clone()) { continue; }
+                let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(&ty);
+                self.line(&format!("{} {}{};", ty_str, flat, arr_suffix));
+            }
+        }
+
         for conn in &inst.connections {
             if conn.direction != ConnectDir::Output {
                 continue;
@@ -2290,8 +2338,9 @@ impl<'a> Codegen<'a> {
                 if declared.contains(target) {
                     continue;
                 }
-                // Find the port type from the module definition
+                // Bus ports are handled above as a separate pass; skip.
                 if let Some(port) = module_ports.iter().find(|p| p.name.name == conn.port_name.name) {
+                    if port.bus_info.is_some() { continue; }
                     let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(&port.ty);
                     self.line(&format!("{} {}{};", ty_str, target, arr_suffix));
                 } else if let Some((_, ty)) = ram_flat_ports.iter().find(|(n, _)| *n == conn.port_name.name) {
@@ -6170,8 +6219,12 @@ impl<'a> Codegen<'a> {
             }
             ExprKind::BitSlice(base, hi, lo) => {
                 let b = self.emit_expr_str(base);
-                // Parenthesize complex base expressions to avoid precedence issues
-                let b = if matches!(base.kind, ExprKind::Ident(_) | ExprKind::Literal(_)
+                // Parenthesize complex base expressions to avoid precedence issues.
+                // SynthIdent is a compiler-renamed bare identifier with the same
+                // semantics as Ident — no parens needed (Verilator rejects
+                // `(__name)[hi:lo]` as a syntax error).
+                let b = if matches!(base.kind, ExprKind::Ident(_) | ExprKind::SynthIdent(_, _)
+                    | ExprKind::Literal(_)
                     | ExprKind::Index(_, _) | ExprKind::FieldAccess(_, _)) { b }
                     else { format!("({})", b) };
                 // Try to emit indexed part-select: base[lo +: width]

@@ -1931,15 +1931,37 @@ impl<'a> FormalCtx<'a> {
             // variant) is still unsupported.
             SynthIdent(name, _) => {
                 if self.sigs.contains_key(name) {
-                    self.encode_ident(name, t, expr.span)
-                } else {
-                    Err(CompileError::general(
-                        &format!(
-                            "formal encoding of synthesized identifier `{name}` is not yet supported — only credit_channel scalar state is modelled today (see doc/plan_hierarchical_formal.md PR-hf4)",
-                        ),
-                        expr.span,
-                    ))
+                    return self.encode_ident(name, t, expr.span);
                 }
+                // Derived comb signals: codegen exposes `can_send` and
+                // `valid` as combinational outputs of the credit_channel
+                // state. Encode them as comparisons against the lifted
+                // regs so user code that gates traffic on these (the
+                // canonical pattern) flows through correctly.
+                //
+                //   __<port>_<ch>_can_send  ≡  __<port>_<ch>_credit != 0
+                //   __<port>_<ch>_valid     ≡  __<port>_<ch>_occ    != 0
+                if let Some(stem) = name.strip_suffix("_can_send")
+                    .or_else(|| name.strip_suffix("_valid"))
+                {
+                    let suffix = if name.ends_with("_can_send") { "_credit" } else { "_occ" };
+                    let reg = format!("{stem}{suffix}");
+                    if self.sigs.contains_key(&reg) {
+                        let r = self.encode_ident(&reg, t, expr.span)?;
+                        let zero = bv_zero(r.width);
+                        return Ok(SmtTerm {
+                            s: format!("(ite (= {} {zero}) #b0 #b1)", r.s),
+                            width: 1,
+                            signed: false,
+                        });
+                    }
+                }
+                Err(CompileError::general(
+                    &format!(
+                        "formal encoding of synthesized identifier `{name}` is not yet supported — only credit_channel scalar state and derived can_send/valid are modelled today (see doc/plan_hierarchical_formal.md PR-hf4)",
+                    ),
+                    expr.span,
+                ))
             }
             Literal(l) => Ok(lit_to_term(l)),
             Bool(b) => Ok(SmtTerm {
@@ -2123,6 +2145,24 @@ impl<'a> FormalCtx<'a> {
                 width: info.width,
                 signed: info.signed,
             });
+        }
+        // 4. Derived credit_channel signal: `__<port>_<ch>_can_send`
+        // resolves to `credit != 0`, `_valid` resolves to `occ != 0`.
+        // Mirrors the SynthIdent path so user-written asserts that
+        // reference the lifted state work too.
+        if let Some(stem) = name.strip_suffix("_can_send")
+            .or_else(|| name.strip_suffix("_valid"))
+        {
+            let suffix = if name.ends_with("_can_send") { "_credit" } else { "_occ" };
+            let reg = format!("{stem}{suffix}");
+            if let Some(info) = self.sigs.get(&reg) {
+                let zero = bv_zero(info.width);
+                return Ok(SmtTerm {
+                    s: format!("(ite (= {reg}_{t} {zero}) #b0 #b1)"),
+                    width: 1,
+                    signed: false,
+                });
+            }
         }
         Err(CompileError::general(
             &format!("unknown identifier `{name}` in arch formal encoding"),
