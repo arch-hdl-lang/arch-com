@@ -73,11 +73,22 @@ pub fn run(
     // 1. Pick the top module
     let module = select_top(ast, args.top.as_deref())?;
 
-    // 2. Build encoder state
-    let mut ctx = FormalCtx::new(module, symbols);
+    // 2. Flatten sub-instances into a synthetic flat module. For designs
+    //    without any sub-inst, this is a no-op clone. See
+    //    doc/plan_hierarchical_formal.md for the design.
+    let flat_module: ModuleDecl;
+    let encode_module: &ModuleDecl = if module.body.iter().any(|b| matches!(b, ModuleBodyItem::Inst(_))) {
+        flat_module = flatten_for_formal(ast, module)?;
+        &flat_module
+    } else {
+        module
+    };
+
+    // 3. Build encoder state
+    let mut ctx = FormalCtx::new(encode_module, symbols);
     ctx.preprocess()?;
 
-    // 3. Emit SMT-LIB2 (header + declarations + transitions + comb)
+    // 4. Emit SMT-LIB2 (header + declarations + transitions + comb)
     let base = ctx.emit_base(args.bound)?;
 
     // 4. Optionally dump
@@ -98,6 +109,341 @@ pub fn run(
     render_report(&results);
 
     Ok(FormalReport { results })
+}
+
+// ── Hierarchical flattening (PR-hf1b) ────────────────────────────────────────
+//
+// Bottom-up inline each sub-inst of the top module into a synthetic flat
+// ModuleDecl. The existing FormalCtx then encodes the flat module as if
+// it were written hand-flat.
+//
+// v1 scope (matching plan doc):
+//   - Single level of nesting (no inst-inside-inst).
+//   - Scalar ports only.
+//   - Sub-module body may contain ONLY `let` bindings (pure comb).
+//     Regs/comb/seq/assert/cover inside sub = unsupported in this slice
+//     (PR-hf2 extends coverage).
+//   - Same-clock hierarchy (connections must bind sub's clk/rst to top's).
+//
+// Name mangling:
+//   - Sub's local let `x` becomes `<inst>_x` in the flat body.
+//   - Sub's port references resolve to the parent signal expression
+//     from the inst's connection list.
+//   - Sub's ports themselves are NOT carried into the flat module (they
+//     dissolve into connection bindings).
+
+fn flatten_for_formal(
+    ast: &SourceFile,
+    top: &ModuleDecl,
+) -> Result<ModuleDecl, CompileError> {
+    use std::collections::HashMap;
+
+    let mut flat = top.clone();
+    let mut new_body: Vec<ModuleBodyItem> = Vec::with_capacity(flat.body.len());
+
+    for item in std::mem::take(&mut flat.body) {
+        match item {
+            ModuleBodyItem::Inst(inst) => {
+                let sub = lookup_module(ast, &inst.module_name.name).ok_or_else(|| {
+                    CompileError::general(
+                        &format!(
+                            "hierarchical formal: sub-module `{}` not found in source",
+                            inst.module_name.name
+                        ),
+                        inst.module_name.span,
+                    )
+                })?;
+
+                validate_sub_for_formal(sub)?;
+
+                // Port map: sub-port name → parent-side Expr. Connections
+                // pair port names with signal expressions regardless of
+                // direction (ConnectDir just documents intent; at the
+                // formal flattening level, we substitute Ident(port) →
+                // signal_expr everywhere in the sub's body).
+                let mut port_map: HashMap<String, Expr> = HashMap::new();
+                for c in &inst.connections {
+                    port_map.insert(c.port_name.name.clone(), c.signal.clone());
+                }
+
+                // Enforce: every sub port must have a connection.
+                for p in &sub.ports {
+                    if !port_map.contains_key(&p.name.name) {
+                        return Err(CompileError::general(
+                            &format!(
+                                "hierarchical formal: inst `{}` of `{}` leaves port `{}` unconnected (required in v1)",
+                                inst.name.name, inst.module_name.name, p.name.name,
+                            ),
+                            inst.span,
+                        ));
+                    }
+                }
+
+                // Collect local (non-port) names in the sub that need
+                // prefixing. For the let-only slice, this is every
+                // `let`-bound identifier whose name is not also a port.
+                let port_names: std::collections::HashSet<String> =
+                    sub.ports.iter().map(|p| p.name.name.clone()).collect();
+                let mut locals: std::collections::HashSet<String> = std::collections::HashSet::new();
+                for bi in &sub.body {
+                    if let ModuleBodyItem::LetBinding(lb) = bi {
+                        if !port_names.contains(&lb.name.name) {
+                            locals.insert(lb.name.name.clone());
+                        }
+                    }
+                }
+
+                let prefix = format!("{}_", inst.name.name);
+                for bi in &sub.body {
+                    match bi {
+                        ModuleBodyItem::LetBinding(lb) => {
+                            // Decide the rewritten name of the let itself.
+                            // If it shares a name with a sub-port, it
+                            // IS the driver for that port — its rewritten
+                            // target is whatever the parent side connects
+                            // to that port.
+                            let rewritten_value = subst_expr_for_formal(
+                                &lb.value, &port_map, &locals, &prefix,
+                            );
+                            if port_names.contains(&lb.name.name) {
+                                // Port-driving let. Emit
+                                //   `let <parent_side_name> = <value>;`
+                                // ONLY if the parent side expression is a
+                                // simple Ident. Otherwise (e.g., a complex
+                                // bit-slice), emit a comb assignment to
+                                // the parent signal.
+                                let parent_expr = port_map.get(&lb.name.name).unwrap().clone();
+                                match &parent_expr.kind {
+                                    ExprKind::Ident(parent_name) => {
+                                        new_body.push(ModuleBodyItem::LetBinding(LetBinding {
+                                            name: Ident::new(parent_name.clone(), lb.name.span),
+                                            ty: lb.ty.clone(),
+                                            value: rewritten_value,
+                                            span: lb.span,
+                                            destructure_fields: Vec::new(),
+                                        }));
+                                    }
+                                    _ => {
+                                        return Err(CompileError::general(
+                                            &format!(
+                                                "hierarchical formal: inst `{}.{}` port connection must be a simple identifier in v1 (got a complex expression); refactor the parent to a named wire",
+                                                inst.name.name, lb.name.name,
+                                            ),
+                                            inst.span,
+                                        ));
+                                    }
+                                }
+                            } else {
+                                // Internal let — prefix its name.
+                                new_body.push(ModuleBodyItem::LetBinding(LetBinding {
+                                    name: Ident::new(format!("{prefix}{}", lb.name.name), lb.name.span),
+                                    ty: lb.ty.clone(),
+                                    value: rewritten_value,
+                                    span: lb.span,
+                                    destructure_fields: Vec::new(),
+                                }));
+                            }
+                        }
+                        ModuleBodyItem::CombBlock(cb) => {
+                            // Substitute comb block statements. Target
+                            // names (LHS) bound to sub-output ports rewrite
+                            // to the parent signal; internal comb targets
+                            // prefix.
+                            let new_stmts: Vec<CombStmt> = cb.stmts.iter()
+                                .map(|s| subst_comb_stmt_for_formal(
+                                    s, &port_map, &locals, &prefix,
+                                ))
+                                .collect::<Result<_, _>>()?;
+                            new_body.push(ModuleBodyItem::CombBlock(CombBlock {
+                                stmts: new_stmts,
+                                span: cb.span,
+                            }));
+                        }
+                        _ => unreachable!("validate_sub_for_formal rejects other items"),
+                    }
+                }
+            }
+            other => new_body.push(other),
+        }
+    }
+
+    flat.body = new_body;
+    Ok(flat)
+}
+
+fn subst_comb_stmt_for_formal(
+    s: &CombStmt,
+    port_map: &std::collections::HashMap<String, Expr>,
+    locals: &std::collections::HashSet<String>,
+    prefix: &str,
+) -> Result<CombStmt, CompileError> {
+    match s {
+        CombStmt::Assign(a) => {
+            let target = subst_expr_for_formal(&a.target, port_map, locals, prefix);
+            let value = subst_expr_for_formal(&a.value, port_map, locals, prefix);
+            Ok(CombStmt::Assign(Assign { target, value, span: a.span }))
+        }
+        CombStmt::IfElse(ie) => {
+            let cond = subst_expr_for_formal(&ie.cond, port_map, locals, prefix);
+            let then_stmts: Vec<CombStmt> = ie.then_stmts.iter()
+                .map(|s| subst_comb_stmt_for_formal(s, port_map, locals, prefix))
+                .collect::<Result<_, _>>()?;
+            let else_stmts: Vec<CombStmt> = ie.else_stmts.iter()
+                .map(|s| subst_comb_stmt_for_formal(s, port_map, locals, prefix))
+                .collect::<Result<_, _>>()?;
+            Ok(CombStmt::IfElse(IfElseOf {
+                cond,
+                then_stmts,
+                else_stmts,
+                unique: ie.unique,
+                span: ie.span,
+            }))
+        }
+        other => {
+            let sp = match other {
+                CombStmt::For(f) => f.span,
+                CombStmt::MatchExpr(m) => m.span,
+                CombStmt::Log(l) => l.span,
+                _ => Span { start: 0, end: 0 },
+            };
+            Err(CompileError::general(
+                &format!(
+                    "hierarchical formal v1: unsupported comb stmt in sub-module ({:?}); only Assign and IfElse allowed in this slice",
+                    std::mem::discriminant(other),
+                ),
+                sp,
+            ))
+        }
+    }
+}
+
+fn lookup_module<'a>(ast: &'a SourceFile, name: &str) -> Option<&'a ModuleDecl> {
+    ast.items.iter().find_map(|it| match it {
+        Item::Module(m) if m.name.name == name => Some(m),
+        _ => None,
+    })
+}
+
+fn validate_sub_for_formal(sub: &ModuleDecl) -> Result<(), CompileError> {
+    for p in &sub.ports {
+        // Scalar ports only.
+        match &p.ty {
+            TypeExpr::UInt(_) | TypeExpr::SInt(_) | TypeExpr::Bool
+                | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(_, _) => {}
+            _ => {
+                return Err(CompileError::general(
+                    &format!(
+                        "hierarchical formal v1: sub-module `{}` port `{}` has non-scalar type; only UInt/SInt/Bool/Bit/Clock/Reset are supported",
+                        sub.name.name, p.name.name,
+                    ),
+                    p.span,
+                ));
+            }
+        }
+    }
+    for bi in &sub.body {
+        match bi {
+            ModuleBodyItem::LetBinding(_) => {}
+            ModuleBodyItem::CombBlock(_) => {}
+            other => {
+                let kind = match other {
+                    ModuleBodyItem::RegDecl(_) | ModuleBodyItem::RegBlock(_) => "register",
+                    ModuleBodyItem::LatchBlock(_) => "latch block",
+                    ModuleBodyItem::Inst(_) => "nested instance",
+                    ModuleBodyItem::Generate(_) => "generate",
+                    ModuleBodyItem::PipeRegDecl(_) => "pipe_reg",
+                    ModuleBodyItem::WireDecl(_) => "wire",
+                    ModuleBodyItem::Thread(_) => "thread",
+                    ModuleBodyItem::Resource(_) => "resource",
+                    ModuleBodyItem::Assert(_) => "assert/cover",
+                    ModuleBodyItem::Function(_) => "function",
+                    _ => "item",
+                };
+                return Err(CompileError::general(
+                    &format!(
+                        "hierarchical formal v1: sub-module `{}` contains a {} — only `let` bindings + a single `comb` block are supported in this slice (PR-hf2 extends to regs + seq)",
+                        sub.name.name, kind
+                    ),
+                    bi.span(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Walk `expr` and substitute per the rules:
+///   - `Ident(name)` where `name ∈ port_map` → the parent-side expression.
+///   - `Ident(name)` where `name ∈ locals` → `Ident("<prefix><name>")`.
+///   - anything else → recurse, otherwise unchanged.
+fn subst_expr_for_formal(
+    expr: &Expr,
+    port_map: &std::collections::HashMap<String, Expr>,
+    locals: &std::collections::HashSet<String>,
+    prefix: &str,
+) -> Expr {
+    use ExprKind::*;
+    let new_kind = match &expr.kind {
+        Ident(name) => {
+            if let Some(p) = port_map.get(name) { return p.clone(); }
+            if locals.contains(name) {
+                Ident(format!("{prefix}{name}"))
+            } else {
+                return expr.clone();
+            }
+        }
+        Binary(op, l, r) => Binary(
+            *op,
+            Box::new(subst_expr_for_formal(l, port_map, locals, prefix)),
+            Box::new(subst_expr_for_formal(r, port_map, locals, prefix)),
+        ),
+        Unary(op, e) => Unary(*op, Box::new(subst_expr_for_formal(e, port_map, locals, prefix))),
+        Cast(e, ty) => Cast(Box::new(subst_expr_for_formal(e, port_map, locals, prefix)), ty.clone()),
+        Index(b, i) => Index(
+            Box::new(subst_expr_for_formal(b, port_map, locals, prefix)),
+            Box::new(subst_expr_for_formal(i, port_map, locals, prefix)),
+        ),
+        BitSlice(b, hi, lo) => BitSlice(
+            Box::new(subst_expr_for_formal(b, port_map, locals, prefix)),
+            Box::new(subst_expr_for_formal(hi, port_map, locals, prefix)),
+            Box::new(subst_expr_for_formal(lo, port_map, locals, prefix)),
+        ),
+        PartSelect(b, s, w, plus) => PartSelect(
+            Box::new(subst_expr_for_formal(b, port_map, locals, prefix)),
+            Box::new(subst_expr_for_formal(s, port_map, locals, prefix)),
+            Box::new(subst_expr_for_formal(w, port_map, locals, prefix)),
+            *plus,
+        ),
+        Ternary(c, t, f) => Ternary(
+            Box::new(subst_expr_for_formal(c, port_map, locals, prefix)),
+            Box::new(subst_expr_for_formal(t, port_map, locals, prefix)),
+            Box::new(subst_expr_for_formal(f, port_map, locals, prefix)),
+        ),
+        Clog2(e) => Clog2(Box::new(subst_expr_for_formal(e, port_map, locals, prefix))),
+        Onehot(e) => Onehot(Box::new(subst_expr_for_formal(e, port_map, locals, prefix))),
+        Signed(e) => Signed(Box::new(subst_expr_for_formal(e, port_map, locals, prefix))),
+        Unsigned(e) => Unsigned(Box::new(subst_expr_for_formal(e, port_map, locals, prefix))),
+        MethodCall(recv, m, args) => MethodCall(
+            Box::new(subst_expr_for_formal(recv, port_map, locals, prefix)),
+            m.clone(),
+            args.iter().map(|a| subst_expr_for_formal(a, port_map, locals, prefix)).collect(),
+        ),
+        Concat(xs) => Concat(xs.iter().map(|x| subst_expr_for_formal(x, port_map, locals, prefix)).collect()),
+        Repeat(n, x) => Repeat(
+            Box::new(subst_expr_for_formal(n, port_map, locals, prefix)),
+            Box::new(subst_expr_for_formal(x, port_map, locals, prefix)),
+        ),
+        FieldAccess(b, f) => FieldAccess(
+            Box::new(subst_expr_for_formal(b, port_map, locals, prefix)),
+            f.clone(),
+        ),
+        FunctionCall(n, xs) => FunctionCall(
+            n.clone(),
+            xs.iter().map(|x| subst_expr_for_formal(x, port_map, locals, prefix)).collect(),
+        ),
+        _ => return expr.clone(),
+    };
+    Expr { kind: new_kind, span: expr.span, parenthesized: expr.parenthesized }
 }
 
 // ── Top-module selection ─────────────────────────────────────────────────────
@@ -259,31 +605,20 @@ impl<'a> FormalCtx<'a> {
         let (rn, is_async, is_low) = crate::ast::extract_reset_info(&self.module.ports);
         self.reset = ResetInfo { name: rn, is_async, is_low };
 
-        // Sub-instances: hierarchical encoding is PR-hf1b (tracked in
-        // doc/plan_hierarchical_formal.md). For now, produce a more
-        // actionable error listing the detected inst sites + the
-        // workaround paths (target the sub-module in isolation via
-        // --top, or use `arch build` + EBMC/SymbiYosys for hierarchy).
-        let mut inst_names: Vec<String> = Vec::new();
+        // Defensive: any Inst items here mean the flattener didn't run.
+        // `run()` invokes `flatten_for_formal` before preprocess() for
+        // modules containing insts, so reaching this means a caller
+        // bypassed the pipeline.
         for b in &self.module.body {
             if let ModuleBodyItem::Inst(inst) = b {
-                inst_names.push(format!("{} (module {})", inst.name.name, inst.module_name.name));
+                return Err(CompileError::general(
+                    &format!(
+                        "internal error: `inst {}` reached FormalCtx::preprocess without flattening. Call `flatten_for_formal` first (see run()).",
+                        inst.name.name
+                    ),
+                    inst.span,
+                ));
             }
-        }
-        if !inst_names.is_empty() {
-            let first_inst = self.module.body.iter().find_map(|b| match b {
-                ModuleBodyItem::Inst(i) => Some(i.span),
-                _ => None,
-            }).unwrap();
-            return Err(CompileError::general(
-                &format!(
-                    "hierarchical `arch formal` is not yet implemented — module `{}` contains {} sub-instance(s): {}. Workarounds: (a) run `arch formal --top <sub_module>` to verify each sub-module in isolation; (b) use `arch build` + EBMC / SymbiYosys on the composed SV for whole-design BMC. Tracked in doc/plan_hierarchical_formal.md.",
-                    self.module.name.name,
-                    inst_names.len(),
-                    inst_names.join(", ")
-                ),
-                first_inst,
-            ));
         }
         for b in &self.module.body {
             if let ModuleBodyItem::Thread(t) = b {

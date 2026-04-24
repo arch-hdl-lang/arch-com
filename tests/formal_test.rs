@@ -123,3 +123,26 @@ fn formal_solver_parity_bitwuzla() {
     assert_eq!(code, 0, "expected exit 0 via bitwuzla; got {code}\n{out}");
     assert!(out.contains("PROVED"));
 }
+
+#[test]
+fn formal_hier_adder_proves() {
+    if !z3_available() { eprintln!("skipping: z3 not in PATH"); return; }
+    let (code, out) = run_formal(
+        "tests/formal/hier_adder_proves.arch",
+        &["--top", "HierTop", "--bound", "5"],
+    );
+    assert_eq!(code, 0, "expected exit 0 (PROVED); got {code}\n{out}");
+    assert!(out.contains("PROVED"), "expected PROVED in output:\n{out}");
+}
+
+#[test]
+fn formal_hier_adder_refutes() {
+    if !z3_available() { eprintln!("skipping: z3 not in PATH"); return; }
+    let (code, out) = run_formal(
+        "tests/formal/hier_adder_refutes.arch",
+        &["--top", "HierTopBad", "--bound", "5"],
+    );
+    assert_eq!(code, 1, "expected exit 1 (REFUTED); got {code}\n{out}");
+    assert!(out.contains("REFUTED"));
+    assert!(out.contains("Counterexample"));
+}
