@@ -3415,6 +3415,49 @@ impl<'a> SimCodegen<'a> {
             .map(|inst| expand_bus_connections(inst, self.source, self.symbols, &bus_wire_names))
             .collect();
 
+        // Augment `inst_out` with output signals discovered through bus
+        // expansion. The raw `collect_inst_output_signals(&m.body)` only
+        // sees `out <- noc_link` (whole-bus) and records nothing useful;
+        // the per-signal expansion produces directional connections like
+        // `noc_link_flits_send_valid` (from prod) that must be declared
+        // as private members on the parent. Without this, two insts
+        // sharing an undeclared bus name (the implicit-bus-wire case)
+        // generate code that references undeclared identifiers.
+        let mut inst_out = inst_out;
+        for conns in &expanded_conns {
+            for conn in conns {
+                if conn.direction == ConnectDir::Output {
+                    if let ExprKind::Ident(name) = &conn.signal.kind {
+                        inst_out.insert(name.clone());
+                    }
+                }
+            }
+        }
+        // Also populate `widths` for implicit-bus-wire signals so the
+        // private member emission picks the right C++ type (e.g. uint64_t
+        // for a 64-bit `send_data` instead of the uint32_t fallback).
+        for inst in insts.iter() {
+            for p in &m.ports { let _ = p; }  // placate borrow-check noise
+            for sub_port in self.lookup_inst_ports(&inst.module_name.name) {
+                let Some(bi) = &sub_port.bus_info else { continue; };
+                let Some((crate::resolve::Symbol::Bus(info), _)) =
+                    self.symbols.globals.get(&bi.bus_name.name) else { continue; };
+                // Find the parent-side connection name for this bus port.
+                let parent_name = inst.connections.iter()
+                    .find(|c| c.port_name.name == sub_port.name.name)
+                    .and_then(|c| if let ExprKind::Ident(n) = &c.signal.kind {
+                        Some(n.clone())
+                    } else { None });
+                let Some(parent_name) = parent_name else { continue; };
+                let mut pm = info.default_param_map();
+                for pa in &bi.params { pm.insert(pa.name.name.clone(), &pa.value); }
+                for (sname, _sdir, ty) in info.effective_signals(&pm) {
+                    let bits = type_bits_te(&ty);
+                    widths.entry(format!("{parent_name}_{sname}")).or_insert(bits);
+                }
+            }
+        }
+
         // Build map: parent_signal_name → Vec element count for inst-output Vec ports.
         // When a sub-instance has a Vec output port and the parent connects it to a scalar
         // wire (e.g. thread lowering creates `thread_complete -> thread_complete`), we need
@@ -3892,7 +3935,14 @@ impl<'a> SimCodegen<'a> {
                 if let Some((elem_ty, count)) = inst_vec_out.get(sig_name) {
                     h.push_str(&format!("  {elem_ty} {sig_name}[{count}];\n"));
                 } else {
-                    h.push_str(&format!("  uint32_t {sig_name};\n"));
+                    // Pick the C++ type from the resolved width when known
+                    // (implicit bus wires + flat bus signals propagate through
+                    // `widths`). Default to uint32_t when the width isn't
+                    // tracked — preserves prior behaviour for plain scalars.
+                    let ty = widths.get(sig_name).copied()
+                        .map(cpp_uint)
+                        .unwrap_or("uint32_t");
+                    h.push_str(&format!("  {ty} {sig_name};\n"));
                 }
             }
         }
