@@ -24,8 +24,7 @@ body; the compiler wires it to the response channel.
 `tlm_method` sits beside `handshake_channel` and `credit_channel` under
 the unified `bus` umbrella. It is the **transaction-level** + **stateful**
 quadrant of the 2×2 — stateful because the compiler owns request/response
-FSMs, Future/Token synchronization state, and outstanding-transaction
-bookkeeping.
+FSMs and any outstanding-transaction bookkeeping.
 
 ## v1 scope (what ships first)
 
@@ -55,9 +54,11 @@ Shipping in v1:
    the credit_channel / sim_credit_channel module pattern).
 
 Explicitly **deferred** to v2:
-- `pipelined` mode + `Future<T>` type + `await` primitive.
+- In-order generated-thread mapping for a finite worker cohort sharing
+  one method.
 - `out_of_order` mode + `Token<T, id_width: N>`.
-- `burst` mode + `Future<Vec<T, L>>`.
+- Burst-oriented protocol support, if a viable explicit beat-stream
+  lowering is found.
 - `max_outstanding` / `timing` annotations from the original sketch.
 - `fork` / `join` inside thread bodies (already a thread v2 topic).
 - `implement X.m rtl` protocol-level mapping (covered by threads today).
@@ -303,9 +304,16 @@ Three auto-emitted properties labeled
 
 ### Future (not in this plan)
 
-- PR-tlm-V2a: `pipelined` mode + `Future<T>` type.
+- PR-tlm-V2a candidate: in-order generated-thread mapping for ordinary
+  blocking calls. A `generate for` cohort of worker threads may share a
+  `(port, method)` pair; the compiler lowers the group to an issue
+  arbiter plus in-order response router. No new `tlm_method` mode and
+  no `Future<T>` type. See `doc/plan_tlm_pipelined.md` "Future
+  Candidate: In-Order Generated-Thread Mapping".
 - PR-tlm-V2b: `out_of_order` mode + `Token<T, id_width: N>`.
-- PR-tlm-V2c: `burst` mode + `Future<Vec<T, L>>`.
+- PR-tlm-V2c candidate: burst-oriented protocol support. No viable
+  `Future<Vec<T,L>>` path is currently identified; any future design
+  should preserve explicit beat ownership and backpressure.
 - PR-tlm-V2d: DMA test migration — rewrite `ThreadMm2s` / `ThreadS2mm`
   to use `tlm_method` and compare SV/behavior against the hand-rolled
   baseline (§`plan_bus_unification.md`).
@@ -322,8 +330,10 @@ Three auto-emitted properties labeled
    avoids committing to arg-direction grammar before we know we
    need it).
 4. **Multiple threads touching the same method** in the same module:
-   compile error in v1. Pipelined / OoO modes in v2 are the answer
-   for genuine concurrency.
+   compile error in v1. A future in-order generated-thread mapping may
+   allow a finite worker cohort to share one method when responses are
+   returned in issue order; out-of-order/ID-tagged concurrency remains a
+   separate v2 topic.
 5. **Call site outside a thread**: compile error with a targeted
    message pointing the user at `thread X ... end thread X`.
 6. **Shared method body across multiple ports on target**: out of v1.
