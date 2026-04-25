@@ -139,6 +139,8 @@ impl<'a> Codegen<'a> {
                 Item::Fsm(f) => self.emit_fsm(f),
                 Item::Fifo(f) => self.emit_fifo(f),
                 Item::Ram(r) => self.emit_ram(r),
+                Item::Cam(c) => self.emit_cam(c),
+
                 Item::Counter(c) => self.emit_counter(c),
                 Item::Arbiter(a) => self.emit_arbiter(a),
                 Item::Regfile(r) => self.emit_regfile(r),
@@ -7024,6 +7026,122 @@ impl<'a> Codegen<'a> {
     }
 
     // ── Counter ───────────────────────────────────────────────────────────────
+
+    fn emit_cam(&mut self, c: &crate::ast::CamDecl) {
+        let n = c.name.name.clone();
+
+        // Required params (validated by typecheck): DEPTH, KEY_W
+        let depth_default = c.params.iter()
+            .find(|p| p.name.name == "DEPTH")
+            .and_then(|p| p.default.as_ref())
+            .map(|e| self.emit_expr_str(e))
+            .unwrap_or_else(|| "0".to_string());
+        let key_w_default = c.params.iter()
+            .find(|p| p.name.name == "KEY_W")
+            .and_then(|p| p.default.as_ref())
+            .map(|e| self.emit_expr_str(e))
+            .unwrap_or_else(|| "0".to_string());
+
+        let clk = c.ports.iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            .map(|p| p.name.name.clone())
+            .unwrap_or_else(|| "clk".to_string());
+        let (rst, is_async, is_low) = Self::extract_reset_info(&c.ports);
+
+        // ── Module header ─────────────────────────────────────────────────────
+        self.line(&format!("module {n} #("));
+        self.indent += 1;
+        self.line(&format!("parameter int DEPTH = {depth_default},"));
+        self.line(&format!("parameter int KEY_W = {key_w_default}"));
+        self.indent -= 1;
+        self.line(") (");
+        self.indent += 1;
+
+        let mut all_ports: Vec<String> = Vec::new();
+        for p in &c.ports {
+            let dir = match p.direction { Direction::In => "input", Direction::Out => "output" };
+            let ty_str = self.emit_port_type_str(&p.ty);
+            all_ports.push(format!("{dir} {ty_str} {}", p.name.name));
+        }
+        let port_count = all_ports.len();
+        for (i, p) in all_ports.iter().enumerate() {
+            let comma = if i < port_count - 1 { "," } else { "" };
+            self.line(&format!("{p}{comma}"));
+        }
+        self.indent -= 1;
+        self.line(");");
+        self.line("");
+        self.indent += 1;
+
+        // ── Storage ──────────────────────────────────────────────────────────
+        self.line("logic [DEPTH-1:0]      entry_valid_r;");
+        self.line("logic [KEY_W-1:0]      entry_key_r [DEPTH];");
+        self.line("");
+
+        // ── Combinational match ──────────────────────────────────────────────
+        // search_mask[i] = entry_valid_r[i] && (entry_key_r[i] == search_key)
+        self.line("always_comb begin");
+        self.indent += 1;
+        self.line("for (int i = 0; i < DEPTH; i++) begin");
+        self.indent += 1;
+        self.line("search_mask[i] = entry_valid_r[i] && (entry_key_r[i] == search_key);");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line("end");
+        self.line("assign search_any = |search_mask;");
+        self.line("");
+
+        // ── Priority encoder for search_first (LSB-first) ────────────────────
+        self.line("always_comb begin");
+        self.indent += 1;
+        self.line("search_first = '0;");
+        self.line("for (int i = DEPTH-1; i >= 0; i--) begin");
+        self.indent += 1;
+        self.line("if (search_mask[i]) search_first = i[$clog2(DEPTH)-1:0];");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line("end");
+        self.line("");
+
+        // ── Sequential write port ────────────────────────────────────────────
+        let ff_sens = Self::ff_sensitivity(&clk, &rst, is_async, is_low);
+        let rst_cond = Self::rst_condition(&rst, is_low);
+
+        self.line(&format!("always_ff @({ff_sens}) begin"));
+        self.indent += 1;
+        self.line(&format!("if ({rst_cond}) begin"));
+        self.indent += 1;
+        self.line("entry_valid_r <= '0;");
+        self.indent -= 1;
+        self.line("end else if (write_valid) begin");
+        self.indent += 1;
+        self.line("if (write_set) begin");
+        self.indent += 1;
+        self.line("entry_valid_r[write_idx] <= 1'b1;");
+        self.line("entry_key_r[write_idx] <= write_key;");
+        self.indent -= 1;
+        self.line("end else begin");
+        self.indent += 1;
+        self.line("entry_valid_r[write_idx] <= 1'b0;");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line("end");
+        self.indent -= 1;
+        self.line("end");
+        self.line("");
+
+        if !c.asserts.is_empty() {
+            let asserts = c.asserts.clone();
+            self.emit_asserts_for_construct(&asserts, &n, &clk);
+        }
+
+        self.indent -= 1;
+        self.line("endmodule");
+        self.line("");
+    }
 
     fn emit_counter(&mut self, c: &crate::ast::CounterDecl) {
         use crate::ast::{CounterMode, CounterDirection};

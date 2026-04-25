@@ -14,6 +14,7 @@ pub enum Item {
     Fsm(FsmDecl),
     Fifo(FifoDecl),
     Ram(RamDecl),
+    Cam(CamDecl),
     Counter(CounterDecl),
     Arbiter(ArbiterDecl),
     Regfile(RegfileDecl),
@@ -962,6 +963,7 @@ impl Item {
             Item::Fsm(f) => f.span,
             Item::Fifo(f) => f.span,
             Item::Ram(r) => r.span,
+            Item::Cam(c) => c.span,
             Item::Counter(c) => c.span,
             Item::Arbiter(a) => a.span,
             Item::Regfile(r) => r.span,
@@ -1228,6 +1230,23 @@ pub enum RamInit {
     File(String, FileFormat),
     Value(Expr),
     Array(Vec<u64>),
+}
+
+// ── CAM ──────────────────────────────────────────────────────────────────────
+
+/// Content-addressable memory: combinational match of a search key against
+/// a vector of (valid, key) entries. Single write port (set/clear by index).
+/// See doc/plan_cam.md for full semantics.
+#[derive(Debug, Clone)]
+pub struct CamDecl {
+    pub common: ConstructCommon,
+}
+impl std::ops::Deref for CamDecl {
+    type Target = ConstructCommon;
+    fn deref(&self) -> &ConstructCommon { &self.common }
+}
+impl std::ops::DerefMut for CamDecl {
+    fn deref_mut(&mut self) -> &mut ConstructCommon { &mut self.common }
 }
 
 // ── Counter ───────────────────────────────────────────────────────────────────
