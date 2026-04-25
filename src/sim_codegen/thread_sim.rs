@@ -204,6 +204,26 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool) -> Result<SimM
             }
         }
     }
+    // Let-binding fields: declare any let whose name isn't already a
+    // port (lets aliasing a port skip declaration — eval() just writes
+    // to the port). Without this, eval()'s `<let_name> = expr;`
+    // assignments fail to compile when an out-of-line method body
+    // (e.g. trace_open under --wave) actually exercises the .h.
+    let port_names_set: std::collections::HashSet<&str> =
+        m.ports.iter().map(|p| p.name.name.as_str()).collect();
+    for item in &m.body {
+        if let ModuleBodyItem::LetBinding(lb) = item {
+            if port_names_set.contains(lb.name.name.as_str()) { continue; }
+            // For typed lets, infer width; for untyped (target=port),
+            // the previous filter already skipped them.
+            let cpp_ty = match &lb.ty {
+                Some(t) => port_or_reg_cpp_ty(t)
+                    .map_err(|e| format!("module `{}` let `{}`: {}", class, lb.name.name, e))?,
+                None => continue, // untyped lets must alias a port — handled by the filter above
+            };
+            header.push_str(&format!("  {} {} = 0;\n", cpp_ty, lb.name.name));
+        }
+    }
     header.push('\n');
 
     let driven_outputs = collect_thread_driven_outputs(&threads, m);
@@ -494,21 +514,43 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool) -> Result<SimM
                 is_wide: false,
             });
         }
-        // Reg fields (scalar only — Vec/wide skipped in this spike).
+        // Reg fields. Scalars trace as a single VCD signal; Vec<T,N>
+        // traces as N separate signals named `<name>[i]` so each
+        // element is independently visible in the waveform viewer.
+        // (fsm sim currently skips Vec regs entirely — gap to close
+        // separately if the consistency matters.)
         for item in &m.body {
             if let ModuleBodyItem::RegDecl(r) = item {
-                let width = match &r.ty {
-                    TypeExpr::Bool | TypeExpr::Bit => 1,
-                    TypeExpr::UInt(w) => eval_const(w) as u32,
-                    _ => continue,
-                };
-                if width == 0 || width > 64 { continue; }
-                signals.push(crate::sim_codegen::TraceSignal {
-                    vcd_name: r.name.name.clone(),
-                    cpp_expr: r.name.name.clone(),
-                    width,
-                    is_wide: false,
-                });
+                if let TypeExpr::Vec(elem, count_expr) = &r.ty {
+                    let elem_width = match elem.as_ref() {
+                        TypeExpr::Bool | TypeExpr::Bit => 1,
+                        TypeExpr::UInt(w) => eval_const(w) as u32,
+                        _ => continue,
+                    };
+                    if elem_width == 0 || elem_width > 64 { continue; }
+                    let count = eval_const(count_expr);
+                    for i in 0..count {
+                        signals.push(crate::sim_codegen::TraceSignal {
+                            vcd_name: format!("{}[{}]", r.name.name, i),
+                            cpp_expr: format!("{}[{}]", r.name.name, i),
+                            width: elem_width,
+                            is_wide: false,
+                        });
+                    }
+                } else {
+                    let width = match &r.ty {
+                        TypeExpr::Bool | TypeExpr::Bit => 1,
+                        TypeExpr::UInt(w) => eval_const(w) as u32,
+                        _ => continue,
+                    };
+                    if width == 0 || width > 64 { continue; }
+                    signals.push(crate::sim_codegen::TraceSignal {
+                        vcd_name: r.name.name.clone(),
+                        cpp_expr: r.name.name.clone(),
+                        width,
+                        is_wide: false,
+                    });
+                }
             }
         }
         // Coroutine state — exposed to VCD with leading underscore so
