@@ -1,0 +1,46 @@
+// Regression test for the sub-instance Vec port wiring fix.
+//
+// The sub-module declares an output port whose Vec count is a param.
+// The parent instantiates it with `param N = 8;`. Pre-fix, the
+// parent's sim_codegen looked up the sub-module's port type and
+// asked vec_array_info for the count, which fell through to 0
+// because N is an Ident. The Vec wiring was then silently dropped
+// (count==0 filter), and the parent read garbage from the sub's
+// outputs.
+//
+// Post-fix: lookup_inst_params + inst-time param overrides feed
+// vec_array_info_with_params, so the count resolves correctly and
+// the per-element wiring is emitted.
+
+module Mirror
+  param N: const = 4;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+
+  port in_vec:  in  Vec<UInt<8>, N>;
+  port out_vec: out Vec<UInt<8>, N>;
+
+  comb
+    for i in 0..N-1
+      out_vec[i] = in_vec[i];
+    end for
+  end comb
+end module Mirror
+
+module Top
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+
+  port src: in  Vec<UInt<8>, 8>;
+  port dst: out Vec<UInt<8>, 8>;
+
+  inst mirror: Mirror
+    param N = 8;
+
+    clk     <- clk;
+    rst     <- rst;
+    in_vec  <- src;
+    out_vec -> dst;
+  end inst mirror
+end module Top
