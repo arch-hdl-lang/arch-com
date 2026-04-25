@@ -23,6 +23,8 @@
 #include <functional>
 #include <cstdint>
 #include <vector>
+#include <atomic>
+#include <thread>
 
 namespace arch_rt {
 
@@ -161,6 +163,39 @@ struct ThreadScheduler {
     bool all_done() const {
         for (auto* s : slots) if (s->kind != WaitKind::Done) return false;
         return true;
+    }
+};
+
+// ─── Multi-OS-thread support (Phase 3) ────────────────────────────────
+//
+// Atomic spin-wait barrier. ~10-30 ns per round-trip vs ~µs for
+// std::condition_variable. Used by MtScheduler to synchronize one
+// "tick" across N OS threads.
+//
+// Usage: construct with `target` = number of participating threads.
+// Each thread calls wait() at the synchronization point; all
+// participants advance together.
+struct Barrier {
+    std::atomic<uint32_t> count{0};
+    std::atomic<uint32_t> generation{0};
+    uint32_t target;
+    explicit Barrier(uint32_t target) : target(target) {}
+    void wait() {
+        uint32_t gen = generation.load(std::memory_order_acquire);
+        if (count.fetch_add(1, std::memory_order_acq_rel) + 1 == target) {
+            count.store(0, std::memory_order_release);
+            generation.fetch_add(1, std::memory_order_release);
+        } else {
+            // Spin briefly, then yield to avoid pegging a core when
+            // other participants are slow (or oversubscribed).
+            uint32_t spins = 0;
+            while (generation.load(std::memory_order_acquire) == gen) {
+                if (++spins > 1000) {
+                    std::this_thread::yield();
+                    spins = 0;
+                }
+            }
+        }
     }
 };
 

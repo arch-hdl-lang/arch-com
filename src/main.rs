@@ -129,11 +129,19 @@ enum Command {
         /// --annotate annot/ <file>`.
         #[arg(long)]
         coverage_dat: Option<Option<String>>,
-        /// Thread-sim mode: `fsm` (default; threads lowered to FSM, single-core)
-        /// or `parallel` (Phase 1 spike: pre-lowering coroutine sim). See
-        /// doc/plan_thread_parallel_sim.md.
+        /// Thread-sim mode: `fsm` (default; threads lowered to FSM, single-core),
+        /// `parallel` (pre-lowering coroutine sim — Verilator-style use
+        /// `--threads N` to spread N OS threads), or `both` (cross-check
+        /// fsm vs parallel). See doc/plan_thread_parallel_sim.md and
+        /// doc/plan_thread_parallel_sim_phase3.md.
         #[arg(long = "thread-sim", default_value = "fsm")]
         thread_sim: String,
+        /// Number of OS threads to use under `--thread-sim parallel`.
+        /// Default 1 = cooperative single-OS-thread coroutine scheduler
+        /// (current behavior). N>1 spawns one OS thread per user
+        /// `thread` block (Verilator-style). See Phase 3 plan.
+        #[arg(long = "threads", default_value_t = 1)]
+        threads: u32,
         /// Generate pybind11 Python module for cocotb-compatible testing
         #[arg(long)]
         pybind: bool,
@@ -352,7 +360,7 @@ fn main() -> miette::Result<()> {
             }
             Ok(())
         }
-        Command::Sim { arch_files, tb_files, outdir, check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave, debug, debug_depth, debug_fsm, coverage, coverage_dat, thread_sim, pybind, test, pybind_module_name } => {
+        Command::Sim { arch_files, tb_files, outdir, check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave, debug, debug_depth, debug_fsm, coverage, coverage_dat, thread_sim, threads, pybind, test, pybind_module_name } => {
             let dbg_ports = debug || debug_fsm;  // any debug option implies port logging
             // --inputs-start-uninit and --check-uninit-ram both imply --check-uninit
             let check_uninit = check_uninit || inputs_start_uninit || check_uninit_ram;
@@ -361,6 +369,15 @@ fn main() -> miette::Result<()> {
             // → Some(None) → default "coverage.dat"; absent → None.
             let cov_dat_path: Option<String> = coverage_dat.map(|opt| opt.unwrap_or_else(|| "coverage.dat".to_string()));
             let coverage = coverage || cov_dat_path.is_some();
+            if threads > 1 && thread_sim != "parallel" {
+                return Err(miette::miette!("--threads N (N>1) requires --thread-sim parallel"));
+            }
+            if threads > 1 {
+                return Err(miette::miette!(
+                    "--threads {} not yet implemented (Phase 3.2 work). Currently --threads 1 only.",
+                    threads
+                ));
+            }
             match thread_sim.as_str() {
                 "fsm" => learn_wrap(&arch_files, || {
                     run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, coverage, cov_dat_path.clone(), false, pybind, test.as_deref(), pybind_module_name.as_deref())
