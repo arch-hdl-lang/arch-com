@@ -63,12 +63,29 @@ enum WaitKind {
     Until(Expr),
     Cycles(Expr),
     Terminal,
+    /// Fork/join segment: launch the listed branches, then wait for
+    /// all of them to reach `Done`. Branch indices are into
+    /// ThreadInfo.branches.
+    ForkJoin(Vec<usize>),
 }
 
 struct ForLoopInfo {
     var: String,
     start: Expr,
     end: Expr,
+}
+
+/// One fork branch with its own segment list.
+struct Branch {
+    /// Per-thread branch index (used to name slot/seg fields).
+    id: usize,
+    segs: Vec<Segment>,
+}
+
+/// Top-level partition output for one thread.
+struct ThreadInfo {
+    main_segs: Vec<Segment>,
+    branches: Vec<Branch>,
 }
 
 pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
@@ -85,9 +102,6 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
         if t.tlm_target.is_some() || t.implement.is_some() || t.reentrant.is_some() {
             return Err(format!("module `{}` thread #{}: TLM/implement/reentrant not yet supported", class, i));
         }
-        if t.default_when.is_some() {
-            return Err(format!("module `{}` thread #{}: `default when` not yet supported", class, i));
-        }
     }
 
     for item in &m.body {
@@ -102,12 +116,13 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
         }
     }
 
-    // Partition each thread body into segments.
-    let mut thread_segments: Vec<Vec<Segment>> = Vec::new();
+    // Partition each thread body into segments + collected branches.
+    let mut thread_infos: Vec<ThreadInfo> = Vec::new();
     for (ti, t) in threads.iter().enumerate() {
-        let segs = partition(&t.body)
+        let mut branches: Vec<Branch> = Vec::new();
+        let main_segs = partition(&t.body, &mut branches)
             .map_err(|e| format!("module `{}` thread #{}: {}", class, ti, e))?;
-        thread_segments.push(segs);
+        thread_infos.push(ThreadInfo { main_segs, branches });
     }
 
     // Ports + regs as fields.
@@ -136,11 +151,23 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
     }
     header.push('\n');
 
+    let mut vec_reg_info: Vec<(String, String, u64)> = Vec::new(); // (name, elem_ty, count)
     for item in &m.body {
         if let ModuleBodyItem::RegDecl(r) = item {
-            let cpp_ty = port_or_reg_cpp_ty(&r.ty)
-                .map_err(|e| format!("module `{}` reg `{}`: {}", class, r.name.name, e))?;
-            header.push_str(&format!("  {} {} = 0;\n", cpp_ty, r.name.name));
+            if let TypeExpr::Vec(elem, count_expr) = &r.ty {
+                let elem_ty = port_or_reg_cpp_ty(elem)
+                    .map_err(|e| format!("module `{}` reg `{}` element: {}", class, r.name.name, e))?;
+                let count = eval_const(count_expr);
+                if count == 0 {
+                    return Err(format!("module `{}` reg `{}`: Vec count = 0 (param resolution not yet supported)", class, r.name.name));
+                }
+                header.push_str(&format!("  {} {}[{}] = {{}};\n", elem_ty, r.name.name, count));
+                vec_reg_info.push((r.name.name.clone(), elem_ty, count));
+            } else {
+                let cpp_ty = port_or_reg_cpp_ty(&r.ty)
+                    .map_err(|e| format!("module `{}` reg `{}`: {}", class, r.name.name, e))?;
+                header.push_str(&format!("  {} {} = 0;\n", cpp_ty, r.name.name));
+            }
         }
     }
     header.push('\n');
@@ -149,14 +176,23 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
 
     // Constructor: register one slot per thread coroutine.
     header.push_str(&format!("  {}() {{\n", class));
-    for (i, _) in threads.iter().enumerate() {
+    for (i, info) in thread_infos.iter().enumerate() {
         header.push_str(&format!("    _slot_{i}.thread = _make_thread_{i}();\n"));
         header.push_str(&format!("    _sched.slots.push_back(&_slot_{i});\n"));
+        for br in &info.branches {
+            // Branch slot starts in Done so the scheduler skips it
+            // until the parent's fork-launch resets it.
+            header.push_str(&format!("    _t{i}_br{}_slot.kind = arch_rt::WaitKind::Done;\n", br.id));
+            header.push_str(&format!("    _sched.slots.push_back(&_t{i}_br{}_slot);\n", br.id));
+        }
     }
     header.push_str("  }\n");
     header.push_str(&format!("  ~{}() {{\n", class));
-    for (i, _) in threads.iter().enumerate() {
+    for (i, info) in thread_infos.iter().enumerate() {
         header.push_str(&format!("    _slot_{i}.thread.destroy();\n"));
+        for br in &info.branches {
+            header.push_str(&format!("    _t{i}_br{}_slot.thread.destroy();\n", br.id));
+        }
     }
     header.push_str("  }\n\n");
 
@@ -166,19 +202,41 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
     for n in &driven_outputs {
         header.push_str(&format!("    {} = 0;\n", n));
     }
-    for (ti, segs) in thread_segments.iter().enumerate() {
-        if segs.is_empty() { continue; }
-        header.push_str(&format!("    switch (_seg_{ti}) {{\n"));
-        for (si, seg) in segs.iter().enumerate() {
-            header.push_str(&format!("      case {si}: {{\n"));
-            for cs in &seg.hold_comb {
-                emit_comb_stmt(cs, &mut header, 8);
+    for (ti, info) in thread_infos.iter().enumerate() {
+        if !info.main_segs.is_empty() {
+            header.push_str(&format!("    switch (_seg_{ti}) {{\n"));
+            for (si, seg) in info.main_segs.iter().enumerate() {
+                header.push_str(&format!("      case {si}: {{\n"));
+                for cs in &seg.hold_comb {
+                    emit_comb_stmt(cs, &mut header, 8);
+                }
+                header.push_str("        break;\n");
+                header.push_str("      }\n");
             }
-            header.push_str("        break;\n");
-            header.push_str("      }\n");
+            header.push_str("      default: break;\n");
+            header.push_str("    }\n");
         }
-        header.push_str("      default: break;\n");
-        header.push_str("    }\n");
+        // Per-fork-branch segment switches; only contribute when the
+        // branch slot isn't Done (avoids stale segment outputs after
+        // join completes).
+        for br in &info.branches {
+            header.push_str(&format!(
+                "    if (_t{ti}_br{}_slot.kind != arch_rt::WaitKind::Done) {{\n",
+                br.id
+            ));
+            header.push_str(&format!("      switch (_t{ti}_br{}_seg) {{\n", br.id));
+            for (si, seg) in br.segs.iter().enumerate() {
+                header.push_str(&format!("        case {si}: {{\n"));
+                for cs in &seg.hold_comb {
+                    emit_comb_stmt(cs, &mut header, 10);
+                }
+                header.push_str("          break;\n");
+                header.push_str("        }\n");
+            }
+            header.push_str("        default: break;\n");
+            header.push_str("      }\n");
+            header.push_str("    }\n");
+        }
     }
     for item in &m.body {
         if let ModuleBodyItem::LetBinding(lb) = item {
@@ -201,20 +259,73 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
     }
     for item in &m.body {
         if let ModuleBodyItem::RegDecl(r) = item {
-            header.push_str(&format!("      {} = 0;\n", r.name.name));
+            if let TypeExpr::Vec(_, count_expr) = &r.ty {
+                let count = eval_const(count_expr);
+                header.push_str(&format!("      for (uint64_t _i = 0; _i < {count}; _i++) {} [_i] = 0;\n", r.name.name));
+            } else {
+                header.push_str(&format!("      {} = 0;\n", r.name.name));
+            }
         }
     }
-    for (i, _) in threads.iter().enumerate() {
+    for (i, info) in thread_infos.iter().enumerate() {
         header.push_str(&format!("      _slot_{i}.thread.destroy();\n"));
         header.push_str(&format!("      _slot_{i}.thread = _make_thread_{i}();\n"));
         header.push_str(&format!("      _slot_{i}.kind = arch_rt::WaitKind::Ready;\n"));
         header.push_str(&format!("      _slot_{i}.cycles_remaining = 0;\n"));
         header.push_str(&format!("      _slot_{i}.pred = nullptr;\n"));
         header.push_str(&format!("      _seg_{i} = 0;\n"));
+        // Branch slots return to Done so they don't run until next fork-launch.
+        for br in &info.branches {
+            header.push_str(&format!("      _t{i}_br{}_slot.thread.destroy();\n", br.id));
+            header.push_str(&format!("      _t{i}_br{}_slot.kind = arch_rt::WaitKind::Done;\n", br.id));
+            header.push_str(&format!("      _t{i}_br{}_slot.cycles_remaining = 0;\n", br.id));
+            header.push_str(&format!("      _t{i}_br{}_slot.pred = nullptr;\n", br.id));
+            header.push_str(&format!("      _t{i}_br{}_seg = 0;\n", br.id));
+        }
     }
     header.push_str("      eval();\n");
     header.push_str("      return;\n");
     header.push_str("    }\n");
+    // `default when <cond>` clauses (priority soft-reset per thread):
+    // checked AFTER hard reset and BEFORE the scheduler tick. When the
+    // condition is true, fire the clause's seq assigns and reset the
+    // thread's coroutine to its entry segment — same shape as the
+    // lowered-fsm wrapping behavior in elaborate.rs.
+    for (ti, t) in threads.iter().enumerate() {
+        if let Some((dw_cond, dw_stmts)) = &t.default_when {
+            let cond_cpp = expr_to_cpp_bool(dw_cond)?;
+            header.push_str(&format!("    if ({cond_cpp}) {{\n"));
+            for s in dw_stmts {
+                if let ThreadStmt::SeqAssign(a) = s {
+                    let lhs = expr_to_cpp(&a.target)?;
+                    let rhs = expr_to_cpp(&a.value)?;
+                    header.push_str(&format!("      {lhs} = {rhs};\n"));
+                } else if let ThreadStmt::CombAssign(a) = s {
+                    // CombAssign in default-when block: also fire once
+                    // (treat like a seq assign for soft-reset purposes).
+                    let lhs = expr_to_cpp(&a.target)?;
+                    let rhs = expr_to_cpp(&a.value)?;
+                    header.push_str(&format!("      {lhs} = {rhs};\n"));
+                }
+                // Other ThreadStmt kinds (waits, control flow) are
+                // illegal inside `default when` per arch grammar; ignored
+                // here defensively.
+            }
+            header.push_str(&format!("      _slot_{ti}.thread.destroy();\n"));
+            header.push_str(&format!("      _slot_{ti}.thread = _make_thread_{ti}();\n"));
+            header.push_str(&format!("      _slot_{ti}.kind = arch_rt::WaitKind::Ready;\n"));
+            header.push_str(&format!("      _slot_{ti}.cycles_remaining = 0;\n"));
+            header.push_str(&format!("      _slot_{ti}.pred = nullptr;\n"));
+            header.push_str(&format!("      _seg_{ti} = 0;\n"));
+            // Reset this thread's branches too.
+            for br in &thread_infos[ti].branches {
+                header.push_str(&format!("      _t{ti}_br{}_slot.thread.destroy();\n", br.id));
+                header.push_str(&format!("      _t{ti}_br{}_slot.kind = arch_rt::WaitKind::Done;\n", br.id));
+                header.push_str(&format!("      _t{ti}_br{}_seg = 0;\n", br.id));
+            }
+            header.push_str("    }\n");
+        }
+    }
     header.push_str("    _sched.tick();\n");
     header.push_str("    eval();\n");
     header.push_str("  }\n\n");
@@ -223,9 +334,13 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
 
     header.push_str("private:\n");
     header.push_str("  arch_rt::ThreadScheduler _sched;\n");
-    for (i, _) in threads.iter().enumerate() {
+    for (i, info) in thread_infos.iter().enumerate() {
         header.push_str(&format!("  arch_rt::ThreadSlot _slot_{i};\n"));
         header.push_str(&format!("  uint32_t _seg_{i} = 0;\n"));
+        for br in &info.branches {
+            header.push_str(&format!("  arch_rt::ThreadSlot _t{i}_br{}_slot;\n", br.id));
+            header.push_str(&format!("  uint32_t _t{i}_br{}_seg = 0;\n", br.id));
+        }
     }
     header.push('\n');
 
@@ -233,7 +348,8 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
     for (ti, t) in threads.iter().enumerate() {
         header.push_str(&format!("  arch_rt::ArchThread _make_thread_{ti}() {{\n"));
         let mut body_cpp = String::new();
-        let segs = &thread_segments[ti];
+        let info = &thread_infos[ti];
+        let segs = &info.main_segs;
         if !t.once {
             body_cpp.push_str("    while (true) {\n");
         }
@@ -286,6 +402,27 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
                         "{pad2}co_await arch_rt::wait_cycles(&_slot_{ti}, 1);\n"
                     ));
                 }
+                WaitKind::ForkJoin(branch_ids) => {
+                    // Launch each branch: destroy any prior coroutine,
+                    // create a fresh one, mark slot Ready so the next
+                    // tick resumes it. Then wait until all branch slots
+                    // are Done.
+                    for &bid in branch_ids {
+                        body_cpp.push_str(&format!("{pad2}_t{ti}_br{bid}_slot.thread.destroy();\n"));
+                        body_cpp.push_str(&format!("{pad2}_t{ti}_br{bid}_slot.thread = _t{ti}_br{bid}_make();\n"));
+                        body_cpp.push_str(&format!("{pad2}_t{ti}_br{bid}_slot.kind = arch_rt::WaitKind::Ready;\n"));
+                        body_cpp.push_str(&format!("{pad2}_t{ti}_br{bid}_slot.cycles_remaining = 0;\n"));
+                        body_cpp.push_str(&format!("{pad2}_t{ti}_br{bid}_slot.pred = nullptr;\n"));
+                        body_cpp.push_str(&format!("{pad2}_t{ti}_br{bid}_seg = 0;\n"));
+                    }
+                    let pred = branch_ids.iter()
+                        .map(|b| format!("_t{ti}_br{b}_slot.kind == arch_rt::WaitKind::Done"))
+                        .collect::<Vec<_>>()
+                        .join(" && ");
+                    body_cpp.push_str(&format!(
+                        "{pad2}co_await arch_rt::wait_until(&_slot_{ti}, [this]{{ return {pred}; }});\n"
+                    ));
+                }
             }
             if seg.for_loop.is_some() {
                 let pad_close = " ".repeat(ind);
@@ -298,6 +435,74 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
         header.push_str(&body_cpp);
         header.push_str("    co_return;\n");
         header.push_str("  }\n\n");
+
+        // Branch coroutines for this thread (one per fork branch).
+        // Each is a one-shot (no while-true) — branches complete then
+        // sit at Done until the parent's next fork-launch resets them.
+        for br in &info.branches {
+            header.push_str(&format!(
+                "  arch_rt::ArchThread _t{ti}_br{}_make() {{\n", br.id
+            ));
+            for (si, seg) in br.segs.iter().enumerate() {
+                let pad = "    ";
+                if let Some(fl) = &seg.for_loop {
+                    let s = expr_to_cpp(&fl.start)?;
+                    let e = expr_to_cpp(&fl.end)?;
+                    header.push_str(&format!(
+                        "{pad}for (uint64_t {v} = {s}; {v} <= {e}; {v}++) {{\n",
+                        v = fl.var
+                    ));
+                }
+                let pad2 = if seg.for_loop.is_some() { "      " } else { "    " };
+                header.push_str(&format!("{pad2}_t{ti}_br{}_seg = {si};\n", br.id));
+                for sa in &seg.entry_seq {
+                    let lhs = expr_to_cpp(&sa.target)?;
+                    let rhs = expr_to_cpp(&sa.value)?;
+                    header.push_str(&format!("{pad2}{lhs} = {rhs};\n"));
+                }
+                for ie in &seg.entry_seq_if {
+                    emit_seq_if(ie, &mut header, if seg.for_loop.is_some() { 6 } else { 4 })?;
+                }
+                match &seg.wait_kind {
+                    WaitKind::Until(cond) => {
+                        let pred = expr_to_cpp_bool(cond)?;
+                        header.push_str(&format!(
+                            "{pad2}co_await arch_rt::wait_until(&_t{ti}_br{}_slot, [this]{{ return {pred}; }});\n", br.id
+                        ));
+                    }
+                    WaitKind::Cycles(n) => {
+                        let n_str = expr_to_cpp(n)?;
+                        header.push_str(&format!(
+                            "{pad2}co_await arch_rt::wait_cycles(&_t{ti}_br{}_slot, {n_str});\n", br.id
+                        ));
+                    }
+                    WaitKind::Terminal => {
+                        // Terminal in branch body. If the segment has held
+                        // outputs the user wrote (e.g. `aw_valid = 0;` after
+                        // a wait), they need one cycle of visibility before
+                        // the branch goes Done — otherwise the assignment is
+                        // invisible because eval() skips segment switches
+                        // for Done branches. A 1-cycle yield here matches
+                        // the lowered-fsm behavior (each trailing segment
+                        // becomes its own state with one posedge of comb
+                        // visibility).
+                        if !seg.hold_comb.is_empty() {
+                            header.push_str(&format!(
+                                "{pad2}co_await arch_rt::wait_cycles(&_t{ti}_br{}_slot, 1);\n", br.id
+                            ));
+                        }
+                    }
+                    WaitKind::ForkJoin(_) => {
+                        return Err("nested fork/join inside fork branch not yet supported".into());
+                    }
+                }
+                if seg.for_loop.is_some() {
+                    header.push_str("    }\n");
+                }
+            }
+            header.push_str("    co_return;\n");
+            header.push_str("  }\n\n");
+        }
     }
 
     header.push_str("};\n");
@@ -310,7 +515,9 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
 }
 
 // Walk thread body and partition into segments at each wait point.
-fn partition(body: &[ThreadStmt]) -> Result<Vec<Segment>, String> {
+// Branches collected from any nested fork/join sites are appended to
+// `branches`; the caller passes a fresh Vec at the top level.
+fn partition(body: &[ThreadStmt], branches: &mut Vec<Branch>) -> Result<Vec<Segment>, String> {
     let mut segs: Vec<Segment> = Vec::new();
     let mut cur = new_segment();
 
@@ -364,7 +571,7 @@ fn partition(body: &[ThreadStmt]) -> Result<Vec<Segment>, String> {
                 // Partition the loop body — Phase 2 supports a body with
                 // exactly one wait (like BurstRead). The loop body is then
                 // a single segment that gets wrapped in a C++ for loop.
-                let inner = partition(body)?;
+                let inner = partition(body, branches)?;
                 if inner.len() != 1 {
                     return Err("`for` body must contain exactly one wait segment in Phase 2".into());
                 }
@@ -375,6 +582,32 @@ fn partition(body: &[ThreadStmt]) -> Result<Vec<Segment>, String> {
                     end: end.clone(),
                 });
                 segs.push(inner_seg);
+            }
+            ThreadStmt::ForkJoin(branch_bodies, _) => {
+                // Flush any pending into a 1-cycle yield segment so the
+                // pre-fork holds get a chance to settle. Phase 3a: error
+                // if pending (force user to put a wait before fork).
+                if !cur.hold_comb.is_empty() || !cur.entry_seq.is_empty() || !cur.entry_seq_if.is_empty() {
+                    return Err("fork preceded by un-flushed comb/seq assigns not yet supported \
+                        (insert a wait before the fork)".into());
+                }
+                // Allocate a Branch per branch body, partition each.
+                let mut branch_ids: Vec<usize> = Vec::new();
+                for body in branch_bodies {
+                    let id = branches.len();
+                    let segs = partition(body, branches)?;
+                    branches.push(Branch { id, segs });
+                    branch_ids.push(id);
+                }
+                // Emit a fork segment whose wait waits for all branches Done.
+                cur.wait_kind = WaitKind::ForkJoin(branch_ids);
+                segs.push(std::mem::replace(&mut cur, new_segment()));
+            }
+            ThreadStmt::Lock { .. } => {
+                return Err("`lock` (resource arbitration) not yet supported by thread sim (Phase 3)".into());
+            }
+            ThreadStmt::DoUntil { .. } => {
+                return Err("`do until` not yet supported by thread sim (Phase 3)".into());
             }
             other => return Err(format!("thread stmt not yet supported: {:?}", std::mem::discriminant(other))),
         }
@@ -524,6 +757,13 @@ fn expr_to_cpp(e: &Expr) -> Result<String, String> {
         ExprKind::Unary(UnaryOp::Not, inner) => Ok(format!("!({})", expr_to_cpp_bool(inner)?)),
         ExprKind::Unary(UnaryOp::BitNot, inner) => Ok(format!("(~({}))", expr_to_cpp(inner)?)),
         ExprKind::Unary(UnaryOp::Neg, inner) => Ok(format!("(-({}))", expr_to_cpp(inner)?)),
+        ExprKind::Index(base, idx) => {
+            // Vec/array indexing: lower as C++ subscript. The base is
+            // typically a Vec reg (`thread_complete[i]`).
+            let b = expr_to_cpp(base)?;
+            let i = expr_to_cpp(idx)?;
+            Ok(format!("{b}[{i}]"))
+        }
         ExprKind::Binary(op, lhs, rhs) => {
             let l = expr_to_cpp(lhs)?;
             let r = expr_to_cpp(rhs)?;
