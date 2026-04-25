@@ -193,7 +193,8 @@ parallel-N=1 vs parallel-N=k. Probably gated behind a separate
 | 3.2 — N OS threads | std::thread per `thread` block; barrier-synchronized loop per OS thread. No deterministic ordering yet. | tests/thread/ all pass under `--thread-sim parallel-N>1`; result correct (may be non-deterministic) |
 | 3.3 — determinism | Empirical verification (10-run identical-VCD check); ARCH_TSAN=1 opt-in for race detection. **Naturally race-free for owned outputs — no extra runtime machinery needed.** Affinity / ordered publish / per-thread write buffers deferred until a shared(or)-under-MT consumer needs them. | 10 runs identical (PASS); zero TSan reports (PASS) |
 | 3.4 — perf measurement | Benchmark in tests/thread_sim_perf/. **Result**: architecture verified correct but **NO speedup yet** at N>1 for current workloads on Apple Silicon — barrier overhead + P/E core scheduling dominates sub-µs per-cycle work. ~50µs/cycle at N=5 vs 250ns/cycle at N=1 on ThreadMm2s. See tests/thread_sim_perf/README.md for full analysis. Path to speedup (deferred to Phase 3.5+): cycle batching, perf-core affinity, x86 Linux comparison, complex per-cycle workloads. | Architecture works (PASS); speedup target NOT met (deferred) |
-| 3.5 — thread groups (optional) | If oversubscription hurts: bundle small threads. Static analysis to estimate per-thread work. | Speedup recovers when N > host_cores |
+| 3.5 — cycle batching | Public `dut.run_cycles(K)` API: workers do K ticks per barrier round-trip. Trade-off: per-cycle observability sacrificed in batch (segment switches/eval/debug/VCD only fire at batch end). Worker loop reads `_batch_count` to decide K. **ThreadMm2s at N=2 batch: 14.3 Mcyc/s — 2.2× over fsm, 700× over per-cycle MT.** | Speedup ≥ 2× over fsm at N=2 (PASS) |
+| 3.6 — thread groups (optional, future) | If oversubscription hurts: bundle small threads. Static analysis to estimate per-thread work. | Speedup recovers when N > host_cores |
 
 ## Risks
 

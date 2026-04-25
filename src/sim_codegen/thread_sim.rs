@@ -637,6 +637,24 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool, num_os_threads
         String::new()
     };
 
+    if mt {
+        // Public cycle-batch API: run K cycles in workers without
+        // returning to caller between them. Trade-off: per-cycle
+        // observability is sacrificed (no segment-switch eval, no
+        // module-level comb/seq, no debug log, no VCD dump inside
+        // the batch — only at the end). Use when running long
+        // input-stable simulations where amortizing barrier cost
+        // matters more than per-cycle observability.
+        header.push_str("  void run_cycles(uint64_t k) {\n");
+        header.push_str("    if (k == 0) return;\n");
+        header.push_str("    _batch_count.store(k, std::memory_order_release);\n");
+        header.push_str("    _start_barrier.wait();\n");
+        header.push_str("    _end_barrier.wait();\n");
+        header.push_str("    _batch_count.store(0, std::memory_order_release);\n");
+        header.push_str("    eval();  // settle outputs after the batch\n");
+        header.push_str("  }\n\n");
+    }
+
     header.push_str("private:\n");
     header.push_str("  uint8_t _clk_prev = 0;\n");
     if wave {
@@ -665,6 +683,10 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool, num_os_threads
         // each posedge.
         let total = thread_infos.len() + 1;
         header.push_str("  std::atomic<bool> _shutdown{false};\n");
+        // Cycle-batch count: 0 = per-cycle mode (workers run 1 tick
+        // per barrier round-trip from eval()); >0 = cycle-batch mode
+        // (workers run K ticks per round-trip, set by run_cycles(K)).
+        header.push_str("  std::atomic<uint64_t> _batch_count{0};\n");
         header.push_str(&format!("  arch_rt::Barrier _start_barrier{{{total}}};\n"));
         header.push_str(&format!("  arch_rt::Barrier _end_barrier{{{total}}};\n"));
         for (i, _) in thread_infos.iter().enumerate() {
@@ -884,14 +906,22 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool, num_os_threads
 
     if mt {
         // Per-worker loop method. Each worker waits at _start_barrier,
-        // checks _shutdown, ticks its scheduler, then waits at
-        // _end_barrier. Loops until shutdown.
+        // checks _shutdown, runs the requested number of ticks, then
+        // waits at _end_barrier. _batch_count==0 ⇒ regular per-cycle
+        // mode (one tick per barrier round-trip from eval()).
+        // _batch_count>0 ⇒ cycle-batch mode (workers run K ticks
+        // before signaling done, amortizing barrier overhead over K
+        // cycles). Caller invokes batch mode via run_cycles(K).
         for (i, _) in thread_infos.iter().enumerate() {
             header.push_str(&format!("  void _worker_loop_{i}() {{\n"));
             header.push_str("    while (true) {\n");
             header.push_str("      _start_barrier.wait();\n");
             header.push_str("      if (_shutdown.load(std::memory_order_acquire)) break;\n");
-            header.push_str(&format!("      _sched_{i}.tick();\n"));
+            header.push_str("      uint64_t k = _batch_count.load(std::memory_order_acquire);\n");
+            header.push_str("      if (k == 0) k = 1;\n");
+            header.push_str("      for (uint64_t _j = 0; _j < k; _j++) {\n");
+            header.push_str(&format!("        _sched_{i}.tick();\n"));
+            header.push_str("      }\n");
             header.push_str("      _end_barrier.wait();\n");
             header.push_str("    }\n");
             header.push_str("  }\n\n");
