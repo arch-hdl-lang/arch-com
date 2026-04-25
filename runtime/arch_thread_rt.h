@@ -107,13 +107,20 @@ struct ThreadScheduler {
     //   - Ready:       (only first tick, or just-marked-ready) resume the
     //                  coroutine until it suspends or finishes.
     void tick() {
-        // Each slot resumes at most ONCE per tick. Without this guard,
-        // a slot whose WaitUntil pred is held high (e.g. for-loop
-        // with r_valid stuck on) would resume → suspend on the next
-        // wait → re-resume infinitely within one tick.
-        std::vector<bool> resumed(slots.size(), false);
+        // Semantic: `wait until cond` blocks for AT LEAST one posedge,
+        // even if `cond` is true at the moment of suspension. Same for
+        // `wait_cycles(N)` — counter decrements once per tick, never
+        // advances and resumes within the same tick.
+        //
+        // Implementation: pred evaluation samples the PRIOR-tick state
+        // (pass 1), and resume happens once (pass 2). A slot that
+        // becomes WaitUntil/WaitCycles during pass 2 will NOT have its
+        // new pred evaluated this tick — it waits for the next.
+        // This matches the lowered-fsm rule that every state transition
+        // costs a posedge, and prevents zero-cycle races at fork-joins
+        // and cross-thread signal handshakes.
 
-        // Pass 1: advance wait conditions (counters tick, preds eval).
+        // Pass 1: advance wait conditions based on PRIOR-tick state.
         for (auto* s : slots) {
             if (s->kind == WaitKind::WaitCycles) {
                 if (s->cycles_remaining > 0) --s->cycles_remaining;
@@ -122,28 +129,14 @@ struct ThreadScheduler {
                 if (s->pred && s->pred()) s->kind = WaitKind::Ready;
             }
         }
-        // Pass 2 (iterated): resume Ready slots that haven't resumed
-        // this tick. After each batch, re-evaluate WaitUntil preds
-        // for non-yet-resumed slots — covers fork-join (parent's
-        // "all branches Done" pred fires after branches finish).
-        bool changed = true;
-        while (changed) {
-            changed = false;
-            for (size_t i = 0; i < slots.size(); ++i) {
-                if (slots[i]->kind == WaitKind::Ready && !resumed[i]) {
-                    resumed[i] = true;
-                    slots[i]->thread.resume();
-                    if (slots[i]->thread.done()) slots[i]->kind = WaitKind::Done;
-                    changed = true;
-                }
-            }
-            for (size_t i = 0; i < slots.size(); ++i) {
-                if (!resumed[i] && slots[i]->kind == WaitKind::WaitUntil) {
-                    if (slots[i]->pred && slots[i]->pred()) {
-                        slots[i]->kind = WaitKind::Ready;
-                        changed = true;
-                    }
-                }
+        // Pass 2: resume Ready slots exactly once. They run until they
+        // hit another co_await (kind ← WaitUntil/WaitCycles — those
+        // preds are NOT re-evaluated in this tick) or co_return
+        // (kind ← Done).
+        for (auto* s : slots) {
+            if (s->kind == WaitKind::Ready) {
+                s->thread.resume();
+                if (s->thread.done()) s->kind = WaitKind::Done;
             }
         }
     }
