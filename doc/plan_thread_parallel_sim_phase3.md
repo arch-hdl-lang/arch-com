@@ -6,8 +6,8 @@
 
 After Phase 3:
 - An N-thread design (e.g. multi-channel DMA, NoC mesh) sims at near-N× the current single-core throughput when the host has ≥N cores.
-- `arch sim --thread-sim parallel-mt` is opt-in; existing `--thread-sim parallel` stays single-OS-thread (cooperative coroutine scheduling).
-- All five `tests/thread/` cross-checks remain bit-identical between fsm, parallel, and parallel-mt paths.
+- `arch sim --thread-sim parallel --threads N` (with N>1) is opt-in; default `--threads 1` keeps current cooperative single-OS-thread behavior.
+- All five `tests/thread/` cross-checks remain bit-identical between fsm, parallel-N=1, and parallel-N=k paths.
 
 Non-goals:
 - Parallelizing `gen_module`'s comb blocks. Threads are the user-marked concurrency boundary.
@@ -116,17 +116,31 @@ Mitigations:
 
 Result: same input + same `--threads N` ⇒ bit-identical VCD across runs.
 
-### 7. CLI: `--thread-sim parallel-mt` (new mode)
+### 7. CLI: `--thread-sim parallel` + `--threads N` (Verilator-style)
 
-Three modes total:
+Reuse the existing `--thread-sim parallel` mode; add a separate
+`--threads N` flag that controls how many OS threads run user
+threads. Same shape as Verilator's `--threads N`.
 
-| Mode | Threads | Use case |
+| Invocation | Threads | Use case |
 |---|---|---|
-| `fsm` (default) | Single | Synth-equivalence ground truth |
-| `parallel` | Single (cooperative coroutines) | Validates parallel runtime; cross-check reference |
-| `parallel-mt` | One OS thread per `thread` block | Performance lane |
+| `--thread-sim fsm` (default) | Single | Synth-equivalence ground truth |
+| `--thread-sim parallel` (`--threads 1`, default) | Single (cooperative coroutines) | Today's behavior — back-compat |
+| `--thread-sim parallel --threads N` (N>1) | N OS threads | Performance lane |
+| `--thread-sim both` | fsm + parallel-N=1 cross-check | Validation (unchanged) |
 
-`--thread-sim both` continues to compare fsm vs parallel (single-core, deterministic). A future `--thread-sim three` could add parallel-mt to the diff once perf-mode determinism is proven.
+`--threads 1` is the default for `--thread-sim parallel`, so existing
+TBs and CI invocations keep their current single-thread-cooperative
+semantics with no change. Opting into multi-OS-thread is an additive
+flag.
+
+Optional convenience: `--threads auto` could pick `min(num_user_threads,
+num_host_cores)`. Defer to sub-phase 3.4 once perf is measured.
+
+Once parallel-N>1 determinism is proven (sub-phase 3.3), extend
+`--thread-sim both` to support an opt-in three-way diff: fsm vs
+parallel-N=1 vs parallel-N=k. Probably gated behind a separate
+`--threads-cross-check N` flag rather than overloading `both`.
 
 ### 8. Existing features: integration points
 
@@ -144,10 +158,10 @@ Three modes total:
 | Sub-phase | Scope | Gate |
 |---|---|---|
 | 3.0 — design lock | This doc, reviewer sign-off | Approval |
-| 3.1 — barrier + two-region runtime | Implement Barrier, write-buffer publish, two-region tick. Wire single-thread sim through it (no actual parallelism yet) — proves the runtime correct. | All Phase 2 cross-checks still PASS via parallel-mt with N=1 thread |
-| 3.2 — N OS threads | std::thread per `thread` block; barrier-synchronized loop per OS thread. No deterministic ordering yet. | tests/thread/ all pass under `--thread-sim parallel-mt`; result correct (may be non-deterministic) |
+| 3.1 — barrier + two-region runtime | Implement Barrier, write-buffer publish, two-region tick. Wire single-thread sim through it (no actual parallelism yet) — proves the runtime correct. | All Phase 2 cross-checks still PASS via parallel-N>1 with N=1 thread |
+| 3.2 — N OS threads | std::thread per `thread` block; barrier-synchronized loop per OS thread. No deterministic ordering yet. | tests/thread/ all pass under `--thread-sim parallel-N>1`; result correct (may be non-deterministic) |
 | 3.3 — determinism | Fixed thread→core mapping; ordered publish; ordered debug log merge | Same VCD bit-identical across 10 runs |
-| 3.4 — perf measurement | Benchmark on tests/axi_dma_thread/ (5 threads): cycles-per-second under fsm, parallel, parallel-mt with N=1, N=2, N=4, N=8 | Speedup ≥ 2× at N=4 vs N=1 |
+| 3.4 — perf measurement | Benchmark on tests/axi_dma_thread/ (5 threads): cycles-per-second under fsm, parallel, parallel-N>1 with N=1, N=2, N=4, N=8 | Speedup ≥ 2× at N=4 vs N=1 |
 | 3.5 — thread groups (optional) | If oversubscription hurts: bundle small threads. Static analysis to estimate per-thread work. | Speedup recovers when N > host_cores |
 
 ## Risks
@@ -156,18 +170,18 @@ Three modes total:
 |---|---|
 | Spin-wait barriers waste CPU on under-loaded systems | After N=1000 spins, fall back to `std::this_thread::yield()`. Verilator does this. |
 | Determinism breaks under contention | Ordered publish + fixed affinity. Cross-check against single-thread parallel via `--thread-sim three` once that ships. |
-| Memory model bugs (missing acquire/release) | Use Sanitizer: `-fsanitize=thread` in CI for parallel-mt builds. Catches data races at runtime. |
+| Memory model bugs (missing acquire/release) | Use Sanitizer: `-fsanitize=thread` in CI for parallel-N>1 builds. Catches data races at runtime. |
 | Resource-lock CAS livelock under heavy contention | Bounded retry (N=100) before falling back to a brief sleep. Real workloads have low contention; livelock is a pathology. |
 | Coverage-counter merging serializes | Per-thread counter arrays, merged once at exit. No per-cycle synchronization. |
 | --debug output interleaves non-deterministically | Per-thread buffer + merged in thread-index order at end of eval(). Deterministic. |
 
 ## Open questions for the reviewer
 
-1. **Default-when racing** — if the soft-reset condition involves outputs from two different threads, can the threads disagree on whether to reset? *Likely no — the pred reads from the previous-cycle published values, which all threads see the same way. But worth a worked example before coding.*
+1. ~~**Default-when racing**~~ **Decided**: no — the pred reads from the previous-cycle PUBLISHED values (post-barrier B1 from the prior cycle), so every thread sees the same snapshot. Even when the pred references outputs driven by different threads, all threads agree on whether the condition is true. Each thread independently fires its own default-when seq + resets its own coroutine; the per-thread reset is independent (no cross-thread coordination needed). Confirmed.
 2. ~~**Module-level `comb` and `seq` blocks**~~ **Decided**: run on the eval-caller thread (the one the TB calls `dut.eval()` from). This avoids spawning a "thread 0" OS thread for what is conceptually setup/wrapper logic, keeps the comb/seq close to the TB driver (lowest latency to TB-driven inputs), and matches the existing single-thread parallel sim's structure. Synchronization: place a barrier between the caller-thread comb/seq evaluation and the worker threads' Phase B publish, so workers see the just-updated reg values consistently. The caller thread effectively executes the wrapper while workers wait at the barrier — minor serialization overhead, but the wrapper is typically small (single-digit assignments).
 3. **Bus ports** — none of the existing thread tests use them; deferred. But Phase 3 will want a story for bus-port writes from multiple threads (e.g. AXI shared by N initiators).
 4. **Affinity on macOS** — `thread_policy_set` is allowed but advisory; on Apple Silicon it doesn't bind to perf-cores. May need to skip affinity on macOS and rely on ordered publish alone for determinism.
-5. **CLI naming** — `parallel-mt` vs `parallel-threads N`? Latter is more Verilator-like. Lean: `parallel-mt` for "yes/no", with default `--threads = #thread blocks`. Override via `--threads N`.
+5. ~~**CLI naming**~~ **Decided**: Verilator-style `--thread-sim parallel --threads N`. Default `--threads 1` preserves current cooperative-single-OS-thread behavior. Multi-OS-thread is opted into additively. See §7 for full detail.
 
 ## Estimated effort
 
