@@ -1,7 +1,29 @@
+// Address-CAM helper for the TLB virtual-tag lookup. Caller owns
+// `valid_bits` externally so a single-cycle flush is possible without
+// multi-cycle cam writes (cam v1 has one write per cycle).
+cam Tlb_Cam
+  param DEPTH: const = 4;
+  param KEY_W: const = 8;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+
+  port write_valid: in Bool;
+  port write_idx:   in UInt<2>;
+  port write_key:   in UInt<8>;
+  port write_set:   in Bool;
+
+  port search_key:   in  UInt<8>;
+  port search_mask:  out UInt<4>;
+  port search_any:   out Bool;
+  port search_first: out UInt<2>;
+end cam Tlb_Cam
+
 module TLB
   param TLB_SIZE: const = 4;
   param ADDR_WIDTH: const = 8;
   param PAGE_WIDTH: const = 8;
+
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
   port virtual_address: in UInt<ADDR_WIDTH>;
@@ -14,44 +36,62 @@ module TLB
 
   default seq on clk rising;
 
-  reg virtual_tags_0: UInt<ADDR_WIDTH> reset rst=>0;
-  reg virtual_tags_1: UInt<ADDR_WIDTH> reset rst=>0;
-  reg virtual_tags_2: UInt<ADDR_WIDTH> reset rst=>0;
-  reg virtual_tags_3: UInt<ADDR_WIDTH> reset rst=>0;
-  reg physical_pages_0: UInt<PAGE_WIDTH> reset rst=>0;
-  reg physical_pages_1: UInt<PAGE_WIDTH> reset rst=>0;
-  reg physical_pages_2: UInt<PAGE_WIDTH> reset rst=>0;
-  reg physical_pages_3: UInt<PAGE_WIDTH> reset rst=>0;
-  reg valid_bits: UInt<TLB_SIZE> reset rst=>0;
-  reg replacement_idx: UInt<2> reset rst=>0;
+  // External valid bits — separate from the cam's internal valid so a
+  // single-cycle flush stays single-cycle (cam v1 has one write port,
+  // and clearing N entries would otherwise take N cycles).
+  reg valid_bits: UInt<TLB_SIZE> reset rst => 0;
+  reg replacement_idx: UInt<2>   reset rst => 0;
 
-  let v0: Bool = (virtual_tags_0 == virtual_address);
-  let v1: Bool = (virtual_tags_1 == virtual_address);
-  let v2: Bool = (virtual_tags_2 == virtual_address);
-  let v3: Bool = (virtual_tags_3 == virtual_address);
+  // Per-entry physical pages — addressed by the priority-encoded match
+  // index. The cam stores the virtual_address keys.
+  reg physical_pages: Vec<UInt<PAGE_WIDTH>, TLB_SIZE> reset rst => 0;
 
-  let match0: Bool = valid_bits[0:0] & v0;
-  let match1: Bool = valid_bits[1:1] & v1;
-  let match2: Bool = valid_bits[2:2] & v2;
-  let match3: Bool = valid_bits[3:3] & v3;
+  wire cam_search_mask:  UInt<TLB_SIZE>;
+  wire cam_search_any:   Bool;        // unused; required to bind cam port
+  wire cam_search_first: UInt<2>;     // unused; required to bind cam port
+  wire hit_idx:          UInt<2>;
+  wire any_match:        Bool;
+
+  inst tlb_cam: Tlb_Cam
+    param DEPTH = TLB_SIZE;
+    param KEY_W = ADDR_WIDTH;
+
+    clk           <- clk;
+    rst           <- rst;
+    write_valid   <- tlb_write_enable & ~flsh;
+    write_idx     <- replacement_idx;
+    write_key     <- virtual_address;
+    write_set     <- true;
+    search_key    <- virtual_address;
+    search_mask   -> cam_search_mask;
+    search_any    -> cam_search_any;
+    search_first  -> cam_search_first;
+  end inst tlb_cam
+
+  // A "real" match is one the cam reports AND whose external valid bit
+  // is set. Flush only clears valid_bits, not the cam's internal state,
+  // so the AND below is what makes flush a single-cycle operation.
+  let effective_match: UInt<TLB_SIZE> = valid_bits & cam_search_mask;
+
+  // Priority encoder for first effective match (LSB-first).
+  comb
+    hit_idx = 0;
+    any_match = false;
+    for i in 0..TLB_SIZE-1
+      if ~any_match
+        if (effective_match >> i) & 1
+          hit_idx = i.trunc<2>();
+          any_match = true;
+        end if
+      end if
+    end for
+  end comb
 
   comb
-    if match0
+    if any_match
       hit = true;
       miss = false;
-      physical_address = physical_pages_0;
-    elsif match1
-      hit = true;
-      miss = false;
-      physical_address = physical_pages_1;
-    elsif match2
-      hit = true;
-      miss = false;
-      physical_address = physical_pages_2;
-    elsif match3
-      hit = true;
-      miss = false;
-      physical_address = physical_pages_3;
+      physical_address = physical_pages[hit_idx];
     else
       hit = false;
       miss = true;
@@ -63,27 +103,9 @@ module TLB
     if flsh
       valid_bits <= 0;
     elsif tlb_write_enable
-      if replacement_idx == 0
-        virtual_tags_0 <= virtual_address;
-        physical_pages_0 <= page_table_entry;
-        valid_bits <= valid_bits | 4'b0001;
-        replacement_idx <= 1;
-      elsif replacement_idx == 1
-        virtual_tags_1 <= virtual_address;
-        physical_pages_1 <= page_table_entry;
-        valid_bits <= valid_bits | 4'b0010;
-        replacement_idx <= 2;
-      elsif replacement_idx == 2
-        virtual_tags_2 <= virtual_address;
-        physical_pages_2 <= page_table_entry;
-        valid_bits <= valid_bits | 4'b0100;
-        replacement_idx <= 3;
-      else
-        virtual_tags_3 <= virtual_address;
-        physical_pages_3 <= page_table_entry;
-        valid_bits <= valid_bits | 4'b1000;
-        replacement_idx <= 0;
-      end if
+      physical_pages[replacement_idx] <= page_table_entry;
+      valid_bits <= valid_bits | ((1.zext<TLB_SIZE>()) << replacement_idx);
+      replacement_idx <= replacement_idx +% 1;
     end if
   end seq
 end module TLB
