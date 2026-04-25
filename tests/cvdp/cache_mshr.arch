@@ -1,3 +1,32 @@
+// Address-CAM helper used by cache_mshr to find the tail of the chain
+// for a given line address. Maintains (valid, addr) per slot; the cam's
+// dual-write port commits allocate (port 2, wins on conflict) and
+// finalize (port 1) on the same edge.
+cam Mshr_Addr_Cam
+  param DEPTH: const = 32;
+  param KEY_W: const = 10;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+
+  // Port 1: finalize (clear by id)
+  port write_valid: in Bool;
+  port write_idx:   in UInt<5>;
+  port write_key:   in UInt<10>;
+  port write_set:   in Bool;
+
+  // Port 2: allocate (insert at alloc_idx with allocate_addr) — wins on same-idx conflict
+  port write2_valid: in Bool;
+  port write2_idx:   in UInt<5>;
+  port write2_key:   in UInt<10>;
+  port write2_set:   in Bool;
+
+  port search_key:   in  UInt<10>;
+  port search_mask:  out UInt<32>;
+  port search_any:   out Bool;
+  port search_first: out UInt<5>;
+end cam Mshr_Addr_Cam
+
 module cache_mshr
   param MSHR_SIZE: const = 32;
   param CS_LINE_ADDR_WIDTH: const = 10;
@@ -60,13 +89,44 @@ module cache_mshr
   reg dq_valid_r:   Bool;
   reg dq_idx_r:     UInt<MSHR_ADDR_WIDTH>;
 
-  // Wires for priority encoder
+  // Wires for the free-slot priority encoder
   wire alloc_idx:      UInt<MSHR_ADDR_WIDTH>;
   wire full_flag:      Bool;
-  wire prev_idx:       UInt<MSHR_ADDR_WIDTH>;
-  wire prev_all_zeros: Bool;
 
-  // Priority encoder: find first free slot (LSB-first)
+  // Wires for the address-CAM lookup chain
+  wire addr_search_mask:  UInt<MSHR_SIZE>;
+  wire addr_search_any:   Bool;                       // unused; required to bind cam port
+  wire addr_search_first: UInt<MSHR_ADDR_WIDTH>;      // unused; required to bind cam port
+  wire has_next_mask:     UInt<MSHR_SIZE>;
+  wire tail_mask:         UInt<MSHR_SIZE>;
+  wire prev_idx:          UInt<MSHR_ADDR_WIDTH>;
+  wire prev_all_zeros:    Bool;
+
+  // Address CAM: maintains (valid, addr) per slot. Port 1 = finalize,
+  // port 2 = allocate (wins on same-idx conflict, matching the original
+  // last-assignment-wins seq semantics).
+  inst addr_cam: Mshr_Addr_Cam
+    param DEPTH = MSHR_SIZE;
+    param KEY_W = CS_LINE_ADDR_WIDTH;
+
+    clk           <- clk;
+    rst           <- reset;
+    write_valid   <- finalize_valid;
+    write_idx     <- finalize_id;
+    write_key     <- 0.zext<CS_LINE_ADDR_WIDTH>();  // ignored on clear; explicit width to silence iverilog literal-prune warning
+    write_set     <- false;
+    write2_valid  <- allocate_valid & ~full_flag;
+    write2_idx    <- alloc_idx;
+    write2_key    <- allocate_addr;
+    write2_set    <- true;
+    search_key    <- allocate_addr;
+    search_mask   -> addr_search_mask;
+    search_any    -> addr_search_any;
+    search_first  -> addr_search_first;
+  end inst addr_cam
+
+  // Free-slot priority encoder: find first ~entry_valid (LSB-first).
+  // Not a CAM lookup (no key matching), so still hand-rolled.
   comb
     alloc_idx = 0;
     full_flag = true;
@@ -80,13 +140,28 @@ module cache_mshr
     end for
   end comb
 
-  // Priority encoder: find first matching entry with no next (LSB-first)
+  // Pack entry_has_next into a UInt mask so we can AND it with the
+  // CAM's search_mask. The tail of a chain is an entry that matches
+  // the address AND has no next pointer.
+  comb
+    has_next_mask = 0;
+    for i in 0..MSHR_SIZE-1
+      if entry_has_next[i]
+        has_next_mask = has_next_mask | ((1.zext<MSHR_SIZE>()) << i);
+      end if
+    end for
+  end comb
+
+  let tail_mask_w: UInt<MSHR_SIZE> = addr_search_mask & ~has_next_mask;
+  let tail_mask = tail_mask_w;
+
+  // Priority-encode tail_mask to get prev_idx (LSB-first).
   comb
     prev_idx = 0;
     prev_all_zeros = true;
     for i in 0..MSHR_SIZE-1
       if ~prev_all_zeros == false
-        if entry_valid[i] & (entry_addr[i] == allocate_addr) & ~entry_has_next[i]
+        if (tail_mask >> i) & 1
           prev_idx = i.trunc<MSHR_ADDR_WIDTH>();
           prev_all_zeros = false;
         end if
