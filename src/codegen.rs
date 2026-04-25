@@ -3536,6 +3536,11 @@ impl<'a> Codegen<'a> {
 
     fn emit_fsm(&mut self, f: &FsmDecl) {
         self.current_construct = f.name.name.clone();
+        // Built-in `state` identifier inside fsm scope: read of the current
+        // encoded state register. SV emission lowers to `state_r` (the enum
+        // register), which implicitly casts to the user-declared output port
+        // width. Cleared at the end of emit_fsm.
+        self.ident_subst.insert("state".to_string(), "state_r".to_string());
         let n = f.name.name.clone();
         let n_states = f.state_names.len();
         let state_bits = enum_width(n_states);
@@ -3628,14 +3633,19 @@ impl<'a> Codegen<'a> {
         }
 
         // ── Let wire declarations ────────────────────────────────────────────
+        let port_names_in_fsm: std::collections::HashSet<&str> =
+            f.ports.iter().map(|p| p.name.name.as_str()).collect();
         for lb in &f.lets {
-            let ty = if let Some(t) = &lb.ty {
-                self.emit_type_str(t)
-            } else {
-                "logic".to_string()
-            };
             let val = self.emit_expr_str(&lb.value);
-            self.line(&format!("{ty} {};", lb.name.name));
+            let aliases_port = lb.ty.is_none() && port_names_in_fsm.contains(lb.name.name.as_str());
+            if !aliases_port {
+                let ty = if let Some(t) = &lb.ty {
+                    self.emit_type_str(t)
+                } else {
+                    "logic".to_string()
+                };
+                self.line(&format!("{ty} {};", lb.name.name));
+            }
             self.line(&format!("assign {} = {};", lb.name.name, val));
         }
         if !f.lets.is_empty() {
@@ -3869,6 +3879,7 @@ impl<'a> Codegen<'a> {
         self.line("");
         self.line("endmodule");
         self.line("");
+        self.ident_subst.remove("state");
     }
 
     // ── Pipeline ──────────────────────────────────────────────────────────────

@@ -28,6 +28,7 @@ mod linklist;
 mod pipeline;
 mod ram;
 mod cam;
+pub mod thread_sim;
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -1590,6 +1591,11 @@ impl<'a> Ctx<'a> {
 
     fn with_fsm_vec_port_regs(mut self, fsm_vec_port_regs: &'a HashSet<String>) -> Self {
         self.fsm_vec_port_regs = Some(fsm_vec_port_regs);
+        self
+    }
+
+    fn with_ident_subst(mut self, ident_subst: &'a HashMap<String, String>) -> Self {
+        self.ident_subst = Some(ident_subst);
         self
     }
 

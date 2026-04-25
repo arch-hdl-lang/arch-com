@@ -129,6 +129,11 @@ enum Command {
         /// --annotate annot/ <file>`.
         #[arg(long)]
         coverage_dat: Option<Option<String>>,
+        /// Thread-sim mode: `fsm` (default; threads lowered to FSM, single-core)
+        /// or `parallel` (Phase 1 spike: pre-lowering coroutine sim). See
+        /// doc/plan_thread_parallel_sim.md.
+        #[arg(long = "thread-sim", default_value = "fsm")]
+        thread_sim: String,
         /// Generate pybind11 Python module for cocotb-compatible testing
         #[arg(long)]
         pybind: bool,
@@ -347,7 +352,7 @@ fn main() -> miette::Result<()> {
             }
             Ok(())
         }
-        Command::Sim { arch_files, tb_files, outdir, check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave, debug, debug_depth, debug_fsm, coverage, coverage_dat, pybind, test, pybind_module_name } => {
+        Command::Sim { arch_files, tb_files, outdir, check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave, debug, debug_depth, debug_fsm, coverage, coverage_dat, thread_sim, pybind, test, pybind_module_name } => {
             let dbg_ports = debug || debug_fsm;  // any debug option implies port logging
             // --inputs-start-uninit and --check-uninit-ram both imply --check-uninit
             let check_uninit = check_uninit || inputs_start_uninit || check_uninit_ram;
@@ -356,8 +361,13 @@ fn main() -> miette::Result<()> {
             // → Some(None) → default "coverage.dat"; absent → None.
             let cov_dat_path: Option<String> = coverage_dat.map(|opt| opt.unwrap_or_else(|| "coverage.dat".to_string()));
             let coverage = coverage || cov_dat_path.is_some();
+            let thread_sim_parallel = match thread_sim.as_str() {
+                "fsm" => false,
+                "parallel" => true,
+                other => return Err(miette::miette!("--thread-sim: expected `fsm` or `parallel`, got `{}`", other)),
+            };
             learn_wrap(&arch_files, || {
-                run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, coverage, cov_dat_path.clone(), pybind, test.as_deref(), pybind_module_name.as_deref())
+                run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, coverage, cov_dat_path.clone(), thread_sim_parallel, pybind, test.as_deref(), pybind_module_name.as_deref())
             })
         }
         Command::Build { files, o } => {
@@ -478,6 +488,7 @@ fn run_sim(
     debug_fsm: bool,
     coverage: bool,
     coverage_dat: Option<String>,
+    thread_sim_parallel: bool,
     pybind: bool,
     test_file: Option<&std::path::Path>,
     pybind_module_name_override: Option<&str>,
@@ -485,7 +496,7 @@ fn run_sim(
     // 1. Parse + type-check
     let all_files = resolve_use_imports(arch_files)?;
     let ms = MultiSource::from_files(&all_files)?;
-    let (ast, symbols, overload_map) = run_check_multi(&ms)?;
+    let (ast, symbols, overload_map) = run_check_multi_opts(&ms, thread_sim_parallel)?;
 
     // 2. Set up output directory
     let build_dir = outdir
@@ -494,16 +505,34 @@ fn run_sim(
     fs::create_dir_all(&build_dir).into_diagnostic()?;
 
     // 3. Generate C++ models
-    let mut sim = SimCodegen::new(&symbols, &ast, overload_map).check_uninit(check_uninit).inputs_start_uninit(inputs_start_uninit).check_uninit_ram(check_uninit_ram).cdc_random(cdc_random).debug(debug, debug_depth).with_debug_fsm(debug_fsm).coverage(coverage).coverage_dat(coverage_dat);
-    if coverage {
-        // Build a SourceMap so the coverage dumper can render
-        // file:line instead of opaque branch[N] ordinals.
-        let segs: Vec<(usize, String, String)> = ms.segments.iter()
-            .map(|(start, _end, name, src)| (*start, name.clone(), src.clone()))
-            .collect();
-        sim = sim.with_source_map(arch::sim_codegen::SourceMap::new(segs));
-    }
-    let models = sim.generate();
+    let models: Vec<arch::sim_codegen::SimModel> = if thread_sim_parallel {
+        // Pre-lowering thread sim path: route every module containing
+        // a `thread` block through the new emitter; reject mixed
+        // modules (Phase 1 limitation).
+        let mut out = Vec::new();
+        for item in &ast.items {
+            if let arch::ast::Item::Module(m) = item {
+                let has_thread = m.body.iter().any(|i| matches!(i, arch::ast::ModuleBodyItem::Thread(_)));
+                if has_thread {
+                    let model = arch::sim_codegen::thread_sim::gen_module_thread(m)
+                        .map_err(|e| miette::miette!("thread sim: {}", e))?;
+                    out.push(model);
+                }
+            }
+        }
+        out
+    } else {
+        let mut sim = SimCodegen::new(&symbols, &ast, overload_map.clone()).check_uninit(check_uninit).inputs_start_uninit(inputs_start_uninit).check_uninit_ram(check_uninit_ram).cdc_random(cdc_random).debug(debug, debug_depth).with_debug_fsm(debug_fsm).coverage(coverage).coverage_dat(coverage_dat.clone());
+        if coverage {
+            // Build a SourceMap so the coverage dumper can render
+            // file:line instead of opaque branch[N] ordinals.
+            let segs: Vec<(usize, String, String)> = ms.segments.iter()
+                .map(|(start, _end, name, src)| (*start, name.clone(), src.clone()))
+                .collect();
+            sim = sim.with_source_map(arch::sim_codegen::SourceMap::new(segs));
+        }
+        sim.generate()
+    };
 
     if models.is_empty() {
         eprintln!("warning: no synthesizable constructs found (module/counter/fsm)");
@@ -527,8 +556,23 @@ fn run_sim(
     fs::write(&verilated_cpp, SimCodegen::verilated_cpp()).into_diagnostic()?;
     generated_cpps.push(verilated_cpp);
 
+    // 4b. Thread sim runtime header (only used under --thread-sim parallel,
+    // but emit unconditionally — cheap and keeps the build dir self-contained).
+    let arch_thread_rt_h = build_dir.join("arch_thread_rt.h");
+    fs::write(&arch_thread_rt_h, arch::sim_codegen::thread_sim::arch_thread_rt_h()).into_diagnostic()?;
+
     // ── Pybind11 mode ────────────────────────────────────────────────────
     if pybind {
+        if thread_sim_parallel {
+            return Err(miette::miette!("--pybind not yet supported with --thread-sim parallel"));
+        }
+        let mut sim = SimCodegen::new(&symbols, &ast, overload_map.clone()).check_uninit(check_uninit).inputs_start_uninit(inputs_start_uninit).check_uninit_ram(check_uninit_ram).cdc_random(cdc_random).debug(debug, debug_depth).with_debug_fsm(debug_fsm).coverage(coverage).coverage_dat(coverage_dat.clone());
+        if coverage {
+            let segs: Vec<(usize, String, String)> = ms.segments.iter()
+                .map(|(start, _end, name, src)| (*start, name.clone(), src.clone()))
+                .collect();
+            sim = sim.with_source_map(arch::sim_codegen::SourceMap::new(segs));
+        }
         let pybind_wrappers = sim.generate_pybind();
         if pybind_wrappers.is_empty() {
             eprintln!("warning: no pybind11 wrappers generated");
@@ -773,7 +817,8 @@ sys.exit(0 if ok else 1)
     // 5. Compile with g++
     let sim_bin = build_dir.join("sim_out");
     let mut cmd = std::process::Command::new("g++");
-    cmd.arg("-std=c++17")
+    let cpp_std = if thread_sim_parallel { "-std=c++20" } else { "-std=c++17" };
+    cmd.arg(cpp_std)
        .arg("-O1")
        .arg("-I").arg(&build_dir);
 
@@ -991,6 +1036,13 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
 fn run_check_multi(
     ms: &MultiSource,
 ) -> miette::Result<(arch::ast::SourceFile, resolve::SymbolTable, std::collections::HashMap<usize, usize>)> {
+    run_check_multi_opts(ms, /*skip_lower_threads=*/ false)
+}
+
+fn run_check_multi_opts(
+    ms: &MultiSource,
+    skip_lower_threads: bool,
+) -> miette::Result<(arch::ast::SourceFile, resolve::SymbolTable, std::collections::HashMap<usize, usize>)> {
     let source = &ms.combined;
 
     // Lex
@@ -1038,11 +1090,17 @@ fn run_check_multi(
         ms.report_error(err)
     })?;
 
-    // Lower thread blocks to FSM + inst
-    let ast = elaborate::lower_threads(ast).map_err(|errs| {
-        let err = errs.into_iter().next().unwrap();
-        ms.report_error(err)
-    })?;
+    // Lower thread blocks to FSM + inst (skipped under --thread-sim parallel,
+    // where the new pre-lowering thread sim emitter consumes thread blocks
+    // directly via coroutines).
+    let ast = if skip_lower_threads {
+        ast
+    } else {
+        elaborate::lower_threads(ast).map_err(|errs| {
+            let err = errs.into_iter().next().unwrap();
+            ms.report_error(err)
+        })?
+    };
 
     // Lower `pipe_reg<T, N>` ports with N > 1 into an N-stage cascade.
     let ast = elaborate::lower_pipe_reg_ports(ast).map_err(|errs| {
