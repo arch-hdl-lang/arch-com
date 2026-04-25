@@ -2229,9 +2229,9 @@ impl<'a> Codegen<'a> {
                     if let Some(name) = base_ident(base) {
                         let idx_s = self.emit_expr_str(idx);
                         if let Some(limit) = vec_sizes.get(&name) {
-                            push(format!("({idx_s}) < ({limit})"), "vec", sites, seen);
+                            push(format!("int'({idx_s}) < ({limit})"), "vec", sites, seen);
                         } else if let Some(w) = scalar_widths.get(&name) {
-                            push(format!("({idx_s}) < ({w})"), "bitsel", sites, seen);
+                            push(format!("int'({idx_s}) < ({w})"), "bitsel", sites, seen);
                         }
                     }
                 }
@@ -3403,4 +3403,3 @@ impl<'a> Codegen<'a> {
     // ── RAM ───────────────────────────────────────────────────────────────────
 
 }
-
