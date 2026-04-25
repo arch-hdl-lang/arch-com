@@ -29,9 +29,9 @@ FSMs and any outstanding-transaction bookkeeping.
 ## v1 scope (what ships first)
 
 To keep the feature tractable and reviewable, v1 is **`blocking` mode
-only**. Pipelined / out_of_order / burst modes follow as independent
-PRs once the blocking foundation is solid and the wire protocol is
-validated.
+only**. In-order thread-cohort lowering, out-of-order tagged routing,
+and burst support follow as independent PRs once the blocking
+foundation is solid and the wire protocol is validated.
 
 Shipping in v1:
 1. Grammar for `tlm_method name(args) -> ret: blocking;` inside a bus.
@@ -56,11 +56,11 @@ Shipping in v1:
 Explicitly **deferred** to v2:
 - In-order generated-thread mapping for a finite worker cohort sharing
   one method.
-- `out_of_order` mode + `Token<T, id_width: N>`.
+- Out-of-order mode via compiler-managed request/response tags.
 - Burst-oriented protocol support, if a viable explicit beat-stream
   lowering is found.
 - `max_outstanding` / `timing` annotations from the original sketch.
-- `fork` / `join` inside thread bodies (already a thread v2 topic).
+- Richer `fork` / `join` lowering around non-trivial TLM call bodies.
 - `implement X.m rtl` protocol-level mapping (covered by threads today).
 - Multiple initiators on one method (arbiter composition at target).
 
@@ -83,9 +83,8 @@ concurrency mode for v1; no body yet):
 ```
 TlmMethod      := 'tlm_method' Ident '(' ParamList ')' ('->' TypeExpr)? ':' Mode ';'
 Mode           := 'blocking'     // v1
-                | 'pipelined'    // v2
-                | 'out_of_order' // v2
-                | 'burst'        // v2
+                | 'out_of_order' // future tagged protocol
+                | 'burst'        // future beat-stream protocol
 ParamList      := (Ident ':' TypeExpr (',' Ident ':' TypeExpr)*)?
 ```
 
@@ -304,16 +303,18 @@ Three auto-emitted properties labeled
 
 ### Future (not in this plan)
 
-- PR-tlm-V2a candidate: in-order generated-thread mapping for ordinary
-  blocking calls. A `generate for` cohort of worker threads may share a
-  `(port, method)` pair; the compiler lowers the group to an issue
-  arbiter plus in-order response router. No new `tlm_method` mode and
-  no `Future<T>` type. See `doc/plan_tlm_pipelined.md` "Future
-  Candidate: In-Order Generated-Thread Mapping".
-- PR-tlm-V2b: `out_of_order` mode + `Token<T, id_width: N>`.
+- PR-tlm-V2a: in-order thread-cohort mapping for ordinary blocking
+  calls. A `generate_for` cohort, explicit worker threads, or direct-call
+  `fork ... join` branches may share a `(port, method)` pair; the
+  compiler lowers the group to an issue arbiter plus in-order response
+  router. No new `tlm_method` mode and no `Future<T>` type. See
+  `doc/plan_tlm_pipelined.md`.
+- PR-tlm-V2b: out-of-order mode via compiler-managed request/response
+  tags. Keep the worker syntax; change the protocol contract so the
+  compiler can route by `rsp_tag` instead of FIFO issue order.
 - PR-tlm-V2c candidate: burst-oriented protocol support. No viable
-  `Future<Vec<T,L>>` path is currently identified; any future design
-  should preserve explicit beat ownership and backpressure.
+  hidden-future path is currently identified; any future design should
+  preserve explicit beat ownership and backpressure.
 - PR-tlm-V2d: DMA test migration — rewrite `ThreadMm2s` / `ThreadS2mm`
   to use `tlm_method` and compare SV/behavior against the hand-rolled
   baseline (§`plan_bus_unification.md`).
@@ -330,10 +331,9 @@ Three auto-emitted properties labeled
    avoids committing to arg-direction grammar before we know we
    need it).
 4. **Multiple threads touching the same method** in the same module:
-   compile error in v1. A future in-order generated-thread mapping may
-   allow a finite worker cohort to share one method when responses are
-   returned in issue order; out-of-order/ID-tagged concurrency remains a
-   separate v2 topic.
+   compile error in v1 unless they match the in-order thread-cohort
+   lowering shape. Out-of-order/ID-tagged concurrency remains a separate
+   v2 topic and should use compiler-managed tags, not `Future<T>`.
 5. **Call site outside a thread**: compile error with a targeted
    message pointing the user at `thread X ... end thread X`.
 6. **Shared method body across multiple ports on target**: out of v1.

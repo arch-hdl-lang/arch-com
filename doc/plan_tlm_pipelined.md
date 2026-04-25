@@ -1,49 +1,54 @@
-# Plan: `tlm_method` pipelined — **SHELVED** (2026-04-23)
+# Plan: `tlm_method` in-order thread cohorts
 
-> **Shelved per design review (2026-04-23).** The concurrency-mode
-> label `pipelined` doesn't buy capability beyond what users already
-> express with `generate for threads` + `lock RESOURCE` (for request
-> serialization) + ID-tagged responses (for routing). See
-> `tests/axi_dma_thread/ThreadMm2s.arch` for the canonical
-> multi-outstanding AXI pattern — it uses these building blocks
-> without any dedicated TLM "pipelined" support.
+> **Current direction (2026-04-25).** Do not add a user-visible
+> `Future<T>`/`await` API and do not add a separate `tlm_method:
+> pipelined` mode for in-order request/response behavior.
 >
-> The genuinely new capability is **`out_of_order`** mode (auto-route
-> responses by ID tag); that's the next real v2 target. Tracking in
-> a future `plan_tlm_out_of_order.md`.
+> The viable path is ordinary `thread` concurrency: users express a
+> finite set of workers with generated threads or `fork ... join`, and
+> the compiler lowers the direct blocking calls to a shared request
+> arbiter plus an issue-order response router.
+>
+> The genuinely new future capability is **out-of-order** response
+> routing. That should be a tagged bus protocol extension using the same
+> fork/join or generated-thread user surface, not `Future<T>`.
 >
 > `reentrant` grammar on ThreadBlock (merged in PR #86) stays as
 > dead-but-parsed code; removal or repurposing is a future cleanup.
-> A targeted diagnostic (PR-tlm-p3) points users at the
-> `lock RESOURCE` idiom for multi-thread TLM sharing today.
 >
 > Historical design below kept for context — the reentrant thread
 > and `Future<T>/await` sketches led to the current framing. Treat
 > `Future<T>/await` as a rejected design direction, not a dormant
-> roadmap item: it introduces new type/lifetime/await semantics while
-> solving less cleanly than ordinary generated worker threads.
+> roadmap item.
 
-> **Future candidate: in-order generated-thread mapping (2026-04-24).**
-> A narrower version of the historical multi-thread idea may still be
-> worth implementing later: allow a `generate for` cohort of ordinary
-> threads to issue blocking calls to the same `tlm_method`, and synthesize
-> only an in-order request arbiter plus response router. This is not a new
-> `tlm_method: pipelined` mode and not the shelved `implement` pool. It is
-> a compiler lowering of this shape:
+> **Implemented slice in this branch.** A narrow version of the
+> historical multi-thread idea is now supported: allow a finite cohort
+> of ordinary workers to issue blocking calls to the same `tlm_method`,
+> and synthesize only an in-order request arbiter plus response router.
+> This is not a new `tlm_method: pipelined` mode and not the shelved
+> `implement` pool. It is a compiler lowering of these shapes:
 >
-> ```
-> generate for i in 0..N-1
+> ```arch
+> generate_for i in 0..N-1
 >   thread worker_i on clk rising, rst high
 >     d[i] <= m.read(addr[i]);
 >   end thread worker_i
-> end generate for i
+> end generate_for
+>
+> thread workers on clk rising, rst high
+>   fork
+>     d[0] <= m.read(addr[0]);
+>   and
+>     d[1] <= m.read(addr[1]);
+>   join
+> end thread workers
 > ```
 >
 > The target protocol remains the v1 blocking req/rsp handshake and is
 > assumed to return responses in request order. AXI-style separate AR/R
 > channels, IDs, bursts, and out-of-order completion remain outside this
-> feature; those still belong in explicit protocol threads or a future HLS
-> pass.
+> feature; those belong in explicit protocol threads or a future tagged
+> TLM protocol extension.
 
 ---
 
@@ -214,7 +219,7 @@ end comb
 
 ---
 
-# Future Candidate: In-Order Generated-Thread Mapping
+# Current Implementation: In-Order Thread-Cohort Mapping
 
 This section is the viable subset of the historical v2a plan after
 reviewing the implemented `thread` construct and lowering path.
@@ -227,7 +232,9 @@ for hand-written high-performance bus protocols.
 
 Use it when:
 
-- The source already has a `generate for` group of worker threads.
+- The source already has a `generate_for` group of worker threads, a
+  small set of named worker threads, or one `fork ... join` block whose
+  branches are direct TLM calls.
 - Each worker can have at most one outstanding call to a given method.
 - The target returns responses in the same order as accepted requests.
 - Each worker writes a distinct destination, usually indexed by the
@@ -258,15 +265,23 @@ module Readers
   reg addr: Vec<UInt<32>, 4> reset rst => 0;
   reg data: Vec<UInt<64>, 4> reset rst => 0;
 
-  generate for i in 0..3
-    thread worker_i on clk rising, rst high
-      data[i] <= m.read(addr[i]);
-    end thread worker_i
-  end generate for i
+generate_for i in 0..3
+  thread worker_i on clk rising, rst high
+    data[i] <= m.read(addr[i]);
+  end thread worker_i
+end generate_for
+
+thread workers on clk rising, rst high
+  fork
+    data[0] <= m.read(addr[0]);
+  and
+    data[1] <= m.read(addr[1]);
+  join
+end thread workers
 end module Readers
 ```
 
-After normal elaboration, the `generate for` is unrolled into concrete
+After normal elaboration, the `generate_for` is unrolled into concrete
 threads. The compiler groups threads that call the same `(port, method)`
 pair and lowers that group as one in-order call pool.
 
@@ -285,7 +300,7 @@ For the first implementation, reject anything outside this shape:
 4. **In-order responses only**. The response FIFO records issue order;
    no response ID exists in the bus protocol.
 5. **Thread cohort must be finite after elaboration**. This naturally
-   follows from the current `generate for` thread rule: threads are
+  follows from the current `generate_for` thread rule: threads are
    always unrolled before thread lowering.
 6. **Distinct destinations are recommended and should be diagnosed when
    obviously violated**. `data[i]` is fine after generate substitution;
@@ -294,33 +309,23 @@ For the first implementation, reject anything outside this shape:
 7. **No `implement` clause required**. The explicit `implement` pool is
    still shelved; this feature is driven by ordinary thread calls.
 
-## Where To Implement
+## Where It Is Implemented
 
-Do not extend the current `lower_tlm_initiator_calls` path directly.
-That pass runs before generic thread lowering and currently rewrites a
-TLM caller into standalone `RegDecl` / `RegBlock` / `CombBlock` items.
-At that point the compiler loses the thread cohort structure needed for
-per-thread routing.
+The first implementation lives in `lower_tlm_initiator_calls`, before
+generic thread lowering. It intentionally recognizes only a narrow,
+structurally obvious shape and replaces the worker threads with
+module-level `RegDecl` / `RegBlock` / `CombBlock` items:
 
-Instead, add a thread-aware TLM lowering step inside, or immediately
-before, `lower_module_threads`:
+1. Scan concrete `ThreadBlock`s after `generate_for` expansion.
+2. Recognize either a one-statement thread `dst <= m.method(args);` or
+   one `fork ... join` whose branches each contain that direct call.
+3. Group call sites by `(port, method)`.
+4. For groups with one caller, keep the existing v1 inline lowering.
+5. For groups with N > 1, emit a shared in-order pool.
 
-1. During `lower_module_threads`, after collecting the module's concrete
-   `ThreadBlock`s, scan thread bodies for direct TLM call RHSs.
-2. Group call sites by `(port, method)`.
-3. For groups with one caller, either keep the existing v1 inline
-   lowering or lower through the same machinery with N = 1.
-4. For groups with N > 1, rewrite each call site into thread FSM states
-   that use synthesized per-thread TLM control signals.
-5. Inject the shared arbiter/FIFO/router hardware into the generated
-   `_Module_threads` module, not the parent module.
-
-This keeps the feature close to:
-
-- concrete thread indices (`ti`);
-- generated-thread substitution (`worker_i` -> `worker_0`, etc.);
-- lock/shared signal handling;
-- the single merged `always_ff` that avoids register multi-drivers.
+This keeps the shipped slice small. A later richer implementation could
+move closer to generic thread lowering if it needs arbitrary statements
+around the call.
 
 ## Lowering Sketch
 
@@ -328,14 +333,10 @@ For each shared `(port, method)` with N caller threads:
 
 ```text
 per thread i:
-  _tlm_<p>_<m>_want_i       // issue state wants to send a request
-  _tlm_<p>_<m>_grant_i      // arbiter accepted this thread's request
-  _tlm_<p>_<m>_done_i       // response router completed this thread
-  _tlm_<p>_<m>_rsp_data_i   // only when method has a return value
-  _tlm_<p>_<m>_arg_i_<arg>  // latched or muxable request args
+  _tlm_pool_<p>_<m>_t<i>_state  // 0 = ready to issue, 1 = waiting response
 
 shared:
-  round-robin or fixed-priority arbiter over want_i
+  fixed-priority arbiter over ready-to-issue workers
   request arg mux from granted thread
   issue-order FIFO of thread indices
   response router using FIFO head
@@ -344,27 +345,28 @@ shared:
 Issue state behavior:
 
 ```text
-want_i = (thread_i_state == ISSUE)
-method_req_valid = any granted want
+want_i = (_tlm_pool_<p>_<m>_t<i>_state == 0)
+method_req_valid = any grant
 method_arg = mux(granted_i, arg_i)
 
 if grant_i && method_req_ready:
   push i into issue-order FIFO
-  thread_i_state <= WAIT_RSP
+  _tlm_pool_<p>_<m>_t<i>_state <= 1
 ```
 
 Wait state behavior:
 
 ```text
-method_rsp_ready = FIFO nonempty && response target can accept
+method_rsp_ready = FIFO nonempty
 
 if method_rsp_valid && FIFO.head == i:
   dst_i <= method_rsp_data
   pop FIFO
-  thread_i_state <= next
+  _tlm_pool_<p>_<m>_t<i>_state <= 0
 ```
 
-Void-return methods omit `rsp_data_i` and use only `done_i`.
+Void-return methods omit the destination capture and still use the
+per-worker state bit for completion.
 
 ## Ordering And Backpressure
 
@@ -396,7 +398,7 @@ Prefer targeted diagnostics over falling through to multi-driver errors:
 
 Minimum regression set:
 
-1. `generate for i in 0..3` workers reading `data[i] <= m.read(addr[i])`
+1. `generate_for i in 0..3` workers reading `data[i] <= m.read(addr[i])`
    emits one shared request drive and per-thread response capture.
 2. Single worker still matches v1 output shape or behavior.
 3. Two non-generated named threads sharing one method lower through the
@@ -406,7 +408,9 @@ Minimum regression set:
 5. Wrong arg count is rejected.
 6. Void method works with response completion but no data capture.
 7. Verilator lint on the generated SV.
-8. `compile_to_sim_h` confirms the lowered reg/comb/seq form remains
+8. `fork ... join` with direct call branches lowers through the same
+   pool.
+9. `compile_to_sim_h` confirms the lowered reg/comb/seq form remains
    visible to sim codegen.
 
 ## Relationship To Existing Thread Idioms
@@ -416,6 +420,33 @@ serialization. It adds response routing for in-order TLM methods. It
 does not replace explicit thread protocol code where the protocol itself
 has useful structure, such as separate issue and collection threads,
 ID-tagged responses, or burst beat loops.
+
+## Next: Out-Of-Order
+
+Out-of-order support should keep the same user-facing worker syntax and
+change only the method protocol/lowering contract. The compiler assigns
+one small tag per worker/branch, sends that tag with the request, and
+routes a response by `rsp_tag` instead of FIFO head.
+
+Sketch:
+
+```arch
+bus Mem
+  tlm_method read(addr: UInt<32>) -> UInt<64>: out_of_order tags 4;
+end bus Mem
+```
+
+Lowering changes:
+
+- Request channel gains `<method>_req_tag`.
+- Response channel gains `<method>_rsp_tag`.
+- Per-worker state is still "ready" / "waiting".
+- Accepted requests mark the worker waiting by tag.
+- Responses compare `rsp_tag` and complete the matching worker.
+- `fork ... join` completes when all branch states return to ready.
+
+This replaces any need for `Future<T>`. The branch or generated worker
+is the outstanding operation handle.
 
 ## PR roadmap (revised)
 

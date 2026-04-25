@@ -5216,9 +5216,10 @@ fn test_implement_initiator_with_args_in_parens_errors() {
 }
 
 #[test]
-fn test_tlm_multi_thread_sharing_without_lock_errors() {
-    // Multi-thread sharing of a TLM method outside any lock block →
-    // targeted diagnostic pointing at the lock/resource idiom.
+fn test_tlm_multi_thread_direct_calls_lower_to_in_order_pool() {
+    // Direct multi-thread sharing of a TLM method lowers to an in-order
+    // request arbiter + response router. More complex shapes still get
+    // targeted diagnostics.
     let source = "
         bus Mem
           tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
@@ -5240,16 +5241,145 @@ fn test_tlm_multi_thread_sharing_without_lock_errors() {
           end thread w1
         end module Shared
     ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("_tlm_pool_m_read_fifo"),
+        "cohort lowering should emit issue-order FIFO:\n{sv}");
+    assert!(sv.contains("_tlm_pool_m_read_t0_state")
+         && sv.contains("_tlm_pool_m_read_t1_state"),
+        "cohort lowering should emit per-thread state regs:\n{sv}");
+    assert!(sv.contains("m_read_req_valid")
+         && sv.contains("m_read_rsp_ready"),
+        "cohort lowering should drive shared TLM handshakes:\n{sv}");
+}
+
+#[test]
+fn test_tlm_generate_for_workers_share_method() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module Shared
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   addr: Vec<UInt<32>, 3> reset rst => 0;
+          reg   data: Vec<UInt<64>, 3> reset rst => 0;
+          generate_for i in 0..2
+            thread w_i on clk rising, rst high
+              data[i] <= m.read(addr[i]);
+            end thread w_i
+          end generate_for
+        end module Shared
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("_tlm_pool_m_read_fifo"),
+        "generated worker cohort should use pooled TLM lowering:\n{sv}");
+    assert!(sv.contains("data[0] <= m_read_rsp_data")
+         && sv.contains("data[1] <= m_read_rsp_data")
+         && sv.contains("data[2] <= m_read_rsp_data"),
+        "each generated worker should capture its routed response:\n{sv}");
+}
+
+#[test]
+fn test_tlm_fork_join_workers_share_method() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module Shared
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   addr: Vec<UInt<32>, 2> reset rst => 0;
+          reg   data: Vec<UInt<64>, 2> reset rst => 0;
+          thread workers on clk rising, rst high
+            fork
+              data[0] <= m.read(addr[0]);
+            and
+              data[1] <= m.read(addr[1]);
+            join
+          end thread workers
+        end module Shared
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("_tlm_pool_m_read_fifo"),
+        "fork/join TLM workers should use pooled TLM lowering:\n{sv}");
+    assert!(sv.contains("data[0] <= m_read_rsp_data")
+         && sv.contains("data[1] <= m_read_rsp_data"),
+        "fork/join worker responses should route by issue order:\n{sv}");
+}
+
+#[test]
+fn test_tlm_cohort_multi_arg_method() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>, len: UInt<4>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module Shared
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   d0: UInt<64> reset rst => 0;
+          reg   d1: UInt<64> reset rst => 0;
+          thread w0 on clk rising, rst high
+            d0 <= m.read(32'h1000, 4'd4);
+          end thread w0
+          thread w1 on clk rising, rst high
+            d1 <= m.read(32'h2000, 4'd8);
+          end thread w1
+        end module Shared
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("_tlm_pool_m_read_fifo"),
+        "multi-arg method should use pooled TLM lowering:\n{sv}");
+    assert!(sv.contains("m_read_addr")
+         && sv.contains("m_read_len"),
+        "cohort lowering should mux every method arg:\n{sv}");
+}
+
+#[test]
+fn test_tlm_unsupported_fork_join_call_errors() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module Bad
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   d0: UInt<64> reset rst => 0;
+          reg   d1: UInt<64> reset rst => 0;
+          thread workers on clk rising, rst high
+            fork
+              d0 <= m.read(32'h1000) + 1;
+            and
+              d1 <= m.read(32'h1004);
+            join
+          end thread workers
+        end module Bad
+    ";
     let tokens = arch::lexer::tokenize(source).expect("lexer");
     let mut parser = arch::parser::Parser::new(tokens, source);
     let ast = parser.parse_source_file().expect("parse");
     let ast = arch::elaborate::elaborate(ast).expect("elaborate");
     let ast = arch::elaborate::lower_tlm_target_threads(ast).expect("tlm target");
     let r = arch::elaborate::lower_tlm_initiator_calls(ast);
-    assert!(r.is_err(), "bare multi-thread TLM should error");
+    assert!(r.is_err(), "unsupported fork/join TLM shape should error");
     let msg = format!("{:?}", r.unwrap_err());
-    assert!(msg.contains("multi-thread sharing") && msg.contains("lock"),
-        "expected lock/resource diagnostic, got: {msg}");
+    assert!(msg.contains("multi-thread sharing") || msg.contains("TLM initiator thread body"),
+        "expected targeted TLM fork/join error, got: {msg}");
 }
 
 #[test]
