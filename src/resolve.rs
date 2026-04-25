@@ -13,6 +13,7 @@ pub enum Symbol {
     Fsm(FsmInfo),
     Fifo(FifoInfo),
     Ram(RamInfo),
+    Cam(CamInfo),
     Counter(CounterInfo),
     Arbiter(ArbiterInfo),
     Regfile(RegfileInfo),
@@ -92,6 +93,11 @@ pub struct RamInfo {
     pub name: String,
     pub kind: crate::ast::RamKind,
     pub latency: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct CamInfo {
+    pub name: String,
 }
 
 #[derive(Debug, Clone)]
@@ -489,10 +495,13 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                     table.globals.insert(r.name.name.clone(), (Symbol::Ram(info), r.name.span));
                 }
             }
-            Item::Cam(_c) => {
-                // Phase A: name is registered via the generic construct
-                // resolution below — full Symbol::Cam variant deferred to
-                // Phase B when codegen needs it. No-op for now.
+            Item::Cam(c) => {
+                if table.globals.contains_key(&c.name.name) {
+                    errors.push(CompileError::duplicate(&c.name.name, c.name.span));
+                } else {
+                    let info = CamInfo { name: c.name.name.clone() };
+                    table.globals.insert(c.name.name.clone(), (Symbol::Cam(info), c.name.span));
+                }
             }
             Item::Counter(c) => {
                 if table.globals.contains_key(&c.name.name) {

@@ -167,6 +167,7 @@ all_pass = True
 for mshr_size in [4, 8, 12, 16, 20, 24, 28, 32]:
     r = subprocess.run(
         ['iverilog', '-o', os.path.join(workdir, 'sim.vvp'), '-s', 'tb', '-g2012',
+         '-gsupported-assertions',
          f'-Ptb.MSHR_SIZE={mshr_size}', sv_file, tb_file],
         capture_output=True, text=True, timeout=30
     )
