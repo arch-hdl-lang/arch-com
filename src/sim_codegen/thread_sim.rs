@@ -151,11 +151,23 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
     }
     header.push('\n');
 
+    let mut vec_reg_info: Vec<(String, String, u64)> = Vec::new(); // (name, elem_ty, count)
     for item in &m.body {
         if let ModuleBodyItem::RegDecl(r) = item {
-            let cpp_ty = port_or_reg_cpp_ty(&r.ty)
-                .map_err(|e| format!("module `{}` reg `{}`: {}", class, r.name.name, e))?;
-            header.push_str(&format!("  {} {} = 0;\n", cpp_ty, r.name.name));
+            if let TypeExpr::Vec(elem, count_expr) = &r.ty {
+                let elem_ty = port_or_reg_cpp_ty(elem)
+                    .map_err(|e| format!("module `{}` reg `{}` element: {}", class, r.name.name, e))?;
+                let count = eval_const(count_expr);
+                if count == 0 {
+                    return Err(format!("module `{}` reg `{}`: Vec count = 0 (param resolution not yet supported)", class, r.name.name));
+                }
+                header.push_str(&format!("  {} {}[{}] = {{}};\n", elem_ty, r.name.name, count));
+                vec_reg_info.push((r.name.name.clone(), elem_ty, count));
+            } else {
+                let cpp_ty = port_or_reg_cpp_ty(&r.ty)
+                    .map_err(|e| format!("module `{}` reg `{}`: {}", class, r.name.name, e))?;
+                header.push_str(&format!("  {} {} = 0;\n", cpp_ty, r.name.name));
+            }
         }
     }
     header.push('\n');
@@ -247,7 +259,12 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
     }
     for item in &m.body {
         if let ModuleBodyItem::RegDecl(r) = item {
-            header.push_str(&format!("      {} = 0;\n", r.name.name));
+            if let TypeExpr::Vec(_, count_expr) = &r.ty {
+                let count = eval_const(count_expr);
+                header.push_str(&format!("      for (uint64_t _i = 0; _i < {count}; _i++) {} [_i] = 0;\n", r.name.name));
+            } else {
+                header.push_str(&format!("      {} = 0;\n", r.name.name));
+            }
         }
     }
     for (i, info) in thread_infos.iter().enumerate() {
@@ -740,6 +757,13 @@ fn expr_to_cpp(e: &Expr) -> Result<String, String> {
         ExprKind::Unary(UnaryOp::Not, inner) => Ok(format!("!({})", expr_to_cpp_bool(inner)?)),
         ExprKind::Unary(UnaryOp::BitNot, inner) => Ok(format!("(~({}))", expr_to_cpp(inner)?)),
         ExprKind::Unary(UnaryOp::Neg, inner) => Ok(format!("(-({}))", expr_to_cpp(inner)?)),
+        ExprKind::Index(base, idx) => {
+            // Vec/array indexing: lower as C++ subscript. The base is
+            // typically a Vec reg (`thread_complete[i]`).
+            let b = expr_to_cpp(base)?;
+            let i = expr_to_cpp(idx)?;
+            Ok(format!("{b}[{i}]"))
+        }
         ExprKind::Binary(op, lhs, rhs) => {
             let l = expr_to_cpp(lhs)?;
             let r = expr_to_cpp(rhs)?;
