@@ -497,10 +497,15 @@ fn run_thread_sim_cross_check(
     eprintln!("=== arch sim --thread-sim both: building parallel path ===");
     let par_trace = build_and_capture(arch_files, tb_files, &par_dir, /*parallel=*/true)?;
 
-    // Filter to just the [cycle][...] debug lines, ignore TB output.
+    // Filter to just the [cycle][Mod.port](in/out) debug lines, ignore
+    // TB stdout. The fsm path uses --debug --depth N to optionally
+    // include sub-instance traces; we only invoke with depth=1 above,
+    // so only top-module ports appear in either trace. (For cross-check
+    // we want top-module observable behavior — sub-module internals
+    // are implementation detail and may legitimately differ.)
     let extract_trace = |s: &str| -> Vec<String> {
         s.lines()
-            .filter(|l| l.starts_with('[') && l.contains("](in)") || l.contains("](out)"))
+            .filter(|l| l.starts_with('[') && (l.contains("](in)") || l.contains("](out)")))
             .map(|l| l.to_string())
             .collect()
     };
