@@ -102,9 +102,6 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
         if t.tlm_target.is_some() || t.implement.is_some() || t.reentrant.is_some() {
             return Err(format!("module `{}` thread #{}: TLM/implement/reentrant not yet supported", class, i));
         }
-        if t.default_when.is_some() {
-            return Err(format!("module `{}` thread #{}: `default when` not yet supported", class, i));
-        }
     }
 
     for item in &m.body {
@@ -272,6 +269,46 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
     header.push_str("      eval();\n");
     header.push_str("      return;\n");
     header.push_str("    }\n");
+    // `default when <cond>` clauses (priority soft-reset per thread):
+    // checked AFTER hard reset and BEFORE the scheduler tick. When the
+    // condition is true, fire the clause's seq assigns and reset the
+    // thread's coroutine to its entry segment — same shape as the
+    // lowered-fsm wrapping behavior in elaborate.rs.
+    for (ti, t) in threads.iter().enumerate() {
+        if let Some((dw_cond, dw_stmts)) = &t.default_when {
+            let cond_cpp = expr_to_cpp_bool(dw_cond)?;
+            header.push_str(&format!("    if ({cond_cpp}) {{\n"));
+            for s in dw_stmts {
+                if let ThreadStmt::SeqAssign(a) = s {
+                    let lhs = expr_to_cpp(&a.target)?;
+                    let rhs = expr_to_cpp(&a.value)?;
+                    header.push_str(&format!("      {lhs} = {rhs};\n"));
+                } else if let ThreadStmt::CombAssign(a) = s {
+                    // CombAssign in default-when block: also fire once
+                    // (treat like a seq assign for soft-reset purposes).
+                    let lhs = expr_to_cpp(&a.target)?;
+                    let rhs = expr_to_cpp(&a.value)?;
+                    header.push_str(&format!("      {lhs} = {rhs};\n"));
+                }
+                // Other ThreadStmt kinds (waits, control flow) are
+                // illegal inside `default when` per arch grammar; ignored
+                // here defensively.
+            }
+            header.push_str(&format!("      _slot_{ti}.thread.destroy();\n"));
+            header.push_str(&format!("      _slot_{ti}.thread = _make_thread_{ti}();\n"));
+            header.push_str(&format!("      _slot_{ti}.kind = arch_rt::WaitKind::Ready;\n"));
+            header.push_str(&format!("      _slot_{ti}.cycles_remaining = 0;\n"));
+            header.push_str(&format!("      _slot_{ti}.pred = nullptr;\n"));
+            header.push_str(&format!("      _seg_{ti} = 0;\n"));
+            // Reset this thread's branches too.
+            for br in &thread_infos[ti].branches {
+                header.push_str(&format!("      _t{ti}_br{}_slot.thread.destroy();\n", br.id));
+                header.push_str(&format!("      _t{ti}_br{}_slot.kind = arch_rt::WaitKind::Done;\n", br.id));
+                header.push_str(&format!("      _t{ti}_br{}_seg = 0;\n", br.id));
+            }
+            header.push_str("    }\n");
+        }
+    }
     header.push_str("    _sched.tick();\n");
     header.push_str("    eval();\n");
     header.push_str("  }\n\n");
