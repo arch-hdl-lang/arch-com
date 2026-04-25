@@ -95,6 +95,8 @@ pub enum TokenKind {
     Clkgate,
     #[token("ram")]
     Ram,
+    #[token("cam")]
+    Cam,
     #[token("store")]
     Store,
     #[token("counter")]
@@ -404,6 +406,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Synchronizer => write!(f, "synchronizer"),
             TokenKind::Clkgate => write!(f, "clkgate"),
             TokenKind::Ram => write!(f, "ram"),
+            TokenKind::Cam => write!(f, "cam"),
             TokenKind::Store => write!(f, "store"),
             TokenKind::Counter => write!(f, "counter"),
             TokenKind::Arbiter => write!(f, "arbiter"),

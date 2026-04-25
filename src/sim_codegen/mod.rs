@@ -27,6 +27,7 @@ mod fsm;
 mod linklist;
 mod pipeline;
 mod ram;
+mod cam;
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -167,6 +168,7 @@ impl<'a> SimCodegen<'a> {
                 Item::Regfile(r)     => models.push(self.gen_regfile(r)),
                 Item::Linklist(l)    => models.push(self.gen_linklist(l)),
                 Item::Ram(r)         => models.push(self.gen_ram(r)),
+                Item::Cam(c)         => models.push(self.gen_cam(c)),
                 Item::Synchronizer(s) => models.push(self.gen_synchronizer(s)),
                 Item::Clkgate(c)     => models.push(self.gen_clkgate(c)),
                 Item::Fifo(f)        => models.push(self.gen_fifo(f)),
@@ -3079,6 +3081,7 @@ impl<'a> SimCodegen<'a> {
                 Item::Fsm(f)          if f.name.name == module_name => Some(&f.ports),
                 Item::Fifo(f)         if f.name.name == module_name => Some(&f.ports),
                 Item::Ram(r)          if r.name.name == module_name => Some(&r.ports),
+                Item::Cam(c)          if c.name.name == module_name => Some(&c.ports),
                 Item::Counter(c)      if c.name.name == module_name => Some(&c.ports),
                 Item::Arbiter(a)      if a.name.name == module_name => Some(&a.ports),
                 Item::Regfile(r)      if r.name.name == module_name => Some(&r.ports),

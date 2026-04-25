@@ -1,0 +1,20 @@
+// Phase A smoke test: a `cam` construct parses and type-checks.
+// Codegen (Phase B) and sim (Phase C) are not yet implemented.
+
+cam Mshr_Addr_Cam
+  param DEPTH: const = 32;
+  param KEY_W: const = 10;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+
+  port write_valid: in Bool;
+  port write_idx:   in UInt<5>;
+  port write_key:   in UInt<10>;
+  port write_set:   in Bool;
+
+  port search_key:   in  UInt<10>;
+  port search_mask:  out UInt<32>;
+  port search_any:   out Bool;
+  port search_first: out UInt<5>;
+end cam Mshr_Addr_Cam

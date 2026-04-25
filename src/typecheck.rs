@@ -89,6 +89,7 @@ impl<'a> TypeChecker<'a> {
                 Item::Fsm(f) => self.check_fsm(f),
                 Item::Fifo(f) => self.check_fifo(f),
                 Item::Ram(r) => self.check_ram(r),
+                Item::Cam(c) => self.check_cam(c),
                 Item::Counter(c) => self.check_counter(c),
                 Item::Arbiter(a) => self.check_arbiter(a),
                 Item::Regfile(r) => self.check_regfile(r),
@@ -163,6 +164,7 @@ impl<'a> TypeChecker<'a> {
                 Item::Fsm(f)          => &f.params,
                 Item::Fifo(f)         => &f.params,
                 Item::Ram(r)          => &r.params,
+                Item::Cam(c)          => &c.params,
                 Item::Counter(c)      => &c.params,
                 Item::Arbiter(a)      => &a.params,
                 Item::Regfile(r)      => &r.params,
@@ -3530,6 +3532,33 @@ impl<'a> TypeChecker<'a> {
     }
 
     // ── RAM ───────────────────────────────────────────────────────────────────
+
+    fn check_cam(&mut self, c: &CamDecl) {
+        // Phase A: minimal naming check + presence of required params/ports.
+        // Full validation (port widths from $clog2(DEPTH), $clog2(KEY_W),
+        // exact port name list) deferred to Phase A continuation.
+        self.check_pascal_case(&c.name);
+        for p in &c.params {
+            self.check_upper_snake(&p.name);
+        }
+        for p in &c.ports {
+            self.check_snake_case(&p.name);
+        }
+        let has_depth = c.params.iter().any(|p| p.name.name == "DEPTH");
+        let has_key_w = c.params.iter().any(|p| p.name.name == "KEY_W");
+        if !has_depth {
+            self.errors.push(CompileError::general(
+                "cam: missing required `param DEPTH: const = N;`",
+                c.name.span,
+            ));
+        }
+        if !has_key_w {
+            self.errors.push(CompileError::general(
+                "cam: missing required `param KEY_W: const = N;`",
+                c.name.span,
+            ));
+        }
+    }
 
     fn check_ram(&mut self, r: &RamDecl) {
         self.check_pascal_case(&r.name);

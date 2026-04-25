@@ -489,6 +489,11 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                     table.globals.insert(r.name.name.clone(), (Symbol::Ram(info), r.name.span));
                 }
             }
+            Item::Cam(_c) => {
+                // Phase A: name is registered via the generic construct
+                // resolution below — full Symbol::Cam variant deferred to
+                // Phase B when codegen needs it. No-op for now.
+            }
             Item::Counter(c) => {
                 if table.globals.contains_key(&c.name.name) {
                     errors.push(CompileError::duplicate(&c.name.name, c.name.span));

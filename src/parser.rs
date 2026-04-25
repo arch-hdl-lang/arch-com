@@ -47,6 +47,7 @@ impl Parser {
             Some(TokenKind::Fsm) => Ok(Item::Fsm(self.parse_fsm()?)),
             Some(TokenKind::Fifo) => Ok(Item::Fifo(self.parse_fifo()?)),
             Some(TokenKind::Ram) => Ok(Item::Ram(self.parse_ram()?)),
+            Some(TokenKind::Cam) => Ok(Item::Cam(self.parse_cam()?)),
             Some(TokenKind::Counter) => Ok(Item::Counter(self.parse_counter()?)),
             Some(TokenKind::Arbiter) => Ok(Item::Arbiter(self.parse_arbiter()?)),
             Some(TokenKind::Regfile) => Ok(Item::Regfile(self.parse_regfile()?)),
@@ -4055,6 +4056,53 @@ impl Parser {
     }
 
     // ── Counter ───────────────────────────────────────────────────────────────
+
+    fn parse_cam(&mut self) -> Result<CamDecl, CompileError> {
+        let start = self.expect(TokenKind::Cam)?.span;
+        let name = self.expect_ident()?;
+
+        let mut params: Vec<ParamDecl> = Vec::new();
+        let mut ports: Vec<PortDecl> = Vec::new();
+        let mut asserts: Vec<AssertDecl> = Vec::new();
+
+        // params first, then ports / assert / cover. Same shape as counter
+        // but no kind/direction/init attributes.
+        while !self.check_end_of(TokenKind::Cam) && self.check(TokenKind::Param) {
+            params.push(self.parse_param_decl()?);
+        }
+        while !self.check_end_of(TokenKind::Cam) {
+            match self.peek_kind() {
+                Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
+                Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
+                    asserts.push(self.parse_assert_decl()?);
+                }
+                Some(other) => return Err(CompileError::unexpected_token(
+                    "port, assert, or cover",
+                    &other.to_string(),
+                    self.peek_span(),
+                )),
+                None => return Err(CompileError::UnexpectedEof),
+            }
+        }
+
+        self.expect(TokenKind::End)?;
+        self.expect(TokenKind::Cam)?;
+        let closing = self.expect_ident()?;
+        if closing.name != name.name {
+            return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+        }
+        let end = closing.span;
+
+        Ok(CamDecl {
+            common: ConstructCommon {
+                name,
+                params,
+                ports,
+                asserts,
+                span: Span { start: start.start, end: end.end },
+            },
+        })
+    }
 
     fn parse_counter(&mut self) -> Result<CounterDecl, CompileError> {
         let start = self.expect(TokenKind::Counter)?.span;
