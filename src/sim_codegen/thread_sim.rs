@@ -103,8 +103,11 @@ struct ThreadInfo {
     branches: Vec<Branch>,
 }
 
-pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
-    let class = m.name.name.clone();
+pub fn gen_module_thread(m: &ModuleDecl, debug: bool) -> Result<SimModel, String> {
+    // Match the Verilator/fsm convention: V<ModuleName>. Lets the same
+    // TB drive either --thread-sim path without changing #includes,
+    // which is what makes --thread-sim=both cross-check practical.
+    let class = format!("V{}", m.name.name);
 
     let threads: Vec<&ThreadBlock> = m.body.iter().filter_map(|i| match i {
         ModuleBodyItem::Thread(t) => Some(t),
@@ -230,6 +233,25 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
     // eval(): zero thread-driven outputs, run each thread's segment
     // hold-comb, then evaluate combinational lets.
     header.push_str("  void eval() {\n");
+    // Detect rising edge of clk (Verilator convention) and run the
+    // posedge logic. Update _clk_prev BEFORE the dispatch so the
+    // recursive eval() call inside _do_posedge doesn't re-trigger.
+    header.push_str(&format!("    bool _rising = ({clk_name} && !_clk_prev);\n"));
+    header.push_str(&format!("    _clk_prev = {clk_name};\n"));
+    header.push_str("    if (_rising) {\n");
+    header.push_str("      _do_posedge();\n");
+    if debug {
+        // Match fsm sim's --debug pattern: log FIRST with current
+        // cycle counter, THEN increment. So a port change logged on
+        // the Nth rising edge reports cycle N (counting from 0 at
+        // the initial pre-clock eval).
+        header.push_str("      _dbg_log_ports();\n");
+        header.push_str("      _dbg_cycle++;\n");
+    }
+    header.push_str("      return;\n");  // _do_posedge settled comb via its own eval() at the end
+    header.push_str("    }\n");
+    // Comb-only eval (clk falling or steady) — falls through to the
+    // segment switches and module-level comb below, then logs at end.
     for n in &driven_outputs {
         header.push_str(&format!("    {} = 0;\n", n));
     }
@@ -285,10 +307,16 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
             }
         }
     }
+    if debug {
+        header.push_str("    _dbg_log_ports();\n");
+    }
     header.push_str("  }\n\n");
 
     // posedge handler: reset → recreate; else → tick + eval.
-    header.push_str(&format!("  void posedge_{}() {{\n", clk_name));
+    // Posedge handler — called from eval() on rising edge of clk.
+    // Kept as a private method for internal call; previously was
+    // public posedge_<clk>() and called explicitly by TB.
+    header.push_str("  void _do_posedge() {\n");
     let rst_check = if rst_active_low {
         format!("if (!{}) {{", rst_name)
     } else {
@@ -385,11 +413,53 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
     }
     header.push_str("    _sched.tick();\n");
     header.push_str("    eval();\n");
+    // Note: --debug logging fires from eval() at end (matches fsm
+    // pattern). _dbg_cycle increments on rising edge in eval() too.
     header.push_str("  }\n\n");
+
+    if debug {
+        // Initial log: capture port-state at construction (cycle 0
+        // before any posedge). Called once from constructor or first
+        // eval — for parity with fsm, we emit it as a public method
+        // the TB can call after reset.
+        header.push_str(&format!("  void _dbg_log_ports() {{\n"));
+        for p in &m.ports {
+            if matches!(&p.ty, TypeExpr::Clock(_)) { continue; }
+            let pname = &p.name.name;
+            let dir = match p.direction { Direction::In => "in", Direction::Out => "out" };
+            let bits = match &p.ty {
+                TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Reset(..) => 1,
+                TypeExpr::UInt(w) => eval_const(w),
+                _ => continue,  // Vec / wide / bus skipped in Phase 5 spike
+            };
+            if bits == 0 || bits > 64 { continue; }
+            header.push_str(&format!("    if ({pname} != _dbg_prev_{pname}) {{\n"));
+            header.push_str(&format!(
+                "      printf(\"[%llu][{mod}.{pname}]({dir}) 0x%llx -> 0x%llx\\n\", \
+                 (unsigned long long)_dbg_cycle, \
+                 (unsigned long long)_dbg_prev_{pname}, \
+                 (unsigned long long){pname});\n",
+                mod = m.name.name
+            ));
+            header.push_str(&format!("      _dbg_prev_{pname} = {pname};\n"));
+            header.push_str("    }\n");
+        }
+        header.push_str("  }\n\n");
+    }
 
     let _ = (&clk_name, &rst_name);
 
     header.push_str("private:\n");
+    header.push_str("  uint8_t _clk_prev = 0;\n");
+    if debug {
+        header.push_str("  uint64_t _dbg_cycle = 0;\n");
+        for p in &m.ports {
+            if matches!(&p.ty, TypeExpr::Clock(_)) { continue; }
+            let cpp_ty = port_or_reg_cpp_ty(&p.ty)
+                .map_err(|e| format!("module `{}` port `{}`: {}", class, p.name.name, e))?;
+            header.push_str(&format!("  {cpp_ty} _dbg_prev_{} = 0;\n", p.name.name));
+        }
+    }
     header.push_str("  arch_rt::ThreadScheduler _sched;\n");
     // One holder field per resource: int32_t = current owning thread
     // index, or -1 when free. Reset to -1 in posedge_clk's reset arm.
@@ -771,10 +841,30 @@ fn partition(body: &[ThreadStmt], branches: &mut Vec<Branch>, thread_id: usize) 
             other => return Err(format!("thread stmt not yet supported: {:?}", std::mem::discriminant(other))),
         }
     }
-    // Trailing segment: terminal yield (if non-empty).
-    if !cur.hold_comb.is_empty() || !cur.entry_seq.is_empty() || !cur.entry_seq_if.is_empty() {
+    // Trailing segment: if it's pure-seq (no held comb), fold its
+    // assigns into the previous wait segment's post_wait_seq — they
+    // fire on the cycle the previous wait completes, no extra cycle
+    // of latency. This matches the lowered-fsm trailing-statement
+    // optimization (elaborate.rs §4 "Trailing statements"). For
+    // trailing segments with held comb, we still need a Terminal
+    // segment with a 1-cycle yield so the comb is visible.
+    if !cur.hold_comb.is_empty() {
         cur.wait_kind = WaitKind::Terminal;
         segs.push(cur);
+    } else if !cur.entry_seq.is_empty() || !cur.entry_seq_if.is_empty() {
+        if let Some(prev) = segs.last_mut() {
+            // Only fold into a wait segment (not Terminal/ForkJoin etc.).
+            if matches!(prev.wait_kind, WaitKind::Until(_) | WaitKind::Cycles(_)) {
+                prev.post_wait_seq.extend(std::mem::take(&mut cur.entry_seq));
+                prev.post_wait_seq_if.extend(std::mem::take(&mut cur.entry_seq_if));
+            } else {
+                cur.wait_kind = WaitKind::Terminal;
+                segs.push(cur);
+            }
+        } else {
+            cur.wait_kind = WaitKind::Terminal;
+            segs.push(cur);
+        }
     }
     if segs.is_empty() {
         return Err("thread body has no statements".into());
