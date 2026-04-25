@@ -103,7 +103,7 @@ struct ThreadInfo {
     branches: Vec<Branch>,
 }
 
-pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool) -> Result<SimModel, String> {
+pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool, num_os_threads: u32) -> Result<SimModel, String> {
     // Match the Verilator/fsm convention: V<ModuleName>. Lets the same
     // TB drive either --thread-sim path without changing #includes,
     // which is what makes --thread-sim=both cross-check practical.
@@ -236,6 +236,7 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool) -> Result<SimM
     // until the cycle after that). The initial tick doesn't increment
     // _dbg_cycle (cycle counter lives in eval()) so cycle alignment
     // matches fsm's "state register starts at entry state" semantic.
+    let mt = num_os_threads > 1;
     header.push_str(&format!("  {}() {{\n", class));
     for (i, info) in thread_infos.iter().enumerate() {
         header.push_str(&format!("    _slot_{i}.thread = _make_thread_{i}();\n"));
@@ -249,14 +250,31 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool) -> Result<SimM
     }
     // Initial settle — run each per-thread scheduler in declaration
     // order so thread N can read signals set by threads 0..N-1 during
-    // their entry segments. At N=1 OS thread (current) this is a
-    // sequential loop; sub-phase 3.2 will dispatch each call into a
-    // dedicated worker OS thread synchronized via Barrier.
+    // their entry segments. ALWAYS sequential in the constructor (workers
+    // not yet spawned).
     for (i, _) in thread_infos.iter().enumerate() {
         header.push_str(&format!("    _sched_{i}.tick();\n"));
     }
+    if mt {
+        // Spawn one worker OS thread per user thread. Each worker waits
+        // at _start_barrier, ticks its scheduler when signaled, then
+        // signals _end_barrier. The main TB-driving thread (caller of
+        // eval()) coordinates by hitting both barriers per posedge.
+        for (i, _) in thread_infos.iter().enumerate() {
+            header.push_str(&format!("    _worker_{i} = std::thread([this]{{ _worker_loop_{i}(); }});\n"));
+        }
+    }
     header.push_str("  }\n");
     header.push_str(&format!("  ~{}() {{\n", class));
+    if mt {
+        // Wake workers via _start_barrier so they observe _shutdown=true
+        // and break out of their loops, then join them.
+        header.push_str("    _shutdown.store(true, std::memory_order_release);\n");
+        header.push_str("    _start_barrier.wait();\n");
+        for (i, _) in thread_infos.iter().enumerate() {
+            header.push_str(&format!("    if (_worker_{i}.joinable()) _worker_{i}.join();\n"));
+        }
+    }
     for (i, info) in thread_infos.iter().enumerate() {
         header.push_str(&format!("    _slot_{i}.thread.destroy();\n"));
         for br in &info.branches {
@@ -466,11 +484,17 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool) -> Result<SimM
             }
         }
     }
-    // Per-user-thread tick (Phase 3 architecture). At N=1 OS thread
-    // these run sequentially in declaration order; sub-phase 3.2 will
-    // dispatch each into a worker OS thread synchronized via Barrier.
-    for (i, _) in thread_infos.iter().enumerate() {
-        header.push_str(&format!("    _sched_{i}.tick();\n"));
+    if mt {
+        // Multi-OS-thread tick: workers wait at _start_barrier; signal
+        // them to begin their per-thread tick, then wait at _end_barrier
+        // for them to complete.
+        header.push_str("    _start_barrier.wait();\n");
+        header.push_str("    _end_barrier.wait();\n");
+    } else {
+        // Sequential tick (single OS thread, current default).
+        for (i, _) in thread_infos.iter().enumerate() {
+            header.push_str(&format!("    _sched_{i}.tick();\n"));
+        }
     }
     header.push_str("    eval();\n");
     // Note: --debug logging fires from eval() at end (matches fsm
@@ -629,11 +653,23 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool) -> Result<SimM
         }
     }
     // Per-user-thread scheduler. Each owns its main slot + its fork
-    // branches. At N=1 OS thread (current), all schedulers tick
-    // sequentially in the calling OS thread; sub-phase 3.2 wraps
-    // each tick in a worker OS thread synchronized via Barrier.
+    // branches. At N=1 OS thread, all schedulers tick sequentially in
+    // the calling OS thread; at N>1 each tick runs in a dedicated
+    // worker OS thread synchronized via Barrier.
     for (i, _) in thread_infos.iter().enumerate() {
         header.push_str(&format!("  arch_rt::ThreadScheduler _sched_{i};\n"));
+    }
+    if mt {
+        // Multi-OS-thread coordination state. The +1 in barrier targets
+        // is the calling thread (TB driver) which hits both barriers
+        // each posedge.
+        let total = thread_infos.len() + 1;
+        header.push_str("  std::atomic<bool> _shutdown{false};\n");
+        header.push_str(&format!("  arch_rt::Barrier _start_barrier{{{total}}};\n"));
+        header.push_str(&format!("  arch_rt::Barrier _end_barrier{{{total}}};\n"));
+        for (i, _) in thread_infos.iter().enumerate() {
+            header.push_str(&format!("  std::thread _worker_{i};\n"));
+        }
     }
     // One holder field per resource: int32_t = current owning thread
     // index, or -1 when free. Reset to -1 in posedge_clk's reset arm.
@@ -842,6 +878,22 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool) -> Result<SimM
                 }
             }
             header.push_str("    co_return;\n");
+            header.push_str("  }\n\n");
+        }
+    }
+
+    if mt {
+        // Per-worker loop method. Each worker waits at _start_barrier,
+        // checks _shutdown, ticks its scheduler, then waits at
+        // _end_barrier. Loops until shutdown.
+        for (i, _) in thread_infos.iter().enumerate() {
+            header.push_str(&format!("  void _worker_loop_{i}() {{\n"));
+            header.push_str("    while (true) {\n");
+            header.push_str("      _start_barrier.wait();\n");
+            header.push_str("      if (_shutdown.load(std::memory_order_acquire)) break;\n");
+            header.push_str(&format!("      _sched_{i}.tick();\n"));
+            header.push_str("      _end_barrier.wait();\n");
+            header.push_str("    }\n");
             header.push_str("  }\n\n");
         }
     }

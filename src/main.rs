@@ -372,18 +372,12 @@ fn main() -> miette::Result<()> {
             if threads > 1 && thread_sim != "parallel" {
                 return Err(miette::miette!("--threads N (N>1) requires --thread-sim parallel"));
             }
-            if threads > 1 {
-                return Err(miette::miette!(
-                    "--threads {} not yet implemented (Phase 3.2 work). Currently --threads 1 only.",
-                    threads
-                ));
-            }
             match thread_sim.as_str() {
                 "fsm" => learn_wrap(&arch_files, || {
-                    run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, coverage, cov_dat_path.clone(), false, pybind, test.as_deref(), pybind_module_name.as_deref())
+                    run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, coverage, cov_dat_path.clone(), false, threads, pybind, test.as_deref(), pybind_module_name.as_deref())
                 }),
                 "parallel" => learn_wrap(&arch_files, || {
-                    run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, coverage, cov_dat_path.clone(), true, pybind, test.as_deref(), pybind_module_name.as_deref())
+                    run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, coverage, cov_dat_path.clone(), true, threads, pybind, test.as_deref(), pybind_module_name.as_deref())
                 }),
                 "both" => {
                     // Cross-check: build + run both fsm and parallel sims
@@ -575,6 +569,7 @@ fn build_and_capture(
         /*debug*/ true, /*debug_depth*/ 1, /*debug_fsm*/ false,
         /*coverage*/ false, /*coverage_dat*/ None,
         parallel,
+        /*threads*/ 1,
         /*pybind*/ false, /*test_file*/ None, /*pybind_module_name_override*/ None,
         /*no_exit*/ true,
     )?;
@@ -605,13 +600,14 @@ fn run_sim(
     coverage: bool,
     coverage_dat: Option<String>,
     thread_sim_parallel: bool,
+    threads: u32,
     pybind: bool,
     test_file: Option<&std::path::Path>,
     pybind_module_name_override: Option<&str>,
 ) -> miette::Result<()> {
     run_sim_opts(arch_files, tb_files, outdir, check_uninit, inputs_start_uninit, check_uninit_ram,
         cdc_random, wave, debug, debug_depth, debug_fsm, coverage, coverage_dat, thread_sim_parallel,
-        pybind, test_file, pybind_module_name_override, /*no_exit=*/false)
+        threads, pybind, test_file, pybind_module_name_override, /*no_exit=*/false)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -630,6 +626,7 @@ fn run_sim_opts(
     coverage: bool,
     coverage_dat: Option<String>,
     thread_sim_parallel: bool,
+    threads: u32,
     pybind: bool,
     test_file: Option<&std::path::Path>,
     pybind_module_name_override: Option<&str>,
@@ -656,7 +653,7 @@ fn run_sim_opts(
             if let arch::ast::Item::Module(m) = item {
                 let has_thread = m.body.iter().any(|i| matches!(i, arch::ast::ModuleBodyItem::Thread(_)));
                 if has_thread {
-                    let model = arch::sim_codegen::thread_sim::gen_module_thread(m, debug, wave.is_some())
+                    let model = arch::sim_codegen::thread_sim::gen_module_thread(m, debug, wave.is_some(), threads)
                         .map_err(|e| miette::miette!("thread sim: {}", e))?;
                     out.push(model);
                 }
