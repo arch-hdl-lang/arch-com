@@ -452,11 +452,22 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str(&format!("  uint64_t total = 0; uint64_t hit = 0;\n"));
             cpp.push_str(&format!("  for (uint32_t i = 0; i < {n_cov}; i++) {{ total++; if ({class}::_arch_cov[i]) hit++; }}\n"));
             cpp.push_str(&format!("  fprintf(stderr, \"[{class}] FSM coverage: %llu/%llu hit (%.1f%%)\\n\", (unsigned long long)hit, (unsigned long long)total, total ? (100.0 * hit / total) : 0.0);\n"));
+            // --coverage-dat: also append per-point Verilator-compatible
+            // lines for the FSM coverage points.
+            if let Some(path) = &self.coverage_dat {
+                let path_lit = path.replace('\\', "\\\\").replace('"', "\\\"");
+                cpp.push_str(&format!("  FILE* _dat = _arch_cov_dat_open(\"{path_lit}\");\n"));
+            }
             for (i, p) in cov_reg.borrow().points.iter().enumerate() {
-                let location = if let Some(sm) = &self.source_map {
+                let (file_disp, line_no) = if let Some(sm) = &self.source_map {
                     sm.locate(p.span_start)
-                        .map(|(file, line)| format!("{}:{}", file, line))
-                        .unwrap_or_else(|| format!("point[{i}]"))
+                        .map(|(f, l)| (f.to_string(), l))
+                        .unwrap_or_else(|| (String::new(), 0))
+                } else {
+                    (String::new(), 0)
+                };
+                let location = if !file_disp.is_empty() {
+                    format!("{file_disp}:{line_no}")
                 } else {
                     format!("point[{i}]")
                 };
@@ -465,6 +476,20 @@ impl<'a> SimCodegen<'a> {
                     "  fprintf(stderr, \"  {location} ({}) [{label_escaped}]: %llu hits%s\\n\", (unsigned long long){class}::_arch_cov[{i}], {class}::_arch_cov[{i}] ? \"\" : \" *NOT HIT*\");\n",
                     p.kind
                 ));
+                if self.coverage_dat.is_some() && !file_disp.is_empty() {
+                    let file_esc = file_disp.replace('\\', "\\\\").replace('"', "\\\"");
+                    let page = match p.kind {
+                        "state" | "trans" => "v_user/fsm",
+                        _                 => "v_user",
+                    };
+                    cpp.push_str(&format!(
+                        "  if (_dat) fprintf(_dat, \"C '\" \"\\x01\" \"file\" \"\\x02\" \"{file_esc}\" \"\\x01\" \"line\" \"\\x02\" \"{line_no}\" \"\\x01\" \"page\" \"\\x02\" \"{page}\" \"\\x01\" \"comment\" \"\\x02\" \"{kind} {comment}\" \"' %llu\\n\", (unsigned long long){class}::_arch_cov[{i}]);\n",
+                        kind = p.kind, comment = label_escaped
+                    ));
+                }
+            }
+            if self.coverage_dat.is_some() {
+                cpp.push_str("  if (_dat) fclose(_dat);\n");
             }
             cpp.push_str("}\n");
             cpp.push_str("struct _ArchCovInit { _ArchCovInit() { atexit(_arch_cov_dump); } };\n");
