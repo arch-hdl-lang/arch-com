@@ -4674,6 +4674,14 @@ impl<'a> SimCodegen<'a> {
                 // Guard each seq block on its specific clock's rising edge
                 cpp.push_str(&format!("  if (_rising_{}) {{\n", rb.clock.name));
                 let base_indent: usize = 2;
+                // --coverage phase 2: count seq-block entries (rising
+                // edges seen). One counter per top-level seq block;
+                // catches dead clock domains where branch coverage
+                // shows 0/0 trivially.
+                if let Some(reg) = cov_handle {
+                    let idx = reg.borrow_mut().alloc("seq", rb.span.start, format!("seq @{}", rb.clock.name));
+                    cpp.push_str(&format!("{}_arch_cov[{idx}]++;\n", "  ".repeat(base_indent)));
+                }
 
                 if let Some((rst_name, _is_async, is_low)) = &reset_sig {
                     let cond = if *is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
@@ -5176,6 +5184,15 @@ impl<'a> SimCodegen<'a> {
         for item in &m.body {
             if let ModuleBodyItem::CombBlock(cb) = item {
                 let mut body = String::new();
+                // --coverage phase 2: count comb-block entries (eval_comb
+                // calls per block). Caveat: comb blocks may evaluate
+                // multiple times per cycle during the settle loop, so
+                // counters reflect "block evaluations" rather than
+                // "cycles where block was active".
+                if let Some(reg) = cov_handle {
+                    let idx = reg.borrow_mut().alloc("comb", cb.span.start, "comb".to_string());
+                    body.push_str(&format!("  _arch_cov[{idx}]++;\n"));
+                }
                 emit_comb_stmts(&cb.stmts, &ctx_comb, &mut body, 1);
                 cpp.push_str(&body);
             }
