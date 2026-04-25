@@ -4105,6 +4105,31 @@ impl<'a> SimCodegen<'a> {
         for c in &all_clks {
             h.push_str(&format!("  bool _rising_{c};\n"));
         }
+        // --coverage Phase 6: per-(inst, output-port) prev-value
+        // shadow for construct port toggle counters. Allocated only
+        // when coverage is on AND port is scalar (≤64 bits). Skips
+        // bus / Vec / wide ports (v1).
+        if self.coverage {
+            for (inst_idx, inst) in insts.iter().enumerate() {
+                let conns = &expanded_conns[inst_idx];
+                for conn in conns {
+                    if conn.direction != ConnectDir::Output { continue; }
+                    let sig_name = if let crate::ast::ExprKind::Ident(n) = &conn.signal.kind { n.as_str() } else { continue; };
+                    let w = widths.get(sig_name).copied().unwrap_or(0);
+                    if w == 0 || w > 64 { continue; }
+                    if wide_names.contains(sig_name) { continue; }
+                    if vec_port_names.contains(sig_name) { continue; }
+                    // Skip Vec regs/wires (they connect to flattened
+                    // sub-instance port names like `name_0..name_{n-1}`,
+                    // not the bare `name`). Phase 6 v1 = scalars only.
+                    if vec_wire_counts.contains_key(sig_name) { continue; }
+                    h.push_str(&format!(
+                        "  uint64_t _prev_{}_{} = 0;\n",
+                        inst.name.name, conn.port_name.name
+                    ));
+                }
+            }
+        }
 
         // Private reg fields. Use params-aware Vec sizing — bare
         // `vec_array_info` returns 0 for params-as-length, which would
@@ -4719,6 +4744,45 @@ impl<'a> SimCodegen<'a> {
             for inst in &insts {
                 if debug_module_set.contains(&inst.module_name.name) {
                     cpp.push_str(&format!("  _inst_{}._debug_log_ports();\n", inst.name.name));
+                }
+            }
+        }
+
+        // --coverage Phase 6: construct port toggle. For each scalar
+        // OUTPUT port of each instantiated sub-construct, popcount-XOR
+        // the current value against a per-port _prev shadow and
+        // accumulate into a coverage counter. Surfaces dead lanes /
+        // tied-off interfaces at black-box construct boundaries
+        // (fifo, arbiter, ram, cam — anywhere the sub's internals
+        // contribute zero coverage from the consumer's viewpoint).
+        // Skip in v1: bus ports, wide (>64b) ports.
+        if let Some(reg) = cov_handle {
+            for (inst_idx, inst) in insts.iter().enumerate() {
+                let conns = &expanded_conns[inst_idx];
+                for conn in conns {
+                    if conn.direction != ConnectDir::Output { continue; }
+                    // Resolve parent-side storage name + width.
+                    let sig_name = if let crate::ast::ExprKind::Ident(n) = &conn.signal.kind { n.as_str() } else { continue; };
+                    let w = widths.get(sig_name).copied().unwrap_or(0);
+                    if w == 0 || w > 64 { continue; }
+                    if wide_names.contains(sig_name) { continue; }
+                    if vec_port_names.contains(sig_name) { continue; }
+                    // Skip Vec regs/wires (they connect to flattened
+                    // sub-instance port names like `name_0..name_{n-1}`,
+                    // not the bare `name`). Phase 6 v1 = scalars only.
+                    if vec_wire_counts.contains_key(sig_name) { continue; }
+                    let cidx = reg.borrow_mut().alloc(
+                        "toggle",
+                        inst.span.start,
+                        format!("toggle {}.{}", inst.name.name, conn.port_name.name),
+                    );
+                    let inst_n = &inst.name.name;
+                    let port_n = &conn.port_name.name;
+                    cpp.push_str(&format!(
+                        "  {{ uint64_t _cur = (uint64_t)_inst_{inst_n}.{port_n}; \
+                         _arch_cov[{cidx}] += __builtin_popcountll(_cur ^ _prev_{inst_n}_{port_n}); \
+                         _prev_{inst_n}_{port_n} = _cur; }}\n"
+                    ));
                 }
             }
         }
