@@ -3061,7 +3061,52 @@ For a linklist of kind doubly, depth D, and payload type T, the compiler generat
 
 A cam (Content-Addressable Memory) is a first-class construct that searches by content rather than by address. Instead of \'return the value at address X,\' a CAM answers \'is key X present, and if so at which index?\' The designer declares the CAM kind, depth, key and value types, match policy, and a lookup latency budget. The compiler generates the comparator array, priority encoder, replacement logic, and pipeline registers to meet the declared constraints.
 
-**13.1 CAM Kinds**
+> *⚑ Implementation status (v1): the surface in **§13.0** is implemented end-to-end — parser, type-check, SV codegen (Verilator-clean), and arch-sim. The richer surface in §13.1 onward (kind: ternary/associative, replace: lru/fifo/random, value_type, op-style lookup/insert with latency budgets) is aspirational design and not yet accepted by the compiler.*
+
+**13.0 v1 Surface --- Combinational Binary Match**
+
+The v1 \`cam\` is a stateless-controller helper: a vector of (valid, key) entries with a single write port (set or clear by index) and a combinational search port returning a one-hot match mask, an any-match flag, and the LSB-priority first-match index.
+
+```
+cam Mshr_Addr_Cam
+  param DEPTH: const = 32;
+  param KEY_W: const = 10;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+
+  // Write port: set or clear an entry
+  port write_valid: in Bool;
+  port write_idx:   in UInt<5>;       // $clog2(DEPTH)
+  port write_key:   in UInt<10>;      // KEY_W
+  port write_set:   in Bool;          // true = insert valid+key, false = clear valid
+
+  // Search port: combinational
+  port search_key:   in  UInt<10>;
+  port search_mask:  out UInt<32>;    // bitmask of matches; zero if no match
+  port search_any:   out Bool;
+  port search_first: out UInt<5>;     // LSB-priority first match (0 when search_any == 0)
+end cam Mshr_Addr_Cam
+```
+
+**Required params:** \`DEPTH\` and \`KEY_W\` (both \`const\`). The compiler rejects a \`cam\` declaration that omits either.
+
+**Semantics:**
+- **Storage:** internal \`entry_valid_r [DEPTH]\` (1 bit per entry) and \`entry_key_r [DEPTH]\` (KEY_W bits per entry). Both reset to zero.
+- **Write:** when \`write_valid\` is high on a clock edge, \`entry_valid_r[write_idx]\` is set to \`write_set\`; if \`write_set\` is true the corresponding \`entry_key_r[write_idx]\` is updated to \`write_key\`. Multiple writes per cycle are not supported (single write port; the user serializes).
+- **Search:** combinational. \`search_mask[i] = entry_valid_r[i] && (entry_key_r[i] == search_key)\`. \`search_any = OR(search_mask)\`. \`search_first\` is the LSB-priority first set bit of \`search_mask\` (0 when there is no match; gate consumers with \`search_any\`).
+- **Read-during-write:** the search port reflects the *pre-write* state on the same cycle as a write; the write commits on the next clock edge. Same convention as ARCH \`reg\`.
+
+**Typical use:** content-keyed lookup in cache MSHR, per-flow tables, scoreboard tag CAM, or any design that today hand-rolls \`Vec<reg>\` + a comb match loop. Compose with \`linklist\` (CAM finds head index → linklist owns the chain) for content-keyed multi-list designs.
+
+**Limitations of v1 (deferred to follow-ups):**
+- No ternary (TCAM) kind --- exact match only.
+- No \`value_type\` --- key only; pair with a \`ram\` indexed by \`search_first\` to recover an associated value.
+- No replacement policy --- the user picks the index to write (typically a free-slot priority encoder driven by \`~entry_valid_r\`).
+- No multi-cycle pipelined comparator --- a single combinational compare. Adequate for DEPTH ≤ 64; larger CAMs should pipeline manually for now.
+- No multiple search ports --- instantiate two CAMs.
+
+**13.1 CAM Kinds** *(aspirational --- not yet implemented)*
 
   ----------------------------------------------------------------------------------------------------------------------------------------------------------
   **kind**          **Match Semantics**                             **Don\'t-Care Bits**   **Typical Applications**
