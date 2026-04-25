@@ -417,19 +417,26 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
                         ));
                     }
                     WaitKind::Cycles(n) => {
-                        let n_str = match &n.kind {
-                            ExprKind::Literal(LitKind::Dec(v)) => format!("{}", v),
-                            ExprKind::Literal(LitKind::Sized(_, v)) => format!("{}", v),
-                            _ => return Err("wait <N> cycle: only literal N supported".into()),
-                        };
+                        let n_str = expr_to_cpp(n)?;
                         header.push_str(&format!(
                             "{pad2}co_await arch_rt::wait_cycles(&_t{ti}_br{}_slot, {n_str});\n", br.id
                         ));
                     }
                     WaitKind::Terminal => {
-                        // Terminal in branch body: just fall off (co_return).
-                        // No extra yield — branch slot becoming Done is the
-                        // signal the parent waits for.
+                        // Terminal in branch body. If the segment has held
+                        // outputs the user wrote (e.g. `aw_valid = 0;` after
+                        // a wait), they need one cycle of visibility before
+                        // the branch goes Done — otherwise the assignment is
+                        // invisible because eval() skips segment switches
+                        // for Done branches. A 1-cycle yield here matches
+                        // the lowered-fsm behavior (each trailing segment
+                        // becomes its own state with one posedge of comb
+                        // visibility).
+                        if !seg.hold_comb.is_empty() {
+                            header.push_str(&format!(
+                                "{pad2}co_await arch_rt::wait_cycles(&_t{ti}_br{}_slot, 1);\n", br.id
+                            ));
+                        }
                     }
                     WaitKind::ForkJoin(_) => {
                         return Err("nested fork/join inside fork branch not yet supported".into());
