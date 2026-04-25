@@ -121,6 +121,7 @@ x = expr                CombAssign → append to cur_comb  (no boundary)
 x <= expr               SeqAssign  → append to cur_seq   (no boundary)
 if/else (no waits)      Converted to CombIfElse / IfElse → appended to cur_*
 wait until cond         Flush pending → new state with transition_cond=cond
+                        cur_comb FUSES into the wait state (held during wait)
 wait N cycle            Flush pending → new state with wait_cycles=N
 do { … } until cond     Flush pending → new hold-state with transition_cond=cond
 for i in s..e { … }     lower_thread_for   (see §4a)
@@ -128,8 +129,21 @@ lock res { … }          lower_thread_lock  (see §4b)
 fork…and…join           lower_fork_join    (see §4c)
 ```
 
-"Flush pending" means: if `cur_comb` or `cur_seq` is non-empty, emit a state for
-them first (unconditional advance), then clear both.
+"Flush pending" before a `wait until`: SeqAssigns (`<=`) emit a fire-once
+predecessor state and unconditionally advance — registered writes fire
+exactly once on entry. CombAssigns (`=`) FUSE into the wait state's
+`comb_stmts` so they hold while the wait predicate is being evaluated each
+cycle. This makes `valid = 1; wait until ready;` produce held-AXI-style
+semantics (valid stays asserted until the handshake completes), which is
+what users expect.
+
+`do { … } until cond` remains the canonical form for genuinely multi-cycle
+holds where the body itself contains `wait` statements (the held outputs
+change over time across the wait). For the simple "hold one comb across one
+wait" case, the implicit fusion above is sufficient.
+
+For other boundary kinds (`wait N cycle`, `do until`, etc.), "flush pending"
+emits a predecessor state for both `cur_comb` and `cur_seq`, then clears.
 
 ### Trailing statements
 
