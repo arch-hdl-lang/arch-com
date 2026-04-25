@@ -20,7 +20,19 @@ Each TB takes an optional cycle count (default 1M) and reports cycles/sec.
 | named_thread (2 user threads, trivial body) | 39.4 Mcyc/s | 11.3 Mcyc/s | 1.9 Mcyc/s | 9.2 Mcyc/s | — |
 | ThreadMm2s (5 user threads, AXI DMA logic) | 6.5 Mcyc/s | 4.0 Mcyc/s | 0.02 Mcyc/s | **14.3 Mcyc/s** | **11.9 Mcyc/s** |
 
-**ThreadMm2s at N=2 with batching is 2.2× faster than fsm and 700× faster than per-cycle MT** — the cycle-batching API (Phase 3.5) makes multi-OS-thread parallel sim a real speedup. Per-cycle-mode N>1 remains slow on Apple Silicon (P/E core jitter at sub-µs work granularity).
+## Verilator comparison (ThreadMm2s, same TB / Apple M-series)
+
+| Sim | Single-thread | Multi-thread (per-cycle) | Multi-thread (batched) |
+|---|---|---|---|
+| **Verilator** | 17.0 Mcyc/s (N=1) | 0.94 Mcyc/s (N=2) / 0.30 (N=4) | N/A — Verilator has no batching API |
+| **arch sim** | 6.5 Mcyc/s (fsm) / 4.0 (par N=1) | 0.02 Mcyc/s (par N=2) | **14.3 Mcyc/s (par N=2 batch)** |
+
+Honest interpretation:
+- **Single-thread**: Verilator wins (2.6× over arch fsm) — years of optimization; expected.
+- **Per-cycle MT on Apple Silicon**: both Verilator and arch sim are catastrophically slow (P/E core jitter affects both equally). Verilator drops 18× from N=1 to N=2; arch sim drops 200×.
+- **Batched MT**: arch sim's `run_cycles(K)` API delivers **14.3 Mcyc/s — 15× faster than Verilator N=2 per-cycle, and 84% of Verilator single-thread**. Verilator can't batch this way because lowered RTL must honor per-cycle observability; arch sim's user-marked threads + `run_cycles(K)` is a semantic shortcut Verilator doesn't have.
+
+## Path to further speedup (deferred)
 
 ## Honest interpretation
 
@@ -36,6 +48,7 @@ Root causes:
 - **Affinity to perf cores**: macOS `thread_policy_set(THREAD_AFFINITY_POLICY)` is advisory but worth trying.
 - **Test on x86 Linux**: consistent core performance, no P/E asymmetry. Per-cycle MT mode likely usable on x86.
 - **Larger per-cycle work**: real designs with deeper compute per cycle (e.g., compression, crypto) would amortize even better.
+- **Single-thread tuning**: closing the 2.6× gap to Verilator on single-thread (possibly inlining segment-switch code, removing function-call overhead on hot paths, optimizing scheduler tick).
 
 ## Cycle batching usage
 
