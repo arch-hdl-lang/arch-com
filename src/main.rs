@@ -361,14 +361,21 @@ fn main() -> miette::Result<()> {
             // → Some(None) → default "coverage.dat"; absent → None.
             let cov_dat_path: Option<String> = coverage_dat.map(|opt| opt.unwrap_or_else(|| "coverage.dat".to_string()));
             let coverage = coverage || cov_dat_path.is_some();
-            let thread_sim_parallel = match thread_sim.as_str() {
-                "fsm" => false,
-                "parallel" => true,
-                other => return Err(miette::miette!("--thread-sim: expected `fsm` or `parallel`, got `{}`", other)),
-            };
-            learn_wrap(&arch_files, || {
-                run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, coverage, cov_dat_path.clone(), thread_sim_parallel, pybind, test.as_deref(), pybind_module_name.as_deref())
-            })
+            match thread_sim.as_str() {
+                "fsm" => learn_wrap(&arch_files, || {
+                    run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, coverage, cov_dat_path.clone(), false, pybind, test.as_deref(), pybind_module_name.as_deref())
+                }),
+                "parallel" => learn_wrap(&arch_files, || {
+                    run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, coverage, cov_dat_path.clone(), true, pybind, test.as_deref(), pybind_module_name.as_deref())
+                }),
+                "both" => {
+                    // Cross-check: build + run both fsm and parallel sims
+                    // independently with --debug, then diff the port-change
+                    // traces. Mismatch ⇒ abort with first divergence.
+                    run_thread_sim_cross_check(&arch_files, &tb_files, outdir.as_deref())
+                }
+                other => return Err(miette::miette!("--thread-sim: expected `fsm`, `parallel`, or `both`, got `{}`", other)),
+            }
         }
         Command::Build { files, o } => {
             let files_for_learn = files.clone();
@@ -473,6 +480,98 @@ fn main() -> miette::Result<()> {
     }
 }
 
+/// `--thread-sim both` driver: build + run fsm and parallel sims
+/// independently with --debug, then diff their port-change traces.
+/// Mismatch ⇒ abort with the first divergence highlighted.
+fn run_thread_sim_cross_check(
+    arch_files: &[PathBuf],
+    tb_files: &[PathBuf],
+    outdir: Option<&std::path::Path>,
+) -> miette::Result<()> {
+    let base = outdir.map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("arch_sim_build"));
+    let fsm_dir = base.with_file_name(format!("{}_fsm", base.file_name().and_then(|s| s.to_str()).unwrap_or("arch_sim_build")));
+    let par_dir = base.with_file_name(format!("{}_par", base.file_name().and_then(|s| s.to_str()).unwrap_or("arch_sim_build")));
+
+    eprintln!("=== arch sim --thread-sim both: building fsm path ===");
+    let fsm_trace = build_and_capture(arch_files, tb_files, &fsm_dir, /*parallel=*/false)?;
+    eprintln!("=== arch sim --thread-sim both: building parallel path ===");
+    let par_trace = build_and_capture(arch_files, tb_files, &par_dir, /*parallel=*/true)?;
+
+    // Filter to just the [cycle][Mod.port](in/out) debug lines, ignore
+    // TB stdout. The fsm path uses --debug --depth N to optionally
+    // include sub-instance traces; we only invoke with depth=1 above,
+    // so only top-module ports appear in either trace. (For cross-check
+    // we want top-module observable behavior — sub-module internals
+    // are implementation detail and may legitimately differ.)
+    let extract_trace = |s: &str| -> Vec<String> {
+        s.lines()
+            .filter(|l| l.starts_with('[') && (l.contains("](in)") || l.contains("](out)")))
+            .map(|l| l.to_string())
+            .collect()
+    };
+    let fsm_lines = extract_trace(&fsm_trace);
+    let par_lines = extract_trace(&par_trace);
+
+    if fsm_lines == par_lines {
+        eprintln!("=== Cross-check PASS: {} port-change events match ===", fsm_lines.len());
+        return Ok(());
+    }
+
+    eprintln!("=== Cross-check FAIL: traces diverge ===");
+    let n = fsm_lines.len().max(par_lines.len());
+    let empty = String::new();
+    for i in 0..n {
+        let f = fsm_lines.get(i).unwrap_or(&empty);
+        let p = par_lines.get(i).unwrap_or(&empty);
+        if f != p {
+            eprintln!("  first divergence at event #{}:", i);
+            eprintln!("    fsm:      {}", f);
+            eprintln!("    parallel: {}", p);
+            return Err(miette::miette!("--thread-sim both: cross-check failed"));
+        }
+    }
+    Err(miette::miette!("--thread-sim both: trace lengths differ ({} fsm vs {} parallel)",
+        fsm_lines.len(), par_lines.len()))
+}
+
+/// Helper for run_thread_sim_cross_check: build a sim binary in `dir`
+/// (fsm or parallel mode), run it, capture its stdout.
+fn build_and_capture(
+    arch_files: &[PathBuf],
+    tb_files: &[PathBuf],
+    dir: &std::path::Path,
+    parallel: bool,
+) -> miette::Result<String> {
+    // Capture stdout via a temp file: redirect the child's stdout to it,
+    // then read it back. Easier than threading capture through run_sim.
+    let stdout_path = dir.with_extension("trace.txt");
+    // Ensure clean dir + previous trace.
+    let _ = std::fs::remove_dir_all(dir);
+    let _ = std::fs::remove_file(&stdout_path);
+    fs::create_dir_all(dir).into_diagnostic()?;
+
+    // Generate models + verilated stubs into dir.
+    run_sim_opts(
+        arch_files, tb_files, Some(dir),
+        /*check_uninit*/ false, /*inputs_start_uninit*/ false, /*check_uninit_ram*/ false,
+        /*cdc_random*/ false, /*wave*/ None,
+        /*debug*/ true, /*debug_depth*/ 1, /*debug_fsm*/ false,
+        /*coverage*/ false, /*coverage_dat*/ None,
+        parallel,
+        /*pybind*/ false, /*test_file*/ None, /*pybind_module_name_override*/ None,
+        /*no_exit*/ true,
+    )?;
+
+    // The sim_out binary was already executed by run_sim; capture its
+    // stdout would require modifying run_sim. For now, run the binary
+    // a second time and capture this run.
+    let sim_bin = dir.join("sim_out");
+    let output = std::process::Command::new(&sim_bin)
+        .output()
+        .into_diagnostic()?;
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_sim(
     arch_files: &[PathBuf],
@@ -492,6 +591,32 @@ fn run_sim(
     pybind: bool,
     test_file: Option<&std::path::Path>,
     pybind_module_name_override: Option<&str>,
+) -> miette::Result<()> {
+    run_sim_opts(arch_files, tb_files, outdir, check_uninit, inputs_start_uninit, check_uninit_ram,
+        cdc_random, wave, debug, debug_depth, debug_fsm, coverage, coverage_dat, thread_sim_parallel,
+        pybind, test_file, pybind_module_name_override, /*no_exit=*/false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_sim_opts(
+    arch_files: &[PathBuf],
+    tb_files: &[PathBuf],
+    outdir: Option<&std::path::Path>,
+    check_uninit: bool,
+    inputs_start_uninit: bool,
+    check_uninit_ram: bool,
+    cdc_random: bool,
+    wave: Option<&std::path::Path>,
+    debug: bool,
+    debug_depth: u32,
+    debug_fsm: bool,
+    coverage: bool,
+    coverage_dat: Option<String>,
+    thread_sim_parallel: bool,
+    pybind: bool,
+    test_file: Option<&std::path::Path>,
+    pybind_module_name_override: Option<&str>,
+    no_exit: bool,
 ) -> miette::Result<()> {
     // 1. Parse + type-check
     let all_files = resolve_use_imports(arch_files)?;
@@ -514,7 +639,7 @@ fn run_sim(
             if let arch::ast::Item::Module(m) = item {
                 let has_thread = m.body.iter().any(|i| matches!(i, arch::ast::ModuleBodyItem::Thread(_)));
                 if has_thread {
-                    let model = arch::sim_codegen::thread_sim::gen_module_thread(m)
+                    let model = arch::sim_codegen::thread_sim::gen_module_thread(m, debug)
                         .map_err(|e| miette::miette!("thread sim: {}", e))?;
                     out.push(model);
                 }
@@ -846,6 +971,14 @@ sys.exit(0 if ok else 1)
     if let Some(wave_path) = wave {
         run_cmd.arg(format!("+trace+{}", wave_path.display()));
         eprintln!("VCD waveform will be written to {}", wave_path.display());
+    }
+    if no_exit {
+        // Cross-check mode: don't take over stdout/exit. Inherit stdio
+        // so the binary's output appears interleaved with the parent's
+        // logs as usual; the cross-check driver re-runs the binary
+        // itself to capture stdout.
+        let _ = run_cmd.status();
+        return Ok(());
     }
     let run_status = run_cmd
         .status()
