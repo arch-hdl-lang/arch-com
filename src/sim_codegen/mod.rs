@@ -2931,6 +2931,15 @@ fn build_widths(ports: &[PortDecl], body: &[ModuleBodyItem]) -> HashMap<String, 
     for item in body {
         match item {
             ModuleBodyItem::RegDecl(r) => { m.insert(r.name.name.clone(), type_bits_te(&r.ty)); }
+            ModuleBodyItem::WireDecl(w) => {
+                // Wires need width registration too — without this, downstream
+                // sites that consult ctx.widths (the Bool `~` masking check
+                // in cpp_expr's BitNot arm, infer_expr_width's Ident default,
+                // …) silently fall back to "32" and produce broken codegen.
+                // Symptom: `if ~bool_wire == false` emitted as
+                // `(~(uint8_t)1) == 0` → `0xFE == 0` → never true.
+                m.insert(w.name.name.clone(), type_bits_te(&w.ty));
+            }
             ModuleBodyItem::LetBinding(l) => {
                 // Destructuring: widths come from struct field types; these
                 // are best-effort looked up at emission time. Leave them

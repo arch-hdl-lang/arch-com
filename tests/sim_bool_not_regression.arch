@@ -1,0 +1,39 @@
+// Regression test for the sim Bool `~` masking bug.
+//
+// Pre-fix: `wire b: Bool;` had no width registered in the sim
+// codegen's `widths` map (build_widths only handled RegDecl /
+// LetBinding). So `~b` in cpp_expr's BitNot arm took the "wider
+// type" branch and emitted `(~(uint8_t)1)` = 0xFE, never == 0.
+// `if ~b == false` therefore never entered its body in arch sim
+// (iverilog masked correctly so existing CVDP tests passed).
+//
+// Post-fix: build_widths registers wires too. `~b` correctly emits
+// `(uint8_t)(!(...))` so `~b == false` evaluates the way the design
+// intended.
+
+module sim_bool_not_regression
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port a:   in Bool;
+  port b:   in Bool;
+
+  port not_a_eq_false: out Bool;   // (~a == false)
+  port not_b_neg_a:    out UInt<8>;  // first idx i in 0..3 where ~b == false then ~a[i]
+
+  wire flag_w: Bool;
+
+  comb
+    flag_w = ~a;
+    not_a_eq_false = (~a) == false;
+  end comb
+
+  // Loop pattern from cache_mshr's alloc_idx priority encoder
+  comb
+    not_b_neg_a = 0;
+    for i in 0..3
+      if ~b == false
+        not_b_neg_a = (not_b_neg_a + 1).trunc<8>();
+      end if
+    end for
+  end comb
+end module sim_bool_not_regression
