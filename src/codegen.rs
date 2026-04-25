@@ -7041,6 +7041,13 @@ impl<'a> Codegen<'a> {
             .and_then(|p| p.default.as_ref())
             .map(|e| self.emit_expr_str(e))
             .unwrap_or_else(|| "0".to_string());
+        // v3: optional VAL_W param activates the value-payload bundle.
+        let has_value = c.params.iter().any(|p| p.name.name == "VAL_W");
+        let val_w_default = c.params.iter()
+            .find(|p| p.name.name == "VAL_W")
+            .and_then(|p| p.default.as_ref())
+            .map(|e| self.emit_expr_str(e))
+            .unwrap_or_else(|| "0".to_string());
 
         let clk = c.ports.iter()
             .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
@@ -7051,8 +7058,14 @@ impl<'a> Codegen<'a> {
         // ── Module header ─────────────────────────────────────────────────────
         self.line(&format!("module {n} #("));
         self.indent += 1;
-        self.line(&format!("parameter int DEPTH = {depth_default},"));
-        self.line(&format!("parameter int KEY_W = {key_w_default}"));
+        if has_value {
+            self.line(&format!("parameter int DEPTH = {depth_default},"));
+            self.line(&format!("parameter int KEY_W = {key_w_default},"));
+            self.line(&format!("parameter int VAL_W = {val_w_default}"));
+        } else {
+            self.line(&format!("parameter int DEPTH = {depth_default},"));
+            self.line(&format!("parameter int KEY_W = {key_w_default}"));
+        }
         self.indent -= 1;
         self.line(") (");
         self.indent += 1;
@@ -7076,6 +7089,9 @@ impl<'a> Codegen<'a> {
         // ── Storage ──────────────────────────────────────────────────────────
         self.line("logic [DEPTH-1:0]      entry_valid_r;");
         self.line("logic [KEY_W-1:0]      entry_key_r [DEPTH];");
+        if has_value {
+            self.line("logic [VAL_W-1:0]      entry_value_r [DEPTH];");
+        }
         self.line("");
 
         // ── Combinational match ──────────────────────────────────────────────
@@ -7105,6 +7121,14 @@ impl<'a> Codegen<'a> {
         self.line("end");
         self.line("");
 
+        // ── Value-payload read (v3) ──────────────────────────────────────────
+        // read_value reflects the entry at search_first; the caller should
+        // qualify with search_any (it reads as 0 when there is no match).
+        if has_value {
+            self.line("assign read_value = entry_value_r[search_first];");
+            self.line("");
+        }
+
         // ── Sequential write port(s) ─────────────────────────────────────────
         // v2: if write2_* ports exist, emit two sequential write blocks back-
         // to-back (write1 first, then write2) so write2 wins on same-index
@@ -7129,6 +7153,9 @@ impl<'a> Codegen<'a> {
         self.indent += 1;
         self.line("entry_valid_r[write_idx] <= 1'b1;");
         self.line("entry_key_r[write_idx] <= write_key;");
+        if has_value {
+            self.line("entry_value_r[write_idx] <= write_value;");
+        }
         self.indent -= 1;
         self.line("end else begin");
         self.indent += 1;
@@ -7145,6 +7172,9 @@ impl<'a> Codegen<'a> {
             self.indent += 1;
             self.line("entry_valid_r[write2_idx] <= 1'b1;");
             self.line("entry_key_r[write2_idx] <= write2_key;");
+            if has_value {
+                self.line("entry_value_r[write2_idx] <= write2_value;");
+            }
             self.indent -= 1;
             self.line("end else begin");
             self.indent += 1;

@@ -1,0 +1,26 @@
+// Cam v3 smoke test: optional value-payload bundle.
+//
+// Adds VAL_W param + write_value + read_value ports. Each entry now
+// stores (valid, key, value) instead of just (valid, key); the read
+// side returns the value at search_first directly.
+
+cam Tag_Value_Cam
+  param DEPTH: const = 8;
+  param KEY_W: const = 16;
+  param VAL_W: const = 32;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+
+  port write_valid: in Bool;
+  port write_idx:   in UInt<3>;
+  port write_key:   in UInt<16>;
+  port write_value: in UInt<32>;
+  port write_set:   in Bool;
+
+  port search_key:   in  UInt<16>;
+  port search_mask:  out UInt<8>;
+  port search_any:   out Bool;
+  port search_first: out UInt<3>;
+  port read_value:   out UInt<32>;
+end cam Tag_Value_Cam

@@ -3566,7 +3566,8 @@ impl<'a> TypeChecker<'a> {
         let w2_present: Vec<bool> = w2_names.iter()
             .map(|n| c.ports.iter().any(|p| p.name.name == *n))
             .collect();
-        if w2_present.iter().any(|b| *b) && !w2_present.iter().all(|b| *b) {
+        let has_w2 = w2_present.iter().any(|b| *b);
+        if has_w2 && !w2_present.iter().all(|b| *b) {
             let missing: Vec<&str> = w2_names.iter().zip(&w2_present)
                 .filter(|(_, present)| !**present)
                 .map(|(name, _)| *name)
@@ -3576,6 +3577,37 @@ impl<'a> TypeChecker<'a> {
                     "cam: dual-write port is all-or-nothing — missing port(s): {}",
                     missing.join(", ")
                 ),
+                c.name.span,
+            ));
+        }
+        // v3: optional value payload. Activation = VAL_W param + write_value
+        // + read_value (and write2_value if dual-write is enabled).
+        let has_val_w     = c.params.iter().any(|p| p.name.name == "VAL_W");
+        let has_write_val = c.ports.iter().any(|p| p.name.name == "write_value");
+        let has_read_val  = c.ports.iter().any(|p| p.name.name == "read_value");
+        let has_w2_val    = c.ports.iter().any(|p| p.name.name == "write2_value");
+        if has_val_w || has_write_val || has_read_val || has_w2_val {
+            // Any one present → all required (matched to the active write port set).
+            let mut missing: Vec<&str> = Vec::new();
+            if !has_val_w     { missing.push("param VAL_W");      }
+            if !has_write_val { missing.push("port write_value"); }
+            if !has_read_val  { missing.push("port read_value");  }
+            if has_w2 && !has_w2_val { missing.push("port write2_value"); }
+            if !missing.is_empty() {
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "cam: value-type bundle is all-or-nothing — missing: {}",
+                        missing.join(", ")
+                    ),
+                    c.name.span,
+                ));
+            }
+        }
+        // Reject value-side ports declared without VAL_W (caught above when
+        // VAL_W is missing) or write2_value without dual-write.
+        if has_w2_val && !has_w2 {
+            self.errors.push(CompileError::general(
+                "cam: `write2_value` requires the full dual-write port set (write2_{valid,idx,key,set})",
                 c.name.span,
             ));
         }

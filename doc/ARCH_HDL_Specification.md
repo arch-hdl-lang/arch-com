@@ -3143,6 +3143,44 @@ end cam Mshr_Addr_Cam_Dual
 - **Different indices:** both writes commit independently.
 - **Same index:** port 2 wins (last-write semantics --- the SV codegen processes port 1 then port 2 in the same \`always_ff\` block, so the port-2 assignment overwrites). Use this to encode "allocate beats finalize" or "set beats clear" --- pick which side maps to port 2 based on which should win the race in your design.
 
+**13.0b Value Payload (v3)**
+
+By default a cam stores only \`(valid, key)\` per slot --- callers that want an associated value typically pair the cam with a \`Vec\` indexed by \`search_first\`. v3 absorbs that pattern into the construct itself: an optional \`VAL_W\` param + \`write_value\` / \`read_value\` ports adds a parallel value array.
+
+```
+cam Tag_Value_Cam
+  param DEPTH: const = 8;
+  param KEY_W: const = 16;
+  param VAL_W: const = 32;       // ← activates the value bundle
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+
+  port write_valid: in Bool;
+  port write_idx:   in UInt<3>;
+  port write_key:   in UInt<16>;
+  port write_value: in UInt<32>;  // ← required when VAL_W is present
+  port write_set:   in Bool;
+
+  port search_key:   in  UInt<16>;
+  port search_mask:  out UInt<8>;
+  port search_any:   out Bool;
+  port search_first: out UInt<3>;
+  port read_value:   out UInt<32>; // ← required when VAL_W is present
+end cam Tag_Value_Cam
+```
+
+**Activation:** \`VAL_W\`, \`write_value\`, and \`read_value\` are **all-or-nothing** --- declaring any one of them requires all three. With v2 dual-write, \`write2_value\` is also required. A cam without \`VAL_W\` keeps v1/v2 semantics (key-only); existing CAMs are byte-identical.
+
+**Semantics:**
+- **Storage:** internal \`entry_value_r [DEPTH]\` parallel to \`entry_key_r\`. Both reset to zero.
+- **Write:** \`write_valid && write_set\` updates \`entry_key_r[write_idx]\` AND \`entry_value_r[write_idx]\` together. Clear (\`write_set=false\`) only invalidates --- the value is left as-is, but unreachable until the slot is re-set.
+- **Read:** \`read_value = entry_value_r[search_first]\` --- combinational mux into the same priority-encoded slot the rest of the search-port outputs reference. **Caller must qualify with \`search_any\`**: when no entry matches, \`search_first\` reads as 0 and \`read_value\` reflects whatever's at slot 0 (typically stale or zero), so consumers should gate with \`if search_any\`.
+
+**When to use:** any design that previously paired a cam with \`Vec<UInt<W>, DEPTH>\` indexed by \`cam.search_first\` --- TLBs (key=virtual page → value=physical page), MAC learning tables (key=MAC → value=port), scoreboards (key=tag → value=in-flight state), reservation stations.
+
+**When not to use:** designs that need to read the value at an index *other* than \`search_first\` (e.g. designs that apply an external valid mask and re-priority-encode the result --- see [tests/cvdp/TLB.arch](tests/cvdp/TLB.arch) for an example where a flush-gated valid_bits AND'd with \`search_mask\` selects a different index than the cam's own \`search_first\`). Those designs should keep using a separate \`Vec\` indexed by their own hit_idx.
+
 **13.1 CAM Kinds** *(aspirational --- not yet implemented)*
 
   ----------------------------------------------------------------------------------------------------------------------------------------------------------

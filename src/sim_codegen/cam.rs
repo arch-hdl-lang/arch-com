@@ -24,8 +24,16 @@ impl<'a> SimCodegen<'a> {
             .and_then(|p| p.default.as_ref())
             .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(*v as u32) } else { None })
             .unwrap_or(8);
+        // v3: optional value payload.
+        let has_value = c.params.iter().any(|p| p.name.name == "VAL_W");
+        let val_w: u32 = c.params.iter()
+            .find(|p| p.name.name == "VAL_W")
+            .and_then(|p| p.default.as_ref())
+            .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(*v as u32) } else { None })
+            .unwrap_or(8);
 
         let key_ty = cpp_uint(key_w);
+        let val_ty = cpp_uint(val_w);
         let mask_ty = cpp_uint(depth);
         let idx_w = if depth <= 1 { 1 } else { 32 - (depth - 1).leading_zeros() };
         let idx_ty = cpp_uint(idx_w);
@@ -51,6 +59,9 @@ impl<'a> SimCodegen<'a> {
         let all_inits: Vec<String> = port_inits.into_iter().chain(state_inits).collect();
         h.push_str(&format!("  {class}() : {} {{\n", all_inits.join(", ")));
         h.push_str("    memset(_entry_key_r, 0, sizeof(_entry_key_r));\n");
+        if has_value {
+            h.push_str("    memset(_entry_value_r, 0, sizeof(_entry_value_r));\n");
+        }
         h.push_str("  }\n");
         h.push_str(&format!("  explicit {class}(VerilatedContext*) : {class}() {{}}\n"));
         h.push_str("  void eval();\n  void eval_posedge();\n  void eval_comb();\n  void final() { trace_close(); }\n");
@@ -58,6 +69,9 @@ impl<'a> SimCodegen<'a> {
         h.push_str("  uint8_t _clk_prev;\n");
         h.push_str(&format!("  {mask_ty} _entry_valid_r;\n"));
         h.push_str(&format!("  {key_ty} _entry_key_r[{depth}];\n"));
+        if has_value {
+            h.push_str(&format!("  {val_ty} _entry_value_r[{depth}];\n"));
+        }
 
         // ── Implementation ──
         let mut cpp = String::new();
@@ -88,6 +102,9 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("    if (write_set) {\n");
         cpp.push_str("      _entry_valid_r |= _bit;\n");
         cpp.push_str("      _entry_key_r[write_idx] = write_key;\n");
+        if has_value {
+            cpp.push_str("      _entry_value_r[write_idx] = write_value;\n");
+        }
         cpp.push_str("    } else {\n");
         cpp.push_str("      _entry_valid_r &= ~_bit;\n");
         cpp.push_str("    }\n");
@@ -99,6 +116,9 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str("    if (write2_set) {\n");
             cpp.push_str("      _entry_valid_r |= _bit2;\n");
             cpp.push_str("      _entry_key_r[write2_idx] = write2_key;\n");
+            if has_value {
+                cpp.push_str("      _entry_value_r[write2_idx] = write2_value;\n");
+            }
             cpp.push_str("    } else {\n");
             cpp.push_str("      _entry_valid_r &= ~_bit2;\n");
             cpp.push_str("    }\n");
@@ -126,7 +146,14 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("    }\n");
         cpp.push_str("  }\n");
         cpp.push_str("  search_first = _first;\n");
+        if has_value {
+            // Mux into entry_value_r at search_first; caller qualifies with search_any.
+            cpp.push_str("  read_value = _entry_value_r[_first];\n");
+        }
         cpp.push_str("}\n");
+
+        // Suppress unused-variable warning when val_ty isn't referenced.
+        let _ = val_ty;
 
         // Trace support — track entry_valid_r and search outputs.
         let extra_sigs: Vec<(&str, &str, u32)> = vec![
