@@ -50,6 +50,46 @@ pub struct SimCodegen<'a> {
     debug_depth: u32,
     debug_fsm: bool,
     coverage: bool,
+    /// Optional source map for resolving span byte offsets to
+    /// (file:line). Populated by main.rs from MultiSource when
+    /// --coverage is enabled.
+    source_map: Option<SourceMap>,
+}
+
+/// Maps byte offsets in the concatenated source (as produced by
+/// `MultiSource::from_files` in `main.rs`) back to (file_path,
+/// 1-based line number). Used by --coverage to render
+/// `cache_mshr.arch:111` instead of opaque `branch[3]` ordinals.
+#[derive(Debug, Default, Clone)]
+pub struct SourceMap {
+    /// (start_offset_in_combined, file_path, source_text). Sorted by
+    /// start_offset; segments may have padding bytes between them.
+    segments: Vec<(usize, String, String)>,
+}
+
+impl SourceMap {
+    pub fn new(segments: Vec<(usize, String, String)>) -> Self {
+        let mut s = segments;
+        s.sort_by_key(|(start, _, _)| *start);
+        Self { segments: s }
+    }
+
+    /// Resolve a byte offset → (file_path, 1-based line). Returns None
+    /// when the offset doesn't fall inside any registered segment
+    /// (defensive — well-formed AST spans should always resolve).
+    pub fn locate(&self, offset: usize) -> Option<(&str, u32)> {
+        for i in 0..self.segments.len() {
+            let (start, file, src) = &self.segments[i];
+            let next_start = self.segments.get(i + 1).map(|s| s.0).unwrap_or(usize::MAX);
+            if offset >= *start && offset < next_start {
+                let local = offset.saturating_sub(*start);
+                if local > src.len() { return None; }
+                let line = 1 + src[..local].matches('\n').count() as u32;
+                return Some((file.as_str(), line));
+            }
+        }
+        None
+    }
 }
 
 /// One coverage point recorded during gen_module. Currently only branch
@@ -88,11 +128,16 @@ impl<'a> SimCodegen<'a> {
         source: &'a SourceFile,
         overload_map: HashMap<usize, usize>,
     ) -> Self {
-        Self { symbols, source, overload_map, check_uninit: false, inputs_start_uninit: false, check_uninit_ram: false, cdc_random: false, debug: false, debug_depth: 1, debug_fsm: false, coverage: false }
+        Self { symbols, source, overload_map, check_uninit: false, inputs_start_uninit: false, check_uninit_ram: false, cdc_random: false, debug: false, debug_depth: 1, debug_fsm: false, coverage: false, source_map: None }
     }
 
     pub fn coverage(mut self, enabled: bool) -> Self {
         self.coverage = enabled;
+        self
+    }
+
+    pub fn with_source_map(mut self, sm: SourceMap) -> Self {
+        self.source_map = Some(sm);
         self
     }
 
@@ -5358,13 +5403,20 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str(&format!("  uint64_t total = 0; uint64_t hit = 0;\n"));
             cpp.push_str(&format!("  for (uint32_t i = 0; i < {n_cov}; i++) {{ total++; if ({class}::_arch_cov[i]) hit++; }}\n"));
             cpp.push_str(&format!("  fprintf(stderr, \"[{class}] branch coverage: %llu/%llu hit (%.1f%%)\\n\", (unsigned long long)hit, (unsigned long long)total, total ? (100.0 * hit / total) : 0.0);\n"));
-            // Per-arm breakdown — one line per counter, kind ordinal only
-            // (file:line resolution is phase 1b once the source-text plumbing
-            // is in place; for now the user maps ordinal → branch by the
-            // alloc-order, which is left-to-right top-to-bottom).
+            // Per-arm breakdown — file:line if a SourceMap is available,
+            // ordinal-only fallback otherwise. (Phase 1b lands the
+            // source-text plumbing so the dump shows
+            // `tests/cvdp/cache_mshr.arch:111` instead of `branch[0]`.)
             for (i, p) in cov_reg.borrow().points.iter().enumerate() {
+                let location = if let Some(sm) = &self.source_map {
+                    sm.locate(p.span_start)
+                        .map(|(f, l)| format!("{}:{}", f, l))
+                        .unwrap_or_else(|| format!("branch[{i}]"))
+                } else {
+                    format!("branch[{i}]")
+                };
                 cpp.push_str(&format!(
-                    "  fprintf(stderr, \"  branch[{i}] ({}): %llu hits%s\\n\", (unsigned long long){class}::_arch_cov[{i}], {class}::_arch_cov[{i}] ? \"\" : \" *NOT HIT*\");\n",
+                    "  fprintf(stderr, \"  {location} ({}): %llu hits%s\\n\", (unsigned long long){class}::_arch_cov[{i}], {class}::_arch_cov[{i}] ? \"\" : \" *NOT HIT*\");\n",
                     p.kind
                 ));
             }
