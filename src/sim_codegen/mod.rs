@@ -4413,13 +4413,72 @@ impl<'a> SimCodegen<'a> {
             // intermediates; 2 when parent comb blocks produce signals that feed
             // instance inputs (they're updated by eval_comb() at loop end, so a
             // second pass is needed to propagate them).
+            // Perf: classify inst input connections by whether they
+            // depend on parent comb (let bindings, comb-driven wires)
+            // vs invariant within a cycle (external ports, regs whose
+            // value is fixed for the whole eval()). Invariant inputs
+            // are mirrored ONCE before the settle loop instead of
+            // every iteration — typically saves ~80% of mirror lines
+            // for thread-style designs (e.g. ThreadMm2s) where most
+            // inputs are external ports.
+            let is_invariant = |conn: &crate::ast::Connection| -> bool {
+                if let crate::ast::ExprKind::Ident(name) = &conn.signal.kind {
+                    // Parent ports: invariant within a cycle.
+                    if port_names.contains(name.as_str()) { return true; }
+                    // Parent regs: stored value, only changes at posedge.
+                    if reg_names.contains(name.as_str()) { return true; }
+                    // Vec port elements: also invariant.
+                    if vec_port_names.contains(name.as_str()) { return true; }
+                }
+                // Conservative: anything else (let, wire, expr) is variant.
+                false
+            };
+
+            // Pre-loop: hoisted invariant input copies.
+            for &inst_idx in &inst_eval_order {
+                let inst = insts[inst_idx];
+                let conns = &expanded_conns[inst_idx];
+                for conn in conns {
+                    if conn.direction == ConnectDir::Input && is_invariant(conn) {
+                        if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
+                            if let Some(&n) = vec_wire_counts.get(src_name.as_str()) {
+                                for i in 0..n {
+                                    cpp.push_str(&format!("  _inst_{}.{}_{i} = _let_{src_name}[{i}];\n",
+                                        inst.name.name, conn.port_name.name));
+                                }
+                                continue;
+                            }
+                            if vec_port_names.contains(src_name.as_str()) {
+                                let n = vec_port_infos.iter()
+                                    .find(|v| v.name == *src_name)
+                                    .map(|v| v.count).unwrap_or(0);
+                                for i in 0..n {
+                                    cpp.push_str(&format!("  _inst_{}.{}_{i} = {src_name}_{i};\n",
+                                        inst.name.name, conn.port_name.name));
+                                }
+                                continue;
+                            }
+                            if wide_names.contains(src_name.as_str()) {
+                                let resolved = ctx.resolve_name(src_name, false);
+                                cpp.push_str(&format!("  _inst_{}.{} = {};\n",
+                                    inst.name.name, conn.port_name.name, resolved));
+                                continue;
+                            }
+                        }
+                        let sig = cpp_expr(&conn.signal, &ctx);
+                        cpp.push_str(&format!("  _inst_{}.{} = {};\n",
+                            inst.name.name, conn.port_name.name, sig));
+                    }
+                }
+            }
+
             cpp.push_str(&format!("  for (int _settle = 0; _settle < {settle_depth}; _settle++) {{\n"));
             for &inst_idx in &inst_eval_order {
             let inst = insts[inst_idx];
             let conns = &expanded_conns[inst_idx];
                 cpp.push('\n');
                 for conn in conns {
-                    if conn.direction == ConnectDir::Input {
+                    if conn.direction == ConnectDir::Input && !is_invariant(conn) {
                         if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
                             // Vec wire/reg → inst Vec port: expand element-by-element
                             if let Some(&n) = vec_wire_counts.get(src_name.as_str()) {
@@ -4519,13 +4578,51 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str("  eval_posedge();\n");
 
             // Step 3: refresh sub-inst comb outputs, then parent comb (with settle loop)
+            // Hoist invariant inputs (post-posedge values for ports/regs)
+            // out of the settle loop, mirroring the optimization above.
+            for &inst_idx in &inst_eval_order {
+                let inst = insts[inst_idx];
+                let conns = &expanded_conns[inst_idx];
+                for conn in conns {
+                    if conn.direction == ConnectDir::Input && is_invariant(conn) {
+                        if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
+                            if let Some(&n) = vec_wire_counts.get(src_name.as_str()) {
+                                for i in 0..n {
+                                    cpp.push_str(&format!("  _inst_{}.{}_{i} = _let_{src_name}[{i}];\n",
+                                        inst.name.name, conn.port_name.name));
+                                }
+                                continue;
+                            }
+                            if vec_port_names.contains(src_name.as_str()) {
+                                let n = vec_port_infos.iter()
+                                    .find(|v| v.name == *src_name)
+                                    .map(|v| v.count).unwrap_or(0);
+                                for i in 0..n {
+                                    cpp.push_str(&format!("  _inst_{}.{}_{i} = {src_name}_{i};\n",
+                                        inst.name.name, conn.port_name.name));
+                                }
+                                continue;
+                            }
+                            if wide_names.contains(src_name.as_str()) {
+                                let resolved = ctx.resolve_name(src_name, false);
+                                cpp.push_str(&format!("  _inst_{}.{} = {};\n",
+                                    inst.name.name, conn.port_name.name, resolved));
+                                continue;
+                            }
+                        }
+                        let sig = cpp_expr(&conn.signal, &ctx);
+                        cpp.push_str(&format!("  _inst_{}.{} = {};\n",
+                            inst.name.name, conn.port_name.name, sig));
+                    }
+                }
+            }
             cpp.push_str(&format!("  for (int _settle = 0; _settle < {settle_depth}; _settle++) {{\n"));
             for &inst_idx in &inst_eval_order {
             let inst = insts[inst_idx];
             let conns = &expanded_conns[inst_idx];
                 // Re-set sub-inst inputs (may have changed after posedge)
                 for conn in conns {
-                    if conn.direction == ConnectDir::Input {
+                    if conn.direction == ConnectDir::Input && !is_invariant(conn) {
                         if let crate::ast::ExprKind::Ident(src_name) = &conn.signal.kind {
                             // Vec wire/reg → inst Vec port: expand element-by-element
                             if let Some(&n) = vec_wire_counts.get(src_name.as_str()) {
