@@ -265,7 +265,7 @@ impl<'a> SimCodegen<'a> {
         let vec_port_infos: Vec<(String, String, u64, bool)> = m.ports.iter()
             .filter(|p| p.bus_info.is_none())
             .filter_map(|p| {
-                if let Some((elem_ty, count_str)) = vec_array_info(&p.ty) {
+                if let Some((elem_ty, count_str)) = vec_array_info_with_params(&p.ty, &m.params) {
                     let count: u64 = count_str.parse().unwrap_or(0);
                     Some((p.name.name.clone(), elem_ty, count, p.direction == Direction::In))
                 } else {
@@ -1213,13 +1213,82 @@ fn vec_array_info(ty: &TypeExpr) -> Option<(String, String)> {
 }
 
 /// Evaluate a constant expression to a u64, resolving basic arithmetic.
+/// Backward-compatible wrapper that doesn't resolve param identifiers —
+/// see [`eval_const_expr_with_params`] for the version that does. Use
+/// the param-aware version anywhere a Vec / array length needs to fold
+/// across `param N: const = …;` references (otherwise the result is 0
+/// and downstream code emits zero-sized C++ arrays — see the regression
+/// fixed in PR #cam-zero-array).
 fn eval_const_expr(expr: &Expr) -> u64 {
+    eval_const_expr_with_params(expr, &[])
+}
+
+/// Param-aware constant evaluator. Resolves bare identifiers against
+/// `params` (regular + local) by recursing on each param's `default`
+/// expression. Handles literals, `$clog2(x)`, unary `-`/`~`, and
+/// binary `+`, `-`, `*`, `/`, `%`, `<<`, `>>`, `&`, `|`, `^`. Returns 0
+/// for anything it can't fold (e.g. non-literal port reads), matching
+/// the conservative behavior of the legacy single-arg version.
+fn eval_const_expr_with_params(expr: &Expr, params: &[ParamDecl]) -> u64 {
     match &expr.kind {
         ExprKind::Literal(LitKind::Dec(v)) => *v,
         ExprKind::Literal(LitKind::Hex(v)) => *v,
         ExprKind::Literal(LitKind::Bin(v)) => *v,
         ExprKind::Literal(LitKind::Sized(_, v)) => *v,
+        ExprKind::Ident(name) => {
+            if let Some(p) = params.iter().find(|p| p.name.name == *name) {
+                if let Some(d) = &p.default {
+                    return eval_const_expr_with_params(d, params);
+                }
+            }
+            0
+        }
+        ExprKind::Clog2(a) => {
+            let v = eval_const_expr_with_params(a, params);
+            if v <= 1 { 0 } else { 64 - (v - 1).leading_zeros() as u64 }
+        }
+        ExprKind::Unary(op, a) => {
+            let v = eval_const_expr_with_params(a, params);
+            match op {
+                UnaryOp::Not => !v,
+                UnaryOp::Neg => v.wrapping_neg(),
+                _ => 0,
+            }
+        }
+        ExprKind::Binary(op, l, r) => {
+            let lv = eval_const_expr_with_params(l, params);
+            let rv = eval_const_expr_with_params(r, params);
+            match op {
+                BinOp::Add => lv.wrapping_add(rv),
+                BinOp::Sub => lv.wrapping_sub(rv),
+                BinOp::Mul => lv.wrapping_mul(rv),
+                BinOp::Div => if rv == 0 { 0 } else { lv / rv },
+                BinOp::Mod => if rv == 0 { 0 } else { lv % rv },
+                BinOp::Shl => lv.wrapping_shl(rv as u32),
+                BinOp::Shr => lv.wrapping_shr(rv as u32),
+                BinOp::BitAnd => lv & rv,
+                BinOp::BitOr => lv | rv,
+                BinOp::BitXor => lv ^ rv,
+                _ => 0,
+            }
+        }
         _ => 0,
+    }
+}
+
+/// Param-aware variant of [`vec_array_info`]. Uses
+/// [`eval_const_expr_with_params`] so that `Vec<_, NUM_ENTRIES>` style
+/// declarations whose count is a param identifier resolve to the
+/// param's literal default (rather than silently degrading to 0 and
+/// emitting a zero-sized C++ scratch array, which corrupts the
+/// surrounding stack on memcpy/index).
+fn vec_array_info_with_params(ty: &TypeExpr, params: &[ParamDecl]) -> Option<(String, String)> {
+    if let TypeExpr::Vec(elem, count_expr) = ty {
+        let elem_type = cpp_internal_type(elem);
+        let count_str = eval_const_expr_with_params(count_expr, params).to_string();
+        Some((elem_type, count_str))
+    } else {
+        None
     }
 }
 
@@ -3247,7 +3316,7 @@ impl<'a> SimCodegen<'a> {
         let vec_port_infos: Vec<VecPortInfo> = m.ports.iter()
             .filter(|p| p.bus_info.is_none())
             .filter_map(|p| {
-                if let Some((elem_ty, count_str)) = vec_array_info(&p.ty) {
+                if let Some((elem_ty, count_str)) = vec_array_info_with_params(&p.ty, &m.params) {
                     let count: u64 = count_str.parse().unwrap_or(0);
                     Some(VecPortInfo {
                         name: p.name.name.clone(),
@@ -3785,10 +3854,12 @@ impl<'a> SimCodegen<'a> {
             h.push_str(&format!("  bool _rising_{c};\n"));
         }
 
-        // Private reg fields
+        // Private reg fields. Use params-aware Vec sizing — bare
+        // `vec_array_info` returns 0 for params-as-length, which would
+        // emit `_arr[0]` and corrupt stack on memcpy / index.
         for item in &m.body {
             if let ModuleBodyItem::RegDecl(r) = item {
-                if let Some((elem_ty, count)) = vec_array_info(&r.ty) {
+                if let Some((elem_ty, count)) = vec_array_info_with_params(&r.ty, &m.params) {
                     h.push_str(&format!("  {elem_ty} _{}[{count}];\n", r.name.name));
                 } else {
                     let ty = cpp_internal_type(&r.ty);
@@ -3905,7 +3976,7 @@ impl<'a> SimCodegen<'a> {
                     h.push_str(&format!("  {ty} _let_{};\n", l.name.name));
                 }
                 ModuleBodyItem::WireDecl(w) => {
-                    if let Some((elem_ty, count)) = vec_array_info(&w.ty) {
+                    if let Some((elem_ty, count)) = vec_array_info_with_params(&w.ty, &m.params) {
                         h.push_str(&format!("  {elem_ty} _let_{}[{count}];\n", w.name.name));
                     } else {
                         let ty = cpp_internal_type(&w.ty);
@@ -4264,10 +4335,12 @@ impl<'a> SimCodegen<'a> {
             .collect();
 
         if !reg_blocks.is_empty() || !pipe_regs.is_empty() {
-            // Declare _n_ temporaries for all regs
+            // Declare _n_ temporaries for all regs. Use the param-aware
+            // helper so Vec<_, PARAM_NAME> resolves to the literal default
+            // (otherwise we emit `_n_arr[0]` and corrupt stack on memcpy).
             for rd in &reg_decls {
                 let n = &rd.name.name;
-                if let Some((elem_ty, count)) = vec_array_info(&rd.ty) {
+                if let Some((elem_ty, count)) = vec_array_info_with_params(&rd.ty, &m.params) {
                     cpp.push_str(&format!("  {elem_ty} _n_{n}[{count}]; memcpy(_n_{n}, _{n}, sizeof(_{n}));\n"));
                 } else {
                     let ty = cpp_internal_type(&rd.ty);
