@@ -907,6 +907,7 @@ fn collect_trace_signals(
     wide_names: &HashSet<String>,
     widths: &HashMap<String, u32>,
     bus_flat: &[(String, TypeExpr)],
+    params: &[ParamDecl],
 ) -> Vec<TraceSignal> {
     let mut sigs = Vec::new();
 
@@ -937,20 +938,42 @@ fn collect_trace_signals(
         });
     }
 
-    // Registers (skip struct/named types and Vec types — can't bit-shift)
-    // Regs >64 bits use _arch_u128, not VlWide, so is_wide = false
+    // Registers. Skip struct/named types (can't bit-shift). Scalars
+    // emit one signal; Vec<T,N> regs emit one signal per element so
+    // each is independently visible in the waveform viewer.
+    // Regs >64 bits use _arch_u128, not VlWide, so is_wide = false.
     for item in body {
         if let ModuleBodyItem::RegDecl(r) = item {
-            if matches!(r.ty, TypeExpr::Named(_) | TypeExpr::Vec(..)) { continue; }
+            if matches!(r.ty, TypeExpr::Named(_)) { continue; }
             let name = &r.name.name;
-            let width = type_width(&r.ty);
-            let is_wide = false; // regs use _arch_u128, not VlWide
-            sigs.push(TraceSignal {
-                vcd_name: name.clone(),
-                cpp_expr: format!("_{name}"),
-                width,
-                is_wide,
-            });
+            if let TypeExpr::Vec(elem, count_expr) = &r.ty {
+                // Skip Vec-of-named (struct/enum element); per-element
+                // bit-shift only works for scalar elements.
+                if matches!(elem.as_ref(), TypeExpr::Named(_)) { continue; }
+                let elem_width = type_width(elem);
+                if elem_width == 0 || elem_width > 64 { continue; }
+                // Use params-aware count (matches the field-decl path
+                // at line 4091); bare eval_const_expr returns 0 for
+                // param-based sizes, which would skip the trace silently.
+                let count = eval_const_expr_with_params(count_expr, params);
+                if count == 0 { continue; }
+                for i in 0..count {
+                    sigs.push(TraceSignal {
+                        vcd_name: format!("{name}[{i}]"),
+                        cpp_expr: format!("_{name}[{i}]"),
+                        width: elem_width,
+                        is_wide: false,
+                    });
+                }
+            } else {
+                let width = type_width(&r.ty);
+                sigs.push(TraceSignal {
+                    vcd_name: name.clone(),
+                    cpp_expr: format!("_{name}"),
+                    width,
+                    is_wide: false,
+                });
+            }
         }
     }
 
@@ -4051,7 +4074,7 @@ impl<'a> SimCodegen<'a> {
         // Verilator-compatible constructor: accepts VerilatedContext* but ignores it
         h.push_str(&format!("  explicit {class}(VerilatedContext*) : {class}() {{}}\n"));
         // Collect trace signals for VCD waveform support
-        let trace_signals = collect_trace_signals(&m.ports, &m.body, &wide_names, &widths, &bus_flat);
+        let trace_signals = collect_trace_signals(&m.ports, &m.body, &wide_names, &widths, &bus_flat, &m.params);
         let (trace_h_decls, trace_cpp_impl) = emit_trace_methods(&class, name, &trace_signals);
 
         h.push_str("  void eval();\n");
