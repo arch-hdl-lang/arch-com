@@ -2612,6 +2612,17 @@ fn emit_comb_if_else(ie: &CombIfElse, ctx: &Ctx, out: &mut String, indent: usize
     } else {
         out.push_str(&format!("{}if ({}) {{\n", ind(indent), cond));
     }
+    // --coverage phase 1c: same instrumentation as emit_reg_if_else for
+    // comb if/elsif/else arms. Note that comb blocks may evaluate
+    // multiple times per cycle during the settle loop — counters
+    // therefore reflect "branch entries", not "cycles where branch was
+    // active". For most arch designs the settle loop converges in 1-2
+    // iterations so this is close to the cycle count.
+    if let Some(reg) = ctx.coverage {
+        let kind = if is_chain { "elsif" } else { "if" };
+        let idx = reg.borrow_mut().alloc(kind, ie.cond.span.start, String::new());
+        out.push_str(&format!("{}  _arch_cov[{idx}]++;\n", ind(indent)));
+    }
     emit_comb_stmts(&ie.then_stmts, ctx, out, indent + 1);
     if ie.else_stmts.len() == 1 {
         if let CombStmt::IfElse(nested) = &ie.else_stmts[0] {
@@ -2621,6 +2632,10 @@ fn emit_comb_if_else(ie: &CombIfElse, ctx: &Ctx, out: &mut String, indent: usize
     }
     if !ie.else_stmts.is_empty() {
         out.push_str(&format!("{}}} else {{\n", ind(indent)));
+        if let Some(reg) = ctx.coverage {
+            let idx = reg.borrow_mut().alloc("else", ie.span.end, String::new());
+            out.push_str(&format!("{}  _arch_cov[{idx}]++;\n", ind(indent)));
+        }
         emit_comb_stmts(&ie.else_stmts, ctx, out, indent + 1);
     }
     out.push_str(&format!("{}}}\n", ind(indent)));
@@ -4880,7 +4895,8 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
         let ctx_comb = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                 &wide_names, &widths, &enum_map, &bus_port_names)
-                           .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes);
+                           .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes)
+                           .with_coverage(cov_handle);
 
         // Credit-channel combinational wires (sender can_send; receiver
         // valid/data once PR-sim-2 lands). Emit early so user comb code
