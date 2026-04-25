@@ -16,6 +16,14 @@ impl<'a> SimCodegen<'a> {
         let class = format!("V{name}");
         let enum_map = build_enum_map(self.symbols);
 
+        // --coverage phase 3: per-state and per-transition counter
+        // registry. Same pattern as gen_module: emit `_arch_cov[N]++;`
+        // at each state's case body (state-entry coverage) and at each
+        // transition's `if (cond) ...` (transition-arc coverage).
+        let cov_reg: std::cell::RefCell<CoverageRegistry> = std::cell::RefCell::new(CoverageRegistry::default());
+        let cov_handle: Option<&std::cell::RefCell<CoverageRegistry>> =
+            if self.coverage { Some(&cov_reg) } else { None };
+
         // Collect bus port names and flattened signals (same pattern as gen_module)
         let mut bus_port_names: HashSet<String> = HashSet::new();
         let mut bus_flat: Vec<(String, TypeExpr)> = Vec::new();
@@ -299,6 +307,14 @@ impl<'a> SimCodegen<'a> {
         for sb in &f.states {
             let idx = state_idx.get(&sb.name.name).copied().unwrap_or(0);
             cpp.push_str(&format!("      case {idx}: // {}\n", sb.name.name));
+            // --coverage: state-entry counter (per posedge that
+            // dispatched into this state's case). 0 hits means the
+            // state was never entered — useful for unreachable-state
+            // diagnostics.
+            if let Some(reg) = cov_handle {
+                let cidx = reg.borrow_mut().alloc("state", sb.name.span.start, format!("state {}", sb.name.name));
+                cpp.push_str(&format!("        _arch_cov[{cidx}]++;\n"));
+            }
             // Emit seq_stmts for this state
             for stmt in &sb.seq_stmts {
                 let mut body = String::new();
@@ -308,18 +324,30 @@ impl<'a> SimCodegen<'a> {
             for tr in &sb.transitions {
                 let cond = cpp_expr(&tr.condition, &ctx_fsm);
                 let target_idx = state_idx.get(&tr.target.name).copied().unwrap_or(0);
+                // --coverage: per-transition counter. The bump is
+                // inside the `if (cond) { ... }` so it only increments
+                // when the arc is actually taken (not on every
+                // condition evaluation).
+                let cov_bump = if let Some(reg) = cov_handle {
+                    let cidx = reg.borrow_mut().alloc(
+                        "trans",
+                        tr.condition.span.start,
+                        format!("trans {} -> {}", sb.name.name, tr.target.name),
+                    );
+                    format!("_arch_cov[{cidx}]++; ")
+                } else { String::new() };
                 if self.debug_fsm {
                     // Escape the condition for printf literal
                     let cond_escaped = cond.replace('\\', "\\\\").replace('"', "\\\"").replace('%', "%%");
                     cpp.push_str(&format!(
-                        "        if ({cond}) {{ _n_state = {target_idx}; \
+                        "        if ({cond}) {{ {cov_bump}_n_state = {target_idx}; \
                          printf(\"[FSM][{name}] {src} -> {tgt} ({cond_lit})\\n\"); break; }}\n",
                         src = sb.name.name,
                         tgt = tr.target.name,
                         cond_lit = cond_escaped,
                     ));
                 } else {
-                    cpp.push_str(&format!("        if ({cond}) {{ _n_state = {target_idx}; break; }}\n"));
+                    cpp.push_str(&format!("        if ({cond}) {{ {cov_bump}_n_state = {target_idx}; break; }}\n"));
                 }
             }
             cpp.push_str("        break;\n");
@@ -410,6 +438,40 @@ impl<'a> SimCodegen<'a> {
             .map(|(n, e, w)| (n.as_str(), e.as_str(), *w))
             .collect();
         add_trace_to_simple_construct(&mut h, &mut cpp, &class, name, &f.ports, &extra_sigs_ref);
+
+        // --coverage: per-FSM counter storage + atexit dumper. Same
+        // shape as gen_module's coverage emission (#132/#134).
+        let n_cov = cov_reg.borrow().points.len();
+        if self.coverage && n_cov > 0 {
+            h.push_str(&format!("public:\n  static uint64_t _arch_cov[{n_cov}];\n  static bool _arch_cov_dumped;\n"));
+            cpp.push_str(&format!("uint64_t {class}::_arch_cov[{n_cov}] = {{}};\nbool {class}::_arch_cov_dumped = false;\n\n"));
+            cpp.push_str("namespace {\n");
+            cpp.push_str("static void _arch_cov_dump() {\n");
+            cpp.push_str(&format!("  if ({class}::_arch_cov_dumped) return;\n"));
+            cpp.push_str(&format!("  {class}::_arch_cov_dumped = true;\n"));
+            cpp.push_str(&format!("  uint64_t total = 0; uint64_t hit = 0;\n"));
+            cpp.push_str(&format!("  for (uint32_t i = 0; i < {n_cov}; i++) {{ total++; if ({class}::_arch_cov[i]) hit++; }}\n"));
+            cpp.push_str(&format!("  fprintf(stderr, \"[{class}] FSM coverage: %llu/%llu hit (%.1f%%)\\n\", (unsigned long long)hit, (unsigned long long)total, total ? (100.0 * hit / total) : 0.0);\n"));
+            for (i, p) in cov_reg.borrow().points.iter().enumerate() {
+                let location = if let Some(sm) = &self.source_map {
+                    sm.locate(p.span_start)
+                        .map(|(file, line)| format!("{}:{}", file, line))
+                        .unwrap_or_else(|| format!("point[{i}]"))
+                } else {
+                    format!("point[{i}]")
+                };
+                let label_escaped = p.label.replace('"', "\\\"");
+                cpp.push_str(&format!(
+                    "  fprintf(stderr, \"  {location} ({}) [{label_escaped}]: %llu hits%s\\n\", (unsigned long long){class}::_arch_cov[{i}], {class}::_arch_cov[{i}] ? \"\" : \" *NOT HIT*\");\n",
+                    p.kind
+                ));
+            }
+            cpp.push_str("}\n");
+            cpp.push_str("struct _ArchCovInit { _ArchCovInit() { atexit(_arch_cov_dump); } };\n");
+            cpp.push_str("static _ArchCovInit _arch_cov_init;\n");
+            cpp.push_str("} // namespace\n\n");
+        }
+
         h.push_str("};\n");
 
         SimModel { class_name: class, header: h, impl_: cpp }
