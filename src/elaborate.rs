@@ -2283,13 +2283,13 @@ fn partition_thread_body(
                 cur_seq.push(Stmt::Log(l.clone()));
             }
             ThreadStmt::WaitUntil(cond, _) => {
-                // `wait until` is a pure state boundary.
-                // ALL pending assigns (comb + seq) go into a prior state
-                // that fires once and advances unconditionally.
-                // Use `do..until` instead when comb outputs must be held while waiting.
-                if !cur_comb.is_empty() || !cur_seq.is_empty() {
+                // Comb assigns flow INTO the wait state so they hold while
+                // waiting (matches `valid=1; wait until ready;` AXI intent).
+                // Seq assigns (`<=`) still need a fire-once predecessor state
+                // — putting them in the wait state would re-fire each cycle.
+                if !cur_seq.is_empty() {
                     states.push(ThreadFsmState {
-                        comb_stmts: std::mem::take(&mut cur_comb),
+                        comb_stmts: Vec::new(),
                         seq_stmts: std::mem::take(&mut cur_seq),
                         transition_cond: None,
                         wait_cycles: None,
@@ -2297,7 +2297,7 @@ fn partition_thread_body(
                     });
                 }
                 states.push(ThreadFsmState {
-                    comb_stmts: Vec::new(),
+                    comb_stmts: std::mem::take(&mut cur_comb),
                     seq_stmts: Vec::new(),
                     transition_cond: Some(cond.clone()),
                     wait_cycles: None,
