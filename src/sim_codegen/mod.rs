@@ -4770,6 +4770,25 @@ impl<'a> SimCodegen<'a> {
                 if vec_array_info(&rd.ty).is_some() {
                     cpp.push_str(&format!("  memcpy(_{n}, _n_{n}, sizeof(_{n}));\n"));
                 } else {
+                    // --coverage phase 4: toggle counter — popcount of
+                    // (prev XOR new) sums all bits that flipped this
+                    // posedge. Skip Vec / wide regs in v1 (Vec needs
+                    // per-element handling; wide needs split popcount).
+                    // Skip enums — toggle on a state reg is mostly
+                    // noise, FSM coverage is more useful there.
+                    if let Some(reg) = cov_handle {
+                        let bits = type_bits_te(&rd.ty);
+                        if bits > 0 && bits <= 64 && !matches!(rd.ty, TypeExpr::Named(_)) {
+                            let cidx = reg.borrow_mut().alloc(
+                                "toggle",
+                                rd.name.span.start,
+                                format!("toggle {n}"),
+                            );
+                            cpp.push_str(&format!(
+                                "  _arch_cov[{cidx}] += __builtin_popcountll((uint64_t)_{n} ^ (uint64_t)_n_{n});\n"
+                            ));
+                        }
+                    }
                     cpp.push_str(&format!("  _{n} = _n_{n};\n"));
                 }
             }
