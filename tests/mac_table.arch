@@ -1,31 +1,30 @@
-// Ethernet MAC address learning table — textbook CAM use case.
+// Ethernet MAC address learning table — refactored on cam v3 (value_type).
 //
-// On the lookup side: given a destination MAC, return the egress port
-// (or signal "miss" so the caller can broadcast). On the learn side:
-// when a frame arrives, the caller picks a slot and writes
-// (src_mac, ingress_port). v1 single-write port suffices because lookup
-// and learn never write the CAM in the same cycle (lookup is purely
-// combinational; only learn drives writes).
-//
-// Slot selection is the caller's job (round-robin in this demo). Real
-// switches add aging / LRU on top.
+// The cam now stores (mac_addr, port) pairs directly via the value-payload
+// bundle (VAL_W param + write_value/read_value ports). The previous version
+// kept a parallel `port_table: Vec<UInt<PORT_W>, NUM_ENTRIES>` and indexed
+// it by `cam.search_first` — pure boilerplate that v3 absorbs into the
+// CAM itself.
 
 cam Mac_Cam
   param DEPTH: const = 8;
   param KEY_W: const = 48;     // Ethernet MAC width
+  param VAL_W: const = 2;      // PORT_W
 
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync, High>;
 
   port write_valid: in Bool;
-  port write_idx:   in UInt<3>;     // $clog2(DEPTH)
+  port write_idx:   in UInt<3>;
   port write_key:   in UInt<48>;
-  port write_set:   in Bool;        // true=insert, false=clear (unused in demo)
+  port write_value: in UInt<2>;
+  port write_set:   in Bool;
 
   port search_key:   in  UInt<48>;
   port search_mask:  out UInt<8>;
   port search_any:   out Bool;
   port search_first: out UInt<3>;
+  port read_value:   out UInt<2>;
 end cam Mac_Cam
 
 module mac_table
@@ -42,7 +41,7 @@ module mac_table
   port lookup_hit:  out Bool;       // miss → caller floods/broadcasts
   port lookup_port: out UInt<PORT_W>;
 
-  // Learn interface — writes a MAC→port binding into the slot
+  // Learn interface — writes a (MAC → port) binding into the slot
   // chosen by the caller (round-robin, LRU, etc.; out of scope here).
   port learn_valid: in Bool;
   port learn_mac:   in UInt<48>;
@@ -51,36 +50,30 @@ module mac_table
 
   default seq on clk rising;
 
-  // Per-entry port number — addressed by the cam's first-match index.
-  // The CAM itself stores the MAC keys; this Vec stores the values.
-  reg port_table: Vec<UInt<PORT_W>, NUM_ENTRIES> reset rst => 0;
-
   wire cam_search_mask:  UInt<NUM_ENTRIES>;     // unused; required to bind cam port
   wire cam_search_any:   Bool;
-  wire cam_search_first: UInt<IDX_W>;
+  wire cam_search_first: UInt<IDX_W>;            // unused; required to bind cam port
+  wire cam_read_value:   UInt<PORT_W>;
 
   inst mac_cam: Mac_Cam
     param DEPTH = NUM_ENTRIES;
     param KEY_W = 48;
+    param VAL_W = PORT_W;
 
     clk           <- clk;
     rst           <- rst;
     write_valid   <- learn_valid;
     write_idx     <- learn_idx;
     write_key     <- learn_mac;
+    write_value   <- learn_port;
     write_set     <- true;
     search_key    <- lookup_mac;
     search_mask   -> cam_search_mask;
     search_any    -> cam_search_any;
     search_first  -> cam_search_first;
+    read_value    -> cam_read_value;
   end inst mac_cam
 
   let lookup_hit  = cam_search_any;
-  let lookup_port = port_table[cam_search_first];
-
-  seq
-    if learn_valid
-      port_table[learn_idx] <= learn_port;
-    end if
-  end seq
+  let lookup_port = cam_read_value;
 end module mac_table

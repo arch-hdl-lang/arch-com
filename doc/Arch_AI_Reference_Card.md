@@ -712,6 +712,17 @@ end cam Mshr_Addr_Cam
 
 All four are required together (all-or-nothing). On the same edge: different indices both commit; same index → port 2 wins (last-write). Map your "winner" stream to port 2.
 
+**Value payload (v3):** absorb the per-entry value (otherwise kept in a parallel `Vec<UInt<W>, DEPTH>`) into the cam itself by adding `param VAL_W` + the matching write/read ports:
+
+```
+  param VAL_W: const = 32;
+  port write_value: in UInt<32>;
+  port read_value:  out UInt<32>;
+  // and write2_value if dual-write is enabled
+```
+
+All-or-nothing within the value bundle. `read_value = entry_value_r[search_first]`; gate with `search_any` (reads as 0 when no entry matches). Use this for TLB virtual→physical, MAC table MAC→port, scoreboard tag→state. Don't use it when the design re-priority-encodes against an external mask (different index than `search_first`) — keep a separate `Vec` for that case.
+
 ---
 
 ### counter

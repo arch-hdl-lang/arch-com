@@ -1,32 +1,32 @@
-// Ethernet MAC address learning table — textbook CAM use case.
+// Ethernet MAC address learning table — refactored on cam v3 (value_type).
 //
-// On the lookup side: given a destination MAC, return the egress port
-// (or signal "miss" so the caller can broadcast). On the learn side:
-// when a frame arrives, the caller picks a slot and writes
-// (src_mac, ingress_port). v1 single-write port suffices because lookup
-// and learn never write the CAM in the same cycle (lookup is purely
-// combinational; only learn drives writes).
-//
-// Slot selection is the caller's job (round-robin in this demo). Real
-// switches add aging / LRU on top.
+// The cam now stores (mac_addr, port) pairs directly via the value-payload
+// bundle (VAL_W param + write_value/read_value ports). The previous version
+// kept a parallel `port_table: Vec<UInt<PORT_W>, NUM_ENTRIES>` and indexed
+// it by `cam.search_first` — pure boilerplate that v3 absorbs into the
+// CAM itself.
 module Mac_Cam #(
   parameter int DEPTH = 8,
-  parameter int KEY_W = 48
+  parameter int KEY_W = 48,
+  parameter int VAL_W = 2
 ) (
   input logic clk,
   input logic rst,
   input logic write_valid,
   input logic [2:0] write_idx,
   input logic [47:0] write_key,
+  input logic [1:0] write_value,
   input logic write_set,
   input logic [47:0] search_key,
   output logic [7:0] search_mask,
   output logic search_any,
-  output logic [2:0] search_first
+  output logic [2:0] search_first,
+  output logic [1:0] read_value
 );
 
   logic [DEPTH-1:0]      entry_valid_r;
   logic [KEY_W-1:0]      entry_key_r [DEPTH];
+  logic [VAL_W-1:0]      entry_value_r [DEPTH];
   
   always_comb begin
     for (int i = 0; i < DEPTH; i++) begin
@@ -42,6 +42,8 @@ module Mac_Cam #(
     end
   end
   
+  assign read_value = entry_value_r[search_first];
+  
   always_ff @(posedge clk) begin
     if (rst) begin
       entry_valid_r <= '0;
@@ -50,6 +52,7 @@ module Mac_Cam #(
         if (write_set) begin
           entry_valid_r[write_idx] <= 1'b1;
           entry_key_r[write_idx] <= write_key;
+          entry_value_r[write_idx] <= write_value;
         end else begin
           entry_valid_r[write_idx] <= 1'b0;
         end
@@ -60,8 +63,7 @@ module Mac_Cam #(
 endmodule
 
 // Ethernet MAC width
-// $clog2(DEPTH)
-// true=insert, false=clear (unused in demo)
+// PORT_W
 module mac_table #(
   parameter int NUM_ENTRIES = 8,
   parameter int NUM_PORTS = 4,
@@ -81,45 +83,30 @@ module mac_table #(
 
   // Lookup interface (combinational)
   // miss → caller floods/broadcasts
-  // Learn interface — writes a MAC→port binding into the slot
+  // Learn interface — writes a (MAC → port) binding into the slot
   // chosen by the caller (round-robin, LRU, etc.; out of scope here).
-  // Per-entry port number — addressed by the cam's first-match index.
-  // The CAM itself stores the MAC keys; this Vec stores the values.
-  logic [NUM_ENTRIES-1:0] [PORT_W-1:0] port_table;
   logic [NUM_ENTRIES-1:0] cam_search_mask;
   // unused; required to bind cam port
   logic cam_search_any;
   logic [IDX_W-1:0] cam_search_first;
-  Mac_Cam #(.DEPTH(NUM_ENTRIES), .KEY_W(48)) mac_cam (
+  // unused; required to bind cam port
+  logic [PORT_W-1:0] cam_read_value;
+  Mac_Cam #(.DEPTH(NUM_ENTRIES), .KEY_W(48), .VAL_W(PORT_W)) mac_cam (
     .clk(clk),
     .rst(rst),
     .write_valid(learn_valid),
     .write_idx(learn_idx),
     .write_key(learn_mac),
+    .write_value(learn_port),
     .write_set(1'b1),
     .search_key(lookup_mac),
     .search_mask(cam_search_mask),
     .search_any(cam_search_any),
-    .search_first(cam_search_first)
+    .search_first(cam_search_first),
+    .read_value(cam_read_value)
   );
   assign lookup_hit = cam_search_any;
-  assign lookup_port = port_table[cam_search_first];
-  always_ff @(posedge clk) begin
-    if (rst) begin
-      for (int __ri0 = 0; __ri0 < NUM_ENTRIES; __ri0++) begin
-        port_table[__ri0] <= 0;
-      end
-    end else begin
-      if (learn_valid) begin
-        port_table[learn_idx] <= learn_port;
-      end
-    end
-  end
-  // synopsys translate_off
-  // Auto-generated safety assertions (bounds / divide-by-zero)
-  _auto_bound_vec_0: assert property (@(posedge clk) disable iff (rst) (learn_idx) < (NUM_ENTRIES))
-    else $fatal(1, "BOUNDS VIOLATION: mac_table._auto_bound_vec_0");
-  // synopsys translate_on
+  assign lookup_port = cam_read_value;
 
 endmodule
 
