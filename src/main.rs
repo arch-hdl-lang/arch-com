@@ -966,8 +966,12 @@ sys.exit(0 if ok else 1)
         cmd.arg("-fsanitize=thread").arg("-g");
         eprintln!("(ARCH_TSAN=1: building with -fsanitize=thread)");
     }
+    // -O2 (was -O1): meaningful uplift for hot inner loops in
+    // generated sim code without significantly slower compile.
+    // Override via ARCH_OPT env (e.g. ARCH_OPT=-O3 for max).
+    let opt = std::env::var("ARCH_OPT").unwrap_or_else(|_| "-O2".to_string());
     cmd
-       .arg("-O1")
+       .arg(&opt)
        .arg("-I").arg(&build_dir);
 
     for cpp in &generated_cpps {
