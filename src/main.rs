@@ -341,14 +341,11 @@ fn main() -> miette::Result<()> {
             Ok(())
         }
         Command::Sim { arch_files, tb_files, outdir, check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave, debug, debug_depth, debug_fsm, coverage, pybind, test, pybind_module_name } => {
-            if coverage {
-                eprintln!("warning: --coverage is reserved but not yet implemented (see doc/plan_arch_coverage.md). Continuing without instrumentation.");
-            }
             let dbg_ports = debug || debug_fsm;  // any debug option implies port logging
             // --inputs-start-uninit and --check-uninit-ram both imply --check-uninit
             let check_uninit = check_uninit || inputs_start_uninit || check_uninit_ram;
             learn_wrap(&arch_files, || {
-                run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, pybind, test.as_deref(), pybind_module_name.as_deref())
+                run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, coverage, pybind, test.as_deref(), pybind_module_name.as_deref())
             })
         }
         Command::Build { files, o } => {
@@ -467,6 +464,7 @@ fn run_sim(
     debug: bool,
     debug_depth: u32,
     debug_fsm: bool,
+    coverage: bool,
     pybind: bool,
     test_file: Option<&std::path::Path>,
     pybind_module_name_override: Option<&str>,
@@ -483,7 +481,7 @@ fn run_sim(
     fs::create_dir_all(&build_dir).into_diagnostic()?;
 
     // 3. Generate C++ models
-    let sim = SimCodegen::new(&symbols, &ast, overload_map).check_uninit(check_uninit).inputs_start_uninit(inputs_start_uninit).check_uninit_ram(check_uninit_ram).cdc_random(cdc_random).debug(debug, debug_depth).with_debug_fsm(debug_fsm);
+    let sim = SimCodegen::new(&symbols, &ast, overload_map).check_uninit(check_uninit).inputs_start_uninit(inputs_start_uninit).check_uninit_ram(check_uninit_ram).cdc_random(cdc_random).debug(debug, debug_depth).with_debug_fsm(debug_fsm).coverage(coverage);
     let models = sim.generate();
 
     if models.is_empty() {

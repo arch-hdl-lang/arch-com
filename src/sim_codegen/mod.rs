@@ -49,6 +49,37 @@ pub struct SimCodegen<'a> {
     debug: bool,
     debug_depth: u32,
     debug_fsm: bool,
+    coverage: bool,
+}
+
+/// One coverage point recorded during gen_module. Currently only branch
+/// coverage (one entry per if/elsif/else arm in seq+comb) — see
+/// doc/plan_arch_coverage.md for the phased rollout.
+#[derive(Debug, Clone)]
+pub(crate) struct CovPoint {
+    /// "if", "elsif", or "else"
+    pub kind: &'static str,
+    /// Source byte offset of the cond expr (else: of the `else` keyword).
+    /// Resolved to file:line at dump-emit time via the SourceFile span map.
+    pub span_start: usize,
+    /// Brief textual hint for the dump (typically the cond source) — empty
+    /// for `else`. Truncated to ~60 chars.
+    pub label: String,
+}
+
+/// Per-module coverage state, threaded through the emit functions via
+/// `Ctx::coverage`. Single counter id namespace per module/class.
+#[derive(Debug, Default)]
+pub(crate) struct CoverageRegistry {
+    pub points: Vec<CovPoint>,
+}
+
+impl CoverageRegistry {
+    pub fn alloc(&mut self, kind: &'static str, span_start: usize, label: String) -> usize {
+        let idx = self.points.len();
+        self.points.push(CovPoint { kind, span_start, label });
+        idx
+    }
 }
 
 impl<'a> SimCodegen<'a> {
@@ -57,7 +88,12 @@ impl<'a> SimCodegen<'a> {
         source: &'a SourceFile,
         overload_map: HashMap<usize, usize>,
     ) -> Self {
-        Self { symbols, source, overload_map, check_uninit: false, inputs_start_uninit: false, check_uninit_ram: false, cdc_random: false, debug: false, debug_depth: 1, debug_fsm: false }
+        Self { symbols, source, overload_map, check_uninit: false, inputs_start_uninit: false, check_uninit_ram: false, cdc_random: false, debug: false, debug_depth: 1, debug_fsm: false, coverage: false }
+    }
+
+    pub fn coverage(mut self, enabled: bool) -> Self {
+        self.coverage = enabled;
+        self
     }
 
     pub fn check_uninit(mut self, enabled: bool) -> Self {
@@ -1432,6 +1468,10 @@ struct Ctx<'a> {
     /// (e.g. "item" → "vec[3]", "index" → "3"). Checked first in the Ident
     /// branch of `cpp_expr`; None or missing key means normal resolution.
     ident_subst: Option<&'a HashMap<String, String>>,
+    /// Branch-coverage registry for the current module. None when --coverage
+    /// is off; Some(_) when on. emit_*_if_else allocates counter ids here
+    /// and emits `_arch_cov[N]++;` at the start of each arm.
+    coverage: Option<&'a std::cell::RefCell<CoverageRegistry>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -1451,7 +1491,7 @@ impl<'a> Ctx<'a> {
         Ctx { reg_names, port_names, let_names, inst_names, wide_names,
               widths, posedge_lhs: false, fsm_mode: false, enum_map, bus_ports,
               reset_levels, vec_names: None, vec_sizes: None, fsm_vec_port_regs: None,
-              ident_subst: None }
+              ident_subst: None, coverage: None }
     }
 
     fn with_vec_sizes(mut self, vec_sizes: &'a HashMap<String, u64>) -> Self {
@@ -1471,6 +1511,11 @@ impl<'a> Ctx<'a> {
 
     fn with_fsm_vec_port_regs(mut self, fsm_vec_port_regs: &'a HashSet<String>) -> Self {
         self.fsm_vec_port_regs = Some(fsm_vec_port_regs);
+        self
+    }
+
+    fn with_coverage(mut self, reg: Option<&'a std::cell::RefCell<CoverageRegistry>>) -> Self {
+        self.coverage = reg;
         self
     }
 
@@ -1685,6 +1730,7 @@ fn lower_vec_method_cpp(
             reset_levels: ctx.reset_levels, vec_names: ctx.vec_names,
             vec_sizes: ctx.vec_sizes, fsm_vec_port_regs: ctx.fsm_vec_port_regs,
             ident_subst: None, // replaced below via a temporary binding
+            coverage: ctx.coverage,
         };
         // The sub map must outlive the cpp_expr call. We keep `sub` as a
         // stack-local binding whose lifetime covers the call.
@@ -2392,6 +2438,14 @@ fn emit_reg_if_else(ie: &IfElse, ctx: &Ctx, out: &mut String, indent: usize, is_
     } else {
         out.push_str(&format!("{}if ({}) {{\n", ind(indent), cond));
     }
+    // --coverage: count entries to this arm. Phase 1 records branch
+    // coverage for seq if/elsif/else; phase 1b adds comb. Counter id is
+    // the alloc order in the per-class registry.
+    if let Some(reg) = ctx.coverage {
+        let kind = if is_chain { "elsif" } else { "if" };
+        let idx = reg.borrow_mut().alloc(kind, ie.cond.span.start, String::new());
+        out.push_str(&format!("{}  _arch_cov[{idx}]++;\n", ind(indent)));
+    }
     emit_reg_stmts(&ie.then_stmts, ctx, out, indent + 1);
     if ie.else_stmts.len() == 1 {
         if let Stmt::IfElse(nested) = &ie.else_stmts[0] {
@@ -2401,6 +2455,10 @@ fn emit_reg_if_else(ie: &IfElse, ctx: &Ctx, out: &mut String, indent: usize, is_
     }
     if !ie.else_stmts.is_empty() {
         out.push_str(&format!("{}}} else {{\n", ind(indent)));
+        if let Some(reg) = ctx.coverage {
+            let idx = reg.borrow_mut().alloc("else", ie.span.end, String::new());
+            out.push_str(&format!("{}  _arch_cov[{idx}]++;\n", ind(indent)));
+        }
         emit_reg_stmts(&ie.else_stmts, ctx, out, indent + 1);
     }
     out.push_str(&format!("{}}}\n", ind(indent)));
@@ -3199,6 +3257,13 @@ impl<'a> SimCodegen<'a> {
         let name = &m.name.name;
         let class = format!("V{name}");
         let enum_map = build_enum_map(self.symbols);
+
+        // --coverage: per-module branch-coverage registry. emit_reg_if_else
+        // and (later phase 1b) emit_comb_if_else allocate counter ids here.
+        // Threaded into Ctx via .with_coverage(Some(&cov_reg)).
+        let cov_reg: std::cell::RefCell<CoverageRegistry> = std::cell::RefCell::new(CoverageRegistry::default());
+        let cov_handle: Option<&std::cell::RefCell<CoverageRegistry>> =
+            if self.coverage { Some(&cov_reg) } else { None };
 
         // Collect bus port names and flattened signals (with direction for debug)
         let mut bus_port_names: HashSet<String> = HashSet::new();
@@ -4134,11 +4199,23 @@ impl<'a> SimCodegen<'a> {
             }
         }
 
+        // --coverage: emit a placeholder for the per-class counter array
+        // declaration. The actual size isn't known until seq emission has
+        // populated cov_reg, so we patch this placeholder just before
+        // returning the SimModel.
+        if self.coverage {
+            h.push_str("__ARCH_COV_HEADER_DECL__");
+        }
+
         h.push_str("};\n");
 
         // ── Implementation ────────────────────────────────────────────────────
         let mut cpp = String::new();
         cpp.push_str(&format!("#include \"{class}.h\"\n\n"));
+
+        if self.coverage {
+            cpp.push_str("__ARCH_COV_IMPL_DEFN__");
+        }
 
         // eval()
         cpp.push_str(&format!("void {class}::eval() {{\n"));
@@ -4472,7 +4549,8 @@ impl<'a> SimCodegen<'a> {
 
             let ctx = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                &wide_names, &widths, &enum_map, &bus_port_names)
-                          .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes).posedge();
+                          .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes).posedge()
+                          .with_coverage(cov_handle);
 
             for rb in &reg_blocks {
                 let mut assigned = std::collections::BTreeSet::new();
@@ -4807,6 +4885,7 @@ impl<'a> SimCodegen<'a> {
                                         reset_levels: ctx_comb.reset_levels, vec_names: ctx_comb.vec_names,
                                         vec_sizes: ctx_comb.vec_sizes, fsm_vec_port_regs: ctx_comb.fsm_vec_port_regs,
                                         ident_subst: Some(&sub),
+                                        coverage: ctx_comb.coverage,
                                     };
                                     hits.push(cpp_expr(&margs[0], &sub_ctx));
                                 }
@@ -5244,6 +5323,46 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str("\n");
             }
             cpp.push_str("}\n\n");
+        }
+
+        // --coverage: now that all seq emission is done, the registry has
+        // its final point count. Patch the header / impl placeholders.
+        let n_cov = cov_reg.borrow().points.len();
+        let header_decl = if self.coverage && n_cov > 0 {
+            format!("public:\n  static uint64_t _arch_cov[{n_cov}];\n  static bool _arch_cov_dumped;\n")
+        } else { String::new() };
+        let impl_defn = if self.coverage && n_cov > 0 {
+            format!("uint64_t {class}::_arch_cov[{n_cov}] = {{}};\nbool {class}::_arch_cov_dumped = false;\n\n")
+        } else { String::new() };
+        h = h.replace("__ARCH_COV_HEADER_DECL__", &header_decl);
+        cpp = cpp.replace("__ARCH_COV_IMPL_DEFN__", &impl_defn);
+
+        // --coverage: per-class atexit dumper. Registered via a static
+        // initializer so a normal exit (return from main) flushes the
+        // counter table to stderr. abort() / fast-exit paths skip atexit
+        // handlers — that's documented in doc/plan_arch_coverage.md.
+        if self.coverage && n_cov > 0 {
+            cpp.push_str("namespace {\n");
+            cpp.push_str("static void _arch_cov_dump() {\n");
+            cpp.push_str(&format!("  if ({class}::_arch_cov_dumped) return;\n"));
+            cpp.push_str(&format!("  {class}::_arch_cov_dumped = true;\n"));
+            cpp.push_str(&format!("  uint64_t total = 0; uint64_t hit = 0;\n"));
+            cpp.push_str(&format!("  for (uint32_t i = 0; i < {n_cov}; i++) {{ total++; if ({class}::_arch_cov[i]) hit++; }}\n"));
+            cpp.push_str(&format!("  fprintf(stderr, \"[{class}] branch coverage: %llu/%llu hit (%.1f%%)\\n\", (unsigned long long)hit, (unsigned long long)total, total ? (100.0 * hit / total) : 0.0);\n"));
+            // Per-arm breakdown — one line per counter, kind ordinal only
+            // (file:line resolution is phase 1b once the source-text plumbing
+            // is in place; for now the user maps ordinal → branch by the
+            // alloc-order, which is left-to-right top-to-bottom).
+            for (i, p) in cov_reg.borrow().points.iter().enumerate() {
+                cpp.push_str(&format!(
+                    "  fprintf(stderr, \"  branch[{i}] ({}): %llu hits%s\\n\", (unsigned long long){class}::_arch_cov[{i}], {class}::_arch_cov[{i}] ? \"\" : \" *NOT HIT*\");\n",
+                    p.kind
+                ));
+            }
+            cpp.push_str("}\n");
+            cpp.push_str("struct _ArchCovInit { _ArchCovInit() { atexit(_arch_cov_dump); } };\n");
+            cpp.push_str("static _ArchCovInit _arch_cov_init;\n");
+            cpp.push_str("} // namespace\n\n");
         }
 
         SimModel { class_name: class.clone(), header: h, impl_: cpp }
