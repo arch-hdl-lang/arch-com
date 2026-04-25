@@ -50,6 +50,10 @@ pub struct SimCodegen<'a> {
     debug_depth: u32,
     debug_fsm: bool,
     coverage: bool,
+    /// Phase 5: also write a Verilator-compatible coverage.dat.
+    /// Implies --coverage. Filename comes via main.rs (defaults to
+    /// `coverage.dat` in cwd).
+    coverage_dat: Option<String>,
     /// Optional source map for resolving span byte offsets to
     /// (file:line). Populated by main.rs from MultiSource when
     /// --coverage is enabled.
@@ -128,11 +132,17 @@ impl<'a> SimCodegen<'a> {
         source: &'a SourceFile,
         overload_map: HashMap<usize, usize>,
     ) -> Self {
-        Self { symbols, source, overload_map, check_uninit: false, inputs_start_uninit: false, check_uninit_ram: false, cdc_random: false, debug: false, debug_depth: 1, debug_fsm: false, coverage: false, source_map: None }
+        Self { symbols, source, overload_map, check_uninit: false, inputs_start_uninit: false, check_uninit_ram: false, cdc_random: false, debug: false, debug_depth: 1, debug_fsm: false, coverage: false, coverage_dat: None, source_map: None }
     }
 
     pub fn coverage(mut self, enabled: bool) -> Self {
         self.coverage = enabled;
+        self
+    }
+
+    pub fn coverage_dat(mut self, path: Option<String>) -> Self {
+        self.coverage_dat = path;
+        if self.coverage_dat.is_some() { self.coverage = true; }
         self
     }
 
@@ -593,6 +603,12 @@ r#"        .def_property("{field}",
 #include <cstdlib>
 #include <cstring>
 
+// --coverage-dat: forward declaration for the helper defined in
+// verilated.cpp. Each class's atexit dumper calls this to get a
+// FILE* opened for append (with the header line written once on
+// first call).
+extern "C" FILE* _arch_cov_dat_open(const char* path);
+
 /// Minimal Verilated compatibility shim for arch-generated C++ simulation models.
 class Verilated {
 public:
@@ -766,11 +782,29 @@ static inline uint64_t _arch_repeat(uint64_t val, uint32_t n, uint32_t val_width
     }
 
     pub fn verilated_cpp() -> String {
-        r#"#include "verilated.h"
+        r##"#include "verilated.h"
+#include <cstdio>
+#include <cstdlib>
 int Verilated::_s_verbosity = 1;
 const char* Verilated::_s_trace_file = nullptr;
 bool Verilated::_s_trace_claimed = false;
-"#.to_string()
+
+// --coverage-dat: Verilator-compatible coverage.dat writer. Each
+// class's atexit dumper calls _arch_cov_dat_open() to get a FILE*
+// opened for append; the first call writes the header line so
+// verilator_coverage --annotate parses cleanly. Subsequent calls
+// just append their point lines.
+extern "C" FILE* _arch_cov_dat_open(const char* path) {
+    static bool _header_written = false;
+    FILE* f = fopen(path, _header_written ? "a" : "w");
+    if (!f) return nullptr;
+    if (!_header_written) {
+        fprintf(f, "# SystemC::Coverage-3\n");
+        _header_written = true;
+    }
+    return f;
+}
+"##.to_string()
     }
 }
 
@@ -5450,11 +5484,22 @@ impl<'a> SimCodegen<'a> {
             // ordinal-only fallback otherwise. (Phase 1b lands the
             // source-text plumbing so the dump shows
             // `tests/cvdp/cache_mshr.arch:111` instead of `branch[0]`.)
+            // --coverage-dat: also append per-point Verilator-compatible
+            // lines to the coverage.dat file.
+            if let Some(path) = &self.coverage_dat {
+                let path_lit = path.replace('\\', "\\\\").replace('"', "\\\"");
+                cpp.push_str(&format!("  FILE* _dat = _arch_cov_dat_open(\"{path_lit}\");\n"));
+            }
             for (i, p) in cov_reg.borrow().points.iter().enumerate() {
-                let location = if let Some(sm) = &self.source_map {
+                let (file_disp, line_no) = if let Some(sm) = &self.source_map {
                     sm.locate(p.span_start)
-                        .map(|(f, l)| format!("{}:{}", f, l))
-                        .unwrap_or_else(|| format!("branch[{i}]"))
+                        .map(|(f, l)| (f.to_string(), l))
+                        .unwrap_or_else(|| (String::new(), 0))
+                } else {
+                    (String::new(), 0)
+                };
+                let location = if !file_disp.is_empty() {
+                    format!("{file_disp}:{line_no}")
                 } else {
                     format!("branch[{i}]")
                 };
@@ -5462,6 +5507,28 @@ impl<'a> SimCodegen<'a> {
                     "  fprintf(stderr, \"  {location} ({}): %llu hits%s\\n\", (unsigned long long){class}::_arch_cov[{i}], {class}::_arch_cov[{i}] ? \"\" : \" *NOT HIT*\");\n",
                     p.kind
                 ));
+                if self.coverage_dat.is_some() && !file_disp.is_empty() {
+                    let file_esc = file_disp.replace('\\', "\\\\").replace('"', "\\\"");
+                    let page = match p.kind {
+                        "if" | "elsif" | "else" => "v_branch",
+                        "seq" | "comb"          => "v_line",
+                        "state" | "trans"       => "v_user/fsm",
+                        "toggle"                => "v_toggle",
+                        _                       => "v_user",
+                    };
+                    let comment = p.label.replace('\\', "\\\\").replace('"', "\\\"");
+                    // Verilator coverage.dat field separators are \x01 (key)
+                    // and \x02 (value). C++ greedy-matches hex escapes, so
+                    // each escape is its own string literal — adjacent
+                    // string concatenation joins them safely.
+                    cpp.push_str(&format!(
+                        "  if (_dat) fprintf(_dat, \"C '\" \"\\x01\" \"file\" \"\\x02\" \"{file_esc}\" \"\\x01\" \"line\" \"\\x02\" \"{line_no}\" \"\\x01\" \"page\" \"\\x02\" \"{page}\" \"\\x01\" \"comment\" \"\\x02\" \"{kind} {comment}\" \"' %llu\\n\", (unsigned long long){class}::_arch_cov[{i}]);\n",
+                        kind = p.kind
+                    ));
+                }
+            }
+            if self.coverage_dat.is_some() {
+                cpp.push_str("  if (_dat) fclose(_dat);\n");
             }
             cpp.push_str("}\n");
             cpp.push_str("struct _ArchCovInit { _ArchCovInit() { atexit(_arch_cov_dump); } };\n");
