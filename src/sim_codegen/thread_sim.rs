@@ -239,15 +239,22 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool) -> Result<SimM
     header.push_str(&format!("  {}() {{\n", class));
     for (i, info) in thread_infos.iter().enumerate() {
         header.push_str(&format!("    _slot_{i}.thread = _make_thread_{i}();\n"));
-        header.push_str(&format!("    _sched.slots.push_back(&_slot_{i});\n"));
+        header.push_str(&format!("    _sched_{i}.slots.push_back(&_slot_{i});\n"));
         for br in &info.branches {
             // Branch slot starts in Done so the scheduler skips it
             // until the parent's fork-launch resets it.
             header.push_str(&format!("    _t{i}_br{}_slot.kind = arch_rt::WaitKind::Done;\n", br.id));
-            header.push_str(&format!("    _sched.slots.push_back(&_t{i}_br{}_slot);\n", br.id));
+            header.push_str(&format!("    _sched_{i}.slots.push_back(&_t{i}_br{}_slot);\n", br.id));
         }
     }
-    header.push_str("    _sched.tick();  // initial settle: run all threads to first wait\n");
+    // Initial settle — run each per-thread scheduler in declaration
+    // order so thread N can read signals set by threads 0..N-1 during
+    // their entry segments. At N=1 OS thread (current) this is a
+    // sequential loop; sub-phase 3.2 will dispatch each call into a
+    // dedicated worker OS thread synchronized via Barrier.
+    for (i, _) in thread_infos.iter().enumerate() {
+        header.push_str(&format!("    _sched_{i}.tick();\n"));
+    }
     header.push_str("  }\n");
     header.push_str(&format!("  ~{}() {{\n", class));
     for (i, info) in thread_infos.iter().enumerate() {
@@ -403,7 +410,9 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool) -> Result<SimM
     // every thread past its entry wait so post-reset eval() shows the
     // initial state's hold-comb (matching fsm's "state register reset
     // to entry state, comb runs immediately" semantic).
-    header.push_str("      _sched.tick();\n");
+    for (i, _) in thread_infos.iter().enumerate() {
+        header.push_str(&format!("      _sched_{i}.tick();\n"));
+    }
     header.push_str("      eval();\n");
     header.push_str("      return;\n");
     header.push_str("    }\n");
@@ -457,7 +466,12 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool) -> Result<SimM
             }
         }
     }
-    header.push_str("    _sched.tick();\n");
+    // Per-user-thread tick (Phase 3 architecture). At N=1 OS thread
+    // these run sequentially in declaration order; sub-phase 3.2 will
+    // dispatch each into a worker OS thread synchronized via Barrier.
+    for (i, _) in thread_infos.iter().enumerate() {
+        header.push_str(&format!("    _sched_{i}.tick();\n"));
+    }
     header.push_str("    eval();\n");
     // Note: --debug logging fires from eval() at end (matches fsm
     // pattern). _dbg_cycle increments on rising edge in eval() too.
@@ -614,7 +628,13 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool) -> Result<SimM
             header.push_str(&format!("  {cpp_ty} _dbg_prev_{} = 0;\n", p.name.name));
         }
     }
-    header.push_str("  arch_rt::ThreadScheduler _sched;\n");
+    // Per-user-thread scheduler. Each owns its main slot + its fork
+    // branches. At N=1 OS thread (current), all schedulers tick
+    // sequentially in the calling OS thread; sub-phase 3.2 wraps
+    // each tick in a worker OS thread synchronized via Barrier.
+    for (i, _) in thread_infos.iter().enumerate() {
+        header.push_str(&format!("  arch_rt::ThreadScheduler _sched_{i};\n"));
+    }
     // One holder field per resource: int32_t = current owning thread
     // index, or -1 when free. Reset to -1 in posedge_clk's reset arm.
     for item in &m.body {
