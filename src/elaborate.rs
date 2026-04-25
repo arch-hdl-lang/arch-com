@@ -2644,10 +2644,21 @@ fn lower_fork_join(
         }
 
         if all_done {
-            result.push(ThreadFsmState {
-                comb_stmts: comb, seq_stmts: seq,
-                transition_cond: None, wait_cycles: None, multi_transitions: Vec::new(),
-            });
+            // Skip the all-done product state. The done-marker per-branch
+            // states are already empty (lines 2597-2600 push them with
+            // empty comb/seq), so the merged comb/seq here are also
+            // empty — this state is purely a 1-cycle pass-through.
+            // Multi-transitions in non-all_done states encode their
+            // destination as `total - 1` (= the would-be all_done
+            // index) which, after `fork_base` adjustment in
+            // `partition_thread_body`, points at the first post-fork
+            // state. Eliding the all_done state removes one cycle of
+            // FSM-state-cranking latency at every join.
+            //
+            // Sanity assert: comb + seq merged here must be empty
+            // (otherwise we'd be losing user-driven assignments).
+            debug_assert!(comb.is_empty() && seq.is_empty(),
+                "fork all_done state non-empty — branch done-hold states have unexpected content");
             continue;
         }
 
