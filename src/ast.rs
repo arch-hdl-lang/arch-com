@@ -112,8 +112,10 @@ pub struct TlmMethodMeta {
     /// Return type, `None` for void methods (response channel carries
     /// only valid/ready, no payload).
     pub ret: Option<TypeExpr>,
-    /// Concurrency mode — v1 only accepts `blocking`.
+    /// Concurrency mode. `blocking` uses the base req/rsp protocol;
+    /// `out_of_order tags N` adds compiler-managed req/rsp tag wires.
     pub mode: Ident,
+    pub out_of_order_tags: Option<Expr>,
     pub span: Span,
 }
 

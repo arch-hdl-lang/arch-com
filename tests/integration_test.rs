@@ -4633,6 +4633,54 @@ fn test_tlm_method_parses_as_bus_sub_construct() {
 }
 
 #[test]
+fn test_tlm_method_out_of_order_tags_parse_and_flatten() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: out_of_order tags 3;
+        end bus Mem
+
+        use Mem;
+
+        module Initiator
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m: initiator Mem;
+          reg data: UInt<64> reset rst => 0;
+          thread driver on clk rising, rst high
+            data <= m.read(32'h1000);
+          end thread driver
+        end module Initiator
+
+        module Target
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port s: target Mem;
+          reg value: UInt<64> reset rst => 0;
+          thread s.read(addr) on clk rising, rst high
+            return value;
+          end thread s.read
+        end module Target
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let bus = ast.items.iter().find_map(|it| match it {
+        arch::ast::Item::Bus(b) if b.name.name == "Mem" => Some(b),
+        _ => None,
+    }).expect("Mem bus in AST");
+    assert_eq!(bus.tlm_methods[0].mode.name, "out_of_order");
+    assert!(bus.tlm_methods[0].out_of_order_tags.is_some());
+
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("output logic [2:0] m_read_req_tag")
+         && sv.contains("input logic [2:0] m_read_rsp_tag"),
+        "initiator should expose out-of-order tag wires:\n{sv}");
+    assert!(sv.contains("input logic [2:0] s_read_req_tag")
+         && sv.contains("output logic [2:0] s_read_rsp_tag"),
+        "target perspective should flip tag wire directions:\n{sv}");
+}
+
+#[test]
 fn test_tlm_method_wires_flatten_at_bus_port() {
     // PR-tlm-2: tlm_method declarations flatten to a request channel
     // (valid/args/ready) plus response channel (valid/data/ready) at
@@ -5383,6 +5431,67 @@ fn test_tlm_unsupported_fork_join_call_errors() {
 }
 
 #[test]
+fn test_tlm_out_of_order_fork_join_routes_by_tag() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: out_of_order tags 2;
+        end bus Mem
+
+        use Mem;
+
+        module Shared
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   addr: Vec<UInt<32>, 2> reset rst => 0;
+          reg   data: Vec<UInt<64>, 2> reset rst => 0;
+          thread workers on clk rising, rst high
+            fork
+              data[0] <= m.read(addr[0]);
+            and
+              data[1] <= m.read(addr[1]);
+            join
+          end thread workers
+        end module Shared
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("m_read_req_tag"),
+        "out-of-order cohort should drive request tags:\n{sv}");
+    assert!(sv.contains("m_read_rsp_tag == 2'd0")
+         && sv.contains("m_read_rsp_tag == 2'd1"),
+        "out-of-order cohort should route responses by rsp_tag:\n{sv}");
+    assert!(sv.contains("data[0] <= m_read_rsp_data")
+         && sv.contains("data[1] <= m_read_rsp_data"),
+        "tag-routed responses should capture into each worker destination:\n{sv}");
+}
+
+#[test]
+fn test_tlm_out_of_order_target_echoes_tag() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: out_of_order tags 2;
+        end bus Mem
+
+        use Mem;
+
+        module MemTarget
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port s:   target Mem;
+          reg value: UInt<64> reset rst => 0;
+          thread s.read(addr) on clk rising, rst high
+            return value;
+          end thread s.read
+        end module MemTarget
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("_tlm_s_read_tag_latched"),
+        "target should latch accepted request tag:\n{sv}");
+    assert!(sv.contains("assign s_read_rsp_tag = _tlm_s_read_tag_latched"),
+        "target should echo the latched tag on response:\n{sv}");
+}
+
+#[test]
 fn test_tlm_call_rejected_outside_seq_assign_rhs() {
     // Arithmetic on a TLM call RHS is not supported in v1 — must be
     // direct.
@@ -5571,8 +5680,8 @@ fn test_tlm_method_target_perspective_flips() {
 }
 
 #[test]
-fn test_tlm_method_v2_modes_rejected_in_v1() {
-    for mode in ["pipelined", "out_of_order", "burst"] {
+fn test_tlm_method_unsupported_modes_rejected() {
+    for mode in ["pipelined", "burst"] {
         let source = format!(
             "bus Mem
               tlm_method read(addr: UInt<32>) -> UInt<64>: {mode};

@@ -53,7 +53,7 @@ Shipping in v1:
 8. sim_codegen mirror (C++ request/response FIFOs of depth 1, following
    the credit_channel / sim_credit_channel module pattern).
 
-Explicitly **deferred** to v2:
+Explicitly **deferred** beyond the blocking foundation:
 - In-order generated-thread mapping for a finite worker cohort sharing
   one method.
 - Out-of-order mode via compiler-managed request/response tags.
@@ -311,7 +311,9 @@ Three auto-emitted properties labeled
   `doc/plan_tlm_pipelined.md`.
 - PR-tlm-V2b: out-of-order mode via compiler-managed request/response
   tags. Keep the worker syntax; change the protocol contract so the
-  compiler can route by `rsp_tag` instead of FIFO issue order.
+  compiler can route by `rsp_tag` instead of FIFO issue order. Initial
+  parser, wire flattening, target tag echo, and cohort tag routing are
+  implemented in the thread-cohort branch.
 - PR-tlm-V2c candidate: burst-oriented protocol support. No viable
   hidden-future path is currently identified; any future design should
   preserve explicit beat ownership and backpressure.

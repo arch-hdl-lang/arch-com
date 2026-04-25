@@ -9,9 +9,8 @@
 > the compiler lowers the direct blocking calls to a shared request
 > arbiter plus an issue-order response router.
 >
-> The genuinely new future capability is **out-of-order** response
-> routing. That should be a tagged bus protocol extension using the same
-> fork/join or generated-thread user surface, not `Future<T>`.
+> The first out-of-order slice is a tagged bus protocol extension using
+> the same fork/join or generated-thread user surface, not `Future<T>`.
 >
 > `reentrant` grammar on ThreadBlock (merged in PR #86) stays as
 > dead-but-parsed code; removal or repurposing is a future cleanup.
@@ -44,11 +43,11 @@
 > end thread workers
 > ```
 >
-> The target protocol remains the v1 blocking req/rsp handshake and is
-> assumed to return responses in request order. AXI-style separate AR/R
-> channels, IDs, bursts, and out-of-order completion remain outside this
-> feature; those belong in explicit protocol threads or a future tagged
-> TLM protocol extension.
+> The in-order target protocol remains the v1 blocking req/rsp handshake
+> and is assumed to return responses in request order. `out_of_order
+> tags N` adds req/rsp tag wires and routes by response tag. AXI-style
+> separate AR/R channels and bursts remain outside this feature; those
+> belong in explicit protocol threads or a future beat-stream extension.
 
 ---
 
@@ -421,10 +420,10 @@ does not replace explicit thread protocol code where the protocol itself
 has useful structure, such as separate issue and collection threads,
 ID-tagged responses, or burst beat loops.
 
-## Next: Out-Of-Order
+## Current Out-Of-Order Slice
 
-Out-of-order support should keep the same user-facing worker syntax and
-change only the method protocol/lowering contract. The compiler assigns
+Out-of-order support keeps the same user-facing worker syntax and
+changes only the method protocol/lowering contract. The compiler assigns
 one small tag per worker/branch, sends that tag with the request, and
 routes a response by `rsp_tag` instead of FIFO head.
 
@@ -436,14 +435,14 @@ bus Mem
 end bus Mem
 ```
 
-Lowering changes:
+Implemented lowering:
 
 - Request channel gains `<method>_req_tag`.
 - Response channel gains `<method>_rsp_tag`.
 - Per-worker state is still "ready" / "waiting".
 - Accepted requests mark the worker waiting by tag.
 - Responses compare `rsp_tag` and complete the matching worker.
-- `fork ... join` completes when all branch states return to ready.
+- Target-side lowering latches `req_tag` and echoes it as `rsp_tag`.
 
 This replaces any need for `Future<T>`. The branch or generated worker
 is the outstanding operation handle.

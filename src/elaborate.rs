@@ -4992,6 +4992,14 @@ fn lower_tlm_initiator_cohort(
     let method = first.call.method.clone();
     let method_meta = first.call.method_meta.clone();
     let span = first.thread.span;
+    let tag_width = if let Some(e) = &method_meta.out_of_order_tags {
+        Some(literal_expr_u64(e).ok_or_else(|| CompileError::general(
+            "`out_of_order tags` must be a literal width in the first implementation",
+            span,
+        ))? as u32)
+    } else {
+        None
+    };
     let clk = first.thread.clock.clone();
     let rst = first.thread.reset.clone();
     let clock_edge = first.thread.clock_edge;
@@ -5020,6 +5028,17 @@ fn lower_tlm_initiator_cohort(
     }
 
     let n = group.len();
+    if let Some(tag_w) = tag_width {
+        let tag_slots = if tag_w >= 64 { u128::MAX } else { 1u128 << tag_w };
+        if tag_slots < n as u128 {
+            return Err(CompileError::general(
+                &format!(
+                    "`{port}.{method}` has {n} workers but only {tag_slots} out-of-order tags; increase `tags` width"
+                ),
+                span,
+            ));
+        }
+    }
     let idx_w = clog2_width(n as u64);
     let occ_w = clog2_width((n + 1) as u64);
     let prefix = format!("_tlm_pool_{}_{}", port, method);
@@ -5145,6 +5164,17 @@ fn lower_tlm_initiator_cohort(
             span,
         }));
     }
+    if let Some(tag_w) = tag_width {
+        let mut value = sized(tag_w, 0);
+        for i in (0..n).rev() {
+            value = tern(grants[i].clone(), sized(tag_w, i as u64), value);
+        }
+        comb_stmts.push(CombStmt::Assign(CombAssign {
+            target: port_member(format!("{method}_req_tag")),
+            value,
+            span,
+        }));
+    }
     comb_stmts.push(CombStmt::Assign(CombAssign {
         target: port_member(format!("{method}_rsp_ready")),
         value: occ_nonzero.clone(),
@@ -5173,11 +5203,23 @@ fn lower_tlm_initiator_cohort(
             span,
         }));
 
-        let rsp_i = bin(
-            BinOp::And,
-            rsp_pop.clone(),
-            bin(BinOp::Eq, fifo_head.clone(), sized(idx_w, i as u64)),
-        );
+        let rsp_i = if let Some(tag_w) = tag_width {
+            bin(
+                BinOp::And,
+                bin(
+                    BinOp::And,
+                    rsp_pop.clone(),
+                    bin(BinOp::Eq, id(state_name(i)), sized(1, 1)),
+                ),
+                bin(BinOp::Eq, port_member(format!("{method}_rsp_tag")), sized(tag_w, i as u64)),
+            )
+        } else {
+            bin(
+                BinOp::And,
+                rsp_pop.clone(),
+                bin(BinOp::Eq, fifo_head.clone(), sized(idx_w, i as u64)),
+            )
+        };
         let mut rsp_then: Vec<Stmt> = Vec::new();
         if method_meta.ret.is_some() {
             rsp_then.push(Stmt::Assign(RegAssign {
@@ -5365,6 +5407,7 @@ fn inline_lower_tlm_initiator(
         TlmWait {
             port: String,
             method: String,
+            method_meta: TlmMethodMeta,
             dest: Option<Expr>,
         },
     }
@@ -5407,6 +5450,7 @@ fn inline_lower_tlm_initiator(
                     states.push(StateKind::TlmWait {
                         port: call.port,
                         method: call.method,
+                        method_meta: call.method_meta.clone(),
                         dest: if has_ret { Some(ra.target) } else { None },
                     });
                 } else {
@@ -5473,6 +5517,7 @@ fn inline_lower_tlm_initiator(
         method: String,
         ret_ty: Option<TypeExpr>,
         arg_decls: Vec<(Ident, TypeExpr)>,
+        tag_width: Option<Expr>,
         issues: Vec<(u64, Vec<Expr>)>,  // (state_idx, args at that call site)
         waits: Vec<u64>,                 // state_idx
     }
@@ -5504,6 +5549,7 @@ fn inline_lower_tlm_initiator(
                     method: method.clone(),
                     ret_ty: method_meta.ret.clone(),
                     arg_decls: method_meta.args.clone(),
+                    tag_width: method_meta.out_of_order_tags.clone(),
                     issues: Vec::new(),
                     waits: Vec::new(),
                 }).issues.push((cur_idx, args.clone()));
@@ -5527,13 +5573,14 @@ fn inline_lower_tlm_initiator(
                     span,
                 }));
             }
-            StateKind::TlmWait { port, method, dest } => {
+            StateKind::TlmWait { port, method, method_meta, dest } => {
                 let key = format!("{port}.{method}");
                 aggs.entry(key).or_insert_with(|| MethodAgg {
                     port: port.clone(),
                     method: method.clone(),
-                    ret_ty: None,
-                    arg_decls: Vec::new(),
+                    ret_ty: method_meta.ret.clone(),
+                    arg_decls: method_meta.args.clone(),
+                    tag_width: method_meta.out_of_order_tags.clone(),
                     issues: Vec::new(),
                     waits: Vec::new(),
                 }).waits.push(cur_idx);
@@ -5550,10 +5597,33 @@ fn inline_lower_tlm_initiator(
                     value: mk_state_lit(next_idx),
                     span,
                 }));
+                let mut advance_rhs = mk_port_member(port, format!("{method}_rsp_valid"));
+                if let Some(tag_w_expr) = &method_meta.out_of_order_tags {
+                    let tag_w = literal_expr_u64(tag_w_expr)
+                        .ok_or_else(|| CompileError::general(
+                            "`out_of_order tags` must be a literal width in the first implementation",
+                            tag_w_expr.span,
+                        ))? as u32;
+                    advance_rhs = Expr::new(
+                        ExprKind::Binary(
+                            BinOp::And,
+                            Box::new(advance_rhs),
+                            Box::new(Expr::new(
+                                ExprKind::Binary(
+                                    BinOp::Eq,
+                                    Box::new(mk_port_member(port, format!("{method}_rsp_tag"))),
+                                    Box::new(Expr::new(ExprKind::Literal(LitKind::Sized(tag_w, 0)), span)),
+                                ),
+                                span,
+                            )),
+                        ),
+                        span,
+                    );
+                }
                 let advance_cond = Expr::new(
                     ExprKind::Binary(BinOp::And,
                         Box::new(state_eq(cur_idx)),
-                        Box::new(mk_port_member(port, format!("{method}_rsp_valid"))),
+                        Box::new(advance_rhs),
                     ),
                     span,
                 );
@@ -5614,6 +5684,14 @@ fn inline_lower_tlm_initiator(
                 span,
             }));
             let _ = agg.ret_ty;
+        }
+        if let Some(tag_w_expr) = &agg.tag_width {
+            let tag_w = literal_expr_u64(tag_w_expr).unwrap_or(1) as u32;
+            comb_stmts.push(CombStmt::Assign(CombAssign {
+                target: mk_port_member(&agg.port, format!("{}_req_tag", agg.method)),
+                value: Expr::new(ExprKind::Literal(LitKind::Sized(tag_w, 0)), span),
+                span,
+            }));
         }
         // rsp_ready = OR of wait states
         comb_stmts.push(Stmt::Assign(CombAssign {
@@ -5748,6 +5826,18 @@ fn inline_lower_tlm_target(
     // Arg renames: user-bound arg name → latched reg name.
     let mut arg_renames: Vec<(String, String)> = Vec::new();
     let mut latch_regs: Vec<RegDecl> = Vec::new();
+    let tag_latch_name = method.out_of_order_tags.as_ref().map(|tag_w| {
+        let latch_name = format!("_tlm_{port}_{method_name}_tag_latched");
+        latch_regs.push(RegDecl {
+            name: mk_ident(latch_name.clone()),
+            ty: TypeExpr::UInt(Box::new(tag_w.clone())),
+            init: None,
+            reset: RegReset::Inherit(t.reset.clone(), Expr::new(ExprKind::Literal(LitKind::Dec(0)), span)),
+            guard: None,
+            span,
+        });
+        latch_name
+    });
     for (user_arg, method_arg) in binding.args.iter().zip(method.args.iter()) {
         let latch_name = format!("_tlm_{port}_{method_name}_{}_latched", method_arg.0.name);
         latch_regs.push(RegDecl {
@@ -5858,6 +5948,13 @@ fn inline_lower_tlm_target(
             span,
         }));
         let _ = user_arg;
+    }
+    if let Some(latch_name) = &tag_latch_name {
+        entry_then.push(Stmt::Assign(RegAssign {
+            target: Expr::new(ExprKind::Ident(latch_name.clone()), span),
+            value: mk_port_member(format!("{method_name}_req_tag")),
+            span,
+        }));
     }
     entry_then.push(Stmt::Assign(RegAssign {
         target: state_ident.clone(),
@@ -5979,6 +6076,13 @@ fn inline_lower_tlm_target(
             }));
         }
     }
+    if let Some(latch_name) = &tag_latch_name {
+        comb_stmts.push(CombStmt::Assign(CombAssign {
+            target: mk_port_member(format!("{method_name}_rsp_tag")),
+            value: Expr::new(ExprKind::Ident(latch_name.clone()), span),
+            span,
+        }));
+    }
     // User-written CombAssigns from the body — per-state guarded.
     for (i, us) in user_states.iter().enumerate() {
         let state_idx = (i + 1) as u64;
@@ -6020,4 +6124,14 @@ fn inline_lower_tlm_target(
 /// Width-of-state helper. Compatibility shim — delegates to [`crate::width::index_width`].
 fn clog2_width(n: u64) -> u32 {
     crate::width::index_width(n)
+}
+
+fn literal_expr_u64(expr: &Expr) -> Option<u64> {
+    match &expr.kind {
+        ExprKind::Literal(LitKind::Dec(v))
+        | ExprKind::Literal(LitKind::Hex(v))
+        | ExprKind::Literal(LitKind::Bin(v))
+        | ExprKind::Literal(LitKind::Sized(_, v)) => Some(*v),
+        _ => None,
+    }
 }
