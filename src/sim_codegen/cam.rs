@@ -70,14 +70,20 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("  if (_trace_fp) trace_dump(_trace_time++);\n");
         cpp.push_str("}\n\n");
 
-        // posedge: write port (set or clear).
+        // posedge: write port (set or clear). v2: optional second write port,
+        // applied after port 1, so port 2 wins on same-index conflict.
+        let has_w2 = c.ports.iter().any(|p| p.name.name == "write2_valid");
+
         cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
         cpp.push_str(&format!("  bool _rising = ({clk_port} && !_clk_prev);\n"));
         cpp.push_str(&format!("  _clk_prev = {clk_port};\n"));
         cpp.push_str("  if (!_rising) return;\n");
         cpp.push_str(&format!("  if ({rst_cond}) {{\n"));
         cpp.push_str("    _entry_valid_r = 0;\n");
-        cpp.push_str("  } else if (write_valid) {\n");
+        cpp.push_str("    return;\n");
+        cpp.push_str("  }\n");
+        // Port 1
+        cpp.push_str("  if (write_valid) {\n");
         cpp.push_str(&format!("    {mask_ty} _bit = ({mask_ty})1 << write_idx;\n"));
         cpp.push_str("    if (write_set) {\n");
         cpp.push_str("      _entry_valid_r |= _bit;\n");
@@ -86,6 +92,18 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("      _entry_valid_r &= ~_bit;\n");
         cpp.push_str("    }\n");
         cpp.push_str("  }\n");
+        // Port 2 (v2)
+        if has_w2 {
+            cpp.push_str("  if (write2_valid) {\n");
+            cpp.push_str(&format!("    {mask_ty} _bit2 = ({mask_ty})1 << write2_idx;\n"));
+            cpp.push_str("    if (write2_set) {\n");
+            cpp.push_str("      _entry_valid_r |= _bit2;\n");
+            cpp.push_str("      _entry_key_r[write2_idx] = write2_key;\n");
+            cpp.push_str("    } else {\n");
+            cpp.push_str("      _entry_valid_r &= ~_bit2;\n");
+            cpp.push_str("    }\n");
+            cpp.push_str("  }\n");
+        }
         cpp.push_str("}\n\n");
 
         // comb: recompute search_mask / search_any / search_first.

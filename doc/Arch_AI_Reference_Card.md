@@ -701,6 +701,17 @@ end cam Mshr_Addr_Cam
 - `search_first` is the LSB-priority first set bit of `search_mask`; consumers should qualify with `search_any` (it reads as 0 when there is no match).
 - v1 is exact-match only (no TCAM/wildcards), no value payload (pair with a `ram` indexed by `search_first` to recover an associated value), no built-in replacement policy (the user picks the index to write — typically a free-slot priority encoder over `~entry_valid_r`).
 
+**Dual-write port (v2):** for designs with two concurrent state-update streams (e.g., MSHR with simultaneous allocate + finalize), add the optional `write2_*` port set:
+
+```
+  port write2_valid: in Bool;
+  port write2_idx:   in UInt<5>;
+  port write2_key:   in UInt<10>;
+  port write2_set:   in Bool;
+```
+
+All four are required together (all-or-nothing). On the same edge: different indices both commit; same index → port 2 wins (last-write). Map your "winner" stream to port 2.
+
 ---
 
 ### counter
