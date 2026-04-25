@@ -481,7 +481,15 @@ fn run_sim(
     fs::create_dir_all(&build_dir).into_diagnostic()?;
 
     // 3. Generate C++ models
-    let sim = SimCodegen::new(&symbols, &ast, overload_map).check_uninit(check_uninit).inputs_start_uninit(inputs_start_uninit).check_uninit_ram(check_uninit_ram).cdc_random(cdc_random).debug(debug, debug_depth).with_debug_fsm(debug_fsm).coverage(coverage);
+    let mut sim = SimCodegen::new(&symbols, &ast, overload_map).check_uninit(check_uninit).inputs_start_uninit(inputs_start_uninit).check_uninit_ram(check_uninit_ram).cdc_random(cdc_random).debug(debug, debug_depth).with_debug_fsm(debug_fsm).coverage(coverage);
+    if coverage {
+        // Build a SourceMap so the coverage dumper can render
+        // file:line instead of opaque branch[N] ordinals.
+        let segs: Vec<(usize, String, String)> = ms.segments.iter()
+            .map(|(start, _end, name, src)| (*start, name.clone(), src.clone()))
+            .collect();
+        sim = sim.with_source_map(arch::sim_codegen::SourceMap::new(segs));
+    }
     let models = sim.generate();
 
     if models.is_empty() {
