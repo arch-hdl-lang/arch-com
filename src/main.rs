@@ -116,6 +116,12 @@ enum Command {
         /// How many module levels to instrument with --debug (default 1 = top module only)
         #[arg(long = "depth", default_value_t = 1)]
         debug_depth: u32,
+        /// Enable code coverage instrumentation. Counts each if/elsif/else arm
+        /// in seq and comb blocks and dumps `coverage.txt` keyed to .arch source
+        /// lines at sim exit. See doc/plan_arch_coverage.md for the phased rollout
+        /// (branch → line → FSM → toggle → Verilator-compatible coverage.dat).
+        #[arg(long)]
+        coverage: bool,
         /// Generate pybind11 Python module for cocotb-compatible testing
         #[arg(long)]
         pybind: bool,
@@ -334,7 +340,10 @@ fn main() -> miette::Result<()> {
             }
             Ok(())
         }
-        Command::Sim { arch_files, tb_files, outdir, check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave, debug, debug_depth, debug_fsm, pybind, test, pybind_module_name } => {
+        Command::Sim { arch_files, tb_files, outdir, check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave, debug, debug_depth, debug_fsm, coverage, pybind, test, pybind_module_name } => {
+            if coverage {
+                eprintln!("warning: --coverage is reserved but not yet implemented (see doc/plan_arch_coverage.md). Continuing without instrumentation.");
+            }
             let dbg_ports = debug || debug_fsm;  // any debug option implies port logging
             // --inputs-start-uninit and --check-uninit-ram both imply --check-uninit
             let check_uninit = check_uninit || inputs_start_uninit || check_uninit_ram;
