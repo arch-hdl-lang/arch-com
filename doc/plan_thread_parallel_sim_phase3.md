@@ -104,17 +104,48 @@ do {
 
 Priority arbitration when multiple threads contend at the same barrier: first-CAS-wins is non-deterministic. Fix: the barrier publish phase processes threads in fixed thread-index order, so lower-id threads always claim first. (Same determinism rule as Phase 2's iterated-tick `resumed[]` ordering.)
 
-### 6. Determinism: fixed thread→core + ordered publish
+### 6. Determinism: naturally race-free for owned outputs (verified)
 
-Two sources of non-determinism in naive multi-threading:
-- OS thread scheduling jitter
-- CAS / fetch-add winner depending on hardware contention
+**Phase 3.3 finding**: the owned-output design is naturally race-free
+and deterministic without thread affinity, ordered publish, or any
+extra machinery. Verified empirically:
+  - `named_thread` at `--threads 2`: 10 runs produce bit-identical
+    `--debug` traces.
+  - `ARCH_TSAN=1 arch sim --thread-sim parallel --threads N`:
+    builds with `-fsanitize=thread`; no race reports on any
+    existing test.
 
-Mitigations:
-- **Fixed thread→core mapping** at construction (pthread_setaffinity_np on Linux, thread_policy_set on macOS). Optional — adds robustness on busy hosts.
-- **Ordered publish** in barrier B1: iterate per-thread buffers in thread-index order, so writes/CAS ties resolve identically every run.
+Why it's race-free:
+1. Each port has exactly one writer thread (owned-output invariant).
+2. Workers wake at `start_barrier` together but operate on
+   independent slot data (their own scheduler).
+3. The TB-driving caller reads port values only after `end_barrier`
+   (all workers have completed and published their writes).
+4. No worker reads another worker's slot state — only canonical
+   port/reg fields, which are themselves either owned or read-only
+   from the worker's perspective.
 
-Result: same input + same `--threads N` ⇒ bit-identical VCD across runs.
+**When ordered publish becomes necessary** (deferred):
+
+Adding **ordered publish** at the barrier (iterate per-thread buffers
+in thread-index order) becomes necessary when:
+- `shared(or)` ports run under MT (multiple writers per port; need
+  deterministic OR-reduction order to avoid jitter from atomic
+  fetch-or contention).
+- Resource locks have ties (multiple threads CAS at the same
+  barrier; first-wins is non-deterministic without ordered publish).
+
+Neither path is exercised by the current Phase 3.2 tests. When
+adding either feature, also add:
+- Per-thread write buffers for shared(or) ports
+- Ordered iteration of buffers in thread-index order at barrier
+- Optional thread→core affinity (pthread_setaffinity_np on Linux;
+  thread_policy_set on macOS, but advisory on Apple Silicon)
+
+For the current owned-output design, these are no-ops, so Phase 3.3
+ships as: empirical verification + ARCH_TSAN=1 opt-in for CI race
+checking. Affinity deferred until a real consumer (e.g. shared(or)
+under MT) needs it.
 
 ### 7. CLI: `--thread-sim parallel` + `--threads N` (Verilator-style)
 
@@ -160,7 +191,7 @@ parallel-N=1 vs parallel-N=k. Probably gated behind a separate
 | 3.0 — design lock | This doc, reviewer sign-off | Approval |
 | 3.1 — barrier + two-region runtime | Implement Barrier, write-buffer publish, two-region tick. Wire single-thread sim through it (no actual parallelism yet) — proves the runtime correct. | All Phase 2 cross-checks still PASS via parallel-N>1 with N=1 thread |
 | 3.2 — N OS threads | std::thread per `thread` block; barrier-synchronized loop per OS thread. No deterministic ordering yet. | tests/thread/ all pass under `--thread-sim parallel-N>1`; result correct (may be non-deterministic) |
-| 3.3 — determinism | Fixed thread→core mapping; ordered publish; ordered debug log merge | Same VCD bit-identical across 10 runs |
+| 3.3 — determinism | Empirical verification (10-run identical-VCD check); ARCH_TSAN=1 opt-in for race detection. **Naturally race-free for owned outputs — no extra runtime machinery needed.** Affinity / ordered publish / per-thread write buffers deferred until a shared(or)-under-MT consumer needs them. | 10 runs identical (PASS); zero TSan reports (PASS) |
 | 3.4 — perf measurement | Benchmark on tests/axi_dma_thread/ (5 threads): cycles-per-second under fsm, parallel, parallel-N>1 with N=1, N=2, N=4, N=8 | Speedup ≥ 2× at N=4 vs N=1 |
 | 3.5 — thread groups (optional) | If oversubscription hurts: bundle small threads. Static analysis to estimate per-thread work. | Speedup recovers when N > host_cores |
 
