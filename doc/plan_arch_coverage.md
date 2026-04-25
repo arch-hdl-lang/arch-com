@@ -25,9 +25,22 @@ Each \`if\` / \`elsif\` / \`else\` arm in seq and comb blocks gets a counter. At
   Summary: 12/14 branches hit (85.7%)
   ```
 
-### Phase 2 — line coverage
+### Phase 2 — block-execution coverage (NOT full line coverage)
 
-Counter per \`<=\` and \`=\` statement in seq/comb. Often subsumes branch coverage but distinct: a branch may be entered without all its statements firing (early-return-style patterns).
+Originally scoped as "line coverage", but full per-statement counters are mostly redundant with branch coverage in arch:
+- Statements inside a branch arm are guaranteed to execute when the arm is hit (no early returns in seq/comb).
+- Unconditional top-of-block statements are trivially hit if the block runs.
+- For-loop bodies are bounded compile-time; if the enclosing branch ran, all iterations ran.
+
+**The one case branch coverage doesn't catch**: a seq or comb block with no branches at all, where you'd want to know "did this block ever run?". Example:
+```
+seq on rare_clk
+  counter <= counter + 1;
+end seq
+```
+Branch coverage says \`0/0 = N/A\`. Useful coverage would say \`seq @rare_clk: 0 ticks\` so a wedged clock or a never-instantiated module shows up.
+
+So Phase 2 ships **block-execution coverage**: one counter per top-level seq/comb block, incremented on every entry. Cheap, catches dead-block bugs, and stays semantically distinct from branch coverage. Full per-statement line coverage stays out of scope.
 
 ### Phase 3 — FSM state + transition coverage
 
