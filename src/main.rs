@@ -957,7 +957,16 @@ sys.exit(0 if ok else 1)
     let sim_bin = build_dir.join("sim_out");
     let mut cmd = std::process::Command::new("g++");
     let cpp_std = if thread_sim_parallel { "-std=c++20" } else { "-std=c++17" };
-    cmd.arg(cpp_std)
+    cmd.arg(cpp_std);
+    // Phase 3.3: opt-in ThreadSanitizer for parallel multi-OS-thread
+    // builds. Catches data races at runtime — useful in CI to verify
+    // the owned-output invariant remains intact as more features (e.g.
+    // shared(or) under MT) get added. Triggered by ARCH_TSAN=1 env.
+    if thread_sim_parallel && std::env::var("ARCH_TSAN").is_ok() {
+        cmd.arg("-fsanitize=thread").arg("-g");
+        eprintln!("(ARCH_TSAN=1: building with -fsanitize=thread)");
+    }
+    cmd
        .arg("-O1")
        .arg("-I").arg(&build_dir);
 
