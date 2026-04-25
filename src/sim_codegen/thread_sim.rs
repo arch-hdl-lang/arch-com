@@ -208,7 +208,14 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool) -> Result<SimM
 
     let driven_outputs = collect_thread_driven_outputs(&threads, m);
 
-    // Constructor: register one slot per thread coroutine.
+    // Constructor: register one slot per thread coroutine, then run an
+    // initial scheduler tick to advance every thread past its entry
+    // wait. Without this, parallel sim takes 1 cycle longer than fsm
+    // to "warm up" (parent coroutine wouldn't run its fork-launch
+    // until first posedge, branches wouldn't reach their first wait
+    // until the cycle after that). The initial tick doesn't increment
+    // _dbg_cycle (cycle counter lives in eval()) so cycle alignment
+    // matches fsm's "state register starts at entry state" semantic.
     header.push_str(&format!("  {}() {{\n", class));
     for (i, info) in thread_infos.iter().enumerate() {
         header.push_str(&format!("    _slot_{i}.thread = _make_thread_{i}();\n"));
@@ -220,6 +227,7 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool) -> Result<SimM
             header.push_str(&format!("    _sched.slots.push_back(&_t{i}_br{}_slot);\n", br.id));
         }
     }
+    header.push_str("    _sched.tick();  // initial settle: run all threads to first wait\n");
     header.push_str("  }\n");
     header.push_str(&format!("  ~{}() {{\n", class));
     for (i, info) in thread_infos.iter().enumerate() {
@@ -371,6 +379,11 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool) -> Result<SimM
             header.push_str(&format!("      _resource_{}_holder = -1;\n", r.name.name));
         }
     }
+    // Initial settle after reset: same logic as constructor — advances
+    // every thread past its entry wait so post-reset eval() shows the
+    // initial state's hold-comb (matching fsm's "state register reset
+    // to entry state, comb runs immediately" semantic).
+    header.push_str("      _sched.tick();\n");
     header.push_str("      eval();\n");
     header.push_str("      return;\n");
     header.push_str("    }\n");
@@ -494,6 +507,41 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool) -> Result<SimM
                     vcd_name: r.name.name.clone(),
                     cpp_expr: r.name.name.clone(),
                     width,
+                    is_wide: false,
+                });
+            }
+        }
+        // Coroutine state — exposed to VCD with leading underscore so
+        // they show up as "reg" in the VCD scope. Useful for debugging
+        // why a thread is parked at a given segment / which thread holds
+        // a resource. Width: 8 bits is plenty for segment ids (Phase
+        // limits well under 256), 32 bits for resource holders (-1
+        // sentinel needs full int32_t but we cast to uint32 for VCD).
+        for (ti, info) in thread_infos.iter().enumerate() {
+            // Per-thread main segment id
+            signals.push(crate::sim_codegen::TraceSignal {
+                vcd_name: format!("_seg_{ti}"),
+                cpp_expr: format!("_seg_{ti}"),
+                width: 8,
+                is_wide: false,
+            });
+            // Per-fork-branch segment ids
+            for br in &info.branches {
+                signals.push(crate::sim_codegen::TraceSignal {
+                    vcd_name: format!("_t{ti}_br{}_seg", br.id),
+                    cpp_expr: format!("_t{ti}_br{}_seg", br.id),
+                    width: 8,
+                    is_wide: false,
+                });
+            }
+        }
+        // Per-resource holder fields (-1 = free, otherwise thread index).
+        for item in &m.body {
+            if let ModuleBodyItem::Resource(r) = item {
+                signals.push(crate::sim_codegen::TraceSignal {
+                    vcd_name: format!("_resource_{}_holder", r.name.name),
+                    cpp_expr: format!("(uint32_t)_resource_{}_holder", r.name.name),
+                    width: 32,
                     is_wide: false,
                 });
             }
