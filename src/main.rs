@@ -639,7 +639,7 @@ fn run_sim_opts(
             if let arch::ast::Item::Module(m) = item {
                 let has_thread = m.body.iter().any(|i| matches!(i, arch::ast::ModuleBodyItem::Thread(_)));
                 if has_thread {
-                    let model = arch::sim_codegen::thread_sim::gen_module_thread(m, debug)
+                    let model = arch::sim_codegen::thread_sim::gen_module_thread(m, debug, wave.is_some())
                         .map_err(|e| miette::miette!("thread sim: {}", e))?;
                     out.push(model);
                 }

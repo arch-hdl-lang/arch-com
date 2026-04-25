@@ -103,7 +103,7 @@ struct ThreadInfo {
     branches: Vec<Branch>,
 }
 
-pub fn gen_module_thread(m: &ModuleDecl, debug: bool) -> Result<SimModel, String> {
+pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool) -> Result<SimModel, String> {
     // Match the Verilator/fsm convention: V<ModuleName>. Lets the same
     // TB drive either --thread-sim path without changing #includes,
     // which is what makes --thread-sim=both cross-check practical.
@@ -233,6 +233,13 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool) -> Result<SimModel, String
     // eval(): zero thread-driven outputs, run each thread's segment
     // hold-comb, then evaluate combinational lets.
     header.push_str("  void eval() {\n");
+    if wave {
+        // Auto-open VCD on first eval if Verilated::traceFile() is set
+        // (TB convention: arch sim --wave out.vcd passes +trace+out.vcd
+        // which the verilated.cpp stub captures into traceFile()).
+        header.push_str("    if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n");
+        header.push_str("      trace_open(Verilated::traceFile());\n");
+    }
     // Detect rising edge of clk (Verilator convention) and run the
     // posedge logic. Update _clk_prev BEFORE the dispatch so the
     // recursive eval() call inside _do_posedge doesn't re-trigger.
@@ -247,6 +254,9 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool) -> Result<SimModel, String
         // the initial pre-clock eval).
         header.push_str("      _dbg_log_ports();\n");
         header.push_str("      _dbg_cycle++;\n");
+    }
+    if wave {
+        header.push_str("      if (_trace_fp) trace_dump(_trace_time++);\n");
     }
     header.push_str("      return;\n");  // _do_posedge settled comb via its own eval() at the end
     header.push_str("    }\n");
@@ -309,6 +319,9 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool) -> Result<SimModel, String
     }
     if debug {
         header.push_str("    _dbg_log_ports();\n");
+    }
+    if wave {
+        header.push_str("    if (_trace_fp) trace_dump(_trace_time++);\n");
     }
     header.push_str("  }\n\n");
 
@@ -449,8 +462,59 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool) -> Result<SimModel, String
 
     let _ = (&clk_name, &rst_name);
 
+    // VCD trace methods (auto-emit when --wave is set).
+    let trace_impl_str = if wave {
+        let mut signals: Vec<crate::sim_codegen::TraceSignal> = Vec::new();
+        // Top-level ports — include clocks too so the VCD timeline is
+        // visible (matches fsm sim's --wave output).
+        for p in &m.ports {
+            let width = match &p.ty {
+                TypeExpr::Clock(_) | TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Reset(..) => 1,
+                TypeExpr::UInt(w) => eval_const(w) as u32,
+                _ => continue,
+            };
+            if width == 0 || width > 64 { continue; }
+            signals.push(crate::sim_codegen::TraceSignal {
+                vcd_name: p.name.name.clone(),
+                cpp_expr: p.name.name.clone(),
+                width,
+                is_wide: false,
+            });
+        }
+        // Reg fields (scalar only — Vec/wide skipped in this spike).
+        for item in &m.body {
+            if let ModuleBodyItem::RegDecl(r) = item {
+                let width = match &r.ty {
+                    TypeExpr::Bool | TypeExpr::Bit => 1,
+                    TypeExpr::UInt(w) => eval_const(w) as u32,
+                    _ => continue,
+                };
+                if width == 0 || width > 64 { continue; }
+                signals.push(crate::sim_codegen::TraceSignal {
+                    vcd_name: r.name.name.clone(),
+                    cpp_expr: r.name.name.clone(),
+                    width,
+                    is_wide: false,
+                });
+            }
+        }
+        let (decls, _impl) = crate::sim_codegen::emit_trace_methods(&class, &m.name.name, &signals);
+        header.push_str(&decls);
+        // emit_trace_methods returns standalone-class-method impls
+        // (e.g. `void Foo::trace_open(...)`); since our class is
+        // header-only, we splice them in inline at the bottom rather
+        // than putting them in a separate .cpp.
+        _impl
+    } else {
+        String::new()
+    };
+
     header.push_str("private:\n");
     header.push_str("  uint8_t _clk_prev = 0;\n");
+    if wave {
+        header.push_str("  FILE* _trace_fp = nullptr;\n");
+        header.push_str("  uint64_t _trace_time = 0;\n");
+    }
     if debug {
         header.push_str("  uint64_t _dbg_cycle = 0;\n");
         for p in &m.ports {
@@ -674,10 +738,20 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool) -> Result<SimModel, String
 
     header.push_str("};\n");
 
+    let impl_ = if !trace_impl_str.is_empty() {
+        // Trace impls reference class-private fields, so they must be
+        // class methods (not free functions). emit_trace_methods returns
+        // out-of-class definitions like `void Foo::trace_open(...)`,
+        // which we put in the .cpp alongside an #include of the .h.
+        format!("#include \"{class}.h\"\n#include <cstdio>\n\n{trace_impl_str}")
+    } else {
+        format!("// {} thread-sim: header-only\n", class)
+    };
+
     Ok(SimModel {
         class_name: class.clone(),
         header,
-        impl_: format!("// {} thread-sim: header-only\n", class),
+        impl_,
     })
 }
 

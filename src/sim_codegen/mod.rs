@@ -812,11 +812,11 @@ extern "C" FILE* _arch_cov_dat_open(const char* path) {
 // ── VCD Trace helpers ────────────────────────────────────────────────────────
 
 /// A signal to be traced in VCD output.
-struct TraceSignal {
-    vcd_name: String,    // display name in VCD scope
-    cpp_expr: String,    // C++ expression to read the value
-    width: u32,          // bit width
-    is_wide: bool,       // true if VlWide<N> type
+pub(crate) struct TraceSignal {
+    pub(crate) vcd_name: String,    // display name in VCD scope
+    pub(crate) cpp_expr: String,    // C++ expression to read the value
+    pub(crate) width: u32,          // bit width
+    pub(crate) is_wide: bool,       // true if VlWide<N> type
 }
 
 /// Generate a short VCD identifier from a signal index.
@@ -828,7 +828,7 @@ fn vcd_id(index: usize) -> String {
 
 /// Emit trace_open / trace_dump / trace_close C++ method implementations.
 /// Returns (header_declarations, cpp_implementations).
-fn emit_trace_methods(class: &str, module_name: &str, signals: &[TraceSignal]) -> (String, String) {
+pub(crate) fn emit_trace_methods(class: &str, module_name: &str, signals: &[TraceSignal]) -> (String, String) {
     let mut h = String::new();
     let mut cpp = String::new();
 
