@@ -204,11 +204,38 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool) -> Result<SimM
             }
         }
     }
+    // Let-binding fields: declare any let whose name isn't already a
+    // port (lets aliasing a port skip declaration — eval() just writes
+    // to the port). Without this, eval()'s `<let_name> = expr;`
+    // assignments fail to compile when an out-of-line method body
+    // (e.g. trace_open under --wave) actually exercises the .h.
+    let port_names_set: std::collections::HashSet<&str> =
+        m.ports.iter().map(|p| p.name.name.as_str()).collect();
+    for item in &m.body {
+        if let ModuleBodyItem::LetBinding(lb) = item {
+            if port_names_set.contains(lb.name.name.as_str()) { continue; }
+            // For typed lets, infer width; for untyped (target=port),
+            // the previous filter already skipped them.
+            let cpp_ty = match &lb.ty {
+                Some(t) => port_or_reg_cpp_ty(t)
+                    .map_err(|e| format!("module `{}` let `{}`: {}", class, lb.name.name, e))?,
+                None => continue, // untyped lets must alias a port — handled by the filter above
+            };
+            header.push_str(&format!("  {} {} = 0;\n", cpp_ty, lb.name.name));
+        }
+    }
     header.push('\n');
 
     let driven_outputs = collect_thread_driven_outputs(&threads, m);
 
-    // Constructor: register one slot per thread coroutine.
+    // Constructor: register one slot per thread coroutine, then run an
+    // initial scheduler tick to advance every thread past its entry
+    // wait. Without this, parallel sim takes 1 cycle longer than fsm
+    // to "warm up" (parent coroutine wouldn't run its fork-launch
+    // until first posedge, branches wouldn't reach their first wait
+    // until the cycle after that). The initial tick doesn't increment
+    // _dbg_cycle (cycle counter lives in eval()) so cycle alignment
+    // matches fsm's "state register starts at entry state" semantic.
     header.push_str(&format!("  {}() {{\n", class));
     for (i, info) in thread_infos.iter().enumerate() {
         header.push_str(&format!("    _slot_{i}.thread = _make_thread_{i}();\n"));
@@ -220,6 +247,7 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool) -> Result<SimM
             header.push_str(&format!("    _sched.slots.push_back(&_t{i}_br{}_slot);\n", br.id));
         }
     }
+    header.push_str("    _sched.tick();  // initial settle: run all threads to first wait\n");
     header.push_str("  }\n");
     header.push_str(&format!("  ~{}() {{\n", class));
     for (i, info) in thread_infos.iter().enumerate() {
@@ -371,6 +399,11 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool) -> Result<SimM
             header.push_str(&format!("      _resource_{}_holder = -1;\n", r.name.name));
         }
     }
+    // Initial settle after reset: same logic as constructor — advances
+    // every thread past its entry wait so post-reset eval() shows the
+    // initial state's hold-comb (matching fsm's "state register reset
+    // to entry state, comb runs immediately" semantic).
+    header.push_str("      _sched.tick();\n");
     header.push_str("      eval();\n");
     header.push_str("      return;\n");
     header.push_str("    }\n");
@@ -481,19 +514,76 @@ pub fn gen_module_thread(m: &ModuleDecl, debug: bool, wave: bool) -> Result<SimM
                 is_wide: false,
             });
         }
-        // Reg fields (scalar only — Vec/wide skipped in this spike).
+        // Reg fields. Scalars trace as a single VCD signal; Vec<T,N>
+        // traces as N separate signals named `<name>[i]` so each
+        // element is independently visible in the waveform viewer.
+        // (fsm sim currently skips Vec regs entirely — gap to close
+        // separately if the consistency matters.)
         for item in &m.body {
             if let ModuleBodyItem::RegDecl(r) = item {
-                let width = match &r.ty {
-                    TypeExpr::Bool | TypeExpr::Bit => 1,
-                    TypeExpr::UInt(w) => eval_const(w) as u32,
-                    _ => continue,
-                };
-                if width == 0 || width > 64 { continue; }
+                if let TypeExpr::Vec(elem, count_expr) = &r.ty {
+                    let elem_width = match elem.as_ref() {
+                        TypeExpr::Bool | TypeExpr::Bit => 1,
+                        TypeExpr::UInt(w) => eval_const(w) as u32,
+                        _ => continue,
+                    };
+                    if elem_width == 0 || elem_width > 64 { continue; }
+                    let count = eval_const(count_expr);
+                    for i in 0..count {
+                        signals.push(crate::sim_codegen::TraceSignal {
+                            vcd_name: format!("{}[{}]", r.name.name, i),
+                            cpp_expr: format!("{}[{}]", r.name.name, i),
+                            width: elem_width,
+                            is_wide: false,
+                        });
+                    }
+                } else {
+                    let width = match &r.ty {
+                        TypeExpr::Bool | TypeExpr::Bit => 1,
+                        TypeExpr::UInt(w) => eval_const(w) as u32,
+                        _ => continue,
+                    };
+                    if width == 0 || width > 64 { continue; }
+                    signals.push(crate::sim_codegen::TraceSignal {
+                        vcd_name: r.name.name.clone(),
+                        cpp_expr: r.name.name.clone(),
+                        width,
+                        is_wide: false,
+                    });
+                }
+            }
+        }
+        // Coroutine state — exposed to VCD with leading underscore so
+        // they show up as "reg" in the VCD scope. Useful for debugging
+        // why a thread is parked at a given segment / which thread holds
+        // a resource. Width: 8 bits is plenty for segment ids (Phase
+        // limits well under 256), 32 bits for resource holders (-1
+        // sentinel needs full int32_t but we cast to uint32 for VCD).
+        for (ti, info) in thread_infos.iter().enumerate() {
+            // Per-thread main segment id
+            signals.push(crate::sim_codegen::TraceSignal {
+                vcd_name: format!("_seg_{ti}"),
+                cpp_expr: format!("_seg_{ti}"),
+                width: 8,
+                is_wide: false,
+            });
+            // Per-fork-branch segment ids
+            for br in &info.branches {
                 signals.push(crate::sim_codegen::TraceSignal {
-                    vcd_name: r.name.name.clone(),
-                    cpp_expr: r.name.name.clone(),
-                    width,
+                    vcd_name: format!("_t{ti}_br{}_seg", br.id),
+                    cpp_expr: format!("_t{ti}_br{}_seg", br.id),
+                    width: 8,
+                    is_wide: false,
+                });
+            }
+        }
+        // Per-resource holder fields (-1 = free, otherwise thread index).
+        for item in &m.body {
+            if let ModuleBodyItem::Resource(r) = item {
+                signals.push(crate::sim_codegen::TraceSignal {
+                    vcd_name: format!("_resource_{}_holder", r.name.name),
+                    cpp_expr: format!("(uint32_t)_resource_{}_holder", r.name.name),
+                    width: 32,
                     is_wide: false,
                 });
             }
