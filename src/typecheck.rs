@@ -3537,6 +3537,8 @@ impl<'a> TypeChecker<'a> {
         // Phase A: minimal naming check + presence of required params/ports.
         // Full validation (port widths from $clog2(DEPTH), $clog2(KEY_W),
         // exact port name list) deferred to Phase A continuation.
+        // v2 (cam-dual-write): if any of write2_{valid,idx,key,set} is
+        // declared, all four must be present (all-or-nothing).
         self.check_pascal_case(&c.name);
         for p in &c.params {
             self.check_upper_snake(&p.name);
@@ -3555,6 +3557,25 @@ impl<'a> TypeChecker<'a> {
         if !has_key_w {
             self.errors.push(CompileError::general(
                 "cam: missing required `param KEY_W: const = N;`",
+                c.name.span,
+            ));
+        }
+        // v2: optional dual-write port. If any write2_* port is present,
+        // all four must be, so codegen can assume the full bundle.
+        let w2_names = ["write2_valid", "write2_idx", "write2_key", "write2_set"];
+        let w2_present: Vec<bool> = w2_names.iter()
+            .map(|n| c.ports.iter().any(|p| p.name.name == *n))
+            .collect();
+        if w2_present.iter().any(|b| *b) && !w2_present.iter().all(|b| *b) {
+            let missing: Vec<&str> = w2_names.iter().zip(&w2_present)
+                .filter(|(_, present)| !**present)
+                .map(|(name, _)| *name)
+                .collect();
+            self.errors.push(CompileError::general(
+                &format!(
+                    "cam: dual-write port is all-or-nothing — missing port(s): {}",
+                    missing.join(", ")
+                ),
                 c.name.span,
             ));
         }

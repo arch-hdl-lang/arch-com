@@ -7105,7 +7105,12 @@ impl<'a> Codegen<'a> {
         self.line("end");
         self.line("");
 
-        // ── Sequential write port ────────────────────────────────────────────
+        // ── Sequential write port(s) ─────────────────────────────────────────
+        // v2: if write2_* ports exist, emit two sequential write blocks back-
+        // to-back (write1 first, then write2) so write2 wins on same-index
+        // conflict (last-write semantics). Different-index writes both commit.
+        let has_w2 = c.ports.iter().any(|p| p.name.name == "write2_valid");
+
         let ff_sens = Self::ff_sensitivity(&clk, &rst, is_async, is_low);
         let rst_cond = Self::rst_condition(&rst, is_low);
 
@@ -7115,7 +7120,10 @@ impl<'a> Codegen<'a> {
         self.indent += 1;
         self.line("entry_valid_r <= '0;");
         self.indent -= 1;
-        self.line("end else if (write_valid) begin");
+        self.line("end else begin");
+        self.indent += 1;
+        // Port 1
+        self.line("if (write_valid) begin");
         self.indent += 1;
         self.line("if (write_set) begin");
         self.indent += 1;
@@ -7127,6 +7135,25 @@ impl<'a> Codegen<'a> {
         self.line("entry_valid_r[write_idx] <= 1'b0;");
         self.indent -= 1;
         self.line("end");
+        self.indent -= 1;
+        self.line("end");
+        // Port 2 (v2 only) — placed AFTER port 1 so it wins on same-index conflict.
+        if has_w2 {
+            self.line("if (write2_valid) begin");
+            self.indent += 1;
+            self.line("if (write2_set) begin");
+            self.indent += 1;
+            self.line("entry_valid_r[write2_idx] <= 1'b1;");
+            self.line("entry_key_r[write2_idx] <= write2_key;");
+            self.indent -= 1;
+            self.line("end else begin");
+            self.indent += 1;
+            self.line("entry_valid_r[write2_idx] <= 1'b0;");
+            self.indent -= 1;
+            self.line("end");
+            self.indent -= 1;
+            self.line("end");
+        }
         self.indent -= 1;
         self.line("end");
         self.indent -= 1;

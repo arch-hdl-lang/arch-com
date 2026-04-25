@@ -1,0 +1,27 @@
+// Cam v2 smoke test: dual-write port. Both write ports can fire in the
+// same cycle; if they target the same index, port 2 wins (last-write).
+
+cam Mshr_Addr_Cam_Dual
+  param DEPTH: const = 16;
+  param KEY_W: const = 8;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+
+  // Write port 1 (e.g. finalize/clear path)
+  port write_valid: in Bool;
+  port write_idx:   in UInt<4>;
+  port write_key:   in UInt<8>;
+  port write_set:   in Bool;
+
+  // Write port 2 (e.g. allocate/insert path) — wins on same-index conflict
+  port write2_valid: in Bool;
+  port write2_idx:   in UInt<4>;
+  port write2_key:   in UInt<8>;
+  port write2_set:   in Bool;
+
+  port search_key:   in  UInt<8>;
+  port search_mask:  out UInt<16>;
+  port search_any:   out Bool;
+  port search_first: out UInt<4>;
+end cam Mshr_Addr_Cam_Dual

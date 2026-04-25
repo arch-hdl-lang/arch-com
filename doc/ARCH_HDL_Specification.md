@@ -3106,6 +3106,43 @@ end cam Mshr_Addr_Cam
 - No multi-cycle pipelined comparator --- a single combinational compare. Adequate for DEPTH ≤ 64; larger CAMs should pipeline manually for now.
 - No multiple search ports --- instantiate two CAMs.
 
+**13.0a Dual-Write Port (v2)**
+
+Designs with two concurrent state-update streams --- the canonical example is a cache MSHR with simultaneous \`allocate\` (insert) and \`finalize\` (clear) --- need to commit two independent writes per cycle. A v1 CAM cannot express this without an external mux that serializes one of the writers. v2 adds an optional second write port:
+
+```
+cam Mshr_Addr_Cam_Dual
+  param DEPTH: const = 32;
+  param KEY_W: const = 10;
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+
+  // Port 1 (e.g. finalize/clear path)
+  port write_valid: in Bool;
+  port write_idx:   in UInt<5>;
+  port write_key:   in UInt<10>;
+  port write_set:   in Bool;
+
+  // Port 2 (e.g. allocate/insert path) — wins on same-index conflict
+  port write2_valid: in Bool;
+  port write2_idx:   in UInt<5>;
+  port write2_key:   in UInt<10>;
+  port write2_set:   in Bool;
+
+  port search_key:   in  UInt<10>;
+  port search_mask:  out UInt<32>;
+  port search_any:   out Bool;
+  port search_first: out UInt<5>;
+end cam Mshr_Addr_Cam_Dual
+```
+
+**Activation:** the four \`write2_*\` ports are optional and **all-or-nothing** --- declaring any one of them requires declaring all four. A CAM with only \`write_*\` is v1 single-write (no behavioral change).
+
+**Conflict semantics:** when both \`write_valid\` and \`write2_valid\` are asserted on the same edge:
+- **Different indices:** both writes commit independently.
+- **Same index:** port 2 wins (last-write semantics --- the SV codegen processes port 1 then port 2 in the same \`always_ff\` block, so the port-2 assignment overwrites). Use this to encode "allocate beats finalize" or "set beats clear" --- pick which side maps to port 2 based on which should win the race in your design.
+
 **13.1 CAM Kinds** *(aspirational --- not yet implemented)*
 
   ----------------------------------------------------------------------------------------------------------------------------------------------------------
