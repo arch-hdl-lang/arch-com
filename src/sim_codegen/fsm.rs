@@ -139,8 +139,11 @@ impl<'a> SimCodegen<'a> {
                 h.push_str(&format!("  {} {};\n", ty, reg.name.name));
             }
         }
-        // Let bindings as public members
+        // Let bindings as public members. Skip lets that alias an existing
+        // output port (no separate storage — `eval_comb` writes the port
+        // directly via the let's RHS).
         for lb in &f.lets {
+            if port_names.contains(&lb.name.name) { continue; }
             let ty = lb.ty.as_ref().map(|t| cpp_internal_type(t)).unwrap_or_else(|| "uint32_t".to_string());
             h.push_str(&format!("  {} {};\n", ty, lb.name.name));
         }
@@ -232,11 +235,18 @@ impl<'a> SimCodegen<'a> {
             if let Some(ty) = &l.ty { fsm_widths.insert(l.name.name.clone(), type_bits_te(ty)); }
         }
         for w in &f.wires { fsm_widths.insert(w.name.name.clone(), type_bits_te(&w.ty)); }
+        // Built-in `state` identifier inside fsm scope: read of the current
+        // encoded state. Lowers to `_state_r` in sim, with width = clog2(N).
+        fsm_widths.insert("state".to_string(), state_bits as u32);
+        let fsm_ident_subst: HashMap<String, String> = std::iter::once(
+            ("state".to_string(), "_state_r".to_string())
+        ).collect();
         let ctx_fsm = {
             let mut c = Ctx::new(&fsm_reg_names, &port_names, &fsm_let_names, &empty_insts,
                                  &empty_wide, &fsm_widths, &enum_map, &bus_port_names)
                 .with_vec_names(&fsm_vec_names)
-                .with_fsm_vec_port_regs(&fsm_vec_port_reg_names);
+                .with_fsm_vec_port_regs(&fsm_vec_port_reg_names)
+                .with_ident_subst(&fsm_ident_subst);
             c.fsm_mode = true;
             c
         };
@@ -292,7 +302,8 @@ impl<'a> SimCodegen<'a> {
             let mut c = Ctx::new(&fsm_reg_names, &port_names, &fsm_let_names, &empty_insts,
                                  &empty_wide, &fsm_widths, &enum_map, &bus_port_names)
                 .with_vec_names(&fsm_vec_names)
-                .with_fsm_vec_port_regs(&fsm_vec_port_reg_names);
+                .with_fsm_vec_port_regs(&fsm_vec_port_reg_names)
+                .with_ident_subst(&fsm_ident_subst);
             c.posedge_lhs = true;
             c.fsm_mode = true;
             c

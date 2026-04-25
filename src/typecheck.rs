@@ -793,8 +793,45 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
-                ModuleBodyItem::Thread(_) | ModuleBodyItem::Resource(_) => {
-                    // Threads and resources are lowered before typecheck.
+                ModuleBodyItem::Thread(t) => {
+                    // Under --thread-sim parallel, lower_threads is skipped,
+                    // so threads survive to typecheck. Mark thread-driven
+                    // signals (CombAssign + SeqAssign LHS) as driven so the
+                    // single-driver check sees them. Full typecheck of thread
+                    // bodies is light in Phase 1 (the spike emitter rejects
+                    // unsupported shapes itself).
+                    fn walk_thread(stmts: &[crate::ast::ThreadStmt], driven: &mut HashSet<String>) {
+                        use crate::ast::ThreadStmt;
+                        for s in stmts {
+                            match s {
+                                ThreadStmt::CombAssign(a) => {
+                                    if let crate::ast::ExprKind::Ident(n) = &a.target.kind {
+                                        driven.insert(n.clone());
+                                    }
+                                }
+                                ThreadStmt::SeqAssign(a) => {
+                                    if let crate::ast::ExprKind::Ident(n) = &a.target.kind {
+                                        driven.insert(n.clone());
+                                    }
+                                }
+                                ThreadStmt::IfElse(ie) => {
+                                    walk_thread(&ie.then_stmts, driven);
+                                    walk_thread(&ie.else_stmts, driven);
+                                }
+                                ThreadStmt::For { body, .. }
+                                | ThreadStmt::Lock { body, .. }
+                                | ThreadStmt::DoUntil { body, .. } => walk_thread(body, driven),
+                                ThreadStmt::ForkJoin(branches, _) => {
+                                    for b in branches { walk_thread(b, driven); }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    walk_thread(&t.body, &mut driven);
+                }
+                ModuleBodyItem::Resource(_) => {
+                    // Resources are lowered before typecheck.
                 }
                 ModuleBodyItem::Assert(a) => {
                     // Verify expr is Bool; require a Clock port

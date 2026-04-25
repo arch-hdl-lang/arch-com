@@ -54,6 +54,16 @@ For each scalar wire/reg, count 0→1 and 1→0 transitions. Useful for catching
 
 Emit Verilator's \`# SystemC: …\`-prefixed format alongside the text report so users can run \`verilator_coverage --annotate-min 1 --annotate annot/ coverage.dat\` and get HTML annotation against the *.sv files. (The arch source lines won't match SV lines exactly, but the text report from phases 1-4 gives the arch-source view; the .dat gives the SV view.)
 
+### Phase 6 — construct port toggle coverage (TODO)
+
+Today toggle coverage (Phase 4/4b) instruments scalar/Vec \`reg\` declarations inside \`gen_module\` only. The non-module construct emitters (\`fifo\`, \`arbiter\`, \`ram\`, \`cam\`, \`linklist\`, \`pipeline\`, plus \`fsm\` datapath regs) install no \`CoverageRegistry\`, so their internals contribute zero coverage. For most designs this is fine — the producing reg in the wrapping module is already toggled — but at black-box construct boundaries (e.g. an \`inst sub: SomeFifo\`) there is no signal we can attribute toggles to.
+
+Phase 6 fills that gap by toggling the **interface ports** of every construct from the *consumer* side: in \`gen_module\`, when emitting an instance, declare a \`_prev_<inst>_<port>\` shadow per output port and bump a popcount counter at the end of each \`eval()\`. Counter category \`v_toggle\`, comment \`toggle <inst>.<port>\`. This treats the construct as opaque (correct, since we don't own its internals) while still surfacing dead lanes / tied-off interfaces.
+
+Skip in v1: bus ports (already flatten to multiple scalars — nice-to-have but the per-leaf shadow set gets verbose); wide ports >64b (split popcount).
+
+Promote when a real consumer asks (most likely: arbiter grant-fairness audits, or fifo data-bus dead-bit hunting).
+
 ## Non-goals (v1)
 
 - **Cross-test merging**: each \`arch sim\` run overwrites \`coverage.txt\`. \`verilator_coverage --merge\` semantics deferred until users ask.

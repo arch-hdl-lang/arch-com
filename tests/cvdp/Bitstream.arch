@@ -1,4 +1,4 @@
-module Bitstream
+fsm Bitstream
   port clk: in Clock<SysDomain>;
   port rst_n: in Reset<Async, Low>;
   port enb: in Bool;
@@ -10,89 +10,60 @@ module Bitstream
   port rinc_out: out Bool;
   port curr_state: out UInt<2>;
 
-  reg default: reset rst_n => 0;
+  reg bp:       UInt<4> reset rst_n => 0;
+  reg byte_buf: UInt<8> reset rst_n => 0;
 
-  // State register: 0=IDLE, 1=WaitR, 2=Ready
-  reg state_r: UInt<2>;
-  // Data registers
-  reg bp: UInt<4>;
-  reg byte_buf: UInt<8>;
-
-  let curr_state = state_r;
+  // Mirror the encoded fsm state onto the user-declared output port.
+  // Encoding follows declaration order (Idle=0, WaitR=1, Ready=2),
+  // matching the original UInt<2> encoding.
+  let curr_state = state;
 
   // rde: read-done flag (bp[3]=1 means all 8 bits consumed)
   let rde: Bool = bp[3];
 
-  // Combinatorial outputs based on CURRENT state and inputs
-  wire rinc_out_c: Bool;
-  wire rempty_out_c: Bool;
-
-  comb
-    if state_r == 0
-      // IDLE
-      rinc_out_c = false;
-      rempty_out_c = true;
-    elsif state_r == 1
-      // WaitR
-      rempty_out_c = true;
-      if rempty_in
-        rinc_out_c = false;
-      else
-        rinc_out_c = true;
-      end if
-    elsif state_r == 2
-      // Ready
-      if rde
-        if rempty_in
-          rinc_out_c = false;
-          rempty_out_c = true;
-        else
-          rinc_out_c = true;
-          rempty_out_c = true;
-        end if
-      else
-        rinc_out_c = false;
-        rempty_out_c = false;
-      end if
-    else
-      rinc_out_c = false;
-      rempty_out_c = true;
-    end if
-
-    rinc_out = rinc_out_c;
-    rempty_out = rempty_out_c;
-    // o_bit: combinatorial from current byte_buf and bp
-    o_bit = byte_buf[bp[2:0]];
-  end comb
-
+  state [Idle, WaitR, Ready]
+  default state Idle;
   default seq on clk rising;
 
-  seq
-    // State machine transitions
-    if state_r == 0
-      // IDLE
-      if enb
-        state_r <= 1;
+  default
+    comb
+      rinc_out   = false;
+      rempty_out = true;
+      o_bit      = byte_buf[bp[2:0]];
+    end comb
+    seq
+      // Datapath updates gated on the state's effective rinc_out value.
+      if rinc_out
+        byte_buf <= i_byte;
+        bp       <= 0;
+      elsif rinc_in & ~rempty_out
+        bp <= (bp + 4'b0001).trunc<4>();
       end if
-    elsif state_r == 1
-      // WaitR
-      if ~rempty_in
-        state_r <= 2;
-      end if
-    elsif state_r == 2
-      // Ready
-      if rde & rempty_in
-        state_r <= 1;
-      end if
-    end if
+    end seq
+  end default
 
-    // Update data registers based on combinatorial rinc_out
-    if rinc_out_c
-      byte_buf <= i_byte;
-      bp <= 0;
-    elsif rinc_in & ~rempty_out_c
-      bp <= (bp + 4'b0001).trunc<4>();
-    end if
-  end seq
+  state Idle
+    -> WaitR when enb;
+  end state Idle
 
-end module Bitstream
+  state WaitR
+    comb
+      rinc_out = ~rempty_in;
+    end comb
+    -> Ready when ~rempty_in;
+  end state WaitR
+
+  state Ready
+    comb
+      if rde
+        rinc_out   = ~rempty_in;
+        rempty_out = true;
+      else
+        rinc_out   = false;
+        rempty_out = false;
+      end if
+    end comb
+    -> WaitR when rde & rempty_in;
+  end state Ready
+
+end fsm Bitstream
