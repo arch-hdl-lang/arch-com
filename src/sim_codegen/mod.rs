@@ -2452,17 +2452,27 @@ fn emit_reg_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize) {
             let scrut = cpp_expr(&m.scrutinee, ctx);
             out.push_str(&format!("{}switch ({}) {{\n", ind(indent), scrut));
             for arm in &m.arms {
-                let case_str = match &arm.pattern {
-                    Pattern::Wildcard | Pattern::Ident(_) => "default".to_string(),
-                    Pattern::Literal(e) => format!("case {}", cpp_expr(e, ctx)),
+                let (case_str, label) = match &arm.pattern {
+                    Pattern::Wildcard => ("default".to_string(), "match _".to_string()),
+                    Pattern::Ident(id) => ("default".to_string(), format!("match {}", id.name)),
+                    Pattern::Literal(e) => (format!("case {}", cpp_expr(e, ctx)), "match lit".to_string()),
                     Pattern::EnumVariant(en, vr) => {
                         if let Some(variants) = ctx.enum_map.get(&en.name) {
                             let idx = variants.iter().find(|(n, _)| *n == vr.name).map(|(_, v)| *v).unwrap_or(0);
-                            format!("case {idx}")
-                        } else { "default".to_string() }
+                            (format!("case {idx}"), format!("match {}::{}", en.name, vr.name))
+                        } else { ("default".to_string(), format!("match {}::{}", en.name, vr.name)) }
                     }
                 };
                 out.push_str(&format!("{}{}: {{\n", ind(indent + 1), case_str));
+                // --coverage phase 1d: per match-arm counter. Use the
+                // match's span.start so the report points to the match
+                // statement (per-arm spans aren't tracked on MatchArm);
+                // the label disambiguates which arm.
+                if let Some(reg) = ctx.coverage {
+                    let kind = if matches!(arm.pattern, Pattern::Wildcard | Pattern::Ident(_)) { "match-default" } else { "match-arm" };
+                    let cidx = reg.borrow_mut().alloc(kind, m.span.start, label);
+                    out.push_str(&format!("{}  _arch_cov[{cidx}]++;\n", ind(indent + 1)));
+                }
                 emit_reg_stmts(&arm.body, ctx, out, indent + 2);
                 out.push_str(&format!("{}  break;\n", ind(indent + 1)));
                 out.push_str(&format!("{}}}\n", ind(indent + 1)));
@@ -2591,17 +2601,23 @@ fn emit_comb_stmt(stmt: &CombStmt, ctx: &Ctx, out: &mut String, indent: usize) {
             let scrut = cpp_expr(&m.scrutinee, ctx);
             out.push_str(&format!("{}switch ({}) {{\n", ind(indent), scrut));
             for arm in &m.arms {
-                let case_str = match &arm.pattern {
-                    Pattern::Wildcard | Pattern::Ident(_) => "default".to_string(),
-                    Pattern::Literal(e) => format!("case {}", cpp_expr(e, ctx)),
+                let (case_str, label) = match &arm.pattern {
+                    Pattern::Wildcard => ("default".to_string(), "match _".to_string()),
+                    Pattern::Ident(id) => ("default".to_string(), format!("match {}", id.name)),
+                    Pattern::Literal(e) => (format!("case {}", cpp_expr(e, ctx)), "match lit".to_string()),
                     Pattern::EnumVariant(en, vr) => {
                         if let Some(variants) = ctx.enum_map.get(&en.name) {
                             let idx = variants.iter().find(|(n, _)| *n == vr.name).map(|(_, v)| *v).unwrap_or(0);
-                            format!("case {idx}")
-                        } else { "default".to_string() }
+                            (format!("case {idx}"), format!("match {}::{}", en.name, vr.name))
+                        } else { ("default".to_string(), format!("match {}::{}", en.name, vr.name)) }
                     }
                 };
                 out.push_str(&format!("{}{}: {{\n", ind(indent + 1), case_str));
+                if let Some(reg) = ctx.coverage {
+                    let kind = if matches!(arm.pattern, Pattern::Wildcard | Pattern::Ident(_)) { "match-default" } else { "match-arm" };
+                    let cidx = reg.borrow_mut().alloc(kind, m.span.start, label);
+                    out.push_str(&format!("{}  _arch_cov[{cidx}]++;\n", ind(indent + 1)));
+                }
                 for s in &arm.body {
                     if let Stmt::Assign(a) = s {
                         let rhs = cpp_expr(&a.value, ctx);
@@ -4810,7 +4826,27 @@ impl<'a> SimCodegen<'a> {
             cpp.push('\n');
             for rd in &reg_decls {
                 let n = &rd.name.name;
-                if vec_array_info(&rd.ty).is_some() {
+                if let Some((_, count_str)) = vec_array_info_with_params(&rd.ty, &m.params) {
+                    // --coverage phase 4b: per-Vec-reg aggregate toggle
+                    // counter — sum of popcount(prev XOR new) across all
+                    // elements. One counter per Vec reg (not per element)
+                    // to keep the dump size manageable; the per-element
+                    // breakdown stays a future opt-in.
+                    if let Some(reg) = cov_handle {
+                        if let TypeExpr::Vec(elem_ty, _) = &rd.ty {
+                            let elem_bits = type_bits_te(elem_ty);
+                            if elem_bits > 0 && elem_bits <= 64 {
+                                let cidx = reg.borrow_mut().alloc(
+                                    "toggle",
+                                    rd.name.span.start,
+                                    format!("toggle {n}[]"),
+                                );
+                                cpp.push_str(&format!(
+                                    "  for (uint32_t _ti = 0; _ti < {count_str}; _ti++) {{ _arch_cov[{cidx}] += __builtin_popcountll((uint64_t)_{n}[_ti] ^ (uint64_t)_n_{n}[_ti]); }}\n"
+                                ));
+                            }
+                        }
+                    }
                     cpp.push_str(&format!("  memcpy(_{n}, _n_{n}, sizeof(_{n}));\n"));
                 } else {
                     // --coverage phase 4: toggle counter — popcount of
