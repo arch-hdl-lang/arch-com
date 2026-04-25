@@ -3655,6 +3655,7 @@ pub fn lower_credit_channel_dispatch(ast: SourceFile) -> Result<SourceFile, Vec<
     }
     if bus_ccs.is_empty() { return Ok(ast); }
     let mut items: Vec<Item> = Vec::with_capacity(ast.items.len());
+    let mut errors: Vec<CompileError> = Vec::new();
     for item in ast.items {
         match item {
             Item::Module(mut m) => {
@@ -3666,7 +3667,7 @@ pub fn lower_credit_channel_dispatch(ast: SourceFile) -> Result<SourceFile, Vec<
                 if port_buses.values().any(|(b, _)| bus_ccs.contains_key(b)) {
                     let ctx = CcDispatchCtx { bus_ccs: &bus_ccs, port_buses: &port_buses };
                     for bi in &mut m.body {
-                        rewrite_body_item_cc(bi, &ctx);
+                        rewrite_body_item_cc(bi, &ctx, &mut errors);
                     }
                 }
                 items.push(Item::Module(m));
@@ -3674,6 +3675,7 @@ pub fn lower_credit_channel_dispatch(ast: SourceFile) -> Result<SourceFile, Vec<
             other => items.push(other),
         }
     }
+    if !errors.is_empty() { return Err(errors); }
     Ok(SourceFile { items })
 }
 
@@ -3682,81 +3684,112 @@ struct CcDispatchCtx<'a> {
     port_buses: &'a std::collections::HashMap<String, (String, BusPerspective)>,
 }
 
-fn rewrite_body_item_cc(bi: &mut ModuleBodyItem, ctx: &CcDispatchCtx) {
+fn rewrite_body_item_cc(bi: &mut ModuleBodyItem, ctx: &CcDispatchCtx, errors: &mut Vec<CompileError>) {
     match bi {
         ModuleBodyItem::CombBlock(cb) => {
-            for s in &mut cb.stmts { rewrite_comb_stmt_cc(s, ctx); }
+            for s in &mut cb.stmts { rewrite_comb_stmt_cc(s, ctx, errors); }
         }
         ModuleBodyItem::RegBlock(rb) => {
-            for s in &mut rb.stmts { rewrite_reg_stmt_cc(s, ctx); }
+            for s in &mut rb.stmts { rewrite_reg_stmt_cc(s, ctx, errors); }
         }
-        ModuleBodyItem::LetBinding(l) => { rewrite_expr_cc(&mut l.value, ctx); }
+        ModuleBodyItem::LetBinding(l) => { rewrite_expr_cc(&mut l.value, ctx, errors); }
         _ => {}
     }
 }
 
-fn rewrite_comb_stmt_cc(s: &mut CombStmt, ctx: &CcDispatchCtx) {
+fn rewrite_comb_stmt_cc(s: &mut CombStmt, ctx: &CcDispatchCtx, errors: &mut Vec<CompileError>) {
     match s {
-        CombStmt::Assign(a) => { rewrite_expr_cc(&mut a.value, ctx); }
+        CombStmt::Assign(a) => { rewrite_expr_cc(&mut a.target, ctx, errors); rewrite_expr_cc(&mut a.value, ctx, errors); }
         CombStmt::IfElse(ie) => {
-            rewrite_expr_cc(&mut ie.cond, ctx);
-            for s in &mut ie.then_stmts { rewrite_comb_stmt_cc(s, ctx); }
-            for s in &mut ie.else_stmts { rewrite_comb_stmt_cc(s, ctx); }
+            rewrite_expr_cc(&mut ie.cond, ctx, errors);
+            for s in &mut ie.then_stmts { rewrite_comb_stmt_cc(s, ctx, errors); }
+            for s in &mut ie.else_stmts { rewrite_comb_stmt_cc(s, ctx, errors); }
         }
         CombStmt::For(fl) => {
-            for s in &mut fl.body { rewrite_reg_stmt_cc(s, ctx); }
+            for s in &mut fl.body { rewrite_reg_stmt_cc(s, ctx, errors); }
         }
         _ => {}
     }
 }
 
-fn rewrite_reg_stmt_cc(s: &mut Stmt, ctx: &CcDispatchCtx) {
+fn rewrite_reg_stmt_cc(s: &mut Stmt, ctx: &CcDispatchCtx, errors: &mut Vec<CompileError>) {
     match s {
-        Stmt::Assign(a) => { rewrite_expr_cc(&mut a.value, ctx); }
+        Stmt::Assign(a) => { rewrite_expr_cc(&mut a.target, ctx, errors); rewrite_expr_cc(&mut a.value, ctx, errors); }
         Stmt::IfElse(ie) => {
-            rewrite_expr_cc(&mut ie.cond, ctx);
-            for s in &mut ie.then_stmts { rewrite_reg_stmt_cc(s, ctx); }
-            for s in &mut ie.else_stmts { rewrite_reg_stmt_cc(s, ctx); }
+            rewrite_expr_cc(&mut ie.cond, ctx, errors);
+            for s in &mut ie.then_stmts { rewrite_reg_stmt_cc(s, ctx, errors); }
+            for s in &mut ie.else_stmts { rewrite_reg_stmt_cc(s, ctx, errors); }
         }
-        Stmt::For(fl) => { for s in &mut fl.body { rewrite_reg_stmt_cc(s, ctx); } }
+        Stmt::For(fl) => { for s in &mut fl.body { rewrite_reg_stmt_cc(s, ctx, errors); } }
         Stmt::Match(m) => {
             for arm in &mut m.arms {
-                for s in &mut arm.body { rewrite_reg_stmt_cc(s, ctx); }
+                for s in &mut arm.body { rewrite_reg_stmt_cc(s, ctx, errors); }
             }
         }
         _ => {}
     }
 }
 
-fn rewrite_expr_cc(e: &mut Expr, ctx: &CcDispatchCtx) {
+fn rewrite_expr_cc(e: &mut Expr, ctx: &CcDispatchCtx, errors: &mut Vec<CompileError>) {
     match &mut e.kind {
-        ExprKind::Binary(_, l, r) => { rewrite_expr_cc(l, ctx); rewrite_expr_cc(r, ctx); }
+        ExprKind::Binary(_, l, r) => { rewrite_expr_cc(l, ctx, errors); rewrite_expr_cc(r, ctx, errors); }
         ExprKind::Unary(_, x) | ExprKind::Cast(x, _) | ExprKind::Clog2(x)
         | ExprKind::Onehot(x) | ExprKind::Signed(x) | ExprKind::Unsigned(x)
-        | ExprKind::LatencyAt(x, _) => { rewrite_expr_cc(x, ctx); }
-        ExprKind::Index(b, i) => { rewrite_expr_cc(b, ctx); rewrite_expr_cc(i, ctx); }
+        | ExprKind::LatencyAt(x, _) => { rewrite_expr_cc(x, ctx, errors); }
+        ExprKind::Index(b, i) => { rewrite_expr_cc(b, ctx, errors); rewrite_expr_cc(i, ctx, errors); }
         ExprKind::BitSlice(b, hi, lo) => {
-            rewrite_expr_cc(b, ctx); rewrite_expr_cc(hi, ctx); rewrite_expr_cc(lo, ctx);
+            rewrite_expr_cc(b, ctx, errors); rewrite_expr_cc(hi, ctx, errors); rewrite_expr_cc(lo, ctx, errors);
         }
         ExprKind::PartSelect(b, s, w, _) => {
-            rewrite_expr_cc(b, ctx); rewrite_expr_cc(s, ctx); rewrite_expr_cc(w, ctx);
+            rewrite_expr_cc(b, ctx, errors); rewrite_expr_cc(s, ctx, errors); rewrite_expr_cc(w, ctx, errors);
         }
         ExprKind::Ternary(c, t, el) => {
-            rewrite_expr_cc(c, ctx); rewrite_expr_cc(t, ctx); rewrite_expr_cc(el, ctx);
+            rewrite_expr_cc(c, ctx, errors); rewrite_expr_cc(t, ctx, errors); rewrite_expr_cc(el, ctx, errors);
         }
         ExprKind::Concat(xs) | ExprKind::FunctionCall(_, xs) => {
-            for x in xs { rewrite_expr_cc(x, ctx); }
+            for x in xs { rewrite_expr_cc(x, ctx, errors); }
         }
-        ExprKind::Repeat(n, x) => { rewrite_expr_cc(n, ctx); rewrite_expr_cc(x, ctx); }
+        ExprKind::Repeat(n, x) => { rewrite_expr_cc(n, ctx, errors); rewrite_expr_cc(x, ctx, errors); }
         ExprKind::MethodCall(recv, _, args) => {
-            rewrite_expr_cc(recv, ctx);
-            for a in args { rewrite_expr_cc(a, ctx); }
+            rewrite_expr_cc(recv, ctx, errors);
+            for a in args { rewrite_expr_cc(a, ctx, errors); }
         }
-        ExprKind::FieldAccess(base, _) => { rewrite_expr_cc(base, ctx); }
+        ExprKind::FieldAccess(base, _) => { rewrite_expr_cc(base, ctx, errors); }
         ExprKind::StructLiteral(_, fields) => {
-            for fi in fields { rewrite_expr_cc(&mut fi.value, ctx); }
+            for fi in fields { rewrite_expr_cc(&mut fi.value, ctx, errors); }
         }
         _ => {}
+    }
+    // Reject the underscored credit_channel access form (`port.<ch>_send_valid`,
+    // `port.<ch>_send_data`, `port.<ch>_credit_return`). Tell the user to use
+    // the dotted method form instead.
+    if let ExprKind::FieldAccess(base, member) = &e.kind {
+        if let ExprKind::Ident(port) = &base.kind {
+            if let Some((bus_name, _)) = ctx.port_buses.get(port) {
+                if let Some(ccs) = ctx.bus_ccs.get(bus_name) {
+                    for cc in ccs {
+                        let ch = &cc.name.name;
+                        let m = &member.name;
+                        let suggest = if m == &format!("{ch}_send_valid") || m == &format!("{ch}_send_data") {
+                            Some(format!("{port}.{ch}.send(...) or {port}.{ch}.no_send()"))
+                        } else if m == &format!("{ch}_credit_return") {
+                            Some(format!("{port}.{ch}.pop() or {port}.{ch}.no_pop()"))
+                        } else {
+                            None
+                        };
+                        if let Some(s) = suggest {
+                            errors.push(CompileError::general(
+                                &format!(
+                                    "underscored credit_channel access `{port}.{m}` is no longer accepted — use the dotted method form: {s}"
+                                ),
+                                e.span,
+                            ));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
     }
     if let ExprKind::FieldAccess(base, member) = &e.kind {
         if let ExprKind::FieldAccess(inner, ch) = &base.kind {
@@ -3786,6 +3819,17 @@ fn rewrite_expr_cc(e: &mut Expr, ctx: &CcDispatchCtx) {
                             if let Some((ty, suffix)) = synth {
                                 let name = format!("__{port}_{}_{suffix}", ch.name);
                                 e.kind = ExprKind::SynthIdent(name, ty);
+                            } else if matches!(member.name.as_str(),
+                                "send_valid" | "send_data" | "credit_return")
+                            {
+                                // Dotted access to raw wire (escape hatch for
+                                // direct conditional drives that no_send/no_pop
+                                // can't express). Rewrite to the flat bus signal
+                                // name so the resolver finds it via the normal
+                                // bus-member path.
+                                let flat = format!("{}_{}", ch.name, member.name);
+                                let new_member = Ident::new(flat, member.span);
+                                e.kind = ExprKind::FieldAccess((*inner).clone(), new_member);
                             }
                         }
                     }

@@ -974,17 +974,16 @@ bus DmaCh
 end bus DmaCh
 ```
 
-**API** (read-side methods + write-side sugar):
-- Sender: `port.ch.can_send` (read); `port.ch.send(x);` (statement — desugars to `send_valid=1; send_data=x;`).
-- Receiver: `port.ch.valid`, `port.ch.data` (read); `port.ch.pop();` (statement — drives `credit_return=1`).
-- Credit return and pop are the same signal (`<port>_<ch>_credit_return`), by design.
+**API** (read-side methods + write-side sugar; **all access is dotted** — `port.<ch>.<wire>`, not underscored):
+- Sender: `port.ch.can_send` (read); `port.ch.send(x);` (drives `send_valid=1, send_data=x`); `port.ch.no_send();` (defaults `send_valid=0, send_data=0`).
+- Receiver: `port.ch.valid`, `port.ch.data` (read); `port.ch.pop();` (drives `credit_return=1`); `port.ch.no_pop();` (defaults `credit_return=0`).
+- The underscored form `port.ch_send_valid` is **rejected** by the compiler — use `port.ch.send_valid` for direct conditional drives, or `no_send()`/`no_pop()` for defaults.
 
 **Canonical pattern**:
 ```
 // Sender
 comb
-  out.flits_send_valid = 1'b0;
-  out.flits_send_data  = 64'h0;
+  out.flits.no_send();
   if out.flits.can_send
     out.flits.send(seq_no);
   end if
@@ -992,7 +991,7 @@ end comb
 
 // Receiver
 comb
-  incoming.flits_credit_return = 1'b0;
+  incoming.flits.no_pop();
   if incoming.flits.valid
     incoming.flits.pop();
   end if

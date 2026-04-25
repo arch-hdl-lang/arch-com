@@ -4901,7 +4901,7 @@ fn is_method_name(name: &str) -> bool {
         // the underlying wire assignments. Accepting them here as method
         // names makes parse_expr succeed; in any other context the type
         // checker flags them as unsupported.
-        | "send" | "pop"
+        | "send" | "pop" | "no_send" | "no_pop"
     )
 }
 
@@ -4919,20 +4919,36 @@ fn desugar_cc_method_call_assigns(expr: &Expr) -> Option<Vec<CombAssign>> {
     if !matches!(&port_expr.kind, ExprKind::Ident(_)) { return None; }
     let ch = &ch_ident.name;
     let span = expr.span;
-    let mk_field = |name: String| -> Expr {
+    // Emit `port.<ch>.<wire>` (dotted). The elaborate pass
+    // (lower_credit_channel_dispatch) collapses this to the flat
+    // `port.<ch>_<wire>` form. Direct underscored writes are rejected.
+    let ch_expr = Expr::new(
+        ExprKind::FieldAccess(port_expr.clone(), Ident::new(ch.clone(), span)),
+        span,
+    );
+    let mk_dot = |wire: &str| -> Expr {
         Expr::new(
-            ExprKind::FieldAccess((*port_expr).clone(), Ident::new(name, span)),
+            ExprKind::FieldAccess(Box::new(ch_expr.clone()), Ident::new(wire.to_string(), span)),
             span,
         )
     };
     let one = Expr::new(ExprKind::Literal(LitKind::Sized(1, 1)), span);
+    let zero = Expr::new(ExprKind::Literal(LitKind::Sized(1, 0)), span);
+    let zero_data = Expr::new(ExprKind::Literal(LitKind::Dec(0)), span);
     match method.name.as_str() {
         "send" if args.len() == 1 => Some(vec![
-            CombAssign { target: mk_field(format!("{ch}_send_valid")), value: one.clone(), span },
-            CombAssign { target: mk_field(format!("{ch}_send_data")),  value: args[0].clone(), span },
+            CombAssign { target: mk_dot("send_valid"), value: one.clone(), span },
+            CombAssign { target: mk_dot("send_data"),  value: args[0].clone(), span },
         ]),
         "pop" if args.is_empty() => Some(vec![
-            CombAssign { target: mk_field(format!("{ch}_credit_return")), value: one, span },
+            CombAssign { target: mk_dot("credit_return"), value: one, span },
+        ]),
+        "no_send" if args.is_empty() => Some(vec![
+            CombAssign { target: mk_dot("send_valid"), value: zero, span },
+            CombAssign { target: mk_dot("send_data"),  value: zero_data, span },
+        ]),
+        "no_pop" if args.is_empty() => Some(vec![
+            CombAssign { target: mk_dot("credit_return"), value: zero, span },
         ]),
         _ => None,
     }

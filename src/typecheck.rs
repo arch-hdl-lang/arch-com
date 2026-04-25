@@ -2184,10 +2184,20 @@ impl<'a> TypeChecker<'a> {
                     let (then_all, then_full) = Self::comb_latch_targets(&ie.then_stmts, symbols);
                     let (else_all, else_full) = Self::comb_latch_targets(&ie.else_stmts, symbols);
                     all.extend(then_all); all.extend(else_all);
-                    // A signal is fully assigned through an if/else only if
-                    // assigned on BOTH branches.  No else = empty else_full.
-                    for name in then_full.intersection(&else_full) {
-                        full.insert(name.clone());
+                    // Const-true cond (e.g. desugared `port.ch.no_send()` /
+                    // `.send(x)` wrappers): the then-branch is unconditional,
+                    // promote its assigns to full regardless of an empty else.
+                    let cond_is_true = matches!(&ie.cond.kind,
+                        ExprKind::Literal(LitKind::Sized(_, n)) if *n != 0)
+                        || matches!(&ie.cond.kind, ExprKind::Literal(LitKind::Dec(n)) if *n != 0);
+                    if cond_is_true {
+                        for name in &then_full { full.insert(name.clone()); }
+                    } else {
+                        // A signal is fully assigned through an if/else only if
+                        // assigned on BOTH branches.  No else = empty else_full.
+                        for name in then_full.intersection(&else_full) {
+                            full.insert(name.clone());
+                        }
                     }
                 }
                 CombStmt::MatchExpr(m) => {
