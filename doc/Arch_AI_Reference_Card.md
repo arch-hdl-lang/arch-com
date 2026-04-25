@@ -670,6 +670,39 @@ end ram Name
 
 ---
 
+### cam
+
+Content-addressable lookup. Combinational match of a search key against a vector of (valid, key) entries; single write port for set/clear by index. Use for cache MSHR address lookup, per-flow tables, scoreboard tag CAM, or any design that today hand-rolls `Vec<reg>` + a comb match loop. Compose with `linklist` (CAM finds head index → linklist owns the chain) for content-keyed multi-list designs.
+
+```
+cam Mshr_Addr_Cam
+  param DEPTH: const = 32;            // required
+  param KEY_W: const = 10;            // required
+
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+
+  // Write port: set (write_set=true → insert valid+key) or clear (false → invalidate)
+  port write_valid: in Bool;
+  port write_idx:   in UInt<5>;       // $clog2(DEPTH)
+  port write_key:   in UInt<10>;      // KEY_W
+  port write_set:   in Bool;
+
+  // Search port: combinational
+  port search_key:   in  UInt<10>;
+  port search_mask:  out UInt<32>;    // bitmask of matches; zero if no match
+  port search_any:   out Bool;
+  port search_first: out UInt<5>;     // LSB-priority first match (gate with search_any)
+end cam Mshr_Addr_Cam
+```
+
+**Semantics:**
+- One write per cycle. Search reads pre-write state on the same cycle as a write; the write commits on the next clock edge.
+- `search_first` is the LSB-priority first set bit of `search_mask`; consumers should qualify with `search_any` (it reads as 0 when there is no match).
+- v1 is exact-match only (no TCAM/wildcards), no value payload (pair with a `ram` indexed by `search_first` to recover an associated value), no built-in replacement policy (the user picks the index to write — typically a free-slot priority encoder over `~entry_valid_r`).
+
+---
+
 ### counter
 
 Configurable counter. `kind: wrap | saturate | gray | one_hot | johnson`.
