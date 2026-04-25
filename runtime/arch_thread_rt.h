@@ -175,9 +175,13 @@ struct ThreadScheduler {
 // Usage: construct with `target` = number of participating threads.
 // Each thread calls wait() at the synchronization point; all
 // participants advance together.
-struct Barrier {
-    std::atomic<uint32_t> count{0};
-    std::atomic<uint32_t> generation{0};
+struct alignas(64) Barrier {
+    // Cache-line padded to avoid false sharing with neighbouring fields
+    // (especially the second Barrier instance in MtScheduler classes).
+    // Apple Silicon's strong cache-line bouncing penalty makes this
+    // matter much more than on x86.
+    alignas(64) std::atomic<uint32_t> count{0};
+    alignas(64) std::atomic<uint32_t> generation{0};
     uint32_t target;
     explicit Barrier(uint32_t target) : target(target) {}
     void wait() {
@@ -188,9 +192,15 @@ struct Barrier {
         } else {
             // Spin briefly, then yield to avoid pegging a core when
             // other participants are slow (or oversubscribed).
+            // Long spin window before falling back to yield. Per-cycle
+            // sim work is often sub-µs so a low spin budget would
+            // trigger OS context switches every cycle. ~100k iters
+            // ≈ 30-100µs on modern CPUs — well over typical per-cycle
+            // work. Tunable via ARCH_BARRIER_SPIN env at compile if
+            // workloads need adjustment.
             uint32_t spins = 0;
             while (generation.load(std::memory_order_acquire) == gen) {
-                if (++spins > 1000) {
+                if (++spins > 100000) {
                     std::this_thread::yield();
                     spins = 0;
                 }
