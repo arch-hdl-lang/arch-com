@@ -29,7 +29,7 @@
 //   - Predicate / expression shapes: idents, literals, !/~, all binops
 
 use crate::ast::{
-    BinOp, CombAssign, CombStmt, Direction, Expr, ExprKind, IfElseOf,
+    ArbiterPolicy, BinOp, CombAssign, CombStmt, Direction, Expr, ExprKind, IfElseOf,
     LitKind, ModuleBodyItem, ModuleDecl, RegAssign, ResetLevel,
     ThreadBlock, ThreadStmt, TypeExpr, UnaryOp,
 };
@@ -56,6 +56,10 @@ struct Segment {
     /// Terminating wait. None ⇒ terminal segment (falls off end of
     /// thread body; for non-once threads the while-loop wraps).
     wait_kind: WaitKind,
+    /// If Some(resource_name): release the resource after this
+    /// segment's wait completes (set holder back to -1). Used by the
+    /// `lock` exit to release the resource at the end of the lock body.
+    release_lock: Option<String>,
     /// For loops (no waits inside): emitted as a C++ for around the
     /// segment's await. For Phase 2 we attach the for-loop bounds here
     /// and use the loop body as the segment's content.
@@ -73,6 +77,11 @@ enum WaitKind {
     /// all of them to reach `Done`. Branch indices are into
     /// ThreadInfo.branches.
     ForkJoin(Vec<usize>),
+    /// Wait until the named resource's holder is either free (-1) or
+    /// already this thread (priority-arbitrated; lower thread index
+    /// wins ties because pass 2 of the scheduler resumes slots in
+    /// declaration order). On resume the coroutine claims the holder.
+    LockAcquire(String /* resource name */, usize /* this thread index */),
 }
 
 struct ForLoopInfo {
@@ -116,11 +125,25 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
             | ModuleBodyItem::RegDecl(_)
             | ModuleBodyItem::LetBinding(_)
             | ModuleBodyItem::CombBlock(_)
-            | ModuleBodyItem::RegBlock(_) => {}
+            | ModuleBodyItem::RegBlock(_)
+            | ModuleBodyItem::Resource(_) => {}
             _ => return Err(format!(
                 "module `{}`: thread sim does not yet support this body item kind",
                 class
             )),
+        }
+    }
+    // Resources: only `mutex<priority>` supported in Phase 4 (lower
+    // thread index = higher priority, naturally enforced by the
+    // scheduler's slot iteration order).
+    for item in &m.body {
+        if let ModuleBodyItem::Resource(r) = item {
+            if !matches!(r.policy, ArbiterPolicy::Priority) {
+                return Err(format!(
+                    "module `{}` resource `{}`: only `mutex<priority>` policy is supported by thread sim",
+                    class, r.name.name
+                ));
+            }
         }
     }
 
@@ -128,7 +151,7 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
     let mut thread_infos: Vec<ThreadInfo> = Vec::new();
     for (ti, t) in threads.iter().enumerate() {
         let mut branches: Vec<Branch> = Vec::new();
-        let main_segs = partition(&t.body, &mut branches)
+        let main_segs = partition(&t.body, &mut branches, ti)
             .map_err(|e| format!("module `{}` thread #{}: {}", class, ti, e))?;
         thread_infos.push(ThreadInfo { main_segs, branches });
     }
@@ -301,6 +324,12 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
             header.push_str(&format!("      _t{i}_br{}_seg = 0;\n", br.id));
         }
     }
+    // Resource holders back to free.
+    for item in &m.body {
+        if let ModuleBodyItem::Resource(r) = item {
+            header.push_str(&format!("      _resource_{}_holder = -1;\n", r.name.name));
+        }
+    }
     header.push_str("      eval();\n");
     header.push_str("      return;\n");
     header.push_str("    }\n");
@@ -362,6 +391,13 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
 
     header.push_str("private:\n");
     header.push_str("  arch_rt::ThreadScheduler _sched;\n");
+    // One holder field per resource: int32_t = current owning thread
+    // index, or -1 when free. Reset to -1 in posedge_clk's reset arm.
+    for item in &m.body {
+        if let ModuleBodyItem::Resource(r) = item {
+            header.push_str(&format!("  int32_t _resource_{}_holder = -1;\n", r.name.name));
+        }
+    }
     for (i, info) in thread_infos.iter().enumerate() {
         header.push_str(&format!("  arch_rt::ThreadSlot _slot_{i};\n"));
         header.push_str(&format!("  uint32_t _seg_{i} = 0;\n"));
@@ -451,6 +487,25 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
                         "{pad2}co_await arch_rt::wait_until(&_slot_{ti}, [this]{{ return {pred}; }});\n"
                     ));
                 }
+                WaitKind::LockAcquire(res, my_id) => {
+                    // Wait until lock is free or already held by this thread.
+                    // Re-check after resume because another thread (lower
+                    // priority order in pass 2) might have just claimed.
+                    body_cpp.push_str(&format!("{pad2}while (true) {{\n"));
+                    body_cpp.push_str(&format!(
+                        "{pad2}  co_await arch_rt::wait_until(&_slot_{ti}, [this]{{ return _resource_{res}_holder == -1 || _resource_{res}_holder == {my_id}; }});\n"
+                    ));
+                    body_cpp.push_str(&format!("{pad2}  if (_resource_{res}_holder == -1 || _resource_{res}_holder == {my_id}) {{\n"));
+                    body_cpp.push_str(&format!("{pad2}    _resource_{res}_holder = {my_id};\n"));
+                    body_cpp.push_str(&format!("{pad2}    break;\n"));
+                    body_cpp.push_str(&format!("{pad2}  }}\n"));
+                    body_cpp.push_str(&format!("{pad2}}}\n"));
+                }
+            }
+            // Release lock if this segment was the last one inside a
+            // `lock <name> { ... }` body.
+            if let Some(res) = &seg.release_lock {
+                body_cpp.push_str(&format!("{pad2}_resource_{res}_holder = -1;\n"));
             }
             // Post-wait seq stmts (used by `do { ... } until cond;`):
             // fire AFTER the co_await returns, on the cycle the wait
@@ -534,6 +589,9 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
                     WaitKind::ForkJoin(_) => {
                         return Err("nested fork/join inside fork branch not yet supported".into());
                     }
+                    WaitKind::LockAcquire(_, _) => {
+                        return Err("`lock` inside fork branch not yet supported".into());
+                    }
                 }
                 if seg.for_loop.is_some() {
                     header.push_str("    }\n");
@@ -556,7 +614,9 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
 // Walk thread body and partition into segments at each wait point.
 // Branches collected from any nested fork/join sites are appended to
 // `branches`; the caller passes a fresh Vec at the top level.
-fn partition(body: &[ThreadStmt], branches: &mut Vec<Branch>) -> Result<Vec<Segment>, String> {
+// `thread_id` identifies the owning thread (used as priority for
+// LockAcquire — lower id wins).
+fn partition(body: &[ThreadStmt], branches: &mut Vec<Branch>, thread_id: usize) -> Result<Vec<Segment>, String> {
     let mut segs: Vec<Segment> = Vec::new();
     let mut cur = new_segment();
 
@@ -610,7 +670,7 @@ fn partition(body: &[ThreadStmt], branches: &mut Vec<Branch>) -> Result<Vec<Segm
                 // Partition the loop body — Phase 2 supports a body with
                 // exactly one wait (like BurstRead). The loop body is then
                 // a single segment that gets wrapped in a C++ for loop.
-                let inner = partition(body, branches)?;
+                let inner = partition(body, branches, thread_id)?;
                 if inner.len() != 1 {
                     return Err("`for` body must contain exactly one wait segment in Phase 2".into());
                 }
@@ -634,7 +694,7 @@ fn partition(body: &[ThreadStmt], branches: &mut Vec<Branch>) -> Result<Vec<Segm
                 let mut branch_ids: Vec<usize> = Vec::new();
                 for body in branch_bodies {
                     let id = branches.len();
-                    let segs = partition(body, branches)?;
+                    let segs = partition(body, branches, thread_id)?;
                     branches.push(Branch { id, segs });
                     branch_ids.push(id);
                 }
@@ -642,8 +702,26 @@ fn partition(body: &[ThreadStmt], branches: &mut Vec<Branch>) -> Result<Vec<Segm
                 cur.wait_kind = WaitKind::ForkJoin(branch_ids);
                 segs.push(std::mem::replace(&mut cur, new_segment()));
             }
-            ThreadStmt::Lock { .. } => {
-                return Err("`lock` (resource arbitration) not yet supported by thread sim (Phase 3)".into());
+            ThreadStmt::Lock { resource, body, .. } => {
+                // Flush pending into a state before the lock, since the
+                // pre-lock CombAssigns/SeqAssigns shouldn't be held while
+                // waiting to acquire the resource.
+                if !cur.hold_comb.is_empty() || !cur.entry_seq.is_empty() || !cur.entry_seq_if.is_empty() {
+                    return Err("`lock` preceded by un-flushed comb/seq assigns not yet supported \
+                        (insert a wait before the lock)".into());
+                }
+                // Acquire segment: wait until lock is free or already held by us.
+                cur.wait_kind = WaitKind::LockAcquire(resource.name.clone(), thread_id);
+                segs.push(std::mem::replace(&mut cur, new_segment()));
+                // Recursively partition the lock body.
+                let mut body_segs = partition(body, branches, thread_id)?;
+                // The last segment of the body is where the lock release fires.
+                if let Some(last) = body_segs.last_mut() {
+                    last.release_lock = Some(resource.name.clone());
+                } else {
+                    return Err("`lock` body partitioned to zero segments".into());
+                }
+                segs.extend(body_segs);
             }
             ThreadStmt::DoUntil { body, cond, .. } => {
                 // do { body } until cond — hold body's CombAssigns
@@ -712,6 +790,7 @@ fn new_segment() -> Segment {
         post_wait_seq: Vec::new(),
         post_wait_seq_if: Vec::new(),
         wait_kind: WaitKind::Terminal,
+        release_lock: None,
         for_loop: None,
     }
 }
