@@ -47,6 +47,12 @@ struct Segment {
     /// CombAssigns held while in this segment. Re-evaluated each
     /// `eval()` so they track input changes during the wait.
     hold_comb: Vec<CombStmt>,
+    /// SeqAssigns / IfElses-of-SeqAssigns that fire ONCE when the wait
+    /// completes (i.e., right after the co_await returns). Used by
+    /// `do { ... } until cond;` where the body's seq updates fire on
+    /// the cycle the until-cond becomes true.
+    post_wait_seq: Vec<RegAssign>,
+    post_wait_seq_if: Vec<IfElseOf<ThreadStmt>>,
     /// Terminating wait. None ⇒ terminal segment (falls off end of
     /// thread body; for non-once threads the while-loop wraps).
     wait_kind: WaitKind,
@@ -108,9 +114,11 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
         match item {
             ModuleBodyItem::Thread(_)
             | ModuleBodyItem::RegDecl(_)
-            | ModuleBodyItem::LetBinding(_) => {}
+            | ModuleBodyItem::LetBinding(_)
+            | ModuleBodyItem::CombBlock(_)
+            | ModuleBodyItem::RegBlock(_) => {}
             _ => return Err(format!(
-                "module `{}`: thread sim only supports `thread` + `reg` + `let` items",
+                "module `{}`: thread sim does not yet support this body item kind",
                 class
             )),
         }
@@ -244,6 +252,16 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
             header.push_str(&format!("    {} = {};\n", lb.name.name, rhs));
         }
     }
+    // Module-level `comb` blocks run every eval() (after thread segment
+    // hold-comb but the order shouldn't matter for non-overlapping
+    // assignments — both are "always_comb" semantics).
+    for item in &m.body {
+        if let ModuleBodyItem::CombBlock(cb) = item {
+            for cs in &cb.stmts {
+                emit_comb_stmt(cs, &mut header, 4);
+            }
+        }
+    }
     header.push_str("  }\n\n");
 
     // posedge handler: reset → recreate; else → tick + eval.
@@ -324,6 +342,16 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
                 header.push_str(&format!("      _t{ti}_br{}_seg = 0;\n", br.id));
             }
             header.push_str("    }\n");
+        }
+    }
+    // Module-level `seq on clk rising` blocks run at every posedge,
+    // BEFORE the scheduler tick — so threads that read the just-updated
+    // reg state see the new value (matches lowered-fsm always_ff order).
+    for item in &m.body {
+        if let ModuleBodyItem::RegBlock(rb) = item {
+            for s in &rb.stmts {
+                emit_seq_stmt(s, &mut header, 4)?;
+            }
         }
     }
     header.push_str("    _sched.tick();\n");
@@ -423,6 +451,17 @@ pub fn gen_module_thread(m: &ModuleDecl) -> Result<SimModel, String> {
                         "{pad2}co_await arch_rt::wait_until(&_slot_{ti}, [this]{{ return {pred}; }});\n"
                     ));
                 }
+            }
+            // Post-wait seq stmts (used by `do { ... } until cond;`):
+            // fire AFTER the co_await returns, on the cycle the wait
+            // condition became true.
+            for sa in &seg.post_wait_seq {
+                let lhs = expr_to_cpp(&sa.target)?;
+                let rhs = expr_to_cpp(&sa.value)?;
+                body_cpp.push_str(&format!("{pad2}{lhs} = {rhs};\n"));
+            }
+            for ie in &seg.post_wait_seq_if {
+                emit_seq_if(ie, &mut body_cpp, ind + if seg.for_loop.is_some() {2} else {0})?;
             }
             if seg.for_loop.is_some() {
                 let pad_close = " ".repeat(ind);
@@ -606,8 +645,50 @@ fn partition(body: &[ThreadStmt], branches: &mut Vec<Branch>) -> Result<Vec<Segm
             ThreadStmt::Lock { .. } => {
                 return Err("`lock` (resource arbitration) not yet supported by thread sim (Phase 3)".into());
             }
-            ThreadStmt::DoUntil { .. } => {
-                return Err("`do until` not yet supported by thread sim (Phase 3)".into());
+            ThreadStmt::DoUntil { body, cond, .. } => {
+                // do { body } until cond — hold body's CombAssigns
+                // while waiting for cond; when cond fires, also fire
+                // body's SeqAssigns (and IfElses-of-SeqAssigns).
+                //
+                // Phase 4 scope: body must contain only CombAssign,
+                // SeqAssign, IfElse (no nested waits, no for-loops,
+                // no fork/join). This covers the axi_dma_thread case.
+                if !cur.hold_comb.is_empty() || !cur.entry_seq.is_empty() || !cur.entry_seq_if.is_empty() {
+                    return Err("`do until` preceded by un-flushed comb/seq assigns not yet supported".into());
+                }
+                if contains_wait(body) {
+                    return Err("`do until` body containing nested `wait` not yet supported".into());
+                }
+                let mut hold_comb: Vec<CombStmt> = Vec::new();
+                let mut post_seq: Vec<RegAssign> = Vec::new();
+                let mut post_seq_if: Vec<IfElseOf<ThreadStmt>> = Vec::new();
+                for s in body {
+                    match s {
+                        ThreadStmt::CombAssign(a) => hold_comb.push(CombStmt::Assign(a.clone())),
+                        ThreadStmt::SeqAssign(a) => post_seq.push(a.clone()),
+                        ThreadStmt::IfElse(ie) => {
+                            match classify_ifelse(ie) {
+                                IfKind::PureComb => {
+                                    let comb_ie = lower_thread_ifelse_to_comb(ie)?;
+                                    hold_comb.push(CombStmt::IfElse(comb_ie));
+                                }
+                                IfKind::PureSeq => post_seq_if.push(ie.clone()),
+                                IfKind::Mixed => return Err(
+                                    "mixed comb+seq IfElse inside `do until` body not yet supported".into()),
+                                IfKind::Empty => {}
+                            }
+                        }
+                        _ => return Err(format!(
+                            "stmt kind not supported inside `do until` body: {:?}",
+                            std::mem::discriminant(s)
+                        )),
+                    }
+                }
+                cur.hold_comb = hold_comb;
+                cur.post_wait_seq = post_seq;
+                cur.post_wait_seq_if = post_seq_if;
+                cur.wait_kind = WaitKind::Until(cond.clone());
+                segs.push(std::mem::replace(&mut cur, new_segment()));
             }
             other => return Err(format!("thread stmt not yet supported: {:?}", std::mem::discriminant(other))),
         }
@@ -628,6 +709,8 @@ fn new_segment() -> Segment {
         entry_seq: Vec::new(),
         entry_seq_if: Vec::new(),
         hold_comb: Vec::new(),
+        post_wait_seq: Vec::new(),
+        post_wait_seq_if: Vec::new(),
         wait_kind: WaitKind::Terminal,
         for_loop: None,
     }
@@ -683,6 +766,33 @@ fn lower_thread_ifelse_to_comb(ie: &IfElseOf<ThreadStmt>) -> Result<IfElseOf<Com
     })
 }
 
+// Emit a sequential statement (from a module-level `seq on clk rising`
+// block) as C++ inside posedge_clk. Non-blocking `<=` lowers to `=`
+// because arch sim is single-process / immediate-effect.
+fn emit_seq_stmt(s: &crate::ast::Stmt, out: &mut String, indent: usize) -> Result<(), String> {
+    use crate::ast::Stmt;
+    let pad = " ".repeat(indent);
+    match s {
+        Stmt::Assign(a) => {
+            let lhs = expr_to_cpp(&a.target)?;
+            let rhs = expr_to_cpp(&a.value)?;
+            out.push_str(&format!("{pad}{lhs} = {rhs};\n"));
+        }
+        Stmt::IfElse(ie) => {
+            let cond = expr_to_cpp_bool(&ie.cond)?;
+            out.push_str(&format!("{pad}if ({cond}) {{\n"));
+            for s in &ie.then_stmts { emit_seq_stmt(s, out, indent + 2)?; }
+            if !ie.else_stmts.is_empty() {
+                out.push_str(&format!("{pad}}} else {{\n"));
+                for s in &ie.else_stmts { emit_seq_stmt(s, out, indent + 2)?; }
+            }
+            out.push_str(&format!("{pad}}}\n"));
+        }
+        _ => return Err(format!("module-level seq stmt kind not yet supported by thread sim")),
+    }
+    Ok(())
+}
+
 fn emit_comb_stmt(cs: &CombStmt, out: &mut String, indent: usize) {
     let pad = " ".repeat(indent);
     match cs {
@@ -736,10 +846,11 @@ fn emit_seq_if(ie: &IfElseOf<ThreadStmt>, out: &mut String, indent: usize) -> Re
 
 fn contains_wait(stmts: &[ThreadStmt]) -> bool {
     stmts.iter().any(|s| match s {
-        ThreadStmt::WaitUntil(..) | ThreadStmt::WaitCycles(..) => true,
+        // DoUntil is itself a wait — the until-cond gates progress.
+        ThreadStmt::WaitUntil(..) | ThreadStmt::WaitCycles(..) | ThreadStmt::DoUntil { .. } => true,
         ThreadStmt::IfElse(ie) => contains_wait(&ie.then_stmts) || contains_wait(&ie.else_stmts),
         ThreadStmt::For { body, .. } => contains_wait(body),
-        ThreadStmt::Lock { body, .. } | ThreadStmt::DoUntil { body, .. } => contains_wait(body),
+        ThreadStmt::Lock { body, .. } => contains_wait(body),
         ThreadStmt::ForkJoin(branches, _) => branches.iter().any(|b| contains_wait(b)),
         _ => false,
     })
@@ -763,6 +874,22 @@ fn expr_to_cpp(e: &Expr) -> Result<String, String> {
             let b = expr_to_cpp(base)?;
             let i = expr_to_cpp(idx)?;
             Ok(format!("{b}[{i}]"))
+        }
+        ExprKind::MethodCall(recv, method, args) => {
+            // Width-cast methods are no-ops for sim (C++ types already
+            // hold the right width). Emit the receiver verbatim.
+            match method.name.as_str() {
+                "trunc" | "zext" | "sext" | "resize" => expr_to_cpp(recv),
+                _ => Err(format!("method `.{}()` not yet supported by thread sim", method.name)),
+            }.map(|s| { let _ = args; s })
+        }
+        ExprKind::BitSlice(base, hi, lo) => {
+            // base[hi:lo] — extract bits. C++ equivalent:
+            // (base >> lo) & ((1 << (hi - lo + 1)) - 1)
+            let b = expr_to_cpp(base)?;
+            let h = expr_to_cpp(hi)?;
+            let l = expr_to_cpp(lo)?;
+            Ok(format!("(({b}) >> ({l}) & ((1ull << (({h}) - ({l}) + 1)) - 1))"))
         }
         ExprKind::Binary(op, lhs, rhs) => {
             let l = expr_to_cpp(lhs)?;
