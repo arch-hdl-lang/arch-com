@@ -122,6 +122,13 @@ enum Command {
         /// (branch → line → FSM → toggle → Verilator-compatible coverage.dat).
         #[arg(long)]
         coverage: bool,
+        /// Also emit a Verilator-compatible coverage.dat alongside the stderr
+        /// report. Path defaults to `coverage.dat` in the cwd; pass a value to
+        /// override (e.g. --coverage-dat=build/cov.dat). Implies --coverage.
+        /// Output is consumed by `verilator_coverage --annotate-min 1
+        /// --annotate annot/ <file>`.
+        #[arg(long)]
+        coverage_dat: Option<Option<String>>,
         /// Generate pybind11 Python module for cocotb-compatible testing
         #[arg(long)]
         pybind: bool,
@@ -340,12 +347,17 @@ fn main() -> miette::Result<()> {
             }
             Ok(())
         }
-        Command::Sim { arch_files, tb_files, outdir, check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave, debug, debug_depth, debug_fsm, coverage, pybind, test, pybind_module_name } => {
+        Command::Sim { arch_files, tb_files, outdir, check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave, debug, debug_depth, debug_fsm, coverage, coverage_dat, pybind, test, pybind_module_name } => {
             let dbg_ports = debug || debug_fsm;  // any debug option implies port logging
             // --inputs-start-uninit and --check-uninit-ram both imply --check-uninit
             let check_uninit = check_uninit || inputs_start_uninit || check_uninit_ram;
+            // --coverage-dat resolves to a path: explicit --coverage-dat=foo
+            // → Some(Some("foo")) → "foo"; bare --coverage-dat
+            // → Some(None) → default "coverage.dat"; absent → None.
+            let cov_dat_path: Option<String> = coverage_dat.map(|opt| opt.unwrap_or_else(|| "coverage.dat".to_string()));
+            let coverage = coverage || cov_dat_path.is_some();
             learn_wrap(&arch_files, || {
-                run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, coverage, pybind, test.as_deref(), pybind_module_name.as_deref())
+                run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, coverage, cov_dat_path.clone(), pybind, test.as_deref(), pybind_module_name.as_deref())
             })
         }
         Command::Build { files, o } => {
@@ -465,6 +477,7 @@ fn run_sim(
     debug_depth: u32,
     debug_fsm: bool,
     coverage: bool,
+    coverage_dat: Option<String>,
     pybind: bool,
     test_file: Option<&std::path::Path>,
     pybind_module_name_override: Option<&str>,
@@ -481,7 +494,15 @@ fn run_sim(
     fs::create_dir_all(&build_dir).into_diagnostic()?;
 
     // 3. Generate C++ models
-    let sim = SimCodegen::new(&symbols, &ast, overload_map).check_uninit(check_uninit).inputs_start_uninit(inputs_start_uninit).check_uninit_ram(check_uninit_ram).cdc_random(cdc_random).debug(debug, debug_depth).with_debug_fsm(debug_fsm).coverage(coverage);
+    let mut sim = SimCodegen::new(&symbols, &ast, overload_map).check_uninit(check_uninit).inputs_start_uninit(inputs_start_uninit).check_uninit_ram(check_uninit_ram).cdc_random(cdc_random).debug(debug, debug_depth).with_debug_fsm(debug_fsm).coverage(coverage).coverage_dat(coverage_dat);
+    if coverage {
+        // Build a SourceMap so the coverage dumper can render
+        // file:line instead of opaque branch[N] ordinals.
+        let segs: Vec<(usize, String, String)> = ms.segments.iter()
+            .map(|(start, _end, name, src)| (*start, name.clone(), src.clone()))
+            .collect();
+        sim = sim.with_source_map(arch::sim_codegen::SourceMap::new(segs));
+    }
     let models = sim.generate();
 
     if models.is_empty() {

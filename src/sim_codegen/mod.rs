@@ -50,6 +50,50 @@ pub struct SimCodegen<'a> {
     debug_depth: u32,
     debug_fsm: bool,
     coverage: bool,
+    /// Phase 5: also write a Verilator-compatible coverage.dat.
+    /// Implies --coverage. Filename comes via main.rs (defaults to
+    /// `coverage.dat` in cwd).
+    coverage_dat: Option<String>,
+    /// Optional source map for resolving span byte offsets to
+    /// (file:line). Populated by main.rs from MultiSource when
+    /// --coverage is enabled.
+    source_map: Option<SourceMap>,
+}
+
+/// Maps byte offsets in the concatenated source (as produced by
+/// `MultiSource::from_files` in `main.rs`) back to (file_path,
+/// 1-based line number). Used by --coverage to render
+/// `cache_mshr.arch:111` instead of opaque `branch[3]` ordinals.
+#[derive(Debug, Default, Clone)]
+pub struct SourceMap {
+    /// (start_offset_in_combined, file_path, source_text). Sorted by
+    /// start_offset; segments may have padding bytes between them.
+    segments: Vec<(usize, String, String)>,
+}
+
+impl SourceMap {
+    pub fn new(segments: Vec<(usize, String, String)>) -> Self {
+        let mut s = segments;
+        s.sort_by_key(|(start, _, _)| *start);
+        Self { segments: s }
+    }
+
+    /// Resolve a byte offset → (file_path, 1-based line). Returns None
+    /// when the offset doesn't fall inside any registered segment
+    /// (defensive — well-formed AST spans should always resolve).
+    pub fn locate(&self, offset: usize) -> Option<(&str, u32)> {
+        for i in 0..self.segments.len() {
+            let (start, file, src) = &self.segments[i];
+            let next_start = self.segments.get(i + 1).map(|s| s.0).unwrap_or(usize::MAX);
+            if offset >= *start && offset < next_start {
+                let local = offset.saturating_sub(*start);
+                if local > src.len() { return None; }
+                let line = 1 + src[..local].matches('\n').count() as u32;
+                return Some((file.as_str(), line));
+            }
+        }
+        None
+    }
 }
 
 /// One coverage point recorded during gen_module. Currently only branch
@@ -88,11 +132,22 @@ impl<'a> SimCodegen<'a> {
         source: &'a SourceFile,
         overload_map: HashMap<usize, usize>,
     ) -> Self {
-        Self { symbols, source, overload_map, check_uninit: false, inputs_start_uninit: false, check_uninit_ram: false, cdc_random: false, debug: false, debug_depth: 1, debug_fsm: false, coverage: false }
+        Self { symbols, source, overload_map, check_uninit: false, inputs_start_uninit: false, check_uninit_ram: false, cdc_random: false, debug: false, debug_depth: 1, debug_fsm: false, coverage: false, coverage_dat: None, source_map: None }
     }
 
     pub fn coverage(mut self, enabled: bool) -> Self {
         self.coverage = enabled;
+        self
+    }
+
+    pub fn coverage_dat(mut self, path: Option<String>) -> Self {
+        self.coverage_dat = path;
+        if self.coverage_dat.is_some() { self.coverage = true; }
+        self
+    }
+
+    pub fn with_source_map(mut self, sm: SourceMap) -> Self {
+        self.source_map = Some(sm);
         self
     }
 
@@ -548,6 +603,12 @@ r#"        .def_property("{field}",
 #include <cstdlib>
 #include <cstring>
 
+// --coverage-dat: forward declaration for the helper defined in
+// verilated.cpp. Each class's atexit dumper calls this to get a
+// FILE* opened for append (with the header line written once on
+// first call).
+extern "C" FILE* _arch_cov_dat_open(const char* path);
+
 /// Minimal Verilated compatibility shim for arch-generated C++ simulation models.
 class Verilated {
 public:
@@ -721,11 +782,29 @@ static inline uint64_t _arch_repeat(uint64_t val, uint32_t n, uint32_t val_width
     }
 
     pub fn verilated_cpp() -> String {
-        r#"#include "verilated.h"
+        r##"#include "verilated.h"
+#include <cstdio>
+#include <cstdlib>
 int Verilated::_s_verbosity = 1;
 const char* Verilated::_s_trace_file = nullptr;
 bool Verilated::_s_trace_claimed = false;
-"#.to_string()
+
+// --coverage-dat: Verilator-compatible coverage.dat writer. Each
+// class's atexit dumper calls _arch_cov_dat_open() to get a FILE*
+// opened for append; the first call writes the header line so
+// verilator_coverage --annotate parses cleanly. Subsequent calls
+// just append their point lines.
+extern "C" FILE* _arch_cov_dat_open(const char* path) {
+    static bool _header_written = false;
+    FILE* f = fopen(path, _header_written ? "a" : "w");
+    if (!f) return nullptr;
+    if (!_header_written) {
+        fprintf(f, "# SystemC::Coverage-3\n");
+        _header_written = true;
+    }
+    return f;
+}
+"##.to_string()
     }
 }
 
@@ -2567,6 +2646,17 @@ fn emit_comb_if_else(ie: &CombIfElse, ctx: &Ctx, out: &mut String, indent: usize
     } else {
         out.push_str(&format!("{}if ({}) {{\n", ind(indent), cond));
     }
+    // --coverage phase 1c: same instrumentation as emit_reg_if_else for
+    // comb if/elsif/else arms. Note that comb blocks may evaluate
+    // multiple times per cycle during the settle loop — counters
+    // therefore reflect "branch entries", not "cycles where branch was
+    // active". For most arch designs the settle loop converges in 1-2
+    // iterations so this is close to the cycle count.
+    if let Some(reg) = ctx.coverage {
+        let kind = if is_chain { "elsif" } else { "if" };
+        let idx = reg.borrow_mut().alloc(kind, ie.cond.span.start, String::new());
+        out.push_str(&format!("{}  _arch_cov[{idx}]++;\n", ind(indent)));
+    }
     emit_comb_stmts(&ie.then_stmts, ctx, out, indent + 1);
     if ie.else_stmts.len() == 1 {
         if let CombStmt::IfElse(nested) = &ie.else_stmts[0] {
@@ -2576,6 +2666,10 @@ fn emit_comb_if_else(ie: &CombIfElse, ctx: &Ctx, out: &mut String, indent: usize
     }
     if !ie.else_stmts.is_empty() {
         out.push_str(&format!("{}}} else {{\n", ind(indent)));
+        if let Some(reg) = ctx.coverage {
+            let idx = reg.borrow_mut().alloc("else", ie.span.end, String::new());
+            out.push_str(&format!("{}  _arch_cov[{idx}]++;\n", ind(indent)));
+        }
         emit_comb_stmts(&ie.else_stmts, ctx, out, indent + 1);
     }
     out.push_str(&format!("{}}}\n", ind(indent)));
@@ -4614,6 +4708,14 @@ impl<'a> SimCodegen<'a> {
                 // Guard each seq block on its specific clock's rising edge
                 cpp.push_str(&format!("  if (_rising_{}) {{\n", rb.clock.name));
                 let base_indent: usize = 2;
+                // --coverage phase 2: count seq-block entries (rising
+                // edges seen). One counter per top-level seq block;
+                // catches dead clock domains where branch coverage
+                // shows 0/0 trivially.
+                if let Some(reg) = cov_handle {
+                    let idx = reg.borrow_mut().alloc("seq", rb.span.start, format!("seq @{}", rb.clock.name));
+                    cpp.push_str(&format!("{}_arch_cov[{idx}]++;\n", "  ".repeat(base_indent)));
+                }
 
                 if let Some((rst_name, _is_async, is_low)) = &reset_sig {
                     let cond = if *is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
@@ -4711,6 +4813,25 @@ impl<'a> SimCodegen<'a> {
                 if vec_array_info(&rd.ty).is_some() {
                     cpp.push_str(&format!("  memcpy(_{n}, _n_{n}, sizeof(_{n}));\n"));
                 } else {
+                    // --coverage phase 4: toggle counter — popcount of
+                    // (prev XOR new) sums all bits that flipped this
+                    // posedge. Skip Vec / wide regs in v1 (Vec needs
+                    // per-element handling; wide needs split popcount).
+                    // Skip enums — toggle on a state reg is mostly
+                    // noise, FSM coverage is more useful there.
+                    if let Some(reg) = cov_handle {
+                        let bits = type_bits_te(&rd.ty);
+                        if bits > 0 && bits <= 64 && !matches!(rd.ty, TypeExpr::Named(_)) {
+                            let cidx = reg.borrow_mut().alloc(
+                                "toggle",
+                                rd.name.span.start,
+                                format!("toggle {n}"),
+                            );
+                            cpp.push_str(&format!(
+                                "  _arch_cov[{cidx}] += __builtin_popcountll((uint64_t)_{n} ^ (uint64_t)_n_{n});\n"
+                            ));
+                        }
+                    }
                     cpp.push_str(&format!("  _{n} = _n_{n};\n"));
                 }
             }
@@ -4844,7 +4965,8 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
         let ctx_comb = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                 &wide_names, &widths, &enum_map, &bus_port_names)
-                           .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes);
+                           .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes)
+                           .with_coverage(cov_handle);
 
         // Credit-channel combinational wires (sender can_send; receiver
         // valid/data once PR-sim-2 lands). Emit early so user comb code
@@ -5115,6 +5237,15 @@ impl<'a> SimCodegen<'a> {
         for item in &m.body {
             if let ModuleBodyItem::CombBlock(cb) = item {
                 let mut body = String::new();
+                // --coverage phase 2: count comb-block entries (eval_comb
+                // calls per block). Caveat: comb blocks may evaluate
+                // multiple times per cycle during the settle loop, so
+                // counters reflect "block evaluations" rather than
+                // "cycles where block was active".
+                if let Some(reg) = cov_handle {
+                    let idx = reg.borrow_mut().alloc("comb", cb.span.start, "comb".to_string());
+                    body.push_str(&format!("  _arch_cov[{idx}]++;\n"));
+                }
                 emit_comb_stmts(&cb.stmts, &ctx_comb, &mut body, 1);
                 cpp.push_str(&body);
             }
@@ -5358,15 +5489,55 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str(&format!("  uint64_t total = 0; uint64_t hit = 0;\n"));
             cpp.push_str(&format!("  for (uint32_t i = 0; i < {n_cov}; i++) {{ total++; if ({class}::_arch_cov[i]) hit++; }}\n"));
             cpp.push_str(&format!("  fprintf(stderr, \"[{class}] branch coverage: %llu/%llu hit (%.1f%%)\\n\", (unsigned long long)hit, (unsigned long long)total, total ? (100.0 * hit / total) : 0.0);\n"));
-            // Per-arm breakdown — one line per counter, kind ordinal only
-            // (file:line resolution is phase 1b once the source-text plumbing
-            // is in place; for now the user maps ordinal → branch by the
-            // alloc-order, which is left-to-right top-to-bottom).
+            // Per-arm breakdown — file:line if a SourceMap is available,
+            // ordinal-only fallback otherwise. (Phase 1b lands the
+            // source-text plumbing so the dump shows
+            // `tests/cvdp/cache_mshr.arch:111` instead of `branch[0]`.)
+            // --coverage-dat: also append per-point Verilator-compatible
+            // lines to the coverage.dat file.
+            if let Some(path) = &self.coverage_dat {
+                let path_lit = path.replace('\\', "\\\\").replace('"', "\\\"");
+                cpp.push_str(&format!("  FILE* _dat = _arch_cov_dat_open(\"{path_lit}\");\n"));
+            }
             for (i, p) in cov_reg.borrow().points.iter().enumerate() {
+                let (file_disp, line_no) = if let Some(sm) = &self.source_map {
+                    sm.locate(p.span_start)
+                        .map(|(f, l)| (f.to_string(), l))
+                        .unwrap_or_else(|| (String::new(), 0))
+                } else {
+                    (String::new(), 0)
+                };
+                let location = if !file_disp.is_empty() {
+                    format!("{file_disp}:{line_no}")
+                } else {
+                    format!("branch[{i}]")
+                };
                 cpp.push_str(&format!(
-                    "  fprintf(stderr, \"  branch[{i}] ({}): %llu hits%s\\n\", (unsigned long long){class}::_arch_cov[{i}], {class}::_arch_cov[{i}] ? \"\" : \" *NOT HIT*\");\n",
+                    "  fprintf(stderr, \"  {location} ({}): %llu hits%s\\n\", (unsigned long long){class}::_arch_cov[{i}], {class}::_arch_cov[{i}] ? \"\" : \" *NOT HIT*\");\n",
                     p.kind
                 ));
+                if self.coverage_dat.is_some() && !file_disp.is_empty() {
+                    let file_esc = file_disp.replace('\\', "\\\\").replace('"', "\\\"");
+                    let page = match p.kind {
+                        "if" | "elsif" | "else" => "v_branch",
+                        "seq" | "comb"          => "v_line",
+                        "state" | "trans"       => "v_user/fsm",
+                        "toggle"                => "v_toggle",
+                        _                       => "v_user",
+                    };
+                    let comment = p.label.replace('\\', "\\\\").replace('"', "\\\"");
+                    // Verilator coverage.dat field separators are \x01 (key)
+                    // and \x02 (value). C++ greedy-matches hex escapes, so
+                    // each escape is its own string literal — adjacent
+                    // string concatenation joins them safely.
+                    cpp.push_str(&format!(
+                        "  if (_dat) fprintf(_dat, \"C '\" \"\\x01\" \"file\" \"\\x02\" \"{file_esc}\" \"\\x01\" \"line\" \"\\x02\" \"{line_no}\" \"\\x01\" \"page\" \"\\x02\" \"{page}\" \"\\x01\" \"comment\" \"\\x02\" \"{kind} {comment}\" \"' %llu\\n\", (unsigned long long){class}::_arch_cov[{i}]);\n",
+                        kind = p.kind
+                    ));
+                }
+            }
+            if self.coverage_dat.is_some() {
+                cpp.push_str("  if (_dat) fclose(_dat);\n");
             }
             cpp.push_str("}\n");
             cpp.push_str("struct _ArchCovInit { _ArchCovInit() { atexit(_arch_cov_dump); } };\n");
