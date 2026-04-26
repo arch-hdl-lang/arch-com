@@ -1662,6 +1662,29 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
             } else {
                 0 // repeating: wrap to first state
             };
+            // Counter decrement is intrinsic to a wait_cycles state — it must
+            // run regardless of how the transition target is decided. Hoisted
+            // out of the wait_cycles transition branch below so that an
+            // if/else-with-waits dispatch (which puts a (cnt==0, target)
+            // entry in multi_transitions) doesn't accidentally suppress it.
+            if raw.wait_cycles.is_some() {
+                let cnt_name = format!("_t{}_cnt", ti);
+                let cnt_id = Expr::new(ExprKind::Ident(cnt_name.clone()), sp);
+                let sub = Expr::new(ExprKind::Binary(
+                    BinOp::Sub, Box::new(cnt_id),
+                    Box::new(Expr::new(ExprKind::Literal(LitKind::Sized(32, 1)), sp)),
+                ), sp);
+                body.push(Stmt::Assign(RegAssign {
+                    target: Expr::new(ExprKind::Ident(cnt_name.clone()), sp),
+                    value: Expr::new(ExprKind::MethodCall(
+                        Box::new(sub),
+                        Ident::new("trunc".to_string(), sp),
+                        vec![Expr::new(ExprKind::Literal(LitKind::Dec(32)), sp)],
+                    ), sp),
+                    span: sp,
+                }));
+            }
+
             if !raw.multi_transitions.is_empty() {
                 for (cond, target) in &raw.multi_transitions {
                     let tgt = if *target >= n_states {
@@ -1687,29 +1710,14 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
                     })],
                     else_stmts: Vec::new(), unique: false, span: sp,
                 }));
-            } else if let Some(ref _count_expr) = raw.wait_cycles {
-                // Counter-based wait: decrement counter, transition when 0
+            } else if raw.wait_cycles.is_some() {
+                // Default wait_cycles transition: cnt==0 ⇒ next_state.
                 let cnt_name = format!("_t{}_cnt", ti);
                 let cnt_id = Expr::new(ExprKind::Ident(cnt_name.clone()), sp);
                 let cnt_zero = Expr::new(ExprKind::Binary(
-                    BinOp::Eq, Box::new(cnt_id.clone()),
+                    BinOp::Eq, Box::new(cnt_id),
                     Box::new(make_zero_expr(sp)),
                 ), sp);
-                // cnt <= (cnt - 32'd1).trunc<32>()
-                let sub = Expr::new(ExprKind::Binary(
-                    BinOp::Sub, Box::new(cnt_id),
-                    Box::new(Expr::new(ExprKind::Literal(LitKind::Sized(32, 1)), sp)),
-                ), sp);
-                body.push(Stmt::Assign(RegAssign {
-                    target: Expr::new(ExprKind::Ident(cnt_name.clone()), sp),
-                    value: Expr::new(ExprKind::MethodCall(
-                        Box::new(sub),
-                        Ident::new("trunc".to_string(), sp),
-                        vec![Expr::new(ExprKind::Literal(LitKind::Dec(32)), sp)],
-                    ), sp),
-                    span: sp,
-                }));
-                // Transition when counter hits 0
                 body.push(Stmt::IfElse(IfElse {
                     cond: cnt_zero,
                     then_stmts: vec![Stmt::Assign(RegAssign {
@@ -2360,6 +2368,53 @@ fn thread_has_for(stmts: &[ThreadStmt]) -> bool {
     })
 }
 
+/// Redirect the natural fallthrough of `states[idx]` to `target`.
+///
+/// Used by the dispatch-and-rejoin lowering of `if/else` with internal waits
+/// (see `doc/thread_lowering_proof.md` §II.10.2 step 5) to send each branch's
+/// last state to the rejoin index instead of letting it fall through to the
+/// other branch's first state.
+///
+/// Cases (mirroring the spec):
+/// - `M = ∅, τ = ⊥, w = ⊥` (unconditional advance): replace with
+///   `M = [(true, target)]`.
+/// - `M = ∅, τ = c`: replace with `M = [(c, target)]`.
+/// - `M = ∅, w = n` (wait_cycles): replace with `M = [(cnt == 0, target)]`.
+///   The counter decrement is now hoisted out of the transition emitter
+///   (see `lower_module_threads`'s seq-stmt construction), so this conversion
+///   does not lose the decrement.
+/// - `M ≠ ∅`: append `(true, target)` only if no existing entry already
+///   targets `target`. (For-loop exits already target the resolved sentinel,
+///   which equals `target` when the for-group is the last sub-state.)
+fn redirect_fallthrough_to(
+    states: &mut [ThreadFsmState],
+    idx: usize,
+    target: usize,
+    span: Span,
+) {
+    let s = &mut states[idx];
+    if !s.multi_transitions.is_empty() {
+        if !s.multi_transitions.iter().any(|(_, t)| *t == target) {
+            s.multi_transitions.push((Expr::new(ExprKind::Bool(true), span), target));
+        }
+        return;
+    }
+    if let Some(cond) = s.transition_cond.take() {
+        s.multi_transitions = vec![(cond, target)];
+        return;
+    }
+    if s.wait_cycles.is_some() {
+        let cnt_id = Expr::new(ExprKind::Ident("_cnt".to_string()), span);
+        let cnt_zero = Expr::new(ExprKind::Binary(
+            BinOp::Eq, Box::new(cnt_id),
+            Box::new(make_zero_expr(span)),
+        ), span);
+        s.multi_transitions = vec![(cnt_zero, target)];
+        return;
+    }
+    s.multi_transitions = vec![(Expr::new(ExprKind::Bool(true), span), target)];
+}
+
 fn contains_wait(stmts: &[ThreadStmt]) -> bool {
     stmts.iter().any(|s| match s {
         ThreadStmt::WaitUntil(..) | ThreadStmt::WaitCycles(..) | ThreadStmt::DoUntil { .. } => true,
@@ -2434,17 +2489,99 @@ fn partition_thread_body(
                 });
             }
             ThreadStmt::IfElse(ie) => {
-                if contains_wait(&ie.then_stmts) || contains_wait(&ie.else_stmts) {
-                    return Err(CompileError::general(
-                        "wait inside if/else branches is not yet supported; \
-                         restructure as separate threads or flatten the control flow",
+                let then_has_wait = contains_wait(&ie.then_stmts);
+                let else_has_wait = contains_wait(&ie.else_stmts);
+                if then_has_wait || else_has_wait {
+                    // Dispatch-and-rejoin (see doc/thread_lowering_proof.md §II.10).
+                    // Step 1: flush pending comb/seq into a predecessor state so
+                    // `cond` reads post-flush register values.
+                    if !cur_comb.is_empty() || !cur_seq.is_empty() {
+                        states.push(ThreadFsmState {
+                            comb_stmts: std::mem::take(&mut cur_comb),
+                            seq_stmts: std::mem::take(&mut cur_seq),
+                            transition_cond: None,
+                            wait_cycles: None,
+                            multi_transitions: Vec::new(),
+                        });
+                    }
+                    // Step 2: insert dispatch state placeholder; M filled below
+                    // once branch base indices are known.
+                    let dispatch_idx = states.len();
+                    states.push(ThreadFsmState {
+                        comb_stmts: Vec::new(),
+                        seq_stmts: Vec::new(),
+                        transition_cond: None,
+                        wait_cycles: None,
+                        multi_transitions: Vec::new(),
+                    });
+                    // Step 3: recursively partition `then_stmts` and append at then_base.
+                    // Empty branches (§II.10.4) skip the recursive call —
+                    // `partition_thread_body` rejects empty bodies, but the
+                    // dispatch-and-rejoin lowering treats them as a direct jump
+                    // to the rejoin index.
+                    let then_base = states.len();
+                    if !ie.then_stmts.is_empty() {
+                        let mut then_states = partition_thread_body(&ie.then_stmts, ie.span, cnt_width)?;
+                        let then_len = then_states.len();
+                        for fs in &mut then_states {
+                            for (_, target) in &mut fs.multi_transitions {
+                                // Sentinel `usize::MAX` is the "next state after
+                                // this for group" marker emitted by
+                                // `lower_thread_for`. Inside a branch, that
+                                // fallthrough should land at the rejoin index;
+                                // the redirect step below rewrites it.
+                                if *target == usize::MAX {
+                                    *target = then_base + then_len;
+                                } else {
+                                    *target += then_base;
+                                }
+                            }
+                        }
+                        states.extend(then_states);
+                    }
+                    // Step 4: same for `else_stmts` at else_base.
+                    let else_base = states.len();
+                    if !ie.else_stmts.is_empty() {
+                        let mut else_states = partition_thread_body(&ie.else_stmts, ie.span, cnt_width)?;
+                        let else_len = else_states.len();
+                        for fs in &mut else_states {
+                            for (_, target) in &mut fs.multi_transitions {
+                                if *target == usize::MAX {
+                                    *target = else_base + else_len;
+                                } else {
+                                    *target += else_base;
+                                }
+                            }
+                        }
+                        states.extend(else_states);
+                    }
+                    let rejoin_idx = states.len();
+                    // Step 5: redirect each branch's natural exit to rejoin_idx.
+                    if then_base < else_base {
+                        redirect_fallthrough_to(&mut states, else_base - 1, rejoin_idx, ie.span);
+                    }
+                    if else_base < rejoin_idx {
+                        redirect_fallthrough_to(&mut states, rejoin_idx - 1, rejoin_idx, ie.span);
+                    }
+                    // Step 2 (deferred): fill dispatch state's M.
+                    // Empty-branch handling (§II.10.4): if a branch is empty, its
+                    // base equals the next position, and the dispatch jumps there.
+                    let then_target = if then_base == else_base { rejoin_idx } else { then_base };
+                    let else_target = if else_base == rejoin_idx { rejoin_idx } else { else_base };
+                    let neg_cond = Expr::new(
+                        ExprKind::Unary(UnaryOp::Not, Box::new(ie.cond.clone())),
                         ie.span,
-                    ));
+                    );
+                    states[dispatch_idx].multi_transitions = vec![
+                        (ie.cond.clone(), then_target),
+                        (neg_cond, else_target),
+                    ];
+                } else {
+                    // Same-state conditional: convert to CombIfElse / IfElse for comb and seq
+                    let (comb_if, seq_if) = thread_if_to_fsm_stmts(ie);
+                    if let Some(c) = comb_if { cur_comb.push(c); }
+                    if let Some(s) = seq_if { cur_seq.push(s); }
                 }
-                // Same-state conditional: convert to CombIfElse / IfElse for comb and seq
-                let (comb_if, seq_if) = thread_if_to_fsm_stmts(ie);
-                if let Some(c) = comb_if { cur_comb.push(c); }
-                if let Some(s) = seq_if { cur_seq.push(s); }
             }
             ThreadStmt::ForkJoin(branches, sp) => {
                 // Flush pending statements into a state before fork

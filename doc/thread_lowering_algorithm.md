@@ -120,6 +120,7 @@ ThreadStmt              Action
 x = expr                CombAssign → append to cur_comb  (no boundary)
 x <= expr               SeqAssign  → append to cur_seq   (no boundary)
 if/else (no waits)      Converted to CombIfElse / IfElse → appended to cur_*
+if/else (with waits)    Dispatch state + recursive partition + rejoin (see §4d)
 wait until cond         Flush pending → new state with transition_cond=cond
 wait N cycle            Flush pending → new state with wait_cycles=N
 do { … } until cond     Flush pending → new hold-state with transition_cond=cond
@@ -252,6 +253,36 @@ For each product-state the algorithm:
 — transitions to the next main-line state.
 
 **Size guard**: product > 64 is rejected at compile time.
+
+### 4d — `if/else` with internal waits — dispatch-and-rejoin
+
+When an `if/else` body contains a `wait` (any form), the conditional cannot be
+folded into a single combinational `if/else` — control has to split across
+multiple cycles. The lowering emits:
+
+```
+S_pre   : (flush of pending comb/seq before the if)
+S_disp  : empty comb/seq, M = [(cond, then_base), (¬cond, else_base)]
+[then_states] : recursive partition of then_stmts (offset then_base)
+[else_states] : recursive partition of else_stmts (offset else_base)
+S_rejoin: (the next state after the if/else, or the post-if chain)
+```
+
+Each branch's last state is then *redirected* so its natural fallthrough lands
+at `S_rejoin` instead of falling through to the other branch's first state.
+`redirect_fallthrough_to` handles four shapes of last state:
+
+| Last state | Edit |
+|---|---|
+| `M = ∅, τ = ⊥, w = ⊥` (unconditional) | replace with `M = [(true, rejoin)]` |
+| `M = ∅, τ = c` (wait_until) | replace with `M = [(c, rejoin)]` |
+| `M = ∅, w = n` (wait_cycles) | replace with `M = [(cnt == 0, rejoin)]` (counter decrement is hoisted out so the `M`-arm doesn't suppress it) |
+| `M ≠ ∅` (e.g. for-loop exit) | append `(true, rejoin)` only if no entry already targets `rejoin` |
+
+Empty branches (`then_stmts == []` or `else_stmts == []`) skip the recursive
+call and the dispatch points that arm directly at `rejoin`.
+
+Soundness: see `doc/thread_lowering_proof.md` §II.10 (Lemma I).
 
 ---
 
