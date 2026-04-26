@@ -6156,3 +6156,62 @@ fn test_if_wait_nested() {
         "nested if/else with waits should compile:\n{sv}");
 }
 
+#[test]
+fn test_if_wait_for_in_then_branch() {
+    // Regression test for the for-loop-in-then-branch asymmetry bug
+    // (see doc/thread_lowering_proof.md §II.10.4).
+    //
+    // Before the fix, the for-loop's exit-sentinel (usize::MAX) resolved
+    // to `then_base + then_len = else_base`, and `redirect_fallthrough_to`
+    // then appended `(true, rejoin_idx)` which always overrode the
+    // for-loop's loop-back arm under last-write-wins. The for-loop body
+    // executed exactly once instead of N times.
+    //
+    // After the fix, any target equal to `else_base` in the then-branch
+    // states is rewritten to `rejoin_idx` before the redirect, so the
+    // for-exit naturally lands at rejoin_idx and no spurious append
+    // occurs.
+    let source = r#"
+        module M
+          param burst_len: const = 4;
+          port clk:  in Clock<SysDomain>;
+          port rst:  in Reset<Async, Low>;
+          port go:   in Bool;
+          port doit: in Bool;
+          port ack:  in Bool;
+          port done: out Bool;
+          thread on clk rising, rst low
+            wait until go;
+            if doit
+              for i in 0..burst_len-1
+                wait until ack;
+                done = 1;
+              end for
+            else
+              wait 1 cycle;
+            end if
+            wait 1 cycle;
+          end thread
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module _M_threads"),
+        "for-loop in then-branch should compile:\n{sv}");
+    // Bug witness: the buggy lowering emitted `if (1'b1) _t0_state <= <rejoin>`
+    // inside the for-loop's last state, causing the body to execute exactly once.
+    // The fix removes this unconditional override, so the only state-write
+    // arms inside state 4 (for-loop last) should be the loop-back and exit
+    // arms — both guarded by `_t0_loop_cnt` comparisons against `burst_len - 1`.
+    assert!(!sv.contains("if (1'b1) begin\n          _t0_state"),
+        "buggy unconditional override should not be emitted:\n{sv}");
+    // The for-loop's exit arm should land at the rejoin state (post-if
+    // wait_cycles), not at the start of the else branch.
+    // The else branch is `wait 1 cycle` (one state); the rejoin is the
+    // post-if `wait 1 cycle` (one state). With the fix, `_t0_loop_cnt >=
+    // (burst_len - 1)` should write the rejoin state, not else_base.
+    let exit_arm = sv.contains("if (_t0_loop_cnt >= 16'(burst_len - 1)) begin")
+        || sv.contains("if (_t0_loop_cnt >= 16'(burst_len-1)) begin");
+    assert!(exit_arm,
+        "for-loop exit arm should compare loop_cnt against burst_len-1:\n{sv}");
+}
+

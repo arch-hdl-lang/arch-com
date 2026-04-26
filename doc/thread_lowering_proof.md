@@ -824,16 +824,24 @@ internal waits is encountered:
    ```
 3. **Recursively partition** `then_stmts` and append at index `then_base`.
 4. **Recursively partition** `else_stmts` and append at index `else_base`.
-5. **Redirect each branch's exit** to the rejoin index `rejoin_idx =
+5. **Pre-redirect rewrite (since v0.46.0).**  Walk the then-branch states
+   and rewrite any `multi_transitions` target equal to `then_base + then_len
+   = else_base` to `rejoin_idx`.  This catches sentinel-resolved targets
+   (for-loop exits, nested if/else rejoin points) that landed at
+   `else_base` after outer shifting.  The else-branch is symmetric and
+   self-correcting — its `else_base + else_len = rejoin_idx` already.
+
+6. **Redirect each branch's exit** to the rejoin index `rejoin_idx =
    states.len()`.  Concretely, `redirect_fallthrough_to(branch, rejoin_idx)`
    modifies the *last* state of the branch so that its natural advance lands
    at `rejoin_idx`.  As implemented in `src/elaborate.rs::redirect_fallthrough_to`,
    four cases are handled in this priority order:
    - **(A) M-state** (`M ≠ ∅`): append `(true, rejoin_idx)` to `M` only if
      no existing `t_j` already equals `rejoin_idx`; otherwise no change.
-     ⚠️ This case has a **known corner-case bug** when an existing target
-     points at the position immediately after the branch (for-loop sentinel
-     in then-branch with non-empty else); see §II.10.4.
+     After step 5, any target that *would* have pointed past the branch
+     into the else-branch's start has been rewritten to `rejoin_idx`, so
+     the no-change path is taken whenever the branch ends with a for-loop
+     or nested if/else.
    - **(B) τ-state** (`τ = c`, `M = ∅`): take `c`, replace with
      `M = [(c, rejoin_idx)]` (clears `τ`).
    - **(C) wait_cycles state** (`w = n`, `τ = ⊥`, `M = ∅`): replace with
@@ -843,7 +851,7 @@ internal waits is encountered:
      "Counter-decrement hoist").
    - **(D) unconditional advance** (`τ = ⊥`, `w = ⊥`, `M = ∅`): replace
      with `M = [(true, rejoin_idx)]`.
-6. The dispatch state itself does not advance via the default `next = s+1`;
+7. The dispatch state itself does not advance via the default `next = s+1`;
    `transition_logic` recognises that a state with `M ≠ ∅` always uses the
    `M`-list, so `S_disp.M` overrides any default.
 
@@ -915,25 +923,30 @@ step 5):
   the partitioning invariant (§II.4) the predecessor state preloads
   `_cnt ← n − 1`; the decrement (hoisted out — see §II.10.5) fires every
   cycle in the wait state.
-- **(A) Last state already had `M`**: append `(true, rejoin_idx)` only if
-  no existing `t_j` equals `rejoin_idx`.  This case arises when:
-  - The branch ends with a `for` loop *whose `usize::MAX` exit-sentinel
-    was resolved to `rejoin_idx` directly*.  This holds when the for-loop
-    is at the end of the **else** branch, because `else_base + else_len =
-    rejoin_idx`.  In this case the existing `(exit_cond, rejoin_idx)`
-    arm already targets `rejoin_idx`, the redirect is a no-op, and the
-    for-exit naturally lands at `rejoin_idx`.  Source: for-loop exit on
-    the last iteration falls through to the post-`if` statements.  Target:
-    same.
-  - The branch ends with a `for` loop *in the **then** branch with a
-    non-empty else branch*.  Here the sentinel resolves to
-    `then_base + then_len = else_base ≠ rejoin_idx`, so the redirect
-    appends `(true, rejoin_idx)`.  ⚠️ **This case is currently broken in
-    the implementation** — see §II.10.4 "for-loop-in-then-branch
-    asymmetry".
+- **(A) Last state already had `M`** (e.g. for-loop exit, nested if/else
+  rejoin): the pre-redirect rewrite (§II.10.2 step 5) has already
+  rewritten any target equal to `else_base` (the natural "next position
+  after the then-branch") to `rejoin_idx`.  After this rewrite, at least
+  one `M`-entry already targets `rejoin_idx`, so `redirect_fallthrough_to`
+  case (A) takes the no-change path.
+  - **Symmetric for-loop case (else branch)**: `else_base + else_len =
+    rejoin_idx`, so the for-loop's `(exit_cond, usize::MAX)` sentinel
+    naturally resolves to `rejoin_idx` and the pre-redirect rewrite is
+    a no-op for the else-branch.
+  - **Asymmetric for-loop case (then branch)**: as described above, the
+    sentinel resolves to `else_base` after outer shifting; the
+    pre-redirect rewrite catches this and remaps to `rejoin_idx`.
+  - **Nested if/else case**: the inner if/else's redirect rewrites its
+    own branches' last states to point at the inner `rejoin_idx`.  When
+    the inner if/else is the last stmt of the outer then-branch, the
+    inner `rejoin_idx` (relative) lands at `else_base` (absolute) after
+    outer shifting; same fix applies.
 
-For sub-cases (D), (B), (C), and the well-behaved part of (A), `≈_if` is
-preserved across the rejoin transition.
+  Source semantics: in all three sub-cases the branch ends and control
+  flows to the post-`if` statements.  Target semantics with the
+  pre-redirect rewrite: same.
+
+In all four sub-cases, `≈_if` is preserved across the rejoin transition.
 
 **Case (Eq) — outside the if/else.** Steps before reaching the dispatch
 barrier and after rejoin are governed by Lemma 2 of §II.3 unchanged
@@ -968,10 +981,11 @@ on the *post-flush* register values, matching the source semantics where
 effect at the previous clock edge."  Without this flush, `cond` would read
 stale register values, breaking equivalence.
 
-**⚠️ For-loop-in-then-branch asymmetry (known bug as of v0.45.0).**  When
-a `for` loop is the *last* statement of the **then** branch and the
-**else** branch is non-empty, the dispatch-and-rejoin lowering produces
-incorrect SV.  The mechanism:
+**For-loop-in-then-branch asymmetry (resolved in v0.46.0).**  Earlier
+versions (v0.45.0) had a corner-case bug: when a `for` loop was the
+*last* statement of the **then** branch and the **else** branch was
+non-empty, the dispatch-and-rejoin lowering produced incorrect SV.  The
+mechanism:
 
 - Inside the recursive `partition_thread_body(then_stmts)` call,
   `lower_thread_for` emits the for-loop's last state with
@@ -980,41 +994,38 @@ incorrect SV.  The mechanism:
   `usize::MAX → for_base + for_len`, which equals the position right after
   the for-loop within the recursive call's frame.
 - The outer IfElse handler then shifts every target by `then_base`, so the
-  exit target becomes `then_base + then_len = else_base` (the start of the
+  exit target became `then_base + then_len = else_base` (the start of the
   else branch).
-- `redirect_fallthrough_to` inspects the for-loop's last state, sees
-  `M = [(loop_cond, then_base), (exit_cond, else_base)]`, and finds no
-  existing target equals `rejoin_idx`.  Per case (A), it appends
-  `(true, rejoin_idx)`.
-- The resulting M is `[(loop_cond, then_base), (exit_cond, else_base),
-  (true, rejoin_idx)]`.  Under ARCH `seq` last-write-wins semantics, the
-  unconditional `(true, rejoin_idx)` arm always overrides the loop-back,
-  so the for-loop body executes exactly once and control jumps to the
-  post-`if` regardless of `loop_cnt`.
+- `redirect_fallthrough_to` (case A) appended `(true, rejoin_idx)` because
+  no existing target equalled `rejoin_idx`.  Under ARCH `seq`
+  last-write-wins, the unconditional arm always overrode the loop-back,
+  so the for-loop body executed exactly once.
 
-Symmetric case: a for-loop at the end of the **else** branch is handled
-correctly because `else_base + else_len = rejoin_idx`, so the existing
-`(exit_cond, rejoin_idx)` arm matches the redirect's target check and no
-spurious arm is appended.
+The else-branch is symmetric and self-correcting because
+`else_base + else_len = rejoin_idx`, so its sentinels naturally land at
+`rejoin_idx`.
 
-**Suggested fix** (out of scope for this proof; flagged for the
-implementation to address): in the IfElse handler, after computing
-`rejoin_idx`, walk all targets in `then_states` (and `else_states`) that
-equal `then_base + then_len` (resp. `else_base + else_len`) and rewrite
-them to `rejoin_idx`.  This eliminates the asymmetry: any sentinel-derived
-"next state after this branch" target lands directly at the post-`if`
-position.  The `redirect_fallthrough_to` case (A) then becomes a true
-no-op because the for-exit is already correctly routed.
+**The fix (v0.46.0).**  §II.10.2 step 5 (the pre-redirect rewrite) walks
+the then-branch states *after* outer shifting and rewrites any target
+equal to `else_base` to `rejoin_idx`.  Any sentinel-derived "next state
+after this branch" target then lands directly at the post-`if` position,
+and `redirect_fallthrough_to` case (A) becomes a no-op for branches that
+end with a for-loop (or nested if/else, which has the same symptom for
+the same reason).  Same-level recursion at every nesting depth means the
+fix composes through arbitrarily deep nested if/else and for-loops.
 
-**Empirical confirmation.**  A minimal reproducer
-(`tests/check_if_wait_for.arch` during proof review) generates state-4 SV
-of the form:
+**Empirical confirmation (post-fix).**  The reproducer
+`tests/if_wait_for_in_then.arch` plus testbench
+`tests/if_wait_for_in_then_tb.cpp` (used during the bug review and fix
+verification) produce 4 `done` pulses for `burst = 4`, matching the
+expected loop-iteration count, with state-4 SV of the form:
 ```sv
-if (loop_cnt < end) state <= 3;     // loop-back
-if (loop_cnt >= end) state <= 5;    // → else_base, NOT rejoin
-if (1'b1) state <= 6;               // → rejoin (always overrides above)
+if (loop_cnt < burst-1) state <= 3;    // loop-back
+if (loop_cnt >= burst-1) state <= 6;   // → rejoin (CORRECT)
 ```
-The for-loop body executes exactly once instead of `end` times.
+Regression test: `tests/integration_test.rs::test_if_wait_for_in_then_branch`
+asserts the absence of the buggy `if (1'b1) state <= …` arm and presence
+of the correct exit comparison.
 
 **Empty branches.** If `then_stmts = []` (vacuous then), the recursive
 `partition_thread_body([])` returns no states; `then_base = else_base` and
@@ -1055,11 +1066,14 @@ Tests covering: (a) wait in then-branch only, (b) wait in else-branch only,
 (`test_if_wait_*` family).  End-to-end Verilator `--assert` golden + mutation
 runs confirm the dispatch-state branch assertions are load-bearing.
 
-**Coverage gap.** The current test suite does **not** cover the
-for-loop-in-then-branch case described in §II.10.4.  This is the case where
-the `redirect_fallthrough_to` case-(A) handling produces an unconditional
-override that defeats the for-loop's loop-back arm.  A regression test
-exercising this combination is needed alongside the implementation fix.
+**Regression coverage.** The for-loop-in-then-branch case described in
+§II.10.4 is covered by `tests/integration_test.rs::test_if_wait_for_in_then_branch`,
+which compiles a thread with a for-loop in the then-branch + non-empty
+else-branch and asserts that the buggy unconditional `(true, rejoin_idx)`
+arm is **not** emitted.  An end-to-end Verilator simulation
+(`tests/if_wait_for_in_then.arch` + `tests/if_wait_for_in_then_tb.cpp`,
+run during the v0.46.0 fix verification) confirmed that the for-loop
+iterates the expected number of times.
 
 ### II.11  Auto-emitted spec-contract SVA (`--auto-thread-asserts`)
 
@@ -1201,12 +1215,8 @@ The thread-to-FSM lowering is correct in the following precise sense:
 6. **Shared(or) reduction faithfulness** (Lemma S, II.9).
 7. **If/else with internal waits faithfulness** (Lemma I, II.10) —
    *implemented in v0.45.0 via the dispatch-and-rejoin scheme proved sound
-   here.* ⚠️ A known corner-case bug remains in `redirect_fallthrough_to`
-   case (A): a `for` loop at the end of the **then** branch with a
-   non-empty else branch produces an extra `(true, rejoin_idx)` arm that
-   overrides the loop-back, so the for-loop body executes exactly once.
-   See §II.10.4 "for-loop-in-then-branch asymmetry" for the mechanism and
-   suggested fix.
+   here; corner-case fix in v0.46.0 added a pre-redirect rewrite (step 5)
+   for the for-loop-in-then-branch asymmetry.*
 8. **Auto-emitted spec-contract SVA correctness** (Corollaries W/C/B, II.11)
    — the `--auto-thread-asserts` properties hold by construction in any
    accepted source program, so an `ASSERTION FAILED` from one of them

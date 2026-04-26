@@ -1,0 +1,21 @@
+module M
+  port clk:        in Clock<SysDomain>;
+  port rst:        in Reset<Async, Low>;
+  port go:         in Bool;
+  port doit:       in Bool;
+  port ack:        in Bool;
+  port burst:      in UInt<16>;
+  port done:       out Bool;
+  thread on clk rising, rst low
+    wait until go;
+    if doit
+      for i in 0..burst-1
+        wait until ack;
+        done = 1;
+      end for
+    else
+      wait 1 cycle;
+    end if
+    wait 1 cycle;
+  end thread
+end module M
