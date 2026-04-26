@@ -9,9 +9,11 @@ module fir_filter
   port coeff2: in SInt<16>;
   port coeff3: in SInt<16>;
 
-  reg sample_delay1: SInt<16> reset reset=>0;
-  reg sample_delay2: SInt<16> reset reset=>0;
-  reg sample_delay3: SInt<16> reset reset=>0;
+  // 3-stage delay line over input_sample. Tap K = K cycles of delay
+  // from the input: @0 = input_sample, @1..@2 = intermediate stages,
+  // @3 = bare `sample_pipe` (final output).
+  pipe_reg sample_pipe: input_sample stages 3;
+
   reg accumulator: SInt<32> reset reset=>0;
   reg out_reg: SInt<16> reset reset=>0;
 
@@ -22,17 +24,14 @@ module fir_filter
   wire acc_sum: SInt<32>;
 
   comb
-    prod0 = input_sample * coeff0;
-    prod1 = sample_delay1 * coeff1;
-    prod2 = sample_delay2 * coeff2;
-    prod3 = sample_delay3 * coeff3;
+    prod0 = sample_pipe@0 * coeff0;
+    prod1 = sample_pipe@1 * coeff1;
+    prod2 = sample_pipe@2 * coeff2;
+    prod3 = sample_pipe@3 * coeff3;
     acc_sum = (prod0.sext<34>() + prod1.sext<34>() + prod2.sext<34>() + prod3.sext<34>()).trunc<32>();
   end comb
 
   seq on clk rising
-    sample_delay1 <= input_sample;
-    sample_delay2 <= sample_delay1;
-    sample_delay3 <= sample_delay2;
     accumulator <= acc_sum;
     out_reg <= accumulator.trunc<16>();
   end seq

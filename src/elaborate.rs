@@ -3321,13 +3321,25 @@ fn lower_pipe_reg_module(mut m: ModuleDecl) -> Result<ModuleDecl, Vec<CompileErr
     //   - bare q <= Y on pipe_reg with depth > 1 (ambiguous)
     //   - q@K on RHS for K > 0 (intermediate stage reads not supported v1)
     //   - q@0 = Y on combinational port (not a pipe_reg)
+    // Build name → total-stages for tap-bound checks of `q@K` reads.
+    // Includes module-scope `pipe_reg` decls (depth = `stages`) and
+    // pipe_reg ports (depth = port latency).
+    let mut pipe_depths: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    for pp in &all_pipe_ports {
+        pipe_depths.insert(pp.name.clone(), pp.latency);
+    }
+    for bi in &m.body {
+        if let ModuleBodyItem::PipeRegDecl(p) = bi {
+            pipe_depths.insert(p.name.name.clone(), p.stages);
+        }
+    }
     let mut errors: Vec<CompileError> = Vec::new();
     for bi in &m.body {
         if let ModuleBodyItem::RegBlock(rb) = bi {
-            validate_pipe_assignments(&rb.stmts, &all_pipe_ports, &mut errors);
+            validate_pipe_assignments(&rb.stmts, &all_pipe_ports, &pipe_depths, &mut errors);
         }
         if let ModuleBodyItem::CombBlock(cb) = bi {
-            validate_comb_pipe_refs(&cb.stmts, &all_pipe_ports, &m.ports, &mut errors);
+            validate_comb_pipe_refs(&cb.stmts, &all_pipe_ports, &m.ports, &pipe_depths, &mut errors);
         }
     }
     if !errors.is_empty() { return Err(errors); }
@@ -3396,16 +3408,18 @@ fn lower_pipe_reg_module(mut m: ModuleDecl) -> Result<ModuleDecl, Vec<CompileErr
 fn validate_pipe_assignments(
     stmts: &[Stmt],
     ports: &[PipePortInfoLocal],
+    pipe_depths: &std::collections::HashMap<String, u32>,
     errors: &mut Vec<CompileError>,
 ) {
     for s in stmts {
-        validate_pipe_assign_stmt(s, ports, errors);
+        validate_pipe_assign_stmt(s, ports, pipe_depths, errors);
     }
 }
 
 fn validate_pipe_assign_stmt(
     stmt: &Stmt,
     ports: &[PipePortInfoLocal],
+    pipe_depths: &std::collections::HashMap<String, u32>,
     errors: &mut Vec<CompileError>,
 ) {
     match stmt {
@@ -3442,67 +3456,76 @@ fn validate_pipe_assign_stmt(
                 }
                 _ => {}
             }
-            // Validate RHS too — no @K for K > 0 in v1.
-            validate_rhs_latency(&a.value, errors);
+            // RHS `q@K` for pipe_reg `q`: K must be 0..=N.
+            validate_rhs_latency_with_depths(&a.value, pipe_depths, errors);
         }
         Stmt::IfElse(ie) => {
-            validate_pipe_assignments(&ie.then_stmts, ports, errors);
-            validate_pipe_assignments(&ie.else_stmts, ports, errors);
+            validate_pipe_assignments(&ie.then_stmts, ports, pipe_depths, errors);
+            validate_pipe_assignments(&ie.else_stmts, ports, pipe_depths, errors);
         }
         Stmt::Match(m) => {
             for arm in &m.arms {
-                validate_pipe_assignments(&arm.body, ports, errors);
+                validate_pipe_assignments(&arm.body, ports, pipe_depths, errors);
             }
         }
-        Stmt::For(f) => validate_pipe_assignments(&f.body, ports, errors),
-        Stmt::Init(ib) => validate_pipe_assignments(&ib.body, ports, errors),
+        Stmt::For(f) => validate_pipe_assignments(&f.body, ports, pipe_depths, errors),
+        Stmt::Init(ib) => validate_pipe_assignments(&ib.body, ports, pipe_depths, errors),
         _ => {}
     }
 }
 
-fn validate_rhs_latency(e: &Expr, errors: &mut Vec<CompileError>) {
+fn validate_rhs_latency_with_depths(
+    e: &Expr,
+    pipe_depths: &std::collections::HashMap<String, u32>,
+    errors: &mut Vec<CompileError>,
+) {
+    // RHS `q@K` reads the K-th tap of pipe_reg `q` (K=0 = source comb,
+    // K=N = final output = bare `q`). Validate K ≤ N when the base is
+    // a known pipe_reg name; if the base isn't a pipe_reg, reject @K
+    // for K > 0 (legacy "no @ on plain regs" rule).
     match &e.kind {
         ExprKind::LatencyAt(inner, n) => {
-            if *n != 0 {
-                let root = pipe_reg_expr_root_name(inner);
-                errors.push(CompileError::general(
-                    &format!("reading intermediate stage `@{n}` is not yet supported — read `{root}` or `{root}@0` for the current value"),
-                    e.span,
-                ));
+            if let ExprKind::Ident(name) = &inner.kind {
+                match pipe_depths.get(name) {
+                    Some(depth) if *n > *depth => {
+                        errors.push(CompileError::general(
+                            &format!("`{name}@{n}` exceeds pipe_reg depth {depth} (valid taps: 0..={depth})"),
+                            e.span,
+                        ));
+                    }
+                    None if *n != 0 => {
+                        errors.push(CompileError::general(
+                            &format!("`{name}@{n}` — `{name}` is not a pipe_reg, only `@0` is allowed on plain signals"),
+                            e.span,
+                        ));
+                    }
+                    _ => {}
+                }
             }
-            validate_rhs_latency(inner, errors);
+            validate_rhs_latency_with_depths(inner, pipe_depths, errors);
         }
-        ExprKind::Binary(_, l, r) => { validate_rhs_latency(l, errors); validate_rhs_latency(r, errors); }
-        ExprKind::Unary(_, x) => validate_rhs_latency(x, errors),
+        ExprKind::Binary(_, l, r) => { validate_rhs_latency_with_depths(l, pipe_depths, errors); validate_rhs_latency_with_depths(r, pipe_depths, errors); }
+        ExprKind::Unary(_, x) => validate_rhs_latency_with_depths(x, pipe_depths, errors),
         ExprKind::Ternary(c, t, e2) => {
-            validate_rhs_latency(c, errors);
-            validate_rhs_latency(t, errors);
-            validate_rhs_latency(e2, errors);
+            validate_rhs_latency_with_depths(c, pipe_depths, errors);
+            validate_rhs_latency_with_depths(t, pipe_depths, errors);
+            validate_rhs_latency_with_depths(e2, pipe_depths, errors);
         }
-        ExprKind::FieldAccess(b, _) => validate_rhs_latency(b, errors),
-        ExprKind::Index(b, i) => { validate_rhs_latency(b, errors); validate_rhs_latency(i, errors); }
+        ExprKind::FieldAccess(b, _) => validate_rhs_latency_with_depths(b, pipe_depths, errors),
+        ExprKind::Index(b, i) => { validate_rhs_latency_with_depths(b, pipe_depths, errors); validate_rhs_latency_with_depths(i, pipe_depths, errors); }
         ExprKind::BitSlice(b, h, l) => {
-            validate_rhs_latency(b, errors);
-            validate_rhs_latency(h, errors);
-            validate_rhs_latency(l, errors);
+            validate_rhs_latency_with_depths(b, pipe_depths, errors);
+            validate_rhs_latency_with_depths(h, pipe_depths, errors);
+            validate_rhs_latency_with_depths(l, pipe_depths, errors);
         }
         ExprKind::MethodCall(b, _, args) => {
-            validate_rhs_latency(b, errors);
-            for a in args { validate_rhs_latency(a, errors); }
+            validate_rhs_latency_with_depths(b, pipe_depths, errors);
+            for a in args { validate_rhs_latency_with_depths(a, pipe_depths, errors); }
         }
         ExprKind::FunctionCall(_, args) => {
-            for a in args { validate_rhs_latency(a, errors); }
+            for a in args { validate_rhs_latency_with_depths(a, pipe_depths, errors); }
         }
         _ => {}
-    }
-}
-
-fn pipe_reg_expr_root_name(e: &Expr) -> String {
-    match &e.kind {
-        ExprKind::Ident(n) => n.clone(),
-        ExprKind::LatencyAt(inner, _) => pipe_reg_expr_root_name(inner),
-        ExprKind::FieldAccess(b, _) => pipe_reg_expr_root_name(b),
-        _ => "<expr>".to_string(),
     }
 }
 
@@ -3510,6 +3533,7 @@ fn validate_comb_pipe_refs(
     stmts: &[CombStmt],
     pipe_ports: &[PipePortInfoLocal],
     all_ports: &[PortDecl],
+    pipe_depths: &std::collections::HashMap<String, u32>,
     errors: &mut Vec<CompileError>,
 ) {
     for s in stmts {
@@ -3527,11 +3551,11 @@ fn validate_comb_pipe_refs(
                         }
                     }
                 }
-                validate_rhs_latency(&a.value, errors);
+                validate_rhs_latency_with_depths(&a.value, pipe_depths, errors);
             }
             CombStmt::IfElse(ie) => {
-                validate_comb_pipe_refs(&ie.then_stmts, pipe_ports, all_ports, errors);
-                validate_comb_pipe_refs(&ie.else_stmts, pipe_ports, all_ports, errors);
+                validate_comb_pipe_refs(&ie.then_stmts, pipe_ports, all_ports, pipe_depths, errors);
+                validate_comb_pipe_refs(&ie.else_stmts, pipe_ports, all_ports, pipe_depths, errors);
             }
             CombStmt::MatchExpr(_) | CombStmt::For(_) | CombStmt::Log(_) => {}
         }
