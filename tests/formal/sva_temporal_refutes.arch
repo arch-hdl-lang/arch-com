@@ -1,0 +1,15 @@
+// Negative test: same-cycle equality on a registered output is false.
+module SvaTemporalRefutes
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port req: in Bool;
+
+  reg gnt_r: Bool reset rst => false;
+
+  seq on clk rising
+    gnt_r <= req;
+  end seq
+
+  // FALSE: gnt_r at t equals req at t (no delay) — should be REFUTED.
+  assert gnt_eq_req_wrong: (not rst) implies (gnt_r == req);
+end module SvaTemporalRefutes

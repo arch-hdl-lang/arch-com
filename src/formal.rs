@@ -2118,6 +2118,25 @@ impl<'a> FormalCtx<'a> {
                     expr.span,
                 ))
             }
+            FunctionCall(name, args) if name == "past" && args.len() == 2 => {
+                // SVA past(expr, N): encode `expr` at cycle t - N. Caller
+                // (run_property) computes the min cycle for the property
+                // and skips earlier ones, so t < N indicates a bug.
+                let n = match &args[1].kind {
+                    Literal(LitKind::Dec(n)) | Literal(LitKind::Sized(_, n)) => *n as u32,
+                    _ => return Err(CompileError::general(
+                        "`past(expr, N)` requires N to be a compile-time integer literal",
+                        expr.span,
+                    )),
+                };
+                if t < n {
+                    return Err(CompileError::general(
+                        &format!("internal: past depth {n} exceeds cycle index {t} — run_property should have skipped this cycle"),
+                        expr.span,
+                    ));
+                }
+                self.encode_raw(&args[0], t - n)
+            }
             StructLiteral(_, _) | Cast(_, _) | Index(_, _)
             | FunctionCall(_, _) | Inside(_, _) | Match(_, _) | ExprMatch(_, _) | Todo => {
                 Err(CompileError::general(
@@ -2308,15 +2327,15 @@ impl<'a> FormalCtx<'a> {
                 })
             }
             BinOp::ImpliesNext => {
-                // `a |=> b` and `past(_, N)` desugar properly only in cycle-
-                // aware contexts (the BMC assert loop). The current encoder
-                // lowers expressions per single cycle, so multi-cycle SVA is
-                // not yet supported here. Use `arch build` for SVA emission
-                // and EBMC / Verilator-assert for verification until the
-                // formal cycle-shift pass lands (see plan_temporal_sva.md).
+                // `a |=> b` is best handled at the property level
+                // (run_property recognizes a top-level ImpliesNext and
+                // encodes `a@t → b@(t+1)` directly). When it appears
+                // nested inside another expression — `(a |=> b) and c` —
+                // we don't have a cycle-shift context, so reject.
                 Err(CompileError::general(
-                    "multi-cycle SVA (`|=>`, `past`) is not yet supported in `arch formal`; \
-                     use `arch build` SV output with EBMC or Verilator --assert",
+                    "`|=>` is only supported as the top-level operator of an assert/cover \
+                     property in `arch formal`; nested use (e.g. `(a |=> b) and c`) is not \
+                     yet implemented",
                     span,
                 ))
             }
@@ -2464,11 +2483,56 @@ impl<'a> FormalCtx<'a> {
         base: &str,
         args: &FormalArgs,
     ) -> Result<PropertyResult, CompileError> {
-        // Encode the property at each cycle 0..=bound.
-        let mut per_cycle: Vec<String> = Vec::with_capacity(args.bound as usize + 1);
-        for t in 0..=args.bound {
-            let term = self.encode_expr(&prop.expr, t, Some((1, false)))?;
-            per_cycle.push(as_bv1_bool(&term));
+        // Detect top-level `a |=> b` — encode `a@t → b@(t+1)` directly.
+        let toplevel_implies_next = matches!(
+            &prop.expr.kind,
+            ExprKind::Binary(BinOp::ImpliesNext, _, _)
+        );
+
+        // Compute earliest cycle the property is well-defined: for any
+        // `past(_, N)` subterm, we need t ≥ N. Skipping earlier cycles
+        // matches SVA's vacuous-true / vacuous-no-hit semantics for
+        // not-yet-defined past values.
+        let min_t = max_past_depth(&prop.expr);
+        // For top-level `|=> b`, the RHS is sampled at t+1, so the last
+        // valid t is bound-1.
+        let max_t = if toplevel_implies_next {
+            args.bound.saturating_sub(1)
+        } else {
+            args.bound
+        };
+
+        if min_t > max_t {
+            // No cycle in [0, bound] satisfies the constraints. Treat as
+            // inconclusive — bound too small to evaluate the property.
+            let msg = if toplevel_implies_next {
+                format!("bound {} too small for `|=>` (need bound ≥ 1 + max past depth = {})", args.bound, min_t + 1)
+            } else {
+                format!("bound {} too small for max past depth {}", args.bound, min_t)
+            };
+            return Ok(PropertyResult {
+                name: prop.name.clone(),
+                kind: prop.kind.clone(),
+                status: PropertyStatus::Inconclusive(msg),
+                counterexample: None,
+            });
+        }
+
+        // Encode the property at each cycle min_t..=max_t.
+        let mut per_cycle: Vec<String> = Vec::with_capacity((max_t - min_t + 1) as usize);
+        for t in min_t..=max_t {
+            let bool_term = if let ExprKind::Binary(BinOp::ImpliesNext, lhs, rhs) = &prop.expr.kind {
+                // a@t → b@(t+1) ≡ ¬a@t ∨ b@(t+1)
+                let la = self.encode_expr(lhs, t, Some((1, false)))?;
+                let lb = self.encode_expr(rhs, t + 1, Some((1, false)))?;
+                let la_b = as_bv1_bool(&la);
+                let lb_b = as_bv1_bool(&lb);
+                format!("(bvor (bvnot {la_b}) {lb_b})")
+            } else {
+                let term = self.encode_expr(&prop.expr, t, Some((1, false)))?;
+                as_bv1_bool(&term)
+            };
+            per_cycle.push(bool_term);
         }
 
         // Build the check. For Assert, we want to find ANY violation:
@@ -2945,6 +3009,39 @@ fn parse_bv_literal(s: &str) -> Option<u64> {
     None
 }
 
+// ── SVA `past(_, N)` depth analysis ─────────────────────────────────────────
+
+/// Largest `N` such that `past(_, N)` appears reachable in `e` (including
+/// nested `past(past(_, M), K)` whose depth is M + K). Determines the
+/// earliest cycle for which the property is well-defined; run_property
+/// skips cycles below this depth (vacuous-true / vacuous-no-hit).
+fn max_past_depth(e: &Expr) -> u32 {
+    use ExprKind::*;
+    match &e.kind {
+        FunctionCall(name, args) if name == "past" && args.len() == 2 => {
+            let n = match &args[1].kind {
+                Literal(LitKind::Dec(n)) | Literal(LitKind::Sized(_, n)) => *n as u32,
+                _ => 0,
+            };
+            n + max_past_depth(&args[0])
+        }
+        Binary(_, l, r) => max_past_depth(l).max(max_past_depth(r)),
+        Unary(_, x) | Cast(x, _) | Clog2(x) | Onehot(x) | Signed(x) | Unsigned(x)
+        | LatencyAt(x, _) => max_past_depth(x),
+        Ternary(c, t, el) => max_past_depth(c).max(max_past_depth(t)).max(max_past_depth(el)),
+        Index(b, i) => max_past_depth(b).max(max_past_depth(i)),
+        BitSlice(b, _, _) => max_past_depth(b),
+        PartSelect(b, s, w, _) => max_past_depth(b).max(max_past_depth(s)).max(max_past_depth(w)),
+        Concat(xs) | FunctionCall(_, xs) => xs.iter().map(max_past_depth).max().unwrap_or(0),
+        Repeat(n, x) => max_past_depth(n).max(max_past_depth(x)),
+        MethodCall(r, _, args) => max_past_depth(r)
+            .max(args.iter().map(max_past_depth).max().unwrap_or(0)),
+        FieldAccess(b, _) => max_past_depth(b),
+        StructLiteral(_, fs) => fs.iter().map(|fi| max_past_depth(&fi.value)).max().unwrap_or(0),
+        _ => 0,
+    }
+}
+
 // ── Counterexample rendering ────────────────────────────────────────────────
 
 fn find_first_failing_cycle(
@@ -2955,14 +3052,20 @@ fn find_first_failing_cycle(
     bound: u32,
 ) -> u32 {
     let target_bit = matches!(kind, AssertKind::Cover) as u64; // cover: want 1; assert: want 0 (failing)
-    for t in 0..=bound {
+    let min_t = max_past_depth(expr);
+    let max_t = if matches!(&expr.kind, ExprKind::Binary(BinOp::ImpliesNext, _, _)) {
+        bound.saturating_sub(1)
+    } else {
+        bound
+    };
+    for t in min_t..=max_t {
         let v = eval_expr_numeric(expr, t, ctx, assignments).unwrap_or(0);
         let bit = v & 1;
         if bit == target_bit {
             return t;
         }
     }
-    bound
+    max_t
 }
 
 fn render_counterexample(
@@ -3016,6 +3119,12 @@ fn eval_expr_numeric(
             assignments.get(&format!("{n}_{t}")).copied()
         }
         Binary(op, a, b) => {
+            // SVA `a |=> b`: sample b at t+1 (next cycle).
+            if matches!(op, BinOp::ImpliesNext) {
+                let va = eval_expr_numeric(a, t, ctx, assignments)?;
+                let vb = eval_expr_numeric(b, t + 1, ctx, assignments)?;
+                return Some(((va == 0) || (vb != 0)) as u64);
+            }
             let va = eval_expr_numeric(a, t, ctx, assignments)?;
             let vb = eval_expr_numeric(b, t, ctx, assignments)?;
             Some(match op {
@@ -3037,7 +3146,8 @@ fn eval_expr_numeric(
                 BinOp::BitXor => va ^ vb,
                 BinOp::Shl => va << (vb & 63),
                 BinOp::Shr => va >> (vb & 63),
-                BinOp::Implies | BinOp::ImpliesNext => ((va == 0) || (vb != 0)) as u64,
+                BinOp::Implies => ((va == 0) || (vb != 0)) as u64,
+                BinOp::ImpliesNext => unreachable!("handled above"),
             })
         }
         Unary(op, a) => {
@@ -3055,6 +3165,14 @@ fn eval_expr_numeric(
             let cv = eval_expr_numeric(c, t, ctx, assignments)?;
             if cv != 0 { eval_expr_numeric(tt, t, ctx, assignments) }
             else       { eval_expr_numeric(ee, t, ctx, assignments) }
+        }
+        FunctionCall(name, args) if name == "past" && args.len() == 2 => {
+            let n = match &args[1].kind {
+                Literal(LitKind::Dec(n)) | Literal(LitKind::Sized(_, n)) => *n as u32,
+                _ => return None,
+            };
+            if t < n { return None; }
+            eval_expr_numeric(&args[0], t - n, ctx, assignments)
         }
         _ => None,
     }
