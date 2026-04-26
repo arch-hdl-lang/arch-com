@@ -5907,3 +5907,31 @@ fn test_counter_runtime_max_port() {
     assert!(!sv.contains("'(MAX)"),
         "should not emit const MAX comparator when port is present:\n{sv}");
 }
+
+#[test]
+fn test_counter_max_param_and_port_both_rejected() {
+    let source = r#"
+        counter Bad
+          kind wrap;
+          direction: up;
+          init: 0;
+          param MAX: const = 255;
+          port clk:    in Clock<SysDomain>;
+          port rst:    in Reset<Async, Low>;
+          port inc:    in Bool;
+          port max:    in UInt<8>;
+          port value:  out UInt<8>;
+        end counter Bad
+    "#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err(), "should reject counter with both MAX param and max port");
+    let errs = result.err().unwrap();
+    assert!(errs.iter().any(|e| format!("{e:?}").contains("both")),
+        "error should mention 'both': {errs:?}");
+}
