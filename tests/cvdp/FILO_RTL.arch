@@ -1,3 +1,27 @@
+// FILO_RTL — wraps the built-in `fifo kind: lifo` to match the CVDP
+// testbench's port shape (`push`/`pop`/`data_in`/`data_out`/`full`/`empty`)
+// and same-cycle feedthrough semantics on push+pop into an empty stack.
+//
+// Race avoidance: the inst's `push_valid` / `pop_ready` inputs are
+// driven by *inlined* expressions (`push & ~(push & pop & empty_r)`),
+// not via an intermediate `feedthrough` wire. iverilog can otherwise
+// schedule the two continuous assigns out of order, sampling
+// `push_valid` before `feedthrough` propagates the new `push` value
+// — letting a spurious push slip through on the feedthrough cycle.
+fifo FiloStack
+  kind lifo;
+  param DEPTH: const = 16;
+  param T: type = UInt<8>;
+  port clk: in Clock<SysDomain>;
+  port reset: in Reset<Async>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data: in T;
+  port pop_valid: out Bool;
+  port pop_ready: in Bool;
+  port pop_data: out T;
+end fifo FiloStack
+
 module FILO_RTL
   param DATA_WIDTH: const = 8;
   param FILO_DEPTH: const = 16;
@@ -8,31 +32,42 @@ module FILO_RTL
   port pop:   in Bool;
   port data_in: in UInt<DATA_WIDTH>;
   port data_out: out pipe_reg<UInt<DATA_WIDTH>, 1> reset reset=>0;
-  port full: out pipe_reg<Bool, 1> reset reset=>0;
-  port empty: out pipe_reg<Bool, 1> reset reset=>1;
+  port full:  out pipe_reg<Bool, 1> reset reset=>false;
+  port empty: out pipe_reg<Bool, 1> reset reset=>true;
 
   default seq on clk rising;
 
-  reg top: UInt<32> reset reset=>0;
-  reg buffer: Vec<UInt<DATA_WIDTH>, FILO_DEPTH> reset reset=>0;
+  // Registered empty mirror for the feedthrough check (no comb path
+  // through the inst, no race on the inst's input gates).
+  reg empty_r: Bool reset reset=>true;
+
+  wire push_ready_w: Bool;
+  wire pop_valid_w:  Bool;
+  wire pop_data_w:   UInt<DATA_WIDTH>;
+
+  inst stack: FiloStack
+    param DEPTH = FILO_DEPTH;
+    param T = UInt<DATA_WIDTH>;
+    clk         <- clk;
+    reset       <- reset;
+    // Inlined gate: `push_valid = push & ~feedthrough` written out so
+    // there's a single continuous assign per inst input. See header.
+    push_valid  <- push & ~(push & pop & empty_r);
+    push_data   <- data_in;
+    push_ready  -> push_ready_w;
+    pop_valid   -> pop_valid_w;
+    pop_ready   <- pop & ~(push & pop & empty_r);
+    pop_data    -> pop_data_w;
+  end inst stack
 
   seq
-    if push & ~pop & ~full
-      buffer[top] <= data_in;
-      top <= (top + 1).trunc<32>();
-      empty <= false;
-      if (top + 1).trunc<32>() == FILO_DEPTH.zext<32>()
-        full <= true;
-      end if
-    elsif pop & ~push & ~empty
-      top <= (top - 1).trunc<32>();
-      data_out <= buffer[(top - 1).trunc<32>()];
-      full <= false;
-      if (top - 1).trunc<32>() == 0
-        empty <= true;
-      end if
-    elsif push & pop & empty
+    empty_r <= ~pop_valid_w;
+    empty   <= ~pop_valid_w;
+    full    <= ~push_ready_w;
+    if push & pop & empty_r
       data_out <= data_in;
+    elsif pop & pop_valid_w
+      data_out <= pop_data_w;
     end if
   end seq
 

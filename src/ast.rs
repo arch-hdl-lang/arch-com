@@ -636,6 +636,13 @@ pub struct InstDecl {
 pub struct ParamAssign {
     pub name: Ident,
     pub value: Expr,
+    /// When the parent module's matching `param NAME: type = ...` is a
+    /// type parameter, this holds the override type expression (e.g.
+    /// `UInt<DATA_WIDTH>`). The parser populates this when the inst-site
+    /// RHS parses as a type rather than a value expression. SV codegen
+    /// emits `.NAME(<type>)`; elaborate substitutes through type-using
+    /// declarations in the child.
+    pub ty: Option<TypeExpr>,
 }
 
 #[derive(Debug, Clone)]

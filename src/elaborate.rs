@@ -738,6 +738,7 @@ fn subst_inst(inst: &InstDecl, var: &str, val: i64) -> InstDecl {
             .map(|pa| ParamAssign {
                 name: pa.name.clone(),
                 value: subst_expr(pa.value.clone(), var, val),
+                ty: pa.ty.clone(),
             })
             .collect(),
         // Connection signals may reference suffix-substituted names from the
