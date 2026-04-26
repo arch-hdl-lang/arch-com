@@ -1909,6 +1909,10 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
         // site handles directing the write to stage 0 of the pipe chain;
         // reads of `q@0` collapse to the final-output field of the pipe.
         ExprKind::LatencyAt(inner, _) => cpp_expr_inner(inner, ctx, is_lhs),
+        // SVA `##N expr` is sim-irrelevant (assert/cover bodies aren't
+        // lowered to runtime checks); emit the inner expression as a
+        // safe fallback in case it's ever reached via a non-assert path.
+        ExprKind::SvaNext(_, inner) => cpp_expr_inner(inner, ctx, is_lhs),
         // SynthIdent: emit as a plain identifier. Simulation support for
         // credit_channel (counter + FIFO mirror in C++) is separate work;
         // designs that use method dispatch today work under `arch build`

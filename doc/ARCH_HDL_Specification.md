@@ -9078,12 +9078,18 @@ Planned (post-v0.41 roadmap) — lightweight temporal sugar that desugars to the
 
   `past(expr, N)`              SV `$past(expr, N)`                                                 Phase 1 — shipped
 
-  `##N a`                      N-stage shift register, reference the tail                          Phase 2
+  `##N expr`                   SV `##N expr` — forward cycle-shift                                  Phase 2 — shipped
 
-  `$rose(a)` / `$fell(a)`      `a && !past(a, 1)` / `!a && past(a, 1)`                             Phase 2
+  `rose(a)` / `fell(a)`        SV `$rose(a)` / `$fell(a)`                                          Phase 2 — shipped
   -----------------------------------------------------------------------------------------------------------------
 
-Both `past(expr, N)` and `a |=> b` are **only legal inside `assert` / `cover` bodies**. Use outside that scope is a compile error pointing back at the SVA-only restriction. `past`'s `N` must be a compile-time integer ≥ 1 (current cycle is just `expr`). All three backends (`arch build`, `arch formal`, `arch sim`) accept the syntax: `arch build` emits SV `$past` / `|=>` directly; `arch formal`'s BMC encoder uses cycle-shifted term references (`past(expr, N)` evaluates `expr` at cycle `t-N`, top-level `a |=> b` checks `a@t → b@(t+1)`, cycles below max past depth are skipped under vacuous-true / vacuous-no-hit semantics); `arch sim` does not currently lower `assert`/`cover` to runtime checks, so the temporal forms are dropped along with the rest of the assertion.
+All forms (`past(expr, N)`, `a |=> b`, `rose(a)`, `fell(a)`, `##N expr`) are **only legal inside `assert` / `cover` bodies**. Use outside that scope is a compile error pointing back at the SVA-only restriction. `past`'s `N` must be a compile-time integer ≥ 1 (current cycle is just `expr`). `##N`'s `N` must be a positive integer literal (`##0` is just `expr`).
+
+Backend behavior:
+
+- **`arch build`** emits the SV equivalents directly (`$past`, `$rose`, `$fell`, `|=>`, `##N`). Verilator (`--assert`) accepts `$past`, `$rose`, `$fell`, and `|=>`; `##N` is full-SVA and goes to EBMC / commercial tools (Verilator 5.x rejects it as "unsupported sequence expression").
+- **`arch formal`** BMC encoder supports all five via cycle-shifted term references: `past(expr, N)` at cycle `t` evaluates `expr` at `t - N`; `rose(a)` / `fell(a)` are depth-1 past edges; `##N expr` evaluates `expr` at `t + N`; top-level `a |=> b` checks `a@t → b@(t + 1 + future_depth(a))`. Cycles below `max_past_depth` and above `bound − max_future_depth − (1 if top-level |=> else 0)` are skipped under SVA's vacuous-true / vacuous-no-hit semantics.
+- **`arch sim`** does not currently lower `assert`/`cover` to runtime checks, so all temporal forms drop with the assertion.
 
 Out of scope (intentionally): sequence composition (`##[a:b]`, `[*n]`, `throughout`, `within`, `first_match`) and unbounded-liveness (`s_eventually`, strong/weak property operators). Those are left to a dedicated SVA sidecar or model-checking tool — ARCH's philosophy keeps the verification surface small enough that an LLM can generate correct usage without prior training.
 

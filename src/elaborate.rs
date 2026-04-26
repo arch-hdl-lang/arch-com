@@ -3735,7 +3735,8 @@ fn rewrite_expr_cc(e: &mut Expr, ctx: &CcDispatchCtx, errors: &mut Vec<CompileEr
         ExprKind::Binary(_, l, r) => { rewrite_expr_cc(l, ctx, errors); rewrite_expr_cc(r, ctx, errors); }
         ExprKind::Unary(_, x) | ExprKind::Cast(x, _) | ExprKind::Clog2(x)
         | ExprKind::Onehot(x) | ExprKind::Signed(x) | ExprKind::Unsigned(x)
-        | ExprKind::LatencyAt(x, _) => { rewrite_expr_cc(x, ctx, errors); }
+        | ExprKind::LatencyAt(x, _)
+        | ExprKind::SvaNext(_, x) => { rewrite_expr_cc(x, ctx, errors); }
         ExprKind::Index(b, i) => { rewrite_expr_cc(b, ctx, errors); rewrite_expr_cc(i, ctx, errors); }
         ExprKind::BitSlice(b, hi, lo) => {
             rewrite_expr_cc(b, ctx, errors); rewrite_expr_cc(hi, ctx, errors); rewrite_expr_cc(lo, ctx, errors);
@@ -4578,7 +4579,8 @@ fn contains_tlm_call(
         ExprKind::Binary(_, l, r) => contains_tlm_call(l, port_buses, bus_methods) || contains_tlm_call(r, port_buses, bus_methods),
         ExprKind::Unary(_, x) | ExprKind::Cast(x, _) | ExprKind::Clog2(x)
         | ExprKind::Onehot(x) | ExprKind::Signed(x) | ExprKind::Unsigned(x)
-        | ExprKind::LatencyAt(x, _) => contains_tlm_call(x, port_buses, bus_methods),
+        | ExprKind::LatencyAt(x, _)
+        | ExprKind::SvaNext(_, x) => contains_tlm_call(x, port_buses, bus_methods),
         ExprKind::Index(b, i) => contains_tlm_call(b, port_buses, bus_methods) || contains_tlm_call(i, port_buses, bus_methods),
         ExprKind::FieldAccess(b, _) => contains_tlm_call(b, port_buses, bus_methods),
         ExprKind::MethodCall(recv, _, args) => {

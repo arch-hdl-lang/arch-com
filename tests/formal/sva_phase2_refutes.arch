@@ -1,0 +1,12 @@
+module SvaPhase2Refutes
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in Bool;
+  reg b: Bool reset rst => false;
+  seq on clk rising
+    b <= a;
+  end seq
+
+  // Wrong: rose(b) does NOT imply a is high at the SAME cycle (b is registered).
+  assert rose_eq_a_wrong: (not rst) and rose(b) implies a;
+end module SvaPhase2Refutes

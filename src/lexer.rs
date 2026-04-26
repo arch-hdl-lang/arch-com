@@ -272,6 +272,10 @@ pub enum TokenKind {
     Pipe,
     #[token("|=>")]
     PipeImpliesNext,
+    /// SVA delay operator `##` — used as `##N expr` for forward
+    /// cycle-shift inside assert/cover bodies.
+    #[token("##")]
+    HashHash,
     #[token("^")]
     Caret,
     #[token("~")]
@@ -469,6 +473,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Amp => write!(f, "&"),
             TokenKind::Pipe => write!(f, "|"),
             TokenKind::PipeImpliesNext => write!(f, "|=>"),
+            TokenKind::HashHash => write!(f, "##"),
             TokenKind::Caret => write!(f, "^"),
             TokenKind::Tilde => write!(f, "~"),
             TokenKind::Shl => write!(f, "<<"),

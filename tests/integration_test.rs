@@ -5603,3 +5603,86 @@ fn test_past_n_must_be_positive_const() {
     let checker = TypeChecker::new(&symbols, &ast);
     assert!(checker.check().is_err(), "past(_, 0) should error");
 }
+
+#[test]
+fn test_phase2_rose_emits_dollar_rose() {
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port a: in Bool;
+          assert e: rose(a);
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("$rose(a)"), "expected $rose:\n{sv}");
+}
+
+#[test]
+fn test_phase2_fell_emits_dollar_fell() {
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port a: in Bool;
+          assert e: fell(a);
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("$fell(a)"), "expected $fell:\n{sv}");
+}
+
+#[test]
+fn test_phase2_hashhash_emits_sva_delay() {
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port a: in Bool;
+          port b: in Bool;
+          assert e: a |=> ##2 b;
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("##2 b") || sv.contains("##2b"), "expected ##2 in SV:\n{sv}");
+}
+
+#[test]
+fn test_phase2_rose_outside_assert_rejected() {
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port a: in Bool;
+          port out: out Bool;
+          comb out = rose(a); end comb
+        end module M
+    "#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = TypeChecker::new(&symbols, &ast);
+    assert!(checker.check().is_err(), "rose() outside assert should be rejected");
+}
+
+#[test]
+fn test_phase2_hashhash_outside_assert_rejected() {
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port a: in Bool;
+          port out: out Bool;
+          comb out = ##1 a; end comb
+        end module M
+    "#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = TypeChecker::new(&symbols, &ast);
+    assert!(checker.check().is_err(), "##N outside assert should be rejected");
+}
