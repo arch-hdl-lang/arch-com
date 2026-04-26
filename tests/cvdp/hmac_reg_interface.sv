@@ -14,147 +14,55 @@ module hmac_reg_interface #(
   output logic hmac_key_error
 );
 
-  // FSM state encoding
-  logic [2:0] ST_IDLE;
-  assign ST_IDLE = 0;
-  logic [2:0] ST_ANALYZE;
-  assign ST_ANALYZE = 1;
-  logic [2:0] ST_XOR_DATA;
-  assign ST_XOR_DATA = 2;
-  logic [2:0] ST_WRITE;
-  assign ST_WRITE = 3;
-  logic [2:0] ST_LOST;
-  assign ST_LOST = 4;
-  logic [2:0] ST_CHECK_KEY;
-  assign ST_CHECK_KEY = 5;
-  logic [2:0] ST_TRIG_WAIT;
-  assign ST_TRIG_WAIT = 6;
-  logic [2:0] current_state;
+  typedef enum logic [2:0] {
+    IDLE = 3'd0,
+    ANALYZE = 3'd1,
+    XOR_DATA = 3'd2,
+    WRITE = 3'd3,
+    LOST = 3'd4,
+    CHECK_KEY = 3'd5,
+    TRIG_WAIT = 3'd6
+  } hmac_reg_interface_state_t;
+  
+  hmac_reg_interface_state_t state_r, state_next;
+  
   logic [DATA_WIDTH-1:0] hmac_key;
   logic [DATA_WIDTH-1:0] hmac_data;
   logic [255:0] [DATA_WIDTH-1:0] registers;
-  // xor_data: current wdata XOR'd with '01010101...' mask — exposed for testbench visibility.
-  // The Python model sets processed_data = wdata (plain) for all states except PROCESS/XOR_DATA,
-  // and in WRITE state it immediately uses that overwritten value. This means the WRITE state
-  // always writes the current wdata directly, not a previously XOR'd value.
+  
+  logic [2:0] current_state;
+  assign current_state = state_r;
+  
   logic [DATA_WIDTH-1:0] xor_data;
   logic [DATA_WIDTH-1:0] xor_mask;
-  always_comb begin
-    xor_mask = DATA_WIDTH'($unsigned(0));
-    for (int i = 0; i <= DATA_WIDTH / 2 - 1; i++) begin
-      xor_mask[i * 2 +: 2] = 2'd1;
-    end
-  end
-  assign xor_data = wdata ^ xor_mask;
-  // Key validation: 2 MSB and 2 LSB of hmac_key must be zero for key to be valid
   logic key_valid;
-  assign key_valid = (hmac_key[DATA_WIDTH - 2 +: 2] == 0) & (hmac_key[1:0] == 0);
-  // Next-cycle hmac_key (what hmac_key will be after the next clock edge)
-  // Used so hmac_key_error is updated in same cycle as hmac_key write
   logic [DATA_WIDTH-1:0] next_hmac_key;
-  always_comb begin
-    if ((current_state == ST_WRITE) & (addr == 0)) begin
-      next_hmac_key = wdata;
-    end else begin
-      next_hmac_key = hmac_key;
-    end
-  end
   logic next_key_valid;
-  assign next_key_valid = (next_hmac_key[DATA_WIDTH - 2 +: 2] == 0) & (next_hmac_key[1:0] == 0);
-  // Next state combinational logic
-  logic [2:0] next_state;
-  always_comb begin
-    if (current_state == ST_IDLE) begin
-      if (write_en) begin
-        next_state = ST_ANALYZE;
-      end else begin
-        next_state = ST_IDLE;
-      end
-    end else if (current_state == ST_ANALYZE) begin
-      if (wdata[DATA_WIDTH - 1 +: 1] == 1) begin
-        next_state = ST_XOR_DATA;
-      end else begin
-        next_state = ST_WRITE;
-      end
-    end else if (current_state == ST_XOR_DATA) begin
-      next_state = ST_WRITE;
-    end else if (current_state == ST_WRITE) begin
-      if (write_en) begin
-        next_state = ST_IDLE;
-      end else begin
-        next_state = ST_LOST;
-      end
-    end else if (current_state == ST_LOST) begin
-      if (read_en) begin
-        next_state = ST_CHECK_KEY;
-      end else begin
-        next_state = ST_LOST;
-      end
-    end else if (current_state == ST_CHECK_KEY) begin
-      if (key_valid) begin
-        next_state = ST_TRIG_WAIT;
-      end else begin
-        next_state = ST_WRITE;
-      end
-    end else if (current_state == ST_TRIG_WAIT) begin
-      if (i_wait_en) begin
-        next_state = ST_TRIG_WAIT;
-      end else if ((hmac_data != 0) & (hmac_key != 0)) begin
-        next_state = ST_IDLE;
-      end else begin
-        next_state = ST_WRITE;
-      end
-    end else begin
-      next_state = ST_IDLE;
-    end
-  end
-  // Sequential: state register
+  
   always_ff @(posedge clk or negedge rst_n) begin
     if ((!rst_n)) begin
-      current_state <= 0;
-    end else begin
-      current_state <= next_state;
-    end
-  end
-  // Sequential: key error flag — updated with look-ahead so it reflects
-  // the key value being written in WRITE state in the same cycle
-  always_ff @(posedge clk or negedge rst_n) begin
-    if ((!rst_n)) begin
+      state_r <= IDLE;
+      hmac_key <= 0;
+      hmac_data <= 0;
+      for (int __ri_registers = 0; __ri_registers < 256; __ri_registers++) begin
+        registers[__ri_registers] <= 0;
+      end
+      rdata <= 0;
+      hmac_valid <= 1'b0;
       hmac_key_error <= 1'b0;
     end else begin
+      state_r <= state_next;
+      // Datapath regs (alongside FSM state)
+      // Internal wires for the look-ahead key-error path.
+      // The CVDP TB probes `dut.current_state.value`; alias state_r so the
+      // test can read it without renaming inside the auto-generated FSM.
+      // xor_mask: alternating-1s pattern (01010101...) — TB-visible.
+      // Key validation: 2 MSB and 2 LSB of hmac_key must be zero.
+      // Look-ahead so hmac_key_error tracks the key being written *this* cycle.
       hmac_key_error <= ~next_key_valid;
-    end
-  end
-  // Sequential: Write and valid logic
-  // The model writes wdata (current cycle's value) directly in WRITE state.
-  always_ff @(posedge clk or negedge rst_n) begin
-    if ((!rst_n)) begin
-      hmac_data <= 0;
-      hmac_key <= 0;
       hmac_valid <= 1'b0;
-      for (int __ri0 = 0; __ri0 < 256; __ri0++) begin
-        registers[__ri0] <= 0;
-      end
-    end else begin
-      hmac_valid <= 1'b0;
-      if (current_state == ST_WRITE) begin
-        if (addr == 0) begin
-          hmac_key <= wdata;
-        end else if (addr == 1) begin
-          hmac_data <= wdata;
-          hmac_valid <= 1'b1;
-        end else begin
-          registers[addr] <= wdata;
-        end
-      end
-    end
-  end
-  // Sequential: Read logic
-  always_ff @(posedge clk or negedge rst_n) begin
-    if ((!rst_n)) begin
-      rdata <= 0;
-    end else begin
-      if (read_en & (current_state != ST_WRITE)) begin
+      // Reads: serve from non-WRITE states.
+      if (read_en & (state_r != WRITE)) begin
         if (addr == 0) begin
           rdata <= hmac_key;
         end else if (addr == 1) begin
@@ -163,8 +71,110 @@ module hmac_reg_interface #(
           rdata <= registers[addr];
         end
       end
+      case (state_r)
+        WRITE: begin
+          if (addr == 0) begin
+            hmac_key <= wdata;
+          end else if (addr == 1) begin
+            hmac_data <= wdata;
+            hmac_valid <= 1'b1;
+          end else begin
+            registers[addr] <= wdata;
+          end
+        end
+        default: ;
+      endcase
     end
   end
+  
+  always_comb begin
+    state_next = state_r; // hold by default
+    case (state_r)
+      IDLE: begin
+        if (write_en) state_next = ANALYZE;
+      end
+      ANALYZE: begin
+        if (wdata[DATA_WIDTH - 1 +: 1] == 1) state_next = XOR_DATA;
+        else if (wdata[DATA_WIDTH - 1 +: 1] == 0) state_next = WRITE;
+      end
+      XOR_DATA: begin
+        state_next = WRITE;
+      end
+      WRITE: begin
+        if (write_en) state_next = IDLE;
+        else if (!write_en) state_next = LOST;
+      end
+      LOST: begin
+        if (read_en) state_next = CHECK_KEY;
+      end
+      CHECK_KEY: begin
+        if (key_valid) state_next = TRIG_WAIT;
+        else if (!key_valid) state_next = WRITE;
+      end
+      TRIG_WAIT: begin
+        if (i_wait_en) state_next = TRIG_WAIT;
+        else if (!i_wait_en & (hmac_data != 0) & (hmac_key != 0)) state_next = IDLE;
+        else if (!i_wait_en & ((hmac_data == 0) | (hmac_key == 0))) state_next = WRITE;
+      end
+      default: state_next = state_r;
+    endcase
+  end
+  
+  always_comb begin
+    xor_mask = DATA_WIDTH'($unsigned(0));
+    for (int i = 0; i <= DATA_WIDTH / 2 - 1; i++) begin
+      xor_mask[i * 2 +: 2] = 2'd1;
+    end
+    xor_data = wdata ^ xor_mask;
+    key_valid = (hmac_key[DATA_WIDTH - 2 +: 2] == 0) & (hmac_key[1:0] == 0);
+    if ((state_r == WRITE) & (addr == 0)) begin
+      next_hmac_key = wdata;
+    end else begin
+      next_hmac_key = hmac_key;
+    end
+    next_key_valid = (next_hmac_key[DATA_WIDTH - 2 +: 2] == 0) & (next_hmac_key[1:0] == 0);
+    case (state_r)
+      IDLE: begin
+      end
+      ANALYZE: begin
+      end
+      XOR_DATA: begin
+      end
+      WRITE: begin
+      end
+      LOST: begin
+      end
+      CHECK_KEY: begin
+      end
+      TRIG_WAIT: begin
+      end
+      default: ;
+    endcase
+  end
+  
+  // synopsys translate_off
+  _auto_legal_state: assert property (@(posedge clk) rst_n |-> state_r < 7)
+    else $fatal(1, "FSM ILLEGAL STATE: hmac_reg_interface.state_r = %0d", state_r);
+  _auto_reach_IDLE: cover property (@(posedge clk) state_r == IDLE);
+  _auto_reach_ANALYZE: cover property (@(posedge clk) state_r == ANALYZE);
+  _auto_reach_XOR_DATA: cover property (@(posedge clk) state_r == XOR_DATA);
+  _auto_reach_WRITE: cover property (@(posedge clk) state_r == WRITE);
+  _auto_reach_LOST: cover property (@(posedge clk) state_r == LOST);
+  _auto_reach_CHECK_KEY: cover property (@(posedge clk) state_r == CHECK_KEY);
+  _auto_reach_TRIG_WAIT: cover property (@(posedge clk) state_r == TRIG_WAIT);
+  _auto_tr_IDLE_to_ANALYZE: cover property (@(posedge clk) state_r == IDLE && state_next == ANALYZE);
+  _auto_tr_ANALYZE_to_XOR_DATA: cover property (@(posedge clk) state_r == ANALYZE && state_next == XOR_DATA);
+  _auto_tr_ANALYZE_to_WRITE: cover property (@(posedge clk) state_r == ANALYZE && state_next == WRITE);
+  _auto_tr_XOR_DATA_to_WRITE: cover property (@(posedge clk) state_r == XOR_DATA && state_next == WRITE);
+  _auto_tr_WRITE_to_IDLE: cover property (@(posedge clk) state_r == WRITE && state_next == IDLE);
+  _auto_tr_WRITE_to_LOST: cover property (@(posedge clk) state_r == WRITE && state_next == LOST);
+  _auto_tr_LOST_to_CHECK_KEY: cover property (@(posedge clk) state_r == LOST && state_next == CHECK_KEY);
+  _auto_tr_CHECK_KEY_to_TRIG_WAIT: cover property (@(posedge clk) state_r == CHECK_KEY && state_next == TRIG_WAIT);
+  _auto_tr_CHECK_KEY_to_WRITE: cover property (@(posedge clk) state_r == CHECK_KEY && state_next == WRITE);
+  _auto_tr_TRIG_WAIT_to_TRIG_WAIT: cover property (@(posedge clk) state_r == TRIG_WAIT && state_next == TRIG_WAIT);
+  _auto_tr_TRIG_WAIT_to_IDLE: cover property (@(posedge clk) state_r == TRIG_WAIT && state_next == IDLE);
+  _auto_tr_TRIG_WAIT_to_WRITE: cover property (@(posedge clk) state_r == TRIG_WAIT && state_next == WRITE);
+  // synopsys translate_on
 
 endmodule
 
