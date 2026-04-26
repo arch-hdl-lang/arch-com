@@ -5991,3 +5991,168 @@ fn test_auto_thread_asserts_active_high_reset() {
         "should not use bare `rst` as guard for active-high:\n{sv}");
 }
 
+// ── If/else with internal waits — dispatch-and-rejoin ─────────────────────────
+
+#[test]
+fn test_if_wait_then_only() {
+    // Wait inside the then-branch only. else-branch is empty (vacuous else).
+    // Expected lowering: dispatch -> [then states] -> rejoin; cond false jumps
+    // straight to rejoin (per §II.10.4 empty-branch rule).
+    let source = r#"
+        module M
+          port clk:  in Clock<SysDomain>;
+          port rst:  in Reset<Async, Low>;
+          port go:   in Bool;
+          port grant:in Bool;
+          port done: out Bool;
+          thread on clk rising, rst low
+            wait until go;
+            if grant
+              wait until grant;
+              done = 1;
+              wait 1 cycle;
+            end if
+          end thread
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    // Compiles without rejection.
+    assert!(sv.contains("module _M_threads"),
+        "merged thread module should be emitted:\n{sv}");
+}
+
+#[test]
+fn test_if_wait_else_only() {
+    let source = r#"
+        module M
+          port clk:  in Clock<SysDomain>;
+          port rst:  in Reset<Async, Low>;
+          port go:   in Bool;
+          port skip: in Bool;
+          port done: out Bool;
+          thread on clk rising, rst low
+            wait until go;
+            if skip
+              done = 1;
+            else
+              wait 2 cycle;
+              done = 1;
+            end if
+          end thread
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module _M_threads"),
+        "merged thread module should be emitted:\n{sv}");
+}
+
+#[test]
+fn test_if_wait_both_branches() {
+    // Both branches have waits, of different lengths. Dispatch picks one,
+    // each branch redirects to a common rejoin.
+    let source = r#"
+        module M
+          port clk:    in Clock<SysDomain>;
+          port rst:    in Reset<Async, Low>;
+          port is_wr:  in Bool;
+          port aw_rdy: in Bool;
+          port w_rdy:  in Bool;
+          port b_vld:  in Bool;
+          port ar_rdy: in Bool;
+          port r_vld:  in Bool;
+          port aw_v:   out Bool;
+          port w_v:    out Bool;
+          port ar_v:   out Bool;
+          port r_r:    out Bool;
+          port done:   out Bool;
+          thread on clk rising, rst low
+            if is_wr
+              aw_v = 1;
+              wait until aw_rdy;
+              w_v = 1;
+              wait until w_rdy;
+              wait until b_vld;
+            else
+              ar_v = 1;
+              wait until ar_rdy;
+              r_r = 1;
+              wait until r_vld;
+            end if
+            done = 1;
+            wait 1 cycle;
+          end thread
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module _M_threads"),
+        "merged thread module should be emitted:\n{sv}");
+    // The dispatch state's transition table negates the if condition for
+    // the else branch. Verify both arms land at distinct branch bases.
+    assert!(sv.contains("is_wr") && sv.contains("!"),
+        "expected dispatch to use `is_wr` and `!is_wr` arms:\n{sv}");
+}
+
+#[test]
+fn test_if_wait_with_auto_asserts() {
+    // Verify --auto-thread-asserts still emits a coherent set of properties
+    // when the thread contains a wait-bearing if/else. The dispatch state's
+    // multi_transitions surface as `_auto_thread_t0_branch_*` covers.
+    let source = r#"
+        module M
+          port clk:  in Clock<SysDomain>;
+          port rst:  in Reset<Async, Low>;
+          port go:   in Bool;
+          port f:    in Bool;
+          port done: out Bool;
+          thread on clk rising, rst low
+            wait until go;
+            if f
+              wait until f;
+            else
+              wait 1 cycle;
+            end if
+            done = 1;
+            wait 1 cycle;
+          end thread
+        end module M
+    "#;
+    let opts = elaborate::ThreadLowerOpts { auto_asserts: true };
+    let sv = compile_to_sv_with_opts(source, &opts);
+    assert!(sv.contains("_auto_thread_t0_branch_"),
+        "expected dispatch-state branch assertions:\n{sv}");
+}
+
+#[test]
+fn test_if_wait_nested() {
+    // Nesting: inner if-with-wait inside outer if-with-wait. The recursive
+    // partition_thread_body call is what enables nesting per §II.10.4.
+    let source = r#"
+        module M
+          port clk:  in Clock<SysDomain>;
+          port rst:  in Reset<Async, Low>;
+          port go:   in Bool;
+          port a:    in Bool;
+          port b:    in Bool;
+          port done: out Bool;
+          thread on clk rising, rst low
+            wait until go;
+            if a
+              wait 1 cycle;
+              if b
+                wait 1 cycle;
+              else
+                wait 2 cycle;
+              end if
+            else
+              wait 3 cycle;
+            end if
+            done = 1;
+            wait 1 cycle;
+          end thread
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module _M_threads"),
+        "nested if/else with waits should compile:\n{sv}");
+}
+

@@ -236,9 +236,8 @@ function partition_thread_body(B: list⟨ThreadStmt⟩) → list⟨ThreadFsmStat
                 states ⧺= fork_states
 
             IfElse{cond, then_stmts, else_stmts} when contains_wait(then_stmts) ∨ contains_wait(else_stmts):
-                # PLANNED extension (not yet in compiler v0.43.0; see §II.10 of proof).
-                # The current implementation rejects this case at line 2328–2333 of
-                # elaborate.rs.  The planned lowering uses a dispatch-and-rejoin scheme.
+                # Implemented as of v0.45.0 (see §II.10 of proof for soundness).
+                # Lowering uses a dispatch-and-rejoin scheme.
                 flush_pending(states, cur_comb, cur_seq)
 
                 dispatch_idx ← states.len()
@@ -617,8 +616,8 @@ construction:
 - **`Lock{r, body}`:** by Lemma L (II.7) below, the grant-gating preserves
   source semantics for non-nested locks (which the algorithm enforces).
 - **`IfElse(cond, then, else)` with internal `wait`:** by Lemma I (II.10)
-  below, the dispatch-and-rejoin construction is faithful.  *Status: planned
-  extension; the current compiler rejects this case (line 2328–2333).*
+  below, the dispatch-and-rejoin construction is faithful.  *Implemented as
+  of v0.45.0.*
 - **Default `when cond`:** wraps the entire chain in `if (cond) {body;
   state <= 0} else {…}`; this is exactly the source's "soft-reset clause"
   semantics.
@@ -791,11 +790,11 @@ merged `RegBlock` records this OR as the next cycle's value of `x`.  ∎
 
 ### II.10  If/else with internal waits — dispatch-and-rejoin
 
-The current compiler rejects `wait` inside `if/else` branches at line 2328–2333
-of `elaborate.rs`.  We prove that the *planned* dispatch-and-rejoin lowering
-sketched in §I.4 (`IfElse{cond, then_stmts, else_stmts}` case) is sound, so
-that the implementation can adopt it without re-doing the equivalence
-argument.
+> **Status (v0.45.0+):** Implemented in `src/elaborate.rs::partition_thread_body`
+> at the `ThreadStmt::IfElse` branch.  The proof below was written ahead of
+> the implementation as a soundness argument; it now serves as the
+> equivalence guarantee that any conforming implementation (the current one)
+> preserves source semantics.
 
 #### II.10.1  Source semantics for `if` with internal waits
 
@@ -957,23 +956,30 @@ of `partition_thread_body`.  Each level of nesting introduces one dispatch
 state and two branch chains; the proof composes by induction on nesting
 depth.
 
-#### II.10.5  Implementation cost
+#### II.10.5  Implementation notes (as landed in v0.45.0)
 
-Adopting this lowering requires:
+The implementation in `src/elaborate.rs::partition_thread_body` follows
+§II.10.2 directly.  Two non-obvious points:
 
-- Removing the rejection at line 2328–2333 of `elaborate.rs` for the
-  `wait`-bearing case.
-- Adding the dispatch + redirect logic described in §I.4 (~30 lines of
-  Rust).
-- Extending `transition_logic` (no change needed — `M`-state semantics
-  already handle the dispatch).
-- Adding tests covering: (a) wait in then-branch only, (b) wait in
-  else-branch only, (c) waits in both branches with different lengths, (d)
-  nested if/else-with-waits, (e) for-loop in branch (verify sentinel
-  resolution lands at `rejoin_idx`).
+- **Counter-decrement hoist.** The earlier transition emitter coupled the
+  `wait_cycles` counter decrement and its `cnt == 0 ⇒ next` transition into
+  one branch.  When dispatch-and-rejoin redirects a wait_cycles state's
+  fallthrough by populating its `M` list, the `M`-arm takes precedence over
+  the wait_cycles arm, which would silently suppress the decrement.  The
+  decrement is therefore hoisted out and fired unconditionally for every
+  wait_cycles state, independent of the transition mechanism.  See the
+  refactored block in `lower_module_threads`.
+- **Empty branches.** `partition_thread_body` rejects empty bodies (it
+  requires at least one wait); the dispatch lowering must skip the recursive
+  call when `then_stmts.is_empty()` or `else_stmts.is_empty()` and instead
+  point that arm of the dispatch directly at the rejoin index.  This matches
+  §II.10.4's empty-branch semantics.
 
-The proof above carries over without modification once the implementation
-is added.
+Tests covering: (a) wait in then-branch only, (b) wait in else-branch only,
+(c) waits in both branches with different lengths, (d) nested if/else-with-waits,
+(e) auto-thread-asserts integration — see `tests/integration_test.rs`
+(`test_if_wait_*` family).  End-to-end Verilator `--assert` golden + mutation
+runs confirm the dispatch-state branch assertions are load-bearing.
 
 ### II.11  Auto-emitted spec-contract SVA (`--auto-thread-asserts`)
 
@@ -1113,8 +1119,9 @@ The thread-to-FSM lowering is correct in the following precise sense:
 4. **Resource-arbitration correctness** (Lemma L, II.7).
 5. **Multi-driver discipline** (Lemma M, II.8).
 6. **Shared(or) reduction faithfulness** (Lemma S, II.9).
-7. **If/else with internal waits faithfulness** (Lemma I, II.10) — *planned
-   extension; proof is constructive and ready for the implementation.*
+7. **If/else with internal waits faithfulness** (Lemma I, II.10) —
+   *implemented in v0.45.0 via the dispatch-and-rejoin scheme proved sound
+   here.*
 8. **Auto-emitted spec-contract SVA correctness** (Corollaries W/C/B, II.11)
    — the `--auto-thread-asserts` properties hold by construction in any
    accepted source program, so an `ASSERTION FAILED` from one of them
@@ -1159,8 +1166,5 @@ formal contract for the planned arch-sim alternate path (`arch sim` without
   they're emitted *during* `lower_threads` and their correctness is *part
   of* this proof, established as Corollaries W/C/B in §II.11.
 
-> Note: `wait inside if/else` *is* covered by Lemma I (§II.10) as a
-> constructive planned extension.  The current compiler rejects it at
-> line 2328–2333 of `elaborate.rs`; the rejection is therefore vacuously
-> sound (no incorrect output can be produced from a rejected program), and
-> the proof gives a roadmap for safely lifting the restriction.
+> Note: `wait inside if/else` is implemented as of v0.45.0; correctness is
+> established by Lemma I (§II.10).

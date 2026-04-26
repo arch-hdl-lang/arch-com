@@ -1,6 +1,6 @@
 # 20.  Thread Block
 
-> **Status: Implemented.** All features below are supported: `wait until`, `wait N cycle`, `thread once`, named threads, `fork`/`join`, `for` loops with `wait`, `generate for/if` with threads, `resource`/`lock`, `shared(or|and)`. Compiler lowers thread → FSM + inst at AST level.
+> **Status: Implemented.** All features below are supported: `wait until`, `wait N cycle`, `thread once`, named threads, `fork`/`join`, `for` loops with `wait`, **`if/else` with `wait` inside either branch (dispatch-and-rejoin lowering, v0.45.0+)**, `generate for/if` with threads, `resource`/`lock`, `shared(or|and)`. Compiler lowers thread → FSM + inst at AST level.
 
 A `thread` block is a sequential block that may span multiple clock cycles.  The compiler lowers it to a synthesizable FSM — each `wait` statement becomes a state boundary.  It provides the same expressive power as a hand-written `fsm` but reads as straight-line sequential code.
 
@@ -61,6 +61,7 @@ All primitives from §19.2.2 are available inside `thread` blocks:
 | Primitive | Meaning |
 |-----------|---------|
 | `wait until cond` | Pause until condition is true — becomes a state boundary |
+| `if cond { … wait … } else { … wait … }` | Either or both branches may contain `wait`. Lowered as a single dispatch state plus per-branch substates that rejoin after the `if/else` (v0.45.0+; see [doc/thread_lowering_proof.md §II.10](thread_lowering_proof.md)). |
 | `wait N cycle` | Pause for exactly N clock cycles — counter + state boundary |
 | `fork ... and ... join` | Drive parallel channels — per-arm done-bit registers |
 | `if/elsif/else` | Conditional logic within a state |
