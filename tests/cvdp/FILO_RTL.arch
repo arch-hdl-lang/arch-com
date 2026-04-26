@@ -3,7 +3,7 @@
 // and same-cycle feedthrough semantics on push+pop into an empty stack.
 //
 // Race avoidance: the inst's `push_valid` / `pop_ready` inputs are
-// driven by *inlined* expressions (`push & ~(push & pop & empty_r)`),
+// driven by *inlined* expressions (`push & ~(push & pop & empty)`),
 // not via an intermediate `feedthrough` wire. iverilog can otherwise
 // schedule the two continuous assigns out of order, sampling
 // `push_valid` before `feedthrough` propagates the new `push` value
@@ -37,10 +37,6 @@ module FILO_RTL
 
   default seq on clk rising;
 
-  // Registered empty mirror for the feedthrough check (no comb path
-  // through the inst, no race on the inst's input gates).
-  reg empty_r: Bool reset reset=>true;
-
   wire push_ready_w: Bool;
   wire pop_valid_w:  Bool;
   wire pop_data_w:   UInt<DATA_WIDTH>;
@@ -52,19 +48,18 @@ module FILO_RTL
     reset       <- reset;
     // Inlined gate: `push_valid = push & ~feedthrough` written out so
     // there's a single continuous assign per inst input. See header.
-    push_valid  <- push & ~(push & pop & empty_r);
+    push_valid  <- push & ~(push & pop & empty);
     push_data   <- data_in;
     push_ready  -> push_ready_w;
     pop_valid   -> pop_valid_w;
-    pop_ready   <- pop & ~(push & pop & empty_r);
+    pop_ready   <- pop & ~(push & pop & empty);
     pop_data    -> pop_data_w;
   end inst stack
 
   seq
-    empty_r <= ~pop_valid_w;
-    empty   <= ~pop_valid_w;
-    full    <= ~push_ready_w;
-    if push & pop & empty_r
+    empty <= ~pop_valid_w;
+    full  <= ~push_ready_w;
+    if push & pop & empty
       data_out <= data_in;
     elsif pop & pop_valid_w
       data_out <= pop_data_w;
