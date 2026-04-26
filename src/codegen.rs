@@ -7436,16 +7436,11 @@ impl<'a> Codegen<'a> {
 
         let n = &c.name.name.clone();
 
-        // Find relevant params
-        let max_param = c.params.iter()
-            .find(|p| p.name.name == "MAX")
-            .and_then(|p| p.default.as_ref())
-            .map(|e| self.emit_expr_str(e));
-
-        // Optional runtime-programmable max. Declared as
-        // `port max: in UInt<W>` on the counter; takes precedence over
-        // any compile-time MAX param. Used for wrap target, saturate
-        // ceiling, and the `at_max` comparator.
+        // Optional max signal. Declared as `port max: in UInt<W>` on the
+        // counter; used for wrap target, saturate ceiling, and the `at_max`
+        // comparator. Callers tie it off to a constant for fixed-max counters
+        // (synthesis folds it). When absent, the counter wraps at the natural
+        // width bound (all-ones).
         let max_port = c.ports.iter()
             .find(|p| p.name.name == "max" && matches!(p.direction, Direction::In))
             .map(|_| "max".to_string());
@@ -7543,8 +7538,6 @@ impl<'a> Codegen<'a> {
             (CounterDirection::Up, CounterMode::Wrap) => {
                 let max_cond = if let Some(mp) = &max_port {
                     format!("count_r == {mp}")
-                } else if max_param.is_some() {
-                    format!("count_r == {count_width}'(MAX)")
                 } else {
                     format!("&count_r")  // all bits set
                 };
@@ -7560,8 +7553,6 @@ impl<'a> Codegen<'a> {
                 let min_cond = "count_r == '0";
                 let max_val = if let Some(mp) = &max_port {
                     mp.clone()
-                } else if max_param.is_some() {
-                    format!("{count_width}'(MAX)")
                 } else {
                     format!("'1")
                 };
@@ -7580,8 +7571,6 @@ impl<'a> Codegen<'a> {
             (CounterDirection::Up, CounterMode::Saturate) => {
                 let max_cond = if let Some(mp) = &max_port {
                     format!("count_r < {mp}")
-                } else if max_param.is_some() {
-                    format!("count_r < {count_width}'(MAX)")
                 } else {
                     format!("!(&count_r)")
                 };
@@ -7642,8 +7631,6 @@ impl<'a> Codegen<'a> {
         if c.ports.iter().any(|p| p.name.name == "at_max") {
             let max_expr = if let Some(mp) = &max_port {
                 format!("count_r == {mp}")
-            } else if max_param.is_some() {
-                format!("count_r == {count_width}'(MAX)")
             } else {
                 format!("&count_r")
             };
@@ -7659,20 +7646,11 @@ impl<'a> Codegen<'a> {
             self.line("");
             self.line("// synopsys translate_off");
             if let Some(mp) = &max_port {
-                // Runtime max — assert against the port value.
                 self.line(&format!(
                     "_auto_count_range: assert property (@(posedge {clk}) count_r <= {mp})"
                 ));
                 self.line(&format!(
                     "  else $fatal(1, \"COUNTER OVERFLOW: {n}.count_r > {mp}\");"
-                ));
-            } else if max_param.is_some() {
-                // Use the SV parameter name `MAX` so instantiation overrides are honored.
-                self.line(&format!(
-                    "_auto_count_range: assert property (@(posedge {clk}) count_r <= {count_width}'(MAX))"
-                ));
-                self.line(&format!(
-                    "  else $fatal(1, \"COUNTER OVERFLOW: {n}.count_r > MAX\");"
                 ));
             }
             self.line("// synopsys translate_on");

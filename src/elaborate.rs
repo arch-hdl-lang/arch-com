@@ -1113,12 +1113,6 @@ pub fn try_eval_i64(expr: &Expr, param_vals: &HashMap<String, i64>) -> Option<i6
     }
 }
 
-/// Public re-export so the parser can pre-evaluate counter
-/// `generate_if` conditions using counter param defaults.
-pub fn try_eval_bool_pub(expr: &Expr, param_vals: &HashMap<String, i64>) -> Option<bool> {
-    try_eval_bool(expr, param_vals)
-}
-
 fn try_eval_bool(expr: &Expr, param_vals: &HashMap<String, i64>) -> Option<bool> {
     match &expr.kind {
         ExprKind::Bool(b) => Some(*b),

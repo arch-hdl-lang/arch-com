@@ -62,6 +62,7 @@ module BufMgr
     clk   <- clk;
     rst   <- rst or setup_at_max;
     inc   <- fl_do_prefetch;
+    max   <- 14'd16383;
     value -> fl_rd_ptr_val;
   end inst fl_rd_ctr
 
@@ -69,6 +70,7 @@ module BufMgr
     clk   <- clk;
     rst   <- rst or (setup_at_max and not setup_done);
     inc   <- dq2_valid;
+    max   <- 14'd16383;
     value -> fl_wr_ptr_val;
   end inst fl_wr_ctr
 
@@ -166,6 +168,7 @@ module BufMgr
     clk    <- clk;
     rst    <- rst;
     inc    <- not setup_done;
+    max    <- 14'd16383;
     value  -> setup_ctr_val;
     at_max -> setup_at_max;
   end inst setup_ctr

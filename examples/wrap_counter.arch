@@ -6,10 +6,10 @@ counter WrapCounter
   kind wrap;
   direction: up;
   init: 0;
-  param MAX: const = 15;
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
   port inc: in Bool;
+  port max: in UInt<4>;
   port value: out UInt<4>;
   port at_max: out Bool;
 end counter WrapCounter

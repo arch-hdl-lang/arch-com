@@ -88,11 +88,11 @@ counter BeatCounter
   kind       wrap;
   direction: up;
   init: 0;
-  param MAX: const = 255;
   port clk:    in Clock<SysDomain>;
   port rst:    in Reset<Sync>;
   port inc:    in Bool;
   port clear:  in Bool;
+  port max:    in UInt<8>;
   port value:  out UInt<8>;
   port at_max: out Bool;
 end counter BeatCounter
@@ -257,6 +257,7 @@ module DmaEngine
     rst    <- rst;
     inc    <- read_fired;
     clear  <- read_done;
+    max    <- 8'd255;
     value  -> read_val;
     at_max -> read_at_max_r;
   end inst read_ctr
@@ -266,6 +267,7 @@ module DmaEngine
     rst    <- rst;
     inc    <- beat_fired;
     clear  <- all_done;
+    max    <- 8'd255;
     value  -> beat_val;
     at_max -> at_max_r;
   end inst beat

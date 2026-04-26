@@ -5,12 +5,11 @@ expression: sv
 // domain SysDomain
 //   freq_mhz: 100
 
-module WrapCounter #(
-  parameter int MAX = 15
-) (
+module WrapCounter (
   input logic clk,
   input logic rst,
   input logic inc,
+  input logic [3:0] max,
   output logic [3:0] value,
   output logic at_max
 );
@@ -19,16 +18,16 @@ module WrapCounter #(
   always_ff @(posedge clk) begin
     if (rst) count_r <= 0;
     else if (inc) begin
-      if (count_r == 4'(MAX)) count_r <= 0;
+      if (count_r == max) count_r <= 0;
       else count_r <= count_r + 1;
     end
   end
   assign value = count_r;
-  assign at_max = (count_r == 4'(MAX));
+  assign at_max = (count_r == max);
   
   // synopsys translate_off
-  _auto_count_range: assert property (@(posedge clk) count_r <= 4'(MAX))
-    else $fatal(1, "COUNTER OVERFLOW: WrapCounter.count_r > MAX");
+  _auto_count_range: assert property (@(posedge clk) count_r <= max)
+    else $fatal(1, "COUNTER OVERFLOW: WrapCounter.count_r > max");
   // synopsys translate_on
 
 endmodule
