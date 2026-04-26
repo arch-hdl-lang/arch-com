@@ -1,63 +1,42 @@
 module gmii_rx_to_axi_stream
-  port gmii_rx_clk: in Clock<SysDomain>;
-  port gmii_rxd: in UInt<8>;
-  port gmii_rx_dv: in Bool;
-  port m_axis_tdata: out UInt<8>;
-  port m_axis_tvalid: out Bool;
-  port m_axis_tready: in Bool;
-  port m_axis_tlast: out Bool;
+  port gmii_rx_clk:   in  Clock<SysDomain>;
+  // `thread` requires a reset clause. The CVDP TB doesn't drive a
+  // reset signal, but `dut_init` zeroes every input — so a sync-high
+  // reset port stays deasserted throughout the test.
+  port reset:         in  Reset<Sync, High>;
+  port gmii_rxd:      in  UInt<8>;
+  port gmii_rx_dv:    in  Bool;
+  // `port reg` so the thread can drive these directly via `<=`.
+  port reg m_axis_tdata:  out UInt<8>  reset reset => 0;
+  port reg m_axis_tvalid: out Bool     reset reset => false;
+  port reg m_axis_tlast:  out Bool     reset reset => false;
+  port m_axis_tready: in  Bool;
 
-  default seq on gmii_rx_clk rising;
+  // 1. Idle until rx_dv asserts.
+  // 2. Forward each byte while rx_dv stays high (de-asserting valid on
+  //    backpressured cycles, matching the original FSM's behavior).
+  // 3. When rx_dv drops, present the last marker until tready accepts.
+  thread on gmii_rx_clk rising, reset high
+    m_axis_tvalid <= false;
+    m_axis_tlast  <= false;
+    wait until gmii_rx_dv;
 
-  reg state_r: UInt<2> init 0;
-  reg data_r: UInt<8> init 0;
-  reg valid_r: Bool init false;
-  reg last_r: Bool init false;
-  reg dv_prev: Bool init false;
+    m_axis_tdata  <= gmii_rxd;
+    m_axis_tvalid <= true;
+    m_axis_tlast  <= false;
 
-  seq
-    dv_prev <= gmii_rx_dv;
-  end seq
-
-  seq
-    if state_r == 0
-      // IDLE
-      if gmii_rx_dv
-        state_r <= 1;
-        data_r <= gmii_rxd;
-        valid_r <= true;
-        last_r <= false;
-      else
-        valid_r <= false;
-        last_r <= false;
-      end if
-    elsif state_r == 1
-      // RECEIVING
-      if gmii_rx_dv
-        if m_axis_tready
-          data_r <= gmii_rxd;
-          valid_r <= true;
-        else
-          valid_r <= false;
-        end if
-        last_r <= false;
-      else
-        // dv dropped, end of frame
-        state_r <= 2;
-        valid_r <= true;
-        last_r <= true;
-      end if
-    else
-      // FINISHED
+    do
       if m_axis_tready
-        state_r <= 0;
-        valid_r <= false;
-        last_r <= false;
+        m_axis_tdata  <= gmii_rxd;
+        m_axis_tvalid <= true;
+      else
+        m_axis_tvalid <= false;
       end if
-    end if
-  end seq
+      m_axis_tlast <= false;
+    until not gmii_rx_dv;
 
-  let m_axis_tdata = data_r;
-  let m_axis_tvalid = valid_r;
-  let m_axis_tlast = last_r;
+    m_axis_tvalid <= true;
+    m_axis_tlast  <= true;
+    wait until m_axis_tready;
+  end thread
 end module gmii_rx_to_axi_stream
