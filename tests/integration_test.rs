@@ -5740,3 +5740,58 @@ fn test_inst_site_type_param_override_translates_to_data_width() {
     assert!(!sv.contains(".T(logic"),
         "should not emit raw `.T(logic ...)` for fifo whose T was synthesized to DATA_WIDTH:\n{sv}");
 }
+
+#[test]
+fn test_pipe_reg_tap_reads_q_at_k() {
+    // `q@K` on RHS reads the K-th tap of a pipe_reg chain.
+    // K=0 is the source comb; K=N is the bare q (final output).
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port reset: in Reset<Async, High>;
+          port a: in UInt<8>;
+          port o0: out UInt<8>;
+          port o1: out UInt<8>;
+          port o2: out UInt<8>;
+          port o3: out UInt<8>;
+
+          pipe_reg q: a stages 3;
+
+          comb
+            o0 = q@0;   // source = a
+            o1 = q@1;   // q_stg1
+            o2 = q@2;   // q_stg2
+            o3 = q@3;   // bare q (final flop)
+          end comb
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("assign o0 = a;"), "q@0 should be source `a`:\n{sv}");
+    assert!(sv.contains("assign o1 = q_stg1;"), "q@1 should be q_stg1:\n{sv}");
+    assert!(sv.contains("assign o2 = q_stg2;"), "q@2 should be q_stg2:\n{sv}");
+    assert!(sv.contains("assign o3 = q;"), "q@3 should be bare q:\n{sv}");
+}
+
+#[test]
+fn test_pipe_reg_tap_out_of_range_errors() {
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port reset: in Reset<Async, High>;
+          port a: in UInt<8>;
+          port o: out UInt<8>;
+          pipe_reg q: a stages 3;
+          comb
+            o = q@4;   // out of range (max is 3)
+          end comb
+        end module M
+    "#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse");
+    let result = elaborate::lower_pipe_reg_ports(parsed_ast);
+    assert!(result.is_err(), "q@4 should be rejected for stages=3");
+    let errs = result.err().unwrap();
+    assert!(errs.iter().any(|e| format!("{e:?}").contains("exceeds pipe_reg depth")),
+        "error should mention depth: {errs:?}");
+}

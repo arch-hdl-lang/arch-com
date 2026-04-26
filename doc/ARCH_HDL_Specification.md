@@ -953,7 +953,28 @@ end seq
 
 For N = 1, the bare assignment form `q <= Y` is also accepted (same flop count as `port reg`). For N > 1, only `q@N <= Y` is valid — bare `q <= Y` is a compile error (*"assignment to pipe_reg port `q` is ambiguous — write `q@N <= ...` to state the latency"*).
 
-**Reading** a `pipe_reg` port on the RHS returns the final-output stage. The explicit form `q@0` reads as "current value" and is equivalent to bare `q`. Reading intermediate stages (`q@K` for K > 0 on the RHS) is a compile error in v1 — *"reading intermediate stage `@K` is not yet supported"*.
+**Reading** a `pipe_reg` port or module-scope `pipe_reg` decl on the RHS supports tap-line indexing: `q@K` reads the value at K cycles of delay from the input. For `pipe_reg q: src stages N`:
+
+| Read | Value |
+|---|---|
+| `q@0` | `src` (raw input, no flop) |
+| `q@1` | after 1 flop |
+| `q@K` (1 ≤ K < N) | after K flops |
+| `q@N` | after N flops = same as bare `q` (final output) |
+| bare `q` | final output (= `q@N`) |
+
+`q@K` for K > N is a compile error (`q@N+1 exceeds pipe_reg depth N`). `name@K` on a non-pipe_reg signal is rejected with the legacy "only `@0` is allowed" message. The classic 4-tap FIR pattern collapses from three separate delay regs to one declaration:
+
+```
+pipe_reg sample_pipe: input_sample stages 3;
+
+comb
+  prod0 = sample_pipe@0 * coeff0;   // input_sample
+  prod1 = sample_pipe@1 * coeff1;   // 1-cycle-delayed
+  prod2 = sample_pipe@2 * coeff2;   // 2-cycle-delayed
+  prod3 = sample_pipe@3 * coeff3;   // 3-cycle-delayed = bare sample_pipe
+end comb
+```
 
 **Uniform reset / init across stages.** A single `reset R => V` or `init V` clause applies to every flop in the chain. When `rst` asserts, all N stages simultaneously drop to the reset value; one cycle after deassert, a new write to `q@N` begins propagating. This matches today's module-scope `pipe_reg` semantics.
 

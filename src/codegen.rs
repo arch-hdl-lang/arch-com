@@ -62,6 +62,11 @@ pub struct Codegen<'a> {
     /// Populated per-module at emit time so Vec method lowerings
     /// (`any`/`all`/`count`/etc.) can unroll over N iterations.
     vec_sizes: std::collections::HashMap<String, u32>,
+    /// Map of pipe_reg name → (source name, total stages N) for the
+    /// current module being emitted. Used to lower `q@K` reads on RHS
+    /// to the right SV intermediate signal: `q@0` → source, `q@K` for
+    /// 1≤K<N → `q_stg{K}`, `q@N` → `q` (= bare q).
+    pipe_regs: std::collections::HashMap<String, (String, u32)>,
     /// Set of index widths used by `.find_first(...)` calls in this file.
     /// Drives emission of one `typedef struct packed ... __ArchFindResult_<W>;`
     /// per unique W at the top of the generated SV. Interior-mutability
@@ -91,6 +96,7 @@ impl<'a> Codegen<'a> {
             current_construct: String::new(),
             ident_subst: std::collections::HashMap::new(),
             vec_sizes: std::collections::HashMap::new(),
+            pipe_regs: std::collections::HashMap::new(),
             find_first_widths: std::cell::RefCell::new(std::collections::BTreeSet::new()),
         }
     }
@@ -539,6 +545,12 @@ impl<'a> Codegen<'a> {
         self.bus_wires.clear();
         self.reset_ports.clear();
         self.vec_sizes.clear();
+        self.pipe_regs.clear();
+        for bi in &m.body {
+            if let ModuleBodyItem::PipeRegDecl(p) = bi {
+                self.pipe_regs.insert(p.name.name.clone(), (p.source.name.clone(), p.stages));
+            }
+        }
         for p in m.ports.iter() {
             if let TypeExpr::Reset(kind, level) = &p.ty {
                 self.reset_ports.insert(p.name.name.clone(), (*kind, *level));
@@ -6067,12 +6079,30 @@ impl<'a> Codegen<'a> {
     /// Core expression emitter — never adds outer parens itself.
     fn emit_expr_inner(&self, expr: &Expr) -> String {
         match &expr.kind {
-            // Latency annotation is purely documentary on emission.
-            // On RHS, `q@0` reads as the current value of `q` (the pipe's
-            // final output). On LHS inside an assignment, the enclosing
-            // assignment emitter strips the annotation before routing the
-            // value to the appropriate stage 0 of the pipe chain.
-            ExprKind::LatencyAt(inner, _) => self.emit_expr_inner(inner),
+            // `q@K` on RHS lowers to the K-th tap of the pipe_reg
+            // chain (`q` being the final flop, source being the input
+            // before any flop). Numbering counts cycles of delay from
+            // the input: `@0` = source comb, `@K` = after K flops,
+            // `@N` = bare `q`. Falls through transparently when the
+            // base isn't a known pipe_reg name (typecheck rejects
+            // out-of-range / non-pipe-reg uses earlier).
+            ExprKind::LatencyAt(inner, n) => {
+                if let ExprKind::Ident(name) = &inner.kind {
+                    if let Some((source, stages)) = self.pipe_regs.get(name) {
+                        let stages = *stages;
+                        if *n == 0 {
+                            return source.clone();
+                        }
+                        if *n == stages {
+                            return name.clone();
+                        }
+                        if *n < stages {
+                            return format!("{name}_stg{n}");
+                        }
+                    }
+                }
+                self.emit_expr_inner(inner)
+            }
             // SVA forward-shift: `##N expr` only legal inside an assert
             // /cover property (typecheck enforces). Emit verbatim — SV
             // accepts it natively in property context.
