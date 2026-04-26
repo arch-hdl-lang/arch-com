@@ -14,23 +14,11 @@ module hamming_code_receiver
     c3 = data_in[4] ^ data_in[5] ^ data_in[6] ^ data_in[7];
     syndrome = {c3, c2, c1};
 
-    if syndrome == 3'd0
-      corrected = data_in;
-    elsif syndrome == 3'd1
-      corrected = data_in ^ 8'd2;
-    elsif syndrome == 3'd2
-      corrected = data_in ^ 8'd4;
-    elsif syndrome == 3'd3
-      corrected = data_in ^ 8'd8;
-    elsif syndrome == 3'd4
-      corrected = data_in ^ 8'd16;
-    elsif syndrome == 3'd5
-      corrected = data_in ^ 8'd32;
-    elsif syndrome == 3'd6
-      corrected = data_in ^ 8'd64;
-    else
-      corrected = data_in ^ 8'd128;
-    end if
+    // Syndrome k (1..7) flips bit k of data_in; syndrome 0 = no error.
+    corrected = match syndrome
+      3'd0 => data_in,
+      _    => (data_in ^ (8'd1 << syndrome)).trunc<8>(),
+    end match;
 
     // d3=corrected[7], d2=corrected[6], d1=corrected[5], d0=corrected[3]
     data_out = {corrected[7], corrected[6], corrected[5], corrected[3]};
