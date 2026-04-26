@@ -796,6 +796,44 @@ impl<'a> Codegen<'a> {
                                 let recv_str = self.emit_expr_str(recv);
                                 let n = match &recv.kind {
                                     ExprKind::Ident(nm) => self.vec_sizes.get(nm).copied(),
+                                    // `(uint_expr as Vec<T, N>).find_first(...)`
+                                    // — extract N from the cast's target type.
+                                    ExprKind::Cast(_, ty) => match &**ty {
+                                        TypeExpr::Vec(_, size) => match &size.kind {
+                                            ExprKind::Literal(LitKind::Dec(n))
+                                            | ExprKind::Literal(LitKind::Hex(n))
+                                            | ExprKind::Literal(LitKind::Bin(n))
+                                            | ExprKind::Literal(LitKind::Sized(_, n)) => Some(*n as u32),
+                                            ExprKind::Ident(name) => {
+                                                self.symbols.globals.get(name)
+                                                    .and_then(|(s, _)| match s {
+                                                        crate::resolve::Symbol::Param(_) => None,
+                                                        _ => None,
+                                                    })
+                                                    .or_else(|| {
+                                                        // Fall back to the param's default if it's a const literal.
+                                                        for it in &self.source.items {
+                                                            if let Item::Module(m) = it {
+                                                                if m.name.name == self.current_construct {
+                                                                    for p in &m.params {
+                                                                        if p.name.name == *name {
+                                                                            if let Some(d) = &p.default {
+                                                                                if let ExprKind::Literal(LitKind::Dec(n)) = &d.kind {
+                                                                                    return Some(*n as u32);
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        None
+                                                    })
+                                            }
+                                            _ => None,
+                                        },
+                                        _ => None,
+                                    },
                                     _ => None,
                                 };
                                 if let Some(n) = n {
@@ -6387,6 +6425,10 @@ impl<'a> Codegen<'a> {
                         let ws = self.emit_expr_str(w);
                         format!("{ws}'($unsigned({e}))")
                     }
+                    // `as Vec<T, N>` is a typecheck-only view (UInt<N>'s
+                    // bits read as N elements). Width is identical so SV
+                    // can pass the inner expression through unchanged.
+                    TypeExpr::Vec(_, _) => e,
                     _ => {
                         let t = self.emit_type_str(ty);
                         format!("{t}'({e})")

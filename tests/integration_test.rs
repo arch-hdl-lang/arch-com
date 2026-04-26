@@ -5851,3 +5851,29 @@ fn test_vec_of_const_param_emits_packed_and_indexes() {
     assert!(sv.contains("coeffs[(0) * (8) +: (8)]"),
         "expected coeffs[0] → coeffs[(0) * (8) +: (8)]:\n{sv}");
 }
+
+#[test]
+fn test_uint_as_vec_cast_for_find_first() {
+    // `as Vec<T, N>` is a typecheck-only view that lets Vec methods
+    // (find_first, etc.) operate on a UInt directly without a manual
+    // for-loop bit unpack. The generated SV indexes the UInt's bits
+    // directly with no intermediate Vec wire.
+    let source = r#"
+        module M
+          port d: in UInt<8>;
+          port idx: out UInt<3>;
+          port hit: out Bool;
+
+          let { found, index } = (d as Vec<Bool, 8>).find_first(item);
+          let idx = found ? index : 0.zext<3>();
+          let hit = found;
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    // No bit-unpack `for` loop or intermediate Vec wire.
+    assert!(!sv.contains("for ("),
+        "should not synthesize a for-loop bit unpack:\n{sv}");
+    // Should index `d[i]` directly in the priority encoder.
+    assert!(sv.contains("d[0]") && sv.contains("d[7]"),
+        "expected direct bit indexing of `d`:\n{sv}");
+}

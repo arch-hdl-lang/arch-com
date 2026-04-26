@@ -7,21 +7,10 @@ module leading_zero_cnt
   port leading_zeros: out UInt<OUT_WIDTH>;
   port all_zeros: out Bool;
 
-  wire result: UInt<OUT_WIDTH>;
-  wire found: Bool;
+  // View `data`'s bits as a Vec so the priority-encoder pattern
+  // collapses into a single `find_first` call.
+  let { found, index } = (data as Vec<Bool, DATA_WIDTH>).find_first(item);
 
-  comb
-    // Find first set bit from LSB (trailing zero count for REVERSE=1)
-    result = 0;
-    found = false;
-    for i in 0..DATA_WIDTH-1
-      if (~found) & data[i:i]
-        result = i.trunc<OUT_WIDTH>();
-        found = true;
-      end if
-    end for
-
-    leading_zeros = result;
-    all_zeros = data == 0;
-  end comb
+  let leading_zeros = found ? index : 0.zext<OUT_WIDTH>();
+  let all_zeros = data == 0;
 end module leading_zero_cnt
