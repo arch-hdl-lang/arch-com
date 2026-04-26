@@ -151,13 +151,22 @@ function transition_logic(S, i, s, once):
     next ← (s+1)             if s+1 < n_states
          ← s                 if once and s = n_states−1     # terminal hold
          ← 0                 otherwise                       # repeating wrap
+
+    # Counter-decrement hoist: fires unconditionally for any wait_cycles
+    # state, independent of how the transition target is decided.  This
+    # matters when redirect_fallthrough_to (§II.10.2 step 6 case C) gives
+    # a wait_cycles state a populated M; without the hoist, the M-arm
+    # would suppress the decrement.
+    if S.w ≠ ⊥:
+        emit: _t{i}_cnt <= _t{i}_cnt − 1
+
+    # Transition target dispatch — exactly one of the four arms fires.
     case S of
         S.M ≠ ∅:        for (c, t) ∈ S.M:
                             tgt ← (n_states−1 if once else 0) if t ≥ n_states else t
                             emit: if (c) _t{i}_state <= tgt
         S.τ = c:        emit: if (c) _t{i}_state <= next
-        S.w = n:        emit: _t{i}_cnt <= _t{i}_cnt − 1
-                        emit: if (_t{i}_cnt == 0) _t{i}_state <= next
+        S.w = n:        emit: if (_t{i}_cnt == 0) _t{i}_state <= next
         otherwise:      emit: _t{i}_state <= next
 ```
 
@@ -236,8 +245,7 @@ function partition_thread_body(B: list⟨ThreadStmt⟩) → list⟨ThreadFsmStat
                 states ⧺= fork_states
 
             IfElse{cond, then_stmts, else_stmts} when contains_wait(then_stmts) ∨ contains_wait(else_stmts):
-                # Implemented as of v0.45.0 (see §II.10 of proof for soundness).
-                # Lowering uses a dispatch-and-rejoin scheme.
+                # Dispatch-and-rejoin lowering (see §II.10 for soundness).
                 flush_pending(states, cur_comb, cur_seq)
 
                 dispatch_idx ← states.len()
@@ -259,14 +267,19 @@ function partition_thread_body(B: list⟨ThreadStmt⟩) → list⟨ThreadFsmStat
                     (¬cond, else_base),
                 ]
 
-                # Fixup each branch's exit: redirect its "fall-through" to rejoin_idx.
-                # Each branch's last state gets its `next` overridden by appending a
-                # default (true)-guarded transition to rejoin_idx, OR (cleaner) by
-                # converting any unconditional advance to a multi_transitions
-                # [(true, rejoin_idx)] entry, OR (in the case of an existing τ or M)
-                # leaving the natural fall-through and asserting rejoin_idx == s+1.
-                redirect_fallthrough_to(states[then_base ..< else_base], rejoin_idx)
-                redirect_fallthrough_to(states[else_base ..< rejoin_idx], rejoin_idx)
+                # Pre-redirect rewrite: any target in the then-branch states that
+                # equals `else_base` (= then_base + then_len) is a sentinel-resolved
+                # "fall through past this branch" target — for-loop exits, nested
+                # if/else rejoin points — that should land at rejoin_idx instead.
+                # The else-branch is symmetric and self-correcting because
+                # else_base + else_len = rejoin_idx.
+                for s_idx in then_base ..< else_base:
+                    for (_, t) in states[s_idx].multi_transitions:
+                        if t = else_base: t ← rejoin_idx
+
+                # Redirect each branch's last-state fall-through to rejoin_idx.
+                redirect_fallthrough_to(states, else_base − 1, rejoin_idx)
+                redirect_fallthrough_to(states, rejoin_idx − 1, rejoin_idx)
 
     # Trailing tail: try to merge into preceding wait state
     if cur_seq ≠ ∅ ∧ cur_comb = ∅ ∧ states.last.τ ≠ ⊥:
@@ -616,8 +629,7 @@ construction:
 - **`Lock{r, body}`:** by Lemma L (II.7) below, the grant-gating preserves
   source semantics for non-nested locks (which the algorithm enforces).
 - **`IfElse(cond, then, else)` with internal `wait`:** by Lemma I (II.10)
-  below, the dispatch-and-rejoin construction is faithful.  *Implemented as
-  of v0.45.0.*
+  below, the dispatch-and-rejoin construction is faithful.
 - **Default `when cond`:** wraps the entire chain in `if (cond) {body;
   state <= 0} else {…}`; this is exactly the source's "soft-reset clause"
   semantics.
@@ -790,11 +802,14 @@ merged `RegBlock` records this OR as the next cycle's value of `x`.  ∎
 
 ### II.10  If/else with internal waits — dispatch-and-rejoin
 
-> **Status (v0.45.0+):** Implemented in `src/elaborate.rs::partition_thread_body`
-> at the `ThreadStmt::IfElse` branch.  The proof below was written ahead of
-> the implementation as a soundness argument; it now serves as the
-> equivalence guarantee that any conforming implementation (the current one)
-> preserves source semantics.
+When an `if/else` statement contains a `wait` form (`wait until`, `wait n
+cycle`, `do..until`, `for`, or another nested `if/else`-with-waits) inside
+either branch, the lowering can no longer collapse the conditional into
+same-state combinational logic — the two branches may execute over
+different numbers of cycles.  `partition_thread_body` instead emits a
+*dispatch-and-rejoin* FSM: a single dispatch state evaluates `cond` and
+selects the branch's first state, each branch executes its own segment
+chain, and both branches converge on a common rejoin index.
 
 #### II.10.1  Source semantics for `if` with internal waits
 
@@ -824,36 +839,42 @@ internal waits is encountered:
    ```
 3. **Recursively partition** `then_stmts` and append at index `then_base`.
 4. **Recursively partition** `else_stmts` and append at index `else_base`.
-5. **Pre-redirect rewrite (since v0.46.0).**  Walk the then-branch states
-   and rewrite any `multi_transitions` target equal to `then_base + then_len
-   = else_base` to `rejoin_idx`.  This catches sentinel-resolved targets
-   (for-loop exits, nested if/else rejoin points) that landed at
-   `else_base` after outer shifting.  The else-branch is symmetric and
-   self-correcting — its `else_base + else_len = rejoin_idx` already.
+5. **Pre-redirect rewrite.**  The recursive partition of `then_stmts` may
+   resolve `usize::MAX` exit-sentinels (emitted by `lower_thread_for` for
+   for-loop exits, and by inner `if/else`-with-waits dispatches for
+   nested rejoin points) to "the position immediately after the
+   recursive frame's state list".  After outer shifting by `then_base`,
+   that absolute position is `then_base + then_len = else_base` — the
+   start of the else-branch, not the post-`if` rejoin point.
 
-6. **Redirect each branch's exit** to the rejoin index `rejoin_idx =
-   states.len()`.  Concretely, `redirect_fallthrough_to(branch, rejoin_idx)`
-   modifies the *last* state of the branch so that its natural advance lands
-   at `rejoin_idx`.  As implemented in `src/elaborate.rs::redirect_fallthrough_to`,
-   four cases are handled in this priority order:
-   - **(A) M-state** (`M ≠ ∅`): append `(true, rejoin_idx)` to `M` only if
-     no existing `t_j` already equals `rejoin_idx`; otherwise no change.
-     After step 5, any target that *would* have pointed past the branch
-     into the else-branch's start has been rewritten to `rejoin_idx`, so
-     the no-change path is taken whenever the branch ends with a for-loop
-     or nested if/else.
+   To route those sentinels to the correct rejoin position, walk the
+   then-branch states `states[then_base ..< else_base]` and rewrite any
+   `multi_transitions` target equal to `else_base` to `rejoin_idx`.  The
+   else-branch is symmetric and self-correcting because
+   `else_base + else_len = rejoin_idx`, so its sentinels already land at
+   `rejoin_idx` and no rewrite is needed.
+
+6. **Redirect each branch's last state** to advance to `rejoin_idx`.
+   `redirect_fallthrough_to(states, idx, rejoin_idx)` modifies the state
+   at `idx` (the last state of a branch) so that its natural transition
+   lands at `rejoin_idx`.  Four cases, dispatched on the state's shape:
+   - **(A) M-state** (`M ≠ ∅`): append `(true, rejoin_idx)` to `M` only
+     when no existing `t_j` equals `rejoin_idx`.  After the pre-redirect
+     rewrite (step 5), branches ending with a for-loop or nested
+     if/else already have an arm pointing at `rejoin_idx`, so the
+     append is a no-op for those cases.
    - **(B) τ-state** (`τ = c`, `M = ∅`): take `c`, replace with
      `M = [(c, rejoin_idx)]` (clears `τ`).
    - **(C) wait_cycles state** (`w = n`, `τ = ⊥`, `M = ∅`): replace with
-     `M = [(_cnt == 0, rejoin_idx)]`.  The counter decrement is hoisted out
-     of the transition emitter so it still fires unconditionally for every
-     wait_cycles state even after this rewrite (see §II.10.5,
-     "Counter-decrement hoist").
+     `M = [(_cnt == 0, rejoin_idx)]`.  The counter decrement is hoisted
+     out of the transition emitter and fires unconditionally for every
+     wait_cycles state, so a redirect-induced `M`-arm does not suppress
+     the decrement.
    - **(D) unconditional advance** (`τ = ⊥`, `w = ⊥`, `M = ∅`): replace
      with `M = [(true, rejoin_idx)]`.
-7. The dispatch state itself does not advance via the default `next = s+1`;
-   `transition_logic` recognises that a state with `M ≠ ∅` always uses the
-   `M`-list, so `S_disp.M` overrides any default.
+7. The dispatch state `S_disp` does not advance via the default
+   `next = s+1`; `transition_logic` recognises that a state with `M ≠ ∅`
+   always uses the `M`-list, so `S_disp.M` overrides any default.
 
 Mutual exclusion of `cond` and `¬cond` ensures exactly one of the two
 dispatch transitions fires in any cycle (the ARCH `seq` "last-true-wins"
@@ -906,45 +927,36 @@ each branch.  All conditions inside a branch reference the *same* register
 valuation in source and target (by `≈_if`), so the same paths fire.
 
 **Case (R) — branch exit / rejoin.** The last state of branch `b` has been
-modified by `redirect_fallthrough_to` to advance to `rejoin_idx`.  Four
-sub-cases (matching the four arms of `redirect_fallthrough_to` in §II.10.2
-step 5):
+modified by §II.10.2's pre-redirect rewrite (step 5) and
+`redirect_fallthrough_to` (step 6) so that branch `b`'s natural exit
+lands at `rejoin_idx`.  Four sub-cases, matching the four shapes
+`redirect_fallthrough_to` dispatches on:
 
-- **(D) Last state had unconditional advance** (`M = ∅`, `τ = ⊥`, `w = ⊥`):
-  replaced with `M = [(true, rejoin_idx)]`.  Source semantics: branch `b`'s
-  last segment completes unconditionally, i.e. `(b, j_max) → (post, 0)`.
-  Target semantics: `_state <= rejoin_idx`.  Match.
-- **(B) Last state had `τ = c`**: replaced with `M = [(c, rejoin_idx)]`.
-  Source: branch's last wait-until exits to `(post, 0)` when `c` fires.
-  Target: same.
-- **(C) Last state had `w = n` (wait_cycles)**: replaced with
+- **(D) Last state was unconditional advance** (`M = ∅`, `τ = ⊥`, `w = ⊥`):
+  rewritten to `M = [(true, rejoin_idx)]`.  Source semantics: branch
+  `b`'s last segment completes unconditionally, i.e. `(b, j_max) →
+  (post, 0)`.  Target semantics: `_state <= rejoin_idx`.  Match.
+- **(B) Last state was a `τ = c` (wait-until)**: rewritten to
+  `M = [(c, rejoin_idx)]`.  Source: branch's last wait-until exits to
+  `(post, 0)` when `c` fires.  Target: same.
+- **(C) Last state was a `w = n` (wait_cycles)**: rewritten to
   `M = [(_cnt == 0, rejoin_idx)]`.  Source: branch's last wait_N_cycle
-  exits to `(post, 0)` when the counter reaches zero.  Target: same.  By
-  the partitioning invariant (§II.4) the predecessor state preloads
-  `_cnt ← n − 1`; the decrement (hoisted out — see §II.10.5) fires every
-  cycle in the wait state.
-- **(A) Last state already had `M`** (e.g. for-loop exit, nested if/else
-  rejoin): the pre-redirect rewrite (§II.10.2 step 5) has already
-  rewritten any target equal to `else_base` (the natural "next position
-  after the then-branch") to `rejoin_idx`.  After this rewrite, at least
-  one `M`-entry already targets `rejoin_idx`, so `redirect_fallthrough_to`
-  case (A) takes the no-change path.
-  - **Symmetric for-loop case (else branch)**: `else_base + else_len =
-    rejoin_idx`, so the for-loop's `(exit_cond, usize::MAX)` sentinel
-    naturally resolves to `rejoin_idx` and the pre-redirect rewrite is
-    a no-op for the else-branch.
-  - **Asymmetric for-loop case (then branch)**: as described above, the
-    sentinel resolves to `else_base` after outer shifting; the
-    pre-redirect rewrite catches this and remaps to `rejoin_idx`.
-  - **Nested if/else case**: the inner if/else's redirect rewrites its
-    own branches' last states to point at the inner `rejoin_idx`.  When
-    the inner if/else is the last stmt of the outer then-branch, the
-    inner `rejoin_idx` (relative) lands at `else_base` (absolute) after
-    outer shifting; same fix applies.
+  exits to `(post, 0)` when the counter reaches zero.  Target: same.
+  By the partitioning invariant (§II.4) the predecessor state preloads
+  `_cnt ← n − 1`; the decrement (hoisted out of the transition emitter)
+  fires every cycle in the wait state.
+- **(A) Last state already had `M`** (e.g. for-loop exit, nested
+  if/else rejoin): the pre-redirect rewrite has already remapped the
+  branch's "fall-through past this branch" target to `rejoin_idx`, so
+  `M` already contains an entry pointing at `rejoin_idx` and
+  `redirect_fallthrough_to` makes no further change.
 
-  Source semantics: in all three sub-cases the branch ends and control
-  flows to the post-`if` statements.  Target semantics with the
-  pre-redirect rewrite: same.
+  Source semantics in this sub-case: branch `b`'s last segment is a
+  for-loop or a nested if/else whose own exit semantics define when
+  control passes to `(post, 0)`.  For a for-loop this is the iteration
+  count reaching `end`; for a nested if/else this is the inner rejoin.
+  Target semantics: the corresponding `M`-arm targets `rejoin_idx`,
+  which is reached on exactly the same condition.  Match.
 
 In all four sub-cases, `≈_if` is preserved across the rejoin transition.
 
@@ -981,99 +993,79 @@ on the *post-flush* register values, matching the source semantics where
 effect at the previous clock edge."  Without this flush, `cond` would read
 stale register values, breaking equivalence.
 
-**For-loop-in-then-branch asymmetry (resolved in v0.46.0).**  Earlier
-versions (v0.45.0) had a corner-case bug: when a `for` loop was the
-*last* statement of the **then** branch and the **else** branch was
-non-empty, the dispatch-and-rejoin lowering produced incorrect SV.  The
-mechanism:
+**Sentinel-rewrite asymmetry between branches.**  The then-branch and
+else-branch require different handling for sentinel-resolved targets that
+the recursive `partition_thread_body` call leaves pointing "one past the
+recursive frame's state list":
 
-- Inside the recursive `partition_thread_body(then_stmts)` call,
-  `lower_thread_for` emits the for-loop's last state with
-  `M = [(loop_cond, 0), (exit_cond, usize::MAX)]`.
-- The recursive call resolves the sentinel relative to its own state list:
-  `usize::MAX → for_base + for_len`, which equals the position right after
-  the for-loop within the recursive call's frame.
-- The outer IfElse handler then shifts every target by `then_base`, so the
-  exit target became `then_base + then_len = else_base` (the start of the
-  else branch).
-- `redirect_fallthrough_to` (case A) appended `(true, rejoin_idx)` because
-  no existing target equalled `rejoin_idx`.  Under ARCH `seq`
-  last-write-wins, the unconditional arm always overrode the loop-back,
-  so the for-loop body executed exactly once.
+- The else-branch is *self-correcting*: `else_base + else_len =
+  rejoin_idx`, so a sentinel resolved to `else_base + else_len` lands
+  exactly at the post-`if` position after outer shifting.
+- The then-branch is *not* self-correcting: a sentinel resolved to
+  `then_base + then_len` lands at `else_base` (the start of the
+  else-branch), not at `rejoin_idx`.  Without intervention, a for-loop
+  whose exit-sentinel landed at `else_base` would (incorrectly) cause
+  the for-loop to fall through into the else-branch instead of past it,
+  and `redirect_fallthrough_to` case (A) — which only appends
+  `(true, rejoin_idx)` if no existing target equals `rejoin_idx` —
+  would respond by appending an unconditional arm that, under ARCH
+  `seq` last-write-wins, would always override the legitimate
+  loop-back.
 
-The else-branch is symmetric and self-correcting because
-`else_base + else_len = rejoin_idx`, so its sentinels naturally land at
-`rejoin_idx`.
+§II.10.2 step 5 (the pre-redirect rewrite) eliminates the asymmetry:
+walking the then-branch states `[then_base, else_base)` and remapping
+any target equal to `else_base` to `rejoin_idx` ensures every "fall
+through past this branch" target lands at the post-`if` position
+regardless of which branch contained the for-loop or nested if/else.
+Step 6 (`redirect_fallthrough_to` case A) then takes the no-change path
+for these states.
 
-**The fix (v0.46.0).**  §II.10.2 step 5 (the pre-redirect rewrite) walks
-the then-branch states *after* outer shifting and rewrites any target
-equal to `else_base` to `rejoin_idx`.  Any sentinel-derived "next state
-after this branch" target then lands directly at the post-`if` position,
-and `redirect_fallthrough_to` case (A) becomes a no-op for branches that
-end with a for-loop (or nested if/else, which has the same symptom for
-the same reason).  Same-level recursion at every nesting depth means the
-fix composes through arbitrarily deep nested if/else and for-loops.
-
-**Empirical confirmation (post-fix).**  The reproducer
-`tests/if_wait_for_in_then.arch` plus testbench
-`tests/if_wait_for_in_then_tb.cpp` (used during the bug review and fix
-verification) produce 4 `done` pulses for `burst = 4`, matching the
-expected loop-iteration count, with state-4 SV of the form:
-```sv
-if (loop_cnt < burst-1) state <= 3;    // loop-back
-if (loop_cnt >= burst-1) state <= 6;   // → rejoin (CORRECT)
-```
-Regression test: `tests/integration_test.rs::test_if_wait_for_in_then_branch`
-asserts the absence of the buggy `if (1'b1) state <= …` arm and presence
-of the correct exit comparison.
+The rewrite is *local to one level* of nesting but composes through
+nesting because every level of `if/else`-with-waits invokes the same
+step-5 rewrite on its own then-branch.
 
 **Empty branches.** If `then_stmts = []` (vacuous then), the recursive
-`partition_thread_body([])` returns no states; `then_base = else_base` and
-the dispatch entry `(cond, then_base)` lands directly at `else_base` —
-which would skip the entire if/else into the post-if stream.  This is
-correct: an empty then-branch with `cond` true should produce no behaviour
-beyond the dispatch.  Symmetrically for empty else.  The lowering must
-guard `then_base == rejoin_idx` (resp. `else_base == rejoin_idx`) and emit
-the dispatch to point directly at `rejoin_idx` in such cases.
+`partition_thread_body([])` returns no states; `then_base = else_base`
+and the dispatch entry `(cond, then_base)` lands directly at `else_base`
+— which is `rejoin_idx` in this case.  Step 6's redirect is skipped
+because there is no last state in the empty branch.  Source: an empty
+then-branch with `cond` true produces no behaviour beyond the dispatch.
+Target: same.  Symmetrically for empty else.  The lowering guards
+`then_base == else_base` (resp. `else_base == rejoin_idx`) when filling
+the dispatch state's `M` (§II.10.2 step 2).
 
 **Nesting.** Nested `if/else`-with-waits is handled by the recursive nature
 of `partition_thread_body`.  Each level of nesting introduces one dispatch
 state and two branch chains; the proof composes by induction on nesting
 depth.
 
-#### II.10.5  Implementation notes (as landed in v0.45.0)
+#### II.10.5  Implementation notes
 
 The implementation in `src/elaborate.rs::partition_thread_body` follows
 §II.10.2 directly.  Two non-obvious points:
 
-- **Counter-decrement hoist.** The earlier transition emitter coupled the
-  `wait_cycles` counter decrement and its `cnt == 0 ⇒ next` transition into
-  one branch.  When dispatch-and-rejoin redirects a wait_cycles state's
-  fallthrough by populating its `M` list, the `M`-arm takes precedence over
-  the wait_cycles arm, which would silently suppress the decrement.  The
-  decrement is therefore hoisted out and fired unconditionally for every
-  wait_cycles state, independent of the transition mechanism.  See the
-  refactored block in `lower_module_threads`.
-- **Empty branches.** `partition_thread_body` rejects empty bodies (it
-  requires at least one wait); the dispatch lowering must skip the recursive
-  call when `then_stmts.is_empty()` or `else_stmts.is_empty()` and instead
-  point that arm of the dispatch directly at the rejoin index.  This matches
-  §II.10.4's empty-branch semantics.
+- **Counter-decrement hoist.** The `wait_cycles` counter decrement is
+  emitted unconditionally for every `wait_cycles` state, separately from
+  the state's transition logic.  This matters when
+  `redirect_fallthrough_to` case (C) replaces a `wait_cycles` state's
+  default `cnt == 0 ⇒ next` transition with `M = [(_cnt == 0,
+  rejoin_idx)]`: the `M`-arm takes precedence over the original
+  transition path, but the decrement still fires every cycle in the
+  wait state because it lives outside the transition emitter.
+- **Empty branches.** `partition_thread_body` rejects empty bodies
+  (every body must contain at least one wait), so the IfElse handler
+  skips the recursive call when `then_stmts.is_empty()` or
+  `else_stmts.is_empty()` and points that arm of the dispatch directly
+  at the rejoin index.  See §II.10.4's empty-branch semantics.
 
-Tests covering: (a) wait in then-branch only, (b) wait in else-branch only,
-(c) waits in both branches with different lengths, (d) nested if/else-with-waits,
-(e) auto-thread-asserts integration — see `tests/integration_test.rs`
-(`test_if_wait_*` family).  End-to-end Verilator `--assert` golden + mutation
-runs confirm the dispatch-state branch assertions are load-bearing.
-
-**Regression coverage.** The for-loop-in-then-branch case described in
-§II.10.4 is covered by `tests/integration_test.rs::test_if_wait_for_in_then_branch`,
-which compiles a thread with a for-loop in the then-branch + non-empty
-else-branch and asserts that the buggy unconditional `(true, rejoin_idx)`
-arm is **not** emitted.  An end-to-end Verilator simulation
-(`tests/if_wait_for_in_then.arch` + `tests/if_wait_for_in_then_tb.cpp`,
-run during the v0.46.0 fix verification) confirmed that the for-loop
-iterates the expected number of times.
+**Test coverage** in `tests/integration_test.rs` (`test_if_wait_*`
+family): wait in then-branch only, wait in else-branch only, waits in
+both branches with different lengths, nested if/else-with-waits,
+for-loop in then-branch with non-empty else-branch, and
+auto-thread-asserts integration.  An end-to-end Verilator simulation
+(`tests/if_wait_for_in_then.arch` + `tests/if_wait_for_in_then_tb.cpp`)
+confirms the for-loop-in-then-branch case iterates the expected number
+of times.
 
 ### II.11  Auto-emitted spec-contract SVA (`--auto-thread-asserts`)
 
@@ -1213,10 +1205,7 @@ The thread-to-FSM lowering is correct in the following precise sense:
 4. **Resource-arbitration correctness** (Lemma L, II.7).
 5. **Multi-driver discipline** (Lemma M, II.8).
 6. **Shared(or) reduction faithfulness** (Lemma S, II.9).
-7. **If/else with internal waits faithfulness** (Lemma I, II.10) —
-   *implemented in v0.45.0 via the dispatch-and-rejoin scheme proved sound
-   here; corner-case fix in v0.46.0 added a pre-redirect rewrite (step 5)
-   for the for-loop-in-then-branch asymmetry.*
+7. **If/else with internal waits faithfulness** (Lemma I, II.10).
 8. **Auto-emitted spec-contract SVA correctness** (Corollaries W/C/B, II.11)
    — the `--auto-thread-asserts` properties hold by construction in any
    accepted source program, so an `ASSERTION FAILED` from one of them
@@ -1261,5 +1250,3 @@ formal contract for the planned arch-sim alternate path (`arch sim` without
   they're emitted *during* `lower_threads` and their correctness is *part
   of* this proof, established as Corollaries W/C/B in §II.11.
 
-> Note: `wait inside if/else` is implemented as of v0.45.0; correctness is
-> established by Lemma I (§II.10).
