@@ -4017,6 +4017,20 @@ impl<'a> TypeChecker<'a> {
         for p in &c.ports {
             self.check_snake_case(&p.name);
         }
+        // Reject "both `param MAX` and `port max` declared unconditionally".
+        // Ports materialized via `generate_if` are exempt — that's the
+        // intended pattern for selecting between the two forms per-instance.
+        let has_max_param = c.params.iter().any(|p| p.name.name == "MAX");
+        if has_max_param {
+            if let Some(p) = c.ports.iter().find(|p| {
+                p.name.name == "max" && !c.gen_if_port_names.contains(&p.name.name)
+            }) {
+                self.errors.push(CompileError::general(
+                    "counter declares both `param MAX` and `port max`; pick one form, or gate one of them with `generate_if`",
+                    p.name.span,
+                ));
+            }
+        }
     }
 
     // ── Arbiter ───────────────────────────────────────────────────────────────
