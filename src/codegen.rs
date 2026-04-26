@@ -1984,10 +1984,11 @@ impl<'a> Codegen<'a> {
     }
 
     /// Check if a let binding is typed as SInt by looking up the AST.
+    /// Searches modules and fsms (which carry their own `lets` field).
     fn let_binding_is_sint(&self, name: &str) -> bool {
         for item in &self.source.items {
-            if let Item::Module(m) = item {
-                if m.name.name == self.current_construct {
+            match item {
+                Item::Module(m) if m.name.name == self.current_construct => {
                     for bi in &m.body {
                         if let ModuleBodyItem::LetBinding(l) = bi {
                             if l.name.name == name {
@@ -1996,6 +1997,14 @@ impl<'a> Codegen<'a> {
                         }
                     }
                 }
+                Item::Fsm(f) if f.name.name == self.current_construct => {
+                    for l in &f.lets {
+                        if l.name.name == name {
+                            return l.ty.as_ref().map_or(false, |t| matches!(t, TypeExpr::SInt(_)));
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         false

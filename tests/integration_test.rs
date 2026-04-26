@@ -5795,3 +5795,36 @@ fn test_pipe_reg_tap_out_of_range_errors() {
     assert!(errs.iter().any(|e| format!("{e:?}").contains("exceeds pipe_reg depth")),
         "error should mention depth: {errs:?}");
 }
+
+#[test]
+fn test_fsm_sint_uses_arithmetic_shift() {
+    // SInt regs/lets declared inside an `fsm` should have `>>` emit `>>>`
+    // (arithmetic shift right) — same as inside a `module`. Regression
+    // test for the missing fsm scope in module_scopes.
+    let source = r#"
+        fsm F
+          port clk: in Clock<SysDomain>;
+          port reset: in Reset<Async, High>;
+          port a: in SInt<8>;
+          port y: out SInt<8>;
+
+          reg buf_y: SInt<8> reset reset=>0;
+
+          state [Idle]
+          default state Idle;
+          default seq on clk rising;
+          default
+            comb y = buf_y; end comb
+          end default
+          state Idle
+            seq buf_y <= a >> 1; end seq
+            -> Idle;
+          end state Idle
+        end fsm F
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("a >>> 1"),
+        "fsm-scope SInt port `a` shifted right should emit `>>>` (arithmetic):\n{sv}");
+    assert!(!sv.contains("a >> 1"),
+        "should not emit `>>` (logical) for SInt:\n{sv}");
+}

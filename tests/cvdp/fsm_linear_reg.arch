@@ -1,4 +1,6 @@
-module fsm_linear_reg
+// 3-state linear-regression accumulator: idle until `start`, compute for
+// one cycle, then assert `done`.
+fsm fsm_linear_reg
   param DATA_WIDTH: const = 16;
   port clk:     in Clock<SysDomain>;
   port reset:   in Reset<Async, High>;
@@ -10,45 +12,54 @@ module fsm_linear_reg
   port result2: out SInt<DATA_WIDTH + 1>;
   port done:    out Bool;
 
-  reg state: UInt<2> reset reset=>0;
+  // Datapath registers — drive the output ports directly via `comb`.
   reg buf_result1: SInt<DATA_WIDTH * 2> reset reset=>0;
   reg buf_result2: SInt<DATA_WIDTH + 1> reset reset=>0;
-  reg buf_done: Bool reset reset=>0;
+  reg buf_done:    Bool                  reset reset=>false;
 
-  let x_shifted: SInt<DATA_WIDTH> = x_in >> 2;
-  let w_ext: SInt<DATA_WIDTH * 2> = w_in.sext<DATA_WIDTH * 2>();
-  let x_ext: SInt<DATA_WIDTH * 2> = x_in.sext<DATA_WIDTH * 2>();
-  let product: SInt<DATA_WIDTH * 2> = (w_ext * x_ext).trunc<DATA_WIDTH * 2>();
-  let b_ext: SInt<DATA_WIDTH + 1> = b_in.sext<DATA_WIDTH + 1>();
-  let xs_ext: SInt<DATA_WIDTH + 1> = x_shifted.sext<DATA_WIDTH + 1>();
+  // Combinational MAC — only the seq capture is gated by state.
+  let x_shifted: SInt<DATA_WIDTH>     = x_in >> 2;
+  let w_ext:     SInt<DATA_WIDTH * 2> = w_in.sext<DATA_WIDTH * 2>();
+  let x_ext:     SInt<DATA_WIDTH * 2> = x_in.sext<DATA_WIDTH * 2>();
+  let product:   SInt<DATA_WIDTH * 2> = (w_ext * x_ext).trunc<DATA_WIDTH * 2>();
+  let b_ext:     SInt<DATA_WIDTH + 1> = b_in.sext<DATA_WIDTH + 1>();
+  let xs_ext:    SInt<DATA_WIDTH + 1> = x_shifted.sext<DATA_WIDTH + 1>();
 
-  comb
-    result1 = buf_result1;
-    result2 = buf_result2;
-    done    = buf_done;
-  end comb
+  state [Idle, Compute, Done]
+  default state Idle;
+  default seq on clk rising;
 
-  seq on clk rising
-    if state == 0
-      if start
-        state <= 1;
-      end if
+  default
+    comb
+      result1 = buf_result1;
+      result2 = buf_result2;
+      done    = buf_done;
+    end comb
+  end default
+
+  state Idle
+    seq
       buf_result1 <= 0;
       buf_result2 <= 0;
       buf_done    <= false;
-    elsif state == 1
+    end seq
+    -> Compute when start;
+  end state Idle
+
+  state Compute
+    seq
       buf_result1 <= product >> 1;
       buf_result2 <= (b_ext + xs_ext).trunc<DATA_WIDTH + 1>();
       buf_done    <= false;
-      state       <= 2;
-    elsif state == 2
+    end seq
+    -> Done;
+  end state Compute
+
+  state Done
+    seq
       buf_done <= true;
-      state    <= 0;
-    else
-      state       <= 0;
-      buf_result1 <= 0;
-      buf_result2 <= 0;
-      buf_done    <= false;
-    end if
-  end seq
-end module fsm_linear_reg
+    end seq
+    -> Idle;
+  end state Done
+
+end fsm fsm_linear_reg
