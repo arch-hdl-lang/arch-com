@@ -827,13 +827,22 @@ internal waits is encountered:
 5. **Redirect each branch's exit** to the rejoin index `rejoin_idx =
    states.len()`.  Concretely, `redirect_fallthrough_to(branch, rejoin_idx)`
    modifies the *last* state of the branch so that its natural advance lands
-   at `rejoin_idx`:
-   - If the last state has `M = ∅` and `τ = ⊥` (unconditional advance):
-     replace with `M = [(true, rejoin_idx)]`.
-   - If the last state has `τ = c`: replace with `M = [(c, rejoin_idx)]`.
-   - If the last state already has `M = [(c_0, t_0), …]`: append
-     `(true, rejoin_idx)` only if no `t_j` already targets `rejoin_idx`;
-     otherwise no change (e.g. for-loop exit already routed correctly).
+   at `rejoin_idx`.  As implemented in `src/elaborate.rs::redirect_fallthrough_to`,
+   four cases are handled in this priority order:
+   - **(A) M-state** (`M ≠ ∅`): append `(true, rejoin_idx)` to `M` only if
+     no existing `t_j` already equals `rejoin_idx`; otherwise no change.
+     ⚠️ This case has a **known corner-case bug** when an existing target
+     points at the position immediately after the branch (for-loop sentinel
+     in then-branch with non-empty else); see §II.10.4.
+   - **(B) τ-state** (`τ = c`, `M = ∅`): take `c`, replace with
+     `M = [(c, rejoin_idx)]` (clears `τ`).
+   - **(C) wait_cycles state** (`w = n`, `τ = ⊥`, `M = ∅`): replace with
+     `M = [(_cnt == 0, rejoin_idx)]`.  The counter decrement is hoisted out
+     of the transition emitter so it still fires unconditionally for every
+     wait_cycles state even after this rewrite (see §II.10.5,
+     "Counter-decrement hoist").
+   - **(D) unconditional advance** (`τ = ⊥`, `w = ⊥`, `M = ∅`): replace
+     with `M = [(true, rejoin_idx)]`.
 6. The dispatch state itself does not advance via the default `next = s+1`;
    `transition_logic` recognises that a state with `M ≠ ∅` always uses the
    `M`-list, so `S_disp.M` overrides any default.
@@ -889,25 +898,42 @@ each branch.  All conditions inside a branch reference the *same* register
 valuation in source and target (by `≈_if`), so the same paths fire.
 
 **Case (R) — branch exit / rejoin.** The last state of branch `b` has been
-modified by `redirect_fallthrough_to` to advance to `rejoin_idx`.  Three
-sub-cases:
+modified by `redirect_fallthrough_to` to advance to `rejoin_idx`.  Four
+sub-cases (matching the four arms of `redirect_fallthrough_to` in §II.10.2
+step 5):
 
-- **Last state had unconditional advance** (`M = ∅`, `τ = ⊥`): replaced with
-  `M = [(true, rejoin_idx)]`.  Source semantics: branch `b`'s last segment
-  completes unconditionally, i.e. `(b, j_max) → (post, 0)`.  Target
-  semantics: `_state <= rejoin_idx`.  Match.
-- **Last state had `τ = c`**: replaced with `M = [(c, rejoin_idx)]`.  Source:
-  branch's last wait-until exits to `(post, 0)` when `c` fires.  Target:
-  same.
-- **Last state already had `M`** (e.g. for-loop exit at end of branch):
-  exactly one of the existing `M`-entries already targeted "next state after
-  the for group" via the sentinel `usize::MAX`, which the parent
-  `partition_thread_body` resolved to `rejoin_idx` (because that's
-  `states.len()` after the for-states are appended).  So no edit is needed,
-  and the for-exit already lands at `rejoin_idx`.  Source: for-loop exit on
-  the last iteration falls through to the post-if statements.  Target: same.
+- **(D) Last state had unconditional advance** (`M = ∅`, `τ = ⊥`, `w = ⊥`):
+  replaced with `M = [(true, rejoin_idx)]`.  Source semantics: branch `b`'s
+  last segment completes unconditionally, i.e. `(b, j_max) → (post, 0)`.
+  Target semantics: `_state <= rejoin_idx`.  Match.
+- **(B) Last state had `τ = c`**: replaced with `M = [(c, rejoin_idx)]`.
+  Source: branch's last wait-until exits to `(post, 0)` when `c` fires.
+  Target: same.
+- **(C) Last state had `w = n` (wait_cycles)**: replaced with
+  `M = [(_cnt == 0, rejoin_idx)]`.  Source: branch's last wait_N_cycle
+  exits to `(post, 0)` when the counter reaches zero.  Target: same.  By
+  the partitioning invariant (§II.4) the predecessor state preloads
+  `_cnt ← n − 1`; the decrement (hoisted out — see §II.10.5) fires every
+  cycle in the wait state.
+- **(A) Last state already had `M`**: append `(true, rejoin_idx)` only if
+  no existing `t_j` equals `rejoin_idx`.  This case arises when:
+  - The branch ends with a `for` loop *whose `usize::MAX` exit-sentinel
+    was resolved to `rejoin_idx` directly*.  This holds when the for-loop
+    is at the end of the **else** branch, because `else_base + else_len =
+    rejoin_idx`.  In this case the existing `(exit_cond, rejoin_idx)`
+    arm already targets `rejoin_idx`, the redirect is a no-op, and the
+    for-exit naturally lands at `rejoin_idx`.  Source: for-loop exit on
+    the last iteration falls through to the post-`if` statements.  Target:
+    same.
+  - The branch ends with a `for` loop *in the **then** branch with a
+    non-empty else branch*.  Here the sentinel resolves to
+    `then_base + then_len = else_base ≠ rejoin_idx`, so the redirect
+    appends `(true, rejoin_idx)`.  ⚠️ **This case is currently broken in
+    the implementation** — see §II.10.4 "for-loop-in-then-branch
+    asymmetry".
 
-In all three sub-cases `≈_if` is preserved across the rejoin transition.
+For sub-cases (D), (B), (C), and the well-behaved part of (A), `≈_if` is
+preserved across the rejoin transition.
 
 **Case (Eq) — outside the if/else.** Steps before reaching the dispatch
 barrier and after rejoin are governed by Lemma 2 of §II.3 unchanged
@@ -941,6 +967,54 @@ on the *post-flush* register values, matching the source semantics where
 "the if statement evaluates `cond` after preceding seq updates have taken
 effect at the previous clock edge."  Without this flush, `cond` would read
 stale register values, breaking equivalence.
+
+**⚠️ For-loop-in-then-branch asymmetry (known bug as of v0.45.0).**  When
+a `for` loop is the *last* statement of the **then** branch and the
+**else** branch is non-empty, the dispatch-and-rejoin lowering produces
+incorrect SV.  The mechanism:
+
+- Inside the recursive `partition_thread_body(then_stmts)` call,
+  `lower_thread_for` emits the for-loop's last state with
+  `M = [(loop_cond, 0), (exit_cond, usize::MAX)]`.
+- The recursive call resolves the sentinel relative to its own state list:
+  `usize::MAX → for_base + for_len`, which equals the position right after
+  the for-loop within the recursive call's frame.
+- The outer IfElse handler then shifts every target by `then_base`, so the
+  exit target becomes `then_base + then_len = else_base` (the start of the
+  else branch).
+- `redirect_fallthrough_to` inspects the for-loop's last state, sees
+  `M = [(loop_cond, then_base), (exit_cond, else_base)]`, and finds no
+  existing target equals `rejoin_idx`.  Per case (A), it appends
+  `(true, rejoin_idx)`.
+- The resulting M is `[(loop_cond, then_base), (exit_cond, else_base),
+  (true, rejoin_idx)]`.  Under ARCH `seq` last-write-wins semantics, the
+  unconditional `(true, rejoin_idx)` arm always overrides the loop-back,
+  so the for-loop body executes exactly once and control jumps to the
+  post-`if` regardless of `loop_cnt`.
+
+Symmetric case: a for-loop at the end of the **else** branch is handled
+correctly because `else_base + else_len = rejoin_idx`, so the existing
+`(exit_cond, rejoin_idx)` arm matches the redirect's target check and no
+spurious arm is appended.
+
+**Suggested fix** (out of scope for this proof; flagged for the
+implementation to address): in the IfElse handler, after computing
+`rejoin_idx`, walk all targets in `then_states` (and `else_states`) that
+equal `then_base + then_len` (resp. `else_base + else_len`) and rewrite
+them to `rejoin_idx`.  This eliminates the asymmetry: any sentinel-derived
+"next state after this branch" target lands directly at the post-`if`
+position.  The `redirect_fallthrough_to` case (A) then becomes a true
+no-op because the for-exit is already correctly routed.
+
+**Empirical confirmation.**  A minimal reproducer
+(`tests/check_if_wait_for.arch` during proof review) generates state-4 SV
+of the form:
+```sv
+if (loop_cnt < end) state <= 3;     // loop-back
+if (loop_cnt >= end) state <= 5;    // → else_base, NOT rejoin
+if (1'b1) state <= 6;               // → rejoin (always overrides above)
+```
+The for-loop body executes exactly once instead of `end` times.
 
 **Empty branches.** If `then_stmts = []` (vacuous then), the recursive
 `partition_thread_body([])` returns no states; `then_base = else_base` and
@@ -980,6 +1054,12 @@ Tests covering: (a) wait in then-branch only, (b) wait in else-branch only,
 (e) auto-thread-asserts integration — see `tests/integration_test.rs`
 (`test_if_wait_*` family).  End-to-end Verilator `--assert` golden + mutation
 runs confirm the dispatch-state branch assertions are load-bearing.
+
+**Coverage gap.** The current test suite does **not** cover the
+for-loop-in-then-branch case described in §II.10.4.  This is the case where
+the `redirect_fallthrough_to` case-(A) handling produces an unconditional
+override that defeats the for-loop's loop-back arm.  A regression test
+exercising this combination is needed alongside the implementation fix.
 
 ### II.11  Auto-emitted spec-contract SVA (`--auto-thread-asserts`)
 
@@ -1121,7 +1201,12 @@ The thread-to-FSM lowering is correct in the following precise sense:
 6. **Shared(or) reduction faithfulness** (Lemma S, II.9).
 7. **If/else with internal waits faithfulness** (Lemma I, II.10) —
    *implemented in v0.45.0 via the dispatch-and-rejoin scheme proved sound
-   here.*
+   here.* ⚠️ A known corner-case bug remains in `redirect_fallthrough_to`
+   case (A): a `for` loop at the end of the **then** branch with a
+   non-empty else branch produces an extra `(true, rejoin_idx)` arm that
+   overrides the loop-back, so the for-loop body executes exactly once.
+   See §II.10.4 "for-loop-in-then-branch asymmetry" for the mechanism and
+   suggested fix.
 8. **Auto-emitted spec-contract SVA correctness** (Corollaries W/C/B, II.11)
    — the `--auto-thread-asserts` properties hold by construction in any
    accepted source program, so an `ASSERTION FAILED` from one of them
