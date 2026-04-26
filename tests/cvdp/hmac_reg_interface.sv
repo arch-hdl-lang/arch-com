@@ -36,7 +36,6 @@ module hmac_reg_interface #(
   logic [DATA_WIDTH-1:0] xor_data;
   logic [DATA_WIDTH-1:0] xor_mask;
   logic key_valid;
-  logic [DATA_WIDTH-1:0] next_hmac_key;
   logic next_key_valid;
   
   always_ff @(posedge clk or negedge rst_n) begin
@@ -53,12 +52,14 @@ module hmac_reg_interface #(
     end else begin
       state_r <= state_next;
       // Datapath regs (alongside FSM state)
-      // Internal wires for the look-ahead key-error path.
+      // Internal wires.
+      // Look-ahead key-error: default = check current hmac_key, WRITE
+      // state overrides to check wdata when writing the key (addr == 0).
       // The CVDP TB probes `dut.current_state.value`; alias `state` so the
       // test can read it without renaming inside the auto-generated FSM.
       // xor_mask: alternating-1s pattern (01010101...) — TB-visible.
-      // Key validation: 2 MSB and 2 LSB of hmac_key must be zero.
-      // Look-ahead so hmac_key_error tracks the key being written *this* cycle.
+      // Key validation: 2 MSB and 2 LSB must be zero.
+      // Default look-ahead: not writing the key this cycle.
       hmac_key_error <= ~next_key_valid;
       hmac_valid <= 1'b0;
       // Reads: serve from non-WRITE states.
@@ -73,6 +74,8 @@ module hmac_reg_interface #(
       end
       case (state_r)
         WRITE: begin
+          // Look-ahead override: when writing the key this cycle, validate
+          // against wdata so hmac_key_error tracks it without a 1-cycle lag.
           if (addr == 0) begin
             hmac_key <= wdata;
           end else if (addr == 1) begin
@@ -127,12 +130,7 @@ module hmac_reg_interface #(
     end
     xor_data = wdata ^ xor_mask;
     key_valid = (hmac_key[DATA_WIDTH - 2 +: 2] == 0) & (hmac_key[1:0] == 0);
-    if ((state_r == WRITE) & (addr == 0)) begin
-      next_hmac_key = wdata;
-    end else begin
-      next_hmac_key = hmac_key;
-    end
-    next_key_valid = (next_hmac_key[DATA_WIDTH - 2 +: 2] == 0) & (next_hmac_key[1:0] == 0);
+    next_key_valid = key_valid;
     case (state_r)
       IDLE: begin
       end
@@ -141,6 +139,9 @@ module hmac_reg_interface #(
       XOR_DATA: begin
       end
       WRITE: begin
+        if (addr == 0) begin
+          next_key_valid = (wdata[DATA_WIDTH - 2 +: 2] == 0) & (wdata[1:0] == 0);
+        end
       end
       LOST: begin
       end

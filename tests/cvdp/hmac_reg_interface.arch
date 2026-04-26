@@ -18,12 +18,14 @@ fsm hmac_reg_interface
   reg hmac_data: UInt<DATA_WIDTH> reset rst_n=>0;
   reg registers: Vec<UInt<DATA_WIDTH>, 256> reset rst_n=>0;
 
-  // Internal wires for the look-ahead key-error path.
+  // Internal wires.
   wire xor_data:       UInt<DATA_WIDTH>;
   wire xor_mask:       UInt<DATA_WIDTH>;
   wire key_valid:      Bool;
-  wire next_hmac_key:  UInt<DATA_WIDTH>;
+  // Look-ahead key-error: default = check current hmac_key, WRITE
+  // state overrides to check wdata when writing the key (addr == 0).
   wire next_key_valid: Bool;
+
   // The CVDP TB probes `dut.current_state.value`; alias `state` so the
   // test can read it without renaming inside the auto-generated FSM.
   let current_state: UInt<3> = state;
@@ -41,17 +43,10 @@ fsm hmac_reg_interface
       end for
       xor_data = wdata ^ xor_mask;
 
-      // Key validation: 2 MSB and 2 LSB of hmac_key must be zero.
-      key_valid = (hmac_key[DATA_WIDTH-1:DATA_WIDTH-2] == 0) & (hmac_key[1:0] == 0);
-
-      // Look-ahead so hmac_key_error tracks the key being written *this* cycle.
-      if (state == WRITE) & (addr == 0)
-        next_hmac_key = wdata;
-      else
-        next_hmac_key = hmac_key;
-      end if
-      next_key_valid = (next_hmac_key[DATA_WIDTH-1:DATA_WIDTH-2] == 0)
-                     & (next_hmac_key[1:0] == 0);
+      // Key validation: 2 MSB and 2 LSB must be zero.
+      key_valid      = (hmac_key[DATA_WIDTH-1:DATA_WIDTH-2] == 0) & (hmac_key[1:0] == 0);
+      // Default look-ahead: not writing the key this cycle.
+      next_key_valid = key_valid;
     end comb
     seq
       hmac_key_error <= ~next_key_valid;
@@ -83,6 +78,13 @@ fsm hmac_reg_interface
   end state XOR_DATA
 
   state WRITE
+    comb
+      // Look-ahead override: when writing the key this cycle, validate
+      // against wdata so hmac_key_error tracks it without a 1-cycle lag.
+      if addr == 0
+        next_key_valid = (wdata[DATA_WIDTH-1:DATA_WIDTH-2] == 0) & (wdata[1:0] == 0);
+      end if
+    end comb
     seq
       if addr == 0
         hmac_key <= wdata;
