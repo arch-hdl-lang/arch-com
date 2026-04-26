@@ -761,6 +761,10 @@ impl Parser {
             self.expect(TokenKind::Eq)?;
             let ty = self.parse_type_expr()?;
             ParamKind::Type(ty)
+        } else if matches!(self.peek_kind(), Some(TokenKind::KwVec)) {
+            // Vec-of-const: param NAME: Vec<T, N> = {...};
+            let ty = self.parse_type_expr()?;
+            ParamKind::ConstVec(ty)
         } else if matches!(self.peek_kind(), Some(TokenKind::Ident(_))) {
             // Enum-typed const: param MODE: EnumName = EnumName::Variant
             let enum_name = self.expect_ident()?;

@@ -627,6 +627,10 @@ A module is the fundamental unit of design in Arch. Every module follows the sam
 |                                                                                |
 | // param NAME: EnumName = EnumName::Variant; // enum-typed — emits `parameter EnumName` |
 |                                                                                |
+| // param NAME: Vec<T, N> = {a, b, c, ...}; // fixed-length array of consts;  |
+| //                                  emits packed `parameter logic [N*W-1:0]`,  |
+| //                                  `NAME[i]` reads as a packed part-select.   |
+|                                                                                |
 | // local param NAME: const = expr;  // derived — emits `localparam` (not overridable) |
 |                                                                                |
 | //                                                                             |

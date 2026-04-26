@@ -1,17 +1,8 @@
 module iir_filter
-  param b0: const = 1;
-  param b1: const = 0;
-  param b2: const = 0;
-  param b3: const = 0;
-  param b4: const = 0;
-  param b5: const = 0;
-  param b6: const = 0;
-  param a1: const = 0;
-  param a2: const = 0;
-  param a3: const = 0;
-  param a4: const = 0;
-  param a5: const = 0;
-  param a6: const = 0;
+  // Feedforward (b) coefficients, indexed b[0..6].
+  param b: Vec<SInt<16>, 7> = {1, 0, 0, 0, 0, 0, 0};
+  // Feedback (a) coefficients, indexed a[1..6]; a[0] is unused.
+  param a: Vec<SInt<16>, 7> = {0, 0, 0, 0, 0, 0, 0};
 
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync, High>;
@@ -23,36 +14,36 @@ module iir_filter
   // x_pipe@0 = x (current input), x_pipe@K = x delayed by K cycles.
   pipe_reg x_pipe: x stages 6;
   // y_reg captures the current filter output. y_pipe@K reads y_reg
-  // from K cycles ago (so y_reg itself = y at lag 0, y_pipe@1 = lag 1, …).
+  // from K cycles ago (y_reg = y at lag 0, y_pipe@1 = lag 1, …).
   reg y_reg: SInt<16> reset rst=>0;
   pipe_reg y_pipe: y_reg stages 5;
 
-  // b*x terms — the K-th tap multiplied by b_K.
-  let t0: SInt<48> = (x_pipe@0.sext<48>() * b0.zext<48>() as SInt<48>).trunc<48>();
-  let t1: SInt<48> = (x_pipe@1.sext<48>() * b1.zext<48>() as SInt<48>).trunc<48>();
-  let t2: SInt<48> = (x_pipe@2.sext<48>() * b2.zext<48>() as SInt<48>).trunc<48>();
-  let t3: SInt<48> = (x_pipe@3.sext<48>() * b3.zext<48>() as SInt<48>).trunc<48>();
-  let t4: SInt<48> = (x_pipe@4.sext<48>() * b4.zext<48>() as SInt<48>).trunc<48>();
-  let t5: SInt<48> = (x_pipe@5.sext<48>() * b5.zext<48>() as SInt<48>).trunc<48>();
-  let t6: SInt<48> = (x_pipe@6.sext<48>() * b6.zext<48>() as SInt<48>).trunc<48>();
-  // a*y terms — y1 = y_reg, y2..y6 = y_pipe@1..@5.
-  let u1: SInt<48> = (y_reg.sext<48>()    * a1.zext<48>() as SInt<48>).trunc<48>();
-  let u2: SInt<48> = (y_pipe@1.sext<48>() * a2.zext<48>() as SInt<48>).trunc<48>();
-  let u3: SInt<48> = (y_pipe@2.sext<48>() * a3.zext<48>() as SInt<48>).trunc<48>();
-  let u4: SInt<48> = (y_pipe@3.sext<48>() * a4.zext<48>() as SInt<48>).trunc<48>();
-  let u5: SInt<48> = (y_pipe@4.sext<48>() * a5.zext<48>() as SInt<48>).trunc<48>();
-  let u6: SInt<48> = (y_pipe@5.sext<48>() * a6.zext<48>() as SInt<48>).trunc<48>();
-  // Sum feedforward.
-  let ff01: SInt<48> = (t0 + t1).trunc<48>();
-  let ff23: SInt<48> = (t2 + t3).trunc<48>();
-  let ff45: SInt<48> = (t4 + t5).trunc<48>();
-  let ff_b: SInt<48> = ((ff01 + ff23).trunc<48>() + (ff45 + t6).trunc<48>()).trunc<48>();
-  // Sum feedback.
-  let fb12: SInt<48> = (u1 + u2).trunc<48>();
-  let fb34: SInt<48> = (u3 + u4).trunc<48>();
-  let fb56: SInt<48> = (u5 + u6).trunc<48>();
-  let fb_a: SInt<48> = ((fb12 + fb34).trunc<48>() + fb56).trunc<48>();
-  // Final accumulator.
+  // Per-tap multiply-accumulate. The K-th input tap multiplies b[K];
+  // the K-th output tap (lag K, with lag 0 = y_reg) multiplies a[K].
+  wire t: Vec<SInt<48>, 7>;
+  wire u: Vec<SInt<48>, 7>;
+  comb
+    t[0] = (x_pipe@0.sext<48>() * b[0].sext<48>()).trunc<48>();
+    t[1] = (x_pipe@1.sext<48>() * b[1].sext<48>()).trunc<48>();
+    t[2] = (x_pipe@2.sext<48>() * b[2].sext<48>()).trunc<48>();
+    t[3] = (x_pipe@3.sext<48>() * b[3].sext<48>()).trunc<48>();
+    t[4] = (x_pipe@4.sext<48>() * b[4].sext<48>()).trunc<48>();
+    t[5] = (x_pipe@5.sext<48>() * b[5].sext<48>()).trunc<48>();
+    t[6] = (x_pipe@6.sext<48>() * b[6].sext<48>()).trunc<48>();
+    u[0] = 0.zext<48>() as SInt<48>;  // a[0] unused; pad so indices align with b
+    u[1] = (y_reg.sext<48>()    * a[1].sext<48>()).trunc<48>();
+    u[2] = (y_pipe@1.sext<48>() * a[2].sext<48>()).trunc<48>();
+    u[3] = (y_pipe@2.sext<48>() * a[3].sext<48>()).trunc<48>();
+    u[4] = (y_pipe@3.sext<48>() * a[4].sext<48>()).trunc<48>();
+    u[5] = (y_pipe@4.sext<48>() * a[5].sext<48>()).trunc<48>();
+    u[6] = (y_pipe@5.sext<48>() * a[6].sext<48>()).trunc<48>();
+  end comb
+
+  // Sum trees + final accumulator.
+  let ff_b: SInt<48> = (((t[0] + t[1]).trunc<48>() + (t[2] + t[3]).trunc<48>()).trunc<48>()
+                      + ((t[4] + t[5]).trunc<48>() + t[6]).trunc<48>()).trunc<48>();
+  let fb_a: SInt<48> = (((u[1] + u[2]).trunc<48>() + (u[3] + u[4]).trunc<48>()).trunc<48>()
+                      + (u[5] + u[6]).trunc<48>()).trunc<48>();
   let acc:  SInt<48> = (ff_b - fb_a).trunc<48>();
 
   let y = y_reg;

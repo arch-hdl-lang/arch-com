@@ -278,6 +278,15 @@ fn emit_params(s: &mut String, params: &[ParamDecl]) {
                     "  {local}param {name}: {enum_name}{default_str};\n"
                 ));
             }
+            ParamKind::ConstVec(ty) => {
+                let default_str = p.default.as_ref()
+                    .map(|d| format!(" = {}", expr_str(d)))
+                    .unwrap_or_default();
+                s.push_str(&format!(
+                    "  {local}param {name}: {}{default_str};\n",
+                    type_str(ty)
+                ));
+            }
         }
     }
 }
