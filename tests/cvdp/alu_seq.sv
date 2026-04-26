@@ -19,23 +19,32 @@ module alu_seq #(
       result <= 0;
     end else begin
       if (key_match) begin
-        if (i_opcode == 0) begin
-          result <= 8'(9'($unsigned(i_operand_a)) + 9'($unsigned(i_operand_b)));
-        end else if (i_opcode == 1) begin
-          result <= 8'(9'($unsigned(i_operand_a)) - 9'($unsigned(i_operand_b)));
-        end else if (i_opcode == 2) begin
-          result <= 8'(8'($unsigned(i_operand_a)) * 8'($unsigned(i_operand_b)));
-        end else if (i_opcode == 3) begin
-          result <= 8'($unsigned(i_operand_a)) & 8'($unsigned(i_operand_b));
-        end else if (i_opcode == 4) begin
-          result <= 8'($unsigned(i_operand_a)) | 8'($unsigned(i_operand_b));
-        end else if (i_opcode == 5) begin
-          result <= 8'($unsigned(~i_operand_a));
-        end else if (i_opcode == 6) begin
-          result <= 8'($unsigned(i_operand_a)) ^ 8'($unsigned(i_operand_b));
-        end else begin
-          result <= 8'($unsigned(~(i_operand_a ^ i_operand_b)));
-        end
+        unique case (i_opcode)
+          0: begin
+            result <= 8'(9'($unsigned(i_operand_a)) + 9'($unsigned(i_operand_b)));
+          end
+          1: begin
+            result <= 8'(9'($unsigned(i_operand_a)) - 9'($unsigned(i_operand_b)));
+          end
+          2: begin
+            result <= 8'(8'($unsigned(i_operand_a)) * 8'($unsigned(i_operand_b)));
+          end
+          3: begin
+            result <= 8'($unsigned(i_operand_a)) & 8'($unsigned(i_operand_b));
+          end
+          4: begin
+            result <= 8'($unsigned(i_operand_a)) | 8'($unsigned(i_operand_b));
+          end
+          5: begin
+            result <= 8'($unsigned(~i_operand_a));
+          end
+          6: begin
+            result <= 8'($unsigned(i_operand_a)) ^ 8'($unsigned(i_operand_b));
+          end
+          default: begin
+            result <= 8'($unsigned(~(i_operand_a ^ i_operand_b)));
+          end
+        endcase
       end else begin
         result <= 0;
       end
