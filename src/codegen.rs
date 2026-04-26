@@ -2088,7 +2088,7 @@ impl<'a> Codegen<'a> {
             ExprKind::Ident(n) => n.clone(),
             ExprKind::FieldAccess(base, _) => Self::expr_root_name(base),
             ExprKind::Index(base, _) | ExprKind::BitSlice(base, _, _) | ExprKind::PartSelect(base, _, _, _) => Self::expr_root_name(base),
-            ExprKind::LatencyAt(inner, _) => Self::expr_root_name(inner),
+            ExprKind::LatencyAt(inner, _) | ExprKind::SvaNext(_, inner) => Self::expr_root_name(inner),
             _ => String::new(),
         }
     }
@@ -6026,6 +6026,10 @@ impl<'a> Codegen<'a> {
             // assignment emitter strips the annotation before routing the
             // value to the appropriate stage 0 of the pipe chain.
             ExprKind::LatencyAt(inner, _) => self.emit_expr_inner(inner),
+            // SVA forward-shift: `##N expr` only legal inside an assert
+            // /cover property (typecheck enforces). Emit verbatim — SV
+            // accepts it natively in property context.
+            ExprKind::SvaNext(n, inner) => format!("##{n} {}", self.emit_expr_inner(inner)),
             // SynthIdent: compiler-synthesized name pointing at codegen-
             // emitted SV wires (credit_channel dispatch targets). Emits as
             // a plain identifier — the declaration + driver live elsewhere
@@ -6368,9 +6372,9 @@ impl<'a> Codegen<'a> {
             }
             ExprKind::FunctionCall(name, args) => {
                 let arg_strs: Vec<String> = args.iter().map(|a| self.emit_expr_str(a)).collect();
-                // Built-in: `past(expr, N)` → SV `$past(expr, N)`
-                if name == "past" {
-                    return format!("$past({})", arg_strs.join(", "));
+                // Built-in SVA: past/rose/fell → SV $past/$rose/$fell
+                if name == "past" || name == "rose" || name == "fell" {
+                    return format!("${name}({})", arg_strs.join(", "));
                 }
                 // Resolve mangled name if this is an overloaded function.
                 let sv_name = if let Some((Symbol::Function(overloads), _)) = self.symbols.globals.get(name) {

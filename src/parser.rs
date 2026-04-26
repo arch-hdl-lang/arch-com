@@ -2833,6 +2833,32 @@ impl Parser {
 
     fn parse_prefix(&mut self) -> Result<Expr, CompileError> {
         match self.peek_kind() {
+            Some(TokenKind::HashHash) => {
+                // SVA `##N expr` — forward cycle-shift sugar. Only legal
+                // inside assert/cover bodies (typecheck enforces).
+                let tok = self.advance();
+                let n_tok = self.advance();
+                let n_val: u32 = match &n_tok.kind {
+                    TokenKind::DecLiteral(s) => s.parse().map_err(|_| CompileError::general(
+                        "`##N` cycle count out of range", n_tok.span,
+                    ))?,
+                    _ => return Err(CompileError::general(
+                        "`##N` requires an integer literal cycle count",
+                        n_tok.span,
+                    )),
+                };
+                if n_val == 0 {
+                    return Err(CompileError::general(
+                        "`##0 expr` is just `expr`; use the bare expression instead",
+                        n_tok.span,
+                    ));
+                }
+                let operand = self.parse_expr_bp(prefix_bp())?;
+                let span = tok.span.merge(operand.span);
+                Ok(Expr {
+                    kind: ExprKind::SvaNext(n_val, Box::new(operand)),
+                    span, parenthesized: false })
+            }
             Some(TokenKind::Not) => {
                 let tok = self.advance();
                 let operand = self.parse_expr_bp(prefix_bp())?;

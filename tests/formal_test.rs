@@ -223,3 +223,23 @@ fn formal_sva_temporal_refutes() {
     assert_eq!(code, 1, "expected exit 1 (REFUTED); got {code}\n{out}");
     assert!(out.contains("REFUTED"), "expected REFUTED:\n{out}");
 }
+
+#[test]
+fn formal_sva_phase2_proves() {
+    if !z3_available() { eprintln!("skipping: z3 not in PATH"); return; }
+    let (code, out) = run_formal("tests/formal/sva_phase2_proves.arch", &["--bound", "8"]);
+    assert_eq!(code, 0, "expected exit 0; got {code}\n{out}");
+    for prop in ["rose_implies_a_edge", "fell_implies_a_edge", "next_chain"] {
+        assert!(out.contains(prop), "missing property `{prop}`:\n{out}");
+    }
+    let proved = out.matches("PROVED").count();
+    assert_eq!(proved, 3, "expected 3 PROVED, got {proved}:\n{out}");
+}
+
+#[test]
+fn formal_sva_phase2_refutes() {
+    if !z3_available() { eprintln!("skipping: z3 not in PATH"); return; }
+    let (code, out) = run_formal("tests/formal/sva_phase2_refutes.arch", &["--bound", "8"]);
+    assert_eq!(code, 1, "expected exit 1 (REFUTED); got {code}\n{out}");
+    assert!(out.contains("REFUTED"), "expected REFUTED:\n{out}");
+}

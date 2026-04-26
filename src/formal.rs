@@ -1922,6 +1922,10 @@ impl<'a> FormalCtx<'a> {
             // `q@0` is the same as `q` at t. Non-@0 reads are rejected by
             // typecheck before reaching formal emission.
             LatencyAt(inner, _) => self.encode_raw(inner, t),
+            // SVA `##N expr` — forward cycle-shift. Encode `expr` at
+            // cycle `t + N`. run_property clamps max_t so this never
+            // goes out of the unrolled range.
+            SvaNext(n, inner) => self.encode_raw(inner, t + *n),
             // SynthIdent points at codegen-emitted state (credit_channel
             // counter / occ / valid / data wires). PR-hf4 item 2 registered
             // the scalar ones (credit, occ, head, tail, send_valid,
@@ -2117,6 +2121,26 @@ impl<'a> FormalCtx<'a> {
                     "expression kind not supported by arch formal v1 (struct field access on a non-bus port — only `<bus_port>.<channel_signal>` is supported)",
                     expr.span,
                 ))
+            }
+            FunctionCall(name, args) if (name == "rose" || name == "fell") && args.len() == 1 => {
+                // rose(a) ≡ a@t AND NOT a@(t-1); fell(a) ≡ NOT a@t AND a@(t-1).
+                // run_property's max_past_depth treats these as depth 1.
+                if t < 1 {
+                    return Err(CompileError::general(
+                        &format!("internal: {name}() at cycle 0 — run_property should have skipped this cycle"),
+                        expr.span,
+                    ));
+                }
+                let now = self.encode_raw(&args[0], t)?;
+                let prev = self.encode_raw(&args[0], t - 1)?;
+                let now_b = as_bv1_bool(&now);
+                let prev_b = as_bv1_bool(&prev);
+                let term = if name == "rose" {
+                    format!("(bvand {now_b} (bvnot {prev_b}))")
+                } else {
+                    format!("(bvand (bvnot {now_b}) {prev_b})")
+                };
+                Ok(SmtTerm { s: term, width: 1, signed: false })
             }
             FunctionCall(name, args) if name == "past" && args.len() == 2 => {
                 // SVA past(expr, N): encode `expr` at cycle t - N. Caller
@@ -2489,27 +2513,23 @@ impl<'a> FormalCtx<'a> {
             ExprKind::Binary(BinOp::ImpliesNext, _, _)
         );
 
-        // Compute earliest cycle the property is well-defined: for any
-        // `past(_, N)` subterm, we need t ≥ N. Skipping earlier cycles
-        // matches SVA's vacuous-true / vacuous-no-hit semantics for
-        // not-yet-defined past values.
-        let min_t = max_past_depth(&prop.expr);
-        // For top-level `|=> b`, the RHS is sampled at t+1, so the last
-        // valid t is bound-1.
-        let max_t = if toplevel_implies_next {
-            args.bound.saturating_sub(1)
-        } else {
-            args.bound
-        };
+        // Determine the cycle range over which the property is well-defined:
+        // - past(_, N), rose, fell need t ≥ past_depth (past values undefined).
+        // - ##M expr needs t + M ≤ bound (future cycle inside unroll).
+        // - Top-level `|=>` adds an additional +1 for the RHS sample at t+1.
+        // SVA's vacuous-true / vacuous-no-hit semantics handle the skipped
+        // cycles cleanly.
+        let (min_t, future_depth) = max_cycle_offsets(&prop.expr);
+        let extra_for_implies = if toplevel_implies_next { 1 } else { 0 };
+        let max_t = args.bound.saturating_sub(future_depth + extra_for_implies);
 
         if min_t > max_t {
-            // No cycle in [0, bound] satisfies the constraints. Treat as
-            // inconclusive — bound too small to evaluate the property.
-            let msg = if toplevel_implies_next {
-                format!("bound {} too small for `|=>` (need bound ≥ 1 + max past depth = {})", args.bound, min_t + 1)
-            } else {
-                format!("bound {} too small for max past depth {}", args.bound, min_t)
-            };
+            let need = (min_t + future_depth + extra_for_implies).max(1);
+            let msg = format!(
+                "bound {} too small for property (needs ≥ {need}: past_depth={min_t}, future_depth={future_depth}{})",
+                args.bound,
+                if toplevel_implies_next { ", +1 for top-level `|=>`" } else { "" },
+            );
             return Ok(PropertyResult {
                 name: prop.name.clone(),
                 kind: prop.kind.clone(),
@@ -2518,13 +2538,20 @@ impl<'a> FormalCtx<'a> {
             });
         }
 
+        // For `lhs |=> rhs`, the RHS samples one cycle after the LHS
+        // sequence ENDS — for plain `a |=> b` that's t+1; for `##N a |=> b`
+        // the lhs sequence ends at t+N, so rhs samples at t+N+1.
+        let lhs_future = if let ExprKind::Binary(BinOp::ImpliesNext, lhs, _) = &prop.expr.kind {
+            max_cycle_offsets(lhs).1
+        } else { 0 };
+
         // Encode the property at each cycle min_t..=max_t.
         let mut per_cycle: Vec<String> = Vec::with_capacity((max_t - min_t + 1) as usize);
         for t in min_t..=max_t {
             let bool_term = if let ExprKind::Binary(BinOp::ImpliesNext, lhs, rhs) = &prop.expr.kind {
-                // a@t → b@(t+1) ≡ ¬a@t ∨ b@(t+1)
+                // a@t → b@(t+1+lhs_future) ≡ ¬a@t ∨ b@(t+1+lhs_future)
                 let la = self.encode_expr(lhs, t, Some((1, false)))?;
-                let lb = self.encode_expr(rhs, t + 1, Some((1, false)))?;
+                let lb = self.encode_expr(rhs, t + 1 + lhs_future, Some((1, false)))?;
                 let la_b = as_bv1_bool(&la);
                 let lb_b = as_bv1_bool(&lb);
                 format!("(bvor (bvnot {la_b}) {lb_b})")
@@ -3011,36 +3038,50 @@ fn parse_bv_literal(s: &str) -> Option<u64> {
 
 // ── SVA `past(_, N)` depth analysis ─────────────────────────────────────────
 
-/// Largest `N` such that `past(_, N)` appears reachable in `e` (including
-/// nested `past(past(_, M), K)` whose depth is M + K). Determines the
-/// earliest cycle for which the property is well-defined; run_property
-/// skips cycles below this depth (vacuous-true / vacuous-no-hit).
-fn max_past_depth(e: &Expr) -> u32 {
+/// Returns `(past_depth, future_depth)`: the largest `N` such that
+/// `past(_, N)` (or `rose`/`fell` which act like depth-1 past) appears
+/// in `e`, paired with the largest `M` such that `##M expr` appears.
+/// run_property uses these to bound the per-cycle eval loop:
+/// skip `t < past_depth` (past values undefined), `t > bound - future_depth`
+/// (future values out of unroll). Both follow SVA's vacuous semantics for
+/// the skipped cycles.
+fn max_cycle_offsets(e: &Expr) -> (u32, u32) {
     use ExprKind::*;
+    fn cmb(a: (u32, u32), b: (u32, u32)) -> (u32, u32) { (a.0.max(b.0), a.1.max(b.1)) }
     match &e.kind {
         FunctionCall(name, args) if name == "past" && args.len() == 2 => {
             let n = match &args[1].kind {
                 Literal(LitKind::Dec(n)) | Literal(LitKind::Sized(_, n)) => *n as u32,
                 _ => 0,
             };
-            n + max_past_depth(&args[0])
+            let (p, f) = max_cycle_offsets(&args[0]);
+            (n + p, f)
         }
-        Binary(_, l, r) => max_past_depth(l).max(max_past_depth(r)),
+        FunctionCall(name, args) if (name == "rose" || name == "fell") && args.len() == 1 => {
+            let (p, f) = max_cycle_offsets(&args[0]);
+            (1 + p, f)
+        }
+        SvaNext(n, inner) => {
+            let (p, f) = max_cycle_offsets(inner);
+            (p, n + f)
+        }
+        Binary(_, l, r) => cmb(max_cycle_offsets(l), max_cycle_offsets(r)),
         Unary(_, x) | Cast(x, _) | Clog2(x) | Onehot(x) | Signed(x) | Unsigned(x)
-        | LatencyAt(x, _) => max_past_depth(x),
-        Ternary(c, t, el) => max_past_depth(c).max(max_past_depth(t)).max(max_past_depth(el)),
-        Index(b, i) => max_past_depth(b).max(max_past_depth(i)),
-        BitSlice(b, _, _) => max_past_depth(b),
-        PartSelect(b, s, w, _) => max_past_depth(b).max(max_past_depth(s)).max(max_past_depth(w)),
-        Concat(xs) | FunctionCall(_, xs) => xs.iter().map(max_past_depth).max().unwrap_or(0),
-        Repeat(n, x) => max_past_depth(n).max(max_past_depth(x)),
-        MethodCall(r, _, args) => max_past_depth(r)
-            .max(args.iter().map(max_past_depth).max().unwrap_or(0)),
-        FieldAccess(b, _) => max_past_depth(b),
-        StructLiteral(_, fs) => fs.iter().map(|fi| max_past_depth(&fi.value)).max().unwrap_or(0),
-        _ => 0,
+        | LatencyAt(x, _) => max_cycle_offsets(x),
+        Ternary(c, t, el) => cmb(cmb(max_cycle_offsets(c), max_cycle_offsets(t)), max_cycle_offsets(el)),
+        Index(b, i) => cmb(max_cycle_offsets(b), max_cycle_offsets(i)),
+        BitSlice(b, _, _) => max_cycle_offsets(b),
+        PartSelect(b, s, w, _) => cmb(cmb(max_cycle_offsets(b), max_cycle_offsets(s)), max_cycle_offsets(w)),
+        Concat(xs) | FunctionCall(_, xs) => xs.iter().fold((0, 0), |a, x| cmb(a, max_cycle_offsets(x))),
+        Repeat(n, x) => cmb(max_cycle_offsets(n), max_cycle_offsets(x)),
+        MethodCall(r, _, args) => cmb(max_cycle_offsets(r),
+            args.iter().fold((0, 0), |a, x| cmb(a, max_cycle_offsets(x)))),
+        FieldAccess(b, _) => max_cycle_offsets(b),
+        StructLiteral(_, fs) => fs.iter().fold((0, 0), |a, fi| cmb(a, max_cycle_offsets(&fi.value))),
+        _ => (0, 0),
     }
 }
+
 
 // ── Counterexample rendering ────────────────────────────────────────────────
 
@@ -3052,12 +3093,12 @@ fn find_first_failing_cycle(
     bound: u32,
 ) -> u32 {
     let target_bit = matches!(kind, AssertKind::Cover) as u64; // cover: want 1; assert: want 0 (failing)
-    let min_t = max_past_depth(expr);
-    let max_t = if matches!(&expr.kind, ExprKind::Binary(BinOp::ImpliesNext, _, _)) {
-        bound.saturating_sub(1)
-    } else {
-        bound
-    };
+    let (min_t, future_depth) = max_cycle_offsets(expr);
+    let extra = if matches!(&expr.kind, ExprKind::Binary(BinOp::ImpliesNext, _, _)) { 1 } else { 0 };
+    let max_t = bound.saturating_sub(future_depth + extra);
+    if min_t > max_t {
+        return min_t.min(bound);
+    }
     for t in min_t..=max_t {
         let v = eval_expr_numeric(expr, t, ctx, assignments).unwrap_or(0);
         let bit = v & 1;
@@ -3174,6 +3215,14 @@ fn eval_expr_numeric(
             if t < n { return None; }
             eval_expr_numeric(&args[0], t - n, ctx, assignments)
         }
+        FunctionCall(name, args) if (name == "rose" || name == "fell") && args.len() == 1 => {
+            if t < 1 { return None; }
+            let now = eval_expr_numeric(&args[0], t, ctx, assignments)? & 1;
+            let prev = eval_expr_numeric(&args[0], t - 1, ctx, assignments)? & 1;
+            Some(if name == "rose" { (now == 1 && prev == 0) as u64 }
+                 else                { (now == 0 && prev == 1) as u64 })
+        }
+        SvaNext(n, inner) => eval_expr_numeric(inner, t + n, ctx, assignments),
         _ => None,
     }
 }

@@ -1692,7 +1692,7 @@ impl<'a> TypeChecker<'a> {
             ExprKind::Ident(n) => n.clone(),
             ExprKind::FieldAccess(base, _) => Self::expr_root_name_tc(base),
             ExprKind::Index(base, _) | ExprKind::BitSlice(base, _, _) | ExprKind::PartSelect(base, _, _, _) => Self::expr_root_name_tc(base),
-            ExprKind::LatencyAt(inner, _) => Self::expr_root_name_tc(inner),
+            ExprKind::LatencyAt(inner, _) | ExprKind::SvaNext(_, inner) => Self::expr_root_name_tc(inner),
             _ => String::new(),
         }
     }
@@ -1701,7 +1701,7 @@ impl<'a> TypeChecker<'a> {
     /// (e.g. `itcm.cmd_valid` → `"itcm_cmd_valid"`). Used for bus port driven tracking.
     fn expr_flat_name_tc(expr: &Expr) -> String {
         match &expr.kind {
-            ExprKind::LatencyAt(inner, _) => Self::expr_flat_name_tc(inner),
+            ExprKind::LatencyAt(inner, _) | ExprKind::SvaNext(_, inner) => Self::expr_flat_name_tc(inner),
             ExprKind::Ident(n) => n.clone(),
             ExprKind::FieldAccess(base, field) => {
                 if let ExprKind::Ident(base_name) = &base.kind {
@@ -2360,6 +2360,17 @@ impl<'a> TypeChecker<'a> {
         local_types: &HashMap<String, Ty>,
     ) -> Ty {
         match &expr.kind {
+            ExprKind::SvaNext(_, inner) => {
+                if !self.in_sva_context {
+                    self.errors.push(CompileError::general(
+                        "`##N expr` is only legal inside `assert` / `cover` bodies",
+                        expr.span,
+                    ));
+                    return Ty::Error;
+                }
+                // Cycle-shift only — type matches the inner expression.
+                self.resolve_expr_type(inner, module_name, local_types)
+            }
             ExprKind::LatencyAt(inner, _) => {
                 // Latency annotation is a typing no-op — the value's type
                 // matches the underlying signal. Placement/value validation
@@ -2943,6 +2954,33 @@ impl<'a> TypeChecker<'a> {
                 Ty::Bool
             }
             ExprKind::FunctionCall(name, call_args) => {
+                // Built-in SVA edge sugar: `rose(a)` ≡ `a and not past(a, 1)`,
+                // `fell(a)` ≡ `not a and past(a, 1)`. Both Bool-returning,
+                // arity 1, SVA-context only.
+                if name == "rose" || name == "fell" {
+                    if !self.in_sva_context {
+                        self.errors.push(CompileError::general(
+                            &format!("`{name}(...)` is only legal inside `assert` / `cover` bodies"),
+                            expr.span,
+                        ));
+                        return Ty::Error;
+                    }
+                    if call_args.len() != 1 {
+                        self.errors.push(CompileError::general(
+                            &format!("`{name}(expr)` takes 1 argument, got {}", call_args.len()),
+                            expr.span,
+                        ));
+                        return Ty::Error;
+                    }
+                    let inner = self.resolve_expr_type(&call_args[0], module_name, local_types);
+                    if inner != Ty::Bool && inner != Ty::Error && inner != Ty::Todo {
+                        self.errors.push(CompileError::general(
+                            &format!("`{name}(expr)` requires Bool argument, got {}", inner.display()),
+                            call_args[0].span,
+                        ));
+                    }
+                    return Ty::Bool;
+                }
                 // Built-in: `past(expr, N)` — SVA shadow-reg sugar.
                 if name == "past" {
                     if !self.in_sva_context {
@@ -4188,7 +4226,8 @@ impl<'a> TypeChecker<'a> {
             }
             ExprKind::Unary(_, e) | ExprKind::Cast(e, _) | ExprKind::Clog2(e)
             | ExprKind::Onehot(e) | ExprKind::Signed(e) | ExprKind::Unsigned(e)
-            | ExprKind::LatencyAt(e, _) => {
+            | ExprKind::LatencyAt(e, _)
+            | ExprKind::SvaNext(_, e) => {
                 self.check_pipeline_cross_stage_expr(e, cur_idx, stage_idx, cur_name);
             }
             ExprKind::Index(b, i) => {

@@ -844,6 +844,11 @@ pub enum ExprKind {
     Unsigned(Box<Expr>),
     /// Pure combinational function call: Name(arg, ...)
     FunctionCall(String, Vec<Expr>),
+    /// SVA delay-shift: `##N expr`. Inside an `assert`/`cover` body, shifts
+    /// the cycle of `expr` forward by `N` (i.e. evaluates `expr` at cycle
+    /// `t + N` when the surrounding property is checked at cycle `t`).
+    /// `N` is a parse-time integer literal.
+    SvaNext(u32, Box<Expr>),
     /// Set membership: expr inside {val, lo..hi, ...}
     Inside(Box<Expr>, Vec<InsideMember>),
     /// Ternary conditional: cond ? then_expr : else_expr

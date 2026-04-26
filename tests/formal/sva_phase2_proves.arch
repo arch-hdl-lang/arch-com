@@ -1,0 +1,27 @@
+// Phase 2 SVA sugar: rose, fell, ##N forward-shift in `arch formal`.
+module SvaPhase2Proves
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in Bool;
+
+  reg b: Bool reset rst => false;
+  seq on clk rising
+    b <= a;
+  end seq
+
+  // rose(b) IMPLIES (a was high at t-1 and a was low at t-2) when no
+  // reset disrupted the registration.
+  assert rose_implies_a_edge:
+    (not rst) and (not past(rst, 1)) and (not past(rst, 2)) and rose(b)
+      implies (past(a, 1) and not past(a, 2));
+
+  // fell(b) IMPLIES (a was low at t-1 and a was high at t-2)
+  assert fell_implies_a_edge:
+    (not rst) and (not past(rst, 1)) and (not past(rst, 2)) and fell(b)
+      implies (not past(a, 1)) and past(a, 2);
+
+  // Forward shift: at any cycle, if at t+1 we're not in reset and a is
+  // high, then at t+2 b must be high.
+  assert next_chain:
+    ##1 ((not rst) and a) |=> b;
+end module SvaPhase2Proves
