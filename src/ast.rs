@@ -203,6 +203,12 @@ pub enum ParamKind {
     Type(TypeExpr),
     /// Enum-typed const: `param MODE: EnumName = EnumName::Variant`
     EnumConst(String),
+    /// Vec-of-const: `param NAME: Vec<T, N> = {a, b, c};` — fixed-length
+    /// array of compile-time constants. Emits SV
+    /// `parameter logic [W-1:0] NAME [0:N-1] = '{a, b, c, ...}`.
+    /// Indexable as `NAME[i]` returning `T`. Inst-site overrides via
+    /// `param NAME = {…};`.
+    ConstVec(TypeExpr),
 }
 
 #[derive(Debug, Clone)]

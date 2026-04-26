@@ -5828,3 +5828,26 @@ fn test_fsm_sint_uses_arithmetic_shift() {
     assert!(!sv.contains("a >> 1"),
         "should not emit `>>` (logical) for SInt:\n{sv}");
 }
+
+#[test]
+fn test_vec_of_const_param_emits_packed_and_indexes() {
+    // `param NAME: Vec<T, N> = {a, b, c, ...};` emits a packed SV
+    // `parameter logic [N*W-1:0] NAME = {chunks_reversed}` plus `NAME[i]`
+    // reads rewrite to `NAME[(i)*(W) +: (W)]` part-selects.
+    let source = r#"
+        module M
+          param coeffs: Vec<UInt<8>, 4> = {1, 2, 3, 4};
+          port out: out UInt<8>;
+          let out = coeffs[0] + coeffs[1] + coeffs[2] + coeffs[3];
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("parameter logic [(4)*(8)-1:0] coeffs"),
+        "expected packed parameter:\n{sv}");
+    // Default packed in reverse so coeffs[0] = parts[0] = 1 (LSB).
+    assert!(sv.contains("(8)'(4), (8)'(3), (8)'(2), (8)'(1)"),
+        "expected reversed default chunks (MSB-first packing):\n{sv}");
+    // Indexing rewritten to part-select.
+    assert!(sv.contains("coeffs[(0) * (8) +: (8)]"),
+        "expected coeffs[0] → coeffs[(0) * (8) +: (8)]:\n{sv}");
+}

@@ -67,6 +67,11 @@ pub struct Codegen<'a> {
     /// to the right SV intermediate signal: `q@0` → source, `q@K` for
     /// 1≤K<N → `q_stg{K}`, `q@N` → `q` (= bare q).
     pipe_regs: std::collections::HashMap<String, (String, u32)>,
+    /// Vec-of-const param name → (element TypeExpr) for the current
+    /// module. iverilog rejects unpacked-array params, so codegen emits
+    /// the param packed and rewrites `B[i]` reads to `B[i*W +: W]`
+    /// part-selects. Lookup populated per-module at emit time.
+    vec_params: std::collections::HashMap<String, TypeExpr>,
     /// Set of index widths used by `.find_first(...)` calls in this file.
     /// Drives emission of one `typedef struct packed ... __ArchFindResult_<W>;`
     /// per unique W at the top of the generated SV. Interior-mutability
@@ -97,6 +102,7 @@ impl<'a> Codegen<'a> {
             ident_subst: std::collections::HashMap::new(),
             vec_sizes: std::collections::HashMap::new(),
             pipe_regs: std::collections::HashMap::new(),
+            vec_params: std::collections::HashMap::new(),
             find_first_widths: std::cell::RefCell::new(std::collections::BTreeSet::new()),
         }
     }
@@ -240,6 +246,48 @@ impl<'a> Codegen<'a> {
             }
             ParamKind::EnumConst(enum_name) => {
                 self.line(&format!("{kw} {} {}{}{}", enum_name, p.name.name, default_str, comma));
+            }
+            ParamKind::ConstVec(ty) => {
+                // Vec<T, N> param. iverilog rejects unpacked-array parameters,
+                // so emit a packed `parameter logic [N*W-1:0] NAME = {…}` and
+                // expose a sibling `wire NAME_arr [0:N-1]` (driven elsewhere
+                // in the module body) for `NAME[i]` indexing.
+                //
+                // Default `{a, b, c, …}` (parsed as ExprKind::Concat) packs
+                // with reversed ordering so `NAME[0]` lands at the LSB and
+                // matches the user's literal index — `parts[0]` = LSB chunk.
+                let (elem_ty, size_expr) = match ty {
+                    TypeExpr::Vec(elem, size) => (elem.as_ref().clone(), (**size).clone()),
+                    _ => {
+                        self.line(&format!("{kw} int {}{}{}", p.name.name, default_str, comma));
+                        return;
+                    }
+                };
+                let elem_w_expr = match &elem_ty {
+                    TypeExpr::UInt(w) | TypeExpr::SInt(w) => (**w).clone(),
+                    _ => Expr::new(ExprKind::Literal(LitKind::Dec(1)), p.span),
+                };
+                let elem_w_s = self.emit_expr_str(&elem_w_expr);
+                let signed = matches!(&elem_ty, TypeExpr::SInt(_));
+                let signed_kw = if signed { "signed " } else { "" };
+                let size_s = self.emit_expr_str(&size_expr);
+                let default_packed = if let Some(d) = &p.default {
+                    if let ExprKind::Concat(parts) = &d.kind {
+                        // Reverse so parts[0] is the LSB chunk → NAME[0] reads parts[0].
+                        let mut rev: Vec<&Expr> = parts.iter().collect();
+                        rev.reverse();
+                        let chunks: Vec<String> = rev.iter()
+                            .map(|e| format!("({})'({})", elem_w_s, self.emit_expr_str(e)))
+                            .collect();
+                        format!(" = {{{}}}", chunks.join(", "))
+                    } else {
+                        format!(" = {}", self.emit_expr_str(d))
+                    }
+                } else { String::new() };
+                self.line(&format!(
+                    "{kw} logic {signed_kw}[({size_s})*({elem_w_s})-1:0] {}{default_packed}{comma}",
+                    p.name.name
+                ));
             }
             _ => {
                 self.line(&format!("{kw} int {}{}{}", p.name.name, default_str, comma));
@@ -546,9 +594,17 @@ impl<'a> Codegen<'a> {
         self.reset_ports.clear();
         self.vec_sizes.clear();
         self.pipe_regs.clear();
+        self.vec_params.clear();
         for bi in &m.body {
             if let ModuleBodyItem::PipeRegDecl(p) = bi {
                 self.pipe_regs.insert(p.name.name.clone(), (p.source.name.clone(), p.stages));
+            }
+        }
+        for p in m.params.iter() {
+            if let ParamKind::ConstVec(ty) = &p.kind {
+                if let TypeExpr::Vec(elem, _) = ty {
+                    self.vec_params.insert(p.name.name.clone(), (**elem).clone());
+                }
             }
         }
         for p in m.ports.iter() {
@@ -6338,6 +6394,21 @@ impl<'a> Codegen<'a> {
                 }
             }
             ExprKind::Index(base, idx) => {
+                // Vec-of-const param `B[i]`: rewrite to packed part-select
+                // `B[i*W +: W]` since iverilog rejects unpacked-array params.
+                if let ExprKind::Ident(name) = &base.kind {
+                    if let Some(elem_ty) = self.vec_params.get(name) {
+                        let w = match elem_ty {
+                            TypeExpr::UInt(w) | TypeExpr::SInt(w) => self.emit_expr_str(w),
+                            _ => "1".to_string(),
+                        };
+                        let i = self.emit_expr_str(idx);
+                        // The packed param is declared `signed` for SInt
+                        // elements, so the part-select inherits signedness
+                        // without an explicit `$signed()` wrap.
+                        return format!("{name}[({i}) * ({w}) +: ({w})]");
+                    }
+                }
                 let b = self.emit_expr_str(base);
                 let i = self.emit_expr_str(idx);
                 format!("{b}[{i}]")
