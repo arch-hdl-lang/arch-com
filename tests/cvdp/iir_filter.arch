@@ -20,81 +20,44 @@ module iir_filter
 
   default seq on clk rising;
 
-  reg x1: SInt<16> reset none;
-  reg x2: SInt<16> reset none;
-  reg x3: SInt<16> reset none;
-  reg x4: SInt<16> reset none;
-  reg x5: SInt<16> reset none;
-  reg x6: SInt<16> reset none;
-  reg y1: SInt<16> reset none;
-  reg y2: SInt<16> reset none;
-  reg y3: SInt<16> reset none;
-  reg y4: SInt<16> reset none;
-  reg y5: SInt<16> reset none;
-  reg y6: SInt<16> reset none;
-  reg y_reg: SInt<16> reset none;
+  // x_pipe@0 = x (current input), x_pipe@K = x delayed by K cycles.
+  pipe_reg x_pipe: x stages 6;
+  // y_reg captures the current filter output. y_pipe@K reads y_reg
+  // from K cycles ago (so y_reg itself = y at lag 0, y_pipe@1 = lag 1, …).
+  reg y_reg: SInt<16> reset rst=>0;
+  pipe_reg y_pipe: y_reg stages 5;
 
-  // b*x terms
-  let t0: SInt<48> = (x.sext<48>()  * b0.zext<48>() as SInt<48>).trunc<48>();
-  let t1: SInt<48> = (x1.sext<48>() * b1.zext<48>() as SInt<48>).trunc<48>();
-  let t2: SInt<48> = (x2.sext<48>() * b2.zext<48>() as SInt<48>).trunc<48>();
-  let t3: SInt<48> = (x3.sext<48>() * b3.zext<48>() as SInt<48>).trunc<48>();
-  let t4: SInt<48> = (x4.sext<48>() * b4.zext<48>() as SInt<48>).trunc<48>();
-  let t5: SInt<48> = (x5.sext<48>() * b5.zext<48>() as SInt<48>).trunc<48>();
-  let t6: SInt<48> = (x6.sext<48>() * b6.zext<48>() as SInt<48>).trunc<48>();
-  // a*y terms
-  let u1: SInt<48> = (y1.sext<48>() * a1.zext<48>() as SInt<48>).trunc<48>();
-  let u2: SInt<48> = (y2.sext<48>() * a2.zext<48>() as SInt<48>).trunc<48>();
-  let u3: SInt<48> = (y3.sext<48>() * a3.zext<48>() as SInt<48>).trunc<48>();
-  let u4: SInt<48> = (y4.sext<48>() * a4.zext<48>() as SInt<48>).trunc<48>();
-  let u5: SInt<48> = (y5.sext<48>() * a5.zext<48>() as SInt<48>).trunc<48>();
-  let u6: SInt<48> = (y6.sext<48>() * a6.zext<48>() as SInt<48>).trunc<48>();
-  // sum feedforward
+  // b*x terms — the K-th tap multiplied by b_K.
+  let t0: SInt<48> = (x_pipe@0.sext<48>() * b0.zext<48>() as SInt<48>).trunc<48>();
+  let t1: SInt<48> = (x_pipe@1.sext<48>() * b1.zext<48>() as SInt<48>).trunc<48>();
+  let t2: SInt<48> = (x_pipe@2.sext<48>() * b2.zext<48>() as SInt<48>).trunc<48>();
+  let t3: SInt<48> = (x_pipe@3.sext<48>() * b3.zext<48>() as SInt<48>).trunc<48>();
+  let t4: SInt<48> = (x_pipe@4.sext<48>() * b4.zext<48>() as SInt<48>).trunc<48>();
+  let t5: SInt<48> = (x_pipe@5.sext<48>() * b5.zext<48>() as SInt<48>).trunc<48>();
+  let t6: SInt<48> = (x_pipe@6.sext<48>() * b6.zext<48>() as SInt<48>).trunc<48>();
+  // a*y terms — y1 = y_reg, y2..y6 = y_pipe@1..@5.
+  let u1: SInt<48> = (y_reg.sext<48>()    * a1.zext<48>() as SInt<48>).trunc<48>();
+  let u2: SInt<48> = (y_pipe@1.sext<48>() * a2.zext<48>() as SInt<48>).trunc<48>();
+  let u3: SInt<48> = (y_pipe@2.sext<48>() * a3.zext<48>() as SInt<48>).trunc<48>();
+  let u4: SInt<48> = (y_pipe@3.sext<48>() * a4.zext<48>() as SInt<48>).trunc<48>();
+  let u5: SInt<48> = (y_pipe@4.sext<48>() * a5.zext<48>() as SInt<48>).trunc<48>();
+  let u6: SInt<48> = (y_pipe@5.sext<48>() * a6.zext<48>() as SInt<48>).trunc<48>();
+  // Sum feedforward.
   let ff01: SInt<48> = (t0 + t1).trunc<48>();
   let ff23: SInt<48> = (t2 + t3).trunc<48>();
   let ff45: SInt<48> = (t4 + t5).trunc<48>();
   let ff_b: SInt<48> = ((ff01 + ff23).trunc<48>() + (ff45 + t6).trunc<48>()).trunc<48>();
-  // sum feedback
+  // Sum feedback.
   let fb12: SInt<48> = (u1 + u2).trunc<48>();
   let fb34: SInt<48> = (u3 + u4).trunc<48>();
   let fb56: SInt<48> = (u5 + u6).trunc<48>();
   let fb_a: SInt<48> = ((fb12 + fb34).trunc<48>() + fb56).trunc<48>();
-  // final accumulator
+  // Final accumulator.
   let acc:  SInt<48> = (ff_b - fb_a).trunc<48>();
-
-  let zero16: SInt<16> = 0.zext<16>() as SInt<16>;
 
   let y = y_reg;
 
   seq
-    if rst
-      x1    <= zero16;
-      x2    <= zero16;
-      x3    <= zero16;
-      x4    <= zero16;
-      x5    <= zero16;
-      x6    <= zero16;
-      y1    <= zero16;
-      y2    <= zero16;
-      y3    <= zero16;
-      y4    <= zero16;
-      y5    <= zero16;
-      y6    <= zero16;
-      y_reg <= zero16;
-    else
-      x1    <= x;
-      x2    <= x1;
-      x3    <= x2;
-      x4    <= x3;
-      x5    <= x4;
-      x6    <= x5;
-      y_reg <= acc.trunc<16>();
-      y1    <= acc.trunc<16>();
-      y2    <= y1;
-      y3    <= y2;
-      y4    <= y3;
-      y5    <= y4;
-      y6    <= y5;
-    end if
+    y_reg <= acc.trunc<16>();
   end seq
 end module iir_filter
