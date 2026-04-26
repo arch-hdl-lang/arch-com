@@ -5484,3 +5484,122 @@ fn test_handshake_mismatched_closing_keyword_errors() {
     let result = parser.parse_source_file();
     assert!(result.is_err(), "expected parse error for mismatched opening/closing keyword");
 }
+
+#[test]
+fn test_temporal_sva_past_emits_dollar_past() {
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port a: in Bool;
+          port b: in Bool;
+          assert eq_past: a == past(b, 2);
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("$past(b, 2)"),
+        "past(b, 2) should emit SV $past(b, 2):\n{sv}");
+}
+
+#[test]
+fn test_temporal_sva_implies_next_emits_pipe_arrow() {
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port a: in Bool;
+          port b: in Bool;
+          assert next_implies: a |=> b;
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("a |=> b"),
+        "a |=> b should emit SV a |=> b:\n{sv}");
+}
+
+#[test]
+fn test_past_outside_assert_rejected() {
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port a: in Bool;
+          port out: out Bool;
+          comb
+            out = past(a, 1);
+          end comb
+        end module M
+    "#;
+    let tokens = lexer::tokenize(source).expect("lexer");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err(), "past() outside assert should be rejected");
+    let errs = result.err().unwrap();
+    assert!(errs.iter().any(|e| format!("{e:?}").contains("past")),
+        "error should mention past: {errs:?}");
+}
+
+#[test]
+fn test_implies_next_outside_assert_rejected() {
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port a: in Bool;
+          port out: out Bool;
+          comb
+            out = a |=> a;
+          end comb
+        end module M
+    "#;
+    let tokens = lexer::tokenize(source).expect("lexer");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err(), "|=> outside assert should be rejected");
+}
+
+#[test]
+fn test_past_arity_errors() {
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port a: in Bool;
+          assert bad: past(a);
+        end module M
+    "#;
+    let tokens = lexer::tokenize(source).expect("lexer");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = TypeChecker::new(&symbols, &ast);
+    assert!(checker.check().is_err(), "past with wrong arity should error");
+}
+
+#[test]
+fn test_past_n_must_be_positive_const() {
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port a: in Bool;
+          assert bad: past(a, 0);
+        end module M
+    "#;
+    let tokens = lexer::tokenize(source).expect("lexer");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = TypeChecker::new(&symbols, &ast);
+    assert!(checker.check().is_err(), "past(_, 0) should error");
+}

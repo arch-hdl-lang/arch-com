@@ -3129,6 +3129,7 @@ impl Parser {
             TokenKind::And => Some(BinOp::And),
             TokenKind::Or => Some(BinOp::Or),
             TokenKind::Implies => Some(BinOp::Implies),
+            TokenKind::PipeImpliesNext => Some(BinOp::ImpliesNext),
             TokenKind::Amp => Some(BinOp::BitAnd),
             TokenKind::Pipe => Some(BinOp::BitOr),
             TokenKind::Caret => Some(BinOp::BitXor),
@@ -5002,7 +5003,7 @@ fn infix_binding_power(op: BinOp) -> (u8, u8) {
     match op {
         // `implies` has the lowest precedence; right-associative so (0,0) makes
         // `a implies b implies c` parse as `a implies (b implies c)`.
-        BinOp::Implies => (0, 0),
+        BinOp::Implies | BinOp::ImpliesNext => (0, 0),
         BinOp::Or  => (1, 2),
         BinOp::And => (3, 4),
         BinOp::Eq | BinOp::Neq => (5, 6),

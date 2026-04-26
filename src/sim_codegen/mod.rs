@@ -1944,6 +1944,12 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             if *op == BinOp::Implies {
                 return format!("(!{l} || {r})");
             }
+            if *op == BinOp::ImpliesNext {
+                // Sim shadow-reg lifting handles this at the assert site;
+                // by the time it reaches expr lowering, lhs has been rewritten
+                // into past-state. Treat as Implies for fallback paths.
+                return format!("(!{l} || {r})");
+            }
             let op_str = match op {
                 BinOp::Add | BinOp::AddWrap => "+",  BinOp::Sub | BinOp::SubWrap => "-",
                 BinOp::Mul | BinOp::MulWrap => "*",  BinOp::Div   => "/",
@@ -1955,7 +1961,7 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                 BinOp::BitAnd => "&",  BinOp::BitOr => "|",
                 BinOp::BitXor => "^",
                 BinOp::Shl    => "<<", BinOp::Shr  => ">>",
-                BinOp::Implies => unreachable!(),
+                BinOp::Implies | BinOp::ImpliesNext => unreachable!(),
             };
             // Runtime divide-by-zero check for / and % when the divisor is
             // not a compile-time-reducible constant. Literal zero is already

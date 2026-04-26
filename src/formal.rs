@@ -2307,6 +2307,19 @@ impl<'a> FormalCtx<'a> {
                     signed: false,
                 })
             }
+            BinOp::ImpliesNext => {
+                // `a |=> b` and `past(_, N)` desugar properly only in cycle-
+                // aware contexts (the BMC assert loop). The current encoder
+                // lowers expressions per single cycle, so multi-cycle SVA is
+                // not yet supported here. Use `arch build` for SVA emission
+                // and EBMC / Verilator-assert for verification until the
+                // formal cycle-shift pass lands (see plan_temporal_sva.md).
+                Err(CompileError::general(
+                    "multi-cycle SVA (`|=>`, `past`) is not yet supported in `arch formal`; \
+                     use `arch build` SV output with EBMC or Verilator --assert",
+                    span,
+                ))
+            }
         }
         .map_err(|e: CompileError| CompileError::general(
             &format!("{}", e_display(&e, span)),
@@ -3024,7 +3037,7 @@ fn eval_expr_numeric(
                 BinOp::BitXor => va ^ vb,
                 BinOp::Shl => va << (vb & 63),
                 BinOp::Shr => va >> (vb & 63),
-                BinOp::Implies => ((va == 0) || (vb != 0)) as u64,
+                BinOp::Implies | BinOp::ImpliesNext => ((va == 0) || (vb != 0)) as u64,
             })
         }
         Unary(op, a) => {

@@ -4880,6 +4880,9 @@ impl<'a> Codegen<'a> {
                 if *op == BinOp::Implies {
                     return format!("(!{l} || {r})");
                 }
+                if *op == BinOp::ImpliesNext {
+                    return format!("({l} |=> {r})");
+                }
                 let op_str = match op {
                     BinOp::Add | BinOp::AddWrap => "+", BinOp::Sub | BinOp::SubWrap => "-",
                     BinOp::Mul | BinOp::MulWrap => "*",
@@ -4888,7 +4891,7 @@ impl<'a> Codegen<'a> {
                     BinOp::Lte => "<=", BinOp::Gte => ">=", BinOp::And => "&&",
                     BinOp::Or => "||", BinOp::BitAnd => "&", BinOp::BitOr => "|",
                     BinOp::BitXor => "^", BinOp::Shl => "<<", BinOp::Shr => ">>",
-                    BinOp::Implies => unreachable!(),
+                    BinOp::Implies | BinOp::ImpliesNext => unreachable!(),
                 };
                 if matches!(op, BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap) {
                     let lw = self.infer_sv_width_str(lhs);
@@ -5065,6 +5068,9 @@ impl<'a> Codegen<'a> {
                 if *op == BinOp::Implies {
                     return format!("(!{l} || {r})");
                 }
+                if *op == BinOp::ImpliesNext {
+                    return format!("({l} |=> {r})");
+                }
                 let op_str = match op {
                     BinOp::Add | BinOp::AddWrap => "+", BinOp::Sub | BinOp::SubWrap => "-",
                     BinOp::Mul | BinOp::MulWrap => "*",
@@ -5073,7 +5079,7 @@ impl<'a> Codegen<'a> {
                     BinOp::Lte => "<=", BinOp::Gte => ">=", BinOp::And => "&&",
                     BinOp::Or => "||", BinOp::BitAnd => "&", BinOp::BitOr => "|",
                     BinOp::BitXor => "^", BinOp::Shl => "<<", BinOp::Shr => ">>",
-                    BinOp::Implies => unreachable!(),
+                    BinOp::Implies | BinOp::ImpliesNext => unreachable!(),
                 };
                 if matches!(op, BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap) {
                     let lw = self.infer_sv_width_str(lhs);
@@ -5634,7 +5640,7 @@ impl<'a> Codegen<'a> {
             BinOp::BitOr => 7,
             BinOp::And => 4,
             BinOp::Or => 3,
-            BinOp::Implies => 2,
+            BinOp::Implies | BinOp::ImpliesNext => 2,
         }
     }
 
@@ -6048,6 +6054,13 @@ impl<'a> Codegen<'a> {
                     let r = self.emit_expr_prec(rhs, 4);  // || prec
                     return format!("!{l} || {r}");
                 }
+                if *op == BinOp::ImpliesNext {
+                    // SVA next-cycle implication. Only valid inside
+                    // assert/cover property contexts (typechecker enforces).
+                    let l = self.emit_expr_prec(lhs, 4);
+                    let r = self.emit_expr_prec(rhs, 4);
+                    return format!("{l} |=> {r}");
+                }
                 let prec = Self::sv_binop_prec(op);
                 // LHS: same-prec left-assoc chain of the SAME associative op → no wrap;
                 // otherwise wrap if same-or-lower precedence.
@@ -6094,7 +6107,7 @@ impl<'a> Codegen<'a> {
                     BinOp::BitXor => "^",
                     BinOp::Shl => "<<",
                     BinOp::Shr => shr_str,
-                    BinOp::Implies => unreachable!("implies handled above"),
+                    BinOp::Implies | BinOp::ImpliesNext => unreachable!("implies handled above"),
                 };
                 if matches!(op, BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap) {
                     let lw = self.infer_sv_width_str(lhs);
@@ -6355,6 +6368,10 @@ impl<'a> Codegen<'a> {
             }
             ExprKind::FunctionCall(name, args) => {
                 let arg_strs: Vec<String> = args.iter().map(|a| self.emit_expr_str(a)).collect();
+                // Built-in: `past(expr, N)` → SV `$past(expr, N)`
+                if name == "past" {
+                    return format!("$past({})", arg_strs.join(", "));
+                }
                 // Resolve mangled name if this is an overloaded function.
                 let sv_name = if let Some((Symbol::Function(overloads), _)) = self.symbols.globals.get(name) {
                     if overloads.len() > 1 {
