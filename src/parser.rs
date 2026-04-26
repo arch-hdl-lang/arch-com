@@ -809,7 +809,7 @@ impl Parser {
                     let pname = self.expect_ident()?;
                     self.expect(TokenKind::Eq)?;
                     let pval = self.parse_expr()?;
-                    assigns.push(ParamAssign { name: pname, value: pval });
+                    assigns.push(ParamAssign { name: pname, value: pval, ty: None });
                     if !self.eat(TokenKind::Comma) { break; }
                 }
                 self.no_angle = old_no_angle;
@@ -2262,9 +2262,19 @@ impl Parser {
                 self.advance();
                 let pname = self.expect_ident()?;
                 self.expect(TokenKind::Eq)?;
-                let value = self.parse_expr()?;
+                // Type-param override (e.g. `param T = UInt<DATA_WIDTH>;`) —
+                // detected by leading type keyword. Otherwise parse as a
+                // value expression.
+                let (value, ty) = if self.is_type_start() {
+                    let te = self.parse_type_expr()?;
+                    let span = pname.span;
+                    let placeholder = Expr::new(ExprKind::Literal(LitKind::Dec(0)), span);
+                    (placeholder, Some(te))
+                } else {
+                    (self.parse_expr()?, None)
+                };
                 self.expect(TokenKind::Semi)?;
-                param_assigns.push(ParamAssign { name: pname, value });
+                param_assigns.push(ParamAssign { name: pname, value, ty });
             } else if matches!(self.peek_kind(), Some(TokenKind::Ident(_))) {
                 let cstart = self.peek_span();
                 let mut port_name = self.expect_ident()?;
@@ -4668,6 +4678,18 @@ impl Parser {
     }
 
     /// Check if the next token(s) start a param decl: `param` or `local param`.
+    /// True if the current token starts a type expression
+    /// (UInt/SInt/Bool/Bit/Vec/Clock/Reset/Token/Future). Used at the
+    /// inst-site param-override RHS to choose between value and type
+    /// parsing — `param T = UInt<DATA_WIDTH>;` vs `param N = 4;`.
+    fn is_type_start(&self) -> bool {
+        matches!(
+            self.peek_kind(),
+            Some(TokenKind::UInt | TokenKind::SInt | TokenKind::Bool | TokenKind::Bit
+                | TokenKind::KwVec | TokenKind::Clock | TokenKind::Reset)
+        )
+    }
+
     fn check_param(&self) -> bool {
         if self.check(TokenKind::Param) { return true; }
         if self.check_ident("local") {

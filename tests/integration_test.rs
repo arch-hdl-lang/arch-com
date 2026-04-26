@@ -5686,3 +5686,57 @@ fn test_phase2_hashhash_outside_assert_rejected() {
     let checker = TypeChecker::new(&symbols, &ast);
     assert!(checker.check().is_err(), "##N outside assert should be rejected");
 }
+
+#[test]
+fn test_inst_site_type_param_override_translates_to_data_width() {
+    // Parent module instantiates a fifo whose `T: type` param is overridden
+    // at the inst site. SV codegen translates the type override into the
+    // fifo's synthesized `DATA_WIDTH` int param.
+    let source = r#"
+        fifo Stack
+          kind lifo;
+          param DEPTH: const = 8;
+          param T: type = UInt<8>;
+          port clk: in Clock<SysDomain>;
+          port reset: in Reset<Sync>;
+          port push_valid: in Bool;
+          port push_ready: out Bool;
+          port push_data: in T;
+          port pop_valid: out Bool;
+          port pop_ready: in Bool;
+          port pop_data: out T;
+        end fifo Stack
+
+        module Wrapper
+          param W: const = 16;
+          port clk: in Clock<SysDomain>;
+          port reset: in Reset<Sync>;
+          port d_in: in UInt<W>;
+          port d_out: out UInt<W>;
+
+          wire pr: Bool;
+          wire pv: Bool;
+          inst s: Stack
+            param DEPTH = 4;
+            param T = UInt<W>;
+            clk        <- clk;
+            reset      <- reset;
+            push_valid <- false;
+            push_ready -> pr;
+            push_data  <- d_in;
+            pop_valid  -> pv;
+            pop_ready  <- false;
+            pop_data   -> d_out;
+          end inst s
+        end module Wrapper
+    "#;
+    let sv = compile_to_sv(source);
+    // Type param `T = UInt<W>` should translate to `.DATA_WIDTH(W)` in the SV inst.
+    assert!(sv.contains(".DATA_WIDTH(W)"),
+        "type override `T = UInt<W>` should emit `.DATA_WIDTH(W)`:\n{sv}");
+    assert!(sv.contains(".DEPTH(4)"),
+        "value override `DEPTH = 4` should emit `.DEPTH(4)`:\n{sv}");
+    // Sanity: no `.T(...)` raw type in the inst — the fifo doesn't expose `T` at SV level.
+    assert!(!sv.contains(".T(logic"),
+        "should not emit raw `.T(logic ...)` for fifo whose T was synthesized to DATA_WIDTH:\n{sv}");
+}

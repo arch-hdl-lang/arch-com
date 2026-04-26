@@ -187,6 +187,38 @@ impl<'a> Codegen<'a> {
         self.out.push('\n');
     }
 
+    /// Emit one inst-site param override `.NAME(...)`. Handles two cases:
+    ///
+    /// 1. **Value override** (`pa.ty == None`) — emit `.NAME(<expr>)`.
+    /// 2. **Type override** (`pa.ty == Some(te)`) — the override targets
+    ///    a child param declared as `param NAME: type = ...`. SV codegen
+    ///    has two conventions for these:
+    ///    - `fifo` synthesizes an int `parameter DATA_WIDTH` from the
+    ///      type-param's bit width. So a type override translates to
+    ///      `.DATA_WIDTH(<bits-of-new-type>)` at the inst site.
+    ///    - User modules emit type-typed params as `parameter int NAME`
+    ///      (legacy quirk; type params on user modules aren't fully
+    ///      supported at SV level today). Type overrides for those emit
+    ///      `.NAME(<bits-of-new-type>)` as a best-effort.
+    fn emit_param_override(&self, child: &str, pa: &ParamAssign) -> String {
+        let Some(te) = &pa.ty else {
+            return format!(".{}({})", pa.name.name, self.emit_expr_str(&pa.value));
+        };
+        let width = self.type_expr_data_width(te).unwrap_or_else(|| "0".to_string());
+        // Map T → DATA_WIDTH for fifo children.
+        let is_fifo_type_param = self.source.items.iter().any(|it| match it {
+            Item::Fifo(f) if f.name.name == child => f.params.iter().any(|p|
+                p.name.name == pa.name.name
+                && matches!(p.kind, crate::ast::ParamKind::Type(_))),
+            _ => false,
+        });
+        if is_fifo_type_param {
+            format!(".DATA_WIDTH({width})")
+        } else {
+            format!(".{}({width})", pa.name.name)
+        }
+    }
+
     fn emit_param_decl(&mut self, p: &ParamDecl, comma: &str) {
         let default_str = if let Some(d) = &p.default {
             format!(" = {}", self.emit_expr_str(d))
@@ -636,6 +668,21 @@ impl<'a> Codegen<'a> {
                     declared_names.insert(p.name.name.clone());
                     for i in 0..p.stages.saturating_sub(1) {
                         declared_names.insert(format!("{}_stg{}", p.name.name, i + 1));
+                    }
+                }
+                ModuleBodyItem::WireDecl(w) => {
+                    declared_names.insert(w.name.name.clone());
+                    // For bus-typed wires, also pre-populate flattened signal
+                    // names so that inst auto-wire-decl doesn't duplicate them.
+                    if let TypeExpr::Named(id) = &w.ty {
+                        if let Some((Symbol::Bus(info), _)) =
+                            self.symbols.globals.get(&id.name)
+                        {
+                            let param_map = info.default_param_map();
+                            for (sname, _sdir, _sty) in info.effective_signals(&param_map) {
+                                declared_names.insert(format!("{}_{}", w.name.name, sname));
+                            }
+                        }
                     }
                 }
                 _ => {}
@@ -2386,7 +2433,7 @@ impl<'a> Codegen<'a> {
             let params: Vec<String> = inst
                 .param_assigns
                 .iter()
-                .map(|p| format!(".{}({})", p.name.name, self.emit_expr_str(&p.value)))
+                .map(|p| self.emit_param_override(&inst.module_name.name, p))
                 .collect();
             parts.push(format!(
                 "{} #({}) {} (",
@@ -3497,7 +3544,7 @@ impl<'a> Codegen<'a> {
             let params: Vec<String> = inst
                 .param_assigns
                 .iter()
-                .map(|p| format!(".{}({})", p.name.name, self.emit_expr_str(&p.value)))
+                .map(|p| self.emit_param_override(&inst.module_name.name, p))
                 .collect();
             format!(
                 "{} #({}) {} (",
