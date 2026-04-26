@@ -1241,6 +1241,11 @@ arch sim F.arch --tb F_tb.cpp --check-uninit-ram  // warn on reads of RAM cells 
 //   arch check: compile error if a param/const let folds to `A / 0` / `A % 0`
 //   arch sim: ARCH-ERROR + abort() via _ARCH_DCHK
 //   arch build: auto-emits `_auto_div0_<op>_<n>: assert property ((divisor) != 0)` in seq/latch
+// Thread spec-contract SVA (off by default; `arch build`/`sim`/`formal` accept `--auto-thread-asserts`):
+//   wait until <cond>:  _auto_thread_t{i}_wait_until_s{si}: (rst_inactive && state==si && cond) |=> state==next
+//   wait N cycle:       _auto_thread_t{i}_wait_stay_s{si} (cnt!=0 ⇒ stay) + _..._wait_done_s{si} (cnt==0 ⇒ advance)
+//   fork/join branches: _auto_thread_t{i}_branch_s{si}_b{bi}: per-(cond,target) implication
+//   wrapped in synopsys translate_off/on; reset polarity (Low/High) inverted to the right not-in-reset guard
 arch sim F.arch --tb F_tb.cpp --cdc-random    // randomize synchronizer latency
 arch sim --pybind --test test_F.py F.arch     // run Python cocotb-style TB through pybind11
                                                //   see doc/arch_sim_cocotb.md for API + portability deltas

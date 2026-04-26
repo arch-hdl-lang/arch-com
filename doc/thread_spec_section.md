@@ -391,3 +391,17 @@ The merge fires `ar_done_r <= 1` on the same clock edge as the `ar_ready` handsh
 - The state has a single, unconditional-except-for-condition transition
 
 If the seq assign appears after a multi-transition state (e.g. inside a `for` loop), the compiler uses the loop exit condition as the guard instead of every iteration.
+
+## 20.15  Auto-Emitted Spec-Contract SVA (`--auto-thread-asserts`)
+
+Off-by-default flag on `arch build` / `arch sim` / `arch formal`. When set, the thread lowerer emits SVA properties anchored to the lowered state register `_t{i}_state` and per-thread counter `_t{i}_cnt`. They encode contracts the source spelled out (`wait until`, `wait N cycle`, `fork/join` branches) but the lowered comb+seq blob has lost — no downstream pass can recover them.
+
+| Source construct | Property class | SVA shape |
+|---|---|---|
+| `wait until <cond>` | `_auto_thread_t{i}_wait_until_s{si}` | `(rst_inactive && state==si && cond) \|=> state==next` |
+| `wait <N> cycle` | `_auto_thread_t{i}_wait_stay_s{si}` + `_..._wait_done_s{si}` | stay (`cnt!=0` ⇒ stay) and done (`cnt==0` ⇒ advance) |
+| `fork`/`join` branches | `_auto_thread_t{i}_branch_s{si}_b{bi}` | per-(cond, target) `(rst_inactive && state==si && cond) \|=> state==target` |
+
+All wrapped in `synopsys translate_off/on`. Reset polarity inverted to the not-in-reset guard (active-low → bare `rst`, active-high → `!rst`). Skipped for terminal `thread once` last states (vacuous) and threads with `default_when` (the soft-reset escape can preempt any state). Unconditional transitions are not asserted: `|=> next` is trivially true and adds noise without catching anything new.
+
+State-space-integrity properties (reachability cover, "state stays in declared range") are out of scope here — they belong with FSM-construct auto-gen and lowered threads will inherit them.

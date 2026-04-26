@@ -135,6 +135,22 @@ Consumed by Verilator (`--assert`), iverilog (`-gsupported-assertions`), and for
 - *Verilator 5.034 `--assert`*: in-bounds runs; `den=0` trips `$fatal(1, "DIV-BY-ZERO VIOLATION: DivRt._auto_div0_div0_0")`.
 - *EBMC 5.11*: unconstrained `den: UInt<8>` ⇒ **REFUTED** (caller must gate). With `den_safe = den_raw | 1` ⇒ **PROVED up to bound 5** (divisor is structurally odd, hence non-zero).
 
+### Auto-emitted thread spec-contract SVA (`--auto-thread-asserts`)
+
+Off-by-default flag on `arch build`, `arch sim`, `arch formal`. When set, `lower_threads` emits SVA properties anchored to the lowered state register and counter, capturing the thread's source-level intent that the lowered comb+seq blob has otherwise lost. Wrapped in `synopsys translate_off/on`. Reset polarity is honored — active-low → bare `rst` as the not-in-reset guard, active-high → `!rst`.
+
+| Source construct | Property class | SVA shape |
+|---|---|---|
+| `wait until <cond>` | `_auto_thread_t{i}_wait_until_s{si}` | `(rst_inactive && state==si && cond) \|=> state==next` |
+| `wait <N> cycle` | `_auto_thread_t{i}_wait_stay_s{si}` + `_..._wait_done_s{si}` | stay (`cnt!=0` ⇒ stay) and done (`cnt==0` ⇒ advance) |
+| `fork`/`join` branches | `_auto_thread_t{i}_branch_s{si}_b{bi}` | per-(cond, target) `(rst_inactive && state==si && cond) \|=> state==target` |
+
+Thread-level (not FSM-level) auto-gen: once lowered, the source structure is gone — no downstream pass can recover that a transition came from `wait until` vs an arbitrary user-condition. Reachability/state-range cover are out of scope here; they belong with FSM-construct auto-gen and lowered threads will inherit them.
+
+Skipped for terminal once-states (`thread once` last state — vacuous) and threads with `default_when` (the soft-reset escape can preempt any state).
+
+**Verified end-to-end (2026-04-26):** `arch build wait_cycles.arch --auto-thread-asserts | verilator --binary --assert` runs silently for 24 cycles across ~5 thread-state-machine loops; mutating the `wait_until` consequent (`state==1` → `state==7`) trips `$fatal(1, "ASSERTION FAILED: _auto_thread_t0_wait_until_s0")` mid-sim.
+
 ---
 
 ## ARCH Language — Key Constructs
