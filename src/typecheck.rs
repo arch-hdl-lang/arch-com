@@ -4017,19 +4017,19 @@ impl<'a> TypeChecker<'a> {
         for p in &c.ports {
             self.check_snake_case(&p.name);
         }
-        // Reject the ambiguous "both compile-time MAX and runtime max
-        // port" form. The codegen would silently let the port win,
-        // hiding the redundant param. Force the user to pick one.
+        // Reject "both `param MAX` and `port max` declared unconditionally".
+        // Ports materialized via `generate_if` are exempt — that's the
+        // intended pattern for selecting between the two forms per-instance.
         let has_max_param = c.params.iter().any(|p| p.name.name == "MAX");
-        let has_max_port = c.ports.iter().any(|p|
-            p.name.name == "max" && matches!(p.direction, crate::ast::Direction::In));
-        if has_max_param && has_max_port {
-            self.errors.push(crate::diagnostics::CompileError::general(
-                "counter declares both `param MAX: const` and `port max: in <T>`. \
-                 These two forms set the same maximum — pick one (compile-time \
-                 const OR runtime port).",
-                c.name.span,
-            ));
+        if has_max_param {
+            if let Some(p) = c.ports.iter().find(|p| {
+                p.name.name == "max" && !c.gen_if_port_names.contains(&p.name.name)
+            }) {
+                self.errors.push(CompileError::general(
+                    "counter declares both `param MAX` and `port max`; pick one form, or gate one of them with `generate_if`",
+                    p.name.span,
+                ));
+            }
         }
     }
 
