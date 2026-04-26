@@ -1279,11 +1279,6 @@ pub struct CounterDecl {
     pub mode: CounterMode,
     pub direction: CounterDirection,
     pub init: Option<Expr>,
-    /// Names of ports that were materialized via `generate_if` expansion at
-    /// parse time. Used by the typechecker to skip the "both `param MAX` and
-    /// `port max` declared" rejection in the legitimate case where one is
-    /// gated by a `generate_if`.
-    pub gen_if_port_names: Vec<String>,
 }
 impl std::ops::Deref for CounterDecl {
     type Target = ConstructCommon;

@@ -4209,59 +4209,16 @@ impl Parser {
             params.push(self.parse_param_decl()?);
         }
 
-        // Phase 3: ports (and assert/cover, generate_if for conditional ports)
+        // Phase 3: ports (and assert/cover)
         let mut asserts: Vec<AssertDecl> = Vec::new();
-        let mut gen_if_port_names: Vec<String> = Vec::new();
         while !self.check_end_of(TokenKind::Counter) {
             match self.peek_kind() {
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
                     asserts.push(self.parse_assert_decl()?);
                 }
-                Some(TokenKind::GenerateIf) => {
-                    // Parse `generate_if cond ... end generate_if`. Expand
-                    // immediately using param defaults — counter codegen
-                    // emits a single SV module per counter declaration.
-                    let g = self.parse_generate_if()?;
-                    if let GenerateDecl::If(gi) = g {
-                        let defaults: std::collections::HashMap<String, i64> = params.iter()
-                            .filter_map(|p| {
-                                let v = p.default.as_ref().and_then(|e| match &e.kind {
-                                    ExprKind::Literal(LitKind::Dec(n))
-                                    | ExprKind::Literal(LitKind::Hex(n))
-                                    | ExprKind::Literal(LitKind::Bin(n))
-                                    | ExprKind::Literal(LitKind::Sized(_, n)) => Some(*n as i64),
-                                    ExprKind::Bool(b) => Some(if *b { 1 } else { 0 }),
-                                    _ => None,
-                                })?;
-                                Some((p.name.name.clone(), v))
-                            })
-                            .collect();
-                        let cond_v = match crate::elaborate::try_eval_bool_pub(&gi.cond, &defaults) {
-                            Some(v) => v,
-                            None => return Err(CompileError::general(
-                                "counter generate_if condition must reduce to a compile-time boolean using counter param defaults (full per-inst variant support is not yet implemented)",
-                                gi.cond.span,
-                            )),
-                        };
-                        let chosen = if cond_v { gi.then_items } else { gi.else_items };
-                        for item in chosen {
-                            match item {
-                                GenItem::Port(pd) => {
-                                    gen_if_port_names.push(pd.name.name.clone());
-                                    ports.push(pd);
-                                }
-                                GenItem::Assert(a) => asserts.push(a),
-                                _ => return Err(CompileError::general(
-                                    "counter `generate_if` body may only contain `port` or `assert`/`cover` items",
-                                    gi.span,
-                                )),
-                            }
-                        }
-                    }
-                }
                 Some(other) => return Err(CompileError::unexpected_token(
-                    "port, assert, cover, or generate_if",
+                    "port, assert, or cover",
                     &other.to_string(),
                     self.peek_span(),
                 )),
@@ -4280,7 +4237,7 @@ impl Parser {
         let direction = direction.unwrap_or(CounterDirection::Up);
         Ok(CounterDecl {
             common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span) },
-            mode, direction, init, gen_if_port_names,
+            mode, direction, init,
         })
     }
 

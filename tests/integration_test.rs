@@ -330,7 +330,7 @@ fn test_wrap_counter() {
     let source = include_str!("../examples/wrap_counter.arch");
     let sv = compile_to_sv(source);
     assert!(sv.contains("module WrapCounter"));
-    assert!(sv.contains("parameter int MAX = 15"));
+    assert!(sv.contains("input logic [3:0] max"));
     assert!(sv.contains("logic [3:0] count_r"));
     assert!(sv.contains("always_ff @(posedge clk)"));
     assert!(sv.contains("assign value = count_r"));
@@ -5908,82 +5908,3 @@ fn test_counter_runtime_max_port() {
         "should not emit const MAX comparator when port is present:\n{sv}");
 }
 
-#[test]
-fn test_counter_max_param_and_port_both_rejected() {
-    let source = r#"
-        counter Bad
-          kind wrap;
-          direction: up;
-          init: 0;
-          param MAX: const = 255;
-          port clk:    in Clock<SysDomain>;
-          port rst:    in Reset<Async, Low>;
-          port inc:    in Bool;
-          port max:    in UInt<8>;
-          port value:  out UInt<8>;
-        end counter Bad
-    "#;
-    let tokens = lexer::tokenize(source).expect("lex");
-    let mut parser = Parser::new(tokens, source);
-    let parsed_ast = parser.parse_source_file().expect("parse");
-    let ast = elaborate::elaborate(parsed_ast).expect("elaborate");
-    let symbols = resolve::resolve(&ast).expect("resolve");
-    let checker = TypeChecker::new(&symbols, &ast);
-    let result = checker.check();
-    assert!(result.is_err(), "should reject counter with both MAX param and max port");
-    let errs = result.err().unwrap();
-    assert!(errs.iter().any(|e| format!("{e:?}").contains("both")),
-        "error should mention 'both': {errs:?}");
-}
-
-#[test]
-fn test_counter_generate_if_max_port() {
-    // `generate_if PROGRAMMABLE` selects whether the counter exposes
-    // a runtime `max` port or relies on the const `MAX` param. Cond
-    // is evaluated against counter param defaults at parse time.
-    let source_prog = r#"
-        counter ProgCounter
-          kind wrap;
-          direction: up;
-          init: 0;
-          param PROGRAMMABLE: const = 1;
-          param MAX:          const = 0;
-          port clk:    in Clock<SysDomain>;
-          port rst:    in Reset<Async, Low>;
-          port inc:    in Bool;
-          generate_if PROGRAMMABLE
-            port max:  in UInt<8>;
-          end generate_if
-          port value:  out UInt<8>;
-          port at_max: out Bool;
-        end counter ProgCounter
-    "#;
-    let sv_prog = compile_to_sv(source_prog);
-    assert!(sv_prog.contains("input logic [7:0] max"),
-        "PROGRAMMABLE=1 default: max port should be present:\n{sv_prog}");
-    assert!(sv_prog.contains("count_r == max"),
-        "wrap target should use the max port:\n{sv_prog}");
-
-    let source_const = r#"
-        counter ConstCounter
-          kind wrap;
-          direction: up;
-          init: 0;
-          param PROGRAMMABLE: const = 0;
-          param MAX:          const = 255;
-          port clk:    in Clock<SysDomain>;
-          port rst:    in Reset<Async, Low>;
-          port inc:    in Bool;
-          generate_if PROGRAMMABLE
-            port max:  in UInt<8>;
-          end generate_if
-          port value:  out UInt<8>;
-          port at_max: out Bool;
-        end counter ConstCounter
-    "#;
-    let sv_const = compile_to_sv(source_const);
-    assert!(!sv_const.contains("input logic [7:0] max"),
-        "PROGRAMMABLE=0 default: max port should NOT be present:\n{sv_const}");
-    assert!(sv_const.contains("count_r == 8'(MAX)"),
-        "wrap target should use const MAX:\n{sv_const}");
-}

@@ -4,10 +4,10 @@ counter SetupCounter
   kind wrap;
   direction: up;
   init: 0;
-  param MAX: const = 16383;
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
   port inc: in Bool;
+  port max: in UInt<14>;
   port value: out UInt<14>;
   port at_max: out Bool;
 end counter SetupCounter
