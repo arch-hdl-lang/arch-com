@@ -1155,6 +1155,24 @@ fn _dummy_span() -> Span {
 /// 2. Creates a top-level FsmDecl with auto-generated states
 /// 3. Replaces the ThreadBlock with an InstDecl wiring up the FSM
 pub fn lower_threads(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
+    lower_threads_with_opts(ast, &ThreadLowerOpts::default())
+}
+
+/// Options that tune `lower_threads` behavior. The default disables every
+/// optional behavior so existing callers (tests, sim, etc.) see no diff.
+#[derive(Debug, Clone, Default)]
+pub struct ThreadLowerOpts {
+    /// Auto-emit SVA spec-contract properties at lowering time
+    /// (`wait_until` progress, `wait N cycle` bounded liveness, fork/join
+    /// branch transitions). Wrapped in `synopsys translate_off/on` so they
+    /// don't reach synthesis. CLI: `--auto-thread-asserts`.
+    pub auto_asserts: bool,
+}
+
+pub fn lower_threads_with_opts(
+    ast: SourceFile,
+    opts: &ThreadLowerOpts,
+) -> Result<SourceFile, Vec<CompileError>> {
     let mut new_items: Vec<Item> = Vec::new();
     let mut extra_fsms: Vec<Item> = Vec::new();
     let mut errors: Vec<CompileError> = Vec::new();
@@ -1167,7 +1185,7 @@ pub fn lower_threads(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
                     new_items.push(Item::Module(m));
                     continue;
                 }
-                match lower_module_threads(m) {
+                match lower_module_threads(m, opts) {
                     Ok((new_module, fsms)) => {
                         new_items.push(Item::Module(new_module));
                         extra_fsms.extend(fsms);
@@ -1194,7 +1212,7 @@ pub fn lower_threads(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
 /// All threads become per-thread state machines within one module.
 /// Shared registers, lock arbitration, and output muxing are all
 /// handled internally — no multi-driver issues.
-fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<CompileError>> {
+fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(ModuleDecl, Vec<Item>), Vec<CompileError>> {
     let sp = m.span;
     let type_map = build_module_type_map(&m);
     let _reg_map = build_module_reg_map(&m);
@@ -1472,6 +1490,20 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
     // ── Per-thread state machines ──────────────────────────────────────
     let mut all_thread_comb: Vec<CombStmt> = Vec::new();
     let mut all_thread_seq: Vec<Stmt> = Vec::new();
+    // Auto-emitted SVA spec-contract properties (gated by `opts.auto_asserts`).
+    // Reset-guarded antecedent so they don't fire during reset.
+    let mut auto_asserts: Vec<AssertDecl> = Vec::new();
+    let rst_inactive: Option<Expr> = if opts.auto_asserts {
+        let rst_id = Expr::new(ExprKind::Ident(rst_name.clone()), sp);
+        Some(match _rst_level {
+            // active-low: not_in_reset == rst
+            ResetLevel::Low => rst_id,
+            // active-high: not_in_reset == !rst
+            ResetLevel::High => Expr::new(ExprKind::Unary(UnaryOp::Not, Box::new(rst_id)), sp),
+        })
+    } else {
+        None
+    };
 
     for (ti, (_tname, t)) in threads.iter().enumerate() {
         let cnt_width = infer_for_cnt_width(&t.body, &type_map);
@@ -1696,6 +1728,76 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
                 }));
             }
 
+            // ── Auto-emit SVA spec-contract properties ─────────────────
+            // Gated by `--auto-thread-asserts`. Guarded with `rst_inactive`
+            // so they don't fire during reset. Skipped for terminal once
+            // states (vacuous) and for threads with `default_when` (the
+            // soft-reset escape can preempt any state).
+            if opts.auto_asserts
+                && t.default_when.is_none()
+                && !(t.once && si + 1 >= n_states)
+            {
+                let mk_bin = |op: BinOp, a: Expr, b: Expr| -> Expr {
+                    Expr::new(ExprKind::Binary(op, Box::new(a), Box::new(b)), sp)
+                };
+                let state_lit = |id: usize| Expr::new(ExprKind::Literal(LitKind::Dec(id as u64)), sp);
+                let state_id = || Expr::new(ExprKind::Ident(state_reg.clone()), sp);
+                let state_eq = |id: usize| mk_bin(BinOp::Eq, state_id(), state_lit(id));
+                let rst_g = rst_inactive.clone().unwrap();
+                let in_state = mk_bin(BinOp::And, rst_g.clone(), state_eq(si));
+                let push_assert = |name: String, antecedent: Expr, consequent: Expr,
+                                   acc: &mut Vec<AssertDecl>| {
+                    let prop = mk_bin(BinOp::ImpliesNext, antecedent, consequent);
+                    acc.push(AssertDecl {
+                        kind: AssertKind::Assert,
+                        name: Some(Ident::new(name, sp)),
+                        expr: prop,
+                        span: sp,
+                    });
+                };
+
+                if !raw.multi_transitions.is_empty() {
+                    // Each branch: when its cond fires, state goes to its target.
+                    for (bi, (cond, target)) in raw.multi_transitions.iter().enumerate() {
+                        let tgt = if *target >= n_states {
+                            if t.once { n_states - 1 } else { 0 }
+                        } else { *target };
+                        let antecedent = mk_bin(BinOp::And, in_state.clone(), cond.clone());
+                        push_assert(
+                            format!("_auto_thread_t{}_branch_s{}_b{}", ti, si, bi),
+                            antecedent, state_eq(tgt), &mut auto_asserts,
+                        );
+                    }
+                } else if let Some(ref cond) = raw.transition_cond {
+                    // wait_until cond — guard fires ⇒ FSM advances next edge.
+                    let antecedent = mk_bin(BinOp::And, in_state.clone(), cond.clone());
+                    push_assert(
+                        format!("_auto_thread_t{}_wait_until_s{}", ti, si),
+                        antecedent, state_eq(next_state), &mut auto_asserts,
+                    );
+                } else if raw.wait_cycles.is_some() {
+                    // wait N cycle — counter-driven stay-then-advance.
+                    let cnt_name = format!("_t{}_cnt", ti);
+                    let cnt_id = || Expr::new(ExprKind::Ident(cnt_name.clone()), sp);
+                    let zero = || make_zero_expr(sp);
+                    let cnt_eq_zero = mk_bin(BinOp::Eq, cnt_id(), zero());
+                    let cnt_neq_zero = mk_bin(BinOp::Neq, cnt_id(), zero());
+                    let stay_ant = mk_bin(BinOp::And, in_state.clone(), cnt_neq_zero);
+                    let done_ant = mk_bin(BinOp::And, in_state.clone(), cnt_eq_zero);
+                    push_assert(
+                        format!("_auto_thread_t{}_wait_stay_s{}", ti, si),
+                        stay_ant, state_eq(si), &mut auto_asserts,
+                    );
+                    push_assert(
+                        format!("_auto_thread_t{}_wait_done_s{}", ti, si),
+                        done_ant, state_eq(next_state), &mut auto_asserts,
+                    );
+                }
+                // Unconditional transitions (no cond, no wait, no multi)
+                // are not asserted: they're already trivially correct
+                // ("|=> next") and add noise without catching anything new.
+            }
+
             seq_stmts.push(Stmt::IfElse(IfElse {
                 cond: state_cond,
                 then_stmts: body,
@@ -1844,6 +1946,13 @@ fn lower_module_threads(m: ModuleDecl) -> Result<(ModuleDecl, Vec<Item>), Vec<Co
         merged_body.insert(0, ModuleBodyItem::CombBlock(CombBlock {
             stmts: merged_comb, span: sp,
         }));
+    }
+
+    // Auto-emitted SVA spec-contract properties from `--auto-thread-asserts`.
+    // Flow through the existing module-level assert path
+    // (codegen.rs `emit_asserts_for_construct` → `synopsys translate_off/on`).
+    for a in auto_asserts {
+        merged_body.push(ModuleBodyItem::Assert(a));
     }
 
     let merged_module = ModuleDecl {

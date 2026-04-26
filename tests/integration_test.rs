@@ -6,13 +6,17 @@ use arch::resolve;
 use arch::typecheck::TypeChecker;
 
 fn compile_to_sv(source: &str) -> String {
+    compile_to_sv_with_opts(source, &elaborate::ThreadLowerOpts::default())
+}
+
+fn compile_to_sv_with_opts(source: &str, opts: &elaborate::ThreadLowerOpts) -> String {
     let tokens = lexer::tokenize(source).expect("lexer error");
     let mut parser = Parser::new(tokens, source);
     let parsed_ast = parser.parse_source_file().expect("parse error");
     let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
     let ast = elaborate::lower_tlm_target_threads(ast).expect("tlm_target lowering error");
     let ast = elaborate::lower_tlm_initiator_calls(ast).expect("tlm_initiator lowering error");
-    let ast = elaborate::lower_threads(ast).expect("lower_threads error");
+    let ast = elaborate::lower_threads_with_opts(ast, opts).expect("lower_threads error");
     let ast = elaborate::lower_pipe_reg_ports(ast).expect("lower_pipe_reg_ports error");
     let ast = elaborate::lower_credit_channel_dispatch(ast).expect("credit_channel dispatch error");
     let symbols = resolve::resolve(&ast).expect("resolve error");
@@ -5906,5 +5910,84 @@ fn test_counter_runtime_max_port() {
     // No const MAX appears (no MAX param declared).
     assert!(!sv.contains("'(MAX)"),
         "should not emit const MAX comparator when port is present:\n{sv}");
+}
+
+// ── Auto-emitted SVA from thread lowering ─────────────────────────────────────
+
+#[test]
+fn test_auto_thread_asserts_off_by_default() {
+    let source = include_str!("../tests/thread/wait_cycles.arch");
+    let sv = compile_to_sv(source);
+    assert!(!sv.contains("_auto_thread_"),
+        "default lowering must not emit auto-thread asserts:\n{sv}");
+}
+
+#[test]
+fn test_auto_thread_asserts_wait_cycles_and_until() {
+    // DelayPulse thread covers both wait_until (state 0: `wait until start`)
+    // and wait N cycle (states 1 and 3). Verify both property classes
+    // emit, wrapped in `synopsys translate_off/on`, with reset-guarded
+    // antecedents.
+    let source = include_str!("../tests/thread/wait_cycles.arch");
+    let opts = elaborate::ThreadLowerOpts { auto_asserts: true };
+    let sv = compile_to_sv_with_opts(source, &opts);
+
+    // Wait-until: state 0 transitions on `start`.
+    assert!(sv.contains("_auto_thread_t0_wait_until_s0:"),
+        "expected wait_until property at state 0:\n{sv}");
+    assert!(sv.contains("|=> _t0_state == 1"),
+        "expected next-cycle implication to state 1:\n{sv}");
+
+    // Wait-cycles: stay + done assertions.
+    assert!(sv.contains("_auto_thread_t0_wait_stay_s1:"),
+        "expected wait-cycles stay assertion:\n{sv}");
+    assert!(sv.contains("_auto_thread_t0_wait_done_s1:"),
+        "expected wait-cycles done assertion:\n{sv}");
+
+    // Reset guard: rst_n is active-low, so `not_in_reset == rst_n`.
+    assert!(sv.contains("rst_n &&"),
+        "expected reset guard `rst_n && ...` in antecedent:\n{sv}");
+
+    // SVA wrapped in translate_off/on (so synth ignores it).
+    assert!(sv.contains("// synopsys translate_off"),
+        "expected translate_off wrapping:\n{sv}");
+    assert!(sv.contains("// synopsys translate_on"),
+        "expected translate_on wrapping:\n{sv}");
+}
+
+#[test]
+fn test_auto_thread_asserts_fork_join_branches() {
+    // fork/join produces multi_transitions. Each branch transition gets
+    // an `_auto_thread_t{i}_branch_s{s}_b{b}` assertion.
+    let source = include_str!("../tests/thread/fork_join.arch");
+    let opts = elaborate::ThreadLowerOpts { auto_asserts: true };
+    let sv = compile_to_sv_with_opts(source, &opts);
+    assert!(sv.contains("_auto_thread_t0_branch_s"),
+        "expected at least one fork/join branch assertion:\n{sv}");
+}
+
+#[test]
+fn test_auto_thread_asserts_active_high_reset() {
+    // Active-high reset (`Reset<Sync>` defaults to High) must produce a
+    // `!rst` guard, not `rst`.
+    let source = r#"
+        module M
+          port clk:   in Clock<SysDomain>;
+          port rst:   in Reset<Sync>;
+          port go:    in Bool;
+          port done:  out Bool;
+          thread on clk rising, rst high
+            wait until go;
+            done = 1;
+            wait 1 cycle;
+          end thread
+        end module M
+    "#;
+    let opts = elaborate::ThreadLowerOpts { auto_asserts: true };
+    let sv = compile_to_sv_with_opts(source, &opts);
+    assert!(sv.contains("!rst &&"),
+        "expected `!rst` guard for active-high reset:\n{sv}");
+    assert!(!sv.contains("(rst) &&"),
+        "should not use bare `rst` as guard for active-high:\n{sv}");
 }
 
