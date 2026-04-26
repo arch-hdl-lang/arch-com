@@ -9074,14 +9074,16 @@ Planned (post-v0.41 roadmap) — lightweight temporal sugar that desugars to the
   -----------------------------------------------------------------------------------------------------------------
   **Sugar**                    **Desugar target**                                                  **Status**
   ---------------------------- ------------------------------------------------------------------- --------------------
-  `a |=> b`                    `a_d1 implies b` with auto-generated `reg a_d1`                     Roadmap
+  `a |=> b`                    SV `a |=> b` (Verilator + EBMC accept natively)                     Phase 1 — shipped
 
-  `##N a`                      N-stage shift register, reference the tail                          Roadmap
+  `past(expr, N)`              SV `$past(expr, N)`                                                 Phase 1 — shipped
 
-  `past(expr, N)`              Read of auto-generated N-deep shift register on `expr`              Roadmap
+  `##N a`                      N-stage shift register, reference the tail                          Phase 2
 
-  `$rose(a)` / `$fell(a)`      `a && !past(a, 1)` / `!a && past(a, 1)`                             Roadmap
+  `$rose(a)` / `$fell(a)`      `a && !past(a, 1)` / `!a && past(a, 1)`                             Phase 2
   -----------------------------------------------------------------------------------------------------------------
+
+Both `past(expr, N)` and `a |=> b` are **only legal inside `assert` / `cover` bodies**. Use outside that scope is a compile error pointing back at the SVA-only restriction. `past`'s `N` must be a compile-time integer ≥ 1 (current cycle is just `expr`). `arch formal`'s BMC encoder does not yet support multi-cycle SVA — verify properties using `arch build` SV + Verilator `--assert` or EBMC until the cycle-shift-aware encoding lands.
 
 Out of scope (intentionally): sequence composition (`##[a:b]`, `[*n]`, `throughout`, `within`, `first_match`) and unbounded-liveness (`s_eventually`, strong/weak property operators). Those are left to a dedicated SVA sidecar or model-checking tool — ARCH's philosophy keeps the verification surface small enough that an LLM can generate correct usage without prior training.
 

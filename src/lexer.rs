@@ -270,6 +270,8 @@ pub enum TokenKind {
     Amp,
     #[token("|")]
     Pipe,
+    #[token("|=>")]
+    PipeImpliesNext,
     #[token("^")]
     Caret,
     #[token("~")]
@@ -466,6 +468,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Eq => write!(f, "="),
             TokenKind::Amp => write!(f, "&"),
             TokenKind::Pipe => write!(f, "|"),
+            TokenKind::PipeImpliesNext => write!(f, "|=>"),
             TokenKind::Caret => write!(f, "^"),
             TokenKind::Tilde => write!(f, "~"),
             TokenKind::Shl => write!(f, "<<"),

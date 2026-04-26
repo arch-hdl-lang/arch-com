@@ -62,6 +62,10 @@ pub struct TypeChecker<'a> {
     /// Maps call-site span.start → overload index within Symbol::Function vec.
     /// Only populated for calls to overloaded functions (vec.len() > 1).
     pub overload_map: HashMap<usize, usize>,
+    /// True while resolving an `assert`/`cover` body. Multi-cycle SVA
+    /// constructs (`past(x, N)`, `a |=> b`) are only legal inside this
+    /// scope; flagged as compile errors elsewhere.
+    pub in_sva_context: bool,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -72,6 +76,7 @@ impl<'a> TypeChecker<'a> {
             errors: Vec::new(),
             warnings: Vec::new(),
             overload_map: HashMap::new(),
+            in_sva_context: false,
         }
     }
 
@@ -834,8 +839,12 @@ impl<'a> TypeChecker<'a> {
                     // Resources are lowered before typecheck.
                 }
                 ModuleBodyItem::Assert(a) => {
-                    // Verify expr is Bool; require a Clock port
+                    // Verify expr is Bool; require a Clock port. Resolve in
+                    // SVA context so multi-cycle constructs (`past`, `|=>`)
+                    // are legal inside this body and rejected elsewhere.
+                    self.in_sva_context = true;
                     let ty = self.resolve_expr_type(&a.expr, &m.name.name, &local_types);
+                    self.in_sva_context = false;
                     if ty != Ty::Bool && ty != Ty::Error && ty != Ty::Todo {
                         self.errors.push(CompileError::general(
                             &format!(
@@ -2410,6 +2419,13 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             ExprKind::Binary(op, lhs, rhs) => {
+                if *op == BinOp::ImpliesNext && !self.in_sva_context {
+                    self.errors.push(CompileError::general(
+                        "`|=>` is only legal inside `assert` / `cover` bodies",
+                        expr.span,
+                    ));
+                    return Ty::Error;
+                }
                 // Check for precedence ambiguity between bitwise and comparison ops.
                 // ARCH and SV parse these differently — require parentheses to be explicit.
                 self.check_precedence_ambiguity(*op, lhs, rhs, expr.span);
@@ -2927,6 +2943,48 @@ impl<'a> TypeChecker<'a> {
                 Ty::Bool
             }
             ExprKind::FunctionCall(name, call_args) => {
+                // Built-in: `past(expr, N)` — SVA shadow-reg sugar.
+                if name == "past" {
+                    if !self.in_sva_context {
+                        self.errors.push(CompileError::general(
+                            "`past(...)` is only legal inside `assert` / `cover` bodies",
+                            expr.span,
+                        ));
+                        return Ty::Error;
+                    }
+                    if call_args.len() != 2 {
+                        self.errors.push(CompileError::general(
+                            &format!("`past(expr, N)` takes 2 arguments, got {}", call_args.len()),
+                            expr.span,
+                        ));
+                        return Ty::Error;
+                    }
+                    // N must be a const positive integer.
+                    let n_val = match &call_args[1].kind {
+                        ExprKind::Literal(LitKind::Dec(n)) => Some(*n),
+                        ExprKind::Literal(LitKind::Sized(_, n)) => Some(*n),
+                        _ => None,
+                    };
+                    match n_val {
+                        Some(n) if n >= 1 => {}
+                        Some(_) => {
+                            self.errors.push(CompileError::general(
+                                "`past(expr, N)` requires N >= 1 (current cycle is just `expr`)",
+                                call_args[1].span,
+                            ));
+                            return Ty::Error;
+                        }
+                        None => {
+                            self.errors.push(CompileError::general(
+                                "`past(expr, N)` requires N to be a compile-time integer literal",
+                                call_args[1].span,
+                            ));
+                            return Ty::Error;
+                        }
+                    }
+                    // Result type matches the inner expression.
+                    return self.resolve_expr_type(&call_args[0], module_name, local_types);
+                }
                 if let Some((Symbol::Function(overloads), _)) = self.symbols.globals.get(name) {
                     // Resolve argument types first.
                     let arg_tys: Vec<Ty> = call_args.iter()
@@ -3047,7 +3105,7 @@ impl<'a> TypeChecker<'a> {
             BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => {
                 Ty::Bool
             }
-            BinOp::And | BinOp::Or | BinOp::Implies => Ty::Bool,
+            BinOp::And | BinOp::Or | BinOp::Implies | BinOp::ImpliesNext => Ty::Bool,
             BinOp::Add | BinOp::Sub => {
                 let lw = lt.width().unwrap_or(1);
                 let rw = rt.width().unwrap_or(1);
@@ -4601,7 +4659,7 @@ fn classify(op: BinOp) -> OpClass {
     match op {
         BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => OpClass::Bitwise,
         BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => OpClass::Comparison,
-        BinOp::And | BinOp::Or | BinOp::Implies => OpClass::Logical,
+        BinOp::And | BinOp::Or | BinOp::Implies | BinOp::ImpliesNext => OpClass::Logical,
         BinOp::Shl | BinOp::Shr => OpClass::Shift,
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
             | BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap => OpClass::Arith,

@@ -338,7 +338,7 @@ impl<'a> SimCodegen<'a> {
             ExprKind::Binary(op, lhs, rhs) => {
                 let l = self.pipeline_sim_expr(lhs, prefix, si, sn, sp, srn, pn, rn, ln, w, em);
                 let r = self.pipeline_sim_expr(rhs, prefix, si, sn, sp, srn, pn, rn, ln, w, em);
-                if *op == BinOp::Implies {
+                if matches!(*op, BinOp::Implies | BinOp::ImpliesNext) {
                     return format!("(!{l} || {r})");
                 }
                 let os = match op {
@@ -347,7 +347,7 @@ impl<'a> SimCodegen<'a> {
                     BinOp::Eq => "==", BinOp::Neq => "!=", BinOp::Lt => "<", BinOp::Gt => ">",
                     BinOp::Lte => "<=", BinOp::Gte => ">=", BinOp::And => "&&", BinOp::Or => "||",
                     BinOp::BitAnd => "&", BinOp::BitOr => "|", BinOp::BitXor => "^", BinOp::Shl => "<<", BinOp::Shr => ">>",
-                    BinOp::Implies => unreachable!(),
+                    BinOp::Implies | BinOp::ImpliesNext => unreachable!(),
                 };
                 format!("({l} {os} {r})")
             }

@@ -900,6 +900,9 @@ pub enum BinOp {
     SubWrap,
     MulWrap,
     Implies,
+    /// `a |=> b` — SVA-style next-cycle implication. Sugar for
+    /// `past(a, 1) implies b`. Valid only inside assert/cover bodies.
+    ImpliesNext,
 }
 
 impl std::fmt::Display for BinOp {
@@ -927,6 +930,7 @@ impl std::fmt::Display for BinOp {
             BinOp::SubWrap => write!(f, "-%"),
             BinOp::MulWrap => write!(f, "*%"),
             BinOp::Implies => write!(f, "implies"),
+            BinOp::ImpliesNext => write!(f, "|=>"),
         }
     }
 }
