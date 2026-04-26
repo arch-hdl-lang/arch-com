@@ -163,47 +163,47 @@ module Router
 
   comb
     // Per-output drives: pick the winner's data; otherwise idle.
-    out_local.flits_send_valid = (pick_local != 3'd0);
-    out_local.flits_send_data  =
+    out_local.flits.send_valid = (pick_local != 3'd0);
+    out_local.flits.send_data  =
       (pick_local == 3'd1) ? lx_data :
       (pick_local == 3'd2) ? nx_data :
       (pick_local == 3'd3) ? sx_data :
       (pick_local == 3'd4) ? ex_data : wx_data;
 
-    out_n.flits_send_valid = (pick_n != 3'd0);
-    out_n.flits_send_data  =
+    out_n.flits.send_valid = (pick_n != 3'd0);
+    out_n.flits.send_data  =
       (pick_n == 3'd1) ? lx_data :
       (pick_n == 3'd2) ? nx_data :
       (pick_n == 3'd3) ? sx_data :
       (pick_n == 3'd4) ? ex_data : wx_data;
 
-    out_s.flits_send_valid = (pick_s != 3'd0);
-    out_s.flits_send_data  =
+    out_s.flits.send_valid = (pick_s != 3'd0);
+    out_s.flits.send_data  =
       (pick_s == 3'd1) ? lx_data :
       (pick_s == 3'd2) ? nx_data :
       (pick_s == 3'd3) ? sx_data :
       (pick_s == 3'd4) ? ex_data : wx_data;
 
-    out_e.flits_send_valid = (pick_e != 3'd0);
-    out_e.flits_send_data  =
+    out_e.flits.send_valid = (pick_e != 3'd0);
+    out_e.flits.send_data  =
       (pick_e == 3'd1) ? lx_data :
       (pick_e == 3'd2) ? nx_data :
       (pick_e == 3'd3) ? sx_data :
       (pick_e == 3'd4) ? ex_data : wx_data;
 
-    out_w.flits_send_valid = (pick_w != 3'd0);
-    out_w.flits_send_data  =
+    out_w.flits.send_valid = (pick_w != 3'd0);
+    out_w.flits.send_data  =
       (pick_w == 3'd1) ? lx_data :
       (pick_w == 3'd2) ? nx_data :
       (pick_w == 3'd3) ? sx_data :
       (pick_w == 3'd4) ? ex_data : wx_data;
 
     // Pop each input that was served somewhere.
-    in_local.flits_credit_return = served_local;
-    in_n.flits_credit_return     = served_n;
-    in_s.flits_credit_return     = served_s;
-    in_e.flits_credit_return     = served_e;
-    in_w.flits_credit_return     = served_w;
+    in_local.flits.credit_return = served_local;
+    in_n.flits.credit_return     = served_n;
+    in_s.flits.credit_return     = served_s;
+    in_e.flits.credit_return     = served_e;
+    in_w.flits.credit_return     = served_w;
   end comb
 end module Router
 // 4×4 mesh NoC top — instantiates 16 Router(X, Y) instances and
@@ -223,8 +223,7 @@ module FlitProducer
   reg lfsr:   UInt<8>  reset rst => 8'h5A;
 
   comb
-    out.flits_send_valid = 1'b0;
-    out.flits_send_data  = 32'h0;
+    out.flits.no_send();
     if out.flits.can_send and (lfsr < gen_pressure)
       out.flits.send({seq_no, dst_y, dst_x});
     end if
@@ -254,7 +253,7 @@ module FlitConsumer
   reg lfsr: UInt<8> reset rst => 8'hC3;
 
   comb
-    incoming.flits_credit_return = 1'b0;
+    incoming.flits.no_pop();
     if incoming.flits.valid and (lfsr < pop_pressure)
       incoming.flits.pop();
     end if

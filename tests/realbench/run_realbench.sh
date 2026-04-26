@@ -81,11 +81,23 @@ for MOD in $MODULES; do
     # Copy all verification files
     cp "$VERIF_DIR"/* "$WORK_DIR/" 2>/dev/null || true
 
-    # Build ARCH -> SV (may need extra files for submodules)
-    EXTRA_ARCH=$(ls "$ARCH_SRC_DIR"/*.arch 2>/dev/null | tr '\n' ' ')
-    GEN_SV="$WORK_DIR/${MOD}_gen.sv"
+    # Build ARCH -> SV per-module. The compiler auto-discovers
+    # transitively-needed .archi files in $ARCH_SRC_DIR (cwd-based
+    # search), so each module's build is isolated from unrelated drift
+    # in OTHER arch sources. This means a stale wrapper module (e.g.
+    # arch-side e203_core_top.arch with broken inst port lists) no
+    # longer takes down the whole batch.
+    MOD_ARCH="$ARCH_SRC_DIR/$MOD.arch"
+    GEN_FILE="$ARCH_SRC_DIR/$MOD.sv"
 
-    if ! "$ARCH_BIN" build $EXTRA_ARCH -o "$WORK_DIR/" 2>"$WORK_DIR/arch_err.txt"; then
+    if [ ! -f "$MOD_ARCH" ]; then
+        echo "SKIP (no .arch source for $MOD)"
+        SKIP=$((SKIP + 1))
+        rm -rf "$WORK_DIR"
+        continue
+    fi
+
+    if ! (cd "$ARCH_SRC_DIR" && "$ARCH_BIN" build "$MOD.arch" 2>"$WORK_DIR/arch_err.txt"); then
         echo "FAIL (arch build error)"
         FAIL=$((FAIL + 1))
         ERRORS="$ERRORS\n  $MOD: arch build failed - $(head -1 $WORK_DIR/arch_err.txt)"
@@ -93,9 +105,7 @@ for MOD in $MODULES; do
         continue
     fi
 
-    # Replace the _top.sv (DUT) with our generated SV
-    # Our generated SV file should be named after the module
-    GEN_FILE="$WORK_DIR/$MOD.sv"
+    # The generated .sv lands next to the source; copy to expected place.
     if [ -f "$GEN_FILE" ]; then
         cp "$GEN_FILE" "$TOP_SV"
     fi
@@ -110,7 +120,7 @@ for MOD in $MODULES; do
     VFLAGS="$VFLAGS -Wno-DECLFILENAME -Wno-WIDTHEXPAND -Wno-WIDTHCONCAT"
     VFLAGS="$VFLAGS -fno-table"
 
-    if ! verilator $VFLAGS *v *.sv 2>"$WORK_DIR/vltor_err.txt"; then
+    if ! verilator $VFLAGS *.v *.sv 2>"$WORK_DIR/vltor_err.txt"; then
         echo "FAIL (verilator compile)"
         FAIL=$((FAIL + 1))
         ERRORS="$ERRORS\n  $MOD: verilator compile - $(grep '%Error' $WORK_DIR/vltor_err.txt | head -3)"
@@ -119,8 +129,8 @@ for MOD in $MODULES; do
         continue
     fi
 
-    # Run simulation with timeout
-    if timeout 30 obj_dir/Vtb >"$WORK_DIR/sim_out.txt" 2>&1; then
+    # Run simulation with timeout (portable: macOS lacks `timeout`)
+    if perl -e 'alarm shift; exec @ARGV' 30 obj_dir/Vtb >"$WORK_DIR/sim_out.txt" 2>&1; then
         # Check for mismatches
         if grep -q "Mismatches: 0" "$WORK_DIR/sim_out.txt"; then
             SAMPLES=$(grep -o '[0-9]* samples' "$WORK_DIR/sim_out.txt" | head -1)

@@ -109,7 +109,7 @@ module e203_core_top
   end inst lsu
 
   // ── BIU ────────────────────────────────────────────────────────────
-  inst bus: e203_biu
+  inst bus_: e203_biu
     lsu_addr   <- lsu_mem_addr;
     lsu_wdata  <- lsu_mem_wdata;
     lsu_wstrb  <- lsu_mem_wstrb;
@@ -129,7 +129,7 @@ module e203_core_top
     dtcm_wr_addr -> biu_dtcm_wr_addr;
     dtcm_wr_data -> biu_dtcm_wr_data;
     dtcm_wr_be   -> biu_dtcm_wr_be;
-  end inst bus
+  end inst bus_
 
   // ── DTCM ───────────────────────────────────────────────────────────
   inst dtcm: e203_dtcm

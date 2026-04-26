@@ -21,8 +21,7 @@ module NocProducer
   reg lfsr:   UInt<8>  reset rst => 8'h5A;
 
   comb
-    out.flits_send_valid = 1'b0;
-    out.flits_send_data  = 64'h0;
+    out.flits.no_send();
     if out.flits.can_send and (lfsr < gen_pressure)
       out.flits.send(seq_no);
     end if
@@ -55,7 +54,7 @@ module NocConsumer
   reg lfsr: UInt<8> reset rst => 8'hC3;
 
   comb
-    incoming.flits_credit_return = 1'b0;
+    incoming.flits.no_pop();
     if incoming.flits.valid and (lfsr < pop_pressure)
       incoming.flits.pop();
     end if

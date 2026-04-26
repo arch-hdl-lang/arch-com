@@ -4827,13 +4827,13 @@ Knobs:
 
 **18c.2 Wire protocol**
 
-Each credit_channel flattens at the bus port into three signals. Directions below are from the initiator perspective; the `target` bus-port flip inverts them.
+Each credit_channel flattens at the bus port into three signals. Directions below are from the initiator perspective; the `target` bus-port flip inverts them. **Source-level access uses dotted form only** — `port.<ch>.send_valid`, `port.<ch>.send_data`, `port.<ch>.credit_return`. The underscored form (`port.<ch>_send_valid`) is rejected with a suggestion to switch to dots; SV-level wire names retain underscores (`<port>_<ch>_send_valid`) since SV has no nested namespacing.
 
-| Signal | Direction | Driver |
-|---|---|---|
-| `<ch>_send_valid` | initiator → target | user's comb (sender) |
-| `<ch>_send_data` | initiator → target | user's comb (sender) |
-| `<ch>_credit_return` | target → initiator | user's comb (receiver) |
+| Source access | SV wire | Direction | Driver |
+|---|---|---|---|
+| `port.<ch>.send_valid` | `<port>_<ch>_send_valid` | initiator → target | user's comb (sender) |
+| `port.<ch>.send_data` | `<port>_<ch>_send_data` | initiator → target | user's comb (sender) |
+| `port.<ch>.credit_return` | `<port>_<ch>_credit_return` | target → initiator | user's comb (receiver) |
 
 The user-driven `credit_return` signal has a dual role: it tells the sender to increment its counter *and* tells the receiver's FIFO to dequeue. One signal, one decision point, no double-bookkeeping.
 
@@ -4851,14 +4851,26 @@ Attempts to access the wrong side produce a normal unknown-field error at typech
 
 **18c.4 Statement sugar (write side)**
 
-Inside a comb or seq block, two method-call statements desugar to wire drives:
+Inside a comb or seq block, four method-call statements desugar to wire drives. The first pair drives the channel; the second pair sets it idle (the typical "default to idle, override on action" pattern):
 
 | Sugar | Desugars to |
 |---|---|
-| `port.ch.send(x);` | `port.<ch>_send_valid = 1; port.<ch>_send_data = x;` |
-| `port.ch.pop();` | `port.<ch>_credit_return = 1;` |
+| `port.ch.send(x);` | `port.ch.send_valid = 1; port.ch.send_data = x;` |
+| `port.ch.pop();` | `port.ch.credit_return = 1;` |
+| `port.ch.no_send();` | `port.ch.send_valid = 0; port.ch.send_data = 0;` |
+| `port.ch.no_pop();` | `port.ch.credit_return = 0;` |
 
-`.pop()` and manually writing `credit_return = 1` are exactly equivalent — `.pop()` just names the receiver-side verb.
+Pattern:
+```
+comb
+  out.ch.no_send();          // default: nothing this cycle
+  if out.ch.can_send and have_data
+    out.ch.send(payload);    // override: drive a flit
+  end if
+end comb
+```
+
+Manual dotted writes (`port.ch.send_valid = ...;`) are also accepted for cases where the conditional is on the value rather than a clean default-vs-override (e.g. arbiter-style `send_valid = (winner != 0)`).
 
 **18c.5 Canonical pattern**
 
@@ -4876,8 +4888,7 @@ module NocProducer
   port out: initiator NocChannel;
   reg seq_no: UInt<64> reset rst => 0;
   comb
-    out.flits_send_valid = 1'b0;
-    out.flits_send_data  = 64'h0;
+    out.flits.no_send();
     if out.flits.can_send
       out.flits.send(seq_no);
     end if
@@ -4895,7 +4906,7 @@ module NocConsumer
   port incoming: target NocChannel;
   port reg last_seq: out UInt<64> reset rst => 0;
   comb
-    incoming.flits_credit_return = 1'b0;
+    incoming.flits.no_pop();
     if incoming.flits.valid
       incoming.flits.pop();
     end if

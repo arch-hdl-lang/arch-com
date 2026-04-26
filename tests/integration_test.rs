@@ -3971,8 +3971,8 @@ fn test_credit_channel_wires_flatten_at_bus_port() {
         module Prod
           port p: initiator DmaCh;
           comb
-            p.data_send_valid = 1'b0;
-            p.data_send_data  = 16'h0;
+            p.data.send_valid = 1'b0;
+            p.data.send_data  = 16'h0;
           end comb
         end module Prod
     ";
@@ -4000,7 +4000,7 @@ fn test_credit_channel_wires_flip_on_target_perspective() {
         module Cons
           port p: target DmaCh;
           comb
-            p.data_credit_return = 1'b0;
+            p.data.credit_return = 1'b0;
           end comb
         end module Cons
     ";
@@ -4034,8 +4034,8 @@ fn test_credit_channel_emits_sender_counter_state() {
           port rst: in Reset<Sync>;
           port p:   initiator DmaCh;
           comb
-            p.data_send_valid = 1'b0;
-            p.data_send_data  = 8'h0;
+            p.data.send_valid = 1'b0;
+            p.data.send_data  = 8'h0;
           end comb
         end module Prod
     ";
@@ -4073,7 +4073,7 @@ fn test_credit_channel_emits_target_fifo() {
           port rst: in Reset<Sync>;
           port p:   target DmaCh;
           comb
-            p.data_credit_return = 1'b0;
+            p.data.credit_return = 1'b0;
           end comb
         end module Cons
     ";
@@ -4116,8 +4116,8 @@ fn test_credit_channel_no_target_fifo_on_send_role() {
           port rst: in Reset<Sync>;
           port p:   initiator DmaCh;
           comb
-            p.data_send_valid = 1'b0;
-            p.data_send_data  = 8'h0;
+            p.data.send_valid = 1'b0;
+            p.data.send_data  = 8'h0;
           end comb
         end module Prod
     ";
@@ -4147,7 +4147,7 @@ fn test_credit_channel_no_counter_on_receive_role() {
           port rst: in Reset<Sync>;
           port p:   target DmaCh;
           comb
-            p.data_credit_return = 1'b0;
+            p.data.credit_return = 1'b0;
           end comb
         end module Cons
     ";
@@ -4177,8 +4177,8 @@ fn test_credit_channel_can_send_method_dispatch() {
           port have_data: in Bool;
           port payload:   in UInt<8>;
           comb
-            p.data_send_valid = p.data.can_send and have_data;
-            p.data_send_data  = payload;
+            p.data.send_valid = p.data.can_send and have_data;
+            p.data.send_data  = payload;
           end comb
         end module Prod
     ";
@@ -4209,7 +4209,7 @@ fn test_credit_channel_valid_and_data_method_dispatch_on_receiver() {
           port latest:   out UInt<8>;
           comb
             latest = p.data.data;
-            p.data_credit_return = p.data.valid and want_pop;
+            p.data.credit_return = p.data.valid and want_pop;
           end comb
         end module Cons
     ";
@@ -4241,8 +4241,8 @@ fn test_credit_channel_can_send_registered_emits_flop() {
           port rst: in Reset<Sync>;
           port p:   initiator DmaCh;
           comb
-            p.data_send_valid = 1'b0;
-            p.data_send_data  = 8'h0;
+            p.data.send_valid = 1'b0;
+            p.data.send_data  = 8'h0;
           end comb
         end module Prod
     ";
@@ -4277,8 +4277,8 @@ fn test_credit_channel_can_send_default_is_combinational() {
           port rst: in Reset<Sync>;
           port p:   initiator DmaCh;
           comb
-            p.data_send_valid = 1'b0;
-            p.data_send_data  = 8'h0;
+            p.data.send_valid = 1'b0;
+            p.data.send_data  = 8'h0;
           end comb
         end module Prod
     ";
@@ -4304,8 +4304,8 @@ fn test_credit_channel_tier2_sender_assertions() {
           port rst: in Reset<Sync>;
           port p:   initiator DmaCh;
           comb
-            p.data_send_valid = 1'b0;
-            p.data_send_data  = 8'h0;
+            p.data.send_valid = 1'b0;
+            p.data.send_data  = 8'h0;
           end comb
         end module Prod
     ";
@@ -4337,7 +4337,7 @@ fn test_credit_channel_tier2_receiver_assertion() {
           port rst: in Reset<Sync>;
           port p:   target DmaCh;
           comb
-            p.data_credit_return = 1'b0;
+            p.data.credit_return = 1'b0;
           end comb
         end module Cons
     ";
@@ -4368,8 +4368,8 @@ fn test_credit_channel_send_sugar() {
           port p:   initiator DmaCh;
           port payload: in UInt<8>;
           comb
-            p.data_send_valid = 1'b0;       // default — overridden below
-            p.data_send_data  = 8'h0;
+            p.data.send_valid = 1'b0;       // default — overridden below
+            p.data.send_data  = 8'h0;
             if p.data.can_send
               p.data.send(payload);
             end if
@@ -4402,7 +4402,7 @@ fn test_credit_channel_pop_sugar() {
           port p:   target DmaCh;
           port want_pop: in Bool;
           comb
-            p.data_credit_return = 1'b0;
+            p.data.credit_return = 1'b0;
             if p.data.valid and want_pop
               p.data.pop();
             end if
@@ -4443,8 +4443,8 @@ fn test_credit_channel_end_to_end_noc_producer_consumer() {
           reg seq_no: UInt<64> init 0 reset rst => 0;
           reg lfsr:   UInt<8>  init 8'h5A reset rst => 8'h5A;
           comb
-            out.flits_send_valid = 1'b0;
-            out.flits_send_data  = 64'h0;
+            out.flits.send_valid = 1'b0;
+            out.flits.send_data  = 64'h0;
             if out.flits.can_send
               out.flits.send(seq_no);
             end if
@@ -4470,7 +4470,7 @@ fn test_credit_channel_end_to_end_noc_producer_consumer() {
           port reg last_seq:      out UInt<64> reset rst => 0;
           reg lfsr: UInt<8> init 8'hC3 reset rst => 8'hC3;
           comb
-            incoming.flits_credit_return = 1'b0;
+            incoming.flits.credit_return = 1'b0;
             if incoming.flits.valid and (lfsr < pop_pressure)
               incoming.flits.pop();
             end if
@@ -4537,8 +4537,8 @@ fn test_credit_channel_sim_emits_sender_state() {
           port rst: in Reset<Sync>;
           port p:   initiator DmaCh;
           comb
-            p.data_send_valid = 1'b0;
-            p.data_send_data  = 8'h0;
+            p.data.send_valid = 1'b0;
+            p.data.send_data  = 8'h0;
           end comb
         end module Prod
     ";
@@ -4574,7 +4574,7 @@ fn test_credit_channel_sim_emits_receiver_state() {
           port rst: in Reset<Sync>;
           port p:   target DmaCh;
           comb
-            p.data_credit_return = 1'b0;
+            p.data.credit_return = 1'b0;
           end comb
         end module Cons
     ";
