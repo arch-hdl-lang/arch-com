@@ -202,3 +202,24 @@ fn formal_credit_channel_invariant_proves() {
     assert!(out.contains("credit_balance"), "expected credit_balance label:\n{out}");
     assert!(out.contains("PROVED"), "expected PROVED in output:\n{out}");
 }
+
+#[test]
+fn formal_sva_temporal_proves() {
+    if !z3_available() { eprintln!("skipping: z3 not in PATH"); return; }
+    let (code, out) = run_formal("tests/formal/sva_temporal_proves.arch", &["--bound", "5"]);
+    assert_eq!(code, 0, "expected exit 0; got {code}\n{out}");
+    assert!(out.contains("gnt_follows_req"), "missing property name in output:\n{out}");
+    assert!(out.contains("req_implies_next_gnt"), "missing |=> property:\n{out}");
+    // Both asserts should PROVE; cover should HIT.
+    let proved = out.matches("PROVED").count();
+    assert!(proved >= 2, "expected ≥2 PROVED (got {proved}):\n{out}");
+    assert!(out.contains("HIT"), "expected cover HIT:\n{out}");
+}
+
+#[test]
+fn formal_sva_temporal_refutes() {
+    if !z3_available() { eprintln!("skipping: z3 not in PATH"); return; }
+    let (code, out) = run_formal("tests/formal/sva_temporal_refutes.arch", &["--bound", "5"]);
+    assert_eq!(code, 1, "expected exit 1 (REFUTED); got {code}\n{out}");
+    assert!(out.contains("REFUTED"), "expected REFUTED:\n{out}");
+}
