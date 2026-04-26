@@ -20,23 +20,16 @@ module alu_seq
 
   seq on i_clk rising
     if key_match
-      if i_opcode == 0
-        result <= (i_operand_a.zext<9>() + i_operand_b.zext<9>()).trunc<8>();
-      elsif i_opcode == 1
-        result <= (i_operand_a.zext<9>() - i_operand_b.zext<9>()).trunc<8>();
-      elsif i_opcode == 2
-        result <= (i_operand_a.zext<8>() * i_operand_b.zext<8>()).trunc<8>();
-      elsif i_opcode == 3
-        result <= i_operand_a.zext<8>() & i_operand_b.zext<8>();
-      elsif i_opcode == 4
-        result <= i_operand_a.zext<8>() | i_operand_b.zext<8>();
-      elsif i_opcode == 5
-        result <= (~i_operand_a).zext<8>();
-      elsif i_opcode == 6
-        result <= i_operand_a.zext<8>() ^ i_operand_b.zext<8>();
-      else
-        result <= (~(i_operand_a ^ i_operand_b)).zext<8>();
-      end if
+      unique match i_opcode
+        0 => result <= (i_operand_a.zext<9>() + i_operand_b.zext<9>()).trunc<8>();
+        1 => result <= (i_operand_a.zext<9>() - i_operand_b.zext<9>()).trunc<8>();
+        2 => result <= (i_operand_a.zext<8>() * i_operand_b.zext<8>()).trunc<8>();
+        3 => result <= i_operand_a.zext<8>() & i_operand_b.zext<8>();
+        4 => result <= i_operand_a.zext<8>() | i_operand_b.zext<8>();
+        5 => result <= (~i_operand_a).zext<8>();
+        6 => result <= i_operand_a.zext<8>() ^ i_operand_b.zext<8>();
+        _ => result <= (~(i_operand_a ^ i_operand_b)).zext<8>();
+      end match
     else
       result <= 0;
     end if
