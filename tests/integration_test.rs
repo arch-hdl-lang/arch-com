@@ -5877,3 +5877,33 @@ fn test_uint_as_vec_cast_for_find_first() {
     assert!(sv.contains("d[0]") && sv.contains("d[7]"),
         "expected direct bit indexing of `d`:\n{sv}");
 }
+
+#[test]
+fn test_counter_runtime_max_port() {
+    // `counter` with a `port max: in UInt<W>` overrides the compile-time
+    // MAX param. Wrap target, saturate ceiling, and `at_max` all consult
+    // the runtime port instead of the const.
+    let source = r#"
+        counter ProgCounter
+          kind wrap;
+          direction: up;
+          init: 0;
+          port clk:    in Clock<SysDomain>;
+          port rst:    in Reset<Async, Low>;
+          port inc:    in Bool;
+          port max:    in UInt<8>;
+          port value:  out UInt<8>;
+          port at_max: out Bool;
+        end counter ProgCounter
+    "#;
+    let sv = compile_to_sv(source);
+    // Wrap compare uses the runtime `max` port, not a const.
+    assert!(sv.contains("count_r == max"),
+        "expected wrap compare against `max` port:\n{sv}");
+    // at_max output mirrors the same compare.
+    assert!(sv.contains("assign at_max = (count_r == max)"),
+        "expected at_max against `max` port:\n{sv}");
+    // No const MAX appears (no MAX param declared).
+    assert!(!sv.contains("'(MAX)"),
+        "should not emit const MAX comparator when port is present:\n{sv}");
+}
