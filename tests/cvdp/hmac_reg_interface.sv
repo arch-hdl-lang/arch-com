@@ -54,7 +54,7 @@ module hmac_reg_interface #(
       state_r <= state_next;
       // Datapath regs (alongside FSM state)
       // Internal wires for the look-ahead key-error path.
-      // The CVDP TB probes `dut.current_state.value`; alias state_r so the
+      // The CVDP TB probes `dut.current_state.value`; alias `state` so the
       // test can read it without renaming inside the auto-generated FSM.
       // xor_mask: alternating-1s pattern (01010101...) — TB-visible.
       // Key validation: 2 MSB and 2 LSB of hmac_key must be zero.

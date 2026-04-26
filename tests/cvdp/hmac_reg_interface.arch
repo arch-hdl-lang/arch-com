@@ -24,9 +24,9 @@ fsm hmac_reg_interface
   wire key_valid:      Bool;
   wire next_hmac_key:  UInt<DATA_WIDTH>;
   wire next_key_valid: Bool;
-  // The CVDP TB probes `dut.current_state.value`; alias state_r so the
+  // The CVDP TB probes `dut.current_state.value`; alias `state` so the
   // test can read it without renaming inside the auto-generated FSM.
-  let current_state: UInt<3> = state_r;
+  let current_state: UInt<3> = state;
 
   state [IDLE, ANALYZE, XOR_DATA, WRITE, LOST, CHECK_KEY, TRIG_WAIT]
   default state IDLE;
@@ -45,7 +45,7 @@ fsm hmac_reg_interface
       key_valid = (hmac_key[DATA_WIDTH-1:DATA_WIDTH-2] == 0) & (hmac_key[1:0] == 0);
 
       // Look-ahead so hmac_key_error tracks the key being written *this* cycle.
-      if (state_r == WRITE) & (addr == 0)
+      if (state == WRITE) & (addr == 0)
         next_hmac_key = wdata;
       else
         next_hmac_key = hmac_key;
@@ -57,7 +57,7 @@ fsm hmac_reg_interface
       hmac_key_error <= ~next_key_valid;
       hmac_valid     <= false;
       // Reads: serve from non-WRITE states.
-      if read_en & (state_r != WRITE)
+      if read_en & (state != WRITE)
         if addr == 0
           rdata <= hmac_key;
         elsif addr == 1
