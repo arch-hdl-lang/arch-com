@@ -71,6 +71,13 @@ enum Command {
         /// Output .sv file
         #[arg(short, long)]
         o: Option<PathBuf>,
+        /// Auto-emit SVA properties from `thread` lowering (wait_until / wait
+        /// N cycle progress, fork-join branch transitions). Wrapped in
+        /// `synopsys translate_off/on` so they don't reach synthesis. Off by
+        /// default; turn on for `arch formal` runs or under Verilator
+        /// `--assert` to get free spec-derived coverage.
+        #[arg(long)]
+        auto_thread_asserts: bool,
     },
     /// Compile ARCH + C++ testbench and run simulation
     ///
@@ -153,6 +160,10 @@ enum Command {
         /// single Python process — each can have a distinct PyInit_* symbol.
         #[arg(long)]
         pybind_module_name: Option<String>,
+        /// Auto-emit SVA properties from `thread` lowering — see `arch build`
+        /// help for the property set. Picked up by Verilator `--assert`.
+        #[arg(long)]
+        auto_thread_asserts: bool,
     },
     /// Formal verification: emit SMT-LIB2 and invoke a bit-vector SMT solver.
     ///
@@ -177,6 +188,11 @@ enum Command {
         /// Per-property solver timeout in seconds
         #[arg(long, default_value_t = 60)]
         timeout: u32,
+        /// Auto-emit SVA properties from `thread` lowering — provable by the
+        /// formal backend when the lowering is correct (the properties hold
+        /// by construction). See `arch build` help for the property set.
+        #[arg(long)]
+        auto_thread_asserts: bool,
     },
 }
 
@@ -360,7 +376,9 @@ fn main() -> miette::Result<()> {
             }
             Ok(())
         }
-        Command::Sim { arch_files, tb_files, outdir, check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave, debug, debug_depth, debug_fsm, coverage, coverage_dat, thread_sim, threads, pybind, test, pybind_module_name } => {
+        Command::Sim { arch_files, tb_files, outdir, check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave, debug, debug_depth, debug_fsm, coverage, coverage_dat, thread_sim, threads, pybind, test, pybind_module_name, auto_thread_asserts } => {
+            let _ = auto_thread_asserts;
+
             let dbg_ports = debug || debug_fsm;  // any debug option implies port logging
             // --inputs-start-uninit and --check-uninit-ram both imply --check-uninit
             let check_uninit = check_uninit || inputs_start_uninit || check_uninit_ram;
@@ -388,12 +406,12 @@ fn main() -> miette::Result<()> {
                 other => return Err(miette::miette!("--thread-sim: expected `fsm`, `parallel`, or `both`, got `{}`", other)),
             }
         }
-        Command::Build { files, o } => {
+        Command::Build { files, o, auto_thread_asserts } => {
             let files_for_learn = files.clone();
             learn_wrap(&files_for_learn, move || {
             let all_files = resolve_use_imports(&files)?;
             let ms = MultiSource::from_files(&all_files)?;
-            let (ast, symbols, overload_map) = run_check_multi(&ms)?;
+            let (ast, symbols, overload_map) = run_check_multi_opts(&ms, false, auto_thread_asserts)?;
 
             let comments = lexer::extract_comments(&ms.combined);
 
@@ -468,12 +486,12 @@ fn main() -> miette::Result<()> {
             Ok(())
             })
         }
-        Command::Formal { files, top, bound, solver, emit_smt, timeout } => {
+        Command::Formal { files, top, bound, solver, emit_smt, timeout, auto_thread_asserts } => {
             let files_for_learn = files.clone();
             learn_wrap(&files_for_learn, move || {
                 let all_files = resolve_use_imports(&files)?;
                 let ms = MultiSource::from_files(&all_files)?;
-                let (ast, symbols, _overload_map) = run_check_multi(&ms)?;
+                let (ast, symbols, _overload_map) = run_check_multi_opts(&ms, false, auto_thread_asserts)?;
 
                 let args = formal::FormalArgs {
                     top: top.clone(),
@@ -635,7 +653,7 @@ fn run_sim_opts(
     // 1. Parse + type-check
     let all_files = resolve_use_imports(arch_files)?;
     let ms = MultiSource::from_files(&all_files)?;
-    let (ast, symbols, overload_map) = run_check_multi_opts(&ms, thread_sim_parallel)?;
+    let (ast, symbols, overload_map) = run_check_multi_opts(&ms, thread_sim_parallel, /*auto_thread_asserts=*/ false)?;
 
     // 2. Set up output directory
     let build_dir = outdir
@@ -1200,12 +1218,13 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
 fn run_check_multi(
     ms: &MultiSource,
 ) -> miette::Result<(arch::ast::SourceFile, resolve::SymbolTable, std::collections::HashMap<usize, usize>)> {
-    run_check_multi_opts(ms, /*skip_lower_threads=*/ false)
+    run_check_multi_opts(ms, /*skip_lower_threads=*/ false, /*auto_thread_asserts=*/ false)
 }
 
 fn run_check_multi_opts(
     ms: &MultiSource,
     skip_lower_threads: bool,
+    auto_thread_asserts: bool,
 ) -> miette::Result<(arch::ast::SourceFile, resolve::SymbolTable, std::collections::HashMap<usize, usize>)> {
     let source = &ms.combined;
 
@@ -1260,7 +1279,10 @@ fn run_check_multi_opts(
     let ast = if skip_lower_threads {
         ast
     } else {
-        elaborate::lower_threads(ast).map_err(|errs| {
+        let opts = elaborate::ThreadLowerOpts {
+            auto_asserts: auto_thread_asserts,
+        };
+        elaborate::lower_threads_with_opts(ast, &opts).map_err(|errs| {
             let err = errs.into_iter().next().unwrap();
             ms.report_error(err)
         })?
