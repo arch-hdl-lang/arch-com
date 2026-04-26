@@ -1,194 +1,81 @@
-module huffman_encoder
+// 7-state Huffman encoder.
+// State machine lives in `fsm huffman_encoder_core`; the wrapper
+// `module huffman_encoder` owns the 5 RAM instances and connects
+// them to the fsm. (`fsm` bodies don't host `inst` declarations.)
+
+fsm huffman_encoder_core
   port clk:     in Clock<SysDomain>;
   port reset:   in Reset<Async>;
 
-  port data_valid:     in Bool;
-  port data_in:        in UInt<4>;
-  port data_priority:  in UInt<2>;
-  port update_enable:  in Bool;
-  port config_symbol:  in UInt<4>;
-  port config_code:    in UInt<7>;
-  port config_length:  in UInt<3>;
+  // External I/O (mirrors top-level)
+  port data_valid:    in Bool;
+  port data_in:       in UInt<4>;
+  port data_priority: in UInt<2>;
+  port update_enable: in Bool;
+  port config_symbol: in UInt<4>;
+  port config_code:   in UInt<7>;
+  port config_length: in UInt<3>;
 
   port huffman_code_out: out pipe_reg<UInt<7>, 1> reset reset=>0;
-  port code_valid: out pipe_reg<Bool, 1> reset reset=>false;
-  port error_flag: out pipe_reg<Bool, 1> reset reset=>false;
+  port code_valid:       out pipe_reg<Bool, 1>     reset reset=>false;
+  port error_flag:       out pipe_reg<Bool, 1>     reset reset=>false;
 
-  default seq on clk rising;
+  // RAM driver ports (combinational outputs to the wrapper).
+  port ht_we: out Bool; port ht_addr: out UInt<4>; port ht_din: out UInt<7>; port ht_dout: in UInt<7>;
+  port cl_we: out Bool; port cl_addr: out UInt<4>; port cl_din: out UInt<3>; port cl_dout: in UInt<3>;
+  port qh_we: out Bool; port qh_addr: out UInt<4>; port qh_din: out UInt<4>; port qh_dout: in UInt<4>;
+  port qm_we: out Bool; port qm_addr: out UInt<4>; port qm_din: out UInt<4>; port qm_dout: in UInt<4>;
+  port ql_we: out Bool; port ql_addr: out UInt<4>; port ql_din: out UInt<4>; port ql_dout: in UInt<4>;
 
-  // FSM states: 0=IDLE,1=PREPARE,2=CHECK_UPDATE,3=ENCODE,4=OUTPUT,5=HANDLE_ERROR,6=UPDATE_TABLE
-  reg state: UInt<3> reset reset=>0;
-
-  // RAM interface wires
-  wire ht_we: Bool;
-  wire ht_addr: UInt<4>;
-  wire ht_din: UInt<7>;
-  wire ht_dout: UInt<7>;
-
-  wire cl_we: Bool;
-  wire cl_addr: UInt<4>;
-  wire cl_din: UInt<3>;
-  wire cl_dout: UInt<3>;
-
-  wire qh_we: Bool;
-  wire qh_addr: UInt<4>;
-  wire qh_din: UInt<4>;
-  wire qh_dout: UInt<4>;
-
-  wire qm_we: Bool;
-  wire qm_addr: UInt<4>;
-  wire qm_din: UInt<4>;
-  wire qm_dout: UInt<4>;
-
-  wire ql_we: Bool;
-  wire ql_addr: UInt<4>;
-  wire ql_din: UInt<4>;
-  wire ql_dout: UInt<4>;
-
-  // Queue write pointers
+  // Datapath regs alongside the FSM state.
   reg qh_wptr: UInt<4> reset reset=>0;
   reg qm_wptr: UInt<4> reset reset=>0;
   reg ql_wptr: UInt<4> reset reset=>0;
-
-  // Queue read pointers
   reg qh_rptr: UInt<4> reset reset=>0;
   reg qm_rptr: UInt<4> reset reset=>0;
   reg ql_rptr: UInt<4> reset reset=>0;
+  reg cur_symbol:  UInt<4> reset reset=>0;
+  reg upd_symbol:  UInt<4> reset reset=>0;
+  reg upd_code:    UInt<7> reset reset=>0;
+  reg upd_length:  UInt<3> reset reset=>0;
+  reg upd_pending: Bool    reset reset=>false;
 
-  // Saved symbol for encoding
-  reg cur_symbol: UInt<4> reset reset=>0;
-  // Saved update params
-  reg upd_symbol: UInt<4> reset reset=>0;
-  reg upd_code: UInt<7> reset reset=>0;
-  reg upd_length: UInt<3> reset reset=>0;
-  reg upd_pending: Bool reset reset=>false;
+  state [IDLE, PREPARE, CHECK_UPDATE, ENCODE, OUTPUT, HANDLE_ERROR, UPDATE_TABLE]
+  default state IDLE;
+  default seq on clk rising;
 
-  // RAM instances
-  inst ht_ram: single_port_ram
-    param DATA_WIDTH = 7;
-    param ADDR_WIDTH = 4;
-    clk  <- clk;
-    we   <- ht_we;
-    addr <- ht_addr;
-    din  <- ht_din;
-    dout -> ht_dout;
-  end inst ht_ram
+  // RAM idle defaults — every state overrides what it needs.
+  default
+    comb
+      ht_we = false; ht_addr = 0; ht_din = 0;
+      cl_we = false; cl_addr = 0; cl_din = 0;
+      qh_we = false; qh_addr = 0; qh_din = 0;
+      qm_we = false; qm_addr = 0; qm_din = 0;
+      ql_we = false; ql_addr = 0; ql_din = 0;
+    end comb
+  end default
 
-  inst cl_ram: single_port_ram
-    param DATA_WIDTH = 3;
-    param ADDR_WIDTH = 4;
-    clk  <- clk;
-    we   <- cl_we;
-    addr <- cl_addr;
-    din  <- cl_din;
-    dout -> cl_dout;
-  end inst cl_ram
-
-  inst qh_ram: single_port_ram
-    param DATA_WIDTH = 4;
-    param ADDR_WIDTH = 4;
-    clk  <- clk;
-    we   <- qh_we;
-    addr <- qh_addr;
-    din  <- qh_din;
-    dout -> qh_dout;
-  end inst qh_ram
-
-  inst qm_ram: single_port_ram
-    param DATA_WIDTH = 4;
-    param ADDR_WIDTH = 4;
-    clk  <- clk;
-    we   <- qm_we;
-    addr <- qm_addr;
-    din  <- qm_din;
-    dout -> qm_dout;
-  end inst qm_ram
-
-  inst ql_ram: single_port_ram
-    param DATA_WIDTH = 4;
-    param ADDR_WIDTH = 4;
-    clk  <- clk;
-    we   <- ql_we;
-    addr <- ql_addr;
-    din  <- ql_din;
-    dout -> ql_dout;
-  end inst ql_ram
-
-  // Default RAM drive signals (combinational)
-  comb
-    ht_we = false;
-    ht_addr = 0;
-    ht_din = 0;
-    cl_we = false;
-    cl_addr = 0;
-    cl_din = 0;
-    qh_we = false;
-    qh_addr = 0;
-    qh_din = 0;
-    qm_we = false;
-    qm_addr = 0;
-    qm_din = 0;
-    ql_we = false;
-    ql_addr = 0;
-    ql_din = 0;
-
-    if state == 0
-      // IDLE: enqueue data if valid
+  state IDLE
+    comb
+      // Enqueue incoming data into its priority queue.
       if data_valid
         if data_priority == 3
-          qh_we = true;
-          qh_addr = qh_wptr;
-          qh_din = data_in;
+          qh_we = true; qh_addr = qh_wptr; qh_din = data_in;
         elsif data_priority == 2
-          qm_we = true;
-          qm_addr = qm_wptr;
-          qm_din = data_in;
+          qm_we = true; qm_addr = qm_wptr; qm_din = data_in;
         else
-          ql_we = true;
-          ql_addr = ql_wptr;
-          ql_din = data_in;
+          ql_we = true; ql_addr = ql_wptr; ql_din = data_in;
         end if
       end if
-    elsif state == 1
-      // PREPARE: read from highest priority queue
-      if qh_rptr != qh_wptr
-        qh_addr = qh_rptr;
-      elsif qm_rptr != qm_wptr
-        qm_addr = qm_rptr;
-      elsif ql_rptr != ql_wptr
-        ql_addr = ql_rptr;
-      end if
-    elsif state == 2
-      // CHECK_UPDATE
-      ht_addr = upd_symbol;
-      cl_addr = upd_symbol;
-    elsif state == 3
-      // ENCODE: read huffman table for current symbol
-      ht_addr = cur_symbol;
-      cl_addr = cur_symbol;
-    elsif state == 6
-      // UPDATE_TABLE: write new code and length
-      ht_we = true;
-      ht_addr = upd_symbol;
-      ht_din = upd_code;
-      cl_we = true;
-      cl_addr = upd_symbol;
-      cl_din = upd_length;
-    end if
-  end comb
-
-  // FSM sequential logic
-  seq
-    if state == 0
-      // IDLE
+    end comb
+    seq
       code_valid <= false;
       error_flag <= false;
       if update_enable
-        upd_symbol <= config_symbol;
-        upd_code <= config_code;
-        upd_length <= config_length;
+        upd_symbol  <= config_symbol;
+        upd_code    <= config_code;
+        upd_length  <= config_length;
         upd_pending <= true;
-        state <= 2;
       elsif data_valid
         if data_priority == 3
           qh_wptr <= (qh_wptr + 1).trunc<4>();
@@ -197,48 +84,147 @@ module huffman_encoder
         else
           ql_wptr <= (ql_wptr + 1).trunc<4>();
         end if
-        state <= 1;
       end if
-    elsif state == 1
-      // PREPARE
+    end seq
+    -> CHECK_UPDATE when update_enable;
+    -> PREPARE      when (not update_enable) & data_valid;
+  end state IDLE
+
+  state PREPARE
+    comb
+      // Address the highest-priority non-empty queue.
+      if qh_rptr != qh_wptr
+        qh_addr = qh_rptr;
+      elsif qm_rptr != qm_wptr
+        qm_addr = qm_rptr;
+      elsif ql_rptr != ql_wptr
+        ql_addr = ql_rptr;
+      end if
+    end comb
+    seq
       if qh_rptr != qh_wptr
         cur_symbol <= qh_dout;
-        qh_rptr <= (qh_rptr + 1).trunc<4>();
-        state <= 3;
+        qh_rptr    <= (qh_rptr + 1).trunc<4>();
       elsif qm_rptr != qm_wptr
         cur_symbol <= qm_dout;
-        qm_rptr <= (qm_rptr + 1).trunc<4>();
-        state <= 3;
+        qm_rptr    <= (qm_rptr + 1).trunc<4>();
       elsif ql_rptr != ql_wptr
         cur_symbol <= ql_dout;
-        ql_rptr <= (ql_rptr + 1).trunc<4>();
-        state <= 3;
-      else
-        state <= 0;
+        ql_rptr    <= (ql_rptr + 1).trunc<4>();
       end if
-    elsif state == 2
-      // CHECK_UPDATE
+    end seq
+    -> ENCODE when (qh_rptr != qh_wptr) | (qm_rptr != qm_wptr) | (ql_rptr != ql_wptr);
+    -> IDLE   when (qh_rptr == qh_wptr) & (qm_rptr == qm_wptr) & (ql_rptr == ql_wptr);
+  end state PREPARE
+
+  state CHECK_UPDATE
+    comb
+      ht_addr = upd_symbol;
+      cl_addr = upd_symbol;
+    end comb
+    seq
       if upd_length == 0
         error_flag <= true;
-        state <= 5;
-      else
-        state <= 6;
       end if
-    elsif state == 3
-      // ENCODE
-      state <= 4;
-    elsif state == 4
-      // OUTPUT
+    end seq
+    -> HANDLE_ERROR when upd_length == 0;
+    -> UPDATE_TABLE when upd_length != 0;
+  end state CHECK_UPDATE
+
+  state ENCODE
+    comb
+      ht_addr = cur_symbol;
+      cl_addr = cur_symbol;
+    end comb
+    -> OUTPUT;
+  end state ENCODE
+
+  state OUTPUT
+    seq
       huffman_code_out <= ht_dout;
-      code_valid <= true;
-      state <= 0;
-    elsif state == 5
-      // HANDLE_ERROR
-      state <= 0;
-    elsif state == 6
-      // UPDATE_TABLE
+      code_valid       <= true;
+    end seq
+    -> IDLE;
+  end state OUTPUT
+
+  state HANDLE_ERROR
+    -> IDLE;
+  end state HANDLE_ERROR
+
+  state UPDATE_TABLE
+    comb
+      ht_we = true; ht_addr = upd_symbol; ht_din = upd_code;
+      cl_we = true; cl_addr = upd_symbol; cl_din = upd_length;
+    end comb
+    seq
       upd_pending <= false;
-      state <= 0;
-    end if
-  end seq
+    end seq
+    -> IDLE;
+  end state UPDATE_TABLE
+end fsm huffman_encoder_core
+
+
+// Top-level wrapper: 5 single-port RAMs + 1 fsm core.
+module huffman_encoder
+  port clk:     in Clock<SysDomain>;
+  port reset:   in Reset<Async>;
+
+  port data_valid:    in Bool;
+  port data_in:       in UInt<4>;
+  port data_priority: in UInt<2>;
+  port update_enable: in Bool;
+  port config_symbol: in UInt<4>;
+  port config_code:   in UInt<7>;
+  port config_length: in UInt<3>;
+
+  port huffman_code_out: out UInt<7>;
+  port code_valid:       out Bool;
+  port error_flag:       out Bool;
+
+  // FSM ↔ RAM interconnect wires.
+  wire ht_we: Bool; wire ht_addr: UInt<4>; wire ht_din: UInt<7>; wire ht_dout: UInt<7>;
+  wire cl_we: Bool; wire cl_addr: UInt<4>; wire cl_din: UInt<3>; wire cl_dout: UInt<3>;
+  wire qh_we: Bool; wire qh_addr: UInt<4>; wire qh_din: UInt<4>; wire qh_dout: UInt<4>;
+  wire qm_we: Bool; wire qm_addr: UInt<4>; wire qm_din: UInt<4>; wire qm_dout: UInt<4>;
+  wire ql_we: Bool; wire ql_addr: UInt<4>; wire ql_din: UInt<4>; wire ql_dout: UInt<4>;
+
+  inst ht_ram: single_port_ram
+    param DATA_WIDTH = 7; param ADDR_WIDTH = 4;
+    clk <- clk; we <- ht_we; addr <- ht_addr; din <- ht_din; dout -> ht_dout;
+  end inst ht_ram
+
+  inst cl_ram: single_port_ram
+    param DATA_WIDTH = 3; param ADDR_WIDTH = 4;
+    clk <- clk; we <- cl_we; addr <- cl_addr; din <- cl_din; dout -> cl_dout;
+  end inst cl_ram
+
+  inst qh_ram: single_port_ram
+    param DATA_WIDTH = 4; param ADDR_WIDTH = 4;
+    clk <- clk; we <- qh_we; addr <- qh_addr; din <- qh_din; dout -> qh_dout;
+  end inst qh_ram
+
+  inst qm_ram: single_port_ram
+    param DATA_WIDTH = 4; param ADDR_WIDTH = 4;
+    clk <- clk; we <- qm_we; addr <- qm_addr; din <- qm_din; dout -> qm_dout;
+  end inst qm_ram
+
+  inst ql_ram: single_port_ram
+    param DATA_WIDTH = 4; param ADDR_WIDTH = 4;
+    clk <- clk; we <- ql_we; addr <- ql_addr; din <- ql_din; dout -> ql_dout;
+  end inst ql_ram
+
+  inst core: huffman_encoder_core
+    clk <- clk; reset <- reset;
+    data_valid <- data_valid; data_in <- data_in; data_priority <- data_priority;
+    update_enable <- update_enable; config_symbol <- config_symbol;
+    config_code <- config_code; config_length <- config_length;
+    huffman_code_out -> huffman_code_out;
+    code_valid       -> code_valid;
+    error_flag       -> error_flag;
+    ht_we -> ht_we; ht_addr -> ht_addr; ht_din -> ht_din; ht_dout <- ht_dout;
+    cl_we -> cl_we; cl_addr -> cl_addr; cl_din -> cl_din; cl_dout <- cl_dout;
+    qh_we -> qh_we; qh_addr -> qh_addr; qh_din -> qh_din; qh_dout <- qh_dout;
+    qm_we -> qm_we; qm_addr -> qm_addr; qm_din -> qm_din; qm_dout <- qm_dout;
+    ql_we -> ql_we; ql_addr -> ql_addr; ql_din -> ql_din; ql_dout <- ql_dout;
+  end inst core
 end module huffman_encoder
