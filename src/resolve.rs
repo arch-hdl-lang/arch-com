@@ -833,6 +833,44 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
             table.module_scopes.insert(m.name.name.clone(), scope);
         }
 
+        // Per-fsm scope: params + ports + datapath regs + lets + wires.
+        // Lets codegen lookups (`ident_is_sint`, etc.) find SInt regs
+        // declared inside an fsm — same as it does for modules.
+        if let Item::Fsm(f) = item {
+            let mut scope = HashMap::new();
+            for p in &f.params {
+                scope.insert(p.name.name.clone(),
+                    (Symbol::Param(p.name.name.clone()), p.name.span));
+            }
+            for p in &f.ports {
+                scope.insert(p.name.name.clone(),
+                    (Symbol::Port(PortInfo {
+                        name: p.name.name.clone(),
+                        direction: p.direction,
+                        ty: p.ty.clone(),
+                    }), p.name.span));
+            }
+            for r in &f.regs {
+                scope.entry(r.name.name.clone()).or_insert_with(||
+                    (Symbol::Reg(RegInfo {
+                        name: r.name.name.clone(),
+                        ty: r.ty.clone(),
+                        reset: r.reset.clone(),
+                    }), r.name.span));
+            }
+            for l in &f.lets {
+                if l.ty.is_some() {
+                    scope.entry(l.name.name.clone()).or_insert_with(||
+                        (Symbol::Let(l.name.name.clone()), l.name.span));
+                }
+            }
+            for w in &f.wires {
+                scope.entry(w.name.name.clone()).or_insert_with(||
+                    (Symbol::Let(w.name.name.clone()), w.name.span));
+            }
+            table.module_scopes.insert(f.name.name.clone(), scope);
+        }
+
         // Validate inst references inside pipeline stages
         if let Item::Pipeline(p) = item {
             for stage in &p.stages {
