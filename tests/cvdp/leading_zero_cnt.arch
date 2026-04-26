@@ -9,14 +9,7 @@ module leading_zero_cnt
 
   // View `data`'s bits as a Vec so the priority-encoder pattern
   // collapses into a single `find_first` call.
-  wire bits: Vec<Bool, DATA_WIDTH>;
-  comb
-    for i in 0..DATA_WIDTH-1
-      bits[i] = data[i:i];
-    end for
-  end comb
-
-  let { found, index } = bits.find_first(item);
+  let { found, index } = (data as Vec<Bool, DATA_WIDTH>).find_first(item);
 
   let leading_zeros = found ? index : 0.zext<OUT_WIDTH>();
   let all_zeros = data == 0;
