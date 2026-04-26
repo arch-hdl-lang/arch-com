@@ -975,6 +975,132 @@ Adopting this lowering requires:
 The proof above carries over without modification once the implementation
 is added.
 
+### II.11  Auto-emitted spec-contract SVA (`--auto-thread-asserts`)
+
+When `lower_threads` runs with `ThreadLowerOpts { auto_asserts: true }`,
+`lower_module_threads` emits a set of named SVA assertions into the merged
+module's body, anchored to the lowered state register `_t_i_state` and
+per-thread counter `_t_i_cnt`.  We show that each property follows directly
+from the equivalence theorems already established — i.e. **the assertions
+hold by construction in any source program the algorithm accepts**.  An
+`ASSERTION FAILED` from one of these labels is therefore evidence of either
+a compiler bug, a hand-edit of the lowered RTL, or a malformed downstream
+pass — never a user-program error.
+
+Throughout this section, write `s = Γ̂.s_i` for the current target state of
+thread `i`, `next_i(s)` for the index returned by the `next_state`
+computation at line 1626 of `elaborate.rs`, and `rst_inactive` for the
+reset-polarity-corrected guard (`rst` for active-low, `!rst` for
+active-high).  Each property is wrapped in `synopsys translate_off/on` and
+named per the convention `_auto_thread_t{i}_<class>_s{s}[_<sub>]`.
+
+#### II.11.1  Corollary W (wait_until progress)
+
+For a state `s` with `K_i[s].τ = c` and `M = ∅` (a `wait until c` state):
+
+> **Property `_auto_thread_t{i}_wait_until_s{s}`**
+> ```
+> (rst_inactive ∧ s_i = s ∧ c)  ⊨>  s_i' = next_i(s)
+> ```
+> (where `⊨>` is SVA's next-cycle implication `|=>`).
+
+**Derivation.** Take any reachable cycle with `Γ̂.s_i = s ∧ μ ⊨ c` and reset
+not asserted.  By Theorem (II.3), `(Γ, Γ̂) ≈`, so `Γ.PC_i = s` and the
+source's `wait_until c` semantics fires the advance: `Γ.PC_i' = next_i(s)`.
+By Lemma 2 (II.3.2) clause (c), the target's transition logic for the
+`τ = c` case is `if (c) _state <= next`, giving `Γ̂.s_i' = next_i(s)`.  The
+SVA holds.  ∎
+
+#### II.11.2  Corollary C (wait_cycles bounded liveness)
+
+For a state `s` with `K_i[s].w = n` (a `wait n cycle` state):
+
+> **Property `_auto_thread_t{i}_wait_stay_s{s}`**
+> ```
+> (rst_inactive ∧ s_i = s ∧ _t_i_cnt ≠ 0)  ⊨>  s_i' = s
+> ```
+>
+> **Property `_auto_thread_t{i}_wait_done_s{s}`**
+> ```
+> (rst_inactive ∧ s_i = s ∧ _t_i_cnt = 0)  ⊨>  s_i' = next_i(s)
+> ```
+
+**Derivation.** By the partitioning invariant (II.4) the predecessor state
+loads `_t_i_cnt ← n − 1` exactly when control transitions into `s`; by
+Lemma 2 clause (d), the wait state itself emits
+`_t_i_cnt <= _t_i_cnt − 1` and `if (_t_i_cnt == 0) _state <= next`.
+
+- *Stay:* if `cnt ≠ 0` at the sample point, the only `_state` write in `K_i[s]`
+  is guarded by `cnt == 0` (false this cycle), so no transition fires; by the
+  default-PC-hold property of `RegBlock` semantics (II.4 case 7), the state
+  register retains its current value, i.e. `s_i' = s`.
+- *Done:* if `cnt = 0`, the guarded write fires, and `s_i' = next_i(s)`.
+
+Both hold by Lemma 2.  ∎
+
+#### II.11.3  Corollary B (fork/join branch faithfulness)
+
+For each multi-transition `(c_b, t_b) ∈ K_i[s].M` (each branch of a fork/join
+or a do-until / for-loop dispatch state):
+
+> **Property `_auto_thread_t{i}_branch_s{s}_b{b}`**
+> ```
+> (rst_inactive ∧ s_i = s ∧ c_b)  ⊨>  s_i' = t_b
+> ```
+
+**Derivation.** By Lemma F (II.6), the multi-transition table emitted at
+this state is mutually exclusive (the `mask` loop in `lower_fork_join`
+ensures `c_b ∧ ¬c_{b'}` for `b' ≠ b`).  Hence under the antecedent, *only*
+the `b`-th `if (c_b) _state <= t_b` fires, and the last-true-wins / first-true-wins
+collapse from Lemma 2 clause (c) gives `s_i' = t_b`.  Reset-inactive ensures
+the always_ff reset branch does not preempt the assignment.  ∎
+
+#### II.11.4  Soundness of the reset-guarded antecedent
+
+Each property antecedent conjoins `rst_inactive` so that the SVA does not
+fire while the reset clause holds `_t_i_state` at 0 (preventing spurious
+"state didn't advance" failures during reset).  Lemma 1 (II.3.1) gives
+`Γ̂.s_i = 0` immediately after reset deasserts; the first cycle in which
+`rst_inactive` holds is therefore the first cycle in which the source PC
+agrees with the target state, which is also the first cycle in which Lemma 2
+applies.  The guard is therefore exactly tight: it neither over-disables
+(the SVA still evaluates from the very first post-reset edge) nor
+under-disables (no false fire during reset itself).
+
+#### II.11.5  Coverage of property classes
+
+The implementation in `lower_module_threads` (post-state-list construction
+loop at line ~1631 of `elaborate.rs`) emits Corollary W, C, and B properties
+for every reachable state with the matching kind, gated on
+`opts.auto_asserts`.  Skipped intentionally:
+
+- **Terminal states of `thread once`** (`si + 1 ≥ n_states ∧ t.once`): the
+  source semantics holds the PC at the last state, making the implication
+  vacuous — both source and target satisfy it, but the assertion provides no
+  signal.
+- **Threads with `default_when`**: the soft-reset escape can preempt any
+  state, so the simple `s_i = s ⇒ next` shape becomes
+  `(¬dw_cond ∧ s_i = s) ⇒ next`.  Folding `¬dw_cond` into every antecedent
+  is mechanical but adds noise; v1 skips these threads entirely.  The
+  underlying lemmas still hold; the assertion just isn't emitted.
+- **Unconditional advance states** (`τ = ⊥ ∧ M = ∅ ∧ w = ⊥`): the implication
+  `s_i = s ⊨> s_i' = next_i(s)` is true by construction at every accepted
+  state and adds nothing a tool would catch.
+
+#### II.11.6  Empirical end-to-end check
+
+`tests/thread/wait_cycles.arch` (DelayPulse, 4-state thread mixing `wait
+until` and `wait n cycle`) was compiled with `--auto-thread-asserts`,
+linked against a 24-cycle SystemVerilog testbench, and run under Verilator
+5.034 with `--binary --assert`.  All five emitted properties hold silently
+across ~5 thread loops.  As a load-bearing check, mutating the `wait_until`
+consequent in the emitted SV from `_t0_state == 1` to `_t0_state == 7`
+trips `$fatal(1, "ASSERTION FAILED: _auto_thread_t0_wait_until_s0")`
+mid-sim, confirming both that the property is reachable and that
+Verilator's assertion engine is in fact evaluating it (the
+`synopsys translate_off/on` pragma does not strip assertions in Verilator's
+default simulation mode).
+
 ---
 
 ## Part III — Summary
@@ -989,6 +1115,10 @@ The thread-to-FSM lowering is correct in the following precise sense:
 6. **Shared(or) reduction faithfulness** (Lemma S, II.9).
 7. **If/else with internal waits faithfulness** (Lemma I, II.10) — *planned
    extension; proof is constructive and ready for the implementation.*
+8. **Auto-emitted spec-contract SVA correctness** (Corollaries W/C/B, II.11)
+   — the `--auto-thread-asserts` properties hold by construction in any
+   accepted source program, so an `ASSERTION FAILED` from one of them
+   indicates a compiler bug, not a user-program bug.
 
 These properties together guarantee that for every accepted source program
 and every input stream, the **lowered ARCH RTL** (the thread-free ARCH
@@ -1021,9 +1151,13 @@ formal contract for the planned arch-sim alternate path (`arch sim` without
 - **Synthesisability of generated SV.** Even with codegen equivalence
   established, the proof works at the abstract semantic level, not at the
   gate level.  Synthesis and timing closure are out of scope.
-- **Coverage and SVA.** Generated assertions and coverage points are added
-  by separate passes; their correctness is independent of the thread
-  lowering itself.
+- **Coverage and SVA.** Generated assertions and coverage points added by
+  *separate* passes (bounds checks at `_auto_bound_*`, divide-by-zero at
+  `_auto_div0_*`, handshake protocol at `_auto_hs_*`, etc.) are independent
+  of the thread lowering and have their own correctness arguments. The
+  `--auto-thread-asserts` properties (`_auto_thread_*`) are different —
+  they're emitted *during* `lower_threads` and their correctness is *part
+  of* this proof, established as Corollaries W/C/B in §II.11.
 
 > Note: `wait inside if/else` *is* covered by Lemma I (§II.10) as a
 > constructive planned extension.  The current compiler rejects it at
