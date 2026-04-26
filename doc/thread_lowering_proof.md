@@ -151,13 +151,22 @@ function transition_logic(S, i, s, once):
     next ← (s+1)             if s+1 < n_states
          ← s                 if once and s = n_states−1     # terminal hold
          ← 0                 otherwise                       # repeating wrap
+
+    # Counter-decrement hoist: fires unconditionally for any wait_cycles
+    # state, independent of how the transition target is decided.  This
+    # matters when redirect_fallthrough_to (§II.10.2 step 6 case C) gives
+    # a wait_cycles state a populated M; without the hoist, the M-arm
+    # would suppress the decrement.
+    if S.w ≠ ⊥:
+        emit: _t{i}_cnt <= _t{i}_cnt − 1
+
+    # Transition target dispatch — exactly one of the four arms fires.
     case S of
         S.M ≠ ∅:        for (c, t) ∈ S.M:
                             tgt ← (n_states−1 if once else 0) if t ≥ n_states else t
                             emit: if (c) _t{i}_state <= tgt
         S.τ = c:        emit: if (c) _t{i}_state <= next
-        S.w = n:        emit: _t{i}_cnt <= _t{i}_cnt − 1
-                        emit: if (_t{i}_cnt == 0) _t{i}_state <= next
+        S.w = n:        emit: if (_t{i}_cnt == 0) _t{i}_state <= next
         otherwise:      emit: _t{i}_state <= next
 ```
 
