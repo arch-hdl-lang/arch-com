@@ -2556,6 +2556,36 @@ fn partition_thread_body(
                         states.extend(else_states);
                     }
                     let rejoin_idx = states.len();
+
+                    // Fix for the for-loop-in-then-branch asymmetry (see
+                    // doc/thread_lowering_proof.md §II.10.4).  In the
+                    // then-branch, the natural "next state past this branch"
+                    // is `else_base` (= `then_base + then_len`).  When a
+                    // recursive `partition_thread_body` call resolves a
+                    // `usize::MAX` sentinel (e.g. for-loop exit, nested
+                    // if/else rejoin), the result after outer shifting is
+                    // `else_base`, NOT `rejoin_idx`.  Walk the then-branch
+                    // states and rewrite any such targets to `rejoin_idx`.
+                    //
+                    // The else-branch is symmetric and self-correcting:
+                    // `else_base + else_len = rejoin_idx`, so its sentinels
+                    // naturally land at `rejoin_idx`.  No rewrite needed.
+                    //
+                    // Without this rewrite, `redirect_fallthrough_to` case
+                    // (A) appends `(true, rejoin_idx)` after the existing
+                    // `(exit_cond, else_base)` arm, which under last-write-
+                    // wins always fires and overrides the for-loop's
+                    // loop-back arm — making the body execute exactly once.
+                    if then_base < else_base {
+                        for s_idx in then_base..else_base {
+                            for (_, t) in &mut states[s_idx].multi_transitions {
+                                if *t == else_base {
+                                    *t = rejoin_idx;
+                                }
+                            }
+                        }
+                    }
+
                     // Step 5: redirect each branch's natural exit to rejoin_idx.
                     if then_base < else_base {
                         redirect_fallthrough_to(&mut states, else_base - 1, rejoin_idx, ie.span);
