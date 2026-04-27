@@ -6122,6 +6122,141 @@ fn test_if_wait_with_auto_asserts() {
         "expected dispatch-state branch assertions:\n{sv}");
 }
 
+// ── resource arbiter policies ─────────────────────────────────────────────────
+
+#[test]
+fn test_resource_lock_priority_default() {
+    // No explicit `resource` decl — implicit fallback to priority. The
+    // synthesized arbiter must wire correctly and emit the priority logic.
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port go0: in Bool;
+          port go1: in Bool;
+          port go2: in Bool;
+          port done: out Bool shared(or);
+
+          thread on clk rising, rst low
+            wait until go0;
+            lock shared_lk
+              done = 1;
+              wait 1 cycle;
+            end lock shared_lk
+          end thread
+
+          thread on clk rising, rst low
+            wait until go1;
+            lock shared_lk
+              done = 1;
+              wait 1 cycle;
+            end lock shared_lk
+          end thread
+
+          thread on clk rising, rst low
+            wait until go2;
+            lock shared_lk
+              done = 1;
+              wait 1 cycle;
+            end lock shared_lk
+          end thread
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    // Synthesized arbiter is named _arb_<Mod>_<res>.
+    assert!(sv.contains("module _arb_M_shared_lk"),
+        "expected synthesized arbiter module:\n{sv}");
+    // Default = priority arbiter (linear pri_i loop).
+    assert!(sv.contains("for (int pri_i = 0; pri_i < 3"),
+        "default policy should be priority:\n{sv}");
+    // Inst inside the merged module.
+    assert!(sv.contains("_arb_M_shared_lk _arb_inst_shared_lk"),
+        "expected arbiter instance inside merged module:\n{sv}");
+}
+
+#[test]
+fn test_resource_lock_round_robin() {
+    let source = r#"
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port go0: in Bool;
+          port go1: in Bool;
+          port done: out Bool shared(or);
+
+          resource shared_lk: mutex<round_robin>;
+
+          thread on clk rising, rst low
+            wait until go0;
+            lock shared_lk
+              done = 1;
+              wait 1 cycle;
+            end lock shared_lk
+          end thread
+
+          thread on clk rising, rst low
+            wait until go1;
+            lock shared_lk
+              done = 1;
+              wait 1 cycle;
+            end lock shared_lk
+          end thread
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("logic [0:0] rr_ptr_r;"),
+        "round_robin should emit rr_ptr_r register:\n{sv}");
+    assert!(sv.contains("rr_ptr_r <= rr_ptr_r + 1"),
+        "round_robin should increment pointer on grant:\n{sv}");
+}
+
+#[test]
+fn test_resource_lock_custom_policy_with_hook() {
+    let source = r#"
+        function PickHigh(req_mask: UInt<2>, _last: UInt<2>) -> UInt<2>
+          return req_mask & 2'b10;
+        end function PickHigh
+
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port go0: in Bool;
+          port go1: in Bool;
+          port done: out Bool shared(or);
+
+          resource shared_lk: mutex<PickHigh>
+            hook grant_select(req_mask: UInt<2>, last_grant: UInt<2>) -> UInt<2>
+                 = PickHigh(req_mask, last_grant);
+          end resource shared_lk
+
+          thread on clk rising, rst low
+            wait until go0;
+            lock shared_lk
+              done = 1;
+              wait 1 cycle;
+            end lock shared_lk
+          end thread
+
+          thread on clk rising, rst low
+            wait until go1;
+            lock shared_lk
+              done = 1;
+              wait 1 cycle;
+            end lock shared_lk
+          end thread
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    // Custom policy emits the user's function inside the synthesized arbiter.
+    assert!(sv.contains("function automatic"),
+        "custom-policy arbiter should embed the user function:\n{sv}");
+    assert!(sv.contains("PickHigh"),
+        "expected user function name in arbiter:\n{sv}");
+    // last_grant_r register comes from the custom-arbiter codegen.
+    assert!(sv.contains("last_grant_r"),
+        "custom-policy arbiter should track last_grant_r:\n{sv}");
+}
+
 #[test]
 fn test_if_wait_nested() {
     // Nesting: inner if-with-wait inside outer if-with-wait. The recursive

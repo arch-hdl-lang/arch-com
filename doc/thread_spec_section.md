@@ -194,9 +194,22 @@ When multiple threads share a bus or set of signals, they need exclusive access.
 
 ```
 resource axi_wr: mutex<round_robin>;
+resource bus:    mutex<priority>;
+resource bw:     mutex<weighted<8>>;
 ```
 
-The `mutex<policy>` type declares a shared resource with an arbitration policy.  The policy reuses existing `arbiter` policies: `round_robin`, `priority`, `lru`, `weighted`.
+The `mutex<policy>` type declares a shared resource with an arbitration policy.  The policy reuses existing `arbiter` policies: `round_robin`, `priority`, `lru`, `weighted<W>`, and a user-named function for custom policies (v0.46.0+).
+
+For custom policies, use the block form with an inline `hook` clause — same syntax as `arbiter`'s `hook grant_select(...)`:
+
+```
+resource bus: mutex<MyQosPolicy>
+  hook grant_select(req_mask: UInt<4>, last_grant: UInt<4>, qos: UInt<8>) -> UInt<4>
+       = MyQosPolicy(req_mask, last_grant, qos);
+end resource bus
+```
+
+If a `lock` references a resource that has no explicit `resource` declaration, the compiler defaults to `mutex<priority>`.
 
 ### 20.8.2  Lock Block
 
@@ -234,7 +247,7 @@ A thread reaching `lock` asserts its request.  The thread stalls until granted. 
 
 The compiler generates three components:
 
-1. **Arbiter** — reuses the existing `arbiter` construct internally, with the declared policy.  Each thread produces a `req[i]` signal; the arbiter outputs `grant[i]`.
+1. **Arbiter** — synthesised as a real `arbiter` Item (named `_arb_<Mod>_<res>`) and instantiated inside the merged threads module (v0.46.0+).  This makes every `arbiter`-supported policy directly available to `lock`-block arbitration without duplicate codegen — round_robin, priority, lru, weighted, and custom-via-hook all just work.  Each thread produces a `req[i]` signal packed into `request_valid[N]`; the arbiter drives `request_ready[N]`, unpacked back into per-thread `grant[i]` wires.
 
 2. **Mux** — all signals driven inside `lock` bodies are routed through a `grant`-indexed mux.  Only the granted thread's values reach the shared signals.
 
