@@ -1611,13 +1611,19 @@ impl Parser {
         })
     }
 
-    /// Parse `resource name : mutex<policy>;`
+    /// Parse `resource name : mutex<policy>;` (one-liner) or
+    /// `resource name : mutex<policy> hook ... end resource name` (block form).
+    ///
+    /// `policy` is one of: `round_robin`, `priority`, `lru`, `weighted<W>`,
+    /// or any other identifier — treated as `Custom(<ident>)`. A `Custom`
+    /// policy may add a `hook grant_select(...) = FnName(...);` clause; the
+    /// hook closes with `end resource <name>`.
     fn parse_resource_decl(&mut self) -> Result<ResourceDecl, CompileError> {
         let start = self.expect_contextual("resource")?.span;
         let name = self.expect_ident()?;
         self.expect(TokenKind::Colon)?;
 
-        // Parse `mutex<policy>`
+        // Parse `mutex<policy>` — accepts the same policy grammar as `arbiter`.
         self.expect_contextual("mutex")?;
         self.expect(TokenKind::Lt)?;
         let policy_ident = self.expect_ident()?;
@@ -1625,17 +1631,40 @@ impl Parser {
             "round_robin" => ArbiterPolicy::RoundRobin,
             "priority"    => ArbiterPolicy::Priority,
             "lru"         => ArbiterPolicy::Lru,
-            other => return Err(CompileError::general(
-                &format!("unknown mutex policy `{}`; expected round_robin, priority, or lru", other),
-                policy_ident.span,
-            )),
+            "weighted"    => {
+                // `mutex<weighted<W>>` — inner `<W>` (param expr).
+                self.expect(TokenKind::Lt)?;
+                let w = self.parse_expr()?;
+                self.expect(TokenKind::Gt)?;
+                ArbiterPolicy::Weighted(w)
+            }
+            // Any other identifier is treated as a custom-policy function name.
+            _ => ArbiterPolicy::Custom(policy_ident),
         };
         self.expect(TokenKind::Gt)?;
-        let end_span = self.expect(TokenKind::Semi)?.span;
+
+        // Either one-liner `;` or block form with optional `hook` + `end resource <name>`.
+        let mut hook: Option<crate::ast::ArbiterHookDecl> = None;
+        let end_span = if self.check(TokenKind::Semi) {
+            self.expect(TokenKind::Semi)?.span
+        } else {
+            // Block form: optional hook clause, then `end resource <name>`.
+            if self.check(TokenKind::Hook) {
+                hook = Some(self.parse_arbiter_hook()?);
+            }
+            self.expect(TokenKind::End)?;
+            self.expect_contextual("resource")?;
+            let closing = self.expect_ident()?;
+            if closing.name != name.name {
+                return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
+            }
+            closing.span
+        };
 
         Ok(ResourceDecl {
             name,
             policy,
+            hook,
             span: start.merge(end_span),
         })
     }

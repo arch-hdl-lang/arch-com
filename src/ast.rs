@@ -557,11 +557,28 @@ pub struct IfElseOf<S> {
 
 pub type ThreadIfElse = IfElseOf<ThreadStmt>;
 
-/// `resource name : mutex<policy>;` — shared bus arbitration declaration
+/// `resource name : mutex<policy>;` — shared bus arbitration declaration.
+///
+/// One-liner: `resource bus: mutex<round_robin>;` / `mutex<priority>` / `mutex<lru>`
+/// / `mutex<weighted<W>>` / `mutex<MyFn>` (the last picks the `Custom(MyFn)` policy).
+///
+/// Block form (for custom policies needing a hook):
+/// ```text
+/// resource bus: mutex<MyFn>
+///   hook grant_select(req_mask: UInt<N>, last_grant: UInt<N>) -> UInt<N>
+///        = MyFn(req_mask, last_grant);
+/// end resource bus
+/// ```
+///
+/// The lock arbiter is synthesized per resource by `lower_module_threads`,
+/// reusing the existing `arbiter` construct's codegen by emitting an
+/// `ArbiterDecl` Item with `policy` and `hook` carried over from this
+/// declaration.
 #[derive(Debug, Clone)]
 pub struct ResourceDecl {
     pub name: Ident,
     pub policy: ArbiterPolicy,
+    pub hook: Option<ArbiterHookDecl>,
     pub span: Span,
 }
 

@@ -1222,6 +1222,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
     let mut threads: Vec<(String, ThreadBlock)> = Vec::new();
     let mut new_body: Vec<ModuleBodyItem> = Vec::new();
     let mut thread_idx = 0usize;
+    let mut resource_decls: HashMap<String, ResourceDecl> = HashMap::new();
 
     for item in m.body {
         match item {
@@ -1282,8 +1283,11 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
                 if t.name.is_some() { thread_idx += 1; }
                 threads.push((name, t));
             }
-            ModuleBodyItem::Resource(_) => {
-                // Resource declarations consumed — lock logic generated inline
+            ModuleBodyItem::Resource(r) => {
+                // Resource declarations are consumed here; their policy + hook
+                // are stashed in `resource_decls` and used to synthesize a
+                // per-resource arbiter further below.
+                resource_decls.insert(r.name.name.clone(), r);
             }
             other => new_body.push(other),
         }
@@ -1402,15 +1406,28 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
         }
     }
 
-    // ── Lock arbiter signals (internal to merged module) ─────────────
-    // For each resource, create per-thread req/grant wires + priority arbiter
+    // ── Lock arbiter — one synthesized `arbiter` Item per resource ──────
+    //
+    // For each locked resource we synthesize an `ArbiterDecl` carrying the
+    // user's chosen `policy` + optional `hook` (default = `priority`), and
+    // instantiate it inside the merged threads module. Per-thread `_req_i`
+    // / `_grant_i` scalar wires are packed/unpacked through the arbiter's
+    // `request_valid[N]` / `request_ready[N]` ports.
+    //
+    // This makes the existing `arbiter` construct's full policy support
+    // (round_robin / priority / lru / weighted / custom-via-hook) available
+    // for `lock`-block arbitration without duplicating arbitration logic.
     let mut all_resources: HashSet<String> = HashSet::new();
     for (_, t) in &threads {
         all_resources.extend(collect_locked_resources(&t.body));
     }
-    for res_name in &all_resources {
+    let mut synthesized_arbiters: Vec<Item> = Vec::new();
+    // Sort for deterministic output — HashSet iteration order is not stable.
+    let mut sorted_resources: Vec<&String> = all_resources.iter().collect();
+    sorted_resources.sort();
+    for res_name in sorted_resources {
         let n_threads = threads.len();
-        // Req and grant wires per thread
+        // Per-thread scalar req/grant wires (internal to the merged module).
         for ti in 0..n_threads {
             merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
                 name: Ident::new(format!("_{}_req_{}", res_name, ti), sp),
@@ -1421,21 +1438,123 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
                 ty: TypeExpr::Bool, span: sp,
             }));
         }
-        // Default req = 0 — will be added to merged comb block later
+        // Build packed req/grant vectors used by the arbiter inst.
+        let req_packed = format!("_{}_req_packed", res_name);
+        let grant_packed = format!("_{}_grant_packed", res_name);
+        let n_threads_expr = Expr::new(
+            ExprKind::Literal(LitKind::Dec(n_threads as u64)), sp);
+        merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
+            name: Ident::new(req_packed.clone(), sp),
+            ty: TypeExpr::UInt(Box::new(n_threads_expr.clone())), span: sp,
+        }));
+        merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
+            name: Ident::new(grant_packed.clone(), sp),
+            ty: TypeExpr::UInt(Box::new(n_threads_expr.clone())), span: sp,
+        }));
+        // Throwaway sinks for arbiter scalar outputs (the lock idiom only
+        // consumes the per-thread grant ready bits, not the scalar grant
+        // index/valid).
+        let gv_sink = format!("_{}_grant_valid", res_name);
+        let gr_sink = format!("_{}_grant_requester", res_name);
+        let gr_width = if n_threads <= 1 { 1u32 } else { (n_threads as f64).log2().ceil() as u32 };
+        merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
+            name: Ident::new(gv_sink.clone(), sp),
+            ty: TypeExpr::Bool, span: sp,
+        }));
+        merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
+            name: Ident::new(gr_sink.clone(), sp),
+            ty: TypeExpr::UInt(Box::new(Expr::new(
+                ExprKind::Literal(LitKind::Dec(gr_width as u64)), sp))), span: sp,
+        }));
 
-        // Priority arbiter: grant[i] = req[i] && !grant[j<i]
-        let mut arb_stmts: Vec<CombStmt> = Vec::new();
-        for i in 0..n_threads {
-            let grant_i = Expr::new(ExprKind::Ident(format!("_{}_grant_{}", res_name, i)), sp);
-            let mut cond = Expr::new(ExprKind::Ident(format!("_{}_req_{}", res_name, i)), sp);
-            for j in 0..i {
-                let grant_j = Expr::new(ExprKind::Ident(format!("_{}_grant_{}", res_name, j)), sp);
-                cond = Expr::new(ExprKind::Binary(BinOp::And, Box::new(cond),
-                    Box::new(Expr::new(ExprKind::Unary(UnaryOp::Not, Box::new(grant_j)), sp))), sp);
-            }
-            arb_stmts.push(CombStmt::Assign(CombAssign { target: grant_i, value: cond, span: sp }));
+        // Pack/unpack between scalar wires and packed vectors.
+        let mut pack_stmts: Vec<CombStmt> = Vec::new();
+        for ti in 0..n_threads {
+            // _packed[ti] = _req_ti
+            pack_stmts.push(CombStmt::Assign(CombAssign {
+                target: Expr::new(ExprKind::Index(
+                    Box::new(Expr::new(ExprKind::Ident(req_packed.clone()), sp)),
+                    Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(ti as u64)), sp)),
+                ), sp),
+                value: Expr::new(ExprKind::Ident(format!("_{}_req_{}", res_name, ti)), sp),
+                span: sp,
+            }));
+            // _grant_ti = _grant_packed[ti]
+            pack_stmts.push(CombStmt::Assign(CombAssign {
+                target: Expr::new(ExprKind::Ident(format!("_{}_grant_{}", res_name, ti)), sp),
+                value: Expr::new(ExprKind::Index(
+                    Box::new(Expr::new(ExprKind::Ident(grant_packed.clone()), sp)),
+                    Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(ti as u64)), sp)),
+                ), sp),
+                span: sp,
+            }));
         }
-        merged_body.push(ModuleBodyItem::CombBlock(CombBlock { stmts: arb_stmts, span: sp }));
+        merged_body.push(ModuleBodyItem::CombBlock(CombBlock { stmts: pack_stmts, span: sp }));
+
+        // Synthesize the per-resource arbiter Item.
+        let (policy, hook) = match resource_decls.get(res_name) {
+            Some(rd) => (rd.policy.clone(), rd.hook.clone()),
+            None => (ArbiterPolicy::Priority, None),
+        };
+        let arb_module_name = format!("_arb_{}_{}", m.name.name, res_name);
+        let arb_decl = synthesize_lock_arbiter(
+            &arb_module_name,
+            n_threads,
+            policy,
+            hook,
+            &clk_name,
+            &rst_name,
+            _rst_level,
+            sp,
+        );
+        synthesized_arbiters.push(Item::Arbiter(arb_decl));
+
+        // Instantiate the arbiter inside the merged module.
+        let inst_name = format!("_arb_inst_{}", res_name);
+        merged_body.push(ModuleBodyItem::Inst(InstDecl {
+            name: Ident::new(inst_name, sp),
+            module_name: Ident::new(arb_module_name, sp),
+            param_assigns: Vec::new(),
+            connections: vec![
+                Connection {
+                    port_name: Ident::new("clk".to_string(), sp),
+                    direction: ConnectDir::Input,
+                    signal: Expr::new(ExprKind::Ident(clk_name.clone()), sp),
+                    reset_override: None, span: sp,
+                },
+                Connection {
+                    port_name: Ident::new("rst".to_string(), sp),
+                    direction: ConnectDir::Input,
+                    signal: Expr::new(ExprKind::Ident(rst_name.clone()), sp),
+                    reset_override: None, span: sp,
+                },
+                Connection {
+                    port_name: Ident::new("request_valid".to_string(), sp),
+                    direction: ConnectDir::Input,
+                    signal: Expr::new(ExprKind::Ident(req_packed.clone()), sp),
+                    reset_override: None, span: sp,
+                },
+                Connection {
+                    port_name: Ident::new("request_ready".to_string(), sp),
+                    direction: ConnectDir::Output,
+                    signal: Expr::new(ExprKind::Ident(grant_packed.clone()), sp),
+                    reset_override: None, span: sp,
+                },
+                Connection {
+                    port_name: Ident::new("grant_valid".to_string(), sp),
+                    direction: ConnectDir::Output,
+                    signal: Expr::new(ExprKind::Ident(gv_sink), sp),
+                    reset_override: None, span: sp,
+                },
+                Connection {
+                    port_name: Ident::new("grant_requester".to_string(), sp),
+                    direction: ConnectDir::Output,
+                    signal: Expr::new(ExprKind::Ident(gr_sink), sp),
+                    reset_override: None, span: sp,
+                },
+            ],
+            span: sp,
+        }));
     }
 
     // ── Collect shared(or) signal names for OR-accumulation ────────────
@@ -2006,7 +2125,109 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
     });
 
     let new_module = ModuleDecl { body: new_body, ..m };
-    Ok((new_module, vec![Item::Module(merged_module)]))
+    let mut extras = synthesized_arbiters;
+    extras.push(Item::Module(merged_module));
+    Ok((new_module, extras))
+}
+
+/// Build the per-resource lock arbiter (one `ArbiterDecl` per `resource`,
+/// instantiated inside the merged threads module).
+///
+/// Shape mirrors a standalone `arbiter` written by hand:
+/// - `param NUM_REQ: const = <n_threads>;`
+/// - `port clk: in Clock<...>; port rst: in Reset<...>;`
+/// - `ports[NUM_REQ] request { valid: in Bool; ready: out Bool; }`
+/// - `port grant_valid: out Bool; port grant_requester: out UInt<W>;`
+/// - `policy <P>;` and optional `hook grant_select(...) = FnName(...);`
+///
+/// Reusing `ArbiterDecl` makes every policy supported by the standalone
+/// arbiter — round_robin / priority / lru / weighted / custom — available
+/// to `lock`-block arbitration without duplicating arbitration codegen.
+fn synthesize_lock_arbiter(
+    arb_module_name: &str,
+    n_threads: usize,
+    policy: ArbiterPolicy,
+    hook: Option<ArbiterHookDecl>,
+    clk_name: &str,
+    rst_name: &str,
+    rst_level: ResetLevel,
+    sp: Span,
+) -> ArbiterDecl {
+    // Reset kind: synthesized arbiter inherits Async from the merged
+    // module's reset (matches the merged module itself, which uses Async
+    // for thread-driven resets).
+    let rst_ty = TypeExpr::Reset(ResetKind::Async, rst_level);
+    let clk_ty = TypeExpr::Clock(Ident::new("SysDomain".to_string(), sp));
+    let n_threads_expr = Expr::new(
+        ExprKind::Literal(LitKind::Dec(n_threads as u64)), sp);
+    let gr_width = if n_threads <= 1 { 1u32 } else { (n_threads as f64).log2().ceil() as u32 };
+
+    // The arbiter is an internal synthesized module; its port names are
+    // canonical (`clk` / `rst`) regardless of the parent's reset signal name.
+    let _ = clk_name;
+    let _ = rst_name;
+    let scalar_ports = vec![
+        PortDecl {
+            name: Ident::new("clk".to_string(), sp),
+            direction: Direction::In, ty: clk_ty, default: None,
+            reg_info: None, bus_info: None, shared: None, span: sp,
+        },
+        PortDecl {
+            name: Ident::new("rst".to_string(), sp),
+            direction: Direction::In, ty: rst_ty, default: None,
+            reg_info: None, bus_info: None, shared: None, span: sp,
+        },
+        PortDecl {
+            name: Ident::new("grant_valid".to_string(), sp),
+            direction: Direction::Out, ty: TypeExpr::Bool, default: None,
+            reg_info: None, bus_info: None, shared: None, span: sp,
+        },
+        PortDecl {
+            name: Ident::new("grant_requester".to_string(), sp),
+            direction: Direction::Out,
+            ty: TypeExpr::UInt(Box::new(Expr::new(
+                ExprKind::Literal(LitKind::Dec(gr_width as u64)), sp))),
+            default: None, reg_info: None, bus_info: None, shared: None, span: sp,
+        },
+    ];
+
+    let request_array = PortArrayDecl {
+        count_expr: Expr::new(ExprKind::Ident("NUM_REQ".to_string()), sp),
+        name: Ident::new("request".to_string(), sp),
+        signals: vec![
+            PortDecl {
+                name: Ident::new("valid".to_string(), sp),
+                direction: Direction::In, ty: TypeExpr::Bool, default: None,
+                reg_info: None, bus_info: None, shared: None, span: sp,
+            },
+            PortDecl {
+                name: Ident::new("ready".to_string(), sp),
+                direction: Direction::Out, ty: TypeExpr::Bool, default: None,
+                reg_info: None, bus_info: None, shared: None, span: sp,
+            },
+        ],
+        span: sp,
+    };
+
+    ArbiterDecl {
+        common: ConstructCommon {
+            name: Ident::new(arb_module_name.to_string(), sp),
+            params: vec![ParamDecl {
+                name: Ident::new("NUM_REQ".to_string(), sp),
+                kind: ParamKind::Const,
+                default: Some(n_threads_expr),
+                is_local: false,
+                span: sp,
+            }],
+            ports: scalar_ports,
+            asserts: Vec::new(),
+            span: sp,
+        },
+        port_arrays: vec![request_array],
+        policy,
+        hook,
+        latency: 1,
+    }
 }
 
 // Old multi-FSM approach removed. See git history for reference.
