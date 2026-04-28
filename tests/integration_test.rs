@@ -7004,6 +7004,60 @@ fn test_regfile_flop_default_unchanged() {
 }
 
 #[test]
+fn test_cc_dispatch_rewrites_seq_match_scrutinee() {
+    // Regression for the elaborate CC-dispatch asymmetry: the reg-block
+    // walker used to skip `Stmt::Match` scrutinees (only the comb walker
+    // rewrote them), so `match port.ch.data { ... }` inside a `seq` block
+    // would slip through to the resolver, which fails with the misleading
+    // "bus has no signal X" error. After the fix, both contexts rewrite
+    // every expression position uniformly.
+    let source = "
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+
+        bus DmaCh
+          credit_channel data: send
+            param T:     type  = UInt<8>;
+            param DEPTH: const = 4;
+          end credit_channel data
+        end bus DmaCh
+
+        use DmaCh;
+
+        module Cons
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port p:   target DmaCh;
+          port classified: out UInt<2>;
+
+          reg cls_r: UInt<2> reset rst => 0;
+
+          comb
+            p.data.credit_return = p.data.valid;
+            classified = cls_r;
+          end comb
+
+          seq on clk rising
+            if p.data.valid
+              match p.data.data
+                0 => cls_r <= 2'd0;
+                1 => cls_r <= 2'd1;
+                2 => cls_r <= 2'd2;
+                _ => cls_r <= 2'd3;
+              end match
+            end if
+          end seq
+        end module Cons
+    ";
+    let sv = compile_to_sv(source);
+    // Scrutinee must be rewritten — pre-fix this would compile-error in the
+    // resolver because `p.data.data` was untouched.
+    assert!(sv.contains("case (__p_data_data)"),
+        "seq-block match scrutinee should rewrite to __p_data_data:\n{sv}");
+}
+
+#[test]
 fn test_typecheck_branch_aware_driven_tracking_in_comb() {
     // Regression for the unified `check_stmt(BlockKind::Comb)` path: a
     // signal driven on both branches of an if/elsif chain in a comb block
