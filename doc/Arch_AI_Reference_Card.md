@@ -280,6 +280,11 @@ Wrapping:    +% -% *%    (no-widen; result width = max(W(a),W(b)))
 Comparison:  == != < > <= >=
 Logical:     and or not
 Bitwise:     & | ^ ~ << >>
+SVA-only:    |->  (overlap implication, same-cycle)
+             |=>  (next-cycle implication)
+             // both legal only inside `assert`/`cover` bodies; outside SVA,
+             // use `(!a) || b` for plain Boolean implication.
+             // The legacy `implies` keyword is a deprecated alias for `|->`.
 Ternary:     cond ? a : b      // right-associative; chains for priority muxes
 Match:       match x { E::A => val1, E::B => val2, _ => default }
 Set member:  expr inside {val1, val2, lo..hi}   // returns Bool, emits SV inside
