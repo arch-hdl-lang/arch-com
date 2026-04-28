@@ -45,6 +45,8 @@ pub struct DomainDecl {
     pub name: Ident,
     pub fields: Vec<DomainField>,
     pub span: Span,
+    pub doc: Option<String>,
+    pub inner_doc: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +60,8 @@ pub struct StructDecl {
     pub name: Ident,
     pub fields: Vec<StructField>,
     pub span: Span,
+    pub doc: Option<String>,
+    pub inner_doc: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +75,8 @@ pub struct StructField {
 #[derive(Debug, Clone)]
 pub struct BusDecl {
     pub name: Ident,
+    pub doc: Option<String>,
+    pub inner_doc: Option<String>,
     pub params: Vec<ParamDecl>,
     pub signals: Vec<PortDecl>,  // direction = from initiator's perspective
     pub generates: Vec<BusGenerateIf>,  // conditional signal groups
@@ -181,6 +187,8 @@ pub struct EnumDecl {
     /// None = auto-assign sequential from 0.
     pub values: Vec<Option<Expr>>,
     pub span: Span,
+    pub doc: Option<String>,
+    pub inner_doc: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1045,6 +1053,8 @@ pub struct FunctionDecl {
     pub ret_ty: TypeExpr,
     pub body: Vec<FunctionBodyItem>,
     pub span: Span,
+    pub doc: Option<String>,
+    pub inner_doc: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1205,6 +1215,8 @@ pub struct SynchronizerDecl {
     pub params: Vec<ParamDecl>,
     pub ports: Vec<PortDecl>,
     pub span: Span,
+    pub doc: Option<String>,
+    pub inner_doc: Option<String>,
 }
 
 // ── Clock Gate ───────────────────────────────────────────────────────────────
@@ -1222,6 +1234,8 @@ pub struct ClkGateDecl {
     pub params: Vec<ParamDecl>,
     pub ports: Vec<PortDecl>,
     pub span: Span,
+    pub doc: Option<String>,
+    pub inner_doc: Option<String>,
 }
 
 // ── RAM ──────────────────────────────────────────────────────────────────────
@@ -1522,6 +1536,8 @@ pub struct TemplateDecl {
     pub port_arrays: Vec<PortArrayDecl>,
     pub hooks: Vec<TemplateHookDecl>,
     pub span: Span,
+    pub doc: Option<String>,
+    pub inner_doc: Option<String>,
 }
 
 /// Hook signature in a template (no binding — just the contract)
@@ -1545,12 +1561,15 @@ pub struct PackageDecl {
     pub buses: Vec<BusDecl>,
     pub functions: Vec<FunctionDecl>,
     pub span: Span,
+    pub doc: Option<String>,
+    pub inner_doc: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct UseDecl {
     pub name: Ident,
     pub span: Span,
+    pub doc: Option<String>,
 }
 
 /// Hook binding in a module that `implements` a template
