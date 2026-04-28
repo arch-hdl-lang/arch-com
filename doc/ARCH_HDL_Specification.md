@@ -2138,9 +2138,27 @@ A regfile declares a structured register file with typed entries, multiple read 
 
 > ◈ forward write_before_read: true generates bypass muxes so a write and read to the same address in the same cycle returns the new value. Setting it to false generates simpler hardware and surfaces the hazard to the pipeline.
 
+**10.2 Storage kind: flop vs. latch**
+
+A regfile body may declare `kind flop;` (default) or `kind latch;` to choose the storage primitive. With `kind flop` the compiler emits one `always_ff @(posedge clk)` block driving an unrolled flop array — the historical shape, suitable for FPGA and any flow that prefers full timing budget per cycle.
+
+With `kind latch` each row becomes a per-row `always_latch` block with one-hot write-enable decoding. On ASIC this saves area (latches are roughly 30–50% smaller cells than flops) and power (rows whose row-enable stays low draw no clock). FPGA tools will flag the shape during mapping --- this is intentional; ARCH is target-agnostic and the choice belongs in the source. The read path stays a `always_comb` mux. Init-guarded addresses (`init [k] = v`) become constant `assign rf_data[k] = v;` and have no latch.
+
+**10.3 Latch sample timing: flops external vs. internal**
+
+`kind latch` accepts an optional `flops:` sub-config that selects who owns the sample flops protecting the latch's transparency window:
+
+`flops: external` (default). The caller must drive `write.addr` / `write.data` directly from a flop --- a `reg`, a `port reg`, a pipeline stage register, an input port, or another instance's output. The type checker rejects `wire` / `let` / arbitrary combinational sources with a diagnostic that names the problematic pin and asks for a flop, since transparent latches can glitch on combinational input churn. The latch enable is `we && (waddr == k)` and write happens with zero added latency.
+
+`flops: internal` (Ibex-style). The regfile auto-emits its own `we_q` / `waddr_q` / `wdata_q` sample flops on the rising edge of `clk` and drives each row's latch with an ICG-equivalent gate `!clk && we_q && (waddr_q == k)` --- transparent only during the clk-low half of the cycle after the sample edge, when the sampled signals are guaranteed stable. This shifts the freshness contract from caller to regfile: the caller may drive write pins from any combinational source, and the static flop-source check is skipped. The trade-off is one extra cycle of write latency: a write asserted in cycle N is captured into `rf_data[k]` during cycle N+1's clk-low phase.
+
+> ◈ Testbench note. Latch register files (either `flops` mode) require stimulus to be driven on `@(negedge clk)` when a TB writes RF inputs directly via blocking assigns at the same simulation time as the rising edge --- that's a TB-pattern race in the latch path, not an RTL race. Integration is fine: when another RTL block drives the RF inputs from `always_ff` (NBA semantics), no race exists. This matches the convention used by the Ibex test bench.
+
+> ◈ Simulation parity. `arch sim` mirrors the SV semantics for both `flops` modes: `external` is a comb-time `if (we) _rf[waddr] = wdata;` inside `eval_comb()`, transparent while `we` is high. `internal` adds private `_we_q` / `_waddr_q` / `_wdata_q` sample flops taken on the rising edge inside `eval_posedge()`, then a half-cycle latch capture `if (!clk && _we_q) _rf[_waddr_q] = _wdata_q;` inside `eval_comb()` --- the same trick used by the `clkgate kind: latch` model. As a result, the 1-cycle write latency of `flops: internal` is preserved in arch sim.
+
 **11. First-Class Construct: ram**
 
-A ram is a first-class construct that maps to a physical memory --- FPGA BRAM, distributed RAM, or ASIC SRAM macro. Unlike regfile (which always uses flip-flops), ram targets technology memory primitives. The designer declares the port topology, read timing, and a set of logical variables that live inside the RAM\'s address space. The compiler assigns address ranges, computes total depth and word width, and translates all logical accesses to physical addresses --- no manual address arithmetic required.
+A ram is a first-class construct that maps to a physical memory --- FPGA BRAM, distributed RAM, or ASIC SRAM macro. Unlike regfile (which uses flip-flops or latches in fabric logic), ram targets technology memory primitives. The designer declares the port topology, read timing, and a set of logical variables that live inside the RAM\'s address space. The compiler assigns address ranges, computes total depth and word width, and translates all logical accesses to physical addresses --- no manual address arithmetic required.
 
 **11.1 Port Topologies**
 

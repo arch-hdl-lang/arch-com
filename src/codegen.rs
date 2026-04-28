@@ -8204,9 +8204,42 @@ impl<'a> Codegen<'a> {
         // write decoding. Saves area / power on ASIC; FPGA tools will flag
         // this at mapping (intentional — ARCH is target-agnostic).
         if r.kind == crate::ast::RegfileKind::Latch {
-            let wen   = flat(&write_pfx, 0, nwrite, "en");
-            let waddr = flat(&write_pfx, 0, nwrite, "addr");
-            let wdata = flat(&write_pfx, 0, nwrite, "data");
+            let wen_in   = flat(&write_pfx, 0, nwrite, "en");
+            let waddr_in = flat(&write_pfx, 0, nwrite, "addr");
+            let wdata_in = flat(&write_pfx, 0, nwrite, "data");
+
+            // `flops: internal` (Ibex-style) — regfile auto-emits its own
+            // sample flops + per-row ICG-equivalent gating, so the caller can
+            // drive write pins combinationally. Adds 1-cycle write latency:
+            // a write asserted in cycle N is captured into rf_data[k] during
+            // cycle N+1's clk-low phase. The flop->latch pipeline keeps
+            // wdata stable across the latch transparency window without any
+            // contract on the caller.
+            let internal_flops = matches!(r.flops, crate::ast::RegfileFlops::Internal);
+            let (wen_eff, waddr_eff, wdata_eff) = if internal_flops {
+                let aw_msb = addr_width.saturating_sub(1);
+                let dw = Self::fold_width_str(&data_width_num);
+                self.line("// Internal sample flops (regfile flops: internal)");
+                self.line("logic                 we_q;");
+                self.line(&format!("logic [{aw_msb}:0]        waddr_q;"));
+                self.line(&format!("logic [{dw}]            wdata_q;"));
+                self.line(&format!("always_ff @(posedge {clk}) begin"));
+                self.indent += 1;
+                self.line(&format!("we_q <= {wen_in};"));
+                self.line(&format!("if ({wen_in}) begin"));
+                self.indent += 1;
+                self.line(&format!("waddr_q <= {waddr_in};"));
+                self.line(&format!("wdata_q <= {wdata_in};"));
+                self.indent -= 1;
+                self.line("end");
+                self.indent -= 1;
+                self.line("end");
+                self.line("");
+                ("we_q".to_string(), "waddr_q".to_string(), "wdata_q".to_string())
+            } else {
+                (wen_in, waddr_in, wdata_in)
+            };
+
             for k in 0..nregs {
                 let k_lit = format!("{addr_width}'d{k}");
                 let init_for_k = r.inits.iter()
@@ -8222,9 +8255,16 @@ impl<'a> Codegen<'a> {
                 } else {
                     self.line(&format!("always_latch begin"));
                     self.indent += 1;
-                    self.line(&format!("if ({wen} && {waddr} == {k_lit})"));
+                    if internal_flops {
+                        // ICG-equivalent gating: latch transparent only during
+                        // clk-low of the cycle after the sample, when we_q /
+                        // waddr_q / wdata_q are stable.
+                        self.line(&format!("if (!{clk} && {wen_eff} && {waddr_eff} == {k_lit})"));
+                    } else {
+                        self.line(&format!("if ({wen_eff} && {waddr_eff} == {k_lit})"));
+                    }
                     self.indent += 1;
-                    self.line(&format!("rf_data[{k}] = {wdata};"));
+                    self.line(&format!("rf_data[{k}] = {wdata_eff};"));
                     self.indent -= 1;
                     self.indent -= 1;
                     self.line("end");

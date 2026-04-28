@@ -6811,6 +6811,170 @@ fn test_regfile_latch_rejects_let_source() {
         "diagnostic should explain the flop-source requirement; got: {err_msg}");
 }
 
+const LATCH_RF_INTERNAL_DECL: &str = "
+    domain SysDomain
+      freq_mhz: 100
+    end domain SysDomain
+
+    regfile LatchRfInt
+      kind latch;
+      flops: internal;
+      param NREGS: const = 4;
+      param T: type = UInt<8>;
+      port clk: in Clock<SysDomain>;
+      ports[1] read
+        addr: in UInt<2>;
+        data: out UInt<8>;
+      end ports read
+      ports[1] write
+        en:   in Bool;
+        addr: in UInt<2>;
+        data: in UInt<8>;
+      end ports write
+    end regfile LatchRfInt
+";
+
+#[test]
+fn test_regfile_latch_internal_emits_sample_flops_and_gated_latches() {
+    let source = format!("{LATCH_RF_INTERNAL_DECL}
+        module Top
+          port clk: in Clock<SysDomain>;
+          port we_in:    in Bool;
+          port waddr_in: in UInt<2>;
+          port wdata_in: in UInt<8>;
+          port raddr_in: in UInt<2>;
+          port q:        out UInt<8>;
+
+          inst rf: LatchRfInt
+            clk        <- clk;
+            write_en   <- we_in;
+            write_addr <- waddr_in;
+            write_data <- wdata_in;
+            read_addr  <- raddr_in;
+            read_data  -> q;
+          end inst rf
+        end module Top
+    ");
+    let sv = compile_to_sv(&source);
+    let body: String = sv.split("module LatchRfInt").nth(1).unwrap_or(&sv)
+        .split("endmodule").next().unwrap_or(&sv).to_string();
+    assert!(body.contains("we_q"),     "expected we_q sample flop:\n{body}");
+    assert!(body.contains("waddr_q"),  "expected waddr_q sample flop:\n{body}");
+    assert!(body.contains("wdata_q"),  "expected wdata_q sample flop:\n{body}");
+    assert!(body.contains("always_ff @(posedge clk)"),
+        "expected sample flop always_ff:\n{body}");
+    let n_latch = body.matches("always_latch").count();
+    assert_eq!(n_latch, 4, "expected 4 always_latch blocks (NREGS=4):\n{body}");
+    // ICG-equivalent gating: latch transparent only when clk is low.
+    assert!(body.contains("!clk"),
+        "expected `!clk` gating in latch enable for ICG-equivalent path:\n{body}");
+    assert!(body.contains("we_q && waddr_q == 2'd0"),
+        "row 0 enable should use sampled (q) signals:\n{body}");
+}
+
+#[test]
+fn test_regfile_latch_internal_skips_flop_source_check() {
+    // With flops: internal the regfile owns its own sample flops, so the
+    // caller is allowed to drive write pins from a `let` (combinational
+    // expression). This is the static-check skip property.
+    let source = format!("{LATCH_RF_INTERNAL_DECL}
+        module Top
+          port clk: in Clock<SysDomain>;
+          port a: in UInt<8>;
+          port b: in UInt<8>;
+          port we_in: in Bool;
+          port waddr_in: in UInt<2>;
+          port raddr_in: in UInt<2>;
+          port q: out UInt<8>;
+
+          let combinational_data: UInt<8> = (a + b).trunc<8>();
+
+          inst rf: LatchRfInt
+            clk        <- clk;
+            write_en   <- we_in;
+            write_addr <- waddr_in;
+            write_data <- combinational_data;
+            read_addr  <- raddr_in;
+            read_data  -> q;
+          end inst rf
+        end module Top
+    ");
+    let tokens = lexer::tokenize(&source).expect("lex");
+    let mut parser = Parser::new(tokens, &source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(ast).expect("elaborate");
+    let ast = elaborate::lower_threads(ast).expect("lower threads");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let result = TypeChecker::new(&symbols, &ast).check();
+    assert!(result.is_ok(),
+        "flops: internal should skip flop-source check; got error: {:?}", result.err());
+}
+
+#[test]
+fn test_regfile_latch_internal_sim_codegen_emits_sample_flops_and_gated_capture() {
+    // sim_codegen must mirror the SV semantics for `flops: internal`:
+    // sample we_q/waddr_q/wdata_q on rising edge, then capture into _rf
+    // during clk-low (the half-cycle latch transparency window).
+    let source = format!("{LATCH_RF_INTERNAL_DECL}");
+    let cpp = compile_to_sim_h(&source, false);
+    assert!(cpp.contains("_we_q"),    "expected _we_q sample flop in sim:\n{cpp}");
+    assert!(cpp.contains("_waddr_q"), "expected _waddr_q sample flop in sim:\n{cpp}");
+    assert!(cpp.contains("_wdata_q"), "expected _wdata_q sample flop in sim:\n{cpp}");
+    // Posedge: sample.
+    assert!(cpp.contains("_we_q = write_en;"),
+        "sim should sample _we_q from write_en on posedge:\n{cpp}");
+    // Comb: latch transparency gated by `!clk && _we_q`.
+    assert!(cpp.contains("if (!clk && _we_q)"),
+        "sim should gate latch capture with `!clk && _we_q`:\n{cpp}");
+    assert!(cpp.contains("_rf[_waddr_q] = _wdata_q;"),
+        "sim should capture _wdata_q into _rf[_waddr_q]:\n{cpp}");
+    // Posedge must NOT contain a direct flop-style write — that would
+    // collapse the latch into a flop and lose the 1-cycle latency.
+    let posedge = cpp.split("eval_posedge() {").nth(1).unwrap_or("")
+        .split("}").next().unwrap_or("");
+    assert!(!posedge.contains("_rf[write_addr]"),
+        "eval_posedge must NOT do a flop-style _rf write under flops:internal:\n{posedge}");
+}
+
+#[test]
+fn test_regfile_latch_external_sim_codegen_uses_comb_latch() {
+    // For `flops: external`, the SV is `always_latch if (we && waddr == k)`,
+    // i.e. transparent whenever we is high. The sim mirror is a comb-time
+    // _rf update gated by we (no clk gating, no sample flops).
+    let source = "
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+        regfile LatchExtRf
+          kind latch;
+          flops: external;
+          param NREGS: const = 4;
+          param T: type = UInt<8>;
+          port clk: in Clock<SysDomain>;
+          ports[1] read
+            addr: in UInt<2>;
+            data: out UInt<8>;
+          end ports read
+          ports[1] write
+            en:   in Bool;
+            addr: in UInt<2>;
+            data: in UInt<8>;
+          end ports write
+        end regfile LatchExtRf
+    ";
+    let cpp = compile_to_sim_h(source, false);
+    assert!(!cpp.contains("_we_q"),
+        "external flops should NOT emit _we_q sample flop:\n{cpp}");
+    // Comb-time latch update gated by write_en.
+    assert!(cpp.contains("if (write_en)") && cpp.contains("_rf[write_addr] = write_data;"),
+        "external flops sim should be a comb-gated _rf write:\n{cpp}");
+    // Posedge eval must not directly sample _rf (that's flop semantics).
+    let posedge = cpp.split("eval_posedge() {").nth(1).unwrap_or("")
+        .split("}").next().unwrap_or("");
+    assert!(!posedge.contains("_rf[write_addr] = write_data"),
+        "eval_posedge must not be the only writer under kind:latch:\n{posedge}");
+}
+
 #[test]
 fn test_regfile_flop_default_unchanged() {
     let source = "

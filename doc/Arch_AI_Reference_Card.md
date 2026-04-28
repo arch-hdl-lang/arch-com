@@ -823,10 +823,14 @@ regfile Name
     data: in UInt<T>;
   end port wr0
 
+  kind flop;                         // flop (default) | latch (ASIC area/power)
+  flops: external;                   // latch only: external (default, caller flops) | internal (Ibex-style, +1 cycle latency)
   forward write_before_read: false;  // true = enable bypass forwarding
   init [0] = 0;                      // per-index reset values
 end regfile Name
 ```
+
+`kind latch` emits one `always_latch` per row with one-hot enable decoding. Default `flops: external` requires the caller to drive `addr`/`data` from a flop (typecheck enforces). `flops: internal` makes the regfile emit its own `we_q`/`waddr_q`/`wdata_q` sample flops + ICG-equivalent gating; caller may drive write pins combinationally, write lands one cycle later. Latch RFs require `@(negedge clk)`-driven testbenches (Ibex convention).
 
 ---
 
