@@ -2015,41 +2015,105 @@ impl<'a> TypeChecker<'a> {
         local_types: &HashMap<String, Ty>,
         driven: &mut HashSet<String>,
     ) {
+        let empty_regs: HashSet<String> = HashSet::new();
+        self.check_stmt(stmt, module_name, local_types, driven, BlockKind::Seq, &empty_regs);
+    }
+
+    /// Unified `Stmt` typecheck walker for both `comb` and `seq` (and seq's
+    /// `init` sub-block) blocks. Phase 5b part 3: replaces the previously
+    /// parallel `check_reg_stmt` and `check_comb_stmt` walkers. Behavior
+    /// gated by `block_kind`:
+    /// - `Comb`: rejects assignment targets that name a `reg`; tracks the
+    ///   `driven` set with branch-aware merging across `if`/`else` so a
+    ///   signal driven on one branch is not flagged as undriven on the
+    ///   other; rejects `Init` / `WaitUntil` / `DoUntil` (defensive — the
+    ///   parser already routes them to seq blocks only).
+    /// - `Seq` / `PipelineStage`: drives the common width / shift / match
+    ///   exhaustiveness / log / for-body / wait / do-until / init-block
+    ///   checks. `WaitUntil` and `DoUntil` are not rejected by block-kind
+    ///   here — that's `reject_wait_in_stmts`'s job at the block-level
+    ///   call site (it has the context to allow them in pipeline stages
+    ///   and reject them in plain seq).
+    fn check_stmt(
+        &mut self,
+        stmt: &Stmt,
+        module_name: &str,
+        local_types: &HashMap<String, Ty>,
+        driven: &mut HashSet<String>,
+        block_kind: BlockKind,
+        reg_names: &HashSet<String>,
+    ) {
+        let in_comb = block_kind == BlockKind::Comb;
         match stmt {
             Stmt::Assign(a) => {
-                {
-                    let name = Self::expr_root_name_tc(&a.target);
-                    if !name.is_empty() { driven.insert(name.clone()); }
-                    let flat = Self::expr_flat_name_tc(&a.target);
-                    if flat != name { driven.insert(flat); }
-                    let rhs_ty = self.resolve_expr_type(&a.value, module_name, local_types);
-                    // Use the target expression's actual type (handles Index/BitSlice correctly)
-                    let lhs_ty = self.resolve_expr_type(&a.target, module_name, local_types);
-                    if lhs_ty != Ty::Error && local_types.contains_key(&name) {
-                        self.check_width_compatible(&lhs_ty, &rhs_ty, &name, a.span);
-                        // Shift width check (IEEE §11.6.1: shifts are non-widening)
-                        if let (Some(lw), Some(rw)) = (lhs_ty.width(), rhs_ty.width()) {
-                            if lw > rw && expr_is_shift(&a.value) {
-                                self.errors.push(CompileError::general(
-                                    &format!(
-                                        "shift result is UInt<{rw}> but target `{name}` is UInt<{lw}>; \
-                                         shifts do not widen (IEEE §11.6.1). \
-                                         To capture overflow, widen the operand first: `.zext<{lw}>() << n`"
-                                    ),
-                                    a.span,
-                                ));
-                            }
+                let name = Self::expr_root_name_tc(&a.target);
+                let target_name = if name.is_empty() { format!("{:?}", a.target.kind) } else { name.clone() };
+                // Comb-only: `reg` targets must be assigned in seq, not comb.
+                if in_comb && reg_names.contains(&target_name) {
+                    self.errors.push(CompileError::general(
+                        &format!(
+                            "`{}` is a reg — assign it with `<=` in a `seq` block, not `=` in a `comb` block",
+                            target_name
+                        ),
+                        a.span,
+                    ));
+                }
+                if !target_name.is_empty() { driven.insert(target_name.clone()); }
+                let flat = Self::expr_flat_name_tc(&a.target);
+                if flat != target_name { driven.insert(flat); }
+
+                let rhs_ty = self.resolve_expr_type(&a.value, module_name, local_types);
+                let is_indexed = !matches!(&a.target.kind, ExprKind::Ident(_));
+                // LHS-type lookup: comb uses local_types directly so missing
+                // entries silently skip the width check (matches historical
+                // behavior); seq uses resolve_expr_type to handle Index /
+                // BitSlice correctly.
+                let lhs_ty: Option<Ty> = if in_comb {
+                    if is_indexed { None } else { local_types.get(&target_name).cloned() }
+                } else {
+                    let t = self.resolve_expr_type(&a.target, module_name, local_types);
+                    if t != Ty::Error && local_types.contains_key(&target_name) { Some(t) } else { None }
+                };
+                if let Some(lhs_ty) = lhs_ty {
+                    self.check_width_compatible(&lhs_ty, &rhs_ty, &target_name, a.span);
+                    if let (Some(lw), Some(rw)) = (lhs_ty.width(), rhs_ty.width()) {
+                        if lw > rw && expr_is_shift(&a.value) {
+                            self.errors.push(CompileError::general(
+                                &format!(
+                                    "shift result is UInt<{rw}> but target `{target_name}` is UInt<{lw}>; \
+                                     shifts do not widen (IEEE §11.6.1). \
+                                     To capture overflow, widen the operand first: `.zext<{lw}>() << n`"
+                                ),
+                                a.span,
+                            ));
                         }
                     }
                 }
             }
             Stmt::IfElse(ie) => {
                 let _cond_ty = self.resolve_expr_type(&ie.cond, module_name, local_types);
-                for s in &ie.then_stmts {
-                    self.check_reg_stmt(s, module_name, local_types, driven);
-                }
-                for s in &ie.else_stmts {
-                    self.check_reg_stmt(s, module_name, local_types, driven);
+                if in_comb {
+                    // Branch-aware driven tracking: each branch sees a clone
+                    // of driven; signals assigned in mutually-exclusive
+                    // branches are not multi-driven. Merge after.
+                    let mut then_driven = driven.clone();
+                    for s in &ie.then_stmts {
+                        self.check_stmt(s, module_name, local_types, &mut then_driven, block_kind, reg_names);
+                    }
+                    let mut else_driven = driven.clone();
+                    for s in &ie.else_stmts {
+                        self.check_stmt(s, module_name, local_types, &mut else_driven, block_kind, reg_names);
+                    }
+                    for nm in then_driven.iter().chain(else_driven.iter()) {
+                        driven.insert(nm.clone());
+                    }
+                } else {
+                    for s in &ie.then_stmts {
+                        self.check_stmt(s, module_name, local_types, driven, block_kind, reg_names);
+                    }
+                    for s in &ie.else_stmts {
+                        self.check_stmt(s, module_name, local_types, driven, block_kind, reg_names);
+                    }
                 }
             }
             Stmt::Match(m) => {
@@ -2057,7 +2121,7 @@ impl<'a> TypeChecker<'a> {
                 self.check_match_exhaustive(&m.scrutinee, &patterns, m.span, module_name, local_types);
                 for arm in &m.arms {
                     for s in &arm.body {
-                        self.check_reg_stmt(s, module_name, local_types, driven);
+                        self.check_stmt(s, module_name, local_types, driven, block_kind, reg_names);
                     }
                 }
             }
@@ -2068,11 +2132,17 @@ impl<'a> TypeChecker<'a> {
             }
             Stmt::For(f) => {
                 for s in &f.body {
-                    self.check_reg_stmt(s, module_name, local_types, driven);
+                    self.check_stmt(s, module_name, local_types, driven, block_kind, reg_names);
                 }
             }
             Stmt::Init(ib) => {
-                // Validate that reset_signal is a Reset port in this module
+                if in_comb {
+                    self.errors.push(CompileError::general(
+                        "`init on rst.asserted` is only valid inside a `seq` block, not `comb`",
+                        ib.span,
+                    ));
+                    return;
+                }
                 let valid_reset = self.source.items.iter().find_map(|item| {
                     if let Item::Module(m) = item {
                         if m.name.name == module_name {
@@ -2094,10 +2164,17 @@ impl<'a> TypeChecker<'a> {
                     ));
                 }
                 for s in &ib.body {
-                    self.check_reg_stmt(s, module_name, local_types, driven);
+                    self.check_stmt(s, module_name, local_types, driven, block_kind, reg_names);
                 }
             }
             Stmt::WaitUntil(expr, span) => {
+                if in_comb {
+                    self.errors.push(CompileError::general(
+                        "`wait until` is only valid inside a pipeline stage `seq` block, not `comb`",
+                        *span,
+                    ));
+                    return;
+                }
                 let ty = self.resolve_expr_type(expr, module_name, local_types);
                 if ty != Ty::Bool && ty != Ty::Error {
                     self.errors.push(CompileError::general(
@@ -2107,8 +2184,15 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Stmt::DoUntil { body, cond, span } => {
+                if in_comb {
+                    self.errors.push(CompileError::general(
+                        "`do..until` is only valid inside a pipeline stage `seq` block, not `comb`",
+                        *span,
+                    ));
+                    return;
+                }
                 for s in body {
-                    self.check_reg_stmt(s, module_name, local_types, driven);
+                    self.check_stmt(s, module_name, local_types, driven, block_kind, reg_names);
                 }
                 let ty = self.resolve_expr_type(cond, module_name, local_types);
                 if ty != Ty::Bool && ty != Ty::Error {
@@ -2204,89 +2288,7 @@ impl<'a> TypeChecker<'a> {
         driven: &mut HashSet<String>,
         reg_names: &HashSet<String>,
     ) {
-        match stmt {
-            Stmt::Assign(a) => {
-                let target_name = Self::expr_root_name_tc(&a.target);
-                let target_name = if target_name.is_empty() { format!("{:?}", a.target.kind) } else { target_name };
-                // Regs must be assigned in seq blocks, not comb blocks
-                if reg_names.contains(&target_name) {
-                    self.errors.push(CompileError::general(
-                        &format!(
-                            "`{}` is a reg — assign it with `<=` in a `seq` block, not `=` in a `comb` block",
-                            target_name
-                        ),
-                        a.span,
-                    ));
-                }
-                let is_indexed = !matches!(&a.target.kind, ExprKind::Ident(_));
-                // Multiple assignments within a single comb block are allowed
-                // (default + override in if/elsif/else branches). The real
-                // multiple-driver check is across different comb blocks.
-                driven.insert(target_name.clone());
-                // Also track flattened name for bus port signals (e.g. itcm_cmd_valid)
-                let flat_name = Self::expr_flat_name_tc(&a.target);
-                if flat_name != target_name {
-                    driven.insert(flat_name);
-                }
-                let rhs_ty = self.resolve_expr_type(&a.value, module_name, local_types);
-                if !is_indexed {
-                    if let Some(lhs_ty) = local_types.get(&target_name).cloned() {
-                        self.check_width_compatible(&lhs_ty, &rhs_ty, &target_name, a.span);
-                        // Shift width checks (IEEE §11.6.1: shifts are non-widening)
-                        if let (Some(lw), Some(rw)) = (lhs_ty.width(), rhs_ty.width()) {
-                            if lw > rw && expr_is_shift(&a.value) {
-                                self.errors.push(CompileError::general(
-                                    &format!(
-                                        "shift result is UInt<{rw}> but target `{target_name}` is UInt<{lw}>; \
-                                         shifts do not widen (IEEE §11.6.1). \
-                                         To capture overflow, widen the operand first: `.zext<{lw}>() << n`"
-                                    ),
-                                    a.span,
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-            Stmt::IfElse(ie) => {
-                let _cond_ty = self.resolve_expr_type(&ie.cond, module_name, local_types);
-                // Each branch gets its own copy of driven — signals assigned
-                // in mutually exclusive branches are not multiple drivers.
-                let mut then_driven = driven.clone();
-                for s in &ie.then_stmts {
-                    self.check_comb_stmt(s, module_name, local_types, &mut then_driven, reg_names);
-                }
-                let mut else_driven = driven.clone();
-                for s in &ie.else_stmts {
-                    self.check_comb_stmt(s, module_name, local_types, &mut else_driven, reg_names);
-                }
-                // Merge both branches back — a signal driven in either branch
-                // counts as driven for subsequent statements.
-                for name in then_driven.iter().chain(else_driven.iter()) {
-                    driven.insert(name.clone());
-                }
-            }
-            Stmt::Match(m) => {
-                let patterns: Vec<Pattern> = m.arms.iter().map(|a| a.pattern.clone()).collect();
-                self.check_match_exhaustive(&m.scrutinee, &patterns, m.span, module_name, local_types);
-                for arm in &m.arms {
-                    for s in &arm.body {
-                        self.check_comb_stmt(s, module_name, local_types, driven, reg_names);
-                    }
-                }
-            }
-            Stmt::Log(l) => {
-                for arg in &l.args {
-                    self.resolve_expr_type(arg, module_name, local_types);
-                }
-            }
-            Stmt::For(f) => {
-                for s in &f.body {
-                    self.check_comb_stmt(s, module_name, local_types, driven, reg_names);
-                }
-            }
-                Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => unreachable!("seq-only Stmt variant inside comb-context walker"),
-        }
+        self.check_stmt(stmt, module_name, local_types, driven, BlockKind::Comb, reg_names);
     }
 
     /// Check for latches: signals assigned on some but not all paths in a comb block.

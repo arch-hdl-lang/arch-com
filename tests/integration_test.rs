@@ -7004,6 +7004,38 @@ fn test_regfile_flop_default_unchanged() {
 }
 
 #[test]
+fn test_typecheck_branch_aware_driven_tracking_in_comb() {
+    // Regression for the unified `check_stmt(BlockKind::Comb)` path: a
+    // signal driven on both branches of an if/elsif chain in a comb block
+    // must be considered fully driven for any downstream multiple-driver
+    // analysis, not just on one branch. The parallel-walker era used a
+    // clone-and-merge pattern in `check_comb_stmt::IfElse` to track this
+    // correctly; the unified `check_stmt` keeps that behavior gated on
+    // BlockKind::Comb (Seq path uses simple shared-driven recursion).
+    let source = "
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+        module BranchDriven
+          port sel: in Bool;
+          port a:   in UInt<8>;
+          port b:   in UInt<8>;
+          port q:   out UInt<8>;
+          comb
+            if sel
+              q = a;
+            else
+              q = b;
+            end if
+          end comb
+        end module BranchDriven
+    ";
+    // Should typecheck cleanly — both branches drive `q`.
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module BranchDriven"));
+}
+
+#[test]
 fn test_comb_for_loop_body_type_checked_as_comb() {
     // Regression for the ForLoop<S> generalization: previously CombStmt::For's
     // body was Vec<Stmt> (lossily cast from Vec<CombStmt>), so the typecheck
