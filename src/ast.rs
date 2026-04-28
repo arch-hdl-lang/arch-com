@@ -3,6 +3,17 @@ use crate::lexer::Span;
 #[derive(Debug, Clone)]
 pub struct SourceFile {
     pub items: Vec<Item>,
+    /// Concatenated text of leading `//!` lines at the top of the file
+    /// (with the `//! ` prefix stripped per line). `None` when the file
+    /// has no leading `//!` block. The frontmatter (delimited by
+    /// `//! ---`) is included verbatim in this field for fidelity.
+    pub inner_doc: Option<String>,
+    /// Raw text of the YAML-style frontmatter block at the top of the
+    /// file: the contiguous `//! ---\n…\n//! ---` lines, with `//! `
+    /// prefixes stripped. `None` when no frontmatter is present.
+    /// Always a substring of `inner_doc` when both are present.
+    /// The compiler does not parse the YAML; downstream tooling does.
+    pub frontmatter: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -182,6 +193,12 @@ pub struct ModuleDecl {
     pub hooks: Vec<ModuleHookDecl>,
     pub cdc_safe: bool,
     pub span: Span,
+    /// Outer doc comment from `///` lines preceding the `module` keyword.
+    /// See `doc/plan_arch_doc_comments.md`.
+    pub doc: Option<String>,
+    /// Inner doc comment from `//!` lines after `module Name` and before
+    /// any other body item.
+    pub inner_doc: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1086,6 +1103,15 @@ pub struct ConstructCommon {
     pub ports:   Vec<PortDecl>,
     pub asserts: Vec<AssertDecl>,
     pub span:    Span,
+    /// Outer doc comment from immediately-preceding `///` lines. None when
+    /// the construct has no doc-comment block above it. See
+    /// `doc/plan_arch_doc_comments.md` for the V1 surface.
+    pub doc:     Option<String>,
+    /// Inner doc comment from `//!` lines that appear between the opening
+    /// keyword + name and any other body item. Distinct from `doc` so
+    /// downstream tooling can tell "from the outside" prose apart from
+    /// "from the inside" prose.
+    pub inner_doc: Option<String>,
 }
 
 // ── FSM ──────────────────────────────────────────────────────────────────────
