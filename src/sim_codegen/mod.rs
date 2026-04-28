@@ -2658,7 +2658,7 @@ fn emit_comb_stmt(stmt: &CombStmt, ctx: &Ctx, out: &mut String, indent: usize) {
                     out.push_str(&format!("{}  _arch_cov[{cidx}]++;\n", ind(indent + 1)));
                 }
                 for s in &arm.body {
-                    if let Stmt::Assign(a) = s {
+                    if let CombStmt::Assign(a) = s {
                         let rhs = cpp_expr(&a.value, ctx);
                         let lhs = cpp_expr(&a.target, ctx);
                         out.push_str(&format!("{}{} = {};\n", ind(indent + 2), lhs, rhs));
@@ -2677,7 +2677,7 @@ fn emit_comb_stmt(stmt: &CombStmt, ctx: &Ctx, out: &mut String, indent: usize) {
                     let start = cpp_expr(rs, ctx);
                     let end = cpp_expr(re, ctx);
                     out.push_str(&format!("{}for (int {var} = {start}; {var} <= {end}; {var}++) {{\n", ind(indent)));
-                    for s in &f.body { emit_reg_stmt(s, ctx, out, indent + 1); }
+                    for s in &f.body { emit_comb_stmt(s, ctx, out, indent + 1); }
                     out.push_str(&format!("{}}}\n", ind(indent)));
                 }
                 ForRange::ValueList(vals) => {
@@ -2685,7 +2685,7 @@ fn emit_comb_stmt(stmt: &CombStmt, ctx: &Ctx, out: &mut String, indent: usize) {
                         let val = cpp_expr(v, ctx);
                         out.push_str(&format!("{}{{\n", ind(indent)));
                         out.push_str(&format!("{}int {var} = {val};\n", ind(indent + 1)));
-                        for s in &f.body { emit_reg_stmt(s, ctx, out, indent + 1); }
+                        for s in &f.body { emit_comb_stmt(s, ctx, out, indent + 1); }
                         out.push_str(&format!("{}}}\n", ind(indent)));
                     }
                 }
@@ -2775,7 +2775,8 @@ fn collect_log_files(body: &[ModuleBodyItem]) -> Vec<String> {
             match s {
                 CombStmt::Log(l) => { if let Some(ref p) = l.file { if seen.insert(p.clone()) { files.push(p.clone()); } } }
                 CombStmt::IfElse(ie) => { from_comb(&ie.then_stmts, files, seen); from_comb(&ie.else_stmts, files, seen); }
-                CombStmt::MatchExpr(m) => { for arm in &m.arms { from_seq(&arm.body, files, seen); } }
+                CombStmt::MatchExpr(m) => { for arm in &m.arms { from_comb(&arm.body, files, seen); } }
+                CombStmt::For(f) => from_comb(&f.body, files, seen),
                 _ => {}
             }
         }
@@ -2857,13 +2858,13 @@ fn collect_comb_reads(stmt: &CombStmt, out: &mut std::collections::BTreeSet<Stri
             for s in &ie.then_stmts { collect_comb_reads(s, out); }
             for s in &ie.else_stmts { collect_comb_reads(s, out); }
         }
-        CombStmt::MatchExpr(_) | CombStmt::Log(_) => {}
+        CombStmt::Log(_) => {}
+        CombStmt::MatchExpr(m) => {
+            collect_expr_idents(&m.scrutinee, out);
+            for arm in &m.arms { for s in &arm.body { collect_comb_reads(s, out); } }
+        }
         CombStmt::For(f) => {
-            for s in &f.body {
-                if let Stmt::Assign(a) = s {
-                    collect_expr_idents(&a.value, out);
-                }
-            }
+            for s in &f.body { collect_comb_reads(s, out); }
         }
     }
 }
@@ -2994,24 +2995,12 @@ fn collect_comb_targets(body: &[ModuleBodyItem]) -> HashSet<String> {
             }
             CombStmt::MatchExpr(m) => {
                 for arm in &m.arms {
-                    for s in &arm.body {
-                        if let Stmt::Assign(a) = s {
-                            if let ExprKind::Ident(name) = &a.target.kind {
-                                out.insert(name.clone());
-                            }
-                        }
-                    }
+                    for s in &arm.body { collect_stmt_targets(s, out); }
                 }
             }
             CombStmt::Log(_) => {}
             CombStmt::For(f) => {
-                for s in &f.body {
-                    if let Stmt::Assign(a) = s {
-                        if let ExprKind::Ident(name) = &a.target.kind {
-                            out.insert(name.clone());
-                        }
-                    }
-                }
+                for s in &f.body { collect_stmt_targets(s, out); }
             }
         }
     }

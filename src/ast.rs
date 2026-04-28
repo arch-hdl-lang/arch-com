@@ -619,7 +619,7 @@ pub enum CombStmt {
     IfElse(CombIfElse),
     MatchExpr(CombMatch),
     Log(LogStmt),
-    For(ForLoop),
+    For(ForLoop<CombStmt>),
 }
 
 /// Assignment statement: `target = expr;` (combinational, in `comb` blocks)
@@ -641,13 +641,12 @@ pub type CombAssign = Assign;
 
 pub type CombIfElse = IfElseOf<CombStmt>;
 
-#[derive(Debug, Clone)]
-pub struct CombMatch {
-    pub scrutinee: Expr,
-    pub arms: Vec<MatchArm>,
-    pub unique: bool,
-    pub span: Span,
-}
+/// `comb`-block match. A type alias for `MatchStmt<CombStmt>` — the arm
+/// bodies are comb statements (use `=`), not seq statements. Previously
+/// declared as a separate struct with `Vec<MatchArm>` (seq-typed bodies),
+/// which forced the comb typecheck to delegate match-arm bodies to
+/// `check_reg_stmt`. Now the arms parametrically carry comb stmts.
+pub type CombMatch = MatchStmt<CombStmt>;
 
 #[derive(Debug, Clone)]
 pub struct LetBinding {
@@ -771,10 +770,16 @@ pub enum ForRange {
 }
 
 #[derive(Debug, Clone)]
-pub struct ForLoop {
+/// `for VAR in RANGE ... end for` — generic over the body statement type.
+/// `ForLoop<Stmt>` for seq-block / pipeline-stage for loops; `ForLoop<CombStmt>`
+/// for comb-block for loops. Previously hard-coded to `Vec<Stmt>`, which
+/// forced comb-context for-loop bodies to be wrapped as seq stmts and then
+/// re-checked under seq semantics in typecheck — the bug this generalization
+/// removes.
+pub struct ForLoop<S = Stmt> {
     pub var: Ident,
     pub range: ForRange,
-    pub body: Vec<Stmt>,
+    pub body: Vec<S>,
     pub span: Span,
 }
 
@@ -792,18 +797,23 @@ pub type RegAssign = Assign;
 
 pub type IfElse = IfElseOf<Stmt>;
 
+/// `match SCRUTINEE ... end match` — generic over the arm-body statement type.
+/// `MatchStmt<Stmt>` for seq-block matches; `MatchStmt<CombStmt>` for
+/// comb-block matches (aliased as `CombMatch`). Previously hard-coded to
+/// `Vec<MatchArm>` (i.e. `Vec<MatchArm<Stmt>>`), forcing comb match-arm
+/// bodies to be wrapped as seq stmts.
 #[derive(Debug, Clone)]
-pub struct MatchStmt {
+pub struct MatchStmt<S = Stmt> {
     pub scrutinee: Expr,
-    pub arms: Vec<MatchArm>,
+    pub arms: Vec<MatchArm<S>>,
     pub unique: bool,
     pub span: Span,
 }
 
 #[derive(Debug, Clone)]
-pub struct MatchArm {
+pub struct MatchArm<S = Stmt> {
     pub pattern: Pattern,
-    pub body: Vec<Stmt>,
+    pub body: Vec<S>,
 }
 
 #[derive(Debug, Clone)]

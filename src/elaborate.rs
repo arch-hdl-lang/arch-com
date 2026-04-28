@@ -603,9 +603,10 @@ fn check_gen_for_comb_stmts(stmts: &[CombStmt], var: &str, errors: &mut Vec<Comp
                 check_gen_for_comb_stmts(&ie.then_stmts, var, errors);
                 check_gen_for_comb_stmts(&ie.else_stmts, var, errors);
             }
-            // MatchExpr arms are value-producing (no further LHS to check).
-            CombStmt::MatchExpr(_) => {}
-            CombStmt::For(f) => check_gen_for_reg_stmts(&f.body, var, errors),
+            CombStmt::MatchExpr(m) => {
+                for arm in &m.arms { check_gen_for_comb_stmts(&arm.body, var, errors); }
+            }
+            CombStmt::For(f) => check_gen_for_comb_stmts(&f.body, var, errors),
             CombStmt::Log(_) => {}
         }
     }
@@ -4232,7 +4233,13 @@ fn rewrite_comb_stmt_cc(s: &mut CombStmt, ctx: &CcDispatchCtx, errors: &mut Vec<
             for s in &mut ie.else_stmts { rewrite_comb_stmt_cc(s, ctx, errors); }
         }
         CombStmt::For(fl) => {
-            for s in &mut fl.body { rewrite_reg_stmt_cc(s, ctx, errors); }
+            for s in &mut fl.body { rewrite_comb_stmt_cc(s, ctx, errors); }
+        }
+        CombStmt::MatchExpr(m) => {
+            rewrite_expr_cc(&mut m.scrutinee, ctx, errors);
+            for arm in &mut m.arms {
+                for s in &mut arm.body { rewrite_comb_stmt_cc(s, ctx, errors); }
+            }
         }
         _ => {}
     }

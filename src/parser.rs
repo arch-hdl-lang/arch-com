@@ -1888,7 +1888,7 @@ impl Parser {
             return Ok(Stmt::Log(self.parse_log_stmt()?));
         }
         if self.check(TokenKind::For) {
-            return self.parse_for_loop(true);
+            return self.parse_seq_for_loop();
         }
         if self.check(TokenKind::Init) {
             return self.parse_init_block();
@@ -2065,35 +2065,14 @@ impl Parser {
             && self.tokens[self.pos + 1].kind == TokenKind::Comb
     }
 
-    /// Convert a CombStmt to a Stmt for use in for-loop bodies.
-    fn comb_stmt_to_stmt(cs: CombStmt) -> Stmt {
-        match cs {
-            CombStmt::Assign(a) => Stmt::Assign(RegAssign {
-                target: a.target,
-                value: a.value,
-                span: a.span,
-            }),
-            CombStmt::IfElse(ie) => Stmt::IfElse(IfElse {
-                cond: ie.cond,
-                then_stmts: ie.then_stmts.into_iter().map(Self::comb_stmt_to_stmt).collect(),
-                else_stmts: ie.else_stmts.into_iter().map(Self::comb_stmt_to_stmt).collect(),
-                unique: ie.unique,
-                span: ie.span,
-            }),
-            CombStmt::Log(l) => Stmt::Log(l),
-            CombStmt::For(f) => Stmt::For(f),
-            CombStmt::MatchExpr(m) => Stmt::Match(MatchStmt {
-                scrutinee: m.scrutinee,
-                arms: m.arms,
-                unique: m.unique,
-                span: m.span,
-            }),
-        }
-    }
-
-    /// Parse `for VAR in START..END ... end for`
-    /// `is_seq`: true = body uses `parse_reg_stmt`, false = body uses `parse_comb_stmt` (wrapped)
-    fn parse_for_loop(&mut self, is_seq: bool) -> Result<Stmt, CompileError> {
+    /// Parse `for VAR in RANGE ... end for` — the surrounding scaffolding,
+    /// generic over the body statement type. Caller passes the body parser
+    /// (`parse_reg_stmt` for seq, `parse_comb_stmt` for comb), and wraps the
+    /// returned `ForLoop<S>` in the right enum variant.
+    fn parse_for_loop_generic<S>(
+        &mut self,
+        mut parse_body: impl FnMut(&mut Self) -> Result<S, CompileError>,
+    ) -> Result<ForLoop<S>, CompileError> {
         let start = self.expect(TokenKind::For)?.span;
         let var = self.expect_ident()?;
         self.expect_contextual("in")?;
@@ -2118,22 +2097,21 @@ impl Parser {
         while !(self.check(TokenKind::End)
             && self.pos + 1 < self.tokens.len()
             && self.tokens[self.pos + 1].kind == TokenKind::For) {
-            if is_seq {
-                body.push(self.parse_reg_stmt()?);
-            } else {
-                // Wrap CombStmt into Stmt for unified ForLoop body
-                let cs = self.parse_comb_stmt()?;
-                body.push(Self::comb_stmt_to_stmt(cs));
-            }
+            body.push(parse_body(self)?);
         }
         self.expect(TokenKind::End)?;
         let end_span = self.expect(TokenKind::For)?.span;
-        Ok(Stmt::For(ForLoop {
-            var,
-            range,
-            body,
-            span: start.merge(end_span),
-        }))
+        Ok(ForLoop { var, range, body, span: start.merge(end_span) })
+    }
+
+    fn parse_seq_for_loop(&mut self) -> Result<Stmt, CompileError> {
+        let fl = self.parse_for_loop_generic(|p| p.parse_reg_stmt())?;
+        Ok(Stmt::For(fl))
+    }
+
+    fn parse_comb_for_loop(&mut self) -> Result<CombStmt, CompileError> {
+        let fl = self.parse_for_loop_generic(|p| p.parse_comb_stmt())?;
+        Ok(CombStmt::For(fl))
     }
 
     /// Parse `init on RST.asserted \n body \n end init`
@@ -2181,11 +2159,7 @@ impl Parser {
             return Ok(CombStmt::Log(self.parse_log_stmt()?));
         }
         if self.check(TokenKind::For) {
-            let fl = self.parse_for_loop(false)?;
-            if let Stmt::For(f) = fl {
-                return Ok(CombStmt::For(f));
-            }
-            unreachable!();
+            return self.parse_comb_for_loop();
         }
         // target = expr;   OR   bare method-call statement (credit_channel sugar).
         let target = self.parse_expr()?;
@@ -2249,17 +2223,16 @@ impl Parser {
         while !self.check_end_match() {
             let pattern = self.parse_pattern()?;
             self.expect(TokenKind::FatArrow)?;
-            // Parse comb-style statements (with =) and convert to Stmt for MatchArm
+            // Comb match-arm body is a single comb statement (kept as
+            // CombStmt — previously cast to Stmt for `Vec<MatchArm<Stmt>>`,
+            // which forced the typecheck to recheck under seq semantics).
             let comb_stmt = self.parse_comb_stmt()?;
-            arms.push(MatchArm {
-                pattern,
-                body: vec![Self::comb_stmt_to_stmt(comb_stmt)],
-            });
+            arms.push(MatchArm { pattern, body: vec![comb_stmt] });
         }
         self.expect(TokenKind::End)?;
         self.expect(TokenKind::Match)?;
         let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
-        Ok(CombStmt::MatchExpr(CombMatch {
+        Ok(CombStmt::MatchExpr(MatchStmt {
             scrutinee,
             arms,
             unique,

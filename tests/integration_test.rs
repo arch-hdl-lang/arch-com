@@ -7002,3 +7002,40 @@ fn test_regfile_flop_default_unchanged() {
     assert!(!sv.contains("always_latch"),
         "default kind:flop should not emit always_latch:\n{sv}");
 }
+
+#[test]
+fn test_comb_for_loop_body_type_checked_as_comb() {
+    // Regression for the ForLoop<S> generalization: previously CombStmt::For's
+    // body was Vec<Stmt> (lossily cast from Vec<CombStmt>), so the typecheck
+    // walked comb for-loop bodies via `check_reg_stmt` and missed the
+    // "reg assigned in comb block" rule. After making ForLoop generic, the
+    // comb For body stays as Vec<CombStmt> and `check_comb_stmt` runs — which
+    // catches reg assigns in comb context as the spec requires.
+    let source = "
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+        module Bad
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          reg arr_r: Vec<UInt<8>, 4> reset rst => 0;
+          comb
+            for i in 0..3
+              arr_r[i] = 8'h00;
+            end for
+          end comb
+        end module Bad
+    ";
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(ast).expect("elaborate");
+    let ast = elaborate::lower_threads(ast).expect("lower threads");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let result = TypeChecker::new(&symbols, &ast).check();
+    assert!(result.is_err(),
+        "assigning to a `reg` in a comb-block for-loop body must be a typecheck error");
+    let err_msg = format!("{:?}", result.err().unwrap());
+    assert!(err_msg.contains("`arr_r` is a reg") && err_msg.contains("seq"),
+        "diagnostic should explain reg-vs-seq rule; got: {err_msg}");
+}

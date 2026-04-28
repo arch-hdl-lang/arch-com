@@ -1121,7 +1121,10 @@ impl<'a> Codegen<'a> {
                         collect_from_comb(&ie.else_stmts, files, seen);
                     }
                     CombStmt::MatchExpr(m) => {
-                        for arm in &m.arms { collect_from_seq(&arm.body, files, seen); }
+                        for arm in &m.arms { collect_from_comb(&arm.body, files, seen); }
+                    }
+                    CombStmt::For(f) => {
+                        collect_from_comb(&f.body, files, seen);
                     }
                     _ => {}
                 }
@@ -1300,13 +1303,14 @@ impl<'a> Codegen<'a> {
             CombStmt::Log(_) => true,
             CombStmt::IfElse(ie) => ie.then_stmts.iter().any(Self::comb_stmt_has_log)
                 || ie.else_stmts.iter().any(Self::comb_stmt_has_log),
-            CombStmt::Assign(_) | CombStmt::MatchExpr(_) => false,
-            CombStmt::For(f) => f.body.iter().any(Self::stmt_has_log),
+            CombStmt::Assign(_) => false,
+            CombStmt::MatchExpr(m) => m.arms.iter().any(|a| a.body.iter().any(Self::comb_stmt_has_log)),
+            CombStmt::For(f) => f.body.iter().any(Self::comb_stmt_has_log),
         }
     }
 
     /// Emit a for-loop (Range or ValueList) as SV.
-    fn emit_for_loop_sv(&mut self, f: &ForLoop, mut emit_body_stmt: impl FnMut(&mut Self, &Stmt)) {
+    fn emit_for_loop_sv<S>(&mut self, f: &ForLoop<S>, mut emit_body_stmt: impl FnMut(&mut Self, &S)) {
         let var = &f.var.name;
         match &f.range {
             ForRange::Range(rs, re) => {
@@ -1412,7 +1416,7 @@ impl<'a> Codegen<'a> {
                     self.line(&format!("{}: begin", pat));
                     self.indent += 1;
                     for s in &arm.body {
-                        self.emit_reg_stmt_as_comb(s);
+                        self.emit_comb_stmt(s);
                     }
                     self.indent -= 1;
                     self.line("end");
@@ -1422,7 +1426,7 @@ impl<'a> Codegen<'a> {
             }
             CombStmt::Log(l) => { self.emit_log_stmt(l); }
             CombStmt::For(f) => {
-                self.emit_for_loop_sv(f, |s, stmt| s.emit_reg_stmt_as_comb(stmt));
+                self.emit_for_loop_sv(f, |s, stmt| s.emit_comb_stmt(stmt));
             }
         }
     }
@@ -4796,9 +4800,9 @@ impl<'a> Codegen<'a> {
                 }
                 CombStmt::MatchExpr(_) | CombStmt::Log(_) => {}
                 CombStmt::For(f) => {
-                    // ForLoop body is Vec<Stmt>; collect ident targets from assigns
+                    // Comb for-loop body is Vec<CombStmt>; collect ident targets from assigns.
                     for s in &f.body {
-                        if let Stmt::Assign(a) = s {
+                        if let CombStmt::Assign(a) = s {
                             if let ExprKind::Ident(name) = &a.target.kind {
                                 if !targets.contains(name) { targets.push(name.clone()); }
                             }
@@ -4917,7 +4921,9 @@ impl<'a> Codegen<'a> {
             CombStmt::MatchExpr(_) => {} // TODO if needed
             CombStmt::Log(l) => { self.emit_log_stmt(l); }
             CombStmt::For(f) => {
-                self.emit_for_loop_sv(f, |s, stmt| s.emit_reg_stmt_as_comb(stmt));
+                self.emit_for_loop_sv(f, |s, stmt| {
+                    s.emit_pipeline_comb_stmt(stmt, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
+                });
             }
         }
     }

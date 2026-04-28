@@ -1241,14 +1241,13 @@ impl<'a> TypeChecker<'a> {
                 self.check_expr_for_unguarded_payload(&mm.scrutinee, enclosing, info, mm.span);
                 for arm in &mm.arms {
                     for s in &arm.body {
-                        self.walk_seq_for_hs_reads(s, enclosing, info);
+                        self.walk_comb_for_hs_reads(s, enclosing, info);
                     }
                 }
             }
             CombStmt::For(fl) => {
-                // ForLoop.body is Vec<Stmt>, reused from seq semantics.
                 for s in &fl.body {
-                    self.walk_seq_for_hs_reads(s, enclosing, info);
+                    self.walk_comb_for_hs_reads(s, enclosing, info);
                 }
             }
             CombStmt::Log(_) => {}
@@ -2271,7 +2270,7 @@ impl<'a> TypeChecker<'a> {
                 self.check_match_exhaustive(&m.scrutinee, &patterns, m.span, module_name, local_types);
                 for arm in &m.arms {
                     for s in &arm.body {
-                        self.check_reg_stmt(s, module_name, local_types, driven);
+                        self.check_comb_stmt(s, module_name, local_types, driven, reg_names);
                     }
                 }
             }
@@ -2282,7 +2281,7 @@ impl<'a> TypeChecker<'a> {
             }
             CombStmt::For(f) => {
                 for s in &f.body {
-                    self.check_reg_stmt(s, module_name, local_types, driven);
+                    self.check_comb_stmt(s, module_name, local_types, driven, reg_names);
                 }
             }
         }
@@ -2327,11 +2326,11 @@ impl<'a> TypeChecker<'a> {
                     let has_wildcard = m.arms.iter().any(|a| matches!(a.pattern, Pattern::Wildcard));
                     let arm_results: Vec<(HashSet<String>, HashSet<String>)> = m.arms.iter()
                         .map(|arm| {
-                            // Match arm bodies are Vec<Stmt> — extract assign targets
+                            // Comb match arm bodies are Vec<CombStmt> — extract assign targets.
                             let mut arm_all = HashSet::new();
                             let mut arm_full = HashSet::new();
                             for s in &arm.body {
-                                if let Stmt::Assign(a) = s {
+                                if let CombStmt::Assign(a) = s {
                                     let name = Self::expr_flat_name_tc(&a.target);
                                     if !name.is_empty() {
                                         arm_all.insert(name.clone());
@@ -2370,9 +2369,9 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 CombStmt::For(f) => {
-                    // For-loop body uses Stmt — treat assigns as fully driven
+                    // Comb for-loop body is Vec<CombStmt> — treat assigns as fully driven.
                     for s in &f.body {
-                        if let Stmt::Assign(a) = s {
+                        if let CombStmt::Assign(a) = s {
                             let name = Self::expr_flat_name_tc(&a.target);
                             if !name.is_empty() {
                                 all.insert(name.clone());
@@ -3694,13 +3693,13 @@ impl<'a> TypeChecker<'a> {
                 }
                 CombStmt::MatchExpr(m) => {
                     Self::collect_expr_reads(&m.scrutinee, out);
-                    for arm in &m.arms { Self::collect_stmt_reads(&arm.body, out); }
+                    for arm in &m.arms { Self::collect_comb_stmt_reads(&arm.body, out); }
                 }
                 CombStmt::Log(l) => {
                     for arg in &l.args { Self::collect_expr_reads(arg, out); }
                 }
                 CombStmt::For(f) => {
-                    Self::collect_stmt_reads(&f.body, out);
+                    Self::collect_comb_stmt_reads(&f.body, out);
                 }
             }
         }
@@ -3716,11 +3715,11 @@ impl<'a> TypeChecker<'a> {
                     Self::collect_comb_stmt_targets(&ie.else_stmts, out);
                 }
                 CombStmt::MatchExpr(m) => {
-                    for arm in &m.arms { Self::collect_stmt_targets(&arm.body, out); }
+                    for arm in &m.arms { Self::collect_comb_stmt_targets(&arm.body, out); }
                 }
                 CombStmt::Log(_) => {}
                 CombStmt::For(f) => {
-                    Self::collect_stmt_targets(&f.body, out);
+                    Self::collect_comb_stmt_targets(&f.body, out);
                 }
             }
         }
@@ -5068,15 +5067,7 @@ fn check_precedence_in_item(item: &Item, errors: &mut Vec<CompileError>) {
             CombStmt::MatchExpr(m) => {
                 check_precedence_expr(&m.scrutinee, errors);
                 for arm in &m.arms {
-                    for s in &arm.body {
-                        match s {
-                            Stmt::Assign(a) => {
-                                check_precedence_expr(&a.target, errors);
-                                check_precedence_expr(&a.value, errors);
-                            }
-                            _ => walk_stmt(s, errors),
-                        }
-                    }
+                    for s in &arm.body { walk_comb(s, errors); }
                 }
             }
             CombStmt::Log(l) => {
@@ -5092,8 +5083,7 @@ fn check_precedence_in_item(item: &Item, errors: &mut Vec<CompileError>) {
                         for v in vs { check_precedence_expr(v, errors); }
                     }
                 }
-                // CombStmt::For's body is Vec<Stmt>, not Vec<CombStmt>
-                for s in &fl.body { walk_stmt(s, errors); }
+                for s in &fl.body { walk_comb(s, errors); }
             }
         }
     }
