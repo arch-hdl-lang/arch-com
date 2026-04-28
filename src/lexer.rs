@@ -305,6 +305,8 @@ pub enum TokenKind {
     Amp,
     #[token("|")]
     Pipe,
+    #[token("|->")]
+    PipeImplies,
     #[token("|=>")]
     PipeImpliesNext,
     /// SVA delay operator `##` — used as `##N expr` for forward
@@ -507,6 +509,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Eq => write!(f, "="),
             TokenKind::Amp => write!(f, "&"),
             TokenKind::Pipe => write!(f, "|"),
+            TokenKind::PipeImplies => write!(f, "|->"),
             TokenKind::PipeImpliesNext => write!(f, "|=>"),
             TokenKind::HashHash => write!(f, "##"),
             TokenKind::Caret => write!(f, "^"),

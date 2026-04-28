@@ -1385,6 +1385,20 @@ fn run_check_multi_opts(
         ms.report_error(err)
     })?;
 
+    // Surface any deprecated-`implies`-keyword usages as a single stderr
+    // warning (one line per site). The symbolic `|->` form is the
+    // recommended spelling; the keyword is still accepted in this
+    // release.
+    if !p.deprecated_implies_spans.is_empty() {
+        for span in &p.deprecated_implies_spans {
+            let (filename, _, local_offset) = ms.locate(span.start);
+            eprintln!(
+                "warning: `implies` keyword is deprecated; use `|->` instead — {}:{}",
+                filename, local_offset,
+            );
+        }
+    }
+
     // Harvest doc-comment / frontmatter content into the local learn store
     // (PR-doc-3). Runs on the *parsed* AST — before elaboration — so we
     // capture the user's source-level intent unchanged. Each top-level

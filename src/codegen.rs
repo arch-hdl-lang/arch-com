@@ -5040,7 +5040,7 @@ impl<'a> Codegen<'a> {
                 let l = self.emit_pipeline_stage_expr_str(lhs, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
                 let r = self.emit_pipeline_stage_expr_str(rhs, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
                 if *op == BinOp::Implies {
-                    return format!("(!{l} || {r})");
+                    return format!("({l} |-> {r})");
                 }
                 if *op == BinOp::ImpliesNext {
                     return format!("({l} |=> {r})");
@@ -5228,7 +5228,7 @@ impl<'a> Codegen<'a> {
                 let l = self.emit_pipeline_expr_str(lhs, stage_names, stage_regs, port_names);
                 let r = self.emit_pipeline_expr_str(rhs, stage_names, stage_regs, port_names);
                 if *op == BinOp::Implies {
-                    return format!("(!{l} || {r})");
+                    return format!("({l} |-> {r})");
                 }
                 if *op == BinOp::ImpliesNext {
                     return format!("({l} |=> {r})");
@@ -6236,7 +6236,7 @@ impl<'a> Codegen<'a> {
                 if *op == BinOp::Implies {
                     let l = self.emit_expr_prec(lhs, 14); // unary prec for !
                     let r = self.emit_expr_prec(rhs, 4);  // || prec
-                    return format!("!{l} || {r}");
+                    return format!("{l} |-> {r}");
                 }
                 if *op == BinOp::ImpliesNext {
                     // SVA next-cycle implication. Only valid inside

@@ -18,11 +18,15 @@ pub struct Parser {
     reg_defaults: Option<(Option<Expr>, RegReset)>,
     /// Default clock/edge for seq blocks. Set by `default seq on <clk> rising|falling;`.
     seq_default: Option<(Ident, ClockEdge)>,
+    /// Spans where the user wrote the deprecated `implies` keyword instead
+    /// of `|->`. Surfaced by callers (e.g. `run_check_multi_opts`) as
+    /// stderr deprecation warnings — does not block compilation.
+    pub deprecated_implies_spans: Vec<Span>,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>, source: &str) -> Self {
-        Self { tokens, pos: 0, source: source.to_string(), no_angle: false, no_lteq: false, reg_defaults: None, seq_default: None }
+        Self { tokens, pos: 0, source: source.to_string(), no_angle: false, no_lteq: false, reg_defaults: None, seq_default: None, deprecated_implies_spans: Vec::new() }
     }
 
     /// Check if there's a newline in the source between two byte offsets.
@@ -2948,6 +2952,12 @@ impl Parser {
             if l_bp < min_bp {
                 break;
             }
+            // Track deprecated `implies` keyword usage for a stderr warning
+            // surfaced by the CLI driver. The symbolic `|->` form is the
+            // recommended spelling.
+            if matches!(self.peek_kind(), Some(TokenKind::Implies)) {
+                self.deprecated_implies_spans.push(self.peek_span());
+            }
             self.advance(); // consume operator (first token)
             // Wrapping operators are two tokens (+%, -%, *%); consume the trailing %
             if matches!(op, BinOp::AddWrap | BinOp::SubWrap | BinOp::MulWrap) {
@@ -3287,6 +3297,7 @@ impl Parser {
             TokenKind::And => Some(BinOp::And),
             TokenKind::Or => Some(BinOp::Or),
             TokenKind::Implies => Some(BinOp::Implies),
+            TokenKind::PipeImplies => Some(BinOp::Implies),
             TokenKind::PipeImpliesNext => Some(BinOp::ImpliesNext),
             TokenKind::Amp => Some(BinOp::BitAnd),
             TokenKind::Pipe => Some(BinOp::BitOr),

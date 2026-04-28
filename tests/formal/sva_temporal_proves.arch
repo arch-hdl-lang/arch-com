@@ -11,7 +11,7 @@ module SvaTemporalProves
   end seq
 
   // gnt_r equals past(req, 1) — when reset wasn't active at the past cycle either.
-  assert gnt_follows_req: (not rst) and (not past(rst, 1)) implies (gnt_r == past(req, 1));
+  assert gnt_follows_req: (not rst) and (not past(rst, 1)) |-> (gnt_r == past(req, 1));
   // Top-level |=>: req at t (no reset) implies gnt_r at t+1.
   assert req_implies_next_gnt: ((not rst) and req) |=> gnt_r;
   // Cover: witness exists.

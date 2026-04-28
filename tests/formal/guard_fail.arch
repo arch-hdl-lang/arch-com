@@ -12,5 +12,5 @@ module GuardFail
     end if
   end seq
 
-  assert valid_implies_written: valid_r implies written;
+  assert valid_implies_written: valid_r |-> written;
 end module GuardFail
