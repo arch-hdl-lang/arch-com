@@ -254,21 +254,21 @@ impl<'a> SimCodegen<'a> {
     }
 
     fn emit_pipeline_sim_comb_stmt(
-        &self, cpp: &mut String, stmt: &CombStmt, prefix: &str, si: usize,
+        &self, cpp: &mut String, stmt: &Stmt, prefix: &str, si: usize,
         sn: &[String], sp: &[String], srn: &[HashSet<String>],
         pn: &HashSet<String>, rn: &HashSet<String>, ln: &HashSet<String>,
         w: &HashMap<String, u32>, em: &HashMap<String, Vec<(String, u64)>>, indent: usize,
     ) {
         let pad = " ".repeat(indent);
         match stmt {
-            CombStmt::Assign(a) => {
+            Stmt::Assign(a) => {
                 let tgt = if let ExprKind::Ident(n) = &a.target.kind {
                     if pn.contains(n) { n.clone() } else { format!("{}_{}", prefix, n) }
                 } else { self.pipeline_sim_expr(&a.target, prefix, si, sn, sp, srn, pn, rn, ln, w, em) };
                 let val = self.pipeline_sim_expr(&a.value, prefix, si, sn, sp, srn, pn, rn, ln, w, em);
                 cpp.push_str(&format!("{pad}{tgt} = {val};\n"));
             }
-            CombStmt::IfElse(ie) => {
+            Stmt::IfElse(ie) => {
                 let cond = self.pipeline_sim_expr(&ie.cond, prefix, si, sn, sp, srn, pn, rn, ln, w, em);
                 cpp.push_str(&format!("{pad}if ({cond}) {{\n"));
                 for s in &ie.then_stmts { self.emit_pipeline_sim_comb_stmt(cpp, s, prefix, si, sn, sp, srn, pn, rn, ln, w, em, indent+2); }

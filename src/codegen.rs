@@ -17,13 +17,19 @@ fn stmt_span_start(stmt: &Stmt) -> usize {
     }
 }
 
-fn comb_stmt_span_start(stmt: &CombStmt) -> usize {
+fn comb_stmt_span_start(stmt: &Stmt) -> usize {
     match stmt {
-        CombStmt::Assign(a) => a.span.start,
-        CombStmt::IfElse(i) => i.span.start,
-        CombStmt::MatchExpr(m) => m.span.start,
-        CombStmt::Log(l) => l.span.start,
-        CombStmt::For(f) => f.span.start,
+        Stmt::Assign(a) => a.span.start,
+        Stmt::IfElse(i) => i.span.start,
+        Stmt::Match(m) => m.span.start,
+        Stmt::Log(l) => l.span.start,
+        Stmt::For(f) => f.span.start,
+        // Seq-only variants — typecheck rejects these in `comb` context, so
+        // a comb-only walker should never see them. Keep the arm for the
+        // exhaustiveness checker; the panic is a defensive belt-and-suspenders.
+        Stmt::Init(ib) => ib.span.start,
+        Stmt::WaitUntil(_, sp) => sp.start,
+        Stmt::DoUntil { span, .. } => span.start,
     }
 }
 
@@ -1108,22 +1114,22 @@ impl<'a> Codegen<'a> {
     fn collect_log_files(body: &[ModuleBodyItem]) -> Vec<String> {
         let mut files = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        fn collect_from_comb(stmts: &[CombStmt], files: &mut Vec<String>, seen: &mut std::collections::HashSet<String>) {
+        fn collect_from_comb(stmts: &[Stmt], files: &mut Vec<String>, seen: &mut std::collections::HashSet<String>) {
             for stmt in stmts {
                 match stmt {
-                    CombStmt::Log(l) => {
+                    Stmt::Log(l) => {
                         if let Some(ref path) = l.file {
                             if seen.insert(path.clone()) { files.push(path.clone()); }
                         }
                     }
-                    CombStmt::IfElse(ie) => {
+                    Stmt::IfElse(ie) => {
                         collect_from_comb(&ie.then_stmts, files, seen);
                         collect_from_comb(&ie.else_stmts, files, seen);
                     }
-                    CombStmt::MatchExpr(m) => {
+                    Stmt::Match(m) => {
                         for arm in &m.arms { collect_from_comb(&arm.body, files, seen); }
                     }
-                    CombStmt::For(f) => {
+                    Stmt::For(f) => {
                         collect_from_comb(&f.body, files, seen);
                     }
                     _ => {}
@@ -1252,12 +1258,12 @@ impl<'a> Codegen<'a> {
         // Simple assign form only when every statement is a plain assign with
         // no match-expression RHS (those need always_comb for the case block).
         let all_simple = cb.stmts.iter().all(|s| match s {
-            CombStmt::Assign(a) => !matches!(a.value.kind, ExprKind::ExprMatch(..)),
+            Stmt::Assign(a) => !matches!(a.value.kind, ExprKind::ExprMatch(..)),
             _ => false,
         });
         if all_simple {
             for stmt in &cb.stmts {
-                if let CombStmt::Assign(a) = stmt {
+                if let Stmt::Assign(a) = stmt {
                     let val = self.emit_expr_str(&a.value);
                     let tgt = self.emit_expr_str(&a.target);
                     self.line(&format!("assign {} = {};", tgt, val));
@@ -1279,7 +1285,7 @@ impl<'a> Codegen<'a> {
     fn module_has_log(body: &[ModuleBodyItem]) -> bool {
         body.iter().any(|item| match item {
             ModuleBodyItem::RegBlock(rb) => rb.stmts.iter().any(Self::stmt_has_log),
-            ModuleBodyItem::CombBlock(cb) => cb.stmts.iter().any(Self::comb_stmt_has_log),
+            ModuleBodyItem::CombBlock(cb) => cb.stmts.iter().any(Self::stmt_has_log),
             _ => false,
         })
     }
@@ -1295,17 +1301,6 @@ impl<'a> Codegen<'a> {
             Stmt::Init(ib) => ib.body.iter().any(Self::stmt_has_log),
             Stmt::WaitUntil(_, _) => false,
             Stmt::DoUntil { body, .. } => body.iter().any(Self::stmt_has_log),
-        }
-    }
-
-    fn comb_stmt_has_log(s: &CombStmt) -> bool {
-        match s {
-            CombStmt::Log(_) => true,
-            CombStmt::IfElse(ie) => ie.then_stmts.iter().any(Self::comb_stmt_has_log)
-                || ie.else_stmts.iter().any(Self::comb_stmt_has_log),
-            CombStmt::Assign(_) => false,
-            CombStmt::MatchExpr(m) => m.arms.iter().any(|a| a.body.iter().any(Self::comb_stmt_has_log)),
-            CombStmt::For(f) => f.body.iter().any(Self::comb_stmt_has_log),
         }
     }
 
@@ -1372,10 +1367,10 @@ impl<'a> Codegen<'a> {
         format!("_log_fd_{clean}")
     }
 
-    fn emit_comb_stmt(&mut self, stmt: &CombStmt) {
+    fn emit_comb_stmt(&mut self, stmt: &Stmt) {
         self.emit_comments_before(comb_stmt_span_start(stmt));
         match stmt {
-            CombStmt::Assign(a) => {
+            Stmt::Assign(a) => {
                 // Match-expression RHS: emit as a case block for readability
                 if let ExprKind::ExprMatch(scrutinee, arms) = &a.value.kind {
                     let s = self.emit_expr_str(scrutinee);
@@ -1403,10 +1398,10 @@ impl<'a> Codegen<'a> {
                     self.line(&format!("{} = {};", tgt, val));
                 }
             }
-            CombStmt::IfElse(ie) => {
+            Stmt::IfElse(ie) => {
                 self.emit_comb_if_else(ie);
             }
-            CombStmt::MatchExpr(m) => {
+            Stmt::Match(m) => {
                 let scrut = self.emit_expr_str(&m.scrutinee);
                 let u = if m.unique { "unique " } else { "" };
                 self.line(&format!("{}case ({})", u, scrut));
@@ -1424,18 +1419,23 @@ impl<'a> Codegen<'a> {
                 self.indent -= 1;
                 self.line("endcase");
             }
-            CombStmt::Log(l) => { self.emit_log_stmt(l); }
-            CombStmt::For(f) => {
+            Stmt::Log(l) => { self.emit_log_stmt(l); }
+            Stmt::For(f) => {
                 self.emit_for_loop_sv(f, |s, stmt| s.emit_comb_stmt(stmt));
+            }
+            // Seq-only variants are rejected in `comb` context by typecheck;
+            // a comb-only walker should never see them.
+            Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => {
+                unreachable!("seq-only Stmt variant inside comb block — typecheck bug");
             }
         }
     }
 
-    fn emit_comb_if_else(&mut self, ie: &CombIfElse) {
+    fn emit_comb_if_else(&mut self, ie: &IfElse) {
         self.emit_comb_if_else_inner(ie, false);
     }
 
-    fn emit_comb_if_else_inner(&mut self, ie: &CombIfElse, is_chain: bool) {
+    fn emit_comb_if_else_inner(&mut self, ie: &IfElse, is_chain: bool) {
         let cond = self.emit_expr_str(&ie.cond);
         let u = if ie.unique && !is_chain { "unique " } else { "" };
         if is_chain {
@@ -1449,7 +1449,7 @@ impl<'a> Codegen<'a> {
         }
         self.indent -= 1;
         if ie.else_stmts.len() == 1 {
-            if let CombStmt::IfElse(nested) = &ie.else_stmts[0] {
+            if let Stmt::IfElse(nested) = &ie.else_stmts[0] {
                 self.emit_comb_if_else_inner(nested, true);
                 return;
             }
@@ -4434,10 +4434,10 @@ impl<'a> Codegen<'a> {
             let prefix = stage.name.name.to_lowercase();
             for item in &stage.body {
                 if let ModuleBodyItem::CombBlock(cb) = item {
-                    let all_simple = cb.stmts.iter().all(|s| matches!(s, CombStmt::Assign(_)));
+                    let all_simple = cb.stmts.iter().all(|s| matches!(s, Stmt::Assign(_)));
                     if all_simple {
                         for stmt in &cb.stmts {
-                            if let CombStmt::Assign(a) = stmt {
+                            if let Stmt::Assign(a) = stmt {
                                 let val = self.emit_pipeline_stage_expr_str(&a.value, &prefix, si, &stage_names, &stage_regs, &port_names);
                                 let target = if let ExprKind::Ident(name) = &a.target.kind {
                                     if port_names.contains(name) {
@@ -4779,18 +4779,18 @@ impl<'a> Codegen<'a> {
     }
 
     /// Collect all unique comb assign targets from a list of comb statements (recursive).
-    fn collect_comb_targets(stmts: &[CombStmt]) -> Vec<String> {
+    fn collect_comb_targets(stmts: &[Stmt]) -> Vec<String> {
         let mut targets = Vec::new();
         for stmt in stmts {
             match stmt {
-                CombStmt::Assign(a) => {
+                Stmt::Assign(a) => {
                     if let ExprKind::Ident(name) = &a.target.kind {
                         if !targets.contains(name) {
                             targets.push(name.clone());
                         }
                     }
                 }
-                CombStmt::IfElse(ie) => {
+                Stmt::IfElse(ie) => {
                     for t in Self::collect_comb_targets(&ie.then_stmts) {
                         if !targets.contains(&t) { targets.push(t); }
                     }
@@ -4798,16 +4798,18 @@ impl<'a> Codegen<'a> {
                         if !targets.contains(&t) { targets.push(t); }
                     }
                 }
-                CombStmt::MatchExpr(_) | CombStmt::Log(_) => {}
-                CombStmt::For(f) => {
-                    // Comb for-loop body is Vec<CombStmt>; collect ident targets from assigns.
+                Stmt::Match(_) | Stmt::Log(_) => {}
+                Stmt::For(f) => {
                     for s in &f.body {
-                        if let CombStmt::Assign(a) = s {
+                        if let Stmt::Assign(a) = s {
                             if let ExprKind::Ident(name) = &a.target.kind {
                                 if !targets.contains(name) { targets.push(name.clone()); }
                             }
                         }
                     }
+                }
+                Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => {
+                    unreachable!("seq-only Stmt variant inside comb-context walker");
                 }
             }
         }
@@ -4847,14 +4849,14 @@ impl<'a> Codegen<'a> {
     /// Looks for known registers (local or cross-stage) in assignment RHS.
     fn resolve_comb_wire_type(
         target: &str,
-        stmts: &[CombStmt],
+        stmts: &[Stmt],
         current_stage_idx: usize,
         stage_regs: &[Vec<(String, String, String)>],
         stage_names: &[&str],
     ) -> Option<String> {
         for stmt in stmts {
             match stmt {
-                CombStmt::Assign(a) if matches!(&a.target.kind, ExprKind::Ident(n) if n == target) => {
+                Stmt::Assign(a) if matches!(&a.target.kind, ExprKind::Ident(n) if n == target) => {
                     // Check if RHS is a bare identifier (local register)
                     if let ExprKind::Ident(name) = &a.value.kind {
                         if let Some(r) = stage_regs[current_stage_idx].iter()
@@ -4876,7 +4878,7 @@ impl<'a> Codegen<'a> {
                         }
                     }
                 }
-                CombStmt::IfElse(ie) => {
+                Stmt::IfElse(ie) => {
                     if let Some(ty) = Self::resolve_comb_wire_type(target, &ie.then_stmts, current_stage_idx, stage_regs, stage_names) {
                         return Some(ty);
                     }
@@ -4894,7 +4896,7 @@ impl<'a> Codegen<'a> {
     /// Handles Assign, IfElse with pipeline name rewriting.
     fn emit_pipeline_comb_stmt(
         &mut self,
-        stmt: &CombStmt,
+        stmt: &Stmt,
         current_prefix: &str,
         current_stage_idx: usize,
         stage_names: &[&str],
@@ -4902,7 +4904,7 @@ impl<'a> Codegen<'a> {
         port_names: &std::collections::HashSet<String>,
     ) {
         match stmt {
-            CombStmt::Assign(a) => {
+            Stmt::Assign(a) => {
                 let val = self.emit_pipeline_stage_expr_str(&a.value, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
                 let target = if let ExprKind::Ident(name) = &a.target.kind {
                     if port_names.contains(name) {
@@ -4915,16 +4917,17 @@ impl<'a> Codegen<'a> {
                 };
                 self.line(&format!("{} = {};", target, val));
             }
-            CombStmt::IfElse(ie) => {
+            Stmt::IfElse(ie) => {
                 self.emit_pipeline_comb_if_else(ie, current_prefix, current_stage_idx, stage_names, stage_regs, port_names, false);
             }
-            CombStmt::MatchExpr(_) => {} // TODO if needed
-            CombStmt::Log(l) => { self.emit_log_stmt(l); }
-            CombStmt::For(f) => {
+            Stmt::Match(_) => {} // TODO if needed
+            Stmt::Log(l) => { self.emit_log_stmt(l); }
+            Stmt::For(f) => {
                 self.emit_for_loop_sv(f, |s, stmt| {
                     s.emit_pipeline_comb_stmt(stmt, current_prefix, current_stage_idx, stage_names, stage_regs, port_names);
                 });
             }
+                Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => unreachable!("seq-only Stmt variant inside comb-context walker"),
         }
     }
 
@@ -4968,7 +4971,7 @@ impl<'a> Codegen<'a> {
 
     fn emit_pipeline_comb_if_else(
         &mut self,
-        ie: &CombIfElse,
+        ie: &IfElse,
         current_prefix: &str,
         current_stage_idx: usize,
         stage_names: &[&str],
@@ -4988,7 +4991,7 @@ impl<'a> Codegen<'a> {
         }
         self.indent -= 1;
         if ie.else_stmts.len() == 1 {
-            if let CombStmt::IfElse(nested) = &ie.else_stmts[0] {
+            if let Stmt::IfElse(nested) = &ie.else_stmts[0] {
                 self.emit_pipeline_comb_if_else(nested, current_prefix, current_stage_idx, stage_names, stage_regs, port_names, true);
                 return;
             }

@@ -331,7 +331,7 @@ fn flatten_for_formal(
                             }
                         }
                         ModuleBodyItem::CombBlock(cb) => {
-                            let new_stmts: Vec<CombStmt> = cb.stmts.iter()
+                            let new_stmts: Vec<Stmt> = cb.stmts.iter()
                                 .map(|s| subst_comb_stmt_for_formal(
                                     s, &port_map, &locals, &prefix,
                                 ))
@@ -434,15 +434,15 @@ fn rewrite_synth_idents_in_body_item(
 }
 
 fn rewrite_synth_idents_in_comb_stmt(
-    s: &mut CombStmt,
+    s: &mut Stmt,
     remap: &std::collections::HashMap<String, String>,
 ) {
     match s {
-        CombStmt::Assign(a) => {
+        Stmt::Assign(a) => {
             rewrite_synth_idents_in_expr(&mut a.target, remap);
             rewrite_synth_idents_in_expr(&mut a.value, remap);
         }
-        CombStmt::IfElse(ie) => {
+        Stmt::IfElse(ie) => {
             rewrite_synth_idents_in_expr(&mut ie.cond, remap);
             for st in &mut ie.then_stmts { rewrite_synth_idents_in_comb_stmt(st, remap); }
             for st in &mut ie.else_stmts { rewrite_synth_idents_in_comb_stmt(st, remap); }
@@ -547,26 +547,26 @@ fn rewrite_synth_idents_in_expr(
 }
 
 fn subst_comb_stmt_for_formal(
-    s: &CombStmt,
+    s: &Stmt,
     port_map: &std::collections::HashMap<String, Expr>,
     locals: &std::collections::HashSet<String>,
     prefix: &str,
-) -> Result<CombStmt, CompileError> {
+) -> Result<Stmt, CompileError> {
     match s {
-        CombStmt::Assign(a) => {
+        Stmt::Assign(a) => {
             let target = subst_expr_for_formal(&a.target, port_map, locals, prefix);
             let value = subst_expr_for_formal(&a.value, port_map, locals, prefix);
-            Ok(CombStmt::Assign(Assign { target, value, span: a.span }))
+            Ok(Stmt::Assign(Assign { target, value, span: a.span }))
         }
-        CombStmt::IfElse(ie) => {
+        Stmt::IfElse(ie) => {
             let cond = subst_expr_for_formal(&ie.cond, port_map, locals, prefix);
-            let then_stmts: Vec<CombStmt> = ie.then_stmts.iter()
+            let then_stmts: Vec<Stmt> = ie.then_stmts.iter()
                 .map(|s| subst_comb_stmt_for_formal(s, port_map, locals, prefix))
                 .collect::<Result<_, _>>()?;
-            let else_stmts: Vec<CombStmt> = ie.else_stmts.iter()
+            let else_stmts: Vec<Stmt> = ie.else_stmts.iter()
                 .map(|s| subst_comb_stmt_for_formal(s, port_map, locals, prefix))
                 .collect::<Result<_, _>>()?;
-            Ok(CombStmt::IfElse(IfElseOf {
+            Ok(Stmt::IfElse(IfElseOf {
                 cond,
                 then_stmts,
                 else_stmts,
@@ -576,9 +576,9 @@ fn subst_comb_stmt_for_formal(
         }
         other => {
             let sp = match other {
-                CombStmt::For(f) => f.span,
-                CombStmt::MatchExpr(m) => m.span,
-                CombStmt::Log(l) => l.span,
+                Stmt::For(f) => f.span,
+                Stmt::Match(m) => m.span,
+                Stmt::Log(l) => l.span,
                 _ => Span { start: 0, end: 0 },
             };
             Err(CompileError::general(
@@ -720,7 +720,7 @@ fn resolve_port_ident_for_formal(
     Ok(id.clone())
 }
 
-/// Substitute a seq-block Stmt. Mirrors the CombStmt substituter but
+/// Substitute a seq-block Stmt. Mirrors the Stmt substituter but
 /// over the Stmt variants.
 fn subst_stmt_for_formal(
     s: &Stmt,
@@ -1580,9 +1580,9 @@ impl<'a> FormalCtx<'a> {
         Ok(())
     }
 
-    fn walk_comb_stmt(&mut self, s: &CombStmt, path: &[Expr]) -> Result<(), CompileError> {
+    fn walk_comb_stmt(&mut self, s: &Stmt, path: &[Expr]) -> Result<(), CompileError> {
         match s {
-            CombStmt::Assign(a) => {
+            Stmt::Assign(a) => {
                 let name = match target_root_ident(&a.target) {
                     Some(n) => n,
                     None => return Err(CompileError::general(
@@ -1596,7 +1596,7 @@ impl<'a> FormalCtx<'a> {
                     value: a.value.clone(),
                 });
             }
-            CombStmt::IfElse(ie) => {
+            Stmt::IfElse(ie) => {
                 let mut then_path = path.to_vec();
                 then_path.push(ie.cond.clone());
                 for c in &ie.then_stmts { self.walk_comb_stmt(c, &then_path)?; }
@@ -1604,19 +1604,20 @@ impl<'a> FormalCtx<'a> {
                 else_path.push(not_expr(ie.cond.clone()));
                 for c in &ie.else_stmts { self.walk_comb_stmt(c, &else_path)?; }
             }
-            CombStmt::MatchExpr(m) => {
+            Stmt::Match(m) => {
                 return Err(CompileError::general(
                     "`match` inside `comb` blocks is not supported by `arch formal` v1 (rewrite as if/else or expression-level match)",
                     m.span,
                 ));
             }
-            CombStmt::For(fl) => {
+            Stmt::For(fl) => {
                 return Err(CompileError::general(
                     "`for` inside `comb` blocks is not supported by `arch formal` v1 (unroll manually)",
                     fl.span,
                 ));
             }
-            CombStmt::Log(_) => { /* ignore */ }
+                Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => unreachable!("seq-only Stmt variant inside comb-context walker"),
+            Stmt::Log(_) => { /* ignore */ }
         }
         Ok(())
     }
