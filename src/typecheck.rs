@@ -2437,6 +2437,13 @@ impl<'a> TypeChecker<'a> {
                     ));
                     return Ty::Error;
                 }
+                if *op == BinOp::Implies && !self.in_sva_context {
+                    self.errors.push(CompileError::general(
+                        "`|->` (and the deprecated `implies` keyword) is only legal inside `assert` / `cover` bodies; use `(!a) || b` for plain Boolean implication",
+                        expr.span,
+                    ));
+                    return Ty::Error;
+                }
                 // Check for precedence ambiguity between bitwise and comparison ops.
                 // ARCH and SV parse these differently — require parentheses to be explicit.
                 self.check_precedence_ambiguity(*op, lhs, rhs, expr.span);

@@ -11,5 +11,5 @@ module SvaTemporalRefutes
   end seq
 
   // FALSE: gnt_r at t equals req at t (no delay) — should be REFUTED.
-  assert gnt_eq_req_wrong: (not rst) implies (gnt_r == req);
+  assert gnt_eq_req_wrong: (not rst) |-> (gnt_r == req);
 end module SvaTemporalRefutes

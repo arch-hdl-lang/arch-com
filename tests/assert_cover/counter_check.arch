@@ -16,7 +16,7 @@ module CounterCheck
     count = cnt;
   end comb
 
-  assert no_overflow: cnt != 0 implies en;
+  assert no_overflow: cnt != 0 |-> en;
   cover saw_max: cnt == 255;
   cover saw_zero: cnt == 0;
 end module CounterCheck
