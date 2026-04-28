@@ -595,19 +595,20 @@ fn check_gen_for_reg_stmts(stmts: &[Stmt], var: &str, errors: &mut Vec<CompileEr
     }
 }
 
-fn check_gen_for_comb_stmts(stmts: &[CombStmt], var: &str, errors: &mut Vec<CompileError>) {
+fn check_gen_for_comb_stmts(stmts: &[Stmt], var: &str, errors: &mut Vec<CompileError>) {
     for s in stmts {
         match s {
-            CombStmt::Assign(a) => reject_bad_lhs(&a.target, var, errors),
-            CombStmt::IfElse(ie) => {
+            Stmt::Assign(a) => reject_bad_lhs(&a.target, var, errors),
+            Stmt::IfElse(ie) => {
                 check_gen_for_comb_stmts(&ie.then_stmts, var, errors);
                 check_gen_for_comb_stmts(&ie.else_stmts, var, errors);
             }
-            CombStmt::MatchExpr(m) => {
+            Stmt::Match(m) => {
                 for arm in &m.arms { check_gen_for_comb_stmts(&arm.body, var, errors); }
             }
-            CombStmt::For(f) => check_gen_for_comb_stmts(&f.body, var, errors),
-            CombStmt::Log(_) => {}
+            Stmt::For(f) => check_gen_for_comb_stmts(&f.body, var, errors),
+                Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => unreachable!("seq-only Stmt variant inside comb-context walker"),
+            Stmt::Log(_) => {}
         }
     }
 }
@@ -665,14 +666,14 @@ fn subst_comb_block(cb: &CombBlock, var: &str, val: i64) -> CombBlock {
     }
 }
 
-fn subst_comb_stmt(s: &CombStmt, var: &str, val: i64) -> CombStmt {
+fn subst_comb_stmt(s: &Stmt, var: &str, val: i64) -> Stmt {
     match s {
-        CombStmt::Assign(a) => CombStmt::Assign(Assign {
+        Stmt::Assign(a) => Stmt::Assign(Assign {
             target: subst_expr_names(a.target.clone(), var, val),
             value:  subst_expr_names(a.value.clone(),  var, val),
             span:   a.span,
         }),
-        CombStmt::IfElse(ie) => CombStmt::IfElse(IfElseOf {
+        Stmt::IfElse(ie) => Stmt::IfElse(IfElseOf {
             cond:       subst_expr_names(ie.cond.clone(), var, val),
             then_stmts: ie.then_stmts.iter().map(|x| subst_comb_stmt(x, var, val)).collect(),
             else_stmts: ie.else_stmts.iter().map(|x| subst_comb_stmt(x, var, val)).collect(),
@@ -1469,10 +1470,10 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
         }));
 
         // Pack/unpack between scalar wires and packed vectors.
-        let mut pack_stmts: Vec<CombStmt> = Vec::new();
+        let mut pack_stmts: Vec<Stmt> = Vec::new();
         for ti in 0..n_threads {
             // _packed[ti] = _req_ti
-            pack_stmts.push(CombStmt::Assign(CombAssign {
+            pack_stmts.push(Stmt::Assign(CombAssign {
                 target: Expr::new(ExprKind::Index(
                     Box::new(Expr::new(ExprKind::Ident(req_packed.clone()), sp)),
                     Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(ti as u64)), sp)),
@@ -1481,7 +1482,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
                 span: sp,
             }));
             // _grant_ti = _grant_packed[ti]
-            pack_stmts.push(CombStmt::Assign(CombAssign {
+            pack_stmts.push(Stmt::Assign(CombAssign {
                 target: Expr::new(ExprKind::Ident(format!("_{}_grant_{}", res_name, ti)), sp),
                 value: Expr::new(ExprKind::Index(
                     Box::new(Expr::new(ExprKind::Ident(grant_packed.clone()), sp)),
@@ -1608,7 +1609,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
     }
 
     // ── Per-thread state machines ──────────────────────────────────────
-    let mut all_thread_comb: Vec<CombStmt> = Vec::new();
+    let mut all_thread_comb: Vec<Stmt> = Vec::new();
     let mut all_thread_seq: Vec<Stmt> = Vec::new();
     // Auto-emitted SVA spec-contract properties (gated by `opts.auto_asserts`).
     // Reset-guarded antecedent so they don't fire during reset.
@@ -1975,7 +1976,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
             // This state's own comb outputs
             if !raw.comb_stmts.is_empty() {
                 let transformed_stmts = transform_shared_or_assigns(&raw.comb_stmts, &shared_or_signals, sp);
-                all_thread_comb.push(CombStmt::IfElse(CombIfElse {
+                all_thread_comb.push(Stmt::IfElse(IfElse {
                     cond: state_cond.clone(),
                     then_stmts: transformed_stmts,
                     else_stmts: Vec::new(),
@@ -2037,11 +2038,11 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
     }
 
     // ── Merged comb block: defaults + all per-thread comb stmts ──────
-    let mut merged_comb: Vec<CombStmt> = Vec::new();
+    let mut merged_comb: Vec<Stmt> = Vec::new();
     // Defaults: all comb outputs = 0
     for p in &merged_ports {
         if p.direction == Direction::Out && p.default.is_some() {
-            merged_comb.push(CombStmt::Assign(CombAssign {
+            merged_comb.push(Stmt::Assign(CombAssign {
                 target: Expr::new(ExprKind::Ident(p.name.name.clone()), sp),
                 value: p.default.as_ref().unwrap().clone(),
                 span: sp,
@@ -2051,7 +2052,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
     // Default lock req = 0
     for res_name in &all_resources {
         for ti in 0..threads.len() {
-            merged_comb.push(CombStmt::Assign(CombAssign {
+            merged_comb.push(Stmt::Assign(CombAssign {
                 target: Expr::new(ExprKind::Ident(format!("_{}_req_{}", res_name, ti)), sp),
                 value: Expr::new(ExprKind::Bool(false), sp),
                 span: sp,
@@ -2061,7 +2062,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
     // Default shared(or) seq per-thread input wires = 0
     for sig_name in &shared_or_seq {
         for ti in 0..n_threads {
-            merged_comb.push(CombStmt::Assign(CombAssign {
+            merged_comb.push(Stmt::Assign(CombAssign {
                 target: Expr::new(ExprKind::Ident(format!("_{}_in_{}", sig_name, ti)), sp),
                 value: make_zero_expr(sp),
                 span: sp,
@@ -2470,7 +2471,7 @@ fn collect_expr_index_reads(e: &Expr, out: &mut HashSet<String>) {
 /// A single FSM state derived from thread body partitioning.
 struct ThreadFsmState {
     /// Combinational assignments active in this state.
-    comb_stmts: Vec<CombStmt>,
+    comb_stmts: Vec<Stmt>,
     /// Sequential assignments that fire on the transition out of this state.
     seq_stmts: Vec<Stmt>,
     /// Transition condition (from `wait until`).  None = unconditional.
@@ -2659,13 +2660,13 @@ fn partition_thread_body(
     cnt_width: u32,
 ) -> Result<Vec<ThreadFsmState>, CompileError> {
     let mut states: Vec<ThreadFsmState> = Vec::new();
-    let mut cur_comb: Vec<CombStmt> = Vec::new();
+    let mut cur_comb: Vec<Stmt> = Vec::new();
     let mut cur_seq: Vec<Stmt> = Vec::new();
 
     for stmt in body {
         match stmt {
             ThreadStmt::CombAssign(ca) => {
-                cur_comb.push(CombStmt::Assign(ca.clone()));
+                cur_comb.push(Stmt::Assign(ca.clone()));
             }
             ThreadStmt::SeqAssign(ra) => {
                 cur_seq.push(Stmt::Assign(ra.clone()));
@@ -2833,7 +2834,7 @@ fn partition_thread_body(
                         (neg_cond, else_target),
                     ];
                 } else {
-                    // Same-state conditional: convert to CombIfElse / IfElse for comb and seq
+                    // Same-state conditional: convert to IfElse / IfElse for comb and seq
                     let (comb_if, seq_if) = thread_if_to_fsm_stmts(ie);
                     if let Some(c) = comb_if { cur_comb.push(c); }
                     if let Some(s) = seq_if { cur_seq.push(s); }
@@ -2957,12 +2958,12 @@ fn partition_thread_body(
                     });
                 }
                 // Collect the do-body's assigns: comb stays in-state, seq stays in-state
-                let mut do_comb: Vec<CombStmt> = Vec::new();
+                let mut do_comb: Vec<Stmt> = Vec::new();
                 let mut do_seq: Vec<Stmt> = Vec::new();
                 for s in body {
                     match s {
                         ThreadStmt::CombAssign(ca) => {
-                            do_comb.push(CombStmt::Assign(ca.clone()));
+                            do_comb.push(Stmt::Assign(ca.clone()));
                         }
                         ThreadStmt::SeqAssign(ra) => {
                             do_seq.push(Stmt::Assign(ra.clone()));
@@ -3362,7 +3363,7 @@ fn lower_thread_lock(
     let grant_signal = format!("_{}_grant", resource_name);
 
     let make_grant = || Expr::new(ExprKind::Ident(grant_signal.clone()), span);
-    let req_assign = CombStmt::Assign(CombAssign {
+    let req_assign = Stmt::Assign(CombAssign {
         target: Expr::new(ExprKind::Ident(req_signal.clone()), span),
         value: Expr::new(ExprKind::Literal(LitKind::Dec(1)), span),
         span,
@@ -3379,9 +3380,9 @@ fn lower_thread_lock(
     // Without grant gating, all contending threads would drive outputs simultaneously.
     if let Some(first) = body_states.first_mut() {
         // Wrap ALL comb outputs (except req) in `if (grant) { ... }`
-        let non_req_comb: Vec<CombStmt> = first.comb_stmts.iter()
+        let non_req_comb: Vec<Stmt> = first.comb_stmts.iter()
             .filter(|s| {
-                if let CombStmt::Assign(a) = s {
+                if let Stmt::Assign(a) = s {
                     if let ExprKind::Ident(ref n) = a.target.kind {
                         return *n != req_signal;
                     }
@@ -3392,7 +3393,7 @@ fn lower_thread_lock(
             .collect();
         // Keep only req assign at top level
         first.comb_stmts.retain(|s| {
-            if let CombStmt::Assign(a) = s {
+            if let Stmt::Assign(a) = s {
                 if let ExprKind::Ident(ref n) = a.target.kind {
                     return *n == req_signal;
                 }
@@ -3401,7 +3402,7 @@ fn lower_thread_lock(
         });
         // Add grant-gated outputs
         if !non_req_comb.is_empty() {
-            first.comb_stmts.push(CombStmt::IfElse(CombIfElse {
+            first.comb_stmts.push(Stmt::IfElse(IfElse {
                 cond: make_grant(),
                 then_stmts: non_req_comb,
                 else_stmts: Vec::new(),
@@ -3554,16 +3555,16 @@ fn rewrite_var_expr(expr: Expr, var: &str, replacement: &str) -> Expr {
 }
 
 /// Convert a ThreadIfElse (no waits) into FSM comb and seq statements.
-fn thread_if_to_fsm_stmts(ie: &ThreadIfElse) -> (Option<CombStmt>, Option<Stmt>) {
+fn thread_if_to_fsm_stmts(ie: &ThreadIfElse) -> (Option<Stmt>, Option<Stmt>) {
     let mut then_comb = Vec::new();
     let mut then_seq = Vec::new();
     let mut else_comb = Vec::new();
     let mut else_seq = Vec::new();
 
-    fn partition_stmts(stmts: &[ThreadStmt], comb: &mut Vec<CombStmt>, seq: &mut Vec<Stmt>) {
+    fn partition_stmts(stmts: &[ThreadStmt], comb: &mut Vec<Stmt>, seq: &mut Vec<Stmt>) {
         for s in stmts {
             match s {
-                ThreadStmt::CombAssign(ca) => comb.push(CombStmt::Assign(ca.clone())),
+                ThreadStmt::CombAssign(ca) => comb.push(Stmt::Assign(ca.clone())),
                 ThreadStmt::SeqAssign(ra) => seq.push(Stmt::Assign(ra.clone())),
                 ThreadStmt::Log(l) => seq.push(Stmt::Log(l.clone())),
                 ThreadStmt::IfElse(nested) => {
@@ -3580,7 +3581,7 @@ fn thread_if_to_fsm_stmts(ie: &ThreadIfElse) -> (Option<CombStmt>, Option<Stmt>)
     partition_stmts(&ie.else_stmts, &mut else_comb, &mut else_seq);
 
     let comb_if = if !then_comb.is_empty() || !else_comb.is_empty() {
-        Some(CombStmt::IfElse(CombIfElse {
+        Some(Stmt::IfElse(IfElse {
             cond: ie.cond.clone(),
             then_stmts: then_comb,
             else_stmts: else_comb,
@@ -3611,7 +3612,7 @@ fn rewrite_shared_or_seq_stmts(
     shared_or_seq: &HashSet<String>,
     thread_idx: usize,
     sp: Span,
-    out_comb: &mut Vec<CombStmt>,
+    out_comb: &mut Vec<Stmt>,
 ) -> Vec<Stmt> {
     let mut kept = Vec::new();
     for stmt in stmts {
@@ -3620,7 +3621,7 @@ fn rewrite_shared_or_seq_stmts(
                 if let Some(name) = expr_root_name(&ra.target) {
                     if shared_or_seq.contains(&name) {
                         let shadow = format!("_{}_in_{}", name, thread_idx);
-                        out_comb.push(CombStmt::Assign(CombAssign {
+                        out_comb.push(Stmt::Assign(CombAssign {
                             target: Expr::new(ExprKind::Ident(shadow), sp),
                             value: ra.value.clone(),
                             span: ra.span,
@@ -3639,7 +3640,7 @@ fn rewrite_shared_or_seq_stmts(
                     &ie.else_stmts, shared_or_seq, thread_idx, sp, &mut else_comb);
                 // Push rewritten comb assigns under the same if guard
                 if !then_comb.is_empty() || !else_comb.is_empty() {
-                    out_comb.push(CombStmt::IfElse(CombIfElse {
+                    out_comb.push(Stmt::IfElse(IfElse {
                         cond: ie.cond.clone(),
                         then_stmts: then_comb,
                         else_stmts: else_comb,
@@ -3666,13 +3667,13 @@ fn rewrite_shared_or_seq_stmts(
 /// Transform comb assigns for shared(or) signals: `sig = val` → `sig = sig | val`.
 /// This ensures multiple threads OR-accumulate rather than last-writer-wins.
 fn transform_shared_or_assigns(
-    stmts: &[CombStmt],
+    stmts: &[Stmt],
     shared_or: &HashSet<String>,
     sp: Span,
-) -> Vec<CombStmt> {
+) -> Vec<Stmt> {
     stmts.iter().map(|stmt| {
         match stmt {
-            CombStmt::Assign(a) => {
+            Stmt::Assign(a) => {
                 let target_name = match &a.target.kind {
                     ExprKind::Ident(n) => Some(n.clone()),
                     _ => None,
@@ -3680,7 +3681,7 @@ fn transform_shared_or_assigns(
                 if let Some(ref name) = target_name {
                     if shared_or.contains(name) {
                         // sig = sig | val
-                        return CombStmt::Assign(CombAssign {
+                        return Stmt::Assign(CombAssign {
                             target: a.target.clone(),
                             value: Expr::new(ExprKind::Binary(
                                 BinOp::BitOr,
@@ -3693,8 +3694,8 @@ fn transform_shared_or_assigns(
                 }
                 stmt.clone()
             }
-            CombStmt::IfElse(ie) => {
-                CombStmt::IfElse(CombIfElse {
+            Stmt::IfElse(ie) => {
+                Stmt::IfElse(IfElse {
                     cond: ie.cond.clone(),
                     then_stmts: transform_shared_or_assigns(&ie.then_stmts, shared_or, sp),
                     else_stmts: transform_shared_or_assigns(&ie.else_stmts, shared_or, sp),
@@ -3740,11 +3741,11 @@ fn rename_ident_in_stmts(stmts: &mut [Stmt], old: &str, new: &str) {
     }
 }
 
-fn rename_ident_in_comb_stmts(stmts: &mut [CombStmt], old: &str, new: &str) {
+fn rename_ident_in_comb_stmts(stmts: &mut [Stmt], old: &str, new: &str) {
     for s in stmts {
         match s {
-            CombStmt::Assign(ca) => { rename_ident_in_expr(&mut ca.target, old, new); rename_ident_in_expr(&mut ca.value, old, new); }
-            CombStmt::IfElse(ie) => {
+            Stmt::Assign(ca) => { rename_ident_in_expr(&mut ca.target, old, new); rename_ident_in_expr(&mut ca.value, old, new); }
+            Stmt::IfElse(ie) => {
                 rename_ident_in_expr(&mut ie.cond, old, new);
                 rename_ident_in_comb_stmts(&mut ie.then_stmts, old, new);
                 rename_ident_in_comb_stmts(&mut ie.else_stmts, old, new);
@@ -4032,7 +4033,7 @@ fn validate_rhs_latency_with_depths(
 }
 
 fn validate_comb_pipe_refs(
-    stmts: &[CombStmt],
+    stmts: &[Stmt],
     pipe_ports: &[PipePortInfoLocal],
     all_ports: &[PortDecl],
     pipe_depths: &std::collections::HashMap<String, u32>,
@@ -4040,7 +4041,7 @@ fn validate_comb_pipe_refs(
 ) {
     for s in stmts {
         match s {
-            CombStmt::Assign(a) => {
+            Stmt::Assign(a) => {
                 // LHS @0 on a plain (non-pipe_reg) port is an error.
                 if let ExprKind::LatencyAt(inner, n) = &a.target.kind {
                     if let ExprKind::Ident(name) = &inner.kind {
@@ -4055,11 +4056,12 @@ fn validate_comb_pipe_refs(
                 }
                 validate_rhs_latency_with_depths(&a.value, pipe_depths, errors);
             }
-            CombStmt::IfElse(ie) => {
+            Stmt::IfElse(ie) => {
                 validate_comb_pipe_refs(&ie.then_stmts, pipe_ports, all_ports, pipe_depths, errors);
                 validate_comb_pipe_refs(&ie.else_stmts, pipe_ports, all_ports, pipe_depths, errors);
             }
-            CombStmt::MatchExpr(_) | CombStmt::For(_) | CombStmt::Log(_) => {}
+                Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => unreachable!("seq-only Stmt variant inside comb-context walker"),
+            Stmt::Match(_) | Stmt::For(_) | Stmt::Log(_) => {}
         }
     }
 }
@@ -4224,18 +4226,18 @@ fn rewrite_body_item_cc(bi: &mut ModuleBodyItem, ctx: &CcDispatchCtx, errors: &m
     }
 }
 
-fn rewrite_comb_stmt_cc(s: &mut CombStmt, ctx: &CcDispatchCtx, errors: &mut Vec<CompileError>) {
+fn rewrite_comb_stmt_cc(s: &mut Stmt, ctx: &CcDispatchCtx, errors: &mut Vec<CompileError>) {
     match s {
-        CombStmt::Assign(a) => { rewrite_expr_cc(&mut a.target, ctx, errors); rewrite_expr_cc(&mut a.value, ctx, errors); }
-        CombStmt::IfElse(ie) => {
+        Stmt::Assign(a) => { rewrite_expr_cc(&mut a.target, ctx, errors); rewrite_expr_cc(&mut a.value, ctx, errors); }
+        Stmt::IfElse(ie) => {
             rewrite_expr_cc(&mut ie.cond, ctx, errors);
             for s in &mut ie.then_stmts { rewrite_comb_stmt_cc(s, ctx, errors); }
             for s in &mut ie.else_stmts { rewrite_comb_stmt_cc(s, ctx, errors); }
         }
-        CombStmt::For(fl) => {
+        Stmt::For(fl) => {
             for s in &mut fl.body { rewrite_comb_stmt_cc(s, ctx, errors); }
         }
-        CombStmt::MatchExpr(m) => {
+        Stmt::Match(m) => {
             rewrite_expr_cc(&mut m.scrutinee, ctx, errors);
             for arm in &mut m.arms {
                 for s in &mut arm.body { rewrite_comb_stmt_cc(s, ctx, errors); }
@@ -5003,7 +5005,7 @@ fn inline_lower_tlm_initiator(
     // Build comb drives: one unconditional CombAssign per wire, with
     // state-dependent RHS. OR-of-state-eq for booleans; ternary-mux for
     // argument values (default 0 when not in an issue state).
-    let mut comb_stmts: Vec<CombStmt> = Vec::new();
+    let mut comb_stmts: Vec<Stmt> = Vec::new();
     let or_of_states = |indices: &[u64]| -> Expr {
         if indices.is_empty() {
             return Expr::new(ExprKind::Literal(LitKind::Sized(1, 0)), span);
@@ -5020,7 +5022,7 @@ fn inline_lower_tlm_initiator(
     for (_, agg) in &aggs {
         // req_valid = OR of issue states
         let issue_idxs: Vec<u64> = agg.issues.iter().map(|(i, _)| *i).collect();
-        comb_stmts.push(CombStmt::Assign(CombAssign {
+        comb_stmts.push(Stmt::Assign(CombAssign {
             target: mk_port_member(&agg.port, format!("{}_req_valid", agg.method)),
             value: or_of_states(&issue_idxs),
             span,
@@ -5040,7 +5042,7 @@ fn inline_lower_tlm_initiator(
                     );
                 }
             }
-            comb_stmts.push(CombStmt::Assign(CombAssign {
+            comb_stmts.push(Stmt::Assign(CombAssign {
                 target: mk_port_member(&agg.port, format!("{}_{}", agg.method, arg_ident.name)),
                 value: value_expr,
                 span,
@@ -5048,7 +5050,7 @@ fn inline_lower_tlm_initiator(
             let _ = agg.ret_ty;
         }
         // rsp_ready = OR of wait states
-        comb_stmts.push(CombStmt::Assign(CombAssign {
+        comb_stmts.push(Stmt::Assign(CombAssign {
             target: mk_port_member(&agg.port, format!("{}_rsp_ready", agg.method)),
             value: or_of_states(&agg.waits),
             span,
@@ -5169,12 +5171,12 @@ fn inline_lower_tlm_target(
     // walk and becomes the respond state.
     struct UserState {
         seq_on_exit: Vec<Stmt>,       // fires on transition out of this state
-        comb_in_state: Vec<CombStmt>, // active during this state
+        comb_in_state: Vec<Stmt>, // active during this state
         transition_cond: Expr,
     }
     let mut user_states: Vec<UserState> = Vec::new();
     let mut cur_seq: Vec<Stmt> = Vec::new();
-    let mut cur_comb: Vec<CombStmt> = Vec::new();
+    let mut cur_comb: Vec<Stmt> = Vec::new();
     let mut return_expr: Option<Expr> = None;
 
     // Arg renames: user-bound arg name → latched reg name.
@@ -5212,7 +5214,7 @@ fn inline_lower_tlm_target(
                 }));
             }
             ThreadStmt::CombAssign(ca) => {
-                cur_comb.push(CombStmt::Assign(CombAssign {
+                cur_comb.push(Stmt::Assign(CombAssign {
                     target: rename_args(ca.target, &arg_renames),
                     value: rename_args(ca.value, &arg_renames),
                     span: ca.span,
@@ -5388,15 +5390,15 @@ fn inline_lower_tlm_target(
     };
 
     // ── Comb block: drive req_ready / rsp_valid / rsp_data ──────────────
-    let mut comb_stmts: Vec<CombStmt> = Vec::new();
+    let mut comb_stmts: Vec<Stmt> = Vec::new();
     // req_ready = (state == 0)
-    comb_stmts.push(CombStmt::Assign(CombAssign {
+    comb_stmts.push(Stmt::Assign(CombAssign {
         target: mk_port_member(format!("{method_name}_req_ready")),
         value: state_eq(entry_idx),
         span,
     }));
     // rsp_valid = (state == respond)
-    comb_stmts.push(CombStmt::Assign(CombAssign {
+    comb_stmts.push(Stmt::Assign(CombAssign {
         target: mk_port_member(format!("{method_name}_rsp_valid")),
         value: state_eq(respond_idx),
         span,
@@ -5404,7 +5406,7 @@ fn inline_lower_tlm_target(
     // rsp_data = <return expr> (always driven; only observed when rsp_valid).
     if let Some(expr) = return_expr {
         if method.ret.is_some() {
-            comb_stmts.push(CombStmt::Assign(CombAssign {
+            comb_stmts.push(Stmt::Assign(CombAssign {
                 target: mk_port_member(format!("{method_name}_rsp_data")),
                 value: expr,
                 span,
@@ -5415,7 +5417,7 @@ fn inline_lower_tlm_target(
     for (i, us) in user_states.iter().enumerate() {
         let state_idx = (i + 1) as u64;
         if !us.comb_in_state.is_empty() {
-            comb_stmts.push(CombStmt::IfElse(CombIfElse {
+            comb_stmts.push(Stmt::IfElse(IfElse {
                 cond: state_eq(state_idx),
                 then_stmts: us.comb_in_state.clone(),
                 else_stmts: Vec::new(),
@@ -5425,7 +5427,7 @@ fn inline_lower_tlm_target(
         }
     }
     if !final_comb_in_state.is_empty() {
-        comb_stmts.push(CombStmt::IfElse(CombIfElse {
+        comb_stmts.push(Stmt::IfElse(IfElse {
             cond: state_eq(pre_respond_idx),
             then_stmts: final_comb_in_state,
             else_stmts: Vec::new(),

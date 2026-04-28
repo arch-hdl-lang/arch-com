@@ -1215,15 +1215,15 @@ impl<'a> TypeChecker<'a> {
 
     fn walk_comb_for_hs_reads(
         &mut self,
-        stmt: &CombStmt,
+        stmt: &Stmt,
         enclosing: &[&Expr],
         info: &std::collections::HashMap<String, Vec<(String, String, Vec<String>)>>,
     ) {
         match stmt {
-            CombStmt::Assign(a) => {
+            Stmt::Assign(a) => {
                 self.check_expr_for_unguarded_payload(&a.value, enclosing, info, a.span);
             }
-            CombStmt::IfElse(ie) => {
+            Stmt::IfElse(ie) => {
                 // Expressions inside the condition itself don't get the
                 // condition as a guard — they're evaluated before the branch.
                 self.check_expr_for_unguarded_payload(&ie.cond, enclosing, info, ie.span);
@@ -1237,7 +1237,7 @@ impl<'a> TypeChecker<'a> {
                     self.walk_comb_for_hs_reads(s, enclosing, info);
                 }
             }
-            CombStmt::MatchExpr(mm) => {
+            Stmt::Match(mm) => {
                 self.check_expr_for_unguarded_payload(&mm.scrutinee, enclosing, info, mm.span);
                 for arm in &mm.arms {
                     for s in &arm.body {
@@ -1245,12 +1245,13 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
-            CombStmt::For(fl) => {
+            Stmt::For(fl) => {
                 for s in &fl.body {
                     self.walk_comb_for_hs_reads(s, enclosing, info);
                 }
             }
-            CombStmt::Log(_) => {}
+                Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => unreachable!("seq-only Stmt variant inside comb-context walker"),
+            Stmt::Log(_) => {}
         }
     }
 
@@ -2197,14 +2198,14 @@ impl<'a> TypeChecker<'a> {
 
     fn check_comb_stmt(
         &mut self,
-        stmt: &CombStmt,
+        stmt: &Stmt,
         module_name: &str,
         local_types: &HashMap<String, Ty>,
         driven: &mut HashSet<String>,
         reg_names: &HashSet<String>,
     ) {
         match stmt {
-            CombStmt::Assign(a) => {
+            Stmt::Assign(a) => {
                 let target_name = Self::expr_root_name_tc(&a.target);
                 let target_name = if target_name.is_empty() { format!("{:?}", a.target.kind) } else { target_name };
                 // Regs must be assigned in seq blocks, not comb blocks
@@ -2247,7 +2248,7 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
-            CombStmt::IfElse(ie) => {
+            Stmt::IfElse(ie) => {
                 let _cond_ty = self.resolve_expr_type(&ie.cond, module_name, local_types);
                 // Each branch gets its own copy of driven — signals assigned
                 // in mutually exclusive branches are not multiple drivers.
@@ -2265,7 +2266,7 @@ impl<'a> TypeChecker<'a> {
                     driven.insert(name.clone());
                 }
             }
-            CombStmt::MatchExpr(m) => {
+            Stmt::Match(m) => {
                 let patterns: Vec<Pattern> = m.arms.iter().map(|a| a.pattern.clone()).collect();
                 self.check_match_exhaustive(&m.scrutinee, &patterns, m.span, module_name, local_types);
                 for arm in &m.arms {
@@ -2274,35 +2275,36 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
-            CombStmt::Log(l) => {
+            Stmt::Log(l) => {
                 for arg in &l.args {
                     self.resolve_expr_type(arg, module_name, local_types);
                 }
             }
-            CombStmt::For(f) => {
+            Stmt::For(f) => {
                 for s in &f.body {
                     self.check_comb_stmt(s, module_name, local_types, driven, reg_names);
                 }
             }
+                Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => unreachable!("seq-only Stmt variant inside comb-context walker"),
         }
     }
 
     /// Check for latches: signals assigned on some but not all paths in a comb block.
     /// Returns (all_assigned, fully_assigned) for the statement list.
-    fn comb_latch_targets(stmts: &[CombStmt], symbols: &crate::resolve::SymbolTable) -> (HashSet<String>, HashSet<String>) {
+    fn comb_latch_targets(stmts: &[Stmt], symbols: &crate::resolve::SymbolTable) -> (HashSet<String>, HashSet<String>) {
         let mut all = HashSet::new();
         let mut full = HashSet::new();
 
         for stmt in stmts {
             match stmt {
-                CombStmt::Assign(a) => {
+                Stmt::Assign(a) => {
                     let name = Self::expr_flat_name_tc(&a.target);
                     if !name.is_empty() {
                         all.insert(name.clone());
                         full.insert(name);
                     }
                 }
-                CombStmt::IfElse(ie) => {
+                Stmt::IfElse(ie) => {
                     let (then_all, then_full) = Self::comb_latch_targets(&ie.then_stmts, symbols);
                     let (else_all, else_full) = Self::comb_latch_targets(&ie.else_stmts, symbols);
                     all.extend(then_all); all.extend(else_all);
@@ -2322,15 +2324,15 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
-                CombStmt::MatchExpr(m) => {
+                Stmt::Match(m) => {
                     let has_wildcard = m.arms.iter().any(|a| matches!(a.pattern, Pattern::Wildcard));
                     let arm_results: Vec<(HashSet<String>, HashSet<String>)> = m.arms.iter()
                         .map(|arm| {
-                            // Comb match arm bodies are Vec<CombStmt> — extract assign targets.
+                            // Comb match arm bodies are Vec<Stmt> — extract assign targets.
                             let mut arm_all = HashSet::new();
                             let mut arm_full = HashSet::new();
                             for s in &arm.body {
-                                if let CombStmt::Assign(a) = s {
+                                if let Stmt::Assign(a) = s {
                                     let name = Self::expr_flat_name_tc(&a.target);
                                     if !name.is_empty() {
                                         arm_all.insert(name.clone());
@@ -2368,10 +2370,10 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
-                CombStmt::For(f) => {
-                    // Comb for-loop body is Vec<CombStmt> — treat assigns as fully driven.
+                Stmt::For(f) => {
+                    // Comb for-loop body is Vec<Stmt> — treat assigns as fully driven.
                     for s in &f.body {
-                        if let CombStmt::Assign(a) = s {
+                        if let Stmt::Assign(a) = s {
                             let name = Self::expr_flat_name_tc(&a.target);
                             if !name.is_empty() {
                                 all.insert(name.clone());
@@ -2380,14 +2382,15 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
-                CombStmt::Log(_) => {}
+                    Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => unreachable!("seq-only Stmt variant inside comb-context walker"),
+                Stmt::Log(_) => {}
             }
         }
         (all, full)
     }
 
     /// Check a comb block for latch-inducing patterns and emit warnings.
-    fn check_comb_latch(&mut self, stmts: &[CombStmt], span: Span) {
+    fn check_comb_latch(&mut self, stmts: &[Stmt], span: Span) {
         let (all_assigned, fully_assigned) = Self::comb_latch_targets(stmts, self.symbols);
         for name in &all_assigned {
             if !fully_assigned.contains(name) {
@@ -3682,45 +3685,47 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Collect all identifier names read in comb statements.
-    fn collect_comb_stmt_reads(stmts: &[CombStmt], out: &mut HashSet<String>) {
+    fn collect_comb_stmt_reads(stmts: &[Stmt], out: &mut HashSet<String>) {
         for stmt in stmts {
             match stmt {
-                CombStmt::Assign(a) => Self::collect_expr_reads(&a.value, out),
-                CombStmt::IfElse(ie) => {
+                Stmt::Assign(a) => Self::collect_expr_reads(&a.value, out),
+                Stmt::IfElse(ie) => {
                     Self::collect_expr_reads(&ie.cond, out);
                     Self::collect_comb_stmt_reads(&ie.then_stmts, out);
                     Self::collect_comb_stmt_reads(&ie.else_stmts, out);
                 }
-                CombStmt::MatchExpr(m) => {
+                Stmt::Match(m) => {
                     Self::collect_expr_reads(&m.scrutinee, out);
                     for arm in &m.arms { Self::collect_comb_stmt_reads(&arm.body, out); }
                 }
-                CombStmt::Log(l) => {
+                Stmt::Log(l) => {
                     for arg in &l.args { Self::collect_expr_reads(arg, out); }
                 }
-                CombStmt::For(f) => {
+                Stmt::For(f) => {
                     Self::collect_comb_stmt_reads(&f.body, out);
                 }
+                    Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => unreachable!("seq-only Stmt variant inside comb-context walker"),
             }
         }
     }
 
     /// Collect all target names assigned in comb statements.
-    fn collect_comb_stmt_targets(stmts: &[CombStmt], out: &mut HashSet<String>) {
+    fn collect_comb_stmt_targets(stmts: &[Stmt], out: &mut HashSet<String>) {
         for stmt in stmts {
             match stmt {
-                CombStmt::Assign(a) => { let name = Self::expr_root_name_tc(&a.target); if !name.is_empty() { out.insert(name); } }
-                CombStmt::IfElse(ie) => {
+                Stmt::Assign(a) => { let name = Self::expr_root_name_tc(&a.target); if !name.is_empty() { out.insert(name); } }
+                Stmt::IfElse(ie) => {
                     Self::collect_comb_stmt_targets(&ie.then_stmts, out);
                     Self::collect_comb_stmt_targets(&ie.else_stmts, out);
                 }
-                CombStmt::MatchExpr(m) => {
+                Stmt::Match(m) => {
                     for arm in &m.arms { Self::collect_comb_stmt_targets(&arm.body, out); }
                 }
-                CombStmt::Log(_) => {}
-                CombStmt::For(f) => {
+                Stmt::Log(_) => {}
+                Stmt::For(f) => {
                     Self::collect_comb_stmt_targets(&f.body, out);
                 }
+                    Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => unreachable!("seq-only Stmt variant inside comb-context walker"),
             }
         }
     }
@@ -4277,14 +4282,14 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn walk_pipeline_comb_stmt(
-        &mut self, s: &CombStmt, cur_idx: usize,
+        &mut self, s: &Stmt, cur_idx: usize,
         stage_idx: &HashMap<&str, usize>, cur_name: &str,
     ) {
         match s {
-            CombStmt::Assign(a) => {
+            Stmt::Assign(a) => {
                 self.check_pipeline_cross_stage_expr(&a.value, cur_idx, stage_idx, cur_name);
             }
-            CombStmt::IfElse(ie) => {
+            Stmt::IfElse(ie) => {
                 self.check_pipeline_cross_stage_expr(&ie.cond, cur_idx, stage_idx, cur_name);
                 for s in &ie.then_stmts { self.walk_pipeline_comb_stmt(s, cur_idx, stage_idx, cur_name); }
                 for s in &ie.else_stmts { self.walk_pipeline_comb_stmt(s, cur_idx, stage_idx, cur_name); }
@@ -4469,7 +4474,7 @@ impl<'a> TypeChecker<'a> {
             for item in &stage.body {
                 if let ModuleBodyItem::CombBlock(cb) = item {
                     for stmt in &cb.stmts {
-                        if let CombStmt::Assign(a) = stmt {
+                        if let Stmt::Assign(a) = stmt {
                             if let ExprKind::Ident(name) = &a.target.kind { driven.insert(name.clone()); }
                         }
                     }
@@ -5053,27 +5058,27 @@ fn check_precedence_in_item(item: &Item, errors: &mut Vec<CompileError>) {
         }
     }
 
-    fn walk_comb(cs: &CombStmt, errors: &mut Vec<CompileError>) {
+    fn walk_comb(cs: &Stmt, errors: &mut Vec<CompileError>) {
         match cs {
-            CombStmt::Assign(a) => {
+            Stmt::Assign(a) => {
                 check_precedence_expr(&a.target, errors);
                 check_precedence_expr(&a.value, errors);
             }
-            CombStmt::IfElse(ie) => {
+            Stmt::IfElse(ie) => {
                 check_precedence_expr(&ie.cond, errors);
                 for s in &ie.then_stmts { walk_comb(s, errors); }
                 for s in &ie.else_stmts { walk_comb(s, errors); }
             }
-            CombStmt::MatchExpr(m) => {
+            Stmt::Match(m) => {
                 check_precedence_expr(&m.scrutinee, errors);
                 for arm in &m.arms {
                     for s in &arm.body { walk_comb(s, errors); }
                 }
             }
-            CombStmt::Log(l) => {
+            Stmt::Log(l) => {
                 for a in &l.args { check_precedence_expr(a, errors); }
             }
-            CombStmt::For(fl) => {
+            Stmt::For(fl) => {
                 match &fl.range {
                     ForRange::Range(s, e) => {
                         check_precedence_expr(s, errors);
@@ -5085,6 +5090,7 @@ fn check_precedence_in_item(item: &Item, errors: &mut Vec<CompileError>) {
                 }
                 for s in &fl.body { walk_comb(s, errors); }
             }
+                Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => unreachable!("seq-only Stmt variant inside comb-context walker"),
         }
     }
 

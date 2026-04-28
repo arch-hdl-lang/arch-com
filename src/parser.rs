@@ -2109,9 +2109,9 @@ impl Parser {
         Ok(Stmt::For(fl))
     }
 
-    fn parse_comb_for_loop(&mut self) -> Result<CombStmt, CompileError> {
+    fn parse_comb_for_loop(&mut self) -> Result<Stmt, CompileError> {
         let fl = self.parse_for_loop_generic(|p| p.parse_comb_stmt())?;
-        Ok(CombStmt::For(fl))
+        Ok(Stmt::For(fl))
     }
 
     /// Parse `init on RST.asserted \n body \n end init`
@@ -2141,7 +2141,7 @@ impl Parser {
         }))
     }
 
-    fn parse_comb_stmt(&mut self) -> Result<CombStmt, CompileError> {
+    fn parse_comb_stmt(&mut self) -> Result<Stmt, CompileError> {
         let unique = self.eat(TokenKind::Unique);
         if self.check(TokenKind::If) {
             return self.parse_comb_if(unique);
@@ -2156,7 +2156,7 @@ impl Parser {
             ));
         }
         if self.check(TokenKind::Log) {
-            return Ok(CombStmt::Log(self.parse_log_stmt()?));
+            return Ok(Stmt::Log(self.parse_log_stmt()?));
         }
         if self.check(TokenKind::For) {
             return self.parse_comb_for_loop();
@@ -2174,14 +2174,14 @@ impl Parser {
         let value = self.parse_expr()?;
         self.expect(TokenKind::Semi)?;
         let span = target.span.merge(value.span);
-        Ok(CombStmt::Assign(CombAssign {
+        Ok(Stmt::Assign(CombAssign {
             target,
             value,
             span,
         }))
     }
 
-    fn parse_comb_if(&mut self, unique: bool) -> Result<CombStmt, CompileError> {
+    fn parse_comb_if(&mut self, unique: bool) -> Result<Stmt, CompileError> {
         let start = self.expect(TokenKind::If)?.span;
         let cond = self.parse_expr()?;
         let mut then_stmts = Vec::new();
@@ -2207,7 +2207,7 @@ impl Parser {
         }
 
         let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
-        Ok(CombStmt::IfElse(CombIfElse {
+        Ok(Stmt::IfElse(IfElse {
             cond,
             then_stmts,
             else_stmts,
@@ -2216,7 +2216,7 @@ impl Parser {
         }))
     }
 
-    fn parse_comb_match(&mut self, unique: bool) -> Result<CombStmt, CompileError> {
+    fn parse_comb_match(&mut self, unique: bool) -> Result<Stmt, CompileError> {
         let start = self.expect(TokenKind::Match)?.span;
         let scrutinee = self.parse_expr()?;
         let mut arms = Vec::new();
@@ -2224,7 +2224,7 @@ impl Parser {
             let pattern = self.parse_pattern()?;
             self.expect(TokenKind::FatArrow)?;
             // Comb match-arm body is a single comb statement (kept as
-            // CombStmt — previously cast to Stmt for `Vec<MatchArm<Stmt>>`,
+            // Stmt — previously cast to Stmt for `Vec<MatchArm<Stmt>>`,
             // which forced the typecheck to recheck under seq semantics).
             let comb_stmt = self.parse_comb_stmt()?;
             arms.push(MatchArm { pattern, body: vec![comb_stmt] });
@@ -2232,7 +2232,7 @@ impl Parser {
         self.expect(TokenKind::End)?;
         self.expect(TokenKind::Match)?;
         let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
-        Ok(CombStmt::MatchExpr(MatchStmt {
+        Ok(Stmt::Match(MatchStmt {
             scrutinee,
             arms,
             unique,
@@ -3296,7 +3296,7 @@ impl Parser {
         let mut wires = Vec::new();
         let mut state_names: Vec<Ident> = Vec::new();
         let mut default_state: Option<Ident> = None;
-        let mut default_comb: Vec<CombStmt> = Vec::new();
+        let mut default_comb: Vec<Stmt> = Vec::new();
         let mut default_seq: Vec<Stmt> = Vec::new();
         let mut states: Vec<StateBody> = Vec::new();
         let mut asserts: Vec<AssertDecl> = Vec::new();
@@ -3446,7 +3446,7 @@ impl Parser {
                 Some(TokenKind::Let) => {
                     // `let x = expr;` inside state — shorthand for comb assignment
                     let l = self.parse_let_binding()?;
-                    comb_stmts.push(CombStmt::Assign(crate::ast::CombAssign {
+                    comb_stmts.push(Stmt::Assign(crate::ast::CombAssign {
                         target: Expr { kind: ExprKind::Ident(l.name.name.clone()), span: l.name.span, parenthesized: false },
                         value: l.value,
                         span: l.span,
@@ -5201,20 +5201,20 @@ fn desugar_cc_method_call_assigns(expr: &Expr) -> Option<Vec<CombAssign>> {
     }
 }
 
-/// Desugar a credit_channel method-call statement into a single CombStmt.
+/// Desugar a credit_channel method-call statement into a single Stmt.
 /// Multi-assign cases (`.send(x)`) wrap the two assigns in an `if (1'b1)`
 /// block so the caller always gets exactly one statement — avoids
 /// threading a mutation-buffer through every stmt-list-collection loop.
 /// SV synthesis trivially flattens the always-true guard.
-fn desugar_cc_method_call_comb_stmt(expr: &Expr) -> Option<CombStmt> {
+fn desugar_cc_method_call_comb_stmt(expr: &Expr) -> Option<Stmt> {
     let assigns = desugar_cc_method_call_assigns(expr)?;
     if assigns.len() == 1 {
-        return Some(CombStmt::Assign(assigns.into_iter().next().unwrap()));
+        return Some(Stmt::Assign(assigns.into_iter().next().unwrap()));
     }
     let span = expr.span;
-    Some(CombStmt::IfElse(CombIfElse {
+    Some(Stmt::IfElse(IfElse {
         cond: Expr::new(ExprKind::Literal(LitKind::Sized(1, 1)), span),
-        then_stmts: assigns.into_iter().map(CombStmt::Assign).collect(),
+        then_stmts: assigns.into_iter().map(Stmt::Assign).collect(),
         else_stmts: Vec::new(),
         unique: false,
         span,

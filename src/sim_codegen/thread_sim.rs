@@ -29,7 +29,7 @@
 //   - Predicate / expression shapes: idents, literals, !/~, all binops
 
 use crate::ast::{
-    ArbiterPolicy, BinOp, CombAssign, CombStmt, Direction, Expr, ExprKind, IfElseOf,
+    ArbiterPolicy, BinOp, CombAssign, Stmt, Direction, Expr, ExprKind, IfElseOf,
     LitKind, ModuleBodyItem, ModuleDecl, RegAssign, ResetLevel,
     ThreadBlock, ThreadStmt, TypeExpr, UnaryOp,
 };
@@ -46,7 +46,7 @@ struct Segment {
     entry_seq_if: Vec<IfElseOf<ThreadStmt>>,
     /// CombAssigns held while in this segment. Re-evaluated each
     /// `eval()` so they track input changes during the wait.
-    hold_comb: Vec<CombStmt>,
+    hold_comb: Vec<Stmt>,
     /// SeqAssigns / IfElses-of-SeqAssigns that fire ONCE when the wait
     /// completes (i.e., right after the co_await returns). Used by
     /// `do { ... } until cond;` where the body's seq updates fire on
@@ -959,7 +959,7 @@ fn partition(body: &[ThreadStmt], branches: &mut Vec<Branch>, thread_id: usize) 
     for s in body {
         match s {
             ThreadStmt::CombAssign(a) => {
-                cur.hold_comb.push(CombStmt::Assign(a.clone()));
+                cur.hold_comb.push(Stmt::Assign(a.clone()));
             }
             ThreadStmt::SeqAssign(a) => {
                 cur.entry_seq.push(a.clone());
@@ -972,7 +972,7 @@ fn partition(body: &[ThreadStmt], branches: &mut Vec<Branch>, thread_id: usize) 
                 match kind {
                     IfKind::PureComb => {
                         let comb_ie = lower_thread_ifelse_to_comb(ie)?;
-                        cur.hold_comb.push(CombStmt::IfElse(comb_ie));
+                        cur.hold_comb.push(Stmt::IfElse(comb_ie));
                     }
                     IfKind::PureSeq => {
                         cur.entry_seq_if.push(ie.clone());
@@ -1073,18 +1073,18 @@ fn partition(body: &[ThreadStmt], branches: &mut Vec<Branch>, thread_id: usize) 
                 if contains_wait(body) {
                     return Err("`do until` body containing nested `wait` not yet supported".into());
                 }
-                let mut hold_comb: Vec<CombStmt> = Vec::new();
+                let mut hold_comb: Vec<Stmt> = Vec::new();
                 let mut post_seq: Vec<RegAssign> = Vec::new();
                 let mut post_seq_if: Vec<IfElseOf<ThreadStmt>> = Vec::new();
                 for s in body {
                     match s {
-                        ThreadStmt::CombAssign(a) => hold_comb.push(CombStmt::Assign(a.clone())),
+                        ThreadStmt::CombAssign(a) => hold_comb.push(Stmt::Assign(a.clone())),
                         ThreadStmt::SeqAssign(a) => post_seq.push(a.clone()),
                         ThreadStmt::IfElse(ie) => {
                             match classify_ifelse(ie) {
                                 IfKind::PureComb => {
                                     let comb_ie = lower_thread_ifelse_to_comb(ie)?;
-                                    hold_comb.push(CombStmt::IfElse(comb_ie));
+                                    hold_comb.push(Stmt::IfElse(comb_ie));
                                 }
                                 IfKind::PureSeq => post_seq_if.push(ie.clone()),
                                 IfKind::Mixed => return Err(
@@ -1178,14 +1178,14 @@ fn classify_ifelse(ie: &IfElseOf<ThreadStmt>) -> IfKind {
     }
 }
 
-fn lower_thread_ifelse_to_comb(ie: &IfElseOf<ThreadStmt>) -> Result<IfElseOf<CombStmt>, String> {
-    fn lower_stmts(stmts: &[ThreadStmt]) -> Result<Vec<CombStmt>, String> {
+fn lower_thread_ifelse_to_comb(ie: &IfElseOf<ThreadStmt>) -> Result<IfElseOf<Stmt>, String> {
+    fn lower_stmts(stmts: &[ThreadStmt]) -> Result<Vec<Stmt>, String> {
         let mut out = Vec::new();
         for s in stmts {
             match s {
-                ThreadStmt::CombAssign(a) => out.push(CombStmt::Assign(a.clone())),
+                ThreadStmt::CombAssign(a) => out.push(Stmt::Assign(a.clone())),
                 ThreadStmt::IfElse(inner) => {
-                    out.push(CombStmt::IfElse(lower_thread_ifelse_to_comb(inner)?));
+                    out.push(Stmt::IfElse(lower_thread_ifelse_to_comb(inner)?));
                 }
                 _ => return Err("non-comb stmt inside pure-comb IfElse (shouldn't happen)".into()),
             }
@@ -1228,15 +1228,15 @@ fn emit_seq_stmt(s: &crate::ast::Stmt, out: &mut String, indent: usize) -> Resul
     Ok(())
 }
 
-fn emit_comb_stmt(cs: &CombStmt, out: &mut String, indent: usize) {
+fn emit_comb_stmt(cs: &Stmt, out: &mut String, indent: usize) {
     let pad = " ".repeat(indent);
     match cs {
-        CombStmt::Assign(a) => {
+        Stmt::Assign(a) => {
             let lhs = expr_to_cpp(&a.target).unwrap_or_else(|e| format!("/* err: {e} */"));
             let rhs = expr_to_cpp(&a.value).unwrap_or_else(|e| format!("/* err: {e} */"));
             out.push_str(&format!("{pad}{lhs} = {rhs};\n"));
         }
-        CombStmt::IfElse(ie) => {
+        Stmt::IfElse(ie) => {
             let cond = expr_to_cpp_bool(&ie.cond).unwrap_or_else(|e| format!("/* err: {e} */"));
             out.push_str(&format!("{pad}if ({cond}) {{\n"));
             for s in &ie.then_stmts { emit_comb_stmt(s, out, indent + 2); }
@@ -1246,7 +1246,7 @@ fn emit_comb_stmt(cs: &CombStmt, out: &mut String, indent: usize) {
             }
             out.push_str(&format!("{pad}}}\n"));
         }
-        _ => out.push_str(&format!("{pad}/* unsupported CombStmt */\n")),
+        _ => out.push_str(&format!("{pad}/* unsupported Stmt */\n")),
     }
 }
 

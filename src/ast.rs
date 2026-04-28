@@ -607,26 +607,37 @@ pub struct ResourceDecl {
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
-pub struct CombBlock {
-    pub stmts: Vec<CombStmt>,
-    pub span: Span,
+/// Block context — propagated through typecheck and codegen so a single
+/// `Stmt` enum covers both comb (`=`) and seq (`<=`) blocks. The
+/// distinction is *where* the statement lives, not *what* it carries:
+/// the parser already enforces `=` only inside `comb { }` and `<=` only
+/// inside `seq { }`, so the AST node is unbiased and the context decides
+/// the rules at use sites.
+///
+/// - `Comb`: stmts inside a `comb` block. Assigns to `wire`/port targets only;
+///   blocking `=` in SV.
+/// - `Seq`: stmts inside a `seq on clk` block. Assigns to `reg` targets only;
+///   non-blocking `<=` in SV.
+/// - `PipelineStage`: a pipeline-stage seq block — same rules as `Seq` plus
+///   `wait until` / `do until` are legal here only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockKind {
+    Comb,
+    Seq,
+    PipelineStage,
 }
 
 #[derive(Debug, Clone)]
-pub enum CombStmt {
-    Assign(CombAssign),
-    IfElse(CombIfElse),
-    MatchExpr(CombMatch),
-    Log(LogStmt),
-    For(ForLoop<CombStmt>),
+pub struct CombBlock {
+    pub stmts: Vec<Stmt>,
+    pub span: Span,
 }
 
 /// Assignment statement: `target = expr;` (combinational, in `comb` blocks)
 /// or `target <= expr;` (sequential, in `seq` blocks / thread seq-assigns).
-/// The assignment kind (blocking vs non-blocking) is determined by which
-/// enum wraps it: `CombStmt::Assign` is blocking, `Stmt::Assign` and
-/// `ThreadStmt::SeqAssign` are non-blocking.
+/// Pre-5b this was wrapped in `CombStmt::Assign` vs `Stmt::Assign` to encode
+/// blocking vs non-blocking; that distinction now lives in the enclosing
+/// block context (`BlockKind` for typecheck, `AssignCtx` for codegen).
 #[derive(Debug, Clone)]
 pub struct Assign {
     pub target: Expr,
@@ -634,19 +645,11 @@ pub struct Assign {
     pub span: Span,
 }
 
-// CombAssign and RegAssign are aliases for Assign — previously three
-// identical structs; now unified. Both names kept for readability at
-// call sites (CombAssign for blocking `=`, RegAssign for non-blocking `<=`).
+/// Readability alias for `Assign` used at thread/sites where the *blocking*
+/// (combinational) form is the intent — `target = expr;`. The struct itself
+/// is unbiased; the enclosing context (or the wrapping enum variant)
+/// decides emit semantics.
 pub type CombAssign = Assign;
-
-pub type CombIfElse = IfElseOf<CombStmt>;
-
-/// `comb`-block match. A type alias for `MatchStmt<CombStmt>` — the arm
-/// bodies are comb statements (use `=`), not seq statements. Previously
-/// declared as a separate struct with `Vec<MatchArm>` (seq-typed bodies),
-/// which forced the comb typecheck to delegate match-arm bodies to
-/// `check_reg_stmt`. Now the arms parametrically carry comb stmts.
-pub type CombMatch = MatchStmt<CombStmt>;
 
 #[derive(Debug, Clone)]
 pub struct LetBinding {
@@ -1150,7 +1153,7 @@ pub struct FsmDecl {
     /// The reset / default state
     pub default_state: Ident,
     /// Default block: comb and seq statements applied before the state case
-    pub default_comb: Vec<CombStmt>,
+    pub default_comb: Vec<Stmt>,
     pub default_seq: Vec<Stmt>,
     /// State bodies (`state Foo ... end state Foo`)
     pub states: Vec<StateBody>,
@@ -1167,7 +1170,7 @@ impl std::ops::DerefMut for FsmDecl {
 pub struct StateBody {
     pub name: Ident,
     /// Combinational output assignments for this state
-    pub comb_stmts: Vec<CombStmt>,
+    pub comb_stmts: Vec<Stmt>,
     /// Sequential register assignments for this state
     pub seq_stmts: Vec<Stmt>,
     pub transitions: Vec<Transition>,

@@ -2592,15 +2592,15 @@ fn emit_reg_if_else(ie: &IfElse, ctx: &Ctx, out: &mut String, indent: usize, is_
     out.push_str(&format!("{}}}\n", ind(indent)));
 }
 
-fn emit_comb_stmts(stmts: &[CombStmt], ctx: &Ctx, out: &mut String, indent: usize) {
+fn emit_comb_stmts(stmts: &[Stmt], ctx: &Ctx, out: &mut String, indent: usize) {
     for stmt in stmts {
         emit_comb_stmt(stmt, ctx, out, indent);
     }
 }
 
-fn emit_comb_stmt(stmt: &CombStmt, ctx: &Ctx, out: &mut String, indent: usize) {
+fn emit_comb_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize) {
     match stmt {
-        CombStmt::Assign(a) => {
+        Stmt::Assign(a) => {
             // Scalar bit-indexed LHS: name[idx] = val where name is NOT a Vec
             // Emit mask-and-OR: base = (base & ~(1ULL << idx)) | (uint64_t(val & 1) << idx)
             if let ExprKind::Index(base, idx_expr) = &a.target.kind {
@@ -2635,8 +2635,8 @@ fn emit_comb_stmt(stmt: &CombStmt, ctx: &Ctx, out: &mut String, indent: usize) {
                 out.push_str(&format!("{}{}  = {};\n", ind(indent), resolved_target, rhs));
             }
         }
-        CombStmt::IfElse(ie) => emit_comb_if_else(ie, ctx, out, indent, false),
-        CombStmt::MatchExpr(m) => {
+        Stmt::IfElse(ie) => emit_comb_if_else(ie, ctx, out, indent, false),
+        Stmt::Match(m) => {
             let scrut = cpp_expr(&m.scrutinee, ctx);
             out.push_str(&format!("{}switch ({}) {{\n", ind(indent), scrut));
             for arm in &m.arms {
@@ -2658,7 +2658,7 @@ fn emit_comb_stmt(stmt: &CombStmt, ctx: &Ctx, out: &mut String, indent: usize) {
                     out.push_str(&format!("{}  _arch_cov[{cidx}]++;\n", ind(indent + 1)));
                 }
                 for s in &arm.body {
-                    if let CombStmt::Assign(a) = s {
+                    if let Stmt::Assign(a) = s {
                         let rhs = cpp_expr(&a.value, ctx);
                         let lhs = cpp_expr(&a.target, ctx);
                         out.push_str(&format!("{}{} = {};\n", ind(indent + 2), lhs, rhs));
@@ -2669,8 +2669,8 @@ fn emit_comb_stmt(stmt: &CombStmt, ctx: &Ctx, out: &mut String, indent: usize) {
             }
             out.push_str(&format!("{}}}\n", ind(indent)));
         }
-        CombStmt::Log(l) => emit_log_stmt(l, ctx, out, indent),
-        CombStmt::For(f) => {
+        Stmt::Log(l) => emit_log_stmt(l, ctx, out, indent),
+        Stmt::For(f) => {
             let var = &f.var.name;
             match &f.range {
                 ForRange::Range(rs, re) => {
@@ -2691,10 +2691,11 @@ fn emit_comb_stmt(stmt: &CombStmt, ctx: &Ctx, out: &mut String, indent: usize) {
                 }
             }
         }
+            Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => unreachable!("seq-only Stmt variant inside comb-context walker"),
     }
 }
 
-fn emit_comb_if_else(ie: &CombIfElse, ctx: &Ctx, out: &mut String, indent: usize, is_chain: bool) {
+fn emit_comb_if_else(ie: &IfElse, ctx: &Ctx, out: &mut String, indent: usize, is_chain: bool) {
     let cond = cpp_expr(&ie.cond, ctx);
     if is_chain {
         out.push_str(&format!("{}}} else if ({}) {{\n", ind(indent), cond));
@@ -2714,7 +2715,7 @@ fn emit_comb_if_else(ie: &CombIfElse, ctx: &Ctx, out: &mut String, indent: usize
     }
     emit_comb_stmts(&ie.then_stmts, ctx, out, indent + 1);
     if ie.else_stmts.len() == 1 {
-        if let CombStmt::IfElse(nested) = &ie.else_stmts[0] {
+        if let Stmt::IfElse(nested) = &ie.else_stmts[0] {
             emit_comb_if_else(nested, ctx, out, indent, true);
             return;
         }
@@ -2770,13 +2771,13 @@ fn log_fd_name(path: &str) -> String {
 fn collect_log_files(body: &[ModuleBodyItem]) -> Vec<String> {
     let mut files = Vec::new();
     let mut seen = HashSet::new();
-    fn from_comb(stmts: &[CombStmt], files: &mut Vec<String>, seen: &mut HashSet<String>) {
+    fn from_comb(stmts: &[Stmt], files: &mut Vec<String>, seen: &mut HashSet<String>) {
         for s in stmts {
             match s {
-                CombStmt::Log(l) => { if let Some(ref p) = l.file { if seen.insert(p.clone()) { files.push(p.clone()); } } }
-                CombStmt::IfElse(ie) => { from_comb(&ie.then_stmts, files, seen); from_comb(&ie.else_stmts, files, seen); }
-                CombStmt::MatchExpr(m) => { for arm in &m.arms { from_comb(&arm.body, files, seen); } }
-                CombStmt::For(f) => from_comb(&f.body, files, seen),
+                Stmt::Log(l) => { if let Some(ref p) = l.file { if seen.insert(p.clone()) { files.push(p.clone()); } } }
+                Stmt::IfElse(ie) => { from_comb(&ie.then_stmts, files, seen); from_comb(&ie.else_stmts, files, seen); }
+                Stmt::Match(m) => { for arm in &m.arms { from_comb(&arm.body, files, seen); } }
+                Stmt::For(f) => from_comb(&f.body, files, seen),
                 _ => {}
             }
         }
@@ -2850,22 +2851,23 @@ fn collect_pipe_reg_names(body: &[ModuleBodyItem]) -> HashSet<String> {
 }
 
 /// Collect all identifiers read in a comb statement (RHS of assignments).
-fn collect_comb_reads(stmt: &CombStmt, out: &mut std::collections::BTreeSet<String>) {
+fn collect_comb_reads(stmt: &Stmt, out: &mut std::collections::BTreeSet<String>) {
     match stmt {
-        CombStmt::Assign(a) => collect_expr_idents(&a.value, out),
-        CombStmt::IfElse(ie) => {
+        Stmt::Assign(a) => collect_expr_idents(&a.value, out),
+        Stmt::IfElse(ie) => {
             collect_expr_idents(&ie.cond, out);
             for s in &ie.then_stmts { collect_comb_reads(s, out); }
             for s in &ie.else_stmts { collect_comb_reads(s, out); }
         }
-        CombStmt::Log(_) => {}
-        CombStmt::MatchExpr(m) => {
+        Stmt::Log(_) => {}
+        Stmt::Match(m) => {
             collect_expr_idents(&m.scrutinee, out);
             for arm in &m.arms { for s in &arm.body { collect_comb_reads(s, out); } }
         }
-        CombStmt::For(f) => {
+        Stmt::For(f) => {
             for s in &f.body { collect_comb_reads(s, out); }
         }
+            Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => unreachable!("seq-only Stmt variant inside comb-context walker"),
     }
 }
 
@@ -2986,22 +2988,23 @@ fn collect_inst_output_signals(body: &[ModuleBodyItem]) -> HashSet<String> {
 
 /// Collect all LHS targets from comb blocks (recursing into if/else/match arms).
 fn collect_comb_targets(body: &[ModuleBodyItem]) -> HashSet<String> {
-    fn collect_stmt_targets(stmt: &CombStmt, out: &mut HashSet<String>) {
+    fn collect_stmt_targets(stmt: &Stmt, out: &mut HashSet<String>) {
         match stmt {
-            CombStmt::Assign(a) => { if let ExprKind::Ident(name) = &a.target.kind { out.insert(name.clone()); } }
-            CombStmt::IfElse(ie) => {
+            Stmt::Assign(a) => { if let ExprKind::Ident(name) = &a.target.kind { out.insert(name.clone()); } }
+            Stmt::IfElse(ie) => {
                 for s in &ie.then_stmts { collect_stmt_targets(s, out); }
                 for s in &ie.else_stmts { collect_stmt_targets(s, out); }
             }
-            CombStmt::MatchExpr(m) => {
+            Stmt::Match(m) => {
                 for arm in &m.arms {
                     for s in &arm.body { collect_stmt_targets(s, out); }
                 }
             }
-            CombStmt::Log(_) => {}
-            CombStmt::For(f) => {
+            Stmt::Log(_) => {}
+            Stmt::For(f) => {
                 for s in &f.body { collect_stmt_targets(s, out); }
             }
+                Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => unreachable!("seq-only Stmt variant inside comb-context walker"),
         }
     }
     let mut targets = HashSet::new();

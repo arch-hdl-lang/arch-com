@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::ast::{
-    ConnectDir, CombStmt, ExprKind, FsmDecl, InsideMember, InstDecl, Item,
+    ConnectDir, Stmt, ExprKind, FsmDecl, InsideMember, InstDecl, Item,
     ModuleBodyItem, ModuleDecl, PortDecl, RamDecl, SourceFile, TypeExpr,
 };
 use crate::diagnostics::CompileError;
@@ -132,17 +132,17 @@ fn lhs_base_name(expr: &crate::ast::Expr) -> Option<String> {
 
 // ── Scanning helpers ──────────────────────────────────────────────────────────
 
-/// Recursively scan a single `CombStmt` and accumulate driven outputs and
+/// Recursively scan a single `Stmt` and accumulate driven outputs and
 /// read inputs.
 fn scan_comb_stmt(
-    stmt: &CombStmt,
+    stmt: &Stmt,
     input_names: &HashSet<String>,
     output_names: &HashSet<String>,
     driven: &mut HashSet<String>,
     read: &mut HashSet<String>,
 ) {
     match stmt {
-        CombStmt::Assign(a) => {
+        Stmt::Assign(a) => {
             if let Some(lhs) = lhs_base_name(&a.target) {
                 if output_names.contains(&lhs) {
                     driven.insert(lhs);
@@ -154,7 +154,7 @@ fn scan_comb_stmt(
                 if input_names.contains(id) { read.insert(id.clone()); }
             }
         }
-        CombStmt::IfElse(ife) => {
+        Stmt::IfElse(ife) => {
             // Condition reads count as comb deps
             let mut cond = HashSet::new();
             collect_expr_idents(&ife.cond, &mut cond);
@@ -164,7 +164,7 @@ fn scan_comb_stmt(
             for s in &ife.then_stmts { scan_comb_stmt(s, input_names, output_names, driven, read); }
             for s in &ife.else_stmts { scan_comb_stmt(s, input_names, output_names, driven, read); }
         }
-        CombStmt::MatchExpr(m) => {
+        Stmt::Match(m) => {
             // Scrutinee
             let mut scrut = HashSet::new();
             collect_expr_idents(&m.scrutinee, &mut scrut);
@@ -177,17 +177,18 @@ fn scan_comb_stmt(
                 }
             }
         }
-        CombStmt::For(f) => {
+        Stmt::For(f) => {
             for s in &f.body {
                 scan_comb_stmt(s, input_names, output_names, driven, read);
             }
         }
-        CombStmt::Log(_) => {}
+            Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => unreachable!("seq-only Stmt variant inside comb-context walker"),
+        Stmt::Log(_) => {}
     }
 }
 
 fn scan_comb_stmts(
-    stmts: &[CombStmt],
+    stmts: &[Stmt],
     input_names: &HashSet<String>,
     output_names: &HashSet<String>,
     driven: &mut HashSet<String>,
