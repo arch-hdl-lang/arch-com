@@ -1,3 +1,14 @@
+//! ---
+//! tags: [arbiter, round_robin, basic, tutorial]
+//! ---
+//!
+//! Built-in round-robin arbiter — minimal example showing the
+//! `policy round_robin` shorthand (no custom function / hook needed).
+
+/// 4-requester round-robin bus arbiter.
+///
+/// Picks among `NUM_REQ` requesters with a rotating priority pointer so
+/// each requester gets fair bandwidth on the shared bus.
 arbiter BusArbiter
   policy round_robin;
   param NUM_REQ: const = 4;

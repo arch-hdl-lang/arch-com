@@ -1,7 +1,19 @@
+//! ---
+//! tags: [fsm, traffic_light, tutorial]
+//! ---
+//!
+//! Classic traffic-light FSM tutorial — three-state Red → Green → Yellow
+//! → Red rotation, advances when an external `timer` reaches 0.
+
 domain SysDomain
   freq_mhz: 100
 end domain SysDomain
 
+/// Three-state traffic-light FSM (Red → Green → Yellow → Red).
+///
+/// State advances when the external `timer` input hits 0. Output ports
+/// (`red` / `yellow` / `green`) default to `false` and are asserted from
+/// the matching state's comb block.
 fsm TrafficLight
   param TIMER_W: const = 8;
   port clk: in Clock<SysDomain>;

@@ -1,7 +1,19 @@
+//! ---
+//! tags: [fifo, sync, single_clock, basic, tutorial]
+//! ---
+//!
+//! Single-clock synchronous FIFO — basic `fifo` first-class construct.
+//! Use this shape when producer and consumer share a clock; for
+//! cross-clock crossings use the dual-clock form (see `async_fifo.arch`).
+
 domain SysDomain
   freq_mhz: 100
 end domain SysDomain
 
+/// 16-deep single-clock FIFO with full/empty side-band signals.
+///
+/// Push: `push_valid` + `push_data`, gated by `push_ready`.
+/// Pop: `pop_valid` + `pop_data`, gated by `pop_ready`.
 fifo TxQueue
   param DEPTH: const = 16;
   param T: type = UInt<8>;

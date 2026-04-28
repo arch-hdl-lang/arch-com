@@ -1,9 +1,18 @@
-// Simple FSM with datapath registers to test reg/seq in FSM
+//! ---
+//! tags: [fsm, counter, datapath, regs_in_fsm, tutorial]
+//! ---
+//!
+//! FSM with datapath registers — demonstrates `reg` declarations and
+//! `seq` blocks at FSM scope (alongside the per-state comb/seq).
 
 domain SysDomain
   freq_mhz: 100
 end domain SysDomain
 
+/// 3-state count-to-target FSM (Idle → Counting → Done → Idle).
+///
+/// Triggered by `go`; counts `cnt_r` from 0 up to the captured target;
+/// asserts `done` for one cycle in the Done state, then returns to Idle.
 fsm FsmCounter
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync, High>;

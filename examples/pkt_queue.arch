@@ -1,8 +1,10 @@
-// PacketQueue: a module that wraps TaskQueue (singly linked list) as a simple
-// push/pop FIFO interface.  Demonstrates linklist instantiation inside a module.
-//
-// Tests: arch build (multi-file → SV with both modules), arch sim (wrapper
-//        module drives sub-instance linklist C++ model).
+//! ---
+//! tags: [linklist, fifo_wrapper, packet_queue, instantiation]
+//! ---
+//!
+//! Packet queue — wraps a `linklist` task queue inside a `module` to
+//! present a simple push/pop FIFO interface to the rest of the design.
+//! Demonstrates linklist instantiation from a module wrapper.
 
 domain SysDomain
   freq_mhz: 100
@@ -10,6 +12,8 @@ end domain SysDomain
 
 // ── linklist ────────────────────────────────────────────────────────────────
 
+/// Underlying linklist task queue. Wrapped by `PacketQueue` below to
+/// expose a push/pop interface to the rest of the design.
 linklist TaskQueue
   param DEPTH: const = 8;
   param DATA: type = UInt<32>;
@@ -47,6 +51,8 @@ end linklist TaskQueue
 
 // ── wrapper module ───────────────────────────────────────────────────────────
 
+/// Module wrapper exposing a `push`/`pop` FIFO interface backed by an
+/// internal linklist `TaskQueue` instance.
 module PacketQueue
   param DEPTH: const = 8;
 

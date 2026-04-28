@@ -1,16 +1,22 @@
-// 4-stage RISC-V-style pipeline: Fetch → Decode → Execute → Writeback
-//
-// Demonstrates:
-//   - Per-stage stall (Fetch stalls on cache miss)
-//   - Flush (branch misprediction clears Fetch + Decode)
-//   - Forward (bypass ALU result to Decode to avoid RAW hazard)
-//   - Cross-stage signal references (Decode reads Fetch.instr, etc.)
+//! ---
+//! tags: [pipeline, riscv, cpu, stall, flush, forward, hazard]
+//! refs:
+//!   - "RISC-V Unprivileged ISA Specification, Volume I"
+//!   - "Hennessy & Patterson, Computer Architecture: A Quantitative Approach (Ch. 3)"
+//! ---
+//!
+//! 4-stage RISC-V-style pipeline (Fetch → Decode → Execute → Writeback)
+//! exercising the full hazard-handling surface of the `pipeline`
+//! construct: per-stage `stall` (Fetch on cache miss), `flush` (branch
+//! misprediction clears Fetch + Decode), and `forward` (bypass ALU
+//! result to Decode to break RAW hazards).
 
+/// 200 MHz CPU core clock domain.
 domain CoreDomain
   freq_mhz: 200
 end domain CoreDomain
 
-// Combinational ALU — instantiated inside Execute stage
+/// Combinational ALU — instantiated inside the Execute stage.
 module Alu
   param WIDTH: const = 32;
   port a: in UInt<WIDTH>;
@@ -22,6 +28,10 @@ module Alu
   end comb
 end module Alu
 
+/// 4-stage in-order RISC-V-style pipeline. Stages: Fetch → Decode →
+/// Execute → Writeback. Demonstrates pipeline hazard handling: stall on
+/// cache miss, flush on branch misprediction, forward to break RAW
+/// hazards.
 pipeline CpuPipe
   param XLEN: const = 32;
   param REG_ADDR_W: const = 5;

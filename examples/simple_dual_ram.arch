@@ -1,7 +1,19 @@
+//! ---
+//! tags: [ram, simple_dual, dual_port, bram, tutorial]
+//! ---
+//!
+//! Simple-dual-port BRAM example — one read port + one write port,
+//! independent addresses. Useful for FIFOs, scratchpads, descriptor
+//! tables, etc.
+
 domain SysDomain
   freq_mhz: 100
 end domain SysDomain
 
+/// 128x8 simple-dual-port RAM with 1-cycle read latency. Read and write
+/// ports are fully independent — concurrent read+write to different
+/// addresses always succeeds; collision behavior at the same address is
+/// undefined (no `write:` policy needed for simple_dual).
 ram DualMem
   kind simple_dual;
   latency 1;
