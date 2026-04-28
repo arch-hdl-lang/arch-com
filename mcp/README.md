@@ -73,7 +73,9 @@ session loads the server and exposes the MCP resources and tools.
 | Resource | Description |
 |----------|-------------|
 | `arch://reference-card` | Full ARCH HDL AI Reference Card — language syntax and examples |
+| `arch://specification` | Full ARCH HDL Language Specification |
 | `arch://compiler-status` | Current compiler feature status and changelog |
+| `arch://doc-comments` | V1 spec for `///` / `//!` doc comments and the `//! ---` YAML frontmatter that captures spec→RTL provenance |
 
 ## Available Tools
 
@@ -97,7 +99,12 @@ session loads the server and exposes the MCP resources and tools.
 An AI assistant using this MCP server can:
 
 1. Read `arch://reference-card` to learn the ARCH language
-2. Use `write_arch_file` to create a design from natural language
-3. Use `arch_check` to validate — fix errors from diagnostics
-4. Use `arch_build` to emit SystemVerilog
-5. Use `arch_sim` to run simulation with a testbench
+2. Call `get_construct_syntax("doc_comments")` to learn the spec-provenance shape
+3. Use `write_arch_file` (or `write_and_check`) to create a design from natural language — capture the user's design spec in front matter (`//! ---`) + per-construct `///` blocks per the directive in `instructions.md`
+4. Use `arch_check` to validate — fix errors from diagnostics
+5. Use `arch_build_and_lint` to emit SystemVerilog and verify with Verilator
+6. Use `arch_sim` to run simulation with a testbench
+
+Spec preservation: when editing an existing `.arch` file, agents are
+instructed to preserve all `///`, `//!`, and front-matter content
+unless the user explicitly asks to change it.

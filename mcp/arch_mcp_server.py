@@ -79,6 +79,64 @@ def _load_construct_syntax() -> dict[str, str]:
 
 CONSTRUCT_SYNTAX = _load_construct_syntax()
 
+# Inject a synthetic "doc_comments" entry so agents who reach for
+# get_construct_syntax() before writing code learn the front-matter +
+# `///` + `//!` shape without a second round-trip.
+CONSTRUCT_SYNTAX["doc_comments"] = """\
+ARCH supports three doc-comment surfaces for capturing design intent
+inline. The compiler stores them on the AST verbatim; downstream tooling
+(RAG indexer, formal-tool feeders) consumes them.
+
+`///` outer doc — attaches to the next construct, similar to Rust:
+```
+/// 4-channel round-robin AXI write arbiter.
+///
+/// Picks among DMA channels using a rotating priority pointer.
+arbiter AxiWrArb
+  ...
+end arbiter AxiWrArb
+```
+
+`//!` inner doc — attaches to the enclosing item; legal at file-top
+(documents the file as a whole) or immediately after a construct's
+opening keyword + name:
+```
+arbiter AxiWrArb
+  //! Round-robin chosen because all 4 channels are equal-priority;
+  //! see ticket FOO-1234 for the QoS-aware variant proposed for v2.
+  policy round_robin;
+```
+
+YAML front matter — embedded in the leading `//!` block at the top of
+the file, delimited by `//! ---` lines. Compiler does NOT parse the
+YAML; it stores the text verbatim.
+```
+//! ---
+//! spec_md: doc/specs/dma_engine.md
+//! tags: [dma, axi]
+//! refs: ["AXI4 §A3.3.1"]
+//! ---
+//!
+//! Multi-channel DMA engine. See spec_md for the channel state diagram.
+```
+
+Recognized field semantics (interpreted by tooling, not the compiler):
+- `spec_md`: relative path to an external markdown spec, optional `#anchor`.
+- `tags`: 3-6 short feature tags for retrieval.
+- `refs`: citations — datasheet sections, ticket IDs, URLs.
+
+Escape hatch: `////` (4 or more slashes) is a regular comment, NOT a
+doc comment — use it for ASCII banners or notes you don't want indexed.
+
+When generating .arch code from a user-supplied design spec, capture the
+spec across all three surfaces. When editing an existing file, preserve
+all `///`, `//!`, and front matter unless the user explicitly asks to
+change them — they're the project's spec→RTL provenance trail.
+
+Full V1 spec: `arch://doc-comments` resource (or
+`doc/plan_arch_doc_comments.md`).
+"""
+
 # ── Reserved keywords (for syntax hints) ────────────────────────────────
 
 RESERVED_KEYWORDS = {
@@ -115,6 +173,16 @@ def specification() -> str:
 def compiler_status() -> str:
     """Current compiler feature status and changelog."""
     return (PROJECT_ROOT / "doc" / "COMPILER_STATUS.md").read_text()
+
+
+@mcp.resource("arch://doc-comments")
+def doc_comments_spec() -> str:
+    """V1 spec for ARCH doc comments (`///`, `//!`) and the YAML-style
+    frontmatter block that captures spec→RTL provenance. Read this when
+    generating new .arch code to learn the exact attachment rules and
+    field semantics; the compiler stores the YAML verbatim — downstream
+    tooling parses it."""
+    return (PROJECT_ROOT / "doc" / "plan_arch_doc_comments.md").read_text()
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -162,7 +230,11 @@ def get_construct_syntax(construct: str) -> str:
 
     Available constructs: module, function, pipeline, fsm, fifo, synchronizer,
     ram, counter, arbiter, regfile, linklist, generate, bus, template, package,
-    types, expressions
+    types, expressions, doc_comments
+
+    `doc_comments` documents the `///` outer / `//!` inner / `//! ---`
+    front-matter syntax — call it once before writing a new .arch file
+    so the design spec gets captured inline.
 
     Also returns reserved keywords to avoid as signal/register names.
     Note: 'in', 'out', 'state' are contextual — safe to use as port/signal names.

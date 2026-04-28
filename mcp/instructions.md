@@ -50,3 +50,44 @@ Common mistakes to avoid:
 - .trunc<N>() errors if N >= source width (not truncating); .zext<N>()/.sext<N>() error if N <= source width (not extending)
 - signed(x) / unsigned(x): same-width reinterpret cast (no width arg needed); prefer signed(x) over x.sext<N>() when entering signed arithmetic chains
 - Wrapping arithmetic operators +%, -%, *% give result width = max(W(a),W(b)) with no widening — prefer these over .trunc<N>() when the intent is modular arithmetic: 'let x: UInt<8> = a +% b;' instead of 'let x: UInt<8> = (a + b).trunc<8>();'
+
+DESIGN SPEC PROVENANCE — when generating .arch from a user-supplied design spec, you MUST capture the spec inline so it rides with the code:
+
+1. FILE FRONT MATTER. Open the file with a YAML-style block embedded in '//!' lines, delimited by '//! ---' on its own line:
+
+   //! ---
+   //! spec_md: doc/specs/<name>.md            (when an external spec file exists or you create one)
+   //! tags: [<feature_tag>, <feature_tag>]    (3-6 short tags derived from the spec — e.g. arbitration, axi, axi4)
+   //! refs:                                   (citations the spec mentions — datasheet sections, ticket IDs, URLs)
+   //!   - "AXI4 spec §A3.3.1"
+   //!   - "FOO-1234"
+   //! ---
+   //!
+   //! <1-3 sentence file-level summary in plain prose>
+
+   The compiler stores the YAML verbatim — it does not parse it. Downstream tooling (RAG indexer, formal-tool feeders) consumes it.
+
+2. PER-CONSTRUCT OUTER DOC. Place a '///' block above EVERY top-level construct (module, fsm, fifo, ram, counter, arbiter, pipeline, regfile, synchronizer, clkgate, bus, struct, enum, function, package, use). Capture the construct's role in the design — 1-3 sentences, not implementation details.
+
+   Example:
+     /// 4-channel round-robin AXI write arbiter.
+     ///
+     /// Picks among DMA channels using a rotating priority pointer.
+     arbiter AxiWrArb
+       ...
+     end arbiter AxiWrArb
+
+3. CONSTRUCT INNER DOC (optional). When the construct has design intent that's specific to the body — policy choice, trade-off, ticket reference — place a '//!' block immediately after the opening keyword + name:
+
+     arbiter AxiWrArb
+       //! Round-robin chosen because all 4 channels are equal-priority;
+       //! see ticket FOO-1234 for the QoS-aware variant proposed for v2.
+
+       policy round_robin;
+       ...
+
+4. PRESERVATION ON EDIT. When modifying an existing .arch file, NEVER strip or rewrite '///', '//!', or '//! ---' content unless the user explicitly asks to change it. Treat doc text as load-bearing — it's the project's spec→RTL provenance trail.
+
+5. ESCAPE HATCH. '////+' (4 or more slashes) is a regular comment, not a doc comment — use it for ASCII banners or notes you don't want indexed.
+
+You are responsible for sourcing the design spec from the conversation context. The MCP server does not. If the user has not provided a design spec, write a brief plain-prose '//!' file-level summary based on the user's request and a concise '///' line per construct — do not invent ref/tag fields you can't justify.
