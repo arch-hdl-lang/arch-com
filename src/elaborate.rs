@@ -1458,7 +1458,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
         // index/valid).
         let gv_sink = format!("_{}_grant_valid", res_name);
         let gr_sink = format!("_{}_grant_requester", res_name);
-        let gr_width = if n_threads <= 1 { 1u32 } else { (n_threads as f64).log2().ceil() as u32 };
+        let gr_width = crate::width::index_width(n_threads as u64);
         merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
             name: Ident::new(gv_sink.clone(), sp),
             ty: TypeExpr::Bool, span: sp,
@@ -1689,7 +1689,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
 
         let n_states = raw_states.len();
         let state_reg = format!("_t{}_state", ti);
-        let state_bits = if n_states <= 2 { 1u64 } else { ((n_states as f64).log2().ceil()) as u64 };
+        let state_bits = crate::width::index_width(n_states as u64) as u64;
 
         // State register
         merged_body.push(ModuleBodyItem::RegDecl(RegDecl {
@@ -2164,7 +2164,7 @@ fn synthesize_lock_arbiter(
     let clk_ty = TypeExpr::Clock(Ident::new("SysDomain".to_string(), sp));
     let n_threads_expr = Expr::new(
         ExprKind::Literal(LitKind::Dec(n_threads as u64)), sp);
-    let gr_width = if n_threads <= 1 { 1u32 } else { (n_threads as f64).log2().ceil() as u32 };
+    let gr_width = crate::width::index_width(n_threads as u64);
 
     // The arbiter is an internal synthesized module; its port names are
     // canonical (`clk` / `rst`) regardless of the parent's reset signal name.
@@ -5462,7 +5462,7 @@ fn inline_lower_tlm_target(
     Ok(items)
 }
 
-/// Ceiling log2 helper for state width.
+/// Width-of-state helper. Compatibility shim — delegates to [`crate::width::index_width`].
 fn clog2_width(n: u64) -> u32 {
-    if n <= 1 { 1 } else { (n - 1).ilog2() + 1 }
+    crate::width::index_width(n)
 }

@@ -845,7 +845,7 @@ impl<'a> Codegen<'a> {
                                     _ => None,
                                 };
                                 if let Some(n) = n {
-                                    let idx_w = std::cmp::max(1, (n as f64).log2().ceil() as u32);
+                                    let idx_w = crate::width::index_width(n as u64);
                                     // Record width so the typedef still emits
                                     // (field access paths may still reference
                                     // the struct type).
@@ -4093,7 +4093,7 @@ impl<'a> Codegen<'a> {
                 if !wait_stage_flags[si] { continue; }
                 let prefix = stage.name.name.to_lowercase();
                 let n_states = Self::count_wait_fsm_states(stage);
-                let bits = if n_states <= 2 { 1 } else { ((n_states as f64).log2().ceil()) as usize };
+                let bits = crate::width::index_width(n_states as u64) as usize;
                 self.line(&format!("logic [{}:0] {prefix}_fsm_state;", bits - 1));
                 self.line(&format!("logic {prefix}_fsm_busy;"));
             }
@@ -4482,7 +4482,7 @@ impl<'a> Codegen<'a> {
         // State 0 is special: checks upstream valid, fast-paths.
         // Total states = 1 (idle) + number of wait groups
         let n_states = 1 + groups.len();
-        let bits = if n_states <= 2 { 1 } else { ((n_states as f64).log2().ceil()) as usize };
+        let bits = crate::width::index_width(n_states as u64) as usize;
 
         self.line(&format!("// Wait-stage FSM: {prefix}"));
         self.line(&format!("case ({prefix}_fsm_state)"));
@@ -5408,7 +5408,7 @@ impl<'a> Codegen<'a> {
                     }
                 } else if let Some((crate::resolve::Symbol::Enum(info), _)) = self.symbols.globals.get(&ident.name) {
                     let n = info.variants.len();
-                    let bits = if n <= 1 { 1 } else { (n as f64).log2().ceil() as u32 };
+                    let bits = crate::width::index_width(n as u64);
                     Some(bits.to_string())
                 } else {
                     None
@@ -5809,7 +5809,7 @@ impl<'a> Codegen<'a> {
             return format!("{recv_b}.{}()", method.name);
         };
         let n_usize = n as usize;
-        let idx_w = std::cmp::max(1, (n as f64).log2().ceil() as u32);
+        let idx_w = crate::width::index_width(n as u64);
 
         // Helper: emit an expression with `item` bound to recv[i] and
         // `index` bound to a sized literal. `ident_subst` is a field of
@@ -5848,7 +5848,7 @@ impl<'a> Codegen<'a> {
             }
             "count" => {
                 if n_usize == 0 { return "0".to_string(); }
-                let w = std::cmp::max(1, ((n + 1) as f64).log2().ceil() as u32);
+                let w = crate::width::index_width((n + 1) as u64);
                 // Sum of bool conversions. SV auto-widens `+` per 1800-2012 §11.6.
                 let terms: Vec<String> = (0..n)
                     .map(|i| format!("{w}'({} ? 1 : 0)", emit_at(i)))
@@ -7574,7 +7574,7 @@ impl<'a> Codegen<'a> {
 
         // Parse NUM_REQ as integer for bit width calculations
         let num_req_int: u64 = num_req_default.parse().unwrap_or(4);
-        let req_width = if num_req_int <= 1 { 1 } else { (num_req_int as f64).log2().ceil() as u32 };
+        let req_width = crate::width::index_width(num_req_int as u64);
 
         let clk = a.ports.iter()
             .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
@@ -7986,7 +7986,7 @@ impl<'a> Codegen<'a> {
             .unwrap_or_else(|| "32".to_string());
 
         // Determine addr width: ceil(log2(NREGS))
-        let addr_width = if nregs <= 1 { 1u32 } else { (nregs as f64).log2().ceil() as u32 };
+        let addr_width = crate::width::index_width(nregs);
 
         // Read/write port counts — resolve param references
         let nread = r.read_ports.as_ref()

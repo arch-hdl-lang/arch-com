@@ -2786,7 +2786,7 @@ impl<'a> TypeChecker<'a> {
                             ));
                             return Ty::Error;
                         }
-                        let idx_w = std::cmp::max(1, (n as f64).log2().ceil() as u32);
+                        let idx_w = crate::width::index_width(n as u64);
                         let pred_needed = !matches!(method.name.as_str(),
                             "reduce_or" | "reduce_and" | "reduce_xor" | "contains");
 
@@ -2869,7 +2869,7 @@ impl<'a> TypeChecker<'a> {
                             }
                             "count" => {
                                 // clog2(N+1) for popcount result width.
-                                let w = std::cmp::max(1, ((n + 1) as f64).log2().ceil() as u32);
+                                let w = crate::width::index_width((n + 1) as u64);
                                 Ty::UInt(w)
                             }
                             "reduce_or" | "reduce_and" | "reduce_xor" => {
@@ -5181,7 +5181,7 @@ pub fn enum_width(num_variants: usize) -> u32 {
     if num_variants <= 1 {
         1
     } else {
-        (num_variants as f64).log2().ceil() as u32
+        crate::width::clog2(num_variants as u64)
     }
 }
 
@@ -5202,7 +5202,7 @@ pub fn linklist_num_heads(l: &crate::ast::LinklistDecl) -> u32 {
     }
 }
 
-/// ceil_log2 for u32. `clog2_u32(1) = 0`, `clog2_u32(2) = 1`, `clog2_u32(16) = 4`.
+/// ceil_log2 for u32. Compatibility shim — delegates to [`crate::width::clog2`].
 pub fn clog2_u32(n: u32) -> u32 {
-    if n <= 1 { 0 } else { (n - 1).ilog2() + 1 }
+    crate::width::clog2(n as u64)
 }

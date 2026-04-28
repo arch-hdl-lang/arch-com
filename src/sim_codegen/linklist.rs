@@ -19,8 +19,8 @@ impl<'a> SimCodegen<'a> {
                 .unwrap_or(default)
         };
         let depth = param_int("DEPTH", 8) as usize;
-        let handle_mask = (1u64 << ((depth as f64).log2().ceil() as u32)) - 1;
-        let cnt_mask    = (1u64 << (((depth + 1) as f64).log2().ceil() as u32)) - 1;
+        let handle_mask = (1u64 << crate::width::clog2(depth as u64)) - 1;
+        let cnt_mask    = (1u64 << crate::width::clog2((depth + 1) as u64)) - 1;
 
         // Multi-head linklist support — mirror of the SV codegen in
         // src/codegen.rs::emit_linklist. When NUM_HEADS > 1, head/tail
