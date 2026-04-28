@@ -1,10 +1,17 @@
 # Phase 5b — Collapse `CombStmt` into `Stmt`
 
-**Status (2026-04-28): parts 1 & 2 DONE; part 3 queued.**
+**Status (2026-04-28): parts 1, 2, 3 DONE.**
 
 - **Part 1** (PR #203, merged): drop `CombStmt`, `CombIfElse`, `CombMatch`; unify all references to `Stmt`; `CombBlock.stmts` is now `Vec<Stmt>`. 218/218 tests, zero snapshot drift.
 - **Part 2** (this PR): introduce `AssignCtx { Blocking, NonBlocking }` and a unified `Codegen::emit_stmt(stmt, ctx)` + `emit_if_else(ie, ctx, is_chain)`. Deletes the `emit_reg_stmt_as_comb` workaround the original plan called out, plus the dead `emit_comb_if_else` / `emit_reg_if_else` helpers and the duplicate `comb_stmt_span_start`. Net −122 lines in `codegen.rs`. 218/218 tests, zero snapshot drift.
-- **Part 3 (queued)**: collapse the remaining parallel walkers in typecheck (`check_reg_stmt` + `check_comb_stmt`), sim_codegen (`emit_reg_stmt` + `emit_comb_stmt`), formal (`walk_reg_stmt` + `walk_comb_stmt`), and elaborate (`rewrite_reg_stmt_cc` + `rewrite_comb_stmt_cc`). Each pair has subtler semantic differences than codegen — driven-set tracking, branch-aware merging, name-resolution in_seq flag, init-block handling — that warrant their own review surface. Also: introduce real typecheck rejection for `Init` / `WaitUntil` / `DoUntil` in comb context (currently `unreachable!()` because the parser routes them, but a proper error is the spec.)
+- **Part 3** (this PR): collapse the typecheck walker pair via design choice D3 (`BlockKind` explicit param). `check_reg_stmt` and `check_comb_stmt` are now thin wrappers around a unified `check_stmt(stmt, ..., block_kind, reg_names)`. The branch-aware driven-tracking, reg-vs-wire LHS check, and Init/WaitUntil/DoUntil rejection are all gated by `block_kind`. The previously-`unreachable!()` arms for seq-only variants in comb context now emit proper typecheck errors (defensive — the parser already routes them, but a programmatic AST mutation that bypasses the parser will land a diagnostic, not panic).
+
+  **Sim_codegen, formal, and elaborate walker pairs are kept parallel intentionally.** Their differences are not just operator dispatch:
+  - `sim_codegen::emit_*_stmt`: posedge shadow registers (`_n_{name}` vs `_{name}`), wide-output-port `_arch_u128` conversion, fsm_mode resolution, and per-arm coverage instrumentation interact differently in seq vs comb. A unified function would need 5+ context flags.
+  - `formal::walk_*_stmt`: writes to *different output data structures* (`reg_writes: HashMap<String, Vec<(cond, value)>>` vs `comb_assigns: Vec<CombAssignFlat>`). The shape of the recursion is the same but the recorded data is fundamentally different.
+  - `elaborate::rewrite_*_stmt_cc`: the comb path rewrites `Match` scrutinee, the seq path doesn't — likely a latent bug where seq-context `match my_chan.recv() {…}` would skip CC dispatch rewriting. Worth investigating, but a fix should land in its own commit, not buried inside a refactor.
+
+  These three are tracked under "potential follow-ups" but are not blocking for the Phase 5b goal of "collapse the AST-level merge". The win-per-LOC is also smaller — codegen and typecheck were the high-leverage pairs.
 
 ---
 
