@@ -6614,3 +6614,95 @@ fn test_doc_outer_on_use_decl() {
         "use decl should have outer doc, got {:?}", u.doc);
 }
 
+// ── Member-level doc tokens are silently ignored (not yet attached) ──────────
+
+#[test]
+fn test_doc_above_port_silently_ignored() {
+    // `///` above a port (member-level) is *parsed but discarded* — until
+    // PR-doc-1.6 wires up member-level attachment, the parser treats stray
+    // doc tokens as transparent whitespace rather than producing the
+    // confusing "unexpected token: ///" error.
+    let source = "
+        module M
+          /// stall signal — high while upstream must wait
+          port stall_o: out Bool;
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          comb
+            stall_o = 0;
+          end comb
+        end module M
+    ";
+    let ast = parse_to_ast(source);
+    let m = match &ast.items[0] {
+        arch::ast::Item::Module(m) => m,
+        _ => panic!("expected module"),
+    };
+    // Port still parsed correctly — three ports total.
+    assert_eq!(m.ports.len(), 3, "expected 3 ports, got {}", m.ports.len());
+    // Module-level outer doc is still None (the `///` was member-level
+    // and got silently dropped, NOT promoted to module).
+    assert!(m.doc.is_none(), "module doc should be None, got {:?}", m.doc);
+}
+
+#[test]
+fn test_doc_above_reg_wire_inst_silently_ignored() {
+    // `///` above reg / wire / inst (and member docs in general) is
+    // tolerated. The parse must succeed and produce the expected body
+    // shape.
+    let source = "
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port q: out UInt<8>;
+
+          /// data register
+          reg val_r: UInt<8> reset rst => 0;
+
+          /// combinational tap
+          wire tap: UInt<8>;
+
+          comb
+            tap = val_r;
+          end comb
+          let q = tap;
+        end module M
+    ";
+    let ast = parse_to_ast(source);
+    let m = match &ast.items[0] {
+        arch::ast::Item::Module(m) => m,
+        _ => panic!("expected module"),
+    };
+    let has_reg = m.body.iter().any(|i| matches!(i, arch::ast::ModuleBodyItem::RegDecl(_)));
+    let has_wire = m.body.iter().any(|i| matches!(i, arch::ast::ModuleBodyItem::WireDecl(_)));
+    assert!(has_reg, "reg should be present despite leading doc comment");
+    assert!(has_wire, "wire should be present despite leading doc comment");
+}
+
+#[test]
+fn test_inner_doc_inside_body_silently_ignored() {
+    // `//!` deep inside a module body (not at the legal post-name position)
+    // should also be silently dropped, not error.
+    let source = "
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port q: out Bool;
+
+          //! mid-body inner doc (not at the legal position) — silently dropped
+          comb
+            q = 0;
+          end comb
+        end module M
+    ";
+    let ast = parse_to_ast(source);
+    let m = match &ast.items[0] {
+        arch::ast::Item::Module(m) => m,
+        _ => panic!("expected module"),
+    };
+    // A `//!` not immediately after `module M` is a stray — should NOT
+    // attach to inner_doc (which only catches the post-name position).
+    assert!(m.inner_doc.is_none(),
+        "stray //! mid-body should not attach to inner_doc, got: {:?}", m.inner_doc);
+}
+
