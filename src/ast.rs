@@ -1423,12 +1423,29 @@ pub struct RegfileDecl {
     /// area than the flop form on ASIC, with most rows clock-gated when
     /// no write fires. See spec §regfile and `doc/plan_regfile_latch.md`.
     pub kind: RegfileKind,
+    /// Where the write-port flops live (only meaningful when `kind: latch`):
+    /// - `External` (default): caller flops `we` / `waddr` / `wdata` in
+    ///   their logic; the typecheck pass enforces this at every inst site
+    ///   (see `check_latch_regfile_writes`). Emitted SV is leaner — no
+    ///   internal flop, no ICG cell.
+    /// - `Internal` (Ibex-style): RF auto-emits `wdata_q` / `waddr_q`
+    ///   flops + a per-row ICG cell (`mem_clk[i] = clk && (waddr_q==i)`,
+    ///   gated through a transparent latch on `we` to suppress glitches).
+    ///   Caller can drive `we` / `waddr` / `wdata` combinationally — the
+    ///   static check is skipped.
+    pub flops: RegfileFlops,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegfileKind {
     Flop,
     Latch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegfileFlops {
+    External,
+    Internal,
 }
 impl std::ops::Deref for RegfileDecl {
     type Target = ConstructCommon;

@@ -201,11 +201,17 @@ impl<'a> TypeChecker<'a> {
         for item in &m.body {
             let inst = match item { ModuleBodyItem::Inst(i) => i, _ => continue };
             // Resolve the target — only regfile constructs matter.
-            let target_kind = self.source.items.iter().find_map(|it| match it {
-                Item::Regfile(rf) if rf.name.name == inst.module_name.name => Some(rf.kind),
+            let target = self.source.items.iter().find_map(|it| match it {
+                Item::Regfile(rf) if rf.name.name == inst.module_name.name => Some((rf.kind, rf.flops)),
                 _ => None,
             });
-            let Some(crate::ast::RegfileKind::Latch) = target_kind else { continue };
+            let Some((crate::ast::RegfileKind::Latch, flops)) = target else { continue };
+            // `flops: internal` means the regfile auto-emits its own wdata_q /
+            // waddr_q sample flops + per-row ICG, so the caller is allowed to
+            // drive write pins combinationally — skip the static flop-source
+            // check entirely. (`flops: external` is the default; caller must
+            // pre-flop, which is the property this check enforces.)
+            if matches!(flops, crate::ast::RegfileFlops::Internal) { continue; }
 
             for c in &inst.connections {
                 // Latch-RF write-port pins follow the "<pfx>_addr" / "<pfx>_addr"

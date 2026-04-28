@@ -6030,10 +6030,34 @@ impl<'a> SimCodegen<'a> {
             for i in 0..nwrite { for s in &wp.signals { inits.push(format!("{}(0)", flat(&write_pfx, i, nwrite, &s.name.name))); } }
         }
         inits.push("_clk_prev(0)".to_string());
+        let is_latch_init    = r.kind == crate::ast::RegfileKind::Latch;
+        let is_internal_init = is_latch_init && matches!(r.flops, crate::ast::RegfileFlops::Internal);
+        if is_internal_init {
+            inits.push("_we_q(0)".to_string());
+            inits.push("_waddr_q(0)".to_string());
+            inits.push("_wdata_q(0)".to_string());
+        }
 
         h.push_str(&format!("  {class}() : {} {{\n    memset(_rf, 0, sizeof(_rf));\n  }}\n", inits.join(", ")));
         h.push_str("  void eval();\n  void eval_comb();\n  void eval_posedge();\n  void final() { trace_close(); }\n\nprivate:\n");
         h.push_str("  uint8_t _clk_prev;\n");
+        // Internal sample flops for kind:latch flops:internal (Ibex-style).
+        // `_we_q` / `_waddr_q` / `_wdata_q` are taken on the rising edge; the
+        // latch then captures during the clk-low half-cycle window (mirrors
+        // the SV `always_latch if (!clk && we_q && waddr_q == k)` shape).
+        let is_latch    = r.kind == crate::ast::RegfileKind::Latch;
+        let is_internal = is_latch && matches!(r.flops, crate::ast::RegfileFlops::Internal);
+        if is_internal {
+            // Single write port assumed (matches SV codegen — same restriction).
+            // For a wider data type we still match what cpp_internal_type picks.
+            let waddr_t = r.write_ports.as_ref()
+                .and_then(|wp| wp.signals.iter().find(|s| s.name.name == "addr"))
+                .map(|s| cpp_internal_type(&s.ty))
+                .unwrap_or_else(|| "uint32_t".to_string());
+            h.push_str("  uint8_t _we_q;\n");
+            h.push_str(&format!("  {waddr_t} _waddr_q;\n"));
+            h.push_str(&format!("  {elem_cpp} _wdata_q;\n"));
+        }
         h.push_str(&format!("  {elem_cpp} _rf[{nregs}];\n"));
 
         // ── Implementation ────────────────────────────────────────────────────
@@ -6048,21 +6072,59 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("  if (_trace_fp) trace_dump(_trace_time++);\n");
         cpp.push_str("}\n\n");
 
-        // eval_posedge(): write ports
+        // eval_posedge() — fork on storage kind:
+        //   kind:flop                  → flop array, sampled on rising edge.
+        //   kind:latch flops:external  → no posedge state; latch update lives
+        //                                in eval_comb (transparent while we).
+        //   kind:latch flops:internal  → sample we_q/waddr_q/wdata_q here;
+        //                                latch capture lives in eval_comb.
         cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
         cpp.push_str(&format!("  bool _rising = ({clk_port} && !_clk_prev);\n"));
         cpp.push_str(&format!("  _clk_prev = {clk_port};\n"));
         cpp.push_str("  if (!_rising) return;\n");
-        for wi in 0..nwrite {
-            let wen   = flat(&write_pfx, wi, nwrite, "en");
-            let waddr = flat(&write_pfx, wi, nwrite, "addr");
-            let wdata = flat(&write_pfx, wi, nwrite, "data");
-            cpp.push_str(&format!("  if ({wen})\n    _rf[{waddr}] = {wdata};\n"));
+        if !is_latch {
+            for wi in 0..nwrite {
+                let wen   = flat(&write_pfx, wi, nwrite, "en");
+                let waddr = flat(&write_pfx, wi, nwrite, "addr");
+                let wdata = flat(&write_pfx, wi, nwrite, "data");
+                cpp.push_str(&format!("  if ({wen})\n    _rf[{waddr}] = {wdata};\n"));
+            }
+        } else if is_internal {
+            // Single-port sample (write port 0).
+            let wen   = flat(&write_pfx, 0, nwrite, "en");
+            let waddr = flat(&write_pfx, 0, nwrite, "addr");
+            let wdata = flat(&write_pfx, 0, nwrite, "data");
+            cpp.push_str(&format!("  _we_q = {wen};\n"));
+            cpp.push_str(&format!("  if ({wen}) {{\n"));
+            cpp.push_str(&format!("    _waddr_q = {waddr};\n"));
+            cpp.push_str(&format!("    _wdata_q = {wdata};\n"));
+            cpp.push_str("  }\n");
         }
+        // is_latch && external: nothing on posedge — latch lives in eval_comb.
         cpp.push_str("}\n\n");
 
-        // eval_comb(): async reads, optional write-before-read bypass
+        // eval_comb(): latch update (when kind:latch) + async reads (with
+        // optional write-before-read bypass).
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
+        if is_latch {
+            // Latch update runs *before* the read mux so reads in the same
+            // tick see fresh data (matches SV's transparent-during-low-phase
+            // semantics: read mux is comb on _rf, latch is open during clk-low).
+            if is_internal {
+                // Internal sample flops: latch transparent during clk-low using
+                // sampled inputs. ICG-equivalent gate `!clk && we_q`.
+                cpp.push_str(&format!("  if (!{clk_port} && _we_q)\n"));
+                cpp.push_str("    _rf[_waddr_q] = _wdata_q;\n");
+            } else {
+                // External flops: latch transparent whenever we is high (the
+                // SV `always_latch if (we && waddr == k)` collapses to this).
+                let wen   = flat(&write_pfx, 0, nwrite, "en");
+                let waddr = flat(&write_pfx, 0, nwrite, "addr");
+                let wdata = flat(&write_pfx, 0, nwrite, "data");
+                cpp.push_str(&format!("  if ({wen})\n"));
+                cpp.push_str(&format!("    _rf[{waddr}] = {wdata};\n"));
+            }
+        }
         for ri in 0..nread {
             let raddr = flat(&read_pfx, ri, nread, "addr");
             let rdata = flat(&read_pfx, ri, nread, "data");

@@ -4692,8 +4692,27 @@ impl Parser {
         let mut forward_write_before_read = false;
         let mut asserts: Vec<AssertDecl> = Vec::new();
         let mut kind: crate::ast::RegfileKind = crate::ast::RegfileKind::Flop;
+        let mut flops: crate::ast::RegfileFlops = crate::ast::RegfileFlops::External;
 
         while !self.check_end_of(TokenKind::Regfile) {
+            // Handle the contextual `flops:` sub-config first — `flops` is
+            // an Ident token, so it lands in the wildcard arm if checked
+            // last and we'd lose the dispatch.
+            if self.check_ident("flops") {
+                self.advance(); // consume `flops`
+                self.expect(TokenKind::Colon)?;
+                let val = self.expect_ident()?;
+                self.expect(TokenKind::Semi)?;
+                flops = match val.name.as_str() {
+                    "external" => crate::ast::RegfileFlops::External,
+                    "internal" => crate::ast::RegfileFlops::Internal,
+                    other => return Err(CompileError::general(
+                        &format!("unknown regfile `flops:` value `{other}`; expected `external` or `internal`"),
+                        val.span,
+                    )),
+                };
+                continue;
+            }
             match self.peek_kind() {
                 _ if self.check_param() => params.push(self.parse_param_decl()?),
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
@@ -4785,6 +4804,7 @@ impl Parser {
             inits,
             forward_write_before_read,
             kind,
+            flops,
         })
     }
 
