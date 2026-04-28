@@ -150,10 +150,118 @@ impl<'a> TypeChecker<'a> {
                 Item::Use(_) => {} // no-op
             }
         }
+        // Cross-item check: every `inst foo: SomeRegfile` whose target
+        // regfile has `kind: latch` must drive its write-port `addr` /
+        // `data` connections from a flop-like source (reg / port reg /
+        // pipe_reg / input port / inst output). Combinational sources
+        // (let / wire / arithmetic expr) are rejected — see
+        // `doc/plan_regfile_latch.md` for the timing assumption.
+        for item in &self.source.items {
+            if let Item::Module(m) = item {
+                self.check_latch_regfile_writes(m);
+            }
+        }
         if self.errors.is_empty() {
             Ok((self.warnings, self.overload_map))
         } else {
             Err(self.errors)
+        }
+    }
+
+    /// Static dataflow check for `kind: latch` regfile instances:
+    /// the `addr` and `data` write-port connections must each be a
+    /// bare identifier (or `port.signal` field access on a bus port)
+    /// resolving to a register-typed source in the parent module —
+    /// `reg`, `port reg`, `pipe_reg`, an input port, or another
+    /// inst's output. Combinational sources are rejected because
+    /// transparent latches require their addr/data inputs to be
+    /// stable for the duration of `we`.
+    fn check_latch_regfile_writes(&mut self, m: &ModuleDecl) {
+        // Build a per-module signal-kind map: name → "reg" / "port_reg"
+        // / "pipe_reg" / "input_port" / "inst_output" / "wire" / "let".
+        let mut kind_of: std::collections::HashMap<String, &'static str> =
+            std::collections::HashMap::new();
+        for p in &m.ports {
+            let k = if p.reg_info.is_some() { "port_reg" }
+                    else if p.direction == Direction::In { "input_port" }
+                    else { "comb_port" };
+            kind_of.insert(p.name.name.clone(), k);
+        }
+        for item in &m.body {
+            match item {
+                ModuleBodyItem::RegDecl(r)     => { kind_of.insert(r.name.name.clone(), "reg"); }
+                ModuleBodyItem::PipeRegDecl(p) => { kind_of.insert(p.name.name.clone(), "pipe_reg"); }
+                ModuleBodyItem::WireDecl(w)    => { kind_of.insert(w.name.name.clone(), "wire"); }
+                ModuleBodyItem::LetBinding(l)  => { kind_of.insert(l.name.name.clone(), "let"); }
+                ModuleBodyItem::Inst(i)        => { kind_of.insert(i.name.name.clone(), "inst_name"); }
+                _ => {}
+            }
+        }
+
+        for item in &m.body {
+            let inst = match item { ModuleBodyItem::Inst(i) => i, _ => continue };
+            // Resolve the target — only regfile constructs matter.
+            let target_kind = self.source.items.iter().find_map(|it| match it {
+                Item::Regfile(rf) if rf.name.name == inst.module_name.name => Some(rf.kind),
+                _ => None,
+            });
+            let Some(crate::ast::RegfileKind::Latch) = target_kind else { continue };
+
+            for c in &inst.connections {
+                // Latch-RF write-port pins follow the "<pfx>_addr" / "<pfx>_addr"
+                // shape (or "<pfx>{i}_addr" for multi-port). We only care about
+                // pins that end with `_addr` or `_data` and live on a write port
+                // (input direction at the inst's module side).
+                let pname = &c.port_name.name;
+                let is_addr = pname.ends_with("_addr") || pname.ends_with("_waddr");
+                let is_data = pname.ends_with("_data") || pname.ends_with("_wdata");
+                if !(is_addr || is_data) { continue; }
+                if c.direction != ConnectDir::Input { continue; }
+
+                // Walk the signal expression: accept Ident, Member, Index by
+                // const ident; reject anything else (Binary / Unary / arbitrary
+                // arithmetic).
+                let root = root_ident_for_latch_check(&c.signal);
+                let what = match &root {
+                    Some(name) => kind_of.get(name.as_str()).copied(),
+                    None => None,
+                };
+                let pin_label = if is_addr { "addr" } else { "data" };
+                match what {
+                    Some("reg") | Some("port_reg") | Some("pipe_reg")
+                    | Some("input_port") | Some("inst_name") | Some("inst_output") => {
+                        // OK — register-typed source (or boundary trust).
+                    }
+                    Some("wire") | Some("let") => {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "kind: latch regfile `{}` requires `{pin_label}` to be driven directly from a flop (a `reg` / `port reg` / `pipe_reg` / input port / inst output) — not a `wire` or `let` binding. Latches need addr/data stable while `we` is high; combinational sources can glitch. Move the value into a `reg` first.",
+                                inst.module_name.name
+                            ),
+                            c.span,
+                        ));
+                    }
+                    Some("comb_port") => {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "kind: latch regfile `{}` requires `{pin_label}` to be driven from a flop, but the source is a combinational output port. Move the value into a `reg` (or use `port reg`) before connecting.",
+                                inst.module_name.name
+                            ),
+                            c.span,
+                        ));
+                    }
+                    None => {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "kind: latch regfile `{}` requires `{pin_label}` to be a bare identifier resolving to a flop-typed source (no arithmetic, slicing, or concat). The current expression cannot be statically verified as glitch-free; move the value into a `reg` first.",
+                                inst.module_name.name
+                            ),
+                            c.span,
+                        ));
+                    }
+                    _ => {} // unreachable
+                }
+            }
         }
     }
 
@@ -4852,6 +4960,29 @@ fn check_precedence_expr(e: &Expr, errors: &mut Vec<CompileError>) {
                 ));
             }
         }
+    }
+}
+
+/// For the latch-regfile write-port source check: walk an `Expr` and
+/// return the *root* identifier name when the expression is a path of
+/// idents / member accesses / const-index reads (e.g. `r`, `port.signal`,
+/// `inst.out`, `arr[3]`). Returns `None` for anything else (Binary,
+/// Unary, MethodCall, BitConcat, Ternary, etc.) — those are
+/// combinational and the latch RF cannot accept them as inputs.
+fn root_ident_for_latch_check(e: &Expr) -> Option<String> {
+    match &e.kind {
+        ExprKind::Ident(name) => Some(name.clone()),
+        ExprKind::FieldAccess(inner, _) => root_ident_for_latch_check(inner),
+        ExprKind::Index(inner, idx) => {
+            // Index by literal is fine (it picks one element of a Vec — the
+            // Vec itself is the source). Index by an arbitrary expr could
+            // glitch the index path; reject by returning None.
+            match &idx.kind {
+                ExprKind::Literal(_) | ExprKind::Ident(_) => root_ident_for_latch_check(inner),
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }
 

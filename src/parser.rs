@@ -4691,11 +4691,37 @@ impl Parser {
         let mut inits: Vec<RegfileInit> = Vec::new();
         let mut forward_write_before_read = false;
         let mut asserts: Vec<AssertDecl> = Vec::new();
+        let mut kind: crate::ast::RegfileKind = crate::ast::RegfileKind::Flop;
 
         while !self.check_end_of(TokenKind::Regfile) {
             match self.peek_kind() {
                 _ if self.check_param() => params.push(self.parse_param_decl()?),
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
+                Some(TokenKind::Kind) => {
+                    self.advance(); // consume `kind`
+                    // `latch` is a reserved keyword, so handle it directly
+                    // alongside the ident path.
+                    let span = self.peek_span();
+                    let kind_str = match self.peek_kind() {
+                        Some(TokenKind::Latch) => { self.advance(); "latch".to_string() }
+                        Some(TokenKind::Ident(_)) => self.expect_ident()?.name,
+                        Some(other) => return Err(CompileError::unexpected_token(
+                            "regfile kind (`flop` or `latch`)",
+                            &other.to_string(),
+                            span,
+                        )),
+                        None => return Err(CompileError::UnexpectedEof),
+                    };
+                    self.expect(TokenKind::Semi)?;
+                    kind = match kind_str.as_str() {
+                        "flop"  => crate::ast::RegfileKind::Flop,
+                        "latch" => crate::ast::RegfileKind::Latch,
+                        other => return Err(CompileError::general(
+                            &format!("unknown regfile kind `{other}`; expected `flop` or `latch`"),
+                            span,
+                        )),
+                    };
+                }
                 Some(TokenKind::Ports) => {
                     let arr = self.parse_port_array()?;
                     match arr.name.name.as_str() {
@@ -4758,6 +4784,7 @@ impl Parser {
             write_ports,
             inits,
             forward_write_before_read,
+            kind,
         })
     }
 

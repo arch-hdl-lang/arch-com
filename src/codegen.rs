@@ -8193,12 +8193,45 @@ impl<'a> Codegen<'a> {
             if count == 1 { format!("{pfx}_{sig}") } else { format!("{pfx}{i}_{sig}") }
         };
 
-        // ── Write always_ff ───────────────────────────────────────────────────
+        // ── Write storage ─────────────────────────────────────────────────────
         // Collect init-guarded addresses: init[k]=v means addr k is immutable
         // (implemented as a write guard), not as a reset.
         let guarded_addrs: Vec<String> = r.inits.iter()
             .map(|init| self.emit_expr_str(&init.index))
             .collect();
+
+        // Latch storage path — emit per-row `always_latch` with one-hot
+        // write decoding. Saves area / power on ASIC; FPGA tools will flag
+        // this at mapping (intentional — ARCH is target-agnostic).
+        if r.kind == crate::ast::RegfileKind::Latch {
+            let wen   = flat(&write_pfx, 0, nwrite, "en");
+            let waddr = flat(&write_pfx, 0, nwrite, "addr");
+            let wdata = flat(&write_pfx, 0, nwrite, "data");
+            for k in 0..nregs {
+                let k_lit = format!("{addr_width}'d{k}");
+                let init_for_k = r.inits.iter()
+                    .find_map(|init| match &init.index.kind {
+                        crate::ast::ExprKind::Literal(crate::ast::LitKind::Dec(v)) if *v == k => {
+                            Some(self.emit_expr_str(&init.value))
+                        }
+                        _ => None,
+                    });
+                if let Some(val) = init_for_k {
+                    // Address with `init[k]=v` is immutable — drive a constant.
+                    self.line(&format!("assign rf_data[{k}] = {val};"));
+                } else {
+                    self.line(&format!("always_latch begin"));
+                    self.indent += 1;
+                    self.line(&format!("if ({wen} && {waddr} == {k_lit})"));
+                    self.indent += 1;
+                    self.line(&format!("rf_data[{k}] = {wdata};"));
+                    self.indent -= 1;
+                    self.indent -= 1;
+                    self.line("end");
+                }
+            }
+            self.line("");
+        } else {
 
         // Only include reset sensitivity when a reset port is actually present
         // and there are reset-driven init entries. For register files that use
@@ -8257,6 +8290,7 @@ impl<'a> Codegen<'a> {
         self.indent -= 1;
         self.line("end");
         self.line("");
+        }  // end flop branch (else of `kind == Latch`)
 
         // ── Read always_comb — unrolled per read port ─────────────────────────
         self.line("always_comb begin");

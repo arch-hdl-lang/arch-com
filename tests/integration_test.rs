@@ -6706,3 +6706,135 @@ fn test_inner_doc_inside_body_silently_ignored() {
         "stray //! mid-body should not attach to inner_doc, got: {:?}", m.inner_doc);
 }
 
+// ── regfile `kind: latch` (PR #200) ───────────────────────────────────────────
+
+const LATCH_RF_DECL: &str = "
+    domain SysDomain
+      freq_mhz: 100
+    end domain SysDomain
+
+    regfile LatchRf
+      kind latch;
+      param NREGS: const = 4;
+      param T: type = UInt<8>;
+      port clk: in Clock<SysDomain>;
+      ports[1] read
+        addr: in UInt<2>;
+        data: out UInt<8>;
+      end ports read
+      ports[1] write
+        en:   in Bool;
+        addr: in UInt<2>;
+        data: in UInt<8>;
+      end ports write
+    end regfile LatchRf
+";
+
+#[test]
+fn test_regfile_latch_emits_always_latch_per_row() {
+    let source = format!("{LATCH_RF_DECL}
+        module Top
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port we_in:    in Bool;
+          port waddr_in: in UInt<2>;
+          port wdata_in: in UInt<8>;
+          port raddr_in: in UInt<2>;
+          port q:        out UInt<8>;
+
+          reg waddr_r: UInt<2> reset rst => 0;
+          reg wdata_r: UInt<8> reset rst => 0;
+          reg we_r:    Bool    reset rst => false;
+
+          seq on clk rising
+            waddr_r <= waddr_in;
+            wdata_r <= wdata_in;
+            we_r    <= we_in;
+          end seq
+
+          inst rf: LatchRf
+            clk        <- clk;
+            write_en   <- we_r;
+            write_addr <- waddr_r;
+            write_data <- wdata_r;
+            read_addr  <- raddr_in;
+            read_data  -> q;
+          end inst rf
+        end module Top
+    ");
+    let sv = compile_to_sv(&source);
+    let n = sv.matches("always_latch").count();
+    assert_eq!(n, 4, "expected 4 always_latch blocks (NREGS=4), got {n}:\n{sv}");
+    assert!(sv.contains("write_addr == 2'd0"), "row 0 enable missing:\n{sv}");
+    assert!(sv.contains("write_addr == 2'd3"), "row 3 enable missing:\n{sv}");
+    let module_body: String = sv.split("module LatchRf").nth(1).unwrap_or(&sv)
+        .split("endmodule").next().unwrap_or(&sv).to_string();
+    assert!(!module_body.contains("always_ff"),
+        "latch RF body should not contain always_ff:\n{module_body}");
+}
+
+#[test]
+fn test_regfile_latch_rejects_let_source() {
+    let source = format!("{LATCH_RF_DECL}
+        module Top
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port a: in UInt<8>;
+          port b: in UInt<8>;
+          port we_in: in Bool;
+          port waddr_in: in UInt<2>;
+          port raddr_in: in UInt<2>;
+          port q: out UInt<8>;
+
+          let bad_data: UInt<8> = (a + b).trunc<8>();
+
+          inst rf: LatchRf
+            clk        <- clk;
+            write_en   <- we_in;
+            write_addr <- waddr_in;
+            write_data <- bad_data;
+            read_addr  <- raddr_in;
+            read_data  -> q;
+          end inst rf
+        end module Top
+    ");
+    let tokens = lexer::tokenize(&source).expect("lex");
+    let mut parser = Parser::new(tokens, &source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(ast).expect("elaborate");
+    let ast = elaborate::lower_threads(ast).expect("lower threads");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let result = TypeChecker::new(&symbols, &ast).check();
+    assert!(result.is_err(), "latch RF with `let` source should error");
+    let err_msg = format!("{:?}", result.err().unwrap());
+    assert!(err_msg.contains("kind: latch regfile") && err_msg.contains("flop"),
+        "diagnostic should explain the flop-source requirement; got: {err_msg}");
+}
+
+#[test]
+fn test_regfile_flop_default_unchanged() {
+    let source = "
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+        regfile FlopRf
+          param NREGS: const = 4;
+          param T: type = UInt<8>;
+          port clk: in Clock<SysDomain>;
+          ports[1] read
+            addr: in UInt<2>;
+            data: out UInt<8>;
+          end ports read
+          ports[1] write
+            en:   in Bool;
+            addr: in UInt<2>;
+            data: in UInt<8>;
+          end ports write
+        end regfile FlopRf
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("always_ff @(posedge clk)"),
+        "default kind:flop should emit always_ff:\n{sv}");
+    assert!(!sv.contains("always_latch"),
+        "default kind:flop should not emit always_latch:\n{sv}");
+}
