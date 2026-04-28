@@ -31,14 +31,75 @@ impl Parser {
     }
 
     pub fn parse_source_file(&mut self) -> Result<SourceFile, CompileError> {
+        // File-level inner doc: any contiguous `//!` block at the top of
+        // the file. The frontmatter (delimited by `//! ---`) is extracted
+        // out of this block but also kept in `inner_doc` for fidelity.
+        let inner_doc_lines = self.consume_inner_doc_lines();
+        let inner_doc = if inner_doc_lines.is_empty() {
+            None
+        } else {
+            Some(inner_doc_lines.join("\n"))
+        };
+        let frontmatter = extract_frontmatter(&inner_doc_lines);
+
         let mut items = Vec::new();
         while !self.at_end() {
             items.push(self.parse_item()?);
         }
-        Ok(SourceFile { items })
+        Ok(SourceFile { items, inner_doc, frontmatter })
+    }
+
+    /// Consume all consecutive `DocOuter` tokens at the current position
+    /// and return their concatenated body (one line per token, joined by
+    /// `\n`). Returns `None` when no `DocOuter` token is at `self.pos`.
+    fn consume_outer_doc(&mut self) -> Option<String> {
+        let lines = self.consume_outer_doc_lines();
+        if lines.is_empty() { None } else { Some(lines.join("\n")) }
+    }
+
+    fn consume_outer_doc_lines(&mut self) -> Vec<String> {
+        let mut lines = Vec::new();
+        while let Some(TokenKind::DocOuter(s)) = self.peek_kind_cloned() {
+            lines.push(s);
+            self.advance();
+        }
+        lines
+    }
+
+    /// Same as `consume_outer_doc` but for `DocInner` tokens.
+    fn consume_inner_doc(&mut self) -> Option<String> {
+        let lines = self.consume_inner_doc_lines();
+        if lines.is_empty() { None } else { Some(lines.join("\n")) }
+    }
+
+    fn consume_inner_doc_lines(&mut self) -> Vec<String> {
+        let mut lines = Vec::new();
+        while let Some(TokenKind::DocInner(s)) = self.peek_kind_cloned() {
+            lines.push(s);
+            self.advance();
+        }
+        lines
+    }
+
+    fn peek_kind_cloned(&self) -> Option<TokenKind> {
+        self.tokens.get(self.pos).map(|t| t.kind.clone())
     }
 
     fn parse_item(&mut self) -> Result<Item, CompileError> {
+        // Outer doc — `///` lines preceding the next construct keyword.
+        // Attached to the parsed item via `attach_outer_doc` below for
+        // construct kinds that carry a `doc` field. For kinds that don't
+        // yet expose one (Domain/Struct/Enum/Function/Package/Use/Bus/
+        // Template), the doc is silently dropped — those will be wired
+        // up in PR-doc-1.5 once each non-ConstructCommon decl gains the
+        // field.
+        let outer_doc = self.consume_outer_doc();
+        let mut item = self.parse_item_inner()?;
+        attach_outer_doc(&mut item, outer_doc);
+        Ok(item)
+    }
+
+    fn parse_item_inner(&mut self) -> Result<Item, CompileError> {
         match self.peek_kind() {
             Some(TokenKind::Domain) => Ok(Item::Domain(self.parse_domain()?)),
             Some(TokenKind::Struct) => Ok(Item::Struct(self.parse_struct()?)),
@@ -613,6 +674,11 @@ impl Parser {
         self.reg_defaults = None; // reset per-module
         self.seq_default = None;
 
+        // Inner doc: any `//!` lines immediately after `module Name` and
+        // before any other body item. Per the spec, inner doc may not
+        // appear elsewhere inside a body — we consume only at this point.
+        let inner_doc = self.consume_inner_doc();
+
         // Optional: `implements TemplateName`
         let implements = if self.check(TokenKind::Implements) {
             self.advance();
@@ -730,6 +796,10 @@ impl Parser {
             implements,
             hooks,
             cdc_safe,
+            // `doc` is populated by `attach_outer_doc` from `parse_item`;
+            // `inner_doc` was harvested above right after the name.
+            doc: None,
+            inner_doc,
         })
     }
 
@@ -3330,7 +3400,7 @@ impl Parser {
         })?;
 
         Ok(FsmDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span) },
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc: None },
             regs,
             lets,
             wires,
@@ -3474,7 +3544,7 @@ impl Parser {
         }
 
         Ok(PipelineDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span) },
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc: None },
             stages,
             stall_conds,
             flush_directives,
@@ -3663,7 +3733,7 @@ impl Parser {
         }
 
         Ok(FifoDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span) },
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc: None },
             kind: kind.unwrap_or(FifoKind::Fifo),
         })
     }
@@ -3952,7 +4022,7 @@ impl Parser {
         }
 
         Ok(RamDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span) },
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc: None },
             kind: k,
             latency: lat,
             write_mode,
@@ -4170,6 +4240,7 @@ impl Parser {
                 ports,
                 asserts,
                 span: Span { start: start.start, end: end.end },
+                doc: None, inner_doc: None,
             },
         })
     }
@@ -4265,7 +4336,7 @@ impl Parser {
         let mode = mode.unwrap_or(CounterMode::Wrap);
         let direction = direction.unwrap_or(CounterDirection::Up);
         Ok(CounterDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span) },
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc: None },
             mode, direction, init,
         })
     }
@@ -4371,7 +4442,7 @@ impl Parser {
         }
 
         Ok(ArbiterDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span) },
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc: None },
             port_arrays,
             policy: policy.unwrap_or(ArbiterPolicy::RoundRobin),
             hook,
@@ -4637,7 +4708,7 @@ impl Parser {
         }
 
         Ok(RegfileDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span) },
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc: None },
             read_ports,
             write_ports,
             inits,
@@ -4885,7 +4956,7 @@ impl Parser {
         }
 
         Ok(LinklistDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span) },
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc: None },
             kind: kind.unwrap_or(LinklistKind::Singly),
             track_tail,
             track_length,
@@ -4954,7 +5025,7 @@ impl Parser {
         }
 
         Ok(OpDecl {
-            common: ConstructCommon { name, params: Vec::new(), ports, asserts, span: start.merge(closing.span) },
+            common: ConstructCommon { name, params: Vec::new(), ports, asserts, span: start.merge(closing.span), doc: None, inner_doc: None },
             latency,
             pipelined,
         })
@@ -5326,6 +5397,48 @@ impl Parser {
             functions,
         })
     }
+}
+
+/// Attach an outer doc-comment string to the construct field that owns it.
+///
+/// Variants whose AST struct does not yet carry a `doc` field silently drop
+/// the comment for now — those (Domain, Struct, Enum, Function, Package,
+/// Use, Bus, Template) will gain the field in PR-doc-1.5.
+fn attach_outer_doc(item: &mut Item, doc: Option<String>) {
+    if doc.is_none() { return; }
+    match item {
+        Item::Module(m)       => m.doc = doc,
+        Item::Fsm(f)          => f.common.doc = doc,
+        Item::Fifo(f)         => f.common.doc = doc,
+        Item::Ram(r)          => r.common.doc = doc,
+        Item::Counter(c)      => c.common.doc = doc,
+        Item::Arbiter(a)      => a.common.doc = doc,
+        Item::Pipeline(p)     => p.common.doc = doc,
+        Item::Cam(c)          => c.common.doc = doc,
+        Item::Linklist(l)     => l.common.doc = doc,
+        // SynchronizerDecl and ClkGateDecl have bespoke shapes (no
+        // `ConstructCommon`); doc field will be added in PR-doc-1.5.
+        Item::Synchronizer(_) | Item::Clkgate(_) => {}
+        Item::Regfile(r)      => r.common.doc = doc,
+        // No `doc` field yet — see PR-doc-1.5.
+        Item::Domain(_) | Item::Struct(_) | Item::Enum(_) | Item::Function(_)
+        | Item::Package(_) | Item::Use(_) | Item::Bus(_) | Item::Template(_) => {}
+    }
+}
+
+/// Extract the YAML-frontmatter block from a file's leading `//!` lines.
+///
+/// The frontmatter is the contiguous run delimited by a `---` line and the
+/// next `---` line within the inner-doc block. Returns `None` if either
+/// delimiter is missing or no `//!` lines are present. Per spec, the
+/// compiler stores the block verbatim — it does not parse the YAML.
+fn extract_frontmatter(lines: &[String]) -> Option<String> {
+    if lines.is_empty() { return None; }
+    let first_idx = lines.iter().position(|l| l.trim() == "---")?;
+    let close_idx = lines.iter().enumerate().skip(first_idx + 1)
+        .find(|(_, l)| l.trim() == "---")
+        .map(|(i, _)| i)?;
+    Some(lines[first_idx ..= close_idx].join("\n"))
 }
 
 #[cfg(test)]

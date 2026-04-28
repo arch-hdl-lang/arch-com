@@ -6350,3 +6350,130 @@ fn test_if_wait_for_in_then_branch() {
         "for-loop exit arm should compare loop_cnt against burst_len-1:\n{sv}");
 }
 
+// ── Doc comments and frontmatter (V1) ─────────────────────────────────────────
+
+fn parse_to_ast(source: &str) -> arch::ast::SourceFile {
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    parser.parse_source_file().expect("parse error")
+}
+
+#[test]
+fn test_doc_outer_attaches_to_module() {
+    let source = "
+        /// Saturating up-counter.
+        ///
+        /// Wraps to MAX and never overflows.
+        module Sat
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port v: out UInt<4>;
+        end module Sat
+    ";
+    let ast = parse_to_ast(source);
+    let m = match &ast.items[0] {
+        arch::ast::Item::Module(m) => m,
+        _ => panic!("expected module"),
+    };
+    let doc = m.doc.as_ref().expect("module should have outer doc");
+    assert!(doc.contains("Saturating up-counter."),
+        "outer doc text missing first line: {doc:?}");
+    assert!(doc.contains("Wraps to MAX"),
+        "outer doc text missing third line: {doc:?}");
+}
+
+#[test]
+fn test_doc_inner_attaches_to_module() {
+    let source = "
+        module M
+          //! This module guards CSR access with a 2-cycle pipeline.
+
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port q: out Bool;
+        end module M
+    ";
+    let ast = parse_to_ast(source);
+    let m = match &ast.items[0] {
+        arch::ast::Item::Module(m) => m,
+        _ => panic!("expected module"),
+    };
+    let inner = m.inner_doc.as_ref().expect("module should have inner doc");
+    assert!(inner.contains("CSR access"), "inner doc text missing: {inner:?}");
+    assert!(m.doc.is_none(), "outer doc should be None, got: {:?}", m.doc);
+}
+
+#[test]
+fn test_file_inner_doc_and_frontmatter() {
+    let source = "//! ---
+//! spec_md: doc/specs/dma_engine.md
+//! tags: [dma, axi]
+//! refs:
+//!   - \"AXI4 §A3.3.1\"
+//! ---
+//!
+//! Multi-channel DMA engine. See spec_md for the channel state diagram.
+
+module Top
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Async, Low>;
+end module Top
+";
+    let ast = parse_to_ast(source);
+    let inner = ast.inner_doc.as_ref().expect("file should carry inner_doc");
+    assert!(inner.contains("Multi-channel DMA engine"),
+        "file inner_doc should preserve the prose summary:\n{inner}");
+    assert!(inner.contains("---"),
+        "file inner_doc should retain the frontmatter delimiters verbatim:\n{inner}");
+    let fm = ast.frontmatter.as_ref().expect("file should carry frontmatter");
+    assert!(fm.contains("spec_md: doc/specs/dma_engine.md"),
+        "frontmatter should preserve spec_md field:\n{fm}");
+    assert!(fm.contains("tags: [dma, axi]"),
+        "frontmatter should preserve tags:\n{fm}");
+    let open_close: Vec<_> = fm.lines().filter(|l| l.trim() == "---").collect();
+    assert_eq!(open_close.len(), 2,
+        "frontmatter should contain exactly 2 `---` delimiter lines:\n{fm}");
+}
+
+#[test]
+fn test_doc_outer_on_counter() {
+    let source = "
+        /// 4-bit wrap counter, used by the simple watchdog test.
+        counter Wd
+          kind wrap;
+          init: 0;
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port inc: in Bool;
+          port max: in UInt<4>;
+          port value: out UInt<4>;
+        end counter Wd
+    ";
+    let ast = parse_to_ast(source);
+    let c = match &ast.items[0] {
+        arch::ast::Item::Counter(c) => c,
+        _ => panic!("expected counter"),
+    };
+    let doc = c.common.doc.as_ref().expect("counter should have outer doc");
+    assert!(doc.contains("watchdog"), "outer doc text missing: {doc:?}");
+}
+
+#[test]
+fn test_four_slashes_dropped_as_regular_comment() {
+    // `////` is the documented escape hatch — must NOT attach as a doc.
+    let source = "
+        //// This is a banner, not documentation.
+        module M
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+        end module M
+    ";
+    let ast = parse_to_ast(source);
+    let m = match &ast.items[0] {
+        arch::ast::Item::Module(m) => m,
+        _ => panic!("expected module"),
+    };
+    assert!(m.doc.is_none(),
+        "4-slash banner should not attach as a doc comment, got: {:?}", m.doc);
+}
+

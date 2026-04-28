@@ -108,7 +108,7 @@ pub fn elaborate(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
     if !errors.is_empty() {
         Err(errors)
     } else {
-        Ok(SourceFile { items: new_items })
+        Ok(SourceFile { items: new_items, inner_doc: None, frontmatter: None })
     }
 }
 
@@ -354,7 +354,7 @@ fn elaborate_module_variant(
         p
     }).collect();
 
-    Ok(ModuleDecl { name: new_name, params: new_params, ports: all_ports, body: new_body, implements: m.implements, hooks: m.hooks, cdc_safe: m.cdc_safe, span: m.span })
+    Ok(ModuleDecl { name: new_name, params: new_params, ports: all_ports, body: new_body, implements: m.implements, hooks: m.hooks, cdc_safe: m.cdc_safe, span: m.span, doc: m.doc, inner_doc: m.inner_doc })
 }
 
 /// Rewrite an inst's `module_name` to the correct variant name.
@@ -1204,7 +1204,7 @@ pub fn lower_threads_with_opts(
     // Insert generated FSMs before the modules that use them
     let mut result = extra_fsms;
     result.extend(new_items);
-    Ok(SourceFile { items: result })
+    Ok(SourceFile { items: result, inner_doc: None, frontmatter: None })
 }
 
 /// Lower all threads in a single module to a SINGLE merged module.
@@ -2091,6 +2091,8 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
         hooks: Vec::new(),
         cdc_safe: false,
         span: sp,
+        doc: None,
+        inner_doc: None,
     };
 
     // ── Create InstDecl in parent module ───────────────────────────────
@@ -2222,6 +2224,8 @@ fn synthesize_lock_arbiter(
             ports: scalar_ports,
             asserts: Vec::new(),
             span: sp,
+            doc: None,
+            inner_doc: None,
         },
         port_arrays: vec![request_array],
         policy,
@@ -3784,7 +3788,7 @@ pub fn lower_pipe_reg_ports(ast: SourceFile) -> Result<SourceFile, Vec<CompileEr
         }
     }
     if !errors.is_empty() { return Err(errors); }
-    Ok(SourceFile { items: new_items })
+    Ok(SourceFile { items: new_items, inner_doc: None, frontmatter: None })
 }
 
 struct PipePortInfoLocal {
@@ -4198,7 +4202,7 @@ pub fn lower_credit_channel_dispatch(ast: SourceFile) -> Result<SourceFile, Vec<
         }
     }
     if !errors.is_empty() { return Err(errors); }
-    Ok(SourceFile { items })
+    Ok(SourceFile { items, inner_doc: None, frontmatter: None })
 }
 
 struct CcDispatchCtx<'a> {
@@ -4531,7 +4535,7 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
         }
     }
     if !errors.is_empty() { return Err(errors); }
-    Ok(SourceFile { items: out_items })
+    Ok(SourceFile { items: out_items, inner_doc: None, frontmatter: None })
 }
 
 
@@ -4693,7 +4697,7 @@ pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<Comp
         }
     }
     if !errors.is_empty() { return Err(errors); }
-    Ok(SourceFile { items: out_items })
+    Ok(SourceFile { items: out_items, inner_doc: None, frontmatter: None })
 }
 
 /// Walk a thread body and record spans of any TLM call that is NOT

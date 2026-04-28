@@ -26,11 +26,46 @@ impl Span {
     }
 }
 
+/// Strip the `///` prefix and at-most-one leading space from a raw outer
+/// doc-comment lexeme. Returns `Filter::Skip` for `////+` (4+ slashes), which
+/// is the documented escape hatch — those stay as plain comments.
+fn parse_outer_doc(lex: &mut logos::Lexer<TokenKind>) -> logos::Filter<String> {
+    let s = lex.slice();
+    debug_assert!(s.starts_with("///"));
+    let rest = &s[3..];
+    if rest.starts_with('/') {
+        return logos::Filter::Skip;
+    }
+    let body = rest.strip_prefix(' ').unwrap_or(rest);
+    logos::Filter::Emit(body.to_string())
+}
+
+/// Strip the `//!` prefix and at-most-one leading space from a raw inner
+/// doc-comment lexeme.
+fn parse_inner_doc(lex: &mut logos::Lexer<TokenKind>) -> String {
+    let s = lex.slice();
+    debug_assert!(s.starts_with("//!"));
+    let rest = &s[3..];
+    rest.strip_prefix(' ').unwrap_or(rest).to_string()
+}
+
 #[derive(Logos, Debug, Clone, PartialEq)]
 #[logos(skip r"[ \t\r\n\f]+")]
 #[logos(skip r"//[^\n]*")]
 #[logos(skip r"/\*([^*]|\*[^/])*\*/")]
 pub enum TokenKind {
+    // ── Doc comments ──────────────────────────────────────────────────────────
+    // `///<line>` outer doc — attaches to the next construct. Logos picks the
+    // longest match for `///abc` between this regex and the global `//[^\n]*`
+    // skip; the explicit priority breaks the length tie in favor of DocOuter.
+    // `////+` (4 or more slashes) falls into the callback's Skip branch and
+    // is treated as a regular comment (escape hatch).
+    #[regex(r"///[^\n]*", parse_outer_doc, priority = 5)]
+    DocOuter(String),
+    // `//!<line>` inner doc — attaches to the enclosing item.
+    #[regex(r"//![^\n]*", parse_inner_doc, priority = 5)]
+    DocInner(String),
+
     // Keywords
     #[token("module")]
     Module,
@@ -504,6 +539,8 @@ impl fmt::Display for TokenKind {
             TokenKind::Log => write!(f, "log"),
             TokenKind::StringLit(s) => write!(f, "\"{s}\""),
             TokenKind::Ident(s) => write!(f, "{s}"),
+            TokenKind::DocOuter(_) => write!(f, "///"),
+            TokenKind::DocInner(_) => write!(f, "//!"),
         }
     }
 }
@@ -577,6 +614,51 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, Vec<Span>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_doc_outer_attaches_to_construct() {
+        let src = "/// First line\n/// Second line\nmodule M";
+        let tokens = tokenize(src).unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::DocOuter(s) if s == "First line"));
+        assert!(matches!(&tokens[1].kind, TokenKind::DocOuter(s) if s == "Second line"));
+        assert_eq!(tokens[2].kind, TokenKind::Module);
+    }
+
+    #[test]
+    fn test_doc_inner_token() {
+        let src = "//! header\nmodule M";
+        let tokens = tokenize(src).unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::DocInner(s) if s == "header"));
+        assert_eq!(tokens[1].kind, TokenKind::Module);
+    }
+
+    #[test]
+    fn test_four_slashes_is_regular_comment() {
+        // `////` and beyond are the documented escape hatch and stay
+        // skipped as regular comments — not lexed as DocOuter tokens.
+        let src = "//// not a doc\nmodule M";
+        let tokens = tokenize(src).unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::Module);
+    }
+
+    #[test]
+    fn test_two_slashes_remains_skipped() {
+        let src = "// regular\nmodule M";
+        let tokens = tokenize(src).unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::Module);
+    }
+
+    #[test]
+    fn test_doc_outer_strips_one_leading_space() {
+        let tokens = tokenize("/// abc\n").unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::DocOuter(s) if s == "abc"));
+        // No-space form keeps the body verbatim.
+        let tokens = tokenize("///abc\n").unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::DocOuter(s) if s == "abc"));
+        // Two leading spaces — only one is stripped.
+        let tokens = tokenize("///  abc\n").unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::DocOuter(s) if s == " abc"));
+    }
 
     #[test]
     fn test_basic_tokens() {
