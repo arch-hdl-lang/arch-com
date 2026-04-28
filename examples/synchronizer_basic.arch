@@ -1,3 +1,11 @@
+//! ---
+//! tags: [synchronizer, cdc, ff, two_stage, basic, tutorial]
+//! ---
+//!
+//! 2-flop FF synchronizer — basic single-bit CDC primitive. Use this
+//! shape for control flags / strobes (Bool only). For multi-bit data
+//! crossings, use `kind gray` or `kind handshake` instead.
+
 domain FastDomain
   freq_mhz: 200
 end domain FastDomain
@@ -6,6 +14,9 @@ domain SlowDomain
   freq_mhz: 50
 end domain SlowDomain
 
+/// 2-stage flip-flop synchronizer crossing FastDomain → SlowDomain.
+/// Bool only — `kind ff` rejects multi-bit data with a compile-time
+/// suggestion to use `kind gray` or `kind handshake`.
 synchronizer FlagSync
   param STAGES: const = 2;
   port src_clk: in Clock<FastDomain>;

@@ -1,3 +1,17 @@
+//! ---
+//! tags: [arbiter, custom_policy, hook, qos, round_robin]
+//! ---
+//!
+//! Custom-policy arbiter example — demonstrates the `policy <FnName>` +
+//! `hook grant_select(...) = FnName(...)` form for arbitration logic that
+//! doesn't fit any built-in policy (round_robin / priority / lru /
+//! weighted). The hook function receives `req_mask` and `last_grant`
+//! (plus any extra signals you wire) and returns a one-hot grant mask.
+
+/// Policy function: pick the lowest-set bit of `req_mask` with
+/// `last_grant` deprioritized — round-robin-style fairness with optional
+/// QoS hooks via the `qos` argument (currently unused, but threaded
+/// through to demonstrate extra-arg binding).
 function QosGrant(req_mask: UInt<4>, last_grant: UInt<4>, qos: UInt<8>) -> UInt<4>
   // Isolate lowest set bit of (req_mask with last_grant deprioritized)
   // ~pick + 1 = two's complement negate; use XOR-with-mask to avoid width warnings
@@ -7,6 +21,10 @@ function QosGrant(req_mask: UInt<4>, last_grant: UInt<4>, qos: UInt<8>) -> UInt<
   return pick & pick_neg.trunc<4>();
 end function QosGrant
 
+/// 4-requester arbiter using the user-supplied `QosGrant` function as
+/// the granting policy. The `hook grant_select(...)` clause binds the
+/// arbiter's internal `req_mask` / `last_grant` signals plus the
+/// user-declared `qos` port to the function's formal arguments.
 arbiter QosArbiter
   policy QosGrant;
   param NUM_REQ: const = 4;

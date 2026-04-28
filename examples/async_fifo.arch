@@ -1,11 +1,27 @@
+//! ---
+//! tags: [fifo, async, cdc, dual_clock, gray_code]
+//! refs:
+//!   - "Cummings, 'Simulation and Synthesis Techniques for Asynchronous FIFO Design' (SNUG 2002)"
+//! ---
+//!
+//! Asynchronous (dual-clock) FIFO crossing 200 MHz → 50 MHz. The compiler
+//! detects the two-domain clock signature and inserts gray-code pointer
+//! synchronization automatically — no user code required for the CDC.
+
+/// 200 MHz fast-side clock domain (write port).
 domain FastDomain
   freq_mhz: 200
 end domain FastDomain
 
+/// 50 MHz slow-side clock domain (read port).
 domain SlowDomain
   freq_mhz: 50
 end domain SlowDomain
 
+/// Dual-clock async FIFO: write port on FastDomain, read port on
+/// SlowDomain. Compiler auto-synthesises gray-code pointer
+/// synchronisers because the two `Clock<...>` ports reference
+/// different domains.
 fifo AsyncBridge
   param DEPTH: const = 32;
   param T: type = UInt<8>;

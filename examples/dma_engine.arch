@@ -1,17 +1,22 @@
-// =============================================================================
-// Simple DMA Engine
-// Demonstrates: domain, struct, enum, regfile, ram, fifo, counter,
-//               arbiter, fsm, module (comb + reg blocks, match, inst)
-// =============================================================================
+//! ---
+//! tags: [dma, regfile, ram, fifo, counter, arbiter, fsm, integration]
+//! ---
+//!
+//! Simple DMA Engine — integration example exercising every major
+//! first-class construct. Demonstrates a CSR register file driving a
+//! descriptor-based DMA controller with descriptor table (RAM), write
+//! buffer (FIFO), beat counters, bus arbiter, and a transfer FSM.
 
 // ── Clock domain ─────────────────────────────────────────────────────────────
 
+/// 100 MHz system clock.
 domain SysDomain
   freq_mhz: 100
 end domain SysDomain
 
 // ── Shared types ──────────────────────────────────────────────────────────────
 
+/// DMA transfer descriptor stored in the descriptor RAM.
 struct DmaDescriptor
   src_addr: UInt<32>;
   dst_addr: UInt<32>;
@@ -19,6 +24,7 @@ struct DmaDescriptor
   flags:    UInt<8>;
 end struct DmaDescriptor
 
+/// Bus command tag — drives the arbiter's grant routing.
 enum BusCmd
   BusIdle,
   BusRead,
@@ -27,6 +33,8 @@ end enum BusCmd
 
 // ── CSR register file ─────────────────────────────────────────────────────────
 
+/// CSR register file — host-facing control/status registers (CTRL, STAT,
+/// SRC, DST, LEN, etc.). 2 read ports + 1 write port.
 regfile DmaRegs
   param NREGS: const = 8;
   param T: type = UInt<32>;
@@ -46,6 +54,8 @@ end regfile DmaRegs
 
 // ── Descriptor table RAM ──────────────────────────────────────────────────────
 
+/// Descriptor RAM — simple-dual-port BRAM holding queued DMA descriptors.
+/// Read port serves the FSM; write port lets the host enqueue new entries.
 ram DescTable
   kind simple_dual;
   latency 1;
@@ -69,6 +79,8 @@ end ram DescTable
 
 // ── Write-side data FIFO ──────────────────────────────────────────────────────
 
+/// Write buffer — single-clock FIFO decoupling read fetches from write
+/// transfers. Same domain as the rest of the engine.
 fifo WriteBuffer
   param DEPTH: const = 8;
   param TYPE: type = UInt<32>;
@@ -84,6 +96,8 @@ end fifo WriteBuffer
 
 // ── Beat counter ──────────────────────────────────────────────────────────────
 
+/// 8-bit wrap counter — counts AXI bus beats inside one transfer; asserts
+/// `at_max` when the transfer's burst length is reached.
 counter BeatCounter
   kind       wrap;
   direction: up;
@@ -99,6 +113,8 @@ end counter BeatCounter
 
 // ── Memory bus arbiter ────────────────────────────────────────────────────────
 
+/// Memory bus arbiter — round-robin between DMA's read and write
+/// requesters so the bus shares fairly under back-pressure.
 arbiter MemArbiter
   policy round_robin;
   param NUM_REQ: const = 2;
@@ -114,6 +130,9 @@ end arbiter MemArbiter
 
 // ── Transfer FSM ──────────────────────────────────────────────────────────────
 
+/// Transfer FSM — orchestrates one descriptor's read+write phases.
+/// States: Idle → FetchDesc → Read → Write → Done. Drives the BeatCounter
+/// and the MemArbiter request channels.
 fsm TransferFsm
   port clk:      in Clock<SysDomain>;
   port rst:      in Reset<Sync>;
@@ -155,6 +174,10 @@ end fsm TransferFsm
 
 // ── DMA engine top-level module ───────────────────────────────────────────────
 
+/// Top-level DMA engine — instantiates the regfile, descriptor RAM,
+/// write FIFO, beat counters, memory arbiter, and transfer FSM, and
+/// wires them together. Exposes the host CSR interface and the memory
+/// bus port to the SoC.
 module DmaEngine
   param DATA_WIDTH: const = 32;
 

@@ -69,6 +69,20 @@ enum Command {
     },
     /// Show stats about the local learning store
     LearnStats,
+    /// Seed the local learning store with feature events harvested from a
+    /// directory of `.arch` files (default: `examples/`). Walks the path
+    /// recursively, parses each file, and emits one feature event per
+    /// top-level construct that carries `///` / `//!` / `//! ---` doc
+    /// content. Silently skips files that fail to parse. Re-running
+    /// replaces the existing feature events for each harvested file —
+    /// safe to run repeatedly. Build the BM25 index afterwards with
+    /// `arch learn-index`.
+    LearnBootstrap {
+        /// Directory to walk (default: `examples/` under the current
+        /// working directory).
+        #[arg(default_value = "examples")]
+        path: PathBuf,
+    },
     /// Compile ARCH to SystemVerilog
     Build {
         /// Input .arch file(s)
@@ -384,6 +398,9 @@ fn main() -> miette::Result<()> {
         Command::LearnStats => {
             arch::learn::print_stats().into_diagnostic()?;
             Ok(())
+        }
+        Command::LearnBootstrap { path } => {
+            run_learn_bootstrap(&path)
         }
         Command::LearnClear => {
             arch::learn::clear_store().into_diagnostic()?;
@@ -1245,6 +1262,98 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
     }
     dep_files.extend(main_files);
     Ok(dep_files)
+}
+
+/// Recursively walk a directory and collect every `.arch` file. Returns the
+/// list sorted for deterministic output. Returns an empty vec if the path
+/// doesn't exist.
+fn collect_arch_files(root: &std::path::Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    fn walk(p: &std::path::Path, out: &mut Vec<PathBuf>) {
+        let Ok(rd) = fs::read_dir(p) else { return; };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if let Ok(ft) = entry.file_type() {
+                if ft.is_dir() {
+                    walk(&path, out);
+                } else if ft.is_file()
+                    && path.extension().and_then(|s| s.to_str()) == Some("arch")
+                {
+                    out.push(path);
+                }
+            }
+        }
+    }
+    walk(root, &mut out);
+    out.sort();
+    out
+}
+
+/// Bootstrap the local learning store with feature events harvested from a
+/// directory of `.arch` files. Parses each file standalone (no elaborate /
+/// resolve / typecheck — just enough to populate the AST so `harvest_features`
+/// can read `///` / `//!` / `//! ---` docs). Files that fail to parse are
+/// silently skipped — bootstrap should never fail because one example
+/// happens to use a feature the local toolchain doesn't yet support.
+fn run_learn_bootstrap(path: &std::path::Path) -> miette::Result<()> {
+    if !arch::learn::is_enabled() {
+        eprintln!("ARCH_NO_LEARN is set — bootstrap skipped.");
+        return Ok(());
+    }
+    let _ = arch::learn::maybe_print_first_run_notice();
+
+    if !path.exists() {
+        eprintln!("error: path does not exist: {}", path.display());
+        std::process::exit(2);
+    }
+
+    let files = if path.is_file() {
+        vec![path.to_path_buf()]
+    } else {
+        collect_arch_files(path)
+    };
+    if files.is_empty() {
+        eprintln!("No .arch files found under {}", path.display());
+        return Ok(());
+    }
+
+    let mut total_events = 0usize;
+    let mut parsed_files = 0usize;
+    let mut skipped_files = 0usize;
+    for file in &files {
+        let src = match fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(_) => { skipped_files += 1; continue; }
+        };
+        let tokens = match arch::lexer::tokenize(&src) {
+            Ok(t) => t,
+            Err(_) => { skipped_files += 1; continue; }
+        };
+        let mut p = parser::Parser::new(tokens, &src);
+        let ast = match p.parse_source_file() {
+            Ok(a) => a,
+            Err(_) => { skipped_files += 1; continue; }
+        };
+        let path_str = file.display().to_string();
+        let path_str_for_closure = path_str.clone();
+        let n = arch::learn::harvest_features(&ast, |_item| path_str_for_closure.clone())
+            .unwrap_or(0);
+        total_events += n;
+        parsed_files += 1;
+    }
+
+    eprintln!(
+        "Bootstrap: parsed {} file{}, skipped {}, emitted {} feature event{}.",
+        parsed_files,
+        if parsed_files == 1 { "" } else { "s" },
+        skipped_files,
+        total_events,
+        if total_events == 1 { "" } else { "s" },
+    );
+    let n_indexed = arch::learn::build_index().into_diagnostic()?;
+    eprintln!("Indexed {} total events.", n_indexed);
+    eprintln!("Try: arch advise --feature \"<query>\"");
+    Ok(())
 }
 
 fn run_check_multi(

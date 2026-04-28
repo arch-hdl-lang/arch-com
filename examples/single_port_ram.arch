@@ -1,7 +1,16 @@
+//! ---
+//! tags: [ram, single_port, bram, basic, tutorial]
+//! ---
+//!
+//! Single-port BRAM example — demonstrates the `ram kind single`
+//! shape with one read/write port shared via the `wen` signal.
+
 domain SysDomain
   freq_mhz: 100
 end domain SysDomain
 
+/// 256x8 single-port RAM with 1-cycle read latency, write-no-change
+/// collision policy, zero-initialized at reset.
 ram SimpleMem
   kind single;
   latency 1;

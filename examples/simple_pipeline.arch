@@ -1,7 +1,20 @@
+//! ---
+//! tags: [pipeline, basic, two_stage, tutorial]
+//! ---
+//!
+//! Two-stage pipeline tutorial — shows the `pipeline` first-class
+//! construct with `stage Fetch` and `stage Writeback`. Cross-stage data
+//! flows via `Fetch.captured` reference (compiler auto-synthesizes the
+//! stage register).
+
 domain SysDomain
   freq_mhz: 100
 end domain SysDomain
 
+/// Two-stage pipeline: `Fetch` captures `data_in` into a register,
+/// `Writeback` reads `Fetch.captured` and exposes it on `data_out`.
+/// Demonstrates pipeline stage references — no manual valid/stall
+/// plumbing needed for this trivial datapath.
 pipeline SimplePipe
   param XLEN: const = 32;
   port clk: in Clock<SysDomain>;

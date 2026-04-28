@@ -1,7 +1,13 @@
-// Basic singly-linked task queue
-// Exercises: alloc, free, insert_tail, delete_head, read_data, write_data
-// with full/empty/length status outputs.
+//! ---
+//! tags: [linklist, queue, singly_linked, tutorial]
+//! ---
+//!
+//! Singly-linked task queue — exercises every linklist operation
+//! (alloc, free, insert_tail, delete_head, read_data, write_data) plus
+//! status outputs (empty, full, length).
 
+/// 8-deep singly-linked task queue with separate alloc/free + insert/delete
+/// + read/write op channels and full/empty/length side-band signals.
 linklist TaskQueue
   param DEPTH: const = 8;
   param DATA: type = UInt<32>;

@@ -1,7 +1,19 @@
+//! ---
+//! tags: [counter, wrap, basic, tutorial]
+//! ---
+//!
+//! 4-bit wrap counter — tutorial example for the `counter` first-class
+//! construct.
+
+/// 100 MHz system clock domain (single-clock design).
 domain SysDomain
   freq_mhz: 100
 end domain SysDomain
 
+/// 4-bit wrap-around counter with runtime-programmable max.
+///
+/// Counts up while `inc` is asserted; wraps to 0 when `value == max`.
+/// Asserts `at_max` for one cycle on the boundary.
 counter WrapCounter
   kind wrap;
   direction: up;
