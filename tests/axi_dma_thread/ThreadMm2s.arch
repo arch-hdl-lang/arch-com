@@ -1,15 +1,27 @@
-// Thread-based multi-outstanding MM2S read engine.
-//
-// Architecture: single ArIssuer thread + 4 RCollect threads.
-//   - ArIssuer: single state machine drives all AR outputs — no 4-way mux needed.
-//     Address maintained in next_ar_addr_r (increment-only, no multiply).
-//   - RCollect_i: each thread collects R beats for its assigned ID.
-//     Only drives 1-bit r_ready/push_valid — narrow mux overhead.
-//   - push_data = r_data unconditionally (all threads push same source).
-//
-// Work assignment: xfer k → AR ID k%4, handled by RCollect_{k%4}.
-// Done when sum of thread_complete[i] == total_xfers.
+//! ---
+//! spec_md: doc/axi_dma_case_study.md
+//! tags: [dma, axi4, mm2s, multi_outstanding, thread]
+//! refs:
+//!   - "AXI4 spec ARM IHI 0022, §A3 Single Interface Requirements"
+//!   - "Xilinx PG021 (LogiCORE IP AXI DMA) — MM2S read path"
+//! ---
+//!
+//! Multi-outstanding AXI4 MM2S (read) engine — issues up to NUM_OUTSTANDING
+//! parallel AR transactions and collects R beats per AXI ID, pushing data to
+//! a downstream FIFO. The thread-based decomposition replaces what would be
+//! a 4-state hand-written FSM in the FsmMm2sMulti.arch baseline.
 
+/// Multi-outstanding AXI4 MM2S read engine.
+///
+/// Architecture: a single `ArIssuer` thread owns the AR channel and a
+/// `generate_for` block spawns NUM_OUTSTANDING `RCollect_i` threads, one
+/// per AXI ID. The single-issuer + per-ID-collector split is the central
+/// design choice — see the inner doc on `ArIssuer` and on the `RCollect_i`
+/// generate for the rationale.
+///
+/// Work assignment: transfer `k` is issued with `ar_id = k % NUM_OUTSTANDING`
+/// and collected by `RCollect_{k % NUM_OUTSTANDING}`. The engine is "done"
+/// when `Σ thread_complete[i] == total_xfers`.
 module ThreadMm2s
   param NUM_OUTSTANDING: const = 4;
 
@@ -75,8 +87,14 @@ module ThreadMm2s
   end seq
 
   // ── AR issuer ─────────────────────────────────────────────────────────────
-  // Single thread drives all AR outputs — no resource lock, no 4-way mux.
   thread ArIssuer on clk rising, rst high
+    //! Single thread drives all AR outputs — no resource lock, no 4-way
+    //! mux. Address is maintained in `next_ar_addr_r` (increment-only, no
+    //! multiply); ID rotates via `xfer_ctr_r[1:0]` so transfer `k` lands
+    //! on AXI ID `k % 4`. The `default when start and not active_r` clause
+    //! is the soft-reset arm — kicks off a new run synchronously without
+    //! a separate idle state.
+
     default when start and not active_r
       total_xfers_r  <= total_xfers;
       burst_len_r    <= burst_len;
@@ -100,6 +118,18 @@ module ThreadMm2s
   // ── R collectors ─────────────────────────────────────────────────────────
   generate_for i in 0..3
     thread RCollect_i on clk rising, rst high
+      //! Per-ID R-channel collector. Only drives 1-bit `r_ready` and
+      //! `push_valid` (both `shared(or)` — collector `i` asserts only
+      //! when `r_id == i`), so the OR-reduction in the merged comb block
+      //! is a narrow mux. `push_data = r_data` unconditionally (all
+      //! collectors source the same wire), which is why `push_data` is
+      //! NOT `shared(or)` — see the comb block above for the
+      //! unconditional drive.
+      //!
+      //! Backpressure: each collector waits for its `(thread_complete[i]
+      //! << 2) + i < xfer_ctr_r` window to open before consuming a beat.
+      //! This couples to the issuer's round-robin ID rotation.
+
       default when start and not active_r
         thread_complete[i] <= 0;
       end default

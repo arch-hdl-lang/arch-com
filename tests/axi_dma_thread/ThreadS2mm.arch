@@ -1,7 +1,27 @@
-// Thread-based multi-outstanding S2MM write engine.
-// Compare with FsmS2mmMulti.arch (226 lines, 4 states, manual AW/W/B).
-// Uses fork/join for AW+W parallelism, resource/lock for arbitration.
+//! ---
+//! spec_md: doc/axi_dma_case_study.md
+//! tags: [dma, axi4, s2mm, multi_outstanding, thread, fork_join, lock]
+//! refs:
+//!   - "AXI4 spec ARM IHI 0022, §A3 Single Interface Requirements"
+//!   - "AXI4 spec §A5 — write data ordering / write response ordering"
+//!   - "Xilinx PG021 (LogiCORE IP AXI DMA) — S2MM write path"
+//! ---
+//!
+//! Multi-outstanding AXI4 S2MM (write) engine — issues up to
+//! NUM_OUTSTANDING parallel transactions, each pulling data from the
+//! S2MM FIFO and driving AW + W + B. Compare with FsmS2mmMulti.arch (226
+//! lines, 4 hand-rolled states); the thread version is ~50% shorter
+//! because `fork`/`join` expresses the AW/W parallelism directly, and
+//! `resource` + `lock` handles channel arbitration without a manual mux.
 
+/// Multi-outstanding AXI4 S2MM write engine.
+///
+/// `NUM_OUTSTANDING` parallel `WriteReq_i` threads, one per AXI ID, each
+/// running the AW → W → B sequence. AW and W are issued in parallel via
+/// `fork ... and ... join`; channel arbitration across threads uses
+/// `resource` + `lock`. AW/W use `round_robin` for fairness across IDs
+/// (each thread gets even bandwidth on the bus); the done-counter resource
+/// uses `priority` because completion order doesn't affect throughput.
 module ThreadS2mm
   param NUM_OUTSTANDING: const = 4;
   param ID_W: const = 2;
@@ -49,12 +69,27 @@ module ThreadS2mm
   let idle_out = (aw_issued_r == 0) and (b_received_r == 0);
   let done     = (b_received_r == total_xfers) and (b_received_r != 0);
 
+  /// AW channel arbiter — round-robin keeps bandwidth fair across IDs.
   resource aw_ch  : mutex<round_robin>;
+  /// W channel arbiter — same fairness story as AW.
   resource w_ch   : mutex<round_robin>;
+  /// Done-counter arbiter — order-independent, priority is fine.
   resource done_ch: mutex<priority>;
 
   generate_for i in 0..NUM_OUTSTANDING-1
     thread WriteReq_i on clk rising, rst low
+      //! Per-ID write transaction. Body shape:
+      //!   (1) `wait until start` — block until the host kicks off a run.
+      //!   (2) `fork`-`join` of two locked branches that issue AW and W
+      //!       in parallel — each branch holds its respective channel
+      //!       lock for the duration of its handshake.
+      //!   (3) Wait for `b_valid` matching this thread's ID.
+      //!   (4) Lock `done_ch` to atomically increment `b_received_r`.
+      //!
+      //! ID assignment: the `generate_for i in 0..NUM_OUTSTANDING-1` loop
+      //! gives each thread a static AXI ID `i`; b_id matching ensures a
+      //! thread only consumes its own write response.
+
       wait until start;
 
       // AW+W in parallel via fork/join
