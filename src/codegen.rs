@@ -4,6 +4,23 @@ use crate::lexer::Span;
 use crate::resolve::{Symbol, SymbolTable};
 use crate::typecheck::enum_width;
 
+/// SV assignment-operator context for the unified `emit_stmt` walker.
+/// `Blocking` = `=` (comb / latch / reg-as-comb), `NonBlocking` = `<=` (seq).
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(crate) enum AssignCtx {
+    Blocking,
+    NonBlocking,
+}
+
+impl AssignCtx {
+    fn op(&self) -> &'static str {
+        match self {
+            AssignCtx::Blocking => "=",
+            AssignCtx::NonBlocking => "<=",
+        }
+    }
+}
+
 fn stmt_span_start(stmt: &Stmt) -> usize {
     match stmt {
         Stmt::Assign(a) => a.span.start,
@@ -17,21 +34,6 @@ fn stmt_span_start(stmt: &Stmt) -> usize {
     }
 }
 
-fn comb_stmt_span_start(stmt: &Stmt) -> usize {
-    match stmt {
-        Stmt::Assign(a) => a.span.start,
-        Stmt::IfElse(i) => i.span.start,
-        Stmt::Match(m) => m.span.start,
-        Stmt::Log(l) => l.span.start,
-        Stmt::For(f) => f.span.start,
-        // Seq-only variants — typecheck rejects these in `comb` context, so
-        // a comb-only walker should never see them. Keep the arm for the
-        // exhaustiveness checker; the panic is a defensive belt-and-suspenders.
-        Stmt::Init(ib) => ib.span.start,
-        Stmt::WaitUntil(_, sp) => sp.start,
-        Stmt::DoUntil { span, .. } => span.start,
-    }
-}
 
 pub struct Codegen<'a> {
     pub symbols: &'a SymbolTable,
@@ -1367,113 +1369,52 @@ impl<'a> Codegen<'a> {
         format!("_log_fd_{clean}")
     }
 
-    fn emit_comb_stmt(&mut self, stmt: &Stmt) {
-        self.emit_comments_before(comb_stmt_span_start(stmt));
+    /// Unified `Stmt` emitter for `comb` and `seq` (and `latch`-as-comb)
+    /// contexts. Phase 5b consolidation: the only thing the wrapping block
+    /// decides is the assignment operator (`=` for blocking comb, `<=` for
+    /// non-blocking seq). All other stmt-shape codegen is identical.
+    ///
+    /// `Blocking` is also used for the latch-block emitter and for emitting
+    /// register-shaped FSM/state bodies as combinational logic (e.g. inside
+    /// always_comb when the FSM lowering pulls the body out of seq).
+    fn emit_stmt(&mut self, stmt: &Stmt, ctx: AssignCtx) {
+        self.emit_comments_before(stmt_span_start(stmt));
         match stmt {
             Stmt::Assign(a) => {
-                // Match-expression RHS: emit as a case block for readability
-                if let ExprKind::ExprMatch(scrutinee, arms) = &a.value.kind {
-                    let s = self.emit_expr_str(scrutinee);
-                    let target = self.emit_expr_str(&a.target);
-                    self.line(&format!("case ({s})"));
-                    self.indent += 1;
-                    for arm in arms {
-                        let pat = match &arm.pattern {
-                            Pattern::Wildcard => "default".to_string(),
-                            Pattern::Ident(id) if id.name == "_" => "default".to_string(),
-                            Pattern::Literal(e) => self.emit_expr_str(e),
-                            Pattern::Ident(id) => id.name.clone(),
-                            Pattern::EnumVariant(en, vr) => {
-                                format!("{}__{}", en.name.to_uppercase(), vr.name.to_uppercase())
-                            }
-                        };
-                        let val = self.emit_expr_str(&arm.value);
-                        self.line(&format!("{pat}: {target} = {val};"));
+                // Comb-context special case: `target = match scrut { ... }`
+                // expands to a case block so the RHS can branch per pattern.
+                // Seq context drives the same RHS through emit_expr_str, which
+                // pretty-prints it as a ternary chain — no expansion needed.
+                if ctx == AssignCtx::Blocking {
+                    if let ExprKind::ExprMatch(scrutinee, arms) = &a.value.kind {
+                        let s = self.emit_expr_str(scrutinee);
+                        let target = self.emit_expr_str(&a.target);
+                        self.line(&format!("case ({s})"));
+                        self.indent += 1;
+                        for arm in arms {
+                            let pat = match &arm.pattern {
+                                Pattern::Wildcard => "default".to_string(),
+                                Pattern::Ident(id) if id.name == "_" => "default".to_string(),
+                                Pattern::Literal(e) => self.emit_expr_str(e),
+                                Pattern::Ident(id) => id.name.clone(),
+                                Pattern::EnumVariant(en, vr) => {
+                                    format!("{}__{}", en.name.to_uppercase(), vr.name.to_uppercase())
+                                }
+                            };
+                            let val = self.emit_expr_str(&arm.value);
+                            self.line(&format!("{pat}: {target} = {val};"));
+                        }
+                        self.indent -= 1;
+                        self.line("endcase");
+                        return;
                     }
-                    self.indent -= 1;
-                    self.line("endcase");
-                } else {
-                    let val = self.emit_expr_str(&a.value);
-                    let tgt = self.emit_expr_str(&a.target);
-                    self.line(&format!("{} = {};", tgt, val));
                 }
-            }
-            Stmt::IfElse(ie) => {
-                self.emit_comb_if_else(ie);
-            }
-            Stmt::Match(m) => {
-                let scrut = self.emit_expr_str(&m.scrutinee);
-                let u = if m.unique { "unique " } else { "" };
-                self.line(&format!("{}case ({})", u, scrut));
-                self.indent += 1;
-                for arm in &m.arms {
-                    let pat = self.emit_pattern(&arm.pattern);
-                    self.line(&format!("{}: begin", pat));
-                    self.indent += 1;
-                    for s in &arm.body {
-                        self.emit_comb_stmt(s);
-                    }
-                    self.indent -= 1;
-                    self.line("end");
-                }
-                self.indent -= 1;
-                self.line("endcase");
-            }
-            Stmt::Log(l) => { self.emit_log_stmt(l); }
-            Stmt::For(f) => {
-                self.emit_for_loop_sv(f, |s, stmt| s.emit_comb_stmt(stmt));
-            }
-            // Seq-only variants are rejected in `comb` context by typecheck;
-            // a comb-only walker should never see them.
-            Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => {
-                unreachable!("seq-only Stmt variant inside comb block — typecheck bug");
-            }
-        }
-    }
-
-    fn emit_comb_if_else(&mut self, ie: &IfElse) {
-        self.emit_comb_if_else_inner(ie, false);
-    }
-
-    fn emit_comb_if_else_inner(&mut self, ie: &IfElse, is_chain: bool) {
-        let cond = self.emit_expr_str(&ie.cond);
-        let u = if ie.unique && !is_chain { "unique " } else { "" };
-        if is_chain {
-            self.line(&format!("end else if ({}) begin", cond));
-        } else {
-            self.line(&format!("{}if ({}) begin", u, cond));
-        }
-        self.indent += 1;
-        for s in &ie.then_stmts {
-            self.emit_comb_stmt(s);
-        }
-        self.indent -= 1;
-        if ie.else_stmts.len() == 1 {
-            if let Stmt::IfElse(nested) = &ie.else_stmts[0] {
-                self.emit_comb_if_else_inner(nested, true);
-                return;
-            }
-        }
-        if !ie.else_stmts.is_empty() {
-            self.line("end else begin");
-            self.indent += 1;
-            for s in &ie.else_stmts {
-                self.emit_comb_stmt(s);
-            }
-            self.indent -= 1;
-        }
-        self.line("end");
-    }
-
-    fn emit_reg_stmt_as_comb(&mut self, stmt: &Stmt) {
-        match stmt {
-            Stmt::Assign(a) => {
-                let target = self.emit_expr_str(&a.target);
                 let val = self.emit_expr_str(&a.value);
-                self.line(&format!("{} = {};", target, val));
+                let tgt = self.emit_expr_str(&a.target);
+                self.line(&format!("{} {} {};", tgt, ctx.op(), val));
             }
             Stmt::IfElse(ie) => {
-                self.emit_comb_if_else_from_reg(ie, false);
+                self.emit_if_else(ie, ctx, false);
             }
             Stmt::Match(m) => {
                 let scrut = self.emit_expr_str(&m.scrutinee);
@@ -1485,7 +1426,7 @@ impl<'a> Codegen<'a> {
                     self.line(&format!("{}: begin", pat));
                     self.indent += 1;
                     for s in &arm.body {
-                        self.emit_reg_stmt_as_comb(s);
+                        self.emit_stmt(s, ctx);
                     }
                     self.indent -= 1;
                     self.line("end");
@@ -1493,18 +1434,22 @@ impl<'a> Codegen<'a> {
                 self.indent -= 1;
                 self.line("endcase");
             }
-            Stmt::Log(l) => { self.emit_log_stmt(l); }
+            Stmt::Log(l) => self.emit_log_stmt(l),
             Stmt::For(f) => {
-                self.emit_for_loop_sv(f, |s, stmt| s.emit_reg_stmt_as_comb(stmt));
+                self.emit_for_loop_sv(f, |s, stmt| s.emit_stmt(stmt, ctx));
             }
-            Stmt::Init(_ib) => unreachable!("Stmt::Init should not appear in latch/comb context"),
-            Stmt::WaitUntil(_, _) | Stmt::DoUntil { .. } => {
-                unreachable!("WaitUntil/DoUntil only valid in pipeline stage seq blocks")
+            Stmt::Init(_) => {
+                // `init on RST.asserted` blocks are extracted by emit_reg_block
+                // before this walker runs; reaching here is a compiler bug.
+                unreachable!("Stmt::Init reached emit_stmt; should be handled by emit_reg_block");
+            }
+            Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => {
+                unreachable!("Stmt::WaitUntil / DoUntil are pipeline-stage-seq only");
             }
         }
     }
 
-    fn emit_comb_if_else_from_reg(&mut self, ie: &IfElse, is_chain: bool) {
+    fn emit_if_else(&mut self, ie: &IfElse, ctx: AssignCtx, is_chain: bool) {
         let cond = self.emit_expr_str(&ie.cond);
         let u = if ie.unique && !is_chain { "unique " } else { "" };
         if is_chain {
@@ -1514,12 +1459,12 @@ impl<'a> Codegen<'a> {
         }
         self.indent += 1;
         for s in &ie.then_stmts {
-            self.emit_reg_stmt_as_comb(s);
+            self.emit_stmt(s, ctx);
         }
         self.indent -= 1;
         if ie.else_stmts.len() == 1 {
             if let Stmt::IfElse(nested) = &ie.else_stmts[0] {
-                self.emit_comb_if_else_from_reg(nested, true);
+                self.emit_if_else(nested, ctx, true);
                 return;
             }
         }
@@ -1527,12 +1472,17 @@ impl<'a> Codegen<'a> {
             self.line("end else begin");
             self.indent += 1;
             for s in &ie.else_stmts {
-                self.emit_reg_stmt_as_comb(s);
+                self.emit_stmt(s, ctx);
             }
             self.indent -= 1;
         }
         self.line("end");
     }
+
+    fn emit_comb_stmt(&mut self, stmt: &Stmt) {
+        self.emit_stmt(stmt, AssignCtx::Blocking);
+    }
+
 
     fn emit_reg_block(&mut self, rb: &RegBlock, m: &ModuleDecl) {
         let clk_edge = match rb.clock_edge {
@@ -1813,7 +1763,7 @@ impl<'a> Codegen<'a> {
         self.line(&format!("if ({}) begin", lb.enable.name));
         self.indent += 1;
         for stmt in &lb.stmts {
-            self.emit_reg_stmt_as_comb(stmt);
+            self.emit_stmt(stmt, AssignCtx::Blocking);
         }
         self.indent -= 1;
         self.line("end");
@@ -2285,81 +2235,9 @@ impl<'a> Codegen<'a> {
     }
 
     fn emit_reg_stmt(&mut self, stmt: &Stmt) {
-        self.emit_comments_before(stmt_span_start(stmt));
-        match stmt {
-            Stmt::Assign(a) => {
-                let target = self.emit_expr_str(&a.target);
-                let val = self.emit_expr_str(&a.value);
-                self.line(&format!("{} <= {};", target, val));
-            }
-            Stmt::IfElse(ie) => {
-                self.emit_reg_if_else(ie);
-            }
-            Stmt::Match(m) => {
-                let scrut = self.emit_expr_str(&m.scrutinee);
-                let u = if m.unique { "unique " } else { "" };
-                self.line(&format!("{}case ({})", u, scrut));
-                self.indent += 1;
-                for arm in &m.arms {
-                    let pat = self.emit_pattern(&arm.pattern);
-                    self.line(&format!("{}: begin", pat));
-                    self.indent += 1;
-                    for s in &arm.body {
-                        self.emit_reg_stmt(s);
-                    }
-                    self.indent -= 1;
-                    self.line("end");
-                }
-                self.indent -= 1;
-                self.line("endcase");
-            }
-            Stmt::Log(l) => { self.emit_log_stmt(l); }
-            Stmt::For(f) => {
-                self.emit_for_loop_sv(f, |s, stmt| s.emit_reg_stmt(stmt));
-            }
-            Stmt::Init(_ib) => {
-                // init blocks are extracted and emitted by emit_reg_block before this point
-                unreachable!("Stmt::Init should be handled by emit_reg_block, not emit_reg_stmt")
-            }
-            Stmt::WaitUntil(_, _) | Stmt::DoUntil { .. } => {
-                unreachable!("WaitUntil/DoUntil only valid in pipeline stage seq blocks")
-            }
-        }
+        self.emit_stmt(stmt, AssignCtx::NonBlocking);
     }
 
-    fn emit_reg_if_else(&mut self, ie: &IfElse) {
-        self.emit_reg_if_else_inner(ie, false);
-    }
-
-    fn emit_reg_if_else_inner(&mut self, ie: &IfElse, is_chain: bool) {
-        let cond = self.emit_expr_str(&ie.cond);
-        let u = if ie.unique && !is_chain { "unique " } else { "" };
-        if is_chain {
-            self.line(&format!("end else if ({}) begin", cond));
-        } else {
-            self.line(&format!("{}if ({}) begin", u, cond));
-        }
-        self.indent += 1;
-        for s in &ie.then_stmts {
-            self.emit_reg_stmt(s);
-        }
-        self.indent -= 1;
-        if ie.else_stmts.len() == 1 {
-            if let Stmt::IfElse(nested) = &ie.else_stmts[0] {
-                self.emit_reg_if_else_inner(nested, true);
-                return;
-            }
-        }
-        if !ie.else_stmts.is_empty() {
-            self.line("end else begin");
-            self.indent += 1;
-            for s in &ie.else_stmts {
-                self.emit_reg_stmt(s);
-            }
-            self.indent -= 1;
-        }
-        self.line("end");
-    }
 
     /// Auto-declare `logic` wires for inst output connections that reference
     /// names not already declared as ports, regs, or lets in the current module.

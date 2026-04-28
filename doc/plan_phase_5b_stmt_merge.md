@@ -1,8 +1,10 @@
 # Phase 5b — Collapse `CombStmt` into `Stmt`
 
-**Status (2026-04-28): part 1 DONE.** The AST-level merge — drop `CombStmt`, `CombIfElse`, `CombMatch`; unify all references to `Stmt`; `CombBlock.stmts` is now `Vec<Stmt>` — is shipped in PR #TBD on `refactor/stmt-merge-5b`. 218/218 tests green, zero snapshot drift.
+**Status (2026-04-28): parts 1 & 2 DONE; part 3 queued.**
 
-Part 2 (the `BlockKind` typecheck plumbing and `AssignCtx` codegen consolidation) is **queued** but kept separate so the AST merge can land cleanly. Sketch in the "Migration steps" section below — the mechanical work now is collapsing the 13 parallel walker functions that already operate on the same type into single dispatchers gated by the new context enums.
+- **Part 1** (PR #203, merged): drop `CombStmt`, `CombIfElse`, `CombMatch`; unify all references to `Stmt`; `CombBlock.stmts` is now `Vec<Stmt>`. 218/218 tests, zero snapshot drift.
+- **Part 2** (this PR): introduce `AssignCtx { Blocking, NonBlocking }` and a unified `Codegen::emit_stmt(stmt, ctx)` + `emit_if_else(ie, ctx, is_chain)`. Deletes the `emit_reg_stmt_as_comb` workaround the original plan called out, plus the dead `emit_comb_if_else` / `emit_reg_if_else` helpers and the duplicate `comb_stmt_span_start`. Net −122 lines in `codegen.rs`. 218/218 tests, zero snapshot drift.
+- **Part 3 (queued)**: collapse the remaining parallel walkers in typecheck (`check_reg_stmt` + `check_comb_stmt`), sim_codegen (`emit_reg_stmt` + `emit_comb_stmt`), formal (`walk_reg_stmt` + `walk_comb_stmt`), and elaborate (`rewrite_reg_stmt_cc` + `rewrite_comb_stmt_cc`). Each pair has subtler semantic differences than codegen — driven-set tracking, branch-aware merging, name-resolution in_seq flag, init-block handling — that warrant their own review surface. Also: introduce real typecheck rejection for `Init` / `WaitUntil` / `DoUntil` in comb context (currently `unreachable!()` because the parser routes them, but a proper error is the spec.)
 
 ---
 
