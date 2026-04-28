@@ -1417,6 +1417,18 @@ pub struct RegfileDecl {
     pub write_ports: Option<PortArrayDecl>,
     pub inits: Vec<RegfileInit>,
     pub forward_write_before_read: bool,
+    /// Storage cell type. Default `Flop` matches v0.49.x and earlier
+    /// behavior (a flop array). `Latch` emits one transparent latch per
+    /// row with one-hot write-enable decoding — typically 30–50% smaller
+    /// area than the flop form on ASIC, with most rows clock-gated when
+    /// no write fires. See spec §regfile and `doc/plan_regfile_latch.md`.
+    pub kind: RegfileKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegfileKind {
+    Flop,
+    Latch,
 }
 impl std::ops::Deref for RegfileDecl {
     type Target = ConstructCommon;
