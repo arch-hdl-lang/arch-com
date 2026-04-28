@@ -6477,3 +6477,140 @@ fn test_four_slashes_dropped_as_regular_comment() {
         "4-slash banner should not attach as a doc comment, got: {:?}", m.doc);
 }
 
+// ── PR-doc-1.5: outer-doc + inner-doc on every top-level item kind ────────────
+
+#[test]
+fn test_doc_outer_on_struct_enum_function() {
+    let source = "
+        /// Cache line state struct.
+        struct CacheLine
+          tag: UInt<20>;
+          data: UInt<512>;
+        end struct CacheLine
+
+        /// Branch direction predictor outcome.
+        enum Predict
+          Taken,
+          NotTaken
+        end enum Predict
+
+        /// Saturating add helper.
+        function sat_add(a: UInt<8>, b: UInt<8>) -> UInt<8>
+          return a +% b;
+        end function sat_add
+    ";
+    let ast = parse_to_ast(source);
+    let s = match &ast.items[0] {
+        arch::ast::Item::Struct(s) => s,
+        _ => panic!("expected struct"),
+    };
+    assert!(s.doc.as_ref().map_or(false, |d| d.contains("Cache line state")),
+        "struct should have outer doc, got {:?}", s.doc);
+    let e = match &ast.items[1] {
+        arch::ast::Item::Enum(e) => e,
+        _ => panic!("expected enum"),
+    };
+    assert!(e.doc.as_ref().map_or(false, |d| d.contains("Branch direction")),
+        "enum should have outer doc, got {:?}", e.doc);
+    let f = match &ast.items[2] {
+        arch::ast::Item::Function(f) => f,
+        _ => panic!("expected function"),
+    };
+    assert!(f.doc.as_ref().map_or(false, |d| d.contains("Saturating add")),
+        "function should have outer doc, got {:?}", f.doc);
+}
+
+#[test]
+fn test_doc_outer_on_bus_synchronizer_clkgate() {
+    let source = "
+        /// Reusable AXI4 bus port bundle.
+        bus AxiB
+          aw_valid: out Bool;
+          aw_ready: in  Bool;
+          aw_addr:  out UInt<32>;
+        end bus AxiB
+
+        /// 2-FF synchronizer for a CDC `start` strobe.
+        synchronizer Sync2
+          kind ff;
+          param STAGES: const = 2;
+          port src_clk: in Clock<SysDomain>;
+          port dst_clk: in Clock<SysDomain>;
+          port d:       in Bool;
+          port q:       out Bool;
+        end synchronizer Sync2
+    ";
+    let ast = parse_to_ast(source);
+    let b = match &ast.items[0] {
+        arch::ast::Item::Bus(b) => b,
+        _ => panic!("expected bus"),
+    };
+    assert!(b.doc.as_ref().map_or(false, |d| d.contains("AXI4")),
+        "bus should have outer doc, got {:?}", b.doc);
+    let s = match &ast.items[1] {
+        arch::ast::Item::Synchronizer(s) => s,
+        _ => panic!("expected synchronizer"),
+    };
+    assert!(s.doc.as_ref().map_or(false, |d| d.contains("2-FF")),
+        "synchronizer should have outer doc, got {:?}", s.doc);
+}
+
+#[test]
+fn test_inner_doc_on_counter_and_arbiter() {
+    let source = "
+        counter Wd
+          //! 4-bit watchdog timer used by the test harness.
+          kind wrap;
+          init: 0;
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          port inc: in Bool;
+          port max: in UInt<4>;
+          port value: out UInt<4>;
+        end counter Wd
+
+        arbiter A
+          //! Round-robin arbiter — fairness for the 4 DMA channels.
+          policy round_robin;
+          param NUM_REQ: const = 4;
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Async, Low>;
+          ports[NUM_REQ] request
+            valid: in Bool;
+            ready: out Bool;
+          end ports request
+          port grant_valid: out Bool;
+          port grant_requester: out UInt<2>;
+        end arbiter A
+    ";
+    let ast = parse_to_ast(source);
+    let c = match &ast.items[0] {
+        arch::ast::Item::Counter(c) => c,
+        _ => panic!("expected counter"),
+    };
+    assert!(c.common.inner_doc.as_ref().map_or(false, |d| d.contains("watchdog timer")),
+        "counter inner_doc missing, got {:?}", c.common.inner_doc);
+    let a = match &ast.items[1] {
+        arch::ast::Item::Arbiter(a) => a,
+        _ => panic!("expected arbiter"),
+    };
+    assert!(a.common.inner_doc.as_ref().map_or(false, |d| d.contains("Round-robin")),
+        "arbiter inner_doc missing, got {:?}", a.common.inner_doc);
+}
+
+#[test]
+fn test_doc_outer_on_use_decl() {
+    // `use` is a single-line decl — only outer-doc applies.
+    let source = "
+        /// Pull in the cache-line definition from the shared package.
+        use Pkg;
+    ";
+    let ast = parse_to_ast(source);
+    let u = match &ast.items[0] {
+        arch::ast::Item::Use(u) => u,
+        _ => panic!("expected use"),
+    };
+    assert!(u.doc.as_ref().map_or(false, |d| d.contains("cache-line")),
+        "use decl should have outer doc, got {:?}", u.doc);
+}
+

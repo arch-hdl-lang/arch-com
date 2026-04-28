@@ -134,6 +134,7 @@ impl Parser {
     fn parse_domain(&mut self) -> Result<DomainDecl, CompileError> {
         let start = self.expect(TokenKind::Domain)?.span;
         let name = self.expect_ident()?;
+        let inner_doc = self.consume_inner_doc();
         let mut fields = Vec::new();
         while !self.check_end_keyword() {
             let field_name = self.expect_ident()?;
@@ -158,6 +159,8 @@ impl Parser {
             span: start.merge(closing_name.span),
             name,
             fields,
+            doc: None,
+            inner_doc,
         })
     }
 
@@ -165,6 +168,7 @@ impl Parser {
     fn parse_struct(&mut self) -> Result<StructDecl, CompileError> {
         let start = self.expect(TokenKind::Struct)?.span;
         let name = self.expect_ident()?;
+        let inner_doc = self.consume_inner_doc();
         let mut fields = Vec::new();
         while !self.check_end_keyword() {
             let field_name = self.expect_ident()?;
@@ -190,6 +194,8 @@ impl Parser {
             span: start.merge(closing_name.span),
             name,
             fields,
+            doc: None,
+            inner_doc,
         })
     }
 
@@ -197,6 +203,7 @@ impl Parser {
     fn parse_bus(&mut self) -> Result<BusDecl, CompileError> {
         let start = self.expect(TokenKind::Bus)?.span;
         let name = self.expect_ident()?;
+        let inner_doc = self.consume_inner_doc();
         let mut params = Vec::new();
         let mut signals = Vec::new();
         let mut generates = Vec::new();
@@ -240,6 +247,8 @@ impl Parser {
             handshakes,
             credit_channels,
             tlm_methods,
+            doc: None,
+            inner_doc,
         })
     }
 
@@ -632,6 +641,7 @@ impl Parser {
     fn parse_enum(&mut self) -> Result<EnumDecl, CompileError> {
         let start = self.expect(TokenKind::Enum)?.span;
         let name = self.expect_ident()?;
+        let inner_doc = self.consume_inner_doc();
         let mut variants = Vec::new();
         let mut values = Vec::new();
         while !self.check_end_keyword() {
@@ -664,6 +674,8 @@ impl Parser {
             name,
             variants,
             values,
+            doc: None,
+            inner_doc,
         })
     }
 
@@ -3283,6 +3295,7 @@ impl Parser {
     fn parse_fsm(&mut self) -> Result<FsmDecl, CompileError> {
         let start = self.expect(TokenKind::Fsm)?.span;
         let name = self.expect_ident()?;
+        let inner_doc = self.consume_inner_doc();
         self.seq_default = None;
 
         let mut params = Vec::new();
@@ -3400,7 +3413,7 @@ impl Parser {
         })?;
 
         Ok(FsmDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc: None },
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc },
             regs,
             lets,
             wires,
@@ -3506,6 +3519,7 @@ impl Parser {
         let start = self.expect(TokenKind::Pipeline)?.span;
         let name = self.expect_ident()?;
 
+        let inner_doc = self.consume_inner_doc();
         let mut params = Vec::new();
         let mut ports = Vec::new();
         let mut stages = Vec::new();
@@ -3544,7 +3558,7 @@ impl Parser {
         }
 
         Ok(PipelineDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc: None },
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc },
             stages,
             stall_conds,
             flush_directives,
@@ -3689,6 +3703,7 @@ impl Parser {
         let start = self.expect(TokenKind::Fifo)?.span;
         let name = self.expect_ident()?;
 
+        let inner_doc = self.consume_inner_doc();
         let mut kind: Option<FifoKind> = None;
         let mut params = Vec::new();
         let mut ports = Vec::new();
@@ -3733,7 +3748,7 @@ impl Parser {
         }
 
         Ok(FifoDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc: None },
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc },
             kind: kind.unwrap_or(FifoKind::Fifo),
         })
     }
@@ -3750,6 +3765,7 @@ impl Parser {
         let start = self.expect(TokenKind::Synchronizer)?.span;
         let name = self.expect_ident()?;
 
+        let inner_doc = self.consume_inner_doc();
         let mut params = Vec::new();
         let mut ports = Vec::new();
         let mut kind = None;
@@ -3798,6 +3814,8 @@ impl Parser {
             kind: kind.unwrap_or(SyncKind::Ff),
             params,
             ports,
+            doc: None,
+            inner_doc,
         })
     }
 
@@ -3813,6 +3831,7 @@ impl Parser {
         let start = self.expect(TokenKind::Clkgate)?.span;
         let name = self.expect_ident()?;
 
+        let inner_doc = self.consume_inner_doc();
         let mut params = Vec::new();
         let mut ports = Vec::new();
         let mut kind = None;
@@ -3871,6 +3890,8 @@ impl Parser {
             kind: kind.unwrap_or(ClkGateKind::Latch),
             params,
             ports,
+            doc: None,
+            inner_doc,
         })
     }
 
@@ -3886,6 +3907,7 @@ impl Parser {
         let start = self.expect(TokenKind::Ram)?.span;
         let name = self.expect_ident()?;
 
+        let inner_doc = self.consume_inner_doc();
         let mut params = Vec::new();
         let mut ports = Vec::new();
         let mut kind: Option<RamKind> = None;
@@ -4022,7 +4044,7 @@ impl Parser {
         }
 
         Ok(RamDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc: None },
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc },
             kind: k,
             latency: lat,
             write_mode,
@@ -4201,6 +4223,7 @@ impl Parser {
         let start = self.expect(TokenKind::Cam)?.span;
         let name = self.expect_ident()?;
 
+        let inner_doc = self.consume_inner_doc();
         let mut params: Vec<ParamDecl> = Vec::new();
         let mut ports: Vec<PortDecl> = Vec::new();
         let mut asserts: Vec<AssertDecl> = Vec::new();
@@ -4240,7 +4263,7 @@ impl Parser {
                 ports,
                 asserts,
                 span: Span { start: start.start, end: end.end },
-                doc: None, inner_doc: None,
+                doc: None, inner_doc,
             },
         })
     }
@@ -4249,6 +4272,7 @@ impl Parser {
         let start = self.expect(TokenKind::Counter)?.span;
         let name = self.expect_ident()?;
 
+        let inner_doc = self.consume_inner_doc();
         let mut params = Vec::new();
         let mut ports = Vec::new();
         let mut mode: Option<CounterMode> = None;
@@ -4336,7 +4360,7 @@ impl Parser {
         let mode = mode.unwrap_or(CounterMode::Wrap);
         let direction = direction.unwrap_or(CounterDirection::Up);
         Ok(CounterDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc: None },
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc },
             mode, direction, init,
         })
     }
@@ -4353,6 +4377,7 @@ impl Parser {
         let start = self.expect(TokenKind::Arbiter)?.span;
         let name = self.expect_ident()?;
 
+        let inner_doc = self.consume_inner_doc();
         let mut params = Vec::new();
         let mut ports = Vec::new();
         let mut port_arrays = Vec::new();
@@ -4442,7 +4467,7 @@ impl Parser {
         }
 
         Ok(ArbiterDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc: None },
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc },
             port_arrays,
             policy: policy.unwrap_or(ArbiterPolicy::RoundRobin),
             hook,
@@ -4542,6 +4567,7 @@ impl Parser {
     fn parse_template(&mut self) -> Result<crate::ast::TemplateDecl, CompileError> {
         let start = self.expect(TokenKind::Template)?.span;
         let name = self.expect_ident()?;
+        let inner_doc = self.consume_inner_doc();
 
         let mut params = Vec::new();
         let mut ports = Vec::new();
@@ -4571,7 +4597,7 @@ impl Parser {
         }
 
         let span = start.merge(closing.span);
-        Ok(crate::ast::TemplateDecl { name, params, ports, port_arrays, hooks, span })
+        Ok(crate::ast::TemplateDecl { name, params, ports, port_arrays, hooks, span, doc: None, inner_doc })
     }
 
     /// Parse `hook name(args) -> RetType;` (no binding — template signature only)
@@ -4639,6 +4665,7 @@ impl Parser {
         let start = self.expect(TokenKind::Regfile)?.span;
         let name = self.expect_ident()?;
 
+        let inner_doc = self.consume_inner_doc();
         let mut params = Vec::new();
         let mut ports = Vec::new();
         let mut read_ports: Option<PortArrayDecl> = None;
@@ -4708,7 +4735,7 @@ impl Parser {
         }
 
         Ok(RegfileDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc: None },
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc },
             read_ports,
             write_ports,
             inits,
@@ -4886,6 +4913,7 @@ impl Parser {
         let start = self.expect(TokenKind::Linklist)?.span;
         let name = self.expect_ident()?;
 
+        let inner_doc = self.consume_inner_doc();
         let mut params = Vec::new();
         let mut ports = Vec::new();
         let mut kind: Option<LinklistKind> = None;
@@ -4956,7 +4984,7 @@ impl Parser {
         }
 
         Ok(LinklistDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc: None },
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc },
             kind: kind.unwrap_or(LinklistKind::Singly),
             track_tail,
             track_length,
@@ -5176,6 +5204,7 @@ impl Parser {
         let start = self.expect(TokenKind::Function)?.span;
         let name = self.expect_ident()?;
 
+        let inner_doc = self.consume_inner_doc();
         // Arg list: (name: Type, ...)
         self.expect(TokenKind::LParen)?;
         let mut args = Vec::new();
@@ -5214,6 +5243,8 @@ impl Parser {
             args,
             ret_ty,
             body,
+            doc: None,
+            inner_doc,
         })
     }
 
@@ -5225,6 +5256,7 @@ impl Parser {
         Ok(UseDecl {
             span: start.merge(end),
             name,
+            doc: None,
         })
     }
 
@@ -5349,6 +5381,7 @@ impl Parser {
     fn parse_package(&mut self) -> Result<PackageDecl, CompileError> {
         let start = self.expect(TokenKind::Package)?.span;
         let name = self.expect_ident()?;
+        let inner_doc = self.consume_inner_doc();
         let mut params = Vec::new();
         let mut domains = Vec::new();
         let mut enums = Vec::new();
@@ -5395,15 +5428,17 @@ impl Parser {
             structs,
             buses,
             functions,
+            doc: None,
+            inner_doc,
         })
     }
 }
 
 /// Attach an outer doc-comment string to the construct field that owns it.
 ///
-/// Variants whose AST struct does not yet carry a `doc` field silently drop
-/// the comment for now — those (Domain, Struct, Enum, Function, Package,
-/// Use, Bus, Template) will gain the field in PR-doc-1.5.
+/// Routes outer doc text to each `Item` variant's owning `doc` field.
+/// All top-level constructs now carry a `doc` field (member-level decls
+/// — port/reg/wire/let/inst/resource — are deferred to PR-doc-1.6).
 fn attach_outer_doc(item: &mut Item, doc: Option<String>) {
     if doc.is_none() { return; }
     match item {
@@ -5416,13 +5451,17 @@ fn attach_outer_doc(item: &mut Item, doc: Option<String>) {
         Item::Pipeline(p)     => p.common.doc = doc,
         Item::Cam(c)          => c.common.doc = doc,
         Item::Linklist(l)     => l.common.doc = doc,
-        // SynchronizerDecl and ClkGateDecl have bespoke shapes (no
-        // `ConstructCommon`); doc field will be added in PR-doc-1.5.
-        Item::Synchronizer(_) | Item::Clkgate(_) => {}
         Item::Regfile(r)      => r.common.doc = doc,
-        // No `doc` field yet — see PR-doc-1.5.
-        Item::Domain(_) | Item::Struct(_) | Item::Enum(_) | Item::Function(_)
-        | Item::Package(_) | Item::Use(_) | Item::Bus(_) | Item::Template(_) => {}
+        Item::Synchronizer(s) => s.doc = doc,
+        Item::Clkgate(c)      => c.doc = doc,
+        Item::Domain(d)       => d.doc = doc,
+        Item::Struct(s)       => s.doc = doc,
+        Item::Enum(e)         => e.doc = doc,
+        Item::Function(f)     => f.doc = doc,
+        Item::Package(p)      => p.doc = doc,
+        Item::Use(u)          => u.doc = doc,
+        Item::Bus(b)          => b.doc = doc,
+        Item::Template(t)     => t.doc = doc,
     }
 }
 
