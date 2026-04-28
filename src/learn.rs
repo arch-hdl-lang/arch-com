@@ -245,6 +245,163 @@ fn append_event(e: &Event) -> std::io::Result<()> {
     Ok(())
 }
 
+// ── Feature harvester (PR-doc-3) ─────────────────────────────────────────────
+//
+// On a successful `arch check` / `arch build`, walk the post-parse AST and
+// emit a `kind: "feature"` event per top-level construct that carries any
+// `///` / `//!` / `//! ---` doc text. The event reuses the existing `Event`
+// schema by repurposing fields (kept stable for forward compatibility):
+//
+//   - kind          = "feature"
+//   - error_code    = construct kind ("module", "fsm", "arbiter", …) — used
+//                     by BM25 as a faceted token.
+//   - error_message = concatenated doc text (outer + inner + file inner +
+//                     frontmatter) — the bulk of the indexed content.
+//   - file_path     = source file path.
+//   - diff_summary  = construct's identifier name.
+//   - src_before    = file frontmatter (verbatim, for tooling that wants
+//                     to parse the YAML separately).
+//   - src_after     = construct inner_doc (separated for downstream
+//                     tooling that distinguishes outer- vs inner-doc).
+//
+// Re-harvesting a file replaces its existing feature events (idempotent).
+
+/// Walk the post-parse AST and emit feature events for every top-level
+/// construct that carries doc text. `file_path_for` maps an item's span to
+/// the originating file path (for multi-file builds where a single
+/// `SourceFile` spans several `.arch` files concatenated by `MultiSource`).
+///
+/// Returns the number of feature events emitted across all files. Honors
+/// `ARCH_NO_LEARN` and the store-size cap, same as error-fix events.
+pub fn harvest_features<F>(
+    ast: &crate::ast::SourceFile,
+    file_path_for: F,
+) -> std::io::Result<usize>
+where
+    F: Fn(&crate::ast::Item) -> String,
+{
+    if !is_enabled() || !check_capacity() {
+        return Ok(0);
+    }
+
+    // Collect new feature events first so we can purge per-file in one pass.
+    let mut new_events: Vec<Event> = Vec::new();
+    let frontmatter = ast.frontmatter.clone().unwrap_or_default();
+    let file_inner = ast.inner_doc.clone().unwrap_or_default();
+    for item in &ast.items {
+        let (kind, name, doc, inner_doc) = match extract_doc(item) {
+            Some(t) => t,
+            None => continue,
+        };
+        // Skip when there's nothing useful to retrieve.
+        if doc.is_empty() && inner_doc.is_empty() && frontmatter.is_empty() && file_inner.is_empty() {
+            continue;
+        }
+        let file = file_path_for(item);
+        // Concatenate all doc text into the indexed `error_message` field.
+        // BM25 tokenises this in `build_index` / `advise_impl`; per-class
+        // separation lives in `src_before` (frontmatter) and `src_after`
+        // (inner_doc) for downstream tooling that wants the structure.
+        let combined = [doc.as_str(), inner_doc.as_str(), file_inner.as_str(), frontmatter.as_str()]
+            .iter()
+            .filter(|s| !s.is_empty())
+            .copied()
+            .collect::<Vec<_>>()
+            .join("\n");
+        new_events.push(Event {
+            ts: iso8601_now(),
+            kind: "feature".to_string(),
+            error_code: kind.to_string(),
+            error_message: combined,
+            file_path: file,
+            src_before: frontmatter.clone(),
+            src_after: inner_doc,
+            diff_summary: name,
+        });
+    }
+
+    if new_events.is_empty() {
+        return Ok(0);
+    }
+
+    // Replace any existing feature events for the files we're harvesting.
+    let touched_files: std::collections::HashSet<String> =
+        new_events.iter().map(|e| e.file_path.clone()).collect();
+    purge_features_for_files(&touched_files)?;
+
+    let mut count = 0;
+    for e in &new_events {
+        append_event(e)?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Pull `(construct_kind_str, name, outer_doc, inner_doc)` from an `Item`
+/// when it carries doc text; `None` if the variant has no doc to harvest.
+fn extract_doc(item: &crate::ast::Item) -> Option<(&'static str, String, String, String)> {
+    use crate::ast::Item;
+    let pull = |kind: &'static str, name: String,
+                doc: &Option<String>, inner: &Option<String>| {
+        Some((kind, name, doc.clone().unwrap_or_default(), inner.clone().unwrap_or_default()))
+    };
+    match item {
+        Item::Module(m)       => pull("module",       m.name.name.clone(), &m.doc, &m.inner_doc),
+        Item::Fsm(f)          => pull("fsm",          f.common.name.name.clone(), &f.common.doc, &f.common.inner_doc),
+        Item::Fifo(f)         => pull("fifo",         f.common.name.name.clone(), &f.common.doc, &f.common.inner_doc),
+        Item::Ram(r)          => pull("ram",          r.common.name.name.clone(), &r.common.doc, &r.common.inner_doc),
+        Item::Counter(c)      => pull("counter",      c.common.name.name.clone(), &c.common.doc, &c.common.inner_doc),
+        Item::Arbiter(a)      => pull("arbiter",      a.common.name.name.clone(), &a.common.doc, &a.common.inner_doc),
+        Item::Pipeline(p)     => pull("pipeline",     p.common.name.name.clone(), &p.common.doc, &p.common.inner_doc),
+        Item::Cam(c)          => pull("cam",          c.common.name.name.clone(), &c.common.doc, &c.common.inner_doc),
+        Item::Linklist(l)     => pull("linklist",     l.common.name.name.clone(), &l.common.doc, &l.common.inner_doc),
+        Item::Regfile(r)      => pull("regfile",      r.common.name.name.clone(), &r.common.doc, &r.common.inner_doc),
+        Item::Synchronizer(s) => pull("synchronizer", s.name.name.clone(), &s.doc, &s.inner_doc),
+        Item::Clkgate(c)      => pull("clkgate",      c.name.name.clone(), &c.doc, &c.inner_doc),
+        Item::Domain(d)       => pull("domain",       d.name.name.clone(), &d.doc, &d.inner_doc),
+        Item::Struct(s)       => pull("struct",       s.name.name.clone(), &s.doc, &s.inner_doc),
+        Item::Enum(e)         => pull("enum",         e.name.name.clone(), &e.doc, &e.inner_doc),
+        Item::Function(f)     => pull("function",     f.name.name.clone(), &f.doc, &f.inner_doc),
+        Item::Package(p)      => pull("package",      p.name.name.clone(), &p.doc, &p.inner_doc),
+        Item::Bus(b)          => pull("bus",          b.name.name.clone(), &b.doc, &b.inner_doc),
+        Item::Template(t)     => pull("template",     t.name.name.clone(), &t.doc, &t.inner_doc),
+        // `Use` is a single-line decl with only `doc`; treat inner as empty.
+        Item::Use(u)          => Some(("use", u.name.name.clone(), u.doc.clone().unwrap_or_default(), String::new())),
+    }
+}
+
+/// Remove all feature events whose `file_path` matches any of `files`.
+/// Rewrites `events.jsonl` by line-filtering. O(N) per call.
+fn purge_features_for_files(
+    files: &std::collections::HashSet<String>,
+) -> std::io::Result<()> {
+    let dir = learn_dir()?;
+    let path = dir.join("events.jsonl");
+    if !path.exists() {
+        return Ok(());
+    }
+    let raw = fs::read_to_string(&path)?;
+    let mut kept: Vec<String> = Vec::new();
+    for line in raw.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        // Cheap filter: only re-parse lines that actually carry kind=feature.
+        let drop = line.contains("\"kind\":\"feature\"")
+            && files.iter().any(|f| {
+                line.contains(&format!("\"file_path\":\"{}\"", escape_json_string(f)))
+            });
+        if !drop {
+            kept.push(line.to_string());
+        }
+    }
+    let mut out = kept.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    fs::write(&path, out)
+}
+
 /// Build / rebuild the BM25 index over events.jsonl. Writes index.json.
 pub fn build_index() -> std::io::Result<usize> {
     let dir = learn_dir()?;
@@ -899,5 +1056,34 @@ mod tests {
         assert_eq!(classify_error("undefined signal `foo`"), "undefined_name");
         assert_eq!(classify_error("ambiguous precedence: ..."), "precedence");
         assert_eq!(classify_error("something else"), "other");
+    }
+
+    #[test]
+    fn purge_features_keeps_unrelated_events() {
+        // Event-shaped lines pretending to be on disk; verify the purge
+        // filter retains error_fix events and removes only feature events
+        // matching the targeted file_path. This is a string-level test —
+        // doesn't touch ~/.arch/learn — to keep CI hermetic.
+        let lines = vec![
+            r#"{"ts":"t","kind":"error_fix","error_code":"width_mismatch","error_message":"x","file_path":"a.arch","src_before":"","src_after":"","diff_summary":"d"}"#,
+            r#"{"ts":"t","kind":"feature","error_code":"module","error_message":"m","file_path":"target.arch","src_before":"","src_after":"","diff_summary":"M"}"#,
+            r#"{"ts":"t","kind":"feature","error_code":"module","error_message":"m","file_path":"other.arch","src_before":"","src_after":"","diff_summary":"O"}"#,
+        ];
+        let mut to_drop = std::collections::HashSet::new();
+        to_drop.insert("target.arch".to_string());
+        let mut kept = Vec::new();
+        for line in &lines {
+            let drop = line.contains("\"kind\":\"feature\"")
+                && to_drop.iter().any(|f: &String| {
+                    line.contains(&format!("\"file_path\":\"{}\"", escape_json_string(f)))
+                });
+            if !drop {
+                kept.push(*line);
+            }
+        }
+        assert_eq!(kept.len(), 2);
+        assert!(kept[0].contains("\"kind\":\"error_fix\""), "error_fix retained");
+        assert!(kept[1].contains("\"file_path\":\"other.arch\""),
+            "untouched feature event retained");
     }
 }

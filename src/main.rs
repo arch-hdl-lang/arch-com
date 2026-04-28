@@ -60,6 +60,12 @@ enum Command {
         /// Read the query from stdin (e.g. `arch check foo.arch 2>&1 | arch advise --from-stderr`)
         #[arg(long)]
         from_stderr: bool,
+        /// Restrict the search to feature events (spec→RTL provenance from
+        /// `///` / `//!` / `//! ---` doc comments) instead of error→fix
+        /// pairs. Returns ranked `<file>::<construct>` matches with a doc
+        /// snippet. See `doc/plan_arch_doc_comments.md` §6.
+        #[arg(long)]
+        feature: bool,
     },
     /// Show stats about the local learning store
     LearnStats,
@@ -318,7 +324,7 @@ fn main() -> miette::Result<()> {
             eprintln!("Indexed {} events.", n);
             Ok(())
         }
-        Command::Advise { query, top, from_stderr } => {
+        Command::Advise { query, top, from_stderr, feature } => {
             let mut q = query.join(" ");
             if from_stderr {
                 use std::io::Read;
@@ -333,7 +339,21 @@ fn main() -> miette::Result<()> {
                 eprintln!("error: empty query (pass a query string or pipe via --from-stderr)");
                 std::process::exit(2);
             }
-            let matches = arch::learn::advise(&q, top).into_diagnostic()?;
+            // Pull more candidates than `top` when --feature is set so we
+            // can filter to feature events without starving the result set.
+            let pool_size = if feature { top.max(1) * 8 } else { top };
+            let matches = arch::learn::advise(&q, pool_size).into_diagnostic()?;
+            let matches: Vec<_> = if feature {
+                matches.into_iter()
+                    .filter(|m| m.event.kind == "feature")
+                    .take(top)
+                    .collect()
+            } else {
+                matches.into_iter()
+                    .filter(|m| m.event.kind != "feature")
+                    .take(top)
+                    .collect()
+            };
             if matches.is_empty() {
                 eprintln!("No matches.");
                 return Ok(());
@@ -341,10 +361,22 @@ fn main() -> miette::Result<()> {
             for (i, m) in matches.iter().enumerate() {
                 println!("── match #{} (score {:.3}, retrieved {}×) ──────────────────────",
                          i + 1, m.score, m.retrieved_count);
-                println!("  code:    {}", m.event.error_code);
-                println!("  message: {}", m.event.error_message);
-                println!("  file:    {}", m.event.file_path);
-                println!("  diff:    {}", m.event.diff_summary);
+                if m.event.kind == "feature" {
+                    // Feature event: file::construct + truncated doc snippet.
+                    println!("  kind:      {}", m.event.error_code);
+                    println!("  construct: {}", m.event.diff_summary);
+                    println!("  file:      {}", m.event.file_path);
+                    let snippet: String = m.event.error_message.chars().take(240).collect();
+                    let truncated = m.event.error_message.chars().count() > 240;
+                    println!("  doc:       {}{}",
+                             snippet.replace('\n', " "),
+                             if truncated { " …" } else { "" });
+                } else {
+                    println!("  code:    {}", m.event.error_code);
+                    println!("  message: {}", m.event.error_message);
+                    println!("  file:    {}", m.event.file_path);
+                    println!("  diff:    {}", m.event.diff_summary);
+                }
                 println!();
             }
             Ok(())
@@ -1243,6 +1275,18 @@ fn run_check_multi_opts(
     let parsed_ast = p.parse_source_file().map_err(|err| {
         ms.report_error(err)
     })?;
+
+    // Harvest doc-comment / frontmatter content into the local learn store
+    // (PR-doc-3). Runs on the *parsed* AST — before elaboration — so we
+    // capture the user's source-level intent unchanged. Each top-level
+    // construct becomes one `kind: "feature"` event that `arch advise
+    // --feature <query>` can retrieve.
+    if arch::learn::is_enabled() {
+        let _ = arch::learn::harvest_features(&parsed_ast, |item| {
+            let (filename, _, _) = ms.locate(item.span().start);
+            filename.to_string()
+        });
+    }
 
     // Precedence ambiguity check on user source (pre-elaboration, so generated
     // reductions from thread lowering etc. don't trigger spurious warnings)
