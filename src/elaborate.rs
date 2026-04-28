@@ -4216,52 +4216,63 @@ struct CcDispatchCtx<'a> {
 fn rewrite_body_item_cc(bi: &mut ModuleBodyItem, ctx: &CcDispatchCtx, errors: &mut Vec<CompileError>) {
     match bi {
         ModuleBodyItem::CombBlock(cb) => {
-            for s in &mut cb.stmts { rewrite_comb_stmt_cc(s, ctx, errors); }
+            for s in &mut cb.stmts { rewrite_stmt_cc(s, ctx, errors); }
         }
         ModuleBodyItem::RegBlock(rb) => {
-            for s in &mut rb.stmts { rewrite_reg_stmt_cc(s, ctx, errors); }
+            for s in &mut rb.stmts { rewrite_stmt_cc(s, ctx, errors); }
         }
         ModuleBodyItem::LetBinding(l) => { rewrite_expr_cc(&mut l.value, ctx, errors); }
         _ => {}
     }
 }
 
-fn rewrite_comb_stmt_cc(s: &mut Stmt, ctx: &CcDispatchCtx, errors: &mut Vec<CompileError>) {
+/// Rewrite credit-channel field access (`port.ch.data`, `port.ch.valid`,
+/// `port.ch.can_send`) into the synthetic identifier the SV codegen emits
+/// (`__{port}_{ch}_{suffix}`). Walks every expression position in `Stmt`
+/// recursively. The reg/comb/pipeline-stage block context doesn't affect
+/// the rewrite — the same field access is invalid for the same reason in
+/// every block, and the synthesized identifier is the same.
+///
+/// History: pre-unification this was two near-identical functions
+/// (`rewrite_reg_stmt_cc`, `rewrite_comb_stmt_cc`) — but the seq variant
+/// silently skipped scrutinees of `Stmt::Match`, the bodies of
+/// `Stmt::Init`, and the cond/body of `Stmt::WaitUntil` / `DoUntil`,
+/// leaving CC field accesses inside those positions for the resolver to
+/// trip over with a misleading "bus has no signal X" error. Unifying
+/// (and exhaustively covering all expression positions) closes that gap.
+fn rewrite_stmt_cc(s: &mut Stmt, ctx: &CcDispatchCtx, errors: &mut Vec<CompileError>) {
     match s {
-        Stmt::Assign(a) => { rewrite_expr_cc(&mut a.target, ctx, errors); rewrite_expr_cc(&mut a.value, ctx, errors); }
+        Stmt::Assign(a) => {
+            rewrite_expr_cc(&mut a.target, ctx, errors);
+            rewrite_expr_cc(&mut a.value, ctx, errors);
+        }
         Stmt::IfElse(ie) => {
             rewrite_expr_cc(&mut ie.cond, ctx, errors);
-            for s in &mut ie.then_stmts { rewrite_comb_stmt_cc(s, ctx, errors); }
-            for s in &mut ie.else_stmts { rewrite_comb_stmt_cc(s, ctx, errors); }
+            for s in &mut ie.then_stmts { rewrite_stmt_cc(s, ctx, errors); }
+            for s in &mut ie.else_stmts { rewrite_stmt_cc(s, ctx, errors); }
         }
         Stmt::For(fl) => {
-            for s in &mut fl.body { rewrite_comb_stmt_cc(s, ctx, errors); }
+            for s in &mut fl.body { rewrite_stmt_cc(s, ctx, errors); }
         }
         Stmt::Match(m) => {
             rewrite_expr_cc(&mut m.scrutinee, ctx, errors);
             for arm in &mut m.arms {
-                for s in &mut arm.body { rewrite_comb_stmt_cc(s, ctx, errors); }
+                for s in &mut arm.body { rewrite_stmt_cc(s, ctx, errors); }
             }
         }
-        _ => {}
-    }
-}
-
-fn rewrite_reg_stmt_cc(s: &mut Stmt, ctx: &CcDispatchCtx, errors: &mut Vec<CompileError>) {
-    match s {
-        Stmt::Assign(a) => { rewrite_expr_cc(&mut a.target, ctx, errors); rewrite_expr_cc(&mut a.value, ctx, errors); }
-        Stmt::IfElse(ie) => {
-            rewrite_expr_cc(&mut ie.cond, ctx, errors);
-            for s in &mut ie.then_stmts { rewrite_reg_stmt_cc(s, ctx, errors); }
-            for s in &mut ie.else_stmts { rewrite_reg_stmt_cc(s, ctx, errors); }
+        Stmt::Init(ib) => {
+            for s in &mut ib.body { rewrite_stmt_cc(s, ctx, errors); }
         }
-        Stmt::For(fl) => { for s in &mut fl.body { rewrite_reg_stmt_cc(s, ctx, errors); } }
-        Stmt::Match(m) => {
-            for arm in &mut m.arms {
-                for s in &mut arm.body { rewrite_reg_stmt_cc(s, ctx, errors); }
-            }
+        Stmt::WaitUntil(expr, _) => {
+            rewrite_expr_cc(expr, ctx, errors);
         }
-        _ => {}
+        Stmt::DoUntil { body, cond, .. } => {
+            for s in body { rewrite_stmt_cc(s, ctx, errors); }
+            rewrite_expr_cc(cond, ctx, errors);
+        }
+        Stmt::Log(l) => {
+            for arg in &mut l.args { rewrite_expr_cc(arg, ctx, errors); }
+        }
     }
 }
 
