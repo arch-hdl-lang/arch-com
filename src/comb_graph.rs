@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::ast::{
     ConnectDir, CombStmt, ExprKind, FsmDecl, InsideMember, InstDecl, Item,
-    ModuleBodyItem, ModuleDecl, PortDecl, RamDecl, SourceFile, Stmt, TypeExpr,
+    ModuleBodyItem, ModuleDecl, PortDecl, RamDecl, SourceFile, TypeExpr,
 };
 use crate::diagnostics::CompileError;
 use crate::resolve::{Symbol, SymbolTable};
@@ -132,28 +132,6 @@ fn lhs_base_name(expr: &crate::ast::Expr) -> Option<String> {
 
 // ── Scanning helpers ──────────────────────────────────────────────────────────
 
-/// Helper: scan a `Stmt::Assign` (used inside CombMatch / CombFor arm bodies).
-fn scan_stmt_assign(
-    stmt: &Stmt,
-    input_names: &HashSet<String>,
-    output_names: &HashSet<String>,
-    driven: &mut HashSet<String>,
-    read: &mut HashSet<String>,
-) {
-    if let Stmt::Assign(a) = stmt {
-        if let Some(lhs) = lhs_base_name(&a.target) {
-            if output_names.contains(&lhs) {
-                driven.insert(lhs);
-            }
-        }
-        let mut rhs = HashSet::new();
-        collect_expr_idents(&a.value, &mut rhs);
-        for id in &rhs {
-            if input_names.contains(id) { read.insert(id.clone()); }
-        }
-    }
-}
-
 /// Recursively scan a single `CombStmt` and accumulate driven outputs and
 /// read inputs.
 fn scan_comb_stmt(
@@ -193,17 +171,15 @@ fn scan_comb_stmt(
             for id in &scrut {
                 if input_names.contains(id) { read.insert(id.clone()); }
             }
-            // Arm bodies contain Stmt::Assign items
             for arm in &m.arms {
                 for s in &arm.body {
-                    scan_stmt_assign(s, input_names, output_names, driven, read);
+                    scan_comb_stmt(s, input_names, output_names, driven, read);
                 }
             }
         }
         CombStmt::For(f) => {
-            // For-loop body contains Stmt::Assign items in comb context
             for s in &f.body {
-                scan_stmt_assign(s, input_names, output_names, driven, read);
+                scan_comb_stmt(s, input_names, output_names, driven, read);
             }
         }
         CombStmt::Log(_) => {}
