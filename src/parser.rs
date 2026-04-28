@@ -58,10 +58,16 @@ impl Parser {
     }
 
     fn consume_outer_doc_lines(&mut self) -> Vec<String> {
+        // Direct token access — bypasses the doc-skip semantics of
+        // `peek_kind` / `advance` so we actually see the doc tokens here.
         let mut lines = Vec::new();
-        while let Some(TokenKind::DocOuter(s)) = self.peek_kind_cloned() {
-            lines.push(s);
-            self.advance();
+        while let Some(t) = self.tokens.get(self.pos) {
+            if let TokenKind::DocOuter(s) = &t.kind {
+                lines.push(s.clone());
+                self.pos += 1;
+            } else {
+                break;
+            }
         }
         lines
     }
@@ -73,16 +79,17 @@ impl Parser {
     }
 
     fn consume_inner_doc_lines(&mut self) -> Vec<String> {
+        // Direct token access — see `consume_outer_doc_lines`.
         let mut lines = Vec::new();
-        while let Some(TokenKind::DocInner(s)) = self.peek_kind_cloned() {
-            lines.push(s);
-            self.advance();
+        while let Some(t) = self.tokens.get(self.pos) {
+            if let TokenKind::DocInner(s) = &t.kind {
+                lines.push(s.clone());
+                self.pos += 1;
+            } else {
+                break;
+            }
         }
         lines
-    }
-
-    fn peek_kind_cloned(&self) -> Option<TokenKind> {
-        self.tokens.get(self.pos).map(|t| t.kind.clone())
     }
 
     fn parse_item(&mut self) -> Result<Item, CompileError> {
@@ -4744,8 +4751,24 @@ impl Parser {
     }
 
     // --- Token utilities ---
+    /// Peek the next *meaningful* token kind, transparently skipping any
+    /// `///` / `//!` doc tokens at or after `self.pos` (purely look-ahead;
+    /// does not advance). Doc tokens are treated as "transparent
+    /// whitespace" everywhere except inside `consume_outer_doc_lines` /
+    /// `consume_inner_doc_lines`, which use raw token access. This makes
+    /// stray doc comments above member-level decls (port/reg/wire/let/
+    /// inst/resource) silently ignored instead of producing a confusing
+    /// "unexpected token: ///" parse error — see PR-doc-1.6 for the eventual
+    /// attachment story.
     fn peek_kind(&self) -> Option<TokenKind> {
-        self.tokens.get(self.pos).map(|t| t.kind.clone())
+        let mut i = self.pos;
+        while let Some(t) = self.tokens.get(i) {
+            match &t.kind {
+                TokenKind::DocOuter(_) | TokenKind::DocInner(_) => { i += 1; }
+                other => return Some(other.clone()),
+            }
+        }
+        None
     }
 
     fn peek_kind_at(&self, idx: usize) -> Option<TokenKind> {
@@ -4836,7 +4859,19 @@ impl Parser {
         self.check_ident(name)
     }
 
+    /// Advance past the next *meaningful* token, transparently skipping any
+    /// stray `///` / `//!` tokens. Mirrors `peek_kind`'s skip semantics so
+    /// `expect(TokenKind::Port)` works even with a stray doc above the port.
+    /// Direct callers that want raw advance (e.g. `consume_outer_doc_lines`,
+    /// `consume_inner_doc_lines`) use `self.pos += 1` instead.
     fn advance(&mut self) -> Token {
+        while let Some(t) = self.tokens.get(self.pos) {
+            if matches!(&t.kind, TokenKind::DocOuter(_) | TokenKind::DocInner(_)) {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
         let tok = self.tokens[self.pos].clone();
         self.pos += 1;
         tok
