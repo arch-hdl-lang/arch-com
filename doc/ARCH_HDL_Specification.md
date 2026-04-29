@@ -305,7 +305,7 @@ The Arch type system enforces four independent safety dimensions simultaneously.
 
   **Reset\<Async, High\|Low\>**   1 bit                Asynchronous reset --- deasserted immediately. Polarity defaults High.
 
-  **Reset\<..., ..., Domain\>**   1 bit                Optional third parameter tags the reset with a domain name for RDC (Reset Domain Crossing) checking. See §5.4.
+  *(`Reset` does not carry a domain tag. A reset's domain is inferred from the registers that consume it — see §5.4 for the RDC check derived from this rule.)*
 
   **Tristate\<T\>**    \|T\| bits            Bidirectional pad type. Decomposes to \_out, \_oe, \_in internally. See §5.5.
 
@@ -1302,26 +1302,35 @@ end module ClkDiv2
 
 A `Clock<>` output port emits `output logic` in SV and may be driven by a `comb` assignment. For dedicated clock gating with integrated latch, use the first-class `clkgate` construct instead.
 
-**5.4 Reset Domain Crossing (RDC)** *(planned)*
+**5.4 Reset Domain Crossing (RDC)**
 
-Just as `Clock<Domain>` carries a domain tag for CDC checking, `Reset<Kind, Polarity, Domain>` can carry an optional domain tag for RDC checking. When two or more reset domains are present in a module, the compiler will flag unsafe crossings:
+A reset's domain is **inferred from usage**: it equals the clock domain of the registers that consume it as a reset signal. There is no explicit `Domain` annotation on `Reset<>` — the type stays `Reset<Kind, Polarity>`. A single async reset port wired into registers driven by two different clock domains is the violation.
 
-```
-port rst_a: in Reset<Async, High, PowerDomain>;
-port rst_b: in Reset<Async, High, IoDomain>;
-```
+**RDC violations detected at compile time (shipped):**
 
-**RDC violations detected at compile time (planned):**
+1. **Cross-clock-domain async reset** — an `Reset<Async, ...>` port appears in the reset clause of registers in two different clock domains. The deassertion edge of the reset is not synchronised to either receiving clock, so the receiving flops can sample mid-deassertion and become metastable.
 
-1. **Cross-reset-domain register read** --- a register held in reset by `rst_a` is read in a `seq` block governed by `rst_b`. The register may still be in reset (or just released) when the consumer is active, causing metastability or stale values.
+The fix is `synchronizer kind reset` (deassertion synchroniser) per receiving domain, or — if the reset really is meant to be shared — explicit `cdc_safe` on the module to suppress the check.
 
-2. **Asynchronous reset deassertion ordering** --- module B depends on module A's output, but A's reset releases after B's, so B may sample undefined values during the gap.
+**Scope intentionally narrow in v1:**
 
-3. **Reset glitch propagation** --- an async reset from one domain is connected directly to another domain without a reset synchronizer.
+- **Async resets only.** Cross-domain `Reset<Sync>` is technically a CDC concern (reset signal propagates through the clock and is treated like data), but in practice rarely a real bug — sync resets meet timing through the receiving clock and don't have the deassertion-edge race that makes async cross-domain reset dangerous.
+- **`module` constructs only.** Synchronizer and FIFO constructs are themselves the escape hatches and run their own internal CDC handling.
+- **Multi-clock-domain modules only.** Single-domain modules can't have RDC by construction.
 
-The compiler will require a `reset_synchronizer` or explicit `rdc_safe` annotation to suppress the error, mirroring the existing CDC flow. The implementation will extend the existing `reg_domain` tracking in the type checker to build a parallel `reg_reset_domain` map.
+**Known limitations (TODO — full reset-domain graph analysis):**
 
-> *⚑ Until RDC checking is implemented, the third domain parameter on `Reset<>` is accepted by the parser but not enforced. Engineers should manually verify reset domain crossings.*
+The current check models reset-domain ≡ clock-domain. That covers the most common RDC bug class (an async reset feeding flops in two different clock domains) but misses the bug classes catalogued in mainstream RDC literature:
+
+1. **Same-clock multi-reset metastability.** A flop reset by `por_rst` driving a flop reset by `soft_rst`, both clocked by the same `clk`. Under the current model both flops are "in the same domain," so no error fires — but the underlying SV still has two distinct reset signals and the metastability hazard remains real if either is asynchronous.
+2. **Reset-less sequential paths.** A pipeline of `reset none` flops between two reset-domain boundaries lets metastability cascade further than expected. The check ignores reset-less flops entirely.
+3. **Reset-driven clock gating.** A flop reset by an async signal driving a `clkgate` enable causes clock glitches. We don't analyse paths into clock-gating cells.
+4. **Reconvergent RDC ("loss of functional correlation").** A single async reset routed through two distinct deassertion synchronizers, then reconverging on logic in the receiving domain — the two synchronized versions can deassert on different cycles, leaving downstream logic in inconsistent state. Symmetric to reconvergent CDC; same trace-back-through-synchronizers analysis would handle both.
+5. **Async-reset glitches from multi-source combiners.** `rst_combined = rst_a | rst_b` (or any combinational reset combiner) produces transient pulses on edge skew between the inputs. Partially prevented today by the type system — `Reset` is not a `let`/`comb`-assignable type in ARCH, so you can't write the combiner inside a module — but the hazard can still enter through an external `Reset` input port driven by such logic in the parent.
+
+Closing 1-3 requires graph-walking the data path between every flop pair and tracking each flop's individual reset signal as a domain (rather than collapsing to clock-domain). 4 reuses CDC's reconvergence-analysis machinery (also planned, see §5.2a). 5 requires either a stronger type rule (forbidding combinationally-driven Reset inputs) or a structural check at instance boundaries.
+
+Phase 2 will lift the model to enable 1, 2, and 4. Until then, designs that intentionally use multiple resets within a single clock domain or rely on combiner-derived async resets need external RDC checking (Synopsys SpyGlass, Cadence Conformal) for completeness.
 
 **5.5 Tristate and Bidirectional I/O** *(planned)*
 
