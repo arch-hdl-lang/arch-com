@@ -279,25 +279,76 @@ impl<'a> SimCodegen<'a> {
             }
         }
 
+        // ── Stall signals ────────────────────────────────────────────────
+        // Mirrors src/codegen/pipeline.rs: per-stage stall is the union of
+        // its `stall when` condition, the pipeline-wide global stalls, and
+        // any downstream stage's stall (back-pressure). Computed in reverse
+        // stage order so each stage sees its downstream's resolved value.
+        let has_per_stage_stall = p.stages.iter().any(|s| s.stall_cond.is_some());
+        let has_global_stall = !p.stall_conds.is_empty();
+        let has_any_stall = has_per_stage_stall || has_global_stall;
+        if has_global_stall {
+            let parts: Vec<String> = p.stall_conds.iter().map(|c| {
+                self.pipeline_sim_expr(&c.condition, "", 0,
+                    &stage_names, &stage_prefixes, &stage_reg_names,
+                    &port_names, &reg_names, &let_names, &widths, &_enum_map)
+            }).collect();
+            cpp.push_str(&format!("      bool _pipeline_stall = ({});\n", parts.join(" || ")));
+        }
+        if has_any_stall {
+            for si in (0..p.stages.len()).rev() {
+                let prefix = &stage_prefixes[si];
+                let mut parts: Vec<String> = Vec::new();
+                if let Some(ref cond) = p.stages[si].stall_cond {
+                    let s = self.pipeline_sim_expr(cond, prefix, si,
+                        &stage_names, &stage_prefixes, &stage_reg_names,
+                        &port_names, &reg_names, &let_names, &widths, &_enum_map);
+                    parts.push(format!("({s})"));
+                }
+                if has_global_stall { parts.push("_pipeline_stall".to_string()); }
+                if si + 1 < p.stages.len() {
+                    parts.push(format!("_{}_stall", stage_prefixes[si + 1]));
+                }
+                let expr = if parts.is_empty() { "false".to_string() } else { parts.join(" || ") };
+                cpp.push_str(&format!("      bool _{prefix}_stall = ({expr});\n"));
+            }
+        }
+
         // Process stages in reverse order so later stages read old values
         // (mimics SV non-blocking assignment semantics)
         for si in (0..p.stages.len()).rev() {
             let stage = &p.stages[si];
             let prefix = &stage_prefixes[si];
-            if si == 0 {
-                cpp.push_str(&format!("      _{}_valid_r = 1;\n", prefix));
+            // When stall is in play, this stage advances only if not stalled.
+            // valid_r propagation: if upstream is stalled, insert a bubble.
+            let (open_guard, close_guard, indent_extra) = if has_any_stall {
+                (format!("      if (!_{prefix}_stall) {{\n"), "      }\n".to_string(), 2)
             } else {
-                cpp.push_str(&format!("      _{}_valid_r = _{}_valid_r;\n", prefix, stage_prefixes[si-1]));
+                (String::new(), String::new(), 0)
+            };
+            cpp.push_str(&open_guard);
+            let pad = " ".repeat(6 + indent_extra);
+            if si == 0 {
+                cpp.push_str(&format!("{pad}_{prefix}_valid_r = 1;\n"));
+            } else {
+                let prev = &stage_prefixes[si - 1];
+                if has_any_stall {
+                    // Bubble when prev stage is stalled (upstream can't deliver).
+                    cpp.push_str(&format!("{pad}_{prefix}_valid_r = _{prev}_stall ? 0 : _{prev}_valid_r;\n"));
+                } else {
+                    cpp.push_str(&format!("{pad}_{prefix}_valid_r = _{prev}_valid_r;\n"));
+                }
             }
             for item in &stage.body {
                 if let ModuleBodyItem::RegBlock(rb) = item {
                     for stmt in &rb.stmts {
                         self.emit_pipeline_sim_stmt(&mut cpp, stmt, prefix, si,
                             &stage_names, &stage_prefixes, &stage_reg_names,
-                            &port_names, &reg_names, &let_names, &widths, &_enum_map, 6);
+                            &port_names, &reg_names, &let_names, &widths, &_enum_map, 6 + indent_extra);
                     }
                 }
             }
+            cpp.push_str(&close_guard);
         }
         for flush in &p.flush_directives {
             let target = flush.target_stage.name.to_lowercase();
