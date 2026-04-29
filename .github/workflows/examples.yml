@@ -3,8 +3,20 @@ name: examples
 on:
   push:
     branches: [main]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'examples/**'
+      - '.github/workflows/examples.yml'
   pull_request:
     branches: [main]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'examples/**'
+      - '.github/workflows/examples.yml'
 
 # Cancel in-progress runs of this workflow on the same ref when a new commit
 # is pushed — saves CI minutes when someone pushes a quick fix-up.
