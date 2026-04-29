@@ -927,6 +927,79 @@ impl<'a> TypeChecker<'a> {
                     self.check_inst_cdc(inst, &clk_domain, &reg_domain, m);
                 }
             }
+
+            // ── RDC check: a reset signal used by registers in more than
+            // one clock domain is unsafe (deassertion not synchronised).
+            // Reset's "domain" is inferred from the registers that use it
+            // — no separate annotation needed. Fix is `synchronizer kind
+            // reset` to deassert-synchronise the reset into the new domain.
+            //
+            // v1 narrows the check to **async** reset ports. Sync resets
+            // crossing domains are technically a CDC concern (reset signal
+            // treated as data) but rarely a real bug in practice — they
+            // propagate through clocks and the deassertion-edge race that
+            // makes async cross-domain reset dangerous doesn't apply. If
+            // false-negatives become an issue, broaden by removing the
+            // is-async filter below.
+            let async_reset_ports: HashSet<String> = m.ports.iter()
+                .filter_map(|p| if let TypeExpr::Reset(ResetKind::Async, _) = &p.ty {
+                    Some(p.name.name.clone())
+                } else { None })
+                .collect();
+            // Tracks (reset_signal_name → set of (clock_domain, conflict span)).
+            // Span carries the first reg-decl that introduced each domain so
+            // the diagnostic can point at the offending site. Both inline
+            // `reg` decls and `port reg` decls participate.
+            let mut reset_users: HashMap<String, Vec<(String, crate::lexer::Span)>> = HashMap::new();
+            let record_reset = |sig: &str, reg_name: &str, span: crate::lexer::Span,
+                                    reset_users: &mut HashMap<String, Vec<(String, crate::lexer::Span)>>| {
+                if let Some(domain) = reg_domain.get(reg_name) {
+                    let entry = reset_users.entry(sig.to_string()).or_default();
+                    if !entry.iter().any(|(d, _)| d == domain) {
+                        entry.push((domain.clone(), span));
+                    }
+                }
+            };
+            for item in &m.body {
+                if let ModuleBodyItem::RegDecl(rd) = item {
+                    let sig_name = match &rd.reset {
+                        RegReset::None => continue,
+                        RegReset::Explicit(s, _, _, _) => s.name.clone(),
+                        RegReset::Inherit(s, _) => s.name.clone(),
+                    };
+                    if !async_reset_ports.contains(&sig_name) { continue; }
+                    record_reset(&sig_name, &rd.name.name, rd.name.span, &mut reset_users);
+                }
+            }
+            for p in &m.ports {
+                if let Some(ri) = &p.reg_info {
+                    let sig_name = match &ri.reset {
+                        RegReset::None => continue,
+                        RegReset::Explicit(s, _, _, _) => s.name.clone(),
+                        RegReset::Inherit(s, _) => s.name.clone(),
+                    };
+                    if !async_reset_ports.contains(&sig_name) { continue; }
+                    record_reset(&sig_name, &p.name.name, p.name.span, &mut reset_users);
+                }
+            }
+            for (sig, users) in &reset_users {
+                if users.len() > 1 {
+                    let domains: Vec<&str> = users.iter().map(|(d, _)| d.as_str()).collect();
+                    // Point at the second domain's introducer — the first is
+                    // the established domain, the second is the violating
+                    // crossing.
+                    let report_span = users[1].1;
+                    self.errors.push(CompileError::general(
+                        &format!(
+                            "RDC violation: reset signal `{sig}` is used by registers in \
+                             multiple clock domains ({}). Use `synchronizer kind reset` to \
+                             deassert-synchronise the reset into each receiving domain.",
+                            domains.join(", ")
+                        ),
+                        report_span,
+                    ));
+                }
+            }
         }
 
         // Validate `implements` template conformance

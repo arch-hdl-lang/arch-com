@@ -7238,3 +7238,145 @@ end module unpacked_neg2
     assert!(msg.contains("`unpacked` is not allowed on `port reg`"),
             "diagnostic should explain port-reg restriction, got: {msg}");
 }
+
+#[test]
+fn test_rdc_violation_one_reset_two_domains() {
+    // RDC v1 (phase 1, in-module): a reset signal used by registers in
+    // two different clock domains is unsafe — the deassertion edge of
+    // the receiving domain isn't synchronised to the source domain. The
+    // type checker should flag the second domain's register decl.
+    let source = r#"
+domain DomA
+  freq_mhz: 100
+end domain DomA
+
+domain DomB
+  freq_mhz: 200
+end domain DomB
+
+module BadRdc
+  port clk_a: in Clock<DomA>;
+  port clk_b: in Clock<DomB>;
+  port rst:   in Reset<Async>;
+  port a_in:  in UInt<8>;
+  port b_in:  in UInt<8>;
+  port a_out: out UInt<8>;
+  port b_out: out UInt<8>;
+
+  reg ra: UInt<8> reset rst => 0;
+  reg rb: UInt<8> reset rst => 0;
+
+  seq on clk_a rising
+    ra <= a_in;
+  end seq
+
+  seq on clk_b rising
+    rb <= b_in;
+  end seq
+
+  let a_out = ra;
+  let b_out = rb;
+end module BadRdc
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(parsed).expect("elaborate");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err(), "expected RDC violation");
+    let errs = result.unwrap_err();
+    assert!(
+        errs.iter().any(|e| {
+            let s = e.to_string();
+            s.contains("RDC violation") && s.contains("rst")
+                && s.contains("DomA") && s.contains("DomB")
+        }),
+        "expected RDC error naming both domains, got: {:?}",
+        errs
+    );
+}
+
+#[test]
+fn test_rdc_clean_two_resets_per_domain() {
+    // Two clock domains, two distinct reset signals — each reset is only
+    // used in its own domain → no RDC violation.
+    let source = r#"
+domain DomA
+  freq_mhz: 100
+end domain DomA
+
+domain DomB
+  freq_mhz: 200
+end domain DomB
+
+module GoodRdc
+  port clk_a: in Clock<DomA>;
+  port clk_b: in Clock<DomB>;
+  port rst_a: in Reset<Async>;
+  port rst_b: in Reset<Async>;
+  port a_in:  in UInt<8>;
+  port b_in:  in UInt<8>;
+  port a_out: out UInt<8>;
+  port b_out: out UInt<8>;
+
+  reg ra: UInt<8> reset rst_a => 0;
+  reg rb: UInt<8> reset rst_b => 0;
+
+  seq on clk_a rising
+    ra <= a_in;
+  end seq
+
+  seq on clk_b rising
+    rb <= b_in;
+  end seq
+
+  let a_out = ra;
+  let b_out = rb;
+end module GoodRdc
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(parsed).expect("elaborate");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_ok(), "expected no RDC error, got: {:?}", result.err());
+}
+
+#[test]
+fn test_rdc_single_domain_no_violation() {
+    // Single clock domain — RDC check is gated on multi-domain, so even
+    // multiple registers sharing a reset must not trigger.
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+
+module SingleDomain
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port d:   in UInt<8>;
+  port q:   out UInt<8>;
+
+  reg r1: UInt<8> reset rst => 0;
+  reg r2: UInt<8> reset rst => 0;
+
+  seq on clk rising
+    r1 <= d;
+    r2 <= r1;
+  end seq
+
+  let q = r2;
+end module SingleDomain
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(parsed).expect("elaborate");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = TypeChecker::new(&symbols, &ast);
+    assert!(checker.check().is_ok());
+}
