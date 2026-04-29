@@ -345,8 +345,28 @@ fn elaborate_module_variant(
             } else if p.default.as_ref().map_or(false, |d| expr_references_params(d, &param_names)) {
                 // Preserve original expression for derived params
             } else {
+                // Width-typed params (`param NAME[hi:lo]: const = ...`) emit
+                // SV `parameter [hi:lo] NAME = <default>`. If we replaced
+                // the default with a bare `LitKind::Dec(val)`, the SV
+                // initializer would be unsized (32-bit by default) and
+                // Verilator's WIDTHTRUNC fires on the parameter init when
+                // the typed width is narrower. Emit a sized literal that
+                // matches the declared width so the init is width-clean.
+                let lit = if let ParamKind::WidthConst(hi, lo) = &p.kind {
+                    let hi_val = try_eval_i64(hi, &param_vals);
+                    let lo_val = try_eval_i64(lo, &param_vals);
+                    match (hi_val, lo_val) {
+                        (Some(h), Some(l)) if h >= l => {
+                            let width = (h - l + 1) as u32;
+                            LitKind::Sized(width, val as u64)
+                        }
+                        _ => LitKind::Dec(val as u64),
+                    }
+                } else {
+                    LitKind::Dec(val as u64)
+                };
                 p.default = Some(Expr::new(
-                    ExprKind::Literal(LitKind::Dec(val as u64)),
+                    ExprKind::Literal(lit),
                     p.name.span,
                 ));
             }
