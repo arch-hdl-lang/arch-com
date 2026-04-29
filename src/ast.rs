@@ -1111,6 +1111,12 @@ pub trait Construct {
     /// enum, package); `None` for the rest. Default returns `None`,
     /// matching the original `_ => None` arm in `interface::emit_interface`.
     fn emit_interface(&self) -> Option<String> { None }
+
+    /// Run typecheck on this construct. Default is a no-op (matches the
+    /// `Item::Use(_) => {}` arm in the original dispatch). Each
+    /// construct that has type rules overrides this to call its
+    /// specific `TypeChecker::check_*` method.
+    fn typecheck(&self, _checker: &mut crate::typecheck::TypeChecker) {}
 }
 
 // ── Construct trait impls ────────────────────────────────────────────────────
@@ -1124,75 +1130,60 @@ pub trait Construct {
 // fields directly.
 
 /// Implement `Construct` for a `*Decl` that embeds `ConstructCommon`.
-/// `iface = path::to::emit_X_interface` adds an `emit_interface`
-/// override; without it the trait's default `None` is used.
+/// `iface = path::to::fn` and `check = method_name` are independently
+/// optional in any order. Without them, the trait defaults apply
+/// (`emit_interface` returns `None`, `typecheck` is a no-op).
 macro_rules! impl_construct_via_common {
-    ($ty:ty, $label:expr) => {
+    ($ty:ty, $label:expr $(, iface = $iface:path)? $(, check = $check:ident)?) => {
         impl Construct for $ty {
             fn kind_label(&self) -> &'static str { $label }
             fn name(&self)      -> &Ident         { &self.common.name }
             fn span(&self)      -> Span           { self.common.span }
             fn doc(&self)       -> Option<&str>   { self.common.doc.as_deref() }
             fn inner_doc(&self) -> Option<&str>   { self.common.inner_doc.as_deref() }
-        }
-    };
-    ($ty:ty, $label:expr, iface = $iface:path) => {
-        impl Construct for $ty {
-            fn kind_label(&self) -> &'static str { $label }
-            fn name(&self)      -> &Ident         { &self.common.name }
-            fn span(&self)      -> Span           { self.common.span }
-            fn doc(&self)       -> Option<&str>   { self.common.doc.as_deref() }
-            fn inner_doc(&self) -> Option<&str>   { self.common.inner_doc.as_deref() }
-            fn emit_interface(&self) -> Option<String> { Some($iface(self)) }
+            $(fn emit_interface(&self) -> Option<String> { Some($iface(self)) })?
+            $(fn typecheck(&self, c: &mut crate::typecheck::TypeChecker) { c.$check(self); })?
         }
     };
 }
 
 /// Implement `Construct` for a `*Decl` that carries `name` / `span` /
-/// `doc` / `inner_doc` directly. `iface = ...` is optional, same as
-/// the via-common variant.
+/// `doc` / `inner_doc` directly. Same optional-arg pattern as the
+/// via-common variant.
 macro_rules! impl_construct_direct {
-    ($ty:ty, $label:expr) => {
+    ($ty:ty, $label:expr $(, iface = $iface:path)? $(, check = $check:ident)?) => {
         impl Construct for $ty {
             fn kind_label(&self) -> &'static str { $label }
             fn name(&self)      -> &Ident         { &self.name }
             fn span(&self)      -> Span           { self.span }
             fn doc(&self)       -> Option<&str>   { self.doc.as_deref() }
             fn inner_doc(&self) -> Option<&str>   { self.inner_doc.as_deref() }
-        }
-    };
-    ($ty:ty, $label:expr, iface = $iface:path) => {
-        impl Construct for $ty {
-            fn kind_label(&self) -> &'static str { $label }
-            fn name(&self)      -> &Ident         { &self.name }
-            fn span(&self)      -> Span           { self.span }
-            fn doc(&self)       -> Option<&str>   { self.doc.as_deref() }
-            fn inner_doc(&self) -> Option<&str>   { self.inner_doc.as_deref() }
-            fn emit_interface(&self) -> Option<String> { Some($iface(self)) }
+            $(fn emit_interface(&self) -> Option<String> { Some($iface(self)) })?
+            $(fn typecheck(&self, c: &mut crate::typecheck::TypeChecker) { c.$check(self); })?
         }
     };
 }
 
-impl_construct_direct!(ModuleDecl,           "module",       iface = crate::interface::emit_module_interface);
-impl_construct_via_common!(FsmDecl,          "fsm",          iface = crate::interface::emit_fsm_interface);
-impl_construct_via_common!(FifoDecl,         "fifo",         iface = crate::interface::emit_fifo_interface);
-impl_construct_via_common!(RamDecl,          "ram",          iface = crate::interface::emit_ram_interface);
-impl_construct_via_common!(CamDecl,          "cam");
-impl_construct_via_common!(CounterDecl,      "counter",      iface = crate::interface::emit_counter_interface);
-impl_construct_via_common!(ArbiterDecl,      "arbiter",      iface = crate::interface::emit_arbiter_interface);
-impl_construct_via_common!(RegfileDecl,      "regfile",      iface = crate::interface::emit_regfile_interface);
-impl_construct_via_common!(PipelineDecl,     "pipeline",     iface = crate::interface::emit_pipeline_interface);
-impl_construct_via_common!(LinklistDecl,     "linklist",     iface = crate::interface::emit_linklist_interface);
+impl_construct_direct!(ModuleDecl,           "module",       iface = crate::interface::emit_module_interface,       check = check_module);
+impl_construct_via_common!(FsmDecl,          "fsm",          iface = crate::interface::emit_fsm_interface,          check = check_fsm);
+impl_construct_via_common!(FifoDecl,         "fifo",         iface = crate::interface::emit_fifo_interface,         check = check_fifo);
+impl_construct_via_common!(RamDecl,          "ram",          iface = crate::interface::emit_ram_interface,          check = check_ram);
+impl_construct_via_common!(CamDecl,          "cam",                                                                 check = check_cam);
+impl_construct_via_common!(CounterDecl,      "counter",      iface = crate::interface::emit_counter_interface,      check = check_counter);
+impl_construct_via_common!(ArbiterDecl,      "arbiter",      iface = crate::interface::emit_arbiter_interface,      check = check_arbiter);
+impl_construct_via_common!(RegfileDecl,      "regfile",      iface = crate::interface::emit_regfile_interface,      check = check_regfile);
+impl_construct_via_common!(PipelineDecl,     "pipeline",     iface = crate::interface::emit_pipeline_interface,     check = check_pipeline);
+impl_construct_via_common!(LinklistDecl,     "linklist",     iface = crate::interface::emit_linklist_interface,     check = check_linklist);
 
-impl_construct_direct!(DomainDecl,           "domain");
-impl_construct_direct!(StructDecl,           "struct",       iface = crate::interface::emit_struct);
-impl_construct_direct!(EnumDecl,             "enum",         iface = crate::interface::emit_enum);
-impl_construct_direct!(FunctionDecl,         "function");
-impl_construct_direct!(SynchronizerDecl,     "synchronizer", iface = crate::interface::emit_synchronizer_interface);
-impl_construct_direct!(ClkGateDecl,          "clkgate",      iface = crate::interface::emit_clkgate_interface);
-impl_construct_direct!(BusDecl,              "bus",          iface = crate::interface::emit_bus_interface);
-impl_construct_direct!(PackageDecl,          "package",      iface = crate::interface::emit_package_interface);
-impl_construct_direct!(TemplateDecl,         "template");
+impl_construct_direct!(DomainDecl,           "domain",                                                              check = check_domain);
+impl_construct_direct!(StructDecl,           "struct",       iface = crate::interface::emit_struct,                 check = check_struct);
+impl_construct_direct!(EnumDecl,             "enum",         iface = crate::interface::emit_enum,                   check = check_enum);
+impl_construct_direct!(FunctionDecl,         "function",                                                            check = check_function);
+impl_construct_direct!(SynchronizerDecl,     "synchronizer", iface = crate::interface::emit_synchronizer_interface, check = check_synchronizer);
+impl_construct_direct!(ClkGateDecl,          "clkgate",      iface = crate::interface::emit_clkgate_interface,      check = check_clkgate);
+impl_construct_direct!(BusDecl,              "bus",          iface = crate::interface::emit_bus_interface,          check = check_bus);
+impl_construct_direct!(PackageDecl,          "package",      iface = crate::interface::emit_package_interface,      check = check_package);
+impl_construct_direct!(TemplateDecl,         "template",                                                            check = check_template);
 
 // `Use` has only `doc` — no inner doc (single-line decl).
 impl Construct for UseDecl {
