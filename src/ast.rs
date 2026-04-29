@@ -1103,6 +1103,14 @@ pub trait Construct {
     /// keyword and the first body item. `None` if absent. Some constructs
     /// (`Use`) have no body and always return `None`.
     fn inner_doc(&self) -> Option<&str>;
+
+    /// Emit the `.archi` interface — the public-facing construct signature
+    /// without the body. Returns `Some(content)` for constructs that have
+    /// an external interface (module, fsm, counter, pipeline, fifo, ram,
+    /// arbiter, regfile, synchronizer, clkgate, linklist, bus, struct,
+    /// enum, package); `None` for the rest. Default returns `None`,
+    /// matching the original `_ => None` arm in `interface::emit_interface`.
+    fn emit_interface(&self) -> Option<String> { None }
 }
 
 // ── Construct trait impls ────────────────────────────────────────────────────
@@ -1115,6 +1123,9 @@ pub trait Construct {
 // Use, Template) carry their own `name` / `span` / `doc` / `inner_doc`
 // fields directly.
 
+/// Implement `Construct` for a `*Decl` that embeds `ConstructCommon`.
+/// `iface = path::to::emit_X_interface` adds an `emit_interface`
+/// override; without it the trait's default `None` is used.
 macro_rules! impl_construct_via_common {
     ($ty:ty, $label:expr) => {
         impl Construct for $ty {
@@ -1125,8 +1136,21 @@ macro_rules! impl_construct_via_common {
             fn inner_doc(&self) -> Option<&str>   { self.common.inner_doc.as_deref() }
         }
     };
+    ($ty:ty, $label:expr, iface = $iface:path) => {
+        impl Construct for $ty {
+            fn kind_label(&self) -> &'static str { $label }
+            fn name(&self)      -> &Ident         { &self.common.name }
+            fn span(&self)      -> Span           { self.common.span }
+            fn doc(&self)       -> Option<&str>   { self.common.doc.as_deref() }
+            fn inner_doc(&self) -> Option<&str>   { self.common.inner_doc.as_deref() }
+            fn emit_interface(&self) -> Option<String> { Some($iface(self)) }
+        }
+    };
 }
 
+/// Implement `Construct` for a `*Decl` that carries `name` / `span` /
+/// `doc` / `inner_doc` directly. `iface = ...` is optional, same as
+/// the via-common variant.
 macro_rules! impl_construct_direct {
     ($ty:ty, $label:expr) => {
         impl Construct for $ty {
@@ -1137,27 +1161,37 @@ macro_rules! impl_construct_direct {
             fn inner_doc(&self) -> Option<&str>   { self.inner_doc.as_deref() }
         }
     };
+    ($ty:ty, $label:expr, iface = $iface:path) => {
+        impl Construct for $ty {
+            fn kind_label(&self) -> &'static str { $label }
+            fn name(&self)      -> &Ident         { &self.name }
+            fn span(&self)      -> Span           { self.span }
+            fn doc(&self)       -> Option<&str>   { self.doc.as_deref() }
+            fn inner_doc(&self) -> Option<&str>   { self.inner_doc.as_deref() }
+            fn emit_interface(&self) -> Option<String> { Some($iface(self)) }
+        }
+    };
 }
 
-impl_construct_direct!(ModuleDecl,           "module");
-impl_construct_via_common!(FsmDecl,          "fsm");
-impl_construct_via_common!(FifoDecl,         "fifo");
-impl_construct_via_common!(RamDecl,          "ram");
+impl_construct_direct!(ModuleDecl,           "module",       iface = crate::interface::emit_module_interface);
+impl_construct_via_common!(FsmDecl,          "fsm",          iface = crate::interface::emit_fsm_interface);
+impl_construct_via_common!(FifoDecl,         "fifo",         iface = crate::interface::emit_fifo_interface);
+impl_construct_via_common!(RamDecl,          "ram",          iface = crate::interface::emit_ram_interface);
 impl_construct_via_common!(CamDecl,          "cam");
-impl_construct_via_common!(CounterDecl,      "counter");
-impl_construct_via_common!(ArbiterDecl,      "arbiter");
-impl_construct_via_common!(RegfileDecl,      "regfile");
-impl_construct_via_common!(PipelineDecl,     "pipeline");
-impl_construct_via_common!(LinklistDecl,     "linklist");
+impl_construct_via_common!(CounterDecl,      "counter",      iface = crate::interface::emit_counter_interface);
+impl_construct_via_common!(ArbiterDecl,      "arbiter",      iface = crate::interface::emit_arbiter_interface);
+impl_construct_via_common!(RegfileDecl,      "regfile",      iface = crate::interface::emit_regfile_interface);
+impl_construct_via_common!(PipelineDecl,     "pipeline",     iface = crate::interface::emit_pipeline_interface);
+impl_construct_via_common!(LinklistDecl,     "linklist",     iface = crate::interface::emit_linklist_interface);
 
 impl_construct_direct!(DomainDecl,           "domain");
-impl_construct_direct!(StructDecl,           "struct");
-impl_construct_direct!(EnumDecl,             "enum");
+impl_construct_direct!(StructDecl,           "struct",       iface = crate::interface::emit_struct);
+impl_construct_direct!(EnumDecl,             "enum",         iface = crate::interface::emit_enum);
 impl_construct_direct!(FunctionDecl,         "function");
-impl_construct_direct!(SynchronizerDecl,     "synchronizer");
-impl_construct_direct!(ClkGateDecl,          "clkgate");
-impl_construct_direct!(BusDecl,              "bus");
-impl_construct_direct!(PackageDecl,          "package");
+impl_construct_direct!(SynchronizerDecl,     "synchronizer", iface = crate::interface::emit_synchronizer_interface);
+impl_construct_direct!(ClkGateDecl,          "clkgate",      iface = crate::interface::emit_clkgate_interface);
+impl_construct_direct!(BusDecl,              "bus",          iface = crate::interface::emit_bus_interface);
+impl_construct_direct!(PackageDecl,          "package",      iface = crate::interface::emit_package_interface);
 impl_construct_direct!(TemplateDecl,         "template");
 
 // `Use` has only `doc` — no inner doc (single-line decl).
