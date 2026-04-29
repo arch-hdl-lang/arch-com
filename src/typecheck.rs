@@ -754,129 +754,7 @@ impl<'a> TypeChecker<'a> {
                     local_types.insert(p.name.name.clone(), ty);
                     driven.insert(p.name.name.clone());
                 }
-                ModuleBodyItem::Inst(inst) => {
-                    self.check_snake_case(&inst.name);
-                    // Find the target construct's bus port info for whole-bus expansion
-                    let target_bus_ports: Vec<(String, String)> = self.source.items.iter()
-                        .find_map(|item| match item {
-                            Item::Module(m2) if m2.name.name == inst.module_name.name => Some(m2.ports.as_slice()),
-                            Item::Fsm(f2) if f2.name.name == inst.module_name.name => Some(f2.ports.as_slice()),
-                            _ => None,
-                        })
-                        .map(|ports| ports.iter()
-                            .filter_map(|p| p.bus_info.as_ref().map(|bi| (p.name.name.clone(), bi.bus_name.name.clone())))
-                            .collect())
-                        .unwrap_or_default();
-
-                    // Check for unconnected ports on the instantiated construct.
-                    //
-                    // Bus ports can be connected in one of two shapes:
-                    //   (a) whole-bus: `p -> tb;` — connection.port_name == "p"
-                    //   (b) per-field: `p.cmd_valid <- x; p.cmd_addr <- y;` —
-                    //       the parser concatenates base.field, producing
-                    //       port_name == "p_cmd_valid", "p_cmd_addr", ...
-                    // For the per-field shape we consider the bus port connected
-                    // if any connection's port_name starts with `<bus_port>_`.
-                    {
-                        let child_ports: Option<&[PortDecl]> = self.source.items.iter()
-                            .find_map(|item| match item {
-                                Item::Module(m2) if m2.name.name == inst.module_name.name => Some(m2.ports.as_slice()),
-                                Item::Fsm(f2)    if f2.name.name == inst.module_name.name => Some(f2.ports.as_slice()),
-                                Item::Pipeline(p2) if p2.name.name == inst.module_name.name => Some(p2.ports.as_slice()),
-                                _ => None,
-                            });
-                        if let Some(ports) = child_ports {
-                            let connected: std::collections::HashSet<&str> = inst.connections.iter()
-                                .map(|c| c.port_name.name.as_str())
-                                .collect();
-                            for port in ports {
-                                // Skip Clock and Reset ports — they may be handled via domain defaults
-                                let is_infra = matches!(&port.ty, TypeExpr::Clock(_) | TypeExpr::Reset(_, _));
-                                if is_infra { continue; }
-                                let name = port.name.name.as_str();
-                                let is_connected = if port.bus_info.is_some() {
-                                    // Accept whole-bus OR per-field bindings.
-                                    let prefix = format!("{}_", name);
-                                    connected.contains(name)
-                                        || connected.iter().any(|c| c.starts_with(&prefix))
-                                } else {
-                                    connected.contains(name)
-                                };
-                                if !is_connected {
-                                    if port.direction == Direction::In {
-                                        self.errors.push(CompileError::general(
-                                            &format!(
-                                                "input port `{}` of `{}` is not connected in inst `{}`",
-                                                name, inst.module_name.name, inst.name.name
-                                            ),
-                                            inst.span,
-                                        ));
-                                    } else {
-                                        self.warnings.push(CompileWarning {
-                                            message: format!(
-                                                "output port `{}` of `{}` is not connected in inst `{}`",
-                                                name, inst.module_name.name, inst.name.name
-                                            ),
-                                            span: inst.span,
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Mark connected output ports as driven
-                    for conn in &inst.connections {
-                        if conn.direction == ConnectDir::Output {
-                            if let ExprKind::Ident(name) = &conn.signal.kind {
-                                driven.insert(name.clone());
-                            }
-                            // Bus port FieldAccess: itcm.cmd_valid → driven itcm_cmd_valid
-                            let flat = Self::expr_flat_name_tc(&conn.signal);
-                            if !flat.is_empty() {
-                                driven.insert(flat);
-                            }
-                        }
-                        // Whole-bus connection: axi_rd -> m_axi_mm2s expands to N signals.
-                        // The inst's bus port drives/receives signals based on its perspective.
-                        // We need to mark parent signals as "driven" when the inst OUTPUTS them.
-                        if let Some((_, bus_name)) = target_bus_ports.iter().find(|(pn, _)| *pn == conn.port_name.name) {
-                            if let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
-                                if let ExprKind::Ident(sig_base) = &conn.signal.kind {
-                                    // Find the inst's bus port perspective and params
-                                    let inst_bus_info = self.source.items.iter()
-                                        .find_map(|item| match item {
-                                            Item::Module(m2) if m2.name.name == inst.module_name.name => Some(m2.ports.as_slice()),
-                                            Item::Fsm(f2) if f2.name.name == inst.module_name.name => Some(f2.ports.as_slice()),
-                                            _ => None,
-                                        })
-                                        .and_then(|ports| ports.iter()
-                                            .find(|p| p.name.name == conn.port_name.name)
-                                            .and_then(|p| p.bus_info.as_ref()));
-                                    let inst_perspective = inst_bus_info.map(|bi| bi.perspective);
-
-                                    let mut pm = info.default_param_map();
-                                    if let Some(bi) = inst_bus_info {
-                                        for pa in &bi.params { pm.insert(pa.name.name.clone(), &pa.value); }
-                                    }
-                                    let eff = info.effective_signals(&pm);
-                                    for (sname, sdir, _) in &eff {
-                                        // Determine actual direction from inst's perspective
-                                        let inst_dir = match inst_perspective {
-                                            Some(BusPerspective::Initiator) => *sdir,
-                                            Some(BusPerspective::Target) => (*sdir).flip(),
-                                            None => *sdir,
-                                        };
-                                        // If signal is an output FROM the inst, it drives the parent wire/port
-                                        if inst_dir == Direction::Out {
-                                            driven.insert(format!("{}_{}", sig_base, sname));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                ModuleBodyItem::Inst(inst) => self.check_inst_decl(inst, &mut driven),
                 ModuleBodyItem::WireDecl(w) => {
                     self.check_snake_case(&w.name);
                     let ty = self.resolve_type_expr(&w.ty, &m.name.name, &local_types);
@@ -1164,6 +1042,135 @@ impl<'a> TypeChecker<'a> {
     ///   noisy, extend by resolving single-ident let RHS before matching.
     /// - Variants with no valid signal (`ready_only`) are skipped entirely;
     ///   `req_ack_2phase` skipped pending the stateful toggle guard design.
+
+    /// Check an `inst` declaration: validates port connections (unconnected
+    /// inputs error, unconnected outputs warn), expands whole-bus connections
+    /// to per-signal driven entries, and marks output signals as driven.
+    /// Extracted from `check_module`'s main pass for readability — the
+    /// original arm was 122 lines.
+    fn check_inst_decl(&mut self, inst: &InstDecl, driven: &mut HashSet<String>) {
+            self.check_snake_case(&inst.name);
+            // Find the target construct's bus port info for whole-bus expansion
+            let target_bus_ports: Vec<(String, String)> = self.source.items.iter()
+                .find_map(|item| match item {
+                    Item::Module(m2) if m2.name.name == inst.module_name.name => Some(m2.ports.as_slice()),
+                    Item::Fsm(f2) if f2.name.name == inst.module_name.name => Some(f2.ports.as_slice()),
+                    _ => None,
+                })
+                .map(|ports| ports.iter()
+                    .filter_map(|p| p.bus_info.as_ref().map(|bi| (p.name.name.clone(), bi.bus_name.name.clone())))
+                    .collect())
+                .unwrap_or_default();
+
+            // Check for unconnected ports on the instantiated construct.
+            //
+            // Bus ports can be connected in one of two shapes:
+            //   (a) whole-bus: `p -> tb;` — connection.port_name == "p"
+            //   (b) per-field: `p.cmd_valid <- x; p.cmd_addr <- y;` —
+            //       the parser concatenates base.field, producing
+            //       port_name == "p_cmd_valid", "p_cmd_addr", ...
+            // For the per-field shape we consider the bus port connected
+            // if any connection's port_name starts with `<bus_port>_`.
+            {
+                let child_ports: Option<&[PortDecl]> = self.source.items.iter()
+                    .find_map(|item| match item {
+                        Item::Module(m2) if m2.name.name == inst.module_name.name => Some(m2.ports.as_slice()),
+                        Item::Fsm(f2)    if f2.name.name == inst.module_name.name => Some(f2.ports.as_slice()),
+                        Item::Pipeline(p2) if p2.name.name == inst.module_name.name => Some(p2.ports.as_slice()),
+                        _ => None,
+                    });
+                if let Some(ports) = child_ports {
+                    let connected: std::collections::HashSet<&str> = inst.connections.iter()
+                        .map(|c| c.port_name.name.as_str())
+                        .collect();
+                    for port in ports {
+                        // Skip Clock and Reset ports — they may be handled via domain defaults
+                        let is_infra = matches!(&port.ty, TypeExpr::Clock(_) | TypeExpr::Reset(_, _));
+                        if is_infra { continue; }
+                        let name = port.name.name.as_str();
+                        let is_connected = if port.bus_info.is_some() {
+                            // Accept whole-bus OR per-field bindings.
+                            let prefix = format!("{}_", name);
+                            connected.contains(name)
+                                || connected.iter().any(|c| c.starts_with(&prefix))
+                        } else {
+                            connected.contains(name)
+                        };
+                        if !is_connected {
+                            if port.direction == Direction::In {
+                                self.errors.push(CompileError::general(
+                                    &format!(
+                                        "input port `{}` of `{}` is not connected in inst `{}`",
+                                        name, inst.module_name.name, inst.name.name
+                                    ),
+                                    inst.span,
+                                ));
+                            } else {
+                                self.warnings.push(CompileWarning {
+                                    message: format!(
+                                        "output port `{}` of `{}` is not connected in inst `{}`",
+                                        name, inst.module_name.name, inst.name.name
+                                    ),
+                                    span: inst.span,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Mark connected output ports as driven
+            for conn in &inst.connections {
+                if conn.direction == ConnectDir::Output {
+                    if let ExprKind::Ident(name) = &conn.signal.kind {
+                        driven.insert(name.clone());
+                    }
+                    // Bus port FieldAccess: itcm.cmd_valid → driven itcm_cmd_valid
+                    let flat = Self::expr_flat_name_tc(&conn.signal);
+                    if !flat.is_empty() {
+                        driven.insert(flat);
+                    }
+                }
+                // Whole-bus connection: axi_rd -> m_axi_mm2s expands to N signals.
+                // The inst's bus port drives/receives signals based on its perspective.
+                // We need to mark parent signals as "driven" when the inst OUTPUTS them.
+                if let Some((_, bus_name)) = target_bus_ports.iter().find(|(pn, _)| *pn == conn.port_name.name) {
+                    if let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
+                        if let ExprKind::Ident(sig_base) = &conn.signal.kind {
+                            // Find the inst's bus port perspective and params
+                            let inst_bus_info = self.source.items.iter()
+                                .find_map(|item| match item {
+                                    Item::Module(m2) if m2.name.name == inst.module_name.name => Some(m2.ports.as_slice()),
+                                    Item::Fsm(f2) if f2.name.name == inst.module_name.name => Some(f2.ports.as_slice()),
+                                    _ => None,
+                                })
+                                .and_then(|ports| ports.iter()
+                                    .find(|p| p.name.name == conn.port_name.name)
+                                    .and_then(|p| p.bus_info.as_ref()));
+                            let inst_perspective = inst_bus_info.map(|bi| bi.perspective);
+
+                            let mut pm = info.default_param_map();
+                            if let Some(bi) = inst_bus_info {
+                                for pa in &bi.params { pm.insert(pa.name.name.clone(), &pa.value); }
+                            }
+                            let eff = info.effective_signals(&pm);
+                            for (sname, sdir, _) in &eff {
+                                // Determine actual direction from inst's perspective
+                                let inst_dir = match inst_perspective {
+                                    Some(BusPerspective::Initiator) => *sdir,
+                                    Some(BusPerspective::Target) => (*sdir).flip(),
+                                    None => *sdir,
+                                };
+                                // If signal is an output FROM the inst, it drives the parent wire/port
+                                if inst_dir == Direction::Out {
+                                    driven.insert(format!("{}_{}", sig_base, sname));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+    }
     fn check_handshake_reads(&mut self, m: &ModuleDecl) {
         use std::collections::HashMap as Map;
         // port_name -> Vec<(channel_name, guard_field_name, payload_field_names)>
