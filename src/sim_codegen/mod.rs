@@ -1979,64 +1979,7 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             format!("({l} {op_str} {r})")
         }
 
-        ExprKind::Unary(op, operand) => {
-            let o = cpp_expr(operand, ctx);
-            match op {
-                UnaryOp::Not    => format!("(!{o})"),
-                UnaryOp::BitNot => {
-                    // Use logical ! (clamped to 0/1) only for 1-bit/Bool signals.
-                    // For wider types use bitwise ~.
-                    let is_one_bit = match &operand.kind {
-                        ExprKind::Ident(name) => {
-                            ctx.widths.get(name.as_str()).copied().unwrap_or(32) == 1
-                        }
-                        _ => false,
-                    };
-                    if is_one_bit {
-                        format!("(uint8_t)(!({o}))")
-                    } else {
-                        format!("(~({o}))")
-                    }
-                }
-                UnaryOp::Neg    => format!("(-{o})"),
-                UnaryOp::RedAnd => {
-                    // Reduction AND: all bits set → 1
-                    let w = infer_expr_width(operand, ctx);
-                    if w > 128 {
-                        let words = wide_words(w);
-                        let last_bits = w % 32;
-                        let last_mask = if last_bits == 0 { "0xFFFFFFFFU".to_string() }
-                                        else { format!("0x{:X}U", (1u32 << last_bits) - 1) };
-                        format!("[&](){{auto& _v={o};for(int _i=0;_i<{}-1;_i++)if(_v._data[_i]!=0xFFFFFFFFU)return(uint8_t)0;return(uint8_t)(_v._data[{}]=={last_mask}?1:0);}}()", words, words-1)
-                    } else if w <= 1 {
-                        format!("({o} & 1)")
-                    } else {
-                        let mask = if w >= 64 { u64::MAX } else { (1u64 << w) - 1 };
-                        format!("(uint8_t)(({o} & 0x{mask:x}ULL) == 0x{mask:x}ULL)")
-                    }
-                }
-                UnaryOp::RedOr => {
-                    // Reduction OR: any bit set → 1
-                    let w = infer_expr_width(operand, ctx);
-                    if w > 128 {
-                        let words = wide_words(w);
-                        format!("[&](){{auto& _v={o};for(int _i=0;_i<{words};_i++)if(_v._data[_i])return(uint8_t)1;return(uint8_t)0;}}()")
-                    } else {
-                        format!("(uint8_t)(({o}) != 0)")
-                    }
-                }
-                UnaryOp::RedXor => {
-                    // Reduction XOR: parity
-                    let w = infer_expr_width(operand, ctx);
-                    if w > 128 {
-                        let words = wide_words(w);
-                        format!("[&](){{auto& _v={o};uint8_t _p=0;for(int _i=0;_i<{words};_i++)_p^=(uint8_t)__builtin_parity(_v._data[_i]);return _p;}}()")
-                    } else {
-                        format!("(uint8_t)(__builtin_parityll((uint64_t)({o})))")
-                    }
-                }
-            }
-        }
+        ExprKind::Unary(op, operand) => cpp_unary(op, operand, ctx),
 
         ExprKind::FieldAccess(base, field) => {
             if let ExprKind::Ident(base_name) = &base.kind {
@@ -2073,106 +2016,7 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             format!("{b}.{}", field.name)
         }
 
-        ExprKind::MethodCall(base, method, args) => {
-            let b = cpp_expr(base, ctx);
-            match method.name.as_str() {
-                "trunc" => {
-                    if let Some(w_expr) = args.first() {
-                        let bits = eval_width(w_expr);
-                        let base_w = infer_expr_width(base, ctx);
-                        if base_w > 128 && bits <= 64 {
-                            // VlWide → narrow: extract low bits via word array
-                            format!("({})_arch_vw_bits({b}.data(), {}, 0)", cpp_uint(bits), bits - 1)
-                        } else {
-                            cast_to_bits(&b, bits)
-                        }
-                    } else {
-                        b
-                    }
-                }
-                "zext" => {
-                    if let Some(w_expr) = args.first() {
-                        let bits = eval_width(w_expr);
-                        let base_w = infer_expr_width(base, ctx);
-                        if bits > 128 {
-                            // Narrow → VlWide: use uint64_t constructor
-                            let words = wide_words(bits);
-                            format!("VlWide<{words}>(static_cast<uint64_t>({b}))")
-                        } else if base_w > 128 && bits <= 64 {
-                            format!("({})_arch_vw_bits({b}.data(), {}, 0)", cpp_uint(bits), bits - 1)
-                        } else {
-                            format!("({})({})", cpp_uint(bits), b)
-                        }
-                    } else {
-                        b
-                    }
-                }
-                "sext" => {
-                    if let Some(w_expr) = args.first() {
-                        let dst_bits = eval_width(w_expr);
-                        let src_bits = infer_expr_width(base, ctx);
-                        if src_bits >= dst_bits || src_bits == 0 {
-                            // No extension needed or unknown source width
-                            format!("({})({})", cpp_uint(dst_bits), b)
-                        } else {
-                            // Sign-extend: if MSB of source is set, fill upper bits with 1s
-                            let dst_t = cpp_uint(dst_bits);
-                            format!("(({b} >> {}) & 1 ? ({dst_t})({b}) | ({dst_t})(~(({dst_t})0) << {src_bits}) : ({dst_t})({b}))",
-                                src_bits - 1)
-                        }
-                    } else {
-                        b
-                    }
-                }
-                "resize" => {
-                    // Direction-agnostic: sign-extend if narrowing to signed, zero-pad if widening unsigned
-                    if let Some(w_expr) = args.first() {
-                        let dst_bits = eval_width(w_expr);
-                        let src_bits = infer_expr_width(base, ctx);
-                        if src_bits >= dst_bits || src_bits == 0 {
-                            // Narrowing or equal: just cast (C++ truncates)
-                            cast_to_bits(&b, dst_bits)
-                        } else {
-                            // Widening: zero-extend (same as zext for sim purposes)
-                            format!("({})({})", cpp_uint(dst_bits), b)
-                        }
-                    } else {
-                        b
-                    }
-                }
-                "reverse" => {
-                    let base_w = infer_expr_width(base, ctx);
-                    let chunk = if let Some(c) = args.first() { eval_width(c) } else { 1 };
-                    if chunk == 1 {
-                        // Bit-reverse: build at compile time
-                        if base_w <= 64 {
-                            format!("[&]() {{ {ty} v = {b}; {ty} r = 0; for (int i = 0; i < {w}; i++) r |= (({ty})((v >> i) & 1)) << ({w} - 1 - i); return r; }}()",
-                                ty = cpp_uint(base_w), w = base_w)
-                        } else {
-                            // Wide (>64 bit) reversal via VlWide
-                            format!("[&]() {{ auto v = {b}; {ty} r{{}}; for (int i = 0; i < {w}; i++) {{ int sw = i / 32; int sb = i % 32; int dw = ({w} - 1 - i) / 32; int db = ({w} - 1 - i) % 32; if ((v[sw] >> sb) & 1) r[dw] |= (1u << db); }} return r; }}()",
-                                ty = cpp_uint(base_w), w = base_w)
-                        }
-                    } else {
-                        // Chunk-reverse: reverse order of N-bit chunks
-                        let n_chunks = base_w / chunk;
-                        if base_w <= 64 {
-                            format!("[&]() {{ {ty} v = {b}; {ty} r = 0; for (int i = 0; i < {nc}; i++) r |= ((v >> (i * {c})) & (({ty})((1ULL << {c}) - 1))) << (({nc} - 1 - i) * {c}); return r; }}()",
-                                ty = cpp_uint(base_w), nc = n_chunks, c = chunk)
-                        } else {
-                            // Wide chunk reverse — extract and place via bit loops
-                            format!("[&]() {{ auto v = {b}; {ty} r{{}}; for (int ci = 0; ci < {nc}; ci++) for (int bi = 0; bi < {c}; bi++) {{ int si = ci * {c} + bi; int di = ({nc} - 1 - ci) * {c} + bi; int sw = si / 32; int sb = si % 32; int dw = di / 32; int db = di % 32; if ((v[sw] >> sb) & 1) r[dw] |= (1u << db); }} return r; }}()",
-                                ty = cpp_uint(base_w), nc = n_chunks, c = chunk)
-                        }
-                    }
-                }
-                "any" | "all" | "count" | "contains"
-                | "reduce_or" | "reduce_and" | "reduce_xor" => {
-                    lower_vec_method_cpp(&b, base, method, args, ctx)
-                }
-                _ => format!("{b}.{}()", method.name),
-            }
-        }
+        ExprKind::MethodCall(base, method, args) => cpp_method_call(base, method, args, ctx),
 
         ExprKind::Cast(inner, ty) => {
             let e = cpp_expr(inner, ctx);
@@ -2231,61 +2075,7 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             }
         }
 
-        ExprKind::PartSelect(base, start, width, up) => {
-            let b = cpp_expr(base, ctx);
-            let s = cpp_expr(start, ctx);
-            let w = eval_width(width);
-            let base_w = infer_expr_width(base, ctx);
-            let result_ty = cpp_uint(w);
-            // Runtime bounds check for variable part-selects:
-            //   [+:]: bits [start .. start+W-1] must fit, so (start + W - 1) < base_W
-            //   [-:]: bits [start-W+1 .. start], so start < base_W and start >= W-1
-            // Skip when start is a constant.
-            let start_is_const = matches!(&start.kind, ExprKind::Literal(_));
-            let bchk = if base_w > 0 && !start_is_const {
-                let loc = base_ident_name(base).unwrap_or("<partsel>");
-                if *up {
-                    format!("_ARCH_BCHK((({s}) + {w} - 1), {base_w}, \"{loc}[+:{w}]\"), ")
-                } else {
-                    // [-:W]: need start < base_W AND start >= W-1.
-                    // Check (start + 1 - W) as signed → unsigned wrap makes this >= base_W if invalid.
-                    format!("_ARCH_BCHK(({s}), {base_w}, \"{loc}[-:{w}] start\"), _ARCH_BCHK(({w} - 1), (({s}) + 1), \"{loc}[-:{w}] underflow\"), ")
-                }
-            } else {
-                String::new()
-            };
-            let core = if base_w > 128 {
-                // VlWide<N>: use _arch_vw_bits with runtime start
-                let hi_expr = if *up {
-                    format!("(({s}) + {w} - 1)")
-                } else {
-                    format!("({s})")
-                };
-                let lo_expr = if *up {
-                    format!("({s})")
-                } else {
-                    format!("(({s}) - {} + 1)", w)
-                };
-                format!("({result_ty})_arch_vw_bits({b}.data(), {hi_expr}, {lo_expr})")
-            } else if base_w > 64 {
-                let mask = (1u128 << w).wrapping_sub(1);
-                let mask_str = format!("0x{:x}ULL", mask as u64);
-                if *up {
-                    format!("({result_ty})(({b} >> ({s})) & {mask_str})")
-                } else {
-                    format!("({result_ty})(({b} >> (({s}) - {} + 1)) & {mask_str})", w)
-                }
-            } else {
-                let mask = if w >= 64 { u64::MAX } else { (1u64 << w) - 1 };
-                let mask_str = format!("0x{:x}ULL", mask);
-                if *up {
-                    format!("({result_ty})((uint64_t)({b}) >> ({s}) & {mask_str})")
-                } else {
-                    format!("({result_ty})((uint64_t)({b}) >> (({s}) - {} + 1) & {mask_str})", w)
-                }
-            };
-            if bchk.is_empty() { core } else { format!("({bchk}{core})") }
-        }
+        ExprKind::PartSelect(base, start, width, up) => cpp_part_select(base, start, width, *up, ctx),
 
         ExprKind::EnumVariant(enum_name, variant) => {
             if let Some(variants) = ctx.enum_map.get(&enum_name.name) {
@@ -2333,44 +2123,7 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             "(fprintf(stderr, \"ARCH: todo! reached at sim runtime\\n\"), abort(), 0)".to_string()
         }
 
-        ExprKind::Concat(parts) => {
-            if parts.is_empty() { return "0".to_string(); }
-            // Compute widths for each part (MSB first)
-            let part_widths: Vec<u32> = parts.iter().map(|p| infer_expr_width(p, ctx)).collect();
-            let total: u32 = part_widths.iter().sum();
-
-            if total > 128 {
-                // Result is a VlWide<N>: build via OR-shifted parts in a lambda
-                let words = wide_words(total);
-                let mut stmts = Vec::new();
-                let mut bit_offset = 0u32;
-                for (i, part) in parts.iter().enumerate().rev() {
-                    let w = part_widths[i];
-                    let val = cpp_expr(part, ctx);
-                    // Each part is cast to uint64_t (narrow) then placed into VlWide
-                    stmts.push(format!(
-                        "_r = _r | (VlWide<{words}>(static_cast<uint64_t>({val})) << {bit_offset});"));
-                    bit_offset += w;
-                }
-                format!("[&]() -> VlWide<{words}> {{ VlWide<{words}> _r{{}}; {} return _r; }}()",
-                        stmts.join(" "))
-            } else {
-                // Build expression: accumulate shifts from LSB (last part offset=0)
-                let mut terms = Vec::new();
-                let mut bit_offset = 0u32;
-                for (i, part) in parts.iter().enumerate().rev() {
-                    let w = part_widths[i];
-                    let val = cpp_expr(part, ctx);
-                    if total > 64 {
-                        terms.push(format!("((_arch_u128)(uint64_t)({val}) << {bit_offset})"));
-                    } else {
-                        terms.push(format!("((uint64_t)({val}) << {bit_offset})"));
-                    }
-                    bit_offset += w;
-                }
-                format!("({})", terms.join(" | "))
-            }
-        }
+        ExprKind::Concat(parts) => cpp_concat(parts, ctx),
 
         ExprKind::Repeat(count, value) => {
             // {N{expr}} — replicate expr N times by shift-OR
@@ -2449,6 +2202,265 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             }).collect();
             if parts.is_empty() { "0".to_string() } else { format!("({})", parts.join(" || ")) }
         }
+    }
+}
+
+// ── Per-arm helpers for `cpp_expr_inner` ─────────────────────────────────────
+// Big match arms extracted into private fns so the dispatch reads at a glance.
+// No behavior change — each helper holds the original arm body verbatim.
+
+fn cpp_unary(op: &UnaryOp, operand: &Expr, ctx: &Ctx) -> String {
+    let o = cpp_expr(operand, ctx);
+    match op {
+        UnaryOp::Not    => format!("(!{o})"),
+        UnaryOp::BitNot => {
+            // Use logical ! (clamped to 0/1) only for 1-bit/Bool signals.
+            // For wider types use bitwise ~.
+            let is_one_bit = match &operand.kind {
+                ExprKind::Ident(name) => {
+                    ctx.widths.get(name.as_str()).copied().unwrap_or(32) == 1
+                }
+                _ => false,
+            };
+            if is_one_bit {
+                format!("(uint8_t)(!({o}))")
+            } else {
+                format!("(~({o}))")
+            }
+        }
+        UnaryOp::Neg    => format!("(-{o})"),
+        UnaryOp::RedAnd => {
+            // Reduction AND: all bits set → 1
+            let w = infer_expr_width(operand, ctx);
+            if w > 128 {
+                let words = wide_words(w);
+                let last_bits = w % 32;
+                let last_mask = if last_bits == 0 { "0xFFFFFFFFU".to_string() }
+                                else { format!("0x{:X}U", (1u32 << last_bits) - 1) };
+                format!("[&](){{auto& _v={o};for(int _i=0;_i<{}-1;_i++)if(_v._data[_i]!=0xFFFFFFFFU)return(uint8_t)0;return(uint8_t)(_v._data[{}]=={last_mask}?1:0);}}()", words, words-1)
+            } else if w <= 1 {
+                format!("({o} & 1)")
+            } else {
+                let mask = if w >= 64 { u64::MAX } else { (1u64 << w) - 1 };
+                format!("(uint8_t)(({o} & 0x{mask:x}ULL) == 0x{mask:x}ULL)")
+            }
+        }
+        UnaryOp::RedOr => {
+            // Reduction OR: any bit set → 1
+            let w = infer_expr_width(operand, ctx);
+            if w > 128 {
+                let words = wide_words(w);
+                format!("[&](){{auto& _v={o};for(int _i=0;_i<{words};_i++)if(_v._data[_i])return(uint8_t)1;return(uint8_t)0;}}()")
+            } else {
+                format!("(uint8_t)(({o}) != 0)")
+            }
+        }
+        UnaryOp::RedXor => {
+            // Reduction XOR: parity
+            let w = infer_expr_width(operand, ctx);
+            if w > 128 {
+                let words = wide_words(w);
+                format!("[&](){{auto& _v={o};uint8_t _p=0;for(int _i=0;_i<{words};_i++)_p^=(uint8_t)__builtin_parity(_v._data[_i]);return _p;}}()")
+            } else {
+                format!("(uint8_t)(__builtin_parityll((uint64_t)({o})))")
+            }
+        }
+    }
+}
+
+fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &Ctx) -> String {
+    let b = cpp_expr(base, ctx);
+    match method.name.as_str() {
+        "trunc" => {
+            if let Some(w_expr) = args.first() {
+                let bits = eval_width(w_expr);
+                let base_w = infer_expr_width(base, ctx);
+                if base_w > 128 && bits <= 64 {
+                    // VlWide → narrow: extract low bits via word array
+                    format!("({})_arch_vw_bits({b}.data(), {}, 0)", cpp_uint(bits), bits - 1)
+                } else {
+                    cast_to_bits(&b, bits)
+                }
+            } else {
+                b
+            }
+        }
+        "zext" => {
+            if let Some(w_expr) = args.first() {
+                let bits = eval_width(w_expr);
+                let base_w = infer_expr_width(base, ctx);
+                if bits > 128 {
+                    // Narrow → VlWide: use uint64_t constructor
+                    let words = wide_words(bits);
+                    format!("VlWide<{words}>(static_cast<uint64_t>({b}))")
+                } else if base_w > 128 && bits <= 64 {
+                    format!("({})_arch_vw_bits({b}.data(), {}, 0)", cpp_uint(bits), bits - 1)
+                } else {
+                    format!("({})({})", cpp_uint(bits), b)
+                }
+            } else {
+                b
+            }
+        }
+        "sext" => {
+            if let Some(w_expr) = args.first() {
+                let dst_bits = eval_width(w_expr);
+                let src_bits = infer_expr_width(base, ctx);
+                if src_bits >= dst_bits || src_bits == 0 {
+                    // No extension needed or unknown source width
+                    format!("({})({})", cpp_uint(dst_bits), b)
+                } else {
+                    // Sign-extend: if MSB of source is set, fill upper bits with 1s
+                    let dst_t = cpp_uint(dst_bits);
+                    format!("(({b} >> {}) & 1 ? ({dst_t})({b}) | ({dst_t})(~(({dst_t})0) << {src_bits}) : ({dst_t})({b}))",
+                        src_bits - 1)
+                }
+            } else {
+                b
+            }
+        }
+        "resize" => {
+            // Direction-agnostic: sign-extend if narrowing to signed, zero-pad if widening unsigned
+            if let Some(w_expr) = args.first() {
+                let dst_bits = eval_width(w_expr);
+                let src_bits = infer_expr_width(base, ctx);
+                if src_bits >= dst_bits || src_bits == 0 {
+                    // Narrowing or equal: just cast (C++ truncates)
+                    cast_to_bits(&b, dst_bits)
+                } else {
+                    // Widening: zero-extend (same as zext for sim purposes)
+                    format!("({})({})", cpp_uint(dst_bits), b)
+                }
+            } else {
+                b
+            }
+        }
+        "reverse" => {
+            let base_w = infer_expr_width(base, ctx);
+            let chunk = if let Some(c) = args.first() { eval_width(c) } else { 1 };
+            if chunk == 1 {
+                // Bit-reverse: build at compile time
+                if base_w <= 64 {
+                    format!("[&]() {{ {ty} v = {b}; {ty} r = 0; for (int i = 0; i < {w}; i++) r |= (({ty})((v >> i) & 1)) << ({w} - 1 - i); return r; }}()",
+                        ty = cpp_uint(base_w), w = base_w)
+                } else {
+                    // Wide (>64 bit) reversal via VlWide
+                    format!("[&]() {{ auto v = {b}; {ty} r{{}}; for (int i = 0; i < {w}; i++) {{ int sw = i / 32; int sb = i % 32; int dw = ({w} - 1 - i) / 32; int db = ({w} - 1 - i) % 32; if ((v[sw] >> sb) & 1) r[dw] |= (1u << db); }} return r; }}()",
+                        ty = cpp_uint(base_w), w = base_w)
+                }
+            } else {
+                // Chunk-reverse: reverse order of N-bit chunks
+                let n_chunks = base_w / chunk;
+                if base_w <= 64 {
+                    format!("[&]() {{ {ty} v = {b}; {ty} r = 0; for (int i = 0; i < {nc}; i++) r |= ((v >> (i * {c})) & (({ty})((1ULL << {c}) - 1))) << (({nc} - 1 - i) * {c}); return r; }}()",
+                        ty = cpp_uint(base_w), nc = n_chunks, c = chunk)
+                } else {
+                    // Wide chunk reverse — extract and place via bit loops
+                    format!("[&]() {{ auto v = {b}; {ty} r{{}}; for (int ci = 0; ci < {nc}; ci++) for (int bi = 0; bi < {c}; bi++) {{ int si = ci * {c} + bi; int di = ({nc} - 1 - ci) * {c} + bi; int sw = si / 32; int sb = si % 32; int dw = di / 32; int db = di % 32; if ((v[sw] >> sb) & 1) r[dw] |= (1u << db); }} return r; }}()",
+                        ty = cpp_uint(base_w), nc = n_chunks, c = chunk)
+                }
+            }
+        }
+        "any" | "all" | "count" | "contains"
+        | "reduce_or" | "reduce_and" | "reduce_xor" => {
+            lower_vec_method_cpp(&b, base, method, args, ctx)
+        }
+        _ => format!("{b}.{}()", method.name),
+    }
+}
+
+fn cpp_part_select(base: &Expr, start: &Expr, width: &Expr, up: bool, ctx: &Ctx) -> String {
+    let b = cpp_expr(base, ctx);
+    let s = cpp_expr(start, ctx);
+    let w = eval_width(width);
+    let base_w = infer_expr_width(base, ctx);
+    let result_ty = cpp_uint(w);
+    // Runtime bounds check for variable part-selects:
+    //   [+:]: bits [start .. start+W-1] must fit, so (start + W - 1) < base_W
+    //   [-:]: bits [start-W+1 .. start], so start < base_W and start >= W-1
+    // Skip when start is a constant.
+    let start_is_const = matches!(&start.kind, ExprKind::Literal(_));
+    let bchk = if base_w > 0 && !start_is_const {
+        let loc = base_ident_name(base).unwrap_or("<partsel>");
+        if up {
+            format!("_ARCH_BCHK((({s}) + {w} - 1), {base_w}, \"{loc}[+:{w}]\"), ")
+        } else {
+            // [-:W]: need start < base_W AND start >= W-1.
+            // Check (start + 1 - W) as signed → unsigned wrap makes this >= base_W if invalid.
+            format!("_ARCH_BCHK(({s}), {base_w}, \"{loc}[-:{w}] start\"), _ARCH_BCHK(({w} - 1), (({s}) + 1), \"{loc}[-:{w}] underflow\"), ")
+        }
+    } else {
+        String::new()
+    };
+    let core = if base_w > 128 {
+        // VlWide<N>: use _arch_vw_bits with runtime start
+        let hi_expr = if up {
+            format!("(({s}) + {w} - 1)")
+        } else {
+            format!("({s})")
+        };
+        let lo_expr = if up {
+            format!("({s})")
+        } else {
+            format!("(({s}) - {} + 1)", w)
+        };
+        format!("({result_ty})_arch_vw_bits({b}.data(), {hi_expr}, {lo_expr})")
+    } else if base_w > 64 {
+        let mask = (1u128 << w).wrapping_sub(1);
+        let mask_str = format!("0x{:x}ULL", mask as u64);
+        if up {
+            format!("({result_ty})(({b} >> ({s})) & {mask_str})")
+        } else {
+            format!("({result_ty})(({b} >> (({s}) - {} + 1)) & {mask_str})", w)
+        }
+    } else {
+        let mask = if w >= 64 { u64::MAX } else { (1u64 << w) - 1 };
+        let mask_str = format!("0x{:x}ULL", mask);
+        if up {
+            format!("({result_ty})((uint64_t)({b}) >> ({s}) & {mask_str})")
+        } else {
+            format!("({result_ty})((uint64_t)({b}) >> (({s}) - {} + 1) & {mask_str})", w)
+        }
+    };
+    if bchk.is_empty() { core } else { format!("({bchk}{core})") }
+}
+
+fn cpp_concat(parts: &[Expr], ctx: &Ctx) -> String {
+    if parts.is_empty() { return "0".to_string(); }
+    // Compute widths for each part (MSB first)
+    let part_widths: Vec<u32> = parts.iter().map(|p| infer_expr_width(p, ctx)).collect();
+    let total: u32 = part_widths.iter().sum();
+
+    if total > 128 {
+        // Result is a VlWide<N>: build via OR-shifted parts in a lambda
+        let words = wide_words(total);
+        let mut stmts = Vec::new();
+        let mut bit_offset = 0u32;
+        for (i, part) in parts.iter().enumerate().rev() {
+            let w = part_widths[i];
+            let val = cpp_expr(part, ctx);
+            // Each part is cast to uint64_t (narrow) then placed into VlWide
+            stmts.push(format!(
+                "_r = _r | (VlWide<{words}>(static_cast<uint64_t>({val})) << {bit_offset});"));
+            bit_offset += w;
+        }
+        format!("[&]() -> VlWide<{words}> {{ VlWide<{words}> _r{{}}; {} return _r; }}()",
+                stmts.join(" "))
+    } else {
+        // Build expression: accumulate shifts from LSB (last part offset=0)
+        let mut terms = Vec::new();
+        let mut bit_offset = 0u32;
+        for (i, part) in parts.iter().enumerate().rev() {
+            let w = part_widths[i];
+            let val = cpp_expr(part, ctx);
+            if total > 64 {
+                terms.push(format!("((_arch_u128)(uint64_t)({val}) << {bit_offset})"));
+            } else {
+                terms.push(format!("((uint64_t)({val}) << {bit_offset})"));
+            }
+            bit_offset += w;
+        }
+        format!("({})", terms.join(" | "))
     }
 }
 
