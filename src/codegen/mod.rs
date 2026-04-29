@@ -3072,10 +3072,13 @@ impl<'a> Codegen<'a> {
                 // Parenthesize complex base expressions to avoid precedence issues.
                 // SynthIdent is a compiler-renamed bare identifier with the same
                 // semantics as Ident — no parens needed (Verilator rejects
-                // `(__name)[hi:lo]` as a syntax error).
+                // `(__name)[hi:lo]` as a syntax error). Concat is also accepted
+                // bare per SV-2009 §11.4.12 (concatenation with bit-select):
+                // Verilator rejects `({a, b})[hi:lo]` for the same reason.
                 let b = if matches!(base.kind, ExprKind::Ident(_) | ExprKind::SynthIdent(_, _)
                     | ExprKind::Literal(_)
-                    | ExprKind::Index(_, _) | ExprKind::FieldAccess(_, _)) { b }
+                    | ExprKind::Index(_, _) | ExprKind::FieldAccess(_, _)
+                    | ExprKind::Concat(_)) { b }
                     else { format!("({})", b) };
                 // Try to emit indexed part-select: base[lo +: width]
                 if let Some(width) = Self::try_indexed_part_select(hi, lo) {
