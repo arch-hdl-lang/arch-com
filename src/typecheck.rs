@@ -2584,316 +2584,8 @@ impl<'a> TypeChecker<'a> {
                     UnaryOp::RedAnd | UnaryOp::RedOr | UnaryOp::RedXor => Ty::Bool,
                 }
             }
-            ExprKind::FieldAccess(base, field) => {
-                let base_ty = self.resolve_expr_type(base, module_name, local_types);
-                // rst.asserted — polarity-abstracted boolean: true when reset is active
-                if field.name == "asserted" {
-                    if matches!(base_ty, Ty::Reset(_, _)) {
-                        return Ty::Bool;
-                    }
-                    self.errors.push(CompileError::general(
-                        "`.asserted` is only valid on Reset ports",
-                        field.span,
-                    ));
-                    return Ty::Error;
-                }
-                if let Ty::Struct(name) = &base_ty {
-                    // Synthesized find_first result struct: no entry lives in
-                    // symbols.globals; fields are computed from the name's
-                    // width suffix.
-                    if let Some(w_str) = name.strip_prefix("__ArchFindResult_") {
-                        if let Ok(w) = w_str.parse::<u32>() {
-                            return match field.name.as_str() {
-                                "found" => Ty::Bool,
-                                "index" => Ty::UInt(w),
-                                _ => Ty::Error,
-                            };
-                        }
-                    }
-                    if let Some((sym, _)) = self.symbols.globals.get(name) {
-                        if let crate::resolve::Symbol::Struct(info) = sym {
-                            for (fname, fty) in &info.fields {
-                                if fname == &field.name {
-                                    return self.resolve_type_expr(fty, module_name, local_types);
-                                }
-                            }
-                        }
-                    }
-                }
-                if let Ty::Bus(name) = &base_ty {
-                    if let Some((sym, _)) = self.symbols.globals.get(name) {
-                        if let crate::resolve::Symbol::Bus(info) = sym {
-                            let _eff = info.effective_signals(&info.default_param_map()); for (sname, _dir, sty) in &_eff {
-                                if sname == &field.name {
-                                    return self.resolve_type_expr(sty, module_name, local_types);
-                                }
-                            }
-                            self.errors.push(CompileError::general(
-                                &format!("bus `{}` has no signal `{}`", name, field.name),
-                                field.span,
-                            ));
-                        }
-                    }
-                }
-                // Check for forbidden hierarchical instance reference (inst_name.port_name)
-                if let ExprKind::Ident(base_name) = &base.kind {
-                    let is_inst = self.source.items.iter().any(|item| {
-                        if let crate::ast::Item::Module(m) = item {
-                            if m.name.name == module_name {
-                                return m.body.iter().any(|bi| {
-                                    if let ModuleBodyItem::Inst(inst) = bi {
-                                        inst.name.name == *base_name
-                                    } else {
-                                        false
-                                    }
-                                });
-                            }
-                        }
-                        false
-                    });
-                    if is_inst {
-                        self.errors.push(CompileError::general(
-                            &format!(
-                                "hierarchical reference `{}.{}` is not allowed; \
-                                 use `connect {} -> wire_name` in the inst block instead",
-                                base_name, field.name, field.name
-                            ),
-                            expr.span,
-                        ));
-                    }
-                }
-                Ty::Error
-            }
-            ExprKind::MethodCall(base, method, args) => {
-                let base_ty = self.resolve_expr_type(base, module_name, local_types);
-                match method.name.as_str() {
-                    "trunc" | "zext" | "sext" | "resize" => {
-                        if let Some(width_expr) = args.first() {
-                            if let Some(w) = self.eval_const_expr(width_expr, local_types) {
-                                let target_w = w as u32;
-                                let source_w = match &base_ty {
-                                    Ty::UInt(sw) | Ty::SInt(sw) => Some(*sw),
-                                    Ty::Bool => Some(1),
-                                    _ => None, // param-dependent width — can't verify statically
-                                };
-                                if let Some(sw) = source_w {
-                                    if method.name == "trunc" && target_w == sw {
-                                        self.errors.push(CompileError::general(
-                                            &format!(".trunc<{}>() on a {}-bit value is a no-op — remove the cast", target_w, sw),
-                                            method.span,
-                                        ));
-                                        return Ty::Error;
-                                    }
-                                    if method.name == "trunc" && target_w > sw {
-                                        self.errors.push(CompileError::general(
-                                            &format!(".trunc<{}>() on a {}-bit value widens rather than truncates — use .zext<{}>() or .sext<{}>() to extend", target_w, sw, target_w, target_w),
-                                            method.span,
-                                        ));
-                                        return Ty::Error;
-                                    }
-                                    if (method.name == "zext" || method.name == "sext") && target_w == sw {
-                                        self.errors.push(CompileError::general(
-                                            &format!(".{}<{}>() on a {}-bit value is a no-op — remove the cast", method.name, target_w, sw),
-                                            method.span,
-                                        ));
-                                        return Ty::Error;
-                                    }
-                                    if (method.name == "zext" || method.name == "sext") && target_w < sw {
-                                        self.errors.push(CompileError::general(
-                                            &format!(".{}<{}>() on a {}-bit value narrows rather than extends — use .trunc<{}>() to narrow", method.name, target_w, sw, target_w),
-                                            method.span,
-                                        ));
-                                        return Ty::Error;
-                                    }
-                                }
-                                if method.name == "sext" {
-                                    Ty::SInt(target_w)
-                                } else if let Ty::SInt(_) = base_ty {
-                                    Ty::SInt(target_w)
-                                } else {
-                                    Ty::UInt(target_w)
-                                }
-                            } else {
-                                Ty::Error
-                            }
-                        } else {
-                            Ty::Error
-                        }
-                    }
-                    "reverse" => {
-                        if let Some(chunk_expr) = args.first() {
-                            if let Some(chunk) = self.eval_const_expr(chunk_expr, local_types) {
-                                let chunk = chunk as u32;
-                                if chunk == 0 {
-                                    self.errors.push(CompileError::general(
-                                        ".reverse(N) chunk size must be > 0",
-                                        method.span,
-                                    ));
-                                    Ty::Error
-                                } else {
-                                    let base_w = match &base_ty {
-                                        Ty::UInt(w) | Ty::SInt(w) => *w,
-                                        Ty::Bool => 1,
-                                        _ => {
-                                            self.errors.push(CompileError::general(
-                                                &format!(".reverse(N) requires UInt/SInt/Bool base, got {}", base_ty.display()),
-                                                method.span,
-                                            ));
-                                            return Ty::Error;
-                                        }
-                                    };
-                                    if base_w % chunk != 0 {
-                                        self.errors.push(CompileError::general(
-                                            &format!(".reverse({chunk}) requires width divisible by {chunk}, got UInt<{base_w}>"),
-                                            method.span,
-                                        ));
-                                        Ty::Error
-                                    } else {
-                                        base_ty
-                                    }
-                                }
-                            } else {
-                                Ty::Error
-                            }
-                        } else {
-                            self.errors.push(CompileError::general(
-                                ".reverse(N) requires a chunk size argument",
-                                method.span,
-                            ));
-                            Ty::Error
-                        }
-                    }
-                    // Vec reduction + predicate methods (plan_vec_methods.md v1, PR #1 subset).
-                    // `item` is the per-iteration element, `index` is the position (UInt<clog2(N)>).
-                    // Both are injected into the predicate's local scope during checking.
-                    "any" | "all" | "count" | "contains"
-                    | "reduce_or" | "reduce_and" | "reduce_xor" | "find_first" => {
-                        let (elem_ty, n) = match &base_ty {
-                            Ty::Vec(inner, count) => ((**inner).clone(), *count),
-                            _ => {
-                                self.errors.push(CompileError::general(
-                                    &format!("`.{}(...)` requires a Vec<T,N> receiver, got {}",
-                                        method.name, base_ty.display()),
-                                    method.span,
-                                ));
-                                return Ty::Error;
-                            }
-                        };
-                        if n == 0 {
-                            self.errors.push(CompileError::general(
-                                &format!("`.{}(...)` on a zero-length Vec has no meaningful result", method.name),
-                                method.span,
-                            ));
-                            return Ty::Error;
-                        }
-                        let idx_w = crate::width::index_width(n as u64);
-                        let pred_needed = !matches!(method.name.as_str(),
-                            "reduce_or" | "reduce_and" | "reduce_xor" | "contains");
-
-                        if pred_needed {
-                            if args.len() != 1 {
-                                self.errors.push(CompileError::general(
-                                    &format!("`.{}(pred)` takes exactly 1 argument (the predicate)", method.name),
-                                    method.span,
-                                ));
-                                return Ty::Error;
-                            }
-                            // Inject item/index into the predicate's scope.
-                            let mut pred_scope = local_types.clone();
-                            // Shadow warnings: user-declared signals with these names.
-                            for n in ["item", "index"] {
-                                if local_types.contains_key(n) {
-                                    self.warnings.push(CompileWarning {
-                                        message: format!(
-                                            "Vec method predicate binder `{}` shadows an enclosing signal with the same name — rename the outer signal to avoid confusion",
-                                            n),
-                                        span: method.span,
-                                    });
-                                }
-                            }
-                            pred_scope.insert("item".to_string(), elem_ty.clone());
-                            pred_scope.insert("index".to_string(), Ty::UInt(idx_w));
-                            let pred_ty = self.resolve_expr_type(&args[0], module_name, &pred_scope);
-                            if !matches!(pred_ty, Ty::Bool | Ty::UInt(1)) && pred_ty != Ty::Error {
-                                self.errors.push(CompileError::general(
-                                    &format!(
-                                        "`.{}` predicate must be Bool, got {}",
-                                        method.name, pred_ty.display()),
-                                    args[0].span,
-                                ));
-                                return Ty::Error;
-                            }
-                        } else if matches!(method.name.as_str(), "contains") {
-                            if args.len() != 1 {
-                                self.errors.push(CompileError::general(
-                                    "`.contains(x)` takes exactly 1 argument",
-                                    method.span,
-                                ));
-                                return Ty::Error;
-                            }
-                            let arg_ty = self.resolve_expr_type(&args[0], module_name, local_types);
-                            // Basic element-type compatibility (same kind + width).
-                            let compatible = match (&elem_ty, &arg_ty) {
-                                (Ty::UInt(a), Ty::UInt(b))
-                                | (Ty::SInt(a), Ty::SInt(b)) => a == b,
-                                (Ty::Bool, Ty::Bool) => true,
-                                _ => elem_ty == arg_ty,
-                            };
-                            if !compatible && arg_ty != Ty::Error && elem_ty != Ty::Error {
-                                self.errors.push(CompileError::general(
-                                    &format!("`.contains(x)` argument type `{}` doesn't match Vec element type `{}`",
-                                        arg_ty.display(), elem_ty.display()),
-                                    args[0].span,
-                                ));
-                                return Ty::Error;
-                            }
-                        } else {
-                            // reduce_or/and/xor: no argument
-                            if !args.is_empty() {
-                                self.errors.push(CompileError::general(
-                                    &format!("`.{}()` takes no arguments", method.name),
-                                    method.span,
-                                ));
-                                return Ty::Error;
-                            }
-                        }
-
-                        match method.name.as_str() {
-                            "any" | "all" | "contains" => Ty::Bool,
-                            "find_first" => {
-                                // Synthesized struct { found: Bool; index: UInt<idx_w> }.
-                                // Name is unique per idx_w; the typechecker's struct-field
-                                // lookup has a targeted fallback for this prefix, so no
-                                // entry needs to live in symbols.globals.
-                                Ty::Struct(format!("__ArchFindResult_{}", idx_w))
-                            }
-                            "count" => {
-                                // clog2(N+1) for popcount result width.
-                                let w = crate::width::index_width((n + 1) as u64);
-                                Ty::UInt(w)
-                            }
-                            "reduce_or" | "reduce_and" | "reduce_xor" => {
-                                // Returns a value of the element's width (or Bool if element is Bool).
-                                match &elem_ty {
-                                    Ty::Bool => Ty::Bool,
-                                    Ty::UInt(w) => Ty::UInt(*w),
-                                    Ty::SInt(w) => Ty::SInt(*w),
-                                    _ => {
-                                        self.errors.push(CompileError::general(
-                                            &format!("`.{}()` requires UInt/SInt/Bool element type, got `{}`",
-                                                method.name, elem_ty.display()),
-                                            method.span,
-                                        ));
-                                        return Ty::Error;
-                                    }
-                                }
-                            }
-                            _ => unreachable!(),
-                        }
-                    }
-                    _ => Ty::Error,
-                }
-            }
+            ExprKind::FieldAccess(base, field) => self.resolve_field_access_type(base, field, expr.span, module_name, local_types),
+            ExprKind::MethodCall(base, method, args) => self.resolve_method_call_type(base, method, args, module_name, local_types),
             ExprKind::Cast(inner, ty) => {
                 let src_ty = self.resolve_expr_type(inner, module_name, local_types);
                 let dst_ty = self.resolve_type_expr(ty, module_name, local_types);
@@ -3215,6 +2907,341 @@ impl<'a> TypeChecker<'a> {
     /// Detects expressions where ARCH and SV precedence differ and the user
     /// has not added parentheses. Specifically: bitwise ops (`&`, `|`, `^`)
     /// mixed with comparison ops (`==`, `!=`, `<`, `>`, `<=`, `>=`) as children.
+
+    /// Resolve `ExprKind::FieldAccess(base, field)` — the type of a `.field`
+    /// access on a struct, bus, or `Reset.asserted` polarity-abstracted bool.
+    /// Extracted from `resolve_expr_type` for readability — the original arm
+    /// was 80 lines.
+    fn resolve_field_access_type(
+        &mut self,
+        base: &Expr,
+        field: &Ident,
+        expr_span: Span,
+        module_name: &str,
+        local_types: &HashMap<String, Ty>,
+    ) -> Ty {
+        let base_ty = self.resolve_expr_type(base, module_name, local_types);
+        // rst.asserted — polarity-abstracted boolean: true when reset is active
+        if field.name == "asserted" {
+            if matches!(base_ty, Ty::Reset(_, _)) {
+                return Ty::Bool;
+            }
+            self.errors.push(CompileError::general(
+                "`.asserted` is only valid on Reset ports",
+                field.span,
+            ));
+            return Ty::Error;
+        }
+        if let Ty::Struct(name) = &base_ty {
+            // Synthesized find_first result struct: no entry lives in
+            // symbols.globals; fields are computed from the name's
+            // width suffix.
+            if let Some(w_str) = name.strip_prefix("__ArchFindResult_") {
+                if let Ok(w) = w_str.parse::<u32>() {
+                    return match field.name.as_str() {
+                        "found" => Ty::Bool,
+                        "index" => Ty::UInt(w),
+                        _ => Ty::Error,
+                    };
+                }
+            }
+            if let Some((sym, _)) = self.symbols.globals.get(name) {
+                if let crate::resolve::Symbol::Struct(info) = sym {
+                    for (fname, fty) in &info.fields {
+                        if fname == &field.name {
+                            return self.resolve_type_expr(fty, module_name, local_types);
+                        }
+                    }
+                }
+            }
+        }
+        if let Ty::Bus(name) = &base_ty {
+            if let Some((sym, _)) = self.symbols.globals.get(name) {
+                if let crate::resolve::Symbol::Bus(info) = sym {
+                    let _eff = info.effective_signals(&info.default_param_map()); for (sname, _dir, sty) in &_eff {
+                        if sname == &field.name {
+                            return self.resolve_type_expr(sty, module_name, local_types);
+                        }
+                    }
+                    self.errors.push(CompileError::general(
+                        &format!("bus `{}` has no signal `{}`", name, field.name),
+                        field.span,
+                    ));
+                }
+            }
+        }
+        // Check for forbidden hierarchical instance reference (inst_name.port_name)
+        if let ExprKind::Ident(base_name) = &base.kind {
+            let is_inst = self.source.items.iter().any(|item| {
+                if let crate::ast::Item::Module(m) = item {
+                    if m.name.name == module_name {
+                        return m.body.iter().any(|bi| {
+                            if let ModuleBodyItem::Inst(inst) = bi {
+                                inst.name.name == *base_name
+                            } else {
+                                false
+                            }
+                        });
+                    }
+                }
+                false
+            });
+            if is_inst {
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "hierarchical reference `{}.{}` is not allowed; \
+                         use `connect {} -> wire_name` in the inst block instead",
+                        base_name, field.name, field.name
+                    ),
+                    expr_span,
+                ));
+            }
+        }
+        Ty::Error
+    }
+
+    /// Resolve `ExprKind::MethodCall(base, method, args)` — width casts
+    /// (`trunc` / `zext` / `sext` / `resize`), `Vec` methods (`any` / `all` /
+    /// `count` / `find_first` / `reduce_*`), `Option`-style chans, and the rest.
+    /// Extracted from `resolve_expr_type` for readability — the original arm
+    /// was 230 lines, the largest single arm in the function.
+    fn resolve_method_call_type(
+        &mut self,
+        base: &Expr,
+        method: &Ident,
+        args: &[Expr],
+        module_name: &str,
+        local_types: &HashMap<String, Ty>,
+    ) -> Ty {
+        let base_ty = self.resolve_expr_type(base, module_name, local_types);
+        match method.name.as_str() {
+            "trunc" | "zext" | "sext" | "resize" => {
+                if let Some(width_expr) = args.first() {
+                    if let Some(w) = self.eval_const_expr(width_expr, local_types) {
+                        let target_w = w as u32;
+                        let source_w = match &base_ty {
+                            Ty::UInt(sw) | Ty::SInt(sw) => Some(*sw),
+                            Ty::Bool => Some(1),
+                            _ => None, // param-dependent width — can't verify statically
+                        };
+                        if let Some(sw) = source_w {
+                            if method.name == "trunc" && target_w == sw {
+                                self.errors.push(CompileError::general(
+                                    &format!(".trunc<{}>() on a {}-bit value is a no-op — remove the cast", target_w, sw),
+                                    method.span,
+                                ));
+                                return Ty::Error;
+                            }
+                            if method.name == "trunc" && target_w > sw {
+                                self.errors.push(CompileError::general(
+                                    &format!(".trunc<{}>() on a {}-bit value widens rather than truncates — use .zext<{}>() or .sext<{}>() to extend", target_w, sw, target_w, target_w),
+                                    method.span,
+                                ));
+                                return Ty::Error;
+                            }
+                            if (method.name == "zext" || method.name == "sext") && target_w == sw {
+                                self.errors.push(CompileError::general(
+                                    &format!(".{}<{}>() on a {}-bit value is a no-op — remove the cast", method.name, target_w, sw),
+                                    method.span,
+                                ));
+                                return Ty::Error;
+                            }
+                            if (method.name == "zext" || method.name == "sext") && target_w < sw {
+                                self.errors.push(CompileError::general(
+                                    &format!(".{}<{}>() on a {}-bit value narrows rather than extends — use .trunc<{}>() to narrow", method.name, target_w, sw, target_w),
+                                    method.span,
+                                ));
+                                return Ty::Error;
+                            }
+                        }
+                        if method.name == "sext" {
+                            Ty::SInt(target_w)
+                        } else if let Ty::SInt(_) = base_ty {
+                            Ty::SInt(target_w)
+                        } else {
+                            Ty::UInt(target_w)
+                        }
+                    } else {
+                        Ty::Error
+                    }
+                } else {
+                    Ty::Error
+                }
+            }
+            "reverse" => {
+                if let Some(chunk_expr) = args.first() {
+                    if let Some(chunk) = self.eval_const_expr(chunk_expr, local_types) {
+                        let chunk = chunk as u32;
+                        if chunk == 0 {
+                            self.errors.push(CompileError::general(
+                                ".reverse(N) chunk size must be > 0",
+                                method.span,
+                            ));
+                            Ty::Error
+                        } else {
+                            let base_w = match &base_ty {
+                                Ty::UInt(w) | Ty::SInt(w) => *w,
+                                Ty::Bool => 1,
+                                _ => {
+                                    self.errors.push(CompileError::general(
+                                        &format!(".reverse(N) requires UInt/SInt/Bool base, got {}", base_ty.display()),
+                                        method.span,
+                                    ));
+                                    return Ty::Error;
+                                }
+                            };
+                            if base_w % chunk != 0 {
+                                self.errors.push(CompileError::general(
+                                    &format!(".reverse({chunk}) requires width divisible by {chunk}, got UInt<{base_w}>"),
+                                    method.span,
+                                ));
+                                Ty::Error
+                            } else {
+                                base_ty
+                            }
+                        }
+                    } else {
+                        Ty::Error
+                    }
+                } else {
+                    self.errors.push(CompileError::general(
+                        ".reverse(N) requires a chunk size argument",
+                        method.span,
+                    ));
+                    Ty::Error
+                }
+            }
+            // Vec reduction + predicate methods (plan_vec_methods.md v1, PR #1 subset).
+            // `item` is the per-iteration element, `index` is the position (UInt<clog2(N)>).
+            // Both are injected into the predicate's local scope during checking.
+            "any" | "all" | "count" | "contains"
+            | "reduce_or" | "reduce_and" | "reduce_xor" | "find_first" => {
+                let (elem_ty, n) = match &base_ty {
+                    Ty::Vec(inner, count) => ((**inner).clone(), *count),
+                    _ => {
+                        self.errors.push(CompileError::general(
+                            &format!("`.{}(...)` requires a Vec<T,N> receiver, got {}",
+                                method.name, base_ty.display()),
+                            method.span,
+                        ));
+                        return Ty::Error;
+                    }
+                };
+                if n == 0 {
+                    self.errors.push(CompileError::general(
+                        &format!("`.{}(...)` on a zero-length Vec has no meaningful result", method.name),
+                        method.span,
+                    ));
+                    return Ty::Error;
+                }
+                let idx_w = crate::width::index_width(n as u64);
+                let pred_needed = !matches!(method.name.as_str(),
+                    "reduce_or" | "reduce_and" | "reduce_xor" | "contains");
+
+                if pred_needed {
+                    if args.len() != 1 {
+                        self.errors.push(CompileError::general(
+                            &format!("`.{}(pred)` takes exactly 1 argument (the predicate)", method.name),
+                            method.span,
+                        ));
+                        return Ty::Error;
+                    }
+                    // Inject item/index into the predicate's scope.
+                    let mut pred_scope = local_types.clone();
+                    // Shadow warnings: user-declared signals with these names.
+                    for n in ["item", "index"] {
+                        if local_types.contains_key(n) {
+                            self.warnings.push(CompileWarning {
+                                message: format!(
+                                    "Vec method predicate binder `{}` shadows an enclosing signal with the same name — rename the outer signal to avoid confusion",
+                                    n),
+                                span: method.span,
+                            });
+                        }
+                    }
+                    pred_scope.insert("item".to_string(), elem_ty.clone());
+                    pred_scope.insert("index".to_string(), Ty::UInt(idx_w));
+                    let pred_ty = self.resolve_expr_type(&args[0], module_name, &pred_scope);
+                    if !matches!(pred_ty, Ty::Bool | Ty::UInt(1)) && pred_ty != Ty::Error {
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "`.{}` predicate must be Bool, got {}",
+                                method.name, pred_ty.display()),
+                            args[0].span,
+                        ));
+                        return Ty::Error;
+                    }
+                } else if matches!(method.name.as_str(), "contains") {
+                    if args.len() != 1 {
+                        self.errors.push(CompileError::general(
+                            "`.contains(x)` takes exactly 1 argument",
+                            method.span,
+                        ));
+                        return Ty::Error;
+                    }
+                    let arg_ty = self.resolve_expr_type(&args[0], module_name, local_types);
+                    // Basic element-type compatibility (same kind + width).
+                    let compatible = match (&elem_ty, &arg_ty) {
+                        (Ty::UInt(a), Ty::UInt(b))
+                        | (Ty::SInt(a), Ty::SInt(b)) => a == b,
+                        (Ty::Bool, Ty::Bool) => true,
+                        _ => elem_ty == arg_ty,
+                    };
+                    if !compatible && arg_ty != Ty::Error && elem_ty != Ty::Error {
+                        self.errors.push(CompileError::general(
+                            &format!("`.contains(x)` argument type `{}` doesn't match Vec element type `{}`",
+                                arg_ty.display(), elem_ty.display()),
+                            args[0].span,
+                        ));
+                        return Ty::Error;
+                    }
+                } else {
+                    // reduce_or/and/xor: no argument
+                    if !args.is_empty() {
+                        self.errors.push(CompileError::general(
+                            &format!("`.{}()` takes no arguments", method.name),
+                            method.span,
+                        ));
+                        return Ty::Error;
+                    }
+                }
+
+                match method.name.as_str() {
+                    "any" | "all" | "contains" => Ty::Bool,
+                    "find_first" => {
+                        // Synthesized struct { found: Bool; index: UInt<idx_w> }.
+                        // Name is unique per idx_w; the typechecker's struct-field
+                        // lookup has a targeted fallback for this prefix, so no
+                        // entry needs to live in symbols.globals.
+                        Ty::Struct(format!("__ArchFindResult_{}", idx_w))
+                    }
+                    "count" => {
+                        // clog2(N+1) for popcount result width.
+                        let w = crate::width::index_width((n + 1) as u64);
+                        Ty::UInt(w)
+                    }
+                    "reduce_or" | "reduce_and" | "reduce_xor" => {
+                        // Returns a value of the element's width (or Bool if element is Bool).
+                        match &elem_ty {
+                            Ty::Bool => Ty::Bool,
+                            Ty::UInt(w) => Ty::UInt(*w),
+                            Ty::SInt(w) => Ty::SInt(*w),
+                            _ => {
+                                self.errors.push(CompileError::general(
+                                    &format!("`.{}()` requires UInt/SInt/Bool element type, got `{}`",
+                                        method.name, elem_ty.display()),
+                                    method.span,
+                                ));
+                                return Ty::Error;
+                            }
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            _ => Ty::Error,
+        }
+    }
     fn check_precedence_ambiguity(&mut self, op: BinOp, lhs: &Expr, rhs: &Expr, span: Span) {
         let is_bitwise = matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor);
         let is_comparison = matches!(op, BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte);
