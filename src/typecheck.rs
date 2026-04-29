@@ -85,70 +85,8 @@ impl<'a> TypeChecker<'a> {
         // whose divisor is a reducible constant. Catches bad param defaults, etc.
         // Runs before per-item checks so reported errors sort naturally.
         self.check_const_div_zero();
-        for item in &self.source.items {
-            match item {
-                Item::Domain(d) => self.check_domain(d),
-                Item::Struct(s) => self.check_struct(s),
-                Item::Enum(e) => self.check_enum(e),
-                Item::Module(m) => self.check_module(m),
-                Item::Fsm(f) => self.check_fsm(f),
-                Item::Fifo(f) => self.check_fifo(f),
-                Item::Ram(r) => self.check_ram(r),
-                Item::Cam(c) => self.check_cam(c),
-                Item::Counter(c) => self.check_counter(c),
-                Item::Arbiter(a) => self.check_arbiter(a),
-                Item::Regfile(r) => self.check_regfile(r),
-                Item::Pipeline(p) => self.check_pipeline(p),
-                Item::Function(f) => self.check_function(f),
-                Item::Linklist(l) => self.check_linklist(l),
-                Item::Template(t) => self.check_template(t),
-                Item::Synchronizer(s) => self.check_synchronizer(s),
-                Item::Clkgate(c) => self.check_clkgate(c),
-                Item::Bus(b) => {
-                    // Deprecation: legacy `handshake` keyword inside a bus
-                    // is being renamed to `handshake_channel` for
-                    // consistency with its sibling sub-constructs
-                    // (`credit_channel`, future `tlm_method`). Same soft
-                    // nudge pattern as `port reg`; silenceable via
-                    // ARCH_NO_DEPRECATIONS=1.
-                    if std::env::var("ARCH_NO_DEPRECATIONS").is_err() {
-                        for hs in &b.handshakes {
-                            if hs.legacy_handshake_kw {
-                                self.warnings.push(CompileWarning {
-                                    message: format!(
-                                        "`handshake {name}: ...` is deprecated — use `handshake_channel {name}: ...` instead (identical semantics; matches the new `credit_channel` / `tlm_method` sibling sub-construct naming).",
-                                        name = hs.name.name
-                                    ),
-                                    span: hs.span,
-                                });
-                            }
-                        }
-                    }
-                    // Wire flattening (send_valid, send_data, credit_return)
-                    // is live as of PR #3b-i. The remaining
-                    // not-yet-implemented layers — counter reg on the
-                    // initiator, fifo + credit-return pulse on the target,
-                    // and method dispatch for `ch.send` / `ch.pop` /
-                    // `ch.can_send` / `ch.valid` / `ch.data` — land in a
-                    // follow-up PR. Users who drive the flattened wires
-                    // directly today compile cleanly; method-dispatch use
-                    // sites are rejected at the access resolution site.
-
-                    // tlm_method wire flattening is live as of PR-tlm-2.
-                    // Remaining not-yet-implemented layers: target-side
-                    // `thread port.method(args)` body lowering
-                    // (PR-tlm-3), initiator-side call-site lowering
-                    // (PR-tlm-4), Tier-2 SVA (PR-tlm-5), sim_codegen
-                    // mirror (PR-tlm-6). Users who drive the flattened
-                    // req/rsp wires directly today compile cleanly.
-                }
-                Item::Package(pkg) => {
-                    for e in &pkg.enums { self.check_enum(e); }
-                    for s in &pkg.structs { self.check_struct(s); }
-                    for f in &pkg.functions { self.check_function(f); }
-                }
-                Item::Use(_) => {} // no-op
-            }
+        for item in self.source.items.clone().iter() {
+            item.as_construct().typecheck(&mut self);
         }
         // Cross-item check: every `inst foo: SomeRegfile` whose target
         // regfile has `kind: latch` must drive its write-port `addr` /
@@ -176,7 +114,7 @@ impl<'a> TypeChecker<'a> {
     /// inst's output. Combinational sources are rejected because
     /// transparent latches require their addr/data inputs to be
     /// stable for the duration of `we`.
-    fn check_latch_regfile_writes(&mut self, m: &ModuleDecl) {
+    pub(crate) fn check_latch_regfile_writes(&mut self, m: &ModuleDecl) {
         // Build a per-module signal-kind map: name → "reg" / "port_reg"
         // / "pipe_reg" / "input_port" / "inst_output" / "wire" / "let".
         let mut kind_of: std::collections::HashMap<String, &'static str> =
@@ -276,7 +214,7 @@ impl<'a> TypeChecker<'a> {
     /// subexpression's divisor folds to 0. We rely on `eval_const_expr`
     /// already returning `None` on /0, so this pass is the only place
     /// that *rejects* such cases — elsewhere they're just "not reducible".
-    fn check_const_div_zero(&mut self) {
+    pub(crate) fn check_const_div_zero(&mut self) {
         fn params_of(item: &Item) -> &[ParamDecl] {
             match item {
                 Item::Module(m)       => &m.params,
@@ -367,25 +305,25 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn check_domain(&mut self, d: &DomainDecl) {
+    pub(crate) fn check_domain(&mut self, d: &DomainDecl) {
         self.check_pascal_case(&d.name);
     }
 
-    fn check_struct(&mut self, s: &StructDecl) {
+    pub(crate) fn check_struct(&mut self, s: &StructDecl) {
         self.check_pascal_case(&s.name);
         for field in &s.fields {
             self.check_snake_case(&field.name);
         }
     }
 
-    fn check_enum(&mut self, e: &EnumDecl) {
+    pub(crate) fn check_enum(&mut self, e: &EnumDecl) {
         self.check_pascal_case(&e.name);
         for variant in &e.variants {
             self.check_pascal_case(variant);
         }
     }
 
-    fn check_module(&mut self, m: &ModuleDecl) {
+    pub(crate) fn check_module(&mut self, m: &ModuleDecl) {
         self.check_pascal_case(&m.name);
 
         // Track driven signals
@@ -1048,7 +986,7 @@ impl<'a> TypeChecker<'a> {
     /// to per-signal driven entries, and marks output signals as driven.
     /// Extracted from `check_module`'s main pass for readability — the
     /// original arm was 122 lines.
-    fn check_inst_decl(&mut self, inst: &InstDecl, driven: &mut HashSet<String>) {
+    pub(crate) fn check_inst_decl(&mut self, inst: &InstDecl, driven: &mut HashSet<String>) {
             self.check_snake_case(&inst.name);
             // Find the target construct's bus port info for whole-bus expansion
             let target_bus_ports: Vec<(String, String)> = self.source.items.iter()
@@ -1171,7 +1109,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
     }
-    fn check_handshake_reads(&mut self, m: &ModuleDecl) {
+    pub(crate) fn check_handshake_reads(&mut self, m: &ModuleDecl) {
         use std::collections::HashMap as Map;
         // port_name -> Vec<(channel_name, guard_field_name, payload_field_names)>
         let mut info: Map<String, Vec<(String, String, Vec<String>)>> = Map::new();
@@ -1317,7 +1255,7 @@ impl<'a> TypeChecker<'a> {
     /// Scan `expr` for reads of `<port>.<payload_field>` where the (port,field)
     /// pair is known to be a handshake payload. If no enclosing condition
     /// guards the access, emit a warning.
-    fn check_expr_for_unguarded_payload(
+    pub(crate) fn check_expr_for_unguarded_payload(
         &mut self,
         expr: &Expr,
         enclosing: &[&Expr],
@@ -1413,7 +1351,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn check_implements(&mut self, m: &ModuleDecl, tmpl_name: &Ident) {
+    pub(crate) fn check_implements(&mut self, m: &ModuleDecl, tmpl_name: &Ident) {
         // Find the template in the source file
         let tmpl = self.source.items.iter().find_map(|item| {
             if let Item::Template(t) = item {
@@ -1484,7 +1422,7 @@ impl<'a> TypeChecker<'a> {
     /// Warn when `port reg` outputs are assigned inside state-dependent if/elsif
     /// chains in seq blocks. This indicates the output has 1-cycle latency relative
     /// to the state that drives it — a common timing mismatch with testbench models.
-    fn check_port_reg_timing(&mut self, m: &ModuleDecl) {
+    pub(crate) fn check_port_reg_timing(&mut self, m: &ModuleDecl) {
         // Collect port reg output names
         let port_reg_names: HashSet<String> = m.ports.iter()
             .filter(|p| p.reg_info.is_some() && p.direction == Direction::Out)
@@ -1613,7 +1551,7 @@ impl<'a> TypeChecker<'a> {
     ///  (a) exists in scope (module ports, regs, wires, or let bindings), and
     ///  (b) resolves to a Bool type.
     /// Reports `CompileError::general` with the offending identifier's span.
-    fn check_guards(&mut self, m: &ModuleDecl) {
+    pub(crate) fn check_guards(&mut self, m: &ModuleDecl) {
         // Build name → TypeExpr map for all in-scope signals
         let mut sig_types: HashMap<String, TypeExpr> = HashMap::new();
         for p in &m.ports {
@@ -1688,7 +1626,7 @@ impl<'a> TypeChecker<'a> {
 
     /// Validate that all registers with reset assigned in an `always on` block
     /// agree on reset signal name, sync/async kind, and polarity.
-    fn check_always_block_reset_consistency(&mut self, rb: &RegBlock, m: &ModuleDecl) {
+    pub(crate) fn check_always_block_reset_consistency(&mut self, rb: &RegBlock, m: &ModuleDecl) {
         // Collect assigned register root names
         let mut assigned = std::collections::BTreeSet::new();
         Self::collect_assigned_roots_tc(&rb.stmts, &mut assigned);
@@ -1897,7 +1835,7 @@ impl<'a> TypeChecker<'a> {
     /// Warn when a seq block contains a top-level `if reset_signal` branch that
     /// is dead code because the declaration-level `reset signal=>value` already
     /// generates an outer reset guard wrapping the entire seq body.
-    fn check_redundant_reset_branch(&mut self, rb: &RegBlock, m: &ModuleDecl) {
+    pub(crate) fn check_redundant_reset_branch(&mut self, rb: &RegBlock, m: &ModuleDecl) {
         // Collect all reset signal names used by regs (decl or port reg) assigned in this block.
         let mut assigned = std::collections::BTreeSet::new();
         Self::collect_assigned_roots_tc(&rb.stmts, &mut assigned);
@@ -1957,7 +1895,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn check_width_compatible(&mut self, lhs_ty: &Ty, rhs_ty: &Ty, name: &str, span: Span) {
+    pub(crate) fn check_width_compatible(&mut self, lhs_ty: &Ty, rhs_ty: &Ty, name: &str, span: Span) {
         match (lhs_ty, rhs_ty) {
             (Ty::UInt(lw), Ty::UInt(rw)) if rw > lw => {
                 let hint = if *rw == lw + 1 { " (arithmetic widening)" } else { "" };
@@ -1984,7 +1922,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Emit an error when an enum match is not exhaustive (no wildcard and missing variants).
-    fn check_match_exhaustive(&mut self, scrutinee: &Expr, patterns: &[Pattern], span: Span,
+    pub(crate) fn check_match_exhaustive(&mut self, scrutinee: &Expr, patterns: &[Pattern], span: Span,
                               module_name: &str, local_types: &HashMap<String, Ty>) {
         let scrutinee_ty = self.resolve_expr_type(scrutinee, module_name, local_types);
         let enum_name = match &scrutinee_ty {
@@ -2015,7 +1953,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn check_reg_stmt(
+    pub(crate) fn check_reg_stmt(
         &mut self,
         stmt: &Stmt,
         module_name: &str,
@@ -2041,7 +1979,7 @@ impl<'a> TypeChecker<'a> {
     ///   here — that's `reject_wait_in_stmts`'s job at the block-level
     ///   call site (it has the context to allow them in pipeline stages
     ///   and reject them in plain seq).
-    fn check_stmt(
+    pub(crate) fn check_stmt(
         &mut self,
         stmt: &Stmt,
         module_name: &str,
@@ -2287,7 +2225,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn check_comb_stmt(
+    pub(crate) fn check_comb_stmt(
         &mut self,
         stmt: &Stmt,
         module_name: &str,
@@ -2399,7 +2337,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Check a comb block for latch-inducing patterns and emit warnings.
-    fn check_comb_latch(&mut self, stmts: &[Stmt], span: Span) {
+    pub(crate) fn check_comb_latch(&mut self, stmts: &[Stmt], span: Span) {
         let (all_assigned, fully_assigned) = Self::comb_latch_targets(stmts, self.symbols);
         for name in &all_assigned {
             if !fully_assigned.contains(name) {
@@ -3249,7 +3187,7 @@ impl<'a> TypeChecker<'a> {
             _ => Ty::Error,
         }
     }
-    fn check_precedence_ambiguity(&mut self, op: BinOp, lhs: &Expr, rhs: &Expr, span: Span) {
+    pub(crate) fn check_precedence_ambiguity(&mut self, op: BinOp, lhs: &Expr, rhs: &Expr, span: Span) {
         let is_bitwise = matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor);
         let is_comparison = matches!(op, BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte);
 
@@ -3413,7 +3351,7 @@ impl<'a> TypeChecker<'a> {
     /// Check CDC violations across an instance boundary.
     /// For each data connection, verify that the signal's clock domain in the
     /// parent matches the port's clock domain in the child module.
-    fn check_inst_cdc(
+    pub(crate) fn check_inst_cdc(
         &mut self,
         inst: &InstDecl,
         parent_clk_domain: &HashMap<String, String>,
@@ -3768,12 +3706,12 @@ impl<'a> TypeChecker<'a> {
 
     // Naming convention checks removed — style is a convention (LLM defaults
     // to snake_case), not a compiler-enforced rule.
-    fn check_pascal_case(&mut self, _ident: &Ident) {}
-    fn check_snake_case(&mut self, _ident: &Ident) {}
-    fn check_upper_snake(&mut self, _ident: &Ident) {}
+    pub(crate) fn check_pascal_case(&mut self, _ident: &Ident) {}
+    pub(crate) fn check_snake_case(&mut self, _ident: &Ident) {}
+    pub(crate) fn check_upper_snake(&mut self, _ident: &Ident) {}
 
     /// Check that a WidthConst param's default value fits in the declared width.
-    fn check_width_const_overflow(&mut self, p: &ParamDecl) {
+    pub(crate) fn check_width_const_overflow(&mut self, p: &ParamDecl) {
         if let ParamKind::WidthConst(hi, lo) = &p.kind {
             let empty = std::collections::HashMap::new();
             if let (Some(h), Some(l), Some(default)) = (
@@ -3797,7 +3735,7 @@ impl<'a> TypeChecker<'a> {
 
     // ── FSM ───────────────────────────────────────────────────────────────────
 
-    fn check_fsm(&mut self, f: &FsmDecl) {
+    pub(crate) fn check_fsm(&mut self, f: &FsmDecl) {
         self.check_pascal_case(&f.name);
         for p in &f.params {
             self.check_upper_snake(&p.name);
@@ -3837,7 +3775,7 @@ impl<'a> TypeChecker<'a> {
 
     // ── RAM ───────────────────────────────────────────────────────────────────
 
-    fn check_cam(&mut self, c: &CamDecl) {
+    pub(crate) fn check_cam(&mut self, c: &CamDecl) {
         // Phase A: minimal naming check + presence of required params/ports.
         // Full validation (port widths from $clog2(DEPTH), $clog2(KEY_W),
         // exact port name list) deferred to Phase A continuation.
@@ -3917,7 +3855,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn check_ram(&mut self, r: &RamDecl) {
+    pub(crate) fn check_ram(&mut self, r: &RamDecl) {
         self.check_pascal_case(&r.name);
         for p in &r.params {
             self.check_upper_snake(&p.name);
@@ -3977,7 +3915,7 @@ impl<'a> TypeChecker<'a> {
 
     // ── FIFO ──────────────────────────────────────────────────────────────────
 
-    fn check_fifo(&mut self, f: &FifoDecl) {
+    pub(crate) fn check_fifo(&mut self, f: &FifoDecl) {
         self.check_pascal_case(&f.name);
         for p in &f.params {
             self.check_upper_snake(&p.name);
@@ -4028,7 +3966,7 @@ impl<'a> TypeChecker<'a> {
 
     // ── Synchronizer ─────────────────────────────────────────────────────────
 
-    fn check_synchronizer(&mut self, s: &SynchronizerDecl) {
+    pub(crate) fn check_synchronizer(&mut self, s: &SynchronizerDecl) {
         self.check_pascal_case(&s.name);
         for p in &s.params {
             self.check_upper_snake(&p.name);
@@ -4115,7 +4053,7 @@ impl<'a> TypeChecker<'a> {
 
     // ── Clock Gate ─────────────────────────────────────────────────────────────
 
-    fn check_clkgate(&mut self, c: &crate::ast::ClkGateDecl) {
+    pub(crate) fn check_clkgate(&mut self, c: &crate::ast::ClkGateDecl) {
         self.check_pascal_case(&c.name);
         for p in &c.params {
             self.check_upper_snake(&p.name);
@@ -4170,7 +4108,7 @@ impl<'a> TypeChecker<'a> {
 
     // ── Counter ───────────────────────────────────────────────────────────────
 
-    fn check_counter(&mut self, c: &crate::ast::CounterDecl) {
+    pub(crate) fn check_counter(&mut self, c: &crate::ast::CounterDecl) {
         self.check_pascal_case(&c.name);
         for p in &c.params {
             self.check_upper_snake(&p.name);
@@ -4182,7 +4120,7 @@ impl<'a> TypeChecker<'a> {
 
     // ── Arbiter ───────────────────────────────────────────────────────────────
 
-    fn check_arbiter(&mut self, a: &crate::ast::ArbiterDecl) {
+    pub(crate) fn check_arbiter(&mut self, a: &crate::ast::ArbiterDecl) {
         use crate::ast::ArbiterPolicy;
         self.check_pascal_case(&a.name);
         for p in &a.params {
@@ -4260,7 +4198,7 @@ impl<'a> TypeChecker<'a> {
 
     // ── Regfile ───────────────────────────────────────────────────────────────
 
-    fn check_regfile(&mut self, r: &crate::ast::RegfileDecl) {
+    pub(crate) fn check_regfile(&mut self, r: &crate::ast::RegfileDecl) {
         self.check_pascal_case(&r.name);
         for p in &r.params {
             self.check_upper_snake(&p.name);
@@ -4351,7 +4289,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn check_pipeline_cross_stage_expr(
+    pub(crate) fn check_pipeline_cross_stage_expr(
         &mut self, expr: &Expr, cur_idx: usize,
         stage_idx: &HashMap<&str, usize>, cur_name: &str,
     ) {
@@ -4425,7 +4363,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn check_pipeline(&mut self, p: &PipelineDecl) {
+    pub(crate) fn check_pipeline(&mut self, p: &PipelineDecl) {
         self.check_pascal_case(&p.name);
 
         for param in &p.params {
@@ -4538,7 +4476,7 @@ impl<'a> TypeChecker<'a> {
 
     // ── Linklist ──────────────────────────────────────────────────────────────
 
-    fn check_template(&mut self, t: &crate::ast::TemplateDecl) {
+    pub(crate) fn check_template(&mut self, t: &crate::ast::TemplateDecl) {
         self.check_pascal_case(&t.name);
         for p in &t.params {
             self.check_upper_snake(&p.name);
@@ -4557,7 +4495,39 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn check_linklist(&mut self, l: &crate::ast::LinklistDecl) {
+    /// Bus typecheck: deprecation warning for the legacy `handshake`
+    /// keyword inside a bus (renamed to `handshake_channel` for
+    /// consistency with `credit_channel` / `tlm_method`). Same soft
+    /// nudge pattern as `port reg`; silenceable via
+    /// `ARCH_NO_DEPRECATIONS=1`. Other bus-level rules (wire-flattening
+    /// validity, channel param shapes) are enforced at the bus *use*
+    /// site (port resolution + emit), not here.
+    pub(crate) fn check_bus(&mut self, b: &crate::ast::BusDecl) {
+        if std::env::var("ARCH_NO_DEPRECATIONS").is_err() {
+            for hs in &b.handshakes {
+                if hs.legacy_handshake_kw {
+                    self.warnings.push(CompileWarning {
+                        message: format!(
+                            "`handshake {name}: ...` is deprecated — use `handshake_channel {name}: ...` instead (identical semantics; matches the new `credit_channel` / `tlm_method` sibling sub-construct naming).",
+                            name = hs.name.name
+                        ),
+                        span: hs.span,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Package typecheck: recurses into the package's declared
+    /// enums / structs / functions. Each contained item is checked the
+    /// same way it would be at top level.
+    pub(crate) fn check_package(&mut self, pkg: &crate::ast::PackageDecl) {
+        for e in &pkg.enums { self.check_enum(e); }
+        for s in &pkg.structs { self.check_struct(s); }
+        for f in &pkg.functions { self.check_function(f); }
+    }
+
+    pub(crate) fn check_linklist(&mut self, l: &crate::ast::LinklistDecl) {
         use crate::ast::LinklistKind;
 
         self.check_pascal_case(&l.name);
@@ -4716,7 +4686,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn check_function(&mut self, f: &FunctionDecl) {
+    pub(crate) fn check_function(&mut self, f: &FunctionDecl) {
         self.check_pascal_case(&f.name);
         for arg in &f.args {
             self.check_snake_case(&arg.name);
