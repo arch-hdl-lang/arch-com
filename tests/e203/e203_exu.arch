@@ -231,8 +231,6 @@ module e203_exu
   wire disp_alu_rdwen:   Bool;
   wire disp_alu_info:    UInt<32>;
   wire disp_alu_itag:    UInt<1>;
-  wire disp_alu_instr:   UInt<32>;
-  wire disp_alu_pc_vld:  Bool;
   wire disp_alu_misalgn: Bool;
   wire disp_alu_buserr:  Bool;
   wire disp_alu_ilegl:   Bool;
@@ -305,15 +303,18 @@ module e203_exu
   wire alu_csr_wr_en:        Bool;
   wire alu_csr_rd_en:        Bool;
   wire alu_csr_idx:          UInt<12>;
-  wire alu_nonflush_cmt_ena: Bool;
-  // csr_access_ilgl_w, read_csr_dat_w declared elsewhere
   wire alu_wbck_csr_dat:     UInt<32>;
   // ALU NICE
   wire alu_nice_longp_wbck_valid: Bool;
   wire alu_nice_longp_wbck_ready: Bool;
   wire alu_nice_o_itag:           UInt<1>;
-  // ALU misc wires: amo_wait_w, oitf_empty_w, pipe_flush_req_w, pipe_flush_pulse_w
-  // declared elsewhere in this module
+  // ALU misc wires
+  wire amo_wait_w:         Bool;
+  wire oitf_empty_w:       Bool;
+  wire pipe_flush_pulse_w: Bool;
+  wire read_csr_dat_w:     UInt<32>;
+  // Glue wires - ALU outputs to wbck input
+  wire alu_done_valid: Bool;
 
   // ════════════════════════════════════════════════════════════════════
   // Internal wires -- LongpWbck outputs
@@ -493,12 +494,12 @@ module e203_exu
     rst_n <- rst_n;
 
     // WFI halt interface
-    wfi_halt_exu_req <- false;
+    wfi_halt_exu_req <- wfi_halt_exu_req_w;
     wfi_halt_exu_ack -> disp_wfi_halt_exu_ack;
 
     // OITF status
     oitf_empty <- oitf_is_empty;
-    amo_wait   <- false;
+    amo_wait   <- amo_wait_w;
 
     // Dispatch input (from decode)
     disp_i_valid   <- disp_valid_gated;
@@ -507,23 +508,23 @@ module e203_exu
     disp_i_rs2x0   <- dec_rs2x0;
     disp_i_rs1en   <- dec_rs1_en;
     disp_i_rs2en   <- dec_rs2_en;
-    disp_i_rs1idx  <- dec_rs1_idx;
-    disp_i_rs2idx  <- dec_rs2_idx;
+    disp_i_rs1idx  <- i_rs1idx;
+    disp_i_rs2idx  <- i_rs2idx;
     disp_i_rs1     <- rf_rs1_data;
     disp_i_rs2     <- rf_rs2_data;
     disp_i_rdwen   <- dec_rd_en;
     disp_i_rdidx   <- dec_rd_idx;
     disp_i_info    <- dec_info;
     disp_i_imm     <- dec_imm;
-    disp_i_pc      <- i_pc;
-    disp_i_misalgn <- i_misalgn;
-    disp_i_buserr  <- i_buserr;
+    disp_i_pc      <- dec_pc_out;
+    disp_i_misalgn <- dec_misalgn;
+    disp_i_buserr  <- dec_buserr_out;
     disp_i_ilegl   <- dec_ilegl;
 
     // ALU dispatch output
     disp_o_alu_valid    -> disp_alu_valid;
     disp_o_alu_ready    <- alu_o_ready;
-    disp_o_alu_longpipe <- false;
+    disp_o_alu_longpipe <- alu_longpipe;
     disp_o_alu_rs1      -> disp_alu_rs1;
     disp_o_alu_rs2      -> disp_alu_rs2;
     disp_o_alu_rdwen    -> disp_alu_rdwen;
@@ -616,8 +617,8 @@ module e203_exu
     i_imm      <- disp_alu_imm;
     i_info     <- disp_alu_info;
     i_pc       <- disp_alu_pc;
-    i_instr    <- disp_alu_instr;
-    i_pc_vld   <- disp_alu_pc_vld;
+    i_instr    <- i_ir;
+    i_pc_vld   <- i_pc_vld;
     i_rdidx    <- disp_alu_rdidx;
     i_rdwen    <- disp_alu_rdwen;
     i_itag     <- disp_alu_itag;
@@ -628,13 +629,13 @@ module e203_exu
     nice_xs_off <- csr_nice_xs_off;
     amo_wait    <- amo_wait_w;
     oitf_empty  <- oitf_empty_w;
-    flush_req   <- pipe_flush_req_w;
+    flush_req   <- flush_req_w;
     flush_pulse <- pipe_flush_pulse_w;
-    mdv_nob2b   <- false;
+    mdv_nob2b   <- csr_mdv_nob2b;
     i_nice_cmt_off_ilgl <- false;
     // Commit outputs
     cmt_o_valid       -> alu_cmt_valid;
-    cmt_o_ready       <- true;
+    cmt_o_ready       <- commit_alu_ready;
     cmt_o_pc_vld      -> alu_cmt_pc_vld;
     cmt_o_pc          -> alu_cmt_pc;
     cmt_o_instr       -> alu_cmt_instr;
@@ -667,7 +668,7 @@ module e203_exu
     csr_wr_en         -> alu_csr_wr_en;
     csr_rd_en         -> alu_csr_rd_en;
     csr_idx           -> alu_csr_idx;
-    nonflush_cmt_ena  -> alu_nonflush_cmt_ena;
+    nonflush_cmt_ena  <- nonflush_cmt_ena_w;
     csr_access_ilgl   <- csr_access_ilgl_w;
     read_csr_dat      <- read_csr_dat_w;
     wbck_csr_dat      -> alu_wbck_csr_dat;
@@ -692,7 +693,7 @@ module e203_exu
     // NICE
     nice_req_valid          -> nice_req_valid;
     nice_req_ready          <- nice_req_ready;
-    nice_req_instr          -> nice_req_instr;
+    nice_req_instr          -> nice_req_inst;
     nice_req_rs1            -> nice_req_rs1;
     nice_req_rs2            -> nice_req_rs2;
     nice_rsp_multicyc_valid <- nice_rsp_multicyc_valid;
@@ -732,7 +733,7 @@ module e203_exu
 
     // Exception output
     longp_excp_o_valid   -> longp_excp_valid;
-    longp_excp_o_ready   <- true;
+    longp_excp_o_ready   <- longp_excp_ready_from_commit;
     longp_excp_o_insterr -> longp_excp_insterr;
     longp_excp_o_ld      -> longp_excp_ld;
     longp_excp_o_st      -> longp_excp_st;
@@ -793,8 +794,7 @@ module e203_exu
     excp_active      -> excp_active_w;
 
     // AMO wait
-    amo_wait <- false;
-
+    amo_wait <- amo_wait_w;
     // WFI halt interface
     wfi_halt_ifu_req -> wfi_halt_ifu_req_w;
     wfi_halt_exu_req -> wfi_halt_exu_req_w;
@@ -813,31 +813,31 @@ module e203_exu
     msie_r       <- csr_msie;
     meie_r       <- csr_meie;
 
-    // ALU commit input channel
-    alu_cmt_i_valid      <- alu_done_valid;
-    alu_cmt_i_ready      -> commit_alu_ready;
-    alu_cmt_i_pc         <- i_pc;
-    alu_cmt_i_instr      <- i_ir;
-    alu_cmt_i_pc_vld     <- i_pc_vld;
-    alu_cmt_i_imm        <- dec_imm;
-    alu_cmt_i_rv32       <- dec_rv32;
-    alu_cmt_i_bjp        <- alu_bjp_taken;
-    alu_cmt_i_wfi        <- false;
-    alu_cmt_i_fencei     <- false;
-    alu_cmt_i_mret       <- false;
-    alu_cmt_i_dret       <- false;
-    alu_cmt_i_ecall      <- false;
-    alu_cmt_i_ebreak     <- false;
-    alu_cmt_i_ifu_misalgn <- i_misalgn;
-    alu_cmt_i_ifu_buserr <- i_buserr;
-    alu_cmt_i_ifu_ilegl  <- dec_ilegl;
-    alu_cmt_i_bjp_prdt   <- false;
-    alu_cmt_i_bjp_rslv   <- alu_bjp_taken;
-    alu_cmt_i_misalgn    <- false;
-    alu_cmt_i_ld         <- false;
-    alu_cmt_i_stamo      <- false;
-    alu_cmt_i_buserr     <- false;
-    alu_cmt_i_badaddr    <- 0;
+    // ALU commit input channel (wired from ALU cmt_o_* outputs)
+    alu_cmt_i_valid       <- alu_cmt_valid;
+    alu_cmt_i_ready       -> commit_alu_ready;
+    alu_cmt_i_pc          <- alu_cmt_pc;
+    alu_cmt_i_instr       <- alu_cmt_instr;
+    alu_cmt_i_pc_vld      <- alu_cmt_pc_vld;
+    alu_cmt_i_imm         <- alu_cmt_imm;
+    alu_cmt_i_rv32        <- alu_cmt_rv32;
+    alu_cmt_i_bjp         <- alu_cmt_bjp;
+    alu_cmt_i_wfi         <- alu_cmt_wfi;
+    alu_cmt_i_fencei      <- alu_cmt_fencei;
+    alu_cmt_i_mret        <- alu_cmt_mret;
+    alu_cmt_i_dret        <- alu_cmt_dret;
+    alu_cmt_i_ecall       <- alu_cmt_ecall;
+    alu_cmt_i_ebreak      <- alu_cmt_ebreak;
+    alu_cmt_i_ifu_misalgn <- alu_cmt_ifu_misalgn;
+    alu_cmt_i_ifu_buserr  <- alu_cmt_ifu_buserr;
+    alu_cmt_i_ifu_ilegl   <- alu_cmt_ifu_ilegl;
+    alu_cmt_i_bjp_prdt    <- alu_cmt_bjp_prdt;
+    alu_cmt_i_bjp_rslv    <- alu_cmt_bjp_rslv;
+    alu_cmt_i_misalgn     <- alu_cmt_misalgn;
+    alu_cmt_i_ld          <- alu_cmt_ld;
+    alu_cmt_i_stamo       <- alu_cmt_stamo;
+    alu_cmt_i_buserr      <- alu_cmt_buserr;
+    alu_cmt_i_badaddr     <- alu_cmt_badaddr;
 
     // CSR commit outputs
     cmt_badaddr     -> cmt_badaddr_w;
@@ -856,7 +856,7 @@ module e203_exu
 
     // CSR read inputs
     csr_epc_r   <- csr_mepc_val;
-    csr_dpc_r   <- 0;
+    csr_dpc_r   <- csr_dpc_val;
     csr_mtvec_r <- csr_mtvec_val;
 
     // Debug mode inputs
@@ -902,13 +902,13 @@ module e203_exu
 
     // CSR access interface
     nonflush_cmt_ena <- nonflush_cmt_ena_w;
-    csr_ena      <- false;
-    csr_wr_en    <- false;
-    csr_rd_en    <- false;
-    csr_idx      <- 0;
+    csr_ena      <- alu_csr_ena;
+    csr_wr_en    <- alu_csr_wr_en;
+    csr_rd_en    <- alu_csr_rd_en;
+    csr_idx      <- alu_csr_idx;
     csr_access_ilgl -> csr_access_ilgl_w;
     read_csr_dat -> csr_rdata;
-    wbck_csr_dat <- 0;
+    wbck_csr_dat <- alu_wbck_csr_dat;
 
     // Control outputs
     nice_xs_off  -> csr_nice_xs_off;
@@ -919,7 +919,7 @@ module e203_exu
     mdv_nob2b    -> csr_mdv_nob2b;
 
     // Hart ID
-    core_mhartid <- false;
+    core_mhartid <- core_mhartid[0:0];
 
     // Interrupt status
     ext_irq_r    <- ext_irq_r;
@@ -1003,22 +1003,6 @@ module e203_exu
     // LSU writeback ready
     lsu_o_ready = longp_lsu_ready;
 
-    // AGU ICB command interface (stub — LSU not integrated here)
-    agu_icb_cmd_valid = false;
-    agu_icb_cmd_addr  = 0;
-    agu_icb_cmd_read  = false;
-    agu_icb_cmd_wdata = 0;
-    agu_icb_cmd_wmask = 0xF;
-    agu_icb_cmd_lock  = false;
-    agu_icb_cmd_excl  = false;
-    agu_icb_cmd_size  = 2;
-    agu_icb_cmd_back2agu = false;
-    agu_icb_cmd_usign = false;
-    agu_icb_cmd_itag  = false;
-
-    // AGU ICB response
-    agu_icb_rsp_ready = true;
-
     // OITF empty status
     oitf_empty = oitf_is_empty;
 
@@ -1027,8 +1011,8 @@ module e203_exu
     rf2ifu_rs1 = rf_rs1_data;
 
     // Decode to IFU feedback
-    dec2ifu_rden   = dec_rd_en;
-    dec2ifu_rs1en  = dec_rs1_en;
+    dec2ifu_rden   = dec_rd_en & (~disp_oitf_rdfpu_w);
+    dec2ifu_rs1en  = dec_rs1_en & (~disp_oitf_rs1fpu_w);
     dec2ifu_rdidx  = dec_rd_idx;
     dec2ifu_mulhsu = dec_mulhsu;
     dec2ifu_div    = dec_div;
@@ -1037,7 +1021,7 @@ module e203_exu
     dec2ifu_remu   = dec_remu;
 
     // Status outputs from commit
-    exu_active       = i_valid | alu_done_valid | longp_wbck_valid;
+    exu_active       = (~oitf_is_empty) | i_valid | excp_active_w;
     excp_active      = excp_active_w;
     commit_mret      = commit_mret_w;
     commit_trap      = commit_trap_w;
@@ -1060,12 +1044,13 @@ module e203_exu
     wr_dscratch_ena = csr_wr_dscratch_ena;
     wr_csr_nxt      = csr_wr_csr_nxt;
 
-    // NICE coprocessor (stub)
-    nice_req_valid          = false;
-    nice_req_inst           = 0;
-    nice_req_rs1            = 0;
-    nice_req_rs2            = 0;
-    nice_rsp_multicyc_ready = false;
+    // Glue: ALU outputs to wbck input
+    alu_done_valid = alu_wbck_valid;
+
+    // Glue: misc wires
+    oitf_empty_w       = oitf_is_empty;
+    pipe_flush_pulse_w = flush_pulse_w;
+    read_csr_dat_w     = csr_rdata;
   end comb
 
 end module e203_exu
