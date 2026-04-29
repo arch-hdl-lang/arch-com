@@ -1,0 +1,54 @@
+name: examples
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs of this workflow on the same ref when a new commit
+# is pushed — saves CI minutes when someone pushes a quick fix-up.
+concurrency:
+  group: examples-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sim-sweep:
+    name: examples/run_sims.sh
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: cargo build --release
+        run: cargo build --release
+
+      - name: cargo test --release
+        run: cargo test --release
+
+      - name: Run sim sweep (parallel)
+        # `--keep` preserves the per-test work dirs even on success so the
+        # failure-upload step below can find them. They live under /tmp/
+        # which the runner wipes between jobs anyway.
+        run: examples/run_sims.sh --keep -j$(nproc)
+
+      - name: Upload failed-test work dirs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch-sim-failures
+          path: /tmp/arch_sim_runs.*/
+          retention-days: 7
