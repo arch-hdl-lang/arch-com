@@ -13,10 +13,11 @@ int main(int argc, char** argv) {
         dut->clk = 1; dut->eval();
     };
 
-    // Reset
+    // Reset; set the runtime-programmable wrap boundary to 15 (4-bit max).
     dut->clk = 0;
     dut->rst = 1;
     dut->inc = 0;
+    dut->max = 15;
     dut->eval();
     tick(); tick();
     dut->rst = 0;

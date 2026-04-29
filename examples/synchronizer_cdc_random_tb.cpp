@@ -1,16 +1,13 @@
 #include "FlagSync.h"
 #include <cstdio>
 
-// Test that data eventually propagates even with random latency.
-// With --cdc-random, the synchronizer may take STAGES or more cycles.
-// cdc_skip_pct controls the probability (0-100) of +1 cycle per edge.
+// Test that data eventually propagates through a 2-stage synchronizer.
+// (The original `--cdc-random` feature with cdc_skip_pct was removed; this
+// test now exercises basic CDC propagation without the randomness knob.)
 
 int main() {
     FlagSync dut;
     int errors = 0;
-
-    // Testbench controls skip probability: 50% for aggressive stress testing
-    dut.cdc_skip_pct = 50;
 
     // Reset
     dut.src_clk = 0; dut.dst_clk = 0; dut.rst = 0; dut.data_in = 0;

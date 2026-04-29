@@ -292,7 +292,7 @@ int main(int argc, char** argv) {
     printf("  PASS\n");
 
     // ────────────────────────────────────────────
-    dut->final();
+    dut->final_();
     delete dut;
 
     if (errors == 0) {

@@ -19,8 +19,8 @@ int main(int argc, char** argv) {
     dut->write_en = 0;
     dut->write_addr = 0;
     dut->write_data = 0;
-    dut->read_addr[0] = 0;
-    dut->read_addr[1] = 0;
+    dut->read0_addr = 0;
+    dut->read1_addr = 0;
     dut->eval();
     tick(); tick();
     dut->rst = 0;
@@ -38,11 +38,11 @@ int main(int argc, char** argv) {
     // ── Read back via both read ports ─────────────────────────────────────────
     int read_errors = 0;
     for (int i = 0; i < 4; i++) {
-        dut->read_addr[0] = (uint8_t)(i * 2);
-        dut->read_addr[1] = (uint8_t)(i * 2 + 1);
+        dut->read0_addr = (uint8_t)(i * 2);
+        dut->read1_addr = (uint8_t)(i * 2 + 1);
         dut->eval();
-        uint8_t got0 = (uint8_t)dut->read_data[0];
-        uint8_t got1 = (uint8_t)dut->read_data[1];
+        uint8_t got0 = (uint8_t)dut->read0_data;
+        uint8_t got1 = (uint8_t)dut->read1_data;
         uint8_t exp0 = (uint8_t)((i * 2 * 11 + 5) & 0xFF);
         uint8_t exp1 = (uint8_t)(((i * 2 + 1) * 11 + 5) & 0xFF);
         if (got0 != exp0 || got1 != exp1) {
@@ -61,11 +61,11 @@ int main(int argc, char** argv) {
     dut->write_en   = 1;
     dut->write_addr = 5;
     dut->write_data = 0xBE;
-    dut->read_addr[0] = 5;
-    dut->read_addr[1] = 0;
+    dut->read0_addr = 5;
+    dut->read1_addr = 0;
     dut->eval();
     {
-        uint8_t got = (uint8_t)dut->read_data[0];
+        uint8_t got = (uint8_t)dut->read0_data;
         if (got != 0xBE) {
             printf("FAIL: forwarding: expected 0xBE, got 0x%02X\n", (int)got);
             errors++;
