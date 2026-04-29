@@ -2456,21 +2456,40 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
 
 fn ind(n: usize) -> String { "  ".repeat(n) }
 
-fn emit_reg_stmts(stmts: &[Stmt], ctx: &Ctx, out: &mut String, indent: usize) {
+/// Sim-codegen analog of `codegen::AssignCtx`. Phase 5b part 4 — drives
+/// the unified `emit_stmt` walker so seq vs comb stmt emission shares
+/// one source of truth. The flag affects:
+/// - **LHS resolution**: `Seq` resolves to the next-cycle shadow
+///   `_n_{name}` (committed at end of cycle); `Comb` resolves to the
+///   live `_{name}` (visible immediately).
+/// - **Wide-output-port conversion**: only `Comb` paths apply
+///   `_arch_u128_to_vl` for 65–128b output ports (>128b is a direct
+///   `VlWide<N>` assignment); `Seq` writes go through `cpp_expr_lhs`
+///   which handles the shadow naming uniformly.
+/// - **Init / WaitUntil / DoUntil legality**: `Seq` only.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum SimAssignKind {
+    Seq,
+    Comb,
+}
+
+fn emit_stmts(stmts: &[Stmt], ctx: &Ctx, out: &mut String, indent: usize, k: SimAssignKind) {
     for stmt in stmts {
-        emit_reg_stmt(stmt, ctx, out, indent);
+        emit_stmt(stmt, ctx, out, indent, k);
     }
 }
 
-fn emit_reg_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize) {
+fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssignKind) {
+    let is_seq = k == SimAssignKind::Seq;
     match stmt {
         Stmt::Assign(a) => {
-            // Scalar bit-indexed LHS: name[idx] = val where name is NOT a Vec
-            // Emit mask-and-OR: base = (base & ~(1ULL << idx)) | (uint64_t(val & 1) << idx)
+            // Scalar bit-indexed LHS: name[idx] = val where name is NOT a Vec.
+            // Emit mask-and-OR: base = (base & ~(1ULL << idx)) | (uint64_t(val & 1) << idx).
+            // resolve_name's is_lhs flag = is_seq → seq writes hit the shadow.
             if let ExprKind::Index(base, idx_expr) = &a.target.kind {
                 if let ExprKind::Ident(base_name) = &base.kind {
                     if !ctx.vec_names.map_or(false, |s| s.contains(base_name.as_str())) {
-                        let resolved_base = ctx.resolve_name(base_name, true);
+                        let resolved_base = ctx.resolve_name(base_name, is_seq);
                         let idx_cpp = cpp_expr(idx_expr, ctx);
                         let rhs = cpp_expr(&a.value, ctx);
                         out.push_str(&format!(
@@ -2481,12 +2500,34 @@ fn emit_reg_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize) {
                     }
                 }
             }
-            let lhs = cpp_expr_lhs(&a.target, ctx);
-            // Wide reg assignment from wide port: convert VlWide → _arch_u128
             let rhs = cpp_expr(&a.value, ctx);
-            out.push_str(&format!("{}{}  = {};\n", ind(indent), lhs, rhs));
+            if is_seq {
+                let lhs = cpp_expr_lhs(&a.target, ctx);
+                out.push_str(&format!("{}{}  = {};\n", ind(indent), lhs, rhs));
+            } else {
+                // Comb: bare-ident-aware target name + wide-output-port conversion.
+                let target_name = if let ExprKind::Ident(name) = &a.target.kind {
+                    name.clone()
+                } else {
+                    cpp_expr(&a.target, ctx)
+                };
+                let resolved_target = ctx.resolve_name(&target_name, false);
+                if ctx.wide_names.contains(target_name.as_str()) {
+                    let bits = ctx.widths.get(target_name.as_str()).copied().unwrap_or(0);
+                    if bits > 128 {
+                        // >128 bits: both internal and port are VlWide<N> — direct assign.
+                        out.push_str(&format!("{}{} = {};\n", ind(indent), target_name, rhs));
+                    } else {
+                        // 65–128 bits: internal is _arch_u128, port is VlWide<4>.
+                        out.push_str(&format!("{}  _arch_u128_to_vl({}, {}._data);\n",
+                            ind(indent), rhs, target_name));
+                    }
+                } else {
+                    out.push_str(&format!("{}{}  = {};\n", ind(indent), resolved_target, rhs));
+                }
+            }
         }
-        Stmt::IfElse(ie) => emit_reg_if_else(ie, ctx, out, indent, false),
+        Stmt::IfElse(ie) => emit_if_else(ie, ctx, out, indent, false, k),
         Stmt::Match(m) => {
             let scrut = cpp_expr(&m.scrutinee, ctx);
             out.push_str(&format!("{}switch ({}) {{\n", ind(indent), scrut));
@@ -2503,16 +2544,20 @@ fn emit_reg_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize) {
                     }
                 };
                 out.push_str(&format!("{}{}: {{\n", ind(indent + 1), case_str));
-                // --coverage phase 1d: per match-arm counter. Use the
-                // match's span.start so the report points to the match
-                // statement (per-arm spans aren't tracked on MatchArm);
-                // the label disambiguates which arm.
+                // --coverage: per match-arm counter. Use the match's
+                // span.start so the report points to the match statement
+                // (per-arm spans aren't tracked on MatchArm); the label
+                // disambiguates which arm.
                 if let Some(reg) = ctx.coverage {
                     let kind = if matches!(arm.pattern, Pattern::Wildcard | Pattern::Ident(_)) { "match-default" } else { "match-arm" };
                     let cidx = reg.borrow_mut().alloc(kind, m.span.start, label);
                     out.push_str(&format!("{}  _arch_cov[{cidx}]++;\n", ind(indent + 1)));
                 }
-                emit_reg_stmts(&arm.body, ctx, out, indent + 2);
+                // Arm body: full recurse via the unified emitter — this is
+                // the bug fix. Pre-collapse, the comb walker silently
+                // emitted only `Stmt::Assign` arms and dropped nested
+                // `if/else`, `match`, `for`, and `log` inside arm bodies.
+                emit_stmts(&arm.body, ctx, out, indent + 2, k);
                 out.push_str(&format!("{}  break;\n", ind(indent + 1)));
                 out.push_str(&format!("{}}}\n", ind(indent + 1)));
             }
@@ -2526,7 +2571,7 @@ fn emit_reg_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize) {
                     let start = cpp_expr(rs, ctx);
                     let end = cpp_expr(re, ctx);
                     out.push_str(&format!("{}for (int {var} = {start}; {var} <= {end}; {var}++) {{\n", ind(indent)));
-                    for s in &f.body { emit_reg_stmt(s, ctx, out, indent + 1); }
+                    for s in &f.body { emit_stmt(s, ctx, out, indent + 1, k); }
                     out.push_str(&format!("{}}}\n", ind(indent)));
                 }
                 ForRange::ValueList(vals) => {
@@ -2534,32 +2579,35 @@ fn emit_reg_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize) {
                         let val = cpp_expr(v, ctx);
                         out.push_str(&format!("{}{{\n", ind(indent)));
                         out.push_str(&format!("{}int {var} = {val};\n", ind(indent + 1)));
-                        for s in &f.body { emit_reg_stmt(s, ctx, out, indent + 1); }
+                        for s in &f.body { emit_stmt(s, ctx, out, indent + 1, k); }
                         out.push_str(&format!("{}}}\n", ind(indent)));
                     }
                 }
             }
         }
         Stmt::Init(ib) => {
+            if !is_seq {
+                unreachable!("Stmt::Init reached emit_stmt(Comb) — typecheck bug");
+            }
             let rst_name = &ib.reset_signal.name;
             let is_low = ctx.reset_levels.get(rst_name.as_str())
                 .map_or(false, |level| *level == ResetLevel::Low);
-            let cond = if is_low {
-                format!("(!{})", rst_name)
-            } else {
-                rst_name.clone()
-            };
+            let cond = if is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
             out.push_str(&format!("{}if ({}) {{\n", ind(indent), cond));
-            emit_reg_stmts(&ib.body, ctx, out, indent + 1);
+            emit_stmts(&ib.body, ctx, out, indent + 1, k);
             out.push_str(&format!("{}}}\n", ind(indent)));
         }
         Stmt::WaitUntil(_, _) | Stmt::DoUntil { .. } => {
-            panic!("pipeline wait-stages not yet supported in sim")
+            if !is_seq {
+                unreachable!("Stmt::WaitUntil/DoUntil reached emit_stmt(Comb) — typecheck bug");
+            }
+            // Seq path: pipeline-stage wait/do-until isn't yet sim-supported.
+            panic!("pipeline wait-stages not yet supported in sim");
         }
     }
 }
 
-fn emit_reg_if_else(ie: &IfElse, ctx: &Ctx, out: &mut String, indent: usize, is_chain: bool) {
+fn emit_if_else(ie: &IfElse, ctx: &Ctx, out: &mut String, indent: usize, is_chain: bool, k: SimAssignKind) {
     let cond = cpp_expr(&ie.cond, ctx);
     if is_chain {
         out.push_str(&format!("{}}} else if ({}) {{\n", ind(indent), cond));
@@ -2567,17 +2615,22 @@ fn emit_reg_if_else(ie: &IfElse, ctx: &Ctx, out: &mut String, indent: usize, is_
         out.push_str(&format!("{}if ({}) {{\n", ind(indent), cond));
     }
     // --coverage: count entries to this arm. Phase 1 records branch
-    // coverage for seq if/elsif/else; phase 1b adds comb. Counter id is
-    // the alloc order in the per-class registry.
+    // coverage for seq if/elsif/else; phase 1b/c adds comb. Counter id
+    // is the alloc order in the per-class registry.
+    //
+    // Note: comb blocks may evaluate multiple times per cycle during
+    // the settle loop — counters therefore reflect "branch entries",
+    // not "cycles where branch was active". For most designs the settle
+    // loop converges in 1–2 iterations so this is close to cycle count.
     if let Some(reg) = ctx.coverage {
         let kind = if is_chain { "elsif" } else { "if" };
         let idx = reg.borrow_mut().alloc(kind, ie.cond.span.start, String::new());
         out.push_str(&format!("{}  _arch_cov[{idx}]++;\n", ind(indent)));
     }
-    emit_reg_stmts(&ie.then_stmts, ctx, out, indent + 1);
+    emit_stmts(&ie.then_stmts, ctx, out, indent + 1, k);
     if ie.else_stmts.len() == 1 {
         if let Stmt::IfElse(nested) = &ie.else_stmts[0] {
-            emit_reg_if_else(nested, ctx, out, indent, true);
+            emit_if_else(nested, ctx, out, indent, true, k);
             return;
         }
     }
@@ -2587,148 +2640,40 @@ fn emit_reg_if_else(ie: &IfElse, ctx: &Ctx, out: &mut String, indent: usize, is_
             let idx = reg.borrow_mut().alloc("else", ie.span.end, String::new());
             out.push_str(&format!("{}  _arch_cov[{idx}]++;\n", ind(indent)));
         }
-        emit_reg_stmts(&ie.else_stmts, ctx, out, indent + 1);
+        emit_stmts(&ie.else_stmts, ctx, out, indent + 1, k);
     }
     out.push_str(&format!("{}}}\n", ind(indent)));
+}
+
+// ── Thin compatibility wrappers over `emit_stmt` / `emit_stmts` /
+// `emit_if_else`. Kept so call sites read semantically (`emit_reg_*`
+// for seq, `emit_comb_*` for comb).
+
+fn emit_reg_stmts(stmts: &[Stmt], ctx: &Ctx, out: &mut String, indent: usize) {
+    emit_stmts(stmts, ctx, out, indent, SimAssignKind::Seq);
+}
+
+fn emit_reg_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize) {
+    emit_stmt(stmt, ctx, out, indent, SimAssignKind::Seq);
+}
+
+#[allow(dead_code)]
+fn emit_reg_if_else(ie: &IfElse, ctx: &Ctx, out: &mut String, indent: usize, is_chain: bool) {
+    emit_if_else(ie, ctx, out, indent, is_chain, SimAssignKind::Seq);
 }
 
 fn emit_comb_stmts(stmts: &[Stmt], ctx: &Ctx, out: &mut String, indent: usize) {
-    for stmt in stmts {
-        emit_comb_stmt(stmt, ctx, out, indent);
-    }
+    emit_stmts(stmts, ctx, out, indent, SimAssignKind::Comb);
 }
 
+#[allow(dead_code)]
 fn emit_comb_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize) {
-    match stmt {
-        Stmt::Assign(a) => {
-            // Scalar bit-indexed LHS: name[idx] = val where name is NOT a Vec
-            // Emit mask-and-OR: base = (base & ~(1ULL << idx)) | (uint64_t(val & 1) << idx)
-            if let ExprKind::Index(base, idx_expr) = &a.target.kind {
-                if let ExprKind::Ident(base_name) = &base.kind {
-                    if !ctx.vec_names.map_or(false, |s| s.contains(base_name.as_str())) {
-                        let resolved_base = ctx.resolve_name(base_name, false);
-                        let idx_cpp = cpp_expr(idx_expr, ctx);
-                        let rhs = cpp_expr(&a.value, ctx);
-                        out.push_str(&format!(
-                            "{}{resolved_base} = ({resolved_base} & ~(uint64_t(1) << ({idx_cpp}))) | (uint64_t(({rhs}) & 1) << ({idx_cpp}));\n",
-                            ind(indent)
-                        ));
-                        return;
-                    }
-                }
-            }
-            let rhs = cpp_expr(&a.value, ctx);
-            let target_name = if let ExprKind::Ident(name) = &a.target.kind { name.clone() } else { cpp_expr(&a.target, ctx) };
-            let resolved_target = ctx.resolve_name(&target_name, false);
-            // Wide output port: may need conversion depending on width
-            if ctx.wide_names.contains(target_name.as_str()) {
-                let bits = ctx.widths.get(target_name.as_str()).copied().unwrap_or(0);
-                if bits > 128 {
-                    // >128 bits: both internal and port are VlWide<N> — direct assignment
-                    out.push_str(&format!("{}{} = {};\n", ind(indent), target_name, rhs));
-                } else {
-                    // 65–128 bits: internal is _arch_u128, port is VlWide<4>
-                    out.push_str(&format!("{}  _arch_u128_to_vl({}, {}._data);\n",
-                        ind(indent), rhs, target_name));
-                }
-            } else {
-                out.push_str(&format!("{}{}  = {};\n", ind(indent), resolved_target, rhs));
-            }
-        }
-        Stmt::IfElse(ie) => emit_comb_if_else(ie, ctx, out, indent, false),
-        Stmt::Match(m) => {
-            let scrut = cpp_expr(&m.scrutinee, ctx);
-            out.push_str(&format!("{}switch ({}) {{\n", ind(indent), scrut));
-            for arm in &m.arms {
-                let (case_str, label) = match &arm.pattern {
-                    Pattern::Wildcard => ("default".to_string(), "match _".to_string()),
-                    Pattern::Ident(id) => ("default".to_string(), format!("match {}", id.name)),
-                    Pattern::Literal(e) => (format!("case {}", cpp_expr(e, ctx)), "match lit".to_string()),
-                    Pattern::EnumVariant(en, vr) => {
-                        if let Some(variants) = ctx.enum_map.get(&en.name) {
-                            let idx = variants.iter().find(|(n, _)| *n == vr.name).map(|(_, v)| *v).unwrap_or(0);
-                            (format!("case {idx}"), format!("match {}::{}", en.name, vr.name))
-                        } else { ("default".to_string(), format!("match {}::{}", en.name, vr.name)) }
-                    }
-                };
-                out.push_str(&format!("{}{}: {{\n", ind(indent + 1), case_str));
-                if let Some(reg) = ctx.coverage {
-                    let kind = if matches!(arm.pattern, Pattern::Wildcard | Pattern::Ident(_)) { "match-default" } else { "match-arm" };
-                    let cidx = reg.borrow_mut().alloc(kind, m.span.start, label);
-                    out.push_str(&format!("{}  _arch_cov[{cidx}]++;\n", ind(indent + 1)));
-                }
-                for s in &arm.body {
-                    if let Stmt::Assign(a) = s {
-                        let rhs = cpp_expr(&a.value, ctx);
-                        let lhs = cpp_expr(&a.target, ctx);
-                        out.push_str(&format!("{}{} = {};\n", ind(indent + 2), lhs, rhs));
-                    }
-                }
-                out.push_str(&format!("{}  break;\n", ind(indent + 1)));
-                out.push_str(&format!("{}}}\n", ind(indent + 1)));
-            }
-            out.push_str(&format!("{}}}\n", ind(indent)));
-        }
-        Stmt::Log(l) => emit_log_stmt(l, ctx, out, indent),
-        Stmt::For(f) => {
-            let var = &f.var.name;
-            match &f.range {
-                ForRange::Range(rs, re) => {
-                    let start = cpp_expr(rs, ctx);
-                    let end = cpp_expr(re, ctx);
-                    out.push_str(&format!("{}for (int {var} = {start}; {var} <= {end}; {var}++) {{\n", ind(indent)));
-                    for s in &f.body { emit_comb_stmt(s, ctx, out, indent + 1); }
-                    out.push_str(&format!("{}}}\n", ind(indent)));
-                }
-                ForRange::ValueList(vals) => {
-                    for v in vals {
-                        let val = cpp_expr(v, ctx);
-                        out.push_str(&format!("{}{{\n", ind(indent)));
-                        out.push_str(&format!("{}int {var} = {val};\n", ind(indent + 1)));
-                        for s in &f.body { emit_comb_stmt(s, ctx, out, indent + 1); }
-                        out.push_str(&format!("{}}}\n", ind(indent)));
-                    }
-                }
-            }
-        }
-            Stmt::Init(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => unreachable!("seq-only Stmt variant inside comb-context walker"),
-    }
+    emit_stmt(stmt, ctx, out, indent, SimAssignKind::Comb);
 }
 
+#[allow(dead_code)]
 fn emit_comb_if_else(ie: &IfElse, ctx: &Ctx, out: &mut String, indent: usize, is_chain: bool) {
-    let cond = cpp_expr(&ie.cond, ctx);
-    if is_chain {
-        out.push_str(&format!("{}}} else if ({}) {{\n", ind(indent), cond));
-    } else {
-        out.push_str(&format!("{}if ({}) {{\n", ind(indent), cond));
-    }
-    // --coverage phase 1c: same instrumentation as emit_reg_if_else for
-    // comb if/elsif/else arms. Note that comb blocks may evaluate
-    // multiple times per cycle during the settle loop — counters
-    // therefore reflect "branch entries", not "cycles where branch was
-    // active". For most arch designs the settle loop converges in 1-2
-    // iterations so this is close to the cycle count.
-    if let Some(reg) = ctx.coverage {
-        let kind = if is_chain { "elsif" } else { "if" };
-        let idx = reg.borrow_mut().alloc(kind, ie.cond.span.start, String::new());
-        out.push_str(&format!("{}  _arch_cov[{idx}]++;\n", ind(indent)));
-    }
-    emit_comb_stmts(&ie.then_stmts, ctx, out, indent + 1);
-    if ie.else_stmts.len() == 1 {
-        if let Stmt::IfElse(nested) = &ie.else_stmts[0] {
-            emit_comb_if_else(nested, ctx, out, indent, true);
-            return;
-        }
-    }
-    if !ie.else_stmts.is_empty() {
-        out.push_str(&format!("{}}} else {{\n", ind(indent)));
-        if let Some(reg) = ctx.coverage {
-            let idx = reg.borrow_mut().alloc("else", ie.span.end, String::new());
-            out.push_str(&format!("{}  _arch_cov[{idx}]++;\n", ind(indent)));
-        }
-        emit_comb_stmts(&ie.else_stmts, ctx, out, indent + 1);
-    }
-    out.push_str(&format!("{}}}\n", ind(indent)));
+    emit_if_else(ie, ctx, out, indent, is_chain, SimAssignKind::Comb);
 }
 
 fn emit_log_stmt(l: &LogStmt, ctx: &Ctx, out: &mut String, indent: usize) {

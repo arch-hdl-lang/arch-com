@@ -7004,6 +7004,54 @@ fn test_regfile_flop_default_unchanged() {
 }
 
 #[test]
+fn test_sim_codegen_comb_match_arm_recurses_into_nested_for() {
+    // Regression for the sim_codegen comb-walker shortcut bug: pre-fix,
+    // `emit_comb_stmt::Match` only emitted assigns inside arm bodies and
+    // silently dropped nested for-loops, if/else, log, and nested matches.
+    // So a comb match where one arm has a `for` would compile to a C++ sim
+    // that diverges from `arch build`'s SV output.
+    //
+    // The repro uses a `for` inside a comb match arm writing to a Vec
+    // element. The for-loop should expand to a C++ `for (...)` with a
+    // bit-indexed assignment in the body. Pre-fix, the for-loop was
+    // silently dropped and the arm emitted nothing.
+    let source = "
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+        module M
+          port sel: in UInt<2>;
+          port q:   out Vec<UInt<8>, 4>;
+          comb
+            match sel
+              0 =>
+                for i in 0..3
+                  q[i] = 8'hAA;
+                end for
+              1 =>
+                for i in 0..3
+                  q[i] = 8'hBB;
+                end for
+              _ =>
+                for i in 0..3
+                  q[i] = 8'h00;
+                end for
+            end match
+          end comb
+        end module M
+    ";
+    let cpp = compile_to_sim_h(source, false);
+    // Find the comb-eval body for module M and ensure case-0 emits the
+    // nested for-loop assigning 0xAA, not nothing.
+    let case_0_section = cpp.split("case 0:").nth(1).unwrap_or("");
+    let case_0_body = case_0_section.split("break;").next().unwrap_or("");
+    assert!(case_0_body.contains("for (int i ="),
+        "comb match arm with nested for should emit the for loop (post-fix); pre-fix the comb walker dropped it:\n{cpp}");
+    assert!(case_0_body.contains("0xAA") || case_0_body.contains("170"),
+        "for-body assign of 0xAA should reach the C++ sim:\n{cpp}");
+}
+
+#[test]
 fn test_cc_dispatch_rewrites_seq_match_scrutinee() {
     // Regression for the elaborate CC-dispatch asymmetry: the reg-block
     // walker used to skip `Stmt::Match` scrutinees (only the comb walker
