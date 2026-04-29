@@ -266,7 +266,18 @@ impl<'a> Codegen<'a> {
         if has_comb {
             self.line("always_comb begin");
             self.indent += 1;
-            // Default combinational assignments (before state case)
+            // Per-port defaults (from `port name: out T default V`). Emitted
+            // before the case so any state that doesn't assign the port
+            // still produces the declared default instead of latching.
+            for p in &f.ports {
+                if p.direction != Direction::Out { continue; }
+                if p.reg_info.is_some() { continue; }
+                if let Some(def) = &p.default {
+                    let val = self.emit_expr_str(def);
+                    self.line(&format!("{} = {};", p.name.name, val));
+                }
+            }
+            // Default combinational assignments (from explicit `default` block)
             for stmt in &f.default_comb {
                 self.emit_comb_stmt(stmt);
             }

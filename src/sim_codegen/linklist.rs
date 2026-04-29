@@ -37,13 +37,28 @@ impl<'a> SimCodegen<'a> {
             if multi_head { format!("_tail_r[{idx_expr}]") } else { "_tail_r".to_string() }
         };
 
-        let data_cpp: String = l.params.iter()
+        let data_te: Option<TypeExpr> = l.params.iter()
             .find(|p| p.name.name == "DATA")
-            .map(|p| match &p.kind {
-                crate::ast::ParamKind::Type(te) => cpp_port_type(te),
-                _ => "uint32_t".to_string(),
-            })
+            .and_then(|p| match &p.kind {
+                crate::ast::ParamKind::Type(te) => Some(te.clone()),
+                _ => None,
+            });
+        let data_cpp: String = data_te.as_ref()
+            .map(cpp_port_type)
             .unwrap_or_else(|| "uint32_t".to_string());
+
+        // Port-type emitter that resolves the `DATA` type-param to its
+        // bound type (e.g. `UInt<32>`). Without this, ports declared with
+        // type `DATA` emit literal `DATA` into generated C++, which the
+        // compiler rejects as an unknown type name.
+        let port_cpp_ty = |ty: &TypeExpr| -> String {
+            if let TypeExpr::Named(n) = ty {
+                if n.name == "DATA" {
+                    return data_cpp.clone();
+                }
+            }
+            cpp_port_type(ty)
+        };
 
         let has_doubly = matches!(l.kind, LinklistKind::Doubly | LinklistKind::CircularDoubly);
 
@@ -60,13 +75,13 @@ impl<'a> SimCodegen<'a> {
         h.push_str("  uint8_t clk;\n  uint8_t rst;\n");
         for op in &l.ops {
             for p in &op.ports {
-                h.push_str(&format!("  {} {}_{};\n", cpp_port_type(&p.ty), op.name.name, p.name.name));
+                h.push_str(&format!("  {} {}_{};\n", port_cpp_ty(&p.ty), op.name.name, p.name.name));
             }
         }
         for p in &l.ports {
             match p.name.name.as_str() {
                 "clk" | "rst" => {}
-                _ => { h.push_str(&format!("  {} {};\n", cpp_port_type(&p.ty), p.name.name)); }
+                _ => { h.push_str(&format!("  {} {};\n", port_cpp_ty(&p.ty), p.name.name)); }
             }
         }
         h.push('\n');
@@ -149,7 +164,7 @@ impl<'a> SimCodegen<'a> {
                 h.push_str(&format!("  uint8_t _ctrl_{on}_resp_v;\n"));
             }
             for p in op.ports.iter().filter(|p| is_out_data(p)) {
-                h.push_str(&format!("  {} _ctrl_{on}_{};\n", cpp_port_type(&p.ty), p.name.name));
+                h.push_str(&format!("  {} _ctrl_{on}_{};\n", port_cpp_ty(&p.ty), p.name.name));
             }
             if on == "delete_head" || on == "delete" {
                 h.push_str(&format!("  uint8_t _ctrl_{on}_slot;\n"));
@@ -168,13 +183,14 @@ impl<'a> SimCodegen<'a> {
         // ── Implementation ────────────────────────────────────────────────────
         let mut cpp = String::new();
         cpp.push_str(&format!("#include \"{class}.h\"\n\n"));
+        // eval(): edge detection lives inside eval_posedge() so that when
+        // a parent module calls _inst_q.eval_posedge() directly, the
+        // sub-instance still gates correctly on its own clock edge.
         cpp.push_str(&format!(
             "void {class}::eval() {{\n\
              \n  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n\
              \n    trace_open(Verilated::traceFile());\n\
-             \n  bool _rising = (clk && !_clk_prev);\n\
-             \n  _clk_prev = clk;\n\
-             \n  if (_rising) eval_posedge();\n\
+             \n  eval_posedge();\n\
              \n  eval_comb();\n\
              \n  if (_trace_fp) trace_dump(_trace_time++);\n}}\n\n"
         ));
@@ -222,6 +238,12 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str("}\n\n");
 
         cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
+        // Rising-edge gate: parent modules call eval_posedge() directly on
+        // each of their eval() invocations, so the inst must detect its own
+        // clock edge here (not in eval()).
+        cpp.push_str("  bool _rising = (clk && !_clk_prev);\n");
+        cpp.push_str("  _clk_prev = clk;\n");
+        cpp.push_str("  if (!_rising) return;\n");
         cpp.push_str("  if (rst) {\n");
         cpp.push_str(&format!("    for (int _i = 0; _i < {depth}; _i++) _fl_mem[_i] = (uint8_t)_i;\n"));
         cpp.push_str("    _fl_rdp = 0; _fl_wrp = 0;\n");

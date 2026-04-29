@@ -4908,7 +4908,15 @@ impl<'a> SimCodegen<'a> {
                 cpp.push_str("  }\n");
             }
 
-            // pipe_reg chain assignments — write to _n_ temporaries (before commit)
+            // pipe_reg chain assignments — write to _n_ temporaries (before commit).
+            // Gate on the primary clock's rising edge so stages advance once per
+            // clock cycle, not per eval() call.
+            let pipe_reg_clk = all_clks.first().cloned();
+            if !pipe_regs.is_empty() {
+                if let Some(clk) = &pipe_reg_clk {
+                    cpp.push_str(&format!("  if (_rising_{clk}) {{\n"));
+                }
+            }
             {
                 let rst_info = m.ports.iter()
                     .find(|p| matches!(&p.ty, TypeExpr::Reset(..)))
@@ -4954,6 +4962,9 @@ impl<'a> SimCodegen<'a> {
                         }
                     }
                 }
+            }
+            if !pipe_regs.is_empty() && pipe_reg_clk.is_some() {
+                cpp.push_str("  }\n");
             }
 
             // --debug-fsm: save old state values before commit
@@ -5756,6 +5767,18 @@ impl<'a> SimCodegen<'a> {
         let has_clear  = c.ports.iter().any(|p| p.name.name == "clear");
         let has_at_max = c.ports.iter().any(|p| p.name.name == "at_max");
         let has_at_min = c.ports.iter().any(|p| p.name.name == "at_min");
+        let has_max_port = c.ports.iter().any(|p| p.name.name == "max");
+        // Resolve the wrap/saturate boundary expression: port `max` takes
+        // precedence (runtime-programmable), then the `param MAX = N`
+        // compile-time form, falling back to all-ones for the count width.
+        let bound_expr: String = if has_max_port {
+            format!("({count_ty})max")
+        } else if let Some(m) = max_param {
+            format!("({count_ty}){m}")
+        } else {
+            let all_ones = (1u64 << count_bits) - 1;
+            format!("({count_ty})0x{all_ones:X}ULL")
+        };
 
         let (rst_name, _is_async, is_low) = extract_reset_info(&c.ports);
         let rst_cond = if is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
@@ -5806,34 +5829,21 @@ impl<'a> SimCodegen<'a> {
             (Up, Wrap) => {
                 let inc_cond = if has_inc { "    if (inc) {" } else { "    {" };
                 cpp.push_str(&format!("{inc_cond}\n"));
-                if let Some(max) = max_param {
-                    cpp.push_str(&format!("      if (_count_r == ({count_ty}){max}) _n = {init_val};\n"));
-                    cpp.push_str("      else _n = _count_r + 1;\n");
-                } else {
-                    cpp.push_str(&format!("      _n = ({count_ty})(_count_r + 1);\n"));
-                }
+                cpp.push_str(&format!("      if (_count_r == {bound_expr}) _n = {init_val};\n"));
+                cpp.push_str("      else _n = _count_r + 1;\n");
                 cpp.push_str("    }\n");
             }
             (Down, Wrap) => {
                 let dec_cond = if has_dec { "    if (dec) {" } else { "    {" };
                 cpp.push_str(&format!("{dec_cond}\n"));
-                if let Some(max) = max_param {
-                    cpp.push_str(&format!("      if (_count_r == {init_val}) _n = ({count_ty}){max};\n"));
-                    cpp.push_str("      else _n = _count_r - 1;\n");
-                } else {
-                    cpp.push_str(&format!("      _n = ({count_ty})(_count_r - 1);\n"));
-                }
+                cpp.push_str(&format!("      if (_count_r == {init_val}) _n = {bound_expr};\n"));
+                cpp.push_str("      else _n = _count_r - 1;\n");
                 cpp.push_str("    }\n");
             }
             (Up, Saturate) => {
                 let inc_cond = if has_inc { "    if (inc) {" } else { "    {" };
                 cpp.push_str(&format!("{inc_cond}\n"));
-                if let Some(max) = max_param {
-                    cpp.push_str(&format!("      if (_count_r < ({count_ty}){max}) _n = _count_r + 1;\n"));
-                } else {
-                    let max_val = (1u64 << count_bits) - 1;
-                    cpp.push_str(&format!("      if (_count_r < ({count_ty})0x{max_val:X}ULL) _n = _count_r + 1;\n"));
-                }
+                cpp.push_str(&format!("      if (_count_r < {bound_expr}) _n = _count_r + 1;\n"));
                 cpp.push_str("    }\n");
             }
             (Down, Saturate) => {
@@ -5872,12 +5882,7 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
         if value_port.is_some() { cpp.push_str("  value = _count_r;\n"); }
         if has_at_max {
-            if let Some(max) = max_param {
-                cpp.push_str(&format!("  at_max = (_count_r == ({count_ty}){max}) ? 1 : 0;\n"));
-            } else {
-                let all_ones = (1u64 << count_bits) - 1;
-                cpp.push_str(&format!("  at_max = (_count_r == 0x{all_ones:X}ULL) ? 1 : 0;\n"));
-            }
+            cpp.push_str(&format!("  at_max = (_count_r == {bound_expr}) ? 1 : 0;\n"));
         }
         if has_at_min {
             cpp.push_str(&format!("  at_min = (_count_r == {init_val}) ? 1 : 0;\n"));

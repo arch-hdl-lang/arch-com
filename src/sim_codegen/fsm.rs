@@ -397,7 +397,20 @@ impl<'a> SimCodegen<'a> {
             let val = cpp_expr(&lb.value, &ctx_fsm);
             cpp.push_str(&format!("  {} = {};\n", lb.name.name, val));
         }
-        // Default combinational assignments
+        // Per-port default assignments (from `port name: out T default V`).
+        // These run before the per-state switch so any state that doesn't
+        // explicitly assign the port still produces the declared default
+        // instead of holding the previous cycle's value.
+        for p in &f.ports {
+            if p.direction != Direction::Out { continue; }
+            // Skip port reg (registered output, driven in seq, not comb).
+            if p.reg_info.is_some() { continue; }
+            if let Some(def) = &p.default {
+                let val = cpp_expr(def, &ctx_fsm);
+                cpp.push_str(&format!("  {} = {};\n", p.name.name, val));
+            }
+        }
+        // Default combinational assignments (from `default ... end default` block).
         {
             let mut body = String::new();
             emit_comb_stmts(&f.default_comb, &ctx_fsm, &mut body, 1);

@@ -3785,9 +3785,18 @@ impl Parser {
                 Some(TokenKind::Port) => ports.push(self.parse_port_decl()?),
                 Some(TokenKind::Kind) => {
                     self.advance();
-                    let val = self.expect_ident()?;
+                    // `handshake` is also lexed as its own keyword token
+                    // (used in legacy bus handshake-channel blocks), so
+                    // accept either an Ident or that specific keyword here.
+                    let (kind_name, kind_span) = if self.check(TokenKind::Handshake) {
+                        let tok = self.advance();
+                        ("handshake".to_string(), tok.span)
+                    } else {
+                        let val = self.expect_ident()?;
+                        (val.name, val.span)
+                    };
                     self.expect(TokenKind::Semi)?;
-                    kind = Some(match val.name.as_str() {
+                    kind = Some(match kind_name.as_str() {
                         "ff" => SyncKind::Ff,
                         "gray" => SyncKind::Gray,
                         "handshake" => SyncKind::Handshake,
@@ -3795,7 +3804,7 @@ impl Parser {
                         "pulse" => SyncKind::Pulse,
                         other => return Err(CompileError::general(
                             &format!("unknown synchronizer kind `{other}`; expected ff, gray, handshake, reset, or pulse"),
-                            val.span,
+                            kind_span,
                         )),
                     });
                 }

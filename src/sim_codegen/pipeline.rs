@@ -72,6 +72,109 @@ impl<'a> SimCodegen<'a> {
             widths.insert(pt.name.name.clone(), type_bits_te(&pt.ty));
         }
 
+        // ── Collect implicit wires (comb-block LHS targets + inst output
+        // connection targets that aren't ports/regs/lets). These need to
+        // be declared as members so eval_comb-emitted writes and seq-block
+        // reads both compile. Type is inferred by walking the stage body
+        // to find a consumer register or matching sub-port type.
+        struct ImplicitWire { name: String, prefixed: String, ty_cpp: String, bits: u32 }
+        let mut implicit_wires: Vec<Vec<ImplicitWire>> = Vec::new();
+        for (si, stage) in p.stages.iter().enumerate() {
+            let prefix = &stage_prefixes[si];
+            let mut wires: Vec<ImplicitWire> = Vec::new();
+            // Helper: find a consumer reg's TypeExpr (e.g. `alu_result <= alu_out`).
+            let consumer_ty = |target: &str| -> Option<TypeExpr> {
+                for it in &stage.body {
+                    if let ModuleBodyItem::RegBlock(rb) = it {
+                        for stmt in &rb.stmts {
+                            if let Stmt::Assign(a) = stmt {
+                                if let ExprKind::Ident(rhs) = &a.value.kind {
+                                    if rhs == target {
+                                        if let ExprKind::Ident(lhs) = &a.target.kind {
+                                            for it2 in &stage.body {
+                                                if let ModuleBodyItem::RegDecl(r) = it2 {
+                                                    if r.name.name == *lhs { return Some(r.ty.clone()); }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                None
+            };
+            // Pass 1: comb-block LHS targets.
+            fn walk_comb_targets(stmts: &[Stmt], out: &mut Vec<String>) {
+                for s in stmts {
+                    match s {
+                        Stmt::Assign(a) => {
+                            if let ExprKind::Ident(n) = &a.target.kind { out.push(n.clone()); }
+                        }
+                        Stmt::IfElse(ie) => {
+                            walk_comb_targets(&ie.then_stmts, out);
+                            walk_comb_targets(&ie.else_stmts, out);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let is_known = |n: &str, wires: &Vec<ImplicitWire>| -> bool {
+                port_names.contains(n)
+                    || stage_reg_names[si].contains(n)
+                    || wires.iter().any(|w| w.name == n)
+            };
+            for it in &stage.body {
+                if let ModuleBodyItem::CombBlock(cb) = it {
+                    let mut targets = Vec::new();
+                    walk_comb_targets(&cb.stmts, &mut targets);
+                    for t in targets {
+                        if is_known(&t, &wires) { continue; }
+                        let ty_te = consumer_ty(&t).unwrap_or(TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(32)), p.span))));
+                        let bits = type_bits_te(&ty_te);
+                        let ty_cpp = cpp_internal_type(&ty_te);
+                        wires.push(ImplicitWire { name: t.clone(), prefixed: format!("{prefix}_{t}"), ty_cpp, bits });
+                    }
+                }
+            }
+            // Pass 2: inst-output connection targets.
+            for it in &stage.body {
+                if let ModuleBodyItem::Inst(inst) = it {
+                    let sub_ports = self.lookup_inst_ports(&inst.module_name.name);
+                    for conn in &inst.connections {
+                        if conn.direction != ConnectDir::Output { continue; }
+                        let ExprKind::Ident(target) = &conn.signal.kind else { continue; };
+                        if is_known(target, &wires) { continue; }
+                        // Type from sub-module's matching port, fall back to consumer reg.
+                        let ty_te = sub_ports.iter()
+                            .find(|p| p.name.name == conn.port_name.name)
+                            .map(|p| p.ty.clone())
+                            .or_else(|| consumer_ty(target))
+                            .unwrap_or(TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(32)), p.span))));
+                        let bits = type_bits_te(&ty_te);
+                        let ty_cpp = cpp_internal_type(&ty_te);
+                        wires.push(ImplicitWire { name: target.clone(), prefixed: format!("{prefix}_{target}"), ty_cpp, bits });
+                    }
+                }
+            }
+            implicit_wires.push(wires);
+        }
+        // Register implicit wires in name-resolution sets so reads/writes
+        // resolve to `<prefix>_<name>` (matching the let-binding convention).
+        for (si, wires) in implicit_wires.iter().enumerate() {
+            for w in wires {
+                stage_reg_names[si].insert(w.name.clone());
+                let_names.insert(w.prefixed.clone());
+                widths.insert(w.prefixed.clone(), w.bits);
+            }
+        }
+
+        // Collect insts per stage for codegen.
+        let stage_insts: Vec<Vec<&InstDecl>> = p.stages.iter()
+            .map(|s| s.body.iter().filter_map(|it| if let ModuleBodyItem::Inst(i) = it { Some(i) } else { None }).collect())
+            .collect();
+
         let (rst_name, _is_async, is_low) = extract_reset_info(&p.ports);
         let rst_cond = if is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
         let clk_name = p.ports.iter()
@@ -81,7 +184,17 @@ impl<'a> SimCodegen<'a> {
 
         // ── Header ──
         let mut h = String::new();
-        h.push_str("#pragma once\n#include <cstdint>\n#include <cstdio>\n#include \"verilated.h\"\n\n");
+        h.push_str("#pragma once\n#include <cstdint>\n#include <cstdio>\n#include \"verilated.h\"\n");
+        // Include sub-module headers for any insts inside stages.
+        let mut included: HashSet<String> = HashSet::new();
+        for stage_list in &stage_insts {
+            for inst in stage_list {
+                if included.insert(inst.module_name.name.clone()) {
+                    h.push_str(&format!("#include \"V{}.h\"\n", inst.module_name.name));
+                }
+            }
+        }
+        h.push('\n');
         for param in &p.params {
             if matches!(param.kind, ParamKind::Const | ParamKind::WidthConst(..)) {
                 if let Some(ref def) = param.default {
@@ -101,6 +214,9 @@ impl<'a> SimCodegen<'a> {
         inits.push("_clk_prev(0)".to_string());
         for sr in &all_regs { if !sr.is_let { inits.push(format!("_{}(0)", sr.prefixed)); } }
         for prefix in &stage_prefixes { inits.push(format!("_{}_valid_r(0)", prefix)); }
+        for stage_wires in &implicit_wires {
+            for w in stage_wires { inits.push(format!("{}(0)", w.prefixed)); }
+        }
         h.push_str(&format!("  {class}() : {} {{}}\n\n", inits.join(", ")));
 
         h.push_str("  void eval();\n  void eval_posedge();\n  void eval_comb();\n");
@@ -111,6 +227,18 @@ impl<'a> SimCodegen<'a> {
         h.push_str("  uint8_t _clk_prev;\n");
         for sr in &all_regs { if !sr.is_let { h.push_str(&format!("  {} _{};\n", sr.ty, sr.prefixed)); } }
         for prefix in &stage_prefixes { h.push_str(&format!("  uint8_t _{}_valid_r;\n", prefix)); }
+        // Implicit wires (comb-block LHS targets and inst-output drivers).
+        for stage_wires in &implicit_wires {
+            for w in stage_wires {
+                h.push_str(&format!("  {} {};\n", w.ty_cpp, w.prefixed));
+            }
+        }
+        // Sub-instance members (one per inst inside any stage).
+        for stage_list in &stage_insts {
+            for inst in stage_list {
+                h.push_str(&format!("  V{} _inst_{};\n", inst.module_name.name, inst.name.name));
+            }
+        }
         h.push_str("};\n");
 
         // ── Implementation ──
@@ -202,6 +330,38 @@ impl<'a> SimCodegen<'a> {
                             self.emit_pipeline_sim_comb_stmt(&mut cpp, stmt, prefix, si,
                                 &stage_names, &stage_prefixes, &stage_reg_names,
                                 &port_names, &reg_names, &let_names, &widths, &_enum_map, 2);
+                        }
+                    }
+                    ModuleBodyItem::Inst(inst) => {
+                        let sub_ports = self.lookup_inst_ports(&inst.module_name.name);
+                        // Inputs first.
+                        for conn in &inst.connections {
+                            if conn.direction != ConnectDir::Input { continue; }
+                            let val = self.pipeline_sim_expr(&conn.signal, prefix, si,
+                                &stage_names, &stage_prefixes, &stage_reg_names,
+                                &port_names, &reg_names, &let_names, &widths, &_enum_map);
+                            cpp.push_str(&format!("  _inst_{}.{} = {val};\n",
+                                inst.name.name, conn.port_name.name));
+                        }
+                        // Eval the sub-instance.
+                        cpp.push_str(&format!("  _inst_{}.eval();\n", inst.name.name));
+                        // Outputs to driver wires.
+                        for conn in &inst.connections {
+                            if conn.direction != ConnectDir::Output { continue; }
+                            let ExprKind::Ident(target) = &conn.signal.kind else { continue; };
+                            let lhs = if port_names.contains(target) {
+                                target.clone()
+                            } else {
+                                format!("{}_{}", prefix, target)
+                            };
+                            // Mask to match the implicit-wire width when narrower than 64.
+                            let bits = sub_ports.iter().find(|p| p.name.name == conn.port_name.name)
+                                .map(|p| type_bits_te(&p.ty)).unwrap_or(32);
+                            let mask = if bits > 0 && bits < 64 {
+                                format!(" & 0x{:X}ULL", (1u64 << bits) - 1)
+                            } else { String::new() };
+                            cpp.push_str(&format!("  {lhs} = (_inst_{}.{}){mask};\n",
+                                inst.name.name, conn.port_name.name));
                         }
                     }
                     _ => {}

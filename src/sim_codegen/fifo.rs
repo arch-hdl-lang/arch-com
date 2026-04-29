@@ -64,7 +64,21 @@ impl<'a> SimCodegen<'a> {
             if !port_names.contains("full") { port_inits.push("full(0)".to_string()); }
             if !port_names.contains("empty") { port_inits.push("empty(1)".to_string()); }
         }
-        port_inits.push("_clk_prev(0)".to_string());
+        // Detect dual-clock (async FIFO): wr_clk + rd_clk on different
+        // domains. Single-clock case keeps the original `_clk_prev` member.
+        let clk_ports: Vec<&str> = f.ports.iter()
+            .filter(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            .map(|p| p.name.name.as_str())
+            .collect();
+        let is_async = clk_ports.len() >= 2
+            && clk_ports.iter().any(|n| *n == "wr_clk")
+            && clk_ports.iter().any(|n| *n == "rd_clk");
+        if is_async {
+            port_inits.push("_clk_prev_wr(0)".to_string());
+            port_inits.push("_clk_prev_rd(0)".to_string());
+        } else {
+            port_inits.push("_clk_prev(0)".to_string());
+        }
         if is_lifo {
             port_inits.push("_sp(0)".to_string());
         } else {
@@ -75,9 +89,16 @@ impl<'a> SimCodegen<'a> {
             port_inits.join(", ")));
         h.push_str(&format!("  explicit {class}(VerilatedContext*) : {class}() {{}}\n"));
         h.push_str("  void eval();\n  void eval_posedge();\n  void eval_comb();\n");
+        if is_async {
+            h.push_str("  void eval_posedge_dual(bool _wr_rising, bool _rd_rising);\n");
+        }
         h.push_str("  void final() { trace_close(); }\n");
         h.push_str("private:\n");
-        h.push_str("  uint8_t _clk_prev;\n");
+        if is_async {
+            h.push_str("  uint8_t _clk_prev_wr;\n  uint8_t _clk_prev_rd;\n");
+        } else {
+            h.push_str("  uint8_t _clk_prev;\n");
+        }
         if is_lifo {
             h.push_str("  uint32_t _sp;\n");
         } else {
@@ -100,37 +121,67 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("void {class}::eval() {{\n"));
         cpp.push_str("  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n");
         cpp.push_str("    trace_open(Verilated::traceFile());\n");
-        cpp.push_str(&format!("  if ({clk_port} && !_clk_prev) eval_posedge();\n"));
-        cpp.push_str(&format!("  _clk_prev = {clk_port};\n"));
+        if is_async {
+            // Async FIFO: independent edge detection per side. Push side
+            // clocks on wr_clk; pop side clocks on rd_clk. We do not model
+            // gray-code pointer synchroniser delay — sim is 2-state and
+            // same-tick, so the synth-level CDC settles in zero time here.
+            cpp.push_str("  bool _wr_rising = (wr_clk && !_clk_prev_wr);\n");
+            cpp.push_str("  bool _rd_rising = (rd_clk && !_clk_prev_rd);\n");
+            cpp.push_str("  _clk_prev_wr = wr_clk;\n");
+            cpp.push_str("  _clk_prev_rd = rd_clk;\n");
+            cpp.push_str("  if (_wr_rising || _rd_rising) eval_posedge_dual(_wr_rising, _rd_rising);\n");
+        } else {
+            cpp.push_str(&format!("  if ({clk_port} && !_clk_prev) eval_posedge();\n"));
+            cpp.push_str(&format!("  _clk_prev = {clk_port};\n"));
+        }
         cpp.push_str("  eval_comb();\n");
         cpp.push_str("  if (_trace_fp) trace_dump(_trace_time++);\n");
         cpp.push_str("}\n\n");
 
-        // eval_posedge()
-        cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
-        cpp.push_str(&format!("  if ({rst_cond}) {{\n"));
-        if is_lifo {
-            cpp.push_str("    _sp = 0;\n");
-        } else {
+        if is_async {
+            // Dual-clock posedge handler: split push/pop sides cleanly.
+            cpp.push_str(&format!("void {class}::eval_posedge_dual(bool _wr_rising, bool _rd_rising) {{\n"));
+            cpp.push_str(&format!("  if ({rst_cond}) {{\n"));
             cpp.push_str("    _wr_ptr = 0; _rd_ptr = 0;\n");
-        }
-        cpp.push_str("  } else {\n");
-        if is_lifo {
-            cpp.push_str("    if (push_valid && push_ready) {\n");
-            cpp.push_str(&format!("      _mem[_sp % {depth}] = push_data;\n"));
-            cpp.push_str("      _sp++;\n    }\n");
-            cpp.push_str("    if (pop_ready && pop_valid) {\n");
-            cpp.push_str("      if (_sp > 0) _sp--;\n    }\n");
+            cpp.push_str("    return;\n  }\n");
+            cpp.push_str("  if (_wr_rising && push_valid && push_ready) {\n");
+            cpp.push_str(&format!("    _mem[_wr_ptr % {depth}] = push_data;\n"));
+            cpp.push_str("    _wr_ptr++;\n");
+            cpp.push_str(&format!("    if (_wr_ptr >= 2u * {depth}) _wr_ptr = 0;\n  }}\n"));
+            cpp.push_str("  if (_rd_rising && pop_ready && pop_valid) {\n");
+            cpp.push_str("    _rd_ptr++;\n");
+            cpp.push_str(&format!("    if (_rd_ptr >= 2u * {depth}) _rd_ptr = 0;\n  }}\n"));
+            cpp.push_str("}\n\n");
+            // Keep the standard eval_posedge symbol for ABI parity (unused).
+            cpp.push_str(&format!("void {class}::eval_posedge() {{}}\n\n"));
         } else {
-            cpp.push_str("    if (push_valid && push_ready) {\n");
-            cpp.push_str(&format!("      _mem[_wr_ptr % {depth}] = push_data;\n"));
-            cpp.push_str("      _wr_ptr++;\n");
-            cpp.push_str(&format!("      if (_wr_ptr >= 2u * {depth}) _wr_ptr = 0;\n    }}\n"));
-            cpp.push_str("    if (pop_ready && pop_valid) {\n");
-            cpp.push_str("      _rd_ptr++;\n");
-            cpp.push_str(&format!("      if (_rd_ptr >= 2u * {depth}) _rd_ptr = 0;\n    }}\n"));
+            // eval_posedge() — single-clock path.
+            cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
+            cpp.push_str(&format!("  if ({rst_cond}) {{\n"));
+            if is_lifo {
+                cpp.push_str("    _sp = 0;\n");
+            } else {
+                cpp.push_str("    _wr_ptr = 0; _rd_ptr = 0;\n");
+            }
+            cpp.push_str("  } else {\n");
+            if is_lifo {
+                cpp.push_str("    if (push_valid && push_ready) {\n");
+                cpp.push_str(&format!("      _mem[_sp % {depth}] = push_data;\n"));
+                cpp.push_str("      _sp++;\n    }\n");
+                cpp.push_str("    if (pop_ready && pop_valid) {\n");
+                cpp.push_str("      if (_sp > 0) _sp--;\n    }\n");
+            } else {
+                cpp.push_str("    if (push_valid && push_ready) {\n");
+                cpp.push_str(&format!("      _mem[_wr_ptr % {depth}] = push_data;\n"));
+                cpp.push_str("      _wr_ptr++;\n");
+                cpp.push_str(&format!("      if (_wr_ptr >= 2u * {depth}) _wr_ptr = 0;\n    }}\n"));
+                cpp.push_str("    if (pop_ready && pop_valid) {\n");
+                cpp.push_str("      _rd_ptr++;\n");
+                cpp.push_str(&format!("      if (_rd_ptr >= 2u * {depth}) _rd_ptr = 0;\n    }}\n"));
+            }
+            cpp.push_str("  }\n}\n\n");
         }
-        cpp.push_str("  }\n}\n\n");
 
         // eval_comb()
         cpp.push_str(&format!("void {class}::eval_comb() {{\n"));
