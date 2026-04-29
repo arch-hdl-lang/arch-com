@@ -249,24 +249,20 @@ impl<'a> SimCodegen<'a> {
         };
 
         for item in &self.source.items {
-            match item {
-                Item::Module(m)      => models.push(self.gen_module(
+            // Module is special — it needs the debug-module set passed
+            // through so each emitted class can wire its own debug
+            // instrumentation. All other sim-emitting constructs go
+            // through the uniform `Construct::emit_sim` dispatch, which
+            // returns `Some(model)` for the 11 sim-emitting variants
+            // and `None` for the rest.
+            if let Item::Module(m) = item {
+                models.push(self.gen_module(
                     m,
                     debug_module_set.contains(m.name.name.as_str()),
                     &debug_module_set,
-                )),
-                Item::Counter(c)     => models.push(self.gen_counter(c)),
-                Item::Fsm(f)         => models.push(self.gen_fsm(f)),
-                Item::Regfile(r)     => models.push(self.gen_regfile(r)),
-                Item::Linklist(l)    => models.push(self.gen_linklist(l)),
-                Item::Ram(r)         => models.push(self.gen_ram(r)),
-                Item::Cam(c)         => models.push(self.gen_cam(c)),
-                Item::Synchronizer(s) => models.push(self.gen_synchronizer(s)),
-                Item::Clkgate(c)     => models.push(self.gen_clkgate(c)),
-                Item::Fifo(f)        => models.push(self.gen_fifo(f)),
-                Item::Arbiter(a)     => models.push(self.gen_arbiter(a)),
-                Item::Pipeline(p)    => models.push(self.gen_pipeline(p)),
-                _ => {}
+                ));
+            } else if let Some(model) = item.as_construct().emit_sim(self) {
+                models.push(model);
             }
         }
         models
@@ -3360,7 +3356,7 @@ impl<'a> SimCodegen<'a> {
         Vec::new()
     }
 
-    fn gen_module(&self, m: &ModuleDecl, emit_debug: bool, debug_module_set: &std::collections::HashSet<String>) -> SimModel {
+    pub(crate) fn gen_module(&self, m: &ModuleDecl, emit_debug: bool, debug_module_set: &std::collections::HashSet<String>) -> SimModel {
         let name = &m.name.name;
         let class = format!("V{name}");
         let enum_map = build_enum_map(self.symbols);
@@ -5737,7 +5733,7 @@ impl<'a> SimCodegen<'a> {
 // ── Counter codegen ───────────────────────────────────────────────────────────
 
 impl<'a> SimCodegen<'a> {
-    fn gen_counter(&self, c: &CounterDecl) -> SimModel {
+    pub(crate) fn gen_counter(&self, c: &CounterDecl) -> SimModel {
         let name = &c.name.name;
         let class = format!("V{name}");
 
@@ -5903,7 +5899,7 @@ impl<'a> SimCodegen<'a> {
 // ── Regfile codegen ───────────────────────────────────────────────────────────
 
 impl<'a> SimCodegen<'a> {
-    fn gen_regfile(&self, r: &RegfileDecl) -> SimModel {
+    pub(crate) fn gen_regfile(&self, r: &RegfileDecl) -> SimModel {
         let name  = &r.name.name;
         let class = format!("V{name}");
 
@@ -6078,7 +6074,7 @@ impl<'a> SimCodegen<'a> {
     }
 
 
-    fn gen_synchronizer(&self, s: &crate::ast::SynchronizerDecl) -> SimModel {
+    pub(crate) fn gen_synchronizer(&self, s: &crate::ast::SynchronizerDecl) -> SimModel {
         use crate::ast::SyncKind;
 
         let class = s.name.name.clone();
@@ -6306,7 +6302,7 @@ impl<'a> SimCodegen<'a> {
         SimModel { class_name: class, header: h, impl_: cpp }
     }
 
-    fn gen_clkgate(&self, c: &crate::ast::ClkGateDecl) -> SimModel {
+    pub(crate) fn gen_clkgate(&self, c: &crate::ast::ClkGateDecl) -> SimModel {
         let class = format!("V{}", c.name.name);
 
         let clk_in = c.ports.iter().find(|p| matches!(&p.ty, TypeExpr::Clock(_)) && p.direction == Direction::In)
@@ -6488,7 +6484,7 @@ impl<'a> SimCodegen<'a> {
     }
 
 
-    fn gen_arbiter(&self, a: &ArbiterDecl) -> SimModel {
+    pub(crate) fn gen_arbiter(&self, a: &ArbiterDecl) -> SimModel {
         let name = &a.name.name;
         let class = format!("V{name}");
 

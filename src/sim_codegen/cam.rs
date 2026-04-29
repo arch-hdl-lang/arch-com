@@ -9,7 +9,7 @@ use super::{SimCodegen, SimModel};
 use super::*;
 
 impl<'a> SimCodegen<'a> {
-    pub(super) fn gen_cam(&self, c: &CamDecl) -> SimModel {
+    pub(crate) fn gen_cam(&self, c: &CamDecl) -> SimModel {
         let name = &c.name.name;
         let class = format!("V{name}");
 

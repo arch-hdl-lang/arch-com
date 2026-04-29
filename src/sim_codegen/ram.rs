@@ -9,7 +9,7 @@ use super::{SimCodegen, SimModel};
 use super::*;
 
 impl<'a> SimCodegen<'a> {
-    pub(super) fn gen_ram(&self, r: &RamDecl) -> SimModel {
+    pub(crate) fn gen_ram(&self, r: &RamDecl) -> SimModel {
         let name = &r.name.name;
         let class = format!("V{name}");
 
