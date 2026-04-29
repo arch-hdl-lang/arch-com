@@ -5947,30 +5947,12 @@ impl<'a> SimCodegen<'a> {
 
 impl<'a> SimCodegen<'a> {
     fn gen_regfile(&self, r: &RegfileDecl) -> SimModel {
-        use crate::ast::{ExprKind, LitKind};
-
         let name  = &r.name.name;
         let class = format!("V{name}");
 
-        // Resolve a param by name to its default integer value
-        let param_int = |pname: &str, default: u64| -> u64 {
-            r.params.iter()
-                .find(|p| p.name.name == pname)
-                .and_then(|p| p.default.as_ref())
-                .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(*v) } else { None })
-                .unwrap_or(default)
-        };
-        let resolve_count = |expr: &Expr| -> u64 {
-            match &expr.kind {
-                ExprKind::Literal(LitKind::Dec(v)) => *v,
-                ExprKind::Ident(n) => param_int(n, 1),
-                _ => 1,
-            }
-        };
-
-        let nregs  = param_int("NREGS", 32) as usize;
-        let nread  = r.read_ports.as_ref().map(|rp| resolve_count(&rp.count_expr)).unwrap_or(1) as usize;
-        let nwrite = r.write_ports.as_ref().map(|wp| resolve_count(&wp.count_expr)).unwrap_or(1) as usize;
+        let nregs  = r.param_int("NREGS", 32) as usize;
+        let nread  = r.read_ports.as_ref().map(|rp| r.resolve_count_expr(&rp.count_expr)).unwrap_or(1) as usize;
+        let nwrite = r.write_ports.as_ref().map(|wp| r.resolve_count_expr(&wp.count_expr)).unwrap_or(1) as usize;
 
         // C++ type for one register element (from the write data signal type)
         let elem_cpp = r.write_ports.as_ref()

@@ -6,19 +6,12 @@ use super::*;
 
 impl<'a> SimCodegen<'a> {
     pub(super) fn gen_linklist(&self, l: &crate::ast::LinklistDecl) -> SimModel {
-        use crate::ast::{ExprKind, LitKind, LinklistKind, Direction};
+        use crate::ast::{LinklistKind, Direction};
 
         let name  = &l.name.name;
         let class = format!("V{name}");
 
-        let param_int = |pname: &str, default: u64| -> u64 {
-            l.params.iter()
-                .find(|p| p.name.name == pname)
-                .and_then(|p| p.default.as_ref())
-                .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(*v) } else { None })
-                .unwrap_or(default)
-        };
-        let depth = param_int("DEPTH", 8) as usize;
+        let depth = l.param_int("DEPTH", 8) as usize;
         let handle_mask = (1u64 << crate::width::clog2(depth as u64)) - 1;
         let cnt_mask    = (1u64 << crate::width::clog2((depth + 1) as u64)) - 1;
 
