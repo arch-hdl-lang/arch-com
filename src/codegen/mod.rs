@@ -3357,6 +3357,31 @@ impl<'a> Codegen<'a> {
         (type_str, String::new())
     }
 
+    /// Emit `Vec<T,N>` as an SV **unpacked** array at port boundaries:
+    /// base type is the element type (e.g. `logic [W-1:0]`); array
+    /// dimensions go in the suffix after the port name (e.g. `[N-1:0]`).
+    ///
+    /// Used only for ports declared with the `unpacked` modifier. Caller
+    /// is responsible for restricting this to port emission — unpacked
+    /// arrays are fine in Verilator but Yosys-unfriendly in synthesis,
+    /// so all internal nets/regs/signals continue to use the packed shape
+    /// from `emit_type_and_array_suffix`.
+    fn emit_type_and_unpacked_suffix(&self, ty: &TypeExpr) -> (String, String) {
+        let mut dims = Vec::new();
+        let mut cur = ty;
+        while let TypeExpr::Vec(inner, size) = cur {
+            let range = self.emit_width_range(size);
+            dims.push(format!("[{range}]"));
+            cur = inner;
+        }
+        if dims.is_empty() {
+            return (self.emit_type_str(ty), String::new());
+        }
+        let base_ty = self.emit_type_str(cur);
+        let suffix: String = dims.iter().map(|d| format!(" {d}")).collect();
+        (base_ty, suffix)
+    }
+
     // ── Synchronizer ─────────────────────────────────────────────────────────
     // ── RAM ───────────────────────────────────────────────────────────────────
 

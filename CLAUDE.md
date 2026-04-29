@@ -178,6 +178,7 @@ keyword Name
   param NAME: type = SomeType;
   port name: in TypeExpr;
   port name: out TypeExpr;
+  port name: in unpacked Vec<T, N>;       // SV unpacked-array port (interop hatch)
   socket name: initiator InterfaceName;   // TLM
   socket name: target InterfaceName;      // TLM
   generate for i in 0..N-1 ... end generate for i

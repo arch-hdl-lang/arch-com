@@ -315,6 +315,8 @@ module Name
   port rst: in Reset<Sync>;
   port a:   in UInt<W>;
   port y:   out UInt<W>;
+  port v:   in unpacked Vec<UInt<8>, 4>;  // SV unpacked-array port (interop hatch);
+                                          // default Vec<T,N> ports emit packed multi-dim.
 
   reg default: reset rst => 0;           // wildcard default for all regs
   reg r: UInt<W>;                        // inherits reset from default

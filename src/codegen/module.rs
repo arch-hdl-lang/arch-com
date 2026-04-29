@@ -130,14 +130,23 @@ impl<'a> Codegen<'a> {
                     Direction::In => "input",
                     Direction::Out => "output",
                 };
-                // Vec types: emit unpacked array dimensions after the port name
+                // Vec types: default emission is packed multi-dim
+                // (`logic [N-1:0][W-1:0] name`). When `unpacked` is set on
+                // the port, switch to SV unpacked array shape
+                // (`logic [W-1:0] name [N-1:0]`) for interop with external SV
+                // modules whose port shape is fixed unpacked.
                 if let TypeExpr::Vec(_, _) = &p.ty {
-                    let (base_ty, suffix) = self.emit_type_and_array_suffix(&p.ty);
                     let init_str = p.reg_info.as_ref()
                         .and_then(|ri| ri.init.as_ref())
                         .map(|e| format!(" = {}", self.emit_expr_str(e)))
                         .unwrap_or_default();
-                    port_lines.push(format!("{} {} {}{}{}", dir, base_ty, p.name.name, suffix, init_str));
+                    if p.unpacked {
+                        let (base_ty, suffix) = self.emit_type_and_unpacked_suffix(&p.ty);
+                        port_lines.push(format!("{} {} {}{}{}", dir, base_ty, p.name.name, suffix, init_str));
+                    } else {
+                        let (base_ty, suffix) = self.emit_type_and_array_suffix(&p.ty);
+                        port_lines.push(format!("{} {} {}{}{}", dir, base_ty, p.name.name, suffix, init_str));
+                    }
                 } else {
                     let ty_str = self.emit_port_type_str(&p.ty);
                     let init_str = p.reg_info.as_ref()
