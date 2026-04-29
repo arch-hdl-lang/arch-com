@@ -132,8 +132,14 @@ impl<'a> SimCodegen<'a> {
             cpp.push_str("  _clk_prev_rd = rd_clk;\n");
             cpp.push_str("  if (_wr_rising || _rd_rising) eval_posedge_dual(_wr_rising, _rd_rising);\n");
         } else {
-            cpp.push_str(&format!("  if ({clk_port} && !_clk_prev) eval_posedge();\n"));
-            cpp.push_str(&format!("  _clk_prev = {clk_port};\n"));
+            // Sync FIFO: edge detection lives inside eval_posedge() so
+            // that when a parent module calls _inst_X.eval_posedge()
+            // directly (the sim_codegen convention), the FIFO still
+            // gates correctly on its own clock edge instead of advancing
+            // state on every call. Without this, a TB doing two eval()s
+            // per tick (e.g. the dma_engine_tb pattern of `eval();
+            // mem_rd_data = mem_rd_addr; eval();`) would push twice.
+            cpp.push_str("  eval_posedge();\n");
         }
         cpp.push_str("  eval_comb();\n");
         cpp.push_str("  if (_trace_fp) trace_dump(_trace_time++);\n");
@@ -156,8 +162,12 @@ impl<'a> SimCodegen<'a> {
             // Keep the standard eval_posedge symbol for ABI parity (unused).
             cpp.push_str(&format!("void {class}::eval_posedge() {{}}\n\n"));
         } else {
-            // eval_posedge() — single-clock path.
+            // eval_posedge() — single-clock path. Self-gates on rising
+            // edge so the parent's unconditional call is safe.
             cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
+            cpp.push_str(&format!("  bool _rising = ({clk_port} && !_clk_prev);\n"));
+            cpp.push_str(&format!("  _clk_prev = {clk_port};\n"));
+            cpp.push_str("  if (!_rising) return;\n");
             cpp.push_str(&format!("  if ({rst_cond}) {{\n"));
             if is_lifo {
                 cpp.push_str("    _sp = 0;\n");

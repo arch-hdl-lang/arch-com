@@ -6545,18 +6545,25 @@ impl<'a> SimCodegen<'a> {
         let req_pa_name = a.port_arrays.first()
             .map(|pa| pa.name.name.as_str()).unwrap_or("request");
 
-        // eval()
+        // eval(): edge detection lives inside eval_posedge() so a parent
+        // module's unconditional `_inst_arb.eval_posedge()` call only
+        // advances state on actual rising edges. Without self-gating, the
+        // arbiter's round-robin pointer drifts on every TB eval() — which
+        // breaks designs that read `grant_requester` post-edge to drive
+        // downstream signal handshakes.
         cpp.push_str(&format!("void {class}::eval() {{\n"));
         cpp.push_str("  if (!_trace_fp && Verilated::traceFile() && Verilated::claimTrace())\n");
         cpp.push_str("    trace_open(Verilated::traceFile());\n");
-        cpp.push_str(&format!("  if ({clk_port} && !_clk_prev) eval_posedge();\n"));
-        cpp.push_str(&format!("  _clk_prev = {clk_port};\n"));
+        cpp.push_str("  eval_posedge();\n");
         cpp.push_str("  eval_comb();\n");
         cpp.push_str("  if (_trace_fp) trace_dump(_trace_time++);\n");
         cpp.push_str("}\n\n");
 
-        // eval_posedge()
+        // eval_posedge() — self-gated so parents can call it unconditionally.
         cpp.push_str(&format!("void {class}::eval_posedge() {{\n"));
+        cpp.push_str(&format!("  bool _rising = ({clk_port} && !_clk_prev);\n"));
+        cpp.push_str(&format!("  _clk_prev = {clk_port};\n"));
+        cpp.push_str("  if (!_rising) return;\n");
         cpp.push_str(&format!("  if ({rst_cond}) {{\n    _last_grant = 0;\n  }} else {{\n"));
         cpp.push_str("    if (grant_valid) _last_grant = grant_requester;\n");
         cpp.push_str("  }\n}\n\n");
