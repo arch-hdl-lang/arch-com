@@ -309,7 +309,7 @@ The Arch type system enforces four independent safety dimensions simultaneously.
 
   **Tristate\<T\>**    \|T\| bits            Bidirectional pad type. Decomposes to \_out, \_oe, \_in internally. See §5.5.
 
-  **Vec\<T,N\>**       N × \|T\|            Fixed-size array of any hardware type T.
+  **Vec\<T,N\>**       N × \|T\|            Fixed-size array of any hardware type T. SV emission is **packed** multi-dim by default (`logic [N-1:0][W-1:0] x`); a port can opt into SV **unpacked** array shape with the `unpacked` modifier — see §3.6 below.
 
   **struct S**         Σ fields             Named aggregate. Width = sum of field widths (packed). **Bit layout: declaration-first = MSB, last-declared = LSB — matching SV `struct packed` convention.** A testbench that reads a struct-typed signal as an integer finds the first-declared field in the top bits. The C++ simulation model lays out fields in declaration order in memory (natural C++); per-field access through pybind is by name, so the memory layout is not observable to testbenches.
 
@@ -603,6 +603,27 @@ if found
   result = haystack[index];
 end if
 ```
+
+**3.7 Unpacked-Array Port Modifier**
+
+`Vec<T, N>` ports default to SV **packed** multi-dim emission (`logic [N-1:0][W-1:0] x`), which is portable across Verilator, iverilog, and Yosys. To interop with an external SystemVerilog module whose port shape is fixed unpacked-array (`logic [W-1:0] x [N-1:0]`), declare the port with the `unpacked` modifier between the direction keyword and the type:
+
+```arch
+port imd_val_q_i: in unpacked Vec<UInt<32>, 2>;
+port imd_val_d_o: out unpacked Vec<UInt<32>, 2>;
+```
+
+Effect:
+- SV port emission flips to unpacked-array shape.
+- ARCH-internal semantics are unchanged — body code indexes the port the same way (`imd_val_q_i[0]`).
+- The instantiating SV side may now connect an unpacked-array net (`logic [31:0] q [2]`) directly without packed/unpacked type-mismatch warnings.
+
+Restrictions:
+- Only legal on `Vec<T, N>` types (non-Vec usage rejected at parse time).
+- Incompatible with `port reg ... unpacked` and `pipe_reg<T, N>` ports (no use case; rejected at parse time).
+- Use is intended for **leaf-module port boundaries that face external SV**. ARCH-to-ARCH instantiation across an unpacked port is not validated by the compiler in v1; if both parent and child are ARCH-emitted, the parent's wire will be packed-Vec and Verilator will reject the connection. Restructure to keep both sides packed when the entire path is ARCH.
+
+Why this is opt-in: unpacked arrays are Yosys-unfriendly during synthesis and historically caused Icarus portability issues. The default packed shape preserves these guarantees; `unpacked` is a deliberate interop hatch for ports that face external SV.
 
 **4. Modules**
 

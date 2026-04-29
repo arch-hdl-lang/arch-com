@@ -1,0 +1,14 @@
+// Round-trips a Vec<T,N> port declared `unpacked` to SV unpacked-array shape.
+module unpacked_port_emit
+  port packed_in:    in Vec<UInt<32>, 2>;
+  port unpacked_in:  in unpacked Vec<UInt<32>, 2>;
+  port packed_out:   out Vec<UInt<32>, 2>;
+  port unpacked_out: out unpacked Vec<UInt<32>, 2>;
+
+  comb
+    packed_out[0]   = packed_in[0];
+    packed_out[1]   = packed_in[1];
+    unpacked_out[0] = unpacked_in[0];
+    unpacked_out[1] = unpacked_in[1];
+  end comb
+end module unpacked_port_emit

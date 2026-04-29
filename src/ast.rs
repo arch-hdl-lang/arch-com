@@ -254,6 +254,12 @@ pub struct PortDecl {
     /// Shared reduction annotation: `shared(or)` or `shared(and)`.
     /// Allows multiple drivers with compiler-synthesized reduction logic.
     pub shared: Option<SharedReduction>,
+    /// `unpacked` modifier on a `Vec<T,N>` port: SV emission becomes
+    /// `logic [W-1:0] name [N-1:0]` (unpacked array) instead of the default
+    /// `logic [N-1:0][W-1:0] name` (packed). For interop with external SV
+    /// modules whose port shape is fixed unpacked. Has no effect on
+    /// ARCH-internal semantics. Only legal on `Vec<T,N>` types.
+    pub unpacked: bool,
     pub span: Span,
 }
 

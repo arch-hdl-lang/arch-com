@@ -7173,3 +7173,68 @@ fn test_comb_for_loop_body_type_checked_as_comb() {
     assert!(err_msg.contains("`arr_r` is a reg") && err_msg.contains("seq"),
         "diagnostic should explain reg-vs-seq rule; got: {err_msg}");
 }
+
+// ── unpacked-array port emission ─────────────────────────────────────────
+
+#[test]
+fn test_unpacked_port_emits_unpacked_sv_shape() {
+    // Default Vec port: SV packed multi-dim. With `unpacked` modifier:
+    // SV unpacked-array shape (`logic [W-1:0] name [N-1:0]`). Used for
+    // interop with external SV modules whose port shape is fixed unpacked
+    // (e.g. ibex_alu's `imd_val_q_i [2]`). ARCH-internal indexing on the
+    // port body works the same in both shapes.
+    let source = r#"
+module unpacked_demo
+  port packed_in:    in Vec<UInt<32>, 2>;
+  port unpacked_in:  in unpacked Vec<UInt<32>, 2>;
+  port unpacked_out: out unpacked Vec<UInt<32>, 2>;
+  comb
+    unpacked_out[0] = unpacked_in[0];
+    unpacked_out[1] = unpacked_in[1];
+  end comb
+end module unpacked_demo
+"#;
+    let sv = compile_to_sv(source);
+    // packed Vec port stays packed (default).
+    assert!(sv.contains("input logic [1:0] [31:0] packed_in"),
+            "packed Vec port should keep packed multi-dim shape, got: {sv}");
+    // unpacked Vec port flips to SV unpacked-array shape.
+    assert!(sv.contains("input logic [31:0] unpacked_in [1:0]"),
+            "unpacked Vec port should emit SV unpacked array, got: {sv}");
+    assert!(sv.contains("output logic [31:0] unpacked_out [1:0]"),
+            "unpacked Vec output port should emit SV unpacked array, got: {sv}");
+    // Internal body indexing is identical regardless of port shape.
+    assert!(sv.contains("assign unpacked_out[0] = unpacked_in[0]"));
+}
+
+#[test]
+fn test_unpacked_on_non_vec_is_rejected() {
+    let source = r#"
+module unpacked_neg
+  port bad: in unpacked UInt<32>;
+end module unpacked_neg
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let result = parser.parse_source_file();
+    assert!(result.is_err(), "unpacked on non-Vec should be a parse error");
+    let msg = format!("{:?}", result.err().unwrap());
+    assert!(msg.contains("`unpacked` is only valid on `Vec<T,N>` ports"),
+            "diagnostic should explain Vec-only restriction, got: {msg}");
+}
+
+#[test]
+fn test_unpacked_on_port_reg_is_rejected() {
+    let source = r#"
+module unpacked_neg2
+  port reg bad: out unpacked Vec<UInt<32>, 2>;
+end module unpacked_neg2
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let result = parser.parse_source_file();
+    assert!(result.is_err(), "unpacked + port reg should be a parse error");
+    let msg = format!("{:?}", result.err().unwrap());
+    assert!(msg.contains("`unpacked` is not allowed on `port reg`"),
+            "diagnostic should explain port-reg restriction, got: {msg}");
+}

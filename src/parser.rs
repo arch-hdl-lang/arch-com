@@ -387,7 +387,7 @@ impl Parser {
             default: None,
             reg_info: None,
             bus_info: None,
-            shared: None,
+            shared: None, unpacked: false,
             span: parent_span.merge(end_span),
         })
     }
@@ -588,7 +588,7 @@ impl Parser {
             default: None,
             reg_info: None,
             bus_info: None,
-            shared: None,
+            shared: None, unpacked: false,
             span: sp,
         };
         // Control signals (payload-direction = `dir`, back-signal = `opposite`).
@@ -924,7 +924,7 @@ impl Parser {
                 default: None,
                 reg_info: None,
                 bus_info: Some(BusPortInfo { bus_name, perspective, params }),
-                shared: None,
+                shared: None, unpacked: false,
                 span: start.merge(end_span),
             });
         }
@@ -944,6 +944,17 @@ impl Parser {
             return Err(CompileError::general(
                 "port reg must be an output port",
                 start.merge(self.peek_span()),
+            ));
+        }
+
+        // Optional `unpacked` modifier: `port name: in unpacked Vec<T,N>;`
+        // Flips SV port emission to unpacked-array shape. Only legal on Vec<T,N>
+        // and incompatible with `port reg` / `pipe_reg<T,N>`. Validated below.
+        let unpacked = self.eat_contextual("unpacked");
+        if unpacked && is_reg {
+            return Err(CompileError::general(
+                "`unpacked` is not allowed on `port reg` / pipe_reg<T,N> ports",
+                self.peek_span(),
             ));
         }
 
@@ -1058,6 +1069,12 @@ impl Parser {
         };
         self.expect(TokenKind::Semi)?;
         let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        if unpacked && !matches!(ty, TypeExpr::Vec(..)) {
+            return Err(CompileError::general(
+                "`unpacked` is only valid on `Vec<T,N>` ports",
+                start.merge(end_span),
+            ));
+        }
         Ok(PortDecl {
             name,
             direction,
@@ -1066,6 +1083,7 @@ impl Parser {
             reg_info,
             bus_info: None,
             shared,
+            unpacked,
             span: start.merge(end_span),
         })
     }
@@ -4114,7 +4132,7 @@ impl Parser {
         let ty = self.parse_type_expr()?;
         self.expect(TokenKind::Semi)?;
         let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
-        Ok(PortDecl { name, direction, ty, default: None, reg_info: None, bus_info: None, shared: None, span: start.merge(end_span) })
+        Ok(PortDecl { name, direction, ty, default: None, reg_info: None, bus_info: None, shared: None, unpacked: false, span: start.merge(end_span) })
     }
 
     fn parse_ram_init(&mut self) -> Result<RamInit, CompileError> {
