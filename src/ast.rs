@@ -1119,6 +1119,9 @@ pub struct FunctionAssign {
 /// construct.  Each construct embeds this as `pub common: ConstructCommon` and
 /// implements `Deref<Target = ConstructCommon>` so that existing code such as
 /// `fsm.name`, `fsm.ports`, `fsm.asserts` continues to compile unchanged.
+///
+/// See `impl ConstructCommon` below for shared param-resolution helpers
+/// (`param_int`, `resolve_count_expr`).
 #[derive(Debug, Clone)]
 pub struct ConstructCommon {
     pub name:    Ident,
@@ -1135,6 +1138,39 @@ pub struct ConstructCommon {
     /// downstream tooling can tell "from the outside" prose apart from
     /// "from the inside" prose.
     pub inner_doc: Option<String>,
+}
+
+impl ConstructCommon {
+    /// Resolve a param by name to its default integer literal value.
+    /// Returns `default` if the param is missing, has no default, or its
+    /// default isn't a `LitKind::Dec` (the only literal form param defaults
+    /// take in practice — derived expressions like `XLEN/8` are out of
+    /// scope; full const-eval is its own future refactor item).
+    ///
+    /// Replaces the same 5-line `let param_int = |...|` closure that was
+    /// duplicated in `codegen::emit_regfile`, `sim_codegen::gen_regfile`,
+    /// and `sim_codegen/linklist.rs`.
+    pub fn param_int(&self, name: &str, default: u64) -> u64 {
+        self.params.iter()
+            .find(|p| p.name.name == name)
+            .and_then(|p| p.default.as_ref())
+            .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(*v) } else { None })
+            .unwrap_or(default)
+    }
+
+    /// Resolve a port-array `count_expr` (`ports[N]` / `ports[PARAM]`):
+    /// integer literal returns directly; bare param-name reference falls
+    /// back to that param's default via [`Self::param_int`] with a default
+    /// of 1 (a port array of length 0 makes no sense and shouldn't reach
+    /// here). Anything more complex (arithmetic on params, etc.) returns
+    /// 1 — same conservative fallback the duplicated closures used.
+    pub fn resolve_count_expr(&self, expr: &Expr) -> u64 {
+        match &expr.kind {
+            ExprKind::Literal(LitKind::Dec(v)) => *v,
+            ExprKind::Ident(name) => self.param_int(name, 1),
+            _ => 1,
+        }
+    }
 }
 
 // ── FSM ──────────────────────────────────────────────────────────────────────

@@ -7947,28 +7947,10 @@ impl<'a> Codegen<'a> {
     // ── Regfile ───────────────────────────────────────────────────────────────
 
     fn emit_regfile(&mut self, r: &crate::ast::RegfileDecl) {
-        use crate::ast::{ParamKind, ExprKind, LitKind};
+        use crate::ast::ParamKind;
         let n = &r.name.name.clone();
 
-        // Helper: resolve a param by name to its default integer value.
-        let param_int = |name: &str, default: u64| -> u64 {
-            r.params.iter()
-                .find(|p| p.name.name == name)
-                .and_then(|p| p.default.as_ref())
-                .and_then(|e| if let ExprKind::Literal(LitKind::Dec(v)) = &e.kind { Some(*v) } else { None })
-                .unwrap_or(default)
-        };
-
-        // Helper: resolve a count_expr — literal or param-name reference.
-        let resolve_count = |expr: &crate::ast::Expr| -> u64 {
-            match &expr.kind {
-                ExprKind::Literal(LitKind::Dec(v)) => *v,
-                ExprKind::Ident(name) => param_int(name, 1),
-                _ => 1,
-            }
-        };
-
-        let nregs = param_int("NREGS", 32);
+        let nregs = r.param_int("NREGS", 32);
 
         // Data width: prefer the UInt<N> type of the data signal in the write port,
         // then fall back to XLEN/WIDTH/DATA_WIDTH params.
@@ -7990,10 +7972,10 @@ impl<'a> Codegen<'a> {
 
         // Read/write port counts — resolve param references
         let nread = r.read_ports.as_ref()
-            .map(|rp| resolve_count(&rp.count_expr))
+            .map(|rp| r.resolve_count_expr(&rp.count_expr))
             .unwrap_or(1);
         let nwrite = r.write_ports.as_ref()
-            .map(|wp| resolve_count(&wp.count_expr))
+            .map(|wp| r.resolve_count_expr(&wp.count_expr))
             .unwrap_or(1);
 
         let clk = r.ports.iter()
