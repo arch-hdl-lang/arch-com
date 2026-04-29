@@ -5,7 +5,7 @@ use super::{SimCodegen, SimModel};
 use super::*;
 
 impl<'a> SimCodegen<'a> {
-    pub(super) fn gen_fifo(&self, f: &FifoDecl) -> SimModel {
+    pub(crate) fn gen_fifo(&self, f: &FifoDecl) -> SimModel {
         let name = &f.name.name;
         let class = format!("V{name}");
         let is_lifo = f.kind == FifoKind::Lifo;

@@ -10,7 +10,7 @@ use super::{SimCodegen, SimModel};
 use super::*;
 
 impl<'a> SimCodegen<'a> {
-    pub(super) fn gen_pipeline(&self, p: &PipelineDecl) -> SimModel {
+    pub(crate) fn gen_pipeline(&self, p: &PipelineDecl) -> SimModel {
         let name = &p.name.name;
         let class = format!("V{name}");
         let _enum_map = build_enum_map(self.symbols);

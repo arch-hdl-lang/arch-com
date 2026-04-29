@@ -5,7 +5,7 @@ use super::{SimCodegen, SimModel};
 use super::*;
 
 impl<'a> SimCodegen<'a> {
-    pub(super) fn gen_linklist(&self, l: &crate::ast::LinklistDecl) -> SimModel {
+    pub(crate) fn gen_linklist(&self, l: &crate::ast::LinklistDecl) -> SimModel {
         use crate::ast::{LinklistKind, Direction};
 
         let name  = &l.name.name;

@@ -11,7 +11,7 @@ use super::{SimCodegen, SimModel};
 use super::*;
 
 impl<'a> SimCodegen<'a> {
-    pub(super) fn gen_fsm(&self, f: &FsmDecl) -> SimModel {
+    pub(crate) fn gen_fsm(&self, f: &FsmDecl) -> SimModel {
         let name = &f.name.name;
         let class = format!("V{name}");
         let enum_map = build_enum_map(self.symbols);
