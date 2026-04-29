@@ -1032,29 +1032,141 @@ impl Ident {
 
 impl Item {
     pub fn span(&self) -> Span {
+        self.as_construct().span()
+    }
+
+    /// Centralized accessor that converts an `Item` to its trait object —
+    /// the single match site that replaces the historical N-arm dispatch
+    /// in every consumer pass.
+    ///
+    /// Approach (a) of refactor plan item #6: the `Item` enum stays, but
+    /// every pass that previously did `match item { Item::Counter(c) =>
+    /// emit_counter(c), ... }` can now do `item.as_construct().<method>()`
+    /// — the trait dispatch goes through this one match.
+    pub fn as_construct(&self) -> &dyn Construct {
         match self {
-            Item::Domain(d) => d.span,
-            Item::Struct(s) => s.span,
-            Item::Enum(e) => e.span,
-            Item::Module(m) => m.span,
-            Item::Fsm(f) => f.span,
-            Item::Fifo(f) => f.span,
-            Item::Ram(r) => r.span,
-            Item::Cam(c) => c.span,
-            Item::Counter(c) => c.span,
-            Item::Arbiter(a) => a.span,
-            Item::Regfile(r) => r.span,
-            Item::Pipeline(p) => p.span,
-            Item::Function(f) => f.span,
-            Item::Linklist(l) => l.span,
-            Item::Template(t) => t.span,
-            Item::Synchronizer(s) => s.span,
-            Item::Clkgate(c) => c.span,
-            Item::Bus(b) => b.span,
-            Item::Package(p) => p.span,
-            Item::Use(u) => u.span,
+            Item::Domain(d) => d,
+            Item::Struct(s) => s,
+            Item::Enum(e) => e,
+            Item::Module(m) => m,
+            Item::Fsm(f) => f,
+            Item::Fifo(f) => f,
+            Item::Ram(r) => r,
+            Item::Cam(c) => c,
+            Item::Counter(c) => c,
+            Item::Arbiter(a) => a,
+            Item::Regfile(r) => r,
+            Item::Pipeline(p) => p,
+            Item::Function(f) => f,
+            Item::Linklist(l) => l,
+            Item::Template(t) => t,
+            Item::Synchronizer(s) => s,
+            Item::Clkgate(c) => c,
+            Item::Bus(b) => b,
+            Item::Package(p) => p,
+            Item::Use(u) => u,
         }
     }
+}
+
+/// Centralizing trait for all top-level constructs (every `Item::*`
+/// variant). Phase 1 (this PR) covers only the always-applicable
+/// accessors — `name`, `span`, `doc`, `inner_doc`, `kind_label`. Future
+/// PRs will add pass methods (`typecheck`, `emit_sv`, `emit_sim`, …) one
+/// at a time, each replacing one N-arm `match item { Item::* => self.X }`
+/// dispatch with `item.as_construct().X(...)`.
+///
+/// Item #6 of `doc/plan_compiler_refactor.md`, approach (a): the `Item`
+/// enum stays; this trait provides a single dispatch point via
+/// [`Item::as_construct`] so consumer passes don't have to keep their
+/// own variant-by-variant matches.
+pub trait Construct {
+    /// The lowercase keyword that introduces this construct in source
+    /// (`"module"`, `"counter"`, `"fsm"`, `"struct"`, `"use"`, etc.).
+    /// Used by `arch advise` doc-event emission and diagnostics.
+    fn kind_label(&self) -> &'static str;
+
+    /// The construct's name as declared (e.g. `Counter` in
+    /// `counter Counter ... end counter Counter`).
+    fn name(&self) -> &Ident;
+
+    /// Source span covering the construct from opening keyword to closing
+    /// `end <keyword> <Name>` (or single-line span for `use` / inline
+    /// constructs).
+    fn span(&self) -> Span;
+
+    /// Outer doc comment from `///` lines immediately preceding the
+    /// construct. `None` if no doc-comment block was attached.
+    fn doc(&self) -> Option<&str>;
+
+    /// Inner doc comment from `//!` lines that appear between the opening
+    /// keyword and the first body item. `None` if absent. Some constructs
+    /// (`Use`) have no body and always return `None`.
+    fn inner_doc(&self) -> Option<&str>;
+}
+
+// ── Construct trait impls ────────────────────────────────────────────────────
+// Every `*Decl` that appears as an `Item::*` variant impls `Construct` so
+// the central `Item::as_construct` accessor can return `&dyn Construct`.
+// Constructs that embed `ConstructCommon` (Module, Fsm, Fifo, Ram, Cam,
+// Counter, Arbiter, Regfile, Pipeline, Linklist) get all five methods via
+// the embedded common fields. Constructs without `ConstructCommon`
+// (Domain, Struct, Enum, Function, Synchronizer, Clkgate, Bus, Package,
+// Use, Template) carry their own `name` / `span` / `doc` / `inner_doc`
+// fields directly.
+
+macro_rules! impl_construct_via_common {
+    ($ty:ty, $label:expr) => {
+        impl Construct for $ty {
+            fn kind_label(&self) -> &'static str { $label }
+            fn name(&self)      -> &Ident         { &self.common.name }
+            fn span(&self)      -> Span           { self.common.span }
+            fn doc(&self)       -> Option<&str>   { self.common.doc.as_deref() }
+            fn inner_doc(&self) -> Option<&str>   { self.common.inner_doc.as_deref() }
+        }
+    };
+}
+
+macro_rules! impl_construct_direct {
+    ($ty:ty, $label:expr) => {
+        impl Construct for $ty {
+            fn kind_label(&self) -> &'static str { $label }
+            fn name(&self)      -> &Ident         { &self.name }
+            fn span(&self)      -> Span           { self.span }
+            fn doc(&self)       -> Option<&str>   { self.doc.as_deref() }
+            fn inner_doc(&self) -> Option<&str>   { self.inner_doc.as_deref() }
+        }
+    };
+}
+
+impl_construct_direct!(ModuleDecl,           "module");
+impl_construct_via_common!(FsmDecl,          "fsm");
+impl_construct_via_common!(FifoDecl,         "fifo");
+impl_construct_via_common!(RamDecl,          "ram");
+impl_construct_via_common!(CamDecl,          "cam");
+impl_construct_via_common!(CounterDecl,      "counter");
+impl_construct_via_common!(ArbiterDecl,      "arbiter");
+impl_construct_via_common!(RegfileDecl,      "regfile");
+impl_construct_via_common!(PipelineDecl,     "pipeline");
+impl_construct_via_common!(LinklistDecl,     "linklist");
+
+impl_construct_direct!(DomainDecl,           "domain");
+impl_construct_direct!(StructDecl,           "struct");
+impl_construct_direct!(EnumDecl,             "enum");
+impl_construct_direct!(FunctionDecl,         "function");
+impl_construct_direct!(SynchronizerDecl,     "synchronizer");
+impl_construct_direct!(ClkGateDecl,          "clkgate");
+impl_construct_direct!(BusDecl,              "bus");
+impl_construct_direct!(PackageDecl,          "package");
+impl_construct_direct!(TemplateDecl,         "template");
+
+// `Use` has only `doc` — no inner doc (single-line decl).
+impl Construct for UseDecl {
+    fn kind_label(&self) -> &'static str { "use" }
+    fn name(&self)      -> &Ident         { &self.name }
+    fn span(&self)      -> Span           { self.span }
+    fn doc(&self)       -> Option<&str>   { self.doc.as_deref() }
+    fn inner_doc(&self) -> Option<&str>   { None }
 }
 
 // ── Function ──────────────────────────────────────────────────────────────────

@@ -338,36 +338,16 @@ where
 }
 
 /// Pull `(construct_kind_str, name, outer_doc, inner_doc)` from an `Item`
-/// when it carries doc text; `None` if the variant has no doc to harvest.
+/// via the central [`Construct`](crate::ast::Construct) trait. Pre-trait
+/// this was a 20-arm match that hand-pulled the same shape per variant.
 fn extract_doc(item: &crate::ast::Item) -> Option<(&'static str, String, String, String)> {
-    use crate::ast::Item;
-    let pull = |kind: &'static str, name: String,
-                doc: &Option<String>, inner: &Option<String>| {
-        Some((kind, name, doc.clone().unwrap_or_default(), inner.clone().unwrap_or_default()))
-    };
-    match item {
-        Item::Module(m)       => pull("module",       m.name.name.clone(), &m.doc, &m.inner_doc),
-        Item::Fsm(f)          => pull("fsm",          f.common.name.name.clone(), &f.common.doc, &f.common.inner_doc),
-        Item::Fifo(f)         => pull("fifo",         f.common.name.name.clone(), &f.common.doc, &f.common.inner_doc),
-        Item::Ram(r)          => pull("ram",          r.common.name.name.clone(), &r.common.doc, &r.common.inner_doc),
-        Item::Counter(c)      => pull("counter",      c.common.name.name.clone(), &c.common.doc, &c.common.inner_doc),
-        Item::Arbiter(a)      => pull("arbiter",      a.common.name.name.clone(), &a.common.doc, &a.common.inner_doc),
-        Item::Pipeline(p)     => pull("pipeline",     p.common.name.name.clone(), &p.common.doc, &p.common.inner_doc),
-        Item::Cam(c)          => pull("cam",          c.common.name.name.clone(), &c.common.doc, &c.common.inner_doc),
-        Item::Linklist(l)     => pull("linklist",     l.common.name.name.clone(), &l.common.doc, &l.common.inner_doc),
-        Item::Regfile(r)      => pull("regfile",      r.common.name.name.clone(), &r.common.doc, &r.common.inner_doc),
-        Item::Synchronizer(s) => pull("synchronizer", s.name.name.clone(), &s.doc, &s.inner_doc),
-        Item::Clkgate(c)      => pull("clkgate",      c.name.name.clone(), &c.doc, &c.inner_doc),
-        Item::Domain(d)       => pull("domain",       d.name.name.clone(), &d.doc, &d.inner_doc),
-        Item::Struct(s)       => pull("struct",       s.name.name.clone(), &s.doc, &s.inner_doc),
-        Item::Enum(e)         => pull("enum",         e.name.name.clone(), &e.doc, &e.inner_doc),
-        Item::Function(f)     => pull("function",     f.name.name.clone(), &f.doc, &f.inner_doc),
-        Item::Package(p)      => pull("package",      p.name.name.clone(), &p.doc, &p.inner_doc),
-        Item::Bus(b)          => pull("bus",          b.name.name.clone(), &b.doc, &b.inner_doc),
-        Item::Template(t)     => pull("template",     t.name.name.clone(), &t.doc, &t.inner_doc),
-        // `Use` is a single-line decl with only `doc`; treat inner as empty.
-        Item::Use(u)          => Some(("use", u.name.name.clone(), u.doc.clone().unwrap_or_default(), String::new())),
-    }
+    let c = item.as_construct();
+    Some((
+        c.kind_label(),
+        c.name().name.clone(),
+        c.doc().unwrap_or("").to_string(),
+        c.inner_doc().unwrap_or("").to_string(),
+    ))
 }
 
 /// Remove all feature events whose `file_path` matches any of `files`.

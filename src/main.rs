@@ -505,24 +505,7 @@ fn main() -> miette::Result<()> {
             // Emit .archi interface files alongside .sv (for separate compilation)
             for item in &ast.items {
                 if let Some(content) = arch::interface::emit_interface(item) {
-                    let name = match item {
-                        Item::Module(m) => &m.name.name,
-                        Item::Fsm(f) => &f.name.name,
-                        Item::Counter(c) => &c.name.name,
-                        Item::Pipeline(p) => &p.name.name,
-                        Item::Bus(b) => &b.name.name,
-                        Item::Struct(s) => &s.name.name,
-                        Item::Enum(e) => &e.name.name,
-                        Item::Package(p) => &p.name.name,
-                        Item::Synchronizer(s) => &s.name.name,
-                        Item::Fifo(f) => &f.name.name,
-                        Item::Ram(r) => &r.name.name,
-                        Item::Arbiter(a) => &a.name.name,
-                        Item::Regfile(r) => &r.name.name,
-                        Item::Clkgate(c) => &c.name.name,
-                        Item::Linklist(l) => &l.name.name,
-                        _ => continue,
-                    };
+                    let name = &item.as_construct().name().name;
                     // Write .archi next to the .sv output
                     let archi_dir = files[0].parent()
                         .unwrap_or(std::path::Path::new(".")).to_path_buf();
