@@ -7,29 +7,21 @@ use crate::ast::*;
 
 /// Emit `.archi` content for a single AST item.
 /// Returns `Some(content)` for items that have an external interface
-/// (module, fsm, counter, pipeline), `None` otherwise.
+/// (module, fsm, counter, pipeline, fifo, ram, arbiter, regfile, …),
+/// `None` for the rest. Dispatch goes through `Item::as_construct().emit_interface()`
+/// which is implemented per-construct in `src/ast.rs`.
 pub fn emit_interface(item: &Item) -> Option<String> {
-    match item {
-        Item::Module(m) => Some(emit_module_interface(m)),
-        Item::Fsm(f) => Some(emit_fsm_interface(f)),
-        Item::Counter(c) => Some(emit_counter_interface(c)),
-        Item::Pipeline(p) => Some(emit_pipeline_interface(p)),
-        Item::Bus(b) => Some(emit_bus_interface(b)),
-        Item::Struct(s) => Some(emit_struct(s)),
-        Item::Enum(e) => Some(emit_enum(e)),
-        Item::Package(p) => Some(emit_package_interface(p)),
-        Item::Synchronizer(s) => Some(emit_synchronizer_interface(s)),
-        Item::Fifo(f) => Some(emit_fifo_interface(f)),
-        Item::Ram(r) => Some(emit_ram_interface(r)),
-        Item::Arbiter(a) => Some(emit_arbiter_interface(a)),
-        Item::Regfile(r) => Some(emit_generic("regfile", &r.name.name, &r.params, &r.ports)),
-        Item::Clkgate(c) => Some(emit_clkgate_interface(c)),
-        Item::Linklist(l) => Some(emit_linklist_interface(l)),
-        _ => None,
-    }
+    item.as_construct().emit_interface()
 }
 
-fn emit_module_interface(m: &ModuleDecl) -> String {
+/// Regfile uses the generic shape (no construct-specific fields beyond
+/// params + ports). Wrapper kept here so the trait impl can take a
+/// uniform `fn(&RegfileDecl) -> String`.
+pub(crate) fn emit_regfile_interface(r: &RegfileDecl) -> String {
+    emit_generic("regfile", &r.name.name, &r.params, &r.ports)
+}
+
+pub(crate) fn emit_module_interface(m: &ModuleDecl) -> String {
     let name = &m.name.name;
     let mut s = format!("module {name}\n");
     emit_params(&mut s, &m.params);
@@ -38,7 +30,7 @@ fn emit_module_interface(m: &ModuleDecl) -> String {
     s
 }
 
-fn emit_fsm_interface(f: &FsmDecl) -> String {
+pub(crate) fn emit_fsm_interface(f: &FsmDecl) -> String {
     let name = &f.name.name;
     let mut s = format!("fsm {name}\n");
     emit_params(&mut s, &f.params);
@@ -47,7 +39,7 @@ fn emit_fsm_interface(f: &FsmDecl) -> String {
     s
 }
 
-fn emit_counter_interface(c: &CounterDecl) -> String {
+pub(crate) fn emit_counter_interface(c: &CounterDecl) -> String {
     let name = &c.name.name;
     let mut s = format!("counter {name}\n");
     emit_params(&mut s, &c.params);
@@ -56,7 +48,7 @@ fn emit_counter_interface(c: &CounterDecl) -> String {
     s
 }
 
-fn emit_pipeline_interface(p: &PipelineDecl) -> String {
+pub(crate) fn emit_pipeline_interface(p: &PipelineDecl) -> String {
     let name = &p.name.name;
     let mut s = format!("pipeline {name}\n");
     emit_params(&mut s, &p.params);
@@ -65,7 +57,7 @@ fn emit_pipeline_interface(p: &PipelineDecl) -> String {
     s
 }
 
-fn emit_bus_interface(b: &BusDecl) -> String {
+pub(crate) fn emit_bus_interface(b: &BusDecl) -> String {
     let name = &b.name.name;
     let mut s = format!("bus {name}\n");
     emit_params(&mut s, &b.params);
@@ -77,7 +69,7 @@ fn emit_bus_interface(b: &BusDecl) -> String {
 /// Generic emitter for constructs with name + params + ports (regfile, etc.)
 /// Constructs with additional semantic fields (kind, policy, latency) use
 /// their own per-type emitter instead — see emit_synchronizer_interface etc.
-fn emit_generic(keyword: &str, name: &str, params: &[ParamDecl], ports: &[PortDecl]) -> String {
+pub(crate) fn emit_generic(keyword: &str, name: &str, params: &[ParamDecl], ports: &[PortDecl]) -> String {
     let mut s = format!("{keyword} {name}\n");
     emit_params(&mut s, params);
     emit_ports(&mut s, ports);
@@ -85,7 +77,7 @@ fn emit_generic(keyword: &str, name: &str, params: &[ParamDecl], ports: &[PortDe
     s
 }
 
-fn emit_synchronizer_interface(sync: &SynchronizerDecl) -> String {
+pub(crate) fn emit_synchronizer_interface(sync: &SynchronizerDecl) -> String {
     let name = &sync.name.name;
     let kind = match sync.kind {
         SyncKind::Ff => "ff",
@@ -102,7 +94,7 @@ fn emit_synchronizer_interface(sync: &SynchronizerDecl) -> String {
     s
 }
 
-fn emit_fifo_interface(f: &FifoDecl) -> String {
+pub(crate) fn emit_fifo_interface(f: &FifoDecl) -> String {
     let name = &f.name.name;
     let mut s = format!("fifo {name}\n");
     // FifoKind::Fifo is the default (sync/async detected from clock ports); only emit `kind lifo`
@@ -115,7 +107,7 @@ fn emit_fifo_interface(f: &FifoDecl) -> String {
     s
 }
 
-fn emit_ram_interface(r: &RamDecl) -> String {
+pub(crate) fn emit_ram_interface(r: &RamDecl) -> String {
     let name = &r.name.name;
     let kind = match r.kind {
         RamKind::Single => "single",
@@ -132,7 +124,7 @@ fn emit_ram_interface(r: &RamDecl) -> String {
     s
 }
 
-fn emit_arbiter_interface(a: &ArbiterDecl) -> String {
+pub(crate) fn emit_arbiter_interface(a: &ArbiterDecl) -> String {
     let name = &a.name.name;
     let policy = match &a.policy {
         ArbiterPolicy::RoundRobin => "round_robin".to_string(),
@@ -152,7 +144,7 @@ fn emit_arbiter_interface(a: &ArbiterDecl) -> String {
     s
 }
 
-fn emit_clkgate_interface(c: &ClkGateDecl) -> String {
+pub(crate) fn emit_clkgate_interface(c: &ClkGateDecl) -> String {
     let name = &c.name.name;
     let kind = match c.kind {
         ClkGateKind::Latch => "latch",
@@ -166,7 +158,7 @@ fn emit_clkgate_interface(c: &ClkGateDecl) -> String {
     s
 }
 
-fn emit_linklist_interface(l: &LinklistDecl) -> String {
+pub(crate) fn emit_linklist_interface(l: &LinklistDecl) -> String {
     let name = &l.name.name;
     let kind = match l.kind {
         LinklistKind::Singly => "singly",
@@ -188,7 +180,7 @@ fn emit_linklist_interface(l: &LinklistDecl) -> String {
     s
 }
 
-fn emit_struct(s: &StructDecl) -> String {
+pub(crate) fn emit_struct(s: &StructDecl) -> String {
     let name = &s.name.name;
     let mut out = format!("struct {name}\n");
     for f in &s.fields {
@@ -198,7 +190,7 @@ fn emit_struct(s: &StructDecl) -> String {
     out
 }
 
-fn emit_enum(e: &EnumDecl) -> String {
+pub(crate) fn emit_enum(e: &EnumDecl) -> String {
     let name = &e.name.name;
     let mut out = format!("enum {name}\n");
     for (i, v) in e.variants.iter().enumerate() {
@@ -212,7 +204,7 @@ fn emit_enum(e: &EnumDecl) -> String {
     out
 }
 
-fn emit_package_interface(p: &PackageDecl) -> String {
+pub(crate) fn emit_package_interface(p: &PackageDecl) -> String {
     let name = &p.name.name;
     let mut out = format!("package {name}\n");
     // Params
@@ -243,7 +235,7 @@ fn indent(s: &str) -> String {
     s.lines().map(|l| format!("  {l}\n")).collect()
 }
 
-fn emit_params(s: &mut String, params: &[ParamDecl]) {
+pub(crate) fn emit_params(s: &mut String, params: &[ParamDecl]) {
     for p in params {
         let local = if p.is_local { "local " } else { "" };
         let name = &p.name.name;
@@ -291,7 +283,7 @@ fn emit_params(s: &mut String, params: &[ParamDecl]) {
     }
 }
 
-fn emit_ports(s: &mut String, ports: &[PortDecl]) {
+pub(crate) fn emit_ports(s: &mut String, ports: &[PortDecl]) {
     for p in ports {
         let dir = match p.direction {
             Direction::In => "in",
