@@ -168,29 +168,12 @@ impl<'a> Codegen<'a> {
             .collect();
         for item in items {
             self.emit_comments_before(item.span().start);
-            match item {
-                Item::Domain(d) => self.emit_domain(d),
-                Item::Struct(s) => self.emit_struct(s),
-                Item::Enum(e) => self.emit_enum(e),
-                Item::Module(m) => self.emit_module(m),
-                Item::Fsm(f) => self.emit_fsm(f),
-                Item::Fifo(f) => self.emit_fifo(f),
-                Item::Ram(r) => self.emit_ram(r),
-                Item::Cam(c) => self.emit_cam(c),
-
-                Item::Counter(c) => self.emit_counter(c),
-                Item::Arbiter(a) => self.emit_arbiter(a),
-                Item::Regfile(r) => self.emit_regfile(r),
-                Item::Pipeline(p) => self.emit_pipeline(p),
-                Item::Function(_) => {} // emitted inside modules
-                Item::Linklist(l) => self.emit_linklist(l),
-                Item::Template(_) => {} // compile-time only
-                Item::Bus(_) => {} // compile-time only; flattened at port sites
-                Item::Synchronizer(s) => self.emit_synchronizer(s),
-                Item::Clkgate(c) => self.emit_clkgate(c),
-                Item::Package(p) => self.emit_package(p),
-                Item::Use(_) => {} // import emitted inside modules
-            }
+            // Function / Template / Bus / Use have no top-level SV emit
+            // (Function is emitted inside each module body, Template is
+            // compile-time only, Bus is flattened at port sites, Use is
+            // an import emitted inside modules) — their `Construct::emit_sv`
+            // impl is the trait default no-op.
+            item.as_construct().emit_sv(self);
         }
         // Flush any trailing comments after the last item.
         let end = usize::MAX;
@@ -320,7 +303,7 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    fn emit_domain(&mut self, d: &DomainDecl) {
+    pub(crate) fn emit_domain(&mut self, d: &DomainDecl) {
         self.line(&format!("// domain {}", d.name.name));
         for field in &d.fields {
             self.line(&format!("//   {}: {}", field.name.name, self.emit_expr_str(&field.value)));
@@ -497,7 +480,7 @@ impl<'a> Codegen<'a> {
         self.line("end");
     }
 
-    fn emit_package(&mut self, pkg: &PackageDecl) {
+    pub(crate) fn emit_package(&mut self, pkg: &PackageDecl) {
         self.line(&format!("package {};", pkg.name.name));
         self.indent += 1;
 
@@ -529,7 +512,7 @@ impl<'a> Codegen<'a> {
         self.line("");
     }
 
-    fn emit_struct(&mut self, s: &StructDecl) {
+    pub(crate) fn emit_struct(&mut self, s: &StructDecl) {
         // Canonical ARCH packed-struct bit layout: first-declared field = MSB,
         // last-declared field = LSB — matching SV's `struct packed` convention
         // (fields listed top-to-bottom inside `struct packed { ... }` are emitted
@@ -545,7 +528,7 @@ impl<'a> Codegen<'a> {
         self.line("");
     }
 
-    fn emit_enum(&mut self, e: &EnumDecl) {
+    pub(crate) fn emit_enum(&mut self, e: &EnumDecl) {
         // Compute effective values: explicit where provided, auto-sequential otherwise
         let effective_values: Vec<u64> = e.values.iter().enumerate().map(|(i, v)| {
             v.as_ref().and_then(|expr| match &expr.kind {

@@ -59,7 +59,7 @@ impl<'a> Codegen<'a> {
 
     // ── FSM ───────────────────────────────────────────────────────────────────
 
-    pub(super) fn emit_pipeline(&mut self, p: &PipelineDecl) {
+    pub(crate) fn emit_pipeline(&mut self, p: &PipelineDecl) {
         self.current_construct = p.name.name.clone();
         let n = &p.name.name;
 

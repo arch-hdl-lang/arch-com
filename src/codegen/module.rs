@@ -7,7 +7,7 @@
 use super::*;
 
 impl<'a> Codegen<'a> {
-    pub(super) fn emit_module(&mut self, m: &ModuleDecl) {
+    pub(crate) fn emit_module(&mut self, m: &ModuleDecl) {
         self.current_construct = m.name.name.clone();
         // Emit SV `import NAME::*;` only for `use NAME;` whose target is an
         // actual `package` — package contents become an SV package and need

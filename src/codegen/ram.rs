@@ -7,7 +7,7 @@
 use super::*;
 
 impl<'a> Codegen<'a> {
-    pub(super) fn emit_ram(&mut self, r: &RamDecl) {
+    pub(crate) fn emit_ram(&mut self, r: &RamDecl) {
         use crate::ast::{RamKind, RamInit};
 
         // Resolve DATA_WIDTH from WIDTH type param

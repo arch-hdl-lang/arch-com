@@ -7,7 +7,7 @@
 use super::*;
 
 impl<'a> Codegen<'a> {
-    pub(super) fn emit_fifo(&mut self, f: &FifoDecl) {
+    pub(crate) fn emit_fifo(&mut self, f: &FifoDecl) {
         use crate::resolve::detect_async_fifo;
         let is_async = detect_async_fifo(&f.ports);
 

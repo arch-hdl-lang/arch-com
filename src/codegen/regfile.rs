@@ -10,7 +10,7 @@
 use super::*;
 
 impl<'a> Codegen<'a> {
-    pub(super) fn emit_regfile(&mut self, r: &crate::ast::RegfileDecl) {
+    pub(crate) fn emit_regfile(&mut self, r: &crate::ast::RegfileDecl) {
         use crate::ast::ParamKind;
         let n = &r.name.name.clone();
 
