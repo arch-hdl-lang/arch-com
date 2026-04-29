@@ -7,7 +7,7 @@
 use super::*;
 
 impl<'a> Codegen<'a> {
-    pub(super) fn emit_linklist(&mut self, l: &crate::ast::LinklistDecl) {
+    pub(crate) fn emit_linklist(&mut self, l: &crate::ast::LinklistDecl) {
         use crate::ast::LinklistKind;
         let n = &l.name.name;
         let is_doubly = matches!(l.kind, LinklistKind::Doubly | LinklistKind::CircularDoubly);

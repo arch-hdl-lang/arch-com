@@ -4,7 +4,7 @@
 use super::*;
 
 impl<'a> Codegen<'a> {
-    pub(super) fn emit_synchronizer(&mut self, s: &SynchronizerDecl) {
+    pub(crate) fn emit_synchronizer(&mut self, s: &SynchronizerDecl) {
         let n = &s.name.name;
 
         // Resolve STAGES (default 2)

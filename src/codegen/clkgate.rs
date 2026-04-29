@@ -4,7 +4,7 @@
 use super::*;
 
 impl<'a> Codegen<'a> {
-    pub(super) fn emit_clkgate(&mut self, c: &crate::ast::ClkGateDecl) {
+    pub(crate) fn emit_clkgate(&mut self, c: &crate::ast::ClkGateDecl) {
         let n = &c.name.name;
 
         // Find port names

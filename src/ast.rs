@@ -1117,6 +1117,13 @@ pub trait Construct {
     /// construct that has type rules overrides this to call its
     /// specific `TypeChecker::check_*` method.
     fn typecheck(&self, _checker: &mut crate::typecheck::TypeChecker) {}
+
+    /// Emit SystemVerilog for this construct. Default is a no-op,
+    /// matching the original `Item::Function(_) | Item::Template(_) |
+    /// Item::Bus(_) | Item::Use(_) => {}` arms — `function` is emitted
+    /// inside each module body, `template` is compile-time-only,
+    /// `bus` flattens at port sites, and `use` is an import directive.
+    fn emit_sv(&self, _codegen: &mut crate::codegen::Codegen) {}
 }
 
 // ── Construct trait impls ────────────────────────────────────────────────────
@@ -1134,7 +1141,7 @@ pub trait Construct {
 /// optional in any order. Without them, the trait defaults apply
 /// (`emit_interface` returns `None`, `typecheck` is a no-op).
 macro_rules! impl_construct_via_common {
-    ($ty:ty, $label:expr $(, iface = $iface:path)? $(, check = $check:ident)?) => {
+    ($ty:ty, $label:expr $(, iface = $iface:path)? $(, check = $check:ident)? $(, emit_sv = $emit_sv:ident)?) => {
         impl Construct for $ty {
             fn kind_label(&self) -> &'static str { $label }
             fn name(&self)      -> &Ident         { &self.common.name }
@@ -1143,6 +1150,7 @@ macro_rules! impl_construct_via_common {
             fn inner_doc(&self) -> Option<&str>   { self.common.inner_doc.as_deref() }
             $(fn emit_interface(&self) -> Option<String> { Some($iface(self)) })?
             $(fn typecheck(&self, c: &mut crate::typecheck::TypeChecker) { c.$check(self); })?
+            $(fn emit_sv(&self, c: &mut crate::codegen::Codegen) { c.$emit_sv(self); })?
         }
     };
 }
@@ -1151,7 +1159,7 @@ macro_rules! impl_construct_via_common {
 /// `doc` / `inner_doc` directly. Same optional-arg pattern as the
 /// via-common variant.
 macro_rules! impl_construct_direct {
-    ($ty:ty, $label:expr $(, iface = $iface:path)? $(, check = $check:ident)?) => {
+    ($ty:ty, $label:expr $(, iface = $iface:path)? $(, check = $check:ident)? $(, emit_sv = $emit_sv:ident)?) => {
         impl Construct for $ty {
             fn kind_label(&self) -> &'static str { $label }
             fn name(&self)      -> &Ident         { &self.name }
@@ -1160,29 +1168,30 @@ macro_rules! impl_construct_direct {
             fn inner_doc(&self) -> Option<&str>   { self.inner_doc.as_deref() }
             $(fn emit_interface(&self) -> Option<String> { Some($iface(self)) })?
             $(fn typecheck(&self, c: &mut crate::typecheck::TypeChecker) { c.$check(self); })?
+            $(fn emit_sv(&self, c: &mut crate::codegen::Codegen) { c.$emit_sv(self); })?
         }
     };
 }
 
-impl_construct_direct!(ModuleDecl,           "module",       iface = crate::interface::emit_module_interface,       check = check_module);
-impl_construct_via_common!(FsmDecl,          "fsm",          iface = crate::interface::emit_fsm_interface,          check = check_fsm);
-impl_construct_via_common!(FifoDecl,         "fifo",         iface = crate::interface::emit_fifo_interface,         check = check_fifo);
-impl_construct_via_common!(RamDecl,          "ram",          iface = crate::interface::emit_ram_interface,          check = check_ram);
-impl_construct_via_common!(CamDecl,          "cam",                                                                 check = check_cam);
-impl_construct_via_common!(CounterDecl,      "counter",      iface = crate::interface::emit_counter_interface,      check = check_counter);
-impl_construct_via_common!(ArbiterDecl,      "arbiter",      iface = crate::interface::emit_arbiter_interface,      check = check_arbiter);
-impl_construct_via_common!(RegfileDecl,      "regfile",      iface = crate::interface::emit_regfile_interface,      check = check_regfile);
-impl_construct_via_common!(PipelineDecl,     "pipeline",     iface = crate::interface::emit_pipeline_interface,     check = check_pipeline);
-impl_construct_via_common!(LinklistDecl,     "linklist",     iface = crate::interface::emit_linklist_interface,     check = check_linklist);
+impl_construct_direct!(ModuleDecl,           "module",       iface = crate::interface::emit_module_interface,       check = check_module,       emit_sv = emit_module);
+impl_construct_via_common!(FsmDecl,          "fsm",          iface = crate::interface::emit_fsm_interface,          check = check_fsm,          emit_sv = emit_fsm);
+impl_construct_via_common!(FifoDecl,         "fifo",         iface = crate::interface::emit_fifo_interface,         check = check_fifo,         emit_sv = emit_fifo);
+impl_construct_via_common!(RamDecl,          "ram",          iface = crate::interface::emit_ram_interface,          check = check_ram,          emit_sv = emit_ram);
+impl_construct_via_common!(CamDecl,          "cam",                                                                 check = check_cam,          emit_sv = emit_cam);
+impl_construct_via_common!(CounterDecl,      "counter",      iface = crate::interface::emit_counter_interface,      check = check_counter,      emit_sv = emit_counter);
+impl_construct_via_common!(ArbiterDecl,      "arbiter",      iface = crate::interface::emit_arbiter_interface,      check = check_arbiter,      emit_sv = emit_arbiter);
+impl_construct_via_common!(RegfileDecl,      "regfile",      iface = crate::interface::emit_regfile_interface,      check = check_regfile,      emit_sv = emit_regfile);
+impl_construct_via_common!(PipelineDecl,     "pipeline",     iface = crate::interface::emit_pipeline_interface,     check = check_pipeline,     emit_sv = emit_pipeline);
+impl_construct_via_common!(LinklistDecl,     "linklist",     iface = crate::interface::emit_linklist_interface,     check = check_linklist,     emit_sv = emit_linklist);
 
-impl_construct_direct!(DomainDecl,           "domain",                                                              check = check_domain);
-impl_construct_direct!(StructDecl,           "struct",       iface = crate::interface::emit_struct,                 check = check_struct);
-impl_construct_direct!(EnumDecl,             "enum",         iface = crate::interface::emit_enum,                   check = check_enum);
+impl_construct_direct!(DomainDecl,           "domain",                                                              check = check_domain,       emit_sv = emit_domain);
+impl_construct_direct!(StructDecl,           "struct",       iface = crate::interface::emit_struct,                 check = check_struct,       emit_sv = emit_struct);
+impl_construct_direct!(EnumDecl,             "enum",         iface = crate::interface::emit_enum,                   check = check_enum,         emit_sv = emit_enum);
 impl_construct_direct!(FunctionDecl,         "function",                                                            check = check_function);
-impl_construct_direct!(SynchronizerDecl,     "synchronizer", iface = crate::interface::emit_synchronizer_interface, check = check_synchronizer);
-impl_construct_direct!(ClkGateDecl,          "clkgate",      iface = crate::interface::emit_clkgate_interface,      check = check_clkgate);
+impl_construct_direct!(SynchronizerDecl,     "synchronizer", iface = crate::interface::emit_synchronizer_interface, check = check_synchronizer, emit_sv = emit_synchronizer);
+impl_construct_direct!(ClkGateDecl,          "clkgate",      iface = crate::interface::emit_clkgate_interface,      check = check_clkgate,      emit_sv = emit_clkgate);
 impl_construct_direct!(BusDecl,              "bus",          iface = crate::interface::emit_bus_interface,          check = check_bus);
-impl_construct_direct!(PackageDecl,          "package",      iface = crate::interface::emit_package_interface,      check = check_package);
+impl_construct_direct!(PackageDecl,          "package",      iface = crate::interface::emit_package_interface,      check = check_package,      emit_sv = emit_package);
 impl_construct_direct!(TemplateDecl,         "template",                                                            check = check_template);
 
 // `Use` has only `doc` — no inner doc (single-line decl).

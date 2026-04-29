@@ -7,7 +7,7 @@
 use super::*;
 
 impl<'a> Codegen<'a> {
-    pub(super) fn emit_counter(&mut self, c: &crate::ast::CounterDecl) {
+    pub(crate) fn emit_counter(&mut self, c: &crate::ast::CounterDecl) {
         use crate::ast::{CounterMode, CounterDirection};
 
         let n = &c.name.name.clone();

@@ -7,7 +7,7 @@
 use super::*;
 
 impl<'a> Codegen<'a> {
-    pub(super) fn emit_arbiter(&mut self, a: &crate::ast::ArbiterDecl) {
+    pub(crate) fn emit_arbiter(&mut self, a: &crate::ast::ArbiterDecl) {
         use crate::ast::ArbiterPolicy;
 
         let n = &a.name.name.clone();

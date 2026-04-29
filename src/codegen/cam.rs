@@ -7,7 +7,7 @@
 use super::*;
 
 impl<'a> Codegen<'a> {
-    pub(super) fn emit_cam(&mut self, c: &crate::ast::CamDecl) {
+    pub(crate) fn emit_cam(&mut self, c: &crate::ast::CamDecl) {
         let n = c.name.name.clone();
 
         // Required params (validated by typecheck): DEPTH, KEY_W

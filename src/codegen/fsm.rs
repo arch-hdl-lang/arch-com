@@ -7,7 +7,7 @@
 use super::*;
 
 impl<'a> Codegen<'a> {
-    pub(super) fn emit_fsm(&mut self, f: &FsmDecl) {
+    pub(crate) fn emit_fsm(&mut self, f: &FsmDecl) {
         self.current_construct = f.name.name.clone();
         // Built-in `state` identifier inside fsm scope: read of the current
         // encoded state register. SV emission lowers to `state_r` (the enum
