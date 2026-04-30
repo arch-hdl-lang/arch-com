@@ -1,0 +1,46 @@
+// M2 (CDC reconvergence, part-select): like M1 but the splitting is
+// done with bit-extract on a UInt source rather than Vec indexing.
+// Same source register, two synchronisers, same destination clock
+// domain — same hazard.
+
+domain Src
+  freq_mhz: 100
+end domain Src
+
+domain Dst
+  freq_mhz: 200
+end domain Dst
+
+synchronizer BitSync
+  kind ff;
+  param STAGES: const = 2;
+  port src_clk:  in Clock<Src>;
+  port dst_clk:  in Clock<Dst>;
+  port data_in:  in UInt<1>;
+  port data_out: out UInt<1>;
+end synchronizer BitSync
+
+module M
+  port src_clk: in Clock<Src>;
+  port dst_clk: in Clock<Dst>;
+  port word:    in UInt<8>;
+  port out_a:   out UInt<1>;
+  port out_b:   out UInt<1>;
+
+  inst sync_a: BitSync
+    src_clk  <- src_clk;
+    dst_clk  <- dst_clk;
+    data_in  <- word[0];
+    data_out -> bit_a;
+  end inst sync_a
+
+  inst sync_b: BitSync
+    src_clk  <- src_clk;
+    dst_clk  <- dst_clk;
+    data_in  <- word[1];
+    data_out -> bit_b;
+  end inst sync_b
+
+  let out_a = bit_a;
+  let out_b = bit_b;
+end module M

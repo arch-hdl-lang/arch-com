@@ -1235,7 +1235,7 @@ Every Clock signal in Arch carries a domain tag as part of its type. The compile
 
 > *⚑ The compiler generates a verified synchroniser for each crossing declaration. Engineers choose the policy; correctness of the CDC structure is guaranteed by the language, not by convention or code review.*
 
-**5.2a Reconvergent CDC Path Detection** *(partially shipped — see §5.4 phase 2c)*
+**5.2a Reconvergent CDC Path Detection** *(shipped — see §5.4 phase 2c)*
 
 A reconvergent CDC hazard occurs when multiple bits of a source-domain signal cross independently through separate synchronizers, then recombine in the destination domain. Each bit is individually synchronized, but they may arrive on different clock cycles, causing the receiver to see a value that never existed in the source domain.
 
@@ -1266,7 +1266,7 @@ The compiler will detect this by:
 
 The compiler already warns when `kind ff` is used on multi-bit data (suggesting `kind gray` or `kind handshake`). Reconvergent path detection extends this to catch the case where a designer splits a multi-bit signal into individual bits and synchronizes each separately.
 
-> *⚑ The **same-source** case (a single ident driving multiple synchronisers landing in the same destination domain) is detected today by the §5.4 phase-2c reconvergent-sync check, which covers RDC and CDC variants uniformly. The full **bit-slice** case from the example above (`data[0]` and `data[1]` traced back to the same source register through bit-slice expressions) requires the additional source-tracing pass described in steps 1–3 and is still planned.*
+> *⚑ Detected by the §5.4 phase-2c reconvergent-sync check, which covers RDC and CDC variants uniformly. Each synchroniser's `data_in` connection is walked through bit-slice (`x[i]`, `x[hi:lo]`, `x[s +: w]`), concat (`{a, b}`), unary/binary operators, ternary, function/method calls, and `let`-binding indirection back to its terminal source register(s). Two synchronisers in the same destination domain that share at least one terminal source — even after splitting via different combinational paths — trip the same diagnostic. Closes the Aldec article 2140 patterns (bit-slice splitting, common-source register, comb-fanout).*
 
 **5.3 Clock Output Ports**
 
