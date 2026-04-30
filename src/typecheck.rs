@@ -839,7 +839,10 @@ impl<'a> TypeChecker<'a> {
             } else { None })
             .collect();
 
-        if clk_domain.len() >= 2 && !m.cdc_safe {
+        // Phase 1 RDC + the surrounding CDC pass share this gate.
+        // `pragma cdc_safe;` opts out of CDC + phase 1 (legacy);
+        // `pragma rdc_safe;` opts out of phase 1 too (unified RDC opt-out).
+        if clk_domain.len() >= 2 && !m.cdc_safe && !m.rdc_safe {
             // Build reg → domain map (which domain drives each register)
             let mut reg_domain: HashMap<String, String> = HashMap::new();
             for item in &m.body {
@@ -1017,9 +1020,14 @@ impl<'a> TypeChecker<'a> {
         // concern). A future `pragma rdc_safe;` annotation will be the
         // dedicated opt-out; for now, fix the design or refactor the
         // resets through synchronizers.
-        self.check_rdc_phase2a(m);
-        self.check_reconvergent_syncs(m);
-        self.check_rdc_combiner_at_inst(m);
+        // `pragma rdc_safe;` blanket-suppresses every data-flow / boundary
+        // RDC check (phases 2a–2d). The cross-clock structural rule
+        // (phase 1, gated above) honours this pragma too.
+        if !m.rdc_safe {
+            self.check_rdc_phase2a(m);
+            self.check_reconvergent_syncs(m);
+            self.check_rdc_combiner_at_inst(m);
+        }
 
         // Validate `implements` template conformance
         if let Some(ref tmpl_name) = m.implements {

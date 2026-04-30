@@ -1,0 +1,26 @@
+// L1: `pragma rdc_safe;` suppresses phase 2a (data-path RDC). Without
+// the pragma this would flag — async ra → sync rb is the canonical
+// strict-rule violation. The pragma documents that the design has
+// been externally analysed and the writer accepts the risk.
+
+domain D
+  freq_mhz: 100
+end domain D
+
+module M
+  pragma rdc_safe;
+  port clk:   in Clock<D>;
+  port rst_a: in Reset<Async>;
+  port rst_b: in Reset<Sync>;
+  port d:     in UInt<8>;
+  port q:     out UInt<8>;
+  reg ra: UInt<8> reset rst_a => 0;
+  reg rb: UInt<8> reset rst_b => 0;
+  seq on clk rising
+    ra <= d;
+  end seq
+  seq on clk rising
+    rb <= ra;
+  end seq
+  let q = rb;
+end module M

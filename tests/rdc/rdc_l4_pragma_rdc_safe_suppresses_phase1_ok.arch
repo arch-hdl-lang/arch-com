@@ -1,0 +1,30 @@
+// L4: `pragma rdc_safe;` also suppresses phase 1 (cross-clock async
+// reset). This is the same suppression `pragma cdc_safe;` provides
+// for the structural rule, available now via the dedicated pragma.
+
+domain DA
+  freq_mhz: 100
+end domain DA
+domain DB
+  freq_mhz: 200
+end domain DB
+module M
+  pragma rdc_safe;
+  port clk_a: in Clock<DA>;
+  port clk_b: in Clock<DB>;
+  port rst:   in Reset<Async>;
+  port da: in UInt<8>;
+  port db: in UInt<8>;
+  port qa: out UInt<8>;
+  port qb: out UInt<8>;
+  reg ra: UInt<8> reset rst => 0;
+  reg rb: UInt<8> reset rst => 0;
+  seq on clk_a rising
+    ra <= da;
+  end seq
+  seq on clk_b rising
+    rb <= db;
+  end seq
+  let qa = ra;
+  let qb = rb;
+end module M
