@@ -1,0 +1,44 @@
+// D1: an async reset cannot be shared across two clock domains, even when
+// there is no data path between flops in those domains.
+//
+// The hazard: an async reset synchroniser produces a deassertion edge that
+// is synchronous to ONE clock domain (the one it was synced into). Any flop
+// in a different clock domain that names this signal as its reset sees an
+// unsynchronised deassertion edge — exactly the original RDC hazard the
+// synchroniser was supposed to remove.
+//
+// Therefore: each receiving clock domain must have its own reset
+// synchroniser instance and its own per-domain Reset<Async> port. The same
+// rule applies whether `rst` here is a raw chip-level input OR the output
+// of a `synchronizer kind reset` upstream — neither version is valid for
+// reuse across domains.
+//
+// Phase 1 catches this structurally (no data-path analysis required).
+// The phase-2a data-path rule alone would NOT catch it, because no flop
+// in DA reads from a flop in DB.
+
+domain DA
+  freq_mhz: 100
+end domain DA
+domain DB
+  freq_mhz: 200
+end domain DB
+module M
+  port clk_a: in Clock<DA>;
+  port clk_b: in Clock<DB>;
+  port rst:   in Reset<Async>;
+  port da: in UInt<8>;
+  port db: in UInt<8>;
+  port qa: out UInt<8>;
+  port qb: out UInt<8>;
+  reg ra: UInt<8> reset rst => 0;
+  reg rb: UInt<8> reset rst => 0;
+  seq on clk_a rising
+    ra <= da;
+  end seq
+  seq on clk_b rising
+    rb <= db;
+  end seq
+  let qa = ra;
+  let qb = rb;
+end module M

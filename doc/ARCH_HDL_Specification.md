@@ -1308,9 +1308,9 @@ A reset's domain is **inferred from usage**: it equals the clock domain of the r
 
 **RDC violations detected at compile time (shipped):**
 
-1. **Cross-clock-domain async reset** — an `Reset<Async, ...>` port appears in the reset clause of registers in two different clock domains. The deassertion edge of the reset is not synchronised to either receiving clock, so the receiving flops can sample mid-deassertion and become metastable.
+1. **Cross-clock-domain async reset** — an `Reset<Async, ...>` signal appears in the reset clause of registers in two different clock domains. An async reset signal is *bound to one clock domain* — the one its deassertion edge was synchronised to. Reusing it in a second domain re-creates the original RDC hazard there, regardless of whether the data paths in the two domains interact.
 
-The fix is `synchronizer kind reset` (deassertion synchroniser) per receiving domain, or — if the reset really is meant to be shared — explicit `cdc_safe` on the module to suppress the check.
+The check is intentionally insensitive to data flow because the rule applies even when each domain's flop subset is independent. The fix is one `synchronizer kind reset` instance per receiving clock domain, each driving its own per-domain `Reset<Async>` port. The same rule applies when the upstream signal is itself a synchroniser output: a `synchronizer kind reset` for clock A is *not* valid as a reset source for clock B's flops — synchronisation is per-destination-domain. Use `pragma cdc_safe;` on the module to opt out only when the design has been externally analysed and the reuse is provably safe.
 
 **Scope intentionally narrow in v1:**
 

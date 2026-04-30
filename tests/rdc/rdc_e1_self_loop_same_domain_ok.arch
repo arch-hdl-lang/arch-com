@@ -1,0 +1,13 @@
+domain D
+  freq_mhz: 100
+end domain D
+module M
+  port clk: in Clock<D>;
+  port rst_a: in Reset<Async>;
+  port q: out UInt<8>;
+  reg ra: UInt<8> reset rst_a => 0;
+  seq on clk rising
+    ra <= (ra + 1).trunc<8>();
+  end seq
+  let q = ra;
+end module M
