@@ -18,9 +18,10 @@ tests/rdc/run_rdc.sh c1              # filter by substring
 Output classes:
 
 - `PASS` — outcome matches the filename suffix
-- `XFAIL` — `*_fail.arch` whose violation depends on the phase-2a data-path
-  reach analysis (not yet implemented). Listed in `PHASE_2A_PENDING` inside
-  the runner. Will flip to `PASS` once phase 2a lands.
+- `XFAIL` — `*_fail.arch` whose violation depends on a not-yet-implemented
+  RDC phase. Listed in `PHASE_2A_PENDING` inside the runner. Currently empty
+  (phase 2a shipped 2026-04-30). Re-add entries when scoping a follow-up
+  phase (e.g. phase 2b clkgate, phase 2c reconvergent, phase 2d cross-inst).
 - `FAIL` — outcome doesn't match the filename suffix; investigate.
 
 ## Coverage map
@@ -43,20 +44,20 @@ async-reset flop.
 | File | Class | Expected | Currently |
 |---|---|---|---|
 | `rdc_a1_same_async_direct_ok.arch` | direct edge, same domain | ok | PASS |
-| `rdc_a2_diff_async_direct_fail.arch` | direct cross-domain | fail | XFAIL (phase 2a) |
+| `rdc_a2_diff_async_direct_fail.arch` | direct cross-domain | fail | PASS (phase 2a) |
 | `rdc_a3_async_to_sync_ok.arch` | async → sync (transparent) | ok | PASS |
 | `rdc_a4_async_to_none_ok.arch` | async → reset-none | ok | PASS |
 | `rdc_a5_sync_source_ok.arch` | sync source, no async upstream | ok | PASS |
-| `rdc_b1_async_none_async_diff_fail.arch` | reset-less bridge, diff async | fail | XFAIL (phase 2a) |
+| `rdc_b1_async_none_async_diff_fail.arch` | reset-less bridge, diff async | fail | PASS (phase 2a) |
 | `rdc_b2_async_none_async_same_ok.arch` | reset-less bridge, same async | ok | PASS |
-| `rdc_b3_async_sync_async_diff_fail.arch` | sync intermediate, diff async | fail | XFAIL (phase 2a) |
-| `rdc_c1_two_async_converge_at_none_fail.arch` | two domains converge at none | fail | XFAIL (phase 2a) |
+| `rdc_b3_async_sync_async_diff_fail.arch` | sync intermediate, diff async | fail | PASS (phase 2a) |
+| `rdc_c1_two_async_converge_at_none_fail.arch` | two domains converge at none | fail | PASS (phase 2a) |
 | `rdc_c2_two_same_domain_converge_ok.arch` | same domain converges at none | ok | PASS |
 | `rdc_c3_async_plus_port_at_none_ok.arch` | port input + async → none | ok | PASS |
 | `rdc_d1_same_async_two_clocks_no_data_path_fail.arch` | shared async across two clocks (any data path) | fail | PASS (phase 1 catches) |
-| `rdc_d2_diff_async_diff_clocks_with_path_fail.arch` | cross-clock with data path | fail | XFAIL (phase 2a) |
+| `rdc_d2_diff_async_diff_clocks_with_path_fail.arch` | cross-clock with data path | fail | PASS (phase 2a) |
 | `rdc_e1_self_loop_same_domain_ok.arch` | self-loop, same domain | ok | PASS |
-| `rdc_e2_mutual_feedback_diff_domains_fail.arch` | mutual feedback, diff domains | fail | XFAIL (phase 2a) |
+| `rdc_e2_mutual_feedback_diff_domains_fail.arch` | mutual feedback, diff domains | fail | PASS (phase 2a) |
 | `rdc_f1_single_async_domain_ok.arch` | sanity: one domain, several flops | ok | PASS |
 | `rdc_f2_no_async_flops_ok.arch` | sanity: no async resets at all | ok | PASS |
 

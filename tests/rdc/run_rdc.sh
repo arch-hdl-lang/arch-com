@@ -27,16 +27,10 @@ if [[ ! -x "$ARCH_BIN" ]]; then
 fi
 
 # Scenarios whose violation depends on phase-2a data-path analysis.
-# Until that lands, `arch check` won't reject them; treat as XFAIL so
-# the script reports useful status without going red.
-PHASE_2A_PENDING=(
-  rdc_a2_diff_async_direct_fail
-  rdc_b1_async_none_async_diff_fail
-  rdc_b3_async_sync_async_diff_fail
-  rdc_c1_two_async_converge_at_none_fail
-  rdc_d2_diff_async_diff_clocks_with_path_fail
-  rdc_e2_mutual_feedback_diff_domains_fail
-)
+# Phase 2a shipped 2026-04-30; the list is now empty. Re-add an entry
+# here if a future scenario needs to be marked XFAIL pending follow-up
+# work (phase 2b clkgate, phase 2c reconvergent, phase 2d cross-inst).
+PHASE_2A_PENDING=()
 
 is_phase2a_pending() {
   local name="$1"

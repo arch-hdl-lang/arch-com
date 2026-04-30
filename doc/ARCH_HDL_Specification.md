@@ -1304,33 +1304,45 @@ A `Clock<>` output port emits `output logic` in SV and may be driven by a `comb`
 
 **5.4 Reset Domain Crossing (RDC)**
 
-A reset's domain is **inferred from usage**: it equals the clock domain of the registers that consume it as a reset signal. There is no explicit `Domain` annotation on `Reset<>` — the type stays `Reset<Kind, Polarity>`. A single async reset port wired into registers driven by two different clock domains is the violation.
+A reset's domain is **inferred from usage** — there is no explicit `Domain` annotation on `Reset<>`; the type stays `Reset<Kind, Polarity>`. The compiler treats each async reset signal as originating its own domain (by name). Sync and reset-none flops are *transparent* to the analysis: they originate no domain themselves, just propagate whatever async domains reach their data input. The metastability "chain" only breaks at another async-reset flop.
 
 **RDC violations detected at compile time (shipped):**
 
-1. **Cross-clock-domain async reset** — an `Reset<Async, ...>` signal appears in the reset clause of registers in two different clock domains. An async reset signal is *bound to one clock domain* — the one its deassertion edge was synchronised to. Reusing it in a second domain re-creates the original RDC hazard there, regardless of whether the data paths in the two domains interact.
+1. **Cross-clock-domain async reset (structural, phase 1).** An `Reset<Async, ...>` signal appears in the reset clause of registers in two different clock domains. An async reset signal is *bound to one clock domain* — the one its deassertion edge was synchronised to. Reusing it in a second domain re-creates the original RDC hazard there, regardless of whether the data paths in the two domains interact. The check is data-flow-insensitive because the rule applies even when each domain's flop subset is independent. The same rule applies when the upstream signal is itself a synchroniser output: a `synchronizer kind reset` for clock A is *not* valid as a reset source for clock B's flops — synchronisation is per-destination-domain. The fix is one synchroniser instance per receiving clock domain, each driving its own per-domain `Reset<Async>` port. Suppress with `pragma cdc_safe;`.
 
-The check is intentionally insensitive to data flow because the rule applies even when each domain's flop subset is independent. The fix is one `synchronizer kind reset` instance per receiving clock domain, each driving its own per-domain `Reset<Async>` port. The same rule applies when the upstream signal is itself a synchroniser output: a `synchronizer kind reset` for clock A is *not* valid as a reset source for clock B's flops — synchronisation is per-destination-domain. Use `pragma cdc_safe;` on the module to opt out only when the design has been externally analysed and the reuse is provably safe.
+2. **Cross-async-reset-domain data path (data-flow, phase 2a).** Per-flop reach-set analysis catches the cases phase 1 misses:
 
-**Scope intentionally narrow in v1:**
+   ```
+   reach[f] = { f.reset }            if f.reset_kind == Async
+            = ⋃ reach[srcs]            otherwise
+
+   violation:
+     f.Async       and any reach[src] contains a domain ≠ f.reset
+     f.{Sync,None} and |reach[f]| > 1
+   ```
+
+   Captures three concrete sub-classes:
+   - **Same-clock multi-reset metastability** — `reg ra: reset rst_a (async)` driving `reg rb: reset rst_b (async)` under one clock. The asynchronous assertion of `rst_a` can metastabilise `rb` even though both are clocked by the same `clk`.
+   - **Reset-less sequential paths** — a chain of `reset none` flops between two async-reset domains. The reset-less flops don't absorb the metastability; reach propagates through them and the chain trips at the next async-reset flop.
+   - **Convergent reset-less paths** — multiple async-reset domains feeding a single `reset none` register. The reach set has > 1 domain → flagged at the convergence point.
+
+   Tests live in `tests/rdc/` (also in `tests/integration_test.rs` `rdc_*` functions). The fix is `synchronizer kind reset` between the source and the target domain, or a domain change at a register that captures only one domain. Phase 2a is intentionally **not** gated by `pragma cdc_safe;` — that pragma silences CDC and the phase-1 cross-clock structural RDC check, but the data-path hazard is structurally distinct (single-clock multi-reset trips it without any CDC concern). A future `pragma rdc_safe;` will be the dedicated opt-out.
+
+**Scope intentionally narrow:**
 
 - **Async resets only.** Cross-domain `Reset<Sync>` is technically a CDC concern (reset signal propagates through the clock and is treated like data), but in practice rarely a real bug — sync resets meet timing through the receiving clock and don't have the deassertion-edge race that makes async cross-domain reset dangerous.
-- **`module` constructs only.** Synchronizer and FIFO constructs are themselves the escape hatches and run their own internal CDC handling.
-- **Multi-clock-domain modules only.** Single-domain modules can't have RDC by construction.
+- **`module` constructs only.** Synchronizer and FIFO constructs are themselves the escape hatches and run their own internal CDC/RDC handling.
+- **In-module data flow only (phase 2a).** Cross-instance flow (`inst sub: M; … <- regs in another instance`) is not yet traced — that's phase 2d.
 
-**Known limitations (TODO — full reset-domain graph analysis):**
+**Known limitations (TODO — phases 2b – 2d):**
 
-The current check models reset-domain ≡ clock-domain. That covers the most common RDC bug class (an async reset feeding flops in two different clock domains) but misses the bug classes catalogued in mainstream RDC literature:
+Three RDC bug classes catalogued in mainstream literature still aren't covered:
 
-1. **Same-clock multi-reset metastability.** A flop reset by `por_rst` driving a flop reset by `soft_rst`, both clocked by the same `clk`. Under the current model both flops are "in the same domain," so no error fires — but the underlying SV still has two distinct reset signals and the metastability hazard remains real if either is asynchronous.
-2. **Reset-less sequential paths.** A pipeline of `reset none` flops between two reset-domain boundaries lets metastability cascade further than expected. The check ignores reset-less flops entirely.
-3. **Reset-driven clock gating.** A flop reset by an async signal driving a `clkgate` enable causes clock glitches. We don't analyse paths into clock-gating cells.
-4. **Reconvergent RDC ("loss of functional correlation").** A single async reset routed through two distinct deassertion synchronizers, then reconverging on logic in the receiving domain — the two synchronized versions can deassert on different cycles, leaving downstream logic in inconsistent state. Symmetric to reconvergent CDC; same trace-back-through-synchronizers analysis would handle both.
-5. **Async-reset glitches from multi-source combiners.** `rst_combined = rst_a | rst_b` (or any combinational reset combiner) produces transient pulses on edge skew between the inputs. Partially prevented today by the type system — `Reset` is not a `let`/`comb`-assignable type in ARCH, so you can't write the combiner inside a module — but the hazard can still enter through an external `Reset` input port driven by such logic in the parent.
+1. **Reset-driven clock gating (phase 2b).** A flop reset by an async signal driving a `clkgate` enable causes clock glitches. We don't analyse paths into clock-gating cells.
+2. **Reconvergent RDC / "loss of functional correlation" (phase 2c).** A single async reset routed through two distinct deassertion synchronisers and then reconverging on logic in the receiving domain — the two synchronised versions can deassert on different cycles, leaving downstream logic in an inconsistent state. Symmetric to reconvergent CDC; the same trace-back-through-synchronisers analysis would handle both (see §5.2a).
+3. **Async-reset glitches from multi-source combiners (phase 2d).** `rst_combined = rst_a | rst_b` (or any combinational reset combiner) produces transient pulses on edge skew between the inputs. Partially prevented today by the type system — `Reset` is not a `let`/`comb`-assignable type in ARCH, so you can't write the combiner inside a module — but the hazard can still enter through an external `Reset` input port driven by such logic in the parent.
 
-Closing 1-3 requires graph-walking the data path between every flop pair and tracking each flop's individual reset signal as a domain (rather than collapsing to clock-domain). 4 reuses CDC's reconvergence-analysis machinery (also planned, see §5.2a). 5 requires either a stronger type rule (forbidding combinationally-driven Reset inputs) or a structural check at instance boundaries.
-
-Phase 2 will lift the model to enable 1, 2, and 4. Until then, designs that intentionally use multiple resets within a single clock domain or rely on combiner-derived async resets need external RDC checking (Synopsys SpyGlass, Cadence Conformal) for completeness.
+Until those phases land, designs that hit (1)–(3) need external RDC checking (Synopsys SpyGlass, Cadence Conformal) for completeness.
 
 **5.5 Tristate and Bidirectional I/O** *(planned)*
 

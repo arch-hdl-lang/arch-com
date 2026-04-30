@@ -7445,7 +7445,6 @@ end module M
 }
 
 #[test]
-#[ignore = "phase 2a — async cross-reset-domain data path not yet implemented"]
 fn rdc_a2_diff_async_direct_fails() {
     // ra (rst_a, async) → rb (rst_b, async); different async domains → FAIL.
     assert_rdc_fails("A2", r#"
@@ -7553,7 +7552,6 @@ end module M
 // ── Group B: 2-hop chains (the canonical reset-less / sync-bridge bug) ─────
 
 #[test]
-#[ignore = "phase 2a — async cross-reset-domain data path not yet implemented"]
 fn rdc_b1_async_none_async_diff_fails() {
     // ra (rst_a) → rx (none) → rb (rst_b). reach[rx]={rst_a};
     // reach[rb's src]={rst_a} ≠ rb.reset=rst_b → FAIL at rb.
@@ -7612,7 +7610,6 @@ end module M
 }
 
 #[test]
-#[ignore = "phase 2a — async cross-reset-domain data path not yet implemented"]
 fn rdc_b3_async_sync_async_diff_fails() {
     // Sync rx is transparent like none → still flagged.
     assert_rdc_fails("B3", r#"
@@ -7646,7 +7643,6 @@ end module M
 // ── Group C: convergence at non-async flop ─────────────────────────────────
 
 #[test]
-#[ignore = "phase 2a — async cross-reset-domain data path not yet implemented"]
 fn rdc_c1_two_async_converge_at_none_fails() {
     // ra (rst_a) and rb (rst_b) both feed rx (none).
     // reach[rx]={rst_a, rst_b} → FAIL at rx.
@@ -7771,7 +7767,6 @@ end module M
 }
 
 #[test]
-#[ignore = "phase 2a — async cross-reset-domain data path not yet implemented"]
 fn rdc_d2_diff_async_diff_clocks_with_path_fails() {
     // Two clocks, two async resets, data path between them → FAIL.
     // Module marks itself `cdc_safe` to opt out of the CDC check (which
@@ -7826,7 +7821,6 @@ end module M
 }
 
 #[test]
-#[ignore = "phase 2a — async cross-reset-domain data path not yet implemented"]
 fn rdc_e2_mutual_feedback_diff_domains_fails() {
     // ra ↔ rb across different async domains. Fixpoint converges with
     // reach[rb's src]={rst_a} and reach[ra's src]={rst_b}; both flagged.
