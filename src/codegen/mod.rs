@@ -3083,10 +3083,16 @@ impl<'a> Codegen<'a> {
                 // `(__name)[hi:lo]` as a syntax error). Concat is also accepted
                 // bare per SV-2009 §11.4.12 (concatenation with bit-select):
                 // Verilator rejects `({a, b})[hi:lo]` for the same reason.
+                // FunctionCall / MethodCall result bit-select is similarly
+                // accepted bare; `(func())[hi:lo]` is rejected by Verilator
+                // because bit-select doesn't compose with the parenthesized
+                // expression — but `func()[hi:lo]` is valid (function-call
+                // result is an "lvalue-like" form per the SV grammar).
                 let b = if matches!(base.kind, ExprKind::Ident(_) | ExprKind::SynthIdent(_, _)
                     | ExprKind::Literal(_)
                     | ExprKind::Index(_, _) | ExprKind::FieldAccess(_, _)
-                    | ExprKind::Concat(_)) { b }
+                    | ExprKind::Concat(_)
+                    | ExprKind::FunctionCall(_, _) | ExprKind::MethodCall(_, _, _)) { b }
                     else { format!("({})", b) };
                 // Try to emit indexed part-select: base[lo +: width]
                 if let Some(width) = Self::try_indexed_part_select(hi, lo) {
