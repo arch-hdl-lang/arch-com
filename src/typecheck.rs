@@ -3441,12 +3441,20 @@ impl<'a> TypeChecker<'a> {
     /// Check CDC violations across an instance boundary.
     /// Phase 2a RDC: data-path reset-domain crossing detection.
     ///
-    /// Per agreed semantic (option 1, sync flops transparent):
+    /// Sync and reset-none flops are *transparent* for propagation
+    /// (originate no domain, just forward whatever async domains reach
+    /// their data input). The strict textbook rule: a flop downstream
+    /// of an async-reset flop must itself be async-reset by the SAME
+    /// signal — sync and reset-none flops can't gate their data input
+    /// on the source's async reset event, so they capture mid-deassert
+    /// transients and propagate metastability downstream.
+    ///
     ///   reach[f] = { f.reset } if f.reset_kind == Async
     ///            = ⋃ reach[srcs] over data-flow sources otherwise
     ///   violation:
     ///     f.Async        and any reach[src] contains a domain ≠ f.reset
-    ///     f.{Sync,None}  and |reach[f]| > 1
+    ///     f.Sync         and reach[f] is non-empty
+    ///     f.None         and reach[f] is non-empty
     pub(crate) fn check_rdc_phase2a(&mut self, m: &ModuleDecl) {
         use std::collections::HashSet;
 
@@ -3671,9 +3679,12 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 _ => {
-                    // Sync / None flop: reach must be ≤ 1 domain.
+                    // Sync / None flop: any async reach is a violation.
+                    // The clock-edge capture isn't gated on the upstream's
+                    // async reset event, so mid-deassert transients land
+                    // in this flop and metastability propagates downstream.
                     let r = reach.get(name).cloned().unwrap_or_default();
-                    if r.len() > 1 {
+                    if !r.is_empty() {
                         let mut domains: Vec<String> = r.into_iter().collect();
                         domains.sort();
                         let kind_label = match info.reset_kind {
@@ -3681,13 +3692,20 @@ impl<'a> TypeChecker<'a> {
                             None => "reset-none",
                             Some(ResetKind::Async) => unreachable!(),
                         };
+                        let domain_phrase = if domains.len() == 1 {
+                            format!("async reset domain `{}`", domains[0])
+                        } else {
+                            format!("multiple async reset domains ({})",
+                                domains.iter().map(|d| format!("`{d}`")).collect::<Vec<_>>().join(", "))
+                        };
                         self.errors.push(CompileError::general(
                             &format!(
-                                "RDC violation: {kind_label} register `{name}` propagates \
-                                 multiple async reset domains ({}) into a single capture point. \
-                                 Add a `synchronizer kind reset` upstream so only one async \
-                                 reset domain reaches this register.",
-                                domains.iter().map(|d| format!("`{d}`")).collect::<Vec<_>>().join(", ")
+                                "RDC violation: {kind_label} register `{name}` captures data \
+                                 reaching from {domain_phrase}. The clock-edge capture is not \
+                                 gated on the upstream's async reset event, so mid-deassert \
+                                 transients metastabilise and propagate downstream. Either \
+                                 reset `{name}` async-by the same signal, or insert a \
+                                 `synchronizer kind reset` upstream."
                             ),
                             info.decl_span,
                         ));

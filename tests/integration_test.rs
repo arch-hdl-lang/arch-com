@@ -7471,10 +7471,12 @@ end module M
 }
 
 #[test]
-fn rdc_a3_async_to_sync_ok() {
-    // ra (rst_a, async) → rb (rst_b, sync). Sync is transparent → reach[rb's
-    // src]={rst_a}; rb originates no domain; |reach[rb]|=1 → no violation.
-    assert_rdc_ok("A3", r#"
+fn rdc_a3_async_to_sync_fails() {
+    // ra (rst_a, async) → rb (rst_b, sync). Strict rule: sync is
+    // transparent for propagation but cannot gate its data input on the
+    // upstream's async reset event; mid-deassert transients on `ra`
+    // metastabilise `rb` and propagate downstream. Flag.
+    assert_rdc_fails("A3", r#"
 domain D
   freq_mhz: 100
 end domain D
@@ -7494,13 +7496,15 @@ module M
   end seq
   let q = rb;
 end module M
-"#);
+"#, &["rst_a", "rb"]);
 }
 
 #[test]
-fn rdc_a4_async_to_none_ok() {
-    // ra (rst_a, async) → rb (none); single source → no violation.
-    assert_rdc_ok("A4", r#"
+fn rdc_a4_async_to_none_fails() {
+    // ra (rst_a, async) → rb (reset none). Strict rule: a reset-less
+    // flop cannot gate its data input on the source's async reset
+    // event; mid-deassert transients on `ra` metastabilise `rb`. Flag.
+    assert_rdc_fails("A4", r#"
 domain D
   freq_mhz: 100
 end domain D
@@ -7519,7 +7523,7 @@ module M
   end seq
   let q = rb;
 end module M
-"#);
+"#, &["rst_a", "rb"]);
 }
 
 #[test]
@@ -7583,9 +7587,13 @@ end module M
 }
 
 #[test]
-fn rdc_b2_async_none_async_same_ok() {
-    // ra → rx (none) → rb, all in rst_a → no violation.
-    assert_rdc_ok("B2", r#"
+fn rdc_b2_async_none_async_same_fails() {
+    // ra (rst_a) → rx (reset none) → rb (rst_a). Strict rule: the
+    // intermediate reset-less `rx` captures async-domain data without
+    // being gated on the upstream reset; even though both async flops
+    // share rst_a, the middle hop is the metastability propagator.
+    // Fix is to also reset `rx` by rst_a (or add a synchroniser).
+    assert_rdc_fails("B2", r#"
 domain D
   freq_mhz: 100
 end domain D
@@ -7606,7 +7614,7 @@ module M
   end seq
   let q = rb;
 end module M
-"#);
+"#, &["rst_a", "rx"]);
 }
 
 #[test]
@@ -7675,9 +7683,12 @@ end module M
 }
 
 #[test]
-fn rdc_c2_two_same_domain_converge_ok() {
-    // Both async sources are rst_a → no violation.
-    assert_rdc_ok("C2", r#"
+fn rdc_c2_two_same_domain_converge_fails() {
+    // Both async sources are rst_a, converging at rx (reset none).
+    // Strict rule: rx is reset-less, captures async-domain data without
+    // gating on the upstream reset event → flag, even though only one
+    // async domain reaches it. The fix is to also reset `rx` by rst_a.
+    assert_rdc_fails("C2", r#"
 domain D
   freq_mhz: 100
 end domain D
@@ -7699,14 +7710,15 @@ module M
   end seq
   let q = rx;
 end module M
-"#);
+"#, &["rst_a", "rx"]);
 }
 
 #[test]
-fn rdc_c3_async_plus_port_at_none_ok() {
-    // ra (rst_a) + port input → rx (none). Port contributes no async →
-    // reach[rx]={rst_a}, |reach|=1 → no violation.
-    assert_rdc_ok("C3", r#"
+fn rdc_c3_async_plus_port_at_none_fails() {
+    // ra (rst_a) + port input → rx (reset none). Port contributes no
+    // async, but rx still captures async-domain data from `ra` without
+    // a reset gate — flag.
+    assert_rdc_fails("C3", r#"
 domain D
   freq_mhz: 100
 end domain D
@@ -7726,7 +7738,7 @@ module M
   end seq
   let q = rx;
 end module M
-"#);
+"#, &["rst_a", "rx"]);
 }
 
 // ── Group D: multi-clock-domain interactions ───────────────────────────────
