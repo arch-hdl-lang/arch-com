@@ -7998,3 +7998,35 @@ fn rdc_j4_mixed_reset_and_data_sync_same_source_fails() {
         .expect("read J4");
     assert_rdc_fails("J4", &src, &["RDC/CDC", "shared", "Dst"]);
 }
+
+// ── Group K: Phase 2d — combiner-derived reset glitches at inst boundaries
+// A sub-module Reset input wired by a combinational expression (rst_a | rst_b,
+// not rst_a, etc.) sees glitches on edge skew and can trigger partial resets.
+
+#[test]
+fn rdc_k1_combiner_or_at_inst_fails() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_k1_combiner_or_at_inst_fail.arch")
+        .expect("read K1");
+    assert_rdc_fails("K1", &src, &["sub", "rst", "combinational"]);
+}
+
+#[test]
+fn rdc_k2_negation_at_inst_fails() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_k2_negation_at_inst_fail.arch")
+        .expect("read K2");
+    assert_rdc_fails("K2", &src, &["sub", "rst", "combinational"]);
+}
+
+#[test]
+fn rdc_k3_direct_reset_at_inst_ok() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_k3_direct_reset_at_inst_ok.arch")
+        .expect("read K3");
+    assert_rdc_ok("K3", &src);
+}
+
+#[test]
+fn rdc_k4_sync_output_to_reset_ok() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_k4_sync_output_to_reset_ok.arch")
+        .expect("read K4");
+    assert_rdc_ok("K4", &src);
+}

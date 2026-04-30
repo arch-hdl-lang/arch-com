@@ -1341,13 +1341,17 @@ A reset's domain is **inferred from usage** — there is no explicit `Domain` an
 - **`module` constructs only.** Synchronizer and FIFO constructs are themselves the escape hatches and run their own internal CDC/RDC handling.
 - **In-module data flow only (phase 2a).** Cross-instance flow (`inst sub: M; … <- regs in another instance`) is not yet traced — that's phase 2d.
 
-**Known limitations (TODO — phase 2d):**
+5. **Async-reset glitches from combiners at inst boundaries (phase 2d).** `rst_combined = rst_a | rst_b` (or any combinational expression — bitwise OR, AND, negation, ternary, etc.) produces transient pulses on edge skew between the inputs. The ARCH type system already prevents writing `let combined: Reset = ...` inside a module body, but inst connections accept arbitrary `Expr` in the signal slot, so the hazard can still enter through `inst sub: M; rst <- (rst_a | rst_b);`. The check walks every inst and, for any connection whose target port is `Reset<...>`, requires the parent-side signal to be a simple `Ident` (a port, wire, let-bound name, or another inst's output). Anything more structured (Binary, Unary, FieldAccess, FunctionCall, etc.) is flagged. Idents themselves are trusted — the legal direct routings, including `synchronizer kind reset` outputs, all flow through Idents. Test scenarios live in `tests/rdc/rdc_k*.arch`.
 
-One RDC bug class catalogued in mainstream literature still isn't covered:
+With phase 2d landed, all five article-3 RDC bug classes catalogued in mainstream literature are now covered by the compiler:
 
-1. **Async-reset glitches from multi-source combiners (phase 2d).** `rst_combined = rst_a | rst_b` (or any combinational reset combiner) produces transient pulses on edge skew between the inputs. Partially prevented today by the type system — `Reset` is not a `let`/`comb`-assignable type in ARCH, so you can't write the combiner inside a module — but the hazard can still enter through an external `Reset` input port driven by such logic in the parent module. The detection requires structural analysis at the inst boundary and is the planned phase 2d.
-
-Until phase 2d lands, designs that wire glitch-prone async-reset combiners through input ports need external RDC checking (Synopsys SpyGlass, Cadence Conformal) for completeness.
+  | Phase | Class | Status |
+  |---|---|---|
+  | 1   | Cross-clock-domain async reset (structural) | ✅ |
+  | 2a  | Cross-async-reset-domain data path          | ✅ |
+  | 2b  | Reset-driven clock gating                    | ✅ |
+  | 2c  | Reconvergent synchronisers (RDC + CDC)       | ✅ |
+  | 2d  | Combiner-derived reset glitches at inst      | ✅ |
 
 **5.5 Tristate and Bidirectional I/O** *(planned)*
 

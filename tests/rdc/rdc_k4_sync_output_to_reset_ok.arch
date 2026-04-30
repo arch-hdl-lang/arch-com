@@ -1,0 +1,56 @@
+// K4 (phase 2d sanity): the `data_out` of a `synchronizer kind reset`
+// is wired into a sub-module's Reset input as a direct ident. The
+// connection itself is glitch-clean (synchroniser handles deassertion
+// timing); ARCH's type system handles the Bool→Reset coercion at the
+// connection. Phase 2d does not flag direct-ident connections.
+
+domain Src
+  freq_mhz: 100
+end domain Src
+
+domain Dst
+  freq_mhz: 200
+end domain Dst
+
+synchronizer RstSync
+  kind reset;
+  param STAGES: const = 2;
+  port src_clk:  in Clock<Src>;
+  port dst_clk:  in Clock<Dst>;
+  port data_in:  in Bool;
+  port data_out: out Bool;
+end synchronizer RstSync
+
+module Sub
+  port clk: in Clock<Dst>;
+  port rst: in Reset<Async>;
+  port d:   in UInt<8>;
+  port q:   out UInt<8>;
+  reg r: UInt<8> reset rst => 0;
+  seq on clk rising
+    r <= d;
+  end seq
+  let q = r;
+end module Sub
+
+module Top
+  port src_clk: in Clock<Src>;
+  port dst_clk: in Clock<Dst>;
+  port raw_rst: in Bool;
+  port d:       in UInt<8>;
+  port q:       out UInt<8>;
+
+  inst sync: RstSync
+    src_clk  <- src_clk;
+    dst_clk  <- dst_clk;
+    data_in  <- raw_rst;
+    data_out -> rst_synced;
+  end inst sync
+
+  inst sub: Sub
+    clk <- dst_clk;
+    rst <- rst_synced;
+    d   <- d;
+    q   -> q;
+  end inst sub
+end module Top
