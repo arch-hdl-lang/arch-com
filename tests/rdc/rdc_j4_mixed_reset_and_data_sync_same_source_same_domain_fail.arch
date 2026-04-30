@@ -1,0 +1,56 @@
+// J4 (mixed): same source signal feeds BOTH a kind-ff data
+// synchroniser and a kind-reset synchroniser into the same
+// destination domain. Diagnostic should identify it as RDC/CDC
+// (heterogeneous group) — the hazard is the same shape regardless of
+// kind mix.
+
+domain Src
+  freq_mhz: 100
+end domain Src
+
+domain Dst
+  freq_mhz: 200
+end domain Dst
+
+synchronizer FlagSync
+  kind ff;
+  param STAGES: const = 2;
+  port src_clk:  in Clock<Src>;
+  port dst_clk:  in Clock<Dst>;
+  port data_in:  in Bool;
+  port data_out: out Bool;
+end synchronizer FlagSync
+
+synchronizer RstSync
+  kind reset;
+  param STAGES: const = 2;
+  port src_clk:  in Clock<Src>;
+  port dst_clk:  in Clock<Dst>;
+  port data_in:  in Bool;
+  port data_out: out Bool;
+end synchronizer RstSync
+
+module M
+  port src_clk: in Clock<Src>;
+  port dst_clk: in Clock<Dst>;
+  port shared:  in Bool;
+  port flag_o:  out Bool;
+  port rst_o:   out Bool;
+
+  inst f: FlagSync
+    src_clk  <- src_clk;
+    dst_clk  <- dst_clk;
+    data_in  <- shared;
+    data_out -> flag_synced;
+  end inst f
+
+  inst r: RstSync
+    src_clk  <- src_clk;
+    dst_clk  <- dst_clk;
+    data_in  <- shared;
+    data_out -> rst_synced;
+  end inst r
+
+  let flag_o = flag_synced;
+  let rst_o  = rst_synced;
+end module M

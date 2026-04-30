@@ -69,6 +69,10 @@ violation:
 | `rdc_h2_single_reset_sync_ok.arch` | one source → 1 reset sync (no reconvergence) | ok | PASS |
 | `rdc_h3_reset_syncs_to_diff_domains_ok.arch` | one source → 2 reset syncs → different dest domains | ok | PASS |
 | `rdc_h4_reconvergent_three_syncs_same_domain_fail.arch` | one source → 3 reset syncs → same dest domain | fail | PASS (phase 2c) |
+| `rdc_j1_cdc_reconvergent_two_ff_syncs_same_domain_fail.arch` | one data source → 2 ff-syncs → same dest domain | fail | PASS (CDC reconvergence) |
+| `rdc_j2_cdc_single_ff_sync_ok.arch` | one data source → 1 ff-sync (no reconvergence) | ok | PASS |
+| `rdc_j3_cdc_syncs_to_diff_domains_ok.arch` | one data source → 2 ff-syncs → different dest domains | ok | PASS |
+| `rdc_j4_mixed_reset_and_data_sync_same_source_same_domain_fail.arch` | one source → 1 reset-sync + 1 ff-sync → same dest | fail | PASS (RDC/CDC mixed) |
 
 ## Why D1 still flags (phase 1 backstop)
 

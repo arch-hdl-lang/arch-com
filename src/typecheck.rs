@@ -1018,7 +1018,7 @@ impl<'a> TypeChecker<'a> {
         // dedicated opt-out; for now, fix the design or refactor the
         // resets through synchronizers.
         self.check_rdc_phase2a(m);
-        self.check_rdc_reconvergent_syncs(m);
+        self.check_reconvergent_syncs(m);
 
         // Validate `implements` template conformance
         if let Some(ref tmpl_name) = m.implements {
@@ -3779,85 +3779,111 @@ impl<'a> TypeChecker<'a> {
         // boundary, not at the receiving flops.)
     }
 
-    /// Phase 2c RDC: reconvergent reset synchronisers — "loss of
-    /// functional correlation". One async reset routed through two
-    /// distinct `synchronizer kind reset` instances produces two synced
-    /// outputs that can deassert on different cycles in the receiving
-    /// domain. Logic in that domain consuming both outputs ends up in
-    /// inconsistent state during the deassertion window. Detection:
-    /// same parent-side `data_in` source feeding two reset-sync insts
-    /// whose `dst_clk` port lands in the same clock domain. Targeting
-    /// a different domain per sync is the legitimate pattern.
-    pub(crate) fn check_rdc_reconvergent_syncs(&mut self, m: &ModuleDecl) {
-        use std::collections::HashSet;
-        let reset_sync_constructs: HashSet<String> = self.source.items.iter()
+    /// Reconvergent synchronisers — "loss of functional correlation".
+    /// One source signal routed through two or more `synchronizer`
+    /// instances (any kind) all targeting the same destination clock
+    /// domain produces multiple synced outputs that can settle on
+    /// different cycles in that domain. Logic consuming both outputs
+    /// ends up in inconsistent state during the convergence window.
+    ///
+    /// The hazard's shape is identical for reset synchronisers (RDC
+    /// variant — phase 2c) and data synchronisers (CDC variant — the
+    /// reconvergent CDC class also listed in spec §5.2a). One method
+    /// handles both; the diagnostic reports "RDC" for `kind reset` and
+    /// "CDC" for the rest.
+    ///
+    /// Detection: walk every `inst x: Y` where Y is a synchroniser
+    /// construct, read the `data_in` connection's parent-side ident
+    /// (source signal) and the `dst_clk` connection's ident (look up
+    /// its clock domain). Group by `(source, dest_domain)`. Any group
+    /// with ≥ 2 insts is a violation. Same-source / different-domain
+    /// is the legitimate fan-out pattern (one sync per receiving
+    /// domain) and is not flagged.
+    pub(crate) fn check_reconvergent_syncs(&mut self, m: &ModuleDecl) {
+        // Map synchroniser construct name → its kind, so we can
+        // classify each violating group as RDC vs CDC for the
+        // diagnostic. A heterogeneous group (some reset, some data
+        // synchronisers off the same source) gets the more general
+        // "RDC/CDC" wording.
+        let sync_kinds: HashMap<String, SyncKind> = self.source.items.iter()
             .filter_map(|it| if let Item::Synchronizer(s) = it {
-                if s.kind == SyncKind::Reset { Some(s.name.name.clone()) } else { None }
+                Some((s.name.name.clone(), s.kind))
             } else { None })
             .collect();
-        if !reset_sync_constructs.is_empty() {
-            // Per-port clock domain map (rebuilt locally so phase 2c
-            // works even when phase 1's gate didn't fire).
-            let clk_domain: HashMap<String, String> = m.ports.iter()
-                .filter_map(|p| if let TypeExpr::Clock(domain) = &p.ty {
-                    Some((p.name.name.clone(), domain.name.clone()))
-                } else { None })
-                .collect();
-            // Group: (source_signal_name, dest_clock_domain) → list of
-            // (inst_name, inst_span). We need at least one of those
-            // pieces to look up the dest_clk's domain — if the parent's
-            // dst_clk connection isn't a known clock port we can't
-            // classify, so skip silently.
-            #[allow(clippy::type_complexity)]
-            let mut groups: HashMap<(String, String), Vec<(String, crate::lexer::Span)>> = HashMap::new();
-            for item in &m.body {
-                let ModuleBodyItem::Inst(inst) = item else { continue; };
-                if !reset_sync_constructs.contains(&inst.module_name.name) { continue; }
-                let mut src_name: Option<String> = None;
-                let mut dst_clk_sig: Option<String> = None;
-                for conn in &inst.connections {
-                    match conn.port_name.name.as_str() {
-                        "data_in" => {
-                            if let ExprKind::Ident(n) = &conn.signal.kind {
-                                src_name = Some(n.clone());
-                            }
+        if sync_kinds.is_empty() { return; }
+        // Per-port clock domain map (rebuilt locally — independent of
+        // phase 1's CDC gate so a single-clock module with reconvergent
+        // syncs into that one domain still trips).
+        let clk_domain: HashMap<String, String> = m.ports.iter()
+            .filter_map(|p| if let TypeExpr::Clock(domain) = &p.ty {
+                Some((p.name.name.clone(), domain.name.clone()))
+            } else { None })
+            .collect();
+        // Group: (source_signal_name, dest_clock_domain) → list of
+        // (inst_name, sync_construct_kind, inst_span).
+        #[allow(clippy::type_complexity)]
+        let mut groups: HashMap<(String, String), Vec<(String, SyncKind, crate::lexer::Span)>> = HashMap::new();
+        for item in &m.body {
+            let ModuleBodyItem::Inst(inst) = item else { continue; };
+            let Some(kind) = sync_kinds.get(&inst.module_name.name) else { continue; };
+            let mut src_name: Option<String> = None;
+            let mut dst_clk_sig: Option<String> = None;
+            for conn in &inst.connections {
+                match conn.port_name.name.as_str() {
+                    "data_in" => {
+                        if let ExprKind::Ident(n) = &conn.signal.kind {
+                            src_name = Some(n.clone());
                         }
-                        "dst_clk" => {
-                            if let ExprKind::Ident(n) = &conn.signal.kind {
-                                dst_clk_sig = Some(n.clone());
-                            }
-                        }
-                        _ => {}
                     }
+                    "dst_clk" => {
+                        if let ExprKind::Ident(n) = &conn.signal.kind {
+                            dst_clk_sig = Some(n.clone());
+                        }
+                    }
+                    _ => {}
                 }
-                let (Some(src), Some(clk)) = (src_name, dst_clk_sig) else { continue; };
-                let Some(dom) = clk_domain.get(&clk) else { continue; };
-                groups.entry((src, dom.clone()))
-                    .or_default()
-                    .push((inst.name.name.clone(), inst.span));
             }
-            // Sort groups for deterministic diagnostics across HashMap iteration.
-            let mut sorted_keys: Vec<_> = groups.keys().cloned().collect();
-            sorted_keys.sort();
-            for key in sorted_keys {
-                let users = &groups[&key];
-                if users.len() < 2 { continue; }
-                let (source, domain) = key;
-                let inst_list = users.iter().map(|(n, _)| format!("`{n}`")).collect::<Vec<_>>().join(", ");
-                let report_span = users[1].1;
-                self.errors.push(CompileError::general(
-                    &format!(
-                        "RDC violation: source signal `{source}` is fed into multiple reset \
-                         synchronisers ({inst_list}) all targeting clock domain `{domain}`. \
-                         The independent synchronisers can deassert on different cycles in \
-                         that domain, leaving downstream logic that consumes both outputs in \
-                         inconsistent state (a.k.a. loss of functional correlation, \
-                         reconvergent RDC). Use a single reset synchroniser per destination \
-                         clock domain and fan out its output."
-                    ),
-                    report_span,
-                ));
-            }
+            let (Some(src), Some(clk)) = (src_name, dst_clk_sig) else { continue; };
+            let Some(dom) = clk_domain.get(&clk) else { continue; };
+            groups.entry((src, dom.clone()))
+                .or_default()
+                .push((inst.name.name.clone(), *kind, inst.span));
+        }
+        // Sort for deterministic diagnostics across HashMap iteration.
+        let mut sorted_keys: Vec<_> = groups.keys().cloned().collect();
+        sorted_keys.sort();
+        for key in sorted_keys {
+            let users = &groups[&key];
+            if users.len() < 2 { continue; }
+            let (source, domain) = key;
+            let inst_list = users.iter()
+                .map(|(n, _, _)| format!("`{n}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let report_span = users[1].2;
+            // Classify the hazard: pure-reset → RDC, no-reset → CDC,
+            // mixed → RDC/CDC. Mixed is rare but not impossible (e.g.
+            // a Bool gate signal fed into both a kind-ff sync and a
+            // kind-reset sync).
+            let any_reset = users.iter().any(|(_, k, _)| *k == SyncKind::Reset);
+            let any_data = users.iter().any(|(_, k, _)| *k != SyncKind::Reset);
+            let (label, sync_word, settle_word) = match (any_reset, any_data) {
+                (true,  false) => ("RDC",     "reset synchronisers", "deassert"),
+                (false, true)  => ("CDC",     "synchronisers",       "settle"),
+                _              => ("RDC/CDC", "synchronisers",       "settle"),
+            };
+            self.errors.push(CompileError::general(
+                &format!(
+                    "{label} violation: source signal `{source}` is fed into multiple \
+                     {sync_word} ({inst_list}) all targeting clock domain `{domain}`. \
+                     The independent synchronisers can {settle_word} on different cycles in \
+                     that domain, leaving downstream logic that consumes both outputs in \
+                     inconsistent state (loss of functional correlation, reconvergent \
+                     {label}). Use a single synchroniser per destination clock domain and \
+                     fan out its output."
+                ),
+                report_span,
+            ));
         }
     }
 
