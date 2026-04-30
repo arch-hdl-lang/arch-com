@@ -1235,7 +1235,7 @@ Every Clock signal in Arch carries a domain tag as part of its type. The compile
 
 > *⚑ The compiler generates a verified synchroniser for each crossing declaration. Engineers choose the policy; correctness of the CDC structure is guaranteed by the language, not by convention or code review.*
 
-**5.2a Reconvergent CDC Path Detection** *(planned)*
+**5.2a Reconvergent CDC Path Detection** *(partially shipped — see §5.4 phase 2c)*
 
 A reconvergent CDC hazard occurs when multiple bits of a source-domain signal cross independently through separate synchronizers, then recombine in the destination domain. Each bit is individually synchronized, but they may arrive on different clock cycles, causing the receiver to see a value that never existed in the source domain.
 
@@ -1266,7 +1266,7 @@ The compiler will detect this by:
 
 The compiler already warns when `kind ff` is used on multi-bit data (suggesting `kind gray` or `kind handshake`). Reconvergent path detection extends this to catch the case where a designer splits a multi-bit signal into individual bits and synchronizes each separately.
 
-> *⚑ Reconvergent CDC detection is planned. Currently, the compiler detects direct cross-domain register reads and warns on multi-bit `kind ff` synchronizers, but does not trace signal origins across synchronizer boundaries.*
+> *⚑ The **same-source** case (a single ident driving multiple synchronisers landing in the same destination domain) is detected today by the §5.4 phase-2c reconvergent-sync check, which covers RDC and CDC variants uniformly. The full **bit-slice** case from the example above (`data[0]` and `data[1]` traced back to the same source register through bit-slice expressions) requires the additional source-tracing pass described in steps 1–3 and is still planned.*
 
 **5.3 Clock Output Ports**
 
@@ -1333,7 +1333,7 @@ A reset's domain is **inferred from usage** — there is no explicit `Domain` an
 
 3. **Reset-driven clock gating (phase 2b).** Logic reaching a `clkgate` instance's `enable` input from an async-reset flop causes the gate to glitch on async reset events — `enable` toggles to its reset value mid-cycle, producing partial clock pulses on `clk_out`. The check walks every inst whose target construct is a `clkgate` and reuses phase 2a's reach map: if any async domain reaches the parent-side signal driving `enable`, the inst is flagged. The fix is to drive `enable` from a synchronously-clean source — typically a flop reset by a signal already synchronised to the gated clock's domain, or directly via a `synchronizer kind reset` upstream. Test scenarios live in `tests/rdc/rdc_g*.arch`.
 
-4. **Reconvergent reset synchronisers (phase 2c).** A single async reset signal routed through **two distinct** `synchronizer kind reset` instances both targeting the same destination clock domain produces two synchronised outputs that can deassert on different cycles. Logic in that domain consuming both outputs ends up in inconsistent state during the deassertion window — known in literature as "loss of functional correlation". Detection: build the set of synchroniser constructs declared with `kind reset`, walk every instance, group by `(parent-side data_in source, dst_clk's clock domain)`. Any group with two or more instances is the violation. Targeting a different destination domain per sync is the legitimate fan-out pattern (one synchroniser per receiving domain) and is not flagged. Test scenarios live in `tests/rdc/rdc_h*.arch`.
+4. **Reconvergent synchronisers — RDC + CDC (phase 2c).** A single source signal routed through **two or more** synchroniser instances all targeting the same destination clock domain produces multiple synchronised outputs that can settle on different cycles. Logic in that domain consuming the outputs ends up in inconsistent state during the convergence window — known in literature as "loss of functional correlation". The hazard's shape is identical for `synchronizer kind reset` (the RDC variant) and the data-synchroniser kinds (`ff`, `gray`, `handshake`, `pulse` — the CDC variant); the same detection covers both, and the diagnostic prefixes the message with `RDC violation`, `CDC violation`, or `RDC/CDC violation` (mixed group) accordingly. Detection: walk every `inst x: Y` where Y is a synchroniser construct, group by `(parent-side data_in source, dst_clk's clock domain)`. Any group with two or more instances is the violation. Targeting a different destination domain per sync is the legitimate fan-out pattern (one synchroniser per receiving domain) and is not flagged. Test scenarios for the reset variant live in `tests/rdc/rdc_h*.arch`; data and mixed scenarios in `tests/rdc/rdc_j*.arch`.
 
 **Scope intentionally narrow:**
 

@@ -7412,10 +7412,12 @@ fn assert_rdc_fails(label: &str, source: &str, must_contain: &[&str]) {
     let errs = r.unwrap_err();
     let any_match = errs.iter().any(|e| {
         let s = e.to_string();
-        s.contains("RDC") && must_contain.iter().all(|m| s.contains(m))
+        // Accepts "RDC" or "CDC" prefix — the reconvergent-sync check
+        // shares its diagnostic shape across both hazard classes.
+        (s.contains("RDC") || s.contains("CDC")) && must_contain.iter().all(|m| s.contains(m))
     });
     assert!(any_match,
-        "[{label}] expected RDC error containing all of {:?}, got: {:?}",
+        "[{label}] expected RDC/CDC error containing all of {:?}, got: {:?}",
         must_contain, errs);
 }
 
@@ -7964,4 +7966,35 @@ fn rdc_h4_reconvergent_three_syncs_same_domain_fails() {
     let src = std::fs::read_to_string("tests/rdc/rdc_h4_reconvergent_three_syncs_same_domain_fail.arch")
         .expect("read H4");
     assert_rdc_fails("H4", &src, &["raw_rst", "sync_1", "Dst"]);
+}
+
+// ── Group J: reconvergent CDC (and mixed) — same generalised check ────────
+// Same hazard shape as group H but with non-reset synchroniser kinds.
+
+#[test]
+fn rdc_j1_cdc_reconvergent_two_ff_syncs_same_domain_fails() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_j1_cdc_reconvergent_two_ff_syncs_same_domain_fail.arch")
+        .expect("read J1");
+    assert_rdc_fails("J1", &src, &["CDC", "flag", "sync_a", "sync_b", "Dst"]);
+}
+
+#[test]
+fn rdc_j2_cdc_single_ff_sync_ok() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_j2_cdc_single_ff_sync_ok.arch")
+        .expect("read J2");
+    assert_rdc_ok("J2", &src);
+}
+
+#[test]
+fn rdc_j3_cdc_syncs_to_diff_domains_ok() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_j3_cdc_syncs_to_diff_domains_ok.arch")
+        .expect("read J3");
+    assert_rdc_ok("J3", &src);
+}
+
+#[test]
+fn rdc_j4_mixed_reset_and_data_sync_same_source_fails() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_j4_mixed_reset_and_data_sync_same_source_same_domain_fail.arch")
+        .expect("read J4");
+    assert_rdc_fails("J4", &src, &["RDC/CDC", "shared", "Dst"]);
 }

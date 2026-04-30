@@ -1,0 +1,58 @@
+// J3 (CDC sanity): one source feeds two ff-synchronisers but each
+// targets a different destination clock domain. Legitimate fan-out.
+
+domain Src
+  freq_mhz: 100
+end domain Src
+
+domain DstA
+  freq_mhz: 200
+end domain DstA
+
+domain DstB
+  freq_mhz: 300
+end domain DstB
+
+synchronizer FlagSyncA
+  kind ff;
+  param STAGES: const = 2;
+  port src_clk:  in Clock<Src>;
+  port dst_clk:  in Clock<DstA>;
+  port data_in:  in Bool;
+  port data_out: out Bool;
+end synchronizer FlagSyncA
+
+synchronizer FlagSyncB
+  kind ff;
+  param STAGES: const = 2;
+  port src_clk:  in Clock<Src>;
+  port dst_clk:  in Clock<DstB>;
+  port data_in:  in Bool;
+  port data_out: out Bool;
+end synchronizer FlagSyncB
+
+module M
+  port src_clk: in Clock<Src>;
+  port clk_a:   in Clock<DstA>;
+  port clk_b:   in Clock<DstB>;
+  port flag:    in Bool;
+  port out_a:   out Bool;
+  port out_b:   out Bool;
+
+  inst sync_a: FlagSyncA
+    src_clk  <- src_clk;
+    dst_clk  <- clk_a;
+    data_in  <- flag;
+    data_out -> flag_a;
+  end inst sync_a
+
+  inst sync_b: FlagSyncB
+    src_clk  <- src_clk;
+    dst_clk  <- clk_b;
+    data_in  <- flag;
+    data_out -> flag_b;
+  end inst sync_b
+
+  let out_a = flag_a;
+  let out_b = flag_b;
+end module M
