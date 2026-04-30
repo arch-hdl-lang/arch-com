@@ -1002,6 +1002,23 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // ── Phase 2a RDC: data-path async reset domain crossing ─────────
+        // Each async reset signal originates its OWN domain (by name).
+        // Sync and reset-none flops are transparent — they propagate
+        // whatever async domains reach their data input. Violation:
+        //   f.Async        and any data source reaches domain ≠ f.reset
+        //   f.{Sync,None}  and the reach set contains > 1 domain.
+        //
+        // Fires on any module (single- or multi-clock-domain). Phase 2a
+        // is intentionally NOT gated on `pragma cdc_safe;` — that pragma
+        // suppresses CDC and the phase-1 cross-clock RDC structural
+        // check, but the data-path RDC hazard is structurally distinct
+        // (a single-clock multi-reset module trips it without any CDC
+        // concern). A future `pragma rdc_safe;` annotation will be the
+        // dedicated opt-out; for now, fix the design or refactor the
+        // resets through synchronizers.
+        self.check_rdc_phase2a(m);
+
         // Validate `implements` template conformance
         if let Some(ref tmpl_name) = m.implements {
             self.check_implements(m, tmpl_name);
@@ -3422,6 +3439,264 @@ impl<'a> TypeChecker<'a> {
     // ── CDC helpers ────────────────────────────────────────────────────────
 
     /// Check CDC violations across an instance boundary.
+    /// Phase 2a RDC: data-path reset-domain crossing detection.
+    ///
+    /// Per agreed semantic (option 1, sync flops transparent):
+    ///   reach[f] = { f.reset } if f.reset_kind == Async
+    ///            = ⋃ reach[srcs] over data-flow sources otherwise
+    ///   violation:
+    ///     f.Async        and any reach[src] contains a domain ≠ f.reset
+    ///     f.{Sync,None}  and |reach[f]| > 1
+    pub(crate) fn check_rdc_phase2a(&mut self, m: &ModuleDecl) {
+        use std::collections::HashSet;
+
+        // 1. Build flop info (reset signal name + kind) for every flop in
+        //    the module. Both inline `reg` decls and `port reg` decls
+        //    participate. Flops carry a span we point at on violation.
+        struct FlopInfo {
+            reset_sig: Option<String>,
+            reset_kind: Option<ResetKind>,
+            decl_span: crate::lexer::Span,
+        }
+
+        let async_resets: HashSet<String> = m.ports.iter()
+            .filter_map(|p| if let TypeExpr::Reset(ResetKind::Async, _) = &p.ty {
+                Some(p.name.name.clone())
+            } else { None })
+            .collect();
+        let sync_resets: HashSet<String> = m.ports.iter()
+            .filter_map(|p| if let TypeExpr::Reset(ResetKind::Sync, _) = &p.ty {
+                Some(p.name.name.clone())
+            } else { None })
+            .collect();
+        let kind_of_reset = |sig: &str| -> Option<ResetKind> {
+            if async_resets.contains(sig) { Some(ResetKind::Async) }
+            else if sync_resets.contains(sig) { Some(ResetKind::Sync) }
+            else { None }
+        };
+
+        let mut flop_info: HashMap<String, FlopInfo> = HashMap::new();
+        let extract_reset_sig = |r: &RegReset| -> Option<String> {
+            match r {
+                RegReset::None => None,
+                RegReset::Explicit(s, _, _, _) => Some(s.name.clone()),
+                RegReset::Inherit(s, _) => Some(s.name.clone()),
+            }
+        };
+        for item in &m.body {
+            if let ModuleBodyItem::RegDecl(rd) = item {
+                let sig = extract_reset_sig(&rd.reset);
+                let kind = sig.as_deref().and_then(kind_of_reset);
+                flop_info.insert(rd.name.name.clone(), FlopInfo {
+                    reset_sig: sig,
+                    reset_kind: kind,
+                    decl_span: rd.name.span,
+                });
+            }
+        }
+        for p in &m.ports {
+            if let Some(ri) = &p.reg_info {
+                let sig = extract_reset_sig(&ri.reset);
+                let kind = sig.as_deref().and_then(kind_of_reset);
+                flop_info.insert(p.name.name.clone(), FlopInfo {
+                    reset_sig: sig,
+                    reset_kind: kind,
+                    decl_span: p.name.span,
+                });
+            }
+        }
+        // Fast path: if no async-reset flops exist, no domain originated,
+        // no violation possible. Skip the heavier work.
+        let any_async = flop_info.values().any(|fi| matches!(fi.reset_kind, Some(ResetKind::Async)));
+        if !any_async { return; }
+
+        let flop_set: HashSet<String> = flop_info.keys().cloned().collect();
+
+        // 2. Build let-binding transitive flop reads. A `let x = expr;` is
+        //    a combinational wire; if `expr` reads flop r, then any
+        //    consumer reading `x` is effectively reading r.
+        let lets: Vec<&LetBinding> = m.body.iter()
+            .filter_map(|i| if let ModuleBodyItem::LetBinding(l) = i { Some(l) } else { None })
+            .collect();
+        let let_names: HashSet<String> = lets.iter().map(|l| l.name.name.clone()).collect();
+        let mut let_deps: HashMap<String, HashSet<String>> = HashMap::new();
+        for l in &lets {
+            let mut reads = HashSet::new();
+            Self::collect_expr_reads(&l.value, &mut reads);
+            let direct: HashSet<String> = reads.intersection(&flop_set).cloned().collect();
+            let_deps.insert(l.name.name.clone(), direct);
+        }
+        // Fixpoint: expand let-of-let.
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for l in &lets {
+                let mut reads = HashSet::new();
+                Self::collect_expr_reads(&l.value, &mut reads);
+                let mut to_add: HashSet<String> = HashSet::new();
+                for r in &reads {
+                    if let_names.contains(r) {
+                        if let Some(deps) = let_deps.get(r) {
+                            to_add.extend(deps.iter().cloned());
+                        }
+                    }
+                }
+                let entry = let_deps.get_mut(&l.name.name).unwrap();
+                let before = entry.len();
+                entry.extend(to_add);
+                if entry.len() != before { changed = true; }
+            }
+        }
+
+        // 3. Build per-flop data-flow deps: for each `dst <= rhs` in any
+        //    seq block, collect rhs reads; flops feed directly, lets feed
+        //    transitively via let_deps.
+        let mut flop_deps: HashMap<String, HashSet<String>> = HashMap::new();
+        for f in &flop_set { flop_deps.insert(f.clone(), HashSet::new()); }
+
+        fn walk_seq_assigns(
+            stmts: &[Stmt],
+            flop_set: &HashSet<String>,
+            let_names: &HashSet<String>,
+            let_deps: &HashMap<String, HashSet<String>>,
+            flop_deps: &mut HashMap<String, HashSet<String>>,
+        ) {
+            for s in stmts {
+                match s {
+                    Stmt::Assign(a) => {
+                        if let ExprKind::Ident(target) = &a.target.kind {
+                            if flop_set.contains(target) {
+                                let mut reads = HashSet::new();
+                                TypeChecker::collect_expr_reads(&a.value, &mut reads);
+                                let entry = flop_deps.get_mut(target).unwrap();
+                                for r in reads {
+                                    if flop_set.contains(&r) {
+                                        entry.insert(r);
+                                    } else if let_names.contains(&r) {
+                                        if let Some(d) = let_deps.get(&r) {
+                                            entry.extend(d.iter().cloned());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Stmt::IfElse(ie) => {
+                        walk_seq_assigns(&ie.then_stmts, flop_set, let_names, let_deps, flop_deps);
+                        walk_seq_assigns(&ie.else_stmts, flop_set, let_names, let_deps, flop_deps);
+                    }
+                    Stmt::Match(mm) => {
+                        for arm in &mm.arms {
+                            walk_seq_assigns(&arm.body, flop_set, let_names, let_deps, flop_deps);
+                        }
+                    }
+                    Stmt::For(f) => {
+                        walk_seq_assigns(&f.body, flop_set, let_names, let_deps, flop_deps);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for item in &m.body {
+            if let ModuleBodyItem::RegBlock(rb) = item {
+                walk_seq_assigns(&rb.stmts, &flop_set, &let_names, &let_deps, &mut flop_deps);
+            }
+        }
+
+        // 4. Compute reach via fixpoint.
+        //    - Async flops: reach is fixed at { self.reset }.
+        //    - Sync/None flops: reach = ⋃ reach[deps].
+        let mut reach: HashMap<String, HashSet<String>> = HashMap::new();
+        for (name, info) in &flop_info {
+            let mut s = HashSet::new();
+            if matches!(info.reset_kind, Some(ResetKind::Async)) {
+                if let Some(sig) = &info.reset_sig {
+                    s.insert(sig.clone());
+                }
+            }
+            reach.insert(name.clone(), s);
+        }
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for (name, info) in &flop_info {
+                if matches!(info.reset_kind, Some(ResetKind::Async)) { continue; }
+                let deps = flop_deps.get(name).cloned().unwrap_or_default();
+                let mut new_reach: HashSet<String> = HashSet::new();
+                for src in &deps {
+                    if let Some(r) = reach.get(src) {
+                        new_reach.extend(r.iter().cloned());
+                    }
+                }
+                let cur = reach.get_mut(name).unwrap();
+                if cur != &new_reach {
+                    *cur = new_reach;
+                    changed = true;
+                }
+            }
+        }
+
+        // 5. Detect violations and emit diagnostics. Sort domain names in
+        //    error messages for deterministic output across HashSet iteration.
+        let mut sorted_flops: Vec<&String> = flop_info.keys().collect();
+        sorted_flops.sort();
+        for name in sorted_flops {
+            let info = &flop_info[name];
+            let deps = flop_deps.get(name).cloned().unwrap_or_default();
+            match (&info.reset_sig, info.reset_kind) {
+                (Some(my_reset), Some(ResetKind::Async)) => {
+                    // Async flop: any source reaching a foreign domain is a violation.
+                    let mut foreign: Vec<String> = Vec::new();
+                    for src in &deps {
+                        if let Some(r) = reach.get(src) {
+                            for d in r {
+                                if d != my_reset && !foreign.contains(d) {
+                                    foreign.push(d.clone());
+                                }
+                            }
+                        }
+                    }
+                    if !foreign.is_empty() {
+                        foreign.sort();
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "RDC violation: register `{name}` is reset by async signal \
+                                 `{my_reset}` but its data input transitively reads from \
+                                 register(s) reset by async signal(s) {} — async reset \
+                                 domains cannot be crossed without a `synchronizer kind reset`.",
+                                foreign.iter().map(|d| format!("`{d}`")).collect::<Vec<_>>().join(", ")
+                            ),
+                            info.decl_span,
+                        ));
+                    }
+                }
+                _ => {
+                    // Sync / None flop: reach must be ≤ 1 domain.
+                    let r = reach.get(name).cloned().unwrap_or_default();
+                    if r.len() > 1 {
+                        let mut domains: Vec<String> = r.into_iter().collect();
+                        domains.sort();
+                        let kind_label = match info.reset_kind {
+                            Some(ResetKind::Sync) => "sync-reset",
+                            None => "reset-none",
+                            Some(ResetKind::Async) => unreachable!(),
+                        };
+                        self.errors.push(CompileError::general(
+                            &format!(
+                                "RDC violation: {kind_label} register `{name}` propagates \
+                                 multiple async reset domains ({}) into a single capture point. \
+                                 Add a `synchronizer kind reset` upstream so only one async \
+                                 reset domain reaches this register.",
+                                domains.iter().map(|d| format!("`{d}`")).collect::<Vec<_>>().join(", ")
+                            ),
+                            info.decl_span,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
     /// For each data connection, verify that the signal's clock domain in the
     /// parent matches the port's clock domain in the child module.
     pub(crate) fn check_inst_cdc(
