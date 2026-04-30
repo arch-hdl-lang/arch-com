@@ -1018,6 +1018,7 @@ impl<'a> TypeChecker<'a> {
         // dedicated opt-out; for now, fix the design or refactor the
         // resets through synchronizers.
         self.check_rdc_phase2a(m);
+        self.check_rdc_reconvergent_syncs(m);
 
         // Validate `implements` template conformance
         if let Some(ref tmpl_name) = m.implements {
@@ -3769,6 +3770,93 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
+            }
+        }
+
+        // (Phase 2c — reconvergent RDC — runs as its own method called
+        // from check_module so it isn't gated on this module having any
+        // async-reset flops. The hazard lives at the synchronizer inst
+        // boundary, not at the receiving flops.)
+    }
+
+    /// Phase 2c RDC: reconvergent reset synchronisers — "loss of
+    /// functional correlation". One async reset routed through two
+    /// distinct `synchronizer kind reset` instances produces two synced
+    /// outputs that can deassert on different cycles in the receiving
+    /// domain. Logic in that domain consuming both outputs ends up in
+    /// inconsistent state during the deassertion window. Detection:
+    /// same parent-side `data_in` source feeding two reset-sync insts
+    /// whose `dst_clk` port lands in the same clock domain. Targeting
+    /// a different domain per sync is the legitimate pattern.
+    pub(crate) fn check_rdc_reconvergent_syncs(&mut self, m: &ModuleDecl) {
+        use std::collections::HashSet;
+        let reset_sync_constructs: HashSet<String> = self.source.items.iter()
+            .filter_map(|it| if let Item::Synchronizer(s) = it {
+                if s.kind == SyncKind::Reset { Some(s.name.name.clone()) } else { None }
+            } else { None })
+            .collect();
+        if !reset_sync_constructs.is_empty() {
+            // Per-port clock domain map (rebuilt locally so phase 2c
+            // works even when phase 1's gate didn't fire).
+            let clk_domain: HashMap<String, String> = m.ports.iter()
+                .filter_map(|p| if let TypeExpr::Clock(domain) = &p.ty {
+                    Some((p.name.name.clone(), domain.name.clone()))
+                } else { None })
+                .collect();
+            // Group: (source_signal_name, dest_clock_domain) → list of
+            // (inst_name, inst_span). We need at least one of those
+            // pieces to look up the dest_clk's domain — if the parent's
+            // dst_clk connection isn't a known clock port we can't
+            // classify, so skip silently.
+            #[allow(clippy::type_complexity)]
+            let mut groups: HashMap<(String, String), Vec<(String, crate::lexer::Span)>> = HashMap::new();
+            for item in &m.body {
+                let ModuleBodyItem::Inst(inst) = item else { continue; };
+                if !reset_sync_constructs.contains(&inst.module_name.name) { continue; }
+                let mut src_name: Option<String> = None;
+                let mut dst_clk_sig: Option<String> = None;
+                for conn in &inst.connections {
+                    match conn.port_name.name.as_str() {
+                        "data_in" => {
+                            if let ExprKind::Ident(n) = &conn.signal.kind {
+                                src_name = Some(n.clone());
+                            }
+                        }
+                        "dst_clk" => {
+                            if let ExprKind::Ident(n) = &conn.signal.kind {
+                                dst_clk_sig = Some(n.clone());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let (Some(src), Some(clk)) = (src_name, dst_clk_sig) else { continue; };
+                let Some(dom) = clk_domain.get(&clk) else { continue; };
+                groups.entry((src, dom.clone()))
+                    .or_default()
+                    .push((inst.name.name.clone(), inst.span));
+            }
+            // Sort groups for deterministic diagnostics across HashMap iteration.
+            let mut sorted_keys: Vec<_> = groups.keys().cloned().collect();
+            sorted_keys.sort();
+            for key in sorted_keys {
+                let users = &groups[&key];
+                if users.len() < 2 { continue; }
+                let (source, domain) = key;
+                let inst_list = users.iter().map(|(n, _)| format!("`{n}`")).collect::<Vec<_>>().join(", ");
+                let report_span = users[1].1;
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "RDC violation: source signal `{source}` is fed into multiple reset \
+                         synchronisers ({inst_list}) all targeting clock domain `{domain}`. \
+                         The independent synchronisers can deassert on different cycles in \
+                         that domain, leaving downstream logic that consumes both outputs in \
+                         inconsistent state (a.k.a. loss of functional correlation, \
+                         reconvergent RDC). Use a single reset synchroniser per destination \
+                         clock domain and fan out its output."
+                    ),
+                    report_span,
+                ));
             }
         }
     }

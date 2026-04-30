@@ -65,6 +65,10 @@ violation:
 | `rdc_g1_clkgate_enable_from_async_flop_fail.arch` | clkgate enable driven by async-reset flop | fail | PASS (phase 2b) |
 | `rdc_g2_clkgate_enable_from_port_ok.arch` | clkgate enable from input port | ok | PASS |
 | `rdc_g3_clkgate_enable_from_sync_flop_ok.arch` | clkgate enable from sync-only-upstream flop | ok | PASS |
+| `rdc_h1_reconvergent_two_syncs_same_domain_fail.arch` | one source → 2 reset syncs → same dest domain | fail | PASS (phase 2c) |
+| `rdc_h2_single_reset_sync_ok.arch` | one source → 1 reset sync (no reconvergence) | ok | PASS |
+| `rdc_h3_reset_syncs_to_diff_domains_ok.arch` | one source → 2 reset syncs → different dest domains | ok | PASS |
+| `rdc_h4_reconvergent_three_syncs_same_domain_fail.arch` | one source → 3 reset syncs → same dest domain | fail | PASS (phase 2c) |
 
 ## Why D1 still flags (phase 1 backstop)
 

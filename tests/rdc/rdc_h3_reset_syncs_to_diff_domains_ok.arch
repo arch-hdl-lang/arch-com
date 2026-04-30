@@ -1,0 +1,60 @@
+// H3 (phase 2c sanity): one source feeds two reset synchronisers, but
+// each targets a DIFFERENT destination clock domain. This is the
+// canonical "one sync per receiving domain" pattern — no
+// reconvergence in any single domain.
+
+domain Src
+  freq_mhz: 100
+end domain Src
+
+domain DstA
+  freq_mhz: 200
+end domain DstA
+
+domain DstB
+  freq_mhz: 300
+end domain DstB
+
+synchronizer RstSyncA
+  kind reset;
+  param STAGES: const = 2;
+  port src_clk:  in Clock<Src>;
+  port dst_clk:  in Clock<DstA>;
+  port data_in:  in Bool;
+  port data_out: out Bool;
+end synchronizer RstSyncA
+
+synchronizer RstSyncB
+  kind reset;
+  param STAGES: const = 2;
+  port src_clk:  in Clock<Src>;
+  port dst_clk:  in Clock<DstB>;
+  port data_in:  in Bool;
+  port data_out: out Bool;
+end synchronizer RstSyncB
+
+module M
+  port src_clk:  in Clock<Src>;
+  port clk_a:    in Clock<DstA>;
+  port clk_b:    in Clock<DstB>;
+  port raw_rst:  in Bool;
+  port out_a:    out Bool;
+  port out_b:    out Bool;
+
+  inst sync_a: RstSyncA
+    src_clk  <- src_clk;
+    dst_clk  <- clk_a;
+    data_in  <- raw_rst;
+    data_out -> rst_a;
+  end inst sync_a
+
+  inst sync_b: RstSyncB
+    src_clk  <- src_clk;
+    dst_clk  <- clk_b;
+    data_in  <- raw_rst;
+    data_out -> rst_b;
+  end inst sync_b
+
+  let out_a = rst_a;
+  let out_b = rst_b;
+end module M
