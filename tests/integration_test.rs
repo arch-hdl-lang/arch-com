@@ -7380,3 +7380,524 @@ end module SingleDomain
     let checker = TypeChecker::new(&symbols, &ast);
     assert!(checker.check().is_ok());
 }
+
+
+// ─── RDC phase 2a: data-path reset domain crossing tests ────────────────────
+// Rule (option 1, sync flops are transparent):
+//   reach[f] = { f.reset } if f.reset_kind == Async, else union of reach[srcs]
+//   violation: f.Async with src reaching some domain ≠ f.reset, OR
+//              f.{Sync,None} with |reach[f]| > 1.
+//
+// Tests use one seq block per reset signal (the pre-existing rule
+// "all regs in a seq block must share their reset signal" still applies).
+
+fn rdc_check(source: &str) -> Result<(), Vec<arch::diagnostics::CompileError>> {
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(parsed).expect("elaborate");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = TypeChecker::new(&symbols, &ast);
+    checker.check().map(|_| ())
+}
+
+fn assert_rdc_ok(label: &str, source: &str) {
+    let r = rdc_check(source);
+    assert!(r.is_ok(), "[{label}] expected no RDC error, got: {:?}", r.err());
+}
+
+fn assert_rdc_fails(label: &str, source: &str, must_contain: &[&str]) {
+    let r = rdc_check(source);
+    assert!(r.is_err(), "[{label}] expected RDC violation, got: ok");
+    let errs = r.unwrap_err();
+    let any_match = errs.iter().any(|e| {
+        let s = e.to_string();
+        s.contains("RDC") && must_contain.iter().all(|m| s.contains(m))
+    });
+    assert!(any_match,
+        "[{label}] expected RDC error containing all of {:?}, got: {:?}",
+        must_contain, errs);
+}
+
+// ── Group A: direct edges (1-hop) ───────────────────────────────────────────
+
+#[test]
+fn rdc_a1_same_async_direct_ok() {
+    // ra (rst_a, async) → rb (rst_a, async); same domain → no violation.
+    assert_rdc_ok("A1", r#"
+domain D
+  freq_mhz: 100
+end domain D
+module M
+  port clk: in Clock<D>;
+  port rst_a: in Reset<Async>;
+  port d: in UInt<8>;
+  port q: out UInt<8>;
+  reg ra: UInt<8> reset rst_a => 0;
+  reg rb: UInt<8> reset rst_a => 0;
+  seq on clk rising
+    ra <= d;
+    rb <= ra;
+  end seq
+  let q = rb;
+end module M
+"#);
+}
+
+#[test]
+#[ignore = "phase 2a — async cross-reset-domain data path not yet implemented"]
+fn rdc_a2_diff_async_direct_fails() {
+    // ra (rst_a, async) → rb (rst_b, async); different async domains → FAIL.
+    assert_rdc_fails("A2", r#"
+domain D
+  freq_mhz: 100
+end domain D
+module M
+  port clk: in Clock<D>;
+  port rst_a: in Reset<Async>;
+  port rst_b: in Reset<Async>;
+  port d: in UInt<8>;
+  port q: out UInt<8>;
+  reg ra: UInt<8> reset rst_a => 0;
+  reg rb: UInt<8> reset rst_b => 0;
+  seq on clk rising
+    ra <= d;
+  end seq
+  seq on clk rising
+    rb <= ra;
+  end seq
+  let q = rb;
+end module M
+"#, &["rst_a", "rst_b"]);
+}
+
+#[test]
+fn rdc_a3_async_to_sync_ok() {
+    // ra (rst_a, async) → rb (rst_b, sync). Sync is transparent → reach[rb's
+    // src]={rst_a}; rb originates no domain; |reach[rb]|=1 → no violation.
+    assert_rdc_ok("A3", r#"
+domain D
+  freq_mhz: 100
+end domain D
+module M
+  port clk: in Clock<D>;
+  port rst_a: in Reset<Async>;
+  port rst_b: in Reset<Sync>;
+  port d: in UInt<8>;
+  port q: out UInt<8>;
+  reg ra: UInt<8> reset rst_a => 0;
+  reg rb: UInt<8> reset rst_b => 0;
+  seq on clk rising
+    ra <= d;
+  end seq
+  seq on clk rising
+    rb <= ra;
+  end seq
+  let q = rb;
+end module M
+"#);
+}
+
+#[test]
+fn rdc_a4_async_to_none_ok() {
+    // ra (rst_a, async) → rb (none); single source → no violation.
+    assert_rdc_ok("A4", r#"
+domain D
+  freq_mhz: 100
+end domain D
+module M
+  port clk: in Clock<D>;
+  port rst_a: in Reset<Async>;
+  port d: in UInt<8>;
+  port q: out UInt<8>;
+  reg ra: UInt<8> reset rst_a => 0;
+  reg rb: UInt<8> init 0 reset none;
+  seq on clk rising
+    ra <= d;
+  end seq
+  seq on clk rising
+    rb <= ra;
+  end seq
+  let q = rb;
+end module M
+"#);
+}
+
+#[test]
+fn rdc_a5_sync_source_ok() {
+    // ra (rst_a, sync) sourced from a port has reach[ra]=∅. Then rb
+    // (rst_b, async) reads ra → reach[rb's src]=∅ → no violation.
+    assert_rdc_ok("A5", r#"
+domain D
+  freq_mhz: 100
+end domain D
+module M
+  port clk: in Clock<D>;
+  port rst_a: in Reset<Sync>;
+  port rst_b: in Reset<Async>;
+  port d: in UInt<8>;
+  port q: out UInt<8>;
+  reg ra: UInt<8> reset rst_a => 0;
+  reg rb: UInt<8> reset rst_b => 0;
+  seq on clk rising
+    ra <= d;
+  end seq
+  seq on clk rising
+    rb <= ra;
+  end seq
+  let q = rb;
+end module M
+"#);
+}
+
+// ── Group B: 2-hop chains (the canonical reset-less / sync-bridge bug) ─────
+
+#[test]
+#[ignore = "phase 2a — async cross-reset-domain data path not yet implemented"]
+fn rdc_b1_async_none_async_diff_fails() {
+    // ra (rst_a) → rx (none) → rb (rst_b). reach[rx]={rst_a};
+    // reach[rb's src]={rst_a} ≠ rb.reset=rst_b → FAIL at rb.
+    assert_rdc_fails("B1", r#"
+domain D
+  freq_mhz: 100
+end domain D
+module M
+  port clk: in Clock<D>;
+  port rst_a: in Reset<Async>;
+  port rst_b: in Reset<Async>;
+  port d: in UInt<8>;
+  port q: out UInt<8>;
+  reg ra: UInt<8> reset rst_a => 0;
+  reg rx: UInt<8> init 0 reset none;
+  reg rb: UInt<8> reset rst_b => 0;
+  seq on clk rising
+    ra <= d;
+  end seq
+  seq on clk rising
+    rx <= ra;
+  end seq
+  seq on clk rising
+    rb <= rx;
+  end seq
+  let q = rb;
+end module M
+"#, &["rst_a", "rst_b"]);
+}
+
+#[test]
+fn rdc_b2_async_none_async_same_ok() {
+    // ra → rx (none) → rb, all in rst_a → no violation.
+    assert_rdc_ok("B2", r#"
+domain D
+  freq_mhz: 100
+end domain D
+module M
+  port clk: in Clock<D>;
+  port rst_a: in Reset<Async>;
+  port d: in UInt<8>;
+  port q: out UInt<8>;
+  reg ra: UInt<8> reset rst_a => 0;
+  reg rx: UInt<8> init 0 reset none;
+  reg rb: UInt<8> reset rst_a => 0;
+  seq on clk rising
+    ra <= d;
+    rb <= rx;
+  end seq
+  seq on clk rising
+    rx <= ra;
+  end seq
+  let q = rb;
+end module M
+"#);
+}
+
+#[test]
+#[ignore = "phase 2a — async cross-reset-domain data path not yet implemented"]
+fn rdc_b3_async_sync_async_diff_fails() {
+    // Sync rx is transparent like none → still flagged.
+    assert_rdc_fails("B3", r#"
+domain D
+  freq_mhz: 100
+end domain D
+module M
+  port clk: in Clock<D>;
+  port rst_a: in Reset<Async>;
+  port rst_b: in Reset<Async>;
+  port rst_c: in Reset<Sync>;
+  port d: in UInt<8>;
+  port q: out UInt<8>;
+  reg ra: UInt<8> reset rst_a => 0;
+  reg rx: UInt<8> reset rst_c => 0;
+  reg rb: UInt<8> reset rst_b => 0;
+  seq on clk rising
+    ra <= d;
+  end seq
+  seq on clk rising
+    rx <= ra;
+  end seq
+  seq on clk rising
+    rb <= rx;
+  end seq
+  let q = rb;
+end module M
+"#, &["rst_a", "rst_b"]);
+}
+
+// ── Group C: convergence at non-async flop ─────────────────────────────────
+
+#[test]
+#[ignore = "phase 2a — async cross-reset-domain data path not yet implemented"]
+fn rdc_c1_two_async_converge_at_none_fails() {
+    // ra (rst_a) and rb (rst_b) both feed rx (none).
+    // reach[rx]={rst_a, rst_b} → FAIL at rx.
+    assert_rdc_fails("C1", r#"
+domain D
+  freq_mhz: 100
+end domain D
+module M
+  port clk: in Clock<D>;
+  port rst_a: in Reset<Async>;
+  port rst_b: in Reset<Async>;
+  port da: in UInt<8>;
+  port db: in UInt<8>;
+  port q: out UInt<8>;
+  reg ra: UInt<8> reset rst_a => 0;
+  reg rb: UInt<8> reset rst_b => 0;
+  reg rx: UInt<8> init 0 reset none;
+  seq on clk rising
+    ra <= da;
+  end seq
+  seq on clk rising
+    rb <= db;
+  end seq
+  seq on clk rising
+    rx <= (ra + rb).trunc<8>();
+  end seq
+  let q = rx;
+end module M
+"#, &["rst_a", "rst_b"]);
+}
+
+#[test]
+fn rdc_c2_two_same_domain_converge_ok() {
+    // Both async sources are rst_a → no violation.
+    assert_rdc_ok("C2", r#"
+domain D
+  freq_mhz: 100
+end domain D
+module M
+  port clk: in Clock<D>;
+  port rst_a: in Reset<Async>;
+  port da: in UInt<8>;
+  port db: in UInt<8>;
+  port q: out UInt<8>;
+  reg ra: UInt<8> reset rst_a => 0;
+  reg rb: UInt<8> reset rst_a => 0;
+  reg rx: UInt<8> init 0 reset none;
+  seq on clk rising
+    ra <= da;
+    rb <= db;
+  end seq
+  seq on clk rising
+    rx <= (ra + rb).trunc<8>();
+  end seq
+  let q = rx;
+end module M
+"#);
+}
+
+#[test]
+fn rdc_c3_async_plus_port_at_none_ok() {
+    // ra (rst_a) + port input → rx (none). Port contributes no async →
+    // reach[rx]={rst_a}, |reach|=1 → no violation.
+    assert_rdc_ok("C3", r#"
+domain D
+  freq_mhz: 100
+end domain D
+module M
+  port clk: in Clock<D>;
+  port rst_a: in Reset<Async>;
+  port da: in UInt<8>;
+  port p:  in UInt<8>;
+  port q:  out UInt<8>;
+  reg ra: UInt<8> reset rst_a => 0;
+  reg rx: UInt<8> init 0 reset none;
+  seq on clk rising
+    ra <= da;
+  end seq
+  seq on clk rising
+    rx <= (ra + p).trunc<8>();
+  end seq
+  let q = rx;
+end module M
+"#);
+}
+
+// ── Group D: multi-clock-domain interactions ───────────────────────────────
+
+#[test]
+fn rdc_d1_same_async_two_clocks_no_data_path_phase1_flags() {
+    // Phase 1 (currently shipped) flags this — shared async reset across
+    // two clock domains, regardless of whether a data path exists. Phase
+    // 2's data-path rule alone would let this pass; we keep phase 1 as a
+    // structural backstop so the test pins the union of both checks.
+    assert_rdc_fails("D1", r#"
+domain DA
+  freq_mhz: 100
+end domain DA
+domain DB
+  freq_mhz: 200
+end domain DB
+module M
+  port clk_a: in Clock<DA>;
+  port clk_b: in Clock<DB>;
+  port rst:   in Reset<Async>;
+  port da: in UInt<8>;
+  port db: in UInt<8>;
+  port qa: out UInt<8>;
+  port qb: out UInt<8>;
+  reg ra: UInt<8> reset rst => 0;
+  reg rb: UInt<8> reset rst => 0;
+  seq on clk_a rising
+    ra <= da;
+  end seq
+  seq on clk_b rising
+    rb <= db;
+  end seq
+  let qa = ra;
+  let qb = rb;
+end module M
+"#, &["rst", "DA", "DB"]);
+}
+
+#[test]
+#[ignore = "phase 2a — async cross-reset-domain data path not yet implemented"]
+fn rdc_d2_diff_async_diff_clocks_with_path_fails() {
+    // Two clocks, two async resets, data path between them → FAIL.
+    // Module marks itself `cdc_safe` to opt out of the CDC check (which
+    // would otherwise also fire on this design); RDC must still flag.
+    assert_rdc_fails("D2", r#"
+domain DA
+  freq_mhz: 100
+end domain DA
+domain DB
+  freq_mhz: 200
+end domain DB
+module M
+  pragma cdc_safe;
+  port clk_a: in Clock<DA>;
+  port clk_b: in Clock<DB>;
+  port rst_a: in Reset<Async>;
+  port rst_b: in Reset<Async>;
+  port da: in UInt<8>;
+  port q:  out UInt<8>;
+  reg ra: UInt<8> reset rst_a => 0;
+  reg rb: UInt<8> reset rst_b => 0;
+  seq on clk_a rising
+    ra <= da;
+  end seq
+  seq on clk_b rising
+    rb <= ra;
+  end seq
+  let q = rb;
+end module M
+"#, &["rst_a", "rst_b"]);
+}
+
+// ── Group E: feedback loops (require fixpoint) ─────────────────────────────
+
+#[test]
+fn rdc_e1_self_loop_same_domain_ok() {
+    assert_rdc_ok("E1", r#"
+domain D
+  freq_mhz: 100
+end domain D
+module M
+  port clk: in Clock<D>;
+  port rst_a: in Reset<Async>;
+  port q: out UInt<8>;
+  reg ra: UInt<8> reset rst_a => 0;
+  seq on clk rising
+    ra <= (ra + 1).trunc<8>();
+  end seq
+  let q = ra;
+end module M
+"#);
+}
+
+#[test]
+#[ignore = "phase 2a — async cross-reset-domain data path not yet implemented"]
+fn rdc_e2_mutual_feedback_diff_domains_fails() {
+    // ra ↔ rb across different async domains. Fixpoint converges with
+    // reach[rb's src]={rst_a} and reach[ra's src]={rst_b}; both flagged.
+    assert_rdc_fails("E2", r#"
+domain D
+  freq_mhz: 100
+end domain D
+module M
+  port clk: in Clock<D>;
+  port rst_a: in Reset<Async>;
+  port rst_b: in Reset<Async>;
+  port q: out UInt<8>;
+  reg ra: UInt<8> reset rst_a => 0;
+  reg rb: UInt<8> reset rst_b => 0;
+  seq on clk rising
+    ra <= rb;
+  end seq
+  seq on clk rising
+    rb <= ra;
+  end seq
+  let q = ra;
+end module M
+"#, &["rst_a", "rst_b"]);
+}
+
+// ── Group F: trivial / sanity ──────────────────────────────────────────────
+
+#[test]
+fn rdc_f1_single_async_domain_ok() {
+    // Several flops all reset by rst_a → no violation.
+    assert_rdc_ok("F1", r#"
+domain D
+  freq_mhz: 100
+end domain D
+module M
+  port clk: in Clock<D>;
+  port rst_a: in Reset<Async>;
+  port d: in UInt<8>;
+  port q: out UInt<8>;
+  reg r1: UInt<8> reset rst_a => 0;
+  reg r2: UInt<8> reset rst_a => 0;
+  reg r3: UInt<8> reset rst_a => 0;
+  seq on clk rising
+    r1 <= d;
+    r2 <= r1;
+    r3 <= r2;
+  end seq
+  let q = r3;
+end module M
+"#);
+}
+
+#[test]
+fn rdc_f2_no_async_flops_ok() {
+    // All sync — phase-2 rule originates no domain → no violation.
+    assert_rdc_ok("F2", r#"
+domain D
+  freq_mhz: 100
+end domain D
+module M
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port d: in UInt<8>;
+  port q: out UInt<8>;
+  reg r1: UInt<8> reset rst => 0;
+  reg r2: UInt<8> reset rst => 0;
+  seq on clk rising
+    r1 <= d;
+    r2 <= r1;
+  end seq
+  let q = r2;
+end module M
+"#);
+}
