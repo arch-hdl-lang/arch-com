@@ -1648,6 +1648,7 @@ Expands to `NUM` independent threads, each with its own state register `_t{N}_st
 | `x = expr` | No | Comb assign — drives output while FSM is in this state |
 | `x <= expr` | No | Seq assign — register update fires when state exits |
 | `if/else (no wait inside)` | No | Same-state conditional |
+| `if/else (with wait inside)` | Yes (dispatch + rejoin) | Branches lower to disjoint state ranges; rejoin at exit |
 | `wait until cond;` | Yes | Advance when condition true |
 | `wait N cycle;` | Yes | Stall exactly N clock cycles (counter-based) |
 | `do { … } until cond;` | Yes | Hold state: drive comb outputs until condition fires |
@@ -1657,7 +1658,9 @@ Expands to `NUM` independent threads, each with its own state register `_t{N}_st
 
 **Trailing seq assigns** after the last `wait` in the body are merged into the preceding state's exit logic (guarded by its transition condition) to avoid a dead cycle.
 
-**`if/else` with wait inside** is not supported — use separate threads or flatten the control flow.
+**`if/else` with wait inside** is supported via *dispatch-and-rejoin* lowering (see `doc/thread_lowering_proof.md §II.10`). The compiler emits a dispatch state that branches to disjoint state ranges for `then_stmts` / `else_stmts`, and both ranges rejoin at the post-`if` continuation. Each branch may contain any combination of `wait until`, `wait N cycle`, `for`, nested `if/else`, comb/seq assigns. The branches need not be the same length.
+
+Use this pattern when a thread needs to take a different number of cycles based on a runtime predicate — e.g., a divide unit's "shortcut on divide-by-zero, otherwise long-divide" or an AXI initiator's "burst-of-1 vs burst-of-N" path. Splitting into multiple threads gated by a predicate is also valid but typically requires `shared(or)` on contended outputs and is harder to reason about; prefer the single-thread + dispatch-and-rejoin form when the branches are mutually exclusive.
 
 **7a.3 Resource Locks**
 
