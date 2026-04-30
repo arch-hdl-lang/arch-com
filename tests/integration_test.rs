@@ -7932,3 +7932,36 @@ fn rdc_g3_clkgate_enable_from_sync_flop_ok() {
         .expect("read G3");
     assert_rdc_ok("G3", &src);
 }
+
+// ── Group H: Phase 2c — reconvergent RDC through reset synchronisers ──────
+// One async reset routed through two reset synchronisers landing in the
+// same destination clock domain → flops reset by the two outputs can be in
+// inconsistent state during the deassertion window.
+
+#[test]
+fn rdc_h1_reconvergent_two_syncs_same_domain_fails() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_h1_reconvergent_two_syncs_same_domain_fail.arch")
+        .expect("read H1");
+    assert_rdc_fails("H1", &src, &["raw_rst", "sync_a", "sync_b", "Dst"]);
+}
+
+#[test]
+fn rdc_h2_single_reset_sync_ok() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_h2_single_reset_sync_ok.arch")
+        .expect("read H2");
+    assert_rdc_ok("H2", &src);
+}
+
+#[test]
+fn rdc_h3_reset_syncs_to_diff_domains_ok() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_h3_reset_syncs_to_diff_domains_ok.arch")
+        .expect("read H3");
+    assert_rdc_ok("H3", &src);
+}
+
+#[test]
+fn rdc_h4_reconvergent_three_syncs_same_domain_fails() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_h4_reconvergent_three_syncs_same_domain_fail.arch")
+        .expect("read H4");
+    assert_rdc_fails("H4", &src, &["raw_rst", "sync_1", "Dst"]);
+}
