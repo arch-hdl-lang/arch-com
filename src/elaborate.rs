@@ -1246,9 +1246,23 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
     let mut new_body: Vec<ModuleBodyItem> = Vec::new();
     let mut thread_idx = 0usize;
     let mut resource_decls: HashMap<String, ResourceDecl> = HashMap::new();
+    // Functions defined in the parent module are also visible to thread
+    // bodies. Since the lowering moves thread states into a separate
+    // `_<module>_threads` submodule, the function declarations must be
+    // cloned into that submodule's body too — SV functions are local to
+    // the module they're declared in. Without this, any thread-state body
+    // that calls a parent-module function emits as an unresolved
+    // task/function reference inside the threads submodule.
+    let mut parent_functions: Vec<ModuleBodyItem> = Vec::new();
 
     for item in m.body {
         match item {
+            ModuleBodyItem::Function(_) => {
+                // Keep the function in the parent module body AND clone it
+                // for the threads submodule. Both modules need their own copy.
+                parent_functions.push(item.clone());
+                new_body.push(item);
+            }
             ModuleBodyItem::Thread(t) => {
                 // TLM target threads are rewritten into regular threads
                 // by lower_tlm_target_threads (runs before lower_threads).
@@ -1388,7 +1402,9 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
             merged_ports.push(PortDecl {
                 name: Ident::new(name.clone(), sp), direction: Direction::In,
                 ty: info.ty.clone(),
-                default: None, reg_info: None, bus_info: None, shared: None, unpacked: false, span: sp,
+                default: None, reg_info: None, bus_info: None, shared: None,
+                unpacked: info.unpacked,
+                span: sp,
             });
         }
     }
@@ -1404,7 +1420,9 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
                 name: Ident::new(name.clone(), sp), direction: Direction::Out,
                 ty: info.ty.clone(),
                 default: Some(make_zero_expr(sp)),
-                reg_info: None, bus_info: None, shared: info.shared, unpacked: false, span: sp,
+                reg_info: None, bus_info: None, shared: info.shared,
+                unpacked: info.unpacked,
+                span: sp,
             });
         }
     }
@@ -2061,8 +2079,34 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
     // ── Merged comb block: defaults + all per-thread comb stmts ──────
     let mut merged_comb: Vec<Stmt> = Vec::new();
     // Defaults: all comb outputs = 0
+    //
+    // Unpacked-array ports (`unpacked Vec<T,N>`) need `'{default: 0}` rather
+    // than a bare `0` literal — SV rejects scalar-to-unpacked-array assignment.
+    // For each unpacked port, emit per-element zeros instead so the literal-0
+    // path (which lowers to a sized scalar) doesn't collide with the unpacked
+    // shape. The element count and width are derived from the port type.
     for p in &merged_ports {
         if p.direction == Direction::Out && p.default.is_some() {
+            if p.unpacked {
+                // Pull out the Vec element count from `Vec<T, N>`. Drive
+                // each lane individually with a zero of the element type.
+                if let TypeExpr::Vec(_, size_expr) = &p.ty {
+                    if let Some(n) = try_eval_i64(size_expr, &HashMap::new()) {
+                        for i in 0..(n as u64) {
+                            merged_comb.push(Stmt::Assign(CombAssign {
+                                target: Expr::new(ExprKind::Index(
+                                    Box::new(Expr::new(ExprKind::Ident(p.name.name.clone()), sp)),
+                                    Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(i)), sp)),
+                                ), sp),
+                                value: make_zero_expr(sp),
+                                span: sp,
+                            }));
+                        }
+                        continue;
+                    }
+                }
+                // Fall through (unknown shape) — let the codegen lint catch it.
+            }
             merged_comb.push(Stmt::Assign(CombAssign {
                 target: Expr::new(ExprKind::Ident(p.name.name.clone()), sp),
                 value: p.default.as_ref().unwrap().clone(),
@@ -2096,6 +2140,13 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
         merged_body.insert(0, ModuleBodyItem::CombBlock(CombBlock {
             stmts: merged_comb, span: sp,
         }));
+    }
+
+    // Prepend parent-module function clones so thread-body calls inside
+    // `merged_body` (e.g. `MacRes(...)`) resolve when the submodule is
+    // emitted as standalone SV. See note at `parent_functions`'s declaration.
+    for f in parent_functions.into_iter().rev() {
+        merged_body.insert(0, f);
     }
 
     // Auto-emitted SVA spec-contract properties from `--auto-thread-asserts`.
@@ -2266,6 +2317,11 @@ struct SignalInfo {
     reg_reset: RegReset,
     reg_init: Option<Expr>,
     shared: Option<SharedReduction>,
+    /// Carried so the threads-submodule's synthesized port declarations
+    /// inherit the parent's `unpacked Vec<T,N>` shape — otherwise the
+    /// instantiation in the parent gets a packed-vs-unpacked port
+    /// connection mismatch.
+    unpacked: bool,
 }
 
 fn build_module_type_map(m: &ModuleDecl) -> HashMap<String, SignalInfo> {
@@ -2276,6 +2332,7 @@ fn build_module_type_map(m: &ModuleDecl) -> HashMap<String, SignalInfo> {
             reg_reset: p.reg_info.as_ref().map(|ri| ri.reset.clone()).unwrap_or(RegReset::None),
             reg_init: p.reg_info.as_ref().and_then(|ri| ri.init.clone()),
             shared: p.shared,
+            unpacked: p.unpacked,
         });
     }
     for item in &m.body {
@@ -2286,6 +2343,7 @@ fn build_module_type_map(m: &ModuleDecl) -> HashMap<String, SignalInfo> {
                     reg_reset: r.reset.clone(),
                     reg_init: r.init.clone(),
                     shared: None,
+                    unpacked: false,
                 });
             }
             ModuleBodyItem::WireDecl(w) => {
@@ -2294,6 +2352,7 @@ fn build_module_type_map(m: &ModuleDecl) -> HashMap<String, SignalInfo> {
                     reg_reset: RegReset::None,
                     reg_init: None,
                     shared: None,
+                    unpacked: false,
                 });
             }
             ModuleBodyItem::LetBinding(l) => {
@@ -2303,6 +2362,7 @@ fn build_module_type_map(m: &ModuleDecl) -> HashMap<String, SignalInfo> {
                         reg_reset: RegReset::None,
                         reg_init: None,
                         shared: None,
+                        unpacked: false,
                     });
                 }
             }
@@ -2695,23 +2755,37 @@ fn partition_thread_body(
             ThreadStmt::Log(l) => {
                 cur_seq.push(Stmt::Log(l.clone()));
             }
-            ThreadStmt::WaitUntil(cond, _) => {
+            ThreadStmt::WaitUntil(cond, sp) => {
                 // Comb assigns flow INTO the wait state so they hold while
                 // waiting (matches `valid=1; wait until ready;` AXI intent).
-                // Seq assigns (`<=`) still need a fire-once predecessor state
-                // — putting them in the wait state would re-fire each cycle.
-                if !cur_seq.is_empty() {
-                    states.push(ThreadFsmState {
-                        comb_stmts: Vec::new(),
-                        seq_stmts: std::mem::take(&mut cur_seq),
-                        transition_cond: None,
-                        wait_cycles: None,
-                        multi_transitions: Vec::new(),
-                    });
-                }
+                //
+                // Seq assigns merge into the wait state too, but wrapped in
+                // `if (cond)` so they fire on the wait-exit edge — the same
+                // edge the FSM advances on. This matches the natural
+                // interpretation of `reg <= expr; wait until cond;` as
+                // "register the expression value when cond becomes true".
+                //
+                // Earlier versions used a separate fire-once predecessor
+                // state with unconditional advance, but that landed seq
+                // assigns one edge BEFORE cond actually fires — for the
+                // common pattern `if cond { reg <= ...; } wait until cond;`,
+                // the seq's own if-guard saw cond stale (current cycle, not
+                // the wait-exit cycle), so the register captured the wrong
+                // value.
+                let guarded_seq = if !cur_seq.is_empty() {
+                    vec![Stmt::IfElse(IfElse {
+                        cond: cond.clone(),
+                        then_stmts: std::mem::take(&mut cur_seq),
+                        else_stmts: Vec::new(),
+                        unique: false,
+                        span: *sp,
+                    })]
+                } else {
+                    Vec::new()
+                };
                 states.push(ThreadFsmState {
                     comb_stmts: std::mem::take(&mut cur_comb),
-                    seq_stmts: Vec::new(),
+                    seq_stmts: guarded_seq,
                     transition_cond: Some(cond.clone()),
                     wait_cycles: None,
                     multi_transitions: Vec::new(),
@@ -3303,12 +3377,18 @@ fn lower_thread_for(
     let loop_back_target = 0;
 
     // Match the end expression to cnt_width bits for the loop counter comparison.
-    // Use trunc (not zext) because for-loop end expressions often come from
-    // `burst_len_r - 1` where subtraction widens UInt<8> → UInt<9>.
-    // trunc<cnt_width> is safe: the semantically meaningful range fits in cnt_width bits.
+    // Use `.resize<cnt_width>()` (direction-agnostic) rather than `.trunc<>()`
+    // because:
+    //   - End expressions like `burst_len_r - 1` widen above cnt_width
+    //     (UInt<8> - UInt<1> → UInt<9>), where we need to truncate.
+    //   - End expressions like literal `3` are already cnt_width bits
+    //     (since `cnt_width` is computed from the end value's bit-width),
+    //     where `.trunc<>()` would be flagged as a no-op by typecheck.
+    // `resize` accepts both directions without complaint and lowers to the
+    // same SV cast when widths match.
     let end_w = Expr::new(ExprKind::MethodCall(
         Box::new(end.clone()),
-        Ident::new("trunc".to_string(), span),
+        Ident::new("resize".to_string(), span),
         vec![Expr::new(ExprKind::Literal(LitKind::Dec(cnt_width as u64)), span)],
     ), span);
 
@@ -3553,6 +3633,11 @@ fn rewrite_loop_var(stmt: &ThreadStmt, var: &str, replacement: &str) -> ThreadSt
 
 /// Replace ident `var` with `replacement` in an expression tree.
 fn rewrite_var_expr(expr: Expr, var: &str, replacement: &str) -> Expr {
+    // Recurse into every container variant — for-loop iteration vars can
+    // appear inside Concat / BitSlice / function call args / method receiver
+    // / field access / part-select indices / etc. Missing one of these
+    // shapes silently leaves the iter-var ident in the lowered FSM body,
+    // and SV emission then references an undefined `i`.
     let new_kind = match &expr.kind {
         ExprKind::Ident(name) if name == var => ExprKind::Ident(replacement.to_string()),
         ExprKind::Binary(op, l, r) => ExprKind::Binary(
@@ -3565,11 +3650,46 @@ fn rewrite_var_expr(expr: Expr, var: &str, replacement: &str) -> Expr {
             Box::new(rewrite_var_expr(*base.clone(), var, replacement)),
             Box::new(rewrite_var_expr(*idx.clone(), var, replacement)),
         ),
+        ExprKind::BitSlice(base, hi, lo) => ExprKind::BitSlice(
+            Box::new(rewrite_var_expr(*base.clone(), var, replacement)),
+            Box::new(rewrite_var_expr(*hi.clone(), var, replacement)),
+            Box::new(rewrite_var_expr(*lo.clone(), var, replacement)),
+        ),
+        ExprKind::PartSelect(base, start, width, up) => ExprKind::PartSelect(
+            Box::new(rewrite_var_expr(*base.clone(), var, replacement)),
+            Box::new(rewrite_var_expr(*start.clone(), var, replacement)),
+            Box::new(rewrite_var_expr(*width.clone(), var, replacement)),
+            *up,
+        ),
+        ExprKind::FieldAccess(base, f) => ExprKind::FieldAccess(
+            Box::new(rewrite_var_expr(*base.clone(), var, replacement)),
+            f.clone(),
+        ),
         ExprKind::Ternary(c, t, f) => ExprKind::Ternary(
             Box::new(rewrite_var_expr(*c.clone(), var, replacement)),
             Box::new(rewrite_var_expr(*t.clone(), var, replacement)),
             Box::new(rewrite_var_expr(*f.clone(), var, replacement)),
         ),
+        ExprKind::Concat(parts) => ExprKind::Concat(
+            parts.iter().map(|p| rewrite_var_expr(p.clone(), var, replacement)).collect(),
+        ),
+        ExprKind::Repeat(count, inner) => ExprKind::Repeat(
+            Box::new(rewrite_var_expr(*count.clone(), var, replacement)),
+            Box::new(rewrite_var_expr(*inner.clone(), var, replacement)),
+        ),
+        ExprKind::MethodCall(recv, name, args) => ExprKind::MethodCall(
+            Box::new(rewrite_var_expr(*recv.clone(), var, replacement)),
+            name.clone(),
+            args.iter().map(|a| rewrite_var_expr(a.clone(), var, replacement)).collect(),
+        ),
+        ExprKind::Signed(inner) => ExprKind::Signed(
+            Box::new(rewrite_var_expr(*inner.clone(), var, replacement)),
+        ),
+        ExprKind::Unsigned(inner) => ExprKind::Unsigned(
+            Box::new(rewrite_var_expr(*inner.clone(), var, replacement)),
+        ),
+        // Leaf nodes / non-substitutable forms: Ident-not-matching, Literal,
+        // Bool, EnumVariant, Todo, etc. Fall through unchanged.
         _ => return expr,
     };
     Expr { kind: new_kind, span: expr.span, parenthesized: expr.parenthesized }
@@ -3731,12 +3851,17 @@ fn transform_shared_or_assigns(
 
 /// Rename an identifier in an expression tree.
 fn rename_ident_in_expr(expr: &mut Expr, old: &str, new: &str) {
+    // Must recurse into every container variant that can hold sub-expressions
+    // — counter renames (_loop_cnt → _t{N}_loop_cnt) walk the whole expression
+    // tree, and missing a container leaves a bare `_loop_cnt` ident in the
+    // lowered SV that references no real variable.
     match &mut expr.kind {
         ExprKind::Ident(ref mut name) if name == old => { *name = new.to_string(); }
         ExprKind::Binary(_, l, r) => { rename_ident_in_expr(l, old, new); rename_ident_in_expr(r, old, new); }
         ExprKind::Unary(_, e) => rename_ident_in_expr(e, old, new),
         ExprKind::Index(b, i) => { rename_ident_in_expr(b, old, new); rename_ident_in_expr(i, old, new); }
         ExprKind::BitSlice(b, h, l) => { rename_ident_in_expr(b, old, new); rename_ident_in_expr(h, old, new); rename_ident_in_expr(l, old, new); }
+        ExprKind::PartSelect(b, s, w, _) => { rename_ident_in_expr(b, old, new); rename_ident_in_expr(s, old, new); rename_ident_in_expr(w, old, new); }
         ExprKind::FieldAccess(b, _) => rename_ident_in_expr(b, old, new),
         ExprKind::MethodCall(recv, _, args) => {
             rename_ident_in_expr(recv, old, new);
@@ -3744,6 +3869,11 @@ fn rename_ident_in_expr(expr: &mut Expr, old: &str, new: &str) {
         }
         ExprKind::Ternary(c, t, f) => { rename_ident_in_expr(c, old, new); rename_ident_in_expr(t, old, new); rename_ident_in_expr(f, old, new); }
         ExprKind::Cast(e, _) => rename_ident_in_expr(e, old, new),
+        ExprKind::Concat(parts) => { for p in parts { rename_ident_in_expr(p, old, new); } }
+        ExprKind::Repeat(c, e) => { rename_ident_in_expr(c, old, new); rename_ident_in_expr(e, old, new); }
+        ExprKind::Signed(e) | ExprKind::Unsigned(e) | ExprKind::Clog2(e) | ExprKind::Onehot(e) => {
+            rename_ident_in_expr(e, old, new);
+        }
         _ => {}
     }
 }
