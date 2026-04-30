@@ -279,7 +279,7 @@
 
 | # | Feature | Description |
 |---|---------|-------------|
-| 1 | **`pragma rdc_safe;`** | Per-module opt-out parallel to `pragma cdc_safe;`. Tiny polish (~30 LOC); no real demand yet but tidy. |
+| ~~1~~ | ~~**`pragma rdc_safe;`**~~ | **DONE** — per-module opt-out shipped. `pragma rdc_safe;` suppresses every RDC phase (1 + 2a–2d); independent of `pragma cdc_safe;` (which still gates CDC + phase 1 RDC). Both can coexist; unknown pragmas are a parse error. Tests in `tests/rdc/rdc_l*.arch`. |
 | 2 | **Tristate / bidirectional I/O** | `Tristate<T>` type + `tristate` block for pad-level I/O; SV codegen emits `inout` with Z-driver; sim decomposes to `_out/_oe/_in` (2-state); type checker restricts to top-level modules; supports open-drain (wire-AND) resolution for I2C/GPIO |
 | 3 | **FIFO `latency 1` (registered output + FWFT)** | Registered `pop_data` with first-word fall-through prefetch; consumer interface identical to `latency 0` but `pop_data` comes from a flop, not memory mux — timing-clean for deep FIFOs; explicit designer choice, no auto-selection; see spec §8.2b |
 | 4 | **Package-scoped modules** | Allow hardware constructs (module, fsm, etc.) inside `package`; `inst a: PkgName::ModuleName` for namespace-qualified instantiation; SV codegen flattens to `PkgName_ModuleName`; resolves name collisions without tool-specific library mapping (SV limitation: modules are always global) |

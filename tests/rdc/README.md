@@ -77,6 +77,10 @@ violation:
 | `rdc_k2_negation_at_inst_fail.arch` | sub's Reset input driven by `not rst_a` at inst boundary | fail | PASS (phase 2d) |
 | `rdc_k3_direct_reset_at_inst_ok.arch` | sub's Reset input driven directly by a parent Reset port | ok | PASS |
 | `rdc_k4_sync_output_to_reset_ok.arch` | sub's Reset input driven by a `synchronizer kind reset` output (direct ident) | ok | PASS |
+| `rdc_l1_pragma_rdc_safe_suppresses_phase2a_ok.arch` | `pragma rdc_safe;` opts the module out of phase 2a | ok | PASS |
+| `rdc_l2_pragma_rdc_safe_suppresses_phase2c_ok.arch` | `pragma rdc_safe;` opts the module out of phase 2c | ok | PASS |
+| `rdc_l3_pragma_rdc_safe_suppresses_phase2d_ok.arch` | `pragma rdc_safe;` opts the module out of phase 2d | ok | PASS |
+| `rdc_l4_pragma_rdc_safe_suppresses_phase1_ok.arch` | `pragma rdc_safe;` opts the module out of phase 1 | ok | PASS |
 
 ## Why D1 still flags (phase 1 backstop)
 

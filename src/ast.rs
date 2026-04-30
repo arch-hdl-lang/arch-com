@@ -200,6 +200,11 @@ pub struct ModuleDecl {
     pub implements: Option<Ident>,
     pub hooks: Vec<ModuleHookDecl>,
     pub cdc_safe: bool,
+    /// `pragma rdc_safe;` — suppress all RDC checks (phases 1 + 2a–2d)
+    /// for this module. Independent of `cdc_safe`; either pragma alone
+    /// disables phase 1's structural cross-clock async-reset rule
+    /// (which sits at the CDC/RDC boundary).
+    pub rdc_safe: bool,
     pub span: Span,
     /// Outer doc comment from `///` lines preceding the `module` keyword.
     /// See `doc/plan_arch_doc_comments.md`.

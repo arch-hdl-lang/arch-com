@@ -1,0 +1,34 @@
+// L3: `pragma rdc_safe;` suppresses phase 2d (combiner glitches at
+// inst boundary). Without it K1's `rst <- rst_a | rst_b` would flag.
+
+domain D
+  freq_mhz: 100
+end domain D
+
+module Sub
+  port clk: in Clock<D>;
+  port rst: in Reset<Async>;
+  port d:   in UInt<8>;
+  port q:   out UInt<8>;
+  reg r: UInt<8> reset rst => 0;
+  seq on clk rising
+    r <= d;
+  end seq
+  let q = r;
+end module Sub
+
+module Top
+  pragma rdc_safe;
+  port clk:   in Clock<D>;
+  port rst_a: in Reset<Async>;
+  port rst_b: in Reset<Async>;
+  port d:     in UInt<8>;
+  port q:     out UInt<8>;
+
+  inst sub: Sub
+    clk <- clk;
+    rst <- rst_a | rst_b;
+    d   <- d;
+    q   -> q;
+  end inst sub
+end module Top

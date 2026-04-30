@@ -8030,3 +8030,66 @@ fn rdc_k4_sync_output_to_reset_ok() {
         .expect("read K4");
     assert_rdc_ok("K4", &src);
 }
+
+// ── Group L: Phase polish — `pragma rdc_safe;` per-module opt-out ─────────
+// Mirror of `pragma cdc_safe;` for the RDC-specific phases. Either pragma
+// alone suppresses phase 1 (the structural cross-clock rule). Phases 2a-2d
+// are gated only by `rdc_safe`.
+
+#[test]
+fn rdc_l1_pragma_rdc_safe_suppresses_phase2a() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_l1_pragma_rdc_safe_suppresses_phase2a_ok.arch")
+        .expect("read L1");
+    assert_rdc_ok("L1", &src);
+}
+
+#[test]
+fn rdc_l2_pragma_rdc_safe_suppresses_phase2c() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_l2_pragma_rdc_safe_suppresses_phase2c_ok.arch")
+        .expect("read L2");
+    assert_rdc_ok("L2", &src);
+}
+
+#[test]
+fn rdc_l3_pragma_rdc_safe_suppresses_phase2d() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_l3_pragma_rdc_safe_suppresses_phase2d_ok.arch")
+        .expect("read L3");
+    assert_rdc_ok("L3", &src);
+}
+
+#[test]
+fn rdc_l4_pragma_rdc_safe_suppresses_phase1() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_l4_pragma_rdc_safe_suppresses_phase1_ok.arch")
+        .expect("read L4");
+    assert_rdc_ok("L4", &src);
+}
+
+#[test]
+fn rdc_l5_unknown_pragma_rejected() {
+    // Defensive: a typo or unknown pragma name still errors at parse
+    // time, so users notice when they mistype `rdc_safe`.
+    let src = r#"
+domain D
+  freq_mhz: 100
+end domain D
+module M
+  pragma totally_unsafe;
+  port clk: in Clock<D>;
+  port rst: in Reset<Sync>;
+  port d:   in UInt<8>;
+  port q:   out UInt<8>;
+  reg r: UInt<8> reset rst => 0;
+  seq on clk rising
+    r <= d;
+  end seq
+  let q = r;
+end module M
+"#;
+    let tokens = lexer::tokenize(src).expect("lex");
+    let mut parser = Parser::new(tokens, src);
+    let result = parser.parse_source_file();
+    assert!(result.is_err(), "unknown pragma should be a parse error");
+    let msg = format!("{:?}", result.err().unwrap());
+    assert!(msg.contains("unknown pragma") && msg.contains("totally_unsafe"),
+        "expected unknown-pragma diagnostic, got: {msg}");
+}

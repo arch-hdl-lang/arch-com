@@ -1308,7 +1308,7 @@ A reset's domain is **inferred from usage** — there is no explicit `Domain` an
 
 **RDC violations detected at compile time (shipped):**
 
-1. **Cross-clock-domain async reset (structural, phase 1).** An `Reset<Async, ...>` signal appears in the reset clause of registers in two different clock domains. An async reset signal is *bound to one clock domain* — the one its deassertion edge was synchronised to. Reusing it in a second domain re-creates the original RDC hazard there, regardless of whether the data paths in the two domains interact. The check is data-flow-insensitive because the rule applies even when each domain's flop subset is independent. The same rule applies when the upstream signal is itself a synchroniser output: a `synchronizer kind reset` for clock A is *not* valid as a reset source for clock B's flops — synchronisation is per-destination-domain. The fix is one synchroniser instance per receiving clock domain, each driving its own per-domain `Reset<Async>` port. Suppress with `pragma cdc_safe;`.
+1. **Cross-clock-domain async reset (structural, phase 1).** An `Reset<Async, ...>` signal appears in the reset clause of registers in two different clock domains. An async reset signal is *bound to one clock domain* — the one its deassertion edge was synchronised to. Reusing it in a second domain re-creates the original RDC hazard there, regardless of whether the data paths in the two domains interact. The check is data-flow-insensitive because the rule applies even when each domain's flop subset is independent. The same rule applies when the upstream signal is itself a synchroniser output: a `synchronizer kind reset` for clock A is *not* valid as a reset source for clock B's flops — synchronisation is per-destination-domain. The fix is one synchroniser instance per receiving clock domain, each driving its own per-domain `Reset<Async>` port. Suppress with `pragma cdc_safe;` or `pragma rdc_safe;` (either alone disables this structural rule).
 
 2. **Cross-async-reset-domain data path (data-flow, phase 2a).** Per-flop reach-set analysis. Sync and reset-none flops are *transparent* — they originate no domain, just propagate whatever async domains reach their data input. The textbook strict rule applies: a flop downstream of an async-reset flop must itself be async-reset by the **same** signal (or have a synchroniser in between). Sync and reset-none flops can't gate their data input on the source's async reset event, so they capture mid-deassert transients and propagate metastability downstream.
 
@@ -1329,7 +1329,7 @@ A reset's domain is **inferred from usage** — there is no explicit `Domain` an
    - **Async → reset-none** — async-reset flop driving any reset-less flop. Same hazard, no reset gate at all.
    - **Convergent reset-less / sync paths** — multiple async-reset flops feeding a non-async-reset flop. Even when the upstream domains agree (single source), the receiver still flags because it can't gate on the async event.
 
-   Tests live in `tests/rdc/` (also in `tests/integration_test.rs` `rdc_*` functions). The fix is to either reset the receiving flop async-by the same signal as the source, or insert a `synchronizer kind reset` between them. Phase 2a is intentionally **not** gated by `pragma cdc_safe;` — that pragma silences CDC and the phase-1 cross-clock structural RDC check, but the data-path hazard is structurally distinct (single-clock multi-reset trips it without any CDC concern). A future `pragma rdc_safe;` will be the dedicated opt-out.
+   Tests live in `tests/rdc/` (also in `tests/integration_test.rs` `rdc_*` functions). The fix is to either reset the receiving flop async-by the same signal as the source, or insert a `synchronizer kind reset` between them. Phase 2a is intentionally **not** gated by `pragma cdc_safe;` — that pragma silences CDC and the phase-1 cross-clock structural RDC check, but the data-path hazard is structurally distinct (single-clock multi-reset trips it without any CDC concern). The dedicated opt-out is `pragma rdc_safe;`, which suppresses every RDC phase (1 + 2a–2d).
 
 3. **Reset-driven clock gating (phase 2b).** Logic reaching a `clkgate` instance's `enable` input from an async-reset flop causes the gate to glitch on async reset events — `enable` toggles to its reset value mid-cycle, producing partial clock pulses on `clk_out`. The check walks every inst whose target construct is a `clkgate` and reuses phase 2a's reach map: if any async domain reaches the parent-side signal driving `enable`, the inst is flagged. The fix is to drive `enable` from a synchronously-clean source — typically a flop reset by a signal already synchronised to the gated clock's domain, or directly via a `synchronizer kind reset` upstream. Test scenarios live in `tests/rdc/rdc_g*.arch`.
 
@@ -1352,6 +1352,18 @@ With phase 2d landed, all five article-3 RDC bug classes catalogued in mainstrea
   | 2b  | Reset-driven clock gating                    | ✅ |
   | 2c  | Reconvergent synchronisers (RDC + CDC)       | ✅ |
   | 2d  | Combiner-derived reset glitches at inst      | ✅ |
+
+**Per-module opt-out pragmas:**
+
+```
+module M
+  pragma cdc_safe;     // suppress CDC checks + RDC phase 1
+  pragma rdc_safe;     // suppress every RDC phase (1 + 2a–2d)
+  ...
+end module M
+```
+
+`pragma cdc_safe;` is the long-standing CDC opt-out and incidentally suppresses the structural cross-clock RDC rule (phase 1) because the two checks overlap. `pragma rdc_safe;` is the dedicated RDC opt-out — it suppresses *every* RDC phase, including 2a–2d which `cdc_safe` does not touch. Either pragma alone is enough to silence phase 1; both can coexist on the same module. Use these only when the design has been externally analysed (Synopsys SpyGlass, Cadence Conformal) and the violations are provably safe in the surrounding integration. Unknown pragma names error at parse time, so a typo on `rdc_safe` is caught before compile.
 
 **5.5 Tristate and Bidirectional I/O** *(planned)*
 
