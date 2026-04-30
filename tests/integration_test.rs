@@ -8031,6 +8031,56 @@ fn rdc_k4_sync_output_to_reset_ok() {
     assert_rdc_ok("K4", &src);
 }
 
+// ── Group M: Reconvergent CDC source-tracing (Aldec article 2140) ─────────
+// The phase 2c reconvergence check walks each synchroniser's `data_in`
+// expression through bit-slice / part-select / concat / unary+binary ops /
+// ternary / let-binding indirection to find the *terminal* source
+// register(s). Two synchronisers in the same destination clock domain whose
+// inputs trace back to the same source — even via different combinational
+// paths — produce a reconvergent-CDC violation.
+
+#[test]
+fn rdc_m1_cdc_bit_slice_same_source_fails() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_m1_cdc_bit_slice_same_source_fail.arch")
+        .expect("read M1");
+    assert_rdc_fails("M1", &src, &["CDC", "flags", "sync_a", "sync_b", "Dst"]);
+}
+
+#[test]
+fn rdc_m2_cdc_part_select_same_source_fails() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_m2_cdc_part_select_same_source_fail.arch")
+        .expect("read M2");
+    assert_rdc_fails("M2", &src, &["CDC", "word", "sync_a", "sync_b", "Dst"]);
+}
+
+#[test]
+fn rdc_m3_cdc_common_source_via_comb_fails() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_m3_cdc_common_source_via_comb_fail.arch")
+        .expect("read M3");
+    assert_rdc_fails("M3", &src, &["CDC", "src_flag", "sync_a", "sync_b", "Dst"]);
+}
+
+#[test]
+fn rdc_m4_cdc_let_alias_same_source_fails() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_m4_cdc_let_alias_same_source_fail.arch")
+        .expect("read M4");
+    assert_rdc_fails("M4", &src, &["CDC", "src_flag", "sync_a", "sync_b", "Dst"]);
+}
+
+#[test]
+fn rdc_m5_cdc_distinct_sources_ok() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_m5_cdc_distinct_sources_ok.arch")
+        .expect("read M5");
+    assert_rdc_ok("M5", &src);
+}
+
+#[test]
+fn rdc_m6_cdc_bit_slice_distinct_vecs_ok() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_m6_cdc_bit_slice_distinct_vecs_ok.arch")
+        .expect("read M6");
+    assert_rdc_ok("M6", &src);
+}
+
 // ── Group L: Phase polish — `pragma rdc_safe;` per-module opt-out ─────────
 // Mirror of `pragma cdc_safe;` for the RDC-specific phases. Either pragma
 // alone suppresses phase 1 (the structural cross-clock rule). Phases 2a-2d

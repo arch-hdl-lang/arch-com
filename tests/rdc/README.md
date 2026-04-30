@@ -81,6 +81,12 @@ violation:
 | `rdc_l2_pragma_rdc_safe_suppresses_phase2c_ok.arch` | `pragma rdc_safe;` opts the module out of phase 2c | ok | PASS |
 | `rdc_l3_pragma_rdc_safe_suppresses_phase2d_ok.arch` | `pragma rdc_safe;` opts the module out of phase 2d | ok | PASS |
 | `rdc_l4_pragma_rdc_safe_suppresses_phase1_ok.arch` | `pragma rdc_safe;` opts the module out of phase 1 | ok | PASS |
+| `rdc_m1_cdc_bit_slice_same_source_fail.arch` | bit-slice (`vec[0]` vs `vec[1]`) → same source through 2 ff-syncs | fail | PASS (phase 2c source-tracing) |
+| `rdc_m2_cdc_part_select_same_source_fail.arch` | UInt bit-extract (`word[0]` vs `word[1]`) → same source through 2 ff-syncs | fail | PASS (phase 2c source-tracing) |
+| `rdc_m3_cdc_common_source_via_comb_fail.arch` | comb-fanout (`flag` vs `flag and en`) → same terminal source through 2 ff-syncs | fail | PASS (phase 2c source-tracing) |
+| `rdc_m4_cdc_let_alias_same_source_fail.arch` | `let alias = src;` indirection — both syncs trace to same port | fail | PASS (phase 2c source-tracing) |
+| `rdc_m5_cdc_distinct_sources_ok.arch` | sanity: two ff-syncs with distinct source ports | ok | PASS |
+| `rdc_m6_cdc_bit_slice_distinct_vecs_ok.arch` | sanity: bit-slices off *different* source vectors | ok | PASS |
 
 ## Why D1 still flags (phase 1 backstop)
 
@@ -100,10 +106,7 @@ domains is unsafe even when each domain's flop subset is independent.
 
 ## Relationship to the Rust integration tests
 
-The same 17 scenarios are also encoded as Rust unit tests in
+Every scenario in this directory is also encoded as a Rust unit test in
 `tests/integration_test.rs` (functions `rdc_*`). The `.arch` files in this
 directory are the human-readable mirror — same source, same expected
 outcome — kept in sync intentionally.
-
-When phase 2a lands, the `#[ignore]` markers in the Rust tests come off and
-this directory's `XFAIL` entries flip to `PASS` simultaneously.
