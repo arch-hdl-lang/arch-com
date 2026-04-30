@@ -7998,3 +7998,36 @@ fn rdc_j4_mixed_reset_and_data_sync_same_source_fails() {
         .expect("read J4");
     assert_rdc_fails("J4", &src, &["RDC/CDC", "shared", "Dst"]);
 }
+
+#[test]
+fn package_width_qualified_param_emits_bracket_form() {
+    // Regression: package-scoped `param NAME[hi:lo]: const = …;` must emit
+    // `localparam [hi:lo] NAME = …;`, not `localparam int NAME = …;`.
+    // The latter silently truncates values wider than 32 bits (Verilator
+    // WIDTHTRUNC). Spec §29.1 + lines 1101–1105.
+    let source = "
+        package WidthPkg
+          param NARROW: const = 42;
+          param WIDE32[31:0]: const = 42;
+          param WIDE64[63:0]: const = 24314014034;
+        end package WidthPkg
+
+        use WidthPkg;
+
+        module M
+          port o: out UInt<32>;
+          comb
+            o = NARROW;
+          end comb
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    // Untyped const stays `localparam int`.
+    assert!(sv.contains("localparam int NARROW = 42;"),
+            "untyped const must keep `int`:\n{sv}");
+    // Width-qualified params must keep the [hi:lo] qualifier.
+    assert!(sv.contains("localparam [31:0] WIDE32 = 42;"),
+            "32-bit width qualifier dropped:\n{sv}");
+    assert!(sv.contains("localparam [63:0] WIDE64 = 24314014034;"),
+            "64-bit width qualifier dropped (would truncate):\n{sv}");
+}
