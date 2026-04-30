@@ -53,12 +53,28 @@ async-reset flop.
 | `rdc_c1_two_async_converge_at_none_fail.arch` | two domains converge at none | fail | XFAIL (phase 2a) |
 | `rdc_c2_two_same_domain_converge_ok.arch` | same domain converges at none | ok | PASS |
 | `rdc_c3_async_plus_port_at_none_ok.arch` | port input + async → none | ok | PASS |
-| `rdc_d1_same_async_two_clocks_no_data_path_fail.arch` | shared async, two clocks | fail | PASS (phase 1 catches) |
+| `rdc_d1_same_async_two_clocks_no_data_path_fail.arch` | shared async across two clocks (any data path) | fail | PASS (phase 1 catches) |
 | `rdc_d2_diff_async_diff_clocks_with_path_fail.arch` | cross-clock with data path | fail | XFAIL (phase 2a) |
 | `rdc_e1_self_loop_same_domain_ok.arch` | self-loop, same domain | ok | PASS |
 | `rdc_e2_mutual_feedback_diff_domains_fail.arch` | mutual feedback, diff domains | fail | XFAIL (phase 2a) |
 | `rdc_f1_single_async_domain_ok.arch` | sanity: one domain, several flops | ok | PASS |
 | `rdc_f2_no_async_flops_ok.arch` | sanity: no async resets at all | ok | PASS |
+
+## Why D1 still flags (phase 1 backstop)
+
+D1 has no register-to-register data path between the two clock domains, so the
+phase-2a data-path rule alone would let it through. Phase 1 keeps flagging it
+on a stricter structural rule:
+
+> An async reset signal is bound to a single clock domain — the one its
+> deassertion edge was synchronised to. Connecting it to flops in a second
+> clock domain re-creates the original RDC hazard, regardless of whether
+> the reset is a raw chip-level input or the output of a `synchronizer
+> kind reset` upstream.
+
+The fix is one synchroniser instance per receiving domain, each driving its
+own per-domain `Reset<Async>` port. Sharing a single sync output across
+domains is unsafe even when each domain's flop subset is independent.
 
 ## Relationship to the Rust integration tests
 
