@@ -507,7 +507,7 @@ impl<'a> Codegen<'a> {
                     ParamKind::EnumConst(enum_name) => {
                         self.line(&format!("localparam {} {} = {};", enum_name, p.name.name, val));
                     }
-                    _ => {
+                    ParamKind::Const | ParamKind::Type(_) | ParamKind::ConstVec(_) => {
                         self.line(&format!("localparam int {} = {};", p.name.name, val));
                     }
                 }
