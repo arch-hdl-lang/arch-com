@@ -1331,21 +1331,22 @@ A reset's domain is **inferred from usage** — there is no explicit `Domain` an
 
    Tests live in `tests/rdc/` (also in `tests/integration_test.rs` `rdc_*` functions). The fix is to either reset the receiving flop async-by the same signal as the source, or insert a `synchronizer kind reset` between them. Phase 2a is intentionally **not** gated by `pragma cdc_safe;` — that pragma silences CDC and the phase-1 cross-clock structural RDC check, but the data-path hazard is structurally distinct (single-clock multi-reset trips it without any CDC concern). A future `pragma rdc_safe;` will be the dedicated opt-out.
 
+3. **Reset-driven clock gating (phase 2b).** Logic reaching a `clkgate` instance's `enable` input from an async-reset flop causes the gate to glitch on async reset events — `enable` toggles to its reset value mid-cycle, producing partial clock pulses on `clk_out`. The check walks every inst whose target construct is a `clkgate` and reuses phase 2a's reach map: if any async domain reaches the parent-side signal driving `enable`, the inst is flagged. The fix is to drive `enable` from a synchronously-clean source — typically a flop reset by a signal already synchronised to the gated clock's domain, or directly via a `synchronizer kind reset` upstream. Test scenarios live in `tests/rdc/rdc_g*.arch`.
+
 **Scope intentionally narrow:**
 
 - **Async resets only.** Cross-domain `Reset<Sync>` is technically a CDC concern (reset signal propagates through the clock and is treated like data), but in practice rarely a real bug — sync resets meet timing through the receiving clock and don't have the deassertion-edge race that makes async cross-domain reset dangerous.
 - **`module` constructs only.** Synchronizer and FIFO constructs are themselves the escape hatches and run their own internal CDC/RDC handling.
 - **In-module data flow only (phase 2a).** Cross-instance flow (`inst sub: M; … <- regs in another instance`) is not yet traced — that's phase 2d.
 
-**Known limitations (TODO — phases 2b – 2d):**
+**Known limitations (TODO — phases 2c – 2d):**
 
-Three RDC bug classes catalogued in mainstream literature still aren't covered:
+Two RDC bug classes catalogued in mainstream literature still aren't covered:
 
-1. **Reset-driven clock gating (phase 2b).** A flop reset by an async signal driving a `clkgate` enable causes clock glitches. We don't analyse paths into clock-gating cells.
-2. **Reconvergent RDC / "loss of functional correlation" (phase 2c).** A single async reset routed through two distinct deassertion synchronisers and then reconverging on logic in the receiving domain — the two synchronised versions can deassert on different cycles, leaving downstream logic in an inconsistent state. Symmetric to reconvergent CDC; the same trace-back-through-synchronisers analysis would handle both (see §5.2a).
-3. **Async-reset glitches from multi-source combiners (phase 2d).** `rst_combined = rst_a | rst_b` (or any combinational reset combiner) produces transient pulses on edge skew between the inputs. Partially prevented today by the type system — `Reset` is not a `let`/`comb`-assignable type in ARCH, so you can't write the combiner inside a module — but the hazard can still enter through an external `Reset` input port driven by such logic in the parent.
+1. **Reconvergent RDC / "loss of functional correlation" (phase 2c).** A single async reset routed through two distinct deassertion synchronisers and then reconverging on logic in the receiving domain — the two synchronised versions can deassert on different cycles, leaving downstream logic in an inconsistent state. Symmetric to reconvergent CDC; the same trace-back-through-synchronisers analysis would handle both (see §5.2a).
+2. **Async-reset glitches from multi-source combiners (phase 2d).** `rst_combined = rst_a | rst_b` (or any combinational reset combiner) produces transient pulses on edge skew between the inputs. Partially prevented today by the type system — `Reset` is not a `let`/`comb`-assignable type in ARCH, so you can't write the combiner inside a module — but the hazard can still enter through an external `Reset` input port driven by such logic in the parent.
 
-Until those phases land, designs that hit (1)–(3) need external RDC checking (Synopsys SpyGlass, Cadence Conformal) for completeness.
+Until those phases land, designs that hit (1)–(2) need external RDC checking (Synopsys SpyGlass, Cadence Conformal) for completeness.
 
 **5.5 Tristate and Bidirectional I/O** *(planned)*
 

@@ -3713,6 +3713,64 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+
+        // ── Phase 2b: clock-gating cell enable must not see async reach ──
+        // Per article-3 hazard: an async-reset flop driving a `clkgate`
+        // enable (or any logic that derives the enable) causes the gate
+        // to glitch on async reset events, producing partial/glitchy
+        // clock pulses on `clk_out`. Walk every inst whose target
+        // construct is a `clkgate` and compute reach for the parent-side
+        // signal driving its `enable` port. Non-empty → violation.
+        let clkgate_constructs: HashSet<String> = self.source.items.iter()
+            .filter_map(|it| if let Item::Clkgate(c) = it { Some(c.name.name.clone()) } else { None })
+            .collect();
+        if !clkgate_constructs.is_empty() {
+            let reach_for_signal = |sig: &Expr| -> HashSet<String> {
+                let mut reads = HashSet::new();
+                Self::collect_expr_reads(sig, &mut reads);
+                let mut acc: HashSet<String> = HashSet::new();
+                for r in &reads {
+                    if let Some(rr) = reach.get(r) { acc.extend(rr.iter().cloned()); }
+                    if let Some(ld) = let_deps.get(r) {
+                        for f in ld {
+                            if let Some(rr) = reach.get(f) { acc.extend(rr.iter().cloned()); }
+                        }
+                    }
+                }
+                acc
+            };
+            for item in &m.body {
+                if let ModuleBodyItem::Inst(inst) = item {
+                    if !clkgate_constructs.contains(&inst.module_name.name) { continue; }
+                    for conn in &inst.connections {
+                        if conn.port_name.name != "enable" { continue; }
+                        let domains = reach_for_signal(&conn.signal);
+                        if !domains.is_empty() {
+                            let mut sorted: Vec<String> = domains.into_iter().collect();
+                            sorted.sort();
+                            let domain_phrase = if sorted.len() == 1 {
+                                format!("async reset domain `{}`", sorted[0])
+                            } else {
+                                format!("async reset domains ({})",
+                                    sorted.iter().map(|d| format!("`{d}`")).collect::<Vec<_>>().join(", "))
+                            };
+                            self.errors.push(CompileError::general(
+                                &format!(
+                                    "RDC violation: clkgate `{}` (instance of `{}`) has its \
+                                     `enable` driven by logic in {domain_phrase}. The async \
+                                     reset event causes `enable` to glitch, producing partial \
+                                     clock pulses on the gated output. Drive `enable` from a \
+                                     synchronously-clean source (a flop reset by the gated \
+                                     clock's domain reset, or via a `synchronizer kind reset`).",
+                                    inst.name.name, inst.module_name.name
+                                ),
+                                conn.span,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// For each data connection, verify that the signal's clock domain in the
