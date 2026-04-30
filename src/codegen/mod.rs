@@ -2997,15 +2997,23 @@ impl<'a> Codegen<'a> {
                     "resize" => {
                         if let Some(width) = args.first() {
                             let w = self.emit_expr_str(width);
-                            // Direction-agnostic resize: pads or truncates, preserving signedness.
-                            // e.g. x.resize<16>() on UInt<8> → 16'($unsigned(x))
-                            // e.g. x.resize<4>()  on SInt<8> → 4'($signed(x))
+                            // Direction-agnostic resize: pads or truncates, preserving
+                            // signedness. SV's `N'(expr)` size cast inherits the
+                            // signedness of `expr` and — critically — forwards
+                            // context-determined evaluation through arithmetic
+                            // operators inside it. Earlier emission used
+                            // `N'($signed(expr))` / `N'($unsigned(expr))`, but
+                            // `$signed`/`$unsigned` evaluate their argument in
+                            // self-determined context (LRM §11.6.1, §20.5), which
+                            // truncates a multiply like `a * b` to operand width
+                            // BEFORE the outer cast widens — silently losing the
+                            // upper bits of any product. Dropping the wrapper lets
+                            // `N'(a * b)` widen both operands to N before the
+                            // multiply. For non-arithmetic `expr` (idents, slices),
+                            // the cast still preserves signedness from the
+                            // underlying declaration, so no behaviour changes.
                             let wp = Self::paren_width(&w);
-                            if self.expr_is_signed(base) {
-                                format!("{wp}'($signed({b}))")
-                            } else {
-                                format!("{wp}'($unsigned({b}))")
-                            }
+                            format!("{wp}'({b})")
                         } else {
                             b
                         }
