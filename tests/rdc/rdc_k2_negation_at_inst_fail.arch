@@ -1,0 +1,33 @@
+// K2 (phase 2d): inst's `Reset` input driven by `not rst_a`.
+// Inverters have propagation delay relative to the original signal —
+// same glitch class.
+
+domain D
+  freq_mhz: 100
+end domain D
+
+module Sub
+  port clk: in Clock<D>;
+  port rst: in Reset<Async>;
+  port d:   in UInt<8>;
+  port q:   out UInt<8>;
+  reg r: UInt<8> reset rst => 0;
+  seq on clk rising
+    r <= d;
+  end seq
+  let q = r;
+end module Sub
+
+module Top
+  port clk:   in Clock<D>;
+  port rst_a: in Reset<Async>;
+  port d:     in UInt<8>;
+  port q:     out UInt<8>;
+
+  inst sub: Sub
+    clk <- clk;
+    rst <- not rst_a;
+    d   <- d;
+    q   -> q;
+  end inst sub
+end module Top

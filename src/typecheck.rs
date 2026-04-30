@@ -1019,6 +1019,7 @@ impl<'a> TypeChecker<'a> {
         // resets through synchronizers.
         self.check_rdc_phase2a(m);
         self.check_reconvergent_syncs(m);
+        self.check_rdc_combiner_at_inst(m);
 
         // Validate `implements` template conformance
         if let Some(ref tmpl_name) = m.implements {
@@ -3884,6 +3885,87 @@ impl<'a> TypeChecker<'a> {
                 ),
                 report_span,
             ));
+        }
+    }
+
+    /// Phase 2d RDC: combiner-derived reset glitches at inst boundaries.
+    ///
+    /// A sub-module's `Reset<...>` input port wired by a combinational
+    /// expression (e.g. `rst <- rst_a | rst_b`) sees transient pulses
+    /// on edge skew between the inputs. The async-reset glitch can
+    /// trigger partial flop resets in the sub-module — exactly the
+    /// hazard mainstream RDC literature flags as "glitches from
+    /// multi-source combiners". The ARCH type system prevents writing
+    /// `let combined: Reset = ...` inside a module, but inst
+    /// connections currently accept any Expr in the signal slot, so
+    /// the gate is open at the boundary.
+    ///
+    /// Detection: walk every inst, look up the sub-module's port list,
+    /// for each connection whose target port has type `Reset<...>`,
+    /// inspect the parent-side signal's expression. If it's anything
+    /// other than a simple `Ident` (which refers to a parent port,
+    /// wire, or synchroniser output), flag. Idents are trusted —
+    /// they're the legal direct routings; combinational shapes are
+    /// the violators.
+    ///
+    /// Note: this check fires regardless of whether the parent signal
+    /// is wired to two different reset domains or just one. A single-
+    /// source negation (`rst <- !rst_a`) is also a glitch source on
+    /// the boundary because the inverter has its own propagation
+    /// delay relative to the original signal.
+    pub(crate) fn check_rdc_combiner_at_inst(&mut self, m: &ModuleDecl) {
+        // Look up the sub-construct's port list across every construct
+        // kind that can be `inst`-ed (matches the lookup in mod.rs's
+        // sim_codegen helper of the same name).
+        let lookup_ports = |name: &str| -> Vec<PortDecl> {
+            for item in &self.source.items {
+                let ports = match item {
+                    Item::Module(m)       if m.name.name == name => Some(&m.ports),
+                    Item::Fsm(f)          if f.name.name == name => Some(&f.ports),
+                    Item::Fifo(f)         if f.name.name == name => Some(&f.ports),
+                    Item::Ram(r)          if r.name.name == name => Some(&r.ports),
+                    Item::Cam(c)          if c.name.name == name => Some(&c.ports),
+                    Item::Counter(c)      if c.name.name == name => Some(&c.ports),
+                    Item::Arbiter(a)      if a.name.name == name => Some(&a.ports),
+                    Item::Regfile(r)      if r.name.name == name => Some(&r.ports),
+                    Item::Pipeline(p)     if p.name.name == name => Some(&p.ports),
+                    Item::Linklist(l)     if l.name.name == name => Some(&l.ports),
+                    Item::Synchronizer(s) if s.name.name == name => Some(&s.ports),
+                    Item::Clkgate(c)      if c.name.name == name => Some(&c.ports),
+                    _ => None,
+                };
+                if let Some(p) = ports {
+                    return p.clone();
+                }
+            }
+            Vec::new()
+        };
+        for item in &m.body {
+            let ModuleBodyItem::Inst(inst) = item else { continue; };
+            let sub_ports = lookup_ports(&inst.module_name.name);
+            for conn in &inst.connections {
+                let port = sub_ports.iter().find(|p| p.name.name == conn.port_name.name);
+                let Some(port) = port else { continue; };
+                if !matches!(&port.ty, TypeExpr::Reset(_, _)) { continue; }
+                if conn.direction != ConnectDir::Input { continue; }
+                // Direct ident → trust. Anything else → glitch source.
+                if matches!(&conn.signal.kind, ExprKind::Ident(_)) { continue; }
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "RDC violation: inst `{inst_name}` (instance of `{sub}`) has its \
+                         `Reset`-typed port `{port_name}` driven by a combinational \
+                         expression in the parent. Reset combiners (e.g. `rst_a | rst_b`) \
+                         glitch on edge skew between their inputs and can trigger partial \
+                         flop resets in the sub-module. Drive `{port_name}` from a single \
+                         `Reset` source port (or a `synchronizer kind reset` output) and \
+                         do any combination upstream through dedicated reset-merging logic.",
+                        inst_name = inst.name.name,
+                        sub = inst.module_name.name,
+                        port_name = conn.port_name.name,
+                    ),
+                    conn.span,
+                ));
+            }
         }
     }
 

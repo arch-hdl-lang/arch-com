@@ -73,6 +73,10 @@ violation:
 | `rdc_j2_cdc_single_ff_sync_ok.arch` | one data source → 1 ff-sync (no reconvergence) | ok | PASS |
 | `rdc_j3_cdc_syncs_to_diff_domains_ok.arch` | one data source → 2 ff-syncs → different dest domains | ok | PASS |
 | `rdc_j4_mixed_reset_and_data_sync_same_source_same_domain_fail.arch` | one source → 1 reset-sync + 1 ff-sync → same dest | fail | PASS (RDC/CDC mixed) |
+| `rdc_k1_combiner_or_at_inst_fail.arch` | sub's Reset input driven by `rst_a \| rst_b` at inst boundary | fail | PASS (phase 2d) |
+| `rdc_k2_negation_at_inst_fail.arch` | sub's Reset input driven by `not rst_a` at inst boundary | fail | PASS (phase 2d) |
+| `rdc_k3_direct_reset_at_inst_ok.arch` | sub's Reset input driven directly by a parent Reset port | ok | PASS |
+| `rdc_k4_sync_output_to_reset_ok.arch` | sub's Reset input driven by a `synchronizer kind reset` output (direct ident) | ok | PASS |
 
 ## Why D1 still flags (phase 1 backstop)
 
