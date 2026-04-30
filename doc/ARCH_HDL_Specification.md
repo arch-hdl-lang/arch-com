@@ -1310,23 +1310,26 @@ A reset's domain is **inferred from usage** — there is no explicit `Domain` an
 
 1. **Cross-clock-domain async reset (structural, phase 1).** An `Reset<Async, ...>` signal appears in the reset clause of registers in two different clock domains. An async reset signal is *bound to one clock domain* — the one its deassertion edge was synchronised to. Reusing it in a second domain re-creates the original RDC hazard there, regardless of whether the data paths in the two domains interact. The check is data-flow-insensitive because the rule applies even when each domain's flop subset is independent. The same rule applies when the upstream signal is itself a synchroniser output: a `synchronizer kind reset` for clock A is *not* valid as a reset source for clock B's flops — synchronisation is per-destination-domain. The fix is one synchroniser instance per receiving clock domain, each driving its own per-domain `Reset<Async>` port. Suppress with `pragma cdc_safe;`.
 
-2. **Cross-async-reset-domain data path (data-flow, phase 2a).** Per-flop reach-set analysis catches the cases phase 1 misses:
+2. **Cross-async-reset-domain data path (data-flow, phase 2a).** Per-flop reach-set analysis. Sync and reset-none flops are *transparent* — they originate no domain, just propagate whatever async domains reach their data input. The textbook strict rule applies: a flop downstream of an async-reset flop must itself be async-reset by the **same** signal (or have a synchroniser in between). Sync and reset-none flops can't gate their data input on the source's async reset event, so they capture mid-deassert transients and propagate metastability downstream.
 
    ```
    reach[f] = { f.reset }            if f.reset_kind == Async
             = ⋃ reach[srcs]            otherwise
 
    violation:
-     f.Async       and any reach[src] contains a domain ≠ f.reset
-     f.{Sync,None} and |reach[f]| > 1
+     f.Async   and any reach[src] contains a domain ≠ f.reset
+     f.Sync    and reach[f] is non-empty
+     f.None    and reach[f] is non-empty
    ```
 
-   Captures three concrete sub-classes:
-   - **Same-clock multi-reset metastability** — `reg ra: reset rst_a (async)` driving `reg rb: reset rst_b (async)` under one clock. The asynchronous assertion of `rst_a` can metastabilise `rb` even though both are clocked by the same `clk`.
-   - **Reset-less sequential paths** — a chain of `reset none` flops between two async-reset domains. The reset-less flops don't absorb the metastability; reach propagates through them and the chain trips at the next async-reset flop.
-   - **Convergent reset-less paths** — multiple async-reset domains feeding a single `reset none` register. The reach set has > 1 domain → flagged at the convergence point.
+   Captures four concrete sub-classes:
 
-   Tests live in `tests/rdc/` (also in `tests/integration_test.rs` `rdc_*` functions). The fix is `synchronizer kind reset` between the source and the target domain, or a domain change at a register that captures only one domain. Phase 2a is intentionally **not** gated by `pragma cdc_safe;` — that pragma silences CDC and the phase-1 cross-clock structural RDC check, but the data-path hazard is structurally distinct (single-clock multi-reset trips it without any CDC concern). A future `pragma rdc_safe;` will be the dedicated opt-out.
+   - **Same-clock multi-async-reset metastability** — `reg ra: reset rst_a (async)` driving `reg rb: reset rst_b (async)` under one clock. The asynchronous assertion of `rst_a` can metastabilise `rb` even though both are clocked by the same `clk`.
+   - **Async → sync** — async-reset flop driving a sync-reset flop in any clock domain. The sync flop's reset doesn't help: it gates only the *clocked* reset assertion, not the data-input metastability.
+   - **Async → reset-none** — async-reset flop driving any reset-less flop. Same hazard, no reset gate at all.
+   - **Convergent reset-less / sync paths** — multiple async-reset flops feeding a non-async-reset flop. Even when the upstream domains agree (single source), the receiver still flags because it can't gate on the async event.
+
+   Tests live in `tests/rdc/` (also in `tests/integration_test.rs` `rdc_*` functions). The fix is to either reset the receiving flop async-by the same signal as the source, or insert a `synchronizer kind reset` between them. Phase 2a is intentionally **not** gated by `pragma cdc_safe;` — that pragma silences CDC and the phase-1 cross-clock structural RDC check, but the data-path hazard is structurally distinct (single-clock multi-reset trips it without any CDC concern). A future `pragma rdc_safe;` will be the dedicated opt-out.
 
 **Scope intentionally narrow:**
 

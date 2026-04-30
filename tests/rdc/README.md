@@ -26,39 +26,41 @@ Output classes:
 
 ## Coverage map
 
-The agreed semantic (option 1, sync flops are transparent):
+Strict textbook semantic — a flop downstream of an async-reset flop must
+itself be async-reset by the **same** signal, or be separated by a
+synchroniser. Sync and reset-none flops are transparent (originate no
+domain, just propagate) and **always** trip the rule when any async
+domain reaches their data input — they can't gate the clock-edge capture
+on the upstream's async reset event.
 
 ```
 reach[f] = { f.reset }            if f.reset_kind == Async
          = ⋃ reach[srcs]            otherwise
 
 violation:
-  f.Async       and any reach[src] contains a domain ≠ f.reset
-  f.{Sync,None} and |reach[f]| > 1
+  f.Async   and any reach[src] contains a domain ≠ f.reset
+  f.Sync    and reach[f] is non-empty
+  f.None    and reach[f] is non-empty
 ```
-
-Sync flops originate no domain — they propagate whatever async domains
-reach their data input. The metastability chain only "breaks" at another
-async-reset flop.
 
 | File | Class | Expected | Currently |
 |---|---|---|---|
-| `rdc_a1_same_async_direct_ok.arch` | direct edge, same domain | ok | PASS |
-| `rdc_a2_diff_async_direct_fail.arch` | direct cross-domain | fail | PASS (phase 2a) |
-| `rdc_a3_async_to_sync_ok.arch` | async → sync (transparent) | ok | PASS |
-| `rdc_a4_async_to_none_ok.arch` | async → reset-none | ok | PASS |
+| `rdc_a1_same_async_direct_ok.arch` | direct edge, same async domain | ok | PASS |
+| `rdc_a2_diff_async_direct_fail.arch` | direct edge, diff async domains | fail | PASS |
+| `rdc_a3_async_to_sync_fail.arch` | async → sync (sync can't gate input) | fail | PASS |
+| `rdc_a4_async_to_none_fail.arch` | async → reset-none | fail | PASS |
 | `rdc_a5_sync_source_ok.arch` | sync source, no async upstream | ok | PASS |
-| `rdc_b1_async_none_async_diff_fail.arch` | reset-less bridge, diff async | fail | PASS (phase 2a) |
-| `rdc_b2_async_none_async_same_ok.arch` | reset-less bridge, same async | ok | PASS |
-| `rdc_b3_async_sync_async_diff_fail.arch` | sync intermediate, diff async | fail | PASS (phase 2a) |
-| `rdc_c1_two_async_converge_at_none_fail.arch` | two domains converge at none | fail | PASS (phase 2a) |
-| `rdc_c2_two_same_domain_converge_ok.arch` | same domain converges at none | ok | PASS |
-| `rdc_c3_async_plus_port_at_none_ok.arch` | port input + async → none | ok | PASS |
+| `rdc_b1_async_none_async_diff_fail.arch` | reset-less bridge, diff async ends | fail | PASS |
+| `rdc_b2_async_none_async_same_fail.arch` | reset-less bridge, same async ends (mid-flop trips) | fail | PASS |
+| `rdc_b3_async_sync_async_diff_fail.arch` | sync intermediate, diff async ends | fail | PASS |
+| `rdc_c1_two_async_converge_at_none_fail.arch` | two domains converge at reset-none | fail | PASS |
+| `rdc_c2_two_same_domain_converge_fail.arch` | same domain converges at reset-none | fail | PASS |
+| `rdc_c3_async_plus_port_at_none_fail.arch` | port input + async → reset-none | fail | PASS |
 | `rdc_d1_same_async_two_clocks_no_data_path_fail.arch` | shared async across two clocks (any data path) | fail | PASS (phase 1 catches) |
-| `rdc_d2_diff_async_diff_clocks_with_path_fail.arch` | cross-clock with data path | fail | PASS (phase 2a) |
-| `rdc_e1_self_loop_same_domain_ok.arch` | self-loop, same domain | ok | PASS |
-| `rdc_e2_mutual_feedback_diff_domains_fail.arch` | mutual feedback, diff domains | fail | PASS (phase 2a) |
-| `rdc_f1_single_async_domain_ok.arch` | sanity: one domain, several flops | ok | PASS |
+| `rdc_d2_diff_async_diff_clocks_with_path_fail.arch` | cross-clock with data path | fail | PASS |
+| `rdc_e1_self_loop_same_domain_ok.arch` | self-loop, same async domain | ok | PASS |
+| `rdc_e2_mutual_feedback_diff_domains_fail.arch` | mutual feedback, diff async domains | fail | PASS |
+| `rdc_f1_single_async_domain_ok.arch` | sanity: one async domain, all flops | ok | PASS |
 | `rdc_f2_no_async_flops_ok.arch` | sanity: no async resets at all | ok | PASS |
 
 ## Why D1 still flags (phase 1 backstop)
