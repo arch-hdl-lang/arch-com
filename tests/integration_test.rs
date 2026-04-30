@@ -7907,3 +7907,28 @@ module M
 end module M
 "#);
 }
+
+// ── Group G: Phase 2b — clock-gating cell enable from async reset ─────────
+// An async-reset flop driving a `clkgate` enable causes the gate to glitch
+// on async reset events → partial clock pulses on the gated output.
+
+#[test]
+fn rdc_g1_clkgate_enable_from_async_flop_fails() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_g1_clkgate_enable_from_async_flop_fail.arch")
+        .expect("read G1");
+    assert_rdc_fails("G1", &src, &["clkgate", "icg", "rst_a"]);
+}
+
+#[test]
+fn rdc_g2_clkgate_enable_from_port_ok() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_g2_clkgate_enable_from_port_ok.arch")
+        .expect("read G2");
+    assert_rdc_ok("G2", &src);
+}
+
+#[test]
+fn rdc_g3_clkgate_enable_from_sync_flop_ok() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_g3_clkgate_enable_from_sync_flop_ok.arch")
+        .expect("read G3");
+    assert_rdc_ok("G3", &src);
+}

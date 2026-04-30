@@ -62,6 +62,9 @@ violation:
 | `rdc_e2_mutual_feedback_diff_domains_fail.arch` | mutual feedback, diff async domains | fail | PASS |
 | `rdc_f1_single_async_domain_ok.arch` | sanity: one async domain, all flops | ok | PASS |
 | `rdc_f2_no_async_flops_ok.arch` | sanity: no async resets at all | ok | PASS |
+| `rdc_g1_clkgate_enable_from_async_flop_fail.arch` | clkgate enable driven by async-reset flop | fail | PASS (phase 2b) |
+| `rdc_g2_clkgate_enable_from_port_ok.arch` | clkgate enable from input port | ok | PASS |
+| `rdc_g3_clkgate_enable_from_sync_flop_ok.arch` | clkgate enable from sync-only-upstream flop | ok | PASS |
 
 ## Why D1 still flags (phase 1 backstop)
 

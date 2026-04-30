@@ -1,0 +1,27 @@
+// G2 (phase 2b): enable comes directly from a top-level input port.
+// No flop on the path → reach is empty → no violation.
+
+domain D
+  freq_mhz: 100
+end domain D
+
+clkgate IcgCell
+  kind latch;
+  port clk_in:  in Clock<D>;
+  port enable:  in Bool;
+  port test_en: in Bool;
+  port clk_out: out Clock<D>;
+end clkgate IcgCell
+
+module M
+  port clk:       in Clock<D>;
+  port en:        in Bool;
+  port gated_clk: out Clock<D>;
+
+  inst icg: IcgCell
+    clk_in  <- clk;
+    enable  <- en;
+    test_en <- false;
+    clk_out -> gated_clk;
+  end inst icg
+end module M
