@@ -484,11 +484,24 @@ impl<'a> Codegen<'a> {
         self.line(&format!("package {};", pkg.name.name));
         self.indent += 1;
 
-        // params → localparam
+        // Dispatch on ParamKind: width-qualified params must emit
+        // `localparam [hi:lo]`, not `int` (truncates >32-bit values).
         for p in &pkg.params {
             if let Some(d) = &p.default {
                 let val = self.emit_expr_str(d);
-                self.line(&format!("localparam int {} = {};", p.name.name, val));
+                match &p.kind {
+                    ParamKind::WidthConst(hi, lo) => {
+                        let hi_s = self.emit_expr_str(hi);
+                        let lo_s = self.emit_expr_str(lo);
+                        self.line(&format!("localparam [{}:{}] {} = {};", hi_s, lo_s, p.name.name, val));
+                    }
+                    ParamKind::EnumConst(enum_name) => {
+                        self.line(&format!("localparam {} {} = {};", enum_name, p.name.name, val));
+                    }
+                    _ => {
+                        self.line(&format!("localparam int {} = {};", p.name.name, val));
+                    }
+                }
             }
         }
 
