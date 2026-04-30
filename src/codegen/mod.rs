@@ -484,6 +484,15 @@ impl<'a> Codegen<'a> {
         self.line(&format!("package {};", pkg.name.name));
         self.indent += 1;
 
+        // Typedefs must precede params: an `EnumConst` param references its
+        // enum type, which SV requires forward-declared.
+        for e in &pkg.enums {
+            self.emit_enum(e);
+        }
+        for s in &pkg.structs {
+            self.emit_struct(s);
+        }
+
         // Dispatch on ParamKind: width-qualified params must emit
         // `localparam [hi:lo]`, not `int` (truncates >32-bit values).
         for p in &pkg.params {
@@ -503,16 +512,6 @@ impl<'a> Codegen<'a> {
                     }
                 }
             }
-        }
-
-        // enums
-        for e in &pkg.enums {
-            self.emit_enum(e);
-        }
-
-        // structs
-        for s in &pkg.structs {
-            self.emit_struct(s);
         }
 
         // functions

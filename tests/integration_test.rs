@@ -8031,3 +8031,37 @@ fn package_width_qualified_param_emits_bracket_form() {
     assert!(sv.contains("localparam [63:0] WIDE64 = 24314014034;"),
             "64-bit width qualifier dropped (would truncate):\n{sv}");
 }
+
+#[test]
+fn package_enum_typed_param_emits_typedef_before_localparam() {
+    // Regression: an EnumConst package param references its enum type,
+    // which SV requires forward-declared. The package's `typedef enum`
+    // must appear before the `localparam` that uses it.
+    let source = "
+        package OpPkg
+          enum Op
+            ADD,
+            SUB,
+          end enum Op
+          param DEFAULT_OP: Op = Op::ADD;
+        end package OpPkg
+
+        use OpPkg;
+
+        module M
+          port o: out Op;
+          comb
+            o = DEFAULT_OP;
+          end comb
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    let typedef_pos = sv.find("typedef enum")
+        .expect("typedef enum missing");
+    let param_pos = sv.find("DEFAULT_OP")
+        .expect("DEFAULT_OP localparam missing");
+    assert!(typedef_pos < param_pos,
+        "enum typedef must precede localparam that references it:\n{sv}");
+    assert!(sv.contains("localparam Op DEFAULT_OP = "),
+        "EnumConst must emit typed `localparam Op …`:\n{sv}");
+}
