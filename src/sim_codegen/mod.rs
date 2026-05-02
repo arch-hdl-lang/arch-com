@@ -1668,7 +1668,12 @@ impl<'a> Ctx<'a> {
                 format!("_{name}")
             }
         } else if self.let_names.contains(name) {
-            if self.fsm_mode {
+            // `let port_name = expr` is a port-driver: there is no separate
+            // `_let_port_name` storage. Reads (and the LHS write inside the
+            // synthesized comb assign) bind to the public port field.
+            if self.port_names.contains(name) {
+                name.to_string()
+            } else if self.fsm_mode {
                 name.to_string()
             } else {
                 format!("_let_{name}")
@@ -2166,9 +2171,36 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             let idx = cpp_expr(index, ctx);
             format!("(1ULL << {idx})")
         }
-        ExprKind::Signed(inner) | ExprKind::Unsigned(inner) => {
-            // Same-width reinterpret — C++ sim model is bitwise, no-op
-            cpp_expr(inner, ctx)
+        ExprKind::Signed(inner) => {
+            // signed(x) reinterprets `x`'s bit pattern as a two's-complement
+            // signed value. The bit pattern is unchanged, but C++ operators
+            // (notably `>>`) behave differently for signed types: signed
+            // right-shift sign-extends, unsigned right-shift zero-extends.
+            // Emit an explicit cast so a chained `>>` becomes an arithmetic
+            // shift. Pre-fix: lowering dropped the cast and `signed(x) >> n`
+            // emitted a logical shift, so SRA gave the wrong result for
+            // negative inputs (top bits zero-filled instead of sign-extended).
+            let w = infer_expr_width(inner, ctx);
+            let inner_c = cpp_expr(inner, ctx);
+            if w == 0 || w > 64 {
+                inner_c
+            } else {
+                format!("(({})({}))", cpp_sint(w), inner_c)
+            }
+        }
+        ExprKind::Unsigned(inner) => {
+            // unsigned(x) is the inverse cast. Emit explicit unsigned cast
+            // so a chained `>>` becomes a logical shift. (For values that
+            // started unsigned this is a no-op, but `unsigned(signed(x) >> n)`
+            // patterns rely on the cast to bring the result back to uint
+            // for further unsigned operations.)
+            let w = infer_expr_width(inner, ctx);
+            let inner_c = cpp_expr(inner, ctx);
+            if w == 0 || w > 64 {
+                inner_c
+            } else {
+                format!("(({})({}))", cpp_uint(w), inner_c)
+            }
         }
 
         ExprKind::Ternary(cond, then_expr, else_expr) => {
@@ -3598,6 +3630,20 @@ impl<'a> SimCodegen<'a> {
         for vi in &vec_port_infos {
             vec_sizes.insert(vi.name.clone(), vi.count);
         }
+        // Vec-typed reg counts (e.g. `reg rf_reg: Vec<UInt<32>, 32>`).
+        // Needed by the async-reset emitter to lower `reset r => 0` for
+        // Vec regs into a per-element loop instead of an invalid scalar
+        // `_rf_reg = 0` (a C array isn't assignable from a scalar).
+        for r in m.body.iter().filter_map(|i|
+            if let ModuleBodyItem::RegDecl(r) = i { Some(r) } else { None })
+        {
+            if let TypeExpr::Vec(_, count_expr) = &r.ty {
+                let count = eval_const_expr_with_params(count_expr, &m.params);
+                if count > 0 {
+                    vec_sizes.insert(r.name.name.clone(), count);
+                }
+            }
+        }
 
         // Collect reset-none reg names for --check-uninit + any guarded reg (regardless
         // of reset) so Check A can use _<name>_vinit to detect producer bugs.
@@ -4433,6 +4479,15 @@ impl<'a> SimCodegen<'a> {
             if has_clk {
                 cpp.push_str("  eval_posedge();\n");
                 cpp.push_str("  eval_comb();\n");
+            } else {
+                // Pure-comb modules: emit a second eval_comb() pass so that
+                // comb assignments which forward-reference signals driven
+                // later in source order (e.g. `let port_o = result_w;`
+                // before the comb block that drives `result_w`) settle.
+                // Mirrors the two-pass shape clocked modules already use.
+                // For deeper chains a topological-sort emission would be
+                // required; this catches the common one-level case.
+                cpp.push_str("  eval_comb();\n");
             }
         } else {
             // Modules with sub-instances: preserve simultaneity of posedge across hierarchy.
@@ -4947,7 +5002,16 @@ impl<'a> SimCodegen<'a> {
                     let cond = if *is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
                     cpp.push_str(&format!("  if ({cond}) {{\n"));
                     for (reg_name, init) in &reset_regs {
-                        if wide_names.contains(*reg_name) {
+                        // Vec-typed regs are C arrays — write each element
+                        // via a loop. `init` is a scalar broadcast value
+                        // per the ARCH spec (`reset r => 0` distributes
+                        // the scalar across every element).
+                        if vec_reg_names.contains(*reg_name) {
+                            let count = vec_sizes.get(*reg_name).copied().unwrap_or(0);
+                            if count > 0 {
+                                cpp.push_str(&format!("    for (size_t _i = 0; _i < {count}; ++_i) {{ _{reg_name}[_i] = {init}; _n_{reg_name}[_i] = {init}; }}\n"));
+                            }
+                        } else if wide_names.contains(*reg_name) {
                             let bits = widths.get(*reg_name).copied().unwrap_or(0);
                             if bits > 128 {
                                 let words = wide_words(bits);
