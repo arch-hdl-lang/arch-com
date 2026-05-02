@@ -5033,8 +5033,16 @@ impl<'a> SimCodegen<'a> {
                     false
                 };
 
-                // Guard each seq block on its specific clock's rising edge
-                cpp.push_str(&format!("  if (_rising_{}) {{\n", rb.clock.name));
+                // Guard each seq block on its specific clock's rising edge.
+                // For async reset: use `else if` so the seq body is skipped
+                // when reset was active — the reset arm already cleared the
+                // regs; executing the seq body (e.g. toggle) would overwrite.
+                let rising_gate = if async_reset_emitted {
+                    format!("  else if (_rising_{}) {{\n", rb.clock.name)
+                } else {
+                    format!("  if (_rising_{}) {{\n", rb.clock.name)
+                };
+                cpp.push_str(&rising_gate);
                 let base_indent: usize = 2;
                 // --coverage phase 2: count seq-block entries (rising
                 // edges seen). One counter per top-level seq block;
@@ -5046,13 +5054,9 @@ impl<'a> SimCodegen<'a> {
                 }
 
                 if async_reset_emitted {
-                    // Already cleared regs above; just emit the seq body
-                    // unconditionally inside the rising-clk gate. If reset
-                    // was asserted, the seq body's RHS reads see the cleared
-                    // _q/_n_q values; the resulting writes are then themselves
-                    // overwritten on the NEXT eval() call where the async
-                    // reset arm fires again before the seq body re-runs.
-                    // Net effect under continuous async reset: regs stay 0.
+                    // Seq body: reset already cleared regs above; any
+                    // read-modify-write patterns (e.g. toggle) now see
+                    // the reset-cleared value.
                     let mut body = String::new();
                     emit_reg_stmts(&rb.stmts, &ctx, &mut body, base_indent);
                     cpp.push_str(&body);
