@@ -1,6 +1,6 @@
 # Arch HDL — AI Reference Card
 
-*Compact AI context for hardware generation · v0.41.0 · Put this in context, add design intent, paste compiler errors to self-correct.*
+*Compact AI context for hardware generation · v0.43.0+ · Put this in context, add design intent, paste compiler errors to self-correct.*
 
 ---
 
@@ -158,7 +158,7 @@ enum E   { A, B, }
 - `SysDomain` is built-in — no `domain SysDomain end domain SysDomain` needed
 - `Bool` and `UInt<1>` are identical — freely assignable, bitwise ops on 1-bit return Bool
 - `Bit` is an alias for `UInt<1>`
-- `Token`, `Future<T>`, `Token<T, id_width: N>` (planned — TLM only)
+- No current `Future<T>` / `await` / user-visible `Token<T>` API. TLM concurrency is expressed with worker threads, `generate_for`, and `fork/join` cohorts.
 - `Clock<Domain>` may be `out` — use for passthrough (`comb clk_out = clk_in;`), gating (`comb clk_out = clk_in & en;`), or division. For integrated latch-based gating use the `clkgate` construct.
 - **`struct` packed bit layout: declaration-first = MSB** (SV convention). A TB reading a struct-typed signal as an integer finds the first-declared field in the top bits, last-declared at the LSBs.
 
@@ -1017,11 +1017,12 @@ Full spec: `doc/ARCH_HDL_Specification.md` §18c.
 
 ### tlm_method (inside bus)
 
-Transaction-level method sub-construct. Initiator modules *call*; target modules *implement* via a dotted-name thread. v1 ships `blocking` only.
+Transaction-level method sub-construct. Initiator modules *call*; target modules *implement* via a dotted-name thread. Current compiler support is `blocking` plus a small tagged out-of-order slice.
 
 ```
 bus Mem
   tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+  tlm_method read_ooo(addr: UInt<32>) -> UInt<64>: out_of_order tags 2;
   tlm_method write(addr: UInt<32>, data: UInt<64>) -> Bool: blocking;
   tlm_method poke(addr: UInt<32>): blocking;       // void
 end bus Mem
@@ -1054,9 +1055,31 @@ module Initiator
 end module Initiator
 ```
 
-Both sides lower to a parent-module state machine (state reg + RegBlock + CombBlock). `arch sim --pybind --test` works through the existing reg/seq/comb mirror — no TLM-specific sim code.
+Both sides lower to a parent-module state machine (state reg + RegBlock + CombBlock). `arch sim`, `arch sim --pybind --test`, and `arch sim --thread-sim parallel` work through generated C++ models; parallel mode uses the regular sim model for modules whose TLM threads were lowered away.
 
-v1 restrictions: blocking only; linear SeqAssign-only initiator bodies; no nested or composed TLM calls; no control flow (if/fork/for) inside a TLM-using thread.
+**Concurrent initiator cohorts** — multiple direct worker calls on one method lower to an arbiter plus response router:
+
+```
+module LoadPair
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port m:   initiator Mem;
+  reg d0: UInt<64> reset rst => 0;
+  reg d1: UInt<64> reset rst => 0;
+
+  thread workers on clk rising, rst high
+    fork
+      d0 <= m.read(32'h10);
+    and
+      d1 <= m.read(32'h20);
+    join
+  end thread workers
+end module LoadPair
+```
+
+Supported cohort shapes: multiple direct named worker threads, `generate_for` worker threads, and one direct-call `fork ... and ... join` thread. Blocking cohorts route responses by issue-order FIFO. `out_of_order tags N` cohorts drive `<method>_req_tag` and route by `<method>_rsp_tag`; target threads latch and echo the tag.
+
+Current restrictions: direct RHS call only (`dst <= m.method(args);`), one call per worker/branch, same clock/reset per cohort, literal tag count only, no nested/composed TLM calls, no `pipelined`, no `burst`, no `Future<T>`/`await`.
 
 Full spec: `doc/ARCH_HDL_Specification.md` §18d. Design + v2 roadmap: `doc/plan_tlm_method.md`.
 
@@ -1213,21 +1236,22 @@ Levels: `Always`, `Low`, `Medium`, `High`, `Full`, `Debug`
 
 ---
 
-## 6. TLM Concurrency Modes (planned — not in v0.41.0)
-
-> **Not yet implemented.** Compiler v0.41.0 supports RTL signal bundling only (`bus` RTL ports, `initiator`/`target`). TLM methods, `implement` blocks, `Future<T>`, and `Token<T>` are planned for a future release. Use `fsm` or `thread` (when available) for sequential protocol logic in the meantime.
+## 6. TLM Concurrency Modes
 
 | Mode | Return type | Use case |
 |------|-------------|----------|
-| `blocking` | `ret: T` directly | Caller suspends until done — APB/MMIO |
-| `pipelined` | `ret: Future<T>` | Issue many, await later — AXI in-order |
-| `out_of_order` | `ret: Token<T, id: N>` | Any-order response by ID — Full AXI |
-| `burst` | `ret: Future<Vec<T,L>>` | One AR, N data beats — AXI INCR burst |
+| `blocking` | `ret: T` directly | Caller waits for one response. Multiple workers can still be in flight via thread cohorts; responses route by issue-order FIFO. |
+| `out_of_order tags N` | `ret: T` directly + hidden tag wires | Multiple direct workers can complete out of order; compiler assigns worker tags and routes responses by `<method>_rsp_tag`. |
+| `pipelined` | — | Not supported as a separate mode. Use worker threads / `generate_for` / `fork/join` cohorts. |
+| `burst` | — | Not supported. Model explicit beats with thread/RTL protocol code for now. |
 
 ```
-await f                        // wait for one Future
-await_all(f0, f1, f2)         // wait for all
-await_any(t0, t1)             // first Token to complete (out_of_order only)
+// Do this:
+d <= m.read(addr);             // direct blocking-style call inside a thread
+
+// Not this:
+let f = m.read(addr);           // no Future<T>
+await f;                        // no await
 ```
 
 ---
@@ -1304,8 +1328,8 @@ dut.tick();   // auto-toggles fast_clk (200MHz) and slow_clk (50MHz) at 4:1 rati
    structs → functions → primitives → pipeline → top module → testbench.
    Compile and verify each before moving to the next.
 
-5. **ABSTRACTION PROGRESSION**:
-   Start `--tlm-lt`. Add `rtl_accurate` only after function verified.
+5. **TLM PROGRESSION**:
+   Start with a single `tlm_method ... : blocking;` call and target thread. Add worker-thread, `generate_for`, or `fork/join` cohorts only after the single-call handshake works. Use `out_of_order tags N` only when the target can echo tags.
 
 ---
 

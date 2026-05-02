@@ -1,6 +1,6 @@
 # Plan: `tlm_method` — transaction-level bus sub-construct
 
-*Author: session of 2026-04-22. Status: design draft, not yet implemented.*
+*Author: session of 2026-04-22. Status: implemented in stages; updated 2026-05-01 for thread cohorts, tagged OOO, and arch-sim parallel integration.*
 
 Cross-refs:
 - `doc/plan_bus_unification.md` — sets the unified-bus frame. `tlm_method` is
@@ -301,7 +301,7 @@ Three auto-emitted properties labeled
   exercising blocking `read` and `write`, plus a thread driver issuing
   a small sequence.
 
-### Future (not in this plan)
+### Implemented follow-on slices
 
 - PR-tlm-V2a: in-order thread-cohort mapping for ordinary blocking
   calls. A `generate_for` cohort, explicit worker threads, or direct-call
@@ -311,9 +311,12 @@ Three auto-emitted properties labeled
   `doc/plan_tlm_pipelined.md`.
 - PR-tlm-V2b: out-of-order mode via compiler-managed request/response
   tags. Keep the worker syntax; change the protocol contract so the
-  compiler can route by `rsp_tag` instead of FIFO issue order. Initial
-  parser, wire flattening, target tag echo, and cohort tag routing are
-  implemented in the thread-cohort branch.
+  compiler can route by `rsp_tag` instead of FIFO issue order. Parser,
+  wire flattening, target tag echo, single-thread tag defaults, and
+  cohort tag routing are implemented in the thread-cohort branch.
+
+### Future / deferred
+
 - PR-tlm-V2c candidate: burst-oriented protocol support. No viable
   hidden-future path is currently identified; any future design should
   preserve explicit beat ownership and backpressure.
