@@ -2779,19 +2779,6 @@ fn partition_thread_body(
                 // stable across the full inter-yield region — re-evaluating
                 // the same comb expression in two consecutive states
                 // produces the same per-cycle value.
-                //
-                // For the "capture on wait-exit edge" pattern
-                // (`reg <= ...; wait until cond;` intending the register
-                // to capture at cond's exit edge), use the equivalent
-                // `do { reg <= ...; } until cond;` form: `DoUntil` runs
-                // its seq body every cycle until cond fires, so the final
-                // commit (on the cond-true cycle) wins. Intermediate
-                // per-cycle writes during the wait are harmless — each is
-                // overwritten by the next. A guarded form
-                // `do { if cond_refined { reg <= ...; } } until cond;` is
-                // only useful when the inner condition strictly refines
-                // the outer exit (e.g. `do { if rvalid and not err { ... } }
-                // until rvalid;`); a same-condition guard is redundant.
                 if !cur_seq.is_empty() {
                     states.push(ThreadFsmState {
                         comb_stmts: cur_comb.clone(),
