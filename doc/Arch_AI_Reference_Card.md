@@ -158,7 +158,7 @@ enum E   { A, B, }
 - `SysDomain` is built-in — no `domain SysDomain end domain SysDomain` needed
 - `Bool` and `UInt<1>` are identical — freely assignable, bitwise ops on 1-bit return Bool
 - `Bit` is an alias for `UInt<1>`
-- No current `Future<T>` / `await` / user-visible `Token<T>` API. TLM concurrency is expressed with worker threads, `generate_for`, and `fork/join` cohorts.
+- No current `Future<T>` / `await` / user-visible `Token<T>` API. TLM concurrency is expressed with worker threads, `generate_for`, direct-call `fork/join` cohorts, and RHS-fork groups.
 - `Clock<Domain>` may be `out` — use for passthrough (`comb clk_out = clk_in;`), gating (`comb clk_out = clk_in & en;`), or division. For integrated latch-based gating use the `clkgate` construct.
 - **`struct` packed bit layout: declaration-first = MSB** (SV convention). A TB reading a struct-typed signal as an integer finds the first-declared field in the top bits, last-declared at the LSBs.
 
@@ -1057,6 +1057,8 @@ end module Initiator
 
 Both sides lower to a parent-module state machine (state reg + RegBlock + CombBlock). `arch sim`, `arch sim --pybind --test`, and `arch sim --thread-sim parallel` work through generated C++ models; parallel mode uses the regular sim model for modules whose TLM threads were lowered away.
 
+TLM calls are not general expressions. They are legal only in `thread` bodies as `dst <= port.method(args);` or `dst <= fork port.method(args);`; `comb`, `seq`, module-level `let`, module-local `function`, `pipeline`, and `fsm` contexts reject them.
+
 **Concurrent initiator cohorts** — multiple direct worker calls on one method lower to an arbiter plus response router:
 
 ```
@@ -1092,7 +1094,7 @@ end thread driver
 
 `dst <= fork m.read(...);` is a nonblocking TLM issue; `join all;` waits for every forked issue in the group. v1 allows direct forked TLM assignments plus literal `wait N cycle;` offsets, with `join all;` final.
 
-Current restrictions: direct RHS call only (`dst <= m.method(args);` or `dst <= fork m.method(args);`), one call per worker/branch/forked issue, same clock/reset per cohort, literal tag count only, no nested/composed TLM calls, no `pipelined`, no `burst`, no `Future<T>`/`await`.
+Current restrictions: thread-body call sites only; direct RHS call only (`dst <= m.method(args);` or `dst <= fork m.method(args);`); one call per worker/branch/forked issue; same clock/reset per cohort; literal tag count only; RHS-fork offsets require literal `wait N cycle;`; no nested/composed TLM calls; no `pipelined`; no `burst`; no `Future<T>`/`await`.
 
 Full spec: `doc/ARCH_HDL_Specification.md` §18d. Design + v2 roadmap: `doc/plan_tlm_method.md`.
 
@@ -1249,23 +1251,25 @@ Levels: `Always`, `Low`, `Medium`, `High`, `Full`, `Debug`
 
 ---
 
-## 6. TLM Concurrency Modes
+## 6. TLM Method Modes
 
 | Mode | Return type | Use case |
 |------|-------------|----------|
 | `blocking` | `ret: T` directly | Caller waits for one response. Multiple workers can still be in flight via thread cohorts; responses route by issue-order FIFO. |
 | `out_of_order tags N` | `ret: T` directly + hidden tag wires | Multiple direct workers can complete out of order; compiler assigns worker tags and routes responses by `<method>_rsp_tag`. |
-| `pipelined` | — | Not supported as a separate mode. Use worker threads / `generate_for` / `fork/join` cohorts. |
-| `burst` | — | Not supported. Model explicit beats with thread/RTL protocol code for now. |
 
 ```
 // Do this:
 d <= m.read(addr);             // direct blocking-style call inside a thread
+d0 <= fork m.read(addr0);      // nonblocking issue inside a thread
+join all;                      // explicit barrier for RHS-fork issues
 
 // Not this:
 let f = m.read(addr);           // no Future<T>
 await f;                        // no await
 ```
+
+`pipelined` and `burst` are not current TLM modes. Use worker threads, `generate_for` workers, direct-call `fork ... and ... join`, or RHS-fork groups for multiple outstanding requests.
 
 ---
 
