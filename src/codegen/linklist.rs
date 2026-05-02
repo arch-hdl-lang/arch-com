@@ -366,16 +366,16 @@ impl<'a> Codegen<'a> {
 
         self.line(&format!("// ── {on} ─────────────────────────────────────────"));
 
-        // Phase-B scope: multi-head supports insert_tail + delete_head
-        // only. Other head-addressed ops need wiring the latched head_idx
-        // into their branching / pointer-patch paths; deferred to a
-        // follow-up phase.
-        if multi_head && matches!(on.as_str(), "insert_head" | "insert_after" | "delete") {
+        // Multi-head `insert_head` falls back to a $fatal only on the
+        // latency-1 fast path — that path doesn't carry a busy register,
+        // so per-head bookkeeping has nowhere to land. The latency≥2
+        // path below threads `_ctrl_<op>_head_idx` through normally.
+        if multi_head && on == "insert_head" && op.latency < 2 {
             self.line(&format!(
-                "// NOTE: op `{on}` is not yet supported for multi-head linklist (Phase B)."
+                "// NOTE: latency-1 `insert_head` is not supported for multi-head (NUM_HEADS > 1)."
             ));
             self.line(&format!(
-                "initial $fatal(1, \"linklist: op `{on}` not yet implemented for multi-head (NUM_HEADS > 1)\");"
+                "initial $fatal(1, \"linklist: latency-1 `{on}` not supported for multi-head\");"
             ));
             return;
         }
@@ -421,19 +421,30 @@ impl<'a> Codegen<'a> {
                     }
                     self.line("_fl_rdp <= _fl_rdp + 1'b1;");
                     self.line("_fl_cnt <= _fl_cnt - 1'b1;");
-                    self.line(&format!("_ctrl_{on}_was_empty <= (_fl_cnt == CNT_W'(DEPTH));"));
+                    // Empty check: single-head uses pool occupancy; multi-head
+                    // uses the per-head length counter so chains from other
+                    // heads don't mask this head's emptiness.
+                    if multi_head {
+                        self.line(&format!("_ctrl_{on}_was_empty <= (_length_r[{on}_req_head_idx] == '0);"));
+                        self.line(&format!("_ctrl_{on}_head_idx  <= {on}_req_head_idx;"));
+                    } else {
+                        self.line(&format!("_ctrl_{on}_was_empty <= (_fl_cnt == CNT_W'(DEPTH));"));
+                    }
                     self.line(&format!("_ctrl_{on}_busy <= 1'b1;"));
                     self.indent -= 1;
                     self.line(&format!("end else if (_ctrl_{on}_busy) begin"));
                     self.indent += 1;
-                    self.line(&format!("_next_mem[_ctrl_{on}_resp_handle] <= _head_r;"));
+                    self.line(&format!("_next_mem[_ctrl_{on}_resp_handle] <= {head_r_busy};"));
                     if is_doubly {
                         // old head.prev = new node; new node.prev = sentinel (0)
-                        self.line(&format!("_prev_mem[_head_r] <= _ctrl_{on}_resp_handle;"));
+                        self.line(&format!("_prev_mem[{head_r_busy}] <= _ctrl_{on}_resp_handle;"));
                     }
-                    self.line(&format!("_head_r <= _ctrl_{on}_resp_handle;"));
+                    self.line(&format!("{head_r_busy} <= _ctrl_{on}_resp_handle;"));
                     if track_tail {
-                        self.line(&format!("if (_ctrl_{on}_was_empty) _tail_r <= _ctrl_{on}_resp_handle;"));
+                        self.line(&format!("if (_ctrl_{on}_was_empty) {tail_r_busy} <= _ctrl_{on}_resp_handle;"));
+                    }
+                    if multi_head {
+                        self.line(&format!("_length_r[_ctrl_{on}_head_idx] <= _length_r[_ctrl_{on}_head_idx] + 1'b1;"));
                     }
                     if has_resp_valid { self.line(&format!("_ctrl_{on}_resp_v <= 1'b1;")); }
                     self.line(&format!("_ctrl_{on}_busy <= 1'b0;"));
@@ -592,6 +603,9 @@ impl<'a> Codegen<'a> {
                 self.line(&format!("_next_mem[{slot}] <= _next_mem[{on}_req_handle];"));
                 self.line("_fl_rdp <= _fl_rdp + 1'b1;");
                 self.line("_fl_cnt <= _fl_cnt - 1'b1;");
+                if multi_head {
+                    self.line(&format!("_ctrl_{on}_head_idx <= {on}_req_head_idx;"));
+                }
                 self.line(&format!("_ctrl_{on}_busy <= 1'b1;"));
                 self.indent -= 1;
                 self.line(&format!("end else if (_ctrl_{on}_busy) begin"));
@@ -603,6 +617,9 @@ impl<'a> Codegen<'a> {
                     self.line(&format!("_prev_mem[_ctrl_{on}_resp_handle] <= _ctrl_{on}_after_handle;"));
                     // successor.prev = new  (new.next is already committed from cycle 1)
                     self.line(&format!("_prev_mem[_next_mem[_ctrl_{on}_resp_handle]] <= _ctrl_{on}_resp_handle;"));
+                }
+                if multi_head {
+                    self.line(&format!("_length_r[_ctrl_{on}_head_idx] <= _length_r[_ctrl_{on}_head_idx] + 1'b1;"));
                 }
                 if has_resp_valid { self.line(&format!("_ctrl_{on}_resp_v <= 1'b1;")); }
                 self.line(&format!("_ctrl_{on}_busy <= 1'b0;"));
@@ -617,6 +634,9 @@ impl<'a> Codegen<'a> {
                 if has_req_handle {
                     self.line(&format!("_ctrl_{on}_slot <= {on}_req_handle;"));
                 }
+                if multi_head {
+                    self.line(&format!("_ctrl_{on}_head_idx <= {on}_req_head_idx;"));
+                }
                 self.line(&format!("_ctrl_{on}_busy <= 1'b1;"));
                 self.indent -= 1;
                 self.line(&format!("end else if (_ctrl_{on}_busy) begin"));
@@ -624,6 +644,9 @@ impl<'a> Codegen<'a> {
                 self.line(&format!("_fl_mem[_fl_wrp[HANDLE_W-1:0]] <= _ctrl_{on}_slot;"));
                 self.line("_fl_wrp <= _fl_wrp + 1'b1;");
                 self.line("_fl_cnt <= _fl_cnt + 1'b1;");
+                if multi_head {
+                    self.line(&format!("_length_r[_ctrl_{on}_head_idx] <= _length_r[_ctrl_{on}_head_idx] - 1'b1;"));
+                }
                 if has_resp_valid { self.line(&format!("_ctrl_{on}_resp_v <= 1'b1;")); }
                 self.line(&format!("_ctrl_{on}_busy <= 1'b0;"));
                 self.indent -= 1;
