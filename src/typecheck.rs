@@ -4042,8 +4042,13 @@ impl<'a> TypeChecker<'a> {
                 let Some(port) = port else { continue; };
                 if !matches!(&port.ty, TypeExpr::Reset(_, _)) { continue; }
                 if conn.direction != ConnectDir::Input { continue; }
-                // Direct ident → trust. Anything else → glitch source.
-                if matches!(&conn.signal.kind, ExprKind::Ident(_)) { continue; }
+                // Direct reset source → trust. A reset-type cast such as
+                // `rst as Reset<Async, Low>` is an instantiation-time reset
+                // annotation, not reset-combining logic; peel through it so
+                // legacy reset-override examples stay legal. Real logic under
+                // the cast, e.g. `(rst_a | rst_b) as Reset<Async>`, remains a
+                // combiner and is still rejected.
+                if Self::is_direct_reset_inst_signal(&conn.signal) { continue; }
                 self.errors.push(CompileError::general(
                     &format!(
                         "RDC violation: inst `{inst_name}` (instance of `{sub}`) has its \
@@ -4060,6 +4065,16 @@ impl<'a> TypeChecker<'a> {
                     conn.span,
                 ));
             }
+        }
+    }
+
+    fn is_direct_reset_inst_signal(expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Ident(_) | ExprKind::SynthIdent(_, _) => true,
+            ExprKind::Cast(inner, ty) if matches!(ty.as_ref(), TypeExpr::Reset(_, _)) => {
+                Self::is_direct_reset_inst_signal(inner)
+            }
+            _ => false,
         }
     }
 

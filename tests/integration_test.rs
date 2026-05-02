@@ -7686,6 +7686,13 @@ end module M
 }
 
 #[test]
+fn rdc_reset_type_cast_at_inst_is_direct_reset_ok() {
+    // `rst <- rst_async_n as Reset<Async, Low>` is a reset type override at
+    // the inst boundary. It should not be classified as reset-combining logic.
+    assert_rdc_ok("reset-cast-inst", include_str!("../examples/param_reset.arch"));
+}
+
+#[test]
 fn rdc_a2_diff_async_direct_fails() {
     // ra (rst_a, async) → rb (rst_b, async); different async domains → FAIL.
     assert_rdc_fails("A2", r#"
