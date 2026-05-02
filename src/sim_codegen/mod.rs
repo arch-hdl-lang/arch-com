@@ -3251,10 +3251,21 @@ fn collect_stmt_assigns(stmts: &[Stmt], out: &mut std::collections::BTreeSet<Str
     for stmt in stmts {
         match stmt {
             Stmt::Assign(a) => {
-                if let ExprKind::Ident(n) = &a.target.kind { out.insert(n.clone()); }
-                // Struct-field LHS (`reg.field <= ...`): collect the base reg name.
-                if let ExprKind::FieldAccess(base, _) = &a.target.kind {
-                    if let ExprKind::Ident(n) = &base.kind { out.insert(n.clone()); }
+                // Walk the LHS unwrapping Index / BitSlice / PartSelect /
+                // FieldAccess until we hit the base Ident. `counter_q[hi:lo]`,
+                // `counter_q[i]`, `reg.field`, and chained forms all bind to
+                // `counter_q` for reset-walk purposes — the partial-write
+                // reg is still subject to its declared reset.
+                let mut cursor: &Expr = &a.target;
+                loop {
+                    match &cursor.kind {
+                        ExprKind::Ident(n) => { out.insert(n.clone()); break; }
+                        ExprKind::Index(base, _)
+                        | ExprKind::BitSlice(base, _, _)
+                        | ExprKind::PartSelect(base, _, _, _)
+                        | ExprKind::FieldAccess(base, _) => { cursor = base; }
+                        _ => break,
+                    }
                 }
             }
             Stmt::IfElse(ie) => {
@@ -4921,6 +4932,43 @@ impl<'a> SimCodegen<'a> {
                     }
                 }
 
+                // For async reset, emit the reset arm OUTSIDE the rising-edge
+                // gate so an asserted reset clears the regs immediately
+                // (visible to the very next eval_comb()), not only after
+                // the next clock edge. Write to both `_q` (the live,
+                // user-visible value) and `_n_q` (the shadow) so the
+                // end-of-cycle commit doesn't restore stale state. The
+                // sync-reset case keeps the original gated form.
+                let async_reset_emitted = if let Some((rst_name, is_async, is_low)) = &reset_sig {
+                    if !is_async {
+                        // sync-reset path is handled below; skip the async pre-gate emit
+                        false
+                    } else {
+                    let cond = if *is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
+                    cpp.push_str(&format!("  if ({cond}) {{\n"));
+                    for (reg_name, init) in &reset_regs {
+                        if wide_names.contains(*reg_name) {
+                            let bits = widths.get(*reg_name).copied().unwrap_or(0);
+                            if bits > 128 {
+                                let words = wide_words(bits);
+                                cpp.push_str(&format!("    _{reg_name} = VlWide<{words}>({init});\n"));
+                                cpp.push_str(&format!("    _n_{reg_name} = VlWide<{words}>({init});\n"));
+                            } else {
+                                cpp.push_str(&format!("    _{reg_name} = (_arch_u128){init};\n"));
+                                cpp.push_str(&format!("    _n_{reg_name} = (_arch_u128){init};\n"));
+                            }
+                        } else {
+                            cpp.push_str(&format!("    _{reg_name} = {init};\n"));
+                            cpp.push_str(&format!("    _n_{reg_name} = {init};\n"));
+                        }
+                    }
+                    cpp.push_str("  }\n");
+                    true
+                    }
+                } else {
+                    false
+                };
+
                 // Guard each seq block on its specific clock's rising edge
                 cpp.push_str(&format!("  if (_rising_{}) {{\n", rb.clock.name));
                 let base_indent: usize = 2;
@@ -4933,7 +4981,19 @@ impl<'a> SimCodegen<'a> {
                     cpp.push_str(&format!("{}_arch_cov[{idx}]++;\n", "  ".repeat(base_indent)));
                 }
 
-                if let Some((rst_name, _is_async, is_low)) = &reset_sig {
+                if async_reset_emitted {
+                    // Already cleared regs above; just emit the seq body
+                    // unconditionally inside the rising-clk gate. If reset
+                    // was asserted, the seq body's RHS reads see the cleared
+                    // _q/_n_q values; the resulting writes are then themselves
+                    // overwritten on the NEXT eval() call where the async
+                    // reset arm fires again before the seq body re-runs.
+                    // Net effect under continuous async reset: regs stay 0.
+                    let mut body = String::new();
+                    emit_reg_stmts(&rb.stmts, &ctx, &mut body, base_indent);
+                    cpp.push_str(&body);
+                } else if let Some((rst_name, _is_async, is_low)) = &reset_sig {
+                    // Sync reset — original gated form.
                     let cond = if *is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
                     cpp.push_str(&format!("{}if ({cond}) {{\n", "  ".repeat(base_indent)));
                     for (reg_name, init) in &reset_regs {
