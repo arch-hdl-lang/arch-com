@@ -2765,40 +2765,47 @@ fn partition_thread_body(
                 cur_seq.push(Stmt::Log(l.clone()));
             }
             ThreadStmt::WaitUntil(cond, sp) => {
+                // Per spec §7a.2: only TRAILING seq assigns (after the last
+                // wait in the body) may merge into the preceding state's
+                // exit. Inter-yield seq assigns — assigns sitting BETWEEN
+                // two yield statements — are not trailing, and must each
+                // get a dead-skid state with unconditional advance.
+                //
                 // Comb assigns flow INTO the wait state so they hold while
-                // waiting (matches `valid=1; wait until ready;` AXI intent).
+                // waiting (`valid=1; wait until ready;` AXI intent). When
+                // a dead-skid prefix state is needed (because seq assigns
+                // were pending), comb assigns are duplicated into both the
+                // prefix and the wait state so the protocol output stays
+                // stable across the full inter-yield region — re-evaluating
+                // the same comb expression in two consecutive states
+                // produces the same per-cycle value.
                 //
-                // Seq assigns merge into the wait state too, but wrapped in
-                // `if (cond)` so they fire on the wait-exit edge — the same
-                // edge the FSM advances on. This matches the natural
-                // interpretation of `reg <= expr; wait until cond;` as
-                // "register the expression value when cond becomes true".
-                //
-                // Earlier versions used a separate fire-once predecessor
-                // state with unconditional advance, but that landed seq
-                // assigns one edge BEFORE cond actually fires — for the
-                // common pattern `if cond { reg <= ...; } wait until cond;`,
-                // the seq's own if-guard saw cond stale (current cycle, not
-                // the wait-exit cycle), so the register captured the wrong
-                // value.
-                let guarded_seq = if !cur_seq.is_empty() {
-                    vec![Stmt::IfElse(IfElse {
-                        cond: cond.clone(),
-                        then_stmts: std::mem::take(&mut cur_seq),
-                        else_stmts: Vec::new(),
-                        unique: false,
-                        span: *sp,
-                    })]
-                } else {
-                    Vec::new()
-                };
+                // For the "capture on wait-exit edge" pattern
+                // (`reg <= ...; wait until cond;` intending the register
+                // to capture at cond's exit edge), use the equivalent
+                // `do { reg <= ...; } until cond;` form: `DoUntil` runs
+                // its seq body on the exit cycle, which gives the desired
+                // wait-exit-edge capture without breaking spec semantics
+                // for the inter-yield case. The same applies to the
+                // `if cond { reg <= ...; } wait until cond;` pattern,
+                // which becomes `do { if cond { reg <= ...; } } until cond;`.
+                if !cur_seq.is_empty() {
+                    states.push(ThreadFsmState {
+                        comb_stmts: cur_comb.clone(),
+                        seq_stmts: std::mem::take(&mut cur_seq),
+                        transition_cond: None,
+                        wait_cycles: None,
+                        multi_transitions: Vec::new(),
+                    });
+                }
                 states.push(ThreadFsmState {
                     comb_stmts: std::mem::take(&mut cur_comb),
-                    seq_stmts: guarded_seq,
+                    seq_stmts: Vec::new(),
                     transition_cond: Some(cond.clone()),
                     wait_cycles: None,
                     multi_transitions: Vec::new(),
                 });
+                let _ = sp; // span retained for parity with the prior arm
             }
             ThreadStmt::WaitCycles(count, _) => {
                 // Same: pure boundary, flush all pending assigns

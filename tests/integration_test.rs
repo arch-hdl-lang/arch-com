@@ -8944,3 +8944,76 @@ end module Parent
     assert!(!sv.contains("module ChildStub"),
         "interface stub must not be emitted to SV (real impl lives in a separately-built file)");
 }
+
+#[test]
+fn test_thread_inter_yield_seq_assigns_get_dead_skid() {
+    // Spec §7a.2 line 1677: only TRAILING seq assigns (after the last wait
+    // in the body) may merge into the preceding state's exit logic.
+    // Inter-yield seq assigns — assigns sitting BETWEEN two yield
+    // statements — are NOT trailing and must each get their own dead-skid
+    // state with unconditional advance.
+    //
+    // Pre-fix: the WaitUntil handler in lower_threads merged ALL pending
+    // seq assigns (not just trailing) into the next wait state, guarded
+    // by that wait's condition. This was a documented-as-intentional but
+    // spec-incompatible behavior — the "intent" was to support
+    // `if cond { reg <= ...; } wait until cond;` (capture-on-cond-edge),
+    // but it changed the semantics of every plain inter-yield assign,
+    // making them fire one cycle late AND conditionally on the next
+    // wait's cond.
+    //
+    // Post-fix: the inter-yield assigns get a dead-skid state with
+    // unconditional advance. For capture-on-edge of a wait condition,
+    // users should use `do { if cond { reg <= ...; } } until cond;`
+    // (the do-until body runs while waiting, including the exit cycle).
+    let source = r#"
+domain Sys
+  freq_mhz: 100
+end domain Sys
+
+module M
+  port clk: in Clock<Sys>;
+  port rst: in Reset<Sync, High>;
+  port cond_a: in Bool;
+  port cond_b: in Bool;
+  port out_b: out Bool shared(or);
+  reg x: UInt<8> reset rst => 8'd0;
+  reg y: UInt<8> reset rst => 8'd0;
+
+  thread T on clk rising, rst high
+    do
+      out_b = false;
+    until cond_a;
+    x <= 8'd42;
+    y <= 8'd99;
+    wait until cond_b;
+    out_b = true;
+  end thread T
+end module M
+"#;
+    let sv = compile_to_sv(source);
+
+    // The inter-yield seq assigns must lower as an unconditional dead-skid
+    // (NOT guarded by cond_b). Pre-fix the assign was wrapped in
+    // `if (cond_b) begin x <= 8'd42; ... end`.
+    //
+    // Find the assign and look at the immediately enclosing `begin` block
+    // by scanning backwards for the most recent `begin` token. Whichever
+    // line that `begin` sits on must NOT contain `if (cond_b)` for the
+    // assign to be unconditional.
+    let pos = sv.find("x <= 8'd42").unwrap_or_else(|| {
+        panic!("assign `x <= 8'd42` not found in SV:\n{}", sv);
+    });
+    let preceding = &sv[..pos];
+    let last_begin_at = preceding.rfind("begin").unwrap_or_else(|| {
+        panic!("no `begin` precedes the assign; SV malformed:\n{}", sv);
+    });
+    // Extract the line containing that `begin`.
+    let line_start = preceding[..last_begin_at].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let begin_line = &preceding[line_start..last_begin_at + "begin".len()];
+    assert!(!begin_line.contains("if (cond_b)"),
+        "inter-yield seq assign `x <= 8'd42` must NOT be wrapped in \
+         `if (cond_b) begin ... end` — that's the pre-fix merge-into-wait-state \
+         behavior, which conflicts with spec §7a.2 (only TRAILING assigns merge). \
+         Enclosing begin-line was: {:?}\nFull SV:\n{}", begin_line, sv);
+}
