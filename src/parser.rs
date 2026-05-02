@@ -270,8 +270,9 @@ impl Parser {
     /// Grammar:
     ///   'tlm_method' Ident '(' (Ident ':' TypeExpr (',' Ident ':' TypeExpr)*)? ')'
     ///     ('->' TypeExpr)? ':' Mode ';'
-    ///   Mode := 'blocking'                        // v1
-    ///         | 'pipelined' | 'out_of_order' | 'burst'   // v2 (rejected v1)
+    ///   Mode := 'blocking'
+    ///         | 'out_of_order' 'tags' Expr
+    ///         | 'pipelined' | 'burst'   // future/rejected
     fn parse_tlm_method_decl(&mut self) -> Result<TlmMethodMeta, CompileError> {
         let start = self.expect(TokenKind::TlmMethod)?.span;
         let name = self.expect_ident()?;
@@ -295,16 +296,27 @@ impl Parser {
         };
         self.expect(TokenKind::Colon)?;
         let mode = self.expect_ident()?;
+        let out_of_order_tags = if mode.name == "out_of_order" {
+            self.expect_contextual("tags")?;
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
         let end_span = self.expect(TokenKind::Semi)?.span;
-        // v1 accepts only `blocking`. Other modes land in v2 — reject
-        // early with a targeted message so users aren't surprised when
-        // their `pipelined` method silently parses.
-        if mode.name != "blocking" {
+        // Keep the old mode surface closed except for the tagged
+        // out-of-order slice.
+        if mode.name != "blocking" && mode.name != "out_of_order" {
             return Err(CompileError::general(
                 &format!(
-                    "tlm_method concurrency mode `{}` is not implemented in v1 — only `blocking` is supported. Pipelined / out_of_order / burst are tracked in doc/plan_tlm_method.md.",
+                    "tlm_method concurrency mode `{}` is not implemented — use `blocking` or `out_of_order tags N`.",
                     mode.name
                 ),
+                mode.span,
+            ));
+        }
+        if mode.name == "blocking" && out_of_order_tags.is_some() {
+            return Err(CompileError::general(
+                "`tags` is only valid on `out_of_order` TLM methods",
                 mode.span,
             ));
         }
@@ -313,6 +325,7 @@ impl Parser {
             args,
             ret,
             mode,
+            out_of_order_tags,
             span: start.merge(end_span),
         })
     }
@@ -715,20 +728,25 @@ impl Parser {
         let mut body = Vec::new();
         let mut hooks: Vec<crate::ast::ModuleHookDecl> = Vec::new();
         let mut cdc_safe = false;
+        let mut rdc_safe = false;
 
         while !self.check_end_keyword() {
             match self.peek_kind() {
-                // `pragma cdc_safe;` — suppress CDC checks for this module
+                // `pragma cdc_safe;` — suppress CDC checks for this module.
+                // `pragma rdc_safe;` — suppress all RDC checks (phases 1
+                //   + 2a–2d) for this module.
                 Some(TokenKind::Ident(ref s)) if s == "pragma" => {
                     self.advance();
                     let pragma_name = self.expect_ident()?;
-                    if pragma_name.name == "cdc_safe" {
-                        cdc_safe = true;
-                    } else {
-                        return Err(CompileError::general(
-                            &format!("unknown pragma `{}`", pragma_name.name),
-                            pragma_name.span,
-                        ));
+                    match pragma_name.name.as_str() {
+                        "cdc_safe" => cdc_safe = true,
+                        "rdc_safe" => rdc_safe = true,
+                        _ => {
+                            return Err(CompileError::general(
+                                &format!("unknown pragma `{}`", pragma_name.name),
+                                pragma_name.span,
+                            ));
+                        }
                     }
                     self.expect(TokenKind::Semi)?;
                     continue;
@@ -819,6 +837,7 @@ impl Parser {
             implements,
             hooks,
             cdc_safe,
+            rdc_safe,
             // `doc` is populated by `attach_outer_doc` from `parse_item`;
             // `inner_doc` was harvested above right after the name.
             doc: None,

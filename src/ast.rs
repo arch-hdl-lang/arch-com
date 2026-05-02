@@ -112,8 +112,10 @@ pub struct TlmMethodMeta {
     /// Return type, `None` for void methods (response channel carries
     /// only valid/ready, no payload).
     pub ret: Option<TypeExpr>,
-    /// Concurrency mode — v1 only accepts `blocking`.
+    /// Concurrency mode. `blocking` uses the base req/rsp protocol;
+    /// `out_of_order tags N` adds compiler-managed req/rsp tag wires.
     pub mode: Ident,
+    pub out_of_order_tags: Option<Expr>,
     pub span: Span,
 }
 
@@ -200,6 +202,11 @@ pub struct ModuleDecl {
     pub implements: Option<Ident>,
     pub hooks: Vec<ModuleHookDecl>,
     pub cdc_safe: bool,
+    /// `pragma rdc_safe;` — suppress all RDC checks (phases 1 + 2a–2d)
+    /// for this module. Independent of `cdc_safe`; either pragma alone
+    /// disables phase 1's structural cross-clock async-reset rule
+    /// (which sits at the CDC/RDC boundary).
+    pub rdc_safe: bool,
     pub span: Span,
     /// Outer doc comment from `///` lines preceding the `module` keyword.
     /// See `doc/plan_arch_doc_comments.md`.

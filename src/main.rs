@@ -15,7 +15,7 @@ use arch::sim_codegen::SimCodegen;
 use arch::typecheck::TypeChecker;
 
 #[derive(Parser)]
-#[command(name = "arch", about = "ARCH HDL compiler")]
+#[command(name = "arch", version, about = "ARCH HDL compiler")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -696,15 +696,63 @@ fn run_sim_opts(
     // 3. Generate C++ models
     let models: Vec<arch::sim_codegen::SimModel> = if thread_sim_parallel {
         // Pre-lowering thread sim path: route every module containing
-        // a `thread` block through the new emitter; reject mixed
-        // modules (Phase 1 limitation).
+        // a `thread` block through the new emitter. TLM lowering can
+        // consume an initiator cohort completely before this point,
+        // leaving an ordinary no-thread module; emit those modules with
+        // the regular sim codegen so `--thread-sim parallel` remains a
+        // usable integration mode for TLM designs.
         let mut out = Vec::new();
+        let mut regular_items = Vec::new();
         for item in &ast.items {
-            if let arch::ast::Item::Module(m) = item {
-                let has_thread = m.body.iter().any(|i| matches!(i, arch::ast::ModuleBodyItem::Thread(_)));
-                if has_thread {
-                    let model = arch::sim_codegen::thread_sim::gen_module_thread(m, debug, wave.is_some(), threads)
-                        .map_err(|e| miette::miette!("thread sim: {}", e))?;
+            match item {
+                arch::ast::Item::Module(m) => {
+                    let has_thread = m.body.iter().any(|i| matches!(i, arch::ast::ModuleBodyItem::Thread(_)));
+                    if has_thread {
+                        let model = arch::sim_codegen::thread_sim::gen_module_thread(m, debug, wave.is_some(), threads)
+                            .map_err(|e| miette::miette!("thread sim: {}", e))?;
+                        out.push(model);
+                    } else {
+                        regular_items.push(item.clone());
+                    }
+                }
+                _ => regular_items.push(item.clone()),
+            }
+        }
+        if regular_items.iter().any(|item| matches!(
+            item,
+            arch::ast::Item::Module(_)
+                | arch::ast::Item::Fsm(_)
+                | arch::ast::Item::Fifo(_)
+                | arch::ast::Item::Ram(_)
+                | arch::ast::Item::Cam(_)
+                | arch::ast::Item::Counter(_)
+                | arch::ast::Item::Arbiter(_)
+                | arch::ast::Item::Regfile(_)
+                | arch::ast::Item::Pipeline(_)
+                | arch::ast::Item::Synchronizer(_)
+                | arch::ast::Item::Clkgate(_)
+                | arch::ast::Item::Function(_)
+                | arch::ast::Item::Package(_)
+                | arch::ast::Item::Struct(_)
+                | arch::ast::Item::Enum(_)
+        )) {
+            let regular_ast = arch::ast::SourceFile {
+                items: regular_items,
+                inner_doc: ast.inner_doc.clone(),
+                frontmatter: ast.frontmatter.clone(),
+            };
+            let mut sim = SimCodegen::new(&symbols, &regular_ast, overload_map.clone()).check_uninit(check_uninit).inputs_start_uninit(inputs_start_uninit).check_uninit_ram(check_uninit_ram).cdc_random(cdc_random).debug(debug, debug_depth).with_debug_fsm(debug_fsm).coverage(coverage).coverage_dat(coverage_dat.clone());
+            if coverage {
+                let segs: Vec<(usize, String, String)> = ms.segments.iter()
+                    .map(|(start, _end, name, src)| (*start, name.clone(), src.clone()))
+                    .collect();
+                sim = sim.with_source_map(arch::sim_codegen::SourceMap::new(segs));
+            }
+            for model in sim.generate() {
+                if model.class_name == "VStructs" && out.iter().any(|m| m.class_name == "VStructs") {
+                    continue;
+                }
+                if !out.iter().any(|m| m.class_name == model.class_name) {
                     out.push(model);
                 }
             }
@@ -1471,4 +1519,3 @@ fn run_check_multi_opts(
 
     Ok((ast, symbols, overload_map))
 }
-

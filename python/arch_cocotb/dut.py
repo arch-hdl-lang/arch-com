@@ -1,6 +1,37 @@
 """DUT wrapper that provides cocotb-compatible signal access."""
 
+import re
+
 from arch_cocotb.signal import ArchSignal
+
+
+_VEC_MEMBER_RE = re.compile(r"^(.+)_(\d+)$")
+
+
+class _ArchVecProxy:
+    """Indexable proxy over unpacked-Vec ports.
+
+    arch sim's pybind layer flattens `port: in unpacked Vec<T, N>` into
+    N scalar attributes named `port_0` .. `port_{N-1}`. Tests written
+    against real Verilator cocotb expect to write `dut.port[i].value`,
+    so we synthesize a proxy that maps `[i]` back to the underlying
+    `port_i` ArchSignal handle.
+    """
+
+    __slots__ = ("_members",)
+
+    def __init__(self, members):
+        # members: list[ArchSignal] in index order
+        self._members = members
+
+    def __getitem__(self, idx):
+        return self._members[idx]
+
+    def __len__(self):
+        return len(self._members)
+
+    def __iter__(self):
+        return iter(self._members)
 
 
 class ArchDUT:
@@ -17,6 +48,7 @@ class ArchDUT:
         object.__setattr__(self, '_model', model_class())
         object.__setattr__(self, '_signals', {})
         object.__setattr__(self, '_signal_list', [])
+        object.__setattr__(self, '_vec_groups', {})
         self._register_from_port_info()
 
     def _register_from_port_info(self):
@@ -36,6 +68,25 @@ class ArchDUT:
             self._signals[name] = sig
             if not is_param:
                 self._signal_list.append(sig)
+        # Detect unpacked-Vec port groups: any name `base_<idx>` where
+        # `base` is not itself a registered scalar AND there are at least
+        # two consecutive indices starting at 0. This avoids false
+        # positives on names that incidentally end in `_<digit>` (e.g. an
+        # SV constant `pkt_512`).
+        groups: dict[str, dict[int, ArchSignal]] = {}
+        for name, sig in self._signals.items():
+            m = _VEC_MEMBER_RE.match(name)
+            if not m:
+                continue
+            base, idx_str = m.group(1), m.group(2)
+            if base in self._signals:
+                continue
+            groups.setdefault(base, {})[int(idx_str)] = sig
+        for base, members in groups.items():
+            indices = sorted(members)
+            if len(indices) < 2 or indices != list(range(len(indices))):
+                continue
+            self._vec_groups[base] = _ArchVecProxy([members[i] for i in indices])
 
     def register_signal(self, name, width, signed=False, is_param=False,
                         is_internal=False, cpp_name=None):
@@ -55,6 +106,9 @@ class ArchDUT:
         sigs = object.__getattribute__(self, '_signals')
         if name in sigs:
             return sigs[name]
+        groups = object.__getattribute__(self, '_vec_groups')
+        if name in groups:
+            return groups[name]
         raise AttributeError(f"No signal '{name}' on DUT")
 
     def __iter__(self):

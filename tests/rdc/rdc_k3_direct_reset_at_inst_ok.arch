@@ -1,0 +1,32 @@
+// K3 (phase 2d sanity): direct port-to-port routing — the legal
+// pattern. No combinational logic in the connection.
+
+domain D
+  freq_mhz: 100
+end domain D
+
+module Sub
+  port clk: in Clock<D>;
+  port rst: in Reset<Async>;
+  port d:   in UInt<8>;
+  port q:   out UInt<8>;
+  reg r: UInt<8> reset rst => 0;
+  seq on clk rising
+    r <= d;
+  end seq
+  let q = r;
+end module Sub
+
+module Top
+  port clk:   in Clock<D>;
+  port rst:   in Reset<Async>;
+  port d:     in UInt<8>;
+  port q:     out UInt<8>;
+
+  inst sub: Sub
+    clk <- clk;
+    rst <- rst;
+    d   <- d;
+    q   -> q;
+  end inst sub
+end module Top

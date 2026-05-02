@@ -839,7 +839,10 @@ impl<'a> TypeChecker<'a> {
             } else { None })
             .collect();
 
-        if clk_domain.len() >= 2 && !m.cdc_safe {
+        // Phase 1 RDC + the surrounding CDC pass share this gate.
+        // `pragma cdc_safe;` opts out of CDC + phase 1 (legacy);
+        // `pragma rdc_safe;` opts out of phase 1 too (unified RDC opt-out).
+        if clk_domain.len() >= 2 && !m.cdc_safe && !m.rdc_safe {
             // Build reg → domain map (which domain drives each register)
             let mut reg_domain: HashMap<String, String> = HashMap::new();
             for item in &m.body {
@@ -1017,8 +1020,14 @@ impl<'a> TypeChecker<'a> {
         // concern). A future `pragma rdc_safe;` annotation will be the
         // dedicated opt-out; for now, fix the design or refactor the
         // resets through synchronizers.
-        self.check_rdc_phase2a(m);
-        self.check_reconvergent_syncs(m);
+        // `pragma rdc_safe;` blanket-suppresses every data-flow / boundary
+        // RDC check (phases 2a–2d). The cross-clock structural rule
+        // (phase 1, gated above) honours this pragma too.
+        if !m.rdc_safe {
+            self.check_rdc_phase2a(m);
+            self.check_reconvergent_syncs(m);
+            self.check_rdc_combiner_at_inst(m);
+        }
 
         // Validate `implements` template conformance
         if let Some(ref tmpl_name) = m.implements {
@@ -3819,21 +3828,30 @@ impl<'a> TypeChecker<'a> {
                 Some((p.name.name.clone(), domain.name.clone()))
             } else { None })
             .collect();
-        // Group: (source_signal_name, dest_clock_domain) → list of
-        // (inst_name, sync_construct_kind, inst_span).
+        // Build let-binding indirection map: `let x = expr;` lets the
+        // source-tracing pass walk through `x` to its underlying source
+        // registers, catching common-source-via-comb cases (Aldec article
+        // 2140's bit-slice / common-source-register patterns).
+        let let_map: HashMap<String, &Expr> = m.body.iter()
+            .filter_map(|i| if let ModuleBodyItem::LetBinding(l) = i {
+                Some((l.name.name.clone(), &l.value))
+            } else { None })
+            .collect();
+        // Per-sync-instance terminal source-register set (after walking
+        // through bit-slice, concat, unary/binary, let bindings). For
+        // each terminal source ident, group by (ident, dest_domain).
         #[allow(clippy::type_complexity)]
         let mut groups: HashMap<(String, String), Vec<(String, SyncKind, crate::lexer::Span)>> = HashMap::new();
         for item in &m.body {
             let ModuleBodyItem::Inst(inst) = item else { continue; };
             let Some(kind) = sync_kinds.get(&inst.module_name.name) else { continue; };
-            let mut src_name: Option<String> = None;
+            let mut src_set: HashSet<String> = HashSet::new();
             let mut dst_clk_sig: Option<String> = None;
             for conn in &inst.connections {
                 match conn.port_name.name.as_str() {
                     "data_in" => {
-                        if let ExprKind::Ident(n) = &conn.signal.kind {
-                            src_name = Some(n.clone());
-                        }
+                        let mut visited = HashSet::new();
+                        Self::collect_source_idents(&conn.signal, &let_map, &mut visited, &mut src_set);
                     }
                     "dst_clk" => {
                         if let ExprKind::Ident(n) = &conn.signal.kind {
@@ -3843,21 +3861,34 @@ impl<'a> TypeChecker<'a> {
                     _ => {}
                 }
             }
-            let (Some(src), Some(clk)) = (src_name, dst_clk_sig) else { continue; };
+            if src_set.is_empty() { continue; }
+            let Some(clk) = dst_clk_sig else { continue; };
             let Some(dom) = clk_domain.get(&clk) else { continue; };
-            groups.entry((src, dom.clone()))
-                .or_default()
-                .push((inst.name.name.clone(), *kind, inst.span));
+            for src in &src_set {
+                groups.entry((src.clone(), dom.clone()))
+                    .or_default()
+                    .push((inst.name.name.clone(), *kind, inst.span));
+            }
         }
         // Sort for deterministic diagnostics across HashMap iteration.
         let mut sorted_keys: Vec<_> = groups.keys().cloned().collect();
         sorted_keys.sort();
+        // Two syncs that share *multiple* terminal sources (e.g. both
+        // read `data[0]` and `data[1]` after tracing through bit-slice)
+        // would otherwise emit one error per shared source. Dedup by the
+        // sorted set of inst names involved.
+        let mut reported_inst_sets: HashSet<Vec<String>> = HashSet::new();
         for key in sorted_keys {
             let users = &groups[&key];
             if users.len() < 2 { continue; }
+            let mut inst_set: Vec<String> = users.iter().map(|(n, _, _)| n.clone()).collect();
+            inst_set.sort();
+            inst_set.dedup();
+            if inst_set.len() < 2 { continue; }
+            if !reported_inst_sets.insert(inst_set.clone()) { continue; }
             let (source, domain) = key;
-            let inst_list = users.iter()
-                .map(|(n, _, _)| format!("`{n}`"))
+            let inst_list = inst_set.iter()
+                .map(|n| format!("`{n}`"))
                 .collect::<Vec<_>>()
                 .join(", ");
             let report_span = users[1].2;
@@ -3884,6 +3915,166 @@ impl<'a> TypeChecker<'a> {
                 ),
                 report_span,
             ));
+        }
+    }
+
+    /// Walk `expr` and collect the set of *terminal* source identifiers
+    /// it ultimately reads — descending through bit-slice (`x[i]`,
+    /// `x[hi:lo]`, `x[s +: w]`), field access, concat, unary/binary
+    /// operators, ternaries, function/method calls, and let-binding
+    /// indirection. A "terminal" ident is one that is *not* the LHS of
+    /// any module-scope `let` (i.e. a port, register, wire, or sync
+    /// output). Used by `check_reconvergent_syncs` to recognise the
+    /// Aldec-2140 patterns where two synchronisers share a source after
+    /// being split via combinational logic.
+    fn collect_source_idents(
+        expr: &Expr,
+        let_map: &HashMap<String, &Expr>,
+        visited: &mut HashSet<String>,
+        out: &mut HashSet<String>,
+    ) {
+        match &expr.kind {
+            ExprKind::Ident(name) | ExprKind::SynthIdent(name, _) => {
+                if let Some(rhs) = let_map.get(name) {
+                    if visited.insert(name.clone()) {
+                        Self::collect_source_idents(rhs, let_map, visited, out);
+                        visited.remove(name);
+                    }
+                } else {
+                    out.insert(name.clone());
+                }
+            }
+            ExprKind::Binary(_, l, r) => {
+                Self::collect_source_idents(l, let_map, visited, out);
+                Self::collect_source_idents(r, let_map, visited, out);
+            }
+            ExprKind::Unary(_, e) => Self::collect_source_idents(e, let_map, visited, out),
+            ExprKind::Index(base, idx) => {
+                Self::collect_source_idents(base, let_map, visited, out);
+                Self::collect_source_idents(idx, let_map, visited, out);
+            }
+            ExprKind::BitSlice(base, _, _) => Self::collect_source_idents(base, let_map, visited, out),
+            ExprKind::PartSelect(base, _, _, _) => Self::collect_source_idents(base, let_map, visited, out),
+            ExprKind::FieldAccess(base, _) => Self::collect_source_idents(base, let_map, visited, out),
+            ExprKind::Cast(e, _) => Self::collect_source_idents(e, let_map, visited, out),
+            ExprKind::Signed(e) | ExprKind::Unsigned(e) => Self::collect_source_idents(e, let_map, visited, out),
+            ExprKind::Concat(parts) => {
+                for p in parts { Self::collect_source_idents(p, let_map, visited, out); }
+            }
+            ExprKind::Repeat(n, e) => {
+                Self::collect_source_idents(n, let_map, visited, out);
+                Self::collect_source_idents(e, let_map, visited, out);
+            }
+            ExprKind::Ternary(c, t, e) => {
+                Self::collect_source_idents(c, let_map, visited, out);
+                Self::collect_source_idents(t, let_map, visited, out);
+                Self::collect_source_idents(e, let_map, visited, out);
+            }
+            ExprKind::FunctionCall(_, args) => {
+                for a in args { Self::collect_source_idents(a, let_map, visited, out); }
+            }
+            ExprKind::MethodCall(base, _, args) => {
+                Self::collect_source_idents(base, let_map, visited, out);
+                for a in args { Self::collect_source_idents(a, let_map, visited, out); }
+            }
+            ExprKind::Clog2(e) | ExprKind::Onehot(e) => Self::collect_source_idents(e, let_map, visited, out),
+            _ => {}
+        }
+    }
+
+    /// Phase 2d RDC: combiner-derived reset glitches at inst boundaries.
+    ///
+    /// A sub-module's `Reset<...>` input port wired by a combinational
+    /// expression (e.g. `rst <- rst_a | rst_b`) sees transient pulses
+    /// on edge skew between the inputs. The async-reset glitch can
+    /// trigger partial flop resets in the sub-module — exactly the
+    /// hazard mainstream RDC literature flags as "glitches from
+    /// multi-source combiners". The ARCH type system prevents writing
+    /// `let combined: Reset = ...` inside a module, but inst
+    /// connections currently accept any Expr in the signal slot, so
+    /// the gate is open at the boundary.
+    ///
+    /// Detection: walk every inst, look up the sub-module's port list,
+    /// for each connection whose target port has type `Reset<...>`,
+    /// inspect the parent-side signal's expression. If it's anything
+    /// other than a simple `Ident` (which refers to a parent port,
+    /// wire, or synchroniser output), flag. Idents are trusted —
+    /// they're the legal direct routings; combinational shapes are
+    /// the violators.
+    ///
+    /// Note: this check fires regardless of whether the parent signal
+    /// is wired to two different reset domains or just one. A single-
+    /// source negation (`rst <- !rst_a`) is also a glitch source on
+    /// the boundary because the inverter has its own propagation
+    /// delay relative to the original signal.
+    pub(crate) fn check_rdc_combiner_at_inst(&mut self, m: &ModuleDecl) {
+        // Look up the sub-construct's port list across every construct
+        // kind that can be `inst`-ed (matches the lookup in mod.rs's
+        // sim_codegen helper of the same name).
+        let lookup_ports = |name: &str| -> Vec<PortDecl> {
+            for item in &self.source.items {
+                let ports = match item {
+                    Item::Module(m)       if m.name.name == name => Some(&m.ports),
+                    Item::Fsm(f)          if f.name.name == name => Some(&f.ports),
+                    Item::Fifo(f)         if f.name.name == name => Some(&f.ports),
+                    Item::Ram(r)          if r.name.name == name => Some(&r.ports),
+                    Item::Cam(c)          if c.name.name == name => Some(&c.ports),
+                    Item::Counter(c)      if c.name.name == name => Some(&c.ports),
+                    Item::Arbiter(a)      if a.name.name == name => Some(&a.ports),
+                    Item::Regfile(r)      if r.name.name == name => Some(&r.ports),
+                    Item::Pipeline(p)     if p.name.name == name => Some(&p.ports),
+                    Item::Linklist(l)     if l.name.name == name => Some(&l.ports),
+                    Item::Synchronizer(s) if s.name.name == name => Some(&s.ports),
+                    Item::Clkgate(c)      if c.name.name == name => Some(&c.ports),
+                    _ => None,
+                };
+                if let Some(p) = ports {
+                    return p.clone();
+                }
+            }
+            Vec::new()
+        };
+        for item in &m.body {
+            let ModuleBodyItem::Inst(inst) = item else { continue; };
+            let sub_ports = lookup_ports(&inst.module_name.name);
+            for conn in &inst.connections {
+                let port = sub_ports.iter().find(|p| p.name.name == conn.port_name.name);
+                let Some(port) = port else { continue; };
+                if !matches!(&port.ty, TypeExpr::Reset(_, _)) { continue; }
+                if conn.direction != ConnectDir::Input { continue; }
+                // Direct reset source → trust. A reset-type cast such as
+                // `rst as Reset<Async, Low>` is an instantiation-time reset
+                // annotation, not reset-combining logic; peel through it so
+                // legacy reset-override examples stay legal. Real logic under
+                // the cast, e.g. `(rst_a | rst_b) as Reset<Async>`, remains a
+                // combiner and is still rejected.
+                if Self::is_direct_reset_inst_signal(&conn.signal) { continue; }
+                self.errors.push(CompileError::general(
+                    &format!(
+                        "RDC violation: inst `{inst_name}` (instance of `{sub}`) has its \
+                         `Reset`-typed port `{port_name}` driven by a combinational \
+                         expression in the parent. Reset combiners (e.g. `rst_a | rst_b`) \
+                         glitch on edge skew between their inputs and can trigger partial \
+                         flop resets in the sub-module. Drive `{port_name}` from a single \
+                         `Reset` source port (or a `synchronizer kind reset` output) and \
+                         do any combination upstream through dedicated reset-merging logic.",
+                        inst_name = inst.name.name,
+                        sub = inst.module_name.name,
+                        port_name = conn.port_name.name,
+                    ),
+                    conn.span,
+                ));
+            }
+        }
+    }
+
+    fn is_direct_reset_inst_signal(expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Ident(_) | ExprKind::SynthIdent(_, _) => true,
+            ExprKind::Cast(inner, ty) if matches!(ty.as_ref(), TypeExpr::Reset(_, _)) => {
+                Self::is_direct_reset_inst_signal(inner)
+            }
+            _ => false,
         }
     }
 

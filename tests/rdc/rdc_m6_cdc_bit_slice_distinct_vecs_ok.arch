@@ -1,0 +1,47 @@
+// M6 (sanity): bit-slice splits across *different* source vectors.
+// `vec_a[0]` and `vec_b[0]` reduce to terminal sources `vec_a` and
+// `vec_b` respectively — the source-tracing pass must keep these in
+// distinct groups, not collapse all bit-slices into one.
+
+domain Src
+  freq_mhz: 100
+end domain Src
+
+domain Dst
+  freq_mhz: 200
+end domain Dst
+
+synchronizer FlagSync
+  kind ff;
+  param STAGES: const = 2;
+  port src_clk:  in Clock<Src>;
+  port dst_clk:  in Clock<Dst>;
+  port data_in:  in Bool;
+  port data_out: out Bool;
+end synchronizer FlagSync
+
+module M
+  port src_clk: in Clock<Src>;
+  port dst_clk: in Clock<Dst>;
+  port vec_a:   in Vec<Bool, 4>;
+  port vec_b:   in Vec<Bool, 4>;
+  port out_a:   out Bool;
+  port out_b:   out Bool;
+
+  inst sync_a: FlagSync
+    src_clk  <- src_clk;
+    dst_clk  <- dst_clk;
+    data_in  <- vec_a[0];
+    data_out -> sync_a_out;
+  end inst sync_a
+
+  inst sync_b: FlagSync
+    src_clk  <- src_clk;
+    dst_clk  <- dst_clk;
+    data_in  <- vec_b[0];
+    data_out -> sync_b_out;
+  end inst sync_b
+
+  let out_a = sync_a_out;
+  let out_b = sync_b_out;
+end module M

@@ -2241,9 +2241,9 @@ impl<'a> Codegen<'a> {
                     if let Some(name) = base_ident(base) {
                         let idx_s = self.emit_expr_str(idx);
                         if let Some(limit) = vec_sizes.get(&name) {
-                            push(format!("({idx_s}) < ({limit})"), "vec", sites, seen);
+                            push(format!("int'({idx_s}) < ({limit})"), "vec", sites, seen);
                         } else if let Some(w) = scalar_widths.get(&name) {
-                            push(format!("({idx_s}) < ({w})"), "bitsel", sites, seen);
+                            push(format!("int'({idx_s}) < ({w})"), "bitsel", sites, seen);
                         }
                     }
                 }
@@ -3095,10 +3095,16 @@ impl<'a> Codegen<'a> {
                 // `(__name)[hi:lo]` as a syntax error). Concat is also accepted
                 // bare per SV-2009 §11.4.12 (concatenation with bit-select):
                 // Verilator rejects `({a, b})[hi:lo]` for the same reason.
+                // FunctionCall / MethodCall result bit-select is similarly
+                // accepted bare; `(func())[hi:lo]` is rejected by Verilator
+                // because bit-select doesn't compose with the parenthesized
+                // expression — but `func()[hi:lo]` is valid (function-call
+                // result is an "lvalue-like" form per the SV grammar).
                 let b = if matches!(base.kind, ExprKind::Ident(_) | ExprKind::SynthIdent(_, _)
                     | ExprKind::Literal(_)
                     | ExprKind::Index(_, _) | ExprKind::FieldAccess(_, _)
-                    | ExprKind::Concat(_)) { b }
+                    | ExprKind::Concat(_)
+                    | ExprKind::FunctionCall(_, _) | ExprKind::MethodCall(_, _, _)) { b }
                     else { format!("({})", b) };
                 // Try to emit indexed part-select: base[lo +: width]
                 if let Some(width) = Self::try_indexed_part_select(hi, lo) {
@@ -3409,4 +3415,3 @@ impl<'a> Codegen<'a> {
     // ── RAM ───────────────────────────────────────────────────────────────────
 
 }
-

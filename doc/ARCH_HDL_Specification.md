@@ -2,7 +2,7 @@
 
 Hardware Description Language
 
-Language Specification · v0.41.0 · April 2026
+Language Specification · v0.60.0 · May 2026
 
 *A purpose-built micro-architecture HDL --- clean RTL semantics, strong types, and first-class pipelines, FSMs, FIFOs, and arbiters. Incorrect design patterns --- multiple drivers, undriven ports, clock-domain crossings, width mismatches --- are compile-time errors, never runtime surprises. Designed to be generated correctly by AI without prior training.*
 
@@ -1235,7 +1235,7 @@ Every Clock signal in Arch carries a domain tag as part of its type. The compile
 
 > *⚑ The compiler generates a verified synchroniser for each crossing declaration. Engineers choose the policy; correctness of the CDC structure is guaranteed by the language, not by convention or code review.*
 
-**5.2a Reconvergent CDC Path Detection** *(partially shipped — see §5.4 phase 2c)*
+**5.2a Reconvergent CDC Path Detection** *(shipped — see §5.4 phase 2c)*
 
 A reconvergent CDC hazard occurs when multiple bits of a source-domain signal cross independently through separate synchronizers, then recombine in the destination domain. Each bit is individually synchronized, but they may arrive on different clock cycles, causing the receiver to see a value that never existed in the source domain.
 
@@ -1266,7 +1266,7 @@ The compiler will detect this by:
 
 The compiler already warns when `kind ff` is used on multi-bit data (suggesting `kind gray` or `kind handshake`). Reconvergent path detection extends this to catch the case where a designer splits a multi-bit signal into individual bits and synchronizes each separately.
 
-> *⚑ The **same-source** case (a single ident driving multiple synchronisers landing in the same destination domain) is detected today by the §5.4 phase-2c reconvergent-sync check, which covers RDC and CDC variants uniformly. The full **bit-slice** case from the example above (`data[0]` and `data[1]` traced back to the same source register through bit-slice expressions) requires the additional source-tracing pass described in steps 1–3 and is still planned.*
+> *⚑ Detected by the §5.4 phase-2c reconvergent-sync check, which covers RDC and CDC variants uniformly. Each synchroniser's `data_in` connection is walked through bit-slice (`x[i]`, `x[hi:lo]`, `x[s +: w]`), concat (`{a, b}`), unary/binary operators, ternary, function/method calls, and `let`-binding indirection back to its terminal source register(s). Two synchronisers in the same destination domain that share at least one terminal source — even after splitting via different combinational paths — trip the same diagnostic. Closes the Aldec article 2140 patterns (bit-slice splitting, common-source register, comb-fanout).*
 
 **5.3 Clock Output Ports**
 
@@ -1308,7 +1308,7 @@ A reset's domain is **inferred from usage** — there is no explicit `Domain` an
 
 **RDC violations detected at compile time (shipped):**
 
-1. **Cross-clock-domain async reset (structural, phase 1).** An `Reset<Async, ...>` signal appears in the reset clause of registers in two different clock domains. An async reset signal is *bound to one clock domain* — the one its deassertion edge was synchronised to. Reusing it in a second domain re-creates the original RDC hazard there, regardless of whether the data paths in the two domains interact. The check is data-flow-insensitive because the rule applies even when each domain's flop subset is independent. The same rule applies when the upstream signal is itself a synchroniser output: a `synchronizer kind reset` for clock A is *not* valid as a reset source for clock B's flops — synchronisation is per-destination-domain. The fix is one synchroniser instance per receiving clock domain, each driving its own per-domain `Reset<Async>` port. Suppress with `pragma cdc_safe;`.
+1. **Cross-clock-domain async reset (structural, phase 1).** An `Reset<Async, ...>` signal appears in the reset clause of registers in two different clock domains. An async reset signal is *bound to one clock domain* — the one its deassertion edge was synchronised to. Reusing it in a second domain re-creates the original RDC hazard there, regardless of whether the data paths in the two domains interact. The check is data-flow-insensitive because the rule applies even when each domain's flop subset is independent. The same rule applies when the upstream signal is itself a synchroniser output: a `synchronizer kind reset` for clock A is *not* valid as a reset source for clock B's flops — synchronisation is per-destination-domain. The fix is one synchroniser instance per receiving clock domain, each driving its own per-domain `Reset<Async>` port. Suppress with `pragma cdc_safe;` or `pragma rdc_safe;` (either alone disables this structural rule).
 
 2. **Cross-async-reset-domain data path (data-flow, phase 2a).** Per-flop reach-set analysis. Sync and reset-none flops are *transparent* — they originate no domain, just propagate whatever async domains reach their data input. The textbook strict rule applies: a flop downstream of an async-reset flop must itself be async-reset by the **same** signal (or have a synchroniser in between). Sync and reset-none flops can't gate their data input on the source's async reset event, so they capture mid-deassert transients and propagate metastability downstream.
 
@@ -1329,7 +1329,7 @@ A reset's domain is **inferred from usage** — there is no explicit `Domain` an
    - **Async → reset-none** — async-reset flop driving any reset-less flop. Same hazard, no reset gate at all.
    - **Convergent reset-less / sync paths** — multiple async-reset flops feeding a non-async-reset flop. Even when the upstream domains agree (single source), the receiver still flags because it can't gate on the async event.
 
-   Tests live in `tests/rdc/` (also in `tests/integration_test.rs` `rdc_*` functions). The fix is to either reset the receiving flop async-by the same signal as the source, or insert a `synchronizer kind reset` between them. Phase 2a is intentionally **not** gated by `pragma cdc_safe;` — that pragma silences CDC and the phase-1 cross-clock structural RDC check, but the data-path hazard is structurally distinct (single-clock multi-reset trips it without any CDC concern). A future `pragma rdc_safe;` will be the dedicated opt-out.
+   Tests live in `tests/rdc/` (also in `tests/integration_test.rs` `rdc_*` functions). The fix is to either reset the receiving flop async-by the same signal as the source, or insert a `synchronizer kind reset` between them. Phase 2a is intentionally **not** gated by `pragma cdc_safe;` — that pragma silences CDC and the phase-1 cross-clock structural RDC check, but the data-path hazard is structurally distinct (single-clock multi-reset trips it without any CDC concern). The dedicated opt-out is `pragma rdc_safe;`, which suppresses every RDC phase (1 + 2a–2d).
 
 3. **Reset-driven clock gating (phase 2b).** Logic reaching a `clkgate` instance's `enable` input from an async-reset flop causes the gate to glitch on async reset events — `enable` toggles to its reset value mid-cycle, producing partial clock pulses on `clk_out`. The check walks every inst whose target construct is a `clkgate` and reuses phase 2a's reach map: if any async domain reaches the parent-side signal driving `enable`, the inst is flagged. The fix is to drive `enable` from a synchronously-clean source — typically a flop reset by a signal already synchronised to the gated clock's domain, or directly via a `synchronizer kind reset` upstream. Test scenarios live in `tests/rdc/rdc_g*.arch`.
 
@@ -1341,13 +1341,29 @@ A reset's domain is **inferred from usage** — there is no explicit `Domain` an
 - **`module` constructs only.** Synchronizer and FIFO constructs are themselves the escape hatches and run their own internal CDC/RDC handling.
 - **In-module data flow only (phase 2a).** Cross-instance flow (`inst sub: M; … <- regs in another instance`) is not yet traced — that's phase 2d.
 
-**Known limitations (TODO — phase 2d):**
+5. **Async-reset glitches from combiners at inst boundaries (phase 2d).** `rst_combined = rst_a | rst_b` (or any combinational expression — bitwise OR, AND, negation, ternary, etc.) produces transient pulses on edge skew between the inputs. The ARCH type system already prevents writing `let combined: Reset = ...` inside a module body, but inst connections accept arbitrary `Expr` in the signal slot, so the hazard can still enter through `inst sub: M; rst <- (rst_a | rst_b);`. The check walks every inst and, for any connection whose target port is `Reset<...>`, requires the parent-side signal to be a simple `Ident` (a port, wire, let-bound name, or another inst's output). Anything more structured (Binary, Unary, FieldAccess, FunctionCall, etc.) is flagged. Idents themselves are trusted — the legal direct routings, including `synchronizer kind reset` outputs, all flow through Idents. Test scenarios live in `tests/rdc/rdc_k*.arch`.
 
-One RDC bug class catalogued in mainstream literature still isn't covered:
+With phase 2d landed, all five article-3 RDC bug classes catalogued in mainstream literature are now covered by the compiler:
 
-1. **Async-reset glitches from multi-source combiners (phase 2d).** `rst_combined = rst_a | rst_b` (or any combinational reset combiner) produces transient pulses on edge skew between the inputs. Partially prevented today by the type system — `Reset` is not a `let`/`comb`-assignable type in ARCH, so you can't write the combiner inside a module — but the hazard can still enter through an external `Reset` input port driven by such logic in the parent module. The detection requires structural analysis at the inst boundary and is the planned phase 2d.
+  | Phase | Class | Status |
+  |---|---|---|
+  | 1   | Cross-clock-domain async reset (structural) | ✅ |
+  | 2a  | Cross-async-reset-domain data path          | ✅ |
+  | 2b  | Reset-driven clock gating                    | ✅ |
+  | 2c  | Reconvergent synchronisers (RDC + CDC)       | ✅ |
+  | 2d  | Combiner-derived reset glitches at inst      | ✅ |
 
-Until phase 2d lands, designs that wire glitch-prone async-reset combiners through input ports need external RDC checking (Synopsys SpyGlass, Cadence Conformal) for completeness.
+**Per-module opt-out pragmas:**
+
+```
+module M
+  pragma cdc_safe;     // suppress CDC checks + RDC phase 1
+  pragma rdc_safe;     // suppress every RDC phase (1 + 2a–2d)
+  ...
+end module M
+```
+
+`pragma cdc_safe;` is the long-standing CDC opt-out and incidentally suppresses the structural cross-clock RDC rule (phase 1) because the two checks overlap. `pragma rdc_safe;` is the dedicated RDC opt-out — it suppresses *every* RDC phase, including 2a–2d which `cdc_safe` does not touch. Either pragma alone is enough to silence phase 1; both can coexist on the same module. Use these only when the design has been externally analysed (Synopsys SpyGlass, Cadence Conformal) and the violations are provably safe in the surrounding integration. Unknown pragma names error at parse time, so a typo on `rdc_safe` is caught before compile.
 
 **5.5 Tristate and Bidirectional I/O** *(planned)*
 
@@ -1626,7 +1642,7 @@ end thread Name
 
 **`implement` clause (single-implementer only; multi-thread SHELVED)**: a thread may be declared `implement <port>.<method>()` (initiator side) or `implement target <port>.<method>(args)` (target side) between the thread name and the `on` clock clause. The v2 multi-thread pool extension was shelved after an AXI DMA side-by-side analysis showed the TLM call-site abstraction is a poor fit for multi-channel protocols (see `doc/plan_tlm_implement_thread.md`). What ships: `implement target` as cosmetic sugar for the v1 dotted-name target syntax (single implementer only — multi-implementer target is a permanent compile error); single-thread `implement m.method()` on the initiator side as a documentation annotation. For multi-outstanding AXI-style patterns, use the hand-rolled `thread` + `generate for` + `lock` + `shared(or)` idiom demonstrated by `tests/axi_dma_thread/ThreadMm2s.arch`.
 
-**Reentrant (parser-accepted grammar; SHELVED — no planned lowering)**: a thread may be declared `reentrant [max N]` after the reset clause. This was an earlier pivot in the TLM pipelining design; both the reentrant model and the later `implement` pool model were shelved after the side-by-side analysis (see `doc/plan_tlm_pipelined.md` and `doc/plan_tlm_implement_thread.md`). Grammar remains for forward-compat but is a compile error in all cases today. Advanced multi-cycle patterns use the existing `generate for` + `thread` idiom.
+**Reentrant (parser-accepted grammar; SHELVED — no planned lowering)**: a thread may be declared `reentrant [max N]` after the reset clause. This was an earlier pivot in the TLM pipelining design; both the reentrant model and the later `implement` pool model were shelved after the side-by-side analysis (see `doc/plan_tlm_pipelined.md` and `doc/plan_tlm_implement_thread.md`). Grammar remains for forward-compat but is a compile error in all cases today. Advanced multi-cycle patterns use the existing `generate_for` + `thread` idiom.
 
 **Multiple threads** in one module are declared independently; they all compile into the same `_ModuleName_threads` submodule and share one `always_ff` block to avoid multi-driver conflicts.
 
@@ -1650,6 +1666,7 @@ Expands to `NUM` independent threads, each with its own state register `_t{N}_st
 | `x = expr` | No | Comb assign — drives output while FSM is in this state |
 | `x <= expr` | No | Seq assign — register update fires when state exits |
 | `if/else (no wait inside)` | No | Same-state conditional |
+| `if/else (with wait inside)` | Yes (dispatch + rejoin) | Branches lower to disjoint state ranges; rejoin at exit |
 | `wait until cond;` | Yes | Advance when condition true |
 | `wait N cycle;` | Yes | Stall exactly N clock cycles (counter-based) |
 | `do { … } until cond;` | Yes | Hold state: drive comb outputs until condition fires |
@@ -1659,7 +1676,9 @@ Expands to `NUM` independent threads, each with its own state register `_t{N}_st
 
 **Trailing seq assigns** after the last `wait` in the body are merged into the preceding state's exit logic (guarded by its transition condition) to avoid a dead cycle.
 
-**`if/else` with wait inside** is not supported — use separate threads or flatten the control flow.
+**`if/else` with wait inside** is supported via *dispatch-and-rejoin* lowering (see `doc/thread_lowering_proof.md §II.10`). The compiler emits a dispatch state that branches to disjoint state ranges for `then_stmts` / `else_stmts`, and both ranges rejoin at the post-`if` continuation. Each branch may contain any combination of `wait until`, `wait N cycle`, `for`, nested `if/else`, comb/seq assigns. The branches need not be the same length.
+
+Use this pattern when a thread needs to take a different number of cycles based on a runtime predicate — e.g., a divide unit's "shortcut on divide-by-zero, otherwise long-divide" or an AXI initiator's "burst-of-1 vs burst-of-N" path. Splitting into multiple threads gated by a predicate is also valid but typically requires `shared(or)` on contended outputs and is harder to reason about; prefer the single-thread + dispatch-and-rejoin form when the branches are mutually exclusive.
 
 **7a.3 Resource Locks**
 
@@ -5031,13 +5050,14 @@ Full design history and the broader roadmap are in `doc/plan_credit_channel.md` 
 
 **18d. First-Class Sub-Construct: tlm_method (inside bus)**
 
-`tlm_method` nests inside a `bus` body and declares a transaction-level method that initiator modules *call* and target modules *implement*. v1 ships `blocking` mode only — the caller suspends until the response arrives. Pipelined / out_of_order / burst modes are v2.
+`tlm_method` nests inside a `bus` body and declares a transaction-level method that initiator modules *call* and target modules *implement*. The current compiler supports `blocking` and a tagged out-of-order subset (`out_of_order tags N`). Pipelined / burst / `Future<T>` APIs are not part of the current language surface.
 
 **18d.1 Declaration**
 
 ```
 bus Mem
   tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+  tlm_method read_ooo(addr: UInt<32>) -> UInt<64>: out_of_order tags 2;
   tlm_method write(addr: UInt<32>, data: UInt<64>) -> Bool: blocking;
   tlm_method poke(addr: UInt<32>): blocking;     // void — no ret clause
 end bus Mem
@@ -5047,11 +5067,11 @@ Grammar:
 ```
 TlmMethod := 'tlm_method' Ident '(' ArgList ')' ('->' TypeExpr)? ':' Mode ';'
 ArgList   := (Ident ':' TypeExpr (',' Ident ':' TypeExpr)*)?
-Mode      := 'blocking'                                 // v1
-           | 'pipelined' | 'out_of_order' | 'burst'    // v2 — rejected at parse
+Mode      := 'blocking'
+           | 'out_of_order' 'tags' ConstExpr
 ```
 
-v1 rules: args flow initiator → target only (no per-arg `out` keyword; multi-value returns pack into a struct as the ret type). Call sites and method bodies live inside a `thread` block.
+Rules: args flow initiator → target only (no per-arg `out` keyword; multi-value returns pack into a struct as the ret type). Call sites and method bodies live inside a `thread` block.
 
 **18d.2 Wire protocol**
 
@@ -5065,6 +5085,8 @@ Each method flattens to two handshake-shaped channels. Directions below are from
 | `<name>_rsp_valid` | target → initiator | target |
 | `<name>_rsp_data` | target → initiator | target *(omitted for void)* |
 | `<name>_rsp_ready` | initiator → target | initiator |
+
+For `out_of_order tags N`, each method also flattens `<name>_req_tag` (initiator → target) and `<name>_rsp_tag` (target → initiator). The compiler assigns tags to workers and routes responses by `rsp_tag`.
 
 **18d.3 Target-side implementation**
 
@@ -5103,26 +5125,34 @@ module Initiator
 end module Initiator
 ```
 
-Each call lowers to a two-state issue + wait-response sequence. `d <= m.read(...) + 1;` (composed RHS) is rejected with a targeted error — v1 requires the call to be the direct RHS.
+Each single-thread call lowers to a two-state issue + wait-response sequence. `d <= m.read(...) + 1;` (composed RHS) is rejected with a targeted error — the call must be the direct RHS.
+
+Multiple direct workers may call the same method as a cohort. Supported shapes are:
+
+- Multiple named worker threads, each with exactly one direct call assignment.
+- `generate_for` worker threads.
+- One `thread` whose body is direct-call `fork ... and ... join`.
+
+Blocking cohorts use a request arbiter plus issue-order FIFO response router. `out_of_order tags N` cohorts use compiler-assigned worker tags and route by `rsp_tag`.
 
 **18d.5 Lowering**
 
 Both target and initiator passes emit ordinary `RegDecl` + `RegBlock` + `CombBlock` items into the parent module body (bypassing generic thread lowering). This means:
 
 - Bus-port-member drives resolve naturally in the parent's scope.
-- `arch sim --pybind --test` handles the state machines via its existing reg/seq/comb C++ mirror — no TLM-specific sim emitter.
+- `arch sim`, `arch sim --pybind --test`, and `arch sim --thread-sim parallel` handle the state machines via generated C++ models. In parallel mode, TLM-lowered modules use the regular reg/seq/comb sim model while modules that still contain ordinary non-TLM threads use the coroutine thread emitter.
 - The parent-module state reg is `_tlm_<port>_<method>_state` (target side) or `_tlm_init_<thread>_state` (initiator side).
 - Comb drives are unconditional state-OR / state-mux forms to satisfy the no-latch check.
 
-**18d.6 Not covered in v1**
+**18d.6 Current restrictions**
 
-- `pipelined` / `out_of_order` / `burst` modes + `Future<T>` / `Token<T, id:N>` / `Future<Vec<T,L>>` return types.
+- `pipelined` / `burst` modes and all `Future<T>` / `await` / user-visible `Token<T>` APIs.
 - TLM calls outside a thread body (comb / module-level `let` — compile error).
 - Nested TLM calls in expressions (compile error — must be direct RHS of `<=`).
-- Control flow inside a TLM-using initiator thread beyond a linear SeqAssign sequence (if/else/fork/for rejected in v1).
+- Rich control flow inside TLM initiator bodies. Cohort `fork/join` is supported only when each branch is exactly one direct call assignment.
+- Non-literal `out_of_order tags` expressions.
 - Target method bodies with nested control flow beyond linear `wait until` + seq assigns terminated by a single `return`.
 - Tier-2 protocol SVA assertions (design-complete but not yet emitted).
-- Multi-initiator on a single method (point-to-point only).
 
 Full design and evolution in `doc/plan_tlm_method.md`.
 
@@ -6774,6 +6804,8 @@ Achievable speedup depends on the design\'s inherent parallelism --- the ratio o
 
 **22. Transaction Level Modeling (TLM)**
 
+> **Compiler-supported subset (2026-05-01).** Current ARCH TLM is a cycle-accurate RTL-lowered method interface, not a separate LT/AT simulation API. The implemented syntax is `tlm_method name(args) -> Ret: blocking;` and `tlm_method name(args) -> Ret: out_of_order tags N;` inside `bus`. Calls appear as direct RHS assignments inside `thread` bodies (`dst <= port.method(args);`). Multiple direct worker threads, `generate_for` workers, and direct-call `fork ... and ... join` cohorts lower to request arbitration and response routing. There is no supported `Future<T>`, `await`, user-visible `Token<T>`, `pipelined`, or `burst` API today; those older sketches below are future-design material, not current compiler behavior.
+
 Arch supports Transaction Level Modeling (TLM) as a first-class abstraction layer above RTL. At the TLM level, modules communicate by calling methods on typed interfaces rather than by driving individual signals cycle by cycle. A memory read is membus.read(addr) → data --- one call, one response --- rather than a sequence of valid/ready handshake cycles. TLM enables fast architectural simulation, software/hardware co-simulation, and performance modeling, all from the same Arch source as the RTL implementation.
 
 **22.1 Abstraction Levels in Arch**
@@ -6788,9 +6820,9 @@ Arch supports Transaction Level Modeling (TLM) as a first-class abstraction laye
   **Loosely-timed TLM (LT)**         Method calls, timing ignored for speed              Zero-time or coarse quantum                             100--1000×             SW/HW co-simulation, firmware development, architectural exploration
   --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-**22.2 Transaction Concurrency --- Blocking, Pipelined, and Out-of-Order**
+**22.2 Transaction Concurrency --- Current Compiler Model**
 
-The most important design decision for a TLM method interface is whether calls block the caller until the response arrives, or whether multiple calls can be in-flight simultaneously. Arch makes this explicit with four method concurrency modes. Getting this right is the difference between a TLM model that accurately represents AXI pipelining and one that degenerates into a serial bus that no real hardware resembles.
+The current compiler keeps each call site blocking-style and gets concurrency from ordinary hardware structure: multiple worker threads, `generate_for` worker arrays, or `fork/join` branches. This keeps the source close to the generated RTL and avoids a separate `Future<T>` lifetime model.
 
 **22.2.1 blocking --- Serial, Caller Suspends**
 
@@ -6803,236 +6835,110 @@ The most important design decision for a TLM method interface is whether calls b
 |                                                                           |
 | // Correct for: APB, AHB single-transfer, simple memory-mapped registers. |
 |                                                                           |
-| methods                                                                   |
+| bus Mem                                                                   |
 |                                                                           |
-| blocking method **read**(addr: UInt\<32\>) -\> UInt\<64\>                 |
+| tlm_method **read**(addr: UInt\<32\>) -\> UInt\<64\>: blocking;           |
 |                                                                           |
-| timing: 4 cycles;                                                         |
-|                                                                           |
-| **end** method **read**                                                   |
-|                                                                           |
-| **end** methods                                                           |
+| end bus Mem                                                               |
 |                                                                           |
 | // In a sequence body --- call 2 cannot start until call 1 returns.       |
 |                                                                           |
 | // Total time: 4 + 4 = 8 cycles. Serial.                                  |
 |                                                                           |
-| sequence read_two                                                         |
+| thread driver on clk rising, rst high                                     |
 |                                                                           |
-| **let** d0: UInt\<64\> = mem.**read**(0x1000); // suspends 4 cycles       |
+| d0 <= mem.**read**(32'h1000);                                             |
 |                                                                           |
-| **let** d1: UInt\<64\> = mem.**read**(0x2000); // suspends 4 more cycles  |
+| d1 <= mem.**read**(32'h2000);                                             |
 |                                                                           |
-| **end** sequence read_two                                                 |
+| end thread driver                                                         |
 +---------------------------------------------------------------------------+
 
-**22.2.2 pipelined --- Multiple Outstanding, In-Order Responses**
+**22.2.2 Worker Cohorts --- Multiple Outstanding, In-Order Responses**
 
 +-----------------------------------------------------------------------------------+
-| *pipelined_method.arch*                                                           |
+| *tlm_worker_cohort.arch*                                                          |
 |                                                                                   |
-| // The caller gets a Future\<T\> immediately and can issue more calls.            |
+| // Each worker is written as a direct blocking-style call.                         |
 |                                                                                   |
-| // Responses arrive in the same order as requests.                                |
+| // The compiler arbitrates requests and routes responses by issue-order FIFO.      |
 |                                                                                   |
-| // Correct for: AXI without out-of-order IDs, read-after-read pipelining.         |
+| bus Mem                                                                           |
 |                                                                                   |
-| methods                                                                           |
+| tlm_method read(addr: UInt\<32\>) -\> UInt\<64\>: blocking;                       |
 |                                                                                   |
-| pipelined method **read**(addr: UInt\<32\>) -\> Future\<UInt\<64\>\>              |
+| end bus Mem                                                                       |
 |                                                                                   |
-| timing: 4 cycles; // latency from issue to response                               |
+| thread workers on clk rising, rst high                                            |
 |                                                                                   |
-| max_outstanding: 8; // AXI AR channel depth                                       |
+| fork                                                                              |
 |                                                                                   |
-| **end** method **read**                                                           |
+| d0 <= mem.read(32'h1000);                                                         |
 |                                                                                   |
-| **end** methods                                                                   |
+| and                                                                               |
 |                                                                                   |
-| // In a sequence body --- all three calls issue immediately (back-to-back),       |
+| d1 <= mem.read(32'h2000);                                                         |
 |                                                                                   |
-| // then the caller awaits each response in order.                                 |
+| join                                                                              |
 |                                                                                   |
-| // Total time: 4 cycles (all overlap). Pipelined.                                 |
+| end thread workers                                                                |
 |                                                                                   |
-| sequence read_three_pipelined                                                     |
-|                                                                                   |
-| **let** f0: Future\<UInt\<64\>\> = mem.**read**(0x1000); // issues immediately    |
-|                                                                                   |
-| **let** f1: Future\<UInt\<64\>\> = mem.**read**(0x2000); // issues immediately    |
-|                                                                                   |
-| **let** f2: Future\<UInt\<64\>\> = mem.**read**(0x3000); // issues immediately    |
-|                                                                                   |
-| // Await responses in order                                                       |
-|                                                                                   |
-| **let** d0: UInt\<64\> = await f0; // waits up to 4 cycles                        |
-|                                                                                   |
-| **let** d1: UInt\<64\> = await f1; // already done if pipelined correctly         |
-|                                                                                   |
-| **let** d2: UInt\<64\> = await f2;                                                |
-|                                                                                   |
-| **end** sequence read_three_pipelined                                             |
-|                                                                                   |
-| // If more than max_outstanding calls are issued before any response is received, |
-|                                                                                   |
-| // the (max_outstanding+1)th call blocks until one slot frees --- modelling       |
-|                                                                                   |
-| // the AXI AR channel handshake stall.                                            |
 +-----------------------------------------------------------------------------------+
 
-> ◈ Future\<T\> is a first-class Arch TLM type. It is not a general-purpose async primitive --- it only appears in TLM method return positions and sequence await expressions. The compiler tracks Future lifetimes and emits an error if a Future is awaited after the simulation window in which it was issued.
+The same cohort lowering is available for multiple direct named worker threads and for `generate_for` worker arrays. Current shape restriction: each worker/branch is exactly one assignment, `dst <= port.method(args);`, and all workers use the same clock/reset.
 
-**22.2.3 out_of_order --- Multiple Outstanding, Any-Order Responses**
+**22.2.3 out_of_order tags N --- Multiple Outstanding, Any-Order Responses**
 
 +----------------------------------------------------------------------------------------+
 | *ooo_method.arch*                                                                      |
 |                                                                                        |
-| // The caller gets a Token\<T, ID\> immediately.                                       |
+| // Tags are compiler-managed wires, not user-visible Token values.                     |
 |                                                                                        |
-| // Responses may arrive in any order; matched to the original call by ID.              |
+| bus Mem                                                                                |
 |                                                                                        |
-| // Correct for: full AXI with multiple IDs, out-of-order memory systems.               |
+| tlm_method read(addr: UInt\<32\>) -\> UInt\<64\>: out_of_order tags 2;                 |
 |                                                                                        |
-| methods                                                                                |
+| end bus Mem                                                                            |
 |                                                                                        |
-| out_of_order method **read**(                                                          |
+| thread workers on clk rising, rst high                                                 |
 |                                                                                        |
-| addr: UInt\<32\>                                                                       |
+| fork                                                                                   |
 |                                                                                        |
-| ) -\> Token\<UInt\<64\>, id_width: 4\> // 4-bit AXI ID field                           |
+| d0 <= mem.read(32'h1000);                                                              |
 |                                                                                        |
-| timing: 4..20 cycles; // range: best-case to worst-case latency                        |
+| and                                                                                    |
 |                                                                                        |
-| max_outstanding: 16;                                                                   |
+| d1 <= mem.read(32'h2000);                                                              |
 |                                                                                        |
-| **end** method **read**                                                                |
+| join                                                                                   |
 |                                                                                        |
-| **end** methods                                                                        |
+| end thread workers                                                                     |
 |                                                                                        |
-| // In a sequence body --- issue multiple reads, await in any order.                    |
-|                                                                                        |
-| // Responses may return in a different order than requests.                            |
-|                                                                                        |
-| sequence read_ooo                                                                      |
-|                                                                                        |
-| **let** t0: Token\<UInt\<64\>, 4\> = mem.**read**(0x1000); // ID assigned by interface |
-|                                                                                        |
-| **let** t1: Token\<UInt\<64\>, 4\> = mem.**read**(0x2000);                             |
-|                                                                                        |
-| **let** t2: Token\<UInt\<64\>, 4\> = mem.**read**(0x3000);                             |
-|                                                                                        |
-| // await_any --- return whichever token completes first                                |
-|                                                                                        |
-| **match** await_any(t0, t1, t2)                                                        |
-|                                                                                        |
-| t0 =\> **let** d0: UInt\<64\> = t0.value; // t0 finished first                         |
-|                                                                                        |
-| t1 =\> **let** d1: UInt\<64\> = t1.value;                                              |
-|                                                                                        |
-| t2 =\> **let** d2: UInt\<64\> = t2.value;                                              |
-|                                                                                        |
-| **end** **match**                                                                      |
-|                                                                                        |
-| // await_all --- wait for all outstanding tokens                                       |
-|                                                                                        |
-| **let** (d0, d1, d2) = await_all(t0, t1, t2);                                          |
-|                                                                                        |
-| **end** sequence read_ooo                                                              |
-|                                                                                        |
-| // Token\<T, ID\> carries the assigned AXI ID automatically.                           |
-|                                                                                        |
-| // The transactor extracts the ID field from the AXI R channel response                |
-|                                                                                        |
-| // and routes it back to the correct Token --- no designer involvement.                |
 +----------------------------------------------------------------------------------------+
 
-**22.2.4 burst --- One Call, N Responses**
+For `out_of_order tags N`, the bus flattens two extra wires per method: `<method>_req_tag` and `<method>_rsp_tag`. The initiator cohort assigns one tag per worker and routes response data by `rsp_tag`. A target TLM thread latches `req_tag` with the method arguments and echoes it on `rsp_tag`.
 
-+-----------------------------------------------------------------------------------+
-| *burst_method.arch*                                                               |
-|                                                                                   |
-| // A burst method models AXI INCR bursts natively.                                |
-|                                                                                   |
-| // One call issues one AR transaction; N data beats return as a Vec.              |
-|                                                                                   |
-| // This is more accurate than N separate pipelined reads --- it models            |
-|                                                                                   |
-| // the real AXI burst mechanism: one address, N sequential data beats.            |
-|                                                                                   |
-| methods                                                                           |
-|                                                                                   |
-| burst method read_burst(                                                          |
-|                                                                                   |
-| addr: UInt\<32\>,                                                                 |
-|                                                                                   |
-| length: UInt\<8\> // AXI ARLEN: 0=1 beat, 255=256 beats                           |
-|                                                                                   |
-| ) -\> Future\<Vec\<UInt\<64\>, length\>\>                                         |
-|                                                                                   |
-| timing: 4 + length cycles; // address latency + one beat per cycle                |
-|                                                                                   |
-| max_outstanding: 4; // max simultaneous burst transactions                        |
-|                                                                                   |
-| **end** method read_burst                                                         |
-|                                                                                   |
-| burst method write_burst(                                                         |
-|                                                                                   |
-| addr: UInt\<32\>,                                                                 |
-|                                                                                   |
-| data: Vec\<UInt\<64\>, length\>,                                                  |
-|                                                                                   |
-| strobe: Vec\<UInt\<8\>, length\>                                                  |
-|                                                                                   |
-| ) -\> Future\<WriteResp\>                                                         |
-|                                                                                   |
-| timing: 1 + length cycles;                                                        |
-|                                                                                   |
-| max_outstanding: 4;                                                               |
-|                                                                                   |
-| **end** method write_burst                                                        |
-|                                                                                   |
-| **end** methods                                                                   |
-|                                                                                   |
-| // Burst call: one AR transaction, 16 data beats returned as Vec\<UInt\<64\>,16\> |
-|                                                                                   |
-| sequence dma_burst_read                                                           |
-|                                                                                   |
-| **let** f: Future\<Vec\<UInt\<64\>, 16\>\> = mem.read_burst(0x1000, length: 15);  |
-|                                                                                   |
-| // Issue more work here while burst is in-flight\...                              |
-|                                                                                   |
-| **let** beats: Vec\<UInt\<64\>, 16\> = await f;                                   |
-|                                                                                   |
-| // beats\[0\] is the first 64-bit beat, beats\[15\] is the last                   |
-|                                                                                   |
-| **end** sequence dma_burst_read                                                   |
-|                                                                                   |
-| // Compare: 16 separate pipelined reads vs 1 burst read                           |
-|                                                                                   |
-| // Pipelined: 16 AR channel transactions --- bandwidth-inefficient, not accurate  |
-|                                                                                   |
-| // Burst: 1 AR channel transaction --- matches real AXI behaviour                 |
-+-----------------------------------------------------------------------------------+
+**22.2.4 Deferred Modes: pipelined, burst, Future, Token**
 
-> *⚑ The length parameter in a burst method declaration is a special form --- it is an implicit UInt\<8\> input parameter that also parameterises the return type Vec\<T, length\>. The compiler infers the Vec length from the call site. This is the only case in Arch where a method parameter influences the return type.*
+The older `Future<T>` / `await` and user-visible `Token<T>` sketches are not part of the current language surface. A future HLS or modeling layer may revisit them, but current RTL-backed TLM intentionally uses worker threads and hidden compiler-managed tags instead.
 
 **22.3 Concurrency Mode Comparison**
 
-  ------------------------------------------------------------------------------------------------------------------------------------------------------------------
-  **Mode**           **Return Type**              **Caller Blocks?**          **Multiple Outstanding?**       **Response Order**   **Models**
-  ------------------ ---------------------------- --------------------------- ------------------------------- -------------------- ---------------------------------
-  **blocking**       T directly                   Yes --- until response      No --- one at a time            N/A                  APB, AHB, simple MMIO
+  ----------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  **Mode**                 **Return Type**       **Caller Blocks?**          **Multiple Outstanding?**       **Response Order**      **Models**
+  ------------------------ --------------------- --------------------------- ------------------------------- ----------------------- ---------------------------------
+  **blocking**             T directly            Yes per worker              Yes via worker cohorts          Issue order FIFO        MMIO, simple memory, in-order pools
 
-  **pipelined**      Future\<T\>                  No --- issues immediately   Yes --- up to max_outstanding   In-order             AXI (no OOO), AMBA AHB burst
+  **out_of_order tags N**  T directly + tags     Yes per worker              Yes via worker cohorts          Any order by rsp_tag    Small tagged memories / responders
 
-  **out_of_order**   Token\<T, ID\>               No --- issues immediately   Yes --- up to max_outstanding   Any order            Full AXI with multiple IDs, DDR
+  **pipelined**            —                     —                           Deferred                        —                       Use worker cohorts instead
 
-  **burst**          Future\<Vec\<T, length\>\>   No --- issues immediately   Yes --- up to max_outstanding   In-order beats       AXI INCR burst, HBM row access
-  ------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  **burst**                —                     —                           Deferred                        —                       Model explicit beats in thread/RTL
+  ----------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-**22.4 Full AXI4 Interface Declaration**
+**22.4 Full AXI4 Interface Declaration (Future Sketch)**
 
-Using all four concurrency modes, the AXI4 read and write channels can be modeled with full fidelity --- including ID-based out-of-order completion, byte strobes, burst types, and response codes.
+This section is a forward-looking sketch from the broader TLM design, not current compiler syntax. The implemented subset above should be used for today’s RTL-backed TLM work.
 
 +----------------------------------------------------------------------+
 | *axi4_interface.arch*                                                |
@@ -7204,7 +7110,9 @@ Using all four concurrency modes, the AXI4 read and write channels can be modele
 | **end** **struct** AxiResp                                           |
 +----------------------------------------------------------------------+
 
-**22.5 Using the AXI4 Interface --- Initiator Examples**
+**22.5 Using the AXI4 Interface --- Initiator Examples (Future Sketch)**
+
+The examples from this point through the remainder of the TLM chapter use the older proposed LT/AT API (`Future<T>`, `await`, `--tlm-lt`, `--tlm-at`, `--tlm-rtl`). They are retained as design context only. They are not accepted by the current compiler.
 
 +---------------------------------------------------------------------------------+
 | *dma_axi4_initiator.arch*                                                       |

@@ -1,0 +1,52 @@
+// M3 (CDC reconvergence, common source via comb): two synchronisers
+// in the same destination clock domain whose `data_in` connections
+// are *different* combinational expressions, but share the same
+// underlying source signal. Without source-tracing, the simple
+// "match Ident only" check would miss this; with tracing, both
+// expressions reduce to `{src_flag}` and trip the same group.
+
+domain Src
+  freq_mhz: 100
+end domain Src
+
+domain Dst
+  freq_mhz: 200
+end domain Dst
+
+synchronizer FlagSync
+  kind ff;
+  param STAGES: const = 2;
+  port src_clk:  in Clock<Src>;
+  port dst_clk:  in Clock<Dst>;
+  port data_in:  in Bool;
+  port data_out: out Bool;
+end synchronizer FlagSync
+
+module M
+  port src_clk:  in Clock<Src>;
+  port dst_clk:  in Clock<Dst>;
+  port src_flag: in Bool;
+  port gate_en:  in Bool;
+  port out_a:    out Bool;
+  port out_b:    out Bool;
+
+  let path_a: Bool = src_flag;
+  let path_b: Bool = src_flag and gate_en;
+
+  inst sync_a: FlagSync
+    src_clk  <- src_clk;
+    dst_clk  <- dst_clk;
+    data_in  <- path_a;
+    data_out -> flag_a;
+  end inst sync_a
+
+  inst sync_b: FlagSync
+    src_clk  <- src_clk;
+    dst_clk  <- dst_clk;
+    data_in  <- path_b;
+    data_out -> flag_b;
+  end inst sync_b
+
+  let out_a = flag_a;
+  let out_b = flag_b;
+end module M
