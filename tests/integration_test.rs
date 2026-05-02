@@ -7106,6 +7106,105 @@ fn test_sim_codegen_bit_slice_lhs_compiles_and_uses_param_width() {
 }
 
 #[test]
+fn test_sim_codegen_async_reset_fires_outside_rising_edge() {
+    // Regression: pre-fix the seq-block reset arm was emitted INSIDE the
+    // `if (_rising_clk)` gate even for async resets, so under
+    // `arch sim --pybind` an async-asserted reset only took effect on
+    // the next clock edge. Tests asserting reset and observing within
+    // the same tick (without spanning a rising edge) read stale state.
+    //
+    // Fix: emit the reset arm OUTSIDE the rising-edge gate when the
+    // reset is async, and write to BOTH `_q` (the live, user-visible
+    // value) and `_n_q` (the shadow) so the end-of-cycle commit doesn't
+    // restore stale state.
+    let source = "
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+        module M
+          port clk:    in Clock<SysDomain>;
+          port rst_ni: in Reset<Async, Low>;
+          port we:     in Bool;
+          port d:      in UInt<32>;
+          port q:      out UInt<32>;
+
+          reg q_r: UInt<32> reset rst_ni => 0;
+
+          default seq on clk rising;
+
+          seq
+            if we
+              q_r <= d;
+            end if
+          end seq
+
+          let q = q_r;
+        end module M
+    ";
+    let cpp = compile_to_sim_h(source, false);
+    // The async-reset arm must appear OUTSIDE the rising-edge gate.
+    // Anchor on the eval_posedge function definition and slice through
+    // the function body (closes at the next `\n}\n` after the open).
+    let start_marker = "void VM::eval_posedge() {";
+    let pe_start = cpp.find(start_marker)
+        .unwrap_or_else(|| panic!("expected eval_posedge body in:\n{cpp}"));
+    let pe_body = &cpp[pe_start + start_marker.len()..];
+    let pe_body = pe_body.split("\n}\n").next().unwrap_or("");
+    let async_pos = pe_body.find("if ((!rst_ni))");
+    let rising_pos = pe_body.find("if (_rising_clk)");
+    assert!(async_pos.is_some(), "async reset arm should be emitted in eval_posedge:\n{pe_body}");
+    assert!(rising_pos.is_some(), "rising-edge guard should be emitted in eval_posedge:\n{pe_body}");
+    assert!(async_pos.unwrap() < rising_pos.unwrap(),
+        "async reset arm must precede the rising-edge gate:\n{pe_body}");
+    // The async arm writes to both `_q_r` (live) and `_n_q_r` (shadow).
+    assert!(pe_body.contains("_q_r = 0;") && pe_body.contains("_n_q_r = 0;"),
+        "async reset must write both live and shadow regs:\n{pe_body}");
+}
+
+#[test]
+fn test_sim_codegen_collect_assigns_walks_indexed_lhs() {
+    // Regression: `collect_stmt_assigns` only handled `Ident` and
+    // `FieldAccess` LHS forms, so `q[hi:lo] <= ...` and `q[i] <= ...`
+    // never registered `q` as an assigned reg. Side effect: `reset_sig`
+    // ended up None, the seq-block reset arm wasn't emitted at all,
+    // and the user got a zero-reset register that drifted to whatever
+    // the seq body wrote. The fix walks Index / BitSlice / PartSelect /
+    // FieldAccess down to the base Ident.
+    //
+    // This test triggers the path indirectly: an async-reset register
+    // written only via a bit-slice LHS should still get its reset arm
+    // emitted in eval_posedge.
+    let source = "
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+        module M
+          param W: const = 16;
+          port clk:    in Clock<SysDomain>;
+          port rst_ni: in Reset<Async, Low>;
+          port we:     in Bool;
+          port d:      in UInt<16>;
+          port q:      out UInt<32>;
+
+          reg q_r: UInt<32> reset rst_ni => 0;
+
+          default seq on clk rising;
+
+          seq
+            if we
+              q_r[W-1:0] <= d;
+            end if
+          end seq
+
+          let q = q_r;
+        end module M
+    ";
+    let cpp = compile_to_sim_h(source, false);
+    assert!(cpp.contains("_q_r = 0;"),
+        "indexed-LHS reg should still get its async reset arm:\n{cpp}");
+}
+
+#[test]
 fn test_cc_dispatch_rewrites_seq_match_scrutinee() {
     // Regression for the elaborate CC-dispatch asymmetry: the reg-block
     // walker used to skip `Stmt::Match` scrutinees (only the comb walker
