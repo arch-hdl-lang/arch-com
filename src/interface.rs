@@ -169,10 +169,10 @@ pub(crate) fn emit_linklist_interface(l: &LinklistDecl) -> String {
     let mut s = format!("linklist {name}\n");
     s.push_str(&format!("  kind {kind};\n"));
     if l.track_tail {
-        s.push_str("  track_tail;\n");
+        s.push_str("  track tail: true;\n");
     }
     if l.track_length {
-        s.push_str("  track_length;\n");
+        s.push_str("  track length: true;\n");
     }
     emit_params(&mut s, &l.params);
     emit_ports(&mut s, &l.ports);
