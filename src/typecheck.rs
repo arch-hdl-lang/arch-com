@@ -758,6 +758,11 @@ impl<'a> TypeChecker<'a> {
                                         driven.insert(n.clone());
                                     }
                                 }
+                                ThreadStmt::ForkTlmAssign(a) => {
+                                    if let crate::ast::ExprKind::Ident(n) = &a.target.kind {
+                                        driven.insert(n.clone());
+                                    }
+                                }
                                 ThreadStmt::IfElse(ie) => {
                                     walk_thread(&ie.then_stmts, driven);
                                     walk_thread(&ie.else_stmts, driven);

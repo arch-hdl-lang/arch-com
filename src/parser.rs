@@ -1527,6 +1527,14 @@ impl Parser {
             return self.parse_thread_fork_join();
         }
 
+        // `join all;` — barrier for `target <= fork port.method(args);`.
+        if self.check_ident("join") {
+            let start = self.advance().span;
+            self.expect_contextual("all")?;
+            let semi_span = self.expect(TokenKind::Semi)?.span;
+            return Ok(ThreadStmt::JoinAll(start.merge(semi_span)));
+        }
+
         // `for var in start..end ... end for`
         if self.check(TokenKind::For) {
             return self.parse_thread_for();
@@ -1587,10 +1595,23 @@ impl Parser {
             let span = target.span.merge(semi_span);
             Ok(ThreadStmt::CombAssign(CombAssign { target, value, span }))
         } else if self.eat(TokenKind::LtEq) {
+            let fork_start = if self.check_ident("fork") {
+                Some(self.advance().span)
+            } else {
+                None
+            };
             let value = self.parse_expr()?;
             let semi_span = self.expect(TokenKind::Semi)?.span;
             let span = target.span.merge(semi_span);
-            Ok(ThreadStmt::SeqAssign(RegAssign { target, value, span }))
+            let assign = RegAssign { target, value, span };
+            if let Some(fork_start) = fork_start {
+                Ok(ThreadStmt::ForkTlmAssign(RegAssign {
+                    span: fork_start.merge(semi_span),
+                    ..assign
+                }))
+            } else {
+                Ok(ThreadStmt::SeqAssign(assign))
+            }
         } else {
             Err(CompileError::unexpected_token(
                 "= or <=",

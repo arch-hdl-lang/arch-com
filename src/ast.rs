@@ -562,6 +562,10 @@ pub enum ThreadStmt {
     CombAssign(CombAssign),
     /// Sequential assign: `target <= expr;`
     SeqAssign(RegAssign),
+    /// Nonblocking TLM issue: `target <= fork port.method(args);`
+    ForkTlmAssign(RegAssign),
+    /// Join all outstanding nonblocking TLM issues in the current group.
+    JoinAll(Span),
     /// `wait until cond;`
     WaitUntil(Expr, Span),
     /// `wait N cycle;`

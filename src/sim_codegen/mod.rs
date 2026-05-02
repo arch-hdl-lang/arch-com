@@ -5205,7 +5205,12 @@ impl<'a> SimCodegen<'a> {
                     let cond = if *is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
                     cpp.push_str(&format!("{}if ({cond}) {{\n", "  ".repeat(base_indent)));
                     for (reg_name, init) in &reset_regs {
-                        if wide_names.contains(*reg_name) {
+                        if vec_reg_names.contains(*reg_name) {
+                            let count = vec_sizes.get(*reg_name).copied().unwrap_or(0);
+                            if count > 0 {
+                                cpp.push_str(&format!("{}for (size_t _i = 0; _i < {count}; ++_i) {{ _n_{reg_name}[_i] = {init}; }}\n", "  ".repeat(base_indent + 1)));
+                            }
+                        } else if wide_names.contains(*reg_name) {
                             let bits = widths.get(*reg_name).copied().unwrap_or(0);
                             if bits > 128 {
                                 let words = wide_words(bits);

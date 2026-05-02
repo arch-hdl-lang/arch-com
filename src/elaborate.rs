@@ -818,6 +818,12 @@ fn subst_thread_stmt(stmt: &ThreadStmt, var: &str, val: i64) -> ThreadStmt {
             value: subst_expr_names(ra.value.clone(), var, val),
             span: ra.span,
         }),
+        ThreadStmt::ForkTlmAssign(ra) => ThreadStmt::ForkTlmAssign(RegAssign {
+            target: subst_expr_names(ra.target.clone(), var, val),
+            value: subst_expr_names(ra.value.clone(), var, val),
+            span: ra.span,
+        }),
+        ThreadStmt::JoinAll(sp) => ThreadStmt::JoinAll(*sp),
         ThreadStmt::WaitUntil(cond, sp) => {
             ThreadStmt::WaitUntil(subst_expr_names(cond.clone(), var, val), *sp)
         }
@@ -2407,7 +2413,7 @@ fn collect_thread_signals(body: &[ThreadStmt]) -> (HashSet<String>, HashSet<Stri
                     // Also collect reads from indexed targets like buf[i]
                     collect_expr_index_reads(&ca.target, all_read);
                 }
-                ThreadStmt::SeqAssign(ra) => {
+                ThreadStmt::SeqAssign(ra) | ThreadStmt::ForkTlmAssign(ra) => {
                     if let Some(name) = expr_root_name(&ra.target) {
                         seq_driven.insert(name);
                     }
@@ -2418,6 +2424,7 @@ fn collect_thread_signals(body: &[ThreadStmt]) -> (HashSet<String>, HashSet<Stri
                     collect_expr_reads(cond, all_read);
                 }
                 ThreadStmt::WaitCycles(_, _) => {}
+                ThreadStmt::JoinAll(_) => {}
                 ThreadStmt::IfElse(ie) => {
                     collect_expr_reads(&ie.cond, all_read);
                     walk_stmts(&ie.then_stmts, comb_driven, seq_driven, all_read);
@@ -3099,6 +3106,18 @@ fn partition_thread_body(
                     *span,
                 ));
             }
+            ThreadStmt::ForkTlmAssign(ra) => {
+                return Err(CompileError::general(
+                    "`target <= fork port.method(...);` is only valid for TLM initiator threads and must be paired with a final `join all;`",
+                    ra.span,
+                ));
+            }
+            ThreadStmt::JoinAll(span) => {
+                return Err(CompileError::general(
+                    "`join all;` is only valid after forked TLM calls (`target <= fork port.method(...);`)",
+                    *span,
+                ));
+            }
         }
     }
 
@@ -3594,6 +3613,12 @@ fn rewrite_loop_var(stmt: &ThreadStmt, var: &str, replacement: &str) -> ThreadSt
             value: rewrite_var_expr(ra.value.clone(), var, replacement),
             span: ra.span,
         }),
+        ThreadStmt::ForkTlmAssign(ra) => ThreadStmt::ForkTlmAssign(RegAssign {
+            target: rewrite_var_expr(ra.target.clone(), var, replacement),
+            value: rewrite_var_expr(ra.value.clone(), var, replacement),
+            span: ra.span,
+        }),
+        ThreadStmt::JoinAll(sp) => ThreadStmt::JoinAll(*sp),
         ThreadStmt::WaitUntil(cond, sp) => {
             ThreadStmt::WaitUntil(rewrite_var_expr(cond.clone(), var, replacement), *sp)
         }
@@ -3709,6 +3734,7 @@ fn thread_if_to_fsm_stmts(ie: &ThreadIfElse) -> (Option<Stmt>, Option<Stmt>) {
             match s {
                 ThreadStmt::CombAssign(ca) => comb.push(Stmt::Assign(ca.clone())),
                 ThreadStmt::SeqAssign(ra) => seq.push(Stmt::Assign(ra.clone())),
+                ThreadStmt::ForkTlmAssign(ra) => seq.push(Stmt::Assign(ra.clone())),
                 ThreadStmt::Log(l) => seq.push(Stmt::Log(l.clone())),
                 ThreadStmt::IfElse(nested) => {
                     let (c, s) = thread_if_to_fsm_stmts(nested);
@@ -4860,6 +4886,16 @@ pub fn lower_tlm_initiator_calls(ast: SourceFile) -> Result<SourceFile, Vec<Comp
                             new_body.push(item);
                             continue;
                         }
+                        if thread_has_fork_tlm_assign(&t.body) {
+                            match inline_lower_tlm_fork_join_all(t.clone(), &port_buses, &bus_methods) {
+                                Ok(items) => new_body.extend(items),
+                                Err(e) => {
+                                    errors.push(e);
+                                    new_body.push(item);
+                                }
+                            }
+                            continue;
+                        }
                         // Target-side `implement` is handled by
                         // lower_tlm_target_threads before this pass runs,
                         // so anything reaching here is initiator (if set).
@@ -5318,6 +5354,13 @@ fn collect_bare_tlm_calls(
                         .push(owner_span);
                 }
             }
+            ThreadStmt::ForkTlmAssign(ra) => {
+                if let Some(call) = match_tlm_call(&ra.value, port_buses, bus_methods) {
+                    out.entry((call.port.clone(), call.method.clone()))
+                        .or_default()
+                        .push(owner_span);
+                }
+            }
             ThreadStmt::Lock { .. } => {
                 // TLM calls inside a lock are serialized by the resource
                 // mutex — not a multi-driver hazard. Skip.
@@ -5343,10 +5386,11 @@ fn collect_bare_tlm_calls(
 
 fn thread_stmt_span(stmt: &ThreadStmt) -> Span {
     match stmt {
-        ThreadStmt::SeqAssign(a) | ThreadStmt::CombAssign(a) => a.span,
+        ThreadStmt::SeqAssign(a) | ThreadStmt::CombAssign(a) | ThreadStmt::ForkTlmAssign(a) => a.span,
         ThreadStmt::WaitUntil(_, sp)
         | ThreadStmt::WaitCycles(_, sp)
         | ThreadStmt::ForkJoin(_, sp)
+        | ThreadStmt::JoinAll(sp)
         | ThreadStmt::Return(_, sp) => *sp,
         ThreadStmt::IfElse(ie) => ie.span,
         ThreadStmt::For { span, .. }
@@ -5365,6 +5409,9 @@ fn thread_body_has_tlm_call(
         ThreadStmt::SeqAssign(ra) =>
             contains_tlm_call(&ra.value, port_buses, bus_methods)
             || contains_tlm_call(&ra.target, port_buses, bus_methods),
+        ThreadStmt::ForkTlmAssign(ra) =>
+            contains_tlm_call(&ra.value, port_buses, bus_methods)
+            || contains_tlm_call(&ra.target, port_buses, bus_methods),
         ThreadStmt::CombAssign(ca) =>
             contains_tlm_call(&ca.value, port_buses, bus_methods)
             || contains_tlm_call(&ca.target, port_buses, bus_methods),
@@ -5374,6 +5421,437 @@ fn thread_body_has_tlm_call(
             branches.iter().any(|branch| thread_body_has_tlm_call(branch, port_buses, bus_methods)),
         _ => false,
     })
+}
+
+fn thread_has_fork_tlm_assign(stmts: &[ThreadStmt]) -> bool {
+    stmts.iter().any(|s| match s {
+        ThreadStmt::ForkTlmAssign(_) => true,
+        ThreadStmt::IfElse(ie) => thread_has_fork_tlm_assign(&ie.then_stmts)
+            || thread_has_fork_tlm_assign(&ie.else_stmts),
+        ThreadStmt::ForkJoin(branches, _) => branches.iter().any(|b| thread_has_fork_tlm_assign(b)),
+        ThreadStmt::For { body, .. }
+        | ThreadStmt::Lock { body, .. }
+        | ThreadStmt::DoUntil { body, .. } => thread_has_fork_tlm_assign(body),
+        _ => false,
+    })
+}
+
+#[derive(Clone)]
+struct ForkedTlmIssue {
+    delay: u64,
+    target: Expr,
+    call: TlmCall,
+    span: Span,
+}
+
+fn collect_fork_join_all_issues(
+    t: &ThreadBlock,
+    port_buses: &std::collections::HashMap<String, String>,
+    bus_methods: &std::collections::HashMap<String, Vec<TlmMethodMeta>>,
+) -> Result<Vec<ForkedTlmIssue>, CompileError> {
+    let mut delay = 0u64;
+    let mut issues = Vec::new();
+    let mut saw_join = false;
+    for (idx, stmt) in t.body.iter().enumerate() {
+        match stmt {
+            ThreadStmt::ForkTlmAssign(ra) => {
+                if saw_join {
+                    return Err(CompileError::general(
+                        "`target <= fork port.method(...);` cannot appear after `join all;` in v1",
+                        ra.span,
+                    ));
+                }
+                let Some(call) = match_tlm_call(&ra.value, port_buses, bus_methods) else {
+                    return Err(CompileError::general(
+                        "`fork` on the RHS of `<=` is only supported for direct TLM method calls, e.g. `dst <= fork bus.read(addr);`",
+                        ra.span,
+                    ));
+                };
+                if contains_tlm_call(&ra.target, port_buses, bus_methods) {
+                    return Err(CompileError::general(
+                        "TLM method calls cannot appear on the LHS of a forked TLM assignment",
+                        ra.span,
+                    ));
+                }
+                issues.push(ForkedTlmIssue {
+                    delay,
+                    target: ra.target.clone(),
+                    call,
+                    span: ra.span,
+                });
+            }
+            ThreadStmt::WaitCycles(n, sp) => {
+                if saw_join {
+                    return Err(CompileError::general(
+                        "statements after `join all;` in a forked TLM group are not supported in v1",
+                        *sp,
+                    ));
+                }
+                let Some(v) = literal_expr_u64(n) else {
+                    return Err(CompileError::general(
+                        "v1 forked TLM issue offsets require a literal `wait N cycle;` count",
+                        n.span,
+                    ));
+                };
+                delay = delay.saturating_add(v);
+            }
+            ThreadStmt::JoinAll(sp) => {
+                if saw_join {
+                    return Err(CompileError::general("duplicate `join all;` in forked TLM group", *sp));
+                }
+                saw_join = true;
+                if idx + 1 != t.body.len() {
+                    return Err(CompileError::general(
+                        "v1 forked TLM groups require `join all;` to be the final statement in the thread",
+                        *sp,
+                    ));
+                }
+            }
+            other => {
+                return Err(CompileError::general(
+                    &format!(
+                        "v1 forked TLM groups only support `target <= fork port.method(...);`, literal `wait N cycle;`, and final `join all;` (found {:?})",
+                        std::mem::discriminant(other),
+                    ),
+                    thread_stmt_span(other),
+                ));
+            }
+        }
+    }
+    if issues.is_empty() {
+        return Err(CompileError::general("`join all;` has no preceding forked TLM calls", t.span));
+    }
+    if !saw_join {
+        return Err(CompileError::general(
+            "forked TLM calls require an explicit final `join all;` barrier",
+            t.span,
+        ));
+    }
+    Ok(issues)
+}
+
+fn inline_lower_tlm_fork_join_all(
+    t: ThreadBlock,
+    port_buses: &std::collections::HashMap<String, String>,
+    bus_methods: &std::collections::HashMap<String, Vec<TlmMethodMeta>>,
+) -> Result<Vec<ModuleBodyItem>, CompileError> {
+    let issues = collect_fork_join_all_issues(&t, port_buses, bus_methods)?;
+    let first = &issues[0];
+    let port = first.call.port.clone();
+    let method = first.call.method.clone();
+    let method_meta = first.call.method_meta.clone();
+    let span = t.span;
+    for issue in &issues {
+        if issue.call.port != port || issue.call.method != method {
+            return Err(CompileError::general(
+                "v1 forked TLM groups must target one method; split different methods into separate threads",
+                issue.span,
+            ));
+        }
+        if issue.call.args.len() != method_meta.args.len() {
+            return Err(CompileError::general(
+                &format!(
+                    "TLM call `{port}.{method}` takes {} args but `tlm_method {}` declares {}",
+                    issue.call.args.len(), method, method_meta.args.len()
+                ),
+                issue.span,
+            ));
+        }
+    }
+    let n = issues.len();
+    let tag_width = if let Some(e) = &method_meta.out_of_order_tags {
+        Some(literal_expr_u64(e).ok_or_else(|| CompileError::general(
+            "`out_of_order tags` must be a literal width in the first implementation",
+            e.span,
+        ))? as u32)
+    } else {
+        None
+    };
+    if let Some(tag_w) = tag_width {
+        let tag_slots = if tag_w >= 64 { u128::MAX } else { 1u128 << tag_w };
+        if tag_slots < n as u128 {
+            return Err(CompileError::general(
+                &format!("`{port}.{method}` has {n} forked calls but only {tag_slots} out-of-order tags; increase `tags` width"),
+                span,
+            ));
+        }
+    }
+
+    let max_delay = issues.iter().map(|i| i.delay).max().unwrap_or(0);
+    let idx_w = clog2_width(n as u64);
+    let occ_w = clog2_width((n + 1) as u64);
+    let age_w = clog2_width((max_delay + 2).max(2));
+    let tag = t.name.as_ref().map(|n| n.name.clone()).unwrap_or_else(|| "anon".to_string());
+    let prefix = format!("_tlm_fork_{}_{}_{}", tag, port, method);
+
+    let ident = |name: String| Ident { name, span };
+    let id = |name: String| Expr::new(ExprKind::Ident(name), span);
+    let dec = |v: u64| Expr::new(ExprKind::Literal(LitKind::Dec(v)), span);
+    let sized = |w: u32, v: u64| Expr::new(ExprKind::Literal(LitKind::Sized(w, v)), span);
+    let zero = || Expr::new(ExprKind::Literal(LitKind::Dec(0)), span);
+    let bool_lit = |b: bool| Expr::new(ExprKind::Bool(b), span);
+    let bin = |op: BinOp, l: Expr, r: Expr| Expr::new(ExprKind::Binary(op, Box::new(l), Box::new(r)), span);
+    let not = |e: Expr| Expr::new(ExprKind::Unary(UnaryOp::Not, Box::new(e)), span);
+    let tern = |c: Expr, t: Expr, e: Expr| Expr::new(ExprKind::Ternary(Box::new(c), Box::new(t), Box::new(e)), span);
+    let index = |base: Expr, idx: Expr| Expr::new(ExprKind::Index(Box::new(base), Box::new(idx)), span);
+    let trunc = |e: Expr, w: u32| Expr::new(
+        ExprKind::MethodCall(Box::new(e), ident("trunc".to_string()), vec![dec(w as u64)]),
+        span,
+    );
+    let port_member = |member: String| Expr::new(
+        ExprKind::FieldAccess(Box::new(id(port.clone())), ident(member)),
+        span,
+    );
+    let state_name = |i: usize| format!("{prefix}_t{i}_state");
+    let fifo_name = format!("{prefix}_fifo");
+    let head_name = format!("{prefix}_head");
+    let tail_name = format!("{prefix}_tail");
+    let occ_name = format!("{prefix}_occ");
+    let age_name = format!("{prefix}_age");
+
+    let idx_ty = TypeExpr::UInt(Box::new(dec(idx_w as u64)));
+    let occ_ty = TypeExpr::UInt(Box::new(dec(occ_w as u64)));
+    let age_ty = TypeExpr::UInt(Box::new(dec(age_w as u64)));
+    let state_ty = TypeExpr::UInt(Box::new(dec(2)));
+    let fifo_ty = TypeExpr::Vec(Box::new(idx_ty.clone()), Box::new(dec(n as u64)));
+    let mut items = Vec::new();
+    for i in 0..n {
+        items.push(ModuleBodyItem::RegDecl(RegDecl {
+            name: ident(state_name(i)),
+            ty: state_ty.clone(),
+            init: None,
+            reset: RegReset::Inherit(t.reset.clone(), zero()),
+            guard: None,
+            span,
+        }));
+    }
+    for (name, ty) in [
+        (fifo_name.clone(), fifo_ty),
+        (head_name.clone(), idx_ty.clone()),
+        (tail_name.clone(), idx_ty),
+        (occ_name.clone(), occ_ty.clone()),
+        (age_name.clone(), age_ty.clone()),
+    ] {
+        items.push(ModuleBodyItem::RegDecl(RegDecl {
+            name: ident(name),
+            ty,
+            init: None,
+            reset: RegReset::Inherit(t.reset.clone(), zero()),
+            guard: None,
+            span,
+        }));
+    }
+
+    let occ_nonzero = bin(BinOp::Gt, id(occ_name.clone()), sized(occ_w, 0));
+    let occ_not_full = bin(BinOp::Lt, id(occ_name.clone()), sized(occ_w, n as u64));
+    let rsp_pop = bin(BinOp::And, port_member(format!("{method}_rsp_valid")), occ_nonzero.clone());
+    let fifo_head = index(id(fifo_name.clone()), id(head_name.clone()));
+    let all_done = {
+        let mut acc = bin(BinOp::Eq, id(state_name(0)), sized(2, 2));
+        for i in 1..n {
+            acc = bin(BinOp::And, acc, bin(BinOp::Eq, id(state_name(i)), sized(2, 2)));
+        }
+        acc
+    };
+    let mut wants: Vec<Expr> = Vec::new();
+    let mut grants: Vec<Expr> = Vec::new();
+    for (i, issue) in issues.iter().enumerate() {
+        let pending = bin(BinOp::Eq, id(state_name(i)), sized(2, 0));
+        let aged = bin(BinOp::Gte, id(age_name.clone()), sized(age_w, issue.delay));
+        let want_i = bin(BinOp::And, bin(BinOp::And, pending, aged), occ_not_full.clone());
+        let mut grant_i = want_i.clone();
+        for prev in &wants {
+            grant_i = bin(BinOp::And, grant_i, not(prev.clone()));
+        }
+        wants.push(want_i);
+        grants.push(grant_i);
+    }
+    let or_expr = |xs: &[Expr]| -> Expr {
+        let mut acc = xs.first().cloned().unwrap_or_else(|| bool_lit(false));
+        for x in &xs[1..] {
+            acc = bin(BinOp::Or, acc, x.clone());
+        }
+        acc
+    };
+    let req_valid = or_expr(&grants);
+    let req_fire = bin(BinOp::And, req_valid.clone(), port_member(format!("{method}_req_ready")));
+    let ptr_inc = |ptr: &str, width: u32| -> Expr {
+        tern(
+            bin(BinOp::Eq, id(ptr.to_string()), sized(width, (n - 1) as u64)),
+            sized(width, 0),
+            trunc(bin(BinOp::Add, id(ptr.to_string()), sized(width, 1)), width),
+        )
+    };
+
+    let mut comb_stmts = Vec::new();
+    comb_stmts.push(Stmt::Assign(CombAssign {
+        target: port_member(format!("{method}_req_valid")),
+        value: req_valid.clone(),
+        span,
+    }));
+    for (arg_i, (arg_ident, _)) in method_meta.args.iter().enumerate() {
+        let mut value = zero();
+        for (i, issue) in issues.iter().enumerate().rev() {
+            value = tern(grants[i].clone(), issue.call.args[arg_i].clone(), value);
+        }
+        comb_stmts.push(Stmt::Assign(CombAssign {
+            target: port_member(format!("{}_{}", method, arg_ident.name)),
+            value,
+            span,
+        }));
+    }
+    if let Some(tag_w) = tag_width {
+        let mut value = sized(tag_w, 0);
+        for i in (0..n).rev() {
+            value = tern(grants[i].clone(), sized(tag_w, i as u64), value);
+        }
+        comb_stmts.push(Stmt::Assign(CombAssign {
+            target: port_member(format!("{method}_req_tag")),
+            value,
+            span,
+        }));
+    }
+    comb_stmts.push(Stmt::Assign(CombAssign {
+        target: port_member(format!("{method}_rsp_ready")),
+        value: occ_nonzero.clone(),
+        span,
+    }));
+
+    let mut seq_body: Vec<Stmt> = Vec::new();
+    seq_body.push(Stmt::IfElse(IfElse {
+        cond: all_done.clone(),
+        then_stmts: (0..n).map(|i| Stmt::Assign(RegAssign {
+            target: id(state_name(i)),
+            value: sized(2, 0),
+            span,
+        })).chain(std::iter::once(Stmt::Assign(RegAssign {
+            target: id(age_name.clone()),
+            value: sized(age_w, 0),
+            span,
+        }))).collect(),
+        else_stmts: if max_delay > 0 {
+            vec![Stmt::IfElse(IfElse {
+                cond: bin(BinOp::Lt, id(age_name.clone()), sized(age_w, max_delay)),
+                then_stmts: vec![Stmt::Assign(RegAssign {
+                    target: id(age_name.clone()),
+                    value: trunc(bin(BinOp::Add, id(age_name.clone()), sized(age_w, 1)), age_w),
+                    span,
+                })],
+                else_stmts: Vec::new(),
+                unique: false,
+                span,
+            })]
+        } else { Vec::new() },
+        unique: false,
+        span,
+    }));
+    for i in 0..n {
+        let push_i = bin(BinOp::And, grants[i].clone(), port_member(format!("{method}_req_ready")));
+        seq_body.push(Stmt::IfElse(IfElse {
+            cond: push_i,
+            then_stmts: vec![
+                Stmt::Assign(RegAssign {
+                    target: index(id(fifo_name.clone()), id(tail_name.clone())),
+                    value: sized(idx_w, i as u64),
+                    span,
+                }),
+                Stmt::Assign(RegAssign {
+                    target: id(state_name(i)),
+                    value: sized(2, 1),
+                    span,
+                }),
+            ],
+            else_stmts: Vec::new(),
+            unique: false,
+            span,
+        }));
+        let rsp_i = if let Some(tag_w) = tag_width {
+            bin(
+                BinOp::And,
+                bin(BinOp::And, rsp_pop.clone(), bin(BinOp::Eq, id(state_name(i)), sized(2, 1))),
+                bin(BinOp::Eq, port_member(format!("{method}_rsp_tag")), sized(tag_w, i as u64)),
+            )
+        } else {
+            bin(
+                BinOp::And,
+                bin(BinOp::And, rsp_pop.clone(), bin(BinOp::Eq, id(state_name(i)), sized(2, 1))),
+                bin(BinOp::Eq, fifo_head.clone(), sized(idx_w, i as u64)),
+            )
+        };
+        let mut rsp_then = Vec::new();
+        if method_meta.ret.is_some() {
+            rsp_then.push(Stmt::Assign(RegAssign {
+                target: issues[i].target.clone(),
+                value: port_member(format!("{method}_rsp_data")),
+                span,
+            }));
+        }
+        rsp_then.push(Stmt::Assign(RegAssign {
+            target: id(state_name(i)),
+            value: sized(2, 2),
+            span,
+        }));
+        seq_body.push(Stmt::IfElse(IfElse {
+            cond: rsp_i,
+            then_stmts: rsp_then,
+            else_stmts: Vec::new(),
+            unique: false,
+            span,
+        }));
+    }
+    seq_body.push(Stmt::IfElse(IfElse {
+        cond: req_fire.clone(),
+        then_stmts: vec![Stmt::Assign(RegAssign {
+            target: id(tail_name.clone()),
+            value: ptr_inc(&tail_name, idx_w),
+            span,
+        })],
+        else_stmts: Vec::new(),
+        unique: false,
+        span,
+    }));
+    seq_body.push(Stmt::IfElse(IfElse {
+        cond: rsp_pop.clone(),
+        then_stmts: vec![Stmt::Assign(RegAssign {
+            target: id(head_name.clone()),
+            value: ptr_inc(&head_name, idx_w),
+            span,
+        })],
+        else_stmts: Vec::new(),
+        unique: false,
+        span,
+    }));
+    seq_body.push(Stmt::IfElse(IfElse {
+        cond: bin(BinOp::And, req_fire.clone(), not(rsp_pop.clone())),
+        then_stmts: vec![Stmt::Assign(RegAssign {
+            target: id(occ_name.clone()),
+            value: trunc(bin(BinOp::Add, id(occ_name.clone()), sized(occ_w, 1)), occ_w),
+            span,
+        })],
+        else_stmts: Vec::new(),
+        unique: false,
+        span,
+    }));
+    seq_body.push(Stmt::IfElse(IfElse {
+        cond: bin(BinOp::And, rsp_pop.clone(), not(req_fire)),
+        then_stmts: vec![Stmt::Assign(RegAssign {
+            target: id(occ_name.clone()),
+            value: trunc(bin(BinOp::Sub, id(occ_name.clone()), sized(occ_w, 1)), occ_w),
+            span,
+        })],
+        else_stmts: Vec::new(),
+        unique: false,
+        span,
+    }));
+
+    items.push(ModuleBodyItem::RegBlock(RegBlock {
+        clock: t.clock,
+        clock_edge: t.clock_edge,
+        stmts: seq_body,
+        span,
+    }));
+    items.push(ModuleBodyItem::CombBlock(CombBlock { stmts: comb_stmts, span }));
+    Ok(items)
 }
 
 /// In-place lowering of a thread containing TLM initiator calls. Emits
