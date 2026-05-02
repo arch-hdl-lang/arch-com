@@ -196,16 +196,29 @@ impl<'a> SimCodegen<'a> {
         // "use of undeclared identifier <fn_name>". Hoisting to VFunctions.h
         // mirrors how top-level free functions are exposed; name collisions
         // across modules are the caller's responsibility (same as today).
-        let fn_items: Vec<&FunctionDecl> = self.source.items.iter()
-            .flat_map(|i| match i {
+        //
+        // Dedupe by name: a module-internal `function fn` shared between
+        // a parent module and a thread-lowered submodule (the lowering
+        // copies the function decl into the new submodule so its body
+        // can call it) must only emit once into VFunctions.h, otherwise
+        // we get "redefinition of <fn>".
+        let mut fn_items: Vec<&FunctionDecl> = Vec::new();
+        let mut seen_fn_names: HashSet<String> = HashSet::new();
+        for i in &self.source.items {
+            let candidates: Vec<&FunctionDecl> = match i {
                 Item::Function(f) => vec![f],
                 Item::Package(p) => p.functions.iter().collect(),
                 Item::Module(m) => m.body.iter()
                     .filter_map(|b| if let ModuleBodyItem::Function(f) = b { Some(f) } else { None })
                     .collect(),
                 _ => vec![],
-            })
-            .collect();
+            };
+            for f in candidates {
+                if seen_fn_names.insert(f.name.name.clone()) {
+                    fn_items.push(f);
+                }
+            }
+        }
         if !fn_items.is_empty() {
             models.push(self.gen_functions(&fn_items));
         }
