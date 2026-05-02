@@ -188,11 +188,21 @@ impl<'a> SimCodegen<'a> {
     pub fn generate(&self) -> Vec<SimModel> {
         let mut models = Vec::new();
 
-        // Functions → VFunctions.h (header-only)
+        // Functions → VFunctions.h (header-only).
+        // Sources: top-level `function` items, package-level functions,
+        // and module-internal `function` items. Module-internal functions
+        // were previously dropped — calls in the same module's comb body
+        // emitted as bare identifiers, which then failed C++ compile with
+        // "use of undeclared identifier <fn_name>". Hoisting to VFunctions.h
+        // mirrors how top-level free functions are exposed; name collisions
+        // across modules are the caller's responsibility (same as today).
         let fn_items: Vec<&FunctionDecl> = self.source.items.iter()
             .flat_map(|i| match i {
                 Item::Function(f) => vec![f],
                 Item::Package(p) => p.functions.iter().collect(),
+                Item::Module(m) => m.body.iter()
+                    .filter_map(|b| if let ModuleBodyItem::Function(f) = b { Some(f) } else { None })
+                    .collect(),
                 _ => vec![],
             })
             .collect();
@@ -1759,6 +1769,24 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
         ExprKind::Concat(parts) => {
             parts.iter().map(|p| infer_expr_width(p, ctx)).sum()
         }
+        ExprKind::Index(base, _) => {
+            // For Vec<T, N>[i] the result width is element T's width.
+            // For scalar UInt/SInt[i] (bit indexing), the result is 1 bit.
+            // Pre-fix: Index fell through to default 8, which broke
+            // concat width inference (e.g. `{20{instr[31]}}` reported as
+            // 160 bits instead of 20, blowing past the 32-bit port type
+            // and emitting a VlWide<6> RHS for a uint32_t port).
+            if let ExprKind::Ident(base_name) = &base.kind {
+                if ctx.vec_names.map_or(false, |s| s.contains(base_name.as_str())) {
+                    // Vec element width: total port/reg width / element count.
+                    let total = ctx.widths.get(base_name).copied().unwrap_or(0);
+                    let count = ctx.vec_sizes.and_then(|m| m.get(base_name)).copied().unwrap_or(0);
+                    if count > 0 && total > 0 { return (total as u64 / count) as u32; }
+                }
+            }
+            // Scalar bit index → 1 bit.
+            1
+        }
         ExprKind::Repeat(count, value) => {
             let n = eval_width(count);
             let w = infer_expr_width(value, ctx);
@@ -3213,15 +3241,89 @@ impl<'a> SimCodegen<'a> {
             let empty_lets:  HashSet<String> = HashSet::new();
             let empty_insts: HashSet<String> = HashSet::new();
             let empty_wide:  HashSet<String> = HashSet::new();
-            let empty_w:     HashMap<String, u32> = HashMap::new();
             let enum_map    = build_enum_map(self.symbols);
 
-            // Build arg names as "port" names (so they're used as-is)
-            let arg_ports: HashSet<String> = f.args.iter().map(|a| a.name.name.clone()).collect();
+            // Build arg + local-let names as bare ports (resolve_name hits
+            // them via port_names → no `_let_` prefix, matching the
+            // `const T name = ...;` emitted line). Their widths are
+            // registered so `infer_expr_width` returns the right size
+            // when the name is used inside a `Concat` — pre-fix, every
+            // Concat part fell back to width=8, so a
+            // `{bool, bool, UInt<3>}` concat emitted shifts at offsets
+            // 0/8/16 instead of 0/3/4 and produced wildly wrong values.
+            let mut arg_ports: HashSet<String> = f.args.iter().map(|a| a.name.name.clone()).collect();
+            for item in &f.body {
+                if let FunctionBodyItem::Let(l) = item {
+                    arg_ports.insert(l.name.name.clone());
+                }
+            }
             let empty_bus: HashSet<String> = HashSet::new();
+            let mut local_widths: HashMap<String, u32> = HashMap::new();
+            for a in &f.args {
+                local_widths.insert(a.name.name.clone(), match &a.ty {
+                    TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval_width(w),
+                    TypeExpr::Bool | TypeExpr::Bit => 1,
+                    _ => 32,
+                });
+            }
+            for item in &f.body {
+                if let FunctionBodyItem::Let(l) = item {
+                    let w = match l.ty.as_ref() {
+                        Some(TypeExpr::UInt(w)) | Some(TypeExpr::SInt(w)) => eval_width(w),
+                        Some(TypeExpr::Bool) | Some(TypeExpr::Bit) => 1,
+                        _ => 32,
+                    };
+                    local_widths.insert(l.name.name.clone(), w);
+                }
+            }
             let ctx = Ctx::new(&empty_regs, &arg_ports, &empty_lets, &empty_insts,
-                               &empty_wide, &empty_w, &enum_map, &empty_bus);
+                               &empty_wide, &local_widths, &enum_map, &empty_bus);
 
+            // Recursive emitter for nested function-body items (if/elsif/else
+            // with return statements inside). Pre-fix the if/for/assign arms
+            // were no-ops, so a function whose entire body was an if/else
+            // emitted as `inline T fn(...) { }` and called sites failed C++
+            // compile with "non-void function does not return a value".
+            fn emit_fn_items(
+                items: &[FunctionBodyItem],
+                ctx: &Ctx,
+                ret_ty: &str,
+                indent: &str,
+                out: &mut String,
+            ) {
+                for item in items {
+                    match item {
+                        FunctionBodyItem::Let(l) => {
+                            let ty = l.ty.as_ref().map(|t| cpp_internal_type(t))
+                                .unwrap_or_else(|| "uint32_t".to_string());
+                            let val = cpp_expr(&l.value, ctx);
+                            out.push_str(&format!("{indent}const {ty} {} = {};\n", l.name.name, val));
+                        }
+                        FunctionBodyItem::Return(e) => {
+                            let val = cpp_expr(e, ctx);
+                            out.push_str(&format!("{indent}return {val};\n"));
+                        }
+                        FunctionBodyItem::IfElse(ie) => {
+                            let cond = cpp_expr(&ie.cond, ctx);
+                            out.push_str(&format!("{indent}if ({cond}) {{\n"));
+                            emit_fn_items(&ie.then_body, ctx, ret_ty, &format!("{indent}  "), out);
+                            out.push_str(&format!("{indent}}}"));
+                            if !ie.else_body.is_empty() {
+                                out.push_str(" else {\n");
+                                emit_fn_items(&ie.else_body, ctx, ret_ty, &format!("{indent}  "), out);
+                                out.push_str(&format!("{indent}}}\n"));
+                            } else {
+                                out.push_str("\n");
+                            }
+                        }
+                        FunctionBodyItem::For(_) | FunctionBodyItem::Assign(_) => {
+                            // TODO: not yet needed by ARCH→sim consumers we ship today
+                        }
+                    }
+                }
+            }
+            // Reuse the same recursive pattern below; legacy direct-loop is
+            // kept around the existing match-as-switch shortcut for `Return`.
             for item in &f.body {
                 match item {
                     FunctionBodyItem::Let(l) => {
@@ -3230,9 +3332,21 @@ impl<'a> SimCodegen<'a> {
                         let val = cpp_expr(&l.value, &ctx);
                         h.push_str(&format!("  const {ty} {} = {};\n", l.name.name, val));
                     }
-                    FunctionBodyItem::IfElse(_) | FunctionBodyItem::For(_) | FunctionBodyItem::Assign(_) => {
-                        // TODO: emit C++ for if/for/assign in sim functions
-                        // For now, these are only used in SV codegen
+                    FunctionBodyItem::IfElse(ie) => {
+                        let cond = cpp_expr(&ie.cond, &ctx);
+                        h.push_str(&format!("  if ({cond}) {{\n"));
+                        emit_fn_items(&ie.then_body, &ctx, &ret_ty, "    ", &mut h);
+                        h.push_str("  }");
+                        if !ie.else_body.is_empty() {
+                            h.push_str(" else {\n");
+                            emit_fn_items(&ie.else_body, &ctx, &ret_ty, "    ", &mut h);
+                            h.push_str("  }\n");
+                        } else {
+                            h.push_str("\n");
+                        }
+                    }
+                    FunctionBodyItem::For(_) | FunctionBodyItem::Assign(_) => {
+                        // TODO: emit C++ for for/assign in sim functions
                     }
                     FunctionBodyItem::Return(e) => {
                         // If it's a match expression, emit as switch for efficiency
@@ -3913,8 +4027,15 @@ impl<'a> SimCodegen<'a> {
             (0..insts.len()).collect()
         };
 
-        // Determine if there are any functions defined in the same source file
-        let has_functions = self.source.items.iter().any(|i| matches!(i, Item::Function(_)));
+        // Determine if there are any functions defined in the same source file.
+        // Includes module-internal `function` items so the per-module header
+        // pulls in VFunctions.h when those callees were emitted.
+        let has_functions = self.source.items.iter().any(|i| match i {
+            Item::Function(_) => true,
+            Item::Package(p) => !p.functions.is_empty(),
+            Item::Module(mm) => mm.body.iter().any(|b| matches!(b, ModuleBodyItem::Function(_))),
+            _ => false,
+        });
 
         // ── Header ───────────────────────────────────────────────────────────
         // Recurse into Vec<> so `reg foo: Vec<Entry, N>` and port types like
