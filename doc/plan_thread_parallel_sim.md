@@ -1,9 +1,17 @@
 # Plan: pre-lowering parallel thread simulation
 
-> **Status**: design draft. Not started. Bumped from "queued" by the
-> observation that source-level thread sim unlocks true multi-core
-> parallel execution — a perf win the post-lowering FSM-crank path can
-> never reach.
+> **Status (2026-05-01)**: initial coroutine-based `arch sim
+> --thread-sim parallel` path exists for ordinary, pre-lowering thread
+> blocks. It is not a full multi-core scheduler yet, but it can simulate
+> non-TLM thread modules directly before `lower_threads`.
+>
+> TLM integration note: TLM target threads and initiator calls are
+> consumed by TLM lowering before the parallel thread emitter runs. The
+> simulator now handles this hybrid case by emitting coroutine models for
+> modules that still contain ordinary threads and regular reg/seq/comb
+> C++ models for modules whose TLM threads were lowered away. This keeps
+> `--thread-sim parallel` working for TLM designs without teaching the
+> coroutine emitter a separate TLM protocol.
 
 ## Motivation
 

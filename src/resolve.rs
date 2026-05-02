@@ -210,11 +210,17 @@ impl BusInfo {
             let name = &m.name.name;
             let bool_ty = TypeExpr::Bool;
             result.push((format!("{name}_req_valid"), Direction::Out, bool_ty.clone()));
+            if let Some(tag_w) = &m.out_of_order_tags {
+                result.push((format!("{name}_req_tag"), Direction::Out, TypeExpr::UInt(Box::new(tag_w.clone()))));
+            }
             for (arg_name, arg_ty) in &m.args {
                 result.push((format!("{name}_{}", arg_name.name), Direction::Out, arg_ty.clone()));
             }
             result.push((format!("{name}_req_ready"), Direction::In,  bool_ty.clone()));
             result.push((format!("{name}_rsp_valid"), Direction::In,  bool_ty.clone()));
+            if let Some(tag_w) = &m.out_of_order_tags {
+                result.push((format!("{name}_rsp_tag"), Direction::In, TypeExpr::UInt(Box::new(tag_w.clone()))));
+            }
             if let Some(ret_ty) = &m.ret {
                 result.push((format!("{name}_rsp_data"), Direction::In, ret_ty.clone()));
             }

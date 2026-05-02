@@ -1118,6 +1118,23 @@ fn eval_width(expr: &Expr) -> u32 {
     }
 }
 
+/// Param-aware width evaluator: folds bare `Ident` and arithmetic over
+/// param defaults via `eval_const_expr_with_params`. Used in
+/// width-bearing positions where `BitSlice` hi/lo or `PartSelect` width
+/// may reference a param (e.g. `[CounterWidth-1:0]`). Falls back to the
+/// legacy `eval_width` for shapes the const evaluator can't fold (which
+/// preserves prior conservative-32 behavior).
+fn eval_width_in(expr: &Expr, ctx: &Ctx) -> u32 {
+    let folded = eval_const_expr_with_params(expr, ctx.params);
+    if folded != 0 || matches!(&expr.kind,
+        ExprKind::Literal(LitKind::Dec(0)) | ExprKind::Literal(LitKind::Hex(0)))
+    {
+        folded as u32
+    } else {
+        eval_width(expr)
+    }
+}
+
 /// Number of 32-bit words needed for `bits` bits.
 fn wide_words(bits: u32) -> u32 { (bits + 31) / 32 }
 
@@ -1571,6 +1588,11 @@ struct Ctx<'a> {
     /// is off; Some(_) when on. emit_*_if_else allocates counter ids here
     /// and emits `_arch_cov[N]++;` at the start of each arm.
     coverage: Option<&'a std::cell::RefCell<CoverageRegistry>>,
+    /// Module params (regular + local) for param-aware constant folding in
+    /// width-bearing positions. Used by `eval_width_in` to fold expressions
+    /// like `CounterWidth-1` in `BitSlice` hi/lo and `PartSelect` width.
+    /// Empty by default; populated via [`Ctx::with_params`] at module entry.
+    params: &'a [ParamDecl],
 }
 
 impl<'a> Ctx<'a> {
@@ -1587,10 +1609,16 @@ impl<'a> Ctx<'a> {
     ) -> Self {
         static EMPTY_RESET_LEVELS: std::sync::OnceLock<HashMap<String, ResetLevel>> = std::sync::OnceLock::new();
         let reset_levels = EMPTY_RESET_LEVELS.get_or_init(HashMap::new);
+        static EMPTY_PARAMS: &[ParamDecl] = &[];
         Ctx { reg_names, port_names, let_names, inst_names, wide_names,
               widths, posedge_lhs: false, fsm_mode: false, enum_map, bus_ports,
               reset_levels, vec_names: None, vec_sizes: None, fsm_vec_port_regs: None,
-              ident_subst: None, coverage: None }
+              ident_subst: None, coverage: None, params: EMPTY_PARAMS }
+    }
+
+    fn with_params(mut self, params: &'a [ParamDecl]) -> Self {
+        self.params = params;
+        self
     }
 
     fn with_vec_sizes(mut self, vec_sizes: &'a HashMap<String, u64>) -> Self {
@@ -1640,7 +1668,12 @@ impl<'a> Ctx<'a> {
                 format!("_{name}")
             }
         } else if self.let_names.contains(name) {
-            if self.fsm_mode {
+            // `let port_name = expr` is a port-driver: there is no separate
+            // `_let_port_name` storage. Reads (and the LHS write inside the
+            // synthesized comb assign) bind to the public port field.
+            if self.port_names.contains(name) {
+                name.to_string()
+            } else if self.fsm_mode {
                 name.to_string()
             } else {
                 format!("_let_{name}")
@@ -1711,11 +1744,11 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
             }
         }
         ExprKind::BitSlice(_, hi, lo) => {
-            let h = eval_width(hi);
-            let l = eval_width(lo);
+            let h = eval_width_in(hi, ctx);
+            let l = eval_width_in(lo, ctx);
             h - l + 1
         }
-        ExprKind::PartSelect(_, _, width, _) => eval_width(width),
+        ExprKind::PartSelect(_, _, width, _) => eval_width_in(width, ctx),
         ExprKind::Cast(_, ty) => {
             match ty.as_ref() {
                 TypeExpr::UInt(w) => eval_width(w),
@@ -1835,6 +1868,7 @@ fn lower_vec_method_cpp(
             vec_sizes: ctx.vec_sizes, fsm_vec_port_regs: ctx.fsm_vec_port_regs,
             ident_subst: None, // replaced below via a temporary binding
             coverage: ctx.coverage,
+            params: ctx.params,
         };
         // The sub map must outlive the cpp_expr call. We keep `sub` as a
         // stack-local binding whose lifetime covers the call.
@@ -2055,8 +2089,8 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
 
         ExprKind::BitSlice(base, hi, lo) => {
             let b = cpp_expr(base, ctx);
-            let h = eval_width(hi);
-            let l = eval_width(lo);
+            let h = eval_width_in(hi, ctx);
+            let l = eval_width_in(lo, ctx);
             let base_w = infer_expr_width(base, ctx);
             // Static slice: hi/lo are compile-time. Bounds checked by typecheck.
             if base_w > 128 {
@@ -2137,9 +2171,36 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             let idx = cpp_expr(index, ctx);
             format!("(1ULL << {idx})")
         }
-        ExprKind::Signed(inner) | ExprKind::Unsigned(inner) => {
-            // Same-width reinterpret — C++ sim model is bitwise, no-op
-            cpp_expr(inner, ctx)
+        ExprKind::Signed(inner) => {
+            // signed(x) reinterprets `x`'s bit pattern as a two's-complement
+            // signed value. The bit pattern is unchanged, but C++ operators
+            // (notably `>>`) behave differently for signed types: signed
+            // right-shift sign-extends, unsigned right-shift zero-extends.
+            // Emit an explicit cast so a chained `>>` becomes an arithmetic
+            // shift. Pre-fix: lowering dropped the cast and `signed(x) >> n`
+            // emitted a logical shift, so SRA gave the wrong result for
+            // negative inputs (top bits zero-filled instead of sign-extended).
+            let w = infer_expr_width(inner, ctx);
+            let inner_c = cpp_expr(inner, ctx);
+            if w == 0 || w > 64 {
+                inner_c
+            } else {
+                format!("(({})({}))", cpp_sint(w), inner_c)
+            }
+        }
+        ExprKind::Unsigned(inner) => {
+            // unsigned(x) is the inverse cast. Emit explicit unsigned cast
+            // so a chained `>>` becomes a logical shift. (For values that
+            // started unsigned this is a no-op, but `unsigned(signed(x) >> n)`
+            // patterns rely on the cast to bring the result back to uint
+            // for further unsigned operations.)
+            let w = infer_expr_width(inner, ctx);
+            let inner_c = cpp_expr(inner, ctx);
+            if w == 0 || w > 64 {
+                inner_c
+            } else {
+                format!("(({})({}))", cpp_uint(w), inner_c)
+            }
         }
 
         ExprKind::Ternary(cond, then_expr, else_expr) => {
@@ -2368,7 +2429,7 @@ fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &Ctx) -> Str
 fn cpp_part_select(base: &Expr, start: &Expr, width: &Expr, up: bool, ctx: &Ctx) -> String {
     let b = cpp_expr(base, ctx);
     let s = cpp_expr(start, ctx);
-    let w = eval_width(width);
+    let w = eval_width_in(width, ctx);
     let base_w = infer_expr_width(base, ctx);
     let result_ty = cpp_uint(w);
     // Runtime bounds check for variable part-selects:
@@ -2502,6 +2563,30 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
                         let rhs = cpp_expr(&a.value, ctx);
                         out.push_str(&format!(
                             "{}{resolved_base} = ({resolved_base} & ~(uint64_t(1) << ({idx_cpp}))) | (uint64_t(({rhs}) & 1) << ({idx_cpp}));\n",
+                            ind(indent)
+                        ));
+                        return;
+                    }
+                }
+            }
+            // Bit-slice LHS: name[hi:lo] = val. Lower to mask-and-OR rather
+            // than the read-side `((name >> lo) & mask)` (an rvalue — gcc /
+            // clang reject as "expression is not assignable"). Only the
+            // bare-ident base case `name[hi:lo]` is handled here; Vec-element
+            // slice LHS or wider-than-64 bases keep the generic path and
+            // would need their own arms.
+            if let ExprKind::BitSlice(base, hi_e, lo_e) = &a.target.kind {
+                if let ExprKind::Ident(base_name) = &base.kind {
+                    let base_w = infer_expr_width(base, ctx);
+                    if base_w > 0 && base_w <= 64 {
+                        let resolved_base = ctx.resolve_name(base_name, is_seq);
+                        let hi = eval_width_in(hi_e, ctx);
+                        let lo = eval_width_in(lo_e, ctx);
+                        let width = hi - lo + 1;
+                        let val_mask: u64 = if width >= 64 { u64::MAX } else { (1u64 << width) - 1 };
+                        let rhs = cpp_expr(&a.value, ctx);
+                        out.push_str(&format!(
+                            "{}{resolved_base} = ({resolved_base} & ~(uint64_t(0x{val_mask:X}ULL) << {lo})) | ((uint64_t(({rhs}) & 0x{val_mask:X}ULL)) << {lo});\n",
                             ind(indent)
                         ));
                         return;
@@ -3198,10 +3283,21 @@ fn collect_stmt_assigns(stmts: &[Stmt], out: &mut std::collections::BTreeSet<Str
     for stmt in stmts {
         match stmt {
             Stmt::Assign(a) => {
-                if let ExprKind::Ident(n) = &a.target.kind { out.insert(n.clone()); }
-                // Struct-field LHS (`reg.field <= ...`): collect the base reg name.
-                if let ExprKind::FieldAccess(base, _) = &a.target.kind {
-                    if let ExprKind::Ident(n) = &base.kind { out.insert(n.clone()); }
+                // Walk the LHS unwrapping Index / BitSlice / PartSelect /
+                // FieldAccess until we hit the base Ident. `counter_q[hi:lo]`,
+                // `counter_q[i]`, `reg.field`, and chained forms all bind to
+                // `counter_q` for reset-walk purposes — the partial-write
+                // reg is still subject to its declared reset.
+                let mut cursor: &Expr = &a.target;
+                loop {
+                    match &cursor.kind {
+                        ExprKind::Ident(n) => { out.insert(n.clone()); break; }
+                        ExprKind::Index(base, _)
+                        | ExprKind::BitSlice(base, _, _)
+                        | ExprKind::PartSelect(base, _, _, _)
+                        | ExprKind::FieldAccess(base, _) => { cursor = base; }
+                        _ => break,
+                    }
                 }
             }
             Stmt::IfElse(ie) => {
@@ -3533,6 +3629,20 @@ impl<'a> SimCodegen<'a> {
         let mut vec_sizes: HashMap<String, u64> = vec_wire_counts.clone();
         for vi in &vec_port_infos {
             vec_sizes.insert(vi.name.clone(), vi.count);
+        }
+        // Vec-typed reg counts (e.g. `reg rf_reg: Vec<UInt<32>, 32>`).
+        // Needed by the async-reset emitter to lower `reset r => 0` for
+        // Vec regs into a per-element loop instead of an invalid scalar
+        // `_rf_reg = 0` (a C array isn't assignable from a scalar).
+        for r in m.body.iter().filter_map(|i|
+            if let ModuleBodyItem::RegDecl(r) = i { Some(r) } else { None })
+        {
+            if let TypeExpr::Vec(_, count_expr) = &r.ty {
+                let count = eval_const_expr_with_params(count_expr, &m.params);
+                if count > 0 {
+                    vec_sizes.insert(r.name.name.clone(), count);
+                }
+            }
         }
 
         // Collect reset-none reg names for --check-uninit + any guarded reg (regardless
@@ -4360,13 +4470,23 @@ impl<'a> SimCodegen<'a> {
         let ctx = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                            &wide_names, &widths, &enum_map, &bus_port_names)
                       .with_reset_levels(&reset_levels)
-                      .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes);
+                      .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes)
+                      .with_params(&m.params);
 
         if insts.is_empty() {
             // No sub-instances: simple path
             cpp.push_str("  eval_comb();\n");
             if has_clk {
                 cpp.push_str("  eval_posedge();\n");
+                cpp.push_str("  eval_comb();\n");
+            } else {
+                // Pure-comb modules: emit a second eval_comb() pass so that
+                // comb assignments which forward-reference signals driven
+                // later in source order (e.g. `let port_o = result_w;`
+                // before the comb block that drives `result_w`) settle.
+                // Mirrors the two-pass shape clocked modules already use.
+                // For deeper chains a topological-sort emission would be
+                // required; this catches the common one-level case.
                 cpp.push_str("  eval_comb();\n");
             }
         } else {
@@ -4814,7 +4934,8 @@ impl<'a> SimCodegen<'a> {
             let ctx = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                &wide_names, &widths, &enum_map, &bus_port_names)
                           .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes).posedge()
-                          .with_coverage(cov_handle);
+                          .with_coverage(cov_handle)
+                          .with_params(&m.params);
 
             for rb in &reg_blocks {
                 let mut assigned = std::collections::BTreeSet::new();
@@ -4866,8 +4987,62 @@ impl<'a> SimCodegen<'a> {
                     }
                 }
 
-                // Guard each seq block on its specific clock's rising edge
-                cpp.push_str(&format!("  if (_rising_{}) {{\n", rb.clock.name));
+                // For async reset, emit the reset arm OUTSIDE the rising-edge
+                // gate so an asserted reset clears the regs immediately
+                // (visible to the very next eval_comb()), not only after
+                // the next clock edge. Write to both `_q` (the live,
+                // user-visible value) and `_n_q` (the shadow) so the
+                // end-of-cycle commit doesn't restore stale state. The
+                // sync-reset case keeps the original gated form.
+                let async_reset_emitted = if let Some((rst_name, is_async, is_low)) = &reset_sig {
+                    if !is_async {
+                        // sync-reset path is handled below; skip the async pre-gate emit
+                        false
+                    } else {
+                    let cond = if *is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
+                    cpp.push_str(&format!("  if ({cond}) {{\n"));
+                    for (reg_name, init) in &reset_regs {
+                        // Vec-typed regs are C arrays — write each element
+                        // via a loop. `init` is a scalar broadcast value
+                        // per the ARCH spec (`reset r => 0` distributes
+                        // the scalar across every element).
+                        if vec_reg_names.contains(*reg_name) {
+                            let count = vec_sizes.get(*reg_name).copied().unwrap_or(0);
+                            if count > 0 {
+                                cpp.push_str(&format!("    for (size_t _i = 0; _i < {count}; ++_i) {{ _{reg_name}[_i] = {init}; _n_{reg_name}[_i] = {init}; }}\n"));
+                            }
+                        } else if wide_names.contains(*reg_name) {
+                            let bits = widths.get(*reg_name).copied().unwrap_or(0);
+                            if bits > 128 {
+                                let words = wide_words(bits);
+                                cpp.push_str(&format!("    _{reg_name} = VlWide<{words}>({init});\n"));
+                                cpp.push_str(&format!("    _n_{reg_name} = VlWide<{words}>({init});\n"));
+                            } else {
+                                cpp.push_str(&format!("    _{reg_name} = (_arch_u128){init};\n"));
+                                cpp.push_str(&format!("    _n_{reg_name} = (_arch_u128){init};\n"));
+                            }
+                        } else {
+                            cpp.push_str(&format!("    _{reg_name} = {init};\n"));
+                            cpp.push_str(&format!("    _n_{reg_name} = {init};\n"));
+                        }
+                    }
+                    cpp.push_str("  }\n");
+                    true
+                    }
+                } else {
+                    false
+                };
+
+                // Guard each seq block on its specific clock's rising edge.
+                // For async reset: use `else if` so the seq body is skipped
+                // when reset was active — the reset arm already cleared the
+                // regs; executing the seq body (e.g. toggle) would overwrite.
+                let rising_gate = if async_reset_emitted {
+                    format!("  else if (_rising_{}) {{\n", rb.clock.name)
+                } else {
+                    format!("  if (_rising_{}) {{\n", rb.clock.name)
+                };
+                cpp.push_str(&rising_gate);
                 let base_indent: usize = 2;
                 // --coverage phase 2: count seq-block entries (rising
                 // edges seen). One counter per top-level seq block;
@@ -4878,7 +5053,15 @@ impl<'a> SimCodegen<'a> {
                     cpp.push_str(&format!("{}_arch_cov[{idx}]++;\n", "  ".repeat(base_indent)));
                 }
 
-                if let Some((rst_name, _is_async, is_low)) = &reset_sig {
+                if async_reset_emitted {
+                    // Seq body: reset already cleared regs above; any
+                    // read-modify-write patterns (e.g. toggle) now see
+                    // the reset-cleared value.
+                    let mut body = String::new();
+                    emit_reg_stmts(&rb.stmts, &ctx, &mut body, base_indent);
+                    cpp.push_str(&body);
+                } else if let Some((rst_name, _is_async, is_low)) = &reset_sig {
+                    // Sync reset — original gated form.
                     let cond = if *is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
                     cpp.push_str(&format!("{}if ({cond}) {{\n", "  ".repeat(base_indent)));
                     for (reg_name, init) in &reset_regs {
@@ -4935,7 +5118,8 @@ impl<'a> SimCodegen<'a> {
                     }
                     let ctx_pe = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                            &wide_names, &widths, &enum_map, &bus_port_names)
-                                       .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes);
+                                       .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes)
+                                       .with_params(&m.params);
                     let src = ctx_pe.resolve_name(&p.source.name, false);
                     if let Some((ref rst_name, is_low)) = rst_info {
                         let cond = if is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
@@ -5158,7 +5342,8 @@ impl<'a> SimCodegen<'a> {
         let ctx_comb = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                 &wide_names, &widths, &enum_map, &bus_port_names)
                            .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes)
-                           .with_coverage(cov_handle);
+                           .with_coverage(cov_handle)
+                           .with_params(&m.params);
 
         // Credit-channel combinational wires (sender can_send; receiver
         // valid/data once PR-sim-2 lands). Emit early so user comb code
@@ -5209,6 +5394,7 @@ impl<'a> SimCodegen<'a> {
                                         vec_sizes: ctx_comb.vec_sizes, fsm_vec_port_regs: ctx_comb.fsm_vec_port_regs,
                                         ident_subst: Some(&sub),
                                         coverage: ctx_comb.coverage,
+                                        params: ctx_comb.params,
                                     };
                                     hits.push(cpp_expr(&margs[0], &sub_ctx));
                                 }

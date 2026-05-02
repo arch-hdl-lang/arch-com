@@ -4633,6 +4633,54 @@ fn test_tlm_method_parses_as_bus_sub_construct() {
 }
 
 #[test]
+fn test_tlm_method_out_of_order_tags_parse_and_flatten() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: out_of_order tags 3;
+        end bus Mem
+
+        use Mem;
+
+        module Initiator
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m: initiator Mem;
+          reg data: UInt<64> reset rst => 0;
+          thread driver on clk rising, rst high
+            data <= m.read(32'h1000);
+          end thread driver
+        end module Initiator
+
+        module Target
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port s: target Mem;
+          reg value: UInt<64> reset rst => 0;
+          thread s.read(addr) on clk rising, rst high
+            return value;
+          end thread s.read
+        end module Target
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let bus = ast.items.iter().find_map(|it| match it {
+        arch::ast::Item::Bus(b) if b.name.name == "Mem" => Some(b),
+        _ => None,
+    }).expect("Mem bus in AST");
+    assert_eq!(bus.tlm_methods[0].mode.name, "out_of_order");
+    assert!(bus.tlm_methods[0].out_of_order_tags.is_some());
+
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("output logic [2:0] m_read_req_tag")
+         && sv.contains("input logic [2:0] m_read_rsp_tag"),
+        "initiator should expose out-of-order tag wires:\n{sv}");
+    assert!(sv.contains("input logic [2:0] s_read_req_tag")
+         && sv.contains("output logic [2:0] s_read_rsp_tag"),
+        "target perspective should flip tag wire directions:\n{sv}");
+}
+
+#[test]
 fn test_tlm_method_wires_flatten_at_bus_port() {
     // PR-tlm-2: tlm_method declarations flatten to a request channel
     // (valid/args/ready) plus response channel (valid/data/ready) at
@@ -5216,9 +5264,10 @@ fn test_implement_initiator_with_args_in_parens_errors() {
 }
 
 #[test]
-fn test_tlm_multi_thread_sharing_without_lock_errors() {
-    // Multi-thread sharing of a TLM method outside any lock block →
-    // targeted diagnostic pointing at the lock/resource idiom.
+fn test_tlm_multi_thread_direct_calls_lower_to_in_order_pool() {
+    // Direct multi-thread sharing of a TLM method lowers to an in-order
+    // request arbiter + response router. More complex shapes still get
+    // targeted diagnostics.
     let source = "
         bus Mem
           tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
@@ -5240,16 +5289,206 @@ fn test_tlm_multi_thread_sharing_without_lock_errors() {
           end thread w1
         end module Shared
     ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("_tlm_pool_m_read_fifo"),
+        "cohort lowering should emit issue-order FIFO:\n{sv}");
+    assert!(sv.contains("_tlm_pool_m_read_t0_state")
+         && sv.contains("_tlm_pool_m_read_t1_state"),
+        "cohort lowering should emit per-thread state regs:\n{sv}");
+    assert!(sv.contains("m_read_req_valid")
+         && sv.contains("m_read_rsp_ready"),
+        "cohort lowering should drive shared TLM handshakes:\n{sv}");
+}
+
+#[test]
+fn test_tlm_generate_for_workers_share_method() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module Shared
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   addr: Vec<UInt<32>, 3> reset rst => 0;
+          reg   data: Vec<UInt<64>, 3> reset rst => 0;
+          generate_for i in 0..2
+            thread w_i on clk rising, rst high
+              data[i] <= m.read(addr[i]);
+            end thread w_i
+          end generate_for
+        end module Shared
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("_tlm_pool_m_read_fifo"),
+        "generated worker cohort should use pooled TLM lowering:\n{sv}");
+    assert!(sv.contains("data[0] <= m_read_rsp_data")
+         && sv.contains("data[1] <= m_read_rsp_data")
+         && sv.contains("data[2] <= m_read_rsp_data"),
+        "each generated worker should capture its routed response:\n{sv}");
+}
+
+#[test]
+fn test_tlm_fork_join_workers_share_method() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module Shared
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   addr: Vec<UInt<32>, 2> reset rst => 0;
+          reg   data: Vec<UInt<64>, 2> reset rst => 0;
+          thread workers on clk rising, rst high
+            fork
+              data[0] <= m.read(addr[0]);
+            and
+              data[1] <= m.read(addr[1]);
+            join
+          end thread workers
+        end module Shared
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("_tlm_pool_m_read_fifo"),
+        "fork/join TLM workers should use pooled TLM lowering:\n{sv}");
+    assert!(sv.contains("data[0] <= m_read_rsp_data")
+         && sv.contains("data[1] <= m_read_rsp_data"),
+        "fork/join worker responses should route by issue order:\n{sv}");
+}
+
+#[test]
+fn test_tlm_cohort_multi_arg_method() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>, len: UInt<4>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module Shared
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   d0: UInt<64> reset rst => 0;
+          reg   d1: UInt<64> reset rst => 0;
+          thread w0 on clk rising, rst high
+            d0 <= m.read(32'h1000, 4'd4);
+          end thread w0
+          thread w1 on clk rising, rst high
+            d1 <= m.read(32'h2000, 4'd8);
+          end thread w1
+        end module Shared
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("_tlm_pool_m_read_fifo"),
+        "multi-arg method should use pooled TLM lowering:\n{sv}");
+    assert!(sv.contains("m_read_addr")
+         && sv.contains("m_read_len"),
+        "cohort lowering should mux every method arg:\n{sv}");
+}
+
+#[test]
+fn test_tlm_unsupported_fork_join_call_errors() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module Bad
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   d0: UInt<64> reset rst => 0;
+          reg   d1: UInt<64> reset rst => 0;
+          thread workers on clk rising, rst high
+            fork
+              d0 <= m.read(32'h1000) + 1;
+            and
+              d1 <= m.read(32'h1004);
+            join
+          end thread workers
+        end module Bad
+    ";
     let tokens = arch::lexer::tokenize(source).expect("lexer");
     let mut parser = arch::parser::Parser::new(tokens, source);
     let ast = parser.parse_source_file().expect("parse");
     let ast = arch::elaborate::elaborate(ast).expect("elaborate");
     let ast = arch::elaborate::lower_tlm_target_threads(ast).expect("tlm target");
     let r = arch::elaborate::lower_tlm_initiator_calls(ast);
-    assert!(r.is_err(), "bare multi-thread TLM should error");
+    assert!(r.is_err(), "unsupported fork/join TLM shape should error");
     let msg = format!("{:?}", r.unwrap_err());
-    assert!(msg.contains("multi-thread sharing") && msg.contains("lock"),
-        "expected lock/resource diagnostic, got: {msg}");
+    assert!(msg.contains("multi-thread sharing") || msg.contains("TLM initiator thread body"),
+        "expected targeted TLM fork/join error, got: {msg}");
+}
+
+#[test]
+fn test_tlm_out_of_order_fork_join_routes_by_tag() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: out_of_order tags 2;
+        end bus Mem
+
+        use Mem;
+
+        module Shared
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   addr: Vec<UInt<32>, 2> reset rst => 0;
+          reg   data: Vec<UInt<64>, 2> reset rst => 0;
+          thread workers on clk rising, rst high
+            fork
+              data[0] <= m.read(addr[0]);
+            and
+              data[1] <= m.read(addr[1]);
+            join
+          end thread workers
+        end module Shared
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("m_read_req_tag"),
+        "out-of-order cohort should drive request tags:\n{sv}");
+    assert!(sv.contains("m_read_rsp_tag == 2'd0")
+         && sv.contains("m_read_rsp_tag == 2'd1"),
+        "out-of-order cohort should route responses by rsp_tag:\n{sv}");
+    assert!(sv.contains("data[0] <= m_read_rsp_data")
+         && sv.contains("data[1] <= m_read_rsp_data"),
+        "tag-routed responses should capture into each worker destination:\n{sv}");
+}
+
+#[test]
+fn test_tlm_out_of_order_target_echoes_tag() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: out_of_order tags 2;
+        end bus Mem
+
+        use Mem;
+
+        module MemTarget
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port s:   target Mem;
+          reg value: UInt<64> reset rst => 0;
+          thread s.read(addr) on clk rising, rst high
+            return value;
+          end thread s.read
+        end module MemTarget
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("_tlm_s_read_tag_latched"),
+        "target should latch accepted request tag:\n{sv}");
+    assert!(sv.contains("assign s_read_rsp_tag = _tlm_s_read_tag_latched"),
+        "target should echo the latched tag on response:\n{sv}");
 }
 
 #[test]
@@ -5441,8 +5680,8 @@ fn test_tlm_method_target_perspective_flips() {
 }
 
 #[test]
-fn test_tlm_method_v2_modes_rejected_in_v1() {
-    for mode in ["pipelined", "out_of_order", "burst"] {
+fn test_tlm_method_unsupported_modes_rejected() {
+    for mode in ["pipelined", "burst"] {
         let source = format!(
             "bus Mem
               tlm_method read(addr: UInt<32>) -> UInt<64>: {mode};
@@ -7052,6 +7291,159 @@ fn test_sim_codegen_comb_match_arm_recurses_into_nested_for() {
 }
 
 #[test]
+fn test_sim_codegen_bit_slice_lhs_compiles_and_uses_param_width() {
+    // Regression: pre-fix, `name[hi:lo] = val` in a seq block lowered to
+    // the read-side bit-slice form `((name >> lo) & MASK) = val`, an
+    // rvalue that gcc/clang reject as "expression is not assignable".
+    // Post-fix the slice-LHS arm emits a mask-and-OR analogous to the
+    // existing bit-indexed (`name[i] = val`) handling.
+    //
+    // Additionally, the slice width must be folded against module params
+    // — bare `eval_width` returns 32 for `CounterWidth-1`, which would
+    // make the LHS clear-mask 33 bits and leak bit[CounterWidth] across
+    // writes. Param-aware width evaluation through `eval_width_in` keeps
+    // the mask at exactly `CounterWidth` bits.
+    let source = "
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+        module M
+          param CounterWidth: const = 32;
+          port clk:    in Clock<SysDomain>;
+          port rst_ni: in Reset<Async, Low>;
+          port we:     in Bool;
+          port d:      in UInt<32>;
+          port q:      out UInt<64>;
+
+          reg counter_q: UInt<64> reset rst_ni => 0;
+
+          default seq on clk rising;
+
+          seq
+            if we
+              counter_q[CounterWidth-1:0] <= {counter_q[63:32], d}[CounterWidth-1:0];
+            end if
+          end seq
+
+          let q = counter_q;
+        end module M
+    ";
+    let cpp = compile_to_sim_h(source, false);
+    // Slice-LHS must lower to a mask-and-OR write — not the pre-fix rvalue
+    // form `((_n_counter_q >> 0) & MASK) = ...`.
+    assert!(!cpp.contains(") =") || cpp.contains("== "),
+        "slice-LHS regression: rvalue form must not appear:\n{cpp}");
+    // The clear-mask must be 32 bits (0xFFFFFFFFULL), not 33 (0x1FFFFFFFFULL).
+    assert!(cpp.contains("0xFFFFFFFFULL"),
+        "slice-LHS should use a 32-bit mask for [CounterWidth-1:0] when CounterWidth=32:\n{cpp}");
+    assert!(!cpp.contains("0x1FFFFFFFFULL"),
+        "slice-LHS must not use a 33-bit mask for [CounterWidth-1:0] (param folding regression):\n{cpp}");
+    // Sanity: the mask-and-OR shape includes `& ~(uint64_t(0x...` for the clear
+    // and `| ((uint64_t(...` for the set.
+    assert!(cpp.contains("_n_counter_q = (_n_counter_q & ~"),
+        "expected mask-and-OR LHS shape:\n{cpp}");
+}
+
+#[test]
+fn test_sim_codegen_async_reset_fires_outside_rising_edge() {
+    // Regression: pre-fix the seq-block reset arm was emitted INSIDE the
+    // `if (_rising_clk)` gate even for async resets, so under
+    // `arch sim --pybind` an async-asserted reset only took effect on
+    // the next clock edge. Tests asserting reset and observing within
+    // the same tick (without spanning a rising edge) read stale state.
+    //
+    // Fix: emit the reset arm OUTSIDE the rising-edge gate when the
+    // reset is async, and write to BOTH `_q` (the live, user-visible
+    // value) and `_n_q` (the shadow) so the end-of-cycle commit doesn't
+    // restore stale state.
+    let source = "
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+        module M
+          port clk:    in Clock<SysDomain>;
+          port rst_ni: in Reset<Async, Low>;
+          port we:     in Bool;
+          port d:      in UInt<32>;
+          port q:      out UInt<32>;
+
+          reg q_r: UInt<32> reset rst_ni => 0;
+
+          default seq on clk rising;
+
+          seq
+            if we
+              q_r <= d;
+            end if
+          end seq
+
+          let q = q_r;
+        end module M
+    ";
+    let cpp = compile_to_sim_h(source, false);
+    // The async-reset arm must appear OUTSIDE the rising-edge gate.
+    // Anchor on the eval_posedge function definition and slice through
+    // the function body (closes at the next `\n}\n` after the open).
+    let start_marker = "void VM::eval_posedge() {";
+    let pe_start = cpp.find(start_marker)
+        .unwrap_or_else(|| panic!("expected eval_posedge body in:\n{cpp}"));
+    let pe_body = &cpp[pe_start + start_marker.len()..];
+    let pe_body = pe_body.split("\n}\n").next().unwrap_or("");
+    let async_pos = pe_body.find("if ((!rst_ni))");
+    let rising_pos = pe_body.find("if (_rising_clk)");
+    assert!(async_pos.is_some(), "async reset arm should be emitted in eval_posedge:\n{pe_body}");
+    assert!(rising_pos.is_some(), "rising-edge guard should be emitted in eval_posedge:\n{pe_body}");
+    assert!(async_pos.unwrap() < rising_pos.unwrap(),
+        "async reset arm must precede the rising-edge gate:\n{pe_body}");
+    // The async arm writes to both `_q_r` (live) and `_n_q_r` (shadow).
+    assert!(pe_body.contains("_q_r = 0;") && pe_body.contains("_n_q_r = 0;"),
+        "async reset must write both live and shadow regs:\n{pe_body}");
+}
+
+#[test]
+fn test_sim_codegen_collect_assigns_walks_indexed_lhs() {
+    // Regression: `collect_stmt_assigns` only handled `Ident` and
+    // `FieldAccess` LHS forms, so `q[hi:lo] <= ...` and `q[i] <= ...`
+    // never registered `q` as an assigned reg. Side effect: `reset_sig`
+    // ended up None, the seq-block reset arm wasn't emitted at all,
+    // and the user got a zero-reset register that drifted to whatever
+    // the seq body wrote. The fix walks Index / BitSlice / PartSelect /
+    // FieldAccess down to the base Ident.
+    //
+    // This test triggers the path indirectly: an async-reset register
+    // written only via a bit-slice LHS should still get its reset arm
+    // emitted in eval_posedge.
+    let source = "
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+        module M
+          param W: const = 16;
+          port clk:    in Clock<SysDomain>;
+          port rst_ni: in Reset<Async, Low>;
+          port we:     in Bool;
+          port d:      in UInt<16>;
+          port q:      out UInt<32>;
+
+          reg q_r: UInt<32> reset rst_ni => 0;
+
+          default seq on clk rising;
+
+          seq
+            if we
+              q_r[W-1:0] <= d;
+            end if
+          end seq
+
+          let q = q_r;
+        end module M
+    ";
+    let cpp = compile_to_sim_h(source, false);
+    assert!(cpp.contains("_q_r = 0;"),
+        "indexed-LHS reg should still get its async reset arm:\n{cpp}");
+}
+
+#[test]
 fn test_cc_dispatch_rewrites_seq_match_scrutinee() {
     // Regression for the elaborate CC-dispatch asymmetry: the reg-block
     // walker used to skip `Stmt::Match` scrutinees (only the comb walker
@@ -7444,6 +7836,13 @@ module M
   let q = rb;
 end module M
 "#);
+}
+
+#[test]
+fn rdc_reset_type_cast_at_inst_is_direct_reset_ok() {
+    // `rst <- rst_async_n as Reset<Async, Low>` is a reset type override at
+    // the inst boundary. It should not be classified as reset-combining logic.
+    assert_rdc_ok("reset-cast-inst", include_str!("../examples/param_reset.arch"));
 }
 
 #[test]
@@ -7999,6 +8398,73 @@ fn rdc_j4_mixed_reset_and_data_sync_same_source_fails() {
     assert_rdc_fails("J4", &src, &["RDC/CDC", "shared", "Dst"]);
 }
 
+#[test]
+fn package_width_qualified_param_emits_bracket_form() {
+    // Regression: package-scoped `param NAME[hi:lo]: const = …;` must emit
+    // `localparam [hi:lo] NAME = …;`, not `localparam int NAME = …;`.
+    // The latter silently truncates values wider than 32 bits (Verilator
+    // WIDTHTRUNC). Spec §29.1 + lines 1101–1105.
+    let source = "
+        package WidthPkg
+          param NARROW: const = 42;
+          param WIDE32[31:0]: const = 42;
+          param WIDE64[63:0]: const = 24314014034;
+        end package WidthPkg
+
+        use WidthPkg;
+
+        module M
+          port o: out UInt<32>;
+          comb
+            o = NARROW;
+          end comb
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    // Untyped const stays `localparam int`.
+    assert!(sv.contains("localparam int NARROW = 42;"),
+            "untyped const must keep `int`:\n{sv}");
+    // Width-qualified params must keep the [hi:lo] qualifier.
+    assert!(sv.contains("localparam [31:0] WIDE32 = 42;"),
+            "32-bit width qualifier dropped:\n{sv}");
+    assert!(sv.contains("localparam [63:0] WIDE64 = 24314014034;"),
+            "64-bit width qualifier dropped (would truncate):\n{sv}");
+}
+
+#[test]
+fn package_enum_typed_param_emits_typedef_before_localparam() {
+    // Regression: an EnumConst package param references its enum type,
+    // which SV requires forward-declared. The package's `typedef enum`
+    // must appear before the `localparam` that uses it.
+    let source = "
+        package OpPkg
+          enum Op
+            ADD,
+            SUB,
+          end enum Op
+          param DEFAULT_OP: Op = Op::ADD;
+        end package OpPkg
+
+        use OpPkg;
+
+        module M
+          port o: out Op;
+          comb
+            o = DEFAULT_OP;
+          end comb
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    let typedef_pos = sv.find("typedef enum")
+        .expect("typedef enum missing");
+    let param_pos = sv.find("DEFAULT_OP")
+        .expect("DEFAULT_OP localparam missing");
+    assert!(typedef_pos < param_pos,
+        "enum typedef must precede localparam that references it:\n{sv}");
+    assert!(sv.contains("localparam Op DEFAULT_OP = "),
+        "EnumConst must emit typed `localparam Op …`:\n{sv}");
+}
+
 // ── Group K: Phase 2d — combiner-derived reset glitches at inst boundaries
 // A sub-module Reset input wired by a combinational expression (rst_a | rst_b,
 // not rst_a, etc.) sees glitches on edge skew and can trigger partial resets.
@@ -8029,6 +8495,56 @@ fn rdc_k4_sync_output_to_reset_ok() {
     let src = std::fs::read_to_string("tests/rdc/rdc_k4_sync_output_to_reset_ok.arch")
         .expect("read K4");
     assert_rdc_ok("K4", &src);
+}
+
+// ── Group M: Reconvergent CDC source-tracing (Aldec article 2140) ─────────
+// The phase 2c reconvergence check walks each synchroniser's `data_in`
+// expression through bit-slice / part-select / concat / unary+binary ops /
+// ternary / let-binding indirection to find the *terminal* source
+// register(s). Two synchronisers in the same destination clock domain whose
+// inputs trace back to the same source — even via different combinational
+// paths — produce a reconvergent-CDC violation.
+
+#[test]
+fn rdc_m1_cdc_bit_slice_same_source_fails() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_m1_cdc_bit_slice_same_source_fail.arch")
+        .expect("read M1");
+    assert_rdc_fails("M1", &src, &["CDC", "flags", "sync_a", "sync_b", "Dst"]);
+}
+
+#[test]
+fn rdc_m2_cdc_part_select_same_source_fails() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_m2_cdc_part_select_same_source_fail.arch")
+        .expect("read M2");
+    assert_rdc_fails("M2", &src, &["CDC", "word", "sync_a", "sync_b", "Dst"]);
+}
+
+#[test]
+fn rdc_m3_cdc_common_source_via_comb_fails() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_m3_cdc_common_source_via_comb_fail.arch")
+        .expect("read M3");
+    assert_rdc_fails("M3", &src, &["CDC", "src_flag", "sync_a", "sync_b", "Dst"]);
+}
+
+#[test]
+fn rdc_m4_cdc_let_alias_same_source_fails() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_m4_cdc_let_alias_same_source_fail.arch")
+        .expect("read M4");
+    assert_rdc_fails("M4", &src, &["CDC", "src_flag", "sync_a", "sync_b", "Dst"]);
+}
+
+#[test]
+fn rdc_m5_cdc_distinct_sources_ok() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_m5_cdc_distinct_sources_ok.arch")
+        .expect("read M5");
+    assert_rdc_ok("M5", &src);
+}
+
+#[test]
+fn rdc_m6_cdc_bit_slice_distinct_vecs_ok() {
+    let src = std::fs::read_to_string("tests/rdc/rdc_m6_cdc_bit_slice_distinct_vecs_ok.arch")
+        .expect("read M6");
+    assert_rdc_ok("M6", &src);
 }
 
 // ── Group L: Phase polish — `pragma rdc_safe;` per-module opt-out ─────────

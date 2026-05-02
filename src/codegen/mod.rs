@@ -484,22 +484,34 @@ impl<'a> Codegen<'a> {
         self.line(&format!("package {};", pkg.name.name));
         self.indent += 1;
 
-        // params → localparam
-        for p in &pkg.params {
-            if let Some(d) = &p.default {
-                let val = self.emit_expr_str(d);
-                self.line(&format!("localparam int {} = {};", p.name.name, val));
-            }
-        }
-
-        // enums
+        // Typedefs must precede params: an `EnumConst` param references its
+        // enum type, which SV requires forward-declared.
         for e in &pkg.enums {
             self.emit_enum(e);
         }
-
-        // structs
         for s in &pkg.structs {
             self.emit_struct(s);
+        }
+
+        // Dispatch on ParamKind: width-qualified params must emit
+        // `localparam [hi:lo]`, not `int` (truncates >32-bit values).
+        for p in &pkg.params {
+            if let Some(d) = &p.default {
+                let val = self.emit_expr_str(d);
+                match &p.kind {
+                    ParamKind::WidthConst(hi, lo) => {
+                        let hi_s = self.emit_expr_str(hi);
+                        let lo_s = self.emit_expr_str(lo);
+                        self.line(&format!("localparam [{}:{}] {} = {};", hi_s, lo_s, p.name.name, val));
+                    }
+                    ParamKind::EnumConst(enum_name) => {
+                        self.line(&format!("localparam {} {} = {};", enum_name, p.name.name, val));
+                    }
+                    ParamKind::Const | ParamKind::Type(_) | ParamKind::ConstVec(_) => {
+                        self.line(&format!("localparam int {} = {};", p.name.name, val));
+                    }
+                }
+            }
         }
 
         // functions
@@ -2229,9 +2241,9 @@ impl<'a> Codegen<'a> {
                     if let Some(name) = base_ident(base) {
                         let idx_s = self.emit_expr_str(idx);
                         if let Some(limit) = vec_sizes.get(&name) {
-                            push(format!("({idx_s}) < ({limit})"), "vec", sites, seen);
+                            push(format!("int'({idx_s}) < ({limit})"), "vec", sites, seen);
                         } else if let Some(w) = scalar_widths.get(&name) {
-                            push(format!("({idx_s}) < ({w})"), "bitsel", sites, seen);
+                            push(format!("int'({idx_s}) < ({w})"), "bitsel", sites, seen);
                         }
                     }
                 }
@@ -3403,4 +3415,3 @@ impl<'a> Codegen<'a> {
     // ── RAM ───────────────────────────────────────────────────────────────────
 
 }
-
