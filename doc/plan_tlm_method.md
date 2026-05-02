@@ -11,8 +11,10 @@
 > assignment (`dst <= port.method(args);`) or as an RHS-fork issue
 > (`dst <= fork port.method(args); ... join all;`). The compiler rejects TLM
 > calls in `comb`, `seq`, module-level `let`, module-local `function`,
-> `pipeline`, and `fsm` contexts. There is no current `Future<T>`, `await`,
-> user-visible `Token<T>`, `pipelined`, or `burst` API.
+> `pipeline`, `fsm`, and runtime `for` loop contexts. Use `generate_for`
+> worker threads when a compile-time number of TLM calls is needed. There is
+> no current `Future<T>`, `await`, user-visible `Token<T>`, `pipelined`, or
+> `burst` API.
 
 Cross-refs:
 - `doc/plan_bus_unification.md` — sets the unified-bus frame. `tlm_method` is

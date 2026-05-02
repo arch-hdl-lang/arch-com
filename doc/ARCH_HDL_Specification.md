@@ -5054,6 +5054,8 @@ Full design history and the broader roadmap are in `doc/plan_credit_channel.md` 
 
 TLM call sites are deliberately restricted to `thread` bodies. An initiator call is legal only as the direct RHS of a thread assignment (`dst <= port.method(args);`) or as a nonblocking RHS-fork issue (`dst <= fork port.method(args);`). TLM calls are not general expressions and are rejected in `comb`, `seq`, module-level `let`, module-local `function`, `pipeline`, and `fsm` contexts.
 
+TLM calls are also not legal inside runtime `for` loops in v1, including loops in a thread body. The lowering pass needs a statically visible call site for each outstanding request so it can allocate per-call state, destination routing, FIFO slots, or compiler-managed tags. Use `generate_for` worker threads when the replication factor is compile-time constant.
+
 **18d.1 Declaration**
 
 ```
@@ -5147,6 +5149,26 @@ end thread driver
 
 `target <= fork port.method(args);` issues a nonblocking TLM request and lets the parent thread continue. `join all;` is an explicit barrier; v1 requires it as the final statement in the group. Literal `wait N cycle;` statements between forked issues become issue offsets, so the example above can have both reads outstanding.
 
+Runtime `for` loops around TLM calls are not supported:
+
+```
+thread bad on clk rising, rst high
+  for i in 0..3
+    data[i] <= m.read(addr[i]);        // compile error in v1
+  end for
+end thread bad
+```
+
+Use `generate_for` to create static worker threads instead:
+
+```
+generate_for i in 0..3
+  thread reader_i on clk rising, rst high
+    data[i] <= m.read(addr[i]);
+  end thread reader_i
+end generate_for
+```
+
 Blocking cohorts use a request arbiter plus issue-order FIFO response router. `out_of_order tags N` cohorts use compiler-assigned worker tags and route by `rsp_tag`.
 
 **18d.5 Lowering**
@@ -5162,6 +5184,7 @@ Both target and initiator passes emit ordinary `RegDecl` + `RegBlock` + `CombBlo
 
 - `pipelined` / `burst` modes and all `Future<T>` / `await` / user-visible `Token<T>` APIs.
 - TLM calls outside a thread body (`comb`, `seq`, module-level `let`, module-local `function`, `pipeline`, `fsm` — compile error).
+- TLM calls inside runtime `for` loops, even inside a thread body. Use `generate_for` worker threads for compile-time replication.
 - Nested TLM calls in expressions (compile error — must be direct RHS of `<=`).
 - Rich control flow inside TLM initiator bodies. Cohort `fork/join` is supported only when each branch is exactly one direct call assignment. RHS-fork groups support only direct forked TLM assignments, literal `wait N cycle;` offsets, and final `join all;`.
 - Non-literal `out_of_order tags` expressions.
