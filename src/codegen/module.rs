@@ -8,6 +8,15 @@ use super::*;
 
 impl<'a> Codegen<'a> {
     pub(crate) fn emit_module(&mut self, m: &ModuleDecl) {
+        // Interface stubs loaded from `.archi` files have no body and
+        // exist only to expose the port signature to typecheck. The real
+        // SV for these modules lives in a separately-built `.sv` file
+        // alongside the `.archi` — emitting an empty stub here would
+        // produce a duplicate module declaration that clashes with the
+        // real SV at Verilator link time.
+        if m.is_interface {
+            return;
+        }
         self.current_construct = m.name.name.clone();
         // Emit SV `import NAME::*;` only for `use NAME;` whose target is an
         // actual `package` — package contents become an SV package and need

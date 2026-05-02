@@ -842,6 +842,8 @@ impl Parser {
             // `inner_doc` was harvested above right after the name.
             doc: None,
             inner_doc,
+            // Default false; set post-parse for items loaded from `.archi`.
+            is_interface: false,
         })
     }
 
