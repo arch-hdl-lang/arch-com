@@ -816,12 +816,28 @@ fn run_sim_opts(
             return Ok(());
         }
 
-        // Apply --pybind-module-name if provided. Retarget only the first
-        // wrapper (the user's top module); subsequent wrappers (nested
-        // modules) keep their auto-derived names. The override is a
-        // string-replace on the generated .cpp so the PYBIND11_MODULE macro
-        // matches the new class_name.
-        let default_first_name = pybind_wrappers[0].class_name.clone();
+        // Pick the "user-facing" wrapper as the testbench-default top.
+        // `lower_threads` prepends generated `_threads` submodules to the
+        // AST item list so their SV definitions precede the parent's
+        // instantiation. That puts them at index 0 of `pybind_wrappers`,
+        // which previously made `--test` import the wrong pybind module
+        // (the thread submodule has no parent ports — every test fails
+        // with `AttributeError: No signal '<port>' on DUT`).
+        // Heuristic: thread-lowered submodule class names start with
+        // `V_`; user-module names start with `V<word>` (e.g. `Vibex_alu`).
+        // Prefer the LAST wrapper whose class name doesn't start with
+        // `V_`; fall back to wrapper[0] for designs without thread-
+        // submodule lowering (the existing default shape).
+        let user_top_idx = pybind_wrappers.iter()
+            .rposition(|w| !w.class_name.starts_with("V_"))
+            .unwrap_or(0);
+
+        // Apply --pybind-module-name if provided. Retarget only the
+        // user-top wrapper (the user's intended top module); other
+        // wrappers (thread submodules / nested modules) keep their
+        // auto-derived names. The override is a string-replace on the
+        // generated .cpp so the PYBIND11_MODULE macro matches.
+        let default_first_name = pybind_wrappers[user_top_idx].class_name.clone();
         let effective_first_name = pybind_module_name_override
             .map(|s| s.to_string())
             .unwrap_or_else(|| default_first_name.clone());
@@ -829,7 +845,7 @@ fn run_sim_opts(
         let mut pybind_cpps: Vec<PathBuf> = Vec::new();
         let mut pybind_module_name = String::new();
         for (i, wrapper) in pybind_wrappers.iter().enumerate() {
-            let (class_name, impl_src) = if i == 0 && pybind_module_name_override.is_some() {
+            let (class_name, impl_src) = if i == user_top_idx && pybind_module_name_override.is_some() {
                 let new_name = &effective_first_name;
                 let retargeted = wrapper.impl_
                     .replace(&format!("PYBIND11_MODULE({}, m)", default_first_name),
@@ -842,7 +858,7 @@ fn run_sim_opts(
             fs::write(&cpp_path, &impl_src).into_diagnostic()?;
             eprintln!("Generated pybind11 wrapper: {}", cpp_path.display());
             pybind_cpps.push(cpp_path);
-            if pybind_module_name.is_empty() {
+            if i == user_top_idx {
                 pybind_module_name = class_name;
             }
         }
