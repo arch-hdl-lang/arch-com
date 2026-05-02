@@ -1059,6 +1059,8 @@ Both sides lower to a parent-module state machine (state reg + RegBlock + CombBl
 
 TLM calls are not general expressions. They are legal only in `thread` bodies as `dst <= port.method(args);` or `dst <= fork port.method(args);`; `comb`, `seq`, module-level `let`, module-local `function`, `pipeline`, and `fsm` contexts reject them.
 
+Do not put TLM calls inside runtime `for` loops. Use `generate_for` worker threads for compile-time replication.
+
 **Concurrent initiator cohorts** — multiple direct worker calls on one method lower to an arbiter plus response router:
 
 ```
@@ -1094,7 +1096,7 @@ end thread driver
 
 `dst <= fork m.read(...);` is a nonblocking TLM issue; `join all;` waits for every forked issue in the group. v1 allows direct forked TLM assignments plus literal `wait N cycle;` offsets, with `join all;` final.
 
-Current restrictions: thread-body call sites only; direct RHS call only (`dst <= m.method(args);` or `dst <= fork m.method(args);`); one call per worker/branch/forked issue; same clock/reset per cohort; literal tag count only; RHS-fork offsets require literal `wait N cycle;`; no nested/composed TLM calls; no `pipelined`; no `burst`; no `Future<T>`/`await`.
+Current restrictions: thread-body call sites only; direct RHS call only (`dst <= m.method(args);` or `dst <= fork m.method(args);`); no TLM calls inside runtime `for` loops; one call per worker/branch/forked issue; same clock/reset per cohort; literal tag count only; RHS-fork offsets require literal `wait N cycle;`; no nested/composed TLM calls; no `pipelined`; no `burst`; no `Future<T>`/`await`.
 
 Full spec: `doc/ARCH_HDL_Specification.md` §18d. Design + v2 roadmap: `doc/plan_tlm_method.md`.
 
