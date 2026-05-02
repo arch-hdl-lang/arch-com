@@ -1845,6 +1845,142 @@ end linklist MhQ
 }
 
 #[test]
+fn test_linklist_multi_head_full_ops_sv_shape() {
+    // Multi-head SV codegen for the remaining head-addressed ops:
+    // insert_head, insert_after, delete. Each must latch req_head_idx
+    // at accept, route head/tail reads/writes through the latched idx
+    // at the busy cycle, and bump _length_r[idx] ±1.
+    let source = r#"
+linklist MhFull
+  param DEPTH: const = 16;
+  param NUM_HEADS: const = 2;
+  param DATA: type = UInt<8>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  kind doubly;
+  track tail: true;
+  op insert_head
+    latency: 2;
+    port req_valid:    in Bool;
+    port req_ready:    out Bool;
+    port req_head_idx: in UInt<1>;
+    port req_data:     in UInt<8>;
+    port resp_valid:   out Bool;
+    port resp_handle:  out UInt<4>;
+  end op insert_head
+  op insert_after
+    latency: 2;
+    port req_valid:    in Bool;
+    port req_ready:    out Bool;
+    port req_head_idx: in UInt<1>;
+    port req_handle:   in UInt<4>;
+    port req_data:     in UInt<8>;
+    port resp_valid:   out Bool;
+    port resp_handle:  out UInt<4>;
+  end op insert_after
+  op delete
+    latency: 2;
+    port req_valid:    in Bool;
+    port req_ready:    out Bool;
+    port req_head_idx: in UInt<1>;
+    port req_handle:   in UInt<4>;
+    port resp_valid:   out Bool;
+  end op delete
+end linklist MhFull
+"#;
+    let sv = compile_to_sv(source);
+    // No $fatal stub anywhere — all three ops are now wired.
+    assert!(!sv.contains("not yet implemented for multi-head"),
+            "stub message should be gone:\n{sv}");
+    // insert_head: head_idx latch + busy-cycle uses latched idx + length++
+    assert!(sv.contains("_ctrl_insert_head_head_idx  <= insert_head_req_head_idx"),
+            "missing insert_head idx latch:\n{sv}");
+    assert!(sv.contains("_head_r[_ctrl_insert_head_head_idx] <= _ctrl_insert_head_resp_handle"),
+            "missing insert_head busy-cycle head update");
+    assert!(sv.contains("_length_r[_ctrl_insert_head_head_idx] <= _length_r[_ctrl_insert_head_head_idx] + 1'b1"),
+            "missing insert_head length increment");
+    assert!(sv.contains("_ctrl_insert_head_was_empty <= (_length_r[insert_head_req_head_idx] == '0)"),
+            "missing per-head was_empty check on insert_head");
+    // insert_after: head_idx latch + length++ (pointer patches stay shared)
+    assert!(sv.contains("_ctrl_insert_after_head_idx <= insert_after_req_head_idx"),
+            "missing insert_after idx latch");
+    assert!(sv.contains("_length_r[_ctrl_insert_after_head_idx] <= _length_r[_ctrl_insert_after_head_idx] + 1'b1"),
+            "missing insert_after length increment");
+    // delete: head_idx latch + length-- + per-head ready gate
+    assert!(sv.contains("_ctrl_delete_head_idx <= delete_req_head_idx"),
+            "missing delete idx latch");
+    assert!(sv.contains("_length_r[_ctrl_delete_head_idx] <= _length_r[_ctrl_delete_head_idx] - 1'b1"),
+            "missing delete length decrement");
+    assert!(sv.contains("_length_r[delete_req_head_idx] != '0"),
+            "missing per-head delete ready gate");
+}
+
+#[test]
+fn test_linklist_multi_head_full_ops_sim_shape() {
+    // Sim-codegen mirror of the same three new multi-head ops.
+    let source = r#"
+linklist MhFull
+  param DEPTH: const = 8;
+  param NUM_HEADS: const = 2;
+  param DATA: type = UInt<8>;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  kind doubly;
+  track tail: true;
+  op insert_head
+    latency: 2;
+    port req_valid:    in Bool;
+    port req_ready:    out Bool;
+    port req_head_idx: in UInt<1>;
+    port req_data:     in UInt<8>;
+    port resp_valid:   out Bool;
+    port resp_handle:  out UInt<3>;
+  end op insert_head
+  op insert_after
+    latency: 2;
+    port req_valid:    in Bool;
+    port req_ready:    out Bool;
+    port req_head_idx: in UInt<1>;
+    port req_handle:   in UInt<3>;
+    port req_data:     in UInt<8>;
+    port resp_valid:   out Bool;
+    port resp_handle:  out UInt<3>;
+  end op insert_after
+  op delete
+    latency: 2;
+    port req_valid:    in Bool;
+    port req_ready:    out Bool;
+    port req_head_idx: in UInt<1>;
+    port req_handle:   in UInt<3>;
+    port resp_valid:   out Bool;
+  end op delete
+end linklist MhFull
+"#;
+    let sim = compile_to_sim_h(source, false);
+    assert!(!sim.contains("is not yet implemented for multi-head"),
+            "stub message should be gone:\n{sim}");
+    // insert_head: head_idx latch + length++ + per-head head update
+    assert!(sim.contains("_ctrl_insert_head_head_idx = insert_head_req_head_idx"),
+            "missing insert_head idx latch:\n{sim}");
+    assert!(sim.contains("_head_r[_ctrl_insert_head_head_idx] = _ctrl_insert_head_resp_handle"),
+            "missing insert_head busy head update");
+    assert!(sim.contains("_length_r[_ctrl_insert_head_head_idx]++"),
+            "missing insert_head length increment");
+    // insert_after: idx latch + length++
+    assert!(sim.contains("_ctrl_insert_after_head_idx = insert_after_req_head_idx"),
+            "missing insert_after idx latch");
+    assert!(sim.contains("_length_r[_ctrl_insert_after_head_idx]++"),
+            "missing insert_after length increment");
+    // delete: idx latch + length-- + per-head ready gate
+    assert!(sim.contains("_ctrl_delete_head_idx = delete_req_head_idx"),
+            "missing delete idx latch");
+    assert!(sim.contains("_length_r[_ctrl_delete_head_idx]--"),
+            "missing delete length decrement");
+    assert!(sim.contains("_length_r[delete_req_head_idx] != 0"),
+            "missing per-head delete ready gate");
+}
+
+#[test]
 fn test_linklist_multi_head_rejects_missing_head_idx() {
     // NUM_HEADS > 1 but per-head op omits req_head_idx → typecheck error
     let source = r#"
