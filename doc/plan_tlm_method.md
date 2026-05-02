@@ -1,6 +1,18 @@
 # Plan: `tlm_method` — transaction-level bus sub-construct
 
-*Author: session of 2026-04-22. Status: implemented in stages; updated 2026-05-01 for thread cohorts, tagged OOO, and arch-sim parallel integration.*
+*Author: session of 2026-04-22. Status: implemented in stages; updated 2026-05-02 for RHS-fork issue groups and implemented-only call-site documentation.*
+
+> **Implemented surface.** Current `tlm_method` syntax is only:
+> `tlm_method name(args) -> Ret: blocking;` or
+> `tlm_method name(args) -> Ret: out_of_order tags N;` inside a `bus`.
+> Target implementations are dotted-name threads:
+> `thread port.method(args) on clk rising, rst high ... return expr; end thread port.method`.
+> Initiator calls are legal only inside `thread` bodies as a direct RHS
+> assignment (`dst <= port.method(args);`) or as an RHS-fork issue
+> (`dst <= fork port.method(args); ... join all;`). The compiler rejects TLM
+> calls in `comb`, `seq`, module-level `let`, module-local `function`,
+> `pipeline`, and `fsm` contexts. There is no current `Future<T>`, `await`,
+> user-visible `Token<T>`, `pipelined`, or `burst` API.
 
 Cross-refs:
 - `doc/plan_bus_unification.md` — sets the unified-bus frame. `tlm_method` is
@@ -15,7 +27,7 @@ Cross-refs:
 
 Transaction-level methods collapse what is otherwise a hand-rolled FSM
 per call site: a module that wants to issue an AXI read writes
-`let val = m_axi.read(addr);` inside a thread, and the compiler
+`val <= m_axi.read(addr);` inside a thread, and the compiler
 generates the AR-channel valid/ready shake, the cycle-accurate response
 wait, and the FSM stalling for the enclosing thread. On the target
 side, the user writes a `thread s.read(addr) ... return mem[addr]; end`
@@ -26,7 +38,7 @@ the unified `bus` umbrella. It is the **transaction-level** + **stateful**
 quadrant of the 2×2 — stateful because the compiler owns request/response
 FSMs and any outstanding-transaction bookkeeping.
 
-## v1 scope (what ships first)
+## Historical v1 scope (superseded by the implemented surface above)
 
 To keep the feature tractable and reviewable, v1 is **`blocking` mode
 only**. In-order thread-cohort lowering, out-of-order tagged routing,
