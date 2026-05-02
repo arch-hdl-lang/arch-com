@@ -26,10 +26,7 @@ The compiler binary is `arch`. MVP commands:
 ```
 arch check F.arch          # type-check only (no output)
 arch sim Tb.arch           # simulate (single core)
-arch sim --parallel Tb.arch
-arch sim --tlm-lt          # max speed, no timing
-arch sim --tlm-at          # ns-accurate AT timing
-arch sim --tlm-rtl         # full signal fidelity
+arch sim Tb.arch --thread-sim parallel
 arch sim --wave out.fst    # emit waveform (GTKWave/Surfer)
 arch build F.arch          # emit SystemVerilog
 arch formal F.arch         # emit SMT-LIB2
@@ -179,8 +176,8 @@ keyword Name
   port name: in TypeExpr;
   port name: out TypeExpr;
   port name: in unpacked Vec<T, N>;       // SV unpacked-array port (interop hatch)
-  socket name: initiator InterfaceName;   // TLM
-  socket name: target InterfaceName;      // TLM
+  port name: initiator BusName;           // bus / TLM method initiator
+  port name: target BusName;              // bus / TLM method target
   generate for i in 0..N-1 ... end generate for i
   generate if PARAM > 0 ... end generate if
   assert name: expression;
@@ -210,7 +207,7 @@ Arch has three kinds of module-scope signal declarations:
 - **Separate compilation:** `arch build` emits `.archi` interface files alongside `.sv`. When `inst sub: SubModule` references an undefined module, the compiler auto-discovers `SubModule.archi` in the input directory or `ARCH_LIB_PATH`.
 
 ### Type System
-- **Primitive types:** `UInt<N>`, `SInt<N>`, `Bool`, `Bit`, `Clock<Domain>`, `Reset<Sync|Async, High|Low>` (polarity defaults High), `Vec<T,N>`, `struct`, `enum`, `Token`, `Future<T>`, `Token<T, id_width: N>`
+- **Primitive types:** `UInt<N>`, `SInt<N>`, `Bool`, `Bit`, `Clock<Domain>`, `Reset<Sync|Async, High|Low>` (polarity defaults High), `Vec<T,N>`, `struct`, `enum`. There is no current `Future<T>` / `await` / user-visible `Token<T>` API.
 - **No implicit conversions.** All width casts are explicit: `.trunc<N>()`, `.zext<N>()`, `.sext<N>()`. Same-width signedness reinterpret: `signed(x)`, `unsigned(x)`
 - Arithmetic result widths follow IEEE 1800-2012 §11.6 (e.g. `UInt<8> + UInt<8>` → `UInt<9>`)
 - **Wrapping operators** `+%`, `-%`, `*%` give result width = `max(W(a), W(b))` (no widening); prefer over `.trunc<N>()` for modular arithmetic: `let x: UInt<8> = a +% b;`
@@ -241,15 +238,20 @@ The parse in the "Bad" column is what Verilog/ARCH produces, but rarely what the
 ### `todo!` Escape Hatch
 Any expression or block body may be replaced with `todo!` to produce a compilable, type-checked skeleton. The compiler emits a warning per site; simulation aborts if a `todo!` site is reached at runtime.
 
-### TLM Concurrency Modes
-| Mode | Return | Use case |
-|---|---|---|
-| `blocking` | `ret: T` | Caller suspends — APB/MMIO |
-| `pipelined` | `ret: Future<T>` | Issue many, await later — AXI in-order |
-| `out_of_order` | `ret: Token<T, id: N>` | Any-order response by ID — Full AXI |
-| `burst` | `ret: Future<Vec<T,L>>` | One AR, N data beats — AXI INCR |
+### TLM Method Support
 
-`await f`, `await_all(f0,f1,f2)`, `await_any(t0,t1)` for synchronization.
+Current syntax lives directly inside `bus`:
+
+```arch
+bus Mem
+  tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+  tlm_method read_ooo(addr: UInt<32>) -> UInt<64>: out_of_order tags 2;
+end bus Mem
+```
+
+Initiators call as a direct RHS inside a thread: `d <= m.read(addr);`. Targets implement with a dotted-name thread: `thread s.read(addr) on clk rising, rst high ... return data; end thread s.read`.
+
+Concurrency is structural: multiple direct worker threads, `generate_for` workers, or one direct-call `fork ... and ... join` thread lower to a request arbiter and response router. Blocking routes by issue-order FIFO; `out_of_order tags N` routes by hidden tag wires. Do not generate `Future<T>`, `await`, `Token<T>`, `pipelined`, or `burst` syntax.
 
 ---
 
@@ -262,7 +264,7 @@ The compiler pipeline should follow a classical structure:
 3. **IR / elaboration** — expand `generate` constructs, resolve params, instantiate modules.
 4. **Backend: SystemVerilog emitter** (`arch build`) — one Arch construct → one deterministic SV structure.
 5. **Backend: SMT-LIB2 emitter** (`arch formal`) — for formal verification.
-6. **Simulator** (`arch sim`) — TLM modes: `--tlm-lt`, `--tlm-at`, `--tlm-rtl`; waveform output via `--wave`. Sim emitter lives under `src/sim_codegen/` — `mod.rs` holds shared helpers + `gen_module`; per-construct emitters (`gen_fsm`, `gen_pipeline`, …) live in sibling submodule files and extend `impl SimCodegen` via `pub(super) fn`.
+6. **Simulator** (`arch sim`) — default C++ sim, optional `--thread-sim parallel`, waveform output via `--wave`. TLM-lowered modules use the regular reg/seq/comb sim mirror; ordinary non-TLM thread modules can use the coroutine parallel thread emitter. Sim emitter lives under `src/sim_codegen/` — `mod.rs` holds shared helpers + `gen_module`; per-construct emitters (`gen_fsm`, `gen_pipeline`, …) live in sibling submodule files and extend `impl SimCodegen` via `pub(super) fn`.
 
 Special compiler responsibilities:
 - Auto-detect dual-clock FIFOs and insert gray-code pointer synchronization.

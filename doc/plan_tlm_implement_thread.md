@@ -21,11 +21,12 @@
 >    the equivalent multi-outstanding implementation. That's a
 >    separate compiler project, not a TLM extension.
 >
-> With this framing, TLM v1 (blocking, single-thread per method) is
-> feature-complete for its role. The `implement` pool, `reentrant`,
-> `Future<T>/await`, and the `pipelined`/`out_of_order`/`burst`
-> modes all tried to blur TLM into the high-performance role — none
-> of them succeeded cleanly, and all were shelved.
+> With this framing, TLM v1 blocking calls are the foundation. The
+> `implement` pool, `reentrant`, and `Future<T>/await` all tried to blur
+> TLM into a high-performance role — none of them succeeded cleanly, and
+> all were shelved. The current concurrency path is narrower: ordinary
+> generated threads or `fork ... join` direct-call branches can share a
+> blocking method through compiler-generated in-order routing.
 
 > **Shelved per AXI DMA side-by-side analysis (2026-04-23).** We wrote
 > a TLM-Model-B version of `tests/axi_dma_thread/ThreadMm2s.arch` (kept
@@ -48,13 +49,11 @@
 > *clearer* and *more efficient* because it exploits the protocol's
 > intrinsic parallelism.
 >
-> **Decision**: ship nothing further on `implement` pools. TLM stays
-> at v1 (single-thread blocking). Advanced patterns compose via
-> existing `thread` + `generate for` + `lock` + `shared(or)` — as
-> `ThreadMm2s` already demonstrates. This is option (B) from the
-> design review — "TLM v1 blocking + single thread is the sweet
-> spot; complex patterns deserve the explicit thread-level treatment
-> the corpus already uses well."
+> **Decision**: ship nothing further on `implement` pools. Advanced AXI
+> patterns compose via existing `thread` + `generate_for` + `lock` +
+> `shared(or)` — as `ThreadMm2s` already demonstrates. Simple in-order
+> TLM pipelining is handled by ordinary worker threads or `fork ... join`
+> branches, not by `implement` and not by `Future<T>`.
 >
 > **What stays shipped** (from PR-tlm-i1 through i3):
 >
@@ -71,7 +70,13 @@
 > - Multi-thread `implement` arbitration + dispatch (original PR-tlm-i4).
 > - `Future<T>` / `await` (earlier pivot).
 > - `reentrant [max N]` on threads (prior pivot; dead grammar remains).
-> - TLM `pipelined` / `out_of_order` / `burst` concurrency modes.
+> - TLM `pipelined` as a separate in-order mode.
+>
+> **What remains future work outside this `implement` plan**:
+>
+> - Out-of-order TLM via compiler-managed request/response tags.
+> - Burst-oriented protocol support, if it can be expressed without a
+>   hidden future/await model.
 >
 > Historical design below retained for context.
 >
