@@ -54,12 +54,14 @@ fi
 cp "$EX_DIR"/*.arch "$WORK"/ 2>/dev/null
 
 # Known pre-existing data issues (not caused by refactors):
-#   clk_div_counter         needs cross-file inst from clk_divider.arch
 #   dma_engine              examples/DmaRegs.archi duplicates inline regfile
-#   pkt_queue               examples/TaskQueue.archi uses removed `track_tail;` syntax
 #   synchronizer_handshake  uses `kind handshake;` but `handshake` is reserved
 # These show up as BUILD_FAIL; treat them as expected until the source is fixed.
-KNOWN_BAD=( clk_div_counter dma_engine pkt_queue synchronizer_handshake )
+KNOWN_BAD=( dma_engine synchronizer_handshake )
+
+# Cross-file instantiation dependencies: when building X, also pass Y.arch etc.
+declare -A BUILD_DEPS
+BUILD_DEPS[clk_div_counter]="clk_divider.arch"
 is_known_bad() {
   local b="$1"
   for k in "${KNOWN_BAD[@]}"; do [[ "$k" == "$b" ]] && return 0; done
@@ -81,7 +83,9 @@ for arch_src in "$EX_DIR"/*.arch; do
   gen_sv="$WORK/${base}.gen.sv"
 
   build_log="$WORK/${base}.log"
-  ( cd "$WORK" && "$ARCH_BIN" build -o "$gen_sv" "${base}.arch" ) >"$build_log" 2>&1
+  deps="${BUILD_DEPS[$base]:-}"
+  rm -f "$WORK"/*.archi
+  ( cd "$WORK" && "$ARCH_BIN" build -o "$gen_sv" "${base}.arch" $deps ) >"$build_log" 2>&1
   rc=$?
 
   if [[ $rc -ne 0 ]]; then
