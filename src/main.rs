@@ -504,6 +504,11 @@ fn main() -> miette::Result<()> {
 
             // Emit .archi interface files alongside .sv (for separate compilation)
             for item in &ast.items {
+                // Don't re-emit .archi for an interface stub we just loaded
+                // — we'd be overwriting the source file we read.
+                if let Item::Module(m) = item {
+                    if m.is_interface { continue; }
+                }
                 if let Some(content) = arch::interface::emit_interface(item) {
                     let name = &item.as_construct().name().name;
                     // Write .archi next to the .sv output
@@ -1428,9 +1433,24 @@ fn run_check_multi_opts(
 
     // Parse
     let mut p = parser::Parser::new(tokens, source);
-    let parsed_ast = p.parse_source_file().map_err(|err| {
+    let mut parsed_ast = p.parse_source_file().map_err(|err| {
         ms.report_error(err)
     })?;
+
+    // Tag items loaded from `.archi` interface stubs (port-only, no body).
+    // Body-only downstream passes — typecheck's output-driven check, SV
+    // codegen, and `.archi` re-emission — skip these to avoid spurious
+    // diagnostics and duplicate output. Only `ModuleDecl` carries the flag
+    // for now; extend to other constructs (Fsm, Fifo, …) when they too
+    // start being instantiated across `.archi` boundaries.
+    for item in parsed_ast.items.iter_mut() {
+        if let Item::Module(m) = item {
+            let (filename, _, _) = ms.locate(m.span.start);
+            if filename.ends_with(".archi") {
+                m.is_interface = true;
+            }
+        }
+    }
 
     // Surface any deprecated-`implies`-keyword usages as a single stderr
     // warning (one line per site). The symbolic `|->` form is the

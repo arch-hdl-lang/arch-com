@@ -214,6 +214,12 @@ pub struct ModuleDecl {
     /// Inner doc comment from `//!` lines after `module Name` and before
     /// any other body item.
     pub inner_doc: Option<String>,
+    /// True when this declaration was loaded from a `.archi` interface
+    /// stub (port-only, no body). Set post-parse from the source-file
+    /// extension. Body-only passes (output-driven check, codegen,
+    /// .archi re-emit) skip these to avoid spurious diagnostics and
+    /// duplicate output.
+    pub is_interface: bool,
 }
 
 #[derive(Debug, Clone)]

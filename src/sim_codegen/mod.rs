@@ -279,6 +279,9 @@ impl<'a> SimCodegen<'a> {
             // returns `Some(model)` for the 11 sim-emitting variants
             // and `None` for the rest.
             if let Item::Module(m) = item {
+                // Interface stubs from `.archi`: real sim model lives
+                // alongside the .archi as a separately-built artifact.
+                if m.is_interface { continue; }
                 models.push(self.gen_module(
                     m,
                     debug_module_set.contains(m.name.name.as_str()),
@@ -299,6 +302,9 @@ impl<'a> SimCodegen<'a> {
         for item in &self.source.items {
             match item {
                 Item::Module(m) => {
+                    // Skip interface stubs from `.archi`: the pybind wrapper
+                    // for the real implementation is built separately.
+                    if m.is_interface { continue; }
                     if let Some(w) = self.emit_pybind_module(m) {
                         wrappers.push(w);
                     }

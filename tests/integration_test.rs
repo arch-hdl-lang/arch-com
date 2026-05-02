@@ -8745,3 +8745,67 @@ end module M
     assert!(msg.contains("unknown pragma") && msg.contains("totally_unsafe"),
         "expected unknown-pragma diagnostic, got: {msg}");
 }
+
+#[test]
+fn test_archi_interface_stub_skips_body_only_passes() {
+    // Mimics the multi-file dep-loader case: a parent module instantiates
+    // a child whose source came from a `.archi` interface stub (port-only,
+    // no body). Pre-fix, typecheck reported "output port `out_o` is not
+    // driven" because `check_module` ran the body-driven check on the
+    // empty stub. Codegen would also emit a duplicate empty `module
+    // ChildStub` clashing with the real SV at link time. With the
+    // `is_interface` flag set (post-parse, normally done in main.rs from
+    // the source-file extension), both passes skip the stub.
+    let source = r#"
+domain Sys
+  freq_mhz: 100
+end domain Sys
+
+module ChildStub
+  port clk_i: in Clock<Sys>;
+  port rst_ni: in Reset<Async, Low>;
+  port in_i: in UInt<8>;
+  port out_o: out UInt<8>;
+end module ChildStub
+
+module Parent
+  port clk_i: in Clock<Sys>;
+  port rst_ni: in Reset<Async, Low>;
+  port result: out UInt<8>;
+
+  wire w: UInt<8>;
+  inst c: ChildStub
+    clk_i <- clk_i;
+    rst_ni <- rst_ni;
+    in_i <- 8'd0;
+    out_o -> w;
+  end inst c
+
+  let result = w;
+end module Parent
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let mut parsed_ast = parser.parse_source_file().expect("parse");
+    for item in parsed_ast.items.iter_mut() {
+        if let arch::ast::Item::Module(m) = item {
+            if m.name.name == "ChildStub" { m.is_interface = true; }
+        }
+    }
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate");
+    let ast = elaborate::lower_tlm_target_threads(ast).expect("tlm_target lowering");
+    let ast = elaborate::lower_tlm_initiator_calls(ast).expect("tlm_initiator lowering");
+    let ast = elaborate::lower_threads_with_opts(ast, &elaborate::ThreadLowerOpts::default())
+        .expect("lower_threads");
+    let ast = elaborate::lower_pipe_reg_ports(ast).expect("lower_pipe_reg_ports");
+    let ast = elaborate::lower_credit_channel_dispatch(ast).expect("credit_channel dispatch");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let (_warnings, overload_map) = checker.check()
+        .expect("typecheck must not report 'output port out_o is not driven' on interface stub");
+    let codegen = Codegen::new(&symbols, &ast, overload_map);
+    let sv = codegen.generate();
+    assert!(sv.contains("module Parent"), "parent module should be emitted");
+    assert!(!sv.contains("module ChildStub"),
+        "interface stub must not be emitted to SV (real impl lives in a separately-built file)");
+}

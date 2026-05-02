@@ -326,6 +326,15 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn check_module(&mut self, m: &ModuleDecl) {
         self.check_pascal_case(&m.name);
 
+        // Interface stub loaded from a `.archi` file — body is empty by
+        // construction. Skip body-driven checks (output-driven, CDC/RDC,
+        // body item validation) entirely; the stub exists only to provide
+        // the port signature for parent-side instantiation checking, which
+        // happens in `check_inst_decl` when validating the inst connections.
+        if m.is_interface {
+            return;
+        }
+
         // Track driven signals
         let mut driven: HashSet<String> = HashSet::new();
 
