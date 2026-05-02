@@ -1118,6 +1118,23 @@ fn eval_width(expr: &Expr) -> u32 {
     }
 }
 
+/// Param-aware width evaluator: folds bare `Ident` and arithmetic over
+/// param defaults via `eval_const_expr_with_params`. Used in
+/// width-bearing positions where `BitSlice` hi/lo or `PartSelect` width
+/// may reference a param (e.g. `[CounterWidth-1:0]`). Falls back to the
+/// legacy `eval_width` for shapes the const evaluator can't fold (which
+/// preserves prior conservative-32 behavior).
+fn eval_width_in(expr: &Expr, ctx: &Ctx) -> u32 {
+    let folded = eval_const_expr_with_params(expr, ctx.params);
+    if folded != 0 || matches!(&expr.kind,
+        ExprKind::Literal(LitKind::Dec(0)) | ExprKind::Literal(LitKind::Hex(0)))
+    {
+        folded as u32
+    } else {
+        eval_width(expr)
+    }
+}
+
 /// Number of 32-bit words needed for `bits` bits.
 fn wide_words(bits: u32) -> u32 { (bits + 31) / 32 }
 
@@ -1571,6 +1588,11 @@ struct Ctx<'a> {
     /// is off; Some(_) when on. emit_*_if_else allocates counter ids here
     /// and emits `_arch_cov[N]++;` at the start of each arm.
     coverage: Option<&'a std::cell::RefCell<CoverageRegistry>>,
+    /// Module params (regular + local) for param-aware constant folding in
+    /// width-bearing positions. Used by `eval_width_in` to fold expressions
+    /// like `CounterWidth-1` in `BitSlice` hi/lo and `PartSelect` width.
+    /// Empty by default; populated via [`Ctx::with_params`] at module entry.
+    params: &'a [ParamDecl],
 }
 
 impl<'a> Ctx<'a> {
@@ -1587,10 +1609,16 @@ impl<'a> Ctx<'a> {
     ) -> Self {
         static EMPTY_RESET_LEVELS: std::sync::OnceLock<HashMap<String, ResetLevel>> = std::sync::OnceLock::new();
         let reset_levels = EMPTY_RESET_LEVELS.get_or_init(HashMap::new);
+        static EMPTY_PARAMS: &[ParamDecl] = &[];
         Ctx { reg_names, port_names, let_names, inst_names, wide_names,
               widths, posedge_lhs: false, fsm_mode: false, enum_map, bus_ports,
               reset_levels, vec_names: None, vec_sizes: None, fsm_vec_port_regs: None,
-              ident_subst: None, coverage: None }
+              ident_subst: None, coverage: None, params: EMPTY_PARAMS }
+    }
+
+    fn with_params(mut self, params: &'a [ParamDecl]) -> Self {
+        self.params = params;
+        self
     }
 
     fn with_vec_sizes(mut self, vec_sizes: &'a HashMap<String, u64>) -> Self {
@@ -1711,11 +1739,11 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
             }
         }
         ExprKind::BitSlice(_, hi, lo) => {
-            let h = eval_width(hi);
-            let l = eval_width(lo);
+            let h = eval_width_in(hi, ctx);
+            let l = eval_width_in(lo, ctx);
             h - l + 1
         }
-        ExprKind::PartSelect(_, _, width, _) => eval_width(width),
+        ExprKind::PartSelect(_, _, width, _) => eval_width_in(width, ctx),
         ExprKind::Cast(_, ty) => {
             match ty.as_ref() {
                 TypeExpr::UInt(w) => eval_width(w),
@@ -1835,6 +1863,7 @@ fn lower_vec_method_cpp(
             vec_sizes: ctx.vec_sizes, fsm_vec_port_regs: ctx.fsm_vec_port_regs,
             ident_subst: None, // replaced below via a temporary binding
             coverage: ctx.coverage,
+            params: ctx.params,
         };
         // The sub map must outlive the cpp_expr call. We keep `sub` as a
         // stack-local binding whose lifetime covers the call.
@@ -2055,8 +2084,8 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
 
         ExprKind::BitSlice(base, hi, lo) => {
             let b = cpp_expr(base, ctx);
-            let h = eval_width(hi);
-            let l = eval_width(lo);
+            let h = eval_width_in(hi, ctx);
+            let l = eval_width_in(lo, ctx);
             let base_w = infer_expr_width(base, ctx);
             // Static slice: hi/lo are compile-time. Bounds checked by typecheck.
             if base_w > 128 {
@@ -2368,7 +2397,7 @@ fn cpp_method_call(base: &Expr, method: &Ident, args: &[Expr], ctx: &Ctx) -> Str
 fn cpp_part_select(base: &Expr, start: &Expr, width: &Expr, up: bool, ctx: &Ctx) -> String {
     let b = cpp_expr(base, ctx);
     let s = cpp_expr(start, ctx);
-    let w = eval_width(width);
+    let w = eval_width_in(width, ctx);
     let base_w = infer_expr_width(base, ctx);
     let result_ty = cpp_uint(w);
     // Runtime bounds check for variable part-selects:
@@ -2502,6 +2531,30 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
                         let rhs = cpp_expr(&a.value, ctx);
                         out.push_str(&format!(
                             "{}{resolved_base} = ({resolved_base} & ~(uint64_t(1) << ({idx_cpp}))) | (uint64_t(({rhs}) & 1) << ({idx_cpp}));\n",
+                            ind(indent)
+                        ));
+                        return;
+                    }
+                }
+            }
+            // Bit-slice LHS: name[hi:lo] = val. Lower to mask-and-OR rather
+            // than the read-side `((name >> lo) & mask)` (an rvalue — gcc /
+            // clang reject as "expression is not assignable"). Only the
+            // bare-ident base case `name[hi:lo]` is handled here; Vec-element
+            // slice LHS or wider-than-64 bases keep the generic path and
+            // would need their own arms.
+            if let ExprKind::BitSlice(base, hi_e, lo_e) = &a.target.kind {
+                if let ExprKind::Ident(base_name) = &base.kind {
+                    let base_w = infer_expr_width(base, ctx);
+                    if base_w > 0 && base_w <= 64 {
+                        let resolved_base = ctx.resolve_name(base_name, is_seq);
+                        let hi = eval_width_in(hi_e, ctx);
+                        let lo = eval_width_in(lo_e, ctx);
+                        let width = hi - lo + 1;
+                        let val_mask: u64 = if width >= 64 { u64::MAX } else { (1u64 << width) - 1 };
+                        let rhs = cpp_expr(&a.value, ctx);
+                        out.push_str(&format!(
+                            "{}{resolved_base} = ({resolved_base} & ~(uint64_t(0x{val_mask:X}ULL) << {lo})) | ((uint64_t(({rhs}) & 0x{val_mask:X}ULL)) << {lo});\n",
                             ind(indent)
                         ));
                         return;
@@ -4360,7 +4413,8 @@ impl<'a> SimCodegen<'a> {
         let ctx = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                            &wide_names, &widths, &enum_map, &bus_port_names)
                       .with_reset_levels(&reset_levels)
-                      .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes);
+                      .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes)
+                      .with_params(&m.params);
 
         if insts.is_empty() {
             // No sub-instances: simple path
@@ -4814,7 +4868,8 @@ impl<'a> SimCodegen<'a> {
             let ctx = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                &wide_names, &widths, &enum_map, &bus_port_names)
                           .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes).posedge()
-                          .with_coverage(cov_handle);
+                          .with_coverage(cov_handle)
+                          .with_params(&m.params);
 
             for rb in &reg_blocks {
                 let mut assigned = std::collections::BTreeSet::new();
@@ -4935,7 +4990,8 @@ impl<'a> SimCodegen<'a> {
                     }
                     let ctx_pe = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                            &wide_names, &widths, &enum_map, &bus_port_names)
-                                       .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes);
+                                       .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes)
+                                       .with_params(&m.params);
                     let src = ctx_pe.resolve_name(&p.source.name, false);
                     if let Some((ref rst_name, is_low)) = rst_info {
                         let cond = if is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
@@ -5158,7 +5214,8 @@ impl<'a> SimCodegen<'a> {
         let ctx_comb = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                 &wide_names, &widths, &enum_map, &bus_port_names)
                            .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes)
-                           .with_coverage(cov_handle);
+                           .with_coverage(cov_handle)
+                           .with_params(&m.params);
 
         // Credit-channel combinational wires (sender can_send; receiver
         // valid/data once PR-sim-2 lands). Emit early so user comb code
@@ -5209,6 +5266,7 @@ impl<'a> SimCodegen<'a> {
                                         vec_sizes: ctx_comb.vec_sizes, fsm_vec_port_regs: ctx_comb.fsm_vec_port_regs,
                                         ident_subst: Some(&sub),
                                         coverage: ctx_comb.coverage,
+                                        params: ctx_comb.params,
                                     };
                                     hits.push(cpp_expr(&margs[0], &sub_ctx));
                                 }

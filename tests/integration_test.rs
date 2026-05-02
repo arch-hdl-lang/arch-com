@@ -7291,6 +7291,60 @@ fn test_sim_codegen_comb_match_arm_recurses_into_nested_for() {
 }
 
 #[test]
+fn test_sim_codegen_bit_slice_lhs_compiles_and_uses_param_width() {
+    // Regression: pre-fix, `name[hi:lo] = val` in a seq block lowered to
+    // the read-side bit-slice form `((name >> lo) & MASK) = val`, an
+    // rvalue that gcc/clang reject as "expression is not assignable".
+    // Post-fix the slice-LHS arm emits a mask-and-OR analogous to the
+    // existing bit-indexed (`name[i] = val`) handling.
+    //
+    // Additionally, the slice width must be folded against module params
+    // — bare `eval_width` returns 32 for `CounterWidth-1`, which would
+    // make the LHS clear-mask 33 bits and leak bit[CounterWidth] across
+    // writes. Param-aware width evaluation through `eval_width_in` keeps
+    // the mask at exactly `CounterWidth` bits.
+    let source = "
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+        module M
+          param CounterWidth: const = 32;
+          port clk:    in Clock<SysDomain>;
+          port rst_ni: in Reset<Async, Low>;
+          port we:     in Bool;
+          port d:      in UInt<32>;
+          port q:      out UInt<64>;
+
+          reg counter_q: UInt<64> reset rst_ni => 0;
+
+          default seq on clk rising;
+
+          seq
+            if we
+              counter_q[CounterWidth-1:0] <= {counter_q[63:32], d}[CounterWidth-1:0];
+            end if
+          end seq
+
+          let q = counter_q;
+        end module M
+    ";
+    let cpp = compile_to_sim_h(source, false);
+    // Slice-LHS must lower to a mask-and-OR write — not the pre-fix rvalue
+    // form `((_n_counter_q >> 0) & MASK) = ...`.
+    assert!(!cpp.contains(") =") || cpp.contains("== "),
+        "slice-LHS regression: rvalue form must not appear:\n{cpp}");
+    // The clear-mask must be 32 bits (0xFFFFFFFFULL), not 33 (0x1FFFFFFFFULL).
+    assert!(cpp.contains("0xFFFFFFFFULL"),
+        "slice-LHS should use a 32-bit mask for [CounterWidth-1:0] when CounterWidth=32:\n{cpp}");
+    assert!(!cpp.contains("0x1FFFFFFFFULL"),
+        "slice-LHS must not use a 33-bit mask for [CounterWidth-1:0] (param folding regression):\n{cpp}");
+    // Sanity: the mask-and-OR shape includes `& ~(uint64_t(0x...` for the clear
+    // and `| ((uint64_t(...` for the set.
+    assert!(cpp.contains("_n_counter_q = (_n_counter_q & ~"),
+        "expected mask-and-OR LHS shape:\n{cpp}");
+}
+
+#[test]
 fn test_cc_dispatch_rewrites_seq_match_scrutinee() {
     // Regression for the elaborate CC-dispatch asymmetry: the reg-block
     // walker used to skip `Stmt::Match` scrutinees (only the comb walker
