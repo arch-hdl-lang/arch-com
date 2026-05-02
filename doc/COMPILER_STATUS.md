@@ -1,9 +1,9 @@
 # ARCH Compiler — Status & Roadmap
 
 > Last updated: 2026-04-25
-> Compiler version: 0.43.0+
+> Compiler version: 0.60.0
 >
-> **Recent (post-0.43.0, unversioned):**
+> **0.60.0 release highlights:**
 > - **TLM thread cohorts** — `tlm_method` supports blocking calls plus tagged `out_of_order tags N`; direct worker threads, `generate_for` worker threads, and direct-call `fork ... and ... join` cohorts lower to request arbitration and response routing. `arch sim --thread-sim parallel` handles TLM-lowered modules by falling back to regular sim codegen for modules whose TLM threads were consumed.
 > - **`arch sim --coverage`** — full 6-phase coverage rollout: (1) branch coverage, (2) block-execution coverage for branchless seq/comb, (3) FSM state + transition coverage, (4) toggle coverage for scalar regs, (4b) Vec reg toggle, (5) Verilator-compatible `coverage.dat` alongside text report, (6) construct port toggle (sub-instance interface ports counted from the consumer side via `_prev_<inst>_<port>` shadow + popcount XOR).
 > - **`arch sim --thread-sim parallel --threads N`** — pre-lowering thread sim with multi-OS-thread parallel execution. Per-user-thread C++20 coroutine scheduler; cache-line-padded atomic spin-wait `Barrier`; deterministic for owned-output designs (10-run trace identity verified, TSan-clean). `--thread-sim both` runs fsm-lowered + native paths and diffs `--debug` traces for cross-check. Cycle batching API `dut.run_cycles(K)` cuts per-tick overhead — `named_thread` at N=2/batch hits 14.3 Mcyc/s (~2.2× the fsm path; ~15× Verilator at N=2 per-cycle).

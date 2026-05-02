@@ -15,7 +15,7 @@ use arch::sim_codegen::SimCodegen;
 use arch::typecheck::TypeChecker;
 
 #[derive(Parser)]
-#[command(name = "arch", about = "ARCH HDL compiler")]
+#[command(name = "arch", version, about = "ARCH HDL compiler")]
 struct Cli {
     #[command(subcommand)]
     command: Command,

@@ -1,6 +1,6 @@
 # Arch HDL — AI Reference Card
 
-*Compact AI context for hardware generation · v0.43.0+ · Put this in context, add design intent, paste compiler errors to self-correct.*
+*Compact AI context for hardware generation · v0.60.0 · Put this in context, add design intent, paste compiler errors to self-correct.*
 
 ---
 
