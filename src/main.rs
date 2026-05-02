@@ -736,7 +736,11 @@ fn run_sim_opts(
                 | arch::ast::Item::Struct(_)
                 | arch::ast::Item::Enum(_)
         )) {
-            let regular_ast = arch::ast::SourceFile { items: regular_items };
+            let regular_ast = arch::ast::SourceFile {
+                items: regular_items,
+                inner_doc: ast.inner_doc.clone(),
+                frontmatter: ast.frontmatter.clone(),
+            };
             let mut sim = SimCodegen::new(&symbols, &regular_ast, overload_map.clone()).check_uninit(check_uninit).inputs_start_uninit(inputs_start_uninit).check_uninit_ram(check_uninit_ram).cdc_random(cdc_random).debug(debug, debug_depth).with_debug_fsm(debug_fsm).coverage(coverage).coverage_dat(coverage_dat.clone());
             if coverage {
                 let segs: Vec<(usize, String, String)> = ms.segments.iter()

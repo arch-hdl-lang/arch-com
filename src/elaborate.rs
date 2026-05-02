@@ -5147,8 +5147,8 @@ fn lower_tlm_initiator_cohort(
         )
     };
 
-    let mut comb_stmts: Vec<CombStmt> = Vec::new();
-    comb_stmts.push(CombStmt::Assign(CombAssign {
+    let mut comb_stmts: Vec<Stmt> = Vec::new();
+    comb_stmts.push(Stmt::Assign(CombAssign {
         target: port_member(format!("{method}_req_valid")),
         value: req_valid.clone(),
         span,
@@ -5158,7 +5158,7 @@ fn lower_tlm_initiator_cohort(
         for (i, dt) in group.iter().enumerate().rev() {
             value = tern(grants[i].clone(), dt.call.args[arg_i].clone(), value);
         }
-        comb_stmts.push(CombStmt::Assign(CombAssign {
+        comb_stmts.push(Stmt::Assign(CombAssign {
             target: port_member(format!("{}_{}", method, arg_ident.name)),
             value,
             span,
@@ -5169,13 +5169,13 @@ fn lower_tlm_initiator_cohort(
         for i in (0..n).rev() {
             value = tern(grants[i].clone(), sized(tag_w, i as u64), value);
         }
-        comb_stmts.push(CombStmt::Assign(CombAssign {
+        comb_stmts.push(Stmt::Assign(CombAssign {
             target: port_member(format!("{method}_req_tag")),
             value,
             span,
         }));
     }
-    comb_stmts.push(CombStmt::Assign(CombAssign {
+    comb_stmts.push(Stmt::Assign(CombAssign {
         target: port_member(format!("{method}_rsp_ready")),
         value: occ_nonzero.clone(),
         span,
@@ -5687,7 +5687,7 @@ fn inline_lower_tlm_initiator(
         }
         if let Some(tag_w_expr) = &agg.tag_width {
             let tag_w = literal_expr_u64(tag_w_expr).unwrap_or(1) as u32;
-            comb_stmts.push(CombStmt::Assign(CombAssign {
+            comb_stmts.push(Stmt::Assign(CombAssign {
                 target: mk_port_member(&agg.port, format!("{}_req_tag", agg.method)),
                 value: Expr::new(ExprKind::Literal(LitKind::Sized(tag_w, 0)), span),
                 span,
@@ -6077,7 +6077,7 @@ fn inline_lower_tlm_target(
         }
     }
     if let Some(latch_name) = &tag_latch_name {
-        comb_stmts.push(CombStmt::Assign(CombAssign {
+        comb_stmts.push(Stmt::Assign(CombAssign {
             target: mk_port_member(format!("{method_name}_rsp_tag")),
             value: Expr::new(ExprKind::Ident(latch_name.clone()), span),
             span,
