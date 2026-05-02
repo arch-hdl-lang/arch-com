@@ -25,6 +25,25 @@ class FallingEdge:
         return sim.wait_falling_edge(self._signal._name).__await__()
 
 
+class ReadOnly:
+    """Suspend until the read-only sync region of the current tick.
+
+    In real cocotb this trigger guarantees that all reactive comb
+    settling has completed before the test reads signal values. Under
+    arch sim's tick-sampled scheduler, every `eval()` already settles
+    the comb network before user code runs, so `ReadOnly()` reduces to
+    a zero-duration timer (a yield to the scheduler with no time
+    advance). Tests written against real cocotb that use it for
+    sampling correctness work unchanged."""
+
+    def __init__(self):
+        pass
+
+    def __await__(self):
+        sim = _get_sim()
+        return sim.wait_timer(0).__await__()
+
+
 class Timer:
     """Suspend for a specified duration."""
 
