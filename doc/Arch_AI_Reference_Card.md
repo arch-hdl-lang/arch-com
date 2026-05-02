@@ -1079,7 +1079,20 @@ end module LoadPair
 
 Supported cohort shapes: multiple direct named worker threads, `generate_for` worker threads, and one direct-call `fork ... and ... join` thread. Blocking cohorts route responses by issue-order FIFO. `out_of_order tags N` cohorts drive `<method>_req_tag` and route by `<method>_rsp_tag`; target threads latch and echo the tag.
 
-Current restrictions: direct RHS call only (`dst <= m.method(args);`), one call per worker/branch, same clock/reset per cohort, literal tag count only, no nested/composed TLM calls, no `pipelined`, no `burst`, no `Future<T>`/`await`.
+Timed multiple-outstanding issue in one thread:
+
+```
+thread driver on clk rising, rst high
+  d0 <= fork m.read(32'h10);
+  wait 1 cycle;
+  d1 <= fork m.read(32'h20);
+  join all;
+end thread driver
+```
+
+`dst <= fork m.read(...);` is a nonblocking TLM issue; `join all;` waits for every forked issue in the group. v1 allows direct forked TLM assignments plus literal `wait N cycle;` offsets, with `join all;` final.
+
+Current restrictions: direct RHS call only (`dst <= m.method(args);` or `dst <= fork m.method(args);`), one call per worker/branch/forked issue, same clock/reset per cohort, literal tag count only, no nested/composed TLM calls, no `pipelined`, no `burst`, no `Future<T>`/`await`.
 
 Full spec: `doc/ARCH_HDL_Specification.md` §18d. Design + v2 roadmap: `doc/plan_tlm_method.md`.
 

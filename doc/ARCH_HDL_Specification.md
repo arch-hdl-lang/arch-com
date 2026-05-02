@@ -5132,6 +5132,18 @@ Multiple direct workers may call the same method as a cohort. Supported shapes a
 - Multiple named worker threads, each with exactly one direct call assignment.
 - `generate_for` worker threads.
 - One `thread` whose body is direct-call `fork ... and ... join`.
+- One linear thread group using RHS fork syntax:
+
+```
+thread driver on clk rising, rst high
+  d0 <= fork m.read(32'h1000);
+  wait 1 cycle;
+  d1 <= fork m.read(32'h1004);
+  join all;
+end thread driver
+```
+
+`target <= fork port.method(args);` issues a nonblocking TLM request and lets the parent thread continue. `join all;` is an explicit barrier; v1 requires it as the final statement in the group. Literal `wait N cycle;` statements between forked issues become issue offsets, so the example above can have both reads outstanding.
 
 Blocking cohorts use a request arbiter plus issue-order FIFO response router. `out_of_order tags N` cohorts use compiler-assigned worker tags and route by `rsp_tag`.
 
@@ -5149,7 +5161,7 @@ Both target and initiator passes emit ordinary `RegDecl` + `RegBlock` + `CombBlo
 - `pipelined` / `burst` modes and all `Future<T>` / `await` / user-visible `Token<T>` APIs.
 - TLM calls outside a thread body (comb / module-level `let` — compile error).
 - Nested TLM calls in expressions (compile error — must be direct RHS of `<=`).
-- Rich control flow inside TLM initiator bodies. Cohort `fork/join` is supported only when each branch is exactly one direct call assignment.
+- Rich control flow inside TLM initiator bodies. Cohort `fork/join` is supported only when each branch is exactly one direct call assignment. RHS-fork groups support only direct forked TLM assignments, literal `wait N cycle;` offsets, and final `join all;`.
 - Non-literal `out_of_order tags` expressions.
 - Target method bodies with nested control flow beyond linear `wait until` + seq assigns terminated by a single `return`.
 - Tier-2 protocol SVA assertions (design-complete but not yet emitted).

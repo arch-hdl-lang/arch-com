@@ -5500,6 +5500,69 @@ fn test_tlm_fork_join_workers_share_method() {
 }
 
 #[test]
+fn test_tlm_rhs_fork_join_all_workers_share_method() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module Shared
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   addr: Vec<UInt<32>, 2> reset rst => 0;
+          reg   data: Vec<UInt<64>, 2> reset rst => 0;
+          thread workers on clk rising, rst high
+            data[0] <= fork m.read(addr[0]);
+            wait 1 cycle;
+            data[1] <= fork m.read(addr[1]);
+            join all;
+          end thread workers
+        end module Shared
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("_tlm_fork_workers_m_read_age"),
+        "forked RHS TLM lowering should emit an issue-age counter:\n{sv}");
+    assert!(sv.contains("_tlm_fork_workers_m_read_fifo"),
+        "blocking forked RHS TLM should route responses by issue-order FIFO:\n{sv}");
+    assert!(sv.contains("data[0] <= m_read_rsp_data")
+         && sv.contains("data[1] <= m_read_rsp_data"),
+        "forked RHS worker responses should capture routed data:\n{sv}");
+}
+
+#[test]
+fn test_tlm_rhs_fork_requires_join_all() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+        end bus Mem
+
+        use Mem;
+
+        module Shared
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   d0: UInt<64> reset rst => 0;
+          thread workers on clk rising, rst high
+            d0 <= fork m.read(32'h1000);
+          end thread workers
+        end module Shared
+    ";
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let ast = arch::elaborate::elaborate(ast).expect("elaborate");
+    let ast = arch::elaborate::lower_tlm_target_threads(ast).expect("tlm target");
+    let r = arch::elaborate::lower_tlm_initiator_calls(ast);
+    assert!(r.is_err(), "forked RHS TLM calls should require join all");
+    let msg = format!("{:?}", r.unwrap_err());
+    assert!(msg.contains("join all"), "expected join-all diagnostic, got: {msg}");
+}
+
+#[test]
 fn test_tlm_cohort_multi_arg_method() {
     let source = "
         bus Mem
@@ -5599,6 +5662,38 @@ fn test_tlm_out_of_order_fork_join_routes_by_tag() {
     assert!(sv.contains("data[0] <= m_read_rsp_data")
          && sv.contains("data[1] <= m_read_rsp_data"),
         "tag-routed responses should capture into each worker destination:\n{sv}");
+}
+
+#[test]
+fn test_tlm_rhs_fork_out_of_order_routes_by_tag() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: out_of_order tags 2;
+        end bus Mem
+
+        use Mem;
+
+        module Shared
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m:   initiator Mem;
+          reg   d0: UInt<64> reset rst => 0;
+          reg   d1: UInt<64> reset rst => 0;
+          thread workers on clk rising, rst high
+            d0 <= fork m.read(32'h1000);
+            wait 1 cycle;
+            d1 <= fork m.read(32'h1004);
+            join all;
+          end thread workers
+        end module Shared
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("m_read_req_tag")
+         && sv.contains("m_read_rsp_tag"),
+        "OOO forked RHS TLM should drive and consume tag wires:\n{sv}");
+    assert!(sv.contains("m_read_rsp_tag == 2'd0")
+         && sv.contains("m_read_rsp_tag == 2'd1"),
+        "OOO forked RHS responses should route by worker tag:\n{sv}");
 }
 
 #[test]
