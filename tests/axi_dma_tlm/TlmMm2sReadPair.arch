@@ -1,0 +1,47 @@
+//! ---
+//! spec_md: doc/axi_dma_case_study.md
+//! tags: [dma, axi4, mm2s, tlm_method, rhs_fork, multi_outstanding]
+//! refs:
+//!   - "tests/axi_dma_thread/ThreadMm2s.arch"
+//! ---
+//!
+//! AXI-DMA-flavored TLM smoke example.
+//!
+//! This is intentionally smaller than the full thread MM2S engine. Current
+//! TLM supports scalar method returns, direct thread-body call sites, and
+//! RHS-fork issue groups; it does not model AXI bursts as a first-class TLM
+//! mode. This example therefore tests the implemented lowering shape that
+//! maps cleanly to MM2S: two outstanding memory read transactions issued
+//! one cycle apart, with responses routed by compiler-managed tags.
+
+bus DmaMemRead
+  tlm_method read(addr: UInt<32>) -> UInt<32>: out_of_order tags 2;
+end bus DmaMemRead
+
+use DmaMemRead;
+
+module TlmMm2sReadPair
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  port base_addr: in UInt<32>;
+  port mem: initiator DmaMemRead;
+
+  port data0: out UInt<32>;
+  port data1: out UInt<32>;
+
+  reg d0_r: UInt<32> reset rst => 0;
+  reg d1_r: UInt<32> reset rst => 0;
+
+  comb
+    data0 = d0_r;
+    data1 = d1_r;
+  end comb
+
+  thread issue_pair on clk rising, rst high
+    d0_r <= fork mem.read(base_addr);
+    wait 1 cycle;
+    d1_r <= fork mem.read((base_addr + 32'd4).trunc<32>());
+    join all;
+  end thread issue_pair
+end module TlmMm2sReadPair

@@ -5657,7 +5657,11 @@ fn inline_lower_tlm_fork_join_all(
     let mut grants: Vec<Expr> = Vec::new();
     for (i, issue) in issues.iter().enumerate() {
         let pending = bin(BinOp::Eq, id(state_name(i)), sized(2, 0));
-        let aged = bin(BinOp::Gte, id(age_name.clone()), sized(age_w, issue.delay));
+        let aged = if issue.delay == 0 {
+            bool_lit(true)
+        } else {
+            bin(BinOp::Gte, id(age_name.clone()), sized(age_w, issue.delay))
+        };
         let want_i = bin(BinOp::And, bin(BinOp::And, pending, aged), occ_not_full.clone());
         let mut grant_i = want_i.clone();
         for prev in &wants {

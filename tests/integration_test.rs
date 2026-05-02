@@ -5727,6 +5727,16 @@ fn test_tlm_rhs_fork_out_of_order_routes_by_tag() {
 }
 
 #[test]
+fn test_axi_dma_tlm_read_pair_example_compiles() {
+    let source = include_str!("axi_dma_tlm/TlmMm2sReadPair.arch");
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module TlmMm2sReadPair"));
+    assert!(sv.contains("mem_read_req_tag"));
+    assert!(sv.contains("mem_read_rsp_tag"));
+    assert!(sv.contains("_tlm_fork_issue_pair_mem_read"));
+}
+
+#[test]
 fn test_tlm_out_of_order_target_echoes_tag() {
     let source = "
         bus Mem
