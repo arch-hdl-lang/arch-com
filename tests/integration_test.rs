@@ -5008,6 +5008,36 @@ fn test_tlm_initiator_sim_mirror_works() {
 }
 
 #[test]
+fn test_tlm_vec_return_sim_mirror_uses_array_copy() {
+    let source = "
+        bus BurstMem
+          tlm_method read4(addr: UInt<32>) -> Vec<UInt<32>, 4>: out_of_order tags 1;
+        end bus BurstMem
+
+        use BurstMem;
+
+        module VecBurstCaller
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m: initiator BurstMem;
+          reg data: Vec<UInt<32>, 4> reset rst => 0;
+          thread driver on clk rising, rst high
+            data <= m.read4(32'h1000);
+          end thread driver
+        end module VecBurstCaller
+    ";
+    let out = compile_to_sim_h(source, false);
+    assert!(out.contains("uint32_t m_read4_rsp_data_0;"),
+        "flattened bus Vec payload should expose flat C++ fields:\n{out}");
+    assert!(out.contains("uint32_t _m_read4_rsp_data[4];"),
+        "flattened bus Vec payload should have an internal array:\n{out}");
+    assert!(out.contains("_m_read4_rsp_data[0] = m_read4_rsp_data_0;"),
+        "input bridge should copy flat fields into the internal array:\n{out}");
+    assert!(out.contains("for (size_t _i = 0; _i < 4; ++_i) { _n_data[_i] = _m_read4_rsp_data[_i]; }"),
+        "whole-Vec TLM response assignment should lower to element copy:\n{out}");
+}
+
+#[test]
 fn test_tlm_canonical_end_to_end_initiator_plus_target() {
     // PR-tlm-7: canonical validation — a minimal Mem bus with `read`
     // and `write` methods, plus initiator + target pair exercising

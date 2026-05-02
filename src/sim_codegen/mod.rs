@@ -953,6 +953,7 @@ fn collect_trace_signals(
     }
     // Flattened bus signals
     for (flat_name, flat_ty) in bus_flat {
+        if matches!(flat_ty, TypeExpr::Vec(..)) { continue; }
         let width = type_width(flat_ty);
         let is_wide = wide_names.contains(flat_name.as_str());
         sigs.push(TraceSignal {
@@ -2073,7 +2074,8 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
                 }
                 // Bus port: itcm.cmd_valid → itcm_cmd_valid
                 if ctx.bus_ports.contains(base_name.as_str()) {
-                    return format!("{}_{}", base_name, field.name);
+                    let flat = format!("{}_{}", base_name, field.name);
+                    return ctx.resolve_name(&flat, is_lhs);
                 }
                 if ctx.inst_names.contains(base_name.as_str()) {
                     return format!("_inst_{}.{}", base_name, field.name);
@@ -2599,6 +2601,47 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
     let is_seq = k == SimAssignKind::Seq;
     match stmt {
         Stmt::Assign(a) => {
+            // Whole-Vec assignment: C arrays are not assignable in C++, so
+            // lower `dst <= src_vec;` / `dst = src_vec;` to an element copy.
+            // This is hit by TLM Vec payloads, e.g. `data <= m.read4(...)`
+            // after TLM lowering becomes `data <= m_read4_rsp_data`.
+            let vec_name_of_expr = |e: &Expr| -> Option<String> {
+                match &e.kind {
+                    ExprKind::Ident(name) => Some(name.clone()),
+                    ExprKind::FieldAccess(base, field) => {
+                        if let ExprKind::Ident(base_name) = &base.kind {
+                            if ctx.bus_ports.contains(base_name.as_str()) {
+                                Some(format!("{}_{}", base_name, field.name))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                }
+            };
+            if let Some(dst_name) = vec_name_of_expr(&a.target) {
+                if ctx.vec_names.map_or(false, |s| s.contains(dst_name.as_str())) {
+                    if let Some(rhs_name) = vec_name_of_expr(&a.value) {
+                        if ctx.vec_names.map_or(false, |s| s.contains(rhs_name.as_str())) {
+                            let lhs = cpp_expr_lhs(&a.target, ctx);
+                            let rhs = cpp_expr(&a.value, ctx);
+                            let count = ctx.vec_sizes
+                                .and_then(|m| m.get(dst_name.as_str()).copied())
+                                .unwrap_or(0);
+                            if count > 0 {
+                                out.push_str(&format!(
+                                    "{}for (size_t _i = 0; _i < {count}; ++_i) {{ {lhs}[_i] = {rhs}[_i]; }}\n",
+                                    ind(indent)
+                                ));
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
             // Scalar bit-indexed LHS: name[idx] = val where name is NOT a Vec.
             // Emit mask-and-OR: base = (base & ~(1ULL << idx)) | (uint64_t(val & 1) << idx).
             // resolve_name's is_lhs flag = is_seq → seq writes hit the shadow.
@@ -3738,7 +3781,7 @@ impl<'a> SimCodegen<'a> {
             is_input: bool,
             is_port_reg: bool,
         }
-        let vec_port_infos: Vec<VecPortInfo> = m.ports.iter()
+        let mut vec_port_infos: Vec<VecPortInfo> = m.ports.iter()
             .filter(|p| p.bus_info.is_none())
             .filter_map(|p| {
                 if let Some((elem_ty, count_str)) = vec_array_info_with_params(&p.ty, &m.params) {
@@ -3750,6 +3793,23 @@ impl<'a> SimCodegen<'a> {
                         is_input: p.direction == Direction::In,
                         is_port_reg: p.reg_info.is_some(),
                     })
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let bus_flat_vec_names: HashSet<String> = bus_flat.iter()
+            .filter_map(|(flat_name, flat_ty)| {
+                if let Some((elem_ty, count_str)) = vec_array_info_with_params(flat_ty, &m.params) {
+                    let count: u64 = count_str.parse().unwrap_or(0);
+                    vec_port_infos.push(VecPortInfo {
+                        name: flat_name.clone(),
+                        elem_ty,
+                        count,
+                        is_input: bus_flat_dirs.get(flat_name).copied().unwrap_or(Direction::In) == Direction::In,
+                        is_port_reg: false,
+                    });
+                    Some(flat_name.clone())
                 } else {
                     None
                 }
@@ -4110,8 +4170,16 @@ impl<'a> SimCodegen<'a> {
             }
         }
         for (flat_name, flat_ty) in &bus_flat {
+            if bus_flat_vec_names.contains(flat_name) { continue; }
             let ty = cpp_port_type(flat_ty);
             h.push_str(&format!("  {ty} {flat_name};\n"));
+        }
+        for vi in &vec_port_infos {
+            if bus_flat_vec_names.contains(&vi.name) {
+                for i in 0..vi.count {
+                    h.push_str(&format!("  {} {}_{i};\n", vi.elem_ty, vi.name));
+                }
+            }
         }
         h.push('\n');
 
@@ -4136,6 +4204,7 @@ impl<'a> SimCodegen<'a> {
         }
         // Add flattened bus signal inits
         for (flat_name, _) in &bus_flat {
+            if bus_flat_vec_names.contains(flat_name) { continue; }
             if !wide_names.contains(flat_name) {
                 port_inits.push(format!("{flat_name}(0)"));
             }
@@ -4366,6 +4435,11 @@ impl<'a> SimCodegen<'a> {
                 h.push_str(&format!("  {} _{}[{}];\n", vi.elem_ty, vi.name, vi.count));
             }
         }
+        for vi in &vec_port_infos {
+            if bus_flat_vec_names.contains(&vi.name) {
+                h.push_str(&format!("  {} _{}[{}];\n", vi.elem_ty, vi.name, vi.count));
+            }
+        }
 
         // Shadow valid bits for --check-uninit (reset-none regs + pipe_reg stages)
         if !uninit_regs.is_empty() {
@@ -4562,6 +4636,7 @@ impl<'a> SimCodegen<'a> {
             }
             // Bus flat signal shadows
             for (flat_name, flat_ty) in &bus_flat {
+                if matches!(flat_ty, TypeExpr::Vec(..)) { continue; }
                 let bits = type_width_of(flat_ty);
                 if bits > 64 {
                     let words = wide_words(bits);
