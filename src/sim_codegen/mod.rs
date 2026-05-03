@@ -953,7 +953,7 @@ fn collect_trace_signals(
     }
     // Flattened bus signals
     for (flat_name, flat_ty) in bus_flat {
-        if matches!(flat_ty, TypeExpr::Vec(..)) { continue; }
+        if matches!(flat_ty, TypeExpr::Vec(..) | TypeExpr::Named(_)) { continue; }
         let width = type_width(flat_ty);
         let is_wide = wide_names.contains(flat_name.as_str());
         sigs.push(TraceSignal {
@@ -1383,6 +1383,14 @@ fn cpp_internal_type(ty: &TypeExpr) -> String {
     }
 }
 
+fn cpp_field_decl(name: &str, ty: &TypeExpr, params: &[ParamDecl]) -> String {
+    if let Some((elem_ty, count)) = vec_array_info_with_params(ty, params) {
+        format!("{elem_ty} {name}[{count}]")
+    } else {
+        format!("{} {name}", cpp_internal_type(ty))
+    }
+}
+
 /// If `ty` is Vec<T, N>, return (elem_cpp_type, count_string).
 fn vec_array_info(ty: &TypeExpr) -> Option<(String, String)> {
     if let TypeExpr::Vec(elem, count_expr) = ty {
@@ -1741,6 +1749,37 @@ impl<'a> Ctx<'a> {
             base
         }
     }
+
+    fn vec_path_of_expr(&self, expr: &Expr) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Ident(name) => Some(name.clone()),
+            ExprKind::FieldAccess(base, field) => {
+                if let ExprKind::Ident(base_name) = &base.kind {
+                    if self.bus_ports.contains(base_name.as_str()) {
+                        Some(format!("{}_{}", base_name, field.name))
+                    } else {
+                        Some(format!("{}.{}", base_name, field.name))
+                    }
+                } else if let Some(base_path) = self.vec_path_of_expr(base) {
+                    Some(format!("{}.{}", base_path, field.name))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn expr_is_vec(&self, expr: &Expr) -> bool {
+        self.vec_path_of_expr(expr)
+            .map(|name| self.vec_names.map_or(false, |s| s.contains(name.as_str())))
+            .unwrap_or(false)
+    }
+
+    fn expr_vec_size(&self, expr: &Expr) -> Option<u64> {
+        self.vec_path_of_expr(expr)
+            .and_then(|name| self.vec_sizes.and_then(|m| m.get(name.as_str()).copied()))
+    }
 }
 
 // ── Width inference ───────────────────────────────────────────────────────────
@@ -1796,11 +1835,11 @@ fn infer_expr_width(expr: &Expr, ctx: &Ctx) -> u32 {
             // concat width inference (e.g. `{20{instr[31]}}` reported as
             // 160 bits instead of 20, blowing past the 32-bit port type
             // and emitting a VlWide<6> RHS for a uint32_t port).
-            if let ExprKind::Ident(base_name) = &base.kind {
+            if let Some(base_name) = ctx.vec_path_of_expr(base) {
                 if ctx.vec_names.map_or(false, |s| s.contains(base_name.as_str())) {
-                    // Vec element width: total port/reg width / element count.
-                    let total = ctx.widths.get(base_name).copied().unwrap_or(0);
-                    let count = ctx.vec_sizes.and_then(|m| m.get(base_name)).copied().unwrap_or(0);
+                    // Vec element width: total port/reg/field width / element count.
+                    let total = ctx.widths.get(base_name.as_str()).copied().unwrap_or(0);
+                    let count = ctx.vec_sizes.and_then(|m| m.get(base_name.as_str())).copied().unwrap_or(0);
                     if count > 0 && total > 0 { return (total as u64 / count) as u32; }
                 }
             }
@@ -2106,21 +2145,15 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
         ExprKind::Index(base, idx) => {
             let b = cpp_expr_inner(base, ctx, is_lhs);
             let i = cpp_expr(idx, ctx);
-            // Vec-typed regs use C array subscript; scalar signals use bit extraction
-            let is_vec = if let ExprKind::Ident(name) = &base.kind {
-                ctx.vec_names.map_or(false, |s| s.contains(name.as_str()))
-            } else {
-                false
-            };
+            // Vec-typed regs/fields use C array subscript; scalar signals use bit extraction
+            let is_vec = ctx.expr_is_vec(base);
             // Runtime bounds check (hard abort) — skip when index is a compile-time literal
             // since the type checker handles constant-bounds at compile time.
             let idx_is_const = matches!(&idx.kind, ExprKind::Literal(_));
             if is_vec {
-                let limit = base_ident_name(base)
-                    .and_then(|n| ctx.vec_sizes.and_then(|m| m.get(n)).copied())
-                    .unwrap_or(0);
+                let limit = ctx.expr_vec_size(base).unwrap_or(0);
                 if limit > 0 && !idx_is_const {
-                    let loc = base_ident_name(base).unwrap_or("<vec>");
+                    let loc = ctx.vec_path_of_expr(base).unwrap_or_else(|| "<vec>".to_string());
                     format!("(_ARCH_BCHK(({i}), {limit}, \"{loc}\"), {b}[{i}])")
                 } else {
                     format!("{b}[{i}]")
@@ -2613,10 +2646,10 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
                             if ctx.bus_ports.contains(base_name.as_str()) {
                                 Some(format!("{}_{}", base_name, field.name))
                             } else {
-                                None
+                                Some(format!("{}.{}", base_name, field.name))
                             }
                         } else {
-                            None
+                            ctx.vec_path_of_expr(e)
                         }
                     }
                     _ => None,
@@ -3724,10 +3757,18 @@ impl<'a> SimCodegen<'a> {
             }
         }
         for item in &m.body {
-            if let ModuleBodyItem::RegDecl(r) = item {
-                if let Some(n) = named_or_vec_named(&r.ty) {
-                    struct_typed_names.push((r.name.name.clone(), n.name.as_str()));
+            match item {
+                ModuleBodyItem::RegDecl(r) => {
+                    if let Some(n) = named_or_vec_named(&r.ty) {
+                        struct_typed_names.push((r.name.name.clone(), n.name.as_str()));
+                    }
                 }
+                ModuleBodyItem::WireDecl(w) => {
+                    if let Some(n) = named_or_vec_named(&w.ty) {
+                        struct_typed_names.push((w.name.name.clone(), n.name.as_str()));
+                    }
+                }
+                _ => {}
             }
         }
         for (instance_name, struct_name) in &struct_typed_names {
@@ -3834,6 +3875,24 @@ impl<'a> SimCodegen<'a> {
                 let count = eval_const_expr_with_params(count_expr, &m.params);
                 if count > 0 {
                     vec_sizes.insert(r.name.name.clone(), count);
+                }
+            }
+        }
+        // Vec fields inside struct-typed ports/regs/wires use paths like
+        // `r.data` for indexing (`r.data[i]`) rather than top-level names.
+        // Teach the generic index lowering and bounds-check paths about
+        // those field paths.
+        for (instance_name, struct_name) in &struct_typed_names {
+            if let Some(sd) = struct_decls.get(struct_name) {
+                for f in &sd.fields {
+                    if let TypeExpr::Vec(_, count_expr) = &f.ty {
+                        let count = eval_const_expr_with_params(count_expr, &m.params);
+                        if count > 0 {
+                            let path = format!("{instance_name}.{}", f.name.name);
+                            vec_reg_names.insert(path.clone());
+                            vec_sizes.insert(path, count);
+                        }
+                    }
                 }
             }
         }
@@ -6822,18 +6881,12 @@ impl<'a> SimCodegen<'a> {
         // `reinterpret_cast`.
         for s in &structs {
             h.push_str(&format!("struct {} {{\n", s.name.name));
-            let mut field_inits = Vec::new();
             for f in &s.fields {
-                let ty = cpp_internal_type(&f.ty);
-                h.push_str(&format!("  {} {};\n", ty, f.name.name));
-                // Struct fields use default init for non-trivial types
-                if matches!(f.ty, TypeExpr::Named(_)) {
-                    field_inits.push(format!("{}()", f.name.name));
-                } else {
-                    field_inits.push(format!("{}(0)", f.name.name));
-                }
+                h.push_str(&format!("  {};\n", cpp_field_decl(&f.name.name, &f.ty, &[])));
             }
-            h.push_str(&format!("  {}() : {} {{}}\n", s.name.name, field_inits.join(", ")));
+            h.push_str(&format!("  {}() {{ std::memset(this, 0, sizeof(*this)); }}\n", s.name.name));
+            h.push_str(&format!("  explicit {}(uint64_t v) {{ (void)v; std::memset(this, 0, sizeof(*this)); }}\n", s.name.name));
+            h.push_str(&format!("  {}& operator=(uint64_t v) {{ (void)v; std::memset(this, 0, sizeof(*this)); return *this; }}\n", s.name.name));
             h.push_str("};\n\n");
         }
 

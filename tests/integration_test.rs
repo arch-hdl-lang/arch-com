@@ -5038,6 +5038,88 @@ fn test_tlm_vec_return_sim_mirror_uses_array_copy() {
 }
 
 #[test]
+fn test_struct_vec_field_sim_mirror_uses_array_field() {
+    let source = "
+        struct BoundedVecResp32x4
+          data: Vec<UInt<32>, 4>;
+          len: UInt<3>;
+          resp: UInt<2>;
+        end struct BoundedVecResp32x4
+
+        module StructVecFieldsSmoke
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port in0: in UInt<32>;
+          port out0: out UInt<32>;
+          port out_len: out UInt<3>;
+          reg r: BoundedVecResp32x4 reset rst => 0;
+
+          comb
+            out0 = r.data[0];
+            out_len = r.len;
+          end comb
+
+          seq on clk rising
+            r.data[0] <= in0;
+            r.data[1] <= 32'h22;
+            r.len <= 3'd2;
+          end seq
+        end module StructVecFieldsSmoke
+    ";
+    let out = compile_to_sim_h(source, false);
+    assert!(out.contains("uint32_t data[4];"),
+        "struct Vec field should emit as a C++ array:\n{out}");
+    assert!(out.contains("out0  = _r.data[0];"),
+        "struct Vec field read should use array indexing, not bit extraction:\n{out}");
+    assert!(out.contains("_n_r.data[0]  = in0;"),
+        "struct Vec field write should use array indexing:\n{out}");
+    assert!(!out.contains("((_n_r.data) >> (0)) & 1"),
+        "struct Vec field must not be treated as scalar bit indexing:\n{out}");
+}
+
+#[test]
+fn test_tlm_struct_vec_response_sim_mirror_compiles_shape() {
+    let source = "
+        struct BoundedVecResp32x4
+          data: Vec<UInt<32>, 4>;
+          len: UInt<3>;
+          resp: UInt<2>;
+        end struct BoundedVecResp32x4
+
+        bus MemBurst
+          tlm_method read_burst(addr: UInt<32>, len: UInt<3>) -> BoundedVecResp32x4: out_of_order tags 1;
+        end bus MemBurst
+
+        use MemBurst;
+
+        module StructVecTlmCaller
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port m: initiator MemBurst;
+          port out0: out UInt<32>;
+          port out_len: out UInt<3>;
+          reg r: BoundedVecResp32x4 reset rst => 0;
+
+          comb
+            out0 = r.data[0];
+            out_len = r.len;
+          end comb
+
+          thread driver on clk rising, rst high
+            r <= m.read_burst(32'h1000, 3'd2);
+          end thread driver
+        end module StructVecTlmCaller
+    ";
+    let out = compile_to_sim_h(source, false);
+    assert!(out.contains("BoundedVecResp32x4 m_read_burst_rsp_data;"),
+        "TLM struct response should expose the struct payload in sim:\n{out}");
+    assert!(out.contains("_n_r  = m_read_burst_rsp_data;"),
+        "TLM struct response should copy into the destination register:\n{out}");
+    assert!(!out.contains("m_read_burst_rsp_data >>"),
+        "struct response should not be emitted as a scalar trace expression:\n{out}");
+}
+
+#[test]
 fn test_tlm_canonical_end_to_end_initiator_plus_target() {
     // PR-tlm-7: canonical validation — a minimal Mem bus with `read`
     // and `write` methods, plus initiator + target pair exercising
