@@ -621,9 +621,17 @@ Effect:
 Restrictions:
 - Only legal on `Vec<T, N>` types (non-Vec usage rejected at parse time).
 - Incompatible with `port reg ... unpacked` and `pipe_reg<T, N>` ports (no use case; rejected at parse time).
-- Use is intended for **leaf-module port boundaries that face external SV**. ARCH-to-ARCH instantiation across an unpacked port is not validated by the compiler in v1; if both parent and child are ARCH-emitted, the parent's wire will be packed-Vec and Verilator will reject the connection. Restructure to keep both sides packed when the entire path is ARCH.
+- Use is intended for **leaf-module port boundaries that face external SV**, or for ARCH-to-ARCH connections where both sides are unpacked. For ARCH-to-ARCH instantiation across an `unpacked` port, the parent's connecting wire must also carry the `unpacked` modifier (see below) — otherwise the parent emits a packed wire, the child emits an unpacked port, and Verilator rejects the shape mismatch.
 
-Why this is opt-in: unpacked arrays are Yosys-unfriendly during synthesis and historically caused Icarus portability issues. The default packed shape preserves these guarantees; `unpacked` is a deliberate interop hatch for ports that face external SV.
+The same modifier is permitted on internal `wire` declarations to support that ARCH-to-ARCH-unpacked case:
+
+```arch
+wire bridge: unpacked Vec<UInt<32>, 2>;
+```
+
+Effect mirrors the port form: SV emission flips to unpacked-array shape (`logic [W-1:0] bridge [N-1:0]`); ARCH-internal semantics (lane indexing, lane-by-lane assignment) are unchanged. The same restrictions apply (only legal on `Vec<T, N>`).
+
+Why this is opt-in: unpacked arrays are Yosys-unfriendly during synthesis and historically caused Icarus portability issues. The default packed shape preserves these guarantees; `unpacked` is a deliberate interop hatch for ports and wires that face external SV or that need to mate with an unpacked port across an `inst` connection.
 
 **4. Modules**
 

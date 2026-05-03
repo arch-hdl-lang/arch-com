@@ -1179,12 +1179,22 @@ impl Parser {
         let start = self.expect(TokenKind::Wire)?.span;
         let name = self.expect_ident()?;
         self.expect(TokenKind::Colon)?;
+        // Optional `unpacked` modifier: `wire name: unpacked Vec<T,N>;`
+        // Mirrors the port modifier (§3.7); only legal on Vec<T,N>.
+        let unpacked = self.eat_contextual("unpacked");
         let ty = self.parse_type_expr()?;
         self.expect(TokenKind::Semi)?;
         let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
+        if unpacked && !matches!(ty, TypeExpr::Vec(..)) {
+            return Err(CompileError::general(
+                "`unpacked` is only valid on `Vec<T,N>` wires",
+                start.merge(end_span),
+            ));
+        }
         Ok(WireDecl {
             name,
             ty,
+            unpacked,
             span: start.merge(end_span),
         })
     }

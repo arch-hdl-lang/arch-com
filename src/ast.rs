@@ -698,6 +698,12 @@ pub struct LetBinding {
 pub struct WireDecl {
     pub name: Ident,
     pub ty: TypeExpr,
+    /// `wire name: unpacked Vec<T,N>;` flips SV emission to unpacked-array
+    /// shape (`logic [W-1:0] name [N-1:0]`) so the wire can mate with an
+    /// `unpacked Vec<T,N>` port across an `inst` connection without
+    /// Verilator rejecting the packed/unpacked shape mismatch. Mirrors the
+    /// `unpacked` modifier on port declarations (§3.7).
+    pub unpacked: bool,
     pub span: Span,
 }
 
