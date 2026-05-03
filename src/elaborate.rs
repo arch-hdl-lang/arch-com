@@ -2091,30 +2091,29 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
     let mut merged_comb: Vec<Stmt> = Vec::new();
     // Defaults: all comb outputs = 0
     //
-    // Unpacked-array ports (`unpacked Vec<T,N>`) need `'{default: 0}` rather
-    // than a bare `0` literal — SV rejects scalar-to-unpacked-array assignment.
-    // For each unpacked port, emit per-element zeros instead so the literal-0
-    // path (which lowers to a sized scalar) doesn't collide with the unpacked
-    // shape. The element count and width are derived from the port type.
+    // Vec<T,N> ports need per-element zeros, not a bare `0` literal:
+    //   - unpacked SV emission rejects scalar-to-unpacked-array assignment.
+    //   - packed SV accepts `0` but the sim_codegen C++ path lowers the port
+    //     to `uint64_t[N]`, which is not assignable as a whole array
+    //     (`_foo = 0;` → "array type 'uint64_t[N]' is not assignable").
+    // Per-lane assignment (`foo[i] = 0;`) is valid for both shapes on both
+    // backends, so we apply it to any Vec output regardless of the
+    // `unpacked` modifier.
     for p in &merged_ports {
         if p.direction == Direction::Out && p.default.is_some() {
-            if p.unpacked {
-                // Pull out the Vec element count from `Vec<T, N>`. Drive
-                // each lane individually with a zero of the element type.
-                if let TypeExpr::Vec(_, size_expr) = &p.ty {
-                    if let Some(n) = try_eval_i64(size_expr, &HashMap::new()) {
-                        for i in 0..(n as u64) {
-                            merged_comb.push(Stmt::Assign(CombAssign {
-                                target: Expr::new(ExprKind::Index(
-                                    Box::new(Expr::new(ExprKind::Ident(p.name.name.clone()), sp)),
-                                    Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(i)), sp)),
-                                ), sp),
-                                value: make_zero_expr(sp),
-                                span: sp,
-                            }));
-                        }
-                        continue;
+            if let TypeExpr::Vec(_, size_expr) = &p.ty {
+                if let Some(n) = try_eval_i64(size_expr, &HashMap::new()) {
+                    for i in 0..(n as u64) {
+                        merged_comb.push(Stmt::Assign(CombAssign {
+                            target: Expr::new(ExprKind::Index(
+                                Box::new(Expr::new(ExprKind::Ident(p.name.name.clone()), sp)),
+                                Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(i)), sp)),
+                            ), sp),
+                            value: make_zero_expr(sp),
+                            span: sp,
+                        }));
                     }
+                    continue;
                 }
                 // Fall through (unknown shape) — let the codegen lint catch it.
             }
