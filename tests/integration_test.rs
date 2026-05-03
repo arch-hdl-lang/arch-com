@@ -9162,3 +9162,60 @@ end module M
          behavior, which conflicts with spec §7a.2 (only TRAILING assigns merge). \
          Enclosing begin-line was: {:?}\nFull SV:\n{}", begin_line, sv);
 }
+
+#[test]
+fn test_unpacked_wire_modifier_emits_unpacked_sv() {
+    // Issue #267: `unpacked` modifier on internal wire/let declarations.
+    // A `wire foo: unpacked Vec<T,N>` mirrors the existing `unpacked Vec`
+    // port modifier (§3.7) — emits SV unpacked-array shape so the wire can
+    // mate with an `unpacked Vec` port across an `inst` connection without
+    // Verilator rejecting the packed/unpacked shape mismatch.
+    let source = "
+        module Leaf
+          port q: in unpacked Vec<UInt<32>, 2>;
+          port o: out UInt<32>;
+          comb
+            o = q[0] ^ q[1];
+          end comb
+        end module Leaf
+
+        module Parent
+          port pq: in unpacked Vec<UInt<32>, 2>;
+          port po: out UInt<32>;
+          wire bridge: unpacked Vec<UInt<32>, 2>;
+          comb
+            bridge[0] = pq[0];
+            bridge[1] = pq[1];
+          end comb
+          inst leaf: Leaf
+            q <- bridge;
+            o -> po;
+          end inst leaf
+        end module Parent
+    ";
+    let sv = compile_to_sv(source);
+    // Wire emits unpacked-array shape, not packed multi-dim.
+    assert!(sv.contains("logic [31:0] bridge [1:0]") || sv.contains("logic [31:0] bridge [0:1]"),
+        "expected unpacked wire shape `logic [31:0] bridge [N-1:0]`, got:\n{}", sv);
+    assert!(!sv.contains("logic [1:0][31:0] bridge"),
+        "must NOT emit packed multi-dim for `unpacked` wire, got:\n{}", sv);
+    // Parent's port still uses unpacked (sanity).
+    assert!(sv.contains("input logic [31:0] pq [1:0]") || sv.contains("input logic [31:0] pq [0:1]"),
+        "expected unpacked port shape on parent, got:\n{}", sv);
+}
+
+#[test]
+fn test_unpacked_wire_rejected_on_non_vec() {
+    // The modifier is only valid on `Vec<T,N>`. Other types must error.
+    let source = "
+        module M
+          wire bad: unpacked UInt<32>;
+        end module M
+    ";
+    let tokens = lexer::tokenize(source).expect("lexer");
+    let mut parser = Parser::new(tokens, source);
+    let err = parser.parse_source_file().expect_err("must reject `unpacked UInt<32>`");
+    let msg = format!("{:?}", err);
+    assert!(msg.contains("unpacked") && msg.contains("Vec"),
+        "error should mention the `unpacked` + Vec constraint, got: {}", msg);
+}

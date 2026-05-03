@@ -471,8 +471,17 @@ impl<'a> Codegen<'a> {
                             continue;
                         }
                     }
-                    let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(&w.ty);
-                    self.line(&format!("{} {}{};", ty_str, w.name.name, arr_suffix));
+                    if w.unpacked {
+                        // SV unpacked-array shape (mirror of unpacked port modifier).
+                        // Lets this wire mate with an `unpacked Vec<T,N>` port across
+                        // an `inst` connection without Verilator rejecting the
+                        // packed/unpacked shape mismatch.
+                        let (base_ty, suffix) = self.emit_type_and_unpacked_suffix(&w.ty);
+                        self.line(&format!("{} {}{};", base_ty, w.name.name, suffix));
+                    } else {
+                        let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(&w.ty);
+                        self.line(&format!("{} {}{};", ty_str, w.name.name, arr_suffix));
+                    }
                     declared_names.insert(w.name.name.clone());
                 }
                 ModuleBodyItem::Generate(ref gen) => {
