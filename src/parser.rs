@@ -1332,6 +1332,13 @@ impl Parser {
             if self.check(TokenKind::Dot) {
                 self.advance(); // consume `.`
                 let method = self.expect_ident()?;
+                let tag_lane = if self.eat(TokenKind::LBracket) {
+                    let lane = self.parse_expr()?;
+                    self.expect(TokenKind::RBracket)?;
+                    Some(lane)
+                } else {
+                    None
+                };
                 self.expect(TokenKind::LParen)?;
                 let mut args = Vec::new();
                 if !self.check(TokenKind::RParen) {
@@ -1345,7 +1352,7 @@ impl Parser {
                 // stays as the `port` ident; closing match accepts either
                 // form (`end thread port` or `end thread port.method`).
                 (Some(first.clone()), Some(TlmTargetBinding {
-                    port: first, method, args,
+                    port: first, method, tag_lane, args,
                 }))
             } else {
                 (Some(first), None)

@@ -798,7 +798,12 @@ fn subst_thread(t: &ThreadBlock, var: &str, val: i64) -> ThreadBlock {
             subst_expr_names(cond.clone(), var, val),
             stmts.iter().map(|s| subst_thread_stmt(s, var, val)).collect(),
         )),
-        tlm_target: t.tlm_target.clone(),
+        tlm_target: t.tlm_target.as_ref().map(|tb| TlmTargetBinding {
+            port: tb.port.clone(),
+            method: tb.method.clone(),
+            tag_lane: tb.tag_lane.as_ref().map(|e| subst_expr_names(e.clone(), var, val)),
+            args: tb.args.clone(),
+        }),
         reentrant: t.reentrant.clone(),
         implement: t.implement.clone(),
         body: t.body.iter().map(|s| subst_thread_stmt(s, var, val)).collect(),
@@ -4614,33 +4619,33 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
                         (p.name.name.clone(), bi.bus_name.name.clone())))
                     .collect();
 
-                // Detect multi-implementer target case (2+ threads
-                // implementing the same (port, method)). PR-tlm-i4
-                // will add id-routing; for now reject with a targeted
-                // message so users don't hit the confusing multi-driver
-                // error on rsp_valid / rsp_data / req_ready.
+                // Detect multi-implementer target cases. Indexed target
+                // lanes (`thread s.read[t](...)`) are handled below by
+                // generating private lane endpoints plus one shared mux.
+                // Non-indexed multi-targets still produce multiple drivers.
                 {
-                    let mut counts: HashMap<(String, String), (usize, Span)> = HashMap::new();
+                    let mut counts: HashMap<(String, String), (usize, usize, Span)> = HashMap::new();
                     for item in &m.body {
                         if let ModuleBodyItem::Thread(t) = item {
                             let key = if let Some(tb) = &t.tlm_target {
-                                Some((tb.port.name.clone(), tb.method.name.clone()))
+                                Some((tb.port.name.clone(), tb.method.name.clone(), tb.tag_lane.is_some()))
                             } else if let Some(ib) = &t.implement {
                                 if ib.kind == TlmImplementKind::Target {
-                                    Some((ib.port.name.clone(), ib.method.name.clone()))
+                                    Some((ib.port.name.clone(), ib.method.name.clone(), false))
                                 } else { None }
                             } else { None };
-                            if let Some(k) = key {
-                                let e = counts.entry(k).or_insert((0, t.span));
+                            if let Some((port, method, indexed)) = key {
+                                let e = counts.entry((port, method)).or_insert((0, 0, t.span));
                                 e.0 += 1;
+                                if indexed { e.1 += 1; }
                             }
                         }
                     }
-                    for ((port, method), (n, span)) in &counts {
-                        if *n > 1 {
+                    for ((port, method), (n, indexed, span)) in &counts {
+                        if *n > 1 && *indexed != *n {
                             errors.push(CompileError::general(
                                 &format!(
-                                    "multi-implementer target for `{port}.{method}` is not yet implemented — {n} threads in this module bind to this method as target. id-tagged routing ships in PR-tlm-i4 (see doc/plan_tlm_implement_thread.md).",
+                                    "multi-implementer target for `{port}.{method}` requires every target thread to use indexed tag-lane syntax, e.g. `thread {port}.{method}[t](...)`; {n} threads bind to this method but only {indexed} are indexed.",
                                 ),
                                 *span,
                             ));
@@ -4651,6 +4656,7 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
                 // Collect TLM target threads + their method metadata.
                 let latch_regs: Vec<RegDecl> = Vec::new();
                 let mut new_body: Vec<ModuleBodyItem> = Vec::new();
+                let mut indexed_target_groups: HashMap<(String, String), Vec<(ThreadBlock, TlmTargetBinding, TlmMethodMeta)>> = HashMap::new();
                 for item in std::mem::take(&mut m.body) {
                     if let ModuleBodyItem::Thread(t) = &item {
                         // v1 dotted-name form populates `tlm_target`; v2
@@ -4662,6 +4668,7 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
                                 .map(|b| TlmTargetBinding {
                                     port: b.port.clone(),
                                     method: b.method.clone(),
+                                    tag_lane: None,
                                     args: b.args.clone(),
                                 }));
                         if let Some(binding) = effective_target {
@@ -4709,15 +4716,28 @@ pub fn lower_tlm_target_threads(ast: SourceFile) -> Result<SourceFile, Vec<Compi
                                 continue;
                             }
                             let t_moved = if let ModuleBodyItem::Thread(t) = item { t } else { unreachable!() };
-                            match inline_lower_tlm_target(t_moved, &binding, &method) {
-                                Ok(items) => new_body.extend(items),
-                                Err(e) => errors.push(e),
+                            if binding.tag_lane.is_some() {
+                                indexed_target_groups
+                                    .entry((binding.port.name.clone(), binding.method.name.clone()))
+                                    .or_default()
+                                    .push((t_moved, binding, method));
+                            } else {
+                                match inline_lower_tlm_target(t_moved, &binding, &method) {
+                                    Ok(items) => new_body.extend(items),
+                                    Err(e) => errors.push(e),
+                                }
                             }
                         } else {
                             new_body.push(item);
                         }
                     } else {
                         new_body.push(item);
+                    }
+                }
+                for ((_port, _method), group) in indexed_target_groups {
+                    match lower_indexed_tlm_target_group(group) {
+                        Ok(items) => new_body.extend(items),
+                        Err(e) => errors.push(e),
                     }
                 }
                 // Inline lowering emits its own RegDecl / RegBlock /
@@ -6270,10 +6290,247 @@ fn contains_tlm_call(
 // Any other statement in the body (nested IfElse / ForkJoin / For /
 // Lock / DoUntil / Log) is rejected with a targeted error.
 
+fn lower_indexed_tlm_target_group(
+    mut group: Vec<(ThreadBlock, TlmTargetBinding, TlmMethodMeta)>,
+) -> Result<Vec<ModuleBodyItem>, CompileError> {
+    if group.is_empty() {
+        return Ok(Vec::new());
+    }
+    let span = group[0].0.span;
+    let port = group[0].1.port.name.clone();
+    let method_name = group[0].1.method.name.clone();
+    let method = group[0].2.clone();
+    let tag_w_expr = method.out_of_order_tags.clone().ok_or_else(|| {
+        CompileError::general(
+            &format!("indexed target method `{port}.{method_name}[...]` requires `tlm_method {method_name}(...): out_of_order tags N`"),
+            span,
+        )
+    })?;
+    let tag_w = literal_expr_u64(&tag_w_expr).ok_or_else(|| {
+        CompileError::general("`out_of_order tags` must be a literal width for indexed target lowering", tag_w_expr.span)
+    })? as u32;
+    let tag_slots = if tag_w >= 64 { u128::MAX } else { 1u128 << tag_w };
+
+    let mut seen = std::collections::HashSet::new();
+    let mut lanes: Vec<(u64, ThreadBlock, TlmTargetBinding, TlmMethodMeta)> = Vec::new();
+    for (t, binding, method_meta) in group.drain(..) {
+        let lane_expr = binding.tag_lane.as_ref().ok_or_else(|| {
+            CompileError::general("internal error: indexed TLM target group contains an unindexed target", t.span)
+        })?;
+        let lane = literal_expr_u64(lane_expr).ok_or_else(|| {
+            CompileError::general(
+                "indexed TLM target lane must be compile-time literal after generate_for expansion",
+                lane_expr.span,
+            )
+        })?;
+        if lane as u128 >= tag_slots {
+            return Err(CompileError::general(
+                &format!("indexed TLM target lane {lane} exceeds `{port}.{method_name}` tag capacity {tag_slots}"),
+                lane_expr.span,
+            ));
+        }
+        if !seen.insert(lane) {
+            return Err(CompileError::general(
+                &format!("duplicate indexed TLM target lane {lane} for `{port}.{method_name}`"),
+                lane_expr.span,
+            ));
+        }
+        lanes.push((lane, t, binding, method_meta));
+    }
+    lanes.sort_by_key(|(lane, _, _, _)| *lane);
+
+    let mk_ident = |name: String| Ident { name, span };
+    let ident_expr = |name: String| Expr::new(ExprKind::Ident(name), span);
+    let port_member = |member: String| Expr::new(
+        ExprKind::FieldAccess(
+            Box::new(Expr::new(ExprKind::Ident(port.clone()), span)),
+            mk_ident(member),
+        ),
+        span,
+    );
+    let lit0 = Expr::new(ExprKind::Literal(LitKind::Dec(0)), span);
+    let lit1 = Expr::new(ExprKind::Literal(LitKind::Sized(1, 1)), span);
+    let tag_lit = |lane: u64| Expr::new(ExprKind::Literal(LitKind::Sized(tag_w, lane)), span);
+    let tag_eq = |lane: u64| Expr::new(
+        ExprKind::Binary(
+            BinOp::Eq,
+            Box::new(port_member(format!("{method_name}_req_tag"))),
+            Box::new(tag_lit(lane)),
+        ),
+        span,
+    );
+
+    let mut out = Vec::new();
+    let mut lane_infos = Vec::new();
+    for (lane, t, binding, method_meta) in lanes {
+        let prefix = format!("_tlm_{port}_{method_name}_tag{lane}");
+        let req_ready = format!("{prefix}_req_ready");
+        let rsp_valid = format!("{prefix}_rsp_valid");
+        let rsp_ready = format!("{prefix}_rsp_ready");
+        let rsp_tag = format!("{prefix}_rsp_tag");
+        let rsp_data = format!("{prefix}_rsp_data");
+
+        out.push(ModuleBodyItem::WireDecl(WireDecl { name: mk_ident(req_ready.clone()), ty: TypeExpr::Bool, span }));
+        out.push(ModuleBodyItem::WireDecl(WireDecl { name: mk_ident(rsp_valid.clone()), ty: TypeExpr::Bool, span }));
+        out.push(ModuleBodyItem::WireDecl(WireDecl { name: mk_ident(rsp_ready.clone()), ty: TypeExpr::Bool, span }));
+        out.push(ModuleBodyItem::WireDecl(WireDecl {
+            name: mk_ident(rsp_tag.clone()),
+            ty: TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(tag_w as u64)), span))),
+            span,
+        }));
+        if let Some(ret_ty) = &method.ret {
+            out.push(ModuleBodyItem::WireDecl(WireDecl { name: mk_ident(rsp_data.clone()), ty: ret_ty.clone(), span }));
+        }
+
+        let req_valid = Expr::new(
+            ExprKind::Binary(
+                BinOp::And,
+                Box::new(port_member(format!("{method_name}_req_valid"))),
+                Box::new(tag_eq(lane)),
+            ),
+            span,
+        );
+        let io = TlmTargetIo {
+            suffix: format!("_tag{lane}"),
+            req_valid,
+            rsp_ready: ident_expr(rsp_ready.clone()),
+            req_ready_target: ident_expr(req_ready.clone()),
+            rsp_valid_target: ident_expr(rsp_valid.clone()),
+            rsp_data_target: method.ret.as_ref().map(|_| ident_expr(rsp_data.clone())),
+            rsp_tag_target: Some(ident_expr(rsp_tag.clone())),
+        };
+        out.extend(inline_lower_tlm_target_with_io(t, &binding, &method_meta, io)?);
+        lane_infos.push((lane, req_ready, rsp_valid, rsp_ready, rsp_data, rsp_tag));
+    }
+
+    let mut comb_stmts = Vec::new();
+    comb_stmts.push(Stmt::Assign(CombAssign {
+        target: port_member(format!("{method_name}_req_ready")),
+        value: lit0.clone(),
+        span,
+    }));
+    comb_stmts.push(Stmt::Assign(CombAssign {
+        target: port_member(format!("{method_name}_rsp_valid")),
+        value: lit0.clone(),
+        span,
+    }));
+    if method.ret.is_some() {
+        let default_rsp_data = lane_infos
+            .first()
+            .map(|(_, _, _, _, rsp_data, _)| ident_expr(rsp_data.clone()))
+            .unwrap_or_else(|| lit0.clone());
+        comb_stmts.push(Stmt::Assign(CombAssign {
+            target: port_member(format!("{method_name}_rsp_data")),
+            value: default_rsp_data,
+            span,
+        }));
+    }
+    comb_stmts.push(Stmt::Assign(CombAssign {
+        target: port_member(format!("{method_name}_rsp_tag")),
+        value: lit0.clone(),
+        span,
+    }));
+    for (_lane, _req_ready, _rsp_valid, rsp_ready, _rsp_data, _rsp_tag) in &lane_infos {
+        comb_stmts.push(Stmt::Assign(CombAssign {
+            target: ident_expr(rsp_ready.clone()),
+            value: lit0.clone(),
+            span,
+        }));
+    }
+    for (lane, req_ready, _rsp_valid, _rsp_ready, _rsp_data, _rsp_tag) in &lane_infos {
+        comb_stmts.push(Stmt::IfElse(IfElse {
+            cond: tag_eq(*lane),
+            then_stmts: vec![Stmt::Assign(CombAssign {
+                target: port_member(format!("{method_name}_req_ready")),
+                value: ident_expr(req_ready.clone()),
+                span,
+            })],
+            else_stmts: Vec::new(),
+            unique: false,
+            span,
+        }));
+    }
+    for (_lane, _req_ready, rsp_valid, rsp_ready, rsp_data, rsp_tag) in &lane_infos {
+        let mut then_stmts = vec![
+            Stmt::Assign(CombAssign {
+                target: port_member(format!("{method_name}_rsp_valid")),
+                value: lit1.clone(),
+                span,
+            }),
+            Stmt::Assign(CombAssign {
+                target: port_member(format!("{method_name}_rsp_tag")),
+                value: ident_expr(rsp_tag.clone()),
+                span,
+            }),
+            Stmt::Assign(CombAssign {
+                target: ident_expr(rsp_ready.clone()),
+                value: port_member(format!("{method_name}_rsp_ready")),
+                span,
+            }),
+        ];
+        if method.ret.is_some() {
+            then_stmts.push(Stmt::Assign(CombAssign {
+                target: port_member(format!("{method_name}_rsp_data")),
+                value: ident_expr(rsp_data.clone()),
+                span,
+            }));
+        }
+        comb_stmts.push(Stmt::IfElse(IfElse {
+            cond: ident_expr(rsp_valid.clone()),
+            then_stmts,
+            else_stmts: Vec::new(),
+            unique: false,
+            span,
+        }));
+    }
+    out.push(ModuleBodyItem::CombBlock(CombBlock { stmts: comb_stmts, span }));
+    Ok(out)
+}
+
+#[derive(Clone)]
+struct TlmTargetIo {
+    suffix: String,
+    req_valid: Expr,
+    rsp_ready: Expr,
+    req_ready_target: Expr,
+    rsp_valid_target: Expr,
+    rsp_data_target: Option<Expr>,
+    rsp_tag_target: Option<Expr>,
+}
+
 fn inline_lower_tlm_target(
     t: ThreadBlock,
     binding: &TlmTargetBinding,
     method: &TlmMethodMeta,
+) -> Result<Vec<ModuleBodyItem>, CompileError> {
+    let port = &binding.port.name;
+    let method_name = &binding.method.name;
+    let span = t.span;
+    let mk_ident = |name: String| Ident { name, span };
+    let mk_port_member = |member: String| Expr::new(
+        ExprKind::FieldAccess(
+            Box::new(Expr::new(ExprKind::Ident(port.clone()), span)),
+            mk_ident(member),
+        ),
+        span,
+    );
+    let io = TlmTargetIo {
+        suffix: String::new(),
+        req_valid: mk_port_member(format!("{method_name}_req_valid")),
+        rsp_ready: mk_port_member(format!("{method_name}_rsp_ready")),
+        req_ready_target: mk_port_member(format!("{method_name}_req_ready")),
+        rsp_valid_target: mk_port_member(format!("{method_name}_rsp_valid")),
+        rsp_data_target: method.ret.as_ref().map(|_| mk_port_member(format!("{method_name}_rsp_data"))),
+        rsp_tag_target: method.out_of_order_tags.as_ref().map(|_| mk_port_member(format!("{method_name}_rsp_tag"))),
+    };
+    inline_lower_tlm_target_with_io(t, binding, method, io)
+}
+
+fn inline_lower_tlm_target_with_io(
+    t: ThreadBlock,
+    binding: &TlmTargetBinding,
+    method: &TlmMethodMeta,
+    io: TlmTargetIo,
 ) -> Result<Vec<ModuleBodyItem>, CompileError> {
     let port = &binding.port.name;
     let method_name = &binding.method.name;
@@ -6307,7 +6564,7 @@ fn inline_lower_tlm_target(
     let mut arg_renames: Vec<(String, String)> = Vec::new();
     let mut latch_regs: Vec<RegDecl> = Vec::new();
     let tag_latch_name = method.out_of_order_tags.as_ref().map(|tag_w| {
-        let latch_name = format!("_tlm_{port}_{method_name}_tag_latched");
+        let latch_name = format!("_tlm_{port}_{method_name}{}_tag_latched", io.suffix);
         latch_regs.push(RegDecl {
             name: mk_ident(latch_name.clone()),
             ty: TypeExpr::UInt(Box::new(tag_w.clone())),
@@ -6319,7 +6576,7 @@ fn inline_lower_tlm_target(
         latch_name
     });
     for (user_arg, method_arg) in binding.args.iter().zip(method.args.iter()) {
-        let latch_name = format!("_tlm_{port}_{method_name}_{}_latched", method_arg.0.name);
+        let latch_name = format!("_tlm_{port}_{method_name}{}_{}_latched", io.suffix, method_arg.0.name);
         latch_regs.push(RegDecl {
             name: mk_ident(latch_name.clone()),
             ty: method_arg.1.clone(),
@@ -6395,7 +6652,7 @@ fn inline_lower_tlm_target(
     let entry_idx = 0u64;
     let respond_idx = (total_states - 1) as u64;
 
-    let state_reg_name = format!("_tlm_{port}_{method_name}_state");
+    let state_reg_name = format!("_tlm_{port}_{method_name}{}_state", io.suffix);
     let state_ident = Expr::new(ExprKind::Ident(state_reg_name.clone()), span);
     let mk_state_lit = |v: u64| Expr::new(ExprKind::Literal(LitKind::Sized(state_width, v)), span);
     let state_eq = |v: u64| Expr::new(
@@ -6421,7 +6678,7 @@ fn inline_lower_tlm_target(
     // State 0: ENTRY — if req_valid, latch args and advance to 1.
     let mut entry_then: Vec<Stmt> = Vec::new();
     for (user_arg, method_arg) in binding.args.iter().zip(method.args.iter()) {
-        let latch_name = format!("_tlm_{port}_{method_name}_{}_latched", method_arg.0.name);
+        let latch_name = format!("_tlm_{port}_{method_name}{}_{}_latched", io.suffix, method_arg.0.name);
         entry_then.push(Stmt::Assign(RegAssign {
             target: Expr::new(ExprKind::Ident(latch_name), span),
             value: mk_port_member(format!("{method_name}_{}", method_arg.0.name)),
@@ -6444,7 +6701,7 @@ fn inline_lower_tlm_target(
     let entry_branch_cond = Expr::new(
         ExprKind::Binary(BinOp::And,
             Box::new(state_eq(entry_idx)),
-            Box::new(mk_port_member(format!("{method_name}_req_valid"))),
+            Box::new(io.req_valid.clone()),
         ),
         span,
     );
@@ -6513,7 +6770,7 @@ fn inline_lower_tlm_target(
     let respond_branch_cond = Expr::new(
         ExprKind::Binary(BinOp::And,
             Box::new(state_eq(respond_idx)),
-            Box::new(mk_port_member(format!("{method_name}_rsp_ready"))),
+            Box::new(io.rsp_ready.clone()),
         ),
         span,
     );
@@ -6536,32 +6793,32 @@ fn inline_lower_tlm_target(
     let mut comb_stmts: Vec<Stmt> = Vec::new();
     // req_ready = (state == 0)
     comb_stmts.push(Stmt::Assign(CombAssign {
-        target: mk_port_member(format!("{method_name}_req_ready")),
+        target: io.req_ready_target.clone(),
         value: state_eq(entry_idx),
         span,
     }));
     // rsp_valid = (state == respond)
     comb_stmts.push(Stmt::Assign(CombAssign {
-        target: mk_port_member(format!("{method_name}_rsp_valid")),
+        target: io.rsp_valid_target.clone(),
         value: state_eq(respond_idx),
         span,
     }));
     // rsp_data = <return expr> (always driven; only observed when rsp_valid).
     if let Some(expr) = return_expr {
         if method.ret.is_some() {
-            comb_stmts.push(Stmt::Assign(CombAssign {
-                target: mk_port_member(format!("{method_name}_rsp_data")),
-                value: expr,
-                span,
-            }));
+            if let Some(target) = io.rsp_data_target.clone() {
+                comb_stmts.push(Stmt::Assign(CombAssign { target, value: expr, span }));
+            }
         }
     }
     if let Some(latch_name) = &tag_latch_name {
-        comb_stmts.push(Stmt::Assign(CombAssign {
-            target: mk_port_member(format!("{method_name}_rsp_tag")),
-            value: Expr::new(ExprKind::Ident(latch_name.clone()), span),
-            span,
-        }));
+        if let Some(target) = io.rsp_tag_target.clone() {
+            comb_stmts.push(Stmt::Assign(CombAssign {
+                target,
+                value: Expr::new(ExprKind::Ident(latch_name.clone()), span),
+                span,
+            }));
+        }
     }
     // User-written CombAssigns from the body — per-state guarded.
     for (i, us) in user_states.iter().enumerate() {
