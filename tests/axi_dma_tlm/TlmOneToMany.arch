@@ -1,0 +1,136 @@
+bus Mem
+  tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+  tlm_method write(addr: UInt<32>, data: UInt<64>) -> Bool: blocking;
+end bus Mem
+
+use Mem;
+
+module MemTargetLo
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port s: target Mem;
+
+  thread s.read(addr) on clk rising, rst high
+    return 64'h1111_0000_0000_0000;
+  end thread s.read
+
+  thread s.write(addr, data) on clk rising, rst high
+    return 1'b1;
+  end thread s.write
+end module MemTargetLo
+
+module MemTargetHi
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port s: target Mem;
+
+  thread s.read(addr) on clk rising, rst high
+    return 64'h2222_0000_0000_0000;
+  end thread s.read
+
+  thread s.write(addr, data) on clk rising, rst high
+    return 1'b1;
+  end thread s.write
+end module MemTargetHi
+
+module TlmAddrRouter2
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port up: target Mem;
+  port lo: initiator Mem;
+  port hi: initiator Mem;
+
+  reg read_sel_hi: Bool reset rst => false;
+  reg write_sel_hi: Bool reset rst => false;
+
+  let read_to_hi: Bool = up.read_addr[31] == 1'b1;
+  let write_to_hi: Bool = up.write_addr[31] == 1'b1;
+
+  comb
+    lo.read_req_valid = up.read_req_valid and (read_to_hi == false);
+    hi.read_req_valid = up.read_req_valid and read_to_hi;
+    lo.read_addr = up.read_addr;
+    hi.read_addr = up.read_addr;
+    up.read_req_ready = read_to_hi ? hi.read_req_ready : lo.read_req_ready;
+
+    lo.read_rsp_ready = up.read_rsp_ready and (read_sel_hi == false);
+    hi.read_rsp_ready = up.read_rsp_ready and read_sel_hi;
+    up.read_rsp_valid = read_sel_hi ? hi.read_rsp_valid : lo.read_rsp_valid;
+    up.read_rsp_data = read_sel_hi ? hi.read_rsp_data : lo.read_rsp_data;
+
+    lo.write_req_valid = up.write_req_valid and (write_to_hi == false);
+    hi.write_req_valid = up.write_req_valid and write_to_hi;
+    lo.write_addr = up.write_addr;
+    hi.write_addr = up.write_addr;
+    lo.write_data = up.write_data;
+    hi.write_data = up.write_data;
+    up.write_req_ready = write_to_hi ? hi.write_req_ready : lo.write_req_ready;
+
+    lo.write_rsp_ready = up.write_rsp_ready and (write_sel_hi == false);
+    hi.write_rsp_ready = up.write_rsp_ready and write_sel_hi;
+    up.write_rsp_valid = write_sel_hi ? hi.write_rsp_valid : lo.write_rsp_valid;
+    up.write_rsp_data = write_sel_hi ? hi.write_rsp_data : lo.write_rsp_data;
+  end comb
+
+  seq on clk rising
+    if up.read_req_valid and up.read_req_ready
+      read_sel_hi <= read_to_hi;
+    end if
+    if up.write_req_valid and up.write_req_ready
+      write_sel_hi <= write_to_hi;
+    end if
+  end seq
+end module TlmAddrRouter2
+
+module OneToManyInitiator
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port m: initiator Mem;
+
+  reg lo_data: UInt<64> reset rst => 0;
+  reg hi_data: UInt<64> reset rst => 0;
+  reg lo_ack: Bool reset rst => false;
+  reg hi_ack: Bool reset rst => false;
+
+  thread driver on clk rising, rst high
+    lo_data <= m.read(32'h0000_1000);
+    hi_data <= m.read(32'h8000_1000);
+    lo_ack <= m.write(32'h0000_2000, lo_data);
+    hi_ack <= m.write(32'h8000_2000, hi_data);
+  end thread driver
+end module OneToManyInitiator
+
+module TlmOneToManyTop
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  wire cpu_link: Mem;
+  wire lo_link: Mem;
+  wire hi_link: Mem;
+
+  inst i: OneToManyInitiator
+    clk <- clk;
+    rst <- rst;
+    m -> cpu_link;
+  end inst i
+
+  inst x: TlmAddrRouter2
+    clk <- clk;
+    rst <- rst;
+    up -> cpu_link;
+    lo -> lo_link;
+    hi -> hi_link;
+  end inst x
+
+  inst lo_t: MemTargetLo
+    clk <- clk;
+    rst <- rst;
+    s -> lo_link;
+  end inst lo_t
+
+  inst hi_t: MemTargetHi
+    clk <- clk;
+    rst <- rst;
+    s -> hi_link;
+  end inst hi_t
+end module TlmOneToManyTop
