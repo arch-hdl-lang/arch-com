@@ -1,0 +1,118 @@
+bus MemOoo
+  tlm_method read(addr: UInt<32>) -> UInt<64>: out_of_order tags 2;
+end bus MemOoo
+
+use MemOoo;
+
+module MemOooTargetLo
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port s: target MemOoo;
+
+  generate_for t in 0..3
+    thread s.read[t](addr) on clk rising, rst high
+      return 64'h1111_0000_0000_0000;
+    end thread s.read
+  end generate_for
+end module MemOooTargetLo
+
+module MemOooTargetHi
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port s: target MemOoo;
+
+  generate_for t in 0..3
+    thread s.read[t](addr) on clk rising, rst high
+      return 64'h2222_0000_0000_0000;
+    end thread s.read
+  end generate_for
+end module MemOooTargetHi
+
+module TlmOooAddrRouter2
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port up: target MemOoo;
+  port lo: initiator MemOoo;
+  port hi: initiator MemOoo;
+
+  // Same tag namespace end-to-end. The router records which downstream
+  // target owns each outstanding upstream tag.
+  reg read_route_hi: Vec<Bool, 4> reset rst => 0;
+
+  let read_to_hi: Bool = up.read_addr[31] == 1'b1;
+  let lo_rsp_match: Bool = lo.read_rsp_valid and (read_route_hi[lo.read_rsp_tag] == false);
+  let hi_rsp_match: Bool = hi.read_rsp_valid and read_route_hi[hi.read_rsp_tag];
+  let choose_hi_rsp: Bool = hi_rsp_match and (lo_rsp_match == false);
+
+  comb
+    lo.read_req_valid = up.read_req_valid and (read_to_hi == false);
+    hi.read_req_valid = up.read_req_valid and read_to_hi;
+    lo.read_addr = up.read_addr;
+    hi.read_addr = up.read_addr;
+    lo.read_req_tag = up.read_req_tag;
+    hi.read_req_tag = up.read_req_tag;
+    up.read_req_ready = read_to_hi ? hi.read_req_ready : lo.read_req_ready;
+
+    up.read_rsp_valid = lo_rsp_match or hi_rsp_match;
+    up.read_rsp_data = choose_hi_rsp ? hi.read_rsp_data : lo.read_rsp_data;
+    up.read_rsp_tag = choose_hi_rsp ? hi.read_rsp_tag : lo.read_rsp_tag;
+    lo.read_rsp_ready = up.read_rsp_ready and lo_rsp_match;
+    hi.read_rsp_ready = up.read_rsp_ready and choose_hi_rsp;
+  end comb
+
+  seq on clk rising
+    if up.read_req_valid and up.read_req_ready
+      read_route_hi[up.read_req_tag] <= read_to_hi;
+    end if
+  end seq
+end module TlmOooAddrRouter2
+
+module OneToManyOooInitiator
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port m: initiator MemOoo;
+
+  reg lo_data: UInt<64> reset rst => 0;
+  reg hi_data: UInt<64> reset rst => 0;
+
+  thread driver on clk rising, rst high
+    lo_data <= fork m.read(32'h0000_1000);
+    hi_data <= fork m.read(32'h8000_1000);
+    join all;
+  end thread driver
+end module OneToManyOooInitiator
+
+module TlmOneToManyOooTop
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  wire cpu_link: MemOoo;
+  wire lo_link: MemOoo;
+  wire hi_link: MemOoo;
+
+  inst i: OneToManyOooInitiator
+    clk <- clk;
+    rst <- rst;
+    m -> cpu_link;
+  end inst i
+
+  inst x: TlmOooAddrRouter2
+    clk <- clk;
+    rst <- rst;
+    up -> cpu_link;
+    lo -> lo_link;
+    hi -> hi_link;
+  end inst x
+
+  inst lo_t: MemOooTargetLo
+    clk <- clk;
+    rst <- rst;
+    s -> lo_link;
+  end inst lo_t
+
+  inst hi_t: MemOooTargetHi
+    clk <- clk;
+    rst <- rst;
+    s -> hi_link;
+  end inst hi_t
+end module TlmOneToManyOooTop

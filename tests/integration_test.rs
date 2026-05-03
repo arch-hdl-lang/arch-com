@@ -5184,6 +5184,33 @@ fn test_tlm_one_initiator_many_targets_router_example_compiles() {
 }
 
 #[test]
+fn test_tlm_one_initiator_many_targets_ooo_router_example_compiles() {
+    let source = include_str!("axi_dma_tlm/TlmOneToManyOoo.arch");
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module TlmOooAddrRouter2"),
+        "OOO one-to-many TLM router should build:\n{sv}");
+    assert!(sv.contains("logic [3:0] read_route_hi;")
+         && sv.contains("read_route_hi[up_read_req_tag] <= read_to_hi"),
+        "OOO router should record downstream route per upstream tag:\n{sv}");
+    assert!(sv.contains("lo_read_req_tag = up_read_req_tag")
+         && sv.contains("hi_read_req_tag = up_read_req_tag"),
+        "OOO router should forward upstream tags unchanged downstream:\n{sv}");
+    assert!(sv.contains("up_read_rsp_tag = choose_hi_rsp ? hi_read_rsp_tag : lo_read_rsp_tag")
+         && sv.contains("hi_read_rsp_ready = up_read_rsp_ready && choose_hi_rsp"),
+        "OOO router should mux responses by saved route and downstream response tag:\n{sv}");
+    assert!(sv.contains("module TlmOneToManyOooTop")
+         && sv.contains("cpu_link_read_req_tag")
+         && sv.contains("lo_link_read_req_tag")
+         && sv.contains("hi_link_read_req_tag"),
+        "OOO top should connect tag signals through one-to-many links:\n{sv}");
+
+    let sim = compile_to_sim_h(source, false);
+    assert!(sim.contains("class VTlmOooAddrRouter2")
+         && sim.contains("class VTlmOneToManyOooTop"),
+        "sim C++ should include OOO router and top mirrors");
+}
+
+#[test]
 fn test_reentrant_thread_parses_with_max() {
     // PR-tlm-p1: `reentrant max N` clause parses into
     // ThreadBlock.reentrant = Some(Some(Expr::Literal(N))).
