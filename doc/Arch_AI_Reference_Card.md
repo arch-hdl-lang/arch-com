@@ -1096,7 +1096,9 @@ end thread driver
 
 `dst <= fork m.read(...);` is a nonblocking TLM issue; `join all;` waits for every forked issue in the group. v1 allows direct forked TLM assignments plus literal `wait N cycle;` offsets, with `join all;` final.
 
-Current restrictions: thread-body call sites only; direct RHS call only (`dst <= m.method(args);` or `dst <= fork m.method(args);`); no TLM calls inside runtime `for` loops; one call per worker/branch/forked issue; same clock/reset per cohort; literal tag count only; RHS-fork offsets require literal `wait N cycle;`; no nested/composed TLM calls; no `pipelined`; no `burst`; no `Future<T>`/`await`.
+Bounded burst-like payloads: use a static max vector return and a runtime length arg, for example `tlm_method read_burst(addr: UInt<32>, len: UInt<3>) -> Vec<UInt<32>, 4>: out_of_order tags 2;`. The vector size is compile-time fixed; `len` says how many lanes are valid.
+
+Current restrictions: thread-body call sites only; direct RHS call only (`dst <= m.method(args);` or `dst <= fork m.method(args);`); no TLM calls inside runtime `for` loops; one call per worker/branch/forked issue; same clock/reset per cohort; literal tag count only; RHS-fork offsets require literal `wait N cycle;`; no nested/composed TLM calls; no dynamic-length TLM return types; no `pipelined`; no first-class `burst`; no `Future<T>`/`await`.
 
 Full spec: `doc/ARCH_HDL_Specification.md` §18d. Design + v2 roadmap: `doc/plan_tlm_method.md`.
 

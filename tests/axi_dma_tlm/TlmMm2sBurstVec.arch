@@ -1,0 +1,61 @@
+//! ---
+//! spec_md: doc/axi_dma_case_study.md
+//! tags: [dma, axi4, mm2s, tlm_method, rhs_fork, multi_outstanding, burst_vec]
+//! refs:
+//!   - "tests/axi_dma_tlm/TlmMm2sReadPair.arch"
+//! ---
+//!
+//! AXI-DMA-flavored TLM burst smoke example.
+//!
+//! Current ARCH TLM does not have a dynamic-size `burst` return mode. This
+//! example uses the supported hardware shape instead: the method returns a
+//! statically-sized max-beat Vec, while the request carries a runtime `len`
+//! saying how many lanes are valid. That keeps the interface synthesizable and
+//! lets the compiler lower multiple outstanding burst-like calls using the same
+//! hidden tag routing as scalar out-of-order TLM calls.
+
+bus DmaMemBurstRead
+  tlm_method read_burst(addr: UInt<32>, len: UInt<3>) -> Vec<UInt<32>, 4>: out_of_order tags 2;
+end bus DmaMemBurstRead
+
+use DmaMemBurstRead;
+
+module TlmMm2sBurstVec
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+
+  port base_addr: in UInt<32>;
+  port len0_i: in UInt<3>;
+  port len1_i: in UInt<3>;
+  port mem: initiator DmaMemBurstRead;
+
+  port data0_0: out UInt<32>;
+  port data0_1: out UInt<32>;
+  port data0_2: out UInt<32>;
+  port data0_3: out UInt<32>;
+  port data1_0: out UInt<32>;
+  port data1_1: out UInt<32>;
+  port data1_2: out UInt<32>;
+  port data1_3: out UInt<32>;
+
+  reg burst0_r: Vec<UInt<32>, 4> reset rst => 0;
+  reg burst1_r: Vec<UInt<32>, 4> reset rst => 0;
+
+  comb
+    data0_0 = burst0_r[0];
+    data0_1 = burst0_r[1];
+    data0_2 = burst0_r[2];
+    data0_3 = burst0_r[3];
+    data1_0 = burst1_r[0];
+    data1_1 = burst1_r[1];
+    data1_2 = burst1_r[2];
+    data1_3 = burst1_r[3];
+  end comb
+
+  thread issue_bursts on clk rising, rst high
+    burst0_r <= fork mem.read_burst(base_addr, len0_i);
+    wait 1 cycle;
+    burst1_r <= fork mem.read_burst((base_addr + 32'd16).trunc<32>(), len1_i);
+    join all;
+  end thread issue_bursts
+end module TlmMm2sBurstVec
