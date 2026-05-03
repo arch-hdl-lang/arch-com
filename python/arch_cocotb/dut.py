@@ -2,20 +2,30 @@
 
 import re
 
-from arch_cocotb.signal import ArchSignal
+from arch_cocotb.signal import ArchSignal, ArchSignalValue
 
 
 _VEC_MEMBER_RE = re.compile(r"^(.+)_(\d+)$")
 
 
 class _ArchVecProxy:
-    """Indexable proxy over unpacked-Vec ports.
+    """Indexable proxy over Vec ports.
 
-    arch sim's pybind layer flattens `port: in unpacked Vec<T, N>` into
-    N scalar attributes named `port_0` .. `port_{N-1}`. Tests written
-    against real Verilator cocotb expect to write `dut.port[i].value`,
-    so we synthesize a proxy that maps `[i]` back to the underlying
-    `port_i` ArchSignal handle.
+    arch sim's pybind layer flattens `port: <dir> Vec<T, N>` (packed or
+    unpacked) into N scalar attributes named `port_0` .. `port_{N-1}`.
+    Tests written against real Verilator cocotb expect both styles:
+
+      dut.port[i].value = lane_value     # per-lane (works for both)
+      dut.port.value    = whole_packed   # whole-value (packed Vec only
+                                         # under Verilator, since
+                                         # `vec[i]` errors with
+                                         # "Packed objects cannot be
+                                         # indexed")
+
+    The proxy supports both: `[i]` maps to the underlying `port_i`
+    ArchSignal handle, and `.value` composes/decomposes the lanes. Lane
+    0 occupies the LSB bits, matching the cocotb-Verilator convention
+    for packed `logic [N-1:0][W-1:0]`.
     """
 
     __slots__ = ("_members",)
@@ -32,6 +42,29 @@ class _ArchVecProxy:
 
     def __iter__(self):
         return iter(self._members)
+
+    @property
+    def value(self):
+        """Compose lanes into a single packed integer (lane 0 = LSB)."""
+        raw = 0
+        offset = 0
+        for sig in self._members:
+            lane = int(sig.value) & ((1 << sig._width) - 1)
+            raw |= lane << offset
+            offset += sig._width
+        return ArchSignalValue(raw, offset, signed=False)
+
+    @value.setter
+    def value(self, v):
+        """Decompose a packed integer into lanes (lane 0 = LSB)."""
+        if isinstance(v, ArchSignalValue):
+            v = v.to_unsigned()
+        v = int(v)
+        offset = 0
+        for sig in self._members:
+            mask = (1 << sig._width) - 1
+            sig.value = (v >> offset) & mask
+            offset += sig._width
 
 
 class ArchDUT:
