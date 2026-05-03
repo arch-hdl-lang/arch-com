@@ -5124,43 +5124,7 @@ fn test_tlm_canonical_end_to_end_initiator_plus_target() {
     // PR-tlm-7: canonical validation — a minimal Mem bus with `read`
     // and `write` methods, plus initiator + target pair exercising
     // both sides of the wire protocol.
-    let source = "
-        bus Mem
-          tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
-          tlm_method write(addr: UInt<32>, data: UInt<64>) -> Bool: blocking;
-        end bus Mem
-
-        use Mem;
-
-        module MemTarget
-          port clk: in Clock<SysDomain>;
-          port rst: in Reset<Sync>;
-          port s:   target Mem;
-          port ready: in Bool;
-          thread s.read(addr) on clk rising, rst high
-            wait until ready;
-            return 64'h42;
-          end thread s.read
-          thread s.write(addr, data) on clk rising, rst high
-            wait until ready;
-            return 1'b1;
-          end thread s.write
-        end module MemTarget
-
-        module Initiator
-          port clk: in Clock<SysDomain>;
-          port rst: in Reset<Sync>;
-          port m:   initiator Mem;
-          reg   d0: UInt<64> reset rst => 0;
-          reg   d1: UInt<64> reset rst => 0;
-          reg   ack: Bool    reset rst => false;
-          thread driver on clk rising, rst high
-            d0  <= m.read(32'h1000);
-            d1  <= m.read(32'h1004);
-            ack <= m.write(32'h2000, d0);
-          end thread driver
-        end module Initiator
-    ";
+    let source = include_str!("axi_dma_tlm/TlmOneToOne.arch");
     let sv = compile_to_sv(source);
 
     // Target-side state machines.
@@ -5184,6 +5148,9 @@ fn test_tlm_canonical_end_to_end_initiator_plus_target() {
          && sv.contains("m_write_addr")
          && sv.contains("m_write_data"),
         "initiator: arg signals should appear:\n{sv}");
+    assert!(sv.contains("module TlmOneToOneTop")
+         && sv.contains("link_read_req_valid"),
+        "top-level one-to-one bus wire connection should appear:\n{sv}");
 
     // Compile to sim C++ too — same path should flow through the existing
     // reg/seq/comb sim mirror without issues.
