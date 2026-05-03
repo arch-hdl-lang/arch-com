@@ -5737,6 +5737,30 @@ fn test_axi_dma_tlm_read_pair_example_compiles() {
 }
 
 #[test]
+fn test_axi_dma_tlm_burst_vec_example_compiles() {
+    let source = include_str!("axi_dma_tlm/TlmMm2sBurstVec.arch");
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module TlmMm2sBurstVec"));
+    assert!(sv.contains("input logic [3:0] [31:0] mem_read_burst_rsp_data"));
+    assert!(sv.contains("mem_read_burst_len"));
+    assert!(sv.contains("mem_read_burst_req_tag"));
+    assert!(sv.contains("mem_read_burst_rsp_tag"));
+    assert!(sv.contains("_tlm_fork_issue_bursts_mem_read_burst"));
+    assert!(sv.contains("mem_read_burst_rsp_tag == 2'd0")
+        && sv.contains("mem_read_burst_rsp_tag == 2'd1"),
+        "burst Vec OOO responses should route by worker tag:\n{sv}");
+
+    let sim = compile_to_sim_h(source, false);
+    assert!(sim.contains("uint32_t mem_read_burst_rsp_data_0;"),
+        "sim API should expose flattened Vec response lanes:\n{sim}");
+    assert!(sim.contains("uint32_t _mem_read_burst_rsp_data[4];"),
+        "sim model should mirror the flattened Vec response as an internal array:\n{sim}");
+    assert!(sim.contains("for (size_t _i = 0; _i < 4; ++_i) { _n_burst0_r[_i] = _mem_read_burst_rsp_data[_i]; }")
+        && sim.contains("for (size_t _i = 0; _i < 4; ++_i) { _n_burst1_r[_i] = _mem_read_burst_rsp_data[_i]; }"),
+        "burst Vec responses should copy into both destination arrays:\n{sim}");
+}
+
+#[test]
 fn test_tlm_out_of_order_target_echoes_tag() {
     let source = "
         bus Mem

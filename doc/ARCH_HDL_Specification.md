@@ -5092,6 +5092,17 @@ Each method flattens to two handshake-shaped channels. Directions below are from
 
 For `out_of_order tags N`, each method also flattens `<name>_req_tag` (initiator → target) and `<name>_rsp_tag` (target → initiator). The compiler assigns tags to workers and routes responses by `rsp_tag`.
 
+Fixed-size `Vec<T, N>` return payloads are supported and flatten as a static hardware vector on `<name>_rsp_data`. This is the recommended v1 pattern for bounded burst-like transactions with variable runtime length: pass the requested length as an ordinary method arg and return a maximum-size vector.
+
+```
+bus DmaMem
+  // Runtime len says how many of the four returned lanes are valid.
+  tlm_method read_burst(addr: UInt<32>, len: UInt<3>) -> Vec<UInt<32>, 4>: out_of_order tags 2;
+end bus DmaMem
+```
+
+This is not the deferred first-class `burst` mode: the vector size is still compile-time static, and consumers must track `len` out-of-band.
+
 **18d.3 Target-side implementation**
 
 The target implements each method as a `thread` whose name is the dotted `port.method` path. The body runs once per received request; arg names are bound as thread-local references to the incoming request payload.
@@ -5183,6 +5194,7 @@ Both target and initiator passes emit ordinary `RegDecl` + `RegBlock` + `CombBlo
 **18d.6 Current restrictions**
 
 - `pipelined` / `burst` modes and all `Future<T>` / `await` / user-visible `Token<T>` APIs.
+- Dynamic-length TLM return types. Use a fixed-size `Vec<T, MAX>` return plus a runtime `len` arg for bounded burst-like payloads.
 - TLM calls outside a thread body (`comb`, `seq`, module-level `let`, module-local `function`, `pipeline`, `fsm` — compile error).
 - TLM calls inside runtime `for` loops, even inside a thread body. Use `generate_for` worker threads for compile-time replication.
 - Nested TLM calls in expressions (compile error — must be direct RHS of `<=`).
