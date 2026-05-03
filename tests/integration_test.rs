@@ -5160,6 +5160,30 @@ fn test_tlm_canonical_end_to_end_initiator_plus_target() {
 }
 
 #[test]
+fn test_tlm_one_initiator_many_targets_router_example_compiles() {
+    let source = include_str!("axi_dma_tlm/TlmOneToMany.arch");
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module TlmAddrRouter2"),
+        "one-to-many TLM router should build:\n{sv}");
+    assert!(sv.contains("lo_read_req_valid = up_read_req_valid && read_to_hi == 1'b0")
+         && sv.contains("hi_read_req_valid = up_read_req_valid && read_to_hi"),
+        "router should decode request valid to exactly one downstream target:\n{sv}");
+    assert!(sv.contains("up_read_rsp_data = read_sel_hi ? hi_read_rsp_data : lo_read_rsp_data")
+         && sv.contains("up_write_rsp_data = write_sel_hi ? hi_write_rsp_data : lo_write_rsp_data"),
+        "router should mux responses through the latched request target:\n{sv}");
+    assert!(sv.contains("module TlmOneToManyTop")
+         && sv.contains("cpu_link_read_req_valid")
+         && sv.contains("lo_link_read_req_valid")
+         && sv.contains("hi_link_read_req_valid"),
+        "top should connect one initiator through router to two target links:\n{sv}");
+
+    let sim = compile_to_sim_h(source, false);
+    assert!(sim.contains("class VTlmAddrRouter2")
+         && sim.contains("class VTlmOneToManyTop"),
+        "sim C++ should include router and top mirrors");
+}
+
+#[test]
 fn test_reentrant_thread_parses_with_max() {
     // PR-tlm-p1: `reentrant max N` clause parses into
     // ThreadBlock.reentrant = Some(Some(Expr::Literal(N))).
