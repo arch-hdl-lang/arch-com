@@ -5422,6 +5422,54 @@ fn test_implement_target_multi_implementer_rejected() {
 }
 
 #[test]
+fn test_tlm_indexed_target_generate_for_lowers_tag_lanes() {
+    let source = "
+        bus Mem
+          tlm_method read(addr: UInt<32>) -> UInt<64>: out_of_order tags 2;
+        end bus Mem
+
+        use Mem;
+
+        module MemTarget
+          port clk: in Clock<SysDomain>;
+          port rst: in Reset<Sync>;
+          port s:   target Mem;
+
+          generate_for t in 0..3
+            thread s.read[t](addr) on clk rising, rst high
+              return 64'h42;
+            end thread s.read
+          end generate_for
+        end module MemTarget
+    ";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("_tlm_s_read_tag0_state")
+         && sv.contains("_tlm_s_read_tag3_state"),
+        "indexed target lanes should lower to independent lane FSMs:\n{sv}");
+    assert!(sv.contains("_tlm_s_read_tag0_req_ready")
+         && sv.contains("_tlm_s_read_tag3_rsp_valid"),
+        "indexed target lanes should use private endpoint wires:\n{sv}");
+    assert!(sv.contains("s_read_req_tag == 2'd0")
+         && sv.contains("s_read_req_tag == 2'd3"),
+        "shared target endpoint should route requests by tag lane:\n{sv}");
+    assert!(sv.contains("s_read_rsp_tag = _tlm_s_read_tag0_rsp_tag")
+         && sv.contains("s_read_rsp_data = _tlm_s_read_tag0_rsp_data"),
+        "shared response endpoint should mux lane responses:\n{sv}");
+}
+
+#[test]
+fn test_axi_dma_tlm_indexed_burst_target_example_compiles() {
+    let source = include_str!("axi_dma_tlm/TlmIndexedBurstTarget.arch");
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module TlmIndexedBurstTarget"),
+        "indexed burst target example should build:\n{sv}");
+    assert!(sv.contains("BoundedVecResp32x4 _tlm_s_read_burst_tag0_rsp_data"),
+        "bounded Vec response should stay struct-typed through target lane lowering:\n{sv}");
+    assert!(sv.contains("s_read_burst_req_tag == 2'd3"),
+        "generated target lanes should route by request tag:\n{sv}");
+}
+
+#[test]
 fn test_implement_initiator_single_compiles_end_to_end() {
     // PR-tlm-i3: single-implementer initiator routes through the
     // existing v1 inline lowering. End-to-end SV compiles.

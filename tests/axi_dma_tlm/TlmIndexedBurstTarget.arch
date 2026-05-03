@@ -1,0 +1,27 @@
+struct BoundedVecResp32x4
+  data: Vec<UInt<32>, 4>;
+  len: UInt<3>;
+  resp: UInt<2>;
+end struct BoundedVecResp32x4
+
+bus BurstMem
+  tlm_method read_burst(addr: UInt<32>, len: UInt<3>) -> BoundedVecResp32x4: out_of_order tags 2;
+end bus BurstMem
+
+use BurstMem;
+
+module TlmIndexedBurstTarget
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port s: target BurstMem;
+
+  // Prototype shape for tag-indexed target method replication. Each
+  // generated thread is a static server lane selected by req_tag.
+  reg lane_rsp: Vec<BoundedVecResp32x4, 4> reset rst => 0;
+
+  generate_for t in 0..3
+    thread s.read_burst[t](addr, len) on clk rising, rst high
+      return lane_rsp[t];
+    end thread s.read_burst
+  end generate_for
+end module TlmIndexedBurstTarget

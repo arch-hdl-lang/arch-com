@@ -529,6 +529,11 @@ pub struct TlmTargetBinding {
     pub port: Ident,
     /// Method name (e.g. `read`).
     pub method: Ident,
+    /// Optional compile-time tag lane for indexed target implementations:
+    /// `thread s.read[t](...)`. After `generate_for` expansion this must
+    /// reduce to a literal lane id and is used to replicate target servers
+    /// without a dynamic target-side scheduler.
+    pub tag_lane: Option<Expr>,
     /// Argument names bound as thread-local values for the body.
     /// Types come from the bus's `TlmMethodMeta.args` at lowering time.
     pub args: Vec<Ident>,
