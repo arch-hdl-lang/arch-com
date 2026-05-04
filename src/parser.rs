@@ -778,6 +778,9 @@ impl Parser {
                 Some(TokenKind::Inst) => {
                     body.push(ModuleBodyItem::Inst(self.parse_inst()?));
                 }
+                Some(TokenKind::Ident(ref s)) if s == "connect" => {
+                    body.push(ModuleBodyItem::TlmConnect(self.parse_tlm_connect()?));
+                }
                 Some(TokenKind::PipeReg) => {
                     body.push(ModuleBodyItem::PipeRegDecl(self.parse_pipe_reg_decl()?));
                 }
@@ -808,7 +811,7 @@ impl Parser {
                 }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "param, port, reg, seq, comb, let, inst, pipe_reg, generate_for, generate_if, thread, default, assert, cover, function, or hook",
+                        "param, port, reg, seq, comb, let, inst, connect, pipe_reg, generate_for, generate_if, thread, default, assert, cover, function, or hook",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -1142,6 +1145,29 @@ impl Parser {
             shared,
             unpacked,
             span: start.merge(end_span),
+        })
+    }
+
+
+    fn parse_tlm_connect_endpoint(&mut self) -> Result<(Ident, Ident), CompileError> {
+        let inst = self.expect_ident()?;
+        self.expect(TokenKind::Dot)?;
+        let port = self.expect_ident()?;
+        Ok((inst, port))
+    }
+
+    fn parse_tlm_connect(&mut self) -> Result<TlmConnectDecl, CompileError> {
+        let start = self.expect_contextual("connect")?.span;
+        let (from_inst, from_port) = self.parse_tlm_connect_endpoint()?;
+        self.expect(TokenKind::RArrow)?;
+        let (to_inst, to_port) = self.parse_tlm_connect_endpoint()?;
+        let end = self.expect(TokenKind::Semi)?.span;
+        Ok(TlmConnectDecl {
+            from_inst,
+            from_port,
+            to_inst,
+            to_port,
+            span: start.merge(end),
         })
     }
 

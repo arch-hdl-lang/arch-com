@@ -809,6 +809,9 @@ impl<'a> TypeChecker<'a> {
                 ModuleBodyItem::Function(f) => {
                     self.check_function(f);
                 }
+                ModuleBodyItem::TlmConnect(_) => {
+                    // Source-level sugar lowered during elaboration.
+                }
             }
         }
 

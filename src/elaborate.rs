@@ -108,7 +108,7 @@ pub fn elaborate(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
     if !errors.is_empty() {
         Err(errors)
     } else {
-        Ok(SourceFile { items: new_items, inner_doc: None, frontmatter: None })
+        lower_tlm_connects(SourceFile { items: new_items, inner_doc: None, frontmatter: None })
     }
 }
 
@@ -133,6 +133,7 @@ fn collect_raw_overrides_from_body(
                     }
                 }
             }
+            ModuleBodyItem::TlmConnect(_) => {}
             _ => {}
         }
     }
@@ -419,6 +420,204 @@ fn rewrite_inst(
     }
 
     inst // no match (shouldn't happen) — leave unchanged
+}
+
+// ── TLM/bus connect sugar ───────────────────────────────────────────────────
+
+fn lower_tlm_connects(ast: SourceFile) -> Result<SourceFile, Vec<CompileError>> {
+    let module_ports: HashMap<String, Vec<PortDecl>> = ast.items.iter()
+        .filter_map(|item| match item {
+            Item::Module(m) => Some((m.name.name.clone(), m.ports.clone())),
+            Item::Fsm(f) => Some((f.name.name.clone(), f.ports.clone())),
+            Item::Pipeline(p) => Some((p.name.name.clone(), p.ports.clone())),
+            _ => None,
+        })
+        .collect();
+
+    let mut errors = Vec::new();
+    let mut items = Vec::new();
+    for item in ast.items {
+        match item {
+            Item::Module(m) => match lower_tlm_connects_in_module(m, &module_ports) {
+                Ok(m) => items.push(Item::Module(m)),
+                Err(mut errs) => errors.append(&mut errs),
+            },
+            other => items.push(other),
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(SourceFile { items, inner_doc: ast.inner_doc, frontmatter: ast.frontmatter })
+    } else {
+        Err(errors)
+    }
+}
+
+fn lower_tlm_connects_in_module(
+    mut m: ModuleDecl,
+    module_ports: &HashMap<String, Vec<PortDecl>>,
+) -> Result<ModuleDecl, Vec<CompileError>> {
+    let connects: Vec<TlmConnectDecl> = m.body.iter()
+        .filter_map(|item| match item {
+            ModuleBodyItem::TlmConnect(c) => Some(c.clone()),
+            _ => None,
+        })
+        .collect();
+    if connects.is_empty() {
+        return Ok(m);
+    }
+
+    let mut errors = Vec::new();
+    let mut inst_modules: HashMap<String, String> = HashMap::new();
+    let mut used_names: HashSet<String> = HashSet::new();
+    for item in &m.body {
+        match item {
+            ModuleBodyItem::Inst(inst) => {
+                inst_modules.insert(inst.name.name.clone(), inst.module_name.name.clone());
+                used_names.insert(inst.name.name.clone());
+                for c in &inst.connections {
+                    if c.port_name.name.starts_with("_tlm_conn_") {
+                        used_names.insert(c.port_name.name.clone());
+                    }
+                }
+            }
+            ModuleBodyItem::RegDecl(r) => { used_names.insert(r.name.name.clone()); }
+            ModuleBodyItem::WireDecl(w) => { used_names.insert(w.name.name.clone()); }
+            ModuleBodyItem::LetBinding(l) => { used_names.insert(l.name.name.clone()); }
+            ModuleBodyItem::PipeRegDecl(p) => { used_names.insert(p.name.name.clone()); }
+            _ => {}
+        }
+    }
+    for port in &m.ports {
+        used_names.insert(port.name.name.clone());
+    }
+
+    let mut synthesized_wires = Vec::new();
+    let mut synthesized_conns: HashMap<String, Vec<Connection>> = HashMap::new();
+    for conn in connects {
+        let Some((from_bus, from_persp, from_span)) =
+            tlm_connect_endpoint_bus(&conn.from_inst, &conn.from_port, &inst_modules, module_ports)
+        else {
+            errors.push(CompileError::general(
+                &format!("unknown TLM connect endpoint `{}.{}`", conn.from_inst.name, conn.from_port.name),
+                conn.from_inst.span.merge(conn.from_port.span),
+            ));
+            continue;
+        };
+        let Some((to_bus, to_persp, to_span)) =
+            tlm_connect_endpoint_bus(&conn.to_inst, &conn.to_port, &inst_modules, module_ports)
+        else {
+            errors.push(CompileError::general(
+                &format!("unknown TLM connect endpoint `{}.{}`", conn.to_inst.name, conn.to_port.name),
+                conn.to_inst.span.merge(conn.to_port.span),
+            ));
+            continue;
+        };
+        if from_bus != to_bus {
+            errors.push(CompileError::general(
+                &format!(
+                    "TLM connect bus mismatch: `{}.{}` is `{from_bus}`, but `{}.{}` is `{to_bus}`",
+                    conn.from_inst.name, conn.from_port.name, conn.to_inst.name, conn.to_port.name
+                ),
+                conn.span,
+            ));
+            continue;
+        }
+        if from_persp != BusPerspective::Initiator || to_persp != BusPerspective::Target {
+            errors.push(CompileError::general(
+                "TLM connect prototype requires `connect initiator_inst.initiator_port -> target_inst.target_port;`",
+                from_span.merge(to_span),
+            ));
+            continue;
+        }
+        for (inst_name, port_name) in [(&conn.from_inst, &conn.from_port), (&conn.to_inst, &conn.to_port)] {
+            if let Some(existing) = m.body.iter().find_map(|item| match item {
+                ModuleBodyItem::Inst(inst) if inst.name.name == inst_name.name => Some(inst),
+                _ => None,
+            }).and_then(|inst| inst.connections.iter().find(|c| c.port_name.name == port_name.name)) {
+                errors.push(CompileError::general(
+                    &format!(
+                        "`connect {}.{}` duplicates an explicit connection on inst `{}` port `{}`",
+                        inst_name.name, port_name.name, inst_name.name, port_name.name
+                    ),
+                    existing.span.merge(conn.span),
+                ));
+            }
+        }
+        if !errors.is_empty() {
+            continue;
+        }
+
+        let base = format!(
+            "_tlm_conn_{}_{}_{}_{}",
+            conn.from_inst.name, conn.from_port.name, conn.to_inst.name, conn.to_port.name
+        );
+        let mut wire_name = base.clone();
+        let mut suffix = 0usize;
+        while used_names.contains(&wire_name) {
+            suffix += 1;
+            wire_name = format!("{base}_{suffix}");
+        }
+        used_names.insert(wire_name.clone());
+
+        let wire_ident = Ident::new(wire_name.clone(), conn.span);
+        synthesized_wires.push(ModuleBodyItem::WireDecl(WireDecl {
+            name: wire_ident.clone(),
+            ty: TypeExpr::Named(Ident::new(from_bus.clone(), conn.span)),
+            unpacked: false,
+            span: conn.span,
+        }));
+
+        let signal = Expr::new(ExprKind::Ident(wire_name), conn.span);
+        synthesized_conns.entry(conn.from_inst.name.clone()).or_default().push(Connection {
+            port_name: conn.from_port.clone(),
+            direction: ConnectDir::Output,
+            signal: signal.clone(),
+            reset_override: None,
+            span: conn.span,
+        });
+        synthesized_conns.entry(conn.to_inst.name.clone()).or_default().push(Connection {
+            port_name: conn.to_port.clone(),
+            direction: ConnectDir::Output,
+            signal,
+            reset_override: None,
+            span: conn.span,
+        });
+    }
+
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    let mut lowered_body = Vec::new();
+    lowered_body.extend(synthesized_wires);
+    for item in m.body {
+        match item {
+            ModuleBodyItem::Inst(mut inst) => {
+                if let Some(mut conns) = synthesized_conns.remove(&inst.name.name) {
+                    inst.connections.append(&mut conns);
+                }
+                lowered_body.push(ModuleBodyItem::Inst(inst));
+            }
+            ModuleBodyItem::TlmConnect(_) => {}
+            other => lowered_body.push(other),
+        }
+    }
+    m.body = lowered_body;
+    Ok(m)
+}
+
+fn tlm_connect_endpoint_bus(
+    inst: &Ident,
+    port: &Ident,
+    inst_modules: &HashMap<String, String>,
+    module_ports: &HashMap<String, Vec<PortDecl>>,
+) -> Option<(String, BusPerspective, Span)> {
+    let module_name = inst_modules.get(&inst.name)?;
+    let ports = module_ports.get(module_name)?;
+    let p = ports.iter().find(|p| p.name.name == port.name)?;
+    let bi = p.bus_info.as_ref()?;
+    Some((bi.bus_name.name.clone(), bi.perspective, p.span))
 }
 
 // ── Generate expansion ────────────────────────────────────────────────────────

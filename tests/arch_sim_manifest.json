@@ -83,6 +83,15 @@
       ]
     },
     {
+      "name": "axi_dma_tlm__TlmConnectOneToOne",
+      "arch_files": [
+        "tests/axi_dma_tlm/TlmConnectOneToOne.arch"
+      ],
+      "tb_files": [
+        "tests/axi_dma_tlm/tb_tlm_connect_one_to_one.cpp"
+      ]
+    },
+    {
       "name": "axi_dma_tlm__TlmMm2sBurstVec",
       "arch_files": [
         "tests/axi_dma_tlm/TlmMm2sBurstVec.arch"

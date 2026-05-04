@@ -1057,6 +1057,24 @@ end module Initiator
 
 Both sides lower to a parent-module state machine (state reg + RegBlock + CombBlock). `arch sim`, `arch sim --pybind --test`, and `arch sim --thread-sim parallel` work through generated C++ models; parallel mode uses the regular sim model for modules whose TLM threads were lowered away.
 
+**One-to-one connection sugar** — after both instances are declared, bind an initiator bus port to a target bus port without spelling an intermediate wire:
+
+```
+inst cpu: Initiator
+  clk <- clk;
+  rst <- rst;
+end inst cpu
+
+inst ram: MemTarget
+  clk <- clk;
+  rst <- rst;
+end inst ram
+
+connect cpu.m -> ram.s;
+```
+
+This elaborates to a private bus wire plus ordinary whole-bus inst connections. Current scope is one initiator endpoint to one target endpoint of the same bus type.
+
 TLM calls are not general expressions. They are legal only in `thread` bodies as `dst <= port.method(args);` or `dst <= fork port.method(args);`; `comb`, `seq`, module-level `let`, module-local `function`, `pipeline`, and `fsm` contexts reject them.
 
 Do not put TLM calls inside runtime `for` loops. Use `generate_for` worker threads for compile-time replication.

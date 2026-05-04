@@ -1157,6 +1157,8 @@ The compiler validates that the default value fits within the declared range. Co
 >
 > ◈ **Whole-bus connections.** When an inst's bus port connects to a parent bus port (or wire), a single connection expands to all signals in the bus definition: `axi_rd -> m_axi_mm2s;` expands to `axi_rd_ar_valid -> m_axi_mm2s_ar_valid`, etc. Signal directions are derived from the bus definition and the port's perspective (`initiator` or `target`). This works for both `module` and `fsm` constructs.
 >
+> ◈ **Prototype TLM connect sugar.** For early design-phase one-to-one TLM binding, a module may write `connect cpu.mem -> ram.mem;` after both instances are declared. The left endpoint must be an instantiated `initiator` bus port and the right endpoint an instantiated `target` bus port of the same bus type. Elaboration creates a private bus wire and appends ordinary whole-bus inst connections, so generated SV remains the same flattened req/rsp signal protocol. Current scope is one initiator endpoint to one target endpoint; decoded one-to-many routing still uses an explicit router module.
+>
 > ◈ **Indexed bus port expressions.** Generated bus port arrays (via `generate for i in 0..N / port m_axi_i: initiator Bus`) can be referenced in comb/seq blocks using bracket-dot syntax: `m_axi[0].ar_valid = true;` flattens to `m_axi_0_ar_valid`. The index must be an integer literal.
 >
 > ◈ **Hierarchical instance references are forbidden.** Expressions like `inst_name.port_name` (e.g. `add.sum`) are a compile error. To read an instance output, use `port -> wire_name` inside the `inst` block and reference `wire_name` in the enclosing scope. Error message: *"hierarchical reference \`u.y\` is not allowed; use \`y -> wire_name\` in the inst block instead."*

@@ -5518,6 +5518,25 @@ fn test_tlm_canonical_end_to_end_initiator_plus_target() {
 }
 
 #[test]
+fn test_tlm_connect_one_to_one_sugar_lowers_to_bus_wire() {
+    let source = include_str!("axi_dma_tlm/TlmConnectOneToOne.arch");
+    let sv = compile_to_sv(source);
+
+    assert!(sv.contains("module TlmConnectOneToOneTop"),
+        "connect-sugar top should build:\n{sv}");
+    assert!(sv.contains("_tlm_conn_i_m_t_s_read_req_valid")
+         && sv.contains("_tlm_conn_i_m_t_s_write_req_valid"),
+        "connect sugar should synthesize a private flattened TLM bus wire:\n{sv}");
+    assert!(sv.contains(".m_read_req_valid(_tlm_conn_i_m_t_s_read_req_valid)")
+         && sv.contains(".s_read_req_valid(_tlm_conn_i_m_t_s_read_req_valid)"),
+        "connect sugar should wire initiator and target endpoints together:\n{sv}");
+
+    let sim = compile_to_sim_h(source, false);
+    assert!(sim.contains("class VTlmConnectOneToOneTop"),
+        "sim C++ should include the connect-sugar top");
+}
+
+#[test]
 fn test_tlm_one_initiator_many_targets_router_example_compiles() {
     let source = include_str!("axi_dma_tlm/TlmOneToMany.arch");
     let sv = compile_to_sv(source);

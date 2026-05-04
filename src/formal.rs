@@ -1487,7 +1487,7 @@ impl<'a> FormalCtx<'a> {
                         self.module.span,
                     ));
                 }
-                ModuleBodyItem::Function(_) | ModuleBodyItem::Resource(_) => {
+                ModuleBodyItem::Function(_) | ModuleBodyItem::Resource(_) | ModuleBodyItem::TlmConnect(_) => {
                     // Ignore; v1 doesn't encode module-local functions
                 }
                 ModuleBodyItem::Inst(_) | ModuleBodyItem::Thread(_) => {
