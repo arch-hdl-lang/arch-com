@@ -487,7 +487,7 @@ impl<'a> Codegen<'a> {
                 ModuleBodyItem::Generate(ref gen) => {
                     self.emit_generate(gen);
                 }
-                ModuleBodyItem::Thread(_) | ModuleBodyItem::Resource(_) => {
+                ModuleBodyItem::Thread(_) | ModuleBodyItem::Resource(_) | ModuleBodyItem::TlmConnect(_) => {
                     // Threads and resources are lowered before codegen
                     unreachable!("thread/resource should have been lowered before codegen");
                 }

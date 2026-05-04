@@ -349,6 +349,7 @@ pub enum ModuleBodyItem {
     Resource(ResourceDecl),
     Assert(AssertDecl),
     Function(FunctionDecl),
+    TlmConnect(TlmConnectDecl),
 }
 
 impl ModuleBodyItem {
@@ -370,8 +371,24 @@ impl ModuleBodyItem {
             ModuleBodyItem::Resource(r) => r.span,
             ModuleBodyItem::Assert(a) => a.span,
             ModuleBodyItem::Function(f) => f.span,
+            ModuleBodyItem::TlmConnect(c) => c.span,
         }
     }
+}
+
+/// Source-level TLM/bus binding sugar:
+/// `connect initiator_inst.port -> target_inst.port;`
+///
+/// Elaboration rewrites this into an internal bus wire plus ordinary whole-bus
+/// `inst` connections, so codegen/typecheck keep using the existing flattened
+/// bus machinery.
+#[derive(Debug, Clone)]
+pub struct TlmConnectDecl {
+    pub from_inst: Ident,
+    pub from_port: Ident,
+    pub to_inst: Ident,
+    pub to_port: Ident,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

@@ -38,6 +38,12 @@
       ]
     },
     {
+      "name": "axi_dma_tlm__TlmConnectOneToOne",
+      "files": [
+        "tests/axi_dma_tlm/TlmConnectOneToOne.arch"
+      ]
+    },
+    {
       "name": "axi_dma_tlm__TlmIndexedBurstTarget",
       "files": [
         "tests/axi_dma_tlm/TlmIndexedBurstTarget.arch"

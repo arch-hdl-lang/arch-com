@@ -1,0 +1,62 @@
+bus ConnMem
+  tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+  tlm_method write(addr: UInt<32>, data: UInt<64>) -> Bool: blocking;
+end bus ConnMem
+
+use ConnMem;
+
+module ConnMemTarget
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port s: target ConnMem;
+
+  thread s.read(addr) on clk rising, rst high
+    return 64'h1234_5678_9abc_def0;
+  end thread s.read
+
+  thread s.write(addr, data) on clk rising, rst high
+    return data == 64'h1234_5678_9abc_def0;
+  end thread s.write
+end module ConnMemTarget
+
+module ConnInitiator
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port m: initiator ConnMem;
+  port data_o: out UInt<64>;
+  port ack_o: out Bool;
+
+  reg data: UInt<64> reset rst => 0;
+  reg ack: Bool reset rst => false;
+
+  comb
+    data_o = data;
+    ack_o = ack;
+  end comb
+
+  thread driver on clk rising, rst high
+    data <= m.read(32'h1000);
+    ack <= m.write(32'h2000, data);
+  end thread driver
+end module ConnInitiator
+
+module TlmConnectOneToOneTop
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port data_o: out UInt<64>;
+  port ack_o: out Bool;
+
+  inst i: ConnInitiator
+    clk <- clk;
+    rst <- rst;
+    data_o -> data_o;
+    ack_o -> ack_o;
+  end inst i
+
+  inst t: ConnMemTarget
+    clk <- clk;
+    rst <- rst;
+  end inst t
+
+  connect i.m -> t.s;
+end module TlmConnectOneToOneTop
