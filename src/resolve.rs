@@ -450,15 +450,42 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
             Item::Fsm(f) => {
                 if table.globals.contains_key(&f.name.name) {
                     errors.push(CompileError::duplicate(&f.name.name, f.name.span));
+                } else if f.common.is_interface {
+                    // Interface stub from a `.archi` file — body is empty
+                    // by construction, so default_state / state_names /
+                    // transitions are not present and not validatable.
+                    // The stub exists only to expose the port signature
+                    // so a parent's inst-decl can typecheck against it.
+                    let info = FsmInfo {
+                        name: f.name.name.clone(),
+                        ports: f.ports.clone(),
+                        state_names: Vec::new(),
+                        default_state: String::new(),
+                    };
+                    table.globals.insert(f.name.name.clone(), (Symbol::Fsm(info), f.name.span));
                 } else {
-                    // Validate default_state is declared
+                    // Real fsm: enforce `default state Name;` (was a parse
+                    // error pre-PR for `fsm`-stub support; moved here so
+                    // the parser can accept body-less `.archi` stubs).
                     let declared: Vec<String> = f.state_names.iter().map(|s| s.name.clone()).collect();
-                    if !declared.contains(&f.default_state.name) {
-                        errors.push(CompileError::general(
-                            &format!("default state `{}` not declared", f.default_state.name),
-                            f.default_state.span,
-                        ));
-                    }
+                    let default_state_name = match &f.default_state {
+                        Some(ds) => {
+                            if !declared.contains(&ds.name) {
+                                errors.push(CompileError::general(
+                                    &format!("default state `{}` not declared", ds.name),
+                                    ds.span,
+                                ));
+                            }
+                            ds.name.clone()
+                        }
+                        None => {
+                            errors.push(CompileError::general(
+                                "fsm requires `default state Name;`",
+                                f.name.span,
+                            ));
+                            String::new()
+                        }
+                    };
                     // Validate transition targets exist
                     for sb in &f.states {
                         for tr in &sb.transitions {
@@ -471,7 +498,7 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                         name: f.name.name.clone(),
                         ports: f.ports.clone(),
                         state_names: declared,
-                        default_state: f.default_state.name.clone(),
+                        default_state: default_state_name,
                     };
                     table.globals.insert(f.name.name.clone(), (Symbol::Fsm(info), f.name.span));
                 }

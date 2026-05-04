@@ -8,6 +8,15 @@ use super::*;
 
 impl<'a> Codegen<'a> {
     pub(crate) fn emit_fsm(&mut self, f: &FsmDecl) {
+        // Interface stubs from `.archi` files have no body and exist
+        // only to expose the port signature to typecheck. The real SV
+        // for these fsms lives in a separately-built `.sv` file
+        // alongside the `.archi` — emitting an empty stub would
+        // produce a duplicate module that clashes with the real SV at
+        // Verilator link time. Mirrors the same skip in `emit_module`.
+        if f.common.is_interface {
+            return;
+        }
         self.current_construct = f.name.name.clone();
         // Built-in `state` identifier inside fsm scope: read of the current
         // encoded state register. SV emission lowers to `state_r` (the enum
@@ -147,7 +156,14 @@ impl<'a> Codegen<'a> {
         self.indent += 1;
         self.line(&format!("if ({rst_cond}) begin"));
         self.indent += 1;
-        self.line(&format!("state_r <= {};", f.default_state.name.to_uppercase()));
+        // `default_state` is `Some(_)` here because codegen only runs for
+        // non-interface fsms (interface stubs are filtered out earlier);
+        // resolve.rs already errored on the `None` case for real fsms.
+        let default_state_name = f.default_state.as_ref()
+            .expect("codegen: fsm without default_state — should have been rejected by resolve")
+            .name
+            .clone();
+        self.line(&format!("state_r <= {};", default_state_name.to_uppercase()));
         // Reset datapath registers
         for reg in &f.regs {
             let reset_expr = Self::reset_value_expr(&reg.reset)

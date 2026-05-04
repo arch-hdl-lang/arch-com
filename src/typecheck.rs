@@ -4487,6 +4487,16 @@ impl<'a> TypeChecker<'a> {
             self.check_snake_case(&p.name);
         }
 
+        // Interface stub from a `.archi` file — body is empty by
+        // construction. Skip body-driven checks (state coverage,
+        // transition validation, output-driven, etc.) entirely; the
+        // stub exists only to expose the port signature to parent-side
+        // instantiation typechecking. Mirrors the same short-circuit in
+        // `check_module`.
+        if f.common.is_interface {
+            return;
+        }
+
         let _state_names: Vec<&str> = f.state_names.iter().map(|s| s.name.as_str()).collect();
 
         // Every declared state must have a state body
