@@ -5100,16 +5100,21 @@ Each method flattens to two handshake-shaped channels. Directions below are from
 
 For `out_of_order tags N`, each method also flattens `<name>_req_tag` (initiator → target) and `<name>_rsp_tag` (target → initiator). The compiler assigns tags to workers and routes responses by `rsp_tag`.
 
-Fixed-size `Vec<T, N>` return payloads are supported and flatten as a static hardware vector on `<name>_rsp_data`. This is the recommended v1 pattern for bounded burst-like transactions with variable runtime length: pass the requested length as an ordinary method arg and return a maximum-size vector.
+Struct return payloads are supported, including structs that contain fixed-size `Vec<T, N>` fields. This is the recommended v1 pattern for responses that need payload plus status metadata, for example `data`, returned `len`, and a response/error code. Fixed-size `Vec<T, N>` return payloads flatten as static hardware on `<name>_rsp_data`; for bounded burst-like transactions with variable runtime length, pass the requested length as an ordinary method arg and return either a maximum-size vector or a bounded response struct.
 
 ```
+struct BoundedVecResp32x4
+  data: Vec<UInt<32>, 4>;
+  len: UInt<3>;
+  resp: UInt<2>;
+end struct BoundedVecResp32x4
+
 bus DmaMem
-  // Runtime len says how many of the four returned lanes are valid.
-  tlm_method read_burst(addr: UInt<32>, len: UInt<3>) -> Vec<UInt<32>, 4>: out_of_order tags 2;
+  tlm_method read_burst(addr: UInt<32>, len: UInt<3>) -> BoundedVecResp32x4: out_of_order tags 2;
 end bus DmaMem
 ```
 
-This is not the deferred first-class `burst` mode: the vector size is still compile-time static, and consumers must track `len` out-of-band.
+This is not the deferred first-class `burst` mode: the vector size is still compile-time static, and consumers must use the returned `len` / `resp` fields to handle short, long, or error responses. A one-initiator/four-target router with router-owned decode-error response is covered by `tests/axi_dma_tlm/TlmOneToManyResp.arch`.
 
 **18d.3 Target-side implementation**
 

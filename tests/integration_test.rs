@@ -5211,6 +5211,31 @@ fn test_tlm_one_initiator_many_targets_ooo_router_example_compiles() {
 }
 
 #[test]
+fn test_tlm_one_initiator_many_targets_response_router_example_compiles() {
+    let source = include_str!("axi_dma_tlm/TlmOneToManyResp.arch");
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module TlmAddrRouter4Resp"),
+        "response-typed one-to-many TLM router should build:\n{sv}");
+    assert!(sv.contains("typedef struct packed")
+         && sv.contains("MemResp64"),
+        "struct response payload should be emitted:\n{sv}");
+    assert!(sv.contains("read_err_valid")
+         && sv.contains("up_read_rsp_data = read_err_valid ?"),
+        "router should synthesize its own decode-error response:\n{sv}");
+    assert!(sv.contains("s_read_rsp_data = {64'd1152921504606846976, 2'd0}")
+         && sv.contains("up_read_rsp_data = read_err_valid ? {64'd0, 2'd1}"),
+        "SV codegen should emit packed struct literals as iverilog-friendly concatenations:\n{sv}");
+    assert!(sv.contains("t0_read_req_valid = up_read_req_valid && read_to_0")
+         && sv.contains("t3_read_req_valid = up_read_req_valid && read_to_3"),
+        "router should decode requests across four downstream targets:\n{sv}");
+
+    let sim = compile_to_sim_h(source, false);
+    assert!(sim.contains("class VTlmAddrRouter4Resp")
+         && sim.contains("MemResp64 up_read_rsp_data"),
+        "sim C++ should include struct response router mirror:\n{sim}");
+}
+
+#[test]
 fn test_tlm_one_initiator_many_targets_router_arch_sim_behavior() {
     let td = tempfile::tempdir().expect("tempdir");
     let arch_bin = env!("CARGO_BIN_EXE_arch");
@@ -5250,6 +5275,28 @@ fn test_tlm_one_initiator_many_targets_ooo_router_arch_sim_behavior() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr));
     assert!(String::from_utf8_lossy(&out.stdout).contains("PASS one-to-many OOO"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout));
+}
+
+#[test]
+fn test_tlm_one_initiator_many_targets_response_router_arch_sim_behavior() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/axi_dma_tlm/TlmOneToManyResp.arch")
+        .arg("--tb")
+        .arg("tests/axi_dma_tlm/tb_tlm_one_to_many_resp.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for response-typed one-to-many router");
+    assert!(out.status.success(),
+        "response-typed one-to-many router sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("PASS one-to-many response router"),
         "expected PASS marker in stdout:\n{}",
         String::from_utf8_lossy(&out.stdout));
 }

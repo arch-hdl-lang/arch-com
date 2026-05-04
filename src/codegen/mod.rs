@@ -3123,12 +3123,38 @@ impl<'a> Codegen<'a> {
                 let op = if *up { "+:" } else { "-:" };
                 format!("{b}[{s} {op} {w}]")
             }
-            ExprKind::StructLiteral(_name, fields) => {
-                let field_strs: Vec<String> = fields
-                    .iter()
-                    .map(|f| format!("{}: {}", f.name.name, self.emit_expr_str(&f.value)))
-                    .collect();
-                format!("'{{{}}}", field_strs.join(", "))
+            ExprKind::StructLiteral(name, fields) => {
+                // Emit packed struct literals as a positional concatenation
+                // rather than an SV assignment pattern. Verilator accepts both,
+                // but iverilog rejects assignment patterns in some continuous
+                // assignment contexts. ARCH packed structs declare fields in
+                // MSB-first order, so concatenating values in declaration order
+                // preserves the bit layout.
+                if let Some((crate::resolve::Symbol::Struct(info), _)) =
+                    self.symbols.globals.get(&name.name)
+                {
+                    let mut vals = Vec::new();
+                    for (field_name, _) in &info.fields {
+                        if let Some(f) = fields.iter().find(|f| f.name.name == *field_name) {
+                            vals.push(self.emit_expr_str(&f.value));
+                        }
+                    }
+                    if vals.len() == info.fields.len() {
+                        format!("{{{}}}", vals.join(", "))
+                    } else {
+                        let field_strs: Vec<String> = fields
+                            .iter()
+                            .map(|f| format!("{}: {}", f.name.name, self.emit_expr_str(&f.value)))
+                            .collect();
+                        format!("'{{{}}}", field_strs.join(", "))
+                    }
+                } else {
+                    let field_strs: Vec<String> = fields
+                        .iter()
+                        .map(|f| format!("{}: {}", f.name.name, self.emit_expr_str(&f.value)))
+                        .collect();
+                    format!("'{{{}}}", field_strs.join(", "))
+                }
             }
             ExprKind::EnumVariant(_, variant) => variant.name.to_uppercase(),
             ExprKind::Todo => {

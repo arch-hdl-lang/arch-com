@@ -1096,7 +1096,7 @@ end thread driver
 
 `dst <= fork m.read(...);` is a nonblocking TLM issue; `join all;` waits for every forked issue in the group. v1 allows direct forked TLM assignments plus literal `wait N cycle;` offsets, with `join all;` final.
 
-Bounded burst-like payloads: use a static max vector return and a runtime length arg, for example `tlm_method read_burst(addr: UInt<32>, len: UInt<3>) -> Vec<UInt<32>, 4>: out_of_order tags 2;`. The vector size is compile-time fixed; `len` says how many lanes are valid.
+Bounded burst-like payloads: use a static max vector return and a runtime length arg, or preferably a response struct containing `data: Vec<T, MAX>`, returned `len`, and `resp`. Example: `tlm_method read_burst(addr: UInt<32>, len: UInt<3>) -> BoundedVecResp32x4: out_of_order tags 2;`. The vector size is compile-time fixed; `len` says how many lanes are valid. For decoded interconnect, a router can return a struct response itself on unmapped addresses; see `tests/axi_dma_tlm/TlmOneToManyResp.arch`.
 
 Current restrictions: thread-body call sites only; direct RHS call only (`dst <= m.method(args);` or `dst <= fork m.method(args);`); no TLM calls inside runtime `for` loops; one call per worker/branch/forked issue; same clock/reset per cohort; literal tag count only; RHS-fork offsets require literal `wait N cycle;`; no nested/composed TLM calls; no dynamic-length TLM return types; no `pipelined`; no first-class `burst`; no `Future<T>`/`await`.
 

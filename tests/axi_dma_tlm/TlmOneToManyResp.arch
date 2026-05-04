@@ -1,0 +1,228 @@
+struct MemResp64
+  data: UInt<64>;
+  resp: UInt<2>;
+end struct MemResp64
+
+bus MemResp
+  tlm_method read(addr: UInt<32>) -> MemResp64: blocking;
+end bus MemResp
+
+use MemResp;
+
+module MemRespTarget0
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port s: target MemResp;
+
+  thread s.read(addr) on clk rising, rst high
+    return MemResp64 { data: 64'h1000_0000_0000_0000, resp: 2'd0 };
+  end thread s.read
+end module MemRespTarget0
+
+module MemRespTarget1
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port s: target MemResp;
+
+  thread s.read(addr) on clk rising, rst high
+    return MemResp64 { data: 64'h2000_0000_0000_0000, resp: 2'd0 };
+  end thread s.read
+end module MemRespTarget1
+
+module MemRespTarget2
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port s: target MemResp;
+
+  thread s.read(addr) on clk rising, rst high
+    return MemResp64 { data: 64'h3000_0000_0000_0000, resp: 2'd0 };
+  end thread s.read
+end module MemRespTarget2
+
+module MemRespTarget3
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port s: target MemResp;
+
+  thread s.read(addr) on clk rising, rst high
+    return MemResp64 { data: 64'h4000_0000_0000_0000, resp: 2'd0 };
+  end thread s.read
+end module MemRespTarget3
+
+module TlmAddrRouter4Resp
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port up: target MemResp;
+  port t0: initiator MemResp;
+  port t1: initiator MemResp;
+  port t2: initiator MemResp;
+  port t3: initiator MemResp;
+
+  reg read_route: UInt<2> reset rst => 0;
+  reg read_err_valid: Bool reset rst => false;
+
+  let read_sel: UInt<2> = up.read_addr[31:30];
+  let read_mapped: Bool = up.read_addr[28] == 1'b0;
+  let read_to_0: Bool = read_mapped and (read_sel == 2'd0);
+  let read_to_1: Bool = read_mapped and (read_sel == 2'd1);
+  let read_to_2: Bool = read_mapped and (read_sel == 2'd2);
+  let read_to_3: Bool = read_mapped and (read_sel == 2'd3);
+
+  comb
+    t0.read_req_valid = up.read_req_valid and read_to_0;
+    t1.read_req_valid = up.read_req_valid and read_to_1;
+    t2.read_req_valid = up.read_req_valid and read_to_2;
+    t3.read_req_valid = up.read_req_valid and read_to_3;
+    t0.read_addr = up.read_addr;
+    t1.read_addr = up.read_addr;
+    t2.read_addr = up.read_addr;
+    t3.read_addr = up.read_addr;
+
+    up.read_req_ready = (read_mapped == false) ? (read_err_valid == false)
+      : (read_to_0 ? t0.read_req_ready
+      : (read_to_1 ? t1.read_req_ready
+      : (read_to_2 ? t2.read_req_ready : t3.read_req_ready)));
+
+    up.read_rsp_valid = read_err_valid
+      or ((read_route == 2'd0) and t0.read_rsp_valid)
+      or ((read_route == 2'd1) and t1.read_rsp_valid)
+      or ((read_route == 2'd2) and t2.read_rsp_valid)
+      or ((read_route == 2'd3) and t3.read_rsp_valid);
+
+    up.read_rsp_data = read_err_valid ? MemResp64 { data: 64'd0, resp: 2'd1 }
+      : ((read_route == 2'd0) ? t0.read_rsp_data
+      : ((read_route == 2'd1) ? t1.read_rsp_data
+      : ((read_route == 2'd2) ? t2.read_rsp_data : t3.read_rsp_data)));
+
+    t0.read_rsp_ready = up.read_rsp_ready and (read_err_valid == false) and (read_route == 2'd0);
+    t1.read_rsp_ready = up.read_rsp_ready and (read_err_valid == false) and (read_route == 2'd1);
+    t2.read_rsp_ready = up.read_rsp_ready and (read_err_valid == false) and (read_route == 2'd2);
+    t3.read_rsp_ready = up.read_rsp_ready and (read_err_valid == false) and (read_route == 2'd3);
+  end comb
+
+  seq on clk rising
+    if up.read_req_valid and up.read_req_ready
+      read_route <= read_sel;
+      if read_mapped == false
+        read_err_valid <= true;
+      end if
+    end if
+    if read_err_valid and up.read_rsp_ready
+      read_err_valid <= false;
+    end if
+  end seq
+end module TlmAddrRouter4Resp
+
+module OneToManyRespInitiator
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port m: initiator MemResp;
+  port data0_o: out UInt<64>;
+  port data1_o: out UInt<64>;
+  port data2_o: out UInt<64>;
+  port data3_o: out UInt<64>;
+  port bad_data_o: out UInt<64>;
+  port resp0_o: out UInt<2>;
+  port resp1_o: out UInt<2>;
+  port resp2_o: out UInt<2>;
+  port resp3_o: out UInt<2>;
+  port bad_resp_o: out UInt<2>;
+
+  reg r0: MemResp64 reset rst => 0;
+  reg r1: MemResp64 reset rst => 0;
+  reg r2: MemResp64 reset rst => 0;
+  reg r3: MemResp64 reset rst => 0;
+  reg bad: MemResp64 reset rst => 0;
+
+  comb
+    data0_o = r0.data;
+    data1_o = r1.data;
+    data2_o = r2.data;
+    data3_o = r3.data;
+    bad_data_o = bad.data;
+    resp0_o = r0.resp;
+    resp1_o = r1.resp;
+    resp2_o = r2.resp;
+    resp3_o = r3.resp;
+    bad_resp_o = bad.resp;
+  end comb
+
+  thread driver on clk rising, rst high
+    r0 <= m.read(32'h0000_1000);
+    r1 <= m.read(32'h4000_1000);
+    r2 <= m.read(32'h8000_1000);
+    r3 <= m.read(32'hc000_1000);
+    bad <= m.read(32'h1000_1000);
+  end thread driver
+end module OneToManyRespInitiator
+
+module TlmOneToManyRespTop
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port data0_o: out UInt<64>;
+  port data1_o: out UInt<64>;
+  port data2_o: out UInt<64>;
+  port data3_o: out UInt<64>;
+  port bad_data_o: out UInt<64>;
+  port resp0_o: out UInt<2>;
+  port resp1_o: out UInt<2>;
+  port resp2_o: out UInt<2>;
+  port resp3_o: out UInt<2>;
+  port bad_resp_o: out UInt<2>;
+
+  wire cpu_link: MemResp;
+  wire t0_link: MemResp;
+  wire t1_link: MemResp;
+  wire t2_link: MemResp;
+  wire t3_link: MemResp;
+
+  inst i: OneToManyRespInitiator
+    clk <- clk;
+    rst <- rst;
+    m -> cpu_link;
+    data0_o -> data0_o;
+    data1_o -> data1_o;
+    data2_o -> data2_o;
+    data3_o -> data3_o;
+    bad_data_o -> bad_data_o;
+    resp0_o -> resp0_o;
+    resp1_o -> resp1_o;
+    resp2_o -> resp2_o;
+    resp3_o -> resp3_o;
+    bad_resp_o -> bad_resp_o;
+  end inst i
+
+  inst x: TlmAddrRouter4Resp
+    clk <- clk;
+    rst <- rst;
+    up -> cpu_link;
+    t0 -> t0_link;
+    t1 -> t1_link;
+    t2 -> t2_link;
+    t3 -> t3_link;
+  end inst x
+
+  inst t0: MemRespTarget0
+    clk <- clk;
+    rst <- rst;
+    s -> t0_link;
+  end inst t0
+
+  inst t1: MemRespTarget1
+    clk <- clk;
+    rst <- rst;
+    s -> t1_link;
+  end inst t1
+
+  inst t2: MemRespTarget2
+    clk <- clk;
+    rst <- rst;
+    s -> t2_link;
+  end inst t2
+
+  inst t3: MemRespTarget3
+    clk <- clk;
+    rst <- rst;
+    s -> t3_link;
+  end inst t3
+end module TlmOneToManyRespTop
