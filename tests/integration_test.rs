@@ -2200,6 +2200,46 @@ end struct Foo
     );
 }
 
+/// Regression for issue #277: when a struct literal is emitted as a positional
+/// concatenation `{a, b}` (the form chosen so iverilog accepts struct-literal
+/// RHS in continuous-assignment contexts), each numeric-literal field value
+/// must be sized to the field's declared width. Bare unsized `0` inside a
+/// concat is illegal per IEEE 1800 §11.4.12 and Verilator rejects it with
+/// `WIDTHCONCAT`.
+#[test]
+fn test_struct_literal_concat_sizes_field_literals() {
+    let source = r#"
+struct PriorityReg
+  value:    UInt<3>;
+  reserved: UInt<29>;
+end struct PriorityReg
+
+module ReproStruct
+  port clk: in Clock<MyDomain>;
+  port rst: in Reset<Async, Low>;
+  port out_data: out Vec<PriorityReg, 2>;
+
+  reg priority_r: Vec<PriorityReg, 2> reset rst => PriorityReg { value: 0, reserved: 0 };
+
+  default seq on clk rising;
+  seq
+    out_data[0] <= priority_r[0];
+    out_data[1] <= priority_r[1];
+  end seq
+
+end module ReproStruct
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("{3'd0, 29'd0}"),
+        "expected sized literals `{{3'd0, 29'd0}}` in struct-literal concat (issue #277), got:\n{sv}"
+    );
+    assert!(
+        !sv.contains("{0, 0}"),
+        "unsized `{{0, 0}}` is illegal inside an SV concat (Verilator WIDTHCONCAT); got:\n{sv}"
+    );
+}
+
 /// Regression: `<=` must be accepted as less-than-or-equal in expression context
 /// (assert/cover RHS, comb RHS, let RHS, if conditions, ternary branches), while
 /// still working as the non-blocking-assignment token at the statement level.
