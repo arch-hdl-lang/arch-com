@@ -1,7 +1,7 @@
 // E203 HBirdv2 Instruction Fetch Unit
-// Manages PC generation, instruction fetch requests, branch prediction,
-// pipeline flush, and output to decode stage.
-// Matches RealBench port interface.
+// Instantiates e203_ifu_minidec and e203_ifu_litebpu per spec submodule list.
+// Implements PC generation, fetch request control, halt/flush handling,
+// and IR stage with DFF-based control registers.
 
 module e203_ifu_ifetch
   param XLEN: const = 32;
@@ -9,11 +9,11 @@ module e203_ifu_ifetch
   port clk:   in Clock<SysDomain>;
   port rst_n: in Reset<Async, Low>;
 
-  // ── PC inspect output ─────────────────────────────────────────────
+  // ── PC ──────────────────────────────────────────────────────────────
   port inspect_pc: out UInt<32>;
   port pc_rtvec:   in  UInt<32>;
 
-  // ── Instruction memory request ────────────────────────────────────
+  // ── Fetch request ───────────────────────────────────────────────────
   port ifu_req_valid:    out Bool;
   port ifu_req_ready:    in  Bool;
   port ifu_req_pc:       out UInt<32>;
@@ -21,13 +21,13 @@ module e203_ifu_ifetch
   port ifu_req_seq_rv32: out Bool;
   port ifu_req_last_pc:  out UInt<32>;
 
-  // ── Instruction memory response ───────────────────────────────────
+  // ── Fetch response ──────────────────────────────────────────────────
   port ifu_rsp_valid: in  Bool;
   port ifu_rsp_ready: out Bool;
   port ifu_rsp_err:   in  Bool;
   port ifu_rsp_instr: in  UInt<32>;
 
-  // ── Output to decode stage ────────────────────────────────────────
+  // ── Output to decode ────────────────────────────────────────────────
   port ifu_o_ir:          out UInt<32>;
   port ifu_o_pc:          out UInt<32>;
   port ifu_o_pc_vld:      out Bool;
@@ -40,23 +40,23 @@ module e203_ifu_ifetch
   port ifu_o_valid:       out Bool;
   port ifu_o_ready:       in  Bool;
 
-  // ── Pipeline flush interface ──────────────────────────────────────
+  // ── Pipeline flush ──────────────────────────────────────────────────
   port pipe_flush_ack:     out Bool;
   port pipe_flush_req:     in  Bool;
   port pipe_flush_add_op1: in  UInt<32>;
   port pipe_flush_add_op2: in  UInt<32>;
   port pipe_flush_pc:      in  UInt<32>;
 
-  // ── Halt interface ────────────────────────────────────────────────
+  // ── Halt ────────────────────────────────────────────────────────────
   port ifu_halt_req: in  Bool;
   port ifu_halt_ack: out Bool;
 
-  // ── OITF and register file ────────────────────────────────────────
-  port oitf_empty:   in Bool;
-  port rf2ifu_x1:    in UInt<32>;
-  port rf2ifu_rs1:   in UInt<32>;
+  // ── OITF / register file ────────────────────────────────────────────
+  port oitf_empty: in Bool;
+  port rf2ifu_x1:  in UInt<32>;
+  port rf2ifu_rs1: in UInt<32>;
 
-  // ── Decode feedback for branch prediction ─────────────────────────
+  // ── Decode feedback ─────────────────────────────────────────────────
   port dec2ifu_rs1en:  in Bool;
   port dec2ifu_rden:   in Bool;
   port dec2ifu_rdidx:  in UInt<5>;
@@ -66,87 +66,388 @@ module e203_ifu_ifetch
   port dec2ifu_divu:   in Bool;
   port dec2ifu_remu:   in Bool;
 
-  // ── PC registers ──────────────────────────────────────────────────
-  reg pc_r:         UInt<32> init 0 reset rst_n => 0;
-  reg ir_r:         UInt<32> init 0 reset rst_n => 0;
-  reg pc_out_r:     UInt<32> init 0 reset rst_n => 0;
-  reg pc_vld_r:     Bool     init 0 reset rst_n => 0;
-  reg buserr_r:     Bool     init 0 reset rst_n => 0;
-  reg out_valid_r:  Bool     init 0 reset rst_n => 0;
-  reg req_pending_r: Bool    init 0 reset rst_n => 0;
-  reg last_pc_r:    UInt<32> init 0 reset rst_n => 0;
-  reg last_rv32_r:  Bool     init 0 reset rst_n => 0;
+  // ── Handshake signals ───────────────────────────────────────────────
+  let ifu_req_hsked:  Bool = ifu_req_valid & ifu_req_ready;
+  let ifu_rsp_hsked:  Bool = ifu_rsp_valid & ifu_rsp_ready;
+  let ifu_ir_o_hsked: Bool = ifu_o_valid & ifu_o_ready;
 
-  // ── Flush target address ──────────────────────────────────────────
-  let flush_target: UInt<33> = (pipe_flush_add_op1.zext<33>() + pipe_flush_add_op2.zext<33>()).trunc<33>();
-  let flush_pc: UInt<32> = flush_target.trunc<32>();
+  // ── Reset flag (synced rst_n) ────────────────────────────────────────
+  // Reference: sirv_gnrl_dffrs(1'b0, ...) — resets to 1, captures 0
+  reg reset_flag_r: Bool reset rst_n => false;
+  seq on clk rising
+    reset_flag_r <= false;
+  end seq
 
-  // ── Sequential PC: PC+4 ──────────────────────────────────────────
-  let pc_plus4: UInt<32> = (pc_r + 4).trunc<32>();
-
-  // ── MulDiv back-to-back detection ─────────────────────────────────
-  let muldiv_b2b: Bool = dec2ifu_rden &
-    (dec2ifu_mulhsu | dec2ifu_div | dec2ifu_rem | dec2ifu_divu | dec2ifu_remu);
+  // ── Reset request ────────────────────────────────────────────────────
+  reg reset_req_r: Bool reset rst_n => false;  // sirv_gnrl_dfflr resets to 1
+  let reset_req_set: Bool = (~reset_req_r) & reset_flag_r;
+  let reset_req_clr: Bool = reset_req_r & ifu_req_hsked;
+  let reset_req_ena: Bool = reset_req_set | reset_req_clr;
+  let reset_req_nxt: Bool = reset_req_set | (~reset_req_clr);
 
   seq on clk rising
-    // Pipeline flush: reload PC
-    if pipe_flush_req
-      pc_r <= flush_pc;
-      out_valid_r <= false;
-      req_pending_r <= false;
-    elsif ifu_halt_req
-      out_valid_r <= false;
-      req_pending_r <= false;
-    elsif ifu_req_valid & ifu_req_ready
-      // Request accepted
-      last_pc_r   <= pc_r;
-      last_rv32_r <= (pc_r[1:0] == 0);
-      req_pending_r <= true;
-    end if
-
-    if req_pending_r & ifu_rsp_valid
-      // Response received
-      ir_r        <= ifu_rsp_instr;
-      pc_out_r    <= pc_r;
-      pc_vld_r    <= true;
-      buserr_r    <= ifu_rsp_err;
-      out_valid_r <= true;
-      pc_r        <= pc_plus4;
-      req_pending_r <= false;
-    elsif ifu_o_valid & ifu_o_ready
-      out_valid_r <= false;
+    if rst_n
+      if reset_req_ena
+        reset_req_r <= reset_req_nxt;
+      end if
+    else
+      reset_req_r <= false;
     end if
   end seq
 
+  let ifu_reset_req: Bool = reset_req_r;
+
+  // ── Halt acknowledgement ─────────────────────────────────────────────
+  reg halt_ack_r: Bool reset rst_n => false;
+  let ifu_no_outs: Bool = (~out_flag_r) | ifu_rsp_valid;
+  let halt_ack_set: Bool = ifu_halt_req & (~halt_ack_r) & ifu_no_outs;
+  let halt_ack_clr: Bool = halt_ack_r & (~ifu_halt_req);
+  let halt_ack_ena: Bool = halt_ack_set | halt_ack_clr;
+  let halt_ack_nxt: Bool = halt_ack_set | (~halt_ack_clr);
+
+  seq on clk rising
+    if rst_n
+      if halt_ack_ena
+        halt_ack_r <= halt_ack_nxt;
+      end if
+    else
+      halt_ack_r <= false;
+    end if
+  end seq
+
+  // ── Pipeline flush (delayed) ─────────────────────────────────────────
+  let pipe_flush_hsked: Bool = pipe_flush_req & pipe_flush_ack;
+  reg dly_flush_r: Bool reset rst_n => false;
+  let dly_flush_set: Bool = pipe_flush_req & (~ifu_req_hsked);
+  let dly_flush_clr: Bool = dly_flush_r & ifu_req_hsked;
+  let dly_flush_ena: Bool = dly_flush_set | dly_flush_clr;
+  let dly_flush_nxt: Bool = dly_flush_set | (~dly_flush_clr);
+
+  seq on clk rising
+    if rst_n
+      if dly_flush_ena
+        dly_flush_r <= dly_flush_nxt;
+      end if
+    else
+      dly_flush_r <= false;
+    end if
+  end seq
+
+  let dly_pipe_flush_req: Bool = dly_flush_r;
+  let pipe_flush_req_real: Bool = pipe_flush_req | dly_pipe_flush_req;
+
+  // ── Mini-decoder ─────────────────────────────────────────────────────
+  wire minidec_rv32:   Bool;
+  wire minidec_rs1en:  Bool;
+  wire minidec_rs2en:  Bool;
+  wire minidec_rs1idx: UInt<5>;
+  wire minidec_rs2idx: UInt<5>;
+  wire minidec_bjp:    Bool;
+  wire minidec_jal:    Bool;
+  wire minidec_jalr:   Bool;
+  wire minidec_bxx:    Bool;
+  wire minidec_mul:    Bool;
+  wire minidec_div:    Bool;
+  wire minidec_rem:    Bool;
+  wire minidec_divu:   Bool;
+  wire minidec_remu:   Bool;
+  wire minidec_jalr_rs1idx: UInt<5>;
+  wire minidec_bjp_imm: UInt<32>;
+
+  inst u_minidec: e203_ifu_minidec
+    instr             <- ifu_rsp_instr;
+    dec_rs1en         -> minidec_rs1en;
+    dec_rs2en         -> minidec_rs2en;
+    dec_rs1idx        -> minidec_rs1idx;
+    dec_rs2idx        -> minidec_rs2idx;
+    dec_rv32          -> minidec_rv32;
+    dec_bjp           -> minidec_bjp;
+    dec_jal           -> minidec_jal;
+    dec_jalr          -> minidec_jalr;
+    dec_bxx           -> minidec_bxx;
+    dec_mulhsu        -> _nc_mulhsu;
+    dec_mul           -> minidec_mul;
+    dec_div           -> minidec_div;
+    dec_rem           -> minidec_rem;
+    dec_divu          -> minidec_divu;
+    dec_remu          -> minidec_remu;
+    dec_jalr_rs1idx   -> minidec_jalr_rs1idx;
+    dec_bjp_imm       -> minidec_bjp_imm;
+  end inst u_minidec
+
+  // ── BPU ──────────────────────────────────────────────────────────────
+  wire bpu_wait: Bool;
+  wire prdt_taken: Bool;
+  wire prdt_pc_add_op1: UInt<32>;
+  wire prdt_pc_add_op2: UInt<32>;
+  wire bpu2rf_rs1_ena: Bool;
+
+  // IR status for BPU
+  let ir_empty:  Bool = ~ir_valid_r;
+  let ir_rs1en:  Bool = dec2ifu_rs1en;
+  let ir_rden:   Bool = dec2ifu_rden;
+  let ir_rdidx:  UInt<5> = dec2ifu_rdidx;
+  let jalr_rs1idx_cam_irrdidx: Bool = ir_rden & (minidec_jalr_rs1idx == ir_rdidx) & ir_valid_r;
+
+  inst u_bpu: e203_ifu_litebpu
+    pc                      <- pc_r;
+    dec_jal                 <- minidec_jal;
+    dec_jalr                <- minidec_jalr;
+    dec_bxx                 <- minidec_bxx;
+    dec_bjp_imm             <- minidec_bjp_imm;
+    dec_jalr_rs1idx         <- minidec_jalr_rs1idx;
+    dec_i_valid             <- ifu_rsp_valid;
+    ir_valid_clr            <- ir_valid_clr;
+    oitf_empty              <- oitf_empty;
+    ir_empty                <- ir_empty;
+    ir_rs1en                <- ir_rs1en;
+    jalr_rs1idx_cam_irrdidx <- jalr_rs1idx_cam_irrdidx;
+    bpu_wait                -> bpu_wait;
+    prdt_taken              -> prdt_taken;
+    prdt_pc_add_op1         -> prdt_pc_add_op1;
+    prdt_pc_add_op2         -> prdt_pc_add_op2;
+    bpu2rf_rs1_ena          -> bpu2rf_rs1_ena;
+    rf2bpu_x1               <- rf2ifu_x1;
+    rf2bpu_rs1              <- rf2ifu_rs1;
+    clk                     <- clk;
+    rst_n                   <- rst_n;
+  end inst u_bpu
+
+  // ── IR valid control ─────────────────────────────────────────────────
+  reg ir_valid_r: Bool reset rst_n => false;
+  let ifu_rsp_need_replay: Bool = false;
+  let ifu_ir_i_ready: Bool = (~ir_valid_r) | ir_valid_clr;
+
+  let ir_valid_set:  Bool = ifu_rsp_hsked & (~pipe_flush_req_real) & (~ifu_rsp_need_replay);
+  let ir_valid_clr:  Bool = ifu_ir_o_hsked | (pipe_flush_hsked & ir_valid_r);
+  let ir_valid_ena:  Bool = ir_valid_set | ir_valid_clr;
+  let ir_valid_nxt:  Bool = ir_valid_set | (~ir_valid_clr);
+
+  seq on clk rising
+    if rst_n
+      if ir_valid_ena
+        ir_valid_r <= ir_valid_nxt;
+      end if
+    else
+      ir_valid_r <= false;
+    end if
+  end seq
+
+  // ── IR PC valid control ──────────────────────────────────────────────
+  reg ir_pc_vld_r: Bool reset rst_n => false;
+
+  let ir_pc_vld_set: Bool = pc_newpend_r & ifu_ir_i_ready & (~pipe_flush_req_real) & (~ifu_rsp_need_replay);
+  let ir_pc_vld_clr: Bool = ir_valid_clr;
+  let ir_pc_vld_ena: Bool = ir_pc_vld_set | ir_pc_vld_clr;
+  let ir_pc_vld_nxt: Bool = ir_pc_vld_set | (~ir_pc_vld_clr);
+
+  seq on clk rising
+    if rst_n
+      if ir_pc_vld_ena
+        ir_pc_vld_r <= ir_pc_vld_nxt;
+      end if
+    else
+      ir_pc_vld_r <= false;
+    end if
+  end seq
+
+  // ── Error / prdt_taken / muldiv_b2b registers ────────────────────────
+  reg ifu_err_r: Bool reset rst_n => false;
+  reg ifu_prdt_taken_r: Bool reset rst_n => false;
+  reg ifu_muldiv_b2b_r: Bool reset rst_n => false;
+  let ifu_muldiv_b2b_nxt: Bool =
+      ((minidec_mul & dec2ifu_mulhsu) |
+       (minidec_div  & dec2ifu_rem) |
+       (minidec_rem  & dec2ifu_div) |
+       (minidec_divu & dec2ifu_remu) |
+       (minidec_remu & dec2ifu_divu)) &
+      (ir_rs1idx_r == ir_rs1idx_nxt) &
+      (ir_rs2idx_r == ir_rs2idx_nxt) &
+      (~(ir_rs1idx_r == ir_rdidx)) &
+      (~(ir_rs2idx_r == ir_rdidx));
+
+  seq on clk rising
+    if rst_n
+      if ir_valid_set
+        ifu_err_r        <= ifu_rsp_err;
+        ifu_prdt_taken_r <= prdt_taken;
+        ifu_muldiv_b2b_r <= ifu_muldiv_b2b_nxt;
+      end if
+    else
+      ifu_err_r        <= false;
+      ifu_prdt_taken_r <= false;
+      ifu_muldiv_b2b_r <= false;
+    end if
+  end seq
+
+  // ── Instruction register (IFU-IR) ────────────────────────────────────
+  reg ifu_ir_hi: UInt<16> reset rst_n => 0;
+  reg ifu_ir_lo: UInt<16> reset rst_n => 0;
+  let ir_hi_ena: Bool = ir_valid_set & minidec_rv32;
+  let ir_lo_ena: Bool = ir_valid_set;
+
+  seq on clk rising
+    if rst_n
+      if ir_hi_ena
+        ifu_ir_hi <= ifu_rsp_instr[31:16];
+      end if
+      if ir_lo_ena
+        ifu_ir_lo <= ifu_rsp_instr[15:0];
+      end if
+    else
+      ifu_ir_hi <= 0;
+      ifu_ir_lo <= 0;
+    end if
+  end seq
+
+  // ── Source register index registers ──────────────────────────────────
+  reg ir_rs1idx_r: UInt<5> reset rst_n => 0;
+  reg ir_rs2idx_r: UInt<5> reset rst_n => 0;
+  let ir_rs1idx_ena: Bool = ir_valid_set & minidec_rs1en | bpu2rf_rs1_ena;
+  let ir_rs2idx_ena: Bool = ir_valid_set & minidec_rs2en;
+  let ir_rs1idx_nxt: UInt<5> = minidec_rs1idx;
+  let ir_rs2idx_nxt: UInt<5> = minidec_rs2idx;
+
+  seq on clk rising
+    if rst_n
+      if ir_rs1idx_ena
+        ir_rs1idx_r <= ir_rs1idx_nxt;
+      end if
+      if ir_rs2idx_ena
+        ir_rs2idx_r <= ir_rs2idx_nxt;
+      end if
+    else
+      ir_rs1idx_r <= 0;
+      ir_rs2idx_r <= 0;
+    end if
+  end seq
+
+  // ── PC register ──────────────────────────────────────────────────────
+  reg pc_r: UInt<32> reset rst_n => 0;
+  // PC increment per instruction length
+  let pc_incr_ofst: UInt<32> = minidec_rv32 ? 4 : 2;
+
+  // PC adder operand selection
+  let bjp_req: Bool = minidec_bjp & prdt_taken;
+  let ifetch_replay_req: Bool = false;
+
+  let pc_add_op1: UInt<32> =
+      pipe_flush_req     ? pipe_flush_add_op1 :
+      dly_pipe_flush_req ? pc_r :
+      ifetch_replay_req  ? pc_r :
+      bjp_req            ? prdt_pc_add_op1 :
+      ifu_reset_req      ? pc_rtvec :
+                           pc_r;
+
+  let pc_add_op2: UInt<32> =
+      pipe_flush_req     ? pipe_flush_add_op2 :
+      dly_pipe_flush_req ? 0 :
+      ifetch_replay_req  ? 0 :
+      bjp_req            ? prdt_pc_add_op2 :
+      ifu_reset_req      ? 0 :
+                           pc_incr_ofst;
+
+  let pc_nxt_pre: UInt<32> = (pc_add_op1 + pc_add_op2).trunc<32>();
+  // Bit 0 always 0 (2-byte aligned)
+  let pc_nxt: UInt<32> = {pc_nxt_pre[31:1], false};
+
+  let pc_ena: Bool = ifu_req_hsked | pipe_flush_hsked;
+
+  seq on clk rising
+    if rst_n
+      if pc_ena
+        pc_r <= pc_nxt;
+      end if
+    else
+      pc_r <= 0;
+    end if
+  end seq
+
+  // ── PC output register (captured when IR gets valid PC) ──────────────
+  reg ifu_pc_r: UInt<32> reset rst_n => 0;
+
+  seq on clk rising
+    if rst_n
+      if ir_pc_vld_set
+        ifu_pc_r <= pc_r;
+      end if
+    else
+      ifu_pc_r <= 0;
+    end if
+  end seq
+
+  // ── Fetch request generation ─────────────────────────────────────────
+  let ifu_new_req: Bool = (~bpu_wait) & (~ifu_halt_req) & (~reset_flag_r) & (~ifu_rsp_need_replay);
+  let ifu_req_valid_pre: Bool = ifu_new_req | ifu_reset_req | pipe_flush_req_real | ifetch_replay_req;
+
+  reg out_flag_r: Bool reset rst_n => false;
+  let out_flag_set: Bool = ifu_req_hsked;
+  let out_flag_clr: Bool = ifu_rsp_hsked;
+  let out_flag_ena: Bool = out_flag_set | out_flag_clr;
+  let out_flag_nxt: Bool = out_flag_set | (~out_flag_clr);
+
+  seq on clk rising
+    if rst_n
+      if out_flag_ena
+        out_flag_r <= out_flag_nxt;
+      end if
+    else
+      out_flag_r <= false;
+    end if
+  end seq
+
+  let new_req_condi: Bool = (~out_flag_r) | out_flag_clr;
+
+  // ── PC newpend ───────────────────────────────────────────────────────
+  reg pc_newpend_r: Bool reset rst_n => false;
+  let pc_newpend_set: Bool = pc_ena;
+  let pc_newpend_clr: Bool = ir_pc_vld_set;
+  let pc_newpend_ena: Bool = pc_newpend_set | pc_newpend_clr;
+  let pc_newpend_nxt: Bool = pc_newpend_set | (~pc_newpend_clr);
+
+  seq on clk rising
+    if rst_n
+      if pc_newpend_ena
+        pc_newpend_r <= pc_newpend_nxt;
+      end if
+    else
+      pc_newpend_r <= false;
+    end if
+  end seq
+
+  // ── Response ready ────────────────────────────────────────────────────
+  let ifu_rsp2ir_ready: Bool = pipe_flush_req_real ? true : (ifu_ir_i_ready & ifu_req_ready & (~bpu_wait));
+
+  // ── Unused wires for BPU NC ports ────────────────────────────────────
+  wire _nc_mulhsu: Bool;
+
+  // ── Output logic ─────────────────────────────────────────────────────
+  let ifu_ir_all: UInt<32> = {ifu_ir_hi, ifu_ir_lo};
+
   comb
-    // PC inspection
     inspect_pc = pc_r;
 
-    // Fetch request
-    ifu_req_valid    = ~pipe_flush_req & ~ifu_halt_req & ~req_pending_r & ~out_valid_r;
-    ifu_req_pc       = pc_r;
-    ifu_req_seq      = ~pipe_flush_req;
-    ifu_req_seq_rv32 = last_rv32_r;
-    ifu_req_last_pc  = last_pc_r;
+    ifu_req_valid    = ifu_req_valid_pre & new_req_condi;
+    ifu_req_pc       = pc_nxt;
+    ifu_req_seq      = (~pipe_flush_req_real) & (~ifu_reset_req) & (~ifetch_replay_req) & (~bjp_req);
+    ifu_req_seq_rv32 = minidec_rv32;
+    ifu_req_last_pc  = pc_r;
 
-    // Response accept
-    ifu_rsp_ready = req_pending_r;
+    ifu_rsp_ready = ifu_rsp2ir_ready;
 
-    // Output to decode
-    ifu_o_valid      = out_valid_r;
-    ifu_o_ir         = ir_r;
-    ifu_o_pc         = pc_out_r;
-    ifu_o_pc_vld     = pc_vld_r;
-    ifu_o_rs1idx     = ir_r[19:15];
-    ifu_o_rs2idx     = ir_r[24:20];
-    ifu_o_prdt_taken = false;
+    ifu_o_ir         = ifu_ir_all;
+    ifu_o_pc         = ifu_pc_r;
+    ifu_o_pc_vld     = ir_pc_vld_r;
+    ifu_o_rs1idx     = ir_rs1idx_r;
+    ifu_o_rs2idx     = ir_rs2idx_r;
+    ifu_o_prdt_taken = ifu_prdt_taken_r;
     ifu_o_misalgn    = false;
-    ifu_o_buserr     = buserr_r;
-    ifu_o_muldiv_b2b = muldiv_b2b;
+    ifu_o_buserr     = ifu_err_r;
+    ifu_o_muldiv_b2b = ifu_muldiv_b2b_r;
+    ifu_o_valid      = ir_valid_r;
 
-    // Flush/halt ack
-    pipe_flush_ack = pipe_flush_req;
-    ifu_halt_ack   = ifu_halt_req & ~req_pending_r;
+    pipe_flush_ack = true;
+    ifu_halt_ack   = halt_ack_r;
   end comb
 
 end module e203_ifu_ifetch

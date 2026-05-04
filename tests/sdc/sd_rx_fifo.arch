@@ -1,6 +1,9 @@
-// SD RX FIFO (Dual-clock, 4-bit input -> 32-bit output, depth 8)
-// Nibble packing wrapper around ARCH fifo construct with OVERFLOW mode.
-// BIG_ENDIAN: first nibble goes to MSB (tmp[31:28]).
+// SD RX FIFO — dual-clock, 4-bit nibble input → 32-bit word output
+// Matches RealBench reference: ram + manual pointers, unsynchronized
+// full/empty (combinational compare). Nibble accumulator packs 8×4-bit
+// inputs into 32-bit words before writing to RAM.
+//
+// Spec: sd_rx_fifo.md — DEPTH=8, ADR_SIZE=4
 
 domain WrDomain
   freq_mhz: 100
@@ -10,99 +13,148 @@ domain RdDomain
   freq_mhz: 50
 end domain RdDomain
 
-fifo RxFifoCore
-  param DEPTH: const = 8;
-  param T: type = UInt<32>;
-  param OVERFLOW: const = 1;
-
-  port wr_clk: in Clock<WrDomain>;
-  port rd_clk: in Clock<RdDomain>;
-  port rst:    in Reset<Async, High>;
-
-  port push_valid: in Bool;
-  port push_ready: out Bool;
-  port push_data:  in T;
-
-  port pop_valid:  out Bool;
-  port pop_ready:  in Bool;
-  port pop_data:   out T;
-end fifo RxFifoCore
-
 module sd_rx_fifo
+  pragma rdc_safe;
+  param RX_DEPTH: const = 8;
 
-  port wclk:  in Clock<WrDomain>;
-  port rclk:  in Clock<RdDomain>;
-  port rst:   in Reset<Async, High>;
+  port wclk: in Clock<WrDomain>;
+  port rclk: in Clock<RdDomain>;
+  port rst:  in Reset<Async, High>;
 
-  port d:     in UInt<4>;
-  port wr:    in Bool;
-  port q:     out UInt<32>;
-  port rd:    in Bool;
-  port full:  out Bool;
-  port empty: out Bool;
+  port d:        in UInt<4>;
+  port wr:       in Bool;
+  port q:        out UInt<32>;
+  port rd:       in Bool;
+  port full:     out Bool;
+  port empty:    out Bool;
   port mem_empt: out UInt<2>;
 
-  // Nibble accumulator state
-  reg we_r: UInt<8> reset rst => 1;  // one-hot rotating, bit 0 first
-  reg tmp:  UInt<32> reset rst => 0;
-  reg ft:   Bool reset rst => false;
+  // ── Nibble accumulator ───────────────────────────────────────────────
+  reg we:  UInt<8> reset rst => 1;        // one-hot rotating, bit 0 first
+  reg tmp: UInt<32> reset rst => 0;       // accumulated 32-bit word
+  reg ft:  Bool     reset rst => false;   // first full word flag
 
-  wire push_ready_w: Bool;
-  wire pop_valid_w: Bool;
+  // ── RAM storage ──────────────────────────────────────────────────────
+  reg ram_0: UInt<32> reset rst => 0;
+  reg ram_1: UInt<32> reset rst => 0;
+  reg ram_2: UInt<32> reset rst => 0;
+  reg ram_3: UInt<32> reset rst => 0;
+  reg ram_4: UInt<32> reset rst => 0;
+  reg ram_5: UInt<32> reset rst => 0;
+  reg ram_6: UInt<32> reset rst => 0;
+  reg ram_7: UInt<32> reset rst => 0;
 
-  // Word complete: we wraps back to bit 0 AND first full word was accumulated
-  let word_complete: Bool = wr & we_r[0:0] & ft;
+  // ── Pointers: [MSB]=wrap, [2:0]=address ─────────────────────────────
+  reg adr_i: UInt<4> reset rst => 0;     // write pointer (wclk domain)
+  reg adr_o: UInt<4> reset rst => 0;     // read pointer  (rclk domain)
+
+  // Write to RAM when nibble accumulator completes a word
+  let ram_we: Bool = wr & we[0:0] & ft;
 
   seq on wclk rising
     if wr
       // Rotate we left
-      we_r <= {we_r[6:0], we_r[7:7]};
+      we <= {we[6:0], we[7:7]};
 
       // BIG_ENDIAN: first nibble (we[0]) → MSB tmp[31:28]
-      if we_r[0:0]
+      if we[0:0]
         tmp[31:28] <= d;
       end if
-      if we_r[1:1]
+      if we[1:1]
         tmp[27:24] <= d;
       end if
-      if we_r[2:2]
+      if we[2:2]
         tmp[23:20] <= d;
       end if
-      if we_r[3:3]
+      if we[3:3]
         tmp[19:16] <= d;
       end if
-      if we_r[4:4]
+      if we[4:4]
         tmp[15:12] <= d;
       end if
-      if we_r[5:5]
+      if we[5:5]
         tmp[11:8] <= d;
       end if
-      if we_r[6:6]
+      if we[6:6]
         tmp[7:4] <= d;
       end if
-      if we_r[7:7]
+      if we[7:7]
         tmp[3:0] <= d;
         ft <= true;
       end if
     end if
+
+    // Write pointer
+    if ram_we
+      if adr_i[2:0] == (RX_DEPTH - 1).trunc<3>()
+        adr_i[2:0] <= 0;
+        adr_i[3:3] <= ~adr_i[3:3];
+      else
+        adr_i <= (adr_i + 1).trunc<4>();
+      end if
+
+      // Write tmp to RAM at old address
+      if adr_i[2:0] == 0
+        ram_0 <= tmp;
+      elsif adr_i[2:0] == 1
+        ram_1 <= tmp;
+      elsif adr_i[2:0] == 2
+        ram_2 <= tmp;
+      elsif adr_i[2:0] == 3
+        ram_3 <= tmp;
+      elsif adr_i[2:0] == 4
+        ram_4 <= tmp;
+      elsif adr_i[2:0] == 5
+        ram_5 <= tmp;
+      elsif adr_i[2:0] == 6
+        ram_6 <= tmp;
+      else
+        ram_7 <= tmp;
+      end if
+    end if
   end seq
 
-  // Core FIFO with OVERFLOW: never back-pressures, overwrites oldest when full
-  inst fifo_core: RxFifoCore
-    wr_clk     <- wclk;
-    rd_clk     <- rclk;
-    rst        <- rst;
-    push_valid <- word_complete;
-    push_ready -> push_ready_w;
-    push_data  <- tmp;
-    pop_valid  -> pop_valid_w;
-    pop_ready  <- rd;
-    pop_data   -> q;
-  end inst fifo_core
+  // Read pointer
+  seq on rclk rising
+    if ~empty & rd
+      if adr_o[2:0] == (RX_DEPTH - 1).trunc<3>()
+        adr_o[2:0] <= 0;
+        adr_o[3:3] <= ~adr_o[3:3];
+      else
+        adr_o <= (adr_o + 1).trunc<4>();
+      end if
+    end if
+  end seq
+
+  // ── Read output mux ──────────────────────────────────────────────────
+  // mem_empt = occupancy = adr_i - adr_o (lower 2 bits)
+  let level: UInt<6> = adr_i.zext<5>() - adr_o.zext<5>();
 
   comb
-    full  = ~push_ready_w;
-    empty = ~pop_valid_w;
-    mem_empt = 0;
+    if adr_o[2:0] == 0
+      q = ram_0;
+    elsif adr_o[2:0] == 1
+      q = ram_1;
+    elsif adr_o[2:0] == 2
+      q = ram_2;
+    elsif adr_o[2:0] == 3
+      q = ram_3;
+    elsif adr_o[2:0] == 4
+      q = ram_4;
+    elsif adr_o[2:0] == 5
+      q = ram_5;
+    elsif adr_o[2:0] == 6
+      q = ram_6;
+    else
+      q = ram_7;
+    end if
+
+    // Full/empty: combinational pointer compare (matches reference)
+    full  = (adr_i[2:0] == adr_o[2:0]) & (adr_i[3:3] ^ adr_o[3:3]);
+    empty = adr_i == adr_o;
+
+    // mem_empt from pre-computed level
+    mem_empt = level[1:0];
   end comb
+
 end module sd_rx_fifo
