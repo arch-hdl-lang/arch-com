@@ -2029,11 +2029,32 @@ fn cpp_expr(expr: &Expr, ctx: &Ctx) -> String {
 
 fn cpp_condition(expr: &Expr, ctx: &Ctx) -> String {
     let cond = cpp_expr(expr, ctx);
-    if cond.trim_start().starts_with('(') {
+    if is_fully_wrapped_in_parens(&cond) {
         cond
     } else {
         format!("({cond})")
     }
+}
+
+/// Check if `s` is fully wrapped in a single balanced pair of outer parens.
+/// Returns true for `(!busy)` and `(a + b)`, false for `(uint8_t)(!busy)` where
+/// the first `)` closes the cast, not the whole expression.
+fn is_fully_wrapped_in_parens(s: &str) -> bool {
+    let s = s.trim();
+    if !s.starts_with('(') || !s.ends_with(')') {
+        return false;
+    }
+    let mut depth = 0u32;
+    for (i, c) in s.char_indices() {
+        if c == '(' { depth += 1; }
+        else if c == ')' {
+            depth -= 1;
+            if depth == 0 && i < s.len() - 1 {
+                return false; // closed before the end — not fully wrapped
+            }
+        }
+    }
+    depth == 0
 }
 
 fn cpp_expr_lhs(expr: &Expr, ctx: &Ctx) -> String {
