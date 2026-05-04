@@ -3293,7 +3293,20 @@ impl<'a> Codegen<'a> {
                     format!("'{{{}}}", field_strs.join(", "))
                 }
             }
-            ExprKind::EnumVariant(_, variant) => variant.name.to_uppercase(),
+            ExprKind::EnumVariant(enum_name, variant) => {
+                // Known ARCH-side enum → emit just the variant name in
+                // uppercase (the SV typedef gives variants their type
+                // implicitly via context). Cross-package qualified refs
+                // (e.g. `ibex_pkg::RV32MFast`) — recognised by the
+                // enum side NOT being a known ARCH enum — preserve the
+                // package prefix and original case so they resolve in
+                // upstream SV.
+                if matches!(self.symbols.globals.get(&enum_name.name), Some((Symbol::Enum(_), _))) {
+                    variant.name.to_uppercase()
+                } else {
+                    format!("{}::{}", enum_name.name, variant.name)
+                }
+            }
             ExprKind::Todo => {
                 "'0 /* TODO: todo! placeholder */".to_string()
             }

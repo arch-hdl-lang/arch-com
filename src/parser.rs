@@ -880,9 +880,21 @@ impl Parser {
             let ty = self.parse_type_expr()?;
             ParamKind::ConstVec(ty)
         } else if matches!(self.peek_kind(), Some(TokenKind::Ident(_))) {
-            // Enum-typed const: param MODE: EnumName = EnumName::Variant
-            let enum_name = self.expect_ident()?;
-            ParamKind::EnumConst(enum_name.name)
+            // Enum-typed const: `param MODE: EnumName = EnumName::Variant;`
+            // OR cross-package qualified form for SV-side enums:
+            // `param MODE: pkg::EnumName = pkg::Variant;` (e.g.
+            // `ibex_pkg::rv32m_e`). The qualified path is held as a single
+            // string since arch-com treats cross-package SV enums opaquely
+            // (no value resolution; codegen emits the pkg-prefixed name
+            // verbatim into SV).
+            let first = self.expect_ident()?;
+            let enum_name = if self.eat(TokenKind::ColonColon) {
+                let second = self.expect_ident()?;
+                format!("{}::{}", first.name, second.name)
+            } else {
+                first.name
+            };
+            ParamKind::EnumConst(enum_name)
         } else {
             ParamKind::Const
         };
