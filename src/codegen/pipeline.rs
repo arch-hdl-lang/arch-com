@@ -623,7 +623,7 @@ impl<'a> Codegen<'a> {
         self.line(&format!("{bits}'d0: begin"));
         self.indent += 1;
         if let Some(g) = groups.first() {
-            let cond = self.emit_pipeline_expr_str(g.cond, stage_names, stage_regs, port_names);
+            let cond = self.emit_pipeline_stage_expr_str(g.cond, prefix, si, stage_names, stage_regs, port_names);
 
             // Run pre-assigns (fire once on entry to the wait)
             // For state 0 these only fire when upstream has valid data
@@ -668,7 +668,7 @@ impl<'a> Codegen<'a> {
             self.line(&format!("{bits}'d{state_num}: begin"));
             self.indent += 1;
 
-            let cond = self.emit_pipeline_expr_str(g.cond, stage_names, stage_regs, port_names);
+            let cond = self.emit_pipeline_stage_expr_str(g.cond, prefix, si, stage_names, stage_regs, port_names);
 
             // Emit hold assigns (for do..until, every cycle)
             for a in &g.hold_assigns {

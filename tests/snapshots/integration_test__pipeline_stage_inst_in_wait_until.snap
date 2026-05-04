@@ -1,0 +1,112 @@
+---
+source: tests/integration_test.rs
+assertion_line: 1678
+expression: sv
+---
+// domain SysDomain
+//   freq_mhz: 100
+
+module Worker (
+  input logic clk_i,
+  input logic rst_ni,
+  input logic req_i,
+  output logic done_o
+);
+
+  logic [1:0] state_q;
+  always_ff @(posedge clk_i) begin
+    if ((!rst_ni)) begin
+      state_q <= 0;
+    end else begin
+      if (state_q == 2'd0) begin
+        if (req_i) begin
+          state_q <= 2'd1;
+        end
+      end else if (state_q == 2'd2) begin
+        state_q <= 2'd0;
+      end else begin
+        state_q <= 2'(state_q + 1);
+      end
+    end
+  end
+  assign done_o = state_q == 2'd2;
+
+endmodule
+
+module WorkerPipe (
+  input logic clk,
+  input logic rst,
+  input logic go,
+  output logic out_valid
+);
+
+  // ── Stage valid registers ──
+  logic capture_valid_r;
+  logic process_valid_r;
+  
+  // ── Stage data registers ──
+  logic capture_seen = 1'b0;
+  logic process_result = 1'b0;
+  logic process_worker_done;
+  
+  // ── Wait-stage FSM registers ──
+  logic [0:0] process_fsm_state;
+  logic process_fsm_busy;
+  
+  // ── Stall signals ──
+  logic capture_stall;
+  logic process_stall;
+  assign process_stall = process_fsm_busy;
+  assign capture_stall = process_stall;
+  
+  assign process_fsm_busy = (process_fsm_state != '0);
+  
+  // ── Stage register updates ──
+  always_ff @(posedge clk) begin
+    if ((!rst)) begin
+      capture_valid_r <= 1'b0;
+      capture_seen <= 1'b0;
+      process_valid_r <= 1'b0;
+      process_fsm_state <= '0;
+      process_result <= 1'b0;
+    end else begin
+      if (!capture_stall) begin
+        capture_valid_r <= 1'b1;
+        capture_seen <= go;
+      end
+      // Wait-stage FSM: process
+      case (process_fsm_state)
+        1'd0: begin
+          if (capture_valid_r) begin
+            if (process_worker_done) begin
+              process_result <= 1'b1;
+              process_valid_r <= capture_valid_r;
+            end else begin
+              process_fsm_state <= 1'd1;
+            end
+          end
+        end
+        1'd1: begin
+          if (process_worker_done) begin
+            process_result <= 1'b1;
+            process_fsm_state <= '0;
+            process_valid_r <= 1'b1;
+          end
+        end
+        default: begin
+          process_fsm_state <= '0;
+        end
+      endcase
+    end
+  end
+  
+  // ── Combinational outputs ──
+  Worker worker (
+    .clk_i(clk),
+    .rst_ni(rst),
+    .req_i(capture_seen),
+    .done_o(process_worker_done)
+  );
+  assign out_valid = process_result;
+
+endmodule

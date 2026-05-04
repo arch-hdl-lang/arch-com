@@ -1586,6 +1586,99 @@ end pipeline AluPipe
 }
 
 #[test]
+fn test_pipeline_stage_inst_in_wait_until() {
+    // Regression: a `wait until` condition inside a stage that also
+    // hosts an `inst` block must reference the inst's output via the
+    // stage-prefixed wire name (the same name the inst lowering
+    // emits), not the bare local name. Previously the wait FSM
+    // codegen used the cross-stage `emit_pipeline_expr_str`, which
+    // did not apply the current stage's prefix to local idents,
+    // emitting a dangling `worker_done` reference that Verilator
+    // rejected with "Can't find definition of variable".
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module Worker
+  port clk_i: in Clock<SysDomain>;
+  port rst_ni: in Reset<Sync, Low>;
+  port req_i: in Bool;
+  port done_o: out Bool;
+  reg state_q: UInt<2> reset rst_ni => 0;
+  seq on clk_i rising
+    if state_q == 2'd0
+      if req_i
+        state_q <= 2'd1;
+      end if
+    else
+      if state_q == 2'd2
+        state_q <= 2'd0;
+      else
+        state_q <= (state_q + 1).trunc<2>();
+      end if
+    end if
+  end seq
+  comb
+    done_o = state_q == 2'd2;
+  end comb
+end module Worker
+
+pipeline WorkerPipe
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, Low>;
+  port go: in Bool;
+  port out_valid: out Bool;
+
+  stage Capture
+    reg seen: Bool reset rst => false;
+    seq on clk rising
+      seen <= go;
+    end seq
+  end stage Capture
+
+  stage Process
+    reg result: Bool reset rst => false;
+    seq on clk rising
+      wait until worker_done;
+      result <= true;
+    end seq
+    inst worker: Worker
+      clk_i <- clk;
+      rst_ni <- rst;
+      req_i <- Capture.seen;
+      done_o -> worker_done;
+    end inst worker
+    comb
+      out_valid = result;
+    end comb
+  end stage Process
+
+end pipeline WorkerPipe
+"#;
+    let sv = compile_to_sv(source);
+    // The `wait until worker_done` inside Process stage must resolve
+    // to the stage-prefixed wire name. Both the `inst` connection
+    // and the wait-FSM condition must agree on `process_worker_done`.
+    assert!(
+        sv.contains(".done_o(process_worker_done)"),
+        "inst output connection should target stage-prefixed wire"
+    );
+    // The bare unprefixed name must NOT appear as a free variable
+    // reference (it would cause Verilator UNDEFINED). The prefixed
+    // form `process_worker_done` is the only legal reference.
+    assert!(
+        !sv.contains("if (worker_done)"),
+        "wait condition must use stage-prefixed reference, not bare ident"
+    );
+    assert!(
+        sv.contains("if (process_worker_done)"),
+        "wait condition must reference the stage-prefixed inst output wire"
+    );
+    insta::assert_snapshot!(sv);
+}
+
+#[test]
 fn test_clog2_in_type_args() {
     // $clog2(DEPTH) in type width expressions
     let source = r#"
