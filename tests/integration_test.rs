@@ -5233,6 +5233,10 @@ fn test_tlm_one_initiator_many_targets_response_router_example_compiles() {
     assert!(sim.contains("class VTlmAddrRouter4Resp")
          && sim.contains("MemResp64 up_read_rsp_data"),
         "sim C++ should include struct response router mirror:\n{sim}");
+    assert!(sim.contains("if (_let_read_mapped == 0)"),
+        "sim C++ if conditions should not double-wrap comparison expressions:\n{sim}");
+    assert!(!sim.contains("if ((_let_read_mapped == 0))"),
+        "sim C++ should avoid Clang -Wparentheses-equality noise:\n{sim}");
 }
 
 #[test]
