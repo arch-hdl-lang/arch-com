@@ -1767,6 +1767,50 @@ end module ExternalEnumParam
 }
 
 #[test]
+fn test_unpacked_array_param_for_external_struct() {
+    // Native ARCH syntax for a `parameter <type> NAME [N] = <ident>;`
+    // upstream-SV unpacked-array param. Three shapes covered here:
+    //  - struct + unpacked dim:  `pkg::T [N]`
+    //  - logic-packed + unpacked dim: `[hi:lo] [N]`
+    //  - scalar struct (no dim, exercise back-compat).
+    // All three forward upstream-SV `pkg::Variant` defaults verbatim.
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module ExtUnpackedParams
+  param PMPRstCfg: ibex_pkg::pmp_cfg_t [16] = ibex_pkg::PmpCfgRst;
+  param PMPRstAddr[33:0]: const [16] = ibex_pkg::PmpAddrRst;
+  param PMPRstMsecCfg: ibex_pkg::pmp_mseccfg_t = ibex_pkg::PmpMseccfgRst;
+
+  port clk_i:  in Clock<SysDomain>;
+  port rst_ni: in Reset<Sync, Low>;
+  port d:      in UInt<32>;
+  port q:      out UInt<32>;
+
+  comb
+    q = d;
+  end comb
+end module ExtUnpackedParams
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("parameter ibex_pkg::pmp_cfg_t PMPRstCfg [16] = ibex_pkg::PmpCfgRst"),
+        "struct-typed unpacked-array param should emit verbatim with [N] post-name dim: {sv}"
+    );
+    assert!(
+        sv.contains("parameter [33:0] PMPRstAddr [16] = ibex_pkg::PmpAddrRst"),
+        "width-qualified unpacked-array param should emit `[hi:lo] NAME [N] = ...`"
+    );
+    assert!(
+        sv.contains("parameter ibex_pkg::pmp_mseccfg_t PMPRstMsecCfg = ibex_pkg::PmpMseccfgRst"),
+        "scalar struct param (no unpacked dim) should still work after the syntax extension"
+    );
+    insta::assert_snapshot!(sv);
+}
+
+#[test]
 fn test_pipeline_stage_inst_in_wait_until() {
     // Regression: a `wait until` condition inside a stage that also
     // hosts an `inst` block must reference the inst's output via the
