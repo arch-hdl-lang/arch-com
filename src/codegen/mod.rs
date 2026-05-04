@@ -2153,6 +2153,89 @@ impl<'a> Codegen<'a> {
         self.line("// synopsys translate_on");
     }
 
+    /// TLM method protocol assertions for the flattened req/rsp handshake.
+    ///
+    /// These properties are endpoint-local and intentionally symmetric across
+    /// initiator/target perspectives: if a request or response is held under
+    /// backpressure, the valid bit and payload observed on that module's
+    /// flattened TLM wires must remain stable on the next cycle. That catches
+    /// the common generated/interconnect bug where address/data/tag changes
+    /// while `valid && !ready`.
+    fn emit_tlm_method_asserts(&mut self, m: &ModuleDecl) {
+        let mut emissions: Vec<(String, crate::ast::TlmMethodMeta)> = Vec::new();
+        for p in &m.ports {
+            let Some(ref bi) = p.bus_info else { continue; };
+            let Some((crate::resolve::Symbol::Bus(info), _)) =
+                self.symbols.globals.get(&bi.bus_name.name) else { continue; };
+            for tm in &info.tlm_methods {
+                emissions.push((p.name.name.clone(), tm.clone()));
+            }
+        }
+        if emissions.is_empty() { return; }
+
+        let clk = m.ports.iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Clock(_)))
+            .map(|p| p.name.name.clone());
+        let Some(clk) = clk else { return; };
+        let rst_active = m.ports.iter()
+            .find(|p| matches!(&p.ty, TypeExpr::Reset(_, _)))
+            .map(|p| match &p.ty {
+                TypeExpr::Reset(_, ResetLevel::Low) => format!("!{}", p.name.name),
+                _ => p.name.name.clone(),
+            });
+        let disable = rst_active.as_ref()
+            .map(|r| format!(" disable iff ({r})"))
+            .unwrap_or_default();
+        let mod_name = m.name.name.clone();
+
+        self.line("");
+        self.line("// synopsys translate_off");
+        self.line("// Auto-generated TLM method protocol assertions");
+
+        for (port_name, tm) in &emissions {
+            let method = &tm.name.name;
+            let sig = |suffix: &str| format!("{port_name}_{method}_{suffix}");
+            let req_valid = sig("req_valid");
+            let req_ready = sig("req_ready");
+            let rsp_valid = sig("rsp_valid");
+            let rsp_ready = sig("rsp_ready");
+
+            let mut req_hold_terms = vec![req_valid.clone()];
+            if tm.out_of_order_tags.is_some() {
+                req_hold_terms.push(format!("$stable({})", sig("req_tag")));
+            }
+            for (arg_name, _) in &tm.args {
+                req_hold_terms.push(format!("$stable({})", sig(&arg_name.name)));
+            }
+            let req_hold = req_hold_terms.join(" && ");
+            let label = format!("_auto_tlm_{port_name}_{method}_req_stable");
+            self.line(&format!(
+                "{label}: assert property (@(posedge {clk}){disable} ({req_valid} && !{req_ready}) |=> ({req_hold}))"
+            ));
+            self.line(&format!(
+                "  else $fatal(1, \"TLM VIOLATION (request changed while stalled): {mod_name}.{label}\");"
+            ));
+
+            let mut rsp_hold_terms = vec![rsp_valid.clone()];
+            if tm.out_of_order_tags.is_some() {
+                rsp_hold_terms.push(format!("$stable({})", sig("rsp_tag")));
+            }
+            if tm.ret.is_some() {
+                rsp_hold_terms.push(format!("$stable({})", sig("rsp_data")));
+            }
+            let rsp_hold = rsp_hold_terms.join(" && ");
+            let label = format!("_auto_tlm_{port_name}_{method}_rsp_stable");
+            self.line(&format!(
+                "{label}: assert property (@(posedge {clk}){disable} ({rsp_valid} && !{rsp_ready}) |=> ({rsp_hold}))"
+            ));
+            self.line(&format!(
+                "  else $fatal(1, \"TLM VIOLATION (response changed while stalled): {mod_name}.{label}\");"
+            ));
+        }
+
+        self.line("// synopsys translate_on");
+    }
+
     /// Stringify a compile-time constant expression to an SV literal/expression.
     /// For the common case (integer literal) just prints the number; for
     /// `$clog2(...)` / param refs / arithmetic, prints the SV form.

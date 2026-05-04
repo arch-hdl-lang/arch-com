@@ -549,6 +549,9 @@ impl<'a> Codegen<'a> {
         // Emit the Tier-2 credit_channel protocol assertions (PR #4).
         self.emit_credit_channel_asserts(&m_clone);
 
+        // Emit TLM method request/response stability assertions.
+        self.emit_tlm_method_asserts(&m_clone);
+
         // Emit log file descriptors: initial $fopen / final $fclose
         let log_files = Self::collect_log_files(&m_clone.body);
         if !log_files.is_empty() {
