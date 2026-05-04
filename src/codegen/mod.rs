@@ -264,6 +264,21 @@ impl<'a> Codegen<'a> {
             ParamKind::EnumConst(enum_name) => {
                 self.line(&format!("{kw} {} {}{}{}{}", enum_name, p.name.name, unpacked_str, default_str, comma));
             }
+            ParamKind::Logic(ty) => {
+                // Emit as `parameter <packed-bits> NAME [unpacked]? = ...`.
+                // emit_port_type_str returns "logic [W-1:0]" for UInt/SInt
+                // and just "logic" for Bool; we want the bit-range form
+                // without the leading `logic` keyword (SV `parameter`
+                // doesn't take `logic` as the type qualifier in the
+                // same way `input/output` does).
+                let ty_str = self.emit_port_type_str(ty);
+                let ty_qual = ty_str.strip_prefix("logic").map(|r| r.trim_start()).unwrap_or(&ty_str);
+                if ty_qual.is_empty() {
+                    self.line(&format!("{kw} {}{}{}{}", p.name.name, unpacked_str, default_str, comma));
+                } else {
+                    self.line(&format!("{kw} {} {}{}{}{}", ty_qual, p.name.name, unpacked_str, default_str, comma));
+                }
+            }
             ParamKind::ConstVec(ty) => {
                 // Vec<T, N> param. iverilog rejects unpacked-array parameters,
                 // so emit a packed `parameter logic [N*W-1:0] NAME = {…}` and
@@ -515,6 +530,15 @@ impl<'a> Codegen<'a> {
                     }
                     ParamKind::EnumConst(enum_name) => {
                         self.line(&format!("localparam {} {} = {};", enum_name, p.name.name, val));
+                    }
+                    ParamKind::Logic(ty) => {
+                        let ty_str = self.emit_port_type_str(ty);
+                        let ty_qual = ty_str.strip_prefix("logic").map(|r| r.trim_start()).unwrap_or(&ty_str);
+                        if ty_qual.is_empty() {
+                            self.line(&format!("localparam {} = {};", p.name.name, val));
+                        } else {
+                            self.line(&format!("localparam {} {} = {};", ty_qual, p.name.name, val));
+                        }
                     }
                     ParamKind::Const | ParamKind::Type(_) | ParamKind::ConstVec(_) => {
                         self.line(&format!("localparam int {} = {};", p.name.name, val));

@@ -879,6 +879,16 @@ impl Parser {
             // Vec-of-const: param NAME: Vec<T, N> = {...};
             let ty = self.parse_type_expr()?;
             ParamKind::ConstVec(ty)
+        } else if matches!(
+            self.peek_kind(),
+            Some(TokenKind::UInt | TokenKind::SInt | TokenKind::Bool)
+        ) {
+            // Logic-typed value const: `param NAME: UInt<W> = <default>;`
+            // (or SInt / Bool). Same SV shape as `WidthConst` but
+            // type-first to match how ARCH writes packed types
+            // everywhere else.
+            let ty = self.parse_type_expr()?;
+            ParamKind::Logic(ty)
         } else if matches!(self.peek_kind(), Some(TokenKind::Ident(_))) {
             // Enum-typed const: `param MODE: EnumName = EnumName::Variant;`
             // OR cross-package qualified form for SV-side enums:

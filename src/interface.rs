@@ -251,8 +251,11 @@ pub(crate) fn emit_params(s: &mut String, params: &[ParamDecl]) {
                 let default_str = p.default.as_ref()
                     .map(|d| format!(" = {}", expr_str(d)))
                     .unwrap_or_default();
+                let unpacked = p.unpacked_size.as_ref()
+                    .map(|s| format!(" [{}]", expr_str(s)))
+                    .unwrap_or_default();
                 s.push_str(&format!(
-                    "  {local}param {name}[{}:{}]: const{default_str};\n",
+                    "  {local}param {name}[{}:{}]: const{unpacked}{default_str};\n",
                     expr_str(hi), expr_str(lo)
                 ));
             }
@@ -266,8 +269,11 @@ pub(crate) fn emit_params(s: &mut String, params: &[ParamDecl]) {
                 let default_str = p.default.as_ref()
                     .map(|d| format!(" = {}", expr_str(d)))
                     .unwrap_or_default();
+                let unpacked = p.unpacked_size.as_ref()
+                    .map(|s| format!(" [{}]", expr_str(s)))
+                    .unwrap_or_default();
                 s.push_str(&format!(
-                    "  {local}param {name}: {enum_name}{default_str};\n"
+                    "  {local}param {name}: {enum_name}{unpacked}{default_str};\n"
                 ));
             }
             ParamKind::ConstVec(ty) => {
@@ -276,6 +282,18 @@ pub(crate) fn emit_params(s: &mut String, params: &[ParamDecl]) {
                     .unwrap_or_default();
                 s.push_str(&format!(
                     "  {local}param {name}: {}{default_str};\n",
+                    type_str(ty)
+                ));
+            }
+            ParamKind::Logic(ty) => {
+                let default_str = p.default.as_ref()
+                    .map(|d| format!(" = {}", expr_str(d)))
+                    .unwrap_or_default();
+                let unpacked = p.unpacked_size.as_ref()
+                    .map(|s| format!(" [{}]", expr_str(s)))
+                    .unwrap_or_default();
+                s.push_str(&format!(
+                    "  {local}param {name}: {}{unpacked}{default_str};\n",
                     type_str(ty)
                 ));
             }
