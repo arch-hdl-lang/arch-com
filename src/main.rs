@@ -1252,6 +1252,10 @@ fn resolve_use_imports(files: &[PathBuf]) -> miette::Result<Vec<PathBuf>> {
                 Item::Module(m) => m.body.iter()
                     .filter_map(|b| if let arch::ast::ModuleBodyItem::Inst(i) = b { Some(&i.module_name.name) } else { None })
                     .collect::<Vec<_>>(),
+                Item::Pipeline(p) => p.stages.iter()
+                    .flat_map(|s| s.body.iter())
+                    .filter_map(|b| if let arch::ast::ModuleBodyItem::Inst(i) = b { Some(&i.module_name.name) } else { None })
+                    .collect::<Vec<_>>(),
                 _ => vec![],
             };
             for inst_name in insts {
