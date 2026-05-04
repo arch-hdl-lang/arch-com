@@ -2016,6 +2016,15 @@ fn cpp_expr(expr: &Expr, ctx: &Ctx) -> String {
     cpp_expr_inner(expr, ctx, false)
 }
 
+fn cpp_condition(expr: &Expr, ctx: &Ctx) -> String {
+    let cond = cpp_expr(expr, ctx);
+    if cond.trim_start().starts_with('(') {
+        cond
+    } else {
+        format!("({cond})")
+    }
+}
+
 fn cpp_expr_lhs(expr: &Expr, ctx: &Ctx) -> String {
     cpp_expr_inner(expr, ctx, true)
 }
@@ -2824,11 +2833,11 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
 }
 
 fn emit_if_else(ie: &IfElse, ctx: &Ctx, out: &mut String, indent: usize, is_chain: bool, k: SimAssignKind) {
-    let cond = cpp_expr(&ie.cond, ctx);
+    let cond = cpp_condition(&ie.cond, ctx);
     if is_chain {
-        out.push_str(&format!("{}}} else if ({}) {{\n", ind(indent), cond));
+        out.push_str(&format!("{}}} else if {} {{\n", ind(indent), cond));
     } else {
-        out.push_str(&format!("{}if ({}) {{\n", ind(indent), cond));
+        out.push_str(&format!("{}if {} {{\n", ind(indent), cond));
     }
     // --coverage: count entries to this arm. Phase 1 records branch
     // coverage for seq if/elsif/else; phase 1b/c adds comb. Counter id
