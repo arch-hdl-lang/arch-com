@@ -1,0 +1,21 @@
+---
+source: tests/integration_test.rs
+assertion_line: 1766
+expression: sv
+---
+// domain SysDomain
+//   freq_mhz: 100
+
+module ExternalEnumParam #(
+  parameter ibex_pkg::rv32m_e RV32M = ibex_pkg::RV32MFast,
+  parameter ibex_pkg::rv32b_e RV32B = ibex_pkg::RV32BNone
+) (
+  input logic clk_i,
+  input logic rst_ni,
+  input logic [31:0] d,
+  output logic [31:0] q
+);
+
+  assign q = d;
+
+endmodule

@@ -1725,6 +1725,48 @@ end pipeline P2
 }
 
 #[test]
+fn test_qualified_enum_param_for_external_package() {
+    // Native ARCH syntax for forwarding upstream-SV typed params:
+    // `param NAME: pkg::EnumName = pkg::Variant;` — the qualified
+    // path on both type and default value emits unchanged into SV
+    // so the param can be wired across an ARCH-to-upstream-SV
+    // module boundary without a cast (e.g. ARCH IbexCore forwarding
+    // RV32M to upstream-SV ibex_cs_registers, both seeing
+    // `ibex_pkg::rv32m_e`). The qualified enum side isn't a known
+    // ARCH enum, so codegen preserves the `pkg::Variant` form
+    // verbatim instead of uppercasing the variant.
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module ExternalEnumParam
+  param RV32M: ibex_pkg::rv32m_e = ibex_pkg::RV32MFast;
+  param RV32B: ibex_pkg::rv32b_e = ibex_pkg::RV32BNone;
+
+  port clk_i:  in Clock<SysDomain>;
+  port rst_ni: in Reset<Sync, Low>;
+  port d:      in UInt<32>;
+  port q:      out UInt<32>;
+
+  comb
+    q = d;
+  end comb
+end module ExternalEnumParam
+"#;
+    let sv = compile_to_sv(source);
+    assert!(
+        sv.contains("parameter ibex_pkg::rv32m_e RV32M = ibex_pkg::RV32MFast"),
+        "qualified enum type + default should emit verbatim: {sv}"
+    );
+    assert!(
+        sv.contains("parameter ibex_pkg::rv32b_e RV32B = ibex_pkg::RV32BNone"),
+        "second qualified-enum param should also emit verbatim"
+    );
+    insta::assert_snapshot!(sv);
+}
+
+#[test]
 fn test_pipeline_stage_inst_in_wait_until() {
     // Regression: a `wait until` condition inside a stage that also
     // hosts an `inst` block must reference the inst's output via the
