@@ -1,7 +1,9 @@
 // E203 ITCM Controller
-// Arbitrates IFU (64-bit) and LSU (32-bit, width-converted) access to ITCM SRAM.
-// IFU has lower priority (blocked when LSU active).
-// 1-cycle SRAM latency, response tagged with requester ID.
+// Arbitrates IFU (64-bit), LSU (32-bit, width-converted), and EXT (32-bit) access to ITCM SRAM.
+// Priority: EXT > LSU > IFU.  1-cycle SRAM latency, response tagged with requester ID.
+//
+// Pipeline: LSU/EXT → n2w(addr[2] pipe) → arbt(priority, rspid pipe) → sram_ctrl(bypbuf+usr pipe) → RAM
+// Response: RAM → usr pipe → demux(IFU vs arbt) → rspid demux(EXT vs LSU) → n2w extract → output
 
 module e203_itcm_ctrl
 
@@ -60,86 +62,252 @@ module e203_itcm_ctrl
   port itcm_ram_dout: in UInt<64>;
   port clk_itcm_ram:  out Bool;
 
-  // Response pipeline: track which requester (IFU vs LSU) and address for LSU 32->64
-  reg rsp_valid_r: Bool reset rst_n => false;
-  reg rsp_ifu_r:   Bool reset rst_n => false;
-  reg rsp_read_r:  Bool reset rst_n => false;
-  reg rsp_lsu_lo_r: Bool reset rst_n => false;  // LSU accessed low word
+  // === Pipeline registers ===
+
+  // Stage 0: n2w addr[2] pipe (DP=1, CUT_READY=0)
+  reg lsu_n2w_vld_r: Bool reset rst_n => false;
+  reg lsu_n2w_lo_r:  Bool reset rst_n => false;
+  reg ext_n2w_vld_r: Bool reset rst_n => false;
+  reg ext_n2w_lo_r:  Bool reset rst_n => false;
+
+  // Stage 1: arbt rspid pipe (DP=1, CUT_READY=0). arbt_rspid_r: 0=EXT, 1=LSU
+  reg arbt_rspid_vld_r: Bool reset rst_n => false;
+  reg arbt_rspid_r:      Bool reset rst_n => false;
+
+  // Stage 2: bypbuf internal FIFO (DP=1, CUT_READY=1)
+  reg byp_vld_r:    Bool reset rst_n => false;
+  reg byp_read_r:   Bool reset rst_n => false;
+  reg byp_ifu_r:    Bool reset rst_n => false;
+  reg byp_addr_r:   UInt<16> reset rst_n => 0;
+  reg byp_wdata_r:  UInt<64> reset rst_n => 0;
+  reg byp_wmask_r:  UInt<8>  reset rst_n => 0;
+
+  // Stage 3: usr pipe (DP=1, CUT_READY=0) for 1-cycle SRAM response
+  reg usr_vld_r:  Bool reset rst_n => false;
+  reg usr_ifu_r:  Bool reset rst_n => false;
+  reg usr_read_r: Bool reset rst_n => false;
 
   // IFU holdup tracking
   reg ifu_holdup_r: Bool reset rst_n => false;
 
-  // LSU width conversion: expand 32-bit cmd to 64-bit SRAM
-  let lsu_addr_lo: Bool = ~lsu2itcm_icb_cmd_addr[2:2];  // Low word if addr[2]=0
-  let lsu_wdata_64: UInt<64> = lsu_addr_lo ? {32'b0, lsu2itcm_icb_cmd_wdata}
-                              : {lsu2itcm_icb_cmd_wdata, 32'b0};
-  let lsu_wmask_8: UInt<8> = lsu_addr_lo ? {4'b0, lsu2itcm_icb_cmd_wmask}
-                            : {lsu2itcm_icb_cmd_wmask, 4'b0};
+  // Latch-based clock gate model: enb captured when clk=0
+  reg clkgate_enb_r: Bool reset rst_n => false;
 
-  // Arbitration: LSU has priority over IFU
-  let sram_sel_lsu: Bool = lsu2itcm_icb_cmd_valid;
-  let sram_sel_ifu: Bool = ifu2itcm_icb_cmd_valid & (~lsu2itcm_icb_cmd_valid);
-  let sram_cmd_valid: Bool = sram_sel_lsu | sram_sel_ifu;
-  let sram_ready: Bool = ~rsp_valid_r | (rsp_ifu_r ? ifu2itcm_icb_rsp_ready : lsu2itcm_icb_rsp_ready);
+  // === LSU n2w: 32→64 width conversion ===
+  // wdata duplicated across both halves (reference sirv_gnrl_icb_n2w line 629)
+  let lsu_n2w_wdata: UInt<64> = {lsu2itcm_icb_cmd_wdata, lsu2itcm_icb_cmd_wdata};
+  // wmask shifted based on addr[2] (reference line 630)
+  let lsu_n2w_wmask: UInt<8> = lsu2itcm_icb_cmd_addr[2] ?
+      {lsu2itcm_icb_cmd_wmask, 4'b0} : {4'b0, lsu2itcm_icb_cmd_wmask};
+
+  // n2w pipe full: can't accept when vld_r=1 and not popping
+  let lsu_n2w_rsp_hs: Bool = lsu_n2w_vld_r & lsu2itcm_icb_rsp_valid & lsu2itcm_icb_rsp_ready;
+  let lsu_n2w_full: Bool = lsu_n2w_vld_r & ~lsu_n2w_rsp_hs;
+
+  // n2w output valid (combinational pass-through when not full)
+  let lsu_n2w_cmd_valid: Bool = ~lsu_n2w_full & lsu2itcm_icb_cmd_valid;
+
+  // lsu_n2w cmd_ready comes from arbt back-pressure
+  wire lsu_n2w_cmd_ready: Bool;
+
+  // === EXT n2w: same pattern ===
+  let ext_n2w_wdata: UInt<64> = {ext2itcm_icb_cmd_wdata, ext2itcm_icb_cmd_wdata};
+  let ext_n2w_wmask: UInt<8> = ext2itcm_icb_cmd_addr[2] ?
+      {ext2itcm_icb_cmd_wmask, 4'b0} : {4'b0, ext2itcm_icb_cmd_wmask};
+
+  let ext_n2w_rsp_hs: Bool = ext_n2w_vld_r & ext2itcm_icb_rsp_valid & ext2itcm_icb_rsp_ready;
+  let ext_n2w_full: Bool = ext_n2w_vld_r & ~ext_n2w_rsp_hs;
+  let ext_n2w_cmd_valid: Bool = ~ext_n2w_full & ext2itcm_icb_cmd_valid;
+  wire ext_n2w_cmd_ready: Bool;
+
+  // === Arbiter: priority EXT(port0) > LSU(port1), ALLOW_0CYCL_RSP=0 ===
+  // Priority grants (reference sirv_gnrl_icb_arbt lines 201-207)
+  let arbt_ext_grt: Bool = true;
+  let arbt_lsu_grt: Bool = ~ext_n2w_cmd_valid;
+
+  // arbt rspid pipe full (DP=1, CUT_READY=0)
+  // rspid pops when: arbt sees rsp valid, rspid has entry, selected port ready
+  let arbt_rspid_ren: Bool = usr_vld_r & ~usr_ifu_r & arbt_rspid_vld_r &
+      (arbt_rspid_r ? lsu2itcm_icb_rsp_ready : ext2itcm_icb_rsp_ready);
+  let arbt_rspid_full: Bool = arbt_rspid_vld_r & ~arbt_rspid_ren;
+
+  // arbt cmd output (gated by rspid_full)
+  let arbt_cmd_valid_real: Bool = ext_n2w_cmd_valid | lsu_n2w_cmd_valid;
+  let arbt_cmd_valid: Bool = arbt_cmd_valid_real & ~arbt_rspid_full;
+
+  // arbt selected port ID (for rspid write)
+  let arbt_sel_port: Bool = ext_n2w_cmd_valid ? false : true;  // 0=EXT, 1=LSU
+
+  // arbt cmd mux outputs
+  let arbt_cmd_read:  Bool = ext_n2w_cmd_valid ? ext2itcm_icb_cmd_read  : lsu2itcm_icb_cmd_read;
+  let arbt_cmd_addr:  UInt<16> = ext_n2w_cmd_valid ? ext2itcm_icb_cmd_addr  : lsu2itcm_icb_cmd_addr;
+  let arbt_cmd_wdata: UInt<64> = ext_n2w_cmd_valid ? ext_n2w_wdata : lsu_n2w_wdata;
+  let arbt_cmd_wmask: UInt<8>  = ext_n2w_cmd_valid ? ext_n2w_wmask : lsu_n2w_wmask;
+
+  // === IFU vs arbt selection (reference ref_e203_itcm_ctrl lines 426-459) ===
+  // IFU only proceeds when arbt output is NOT valid
+  let sram_ready2ifu:  Bool = ~arbt_cmd_valid;
+  let sram_ready2arbt: Bool = true;
+  let sram_sel_ifu:  Bool = sram_ready2ifu  & ifu2itcm_icb_cmd_valid;
+  let sram_sel_arbt: Bool = sram_ready2arbt & arbt_cmd_valid;
+
+  // Selected SRAM command
+  let sram_cmd_valid: Bool = (sram_sel_ifu & ifu2itcm_icb_cmd_valid) | (sram_sel_arbt & arbt_cmd_valid);
+  let sram_cmd_ifu:   Bool = sram_sel_ifu;
+  let sram_cmd_read:  Bool = sram_sel_ifu ? ifu2itcm_icb_cmd_read  : arbt_cmd_read;
+  let sram_cmd_addr:  UInt<16> = sram_sel_ifu ? ifu2itcm_icb_cmd_addr  : arbt_cmd_addr;
+  let sram_cmd_wdata: UInt<64> = sram_sel_ifu ? ifu2itcm_icb_cmd_wdata : arbt_cmd_wdata;
+  let sram_cmd_wmask: UInt<8>  = sram_sel_ifu ? ifu2itcm_icb_cmd_wmask : arbt_cmd_wmask;
+
+  // === Bypbuf (DP=1, CUT_READY=1 internal): bypass when empty and downstream ready ===
+  // bypbuf i_rdy = fifo_i_rdy = ~byp_vld_r (CUT_READY=1 for DP=1)
+  let byp_i_rdy: Bool = ~byp_vld_r;
+
+  // usr pipe i_rdy (DP=1, CUT_READY=0)
+  // usr_rsp_hs is the response handshake that pops the usr pipe
+  let usr_rsp_hs: Bool = usr_vld_r & (
+      usr_ifu_r ? ifu2itcm_icb_rsp_ready :
+      (arbt_rspid_vld_r & (arbt_rspid_r ? lsu2itcm_icb_rsp_ready : ext2itcm_icb_rsp_ready)));
+  let usr_i_rdy: Bool = ~usr_vld_r | usr_rsp_hs;
+
+  // bypbuf bypass: i_vld & o_rdy & ~fifo_o_vld
+  let byp_bypass: Bool = sram_cmd_valid & usr_i_rdy & ~byp_vld_r;
+  // bypbuf o_vld
+  let byp_o_vld: Bool = byp_vld_r | sram_cmd_valid;
+
+  // Selected cmd for usr pipe input
+  let uop_cmd_valid: Bool = byp_o_vld;
+  let uop_cmd_read:  Bool = byp_vld_r ? byp_read_r  : sram_cmd_read;
+  let uop_cmd_ifu:   Bool = byp_vld_r ? byp_ifu_r    : sram_cmd_ifu;
+  let uop_cmd_addr:  UInt<16> = byp_vld_r ? byp_addr_r   : sram_cmd_addr;
+  let uop_cmd_wdata: UInt<64> = byp_vld_r ? byp_wdata_r  : sram_cmd_wdata;
+  let uop_cmd_wmask: UInt<8>  = byp_vld_r ? byp_wmask_r  : sram_cmd_wmask;
+
+  // === RAM interface (reference sirv_1cyc_sram_ctrl) ===
+  let ram_cs: Bool = uop_cmd_valid & usr_i_rdy;
+  let ram_we: Bool = ~uop_cmd_read;
+
+  // === Clock gate: latch model (reference e203_clkgate) ===
+  // Latch captures (clock_en | test_mode) when clk=0; clk_out = enb & clk.
+  // Modeled as registered enable (1-cycle delay from latch behavior at posedge).
+
+  // === Response data demux ===
+  // LSU rsp data: extract 32-bit half based on stored addr[2] (reference n2w line 635)
+  let lsu_rsp_rdata: UInt<32> = lsu_n2w_lo_r ?
+      itcm_ram_dout[63:32] : itcm_ram_dout[31:0];
+  let ext_rsp_rdata: UInt<32> = ext_n2w_lo_r ?
+      itcm_ram_dout[63:32] : itcm_ram_dout[31:0];
+
+  // === IFU holdup (reference ref_e203_itcm_ctrl lines 553-559) ===
+  let ifu_holdup_set: Bool = sram_cmd_ifu & ram_cs;
+  let ifu_holdup_clr: Bool = ~sram_cmd_ifu & ram_cs;
+
+  // === Activity (reference line 563) ===
+  let sram_ctrl_active: Bool = sram_cmd_valid | byp_vld_r |
+      (uop_cmd_valid & usr_i_rdy) | usr_vld_r;
 
   default seq on clk rising;
 
   seq
-    if sram_cmd_valid & sram_ready
-      rsp_valid_r <= true;
-      rsp_ifu_r   <= sram_sel_ifu;
-      rsp_read_r  <= sram_sel_lsu ? lsu2itcm_icb_cmd_read : ifu2itcm_icb_cmd_read;
-      rsp_lsu_lo_r <= lsu_addr_lo;
-    elsif rsp_valid_r & (rsp_ifu_r ? ifu2itcm_icb_rsp_ready : lsu2itcm_icb_rsp_ready)
-      rsp_valid_r <= false;
+    // --- LSU n2w pipe: store addr[2] on cmd handshake, clear on rsp handshake ---
+    if lsu_n2w_cmd_valid & lsu_n2w_cmd_ready
+      lsu_n2w_vld_r <= true;
+      lsu_n2w_lo_r  <= lsu2itcm_icb_cmd_addr[2];
+    elsif lsu_n2w_rsp_hs
+      lsu_n2w_vld_r <= false;
     end if
 
-    // IFU holdup: set when IFU accessed SRAM, cleared when non-IFU accesses
-    if sram_cmd_valid & sram_ready
-      ifu_holdup_r <= sram_sel_ifu;
+    // --- EXT n2w pipe ---
+    if ext_n2w_cmd_valid & ext_n2w_cmd_ready
+      ext_n2w_vld_r <= true;
+      ext_n2w_lo_r  <= ext2itcm_icb_cmd_addr[2];
+    elsif ext_n2w_rsp_hs
+      ext_n2w_vld_r <= false;
     end if
+
+    // --- Arbt rspid pipe: store port_id on cmd handshake, clear on rsp ---
+    if arbt_cmd_valid & byp_i_rdy & sram_sel_arbt
+      arbt_rspid_vld_r <= true;
+      arbt_rspid_r     <= arbt_sel_port;
+    elsif arbt_rspid_ren
+      arbt_rspid_vld_r <= false;
+    end if
+
+    // --- Bypbuf FIFO: store cmd when not bypassing ---
+    if sram_cmd_valid & byp_i_rdy & ~byp_bypass
+      byp_vld_r   <= true;
+      byp_read_r  <= sram_cmd_read;
+      byp_ifu_r   <= sram_cmd_ifu;
+      byp_addr_r  <= sram_cmd_addr;
+      byp_wdata_r <= sram_cmd_wdata;
+      byp_wmask_r <= sram_cmd_wmask;
+    elsif byp_vld_r & usr_i_rdy & ~byp_bypass
+      // Pop bypbuf when not bypassing and downstream accepts
+      byp_vld_r <= false;
+    end if
+
+    // --- Usr pipe: 1-cycle SRAM response delay ---
+    if uop_cmd_valid & usr_i_rdy
+      usr_vld_r  <= true;
+      usr_ifu_r  <= uop_cmd_ifu;
+      usr_read_r <= uop_cmd_read;
+    elsif usr_rsp_hs
+      usr_vld_r <= false;
+    end if
+
+    // --- IFU holdup ---
+    if ifu_holdup_set | ifu_holdup_clr
+      ifu_holdup_r <= ifu_holdup_set & ~ifu_holdup_clr;
+    end if
+
+    // --- Clock gate latch model: capture enable when clk=0 ---
+    clkgate_enb_r <= (ram_cs | tcm_cgstop) | test_mode;
   end seq
 
+  // arbt cmd_ready_real: what the arbt passes back to selected input port
+  let arbt_cmd_ready_real: Bool = byp_i_rdy & ~arbt_rspid_full;
+
   comb
-    // SRAM command
-    itcm_ram_cs = sram_cmd_valid & sram_ready;
-    clk_itcm_ram = clk;
+    lsu_n2w_cmd_ready = arbt_lsu_grt & arbt_cmd_ready_real;
+    ext_n2w_cmd_ready = arbt_ext_grt & arbt_cmd_ready_real;
 
-    if sram_sel_lsu
-      itcm_ram_addr = lsu2itcm_icb_cmd_addr[15:3];
-      itcm_ram_we   = ~lsu2itcm_icb_cmd_read;
-      itcm_ram_din  = lsu_wdata_64;
-      itcm_ram_wem  = lsu_wmask_8;
-    else
-      itcm_ram_addr = ifu2itcm_icb_cmd_addr[15:3];
-      itcm_ram_we   = ~ifu2itcm_icb_cmd_read;
-      itcm_ram_din  = ifu2itcm_icb_cmd_wdata;
-      itcm_ram_wem  = ifu2itcm_icb_cmd_wmask;
-    end if
+    // --- Input cmd_ready ---
+    lsu2itcm_icb_cmd_ready = ~lsu_n2w_full & lsu_n2w_cmd_ready;
+    ext2itcm_icb_cmd_ready = ~ext_n2w_full & ext_n2w_cmd_ready;
+    ifu2itcm_icb_cmd_ready = sram_ready2ifu & byp_i_rdy;
 
-    // Handshake
-    lsu2itcm_icb_cmd_ready = sram_ready;
-    ifu2itcm_icb_cmd_ready = sram_ready & (~lsu2itcm_icb_cmd_valid);
+    // --- RAM outputs ---
+    itcm_ram_cs   = ram_cs;
+    itcm_ram_we   = ram_we;
+    itcm_ram_addr = uop_cmd_addr[15:3];
+    itcm_ram_wem  = uop_cmd_wmask;
+    itcm_ram_din  = uop_cmd_wdata;
 
-    // Response demux
-    ifu2itcm_icb_rsp_valid = rsp_valid_r & rsp_ifu_r;
+    // --- Clock output (latched: 1-cycle delayed enable) ---
+    clk_itcm_ram = clkgate_enb_r;
+
+    // --- Response outputs ---
+    // IFU response (direct)
+    ifu2itcm_icb_rsp_valid = usr_vld_r & usr_ifu_r;
     ifu2itcm_icb_rsp_err   = false;
     ifu2itcm_icb_rsp_rdata = itcm_ram_dout;
 
-    lsu2itcm_icb_rsp_valid = rsp_valid_r & (~rsp_ifu_r);
+    // LSU response (through arbt demux + n2w extract)
+    // arbt_rsp_valid_pre = (~rspid_empty) & o_icb_rsp_valid = arbt_rspid_vld_r & usr_vld_r & ~usr_ifu_r
+    lsu2itcm_icb_rsp_valid = arbt_rspid_vld_r & usr_vld_r & ~usr_ifu_r & arbt_rspid_r;
     lsu2itcm_icb_rsp_err   = false;
-    lsu2itcm_icb_rsp_rdata = rsp_lsu_lo_r ? itcm_ram_dout[31:0] : itcm_ram_dout[63:32];
+    lsu2itcm_icb_rsp_rdata = lsu_rsp_rdata;
+
+    // EXT response
+    ext2itcm_icb_rsp_valid = arbt_rspid_vld_r & usr_vld_r & ~usr_ifu_r & ~arbt_rspid_r;
+    ext2itcm_icb_rsp_err   = false;
+    ext2itcm_icb_rsp_rdata = ext_rsp_rdata;
 
     // IFU holdup
     ifu2itcm_holdup = ifu_holdup_r;
 
-    // External debug interface: lowest priority
-    ext2itcm_icb_cmd_ready = (~ifu2itcm_icb_cmd_valid) & (~lsu2itcm_icb_cmd_valid) & sram_ready;
-    ext2itcm_icb_rsp_valid = false;
-    ext2itcm_icb_rsp_err   = false;
-    ext2itcm_icb_rsp_rdata = itcm_ram_dout[31:0];
-
-    // Active
-    itcm_active = ifu2itcm_icb_cmd_valid | lsu2itcm_icb_cmd_valid | ext2itcm_icb_cmd_valid | rsp_valid_r;
+    // Activity
+    itcm_active = ifu2itcm_icb_cmd_valid | lsu2itcm_icb_cmd_valid |
+        ext2itcm_icb_cmd_valid | sram_ctrl_active;
   end comb
 end module e203_itcm_ctrl
