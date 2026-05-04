@@ -1,0 +1,60 @@
+---
+source: tests/integration_test.rs
+assertion_line: 1657
+expression: sv
+---
+// domain SysDomain
+//   freq_mhz: 100
+
+module Sub #(
+  parameter int WIDTH = 32
+) (
+  input logic [WIDTH-1:0] a_in,
+  output logic [WIDTH-1:0] b_out
+);
+
+  assign b_out = a_in;
+
+endmodule
+
+module P (
+  input logic clk,
+  input logic rst,
+  input logic [31:0] src,
+  output logic [31:0] dst
+);
+
+  // ── Stage valid registers ──
+  logic s1_valid_r;
+  logic s2_valid_r;
+  
+  // ── Stage data registers ──
+  logic [31:0] s1_latched = 0;
+  logic [31:0] s1_sub_in;
+  logic [31:0] s1_sub_out;
+  logic [31:0] s2_captured = 0;
+  
+  // ── Stage register updates ──
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      s1_valid_r <= 1'b0;
+      s1_latched <= 0;
+      s2_valid_r <= 1'b0;
+      s2_captured <= 0;
+    end else begin
+      s1_valid_r <= 1'b1;
+      s1_latched <= src;
+      s2_valid_r <= s1_valid_r;
+      s2_captured <= s1_sub_out;
+    end
+  end
+  
+  // ── Combinational outputs ──
+  Sub #(.WIDTH(32)) sub (
+    .a_in(s1_sub_in),
+    .b_out(s1_sub_out)
+  );
+  assign s1_sub_in = s1_latched;
+  assign dst = s2_captured;
+
+endmodule

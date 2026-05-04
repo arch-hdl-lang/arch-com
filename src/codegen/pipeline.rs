@@ -171,10 +171,46 @@ impl<'a> Codegen<'a> {
             }
 
             // Collect inst output connection targets as wires.
-            // Resolve type by finding the register this wire is assigned to in
-            // the stage's seq block (e.g. `alu_result <= alu_out` → use alu_result's type).
+            // Primary type source: the inst's source module's matching port
+            // (from the resolved symbol table), with the inst's
+            // param_assigns substituted into the port type so width
+            // expressions referring to the source module's params resolve
+            // to the instance's param values (or the source's defaults).
+            // Falls back to consumer-based inference (a reg that reads
+            // this wire in the stage's seq block) when the module isn't
+            // resolvable or has unresolved param references.
             for item in &stage.body {
                 if let ModuleBodyItem::Inst(inst) = item {
+                    let inst_ports: Vec<crate::ast::PortDecl> = match self.symbols.globals.get(&inst.module_name.name) {
+                        Some((crate::resolve::Symbol::Module(info), _))   => info.ports.clone(),
+                        Some((crate::resolve::Symbol::Pipeline(info), _)) => info.ports.clone(),
+                        Some((crate::resolve::Symbol::Fsm(info), _))      => info.ports.clone(),
+                        _ => Vec::new(),
+                    };
+                    // Build param substitution map: source-module param name →
+                    // RHS expression in parent scope. Inst-supplied first;
+                    // anything missing falls back to the source's default.
+                    let inst_params: std::collections::HashMap<String, Expr> = {
+                        let mut m: std::collections::HashMap<String, Expr> = inst.param_assigns.iter()
+                            .map(|pa| (pa.name.name.clone(), pa.value.clone()))
+                            .collect();
+                        for src_item in &self.source.items {
+                            let pname = match src_item {
+                                Item::Module(d)   if d.name.name == inst.module_name.name => &d.params,
+                                Item::Pipeline(d) if d.name.name == inst.module_name.name => &d.params,
+                                Item::Fsm(d)      if d.name.name == inst.module_name.name => &d.params,
+                                _ => continue,
+                            };
+                            for p in pname {
+                                if m.contains_key(&p.name.name) { continue; }
+                                if let Some(def) = &p.default {
+                                    m.insert(p.name.name.clone(), def.clone());
+                                }
+                            }
+                            break;
+                        }
+                        m
+                    };
                     for conn in &inst.connections {
                         if conn.direction != ConnectDir::Output {
                             continue;
@@ -186,10 +222,17 @@ impl<'a> Codegen<'a> {
                             if stage_regs[si].iter().any(|(rn, _, _)| rn == target) {
                                 continue;
                             }
-                            // Find type from the register that reads this wire
-                            let ty = Self::resolve_inst_wire_type_from_consumers(
-                                target, &stage.body, &stage_regs[si],
-                            ).unwrap_or_else(|| "logic".to_string());
+                            let port_ty = inst_ports.iter()
+                                .find(|p| p.name.name == conn.port_name.name)
+                                .map(|p| {
+                                    let substituted = Self::substitute_params_in_type(&p.ty, &inst_params);
+                                    self.emit_logic_type_str(&substituted)
+                                });
+                            let ty = port_ty.unwrap_or_else(|| {
+                                Self::resolve_inst_wire_type_from_consumers(
+                                    target, &stage.body, &stage_regs[si],
+                                ).unwrap_or_else(|| "logic".to_string())
+                            });
                             stage_regs[si].push((target.clone(), ty, String::new()));
                         }
                     }
@@ -827,6 +870,45 @@ impl<'a> Codegen<'a> {
 
     /// Resolve the type of an inst output wire by finding which register reads it
     /// in the stage's seq block (e.g. `alu_result <= alu_out` → use alu_result's type).
+    /// Substitute `params` into every Ident expression appearing in
+    /// width / size sub-expressions of `ty`. Used when copying an inst's
+    /// port type onto a parent-scope wire so that param refs scoped to
+    /// the inst's source module are rewritten to the parent-scope
+    /// expressions supplied at inst time (or the source's defaults).
+    fn substitute_params_in_type(ty: &TypeExpr, params: &std::collections::HashMap<String, Expr>) -> TypeExpr {
+        match ty {
+            TypeExpr::UInt(w) => TypeExpr::UInt(Box::new(Self::substitute_params_in_expr(w, params))),
+            TypeExpr::SInt(w) => TypeExpr::SInt(Box::new(Self::substitute_params_in_expr(w, params))),
+            TypeExpr::Vec(inner, n) => TypeExpr::Vec(
+                Box::new(Self::substitute_params_in_type(inner, params)),
+                Box::new(Self::substitute_params_in_expr(n, params)),
+            ),
+            other => other.clone(),
+        }
+    }
+
+    fn substitute_params_in_expr(e: &Expr, params: &std::collections::HashMap<String, Expr>) -> Expr {
+        let kind = match &e.kind {
+            ExprKind::Ident(name) => {
+                if let Some(replacement) = params.get(name) {
+                    return replacement.clone();
+                }
+                ExprKind::Ident(name.clone())
+            }
+            ExprKind::Binary(op, l, r) => ExprKind::Binary(
+                op.clone(),
+                Box::new(Self::substitute_params_in_expr(l, params)),
+                Box::new(Self::substitute_params_in_expr(r, params)),
+            ),
+            ExprKind::Unary(op, x) => ExprKind::Unary(
+                op.clone(),
+                Box::new(Self::substitute_params_in_expr(x, params)),
+            ),
+            other => other.clone(),
+        };
+        Expr { kind, span: e.span, parenthesized: e.parenthesized }
+    }
+
     fn resolve_inst_wire_type_from_consumers(
         wire_name: &str,
         body: &[ModuleBodyItem],
