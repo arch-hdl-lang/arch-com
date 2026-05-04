@@ -1,0 +1,1425 @@
+{
+  "description": "Rust tests discovered by `cargo test -- --list` when this baseline was refreshed.",
+  "tests": [
+    {
+      "target": "tests/formal_test.rs",
+      "name": "formal_counter_bounded_proves"
+    },
+    {
+      "target": "tests/formal_test.rs",
+      "name": "formal_counter_overflow_refutes"
+    },
+    {
+      "target": "tests/formal_test.rs",
+      "name": "formal_counter_simple_proves"
+    },
+    {
+      "target": "tests/formal_test.rs",
+      "name": "formal_cover_hit"
+    },
+    {
+      "target": "tests/formal_test.rs",
+      "name": "formal_cover_not_reached"
+    },
+    {
+      "target": "tests/formal_test.rs",
+      "name": "formal_credit_channel_active_proves"
+    },
+    {
+      "target": "tests/formal_test.rs",
+      "name": "formal_credit_channel_invariant_proves"
+    },
+    {
+      "target": "tests/formal_test.rs",
+      "name": "formal_emit_smt_file"
+    },
+    {
+      "target": "tests/formal_test.rs",
+      "name": "formal_guard_fail"
+    },
+    {
+      "target": "tests/formal_test.rs",
+      "name": "formal_guard_pass"
+    },
+    {
+      "target": "tests/formal_test.rs",
+      "name": "formal_hier_adder_proves"
+    },
+    {
+      "target": "tests/formal_test.rs",
+      "name": "formal_hier_adder_refutes"
+    },
+    {
+      "target": "tests/formal_test.rs",
+      "name": "formal_hier_counter_proves"
+    },
+    {
+      "target": "tests/formal_test.rs",
+      "name": "formal_hier_multi_inst_proves"
+    },
+    {
+      "target": "tests/formal_test.rs",
+      "name": "formal_solver_parity_bitwuzla"
+    },
+    {
+      "target": "tests/formal_test.rs",
+      "name": "formal_solver_parity_boolector"
+    },
+    {
+      "target": "tests/formal_test.rs",
+      "name": "formal_sva_phase2_proves"
+    },
+    {
+      "target": "tests/formal_test.rs",
+      "name": "formal_sva_phase2_refutes"
+    },
+    {
+      "target": "tests/formal_test.rs",
+      "name": "formal_sva_temporal_proves"
+    },
+    {
+      "target": "tests/formal_test.rs",
+      "name": "formal_sva_temporal_refutes"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "package_enum_typed_param_emits_typedef_before_localparam"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "package_width_qualified_param_emits_bracket_form"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_a1_same_async_direct_ok"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_a2_diff_async_direct_fails"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_a3_async_to_sync_fails"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_a4_async_to_none_fails"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_a5_sync_source_ok"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_b1_async_none_async_diff_fails"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_b2_async_none_async_same_fails"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_b3_async_sync_async_diff_fails"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_c1_two_async_converge_at_none_fails"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_c2_two_same_domain_converge_fails"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_c3_async_plus_port_at_none_fails"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_d1_same_async_two_clocks_no_data_path_phase1_flags"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_d2_diff_async_diff_clocks_with_path_fails"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_e1_self_loop_same_domain_ok"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_e2_mutual_feedback_diff_domains_fails"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_f1_single_async_domain_ok"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_f2_no_async_flops_ok"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_g1_clkgate_enable_from_async_flop_fails"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_g2_clkgate_enable_from_port_ok"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_g3_clkgate_enable_from_sync_flop_ok"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_h1_reconvergent_two_syncs_same_domain_fails"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_h2_single_reset_sync_ok"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_h3_reset_syncs_to_diff_domains_ok"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_h4_reconvergent_three_syncs_same_domain_fails"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_j1_cdc_reconvergent_two_ff_syncs_same_domain_fails"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_j2_cdc_single_ff_sync_ok"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_j3_cdc_syncs_to_diff_domains_ok"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_j4_mixed_reset_and_data_sync_same_source_fails"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_k1_combiner_or_at_inst_fails"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_k2_negation_at_inst_fails"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_k3_direct_reset_at_inst_ok"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_k4_sync_output_to_reset_ok"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_l1_pragma_rdc_safe_suppresses_phase2a"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_l2_pragma_rdc_safe_suppresses_phase2c"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_l3_pragma_rdc_safe_suppresses_phase2d"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_l4_pragma_rdc_safe_suppresses_phase1"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_l5_unknown_pragma_rejected"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_m1_cdc_bit_slice_same_source_fails"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_m2_cdc_part_select_same_source_fails"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_m3_cdc_common_source_via_comb_fails"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_m4_cdc_let_alias_same_source_fails"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_m5_cdc_distinct_sources_ok"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_m6_cdc_bit_slice_distinct_vecs_ok"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "rdc_reset_type_cast_at_inst_is_direct_reset_ok"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_active_low_reset"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_arbiter_custom_hook"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_arbiter_custom_hook_missing_error"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_arbiter_latency2"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_archi_interface_stub_for_fsm_skips_body_only_passes"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_archi_interface_stub_skips_body_only_passes"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_async_fifo"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_auto_thread_asserts_active_high_reset"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_auto_thread_asserts_fork_join_branches"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_auto_thread_asserts_off_by_default"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_auto_thread_asserts_wait_cycles_and_until"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_axi_dma_tlm_burst_vec_example_compiles"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_axi_dma_tlm_indexed_burst_target_example_compiles"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_axi_dma_tlm_read_pair_example_compiles"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_bus_arbiter"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_bus_declaration_inside_package_parses"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_bus_port_connected_via_per_field_bindings_no_warning"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_bus_port_unconnected_still_warns"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_bus_wire_sv_flattens_to_individual_signals"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_bus_wire_typechecks_and_codegens"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_cc_dispatch_rewrites_seq_match_scrutinee"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_clog2_in_type_args"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_comb_for_loop_body_type_checked_as_comb"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_connect_indexed_member"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_counter_runtime_max_port"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_cpu_pipeline"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_credit_channel_can_send_default_is_combinational"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_credit_channel_can_send_method_dispatch"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_credit_channel_can_send_registered_emits_flop"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_credit_channel_emits_sender_counter_state"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_credit_channel_emits_target_fifo"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_credit_channel_end_to_end_noc_producer_consumer"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_credit_channel_mismatched_closing_keyword_errors"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_credit_channel_no_counter_on_receive_role"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_credit_channel_no_target_fifo_on_send_role"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_credit_channel_parses_as_bus_sub_construct"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_credit_channel_pop_sugar"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_credit_channel_send_sugar"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_credit_channel_sim_emits_receiver_state"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_credit_channel_sim_emits_sender_state"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_credit_channel_tier2_receiver_assertion"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_credit_channel_tier2_sender_assertions"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_credit_channel_valid_and_data_method_dispatch_on_receiver"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_credit_channel_wires_flatten_at_bus_port"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_credit_channel_wires_flip_on_target_perspective"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_doc_above_port_silently_ignored"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_doc_above_reg_wire_inst_silently_ignored"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_doc_inner_attaches_to_module"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_doc_outer_attaches_to_module"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_doc_outer_on_bus_synchronizer_clkgate"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_doc_outer_on_counter"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_doc_outer_on_struct_enum_function"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_doc_outer_on_use_decl"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_fifo_missing_port_errors"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_file_inner_doc_and_frontmatter"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_find_first_destructure_basic"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_find_first_partial_destructure"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_find_first_unknown_binding_errors"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_four_slashes_dropped_as_regular_comment"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_fsm_missing_default_state_errors"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_fsm_sint_uses_arithmetic_shift"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_fsm_traffic_light"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_fsm_use_non_package_does_not_emit_import"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_fsm_use_package_emits_sv_import"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_generate_for"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_generate_if_false_excludes_port"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_generate_if_inst_override_disables_port"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_generate_if_inst_override_enables_port"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_generate_if_param_comparison"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_generate_if_param_default_true"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_generate_if_param_zero_excludes_port"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_generate_if_true"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_generate_monomorphize_different_port_lists"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_generate_monomorphize_two_variants"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_handshake_all_variants_parse"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_handshake_channel_no_deprecation_warning"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_handshake_channel_parses_new_keyword"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_handshake_generate_if_nested_in_bus_genif_errors"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_handshake_generate_if_payload_toggle"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_handshake_legacy_keyword_emits_deprecation_warning"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_handshake_mismatched_closing_keyword_errors"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_handshake_payload_guard_via_short_circuit_and"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_handshake_payload_guard_via_ternary_condition"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_handshake_payload_truly_unguarded_still_warns"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_handshake_target_flip"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_handshake_tier15_else_branch_warns"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_handshake_tier15_guard_via_compound_and_silent"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_handshake_tier15_guarded_payload_silent"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_handshake_tier15_payload_warning_gated_on_valid"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_handshake_tier15_req_ack_4phase_uses_req_as_guard"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_handshake_tier15_req_ack_uses_req_as_guard"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_handshake_tier15_unguarded_payload_warns"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_handshake_tier2_multiple_variants"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_handshake_tier2_no_clock_no_assertions"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_handshake_tier2_valid_ready_assertion"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_handshake_valid_ready_expansion"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_if_wait_both_branches"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_if_wait_else_only"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_if_wait_for_in_then_branch"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_if_wait_nested"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_if_wait_then_only"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_if_wait_with_auto_asserts"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_implement_initiator_multi_implementer_rejected"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_implement_initiator_parses"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_implement_initiator_single_compiles_end_to_end"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_implement_initiator_with_args_in_parens_errors"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_implement_target_multi_implementer_rejected"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_implement_target_parses"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_implement_target_single_compiles_end_to_end"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_implicit_truncation_is_error"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_implies_next_outside_assert_rejected"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_inner_doc_inside_body_silently_ignored"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_inner_doc_on_counter_and_arbiter"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_inputs_start_uninit_bus_flattened"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_inputs_start_uninit_bus_skips_output_direction"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_inputs_start_uninit_without_flag_emits_nothing"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_inst_site_type_param_override_translates_to_data_width"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_int_regs"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_let_bindings"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_let_destructure_basic"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_let_destructure_non_struct_errors"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_let_destructure_partial"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_let_destructure_unknown_field_errors"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_lifo"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_lifo_async_error"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_linklist_basic_compiles"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_linklist_doubly_compiles"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_linklist_inst_in_module"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_linklist_multi_head_compiles"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_linklist_multi_head_full_ops_sim_shape"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_linklist_multi_head_full_ops_sv_shape"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_linklist_multi_head_rejects_missing_head_idx"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_linklist_multi_head_sim_shape"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_linklist_prev_on_singly_is_error"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_linklist_single_head_rejects_stray_head_idx"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_lte_in_expression_contexts"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_mixed_reset_and_no_reset"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_package_nested_bus_used_as_wire_and_port"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_past_arity_errors"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_past_n_must_be_positive_const"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_past_outside_assert_rejected"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_phase2_fell_emits_dollar_fell"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_phase2_hashhash_emits_sva_delay"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_phase2_hashhash_outside_assert_rejected"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_phase2_rose_emits_dollar_rose"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_phase2_rose_outside_assert_rejected"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_pipe_reg"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_pipe_reg_depth_zero_errors"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_pipe_reg_port_bare_assign_ambiguous_errors"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_pipe_reg_port_depth_mismatch_errors"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_pipe_reg_port_n1_equivalent_to_port_reg"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_pipe_reg_port_n3_emits_cascade"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_pipe_reg_port_no_deprecation_warning"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_pipe_reg_tap_out_of_range_errors"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_pipe_reg_tap_reads_q_at_k"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_pipeline_bad_flush_target_error"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_pipeline_comb_only_stage_error"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_pipeline_cross_stage_skip_rejected"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_pipeline_flush_clear_emits_data_reset"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_pipeline_forward_reference_allowed"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_pipeline_instantiation"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_pipeline_stage_inst"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_port_reg_deprecation_warning_fires"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_pybind_struct_bindings_are_scoped_to_module"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_pybind_struct_bindings_transitive_closure"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_ram_missing_port_group_errors"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_rdc_clean_two_resets_per_domain"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_rdc_single_domain_no_violation"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_rdc_violation_one_reset_two_domains"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_real_fsm_still_requires_default_state"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_reentrant_thread_parses_with_max"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_reentrant_thread_parses_without_max"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_reentrant_thread_rejected_in_lower_threads"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_regfile_flop_default_unchanged"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_regfile_latch_emits_always_latch_per_row"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_regfile_latch_external_sim_codegen_uses_comb_latch"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_regfile_latch_internal_emits_sample_flops_and_gated_latches"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_regfile_latch_internal_sim_codegen_emits_sample_flops_and_gated_capture"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_regfile_latch_internal_skips_flop_source_check"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_regfile_latch_rejects_let_source"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_reset_consistency_error_mixed_signals"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_reset_consistency_error_mixed_sync_async"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_reset_only_reg_alongside_seq_block"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_reset_only_reg_is_driven"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_resource_lock_custom_policy_with_hook"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_resource_lock_priority_default"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_resource_lock_round_robin"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_return_in_regular_thread_errors_in_lower_threads"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_rom_lut"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_seq_for_loop_bare_assign_rejected"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_seq_for_loop_indexed_assign_allowed"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_sim_codegen_async_reset_fires_outside_rising_edge"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_sim_codegen_bit_slice_lhs_compiles_and_uses_param_width"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_sim_codegen_collect_assigns_walks_indexed_lhs"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_sim_codegen_comb_match_arm_recurses_into_nested_for"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_simple_dual_ram"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_simple_pipeline"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_single_port_ram"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_stdlib_bus_apb_discovery_apb3_minimal"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_stdlib_bus_axi_stream_discovery"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_stdlib_disabled_via_env"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_struct_and_enum"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_struct_literal_concat_sizes_field_literals"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_struct_packed_declaration_first_is_msb"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_struct_vec_field_sim_mirror_uses_array_field"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_sync_fifo"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_template_basic"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_template_missing_port_error"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_temporal_sva_implies_next_emits_pipe_arrow"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_temporal_sva_past_emits_dollar_past"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_thread_inter_yield_seq_assigns_get_dead_skid"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_call_rejected_outside_seq_assign_rhs"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_canonical_end_to_end_initiator_plus_target"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_cohort_multi_arg_method"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_fork_join_workers_share_method"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_generate_for_workers_share_method"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_indexed_target_generate_for_lowers_tag_lanes"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_initiator_call_site_end_to_end_sv"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_initiator_sim_mirror_works"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_method_out_of_order_tags_parse_and_flatten"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_method_parses_as_bus_sub_construct"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_method_target_perspective_flips"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_method_unsupported_modes_rejected"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_method_void_omits_rsp_data"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_method_wires_flatten_at_bus_port"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_multi_thread_direct_calls_lower_to_in_order_pool"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_one_initiator_many_targets_ooo_router_arch_sim_behavior"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_one_initiator_many_targets_ooo_router_example_compiles"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_one_initiator_many_targets_response_router_arch_sim_behavior"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_one_initiator_many_targets_response_router_example_compiles"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_one_initiator_many_targets_router_arch_sim_behavior"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_one_initiator_many_targets_router_example_compiles"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_ooo_protocol_asserts_track_tags"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_out_of_order_fork_join_routes_by_tag"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_out_of_order_target_echoes_tag"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_rhs_fork_join_all_workers_share_method"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_rhs_fork_out_of_order_routes_by_tag"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_rhs_fork_requires_join_all"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_struct_vec_response_sim_mirror_compiles_shape"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_target_sim_mirror_works_via_inlined_state_machine"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_target_thread_accepts_matched_closing_method_name"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_target_thread_lowers_inline_to_state_machine"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_target_thread_parses_return_stmt"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_target_thread_parses_with_dotted_name"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_unsupported_fork_join_call_errors"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_tlm_vec_return_sim_mirror_uses_array_copy"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_todo_placeholder"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_top_counter_compiles"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_trace_skips_struct_typed_let_and_wire"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_trunc_bit_range"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_typecheck_branch_aware_driven_tracking_in_comb"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_uint_as_vec_cast_for_find_first"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_unpacked_on_non_vec_is_rejected"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_unpacked_on_port_reg_is_rejected"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_unpacked_port_emits_unpacked_sv_shape"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_unpacked_wire_modifier_emits_unpacked_sv"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_unpacked_wire_rejected_on_non_vec"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_use_bus_does_not_emit_sv_import"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_use_package_still_emits_sv_import"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_vec_methods_any_all_expand_to_reduction"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_vec_methods_count_and_contains"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_vec_methods_index_binder"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_vec_methods_reduce_or_and_xor"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_vec_of_const_param_emits_packed_and_indexes"
+    },
+    {
+      "target": "tests/integration_test.rs",
+      "name": "test_wrap_counter"
+    },
+    {
+      "target": "unittests src/lib.rs",
+      "name": "learn::tests::classify_examples"
+    },
+    {
+      "target": "unittests src/lib.rs",
+      "name": "learn::tests::event_roundtrip"
+    },
+    {
+      "target": "unittests src/lib.rs",
+      "name": "learn::tests::purge_features_keeps_unrelated_events"
+    },
+    {
+      "target": "unittests src/lib.rs",
+      "name": "learn::tests::tokenize_basic"
+    },
+    {
+      "target": "unittests src/lib.rs",
+      "name": "lexer::tests::test_basic_tokens"
+    },
+    {
+      "target": "unittests src/lib.rs",
+      "name": "lexer::tests::test_comments_skipped"
+    },
+    {
+      "target": "unittests src/lib.rs",
+      "name": "lexer::tests::test_doc_inner_token"
+    },
+    {
+      "target": "unittests src/lib.rs",
+      "name": "lexer::tests::test_doc_outer_attaches_to_construct"
+    },
+    {
+      "target": "unittests src/lib.rs",
+      "name": "lexer::tests::test_doc_outer_strips_one_leading_space"
+    },
+    {
+      "target": "unittests src/lib.rs",
+      "name": "lexer::tests::test_four_slashes_is_regular_comment"
+    },
+    {
+      "target": "unittests src/lib.rs",
+      "name": "lexer::tests::test_literals"
+    },
+    {
+      "target": "unittests src/lib.rs",
+      "name": "lexer::tests::test_operators"
+    },
+    {
+      "target": "unittests src/lib.rs",
+      "name": "lexer::tests::test_todo"
+    },
+    {
+      "target": "unittests src/lib.rs",
+      "name": "lexer::tests::test_two_slashes_remains_skipped"
+    },
+    {
+      "target": "unittests src/lib.rs",
+      "name": "lexer::tests::test_type_keywords"
+    },
+    {
+      "target": "unittests src/lib.rs",
+      "name": "parser::tests::test_mismatched_closing"
+    },
+    {
+      "target": "unittests src/lib.rs",
+      "name": "parser::tests::test_parse_domain"
+    },
+    {
+      "target": "unittests src/lib.rs",
+      "name": "parser::tests::test_parse_enum"
+    },
+    {
+      "target": "unittests src/lib.rs",
+      "name": "parser::tests::test_parse_expr_arithmetic"
+    },
+    {
+      "target": "unittests src/lib.rs",
+      "name": "parser::tests::test_parse_simple_module"
+    },
+    {
+      "target": "unittests src/lib.rs",
+      "name": "parser::tests::test_parse_struct"
+    },
+    {
+      "target": "unittests src/lib.rs",
+      "name": "width::tests::clog2_edge_cases"
+    },
+    {
+      "target": "unittests src/lib.rs",
+      "name": "width::tests::index_width_floors_at_1"
+    },
+    {
+      "target": "unittests src/lib.rs",
+      "name": "width::tests::matches_float_log2_ceil_for_n_geq_2"
+    }
+  ]
+}

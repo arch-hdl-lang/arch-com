@@ -1,0 +1,1114 @@
+{
+  "description": "ARCH regression units that passed check/build/verilator/arch-sim smoke when this baseline was refreshed.",
+  "units": [
+    {
+      "name": "aes__aes_inv_sbox",
+      "files": [
+        "tests/aes/aes_inv_sbox.arch"
+      ]
+    },
+    {
+      "name": "aes__aes_key_expand_128",
+      "files": [
+        "tests/aes/aes_key_expand_128.arch"
+      ]
+    },
+    {
+      "name": "aes__aes_rcon",
+      "files": [
+        "tests/aes/aes_rcon.arch"
+      ]
+    },
+    {
+      "name": "aes__aes_rcon_mod",
+      "files": [
+        "tests/aes/aes_rcon_mod.arch"
+      ]
+    },
+    {
+      "name": "aes__aes_sbox",
+      "files": [
+        "tests/aes/aes_sbox.arch"
+      ]
+    },
+    {
+      "name": "aes__domain",
+      "files": [
+        "tests/aes/domain.arch"
+      ]
+    },
+    {
+      "name": "axi_dma_tlm__TlmIndexedBurstTarget",
+      "files": [
+        "tests/axi_dma_tlm/TlmIndexedBurstTarget.arch"
+      ]
+    },
+    {
+      "name": "axi_dma_tlm__TlmMm2sBurstVec",
+      "files": [
+        "tests/axi_dma_tlm/TlmMm2sBurstVec.arch"
+      ]
+    },
+    {
+      "name": "axi_dma_tlm__TlmMm2sReadPair",
+      "files": [
+        "tests/axi_dma_tlm/TlmMm2sReadPair.arch"
+      ]
+    },
+    {
+      "name": "axi_dma_tlm__TlmOneToMany",
+      "files": [
+        "tests/axi_dma_tlm/TlmOneToMany.arch"
+      ]
+    },
+    {
+      "name": "axi_dma_tlm__TlmOneToManyOoo",
+      "files": [
+        "tests/axi_dma_tlm/TlmOneToManyOoo.arch"
+      ]
+    },
+    {
+      "name": "axi_dma_tlm__TlmOneToManyResp",
+      "files": [
+        "tests/axi_dma_tlm/TlmOneToManyResp.arch"
+      ]
+    },
+    {
+      "name": "axi_dma_tlm__TlmOneToOne",
+      "files": [
+        "tests/axi_dma_tlm/TlmOneToOne.arch"
+      ]
+    },
+    {
+      "name": "buf_mgr__domain",
+      "files": [
+        "tests/buf_mgr/domain.arch"
+      ]
+    },
+    {
+      "name": "buf_mgr__setup_counter",
+      "files": [
+        "tests/buf_mgr/setup_counter.arch"
+      ]
+    },
+    {
+      "name": "bus_genif_bug__BusGenIf",
+      "files": [
+        "tests/bus_genif_bug/BusGenIf.arch"
+      ]
+    },
+    {
+      "name": "cvdp__SecureRegBankPkg",
+      "files": [
+        "tests/cvdp/SecureRegBankPkg.arch"
+      ]
+    },
+    {
+      "name": "cvdp__VgaPhase",
+      "files": [
+        "tests/cvdp/VgaPhase.arch"
+      ]
+    },
+    {
+      "name": "cvdp__VgaPkg",
+      "files": [
+        "tests/cvdp/VgaPkg.arch"
+      ]
+    },
+    {
+      "name": "debug_demo",
+      "files": [
+        "tests/debug_demo/Accumulator.arch",
+        "tests/debug_demo/DmaEngine.arch"
+      ]
+    },
+    {
+      "name": "e203__e203_itcm_icb_bus",
+      "files": [
+        "tests/e203/e203_itcm_icb_bus.arch"
+      ]
+    },
+    {
+      "name": "formal__counter_bounded",
+      "files": [
+        "tests/formal/counter_bounded.arch"
+      ]
+    },
+    {
+      "name": "formal__counter_overflow",
+      "files": [
+        "tests/formal/counter_overflow.arch"
+      ]
+    },
+    {
+      "name": "formal__counter_simple",
+      "files": [
+        "tests/formal/counter_simple.arch"
+      ]
+    },
+    {
+      "name": "formal__cover_hit",
+      "files": [
+        "tests/formal/cover_hit.arch"
+      ]
+    },
+    {
+      "name": "formal__guard_fail",
+      "files": [
+        "tests/formal/guard_fail.arch"
+      ]
+    },
+    {
+      "name": "formal__guard_pass",
+      "files": [
+        "tests/formal/guard_pass.arch"
+      ]
+    },
+    {
+      "name": "formal__hier_adder_proves",
+      "files": [
+        "tests/formal/hier_adder_proves.arch"
+      ]
+    },
+    {
+      "name": "formal__hier_adder_refutes",
+      "files": [
+        "tests/formal/hier_adder_refutes.arch"
+      ]
+    },
+    {
+      "name": "formal__hier_counter_proves",
+      "files": [
+        "tests/formal/hier_counter_proves.arch"
+      ]
+    },
+    {
+      "name": "formal__hier_multi_inst_proves",
+      "files": [
+        "tests/formal/hier_multi_inst_proves.arch"
+      ]
+    },
+    {
+      "name": "formal__sva_phase2_refutes",
+      "files": [
+        "tests/formal/sva_phase2_refutes.arch"
+      ]
+    },
+    {
+      "name": "formal__sva_temporal_proves",
+      "files": [
+        "tests/formal/sva_temporal_proves.arch"
+      ]
+    },
+    {
+      "name": "formal__sva_temporal_refutes",
+      "files": [
+        "tests/formal/sva_temporal_refutes.arch"
+      ]
+    },
+    {
+      "name": "noc_credit__noc_credit",
+      "files": [
+        "tests/noc_credit/noc_credit.arch"
+      ]
+    },
+    {
+      "name": "rdc__rdc_a1_same_async_direct_ok",
+      "files": [
+        "tests/rdc/rdc_a1_same_async_direct_ok.arch"
+      ]
+    },
+    {
+      "name": "rdc__rdc_a5_sync_source_ok",
+      "files": [
+        "tests/rdc/rdc_a5_sync_source_ok.arch"
+      ]
+    },
+    {
+      "name": "rdc__rdc_e1_self_loop_same_domain_ok",
+      "files": [
+        "tests/rdc/rdc_e1_self_loop_same_domain_ok.arch"
+      ]
+    },
+    {
+      "name": "rdc__rdc_f1_single_async_domain_ok",
+      "files": [
+        "tests/rdc/rdc_f1_single_async_domain_ok.arch"
+      ]
+    },
+    {
+      "name": "rdc__rdc_f2_no_async_flops_ok",
+      "files": [
+        "tests/rdc/rdc_f2_no_async_flops_ok.arch"
+      ]
+    },
+    {
+      "name": "rdc__rdc_k3_direct_reset_at_inst_ok",
+      "files": [
+        "tests/rdc/rdc_k3_direct_reset_at_inst_ok.arch"
+      ]
+    },
+    {
+      "name": "rdc__rdc_l1_pragma_rdc_safe_suppresses_phase2a_ok",
+      "files": [
+        "tests/rdc/rdc_l1_pragma_rdc_safe_suppresses_phase2a_ok.arch"
+      ]
+    },
+    {
+      "name": "rdc__rdc_l3_pragma_rdc_safe_suppresses_phase2d_ok",
+      "files": [
+        "tests/rdc/rdc_l3_pragma_rdc_safe_suppresses_phase2d_ok.arch"
+      ]
+    },
+    {
+      "name": "rdc__rdc_l4_pragma_rdc_safe_suppresses_phase1_ok",
+      "files": [
+        "tests/rdc/rdc_l4_pragma_rdc_safe_suppresses_phase1_ok.arch"
+      ]
+    },
+    {
+      "name": "sdc__sd_clock_divider",
+      "files": [
+        "tests/sdc/sd_clock_divider.arch"
+      ]
+    },
+    {
+      "name": "sdc__sd_controller_wb",
+      "files": [
+        "tests/sdc/sd_controller_wb.arch"
+      ]
+    },
+    {
+      "name": "sdc__sd_crc_16",
+      "files": [
+        "tests/sdc/sd_crc_16.arch"
+      ]
+    },
+    {
+      "name": "sdc__sd_crc_7",
+      "files": [
+        "tests/sdc/sd_crc_7.arch"
+      ]
+    },
+    {
+      "name": "sdc__sd_data_serial_host",
+      "files": [
+        "tests/sdc/sd_data_serial_host.arch"
+      ]
+    },
+    {
+      "name": "sdc__sd_rx_fifo",
+      "files": [
+        "tests/sdc/sd_rx_fifo.arch"
+      ]
+    },
+    {
+      "name": "sdc__sd_tx_fifo",
+      "files": [
+        "tests/sdc/sd_tx_fifo.arch"
+      ]
+    },
+    {
+      "name": "tests_root",
+      "files": [
+        "tests/cam_basic.arch",
+        "tests/cam_dual_basic.arch",
+        "tests/cam_value_basic.arch",
+        "tests/if_wait_for_in_then.arch",
+        "tests/inst_vec_port_regression.arch",
+        "tests/mac_table.arch",
+        "tests/operator_precedence_test.arch",
+        "tests/operator_type_test.arch",
+        "tests/pipeline_wait_stage.arch",
+        "tests/sim_bool_not_regression.arch",
+        "tests/unpacked_port_emit.arch"
+      ]
+    },
+    {
+      "name": "thread__basic_thread",
+      "files": [
+        "tests/thread/basic_thread.arch"
+      ]
+    },
+    {
+      "name": "thread__fork_join",
+      "files": [
+        "tests/thread/fork_join.arch"
+      ]
+    },
+    {
+      "name": "thread__generate_thread",
+      "files": [
+        "tests/thread/generate_thread.arch"
+      ]
+    },
+    {
+      "name": "thread__named_thread",
+      "files": [
+        "tests/thread/named_thread.arch"
+      ]
+    },
+    {
+      "name": "thread__resource_lock",
+      "files": [
+        "tests/thread/resource_lock.arch"
+      ]
+    },
+    {
+      "name": "thread__shared_reduction",
+      "files": [
+        "tests/thread/shared_reduction.arch"
+      ]
+    },
+    {
+      "name": "thread__thread_for_loop",
+      "files": [
+        "tests/thread/thread_for_loop.arch"
+      ]
+    },
+    {
+      "name": "thread__thread_if_else",
+      "files": [
+        "tests/thread/thread_if_else.arch"
+      ]
+    },
+    {
+      "name": "thread__thread_once",
+      "files": [
+        "tests/thread/thread_once.arch"
+      ]
+    },
+    {
+      "name": "thread__wait_cycles",
+      "files": [
+        "tests/thread/wait_cycles.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob001_zero",
+      "files": [
+        "tests/verilog_eval/Prob001_zero.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob002_m2014_q4i",
+      "files": [
+        "tests/verilog_eval/Prob002_m2014_q4i.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob003_step_one",
+      "files": [
+        "tests/verilog_eval/Prob003_step_one.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob004_vector2",
+      "files": [
+        "tests/verilog_eval/Prob004_vector2.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob005_notgate",
+      "files": [
+        "tests/verilog_eval/Prob005_notgate.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob006_vectorr",
+      "files": [
+        "tests/verilog_eval/Prob006_vectorr.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob007_wire",
+      "files": [
+        "tests/verilog_eval/Prob007_wire.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob008_m2014_q4h",
+      "files": [
+        "tests/verilog_eval/Prob008_m2014_q4h.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob009_popcount3",
+      "files": [
+        "tests/verilog_eval/Prob009_popcount3.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob010_mt2015_q4a",
+      "files": [
+        "tests/verilog_eval/Prob010_mt2015_q4a.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob011_norgate",
+      "files": [
+        "tests/verilog_eval/Prob011_norgate.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob012_xnorgate",
+      "files": [
+        "tests/verilog_eval/Prob012_xnorgate.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob013_m2014_q4e",
+      "files": [
+        "tests/verilog_eval/Prob013_m2014_q4e.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob014_andgate",
+      "files": [
+        "tests/verilog_eval/Prob014_andgate.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob015_vector1",
+      "files": [
+        "tests/verilog_eval/Prob015_vector1.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob016_m2014_q4j",
+      "files": [
+        "tests/verilog_eval/Prob016_m2014_q4j.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob017_mux2to1v",
+      "files": [
+        "tests/verilog_eval/Prob017_mux2to1v.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob019_m2014_q4f",
+      "files": [
+        "tests/verilog_eval/Prob019_m2014_q4f.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob020_mt2015_eq2",
+      "files": [
+        "tests/verilog_eval/Prob020_mt2015_eq2.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob022_mux2to1",
+      "files": [
+        "tests/verilog_eval/Prob022_mux2to1.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob024_hadd",
+      "files": [
+        "tests/verilog_eval/Prob024_hadd.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob025_reduction",
+      "files": [
+        "tests/verilog_eval/Prob025_reduction.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob026_alwaysblock1",
+      "files": [
+        "tests/verilog_eval/Prob026_alwaysblock1.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob027_fadd",
+      "files": [
+        "tests/verilog_eval/Prob027_fadd.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob028_m2014_q4a",
+      "files": [
+        "tests/verilog_eval/Prob028_m2014_q4a.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob029_m2014_q4g",
+      "files": [
+        "tests/verilog_eval/Prob029_m2014_q4g.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob031_dff",
+      "files": [
+        "tests/verilog_eval/Prob031_dff.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob032_vector0",
+      "files": [
+        "tests/verilog_eval/Prob032_vector0.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob033_ece241_2014_q1c",
+      "files": [
+        "tests/verilog_eval/Prob033_ece241_2014_q1c.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob034_dff8",
+      "files": [
+        "tests/verilog_eval/Prob034_dff8.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob035_count1to10",
+      "files": [
+        "tests/verilog_eval/Prob035_count1to10.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob036_ringer",
+      "files": [
+        "tests/verilog_eval/Prob036_ringer.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob037_review2015_count1k",
+      "files": [
+        "tests/verilog_eval/Prob037_review2015_count1k.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob038_count15",
+      "files": [
+        "tests/verilog_eval/Prob038_count15.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob039_always_if",
+      "files": [
+        "tests/verilog_eval/Prob039_always_if.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob040_count10",
+      "files": [
+        "tests/verilog_eval/Prob040_count10.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob041_dff8r",
+      "files": [
+        "tests/verilog_eval/Prob041_dff8r.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob042_vector4",
+      "files": [
+        "tests/verilog_eval/Prob042_vector4.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob043_vector5",
+      "files": [
+        "tests/verilog_eval/Prob043_vector5.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob044_vectorgates",
+      "files": [
+        "tests/verilog_eval/Prob044_vectorgates.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob045_edgedetect2",
+      "files": [
+        "tests/verilog_eval/Prob045_edgedetect2.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob046_dff8p",
+      "files": [
+        "tests/verilog_eval/Prob046_dff8p.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob047_dff8ar",
+      "files": [
+        "tests/verilog_eval/Prob047_dff8ar.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob048_m2014_q4c",
+      "files": [
+        "tests/verilog_eval/Prob048_m2014_q4c.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob049_m2014_q4b",
+      "files": [
+        "tests/verilog_eval/Prob049_m2014_q4b.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob050_kmap1",
+      "files": [
+        "tests/verilog_eval/Prob050_kmap1.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob051_gates4",
+      "files": [
+        "tests/verilog_eval/Prob051_gates4.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob052_gates100",
+      "files": [
+        "tests/verilog_eval/Prob052_gates100.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob053_m2014_q4d",
+      "files": [
+        "tests/verilog_eval/Prob053_m2014_q4d.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob054_edgedetect",
+      "files": [
+        "tests/verilog_eval/Prob054_edgedetect.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob055_conditional",
+      "files": [
+        "tests/verilog_eval/Prob055_conditional.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob056_ece241_2013_q7",
+      "files": [
+        "tests/verilog_eval/Prob056_ece241_2013_q7.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob057_kmap2",
+      "files": [
+        "tests/verilog_eval/Prob057_kmap2.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob058_alwaysblock2",
+      "files": [
+        "tests/verilog_eval/Prob058_alwaysblock2.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob059_wire4",
+      "files": [
+        "tests/verilog_eval/Prob059_wire4.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob060_m2014_q4k",
+      "files": [
+        "tests/verilog_eval/Prob060_m2014_q4k.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob061_2014_q4a",
+      "files": [
+        "tests/verilog_eval/Prob061_2014_q4a.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob062_bugs_mux2",
+      "files": [
+        "tests/verilog_eval/Prob062_bugs_mux2.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob063_review2015_shiftcount",
+      "files": [
+        "tests/verilog_eval/Prob063_review2015_shiftcount.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob064_vector3",
+      "files": [
+        "tests/verilog_eval/Prob064_vector3.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob065_7420",
+      "files": [
+        "tests/verilog_eval/Prob065_7420.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob066_edgecapture",
+      "files": [
+        "tests/verilog_eval/Prob066_edgecapture.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob067_countslow",
+      "files": [
+        "tests/verilog_eval/Prob067_countslow.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob068_countbcd",
+      "files": [
+        "tests/verilog_eval/Prob068_countbcd.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob069_truthtable1",
+      "files": [
+        "tests/verilog_eval/Prob069_truthtable1.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob070_ece241_2013_q2",
+      "files": [
+        "tests/verilog_eval/Prob070_ece241_2013_q2.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob071_always_casez",
+      "files": [
+        "tests/verilog_eval/Prob071_always_casez.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob072_thermostat",
+      "files": [
+        "tests/verilog_eval/Prob072_thermostat.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob073_dff16e",
+      "files": [
+        "tests/verilog_eval/Prob073_dff16e.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob074_ece241_2014_q4",
+      "files": [
+        "tests/verilog_eval/Prob074_ece241_2014_q4.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob075_counter_2bc",
+      "files": [
+        "tests/verilog_eval/Prob075_counter_2bc.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob076_always_case",
+      "files": [
+        "tests/verilog_eval/Prob076_always_case.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob077_wire_decl",
+      "files": [
+        "tests/verilog_eval/Prob077_wire_decl.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob078_dualedge",
+      "files": [
+        "tests/verilog_eval/Prob078_dualedge.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob079_fsm3onehot",
+      "files": [
+        "tests/verilog_eval/Prob079_fsm3onehot.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob080_timer",
+      "files": [
+        "tests/verilog_eval/Prob080_timer.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob081_7458",
+      "files": [
+        "tests/verilog_eval/Prob081_7458.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob082_lfsr32",
+      "files": [
+        "tests/verilog_eval/Prob082_lfsr32.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob083_mt2015_q4b",
+      "files": [
+        "tests/verilog_eval/Prob083_mt2015_q4b.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob085_shift4",
+      "files": [
+        "tests/verilog_eval/Prob085_shift4.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob086_lfsr5",
+      "files": [
+        "tests/verilog_eval/Prob086_lfsr5.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob087_gates",
+      "files": [
+        "tests/verilog_eval/Prob087_gates.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob088_ece241_2014_q5b",
+      "files": [
+        "tests/verilog_eval/Prob088_ece241_2014_q5b.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob090_circuit1",
+      "files": [
+        "tests/verilog_eval/Prob090_circuit1.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob091_2012_q2b",
+      "files": [
+        "tests/verilog_eval/Prob091_2012_q2b.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob093_ece241_2014_q3",
+      "files": [
+        "tests/verilog_eval/Prob093_ece241_2014_q3.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob094_gatesv",
+      "files": [
+        "tests/verilog_eval/Prob094_gatesv.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob097_mux9to1v",
+      "files": [
+        "tests/verilog_eval/Prob097_mux9to1v.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob098_circuit7",
+      "files": [
+        "tests/verilog_eval/Prob098_circuit7.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob099_m2014_q6c",
+      "files": [
+        "tests/verilog_eval/Prob099_m2014_q6c.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob100_fsm3comb",
+      "files": [
+        "tests/verilog_eval/Prob100_fsm3comb.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob101_circuit4",
+      "files": [
+        "tests/verilog_eval/Prob101_circuit4.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob102_circuit3",
+      "files": [
+        "tests/verilog_eval/Prob102_circuit3.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob103_circuit2",
+      "files": [
+        "tests/verilog_eval/Prob103_circuit2.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob104_mt2015_muxdff",
+      "files": [
+        "tests/verilog_eval/Prob104_mt2015_muxdff.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob106_always_nolatches",
+      "files": [
+        "tests/verilog_eval/Prob106_always_nolatches.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob107_fsm1s",
+      "files": [
+        "tests/verilog_eval/Prob107_fsm1s.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob109_fsm1",
+      "files": [
+        "tests/verilog_eval/Prob109_fsm1.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob110_fsm2",
+      "files": [
+        "tests/verilog_eval/Prob110_fsm2.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob111_fsm2s",
+      "files": [
+        "tests/verilog_eval/Prob111_fsm2s.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob112_always_case2",
+      "files": [
+        "tests/verilog_eval/Prob112_always_case2.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob113_2012_q1g",
+      "files": [
+        "tests/verilog_eval/Prob113_2012_q1g.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob114_bugs_case",
+      "files": [
+        "tests/verilog_eval/Prob114_bugs_case.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob116_m2014_q3",
+      "files": [
+        "tests/verilog_eval/Prob116_m2014_q3.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob117_circuit9",
+      "files": [
+        "tests/verilog_eval/Prob117_circuit9.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob118_history_shift",
+      "files": [
+        "tests/verilog_eval/Prob118_history_shift.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob122_kmap4",
+      "files": [
+        "tests/verilog_eval/Prob122_kmap4.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob123_bugs_addsubz",
+      "files": [
+        "tests/verilog_eval/Prob123_bugs_addsubz.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob125_kmap3",
+      "files": [
+        "tests/verilog_eval/Prob125_kmap3.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob126_circuit6",
+      "files": [
+        "tests/verilog_eval/Prob126_circuit6.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob130_circuit5",
+      "files": [
+        "tests/verilog_eval/Prob130_circuit5.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob131_mt2015_q4",
+      "files": [
+        "tests/verilog_eval/Prob131_mt2015_q4.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob132_always_if2",
+      "files": [
+        "tests/verilog_eval/Prob132_always_if2.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob134_2014_q3c",
+      "files": [
+        "tests/verilog_eval/Prob134_2014_q3c.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob135_m2014_q6b",
+      "files": [
+        "tests/verilog_eval/Prob135_m2014_q6b.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob141_count_clock",
+      "files": [
+        "tests/verilog_eval/Prob141_count_clock.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob143_fsm_onehot",
+      "files": [
+        "tests/verilog_eval/Prob143_fsm_onehot.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob145_circuit8",
+      "files": [
+        "tests/verilog_eval/Prob145_circuit8.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob147_circuit10",
+      "files": [
+        "tests/verilog_eval/Prob147_circuit10.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob150_review2015_fsmonehot",
+      "files": [
+        "tests/verilog_eval/Prob150_review2015_fsmonehot.arch"
+      ]
+    },
+    {
+      "name": "verilog_eval__Prob153_gshare",
+      "files": [
+        "tests/verilog_eval/Prob153_gshare.arch"
+      ]
+    }
+  ]
+}
