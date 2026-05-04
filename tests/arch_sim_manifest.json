@@ -1,0 +1,131 @@
+{
+  "description": "Known C++ testbench mappings for real `arch sim --tb` runs. Unit names match tools/run_arch_regression.py discovery names.",
+  "entries": [
+    {
+      "name": "cam_basic",
+      "arch_files": [
+        "tests/cam_basic.arch"
+      ],
+      "tb_files": [
+        "tests/cam_basic_tb.cpp"
+      ]
+    },
+    {
+      "name": "cam_dual_basic",
+      "arch_files": [
+        "tests/cam_dual_basic.arch"
+      ],
+      "tb_files": [
+        "tests/cam_dual_basic_tb.cpp"
+      ]
+    },
+    {
+      "name": "cam_value_basic",
+      "arch_files": [
+        "tests/cam_value_basic.arch"
+      ],
+      "tb_files": [
+        "tests/cam_value_basic_tb.cpp"
+      ]
+    },
+    {
+      "name": "if_wait_for_in_then",
+      "arch_files": [
+        "tests/if_wait_for_in_then.arch"
+      ],
+      "tb_files": [
+        "tests/if_wait_for_in_then_tb.cpp"
+      ]
+    },
+    {
+      "name": "inst_vec_port_regression",
+      "arch_files": [
+        "tests/inst_vec_port_regression.arch"
+      ],
+      "tb_files": [
+        "tests/inst_vec_port_regression_tb.cpp"
+      ]
+    },
+    {
+      "name": "mac_table",
+      "arch_files": [
+        "tests/mac_table.arch"
+      ],
+      "tb_files": [
+        "tests/mac_table_tb.cpp"
+      ]
+    },
+    {
+      "name": "pipeline_wait_stage",
+      "arch_files": [
+        "tests/pipeline_wait_stage.arch"
+      ],
+      "tb_files": [
+        "tests/tb_pipeline_wait_stage.cpp"
+      ]
+    },
+    {
+      "name": "sim_bool_not_regression",
+      "arch_files": [
+        "tests/sim_bool_not_regression.arch"
+      ],
+      "tb_files": [
+        "tests/sim_bool_not_regression_tb.cpp"
+      ]
+    },
+    {
+      "name": "thread__basic_thread",
+      "arch_files": [
+        "tests/thread/basic_thread.arch"
+      ],
+      "tb_files": [
+        "tests/thread/tb_basic_thread.cpp"
+      ]
+    },
+    {
+      "name": "axi_dma_tlm__TlmMm2sBurstVec",
+      "arch_files": [
+        "tests/axi_dma_tlm/TlmMm2sBurstVec.arch"
+      ],
+      "tb_files": [
+        "tests/axi_dma_tlm/tb_tlm_mm2s_burst_vec.cpp"
+      ]
+    },
+    {
+      "name": "axi_dma_tlm__TlmMm2sReadPair",
+      "arch_files": [
+        "tests/axi_dma_tlm/TlmMm2sReadPair.arch"
+      ],
+      "tb_files": [
+        "tests/axi_dma_tlm/tb_tlm_mm2s_read_pair.cpp"
+      ]
+    },
+    {
+      "name": "axi_dma_tlm__TlmOneToMany",
+      "arch_files": [
+        "tests/axi_dma_tlm/TlmOneToMany.arch"
+      ],
+      "tb_files": [
+        "tests/axi_dma_tlm/tb_tlm_one_to_many.cpp"
+      ]
+    },
+    {
+      "name": "axi_dma_tlm__TlmOneToManyOoo",
+      "arch_files": [
+        "tests/axi_dma_tlm/TlmOneToManyOoo.arch"
+      ],
+      "tb_files": [
+        "tests/axi_dma_tlm/tb_tlm_one_to_many_ooo.cpp"
+      ]
+    },
+    {
+      "name": "axi_dma_tlm__TlmOneToManyResp",
+      "arch_files": [
+        "tests/axi_dma_tlm/TlmOneToManyResp.arch"
+      ],
+      "tb_files": [
+        "tests/axi_dma_tlm/tb_tlm_one_to_many_resp.cpp"
+      ]
+    }
+  ]
+}
