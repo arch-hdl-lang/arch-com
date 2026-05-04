@@ -246,14 +246,23 @@ impl<'a> Codegen<'a> {
             String::new()
         };
         let kw = if p.is_local { "localparam" } else { "parameter" };
+        // Optional post-name unpacked dim: `param NAME: T [N]` →
+        // SV `parameter T NAME [N]`. Goes after the param name and
+        // before the `=` default. Used to forward upstream-SV
+        // unpacked-array params like `pmp_cfg_t [PMP_MAX_REGIONS]`.
+        let unpacked_str = if let Some(sz) = &p.unpacked_size {
+            format!(" [{}]", self.emit_expr_str(sz))
+        } else {
+            String::new()
+        };
         match &p.kind {
             ParamKind::WidthConst(hi, lo) => {
                 let hi_s = self.emit_expr_str(hi);
                 let lo_s = self.emit_expr_str(lo);
-                self.line(&format!("{kw} [{}:{}] {}{}{}", hi_s, lo_s, p.name.name, default_str, comma));
+                self.line(&format!("{kw} [{}:{}] {}{}{}{}", hi_s, lo_s, p.name.name, unpacked_str, default_str, comma));
             }
             ParamKind::EnumConst(enum_name) => {
-                self.line(&format!("{kw} {} {}{}{}", enum_name, p.name.name, default_str, comma));
+                self.line(&format!("{kw} {} {}{}{}{}", enum_name, p.name.name, unpacked_str, default_str, comma));
             }
             ParamKind::ConstVec(ty) => {
                 // Vec<T, N> param. iverilog rejects unpacked-array parameters,
@@ -298,7 +307,7 @@ impl<'a> Codegen<'a> {
                 ));
             }
             _ => {
-                self.line(&format!("{kw} int {}{}{}", p.name.name, default_str, comma));
+                self.line(&format!("{kw} int {}{}{}{}", p.name.name, unpacked_str, default_str, comma));
             }
         }
     }

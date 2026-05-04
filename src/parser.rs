@@ -898,6 +898,19 @@ impl Parser {
         } else {
             ParamKind::Const
         };
+        // Optional post-kind unpacked-array dim: `param NAME: T [N] = ...`.
+        // Mirrors SV `parameter T NAME [N] = <default>`. Used to forward
+        // upstream-SV unpacked-array params (e.g. `pmp_cfg_t [16]`,
+        // `logic [W:0] [16]`). Distinguished from the pre-colon
+        // `param NAME[hi:lo]: const` width-qualifier by the position
+        // (post-kind, before `=`).
+        let unpacked_size = if self.eat(TokenKind::LBracket) {
+            let size = self.parse_expr()?;
+            self.expect(TokenKind::RBracket)?;
+            Some(size)
+        } else {
+            None
+        };
         let default = if self.eat(TokenKind::Eq) {
             Some(self.parse_expr()?)
         } else {
@@ -911,6 +924,7 @@ impl Parser {
             default,
             is_local,
             span: start.merge(end_span),
+            unpacked_size,
         })
     }
 

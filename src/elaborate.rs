@@ -2307,6 +2307,7 @@ fn synthesize_lock_arbiter(
                 default: Some(n_threads_expr),
                 is_local: false,
                 span: sp,
+                unpacked_size: None,
             }],
             ports: scalar_ports,
             asserts: Vec::new(),

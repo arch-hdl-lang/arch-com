@@ -230,6 +230,13 @@ pub struct ParamDecl {
     /// `local param` → emits SV `localparam` (not overridable at inst site)
     pub is_local: bool,
     pub span: Span,
+    /// Optional unpacked-array post-name dimension: `param NAME: T [N] = ...`.
+    /// Emits SV `parameter T NAME [N] = <default>` — the SV unpacked-array
+    /// param shape used by upstream Ibex for `pmp_cfg_t [PMP_MAX_REGIONS]`
+    /// and `logic [W:0] [N]` style declarations. arch-com forwards the
+    /// dimension verbatim and treats the param as opaque (no value
+    /// evaluation), since unpacked-array param values are SV-side only.
+    pub unpacked_size: Option<Expr>,
 }
 
 #[derive(Debug, Clone)]

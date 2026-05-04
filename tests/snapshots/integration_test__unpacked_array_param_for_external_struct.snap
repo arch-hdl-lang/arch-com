@@ -1,0 +1,22 @@
+---
+source: tests/integration_test.rs
+assertion_line: 1810
+expression: sv
+---
+// domain SysDomain
+//   freq_mhz: 100
+
+module ExtUnpackedParams #(
+  parameter ibex_pkg::pmp_cfg_t PMPRstCfg [16] = ibex_pkg::PmpCfgRst,
+  parameter [33:0] PMPRstAddr [16] = ibex_pkg::PmpAddrRst,
+  parameter ibex_pkg::pmp_mseccfg_t PMPRstMsecCfg = ibex_pkg::PmpMseccfgRst
+) (
+  input logic clk_i,
+  input logic rst_ni,
+  input logic [31:0] d,
+  output logic [31:0] q
+);
+
+  assign q = d;
+
+endmodule
