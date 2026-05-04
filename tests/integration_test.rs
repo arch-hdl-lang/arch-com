@@ -9377,6 +9377,103 @@ end fsm BrokenFsm
 }
 
 #[test]
+fn test_fsm_use_package_emits_sv_import() {
+    // `emit_fsm` mirrors `emit_module`'s import-emission block so that an
+    // `fsm` consuming a `package` via `use Pkg;` produces the SV
+    // `import Pkg::*;` line. Without it, the emitted SV references the
+    // package's typedefs/enums by bare name with no import, and the
+    // downstream Verilator job can't resolve them. (Showed up in
+    // arch-ibex B5: `IbexController` is an `fsm` that `use IbexPkg;`
+    // for shared `ExcCause` / `Irqs` types.)
+    let source = r#"
+package SharedPkg
+  enum Color
+    Red, Green, Blue
+  end enum Color
+end package SharedPkg
+
+use SharedPkg;
+
+domain Sys
+  freq_mhz: 100
+end domain Sys
+
+fsm Painter
+  port clk_i: in Clock<Sys>;
+  port rst_ni: in Reset<Async, Low>;
+  port hue_o: out Color;
+
+  state [Idle, Working]
+
+  default state Idle;
+
+  state Idle
+    comb
+      hue_o = Red;
+    end comb
+    -> Working when 1'b1;
+  end state Idle
+
+  state Working
+    comb
+      hue_o = Green;
+    end comb
+    -> Idle when 1'b1;
+  end state Working
+end fsm Painter
+"#;
+    let sv = compile_to_sv(source);
+    // Package is emitted up front (no change here — that's package codegen).
+    assert!(sv.contains("package SharedPkg;"),
+        "package SharedPkg should be emitted to SV");
+    assert!(sv.contains("import SharedPkg::*;"),
+        "fsm consumer of `use SharedPkg;` must emit `import SharedPkg::*;` so the module body can reference `Color` without a fully-qualified name");
+    // Sanity: the import comes BEFORE the module declaration so the type
+    // ref inside the module header resolves cleanly.
+    let import_pos = sv.find("import SharedPkg::*;").expect("import present");
+    let module_pos = sv.find("module Painter").expect("module present");
+    assert!(import_pos < module_pos,
+        "`import SharedPkg::*;` must precede `module Painter` (otherwise the port-list type ref doesn't resolve)");
+}
+
+#[test]
+fn test_fsm_use_non_package_does_not_emit_import() {
+    // Symmetric to `test_use_bus_does_not_emit_sv_import` for fsm. `use`
+    // targets that are NOT packages (bus, module, fsm, ...) are
+    // compile-time references; emitting `import` for them would yield
+    // SV that doesn't compile because no SV `package <Name>;` exists.
+    let source = r#"
+domain Sys
+  freq_mhz: 100
+end domain Sys
+
+bus SimpleBus
+  valid_o: out Bool;
+  data_o: out UInt<8>;
+end bus SimpleBus
+
+use SimpleBus;
+
+fsm Sender
+  port clk_i: in Clock<Sys>;
+  port rst_ni: in Reset<Async, Low>;
+  port out_o: out Bool;
+  state [Idle]
+  default state Idle;
+  state Idle
+    comb
+      out_o = 1'b0;
+    end comb
+    -> Idle when 1'b1;
+  end state Idle
+end fsm Sender
+"#;
+    let sv = compile_to_sv(source);
+    assert!(!sv.contains("import SimpleBus::*;"),
+        "fsm `use` of a bus (not a package) must NOT emit a SV import: there's no package to import from. Got SV:\n{sv}");
+}
+
+#[test]
 fn test_thread_inter_yield_seq_assigns_get_dead_skid() {
     // Spec §7a.2 line 1677: only TRAILING seq assigns (after the last wait
     // in the body) may merge into the preceding state's exit logic.

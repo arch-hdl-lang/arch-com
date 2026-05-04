@@ -18,6 +18,24 @@ impl<'a> Codegen<'a> {
             return;
         }
         self.current_construct = f.name.name.clone();
+        // Emit SV `import NAME::*;` only for `use NAME;` whose target is an
+        // actual `package` — package contents become an SV package and need
+        // the import for typedef/enum/struct visibility. Mirrors the same
+        // block in `emit_module`. Without this, an `fsm` that imports types
+        // from a sibling package compiles to SV that references the types
+        // by bare name with no `import`, and Verilator can't resolve them.
+        // (Showed up in arch-ibex B5: `IbexController.arch` is an `fsm`
+        // that `use IbexPkg;` for shared `ExcCause` / `Irqs` types.)
+        for item in &self.source.items {
+            if let Item::Use(u) = item {
+                let is_package = self.source.items.iter().any(|i| {
+                    matches!(i, Item::Package(p) if p.name.name == u.name.name)
+                });
+                if is_package {
+                    self.out.push_str(&format!("import {}::*;\n", u.name.name));
+                }
+            }
+        }
         // Built-in `state` identifier inside fsm scope: read of the current
         // encoded state register. SV emission lowers to `state_r` (the enum
         // register), which implicitly casts to the user-declared output port
