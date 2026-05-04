@@ -1586,6 +1586,145 @@ end pipeline AluPipe
 }
 
 #[test]
+fn test_pipeline_stage_inst_output_wire_type_resolved_from_port() {
+    // Regression: an inst inside a pipeline stage whose output
+    // destination is consumed only cross-stage (no same-stage reg
+    // RHS reference) needs its wire type resolved from the
+    // instantiated module's port declaration, with the inst's
+    // param assignments substituted in. Previously the wire was
+    // declared as bare `logic` (1-bit), causing Verilator
+    // WIDTHEXPAND warnings or width mismatches at the inst
+    // instantiation site.
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module Sub
+  param WIDTH: const = 32;
+  port a_in: in UInt<WIDTH>;
+  port b_out: out UInt<WIDTH>;
+  comb
+    b_out = a_in;
+  end comb
+end module Sub
+
+pipeline P
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port src: in UInt<32>;
+  port dst: out UInt<32>;
+
+  stage S1
+    reg latched: UInt<32> reset rst => 0;
+    seq on clk rising
+      latched <= src;
+    end seq
+    inst sub: Sub
+      param WIDTH = 32;
+      a_in -> sub_in;
+      b_out -> sub_out;
+    end inst sub
+    comb
+      sub_in = latched;
+    end comb
+  end stage S1
+
+  stage S2
+    reg captured: UInt<32> reset rst => 0;
+    seq on clk rising
+      captured <= S1.sub_out;
+    end seq
+    comb
+      dst = captured;
+    end comb
+  end stage S2
+
+end pipeline P
+"#;
+    let sv = compile_to_sv(source);
+    // The inst's output wire `s1_sub_out` must be sized 32 bits,
+    // resolved from `Sub.b_out: out UInt<WIDTH>` with WIDTH=32
+    // substituted from the inst's param_assigns.
+    assert!(
+        sv.contains("logic [31:0] s1_sub_out"),
+        "inst output wire should be 32-bit: {sv}"
+    );
+    assert!(
+        !sv.contains("logic s1_sub_out;"),
+        "inst output wire should NOT be bare 1-bit logic"
+    );
+    insta::assert_snapshot!(sv);
+}
+
+#[test]
+fn test_pipeline_inst_module_dep_auto_resolved() {
+    // Regression: a `pipeline` containing `inst <ExternalModule>`
+    // (where ExternalModule is defined in a sibling .arch / .archi)
+    // must trigger the same auto-dependency walk that
+    // `module + inst` does. Previously the dep walker matched only
+    // Item::Module so the .archi/.arch lookup never fired and the
+    // build failed with `undefined name`.
+    //
+    // We test this end-to-end by having a single-file source with
+    // both the sub-module and the pipeline declared, exercising the
+    // resolve path through self.symbols.globals (which is what the
+    // wire-type resolution and dep-walker share). A multi-file test
+    // would require a real on-disk fixture; this exercises the same
+    // codegen path.
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module Helper
+  port clk_i: in Clock<SysDomain>;
+  port rst_ni: in Reset<Sync, Low>;
+  port d_in: in UInt<16>;
+  port q_out: out UInt<16>;
+  reg r: UInt<16> reset rst_ni => 0;
+  seq on clk_i rising
+    r <= d_in;
+  end seq
+  comb
+    q_out = r;
+  end comb
+end module Helper
+
+pipeline P2
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, Low>;
+  port src: in UInt<16>;
+  port dst: out UInt<16>;
+
+  stage Only
+    reg latched: UInt<16> reset rst => 0;
+    seq on clk rising
+      latched <= src;
+    end seq
+    inst h: Helper
+      clk_i  <- clk;
+      rst_ni <- rst;
+      d_in   <- latched;
+      q_out  -> h_out;
+    end inst h
+    comb
+      dst = h_out;
+    end comb
+  end stage Only
+
+end pipeline P2
+"#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module Helper"), "Helper module should emit");
+    assert!(sv.contains("Helper h ("), "Helper inst should emit inside pipeline stage");
+    assert!(
+        sv.contains("logic [15:0] only_h_out"),
+        "inst output wire should be 16-bit per Helper.q_out"
+    );
+}
+
+#[test]
 fn test_pipeline_stage_inst_in_wait_until() {
     // Regression: a `wait until` condition inside a stage that also
     // hosts an `inst` block must reference the inst's output via the
