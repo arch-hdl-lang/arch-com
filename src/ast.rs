@@ -1101,6 +1101,58 @@ impl Item {
             Item::Use(u) => u,
         }
     }
+
+    /// True when this item was loaded from a `.archi` interface stub
+    /// (port-only, no body). Set by the post-parse tagger in `main.rs`
+    /// based on the source-file extension. Body-only passes (codegen,
+    /// sim model emission, .archi re-emit, body-driven typecheck)
+    /// short-circuit on this so the stub doesn't shadow the real
+    /// implementation that lives in a separately-built `.sv`/`.cpp`.
+    /// Only the construct variants that can be instantiated across
+    /// `.archi` boundaries carry the flag — `module` (via
+    /// `ModuleDecl.is_interface`) and the `ConstructCommon`-bearing
+    /// variants (`fsm`, `fifo`, `ram`, `cam`, `counter`, `arbiter`,
+    /// `regfile`, `pipeline`, `linklist`).
+    pub fn is_interface(&self) -> bool {
+        match self {
+            Item::Module(m)        => m.is_interface,
+            Item::Fsm(f)           => f.common.is_interface,
+            Item::Fifo(f)          => f.common.is_interface,
+            Item::Ram(r)           => r.common.is_interface,
+            Item::Cam(c)           => c.common.is_interface,
+            Item::Counter(c)       => c.common.is_interface,
+            Item::Arbiter(a)       => a.common.is_interface,
+            Item::Regfile(r)       => r.common.is_interface,
+            Item::Pipeline(p)      => p.common.is_interface,
+            Item::Linklist(l)      => l.common.is_interface,
+            // The remaining variants (Domain, Struct, Enum, Function,
+            // Template, Synchronizer, Clkgate, Bus, Package, Use)
+            // either don't get instantiated across `.archi` boundaries
+            // or aren't `ConstructCommon`-bearing. No is_interface for
+            // them today; extend if/when a new case appears.
+            _ => false,
+        }
+    }
+
+    /// Set the interface-stub flag. Mirror of [`Self::is_interface`].
+    /// Used by the post-parse tagger in `main.rs` to mark items loaded
+    /// from `.archi` files. Returns `true` if the variant supports the
+    /// flag (and the assignment took effect); `false` otherwise.
+    pub fn set_is_interface(&mut self, val: bool) -> bool {
+        match self {
+            Item::Module(m)        => { m.is_interface = val; true }
+            Item::Fsm(f)           => { f.common.is_interface = val; true }
+            Item::Fifo(f)          => { f.common.is_interface = val; true }
+            Item::Ram(r)           => { r.common.is_interface = val; true }
+            Item::Cam(c)           => { c.common.is_interface = val; true }
+            Item::Counter(c)       => { c.common.is_interface = val; true }
+            Item::Arbiter(a)       => { a.common.is_interface = val; true }
+            Item::Regfile(r)       => { r.common.is_interface = val; true }
+            Item::Pipeline(p)      => { p.common.is_interface = val; true }
+            Item::Linklist(l)      => { l.common.is_interface = val; true }
+            _ => false,
+        }
+    }
 }
 
 /// Centralizing trait for all top-level constructs (every `Item::*`
@@ -1329,6 +1381,16 @@ pub struct ConstructCommon {
     /// downstream tooling can tell "from the outside" prose apart from
     /// "from the inside" prose.
     pub inner_doc: Option<String>,
+    /// True when this construct was loaded from a `.archi` interface
+    /// stub (port-only, no body). Set post-parse from the source-file
+    /// extension (see `main.rs` post-parse tagger). Body-only passes
+    /// (output-driven check, codegen, .archi re-emit, sim model
+    /// emission) skip these to avoid spurious diagnostics and duplicate
+    /// output. Mirrors the same flag on `ModuleDecl`. Module isn't
+    /// folded into `ConstructCommon` yet — see `feedback_*` for
+    /// background — so that flag is duplicated; both feed the same
+    /// post-parse tagger and downstream-skip pattern.
+    pub is_interface: bool,
 }
 
 impl ConstructCommon {
@@ -1377,8 +1439,13 @@ pub struct FsmDecl {
     pub wires: Vec<WireDecl>,
     /// Flat list of declared state names (`state A, B, C;`)
     pub state_names: Vec<Ident>,
-    /// The reset / default state
-    pub default_state: Ident,
+    /// The reset / default state. `None` is only valid for an interface
+    /// stub loaded from a `.archi` file (`common.is_interface == true`);
+    /// real `fsm` declarations require an explicit `default state Name;`
+    /// — that requirement is now enforced in `resolve.rs` rather than
+    /// `parser.rs`, so the parser can accept body-less stubs that the
+    /// post-parse tagger flips to `is_interface = true`.
+    pub default_state: Option<Ident>,
     /// Default block: comb and seq statements applied before the state case
     pub default_comb: Vec<Stmt>,
     pub default_seq: Vec<Stmt>,

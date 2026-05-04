@@ -2313,6 +2313,7 @@ fn synthesize_lock_arbiter(
             span: sp,
             doc: None,
             inner_doc: None,
+            is_interface: false,
         },
         port_arrays: vec![request_array],
         policy,

@@ -9272,6 +9272,111 @@ end module Parent
 }
 
 #[test]
+fn test_archi_interface_stub_for_fsm_skips_body_only_passes() {
+    // Same scenario as `test_archi_interface_stub_skips_body_only_passes`
+    // but for an `fsm`-typed sub-instance (B5 arch-ibex case: a parent
+    // module instantiates a previously-ported `fsm`, so the dep loader
+    // pulls in the `fsm Name ... end fsm Name` body-less stub from
+    // `<name>.archi`). Pre-fix, the parser rejected the stub with
+    // "fsm requires `default state Name;`" (the rule only the real fsm
+    // needs); post-fix the parser accepts a missing default_state, the
+    // post-parse tagger sets `is_interface = true`, and resolve /
+    // typecheck / codegen / sim_codegen all skip body-only passes.
+    let source = r#"
+domain Sys
+  freq_mhz: 100
+end domain Sys
+
+fsm ChildFsm
+  port clk_i: in Clock<Sys>;
+  port rst_ni: in Reset<Async, Low>;
+  port in_i: in UInt<8>;
+  port out_o: out UInt<8>;
+end fsm ChildFsm
+
+module Parent
+  port clk_i: in Clock<Sys>;
+  port rst_ni: in Reset<Async, Low>;
+  port result: out UInt<8>;
+
+  wire w: UInt<8>;
+  inst c: ChildFsm
+    clk_i <- clk_i;
+    rst_ni <- rst_ni;
+    in_i <- 8'd0;
+    out_o -> w;
+  end inst c
+
+  let result = w;
+end module Parent
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let mut parsed_ast = parser.parse_source_file()
+        .expect("parser must accept body-less fsm (interface stub)");
+    // Mimic main.rs's post-parse tagger: items loaded from `.archi` get
+    // is_interface = true. Here we tag the FSM by name to simulate
+    // "loaded from <name>.archi".
+    for item in parsed_ast.items.iter_mut() {
+        if let arch::ast::Item::Fsm(f) = item {
+            if f.name.name == "ChildFsm" { f.common.is_interface = true; }
+        }
+    }
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate");
+    let ast = elaborate::lower_tlm_target_threads(ast).expect("tlm_target lowering");
+    let ast = elaborate::lower_tlm_initiator_calls(ast).expect("tlm_initiator lowering");
+    let ast = elaborate::lower_threads_with_opts(ast, &elaborate::ThreadLowerOpts::default())
+        .expect("lower_threads");
+    let ast = elaborate::lower_pipe_reg_ports(ast).expect("lower_pipe_reg_ports");
+    let ast = elaborate::lower_credit_channel_dispatch(ast).expect("credit_channel dispatch");
+    let symbols = resolve::resolve(&ast)
+        .expect("resolve must accept fsm interface stub (no default_state validation)");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let (_warnings, overload_map) = checker.check()
+        .expect("typecheck must skip body checks on fsm interface stub");
+    let codegen = Codegen::new(&symbols, &ast, overload_map);
+    let sv = codegen.generate();
+    assert!(sv.contains("module Parent"), "parent module should be emitted");
+    assert!(!sv.contains("module ChildFsm"),
+        "fsm interface stub must not be emitted to SV (real impl lives in a separately-built file)");
+}
+
+#[test]
+fn test_real_fsm_still_requires_default_state() {
+    // Mirror to the stub test: a *real* (non-interface) fsm without
+    // `default state Name;` must still be rejected. Pre-fix the error
+    // came from parser; post-fix it comes from `resolve.rs`. The user
+    // diagnostic is preserved verbatim.
+    let source = r#"
+domain Sys
+  freq_mhz: 100
+end domain Sys
+
+fsm BrokenFsm
+  port clk_i: in Clock<Sys>;
+  port rst_ni: in Reset<Async, Low>;
+  state [Idle, Run]
+  state Idle
+    -> Run when 1'b1;
+  end state Idle
+  state Run
+    -> Idle when 1'b1;
+  end state Run
+end fsm BrokenFsm
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file()
+        .expect("parser accepts body-less fsm now; default-state check moved to resolve");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate");
+    let resolve_err = resolve::resolve(&ast).err()
+        .expect("real fsm without default_state must still error");
+    let msg = format!("{resolve_err:?}");
+    assert!(msg.contains("default state"),
+        "expected `default state` diagnostic, got: {msg}");
+}
+
+#[test]
 fn test_thread_inter_yield_seq_assigns_get_dead_skid() {
     // Spec §7a.2 line 1677: only TRAILING seq assigns (after the last wait
     // in the body) may merge into the preceding state's exit logic.

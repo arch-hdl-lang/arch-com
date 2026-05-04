@@ -3476,17 +3476,21 @@ impl Parser {
             return Err(CompileError::mismatched_closing(&name.name, &closing.name, closing.span));
         }
 
-        let ds = default_state.ok_or_else(|| {
-            CompileError::general("fsm requires `default state Name;`", name.span)
-        })?;
+        // `default state Name;` is required for real `fsm` declarations
+        // but NOT for `.archi` interface stubs (which have no body). The
+        // parser accepts a missing default_state here and lets the
+        // post-parse tagger decide whether this turned out to be an
+        // interface stub. The "real fsm needs default_state" rule moved
+        // into resolve.rs (see `Item::Fsm` arm: emits the diagnostic
+        // when `!common.is_interface && default_state.is_none()`).
 
         Ok(FsmDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc },
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc, is_interface: false },
             regs,
             lets,
             wires,
             state_names,
-            default_state: ds,
+            default_state,
             default_comb,
             default_seq,
             states,
@@ -3626,7 +3630,7 @@ impl Parser {
         }
 
         Ok(PipelineDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc },
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc, is_interface: false },
             stages,
             stall_conds,
             flush_directives,
@@ -3816,7 +3820,7 @@ impl Parser {
         }
 
         Ok(FifoDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc },
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc, is_interface: false },
             kind: kind.unwrap_or(FifoKind::Fifo),
         })
     }
@@ -4121,7 +4125,7 @@ impl Parser {
         }
 
         Ok(RamDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc },
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc, is_interface: false },
             kind: k,
             latency: lat,
             write_mode,
@@ -4341,6 +4345,7 @@ impl Parser {
                 asserts,
                 span: Span { start: start.start, end: end.end },
                 doc: None, inner_doc,
+                is_interface: false,
             },
         })
     }
@@ -4437,7 +4442,7 @@ impl Parser {
         let mode = mode.unwrap_or(CounterMode::Wrap);
         let direction = direction.unwrap_or(CounterDirection::Up);
         Ok(CounterDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc },
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc, is_interface: false },
             mode, direction, init,
         })
     }
@@ -4544,7 +4549,7 @@ impl Parser {
         }
 
         Ok(ArbiterDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc },
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc, is_interface: false },
             port_arrays,
             policy: policy.unwrap_or(ArbiterPolicy::RoundRobin),
             hook,
@@ -4857,7 +4862,7 @@ impl Parser {
         }
 
         Ok(RegfileDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc },
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc, is_interface: false },
             read_ports,
             write_ports,
             inits,
@@ -5136,7 +5141,7 @@ impl Parser {
         }
 
         Ok(LinklistDecl {
-            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc },
+            common: ConstructCommon { name, params, ports, asserts, span: start.merge(closing.span), doc: None, inner_doc, is_interface: false },
             kind: kind.unwrap_or(LinklistKind::Singly),
             track_tail,
             track_length,
@@ -5205,7 +5210,7 @@ impl Parser {
         }
 
         Ok(OpDecl {
-            common: ConstructCommon { name, params: Vec::new(), ports, asserts, span: start.merge(closing.span), doc: None, inner_doc: None },
+            common: ConstructCommon { name, params: Vec::new(), ports, asserts, span: start.merge(closing.span), doc: None, inner_doc: None, is_interface: false },
             latency,
             pipelined,
         })

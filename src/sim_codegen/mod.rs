@@ -287,8 +287,15 @@ impl<'a> SimCodegen<'a> {
                     debug_module_set.contains(m.name.name.as_str()),
                     &debug_module_set,
                 ));
-            } else if let Some(model) = item.as_construct().emit_sim(self) {
-                models.push(model);
+            } else {
+                // Skip interface stubs from `.archi` for any
+                // ConstructCommon-bearing variant (Fsm, Fifo, Ram, …).
+                // Same reason as Module: real sim model is built
+                // separately alongside the `.archi`.
+                if item.is_interface() { continue; }
+                if let Some(model) = item.as_construct().emit_sim(self) {
+                    models.push(model);
+                }
             }
         }
         models
@@ -310,11 +317,15 @@ impl<'a> SimCodegen<'a> {
                     }
                 }
                 Item::Fsm(f) => {
+                    // Skip interface stubs from `.archi`: pybind wrapper
+                    // for the real implementation is built separately.
+                    if f.common.is_interface { continue; }
                     if let Some(w) = self.emit_pybind_fsm(f) {
                         wrappers.push(w);
                     }
                 }
                 Item::Counter(c) => {
+                    if c.common.is_interface { continue; }
                     if let Some(w) = self.emit_pybind_counter(c) {
                         wrappers.push(w);
                     }

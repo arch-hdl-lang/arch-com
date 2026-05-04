@@ -54,7 +54,11 @@ impl<'a> SimCodegen<'a> {
 
         let state_idx: HashMap<String, usize> = f.state_names.iter()
             .enumerate().map(|(i, s)| (s.name.clone(), i)).collect();
-        let default_idx = state_idx.get(&f.default_state.name).copied().unwrap_or(0);
+        // sim_codegen only runs for non-interface fsms; `default_state`
+        // is `Some(_)` here. Interface stubs are filtered out earlier.
+        let default_idx = f.default_state.as_ref()
+            .and_then(|ds| state_idx.get(&ds.name).copied())
+            .unwrap_or(0);
 
         let (rst_name, _is_async, is_low) = extract_reset_info(&f.ports);
         let rst_cond = if is_low { format!("(!{})", rst_name) } else { rst_name.clone() };
