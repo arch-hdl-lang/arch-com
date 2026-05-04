@@ -5225,6 +5225,11 @@ fn test_tlm_one_initiator_many_targets_response_router_example_compiles() {
     assert!(sv.contains("s_read_rsp_data = {64'd1152921504606846976, 2'd0}")
          && sv.contains("up_read_rsp_data = read_err_valid ? {64'd0, 2'd1}"),
         "SV codegen should emit packed struct literals as iverilog-friendly concatenations:\n{sv}");
+    assert!(sv.contains("_auto_tlm_m_read_req_stable")
+         && sv.contains("$stable(m_read_addr)")
+         && sv.contains("_auto_tlm_m_read_rsp_stable")
+         && sv.contains("$stable(m_read_rsp_data)"),
+        "TLM protocol assertions should track request args and struct response payloads:\n{sv}");
     assert!(sv.contains("t0_read_req_valid = up_read_req_valid && read_to_0")
          && sv.contains("t3_read_req_valid = up_read_req_valid && read_to_3"),
         "router should decode requests across four downstream targets:\n{sv}");
@@ -5237,6 +5242,20 @@ fn test_tlm_one_initiator_many_targets_response_router_example_compiles() {
         "sim C++ if conditions should not double-wrap comparison expressions:\n{sim}");
     assert!(!sim.contains("if ((_let_read_mapped == 0))"),
         "sim C++ should avoid Clang -Wparentheses-equality noise:\n{sim}");
+}
+
+#[test]
+fn test_tlm_ooo_protocol_asserts_track_tags() {
+    let source = include_str!("axi_dma_tlm/TlmOneToManyOoo.arch");
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("_auto_tlm_m_read_req_stable")
+         && sv.contains("$stable(m_read_req_tag)")
+         && sv.contains("$stable(m_read_addr)"),
+        "OOO request assertion should track req_tag under backpressure:\n{sv}");
+    assert!(sv.contains("_auto_tlm_m_read_rsp_stable")
+         && sv.contains("$stable(m_read_rsp_tag)")
+         && sv.contains("$stable(m_read_rsp_data)"),
+        "OOO response assertion should track rsp_tag under backpressure:\n{sv}");
 }
 
 #[test]

@@ -5203,6 +5203,7 @@ Both target and initiator passes emit ordinary `RegDecl` + `RegBlock` + `CombBlo
 - `arch sim`, `arch sim --pybind --test`, and `arch sim --thread-sim parallel` handle the state machines via generated C++ models. In parallel mode, TLM-lowered modules use the regular reg/seq/comb sim model while modules that still contain ordinary non-TLM threads use the coroutine thread emitter.
 - The parent-module state reg is `_tlm_<port>_<method>_state` (target side) or `_tlm_init_<thread>_state` (initiator side).
 - Comb drives are unconditional state-OR / state-mux forms to satisfy the no-latch check.
+- `arch build` auto-emits TLM protocol assertions, wrapped in `synopsys translate_off/on`: `_auto_tlm_<port>_<method>_req_stable` requires `req_valid`, args, and OOO `req_tag` to hold after `req_valid && !req_ready`; `_auto_tlm_<port>_<method>_rsp_stable` requires `rsp_valid`, `rsp_data`, and OOO `rsp_tag` to hold after `rsp_valid && !rsp_ready`. These are intended for SVA-capable tools such as Verilator `--assert`.
 
 **18d.6 Current restrictions**
 
@@ -5214,7 +5215,6 @@ Both target and initiator passes emit ordinary `RegDecl` + `RegBlock` + `CombBlo
 - Rich control flow inside TLM initiator bodies. Cohort `fork/join` is supported only when each branch is exactly one direct call assignment. RHS-fork groups support only direct forked TLM assignments, literal `wait N cycle;` offsets, and final `join all;`.
 - Non-literal `out_of_order tags` expressions.
 - Target method bodies with nested control flow beyond linear `wait until` + seq assigns terminated by a single `return`.
-- Tier-2 protocol SVA assertions (design-complete but not yet emitted).
 
 Full design and evolution in `doc/plan_tlm_method.md`.
 
