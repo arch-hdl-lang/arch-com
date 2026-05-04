@@ -1770,8 +1770,8 @@ end module ExternalEnumParam
 fn test_unpacked_array_param_for_external_struct() {
     // Native ARCH syntax for a `parameter <type> NAME [N] = <ident>;`
     // upstream-SV unpacked-array param. Three shapes covered here:
-    //  - struct + unpacked dim:  `pkg::T [N]`
-    //  - logic-packed + unpacked dim: `[hi:lo] [N]`
+    //  - struct + unpacked dim:    `pkg::T [N]`
+    //  - logic-packed + unpacked dim: `UInt<W> [N]`
     //  - scalar struct (no dim, exercise back-compat).
     // All three forward upstream-SV `pkg::Variant` defaults verbatim.
     let source = r#"
@@ -1780,9 +1780,9 @@ domain SysDomain
 end domain SysDomain
 
 module ExtUnpackedParams
-  param PMPRstCfg: ibex_pkg::pmp_cfg_t [16] = ibex_pkg::PmpCfgRst;
-  param PMPRstAddr[33:0]: const [16] = ibex_pkg::PmpAddrRst;
-  param PMPRstMsecCfg: ibex_pkg::pmp_mseccfg_t = ibex_pkg::PmpMseccfgRst;
+  param PMPRstCfg:     ibex_pkg::pmp_cfg_t [16]   = ibex_pkg::PmpCfgRst;
+  param PMPRstAddr:    UInt<34> [16]              = ibex_pkg::PmpAddrRst;
+  param PMPRstMsecCfg: ibex_pkg::pmp_mseccfg_t    = ibex_pkg::PmpMseccfgRst;
 
   port clk_i:  in Clock<SysDomain>;
   port rst_ni: in Reset<Sync, Low>;

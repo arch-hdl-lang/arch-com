@@ -254,6 +254,13 @@ pub enum ParamKind {
     /// Indexable as `NAME[i]` returning `T`. Inst-site overrides via
     /// `param NAME = {…};`.
     ConstVec(TypeExpr),
+    /// Logic-typed value const: `param NAME: UInt<W> = ...;` (or SInt /
+    /// Bool). Emits SV `parameter [W-1:0] NAME = <default>` —
+    /// the same shape as `WidthConst` but with type-first surface
+    /// syntax matching how ARCH writes ports / regs / wires
+    /// elsewhere. Used together with the post-name unpacked-dim
+    /// to express upstream-SV `parameter logic [W:0] NAME [N] = ...`.
+    Logic(TypeExpr),
 }
 
 #[derive(Debug, Clone)]
