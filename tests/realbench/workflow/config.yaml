@@ -1,0 +1,88 @@
+# RealBench Spec-Driven Workflow Configuration
+# Adapted from OpenSpec methodology
+
+schema: spec-driven
+
+context:
+  language: ARCH HDL
+  compiler: arch (Rust)
+  target: SystemVerilog via Verilator simulation
+  benchmark: RealBench (arxiv.org/abs/2507.16200)
+
+conventions:
+  - One construct per .arch file
+  - Module names: PascalCase (match RealBench reference names)
+  - Port names: snake_case (match RealBench spec port names exactly)
+  - Parameters: UPPER_SNAKE
+  - clock ports: clk: in Clock<SysDomain>
+  - reset ports: rst_n: in Reset<Sync, Low> or rst: in Reset<Async, High> per spec
+
+known_artifacts:
+  - id: "#1-delay"
+    description: >
+      Reference Verilog uses <= #1 clk-to-Q transport delay on register updates.
+      ARCH-generated SV uses zero-delay <= in always_ff. This creates timing
+      differences in the RealBench test harness. Accepted as a timing-model
+      artifact, not a logic bug. See memory/project_realbench_timing_artifact.md.
+  - id: "cdc-fifo"
+    description: >
+      ARCH fifo construct generates correct gray-code CDC with 2-cycle latency.
+      Some RealBench reference designs use raw binary pointers across clock
+      domains without synchronizers. Accepted ARCH behavior is correct;
+      document mismatches as known ref limitation.
+      See memory/feedback_realbench_cdc.md.
+
+rules:
+  spec:
+    - Requirements use RFC 2119 keywords (SHALL, MUST, SHOULD, MAY)
+    - Every requirement has at least one scenario (GIVEN/WHEN/THEN)
+    - Port lists match RealBench spec exactly (names, widths, directions)
+  design:
+    - Prefer first-class ARCH constructs (fsm, fifo, pipeline, ram, arbiter)
+    - Document why each construct was chosen
+    - List all .arch files that will be created/modified
+  tasks:
+    - Numbered hierarchically (1.1, 1.2, ...)
+    - Each task is independently verifiable
+    - Include arch check, arch build, and RealBench sim steps
+  verify:
+    - id: "reset-audit"
+      description: >
+        Before running RealBench sim, compare every reg declaration's reset
+        value against the spec's reset table. If the spec says DAT_dat_o = 0
+        at reset but the ARCH code drives it to 4'b1111 in IDLE, that mismatch
+        will fail at time 10. Do this audit regardless of whether the module
+        has an explicit reset table — if the spec describes reset behavior in
+        prose, extract it into a table first.
+    - id: "fsm-transitions"
+      description: >
+        Every row of the spec's state transition table must be traceable to a
+        branch in the ARCH implementation. Missing transitions or wrong
+        conditions are the most common bug class. If the spec has no explicit
+        transition table, derive one from the prose before implementing.
+    - id: "output-per-state"
+      description: >
+        For each FSM state, verify what each output is driven to. Pay
+        particular attention to muxed signals that change meaning per
+        direction (e.g., CRC input is last_din during WRITE but DAT_dat_i
+        during READ). A signal-by-signal audit against the spec's per-state
+        description catches hardwired-wrong-value bugs.
+    - id: "decode-coverage"
+      description: >
+        For combinational decoders: every instruction encoding in the spec's
+        tables must have an explicit traceable path in the implementation.
+        Before writing ARCH code, extract a truth table from the spec: for
+        each opcode class (R/I/S/B/U/J/RV32C), list what every output signal
+        should be. Then verify each row is implemented. Also locate and read
+        the matching *_defines.v file — bit positions for info buses live
+        there, not in the spec prose. Missing the defines file is how
+        dec_info=0 happens.
+    - id: "submodule-audit"
+      description: >
+        Extract every submodule from the spec's submodule list before writing
+        ARCH code. For each one, decide: instantiate it or inline the logic.
+        If inlining, document the reason in design.md. If the spec lists N
+        submodules and the ARCH file instantiates 0, that is a red flag —
+        the implementation is a stub. This catches the most common failure
+        mode: capturing the port list and overall function from prose while
+        skipping the structured submodule requirements entirely.

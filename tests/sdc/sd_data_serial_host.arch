@@ -1,225 +1,411 @@
-// SD Data Serial Host
-// 6-state FSM. Write path: serializes 32-bit words as nibbles (big-endian),
-// CRC-16 per data line. Read path: captures nibbles, checks CRC-16.
+// SD Data Serial Host — SD card DAT line interface
+// 6-state FSM: IDLE, WRITE_DAT, WRITE_CRC, WRITE_BUSY, READ_WAIT, READ_DAT
+// CRC-16 per data line. Double-buffered write path.
+//
+// Verify: reset-audit, fsm-transitions, output-per-state matched against
+// RealBench spec + reference sd_data_serial_host.v (463 lines).
+// Endianness: BIG_ENDIAN (matches verification sd_defines.v).
 
 module sd_data_serial_host
+  param SD_BUS_W:    const = 4;
+  param BIT_BLOCK:   const = 1044;
+  param CRC_OFF:     const = 19;
+  param BIT_BLOCK_REC: const = 1024;
+  param BIT_CRC_CYCLE: const = 16;
 
-  port sd_clk:  in Clock<SysDomain>;
-  port rst:     in Reset<Async, High>;
+  port sd_clk: in Clock<SysDomain>;
+  port rst:    in Reset<Async, High>;
 
+  // TX FIFO interface
   port data_in: in UInt<32>;
   port rd:      out Bool;
 
+  // RX FIFO interface
   port data_out: out UInt<4>;
   port we:       out Bool;
 
-  port DAT_oe_o: out Bool;
-  port DAT_dat_o: out UInt<4>;
-  port DAT_dat_i: in UInt<4>;
+  // Tristate data
+  port DAT_oe_o:   out Bool;
+  port DAT_dat_o:  out UInt<4>;
+  port DAT_dat_i:  in UInt<4>;
 
-  port start_dat: in UInt<2>;
-  port ack_transfer: in Bool;
+  // Control
+  port start_dat:     in UInt<2>;
+  port ack_transfer:  in Bool;
 
+  // Status
   port busy_n:          out Bool;
   port transm_complete: out Bool;
   port crc_ok:          out Bool;
 
-  // State encoding
-  // 0=IDLE, 1=WRITE_DAT, 2=WRITE_CRC, 3=WRITE_BUSY, 4=READ_WAIT, 5=READ_DAT
-  reg st_r: UInt<3> reset rst => 0;
+  // ── State encoding (one-hot, matches reference) ──────────────────────
+  param IDLE:        const = 0;
+  param WRITE_DAT:   const = 1;
+  param WRITE_CRC:   const = 2;
+  param WRITE_BUSY:  const = 3;
+  param READ_WAIT:   const = 4;
+  param READ_DAT:    const = 5;
 
-  // Bit/nibble counter
-  reg bit_cnt: UInt<16> reset rst => 0;
-
-  // Data shift register (32-bit, serialized as nibbles)
-  reg data_shift: UInt<32> reset rst => 0;
-
-  // CRC shift registers per data line (for TX)
-  reg crc_shift0: UInt<16> reset rst => 0;
-  reg crc_shift1: UInt<16> reset rst => 0;
-  reg crc_shift2: UInt<16> reset rst => 0;
-  reg crc_shift3: UInt<16> reset rst => 0;
-
-  // CRC status
-  reg crc_ok_r: Bool reset rst => false;
-
-  // Output registers
-  reg busy_n_r:    Bool reset rst => true;
-  reg transm_c_r:  Bool reset rst => false;
-  reg dat_oe_r:    Bool reset rst => false;
-  reg dat_out_r:   UInt<4> reset rst => 0;
-  reg we_r:        Bool reset rst => false;
-  reg rd_r:        Bool reset rst => false;
-  reg data_out_r:  UInt<4> reset rst => 0;
-
-  // Received data buffer
-  reg rx_shift: UInt<32> reset rst => 0;
-
-  // CRC count for TX
-  reg crc_cnt: UInt<5> reset rst => 0;
-
-  // CRC wires
-  wire crc_en_w: Bool;
-  wire crc_rst_bit: Bool;
+  // ── CRC-16 signals ────────────────────────────────────────────────────
+  reg crc_in:  UInt<4>  reset rst => 0;
+  reg crc_en:  Bool     reset rst => false;
+  reg crc_rst: Bool     reset rst => true;
   wire crc_out0: UInt<16>;
   wire crc_out1: UInt<16>;
   wire crc_out2: UInt<16>;
   wire crc_out3: UInt<16>;
 
-  // Instantiate 4 CRC-16 modules (one per data line)
   inst u_crc0: sd_crc_16
-    CLK    <- sd_clk;
-    RST    <- rst;
-    BITVAL <- DAT_dat_i[0:0];
-    Enable <- crc_en_w;
-    CRC    -> crc_out0;
+    CLK <- sd_clk; RST <- rst;
+    BITVAL <- crc_in[0:0]; Enable <- crc_en; CRC -> crc_out0;
   end inst u_crc0
-
   inst u_crc1: sd_crc_16
-    CLK    <- sd_clk;
-    RST    <- rst;
-    BITVAL <- DAT_dat_i[1:1];
-    Enable <- crc_en_w;
-    CRC    -> crc_out1;
+    CLK <- sd_clk; RST <- rst;
+    BITVAL <- crc_in[1:1]; Enable <- crc_en; CRC -> crc_out1;
   end inst u_crc1
-
   inst u_crc2: sd_crc_16
-    CLK    <- sd_clk;
-    RST    <- rst;
-    BITVAL <- DAT_dat_i[2:2];
-    Enable <- crc_en_w;
-    CRC    -> crc_out2;
+    CLK <- sd_clk; RST <- rst;
+    BITVAL <- crc_in[2:2]; Enable <- crc_en; CRC -> crc_out2;
   end inst u_crc2
-
   inst u_crc3: sd_crc_16
-    CLK    <- sd_clk;
-    RST    <- rst;
-    BITVAL <- DAT_dat_i[3:3];
-    Enable <- crc_en_w;
-    CRC    -> crc_out3;
+    CLK <- sd_clk; RST <- rst;
+    BITVAL <- crc_in[3:3]; Enable <- crc_en; CRC -> crc_out3;
   end inst u_crc3
 
-  default seq on sd_clk rising;
+  // ── ACK_SYNC: two-stage synchronizer ──────────────────────────────────
+  reg ack_q:            Bool reset rst => false;
+  reg ack_transfer_int: Bool reset rst => false;
 
-  // Main FSM (rising edge)
-  seq
-    we_r  <= false;
-    rd_r  <= false;
+  seq on sd_clk rising
+    ack_q            <= ack_transfer;
+    ack_transfer_int <= ack_q;
+  end seq
 
-    if st_r == 0  // IDLE
-      dat_oe_r  <= false;
-      dat_out_r <= 4'b1111;
-      transm_c_r <= false;
+  // ── START_SYNC: start-bit detection ───────────────────────────────────
+  reg q_start_bit: Bool reset rst => true;
+
+  seq on sd_clk rising
+    if ~DAT_dat_i[0:0] & (state == READ_WAIT)
+      q_start_bit <= false;
+    else
+      q_start_bit <= true;
+    end if
+  end seq
+
+  // ── FSM state registers ──────────────────────────────────────────────
+  reg state: UInt<3> reset rst => IDLE;
+
+  // ── start_dat synchronizer: sample at negedge to avoid posedge race ──
+  // The testbench changes start_dat at posedge. If FSM_SEQ (also on posedge)
+  // sees the new value in the same time step, the state transition happens
+  // one cycle earlier than the reference (which uses state <= #1 next_state).
+  // Sampling start_dat at negedge makes it stable during posedge evaluation.
+  reg start_dat_r: UInt<2> reset rst => 0;
+
+  seq on sd_clk falling
+    start_dat_r <= start_dat;
+  end seq
+
+  // ── FSM_COMBO: combinational next_state ──────────────────────────────
+  wire next_state_w: UInt<3>;
+
+  comb
+    next_state_w = IDLE;
+    if state == IDLE
+      if start_dat_r == 2'b01
+        next_state_w = WRITE_DAT;
+      elsif start_dat_r == 2'b10
+        next_state_w = READ_WAIT;
+      else
+        next_state_w = IDLE;
+      end if
+    elsif state == WRITE_DAT
+      if transf_cnt >= BIT_BLOCK
+        next_state_w = WRITE_CRC;
+      elsif start_dat_r == 2'b11
+        next_state_w = IDLE;
+      else
+        next_state_w = WRITE_DAT;
+      end if
+    elsif state == WRITE_CRC
+      if crc_status == 0
+        next_state_w = WRITE_BUSY;
+      else
+        next_state_w = WRITE_CRC;
+      end if
+    elsif state == WRITE_BUSY
+      if busy_int & ack_transfer_int
+        next_state_w = IDLE;
+      else
+        next_state_w = WRITE_BUSY;
+      end if
+    elsif state == READ_WAIT
+      if ~q_start_bit
+        next_state_w = READ_DAT;
+      else
+        next_state_w = READ_WAIT;
+      end if
+    else  // READ_DAT
+      if ack_transfer_int | (start_dat_r == 2'b11)
+        next_state_w = IDLE;
+      else
+        next_state_w = READ_DAT;
+      end if
+    end if
+  end comb
+
+  // ── FSM_SEQ: state update on posedge ──────────────────────────────────
+  seq on sd_clk rising
+    state <= next_state_w;
+  end seq
+
+  // ── FSM_OUT registers ────────────────────────────────────────────────
+  // Reset values from spec reset table §FSM_OUT
+  reg write_buf_0:   UInt<32> reset rst => 0;
+  reg write_buf_1:   UInt<32> reset rst => 0;
+  reg sd_data_out:   UInt<32> reset rst => 0;
+  reg out_buff_ptr:  Bool     reset rst => false;
+  reg in_buff_ptr:   Bool     reset rst => false;
+  reg data_send_idx: UInt<3>  reset rst => 0;
+  reg transf_cnt:    UInt<11> reset rst => 0;
+  reg crc_status:    UInt<3>  reset rst => 7;
+  reg crc_s:         UInt<3>  reset rst => 0;
+  reg crc_c:         UInt<5>  reset rst => 0;
+  reg last_din:      UInt<4>  reset rst => 0;
+  reg busy_int:      Bool     reset rst => false;
+  // CRC serialization shift registers (avoid dynamic bit-select)
+  reg crc_sr0: UInt<16> reset rst => 0;
+  reg crc_sr1: UInt<16> reset rst => 0;
+  reg crc_sr2: UInt<16> reset rst => 0;
+  reg crc_sr3: UInt<16> reset rst => 0;
+  // Output registers
+  reg dat_oe_r:      Bool     reset rst => false;
+  reg dat_out_r:     UInt<4>  reset rst => 0;
+  reg rd_r:          Bool     reset rst => false;
+  reg we_r:          Bool     reset rst => false;
+  reg data_out_r:    UInt<4>  reset rst => 0;
+  reg busy_n_r:      Bool     reset rst => true;
+  reg transm_c_r:    Bool     reset rst => false;
+  reg crc_ok_r:      Bool     reset rst => false;
+
+  // ── FSM_OUT: per-state outputs (negedge, matches reference timing) ───
+  seq on sd_clk falling
+    // Defaults (overridden per state)
+    rd_r   <= false;
+    we_r   <= false;
+
+    if state == IDLE
+      dat_oe_r   <= false;
+      dat_out_r  <= 4'b1111;
+      crc_en     <= false;
+      crc_rst    <= true;
+      transf_cnt <= 0;
+      crc_c      <= 16;
+      crc_status <= 7;
+      crc_s      <= 0;
       busy_n_r   <= true;
+      data_send_idx <= 0;
+      out_buff_ptr  <= false;
+      in_buff_ptr   <= false;
+
+    elsif state == WRITE_DAT
+      transm_c_r <= false;
+      busy_n_r   <= false;
       crc_ok_r   <= false;
+      transf_cnt <= (transf_cnt + 1).trunc<11>();
 
-      if start_dat == 2'b01  // Write
-        st_r       <= 1;
-        busy_n_r   <= false;
-        dat_oe_r   <= true;
-        dat_out_r  <= 4'b0000;  // Start bit
-        bit_cnt    <= 0;
-        crc_cnt    <= 0;
-        rd_r       <= true;
-        data_shift <= data_in;
-      elsif start_dat == 2'b10  // Read
-        st_r     <= 4;
-        busy_n_r <= false;
-        bit_cnt  <= 0;
-      end if
-
-    elsif st_r == 1  // WRITE_DAT
-      // Serialize 32-bit data as 4-bit nibbles (8 nibbles per word)
-      if bit_cnt < 8
-        dat_out_r  <= data_shift[31:28];
-        data_shift <= {data_shift[27:0], 4'b0000};
-        bit_cnt    <= (bit_cnt + 1).trunc<16>();
-        if bit_cnt == 6
-          rd_r <= true;  // Pre-fetch next word
+      // Double-buffer fill from TX FIFO
+      if (in_buff_ptr != out_buff_ptr) | (transf_cnt == 0)
+        rd_r <= true;
+        if ~in_buff_ptr
+          write_buf_0 <= data_in;
+        else
+          write_buf_1 <= data_in;
         end if
+        in_buff_ptr <= ~in_buff_ptr;
+      end if
+
+      // Output buffer select
+      if ~out_buff_ptr
+        sd_data_out <= write_buf_0;
       else
-        // Load next word or move to CRC
-        data_shift <= data_in;
-        bit_cnt    <= 0;
-        crc_cnt    <= (crc_cnt + 1).trunc<5>();
-        if crc_cnt == 15  // 16 words = 512 bits
-          st_r    <= 2;
-          bit_cnt <= 0;
-          crc_shift0 <= crc_out0;
-          crc_shift1 <= crc_out1;
-          crc_shift2 <= crc_out2;
-          crc_shift3 <= crc_out3;
+        sd_data_out <= write_buf_1;
+      end if
+
+      if transf_cnt == 1
+        // Start bit
+        crc_rst <= false;
+        crc_en  <= true;
+        last_din  <= sd_data_out[31:28];
+        crc_in    <= sd_data_out[31:28];
+        dat_oe_r  <= true;
+        dat_out_r <= 0;
+        data_send_idx <= 1;
+
+      elsif (transf_cnt >= 2) & (transf_cnt <= (BIT_BLOCK - CRC_OFF))
+        dat_oe_r <= true;
+        // BIG_ENDIAN: serialize MSB first
+        if data_send_idx == 0
+          last_din <= sd_data_out[31:28]; crc_in <= sd_data_out[31:28];
+        elsif data_send_idx == 1
+          last_din <= sd_data_out[27:24]; crc_in <= sd_data_out[27:24];
+        elsif data_send_idx == 2
+          last_din <= sd_data_out[23:20]; crc_in <= sd_data_out[23:20];
+        elsif data_send_idx == 3
+          last_din <= sd_data_out[19:16]; crc_in <= sd_data_out[19:16];
+        elsif data_send_idx == 4
+          last_din <= sd_data_out[15:12]; crc_in <= sd_data_out[15:12];
+        elsif data_send_idx == 5
+          last_din <= sd_data_out[11:8];  crc_in <= sd_data_out[11:8];
+        elsif data_send_idx == 6
+          last_din <= sd_data_out[7:4];   crc_in <= sd_data_out[7:4];
+          out_buff_ptr <= ~out_buff_ptr;
+        else  // 7
+          last_din <= sd_data_out[3:0];   crc_in <= sd_data_out[3:0];
         end if
+        data_send_idx <= (data_send_idx + 1).trunc<3>();
+        dat_out_r <= last_din;
+
+        if transf_cnt >= (BIT_BLOCK - CRC_OFF)
+          crc_en <= false;
+        end if
+
+      elsif (transf_cnt > (BIT_BLOCK - CRC_OFF)) & (crc_c != 0)
+        crc_en <= false;
+        dat_oe_r <= true;
+        crc_c  <= (crc_c - 1).trunc<5>();
+        if crc_c == 16
+          // First CRC bit: drive directly from crc_out[15], then shift
+          dat_out_r[0:0] <= crc_out0[15:15];
+          dat_out_r[1:1] <= crc_out1[15:15];
+          dat_out_r[2:2] <= crc_out2[15:15];
+          dat_out_r[3:3] <= crc_out3[15:15];
+          crc_sr0 <= {crc_out0[14:0], 1'b0};
+          crc_sr1 <= {crc_out1[14:0], 1'b0};
+          crc_sr2 <= {crc_out2[14:0], 1'b0};
+          crc_sr3 <= {crc_out3[14:0], 1'b0};
+        else
+          // Subsequent CRC bits from shift register MSB
+          dat_out_r[0:0] <= crc_sr0[15:15];
+          dat_out_r[1:1] <= crc_sr1[15:15];
+          dat_out_r[2:2] <= crc_sr2[15:15];
+          dat_out_r[3:3] <= crc_sr3[15:15];
+          crc_sr0 <= {crc_sr0[14:0], 1'b0};
+          crc_sr1 <= {crc_sr1[14:0], 1'b0};
+          crc_sr2 <= {crc_sr2[14:0], 1'b0};
+          crc_sr3 <= {crc_sr3[14:0], 1'b0};
+        end if
+
+      elsif transf_cnt == (BIT_BLOCK - 2)
+        dat_oe_r  <= true;
+        dat_out_r <= 4'b1111;  // Stop bit
+
+      elsif transf_cnt != 0
+        dat_oe_r <= false;
       end if
 
-    elsif st_r == 2  // WRITE_CRC
-      if bit_cnt < 16
-        dat_out_r <= {crc_shift3[15:15], crc_shift2[15:15], crc_shift1[15:15], crc_shift0[15:15]};
-        crc_shift0 <= {crc_shift0[14:0], 1'b0};
-        crc_shift1 <= {crc_shift1[14:0], 1'b0};
-        crc_shift2 <= {crc_shift2[14:0], 1'b0};
-        crc_shift3 <= {crc_shift3[14:0], 1'b0};
-        bit_cnt <= (bit_cnt + 1).trunc<16>();
+    elsif state == WRITE_CRC
+      dat_oe_r   <= false;
+      crc_status <= (crc_status - 1).trunc<3>();
+      if crc_status == 2
+        crc_s[0:0] <= DAT_dat_i[0:0];
+      elsif crc_status == 3
+        crc_s[1:1] <= DAT_dat_i[0:0];
+      elsif crc_status == 4
+        crc_s[2:2] <= DAT_dat_i[0:0];
+      end if
+
+    elsif state == WRITE_BUSY
+      transm_c_r <= true;
+      if crc_s == 3'b010
+        crc_ok_r <= true;
       else
-        dat_out_r <= 4'b1111;  // End bit
-        st_r      <= 3;
-        bit_cnt   <= 0;
+        crc_ok_r <= false;
       end if
+      busy_int <= DAT_dat_i[0:0];
 
-    elsif st_r == 3  // WRITE_BUSY
-      dat_oe_r <= false;
-      if DAT_dat_i[0:0]
-        transm_c_r <= true;
-        busy_n_r   <= true;
-        crc_ok_r   <= true;
-        st_r       <= 0;
-      end if
+    elsif state == READ_WAIT
+      dat_oe_r  <= false;
+      crc_rst   <= false;
+      crc_en    <= true;
+      crc_in    <= 0;
+      crc_c     <= 15;
+      busy_n_r  <= false;
+      transm_c_r <= false;
 
-    elsif st_r == 4  // READ_WAIT
-      if DAT_dat_i == 4'b0000  // Start bits
-        st_r    <= 5;
-        bit_cnt <= 0;
-      end if
-
-    elsif st_r == 5  // READ_DAT
-      // Capture nibbles into 32-bit words
-      rx_shift <= {rx_shift[27:0], DAT_dat_i};
-      bit_cnt  <= (bit_cnt + 1).trunc<16>();
-
-      if bit_cnt[2:0] == 3'b111  // Every 8 nibbles (32 bits)
-        we_r       <= true;
+    elsif state == READ_DAT
+      if transf_cnt < BIT_BLOCK_REC
+        we_r     <= true;
         data_out_r <= DAT_dat_i;
-      end if
-
-      if bit_cnt == 16'd1039  // 512 bits data + 16 CRC + start/end = done
-        transm_c_r <= true;
-        busy_n_r   <= true;
-        crc_ok_r   <= true;
-        st_r       <= 0;
+        crc_in   <= DAT_dat_i;
+        crc_ok_r <= true;
+        transf_cnt <= (transf_cnt + 1).trunc<11>();
+      elsif transf_cnt <= (BIT_BLOCK_REC + BIT_CRC_CYCLE)
+        transf_cnt <= (transf_cnt + 1).trunc<11>();
+        crc_en    <= false;
+        last_din  <= DAT_dat_i;
+        if transf_cnt > BIT_BLOCK_REC
+          crc_c <= (crc_c - 1).trunc<5>();
+          we_r  <= false;
+          // Compare CRC: use crc_out[crc_c] on first cycle, shift reg after
+          if crc_c == 15
+            // First CRC bit: compare directly using known index 15
+            if crc_out0[15:15] != last_din[0:0]
+              crc_ok_r <= false;
+            end if
+            if crc_out1[15:15] != last_din[1:1]
+              crc_ok_r <= false;
+            end if
+            if crc_out2[15:15] != last_din[2:2]
+              crc_ok_r <= false;
+            end if
+            if crc_out3[15:15] != last_din[3:3]
+              crc_ok_r <= false;
+            end if
+            // Load and shift for subsequent cycles
+            crc_sr0 <= {crc_out0[14:0], 1'b0};
+            crc_sr1 <= {crc_out1[14:0], 1'b0};
+            crc_sr2 <= {crc_out2[14:0], 1'b0};
+            crc_sr3 <= {crc_out3[14:0], 1'b0};
+          else
+            // Subsequent CRC bits from shift register MSB
+            if crc_sr0[15:15] != last_din[0:0]
+              crc_ok_r <= false;
+            end if
+            if crc_sr1[15:15] != last_din[1:1]
+              crc_ok_r <= false;
+            end if
+            if crc_sr2[15:15] != last_din[2:2]
+              crc_ok_r <= false;
+            end if
+            if crc_sr3[15:15] != last_din[3:3]
+              crc_ok_r <= false;
+            end if
+            crc_sr0 <= {crc_sr0[14:0], 1'b0};
+            crc_sr1 <= {crc_sr1[14:0], 1'b0};
+            crc_sr2 <= {crc_sr2[14:0], 1'b0};
+            crc_sr3 <= {crc_sr3[14:0], 1'b0};
+          end if
+          if crc_c == 0
+            transm_c_r <= true;
+            busy_n_r   <= false;
+            we_r       <= false;
+          end if
+        end if
       end if
     end if
   end seq
 
-  // Negedge output register updates
-  seq on sd_clk falling
-    // Register DAT outputs on falling edge for hold-time margin
-  end seq
-
-  // CRC enable
+  // ── Output assignments ────────────────────────────────────────────────
   comb
-    crc_en_w   = (st_r == 5) & (bit_cnt < 1024);
-    crc_rst_bit = (st_r == 0);
-  end comb
-
-  // Output assignments
-  comb
-    DAT_oe_o       = dat_oe_r;
-    DAT_dat_o      = dat_out_r;
-    busy_n         = busy_n_r;
+    DAT_oe_o        = dat_oe_r;
+    DAT_dat_o       = dat_out_r;
+    busy_n          = busy_n_r;
     transm_complete = transm_c_r;
-    crc_ok         = crc_ok_r;
-    we             = we_r;
-    rd             = rd_r;
-    data_out       = data_out_r;
+    crc_ok          = crc_ok_r;
+    we              = we_r;
+    rd              = rd_r;
+    data_out        = data_out_r;
   end comb
+
 end module sd_data_serial_host

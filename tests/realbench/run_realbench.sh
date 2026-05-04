@@ -106,16 +106,33 @@ for MOD in $MODULES; do
     fi
 
     # The generated .sv lands next to the source; copy to expected place.
+    # The ARCH compiler may inline transitive dependencies into the main output,
+    # so the top SV already includes sub-modules. Remove any dependency .sv files
+    # that also exist in the work dir to avoid MODDUP.
     if [ -f "$GEN_FILE" ]; then
         cp "$GEN_FILE" "$TOP_SV"
+        # Remove .sv files for instantiated sub-modules (already inlined in top SV)
+        for sv in "$WORK_DIR"/*.sv; do
+            bn=$(basename "$sv" .sv)
+            if [ "$bn" != "${MOD}" ] && grep -q "^module $bn " "$TOP_SV" 2>/dev/null; then
+                rm -f "$sv"
+            fi
+        done
     fi
 
     # Run Verilator compile
     cd "$WORK_DIR"
-    VFLAGS="-cc --exe --binary --trace --assert --timing -j 4 --top tb"
+
+    # Auto-detect top module name from testbench (some use 'tb', others 'tb_<mod>')
+    TOP_MOD="tb"
+    if grep -q '^module tb_' *_testbench.sv 2>/dev/null; then
+        TOP_MOD=$(grep '^module tb_' *_testbench.sv | head -1 | sed 's/.*module \(tb_[^(]*\).*/\1/')
+    fi
+    VFLAGS="-cc --exe --binary --trace --assert --timing -j 4 --top $TOP_MOD"
     VFLAGS="$VFLAGS -Wno-SIDEEFFECT -Wno-CASEOVERLAP -Wno-LATCH -Wno-UNOPTFLAT"
     VFLAGS="$VFLAGS -Wno-MULTIDRIVEN -Wno-ASCRANGE -Wno-COMBDLY -Wno-IMPLICIT"
     VFLAGS="$VFLAGS -Wno-CASEINCOMPLETE -Wno-PINMISSING -Wno-WIDTHTRUNC"
+    VFLAGS="$VFLAGS -Wno-MODDUP -Wno-WIDTHEXPAND"
     VFLAGS="$VFLAGS -Wno-TIMESCALEMOD -Wno-INITIALDLY -Wno-EOFNEWLINE"
     VFLAGS="$VFLAGS -Wno-DECLFILENAME -Wno-WIDTHEXPAND -Wno-WIDTHCONCAT"
     VFLAGS="$VFLAGS -fno-table"

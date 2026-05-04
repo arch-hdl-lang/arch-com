@@ -76,16 +76,32 @@ module e203_exu_disp
   port disp_oitf_pc:     out UInt<32>;
 
   // ── Hazard detection ──────────────────────────────────────────────
-  let raw_dep: Bool = (disp_i_rs1en & oitfrd_match_disprs1) |
-                       (disp_i_rs2en & oitfrd_match_disprs2);
-  let waw_dep: Bool = disp_i_rdwen & oitfrd_match_disprd;
-  let dep_stall: Bool = raw_dep | waw_dep;
+  // Reference does NOT gate on rs1en/rs2en — matches any rs-field hit
+  let raw_dep: Bool = oitfrd_match_disprs1 |
+                       oitfrd_match_disprs2 |
+                       oitfrd_match_disprs3;
+  // Reference matches any rd-field hit regardless of rdwen
+  let waw_dep: Bool = oitfrd_match_disprd;
+  let dep: Bool = raw_dep | waw_dep;
 
-  // For long-pipe instructions, OITF must be ready
-  let oitf_stall: Bool = disp_o_alu_longpipe & ~disp_oitf_ready;
+  // Instruction group from info bus (bits [2:0])
+  let disp_i_info_grp: UInt<3> = disp_i_info[2:0];
 
-  // Dispatch can proceed when ALU is ready, no hazard, no WFI, no AMO
-  let disp_condition: Bool = ~dep_stall & ~oitf_stall & ~wfi_halt_exu_req & ~amo_wait;
+  // CSR group = 3; FENCE/FENCEI in BJP group (2) with specific bits
+  let disp_csr: Bool = disp_i_info_grp == 3;
+  let disp_fence_fencei: Bool = (disp_i_info_grp == 2) &
+                                  (disp_i_info[14:14] | disp_i_info[15:15]);
+
+  // Long-pipe prediction: AGU group (1)
+  let disp_alu_longp_prdt: Bool = disp_i_info_grp == 1;
+
+  // Dispatch condition matches reference exactly
+  let disp_condition: Bool =
+      (disp_csr ? oitf_empty : true)
+    & (disp_fence_fencei ? oitf_empty : true)
+    & ~wfi_halt_exu_req
+    & ~dep
+    & (disp_alu_longp_prdt ? disp_oitf_ready : true);
 
   comb
     // Dispatch handshake

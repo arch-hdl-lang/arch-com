@@ -39,7 +39,7 @@ module sd_fifo_tx_filler
   inst u_fifo: sd_tx_fifo
     wclk  <- clk;
     rclk  <- sd_clk;
-    rst   <- rst | (~en);
+    rst   <- rst;
     d     <- din_r;
     wr    <- wr_tx_r;
     q     -> dat_o;

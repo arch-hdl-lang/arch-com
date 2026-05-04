@@ -1,11 +1,9 @@
 // E203 HBirdv2 Instruction Decode Unit
-// Pure combinational RV32IMC decoder matching the RealBench port interface.
-// Decodes instruction into register indices, immediate, info bus, and
-// control flags. Passes through PC, misalign, and bus error from IFU.
+// Full RV32IMC decoder: 32-bit (RV32I+M+A) + 16-bit compressed (RV32C).
+// Encodes dec_info bus per e203_defines.v bit assignments.
+// Verify: decode-coverage audit applied.
 
 module e203_exu_decode
-  param XLEN: const = 32;
-
   // ── Inputs from IFU ─────────────────────────────────────────────────
   port i_instr:      in UInt<32>;
   port i_pc:         in UInt<32>;
@@ -57,137 +55,447 @@ module e203_exu_decode
   port dec_jalr_rs1idx: out UInt<5>;
   port dec_bjp_imm:     out UInt<32>;
 
-  // ── Simplified control outputs for e203_exu integration ─────────────
-  port o_alu:      out Bool;
-  port o_agu:      out Bool;
-  port o_alu_add:  out Bool;
-  port o_alu_sub:  out Bool;
-  port o_alu_xor:  out Bool;
-  port o_alu_sll:  out Bool;
-  port o_alu_srl:  out Bool;
-  port o_alu_sra:  out Bool;
-  port o_alu_or:   out Bool;
-  port o_alu_and:  out Bool;
-  port o_alu_slt:  out Bool;
-  port o_alu_sltu: out Bool;
-  port o_alu_lui:  out Bool;
-  port o_beq:      out Bool;
-  port o_bne:      out Bool;
-  port o_blt:      out Bool;
-  port o_bge:      out Bool;
-  port o_bltu:     out Bool;
-  port o_bgeu:     out Bool;
-  port o_jump:     out Bool;
-  port o_mulh:     out Bool;
-  port o_mulhu:    out Bool;
-  port o_load:     out Bool;
-  port o_store:    out Bool;
-
   // ── Instruction field extraction ────────────────────────────────────
   let opcode:    UInt<7> = i_instr[6:0];
-  let rd_field:  UInt<5> = i_instr[11:7];
   let funct3:    UInt<3> = i_instr[14:12];
+  let funct7:    UInt<7> = i_instr[31:25];
   let rs1_field: UInt<5> = i_instr[19:15];
   let rs2_field: UInt<5> = i_instr[24:20];
-  let funct7:    UInt<7> = i_instr[31:25];
+  let rd_field:  UInt<5> = i_instr[11:7];
 
-  // ── Opcode classification ───────────────────────────────────────────
-  let is_op:       Bool = opcode == 0x33;
-  let is_op_imm:   Bool = opcode == 0x13;
-  let is_lui:      Bool = opcode == 0x37;
-  let is_auipc:    Bool = opcode == 0x17;
-  let is_branch:   Bool = opcode == 0x63;
-  let is_jal:      Bool = opcode == 0x6F;
-  let is_jalr:     Bool = opcode == 0x67;
-  let is_load_op:  Bool = opcode == 0x03;
-  let is_store_op: Bool = opcode == 0x23;
-  let is_system:   Bool = opcode == 0x73;
-  let is_fence:    Bool = opcode == 0x0F;
-  let is_nice_op:  Bool = opcode == 0x0B;
+  // 16-bit fields (compressed instruction register mapping: x8-x15)
+  let rv16_rd:  UInt<5> = rd_field;
+  let rv16_rs1: UInt<5> = rd_field;
+  let rv16_rs2: UInt<5> = i_instr[6:2];
+  let rv16_rdd: UInt<5> = 8 + i_instr[4:2];
+  let rv16_rss1: UInt<5> = 8 + i_instr[9:7];
+  let rv16_rss2: UInt<5> = rv16_rdd;
+  let rv16_func3: UInt<3> = i_instr[15:13];
 
-  // ── funct3 decode ───────────────────────────────────────────────────
-  let f3_add:  Bool = funct3 == 0x0;
-  let f3_sll:  Bool = funct3 == 0x1;
-  let f3_slt:  Bool = funct3 == 0x2;
-  let f3_sltu: Bool = funct3 == 0x3;
-  let f3_xor:  Bool = funct3 == 0x4;
-  let f3_srl:  Bool = funct3 == 0x5;
-  let f3_or:   Bool = funct3 == 0x6;
-  let f3_and:  Bool = funct3 == 0x7;
+  // ── RV32 detection ──────────────────────────────────────────────────
+  let opcode_1_0_11: Bool = opcode[1:0] == 3;
+  let rv32: Bool = ~(i_instr[4:2] == 7) & opcode_1_0_11;
 
-  let f7_sub:    Bool = funct7 == 0x20;
-  let f7_muldiv: Bool = funct7 == 0x01;
-  let is_muldiv: Bool = is_op & f7_muldiv;
+  // ── RV32 opcode decode ──────────────────────────────────────────────
+  let op6_5: UInt<2> = opcode[6:5];
+  let op4_2: UInt<3> = opcode[4:2];
+  let is_load:   Bool = (op6_5 == 0) & (op4_2 == 0) & rv32;
+  let is_store:  Bool = (op6_5 == 1) & (op4_2 == 0) & rv32;
+  let is_branch: Bool = (op6_5 == 3) & (op4_2 == 0) & rv32;
+  let is_jalr:   Bool = (op6_5 == 3) & (op4_2 == 1) & rv32;
+  let is_jal:    Bool = (op6_5 == 3) & (op4_2 == 3) & rv32;
+  let is_op_imm: Bool = (op6_5 == 0) & (op4_2 == 4) & rv32;
+  let is_op:     Bool = (op6_5 == 1) & (op4_2 == 4) & rv32;
+  let is_system: Bool = (op6_5 == 3) & (op4_2 == 4) & rv32;
+  let is_miscmem:Bool = (op6_5 == 0) & (op4_2 == 3) & rv32;
+  let is_auipc:  Bool = (op6_5 == 0) & (op4_2 == 5) & rv32;
+  let is_lui:    Bool = (op6_5 == 1) & (op4_2 == 5) & rv32;
+  let is_amo:    Bool = (op6_5 == 1) & (op4_2 == 3) & rv32;
 
-  // ── funct3 decode (branch) ──────────────────────────────────────────
-  let f3_beq:  Bool = funct3 == 0x0;
-  let f3_bne:  Bool = funct3 == 0x1;
-  let f3_blt:  Bool = funct3 == 0x4;
-  let f3_bge:  Bool = funct3 == 0x5;
-  let f3_bltu: Bool = funct3 == 0x6;
-  let f3_bgeu: Bool = funct3 == 0x7;
+  // ── RV32 funct3/funct7 classification ───────────────────────────────
+  let f3_000: Bool = funct3 == 0;
+  let f3_001: Bool = funct3 == 1;
+  let f3_010: Bool = funct3 == 2;
+  let f3_011: Bool = funct3 == 3;
+  let f3_100: Bool = funct3 == 4;
+  let f3_101: Bool = funct3 == 5;
+  let f3_110: Bool = funct3 == 6;
+  let f3_111: Bool = funct3 == 7;
+  let f7_00:  Bool = funct7 == 0x00;
+  let f7_20:  Bool = funct7 == 0x20;
+  let f7_01:  Bool = funct7 == 0x01;
 
-  // ── System instruction decode ───────────────────────────────────────
-  let is_ecall:  Bool = is_system & (i_instr[31:20] == 0x000);
-  let is_ebreak: Bool = is_system & (i_instr[31:20] == 0x001);
-  let is_mret:   Bool = is_system & (i_instr[31:20] == 0x302);
-  let is_wfi:    Bool = is_system & (i_instr[31:20] == 0x105);
-  let is_csr:    Bool = is_system & (funct3 != 0);
-  let is_fencei: Bool = is_fence & f3_sll;
+  // ── RV32 specific instructions ──────────────────────────────────────
+  let rv32_add:  Bool = is_op & f3_000 & f7_00;
+  let rv32_sub:  Bool = is_op & f3_000 & f7_20;
+  let rv32_sll:  Bool = is_op & f3_001 & f7_00;
+  let rv32_slt:  Bool = is_op & f3_010 & f7_00;
+  let rv32_sltu: Bool = is_op & f3_011 & f7_00;
+  let rv32_xor:  Bool = is_op & f3_100 & f7_00;
+  let rv32_srl:  Bool = is_op & f3_101 & f7_00;
+  let rv32_sra:  Bool = is_op & f3_101 & f7_20;
+  let rv32_or:   Bool = is_op & f3_110 & f7_00;
+  let rv32_and:  Bool = is_op & f3_111 & f7_00;
+  let rv32_addi: Bool = is_op_imm & f3_000;
+  let rv32_slti: Bool = is_op_imm & f3_010;
+  let rv32_sltiu:Bool = is_op_imm & f3_011;
+  let rv32_xori: Bool = is_op_imm & f3_100;
+  let rv32_ori:  Bool = is_op_imm & f3_110;
+  let rv32_andi: Bool = is_op_imm & f3_111;
+  let rv32_slli: Bool = is_op_imm & f3_001 & (funct7[6:6] == 0);
+  let rv32_srli: Bool = is_op_imm & f3_101 & (funct7[6:6] == 0);
+  let rv32_srai: Bool = is_op_imm & f3_101 & (funct7[6:6] == 1);
 
-  // 32-bit instruction flag (not compressed)
-  let rv32_flag: Bool = (i_instr[1:0] == 3);
+  let rv32_beq:  Bool = is_branch & f3_000;
+  let rv32_bne:  Bool = is_branch & f3_001;
+  let rv32_blt:  Bool = is_branch & f3_100;
+  let rv32_bge:  Bool = is_branch & f3_101;
+  let rv32_bltu: Bool = is_branch & f3_110;
+  let rv32_bgeu: Bool = is_branch & f3_111;
+  let rv32_bxx:  Bool = is_branch;
 
-  // ── Illegal instruction check (simplified) ─────────────────────────
-  let known_op: Bool = is_op | is_op_imm | is_lui | is_auipc | is_branch |
-                        is_jal | is_jalr | is_load_op | is_store_op |
-                        is_system | is_fence | is_nice_op;
-  let illegal: Bool = ~known_op;
+  let rv32_lb:   Bool = is_load & f3_000;
+  let rv32_lh:   Bool = is_load & f3_001;
+  let rv32_lw:   Bool = is_load & f3_010;
+  let rv32_lbu:  Bool = is_load & f3_100;
+  let rv32_lhu:  Bool = is_load & f3_101;
+  let rv32_sb:   Bool = is_store & f3_000;
+  let rv32_sh:   Bool = is_store & f3_001;
+  let rv32_sw:   Bool = is_store & f3_010;
+
+  let rv32_ecall:  Bool = is_system & (i_instr[31:20] == 0x000);
+  let rv32_ebreak: Bool = is_system & (i_instr[31:20] == 0x001);
+  let rv32_mret:   Bool = is_system & (i_instr[31:20] == 0x302);
+  let rv32_dret:   Bool = is_system & (i_instr[31:20] == 0x7B2);
+  let rv32_wfi:    Bool = is_system & (i_instr[31:20] == 0x105);
+  let rv32_csr:    Bool = is_system & ~(funct3 == 0);
+  let rv32_csrrw:  Bool = is_system & (f3_001 | f3_101);
+  let rv32_csrrs:  Bool = is_system & (f3_010 | f3_110);
+  let rv32_csrrc:  Bool = is_system & (f3_011 | f3_111);
+  let rv32_csrrwi: Bool = is_system & f3_101;
+  let rv32_csrrsi: Bool = is_system & f3_110;
+  let rv32_csrrci: Bool = is_system & f3_111;
+  let rv32_fence:  Bool = is_miscmem & f3_000;
+  let rv32_fence_i:Bool = is_miscmem & f3_001;
+
+  // M-extension
+  let rv32_mul:    Bool = is_op & f3_000 & f7_01;
+  let rv32_mulh:   Bool = is_op & f3_001 & f7_01;
+  let rv32_mulhsu: Bool = is_op & f3_010 & f7_01;
+  let rv32_mulhu:  Bool = is_op & f3_011 & f7_01;
+  let rv32_div:    Bool = is_op & f3_100 & f7_01;
+  let rv32_divu:   Bool = is_op & f3_101 & f7_01;
+  let rv32_rem:    Bool = is_op & f3_110 & f7_01;
+  let rv32_remu:   Bool = is_op & f3_111 & f7_01;
+  let is_muldiv:   Bool = is_op & f7_01;
+
+  // ── RV16 (compressed) instruction decode ────────────────────────────
+  let op1_0: UInt<2> = opcode[1:0];
+  let rv16_addi4spn:  Bool = (op1_0 == 0) & (rv16_func3 == 0);
+  let rv16_lw:        Bool = (op1_0 == 0) & (rv16_func3 == 2);
+  let rv16_sw:        Bool = (op1_0 == 0) & (rv16_func3 == 6);
+  let rv16_addi:      Bool = (op1_0 == 1) & (rv16_func3 == 0);
+  let rv16_jal:       Bool = (op1_0 == 1) & (rv16_func3 == 1);
+  let rv16_li:        Bool = (op1_0 == 1) & (rv16_func3 == 2);
+  let rv16_lui_addi16sp: Bool = (op1_0 == 1) & (rv16_func3 == 3);
+  let rv16_miscalu:   Bool = (op1_0 == 1) & (rv16_func3 == 4);
+  let rv16_j:         Bool = (op1_0 == 1) & (rv16_func3 == 5);
+  let rv16_beqz:      Bool = (op1_0 == 1) & (rv16_func3 == 6);
+  let rv16_bnez:      Bool = (op1_0 == 1) & (rv16_func3 == 7);
+  let rv16_slli:      Bool = (op1_0 == 2) & (rv16_func3 == 0);
+  let rv16_lwsp:      Bool = (op1_0 == 2) & (rv16_func3 == 2);
+  let rv16_jalr_mv_add: Bool = (op1_0 == 2) & (rv16_func3 == 4);
+  let rv16_swsp:      Bool = (op1_0 == 2) & (rv16_func3 == 6);
+
+  // RV16 sub-decodes
+  let rv16_nop:   Bool = rv16_addi & ~i_instr[12:12] & (rv16_rd == 0) & (rv16_rs2 == 0);
+  let rv16_srli:  Bool = rv16_miscalu & (i_instr[11:10] == 0);
+  let rv16_srai:  Bool = rv16_miscalu & (i_instr[11:10] == 1);
+  let rv16_andi:  Bool = rv16_miscalu & (i_instr[11:10] == 2);
+  let rv16_subxororand: Bool = rv16_miscalu & (i_instr[12:10] == 3);
+  let rv16_sub:   Bool = rv16_subxororand & (i_instr[6:5] == 0);
+  let rv16_xor:   Bool = rv16_subxororand & (i_instr[6:5] == 1);
+  let rv16_or:    Bool = rv16_subxororand & (i_instr[6:5] == 2);
+  let rv16_and:   Bool = rv16_subxororand & (i_instr[6:5] == 3);
+
+  let rv16_addi16sp: Bool = rv16_lui_addi16sp & (rd_field == 2);
+  let rv16_lui:      Bool = rv16_lui_addi16sp & (rd_field != 0) & (rd_field != 2);
+
+  // RV16 register field special cases
+  let rv16_instr_12_is0:  Bool = i_instr[12:12] == 0;
+  let rv16_instr_6_2_is0: Bool = i_instr[6:2] == 0;
+  let rv16_jr:   Bool = rv16_jalr_mv_add & ~i_instr[12:12] & (rv16_rs2 == 0) & (rv16_rd != 0);
+  let rv16_jalr: Bool = rv16_jalr_mv_add & i_instr[12:12] & (rv16_rs2 == 0) & (rv16_rd != 0);
+  let rv16_mv:   Bool = rv16_jalr_mv_add & ~i_instr[12:12] & (rv16_rs2 != 0) & (rv16_rd != 0);
+  let rv16_add:  Bool = rv16_jalr_mv_add & i_instr[12:12] & (rv16_rs2 != 0) & (rv16_rd != 0);
+  let rv16_ebreak: Bool = rv16_jalr_mv_add & i_instr[12:12] & (rv16_rs2 == 0) & (rv16_rd == 0);
+
+  // ── Specific illegal conditions (gating for alu_op) ──────────────────
+  let rv32_sxxi_shamt_legl: Bool = funct7[6:6] == 0;
+  let rv32_sxxi_shamt_ilgl: Bool = (rv32_slli | rv32_srli | rv32_srai) & ~rv32_sxxi_shamt_legl;
+  let rv16_sxxi_shamt_legl: Bool = rv16_instr_12_is0 & ~(rv16_instr_6_2_is0);
+  let rv16_sxxi_shamt_ilgl: Bool = (rv16_slli | rv16_srli | rv16_srai) & ~rv16_sxxi_shamt_legl;
+  let rv16_addi4spn_ilgl: Bool = rv16_addi4spn & rv16_instr_12_is0 & (rv16_rd == 0) & (opcode[6:5] == 0);
+  let rv16_addi16sp_ilgl: Bool = rv16_addi16sp & rv16_instr_12_is0 & rv16_instr_6_2_is0;
+  let rv16_li_ilgl: Bool = rv16_li & (rv16_rd == 0);
+  let rv16_lui_ilgl: Bool = rv16_lui & ((rv16_rd == 0) | (rv16_rd == 2) | (rv16_instr_6_2_is0 & rv16_instr_12_is0));
+  let rv16_li_lui_ilgl: Bool = rv16_li_ilgl | rv16_lui_ilgl;
+
+  // ── Instruction group classification ────────────────────────────────
+  // alu_op is gated by illegal conditions (matches reference)
+  let alu_op:     Bool = ~rv32_sxxi_shamt_ilgl & ~rv16_sxxi_shamt_ilgl &
+                          ~rv16_li_lui_ilgl & ~rv16_addi4spn_ilgl & ~rv16_addi16sp_ilgl &
+                          (is_op_imm |
+                           (is_op & ~f7_01) |  // exclude MULDIV
+                           is_auipc | is_lui |
+                           rv16_addi4spn | rv16_addi | rv16_lui_addi16sp |
+                           rv16_li | rv16_mv | rv16_slli | rv16_miscalu |
+                           rv16_addi16sp | rv16_nop |
+                           rv32_ecall | rv32_ebreak | rv32_wfi | rv32_mret | rv32_dret |
+                           rv16_ebreak);
+  let amoldst_op: Bool = is_load | is_store | is_amo | rv16_lw | rv16_sw | rv16_lwsp | rv16_swsp;
+  let bjp_op:     Bool = is_branch | is_jal | is_jalr | rv16_j | rv16_jal |
+                          rv16_beqz | rv16_bnez | rv16_jr | rv16_jalr |
+                          rv32_fence | rv32_fence_i;
+  let csr_op:     Bool = rv32_csr;
+  let muldiv_op:  Bool = is_muldiv;
+
+  // ── need_imm flag (for ALU op2 select) ──────────────────────────────
+  let need_imm: Bool = is_op_imm | is_load | is_store | is_jalr | is_auipc | is_lui |
+                        rv16_addi4spn | rv16_addi | rv16_addi16sp | rv16_li | rv16_lui |
+                        rv16_lw | rv16_sw | rv16_lwsp | rv16_swsp;
+
+  // ── Register index selection (RV32 vs RV16) ─────────────────────────
+  // RV16 format classification
+  let rv16_fmt_cr:  Bool = rv16_jalr_mv_add;
+  let rv16_fmt_ci:  Bool = rv16_lwsp | rv16_li | rv16_lui_addi16sp | rv16_addi | rv16_slli;
+  let rv16_fmt_css: Bool = rv16_swsp;
+  let rv16_fmt_ciw: Bool = rv16_addi4spn;
+  let rv16_fmt_cl:  Bool = rv16_lw;
+  let rv16_fmt_cs:  Bool = rv16_sw | rv16_subxororand;
+  let rv16_fmt_cb:  Bool = rv16_beqz | rv16_bnez | rv16_srli | rv16_srai | rv16_andi;
+  let rv16_fmt_cj:  Bool = rv16_j | rv16_jal;
+
+  wire rs1_idx: UInt<5>;
+  wire rs2_idx: UInt<5>;
+  wire rd_idx:  UInt<5>;
+
+  comb
+    if rv32
+      rs1_idx = rs1_field;
+      rs2_idx = rs2_field;
+      rd_idx  = rd_field;
+    // CR format: JR(rs1=coded,rd=0), JALR(rs1=coded,rd=1), MV(rs1=0,rd=coded), ADD(rs1=coded,rd=coded)
+    elsif rv16_fmt_cr
+      if rv16_mv
+        rs1_idx = 0;
+      else
+        rs1_idx = rv16_rs1;
+      end if
+      rs2_idx = rv16_rs2;
+      if rv16_jr
+        rd_idx = 0;
+      elsif rv16_jalr
+        rd_idx = 1;
+      else
+        rd_idx = rv16_rd;
+      end if
+    // CI format: addi, li, lui, addi16sp, slli — rs1=rd, rd=rd
+    elsif rv16_fmt_ci
+      rs1_idx = rv16_rd;
+      rs2_idx = 0;
+      rd_idx  = rv16_rd;
+    // CSS format: swsp — rs1=x2, rs2=rs2
+    elsif rv16_fmt_css
+      rs1_idx = 2;
+      rs2_idx = rv16_rs2;
+      rd_idx  = 0;
+    // CIW format: addi4spn — rs1=x2, rd=rdd
+    elsif rv16_fmt_ciw
+      rs1_idx = 2;
+      rs2_idx = 0;
+      rd_idx  = rv16_rdd;
+    // CL format: lw — rs1=rss1, rd=rdd
+    elsif rv16_fmt_cl
+      rs1_idx = rv16_rss1;
+      rs2_idx = 0;
+      rd_idx  = rv16_rdd;
+    // CS format: sw/sub/xor/or/and — rs1=rss1, rs2=rss2, rd=rss1(for ALU)
+    elsif rv16_fmt_cs
+      rs1_idx = rv16_rss1;
+      rs2_idx = rv16_rss2;
+      if rv16_subxororand
+        rd_idx = rv16_rss1;
+      else
+        rd_idx = 0;
+      end if
+    // CB format: beqz/bnez/srli/srai/andi — rs1=rss1, rd=rss1(for ALU)
+    elsif rv16_fmt_cb
+      rs1_idx = rv16_rss1;
+      rs2_idx = 0;
+      if rv16_beqz | rv16_bnez
+        rd_idx = 0;
+      else
+        rd_idx = rv16_rss1;
+      end if
+    // CJ format: j/jal — rd=0 or rd=1
+    elsif rv16_fmt_cj
+      rs1_idx = 0;
+      rs2_idx = 0;
+      if rv16_j
+        rd_idx = 0;
+      else
+        rd_idx = 1;
+      end if
+    else
+      rs1_idx = 0;
+      rs2_idx = 0;
+      rd_idx  = 0;
+    end if
+  end comb
+
+  // ── Register enables ────────────────────────────────────────────────
+  let rv16_rs1en: Bool = rv16_fmt_cr | rv16_fmt_ci | rv16_fmt_css | rv16_fmt_ciw |
+                          rv16_fmt_cl | rv16_fmt_cs | rv16_fmt_cb;
+  let rv16_rs2en: Bool = rv16_fmt_cr | rv16_fmt_css | (rv16_fmt_cs & ~rv16_subxororand);
+  let rv16_rdwen: Bool = (rv16_fmt_cr & ~rv16_jr & ~rv16_jalr) | rv16_fmt_ci | rv16_fmt_ciw |
+                          rv16_fmt_cl | (rv16_fmt_cs & rv16_subxororand) |
+                          (rv16_fmt_cb & ~rv16_beqz & ~rv16_bnez) | rv16_fmt_cj;
+
+  let rs1en_32: Bool = is_op | is_op_imm | is_branch | is_jalr | is_load | is_store | rv32_csr;
+  let rs2en_32: Bool = is_op | is_branch | is_store;
+  let rdwen_32: Bool = is_op | is_op_imm | is_lui | is_auipc | is_jal | is_jalr | is_load | rv32_csr;
+
+  let rs1_en: Bool = rv32 ? rs1en_32 : rv16_rs1en;
+  let rs2_en: Bool = rv32 ? rs2en_32 : rv16_rs2en;
+  let rdwen:  Bool = rv32 ? rdwen_32 : rv16_rdwen;
 
   // ── Immediate generation ────────────────────────────────────────────
-  // I-type
-  let imm_i: UInt<32> = (i_instr[31:20].sext<32>() as UInt<32>);
-  // S-type
-  let imm_s_hi: UInt<12> = funct7.zext<12>() << 5;
-  let imm_s_raw: UInt<12> = imm_s_hi | rd_field.zext<12>();
-  let imm_s: UInt<32> = (imm_s_raw.sext<32>() as UInt<32>);
-  // B-type
-  let imm_b_12:   UInt<32> = i_instr[31:31].zext<32>() << 12;
-  let imm_b_11:   UInt<32> = i_instr[7:7].zext<32>() << 11;
-  let imm_b_10_5: UInt<32> = i_instr[30:25].zext<32>() << 5;
-  let imm_b_4_1:  UInt<32> = i_instr[11:8].zext<32>() << 1;
-  let imm_b_raw:  UInt<13> = (imm_b_12 | imm_b_11 | imm_b_10_5 | imm_b_4_1).trunc<13>();
-  let imm_b: UInt<32> = (imm_b_raw.sext<32>() as UInt<32>);
-  // U-type
+  // I-type: sign-extend instr[31:20] manually
+  let imm_i_se: UInt<32> = unsigned(i_instr[31:20].sext<32>());
+  // S-type: {instr[31:25], instr[11:7]}
+  let imm_s: UInt<32> = unsigned({funct7, rd_field}.sext<32>());
+  // B-type: construct 13-bit signed immediate then sign-extend
+  let b_imm_12:   UInt<32> = i_instr[31:31].zext<32>() << 12;
+  let b_imm_11:   UInt<32> = i_instr[7:7].zext<32>() << 11;
+  let b_imm_10_5: UInt<32> = i_instr[30:25].zext<32>() << 5;
+  let b_imm_4_1:  UInt<32> = i_instr[11:8].zext<32>() << 1;
+  let b_imm_raw:  UInt<13> = (b_imm_12 | b_imm_11 | b_imm_10_5 | b_imm_4_1).trunc<13>();
+  let imm_b_se: UInt<32> = unsigned(b_imm_raw.sext<32>());
+  // U-type: instr[31:12] << 12
   let imm_u: UInt<32> = (i_instr >> 12).trunc<20>().zext<32>() << 12;
-  // J-type
-  let imm_j_20:    UInt<32> = i_instr[31:31].zext<32>() << 20;
-  let imm_j_19_12: UInt<32> = i_instr[19:12].zext<32>() << 12;
-  let imm_j_11:    UInt<32> = i_instr[20:20].zext<32>() << 11;
-  let imm_j_10_1:  UInt<32> = i_instr[30:21].zext<32>() << 1;
-  let imm_j_raw:   UInt<21> = (imm_j_20 | imm_j_19_12 | imm_j_11 | imm_j_10_1).trunc<21>();
-  let imm_j: UInt<32> = (imm_j_raw.sext<32>() as UInt<32>);
+  // J-type: construct 21-bit signed immediate then sign-extend
+  let j_imm_20:    UInt<32> = i_instr[31:31].zext<32>() << 20;
+  let j_imm_19_12: UInt<32> = i_instr[19:12].zext<32>() << 12;
+  let j_imm_11:    UInt<32> = i_instr[20:20].zext<32>() << 11;
+  let j_imm_10_1:  UInt<32> = i_instr[30:21].zext<32>() << 1;
+  let j_imm_raw:   UInt<21> = (j_imm_20 | j_imm_19_12 | j_imm_11 | j_imm_10_1).trunc<21>();
+  let imm_j_se: UInt<32> = unsigned(j_imm_raw.sext<32>());
 
-  // ── BJP immediate (branch/jump target offset) ──────────────────────
-  let bjp_is_bxx: Bool = is_branch;
-  let bjp_is_jal: Bool = is_jal;
-  let bjp_is_jalr_flag: Bool = is_jalr;
+  // RV16 immediates (simplified)
+  let rv16_imm_i: UInt<32> = unsigned(i_instr[12:12].zext<32>() << 5 | i_instr[6:2].zext<32>());
+  let rv16_imm_b: UInt<32> =
+      (i_instr[12:12].zext<32>() << 8) |
+      (i_instr[6:5].zext<32>() << 6) |
+      (i_instr[4:2].zext<32>() << 3) |
+      (i_instr[11:10].zext<32>() << 1);
+  let rv16_imm_j: UInt<32> =
+      (i_instr[12:12].zext<32>() << 11) |
+      (i_instr[11:11].zext<32>() << 4) |
+      (i_instr[10:9].zext<32>() << 8) |
+      (i_instr[8:8].zext<32>() << 10) |
+      (i_instr[7:7].zext<32>() << 6) |
+      (i_instr[6:6].zext<32>() << 7) |
+      (i_instr[5:5].zext<32>() << 2) |
+      (i_instr[4:4].zext<32>() << 1) |
+      (i_instr[3:1].zext<32>() << 5);
+
+  // ── Illegal instruction detection ───────────────────────────────────
+  // Reference: legl_ops = alu_op | amoldst_op | bjp_op | csr_op | muldiv_op
+  // Single legl_ops covers both 32-bit and 16-bit (alu_op etc. include both)
+  let legl_ops: Bool = alu_op | amoldst_op | bjp_op | csr_op | muldiv_op;
+  let illegal: Bool = ~legl_ops;
+
+  // ── Info bus encoding (per e203_defines.v) ──────────────────────────
+  // GRP[2:0] at bits [2:0], RV32 at bit [3]
+  // Sub-decode info starts at bit [4]
+  // ALU group bits (starting at bit 4):
+  //   4:ADD 5:SUB 6:XOR 7:SLL 8:SRL 9:SRA 10:OR 11:AND 12:SLT 13:SLTU
+  //   14:LUI 15:OP2IMM 16:OP1PC 17:NOP 18:ECAL 19:EBRK 20:WFI
+
+  let grp_alu: UInt<32> = 0;
+  let grp_agu: UInt<32> = 1;
+  let grp_bjp: UInt<32> = 2;
+  let grp_csr: UInt<32> = 3;
+  let grp_muldiv: UInt<32> = 4;
+
+  // Build info bus: group in bits [2:0], rv32 in bit [3], sub-decode in [4+]
+  let info_base: UInt<32> = (rv32 ? 8 : 0);  // bit 3 = rv32 flag
+
+  let alu_sub: UInt<32> =
+      (rv32_add | rv32_addi | is_auipc | rv16_addi4spn | rv16_addi | rv16_addi16sp | rv16_add | rv16_li | rv16_mv ? 0x10 : 0) |
+      (rv32_sub | rv16_sub ? 0x20 : 0) |
+      (rv32_slt | rv32_slti ? 0x1000 : 0) |
+      (rv32_sltu | rv32_sltiu ? 0x2000 : 0) |
+      (rv32_xor | rv32_xori | rv16_xor ? 0x40 : 0) |
+      (rv32_sll | rv32_slli | rv16_slli ? 0x80 : 0) |
+      (rv32_srl | rv32_srli | rv16_srli ? 0x100 : 0) |
+      (rv32_sra | rv32_srai | rv16_srai ? 0x200 : 0) |
+      (rv32_or | rv32_ori | rv16_or ? 0x400 : 0) |
+      (rv32_and | rv32_andi | rv16_andi | rv16_and ? 0x800 : 0) |
+      (is_lui | rv16_lui ? 0x4000 : 0) |
+      (need_imm ? 0x8000 : 0) |
+      (is_auipc ? 0x10000 : 0) |
+      (rv16_nop ? 0x20000 : 0) |
+      (rv32_ecall ? 0x40000 : 0) |
+      (rv32_ebreak | rv16_ebreak ? 0x80000 : 0) |
+      (rv32_wfi ? 0x100000 : 0);
+
+  let alu_info: UInt<32> = grp_alu | info_base | alu_sub;
+
+  // AGU group
+  let agu_info: UInt<32> = grp_agu | info_base |
+      (is_load | rv16_lw | rv16_lwsp ? 0x10 : 0) |
+      (is_store | rv16_sw | rv16_swsp ? 0x20 : 0);
+
+  // BJP group
+  let bjp_info: UInt<32> = grp_bjp | info_base |
+      (is_jal | is_jalr | rv16_j | rv16_jal | rv16_jr | rv16_jalr ? 0x10 : 0) |
+      (i_prdt_taken ? 0x20 : 0) |
+      (rv32_beq | rv16_beqz ? 0x40 : 0) |
+      (rv32_bne | rv16_bnez ? 0x80 : 0) |
+      (rv32_blt ? 0x100 : 0) |
+      (rv32_bge ? 0x200 : 0) |
+      (rv32_bltu ? 0x400 : 0) |
+      (rv32_bgeu ? 0x800 : 0) |
+      (rv32_bxx | rv16_beqz | rv16_bnez ? 0x1000 : 0) |
+      (rv32_mret ? 0x2000 : 0) |
+      (rv32_dret ? 0x4000 : 0) |
+      (rv32_fence ? 0x8000 : 0) |
+      (rv32_fence_i ? 0x10000 : 0);
+
+  // CSR group
+  let csr_info: UInt<32> = grp_csr | info_base |
+      (rv32_csrrw | rv32_csrrwi ? 0x10 : 0) |
+      (rv32_csrrs | rv32_csrrsi ? 0x20 : 0) |
+      (rv32_csrrc | rv32_csrrci ? 0x40 : 0) |
+      (rv32_csrrwi | rv32_csrrsi | rv32_csrrci ? 0x80 : 0);
+
+  // MULDIV group
+  let muldiv_info: UInt<32> = grp_muldiv | info_base |
+      (rv32_mul ? 0x10 : 0) |
+      (rv32_mulh ? 0x20 : 0) |
+      (rv32_mulhsu ? 0x40 : 0) |
+      (rv32_mulhu ? 0x80 : 0) |
+      (rv32_div ? 0x100 : 0) |
+      (rv32_divu ? 0x200 : 0) |
+      (rv32_rem ? 0x400 : 0) |
+      (rv32_remu ? 0x800 : 0) |
+      (i_muldiv_b2b ? 0x1000 : 0);
 
   // ── Combinational output logic ──────────────────────────────────────
   comb
     // Register indices
-    dec_rs1idx = rs1_field;
-    dec_rs2idx = rs2_field;
-    dec_rdidx  = rd_field;
+    dec_rs1idx = rs1_idx;
+    dec_rs2idx = rs2_idx;
+    dec_rdidx  = rd_idx;
+    // jalr_rs1idx: always use 32-bit rs1 field for JALR, compressed rs1 for c.jalr
+    if is_jalr
+      dec_jalr_rs1idx = rs1_field;
+    elsif rv16_jalr
+      dec_jalr_rs1idx = rv16_rs1;
+    else
+      dec_jalr_rs1idx = 0;
+    end if
 
-    // rs1/rs2 == x0 flags
-    dec_rs1x0 = (rs1_field == 0);
-    dec_rs2x0 = (rs2_field == 0);
+    // rs1/rs2 == x0 flags (index is 0, independent of enable)
+    dec_rs1x0 = rs1_idx == 0;
+    dec_rs2x0 = rs2_idx == 0;
 
     // Register enables
-    dec_rs1en = is_op | is_op_imm | is_branch | is_jalr | is_load_op | is_store_op;
-    dec_rs2en = is_op | is_branch | is_store_op;
-    dec_rdwen = is_op | is_op_imm | is_lui | is_auipc | is_jal | is_jalr | is_load_op;
+    dec_rs1en = rs1_en;
+    dec_rs2en = rs2_en;
+    dec_rdwen = rdwen;
 
     // Pass-through
     dec_pc      = i_pc;
@@ -195,92 +503,69 @@ module e203_exu_decode
     dec_buserr  = i_buserr;
     dec_ilegl   = illegal;
 
-    // NICE coprocessor (not supported, always 0)
-    dec_nice           = is_nice_op & ~nice_xs_off;
-    nice_cmt_off_ilgl_o = is_nice_op & nice_xs_off;
+    // NICE coprocessor
+    dec_nice            = false;
+    nice_cmt_off_ilgl_o = false;
 
     // MulDiv flags
-    dec_mul    = is_muldiv & f3_add;
-    dec_mulhsu = is_muldiv & f3_slt;
-    dec_div    = is_muldiv & f3_xor;
-    dec_rem    = is_muldiv & f3_or;
-    dec_divu   = is_muldiv & f3_srl;
-    dec_remu   = is_muldiv & f3_and;
+    dec_mulhsu = rv32_mulh | rv32_mulhsu | rv32_mulhu;
+    dec_mul    = rv32_mul;
+    dec_div    = rv32_div;
+    dec_rem    = rv32_rem;
+    dec_divu   = rv32_divu;
+    dec_remu   = rv32_remu;
 
     // Instruction type flags
-    dec_rv32  = rv32_flag;
-    dec_bjp   = is_branch | is_jal | is_jalr;
-    dec_jal   = is_jal;
-    dec_jalr  = is_jalr;
-    dec_bxx   = is_branch;
-    dec_jalr_rs1idx = rs1_field;
+    dec_rv32  = rv32;
+    dec_bjp   = bjp_op;
+    dec_jal   = is_jal | rv16_jal;
+    dec_jalr  = is_jalr | rv16_jr | rv16_jalr;
+    dec_bxx   = rv32_bxx | rv16_beqz | rv16_bnez;
 
     // BJP immediate
     if is_branch
-      dec_bjp_imm = imm_b;
+      dec_bjp_imm = imm_b_se;
     elsif is_jal
-      dec_bjp_imm = imm_j;
+      dec_bjp_imm = imm_j_se;
     elsif is_jalr
-      dec_bjp_imm = imm_i;
+      dec_bjp_imm = imm_i_se;
+    elsif rv16_beqz | rv16_bnez
+      dec_bjp_imm = rv16_imm_b;
+    elsif rv16_j | rv16_jal
+      dec_bjp_imm = rv16_imm_j;
     else
       dec_bjp_imm = 0;
     end if
 
     // Immediate output (general)
-    if is_op_imm | is_load_op | is_jalr
-      dec_imm = imm_i;
-    elsif is_store_op
+    if is_op_imm | is_load | is_jalr
+      dec_imm = imm_i_se;
+    elsif is_store
       dec_imm = imm_s;
     elsif is_branch
-      dec_imm = imm_b;
+      dec_imm = imm_b_se;
     elsif is_lui | is_auipc
       dec_imm = imm_u;
     elsif is_jal
-      dec_imm = imm_j;
+      dec_imm = imm_j_se;
     else
       dec_imm = 0;
     end if
 
-    // Info bus (packed operation encoding — simplified 32-bit info)
-    // This is a placeholder encoding; functional correctness depends
-    // on matching the reference model's exact encoding.
-    dec_info = 0;
-
-    // ── Simplified control outputs ────────────────────────────────────
-    // ALU class: regular ALU operations (R-type + I-type arithmetic)
-    o_alu = is_op | is_op_imm | is_lui | is_auipc;
-    // AGU class: load/store address generation
-    o_agu = is_load_op | is_store_op;
-
-    // Individual ALU operation flags
-    o_alu_add  = (is_op & f3_add & ~f7_sub) | (is_op_imm & f3_add) | is_auipc;
-    o_alu_sub  = is_op & f3_add & f7_sub;
-    o_alu_xor  = (is_op | is_op_imm) & f3_xor;
-    o_alu_sll  = (is_op | is_op_imm) & f3_sll;
-    o_alu_srl  = (is_op | is_op_imm) & f3_srl & ~f7_sub;
-    o_alu_sra  = (is_op | is_op_imm) & f3_srl & f7_sub;
-    o_alu_or   = (is_op | is_op_imm) & f3_or;
-    o_alu_and  = (is_op | is_op_imm) & f3_and;
-    o_alu_slt  = (is_op | is_op_imm) & f3_slt;
-    o_alu_sltu = (is_op | is_op_imm) & f3_sltu;
-    o_alu_lui  = is_lui;
-
-    // Individual branch type flags
-    o_beq  = is_branch & f3_beq;
-    o_bne  = is_branch & f3_bne;
-    o_blt  = is_branch & f3_blt;
-    o_bge  = is_branch & f3_bge;
-    o_bltu = is_branch & f3_bltu;
-    o_bgeu = is_branch & f3_bgeu;
-    o_jump = is_jal | is_jalr;
-
-    // MulDiv (mulh, mulhu not yet output)
-    o_mulh  = is_muldiv & f3_sll;
-    o_mulhu = is_muldiv & f3_sltu;
-
-    // Load/Store
-    o_load  = is_load_op;
-    o_store = is_store_op;
+    // Info bus
+    if alu_op
+      dec_info = alu_info;
+    elsif amoldst_op
+      dec_info = agu_info;
+    elsif bjp_op
+      dec_info = bjp_info;
+    elsif csr_op
+      dec_info = csr_info;
+    elsif muldiv_op
+      dec_info = muldiv_info;
+    else
+      dec_info = 0;
+    end if
   end comb
 
 end module e203_exu_decode

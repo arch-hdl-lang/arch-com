@@ -96,8 +96,8 @@ module e203_exu_oitf
     dis_ready  = ~(valid_0 & valid_1);
 
     // Pointer outputs
-    dis_ptr = wr_ptr_r.zext<1>();
-    ret_ptr = rd_ptr_r.zext<1>();
+    dis_ptr = wr_ptr_r;
+    ret_ptr = rd_ptr_r;
 
     // Return oldest entry info (at rd_ptr)
     if rd_ptr_r == false
