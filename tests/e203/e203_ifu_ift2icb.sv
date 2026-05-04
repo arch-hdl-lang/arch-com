@@ -10,29 +10,29 @@ module e203_ifu_ift2icb #(
   input logic itcm_nohold,
   input logic ifu_req_valid,
   output logic ifu_req_ready,
-  input logic [32-1:0] ifu_req_pc,
+  input logic [31:0] ifu_req_pc,
   input logic ifu_req_seq,
   input logic ifu_req_seq_rv32,
-  input logic [32-1:0] ifu_req_last_pc,
+  input logic [31:0] ifu_req_last_pc,
   output logic ifu_rsp_valid,
   input logic ifu_rsp_ready,
   output logic ifu_rsp_err,
-  output logic [32-1:0] ifu_rsp_instr,
-  input logic [32-1:0] itcm_region_indic,
+  output logic [31:0] ifu_rsp_instr,
+  input logic [31:0] itcm_region_indic,
   output logic ifu2itcm_icb_cmd_valid,
   input logic ifu2itcm_icb_cmd_ready,
-  output logic [16-1:0] ifu2itcm_icb_cmd_addr,
+  output logic [15:0] ifu2itcm_icb_cmd_addr,
   input logic ifu2itcm_icb_rsp_valid,
   output logic ifu2itcm_icb_rsp_ready,
   input logic ifu2itcm_icb_rsp_err,
-  input logic [64-1:0] ifu2itcm_icb_rsp_rdata,
+  input logic [63:0] ifu2itcm_icb_rsp_rdata,
   output logic ifu2biu_icb_cmd_valid,
   input logic ifu2biu_icb_cmd_ready,
-  output logic [32-1:0] ifu2biu_icb_cmd_addr,
+  output logic [31:0] ifu2biu_icb_cmd_addr,
   input logic ifu2biu_icb_rsp_valid,
   output logic ifu2biu_icb_rsp_ready,
   input logic ifu2biu_icb_rsp_err,
-  input logic [32-1:0] ifu2biu_icb_rsp_rdata,
+  input logic [31:0] ifu2biu_icb_rsp_rdata,
   input logic ifu2itcm_holdup
 );
 
@@ -44,9 +44,9 @@ module e203_ifu_ift2icb #(
   // BIU ICB master interface
   // ITCM holdup signal
   // ── Region decode ──────────────────────────────────────────────────────
-  logic [16-1:0] pc_region;
+  logic [15:0] pc_region;
   assign pc_region = ifu_req_pc[31:16];
-  logic [16-1:0] itcm_region;
+  logic [15:0] itcm_region;
   assign itcm_region = itcm_region_indic[31:16];
   logic is_itcm_region;
   assign is_itcm_region = pc_region == itcm_region;
@@ -54,15 +54,15 @@ module e203_ifu_ift2icb #(
   assign is_biu_region = ~is_itcm_region;
   // ── Sequential PC calculation for sequential fetch ─────────────────────
   // For sequential access: last_pc + 4 (rv32) or last_pc + 2
-  logic [32-1:0] seq_pc;
+  logic [31:0] seq_pc;
   assign seq_pc = ifu_req_seq_rv32 ? 32'(ifu_req_last_pc + 4) : 32'(ifu_req_last_pc + 2);
   // Use seq_pc when sequential, otherwise use ifu_req_pc
-  logic [32-1:0] fetch_pc;
+  logic [31:0] fetch_pc;
   assign fetch_pc = ifu_req_seq ? seq_pc : ifu_req_pc;
   // ── Response pipeline register ─────────────────────────────────────────
   logic rsp_valid_r = 0;
   logic rsp_err_r = 0;
-  logic [32-1:0] rsp_instr_r = 0;
+  logic [31:0] rsp_instr_r = 0;
   // Backpressure
   logic stall_pipe;
   assign stall_pipe = rsp_valid_r & ~ifu_rsp_ready;
@@ -72,7 +72,7 @@ module e203_ifu_ift2icb #(
   logic biu_cmd_fire;
   assign biu_cmd_fire = ifu2biu_icb_cmd_valid & ifu2biu_icb_cmd_ready;
   // ── Select response data from ITCM (64-bit) based on PC alignment ─────
-  logic [32-1:0] itcm_rsp_data_sel;
+  logic [31:0] itcm_rsp_data_sel;
   assign itcm_rsp_data_sel = fetch_pc[2:2] != 0 ? ifu2itcm_icb_rsp_rdata[63:32] : ifu2itcm_icb_rsp_rdata[31:0];
   // ── ITCM or BIU response mux ──────────────────────────────────────────
   // Track which path is active for response routing

@@ -7,26 +7,26 @@ module e203_lsu_ctrl (
   input logic commit_mret,
   input logic commit_trap,
   output logic lsu_ctrl_active,
-  input logic [32-1:0] itcm_region_indic,
-  input logic [32-1:0] dtcm_region_indic,
+  input logic [31:0] itcm_region_indic,
+  input logic [31:0] dtcm_region_indic,
   output logic lsu_o_valid,
   input logic lsu_o_ready,
-  output logic [32-1:0] lsu_o_wbck_wdat,
+  output logic [31:0] lsu_o_wbck_wdat,
   output logic lsu_o_wbck_itag,
   output logic lsu_o_wbck_err,
   output logic lsu_o_cmt_buserr,
-  output logic [32-1:0] lsu_o_cmt_badaddr,
+  output logic [31:0] lsu_o_cmt_badaddr,
   output logic lsu_o_cmt_ld,
   output logic lsu_o_cmt_st,
   input logic agu_icb_cmd_valid,
   output logic agu_icb_cmd_ready,
-  input logic [32-1:0] agu_icb_cmd_addr,
+  input logic [31:0] agu_icb_cmd_addr,
   input logic agu_icb_cmd_read,
-  input logic [32-1:0] agu_icb_cmd_wdata,
-  input logic [4-1:0] agu_icb_cmd_wmask,
+  input logic [31:0] agu_icb_cmd_wdata,
+  input logic [3:0] agu_icb_cmd_wmask,
   input logic agu_icb_cmd_lock,
   input logic agu_icb_cmd_excl,
-  input logic [2-1:0] agu_icb_cmd_size,
+  input logic [1:0] agu_icb_cmd_size,
   input logic agu_icb_cmd_back2agu,
   input logic agu_icb_cmd_usign,
   input logic agu_icb_cmd_itag,
@@ -34,64 +34,64 @@ module e203_lsu_ctrl (
   input logic agu_icb_rsp_ready,
   output logic agu_icb_rsp_err,
   output logic agu_icb_rsp_excl_ok,
-  output logic [32-1:0] agu_icb_rsp_rdata,
+  output logic [31:0] agu_icb_rsp_rdata,
   input logic nice_mem_holdup,
   input logic nice_icb_cmd_valid,
   output logic nice_icb_cmd_ready,
-  input logic [32-1:0] nice_icb_cmd_addr,
+  input logic [31:0] nice_icb_cmd_addr,
   input logic nice_icb_cmd_read,
-  input logic [32-1:0] nice_icb_cmd_wdata,
-  input logic [4-1:0] nice_icb_cmd_wmask,
+  input logic [31:0] nice_icb_cmd_wdata,
+  input logic [3:0] nice_icb_cmd_wmask,
   input logic nice_icb_cmd_lock,
   input logic nice_icb_cmd_excl,
-  input logic [2-1:0] nice_icb_cmd_size,
+  input logic [1:0] nice_icb_cmd_size,
   output logic nice_icb_rsp_valid,
   input logic nice_icb_rsp_ready,
   output logic nice_icb_rsp_err,
   output logic nice_icb_rsp_excl_ok,
-  output logic [32-1:0] nice_icb_rsp_rdata,
+  output logic [31:0] nice_icb_rsp_rdata,
   output logic dtcm_icb_cmd_valid,
   input logic dtcm_icb_cmd_ready,
-  output logic [16-1:0] dtcm_icb_cmd_addr,
+  output logic [15:0] dtcm_icb_cmd_addr,
   output logic dtcm_icb_cmd_read,
-  output logic [32-1:0] dtcm_icb_cmd_wdata,
-  output logic [4-1:0] dtcm_icb_cmd_wmask,
+  output logic [31:0] dtcm_icb_cmd_wdata,
+  output logic [3:0] dtcm_icb_cmd_wmask,
   output logic dtcm_icb_cmd_lock,
   output logic dtcm_icb_cmd_excl,
-  output logic [2-1:0] dtcm_icb_cmd_size,
+  output logic [1:0] dtcm_icb_cmd_size,
   input logic dtcm_icb_rsp_valid,
   output logic dtcm_icb_rsp_ready,
   input logic dtcm_icb_rsp_err,
   input logic dtcm_icb_rsp_excl_ok,
-  input logic [32-1:0] dtcm_icb_rsp_rdata,
+  input logic [31:0] dtcm_icb_rsp_rdata,
   output logic itcm_icb_cmd_valid,
   input logic itcm_icb_cmd_ready,
-  output logic [16-1:0] itcm_icb_cmd_addr,
+  output logic [15:0] itcm_icb_cmd_addr,
   output logic itcm_icb_cmd_read,
-  output logic [32-1:0] itcm_icb_cmd_wdata,
-  output logic [4-1:0] itcm_icb_cmd_wmask,
+  output logic [31:0] itcm_icb_cmd_wdata,
+  output logic [3:0] itcm_icb_cmd_wmask,
   output logic itcm_icb_cmd_lock,
   output logic itcm_icb_cmd_excl,
-  output logic [2-1:0] itcm_icb_cmd_size,
+  output logic [1:0] itcm_icb_cmd_size,
   input logic itcm_icb_rsp_valid,
   output logic itcm_icb_rsp_ready,
   input logic itcm_icb_rsp_err,
   input logic itcm_icb_rsp_excl_ok,
-  input logic [32-1:0] itcm_icb_rsp_rdata,
+  input logic [31:0] itcm_icb_rsp_rdata,
   output logic biu_icb_cmd_valid,
   input logic biu_icb_cmd_ready,
-  output logic [32-1:0] biu_icb_cmd_addr,
+  output logic [31:0] biu_icb_cmd_addr,
   output logic biu_icb_cmd_read,
-  output logic [32-1:0] biu_icb_cmd_wdata,
-  output logic [4-1:0] biu_icb_cmd_wmask,
+  output logic [31:0] biu_icb_cmd_wdata,
+  output logic [3:0] biu_icb_cmd_wmask,
   output logic biu_icb_cmd_lock,
   output logic biu_icb_cmd_excl,
-  output logic [2-1:0] biu_icb_cmd_size,
+  output logic [1:0] biu_icb_cmd_size,
   input logic biu_icb_rsp_valid,
   output logic biu_icb_rsp_ready,
   input logic biu_icb_rsp_err,
   input logic biu_icb_rsp_excl_ok,
-  input logic [32-1:0] biu_icb_rsp_rdata
+  input logic [31:0] biu_icb_rsp_rdata
 );
 
   // Commit signals
@@ -109,13 +109,13 @@ module e203_lsu_ctrl (
   // AGU has priority over NICE; NICE only accepted when AGU not requesting
   // or when nice_mem_holdup forces it
   logic arb_cmd_valid;
-  logic [32-1:0] arb_cmd_addr;
+  logic [31:0] arb_cmd_addr;
   logic arb_cmd_read;
-  logic [32-1:0] arb_cmd_wdata;
-  logic [4-1:0] arb_cmd_wmask;
+  logic [31:0] arb_cmd_wdata;
+  logic [3:0] arb_cmd_wmask;
   logic arb_cmd_lock;
   logic arb_cmd_excl;
-  logic [2-1:0] arb_cmd_size;
+  logic [1:0] arb_cmd_size;
   logic arb_cmd_back2agu;
   logic arb_cmd_usign;
   logic arb_cmd_itag;
@@ -185,7 +185,7 @@ module e203_lsu_ctrl (
     end
   end
   // ── Address region decode ────────────────────────────────────────
-  logic [16-1:0] addr_region;
+  logic [15:0] addr_region;
   assign addr_region = arb_cmd_addr[31:16];
   logic is_dtcm;
   assign is_dtcm = addr_region == dtcm_region_indic[31:16];
@@ -218,7 +218,7 @@ module e203_lsu_ctrl (
   assign biu_icb_cmd_lock = arb_cmd_lock;
   assign biu_icb_cmd_excl = arb_cmd_excl;
   assign biu_icb_cmd_size = arb_cmd_size;
-  assign arb_cmd_ready = is_dtcm & dtcm_icb_cmd_ready | is_itcm & itcm_icb_cmd_ready | is_biu & biu_icb_cmd_ready;
+  assign arb_cmd_ready = (is_dtcm & dtcm_icb_cmd_ready) | (is_itcm & itcm_icb_cmd_ready) | (is_biu & biu_icb_cmd_ready);
   // DTCM
   // ITCM
   // BIU
@@ -232,7 +232,7 @@ module e203_lsu_ctrl (
   logic rsp_usign = 0;
   logic rsp_itag = 0;
   logic rsp_read = 0;
-  logic [32-1:0] rsp_addr = 0;
+  logic [31:0] rsp_addr = 0;
   logic cmd_fire;
   assign cmd_fire = arb_cmd_valid & arb_cmd_ready;
   always_ff @(posedge clk or negedge rst_n) begin
@@ -264,14 +264,14 @@ module e203_lsu_ctrl (
   logic rsp_valid_raw;
   logic rsp_err_raw;
   logic rsp_excl_ok_raw;
-  logic [32-1:0] rsp_rdata_raw;
+  logic [31:0] rsp_rdata_raw;
   always_comb begin
     if (rsp_target_dtcm) begin
       rsp_valid_raw = dtcm_icb_rsp_valid;
       rsp_err_raw = dtcm_icb_rsp_err;
       rsp_excl_ok_raw = dtcm_icb_rsp_excl_ok;
       rsp_rdata_raw = dtcm_icb_rsp_rdata;
-      dtcm_icb_rsp_ready = agu_icb_rsp_ready | rsp_is_nice & nice_icb_rsp_ready;
+      dtcm_icb_rsp_ready = agu_icb_rsp_ready | (rsp_is_nice & nice_icb_rsp_ready);
       itcm_icb_rsp_ready = 1'b0;
       biu_icb_rsp_ready = 1'b0;
     end else if (rsp_target_itcm) begin
@@ -279,7 +279,7 @@ module e203_lsu_ctrl (
       rsp_err_raw = itcm_icb_rsp_err;
       rsp_excl_ok_raw = itcm_icb_rsp_excl_ok;
       rsp_rdata_raw = itcm_icb_rsp_rdata;
-      itcm_icb_rsp_ready = agu_icb_rsp_ready | rsp_is_nice & nice_icb_rsp_ready;
+      itcm_icb_rsp_ready = agu_icb_rsp_ready | (rsp_is_nice & nice_icb_rsp_ready);
       dtcm_icb_rsp_ready = 1'b0;
       biu_icb_rsp_ready = 1'b0;
     end else if (rsp_target_biu) begin
@@ -287,7 +287,7 @@ module e203_lsu_ctrl (
       rsp_err_raw = biu_icb_rsp_err;
       rsp_excl_ok_raw = biu_icb_rsp_excl_ok;
       rsp_rdata_raw = biu_icb_rsp_rdata;
-      biu_icb_rsp_ready = agu_icb_rsp_ready | rsp_is_nice & nice_icb_rsp_ready;
+      biu_icb_rsp_ready = agu_icb_rsp_ready | (rsp_is_nice & nice_icb_rsp_ready);
       dtcm_icb_rsp_ready = 1'b0;
       itcm_icb_rsp_ready = 1'b0;
     end else begin

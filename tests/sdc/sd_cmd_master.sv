@@ -8,24 +8,24 @@ module sd_cmd_master (
   input logic New_CMD,
   input logic data_write,
   input logic data_read,
-  input logic [32-1:0] ARG_REG,
-  input logic [14-1:0] CMD_SET_REG,
-  input logic [16-1:0] TIMEOUT_REG,
-  output logic [16-1:0] STATUS_REG,
-  output logic [32-1:0] RESP_1_REG,
-  output logic [5-1:0] ERR_INT_REG,
-  output logic [16-1:0] NORMAL_INT_REG,
+  input logic [31:0] ARG_REG,
+  input logic [13:0] CMD_SET_REG,
+  input logic [15:0] TIMEOUT_REG,
+  output logic [15:0] STATUS_REG,
+  output logic [31:0] RESP_1_REG,
+  output logic [4:0] ERR_INT_REG,
+  output logic [15:0] NORMAL_INT_REG,
   input logic ERR_INT_RST,
   input logic NORMAL_INT_RST,
-  output logic [16-1:0] settings,
+  output logic [15:0] settings,
   output logic go_idle_o,
-  output logic [40-1:0] cmd_out,
+  output logic [39:0] cmd_out,
   output logic req_out,
   output logic ack_out,
   input logic req_in,
   input logic ack_in,
-  input logic [40-1:0] cmd_in,
-  input logic [8-1:0] serial_status,
+  input logic [39:0] cmd_in,
+  input logic [7:0] serial_status,
   input logic card_detect
 );
 
@@ -36,29 +36,29 @@ module sd_cmd_master (
   logic ack_q;
   logic ack_in_int;
   // Card detect debounce
-  logic [4-1:0] debounce_r;
+  logic [3:0] debounce_r;
   logic card_present_r;
   // FSM state (one-hot: IDLE=001, SETUP=010, EXECUTE=100)
-  logic [3-1:0] state_r;
+  logic [2:0] state_r;
   // Registered outputs & internals
   logic CRC_check_enable_r;
   logic index_check_enable_r;
-  logic [7-1:0] response_size_r;
-  logic [16-1:0] status_r;
-  logic [16-1:0] Watchdog_Cnt_r;
-  logic [16-1:0] STATUS_REG_r;
-  logic [32-1:0] RESP_1_REG_r;
-  logic [5-1:0] ERR_INT_REG_r;
-  logic [16-1:0] NORMAL_INT_REG_r;
-  logic [16-1:0] settings_r;
+  logic [6:0] response_size_r;
+  logic [15:0] status_r;
+  logic [15:0] Watchdog_Cnt_r;
+  logic [15:0] STATUS_REG_r;
+  logic [31:0] RESP_1_REG_r;
+  logic [4:0] ERR_INT_REG_r;
+  logic [15:0] NORMAL_INT_REG_r;
+  logic [15:0] settings_r;
   logic go_idle_o_r;
-  logic [40-1:0] cmd_out_r;
+  logic [39:0] cmd_out_r;
   logic req_out_r;
   logic ack_out_r;
   // Combinational signals computed each cycle (blocking equivalents)
   logic complete_w;
-  logic [3-1:0] next_state_w;
-  logic [16-1:0] Watchdog_next;
+  logic [2:0] next_state_w;
+  logic [15:0] Watchdog_next;
   // --- Input synchronizers ---
   always_ff @(posedge CLK_PAD_IO or posedge RST_PAD_I) begin
     if (RST_PAD_I) begin
@@ -166,15 +166,15 @@ module sd_cmd_master (
   // However, many signals in the reference depend on ordering (blocking);
   // we carefully break them into comb + seq to preserve cycle-accuracy.
   // Aliases for CMD_SET_REG fields
-  logic [6-1:0] CMDI;
+  logic [5:0] CMDI;
   assign CMDI = CMD_SET_REG[13:8];
-  logic [2-1:0] WORD_SELECT;
+  logic [1:0] WORD_SELECT;
   assign WORD_SELECT = CMD_SET_REG[7:6];
   logic CICE;
   assign CICE = CMD_SET_REG[4];
   logic CRCE;
   assign CRCE = CMD_SET_REG[3];
-  logic [2-1:0] RTS;
+  logic [1:0] RTS;
   assign RTS = CMD_SET_REG[1:0];
   always_ff @(posedge CLK_PAD_IO or posedge RST_PAD_I) begin
     if (RST_PAD_I) begin
@@ -213,7 +213,7 @@ module sd_cmd_master (
         ERR_INT_REG_r <= 0;
         index_check_enable_r <= CICE;
         CRC_check_enable_r <= CRCE;
-        if (RTS == 2'd2 | RTS == 2'd3) begin
+        if ((RTS == 2'd2) | (RTS == 2'd3)) begin
           response_size_r <= 7'd40;
         end else if (RTS == 2'd1) begin
           response_size_r <= 7'd127;
@@ -229,7 +229,7 @@ module sd_cmd_master (
         settings_r[10:8] <= 3'd7;
         settings_r[7] <= CRCE;
         // response_size computed above — assign combinationally
-        if (RTS == 2'd2 | RTS == 2'd3) begin
+        if ((RTS == 2'd2) | (RTS == 2'd3)) begin
           settings_r[6:0] <= 7'd40;
         end else if (RTS == 2'd1) begin
           settings_r[6:0] <= 7'd127;
@@ -273,7 +273,7 @@ module sd_cmd_master (
               NORMAL_INT_REG_r[15] <= 1'b1;
             end
             // EI = 1
-            if (index_check_enable_r & cmd_out_r[37:32] != cmd_in[37:32]) begin
+            if (index_check_enable_r & (cmd_out_r[37:32] != cmd_in[37:32])) begin
               ERR_INT_REG_r[3] <= 1'b1;
               // CIE
               NORMAL_INT_REG_r[15] <= 1'b1;
