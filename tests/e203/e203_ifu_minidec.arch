@@ -1,18 +1,14 @@
 // E203 HBirdv2 IFU Mini Decoder
-// Lightweight combinational decoder used inside the IFU to quickly classify
-// fetched instructions before full decode in the EXU. Extracts just enough
-// info for branch/jump handling.
+// Wraps e203_exu_decode — selects subset of decode outputs for IFU.
 
 module e203_ifu_minidec
-  port instr:    in UInt<32>;
+  port instr: in UInt<32>;
 
-  // Register source enables and indices
   port dec_rs1en:  out Bool;
   port dec_rs2en:  out Bool;
   port dec_rs1idx: out UInt<5>;
   port dec_rs2idx: out UInt<5>;
 
-  // M-extension decode
   port dec_mulhsu: out Bool;
   port dec_mul:    out Bool;
   port dec_div:    out Bool;
@@ -20,113 +16,70 @@ module e203_ifu_minidec
   port dec_divu:   out Bool;
   port dec_remu:   out Bool;
 
-  // RV32 flag
-  port dec_rv32:   out Bool;
+  port dec_rv32: out Bool;
+  port dec_bjp:  out Bool;
+  port dec_jal:  out Bool;
+  port dec_jalr: out Bool;
+  port dec_bxx:  out Bool;
 
-  // Branch/jump decode
-  port dec_bjp:    out Bool;
-  port dec_jal:    out Bool;
-  port dec_jalr:   out Bool;
-  port dec_bxx:    out Bool;
-
-  // JALR rs1 index
   port dec_jalr_rs1idx: out UInt<5>;
+  port dec_bjp_imm:     out UInt<32>;
 
-  // Branch/jump immediate
-  port dec_bjp_imm: out UInt<32>;
+  wire nc0:  Bool;
+  wire nc1:  Bool;
+  wire nc2:  Bool;
+  wire nc3:  Bool;
+  wire nc4:  Bool;
+  wire nc5:  Bool;
+  wire nc6:  Bool;
+  wire nc7:  Bool;
+  wire nc8:  Bool;
+  wire nc_u0: UInt<5>;
+  wire nc_u1: UInt<32>;
+  wire nc_u2: UInt<32>;
+  wire nc_u3: UInt<32>;
 
-  // ── Instruction field extraction ─────────────────────────────────────
-  let opcode: UInt<7> = instr[6:0];
-  let funct3: UInt<3> = instr[14:12];
-  let funct7: UInt<7> = instr[31:25];
-  let rs1_idx: UInt<5> = instr[19:15];
-  let rs2_idx: UInt<5> = instr[24:20];
+  inst u_decode: e203_exu_decode
+    i_instr      <- instr;
+    i_pc         <- 0;
+    i_prdt_taken <- false;
+    i_misalgn    <- false;
+    i_buserr     <- false;
+    i_muldiv_b2b <- false;
+    dbg_mode     <- false;
+    nice_xs_off  <- false;
 
-  // ── Opcode classification ────────────────────────────────────────────
-  let is_bxx:    Bool = opcode == 0x63;
-  let is_jal:    Bool = opcode == 0x6F;
-  let is_jalr:   Bool = opcode == 0x67;
-  let is_op:     Bool = opcode == 0x33;  // R-type ALU (includes M-extension)
-  let is_op_imm: Bool = opcode == 0x13;  // I-type ALU
-  let is_load:   Bool = opcode == 0x03;
-  let is_store:  Bool = opcode == 0x23;
-  let is_lui:    Bool = opcode == 0x37;
-  let is_auipc:  Bool = opcode == 0x17;
-  let is_system: Bool = opcode == 0x73;
+    dec_rs1x0  -> nc0;
+    dec_rs2x0  -> nc1;
+    dec_rs1en  -> dec_rs1en;
+    dec_rs2en  -> dec_rs2en;
+    dec_rdwen  -> nc2;
+    dec_rs1idx -> dec_rs1idx;
+    dec_rs2idx -> dec_rs2idx;
+    dec_rdidx  -> nc_u0;
+    dec_info   -> nc_u1;
+    dec_imm    -> nc_u2;
+    dec_pc     -> nc_u3;
+    dec_misalgn -> nc3;
+    dec_buserr -> nc4;
+    dec_ilegl  -> nc5;
+    dec_nice   -> nc6;
+    nice_cmt_off_ilgl_o -> nc7;
 
-  // ── M-extension decode (funct7 == 0x01 under OP) ────────────────────
-  let is_muldiv: Bool = is_op & (funct7 == 0x01);
-  let is_mul_op:    Bool = is_muldiv & (funct3 == 0);
-  let is_mulh_op:   Bool = is_muldiv & (funct3 == 1);
-  let is_mulhsu_op: Bool = is_muldiv & (funct3 == 2);
-  let is_mulhu_op:  Bool = is_muldiv & (funct3 == 3);
-  let is_div_op:    Bool = is_muldiv & (funct3 == 4);
-  let is_divu_op:   Bool = is_muldiv & (funct3 == 5);
-  let is_rem_op:    Bool = is_muldiv & (funct3 == 6);
-  let is_remu_op:   Bool = is_muldiv & (funct3 == 7);
+    dec_mulhsu -> dec_mulhsu;
+    dec_mul    -> dec_mul;
+    dec_div    -> dec_div;
+    dec_rem    -> dec_rem;
+    dec_divu   -> dec_divu;
+    dec_remu   -> dec_remu;
 
-  // ── Register source enables ─────────────────────────────────────────
-  // For BPU purposes: only instructions that read rs1 and could affect
-  // branch prediction need rs1_en. Simplified to standard R/I/S/B/JALR.
-  let rs1_en: Bool = is_op | is_op_imm | is_load | is_store | is_bxx | is_jalr;
-  // rs2 used by: R-type, stores, branches
-  let rs2_en: Bool = is_op | is_store | is_bxx;
-
-  // ── RV32 detection (all 32-bit instructions have [1:0] == 2'b11) ────
-  let is_rv32: Bool = (instr[1:0] == 3);
-
-  // ── B-type immediate: {instr[31], instr[7], instr[30:25], instr[11:8], 1'b0} ──
-  let bimm_12:   UInt<32> = instr[31:31].zext<32>() << 12;
-  let bimm_11:   UInt<32> = instr[7:7].zext<32>() << 11;
-  let bimm_10_5: UInt<32> = instr[30:25].zext<32>() << 5;
-  let bimm_4_1:  UInt<32> = instr[11:8].zext<32>() << 1;
-  let bimm_raw:  UInt<13> = (bimm_12 | bimm_11 | bimm_10_5 | bimm_4_1).trunc<13>();
-  let bimm_se:   UInt<32> = unsigned(bimm_raw.sext<32>());
-
-  // ── J-type immediate: {instr[31], instr[19:12], instr[20], instr[30:21], 1'b0} ──
-  let jimm_20:    UInt<32> = instr[31:31].zext<32>() << 20;
-  let jimm_19_12: UInt<32> = instr[19:12].zext<32>() << 12;
-  let jimm_11:    UInt<32> = instr[20:20].zext<32>() << 11;
-  let jimm_10_1:  UInt<32> = instr[30:21].zext<32>() << 1;
-  let jimm_raw:   UInt<21> = (jimm_20 | jimm_19_12 | jimm_11 | jimm_10_1).trunc<21>();
-  let jimm_se:    UInt<32> = unsigned(jimm_raw.sext<32>());
-
-  // ── I-type immediate (JALR): sign-extend instr[31:20] ──
-  let iimm_raw: UInt<12> = instr[31:20];
-  let iimm_se:  UInt<32> = unsigned(iimm_raw.sext<32>());
-
-  // ── Output logic ─────────────────────────────────────────────────────
-  comb
-    dec_bxx   = is_bxx;
-    dec_jal   = is_jal;
-    dec_jalr  = is_jalr;
-    dec_bjp   = is_bxx | is_jal | is_jalr;
-
-    dec_rs1en = rs1_en;
-    dec_rs2en = rs2_en;
-    dec_rs1idx = rs1_idx;
-    dec_rs2idx = rs2_idx;
-
-    dec_mulhsu = is_mulhsu_op;
-    dec_mul    = is_mul_op | is_mulh_op | is_mulhsu_op | is_mulhu_op;
-    dec_div    = is_div_op;
-    dec_rem    = is_rem_op;
-    dec_divu   = is_divu_op;
-    dec_remu   = is_remu_op;
-
-    dec_rv32   = is_rv32;
-
-    dec_jalr_rs1idx = rs1_idx;
-
-    if is_bxx
-      dec_bjp_imm = bimm_se;
-    elsif is_jal
-      dec_bjp_imm = jimm_se;
-    elsif is_jalr
-      dec_bjp_imm = iimm_se;
-    else
-      dec_bjp_imm = 0;
-    end if
-  end comb
+    dec_rv32 -> dec_rv32;
+    dec_bjp  -> dec_bjp;
+    dec_jal  -> dec_jal;
+    dec_jalr -> dec_jalr;
+    dec_bxx  -> dec_bxx;
+    dec_jalr_rs1idx -> dec_jalr_rs1idx;
+    dec_bjp_imm     -> dec_bjp_imm;
+  end inst u_decode
 
 end module e203_ifu_minidec

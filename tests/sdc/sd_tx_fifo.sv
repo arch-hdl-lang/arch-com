@@ -1,119 +1,128 @@
-// SD TX FIFO (Dual-clock, 32-bit wide, depth 8)
-// Wrapper around ARCH fifo construct with OVERFLOW mode.
+// SD TX FIFO — dual-clock, 32-bit in, 32-bit out
+// Matches RealBench reference: ram + manual pointers, unsynchronized
+// full/empty (combinational compare). Straightforward dual-clock FIFO.
+//
+// Spec: sd_tx_fifo.md — DEPTH=8, ADR_SIZE=4
 // domain WrDomain
 //   freq_mhz: 100
 
 // domain RdDomain
 //   freq_mhz: 50
 
-module TxFifoCore #(
-  parameter int  DEPTH      = 8,
-  parameter int  OVERFLOW   = 1,
-  parameter int  DATA_WIDTH = 32
+module sd_tx_fifo #(
+  parameter int TX_DEPTH = 8
 ) (
-  input logic wr_clk,
-  input logic rd_clk,
-  input logic rst,
-  input logic push_valid,
-  output logic push_ready,
-  input logic [DATA_WIDTH-1:0] push_data,
-  output logic pop_valid,
-  input logic pop_ready,
-  output logic [DATA_WIDTH-1:0] pop_data
-);
-
-  localparam int PTR_W = $clog2(DEPTH) + 1;
-  
-  // Gray-code helper functions
-  function automatic logic [PTR_W-1:0] bin2gray(input logic [PTR_W-1:0] b);
-    return b ^ (b >> 1);
-  endfunction
-  function automatic logic [PTR_W-1:0] gray2bin(input logic [PTR_W-1:0] g);
-    logic [PTR_W-1:0] b;
-    b[PTR_W-1] = g[PTR_W-1];
-    for (int i = PTR_W-2; i >= 0; i--) b[i] = b[i+1] ^ g[i];
-    return b;
-  endfunction
-  
-  logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];
-  logic [PTR_W-1:0] wr_ptr_bin, rd_ptr_bin;
-  logic [PTR_W-1:0] wr_ptr_gray, rd_ptr_gray;
-  // Two-stage synchronizers
-  logic [PTR_W-1:0] wr_ptr_gray_s1, wr_ptr_gray_sync; // in rd domain
-  logic [PTR_W-1:0] rd_ptr_gray_s1, rd_ptr_gray_sync; // in wr domain
-  
-  assign wr_ptr_gray = bin2gray(wr_ptr_bin);
-  assign rd_ptr_gray = bin2gray(rd_ptr_bin);
-  
-  // Sync wr_ptr into rd domain (rd_clk)
-  always_ff @(posedge rd_clk or posedge rst) begin
-    if (rst) begin wr_ptr_gray_s1 <= '0; wr_ptr_gray_sync <= '0; end
-    else begin wr_ptr_gray_s1 <= wr_ptr_gray; wr_ptr_gray_sync <= wr_ptr_gray_s1; end
-  end
-  // Sync rd_ptr into wr domain (wr_clk)
-  always_ff @(posedge wr_clk or posedge rst) begin
-    if (rst) begin rd_ptr_gray_s1 <= '0; rd_ptr_gray_sync <= '0; end
-    else begin rd_ptr_gray_s1 <= rd_ptr_gray; rd_ptr_gray_sync <= rd_ptr_gray_s1; end
-  end
-  
-  // Write domain: full detection using synced rd_ptr
-  logic full_r;
-  logic [PTR_W-1:0] rd_ptr_bin_wr;
-  assign rd_ptr_bin_wr = gray2bin(rd_ptr_gray_sync);
-  assign full_r  = (wr_ptr_bin[PTR_W-1] != rd_ptr_bin_wr[PTR_W-1]) &&
-                   (wr_ptr_bin[PTR_W-2:0] == rd_ptr_bin_wr[PTR_W-2:0]);
-  assign push_ready = (OVERFLOW != 0) ? 1'b1 : !full_r;
-  always_ff @(posedge wr_clk or posedge rst) begin
-    if (rst) wr_ptr_bin <= '0;
-    else if (push_valid && push_ready) begin
-      mem[wr_ptr_bin[PTR_W-2:0]] <= push_data;
-      wr_ptr_bin <= wr_ptr_bin + 1;
-    end
-  end
-  
-  // Read domain: empty detection using synced wr_ptr
-  logic empty_r;
-  logic [PTR_W-1:0] wr_ptr_bin_rd;
-  assign wr_ptr_bin_rd = gray2bin(wr_ptr_gray_sync);
-  assign empty_r = (rd_ptr_bin == wr_ptr_bin_rd);
-  assign pop_valid = !empty_r;
-  assign pop_data  = mem[rd_ptr_bin[PTR_W-2:0]];
-  always_ff @(posedge rd_clk or posedge rst) begin
-    if (rst) rd_ptr_bin <= '0;
-    else if (pop_valid && pop_ready) rd_ptr_bin <= rd_ptr_bin + 1;
-  end
-
-endmodule
-
-module sd_tx_fifo (
   input logic wclk,
   input logic rclk,
   input logic rst,
-  input logic [32-1:0] d,
+  input logic [31:0] d,
   input logic wr,
-  output logic [32-1:0] q,
+  output logic [31:0] q,
   input logic rd,
   output logic full,
   output logic empty,
-  output logic [6-1:0] mem_empt
+  output logic [5:0] mem_empt
 );
 
-  logic push_ready_w;
-  logic pop_valid_w;
-  TxFifoCore fifo_core (
-    .wr_clk(wclk),
-    .rd_clk(rclk),
-    .rst(rst),
-    .push_valid(wr),
-    .push_ready(push_ready_w),
-    .push_data(d),
-    .pop_valid(pop_valid_w),
-    .pop_ready(rd),
-    .pop_data(q)
-  );
-  assign full = ~push_ready_w;
-  assign empty = ~pop_valid_w;
-  assign mem_empt = 0;
+  // ── RAM storage ──────────────────────────────────────────────────────
+  logic [31:0] ram_0;
+  logic [31:0] ram_1;
+  logic [31:0] ram_2;
+  logic [31:0] ram_3;
+  logic [31:0] ram_4;
+  logic [31:0] ram_5;
+  logic [31:0] ram_6;
+  logic [31:0] ram_7;
+  // ── Pointers: [MSB]=wrap, [2:0]=address ─────────────────────────────
+  logic [3:0] adr_i;
+  // write pointer (wclk domain)
+  logic [3:0] adr_o;
+  // read pointer  (rclk domain)
+  // Write side
+  always_ff @(posedge wclk or posedge rst) begin
+    if (rst) begin
+      adr_i <= 0;
+      ram_0 <= 0;
+      ram_1 <= 0;
+      ram_2 <= 0;
+      ram_3 <= 0;
+      ram_4 <= 0;
+      ram_5 <= 0;
+      ram_6 <= 0;
+      ram_7 <= 0;
+    end else begin
+      if (wr & ~full) begin
+        // Write data to RAM at current address
+        if (adr_i[2:0] == 0) begin
+          ram_0 <= d;
+        end else if (adr_i[2:0] == 1) begin
+          ram_1 <= d;
+        end else if (adr_i[2:0] == 2) begin
+          ram_2 <= d;
+        end else if (adr_i[2:0] == 3) begin
+          ram_3 <= d;
+        end else if (adr_i[2:0] == 4) begin
+          ram_4 <= d;
+        end else if (adr_i[2:0] == 5) begin
+          ram_5 <= d;
+        end else if (adr_i[2:0] == 6) begin
+          ram_6 <= d;
+        end else begin
+          ram_7 <= d;
+        end
+        // Increment write pointer
+        if (adr_i[2:0] == 3'(TX_DEPTH - 1)) begin
+          adr_i[2:0] <= 0;
+          adr_i[3:3] <= ~adr_i[3:3];
+        end else begin
+          adr_i <= 4'(adr_i + 1);
+        end
+      end
+    end
+  end
+  // Read side
+  always_ff @(posedge rclk or posedge rst) begin
+    if (rst) begin
+      adr_o <= 0;
+    end else begin
+      if (~empty & rd) begin
+        if (adr_o[2:0] == 3'(TX_DEPTH - 1)) begin
+          adr_o[2:0] <= 0;
+          adr_o[3:3] <= ~adr_o[3:3];
+        end else begin
+          adr_o <= 4'(adr_o + 1);
+        end
+      end
+    end
+  end
+  // ── Combinational read + status ──────────────────────────────────────
+  // mem_empt = occupancy = adr_i - adr_o
+  logic [5:0] level;
+  assign level = 5'($unsigned(adr_i)) - 5'($unsigned(adr_o));
+  always_comb begin
+    if (adr_o[2:0] == 0) begin
+      q = ram_0;
+    end else if (adr_o[2:0] == 1) begin
+      q = ram_1;
+    end else if (adr_o[2:0] == 2) begin
+      q = ram_2;
+    end else if (adr_o[2:0] == 3) begin
+      q = ram_3;
+    end else if (adr_o[2:0] == 4) begin
+      q = ram_4;
+    end else if (adr_o[2:0] == 5) begin
+      q = ram_5;
+    end else if (adr_o[2:0] == 6) begin
+      q = ram_6;
+    end else begin
+      q = ram_7;
+    end
+    // Full/empty: combinational pointer compare (matches reference)
+    full = (adr_i[2:0] == adr_o[2:0]) & (adr_i[3:3] ^ adr_o[3:3]);
+    empty = adr_i == adr_o;
+    // mem_empt from pre-computed level
+    mem_empt = level[5:0];
+  end
 
 endmodule
 

@@ -14,29 +14,29 @@ module e203_exu_disp (
   input logic disp_i_rs2x0,
   input logic disp_i_rs1en,
   input logic disp_i_rs2en,
-  input logic [5-1:0] disp_i_rs1idx,
-  input logic [5-1:0] disp_i_rs2idx,
-  input logic [32-1:0] disp_i_rs1,
-  input logic [32-1:0] disp_i_rs2,
+  input logic [4:0] disp_i_rs1idx,
+  input logic [4:0] disp_i_rs2idx,
+  input logic [31:0] disp_i_rs1,
+  input logic [31:0] disp_i_rs2,
   input logic disp_i_rdwen,
-  input logic [5-1:0] disp_i_rdidx,
-  input logic [32-1:0] disp_i_info,
-  input logic [32-1:0] disp_i_imm,
-  input logic [32-1:0] disp_i_pc,
+  input logic [4:0] disp_i_rdidx,
+  input logic [31:0] disp_i_info,
+  input logic [31:0] disp_i_imm,
+  input logic [31:0] disp_i_pc,
   input logic disp_i_misalgn,
   input logic disp_i_buserr,
   input logic disp_i_ilegl,
   output logic disp_o_alu_valid,
   input logic disp_o_alu_ready,
   input logic disp_o_alu_longpipe,
-  output logic [32-1:0] disp_o_alu_rs1,
-  output logic [32-1:0] disp_o_alu_rs2,
+  output logic [31:0] disp_o_alu_rs1,
+  output logic [31:0] disp_o_alu_rs2,
   output logic disp_o_alu_rdwen,
-  output logic [5-1:0] disp_o_alu_rdidx,
-  output logic [32-1:0] disp_o_alu_info,
-  output logic [32-1:0] disp_o_alu_imm,
-  output logic [32-1:0] disp_o_alu_pc,
-  output logic [1-1:0] disp_o_alu_itag,
+  output logic [4:0] disp_o_alu_rdidx,
+  output logic [31:0] disp_o_alu_info,
+  output logic [31:0] disp_o_alu_imm,
+  output logic [31:0] disp_o_alu_pc,
+  output logic [0:0] disp_o_alu_itag,
   output logic disp_o_alu_misalgn,
   output logic disp_o_alu_buserr,
   output logic disp_o_alu_ilegl,
@@ -44,7 +44,7 @@ module e203_exu_disp (
   input logic oitfrd_match_disprs2,
   input logic oitfrd_match_disprs3,
   input logic oitfrd_match_disprd,
-  input logic [1-1:0] disp_oitf_ptr,
+  input logic [0:0] disp_oitf_ptr,
   output logic disp_oitf_ena,
   input logic disp_oitf_ready,
   output logic disp_oitf_rs1fpu,
@@ -55,11 +55,11 @@ module e203_exu_disp (
   output logic disp_oitf_rs2en,
   output logic disp_oitf_rs3en,
   output logic disp_oitf_rdwen,
-  output logic [5-1:0] disp_oitf_rs1idx,
-  output logic [5-1:0] disp_oitf_rs2idx,
-  output logic [5-1:0] disp_oitf_rs3idx,
-  output logic [5-1:0] disp_oitf_rdidx,
-  output logic [32-1:0] disp_oitf_pc
+  output logic [4:0] disp_oitf_rs1idx,
+  output logic [4:0] disp_oitf_rs2idx,
+  output logic [4:0] disp_oitf_rs3idx,
+  output logic [4:0] disp_oitf_rdidx,
+  output logic [31:0] disp_oitf_pc
 );
 
   // ── WFI halt interface ────────────────────────────────────────────
@@ -69,18 +69,28 @@ module e203_exu_disp (
   // ── OITF hazard check inputs ──────────────────────────────────────
   // ── OITF dispatch interface ───────────────────────────────────────
   // ── Hazard detection ──────────────────────────────────────────────
+  // Reference does NOT gate on rs1en/rs2en — matches any rs-field hit
   logic raw_dep;
-  assign raw_dep = disp_i_rs1en & oitfrd_match_disprs1 | disp_i_rs2en & oitfrd_match_disprs2;
+  assign raw_dep = oitfrd_match_disprs1 | oitfrd_match_disprs2 | oitfrd_match_disprs3;
+  // Reference matches any rd-field hit regardless of rdwen
   logic waw_dep;
-  assign waw_dep = disp_i_rdwen & oitfrd_match_disprd;
-  logic dep_stall;
-  assign dep_stall = raw_dep | waw_dep;
-  // For long-pipe instructions, OITF must be ready
-  logic oitf_stall;
-  assign oitf_stall = disp_o_alu_longpipe & ~disp_oitf_ready;
-  // Dispatch can proceed when ALU is ready, no hazard, no WFI, no AMO
+  assign waw_dep = oitfrd_match_disprd;
+  logic dep;
+  assign dep = raw_dep | waw_dep;
+  // Instruction group from info bus (bits [2:0])
+  logic [2:0] disp_i_info_grp;
+  assign disp_i_info_grp = disp_i_info[2:0];
+  // CSR group = 3; FENCE/FENCEI in BJP group (2) with specific bits
+  logic disp_csr;
+  assign disp_csr = disp_i_info_grp == 3;
+  logic disp_fence_fencei;
+  assign disp_fence_fencei = (disp_i_info_grp == 2) & (disp_i_info[14:14] | disp_i_info[15:15]);
+  // Long-pipe prediction: AGU group (1)
+  logic disp_alu_longp_prdt;
+  assign disp_alu_longp_prdt = disp_i_info_grp == 1;
+  // Dispatch condition matches reference exactly
   logic disp_condition;
-  assign disp_condition = ~dep_stall & ~oitf_stall & ~wfi_halt_exu_req & ~amo_wait;
+  assign disp_condition = (disp_csr ? oitf_empty : 1'b1) & (disp_fence_fencei ? oitf_empty : 1'b1) & ~wfi_halt_exu_req & ~dep & (disp_alu_longp_prdt ? disp_oitf_ready : 1'b1);
   assign disp_o_alu_valid = disp_i_valid & disp_condition;
   assign disp_i_ready = disp_o_alu_ready & disp_condition;
   assign disp_o_alu_rs1 = disp_i_rs1x0 ? 0 : disp_i_rs1;
