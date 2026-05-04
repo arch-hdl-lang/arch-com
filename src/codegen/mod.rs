@@ -2527,6 +2527,60 @@ impl<'a> Codegen<'a> {
         self.emit_expr_prec(expr, 0)
     }
 
+    /// Bit-width of a `TypeExpr` resolved through the symbol table for
+    /// named struct/enum types. Returns `None` if any width sub-expression
+    /// is non-literal (parametric) or the named type is unresolved.
+    ///
+    /// Mirrors `typecheck::TypeChecker::type_expr_width`. Kept private to
+    /// codegen for now — promote to a shared util if a third caller appears.
+    fn type_expr_width(&self, ty: &TypeExpr) -> Option<u32> {
+        let eval = |e: &Expr| match &e.kind {
+            ExprKind::Literal(LitKind::Dec(n)) | ExprKind::Literal(LitKind::Hex(n)) => Some(*n as u32),
+            _ => None,
+        };
+        match ty {
+            TypeExpr::UInt(w) | TypeExpr::SInt(w) => eval(w),
+            TypeExpr::Bool | TypeExpr::Bit | TypeExpr::Clock(_) | TypeExpr::Reset(_, _) => Some(1),
+            TypeExpr::Vec(inner, size) => {
+                let iw = self.type_expr_width(inner)?;
+                let n = eval(size)?;
+                Some(iw * n)
+            }
+            TypeExpr::Named(ident) => match self.symbols.globals.get(&ident.name) {
+                Some((Symbol::Struct(info), _)) => {
+                    let mut total = 0u32;
+                    for (_, field_ty) in &info.fields {
+                        total = total.checked_add(self.type_expr_width(field_ty)?)?;
+                    }
+                    Some(total)
+                }
+                Some((Symbol::Enum(info), _)) => Some(enum_width(info.variants.len())),
+                _ => None,
+            },
+        }
+    }
+
+    /// Emit a struct-field value sized to the field's declared width.
+    ///
+    /// Inside an SV positional concatenation `{a, b, c}`, IEEE 1800
+    /// §11.4.12 requires every operand to be sized — bare unsized
+    /// numeric literals (`0`, `42`) are illegal and Verilator rejects
+    /// them with `WIDTHCONCAT`. Named identifiers, slices, casts, etc.
+    /// already carry a declared width and pass through unchanged.
+    fn emit_field_value_sized(&self, value: &Expr, field_ty: &TypeExpr) -> String {
+        let w = match self.type_expr_width(field_ty) {
+            Some(w) => w,
+            None => return self.emit_expr_str(value),
+        };
+        match &value.kind {
+            ExprKind::Literal(LitKind::Dec(n)) => format!("{w}'d{n}"),
+            ExprKind::Literal(LitKind::Hex(n)) => format!("{w}'h{n:x}"),
+            ExprKind::Literal(LitKind::Bin(n)) => format!("{w}'b{n:b}"),
+            ExprKind::Bool(b) => format!("1'b{}", *b as u8),
+            _ => self.emit_expr_str(value),
+        }
+    }
+
     /// Best-effort struct name for an expression. Walks a small set of
     /// expression shapes that typically produce a struct value in ARCH
     /// today (method calls returning structs, function calls, struct
@@ -3217,9 +3271,9 @@ impl<'a> Codegen<'a> {
                     self.symbols.globals.get(&name.name)
                 {
                     let mut vals = Vec::new();
-                    for (field_name, _) in &info.fields {
+                    for (field_name, field_ty) in &info.fields {
                         if let Some(f) = fields.iter().find(|f| f.name.name == *field_name) {
-                            vals.push(self.emit_expr_str(&f.value));
+                            vals.push(self.emit_field_value_sized(&f.value, field_ty));
                         }
                     }
                     if vals.len() == info.fields.len() {
