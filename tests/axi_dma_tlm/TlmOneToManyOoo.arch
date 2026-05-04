@@ -71,9 +71,16 @@ module OneToManyOooInitiator
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
   port m: initiator MemOoo;
+  port lo_data_o: out UInt<64>;
+  port hi_data_o: out UInt<64>;
 
   reg lo_data: UInt<64> reset rst => 0;
   reg hi_data: UInt<64> reset rst => 0;
+
+  comb
+    lo_data_o = lo_data;
+    hi_data_o = hi_data;
+  end comb
 
   thread driver on clk rising, rst high
     lo_data <= fork m.read(32'h0000_1000);
@@ -85,6 +92,8 @@ end module OneToManyOooInitiator
 module TlmOneToManyOooTop
   port clk: in Clock<SysDomain>;
   port rst: in Reset<Sync>;
+  port lo_data_o: out UInt<64>;
+  port hi_data_o: out UInt<64>;
 
   wire cpu_link: MemOoo;
   wire lo_link: MemOoo;
@@ -94,6 +103,8 @@ module TlmOneToManyOooTop
     clk <- clk;
     rst <- rst;
     m -> cpu_link;
+    lo_data_o -> lo_data_o;
+    hi_data_o -> hi_data_o;
   end inst i
 
   inst x: TlmOooAddrRouter2

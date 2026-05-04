@@ -5211,6 +5211,50 @@ fn test_tlm_one_initiator_many_targets_ooo_router_example_compiles() {
 }
 
 #[test]
+fn test_tlm_one_initiator_many_targets_router_arch_sim_behavior() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/axi_dma_tlm/TlmOneToMany.arch")
+        .arg("--tb")
+        .arg("tests/axi_dma_tlm/tb_tlm_one_to_many.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for one-to-many router");
+    assert!(out.status.success(),
+        "one-to-many router sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("PASS one-to-many blocking"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout));
+}
+
+#[test]
+fn test_tlm_one_initiator_many_targets_ooo_router_arch_sim_behavior() {
+    let td = tempfile::tempdir().expect("tempdir");
+    let arch_bin = env!("CARGO_BIN_EXE_arch");
+    let out = std::process::Command::new(arch_bin)
+        .arg("sim")
+        .arg("tests/axi_dma_tlm/TlmOneToManyOoo.arch")
+        .arg("--tb")
+        .arg("tests/axi_dma_tlm/tb_tlm_one_to_many_ooo.cpp")
+        .arg("--outdir")
+        .arg(td.path())
+        .output()
+        .expect("run arch sim for OOO one-to-many router");
+    assert!(out.status.success(),
+        "OOO one-to-many router sim should pass\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("PASS one-to-many OOO"),
+        "expected PASS marker in stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout));
+}
+
+#[test]
 fn test_reentrant_thread_parses_with_max() {
     // PR-tlm-p1: `reentrant max N` clause parses into
     // ThreadBlock.reentrant = Some(Some(Expr::Literal(N))).
