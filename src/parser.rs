@@ -3201,7 +3201,7 @@ impl Parser {
             | Some(TokenKind::BinLiteral(_)) | Some(TokenKind::SizedLiteral(_)) => {
                 self.parse_literal()
             }
-            Some(TokenKind::Ident(_)) => {
+            Some(TokenKind::Ident(_)) | Some(TokenKind::Counter) => {
                 let ident = self.expect_ident()?;
                 // Check for enum variant: Ident::Ident
                 if self.check(TokenKind::ColonColon) {
@@ -5029,6 +5029,12 @@ impl Parser {
             Some(TokenKind::Ident(name)) => {
                 let tok = self.advance();
                 Ok(Ident::new(name, tok.span))
+            }
+            // `counter` is a construct keyword at the top level but a natural
+            // signal name everywhere else. Accept it as an identifier.
+            Some(TokenKind::Counter) => {
+                let tok = self.advance();
+                Ok(Ident::new("counter".to_string(), tok.span))
             }
             Some(other) => {
                 let found = other.to_string();
