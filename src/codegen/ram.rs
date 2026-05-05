@@ -10,13 +10,24 @@ impl<'a> Codegen<'a> {
     pub(crate) fn emit_ram(&mut self, r: &RamDecl) {
         use crate::ast::{RamKind, RamInit};
 
-        // Resolve DATA_WIDTH from WIDTH type param
+        // Resolve DATA_WIDTH. Three sources, in priority order:
+        //   1. `param WIDTH: type = T` — legacy explicit element type.
+        //   2. First store_var's element width (when store is
+        //      `Vec<UInt<W>, DEPTH>`). This matches the user's intent
+        //      when they declared the store with a typed element.
+        //   3. Fallback to `[7:0]` / "8" so legacy ram declarations
+        //      that omit both still emit something compilable.
+        let store_elem_ty: Option<TypeExpr> = r.store_vars.first().and_then(|sv| match &sv.ty {
+            TypeExpr::Vec(elem, _) => Some((**elem).clone()),
+            _ => None,
+        });
         let data_width_ty = r.params.iter()
             .find(|p| p.name.name == "WIDTH")
             .and_then(|p| match &p.kind {
                 crate::ast::ParamKind::Type(ty) => Some(self.emit_port_type_str(ty)),
                 _ => None,
             })
+            .or_else(|| store_elem_ty.as_ref().map(|ty| self.emit_port_type_str(ty)))
             .unwrap_or_else(|| "logic [7:0]".to_string());
         // Compute the bit-width number directly from the TypeExpr to avoid
         // fragile string parsing of the emitted type (e.g. "logic [7:0]").
@@ -26,6 +37,7 @@ impl<'a> Codegen<'a> {
                 crate::ast::ParamKind::Type(ty) => self.type_expr_data_width(ty),
                 _ => None,
             })
+            .or_else(|| store_elem_ty.as_ref().and_then(|ty| self.type_expr_data_width(ty)))
             .unwrap_or_else(|| "8".to_string());
 
         // Resolve DEPTH from param default
@@ -38,10 +50,50 @@ impl<'a> Codegen<'a> {
         let n = &r.name.name.clone();
 
         // ── Module header ────────────────────────────────────────────────────
+        // Standard params first (DEPTH + DATA_WIDTH), then any
+        // user-declared params (Const / WidthConst) that aren't
+        // covered by the standard pair. Without this, user-typed
+        // ports like `wdata: in UInt<TagW>` reference an undeclared
+        // SV variable when the ram is elaborated.
+        let mut header_params: Vec<String> = Vec::new();
+        header_params.push(format!("parameter int DEPTH = {depth_expr}"));
+        // Emit user-declared params BEFORE DATA_WIDTH so that the
+        // DATA_WIDTH default expression (which may reference user
+        // params like `TagW`) resolves cleanly in the SV elaboration
+        // order.
+        for p in &r.params {
+            if p.name.name == "DEPTH" || p.name.name == "WIDTH" || p.name.name == "T" {
+                continue;
+            }
+            match &p.kind {
+                crate::ast::ParamKind::Const => {
+                    let default_str = p.default.as_ref()
+                        .map(|d| format!(" = {}", self.emit_expr_str(d)))
+                        .unwrap_or_default();
+                    header_params.push(format!("parameter int {}{default_str}", p.name.name));
+                }
+                crate::ast::ParamKind::WidthConst(hi, lo) => {
+                    let hi_s = self.emit_expr_str(hi);
+                    let lo_s = self.emit_expr_str(lo);
+                    let default_str = p.default.as_ref()
+                        .map(|d| format!(" = {}", self.emit_expr_str(d)))
+                        .unwrap_or_default();
+                    header_params.push(format!("parameter [{hi_s}:{lo_s}] {}{default_str}", p.name.name));
+                }
+                // Logic / EnumConst / ConstVec / Type are uncommon for ram
+                // params; punt for now (would emit nothing → port refs
+                // broken, but no current Ibex use-case hits this).
+                _ => {}
+            }
+        }
+        header_params.push(format!("parameter int DATA_WIDTH = {data_width_num}"));
         self.line(&format!("module {n} #("));
         self.indent += 1;
-        self.line(&format!("parameter int DEPTH = {depth_expr},"));
-        self.line(&format!("parameter int DATA_WIDTH = {data_width_num}"));
+        let count = header_params.len();
+        for (i, p) in header_params.iter().enumerate() {
+            let comma = if i < count - 1 { "," } else { "" };
+            self.line(&format!("{p}{comma}"));
+        }
         self.indent -= 1;
         self.line(") (");
         self.indent += 1;
