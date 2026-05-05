@@ -494,25 +494,53 @@ fn lower_tlm_connects_in_module(
 
     let mut synthesized_wires = Vec::new();
     let mut synthesized_conns: HashMap<String, Vec<Connection>> = HashMap::new();
+    let mut connected_endpoints: HashMap<(String, String), Span> = HashMap::new();
     for conn in connects {
-        let Some((from_bus, from_persp, from_span)) =
-            tlm_connect_endpoint_bus(&conn.from_inst, &conn.from_port, &inst_modules, module_ports)
-        else {
-            errors.push(CompileError::general(
-                &format!("unknown TLM connect endpoint `{}.{}`", conn.from_inst.name, conn.from_port.name),
-                conn.from_inst.span.merge(conn.from_port.span),
-            ));
-            continue;
+        let from = match tlm_connect_endpoint_bus(
+            &conn.from_inst,
+            &conn.from_port,
+            &inst_modules,
+            module_ports,
+        ) {
+            Ok(endpoint) => endpoint,
+            Err(err) => {
+                errors.push(err);
+                continue;
+            }
         };
-        let Some((to_bus, to_persp, to_span)) =
-            tlm_connect_endpoint_bus(&conn.to_inst, &conn.to_port, &inst_modules, module_ports)
-        else {
-            errors.push(CompileError::general(
-                &format!("unknown TLM connect endpoint `{}.{}`", conn.to_inst.name, conn.to_port.name),
-                conn.to_inst.span.merge(conn.to_port.span),
-            ));
-            continue;
+        let to = match tlm_connect_endpoint_bus(
+            &conn.to_inst,
+            &conn.to_port,
+            &inst_modules,
+            module_ports,
+        ) {
+            Ok(endpoint) => endpoint,
+            Err(err) => {
+                errors.push(err);
+                continue;
+            }
         };
+        let (from_bus, from_persp, from_span) = from;
+        let (to_bus, to_persp, to_span) = to;
+
+        let error_count_before_endpoint_checks = errors.len();
+        for endpoint in [(&conn.from_inst, &conn.from_port), (&conn.to_inst, &conn.to_port)] {
+            let key = (endpoint.0.name.clone(), endpoint.1.name.clone());
+            if let Some(first_span) = connected_endpoints.get(&key) {
+                errors.push(CompileError::general(
+                    &format!(
+                        "TLM connect endpoint `{}.{}` is connected more than once",
+                        endpoint.0.name, endpoint.1.name
+                    ),
+                    first_span.merge(conn.span),
+                ));
+            } else {
+                connected_endpoints.insert(key, conn.span);
+            }
+        }
+        if errors.len() != error_count_before_endpoint_checks {
+            continue;
+        }
         if from_bus != to_bus {
             errors.push(CompileError::general(
                 &format!(
@@ -525,11 +553,21 @@ fn lower_tlm_connects_in_module(
         }
         if from_persp != BusPerspective::Initiator || to_persp != BusPerspective::Target {
             errors.push(CompileError::general(
-                "TLM connect prototype requires `connect initiator_inst.initiator_port -> target_inst.target_port;`",
+                &format!(
+                    "TLM connect requires `connect initiator_inst.initiator_port -> target_inst.target_port;` \
+                     but `{}.{}` is {:?} and `{}.{}` is {:?}",
+                    conn.from_inst.name,
+                    conn.from_port.name,
+                    from_persp,
+                    conn.to_inst.name,
+                    conn.to_port.name,
+                    to_persp
+                ),
                 from_span.merge(to_span),
             ));
             continue;
         }
+        let error_count_before_duplicate_checks = errors.len();
         for (inst_name, port_name) in [(&conn.from_inst, &conn.from_port), (&conn.to_inst, &conn.to_port)] {
             if let Some(existing) = m.body.iter().find_map(|item| match item {
                 ModuleBodyItem::Inst(inst) if inst.name.name == inst_name.name => Some(inst),
@@ -544,7 +582,7 @@ fn lower_tlm_connects_in_module(
                 ));
             }
         }
-        if !errors.is_empty() {
+        if errors.len() != error_count_before_duplicate_checks {
             continue;
         }
 
@@ -612,12 +650,41 @@ fn tlm_connect_endpoint_bus(
     port: &Ident,
     inst_modules: &HashMap<String, String>,
     module_ports: &HashMap<String, Vec<PortDecl>>,
-) -> Option<(String, BusPerspective, Span)> {
-    let module_name = inst_modules.get(&inst.name)?;
-    let ports = module_ports.get(module_name)?;
-    let p = ports.iter().find(|p| p.name.name == port.name)?;
-    let bi = p.bus_info.as_ref()?;
-    Some((bi.bus_name.name.clone(), bi.perspective, p.span))
+) -> Result<(String, BusPerspective, Span), CompileError> {
+    let Some(module_name) = inst_modules.get(&inst.name) else {
+        return Err(CompileError::general(
+            &format!("unknown TLM connect instance `{}`", inst.name),
+            inst.span,
+        ));
+    };
+    let Some(ports) = module_ports.get(module_name) else {
+        return Err(CompileError::general(
+            &format!(
+                "TLM connect instance `{}` has construct type `{}` whose ports are not supported by connect",
+                inst.name, module_name
+            ),
+            inst.span,
+        ));
+    };
+    let Some(p) = ports.iter().find(|p| p.name.name == port.name) else {
+        return Err(CompileError::general(
+            &format!(
+                "module `{}` has no port `{}` for TLM connect endpoint `{}.{}`",
+                module_name, port.name, inst.name, port.name
+            ),
+            port.span,
+        ));
+    };
+    let Some(bi) = p.bus_info.as_ref() else {
+        return Err(CompileError::general(
+            &format!(
+                "TLM connect endpoint `{}.{}` names non-bus port `{}` on module `{}`",
+                inst.name, port.name, port.name, module_name
+            ),
+            p.span,
+        ));
+    };
+    Ok((bi.bus_name.name.clone(), bi.perspective, p.span))
 }
 
 // ── Generate expansion ────────────────────────────────────────────────────────
