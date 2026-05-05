@@ -1306,7 +1306,7 @@ impl_construct_direct!(ModuleDecl,           "module",       iface = crate::inte
 impl_construct_via_common!(FsmDecl,          "fsm",          iface = crate::interface::emit_fsm_interface,          check = check_fsm,          emit_sv = emit_fsm,          emit_sim = gen_fsm);
 impl_construct_via_common!(FifoDecl,         "fifo",         iface = crate::interface::emit_fifo_interface,         check = check_fifo,         emit_sv = emit_fifo,         emit_sim = gen_fifo);
 impl_construct_via_common!(RamDecl,          "ram",          iface = crate::interface::emit_ram_interface,          check = check_ram,          emit_sv = emit_ram,          emit_sim = gen_ram);
-impl_construct_via_common!(CamDecl,          "cam",                                                                 check = check_cam,          emit_sv = emit_cam,          emit_sim = gen_cam);
+impl_construct_via_common!(CamDecl,          "cam",          iface = crate::interface::emit_cam_interface,          check = check_cam,          emit_sv = emit_cam,          emit_sim = gen_cam);
 impl_construct_via_common!(CounterDecl,      "counter",      iface = crate::interface::emit_counter_interface,      check = check_counter,      emit_sv = emit_counter,      emit_sim = gen_counter);
 impl_construct_via_common!(ArbiterDecl,      "arbiter",      iface = crate::interface::emit_arbiter_interface,      check = check_arbiter,      emit_sv = emit_arbiter,      emit_sim = gen_arbiter);
 impl_construct_via_common!(RegfileDecl,      "regfile",      iface = crate::interface::emit_regfile_interface,      check = check_regfile,      emit_sv = emit_regfile,      emit_sim = gen_regfile);

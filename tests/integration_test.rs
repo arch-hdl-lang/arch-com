@@ -10168,6 +10168,218 @@ fn test_unpacked_wire_modifier_emits_unpacked_sv() {
 }
 
 #[test]
+fn test_cam_emits_archi_interface() {
+    // Regression: arch-ibex Phase D spike surfaced that CamDecl had
+    // no `iface` clause in its impl_construct_via_common, so cam
+    // declarations never produced a `.archi` interface stub. Other
+    // first-class constructs (fsm, fifo, ram, counter, arbiter,
+    // regfile, pipeline, linklist) all have one. Adds parity.
+    let source = "
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+cam TestCam
+  param DEPTH: const = 8;
+  param KEY_W: const = 12;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port write_valid: in Bool;
+  port write_idx:   in UInt<3>;
+  port write_key:   in UInt<12>;
+  port write_set:   in Bool;
+  port search_key:   in  UInt<12>;
+  port search_mask:  out UInt<8>;
+  port search_any:   out Bool;
+  port search_first: out UInt<3>;
+end cam TestCam
+";
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse error");
+    let item = parsed.items.iter()
+        .find(|i| matches!(i, arch::ast::Item::Cam(_)))
+        .expect("expected a cam item");
+    let body = arch::interface::emit_interface(item)
+        .expect("cam should now emit an .archi interface");
+    assert!(body.starts_with("cam TestCam\n"), "body: {body}");
+    assert!(body.contains("param DEPTH: const = 8;"), "body: {body}");
+    assert!(body.contains("port search_first: out UInt<3>;"), "body: {body}");
+    assert!(body.ends_with("end cam TestCam\n"), "body: {body}");
+}
+
+#[test]
+fn test_arbiter_archi_reflects_per_requester_ports_array() {
+    // Regression: arbiter `.archi` previously dropped the `ports[N]`
+    // group, so a downstream consumer reading the .archi to write an
+    // inst connection couldn't see what the per-requester signals
+    // are. Phase D's icache port relies on arbiter inst — exposing
+    // the group in the .archi is required.
+    let source = "
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+arbiter TestArb
+  policy round_robin;
+  param NUM_REQ: const = 3;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  ports[NUM_REQ] request
+    valid: in Bool;
+    ready: out Bool;
+  end ports request
+  port grant_valid: out Bool;
+  port grant_requester: out UInt<2>;
+end arbiter TestArb
+";
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse error");
+    let item = parsed.items.iter()
+        .find(|i| matches!(i, arch::ast::Item::Arbiter(_)))
+        .expect("expected an arbiter item");
+    let body = arch::interface::emit_interface(item)
+        .expect("arbiter should emit an .archi interface");
+    assert!(body.contains("ports[NUM_REQ] request"),
+            ".archi must include the ports[N] group: {body}");
+    assert!(body.contains("    valid: in Bool;"),
+            ".archi must include per-requester valid signal: {body}");
+    assert!(body.contains("    ready: out Bool;"),
+            ".archi must include per-requester ready signal: {body}");
+    assert!(body.contains("  end ports request"),
+            ".archi ports group must be properly closed: {body}");
+}
+
+#[test]
+fn test_arbiter_inst_synthesizes_per_requester_vector_wire() {
+    // Regression: when a parent instantiates an arbiter and writes
+    // `request[0].valid <- a;` per-index connections, the parser flat-
+    // tens to `port_name = "request0_valid"`. The arbiter's SV port
+    // is a vector `request_valid [N-1:0]`, so the inst-site previously
+    // emitted `.request0_valid(...)` — a non-existent SV port name.
+    //
+    // Fix: emit_inst now detects the per-index pattern, synthesizes a
+    // hidden vector wire `__<inst>_<group>_<sig>`, drives each bit
+    // from the user's expression, and connects the whole wire to the
+    // module's vector port.
+    let source = "
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+arbiter MyArb
+  policy round_robin;
+  param NUM_REQ: const = 4;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  ports[NUM_REQ] request
+    valid: in Bool;
+    ready: out Bool;
+  end ports request
+  port grant_valid: out Bool;
+  port grant_requester: out UInt<2>;
+end arbiter MyArb
+
+module Parent
+  port clk_i: in Clock<SysDomain>;
+  port rst_ni: in Reset<Sync, High>;
+  port req0: in Bool;
+  port req1: in Bool;
+  port req2: in Bool;
+  port req3: in Bool;
+  port grant_valid_o: out Bool;
+  port grant_idx_o: out UInt<2>;
+
+  inst arb: MyArb
+    clk <- clk_i;
+    rst <- rst_ni;
+    request[0].valid <- req0;
+    request[1].valid <- req1;
+    request[2].valid <- req2;
+    request[3].valid <- req3;
+    grant_valid <- false;
+    grant_requester <- 2'd0;
+  end inst arb
+
+  let _u_grant_v: Bool = false;
+  let _u_grant_i: UInt<2> = 2'd0;
+  comb
+    grant_valid_o = false;
+    grant_idx_o = 2'd0;
+  end comb
+end module Parent
+";
+    let sv = compile_to_sv(source);
+    // Synthesized wire is declared.
+    assert!(sv.contains("logic [3:0] __arb_request_valid;"),
+            "expected synthesized vector wire: {sv}");
+    // Each bit of the wire is driven from the user's per-index
+    // expression.
+    assert!(sv.contains("assign __arb_request_valid[0] = req0;"),
+            "expected per-index drive [0]: {sv}");
+    assert!(sv.contains("assign __arb_request_valid[3] = req3;"),
+            "expected per-index drive [3]: {sv}");
+    // The whole vector is connected to the inst's `request_valid` port.
+    assert!(sv.contains(".request_valid(__arb_request_valid)"),
+            "expected whole-vector connection: {sv}");
+    // The non-existent flattened port names must NOT appear.
+    assert!(!sv.contains(".request0_valid("),
+            "must not emit per-index port name: {sv}");
+    assert!(!sv.contains(".request3_valid("),
+            "must not emit per-index port name: {sv}");
+}
+
+#[test]
+fn test_ram_user_param_propagates_to_sv_header() {
+    // Regression: ram codegen previously emitted only DEPTH +
+    // DATA_WIDTH parameters in the SV header, dropping any user-
+    // declared `param FOO: const = N;` declarations. But port type
+    // expressions like `wdata: in UInt<TagW>` continued to emit
+    // `[TagW-1:0]` — referencing an undeclared SV variable.
+    //
+    // Fix: emit user params (Const / WidthConst) alongside the
+    // standard pair, AND derive DATA_WIDTH from the store_var's
+    // element type when WIDTH isn't a `type` param.
+    let source = "
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+ram TagRam
+  kind single;
+  latency 1;
+  param DEPTH: const = 64;
+  param TagW: const = 22;
+  port clk: in Clock<SysDomain>;
+  store
+    buf: Vec<UInt<TagW>, DEPTH>;
+  end store
+  ports rw
+    en:    in Bool;
+    wen:   in Bool;
+    addr:  in UInt<6>;
+    wdata: in UInt<TagW>;
+    rdata: out UInt<TagW>;
+  end ports rw
+end ram TagRam
+";
+    let sv = compile_to_sv(source);
+    // SV header includes the user param.
+    assert!(sv.contains("parameter int TagW = 22"),
+            "user param TagW must appear in SV header: {sv}");
+    // DATA_WIDTH is derived from the store element type. Default may
+    // be the symbolic param `TagW` (forward-resolves via the user
+    // param decl above) or the literal `22`; either is correct SV.
+    assert!(sv.contains("parameter int DATA_WIDTH = TagW")
+         || sv.contains("parameter int DATA_WIDTH = 22"),
+            "DATA_WIDTH should follow the store element width: {sv}");
+    // Port refs to TagW now resolve.
+    assert!(sv.contains("[TagW-1:0]"),
+            "port type must keep referencing TagW: {sv}");
+}
+
+#[test]
 fn test_doc_comment_above_local_param_parses() {
     // Regression: arch-ibex C2 surfaced that a `///` doc comment
     // immediately preceding a `local param` declaration confused the

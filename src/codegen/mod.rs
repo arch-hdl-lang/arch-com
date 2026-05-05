@@ -1355,7 +1355,80 @@ impl<'a> Codegen<'a> {
                 .unwrap_or_default()
         };
 
+        // ── Collect target's per-requester ports[N] groups (arbiter / regfile) ──
+        // The parser flattens `request[0].valid` into a single port name
+        // `request0_valid`; on the inst-target side, the SV port is a vector
+        // (`request_valid [N-1:0]`). We need to:
+        //   - synthesize a hidden wire of width N,
+        //   - drive each bit from the user's per-index expression (or split
+        //     the inst's output back to user wires for output signals),
+        //   - replace the N flat connections with one whole-vector
+        //     `.<group>_<sig>(<wire>)` connection.
+        // Without this, the inst-site SV references non-existent port
+        // names like `.request0_valid()`. Issue #296.
+        // Arbiter emits its `ports[N] request { valid; ready; }` group
+        // as vector ports (`request_valid [N-1:0]`, `request_ready [N-1:0]`)
+        // — so individual `request[i].valid <- expr` connections need to
+        // be merged into a synthesized vector wire + per-bit drives, then
+        // connected as a single whole-vector `.request_valid(wire)` pin.
+        //
+        // Regfile uses a different convention — its `ports[N] read { addr;
+        // data; }` emits as per-index scalar ports (`read0_addr`,
+        // `read1_addr`, ...) so the existing flattened-port-name behavior
+        // is correct there. Regfile is intentionally excluded from the
+        // synthesis here.
+        let target_port_arrays: Vec<(String, u64, Vec<(String, Direction, TypeExpr)>)> =
+            self.source.items.iter().find_map(|item| match item {
+                Item::Arbiter(a) if a.name.name == inst.module_name.name => Some(
+                    a.port_arrays.iter().map(|pa| {
+                        let n = self.eval_count_with_inst_params(&pa.count_expr, inst);
+                        let signals = pa.signals.iter()
+                            .map(|s| (s.name.name.clone(), s.direction, s.ty.clone()))
+                            .collect();
+                        (pa.name.name.clone(), n, signals)
+                    }).collect()
+                ),
+                _ => None,
+            }).unwrap_or_default();
+
+        // Map port_name → (group, idx, sig_name) for the per-requester
+        // connections so we can group them after the main loop.
+        let mut indexed_group_conns: std::collections::HashMap<
+            (String, String),  // (group_name, sig_name)
+            Vec<(u32, String)>,  // (idx, signal_str)
+        > = std::collections::HashMap::new();
+        let mut indexed_group_dir: std::collections::HashMap<
+            (String, String), Direction,
+        > = std::collections::HashMap::new();
+        let mut indexed_group_ty: std::collections::HashMap<
+            (String, String), TypeExpr,
+        > = std::collections::HashMap::new();
+
         for c in &inst.connections {
+            // Try to match `<group>{idx}_<sig>` against any known port array.
+            let matched = target_port_arrays.iter().find_map(|(group, _n, sigs)| {
+                let pname = &c.port_name.name;
+                let prefix = format!("{group}");
+                let rest = pname.strip_prefix(&prefix)?;
+                // rest looks like "0_valid" — split on first underscore
+                let und = rest.find('_')?;
+                let idx_str = &rest[..und];
+                let sig = &rest[und + 1..];
+                let idx: u32 = idx_str.parse().ok()?;
+                let (sname, dir, ty) = sigs.iter()
+                    .find(|(sn, _, _)| sn == sig)?;
+                Some((group.clone(), idx, sname.clone(), *dir, ty.clone()))
+            });
+            if let Some((group, idx, sig, dir, ty)) = matched {
+                let sig_str = self.emit_expr_str(&c.signal);
+                indexed_group_conns
+                    .entry((group.clone(), sig.clone()))
+                    .or_default()
+                    .push((idx, sig_str));
+                indexed_group_dir.insert((group.clone(), sig.clone()), dir);
+                indexed_group_ty.insert((group, sig), ty);
+                continue;
+            }
             if let Some((_, bus_name, bus_params)) = target_bus_ports.iter().find(|(pn, _, _)| *pn == c.port_name.name) {
                 // Bus connection — expand to individual signals
                 if let Some((crate::resolve::Symbol::Bus(info), _)) = self.symbols.globals.get(bus_name) {
@@ -1376,6 +1449,49 @@ impl<'a> Codegen<'a> {
             }
         }
 
+        // Emit synthesized vector wires + per-index drives BEFORE the inst.
+        // For inputs: drive each bit from the user's per-index expression.
+        // For outputs: drive the user's per-index target from the wire.
+        // The whole vector then connects to the inst's vector port.
+        let mut grouped_keys: Vec<(String, String)> = indexed_group_conns.keys().cloned().collect();
+        grouped_keys.sort();
+        for (group, sig) in &grouped_keys {
+            let entries = &indexed_group_conns[&(group.clone(), sig.clone())];
+            let dir = indexed_group_dir[&(group.clone(), sig.clone())];
+            let ty = indexed_group_ty[&(group.clone(), sig.clone())].clone();
+            // Find the array's count.
+            let n = target_port_arrays.iter()
+                .find(|(g, _, _)| g == group)
+                .map(|(_, n, _)| *n)
+                .unwrap_or(entries.len() as u64);
+            let wire_name = format!("__{}_{}_{}", inst.name.name, group, sig);
+            // Synthesize the vector wire as `logic [<elem>][N-1:0]`.
+            // Per-bit (`elem` == Bool) flattens to `logic [N-1:0]`.
+            let elem_ty_str = match &ty {
+                TypeExpr::Bool => format!("[{}:0]", n - 1),
+                _ => {
+                    let elem = self.emit_logic_type_str(&ty);
+                    let body = elem.strip_prefix("logic").unwrap_or(&elem).trim_start();
+                    if body.is_empty() {
+                        format!("[{}:0]", n - 1)
+                    } else {
+                        format!("[{}:0]{body}", n - 1)
+                    }
+                }
+            };
+            self.line(&format!("logic {elem_ty_str} {wire_name};"));
+            // Drive direction depends on the inst's port direction.
+            // Input (`in`) port: user assigns drive bits of the wire.
+            // Output (`out`) port: bit-selects of the wire drive user wires.
+            for (idx, sig_str) in entries {
+                match dir {
+                    Direction::In => self.line(&format!("assign {wire_name}[{idx}] = {sig_str};")),
+                    Direction::Out => self.line(&format!("assign {sig_str} = {wire_name}[{idx}];")),
+                }
+            }
+            connections.push(format!(".{group}_{sig}({wire_name})"));
+        }
+
         self.line(&parts[0]);
         self.indent += 1;
         for (i, conn) in connections.iter().enumerate() {
@@ -1387,6 +1503,36 @@ impl<'a> Codegen<'a> {
         }
         self.indent -= 1;
         self.line(");");
+    }
+
+    /// Evaluate a `ports[N]` count expression in the context of an inst's
+    /// param assignments. Falls back to evaluating against the source
+    /// module's defaults if the inst doesn't override the param.
+    fn eval_count_with_inst_params(&self, expr: &Expr, inst: &InstDecl) -> u64 {
+        // Build a param map for the inst.
+        let mut params: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        // Source defaults first.
+        let target_params: Option<&[ParamDecl]> = self.source.items.iter().find_map(|item| match item {
+            Item::Arbiter(a) if a.name.name == inst.module_name.name => Some(a.params.as_slice()),
+            Item::Regfile(r) if r.name.name == inst.module_name.name => Some(r.params.as_slice()),
+            _ => None,
+        });
+        if let Some(ps) = target_params {
+            for p in ps {
+                if let Some(d) = &p.default {
+                    if let Some(v) = crate::elaborate::try_eval_i64(d, &params) {
+                        params.insert(p.name.name.clone(), v);
+                    }
+                }
+            }
+        }
+        // Inst overrides.
+        for pa in &inst.param_assigns {
+            if let Some(v) = crate::elaborate::try_eval_i64(&pa.value, &params) {
+                params.insert(pa.name.name.clone(), v);
+            }
+        }
+        crate::elaborate::try_eval_i64(expr, &params).unwrap_or(0).max(0) as u64
     }
 
     fn emit_generate(&mut self, gen: &GenerateDecl) {
