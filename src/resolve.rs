@@ -9,6 +9,8 @@ pub enum Symbol {
     Domain(DomainInfo),
     Struct(StructInfo),
     Enum(EnumInfo),
+    /// Opaque extern type from an `extern package` (SV-side).
+    ExternEnum(String),
     Module(ModuleInfo),
     Fsm(FsmInfo),
     Fifo(FifoInfo),
@@ -728,6 +730,14 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                             (Symbol::Param(p.name.name.clone()), p.name.span),
                         );
                     }
+                }
+            }
+            Item::ExternPackage(ep) => {
+                for ty in &ep.types {
+                    table.globals.insert(
+                        ty.name.clone(),
+                        (Symbol::ExternEnum(ty.name.clone()), ty.span),
+                    );
                 }
             }
             Item::Use(_) => {} // file already loaded; no-op

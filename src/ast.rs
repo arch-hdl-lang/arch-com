@@ -38,6 +38,7 @@ pub enum Item {
     Bus(BusDecl),
     Package(PackageDecl),
     Use(UseDecl),
+    ExternPackage(ExternPackageDecl),
 }
 
 #[derive(Debug, Clone)]
@@ -1131,6 +1132,7 @@ impl Item {
             Item::Bus(b) => b,
             Item::Package(p) => p,
             Item::Use(u) => u,
+            Item::ExternPackage(ep) => ep,
         }
     }
 
@@ -1322,6 +1324,11 @@ impl_construct_direct!(ClkGateDecl,          "clkgate",      iface = crate::inte
 impl_construct_direct!(BusDecl,              "bus",          iface = crate::interface::emit_bus_interface,          check = check_bus);
 impl_construct_direct!(PackageDecl,          "package",      iface = crate::interface::emit_package_interface,      check = check_package,      emit_sv = emit_package);
 impl_construct_direct!(TemplateDecl,         "template",                                                            check = check_template);
+
+// `extern package` — opaque type declarations for SV-side packages.
+// No SV body emission (the SV package lives upstream); typecheck is a
+// no-op (there are no ARCH-side values to validate).
+impl_construct_direct!(ExternPackageDecl,    "extern package",                                                      check = check_extern_package);
 
 // `Use` has only `doc` — no inner doc (single-line decl).
 impl Construct for UseDecl {
@@ -1938,6 +1945,18 @@ pub struct UseDecl {
     pub name: Ident,
     pub span: Span,
     pub doc: Option<String>,
+}
+
+/// `extern package Name ... end extern package Name`
+/// Declares opaque type names from an SV-side package, so ARCH can type-check
+/// references without importing the SV source. No SV package body is emitted.
+#[derive(Debug, Clone)]
+pub struct ExternPackageDecl {
+    pub name: Ident,
+    pub types: Vec<Ident>,
+    pub span: Span,
+    pub doc: Option<String>,
+    pub inner_doc: Option<String>,
 }
 
 /// Hook binding in a module that `implements` a template

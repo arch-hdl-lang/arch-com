@@ -2832,6 +2832,38 @@ fn test_use_package_still_emits_sv_import() {
             "expected SV import for a package-typed use:\n{sv}");
 }
 
+/// `extern package` declares opaque types from an SV-side package.
+/// `use Pkg;` with an extern package emits `import Pkg::*;` and codegen
+/// drops the `Pkg::` qualifier from enum variant references.
+#[test]
+fn test_extern_package_emits_sv_import_and_bare_names() {
+    let source = r#"
+extern package ibex_pkg
+  type rv32m_e;
+  type rv32b_e;
+end extern package ibex_pkg
+
+use ibex_pkg;
+
+module IbexCore
+  param RV32M: rv32m_e = rv32m_e::RV32MFast;
+  param RV32B: rv32b_e = rv32b_e::RV32BNone;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+end module IbexCore
+"#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("import ibex_pkg::*;"),
+            "expected SV `import ibex_pkg::*;` for extern package:\n{sv}");
+    assert!(sv.contains("parameter rv32m_e RV32M = RV32MFast"),
+            "expected bare `rv32m_e` type and `RV32MFast` variant:\n{sv}");
+    assert!(sv.contains("parameter rv32b_e RV32B = RV32BNone"),
+            "expected bare `rv32b_e` type and `RV32BNone` variant:\n{sv}");
+    // No extern package body should be emitted (SV package lives upstream).
+    assert!(!sv.contains("extern package") && !sv.contains("endpackage"),
+            "extern package must not emit SV package body:\n{sv}");
+}
+
 fn compile_to_sim_h(source: &str, inputs_start_uninit: bool) -> String {
     use arch::sim_codegen::SimCodegen;
     let tokens = arch::lexer::tokenize(source).expect("lexer error");

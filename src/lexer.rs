@@ -231,6 +231,8 @@ pub enum TokenKind {
     GenerateElse,
     #[token("for")]
     For,
+    #[token("extern")]
+    Extern,
     #[token("package")]
     Package,
     #[token("use")]
@@ -437,6 +439,7 @@ impl fmt::Display for TokenKind {
             TokenKind::GenerateIf => write!(f, "generate_if"),
             TokenKind::GenerateElse => write!(f, "generate_else"),
             TokenKind::For => write!(f, "for"),
+            TokenKind::Extern => write!(f, "extern"),
             TokenKind::Package => write!(f, "package"),
             TokenKind::Use => write!(f, "use"),
             TokenKind::Testbench => write!(f, "testbench"),

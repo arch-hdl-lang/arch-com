@@ -130,6 +130,18 @@ impl Parser {
             Some(TokenKind::Synchronizer) => Ok(Item::Synchronizer(self.parse_synchronizer()?)),
             Some(TokenKind::Clkgate) => Ok(Item::Clkgate(self.parse_clkgate()?)),
             Some(TokenKind::Bus) => Ok(Item::Bus(self.parse_bus()?)),
+            Some(TokenKind::Extern) => {
+                self.advance(); // consume `extern`
+                if self.check(TokenKind::Package) {
+                    Ok(Item::ExternPackage(self.parse_extern_package()?))
+                } else {
+                    Err(CompileError::unexpected_token(
+                        "package (after extern)",
+                        &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                        self.peek_span(),
+                    ))
+                }
+            }
             Some(TokenKind::Package) => Ok(Item::Package(self.parse_package()?)),
             Some(TokenKind::Use) => Ok(Item::Use(self.parse_use()?)),
             Some(other) => Err(CompileError::unexpected_token(
@@ -5688,6 +5700,54 @@ impl Parser {
             inner_doc,
         })
     }
+
+    /// Parse `extern package Name ... end extern package Name`.
+    /// Caller has already consumed `extern`.
+    fn parse_extern_package(&mut self) -> Result<ExternPackageDecl, CompileError> {
+        let start = self.expect(TokenKind::Package)?.span;
+        let name = self.expect_ident()?;
+        let inner_doc = self.consume_inner_doc();
+        let mut types = Vec::new();
+
+        while !self.check(TokenKind::End) {
+            match self.peek_kind() {
+                Some(TokenKind::Type) => {
+                    self.advance(); // consume `type`
+                    let ty_name = self.expect_ident()?;
+                    self.expect(TokenKind::Semi)?;
+                    types.push(ty_name);
+                }
+                Some(other) => {
+                    return Err(CompileError::unexpected_token(
+                        "type",
+                        &other.to_string(),
+                        self.peek_span(),
+                    ));
+                }
+                None => return Err(CompileError::UnexpectedEof),
+            }
+        }
+
+        self.expect(TokenKind::End)?;
+        self.expect(TokenKind::Extern)?;
+        self.expect(TokenKind::Package)?;
+        let closing_name = self.expect_ident()?;
+        if closing_name.name != name.name {
+            return Err(CompileError::mismatched_closing(
+                &name.name,
+                &closing_name.name,
+                closing_name.span,
+            ));
+        }
+
+        Ok(ExternPackageDecl {
+            span: start.merge(closing_name.span),
+            name,
+            types,
+            doc: None,
+            inner_doc,
+        })
+    }
 }
 
 /// Attach an outer doc-comment string to the construct field that owns it.
@@ -5718,6 +5778,7 @@ fn attach_outer_doc(item: &mut Item, doc: Option<String>) {
         Item::Use(u)          => u.doc = doc,
         Item::Bus(b)          => b.doc = doc,
         Item::Template(t)     => t.doc = doc,
+        Item::ExternPackage(ep) => ep.doc = doc,
     }
 }
 
