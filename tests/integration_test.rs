@@ -5536,6 +5536,201 @@ fn test_tlm_connect_one_to_one_sugar_lowers_to_bus_wire() {
         "sim C++ should include the connect-sugar top");
 }
 
+fn tlm_connect_elaborate_error(source: &str) -> String {
+    let tokens = arch::lexer::tokenize(source).expect("lexer");
+    let mut parser = arch::parser::Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let err = arch::elaborate::elaborate(ast).expect_err("expected elaborate error");
+    err.iter().map(|e| format!("{e:?}")).collect::<String>()
+}
+
+#[test]
+fn test_tlm_connect_unknown_instance_diagnostic() {
+    let msg = tlm_connect_elaborate_error(r#"
+bus Mem
+  tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+end bus Mem
+use Mem;
+module Initiator
+  port m: initiator Mem;
+end module Initiator
+module Target
+  port s: target Mem;
+end module Target
+module Top
+  inst t: Target
+  end inst t
+  connect missing.m -> t.s;
+end module Top
+"#);
+    assert!(msg.contains("unknown TLM connect instance `missing`"),
+        "expected unknown-instance diagnostic, got: {msg}");
+}
+
+#[test]
+fn test_tlm_connect_unknown_port_diagnostic() {
+    let msg = tlm_connect_elaborate_error(r#"
+bus Mem
+  tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+end bus Mem
+use Mem;
+module Initiator
+  port m: initiator Mem;
+end module Initiator
+module Target
+  port s: target Mem;
+end module Target
+module Top
+  inst i: Initiator
+  end inst i
+  inst t: Target
+  end inst t
+  connect i.nope -> t.s;
+end module Top
+"#);
+    assert!(msg.contains("module `Initiator` has no port `nope`"),
+        "expected unknown-port diagnostic, got: {msg}");
+}
+
+#[test]
+fn test_tlm_connect_non_bus_port_diagnostic() {
+    let msg = tlm_connect_elaborate_error(r#"
+bus Mem
+  tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+end bus Mem
+use Mem;
+module Initiator
+  port scalar: out Bool;
+  port m: initiator Mem;
+end module Initiator
+module Target
+  port s: target Mem;
+end module Target
+module Top
+  inst i: Initiator
+  end inst i
+  inst t: Target
+  end inst t
+  connect i.scalar -> t.s;
+end module Top
+"#);
+    assert!(msg.contains("non-bus port `scalar`"),
+        "expected non-bus-port diagnostic, got: {msg}");
+}
+
+#[test]
+fn test_tlm_connect_direction_mismatch_diagnostic() {
+    let msg = tlm_connect_elaborate_error(r#"
+bus Mem
+  tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+end bus Mem
+use Mem;
+module Initiator
+  port m: initiator Mem;
+end module Initiator
+module Target
+  port s: target Mem;
+end module Target
+module Top
+  inst i: Initiator
+  end inst i
+  inst t: Target
+  end inst t
+  connect t.s -> i.m;
+end module Top
+"#);
+    assert!(msg.contains("requires `connect initiator_inst.initiator_port -> target_inst.target_port;`")
+         && msg.contains("t.s") && msg.contains("Target")
+         && msg.contains("i.m") && msg.contains("Initiator"),
+        "expected direction-mismatch diagnostic, got: {msg}");
+}
+
+#[test]
+fn test_tlm_connect_bus_mismatch_diagnostic() {
+    let msg = tlm_connect_elaborate_error(r#"
+bus MemA
+  tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+end bus MemA
+bus MemB
+  tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+end bus MemB
+use MemA;
+use MemB;
+module Initiator
+  port m: initiator MemA;
+end module Initiator
+module Target
+  port s: target MemB;
+end module Target
+module Top
+  inst i: Initiator
+  end inst i
+  inst t: Target
+  end inst t
+  connect i.m -> t.s;
+end module Top
+"#);
+    assert!(msg.contains("TLM connect bus mismatch")
+         && msg.contains("MemA") && msg.contains("MemB"),
+        "expected bus-mismatch diagnostic, got: {msg}");
+}
+
+#[test]
+fn test_tlm_connect_duplicate_explicit_connection_diagnostic() {
+    let msg = tlm_connect_elaborate_error(r#"
+bus Mem
+  tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+end bus Mem
+use Mem;
+module Initiator
+  port m: initiator Mem;
+end module Initiator
+module Target
+  port s: target Mem;
+end module Target
+module Top
+  wire explicit: Mem;
+  inst i: Initiator
+    m -> explicit;
+  end inst i
+  inst t: Target
+  end inst t
+  connect i.m -> t.s;
+end module Top
+"#);
+    assert!(msg.contains("duplicates an explicit connection")
+         && msg.contains("i.m"),
+        "expected duplicate-explicit-connection diagnostic, got: {msg}");
+}
+
+#[test]
+fn test_tlm_connect_endpoint_reuse_diagnostic() {
+    let msg = tlm_connect_elaborate_error(r#"
+bus Mem
+  tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+end bus Mem
+use Mem;
+module Initiator
+  port m: initiator Mem;
+end module Initiator
+module Target
+  port s: target Mem;
+end module Target
+module Top
+  inst i: Initiator
+  end inst i
+  inst t0: Target
+  end inst t0
+  inst t1: Target
+  end inst t1
+  connect i.m -> t0.s;
+  connect i.m -> t1.s;
+end module Top
+"#);
+    assert!(msg.contains("TLM connect endpoint `i.m` is connected more than once"),
+        "expected endpoint-reuse diagnostic, got: {msg}");
+}
+
 #[test]
 fn test_tlm_one_initiator_many_targets_router_example_compiles() {
     let source = include_str!("axi_dma_tlm/TlmOneToMany.arch");
