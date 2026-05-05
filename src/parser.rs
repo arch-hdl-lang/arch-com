@@ -1165,23 +1165,31 @@ impl Parser {
         self.expect(TokenKind::FatArrow)?;
         let reset_value = self.parse_expr()?;
 
-        if self.check(TokenKind::Sync) || self.check(TokenKind::Async) {
-            let kind = if self.eat(TokenKind::Sync) {
+        // Accept token (Sync/Async) or lowercase ident (sync/async).
+        let is_sync = self.check(TokenKind::Sync) || self.check_ident("sync");
+        let is_async = self.check(TokenKind::Async) || self.check_ident("async");
+        if is_sync || is_async {
+            let kind = if is_sync {
+                self.advance();
                 ResetKind::Sync
             } else {
                 self.advance();
                 ResetKind::Async
             };
-            let level = if self.eat(TokenKind::High) {
-                ResetLevel::High
-            } else if self.eat(TokenKind::Low) {
-                ResetLevel::Low
-            } else {
-                return Err(CompileError::unexpected_token(
-                    "high or low",
-                    &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
-                    self.peek_span(),
-                ));
+            // Accept token (high/low) or PascalCase ident (High/Low), matching
+            // the type-expression convention Reset<Sync, High> / Reset<Async, Low>.
+            let level = match self.peek_kind() {
+                Some(TokenKind::High) => { self.advance(); ResetLevel::High }
+                Some(TokenKind::Low)  => { self.advance(); ResetLevel::Low }
+                Some(TokenKind::Ident(ref s)) if s == "High" => { self.advance(); ResetLevel::High }
+                Some(TokenKind::Ident(ref s)) if s == "Low"  => { self.advance(); ResetLevel::Low }
+                _ => {
+                    return Err(CompileError::unexpected_token(
+                        "high, low, High, or Low",
+                        &self.peek_kind().map(|k| k.to_string()).unwrap_or("EOF".into()),
+                        self.peek_span(),
+                    ));
+                }
             };
             Ok(RegReset::Explicit(rst_signal, kind, level, reset_value))
         } else {
