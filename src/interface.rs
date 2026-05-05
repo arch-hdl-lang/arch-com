@@ -319,20 +319,27 @@ pub(crate) fn emit_ports(s: &mut String, ports: &[PortDecl]) {
             s.push_str(&format!("  port {name}: {persp} {bus_name};\n"));
         } else {
             let ty = type_str(&p.ty);
+            // Preserve the `unpacked` modifier (SV unpacked-array port
+            // shape) so .archi reflects the same SV emit as .sv. Without
+            // this, downstream consumers reading the .archi to decide
+            // port shape would silently see packed-Vec when the source
+            // is unpacked-Vec, causing port-shape mismatches at the
+            // SV inst boundary.
+            let unpacked_kw = if p.unpacked { "unpacked " } else { "" };
             // For port reg with reset, include reset clause
             if let Some(ref ri) = p.reg_info {
                 match &ri.reset {
                     RegReset::Inherit(rst, val) | RegReset::Explicit(rst, _, _, val) => {
                         let rst_name = &rst.name;
                         let rst_val = expr_str(val);
-                        s.push_str(&format!("  port reg {name}: {dir} {ty} reset {rst_name} => {rst_val};\n"));
+                        s.push_str(&format!("  port reg {name}: {dir} {unpacked_kw}{ty} reset {rst_name} => {rst_val};\n"));
                     }
                     RegReset::None => {
-                        s.push_str(&format!("  port reg {name}: {dir} {ty};\n"));
+                        s.push_str(&format!("  port reg {name}: {dir} {unpacked_kw}{ty};\n"));
                     }
                 }
             } else {
-                s.push_str(&format!("  port {name}: {dir} {ty};\n"));
+                s.push_str(&format!("  port {name}: {dir} {unpacked_kw}{ty};\n"));
             }
         }
     }
