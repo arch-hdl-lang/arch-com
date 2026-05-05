@@ -5039,8 +5039,25 @@ impl Parser {
     fn check_param(&self) -> bool {
         if self.check(TokenKind::Param) { return true; }
         if self.check_ident("local") {
-            if let Some(t) = self.tokens.get(self.pos + 1) {
-                return t.kind == TokenKind::Param;
+            // Find the position of `local` after skipping any leading
+            // doc comments (matching `peek_kind`'s skip semantics), then
+            // look at the next non-doc token to see if it's `param`.
+            // Without the doc-skip, `local param` declarations preceded
+            // by a `///` comment fail to be recognized.
+            let mut i = self.pos;
+            while let Some(t) = self.tokens.get(i) {
+                if matches!(&t.kind, TokenKind::DocOuter(_) | TokenKind::DocInner(_)) {
+                    i += 1;
+                } else { break; }
+            }
+            // i now points at `local`; look at the next non-doc token.
+            let mut j = i + 1;
+            while let Some(t) = self.tokens.get(j) {
+                if matches!(&t.kind, TokenKind::DocOuter(_) | TokenKind::DocInner(_)) {
+                    j += 1;
+                } else {
+                    return t.kind == TokenKind::Param;
+                }
             }
         }
         false

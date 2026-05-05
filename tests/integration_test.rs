@@ -10120,6 +10120,82 @@ fn test_unpacked_wire_modifier_emits_unpacked_sv() {
 }
 
 #[test]
+fn test_doc_comment_above_local_param_parses() {
+    // Regression: arch-ibex C2 surfaced that a `///` doc comment
+    // immediately preceding a `local param` declaration confused the
+    // parser's `check_param` lookahead — it didn't skip doc-comment
+    // tokens when looking past `local` for the `param` keyword, so
+    // the body-item dispatcher rejected `local` as an unknown item.
+    // After the fix, doc comments attach cleanly to `local param`s
+    // the same way they attach to plain `param`s.
+    let source = "
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module DocLocal
+  param Foo: const = 32;
+  /// Doc comment that should attach to the `local param` below.
+  /// Multi-line is also fine.
+  local param Bar: const = 64;
+  port clk: in Clock<SysDomain>;
+  port d: in UInt<32>;
+  port q: out UInt<32>;
+  comb
+    q = d;
+  end comb
+end module DocLocal
+";
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("parameter int Foo = 32"),
+            "regular param should still emit: {sv}");
+    assert!(sv.contains("localparam int Bar = 64"),
+            "local param after doc comment should still emit: {sv}");
+}
+
+#[test]
+fn test_unpacked_modifier_preserved_in_archi_emit() {
+    // Regression: arch-ibex C2 surfaced that the `.archi` interface
+    // emit for `port name: in unpacked Vec<T, N>` dropped the
+    // `unpacked` keyword, so downstream consumers reading the
+    // `.archi` to resolve port shape silently saw packed-Vec when
+    // the source was unpacked. The .sv emit was correct; the .archi
+    // was the one that was wrong.
+    let source = "
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module UpkPort
+  param N: const = 4;
+  param W: const = 8;
+  port a: in  unpacked Vec<UInt<W>, N>;
+  port b: out unpacked Vec<UInt<W>, N>;
+  port c: in  Vec<UInt<W>, N>;
+  comb
+    b = a;
+  end comb
+end module UpkPort
+";
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse error");
+    let item = parsed.items.iter()
+        .find(|i| matches!(i, arch::ast::Item::Module(_)))
+        .expect("expected a module item");
+    let body = arch::interface::emit_interface(item).expect("emit_interface");
+    assert!(body.contains("port a: in unpacked Vec<UInt<W>, N>;"),
+            "unpacked input port should round-trip into .archi: {body}");
+    assert!(body.contains("port b: out unpacked Vec<UInt<W>, N>;"),
+            "unpacked output port should round-trip into .archi: {body}");
+    // Packed Vec port (no `unpacked` modifier) still emits without it.
+    assert!(body.contains("port c: in Vec<UInt<W>, N>;"),
+            "packed Vec port must NOT gain the `unpacked` keyword: {body}");
+    assert!(!body.contains("port c: in unpacked Vec"),
+            "packed Vec port must NOT gain the `unpacked` keyword: {body}");
+}
+
+#[test]
 fn test_unpacked_wire_rejected_on_non_vec() {
     // The modifier is only valid on `Vec<T,N>`. Other types must error.
     let source = "
