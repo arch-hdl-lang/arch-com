@@ -1404,6 +1404,7 @@ impl<'a> Codegen<'a> {
                     match item {
                         GenItem::Inst(inst) => self.emit_inst(inst),
                         GenItem::Port(_) => unreachable!("port GenItems should have been lifted by elaboration"),
+                        GenItem::TlmConnect(_) => unreachable!("TLM connect GenItems should have been lowered by elaboration"),
                         GenItem::Thread(_) => unreachable!("thread GenItems should have been lowered by elaboration"),
                         GenItem::Seq(_) | GenItem::Comb(_) => unreachable!(
                             "seq/comb GenItems should have been unrolled by elaboration"),
@@ -1423,6 +1424,7 @@ impl<'a> Codegen<'a> {
                     match item {
                         GenItem::Inst(inst) => self.emit_inst(inst),
                         GenItem::Port(_) => unreachable!("port GenItems should have been lifted by elaboration"),
+                        GenItem::TlmConnect(_) => unreachable!("TLM connect GenItems should have been lowered by elaboration"),
                         GenItem::Thread(_) => unreachable!("thread GenItems should have been lowered by elaboration"),
                         GenItem::Seq(_) | GenItem::Comb(_) => unreachable!(
                             "seq/comb GenItems should have been lifted by elaboration"),
@@ -1437,6 +1439,7 @@ impl<'a> Codegen<'a> {
                         match item {
                             GenItem::Inst(inst) => self.emit_inst(inst),
                             GenItem::Port(_) => unreachable!("port GenItems should have been lifted by elaboration"),
+                            GenItem::TlmConnect(_) => unreachable!("TLM connect GenItems should have been lowered by elaboration"),
                             GenItem::Thread(_) => unreachable!("thread GenItems should have been lowered by elaboration"),
                             GenItem::Seq(_) | GenItem::Comb(_) => unreachable!(
                                 "seq/comb GenItems should have been lifted by elaboration"),

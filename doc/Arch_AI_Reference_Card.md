@@ -1075,6 +1075,8 @@ connect cpu.m -> ram.s;
 
 This elaborates to a private bus wire plus ordinary whole-bus inst connections. Current scope is one initiator endpoint to one target endpoint of the same bus type.
 
+`connect` is also legal inside `generate_for` / `generate_if`. In `generate_for`, suffix-substituted instance names are expanded before TLM lowering, so `connect src_i.m -> dst_i.s;` creates independent private bus wires such as `src_0.m -> dst_0.s` and `src_1.m -> dst_1.s`. The usual one-endpoint-use rule still applies after expansion.
+
 TLM calls are not general expressions. They are legal only in `thread` bodies as `dst <= port.method(args);` or `dst <= fork port.method(args);`; `comb`, `seq`, module-level `let`, module-local `function`, `pipeline`, and `fsm` contexts reject them.
 
 Do not put TLM calls inside runtime `for` loops. Use `generate_for` worker threads for compile-time replication.
