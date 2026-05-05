@@ -5536,6 +5536,27 @@ fn test_tlm_connect_one_to_one_sugar_lowers_to_bus_wire() {
         "sim C++ should include the connect-sugar top");
 }
 
+#[test]
+fn test_tlm_connect_inside_generate_for_lowers_to_per_iteration_wires() {
+    let source = include_str!("axi_dma_tlm/TlmConnectGenerate.arch");
+    let sv = compile_to_sv(source);
+
+    assert!(sv.contains("module TlmConnectGenerateTop"),
+        "generate-for connect-sugar top should build:\n{sv}");
+    assert!(sv.contains("_tlm_conn_src_0_m_dst_0_s_read_req_valid")
+         && sv.contains("_tlm_conn_src_1_m_dst_1_s_read_req_valid"),
+        "generate-for connect sugar should synthesize one private TLM bus per iteration:\n{sv}");
+    assert!(sv.contains(".m_read_req_valid(_tlm_conn_src_0_m_dst_0_s_read_req_valid)")
+         && sv.contains(".s_read_req_valid(_tlm_conn_src_0_m_dst_0_s_read_req_valid)")
+         && sv.contains(".m_read_req_valid(_tlm_conn_src_1_m_dst_1_s_read_req_valid)")
+         && sv.contains(".s_read_req_valid(_tlm_conn_src_1_m_dst_1_s_read_req_valid)"),
+        "unrolled initiator and target endpoints should be wired pairwise:\n{sv}");
+
+    let sim = compile_to_sim_h(source, false);
+    assert!(sim.contains("class VTlmConnectGenerateTop"),
+        "sim C++ should include the generate-for connect-sugar top");
+}
+
 fn tlm_connect_elaborate_error(source: &str) -> String {
     let tokens = arch::lexer::tokenize(source).expect("lexer");
     let mut parser = arch::parser::Parser::new(tokens, source);
@@ -5729,6 +5750,33 @@ end module Top
 "#);
     assert!(msg.contains("TLM connect endpoint `i.m` is connected more than once"),
         "expected endpoint-reuse diagnostic, got: {msg}");
+}
+
+#[test]
+fn test_tlm_connect_endpoint_reuse_after_generate_for_diagnostic() {
+    let msg = tlm_connect_elaborate_error(r#"
+bus Mem
+  tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+end bus Mem
+use Mem;
+module Initiator
+  port m: initiator Mem;
+end module Initiator
+module Target
+  port s: target Mem;
+end module Target
+module Top
+  inst i: Initiator
+  end inst i
+  generate_for n in 0..1
+    inst t_n: Target
+    end inst t_n
+    connect i.m -> t_n.s;
+  end generate_for
+end module Top
+"#);
+    assert!(msg.contains("TLM connect endpoint `i.m` is connected more than once"),
+        "expected endpoint-reuse-after-generate diagnostic, got: {msg}");
 }
 
 #[test]

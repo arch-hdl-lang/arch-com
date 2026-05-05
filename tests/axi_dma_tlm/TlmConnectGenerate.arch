@@ -1,0 +1,59 @@
+bus ConnGenMem
+  tlm_method read(addr: UInt<32>) -> UInt<64>: blocking;
+end bus ConnGenMem
+
+use ConnGenMem;
+
+module ConnGenTarget
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port s: target ConnGenMem;
+  port value: in UInt<64>;
+
+  thread s.read(addr) on clk rising, rst high
+    return value;
+  end thread s.read
+end module ConnGenTarget
+
+module ConnGenInitiator
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port m: initiator ConnGenMem;
+  port data_o: out UInt<64>;
+
+  reg data: UInt<64> reset rst => 0;
+
+  comb
+    data_o = data;
+  end comb
+
+  thread driver on clk rising, rst high
+    data <= m.read(32'h1000);
+  end thread driver
+end module ConnGenInitiator
+
+module TlmConnectGenerateTop
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port data_0: out UInt<64>;
+  port data_1: out UInt<64>;
+
+  let value_0: UInt<64> = 64'h1111_2222_3333_4444;
+  let value_1: UInt<64> = 64'h5555_6666_7777_8888;
+
+  generate_for i in 0..1
+    inst src_i: ConnGenInitiator
+      clk <- clk;
+      rst <- rst;
+      data_o -> data_i;
+    end inst src_i
+
+    inst dst_i: ConnGenTarget
+      clk <- clk;
+      rst <- rst;
+      value <- value_i;
+    end inst dst_i
+
+    connect src_i.m -> dst_i.s;
+  end generate_for
+end module TlmConnectGenerateTop

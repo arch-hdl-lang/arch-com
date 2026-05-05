@@ -427,6 +427,7 @@ pub struct AssertDecl {
 pub enum GenItem {
     Port(PortDecl),
     Inst(InstDecl),
+    TlmConnect(TlmConnectDecl),
     Thread(ThreadBlock),
     Assert(AssertDecl),
     Seq(RegBlock),

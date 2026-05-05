@@ -2666,6 +2666,9 @@ impl Parser {
         while !self.check_end_generate_for() {
             match self.peek_kind() {
                 Some(TokenKind::Inst) => items.push(GenItem::Inst(self.parse_inst()?)),
+                Some(TokenKind::Ident(ref s)) if s == "connect" => {
+                    items.push(GenItem::TlmConnect(self.parse_tlm_connect()?));
+                }
                 Some(TokenKind::Thread) => items.push(GenItem::Thread(self.parse_thread_block()?)),
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
                     items.push(GenItem::Assert(self.parse_assert_decl()?));
@@ -2706,7 +2709,7 @@ impl Parser {
                 }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "inst, thread, seq, comb, assert, or cover",
+                        "inst, connect, thread, seq, comb, assert, or cover",
                         &other.to_string(),
                         self.peek_span(),
                     ));
@@ -2723,13 +2726,16 @@ impl Parser {
             match self.peek_kind() {
                 Some(TokenKind::Port) => items.push(GenItem::Port(self.parse_port_decl()?)),
                 Some(TokenKind::Inst) => items.push(GenItem::Inst(self.parse_inst()?)),
+                Some(TokenKind::Ident(ref s)) if s == "connect" => {
+                    items.push(GenItem::TlmConnect(self.parse_tlm_connect()?));
+                }
                 Some(TokenKind::Thread) => items.push(GenItem::Thread(self.parse_thread_block()?)),
                 Some(TokenKind::Assert) | Some(TokenKind::Cover) => {
                     items.push(GenItem::Assert(self.parse_assert_decl()?));
                 }
                 Some(other) => {
                     return Err(CompileError::unexpected_token(
-                        "port, inst, thread, assert, or cover",
+                        "port, inst, connect, thread, assert, or cover",
                         &other.to_string(),
                         self.peek_span(),
                     ));

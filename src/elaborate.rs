@@ -724,6 +724,7 @@ fn expand_generate_for(
 
     let has_port_items = gf.items.iter().any(|item| matches!(item, GenItem::Port(_)));
     let has_thread_items = gf.items.iter().any(|item| matches!(item, GenItem::Thread(_)));
+    let has_connect_items = gf.items.iter().any(|item| matches!(item, GenItem::TlmConnect(_)));
     let range_depends_on_param = expr_references_param(&gf.start, &param_names)
         || expr_references_param(&gf.end, &param_names);
 
@@ -731,11 +732,13 @@ fn expand_generate_for(
     let start_val = try_eval_i64(&gf.start, param_vals);
     let end_val = try_eval_i64(&gf.end, param_vals);
 
-    // If the range references a param and there are no port or thread items,
+    // If the range references a param and there are no port, thread, or TLM
+    // connect items,
     // preserve the generate block as-is so codegen emits SV generate for.
     // This allows the SV to be parameterized (e.g. NUM_MODULES can be overridden).
-    // Threads must always be expanded (they need concrete lowering to FSMs).
-    if range_depends_on_param && !has_port_items && !has_thread_items {
+    // Threads and TLM connects must always be expanded (threads need concrete
+    // lowering to FSMs; connects elaborate to private bus wires).
+    if range_depends_on_param && !has_port_items && !has_thread_items && !has_connect_items {
         return Ok((
             Vec::new(),
             vec![ModuleBodyItem::Generate(GenerateDecl::For(gf))],
@@ -783,6 +786,9 @@ fn expand_generate_for(
             match item {
                 GenItem::Port(p) => ports.push(subst_port(p, var, i)),
                 GenItem::Inst(inst) => body.push(ModuleBodyItem::Inst(subst_inst(inst, var, i))),
+                GenItem::TlmConnect(c) => {
+                    body.push(ModuleBodyItem::TlmConnect(subst_tlm_connect(c, var, i)));
+                }
                 GenItem::Thread(t) => body.push(ModuleBodyItem::Thread(subst_thread(t, var, i))),
                 GenItem::Assert(a) => body.push(ModuleBodyItem::Assert(subst_assert(a, var, i))),
                 GenItem::Seq(rb)  => body.push(ModuleBodyItem::RegBlock(subst_reg_block(rb, var, i))),
@@ -990,6 +996,7 @@ fn expand_generate_if(
         match item {
             GenItem::Port(p) => ports.push(p),
             GenItem::Inst(inst) => body.push(ModuleBodyItem::Inst(inst)),
+            GenItem::TlmConnect(c) => body.push(ModuleBodyItem::TlmConnect(c)),
             GenItem::Thread(t) => body.push(ModuleBodyItem::Thread(t)),
             GenItem::Assert(a) => body.push(ModuleBodyItem::Assert(a)),
             // No loop var in generate_if, so seq/comb pass through verbatim.
@@ -1002,6 +1009,16 @@ fn expand_generate_if(
 }
 
 // ── Substitution helpers ──────────────────────────────────────────────────────
+
+fn subst_tlm_connect(c: &TlmConnectDecl, var: &str, val: i64) -> TlmConnectDecl {
+    TlmConnectDecl {
+        from_inst: subst_ident(&c.from_inst, var, val),
+        from_port: c.from_port.clone(),
+        to_inst: subst_ident(&c.to_inst, var, val),
+        to_port: c.to_port.clone(),
+        span: c.span,
+    }
+}
 
 fn subst_port(p: &PortDecl, var: &str, val: i64) -> PortDecl {
     PortDecl {
