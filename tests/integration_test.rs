@@ -10120,6 +10120,90 @@ fn test_unpacked_wire_modifier_emits_unpacked_sv() {
 }
 
 #[test]
+fn test_cam_emits_archi_interface() {
+    // Regression: arch-ibex Phase D spike surfaced that CamDecl had
+    // no `iface` clause in its impl_construct_via_common, so cam
+    // declarations never produced a `.archi` interface stub. Other
+    // first-class constructs (fsm, fifo, ram, counter, arbiter,
+    // regfile, pipeline, linklist) all have one. Adds parity.
+    let source = "
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+cam TestCam
+  param DEPTH: const = 8;
+  param KEY_W: const = 12;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  port write_valid: in Bool;
+  port write_idx:   in UInt<3>;
+  port write_key:   in UInt<12>;
+  port write_set:   in Bool;
+  port search_key:   in  UInt<12>;
+  port search_mask:  out UInt<8>;
+  port search_any:   out Bool;
+  port search_first: out UInt<3>;
+end cam TestCam
+";
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse error");
+    let item = parsed.items.iter()
+        .find(|i| matches!(i, arch::ast::Item::Cam(_)))
+        .expect("expected a cam item");
+    let body = arch::interface::emit_interface(item)
+        .expect("cam should now emit an .archi interface");
+    assert!(body.starts_with("cam TestCam\n"), "body: {body}");
+    assert!(body.contains("param DEPTH: const = 8;"), "body: {body}");
+    assert!(body.contains("port search_first: out UInt<3>;"), "body: {body}");
+    assert!(body.ends_with("end cam TestCam\n"), "body: {body}");
+}
+
+#[test]
+fn test_arbiter_archi_reflects_per_requester_ports_array() {
+    // Regression: arbiter `.archi` previously dropped the `ports[N]`
+    // group, so a downstream consumer reading the .archi to write an
+    // inst connection couldn't see what the per-requester signals
+    // are. Phase D's icache port relies on arbiter inst — exposing
+    // the group in the .archi is required.
+    let source = "
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+arbiter TestArb
+  policy round_robin;
+  param NUM_REQ: const = 3;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  ports[NUM_REQ] request
+    valid: in Bool;
+    ready: out Bool;
+  end ports request
+  port grant_valid: out Bool;
+  port grant_requester: out UInt<2>;
+end arbiter TestArb
+";
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse error");
+    let item = parsed.items.iter()
+        .find(|i| matches!(i, arch::ast::Item::Arbiter(_)))
+        .expect("expected an arbiter item");
+    let body = arch::interface::emit_interface(item)
+        .expect("arbiter should emit an .archi interface");
+    assert!(body.contains("ports[NUM_REQ] request"),
+            ".archi must include the ports[N] group: {body}");
+    assert!(body.contains("    valid: in Bool;"),
+            ".archi must include per-requester valid signal: {body}");
+    assert!(body.contains("    ready: out Bool;"),
+            ".archi must include per-requester ready signal: {body}");
+    assert!(body.contains("  end ports request"),
+            ".archi ports group must be properly closed: {body}");
+}
+
+#[test]
 fn test_doc_comment_above_local_param_parses() {
     // Regression: arch-ibex C2 surfaced that a `///` doc comment
     // immediately preceding a `local param` declaration confused the

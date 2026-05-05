@@ -48,6 +48,14 @@ pub(crate) fn emit_counter_interface(c: &CounterDecl) -> String {
     s
 }
 
+pub(crate) fn emit_cam_interface(c: &CamDecl) -> String {
+    // CAM has no construct-specific fields beyond name + params +
+    // ports at the interface level (the cam-specific store /
+    // match-policy attributes live in the body, not visible to
+    // consumers). Generic shape suffices.
+    emit_generic("cam", &c.name.name, &c.params, &c.ports)
+}
+
 pub(crate) fn emit_pipeline_interface(p: &PipelineDecl) -> String {
     let name = &p.name.name;
     let mut s = format!("pipeline {name}\n");
@@ -140,6 +148,23 @@ pub(crate) fn emit_arbiter_interface(a: &ArbiterDecl) -> String {
     }
     emit_params(&mut s, &a.params);
     emit_ports(&mut s, &a.ports);
+    // Per-requester ports group (`ports[N] request { valid; ready; }`).
+    // Without this, the .archi shows only the scalar control ports
+    // and a downstream consumer can't see that this arbiter exposes
+    // an array of per-requester valid/ready signals — which is
+    // information the inst-site connection writer needs.
+    for pa in &a.port_arrays {
+        let count = expr_str(&pa.count_expr);
+        s.push_str(&format!("  ports[{count}] {}\n", pa.name.name));
+        for sig in &pa.signals {
+            let dir = match sig.direction {
+                Direction::In => "in",
+                Direction::Out => "out",
+            };
+            s.push_str(&format!("    {}: {dir} {};\n", sig.name.name, type_str(&sig.ty)));
+        }
+        s.push_str(&format!("  end ports {}\n", pa.name.name));
+    }
     s.push_str(&format!("end arbiter {name}\n"));
     s
 }
