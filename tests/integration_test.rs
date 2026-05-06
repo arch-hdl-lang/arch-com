@@ -7328,6 +7328,89 @@ fn test_counter_runtime_max_port() {
         "should not emit const MAX comparator when port is present:\n{sv}");
 }
 
+// ── Wait-1-cycle elision optimisation ─────────────────────────────────────────
+
+#[test]
+fn test_wait_1_cycle_between_seq_writes_takes_one_cycle() {
+    // `phase <= a; wait 1 cycle; phase <= b;` should produce two
+    // consecutive thread states (one per seq write), with no extra
+    // counter-stall state in between. The natural state transition
+    // X → X+1 already provides the 1-cycle wait.
+    //
+    // Regression for the bug where `wait 1 cycle` emitted a dedicated
+    // wait_cycles state (load cnt=0, decrement, check cnt==0,
+    // transition), making each phase advance take 2 cycles instead of
+    // 1. Surfaced by arch-ibex D1 (FillBufferCtrl phase tracker).
+    let source = r#"
+        module M
+          port clk:   in Clock<SysDomain>;
+          port rst_n: in Reset<Async, Low>;
+          port go:    in Bool;
+          port reg phase: out UInt<2> reset rst_n => 2'd0;
+          thread on clk rising, rst_n low
+            wait until go;
+            phase <= 2'd1;
+            wait 1 cycle;
+            phase <= 2'd2;
+            wait 1 cycle;
+            phase <= 2'd3;
+            wait 1 cycle;
+          end thread
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    // The defining property of the elision: no counter-decrement state.
+    // The dedicated wait_cycles state's body decrements a counter and
+    // checks `_t0_cnt == 0`; its absence means `wait 1 cycle` produced
+    // no extra state between the phase writes.
+    assert!(!sv.contains("_t0_cnt <= 32'(_t0_cnt - 32'd1);"),
+        "should not emit counter-decrement state for `wait 1 cycle`:\n{sv}");
+    // Three phase writes appear, each transitioning to the next state.
+    // State numbering after elision: 0=initial wait, 1=phase=1,
+    // 2=phase=2, 3=phase=3, then loop back to 0.
+    assert!(sv.contains("phase <= 2'd1;") && sv.contains("phase <= 2'd2;")
+            && sv.contains("phase <= 2'd3;"),
+        "expected three phase writes:\n{sv}");
+    assert!(sv.contains("_t0_state <= 2;") && sv.contains("_t0_state <= 3;"),
+        "expected state transitions 1->2 and 2->3:\n{sv}");
+}
+
+#[test]
+fn test_wait_1_cycle_in_else_branch_kept() {
+    // When `wait 1 cycle` is the entire body of an if/else branch
+    // (no preceding seq/comb to flush), the wait state must NOT be
+    // elided — the branch needs at least one state to anchor the
+    // dispatch-and-rejoin pattern, and the 1-cycle delay is the
+    // semantic the user wrote.
+    //
+    // Regression for the over-aggressive elision that broke the
+    // `test_if_wait_for_in_then_branch` style test. Pairs with
+    // `test_wait_1_cycle_between_seq_writes_takes_one_cycle`.
+    let source = r#"
+        module M
+          port clk:   in Clock<SysDomain>;
+          port rst_n: in Reset<Async, Low>;
+          port go:    in Bool;
+          port doit:  in Bool;
+          port ack:   in Bool;
+          port done:  out Bool;
+          thread on clk rising, rst_n low
+            wait until go;
+            if doit
+              wait until ack;
+              done = 1;
+            else
+              wait 1 cycle;
+            end if
+            wait 1 cycle;
+          end thread
+        end module M
+    "#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("module _M_threads"),
+        "thread with wait-1-cycle in else branch should compile:\n{sv}");
+}
+
 // ── Auto-emitted SVA from thread lowering ─────────────────────────────────────
 
 #[test]
