@@ -3089,7 +3089,8 @@ fn partition_thread_body(
             }
             ThreadStmt::WaitCycles(count, _) => {
                 // Same: pure boundary, flush all pending assigns
-                if !cur_comb.is_empty() || !cur_seq.is_empty() {
+                let had_flush = !cur_comb.is_empty() || !cur_seq.is_empty();
+                if had_flush {
                     states.push(ThreadFsmState {
                         comb_stmts: std::mem::take(&mut cur_comb),
                         seq_stmts: std::mem::take(&mut cur_seq),
@@ -3098,13 +3099,35 @@ fn partition_thread_body(
                         multi_transitions: Vec::new(),
                     });
                 }
-                states.push(ThreadFsmState {
-                    comb_stmts: Vec::new(),
-                    seq_stmts: Vec::new(),
-                    transition_cond: None,
-                    wait_cycles: Some(count.clone()),
-                    multi_transitions: Vec::new(),
-                });
+                // `wait 1 cycle` between two seq-write boundaries is a no-op
+                // structurally — the natural state transition from the
+                // flushed prior state to whatever state comes next already
+                // takes one clock edge. Emitting a dedicated wait_cycles
+                // state for N=1 adds an extra cycle (load cnt=0, decrement,
+                // check cnt==0, transition), so e.g.
+                // `phase_q <= a; wait 1 cycle; phase_q <= b;` would put two
+                // cycles between the two phase_q transitions instead of one.
+                // Elide the wait state when (a) count is literal 1 AND
+                // (b) a flush state was pushed in front (so the natural
+                // transition out of that state provides the 1 cycle).
+                // For standalone `wait 1 cycle` with no preceding flush
+                // (e.g. an if/else branch whose only body is `wait 1
+                // cycle;`), keep the wait state — eliding would leave the
+                // branch with zero states and break dispatch-and-rejoin.
+                let count_is_one = matches!(&count.kind,
+                    ExprKind::Literal(LitKind::Dec(1))
+                    | ExprKind::Literal(LitKind::Hex(1))
+                    | ExprKind::Literal(LitKind::Bin(1))
+                    | ExprKind::Literal(LitKind::Sized(_, 1)));
+                if !count_is_one || !had_flush {
+                    states.push(ThreadFsmState {
+                        comb_stmts: Vec::new(),
+                        seq_stmts: Vec::new(),
+                        transition_cond: None,
+                        wait_cycles: Some(count.clone()),
+                        multi_transitions: Vec::new(),
+                    });
+                }
             }
             ThreadStmt::IfElse(ie) => {
                 let then_has_wait = contains_wait(&ie.then_stmts);
