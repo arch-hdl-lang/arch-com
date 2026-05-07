@@ -287,6 +287,15 @@ pub struct PortDecl {
     /// modules whose port shape is fixed unpacked. Has no effect on
     /// ARCH-internal semantics. Only legal on `Vec<T,N>` types.
     pub unpacked: bool,
+    /// `ascending` modifier on an `unpacked Vec<T,N>` port: flips the
+    /// SV unpacked dimension to `[0:N-1]` (ascending) instead of the
+    /// default `[N-1:0]` (descending). For interop with upstream SV
+    /// declared with the bare `[N]` shorthand (= `[0:N-1]`). Without
+    /// this, IEEE 1800-2017 §10.10 element-by-position port mapping
+    /// silently reverses the index correspondence. ARCH-side indexing
+    /// (`name[i]`) is unchanged — `0` is always the first element. Only
+    /// legal when `unpacked` is also set.
+    pub unpacked_ascending: bool,
     pub span: Span,
 }
 
@@ -736,6 +745,11 @@ pub struct WireDecl {
     /// Verilator rejecting the packed/unpacked shape mismatch. Mirrors the
     /// `unpacked` modifier on port declarations (§3.7).
     pub unpacked: bool,
+    /// `wire name: unpacked ascending Vec<T,N>;` — emit the unpacked dim
+    /// as `[0:N-1]` ascending so the wire mates with an ascending port
+    /// (or upstream SV `[N]` shorthand) by-index without IEEE 1800-2017
+    /// §10.10 silent reversal. Only legal when `unpacked` is also set.
+    pub unpacked_ascending: bool,
     pub span: Span,
 }
 

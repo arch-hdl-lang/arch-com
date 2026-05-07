@@ -602,7 +602,7 @@ fn lower_tlm_connects_in_module(
         synthesized_wires.push(ModuleBodyItem::WireDecl(WireDecl {
             name: wire_ident.clone(),
             ty: TypeExpr::Named(Ident::new(from_bus.clone(), conn.span)),
-            unpacked: false,
+            unpacked: false, unpacked_ascending: false,
             span: conn.span,
         }));
 
@@ -1030,6 +1030,7 @@ fn subst_port(p: &PortDecl, var: &str, val: i64) -> PortDecl {
         bus_info: p.bus_info.clone(),
         shared: p.shared,
         unpacked: p.unpacked,
+        unpacked_ascending: p.unpacked_ascending,
         span: p.span,
     }
 }
@@ -1662,12 +1663,12 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
             name: t.clock.clone(), direction: Direction::In,
             ty: type_map.get(&t.clock.name).map(|si| si.ty.clone())
                 .unwrap_or(TypeExpr::Clock(Ident::new("SysDomain".to_string(), sp))),
-            default: None, reg_info: None, bus_info: None, shared: None, unpacked: false, span: sp,
+            default: None, reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, span: sp,
         });
         merged_ports.push(PortDecl {
             name: t.reset.clone(), direction: Direction::In,
             ty: TypeExpr::Reset(rk, t.reset_level),
-            default: None, reg_info: None, bus_info: None, shared: None, unpacked: false, span: sp,
+            default: None, reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, span: sp,
         });
         (t.clock.name.clone(), t.reset.name.clone(), t.reset_level)
     };
@@ -1698,6 +1699,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
                 ty: info.ty.clone(),
                 default: None, reg_info: None, bus_info: None, shared: None,
                 unpacked: info.unpacked,
+                unpacked_ascending: info.unpacked_ascending,
                 span: sp,
             });
         }
@@ -1716,6 +1718,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
                 default: Some(make_zero_expr(sp)),
                 reg_info: None, bus_info: None, shared: info.shared,
                 unpacked: info.unpacked,
+                unpacked_ascending: info.unpacked_ascending,
                 span: sp,
             });
         }
@@ -1736,7 +1739,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
                     // don't deprecate internal artifacts.
                     legacy_port_reg: false,
                 }),
-                bus_info: None, shared: None, unpacked: false, span: sp,
+                bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, span: sp,
             });
         }
     }
@@ -1766,11 +1769,11 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
         for ti in 0..n_threads {
             merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
                 name: Ident::new(format!("_{}_req_{}", res_name, ti), sp),
-                ty: TypeExpr::Bool, unpacked: false, span: sp,
+                ty: TypeExpr::Bool, unpacked: false, unpacked_ascending: false, span: sp,
             }));
             merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
                 name: Ident::new(format!("_{}_grant_{}", res_name, ti), sp),
-                ty: TypeExpr::Bool, unpacked: false, span: sp,
+                ty: TypeExpr::Bool, unpacked: false, unpacked_ascending: false, span: sp,
             }));
         }
         // Build packed req/grant vectors used by the arbiter inst.
@@ -1780,11 +1783,11 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
             ExprKind::Literal(LitKind::Dec(n_threads as u64)), sp);
         merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
             name: Ident::new(req_packed.clone(), sp),
-            ty: TypeExpr::UInt(Box::new(n_threads_expr.clone())), unpacked: false, span: sp,
+            ty: TypeExpr::UInt(Box::new(n_threads_expr.clone())), unpacked: false, unpacked_ascending: false, span: sp,
         }));
         merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
             name: Ident::new(grant_packed.clone(), sp),
-            ty: TypeExpr::UInt(Box::new(n_threads_expr.clone())), unpacked: false, span: sp,
+            ty: TypeExpr::UInt(Box::new(n_threads_expr.clone())), unpacked: false, unpacked_ascending: false, span: sp,
         }));
         // Throwaway sinks for arbiter scalar outputs (the lock idiom only
         // consumes the per-thread grant ready bits, not the scalar grant
@@ -1794,12 +1797,12 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
         let gr_width = crate::width::index_width(n_threads as u64);
         merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
             name: Ident::new(gv_sink.clone(), sp),
-            ty: TypeExpr::Bool, unpacked: false, span: sp,
+            ty: TypeExpr::Bool, unpacked: false, unpacked_ascending: false, span: sp,
         }));
         merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
             name: Ident::new(gr_sink.clone(), sp),
             ty: TypeExpr::UInt(Box::new(Expr::new(
-                ExprKind::Literal(LitKind::Dec(gr_width as u64)), sp))), unpacked: false, span: sp,
+                ExprKind::Literal(LitKind::Dec(gr_width as u64)), sp))), unpacked: false, unpacked_ascending: false, span: sp,
         }));
 
         // Pack/unpack between scalar wires and packed vectors.
@@ -1917,7 +1920,7 @@ fn lower_module_threads(m: ModuleDecl, opts: &ThreadLowerOpts) -> Result<(Module
                 merged_body.push(ModuleBodyItem::WireDecl(WireDecl {
                     name: Ident::new(wire_name, sp),
                     ty: info.ty.clone(),
-                    unpacked: false,
+                    unpacked: false, unpacked_ascending: false,
                     span: sp,
                 }));
             }
@@ -2542,24 +2545,24 @@ fn synthesize_lock_arbiter(
         PortDecl {
             name: Ident::new("clk".to_string(), sp),
             direction: Direction::In, ty: clk_ty, default: None,
-            reg_info: None, bus_info: None, shared: None, unpacked: false, span: sp,
+            reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, span: sp,
         },
         PortDecl {
             name: Ident::new("rst".to_string(), sp),
             direction: Direction::In, ty: rst_ty, default: None,
-            reg_info: None, bus_info: None, shared: None, unpacked: false, span: sp,
+            reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, span: sp,
         },
         PortDecl {
             name: Ident::new("grant_valid".to_string(), sp),
             direction: Direction::Out, ty: TypeExpr::Bool, default: None,
-            reg_info: None, bus_info: None, shared: None, unpacked: false, span: sp,
+            reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, span: sp,
         },
         PortDecl {
             name: Ident::new("grant_requester".to_string(), sp),
             direction: Direction::Out,
             ty: TypeExpr::UInt(Box::new(Expr::new(
                 ExprKind::Literal(LitKind::Dec(gr_width as u64)), sp))),
-            default: None, reg_info: None, bus_info: None, shared: None, unpacked: false, span: sp,
+            default: None, reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, span: sp,
         },
     ];
 
@@ -2570,12 +2573,12 @@ fn synthesize_lock_arbiter(
             PortDecl {
                 name: Ident::new("valid".to_string(), sp),
                 direction: Direction::In, ty: TypeExpr::Bool, default: None,
-                reg_info: None, bus_info: None, shared: None, unpacked: false, span: sp,
+                reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, span: sp,
             },
             PortDecl {
                 name: Ident::new("ready".to_string(), sp),
                 direction: Direction::Out, ty: TypeExpr::Bool, default: None,
-                reg_info: None, bus_info: None, shared: None, unpacked: false, span: sp,
+                reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, span: sp,
             },
         ],
         span: sp,
@@ -2620,6 +2623,11 @@ struct SignalInfo {
     /// instantiation in the parent gets a packed-vs-unpacked port
     /// connection mismatch.
     unpacked: bool,
+    /// Mirror of `unpacked_ascending` for the same reason — synthesized
+    /// sub-module ports must inherit the dimension direction or
+    /// SV port-boundary index reversal silently corrupts cross-module
+    /// arrays. See arch-com#307.
+    unpacked_ascending: bool,
 }
 
 fn build_module_type_map(m: &ModuleDecl) -> HashMap<String, SignalInfo> {
@@ -2631,6 +2639,7 @@ fn build_module_type_map(m: &ModuleDecl) -> HashMap<String, SignalInfo> {
             reg_init: p.reg_info.as_ref().and_then(|ri| ri.init.clone()),
             shared: p.shared,
             unpacked: p.unpacked,
+        unpacked_ascending: p.unpacked_ascending,
         });
     }
     for item in &m.body {
@@ -2641,7 +2650,7 @@ fn build_module_type_map(m: &ModuleDecl) -> HashMap<String, SignalInfo> {
                     reg_reset: r.reset.clone(),
                     reg_init: r.init.clone(),
                     shared: None,
-                    unpacked: false,
+                    unpacked: false, unpacked_ascending: false,
                 });
             }
             ModuleBodyItem::WireDecl(w) => {
@@ -2650,7 +2659,7 @@ fn build_module_type_map(m: &ModuleDecl) -> HashMap<String, SignalInfo> {
                     reg_reset: RegReset::None,
                     reg_init: None,
                     shared: None,
-                    unpacked: false,
+                    unpacked: false, unpacked_ascending: false,
                 });
             }
             ModuleBodyItem::LetBinding(l) => {
@@ -2660,7 +2669,7 @@ fn build_module_type_map(m: &ModuleDecl) -> HashMap<String, SignalInfo> {
                         reg_reset: RegReset::None,
                         reg_init: None,
                         shared: None,
-                        unpacked: false,
+                        unpacked: false, unpacked_ascending: false,
                     });
                 }
             }
@@ -6678,17 +6687,17 @@ fn lower_indexed_tlm_target_group(
         let rsp_tag = format!("{prefix}_rsp_tag");
         let rsp_data = format!("{prefix}_rsp_data");
 
-        out.push(ModuleBodyItem::WireDecl(WireDecl { name: mk_ident(req_ready.clone()), ty: TypeExpr::Bool, unpacked: false, span }));
-        out.push(ModuleBodyItem::WireDecl(WireDecl { name: mk_ident(rsp_valid.clone()), ty: TypeExpr::Bool, unpacked: false, span }));
-        out.push(ModuleBodyItem::WireDecl(WireDecl { name: mk_ident(rsp_ready.clone()), ty: TypeExpr::Bool, unpacked: false, span }));
+        out.push(ModuleBodyItem::WireDecl(WireDecl { name: mk_ident(req_ready.clone()), ty: TypeExpr::Bool, unpacked: false, unpacked_ascending: false, span }));
+        out.push(ModuleBodyItem::WireDecl(WireDecl { name: mk_ident(rsp_valid.clone()), ty: TypeExpr::Bool, unpacked: false, unpacked_ascending: false, span }));
+        out.push(ModuleBodyItem::WireDecl(WireDecl { name: mk_ident(rsp_ready.clone()), ty: TypeExpr::Bool, unpacked: false, unpacked_ascending: false, span }));
         out.push(ModuleBodyItem::WireDecl(WireDecl {
             name: mk_ident(rsp_tag.clone()),
             ty: TypeExpr::UInt(Box::new(Expr::new(ExprKind::Literal(LitKind::Dec(tag_w as u64)), span))),
-            unpacked: false,
+            unpacked: false, unpacked_ascending: false,
             span,
         }));
         if let Some(ret_ty) = &method.ret {
-            out.push(ModuleBodyItem::WireDecl(WireDecl { name: mk_ident(rsp_data.clone()), ty: ret_ty.clone(), unpacked: false, span }));
+            out.push(ModuleBodyItem::WireDecl(WireDecl { name: mk_ident(rsp_data.clone()), ty: ret_ty.clone(), unpacked: false, unpacked_ascending: false, span }));
         }
 
         let req_valid = Expr::new(

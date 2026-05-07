@@ -633,6 +633,34 @@ Effect mirrors the port form: SV emission flips to unpacked-array shape (`logic 
 
 Why this is opt-in: unpacked arrays are Yosys-unfriendly during synthesis and historically caused Icarus portability issues. The default packed shape preserves these guarantees; `unpacked` is a deliberate interop hatch for ports and wires that face external SV or that need to mate with an unpacked port across an `inst` connection.
 
+**3.7.1 Ascending Unpacked Dimension (`ascending` modifier)**
+
+The default `unpacked Vec<T, N>` emits the unpacked dimension as `[N-1:0]` (descending). To interop with upstream SystemVerilog declared with the bare `[N]` shorthand (= `[0:N-1]` ascending), add the `ascending` modifier after `unpacked`:
+
+```arch
+port csr_pmp_cfg_i:  in  unpacked ascending Vec<UInt<6>, PMPNumRegions>;
+port csr_pmp_addr_i: in  unpacked ascending Vec<UInt<34>, PMPNumRegions>;
+wire bridge:              unpacked ascending Vec<UInt<6>, PMPNumRegions>;
+```
+
+Emits:
+```sv
+input logic [5:0]  csr_pmp_cfg_i  [0:PMPNumRegions-1]
+input logic [33:0] csr_pmp_addr_i [0:PMPNumRegions-1]
+logic [5:0]        bridge         [0:PMPNumRegions-1]
+```
+
+**Why this matters:** IEEE 1800-2017 §10.10 maps unpacked-array port connections **element-by-position**, not element-by-index. When a `[N]`-declared SV array (positions 0..N-1, indices 0..N-1) connects to a `[N-1:0]` ARCH-emitted port (positions 0..N-1, indices N-1..0), the indices are **silently reversed**: caller's index `i` connects to callee's index `N-1-i`. There is no compiler warning. The `ascending` modifier flips the ARCH-side emission to match upstream's `[0:N-1]`, so position-based mapping aligns indices on both sides.
+
+ARCH-side indexing (`name[i]`) is **unchanged** — `name[0]` is always the first element regardless of SV emission direction. The keyword affects only the SV declaration.
+
+Restrictions:
+- Only legal when `unpacked` is also set (`ascending` alone, or on a packed Vec, has no meaning).
+- All other `unpacked` restrictions apply (Vec-only, no `port reg`, no `pipe_reg`).
+- For ARCH-to-ARCH connections across `ascending` ports, the connecting wire must also be `ascending` — otherwise the position-based mapping reverses inside our codebase too.
+
+**Rule of thumb:** if you're connecting to upstream SV and its port is declared `logic [W-1:0] x [N]` (no explicit range), use `unpacked ascending`. If the upstream port is `logic [W-1:0] x [N-1:0]` (explicit descending), use plain `unpacked`. If both arch-side endpoints are ARCH-generated and you have no SV-interop constraint, plain `unpacked` is fine.
+
 **4. Modules**
 
 A module is the fundamental unit of design in Arch. Every module follows the same four-section schema --- params, ports, body, optional verification. This regularity is intentional: an AI encountering any Arch construct can immediately orient itself using the same mental model.
