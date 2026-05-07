@@ -163,6 +163,40 @@ end fsm Broken
     assert!(resolve::resolve(&ast).is_err());
 }
 
+#[test]
+fn test_fsm_port_named_state_errors() {
+    // `state` is reserved in fsm — the codegen maps it to state_r.
+    // A user port named `state` would collide.
+    let source = r#"
+fsm BadFsm
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port state: out UInt<2>;
+  state [A, B]
+  default state A;
+  state A
+    comb
+      state = 2'd0;
+    end comb
+    -> B when true;
+  end state A
+  state B
+    comb
+      state = 2'd1;
+    end comb
+    -> A when true;
+  end state B
+end fsm BadFsm
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let ast = parser.parse_source_file().expect("parse");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err(), "fsm with port named 'state' should error");
+}
+
 // ── FIFO ──────────────────────────────────────────────────────────────────────
 
 #[test]

@@ -4507,6 +4507,43 @@ impl<'a> TypeChecker<'a> {
             return;
         }
 
+        // `state` is reserved — the codegen maps it to the internal
+        // `state_r` register via ident_subst. A user port/signal named
+        // `state` would have its assignments rewritten to the enum-typed
+        // register, producing SV ENUMVALUE errors.
+        for p in &f.ports {
+            if p.name.name == "state" {
+                self.errors.push(CompileError::general(
+                    "'state' is reserved in fsm (the codegen maps it to the internal state_r register). Rename the port (e.g. 'state_o').",
+                    p.name.span,
+                ));
+            }
+        }
+        for r in &f.regs {
+            if r.name.name == "state" {
+                self.errors.push(CompileError::general(
+                    "'state' is reserved in fsm. Rename the signal (e.g. 'state_r').",
+                    r.name.span,
+                ));
+            }
+        }
+        for w in &f.wires {
+            if w.name.name == "state" {
+                self.errors.push(CompileError::general(
+                    "'state' is reserved in fsm. Rename the signal.",
+                    w.name.span,
+                ));
+            }
+        }
+        for l in &f.lets {
+            if l.name.name == "state" {
+                self.errors.push(CompileError::general(
+                    "'state' is reserved in fsm. Rename the binding.",
+                    l.name.span,
+                ));
+            }
+        }
+
         let _state_names: Vec<&str> = f.state_names.iter().map(|s| s.name.as_str()).collect();
 
         // Every declared state must have a state body
