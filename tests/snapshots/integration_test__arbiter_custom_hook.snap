@@ -31,7 +31,7 @@ module QosArbiter #(
   logic [3:0] grant_onehot;
   
   always_comb begin
-    grant_onehot = QosGrant(request_valid, last_grant_r, qos);
+    grant_onehot = QosGrant(request_valid, last_grant_r, qos_in);
     grant_valid = |grant_onehot;
     request_ready = grant_onehot;
     grant_requester = '0;

@@ -4977,6 +4977,21 @@ impl<'a> TypeChecker<'a> {
             let port_names: Vec<&str> = a.ports.iter().map(|p| p.name.name.as_str()).collect();
             let param_names: Vec<&str> = a.params.iter().map(|p| p.name.name.as_str()).collect();
             let hook_param_names: Vec<&str> = hook.params.iter().map(|p| p.name.name.as_str()).collect();
+            // Hook parameter names must not shadow arbiter port names — the
+            // codegen emits the function inside the module, so a name collision
+            // produces SV VARHIDDEN warnings.
+            for hp in &hook.params {
+                if port_names.contains(&hp.name.name.as_str()) {
+                    self.errors.push(CompileError::general(
+                        &format!(
+                            "hook parameter `{}` shadows arbiter port of the same name. \
+                             Rename the hook parameter (e.g. `{}s`) or the port.",
+                            hp.name.name, hp.name.name,
+                        ),
+                        hp.name.span,
+                    ));
+                }
+            }
             for arg in &hook.fn_args {
                 if !hook_param_names.contains(&arg.name.as_str())
                     && !port_names.contains(&arg.name.as_str())

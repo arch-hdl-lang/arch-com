@@ -37,6 +37,6 @@ arbiter QosArbiter
   end ports request
   port grant_valid: out Bool;
   port grant_requester: out UInt<2>;
-  hook grant_select(req_mask: UInt<4>, last_grant: UInt<4>, qos: UInt<8>) -> UInt<4>
-    = QosGrant(req_mask, last_grant, qos);
+  hook grant_select(req_mask: UInt<4>, last_grant: UInt<4>, qos_in: UInt<8>) -> UInt<4>
+    = QosGrant(req_mask, last_grant, qos_in);
 end arbiter QosArbiter
