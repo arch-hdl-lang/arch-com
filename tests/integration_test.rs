@@ -417,6 +417,48 @@ fn test_arbiter_latency2() {
     insta::assert_snapshot!(sv);
 }
 
+#[test]
+fn test_arbiter_inst_port_array_connections_use_vector_names() {
+    // Regression: per-index connections like request[0].valid should map to
+    // the vector port `.request_valid({...})` not `.request0_valid(...)`.
+    let source = r#"
+arbiter FillArb
+  policy round_robin;
+  param NUM_REQ: const = 4;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync, High>;
+  ports[NUM_REQ] request
+    valid: in Bool;
+    ready: out Bool;
+  end ports request
+  port grant_valid: out Bool;
+  port grant_requester: out UInt<2>;
+end arbiter FillArb
+
+module Parent
+  port clk_i: in Clock<SysDomain>;
+  port rst_ni: in Reset<Sync, High>;
+  inst fill_arb_i: FillArb
+    clk <- clk_i;
+    rst <- rst_ni;
+    request[0].valid <- false;
+    request[1].valid <- false;
+    request[2].valid <- false;
+    request[3].valid <- false;
+    grant_valid     -> arb_grant_valid;
+    grant_requester -> arb_grant_idx;
+  end inst fill_arb_i
+  wire arb_grant_valid:  Bool;
+  wire arb_grant_idx:    UInt<2>;
+end module Parent
+"#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains(".request_valid({1'b0, 1'b0, 1'b0, 1'b0})"),
+            "expected vector port connection .request_valid({{...}}):\n{sv}");
+    assert!(!sv.contains("request0_valid"),
+            "must NOT emit per-index scalar port name:\n{sv}");
+}
+
 // ── Template ─────────────────────────────────────────────────────────────────
 
 #[test]

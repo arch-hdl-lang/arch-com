@@ -246,38 +246,14 @@ impl<'a> Codegen<'a> {
             String::new()
         };
         let kw = if p.is_local { "localparam" } else { "parameter" };
-        // Optional post-name unpacked dim: `param NAME: T [N]` →
-        // SV `parameter T NAME [N]`. Goes after the param name and
-        // before the `=` default. Used to forward upstream-SV
-        // unpacked-array params like `pmp_cfg_t [PMP_MAX_REGIONS]`.
-        let unpacked_str = if let Some(sz) = &p.unpacked_size {
-            format!(" [{}]", self.emit_expr_str(sz))
-        } else {
-            String::new()
-        };
         match &p.kind {
             ParamKind::WidthConst(hi, lo) => {
                 let hi_s = self.emit_expr_str(hi);
                 let lo_s = self.emit_expr_str(lo);
-                self.line(&format!("{kw} [{}:{}] {}{}{}{}", hi_s, lo_s, p.name.name, unpacked_str, default_str, comma));
+                self.line(&format!("{kw} [{}:{}] {}{}{}", hi_s, lo_s, p.name.name, default_str, comma));
             }
             ParamKind::EnumConst(enum_name) => {
-                self.line(&format!("{kw} {} {}{}{}{}", enum_name, p.name.name, unpacked_str, default_str, comma));
-            }
-            ParamKind::Logic(ty) => {
-                // Emit as `parameter <packed-bits> NAME [unpacked]? = ...`.
-                // emit_port_type_str returns "logic [W-1:0]" for UInt/SInt
-                // and just "logic" for Bool; we want the bit-range form
-                // without the leading `logic` keyword (SV `parameter`
-                // doesn't take `logic` as the type qualifier in the
-                // same way `input/output` does).
-                let ty_str = self.emit_port_type_str(ty);
-                let ty_qual = ty_str.strip_prefix("logic").map(|r| r.trim_start()).unwrap_or(&ty_str);
-                if ty_qual.is_empty() {
-                    self.line(&format!("{kw} {}{}{}{}", p.name.name, unpacked_str, default_str, comma));
-                } else {
-                    self.line(&format!("{kw} {} {}{}{}{}", ty_qual, p.name.name, unpacked_str, default_str, comma));
-                }
+                self.line(&format!("{kw} {} {}{}{}", enum_name, p.name.name, default_str, comma));
             }
             ParamKind::ConstVec(ty) => {
                 // Vec<T, N> param. iverilog rejects unpacked-array parameters,
@@ -322,7 +298,7 @@ impl<'a> Codegen<'a> {
                 ));
             }
             _ => {
-                self.line(&format!("{kw} int {}{}{}{}", p.name.name, unpacked_str, default_str, comma));
+                self.line(&format!("{kw} int {}{}{}", p.name.name, default_str, comma));
             }
         }
     }
@@ -530,15 +506,6 @@ impl<'a> Codegen<'a> {
                     }
                     ParamKind::EnumConst(enum_name) => {
                         self.line(&format!("localparam {} {} = {};", enum_name, p.name.name, val));
-                    }
-                    ParamKind::Logic(ty) => {
-                        let ty_str = self.emit_port_type_str(ty);
-                        let ty_qual = ty_str.strip_prefix("logic").map(|r| r.trim_start()).unwrap_or(&ty_str);
-                        if ty_qual.is_empty() {
-                            self.line(&format!("localparam {} = {};", p.name.name, val));
-                        } else {
-                            self.line(&format!("localparam {} {} = {};", ty_qual, p.name.name, val));
-                        }
                     }
                     ParamKind::Const | ParamKind::Type(_) | ParamKind::ConstVec(_) => {
                         self.line(&format!("localparam int {} = {};", p.name.name, val));
@@ -1319,6 +1286,18 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Check whether `name` is a parser-flattened per-index port_array
+    /// connection like `request0_valid` and extract the index.
+    fn port_array_index(name: &str, prefix: &str, signal: &str) -> Option<usize> {
+        let suffix = &format!("_{signal}");
+        if name.starts_with(prefix) && name.ends_with(suffix) {
+            let mid = &name[prefix.len()..name.len() - suffix.len()];
+            mid.parse::<usize>().ok()
+        } else {
+            None
+        }
+    }
+
     fn emit_inst(&mut self, inst: &InstDecl) {
         let mut parts = Vec::new();
 
@@ -1355,78 +1334,51 @@ impl<'a> Codegen<'a> {
                 .unwrap_or_default()
         };
 
-        // ── Collect target's per-requester ports[N] groups (arbiter / regfile) ──
-        // The parser flattens `request[0].valid` into a single port name
-        // `request0_valid`; on the inst-target side, the SV port is a vector
-        // (`request_valid [N-1:0]`). We need to:
-        //   - synthesize a hidden wire of width N,
-        //   - drive each bit from the user's per-index expression (or split
-        //     the inst's output back to user wires for output signals),
-        //   - replace the N flat connections with one whole-vector
-        //     `.<group>_<sig>(<wire>)` connection.
-        // Without this, the inst-site SV references non-existent port
-        // names like `.request0_valid()`. Issue #296.
-        // Arbiter emits its `ports[N] request { valid; ready; }` group
-        // as vector ports (`request_valid [N-1:0]`, `request_ready [N-1:0]`)
-        // — so individual `request[i].valid <- expr` connections need to
-        // be merged into a synthesized vector wire + per-bit drives, then
-        // connected as a single whole-vector `.request_valid(wire)` pin.
-        //
-        // Regfile uses a different convention — its `ports[N] read { addr;
-        // data; }` emits as per-index scalar ports (`read0_addr`,
-        // `read1_addr`, ...) so the existing flattened-port-name behavior
-        // is correct there. Regfile is intentionally excluded from the
-        // synthesis here.
-        let target_port_arrays: Vec<(String, u64, Vec<(String, Direction, TypeExpr)>)> =
-            self.source.items.iter().find_map(|item| match item {
-                Item::Arbiter(a) if a.name.name == inst.module_name.name => Some(
-                    a.port_arrays.iter().map(|pa| {
-                        let n = self.eval_count_with_inst_params(&pa.count_expr, inst);
-                        let signals = pa.signals.iter()
-                            .map(|s| (s.name.name.clone(), s.direction, s.ty.clone()))
-                            .collect();
-                        (pa.name.name.clone(), n, signals)
-                    }).collect()
-                ),
-                _ => None,
-            }).unwrap_or_default();
+        // For arbiter (or other constructs with port_arrays), detect
+        // per-index connections like `request0_valid` and remap them to
+        // the vector port `request_valid`. The parser flattens
+        //   request[0].valid -> request0_valid
+        // but the target module emits a vector port `request_valid[N-1:0]`.
+        let mut port_array_conns: std::collections::HashMap<String, Vec<(usize, String)>> = std::collections::HashMap::new();
+        let mut port_array_skip: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        {
+            // Look up the target's port_arrays (arbiter for now).
+            let target_pas: Vec<&crate::ast::PortArrayDecl> = self.source.items.iter()
+                .filter_map(|item| match item {
+                    Item::Arbiter(a) if a.name.name == inst.module_name.name => Some(a.port_arrays.as_slice()),
+                    _ => None,
+                })
+                .flatten()
+                .collect();
+            if !target_pas.is_empty() {
+                for (i, c) in inst.connections.iter().enumerate() {
+                    for pa in &target_pas {
+                        for sig in &pa.signals {
+                            if let Some(idx) = Self::port_array_index(&c.port_name.name, &pa.name.name, &sig.name.name) {
+                                let base = format!("{}_{}", pa.name.name, sig.name.name);
+                                port_array_conns.entry(base)
+                                    .or_default()
+                                    .push((idx, self.emit_expr_str(&c.signal)));
+                                port_array_skip.insert(i);
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
-        // Map port_name → (group, idx, sig_name) for the per-requester
-        // connections so we can group them after the main loop.
-        let mut indexed_group_conns: std::collections::HashMap<
-            (String, String),  // (group_name, sig_name)
-            Vec<(u32, String)>,  // (idx, signal_str)
-        > = std::collections::HashMap::new();
-        let mut indexed_group_dir: std::collections::HashMap<
-            (String, String), Direction,
-        > = std::collections::HashMap::new();
-        let mut indexed_group_ty: std::collections::HashMap<
-            (String, String), TypeExpr,
-        > = std::collections::HashMap::new();
+        // Emit vector connections for port_arrays: one .base_name({val[N-1], ..., val[0]}) per signal.
+        for (base_name, mut entries) in port_array_conns {
+            entries.sort_by_key(|(idx, _)| *idx);
+            let concat = entries.iter()
+                .map(|(_, expr)| expr.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            connections.push(format!(".{}({{{}}})", base_name, concat));
+        }
 
-        for c in &inst.connections {
-            // Try to match `<group>{idx}_<sig>` against any known port array.
-            let matched = target_port_arrays.iter().find_map(|(group, _n, sigs)| {
-                let pname = &c.port_name.name;
-                let prefix = format!("{group}");
-                let rest = pname.strip_prefix(&prefix)?;
-                // rest looks like "0_valid" — split on first underscore
-                let und = rest.find('_')?;
-                let idx_str = &rest[..und];
-                let sig = &rest[und + 1..];
-                let idx: u32 = idx_str.parse().ok()?;
-                let (sname, dir, ty) = sigs.iter()
-                    .find(|(sn, _, _)| sn == sig)?;
-                Some((group.clone(), idx, sname.clone(), *dir, ty.clone()))
-            });
-            if let Some((group, idx, sig, dir, ty)) = matched {
-                let sig_str = self.emit_expr_str(&c.signal);
-                indexed_group_conns
-                    .entry((group.clone(), sig.clone()))
-                    .or_default()
-                    .push((idx, sig_str));
-                indexed_group_dir.insert((group.clone(), sig.clone()), dir);
-                indexed_group_ty.insert((group, sig), ty);
+        for (i, c) in inst.connections.iter().enumerate() {
+            if port_array_skip.contains(&i) {
                 continue;
             }
             if let Some((_, bus_name, bus_params)) = target_bus_ports.iter().find(|(pn, _, _)| *pn == c.port_name.name) {
@@ -1449,49 +1401,6 @@ impl<'a> Codegen<'a> {
             }
         }
 
-        // Emit synthesized vector wires + per-index drives BEFORE the inst.
-        // For inputs: drive each bit from the user's per-index expression.
-        // For outputs: drive the user's per-index target from the wire.
-        // The whole vector then connects to the inst's vector port.
-        let mut grouped_keys: Vec<(String, String)> = indexed_group_conns.keys().cloned().collect();
-        grouped_keys.sort();
-        for (group, sig) in &grouped_keys {
-            let entries = &indexed_group_conns[&(group.clone(), sig.clone())];
-            let dir = indexed_group_dir[&(group.clone(), sig.clone())];
-            let ty = indexed_group_ty[&(group.clone(), sig.clone())].clone();
-            // Find the array's count.
-            let n = target_port_arrays.iter()
-                .find(|(g, _, _)| g == group)
-                .map(|(_, n, _)| *n)
-                .unwrap_or(entries.len() as u64);
-            let wire_name = format!("__{}_{}_{}", inst.name.name, group, sig);
-            // Synthesize the vector wire as `logic [<elem>][N-1:0]`.
-            // Per-bit (`elem` == Bool) flattens to `logic [N-1:0]`.
-            let elem_ty_str = match &ty {
-                TypeExpr::Bool => format!("[{}:0]", n - 1),
-                _ => {
-                    let elem = self.emit_logic_type_str(&ty);
-                    let body = elem.strip_prefix("logic").unwrap_or(&elem).trim_start();
-                    if body.is_empty() {
-                        format!("[{}:0]", n - 1)
-                    } else {
-                        format!("[{}:0]{body}", n - 1)
-                    }
-                }
-            };
-            self.line(&format!("logic {elem_ty_str} {wire_name};"));
-            // Drive direction depends on the inst's port direction.
-            // Input (`in`) port: user assigns drive bits of the wire.
-            // Output (`out`) port: bit-selects of the wire drive user wires.
-            for (idx, sig_str) in entries {
-                match dir {
-                    Direction::In => self.line(&format!("assign {wire_name}[{idx}] = {sig_str};")),
-                    Direction::Out => self.line(&format!("assign {sig_str} = {wire_name}[{idx}];")),
-                }
-            }
-            connections.push(format!(".{group}_{sig}({wire_name})"));
-        }
-
         self.line(&parts[0]);
         self.indent += 1;
         for (i, conn) in connections.iter().enumerate() {
@@ -1503,36 +1412,6 @@ impl<'a> Codegen<'a> {
         }
         self.indent -= 1;
         self.line(");");
-    }
-
-    /// Evaluate a `ports[N]` count expression in the context of an inst's
-    /// param assignments. Falls back to evaluating against the source
-    /// module's defaults if the inst doesn't override the param.
-    fn eval_count_with_inst_params(&self, expr: &Expr, inst: &InstDecl) -> u64 {
-        // Build a param map for the inst.
-        let mut params: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-        // Source defaults first.
-        let target_params: Option<&[ParamDecl]> = self.source.items.iter().find_map(|item| match item {
-            Item::Arbiter(a) if a.name.name == inst.module_name.name => Some(a.params.as_slice()),
-            Item::Regfile(r) if r.name.name == inst.module_name.name => Some(r.params.as_slice()),
-            _ => None,
-        });
-        if let Some(ps) = target_params {
-            for p in ps {
-                if let Some(d) = &p.default {
-                    if let Some(v) = crate::elaborate::try_eval_i64(d, &params) {
-                        params.insert(p.name.name.clone(), v);
-                    }
-                }
-            }
-        }
-        // Inst overrides.
-        for pa in &inst.param_assigns {
-            if let Some(v) = crate::elaborate::try_eval_i64(&pa.value, &params) {
-                params.insert(pa.name.name.clone(), v);
-            }
-        }
-        crate::elaborate::try_eval_i64(expr, &params).unwrap_or(0).max(0) as u64
     }
 
     fn emit_generate(&mut self, gen: &GenerateDecl) {
@@ -1550,7 +1429,6 @@ impl<'a> Codegen<'a> {
                     match item {
                         GenItem::Inst(inst) => self.emit_inst(inst),
                         GenItem::Port(_) => unreachable!("port GenItems should have been lifted by elaboration"),
-                        GenItem::TlmConnect(_) => unreachable!("TLM connect GenItems should have been lowered by elaboration"),
                         GenItem::Thread(_) => unreachable!("thread GenItems should have been lowered by elaboration"),
                         GenItem::Seq(_) | GenItem::Comb(_) => unreachable!(
                             "seq/comb GenItems should have been unrolled by elaboration"),
@@ -1570,7 +1448,6 @@ impl<'a> Codegen<'a> {
                     match item {
                         GenItem::Inst(inst) => self.emit_inst(inst),
                         GenItem::Port(_) => unreachable!("port GenItems should have been lifted by elaboration"),
-                        GenItem::TlmConnect(_) => unreachable!("TLM connect GenItems should have been lowered by elaboration"),
                         GenItem::Thread(_) => unreachable!("thread GenItems should have been lowered by elaboration"),
                         GenItem::Seq(_) | GenItem::Comb(_) => unreachable!(
                             "seq/comb GenItems should have been lifted by elaboration"),
@@ -1585,7 +1462,6 @@ impl<'a> Codegen<'a> {
                         match item {
                             GenItem::Inst(inst) => self.emit_inst(inst),
                             GenItem::Port(_) => unreachable!("port GenItems should have been lifted by elaboration"),
-                            GenItem::TlmConnect(_) => unreachable!("TLM connect GenItems should have been lowered by elaboration"),
                             GenItem::Thread(_) => unreachable!("thread GenItems should have been lowered by elaboration"),
                             GenItem::Seq(_) | GenItem::Comb(_) => unreachable!(
                                 "seq/comb GenItems should have been lifted by elaboration"),
@@ -3480,13 +3356,8 @@ impl<'a> Codegen<'a> {
                 // (preserving case), relying on `import Pkg::*;` for resolution.
                 if matches!(self.symbols.globals.get(&enum_name.name), Some((Symbol::ExternEnum(_), _))) {
                     variant.name.clone()
-                // Known ARCH-side enum → emit just the variant name in uppercase.
-                } else if matches!(self.symbols.globals.get(&enum_name.name), Some((Symbol::Enum(_), _))) {
-                    variant.name.to_uppercase()
-                // Cross-package qualified refs (e.g. `ibex_pkg::RV32MFast`) —
-                // preserve the package prefix and original case.
                 } else {
-                    format!("{}::{}", enum_name.name, variant.name)
+                    variant.name.to_uppercase()
                 }
             }
             ExprKind::Todo => {
