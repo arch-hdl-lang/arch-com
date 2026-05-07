@@ -1,6 +1,6 @@
 ---
 source: tests/integration_test.rs
-assertion_line: 1678
+assertion_line: 1972
 expression: sv
 ---
 // domain SysDomain
@@ -75,7 +75,7 @@ module WorkerPipe (
         capture_seen <= go;
       end
       // Wait-stage FSM: process
-      case (process_fsm_state)
+      unique case (process_fsm_state)
         1'd0: begin
           if (capture_valid_r) begin
             if (process_worker_done) begin
