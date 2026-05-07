@@ -1625,6 +1625,10 @@ struct Ctx<'a> {
     reg_names:   &'a HashSet<String>,
     port_names:  &'a HashSet<String>,
     let_names:   &'a HashSet<String>,
+    /// Map of module-scope let-binding names → their RHS expressions.
+    /// Populated via `Ctx::with_let_values`. Used by `Stmt::Match` to
+    /// fold `Pattern::Ident` arms into literal case labels.
+    let_values:  Option<&'a HashMap<String, Expr>>,
     inst_names:  &'a HashSet<String>,
     /// Signals whose type is >64 bits wide (require special handling).
     wide_names:  &'a HashSet<String>,
@@ -1676,7 +1680,7 @@ impl<'a> Ctx<'a> {
         static EMPTY_RESET_LEVELS: std::sync::OnceLock<HashMap<String, ResetLevel>> = std::sync::OnceLock::new();
         let reset_levels = EMPTY_RESET_LEVELS.get_or_init(HashMap::new);
         static EMPTY_PARAMS: &[ParamDecl] = &[];
-        Ctx { reg_names, port_names, let_names, inst_names, wide_names,
+        Ctx { reg_names, port_names, let_names, let_values: None, inst_names, wide_names,
               widths, posedge_lhs: false, fsm_mode: false, enum_map, bus_ports,
               reset_levels, vec_names: None, vec_sizes: None, fsm_vec_port_regs: None,
               ident_subst: None, coverage: None, params: EMPTY_PARAMS }
@@ -1684,6 +1688,11 @@ impl<'a> Ctx<'a> {
 
     fn with_params(mut self, params: &'a [ParamDecl]) -> Self {
         self.params = params;
+        self
+    }
+
+    fn with_let_values(mut self, let_values: &'a HashMap<String, Expr>) -> Self {
+        self.let_values = Some(let_values);
         self
     }
 
@@ -1975,7 +1984,7 @@ fn lower_vec_method_cpp(
         sub.insert("index".to_string(), format!("{i}"));
         let sub_ctx = Ctx {
             reg_names: ctx.reg_names, port_names: ctx.port_names,
-            let_names: ctx.let_names, inst_names: ctx.inst_names,
+            let_names: ctx.let_names, let_values: ctx.let_values, inst_names: ctx.inst_names,
             wide_names: ctx.wide_names, widths: ctx.widths,
             posedge_lhs: ctx.posedge_lhs, fsm_mode: ctx.fsm_mode,
             enum_map: ctx.enum_map, bus_ports: ctx.bus_ports,
@@ -2405,7 +2414,22 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             for arm in arms.iter().rev() {
                 let val = cpp_expr(&arm.value, ctx);
                 let cond = match &arm.pattern {
-                    Pattern::Wildcard | Pattern::Ident(_) => { result = val; continue; }
+                    Pattern::Wildcard => { result = val; continue; }
+                    Pattern::Ident(id) => {
+                        // Mirror Stmt::Match: if the ident names a let
+                        // with a literal RHS, treat as `== <literal>`;
+                        // else fall through as the ternary tail (default).
+                        let folded = ctx.let_values
+                            .and_then(|m| m.get(&id.name))
+                            .filter(|e| matches!(&e.kind, ExprKind::Literal(_)));
+                        match folded {
+                            Some(e) => {
+                                let lit = cpp_expr(e, ctx);
+                                format!("({s} == {lit})")
+                            }
+                            None => { result = val; continue; }
+                        }
+                    }
                     Pattern::Literal(e) => {
                         let lit = cpp_expr(e, ctx);
                         format!("({s} == {lit})")
@@ -2852,7 +2876,24 @@ fn emit_stmt(stmt: &Stmt, ctx: &Ctx, out: &mut String, indent: usize, k: SimAssi
             for arm in &m.arms {
                 let (case_str, label) = match &arm.pattern {
                     Pattern::Wildcard => ("default".to_string(), "match _".to_string()),
-                    Pattern::Ident(id) => ("default".to_string(), format!("match {}", id.name)),
+                    Pattern::Ident(id) => {
+                        // If `id` names a module-scope let-binding with a
+                        // literal RHS, emit `case <literal>:` so multiple
+                        // ident arms (e.g. `ALU_ADD`, `ALU_SUB`, ...) don't
+                        // collapse into "multiple default labels". Falls
+                        // back to `default` when the let is missing or its
+                        // RHS isn't a constant — preserves wildcard-binding
+                        // semantics for non-let idents.
+                        let folded = ctx.let_values
+                            .and_then(|m| m.get(&id.name))
+                            .filter(|e| matches!(&e.kind, ExprKind::Literal(_)));
+                        match folded {
+                            Some(e) => (format!("case {}", cpp_expr(e, ctx)),
+                                        format!("match {}", id.name)),
+                            None    => ("default".to_string(),
+                                        format!("match {}", id.name)),
+                        }
+                    }
                     Pattern::Literal(e) => (format!("case {}", cpp_expr(e, ctx)), "match lit".to_string()),
                     Pattern::EnumVariant(en, vr) => {
                         if let Some(variants) = ctx.enum_map.get(&en.name) {
@@ -3092,6 +3133,25 @@ fn collect_let_names(body: &[ModuleBodyItem]) -> HashSet<String> {
             }
             ModuleBodyItem::WireDecl(w) => { out.insert(w.name.name.clone()); }
             _ => {}
+        }
+    }
+    out
+}
+
+/// Map module-scope `let NAME: T = expr;` bindings to their RHS expr.
+/// Used by `Stmt::Match` codegen to fold `Pattern::Ident(NAME)` arms
+/// into `case <literal>:` labels (instead of the buggy `default:`
+/// fall-through that collapses multi-let-bound match arms — see
+/// memory/feedback_archsim_match_pattern_ident_default_collision.md).
+/// Destructure-let bindings (`let {a, b} = ...;`) are skipped — those
+/// don't have a single RHS and aren't referenceable from match patterns.
+fn collect_let_values(body: &[ModuleBodyItem]) -> HashMap<String, Expr> {
+    let mut out = HashMap::new();
+    for item in body {
+        if let ModuleBodyItem::LetBinding(l) = item {
+            if l.destructure_fields.is_empty() {
+                out.insert(l.name.name.clone(), l.value.clone());
+            }
         }
     }
     out
@@ -3822,6 +3882,7 @@ impl<'a> SimCodegen<'a> {
         let mut reg_names = collect_reg_names(&m.body, &m.ports);
         reg_names.extend(collect_pipe_reg_names(&m.body));
         let let_names   = collect_let_names(&m.body);
+        let let_values  = collect_let_values(&m.body);
         let inst_names  = collect_inst_names(&m.body);
         let inst_out    = collect_inst_output_signals(&m.body);
         let mut wide_names  = collect_wide_names(&m.ports, &m.body);
@@ -4872,6 +4933,7 @@ impl<'a> SimCodegen<'a> {
                            &wide_names, &widths, &enum_map, &bus_port_names)
                       .with_reset_levels(&reset_levels)
                       .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes)
+                      .with_let_values(&let_values)
                       .with_params(&m.params);
 
         if insts.is_empty() {
@@ -5336,6 +5398,7 @@ impl<'a> SimCodegen<'a> {
                                &wide_names, &widths, &enum_map, &bus_port_names)
                           .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes).posedge()
                           .with_coverage(cov_handle)
+                          .with_let_values(&let_values)
                           .with_params(&m.params);
 
             for rb in &reg_blocks {
@@ -5525,6 +5588,7 @@ impl<'a> SimCodegen<'a> {
                     let ctx_pe = Ctx::new(&reg_names, &port_names, &let_names, &inst_names,
                                            &wide_names, &widths, &enum_map, &bus_port_names)
                                        .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes)
+                                       .with_let_values(&let_values)
                                        .with_params(&m.params);
                     let src = ctx_pe.resolve_name(&p.source.name, false);
                     if let Some((ref rst_name, is_low)) = rst_info {
@@ -5749,6 +5813,7 @@ impl<'a> SimCodegen<'a> {
                                 &wide_names, &widths, &enum_map, &bus_port_names)
                            .with_vec_names(&vec_reg_names).with_vec_sizes(&vec_sizes)
                            .with_coverage(cov_handle)
+                           .with_let_values(&let_values)
                            .with_params(&m.params);
 
         // Credit-channel combinational wires (sender can_send; receiver
@@ -5792,7 +5857,7 @@ impl<'a> SimCodegen<'a> {
                                     sub.insert("index".to_string(), format!("{i}"));
                                     let sub_ctx = Ctx {
                                         reg_names: ctx_comb.reg_names, port_names: ctx_comb.port_names,
-                                        let_names: ctx_comb.let_names, inst_names: ctx_comb.inst_names,
+                                        let_names: ctx_comb.let_names, let_values: ctx_comb.let_values, inst_names: ctx_comb.inst_names,
                                         wide_names: ctx_comb.wide_names, widths: ctx_comb.widths,
                                         posedge_lhs: ctx_comb.posedge_lhs, fsm_mode: ctx_comb.fsm_mode,
                                         enum_map: ctx_comb.enum_map, bus_ports: ctx_comb.bus_ports,
