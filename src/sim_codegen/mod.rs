@@ -2197,6 +2197,32 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
         ExprKind::Cast(inner, ty) => {
             let e = cpp_expr(inner, ctx);
             let t = cpp_port_type(ty);
+            // For SInt casts whose source is narrower than the target
+            // C++ int, sign-extend the value: a plain `(int64_t)x`
+            // bit-cast leaves the upper bits zero, which makes a
+            // would-be-negative N-bit value (where N < 64) appear as
+            // a large positive int64_t. Subsequent `>>` on that
+            // mis-typed value zero-fills instead of sign-extending.
+            //
+            // Standard idiom: shift left by (W_int - W_HDL) so the
+            // HDL sign bit lands at the int's MSB, then arith-shift
+            // right by the same amount to sign-extend.
+            //
+            // For UInt casts and same-width SInt casts, the bit-cast
+            // is correct and we keep the original simple form.
+            if let TypeExpr::SInt(w) = &**ty {
+                let w_hdl = eval_width(w);
+                let w_cpp: u32 = if w_hdl <= 8 { 8 }
+                                 else if w_hdl <= 16 { 16 }
+                                 else if w_hdl <= 32 { 32 }
+                                 else if w_hdl <= 64 { 64 }
+                                 else { 0 };  // >64: VlWide / _arch_u128 paths
+                let inner_w = infer_expr_width(inner, ctx);
+                if w_cpp > 0 && inner_w > 0 && inner_w < w_cpp {
+                    let shift = w_cpp - inner_w;
+                    return format!("(({t})({e}) << {shift}) >> {shift}");
+                }
+            }
             format!("({t})({e})")
         }
 
@@ -2316,16 +2342,34 @@ fn cpp_expr_inner(expr: &Expr, ctx: &Ctx, is_lhs: bool) -> String {
             // signed value. The bit pattern is unchanged, but C++ operators
             // (notably `>>`) behave differently for signed types: signed
             // right-shift sign-extends, unsigned right-shift zero-extends.
-            // Emit an explicit cast so a chained `>>` becomes an arithmetic
-            // shift. Pre-fix: lowering dropped the cast and `signed(x) >> n`
-            // emitted a logical shift, so SRA gave the wrong result for
-            // negative inputs (top bits zero-filled instead of sign-extended).
+            //
+            // The cast target is the smallest C++ signed int that fits
+            // the HDL width: SInt<8> → int8_t, SInt<33> → int64_t, etc.
+            // When the HDL width is STRICTLY LESS than the C++ int width
+            // (e.g. SInt<33> → int64_t with 31 padding bits), a plain
+            // bit-cast leaves those upper bits zero, so a value that
+            // should be negative in HDL terms (HDL bit W-1 = 1) appears
+            // POSITIVE in the C++ int, and a chained `>>` zero-fills the
+            // upper bits instead of sign-extending. Sign-extend explicitly
+            // by left-shifting the HDL sign bit to the C++ MSB and then
+            // arith-shifting back: `((int_W)x << (W_cpp-W_hdl)) >> (W_cpp-W_hdl)`.
+            // arch-ibex `IbexAlu`'s SRA uses exactly this pattern via
+            // `signed({sign_ext_msb, 32b}) >> shamt`.
             let w = infer_expr_width(inner, ctx);
             let inner_c = cpp_expr(inner, ctx);
             if w == 0 || w > 64 {
                 inner_c
             } else {
-                format!("(({})({}))", cpp_sint(w), inner_c)
+                let w_cpp: u32 = if w <= 8 { 8 }
+                                 else if w <= 16 { 16 }
+                                 else if w <= 32 { 32 }
+                                 else { 64 };
+                if w < w_cpp {
+                    let pad = w_cpp - w;
+                    format!("((({})({}) << {pad}) >> {pad})", cpp_sint(w), inner_c)
+                } else {
+                    format!("(({})({}))", cpp_sint(w), inner_c)
+                }
             }
         }
         ExprKind::Unsigned(inner) => {
