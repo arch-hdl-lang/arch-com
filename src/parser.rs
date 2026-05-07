@@ -34,6 +34,24 @@ impl Parser {
         self.source[from..to].contains('\n')
     }
 
+    /// Peek the text of the current token from source (for contextual
+    /// keyword matching like `shared` in `shared function`). Skips
+    /// `DocOuter`/`DocInner` tokens (matching `peek_kind`'s behavior),
+    /// so a doc-comment immediately preceding a `shared function`
+    /// declaration doesn't shadow the contextual-keyword check.
+    fn peek_str(&self) -> &str {
+        let mut i = self.pos;
+        while let Some(t) = self.tokens.get(i) {
+            if matches!(&t.kind, TokenKind::DocOuter(_) | TokenKind::DocInner(_)) {
+                i += 1;
+            } else {
+                let s = t.span;
+                return &self.source[s.start..s.end];
+            }
+        }
+        ""
+    }
+
     pub fn parse_source_file(&mut self) -> Result<SourceFile, CompileError> {
         // File-level inner doc: any contiguous `//!` block at the top of
         // the file. The frontmatter (delimited by `//! ---`) is extracted
@@ -125,6 +143,13 @@ impl Parser {
             Some(TokenKind::Regfile) => Ok(Item::Regfile(self.parse_regfile()?)),
             Some(TokenKind::Pipeline) => Ok(Item::Pipeline(self.parse_pipeline()?)),
             Some(TokenKind::Function) => Ok(Item::Function(self.parse_function()?)),
+            // `shared` is a contextual keyword — only special when
+            // immediately followed by `function`. Outside that, it's
+            // a regular identifier (used by some existing names like
+            // `shared_signal_*`).
+            Some(TokenKind::Ident(_)) if self.peek_str() == "shared"
+                                          && self.peek_real_kind_at(1) == Some(TokenKind::Function)
+                => Ok(Item::Function(self.parse_function()?)),
             Some(TokenKind::Linklist) => Ok(Item::Linklist(self.parse_linklist()?)),
             Some(TokenKind::Template) => Ok(Item::Template(self.parse_template()?)),
             Some(TokenKind::Synchronizer) => Ok(Item::Synchronizer(self.parse_synchronizer()?)),
@@ -819,6 +844,10 @@ impl Parser {
                     body.push(ModuleBodyItem::Assert(self.parse_assert_decl()?));
                 }
                 Some(TokenKind::Function) => {
+                    body.push(ModuleBodyItem::Function(self.parse_function()?));
+                }
+                Some(TokenKind::Ident(_)) if self.peek_str() == "shared"
+                                              && self.peek_real_kind_at(1) == Some(TokenKind::Function) => {
                     body.push(ModuleBodyItem::Function(self.parse_function()?));
                 }
                 Some(other) => {
@@ -4995,6 +5024,27 @@ impl Parser {
         self.tokens.get(idx).map(|t| t.kind.clone())
     }
 
+    /// Like `peek_kind` but for the n-th real (non-doc) token from the
+    /// current position. Used by contextual-keyword checks
+    /// (`shared function`) where `peek_kind_at(1)` would incorrectly
+    /// return the next raw token (which may be a `DocOuter` line).
+    fn peek_real_kind_at(&self, n: usize) -> Option<TokenKind> {
+        let mut seen = 0usize;
+        let mut i = self.pos;
+        while let Some(t) = self.tokens.get(i) {
+            if matches!(&t.kind, TokenKind::DocOuter(_) | TokenKind::DocInner(_)) {
+                i += 1;
+                continue;
+            }
+            if seen == n {
+                return Some(t.kind.clone());
+            }
+            seen += 1;
+            i += 1;
+        }
+        None
+    }
+
     fn peek_span(&self) -> Span {
         self.tokens
             .get(self.pos)
@@ -5479,6 +5529,15 @@ impl Parser {
     // ── Function ──────────────────────────────────────────────────────────────
 
     fn parse_function(&mut self) -> Result<FunctionDecl, CompileError> {
+        // Optional `shared` modifier: `shared function NAME(...)`.
+        // Contextual keyword — checked as an ident with name "shared"
+        // immediately followed by `function`.
+        let shared = matches!(self.peek_kind(), Some(TokenKind::Ident(_)))
+                     && self.peek_str() == "shared"
+                     && self.peek_real_kind_at(1) == Some(TokenKind::Function);
+        if shared {
+            self.advance();  // consume the `shared` ident
+        }
         let start = self.expect(TokenKind::Function)?.span;
         let name = self.expect_ident()?;
 
@@ -5523,6 +5582,7 @@ impl Parser {
             body,
             doc: None,
             inner_doc,
+            shared,
         })
     }
 

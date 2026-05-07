@@ -1364,6 +1364,12 @@ pub struct FunctionDecl {
     pub span: Span,
     pub doc: Option<String>,
     pub inner_doc: Option<String>,
+    /// `shared function NAME(...)` — emit ONE inline body at module
+    /// scope with operand muxes selected by the active thread state,
+    /// rather than inlining the body at each call site. Saves area
+    /// when the function is expensive (e.g. a 17×17 multiplier) and
+    /// is called from multiple states of the same thread.
+    pub shared: bool,
 }
 
 #[derive(Debug, Clone)]
