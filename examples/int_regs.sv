@@ -3,20 +3,20 @@
 
 module IntRegs #(
   parameter int NREGS = 32,
-  parameter int WIDTH = 0
+  parameter int T = 0
 ) (
   input logic clk,
   input logic rst,
-  input logic [5-1:0] read0_addr,
-  output logic [8-1:0] read0_data,
-  input logic [5-1:0] read1_addr,
-  output logic [8-1:0] read1_data,
+  input logic [4:0] read0_addr,
+  output logic [7:0] read0_data,
+  input logic [4:0] read1_addr,
+  output logic [7:0] read1_data,
   input logic write_en,
-  input logic [5-1:0] write_addr,
-  input logic [8-1:0] write_data
+  input logic [4:0] write_addr,
+  input logic [7:0] write_data
 );
 
-  logic [8-1:0] rf_data [0:NREGS-1];
+  logic [7:0] rf_data [0:NREGS-1];
   
   always_ff @(posedge clk) begin
     if (write_en && write_addr != 0)

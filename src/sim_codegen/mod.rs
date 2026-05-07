@@ -6607,11 +6607,27 @@ impl<'a> SimCodegen<'a> {
         cpp.push_str(&format!("  _clk_prev = {clk_port};\n"));
         cpp.push_str("  if (!_rising) return;\n");
         if !is_latch {
+            // Init-protected addresses are immutable (mirrors SV emitter:
+            // `init [k] = v;` lowers to a `waddr != k` write guard).
+            let guarded_addrs: Vec<u64> = r.inits.iter()
+                .filter_map(|init| match &init.index.kind {
+                    ExprKind::Literal(LitKind::Dec(v)) => Some(*v),
+                    _ => None,
+                })
+                .collect();
             for wi in 0..nwrite {
                 let wen   = flat(&write_pfx, wi, nwrite, "en");
                 let waddr = flat(&write_pfx, wi, nwrite, "addr");
                 let wdata = flat(&write_pfx, wi, nwrite, "data");
-                cpp.push_str(&format!("  if ({wen})\n    _rf[{waddr}] = {wdata};\n"));
+                let guard = if guarded_addrs.is_empty() {
+                    wen.clone()
+                } else {
+                    let parts: Vec<String> = guarded_addrs.iter()
+                        .map(|k| format!("{waddr} != {k}"))
+                        .collect();
+                    format!("{wen} && {}", parts.join(" && "))
+                };
+                cpp.push_str(&format!("  if ({guard})\n    _rf[{waddr}] = {wdata};\n"));
             }
         } else if is_internal {
             // Single-port sample (write port 0).
