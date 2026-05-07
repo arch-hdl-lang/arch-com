@@ -337,8 +337,13 @@ impl<'a> Codegen<'a> {
     ) {
         let fn_name = &fn_ident.name;
 
-        // last_grant_r register for fairness state
+        // last_grant_r register for fairness state. grant_onehot is
+        // declared up-front (before the always_ff that reads it) so
+        // strict SV frontends like yosys-slang see the wire declared
+        // before any read; the always_comb that drives it stays in
+        // its source-order position below.
         self.line(&format!("logic [{}:0] last_grant_r;", num_req - 1));
+        self.line(&format!("logic [{}:0] grant_onehot;", num_req - 1));
         self.line("");
 
         let ff_sens = Self::ff_sensitivity(clk, rst, is_async, is_low);
@@ -372,9 +377,9 @@ impl<'a> Codegen<'a> {
         }).collect();
         let args_str = args.join(", ");
 
-        // Call the function to get one-hot grant mask
-        self.line(&format!("logic [{}:0] grant_onehot;", num_req - 1));
-        self.line("");
+        // grant_onehot decl was hoisted above (next to last_grant_r)
+        // so the always_ff can read it without slang flagging
+        // declaration-order. Drive it from the always_comb here.
         self.line("always_comb begin");
         self.indent += 1;
         self.line(&format!("grant_onehot = {fn_name}({args_str});"));
