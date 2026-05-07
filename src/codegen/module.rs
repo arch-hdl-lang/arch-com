@@ -230,11 +230,92 @@ impl<'a> Codegen<'a> {
             }
         }
 
-        // Single pass in source order; interleave comments by byte position.
-        // We need a clone of m to satisfy the borrow checker when calling
-        // emit_reg_block (which takes &ModuleDecl) while also mutating self.
-        let body_items: Vec<ModuleBodyItem> = m.body.clone();
+        // Two-bucket preorder: declarations + let-bindings first, then
+        // the rest (CombBlock, RegBlock, LatchBlock, Inst, Generate,
+        // Function, Assert) in source order.
+        //
+        // Why: SystemVerilog LRM permits forward references for net
+        // declarations within a module, but yosys-slang and other
+        // strict frontends enforce decl-before-use. Source-order
+        // emission would put a `let foo: T = ...` after an `inst u_x`
+        // that connects `foo` to a port — and the strict frontend
+        // rejects that as identifier-used-before-declaration. Hoisting
+        // all RegDecl/WireDecl/PipeRegDecl/LetBinding ahead of insts
+        // and behavior blocks fixes this without changing semantics
+        // (continuous assigns and always blocks evaluate based on
+        // signal values regardless of textual order).
+        //
+        // Verilator and iverilog accept either ordering.
+        //
+        // Comments interleaved with body items are emitted at their
+        // original byte positions (`emit_comments_before`), which now
+        // means a comment may land just before the bucket boundary
+        // rather than next to its original target item. The comments
+        // are still all present and in source order; only their
+        // proximity to specific items shifts when buckets reorder.
         let m_clone = m.clone();
+
+        // Stage 1: emit module-scope `function` items FIRST. Functions
+        // come before any `let`/`wire`/`reg` declaration so that a
+        // function's input parameter (e.g. `spimm`) doesn't VARHIDDEN-
+        // shadow a module-scope identifier of the same name. (Once the
+        // outer `logic spimm;` exists, the function param shadows it
+        // and verilator lints out.)
+        for it in m.body.iter() {
+            if let ModuleBodyItem::Function(f) = it {
+                self.emit_function(f);
+            }
+        }
+
+        // Stage 2: bucket-sorted main body — decls, then everything
+        // else. Functions are excluded (already emitted in stage 1).
+        let body_items: Vec<ModuleBodyItem> = {
+            let mut decls: Vec<ModuleBodyItem> = Vec::new();
+            let mut rest:  Vec<ModuleBodyItem> = Vec::new();
+            for it in m.body.iter() {
+                match it {
+                    ModuleBodyItem::Function(_) => {} // already emitted in stage 1
+                    ModuleBodyItem::RegDecl(_)
+                    | ModuleBodyItem::WireDecl(_)
+                    | ModuleBodyItem::PipeRegDecl(_)
+                    | ModuleBodyItem::LetBinding(_) => decls.push(it.clone()),
+                    _ => rest.push(it.clone()),
+                }
+            }
+            decls.into_iter().chain(rest.into_iter()).collect()
+        };
+
+        // Stage 3: LetBinding decl pre-emit. Simple typed `let foo: T = expr;`
+        // bindings get split — the `T foo;` declaration is hoisted here
+        // (above all `assign` and `inst` lines), and the `assign foo =
+        // expr;` stays in the main-loop emission below. This makes the
+        // decl visible before any other LetBinding's RHS or any inst
+        // port connection that references `foo`.
+        //
+        // Destructure (`let {a, b} = ...`) and large match-expr lets
+        // are NOT split here — their decl + body emission is too
+        // intertwined to safely separate without a deeper refactor.
+        // Those names continue to use source-order emission and may
+        // still trip strict frontends if forward-referenced; in
+        // practice the current arch-ibex codebase doesn't hit that
+        // case.
+        let mut pre_emitted_let_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for item in &body_items {
+            if let ModuleBodyItem::LetBinding(l) = item {
+                if l.ty.is_none() { continue; }
+                if !l.destructure_fields.is_empty() { continue; }
+                if let ExprKind::ExprMatch(_, arms) = &l.value.kind {
+                    if arms.len() >= 3 { continue; }
+                }
+                if let Some(ty) = &l.ty {
+                    let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(ty);
+                    self.line(&format!("{} {}{};", ty_str, l.name.name, arr_suffix));
+                    pre_emitted_let_names.insert(l.name.name.clone());
+                }
+            }
+        }
+
         for item in &body_items {
             self.emit_comments_before(item.span().start);
             match item {
@@ -400,8 +481,14 @@ impl<'a> Codegen<'a> {
                     }
                     let val_str = self.emit_expr_str(&l.value);
                     if let Some(ty) = &l.ty {
-                        let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(ty);
-                        self.line(&format!("{} {}{};", ty_str, l.name.name, arr_suffix));
+                        // Skip the decl line if it was hoisted in the
+                        // pre-emit pass above — but still emit the
+                        // `assign` here in source position.
+                        if !pre_emitted_let_names.contains(&l.name.name) {
+                            let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(ty);
+                            self.line(&format!("{} {}{};", ty_str, l.name.name, arr_suffix));
+                        }
+                        let _ = ty;
                         self.line(&format!("assign {} = {};", l.name.name, val_str));
                     } else {
                         // ty=None: assignment to existing port or wire — no logic declaration
