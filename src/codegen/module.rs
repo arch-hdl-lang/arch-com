@@ -19,6 +19,14 @@ impl<'a> Codegen<'a> {
         }
         self.current_construct = m.name.name.clone();
 
+        // Pre-pass: collect `shared function` call sites so the
+        // `emit_expr_str` `FunctionCall` arm rewrites them to the
+        // shared output wire instead of emitting an inline
+        // `FN(args)` body. Per-module reset so per-module rewrite
+        // sets don't leak across module emissions.
+        self.shared_call_sites.clear();
+        let shared_harnesses = self.collect_shared_calls(m);
+
         // File-scope imports for `use Pkg;`:
         //   - arch `package` Pkg → `import Pkg::*;` (wildcard).
         //     arch packages are first-class arch artifacts; the
@@ -284,7 +292,12 @@ impl<'a> Codegen<'a> {
 
         // Stage 2: bucket-sorted main body — decls, then everything
         // else. Functions are excluded (already emitted in stage 1).
-        let body_items: Vec<ModuleBodyItem> = {
+        // `decls_count` is the boundary between the decls bucket and
+        // the rest bucket; the shared-function harness is emitted at
+        // that boundary so it sees all reg/wire/pipe-reg/let decls
+        // (e.g. `_t0_state`) but precedes every comb/reg block that
+        // references `__shared_FN_out`.
+        let (body_items, decls_count): (Vec<ModuleBodyItem>, usize) = {
             let mut decls: Vec<ModuleBodyItem> = Vec::new();
             let mut rest:  Vec<ModuleBodyItem> = Vec::new();
             for it in m.body.iter() {
@@ -297,7 +310,8 @@ impl<'a> Codegen<'a> {
                     _ => rest.push(it.clone()),
                 }
             }
-            decls.into_iter().chain(rest.into_iter()).collect()
+            let n = decls.len();
+            (decls.into_iter().chain(rest.into_iter()).collect(), n)
         };
 
         // Stage 3: LetBinding decl pre-emit. Simple typed `let foo: T = expr;`
@@ -331,7 +345,24 @@ impl<'a> Codegen<'a> {
             }
         }
 
-        for item in &body_items {
+        // Edge case: a module with no `rest`-bucket items (decls only)
+        // still needs the harness emitted (defensively — should not
+        // happen for the multdiv case, but keep the invariant that
+        // collected harnesses are always emitted).
+        if decls_count == body_items.len() {
+            self.emit_shared_harnesses(&shared_harnesses);
+        }
+        for (i, item) in body_items.iter().enumerate() {
+            // Boundary between the decls bucket and the rest bucket:
+            // emit shared-function harnesses here. All reg/wire/let
+            // decls have been emitted (so `_tN_state` references in
+            // the per-state mux always_comb resolve), and the rest
+            // bucket (CombBlocks, RegBlocks, Insts) is about to emit
+            // — those will have their `FN(args)` rewritten to
+            // `__shared_FN_out`, so the wire decls must precede them.
+            if i == decls_count {
+                self.emit_shared_harnesses(&shared_harnesses);
+            }
             self.emit_comments_before(item.span().start);
             match item {
                 ModuleBodyItem::RegDecl(r) => {

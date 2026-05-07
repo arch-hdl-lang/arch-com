@@ -74,6 +74,11 @@ pub struct FunctionInfo {
     pub name: String,
     pub arg_types: Vec<crate::ast::TypeExpr>,
     pub ret_ty: crate::ast::TypeExpr,
+    /// `shared function NAME(...)` was declared with the `shared`
+    /// modifier — codegen will emit ONE inline body at module scope
+    /// with operand muxes selected by the active thread state, instead
+    /// of inlining the body at each call site.
+    pub shared: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -593,6 +598,7 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                     name: f.name.name.clone(),
                     arg_types: f.args.iter().map(|a| a.ty.clone()).collect(),
                     ret_ty: f.ret_ty.clone(),
+                    shared: f.shared,
                 };
                 if let Some((Symbol::Function(overloads), _)) = table.globals.get_mut(&f.name.name) {
                     overloads.push(info);
@@ -715,6 +721,7 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                             name: f.name.name.clone(),
                             arg_types: f.args.iter().map(|a| a.ty.clone()).collect(),
                             ret_ty: f.ret_ty.clone(),
+                            shared: f.shared,
                         };
                         if let Some((Symbol::Function(overloads), _)) = table.globals.get_mut(&f.name.name) {
                             overloads.push(info);
@@ -862,6 +869,7 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
                             name: f.name.name.clone(),
                             arg_types: f.args.iter().map(|a| a.ty.clone()).collect(),
                             ret_ty: f.ret_ty.clone(),
+                            shared: f.shared,
                         };
                         if let Some((Symbol::Function(overloads), _)) = table.globals.get_mut(&f.name.name) {
                             overloads.push(info);

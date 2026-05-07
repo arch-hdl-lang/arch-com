@@ -52,6 +52,38 @@ fn stmt_span_start(stmt: &Stmt) -> usize {
 }
 
 
+/// One `shared function` harness: one MAC (or whatever the function
+/// computes), driven by per-state operand muxes. `sv_name` is the
+/// emitted SV function name (post overload-mangling); `src_name` is
+/// the original arch source name (used to look up the FunctionDecl
+/// for arg names + types). Multiple harnesses for the same `src_name`
+/// can exist if call sites are gated by different state regs (one
+/// MAC per thread).
+struct SharedHarness {
+    src_name: String,
+    sv_name: String,
+    state_reg: String,
+    /// Cached FunctionDecl (cloned). Pulled from either the module
+    /// body or `pending_functions` at collection time so the
+    /// later harness emission can read arg names + types without
+    /// re-traversing.
+    fn_decl: FunctionDecl,
+    entries: Vec<SharedHarnessEntry>,
+}
+
+impl SharedHarness {
+    fn new(src_name: String, sv_name: String, state_reg: String, fn_decl: FunctionDecl) -> Self {
+        Self { src_name, sv_name, state_reg, fn_decl, entries: Vec::new() }
+    }
+}
+
+struct SharedHarnessEntry {
+    state_lit: u64,
+    arg_strs: Vec<String>,
+    #[allow(dead_code)]
+    args: Vec<Expr>,
+}
+
 pub struct Codegen<'a> {
     pub symbols: &'a SymbolTable,
     pub source: &'a SourceFile,
@@ -102,6 +134,12 @@ pub struct Codegen<'a> {
     /// per unique W at the top of the generated SV. Interior-mutability
     /// so the `&self` emission path can record widths as it goes.
     find_first_widths: std::cell::RefCell<std::collections::BTreeSet<u32>>,
+    /// `shared function` rewrite map: call-site span.start → SV output
+    /// wire name (`__shared_<sv_fn_name>_out`). When `emit_expr_str`
+    /// encounters a `FunctionCall` whose span.start is in this map, it
+    /// emits the wire name instead of the per-call inline `FN(args)`
+    /// form. Populated per-module by `collect_shared_calls`.
+    shared_call_sites: std::collections::HashMap<usize, String>,
 }
 
 impl<'a> Codegen<'a> {
@@ -129,6 +167,7 @@ impl<'a> Codegen<'a> {
             pipe_regs: std::collections::HashMap::new(),
             vec_params: std::collections::HashMap::new(),
             find_first_widths: std::cell::RefCell::new(std::collections::BTreeSet::new()),
+            shared_call_sites: std::collections::HashMap::new(),
         }
     }
 
@@ -415,6 +454,412 @@ impl<'a> Codegen<'a> {
         self.indent -= 1;
         self.line("endfunction");
         self.line("");
+    }
+
+    // ── `shared function` support ────────────────────────────────────
+    //
+    // A `shared function NAME(...)` (declared with the `shared`
+    // contextual keyword) avoids per-call-site body inlining when
+    // called from multiple states of the same thread. yosys CSE does
+    // not merge identical calls across thread states because each
+    // call appears under a different `if (_tN_state == M)` arm — the
+    // synth tool sees them as distinct cones. With `shared`, codegen
+    // emits ONE module-scope `assign __shared_FN_out = FN(<muxed>)`
+    // wired through a per-state operand mux, mirroring upstream
+    // hand-written shared-MAC FSM patterns.
+    //
+    // Lifecycle in `emit_module`:
+    //   1. `collect_shared_calls(m)` walks the module body, recording
+    //      every FunctionCall whose source-level fn is `shared` AND
+    //      whose enclosing state predicate is unambiguous. Returns
+    //      one `SharedHarness` per (sv_fn_name, state_reg) pair, with
+    //      one mux entry per state literal. Also populates
+    //      `self.shared_call_sites` so `emit_expr_str` rewrites the
+    //      call to `__shared_<sv_fn_name>_out`.
+    //   2. `emit_shared_harnesses(...)` emits the wire decls and the
+    //      per-state always_comb mux + the single `assign __shared_FN_out
+    //      = FN(<wires>);` continuous-assign. Called BEFORE the body
+    //      bucket loop so the wires are visible to all later
+    //      references.
+    //
+    // Conservative on ambiguity:
+    //   - Call site outside any `_tN_state == LIT` predicate → no rewrite
+    //     (inline as before).
+    //   - Two call sites with the same state predicate but different args
+    //     → typecheck error (`shared` would silently duplicate the body,
+    //     defeating the area saving). User is told to either match the
+    //     args or drop the `shared` keyword.
+
+    /// One shared-function harness instance. Identified by (sv_fn_name,
+    /// state_reg) — multiple state-reg keys would produce multiple
+    /// harnesses (one MAC per thread). Each `entries` row is one state
+    /// literal → operand-args mapping; the always_comb mux ORs them by
+    /// `if (state_reg == lit)` arms.
+    fn collect_shared_calls(&mut self, m: &ModuleDecl) -> Vec<SharedHarness> {
+        // (sv_fn_name, state_reg) → harness builder.
+        let mut harnesses: std::collections::BTreeMap<(String, String), SharedHarness> =
+            std::collections::BTreeMap::new();
+        // Track call sites we successfully bind to a harness so
+        // emit_expr_str can rewrite them.
+        let mut errors: Vec<CompileWarning> = Vec::new();
+        // Build name→FunctionDecl map from BOTH the current module's
+        // body AND `pending_functions` (top-level / package fns).
+        // Threads-submodule lowerings copy the function into the
+        // submodule body, so `m.body` is the authoritative source for
+        // the threads case; top-level Item::Function and Package fns
+        // come from `pending_functions`.
+        let mut fn_decls: std::collections::HashMap<String, FunctionDecl> =
+            std::collections::HashMap::new();
+        for f in &self.pending_functions {
+            fn_decls.insert(f.name.name.clone(), f.clone());
+        }
+        for it in &m.body {
+            if let ModuleBodyItem::Function(f) = it {
+                fn_decls.insert(f.name.name.clone(), f.clone());
+            }
+        }
+        for item in &m.body {
+            self.walk_item_for_shared(item, None, &mut harnesses, &mut errors, &fn_decls);
+        }
+        for w in errors {
+            self.warnings.push(w);
+        }
+        harnesses.into_iter().map(|(_, h)| h).collect()
+    }
+
+    fn walk_item_for_shared(
+        &mut self,
+        item: &ModuleBodyItem,
+        state_pred: Option<(&str, u64)>,
+        harnesses: &mut std::collections::BTreeMap<(String, String), SharedHarness>,
+        errors: &mut Vec<CompileWarning>,
+        fn_decls: &std::collections::HashMap<String, FunctionDecl>,
+    ) {
+        match item {
+            ModuleBodyItem::CombBlock(cb) => {
+                for s in &cb.stmts {
+                    self.walk_stmt_for_shared(s, state_pred, harnesses, errors, fn_decls);
+                }
+            }
+            ModuleBodyItem::RegBlock(rb) => {
+                for s in &rb.stmts {
+                    self.walk_stmt_for_shared(s, state_pred, harnesses, errors, fn_decls);
+                }
+            }
+            ModuleBodyItem::LatchBlock(lb) => {
+                for s in &lb.stmts {
+                    self.walk_stmt_for_shared(s, state_pred, harnesses, errors, fn_decls);
+                }
+            }
+            ModuleBodyItem::LetBinding(l) => {
+                self.walk_expr_for_shared(&l.value, state_pred, harnesses, errors, fn_decls);
+            }
+            _ => {}
+        }
+    }
+
+    fn walk_stmt_for_shared(
+        &mut self,
+        stmt: &Stmt,
+        state_pred: Option<(&str, u64)>,
+        harnesses: &mut std::collections::BTreeMap<(String, String), SharedHarness>,
+        errors: &mut Vec<CompileWarning>,
+        fn_decls: &std::collections::HashMap<String, FunctionDecl>,
+    ) {
+        match stmt {
+            Stmt::Assign(a) => {
+                self.walk_expr_for_shared(&a.target, state_pred, harnesses, errors, fn_decls);
+                self.walk_expr_for_shared(&a.value, state_pred, harnesses, errors, fn_decls);
+            }
+            Stmt::IfElse(ie) => {
+                // Detect `_tN_state == LIT` shape and push the new
+                // predicate while walking the then-branch. The else-
+                // branch is walked under the OUTER predicate (an `else`
+                // arm doesn't refine the state to a single value).
+                let new_pred = Self::extract_state_predicate(&ie.cond);
+                let then_pred = match (&new_pred, state_pred) {
+                    (Some((reg, lit)), None) => Some((reg.as_str(), *lit)),
+                    // Already inside a state arm: nested `_tN_state == K`
+                    // would only be reachable when state == K AND state
+                    // == OUTER, which is unsatisfiable unless K == OUTER.
+                    // Safer: keep the outer predicate (don't refine).
+                    (Some(_), Some(p)) => Some(p),
+                    (None, p) => p,
+                };
+                // Walk cond under outer predicate (cond is evaluated to
+                // pick the branch — its FunctionCall children, if any,
+                // aren't gated by the inner predicate).
+                self.walk_expr_for_shared(&ie.cond, state_pred, harnesses, errors, fn_decls);
+                // Cannot pass &str borrow + recurse if we restructured
+                // owned Strings; clone to a local owned String so the
+                // borrow checker is happy.
+                let then_pred_owned = then_pred.map(|(r, l)| (r.to_string(), l));
+                let then_pred_ref = then_pred_owned.as_ref().map(|(r, l)| (r.as_str(), *l));
+                for s in &ie.then_stmts {
+                    self.walk_stmt_for_shared(s, then_pred_ref, harnesses, errors, fn_decls);
+                }
+                for s in &ie.else_stmts {
+                    self.walk_stmt_for_shared(s, state_pred, harnesses, errors, fn_decls);
+                }
+            }
+            Stmt::Match(m) => {
+                self.walk_expr_for_shared(&m.scrutinee, state_pred, harnesses, errors, fn_decls);
+                for arm in &m.arms {
+                    for s in &arm.body {
+                        self.walk_stmt_for_shared(s, state_pred, harnesses, errors, fn_decls);
+                    }
+                }
+            }
+            Stmt::For(fl) => {
+                for s in &fl.body {
+                    self.walk_stmt_for_shared(s, state_pred, harnesses, errors, fn_decls);
+                }
+            }
+            Stmt::Init(ib) => {
+                for s in &ib.body {
+                    self.walk_stmt_for_shared(s, state_pred, harnesses, errors, fn_decls);
+                }
+            }
+            Stmt::Log(_) | Stmt::WaitUntil(..) | Stmt::DoUntil { .. } => {}
+        }
+    }
+
+    fn walk_expr_for_shared(
+        &mut self,
+        expr: &Expr,
+        state_pred: Option<(&str, u64)>,
+        harnesses: &mut std::collections::BTreeMap<(String, String), SharedHarness>,
+        errors: &mut Vec<CompileWarning>,
+        fn_decls: &std::collections::HashMap<String, FunctionDecl>,
+    ) {
+        match &expr.kind {
+            ExprKind::FunctionCall(name, args) => {
+                // Recurse into args first so nested shared calls inside
+                // an outer shared call's arg also get rewritten.
+                for a in args {
+                    self.walk_expr_for_shared(a, state_pred, harnesses, errors, fn_decls);
+                }
+                // Is this a shared function?
+                let is_shared = matches!(
+                    self.symbols.globals.get(name),
+                    Some((Symbol::Function(ovs), _)) if ovs.iter().any(|o| o.shared)
+                );
+                if !is_shared { return; }
+                let Some((reg, lit)) = state_pred else {
+                    // Outside a state predicate: fall back to inline.
+                    return;
+                };
+                // Resolve the FunctionDecl (for arg names + types at
+                // harness emission). If the decl isn't visible in this
+                // module, we can't synthesize the harness — fall back
+                // to inline.
+                let Some(fd) = fn_decls.get(name).cloned() else { return; };
+                // Resolve mangled SV name (mirrors emit_expr_str's
+                // FunctionCall arm).
+                let sv_name = self.fn_call_sv_name(name, expr);
+                let key = (sv_name.clone(), reg.to_string());
+                let arg_strs: Vec<String> = args.iter().map(|a| self.emit_expr_str(a)).collect();
+
+                let entry = harnesses.entry(key).or_insert_with(|| {
+                    SharedHarness::new(name.clone(), sv_name.clone(), reg.to_string(), fd)
+                });
+                // Look for existing entry under this state literal.
+                if let Some(existing) = entry.entries.iter().find(|e| e.state_lit == lit) {
+                    if existing.arg_strs != arg_strs {
+                        // Same state, different args — would need two
+                        // MACs. Typecheck error: surface as a warning
+                        // for now (CompileError plumbing through the
+                        // codegen path is heavier; the build will fail
+                        // visibly anyway because the rewrite produces
+                        // the wrong result if we proceeded).
+                        errors.push(CompileWarning {
+                            message: format!(
+                                "shared function {} called with different args in same state {}; \
+                                 this would require multiple instances. Either change the args to \
+                                 match, or hand-rewrite without `shared`.",
+                                name, lit
+                            ),
+                            span: expr.span,
+                        });
+                        return;
+                    }
+                    // Identical args — merge by recording this call
+                    // site for rewrite without adding another mux entry.
+                    self.shared_call_sites.insert(expr.span.start, format!("__shared_{sv_name}_out"));
+                    return;
+                }
+                // New entry: record args + rewrite this call site.
+                entry.entries.push(SharedHarnessEntry {
+                    state_lit: lit,
+                    arg_strs,
+                    args: args.clone(),
+                });
+                self.shared_call_sites.insert(expr.span.start, format!("__shared_{sv_name}_out"));
+            }
+            ExprKind::Binary(_, a, b) => {
+                self.walk_expr_for_shared(a, state_pred, harnesses, errors, fn_decls);
+                self.walk_expr_for_shared(b, state_pred, harnesses, errors, fn_decls);
+            }
+            ExprKind::Unary(_, a) => self.walk_expr_for_shared(a, state_pred, harnesses, errors, fn_decls),
+            ExprKind::FieldAccess(e, _) => self.walk_expr_for_shared(e, state_pred, harnesses, errors, fn_decls),
+            ExprKind::MethodCall(recv, _, margs) => {
+                self.walk_expr_for_shared(recv, state_pred, harnesses, errors, fn_decls);
+                for a in margs { self.walk_expr_for_shared(a, state_pred, harnesses, errors, fn_decls); }
+            }
+            ExprKind::Cast(e, _) => self.walk_expr_for_shared(e, state_pred, harnesses, errors, fn_decls),
+            ExprKind::Index(b, i) => {
+                self.walk_expr_for_shared(b, state_pred, harnesses, errors, fn_decls);
+                self.walk_expr_for_shared(i, state_pred, harnesses, errors, fn_decls);
+            }
+            ExprKind::BitSlice(b, h, l) => {
+                self.walk_expr_for_shared(b, state_pred, harnesses, errors, fn_decls);
+                self.walk_expr_for_shared(h, state_pred, harnesses, errors, fn_decls);
+                self.walk_expr_for_shared(l, state_pred, harnesses, errors, fn_decls);
+            }
+            ExprKind::PartSelect(b, s, w, _) => {
+                self.walk_expr_for_shared(b, state_pred, harnesses, errors, fn_decls);
+                self.walk_expr_for_shared(s, state_pred, harnesses, errors, fn_decls);
+                self.walk_expr_for_shared(w, state_pred, harnesses, errors, fn_decls);
+            }
+            ExprKind::Concat(es) => {
+                for e in es { self.walk_expr_for_shared(e, state_pred, harnesses, errors, fn_decls); }
+            }
+            ExprKind::Repeat(n, e) => {
+                self.walk_expr_for_shared(n, state_pred, harnesses, errors, fn_decls);
+                self.walk_expr_for_shared(e, state_pred, harnesses, errors, fn_decls);
+            }
+            ExprKind::Clog2(e) | ExprKind::Onehot(e) | ExprKind::Signed(e) | ExprKind::Unsigned(e) => {
+                self.walk_expr_for_shared(e, state_pred, harnesses, errors, fn_decls);
+            }
+            ExprKind::Ternary(c, t, f) => {
+                self.walk_expr_for_shared(c, state_pred, harnesses, errors, fn_decls);
+                self.walk_expr_for_shared(t, state_pred, harnesses, errors, fn_decls);
+                self.walk_expr_for_shared(f, state_pred, harnesses, errors, fn_decls);
+            }
+            ExprKind::Inside(s, members) => {
+                self.walk_expr_for_shared(s, state_pred, harnesses, errors, fn_decls);
+                for m in members {
+                    match m {
+                        InsideMember::Single(e) => self.walk_expr_for_shared(e, state_pred, harnesses, errors, fn_decls),
+                        InsideMember::Range(a, b) => {
+                            self.walk_expr_for_shared(a, state_pred, harnesses, errors, fn_decls);
+                            self.walk_expr_for_shared(b, state_pred, harnesses, errors, fn_decls);
+                        }
+                    }
+                }
+            }
+            ExprKind::ExprMatch(s, arms) => {
+                self.walk_expr_for_shared(s, state_pred, harnesses, errors, fn_decls);
+                for arm in arms {
+                    self.walk_expr_for_shared(&arm.value, state_pred, harnesses, errors, fn_decls);
+                }
+            }
+            ExprKind::SvaNext(_, e) => self.walk_expr_for_shared(e, state_pred, harnesses, errors, fn_decls),
+            ExprKind::LatencyAt(e, _) => self.walk_expr_for_shared(e, state_pred, harnesses, errors, fn_decls),
+            ExprKind::StructLiteral(_, fields) => {
+                for fi in fields { self.walk_expr_for_shared(&fi.value, state_pred, harnesses, errors, fn_decls); }
+            }
+            // Leaf nodes: literals, idents, enum variants, todo, bool.
+            _ => {}
+        }
+    }
+
+    /// Match `_tN_state == LIT` exactly. Returns `(state_reg_name, lit_value)`.
+    /// Unrecognized shapes return None — the caller falls back to
+    /// inline (no shared rewrite) so we never silently mis-gate a call.
+    fn extract_state_predicate(cond: &Expr) -> Option<(String, u64)> {
+        if let ExprKind::Binary(BinOp::Eq, lhs, rhs) = &cond.kind {
+            // _tN_state on the LHS, literal on the RHS (the shape
+            // emitted by elaborate.rs).
+            if let (ExprKind::Ident(name), ExprKind::Literal(LitKind::Dec(n))) =
+                (&lhs.kind, &rhs.kind)
+            {
+                if name.starts_with("_t") && name.ends_with("_state") {
+                    return Some((name.clone(), *n));
+                }
+            }
+        }
+        None
+    }
+
+    /// Resolve the SV emission name a `FunctionCall(name, args)` would
+    /// produce. Mirrors the overload-mangling logic in `emit_expr_str`.
+    fn fn_call_sv_name(&self, name: &str, expr: &Expr) -> String {
+        if let Some((Symbol::Function(overloads), _)) = self.symbols.globals.get(name) {
+            if overloads.len() > 1 {
+                let idx = self.overload_map.get(&expr.span.start).copied().unwrap_or(0);
+                let ov = &overloads[idx];
+                let suffix: String = ov.arg_types.iter()
+                    .map(|t| Self::type_mangle_tag(t))
+                    .collect::<Vec<_>>()
+                    .join("_");
+                return format!("{name}_{suffix}");
+            }
+        }
+        name.to_string()
+    }
+
+    /// Emit the per-shared-function harness: input wires, per-state
+    /// operand mux (always_comb), and the single continuous-assign
+    /// that calls FN once. Called from `emit_module` BEFORE the main
+    /// body emission loop so the wires precede every reference.
+    fn emit_shared_harnesses(&mut self, harnesses: &[SharedHarness]) {
+        for h in harnesses {
+            // FunctionDecl was cached at collection time so we can
+            // borrow self mutably here without re-traversing the
+            // module body.
+            let fd: &FunctionDecl = &h.fn_decl;
+
+            // 1. Wire decls.
+            self.line(&format!(
+                "// shared function harness — single instance of {} muxed by {}",
+                h.src_name, h.state_reg
+            ));
+            for arg in &fd.args {
+                let ty_str = self.emit_type_str(&arg.ty);
+                self.line(&format!(
+                    "{} __shared_{}_in_{};",
+                    ty_str, h.sv_name, arg.name.name
+                ));
+            }
+            let ret_ty_str = self.emit_type_str(&fd.ret_ty);
+            self.line(&format!("{} __shared_{}_out;", ret_ty_str, h.sv_name));
+
+            // 2. Per-state operand mux. Defaults zero each input, then
+            //    each state arm overrides the inputs with that state's
+            //    args. SV `always_comb` ensures no latch.
+            self.line("always_comb begin");
+            self.indent += 1;
+            for arg in &fd.args {
+                self.line(&format!("__shared_{}_in_{} = '0;", h.sv_name, arg.name.name));
+            }
+            for entry in &h.entries {
+                self.line(&format!("if ({} == {}) begin", h.state_reg, entry.state_lit));
+                self.indent += 1;
+                for (arg_decl, arg_str) in fd.args.iter().zip(entry.arg_strs.iter()) {
+                    self.line(&format!(
+                        "__shared_{}_in_{} = {};",
+                        h.sv_name, arg_decl.name.name, arg_str
+                    ));
+                }
+                self.indent -= 1;
+                self.line("end");
+            }
+            self.indent -= 1;
+            self.line("end");
+
+            // 3. Single function call. The args are fed by the wires
+            //    above, so yosys synthesizes ONE evaluation of the
+            //    function body.
+            let arg_wires: Vec<String> = fd.args.iter()
+                .map(|a| format!("__shared_{}_in_{}", h.sv_name, a.name.name))
+                .collect();
+            self.line(&format!(
+                "assign __shared_{}_out = {}({});",
+                h.sv_name, h.sv_name, arg_wires.join(", ")
+            ));
+            self.line("");
+        }
     }
 
     fn emit_function_body_items(&mut self, items: &[FunctionBodyItem]) {
@@ -3611,6 +4056,15 @@ impl<'a> Codegen<'a> {
                 format!("{s} inside {{{}}}", member_strs.join(", "))
             }
             ExprKind::FunctionCall(name, args) => {
+                // `shared function` rewrite: if this call site was
+                // collected by the pre-pass, return the shared output
+                // wire instead of the inline `FN(args)` form. The
+                // harness `assign __shared_FN_out = FN(...)` emitted at
+                // module scope is the single textual call site that
+                // carries the operand mux.
+                if let Some(out_wire) = self.shared_call_sites.get(&expr.span.start) {
+                    return out_wire.clone();
+                }
                 let arg_strs: Vec<String> = args.iter().map(|a| self.emit_expr_str(a)).collect();
                 // Built-in SVA: past/rose/fell → SV $past/$rose/$fell
                 if name == "past" || name == "rose" || name == "fell" {
