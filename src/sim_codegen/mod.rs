@@ -471,16 +471,33 @@ impl<'a> SimCodegen<'a> {
         }
 
         // Parameters
+        let enum_map = build_enum_map(self.symbols);
         for p in &m.params {
-            if matches!(p.kind, ParamKind::Const | ParamKind::WidthConst(..)) {
-                if let Some(ref def) = p.default {
-                    let val = eval_const_expr(def);
-                    let pname = &p.name.name;
-                    bindings.push(format!(
-                        "        .def_property_readonly_static(\"{pname}\", [](py::object) {{ return {val}ULL; }})"
-                    ));
-                    port_info.push((pname.clone(), 32, false, false, true, false));
+            match &p.kind {
+                ParamKind::Const | ParamKind::WidthConst(..) => {
+                    if let Some(ref def) = p.default {
+                        let val = eval_const_expr(def);
+                        let pname = &p.name.name;
+                        bindings.push(format!(
+                            "        .def_property_readonly_static(\"{pname}\", [](py::object) {{ return {val}ULL; }})"
+                        ));
+                        port_info.push((pname.clone(), 32, false, false, true, false));
+                    }
                 }
+                ParamKind::EnumConst(enum_name) => {
+                    if let Some(ref def) = p.default {
+                        if let ExprKind::EnumVariant(_, variant) = &def.kind {
+                            if let Some(val) = resolve_enum_variant(&enum_map, enum_name, &variant.name) {
+                                let pname = &p.name.name;
+                                bindings.push(format!(
+                                    "        .def_property_readonly_static(\"{pname}\", [](py::object) {{ return {val}ULL; }})"
+                                ));
+                                port_info.push((pname.clone(), 32, false, false, true, false));
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -3265,6 +3282,19 @@ fn build_enum_map(symbols: &SymbolTable) -> HashMap<String, Vec<(String, u64)>> 
     m
 }
 
+/// Resolve an enum variant to its ordinal value.
+fn resolve_enum_variant(
+    enum_map: &HashMap<String, Vec<(String, u64)>>,
+    enum_name: &str,
+    variant_name: &str,
+) -> Option<u64> {
+    enum_map
+        .get(enum_name)
+        .and_then(|variants| {
+            variants.iter().find(|(n, _)| n == variant_name).map(|(_, v)| *v)
+        })
+}
+
 /// Build a name→width map from module ports, regs, and lets.
 fn build_widths(ports: &[PortDecl], body: &[ModuleBodyItem]) -> HashMap<String, u32> {
     let mut m = HashMap::new();
@@ -4246,11 +4276,23 @@ impl<'a> SimCodegen<'a> {
         h.push('\n');
         // Emit param constants as #define
         for p in &m.params {
-            if matches!(p.kind, ParamKind::Const | ParamKind::WidthConst(..)) {
-                if let Some(ref def) = p.default {
-                    let val = eval_const_expr(def);
-                    h.push_str(&format!("#ifndef {}\n#define {} {val}ULL\n#endif\n", p.name.name, p.name.name));
+            match &p.kind {
+                ParamKind::Const | ParamKind::WidthConst(..) => {
+                    if let Some(ref def) = p.default {
+                        let val = eval_const_expr(def);
+                        h.push_str(&format!("#ifndef {}\n#define {} {val}ULL\n#endif\n", p.name.name, p.name.name));
+                    }
                 }
+                ParamKind::EnumConst(enum_name) => {
+                    if let Some(ref def) = p.default {
+                        if let ExprKind::EnumVariant(_, variant) = &def.kind {
+                            if let Some(val) = resolve_enum_variant(&enum_map, enum_name, &variant.name) {
+                                h.push_str(&format!("#ifndef {}\n#define {} {val}ULL\n#endif\n", p.name.name, p.name.name));
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         h.push('\n');
