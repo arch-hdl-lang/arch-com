@@ -398,7 +398,7 @@ fn test_arbiter_custom_hook() {
     let sv = compile_to_sv(source);
     assert!(sv.contains("module QosArbiter"));
     assert!(sv.contains("function automatic"));
-    assert!(sv.contains("QosGrant(request_valid, last_grant_r, qos)"));
+    assert!(sv.contains("QosGrant(request_valid, last_grant_r, qos_in)"));
     assert!(sv.contains("last_grant_r"));
     assert!(sv.contains("grant_onehot"));
     insta::assert_snapshot!(sv);
@@ -433,6 +433,41 @@ end arbiter BadArb
     let checker = TypeChecker::new(&symbols, &ast);
     let result = checker.check();
     assert!(result.is_err(), "expected error for custom policy without hook");
+}
+
+#[test]
+fn test_arbiter_hook_param_shadows_port_errors() {
+    // Hook parameter names must not shadow arbiter port names — codegen
+    // emits the function inside the module, causing SV VARHIDDEN.
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+arbiter BadArb
+  policy ShadowFn;
+  param NUM_REQ: const = 4;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port age: in UInt<8>;
+  ports[NUM_REQ] request
+    valid: in Bool;
+    ready: out Bool;
+  end ports request
+  port grant_valid: out Bool;
+  port grant_requester: out UInt<2>;
+  hook grant_select(req_mask: UInt<4>, age: UInt<8>) -> UInt<4>
+    = ShadowFn(req_mask, age);
+end arbiter BadArb
+"#;
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed_ast = parser.parse_source_file().expect("parse error");
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let symbols = resolve::resolve(&ast).expect("resolve error");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err(), "expected error for hook param shadowing port");
 }
 
 #[test]
