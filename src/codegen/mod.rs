@@ -3753,11 +3753,22 @@ impl<'a> Codegen<'a> {
     /// arrays are fine in Verilator but Yosys-unfriendly in synthesis,
     /// so all internal nets/regs/signals continue to use the packed shape
     /// from `emit_type_and_array_suffix`.
-    fn emit_type_and_unpacked_suffix(&self, ty: &TypeExpr) -> (String, String) {
+    /// Emit the SV unpacked-array form for a Vec<T,N>: returns
+    /// (base type string, suffix). When `ascending` is true, the unpacked
+    /// dim is emitted as `[0:N-1]` instead of the default `[N-1:0]`.
+    /// Required for interop with upstream SV that declares the connecting
+    /// array as `logic [W-1:0] x [N]` shorthand (= `[0:N-1]`); without
+    /// this, IEEE 1800-2017 §10.10 element-by-position port mapping
+    /// silently reverses the indices. See arch-com#307.
+    fn emit_type_and_unpacked_suffix_dir(&self, ty: &TypeExpr, ascending: bool) -> (String, String) {
         let mut dims = Vec::new();
         let mut cur = ty;
         while let TypeExpr::Vec(inner, size) = cur {
-            let range = self.emit_width_range(size);
+            let range = if ascending {
+                self.emit_width_range_ascending(size)
+            } else {
+                self.emit_width_range(size)
+            };
             dims.push(format!("[{range}]"));
             cur = inner;
         }
@@ -3767,6 +3778,22 @@ impl<'a> Codegen<'a> {
         let base_ty = self.emit_type_str(cur);
         let suffix: String = dims.iter().map(|d| format!(" {d}")).collect();
         (base_ty, suffix)
+    }
+
+    /// Emit an unpacked array dim as `0:N-1` (ascending). Mirrors
+    /// `emit_width_range` but flips the direction. The packed Vec dim
+    /// (controlled by `emit_width_range`) is always descending — only
+    /// the unpacked dim ever needs ascending.
+    fn emit_width_range_ascending(&self, w: &Expr) -> String {
+        match &w.kind {
+            ExprKind::Literal(LitKind::Dec(n)) => {
+                format!("0:{}", n.saturating_sub(1))
+            }
+            _ => {
+                let ws = self.emit_expr_str(w);
+                format!("0:{ws}-1")
+            }
+        }
     }
 
     // ── Synchronizer ─────────────────────────────────────────────────────────

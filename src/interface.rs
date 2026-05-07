@@ -350,7 +350,11 @@ pub(crate) fn emit_ports(s: &mut String, ports: &[PortDecl]) {
             // port shape would silently see packed-Vec when the source
             // is unpacked-Vec, causing port-shape mismatches at the
             // SV inst boundary.
-            let unpacked_kw = if p.unpacked { "unpacked " } else { "" };
+            let unpacked_kw = match (p.unpacked, p.unpacked_ascending) {
+                (true, true)  => "unpacked ascending ",
+                (true, false) => "unpacked ",
+                _             => "",
+            };
             // For port reg with reset, include reset clause
             if let Some(ref ri) = p.reg_info {
                 match &ri.reset {

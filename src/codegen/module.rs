@@ -153,7 +153,7 @@ impl<'a> Codegen<'a> {
                         .map(|e| format!(" = {}", self.emit_expr_str(e)))
                         .unwrap_or_default();
                     if p.unpacked {
-                        let (base_ty, suffix) = self.emit_type_and_unpacked_suffix(&p.ty);
+                        let (base_ty, suffix) = self.emit_type_and_unpacked_suffix_dir(&p.ty, p.unpacked_ascending);
                         port_lines.push(format!("{} {} {}{}{}", dir, base_ty, p.name.name, suffix, init_str));
                     } else {
                         let (base_ty, suffix) = self.emit_type_and_array_suffix(&p.ty);
@@ -479,7 +479,7 @@ impl<'a> Codegen<'a> {
                         // Lets this wire mate with an `unpacked Vec<T,N>` port across
                         // an `inst` connection without Verilator rejecting the
                         // packed/unpacked shape mismatch.
-                        let (base_ty, suffix) = self.emit_type_and_unpacked_suffix(&w.ty);
+                        let (base_ty, suffix) = self.emit_type_and_unpacked_suffix_dir(&w.ty, w.unpacked_ascending);
                         self.line(&format!("{} {}{};", base_ty, w.name.name, suffix));
                     } else {
                         let (ty_str, arr_suffix) = self.emit_type_and_array_suffix(&w.ty);

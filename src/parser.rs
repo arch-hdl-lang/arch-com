@@ -412,7 +412,7 @@ impl Parser {
             default: None,
             reg_info: None,
             bus_info: None,
-            shared: None, unpacked: false,
+            shared: None, unpacked: false, unpacked_ascending: false,
             span: parent_span.merge(end_span),
         })
     }
@@ -613,7 +613,7 @@ impl Parser {
             default: None,
             reg_info: None,
             bus_info: None,
-            shared: None, unpacked: false,
+            shared: None, unpacked: false, unpacked_ascending: false,
             span: sp,
         };
         // Control signals (payload-direction = `dir`, back-signal = `opposite`).
@@ -996,7 +996,7 @@ impl Parser {
                 default: None,
                 reg_info: None,
                 bus_info: Some(BusPortInfo { bus_name, perspective, params }),
-                shared: None, unpacked: false,
+                shared: None, unpacked: false, unpacked_ascending: false,
                 span: start.merge(end_span),
             });
         }
@@ -1023,6 +1023,11 @@ impl Parser {
         // Flips SV port emission to unpacked-array shape. Only legal on Vec<T,N>
         // and incompatible with `port reg` / `pipe_reg<T,N>`. Validated below.
         let unpacked = self.eat_contextual("unpacked");
+        // Optional `ascending` modifier: `port ... in unpacked ascending Vec<T,N>;`
+        // Only meaningful (and only legal) with `unpacked`. Flips the SV
+        // unpacked dim to `[0:N-1]` for interop with upstream SV declared as
+        // `logic [W-1:0] x [N]`. See arch-com#307.
+        let unpacked_ascending = if unpacked { self.eat_contextual("ascending") } else { false };
         if unpacked && is_reg {
             return Err(CompileError::general(
                 "`unpacked` is not allowed on `port reg` / pipe_reg<T,N> ports",
@@ -1156,6 +1161,7 @@ impl Parser {
             bus_info: None,
             shared,
             unpacked,
+            unpacked_ascending,
             span: start.merge(end_span),
         })
     }
@@ -1264,6 +1270,9 @@ impl Parser {
         // Optional `unpacked` modifier: `wire name: unpacked Vec<T,N>;`
         // Mirrors the port modifier (§3.7); only legal on Vec<T,N>.
         let unpacked = self.eat_contextual("unpacked");
+        // Optional `ascending` follows `unpacked` (mirror of port modifier).
+        // See arch-com#307.
+        let unpacked_ascending = if unpacked { self.eat_contextual("ascending") } else { false };
         let ty = self.parse_type_expr()?;
         self.expect(TokenKind::Semi)?;
         let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
@@ -1277,6 +1286,7 @@ impl Parser {
             name,
             ty,
             unpacked,
+            unpacked_ascending,
             span: start.merge(end_span),
         })
     }
@@ -4292,7 +4302,7 @@ impl Parser {
         let ty = self.parse_type_expr()?;
         self.expect(TokenKind::Semi)?;
         let end_span = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span).unwrap_or(start);
-        Ok(PortDecl { name, direction, ty, default: None, reg_info: None, bus_info: None, shared: None, unpacked: false, span: start.merge(end_span) })
+        Ok(PortDecl { name, direction, ty, default: None, reg_info: None, bus_info: None, shared: None, unpacked: false, unpacked_ascending: false, span: start.merge(end_span) })
     }
 
     fn parse_ram_init(&mut self) -> Result<RamInit, CompileError> {

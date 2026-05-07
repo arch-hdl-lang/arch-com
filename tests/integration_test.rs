@@ -8926,6 +8926,89 @@ end module unpacked_demo
 }
 
 #[test]
+fn test_unpacked_ascending_emits_ascending_sv_dim() {
+    // `unpacked ascending Vec<T,N>` flips the SV unpacked dim to `[0:N-1]`
+    // (vs the default `[N-1:0]` for `unpacked`). Required for interop with
+    // upstream SV declared as `logic [W-1:0] x [N]` shorthand (= `[0:N-1]`)
+    // — without this, IEEE 1800-2017 §10.10 element-by-position port
+    // mapping silently reverses indices at the connection. See arch-com#307.
+    let source = r#"
+module unpacked_asc_demo
+  port asc_in:    in  unpacked ascending Vec<UInt<6>, 4>;
+  port asc_out:   out unpacked ascending Vec<UInt<6>, 4>;
+  port desc_in:   in  unpacked Vec<UInt<6>, 4>;
+  comb
+    asc_out[0] = asc_in[0];
+    asc_out[3] = asc_in[3];
+  end comb
+end module unpacked_asc_demo
+"#;
+    let sv = compile_to_sv(source);
+    // `ascending` flips both directions.
+    assert!(sv.contains("input logic [5:0] asc_in [0:3]"),
+            "ascending unpacked input should emit [0:N-1], got: {sv}");
+    assert!(sv.contains("output logic [5:0] asc_out [0:3]"),
+            "ascending unpacked output should emit [0:N-1], got: {sv}");
+    // Plain `unpacked` (no `ascending`) keeps default descending.
+    assert!(sv.contains("input logic [5:0] desc_in [3:0]"),
+            "plain unpacked stays descending, got: {sv}");
+    // ARCH-side indexing is unchanged — `asc_in[0]` is still the first
+    // element regardless of SV dim direction.
+    assert!(sv.contains("assign asc_out[0] = asc_in[0]"));
+    assert!(sv.contains("assign asc_out[3] = asc_in[3]"));
+}
+
+#[test]
+fn test_unpacked_ascending_wire_emits_ascending() {
+    // `wire ... unpacked ascending Vec<T,N>;` — same flip on a wire
+    // declaration so the wire mates with an ascending port (or upstream
+    // SV `[N]` array) by-index without reversal. arch-com#307.
+    let source = r#"
+module asc_wire_demo
+  port out_o: out unpacked ascending Vec<UInt<6>, 4>;
+  wire w: unpacked ascending Vec<UInt<6>, 4>;
+  comb
+    w[0]     = 6'd1;
+    w[1]     = 6'd2;
+    w[2]     = 6'd3;
+    w[3]     = 6'd4;
+    out_o[0] = w[0];
+    out_o[1] = w[1];
+    out_o[2] = w[2];
+    out_o[3] = w[3];
+  end comb
+end module asc_wire_demo
+"#;
+    let sv = compile_to_sv(source);
+    assert!(sv.contains("logic [5:0] w [0:3]"),
+            "ascending unpacked wire should emit [0:N-1], got: {sv}");
+}
+
+#[test]
+fn test_unpacked_ascending_archi_emit() {
+    // `.archi` interface stub must preserve the `ascending` keyword so
+    // downstream consumers see the same shape as the .sv. arch-com#307.
+    let source = "
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module AscIface
+  port asc_in: in unpacked ascending Vec<UInt<6>, 4>;
+end module AscIface
+";
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse error");
+    let item = parsed.items.iter()
+        .find(|i| matches!(i, arch::ast::Item::Module(_)))
+        .expect("expected a module item");
+    let body = arch::interface::emit_interface(item).expect("emit_interface");
+    assert!(body.contains("port asc_in: in unpacked ascending Vec"),
+            ".archi should preserve `unpacked ascending`: {body}");
+}
+
+#[test]
 fn test_unpacked_on_non_vec_is_rejected() {
     let source = r#"
 module unpacked_neg
