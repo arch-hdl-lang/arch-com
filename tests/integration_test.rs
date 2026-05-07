@@ -8660,6 +8660,58 @@ fn test_sim_codegen_comb_match_arm_recurses_into_nested_for() {
 }
 
 #[test]
+fn test_sim_codegen_match_arm_let_bound_ident_emits_case_with_literal() {
+    // Regression: pre-fix, archsim's Stmt::Match emitted EVERY
+    // `Pattern::Ident` arm as `default:`. With multiple let-bound
+    // operator constants used as match arms (e.g. `ALU_ADD => ...;
+    // ALU_SUB => ...;`), C++ rejected with "multiple default labels
+    // in one switch". Post-fix, an Ident pattern naming a module-scope
+    // let-binding with a literal RHS folds to `case <literal>:`.
+    //
+    // Bug origin: arch-ibex IbexAlu unique-match conversion attempt;
+    // see memory/feedback_archsim_match_pattern_ident_default_collision.md.
+    let source = "
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+        module M
+          let OP_A: UInt<3> = 3'd0;
+          let OP_B: UInt<3> = 3'd1;
+          let OP_C: UInt<3> = 3'd2;
+          port opc: in UInt<3>;
+          port out: out UInt<8>;
+          comb
+            unique match opc
+              OP_A => out = 8'hAA;
+              OP_B => out = 8'hBB;
+              OP_C => out = 8'hCC;
+              _    => out = 8'h00;
+            end match
+          end comb
+        end module M
+    ";
+    let cpp = compile_to_sim_h(source, false);
+    // Each let-bound ident arm should produce a real `case` label.
+    // Post-fix the case values are the let RHS literals (folded by
+    // cpp_expr) — exact textual form depends on cpp_expr's literal
+    // emit, but it must NOT be `default:` for the three arms, and
+    // must contain the three values 0/1/2.
+    let default_count = cpp.matches("default:").count();
+    assert!(default_count <= 1,
+        "fix means only the wildcard arm emits `default:`; got {default_count}\n{cpp}");
+    // All three case values should appear as case labels.
+    for (n, lit) in [(0, "case 0"), (1, "case 1"), (2, "case 2")] {
+        assert!(cpp.contains(lit) || cpp.contains(&format!("case {n}u")) ,
+            "let-bound ident arm should emit `case {n}` for value {n}:\n{cpp}");
+    }
+    // The arm bodies should be paired with their case values, not
+    // collapsed onto a single default. Search for the body marker.
+    assert!(cpp.contains("0xAA") || cpp.contains("170"));
+    assert!(cpp.contains("0xBB") || cpp.contains("187"));
+    assert!(cpp.contains("0xCC") || cpp.contains("204"));
+}
+
+#[test]
 fn test_sim_codegen_bit_slice_lhs_compiles_and_uses_param_width() {
     // Regression: pre-fix, `name[hi:lo] = val` in a seq block lowered to
     // the read-side bit-slice form `((name >> lo) & MASK) = val`, an
