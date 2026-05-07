@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/shuqingzhao/github/arch-com/.codex/hooks/test-on-src-edit.sh'",
+            "timeout": 120000
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/shuqingzhao/github/arch-com/.codex/hooks/doc-sync-check.sh'",
+            "timeout": 10000
+          }
+        ]
+      }
+    ]
+  }
+}

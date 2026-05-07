@@ -1,0 +1,1730 @@
+This is pdfTeX, Version 3.141592653-2.6-1.40.22 (TeX Live 2022/dev/Debian) (preloaded format=pdflatex 2026.3.30)  1 MAY 2026 21:20
+entering extended mode
+ restricted \write18 enabled.
+ %&-line parsing enabled.
+**arch_paper0502.tex
+(./arch_paper0502.tex
+LaTeX2e <2021-11-15> patch level 1
+L3 programming layer <2022-01-21>
+(/usr/share/texlive/texmf-dist/tex/latex/base/article.cls
+Document Class: article 2021/10/04 v1.4n Standard LaTeX document class
+(/usr/share/texlive/texmf-dist/tex/latex/base/size11.clo
+File: size11.clo 2021/10/04 v1.4n Standard LaTeX file (size option)
+)
+\c@part=\count185
+\c@section=\count186
+\c@subsection=\count187
+\c@subsubsection=\count188
+\c@paragraph=\count189
+\c@subparagraph=\count190
+\c@figure=\count191
+\c@table=\count192
+\abovecaptionskip=\skip47
+\belowcaptionskip=\skip48
+\bibindent=\dimen138
+)
+(/usr/share/texlive/texmf-dist/tex/latex/base/inputenc.sty
+Package: inputenc 2021/02/14 v1.3d Input encoding file
+\inpenc@prehook=\toks16
+\inpenc@posthook=\toks17
+)
+(/usr/share/texlive/texmf-dist/tex/latex/base/fontenc.sty
+Package: fontenc 2021/04/29 v2.0v Standard LaTeX package
+)
+(/usr/share/texlive/texmf-dist/tex/latex/amsmath/amsmath.sty
+Package: amsmath 2021/10/15 v2.17l AMS math features
+\@mathmargin=\skip49
+
+For additional information on amsmath, use the `?' option.
+(/usr/share/texlive/texmf-dist/tex/latex/amsmath/amstext.sty
+Package: amstext 2021/08/26 v2.01 AMS text
+
+(/usr/share/texlive/texmf-dist/tex/latex/amsmath/amsgen.sty
+File: amsgen.sty 1999/11/30 v2.0 generic functions
+\@emptytoks=\toks18
+\ex@=\dimen139
+))
+(/usr/share/texlive/texmf-dist/tex/latex/amsmath/amsbsy.sty
+Package: amsbsy 1999/11/29 v1.2d Bold Symbols
+\pmbraise@=\dimen140
+)
+(/usr/share/texlive/texmf-dist/tex/latex/amsmath/amsopn.sty
+Package: amsopn 2021/08/26 v2.02 operator names
+)
+\inf@bad=\count193
+LaTeX Info: Redefining \frac on input line 234.
+\uproot@=\count194
+\leftroot@=\count195
+LaTeX Info: Redefining \overline on input line 399.
+\classnum@=\count196
+\DOTSCASE@=\count197
+LaTeX Info: Redefining \ldots on input line 496.
+LaTeX Info: Redefining \dots on input line 499.
+LaTeX Info: Redefining \cdots on input line 620.
+\Mathstrutbox@=\box50
+\strutbox@=\box51
+\big@size=\dimen141
+LaTeX Font Info:    Redeclaring font encoding OML on input line 743.
+LaTeX Font Info:    Redeclaring font encoding OMS on input line 744.
+\macc@depth=\count198
+\c@MaxMatrixCols=\count199
+\dotsspace@=\muskip16
+\c@parentequation=\count266
+\dspbrk@lvl=\count267
+\tag@help=\toks19
+\row@=\count268
+\column@=\count269
+\maxfields@=\count270
+\andhelp@=\toks20
+\eqnshift@=\dimen142
+\alignsep@=\dimen143
+\tagshift@=\dimen144
+\tagwidth@=\dimen145
+\totwidth@=\dimen146
+\lineht@=\dimen147
+\@envbody=\toks21
+\multlinegap=\skip50
+\multlinetaggap=\skip51
+\mathdisplay@stack=\toks22
+LaTeX Info: Redefining \[ on input line 2938.
+LaTeX Info: Redefining \] on input line 2939.
+)
+(/usr/share/texlive/texmf-dist/tex/latex/amsfonts/amssymb.sty
+Package: amssymb 2013/01/14 v3.01 AMS font symbols
+
+(/usr/share/texlive/texmf-dist/tex/latex/amsfonts/amsfonts.sty
+Package: amsfonts 2013/01/14 v3.01 Basic AMSFonts support
+\symAMSa=\mathgroup4
+\symAMSb=\mathgroup5
+LaTeX Font Info:    Redeclaring math symbol \hbar on input line 98.
+LaTeX Font Info:    Overwriting math alphabet `\mathfrak' in version `bold'
+(Font)                  U/euf/m/n --> U/euf/b/n on input line 106.
+))
+(/usr/share/texlive/texmf-dist/tex/latex/graphics/graphicx.sty
+Package: graphicx 2021/09/16 v1.2d Enhanced LaTeX Graphics (DPC,SPQR)
+
+(/usr/share/texlive/texmf-dist/tex/latex/graphics/keyval.sty
+Package: keyval 2014/10/28 v1.15 key=value parser (DPC)
+\KV@toks@=\toks23
+)
+(/usr/share/texlive/texmf-dist/tex/latex/graphics/graphics.sty
+Package: graphics 2021/03/04 v1.4d Standard LaTeX Graphics (DPC,SPQR)
+
+(/usr/share/texlive/texmf-dist/tex/latex/graphics/trig.sty
+Package: trig 2021/08/11 v1.11 sin cos tan (DPC)
+)
+(/usr/share/texlive/texmf-dist/tex/latex/graphics-cfg/graphics.cfg
+File: graphics.cfg 2016/06/04 v1.11 sample graphics configuration
+)
+Package graphics Info: Driver file: pdftex.def on input line 107.
+
+(/usr/share/texlive/texmf-dist/tex/latex/graphics-def/pdftex.def
+File: pdftex.def 2020/10/05 v1.2a Graphics/color driver for pdftex
+))
+\Gin@req@height=\dimen148
+\Gin@req@width=\dimen149
+)
+(/usr/share/texlive/texmf-dist/tex/latex/booktabs/booktabs.sty
+Package: booktabs 2020/01/12 v1.61803398 Publication quality tables
+\heavyrulewidth=\dimen150
+\lightrulewidth=\dimen151
+\cmidrulewidth=\dimen152
+\belowrulesep=\dimen153
+\belowbottomsep=\dimen154
+\aboverulesep=\dimen155
+\abovetopsep=\dimen156
+\cmidrulesep=\dimen157
+\cmidrulekern=\dimen158
+\defaultaddspace=\dimen159
+\@cmidla=\count271
+\@cmidlb=\count272
+\@aboverulesep=\dimen160
+\@belowrulesep=\dimen161
+\@thisruleclass=\count273
+\@lastruleclass=\count274
+\@thisrulewidth=\dimen162
+)
+(/usr/share/texlive/texmf-dist/tex/latex/tools/array.sty
+Package: array 2021/10/04 v2.5f Tabular extension package (FMi)
+\col@sep=\dimen163
+\ar@mcellbox=\box52
+\extrarowheight=\dimen164
+\NC@list=\toks24
+\extratabsurround=\skip52
+\backup@length=\skip53
+\ar@cellbox=\box53
+)
+(/usr/share/texlive/texmf-dist/tex/latex/tools/tabularx.sty
+Package: tabularx 2020/01/15 v2.11c `tabularx' package (DPC)
+\TX@col@width=\dimen165
+\TX@old@table=\dimen166
+\TX@old@col=\dimen167
+\TX@target=\dimen168
+\TX@delta=\dimen169
+\TX@cols=\count275
+\TX@ftn=\toks25
+)
+(/usr/share/texlive/texmf-dist/tex/latex/multirow/multirow.sty
+Package: multirow 2021/03/15 v2.8 Span multiple rows of a table
+\multirow@colwidth=\skip54
+\multirow@cntb=\count276
+\multirow@dima=\skip55
+\bigstrutjot=\dimen170
+)
+(/usr/share/texlive/texmf-dist/tex/latex/xcolor/xcolor.sty
+Package: xcolor 2021/10/31 v2.13 LaTeX color extensions (UK)
+
+(/usr/share/texlive/texmf-dist/tex/latex/graphics-cfg/color.cfg
+File: color.cfg 2016/01/02 v1.6 sample color configuration
+)
+Package xcolor Info: Driver file: pdftex.def on input line 227.
+Package xcolor Info: Model `cmy' substituted by `cmy0' on input line 1352.
+Package xcolor Info: Model `hsb' substituted by `rgb' on input line 1356.
+Package xcolor Info: Model `RGB' extended on input line 1368.
+Package xcolor Info: Model `HTML' substituted by `rgb' on input line 1370.
+Package xcolor Info: Model `Hsb' substituted by `hsb' on input line 1371.
+Package xcolor Info: Model `tHsb' substituted by `hsb' on input line 1372.
+Package xcolor Info: Model `HSB' substituted by `hsb' on input line 1373.
+Package xcolor Info: Model `Gray' substituted by `gray' on input line 1374.
+Package xcolor Info: Model `wave' substituted by `hsb' on input line 1375.
+)
+(/usr/share/texlive/texmf-dist/tex/latex/listings/listings.sty
+\lst@mode=\count277
+\lst@gtempboxa=\box54
+\lst@token=\toks26
+\lst@length=\count278
+\lst@currlwidth=\dimen171
+\lst@column=\count279
+\lst@pos=\count280
+\lst@lostspace=\dimen172
+\lst@width=\dimen173
+\lst@newlines=\count281
+\lst@lineno=\count282
+\lst@maxwidth=\dimen174
+
+(/usr/share/texlive/texmf-dist/tex/latex/listings/lstmisc.sty
+File: lstmisc.sty 2020/03/24 1.8d (Carsten Heinz)
+\c@lstnumber=\count283
+\lst@skipnumbers=\count284
+\lst@framebox=\box55
+)
+(/usr/share/texlive/texmf-dist/tex/latex/listings/listings.cfg
+File: listings.cfg 2020/03/24 1.8d listings configuration
+))
+Package: listings 2020/03/24 1.8d (Carsten Heinz)
+
+(/usr/share/texlive/texmf-dist/tex/latex/url/url.sty
+\Urlmuskip=\muskip17
+Package: url 2013/09/16  ver 3.4  Verb mode for urls, etc.
+)
+(/usr/share/texlive/texmf-dist/tex/latex/hyperref/hyperref.sty
+Package: hyperref 2021-06-07 v7.00m Hypertext links for LaTeX
+
+(/usr/share/texlive/texmf-dist/tex/generic/ltxcmds/ltxcmds.sty
+Package: ltxcmds 2020-05-10 v1.25 LaTeX kernel commands for general use (HO)
+)
+(/usr/share/texlive/texmf-dist/tex/generic/iftex/iftex.sty
+Package: iftex 2020/03/06 v1.0d TeX engine tests
+)
+(/usr/share/texlive/texmf-dist/tex/generic/pdftexcmds/pdftexcmds.sty
+Package: pdftexcmds 2020-06-27 v0.33 Utility functions of pdfTeX for LuaTeX (HO
+)
+
+(/usr/share/texlive/texmf-dist/tex/generic/infwarerr/infwarerr.sty
+Package: infwarerr 2019/12/03 v1.5 Providing info/warning/error messages (HO)
+)
+Package pdftexcmds Info: \pdf@primitive is available.
+Package pdftexcmds Info: \pdf@ifprimitive is available.
+Package pdftexcmds Info: \pdfdraftmode found.
+)
+(/usr/share/texlive/texmf-dist/tex/generic/kvsetkeys/kvsetkeys.sty
+Package: kvsetkeys 2019/12/15 v1.18 Key value parser (HO)
+)
+(/usr/share/texlive/texmf-dist/tex/generic/kvdefinekeys/kvdefinekeys.sty
+Package: kvdefinekeys 2019-12-19 v1.6 Define keys (HO)
+)
+(/usr/share/texlive/texmf-dist/tex/generic/pdfescape/pdfescape.sty
+Package: pdfescape 2019/12/09 v1.15 Implements pdfTeX's escape features (HO)
+)
+(/usr/share/texlive/texmf-dist/tex/latex/hycolor/hycolor.sty
+Package: hycolor 2020-01-27 v1.10 Color options for hyperref/bookmark (HO)
+)
+(/usr/share/texlive/texmf-dist/tex/latex/letltxmacro/letltxmacro.sty
+Package: letltxmacro 2019/12/03 v1.6 Let assignment for LaTeX macros (HO)
+)
+(/usr/share/texlive/texmf-dist/tex/latex/auxhook/auxhook.sty
+Package: auxhook 2019-12-17 v1.6 Hooks for auxiliary files (HO)
+)
+(/usr/share/texlive/texmf-dist/tex/latex/kvoptions/kvoptions.sty
+Package: kvoptions 2020-10-07 v3.14 Key value format for package options (HO)
+)
+\@linkdim=\dimen175
+\Hy@linkcounter=\count285
+\Hy@pagecounter=\count286
+
+(/usr/share/texlive/texmf-dist/tex/latex/hyperref/pd1enc.def
+File: pd1enc.def 2021-06-07 v7.00m Hyperref: PDFDocEncoding definition (HO)
+Now handling font encoding PD1 ...
+... no UTF-8 mapping file for font encoding PD1
+)
+(/usr/share/texlive/texmf-dist/tex/latex/hyperref/hyperref-langpatches.def
+File: hyperref-langpatches.def 2021-06-07 v7.00m Hyperref: patches for babel la
+nguages
+)
+(/usr/share/texlive/texmf-dist/tex/generic/intcalc/intcalc.sty
+Package: intcalc 2019/12/15 v1.3 Expandable calculations with integers (HO)
+)
+(/usr/share/texlive/texmf-dist/tex/generic/etexcmds/etexcmds.sty
+Package: etexcmds 2019/12/15 v1.7 Avoid name clashes with e-TeX commands (HO)
+)
+\Hy@SavedSpaceFactor=\count287
+
+(/usr/share/texlive/texmf-dist/tex/latex/hyperref/puenc.def
+File: puenc.def 2021-06-07 v7.00m Hyperref: PDF Unicode definition (HO)
+Now handling font encoding PU ...
+... no UTF-8 mapping file for font encoding PU
+)
+Package hyperref Info: Hyper figures OFF on input line 4192.
+Package hyperref Info: Link nesting OFF on input line 4197.
+Package hyperref Info: Hyper index ON on input line 4200.
+Package hyperref Info: Plain pages OFF on input line 4207.
+Package hyperref Info: Backreferencing OFF on input line 4212.
+Package hyperref Info: Implicit mode ON; LaTeX internals redefined.
+Package hyperref Info: Bookmarks ON on input line 4445.
+\c@Hy@tempcnt=\count288
+LaTeX Info: Redefining \url on input line 4804.
+\XeTeXLinkMargin=\dimen176
+
+(/usr/share/texlive/texmf-dist/tex/generic/bitset/bitset.sty
+Package: bitset 2019/12/09 v1.3 Handle bit-vector datatype (HO)
+
+(/usr/share/texlive/texmf-dist/tex/generic/bigintcalc/bigintcalc.sty
+Package: bigintcalc 2019/12/15 v1.5 Expandable calculations on big integers (HO
+)
+))
+\Fld@menulength=\count289
+\Field@Width=\dimen177
+\Fld@charsize=\dimen178
+Package hyperref Info: Hyper figures OFF on input line 6076.
+Package hyperref Info: Link nesting OFF on input line 6081.
+Package hyperref Info: Hyper index ON on input line 6084.
+Package hyperref Info: backreferencing OFF on input line 6091.
+Package hyperref Info: Link coloring OFF on input line 6096.
+Package hyperref Info: Link coloring with OCG OFF on input line 6101.
+Package hyperref Info: PDF/A mode OFF on input line 6106.
+LaTeX Info: Redefining \ref on input line 6146.
+LaTeX Info: Redefining \pageref on input line 6150.
+
+(/usr/share/texlive/texmf-dist/tex/latex/base/atbegshi-ltx.sty
+Package: atbegshi-ltx 2021/01/10 v1.0c Emulation of the original atbegshi
+package with kernel methods
+)
+\Hy@abspage=\count290
+\c@Item=\count291
+\c@Hfootnote=\count292
+)
+Package hyperref Info: Driver (autodetected): hpdftex.
+
+(/usr/share/texlive/texmf-dist/tex/latex/hyperref/hpdftex.def
+File: hpdftex.def 2021-06-07 v7.00m Hyperref driver for pdfTeX
+
+(/usr/share/texlive/texmf-dist/tex/latex/base/atveryend-ltx.sty
+Package: atveryend-ltx 2020/08/19 v1.0a Emulation of the original atveryend pac
+kage
+with kernel methods
+)
+\Fld@listcount=\count293
+\c@bookmark@seq@number=\count294
+
+(/usr/share/texlive/texmf-dist/tex/latex/rerunfilecheck/rerunfilecheck.sty
+Package: rerunfilecheck 2019/12/05 v1.9 Rerun checks for auxiliary files (HO)
+
+(/usr/share/texlive/texmf-dist/tex/generic/uniquecounter/uniquecounter.sty
+Package: uniquecounter 2019/12/15 v1.4 Provide unlimited unique counter (HO)
+)
+Package uniquecounter Info: New unique counter `rerunfilecheck' on input line 2
+86.
+)
+\Hy@SectionHShift=\skip56
+)
+(/usr/share/texlive/texmf-dist/tex/latex/cleveref/cleveref.sty
+Package: cleveref 2018/03/27 v0.21.4 Intelligent cross-referencing
+Package cleveref Info: `hyperref' support loaded on input line 2370.
+LaTeX Info: Redefining \cref on input line 2370.
+LaTeX Info: Redefining \Cref on input line 2370.
+LaTeX Info: Redefining \crefrange on input line 2370.
+LaTeX Info: Redefining \Crefrange on input line 2370.
+LaTeX Info: Redefining \cpageref on input line 2370.
+LaTeX Info: Redefining \Cpageref on input line 2370.
+LaTeX Info: Redefining \cpagerefrange on input line 2370.
+LaTeX Info: Redefining \Cpagerefrange on input line 2370.
+LaTeX Info: Redefining \labelcref on input line 2370.
+LaTeX Info: Redefining \labelcpageref on input line 2370.
+Package cleveref Info: `listings' support loaded on input line 3131.
+)
+(/usr/share/texlive/texmf-dist/tex/latex/geometry/geometry.sty
+Package: geometry 2020/01/02 v5.9 Page Geometry
+
+(/usr/share/texlive/texmf-dist/tex/generic/iftex/ifvtex.sty
+Package: ifvtex 2019/10/25 v1.7 ifvtex legacy package. Use iftex instead.
+)
+\Gm@cnth=\count295
+\Gm@cntv=\count296
+\c@Gm@tempcnt=\count297
+\Gm@bindingoffset=\dimen179
+\Gm@wd@mp=\dimen180
+\Gm@odd@mp=\dimen181
+\Gm@even@mp=\dimen182
+\Gm@layoutwidth=\dimen183
+\Gm@layoutheight=\dimen184
+\Gm@layouthoffset=\dimen185
+\Gm@layoutvoffset=\dimen186
+\Gm@dimlist=\toks27
+)
+(/usr/share/texlive/texmf-dist/tex/latex/enumitem/enumitem.sty
+Package: enumitem 2019/06/20 v3.9 Customized lists
+\labelindent=\skip57
+\enit@outerparindent=\dimen187
+\enit@toks=\toks28
+\enit@inbox=\box56
+\enit@count@id=\count298
+\enitdp@description=\count299
+)
+(/usr/share/texlive/texmf-dist/tex/latex/caption/caption.sty
+Package: caption 2020/10/26 v3.5g Customizing captions (AR)
+
+(/usr/share/texlive/texmf-dist/tex/latex/caption/caption3.sty
+Package: caption3 2020/10/21 v2.2e caption3 kernel (AR)
+\captionmargin=\dimen188
+\captionmargin@=\dimen189
+\captionwidth=\dimen190
+\caption@tempdima=\dimen191
+\caption@indent=\dimen192
+\caption@parindent=\dimen193
+\caption@hangindent=\dimen194
+Package caption Info: Standard document class detected.
+)
+\c@caption@flags=\count300
+\c@continuedfloat=\count301
+Package caption Info: hyperref package is loaded.
+Package caption Info: listings package is loaded.
+)
+(/usr/share/texlive/texmf-dist/tex/latex/caption/subcaption.sty
+Package: subcaption 2020/10/07 v1.3j Sub-captions (AR)
+\c@subfigure=\count302
+\c@subtable=\count303
+)
+(/usr/share/texlive/texmf-dist/tex/latex/fancyhdr/fancyhdr.sty
+Package: fancyhdr 2021/01/28 v4.0.1 Extensive control of page headers and foote
+rs
+\f@nch@headwidth=\skip58
+\f@nch@O@elh=\skip59
+\f@nch@O@erh=\skip60
+\f@nch@O@olh=\skip61
+\f@nch@O@orh=\skip62
+\f@nch@O@elf=\skip63
+\f@nch@O@erf=\skip64
+\f@nch@O@olf=\skip65
+\f@nch@O@orf=\skip66
+)
+(/usr/share/texlive/texmf-dist/tex/latex/preprint/balance.sty
+Package: balance 1999/02/23 4.3 (PWD)
+\oldvsize=\dimen195
+)
+(/usr/share/texlive/texmf-dist/tex/latex/float/float.sty
+Package: float 2001/11/08 v1.3d Float enhancements (AL)
+\c@float@type=\count304
+\float@exts=\toks29
+\float@box=\box57
+\@float@everytoks=\toks30
+\@floatcapt=\box58
+)
+(/usr/share/texlive/texmf-dist/tex/latex/l3backend/l3backend-pdftex.def
+File: l3backend-pdftex.def 2022-01-12 L3 backend support: PDF output (pdfTeX)
+\l__color_backend_stack_int=\count305
+\l__pdf_internal_box=\box59
+)
+(./arch_paper0502.aux)
+\openout1 = `arch_paper0502.aux'.
+
+LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 100.
+LaTeX Font Info:    ... okay on input line 100.
+LaTeX Font Info:    Checking defaults for OMS/cmsy/m/n on input line 100.
+LaTeX Font Info:    ... okay on input line 100.
+LaTeX Font Info:    Checking defaults for OT1/cmr/m/n on input line 100.
+LaTeX Font Info:    ... okay on input line 100.
+LaTeX Font Info:    Checking defaults for T1/cmr/m/n on input line 100.
+LaTeX Font Info:    ... okay on input line 100.
+LaTeX Font Info:    Checking defaults for TS1/cmr/m/n on input line 100.
+LaTeX Font Info:    ... okay on input line 100.
+LaTeX Font Info:    Checking defaults for OMX/cmex/m/n on input line 100.
+LaTeX Font Info:    ... okay on input line 100.
+LaTeX Font Info:    Checking defaults for U/cmr/m/n on input line 100.
+LaTeX Font Info:    ... okay on input line 100.
+LaTeX Font Info:    Checking defaults for PD1/pdf/m/n on input line 100.
+LaTeX Font Info:    ... okay on input line 100.
+LaTeX Font Info:    Checking defaults for PU/pdf/m/n on input line 100.
+LaTeX Font Info:    ... okay on input line 100.
+
+(/usr/share/texlive/texmf-dist/tex/context/base/mkii/supp-pdf.mkii
+[Loading MPS to PDF converter (version 2006.09.02).]
+\scratchcounter=\count306
+\scratchdimen=\dimen196
+\scratchbox=\box60
+\nofMPsegments=\count307
+\nofMParguments=\count308
+\everyMPshowfont=\toks31
+\MPscratchCnt=\count309
+\MPscratchDim=\dimen197
+\MPnumerator=\count310
+\makeMPintoPDFobject=\count311
+\everyMPtoPDFconversion=\toks32
+) (/usr/share/texlive/texmf-dist/tex/latex/epstopdf-pkg/epstopdf-base.sty
+Package: epstopdf-base 2020-01-24 v2.11 Base part for package epstopdf
+Package epstopdf-base Info: Redefining graphics rule for `.eps' on input line 4
+85.
+
+(/usr/share/texlive/texmf-dist/tex/latex/latexconfig/epstopdf-sys.cfg
+File: epstopdf-sys.cfg 2010/07/13 v1.3 Configuration of (r)epstopdf for TeX Liv
+e
+))
+\c@lstlisting=\count312
+Package hyperref Info: Link coloring OFF on input line 100.
+
+(/usr/share/texlive/texmf-dist/tex/latex/hyperref/nameref.sty
+Package: nameref 2021-04-02 v2.47 Cross-referencing by name of section
+
+(/usr/share/texlive/texmf-dist/tex/latex/refcount/refcount.sty
+Package: refcount 2019/12/15 v3.6 Data extraction from label references (HO)
+)
+(/usr/share/texlive/texmf-dist/tex/generic/gettitlestring/gettitlestring.sty
+Package: gettitlestring 2019/12/15 v1.6 Cleanup title references (HO)
+)
+\c@section@level=\count313
+)
+LaTeX Info: Redefining \ref on input line 100.
+LaTeX Info: Redefining \pageref on input line 100.
+LaTeX Info: Redefining \nameref on input line 100.
+
+(./arch_paper0502.out) (./arch_paper0502.out)
+\@outlinefile=\write3
+\openout3 = `arch_paper0502.out'.
+
+
+*geometry* driver: auto-detecting
+*geometry* detected driver: pdftex
+*geometry* verbose mode - [ preamble ] result:
+* driver: pdftex
+* paper: <default>
+* layout: <same size as paper>
+* layoutoffset:(h,v)=(0.0pt,0.0pt)
+* modes: 
+* h-part:(L,W,R)=(61.42993pt, 491.43513pt, 61.42993pt)
+* v-part:(T,H,B)=(61.42993pt, 672.11012pt, 61.42993pt)
+* \paperwidth=614.295pt
+* \paperheight=794.96999pt
+* \textwidth=491.43513pt
+* \textheight=672.11012pt
+* \oddsidemargin=-10.84006pt
+* \evensidemargin=-10.84006pt
+* \topmargin=-47.84006pt
+* \headheight=12.0pt
+* \headsep=25.0pt
+* \topskip=11.0pt
+* \footskip=30.0pt
+* \marginparwidth=4.0pt
+* \marginparsep=10.0pt
+* \columnsep=10.0pt
+* \skip\footins=10.0pt plus 4.0pt minus 2.0pt
+* \hoffset=0.0pt
+* \voffset=0.0pt
+* \mag=1000
+* \@twocolumntrue
+* \@twosidefalse
+* \@mparswitchfalse
+* \@reversemarginfalse
+* (1in=72.27pt=25.4mm, 1cm=28.453pt)
+
+Package caption Info: Begin \AtBeginDocument code.
+Package caption Info: float package is loaded.
+Package caption Info: End \AtBeginDocument code.
+LaTeX Font Info:    Trying to load font information for U+msa on input line 102
+.
+(/usr/share/texlive/texmf-dist/tex/latex/amsfonts/umsa.fd
+File: umsa.fd 2013/01/14 v3.01 AMS symbols A
+)
+LaTeX Font Info:    Trying to load font information for U+msb on input line 102
+.
+
+(/usr/share/texlive/texmf-dist/tex/latex/amsfonts/umsb.fd
+File: umsb.fd 2013/01/14 v3.01 AMS symbols B
+)
+LaTeX Font Info:    Trying to load font information for T1+cmtt on input line 1
+02.
+
+(/usr/share/texlive/texmf-dist/tex/latex/base/t1cmtt.fd
+File: t1cmtt.fd 2019/12/16 v2.5j Standard LaTeX font definitions
+)
+Underfull \hbox (badness 2744) in paragraph at lines 107--108
+\T1/cmr/m/n/10.95 We present \T1/cmr/bx/n/10.95 Arch \T1/cmr/m/n/10.95 (AI-nati
+ve Register-transfer
+ []
+
+
+Underfull \hbox (badness 2088) in paragraph at lines 107--108
+\T1/cmr/m/n/10.95 architecture spec-i-fi-ca-tion and AI-assisted code
+ []
+
+
+Underfull \hbox (badness 1430) in paragraph at lines 107--108
+\T1/cmr/m/n/10.95 for pipelines, FSMs, FI-FOs, ar-biters, reg-is-ter
+ []
+
+
+Underfull \hbox (badness 3199) in paragraph at lines 107--108
+\T1/cmr/m/n/10.95 files, CAMs, RAMs, syn-chro-niz-ers, coun-ters,
+ []
+
+
+Underfull \hbox (badness 1655) in paragraph at lines 109--110
+[]\T1/cmr/m/n/10.95 A cen-tral de-sign choice is that clocks and
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 109--110
+\T1/cmr/m/n/10.95 re-sets are pa-ram-e-ter-ized types (\T1/cmtt/m/n/10.95 Clock
+<D>\T1/cmr/m/n/10.95 ,
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 109--110
+\T1/cmtt/m/n/10.95 Reset<Sync|Async, High|Low>\T1/cmr/m/n/10.95 ) rather than
+ []
+
+
+Underfull \hbox (badness 3000) in paragraph at lines 109--110
+\T1/cmr/m/n/10.95 from ex-ter-nal lin-ter passes into compile-time
+ []
+
+
+Underfull \hbox (badness 1430) in paragraph at lines 109--110
+\T1/cmr/m/n/10.95 and com-bi-na-tional acyclic-ity, the type sys-tem
+ []
+
+
+Underfull \vbox (badness 1242) has occurred while \output is active []
+
+
+Underfull \hbox (badness 2269) in paragraph at lines 113--115
+[]\T1/cmr/m/n/10.95 The com-piler emits de-ter-min-is-tic, lint-clean
+ []
+
+
+Underfull \hbox (badness 3364) in paragraph at lines 118--121
+\T1/cmr/m/n/10.95 The hard-ware de-scrip-tion lan-guage land-scape
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 118--121
+\T1/cmr/m/n/10.95 is dom-i-nated by two IEEE standards---
+ []
+
+
+Underfull \hbox (badness 5288) in paragraph at lines 118--121
+\T1/cmr/m/n/10.95 to en-com-pass ver-i-fi-ca-tion con-structs (UVM),
+ []
+
+[1{/var/lib/texmf/fonts/map/pdftex/updmap/pdftex.map}
+
+
+]
+Underfull \hbox (badness 1616) in paragraph at lines 134--135
+\T1/cmr/m/n/10.95 Pipeline, FSM, FIFO, ar-biter, reg-is-ter file,
+ []
+
+
+Underfull \hbox (badness 3128) in paragraph at lines 134--135
+\T1/cmr/m/n/10.95 syn-chro-nizer, CAM, RAM, counter, linked
+ []
+
+
+Underfull \hbox (badness 1348) in paragraph at lines 134--135
+\T1/cmr/m/n/10.95 list, clock gate, and bus (with \T1/cmtt/m/n/10.95 handshake\
+T1/cmr/m/n/10.95 ,
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 134--135
+\T1/cmtt/m/n/10.95 tlm_method\T1/cmr/m/n/10.95 , and \T1/cmtt/m/n/10.95 credit_
+channel \T1/cmr/m/n/10.95 sub-
+ []
+
+
+Underfull \hbox (badness 4479) in paragraph at lines 134--135
+\T1/cmr/m/n/10.95 constructs for protocol-level mod-el-ing) are
+ []
+
+
+Underfull \hbox (badness 2772) in paragraph at lines 134--135
+\T1/cmr/m/n/10.95 en-force struc-tural con-tracts across mod-ules
+ []
+
+
+Underfull \hbox (badness 4156) in paragraph at lines 136--137
+\T1/cmtt/m/n/10.95 Reset<Sync|Async, High|Low>\T1/cmr/m/n/10.95 ) rather than
+ []
+
+
+Underfull \hbox (badness 1097) in paragraph at lines 142--143
+\T1/cmtt/m/n/10.95 sim \T1/cmr/m/n/10.95 com-mand in-de-pen-dently gen-er-ates 
+com-
+ []
+
+[2]
+Underfull \hbox (badness 10000) in paragraph at lines 155--156
+ []\T1/cmr/bx/n/10.95 Micro-Architecture First.[] \T1/cmr/m/n/10.95 Pipeline, F
+SM,
+ []
+
+
+Underfull \hbox (badness 3568) in paragraph at lines 155--156
+\T1/cmr/m/n/10.95 are first-class key-words with compiler-verified
+ []
+
+LaTeX Font Info:    Font shape `T1/cmtt/bx/n' in size <8> not available
+(Font)              Font shape `T1/cmtt/m/n' tried instead on input line 166.
+
+Underfull \hbox (badness 1377) in paragraph at lines 206--207
+\T1/cmr/m/n/10.95 The Arch type sys-tem en-forces four in-de-pen-
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 223--224
+[]|\T1/cmr/m/n/9 Two's com-ple-ment
+ []
+
+
+Overfull \hbox (30.52185pt too wide) in paragraph at lines 217--232
+ [][] 
+ []
+
+[3]
+Underfull \hbox (badness 1400) in paragraph at lines 257--258
+\T1/cmr/bx/n/10.95 work. \T1/cmr/m/n/10.95 Be-cause a re-set's clock do-main is
+
+ []
+
+
+Underfull \hbox (badness 2781) in paragraph at lines 258--259
+[]\T1/cmr/bx/n/10.95 Synchronizers are typed bridges. \T1/cmr/m/n/10.95 A
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 258--259
+\T1/cmtt/m/n/10.95 in Clock<A>; port dst_clk: in Clock<B>\T1/cmr/m/n/10.95 .
+ []
+
+[4]
+Underfull \hbox (badness 1400) in paragraph at lines 291--292
+[]\T1/cmr/bx/n/10.95 Cross-clock-domain async re-set (struc-
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 292--293
+[]\T1/cmr/bx/n/10.95 Cross-async-reset-domain data path
+ []
+
+
+Underfull \hbox (badness 1960) in paragraph at lines 293--294
+[]\T1/cmr/bx/n/10.95 Reset-driven clock gat-ing (phase 2b).
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 294--295
+[]\T1/cmr/bx/n/10.95 Reconvergent synchronizers---RDC +
+ []
+
+
+Underfull \hbox (badness 2073) in paragraph at lines 295--296
+\T1/cmr/m/n/10.95 nec-tions (\T1/cmtt/m/n/10.95 rst <- (rst_a | rst_b)\T1/cmr/m
+/n/10.95 ) pro-duce
+ []
+
+
+Underfull \hbox (badness 2173) in paragraph at lines 298--299
+[]\T1/cmr/m/n/10.95 Per-module opt-out is avail-able via \T1/cmtt/m/n/10.95 pra
+gma
+ []
+
+
+Underfull \hbox (badness 1132) in paragraph at lines 298--299
+\T1/cmtt/m/n/10.95 cdc_safe; \T1/cmr/m/n/10.95 (sup-presses CDC checks and RDC
+ []
+
+[5] [6]
+Underfull \hbox (badness 10000) in paragraph at lines 452--453
+[]\T1/cmr/m/n/10.95 The role key-words \T1/cmtt/m/n/10.95 send \T1/cmr/m/n/10.9
+5 and \T1/cmtt/m/n/10.95 receive\T1/cmr/m/n/10.95 ---
+ []
+
+
+Underfull \hbox (badness 1859) in paragraph at lines 454--455
+[]\T1/cmr/m/n/10.95 Six vari-ants cover the com-mon flow-control
+ []
+
+
+Underfull \hbox (badness 1817) in paragraph at lines 454--455
+\T1/cmr/m/n/10.95 shapes: \T1/cmtt/m/n/10.95 valid_ready \T1/cmr/m/n/10.95 (AMB
+A AX-I/ACE and
+ []
+
+
+Underfull \hbox (badness 7379) in paragraph at lines 454--455
+\T1/cmr/m/n/10.95 gen-eral on-chip stream-ing with bidi-rec-tional
+ []
+
+
+Underfull \hbox (badness 1173) in paragraph at lines 454--455
+\T1/cmr/m/n/10.95 back-pres-sure), \T1/cmtt/m/n/10.95 valid_only \T1/cmr/m/n/10
+.95 (strobes, in-ter-rupts,
+ []
+
+
+Underfull \hbox (badness 3396) in paragraph at lines 454--455
+\T1/cmr/m/n/10.95 register-file reads), \T1/cmtt/m/n/10.95 valid_stall \T1/cmr/
+m/n/10.95 (pipeline in-
+ []
+
+
+Underfull \hbox (badness 8170) in paragraph at lines 454--455
+\T1/cmr/m/n/10.95 ter-lock where stall is the nat-u-ral sig-nal),
+ []
+
+
+Underfull \hbox (badness 3189) in paragraph at lines 454--455
+\T1/cmtt/m/n/10.95 req_ack_4phase \T1/cmr/m/n/10.95 (async/-GALS with return-to
+-
+ []
+
+
+Underfull \hbox (badness 1303) in paragraph at lines 454--455
+\T1/cmr/m/n/10.95 zero), and \T1/cmtt/m/n/10.95 req_ack_2phase \T1/cmr/m/n/10.9
+5 (async/-GALS, low
+ []
+
+
+Underfull \hbox (badness 5741) in paragraph at lines 456--457
+\T1/cmr/m/n/10.95 con-cur-rent SVA: ev-ery \T1/cmtt/m/n/10.95 valid_ready \T1/c
+mr/m/n/10.95 chan-nel
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 456--457
+\T1/cmr/m/n/10.95 gets \T1/cmtt/m/n/10.95 _auto_hs_<port>_<ch>_valid_stable
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 456--457
+\T1/cmr/m/n/10.95 (\T1/cmtt/m/n/10.95 (valid && !ready) |=> valid\T1/cmr/m/n/10
+.95 ), ev-
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 456--457
+\T1/cmr/m/n/10.95 ery \T1/cmtt/m/n/10.95 valid_stall \T1/cmr/m/n/10.95 chan-nel
+ gets
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 456--457
+\T1/cmtt/m/n/10.95 _auto_hs_.._valid_stable_while_stall\T1/cmr/m/n/10.95 ,
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 456--457
+\T1/cmr/m/n/10.95 and ev-ery \T1/cmtt/m/n/10.95 req_ack_4phase \T1/cmr/m/n/10.9
+5 chan-nel gets
+ []
+
+
+Underfull \hbox (badness 5985) in paragraph at lines 456--457
+\T1/cmtt/m/n/10.95 _auto_hs_.._req_holds_until_ack\T1/cmr/m/n/10.95 . Prop-er-
+ []
+
+
+Underfull \hbox (badness 1728) in paragraph at lines 456--457
+\T1/cmr/m/n/10.95 correctness bugs that pro-to-col SVA does not
+ []
+
+
+Underfull \hbox (badness 2318) in paragraph at lines 456--457
+\T1/cmr/m/n/10.95 ever writ-ing the pay-load (the uninit shadow
+ []
+
+
+Underfull \hbox (badness 1990) in paragraph at lines 456--457
+\T1/cmr/m/n/10.95 trol, PCIe credit accounting---are han-dled by
+ []
+
+
+Underfull \hbox (badness 7631) in paragraph at lines 456--457
+\T1/cmr/m/n/10.95 the \T1/cmtt/m/n/10.95 credit_channel \T1/cmr/m/n/10.95 sub-c
+onstruct (shipped),
+ []
+
+
+Underfull \hbox (badness 1748) in paragraph at lines 456--457
+\T1/cmr/m/n/10.95 where the com-piler owns the sender counter,
+ []
+
+
+Underfull \hbox (badness 2359) in paragraph at lines 456--457
+\T1/cmr/m/n/10.95 level, the \T1/cmtt/m/n/10.95 tlm_method \T1/cmr/m/n/10.95 su
+b-construct (shipped,
+ []
+
+[7]
+Underfull \hbox (badness 1983) in paragraph at lines 482--483
+\T1/cmr/m/n/10.95 (state bound-ary that ad-vances when \T1/cmtt/m/n/10.95 cond 
+\T1/cmr/m/n/10.95 is
+ []
+
+
+Underfull \hbox (badness 1424) in paragraph at lines 482--483
+\T1/cmtt/m/n/10.95 thread once \T1/cmr/m/n/10.95 pro-duces a one-shot thread th
+at
+ []
+
+
+Underfull \hbox (badness 1817) in paragraph at lines 484--485
+\T1/cmr/m/n/10.95 ref-er-enced in-side any thread of a mod-ule as
+ []
+
+
+Underfull \hbox (badness 1137) in paragraph at lines 484--485
+\T1/cmr/m/n/10.95 en-able block, and a sin-gle merged \T1/cmtt/m/n/10.95 always
+_ff
+ []
+
+[8]
+Underfull \hbox (badness 10000) in paragraph at lines 488--489
+\T1/cmr/m/n/10.95 for each \T1/cmtt/m/n/10.95 wait until \T1/cmr/m/n/10.95 (\T1
+/cmtt/m/n/10.95 state==si &&
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 488--489
+\T1/cmtt/m/n/10.95 cond |=> state==next\T1/cmr/m/n/10.95 ), a stay/-done
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 488--489
+\T1/cmr/m/n/10.95 pair \T1/cmtt/m/n/10.95 _auto_thread_.._wait_stay_s{si}
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 488--489
+\T1/cmr/m/n/10.95 / \T1/cmtt/m/n/10.95 _.._wait_done_s{si} \T1/cmr/m/n/10.95 fo
+r each
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 488--489
+\T1/cmtt/m/n/10.95 wait N cycle\T1/cmr/m/n/10.95 , and per-branch
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 488--489
+\T1/cmtt/m/n/10.95 _auto_thread_.._branch_s{si}_b{bi} \T1/cmr/m/n/10.95 for
+ []
+
+
+Underfull \hbox (badness 3128) in paragraph at lines 488--489
+\T1/cmr/m/n/10.95 each \T1/cmtt/m/n/10.95 fork\T1/cmr/m/n/10.95 /\T1/cmtt/m/n/1
+0.95 join \T1/cmr/m/n/10.95 arm. All are wrapped in
+ []
+
+
+Underfull \hbox (badness 1810) in paragraph at lines 488--489
+\T1/cmr/m/n/10.95 than a user-program bug, com-ple-ment-ing the
+ []
+
+
+Underfull \hbox (badness 4859) in paragraph at lines 492--501
+\T1/cmr/m/n/10.95 Arch also pro-vides first-class con-structs for:
+ []
+
+
+Underfull \hbox (badness 1087) in paragraph at lines 492--501
+\T1/cmtt/m/n/10.95 regfile \T1/cmr/m/n/10.95 (multi-ported reg-is-ter files wit
+h read-
+ []
+
+
+Underfull \hbox (badness 4108) in paragraph at lines 492--501
+\T1/cmtt/m/n/10.95 ram \T1/cmr/m/n/10.95 (single-port, simple-dual, true-dual, 
+and
+ []
+
+
+Underfull \hbox (badness 3396) in paragraph at lines 492--501
+\T1/cmr/m/n/10.95 match, dual write-port, and value pay-load),
+ []
+
+[9]
+Underfull \hbox (badness 1320) in paragraph at lines 583--584
+ []\T1/cmr/bx/n/10.95 Uniform Schema.[] \T1/cmr/m/n/10.95 Ev-ery con-struct use
+s the
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 583--584
+\T1/cmr/m/n/10.95 iden-ti-cal param/-port/-body/ver-i-fi-ca-tion lay-out
+ []
+
+[10]
+Underfull \hbox (badness 2409) in paragraph at lines 590--591
+[]\T1/cmr/bx/n/10.95 Constants: \T1/cmtt/m/n/10.95 param NAME: const = 32; \T1/
+cmr/m/n/10.95 re-
+ []
+
+
+Underfull \hbox (badness 6445) in paragraph at lines 591--592
+\T1/cmr/m/n/10.95 defined im-port se-man-tics with no order-
+ []
+
+
+Underfull \hbox (badness 1028) in paragraph at lines 592--593
+[]\T1/cmr/bx/n/10.95 Conditional struc-ture: \T1/cmtt/m/n/10.95 generate_if \T1
+/cmr/m/n/10.95 per-
+ []
+
+
+Underfull \hbox (badness 1112) in paragraph at lines 592--593
+\T1/cmr/m/n/10.95 and logic based on \T1/cmtt/m/n/10.95 param \T1/cmr/m/n/10.95
+ val-ues, re-plac-ing
+ []
+
+
+Underfull \vbox (badness 10000) has occurred while \output is active []
+
+
+Underfull \hbox (badness 1117) in paragraph at lines 594--595
+\T1/cmr/m/n/10.95 build-time con-fig-u-ra-tion with-out the tex-tual
+ []
+
+
+Underfull \hbox (badness 1184) in paragraph at lines 599--600
+ []\T1/cmr/bx/n/10.95 Named Block End-ings.[] \T1/cmr/m/n/10.95 Ev-ery block cl
+oses
+ []
+
+
+Underfull \hbox (badness 1803) in paragraph at lines 599--600
+\T1/cmr/m/n/10.95 with \T1/cmtt/m/n/10.95 end keyword Name\T1/cmr/m/n/10.95 . T
+he most com-mon
+ []
+
+LaTeX Font Info:    Font shape `T1/cmtt/bx/n' in size <10.95> not available
+(Font)              Font shape `T1/cmtt/m/n' tried instead on input line 605.
+[11]
+Underfull \hbox (badness 10000) in paragraph at lines 639--640
+[]|\T1/cmr/m/n/10 Construct cat-a-log,
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 640--641
+[]|\T1/cmr/m/n/10 Natural-language
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 641--642
+[]|\T1/cmr/m/n/10 Structured er-ror
+ []
+
+
+Underfull \hbox (badness 5260) in paragraph at lines 666--667
+ []\T1/cmr/bx/n/10.95 Test-Driven De-vel-op-ment for Hard-ware
+ []
+
+
+Underfull \hbox (badness 6300) in paragraph at lines 668--669
+[]\T1/cmr/m/n/10.95 With tra-di-tional event-driven HDLs, each
+ []
+
+[12]
+Underfull \hbox (badness 10000) in paragraph at lines 693--694
+[]|\T1/cmr/m/n/10 Symbol ta-ble con-struc-tion,
+ []
+
+
+Underfull \hbox (badness 1275) in paragraph at lines 694--695
+[]|\T1/cmr/m/n/10 Bit-width safety, clock-domain
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 695--696
+[]|\T1/cmr/m/n/10 Pipeline haz-ard gen-er-a-tion,
+ []
+
+
+Underfull \hbox (badness 2617) in paragraph at lines 695--696
+\T1/cmr/m/n/10 FIFO im-ple-men-ta-tion, ar-biter
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 696--697
+[]|\T1/cmtt/m/n/10 assert\T1/cmr/m/n/10 /\T1/cmtt/m/n/10 cover $\OMS/cmsy/m/n/1
+0 !$ \T1/cmr/m/n/10 con-cur-rent
+ []
+
+
+Underfull \hbox (badness 1221) in paragraph at lines 698--699
+[]|\T1/cmtt/m/n/10 arch formal\T1/cmr/m/n/10 : di-rect AST $\OMS/cmsy/m/n/10 !$
+
+ []
+
+
+Underfull \vbox (badness 10000) has occurred while \output is active []
+
+ [13]
+Underfull \hbox (badness 1314) in paragraph at lines 722--727
+\T1/cmr/m/n/10.95 bit-vector tran-si-tion re-la-tions via \T1/cmtt/m/n/10.95 ar
+ch formal
+ []
+
+
+Underfull \hbox (badness 1043) in paragraph at lines 722--727
+\T1/cmr/m/n/10.95 FPGA-specific Sys-temVer-ilog with BRAM/DSP
+ []
+
+
+Underfull \hbox (badness 1005) in paragraph at lines 739--740
+\T1/cmr/m/n/10.95 the \T1/cmtt/m/n/10.95 --tb \T1/cmr/m/n/10.95 flag, \T1/cmtt/
+m/n/10.95 arch sim \T1/cmr/m/n/10.95 sup-ports Python test-
+ []
+
+
+Underfull \hbox (badness 6094) in paragraph at lines 739--740
+\T1/cmr/m/n/10.95 benches writ-ten against a cocotb-compatible
+ []
+
+
+Underfull \hbox (badness 1776) in paragraph at lines 739--740
+\T1/cmr/m/n/10.95 API [[]]. In-vok-ing \T1/cmtt/m/n/10.95 arch sim --pybind --t
+est
+ []
+
+
+Underfull \hbox (badness 1264) in paragraph at lines 739--740
+\T1/cmtt/m/n/10.95 Timer\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 ClockCycles\T1/c
+mr/m/n/10.95 , \T1/cmtt/m/n/10.95 Clock\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 s
+tart_soon\T1/cmr/m/n/10.95 , and
+ []
+
+(/usr/share/texlive/texmf-dist/tex/latex/listings/lstlang1.sty
+File: lstlang1.sty 2020/03/24 1.8d listings language file
+) [14]
+Underfull \hbox (badness 10000) in paragraph at lines 778--778
+[]|\T1/cmr/m/n/9 Delta cy-cles (un-bounded
+ []
+
+
+Underfull \hbox (badness 4024) in paragraph at lines 779--779
+[]|\T1/cmr/m/n/9 X/Z prop-a-ga-tion (4-valued
+ []
+
+
+Underfull \hbox (badness 3312) in paragraph at lines 779--779
+[]|\T1/cmr/m/n/9 Structural X elim-i-nated (no tri-state,
+ []
+
+
+Underfull \hbox (badness 2521) in paragraph at lines 780--780
+[]|\T1/cmr/m/n/9 Multiple drivers (wired-OR
+ []
+
+
+Underfull \hbox (badness 3118) in paragraph at lines 792--793
+\T1/cmr/m/n/10.95 straight-line na-tive loop with bounded set-tle
+ []
+
+
+Underfull \hbox (badness 1383) in paragraph at lines 821--822
+\T1/cmr/m/n/10.95 Arch's 2-state model elim-i-nates the struc-tural
+ []
+
+
+Underfull \hbox (badness 3557) in paragraph at lines 838--839
+[]|\T1/cmtt/m/n/9 --check-uninit-ram \T1/cmr/m/n/9 per-cell valid bitmap;
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 839--839
+[]|\T1/cmr/m/n/9 Uninitialized pri-mary in-put
+ []
+
+
+Underfull \hbox (badness 2418) in paragraph at lines 840--841
+\T1/cmr/m/n/9 con-cur-rent SVA (\T1/cmtt/m/n/9 _auto_bound_*\T1/cmr/m/n/9 ); EB
+MC
+ []
+
+
+Underfull \hbox (badness 3965) in paragraph at lines 842--843
+[]|\T1/cmr/m/n/9 Compile er-ror on con-stant \T1/cmtt/m/n/9 /0\T1/cmr/m/n/9 ; r
+un-time
+ []
+
+[15]
+Underfull \vbox (badness 10000) has occurred while \output is active []
+
+
+Underfull \vbox (badness 1102) has occurred while \output is active []
+
+ [16]
+Underfull \vbox (badness 10000) has occurred while \output is active []
+
+ [17]
+Underfull \hbox (badness 6808) in paragraph at lines 906--907
+\T1/cmr/m/n/10.95 con-cur-rent SVA---\T1/cmtt/m/n/10.95 assert property (@(pose
+dge
+ []
+
+
+Underfull \hbox (badness 3343) in paragraph at lines 906--907
+\T1/cmtt/m/n/10.95 implies \T1/cmr/m/n/10.95 bi-nary op-er-a-tor low-er-ing to 
+\T1/cmtt/m/n/10.95 (!a ||
+ []
+
+
+Underfull \hbox (badness 1325) in paragraph at lines 906--907
+\T1/cmtt/m/n/10.95 b)\T1/cmr/m/n/10.95 . The com-piler ad-di-tion-ally auto-gen
+erates
+ []
+
+
+Underfull \hbox (badness 1308) in paragraph at lines 908--909
+\T1/cmr/m/n/10.95 clock edge un-der the con-struct's \T1/cmtt/m/n/10.95 posedge
+ clk
+ []
+
+
+Underfull \hbox (badness 3579) in paragraph at lines 908--909
+\T1/cmr/m/n/10.95 rently bind the tem-po-ral state into ex-plicit
+ []
+
+
+Underfull \hbox (badness 2285) in paragraph at lines 908--909
+\T1/cmr/m/n/10.95 in-side a \T1/cmtt/m/n/10.95 seq \T1/cmr/m/n/10.95 block up-d
+at-ing \T1/cmtt/m/n/10.95 req_d1 <= req;
+ []
+
+
+Underfull \hbox (badness 5316) in paragraph at lines 908--909
+\T1/cmr/m/n/10.95 fol-lowed by \T1/cmtt/m/n/10.95 assert next_cycle_ack: req_d1
+
+ []
+
+
+Underfull \hbox (badness 3623) in paragraph at lines 908--909
+\T1/cmr/m/n/10.95 post-v0.41 roadmap---\T1/cmtt/m/n/10.95 a |=> b \T1/cmr/m/n/1
+0.95 (non-overlapping
+ []
+
+
+Underfull \hbox (badness 3601) in paragraph at lines 908--909
+\T1/cmr/m/n/10.95 Unbounded-liveness and gen-eral se-quence op-
+ []
+
+
+Underfull \hbox (badness 2253) in paragraph at lines 908--909
+\T1/cmr/m/n/10.95 er-a-tors (\T1/cmtt/m/n/10.95 ##[a:b]\T1/cmr/m/n/10.95 , \T1/
+cmtt/m/n/10.95 [*n]\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 throughout\T1/cmr/m/n
+/10.95 , \T1/cmtt/m/n/10.95 within\T1/cmr/m/n/10.95 ,
+ []
+
+
+Underfull \hbox (badness 2042) in paragraph at lines 908--909
+\T1/cmtt/m/n/10.95 first_match\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 s_eventual
+ly\T1/cmr/m/n/10.95 , and strong/weak
+ []
+
+
+Underfull \hbox (badness 2753) in paragraph at lines 910--911
+[]\T1/cmr/m/n/10.95 Two in-de-pen-dent ver-i-fi-ca-tion back-ends con-
+ []
+
+
+Underfull \hbox (badness 1028) in paragraph at lines 910--911
+\T1/cmr/m/n/10.95 LIB2 and dis-patches prop-er-ties to a back-end
+ []
+
+(/usr/share/texlive/texmf-dist/tex/latex/listings/lstlang1.sty
+File: lstlang1.sty 2020/03/24 1.8d listings language file
+)
+(/usr/share/texlive/texmf-dist/tex/latex/listings/lstlang1.sty
+File: lstlang1.sty 2020/03/24 1.8d listings language file
+)
+Underfull \vbox (badness 10000) has occurred while \output is active []
+
+ [18]
+Underfull \hbox (badness 3312) in paragraph at lines 983--984
+\T1/cmr/m/n/10.95 To demon-strate Arch's con-struct com-po-si-tion
+ []
+
+[19]
+Underfull \hbox (badness 3168) in paragraph at lines 1000--1001
+\T1/cmr/m/n/10.95 to-tal logic lev-els, op-ti-mized from 14 dur-ing
+ []
+
+
+Underfull \hbox (badness 6625) in paragraph at lines 1000--1001
+\T1/cmr/m/n/10.95 de-vel-op-ment). Variable-indexed \T1/cmtt/m/n/10.95 Vec \T1/
+cmr/m/n/10.95 ac-cess
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1000--1001
+\T1/cmr/m/n/10.95 (\T1/cmtt/m/n/10.95 tag_rd_data[lru_victim_way][53:2]\T1/cmr/
+m/n/10.95 ) elim-i-
+ []
+
+
+Underfull \vbox (badness 10000) has occurred while \output is active []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1043--1044
+\T1/cmr/m/n/10.95 chan-nels (Memory-to-Stream and Stream-to-
+ []
+
+[20]
+Underfull \hbox (badness 4120) in paragraph at lines 1050--1051
+[]\T1/cmtt/m/n/10.95 module $\OMS/cmsy/m/n/10.95 ^^B$ \T1/cmr/bx/n/10.95 2: \T1
+/cmr/m/n/10.95 Top-level in-te-gra-tor (with
+ []
+
+
+Underfull \hbox (badness 1448) in paragraph at lines 1050--1051
+\T1/cmr/m/n/10.95 sim-ple/SG com-bi-na-tional mux) and PG021-
+ []
+
+
+Underfull \hbox (badness 3449) in paragraph at lines 1058--1059
+\T1/cmr/m/n/10.95 The gen-er-ated Sys-temVer-ilog was syn-the-sized
+ []
+
+
+Underfull \hbox (badness 1924) in paragraph at lines 1081--1082
+\T1/cmr/m/n/10.95 ing tim-ing at both 100MHz (+5.06ns slack)
+ []
+
+
+Underfull \hbox (badness 1881) in paragraph at lines 1081--1082
+\T1/cmr/m/n/10.95 achiev-able fre-quency of $[]$223MHz on 130nm.
+ []
+
+
+Underfull \hbox (badness 2799) in paragraph at lines 1083--1084
+\T1/cmr/m/n/10.95 test-bench wave-forms shows 9.03mW to-tal at
+ []
+
+[21]
+Underfull \hbox (badness 10000) in paragraph at lines 1125--1126
+\T1/cmtt/m/n/10.95 i in 0..burst_len_r-1 \T1/cmr/m/n/10.95 where \T1/cmtt/m/n/1
+0.95 burst_len_r:
+ []
+
+
+Underfull \hbox (badness 1303) in paragraph at lines 1125--1126
+\T1/cmr/m/n/10.95 re-duc-tion) be-fore the ar-chi-tec-tural split above
+ []
+
+[22]
+Underfull \hbox (badness 1859) in paragraph at lines 1174--1175
+\T1/cmr/m/n/10.95 Table []12[] breaks down line counts by de-sign
+ []
+
+
+Underfull \hbox (badness 2941) in paragraph at lines 1174--1175
+\T1/cmr/m/n/10.95 cat-e-gory. FSMs show the largest com-pres-
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1198--1198
+[]\T1/cmr/bx/n/10.95 Language Fea-tures Driven by
+ []
+
+[23]
+Underfull \hbox (badness 3547) in paragraph at lines 1223--1224
+[]\T1/cmr/m/n/10.95 The 15 ex-cluded tasks are named ex-plic-
+ []
+
+
+Underfull \hbox (badness 2556) in paragraph at lines 1223--1224
+\T1/cmr/m/n/10.95 itly: in cid004, \T1/cmtt/m/n/10.95 8x3_priority_encoder_0013
+\T1/cmr/m/n/10.95 ,
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1223--1224
+\T1/cmtt/m/n/10.95 GFCM_0003\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 bus_arbiter_
+0004\T1/cmr/m/n/10.95 ,
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1223--1224
+\T1/cmtt/m/n/10.95 cdc_pulse_synchronizer_0013\T1/cmr/m/n/10.95 ,
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1223--1224
+\T1/cmtt/m/n/10.95 matrix_multiplier_0010\T1/cmr/m/n/10.95 ; in cid007,
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1223--1224
+\T1/cmtt/m/n/10.95 aes_key_expansion_0001\T1/cmr/m/n/10.95 ; and in cid016,
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1223--1224
+\T1/cmtt/m/n/10.95 String_to_ASCII_0001\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 a
+pb_dsp_op_0002\T1/cmr/m/n/10.95 ,
+ []
+
+
+Underfull \hbox (badness 7133) in paragraph at lines 1263--1264
+[]\T1/cmr/m/n/10.95 A derived-parameter elab-o-ra-tion bug was
+ []
+
+
+Underfull \hbox (badness 1910) in paragraph at lines 1265--1266
+\T1/cmtt/m/n/10.95 *%\T1/cmr/m/n/10.95 ) were added for mod-u-lar arith-metic a
+t
+ []
+
+
+Underfull \hbox (badness 4713) in paragraph at lines 1265--1266
+\T1/cmr/m/n/10.95 widen-ing. Re-sult width is \T1/cmtt/m/n/10.95 max(W(lhs),
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1265--1266
+\T1/cmtt/m/n/10.95 W(rhs))\T1/cmr/m/n/10.95 ; SV emis-sion uses \T1/cmtt/m/n/10
+.95 W'(lhs op
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1265--1266
+\T1/cmtt/m/n/10.95 rhs) \T1/cmr/m/n/10.95 size casts. This elim-i-nated the
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1265--1266
+\T1/cmtt/m/n/10.95 .trunc<N>()\T1/cmr/m/n/10.95 /\T1/cmtt/m/n/10.95 .sext<N>()\
+T1/cmr/m/n/10.95 /\T1/cmtt/m/n/10.95 .zext<N>() \T1/cmr/m/n/10.95 boil-
+ []
+
+
+Underfull \hbox (badness 2799) in paragraph at lines 1265--1266
+\T1/cmr/m/n/10.95 fail-ures in MAC and ac-cu-mu-la-tor de-signs,
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1265--1266
+\T1/cmr/m/n/10.95 ing across the \T1/cmtt/m/n/10.95 sgd_linear_regression\T1/cm
+r/m/n/10.95 ,
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1265--1266
+\T1/cmtt/m/n/10.95 load_store_unit\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 low_pa
+ss_filter\T1/cmr/m/n/10.95 ,
+ []
+
+
+Underfull \hbox (badness 4168) in paragraph at lines 1265--1266
+\T1/cmtt/m/n/10.95 digital_dice_roller\T1/cmr/m/n/10.95 , \T1/cmtt/m/n/10.95 di
+g_stopwatch\T1/cmr/m/n/10.95 , and
+ []
+
+
+Underfull \hbox (badness 3168) in paragraph at lines 1266--1267
+[]\T1/cmr/m/n/10.95 Reset syn-tax was stan-dard-ized to the \T1/cmtt/m/n/10.95 
+=>
+ []
+
+
+Underfull \vbox (badness 2111) has occurred while \output is active []
+
+ [24]
+Underfull \hbox (badness 1466) in paragraph at lines 1343--1344
+ []\T1/cmr/bx/n/10.95 Traditional HDLs.[] \T1/cmr/m/n/10.95 Ver-ilog/Sys-temVer
+-ilog [[]]
+ []
+
+[25]
+Underfull \hbox (badness 4060) in paragraph at lines 1355--1356
+ []\T1/cmr/bx/n/10.95 Rule-Based and Pipeline-Centric HDLs.[]
+ []
+
+
+Underfull \hbox (badness 1342) in paragraph at lines 1355--1356
+\T1/cmr/m/n/10.95 ual) and does not ad-dress FSMs, bus pro-to-
+ []
+
+
+Underfull \hbox (badness 1708) in paragraph at lines 1355--1356
+\T1/cmr/m/n/10.95 pro-pri-etary Sand-piper com-piler. Arch dif-fers
+ []
+
+
+Underfull \hbox (badness 1668) in paragraph at lines 1355--1356
+\T1/cmr/m/n/10.95 (\T1/cmtt/m/n/10.95 pipeline\T1/cmr/m/n/10.95 /\T1/cmtt/m/n/1
+0.95 fsm\T1/cmr/m/n/10.95 /\T1/cmtt/m/n/10.95 fifo\T1/cmr/m/n/10.95 ) to protoc
+ol-level ab-strac-
+ []
+
+
+Underfull \hbox (badness 3199) in paragraph at lines 1358--1359
+\T1/cmr/m/n/10.95 Cat-a-pult, Bambu [[]]) syn-the-size RTL from
+ []
+
+[26]
+Underfull \hbox (badness 1210) in paragraph at lines 1374--1375
+ []\T1/cmr/bx/n/10.95 Transaction-Level Mod-el-ing.[] \T1/cmr/m/n/10.95 Arch sp
+ec-i-fies
+ []
+
+
+Underfull \hbox (badness 1320) in paragraph at lines 1377--1390
+ []\T1/cmr/bx/n/10.95 Additional Planned Fea-tures.[] \T1/cmr/m/n/10.95 Other s
+pec-
+ []
+
+
+Underfull \hbox (badness 2173) in paragraph at lines 1377--1390
+\T1/cmr/m/n/10.95 i-fied but not yet im-ple-mented con-structs in-
+ []
+
+
+Underfull \hbox (badness 2261) in paragraph at lines 1377--1390
+\T1/cmr/m/n/10.95 and \T1/cmtt/m/n/10.95 reorder_buf \T1/cmr/m/n/10.95 (out-of-
+order ex-e-cu-tion sup-
+ []
+
+
+Underfull \hbox (badness 2626) in paragraph at lines 1377--1390
+\T1/cmr/m/n/10.95 and pipelined lookup) is spec-i-fied as as-pi-ra-
+ []
+
+
+Underfull \hbox (badness 5756) in paragraph at lines 1377--1390
+\T1/cmtt/m/n/10.95 r: UInt<32> multicycle 3 reset rst=0;\T1/cmr/m/n/10.95 ) is
+ []
+
+
+Underfull \hbox (badness 1389) in paragraph at lines 1377--1390
+\T1/cmr/m/n/10.95 tate and bidi-rec-tional I/O (\T1/cmtt/m/n/10.95 Tristate<T> 
+\T1/cmr/m/n/10.95 type
+ []
+
+
+Underfull \hbox (badness 1490) in paragraph at lines 1377--1390
+\T1/cmr/m/n/10.95 ing to \T1/cmtt/m/n/10.95 _out\T1/cmr/m/n/10.95 /\T1/cmtt/m/n
+/10.95 _oe\T1/cmr/m/n/10.95 /\T1/cmtt/m/n/10.95 _in\T1/cmr/m/n/10.95 . RDC chec
+k-ing (cross-
+ []
+
+
+Underfull \hbox (badness 1253) in paragraph at lines 1377--1390
+\T1/cmr/m/n/10.95 gent syn-chro-niz-ers, and combiner-derived re-set
+ []
+
+
+Underfull \hbox (badness 1845) in paragraph at lines 1377--1390
+\T1/cmr/m/n/10.95 F/CPF power-intent in-te-gra-tion for low-power
+ []
+
+
+Underfull \hbox (badness 1168) in paragraph at lines 1377--1390
+\T1/cmr/m/n/10.95 LIR back-end in-te-gra-tion is planned as a sec-
+ []
+
+[27]
+Underfull \hbox (badness 1490) in paragraph at lines 1398--1401
+[]\T1/cmr/m/n/10.95 Arch's type sys-tem tracks four in-de-pen-dent
+ []
+
+
+Underfull \hbox (badness 1014) in paragraph at lines 1398--1401
+\T1/cmr/m/n/10.95 eval-u-a-tion, and CDC ran-dom-iza-tion. Its AI-
+ []
+
+
+Underfull \hbox (badness 1377) in paragraph at lines 1412--1414
+[]\T1/cmr/m/n/10.95 IEEE Stan-dard for SystemVerilog---Unified
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1425--1428
+[]\T1/cmr/m/n/10.95 C. Pa-pon. Spinal-HDL: An al-ter-na-tive
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1425--1428
+\T1/cmr/m/n/10.95 hard-ware de-scrip-tion lan-guage. []$\T1/cmtt/m/n/10.95 http
+s :
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1425--1428
+\T1/cmtt/m/n/10.95 / / spinalhdl . github . io / SpinalDoc-[]RTD/$[]\T1/cmr/m/n
+/10.95 ,
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1430--1432
+[]\T1/cmr/m/n/10.95 Amaranth HDL Project. []$\T1/cmtt/m/n/10.95 https :
+ []
+
+
+Underfull \hbox (badness 1769) in paragraph at lines 1434--1437
+[]\T1/cmr/m/n/10.95 T. Clow, J. Valamehr, J. Clemons, and
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1444--1446
+[]\T1/cmr/m/n/10.95 GitHub Copi-lot. []$\T1/cmtt/m/n/10.95 https : / / github .
+ com /
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1464--1467
+[]\T1/cmr/m/n/10.95 S. Williams. Icarus Ver-ilog. []$\T1/cmtt/m/n/10.95 https :
+
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1464--1467
+\T1/cmtt/m/n/10.95 / / steveicarus . github . io / iverilog/$[]\T1/cmr/m/n/10.9
+5 ,
+ []
+
+
+Underfull \hbox (badness 1024) in paragraph at lines 1475--1478
+[]\T1/cmr/m/n/10.95 S. Zhao, S. Yan, and Y. Feng. Prac-ti-cal
+ []
+
+[28]
+Underfull \hbox (badness 10000) in paragraph at lines 1495--1498
+[]$\T1/cmtt/m/n/10.95 https : / / skywater-[]pdk . readthedocs . io/$[]\T1/cmr/
+m/n/10.95 ,
+ []
+
+
+Underfull \hbox (badness 1584) in paragraph at lines 1500--1503
+\T1/cmr/m/n/10.95 source static tim-ing an-a-lyzer. The Open-
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1500--1503
+\T1/cmr/m/n/10.95 ROAD Project, []$\T1/cmtt/m/n/10.95 https : / / github . com 
+/
+ []
+
+
+Underfull \hbox (badness 4859) in paragraph at lines 1525--1528
+[]\T1/cmr/m/n/10.95 F. Skar-man and O. Gustafs-son. Spade:
+ []
+
+
+Underfull \hbox (badness 2521) in paragraph at lines 1535--1538
+[]\T1/cmr/m/n/10.95 S. Hoover. Timing-abstract cir-cuit de-sign
+ []
+
+
+Underfull \hbox (badness 1590) in paragraph at lines 1549--1551
+[]\T1/cmr/m/n/10.95 CIRCT: Cir-cuit IR Com-pil-ers and Tools.
+ []
+
+
+Underfull \hbox (badness 5607) in paragraph at lines 1563--1566
+[]\T1/cmr/m/n/10.95 J. Blocklove, S. Garg, R. Karri, and
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1568--1571
+[]\T1/cmr/m/n/10.95 D. Kroen-ing, P. Schram-mel, and
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1568--1571
+\T1/cmr/m/n/10.95 M. Tautschnig. EBMC: The En-
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 1568--1571
+\T1/cmr/m/n/10.95 hanced Bounded Model Checker.
+ []
+
+[29] (./arch_paper0502.aux)
+Package rerunfilecheck Info: File `arch_paper0502.out' has not changed.
+(rerunfilecheck)             Checksum: FEDC8FB2123CD4821397BC93D47D1A9D;11446.
+ ) 
+Here is how much of TeX's memory you used:
+ 17137 strings out of 480247
+ 275165 string characters out of 5896151
+ 846164 words of memory out of 5000000
+ 34393 multiletter control sequences out of 15000+600000
+ 494529 words of font info for 91 fonts, out of 8000000 for 9000
+ 14 hyphenation exceptions out of 8191
+ 60i,11n,63p,1988b,1630s stack positions out of 5000i,500n,10000p,200000b,80000s
+ </sessions/intelligent-fervent-knuth/.texlive2021/texmf-var/fonts/pk/ljfour/
+jknappen/ec/ecbx0600.600pk> </sessions/intelligent-fervent-knuth/.texlive2021/t
+exmf-var/fonts/pk/ljfour/jknappen/ec/eccc0900.600pk> </sessions/intelligent-fer
+vent-knuth/.texlive2021/texmf-var/fonts/pk/ljfour/jknappen/ec/eccc1095.600pk> <
+/sessions/intelligent-fervent-knuth/.texlive2021/texmf-var/fonts/pk/ljfour/jkna
+ppen/ec/ectt1000.600pk> </sessions/intelligent-fervent-knuth/.texlive2021/texmf
+-var/fonts/pk/ljfour/jknappen/ec/ecrm1000.600pk> </sessions/intelligent-fervent
+-knuth/.texlive2021/texmf-var/fonts/pk/ljfour/jknappen/ec/ecbx1000.600pk> </ses
+sions/intelligent-fervent-knuth/.texlive2021/texmf-var/fonts/pk/ljfour/jknappen
+/ec/tcrm1095.600pk> </sessions/intelligent-fervent-knuth/.texlive2021/texmf-var
+/fonts/pk/ljfour/jknappen/ec/ecrm0900.600pk> </sessions/intelligent-fervent-knu
+th/.texlive2021/texmf-var/fonts/pk/ljfour/jknappen/ec/ectt0900.600pk> </session
+s/intelligent-fervent-knuth/.texlive2021/texmf-var/fonts/pk/ljfour/jknappen/ec/
+ecbx0900.600pk> </sessions/intelligent-fervent-knuth/.texlive2021/texmf-var/fon
+ts/pk/ljfour/jknappen/ec/ecit0800.600pk> </sessions/intelligent-fervent-knuth/.
+texlive2021/texmf-var/fonts/pk/ljfour/jknappen/ec/ectt0800.600pk> </sessions/in
+telligent-fervent-knuth/.texlive2021/texmf-var/fonts/pk/ljfour/jknappen/ec/ecrm
+0600.600pk> </sessions/intelligent-fervent-knuth/.texlive2021/texmf-var/fonts/p
+k/ljfour/jknappen/ec/ecbx1200.600pk> </sessions/intelligent-fervent-knuth/.texl
+ive2021/texmf-var/fonts/pk/ljfour/jknappen/ec/ecti1095.600pk> </sessions/intell
+igent-fervent-knuth/.texlive2021/texmf-var/fonts/pk/ljfour/jknappen/ec/ectt1095
+.600pk> </sessions/intelligent-fervent-knuth/.texlive2021/texmf-var/fonts/pk/lj
+four/jknappen/ec/ecbx1095.600pk> </sessions/intelligent-fervent-knuth/.texlive2
+021/texmf-var/fonts/pk/ljfour/jknappen/ec/ecrm1095.600pk> </sessions/intelligen
+t-fervent-knuth/.texlive2021/texmf-var/fonts/pk/ljfour/jknappen/ec/ecbx1440.600
+pk> </sessions/intelligent-fervent-knuth/.texlive2021/texmf-var/fonts/pk/ljfour
+/jknappen/ec/ectt1200.600pk> </sessions/intelligent-fervent-knuth/.texlive2021/
+texmf-var/fonts/pk/ljfour/jknappen/ec/ecrm1200.600pk> </sessions/intelligent-fe
+rvent-knuth/.texlive2021/texmf-var/fonts/pk/ljfour/jknappen/ec/ecbx1728.600pk><
+/usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi10.pfb></usr/s
+hare/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi9.pfb></usr/share/te
+xlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmr10.pfb></usr/share/texlive/t
+exmf-dist/fonts/type1/public/amsfonts/cm/cmr6.pfb></usr/share/texlive/texmf-dis
+t/fonts/type1/public/amsfonts/cm/cmr9.pfb></usr/share/texlive/texmf-dist/fonts/
+type1/public/amsfonts/cm/cmsy10.pfb></usr/share/texlive/texmf-dist/fonts/type1/
+public/amsfonts/cm/cmsy5.pfb></usr/share/texlive/texmf-dist/fonts/type1/public/
+amsfonts/cm/cmsy6.pfb></usr/share/texlive/texmf-dist/fonts/type1/public/amsfont
+s/cm/cmsy7.pfb></usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cm
+sy9.pfb></usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/symbols/msam
+7.pfb>
+Output written on arch_paper0502.pdf (29 pages, 546249 bytes).
+PDF statistics:
+ 2150 PDF objects out of 2487 (max. 8388607)
+ 1073 compressed objects within 11 object streams
+ 469 named destinations out of 1000 (max. 500000)
+ 561 words of extra memory for PDF output out of 10000 (max. 10000000)
+

@@ -1,0 +1,35 @@
+# Yosys synthesis comparison: FSM vs Thread AXI DMA
+# Run: yosys synth_compare.ys
+# Reports cell counts after synthesis to generic gates
+
+# ── FSM MM2S (FsmMm2sMulti) ──────────────────────────────────────────────────
+design -reset
+read_verilog -sv -I tests/axi_dma_multi tests/axi_dma_multi/FsmMm2sMulti.sv
+hierarchy -check -top FsmMm2sMulti
+synth -top FsmMm2sMulti -flatten
+stat -top FsmMm2sMulti
+tee -a /dev/stdout echo "=== FSM MM2S done ==="
+
+# ── Thread MM2S (ThreadMm2s) ──────────────────────────────────────────────────
+design -reset
+read_verilog -sv -I tests/axi_dma_thread tests/axi_dma_thread/ThreadMm2s.sv
+hierarchy -check -top ThreadMm2s
+synth -top ThreadMm2s -flatten
+stat -top ThreadMm2s
+tee -a /dev/stdout echo "=== Thread MM2S done ==="
+
+# ── FSM S2MM (FsmS2mmMulti) ──────────────────────────────────────────────────
+design -reset
+read_verilog -sv -I tests/axi_dma_multi tests/axi_dma_multi/FsmS2mmMulti.sv
+hierarchy -check -top FsmS2mmMulti
+synth -top FsmS2mmMulti -flatten
+stat -top FsmS2mmMulti
+tee -a /dev/stdout echo "=== FSM S2MM done ==="
+
+# ── Thread S2MM (ThreadS2mm) ──────────────────────────────────────────────────
+design -reset
+read_verilog -sv -I tests/axi_dma_thread tests/axi_dma_thread/ThreadS2mm.sv
+hierarchy -check -top ThreadS2mm
+synth -top ThreadS2mm -flatten
+stat -top ThreadS2mm
+tee -a /dev/stdout echo "=== Thread S2MM done ==="

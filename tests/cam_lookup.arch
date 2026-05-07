@@ -1,0 +1,42 @@
+// cam_lookup: combinational content-addressable lookup helper.
+//
+// Given an array of (valid, key) entries and a search key, returns a
+// one-hot match mask, an any-match flag, and the index of the first
+// (LSB-priority) matching entry.
+//
+// Stateless — caller owns the entry_valid/entry_key registers and
+// drives them as inputs each cycle. Designed for use cases like
+// MSHR address-CAM lookup where storage is shared with non-CAM logic
+// (dequeue / finalize) and the CAM is just one read view.
+
+module cam_lookup
+  param DEPTH: const = 32;
+  param KEY_W: const = 10;
+  local param IDX_W: const = $clog2(DEPTH);
+
+  port entry_valid: in Vec<Bool, DEPTH>;
+  port entry_key:   in Vec<UInt<KEY_W>, DEPTH>;
+  port search_key:  in UInt<KEY_W>;
+
+  port match_mask:  out Vec<Bool, DEPTH>;
+  port match_any:   out Bool;
+  port match_first: out UInt<IDX_W>;
+
+  wire any_w:   Bool;
+  wire first_w: UInt<IDX_W>;
+
+  comb
+    any_w = false;
+    first_w = 0;
+    for i in 0..DEPTH-1
+      match_mask[i] = entry_valid[i] & (entry_key[i] == search_key);
+      if match_mask[i] & ~any_w
+        first_w = i.trunc<IDX_W>();
+        any_w = true;
+      end if
+    end for
+  end comb
+
+  let match_any:   Bool        = any_w;
+  let match_first: UInt<IDX_W> = first_w;
+end module cam_lookup
