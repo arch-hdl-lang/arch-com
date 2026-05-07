@@ -1,0 +1,22 @@
+# SystemC::Coverage-3
+C 'filetests/cvdp/cache_mshr.archline179pagev_linecommentseq seq @clk' 13
+C 'filetests/cvdp/cache_mshr.archline186pagev_branchcommentif ' 1
+C 'filetests/cvdp/cache_mshr.archline189pagev_branchcommentelsif ' 1
+C 'filetests/cvdp/cache_mshr.archline190pagev_branchcommentif ' 0
+C 'filetests/cvdp/cache_mshr.archline194pagev_branchcommentelse ' 1
+C 'filetests/cvdp/cache_mshr.archline198pagev_branchcommentif ' 1
+C 'filetests/cvdp/cache_mshr.archline204pagev_branchcommentif ' 3
+C 'filetests/cvdp/cache_mshr.archline213pagev_branchcommentif ' 1
+C 'filetests/cvdp/cache_mshr.archline84pagev_togglecommenttoggle toggle allocate_id_r' 0
+C 'filetests/cvdp/cache_mshr.archline85pagev_togglecommenttoggle toggle allocate_pending_r' 3
+C 'filetests/cvdp/cache_mshr.archline86pagev_togglecommenttoggle toggle allocate_previd_r' 0
+C 'filetests/cvdp/cache_mshr.archline89pagev_togglecommenttoggle toggle dq_valid_r' 2
+C 'filetests/cvdp/cache_mshr.archline90pagev_togglecommenttoggle toggle dq_idx_r' 0
+C 'filetests/cvdp/cache_mshr.archline130pagev_linecommentcomb comb' 104
+C 'filetests/cvdp/cache_mshr.archline134pagev_branchcommentif ' 104
+C 'filetests/cvdp/cache_mshr.archline135pagev_branchcommentif ' 104
+C 'filetests/cvdp/cache_mshr.archline146pagev_linecommentcomb comb' 104
+C 'filetests/cvdp/cache_mshr.archline149pagev_branchcommentif ' 8
+C 'filetests/cvdp/cache_mshr.archline159pagev_linecommentcomb comb' 104
+C 'filetests/cvdp/cache_mshr.archline163pagev_branchcommentif ' 1344
+C 'filetests/cvdp/cache_mshr.archline164pagev_branchcommentif ' 64

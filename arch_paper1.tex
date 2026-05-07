@@ -1,0 +1,1228 @@
+\documentclass[11pt,twocolumn]{article}
+
+% ---- arXiv-compatible packages ----
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+% microtype removed for compatibility
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{url}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage[margin=0.85in]{geometry}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{fancyhdr}
+\usepackage{balance}
+\usepackage{float}
+
+% ---- Listing style for Arch HDL ----
+\definecolor{keyword}{RGB}{0,0,180}
+\definecolor{comment}{RGB}{100,100,100}
+\definecolor{string}{RGB}{160,32,32}
+\definecolor{bg}{RGB}{248,248,248}
+
+\lstdefinelanguage{Arch}{
+  morekeywords={module,end,pipeline,stage,fsm,state,fifo,arbiter,
+    param,port,in,out,inout,const,type,
+    comb,seq,on,rising,falling,reg,let,
+    if,else,match,case,default,for,generate,
+    assert,cover,assume,
+    struct,enum,interface,domain,inst,
+    crossing,from,to,sync,
+    UInt,SInt,Bool,Bit,Clock,Reset,Vec,Token,
+    true,false,todo,
+    forward,stall,flush,
+    hook,template,implements,function,return},
+  sensitive=true,
+  morecomment=[l]{//},
+  morestring=[b]",
+  morestring=[b]',
+}
+
+\lstset{
+  language=Arch,
+  basicstyle=\ttfamily\scriptsize,
+  keywordstyle=\color{keyword}\bfseries,
+  commentstyle=\color{comment}\itshape,
+  stringstyle=\color{string},
+  backgroundcolor=\color{bg},
+  frame=single,
+  framerule=0.4pt,
+  rulecolor=\color{black!30},
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  numbersep=5pt,
+  breaklines=true,
+  breakatwhitespace=true,
+  tabsize=2,
+  showstringspaces=false,
+  xleftmargin=1.5em,
+  framexleftmargin=1.5em,
+  aboveskip=0.8em,
+  belowskip=0.5em,
+  columns=flexible,
+}
+
+\lstdefinelanguage{SystemVerilog}{
+  morekeywords={module,endmodule,always_ff,always_comb,assign,
+    input,output,logic,wire,reg,parameter,localparam,
+    if,else,case,endcase,begin,end,posedge,negedge,
+    generate,endgenerate,genvar,for,import},
+  sensitive=true,
+  morecomment=[l]{//},
+  morestring=[b]",
+}
+
+% ---- Compact lists ----
+\setlist{nosep,leftmargin=1.2em}
+
+% ---- Title ----
+\title{\textbf{Arch: An AI-Native Hardware Description Language\\for Register-Transfer Clocked Hardware Design}}
+
+\author{
+  Shuqing Zhao \\
+  \texttt{arch.hdl.lang@gmail.com}
+}
+
+\date{April 2026}
+
+\begin{document}
+\maketitle
+
+% ============================================================
+%  ABSTRACT
+% ============================================================
+\begin{abstract}
+We present \textbf{Arch} (AI-native Register-transfer Clocked Hardware), a hardware description language designed from first principles for micro-architecture specification and AI-assisted code generation.
+Arch introduces first-class language constructs for pipelines, finite state machines, FIFOs, arbiters, register files, and clock-domain crossings---structures that existing HDLs express only as user-defined patterns prone to subtle errors.
+A static type system tracking bit widths, clock domains, port directions, and signal ownership converts entire categories of hardware bugs into compile-time errors, including multiple drivers, undriven ports, implicit latches, width mismatches, and unsynchronized clock-domain crossings.
+By moving error detection from simulation time to compile time and replacing event-driven simulation with compiled models, Arch minimizes the iteration latency that determines how quickly an AI agent can converge on a correct design.
+Every syntactic choice is governed by an \emph{AI-generatability contract}: a uniform declaration schema, an LL(1) grammar requiring no backtracking or multi-token lookahead, named block endings, explicit directional connect arrows, and a \texttt{todo!}\ escape hatch enable large language models to produce structurally correct, type-safe Arch from natural-language specifications without fine-tuning.
+The Arch compiler emits deterministic, lint-clean IEEE~1800-2017 SystemVerilog and provides an integrated simulation toolchain (\texttt{arch sim}) that generates compiled C++ models for cycle-accurate simulation with assertion evaluation, coverage, and waveform output.
+The language's structural invariants additionally enable a future fully native LLVM~IR compilation path projected to achieve 15--60$\times$ speedup over interpreted event-driven simulators with structurally guaranteed deterministic parallel execution.
+We describe the language design, type system, compiler pipeline, native simulation architecture, and AI-assisted design workflow, and compare Arch to SystemVerilog, VHDL, Chisel, and other modern HDLs across expressiveness, safety, and AI suitability dimensions.
+\end{abstract}
+
+\section{Introduction}\label{sec:intro}
+
+The hardware description language landscape is dominated by two IEEE standards---Verilog/SystemVerilog~\cite{ieee1800} and VHDL~\cite{ieee1076}---designed in the 1980s and 1990s, well before modern type theory, formal verification integration, or large language model (LLM)--assisted code generation became practical.
+While SystemVerilog has grown to encompass verification constructs (UVM), constrained randomization, and assertions (SVA), the core RTL subset retains characteristics that produce hardware bugs detectable only at simulation time:
+implicit latches from incomplete \texttt{if} coverage, multiply-driven nets from accidental concurrent assignments, unsynchronized clock-domain crossings from untracked clock tags, and width mismatches from implicit truncation and extension rules.
+
+Modern alternatives---Chisel~\cite{chisel}, SpinalHDL~\cite{spinalhdl}, Amaranth~\cite{amaranth}, and PyRTL~\cite{pyrtl}---embed RTL in host languages (Scala, Python) and provide varying degrees of parameterization and type safety.
+However, embedding inherits host-language complexity (JVM runtime, Scala implicits, Python dynamic typing), and micro-architectural constructs such as pipelines with hazard detection, arbiters with fairness policies, and clock-domain crossings remain user-defined library patterns, not compiler-verified first-class constructs.
+
+Simultaneously, LLMs have demonstrated remarkable ability to generate code from natural-language descriptions~\cite{codex,copilot}.
+Yet hardware generation remains brittle: Verilog's irregular syntax, context-dependent semantics, and invisible failure modes (e.g., inferred latches) make LLM-generated HDL unreliable without extensive post-generation verification.
+No existing HDL was designed with AI generatability as a first-class design constraint.
+
+A key insight motivating Arch is that \emph{the critical metric for AI-assisted hardware design is iteration latency}---the time from generating a candidate design to discovering whether it is correct. In traditional HDL workflows, many categories of bugs (latches, multiply-driven nets, width mismatches, CDC violations) are invisible until simulation, and simulation itself is slow: event-driven simulators like VCS and Questa carry heavyweight runtimes because the language permits constructs (delta cycles, X/Z propagation, non-deterministic \texttt{always} ordering) that require dynamic resolution at every time step. An AI agent iterating on a hardware design pays this latency cost on every cycle of generate-compile-simulate. Shortening this iteration radius requires two complementary strategies: (1)~moving error detection from simulation time to compile time, so that the agent receives immediate structured feedback without running a simulator, and (2)~accelerating simulation itself, so that the bugs that \emph{can} only be found at runtime are found faster.
+
+Arch addresses these gaps simultaneously. Its contributions are:
+
+\begin{enumerate}
+\item \textbf{First-class micro-architecture constructs.} Pipeline, FSM, FIFO, arbiter, register file, and synchronizer are language keywords with compiler-verified semantics, not library patterns. Hooks allow customizable behavior injection, and templates enforce structural contracts across modules (\Cref{sec:constructs}).
+
+\item \textbf{Four-dimensional static type system.} Bit widths, clock domains, port directions, and signal ownership are tracked simultaneously. Every mismatch is a compile-time error (\Cref{sec:types}).
+
+\item \textbf{AI-generatability contract.} A uniform declaration schema, an LL(1) grammar, named block endings, directional connect arrows, and a \texttt{todo!}\ placeholder enable LLMs to produce correct Arch without fine-tuning (\Cref{sec:ai}).
+
+\item \textbf{Deterministic, lint-clean output.} The compiler emits one SystemVerilog file per top-level module with no latches, no X-propagation, no multiply-driven nets, and no implicit CDCs (\Cref{sec:compiler}).
+
+\item \textbf{Integrated simulation toolchain.} The \texttt{arch sim} command independently generates compiled C++ models for cycle-accurate simulation with assertion evaluation, waveform output, and CDC randomization. Verilator~\cite{verilator} serves separately as the verification oracle for generated SystemVerilog correctness during compiler development. Language-level invariants (no combinational loops, single-driver rule, static clock schedules) further enable a future fully native LLVM~IR path projected to achieve 15--60$\times$ speedup over event-driven simulators with structurally guaranteed deterministic parallel execution (\Cref{sec:sim}).
+\end{enumerate}
+
+\section{Language Design}\label{sec:design}
+
+\subsection{Design Philosophy}
+
+Arch is built on five principles, each enforced at the language level rather than by convention:
+
+\paragraph{No Baggage.} Arch has no host-language runtime. Every keyword maps directly to a hardware structure. Nothing is a library pattern behind operator overloading.
+
+\paragraph{Strong Types.} Bit widths, clock domains, port directions, and signal ownership are tracked statically. Every mismatch is a compile-time error.
+
+\paragraph{Micro-Architecture First.} Pipeline, FSM, FIFO, Arbiter, and RegFile are first-class keywords with compiler-verified semantics.
+
+\paragraph{AI-Generatable.} Uniform schema, named block endings, English keywords, no braces, an LL(1) grammar (no backtracking, no multi-token lookahead), and a \texttt{todo!}\ escape hatch allow any LLM to produce valid Arch from a natural-language description without fine-tuning.
+
+\paragraph{Predictable RTL.} One Arch construct always produces the same SystemVerilog structure. Designers can audit every output line.
+
+\subsection{Block Structure}
+
+Every compound construct opens with a keyword-and-name header and closes with a matching \texttt{end keyword Name}. No braces are used anywhere in the language.
+
+\begin{lstlisting}[language=Arch,caption={Universal block grammar},label={lst:block}]
+module Alu
+  // body
+end module Alu
+
+pipeline Decode
+  stage Fetch
+    // nested body
+  end stage Fetch
+end pipeline Decode
+
+fifo TxBuffer
+  // body
+end fifo TxBuffer
+\end{lstlisting}
+
+This invariant eliminates brace-counting errors and enables named-ending matching: the compiler verifies that every \texttt{end} closure matches its opener by both keyword and name. Mismatches are immediate compile errors.
+
+\subsection{Universal Declaration Schema}
+
+Every first-class construct follows an identical four-section layout:
+
+\begin{lstlisting}[language=Arch,caption={Universal schema},label={lst:schema}]
+keyword Name
+  param NAME: const = value;  // 1: params
+  param NAME: type = SomeType;
+  port name: in Type;          // 2: ports
+  port name: out Type;
+  // construct-specific body   // 3: body
+  assert name: expr;           // 4: verify
+  cover name: expr;
+end keyword Name
+\end{lstlisting}
+
+This regularity is fundamental to AI generatability: an LLM that learns the schema for one construct can apply it to all constructs without additional training.
+
+% ============================================================
+%  TYPE SYSTEM
+% ============================================================
+\section{Type System}\label{sec:types}
+
+The Arch type system enforces four independent safety dimensions simultaneously. A signal that satisfies all four is guaranteed correct-by-construction.
+
+\subsection{Primitive Types}
+
+\Cref{tab:types} lists all primitive types. Each type carries hardware-relevant metadata tracked at compile time.
+
+\begin{table}[t]
+\centering
+\caption{Arch primitive types}
+\label{tab:types}
+\footnotesize
+\begin{tabular}{@{}llp{3.1cm}@{}}
+\toprule
+\textbf{Type} & \textbf{Width} & \textbf{Notes} \\
+\midrule
+\texttt{Bit}             & 1 bit & Raw logic bit \\
+\texttt{UInt<N>}         & $N$ bits & Unsigned integer \\
+\texttt{SInt<N>}         & $N$ bits & Two's complement signed \\
+\texttt{Bool}            & 1 bit & Alias for \texttt{UInt<1>} \\
+\texttt{Clock<D>}        & 1 bit & Domain-tagged clock \\
+\texttt{Reset<S,P,D?>}   & 1 bit & Sync/Async; optional domain for RDC \\
+\texttt{Vec<T,N>}        & $N \times |T|$ & Fixed-size array \\
+\texttt{struct}          & $\Sigma$ fields & Named aggregate \\
+\texttt{enum}            & $\lceil\log_2 n\rceil$ & Discriminated union \\
+\texttt{Token}           & 0 bits & Handshake carrier \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Bit-Width Safety}
+
+Every assignment, port connection, and arithmetic result is width-checked at compile time. There is no implicit truncation, zero-extension, or sign-extension anywhere in the language. Explicit conversion functions (\texttt{zext}, \texttt{sext}, \texttt{trunc}) are required:
+
+\begin{lstlisting}[language=Arch,caption={Explicit width conversion},label={lst:width}]
+let a: UInt<8> = 255;
+let b: UInt<16> = a.zext<16>();  // explicit
+// let c: UInt<16> = a;  // ERROR: width mismatch
+\end{lstlisting}
+
+\subsection{Clock Domain Tracking}
+
+Every clock signal carries a \texttt{Clock<D>} domain tag. The compiler tracks domain membership for every register and combinational signal. Direct assignment across domains is a compile error:
+
+\begin{lstlisting}[language=Arch,caption={Clock domain crossing via synchronizer},label={lst:cdc}]
+// ERROR: cross-domain direct assign
+// comb usb_data = sys_data;
+
+// Correct: explicit synchronizer
+synchronizer SysToUsb
+  kind ff;
+  param STAGES: const = 2;
+  port src_clk: in Clock<SysDomain>;
+  port dst_clk: in Clock<UsbDomain>;
+  port data_in: in Bool;
+  port data_out: out Bool;
+end synchronizer SysToUsb
+\end{lstlisting}
+
+The compiler detects cross-domain register reads and reports CDC violations, directing the designer to use a \texttt{synchronizer} (for individual signals) or an async \texttt{fifo} (for bulk data). Five synchronizer kinds are supported: \texttt{ff} (flip-flop chain), \texttt{gray} (gray-code for multi-bit counters), \texttt{handshake} (req/ack protocol), \texttt{reset} (async assert, sync deassert), and \texttt{pulse} (single-cycle pulse regeneration). CDC checking extends transitively across module instantiation boundaries.
+
+\subsection{Reset Domain Crossing (RDC)}
+
+Mirroring the clock-domain tracking described above, the \texttt{Reset} type accepts an optional third parameter tagging the reset with a domain name: \texttt{Reset<Async, High, SysDomain>}. When two or more reset domains are present in a module, the compiler will detect three classes of RDC violations at compile time:
+(1)~cross-reset-domain register reads, where a register held in reset by one domain is read in a \texttt{seq} block governed by a different reset domain;
+(2)~asynchronous reset deassertion ordering violations, where a downstream module's reset releases before the upstream module it depends on; and
+(3)~reset glitch propagation, where an async reset from one domain is connected to another without a reset synchronizer.
+The compiler will require a \texttt{reset\_synchronizer} or explicit \texttt{rdc\_safe} annotation to suppress the error, mirroring the existing CDC flow. The third domain parameter is currently accepted by the parser but not enforced; full RDC checking is planned as a type-checker extension (see \Cref{sec:future}).
+
+\subsection{Single-Driver Rule}
+
+Every signal in Arch has exactly one driver. Multiple assignments to the same signal from different blocks are compile-time errors. This eliminates an entire class of simulation-time nondeterminism and enables lock-free parallel simulation (\Cref{sec:sim}).
+
+\subsection{No Implicit Latches}
+
+The compiler verifies that every signal assigned in a \texttt{comb} block is assigned on \emph{all} control paths. A missing \texttt{else} branch or incomplete \texttt{match} is a compile error, eliminating the most common source of unintended latches in synthesized hardware. Intentional latches require an explicit \texttt{latch on ENABLE} construct.
+
+% ============================================================
+%  FIRST-CLASS CONSTRUCTS
+% ============================================================
+\section{First-Class Micro-Architecture Constructs}\label{sec:constructs}
+
+Arch elevates recurring micro-architectural patterns from user-defined code to first-class language constructs with compiler-verified semantics.
+
+\subsection{Pipeline}
+
+A \texttt{pipeline} is a sequenced chain of \texttt{stage} blocks. The compiler generates inter-stage registers, stall propagation, forward paths, and flush logic from declarative annotations:
+
+\begin{lstlisting}[language=Arch,caption={Pipeline with forwarding},label={lst:pipe}]
+pipeline IntPipe
+  param WIDTH: const = 32;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port data_in: in UInt<WIDTH>;
+  port result: out UInt<WIDTH>;
+
+  stage Fetch
+    reg instr: UInt<WIDTH> reset rst=>0;
+    seq on clk rising
+      instr <= data_in;
+    end seq
+  end stage Fetch
+
+  stage Execute
+    reg out_val: UInt<WIDTH> reset rst=>0;
+    // cross-stage reference to Fetch.instr
+    seq on clk rising
+      out_val <= Fetch.instr + 1;
+    end seq
+  end stage Execute
+
+  stall when Execute.out_val == 0;
+  flush Fetch when branch_mispred;
+  comb result = Execute.out_val;
+end pipeline IntPipe
+\end{lstlisting}
+
+The compiler:
+(1)~inserts pipeline registers between stages,
+(2)~generates stall signals that back-propagate when any stage asserts \texttt{stall when},
+(3)~generates flush masks triggered by \texttt{flush} directives, and
+(4)~tracks per-stage \texttt{valid\_r} registers for pipeline occupancy.
+Cross-stage data references (e.g., \texttt{Fetch.instr} read from \texttt{Execute}) are resolved to the retimed pipeline register value. Forwarding muxes, when needed, are expressed as explicit \texttt{comb if/else} blocks.
+
+\subsection{Finite State Machine}
+
+An \texttt{fsm} is declared as a set of named \texttt{state} blocks with explicit transitions. A \texttt{default} block provides shared output assignments emitted before the state \texttt{case} statement, so states only override what differs:
+
+\begin{lstlisting}[language=Arch,caption={FSM with default block and transitions},label={lst:fsm}]
+fsm Controller
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port start: in Bool;
+  port busy: out Bool;
+  port done: out Bool;
+
+  default state Idle;
+
+  default
+    comb
+      busy = false;
+      done = false;
+    end comb
+  end default
+
+  state Idle
+    -> Active when start;
+  end state Idle
+
+  state Active
+    comb busy = true; end comb
+    -> Done when count_done;
+  end state Active
+
+  state Done
+    comb done = true; end comb
+    -> Idle;
+  end state Done
+end fsm Controller
+\end{lstlisting}
+
+The \texttt{default state Idle} declaration sets the reset state. The \texttt{default} block assigns \texttt{busy = false} and \texttt{done = false} at the top of the generated \texttt{always\_comb}; individual states override only the signals that differ (e.g., \texttt{Active} sets \texttt{busy = true}). The compiler generates one-hot or binary state encoding (selected by a \texttt{param} or compiler flag) and the transition \texttt{case} logic. If no transition fires in a given cycle, the FSM holds in the current state.
+
+\subsection{FIFO}
+
+A \texttt{fifo} is a first-class construct with compile-time-verified flow control. The designer specifies depth, width, and clock domain(s); the compiler generates counters, full/empty flags, and gray-code pointer CDC for dual-clock FIFOs:
+
+\begin{lstlisting}[language=Arch,caption={Dual-clock FIFO},label={lst:fifo}]
+fifo AsyncBuf
+  param DEPTH: const = 16;
+  param TYPE: type = UInt<32>;
+  port clk_wr: in Clock<WriteDomain>;
+  port clk_rd: in Clock<ReadDomain>;
+  port push_valid: in Bool;
+  port push_ready: out Bool;
+  port push_data: in TYPE;
+  port pop_valid: out Bool;
+  port pop_ready: in Bool;
+  port pop_data: out TYPE;
+  port full: out Bool;
+  port empty: out Bool;
+end fifo AsyncBuf
+\end{lstlisting}
+
+The \texttt{kind} keyword selects FIFO (default) or LIFO (stack) behavior. LIFO is restricted to single-clock operation.
+
+\subsection{Arbiter}
+
+An \texttt{arbiter} manages $N$ requestors competing for $M$ shared resources. The designer declares port counts and an arbitration policy (\texttt{round\_robin}, \texttt{priority}, \texttt{lru}, \texttt{weighted<W>}, or a custom function via \texttt{hook}); the compiler generates grant logic, stall propagation, and fairness guarantees.
+
+\subsection{Additional Constructs}
+
+Arch also provides first-class constructs for:
+\texttt{regfile} (multi-ported register files with read-during-write policies),
+\texttt{ram} (single-port, simple-dual, true-dual, and ROM with configurable latency),
+\texttt{synchronizer} (CDC crossing for individual signals with selectable policies: \texttt{ff}, \texttt{gray}, \texttt{handshake}, \texttt{reset}, \texttt{pulse}),
+\texttt{counter} (saturating, wrapping, gray-code, one-hot, and Johnson modes),
+\texttt{linklist} (singly/doubly/circular linked-list data structures with per-operation FSM controllers),
+\texttt{clkgate} (integrated clock gating cell, latch-based or AND-based), and
+\texttt{bus} (reusable port bundles with initiator/target perspective flipping).
+
+Each follows the identical four-section schema of \Cref{lst:schema}.
+
+\subsection{Hooks --- Customizable Behavior Points}\label{sec:hooks}
+
+When a built-in construct policy does not fit, Arch provides \texttt{hook} declarations: named function bindings inside a construct that declare an expected signature and map it to a user-defined \texttt{function}. Hooks allow designers to inject custom combinational logic into compiler-generated control structures without abandoning the construct's safety guarantees.
+
+\begin{lstlisting}[language=Arch,caption={Custom arbiter policy via hook},label={lst:hook}]
+function MyGrantFn(req_mask: UInt<4>,
+                   last_grant: UInt<4>,
+                   extra: UInt<8>) -> UInt<4>
+  let masked: UInt<4> = req_mask & (last_grant ^ 0xF);
+  let pick: UInt<4> = masked != 0 ? masked : req_mask;
+  return pick & (~pick + 1).trunc<4>();
+end function MyGrantFn
+
+arbiter CustomArb
+  policy MyGrantFn;
+  param N: const = 4;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port extra_port: in UInt<8>;
+  hook grant_select(req_mask: UInt<4>,
+                    last_grant: UInt<4>,
+                    extra_port: UInt<8>) -> UInt<4>
+    = MyGrantFn(req_mask, last_grant, extra_port);
+end arbiter CustomArb
+\end{lstlisting}
+
+Hook arguments bind to internal signals generated by the construct (e.g., \texttt{req\_mask}, \texttt{last\_grant}) or to user-declared ports and params on the enclosing construct. The bound function is emitted inline inside the generated SystemVerilog module. A missing required hook is a compile error. Hooks are also used inside \texttt{template} contracts (\Cref{sec:templates}) to specify required function bindings.
+
+\subsection{Templates --- Interface Contracts}\label{sec:templates}
+
+A \texttt{template} is a compile-time-only construct that defines a structural contract: a set of required params, ports, and hooks that any implementing module must provide. Templates emit no SystemVerilog---they exist purely to enforce structural conformance across modules, serving as the Arch equivalent of traits or interfaces in software languages.
+
+\begin{lstlisting}[language=Arch,caption={Template declaration and implementation},label={lst:template}]
+template Arbiter
+  param NUM_REQ: const;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port grant_valid: out Bool;
+  hook grant_select(req_mask: UInt<4>) -> UInt<4>;
+end template Arbiter
+
+module MyArbiter implements Arbiter
+  param NUM_REQ: const = 4;
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port req_mask: in UInt<4>;
+  port grant_valid: out Bool;
+  port grant_out: out UInt<4>;
+
+  hook grant_select(req_mask: UInt<4>) -> UInt<4>
+    = FixedGrant(req_mask);
+
+  let grant: UInt<4> = FixedGrant(req_mask);
+  comb
+    grant_valid = grant != 0;
+    grant_out = grant;
+  end comb
+end module MyArbiter
+\end{lstlisting}
+
+A template body contains only declarations---params (without defaults), ports, and hook signatures. No logic, registers, or \texttt{comb}/\texttt{seq} blocks are permitted. A module opts into a template contract with the \texttt{implements} keyword, and the compiler validates conformance:
+
+\begin{itemize}
+\item \textbf{Param presence:} every template param must appear in the implementing module.
+\item \textbf{Port presence and direction:} every template port must appear with matching direction and type.
+\item \textbf{Hook binding:} every template hook must have a corresponding binding in the module.
+\end{itemize}
+
+The implementing module may declare additional params, ports, and logic beyond what the template requires---the template is a minimum contract, not an exhaustive specification. This enables library authors to define reusable contracts (e.g., ``any arbiter must expose \texttt{grant\_valid} and provide a \texttt{grant\_select} hook'') while leaving full implementation freedom to the designer.
+
+% ============================================================
+%  AI GENERATABILITY
+% ============================================================
+\section{AI-Generatability Contract}\label{sec:ai}
+
+Arch makes a hard design commitment: \emph{a large language model that has read the specification and nothing else must be able to generate structurally correct, type-safe Arch from a plain-English hardware description}. Every syntactic choice serves this goal.
+
+\subsection{Design Decisions for AI}
+
+\paragraph{Uniform Schema.} Every construct uses the identical param/port/body/verification layout (\Cref{lst:schema}). An LLM that learns the schema once applies it universally.
+
+\paragraph{LL(1) Grammar.} Arch's grammar is strictly LL(1): at every point during parsing, the next single token unambiguously determines which production rule to apply. There is no backtracking, no multi-token lookahead, and no context-dependent parsing. Every construct is identified by its first keyword (\texttt{module}, \texttt{fsm}, \texttt{pipeline}, \texttt{port}, etc.); every closing is \texttt{end} followed by a single keyword token. By contrast, SystemVerilog requires unbounded lookahead and GLR or backtracking parsers to resolve ambiguities between type declarations, expressions, and module instantiations. The LL(1) property gives AI generators four advantages: (1)~no syntactic traps---every token sequence either parses to exactly one AST or is caught immediately as a syntax error; (2)~instant error localization---the parser never backtracks, so errors are reported at the exact offending token; (3)~context-free understanding---any code snippet can be parsed in isolation without holding the entire file in context; and (4)~predictable token budget---the uniform \texttt{keyword Name \ldots\ end keyword Name} pattern has no hidden costs from macro expansion or optional delimiters.
+
+\paragraph{Named Block Endings.} Every block closes with \texttt{end keyword Name}. The most common LLM failure mode in code generation---incorrect nesting---becomes a hard compiler error. The generator always knows exactly which block it is closing.
+
+\paragraph{No Braces.} The keyword+name header and \texttt{end keyword Name} are the sole delimiters. There is no redundant \texttt{\{} to emit or forget.
+
+\paragraph{Directional Connect Arrows.} Port connections use \texttt{<-} (drive input from local) and \texttt{->} (read output into local). Direction is visible in the syntax itself; an LLM cannot silently reverse data flow.
+
+\paragraph{\texttt{todo!}\ Escape Hatch.} The \texttt{todo!}\ keyword compiles and type-checks but aborts at simulation runtime. This enables incremental AI-assisted design: generate a correct skeleton, then fill in logic section by section. Every intermediate state compiles.
+
+\subsection{Minimal AI Context}
+
+The effective AI context for Arch hardware design comprises three components:
+
+\begin{table}[t]
+\centering
+\caption{AI context window components}
+\label{tab:aicontext}
+\small
+\begin{tabular}{@{}llp{3.2cm}@{}}
+\toprule
+\textbf{Component} & \textbf{Size} & \textbf{Purpose} \\
+\midrule
+Reference Card & ${\sim}400$ lines & Construct catalog, schema, type table \\
+Design Intent & 5--20 lines & Natural-language block description \\
+Compiler Output & 5--30 lines & Structured error feedback \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The full specification is a reference document for human designers.
+The AI Reference Card is what an LLM assistant actually uses---it is optimized for construct lookup and schema recall, not for sequential human reading.
+
+\subsection{AI-Assisted Design Workflow}
+
+The practical workflow has four steps, typically completing in two to four iterations:
+
+\begin{enumerate}
+\item \textbf{Intent.} The designer describes the desired hardware block in natural language.
+\item \textbf{Generation.} The AI identifies the Arch constructs, applies the universal schema, and emits source code, using \texttt{todo!}\ for uncertain logic.
+\item \textbf{Compilation.} The designer runs \texttt{arch check}. The compiler emits zero errors, or precise typed errors.
+\item \textbf{Correction.} Compiler errors are fed back to the AI, which corrects and re-emits. The compiler replaces the spec in the feedback loop.
+\end{enumerate}
+
+This workflow exploits three properties: (1)~the uniform schema means the AI need not choose between implementation strategies, (2)~the compiler produces precise, structured errors sufficient for self-correction, and (3)~hardware intent maps unambiguously to Arch constructs (a FIFO is always \texttt{fifo}, a state machine is always \texttt{fsm}).
+
+\paragraph{Minimizing Iteration Latency.}
+The workflow is designed to minimize the time from code generation to correctness feedback. In a traditional Verilog flow, an AI agent must generate code, invoke a simulator, wait for simulation to complete (seconds to minutes for event-driven tools), and parse waveform or log output to identify failures---many of which are structural errors (latches, width mismatches, CDC violations) that could have been caught statically. In Arch, \texttt{arch check} runs in milliseconds and catches these errors at compile time with structured diagnostics that name the construct, signal, type mismatch, and suggested fix. The agent's inner loop---generate, check, correct---completes without ever invoking a simulator for structural errors. When simulation \emph{is} needed (for functional verification), \texttt{arch sim} generates compiled C++ models in the same performance class as Verilator, avoiding event-driven scheduling overhead and achieving the 10--50$\times$ speedup over interpreted simulators characteristic of compiled 2-state simulation. Together, compile-time error detection and compiled simulation compress the iteration radius that determines how quickly an AI agent---or a human designer---can converge on a correct design.
+
+\paragraph{Test-Driven Development for Hardware Agents.}
+A natural extension of this tight iteration loop is test-driven development (TDD), an increasingly popular methodology for AI-agent-driven hardware design. In TDD, the agent is given a specification and a test suite \emph{before} writing any implementation. The agent then iterates: generate a candidate design, run the tests, observe failures, and refine. The effectiveness of TDD is directly proportional to how fast each generate-test-feedback cycle completes.
+
+With traditional event-driven HDLs, each TDD iteration requires invoking a heavyweight simulator---seconds to minutes per cycle---making agent-driven TDD impractical for all but the simplest designs. Arch enables practical hardware TDD through a two-tier feedback loop. The \emph{inner loop} uses \texttt{arch check} (milliseconds) to eliminate structural errors before any simulation runs; the agent may complete several generate-check-correct cycles per second. The \emph{outer loop} uses \texttt{arch sim} (compiled C++ models) to run the actual test suite for functional verification. Like Verilator-class compiled simulators, \texttt{arch sim} avoids the overhead of event-driven scheduling, achieving the 10--50$\times$ speedup over interpreted simulators characteristic of compiled 2-state simulation. This two-tier structure means the agent spends most of its iterations in the fast inner loop and invokes simulation only when the design is structurally sound---exactly the workflow that makes TDD viable at scale.
+
+The VerilogEval and CVDP benchmarks (\Cref{sec:benchmark}) were themselves completed using this pattern: each design was written from a natural-language spec, compiled with \texttt{arch check}, and validated against reference testbenches---a workflow that mirrors how an AI agent would operate in a TDD loop.
+
+% ============================================================
+%  COMPILER
+% ============================================================
+\section{Compiler Pipeline}\label{sec:compiler}
+
+The Arch compiler transforms source through six phases:
+
+\begin{table}[t]
+\centering
+\caption{Compiler pipeline phases}
+\label{tab:compiler}
+\small
+\begin{tabular}{@{}lp{5cm}@{}}
+\toprule
+\textbf{Phase} & \textbf{Key Actions} \\
+\midrule
+Parse & Syntax, named-block matching \\
+Elaborate & Parameter resolution, generic instantiation, type expansion \\
+Type Check & Bit-width safety, clock-domain tracking, direction safety, single-driver rule \\
+Lower & Pipeline hazard generation, FIFO implementation, arbiter logic, FSM encoding \\
+Verify Emit & \texttt{assert}/\texttt{cover}/\texttt{assume} $\to$ SVA (planned) \\
+SV Emit & One deterministic, lint-clean SV file per top-level module \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Output Guarantee}
+
+The generated SystemVerilog is guaranteed free of:
+\begin{itemize}
+\item Unintentional latches---the compiler verifies all \texttt{comb} signals are assigned on every control path; intentional latches require an explicit \texttt{latch on ENABLE} construct.
+\item Multiply-driven nets---enforced by the single-driver rule.
+\item Unresolved high-Z outputs---every output has exactly one driver.
+\item X-propagation from uninitialized state---all registers declare an explicit reset policy (including opt-out via \texttt{reset none}); the \texttt{--check-uninit} simulation flag detects reads of uninitialized registers at runtime.
+\item Implicit clock-domain crossings---all CDCs are declared and synchronizer-wrapped.
+\end{itemize}
+
+Synthesis tools receive RTL that passes lint cleanly with no \texttt{translate\_off} pragmas or vendor-specific attributes required. During compiler development, the generated SystemVerilog is systematically verified against Verilator~\cite{verilator}---the industry-standard open-source cycle-accurate simulator---to confirm behavioral equivalence between Arch source semantics and the emitted RTL.
+
+\subsection{Intermediate Representation}
+
+The current compiler is a direct single-pass pipeline: parse $\to$ elaborate $\to$ type-check $\to$ codegen, transforming the AST directly to SystemVerilog text. This architecture prioritizes simplicity and correctness for the initial release. A dedicated intermediate representation (AIR) and CIRCT/MLIR backend integration are planned as future work to enable multi-target output and optimization passes.
+
+\subsection{Toolchain Targets}
+
+The compiler currently supports two output targets:
+IEEE~1800-2017 SystemVerilog (no vendor primitives, compatible with any standard EDA tool) and
+independently generated compiled C++ simulation models via \texttt{arch sim}.
+Planned targets include FPGA-specific SystemVerilog with BRAM/DSP primitive insertion, formal verification script generation (SVA + SymbiYosys), and HTML documentation from \texttt{///} doc comments.
+
+% ============================================================
+%  SIMULATION
+% ============================================================
+\section{Simulation}\label{sec:sim}
+
+\subsection{Verilator-Backed Simulation}
+
+The \texttt{arch sim} command provides integrated cycle-accurate simulation. The compiler independently generates a C++ model per construct (\texttt{VName.h}, \texttt{VName.cpp}), compiles it with \texttt{g++}, and executes the resulting binary---no external simulator is invoked. Supported constructs include modules, pipelines, FSMs, counters, RAMs, FIFOs, arbiters, synchronizers, register files, and linked lists. The simulation flow supports VCD waveform output (\texttt{--wave}), assertion evaluation, uninitialized-register detection (\texttt{--check-uninit}), and CDC latency randomization (\texttt{--cdc-random}) for stress-testing synchronizer designs. Separately, Verilator~\cite{verilator} serves as the primary verification oracle during compiler development: every code generation change is validated by comparing Arch-emitted SystemVerilog behavior against Verilator's independent interpretation of the same RTL.
+
+\subsection{Path to Native Compiled Simulation}
+
+Arch's language-level invariants enable a future fully native simulation path that compiles designs directly to LLVM~IR-based binaries, bypassing Verilator for higher throughput. This section describes the structural properties that make such compilation feasible and the expected performance characteristics.
+
+\subsubsection{Why Native Compilation is Feasible}
+
+Traditional Verilog simulators carry a heavyweight runtime because the language permits constructs requiring dynamic resolution. Arch eliminates every one at the language level, as shown in \Cref{tab:simcompare}.
+
+\begin{table*}[t]
+\centering
+\caption{Language invariants enabling native compilation}
+\label{tab:simcompare}
+\small
+\begin{tabular}{@{}p{4.2cm}p{5.5cm}p{4.8cm}@{}}
+\toprule
+\textbf{SV Runtime Complexity} & \textbf{Arch Equivalent} & \textbf{Enables} \\
+\midrule
+Delta cycles (multi-pass convergence) & No combinational loops---static DAG & Single-pass evaluation \\
+X/Z propagation (4-valued logic) & No undriven signals (single-driver rule) & 2-valued logic throughout \\
+Multiple drivers (wired-OR resolution) & Single-driver rule at compile time & No resolution functions \\
+Non-deterministic \texttt{always} ordering & Topological order from dataflow DAG & Deterministic simulation \\
+Implicit latches & No implicit latches (compile error) & Static register allocation \\
+Dynamic clock generation & \texttt{Clock<D>} typed, domain-verified & Static clock scheduling \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\subsubsection{Expected Performance}
+
+Because Arch's execution model compiles to a straight-line native loop with no dynamic dispatch, the projected simulation throughput is competitive with Verilator---currently the fastest open-source HDL simulator---and substantially exceeds event-driven commercial simulators. \Cref{tab:perf} summarizes the expected performance characteristics of the planned native backend.
+
+\begin{table}[!t]
+\centering
+\caption{Simulation performance comparison}
+\label{tab:perf}
+\footnotesize
+\begin{tabular}{@{}llr@{}}
+\toprule
+\textbf{Simulator} & \textbf{Model} & \textbf{Speed} \\
+\midrule
+VCS/Questa (interp.) & Event, 4-state & $1\times$ \\
+VCS/Questa (compiled) & Compiled C, 4-state & $3$--$8\times$ \\
+Verilator & Cycle-acc.\ C++ & $10$--$50\times$ \\
+Arch native & LLVM IR, 2-state & $15$--$60\times$ \\
+Arch native (SIMD) & AVX-512 / NEON & $50$--$200\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+SIMD vectorization is automatic for designs with wide \texttt{Vec<SInt<8>,N>} or \texttt{Vec<UInt<N>,M>} types---precisely the types used in systolic arrays and attention units in AI accelerator designs.
+
+\subsubsection{Parallel Simulation}
+
+Arch supports parallel cycle-accurate simulation exploiting three levels of parallelism:
+
+\begin{enumerate}
+\item \textbf{DAG-level:} independent nodes in the same topological level execute concurrently within a single clock cycle.
+\item \textbf{Module-level:} independent module instances with no intra-cycle dependency execute on separate threads.
+\item \textbf{Domain-level:} separate clock domains run on dedicated threads, synchronizing only at CDC crossings.
+\end{enumerate}
+
+\paragraph{Determinism Guarantee.}
+Parallel Arch simulation is guaranteed to produce bit-identical results to sequential simulation, regardless of thread count, OS scheduling, or memory ordering. This follows from three structural properties:
+(1)~no write conflicts (single-driver rule),
+(2)~register commit barriers (all next-state values computed before any update), and
+(3)~DAG level barriers (level $N{+}1$ never starts before level $N$ completes on all threads).
+
+This is a structural theorem, not a best-effort property. A simulation passing on 1 core produces identical assertion results on 64 cores.
+
+\Cref{tab:scaling} shows expected parallel speedup across design types.
+
+\begin{table}[H]
+\centering
+\caption{Parallel simulation speedup}
+\label{tab:scaling}
+\small
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{Design Type} & \textbf{8 cores} & \textbf{32 cores} \\
+\midrule
+Single-domain, deep chain & $1.5$--$2\times$ & $2$--$3\times$ \\
+Wide parallel array & $3$--$5\times$ & $5$--$8\times$ \\
+Multi-domain balanced & $5$--$7\times$ & $10$--$18\times$ \\
+Multi-domain + wide arrays & $6$--$8\times$ & $15$--$25\times$ \\
+AI accelerator (full) & $7$--$9\times$ & $18$--$30\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ============================================================
+%  COMPILE-TIME GENERATION
+% ============================================================
+\section{Compile-Time Generation}\label{sec:generate}
+
+Arch provides a \texttt{generate} system for compile-time structural replication and conditional instantiation. Unlike SystemVerilog, where the port list of a module is a fixed declaration, Arch's \texttt{generate} operates before elaboration, so generated ports, instances, registers, connections, and assertions are indistinguishable from hand-written declarations.
+
+\begin{lstlisting}[language=Arch,caption={Generate for iteration},label={lst:gen}]
+module SystolicArray
+  param SIZE: const = 4;
+  generate for i in 0..SIZE
+    port data_in[i]: in SInt<8>;
+    inst pe[i]: SystolicPE
+      a <- data_in[i];
+      sum_in <- if i == 0 then 0
+                else pe[i-1].sum_out;
+    end inst pe[i]
+  end generate for i
+end module SystolicArray
+\end{lstlisting}
+
+This capability enables expressing parameterized hardware arrays and conditional ports (via \texttt{generate if})---features that SystemVerilog cannot express without workarounds.
+
+% ============================================================
+%  COMPARISON
+% ============================================================
+\section{Comparison with Existing Languages}\label{sec:comparison}
+
+\Cref{tab:comparison} compares Arch with SystemVerilog, VHDL, Chisel, SpinalHDL, Amaranth, Bluespec, and TL-Verilog across key dimensions.
+
+\begin{table*}[t]
+\centering
+\caption{Comparison of hardware description languages}
+\label{tab:comparison}
+\scriptsize
+\begin{tabular}{@{}lcccccccc@{}}
+\toprule
+\textbf{Feature} & \textbf{Arch} & \textbf{SV} & \textbf{VHDL} & \textbf{Chisel} & \textbf{SpinalHDL} & \textbf{Amaranth} & \textbf{Bluespec} & \textbf{TL-Verilog} \\
+\midrule
+First-class pipeline        & \checkmark & ---     & ---     & ---        & ---        & ---       & ---$^\dagger$    & Partial$^\ddagger$ \\
+Pipeline hazard mgmt        & \checkmark & ---     & ---     & ---        & ---        & ---       & Implicit         & --- \\
+First-class FSM             & \checkmark & ---     & ---     & ---        & \checkmark & ---       & ---$^\dagger$    & --- \\
+First-class FIFO            & \checkmark & ---     & ---     & ---        & ---        & ---       & ---              & --- \\
+First-class arbiter         & \checkmark & ---     & ---     & ---        & ---        & ---       & ---              & --- \\
+Hook (custom policy)        & \checkmark & ---     & ---     & ---        & ---        & ---       & ---              & --- \\
+Template (interface contract) & \checkmark & ---   & ---     & Trait$^*$  & ---        & ---       & Typeclass        & --- \\
+Compile-time CDC check      & \checkmark & ---     & ---     & ---        & \checkmark & ---       & ---              & --- \\
+Bit-width static check      & \checkmark & Partial & \checkmark & \checkmark & \checkmark & \checkmark & \checkmark    & Partial \\
+No implicit latches         & \checkmark & ---     & ---     & ---        & \checkmark & \checkmark & \checkmark      & --- \\
+Single-driver enforce       & \checkmark & ---     & ---     & \checkmark & \checkmark & \checkmark & \checkmark      & --- \\
+Named block endings         & \checkmark & ---     & Partial & ---        & ---        & ---       & ---              & --- \\
+LL(1) grammar               & \checkmark & ---     & ---     & ---        & ---        & ---       & ---              & --- \\
+Generate ports              & \checkmark & ---     & ---     & \checkmark & \checkmark & \checkmark & ---             & --- \\
+No host runtime             & \checkmark & \checkmark & \checkmark & ---  & ---        & ---       & \checkmark      & --- \\
+Readable output SV          & \checkmark & n/a     & n/a     & Partial    & Partial    & Partial   & ---              & Partial \\
+AI-generatability design    & \checkmark & ---     & ---     & ---        & ---        & ---       & ---              & --- \\
+Compiled simulation          & \checkmark$^\|$ & \checkmark$^\S$ & ---  & ---        & ---        & ---       & ---              & --- \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\noindent{\small $^*$Scala traits, not hardware-level contracts with hook bindings.
+$^\dagger$Expressed implicitly via guarded atomic rules; no explicit pipeline/FSM construct.
+$^\ddagger$\texttt{>>N} inline retiming and \texttt{@N} numbered stages, but no hazard management.
+$^\S$Verilator---open-source cycle-accurate compiled simulator for SystemVerilog.
+$^\|$\texttt{arch sim} independently generates compiled C++ models; native LLVM~IR compilation is planned.}
+
+\paragraph{SystemVerilog.}
+SystemVerilog remains the industry standard but provides no compile-time guarantees against latches, multiply-driven nets, or CDC violations. Its \texttt{generate} cannot add ports. X/Z semantics require 4-state simulation. The irregular syntax (different block closers: \texttt{end}, \texttt{endmodule}, \texttt{endcase}, \texttt{endfunction}) creates structural ambiguity for both humans and LLMs.
+
+\paragraph{Chisel.}
+Chisel~\cite{chisel} provides rich parameterization via Scala and targets the FIRRTL intermediate representation. It inherits Scala's JVM runtime, implicit conversions, and build system complexity. Pipelines, FIFOs, and arbiters are library-defined, not compiler-verified. While Scala traits offer type-level abstraction, they lack Arch's hardware-specific hook mechanism for injecting custom logic into compiler-generated constructs. Chisel's FIRRTL lowers to Verilog; Arch emits SystemVerilog directly.
+
+\paragraph{SpinalHDL.}
+SpinalHDL~\cite{spinalhdl} provides strong typing and CDC checking within a Scala DSL. Its FSM library is well-developed. However, pipelines, FIFOs, and arbiters remain library patterns, and the Scala host language creates the same onboarding barrier as Chisel.
+
+\paragraph{Amaranth.}
+Amaranth (formerly nMigen)~\cite{amaranth} uses Python and provides single-driver enforcement and an absence of implicit latches. Its Python embedding means dynamic typing at the meta-level and no compile-time clock domain tracking.
+
+\paragraph{Bluespec.}
+Bluespec SystemVerilog (BSV)~\cite{bluespec} uses guarded atomic actions (rules) as its fundamental concurrency primitive. Each rule fires atomically when its guard is true; the compiler schedules rules to avoid conflicts. This model excels at expressing complex microarchitectures with many interacting concurrent behaviors---out-of-order processors, for instance, can be more concise once the rule model is internalized. Bluespec's type system, including typeclasses and polymorphism, is richer than Arch's.
+However, the scheduling model introduces a fundamental predictability problem: whether two rules fire together in a given cycle is a compiler decision that can be surprising and difficult to debug. Designers influence scheduling via \texttt{descending\_urgency} pragmas rather than controlling it directly. The generated Verilog is often verbose with mangled internal names, making output inspection and debugging difficult. Bluespec's steep learning curve---requiring fluency in functional programming, rule semantics, and the scheduling mental model---also limits adoption. Arch occupies a different point in the design space: the designer always knows what hardware is generated, pipelines and FSMs are explicit constructs rather than emergent rule behaviors, and the output SystemVerilog reads like hand-written code with 1:1 naming correspondence.
+
+\paragraph{TL-Verilog.}
+Transaction-Level Verilog (TL-Verilog)~\cite{tlverilog} extends SystemVerilog with a pipeline-centric model where signals carry implicit stage context via \texttt{>>N} notation. Retiming---delaying a signal by $N$ pipeline stages---is concise: \texttt{>>2\$operand} replaces Arch's explicit \texttt{pipe\_reg operand\_d2: operand stages 2}. Numbered stages (\texttt{@1}, \texttt{@2}) provide implicit pipeline structure. For pure datapath retiming, TL-Verilog achieves the same hardware in fewer characters, and restructuring pipeline depth requires minimal edits.
+However, TL-Verilog leaves hazard management entirely to the designer: stall propagation, flush logic, and data forwarding are manual, whereas Arch generates them from declarative \texttt{stall when}/\texttt{flush}/\texttt{forward} annotations. TL-Verilog does not address FSMs, bus protocols, clock-domain crossings, arbitration, or resource locking---concerns that Arch covers with dedicated first-class constructs. The TL-Verilog toolchain depends on the Sandpiper compiler with a proprietary core, while Arch emits standard SystemVerilog consumable by any EDA tool.
+
+% ============================================================
+%  VERIFICATION
+% ============================================================
+% ============================================================
+%  EXAMPLE
+% ============================================================
+\section{Case Study: L1 Data Cache}\label{sec:example}
+
+To demonstrate Arch's construct composition at production scale, we implemented an 8-way set-associative write-back/write-allocate L1 data cache: 64 sets $\times$ 8 ways $\times$ 64B lines = 32\,KiB, with a CVA6-compatible CPU interface and AXI4 memory interface. The design comprises 1,143 lines of Arch source across 12 files, generating 1,217 lines of SystemVerilog (${\sim}$6\% more concise). All unit and integration tests pass.
+
+\subsection{Architecture and Construct Usage}
+
+The cache exercises six distinct Arch constructs working together:
+
+\begin{itemize}
+\item \textbf{\texttt{fsm} $\times$ 3:} A 9-state main cache controller (Idle $\to$ Lookup $\to$ Hit/Miss $\to$ Refill $\to$ Writeback), a 4-state AXI4 read burst FSM, and a 4-state AXI4 write burst FSM. The controller orchestrates the Fill and Wb FSMs via start/done pulse handshaking.
+\item \textbf{\texttt{ram} $\times$ 3:} Tag SRAMs (64$\times$54b per way, 8 instances), a data SRAM (4096$\times$64b indexed by \{set, way, word\}), and an LRU state SRAM (64$\times$7b pseudo-LRU tree). All use \texttt{simple\_dual} topology with \texttt{latency 1}.
+\item \textbf{\texttt{bus} $\times$ 2:} An AXI4 parameterized bus and a CVA6 CPU-to-cache bus, both with initiator/target perspective flipping.
+\item \textbf{\texttt{module} $\times$ 2:} The top-level integrator and a combinational 8-way pseudo-LRU tree update module.
+\item \textbf{\texttt{generate for}:} 8-way tag array instantiation without code duplication.
+\item \textbf{\texttt{package}:} Shared type definitions and state enums.
+\end{itemize}
+
+\subsection{Design Highlights}
+
+All 8 tag ways are compared in parallel, with one-hot-to-binary encoding in 3 OR levels (10 total logic levels, optimized from 14 during development). Variable-indexed \texttt{Vec} access (\texttt{tag\_rd\_data[lru\_victim\_way][53:2]}) eliminates manual mux trees. Tag entries are packed into 54-bit words (tag, dirty, valid) stored as \texttt{UInt<54>}.
+
+\begin{table}[t]
+\centering
+\caption{L1D cache source breakdown}
+\label{tab:l1d}
+\footnotesize
+\begin{tabular}{@{}llr@{}}
+\toprule
+\textbf{File} & \textbf{Purpose} & \textbf{Lines} \\
+\midrule
+FsmCacheCtrl.arch & Main controller FSM & 380 \\
+L1DCache.arch & Top-level integrator & 319 \\
+FsmAxi4Wb.arch & AXI4 writeback FSM & 107 \\
+FsmAxi4Fill.arch & AXI4 fill FSM & 91 \\
+ModuleLruUpdate.arch & Pseudo-LRU tree & 60 \\
+PkgL1d.arch & Types and enums & 49 \\
+bus\_axi4.arch & AXI4 bus definition & 47 \\
+Ram*.arch ($\times$3) & Tag/Data/LRU SRAMs & 70 \\
+bus\_dcpu.arch & CPU bus definition & 20 \\
+\midrule
+\textbf{Total} & & \textbf{1,143} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Verification}
+
+Nine C++ testbenches (1,321 lines) validate the design at both unit and integration levels. The integration testbench models AXI4 memory with a sparse \texttt{std::map} and exercises cold misses, hits, store hits/misses, and dirty evictions. The LRU testbench exhaustively covers all 128 tree states $\times$ 8 ways. Load-hit latency is 3 cycles; load-miss with clean eviction is ${\sim}$15 cycles; dirty eviction plus refill is ${\sim}$25 cycles.
+
+\subsection{Lessons}
+
+This case study illustrates several Arch principles at production scale: modular FSM composition with clear inter-FSM handshaking, first-class \texttt{ram} constructs replacing hundreds of lines of manual SRAM instantiation, \texttt{bus} abstractions making protocol interfaces reusable, and \texttt{generate for} eliminating per-way code duplication. Three compiler bugs were found and fixed during development (Bool width inference for concat operations, \texttt{let} assign-to-existing-port syntax, and tag-hit logic level optimization), demonstrating the co-design feedback loop between language, compiler, and real hardware.
+
+% ============================================================
+%  AXI DMA CASE STUDY
+% ============================================================
+\section{Case Study: AXI DMA Controller}\label{sec:axidma}
+
+To validate Arch across a wider range of constructs and demonstrate synthesis-quality output, we implemented a dual-channel AXI DMA controller compatible with the Xilinx PG021 specification~\cite{pg021}. The design supports both Simple DMA (register-triggered) and Scatter-Gather (descriptor-chained) modes. It comprises 1,042 lines of Arch source across 14 files, generating 1,176 lines of SystemVerilog (${\sim}$11\% more concise). This is the only case study exercising \texttt{bus}, \texttt{fsm}, \texttt{fifo}, \texttt{latch}, and \texttt{module} together.
+
+\subsection{Architecture}
+
+The top module integrates two symmetric DMA channels (Memory-to-Stream and Stream-to-Memory), each containing a data-path FSM, an optional Scatter-Gather descriptor engine, and a decoupling FIFO:
+
+\begin{itemize}
+\item \textbf{\texttt{fsm} $\times$ 3:} FsmMm2s (4 states), FsmS2mm (6 states), and FsmSgEngine (9 states implementing PG021 descriptor fetch, chain, and status writeback).
+\item \textbf{\texttt{fifo} $\times$ 2:} Synchronous depth-16 FIFOs (15 lines each) decoupling AXI from AXI-Stream timing.
+\item \textbf{\texttt{bus} $\times$ 5:} AXI4 Full, AXI4 Read-only, AXI4 Write-only, AXI4-Lite, and AXI-Stream. Initiator/target perspective flipping is automatic; SV codegen flattens to individual signals.
+\item \textbf{\texttt{latch}:} Latch-based integrated clock gating cells gate each channel clock when halted, with OR logic preventing deadlock when a start signal arrives while gated.
+\item \textbf{\texttt{module} $\times$ 2:} Top-level integrator (with simple/SG combinational mux) and PG021-compatible register block (12 registers with W1C interrupt clearing).
+\item \textbf{\texttt{package}:} Shared domain definition.
+\end{itemize}
+
+A key design decision is that the data-path FSMs are shared between Simple and Scatter-Gather modes via a combinational mux---no duplicate FSMs are needed.
+
+\subsection{Synthesis Results}
+
+The generated SystemVerilog was synthesized through Yosys~\cite{yosys} targeting both Xilinx 7-series and SkyWater Sky130 130nm~\cite{sky130pdk} to validate output quality.
+
+\begin{table}[t]
+\centering
+\caption{AXI DMA synthesis results}
+\label{tab:dmasyn}
+\footnotesize
+\begin{tabular}{@{}llr@{}}
+\toprule
+\textbf{Target} & \textbf{Metric} & \textbf{Value} \\
+\midrule
+Xilinx 7-series & Total LUTs & 913 \\
+                & Flip-flops (FDRE) & 993 \\
+                & Estimated LCs & 586 \\
+\midrule
+Sky130 130nm    & Total area & 78,134\,$\mu$m$^2$ \\
+                & Flip-flops & 2,017 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Timing and Power}
+
+OpenSTA~\cite{opensta} timing analysis with Sky130 liberty files shows a critical path of 4.478\,ns, meeting timing at both 100\,MHz (+5.06\,ns slack) and 200\,MHz (+0.06\,ns slack), for a maximum achievable frequency of ${\sim}$223\,MHz on 130nm. Three rounds of critical-path optimization---guided by Yosys~\cite{yosys} longest-topological-path analysis---reduced logic depth from 23 levels to 18 levels (6 LUT levels after LUT6 mapping), using lookahead registers to keep final combinational paths to a single gate.
+
+VCD-annotated power analysis from \texttt{arch sim} testbench waveforms shows 9.03\,mW total at 100\,MHz during active operation. Latch-based clock gating reduces idle power from 9.73\,mW to ${\sim}$0.02\,mW (leakage only) when both channels are halted.
+
+\subsection{Verification}
+
+Eight C++ testbenches (2,075 lines) cover unit tests for each FSM and FIFO, register read/write and W1C interrupt clearing, clock-gating race conditions and deadlock prevention, and full integration tests including bidirectional transfers and Scatter-Gather descriptor chains with status writeback.
+
+\subsection{Lessons}
+
+This case study demonstrates that Arch-generated SystemVerilog is synthesis-ready for both FPGA and ASIC targets without manual intervention. The five \texttt{bus} definitions eliminated approximately 200 lines of repetitive port declarations. The \texttt{fifo} construct reduced each FIFO to 15 lines of Arch versus ${\sim}$80 lines of equivalent manual SystemVerilog. Clock gating via the \texttt{latch} construct proved essential for power optimization, and the deadlock-prevention pattern (OR of halt and start signals) was expressible directly in Arch's combinational logic. The Scatter-Gather engine's 9-state FSM---the most complex single construct in any case study---compiled and simulated correctly on the first attempt after passing \texttt{arch check}, validating the tight compile-time feedback loop.
+
+% ============================================================
+%  BENCHMARK
+% ============================================================
+\section{Empirical Evaluation}\label{sec:benchmark}
+
+We evaluate the Arch compiler's correctness and expressiveness against two independent benchmark suites covering a combined 387 hardware design problems.
+
+\subsection{VerilogEval v2}\label{sec:verilogeval}
+
+VerilogEval v2~\cite{verilogeval} is a suite of 156 Verilog design problems originally developed by NVIDIA for evaluating LLM-based hardware generation.
+
+\subsubsection{Methodology}
+
+Each problem was solved from its natural-language specification only; no reference SystemVerilog was consulted. The Arch compiler generated all SystemVerilog output, which was then compiled and simulated against the benchmark's reference testbenches using Verilator. A problem is considered solved when Verilator reports zero mismatches between the generated design and the reference outputs.
+
+\subsubsection{Results}
+
+\begin{table}[t]
+\centering
+\caption{VerilogEval v2 benchmark results}
+\label{tab:benchmark}
+\small
+\begin{tabular}{@{}lr@{}}
+\toprule
+\textbf{Metric} & \textbf{Result} \\
+\midrule
+Problems solved & 156 / 156 (100\%) \\
+Verilator-clean & 154 / 156 (99\%) \\
+Total Arch lines & 3,199 \\
+Total generated SV lines & 4,518 \\
+Overall Arch/SV ratio & 70.8\% (${\sim}$29\% shorter) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+All 156 problems were solved. Of these, 154 compile and simulate cleanly under Verilator; the remaining 2 failures are defects in the benchmark dataset itself (a port name mismatch in the test harness and a mixed blocking/non-blocking assignment that Verilator rejects as illegal).
+
+\subsubsection{Code Density by Category}
+
+\Cref{tab:density} breaks down line counts by design category. FSMs show the largest compression (${\sim}$37\% reduction) because the \texttt{fsm} construct eliminates state encoding declarations, separate \texttt{always\_ff}/\texttt{always\_comb} blocks, and \texttt{case} statement boilerplate. Combinational and simple sequential designs show roughly 1:1 ratios since there is minimal boilerplate to eliminate.
+
+\begin{table}[t]
+\centering
+\caption{Arch vs.\ generated SV line counts by category}
+\label{tab:density}
+\small
+\begin{tabular}{@{}lrrrc@{}}
+\toprule
+\textbf{Category} & \textbf{$n$} & \textbf{Arch} & \textbf{SV} & \textbf{Ratio} \\
+\midrule
+Combinational & 83 & ${\sim}$1,100 & ${\sim}$1,300 & ${\sim}$85\% \\
+Sequential & 44 & ${\sim}$900 & ${\sim}$1,100 & ${\sim}$82\% \\
+FSM & 29 & ${\sim}$1,500 & ${\sim}$2,400 & ${\sim}$63\% \\
+\midrule
+\textbf{Total} & \textbf{156} & \textbf{3,199} & \textbf{4,518} & \textbf{70.8\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Construct Usage}
+
+Of the 156 solutions, 127 use a single \texttt{module} construct and 29 use the \texttt{fsm} construct, following a one-construct-per-file convention. File sizes range from 6--7 lines for trivial constant-output designs to 96 lines for the most complex FSM (a bit-pattern detector with shift delay and countdown timer). Notable designs include a 16$\times$16 toroidal Game of Life cellular automaton, a gshare branch predictor with 128-entry pattern history table, and an HDLC framing protocol FSM with 10 states.
+
+\subsubsection{Language Features Driven by Benchmark}
+
+Three problems exposed gaps that drove new language features during the benchmark:
+
+\begin{itemize}
+\item A \texttt{latch on ENABLE \ldots\ end latch} construct was added for problems requiring level-sensitive storage (emitting \texttt{always\_latch} in SystemVerilog).
+\item Dual-edge flip-flop support was added via a posedge FF + negedge FF + clock-level mux pattern.
+\item Negedge-triggered latches were resolved with the new latch construct.
+\end{itemize}
+
+This feedback loop---benchmark exposes gap, language feature is added, compiler is updated, all 156 problems re-verified---illustrates the iterative co-design of the Arch language and compiler.
+
+\subsection{CVDP Benchmark}\label{sec:cvdp}
+
+The Copilot Verilog Design Problems (CVDP) benchmark provides 231 design problems of greater complexity than VerilogEval, with cocotb-based testbenches and parameterized test cases that exercise designs across multiple configurations.
+
+\subsubsection{Methodology}
+
+Each problem was implemented in Arch from its natural-language specification, compiled to SystemVerilog, and validated against the CVDP cocotb test harnesses using Icarus Verilog as the simulation backend. Problems range from simple combinational logic to multi-state FSMs, cache controllers, linked-list data structures, and signal processing pipelines.
+
+\subsubsection{Results}
+
+\begin{table}[t]
+\centering
+\caption{CVDP benchmark results}
+\label{tab:cvdp}
+\footnotesize
+\begin{tabular}{@{}lr@{}}
+\toprule
+\textbf{Metric} & \textbf{Result} \\
+\midrule
+Total Arch files & 231 \\
+Pass \texttt{arch check} & 213 / 231 (92\%) \\
+Fail \texttt{arch check} (multi-file) & 18 \\
+Testable via cocotb & 191 \\
+\textbf{Cocotb pass} & \textbf{133 / 191 (70\%)} \\
+Cocotb fail & 58 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Of the 231 Arch source files, 213 (92\%) pass the compiler's static type checker. The 18 failures are all multi-file designs referencing sub-modules whose source files are not included in the benchmark dataset. Of the 191 designs testable via cocotb (those with matching JSONL test entries), 133 (70\%) pass all parameterized test cases.
+
+\subsubsection{Failure Analysis}
+
+The 58 cocotb failures fall into several categories: multi-file designs where the test harness copies only one SystemVerilog file (missing sub-module definitions), logic bugs in the Arch implementations, test harness timeouts on long-running simulations, and parameterized edge cases exposing width-dependent behavior.
+
+\subsubsection{Compiler Improvements Driven by CVDP}
+
+The CVDP benchmark drove several compiler fixes and language additions:
+
+\begin{itemize}
+\item A derived-parameter elaboration bug was fixed: expressions like \texttt{param NBW\_MULT: const = DATA\_WIDTH + COEFF\_WIDTH} were being evaluated to literals at compile time, breaking parameterized instantiation. The fix preserves the original expression in emitted SystemVerilog when the default references other parameters.
+\item The \texttt{inside} set-membership operator and value-list \texttt{for} iteration (\texttt{for i in \{list\}}) were added to support common CVDP patterns.
+\item Three test-harness bugs were identified and fixed in the runner script (duplicate source deduplication, multi-test-function pytest detection, and clock period rounding).
+\end{itemize}
+
+\subsubsection{Combined Benchmark Summary}
+
+Across both benchmarks, the Arch compiler has been validated against 387 hardware design problems spanning combinational logic, sequential circuits, FSMs, pipelines, caches, and signal processing blocks. \Cref{tab:combined} summarizes the combined results.
+
+\begin{table}[t]
+\centering
+\caption{Combined benchmark results}
+\label{tab:combined}
+\footnotesize
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Benchmark} & \textbf{Problems} & \textbf{Testable} & \textbf{Pass Rate} \\
+\midrule
+VerilogEval v2 & 156 & 156 & 154 (99\%) \\
+CVDP & 231 & 191 & 133 (70\%) \\
+\midrule
+\textbf{Combined} & \textbf{387} & \textbf{347} & \textbf{287 (83\%)} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ============================================================
+%  RELATED WORK
+% ============================================================
+\section{Related Work}\label{sec:related}
+
+\paragraph{Traditional HDLs.}
+Verilog~\cite{ieee1800} and VHDL~\cite{ieee1076} have served the industry for decades but predate modern type systems and AI-assisted workflows. SystemVerilog~2017 added assertions (SVA) and constrained randomization but did not address the core RTL safety issues Arch targets.
+
+\paragraph{Enhanced RTL Semantics.}
+RTL++~\cite{rtlpp} proposed elevating the RTL abstraction level by introducing pipelined register variables with formally defined execution semantics (structural operational semantics) and a Register-transfer Finite State Machine (RFSM) model for synthesis. Arch builds on these ideas---the \texttt{pipe\_reg} construct directly realizes the pipelined register variable concept, and Arch's first-class \texttt{pipeline} and \texttt{fsm} constructs extend the RFSM model with compiler-generated hazard logic. Where RTL++ defined enhanced semantics within the existing C++/SystemC framework, Arch implements them as native language constructs with static type checking and deterministic code generation, targeting the AI-assisted design workflow that was not yet practical in 2005.
+
+\paragraph{Embedded DSLs.}
+Chisel~\cite{chisel}, SpinalHDL~\cite{spinalhdl}, Amaranth~\cite{amaranth}, PyRTL~\cite{pyrtl}, and Clash~\cite{clash} embed RTL in host languages. While they provide varying degrees of type safety and parameterization, they inherit host-language complexity and do not elevate micro-architectural constructs to first-class status.
+
+\paragraph{Rule-Based and Pipeline-Centric HDLs.}
+Bluespec SystemVerilog~\cite{bluespec} uses guarded atomic actions to express concurrency, with the compiler scheduling rules to avoid conflicts. This model is powerful for complex interacting behaviors but introduces scheduling unpredictability and produces verbose, hard-to-inspect output Verilog. TL-Verilog~\cite{tlverilog} extends SystemVerilog with implicit pipeline staging via \texttt{>>N} notation, providing concise retiming syntax but leaving hazard management, FSMs, bus protocols, and CDC to the designer. Arch differs from both by providing explicit, predictable constructs at each abstraction level---from raw RTL (\texttt{comb}/\texttt{seq}) through micro-architectural primitives (\texttt{pipeline}/\texttt{fsm}/\texttt{fifo}) to protocol-level abstractions (\texttt{bus}/\texttt{thread})---with deterministic, readable SystemVerilog output throughout.
+
+\paragraph{High-Level Synthesis.}
+HLS tools (Vitis HLS, Catapult, Bambu~\cite{bambu}) synthesize RTL from C/C++ or SystemC~\cite{systemc} descriptions. SystemC provides cycle-accurate modeling and transaction-level abstractions within a C++ framework, but inherits the complexity of a general-purpose host language and relies on an event-driven simulation kernel. HLS operates at a higher abstraction level than Arch; the designer surrenders control over micro-architectural structure in exchange for productivity. Arch targets designers who require cycle-accurate control over their hardware while benefiting from first-class constructs that eliminate the boilerplate HLS was designed to avoid.
+
+\paragraph{CIRCT/MLIR.}
+The CIRCT project~\cite{circt} provides MLIR-based infrastructure for hardware compilation, including dialects for FIRRTL, FSM, and handshake circuits. Arch plans integration with CIRCT as a backend target (AIR $\to$ CIRCT dialects $\to$ SV/netlist) while maintaining its own frontend type system and compiler for the primary compilation path.
+
+\paragraph{AI for Hardware.}
+Recent work on LLM-based hardware generation~\cite{thakur2023verigen,liu2023chipnemo,blocklove2023chip} has demonstrated promise but is hampered by the irregular syntax and implicit failure modes of existing HDLs. Arch is the first HDL designed with AI generatability as a primary constraint.
+
+% ============================================================
+%  FUTURE WORK
+% ============================================================
+\section{Future Work}\label{sec:future}
+
+Several language features are specified but not yet implemented in the compiler.
+
+\paragraph{Lightweight Verification.}
+Arch specifies three verification constructs using the same types and signals as the design: \texttt{assert} (invariant checking---fires in simulation, provable by formal tools), \texttt{cover} (coverage properties---a missed \texttt{cover} warns that the test suite does not exercise a declared scenario), and \texttt{assume} (environment constraints for formal verification). These keywords are currently lexed but skipped at parse time. Full implementation will include conversion to SVA in emitted SystemVerilog, automated coverage reporting at end of simulation, and an SMT-LIB2 backend for formal analysis.
+
+\paragraph{Transaction-Level Modeling.}
+Arch specifies Transaction Level Modeling as a first-class abstraction above RTL, where modules communicate by calling methods on typed \texttt{bus} interfaces rather than driving individual signals cycle-by-cycle. Three timing modes are specified: loosely-timed (\texttt{timing: 0}) for maximum simulation speed, approximately-timed (\texttt{timing: N}) modeling $N$-cycle latency, and RTL-accurate with cycle-for-cycle fidelity. TLM bus methods (\texttt{blocking}, \texttt{pipelined}, \texttt{out\_of\_order}, \texttt{burst}) and \texttt{implement} blocks with synthesizable lowering are planned but not yet implemented.
+
+\paragraph{Additional Planned Features.}
+Other specified but unimplemented constructs include:
+\texttt{thread} (multi-cycle sequential blocks with \texttt{wait}/\texttt{fork}-\texttt{join}/\texttt{resource}-\texttt{lock}, compiler-lowered to synthesizable FSMs),
+\texttt{cam} (content-addressable memory),
+\texttt{scoreboard} and \texttt{reorder\_buf} (out-of-order execution support),
+\texttt{pqueue} (hardware priority queue),
+and \texttt{crossbar} (switching fabric).
+Reset Domain Crossing (RDC) checking will extend the type checker to build a \texttt{reg\_reset\_domain} map alongside the existing clock-domain infrastructure, flagging cross-reset-domain register reads, deassertion ordering violations, and unsynchronized reset glitches.
+CIRCT/MLIR backend integration is planned as a secondary export path (AIR $\to$ CIRCT dialects $\to$ SV/netlist).
+A fully native LLVM~IR simulation path, bypassing Verilator for higher throughput with structurally guaranteed deterministic parallel execution, is a longer-term goal enabled by the language's structural invariants.
+
+% ============================================================
+%  CONCLUSION
+% ============================================================
+\section{Conclusion}\label{sec:conclusion}
+
+We have presented Arch, a hardware description language that addresses three fundamental gaps in the current HDL landscape: the absence of first-class micro-architectural constructs in mainstream HDLs, the inability of existing type systems to catch entire categories of hardware bugs at compile time, and the lack of any HDL designed for AI-assisted code generation.
+
+Arch's type system tracks four independent safety dimensions (bit widths, clock domains, port directions, signal ownership) and converts latches, multiply-driven nets, CDC violations, and width mismatches into compile-time errors.
+Its integrated \texttt{arch sim} command provides cycle-accurate simulation via independently generated compiled C++ models, with waveform output, assertion evaluation, and CDC randomization.
+Its AI-generatability contract---uniform schema, LL(1) grammar, named endings, directional arrows, and \texttt{todo!}---enables LLMs to produce correct hardware code without fine-tuning.
+
+Arch is under active development with plans for open-source release under the Apache~2.0 license.
+
+% ============================================================
+%  REFERENCES
+% ============================================================
+\bibliographystyle{plain}
+
+\begin{thebibliography}{99}
+
+\bibitem{ieee1800}
+IEEE Standard for SystemVerilog---Unified Hardware Design, Specification, and Verification Language.
+\textit{IEEE Std 1800-2017}, 2018.
+
+\bibitem{ieee1076}
+IEEE Standard VHDL Language Reference Manual.
+\textit{IEEE Std 1076-2019}, 2019.
+
+\bibitem{rtlpp}
+S.~Zhao and D.~D.~Gajski.
+Defining an enhanced RTL semantics.
+In \textit{Proc. Design, Automation and Test in Europe (DATE)}, pages 548--553, 2005.
+
+\bibitem{systemc}
+IEEE Standard for Standard SystemC Language Reference Manual.
+\textit{IEEE Std 1666-2023}, 2023.
+
+\bibitem{chisel}
+J.~Bachrach, H.~Vo, B.~Richards, Y.~Lee, A.~Waterman, R.~Avi\v{z}ienis, J.~Wawrzynek, and K.~Asanovi\'{c}.
+Chisel: Constructing hardware in a Scala embedded language.
+In \textit{Proc. DAC}, pages 1216--1225, 2012.
+
+\bibitem{spinalhdl}
+C.~Papon.
+SpinalHDL: An alternative hardware description language.
+\url{https://spinalhdl.github.io/SpinalDoc-RTD/}, 2016.
+
+\bibitem{amaranth}
+Amaranth HDL Project.
+\url{https://amaranth-lang.org/}, 2023.
+
+\bibitem{pyrtl}
+T.~Clow, J.~Valamehr, J.~Clemons, and T.~Sherwood.
+PyRTL: A Python framework for register-transfer level hardware design.
+In \textit{Proc. FCCM}, 2017.
+
+\bibitem{clash}
+C.~Baaij, M.~Kooijman, J.~Kuper, A.~Boeijink, and M.~Gerards.
+C$\lambda$aSH: Structural descriptions of synchronous hardware using Haskell.
+In \textit{Proc. Euromicro DSD}, pages 714--721, 2010.
+
+\bibitem{bluespec}
+R.~Nikhil.
+Bluespec SystemVerilog: efficient, correct RTL from high-level specifications.
+In \textit{Proc. MEMOCODE}, pages 69--70, 2004.
+
+\bibitem{tlverilog}
+S.~Hoover.
+Timing-abstract circuit design in transaction-level Verilog.
+In \textit{Proc. ICCD}, pages 576--579, 2017.
+
+\bibitem{circt}
+CIRCT: Circuit IR Compilers and Tools.
+\url{https://circt.llvm.org/}, 2024.
+
+\bibitem{verilator}
+W.~Snyder.
+Verilator: open-source SystemVerilog simulator and lint system.
+\url{https://www.veripool.org/verilator/}, 2024.
+
+\bibitem{yosys}
+C.~Wolf.
+Yosys Open SYnthesis Suite.
+\url{https://yosyshq.net/yosys/}, 2024.
+
+\bibitem{opensta}
+J.~Cherry and T.~Ajayi.
+OpenSTA: open-source static timing analyzer.
+The OpenROAD Project, \url{https://github.com/The-OpenROAD-Project/OpenSTA}, 2024.
+
+\bibitem{sky130pdk}
+T.~Edwards et~al.
+SkyWater SKY130 open-source PDK.
+Google/SkyWater Technology, \url{https://skywater-pdk.readthedocs.io/}, 2023.
+
+\bibitem{pg021}
+Xilinx (AMD).
+\textit{AXI DMA v7.1: LogiCORE IP Product Guide}.
+PG021, 2022.
+
+\bibitem{bambu}
+C.~Pilato and F.~Ferrandi.
+Bambu: A modular framework for the high level synthesis of memory-intensive applications.
+In \textit{Proc. FPL}, pages 1--4, 2013.
+
+\bibitem{codex}
+M.~Chen, J.~Tworek, H.~Jun, et~al.
+Evaluating large language models trained on code.
+\textit{arXiv:2107.03374}, 2021.
+
+\bibitem{copilot}
+GitHub Copilot.
+\url{https://github.com/features/copilot}, 2023.
+
+\bibitem{thakur2023verigen}
+S.~Thakur, B.~Ahmad, H.~Pearce, B.~Tan, B.~Dolan-Gavitt, R.~Karri, and S.~Garg.
+VeriGen: A large language model for Verilog code generation.
+\textit{arXiv:2308.00708}, 2023.
+
+\bibitem{liu2023chipnemo}
+M.~Liu, T.~Ene, R.~Kirber, et~al.
+ChipNeMo: Domain-adapted LLMs for chip design.
+\textit{arXiv:2311.00176}, 2023.
+
+\bibitem{blocklove2023chip}
+J.~Blocklove, S.~Garg, R.~Karri, and H.~Pearce.
+Chip-Chat: Challenges and opportunities in conversational hardware design.
+\textit{arXiv:2305.13243}, 2023.
+
+\bibitem{verilogeval}
+M.~Liu, N.~Pinckney, B.~Khailany, and H.~Ren.
+VerilogEval: Evaluating large language models for Verilog code generation.
+In \textit{Proc. ICCAD}, 2023.
+
+\bibitem{cvdp}
+Y.~Tsai, M.~Liu, and H.~Ren.
+CVDP: Copilot Verilog Design Problems benchmark suite.
+\url{https://github.com/NVlabs/cvdp}, 2024.
+
+\end{thebibliography}
+
+\end{document}

@@ -1,0 +1,3 @@
+[mcp_servers.arch-hdl]
+args = ["/Users/shuqingzhao/github/arch-com/mcp/arch_mcp_server.py"]
+command = "/Users/shuqingzhao/github/arch-com/mcp/.venv/bin/python3"

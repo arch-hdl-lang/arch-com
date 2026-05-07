@@ -29,7 +29,10 @@ impl<'a> Codegen<'a> {
                 let is_package = self.source.items.iter().any(|i| {
                     matches!(i, Item::Package(p) if p.name.name == u.name.name)
                 });
-                if is_package {
+                let is_extern = self.source.items.iter().any(|i| {
+                    matches!(i, Item::ExternPackage(ep) if ep.name.name == u.name.name)
+                });
+                if is_package || is_extern {
                     self.out.push_str(&format!("import {}::*;\n", u.name.name));
                 }
             }

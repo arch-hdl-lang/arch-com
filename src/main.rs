@@ -184,6 +184,12 @@ enum Command {
         /// help for the property set. Picked up by Verilator `--assert`.
         #[arg(long)]
         auto_thread_asserts: bool,
+        /// Override a module param default: --param NAME=VALUE (repeatable).
+        /// Value must be an integer literal. The override is passed to the
+        /// C++ compiler as -DNAME=VALUE; the generated header's `#ifndef`
+        /// guard then defers to the command-line definition.
+        #[arg(long = "param", value_name = "NAME=VALUE")]
+        param_overrides: Vec<String>,
     },
     /// Formal verification: emit SMT-LIB2 and invoke a bit-vector SMT solver.
     ///
@@ -425,8 +431,20 @@ fn main() -> miette::Result<()> {
             }
             Ok(())
         }
-        Command::Sim { arch_files, tb_files, outdir, check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave, debug, debug_depth, debug_fsm, coverage, coverage_dat, thread_sim, threads, pybind, test, pybind_module_name, auto_thread_asserts } => {
+        Command::Sim { arch_files, tb_files, outdir, check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave, debug, debug_depth, debug_fsm, coverage, coverage_dat, thread_sim, threads, pybind, test, pybind_module_name, auto_thread_asserts, param_overrides } => {
             let _ = auto_thread_asserts;
+
+            // Parse --param NAME=VALUE overrides
+            let mut param_overrides_map: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+            for ov in &param_overrides {
+                let (name, val_str) = ov.split_once('=').ok_or_else(|| {
+                    miette::miette!("--param: expected NAME=VALUE, got '{ov}'")
+                })?;
+                let val: u64 = val_str.parse().map_err(|_| {
+                    miette::miette!("--param: value must be an integer, got '{val_str}' in '{ov}'")
+                })?;
+                param_overrides_map.insert(name.to_string(), val);
+            }
 
             let dbg_ports = debug || debug_fsm;  // any debug option implies port logging
             // --inputs-start-uninit and --check-uninit-ram both imply --check-uninit
@@ -441,10 +459,10 @@ fn main() -> miette::Result<()> {
             }
             match thread_sim.as_str() {
                 "fsm" => learn_wrap(&arch_files, || {
-                    run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, coverage, cov_dat_path.clone(), false, threads, pybind, test.as_deref(), pybind_module_name.as_deref())
+                    run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, coverage, cov_dat_path.clone(), false, threads, pybind, test.as_deref(), pybind_module_name.as_deref(), &param_overrides_map)
                 }),
                 "parallel" => learn_wrap(&arch_files, || {
-                    run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, coverage, cov_dat_path.clone(), true, threads, pybind, test.as_deref(), pybind_module_name.as_deref())
+                    run_sim(&arch_files, &tb_files, outdir.as_deref(), check_uninit, inputs_start_uninit, check_uninit_ram, cdc_random, wave.as_deref(), dbg_ports, debug_depth, debug_fsm, coverage, cov_dat_path.clone(), true, threads, pybind, test.as_deref(), pybind_module_name.as_deref(), &param_overrides_map)
                 }),
                 "both" => {
                     // Cross-check: build + run both fsm and parallel sims
@@ -627,6 +645,7 @@ fn build_and_capture(
         /*threads*/ 1,
         /*pybind*/ false, /*test_file*/ None, /*pybind_module_name_override*/ None,
         /*no_exit*/ true,
+        &std::collections::HashMap::new(),
     )?;
 
     // The sim_out binary was already executed by run_sim; capture its
@@ -659,10 +678,11 @@ fn run_sim(
     pybind: bool,
     test_file: Option<&std::path::Path>,
     pybind_module_name_override: Option<&str>,
+    param_overrides: &std::collections::HashMap<String, u64>,
 ) -> miette::Result<()> {
     run_sim_opts(arch_files, tb_files, outdir, check_uninit, inputs_start_uninit, check_uninit_ram,
         cdc_random, wave, debug, debug_depth, debug_fsm, coverage, coverage_dat, thread_sim_parallel,
-        threads, pybind, test_file, pybind_module_name_override, /*no_exit=*/false)
+        threads, pybind, test_file, pybind_module_name_override, /*no_exit=*/false, param_overrides)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -686,6 +706,7 @@ fn run_sim_opts(
     test_file: Option<&std::path::Path>,
     pybind_module_name_override: Option<&str>,
     no_exit: bool,
+    param_overrides: &std::collections::HashMap<String, u64>,
 ) -> miette::Result<()> {
     // 1. Parse + type-check
     let all_files = resolve_use_imports(arch_files)?;
@@ -915,6 +936,7 @@ fn run_sim_opts(
                .arg("-c")
                .arg("-I").arg(&build_dir);
             for flag in py_includes.split_whitespace() { cmd.arg(flag); }
+            for (name, val) in param_overrides { cmd.arg(format!("-D{name}={val}")); }
             cmd.arg(cpp).arg("-o").arg(&obj);
             let status = cmd.status().into_diagnostic()?;
             if !status.success() {
@@ -944,6 +966,7 @@ fn run_sim_opts(
                .arg("-fPIC")
                .arg("-I").arg(&build_dir);
             for flag in py_includes.split_whitespace() { cmd.arg(flag); }
+            for (name, val) in param_overrides { cmd.arg(format!("-D{name}={val}")); }
             cmd.arg(cpp_path);
             for obj in &shared_objs { cmd.arg(obj); }
             cmd.arg("-o").arg(&so_path);
@@ -1096,6 +1119,13 @@ sys.exit(0 if ok else 1)
         cmd.arg(tok);
     }
     cmd.arg("-I").arg(&build_dir);
+
+    // --param overrides: inject as -DNAME=VAL preprocessor definitions.
+    // The generated headers use `#ifndef NAME` / `#define NAME val` / `#endif`,
+    // so a -D flag on the command line takes precedence.
+    for (name, val) in param_overrides {
+        cmd.arg(format!("-D{name}={val}"));
+    }
 
     for cpp in &generated_cpps {
         cmd.arg(cpp);

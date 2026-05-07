@@ -1,0 +1,346 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyperFirstAtBeginDocument{\AtBeginDocument}
+\HyperFirstAtBeginDocument{\ifx\hyper@anchor\@undefined
+\global\let\oldcontentsline\contentsline
+\gdef\contentsline#1#2#3#4{\oldcontentsline{#1}{#2}{#3}}
+\global\let\oldnewlabel\newlabel
+\gdef\newlabel#1#2{\newlabelxx{#1}#2}
+\gdef\newlabelxx#1#2#3#4#5#6{\oldnewlabel{#1}{{#2}{#3}}}
+\AtEndDocument{\ifx\hyper@anchor\@undefined
+\let\contentsline\oldcontentsline
+\let\newlabel\oldnewlabel
+\fi}
+\fi}
+\global\let\hyper@last\relax 
+\gdef\HyperFirstAtBeginDocument#1{#1}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\citation{ieee1800}
+\citation{ieee1076}
+\citation{chisel}
+\citation{spinalhdl}
+\citation{amaranth}
+\citation{pyrtl}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{1}{section.1}\protected@file@percent }
+\newlabel{sec:intro}{{1}{1}{Introduction}{section.1}{}}
+\newlabel{sec:intro@cref}{{[section][1][]1}{[1][1][]1}}
+\citation{codex}
+\citation{copilot}
+\citation{verilator}
+\@writefile{toc}{\contentsline {section}{\numberline {2}Language Design}{2}{section.2}\protected@file@percent }
+\newlabel{sec:design}{{2}{2}{Language Design}{section.2}{}}
+\newlabel{sec:design@cref}{{[section][2][]2}{[1][2][]2}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}Design Philosophy}{2}{subsection.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{No Baggage.}{2}{section*.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Strong Types.}{3}{section*.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Micro-Architecture First.}{3}{section*.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{AI-Generatable.}{3}{section*.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Predictable RTL.}{3}{section*.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}Block Structure}{3}{subsection.2.2}\protected@file@percent }
+\newlabel{lst:block}{{1}{3}{Universal block grammar}{lstlisting.1}{}}
+\newlabel{lst:block@cref}{{[listing][1][]1}{[1][3][]3}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {1}Universal block grammar}{3}{lstlisting.1}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Arch primitive types\relax }}{3}{table.caption.7}\protected@file@percent }
+\providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
+\newlabel{tab:types}{{1}{3}{Arch primitive types\relax }{table.caption.7}{}}
+\newlabel{tab:types@cref}{{[table][1][]1}{[1][3][]3}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.3}Universal Declaration Schema}{3}{subsection.2.3}\protected@file@percent }
+\newlabel{lst:schema}{{2}{3}{Universal schema}{lstlisting.2}{}}
+\newlabel{lst:schema@cref}{{[listing][2][]2}{[1][3][]3}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {2}Universal schema}{3}{lstlisting.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}Type System}{3}{section.3}\protected@file@percent }
+\newlabel{sec:types}{{3}{3}{Type System}{section.3}{}}
+\newlabel{sec:types@cref}{{[section][3][]3}{[1][3][]3}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Primitive Types}{3}{subsection.3.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Bit-Width Safety}{3}{subsection.3.2}\protected@file@percent }
+\newlabel{lst:width}{{3}{4}{Explicit width conversion}{lstlisting.3}{}}
+\newlabel{lst:width@cref}{{[listing][3][]3}{[1][4][]4}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {3}Explicit width conversion}{4}{lstlisting.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}First-Class Clock and Reset Types}{4}{subsection.3.3}\protected@file@percent }
+\newlabel{sec:clockreset}{{3.3}{4}{First-Class Clock and Reset Types}{subsection.3.3}{}}
+\newlabel{sec:clockreset@cref}{{[subsection][3][3]3.3}{[1][4][]4}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}Clock Domain Tracking}{4}{subsection.3.4}\protected@file@percent }
+\newlabel{sec:cdc}{{3.4}{4}{Clock Domain Tracking}{subsection.3.4}{}}
+\newlabel{sec:cdc@cref}{{[subsection][4][3]3.4}{[1][4][]4}}
+\newlabel{lst:cdc}{{4}{5}{Clock domain crossing via synchronizer}{lstlisting.4}{}}
+\newlabel{lst:cdc@cref}{{[listing][4][]4}{[1][5][]5}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {4}Clock domain crossing via synchronizer}{5}{lstlisting.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.5}Reset Domain Crossing (RDC)}{5}{subsection.3.5}\protected@file@percent }
+\newlabel{sec:rdc}{{3.5}{5}{Reset Domain Crossing (RDC)}{subsection.3.5}{}}
+\newlabel{sec:rdc@cref}{{[subsection][5][3]3.5}{[1][5][]5}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.6}Single-Driver Rule}{5}{subsection.3.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.7}No Implicit Latches}{5}{subsection.3.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.8}No Combinational Loops}{5}{subsection.3.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4}First-Class Micro-Architecture Constructs}{6}{section.4}\protected@file@percent }
+\newlabel{sec:constructs}{{4}{6}{First-Class Micro-Architecture Constructs}{section.4}{}}
+\newlabel{sec:constructs@cref}{{[section][4][]4}{[1][6][]6}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Pipeline}{6}{subsection.4.1}\protected@file@percent }
+\newlabel{lst:pipe}{{5}{6}{Pipeline with forwarding}{lstlisting.5}{}}
+\newlabel{lst:pipe@cref}{{[listing][5][]5}{[1][6][]6}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {5}Pipeline with forwarding}{6}{lstlisting.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Finite State Machine}{6}{subsection.4.2}\protected@file@percent }
+\newlabel{lst:fsm}{{6}{6}{FSM with default block and transitions}{lstlisting.6}{}}
+\newlabel{lst:fsm@cref}{{[listing][6][]6}{[1][6][]6}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {6}FSM with default block and transitions}{6}{lstlisting.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}FIFO}{7}{subsection.4.3}\protected@file@percent }
+\newlabel{lst:fifo}{{7}{7}{Dual-clock FIFO}{lstlisting.7}{}}
+\newlabel{lst:fifo@cref}{{[listing][7][]7}{[1][7][]7}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {7}Dual-clock FIFO}{7}{lstlisting.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Arbiter}{7}{subsection.4.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.5}Bus and Handshake Channel}{7}{subsection.4.5}\protected@file@percent }
+\newlabel{sec:bus}{{4.5}{7}{Bus and Handshake Channel}{subsection.4.5}{}}
+\newlabel{sec:bus@cref}{{[subsection][5][4]4.5}{[1][7][]7}}
+\newlabel{lst:handshake}{{8}{7}{AXI-Lite as three handshake channels}{lstlisting.8}{}}
+\newlabel{lst:handshake@cref}{{[listing][8][]8}{[1][7][]7}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {8}AXI-Lite as three handshake channels}{7}{lstlisting.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.6}Thread}{8}{subsection.4.6}\protected@file@percent }
+\newlabel{sec:thread}{{4.6}{8}{Thread}{subsection.4.6}{}}
+\newlabel{sec:thread@cref}{{[subsection][6][4]4.6}{[1][8][]8}}
+\newlabel{lst:thread}{{9}{8}{AXI write transaction as a thread}{lstlisting.9}{}}
+\newlabel{lst:thread@cref}{{[listing][9][]9}{[1][8][]8}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {9}AXI write transaction as a thread}{8}{lstlisting.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Lowering.}{8}{section*.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Trailing seq assign merge.}{9}{section*.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Auto-emitted contract assertions.}{9}{section*.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.7}Additional Constructs}{9}{subsection.4.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.8}Hooks --- Customizable Behavior Points}{9}{subsection.4.8}\protected@file@percent }
+\newlabel{sec:hooks}{{4.8}{9}{Hooks --- Customizable Behavior Points}{subsection.4.8}{}}
+\newlabel{sec:hooks@cref}{{[subsection][8][4]4.8}{[1][9][]9}}
+\newlabel{lst:hook}{{10}{9}{Custom arbiter policy via hook}{lstlisting.10}{}}
+\newlabel{lst:hook@cref}{{[listing][10][]10}{[1][9][]9}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {10}Custom arbiter policy via hook}{9}{lstlisting.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.9}Templates --- Interface Contracts}{10}{subsection.4.9}\protected@file@percent }
+\newlabel{sec:templates}{{4.9}{10}{Templates --- Interface Contracts}{subsection.4.9}{}}
+\newlabel{sec:templates@cref}{{[subsection][9][4]4.9}{[1][10][]10}}
+\newlabel{lst:template}{{11}{10}{Template declaration and implementation}{lstlisting.11}{}}
+\newlabel{lst:template@cref}{{[listing][11][]11}{[1][10][]10}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {11}Template declaration and implementation}{10}{lstlisting.11}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5}AI-Generatability Contract}{10}{section.5}\protected@file@percent }
+\newlabel{sec:ai}{{5}{10}{AI-Generatability Contract}{section.5}{}}
+\newlabel{sec:ai@cref}{{[section][5][]5}{[1][10][]10}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Design Decisions for AI}{10}{subsection.5.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Uniform Schema.}{10}{section*.11}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{LL(1) Grammar.}{10}{section*.12}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{No Preprocessor.}{11}{section*.13}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Named Block Endings.}{11}{section*.14}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{No Braces.}{11}{section*.15}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Directional Connect Arrows.}{11}{section*.16}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{\texttt  {todo!}\ Escape Hatch.}{11}{section*.17}\protected@file@percent }
+\newlabel{lst:todo}{{12}{11}{Partial implementation with \texttt {todo!}}{lstlisting.12}{}}
+\newlabel{lst:todo@cref}{{[listing][12][]12}{[1][11][]11}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {12}Partial implementation with \texttt  {todo!}}{11}{lstlisting.12}\protected@file@percent }
+\citation{beck2003tdd}
+\citation{mathews2024tdd}
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces AI context window components\relax }}{12}{table.caption.18}\protected@file@percent }
+\newlabel{tab:aicontext}{{2}{12}{AI context window components\relax }{table.caption.18}{}}
+\newlabel{tab:aicontext@cref}{{[table][2][]2}{[1][12][]12}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Minimal AI Context}{12}{subsection.5.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}AI-Assisted Design Workflow}{12}{subsection.5.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Minimizing Iteration Latency.}{12}{section*.19}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Test-Driven Development for Hardware Agents.}{12}{section*.20}\protected@file@percent }
+\citation{verilator}
+\@writefile{toc}{\contentsline {paragraph}{Compiler Learning System.}{13}{section*.21}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Compiler pipeline phases\relax }}{13}{table.caption.22}\protected@file@percent }
+\newlabel{tab:compiler}{{3}{13}{Compiler pipeline phases\relax }{table.caption.22}{}}
+\newlabel{tab:compiler@cref}{{[table][3][]3}{[1][13][]13}}
+\@writefile{toc}{\contentsline {section}{\numberline {6}Compiler Pipeline}{13}{section.6}\protected@file@percent }
+\newlabel{sec:compiler}{{6}{13}{Compiler Pipeline}{section.6}{}}
+\newlabel{sec:compiler@cref}{{[section][6][]6}{[1][13][]13}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.1}Output Guarantee}{13}{subsection.6.1}\protected@file@percent }
+\citation{verilator}
+\citation{cocotb}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.2}Intermediate Representation}{14}{subsection.6.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.3}Toolchain Targets}{14}{subsection.6.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7}Simulation and Verification}{14}{section.7}\protected@file@percent }
+\newlabel{sec:sim}{{7}{14}{Simulation and Verification}{section.7}{}}
+\newlabel{sec:sim@cref}{{[section][7][]7}{[1][14][]14}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.1}Integrated Simulation}{14}{subsection.7.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.2}Python Testbenches via a cocotb-Compatible API}{14}{subsection.7.2}\protected@file@percent }
+\newlabel{sec:cocotb}{{7.2}{14}{Python Testbenches via a cocotb-Compatible API}{subsection.7.2}{}}
+\newlabel{sec:cocotb@cref}{{[subsection][2][7]7.2}{[1][14][]14}}
+\newlabel{lst:cocotbtb}{{13}{14}{Python testbench against \texttt {arch sim}}{lstlisting.13}{}}
+\newlabel{lst:cocotbtb@cref}{{[listing][13][]13}{[1][14][]14}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {13}Python testbench against \texttt  {arch sim}}{14}{lstlisting.13}\protected@file@percent }
+\citation{icarus}
+\citation{verilator}
+\citation{verilator}
+\citation{embecosm2013}
+\citation{zhao2014xoptimism}
+\citation{zhao2014xoptimism}
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.3}Path to Native Compiled Simulation}{15}{subsection.7.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {7.3.1}Why Native Compilation is Feasible}{15}{subsubsection.7.3.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {7.3.2}Expected Performance}{15}{subsubsection.7.3.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {7.3.3}Limitations of 2-State Simulation}{15}{subsubsection.7.3.3}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Language invariants enabling native compilation\relax }}{16}{table.caption.23}\protected@file@percent }
+\newlabel{tab:simcompare}{{4}{16}{Language invariants enabling native compilation\relax }{table.caption.23}{}}
+\newlabel{tab:simcompare@cref}{{[table][4][]4}{[1][15][]16}}
+\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces Simulation performance comparison\relax }}{16}{table.caption.24}\protected@file@percent }
+\newlabel{tab:perf}{{5}{16}{Simulation performance comparison\relax }{table.caption.24}{}}
+\newlabel{tab:perf@cref}{{[table][5][]5}{[1][15][]16}}
+\@writefile{toc}{\contentsline {paragraph}{The \texttt  {guard} clause.}{16}{section*.26}\protected@file@percent }
+\citation{zhao2014xoptimism}
+\@writefile{lot}{\contentsline {table}{\numberline {6}{\ignorespaces X sources and Arch's handling of each\relax }}{17}{table.caption.25}\protected@file@percent }
+\newlabel{tab:xsources}{{6}{17}{X sources and Arch's handling of each\relax }{table.caption.25}{}}
+\newlabel{tab:xsources@cref}{{[table][6][]6}{[1][15][]17}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {7.3.4}Parallel Simulation}{17}{subsubsection.7.3.4}\protected@file@percent }
+\citation{verilator}
+\citation{ebmc}
+\@writefile{toc}{\contentsline {paragraph}{Determinism Guarantee.}{18}{section*.27}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {7}{\ignorespaces Parallel simulation speedup\relax }}{18}{table.caption.28}\protected@file@percent }
+\newlabel{tab:scaling}{{7}{18}{Parallel simulation speedup\relax }{table.caption.28}{}}
+\newlabel{tab:scaling@cref}{{[table][7][]7}{[1][18][]18}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.4}Verification}{18}{subsection.7.4}\protected@file@percent }
+\newlabel{sec:formal}{{7.4}{18}{Verification}{subsection.7.4}{}}
+\newlabel{sec:formal@cref}{{[subsection][4][7]7.4}{[1][18][]18}}
+\@writefile{toc}{\contentsline {paragraph}{Property scope.}{18}{section*.29}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {8}Compile-Time Generation}{19}{section.8}\protected@file@percent }
+\newlabel{sec:generate}{{8}{19}{Compile-Time Generation}{section.8}{}}
+\newlabel{sec:generate@cref}{{[section][8][]8}{[1][19][]19}}
+\newlabel{lst:gen}{{14}{19}{Generate-for iteration}{lstlisting.14}{}}
+\newlabel{lst:gen@cref}{{[listing][14][]14}{[1][19][]19}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {14}Generate-for iteration}{19}{lstlisting.14}\protected@file@percent }
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {15}SystemVerilog forces preprocessor for conditional ports}{19}{lstlisting.15}\protected@file@percent }
+\newlabel{lst:gencond}{{16}{19}{Conditional ports in Arch via generate\_if}{lstlisting.16}{}}
+\newlabel{lst:gencond@cref}{{[listing][16][]16}{[1][19][]19}}
+\@writefile{lol}{\contentsline {lstlisting}{\numberline {16}Conditional ports in Arch via generate\_if}{19}{lstlisting.16}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {9}Case Study: L1 Data Cache}{19}{section.9}\protected@file@percent }
+\newlabel{sec:example}{{9}{19}{Case Study: L1 Data Cache}{section.9}{}}
+\newlabel{sec:example@cref}{{[section][9][]9}{[1][19][]19}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.1}Architecture and Construct Usage}{19}{subsection.9.1}\protected@file@percent }
+\citation{pg021}
+\@writefile{lot}{\contentsline {table}{\numberline {8}{\ignorespaces L1D cache source breakdown\relax }}{20}{table.caption.30}\protected@file@percent }
+\newlabel{tab:l1d}{{8}{20}{L1D cache source breakdown\relax }{table.caption.30}{}}
+\newlabel{tab:l1d@cref}{{[table][8][]8}{[1][20][]20}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.2}Design Highlights}{20}{subsection.9.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.3}Verification}{20}{subsection.9.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.4}Lessons}{20}{subsection.9.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {10}Case Study: AXI DMA Controller}{20}{section.10}\protected@file@percent }
+\newlabel{sec:axidma}{{10}{20}{Case Study: AXI DMA Controller}{section.10}{}}
+\newlabel{sec:axidma@cref}{{[section][10][]10}{[1][20][]20}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {10.1}Architecture}{20}{subsection.10.1}\protected@file@percent }
+\citation{yosys}
+\citation{sky130pdk}
+\citation{opensta}
+\citation{yosys}
+\@writefile{lot}{\contentsline {table}{\numberline {9}{\ignorespaces AXI DMA synthesis results\relax }}{21}{table.caption.31}\protected@file@percent }
+\newlabel{tab:dmasyn}{{9}{21}{AXI DMA synthesis results\relax }{table.caption.31}{}}
+\newlabel{tab:dmasyn@cref}{{[table][9][]9}{[1][21][]21}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {10.2}Synthesis Results}{21}{subsection.10.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {10.3}Timing and Power}{21}{subsection.10.3}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {10}{\ignorespaces Thread vs.\ FSM synthesis (Yosys \texttt  {synth -flatten})\relax }}{21}{table.caption.32}\protected@file@percent }
+\newlabel{tab:threadvsfsm}{{10}{21}{Thread vs.\ FSM synthesis (Yosys \texttt {synth -flatten})\relax }{table.caption.32}{}}
+\newlabel{tab:threadvsfsm@cref}{{[table][10][]10}{[1][21][]21}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {10.4}Verification}{21}{subsection.10.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {10.5}Thread vs.\ FSM Synthesis Comparison}{21}{subsection.10.5}\protected@file@percent }
+\newlabel{sec:thread-vs-fsm}{{10.5}{21}{Thread vs.\ FSM Synthesis Comparison}{subsection.10.5}{}}
+\newlabel{sec:thread-vs-fsm@cref}{{[subsection][5][10]10.5}{[1][21][]21}}
+\citation{verilogeval}
+\@writefile{toc}{\contentsline {subsection}{\numberline {10.6}Lessons}{22}{subsection.10.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {11}Empirical Evaluation}{22}{section.11}\protected@file@percent }
+\newlabel{sec:benchmark}{{11}{22}{Empirical Evaluation}{section.11}{}}
+\newlabel{sec:benchmark@cref}{{[section][11][]11}{[1][22][]22}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {11.1}VerilogEval v2}{22}{subsection.11.1}\protected@file@percent }
+\newlabel{sec:verilogeval}{{11.1}{22}{VerilogEval v2}{subsection.11.1}{}}
+\newlabel{sec:verilogeval@cref}{{[subsection][1][11]11.1}{[1][22][]22}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {11.1.1}Methodology}{22}{subsubsection.11.1.1}\protected@file@percent }
+\citation{cvdp}
+\citation{cocotb}
+\@writefile{lot}{\contentsline {table}{\numberline {11}{\ignorespaces VerilogEval v2 benchmark results\relax }}{23}{table.caption.33}\protected@file@percent }
+\newlabel{tab:benchmark}{{11}{23}{VerilogEval v2 benchmark results\relax }{table.caption.33}{}}
+\newlabel{tab:benchmark@cref}{{[table][11][]11}{[1][22][]23}}
+\@writefile{lot}{\contentsline {table}{\numberline {12}{\ignorespaces Arch vs.\ generated SV line counts by category\relax }}{23}{table.caption.34}\protected@file@percent }
+\newlabel{tab:density}{{12}{23}{Arch vs.\ generated SV line counts by category\relax }{table.caption.34}{}}
+\newlabel{tab:density@cref}{{[table][12][]12}{[1][23][]23}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {11.1.2}Results}{23}{subsubsection.11.1.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {11.1.3}Code Density by Category}{23}{subsubsection.11.1.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {11.1.4}Construct Usage}{23}{subsubsection.11.1.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {11.1.5}Language Features Driven by Benchmark}{23}{subsubsection.11.1.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {11.2}CVDP Benchmark}{23}{subsection.11.2}\protected@file@percent }
+\newlabel{sec:cvdp}{{11.2}{23}{CVDP Benchmark}{subsection.11.2}{}}
+\newlabel{sec:cvdp@cref}{{[subsection][2][11]11.2}{[1][23][]23}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {11.2.1}ARCH-Relevant Task Selection}{23}{subsubsection.11.2.1}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {13}{\ignorespaces CVDP benchmark results by category (ARCH-relevant subset)\relax }}{24}{table.caption.35}\protected@file@percent }
+\newlabel{tab:cvdp}{{13}{24}{CVDP benchmark results by category (ARCH-relevant subset)\relax }{table.caption.35}{}}
+\newlabel{tab:cvdp@cref}{{[table][13][]13}{[1][24][]24}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {11.2.2}Methodology}{24}{subsubsection.11.2.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {11.2.3}Results}{24}{subsubsection.11.2.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {11.2.4}Compiler Improvements Driven by CVDP}{24}{subsubsection.11.2.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {11.2.5}Combined Benchmark Summary}{24}{subsubsection.11.2.5}\protected@file@percent }
+\citation{ieee1800}
+\citation{ieee1076}
+\citation{rtlpp}
+\citation{chisel}
+\citation{spinalhdl}
+\citation{amaranth}
+\citation{pyrtl}
+\citation{clash}
+\citation{spade}
+\@writefile{lot}{\contentsline {table}{\numberline {14}{\ignorespaces Combined benchmark results\relax }}{25}{table.caption.36}\protected@file@percent }
+\newlabel{tab:combined}{{14}{25}{Combined benchmark results\relax }{table.caption.36}{}}
+\newlabel{tab:combined@cref}{{[table][14][]14}{[1][24][]25}}
+\@writefile{toc}{\contentsline {section}{\numberline {12}Related Work}{25}{section.12}\protected@file@percent }
+\newlabel{sec:related}{{12}{25}{Related Work}{section.12}{}}
+\newlabel{sec:related@cref}{{[section][12][]12}{[1][24][]25}}
+\@writefile{toc}{\contentsline {paragraph}{Traditional HDLs.}{25}{section*.38}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Enhanced RTL Semantics.}{25}{section*.39}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Embedded DSLs.}{25}{section*.40}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Standalone Modern HDLs.}{25}{section*.41}\protected@file@percent }
+\citation{bluespec}
+\citation{tlverilog}
+\citation{bambu}
+\citation{systemc}
+\@writefile{lot}{\contentsline {table}{\numberline {15}{\ignorespaces Comparison of hardware description languages\relax }}{26}{table.caption.37}\protected@file@percent }
+\newlabel{tab:comparison}{{15}{26}{Comparison of hardware description languages\relax }{table.caption.37}{}}
+\newlabel{tab:comparison@cref}{{[table][15][]15}{[1][25][]26}}
+\@writefile{toc}{\contentsline {paragraph}{Rule-Based and Pipeline-Centric HDLs.}{26}{section*.42}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{High-Level Synthesis.}{26}{section*.43}\protected@file@percent }
+\citation{circt}
+\citation{thakur2023verigen}
+\citation{liu2023chipnemo}
+\citation{blocklove2023chip}
+\@writefile{toc}{\contentsline {paragraph}{CIRCT/MLIR.}{27}{section*.44}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{AI for Hardware.}{27}{section*.45}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {13}Future Work}{27}{section.13}\protected@file@percent }
+\newlabel{sec:future}{{13}{27}{Future Work}{section.13}{}}
+\newlabel{sec:future@cref}{{[section][13][]13}{[1][27][]27}}
+\@writefile{toc}{\contentsline {paragraph}{Transaction-Level Modeling.}{27}{section*.46}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Additional Planned Features.}{27}{section*.47}\protected@file@percent }
+\bibstyle{plain}
+\bibcite{ieee1800}{1}
+\bibcite{ieee1076}{2}
+\bibcite{chisel}{3}
+\bibcite{spinalhdl}{4}
+\bibcite{amaranth}{5}
+\bibcite{pyrtl}{6}
+\bibcite{codex}{7}
+\bibcite{copilot}{8}
+\bibcite{verilator}{9}
+\bibcite{beck2003tdd}{10}
+\bibcite{mathews2024tdd}{11}
+\bibcite{icarus}{12}
+\bibcite{embecosm2013}{13}
+\bibcite{zhao2014xoptimism}{14}
+\bibcite{cocotb}{15}
+\bibcite{pg021}{16}
+\@writefile{toc}{\contentsline {section}{\numberline {14}Conclusion}{28}{section.14}\protected@file@percent }
+\newlabel{sec:conclusion}{{14}{28}{Conclusion}{section.14}{}}
+\newlabel{sec:conclusion@cref}{{[section][14][]14}{[1][28][]28}}
+\bibcite{yosys}{17}
+\bibcite{sky130pdk}{18}
+\bibcite{opensta}{19}
+\bibcite{verilogeval}{20}
+\bibcite{cvdp}{21}
+\bibcite{rtlpp}{22}
+\bibcite{clash}{23}
+\bibcite{spade}{24}
+\bibcite{bluespec}{25}
+\bibcite{tlverilog}{26}
+\bibcite{bambu}{27}
+\bibcite{systemc}{28}
+\bibcite{circt}{29}
+\bibcite{thakur2023verigen}{30}
+\bibcite{liu2023chipnemo}{31}
+\bibcite{blocklove2023chip}{32}
+\bibcite{ebmc}{33}
+\gdef \@abspage@last{29}

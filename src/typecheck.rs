@@ -2717,9 +2717,16 @@ impl<'a> TypeChecker<'a> {
             ExprKind::StructLiteral(name, _) => Ty::Struct(name.name.clone()),
             ExprKind::EnumVariant(name, _) => {
                 if let Some((sym, _)) = self.symbols.globals.get(&name.name) {
-                    if let crate::resolve::Symbol::Enum(info) = sym {
-                        let bits = enum_width(info.variants.len());
-                        return Ty::Enum(name.name.clone(), bits);
+                    match sym {
+                        crate::resolve::Symbol::Enum(info) => {
+                            let bits = enum_width(info.variants.len());
+                            return Ty::Enum(name.name.clone(), bits);
+                        }
+                        crate::resolve::Symbol::ExternEnum(_) => {
+                            // Opaque extern type — variant values are unchecked.
+                            return Ty::Enum(name.name.clone(), 1);
+                        }
+                        _ => {}
                     }
                 }
                 Ty::Error
@@ -5282,6 +5289,9 @@ impl<'a> TypeChecker<'a> {
         for s in &pkg.structs { self.check_struct(s); }
         for f in &pkg.functions { self.check_function(f); }
     }
+
+    /// Extern packages have no ARCH-side values to validate.
+    pub(crate) fn check_extern_package(&mut self, _ep: &crate::ast::ExternPackageDecl) {}
 
     pub(crate) fn check_linklist(&mut self, l: &crate::ast::LinklistDecl) {
         use crate::ast::LinklistKind;
