@@ -18,27 +18,42 @@ impl<'a> Codegen<'a> {
             return;
         }
         self.current_construct = m.name.name.clone();
-        // Emit SV `import NAME::*;` only for `use NAME;` whose target is an
-        // actual `package` — package contents become an SV package and need
-        // the import for typedef/enum/struct visibility. Other `use` targets
-        // (bus, module, fsm, ...) are pure compile-time references that the
-        // ARCH compiler resolves before codegen; emitting `import` for them
-        // breaks Verilator/iverilog since no corresponding SV package exists.
+
+        // File-scope imports for `use Pkg;`:
+        //   - arch `package` Pkg → `import Pkg::*;` (wildcard).
+        //     arch packages are first-class arch artifacts; the
+        //     user manages their namespace.
+        //   - `extern package` Pkg → per-TYPE `import Pkg::T;`
+        //     for each declared type. Avoid the `import Pkg::*;`
+        //     wildcard for extern packages because the upstream SV
+        //     package usually contains many enum items and
+        //     parameters (e.g. `IC_NUM_WAYS`, `IbexMuBiOn`,
+        //     `WB_INSTR_OTHER`) that would pollute every
+        //     compilation-unit-visible scope and conflict with
+        //     identically-named locals.
+        // Both kinds emit at file scope so module-header parameter
+        // types like `parameter rv32m_e RV32M` resolve.
         for item in &self.source.items {
             if let Item::Use(u) = item {
-                let is_package = self.source.items.iter().any(|i| {
+                let arch_pkg = self.source.items.iter().any(|i| {
                     matches!(i, Item::Package(p) if p.name.name == u.name.name)
                 });
-                let is_extern = self.source.items.iter().any(|i| {
-                    matches!(i, Item::ExternPackage(ep) if ep.name.name == u.name.name)
+                let extern_pkg = self.source.items.iter().find_map(|i| {
+                    if let Item::ExternPackage(ep) = i {
+                        if ep.name.name == u.name.name { return Some(ep); }
+                    }
+                    None
                 });
-                if is_package || is_extern {
+                if arch_pkg {
                     self.out.push_str(&format!("import {}::*;\n", u.name.name));
+                } else if let Some(ep) = extern_pkg {
+                    for ty in &ep.types {
+                        self.out.push_str(&format!("import {}::{};\n", u.name.name, ty.name));
+                    }
                 }
             }
         }
 
-        // Module header with parameters
         if m.params.is_empty() {
             self.out.push_str(&format!("module {} (\n", m.name.name));
         } else {

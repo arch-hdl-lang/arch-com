@@ -2922,8 +2922,16 @@ module IbexCore
 end module IbexCore
 "#;
     let sv = compile_to_sv(source);
-    assert!(sv.contains("import ibex_pkg::*;"),
-            "expected SV `import ibex_pkg::*;` for extern package:\n{sv}");
+    // extern packages emit per-TYPE imports (`import Pkg::T;`)
+    // rather than wildcard `import Pkg::*;` so unrelated enum
+    // items / parameters from the upstream SV package don't pollute
+    // the compilation unit and conflict with locally-named signals.
+    assert!(sv.contains("import ibex_pkg::rv32m_e;"),
+            "expected SV `import ibex_pkg::rv32m_e;` for extern package:\n{sv}");
+    assert!(sv.contains("import ibex_pkg::rv32b_e;"),
+            "expected SV `import ibex_pkg::rv32b_e;` for extern package:\n{sv}");
+    assert!(!sv.contains("import ibex_pkg::*;"),
+            "extern packages must NOT emit wildcard `import ibex_pkg::*;`:\n{sv}");
     assert!(sv.contains("parameter rv32m_e RV32M = RV32MFast"),
             "expected bare `rv32m_e` type and `RV32MFast` variant:\n{sv}");
     assert!(sv.contains("parameter rv32b_e RV32B = RV32BNone"),
