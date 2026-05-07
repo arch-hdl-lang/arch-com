@@ -13,8 +13,8 @@ module LetDemo (
 );
 
   logic [7:0] mask;
-  assign mask = a & b;
   logic same;
+  assign mask = a & b;
   assign same = a == b;
   assign masked = mask;
   assign equal = same;

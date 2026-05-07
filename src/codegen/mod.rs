@@ -1342,17 +1342,50 @@ impl<'a> Codegen<'a> {
         // Expand bus port connections: one bus connect → N signal connects
         let mut connections: Vec<String> = Vec::new();
         // Find the target construct's ports to detect bus ports (modules and FSMs)
-        let target_bus_ports: Vec<(String, String, Vec<ParamAssign>)> = {
-            let target_ports: Option<&[PortDecl]> = self.source.items.iter()
-                .find_map(|item| match item {
-                    Item::Module(m) if m.name.name == inst.module_name.name => Some(m.ports.as_slice()),
-                    Item::Fsm(f) if f.name.name == inst.module_name.name => Some(f.ports.as_slice()),
-                    _ => None,
-                });
-            target_ports.map(|ports| ports.iter()
+        let target_ports_ref: Option<&[PortDecl]> = self.source.items.iter()
+            .find_map(|item| match item {
+                Item::Module(m) if m.name.name == inst.module_name.name => Some(m.ports.as_slice()),
+                Item::Fsm(f) if f.name.name == inst.module_name.name => Some(f.ports.as_slice()),
+                _ => None,
+            });
+        let target_bus_ports: Vec<(String, String, Vec<ParamAssign>)> = target_ports_ref
+            .map(|ports| ports.iter()
                 .filter_map(|p| p.bus_info.as_ref().map(|bi| (p.name.name.clone(), bi.bus_name.name.clone(), bi.params.clone())))
                 .collect())
-                .unwrap_or_default()
+            .unwrap_or_default();
+
+        // Per-port enum-cast lookup. For each input port whose type is
+        // an extern-package enum (declared via `extern package Pkg ...
+        // type enum_t; ...`), record the package + type name so the
+        // inst-connect emission below can wrap the connected signal in
+        // an explicit `Pkg::enum_t'(sig)` cast. yosys-slang rejects
+        // implicit `logic[N] -> enum_t` conversion at port boundaries
+        // (the source-level `wire NAME: UInt<N>;` declaration in the
+        // arch source means the connected signal is `logic[N]`, not the
+        // enum); the cast keeps strict elaborators happy.
+        // Verilator and iverilog accept the implicit conversion either
+        // way.
+        let port_enum_casts: std::collections::HashMap<String, (String, String)> = {
+            let mut m = std::collections::HashMap::new();
+            if let Some(ports) = target_ports_ref {
+                for p in ports {
+                    if let TypeExpr::Named(id) = &p.ty {
+                        if let Some((Symbol::ExternEnum(_), _)) = self.symbols.globals.get(&id.name) {
+                            // Find the owning extern-package by scanning
+                            // Item::ExternPackage entries — the resolve
+                            // table records only the type name, not its
+                            // owning package.
+                            let pkg_name = self.source.items.iter().find_map(|it| match it {
+                                Item::ExternPackage(ep) if ep.types.iter().any(|t| t.name == id.name) =>
+                                    Some(ep.name.name.clone()),
+                                _ => None,
+                            }).unwrap_or_else(|| id.name.clone());
+                            m.insert(p.name.name.clone(), (pkg_name, id.name.clone()));
+                        }
+                    }
+                }
+            }
+            m
         };
 
         // ── Collect target's per-requester ports[N] groups (arbiter / regfile) ──
@@ -1445,7 +1478,16 @@ impl<'a> Codegen<'a> {
                     }
                 }
             } else {
-                connections.push(format!(".{}({})", c.port_name.name, self.emit_expr_str(&c.signal)));
+                let sig_str = self.emit_expr_str(&c.signal);
+                let conn_str = if let Some((pkg, ty_name)) = port_enum_casts.get(&c.port_name.name) {
+                    // Wrap in explicit cast to the destination port's
+                    // extern-enum type so yosys-slang accepts the
+                    // boundary. No-op for verilator / iverilog.
+                    format!(".{}({}::{}'({}))", c.port_name.name, pkg, ty_name, sig_str)
+                } else {
+                    format!(".{}({})", c.port_name.name, sig_str)
+                };
+                connections.push(conn_str);
             }
         }
 

@@ -22,13 +22,12 @@ module QosArbiter #(
   endfunction
   
   logic [3:0] last_grant_r;
+  logic [3:0] grant_onehot;
   
   always_ff @(posedge clk) begin
     if (rst) last_grant_r <= '0;
     else if (grant_valid) last_grant_r <= grant_onehot;
   end
-  
-  logic [3:0] grant_onehot;
   
   always_comb begin
     grant_onehot = QosGrant(request_valid, last_grant_r, qos_in);
