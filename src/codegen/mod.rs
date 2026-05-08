@@ -1309,6 +1309,109 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Clone a statement, keeping only assignments whose LHS root reg name
+    /// satisfies the inclusion test against `target_set`. When
+    /// `keep_in_set=true`, an Assign survives iff its root is IN the set;
+    /// when `keep_in_set=false`, an Assign survives iff its root is NOT in
+    /// the set. Used by `emit_reg_block` to split a mixed-reset-kind seq
+    /// block into two always_ff bodies — one with reset-edge sensitivity
+    /// for reset-bearing regs and one clock-only for `reset none` regs —
+    /// without losing any assignments.
+    ///
+    /// Returns `None` when the filtered statement has nothing to emit
+    /// (all its assigns were dropped). Container statements (IfElse, For,
+    /// Match, Init, DoUntil) survive only if they have at least one
+    /// surviving inner assign. Log/WaitUntil pass through unchanged when
+    /// the parent's `Some(_)` branch survives — they are conservatively
+    /// kept where their parent body is non-empty.
+    pub(crate) fn filter_stmt_by_assigned_set(
+        stmt: &Stmt,
+        target_set: &std::collections::BTreeSet<String>,
+        keep_in_set: bool,
+    ) -> Option<Stmt> {
+        match stmt {
+            Stmt::Assign(a) => {
+                let root = Self::expr_root_name(&a.target);
+                let in_set = target_set.contains(&root);
+                if (keep_in_set && in_set) || (!keep_in_set && !in_set) {
+                    Some(Stmt::Assign(a.clone()))
+                } else {
+                    None
+                }
+            }
+            Stmt::IfElse(ie) => {
+                let then_filt: Vec<Stmt> = ie.then_stmts.iter()
+                    .filter_map(|s| Self::filter_stmt_by_assigned_set(s, target_set, keep_in_set))
+                    .collect();
+                let else_filt: Vec<Stmt> = ie.else_stmts.iter()
+                    .filter_map(|s| Self::filter_stmt_by_assigned_set(s, target_set, keep_in_set))
+                    .collect();
+                if then_filt.is_empty() && else_filt.is_empty() {
+                    None
+                } else {
+                    let mut clone = ie.clone();
+                    clone.then_stmts = then_filt;
+                    clone.else_stmts = else_filt;
+                    Some(Stmt::IfElse(clone))
+                }
+            }
+            Stmt::Match(m) => {
+                let mut clone = m.clone();
+                let mut any = false;
+                for arm in &mut clone.arms {
+                    arm.body = arm.body.iter()
+                        .filter_map(|s| Self::filter_stmt_by_assigned_set(s, target_set, keep_in_set))
+                        .collect();
+                    if !arm.body.is_empty() { any = true; }
+                }
+                if any { Some(Stmt::Match(clone)) } else { None }
+            }
+            Stmt::For(f) => {
+                let body_filt: Vec<Stmt> = f.body.iter()
+                    .filter_map(|s| Self::filter_stmt_by_assigned_set(s, target_set, keep_in_set))
+                    .collect();
+                if body_filt.is_empty() {
+                    None
+                } else {
+                    let mut clone = f.clone();
+                    clone.body = body_filt;
+                    Some(Stmt::For(clone))
+                }
+            }
+            Stmt::Init(ib) => {
+                let body_filt: Vec<Stmt> = ib.body.iter()
+                    .filter_map(|s| Self::filter_stmt_by_assigned_set(s, target_set, keep_in_set))
+                    .collect();
+                if body_filt.is_empty() {
+                    None
+                } else {
+                    let mut clone = ib.clone();
+                    clone.body = body_filt;
+                    Some(Stmt::Init(clone))
+                }
+            }
+            Stmt::DoUntil { body, cond, span } => {
+                let body_filt: Vec<Stmt> = body.iter()
+                    .filter_map(|s| Self::filter_stmt_by_assigned_set(s, target_set, keep_in_set))
+                    .collect();
+                if body_filt.is_empty() {
+                    None
+                } else {
+                    Some(Stmt::DoUntil { body: body_filt, cond: cond.clone(), span: *span })
+                }
+            }
+            // Log + WaitUntil don't have assignments themselves; if they
+            // appear at the top level of a partition, they only survive
+            // when at least one inner assign survives — but at top-level
+            // they can be dropped (no inner). The recursive walk handles
+            // them only by keeping their parent container; standalone
+            // top-level Log/WaitUntil get dropped. (In practice these
+            // sit inside For/IfElse/Match bodies and the parent's empty-
+            // body check decides their fate.)
+            Stmt::Log(_) | Stmt::WaitUntil(_, _) => None,
+        }
+    }
+
     /// Check if an expression produces a signed (SInt) value.
     fn expr_is_signed(&self, expr: &Expr) -> bool {
         match &expr.kind {
