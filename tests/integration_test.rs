@@ -11082,3 +11082,78 @@ fn test_codegen_vec_uint1_collapses_inner_zero_dim() {
     assert!(sv.contains("output logic [3:0] mask"),
         "Vec<Bool, 4> should still emit as `logic [3:0]`:\n{sv}");
 }
+
+/// Loading both an `.archi` interface stub *and* the real `.arch`
+/// definition for the same module name in a single compilation unit
+/// must not error with `duplicate definition`. This covers the
+/// natural workflow `arch sim sub.arch top.arch --tb top_tb.cpp`,
+/// where `top.arch` references `sub` via `inst` and the inst
+/// resolver auto-loads `sub.archi` on top of the explicitly-passed
+/// `sub.arch` — both register as `Item::Module`, only one as
+/// interface stub.
+#[test]
+fn test_archi_stub_dedupes_with_real_arch() {
+    use arch::ast::Item;
+
+    // Concatenated source: interface stub followed by real definition.
+    // Both define `module Sub` with identical port signatures; the
+    // first will be tagged as an interface stub before resolve, just
+    // like main.rs does for items loaded from `.archi` files.
+    let source = r#"
+domain SysDomain
+  freq_mhz: 100
+end domain SysDomain
+
+module Sub
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port b: out UInt<8>;
+end module Sub
+
+module Sub
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port a: in UInt<8>;
+  port b: out UInt<8>;
+
+  comb
+    b = a;
+  end comb
+end module Sub
+
+module Top
+  port clk: in Clock<SysDomain>;
+  port rst: in Reset<Sync>;
+  port x: in UInt<8>;
+  port y: out UInt<8>;
+
+  inst s: Sub
+    clk <- clk;
+    rst <- rst;
+    a   <- x;
+    b   -> y;
+  end inst s
+end module Top
+"#;
+    let tokens = lexer::tokenize(source).expect("lexer error");
+    let mut parser = Parser::new(tokens, source);
+    let mut parsed_ast = parser.parse_source_file().expect("parse error");
+
+    // Tag the first `Sub` as an interface stub (mirrors main.rs's
+    // filename-based tagging when items are parsed from a `.archi`).
+    let mut tagged_one = false;
+    for item in parsed_ast.items.iter_mut() {
+        if let Item::Module(m) = item {
+            if m.name.name == "Sub" && !tagged_one {
+                item.set_is_interface(true);
+                tagged_one = true;
+            }
+        }
+    }
+    assert!(tagged_one, "expected to tag the first Sub as interface");
+
+    let ast = elaborate::elaborate(parsed_ast).expect("elaborate error");
+    let _symbols = resolve::resolve(&ast)
+        .expect("resolve should succeed when an .archi stub coexists with the real .arch");
+}

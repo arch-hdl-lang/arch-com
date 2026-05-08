@@ -378,8 +378,32 @@ pub fn resolve(source_file: &SourceFile) -> Result<SymbolTable, Vec<CompileError
         (Symbol::Domain(DomainInfo { name: "SysDomain".to_string(), freq_mhz: None }), Span { start: 0, end: 0 }),
     );
 
+    // Build the set of names that have a real (non-interface) definition
+    // in this compilation unit. Interface stubs from `.archi` files for
+    // those same names are silently dropped below — they exist only to
+    // expose port signatures across `.archi` boundaries, and the real
+    // `.arch` definition supersedes them when both are loaded together.
+    //
+    // Without this, passing `clk_divider.arch clk_div_counter.arch` to
+    // `arch sim` errors with `duplicate definition: ClkDiv2` because the
+    // `.archi` stub auto-loaded by the inst-resolver and the `.arch` real
+    // module both register as separate globals.
+    let real_names: std::collections::HashSet<String> = source_file.items.iter()
+        .filter_map(|it| {
+            if it.is_interface() { None }
+            else { Some(it.as_construct().name().name.clone()) }
+        })
+        .collect();
+
     // First pass: register all global items
     for item in &source_file.items {
+        // Drop interface stubs that have a real definition somewhere in
+        // this unit. The stub's only job was to expose the port signature
+        // for `.archi`-based separate compilation; the real definition
+        // carries the same ports plus the body.
+        if item.is_interface() && real_names.contains(&item.as_construct().name().name) {
+            continue;
+        }
         match item {
             Item::Domain(d) => {
                 // Allow duplicate domain definitions (common in multi-file projects)
