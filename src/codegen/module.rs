@@ -971,18 +971,37 @@ impl<'a> Codegen<'a> {
             let reset_reg_names: std::collections::BTreeSet<String> =
                 resets.iter().map(|(n, _)| n.clone()).collect();
 
-            // Partition top-level statements: those that assign to reset
-            // registers vs. those that only assign to non-reset registers.
-            let mut guarded_stmts = Vec::new();
-            let mut unguarded_stmts = Vec::new();
+            // Partition top-level statements by which kind of register they
+            // assign to. A statement may write BOTH reset-bearing regs and
+            // reset-none regs (e.g. `if cond then phase_q <= ...; addr_q <= ...; end if`
+            // where phase_q has reset and addr_q is `reset none`). In that
+            // case, emit the statement into BOTH the guarded (reset-edge
+            // sensitivity) and unguarded (clock-only) always_ff blocks,
+            // filtering each copy to keep only the assignments to its target
+            // reg-kind. Otherwise yosys-slang sees an async-reset always_ff
+            // with assignments to addr_q but no reset value for it, infers
+            // "asynchronous load value missing", treats addr_q as having
+            // undefined async-reset behavior, and constant-propagates it →
+            // downstream DCE cascades and entire fanout chains disappear.
+            // (Manifested in arch-ibex SoC synth: 4 prim_ram_1p banks
+            // eliminated because addr_q's "undefined" status propagated
+            // through the icache hit path.)
+            let mut guarded_stmts: Vec<Stmt> = Vec::new();
+            let mut unguarded_stmts: Vec<Stmt> = Vec::new();
             for stmt in &rb.stmts {
                 let mut stmt_roots = std::collections::BTreeSet::new();
                 Self::collect_assigned_roots(std::slice::from_ref(stmt), &mut stmt_roots);
-                let any_reset = stmt_roots.iter().any(|n| reset_reg_names.contains(n));
-                if any_reset {
-                    guarded_stmts.push(stmt);
-                } else {
-                    unguarded_stmts.push(stmt);
+                let touches_reset = stmt_roots.iter().any(|n| reset_reg_names.contains(n));
+                let touches_nonreset = stmt_roots.iter().any(|n| !reset_reg_names.contains(n));
+                if touches_reset {
+                    if let Some(filtered) = Self::filter_stmt_by_assigned_set(stmt, &reset_reg_names, true) {
+                        guarded_stmts.push(filtered);
+                    }
+                }
+                if touches_nonreset {
+                    if let Some(filtered) = Self::filter_stmt_by_assigned_set(stmt, &reset_reg_names, false) {
+                        unguarded_stmts.push(filtered);
+                    }
                 }
             }
 
