@@ -10797,3 +10797,50 @@ fn test_unpacked_wire_rejected_on_non_vec() {
     assert!(msg.contains("unpacked") && msg.contains("Vec"),
         "error should mention the `unpacked` + Vec constraint, got: {}", msg);
 }
+
+#[test]
+fn test_emit_bound_asserts_elides_for_loop_iterator_index() {
+    // Regression: pre-fix, a `for fb in 0..3` with `vec[fb] <= ...`
+    // inside a seq block emitted a module-scope concurrent assertion
+    // `_auto_bound_vec_0: assert property (... int'(fb) < (4))` —
+    // referencing the for-loop iterator `fb` outside the for-loop's
+    // SV scope. Verilator rejected the SV with "Can't find definition
+    // of variable: 'fb'".
+    //
+    // Post-fix, indices that are bare identifiers naming an in-scope
+    // for-loop iterator skip the bound assertion (the iterator is
+    // statically bounded by the loop range, so the check is redundant
+    // and the auto-emitted SV doesn't compile).
+    //
+    // Origin: arch-ibex IbexIcache 1-FSM rewrite (2026-05-07
+    // followup), `for fb in 0..3 phase_q[fb] <= ...; addr_q[fb] <= ...`.
+    let source = "
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+        module M
+          port clk:    in Clock<SysDomain>;
+          port rst_ni: in Reset<Async, Low>;
+          port we:     in Bool;
+          port d:      in UInt<8>;
+          reg q: Vec<UInt<8>, 4> reset rst_ni => 8'd0;
+          seq on clk rising
+            if we
+              for fb in 0..3
+                q[fb] <= d;
+              end for
+            end if
+          end seq
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    // No bound assertion should reference `fb`. Pre-fix the SV had
+    // `_auto_bound_vec_0: assert property (... int'(fb) < (4))`.
+    assert!(!sv.contains("int'(fb)"),
+        "for-loop iterator `fb` should NOT appear in any bound assertion (lives in inner scope only):\n{sv}");
+    // Sanity: bound-assertion block should be absent entirely (no
+    // other Vec writes here), confirming the for-loop iterator was
+    // the only candidate and it was correctly elided.
+    assert!(!sv.contains("_auto_bound_vec_"),
+        "no bound assertion expected when the only Vec index is a for-loop iterator:\n{sv}");
+}
