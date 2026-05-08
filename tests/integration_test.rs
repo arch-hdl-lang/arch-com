@@ -11031,3 +11031,54 @@ fn test_emit_bound_asserts_elides_for_loop_iterator_index() {
     assert!(!sv.contains("_auto_bound_vec_"),
         "no bound assertion expected when the only Vec index is a for-loop iterator:\n{sv}");
 }
+
+#[test]
+fn test_codegen_vec_uint1_collapses_inner_zero_dim() {
+    // Regression: pre-fix, `Vec<UInt<1>, N>` ports emitted as
+    // `logic [N-1:0] [0:0] x` (multi-dim packed). When such a port
+    // connects to an upstream-SV `logic [N-1:0]` (single-dim packed),
+    // yosys-slang's elaboration could mis-resolve the multi-dim
+    // form's bit-by-position mapping at module boundaries, leading
+    // to silent constant-propagation that DCE'd downstream cells.
+    //
+    // Origin: arch-ibex IbexIcache `ic_tag_req_o` / `ic_data_req_o`
+    // (`Vec<UInt<1>, 2>`) connecting to IbexTop wires of upstream
+    // shape `logic [IC_NUM_WAYS-1:0]`. After full SoC `synth -flatten`,
+    // 4 prim_ram_1p RAM banks (~22k FFs of memory) were eliminated
+    // entirely from the netlist.
+    //
+    // Fix: when the inner element of a Vec is 1-bit (`UInt<1>`), the
+    // redundant `[0:0]` inner dim is collapsed. `Vec<UInt<1>, N>` now
+    // emits as `logic [N-1:0] x`. Same bit-level meaning, cleaner
+    // SV form, no mis-resolution at boundaries.
+    let source = "
+        domain SysDomain
+          freq_mhz: 100
+        end domain SysDomain
+        module M
+          port en_v: out Vec<UInt<1>, 4>;
+          port mask: out Vec<Bool, 4>;
+          comb
+            en_v[0] = 1'd1;
+            en_v[1] = 1'd0;
+            en_v[2] = 1'd1;
+            en_v[3] = 1'd0;
+            mask[0] = true;
+            mask[1] = false;
+            mask[2] = true;
+            mask[3] = false;
+          end comb
+        end module M
+    ";
+    let sv = compile_to_sv(source);
+    // `Vec<UInt<1>, 4>` should emit as single-dim packed `logic [3:0]`.
+    assert!(sv.contains("output logic [3:0] en_v"),
+        "Vec<UInt<1>, 4> should emit as `logic [3:0]` (no inner [0:0]):\n{sv}");
+    assert!(!sv.contains("[3:0] [0:0]"),
+        "no `[N-1:0] [0:0]` multi-dim form expected for Vec<UInt<1>, _>:\n{sv}");
+    // Vec<Bool, 4> behaves the same (Bool is 1-bit) — sanity check the
+    // emission stays single-packed (was always `logic [3:0]` pre-fix
+    // because Bool's emit_type_str returns just `logic`).
+    assert!(sv.contains("output logic [3:0] mask"),
+        "Vec<Bool, 4> should still emit as `logic [3:0]`:\n{sv}");
+}

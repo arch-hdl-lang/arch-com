@@ -2716,6 +2716,20 @@ impl<'a> Codegen<'a> {
     /// identifier references to const params declared in the current module.
     /// Runs during `emit_bound_asserts`, which already has the module's
     /// const-param set in scope.
+    /// True iff `e` is the literal `1` (decimal, hex, binary, or sized
+    /// like `1'b1` / `1'd1`). Used by `emit_type_and_array_suffix` to
+    /// detect `UInt<1>` so the redundant `[0:0]` inner dim can be
+    /// collapsed when emitting `Vec<UInt<1>, N>` ports.
+    fn is_const_one(e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Literal(LitKind::Dec(n))
+            | ExprKind::Literal(LitKind::Hex(n))
+            | ExprKind::Literal(LitKind::Bin(n))
+            | ExprKind::Literal(LitKind::Sized(_, n)) => *n == 1,
+            _ => false,
+        }
+    }
+
     fn is_const_reducible_with(
         e: &Expr,
         const_params: &std::collections::HashSet<String>,
@@ -4249,6 +4263,19 @@ impl<'a> Codegen<'a> {
         if dims.is_empty() {
             return (self.emit_type_str(ty), String::new());
         }
+        // For 1-bit elements (`UInt<1>`, `Bool`, `Bit`), collapse the
+        // redundant `[0:0]` inner dim so a `Vec<UInt<1>, N>` emits as
+        // `logic [N-1:0]` (single packed) instead of `logic [N-1:0][0:0]`
+        // (multi-dim). Necessary for clean interop with upstream SV
+        // ports declared `logic [N-1:0] x` — yosys-slang's elaboration
+        // can mis-resolve the multi-dim form's port-by-position
+        // mapping and silently DCE the connection. arch-ibex IbexTop's
+        // `ic_tag_req_o`/`ic_data_req_o` (Vec<UInt<1>, 2>) hit this and
+        // got their entire RAM-bank connections eliminated post-flatten.
+        let cur = match cur {
+            TypeExpr::UInt(w) if Self::is_const_one(w) => &TypeExpr::Bool,
+            _ => cur,
+        };
         // Build packed multi-dim type: "logic [outerDim][innerDim][baseRange]"
         // emit_type_str(cur) returns e.g. "logic [15:0]" for UInt<16>.
         // We insert the packed dims immediately after the "logic" keyword.
