@@ -659,7 +659,9 @@ impl<'a> Codegen<'a> {
         let bits = crate::width::index_width(n_states as u64) as usize;
 
         self.line(&format!("// Wait-stage FSM: {prefix}"));
-        self.line(&format!("case ({prefix}_fsm_state)"));
+        // `unique case`: pipeline wait-stage state register is exclusive
+        // by construction. Lets yosys-slang emit a parallel mux.
+        self.line(&format!("unique case ({prefix}_fsm_state)"));
         self.indent += 1;
 
         // State 0: idle — check upstream valid, optionally fast-path first wait

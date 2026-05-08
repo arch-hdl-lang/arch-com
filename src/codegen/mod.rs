@@ -827,14 +827,20 @@ impl<'a> Codegen<'a> {
 
             // 2. Per-state operand mux. Defaults zero each input, then
             //    each state arm overrides the inputs with that state's
-            //    args. SV `always_comb` ensures no latch.
+            //    args. SV `always_comb` ensures no latch. `unique case`
+            //    on the state register tells the synthesizer the arms
+            //    are mutually exclusive (one entry per thread state),
+            //    so it produces a parallel mux instead of inferring
+            //    priority across N independent `if (state == K)` tests.
             self.line("always_comb begin");
             self.indent += 1;
             for arg in &fd.args {
                 self.line(&format!("__shared_{}_in_{} = '0;", h.sv_name, arg.name.name));
             }
+            self.line(&format!("unique case ({})", h.state_reg));
+            self.indent += 1;
             for entry in &h.entries {
-                self.line(&format!("if ({} == {}) begin", h.state_reg, entry.state_lit));
+                self.line(&format!("{}: begin", entry.state_lit));
                 self.indent += 1;
                 for (arg_decl, arg_str) in fd.args.iter().zip(entry.arg_strs.iter()) {
                     self.line(&format!(
@@ -845,6 +851,9 @@ impl<'a> Codegen<'a> {
                 self.indent -= 1;
                 self.line("end");
             }
+            self.line("default: ;");
+            self.indent -= 1;
+            self.line("endcase");
             self.indent -= 1;
             self.line("end");
 

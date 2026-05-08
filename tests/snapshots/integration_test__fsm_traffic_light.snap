@@ -1,5 +1,6 @@
 ---
 source: tests/integration_test.rs
+assertion_line: 133
 expression: sv
 ---
 // domain SysDomain
@@ -34,7 +35,7 @@ module TrafficLight #(
   
   always_comb begin
     state_next = state_r; // hold by default
-    case (state_r)
+    unique case (state_r)
       RED: begin
         if (timer == 0) state_next = GREEN;
       end
@@ -52,7 +53,7 @@ module TrafficLight #(
     red = 1'b0;
     yellow = 1'b0;
     green = 1'b0;
-    case (state_r)
+    unique case (state_r)
       RED: begin
         red = 1'b1;
       end

@@ -225,7 +225,11 @@ impl<'a> Codegen<'a> {
         }
         // Per-state sequential logic
         if has_seq || !f.default_seq.is_empty() {
-            self.line("case (state_r)");
+            // `unique case`: state_r is one-hot by construction (single FSM
+// state register), so all arms are mutually exclusive. Tells
+// yosys-slang to synthesize a parallel mux instead of a priority
+// encoder.
+self.line("unique case (state_r)");
             self.indent += 1;
             for sb in &f.states {
                 if sb.seq_stmts.is_empty() {
@@ -253,7 +257,11 @@ impl<'a> Codegen<'a> {
         self.line("always_comb begin");
         self.indent += 1;
         self.line("state_next = state_r; // hold by default");
-        self.line("case (state_r)");
+        // `unique case`: state_r is one-hot by construction (single FSM
+// state register), so all arms are mutually exclusive. Tells
+// yosys-slang to synthesize a parallel mux instead of a priority
+// encoder.
+self.line("unique case (state_r)");
         self.indent += 1;
         for sb in &f.states {
             self.line(&format!("{}: begin", sb.name.name.to_uppercase()));
@@ -318,7 +326,11 @@ impl<'a> Codegen<'a> {
             for stmt in &f.default_comb {
                 self.emit_comb_stmt(stmt);
             }
-            self.line("case (state_r)");
+            // `unique case`: state_r is one-hot by construction (single FSM
+// state register), so all arms are mutually exclusive. Tells
+// yosys-slang to synthesize a parallel mux instead of a priority
+// encoder.
+self.line("unique case (state_r)");
             self.indent += 1;
             for sb in &f.states {
                 self.line(&format!("{}: begin", sb.name.name.to_uppercase()));
