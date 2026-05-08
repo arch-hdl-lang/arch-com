@@ -9191,6 +9191,193 @@ end module GoodRdc
 }
 
 #[test]
+fn test_rdc_guard_waiver_async_same_domain_passes() {
+    // Issue #260: a reset-none data register annotated with `guard
+    // VALID_SIG`, where VALID_SIG is async-reset on the same domain
+    // whose data the reset-none reg captures, should NOT raise an
+    // RDC violation. Downstream readers structurally ignore the data
+    // when VALID_SIG is low, so the metastability hazard during reset
+    // deassertion is contained.
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+module M
+  port clk: in Clock<D>;
+  port rst: in Reset<Async, Low>;
+  port d:   in UInt<8>;
+  port q:   out UInt<8>;
+  port v_in: in Bool;
+  // valid_q is async-reset to false (off-value); data_q is unreset
+  // and guarded by valid_q. RDC waiver applies.
+  reg valid_q: Bool reset rst => false;
+  reg data_q: UInt<8> guard valid_q reset none;
+  seq on clk rising
+    valid_q <= v_in;
+    data_q  <= d;
+  end seq
+  let q = data_q;
+end module M
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(parsed).expect("elaborate");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_ok(),
+        "expected guard-waivered RDC to pass, got: {:?}", result.err());
+}
+
+#[test]
+fn test_rdc_guard_waiver_does_not_apply_when_guard_is_sync_reset() {
+    // The guard waiver requires the guard signal to be ASYNC-reset.
+    // A sync-reset guard doesn't structurally gate the deassertion
+    // window, so the metastability hazard remains. The error should
+    // include a hint pointing at the qualifying-guard form.
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+module M
+  port clk: in Clock<D>;
+  port rst_async: in Reset<Async, Low>;
+  port rst_sync:  in Reset<Sync,  Low>;
+  port d:   in UInt<8>;
+  port q:   out UInt<8>;
+  port v_in: in Bool;
+  // Async source flop; reset-none data with a SYNC-reset guard ⇒
+  // waiver shouldn't apply.
+  reg src_q: UInt<8> reset rst_async => 0;
+  reg valid_q: Bool reset rst_sync => false;
+  reg data_q: UInt<8> guard valid_q reset none;
+  seq on clk rising
+    src_q <= d;
+    valid_q <= v_in;
+    data_q  <= src_q;
+  end seq
+  let q = data_q;
+end module M
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(parsed).expect("elaborate");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err(), "expected RDC error (sync guard doesn't qualify)");
+    let errs = result.unwrap_err();
+    assert!(
+        errs.iter().any(|e| {
+            let s = e.to_string();
+            s.contains("RDC violation") && s.contains("data_q")
+                && s.contains("not async-reset")
+        }),
+        "expected hint about non-async guard, got: {:?}", errs
+    );
+}
+
+#[test]
+fn test_rdc_guard_waiver_does_not_apply_when_guard_is_port_input() {
+    // The guard waiver requires the guard signal to be a register in
+    // THIS module — a port input doesn't carry a known reset behavior
+    // for the local checker (cross-module verification is out of
+    // scope per issue #260). Should still fail with a hint.
+    let source = r#"
+domain D
+  freq_mhz: 100
+end domain D
+module M
+  port clk: in Clock<D>;
+  port rst: in Reset<Async, Low>;
+  port d:   in UInt<8>;
+  port valid_in: in Bool;
+  port q:   out UInt<8>;
+  reg src_q: UInt<8> reset rst => 0;
+  reg data_q: UInt<8> guard valid_in reset none;
+  seq on clk rising
+    src_q  <= d;
+    data_q <= src_q;
+  end seq
+  let q = data_q;
+end module M
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(parsed).expect("elaborate");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err(), "expected RDC error (port guard doesn't qualify)");
+    let errs = result.unwrap_err();
+    assert!(
+        errs.iter().any(|e| {
+            let s = e.to_string();
+            s.contains("RDC violation") && s.contains("data_q")
+                && s.contains("not a register in this module")
+        }),
+        "expected hint about port-input guard, got: {:?}", errs
+    );
+}
+
+#[test]
+fn test_rdc_guard_waiver_does_not_apply_when_guard_is_diff_domain() {
+    // The guard waiver waives only the SAME async reset domain. If
+    // the data path crosses a different async domain, the local
+    // guard's reset doesn't help — should still fail.
+    let source = r#"
+domain DomA
+  freq_mhz: 100
+end domain DomA
+domain DomB
+  freq_mhz: 200
+end domain DomB
+module M
+  port clk_a: in Clock<DomA>;
+  port clk_b: in Clock<DomB>;
+  port rst_a: in Reset<Async, Low>;
+  port rst_b: in Reset<Async, Low>;
+  port d:     in UInt<8>;
+  port v_in:  in Bool;
+  port q:     out UInt<8>;
+  // src_q is in rst_b's domain; valid_q is async-reset on rst_a;
+  // data_q reads src_q (rst_b domain) → guard rst_a doesn't cover
+  // this crossing.
+  reg src_q: UInt<8> reset rst_b => 0;
+  reg valid_q: Bool reset rst_a => false;
+  reg data_q: UInt<8> guard valid_q reset none;
+  seq on clk_b rising
+    src_q <= d;
+  end seq
+  seq on clk_a rising
+    valid_q <= v_in;
+    data_q  <= src_q;
+  end seq
+  let q = data_q;
+end module M
+"#;
+    let tokens = lexer::tokenize(source).expect("lex");
+    let mut parser = Parser::new(tokens, source);
+    let parsed = parser.parse_source_file().expect("parse");
+    let ast = elaborate::elaborate(parsed).expect("elaborate");
+    let symbols = resolve::resolve(&ast).expect("resolve");
+    let checker = TypeChecker::new(&symbols, &ast);
+    let result = checker.check();
+    assert!(result.is_err(), "expected RDC error (cross-domain guard doesn't waive)");
+    let errs = result.unwrap_err();
+    assert!(
+        errs.iter().any(|e| {
+            let s = e.to_string();
+            s.contains("RDC violation") && s.contains("data_q")
+        }),
+        "expected RDC error on data_q, got: {:?}", errs
+    );
+}
+
+#[test]
 fn test_rdc_single_domain_no_violation() {
     // Single clock domain — RDC check is gated on multi-domain, so even
     // multiple registers sharing a reset must not trigger.

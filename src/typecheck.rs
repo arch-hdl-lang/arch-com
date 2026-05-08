@@ -3495,10 +3495,15 @@ impl<'a> TypeChecker<'a> {
         // 1. Build flop info (reset signal name + kind) for every flop in
         //    the module. Both inline `reg` decls and `port reg` decls
         //    participate. Flops carry a span we point at on violation.
+        //    `guard_sig` is the optional `guard <NAME>` annotation (issue
+        //    #260) — recognized as a flop-granular RDC waiver when the
+        //    guard signal is itself async-reset on the same domain whose
+        //    crossing would otherwise be flagged.
         struct FlopInfo {
             reset_sig: Option<String>,
             reset_kind: Option<ResetKind>,
             decl_span: crate::lexer::Span,
+            guard_sig: Option<String>,
         }
 
         let async_resets: HashSet<String> = m.ports.iter()
@@ -3533,6 +3538,7 @@ impl<'a> TypeChecker<'a> {
                     reset_sig: sig,
                     reset_kind: kind,
                     decl_span: rd.name.span,
+                    guard_sig: rd.guard.as_ref().map(|g| g.name.clone()),
                 });
             }
         }
@@ -3544,6 +3550,7 @@ impl<'a> TypeChecker<'a> {
                     reset_sig: sig,
                     reset_kind: kind,
                     decl_span: p.name.span,
+                    guard_sig: ri.guard.as_ref().map(|g| g.name.clone()),
                 });
             }
         }
@@ -3719,6 +3726,30 @@ impl<'a> TypeChecker<'a> {
                     // in this flop and metastability propagates downstream.
                     let r = reach.get(name).cloned().unwrap_or_default();
                     if !r.is_empty() {
+                        // Issue #260: `guard VALID_SIG` waiver — when the
+                        // flop carries a guard annotation AND the guard
+                        // signal is itself async-reset, downstream readers
+                        // structurally gate the data on the guard, so the
+                        // metastability hazard is contained without
+                        // requiring this flop to be reset. The guard's
+                        // async-reset domain must cover all reach domains
+                        // for the waiver to apply (the guard goes off in
+                        // those domains, gating the unreset data).
+                        let waived_by_guard = info.guard_sig.as_ref().and_then(|g| {
+                            let gi = flop_info.get(g)?;
+                            if !matches!(gi.reset_kind, Some(ResetKind::Async)) { return None; }
+                            let g_reset = gi.reset_sig.as_ref()?;
+                            // Every reach domain must equal the guard's
+                            // reset signal — otherwise the guard doesn't
+                            // protect the foreign domain(s) we cross.
+                            if r.iter().all(|d| d == g_reset) {
+                                Some((g.clone(), g_reset.clone()))
+                            } else { None }
+                        });
+                        if waived_by_guard.is_some() {
+                            continue;
+                        }
+
                         let mut domains: Vec<String> = r.into_iter().collect();
                         domains.sort();
                         let kind_label = match info.reset_kind {
@@ -3732,6 +3763,19 @@ impl<'a> TypeChecker<'a> {
                             format!("multiple async reset domains ({})",
                                 domains.iter().map(|d| format!("`{d}`")).collect::<Vec<_>>().join(", "))
                         };
+                        // Hint about the issue-#260 waiver path when the
+                        // user has a guard but it doesn't qualify (so they
+                        // can fix the guard's reset rather than reaching
+                        // for `pragma rdc_safe`).
+                        let guard_hint = match (&info.guard_sig, info.guard_sig.as_ref().and_then(|g| flop_info.get(g))) {
+                            (Some(g), Some(gi)) if !matches!(gi.reset_kind, Some(ResetKind::Async)) => {
+                                format!(" (Note: `guard {g}` is present but `{g}` is not async-reset, so the guard waiver does not apply.)")
+                            }
+                            (Some(g), None) => {
+                                format!(" (Note: `guard {g}` is present but `{g}` is not a register in this module, so the guard waiver does not apply.)")
+                            }
+                            _ => String::new(),
+                        };
                         self.errors.push(CompileError::general(
                             &format!(
                                 "RDC violation: {kind_label} register `{name}` captures data \
@@ -3739,7 +3783,8 @@ impl<'a> TypeChecker<'a> {
                                  gated on the upstream's async reset event, so mid-deassert \
                                  transients metastabilise and propagate downstream. Either \
                                  reset `{name}` async-by the same signal, or insert a \
-                                 `synchronizer kind reset` upstream."
+                                 `synchronizer kind reset` upstream, or annotate `{name}` \
+                                 with `guard <VALID_SIG>` where `<VALID_SIG>` is async-reset.{guard_hint}"
                             ),
                             info.decl_span,
                         ));
