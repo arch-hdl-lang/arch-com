@@ -991,6 +991,8 @@ Arch has three kinds of module-scope signal declarations. Each has a distinct sy
 
 **`reg`** declares a flip-flop. It must be assigned inside a `seq` block using `<=`. Reset polarity and mode are declared per register. The syntax is `reg x: T [init VALUE] [reset SIGNAL=>VALUE];` where `init` is optional (sets only the SV declaration initializer `logic x = VALUE;`) and `reset SIGNAL=>VALUE` specifies both the reset signal and the value to load on reset. Use `reset none` for registers that should not be reset. A `reg default:` declaration sets the default init and reset for all subsequent registers in scope: `reg default: [init VALUE] reset SIGNAL=>VALUE;`.
 
+For `Vec<T, N>` registers, the scalar reset value is broadcast to all N elements (matching SV semantics).
+
 **`port reg`** *(deprecated — prefer `port X: out pipe_reg<T, 1>`)*. Declares an output port that is also a register. The syntax is `port reg name: out T [init V] [reset R=>V];`. It can only be used on output ports (`in` direction is a compile error). The port is assigned with `<=` inside a `seq` block. Still accepted by the compiler and emits byte-identical SV to `pipe_reg<T, 1>`, but using `port reg` now triggers a deprecation warning at `arch check` time. Suppress the warning for migration windows with `ARCH_NO_DEPRECATIONS=1`. The replacement form makes latency visible in the port signature; see §18a below for the full rationale.
 
 **`pipe_reg<T, N>` port type** — the preferred spelling for a registered output port, with latency `N` visible in the port signature. This is the recommended replacement for `port reg`; `port reg` remains accepted and is exactly equivalent to `port q: out pipe_reg<T, 1>`.
